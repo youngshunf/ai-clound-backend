@@ -1,4 +1,6 @@
-"""LLM 网关实现"""
+"""LLM 网关实现
+@author Ysf
+"""
 
 import json
 import time
@@ -26,6 +28,7 @@ from backend.app.llm.schema.proxy import (
     ChatMessage,
 )
 from backend.common.exception.errors import HTTPError
+from backend.common.log import log
 
 
 class LLMGatewayError(HTTPError):
@@ -120,8 +123,17 @@ class LLMGateway:
         # 构建消息列表
         messages = [msg.model_dump(exclude_none=True) for msg in request.messages]
 
+        # 根据 provider_type 构建模型名称
+        # 当有自定义 api_base 时，需要显式添加 provider 前缀
+        has_custom_api_base = bool(provider.api_base_url)
+        model_name = self._build_model_name(
+            model_config.model_name,
+            provider.provider_type,
+            force_prefix=has_custom_api_base
+        )
+
         params = {
-            'model': model_config.model_name,
+            'model': model_name,
             'messages': messages,
             'api_key': api_key,
             'stream': request.stream,
@@ -130,6 +142,11 @@ class LLMGateway:
         # 设置 API base URL
         if provider.api_base_url:
             params['api_base'] = provider.api_base_url
+
+        # 详细日志
+        log.info(f'[LLM Gateway] 调用参数: model={model_name}, provider_name={provider.name}, '
+                 f'provider_type={provider.provider_type}, api_base={provider.api_base_url}, '
+                 f'has_api_key={bool(api_key)}, stream={request.stream}')
 
         # 可选参数
         if request.temperature is not None:
@@ -154,6 +171,32 @@ class LLMGateway:
             params['seed'] = request.seed
 
         return params
+
+    def _build_model_name(self, model_name: str, provider_type: str, force_prefix: bool = False) -> str:
+        """
+        根据 provider_type 构建 LiteLLM 模型名称
+
+        LiteLLM 使用模型名称前缀来识别供应商：
+        - openai: gpt-4, gpt-3.5-turbo (无前缀)
+        - anthropic: claude-3-opus (无前缀，LiteLLM 自动识别)
+        - azure: azure/gpt-4
+        - bedrock: bedrock/anthropic.claude-3
+        - vertex_ai: vertex_ai/claude-3
+        - 等等
+
+        Args:
+            model_name: 模型名称
+            provider_type: 供应商类型
+            force_prefix: 强制添加前缀（当有自定义 api_base 时需要）
+        """
+        # 这些供应商 LiteLLM 可以通过模型名称自动识别，无需前缀
+        auto_detect_providers = {'openai', 'anthropic', 'cohere', 'mistral'}
+
+        if provider_type in auto_detect_providers and not force_prefix:
+            return model_name
+
+        # 其他供应商或强制前缀时，添加 provider_type 前缀
+        return f'{provider_type}/{model_name}'
 
     async def chat_completion(
         self,

@@ -1,11 +1,15 @@
 """模型配置表"""
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.common.model import Base, id_key
+
+if TYPE_CHECKING:
+    from .provider import ModelProvider
 
 
 class ModelConfig(Base):
@@ -14,10 +18,12 @@ class ModelConfig(Base):
     __tablename__ = 'llm_model_config'
 
     id: Mapped[id_key] = mapped_column(init=False)
-    provider_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='供应商 ID')
+    # === 必填字段（无默认值）===
+    provider_id: Mapped[int] = mapped_column(sa.BigInteger, sa.ForeignKey('llm_model_provider.id'), index=True, comment='供应商 ID')
     model_name: Mapped[str] = mapped_column(sa.String(128), index=True, comment='模型名称')
-    display_name: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='显示名称')
     model_type: Mapped[str] = mapped_column(sa.String(32), index=True, comment='模型类型')
+    # === 可选字段（有默认值）===
+    display_name: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='显示名称')
     max_tokens: Mapped[int] = mapped_column(default=4096, comment='最大输出 tokens')
     max_context_length: Mapped[int] = mapped_column(default=8192, comment='最大上下文长度')
     supports_streaming: Mapped[bool] = mapped_column(default=True, comment='支持流式')
@@ -33,3 +39,6 @@ class ModelConfig(Base):
     tpm_limit: Mapped[int | None] = mapped_column(default=None, comment='模型 TPM 限制')
     priority: Mapped[int] = mapped_column(default=0, comment='优先级(越大越优先)')
     enabled: Mapped[bool] = mapped_column(default=True, index=True, comment='是否启用')
+
+    # 关系
+    provider: Mapped['ModelProvider'] = relationship(init=False, lazy='selectin')

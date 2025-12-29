@@ -38,16 +38,22 @@ class CRUDProvider(CRUDPlus[ModelProvider]):
     async def create(self, db: AsyncSession, obj: CreateProviderParam, api_key_encrypted: str | None = None) -> None:
         create_data = obj.model_dump(exclude={'api_key'})
         create_data['api_key_encrypted'] = api_key_encrypted
-        await self.create_model(db, create_data)
+        provider = ModelProvider(**create_data)
+        db.add(provider)
+        await db.commit()
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateProviderParam, api_key_encrypted: str | None = None) -> int:
         update_data = obj.model_dump(exclude={'api_key'}, exclude_none=True)
         if api_key_encrypted is not None:
             update_data['api_key_encrypted'] = api_key_encrypted
-        return await self.update_model(db, pk, update_data)
+        count = await self.update_model(db, pk, update_data)
+        await db.commit()
+        return count
 
     async def delete(self, db: AsyncSession, pk: int) -> int:
-        return await self.delete_model(db, pk)
+        count = await self.delete_model(db, pk)
+        await db.commit()
+        return count
 
 
 provider_dao: CRUDProvider = CRUDProvider(ModelProvider)

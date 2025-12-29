@@ -1,4 +1,6 @@
-"""代理 API - OpenAI/Anthropic 兼容"""
+"""代理 API - OpenAI/Anthropic 兼容
+@author Ysf
+"""
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
@@ -10,6 +12,7 @@ from backend.app.llm.schema.proxy import (
     ChatCompletionResponse,
 )
 from backend.app.llm.service.gateway_service import gateway_service
+from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
 
 router = APIRouter()
@@ -23,34 +26,27 @@ def _get_client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _extract_api_key(authorization: str) -> str:
-    """从 Authorization 头提取 API Key"""
-    if authorization.startswith('Bearer '):
-        return authorization[7:]
-    return authorization
-
-
 @router.post(
     '/v1/chat/completions',
     summary='OpenAI 兼容聊天补全',
-    description='兼容 OpenAI Chat Completions API 格式',
+    description='兼容 OpenAI Chat Completions API 格式，需要 JWT 认证 + X-API-Key',
     response_model=ChatCompletionResponse,
     response_model_exclude_none=True,
+    dependencies=[DependsJwtAuth],
 )
 async def chat_completions(
     request: Request,
     db: CurrentSession,
     body: ChatCompletionRequest,
-    authorization: str = Header(..., description='Bearer sk-xxx'),
+    x_api_key: str = Header(..., alias='x-api-key', description='LLM API Key (sk-cf-xxx)'),
 ) -> ChatCompletionResponse | StreamingResponse:
-    api_key = _extract_api_key(authorization)
     ip_address = _get_client_ip(request)
 
     if body.stream:
         return StreamingResponse(
             gateway_service.chat_completion_stream(
                 db,
-                api_key=api_key,
+                api_key=x_api_key,
                 request=body,
                 ip_address=ip_address,
             ),
@@ -64,7 +60,7 @@ async def chat_completions(
 
     return await gateway_service.chat_completion(
         db,
-        api_key=api_key,
+        api_key=x_api_key,
         request=body,
         ip_address=ip_address,
     )
@@ -73,15 +69,16 @@ async def chat_completions(
 @router.post(
     '/v1/messages',
     summary='Anthropic 兼容消息',
-    description='兼容 Anthropic Messages API 格式',
+    description='兼容 Anthropic Messages API 格式，需要 JWT 认证 + X-API-Key',
     response_model=AnthropicMessageResponse,
     response_model_exclude_none=True,
+    dependencies=[DependsJwtAuth],
 )
 async def anthropic_messages(
     request: Request,
     db: CurrentSession,
     body: AnthropicMessageRequest,
-    x_api_key: str = Header(..., alias='x-api-key', description='API Key'),
+    x_api_key: str = Header(..., alias='x-api-key', description='LLM API Key (sk-cf-xxx)'),
 ) -> AnthropicMessageResponse | StreamingResponse:
     ip_address = _get_client_ip(request)
 

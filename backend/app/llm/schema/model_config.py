@@ -64,6 +64,8 @@ class GetModelConfigDetail(ModelConfigBase):
 class GetModelConfigList(SchemaBase):
     """模型配置列表项"""
 
+    model_config = {'from_attributes': True}
+
     id: int
     provider_id: int
     provider_name: str | None = None
@@ -75,19 +77,22 @@ class GetModelConfigList(SchemaBase):
     supports_streaming: bool
     supports_tools: bool
     supports_vision: bool
+    input_cost_per_1k: Decimal = Decimal('0')
+    output_cost_per_1k: Decimal = Decimal('0')
     priority: int
     enabled: bool
 
 
 class GetAvailableModel(SchemaBase):
-    """可用模型（公开接口）"""
+    """可用模型（公开接口）- 与 agent-core ModelInfo 对应"""
 
-    id: int
-    model_name: str
-    display_name: str | None = None
-    model_type: str
-    max_tokens: int
-    max_context_length: int
-    supports_streaming: bool
-    supports_tools: bool
-    supports_vision: bool
+    model_id: str = Field(description='模型 ID (model_name)')
+    provider: str = Field(description='供应商类型')
+    display_name: str | None = Field(default=None, description='显示名称')
+    max_tokens: int = Field(description='最大输出 tokens')
+    model_type: str = Field(description='模型类型 (fast/default/advanced/vision/coding/embedding)')
+    supports_streaming: bool = Field(default=True, description='支持流式')
+    supports_vision: bool = Field(default=False, description='支持视觉')
+    supports_tools: bool = Field(default=True, description='支持工具调用')
+    priority: int = Field(default=0, description='优先级(越大越优先)')
+    enabled: bool = Field(default=True, description='是否启用')

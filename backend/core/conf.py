@@ -292,6 +292,19 @@ class Settings(BaseSettings):
     LLM_CIRCUIT_BREAKER_TIMEOUT: int = 30
     LLM_REDIS_PREFIX: str = 'fba:llm'
 
+    ##################################################
+    # [ Plugin ] sms (阿里云短信)
+    ##################################################
+    # .env 阿里云短信配置
+    SMS_ALIYUN_ACCESS_KEY_ID: str = ''
+    SMS_ALIYUN_ACCESS_KEY_SECRET: str = ''
+    SMS_ALIYUN_SIGN_NAME: str = ''  # 短信签名
+    SMS_ALIYUN_TEMPLATE_CODE: str = ''  # 验证码模板 ID
+
+    # 短信配置
+    SMS_CODE_REDIS_PREFIX: str = 'fba:sms:code'
+    SMS_CODE_EXPIRE_SECONDS: int = 60 * 5  # 5 分钟
+
     @model_validator(mode='before')
     @classmethod
     def check_env(cls, values: Any) -> Any:

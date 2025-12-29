@@ -1,6 +1,8 @@
 """用户 API Key 管理 API"""
 
-from fastapi import APIRouter, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query, Request
 
 from backend.app.llm.schema.user_api_key import (
     CreateUserApiKeyParam,
@@ -10,11 +12,33 @@ from backend.app.llm.schema.user_api_key import (
     UpdateUserApiKeyParam,
 )
 from backend.app.llm.service.api_key_service import api_key_service
+from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
+from backend.common.security.permission import RequestPermission
+from backend.common.security.rbac import DependsRBAC
 from backend.database.db import CurrentSession
 
 router = APIRouter()
+
+
+@router.get(
+    '/admin',
+    summary='获取所有 API Keys（管理员）',
+    dependencies=[
+        Depends(RequestPermission('llm:api-key:list')),
+        DependsRBAC,
+        DependsPagination,
+    ],
+)
+async def get_all_api_keys(
+    db: CurrentSession,
+    user_id: Annotated[int | None, Query(description='用户 ID')] = None,
+    name: Annotated[str | None, Query(description='Key 名称')] = None,
+    status: Annotated[str | None, Query(description='状态')] = None,
+) -> ResponseSchemaModel[PageData[GetUserApiKeyList]]:
+    page_data = await api_key_service.get_all_keys(db, user_id=user_id, name=name, status=status)
+    return response_base.success(data=page_data)
 
 
 @router.get(

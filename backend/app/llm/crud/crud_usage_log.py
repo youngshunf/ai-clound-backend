@@ -46,7 +46,11 @@ class CRUDUsageLog(CRUDPlus[UsageLog]):
         return await self.select_order('id', 'desc', **filters)
 
     async def create(self, db: AsyncSession, obj: dict) -> UsageLog:
-        return await self.create_model(db, obj, commit=True)
+        new_obj = UsageLog(**obj)
+        db.add(new_obj)
+        await db.commit()
+        await db.refresh(new_obj)
+        return new_obj
 
     async def get_summary(
         self,

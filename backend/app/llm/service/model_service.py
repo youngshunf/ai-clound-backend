@@ -1,5 +1,7 @@
 """模型配置 Service"""
 
+from typing import Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.llm.crud.crud_model_config import model_config_dao
@@ -13,6 +15,7 @@ from backend.app.llm.schema.model_config import (
     UpdateModelConfigParam,
 )
 from backend.common.exception import errors
+from backend.common.pagination import paging_data
 
 
 class ModelService:
@@ -64,59 +67,37 @@ class ModelService:
         model_type: str | None = None,
         model_name: str | None = None,
         enabled: bool | None = None,
-    ) -> list[GetModelConfigList]:
-        """获取模型配置列表"""
-        stmt = await model_config_dao.get_list(
+    ) -> dict[str, Any]:
+        """获取模型配置列表（分页）"""
+        stmt = await model_config_dao.get_list_with_provider(
             provider_id=provider_id,
             model_type=model_type,
             model_name=model_name,
             enabled=enabled,
         )
-        result = await db.execute(stmt)
-        models = result.scalars().all()
-
-        # 获取供应商名称映射
-        provider_ids = {m.provider_id for m in models}
-        providers = {}
-        for pid in provider_ids:
-            provider = await provider_dao.get(db, pid)
-            if provider:
-                providers[pid] = provider.name
-
-        return [
-            GetModelConfigList(
-                id=m.id,
-                provider_id=m.provider_id,
-                provider_name=providers.get(m.provider_id),
-                model_name=m.model_name,
-                display_name=m.display_name,
-                model_type=m.model_type,
-                max_tokens=m.max_tokens,
-                max_context_length=m.max_context_length,
-                supports_streaming=m.supports_streaming,
-                supports_tools=m.supports_tools,
-                supports_vision=m.supports_vision,
-                priority=m.priority,
-                enabled=m.enabled,
-            )
-            for m in models
-        ]
+        page_data = await paging_data(db, stmt)
+        return page_data
 
     @staticmethod
     async def get_available_models(db: AsyncSession) -> list[GetAvailableModel]:
-        """获取可用模型列表（公开接口）"""
+        """
+        获取可用模型列表（公开接口）
+
+        返回格式与 agent-core ModelInfo 对应
+        """
         models = await model_config_dao.get_all_enabled(db)
         return [
             GetAvailableModel(
-                id=m.id,
-                model_name=m.model_name,
-                display_name=m.display_name,
-                model_type=m.model_type,
+                model_id=m.model_name,
+                provider=m.provider.provider_type if m.provider else 'openai',
+                display_name=m.display_name or m.model_name,
                 max_tokens=m.max_tokens,
-                max_context_length=m.max_context_length,
+                model_type=m.model_type,
                 supports_streaming=m.supports_streaming,
-                supports_tools=m.supports_tools,
                 supports_vision=m.supports_vision,
+                supports_tools=m.supports_tools,
+                priority=m.priority,
+                enabled=m.enabled,
             )
             for m in models
         ]

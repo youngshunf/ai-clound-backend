@@ -169,6 +169,8 @@ class AuthService:
                 access_token=access_token_data.access_token,
                 access_token_expire_time=access_token_data.access_token_expire_time,
                 session_uuid=access_token_data.session_uuid,
+                refresh_token=refresh_token_data.refresh_token,
+                refresh_token_expire_time=refresh_token_data.refresh_token_expire_time,
                 password_expire_days_remaining=days_remaining,
                 user=user,  # type: ignore
             )

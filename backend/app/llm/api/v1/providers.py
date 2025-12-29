@@ -11,6 +11,7 @@ from backend.app.llm.schema.provider import (
     UpdateProviderParam,
 )
 from backend.app.llm.service.provider_service import provider_service
+from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.common.security.permission import RequestPermission
@@ -23,15 +24,15 @@ router = APIRouter()
 @router.get(
     '',
     summary='获取供应商列表',
-    dependencies=[DependsJwtAuth],
+    dependencies=[DependsJwtAuth, DependsPagination],
 )
 async def get_provider_list(
     db: CurrentSession,
     name: Annotated[str | None, Query(description='供应商名称')] = None,
     enabled: Annotated[bool | None, Query(description='是否启用')] = None,
-) -> ResponseSchemaModel[list[GetProviderList]]:
-    data = await provider_service.get_list(db, name=name, enabled=enabled)
-    return response_base.success(data=data)
+) -> ResponseSchemaModel[PageData[GetProviderList]]:
+    page_data = await provider_service.get_list(db, name=name, enabled=enabled)
+    return response_base.success(data=page_data)
 
 
 @router.get(

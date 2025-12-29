@@ -1,6 +1,6 @@
 """模型组 Schema"""
 
-from pydantic import Field
+from pydantic import Field, computed_field
 
 from backend.app.llm.enums import ModelType
 from backend.common.schema import SchemaBase
@@ -41,16 +41,26 @@ class UpdateModelGroupParam(SchemaBase):
 class GetModelGroupDetail(ModelGroupBase):
     """模型组详情"""
 
+    model_config = {'from_attributes': True}
+
     id: int
 
 
 class GetModelGroupList(SchemaBase):
     """模型组列表项"""
 
+    model_config = {'from_attributes': True}
+
     id: int
     name: str
     model_type: str
-    model_count: int = Field(description='模型数量')
+    model_ids: list[int] = Field(default_factory=list, exclude=True)
     fallback_enabled: bool
     enabled: bool
     description: str | None = None
+
+    @computed_field
+    @property
+    def model_count(self) -> int:
+        """模型数量"""
+        return len(self.model_ids) if self.model_ids else 0

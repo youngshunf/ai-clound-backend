@@ -1,6 +1,6 @@
 """用户 API Key Service"""
 
-from datetime import datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from backend.app.llm.schema.user_api_key import (
     UpdateUserApiKeyParam,
 )
 from backend.common.exception import errors
+from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
 
 
@@ -56,6 +57,19 @@ class ApiKeyService:
             last_used_at=api_key.last_used_at,
             created_time=api_key.created_time,
         )
+
+    @staticmethod
+    async def get_all_keys(
+        db: AsyncSession,
+        *,
+        user_id: int | None = None,
+        name: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        """获取所有 API Keys（管理员）"""
+        stmt = await user_api_key_dao.get_list(user_id=user_id, name=name, status=status)
+        page_data = await paging_data(db, stmt, GetUserApiKeyList)
+        return page_data
 
     @staticmethod
     async def get_user_keys(db: AsyncSession, user_id: int) -> list[GetUserApiKeyList]:
@@ -165,6 +179,77 @@ class ApiKeyService:
         await user_api_key_dao.update_last_used(db, record.id)
 
         return record
+
+    @staticmethod
+    async def create_default_key(db: AsyncSession, user_id: int) -> UserApiKey:
+        """
+        为用户创建默认 API Key
+
+        :param db: 数据库会话
+        :param user_id: 用户 ID
+        :return: 创建的 API Key 记录
+        """
+        # 生成 API Key
+        full_key, display_prefix = key_encryption.generate_api_key()
+        key_hash = key_encryption.hash_key(full_key)
+        key_encrypted = key_encryption.encrypt(full_key)
+
+        # 创建默认 Key 参数
+        obj = CreateUserApiKeyParam(name='Default Key')
+
+        # 创建记录
+        api_key = await user_api_key_dao.create(
+            db,
+            obj,
+            user_id=user_id,
+            key_prefix=display_prefix,
+            key_hash=key_hash,
+            key_encrypted=key_encrypted,
+        )
+
+        # 保存完整 Key 到临时属性（用于返回给用户）
+        api_key._decrypted_key = full_key
+
+        return api_key
+
+    @staticmethod
+    async def get_default_key(db: AsyncSession, user_id: int) -> UserApiKey | None:
+        """
+        获取用户的默认 API Key
+
+        :param db: 数据库会话
+        :param user_id: 用户 ID
+        :return: API Key 记录，如果不存在返回 None
+        """
+        keys = await user_api_key_dao.get_user_keys(db, user_id)
+        if not keys:
+            return None
+
+        # 返回第一个有效的 Key
+        for key in keys:
+            if key.status == ApiKeyStatus.ACTIVE:
+                # 解密 Key
+                key._decrypted_key = key_encryption.decrypt(key.key_encrypted)
+                return key
+
+        return None
+
+    @staticmethod
+    async def get_or_create_default_key(db: AsyncSession, user_id: int) -> UserApiKey:
+        """
+        获取或创建用户的默认 API Key
+
+        :param db: 数据库会话
+        :param user_id: 用户 ID
+        :return: API Key 记录
+        """
+        # 尝试获取现有 Key
+        existing_key = await ApiKeyService.get_default_key(db, user_id)
+        if existing_key:
+            return existing_key
+
+        # 创建新 Key
+        return await ApiKeyService.create_default_key(db, user_id)
 
     @staticmethod
     async def get_rate_limits(db: AsyncSession, api_key: UserApiKey) -> dict:

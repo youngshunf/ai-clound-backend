@@ -1,5 +1,7 @@
 """模型供应商 Service"""
 
+from typing import Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.llm.core.encryption import key_encryption
@@ -12,6 +14,7 @@ from backend.app.llm.schema.provider import (
     UpdateProviderParam,
 )
 from backend.common.exception import errors
+from backend.common.pagination import paging_data
 
 
 class ProviderService:
@@ -39,22 +42,11 @@ class ProviderService:
         *,
         name: str | None = None,
         enabled: bool | None = None,
-    ) -> list[GetProviderList]:
-        """获取供应商列表"""
+    ) -> dict[str, Any]:
+        """获取供应商列表（分页）"""
         stmt = await provider_dao.get_list(name=name, enabled=enabled)
-        result = await db.execute(stmt)
-        providers = result.scalars().all()
-        return [
-            GetProviderList(
-                id=p.id,
-                name=p.name,
-                enabled=p.enabled,
-                is_domestic=p.is_domestic,
-                has_api_key=bool(p.api_key_encrypted),
-                description=p.description,
-            )
-            for p in providers
-        ]
+        page_data = await paging_data(db, stmt)
+        return page_data
 
     @staticmethod
     async def get_all_enabled(db: AsyncSession) -> list[ModelProvider]:

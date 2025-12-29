@@ -14,7 +14,8 @@ class ModelProvider(Base):
     __tablename__ = 'llm_model_provider'
 
     id: Mapped[id_key] = mapped_column(init=False)
-    name: Mapped[str] = mapped_column(sa.String(64), unique=True, index=True, comment='供应商名称')
+    name: Mapped[str] = mapped_column(sa.String(64), unique=True, index=True, comment='供应商名称（自定义）')
+    provider_type: Mapped[str] = mapped_column(sa.String(32), index=True, comment='供应商类型（决定API格式）')
     api_base_url: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='API 基础 URL')
     api_key_encrypted: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='AES-256 加密的 API Key')
     global_rpm_limit: Mapped[int] = mapped_column(default=60, comment='全局 RPM 限制')

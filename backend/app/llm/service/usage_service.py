@@ -2,6 +2,7 @@
 
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +16,7 @@ from backend.app.llm.schema.usage_log import (
     QuotaInfo,
     UsageSummary,
 )
+from backend.common.pagination import paging_data
 
 
 class UsageService:
@@ -72,8 +74,8 @@ class UsageService:
         status: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
-    ) -> list[GetUsageLogList]:
-        """获取用量日志列表"""
+    ) -> dict[str, Any]:
+        """获取用量日志列表（分页）"""
         stmt = await usage_log_dao.get_list(
             user_id=user_id,
             api_key_id=api_key_id,
@@ -82,24 +84,8 @@ class UsageService:
             start_date=start_date,
             end_date=end_date,
         )
-        result = await db.execute(stmt)
-        logs = result.scalars().all()
-
-        return [
-            GetUsageLogList(
-                id=log.id,
-                model_name=log.model_name,
-                input_tokens=log.input_tokens,
-                output_tokens=log.output_tokens,
-                total_tokens=log.total_tokens,
-                total_cost=log.total_cost,
-                latency_ms=log.latency_ms,
-                status=log.status,
-                is_streaming=log.is_streaming,
-                created_time=log.created_time,
-            )
-            for log in logs
-        ]
+        page_data = await paging_data(db, stmt)
+        return page_data
 
     @staticmethod
     async def get_quota_info(

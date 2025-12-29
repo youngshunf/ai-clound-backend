@@ -40,11 +40,15 @@ class UpdateRateLimitConfigParam(SchemaBase):
 class GetRateLimitConfigDetail(RateLimitConfigBase):
     """速率限制配置详情"""
 
+    model_config = {'from_attributes': True}
+
     id: int
 
 
 class GetRateLimitConfigList(SchemaBase):
     """速率限制配置列表项"""
+
+    model_config = {'from_attributes': True}
 
     id: int
     name: str

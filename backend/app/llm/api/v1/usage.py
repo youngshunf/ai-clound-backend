@@ -14,6 +14,7 @@ from backend.app.llm.schema.usage_log import (
 )
 from backend.app.llm.service.api_key_service import api_key_service
 from backend.app.llm.service.usage_service import usage_service
+from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
@@ -71,7 +72,7 @@ async def get_model_usage(
 @router.get(
     '/logs',
     summary='获取用量日志',
-    dependencies=[DependsJwtAuth],
+    dependencies=[DependsJwtAuth, DependsPagination],
 )
 async def get_usage_logs(
     request: Request,
@@ -81,9 +82,9 @@ async def get_usage_logs(
     status: Annotated[str | None, Query(description='状态')] = None,
     start_date: Annotated[date | None, Query(description='开始日期')] = None,
     end_date: Annotated[date | None, Query(description='结束日期')] = None,
-) -> ResponseSchemaModel[list[GetUsageLogList]]:
+) -> ResponseSchemaModel[PageData[GetUsageLogList]]:
     user_id = request.user.id
-    data = await usage_service.get_usage_logs(
+    page_data = await usage_service.get_usage_logs(
         db,
         user_id=user_id,
         api_key_id=api_key_id,
@@ -92,7 +93,7 @@ async def get_usage_logs(
         start_date=start_date,
         end_date=end_date,
     )
-    return response_base.success(data=data)
+    return response_base.success(data=page_data)
 
 
 @router.get(

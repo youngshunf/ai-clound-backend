@@ -27,7 +27,7 @@ class UsageLog(Base):
     output_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal('0'), comment='输出成本 (USD)')
     total_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal('0'), comment='总成本 (USD)')
     latency_ms: Mapped[int] = mapped_column(default=0, comment='延迟(毫秒)')
-    status: Mapped[str] = mapped_column(sa.String(16), index=True, comment='状态(SUCCESS/ERROR)')
+    status: Mapped[str] = mapped_column(sa.String(16), default='SUCCESS', index=True, comment='状态(SUCCESS/ERROR)')
     error_message: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='错误信息')
     is_streaming: Mapped[bool] = mapped_column(default=False, comment='是否流式')
     ip_address: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='IP 地址')

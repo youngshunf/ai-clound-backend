@@ -20,6 +20,8 @@ class SyncedCredential(Base):
 
     id: Mapped[id_key] = mapped_column(init=False)
 
+    # === 必填字段（无默认值）必须放在前面 ===
+
     # 用户关联
     user_id: Mapped[int] = mapped_column(
         sa.BigInteger,
@@ -38,11 +40,6 @@ class SyncedCredential(Base):
         index=True,
         comment="账号ID"
     )
-    account_name: Mapped[str] = mapped_column(
-        sa.String(256),
-        default="",
-        comment="账号名称"
-    )
 
     # 加密数据 (端到端加密，服务端无法解密)
     encrypted_data: Mapped[bytes] = mapped_column(
@@ -54,6 +51,14 @@ class SyncedCredential(Base):
     sync_key_hash: Mapped[str] = mapped_column(
         sa.String(128),
         comment="同步密钥哈希"
+    )
+
+    # === 可选字段（有默认值）放在后面 ===
+
+    account_name: Mapped[str] = mapped_column(
+        sa.String(256),
+        default="",
+        comment="账号名称"
     )
 
     # 数据版本 (用于冲突检测)

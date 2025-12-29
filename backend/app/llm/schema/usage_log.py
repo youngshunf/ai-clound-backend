@@ -40,6 +40,8 @@ class GetUsageLogDetail(UsageLogBase):
 class GetUsageLogList(SchemaBase):
     """用量日志列表项"""
 
+    model_config = {'from_attributes': True}
+
     id: int
     model_name: str
     input_tokens: int

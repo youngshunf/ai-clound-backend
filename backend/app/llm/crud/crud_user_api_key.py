@@ -60,7 +60,11 @@ class CRUDUserApiKey(CRUDPlus[UserApiKey]):
             'key_encrypted': key_encrypted,
             'status': 'ACTIVE',
         })
-        return await self.create_model(db, create_data, commit=True)
+        new_obj = UserApiKey(**create_data)
+        db.add(new_obj)
+        await db.flush()
+        await db.refresh(new_obj)
+        return new_obj
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateUserApiKeyParam) -> int:
         return await self.update_model(db, pk, obj)
