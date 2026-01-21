@@ -486,7 +486,7 @@ class Run:
     ]
     port: Annotated[
         int,
-        cappa.Arg(default=8000, help='提供服务的主机端口号'),
+        cappa.Arg(default=8010, help='提供服务的主机端口号'),
     ]
     no_reload: Annotated[
         bool,
