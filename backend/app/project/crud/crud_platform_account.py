@@ -1,6 +1,6 @@
 """平台账号数据库操作类"""
 
-from typing import List
+from typing import List, Sequence
 
 from sqlalchemy import Select, and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,11 @@ class CRUDPlatformAccount(CRUDPlus[PlatformAccount]):
     async def get(self, db: AsyncSession, account_id: int) -> PlatformAccount | None:
         """获取账号详情"""
         return await self.select_model(db, account_id)
+
+    async def select_all(self, db: AsyncSession, stmt: Select) -> Sequence[PlatformAccount]:
+        """执行查询语句并返回结果列表"""
+        result = await db.execute(stmt)
+        return result.scalars().all()
 
     async def get_by_project_and_id(
         self, db: AsyncSession, project_id: int, account_id: str, platform: str

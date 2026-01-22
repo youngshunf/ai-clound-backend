@@ -1,6 +1,7 @@
 """平台账号 API"""
 
 from typing import Annotated, Sequence
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 
@@ -11,7 +12,9 @@ from backend.app.project.schema.platform_account import (
     PlatformAccountUpdate,
 )
 from backend.app.project.service.platform_account_service import PlatformAccountService
+from backend.app.project.service.project_service import project_service
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel
+from backend.database.db import async_db_session
 
 router = APIRouter()
 
@@ -61,10 +64,21 @@ async def delete_account(
 @router.post('/{project_id}/accounts/sync', summary='同步平台账号')
 async def sync_account(
     request: Request,
-    project_id: Annotated[int, Path(description='项目ID')],
+    project_id: Annotated[int | str, Path(description='项目ID (支持整数ID或UUID)')],
     obj: PlatformAccountSync,
 ) -> ResponseSchemaModel[PlatformAccountInfo]:
-    obj.project_id = project_id
+    # 如果 project_id 是 UUID 字符串，则转换为整数 ID
+    real_project_id = project_id
+    if isinstance(project_id, str):
+        # 简单判断是否为 UUID (包含连字符)
+        if '-' in project_id:
+            async with async_db_session() as db:
+                project = await project_service.get_by_uuid(db=db, uuid=project_id)
+                real_project_id = project.id
+        elif project_id.isdigit():
+             real_project_id = int(project_id)
+             
+    obj.project_id = real_project_id
     data = await PlatformAccountService.sync(request, obj)
     return ResponseSchemaModel(data=data)
 

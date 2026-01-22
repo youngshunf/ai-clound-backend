@@ -38,7 +38,7 @@ class PlatformAccountUpdate(BaseModel):
 
 class PlatformAccountSync(PlatformAccountBase):
     """同步请求使用的 Schema，允许更新所有字段"""
-    project_id: int
+    project_id: int | str
     is_deleted: Optional[bool] = False
     deleted_at: Optional[datetime] = None
 
