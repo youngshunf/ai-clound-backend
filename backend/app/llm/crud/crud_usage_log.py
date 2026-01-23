@@ -68,7 +68,7 @@ class CRUDUsageLog(CRUDPlus[UsageLog]):
             func.coalesce(func.sum(UsageLog.total_tokens), 0).label('total_tokens'),
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label('total_input_tokens'),
             func.coalesce(func.sum(UsageLog.output_tokens), 0).label('total_output_tokens'),
-            func.coalesce(func.sum(UsageLog.total_cost), Decimal('0')).label('total_cost'),
+            func.coalesce(func.sum(UsageLog.total_cost), Decimal(0)).label('total_cost'),
             func.coalesce(func.avg(UsageLog.latency_ms), 0).label('avg_latency_ms'),
         ).where(UsageLog.user_id == user_id)
 
@@ -87,7 +87,7 @@ class CRUDUsageLog(CRUDPlus[UsageLog]):
             total_tokens=int(row.total_tokens or 0),
             total_input_tokens=int(row.total_input_tokens or 0),
             total_output_tokens=int(row.total_output_tokens or 0),
-            total_cost=row.total_cost or Decimal('0'),
+            total_cost=row.total_cost or Decimal(0),
             avg_latency_ms=int(row.avg_latency_ms or 0),
         )
 
@@ -104,7 +104,7 @@ class CRUDUsageLog(CRUDPlus[UsageLog]):
             func.date(UsageLog.created_time).label('date'),
             func.count(UsageLog.id).label('requests'),
             func.coalesce(func.sum(UsageLog.total_tokens), 0).label('tokens'),
-            func.coalesce(func.sum(UsageLog.total_cost), Decimal('0')).label('cost'),
+            func.coalesce(func.sum(UsageLog.total_cost), Decimal(0)).label('cost'),
         ).where(
             UsageLog.user_id == user_id,
             UsageLog.created_time >= datetime.combine(start_date, datetime.min.time()),
@@ -140,7 +140,7 @@ class CRUDUsageLog(CRUDPlus[UsageLog]):
             UsageLog.model_name,
             func.count(UsageLog.id).label('requests'),
             func.coalesce(func.sum(UsageLog.total_tokens), 0).label('tokens'),
-            func.coalesce(func.sum(UsageLog.total_cost), Decimal('0')).label('cost'),
+            func.coalesce(func.sum(UsageLog.total_cost), Decimal(0)).label('cost'),
         ).where(UsageLog.user_id == user_id)
 
         if start_date:

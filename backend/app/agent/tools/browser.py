@@ -5,22 +5,22 @@
 @date 2025-12-28
 """
 
-from typing import Any, Dict, Optional, List
+from typing import Any
 
+from agent_core.runtime.context import RuntimeContext
+from agent_core.runtime.interfaces import RuntimeType
 from agent_core.tools.base import (
+    ToolCapability,
     ToolInterface,
     ToolMetadata,
-    ToolCapability,
     ToolResult,
 )
-from agent_core.runtime.interfaces import RuntimeType
-from agent_core.runtime.context import RuntimeContext
 
 # 从本地 platforms 模块导入（内部转发自 agent-core）
 from backend.app.platforms import (
+    adapt_content_for_platform,
     get_adapter,
     list_platforms,
-    adapt_content_for_platform,
 )
 
 
@@ -46,7 +46,7 @@ class CloudBrowserPublishTool(ToolInterface):
         *,
         platform: str,
         account_id: str,
-        content: Dict[str, Any],
+        content: dict[str, Any],
     ) -> ToolResult:
         """
         执行云端浏览器发布
@@ -71,7 +71,7 @@ class CloudBrowserPublishTool(ToolInterface):
                 )
 
             # 获取平台适配器
-            adapter = get_adapter(platform)
+            get_adapter(platform)
 
             # 获取浏览器池
             browser_pool = ctx.extra.get("browser_pool")
@@ -141,7 +141,7 @@ class CloudBrowserPublishTool(ToolInterface):
             return ToolResult(
                 success=False,
                 data=None,
-                error=f"云端发布失败: {str(e)}",
+                error=f"云端发布失败: {e!s}",
             )
 
     async def _get_synced_credential(
@@ -149,7 +149,7 @@ class CloudBrowserPublishTool(ToolInterface):
         ctx: RuntimeContext,
         platform: str,
         account_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         获取用户同步的凭证
 
@@ -169,11 +169,11 @@ class CloudBrowserPublishTool(ToolInterface):
         # 需要实现凭证同步功能后完善
         return None
 
-    def get_schema(self) -> Dict[str, Any]:
+    def get_schema(self) -> dict[str, Any]:
         """获取工具参数 Schema，平台列表从 agent-core 动态获取"""
         # 从 agent-core 获取支持的平台列表
         supported_platforms = list_platforms()
-        
+
         return {
             "type": "object",
             "properties": {

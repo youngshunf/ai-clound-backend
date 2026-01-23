@@ -12,8 +12,9 @@ from backend.core.path_conf import BASE_PATH
 
 def find_task_packages() -> list[str]:
     packages = []
-    task_dir = BASE_PATH / 'app' / 'task' / 'tasks'
-    for root, _dirs, files in os.walk(task_dir):
+    # 扫描 app 下所有模块的 tasks 子目录
+    app_dir = BASE_PATH / 'app'
+    for root, _dirs, files in os.walk(app_dir):
         if 'tasks.py' in files:
             package = root.replace(str(BASE_PATH.parent) + os.path.sep, '').replace(os.path.sep, '.')
             packages.append(package)

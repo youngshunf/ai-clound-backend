@@ -2,8 +2,8 @@
 
 import time
 import uuid
+
 from decimal import Decimal
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -144,9 +144,9 @@ class UsageTracker:
                 'input_tokens': 0,
                 'output_tokens': 0,
                 'total_tokens': 0,
-                'input_cost': Decimal('0'),
-                'output_cost': Decimal('0'),
-                'total_cost': Decimal('0'),
+                'input_cost': Decimal(0),
+                'output_cost': Decimal(0),
+                'total_cost': Decimal(0),
                 'latency_ms': latency_ms,
                 'status': UsageLogStatus.ERROR,
                 'error_message': error_message,
@@ -159,7 +159,7 @@ class UsageTracker:
 class RequestTimer:
     """请求计时器"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._start_time: float | None = None
         self._end_time: float | None = None
 
@@ -184,7 +184,7 @@ class RequestTimer:
     def __enter__(self) -> 'RequestTimer':
         return self.start()
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *args: object) -> None:
         self.stop()
 
 

@@ -53,12 +53,19 @@ def jwt_decode(token: str) -> TokenPayload:
         expire = payload.get('exp')
         if not session_uuid or not user_id or not expire:
             raise errors.TokenError(msg='Token 无效')
+        # 尝试转换为整数，如果失败说明是旧的 UUID 格式 token
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            raise errors.TokenError(msg='Token 已失效，请重新登录')
     except ExpiredSignatureError:
         raise errors.TokenError(msg='Token 已过期')
+    except errors.TokenError:
+        raise
     except (JWTError, Exception):
         raise errors.TokenError(msg='Token 无效')
     return TokenPayload(
-        id=int(user_id),
+        id=user_id_int,
         session_uuid=session_uuid,
         expire_time=timezone.from_datetime(timezone.to_utc(expire)),
     )

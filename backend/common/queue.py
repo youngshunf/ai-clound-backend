@@ -21,7 +21,7 @@ async def batch_dequeue(queue: Queue, max_items: int, timeout: float) -> list:
 
     try:
         await asyncio.wait_for(collector(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass
 
     return items

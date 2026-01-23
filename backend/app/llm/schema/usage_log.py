@@ -20,9 +20,9 @@ class UsageLogBase(SchemaBase):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
-    input_cost: Decimal = Decimal('0')
-    output_cost: Decimal = Decimal('0')
-    total_cost: Decimal = Decimal('0')
+    input_cost: Decimal = Decimal(0)
+    output_cost: Decimal = Decimal(0)
+    total_cost: Decimal = Decimal(0)
     latency_ms: int = 0
     status: str
     error_message: str | None = None

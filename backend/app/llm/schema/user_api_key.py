@@ -24,8 +24,6 @@ class UserApiKeyBase(SchemaBase):
 class CreateUserApiKeyParam(UserApiKeyBase):
     """创建用户 API Key 参数"""
 
-    pass
-
 
 class CreateUserApiKeyResponse(SchemaBase):
     """创建用户 API Key 响应"""

@@ -10,7 +10,6 @@ from backend.app.llm.model.provider import ModelProvider
 from backend.app.llm.schema.provider import (
     CreateProviderParam,
     GetProviderDetail,
-    GetProviderList,
     UpdateProviderParam,
 )
 from backend.common.exception import errors

@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Query
 
 from backend.app.llm.schema.model_config import (
     CreateModelConfigParam,
-    GetAvailableModel,
     GetModelConfigDetail,
     GetModelConfigList,
     UpdateModelConfigParam,

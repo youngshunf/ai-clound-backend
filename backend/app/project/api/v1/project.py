@@ -26,7 +26,7 @@ async def create_project(
     obj: ProjectCreate,
 ) -> ResponseSchemaModel[ProjectResponse]:
     """创建项目"""
-    project = await project_service.create(db=db, obj=obj, user_id=request.user.id)
+    project = await project_service.create(db=db, obj=obj, user_id=request.user.uuid)
     return response_base.success(data=project)
 
 
@@ -40,7 +40,7 @@ async def get_projects(
     """获取当前用户的项目列表"""
     page_data = await project_service.get_list(
         db=db,
-        user_id=request.user.id,
+        user_id=request.user.uuid,
         name=name,
         industry=industry,
     )
@@ -53,14 +53,14 @@ async def get_default_project(
     request: Request,
 ) -> ResponseSchemaModel[ProjectResponse | None]:
     """获取当前用户的默认项目"""
-    project = await project_service.get_default(db=db, user_id=request.user.id)
+    project = await project_service.get_default(db=db, user_id=request.user.uuid)
     return response_base.success(data=project)
 
 
 @router.get('/{pk}', summary='获取项目详情', dependencies=[DependsJwtAuth])
 async def get_project(
     db: CurrentSession,
-    pk: Annotated[int, Path(description='项目 ID')],
+    pk: Annotated[str, Path(description='项目 ID (UUID)')],
 ) -> ResponseSchemaModel[ProjectResponse]:
     """获取项目详情"""
     project = await project_service.get(db=db, project_id=pk)
@@ -71,11 +71,11 @@ async def get_project(
 async def update_project(
     db: CurrentSessionTransaction,
     request: Request,
-    pk: Annotated[int, Path(description='项目 ID')],
+    pk: Annotated[str, Path(description='项目 ID (UUID)')],
     obj: ProjectUpdate,
 ) -> ResponseModel:
     """更新项目"""
-    count = await project_service.update(db=db, project_id=pk, obj=obj, user_id=request.user.id)
+    count = await project_service.update(db=db, project_id=pk, obj=obj, user_id=request.user.uuid)
     if count > 0:
         return response_base.success()
     return response_base.fail()
@@ -85,10 +85,10 @@ async def update_project(
 async def set_default_project(
     db: CurrentSessionTransaction,
     request: Request,
-    pk: Annotated[int, Path(description='项目 ID')],
+    pk: Annotated[str, Path(description='项目 ID (UUID)')],
 ) -> ResponseModel:
     """设为默认项目"""
-    count = await project_service.set_default(db=db, project_id=pk, user_id=request.user.id)
+    count = await project_service.set_default(db=db, project_id=pk, user_id=request.user.uuid)
     if count > 0:
         return response_base.success()
     return response_base.fail()
@@ -98,10 +98,10 @@ async def set_default_project(
 async def delete_project(
     db: CurrentSessionTransaction,
     request: Request,
-    pk: Annotated[int, Path(description='项目 ID')],
+    pk: Annotated[str, Path(description='项目 ID (UUID)')],
 ) -> ResponseModel:
     """删除项目 (软删除)"""
-    count = await project_service.delete(db=db, project_id=pk, user_id=request.user.id)
+    count = await project_service.delete(db=db, project_id=pk, user_id=request.user.uuid)
     if count > 0:
         return response_base.success()
     return response_base.fail()

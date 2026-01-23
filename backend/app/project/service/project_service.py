@@ -13,12 +13,12 @@ class ProjectService:
     """项目服务类"""
 
     @staticmethod
-    async def get(*, db: AsyncSession, project_id: int) -> Project:
+    async def get(*, db: AsyncSession, project_id: str) -> Project:
         """
         获取项目详情
 
         :param db: 数据库会话
-        :param project_id: 项目 ID
+        :param project_id: 项目 ID (UUID)
         :return:
         """
         project = await project_dao.get(db, project_id)
@@ -27,24 +27,10 @@ class ProjectService:
         return project
 
     @staticmethod
-    async def get_by_uuid(*, db: AsyncSession, uuid: str) -> Project:
-        """
-        通过 UUID 获取项目
-
-        :param db: 数据库会话
-        :param uuid: 项目 UUID
-        :return:
-        """
-        project = await project_dao.get_by_uuid(db, uuid)
-        if not project:
-            raise errors.NotFoundError(msg='项目不存在')
-        return project
-
-    @staticmethod
     async def get_list(
         *,
         db: AsyncSession,
-        user_id: int,
+        user_id: str,
         name: str | None = None,
         industry: str | None = None,
     ):
@@ -62,7 +48,7 @@ class ProjectService:
         return page_data
 
     @staticmethod
-    async def get_default(*, db: AsyncSession, user_id: int) -> Project | None:
+    async def get_default(*, db: AsyncSession, user_id: str) -> Project | None:
         """
         获取用户默认项目
 
@@ -73,7 +59,7 @@ class ProjectService:
         return await project_dao.get_default_project(db, user_id)
 
     @staticmethod
-    async def create(*, db: AsyncSession, obj: ProjectCreate, user_id: int) -> Project:
+    async def create(*, db: AsyncSession, obj: ProjectCreate, user_id: str) -> Project:
         """
         创建项目
 
@@ -85,7 +71,7 @@ class ProjectService:
         return await project_dao.create(db, obj, user_id)
 
     @staticmethod
-    async def update(*, db: AsyncSession, project_id: int, obj: ProjectUpdate, user_id: int) -> int:
+    async def update(*, db: AsyncSession, project_id: str, obj: ProjectUpdate, user_id: str) -> int:
         """
         更新项目
 
@@ -105,7 +91,7 @@ class ProjectService:
         return await project_dao.update(db, project_id, obj)
 
     @staticmethod
-    async def set_default(*, db: AsyncSession, project_id: int, user_id: int) -> int:
+    async def set_default(*, db: AsyncSession, project_id: str, user_id: str) -> int:
         """
         设为默认项目
 
@@ -124,7 +110,7 @@ class ProjectService:
         return await project_dao.set_default(db, project_id, user_id)
 
     @staticmethod
-    async def delete(*, db: AsyncSession, project_id: int, user_id: int) -> int:
+    async def delete(*, db: AsyncSession, project_id: str, user_id: str) -> int:
         """
         删除项目
 

@@ -32,7 +32,7 @@ class ProjectBase(BaseModel):
 
 class ProjectCreate(ProjectBase):
     """创建项目请求"""
-    pass
+    id: str | None = Field(None, max_length=36, description='项目 ID (UUID), 客户端可指定')
 
 
 class ProjectUpdate(BaseModel):
@@ -65,8 +65,7 @@ class ProjectResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    uuid: str
+    id: str
     name: str
     description: str | None
     industry: str | None
@@ -89,8 +88,7 @@ class ProjectListResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
-    uuid: str
+    id: str
     name: str
     description: str | None
     industry: str | None

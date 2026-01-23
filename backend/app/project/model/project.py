@@ -4,15 +4,13 @@
 """
 
 from datetime import datetime
-from typing import Optional
-from uuid import uuid4
 
 import sqlalchemy as sa
+
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key
-from backend.database.db import uuid4_str
+from backend.common.model import Base, uuid_pk
 
 
 class Project(Base):
@@ -20,11 +18,10 @@ class Project(Base):
 
     __tablename__ = 'projects'
 
-    id: Mapped[id_key] = mapped_column(init=False)
-    uuid: Mapped[str] = mapped_column(sa.String(64), init=False, default_factory=uuid4_str, unique=True)
+    id: Mapped[uuid_pk] = mapped_column(init=False)
 
     # 所属用户
-    user_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='用户ID')
+    user_id: Mapped[str] = mapped_column(sa.String(36), index=True, comment='用户ID')
 
     # 基本信息
     name: Mapped[str] = mapped_column(sa.String(100), comment='项目名称')

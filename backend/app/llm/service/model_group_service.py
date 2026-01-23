@@ -13,7 +13,6 @@ from backend.app.llm.model.model_group import ModelGroup
 from backend.app.llm.schema.model_group import (
     CreateModelGroupParam,
     GetModelGroupDetail,
-    GetModelGroupList,
     UpdateModelGroupParam,
 )
 from backend.common.exception import errors

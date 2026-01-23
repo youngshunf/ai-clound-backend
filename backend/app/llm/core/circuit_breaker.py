@@ -1,6 +1,7 @@
 """熔断器实现"""
 
 import time
+
 from threading import Lock
 
 from backend.app.llm.enums import CircuitState
@@ -16,7 +17,7 @@ class CircuitBreaker:
         failure_threshold: int | None = None,
         recovery_timeout: int | None = None,
         half_open_max_calls: int = 3,
-    ):
+    ) -> None:
         """
         初始化熔断器
 
@@ -51,11 +52,10 @@ class CircuitBreaker:
 
     def _check_state_transition(self) -> None:
         """检查并执行状态转换"""
-        if self._state == CircuitState.OPEN:
-            if time.time() - self._last_failure_time > self.recovery_timeout:
-                self._state = CircuitState.HALF_OPEN
-                self._half_open_calls = 0
-                self._success_count = 0
+        if self._state == CircuitState.OPEN and time.time() - self._last_failure_time > self.recovery_timeout:
+            self._state = CircuitState.HALF_OPEN
+            self._half_open_calls = 0
+            self._success_count = 0
 
     def allow_request(self) -> bool:
         """
@@ -135,7 +135,7 @@ class CircuitBreaker:
 class CircuitBreakerManager:
     """熔断器管理器"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._breakers: dict[str, CircuitBreaker] = {}
         self._lock = Lock()
 

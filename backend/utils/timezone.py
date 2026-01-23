@@ -1,7 +1,6 @@
 import zoneinfo
 
-from datetime import datetime
-from datetime import timezone as datetime_timezone
+from datetime import UTC, datetime
 
 from backend.core.conf import settings
 
@@ -54,8 +53,8 @@ class TimeZone:
         :return:
         """
         if isinstance(t, datetime):
-            return t.astimezone(datetime_timezone.utc)
-        return datetime.fromtimestamp(t, tz=datetime_timezone.utc)
+            return t.astimezone(UTC)
+        return datetime.fromtimestamp(t, tz=UTC)
 
 
 timezone: TimeZone = TimeZone()

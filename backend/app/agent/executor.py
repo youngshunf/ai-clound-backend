@@ -9,22 +9,23 @@
 
 import time
 import uuid
-import json
-from typing import AsyncIterator, Dict, Any, Optional
 
-from agent_core.runtime.interfaces import (
-    ExecutorInterface,
-    RuntimeType,
-    ExecutionRequest,
-    ExecutionResponse,
-)
+from collections.abc import AsyncIterator
+from typing import Any
+
+from agent_core.graph.compiler import GraphCompiler
+from agent_core.graph.loader import GraphLoader
+from agent_core.llm import DirectLLMClient, LLMConfig
 from agent_core.runtime.context import RuntimeContext
 from agent_core.runtime.events import AgentEvent, EventType
-from agent_core.graph.loader import GraphLoader
-from agent_core.graph.compiler import GraphCompiler
-from agent_core.tools.registry import ToolRegistry
+from agent_core.runtime.interfaces import (
+    ExecutionRequest,
+    ExecutionResponse,
+    ExecutorInterface,
+    RuntimeType,
+)
 from agent_core.tools.builtin import LLMGenerateTool
-from agent_core.llm import DirectLLMClient, LLMConfig
+from agent_core.tools.registry import ToolRegistry
 
 
 class CloudExecutor(ExecutorInterface):
@@ -43,10 +44,10 @@ class CloudExecutor(ExecutorInterface):
         self,
         db,
         redis,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         browser_pool=None,
         llm_gateway=None,
-    ):
+    ) -> None:
         """
         初始化云端执行器
 
@@ -287,7 +288,7 @@ class CloudExecutor(ExecutorInterface):
                 },
             )
 
-    async def get_status(self, execution_id: str) -> Dict[str, Any]:
+    async def get_status(self, execution_id: str) -> dict[str, Any]:
         """
         获取执行状态
 
@@ -328,7 +329,7 @@ class CloudExecutor(ExecutorInterface):
             await self.redis.ping()
 
             # 检查 Graph 加载器
-            graphs = self.graph_loader.list_graphs()
+            self.graph_loader.list_graphs()
 
             return True
         except Exception:
@@ -385,7 +386,7 @@ class CloudExecutor(ExecutorInterface):
         return "claude-sonnet-4-20250514"
 
     def _extract_outputs(
-        self, graph_def: Dict[str, Any], final_state: Dict[str, Any]
+        self, graph_def: dict[str, Any], final_state: dict[str, Any]
     ) -> Any:
         """
         从最终状态中提取输出
@@ -414,8 +415,8 @@ class CloudExecutor(ExecutorInterface):
         return outputs
 
     def _convert_langgraph_event(
-        self, event: Dict[str, Any], execution_id: str
-    ) -> Optional[AgentEvent]:
+        self, event: dict[str, Any], execution_id: str
+    ) -> AgentEvent | None:
         """
         转换 LangGraph 事件为 AgentEvent
 
@@ -436,7 +437,7 @@ class CloudExecutor(ExecutorInterface):
                     "node_name": event.get("name"),
                 },
             )
-        elif event_type == "on_chain_end":
+        if event_type == "on_chain_end":
             return AgentEvent(
                 type=EventType.NODE_COMPLETE,
                 data={
@@ -445,7 +446,7 @@ class CloudExecutor(ExecutorInterface):
                     "output": event.get("data", {}).get("output"),
                 },
             )
-        elif event_type == "on_chain_error":
+        if event_type == "on_chain_error":
             return AgentEvent(
                 type=EventType.NODE_ERROR,
                 data={
@@ -465,8 +466,8 @@ class CloudExecutor(ExecutorInterface):
         graph_name: str,
         success: bool,
         execution_time: float,
-        error: Optional[str] = None,
-    ):
+        error: str | None = None,
+    ) -> None:
         """
         记录执行日志
 

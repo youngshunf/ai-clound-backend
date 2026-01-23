@@ -5,21 +5,21 @@
 @date 2025-12-28
 """
 
-from typing import Optional
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Header
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.database.db import get_db
 from backend.common.security.jwt import DependsJwtAuth
+from backend.database.db import get_db
 
 from .schema import (
-    CredentialSyncRequest,
-    CredentialSyncResponse,
+    CredentialDeleteResponse,
     CredentialInfo,
     CredentialListResponse,
-    CredentialDeleteResponse,
+    CredentialSyncRequest,
+    CredentialSyncResponse,
 )
 from .service import CredentialService
 
@@ -33,7 +33,7 @@ router = APIRouter(prefix="/credentials", tags=["凭证同步"])
 )
 async def sync_credential(
     request: CredentialSyncRequest,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: dict = DependsJwtAuth,
 ) -> ResponseModel[CredentialSyncResponse]:
     """同步凭证到云端"""
@@ -53,10 +53,10 @@ async def sync_credential(
 async def get_credential(
     platform: str,
     account_id: str,
-    sync_key_hash: str = Header(..., alias="X-Sync-Key-Hash"),
-    db: AsyncSession = Depends(get_db),
+    sync_key_hash: Annotated[str, Header(alias="X-Sync-Key-Hash")],
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: dict = DependsJwtAuth,
-) -> ResponseModel[Optional[CredentialInfo]]:
+) -> ResponseModel[CredentialInfo | None]:
     """获取凭证"""
     result = await CredentialService.get_credential(
         db=db,
@@ -76,7 +76,7 @@ async def get_credential(
     description="列出用户的所有同步凭证",
 )
 async def list_credentials(
-    platform: Optional[str] = Query(default=None, description="平台名称"),
+    platform: Annotated[str | None, Query(description="平台名称")] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = DependsJwtAuth,
 ) -> ResponseModel[CredentialListResponse]:
@@ -97,7 +97,7 @@ async def list_credentials(
 async def delete_credential(
     platform: str,
     account_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: dict = DependsJwtAuth,
 ) -> ResponseModel[CredentialDeleteResponse]:
     """删除凭证"""

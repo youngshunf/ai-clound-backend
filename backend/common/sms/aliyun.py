@@ -6,8 +6,9 @@ import hashlib
 import hmac
 import json
 import urllib.parse
+
 from base64 import b64encode
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import httpx
@@ -21,7 +22,7 @@ class AliyunSmsService:
     ENDPOINT = 'https://dysmsapi.aliyuncs.com'
     VERSION = '2017-05-25'
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.access_key_id = settings.SMS_ALIYUN_ACCESS_KEY_ID
         self.access_key_secret = settings.SMS_ALIYUN_ACCESS_KEY_SECRET
         self.sign_name = settings.SMS_ALIYUN_SIGN_NAME
@@ -59,7 +60,7 @@ class AliyunSmsService:
             'SignatureVersion': '1.0',
             'TemplateCode': self.template_code,
             'TemplateParam': json.dumps({'code': code}),
-            'Timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'Timestamp': datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
             'Version': self.VERSION,
         }
         params['Signature'] = self._sign(params)

@@ -48,7 +48,8 @@ class JwtAuthMiddleware(AuthenticationBackend):
         :param exc: 认证错误对象
         :return:
         """
-        return MsgSpecJSONResponse(content={'code': exc.code, 'msg': exc.msg, 'data': None}, status_code=exc.code)
+        status_code = int(exc.code) if exc.code else 401
+        return MsgSpecJSONResponse(content={'code': status_code, 'msg': exc.msg, 'data': None}, status_code=status_code)
 
     async def authenticate(self, request: Request) -> tuple[AuthCredentials, GetUserInfoWithRelationDetail] | None:
         """

@@ -22,10 +22,10 @@ from backend.app.llm.service.api_key_service import api_key_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth, create_access_token, create_refresh_token
+from backend.common.sms import sms_service
 from backend.core.conf import settings
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 from backend.database.redis import redis_client
-from backend.common.sms import sms_service
 from backend.utils.timezone import timezone
 
 router = APIRouter()
@@ -167,7 +167,6 @@ async def phone_login(
 
     # 构建用户信息
     user_info = PhoneLoginUserInfo(
-        id=user.id,
         uuid=user.uuid,
         username=user.username,
         nickname=user.nickname,
@@ -207,7 +206,7 @@ async def get_llm_token(
     - 如果用户没有 API Key，自动创建
     - 返回 API Token 供桌面端使用
     """
-    from backend.common.security.jwt import jwt_decode, get_token
+    from backend.common.security.jwt import get_token, jwt_decode
 
     # 获取当前用户 ID
     token = get_token(request)

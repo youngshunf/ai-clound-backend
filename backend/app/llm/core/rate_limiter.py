@@ -9,14 +9,14 @@ from backend.database.redis import redis_client
 class RateLimitExceeded(HTTPError):
     """速率限制超出异常"""
 
-    def __init__(self, message: str = 'Rate limit exceeded'):
+    def __init__(self, message: str = 'Rate limit exceeded') -> None:
         super().__init__(code=429, msg=message)
 
 
 class RateLimiter:
     """基于 Redis 的速率限制器"""
 
-    def __init__(self, redis_prefix: str = 'fba:llm'):
+    def __init__(self, redis_prefix: str = 'fba:llm') -> None:
         self.redis_prefix = redis_prefix
 
     def _get_rpm_key(self, api_key_id: int) -> str:

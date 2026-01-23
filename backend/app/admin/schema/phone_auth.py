@@ -44,7 +44,6 @@ class PhoneLoginResponse(SchemaBase):
 class PhoneLoginUserInfo(SchemaBase):
     """手机号登录用户信息"""
 
-    id: int = Field(description='用户 ID')
     uuid: str = Field(description='用户 UUID')
     username: str = Field(description='用户名')
     nickname: str = Field(description='昵称')

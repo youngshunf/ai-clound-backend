@@ -4,11 +4,11 @@
 """
 
 import pytest
+
 from starlette.testclient import TestClient
 
 from backend.app.admin.tests.conftest import PYTEST_BASE_URL
 from backend.main import app
-
 
 # 测试用项目数据
 TEST_PROJECT = {
@@ -50,7 +50,7 @@ class TestProjectAPI:
 
     created_project_id: int | None = None
 
-    def test_create_project(self, client: TestClient, token_headers: dict):
+    def test_create_project(self, client: TestClient, token_headers: dict) -> None:
         """测试创建项目"""
         response = client.post('/projects', json=TEST_PROJECT, headers=token_headers)
         assert response.status_code == 200
@@ -63,7 +63,7 @@ class TestProjectAPI:
 
         TestProjectAPI.created_project_id = data['data']['id']
 
-    def test_get_projects(self, client: TestClient, token_headers: dict):
+    def test_get_projects(self, client: TestClient, token_headers: dict) -> None:
         """测试获取项目列表"""
         response = client.get('/projects', headers=token_headers)
         assert response.status_code == 200
@@ -73,7 +73,7 @@ class TestProjectAPI:
         assert 'items' in data['data']
         assert isinstance(data['data']['items'], list)
 
-    def test_get_project(self, client: TestClient, token_headers: dict):
+    def test_get_project(self, client: TestClient, token_headers: dict) -> None:
         """测试获取项目详情"""
         if not TestProjectAPI.created_project_id:
             pytest.skip('没有创建的项目')
@@ -85,7 +85,7 @@ class TestProjectAPI:
         assert data['code'] == 200
         assert data['data']['id'] == TestProjectAPI.created_project_id
 
-    def test_update_project(self, client: TestClient, token_headers: dict):
+    def test_update_project(self, client: TestClient, token_headers: dict) -> None:
         """测试更新项目"""
         if not TestProjectAPI.created_project_id:
             pytest.skip('没有创建的项目')
@@ -99,7 +99,7 @@ class TestProjectAPI:
         assert response.status_code == 200
         assert response.json()['code'] == 200
 
-    def test_set_default_project(self, client: TestClient, token_headers: dict):
+    def test_set_default_project(self, client: TestClient, token_headers: dict) -> None:
         """测试设为默认项目"""
         if not TestProjectAPI.created_project_id:
             pytest.skip('没有创建的项目')
@@ -111,7 +111,7 @@ class TestProjectAPI:
         assert response.status_code == 200
         assert response.json()['code'] == 200
 
-    def test_get_default_project(self, client: TestClient, token_headers: dict):
+    def test_get_default_project(self, client: TestClient, token_headers: dict) -> None:
         """测试获取默认项目"""
         response = client.get('/projects/default', headers=token_headers)
         assert response.status_code == 200
@@ -119,7 +119,7 @@ class TestProjectAPI:
         data = response.json()
         assert data['code'] == 200
 
-    def test_delete_project_fail_if_default(self, client: TestClient, token_headers: dict):
+    def test_delete_project_fail_if_default(self, client: TestClient, token_headers: dict) -> None:
         """测试删除默认项目应该失败"""
         if not TestProjectAPI.created_project_id:
             pytest.skip('没有创建的项目')

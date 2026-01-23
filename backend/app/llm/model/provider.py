@@ -1,8 +1,8 @@
 """模型供应商表"""
 
-from datetime import datetime
 
 import sqlalchemy as sa
+
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, id_key

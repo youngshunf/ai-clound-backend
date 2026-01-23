@@ -6,18 +6,17 @@
 """
 
 import base64
-from typing import Optional
 
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .model import SyncedCredential
 from .schema import (
-    CredentialSyncRequest,
-    CredentialSyncResponse,
+    CredentialDeleteResponse,
     CredentialInfo,
     CredentialListResponse,
-    CredentialDeleteResponse,
+    CredentialSyncRequest,
+    CredentialSyncResponse,
 )
 
 
@@ -90,28 +89,27 @@ class CredentialService:
                 version=request.version,
                 message="凭证更新成功",
             )
-        else:
-            # 创建新凭证
-            credential = SyncedCredential(
-                user_id=user_id,
-                platform=request.platform,
-                account_id=request.account_id,
-                account_name=request.account_name,
-                encrypted_data=encrypted_bytes,
-                sync_key_hash=request.sync_key_hash,
-                client_id=request.client_id,
-                version=request.version,
-            )
-            db.add(credential)
-            await db.commit()
+        # 创建新凭证
+        credential = SyncedCredential(
+            user_id=user_id,
+            platform=request.platform,
+            account_id=request.account_id,
+            account_name=request.account_name,
+            encrypted_data=encrypted_bytes,
+            sync_key_hash=request.sync_key_hash,
+            client_id=request.client_id,
+            version=request.version,
+        )
+        db.add(credential)
+        await db.commit()
 
-            return CredentialSyncResponse(
-                success=True,
-                platform=request.platform,
-                account_id=request.account_id,
-                version=request.version,
-                message="凭证同步成功",
-            )
+        return CredentialSyncResponse(
+            success=True,
+            platform=request.platform,
+            account_id=request.account_id,
+            version=request.version,
+            message="凭证同步成功",
+        )
 
     @staticmethod
     async def get_credential(
@@ -120,7 +118,7 @@ class CredentialService:
         platform: str,
         account_id: str,
         sync_key_hash: str,
-    ) -> Optional[CredentialInfo]:
+    ) -> CredentialInfo | None:
         """
         获取凭证
 
@@ -163,7 +161,7 @@ class CredentialService:
     async def list_credentials(
         db: AsyncSession,
         user_id: int,
-        platform: Optional[str] = None,
+        platform: str | None = None,
     ) -> CredentialListResponse:
         """
         列出用户凭证

@@ -103,7 +103,7 @@ async def get_usage_logs(
 )
 async def get_quota_info(
     db: CurrentSession,
-    authorization: str = Header(..., description='Bearer sk-xxx'),
+    authorization: Annotated[str, Header(description='Bearer sk-xxx')],
 ) -> ResponseSchemaModel[QuotaInfo]:
     # 提取 API Key
     api_key = authorization.replace('Bearer ', '') if authorization.startswith('Bearer ') else authorization

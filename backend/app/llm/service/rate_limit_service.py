@@ -13,7 +13,6 @@ from backend.app.llm.model.rate_limit import RateLimitConfig
 from backend.app.llm.schema.rate_limit import (
     CreateRateLimitConfigParam,
     GetRateLimitConfigDetail,
-    GetRateLimitConfigList,
     UpdateRateLimitConfigParam,
 )
 from backend.common.exception import errors

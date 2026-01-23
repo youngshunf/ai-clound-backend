@@ -222,6 +222,17 @@ class Settings(BaseSettings):
     GRAFANA_OTLP_GRPC_ENDPOINT: str = 'fba_alloy:4317'
 
     ##################################################
+    # [ App ] topic (BettaFish / TrendRadar Integration)
+    ##################################################
+    BETTAFISH_API_URL: str = 'http://bettafish:5000'
+    TRENDRADAR_BASE_URL: str = ''
+    TRENDRADAR_ENDPOINT_PATH: str = '/api/hot-topics'
+    TRENDRADAR_PAYLOAD_MODE: str = 'trendradar'
+    # TrendRadar 项目根目录（可选），为空时自动按仓库目录推断
+    TRENDRADAR_PROJECT_ROOT: str = ''
+    LLM_TOPIC_RECOMMENDER_MODEL: str = 'claude-sonnet-4-5-20250929'
+
+    ##################################################
     # [ App ] task
     ##################################################
     # .env Redis

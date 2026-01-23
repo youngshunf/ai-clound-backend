@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
+
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.common.model import Base, id_key
@@ -30,10 +31,10 @@ class ModelConfig(Base):
     supports_tools: Mapped[bool] = mapped_column(default=False, comment='支持工具调用')
     supports_vision: Mapped[bool] = mapped_column(default=False, comment='支持视觉')
     input_cost_per_1k: Mapped[Decimal] = mapped_column(
-        sa.Numeric(10, 6), default=Decimal('0'), comment='输入成本/1K tokens (USD)'
+        sa.Numeric(10, 6), default=Decimal(0), comment='输入成本/1K tokens (USD)'
     )
     output_cost_per_1k: Mapped[Decimal] = mapped_column(
-        sa.Numeric(10, 6), default=Decimal('0'), comment='输出成本/1K tokens (USD)'
+        sa.Numeric(10, 6), default=Decimal(0), comment='输出成本/1K tokens (USD)'
     )
     rpm_limit: Mapped[int | None] = mapped_column(default=None, comment='模型 RPM 限制')
     tpm_limit: Mapped[int | None] = mapped_column(default=None, comment='模型 TPM 限制')

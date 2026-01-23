@@ -4,13 +4,15 @@
 
 import json
 import time
-from typing import Any, AsyncIterator
+
+from collections.abc import AsyncIterator
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.llm.core.circuit_breaker import CircuitBreaker, circuit_breaker_manager
 from backend.app.llm.core.encryption import key_encryption
-from backend.app.llm.core.rate_limiter import RateLimitExceeded, rate_limiter
+from backend.app.llm.core.rate_limiter import rate_limiter
 from backend.app.llm.core.usage_tracker import RequestTimer, usage_tracker
 from backend.app.llm.crud.crud_model_config import model_config_dao
 from backend.app.llm.crud.crud_model_group import model_group_dao
@@ -18,10 +20,10 @@ from backend.app.llm.crud.crud_provider import provider_dao
 from backend.app.llm.model.model_config import ModelConfig
 from backend.app.llm.model.provider import ModelProvider
 from backend.app.llm.schema.proxy import (
+    ChatCompletionChoice,
     ChatCompletionChunk,
     ChatCompletionChunkChoice,
     ChatCompletionChunkDelta,
-    ChatCompletionChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionUsage,
@@ -34,28 +36,28 @@ from backend.common.log import log
 class LLMGatewayError(HTTPError):
     """LLM 网关错误"""
 
-    def __init__(self, message: str, code: int = 500):
+    def __init__(self, message: str, code: int = 500) -> None:
         super().__init__(code=code, msg=message)
 
 
 class ModelNotFoundError(LLMGatewayError):
     """模型未找到错误"""
 
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str) -> None:
         super().__init__(f'Model not found: {model_name}', code=404)
 
 
 class ProviderUnavailableError(LLMGatewayError):
     """供应商不可用错误"""
 
-    def __init__(self, provider_name: str):
+    def __init__(self, provider_name: str) -> None:
         super().__init__(f'Provider unavailable: {provider_name}', code=503)
 
 
 class LLMGateway:
     """LLM 统一调用网关"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._litellm = None
 
     @property

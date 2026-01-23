@@ -13,18 +13,19 @@
 
 import asyncio
 import logging
-from typing import Dict, Any, Optional, List
+
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
-from enum import Enum
+from enum import StrEnum
+from typing import Any
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import Browser, BrowserContext, async_playwright
 
 logger = logging.getLogger(__name__)
 
 
-class BrowserStatus(str, Enum):
+class BrowserStatus(StrEnum):
     """浏览器状态"""
     IDLE = "idle"
     BUSY = "busy"
@@ -67,7 +68,7 @@ class BrowserPool:
     - 健康检查
     """
 
-    def __init__(self, config: Optional[PoolConfig] = None):
+    def __init__(self, config: PoolConfig | None = None) -> None:
         """
         初始化浏览器池
 
@@ -76,14 +77,14 @@ class BrowserPool:
         """
         self._config = config or PoolConfig()
         self._playwright = None
-        self._browser: Optional[Browser] = None
-        self._instances: Dict[str, BrowserInstance] = {}
+        self._browser: Browser | None = None
+        self._instances: dict[str, BrowserInstance] = {}
         self._lock = asyncio.Lock()
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: asyncio.Task | None = None
         self._running = False
         self._instance_counter = 0
 
-    async def start(self):
+    async def start(self) -> None:
         """启动浏览器池"""
         if self._running:
             return
@@ -103,7 +104,7 @@ class BrowserPool:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         logger.info("浏览器池已启动")
 
-    async def stop(self):
+    async def stop(self) -> None:
         """停止浏览器池"""
         if not self._running:
             return
@@ -138,7 +139,7 @@ class BrowserPool:
     async def acquire(
         self,
         platform: str,
-        credential: Optional[Dict[str, Any]] = None,
+        credential: dict[str, Any] | None = None,
     ) -> BrowserInstance:
         """
         获取浏览器实例
@@ -184,7 +185,7 @@ class BrowserPool:
             logger.info(f"创建新浏览器实例: {instance.id}")
             return instance
 
-    async def release(self, instance: BrowserInstance, error: bool = False):
+    async def release(self, instance: BrowserInstance, error: bool = False) -> None:
         """
         释放浏览器实例
 
@@ -214,7 +215,7 @@ class BrowserPool:
     async def get_context(
         self,
         platform: str,
-        credential: Optional[Dict[str, Any]] = None,
+        credential: dict[str, Any] | None = None,
     ):
         """
         上下文管理器方式获取浏览器实例
@@ -239,7 +240,7 @@ class BrowserPool:
     async def _create_instance(
         self,
         platform: str,
-        credential: Optional[Dict[str, Any]] = None,
+        credential: dict[str, Any] | None = None,
     ) -> BrowserInstance:
         """创建浏览器实例"""
         self._instance_counter += 1
@@ -276,14 +277,14 @@ class BrowserPool:
             status=BrowserStatus.BUSY,
         )
 
-    async def _close_instance(self, instance: BrowserInstance):
+    async def _close_instance(self, instance: BrowserInstance) -> None:
         """关闭浏览器实例"""
         try:
             await instance.context.close()
         except Exception as e:
             logger.error(f"关闭浏览器实例失败: {instance.id}, {e}")
 
-    async def _cleanup_loop(self):
+    async def _cleanup_loop(self) -> None:
         """清理循环"""
         while self._running:
             try:
@@ -294,7 +295,7 @@ class BrowserPool:
             except Exception as e:
                 logger.error(f"清理任务出错: {e}")
 
-    async def _cleanup_idle_instances(self):
+    async def _cleanup_idle_instances(self) -> None:
         """清理空闲实例"""
         now = datetime.now()
         timeout = timedelta(seconds=self._config.idle_timeout)
@@ -313,7 +314,7 @@ class BrowserPool:
                 await self._close_instance(instance)
                 logger.info(f"清理空闲实例: {instance_id}")
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """
         健康检查
 
@@ -346,7 +347,7 @@ class BrowserPool:
                 "platforms": platforms,
             }
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """获取统计信息"""
         return {
             "total_created": self._instance_counter,
@@ -360,7 +361,7 @@ class BrowserPool:
 
 
 # 全局浏览器池实例
-_browser_pool: Optional[BrowserPool] = None
+_browser_pool: BrowserPool | None = None
 
 
 async def get_browser_pool() -> BrowserPool:
@@ -372,7 +373,7 @@ async def get_browser_pool() -> BrowserPool:
     return _browser_pool
 
 
-async def shutdown_browser_pool():
+async def shutdown_browser_pool() -> None:
     """关闭全局浏览器池"""
     global _browser_pool
     if _browser_pool:

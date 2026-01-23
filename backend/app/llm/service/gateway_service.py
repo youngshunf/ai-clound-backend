@@ -1,13 +1,12 @@
 """网关 Service"""
 
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.llm.core.gateway import llm_gateway
 from backend.app.llm.schema.proxy import (
     AnthropicContentBlock,
-    AnthropicMessage,
     AnthropicMessageRequest,
     AnthropicMessageResponse,
     AnthropicUsage,
@@ -107,10 +106,7 @@ class GatewayService:
                 content = msg.content
             else:
                 # 处理内容块
-                text_parts = []
-                for block in msg.content:
-                    if block.type == 'text' and block.text:
-                        text_parts.append(block.text)
+                text_parts = [block.text for block in msg.content if block.type == 'text' and block.text]
                 content = '\n'.join(text_parts)
 
             messages.append(ChatMessage(role=msg.role, content=content))
@@ -224,7 +220,7 @@ class GatewayService:
             if chunk.startswith('data: '):
                 try:
                     data = json.loads(chunk[6:])
-                    if 'choices' in data and data['choices']:
+                    if data.get('choices'):
                         delta = data['choices'][0].get('delta', {})
                         content = delta.get('content', '')
                         if content:

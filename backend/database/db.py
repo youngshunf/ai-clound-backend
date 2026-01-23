@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import (
 
 from backend.common.enums import DataBaseType
 from backend.common.log import log
-from backend.common.model import MappedBase
 from backend.core.conf import settings
 
 
@@ -88,12 +87,14 @@ async def get_db_transaction() -> AsyncGenerator[AsyncSession, None]:
 
 async def create_tables() -> None:
     """创建数据库表"""
+    from backend.common.model import MappedBase
     async with async_engine.begin() as coon:
         await coon.run_sync(MappedBase.metadata.create_all)
 
 
 async def drop_tables() -> None:
     """丢弃数据库表"""
+    from backend.common.model import MappedBase
     async with async_engine.begin() as conn:
         await conn.run_sync(MappedBase.metadata.drop_all)
 

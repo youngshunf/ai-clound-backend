@@ -1,7 +1,6 @@
 """用量统计 Service"""
 
 from datetime import date
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +9,6 @@ from backend.app.llm.core.rate_limiter import rate_limiter
 from backend.app.llm.crud.crud_usage_log import usage_log_dao
 from backend.app.llm.schema.usage_log import (
     DailyUsage,
-    GetUsageLogDetail,
-    GetUsageLogList,
     ModelUsage,
     QuotaInfo,
     UsageSummary,

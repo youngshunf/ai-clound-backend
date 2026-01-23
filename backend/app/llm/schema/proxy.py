@@ -1,11 +1,10 @@
 """代理 API Schema - OpenAI/Anthropic 兼容格式"""
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field
 
 from backend.common.schema import SchemaBase
-
 
 # ==================== OpenAI 兼容格式 ====================
 

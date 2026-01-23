@@ -8,33 +8,33 @@
 @date 2026-01-22
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 # 从 agent-core 导入平台适配器
 from agent_core.platforms import (
+    PLATFORM_ADAPTERS,
+    AdaptedContent,
+    BilibiliAdapter,
+    ContentSpec,
+    DouyinAdapter,
+    LoginResult,
     # 基类和数据模型
     PlatformAdapter,
-    AdaptedContent,
-    ContentSpec,
-    LoginResult,
-    UserProfile,
     PublishResult,
+    UserProfile,
+    WechatAdapter,
     # 适配器
     XiaohongshuAdapter,
-    DouyinAdapter,
-    BilibiliAdapter,
-    WechatAdapter,
     # 工具函数
     get_adapter,
     list_platforms,
-    PLATFORM_ADAPTERS,
 )
 
 # 兼容别名
 ContentConstraints = ContentSpec
 
 
-def get_supported_platforms() -> List[Dict[str, Any]]:
+def get_supported_platforms() -> list[dict[str, Any]]:
     """
     获取支持的平台列表
 
@@ -59,7 +59,7 @@ def get_supported_platforms() -> List[Dict[str, Any]]:
     return platforms
 
 
-def get_platform_spec(platform: str) -> Optional[ContentSpec]:
+def get_platform_spec(platform: str) -> ContentSpec | None:
     """
     获取平台内容规格
 
@@ -76,7 +76,7 @@ def get_platform_spec(platform: str) -> Optional[ContentSpec]:
         return None
 
 
-def get_platform_url(platform: str, url_name: str) -> Optional[str]:
+def get_platform_url(platform: str, url_name: str) -> str | None:
     """
     获取平台 URL
 
@@ -117,10 +117,10 @@ def adapt_content_for_platform(
     platform: str,
     title: str,
     content: str,
-    images: List[str] = None,
-    videos: List[str] = None,
-    hashtags: List[str] = None,
-) -> Optional[AdaptedContent]:
+    images: list[str] | None = None,
+    videos: list[str] | None = None,
+    hashtags: list[str] | None = None,
+) -> AdaptedContent | None:
     """
     为指定平台适配内容
 
@@ -149,27 +149,27 @@ def adapt_content_for_platform(
 
 
 __all__ = [
+    "PLATFORM_ADAPTERS",
+    "AdaptedContent",
+    "BilibiliAdapter",
+    "ContentConstraints",
+    "ContentSpec",
+    "DouyinAdapter",
+    "LoginResult",
     # 基类和模型
     "PlatformAdapter",
-    "AdaptedContent",
-    "ContentSpec",
-    "ContentConstraints",
-    "LoginResult",
-    "UserProfile",
     "PublishResult",
+    "UserProfile",
+    "WechatAdapter",
     # 适配器
     "XiaohongshuAdapter",
-    "DouyinAdapter",
-    "BilibiliAdapter",
-    "WechatAdapter",
+    "adapt_content_for_platform",
     # 工具函数
     "get_adapter",
-    "list_platforms",
-    "PLATFORM_ADAPTERS",
-    # 云端辅助函数
-    "get_supported_platforms",
+    "get_platform_selector",
     "get_platform_spec",
     "get_platform_url",
-    "get_platform_selector",
-    "adapt_content_for_platform",
+    # 云端辅助函数
+    "get_supported_platforms",
+    "list_platforms",
 ]

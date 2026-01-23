@@ -22,8 +22,6 @@ class ModelGroupBase(SchemaBase):
 class CreateModelGroupParam(ModelGroupBase):
     """创建模型组参数"""
 
-    pass
-
 
 class UpdateModelGroupParam(SchemaBase):
     """更新模型组参数"""

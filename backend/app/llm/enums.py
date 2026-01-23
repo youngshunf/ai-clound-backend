@@ -31,11 +31,11 @@ class ModelType(StrEnum):
     """
 
     TEXT = 'TEXT'           # 文本生成
-    REASONING = 'REASONING' # 推理
+    REASONING = 'REASONING'  # 推理
     VISION = 'VISION'       # 视觉
     IMAGE = 'IMAGE'         # 图像生成
     VIDEO = 'VIDEO'         # 视频生成
-    EMBEDDING = 'EMBEDDING' # 嵌入
+    EMBEDDING = 'EMBEDDING'  # 嵌入
     TTS = 'TTS'             # 语音合成
     STT = 'STT'             # 语音识别
 

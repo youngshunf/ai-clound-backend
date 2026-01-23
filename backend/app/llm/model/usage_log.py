@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 import sqlalchemy as sa
+
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, id_key
@@ -23,9 +24,9 @@ class UsageLog(Base):
     input_tokens: Mapped[int] = mapped_column(default=0, comment='输入 tokens')
     output_tokens: Mapped[int] = mapped_column(default=0, comment='输出 tokens')
     total_tokens: Mapped[int] = mapped_column(default=0, index=True, comment='总 tokens')
-    input_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal('0'), comment='输入成本 (USD)')
-    output_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal('0'), comment='输出成本 (USD)')
-    total_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal('0'), comment='总成本 (USD)')
+    input_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal(0), comment='输入成本 (USD)')
+    output_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal(0), comment='输出成本 (USD)')
+    total_cost: Mapped[Decimal] = mapped_column(sa.Numeric(10, 6), default=Decimal(0), comment='总成本 (USD)')
     latency_ms: Mapped[int] = mapped_column(default=0, comment='延迟(毫秒)')
     status: Mapped[str] = mapped_column(sa.String(16), default='SUCCESS', index=True, comment='状态(SUCCESS/ERROR)')
     error_message: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='错误信息')

@@ -6,7 +6,6 @@
 """
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -18,7 +17,7 @@ class CredentialSyncRequest(BaseModel):
     account_name: str = Field(default="", description="账号名称")
     encrypted_data: str = Field(..., description="Base64编码的加密数据")
     sync_key_hash: str = Field(..., description="同步密钥哈希")
-    client_id: Optional[str] = Field(default=None, description="客户端设备ID")
+    client_id: str | None = Field(default=None, description="客户端设备ID")
     version: int = Field(default=1, description="数据版本号")
 
 
@@ -39,7 +38,7 @@ class CredentialInfo(BaseModel):
     encrypted_data: str  # Base64编码
     version: int
     created_time: datetime
-    updated_time: Optional[datetime] = None
+    updated_time: datetime | None = None
 
 
 class CredentialListResponse(BaseModel):

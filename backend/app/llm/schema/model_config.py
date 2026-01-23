@@ -20,8 +20,8 @@ class ModelConfigBase(SchemaBase):
     supports_streaming: bool = Field(default=True, description='支持流式')
     supports_tools: bool = Field(default=False, description='支持工具调用')
     supports_vision: bool = Field(default=False, description='支持视觉')
-    input_cost_per_1k: Decimal = Field(default=Decimal('0'), description='输入成本/1K tokens (USD)')
-    output_cost_per_1k: Decimal = Field(default=Decimal('0'), description='输出成本/1K tokens (USD)')
+    input_cost_per_1k: Decimal = Field(default=Decimal(0), description='输入成本/1K tokens (USD)')
+    output_cost_per_1k: Decimal = Field(default=Decimal(0), description='输出成本/1K tokens (USD)')
     rpm_limit: int | None = Field(default=None, description='模型 RPM 限制')
     tpm_limit: int | None = Field(default=None, description='模型 TPM 限制')
     priority: int = Field(default=0, description='优先级(越大越优先)')
@@ -30,8 +30,6 @@ class ModelConfigBase(SchemaBase):
 
 class CreateModelConfigParam(ModelConfigBase):
     """创建模型配置参数"""
-
-    pass
 
 
 class UpdateModelConfigParam(SchemaBase):
@@ -77,8 +75,8 @@ class GetModelConfigList(SchemaBase):
     supports_streaming: bool
     supports_tools: bool
     supports_vision: bool
-    input_cost_per_1k: Decimal = Decimal('0')
-    output_cost_per_1k: Decimal = Decimal('0')
+    input_cost_per_1k: Decimal = Decimal(0)
+    output_cost_per_1k: Decimal = Decimal(0)
     priority: int
     enabled: bool
 

@@ -82,7 +82,7 @@ class CRUDModelConfig(CRUDPlus[ModelConfig]):
         stmt = (
             select(ModelConfig)
             .options(selectinload(ModelConfig.provider))
-            .where(ModelConfig.enabled == True)
+            .where(ModelConfig.enabled)
             .order_by(ModelConfig.priority.desc())
         )
         result = await db.execute(stmt)

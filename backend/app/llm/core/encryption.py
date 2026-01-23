@@ -11,7 +11,7 @@ from backend.core.conf import settings
 class KeyEncryption:
     """API Key 加密工具"""
 
-    def __init__(self, encryption_key: str | None = None):
+    def __init__(self, encryption_key: str | None = None) -> None:
         """
         初始化加密工具
 

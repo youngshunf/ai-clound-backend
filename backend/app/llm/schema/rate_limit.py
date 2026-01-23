@@ -21,8 +21,6 @@ class RateLimitConfigBase(SchemaBase):
 class CreateRateLimitConfigParam(RateLimitConfigBase):
     """创建速率限制配置参数"""
 
-    pass
-
 
 class UpdateRateLimitConfigParam(SchemaBase):
     """更新速率限制配置参数"""

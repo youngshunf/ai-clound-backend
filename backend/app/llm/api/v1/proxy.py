@@ -2,6 +2,8 @@
 @author Ysf
 """
 
+from typing import Annotated
+
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
 
@@ -38,7 +40,7 @@ async def chat_completions(
     request: Request,
     db: CurrentSession,
     body: ChatCompletionRequest,
-    x_api_key: str = Header(..., alias='x-api-key', description='LLM API Key (sk-cf-xxx)'),
+    x_api_key: Annotated[str, Header(alias='x-api-key', description='LLM API Key (sk-cf-xxx)')],
 ) -> ChatCompletionResponse | StreamingResponse:
     ip_address = _get_client_ip(request)
 
@@ -78,7 +80,7 @@ async def anthropic_messages(
     request: Request,
     db: CurrentSession,
     body: AnthropicMessageRequest,
-    x_api_key: str = Header(..., alias='x-api-key', description='LLM API Key (sk-cf-xxx)'),
+    x_api_key: Annotated[str, Header(alias='x-api-key', description='LLM API Key (sk-cf-xxx)')],
 ) -> AnthropicMessageResponse | StreamingResponse:
     ip_address = _get_client_ip(request)
 

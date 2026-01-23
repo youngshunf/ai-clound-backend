@@ -11,7 +11,6 @@ from backend.app.llm.schema.model_config import (
     CreateModelConfigParam,
     GetAvailableModel,
     GetModelConfigDetail,
-    GetModelConfigList,
     UpdateModelConfigParam,
 )
 from backend.common.exception import errors
