@@ -1,23 +1,25 @@
 """项目私有选题 API"""
 
-from collections.abc import Sequence
-from typing import Annotated
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Path, Request
 
-from backend.app.project.schema.project_topic import ProjectTopicInfo, ProjectTopicSyncBatch
 from backend.app.project.service.project_service import project_service
 from backend.app.project.service.project_topic_service import ProjectTopicService
 from backend.common.response.response_schema import ResponseSchemaModel
 from backend.database.db import async_db_session
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from backend.app.project.schema.project_topic import ProjectTopicInfo, ProjectTopicSyncBatch
+
 router = APIRouter()
 
 
-@router.get(
-    "/{project_id}/topics",
-    summary="获取项目私有选题列表",
-)
+@router.get("/{project_id}/topics", summary="获取项目私有选题列表")
 async def get_project_topics(
     project_id: Annotated[int, Path(description="项目ID")],
 ) -> ResponseSchemaModel[Sequence[ProjectTopicInfo]]:
@@ -25,10 +27,7 @@ async def get_project_topics(
     return ResponseSchemaModel(data=data)
 
 
-@router.post(
-    "/{project_id}/topics/sync",
-    summary="同步项目私有选题（批量 upsert）",
-)
+@router.post("/{project_id}/topics/sync", summary="同步项目私有选题（批量 upsert）")
 async def sync_project_topics(
     request: Request,
     project_id: Annotated[int | str, Path(description="项目ID (支持整数ID或UUID)")],

@@ -104,46 +104,49 @@ class CRUDPlatformAccount(CRUDPlus[PlatformAccount]):
         db: AsyncSession,
         project_id: str,
         user_id: str,
-        data: dict
+        data: dict,
     ) -> PlatformAccount:
         """同步：插入或更新账号
-        
-        优先使用客户端提供的 id 进行查找和创建
-        """
-        client_id = data.get('id')
-        platform = data.get('platform')
-        account_id = data.get('account_id')
 
-        existing = None
-        # 优先通过客户端 ID 查找
+        优先使用客户端提供的 id 进行查找和创建；如果没有，则使用
+        (project_id, platform, account_id) 作为业务键进行查找。
+        """
+        client_id = data.get("id") or data.get("uid")
+        platform = data.get("platform")
+        account_id = data.get("account_id")
+
+        existing: PlatformAccount | None = None
+
+        # 1. 优先通过客户端 ID 查找
         if client_id:
             existing = await self.select_model(db, client_id)
-        
-        # 如果通过 ID 找不到，尝试通过业务键 (project_id, platform, account_id) 查找
-        if not existing:
+
+        # 2. 如果通过 ID 找不到，尝试通过业务键 (project_id, platform, account_id) 查找
+        if not existing and platform and account_id:
             stmt = select(self.model).where(
                 self.model.project_id == project_id,
                 self.model.account_id == account_id,
-                self.model.platform == platform
+                self.model.platform == platform,
+                self.model.is_deleted.is_(False),
             )
             result = await db.execute(stmt)
             existing = result.scalars().first()
 
+        # 3. 已存在记录：执行更新（Last-Write-Wins）
         if existing:
-            # 更新逻辑：Last-Write-Wins
             update_data = data.copy()
             # 移除只读或不可变字段
-            for k in ['project_id', 'platform', 'account_id', 'id']:
+            for k in ["project_id", "platform", "account_id", "id", "uid"]:
                 update_data.pop(k, None)
 
-            update_data['user_id'] = user_id
-            update_data['server_version'] = existing.server_version + 1
-            update_data['last_sync_at'] = timezone.now()
+            update_data["user_id"] = user_id
+            update_data["server_version"] = existing.server_version + 1
+            update_data["last_sync_at"] = timezone.now()
 
             # 如果之前是删除状态，现在重新活跃，则恢复
-            if existing.is_deleted and not data.get('is_deleted'):
-                update_data['is_deleted'] = False
-                update_data['deleted_at'] = None
+            if existing.is_deleted and not data.get("is_deleted"):
+                update_data["is_deleted"] = False
+                update_data["deleted_at"] = None
 
             for k, v in update_data.items():
                 setattr(existing, k, v)
@@ -152,15 +155,16 @@ class CRUDPlatformAccount(CRUDPlus[PlatformAccount]):
             await db.refresh(existing)
             return existing
 
-        # 创建新账号
+        # 4. 不存在记录：创建新账号
         create_data = data.copy()
-        create_data['project_id'] = project_id
-        create_data['user_id'] = user_id
-        create_data['server_version'] = 1
-        create_data['last_sync_at'] = timezone.now()
-        # 如果客户端未提供 id，则由数据库默认生成
-        if not create_data.get('id'):
-            create_data.pop('id', None)
+        create_data["project_id"] = project_id
+        create_data["user_id"] = user_id
+        create_data["server_version"] = 1
+        create_data["last_sync_at"] = timezone.now()
+        # 如果客户端未提供 id/uid，则由数据库默认生成
+        if not create_data.get("id") and not create_data.get("uid"):
+            create_data.pop("id", None)
+            create_data.pop("uid", None)
 
         new_account = self.model(**create_data)
         db.add(new_account)

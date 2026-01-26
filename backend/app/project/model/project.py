@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, uuid_pk
+from backend.common.model import Base, uuid4_str
 
 
 class Project(Base):
@@ -18,14 +18,21 @@ class Project(Base):
 
     __tablename__ = 'projects'
 
-    id: Mapped[uuid_pk] = mapped_column(init=False)
+    # 主键 UID（UUID 字符串），列名为 uid
+    id: Mapped[str] = mapped_column(
+        'uid',
+        sa.String(36),
+        primary_key=True,
+        default=uuid4_str,
+        sort_order=-999,
+        init=False,
+        comment='主键 UID',
+    )
 
-    # 所属用户
-    user_id: Mapped[str] = mapped_column(sa.String(36), index=True, comment='用户ID')
-
-    # 基本信息
-    name: Mapped[str] = mapped_column(sa.String(100), comment='项目名称')
-    description: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='项目描述')
+    # 所属用户（sys_user.uuid），列名为 user_uid
+    user_id: Mapped[str] = mapped_column(
+        'user_uid', sa.String(36), index=True, comment='用户 UID'
+    )
 
     # 行业领域
     industry: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment='行业')

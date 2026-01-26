@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.common.model import Base, uuid_pk
+from backend.common.model import Base, uuid4_str
 
 if TYPE_CHECKING:
     from backend.app.project.model.project import Project
@@ -22,11 +22,24 @@ class PlatformAccount(Base):
 
     __tablename__ = 'platform_accounts'
 
-    id: Mapped[uuid_pk] = mapped_column(init=False)
+    # 主键 UID，列名为 uid
+    id: Mapped[str] = mapped_column(
+        'uid',
+        sa.String(36),
+        primary_key=True,
+        default=uuid4_str,
+        sort_order=-999,
+        init=False,
+        comment='主键 UID',
+    )
 
-    # 关联信息
-    project_id: Mapped[str] = mapped_column(sa.String(36), sa.ForeignKey('projects.id'), index=True, comment='项目ID')
-    user_id: Mapped[str] = mapped_column(sa.String(36), index=True, comment='用户ID')
+    # 关联信息：项目 UID / 用户 UID
+    project_id: Mapped[str] = mapped_column(
+        'project_uid', sa.String(36), sa.ForeignKey('projects.uid'), index=True, comment='项目 UID'
+    )
+    user_id: Mapped[str] = mapped_column(
+        'user_uid', sa.String(36), index=True, comment='用户 UID'
+    )
 
     # 关联对象
     project: Mapped["Project"] = relationship("Project", lazy="selectin", foreign_keys=[project_id])
@@ -34,15 +47,7 @@ class PlatformAccount(Base):
     # 平台信息
     platform: Mapped[str] = mapped_column(sa.String(50), comment='平台类型(xiaohongshu/wechat/douyin)')
     account_id: Mapped[str] = mapped_column(sa.String(100), comment='平台侧账号ID')
-    account_name: Mapped[str | None] = mapped_column(sa.String(100), default=None, comment='账号名称/昵称')
-
-    # 账号状态与资料
-    avatar_url: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='头像URL')
     followers_count: Mapped[int] = mapped_column(sa.BigInteger, default=0, comment='粉丝数')
-    following_count: Mapped[int] = mapped_column(sa.Integer, default=0, comment='关注数')
-    posts_count: Mapped[int] = mapped_column(sa.Integer, default=0, comment='作品数')
-
-    is_active: Mapped[bool] = mapped_column(default=True, comment='是否启用')
     session_valid: Mapped[bool] = mapped_column(default=False, comment='登录凭证是否有效')
     metadata_info: Mapped[dict] = mapped_column(JSONB, default_factory=dict, comment='额外元数据')
 

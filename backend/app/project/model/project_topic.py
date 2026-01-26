@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.common.model import Base, uuid_pk
+from backend.common.model import Base, uuid4_str
 
 
 class ProjectTopic(Base):
@@ -20,15 +20,28 @@ class ProjectTopic(Base):
 
     __tablename__ = "project_topics"
 
-    id: Mapped[uuid_pk] = mapped_column(init=False)
-
-    project_id: Mapped[str] = mapped_column(
+    # 主键 UID，列名为 uid
+    id: Mapped[str] = mapped_column(
+        'uid',
         sa.String(36),
-        sa.ForeignKey("projects.id"),
-        index=True,
-        comment="项目ID",
+        primary_key=True,
+        default=uuid4_str,
+        sort_order=-999,
+        init=False,
+        comment="主键 UID",
     )
-    user_id: Mapped[str] = mapped_column(sa.String(36), index=True, comment="用户ID")
+
+    # 关联项目 / 用户 UID
+    project_id: Mapped[str] = mapped_column(
+        'project_uid',
+        sa.String(36),
+        sa.ForeignKey("projects.uid"),
+        index=True,
+        comment="项目 UID",
+    )
+    user_id: Mapped[str] = mapped_column(
+        'user_uid', sa.String(36), index=True, comment="用户 UID"
+    )
 
     project = relationship("Project", lazy="selectin", foreign_keys=[project_id])
 

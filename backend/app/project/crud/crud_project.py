@@ -78,8 +78,6 @@ class CRUDProject(CRUDPlus[Project]):
             dict_obj['is_default'] = True
 
         new_project = self.model(**dict_obj)
-        db.add(new_project)
-        await db.flush()
         await db.refresh(new_project)
         return new_project
 
