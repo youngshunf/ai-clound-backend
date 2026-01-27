@@ -61,6 +61,34 @@ class FrontendGenerator:
         # Generate code
         await self._generate_code(table_info, app, module, output_dir, force)
 
+    async def generate_from_table_info(
+        self,
+        table_info: TableInfo,
+        app: str,
+        module: str | None = None,
+        output_dir: Path | None = None,
+        force: bool = False,
+    ) -> None:
+        """
+        Generate frontend code from TableInfo object.
+
+        :param table_info: TableInfo object from parser
+        :param app: Application name
+        :param module: Module name (optional)
+        :param output_dir: Output directory (auto-detected if None)
+        :param force: Force overwrite existing files
+        """
+        # Use module name or derive from table name
+        if not module:
+            module = table_info.name.replace('_', '-')
+
+        # Detect frontend directory
+        if not output_dir:
+            output_dir = self._detect_frontend_dir()
+
+        # Generate code
+        await self._generate_code(table_info, app, module, output_dir, force)
+
     async def generate_from_db(
         self,
         table: str,

@@ -47,30 +47,139 @@ class SQLParser:
     # Regex patterns for parsing
     MYSQL_COMMENT_PATTERN = re.compile(r"COMMENT\s+'([^']*)'", re.IGNORECASE)
     PG_COMMENT_ON_TABLE = re.compile(
-        r"COMMENT\s+ON\s+TABLE\s+(\w+)\s+IS\s+'([^']*)';?", re.IGNORECASE
+        r"COMMENT\s+ON\s+TABLE\s+[`\"]?(?:\w+\.)?[`\"]?[`\"]?(\w+)[`\"]?\s+IS\s+'([^']*)';?", re.IGNORECASE
     )
     PG_COMMENT_ON_COLUMN = re.compile(
-        r"COMMENT\s+ON\s+COLUMN\s+(\w+)\.(\w+)\s+IS\s+'([^']*)';?", re.IGNORECASE
+        r"COMMENT\s+ON\s+COLUMN\s+[`\"]?(?:\w+\.)?[`\"]?[`\"]?(\w+)[`\"]?\.[`\"]?(\w+)[`\"]?\s+IS\s+'([^']*)';?", re.IGNORECASE
+    )
+    # Pattern to split multiple CREATE TABLE statements
+    CREATE_TABLE_PATTERN = re.compile(
+        r'(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[^;]+\([^;]+\)[^;]*;?)',
+        re.IGNORECASE | re.DOTALL
     )
 
     def parse(self, sql: str) -> TableInfo:
         """
-        Parse CREATE TABLE statement.
+        Parse CREATE TABLE statement (returns first table only).
 
         :param sql: SQL CREATE TABLE statement
         :return: TableInfo object
         """
+        tables = self.parse_all(sql)
+        if not tables:
+            raise ValueError('No CREATE TABLE statements found in SQL')
+        return tables[0]
+
+    def parse_all(self, sql: str) -> list[TableInfo]:
+        """
+        Parse all CREATE TABLE statements from SQL.
+
+        :param sql: SQL containing one or more CREATE TABLE statements
+        :return: List of TableInfo objects
+        """
         # Detect dialect
         dialect = self._detect_dialect(sql)
 
-        # Extract table name and comment
-        table_name = self._extract_table_name(sql)
-        table_comment = self._extract_table_comment(sql, table_name, dialect)
+        # Find all CREATE TABLE statements
+        create_statements = self._split_create_tables(sql)
+        
+        tables = []
+        for create_sql in create_statements:
+            try:
+                # Extract table name
+                table_name = self._extract_table_name(create_sql)
+                
+                # Extract table comment (look in both CREATE statement and full SQL)
+                table_comment = self._extract_table_comment(sql, table_name, dialect)
+                
+                # Parse column definitions
+                columns = self._parse_columns(create_sql, table_name, dialect)
+                
+                # Extract PostgreSQL column comments from full SQL
+                if dialect == DatabaseDialect.POSTGRESQL:
+                    self._extract_pg_column_comments(sql, table_name, columns)
+                
+                tables.append(TableInfo(
+                    name=table_name,
+                    comment=table_comment,
+                    columns=columns,
+                    dialect=dialect
+                ))
+            except ValueError as e:
+                # Skip invalid CREATE TABLE statements
+                continue
+        
+        return tables
 
-        # Parse column definitions
-        columns = self._parse_columns(sql, table_name, dialect)
+    def _split_create_tables(self, sql: str) -> list[str]:
+        """
+        Split SQL into individual CREATE TABLE statements.
 
-        return TableInfo(name=table_name, comment=table_comment, columns=columns, dialect=dialect)
+        :param sql: SQL containing CREATE TABLE statements
+        :return: List of CREATE TABLE statement strings
+        """
+        # Find all CREATE TABLE ... ) patterns
+        statements = []
+        
+        # Split by CREATE TABLE keyword while preserving the keyword
+        parts = re.split(r'(?=CREATE\s+TABLE\s)', sql, flags=re.IGNORECASE)
+        
+        for part in parts:
+            part = part.strip()
+            if not part or not re.match(r'CREATE\s+TABLE\s', part, re.IGNORECASE):
+                continue
+            
+            # Find the end of the CREATE TABLE statement
+            # Look for the closing parenthesis that matches the opening one
+            paren_depth = 0
+            in_create = False
+            end_idx = 0
+            
+            for i, char in enumerate(part):
+                if char == '(':
+                    paren_depth += 1
+                    in_create = True
+                elif char == ')':
+                    paren_depth -= 1
+                    if in_create and paren_depth == 0:
+                        # Found the closing parenthesis
+                        # Include any trailing options (ENGINE, CHARSET, etc.)
+                        end_idx = i + 1
+                        # Look for semicolon or next statement
+                        rest = part[end_idx:]
+                        semicolon_match = re.search(r';', rest)
+                        if semicolon_match:
+                            end_idx += semicolon_match.end()
+                        else:
+                            # Include options until newline or end
+                            options_match = re.match(r'[^;\n]*', rest)
+                            if options_match:
+                                end_idx += options_match.end()
+                        break
+            
+            if end_idx > 0:
+                statements.append(part[:end_idx].strip())
+            elif in_create:
+                # Fallback: use the whole part
+                statements.append(part.strip())
+        
+        return statements
+
+    def _extract_pg_column_comments(self, sql: str, table_name: str, columns: list[ColumnInfo]) -> None:
+        """
+        Extract PostgreSQL column comments and update column objects.
+
+        :param sql: Full SQL content
+        :param table_name: Table name
+        :param columns: List of ColumnInfo objects to update
+        """
+        for match in self.PG_COMMENT_ON_COLUMN.finditer(sql):
+            tbl_name, col_name, comment = match.groups()
+            if tbl_name.lower() == table_name.lower():
+                for column in columns:
+                    if column.name.lower() == col_name.lower():
+                        column.comment = comment
+                        break
 
     def _detect_dialect(self, sql: str) -> DatabaseDialect:
         """
@@ -196,16 +305,6 @@ class SQLParser:
                 if column.name in primary_keys:
                     column.is_primary_key = True
                 columns.append(column)
-
-        # Third pass: extract PostgreSQL column comments
-        if dialect == DatabaseDialect.POSTGRESQL:
-            for match in self.PG_COMMENT_ON_COLUMN.finditer(sql):
-                tbl_name, col_name, comment = match.groups()
-                if tbl_name.lower() == table_name.lower():
-                    for column in columns:
-                        if column.name.lower() == col_name.lower():
-                            column.comment = comment
-                            break
 
         return columns
 
