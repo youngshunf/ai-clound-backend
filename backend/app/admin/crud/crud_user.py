@@ -231,6 +231,19 @@ class CRUDUser(CRUDPlus[User]):
         """
         return await self.update_model(db, user_id, {'email': email})
 
+    async def update_profile(self, db: AsyncSession, user_id: int, profile_data: dict) -> int:
+        """
+        更新用户扩展资料
+
+        :param db: 数据库会话
+        :param user_id: 用户 ID
+        :param profile_data: 资料数据字典
+        :return:
+        """
+        # 过滤掉 None 值，只更新提供的字段
+        update_data = {k: v for k, v in profile_data.items() if v is not None}
+        return await self.update_model(db, user_id, update_data)
+
     async def reset_password(self, db: AsyncSession, pk: int, password: str) -> int:
         """
         重置用户密码

@@ -9,6 +9,7 @@ from backend.app.admin.schema.user import (
     GetUserInfoWithRelationDetail,
     ResetPasswordParam,
     UpdateUserParam,
+    UpdateUserProfileParam,
 )
 from backend.app.admin.service.user_service import user_service
 from backend.common.enums import UserPermissionType
@@ -152,6 +153,18 @@ async def update_user_email(
     email: Annotated[str, Body(embed=True, description='用户邮箱')],
 ) -> ResponseModel:
     count = await user_service.update_email(db=db, user_id=request.user.id, captcha=captcha, email=email)
+    if count > 0:
+        return response_base.success()
+    return response_base.fail()
+
+
+@router.put('/me/profile', summary='更新当前用户资料', dependencies=[DependsJwtAuth])
+async def update_user_profile(
+    db: CurrentSessionTransaction,
+    request: Request,
+    obj: UpdateUserProfileParam,
+) -> ResponseModel:
+    count = await user_service.update_profile(db=db, user_id=request.user.id, obj=obj)
     if count > 0:
         return response_base.success()
     return response_base.fail()

@@ -12,6 +12,7 @@ from backend.app.admin.schema.user import (
     AddUserParam,
     ResetPasswordParam,
     UpdateUserParam,
+    UpdateUserProfileParam,
 )
 from backend.app.admin.schema.user_password_history import CreateUserPasswordHistoryParam
 from backend.app.admin.service.user_password_history_service import password_security_service
@@ -261,6 +262,21 @@ class UserService:
             raise errors.CustomError(error=CustomErrorCode.CAPTCHA_ERROR)
         await redis_client.delete(f'{settings.EMAIL_CAPTCHA_REDIS_PREFIX}:{ctx.ip}')
         count = await user_dao.update_email(db, user_id, email)
+        await redis_client.delete(f'{settings.JWT_USER_REDIS_PREFIX}:{user_id}')
+        return count
+
+    @staticmethod
+    async def update_profile(*, db: AsyncSession, user_id: int, obj: UpdateUserProfileParam) -> int:
+        """
+        更新当前用户扩展资料
+
+        :param db: 数据库会话
+        :param user_id: 用户 ID
+        :param obj: 用户资料更新参数
+        :return:
+        """
+        profile_data = obj.model_dump(exclude_unset=True)
+        count = await user_dao.update_profile(db, user_id, profile_data)
         await redis_client.delete(f'{settings.JWT_USER_REDIS_PREFIX}:{user_id}')
         return count
 

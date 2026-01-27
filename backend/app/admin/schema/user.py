@@ -57,6 +57,20 @@ class ResetPasswordParam(SchemaBase):
     confirm_password: str = Field(description='确认密码')
 
 
+class UpdateUserProfileParam(SchemaBase):
+    """更新用户扩展资料参数"""
+
+    nickname: str | None = Field(None, description='昵称')
+    avatar: Annotated[HttpUrl, PlainSerializer(ser_string)] | None = Field(None, description='头像地址')
+    gender: str | None = Field(None, description='性别(male/female/other)')
+    birthday: str | None = Field(None, description='生日(YYYY-MM-DD)')
+    province: str | None = Field(None, description='省份')
+    city: str | None = Field(None, description='城市')
+    district: str | None = Field(None, description='区')
+    industry: str | None = Field(None, description='行业')
+    bio: str | None = Field(None, description='个人简介')
+
+
 class UserInfoSchemaBase(SchemaBase):
     """用户信息基础模型"""
 
@@ -66,6 +80,14 @@ class UserInfoSchemaBase(SchemaBase):
     avatar: Annotated[HttpUrl, PlainSerializer(ser_string)] | None = Field(None, description='头像地址')
     email: CustomEmailStr | None = Field(None, description='邮箱')
     phone: CustomPhoneNumber | None = Field(None, description='手机号')
+    # 扩展用户资料字段
+    gender: str | None = Field(None, description='性别(male/female/other)')
+    birthday: str | None = Field(None, description='生日(YYYY-MM-DD)')
+    province: str | None = Field(None, description='省份')
+    city: str | None = Field(None, description='城市')
+    district: str | None = Field(None, description='区')
+    industry: str | None = Field(None, description='行业')
+    bio: str | None = Field(None, description='个人简介')
 
 
 class UpdateUserParam(UserInfoSchemaBase):
