@@ -1,0 +1,10 @@
+  {
+    path: '{{ route_path }}',
+    name: '{{ class_name }}',
+    component: () => import('{{ component_path }}'),
+    meta: {
+      title: '{{ doc_comment }}',
+      icon: '{{ menu_icon }}',
+      order: {{ menu_order }},
+    },
+  }

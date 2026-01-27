@@ -1,7 +1,5 @@
 import io
 import os
-import shutil
-import tempfile
 import zipfile
 
 from collections.abc import Sequence
@@ -12,7 +10,6 @@ from anyio import open_file
 from pydantic.alias_generators import to_pascal
 from sqlalchemy import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.concurrency import run_in_threadpool
 
 from backend.common.exception import errors
 from backend.core.conf import settings
@@ -125,6 +122,9 @@ class GenService:
 
         rendered_codes = {}
         for template_path, output_path in template_mapping.items():
+            # 跳过 router.py，由单独的方法处理
+            if output_path.endswith('/router.py'):
+                continue
             code = await gen_template.get_template(template_path).render_async(**gen_vars)
             if output_path.endswith('.py'):
                 code = await format_python_code(code)
@@ -133,9 +133,72 @@ class GenService:
         return rendered_codes
 
     @staticmethod
+    async def _update_app_router(*, business: GenBusiness, app_path: str) -> str:
+        """
+        更新应用路由文件（追加而非覆盖）
+
+        :param business: 业务对象
+        :param app_path: 应用代码路径
+        :return: 生成的路由内容
+        """
+        router_file = anyio.Path(app_path) / business.app_name / 'api' / 'router.py'
+        
+        # 生成新路由内容
+        gen_vars = gen_template.get_vars(business, [])
+        new_router_code = await gen_template.get_template('python/router.jinja').render_async(**gen_vars)
+        
+        # 检查文件是否存在
+        if await router_file.exists():
+            # 读取现有内容
+            async with await open_file(router_file, 'r', encoding='utf-8') as f:
+                existing_content = await f.read()
+            
+            # 检查是否已经包含该路由
+            import_line = f'from backend.app.{business.app_name}.api.{business.api_version}.{business.filename} import router as {business.table_name}_router'
+            if import_line in existing_content:
+                # 已经存在，直接返回
+                return existing_content
+            
+            # 追加新路由
+            lines = existing_content.split('\n')
+            import_section_end = 0
+            include_section_start = len(lines)
+            
+            # 找到 import 和 include 的位置
+            for i, line in enumerate(lines):
+                if line.startswith('from backend.app.'):
+                    import_section_end = i + 1
+                elif 'include_router' in line and i > import_section_end:
+                    include_section_start = i
+                    break
+            
+            # 插入新的 import
+            import_to_add = f'from backend.app.{business.app_name}.api.{business.api_version}.{business.filename} import router as {business.table_name}_router'
+            lines.insert(import_section_end, import_to_add)
+            
+            # 插入新的 include_router
+            include_to_add = f"v1.include_router({business.table_name}_router, prefix='/{business.table_name.replace('_', '/')}s')"
+            lines.insert(include_section_start + 1, include_to_add)
+            
+            content = '\n'.join(lines)
+        else:
+            # 文件不存在，使用新生成的内容
+            content = new_router_code
+        
+        # 格式化代码
+        content = await format_python_code(content)
+        
+        # 写入文件
+        await router_file.parent.mkdir(parents=True, exist_ok=True)
+        async with await open_file(router_file, 'w', encoding='utf-8') as f:
+            await f.write(content)
+        
+        return content
+
+    @staticmethod
     async def _inject_app_router(*, app_name: str, write: bool = True) -> str | None:
         """
-        注入应用路由
+        注入应用路由到全局router.py
 
         :param app_name:
         :param write: 是否写入文件
@@ -148,6 +211,10 @@ class GenService:
 
         import_line = f'from backend.app.{app_name}.api.router import v1 as {app_name}_v1'
         include_line = f'router.include_router({app_name}_v1)'
+        
+        # 检查是否已经存在
+        if import_line in content:
+            return content
 
         content = f'{import_line}\n{content}\n{include_line}'
         content = await format_python_code(content)
@@ -211,6 +278,35 @@ class GenService:
 
         return paths
 
+    async def _write_init_file(self, filepath: str, new_content: str, gen_path: str) -> None:
+        """
+        写入 __init__.py 文件（追加模式）
+        
+        :param filepath: 相对文件路径
+        :param new_content: 要写入的新内容
+        :param gen_path: 生成路径
+        """
+        full_path = anyio.Path(gen_path) / filepath
+        
+        # 确保目录存在
+        await full_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 如果文件存在且有新内容，追加而不是覆盖
+        if await full_path.exists() and new_content.strip():
+            async with await open_file(full_path, 'r', encoding='utf-8') as f:
+                existing_content = await f.read()
+            
+            # 检查新内容是否已存在
+            if new_content.strip() not in existing_content:
+                # 追加新内容
+                combined_content = existing_content.rstrip() + '\n' + new_content
+                async with await open_file(full_path, 'w', encoding='utf-8') as f:
+                    await f.write(combined_content)
+        else:
+            # 文件不存在或内容为空，直接写入
+            async with await open_file(full_path, 'w', encoding='utf-8') as f:
+                await f.write(new_content)
+
     async def generate(self, *, db: AsyncSession, pk: int) -> str:
         """
         生成代码文件
@@ -229,29 +325,30 @@ class GenService:
         gen_path = business.gen_path or str(BASE_PATH / 'app')
 
         async with acquire_distributed_reload_lock():
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                all_files = {}
-                init_files = gen_template.get_init_files(business)
-                all_files.update(init_files)
-                rendered_codes = await self._render_tpl_code(db=db, business=business)
-                all_files.update(rendered_codes)
+            # 先处理 __init__.py 文件（追加模式）
+            init_files = gen_template.get_init_files(business)
+            for filepath, content in init_files.items():
+                await self._write_init_file(filepath, content, gen_path)
+            
+            # 处理其他生成的代码文件（存在则跳过）
+            rendered_codes = await self._render_tpl_code(db=db, business=business)
+            for filepath, content in rendered_codes.items():
+                full_path = anyio.Path(gen_path) / filepath
+                
+                # 如果文件已存在，跳过
+                if await full_path.exists():
+                    continue
+                
+                # 确保目录存在
+                await full_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # 写入文件
+                async with await open_file(full_path, 'w', encoding='utf-8') as f:
+                    await f.write(content)
 
-                for filepath, content in all_files.items():
-                    full_path = os.path.join(tmp_dir, *filepath.split('/'))
-                    code_folder = anyio.Path(full_path).parent
-                    await code_folder.mkdir(parents=True, exist_ok=True)
-                    async with await open_file(full_path, 'w', encoding='utf-8') as f:
-                        await f.write(content)
-
-                for item in os.listdir(tmp_dir):
-                    src = os.path.join(tmp_dir, item)
-                    dst = os.path.join(gen_path, item)
-                    src_path = anyio.Path(src)
-                    if await src_path.is_dir():
-                        await run_in_threadpool(shutil.copytree, src, dst, dirs_exist_ok=True)
-                    else:
-                        await run_in_threadpool(shutil.copy2, src, dst)
-
+            # 更新应用级路由（追加模式）
+            await self._update_app_router(business=business, app_path=gen_path)
+            # 注入全局路由
             await self._inject_app_router(app_name=business.app_name)
 
         return gen_path

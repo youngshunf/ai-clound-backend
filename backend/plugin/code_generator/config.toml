@@ -1,0 +1,89 @@
+# Code Generator Configuration
+# 代码生成器配置文件
+
+[paths]
+# 前端项目根目录（相对于 clound-backend 项目根，或使用绝对路径）
+frontend_dir = "../clound-frontend"
+
+# 后端代码生成目录（相对于 backend/ 根目录）
+backend_app_dir = "app"
+
+# 菜单 SQL 输出目录
+menu_sql_dir = "backend/sql/generated"
+
+# 字典 SQL 输出目录
+dict_sql_dir = "backend/sql/generated"
+
+[generation]
+# 是否自动执行生成的菜单 SQL
+auto_execute_menu_sql = false
+
+# 是否自动执行生成的字典 SQL
+auto_execute_dict_sql = false
+
+# 遇到已存在文件时的行为: "skip" (跳过), "overwrite" (覆盖), "backup" (备份)
+existing_file_behavior = "skip"
+
+# 是否生成后端代码
+generate_backend = true
+
+# 是否生成前端代码
+generate_frontend = true
+
+# 是否生成菜单 SQL
+generate_menu_sql = true
+
+# 是否生成字典 SQL
+generate_dict_sql = true
+
+[backend]
+# 默认数据库 schema
+default_db_schema = "fba"
+
+# 后端 API 版本
+api_version = "v1"
+
+# 是否启用数据权限
+enable_data_scope = false
+
+# 是否启用软删除
+enable_soft_delete = true
+
+[frontend]
+# 默认图标
+default_icon = "lucide:list"
+
+# 路由模式: "hash" 或 "history"
+router_mode = "hash"
+
+[menu]
+# 父菜单 ID（如果为 0 或留空，则作为顶级菜单）
+parent_menu_id = 0
+
+# 菜单排序起始值
+menu_sort_start = 100
+
+[dict]
+# 需要自动生成字典的字段名模式（支持正则）
+auto_dict_patterns = [
+    "status",
+    "type",
+    "state",
+    "category",
+    "level",
+]
+
+# 字典值类型: "integer" 或 "string"
+dict_value_type = "integer"
+
+# 默认字典选项（用于 status 字段）
+default_status_options = [
+    { label = "启用", value = 1, color = "green" },
+    { label = "禁用", value = 0, color = "red" },
+]
+
+# 默认字典选项（用于 type 字段）
+default_type_options = [
+    { label = "类型1", value = 1, color = "blue" },
+    { label = "类型2", value = 2, color = "orange" },
+]

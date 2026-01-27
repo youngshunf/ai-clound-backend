@@ -1,0 +1,93 @@
+import type { VbenFormSchema } from '#/adapter/form';
+import type {
+  OnActionClickFn,
+  VxeGridProps,
+} from '#/adapter/vxe-table';
+import type { {{ class_name }} } from '#/api/{{ app_name }}';
+
+import { $t } from '@vben/locales';
+
+/**
+ * Query form schema
+ */
+export const querySchema: VbenFormSchema[] = [
+{% for col in search_columns %}
+  {
+    component: '{{ col.search_component.component }}',
+    fieldName: '{{ col.name }}',
+    label: '{{ col.comment }}',
+{% if col.search_component.props %}
+    componentProps: {{ col.search_component.props | tojson }},
+{% endif %}
+  },
+{% endfor %}
+];
+
+/**
+ * Table columns configuration
+ */
+export function useColumns(
+  onActionClick?: OnActionClickFn<{{ class_name }}>,
+): VxeGridProps['columns'] {
+  return [
+    {
+      field: 'seq',
+      title: $t('common.table.id'),
+      type: 'seq',
+      fixed: 'left',
+      width: 50,
+    },
+{% for col in display_columns %}
+{% if col.name != 'id' %}
+    {
+      field: '{{ col.name }}',
+      title: '{{ col.comment }}',
+      width: {{ col.table_renderer.width if col.table_renderer and col.table_renderer.width else 150 }},
+{% if col.table_renderer and col.table_renderer.type == 'switch' %}
+      cellRender: {
+        name: 'CellSwitch',
+      },
+{% elif col.table_renderer and col.table_renderer.type == 'tag' %}
+      cellRender: {
+        name: 'CellTag',
+      },
+{% endif %}
+    },
+{% endif %}
+{% endfor %}
+    {
+      field: 'operation',
+      title: $t('common.table.operation'),
+      align: 'center',
+      fixed: 'right',
+      width: 150,
+      cellRender: {
+        attrs: {
+          nameField: 'id',
+          onClick: onActionClick,
+        },
+        name: 'CellOperation',
+        options: ['edit', 'delete'],
+      },
+    },
+  ];
+}
+
+/**
+ * Form schema for add/edit
+ */
+export const formSchema: VbenFormSchema[] = [
+{% for col in form_columns %}
+  {
+    component: '{{ col.form_component.component }}',
+    fieldName: '{{ col.name }}',
+    label: '{{ col.comment }}',
+{% if not col.nullable and col.form_component.component != 'Switch' %}
+    rules: 'required',
+{% endif %}
+{% if col.form_component.props %}
+    componentProps: {{ col.form_component.props | tojson }},
+{% endif %}
+  },
+{% endfor %}
+];

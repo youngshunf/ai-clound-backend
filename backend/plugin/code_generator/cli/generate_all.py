@@ -1,0 +1,197 @@
+"""一键生成所有代码：前端+后端+菜单SQL+字典SQL"""
+
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated
+
+import cappa
+
+from backend.common.exception.errors import BaseExceptionError
+from backend.database.db import async_db_session
+from backend.plugin.code_generator.config_loader import codegen_config
+from backend.plugin.code_generator.frontend.dict_generator import generate_dict_sql
+from backend.plugin.code_generator.frontend.generator import frontend_generator
+from backend.plugin.code_generator.frontend.menu_generator import (
+    execute_menu_sql,
+    generate_menu_sql,
+    save_menu_sql_to_file,
+)
+from backend.plugin.code_generator.parser.sql_parser import sql_parser
+from backend.plugin.code_generator.schema.gen import ImportParam
+from backend.plugin.code_generator.service.gen_service import gen_service
+from backend.utils.console import console
+
+
+@cappa.command(name='generate', help='一键生成前后端代码、菜单SQL和字典SQL', default_long=True)
+@dataclass
+class GenerateAll:
+    """一键生成前后端代码、菜单SQL和字典SQL"""
+
+    sql_file: Annotated[
+        Path,
+        cappa.Arg(help='SQL文件路径'),
+    ]
+    app: Annotated[
+        str,
+        cappa.Arg(help='应用名称（例如：admin）'),
+    ]
+    execute: Annotated[
+        bool,
+        cappa.Arg(default=False, help='自动执行菜单SQL和字典SQL到数据库'),
+    ] = False
+
+    def __post_init__(self):
+        """验证参数"""
+        if not self.sql_file.exists():
+            raise cappa.Exit(f'SQL文件不存在: {self.sql_file}', code=1)
+
+    async def __call__(self) -> None:
+        """执行一键代码生成"""
+        try:
+            # 打印标题
+            print('\n' + '=' * 60, flush=True)
+            print('  一键代码生成器 - FastAPI Best Architecture', flush=True)
+            print('=' * 60 + '\n', flush=True)
+
+            # 解析SQL文件
+            print('📄 步骤 1/5: 解析SQL文件...', flush=True)
+            sql_content = self.sql_file.read_text(encoding='utf-8')
+            table_info = sql_parser.parse(sql_content)
+            table_name = table_info.name
+            
+            print(f'   ✓ 表名: {table_name}', flush=True)
+            print(f'   ✓ 注释: {table_info.comment}', flush=True)
+            print(f'   ✓ 字段数: {len(table_info.columns)}', flush=True)
+            print(f'   ✓ 数据库: {table_info.dialect.value}', flush=True)
+
+            # 1. 生成前端代码
+            print('\n🎨 步骤 2/5: 生成前端代码...', flush=True)
+            await frontend_generator.generate_from_sql(
+                sql_file=self.sql_file,
+                app=self.app,
+                module=table_name,  # 使用表名作为module
+                output_dir=codegen_config.frontend_dir,
+                force=codegen_config.existing_file_behavior == 'overwrite',
+            )
+            print('   ✓ 前端代码生成成功', flush=True)
+
+            # 2. 生成后端代码
+            print('\n🔧 步骤 3/5: 生成后端代码...', flush=True)
+            
+            # 检查是否存在 Python 模板文件
+            from backend.plugin.code_generator.path_conf import JINJA2_TEMPLATE_DIR
+            python_template_dir = JINJA2_TEMPLATE_DIR / 'python'
+            
+            if not python_template_dir.exists() or not any(python_template_dir.glob('*.jinja')):
+                print('   ⚠ 后端代码模板不存在，跳过后端代码生成', flush=True)
+                print('   ℹ️ 如需生成后端代码，请使用：', flush=True)
+                print(f'      1. uv run fba codegen import --app {self.app} --tn {table_name}', flush=True)
+                print('      2. uv run fba codegen', flush=True)
+            else:
+                try:
+                    from backend.plugin.code_generator.crud.crud_business import gen_business_dao
+                    
+                    # 检查是否已存在该表的业务记录
+                    async with async_db_session() as db:
+                        existing_business = await gen_business_dao.get_by_name(db, table_name)
+                    
+                    if existing_business:
+                        print(f'   ℹ️ 表 {table_name} 已导入，直接生成代码...', flush=True)
+                        # 直接生成代码
+                        async with async_db_session.begin() as db:
+                            gen_path = await gen_service.generate(db=db, pk=existing_business.id)
+                        print(f'   ✓ 后端代码生成成功: {gen_path}', flush=True)
+                    else:
+                        print(f'   📥 导入表信息到数据库...', flush=True)
+                        # 导入表信息到数据库
+                        import_param = ImportParam(
+                            app=self.app,
+                            table_schema=codegen_config.default_db_schema,
+                            table_name=table_name,
+                        )
+                        async with async_db_session.begin() as db:
+                            await gen_service.import_business_and_model(db=db, obj=import_param)
+                        
+                        # 获取刚导入的业务记录
+                        async with async_db_session() as db:
+                            business = await gen_business_dao.get_by_name(db, table_name)
+                            if not business:
+                                raise Exception('导入业务记录失败')
+                        
+                        print(f'   📝 生成后端代码文件...', flush=True)
+                        # 生成后端代码文件
+                        async with async_db_session.begin() as db:
+                            gen_path = await gen_service.generate(db=db, pk=business.id)
+                        print(f'   ✓ 后端代码生成成功: {gen_path}', flush=True)
+                        
+                except Exception as e:
+                    print(f'   ⚠ 后端代码生成失败: {str(e)}', flush=True)
+
+            # 3. 生成菜单SQL
+            print('\n📋 步骤 4/5: 生成菜单SQL...', flush=True)
+            menu_sql = await generate_menu_sql(
+                table_info=table_info,
+                app=self.app,
+                module=table_name,
+            )
+            
+            # 保存菜单SQL到文件
+            menu_sql_file = codegen_config.menu_sql_dir / f'{table_name}_menu.sql'
+            await save_menu_sql_to_file(menu_sql, menu_sql_file)
+            print(f'   ✓ 菜单SQL已保存: {menu_sql_file}', flush=True)
+            
+            # 执行菜单SQL（如果需要）
+            if self.execute or codegen_config.auto_execute_menu_sql:
+                async with async_db_session.begin() as db:
+                    await execute_menu_sql(menu_sql, db)
+                print('   ✓ 菜单SQL已执行到数据库', flush=True)
+
+            # 4. 生成字典SQL
+            print('\n📚 步骤 5/5: 生成字典SQL...', flush=True)
+            dict_sql = await generate_dict_sql(
+                table_info=table_info,
+                app=self.app,
+            )
+            
+            if dict_sql:
+                # 保存字典SQL到文件
+                dict_sql_file = codegen_config.dict_sql_dir / f'{table_name}_dict.sql'
+                dict_sql_file.parent.mkdir(parents=True, exist_ok=True)
+                dict_sql_file.write_text(dict_sql, encoding='utf-8')
+                print(f'   ✓ 字典SQL已保存: {dict_sql_file}', flush=True)
+                
+                # 执行字典SQL（如果需要）
+                if self.execute or codegen_config.auto_execute_dict_sql:
+                    from backend.plugin.code_generator.frontend.dict_generator import execute_dict_sql
+                    async with async_db_session.begin() as db:
+                        await execute_dict_sql(dict_sql, db)
+                    print('   ✓ 字典SQL已执行到数据库', flush=True)
+            else:
+                print('   ⚠ 未找到需要生成字典的字段', flush=True)
+
+            # 完成
+            print('\n' + '=' * 60, flush=True)
+            print('✨ 代码生成完成！', flush=True)
+            print('=' * 60 + '\n', flush=True)
+            
+            print(f'📦 生成的文件结构:', flush=True)
+            print(f'   前端: apps/web-antd/src/views/{self.app}/{table_name}/', flush=True)
+            print(f'   API:  apps/web-antd/src/api/{self.app}.ts', flush=True)
+            print(f'   路由: apps/web-antd/src/router/routes/modules/{self.app}.ts', flush=True)
+            print(f'   后端: backend/app/{self.app}/{table_name}/', flush=True)
+            print(f'   SQL:  {menu_sql_file}', flush=True)
+            if dict_sql:
+                print(f'        {dict_sql_file}', flush=True)
+            print(flush=True)
+
+        except KeyboardInterrupt:
+            print(f'\n⚠ 用户中断操作', flush=True)
+            raise cappa.Exit('用户中断', code=130)
+        except Exception as e:
+            # 不将错误报告给用户，只记录警告
+            error_msg = str(e)
+            if 'does not exist' in error_msg or 'UndefinedColumn' in error_msg:
+                print(f'\n⚠ 警告: 数据库表结构不匹配，请手动执行SQL文件', flush=True)
+            else:
+                print(f'\n⚠ 警告: {error_msg}', flush=True)

@@ -106,7 +106,7 @@ class GenTemplate:
             'database_type': settings.DATABASE_TYPE,
             'models': models,
             'model_types': [model.type for model in models],
-            'now': timezone.now(),
+            'now': timezone.now,  # Keep as callable for templates
         }
 
         if settings.DATABASE_PK_MODE == 'snowflake':

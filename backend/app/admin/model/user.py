@@ -1,16 +1,12 @@
 from datetime import datetime
-from uuid import uuid4
 
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, TimeZone, id_key
+from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
-
-
-def uuid4_str() -> str:
-    return str(uuid4())
 
 
 class User(Base):
@@ -19,7 +15,7 @@ class User(Base):
     __tablename__ = 'sys_user'
 
     id: Mapped[id_key] = mapped_column(init=False)
-    uuid: Mapped[str] = mapped_column(sa.String(36), init=False, default_factory=uuid4_str, unique=True, comment='UUID')
+    uuid: Mapped[str] = mapped_column(sa.String(64), init=False, default_factory=uuid4_str, unique=True)
     username: Mapped[str] = mapped_column(sa.String(64), unique=True, index=True, comment='用户名')
     nickname: Mapped[str] = mapped_column(sa.String(64), comment='昵称')
     password: Mapped[str | None] = mapped_column(sa.String(256), comment='密码')

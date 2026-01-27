@@ -1,17 +1,45 @@
-do $$
-declare
-    parent_menu_id bigint;
-begin
-    insert into sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-    values ('{{ doc_comment }}', '{{ schema_name }}', '/{{ app_name }}/{{ table_name|replace("_", "-") }}', 0, 'tabler:list', 1, '/{{ app_name }}/{{ table_name }}/views/index', null, 1, 1, 1, '', null, null, now(), null)
-    returning id into parent_menu_id;
+-- =====================================================
+-- {{ doc_comment }} 菜单初始化 SQL (PostgreSQL)
+-- 自动生成于: {{ now() }}
+-- =====================================================
 
-    insert into sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-    values
-    ('新增', 'Add{{ schema_name }}', null, 0, null, 2, null, '{{ permission }}:add', 1, 0, 1, '', null, parent_menu_id, now(), null),
-    ('修改', 'Edit{{ schema_name }}', null, 0, null, 2, null, '{{ permission }}:edit', 1, 0, 1, '', null, parent_menu_id, now(), null),
-    ('删除', 'Delete{{ schema_name }}', null, 0, null, 2, null, '{{ permission }}:del', 1, 0, 1, '', null, parent_menu_id, now(), null),
-    ('查询', 'Get{{ schema_name }}', null, 0, null, 2, null, '{{ permission }}:get', 1, 0, 1, '', null, parent_menu_id, now(), null);
-end $$;
+-- 父级菜单
+INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+VALUES
+('{{ doc_comment }}', '{{ schema_name }}', '/{{ app_name }}', 1, 'lucide:list', 1, '#/views/{{ app_name }}/index.vue', NULL, 1, 1, 1, '', '{{ doc_comment }}管理', {% if parent_menu_id %}{{ parent_menu_id }}{% else %}NULL{% endif %}, NOW(), NULL)
+RETURNING id AS parent_menu_id;
 
-select setval(pg_get_serial_sequence('sys_menu', 'id'),coalesce(max(id), 0) + 1, true) from sys_menu;
+-- 获取刚插入的父菜单 ID（存储到变量中用于后续按钮菜单）
+DO $$
+DECLARE
+    v_parent_menu_id INTEGER;
+BEGIN
+    -- 获取刚插入的父菜单 ID
+    SELECT id INTO v_parent_menu_id FROM sys_menu 
+    WHERE name = '{{ schema_name }}' AND path = '/{{ app_name }}'
+    ORDER BY id DESC LIMIT 1;
+
+    -- 新增按钮
+    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+    VALUES
+    ('新增', 'Add{{ schema_name }}', NULL, 1, NULL, 2, NULL, '{{ permission }}:add', 1, 0, 1, '', NULL, v_parent_menu_id, NOW(), NULL);
+
+    -- 编辑按钮
+    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+    VALUES
+    ('编辑', 'Edit{{ schema_name }}', NULL, 2, NULL, 2, NULL, '{{ permission }}:edit', 1, 0, 1, '', NULL, v_parent_menu_id, NOW(), NULL);
+
+    -- 删除按钮
+    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+    VALUES
+    ('删除', 'Delete{{ schema_name }}', NULL, 3, NULL, 2, NULL, '{{ permission }}:del', 1, 0, 1, '', NULL, v_parent_menu_id, NOW(), NULL);
+
+    -- 查看按钮
+    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+    VALUES
+    ('查看', 'View{{ schema_name }}', NULL, 4, NULL, 2, NULL, '{{ permission }}:get', 1, 0, 1, '', NULL, v_parent_menu_id, NOW(), NULL);
+END $$;
+
+-- =====================================================
+-- 菜单生成完成
+-- =====================================================

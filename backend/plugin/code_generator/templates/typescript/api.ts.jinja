@@ -1,0 +1,52 @@
+import { requestClient } from '#/api/request';
+
+/**
+ * {{ doc_comment }} API
+ */
+
+// Types
+export interface {{ class_name }} {
+{% for col in columns %}
+  {{ col.name }}{% if col.nullable %}?{% endif %}: {{ col.ts_type }};
+{% endfor %}
+}
+
+export interface {{ class_name }}Params {
+  page?: number;
+  size?: number;
+{% for col in search_columns %}
+  {{ col.name }}?: {{ col.ts_type }};
+{% endfor %}
+}
+
+export interface {{ class_name }}CreateParams {
+{% for col in form_columns %}
+  {{ col.name }}{% if col.nullable %}?{% endif %}: {{ col.ts_type }};
+{% endfor %}
+}
+
+export interface {{ class_name }}ListResult {
+  items: {{ class_name }}[];
+  total: number;
+}
+
+// API functions
+export async function get{{ class_name }}ListApi(params: {{ class_name }}Params): Promise<{{ class_name }}ListResult> {
+  return requestClient.get<{{ class_name }}ListResult>('{{ api_path }}', { params });
+}
+
+export async function get{{ class_name }}Api(id: number): Promise<{{ class_name }}> {
+  return requestClient.get<{{ class_name }}>(`{{ api_path }}/${id}`);
+}
+
+export async function create{{ class_name }}Api(data: {{ class_name }}CreateParams): Promise<{{ class_name }}> {
+  return requestClient.post<{{ class_name }}>('{{ api_path }}', data);
+}
+
+export async function update{{ class_name }}Api(id: number, data: Partial<{{ class_name }}CreateParams>): Promise<{{ class_name }}> {
+  return requestClient.put<{{ class_name }}>(`{{ api_path }}/${id}`, data);
+}
+
+export async function delete{{ class_name }}Api(id: number): Promise<void> {
+  return requestClient.delete<void>(`{{ api_path }}/${id}`);
+}
