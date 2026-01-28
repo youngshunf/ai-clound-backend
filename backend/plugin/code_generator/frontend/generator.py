@@ -199,8 +199,9 @@ class FrontendGenerator:
 
         # Define output paths（约定 output_dir 为 clound-frontend 根目录）
         src_dir = output_dir / 'apps' / 'web-antd' / 'src'
-        views_dir = src_dir / 'views' / app / module  # 使用 app/module 作为目录结构
-        api_file = src_dir / 'api' / f'{app}.ts'
+        views_dir = src_dir / 'views' / app / module  # views/app/module/
+        api_dir = src_dir / 'api' / app  # api/app/
+        api_file = api_dir / f'{module}.ts'  # api/app/module.ts
         route_file = src_dir / 'router' / 'routes' / 'modules' / f'{app}.ts'
 
         # Check for existing files (behavior controlled by config/force flag)
@@ -233,9 +234,9 @@ class FrontendGenerator:
         data_content = await data_template.render_async(**vars_dict)
         (views_dir / 'data.ts').write_text(data_content, encoding='utf-8')
 
-        # Generate or update API file
-        console.print(f'  Updating [cyan]{api_file}[/cyan]')
-        await self._generate_or_update_api(api_file, vars_dict)
+        # Generate API file
+        console.print(f'  Creating [cyan]{api_file}[/cyan]')
+        await self._generate_or_update_api(api_file, vars_dict, force)
 
         # Generate or update route file
         console.print(f'  Updating [cyan]{route_file}[/cyan]')
@@ -298,24 +299,22 @@ class FrontendGenerator:
             'permission_prefix': table_info.name.replace('_', ':'),
         }
 
-    async def _generate_or_update_api(self, api_file: Path, vars_dict: dict) -> None:
-        """Generate or update API file."""
+    async def _generate_or_update_api(self, api_file: Path, vars_dict: dict, force: bool = False) -> None:
+        """
+        Generate API file.
+        
+        每个模块生成独立的 API 文件: api/app/module.ts
+        """
         api_template = self.template_env.get_template('typescript/api.ts.jinja')
         new_api_content = await api_template.render_async(**vars_dict)
 
-        if api_file.exists():
-            # Append to existing file
-            existing_content = api_file.read_text(encoding='utf-8')
-            # Check if this API already exists
-            if f"export interface {vars_dict['class_name']}" in existing_content:
-                console.print(f'    [yellow]API for {vars_dict["class_name"]} already exists, skipping[/yellow]')
-                return
-            # Append new content
-            api_file.write_text(existing_content + '\n\n' + new_api_content, encoding='utf-8')
-        else:
-            # Create new file
-            api_file.parent.mkdir(parents=True, exist_ok=True)
-            api_file.write_text(new_api_content, encoding='utf-8')
+        if api_file.exists() and not force:
+            console.print(f'    [yellow]API file already exists, skipping: {api_file}[/yellow]')
+            return
+        
+        # Create directory and write file
+        api_file.parent.mkdir(parents=True, exist_ok=True)
+        api_file.write_text(new_api_content, encoding='utf-8')
 
     async def _generate_or_update_route(self, route_file: Path, vars_dict: dict) -> None:
         """Generate or update route file."""
