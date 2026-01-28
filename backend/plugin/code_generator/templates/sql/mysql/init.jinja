@@ -3,33 +3,33 @@
 -- 自动生成于: {{ now() }}
 -- =====================================================
 
--- 父级菜单
+-- 菜单
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('{{ doc_comment }}', '{{ schema_name }}', '/{{ app_name }}', 1, 'lucide:list', 1, '#/views/{{ app_name }}/index.vue', NULL, 1, 1, 1, '', '{{ doc_comment }}管理', {% if parent_menu_id %}{{ parent_menu_id }}{% else %}NULL{% endif %}, NOW(), NULL);
+('{{ doc_comment }}', '{{ schema_name }}', '/{{ app_name }}/{{ table_name }}', 1, 'lucide:list', 1, '#/views/{{ app_name }}/{{ table_name }}/index.vue', NULL, 1, 1, 1, '', '{{ doc_comment }}管理', {% if parent_menu_id %}{{ parent_menu_id }}{% else %}NULL{% endif %}, NOW(), NULL);
 
--- 获取刚插入的父菜单 ID
-SET @parent_menu_id = LAST_INSERT_ID();
+-- 获取刚插入的菜单 ID
+SET @menu_id = LAST_INSERT_ID();
 
 -- 新增按钮
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('新增', 'Add{{ schema_name }}', NULL, 1, NULL, 2, NULL, '{{ permission }}:add', 1, 0, 1, '', NULL, @parent_menu_id, NOW(), NULL);
+('新增', 'Add{{ schema_name }}', NULL, 1, NULL, 2, NULL, '{{ permission }}:add', 1, 0, 1, '', NULL, @menu_id, NOW(), NULL);
 
 -- 编辑按钮
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('编辑', 'Edit{{ schema_name }}', NULL, 2, NULL, 2, NULL, '{{ permission }}:edit', 1, 0, 1, '', NULL, @parent_menu_id, NOW(), NULL);
+('编辑', 'Edit{{ schema_name }}', NULL, 2, NULL, 2, NULL, '{{ permission }}:edit', 1, 0, 1, '', NULL, @menu_id, NOW(), NULL);
 
 -- 删除按钮
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('删除', 'Delete{{ schema_name }}', NULL, 3, NULL, 2, NULL, '{{ permission }}:del', 1, 0, 1, '', NULL, @parent_menu_id, NOW(), NULL);
+('删除', 'Delete{{ schema_name }}', NULL, 3, NULL, 2, NULL, '{{ permission }}:del', 1, 0, 1, '', NULL, @menu_id, NOW(), NULL);
 
 -- 查看按钮
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('查看', 'View{{ schema_name }}', NULL, 4, NULL, 2, NULL, '{{ permission }}:get', 1, 0, 1, '', NULL, @parent_menu_id, NOW(), NULL);
+('查看', 'View{{ schema_name }}', NULL, 4, NULL, 2, NULL, '{{ permission }}:get', 1, 0, 1, '', NULL, @menu_id, NOW(), NULL);
 
 -- =====================================================
 -- 菜单生成完成

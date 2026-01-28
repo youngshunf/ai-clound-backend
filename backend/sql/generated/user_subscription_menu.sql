@@ -1,12 +1,12 @@
 -- =====================================================
--- UserSubscription 菜单初始化 SQL (PostgreSQL)
--- 自动生成于: 2026-01-27 19:15:49.170853
+-- 用户订阅表 - 管理用户的订阅等级和积分余额 菜单初始化 SQL (PostgreSQL)
+-- 自动生成于: 2026-01-28 14:07:27.223435
 -- =====================================================
 
 -- 父级菜单
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('UserSubscription', 'UserSubscription', '/llm', 1, 'lucide:list', 1, '#/views/llm/index.vue', NULL, 1, 1, 1, '', 'UserSubscription管理', NULL, NOW(), NULL)
+('用户订阅表 - 管理用户的订阅等级和积分余额', 'UserSubscription', '/llm', 1, 'lucide:list', 1, '#/views/llm/index.vue', NULL, 1, 1, 1, '', '用户订阅表 - 管理用户的订阅等级和积分余额管理', NULL, NOW(), NULL)
 RETURNING id AS parent_menu_id;
 
 -- 获取刚插入的父菜单 ID（存储到变量中用于后续按钮菜单）
