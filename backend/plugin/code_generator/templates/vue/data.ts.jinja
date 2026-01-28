@@ -6,6 +6,10 @@ import type {
 import type { {{ class_name }} } from '#/api/{{ app_name }}/{{ table_name }}';
 
 import { $t } from '@vben/locales';
+{% if has_dict_fields %}
+
+import { getDictOptions } from '#/utils/dict';
+{% endif %}
 
 /**
  * Query form schema
@@ -13,11 +17,21 @@ import { $t } from '@vben/locales';
 export const querySchema: VbenFormSchema[] = [
 {% for col in search_columns %}
   {
+{% if col.dict_code %}
+    component: 'Select',
+    fieldName: '{{ col.name }}',
+    label: '{{ col.comment }}',
+    componentProps: {
+      allowClear: true,
+      options: getDictOptions('{{ col.dict_code }}'),
+    },
+{% else %}
     component: '{{ col.search_component.component }}',
     fieldName: '{{ col.name }}',
     label: '{{ col.comment }}',
 {% if col.search_component.props %}
     componentProps: {{ col.search_component.props | tojson }},
+{% endif %}
 {% endif %}
   },
 {% endfor %}
@@ -43,7 +57,12 @@ export function useColumns(
       field: '{{ col.name }}',
       title: '{{ col.comment }}',
       width: {{ col.table_renderer.width if col.table_renderer and col.table_renderer.width else 150 }},
-{% if col.table_renderer and col.table_renderer.type == 'switch' %}
+{% if col.dict_code %}
+      cellRender: {
+        name: 'CellTag',
+        options: getDictOptions('{{ col.dict_code }}'),
+      },
+{% elif col.table_renderer and col.table_renderer.type == 'switch' %}
       cellRender: {
         name: 'CellSwitch',
       },
@@ -79,6 +98,17 @@ export function useColumns(
 export const formSchema: VbenFormSchema[] = [
 {% for col in form_columns %}
   {
+{% if col.dict_code %}
+    component: 'Select',
+    fieldName: '{{ col.name }}',
+    label: '{{ col.comment }}',
+{% if not col.nullable %}
+    rules: 'required',
+{% endif %}
+    componentProps: {
+      options: getDictOptions('{{ col.dict_code }}'),
+    },
+{% else %}
     component: '{{ col.form_component.component }}',
     fieldName: '{{ col.name }}',
     label: '{{ col.comment }}',
@@ -87,6 +117,7 @@ export const formSchema: VbenFormSchema[] = [
 {% endif %}
 {% if col.form_component.props %}
     componentProps: {{ col.form_component.props | tojson }},
+{% endif %}
 {% endif %}
   },
 {% endfor %}

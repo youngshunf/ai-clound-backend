@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.path_conf import BASE_PATH
 from backend.database.db import async_db_session
+from backend.plugin.code_generator.config_loader import codegen_config
 from backend.plugin.code_generator.crud.crud_business import gen_business_dao
 from backend.plugin.code_generator.crud.crud_column import gen_column_dao
 from backend.plugin.code_generator.crud.crud_gen import gen_dao
@@ -325,10 +326,22 @@ class FrontendGenerator:
 
         # Prepare column metadata
         columns_meta = []
+        dict_patterns = codegen_config.auto_dict_patterns
+        
         for col in table_info.columns:
             # 简化字段标签：去掉括号中的说明部分
             raw_comment = col.comment or col.name
             simple_label = re.split(r'[\(\uff08]', raw_comment)[0].strip()
+            
+            # 检查是否为字典字段
+            dict_code = None
+            if not col.is_primary_key and col.name.lower() not in (
+                'created_time', 'updated_time', 'created_at', 'updated_at', 'deleted_at'
+            ):
+                for pattern in dict_patterns:
+                    if re.search(pattern, col.name.lower()):
+                        dict_code = f'{app}_{col.name}'
+                        break
             
             col_meta = {
                 'name': col.name,
@@ -338,6 +351,7 @@ class FrontendGenerator:
                 'full_comment': raw_comment,  # 保留完整注释供其他用途
                 'nullable': col.nullable,
                 'is_primary_key': col.is_primary_key,
+                'dict_code': dict_code,  # 字典代码，如果不是字典字段则为 None
                 'form_component': select_form_component(col),
                 'table_renderer': select_table_renderer(col),
                 'search_component': select_search_component(col),
@@ -347,6 +361,9 @@ class FrontendGenerator:
             }
             columns_meta.append(col_meta)
 
+        # 检查是否有字典字段
+        has_dict_fields = any(c['dict_code'] for c in columns_meta)
+        
         return {
             'app_name': app,
             'module_name': module,
@@ -359,6 +376,7 @@ class FrontendGenerator:
             'display_columns': [c for c in columns_meta if c['display_in_table']],
             'form_columns': [c for c in columns_meta if c['include_in_form']],
             'search_columns': [c for c in columns_meta if c['include_in_search']],
+            'has_dict_fields': has_dict_fields,
             'api_path': f'/api/v1/{app}/{module.replace("_", "/")}s',
             'permission_prefix': table_info.name.replace('_', ':'),
         }
