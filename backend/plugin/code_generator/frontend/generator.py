@@ -329,9 +329,11 @@ class FrontendGenerator:
         dict_patterns = codegen_config.auto_dict_patterns
         
         for col in table_info.columns:
-            # 简化字段标签：去掉括号中的说明部分
+            # 简化字段标签：去掉括号中的说明部分和冒号后的枚举值
             raw_comment = col.comment or col.name
+            # 先去掉括号部分，再去掉冒号后的枚举值
             simple_label = re.split(r'[\(\uff08]', raw_comment)[0].strip()
+            simple_label = re.split(r'[::：]', simple_label)[0].strip()
             
             # 检查是否为字典字段
             dict_code = None
