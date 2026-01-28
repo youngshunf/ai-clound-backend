@@ -326,11 +326,16 @@ class FrontendGenerator:
         # Prepare column metadata
         columns_meta = []
         for col in table_info.columns:
+            # 简化字段标签：去掉括号中的说明部分
+            raw_comment = col.comment or col.name
+            simple_label = re.split(r'[\(\uff08]', raw_comment)[0].strip()
+            
             col_meta = {
                 'name': col.name,
                 'type': col.type,
                 'ts_type': sql_to_typescript(col.type),
-                'comment': col.comment or col.name,
+                'comment': simple_label,
+                'full_comment': raw_comment,  # 保留完整注释供其他用途
                 'nullable': col.nullable,
                 'is_primary_key': col.is_primary_key,
                 'form_component': select_form_component(col),
@@ -354,7 +359,7 @@ class FrontendGenerator:
             'display_columns': [c for c in columns_meta if c['display_in_table']],
             'form_columns': [c for c in columns_meta if c['include_in_form']],
             'search_columns': [c for c in columns_meta if c['include_in_search']],
-            'api_path': f'/api/v1/{app}',
+            'api_path': f'/api/v1/{app}/{module.replace("_", "/")}s',
             'permission_prefix': table_info.name.replace('_', ':'),
         }
 

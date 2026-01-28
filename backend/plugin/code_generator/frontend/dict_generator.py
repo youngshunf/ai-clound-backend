@@ -79,19 +79,29 @@ async def generate_dict_sql(
 
         sql_lines.extend([
             f'-- {dict_type_name} 字典类型',
-            'INSERT INTO sys_dict_type (name, code, status, remark, created_time, updated_time)',
+            'INSERT INTO sys_dict_type (name, code, remark, created_time, updated_time)',
             'VALUES',
-            f"('{dict_type_name}', '{dict_type_code}', 1, '{table_info.comment or app}模块-{dict_type_name}', NOW(), NULL)",
-            'ON CONFLICT (code) DO NOTHING;',
+            f"('{dict_type_name}', '{dict_type_code}', '{table_info.comment or app}模块-{dict_type_name}', NOW(), NULL)",
+            'ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, remark = EXCLUDED.remark, updated_time = NOW();',
             '',
             f'-- {dict_type_name} 字典数据',
         ])
 
-        # 获取刚插入的字典类型 ID
+        # 获取字典类型 ID 并插入字典数据
         if table_info.dialect.value == 'mysql':
             sql_lines.append('SET @dict_type_id = (SELECT id FROM sys_dict_type WHERE code = '
                            f"'{dict_type_code}' ORDER BY id DESC LIMIT 1);")
             type_id_placeholder = '@dict_type_id'
+            for idx, option in enumerate(options):
+                label = option['label']
+                value = option['value']
+                color = option.get('color', 'blue')
+                sql_lines.append(
+                    f"INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time) "
+                    f"SELECT '{dict_type_code}', '{label}', '{value}', '{color}', {idx + 1}, 1, {type_id_placeholder}, '', NOW(), NULL "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM sys_dict_data WHERE type_code = '{dict_type_code}' AND value = '{value}');"
+                )
+            sql_lines.append('')
         else:
             sql_lines.extend([
                 'DO $$',
@@ -102,39 +112,17 @@ async def generate_dict_sql(
                 f"    WHERE code = '{dict_type_code}' ORDER BY id DESC LIMIT 1;",
                 '',
             ])
-            type_id_placeholder = 'v_dict_type_id'
-
-        # 插入字典数据选项
-        for idx, option in enumerate(options):
-            label = option['label']
-            value = option['value']
-            color = option.get('color', 'blue')
-
-            if table_info.dialect.value == 'mysql':
-                sql_lines.append(
-                    'INSERT INTO sys_dict_data (label, value, sort, status, color_type, '
-                    'type_id, remark, created_time, updated_time)'
-                )
-                sql_lines.append('VALUES')
-                sql_lines.append(
-                    f"('{label}', '{value}', {idx + 1}, 1, '{color}', "
-                    f"{type_id_placeholder}, '', NOW(), NULL);"
-                )
-            else:
-                sql_lines.append(
-                    '    INSERT INTO sys_dict_data (label, value, sort, status, color_type, '
-                    'type_id, remark, created_time, updated_time)'
-                )
-                sql_lines.append('    VALUES')
-                sql_lines.append(
-                    f"    ('{label}', '{value}', {idx + 1}, 1, '{color}', "
-                    f"{type_id_placeholder}, '', NOW(), NULL);"
-                )
-
-        if table_info.dialect.value == 'postgresql':
+            for idx, option in enumerate(options):
+                label = option['label']
+                value = option['value']
+                color = option.get('color', 'blue')
+                sql_lines.extend([
+                    f"    IF NOT EXISTS (SELECT 1 FROM sys_dict_data WHERE type_code = '{dict_type_code}' AND value = '{value}') THEN",
+                    f"        INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time)",
+                    f"        VALUES ('{dict_type_code}', '{label}', '{value}', '{color}', {idx + 1}, 1, v_dict_type_id, '', NOW(), NULL);",
+                    '    END IF;',
+                ])
             sql_lines.extend(['END $$;', ''])
-        else:
-            sql_lines.append('')
 
     sql_lines.extend([
         '-- =====================================================',
@@ -221,19 +209,29 @@ async def generate_dict_sql_from_db(
 
         sql_lines.extend([
             f'-- {dict_type_name} 字典类型',
-            'INSERT INTO sys_dict_type (name, code, status, remark, created_time, updated_time)',
+            'INSERT INTO sys_dict_type (name, code, remark, created_time, updated_time)',
             'VALUES',
-            f"('{dict_type_name}', '{dict_type_code}', 1, '{table_comment}模块-{dict_type_name}', NOW(), NULL)",
-            'ON CONFLICT (code) DO NOTHING;',
+            f"('{dict_type_name}', '{dict_type_code}', '{table_comment}模块-{dict_type_name}', NOW(), NULL)",
+            'ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, remark = EXCLUDED.remark, updated_time = NOW();',
             '',
             f'-- {dict_type_name} 字典数据',
         ])
 
-        # 获取刚插入的字典类型 ID
+        # 获取字典类型 ID 并插入字典数据
         if dialect == 'mysql':
             sql_lines.append('SET @dict_type_id = (SELECT id FROM sys_dict_type WHERE code = '
                            f"'{dict_type_code}' ORDER BY id DESC LIMIT 1);")
             type_id_placeholder = '@dict_type_id'
+            for idx, option in enumerate(options):
+                label = option['label']
+                value = option['value']
+                color = option.get('color', 'blue')
+                sql_lines.append(
+                    f"INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time) "
+                    f"SELECT '{dict_type_code}', '{label}', '{value}', '{color}', {idx + 1}, 1, {type_id_placeholder}, '', NOW(), NULL "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM sys_dict_data WHERE type_code = '{dict_type_code}' AND value = '{value}');"
+                )
+            sql_lines.append('')
         else:
             sql_lines.extend([
                 'DO $$',
@@ -244,39 +242,17 @@ async def generate_dict_sql_from_db(
                 f"    WHERE code = '{dict_type_code}' ORDER BY id DESC LIMIT 1;",
                 '',
             ])
-            type_id_placeholder = 'v_dict_type_id'
-
-        # 插入字典数据选项
-        for idx, option in enumerate(options):
-            label = option['label']
-            value = option['value']
-            color = option.get('color', 'blue')
-
-            if dialect == 'mysql':
-                sql_lines.append(
-                    'INSERT INTO sys_dict_data (label, value, sort, status, color_type, '
-                    'type_id, remark, created_time, updated_time)'
-                )
-                sql_lines.append('VALUES')
-                sql_lines.append(
-                    f"('{label}', '{value}', {idx + 1}, 1, '{color}', "
-                    f"{type_id_placeholder}, '', NOW(), NULL);"
-                )
-            else:
-                sql_lines.append(
-                    '    INSERT INTO sys_dict_data (label, value, sort, status, color_type, '
-                    'type_id, remark, created_time, updated_time)'
-                )
-                sql_lines.append('    VALUES')
-                sql_lines.append(
-                    f"    ('{label}', '{value}', {idx + 1}, 1, '{color}', "
-                    f"{type_id_placeholder}, '', NOW(), NULL);"
-                )
-
-        if dialect == 'postgresql':
+            for idx, option in enumerate(options):
+                label = option['label']
+                value = option['value']
+                color = option.get('color', 'blue')
+                sql_lines.extend([
+                    f"    IF NOT EXISTS (SELECT 1 FROM sys_dict_data WHERE type_code = '{dict_type_code}' AND value = '{value}') THEN",
+                    f"        INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time)",
+                    f"        VALUES ('{dict_type_code}', '{label}', '{value}', '{color}', {idx + 1}, 1, v_dict_type_id, '', NOW(), NULL);",
+                    '    END IF;',
+                ])
             sql_lines.extend(['END $$;', ''])
-        else:
-            sql_lines.append('')
 
     sql_lines.extend([
         '-- =====================================================',

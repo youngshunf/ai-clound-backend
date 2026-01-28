@@ -4,7 +4,7 @@ import type {
   OnActionClickParams,
   VxeTableGridOptions,
 } from '#/adapter/vxe-table';
-import type { {{ class_name }}, {{ class_name }}Params } from '#/api/{{ app_name }}';
+import type { {{ class_name }}, {{ class_name }}Params } from '#/api/{{ app_name }}/{{ table_name }}';
 
 import { ref } from 'vue';
 
@@ -21,7 +21,7 @@ import {
   create{{ class_name }}Api,
   update{{ class_name }}Api,
   delete{{ class_name }}Api,
-} from '#/api/{{ app_name }}';
+} from '#/api/{{ app_name }}/{{ table_name }}';
 import { querySchema, useColumns, formSchema } from './data';
 
 defineOptions({
@@ -178,10 +178,10 @@ const [addModal, addModalApi] = useVbenModal({
         </VbenButton>
       </template>
     </Grid>
-    <editModal :title="'编辑{{ doc_comment }}'">
+    <editModal :title="'编辑'" :fullscreen-button="false" class="w-[800px]">
       <EditForm />
     </editModal>
-    <addModal :title="'添加{{ doc_comment }}'">
+    <addModal :title="'添加'" :fullscreen-button="false" class="w-[800px]">
       <AddForm />
     </addModal>
   </Page>

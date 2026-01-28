@@ -1,6 +1,7 @@
 -- =====================================================
 -- {{ menu_title }} 菜单初始化 SQL (PostgreSQL)
 -- 自动生成于: {{ now() }}
+-- 支持幂等操作：已存在则更新，不存在则新增
 -- =====================================================
 
 DO $$
@@ -14,38 +15,54 @@ BEGIN
     ORDER BY id LIMIT 1;
     
     IF v_parent_id IS NULL THEN
-        -- 创建父级目录菜单
         INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-        VALUES
-        ('{{ app_title }}', '{{ app_name | capitalize }}', '/{{ app_name }}', 1, 'lucide:folder', 0, 'BasicLayout', NULL, 1, 1, 1, '', '{{ app_name }}模块', NULL, NOW(), NULL)
+        VALUES ('{{ app_title }}', '{{ app_name | capitalize }}', '/{{ app_name }}', 1, 'lucide:folder', 0, 'BasicLayout', NULL, 1, 1, 1, '', '{{ app_name }}模块', NULL, NOW(), NULL)
         RETURNING id INTO v_parent_id;
     END IF;
 
-    -- 插入菜单
-    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-    VALUES
-    ('{{ menu_title }}', '{{ schema_name }}', '/{{ app_name }}/{{ table_name }}', 1, 'lucide:list', 1, '#/views/{{ app_name }}/{{ table_name }}/index.vue', NULL, 1, 1, 1, '', '{{ doc_comment }}', v_parent_id, NOW(), NULL)
-    RETURNING id INTO v_menu_id;
+    -- 查找或创建主菜单 (path = /{{ app_name }}/{{ table_name }})
+    SELECT id INTO v_menu_id FROM sys_menu 
+    WHERE path = '/{{ app_name }}/{{ table_name }}' AND type = 1
+    ORDER BY id LIMIT 1;
+    
+    IF v_menu_id IS NULL THEN
+        INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+        VALUES ('{{ menu_title }}', '{{ schema_name }}', '/{{ app_name }}/{{ table_name }}', 1, 'lucide:list', 1, '/{{ app_name }}/{{ table_name }}/index', NULL, 1, 1, 1, '', '{{ doc_comment }}', v_parent_id, NOW(), NULL)
+        RETURNING id INTO v_menu_id;
+    ELSE
+        UPDATE sys_menu SET
+            title = '{{ menu_title }}',
+            name = '{{ schema_name }}',
+            component = '/{{ app_name }}/{{ table_name }}/index',
+            remark = '{{ doc_comment }}',
+            parent_id = v_parent_id,
+            updated_time = NOW()
+        WHERE id = v_menu_id;
+    END IF;
 
-    -- 新增按钮
-    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-    VALUES
-    ('新增', 'Add{{ schema_name }}', NULL, 1, NULL, 2, NULL, '{{ permission }}:add', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    -- 新增按钮（按 perms 判断）
+    IF NOT EXISTS (SELECT 1 FROM sys_menu WHERE perms = '{{ permission }}:add' AND parent_id = v_menu_id) THEN
+        INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+        VALUES ('新增', 'Add{{ schema_name }}', NULL, 1, NULL, 2, NULL, '{{ permission }}:add', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    END IF;
 
     -- 编辑按钮
-    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-    VALUES
-    ('编辑', 'Edit{{ schema_name }}', NULL, 2, NULL, 2, NULL, '{{ permission }}:edit', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    IF NOT EXISTS (SELECT 1 FROM sys_menu WHERE perms = '{{ permission }}:edit' AND parent_id = v_menu_id) THEN
+        INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+        VALUES ('编辑', 'Edit{{ schema_name }}', NULL, 2, NULL, 2, NULL, '{{ permission }}:edit', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    END IF;
 
     -- 删除按钮
-    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-    VALUES
-    ('删除', 'Delete{{ schema_name }}', NULL, 3, NULL, 2, NULL, '{{ permission }}:del', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    IF NOT EXISTS (SELECT 1 FROM sys_menu WHERE perms = '{{ permission }}:del' AND parent_id = v_menu_id) THEN
+        INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+        VALUES ('删除', 'Delete{{ schema_name }}', NULL, 3, NULL, 2, NULL, '{{ permission }}:del', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    END IF;
 
     -- 查看按钮
-    INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-    VALUES
-    ('查看', 'View{{ schema_name }}', NULL, 4, NULL, 2, NULL, '{{ permission }}:get', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    IF NOT EXISTS (SELECT 1 FROM sys_menu WHERE perms = '{{ permission }}:get' AND parent_id = v_menu_id) THEN
+        INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
+        VALUES ('查看', 'View{{ schema_name }}', NULL, 4, NULL, 2, NULL, '{{ permission }}:get', 1, 0, 1, '', NULL, v_menu_id, NOW(), NULL);
+    END IF;
 END $$;
 
 -- =====================================================
