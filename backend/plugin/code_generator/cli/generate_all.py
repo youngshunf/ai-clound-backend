@@ -103,7 +103,13 @@ class GenerateAll:
                     
                     if existing_business:
                         business_id = existing_business.id
-                        print(f'   ✓ 表元数据已存在 (id={business_id})', flush=True)
+                        # 检查 app_name 是否需要更新
+                        if existing_business.app_name != self.app:
+                            async with async_db_session.begin() as db:
+                                await gen_business_dao.update(db, business_id, {'app_name': self.app})
+                            print(f'   ✓ 表元数据已存在 (id={business_id})，app 已更新为 {self.app}', flush=True)
+                        else:
+                            print(f'   ✓ 表元数据已存在 (id={business_id})', flush=True)
                     else:
                         import_param = ImportParam(
                             app=self.app,
