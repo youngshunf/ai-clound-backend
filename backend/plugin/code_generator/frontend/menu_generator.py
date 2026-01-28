@@ -90,10 +90,21 @@ async def generate_menu_sql_from_db(
     # Prepare template variables
     from datetime import datetime
     class_name = business.class_name or to_pascal(business.table_name)
+    # 菜单标题：优先使用简短的名称，如 "项目管理" 而不是 "项目表 - 工作区的核心上下文"
+    doc_comment = business.table_comment or business.doc_comment or class_name
+    # 取注释的第一部分（以 - 或空格分隔）作为菜单标题
+    menu_title = doc_comment.split(' - ')[0].split(' ')[0] if doc_comment else class_name
+    # 去掉结尾的 "表" 字
+    if menu_title.endswith('表'):
+        menu_title = menu_title[:-1]
+    # 如果菜单标题不以 "管理" 结尾，自动添加
+    if not menu_title.endswith('管理'):
+        menu_title = f'{menu_title}管理'
     vars_dict = {
         'app_name': app,
         'table_name': business.table_name,
-        'doc_comment': business.table_comment or business.doc_comment or class_name,
+        'menu_title': menu_title,
+        'doc_comment': doc_comment,
         'schema_name': class_name,
         'permission': business.table_name.replace('_', ':'),
         'now': datetime.now,

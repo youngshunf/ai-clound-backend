@@ -1,12 +1,12 @@
 -- =====================================================
--- {{ doc_comment }} 菜单初始化 SQL (PostgreSQL)
+-- {{ menu_title }} 菜单初始化 SQL (PostgreSQL)
 -- 自动生成于: {{ now() }}
 -- =====================================================
 
 -- 菜单
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('{{ doc_comment }}', '{{ schema_name }}', '/{{ app_name }}/{{ table_name }}', 1, 'lucide:list', 1, '#/views/{{ app_name }}/{{ table_name }}/index.vue', NULL, 1, 1, 1, '', '{{ doc_comment }}管理', {% if parent_menu_id %}{{ parent_menu_id }}{% else %}NULL{% endif %}, NOW(), NULL)
+('{{ menu_title }}', '{{ schema_name }}', '/{{ app_name }}/{{ table_name }}', 1, 'lucide:list', 1, '#/views/{{ app_name }}/{{ table_name }}/index.vue', NULL, 1, 1, 1, '', '{{ doc_comment }}', {% if parent_menu_id %}{{ parent_menu_id }}{% else %}NULL{% endif %}, NOW(), NULL)
 RETURNING id AS menu_id;
 
 -- 获取刚插入的菜单 ID（存储到变量中用于后续按钮菜单）

@@ -1,12 +1,12 @@
 -- =====================================================
--- 项目表 - 工作区的核心上下文 菜单初始化 SQL (PostgreSQL)
--- 自动生成于: 2026-01-28 14:09:56.563590
+-- 项目管理 菜单初始化 SQL (PostgreSQL)
+-- 自动生成于: 2026-01-28 14:12:49.571376
 -- =====================================================
 
 -- 菜单
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
 VALUES
-('项目表 - 工作区的核心上下文', 'Projects', '/projects/projects', 1, 'lucide:list', 1, '#/views/projects/projects/index.vue', NULL, 1, 1, 1, '', '项目表 - 工作区的核心上下文管理', NULL, NOW(), NULL)
+('项目管理', 'Projects', '/projects/projects', 1, 'lucide:list', 1, '#/views/projects/projects/index.vue', NULL, 1, 1, 1, '', '项目表 - 工作区的核心上下文', NULL, NOW(), NULL)
 RETURNING id AS menu_id;
 
 -- 获取刚插入的菜单 ID（存储到变量中用于后续按钮菜单）
