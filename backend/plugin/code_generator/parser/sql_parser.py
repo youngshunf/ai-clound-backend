@@ -222,15 +222,24 @@ class SQLParser:
         :return: Table name
         """
         # Match: CREATE TABLE [IF NOT EXISTS] ["schema".]"table_name" or schema.table_name
-        # Handle quoted identifiers for PostgreSQL
+        # Handle quoted identifiers for PostgreSQL and MySQL
+        # Use \s* to handle newlines between schema and table name
         pattern = re.compile(
-            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[`"]?\w+[`"]?\.)?[`"]?(\w+)[`"]?',
+            r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
+            r'(?:'
+            r'[`"]?(\w+)[`"]?\s*\.\s*[`"]?(\w+)[`"]?'  # schema.table format
+            r'|'
+            r'[`"]?(\w+)[`"]?'  # simple table name
+            r')',
             re.IGNORECASE
         )
         match = pattern.search(sql)
         if not match:
             raise ValueError('Could not extract table name from SQL')
-        return match.group(1)
+        
+        # Groups: (schema, table_from_schema_format, table_only)
+        schema, table_with_schema, table_only = match.groups()
+        return table_with_schema or table_only
 
     def _extract_table_comment(self, sql: str, table_name: str, dialect: DatabaseDialect) -> Optional[str]:
         """
