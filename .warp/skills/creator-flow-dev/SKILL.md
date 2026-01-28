@@ -82,6 +82,35 @@ COMMENT ON COLUMN user_subscription.tier IS '订阅等级';
 
 生成的字典代码格式为：`{app}_{field_name}`，如 `llm_status`
 
+### 字典枚举值定义（重要）
+
+在字段注释中直接定义枚举值，代码生成器会自动解析并生成字典 SQL：
+
+```sql
+-- 格式：标签 (value:显示名/value:显示名/...)
+COMMENT ON COLUMN user_subscription.status IS '订阅状态 (active:激活/inactive:未激活/expired:已过期/cancelled:已取消)';
+
+-- 带颜色格式：标签 (value:显示名:颜色/...)
+COMMENT ON COLUMN user_subscription.status IS '订阅状态 (active:激活:green/inactive:未激活:gray/expired:已过期:red/cancelled:已取消:orange)';
+
+-- 支持中文括号
+COMMENT ON COLUMN user_subscription.tier IS '订阅等级（free:免费版/basic:基础版/pro:专业版/enterprise:企业版）';
+```
+
+**枚举值格式说明：**
+- `value` - 存储在数据库中的值（字符串）
+- `显示名` - 前端显示的标签
+- `颜色` - 可选，支持 blue/green/orange/red/purple/cyan/pink/yellow，不指定则自动分配
+
+**生成结果示例：**
+```sql
+-- sys_dict_type: code='llm_status', name='订阅状态'
+-- sys_dict_data: 
+--   type_code='llm_status', value='active', label='激活', color='green'
+--   type_code='llm_status', value='inactive', label='未激活', color='gray'
+--   ...
+```
+
 ### 第二步：导入表到代码生成器
 
 ```bash

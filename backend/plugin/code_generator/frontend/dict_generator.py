@@ -15,6 +15,67 @@ from backend.plugin.code_generator.model import GenBusiness, GenColumn
 from backend.plugin.code_generator.parser.sql_parser import TableInfo
 
 
+# 默认颜色列表，用于循环分配
+DEFAULT_COLORS = ['blue', 'green', 'orange', 'red', 'purple', 'cyan', 'pink', 'yellow']
+
+
+def parse_dict_options_from_comment(comment: str) -> tuple[str, list[dict] | None]:
+    """
+    从字段注释中解析字典枚举值。
+    
+    支持格式：
+    - "状态 (active:激活/inactive:未激活/expired:过期)"
+    - "状态 (active:激活:green/inactive:未激活:gray/expired:过期:red)"
+    - "状态（active:激活/inactive:未激活）"  # 中文括号
+    
+    :param comment: 字段注释
+    :return: (简化标签, 枚举选项列表 或 None)
+    """
+    if not comment:
+        return comment or '', None
+    
+    # 匹配括号内容：支持中英文括号
+    match = re.search(r'[\(\uff08]([^\)\uff09]+)[\)\uff09]', comment)
+    if not match:
+        return comment, None
+    
+    # 提取简化标签（括号前的部分）
+    simple_label = comment[:match.start()].strip()
+    enum_str = match.group(1).strip()
+    
+    # 检查是否包含字典枚举格式（value:label 或 value:label:color）
+    if ':' not in enum_str:
+        return simple_label or comment, None
+    
+    # 解析枚举选项
+    options = []
+    items = enum_str.split('/')
+    
+    for idx, item in enumerate(items):
+        item = item.strip()
+        if not item:
+            continue
+        
+        parts = item.split(':')
+        if len(parts) < 2:
+            continue
+        
+        value = parts[0].strip()
+        label = parts[1].strip()
+        color = parts[2].strip() if len(parts) > 2 else DEFAULT_COLORS[idx % len(DEFAULT_COLORS)]
+        
+        options.append({
+            'value': value,
+            'label': label,
+            'color': color,
+        })
+    
+    if not options:
+        return simple_label or comment, None
+    
+    return simple_label or comment, options
+
+
 async def generate_dict_sql(
     table_info: TableInfo,
     app: str,
@@ -63,18 +124,23 @@ async def generate_dict_sql(
 
     for column in dict_fields:
         dict_type_code = f'{app}_{column.name}'
-        dict_type_name = column.comment or column.name
-
-        # 确定使用哪个默认选项
-        if 'status' in column.name.lower() or 'state' in column.name.lower():
+        raw_comment = column.comment or column.name
+        
+        # 从注释中解析字典枚举值
+        dict_type_name, parsed_options = parse_dict_options_from_comment(raw_comment)
+        
+        if parsed_options:
+            # 使用注释中定义的枚举值
+            options = parsed_options
+        elif 'status' in column.name.lower() or 'state' in column.name.lower():
             options = codegen_config.default_status_options
         elif 'type' in column.name.lower():
             options = codegen_config.default_type_options
         else:
             # 使用通用选项
             options = [
-                {'label': '选项1', 'value': 1, 'color': 'blue'},
-                {'label': '选项2', 'value': 2, 'color': 'green'},
+                {'label': '选项1', 'value': '1', 'color': 'blue'},
+                {'label': '选项2', 'value': '2', 'color': 'green'},
             ]
 
         sql_lines.extend([
@@ -194,17 +260,22 @@ async def generate_dict_sql_from_db(
 
     for column in dict_fields:
         dict_type_code = f'{app}_{column.name}'
-        dict_type_name = column.comment or column.name
-
-        # 确定使用哪个默认选项
-        if 'status' in column.name.lower() or 'state' in column.name.lower():
+        raw_comment = column.comment or column.name
+        
+        # 从注释中解析字典枚举值
+        dict_type_name, parsed_options = parse_dict_options_from_comment(raw_comment)
+        
+        if parsed_options:
+            # 使用注释中定义的枚举值
+            options = parsed_options
+        elif 'status' in column.name.lower() or 'state' in column.name.lower():
             options = codegen_config.default_status_options
         elif 'type' in column.name.lower():
             options = codegen_config.default_type_options
         else:
             options = [
-                {'label': '选项1', 'value': 1, 'color': 'blue'},
-                {'label': '选项2', 'value': 2, 'color': 'green'},
+                {'label': '选项1', 'value': '1', 'color': 'blue'},
+                {'label': '选项2', 'value': '2', 'color': 'green'},
             ]
 
         sql_lines.extend([
