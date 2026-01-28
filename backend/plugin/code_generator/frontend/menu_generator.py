@@ -100,8 +100,11 @@ async def generate_menu_sql_from_db(
     # 如果菜单标题不以 "管理" 结尾，自动添加
     if not menu_title.endswith('管理'):
         menu_title = f'{menu_title}管理'
+    # app 标题：首字母大写
+    app_title = app.replace('_', ' ').title()
     vars_dict = {
         'app_name': app,
+        'app_title': app_title,
         'table_name': business.table_name,
         'menu_title': menu_title,
         'doc_comment': doc_comment,
