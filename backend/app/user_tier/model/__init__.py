@@ -3,3 +3,4 @@ from backend.app.user_tier.model.subscription_tier import SubscriptionTier as Su
 from backend.app.user_tier.model.user_subscription import UserSubscription as UserSubscription
 from backend.app.user_tier.model.credit_package import CreditPackage as CreditPackage
 from backend.app.user_tier.model.credit_transaction import CreditTransaction as CreditTransaction
+from backend.app.user_tier.model.user_credit_balance import UserCreditBalance as UserCreditBalance

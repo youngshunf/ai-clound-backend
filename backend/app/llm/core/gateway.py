@@ -1171,6 +1171,7 @@ class LLMGateway:
         使用 LiteLLM 的 anthropic.messages.acreate(stream=True) 接口
         LiteLLM 返回的流式事件已经是 Anthropic SSE 格式
         """
+        import codecs
         import traceback
         
         params = context['params']
@@ -1183,6 +1184,9 @@ class LLMGateway:
             self._log_debug_request(params, provider_name, api_base_url)
         
         timer = RequestTimer().start()
+        
+        # 创建增量 UTF-8 解码器，处理多字节字符被分割的情况
+        decoder = codecs.getincrementaldecoder('utf-8')('replace')
         
         try:
             if self.debug_mode:
@@ -1204,9 +1208,11 @@ class LLMGateway:
                 
                 chunk_count += 1
                 
-                # LiteLLM 返回的是原始 SSE bytes，直接透传
+                # LiteLLM 返回的是原始 SSE bytes，使用增量解码器透传
                 if isinstance(chunk, bytes):
-                    yield chunk.decode('utf-8')
+                    decoded = decoder.decode(chunk, final=False)
+                    if decoded:
+                        yield decoded
                 elif isinstance(chunk, str):
                     yield chunk
                 else:
@@ -1226,6 +1232,11 @@ class LLMGateway:
                     else:
                         # 未知格式，尝试直接输出
                         yield f'data: {json.dumps({"type": "unknown", "content": str(chunk)})}\n\n'
+            
+            # 刷新解码器中剩余的字节
+            final_decoded = decoder.decode(b'', final=True)
+            if final_decoded:
+                yield final_decoded
             
             timer.stop()
             
