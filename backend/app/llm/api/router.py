@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from backend.app.llm.api.v1 import api_keys, model_groups, models, providers, proxy, rate_limits, usage
+from backend.app.llm.api.v1 import api_keys, model_alias, model_groups, models, providers, proxy, rate_limits, subscription, usage
 
 from backend.core.conf import settings
 
@@ -10,6 +10,9 @@ v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/llm')
 
 # 模型管理
 v1.include_router(models.router, prefix='/models', tags=['LLM 模型管理'])
+
+# 模型别名映射
+v1.include_router(model_alias.router, prefix='/model-alias', tags=['LLM 模型别名映射'])
 
 # 供应商管理
 v1.include_router(providers.router, prefix='/providers', tags=['LLM 供应商管理'])
@@ -28,3 +31,6 @@ v1.include_router(proxy.router, prefix='/proxy', tags=['LLM 代理'])
 
 # 用量统计
 v1.include_router(usage.router, prefix='/usage', tags=['LLM 用量统计'])
+
+# 订阅积分信息
+v1.include_router(subscription.router, prefix='/subscription', tags=['LLM 订阅积分'])

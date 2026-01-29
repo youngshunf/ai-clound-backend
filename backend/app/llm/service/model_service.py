@@ -109,10 +109,12 @@ class ModelService:
         if not provider:
             raise errors.NotFoundError(msg='供应商不存在')
 
-        # 检查模型名称是否已存在
-        existing = await model_config_dao.get_by_name(db, obj.model_name)
+        # 检查同一供应商下模型名称是否已存在
+        existing = await model_config_dao.get_by_provider_and_name(
+            db, obj.provider_id, obj.model_name
+        )
         if existing:
-            raise errors.ForbiddenError(msg='模型名称已存在')
+            raise errors.ForbiddenError(msg=f'供应商 {provider.name} 下已存在同名模型')
 
         await model_config_dao.create(db, obj)
 
@@ -124,16 +126,20 @@ class ModelService:
             raise errors.NotFoundError(msg='模型不存在')
 
         # 检查供应商是否存在
+        target_provider_id = obj.provider_id or model.provider_id
         if obj.provider_id:
             provider = await provider_dao.get(db, obj.provider_id)
             if not provider:
                 raise errors.NotFoundError(msg='供应商不存在')
 
-        # 检查模型名称是否重复
-        if obj.model_name and obj.model_name != model.model_name:
-            existing = await model_config_dao.get_by_name(db, obj.model_name)
-            if existing:
-                raise errors.ForbiddenError(msg='模型名称已存在')
+        # 检查同一供应商下模型名称是否重复
+        target_model_name = obj.model_name or model.model_name
+        if obj.model_name != model.model_name or obj.provider_id != model.provider_id:
+            existing = await model_config_dao.get_by_provider_and_name(
+                db, target_provider_id, target_model_name
+            )
+            if existing and existing.id != pk:
+                raise errors.ForbiddenError(msg='该供应商下已存在同名模型')
 
         return await model_config_dao.update(db, pk, obj)
 

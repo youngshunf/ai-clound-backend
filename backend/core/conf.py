@@ -231,6 +231,14 @@ class Settings(BaseSettings):
     GRAFANA_OTLP_GRPC_ENDPOINT: str = 'fba_alloy:4317'
 
     ##################################################
+    # [ LLM ] 网关配置
+    ##################################################
+    # .env LLM 加密密钥
+    LLM_ENCRYPTION_KEY: str | None = None
+    # LiteLLM 调试模式（生产环境建议关闭）
+    LITELLM_DEBUG: bool = False
+
+    ##################################################
     # [ App ] task
     ##################################################
     # .env Redis

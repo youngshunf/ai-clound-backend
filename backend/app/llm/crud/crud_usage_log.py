@@ -3,7 +3,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -63,8 +63,8 @@ class CRUDUsageLog(CRUDPlus[UsageLog]):
         """获取用量汇总"""
         stmt = select(
             func.count(UsageLog.id).label('total_requests'),
-            func.sum(func.if_(UsageLog.status == 'SUCCESS', 1, 0)).label('success_requests'),
-            func.sum(func.if_(UsageLog.status == 'ERROR', 1, 0)).label('error_requests'),
+            func.sum(case((UsageLog.status == 'SUCCESS', 1), else_=0)).label('success_requests'),
+            func.sum(case((UsageLog.status == 'ERROR', 1), else_=0)).label('error_requests'),
             func.coalesce(func.sum(UsageLog.total_tokens), 0).label('total_tokens'),
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label('total_input_tokens'),
             func.coalesce(func.sum(UsageLog.output_tokens), 0).label('total_output_tokens'),

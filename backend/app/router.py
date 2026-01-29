@@ -1,3 +1,4 @@
+from backend.app.marketplace.api.router import v1 as marketplace_v1
 from backend.app.user_tier.api.router import v1 as user_tier_v1
 from backend.app.projects.api.router import v1 as projects_v1
 from fastapi import APIRouter
@@ -14,3 +15,4 @@ router.include_router(llm_v1)
 
 router.include_router(projects_v1)
 router.include_router(user_tier_v1)
+router.include_router(marketplace_v1)

@@ -57,6 +57,11 @@ dependencies = [
     "sqlparse>=0.5.5",
     "starlette-context>=0.4.0",
     "user-agents>=2.2.0",
+    "litellm[proxy]>=1.50.0",
+    # LiteLLM 完整功能所需依赖
+    "orjson>=3.10.0",
+    "backoff>=2.2.0",
+    "tiktoken>=0.7.0",
 ]
 
 [dependency-groups]

@@ -115,7 +115,8 @@ class AnthropicMessage(SchemaBase):
     """Anthropic 消息"""
 
     role: Literal['user', 'assistant'] = Field(description='角色')
-    content: str | list[AnthropicContentBlock] = Field(description='内容')
+    # content 可以是字符串、AnthropicContentBlock 列表或 dict 列表（包含 tool_result 等）
+    content: str | list[AnthropicContentBlock] | list[dict] = Field(description='内容')
 
 
 class AnthropicMessageRequest(SchemaBase):
@@ -124,7 +125,8 @@ class AnthropicMessageRequest(SchemaBase):
     model: str = Field(description='模型名称')
     messages: list[AnthropicMessage] = Field(description='消息列表')
     max_tokens: int = Field(description='最大 tokens')
-    system: str | None = Field(default=None, description='系统提示')
+    # system 可以是字符串或数组格式（带 cache_control 等）
+    system: str | list[dict] | None = Field(default=None, description='系统提示')
     temperature: float | None = Field(default=None, ge=0, le=1, description='温度')
     top_p: float | None = Field(default=None, ge=0, le=1, description='Top P')
     top_k: int | None = Field(default=None, description='Top K')
@@ -133,6 +135,15 @@ class AnthropicMessageRequest(SchemaBase):
     tools: list[dict] | None = Field(default=None, description='工具列表')
     tool_choice: dict | None = Field(default=None, description='工具选择')
     metadata: dict | None = Field(default=None, description='元数据')
+
+
+class AnthropicCountTokensRequest(SchemaBase):
+    """Anthropic Token 计数请求（不需要 max_tokens）"""
+
+    model: str = Field(description='模型名称')
+    messages: list[AnthropicMessage] = Field(description='消息列表')
+    system: str | list[dict] | None = Field(default=None, description='系统提示')
+    tools: list[dict] | None = Field(default=None, description='工具列表')
 
 
 class AnthropicUsage(SchemaBase):

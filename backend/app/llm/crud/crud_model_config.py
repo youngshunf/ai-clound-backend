@@ -19,6 +19,12 @@ class CRUDModelConfig(CRUDPlus[ModelConfig]):
     async def get_by_name(self, db: AsyncSession, model_name: str) -> ModelConfig | None:
         return await self.select_model_by_column(db, model_name=model_name)
 
+    async def get_by_provider_and_name(
+        self, db: AsyncSession, provider_id: int, model_name: str
+    ) -> ModelConfig | None:
+        """检查同一供应商下是否已存在同名模型"""
+        return await self.select_model_by_column(db, provider_id=provider_id, model_name=model_name)
+
     async def get_list(
         self,
         *,
