@@ -270,3 +270,83 @@ async def download_app_version(
         file_hash=ver.file_hash,
         file_size=ver.file_size,
     ))
+
+
+# ============================================================
+# 同步检查更新 API
+# ============================================================
+
+class InstalledItem(BaseModel):
+    """已安装的项"""
+    id: str
+    version: str
+    type: str  # 'skill' 或 'app'
+
+
+class SyncRequest(BaseModel):
+    """同步请求"""
+    installed: list[InstalledItem]
+
+
+class UpdateItem(BaseModel):
+    """有更新的项"""
+    id: str
+    type: str
+    current_version: str
+    latest_version: str
+    changelog: Optional[str] = None
+
+
+class SyncResponse(BaseModel):
+    """同步响应"""
+    updates: list[UpdateItem]
+
+
+def _is_newer_version(latest: str, current: str) -> bool:
+    """简单的语义化版本比较"""
+    try:
+        def parse_version(v: str) -> tuple[int, ...]:
+            v = v.lstrip('v')
+            v = v.split('-')[0]
+            return tuple(int(x) for x in v.split('.'))
+        
+        latest_parts = parse_version(latest)
+        current_parts = parse_version(current)
+        return latest_parts > current_parts
+    except (ValueError, AttributeError):
+        return False
+
+
+@router.post('/sync', summary='公开接口：同步检查更新')
+async def client_sync_installed(
+    db: CurrentSession,
+    request: SyncRequest,
+) -> ResponseSchemaModel[SyncResponse]:
+    """检查已安装的技能和应用是否有新版本"""
+    updates = []
+    
+    for item in request.installed:
+        if item.type == 'skill':
+            latest = await marketplace_skill_version_dao.get_latest_by_skill(db, item.id)
+            if latest and latest.version != item.version:
+                if _is_newer_version(latest.version, item.version):
+                    updates.append(UpdateItem(
+                        id=item.id,
+                        type='skill',
+                        current_version=item.version,
+                        latest_version=latest.version,
+                        changelog=latest.changelog,
+                    ))
+        elif item.type == 'app':
+            latest = await marketplace_app_version_dao.get_latest_by_app(db, item.id)
+            if latest and latest.version != item.version:
+                if _is_newer_version(latest.version, item.version):
+                    updates.append(UpdateItem(
+                        id=item.id,
+                        type='app',
+                        current_version=item.version,
+                        latest_version=latest.version,
+                        changelog=latest.changelog,
+                    ))
+    
+    return response_base.success(data=SyncResponse(updates=updates))

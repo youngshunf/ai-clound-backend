@@ -88,6 +88,26 @@ class SkillPublish:
             help='仅预览将要打包的文件，不执行发布',
         ),
     ] = False
+    remote: Annotated[
+        bool,
+        cappa.Arg(
+            short='-r',
+            default=False,
+            help='远程发布模式，通过 API 发布到远程服务器',
+        ),
+    ] = False
+    api_url: Annotated[
+        str | None,
+        cappa.Arg(
+            help='API 服务器地址，如 http://localhost:8020（远程模式必需）',
+        ),
+    ] = None
+    api_key: Annotated[
+        str | None,
+        cappa.Arg(
+            help='发布 API Key（远程模式必需）',
+        ),
+    ] = None
     
     def __post_init__(self) -> None:
         self.path = Path(self.path).resolve()
@@ -99,10 +119,21 @@ class SkillPublish:
         
         if self.bump and self.bump not in ('patch', 'minor', 'major'):
             raise cappa.Exit(f'无效的 --bump 类型: {self.bump}，应为 patch/minor/major', code=1)
+        
+        if self.remote:
+            if not self.api_url:
+                raise cappa.Exit('远程模式需要指定 --api-url', code=1)
+            if not self.api_key:
+                raise cappa.Exit('远程模式需要指定 --api-key', code=1)
     
     async def __call__(self) -> None:
         print_header('技能发布')
         print_info(f'路径: {self.path}')
+        if self.remote:
+            print_info(f'模式: 远程发布')
+            print_info(f'服务器: {self.api_url}')
+        else:
+            print_info(f'模式: 本地发布')
         console.print()
         
         # 预览模式
@@ -111,7 +142,15 @@ class SkillPublish:
             packager.print_preview()
             return
         
-        # 发布
+        if self.remote:
+            # 远程发布
+            await self._publish_remote()
+        else:
+            # 本地发布
+            await self._publish_local()
+    
+    async def _publish_local(self) -> None:
+        """本地发布"""
         publisher = SkillPublisher(self.path)
         async with async_db_session.begin() as db:
             result = await publisher.publish(
@@ -125,6 +164,55 @@ class SkillPublish:
         if result.success:
             print_success(f'技能发布成功!')
             print_success(f'技能 ID: {result.skill_id}')
+            print_success(f'版本: {result.version}')
+            print_success(f'下载地址: {result.package_url}')
+            print_success(f'SHA256: {result.file_hash}')
+        else:
+            print_error(f'发布失败: {result.error}')
+            raise cappa.Exit(code=1)
+    
+    async def _publish_remote(self) -> None:
+        """远程发布"""
+        import tempfile
+        from backend.cli_tools.publisher.remote_client import RemotePublishClient
+        from backend.cli_tools.validator.skill_validator import SkillValidator
+        
+        # 验证技能包
+        print_info('验证技能包...')
+        validator = SkillValidator(self.path)
+        validation_result = validator.validate()
+        if not validation_result.valid:
+            validator.print_result()
+            raise cappa.Exit(code=1)
+        
+        # 打包
+        print_info('打包技能...')
+        packager = SkillPackager(self.path)
+        package_result = packager.package()
+        
+        print_success(f'打包完成: {package_result.file_count} 个文件, {package_result.file_size} B')
+        
+        # 写入临时文件
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
+            tmp.write(package_result.content)
+            tmp_path = Path(tmp.name)
+        
+        # 上传
+        print_info('上传到远程服务器...')
+        client = RemotePublishClient(self.api_url, self.api_key)
+        result = await client.publish_skill(
+            zip_path=tmp_path,
+            version=self.version,
+            changelog=self.changelog,
+        )
+        
+        # 清理临时文件
+        tmp_path.unlink(missing_ok=True)
+        
+        console.print()
+        if result.success:
+            print_success(f'技能发布成功!')
+            print_success(f'技能 ID: {result.id}')
             print_success(f'版本: {result.version}')
             print_success(f'下载地址: {result.package_url}')
             print_success(f'SHA256: {result.file_hash}')

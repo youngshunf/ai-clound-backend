@@ -78,20 +78,27 @@ fba skill publish --path <技能目录> [选项]
 - `--version <版本号>` - 指定发布版本（覆盖 config.yaml 中的版本）
 - `--bump <major|minor|patch>` - 基于最新版本自动递增
 - `--changelog <更新日志>` - 版本更新说明
+- `--remote` / `-r` - 远程发布模式
+- `--api-url <URL>` - API 服务器地址（远程模式必需）
+- `--api-key <KEY>` - 发布 API Key（远程模式必需）
 
 示例：
 ```bash
-# 使用 config.yaml 中的版本
+# 本地发布 - 使用 config.yaml 中的版本
 fba skill publish --path ./skills/my-skill
 
-# 指定版本号
+# 本地发布 - 指定版本号
 fba skill publish --path ./skills/my-skill --version 2.0.0
 
-# 自动递增补丁版本
+# 本地发布 - 自动递增补丁版本
 fba skill publish --path ./skills/my-skill --bump patch
 
-# 带更新日志
+# 本地发布 - 带更新日志
 fba skill publish --path ./skills/my-skill --bump minor --changelog "新增功能X"
+
+# 远程发布 - 发布到远程服务器
+fba skill publish --path ./skills/my-skill --version 1.0.0 \
+    --remote --api-url http://api.example.com --api-key your-api-key
 ```
 
 ### 批量发布技能
@@ -122,10 +129,41 @@ fba app publish --path <应用目录> [选项]
 - `--version <版本号>` - 指定发布版本
 - `--bump <major|minor|patch>` - 自动递增版本
 - `--changelog <更新日志>` - 版本更新说明
+- `--remote` / `-r` - 远程发布模式
+- `--api-url <URL>` - API 服务器地址（远程模式必需）
+- `--api-key <KEY>` - 发布 API Key（远程模式必需）
 
 示例：
 ```bash
+# 本地发布
 fba app publish --path ./apps/my-app --version 1.0.0
+
+# 远程发布
+fba app publish --path ./apps/my-app --version 1.0.0 \
+    --remote --api-url http://api.example.com --api-key your-api-key
+```
+
+## 远程发布模式
+
+远程发布模式允许你从本地发布技能/应用到远程服务器，无需直接访问数据库和 S3 存储。
+
+### 配置
+
+1. 在服务端设置发布 API Key（环境变量）：
+   ```
+   MARKETPLACE_PUBLISH_API_KEY=your-secure-api-key
+   ```
+
+2. 使用远程模式发布：
+   ```bash
+   fba skill publish --path ./my-skill --version 1.0.0 \
+       --remote --api-url http://your-server:8020 --api-key your-secure-api-key
+   ```
+
+### 工作流程
+
+```
+本地 CLI  --验证+打包-->  ZIP 文件  --HTTP上传-->  服务端 API  --保存-->  S3 + 数据库
 ```
 
 ## 版本号规范

@@ -79,8 +79,8 @@ VALUES (
     'credit_conversion',
     '{
         "base_credit_per_1k_tokens": 1.0,
-        "default_input_multiplier": 0.005,
-        "default_output_multiplier": 0.015,
+        "default_input_multiplier": 5,
+        "default_output_multiplier": 15,
         "description": "标准比例: 1M tokens = 输入5积分/输出15积分"
     }'::jsonb,
     '积分转换全局配置',

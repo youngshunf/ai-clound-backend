@@ -35,5 +35,7 @@ class GetModelCreditRateDetail(ModelCreditRateSchemaBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    model_name: str | None = Field(default=None, description='模型名称')
+    provider_name: str | None = Field(default=None, description='供应商名称')
     created_time: datetime
     updated_time: datetime | None = None

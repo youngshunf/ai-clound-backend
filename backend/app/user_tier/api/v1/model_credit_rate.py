@@ -35,8 +35,11 @@ async def get_model_credit_rate(
         DependsPagination,
     ],
 )
-async def get_model_credit_rates_paginated(db: CurrentSession) -> ResponseSchemaModel[PageData[GetModelCreditRateDetail]]:
-    page_data = await model_credit_rate_service.get_list(db=db)
+async def get_model_credit_rates_paginated(
+    db: CurrentSession,
+    model_id: Annotated[int | None, Query(description='模型 ID 筛选')] = None,
+) -> ResponseSchemaModel[PageData[GetModelCreditRateDetail]]:
+    page_data = await model_credit_rate_service.get_list(db=db, model_id=model_id)
     return response_base.success(data=page_data)
 
 

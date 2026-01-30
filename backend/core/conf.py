@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     ]
     TOKEN_REQUEST_PATH_EXCLUDE_PATTERN: list[Pattern[str]] = [  # JWT / RBAC 路由白名单（正则）
         rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$',
+        rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$',  # 桌面端市场公开 API
+        rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$',  # 市场下载 API
     ]
 
     # 用户安全

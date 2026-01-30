@@ -1,9 +1,11 @@
 from typing import Sequence
 
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy_crud_plus import CRUDPlus
 
+from backend.app.llm.model import ModelConfig, ModelProvider
 from backend.app.user_tier.model import ModelCreditRate
 from backend.app.user_tier.schema.model_credit_rate import CreateModelCreditRateParam, UpdateModelCreditRateParam
 
@@ -19,9 +21,25 @@ class CRUDModelCreditRate(CRUDPlus[ModelCreditRate]):
         """
         return await self.select_model(db, pk)
 
-    async def get_select(self) -> Select:
-        """获取模型积分费率列表查询表达式"""
-        return await self.select_order('id', 'desc')
+    async def get_list_with_model_info(
+        self, db: AsyncSession, *, model_id: int | None = None
+    ) -> list[dict]:
+        """获取模型积分费率列表（包含模型信息）"""
+        stmt = (
+            select(
+                ModelCreditRate,
+                ModelConfig.model_name,
+                ModelProvider.name.label('provider_name'),
+            )
+            .outerjoin(ModelConfig, ModelCreditRate.model_id == ModelConfig.id)
+            .outerjoin(ModelProvider, ModelConfig.provider_id == ModelProvider.id)
+            .order_by(ModelCreditRate.id.desc())
+        )
+        if model_id is not None:
+            stmt = stmt.where(ModelCreditRate.model_id == model_id)
+        result = await db.execute(stmt)
+        rows = result.all()
+        return rows
 
     async def get_all(self, db: AsyncSession) -> Sequence[ModelCreditRate]:
         """

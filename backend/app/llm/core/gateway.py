@@ -553,7 +553,9 @@ class LLMGateway:
         output_tokens = usage.get('completion_tokens', 0)
 
         # 计算并扣除积分
-        credits_used = credit_service.calculate_credits(input_tokens, output_tokens, credit_rate)
+        credits_used = credit_service.calculate_credits(
+            input_tokens, output_tokens, credit_rate, model_name=model_config.model_name
+        )
         if credits_used > 0:
             await credit_service.deduct_credits(
                 db,
@@ -753,7 +755,9 @@ class LLMGateway:
             output_tokens = len(content_buffer) // 4
 
             # 计算并扣除积分
-            credits_used = credit_service.calculate_credits(input_tokens, output_tokens, credit_rate)
+            credits_used = credit_service.calculate_credits(
+                input_tokens, output_tokens, credit_rate, model_name=model_config.model_name
+            )
             if credits_used > 0:
                 await credit_service.deduct_credits(
                     db,
@@ -1018,7 +1022,9 @@ class LLMGateway:
         output_tokens = getattr(usage, 'output_tokens', 0) if usage else 0
 
         # 计算并扣除积分
-        credits_used = credit_service.calculate_credits(input_tokens, output_tokens, credit_rate)
+        credits_used = credit_service.calculate_credits(
+            input_tokens, output_tokens, credit_rate, model_name=model_config.model_name
+        )
         if credits_used > 0:
             await credit_service.deduct_credits(
                 db,
@@ -1157,7 +1163,7 @@ class LLMGateway:
             },
             'user_id': user_id,
             'api_key_id': api_key_id,
-            'credit_rate': float(credit_rate) if credit_rate else 1.0,
+'credit_rate': credit_rate,
             'ip_address': ip_address,
         }
 
