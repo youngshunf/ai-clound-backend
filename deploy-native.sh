@@ -31,7 +31,7 @@ PROJECT_DIR="$(pwd)"
 SERVICE_NAME="creator-flow-backend"
 DEPLOY_BRANCH="creator-flow"
 API_PORT="8020"
-FLOWER_PORT="8555"
+FLOWER_PORT="8556"
 # 动态设置服务用户：root 用户运行时使用 root，否则使用 www-data
 if [ "$USER" = "root" ] || [ "$(id -u)" = "0" ]; then
     SERVICE_USER="root"
