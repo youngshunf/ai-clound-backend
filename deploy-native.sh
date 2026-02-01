@@ -38,7 +38,7 @@ if [ "$USER" = "root" ] || [ "$(id -u)" = "0" ]; then
 else
     SERVICE_USER="www-data"
 fi
-PYTHON_VERSION="3.10"
+PYTHON_VERSION="3.12"
 VENV_DIR="$PROJECT_DIR/.venv"
 LOG_DIR="$PROJECT_DIR/logs"
 PID_DIR="$PROJECT_DIR/pids"
@@ -114,69 +114,48 @@ install_system_deps() {
     log_info "✅ 系统依赖安装完成"
 }
 
-# 创建虚拟环境
+# 设置 Python 环境（使用 uv 管理）
 setup_python_env() {
     log_step "设置 Python 环境..."
     
-    # 创建虚拟环境
-    if [ ! -d "$VENV_DIR" ]; then
-        log_info "创建 Python 虚拟环境..."
-        python$PYTHON_VERSION -m venv "$VENV_DIR"
-    else
-        log_info "虚拟环境已存在: $VENV_DIR"
-    fi
-    
-    # 激活虚拟环境
-    source "$VENV_DIR/bin/activate"
-    
-    # 升级 pip
-    pip install --upgrade pip
-    
-    # 安装 uv（更快的包管理器）
-    log_info "安装 uv 包管理器..."
-    pip install uv
-    
-    # 验证 uv 安装
+    # 检查并安装 uv
     if ! command -v uv >/dev/null 2>&1; then
-        log_error "uv 安装失败"
-        exit 1
+        log_info "安装 uv 包管理器..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        export PATH="$HOME/.local/bin:$PATH"
     fi
     
     log_info "uv 版本: $(uv --version)"
     
-    # 使用 uv 安装依赖
-    log_info "安装 Python 依赖..."
+    # 使用 uv 创建虚拟环境并安装指定 Python 版本
+    log_info "使用 uv 创建 Python $PYTHON_VERSION 环境..."
+    
+    # uv 会自动下载并安装指定版本的 Python
     if [ -f "pyproject.toml" ]; then
         log_info "使用 pyproject.toml 安装依赖..."
         
-        # 首先尝试完整同步
-        if uv sync --group server; then
+        # uv sync 会自动创建虚拟环境并安装依赖
+        if uv sync --python $PYTHON_VERSION --group server; then
             log_info "✅ uv sync 成功"
         else
-            log_warn "uv sync 失败，尝试其他方法..."
-            
-            # 尝试不使用组的同步
-            if uv sync; then
-                log_info "✅ uv sync (无组) 成功"
+            log_warn "uv sync --group server 失败，尝试不使用 group..."
+            if uv sync --python $PYTHON_VERSION; then
+                log_info "✅ uv sync 成功"
             else
-                log_warn "uv sync 完全失败，尝试使用 pip 安装..."
-                
-                # 使用 uv pip 安装项目依赖
-                if uv pip install -e .; then
-                    log_info "✅ uv pip install 成功"
-                else
-                    log_warn "uv pip 失败，使用标准 pip..."
-                    pip install -e .
-                fi
+                log_error "uv sync 失败"
+                exit 1
             fi
         fi
-    elif [ -f "requirements.txt" ]; then
-        log_info "使用 requirements.txt 安装依赖..."
-        uv pip install -r requirements.txt || pip install -r requirements.txt
     else
-        log_error "未找到 pyproject.toml 或 requirements.txt 文件"
+        log_error "未找到 pyproject.toml 文件"
         exit 1
     fi
+    
+    # 更新 VENV_DIR 路径（uv 默认创建在 .venv）
+    VENV_DIR="$PROJECT_DIR/.venv"
+    
+    # 激活虚拟环境
+    source "$VENV_DIR/bin/activate"
     
     # 验证关键依赖是否安装成功
     log_info "验证依赖安装..."
