@@ -31,6 +31,48 @@ from backend.utils.serializers import MsgSpecJSONResponse
 router = APIRouter()
 
 
+@router.api_route(
+    '/v1/models',
+    methods=['GET', 'HEAD'],
+    summary='Anthropic 兼容模型列表',
+    description='兼容 Anthropic /v1/models 端点，用于服务可用性检查',
+)
+async def anthropic_models(request: Request, db: CurrentSession):
+    """
+    Anthropic 兼容的模型列表接口
+    
+    - HEAD 请求：用于检查服务可用性（无需返回 body）
+    - GET 请求：返回可用模型列表
+    
+    返回格式符合 Anthropic API 规范
+    """
+    from backend.app.llm.service.model_service import model_service
+    
+    # HEAD 请求只需要返回状态码，不需要 body
+    if request.method == 'HEAD':
+        return MsgSpecJSONResponse(content={})
+    
+    # GET 请求返回模型列表
+    models_data = await model_service.get_available_models(db)
+    
+    # 转换为 Anthropic 格式
+    anthropic_models = []
+    for model in models_data:
+        anthropic_models.append({
+            'id': model.get('model_name') or model.get('id'),
+            'display_name': model.get('display_name') or model.get('model_name'),
+            'created_at': model.get('created_at', '2024-01-01T00:00:00Z'),
+            'type': 'model',
+        })
+    
+    return {
+        'data': anthropic_models,
+        'has_more': False,
+        'first_id': anthropic_models[0]['id'] if anthropic_models else None,
+        'last_id': anthropic_models[-1]['id'] if anthropic_models else None,
+    }
+
+
 def _get_client_ip(request: Request) -> str | None:
     """获取客户端 IP"""
     forwarded = request.headers.get('X-Forwarded-For')

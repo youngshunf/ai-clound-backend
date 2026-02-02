@@ -12,3 +12,4 @@ from backend.app.admin.model.role import Role as Role
 from backend.app.admin.model.user import User as User
 from backend.app.admin.model.user_password_history import UserPasswordHistory as UserPasswordHistory
 from backend.app.admin.model.test_user import TestUser as TestUser
+from backend.app.admin.model.app_version import AppVersion as AppVersion

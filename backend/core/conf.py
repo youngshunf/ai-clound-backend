@@ -95,6 +95,7 @@ class Settings(BaseSettings):
         rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$',
         rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$',  # 桌面端市场公开 API
         rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$',  # 市场下载 API
+        rf'^{FASTAPI_API_V1_PATH}/client/version/.*$',  # 桌面端版本检测公开 API
     ]
 
     # 用户安全
@@ -144,6 +145,9 @@ class Settings(BaseSettings):
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
         'http://127.0.0.1:8000',
         'http://localhost:5173',
+        'http://localhost:8020',
+        'http://192.168.1.92:8020',
+        'http://api.ai.dcfuture.cn',
     ]
     CORS_EXPOSE_HEADERS: list[str] = [
         'X-Request-ID',

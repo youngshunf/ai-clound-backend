@@ -2,7 +2,6 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from starlette.exceptions import HTTPException
-from starlette.middleware.cors import CORSMiddleware
 from uvicorn.protocols.http.h11_impl import STATUS_PHRASES
 
 from backend.common.context import ctx
@@ -239,21 +238,5 @@ def register_exception(app: FastAPI) -> None:  # noqa: C901
                 content=content,
                 background=exc.background if isinstance(exc, BaseExceptionError) else None,
             )
-            origin = request.headers.get('origin')
-            if origin:
-                cors = CORSMiddleware(
-                    app=app,
-                    allow_origins=settings.CORS_ALLOWED_ORIGINS,
-                    allow_credentials=True,
-                    allow_methods=['*'],
-                    allow_headers=['*'],
-                    expose_headers=settings.CORS_EXPOSE_HEADERS,
-                )
-                response.headers.update(cors.simple_headers)
-                has_cookie = 'cookie' in request.headers
-                if cors.allow_all_origins and has_cookie:
-                    response.headers['Access-Control-Allow-Origin'] = origin
-                elif not cors.allow_all_origins and cors.is_allowed_origin(origin=origin):
-                    response.headers['Access-Control-Allow-Origin'] = origin
-                    response.headers.add_vary_header('Origin')
+            # CORS 头由全局 CORSMiddleware 处理，不需要在此重复设置
             return response

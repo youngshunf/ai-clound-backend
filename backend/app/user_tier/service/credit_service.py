@@ -301,6 +301,10 @@ class CreditService:
 
         return result
 
+    # 最小积分阈值：用户至少需要有这么多积分才能发起请求
+    # 这是为了防止零积分用户发起请求后无法扣费的问题
+    MIN_CREDIT_THRESHOLD = Decimal('0.1')
+
     async def check_credits(
         self,
         db: AsyncSession,
@@ -334,8 +338,11 @@ class CreditService:
         total_credits = await self.get_total_available_credits(db, user_id)
 
         # 检查积分余额
-        if estimated_credits and total_credits < estimated_credits:
-            raise InsufficientCreditsError(total_credits, estimated_credits)
+        # 1. 如果指定了预估积分，检查是否足够
+        # 2. 即使没有指定预估积分，也要确保用户有最低积分余额
+        required_credits = estimated_credits or self.MIN_CREDIT_THRESHOLD
+        if total_credits < required_credits:
+            raise InsufficientCreditsError(total_credits, required_credits)
 
         return subscription
 

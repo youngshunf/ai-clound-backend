@@ -1070,10 +1070,13 @@ class LLMGateway:
                 msg_dict['content'] = str(msg.content)
             messages.append(msg_dict)
 
+        # 限制 max_tokens 不超过模型配置的最大值
+        effective_max_tokens = min(request.max_tokens, model_config.max_tokens)
+
         params = {
             'model': model_name,
             'messages': messages,
-            'max_tokens': request.max_tokens,
+            'max_tokens': effective_max_tokens,
             'api_key': api_key,
             'stream': request.stream,
         }
