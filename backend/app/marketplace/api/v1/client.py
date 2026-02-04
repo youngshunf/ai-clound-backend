@@ -168,19 +168,6 @@ async def get_app_skills(
 
 
 # ============================================================
-# 公开的分类 API
-# ============================================================
-
-@router.get('/categories', summary='公开接口：获取分类列表')
-async def list_categories(
-    db: CurrentSession,
-) -> ResponseModel:
-    """公开的分类列表接口，无需登录"""
-    categories = await marketplace_category_dao.get_all(db)
-    return response_base.success(data=categories)
-
-
-# ============================================================
 # 公开的搜索 API
 # ============================================================
 
@@ -472,3 +459,16 @@ async def client_sync_installed(
                     ))
     
     return response_base.success(data=SyncResponse(updates=updates))
+
+
+# ============================================================
+# 公开的分类列表 API
+# ============================================================
+
+@router.get('/categories', summary='公开接口：获取分类列表')
+async def list_categories(
+    db: CurrentSession,
+) -> ResponseSchemaModel[list[GetMarketplaceCategoryDetail]]:
+    """公开的分类列表接口，无需登录"""
+    categories = await marketplace_category_dao.get_all(db)
+    return response_base.success(data=categories)
