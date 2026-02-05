@@ -1,6 +1,6 @@
 import shutil
 
-from functools import lru_cache
+from functools import cache
 from re import Pattern
 from typing import Any, Literal
 
@@ -67,6 +67,17 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_TIMEOUT: int = 5
+
+    # 缓存
+    CACHE_LOCAL_ENABLED: bool = True
+    CACHE_LOCAL_MAXSIZE: int = 100000
+    CACHE_LOCAL_TTL: int = 60 * 60 * 2  # 2 小时
+    CACHE_REDIS_TTL: int = 60 * 60 * 2  # 2 小时
+    CACHE_CONFIG_REDIS_PREFIX: str = 'fba:cache:config'
+    CACHE_DICT_REDIS_PREFIX: str = 'fba:cache:dict'
+    CACHE_PUBSUB_CHANNEL: str = 'fba:cache:invalidate'
+    CACHE_PUBSUB_RECONNECT_DELAY: int = 5  # 重连延迟（秒）
+    CACHE_PUBSUB_MAX_RECONNECT_ATTEMPTS: int = 10  # 最大重连次数
 
     # .env Snowflake
     SNOWFLAKE_DATACENTER_ID: int | None = None
@@ -142,7 +153,7 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
-        'http://127.0.0.1:8000',
+        'http://127.0.0.1',
         'http://localhost:5173',
         'http://localhost:6310',
     ]
@@ -216,6 +227,7 @@ class Settings(BaseSettings):
         'new_password',
         'confirm_password',
     ]
+    OPERA_LOG_QUEUE_MAXSIZE: int = 100000
     OPERA_LOG_QUEUE_BATCH_CONSUME_SIZE: int = 100
     OPERA_LOG_QUEUE_TIMEOUT: int = 60  # 1 分钟
 
@@ -229,8 +241,7 @@ class Settings(BaseSettings):
     I18N_DEFAULT_LANGUAGE: str = 'zh-CN'
 
     # Grafana
-    GRAFANA_METRICS: bool = False
-    GRAFANA_APP_NAME: str = 'fba_server'
+    GRAFANA_METRICS_ENABLE: bool = False
     GRAFANA_OTLP_GRPC_ENDPOINT: str = 'fba_alloy:4317'
 
     ##################################################
@@ -315,10 +326,13 @@ class Settings(BaseSettings):
             # task
             values['CELERY_BROKER'] = 'rabbitmq'
 
+            # Grafana
+            values['GRAFANA_METRICS_ENABLE'] = True
+
         return values
 
 
-@lru_cache
+@cache
 def get_settings() -> Settings:
     """获取全局配置单例"""
     if not ENV_FILE_PATH.exists():

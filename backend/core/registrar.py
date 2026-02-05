@@ -17,6 +17,8 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend import __version__
+from backend.common.cache.pubsub import cache_pubsub_manager
+from backend.common.cache.warmup import cache_warmup
 from backend.common.exception.exception_handler import register_exception
 from backend.common.log import set_custom_logfile, setup_logging
 from backend.common.response.response_code import StandardResponseCode
@@ -66,7 +68,16 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     # 创建操作日志任务
     create_task(OperaLogMiddleware.consumer())
 
+    # 缓存预热
+    await cache_warmup()
+
+    # 启动缓存 Pub/Sub 监听器
+    cache_pubsub_manager.start_listener()
+
     yield
+
+    # 停止缓存 Pub/Sub 监听器
+    await cache_pubsub_manager.stop_listener()
 
     # 释放 snowflake 节点
     await snowflake.shutdown()
@@ -98,7 +109,7 @@ def register_app() -> FastAPI:
     register_page(app)
     register_exception(app)
 
-    if settings.GRAFANA_METRICS:
+    if settings.GRAFANA_METRICS_ENABLE:
         register_metrics(app)
 
     return app
@@ -154,7 +165,7 @@ def register_middleware(app: FastAPI) -> None:
     app.add_middleware(AccessMiddleware)
 
     # ContextVar
-    plugins = [OtelTraceIdPlugin()] if settings.GRAFANA_METRICS else [RequestIdPlugin(validate=True)]
+    plugins = [OtelTraceIdPlugin()] if settings.GRAFANA_METRICS_ENABLE else [RequestIdPlugin(validate=True)]
     app.add_middleware(
         ContextMiddleware,
         plugins=plugins,

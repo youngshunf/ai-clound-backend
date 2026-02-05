@@ -104,7 +104,7 @@ async def install_zip_plugin(file: UploadFile | str) -> str:
 
         await _append_env_example(full_plugin_path)
         await install_requirements_async(plugin_dir_name)
-        await redis_client.set(f'{settings.PLUGIN_REDIS_PREFIX}:changed', 'ture')
+        await redis_client.set(f'{settings.PLUGIN_REDIS_PREFIX}:changed', 'true')
 
     return plugin_name
 
@@ -118,7 +118,7 @@ async def install_git_plugin(repo_url: str) -> str:
     """
     match = is_git_url(repo_url)
     if not match:
-        raise errors.RequestError(msg='Git 仓库地址格式非法')
+        raise errors.RequestError(msg='Git 仓库地址格式非法，仅支持 HTTP/HTTPS 协议')
     repo_name = match.group('repo')
     path = anyio.Path(PLUGIN_DIR / repo_name)
     if await path.exists():
@@ -133,6 +133,6 @@ async def install_git_plugin(repo_url: str) -> str:
 
         await _append_env_example(path)
         await install_requirements_async(repo_name)
-        await redis_client.set(f'{settings.PLUGIN_REDIS_PREFIX}:changed', 'ture')
+        await redis_client.set(f'{settings.PLUGIN_REDIS_PREFIX}:changed', 'true')
 
     return repo_name
