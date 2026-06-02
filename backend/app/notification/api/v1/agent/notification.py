@@ -31,7 +31,7 @@ def _split_csv(value: str | None) -> list[str] | None:
     return [v.strip() for v in value.split(',') if v.strip()] if value else None
 
 
-@router.get('/notifications', summary='Agent 读取自己的通知')
+@router.get('/notifications', name='notif_agent_list', summary='Agent 读取自己的通知')
 async def list_notifications(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -53,7 +53,7 @@ async def list_notifications(
     return response_base.success(data=result)
 
 
-@router.get('/notifications/unread-count', summary='Agent 未读通知数')
+@router.get('/notifications/unread-count', name='notif_agent_unread_count', summary='Agent 未读通知数')
 async def unread_count(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -62,7 +62,7 @@ async def unread_count(
     return response_base.success(data=result)
 
 
-@router.put('/notifications/read-all', summary='Agent 全部已读')
+@router.put('/notifications/read-all', name='notif_agent_read_all', summary='Agent 全部已读')
 async def read_all(
     db: CurrentSessionTransaction,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -78,7 +78,7 @@ async def read_all(
     return response_base.success(data={'affected': affected})
 
 
-@router.put('/notifications/{notification_id}/read', summary='Agent 标记单条已读')
+@router.put('/notifications/{notification_id}/read', name='notif_agent_mark_read', summary='Agent 标记单条已读')
 async def mark_read(
     db: CurrentSessionTransaction,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -90,7 +90,7 @@ async def mark_read(
     return response_base.success()
 
 
-@router.post('/notifications/emit', summary='Agent 通知自己的主人')
+@router.post('/notifications/emit', name='notif_agent_emit', summary='Agent 通知自己的主人')
 async def emit_to_owner(
     db: CurrentSessionTransaction,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],

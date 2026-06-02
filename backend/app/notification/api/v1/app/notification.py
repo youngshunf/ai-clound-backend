@@ -36,6 +36,7 @@ def _split_csv(value: str | None) -> list[str] | None:
 
 @router.get(
     '/notifications',
+    name='notif_app_list',
     summary='通知中心列表',
     description='当前用户全 category 通知（category/type/unread_only 过滤 + 游标分页 + 读时聚合）',
     dependencies=[DependsJwtAuth],
@@ -64,6 +65,7 @@ async def list_notifications(
 
 @router.get(
     '/notifications/unread-count',
+    name='notif_app_unread_count',
     summary='未读通知数（含按 type/category 分组）',
     dependencies=[DependsJwtAuth],
 )
@@ -75,6 +77,7 @@ async def unread_count(request: Request, db: CurrentSession) -> ResponseModel:
 
 @router.put(
     '/notifications/read-all',
+    name='notif_app_read_all',
     summary='全部已读（可按 category/type 过滤）',
     dependencies=[DependsJwtAuth],
 )
@@ -93,6 +96,7 @@ async def read_all(
 
 @router.put(
     '/notifications/{notification_id}/read',
+    name='notif_app_mark_read',
     summary='标记单条已读',
     dependencies=[DependsJwtAuth],
 )
@@ -111,6 +115,7 @@ async def mark_read(
 
 @router.get(
     '/notifications/preferences',
+    name='notif_app_list_preferences',
     summary='获取通知偏好',
     dependencies=[DependsJwtAuth],
 )
@@ -122,6 +127,7 @@ async def list_preferences(request: Request, db: CurrentSession) -> ResponseMode
 
 @router.put(
     '/notifications/preferences',
+    name='notif_app_upsert_preference',
     summary='更新通知偏好（按 category，或 * 全局默认）',
     dependencies=[DependsJwtAuth],
 )
