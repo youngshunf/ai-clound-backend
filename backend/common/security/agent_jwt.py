@@ -38,6 +38,10 @@ DEFAULT_AGENT_SCOPES = [
     'task:execute',
     'knowledge:read',
     'profile:read',
+    # marketplace 工具集（15-技能市场/11-doc 权威源）。三态默认 allow，本数组仅审计快照。
+    'marketplace:read',
+    'marketplace:install',
+    'marketplace:publish',
 ]
 
 

@@ -14,6 +14,7 @@ from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.tool_directory import ToolDirectoryService
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool
+from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
 from backend.app.mcp.tools.registry import ToolRegistry
 from backend.app.mcp.tools.tool_call import ToolCallTool
@@ -83,6 +84,10 @@ class HasnCloudMcpServer:
 
         # 联系人工具
         self.tool_registry.register(ContactListTool())
+
+        # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
+        for tool_cls in MARKETPLACE_TOOLS:
+            self.tool_registry.register(tool_cls())
 
         logger.info(f'Registered {len(self.tool_registry.get_all_tools())} builtin tools')
 
