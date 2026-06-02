@@ -113,7 +113,35 @@ class NotificationService:
         )
         db.add(row)
         await db.flush()
+
+        # 4b) 卡片消息承载（§6.2）：策略允许 card_message + 来源可建服务号 →
+        #     投影成 type=notification,content_type=card 消息落「服务号 ⇄ 接收方」service 会话。
+        if policy.get('channels', {}).get('card_message'):
+            await cls._fanout_card(db, row=row, source=dict(source or {}))
+
         return row.id
+
+    @staticmethod
+    async def _fanout_card(db: AsyncSession, *, row: HasnNotifications, source: dict[str, Any]) -> None:
+        """卡片承载 fanout：建/取服务号 → 投递卡片 → 回写 delivery.card_message_id（D1 投影回指）。"""
+        # 延迟导入：carrier 依赖 message_router（重图），避免模块加载期循环。
+        from backend.app.notification.service.notification_carrier import deliver_card_to_owner
+        from backend.app.notification.service.service_account_service import service_account_service
+
+        account = await service_account_service.get_or_create_for_source(
+            db, owner_id=row.target_id, source=source
+        )
+        if account is None:
+            # agent/user 源不建服务号（agent 走自有会话/relay；user 社交默认无卡片承载）
+            return
+        card_message_id = await deliver_card_to_owner(
+            db, recipient_id=row.target_id, account=account, notif=row
+        )
+        delivery = dict(row.delivery or {})
+        delivery['card_message_id'] = card_message_id
+        delivery['service_account'] = account.sa_hasn_id
+        row.delivery = delivery
+        await db.flush()
 
     # ==================== 读取 / 已读（承袭社区语义，扩展 category） ====================
 

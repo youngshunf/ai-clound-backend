@@ -442,6 +442,8 @@ def _entity_type_int(hasn_id: str) -> int:
         return 2  # agent
     elif hasn_id.startswith('g:'):
         return 4  # group
+    elif hasn_id.startswith('sv_'):
+        return 5  # service（服务号，统一通知服务 D8；不复用 3=system）
     return 3  # system
 
 

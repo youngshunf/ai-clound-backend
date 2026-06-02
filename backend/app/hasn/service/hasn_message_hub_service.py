@@ -815,6 +815,8 @@ def _entity_type_int(hasn_id: str) -> int:
         return 2
     if hasn_id.startswith('g:'):
         return 4
+    if hasn_id.startswith('sv_'):
+        return 5  # service（服务号，统一通知服务 D8）
     return 3
 
 

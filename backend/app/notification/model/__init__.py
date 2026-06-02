@@ -7,3 +7,6 @@ from backend.app.hasn.model.hasn_notifications import HasnNotifications as HasnN
 from backend.app.notification.model.hasn_notification_preferences import (
     HasnNotificationPreferences as HasnNotificationPreferences,
 )
+from backend.app.notification.model.hasn_service_accounts import (
+    HasnServiceAccounts as HasnServiceAccounts,
+)
