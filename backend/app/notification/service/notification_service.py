@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
@@ -24,6 +25,11 @@ if TYPE_CHECKING:
 
 class NotificationService:
     """统一通知服务（生产 + 读取 + 偏好）。"""
+
+    # 限频窗口 / 阈值（§9 防通知轰炸）：同一 (recipient, source) 近窗内超过阈值，
+    # 压制"吵"的承载（toast/push/card_message），但仍落 center 权威行（D1 不漏事）。
+    RATE_WINDOW_SECONDS = 60
+    RATE_MAX_PER_WINDOW = 20
 
     # ==================== 生产入口 ====================
 
@@ -95,6 +101,12 @@ class NotificationService:
                 await db.flush()
                 return existing.id
 
+        # 3b) 限频（§9 防通知轰炸）：同一 (recipient, source) 近窗超阈值 → 压制"吵"的承载
+        #     （toast/push/card_message），但仍落 center 权威行（§4.4 step4：center 不可关）。
+        #     critical 不限频（安全/系统告警必达）；只对带 id 的 app/agent/external 源生效。
+        if priority != 'critical':
+            policy = await cls._apply_rate_limit(db, recipient_id=recipient_id, source=source, policy=policy)
+
         # 4) 落权威行
         row = HasnNotifications(
             target_id=recipient_id,
@@ -119,7 +131,76 @@ class NotificationService:
         if policy.get('channels', {}).get('card_message'):
             await cls._fanout_card(db, row=row, source=dict(source or {}))
 
+        # 4c) toast 在线投递（§5）：策略允许 toast → 写 notification.created sync_event，
+        #     供 daemon 下行 sync 拉取 → 经 NotificationBus 投 OS Toast（权威策略仍在云端）。
+        if policy.get('channels', {}).get('toast'):
+            await cls._emit_sync_event(db, row=row)
+
         return row.id
+
+    @classmethod
+    async def _apply_rate_limit(
+        cls,
+        db: AsyncSession,
+        *,
+        recipient_id: str,
+        source: dict[str, Any],
+        policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        """近窗超阈值 → 返回压制了"吵"承载的新 policy；否则原样返回（不可变更新）。"""
+        src = source or {}
+        src_kind = src.get('kind')
+        src_id = src.get('id')
+        # 只对带 id 的 app/agent/external 源限频（这些是轰炸向量）；system/user 不限频。
+        if src_kind not in ('app', 'agent', 'external') or not src_id:
+            return policy
+        window_start = _tz.now() - timedelta(seconds=cls.RATE_WINDOW_SECONDS)
+        recent = (
+            await db.execute(
+                select(func.count())
+                .select_from(HasnNotifications)
+                .where(
+                    HasnNotifications.target_id == recipient_id,
+                    HasnNotifications.created_time >= window_start,
+                    HasnNotifications.source['kind'].astext == src_kind,
+                    HasnNotifications.source['id'].astext == src_id,
+                )
+            )
+        ).scalar() or 0
+        if recent < cls.RATE_MAX_PER_WINDOW:
+            return policy
+        channels = dict(policy.get('channels', {}))
+        channels['toast'] = False
+        channels['push'] = False
+        channels['card_message'] = False
+        return {**policy, 'channels': channels, 'rate_limited': True}
+
+    @staticmethod
+    async def _emit_sync_event(db: AsyncSession, *, row: HasnNotifications) -> None:
+        """写 notification.created sync_event，供 daemon 下行同步 → OS Toast（§5）。
+
+        载荷只含 owner 自有数据的非敏感投影（id/category/type/priority/title），与
+        message.received sync_event 同口径；明文不外泄（接收方是 owner 自己的节点）。
+        """
+        from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
+
+        sync_gw = SqlAlchemySyncGateway()
+        await sync_gw._append_sync_event(
+            db,
+            owner_id=row.target_id,
+            hasn_id=row.target_id,
+            event_type='notification.created',
+            aggregate_type='notification',
+            aggregate_id=str(row.id),
+            payload={
+                'notification_id': row.id,
+                'category': row.category,
+                'type': row.type,
+                'priority': row.priority,
+                'title': row.title,
+                'source': dict(row.source or {}),
+            },
+        )
 
     @staticmethod
     async def _fanout_card(db: AsyncSession, *, row: HasnNotifications, source: dict[str, Any]) -> None:
