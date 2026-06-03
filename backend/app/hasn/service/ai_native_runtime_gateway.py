@@ -439,11 +439,54 @@ class AiNativeRuntimeGateway:
         agent: AgentTokenPayload,
         input_payload: dict[str, Any],
     ) -> dict[str, Any]:
-        """cloud_relay：云端用登记的 app secret HMAC 签名后转发到实例 endpoint（设计 11 §6.2，P3 落地）。
+        """cloud_relay：云端用登记的 app secret HMAC 签名后转发到实例 endpoint（设计 11 §6.2/§10）。
 
-        Phase A 内置应用恒 gateway_internal，不会走到这里；hasn_app_instance 落库后由 P3 实现真实签名转发。
+        app secret 仅存云端、此处代签，绝不下发 daemon/前端。签名头遵循 HExt-08 §16.4：
+        X-HASN-App-Id / X-HASN-Timestamp / X-HASN-Nonce / X-HASN-Signature(HMAC-SHA256)。
+        签名串 = app_id\\n timestamp\\n nonce\\n body。
         """
-        raise InstanceResolutionError(code='15050', message='cloud_relay_not_configured')
+        import hashlib
+        import hmac
+        import json
+        import time
+        import uuid
+
+        import httpx
+
+        if not handle.endpoint:
+            raise InstanceResolutionError(code='15050', message='instance_endpoint_missing')
+        secret = (handle.credential or {}).get('value') or ''
+        if not secret:
+            raise InstanceResolutionError(code='15051', message='instance_credential_invalid')
+
+        payload = {
+            'tool_id': tool['tool_id'],
+            'input': input_payload,
+            'actor': {'agent_hasn_id': agent.agent_hasn_id, 'owner_hasn_id': agent.owner_hasn_id},
+        }
+        body = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        ts = str(int(time.time()))
+        nonce = uuid.uuid4().hex
+        signing_string = f'{handle.app_id}\n{ts}\n{nonce}\n{body}'
+        signature = hmac.new(secret.encode('utf-8'), signing_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        headers = {
+            'Content-Type': 'application/json',
+            'X-HASN-App-Id': handle.app_id,
+            'X-HASN-Timestamp': ts,
+            'X-HASN-Nonce': nonce,
+            'X-HASN-Signature': signature,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(handle.endpoint, content=body.encode('utf-8'), headers=headers)
+        except httpx.HTTPError as exc:
+            raise InstanceResolutionError(code='15050', message=f'instance_unreachable:{exc.__class__.__name__}') from exc
+        if resp.status_code != 200:
+            raise InstanceResolutionError(code='15050', message=f'instance_http_{resp.status_code}')
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise InstanceResolutionError(code='15050', message='instance_bad_response') from exc
 
     async def _deny(
         self,

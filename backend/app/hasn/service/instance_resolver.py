@@ -16,6 +16,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import sqlalchemy as sa
+
+from backend.app.hasn.model import HasnAppInstance
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 
 if TYPE_CHECKING:
@@ -132,14 +135,57 @@ class InstanceResolver:
     async def _pick_instance(
         self, db: AsyncSession, *, app_id: str, workspace: dict[str, Any]
     ) -> dict[str, Any] | None:
-        """选实例 + 回落（设计 11 §3.2）。Phase B 覆盖为读 hasn_app_instance。
-
-        Phase A：内置应用恒 gateway_internal，不会走到这里（恒返回 None）。
-        """
+        """选实例 + 回落（设计 11 §3.2）：企业自建且 active → 企业实例；否则 / 回落 → 公共实例。"""
+        if workspace.get('kind') == 'enterprise' and workspace.get('enterprise_id') is not None:
+            stmt = sa.select(HasnAppInstance).where(
+                HasnAppInstance.app_id == app_id,
+                HasnAppInstance.scope == 'enterprise',
+                HasnAppInstance.enterprise_id == int(workspace['enterprise_id']),
+            )
+            row = (await db.execute(stmt)).scalars().first()
+            if row is not None and row.status == 'active':
+                return self._instance_to_dict(row)
+        # 默认 / 回落 → 公共实例
+        stmt = sa.select(HasnAppInstance).where(
+            HasnAppInstance.app_id == app_id,
+            HasnAppInstance.scope == 'public',
+        )
+        row = (await db.execute(stmt)).scalars().first()
+        if row is not None and row.status == 'active':
+            return self._instance_to_dict(row)
         return None
 
+    def _instance_to_dict(self, row: HasnAppInstance) -> dict[str, Any]:
+        return {
+            'id': row.id,
+            'app_id': row.app_id,
+            'scope': row.scope,
+            'enterprise_id': row.enterprise_id,
+            'endpoint': row.endpoint,
+            'transport_default': row.transport_default,
+            'credential_ref': row.credential_ref,
+            'status': row.status,
+            'config': row.config,
+        }
+
     async def _mint_credential(self, instance: dict[str, Any], *, transport: str) -> dict[str, Any] | None:
-        """签发短期凭据（设计 11 §3.1）。Phase B 覆盖。"""
+        """签发短期凭据 / 取接入凭据（设计 11 §3.1/§10）。
+
+        - cloud_relay：解密登记的 app secret，仅在云端用于 HMAC 代签，绝不下发 daemon/前端。
+        - daemon_direct / frontend_direct：短期 token（P4 性能档，Tool 面不走）。
+        """
+        if transport == TRANSPORT_CLOUD_RELAY:
+            from backend.app.llm.core.encryption import key_encryption
+
+            ref = instance.get('credential_ref')
+            if not ref:
+                return None
+            try:
+                secret = key_encryption.decrypt(ref)
+            except Exception:
+                # 解密失败 → 凭据无效（由 cloud_relay 侧落 15051）
+                return {'type': 'app_secret', 'value': ''}
+            return {'type': 'app_secret', 'value': secret}
         return None
 
 

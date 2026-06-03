@@ -42,3 +42,5 @@ from backend.app.hasn.model.hasn_session_events import HasnSessionEvents as Hasn
 from backend.app.hasn.model.hasn_session_artifacts import HasnSessionArtifacts as HasnSessionArtifacts
 from backend.app.hasn.model.hasn_agent_mcp_keys import HasnAgentMcpKeys as HasnAgentMcpKeys
 from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests as HasnContactRequests
+from backend.app.hasn.model.hasn_app_instance import HasnAppInstance as HasnAppInstance
+from backend.app.hasn.model.hasn_app_publisher import HasnAppPublisher as HasnAppPublisher
