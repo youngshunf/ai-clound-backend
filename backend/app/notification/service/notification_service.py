@@ -204,16 +204,36 @@ class NotificationService:
 
     @staticmethod
     async def _fanout_card(db: AsyncSession, *, row: HasnNotifications, source: dict[str, Any]) -> None:
-        """卡片承载 fanout：建/取服务号 → 投递卡片 → 回写 delivery.card_message_id（D1 投影回指）。"""
+        """卡片承载 fanout：建/取服务号 → 投递卡片 → 回写 delivery.card_message_id（D1 投影回指）。
+
+        - app/system/external 源 → 服务号（sv_）→ service 会话；
+        - agent 源 → 卡片落「主人 ⇄ agent」既有 social 会话（§4.5：agent 本身即会话身份，不建服务号）；
+        - user（社交）源 → 默认无卡片承载（不进此分支，category=social 无 card_message）。
+        """
         # 延迟导入：carrier 依赖 message_router（重图），避免模块加载期循环。
-        from backend.app.notification.service.notification_carrier import deliver_card_to_owner
+        from backend.app.notification.service.notification_carrier import (
+            deliver_agent_card_to_owner,
+            deliver_card_to_owner,
+        )
         from backend.app.notification.service.service_account_service import service_account_service
 
+        src = source or {}
+        if src.get('kind') == 'agent' and src.get('id'):
+            card_message_id = await deliver_agent_card_to_owner(
+                db, recipient_id=row.target_id, source=src, notif=row
+            )
+            delivery = dict(row.delivery or {})
+            delivery['card_message_id'] = card_message_id
+            delivery['card_peer'] = str(src.get('id'))
+            row.delivery = delivery
+            await db.flush()
+            return
+
         account = await service_account_service.get_or_create_for_source(
-            db, owner_id=row.target_id, source=source
+            db, owner_id=row.target_id, source=src
         )
         if account is None:
-            # agent/user 源不建服务号（agent 走自有会话/relay；user 社交默认无卡片承载）
+            # user 社交源不建服务号、默认无卡片承载
             return
         card_message_id = await deliver_card_to_owner(
             db, recipient_id=row.target_id, account=account, notif=row

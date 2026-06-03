@@ -32,8 +32,20 @@ def _recipient_entity_type(hasn_id: str) -> str:
     return 'human'
 
 
-def build_card_body(notif: HasnNotifications, account: HasnServiceAccounts) -> dict[str, Any]:
-    """从权威通知行 + 服务号构造 hasn.card/0.1 卡片体（schema 校验）。"""
+def build_card_body(
+    notif: HasnNotifications,
+    *,
+    source_kind: str,
+    source_id: str,
+    source_name: str,
+    source_icon: str | None,
+    source_verified: bool,
+) -> dict[str, Any]:
+    """从权威通知行 + 来源信息构造 hasn.card/0.1 卡片体（schema 校验）。
+
+    来源既可能是服务号（app/system/external），也可能是 Agent 本身（agent 源不建服务号，
+    卡片落「主人 ⇄ agent」会话）。source_kind 必须是 CardSourceKind 合法值。
+    """
     data = notif.data or {}
     target = data.get('target') or {}
     fields: list[dict[str, str]] = []
@@ -61,11 +73,11 @@ def build_card_body(notif: HasnNotifications, account: HasnServiceAccounts) -> d
         'title': notif.title or '新通知',
         'description': notif.body or None,
         'source': {
-            'kind': account.kind,
-            'id': account.sa_hasn_id,
-            'display_name': account.display_name or account.sa_hasn_id,
-            'icon_url': account.avatar or None,
-            'verified': account.verified,
+            'kind': source_kind,
+            'id': source_id,
+            'display_name': source_name or source_id,
+            'icon_url': source_icon or None,
+            'verified': source_verified,
         },
         'resource': {
             'type': 'custom',
@@ -90,6 +102,40 @@ def build_card_body(notif: HasnNotifications, account: HasnServiceAccounts) -> d
     return body
 
 
+async def _persist_card(
+    db: AsyncSession,
+    *,
+    recipient_id: str,
+    from_id: str,
+    peer_type: str,
+    relation_type: str,
+    conversation_type: str,
+    card_body: dict[str, Any],
+    notif: HasnNotifications,
+) -> int:
+    """落卡片消息到「from ⇄ 接收方」会话，返回消息 id（绕开 social 权限矩阵：主人自见）。"""
+    conv = await message_router.get_or_create_conversation(
+        db,
+        recipient_id,
+        _recipient_entity_type(recipient_id),
+        from_id,
+        peer_type,
+        relation_type=relation_type,
+    )
+    msg = await message_router.persist_message(
+        db,
+        conversation_id=str(conv.id),
+        from_id=from_id,
+        to_id=recipient_id,
+        content=card_body,
+        content_type=_CONTENT_TYPE_CARD,
+        msg_type='notification',
+        priority=notif.priority if notif.priority in ('critical', 'high', 'normal', 'low') else 'normal',
+        context={'notification_id': notif.id, 'conversation_type': conversation_type},
+    )
+    return msg.id
+
+
 async def deliver_card_to_owner(
     db: AsyncSession,
     *,
@@ -98,24 +144,54 @@ async def deliver_card_to_owner(
     notif: HasnNotifications,
 ) -> int:
     """把通知卡片投递到「服务号 ⇄ 接收方」的 service 会话，返回消息 id。"""
-    conv = await message_router.get_or_create_conversation(
-        db,
-        recipient_id,
-        _recipient_entity_type(recipient_id),
-        account.sa_hasn_id,
-        'service',
-        relation_type='service',
+    card_body = build_card_body(
+        notif,
+        source_kind=account.kind,
+        source_id=account.sa_hasn_id,
+        source_name=account.display_name or account.sa_hasn_id,
+        source_icon=account.avatar or None,
+        source_verified=account.verified,
     )
-    card_body = build_card_body(notif, account)
-    msg = await message_router.persist_message(
+    return await _persist_card(
         db,
-        conversation_id=str(conv.id),
+        recipient_id=recipient_id,
         from_id=account.sa_hasn_id,
-        to_id=recipient_id,
-        content=card_body,
-        content_type=_CONTENT_TYPE_CARD,
-        msg_type='notification',
-        priority=notif.priority if notif.priority in ('critical', 'high', 'normal', 'low') else 'normal',
-        context={'notification_id': notif.id, 'conversation_type': 'service'},
+        peer_type='service',
+        relation_type='service',
+        conversation_type='service',
+        card_body=card_body,
+        notif=notif,
     )
-    return msg.id
+
+
+async def deliver_agent_card_to_owner(
+    db: AsyncSession,
+    *,
+    recipient_id: str,
+    source: dict[str, Any],
+    notif: HasnNotifications,
+) -> int:
+    """Agent 源通知卡片投递到「主人 ⇄ agent」既有 social 会话（§4.5：agent 本身即会话身份）。
+
+    relation_type 用 'social'（与 message_router 对 h_/a_ 收件方的默认一致），确保落进主人
+    与该分身既有的会话，而非新建一个服务号会话。
+    """
+    agent_id = str(source.get('id'))
+    card_body = build_card_body(
+        notif,
+        source_kind='agent',
+        source_id=agent_id,
+        source_name=source.get('display_name') or agent_id,
+        source_icon=source.get('avatar') or None,
+        source_verified=False,
+    )
+    return await _persist_card(
+        db,
+        recipient_id=recipient_id,
+        from_id=agent_id,
+        peer_type='agent',
+        relation_type='social',
+        conversation_type='agent',
+        card_body=card_body,
+        notif=notif,
+    )

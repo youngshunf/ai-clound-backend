@@ -97,22 +97,40 @@ async def test_social_emit_makes_no_card(db):
 
 
 @pytest.mark.asyncio
-async def test_agent_source_makes_no_service_card(db):
-    """agent 源即便 card_message=True 也不建服务号卡片（agent 走自有会话/relay）。"""
+async def test_agent_source_projects_card_into_owner_agent_conversation(db):
+    """agent 源卡片落「主人 ⇄ agent」既有 social 会话（§4.5：agent 本身即会话身份，不建服务号）。"""
     owner = await seed_human(db, nickname='主人')
+    agent_id = 'a_mine'
     nid = await notification_service.emit(
         db,
         recipient_id=owner['hasn_id'],
-        source={'kind': 'agent', 'id': 'a_mine', 'display_name': '我的分身'},
+        source={'kind': 'agent', 'id': agent_id, 'display_name': '我的分身'},
         category='agent',  # card_message 默认 True
         type='community_draft_pending',
-        title='分身有草稿待确认',
-        payload={'target': {'type': 'post', 'id': 'd1'}},
+        title='你的分身 我的分身 有一篇帖子待确认',
+        payload={'target': {'type': 'post', 'id': 'd1'}, 'preview': '副业', 'link': '/community?tab=drafts'},
     )
+    # 权威行回写 card_message_id + card_peer（指向 agent，不建 sv_ 服务号）
     row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
-    assert 'card_message_id' not in (row.delivery or {})
+    assert row.delivery.get('card_message_id')
+    assert row.delivery.get('card_peer') == agent_id
+    assert 'service_account' not in (row.delivery or {})
+
+    # 卡片 from=agent，schema 合法，source.kind=agent
     cards = await _card_messages_to(db, owner['hasn_id'])
-    assert len(cards) == 0
+    assert len(cards) == 1
+    card = cards[0]
+    assert card.from_id == agent_id
+    assert card.content['schema_version'] == 'hasn.card/0.1'
+    assert card.content['source']['kind'] == 'agent'
+
+    # 落进「主人 ⇄ agent」的 direct/social 会话（不是 service 会话），不新建重复会话
+    conv = (
+        await db.execute(select(HasnConversations).where(HasnConversations.id == card.conversation_id))
+    ).scalar_one()
+    assert conv.type == 'direct'
+    assert conv.relation_type == 'social'
+    assert {conv.participant_a_id, conv.participant_b_id} == {owner['hasn_id'], agent_id}
 
 
 @pytest.mark.asyncio
