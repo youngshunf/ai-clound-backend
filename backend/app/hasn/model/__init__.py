@@ -44,3 +44,5 @@ from backend.app.hasn.model.hasn_agent_mcp_keys import HasnAgentMcpKeys as HasnA
 from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests as HasnContactRequests
 from backend.app.hasn.model.hasn_app_instance import HasnAppInstance as HasnAppInstance
 from backend.app.hasn.model.hasn_app_publisher import HasnAppPublisher as HasnAppPublisher
+from backend.app.hasn.model.hasn_assets import HasnAssets as HasnAssets
+from backend.app.hasn.model.hasn_asset_grants import HasnAssetGrants as HasnAssetGrants

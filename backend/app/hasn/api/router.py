@@ -249,6 +249,7 @@ from backend.app.hasn.api.v1.app.hasn_task_run import router as app_hasn_task_ru
 from backend.app.hasn.api.v1.app.hasn_task_sessions import router as app_hasn_task_sessions_router
 from backend.app.hasn.api.v1.app.hasn_task_sessions import work_sessions_router
 from backend.app.hasn.api.v1.app.hasn_agent_mcp_keys import router as app_hasn_agent_mcp_keys_router
+from backend.app.hasn.api.v1.app.hasn_assets_app import router as app_hasn_assets_router
 
 app.include_router(app_hasn_im_router, prefix='/im', tags=['HASN IM 业务'])
 app.include_router(app_hasn_api_keys_router, tags=['HASN API Key'])
@@ -273,6 +274,7 @@ app.include_router(
 app.include_router(app_hasn_task_sessions_router, tags=['任务系统 Session API'])
 app.include_router(app_hasn_task_api_router, tags=['任务系统 Task API'])
 app.include_router(app_hasn_agent_mcp_keys_router, prefix='/agent-mcp-keys', tags=['Agent MCP 接入凭证'])
+app.include_router(app_hasn_assets_router, prefix='/assets', tags=['HASN 资产（消息附件上传/解析）'])
 v1.include_router(work_sessions_router, tags=['外部 APP 工作会话'])
 v1.include_router(node_control_router, tags=['HASN Node 控制平面'])
 v1.include_router(

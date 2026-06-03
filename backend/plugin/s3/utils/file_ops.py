@@ -141,17 +141,27 @@ def object_key_from_url(s3_storage: S3Storage, url: str) -> str:
     return _strip_prefix(relative[len(expected):], s3_storage.prefix)
 
 
-async def presign_read_url(s3_storage: S3Storage, url: str, expires_in: int = 3600) -> dict:
-    """Return a fresh signed read URL for a stable private storage URL."""
-    object_key = object_key_from_url(s3_storage, url)
+async def presign_read_key(s3_storage: S3Storage, object_key: str, expires_in: int = 3600) -> str:
+    """Return a fresh signed read URL for an object key relative to the opendal root.
+
+    Portability note (07 D8): callers hold the stable object key (not a provider
+    URL), so signing never needs to reverse-parse a CDN/S3 URL. Switching provider
+    only swaps the s3_storage row; the key stays identical.
+    """
     op = get_operator_for_storage(s3_storage)
     try:
         signed = await op.presign_read(object_key, expires_in)
     except Exception as e:
         raise errors.ServerError(msg=f'生成 S3 签名 URL 失败: {e!s}')
+    return signed.url
 
+
+async def presign_read_url(s3_storage: S3Storage, url: str, expires_in: int = 3600) -> dict:
+    """Return a fresh signed read URL for a stable private storage URL."""
+    object_key = object_key_from_url(s3_storage, url)
+    signed_url = await presign_read_key(s3_storage, object_key, expires_in)
     return {
-        'url': signed.url,
+        'url': signed_url,
         'expires_in': expires_in,
         'source_url': url,
     }

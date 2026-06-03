@@ -1,0 +1,291 @@
+"""统一对象存储服务（StorageService）。
+
+收口所有 S3 写入与签名读取，是上传/签名的唯一入口（07 设计事实源）：
+
+- **公私分桶（07 D1/D3）**：按业务 `category` 决定 `access`（public/private），
+  写入对应 `s3_storage` 行。public 走 CDN 直读不签名；private 才签名。
+- **provider 无关签名（07 D8）**：签名器按 `s3_storage.sign_strategy` 分发
+  （`cdn_timestamp` / `s3_presign` / `nginx_secure_link`），provider 差异只活在这一处。
+- **可移植性（07 D8）**：DB 只持有 `storage_id + object_key`（不存 provider URL），
+  展示时由 `cdn_domain`/`endpoint` 现拼；换 provider/CDN 仅改 `s3_storage` 行。
+
+零 fake：缺对应访问类型的存储空间、签名策略不被支持/缺 key 时，直接抛错暴露，不伪造 URL。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import posixpath
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from urllib.parse import quote
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.common.exception import errors
+from backend.database.redis import redis_client
+from backend.plugin.s3.crud.storage import s3_storage_dao
+from backend.plugin.s3.model import S3Storage
+from backend.plugin.s3.utils.file_ops import (
+    build_object_url,
+    get_operator_for_storage,
+    presign_read_key,
+    write_bytes,
+)
+
+# category → (access, 默认签名 TTL 秒)。public 不签名 TTL 取 None（07 §4）。
+CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
+    'user_avatar': ('public', None),
+    'post_image': ('public', None),
+    'general_file': ('public', None),
+    'dm_attachment': ('private', 3600),
+    'private_doc': ('private', 3600),
+}
+
+# category → 对象前缀目录（key 的第一段，content-addressed 之上）。
+CATEGORY_DIR: dict[str, str] = {
+    'user_avatar': 'avatars',
+    'post_image': 'posts',
+    'general_file': 'files',
+    'dm_attachment': 'dm',
+    'private_doc': 'docs',
+}
+
+# 缓存 margin：缓存 TTL = 签名有效期 - margin，保证缓存命中时签名仍有效（1c）。
+SIGN_CACHE_MARGIN_SECONDS = 120
+
+
+@dataclass(frozen=True)
+class ObjectRef:
+    """一次上传的稳定引用。DB 只需持有 storage_id + object_key（07 D8 可移植）。"""
+
+    storage_id: int
+    object_key: str
+    access: str
+    stable_url: str  # public 为 CDN 直读 URL；private 为内部稳定 URL（不可直接公开访问）
+    mime: str
+    size: int
+
+
+def _category_policy(category: str) -> tuple[str, int | None]:
+    policy = CATEGORY_POLICY.get(category)
+    if policy is None:
+        raise errors.RequestError(msg=f'未知上传类别: {category}')
+    return policy
+
+
+def _pick_storage(storages: Sequence[S3Storage], access: str) -> S3Storage:
+    for storage in storages:
+        if getattr(storage, 'access', 'private') == access:
+            return storage
+    raise errors.ServerError(msg=f'未配置 access={access} 的 S3 存储空间')
+
+
+def _ext_of(filename: str | None) -> str:
+    if not filename:
+        return ''
+    ext = posixpath.splitext(filename)[1].lower()
+    # 防御非法/超长扩展名
+    return ext if 0 < len(ext) <= 12 and ext.startswith('.') else ''
+
+
+def _build_key(category: str, *, filename: str | None, data: bytes) -> str:
+    """content-addressed key（07 D7）：{dir}/{YYYY}/{MM}/{DD}/{md5[:12]}{ext}。"""
+    directory = CATEGORY_DIR.get(category, 'files')
+    digest = hashlib.md5(data).hexdigest()[:12]  # noqa: S324 仅做内容寻址，非安全用途
+    now = datetime.now()
+    return f'{directory}/{now:%Y/%m/%d}/{digest}{_ext_of(filename)}'
+
+
+def _cdn_sign_key(storage: S3Storage) -> str:
+    """CDN 时间戳防盗链密钥来源：remark JSON 的 cdn_sign_key，或环境变量。
+
+    零 fake：cdn_timestamp 策略缺 key 时抛错，不静默降级到不签名。
+    """
+    remark = getattr(storage, 'remark', None)
+    if remark:
+        try:
+            parsed = json.loads(remark)
+            if isinstance(parsed, dict) and parsed.get('cdn_sign_key'):
+                return str(parsed['cdn_sign_key'])
+        except (ValueError, TypeError):
+            pass
+    env_key = os.getenv('S3_CDN_SIGN_KEY')
+    if env_key:
+        return env_key
+    raise errors.ServerError(msg='sign_strategy=cdn_timestamp 但未配置 CDN 时间戳防盗链密钥(remark.cdn_sign_key / S3_CDN_SIGN_KEY)')
+
+
+class StorageService:
+    """统一存储服务。所有写入与签名读取必经此处。"""
+
+    @staticmethod
+    async def _storages(db: AsyncSession) -> Sequence[S3Storage]:
+        storages = await s3_storage_dao.get_all(db)
+        if not storages:
+            raise errors.ServerError(msg='未配置任何 S3 存储')
+        return storages
+
+    @staticmethod
+    async def get_storage(db: AsyncSession, storage_id: int) -> S3Storage:
+        storage = await s3_storage_dao.get(db, storage_id)
+        if not storage:
+            raise errors.ServerError(msg=f'S3 存储 {storage_id} 不存在')
+        return storage
+
+    @classmethod
+    async def upload(
+        cls,
+        db: AsyncSession,
+        data: bytes,
+        *,
+        category: str,
+        filename: str | None = None,
+        content_type: str | None = None,
+        key: str | None = None,
+    ) -> ObjectRef:
+        """按 category 选公/私桶写入，返回稳定引用。
+
+        :param key: 调用方可显式指定对象 key（保留既有 avatars/images 命名方案）；
+                    缺省则按 content-addressed 规则生成。
+        """
+        access, _ = _category_policy(category)
+        storage = _pick_storage(await cls._storages(db), access)
+        object_key = key or _build_key(category, filename=filename, data=data)
+        await write_bytes(storage, object_key, data, content_type)
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=object_key,
+            access=access,
+            stable_url=build_object_url(storage, object_key),
+            mime=content_type or 'application/octet-stream',
+            size=len(data),
+        )
+
+    @staticmethod
+    def public_url(storage: S3Storage, object_key: str) -> str:
+        """公开资产的 CDN 直读 URL（不签名）。"""
+        return build_object_url(storage, object_key)
+
+    @classmethod
+    async def _sign_one(cls, storage: S3Storage, object_key: str, expires_in: int) -> str:
+        """按 sign_strategy 分发签名（07 D8）。provider 差异只在此处。"""
+        strategy = getattr(storage, 'sign_strategy', 's3_presign')
+        if strategy == 's3_presign':
+            return await presign_read_key(storage, object_key, expires_in)
+        if strategy == 'cdn_timestamp':
+            return cls._cdn_timestamp_url(storage, object_key, expires_in)
+        if strategy == 'nginx_secure_link':
+            return cls._nginx_secure_link_url(storage, object_key, expires_in)
+        raise errors.ServerError(msg=f'未支持的 sign_strategy: {strategy}')
+
+    @staticmethod
+    def _cdn_timestamp_url(storage: S3Storage, object_key: str, expires_in: int) -> str:
+        """七牛 CDN 时间戳防盗链（07 D6）：sign=md5(key + path + t_hex)。"""
+        if not storage.cdn_domain:
+            raise errors.ServerError(msg='sign_strategy=cdn_timestamp 但该存储未配置 cdn_domain')
+        sign_key = _cdn_sign_key(storage)
+        prefix = (storage.prefix or '').strip('/')
+        path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
+        encoded_path = quote(path, safe='/')
+        expire_ts = int(datetime.now().timestamp()) + expires_in
+        t_hex = format(expire_ts, 'x')
+        sign = hashlib.md5(f'{sign_key}{encoded_path}{t_hex}'.encode()).hexdigest()  # noqa: S324 七牛算法规定 md5
+        base = storage.cdn_domain.rstrip('/')
+        return f'{base}{encoded_path}?sign={sign}&t={t_hex}'
+
+    @staticmethod
+    def _nginx_secure_link_url(storage: S3Storage, object_key: str, expires_in: int) -> str:
+        """Nginx secure_link：md5(secret + path + expire) → base64url。"""
+        import base64
+
+        sign_key = _cdn_sign_key(storage)
+        if not storage.cdn_domain:
+            raise errors.ServerError(msg='sign_strategy=nginx_secure_link 但该存储未配置 cdn_domain')
+        prefix = (storage.prefix or '').strip('/')
+        path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
+        expire_ts = int(datetime.now().timestamp()) + expires_in
+        raw = f'{sign_key}{path}{expire_ts}'.encode()
+        digest = hashlib.md5(raw).digest()  # noqa: S324 nginx secure_link 规定 md5
+        md5b64 = base64.urlsafe_b64encode(digest).decode().rstrip('=')
+        base = storage.cdn_domain.rstrip('/')
+        return f'{base}{quote(path, safe="/")}?md5={md5b64}&expires={expire_ts}'
+
+    @classmethod
+    async def signed_url(
+        cls,
+        db: AsyncSession,
+        *,
+        storage_id: int,
+        object_key: str,
+        expires_in: int = 3600,
+    ) -> str:
+        """私有对象的临时签名读 URL（live 签名，无缓存）。"""
+        storage = await cls.get_storage(db, storage_id)
+        return await cls._sign_one(storage, object_key, expires_in)
+
+    # ---- Redis 缓存层（1c：margin TTL，缓存 TTL < 签名有效期，命中即免二次签名）----
+
+    @staticmethod
+    def _cache_key(storage_id: int, object_key: str) -> str:
+        return f's3:signed:{storage_id}:{object_key}'
+
+    @classmethod
+    async def signed_url_cached(
+        cls,
+        db: AsyncSession,
+        *,
+        storage_id: int,
+        object_key: str,
+        expires_in: int = 3600,
+    ) -> str:
+        """带缓存的签名读 URL。命中返回缓存；未命中 live 签名并 SETEX(ttl-margin)。"""
+        rk = cls._cache_key(storage_id, object_key)
+        cached = await redis_client.get(rk)
+        if cached:
+            return cached
+        url = await cls.signed_url(db, storage_id=storage_id, object_key=object_key, expires_in=expires_in)
+        await redis_client.setex(rk, max(1, expires_in - SIGN_CACHE_MARGIN_SECONDS), url)
+        return url
+
+    @classmethod
+    async def signed_urls_cached(
+        cls,
+        db: AsyncSession,
+        *,
+        items: Sequence[tuple[int, str]],
+        expires_in: int = 3600,
+    ) -> dict[tuple[int, str], str]:
+        """批量签名（MGET 命中 + 仅对未命中 live 签名）。返回 {(storage_id, object_key): url}。"""
+        if not items:
+            return {}
+        cache_keys = [cls._cache_key(sid, ok) for sid, ok in items]
+        cached_vals = await redis_client.mget(cache_keys)
+        result: dict[tuple[int, str], str] = {}
+        misses: list[tuple[int, str]] = []
+        for item, val in zip(items, cached_vals, strict=True):
+            if val:
+                result[item] = val
+            else:
+                misses.append(item)
+        if not misses:
+            return result
+        # 按 storage_id 预取存储行，避免逐个未命中重复读库
+        storages: dict[int, S3Storage] = {}
+        ttl = max(1, expires_in - SIGN_CACHE_MARGIN_SECONDS)
+        for sid, ok in misses:
+            storage = storages.get(sid)
+            if storage is None:
+                storage = await cls.get_storage(db, sid)
+                storages[sid] = storage
+            url = await cls._sign_one(storage, ok, expires_in)
+            await redis_client.setex(cls._cache_key(sid, ok), ttl, url)
+            result[(sid, ok)] = url
+        return result
+
+
+storage_service: StorageService = StorageService()
