@@ -38,4 +38,8 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'hasn_check_agent_heartbeat_timeout',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟执行一次
     },
+    '技能市场-ClawHub 定时同步': {
+        'task': 'marketplace_sync_clawhub',
+        'schedule': TzAwareCrontab('0', '*/8'),  # 每 8 小时（00:00 / 08:00 / 16:00）
+    },
 }

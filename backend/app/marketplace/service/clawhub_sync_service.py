@@ -34,14 +34,17 @@ class ClawHubSyncService:
         self.hub_local_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub'))
         self.sync_filters = {
             'official_only': False,  # Sync all skills (ClawHub doesn't have official flag)
-            'limit': 100,            # Sync top-rated skills only
+            # 每次同步抓取的技能数量上限。本地/测试默认 100；生产环境在 .env 把
+            # MARKETPLACE_CLAWHUB_SYNC_LIMIT 设为 0 表示全量同步（不截断）。
+            'limit': getattr(settings, 'MARKETPLACE_CLAWHUB_SYNC_LIMIT', 100),
         }
 
     async def sync_from_clawhub(
         self,
         db: AsyncSession,
         force: bool = False,
-        skill_ids: list[str] | None = None
+        skill_ids: list[str] | None = None,
+        limit: int | None = None,
     ) -> dict[str, Any]:
         """
         Sync skills from ClawHub
@@ -50,10 +53,13 @@ class ClawHubSyncService:
             db: Database session
             force: Force full sync (ignore last sync time)
             skill_ids: Specific skill IDs to sync (sync all if None)
+            limit: Override the configured top-N cap for this run
+                (None -> use settings default; 0 -> full sync, no cap)
 
         Returns:
             Sync result with statistics
         """
+        effective_limit = self.sync_filters['limit'] if limit is None else limit
         sync_log_id = None
         try:
             # Create sync log
@@ -81,7 +87,7 @@ class ClawHubSyncService:
                 skills_data = await self._fetch_all_skills()
 
             # Filter skills
-            filtered_skills = self._filter_skills(skills_data)
+            filtered_skills = self._filter_skills(skills_data, effective_limit)
 
             # Sync to database
             synced_count = 0
@@ -243,17 +249,22 @@ class ClawHubSyncService:
                     return str(first['ownerHandle'])
         return None
 
-    def _filter_skills(self, skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _filter_skills(
+        self,
+        skills: list[dict[str, Any]],
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Filter skills based on sync criteria
 
         Args:
             skills: List of skill data
+            limit: Top-N cap after sorting (falsy / <=0 -> full sync, no cap)
 
         Returns:
             Filtered list of skills
         """
-        return sorted(
+        ranked = sorted(
             skills,
             key=lambda skill: (
                 (skill.get('stats') or {}).get('stars') or 0,
@@ -261,7 +272,10 @@ class ClawHubSyncService:
                 skill.get('updatedAt') or skill.get('createdAt') or 0,
             ),
             reverse=True,
-        )[: self.sync_filters['limit']]
+        )
+        if not limit or limit <= 0:
+            return ranked
+        return ranked[:limit]
 
     async def _sync_skill(self, db: AsyncSession, clawhub_skill: dict[str, Any]):
         """

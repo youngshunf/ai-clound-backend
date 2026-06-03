@@ -350,6 +350,13 @@ class Settings(BaseSettings):
     # GitHub Webhook 配置
     GITHUB_WEBHOOK_SECRET: str = ''  # 生产环境在 .env 中设置
 
+    # ClawHub 同步配置
+    CLAWHUB_API_URL: str = 'https://clawhub.ai/api/v1'
+    CLAWHUB_API_KEY: str = ''  # 可选，用于认证
+    # ClawHub 定时同步每次抓取的技能数量上限：
+    #   本地/测试默认 100；生产环境在 .env 设为 0 表示全量同步
+    MARKETPLACE_CLAWHUB_SYNC_LIMIT: int = 100
+
     # 市场缓存配置
     MARKETPLACE_CACHE_DIR: str = '/tmp/marketplace-cache'
     LLM_COMPRESS_SUMMARY_MODEL: str = 'claude-sonnet-4-5-20250929'
