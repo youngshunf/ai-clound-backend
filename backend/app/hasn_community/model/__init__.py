@@ -6,3 +6,9 @@ from backend.app.hasn_community.model.hasn_likes import HasnLikes as HasnLikes
 from backend.app.hasn_community.model.hasn_collections import HasnCollections as HasnCollections
 from backend.app.hasn_community.model.hasn_collection_items import HasnCollectionItems as HasnCollectionItems
 from backend.app.hasn_community.model.hasn_community_blocks import HasnCommunityBlocks as HasnCommunityBlocks
+from backend.app.hasn_community.model.hasn_topics import HasnTopics as HasnTopics
+from backend.app.hasn_community.model.hasn_content_topics import HasnContentTopics as HasnContentTopics
+from backend.app.hasn_community.model.hasn_circles import HasnCircles as HasnCircles
+from backend.app.hasn_community.model.hasn_circle_members import HasnCircleMembers as HasnCircleMembers
+from backend.app.hasn_community.model.hasn_doc_spaces import HasnDocSpaces as HasnDocSpaces
+from backend.app.hasn_community.model.hasn_doc_nodes import HasnDocNodes as HasnDocNodes

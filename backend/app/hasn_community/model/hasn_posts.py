@@ -35,6 +35,7 @@ class HasnPosts(Base):
     comment_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
     collect_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
     share_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
+    circle_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='所属圈子 circle_id（NULL=主社区/公共流，非空=只进圈子流）')
     created_time: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment=None)
     updated_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
     published_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)

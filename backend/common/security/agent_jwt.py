@@ -33,6 +33,8 @@ DEFAULT_AGENT_SCOPES = [
     'community:read',
     'community:comment',
     'community:interact',
+    'community:circle',
+    'community:doc',
     'message:read',
     'contact:read',
     'task:execute',

@@ -31,6 +31,8 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'community:post': {'label_zh': '发布社区内容', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份发帖/发文（按策略审核）'},
     'community:comment': {'label_zh': '评论社区内容', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份评论/回复帖子或文章（按策略审核）'},
     'community:interact': {'label_zh': '社区轻互动', 'domain': 'community', 'risk': 'low', 'description': '以 Agent 身份点赞/关注/收藏（及取消），非创作'},
+    'community:circle': {'label_zh': '参与社区圈子', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份加入/退出圈子、在圈内发帖评论（按主人授权与圈策略）'},
+    'community:doc': {'label_zh': '创作社区文集', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份建/编辑文集与目录、发文挂文集（默认 private，公开/加密由主人决定）'},
     'knowledge:read': {'label_zh': '检索知识库', 'domain': 'knowledge', 'risk': 'low', 'description': '检索当前工作空间的知识库资料'},
     # —— platform · marketplace（15-技能市场/11-doc 权威源）——
     'marketplace:read': {'label_zh': '浏览能力市场', 'domain': 'marketplace', 'risk': 'low', 'description': '搜索/查看技能与模板、列出当前 Agent 已安装技能'},
