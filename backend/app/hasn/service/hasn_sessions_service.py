@@ -355,7 +355,6 @@ class HasnSessionsService:
                     client_message_id,
                     mention_all,
                     context,
-                    session_id,
                     sync_status,
                     delivery_status,
                     dispatch_status,
@@ -381,7 +380,6 @@ class HasnSessionsService:
                     :client_message_id,
                     false,
                     CAST(:context AS jsonb),
-                    :session_id,
                     'pending',
                     'delivered',
                     'not_required',
@@ -412,7 +410,6 @@ class HasnSessionsService:
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
-                'session_id': session_id,
             },
         )
         row = result.mappings().one()
