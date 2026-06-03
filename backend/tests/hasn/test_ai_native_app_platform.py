@@ -869,7 +869,9 @@ def test_runtime_tool_call_disabled_app_writes_audit(monkeypatch: pytest.MonkeyP
     assert resp.status_code == 200, resp.text
     data = resp.json()['data']
     assert data['decision'] == 'deny'
-    assert data['error'] == {'code': '15002', 'message': 'app_not_enabled'}
+    # 设计 11 §4.2/§4.3：去掉安装态后 15002 语义改为"App 被企业 override 显式 disabled"
+    # （workspace_app 记录 status=disabled 才拒；默认无记录即可用，published 即用）。
+    assert data['error'] == {'code': '15002', 'message': 'app_disabled_by_enterprise'}
     audit_row = fake_db.added[-1]
     assert audit_row.decision == 'deny'
     assert audit_row.error_code == '15002'
