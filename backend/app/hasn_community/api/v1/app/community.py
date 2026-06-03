@@ -4,7 +4,7 @@
 路由前缀: /api/v1/community/app
 认证方式: Owner JWT
 """
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 
 from backend.app.hasn_community.service.community_service import community_service
@@ -373,6 +373,7 @@ async def create_article(
     request: Request,
     db: CurrentSessionTransaction,
     body: CreateArticleRequest,
+    background_tasks: BackgroundTasks,
 ) -> ResponseModel:
     """
     创建文章
@@ -433,6 +434,12 @@ async def create_article(
         circle_id=body.circle_id,
         doc_placement=body.doc_placement,
     )
+
+    # 摘要为空 → 响应后异步用平台 LLM 提取摘要回写（实施/95；展示层另有正文兜底）
+    if not (body.summary or '').strip() and result.get('article_id'):
+        from backend.app.hasn_community.service.article_summary_task import extract_and_store_summary
+
+        background_tasks.add_task(extract_and_store_summary, result['article_id'])
 
     return response_base.success(data=result)
 
