@@ -146,6 +146,28 @@ async def test_agent_source_projects_card_into_owner_agent_conversation(db):
 
 
 @pytest.mark.asyncio
+async def test_list_service_accounts_for_owner(db):
+    """主人名下服务号可列出（供 WebUI 解析服务号会话名称/头像，§4.5）。"""
+    from backend.app.notification.service.service_account_service import service_account_service
+
+    owner = await seed_human(db, nickname='主人')
+    await notification_service.emit(
+        db,
+        recipient_id=owner['hasn_id'],
+        source={'kind': 'system', 'id': 'announcement', 'display_name': '唤星官方'},
+        category='system',
+        type='announcement',
+        title='通知',
+        payload={'target': {'type': 'sys', 'id': 'm1'}},
+    )
+    accounts = await service_account_service.list_for_owner(db, owner_id=owner['hasn_id'])
+    assert len(accounts) == 1
+    assert accounts[0]['sa_hasn_id'].startswith('sv_')
+    assert accounts[0]['display_name'] == '唤星官方'
+    assert accounts[0]['kind'] == 'system'
+
+
+@pytest.mark.asyncio
 async def test_dnd_suppresses_does_not_block_card(db):
     """免打扰只压 toast/push（吵），不影响 card_message/center —— 卡片仍投递。"""
     owner = await seed_human(db, nickname='主人')

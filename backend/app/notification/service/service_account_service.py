@@ -68,5 +68,27 @@ class ServiceAccountService:
         await db.flush()
         return account
 
+    @staticmethod
+    async def list_for_owner(db: AsyncSession, *, owner_id: str) -> list[dict[str, Any]]:
+        """列出主人名下全部服务号（供 WebUI 解析服务号会话的名称/头像）。"""
+        rows = (
+            await db.execute(
+                select(HasnServiceAccounts)
+                .where(HasnServiceAccounts.owner_id == owner_id)
+                .order_by(HasnServiceAccounts.created_time.desc())
+            )
+        ).scalars().all()
+        return [
+            {
+                'sa_hasn_id': r.sa_hasn_id,
+                'kind': r.kind,
+                'display_name': r.display_name or r.sa_hasn_id,
+                'avatar': r.avatar or '',
+                'verified': bool(r.verified),
+                'status': r.status,
+            }
+            for r in rows
+        ]
+
 
 service_account_service = ServiceAccountService()

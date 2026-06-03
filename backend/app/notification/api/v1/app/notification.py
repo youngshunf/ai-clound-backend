@@ -145,3 +145,20 @@ async def upsert_preference(
         dnd=body.dnd.model_dump() if body.dnd is not None else None,
     )
     return response_base.success(data=result)
+
+
+# ==================== 服务号身份（解析服务号会话名称/头像，§4.5） ====================
+
+
+@router.get(
+    '/service-accounts',
+    name='notif_app_list_service_accounts',
+    summary='获取本人名下的服务号（供消息列表解析服务号会话身份）',
+    dependencies=[DependsJwtAuth],
+)
+async def list_service_accounts(request: Request, db: CurrentSession) -> ResponseModel:
+    from backend.app.notification.service.service_account_service import service_account_service
+
+    hasn_id = await _require_owner_hasn_id(db, request.user.id)
+    items = await service_account_service.list_for_owner(db, owner_id=hasn_id)
+    return response_base.success(data={'items': items})
