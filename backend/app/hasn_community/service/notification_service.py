@@ -223,6 +223,13 @@ class NotificationService:
             return
         actor = await cls._resolve_actor(db, agent_hasn_id)
         noun = _CONTENT_NOUN.get(content_type, '内容')
+        # 待确认草稿的复核入口：文章进编辑器确认/发布，帖子进社区草稿箱 tab
+        # （与 WebUI CommunitySidebar「待确认」区一致；不存在 /community/drafts 路由）。
+        link = (
+            f'/community/articles/{content_id}/edit'
+            if content_type == 'article'
+            else '/community?tab=drafts'
+        )
         await cls._emit(
             db,
             recipient_hasn_id=owner_hasn_id,
@@ -234,7 +241,7 @@ class NotificationService:
                 'actor': actor,
                 'target': {'type': content_type, 'id': content_id},
                 'preview': (preview or '')[:80],
-                'link': '/community/drafts',
+                'link': link,
                 'relay_from': agent_hasn_id,
             },
         )
