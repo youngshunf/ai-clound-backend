@@ -447,6 +447,39 @@ def _entity_type_int(hasn_id: str) -> int:
     return 3  # system
 
 
+def _asset_id_from_uri(uri: Any) -> str | None:
+    """hasn://asset/{asset_id} → asset_id。"""
+    if isinstance(uri, str) and uri.startswith('hasn://asset/'):
+        candidate = uri[len('hasn://asset/'):].strip('/')
+        return candidate or None
+    return None
+
+
+async def _grant_private_attachments(db: AsyncSession, conversation_id: str, content: dict | None) -> None:
+    """为消息内私有附件按会话写读权 grant（1f）。public 跳过，零越权。"""
+    if not isinstance(content, dict):
+        return
+    attachments = content.get('attachments')
+    if not isinstance(attachments, list) or not attachments:
+        return
+    asset_ids = [
+        aid
+        for a in attachments
+        if isinstance(a, dict) and (aid := _asset_id_from_uri(a.get('uri')))
+    ]
+    if not asset_ids:
+        return
+    # 延迟 import 避免潜在循环依赖
+    from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+
+    assets = await hasn_asset_service.get_many(db, asset_ids)
+    for asset in assets.values():
+        if asset.access == 'private':
+            await hasn_asset_service.grant_to_conversation(
+                db, asset_id=asset.asset_id, conversation_id=conversation_id
+            )
+
+
 async def persist_message(
     db: AsyncSession,
     conversation_id: str,
@@ -483,6 +516,10 @@ async def persist_message(
     )
     db.add(msg)
     await db.flush()
+
+    # 私有附件按会话授权（1f）：落消息即为 content.attachments 内的私有 asset 写 grant，
+    # 关闭跨 owner 越权洞（08 §1.6）。public 附件无需 grant（resolve 直读）。
+    await _grant_private_attachments(db, conversation_id, content)
 
     # 更新会话最后消息
     conv = await db.get(HasnConversations, conversation_id)
