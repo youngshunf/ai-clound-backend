@@ -9,6 +9,13 @@ from fastapi.security.utils import get_authorization_scheme_param
 from backend.app.hasn.model import HasnAiNativeAppAudit, HasnWorkspaceApp
 from backend.app.hasn.service.agent_capability_guard import capability_guard
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.hasn.service.instance_resolver import (
+    FACE_TOOL,
+    TRANSPORT_CLOUD_RELAY,
+    TRANSPORT_GATEWAY_INTERNAL,
+    InstanceResolutionError,
+    instance_resolver,
+)
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.app.hasn_community.service.community_service import community_service
 from backend.common.exception import errors
@@ -86,6 +93,12 @@ _COMMUNITY_INPUT_RULES: dict[str, dict[str, Any]] = {
 
 
 class AiNativeRuntimeGateway:
+    def __init__(self) -> None:
+        # gateway_internal 工具的 handler 注册表（懒构建并缓存）。
+        # 键 = manifest tool.handler 字段；值 = async (db, agent, input_payload) -> dict。
+        # 取代旧的 `if app_id == ...` 硬编码分发（设计 11 §6.2）。
+        self._internal_handlers_cache: dict[str, Any] | None = None
+
     async def get_capabilities(
         self, db: AsyncSession, *, request: Request, body: AiNativeRuntimeCapabilitiesRequest
     ) -> dict[str, Any]:
@@ -95,7 +108,8 @@ class AiNativeRuntimeGateway:
 
         tool = manifest['manifest_json']['tools'][0]
         capability = manifest['manifest_json']['capabilities'][0]
-        if not await self._is_workspace_app_enabled(db, workspace=workspace, app_id=manifest['app_id']):
+        if not await self._is_workspace_app_available(db, workspace=workspace, app_id=manifest['app_id']):
+            # 去掉安装态：published 即可用，仅企业 override 显式 disabled 时从发现里隐藏（设计 11 §4）。
             return self._capabilities_payload(workspace=workspace, agent=agent, manifest=manifest, tools=[])
         if not self._can_discover_tool(workspace=workspace, manifest=manifest, capability=capability):
             return self._capabilities_payload(workspace=workspace, agent=agent, manifest=manifest, tools=[])
@@ -206,7 +220,22 @@ class AiNativeRuntimeGateway:
         if denied is not None:
             return denied
 
-        result = await self._dispatch_tool(db, app_id=app_id, tool_id=tool_id, agent=agent, input_payload=input_payload)
+        try:
+            result = await self._dispatch_tool(
+                db,
+                app_id=app_id,
+                tool_id=tool_id,
+                workspace=workspace,
+                agent=agent,
+                input_payload=input_payload,
+                manifest=manifest,
+            )
+        except InstanceResolutionError as exc:
+            # 实例未配置 / 凭据无效 / transport 不允许此调用面（15050/15051/15052）→ 写 deny 审计 + 返回错误。
+            return await self._deny(
+                db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                capability=capability, tool=tool, code=exc.code, reason=exc.message,
+            )
         audit = await self._write_audit(
             db,
             trace_id=body.trace_id,
@@ -246,9 +275,10 @@ class AiNativeRuntimeGateway:
         → 企业角色(15004) → 输入校验(15020)。维度① 走唯一判定服务 CapabilityGuard。
         """
         tool_name = tool.get('mcp_name') or tool['tool_id']
-        if not await self._is_workspace_app_enabled(db, workspace=workspace, app_id=manifest['app_id']):
+        # 去掉安装态：published 即可调用，无需任何启用步骤；仅企业 override 显式 disabled 时拒（设计 11 §4.2/§4.3）。
+        if not await self._is_workspace_app_available(db, workspace=workspace, app_id=manifest['app_id']):
             return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15002', reason='app_not_enabled')
+                                    capability=capability, tool=tool, code='15002', reason='app_disabled_by_enterprise')
 
         collaboration_denial = self._collaboration_denial(workspace=workspace, manifest=manifest)
         if collaboration_denial is not None:
@@ -291,43 +321,48 @@ class AiNativeRuntimeGateway:
         *,
         app_id: str,
         tool_id: str,
+        workspace: dict[str, Any],
         agent: AgentTokenPayload,
         input_payload: dict[str, Any],
+        manifest: dict[str, Any],
     ) -> dict[str, Any]:
-        """按 (app_id, tool_id) 分发到真实 handler。未知工具抛 NotFoundError。"""
-        if app_id == 'knowledge' and tool_id == 'knowledge.search':
-            return await workbench_domain_service.search_current_knowledge(
-                db,
-                user_id=agent.owner_user_id,
-                query=str(input_payload['query']),
-                limit=int(input_payload.get('limit') or 50),
-                dataset_id=input_payload.get('dataset_id'),
-            )
-        if app_id == 'community':
-            return await self._dispatch_community_tool(db, tool_id=tool_id, agent=agent, input_payload=input_payload)
-        raise errors.NotFoundError(msg='AI-Native 工具不存在')
+        """按 实例 + transport 通用路由（设计 11 §6.2）。
 
-    async def _dispatch_community_tool(
-        self,
-        db: AsyncSession,
-        *,
-        tool_id: str,
-        agent: AgentTokenPayload,
-        input_payload: dict[str, Any],
-    ) -> dict[str, Any]:
+        先向控制面 resolve() 拿实例句柄，再按 transport 分发：
+        - gateway_internal → internal_handlers 注册表（消灭旧的 ``if app_id == ...`` 硬编码）
+        - cloud_relay      → 云端 HMAC 签名转发到实例 endpoint（第三方 Tool API，P3 落地）
+        - 其它             → 15052（Tool 面默认不走 daemon/frontend direct）
+        """
+        tool = self._find_tool(manifest, tool_id)
+        handle = await instance_resolver.resolve(
+            db, app_id=app_id, workspace=workspace, face=FACE_TOOL, manifest=manifest, tool_id=tool_id
+        )
+        if handle.transport == TRANSPORT_GATEWAY_INTERNAL:
+            handler = self._internal_handlers().get(str(tool.get('handler') or tool_id))
+            if handler is None:
+                raise InstanceResolutionError(code='15050', message=f'internal_handler_missing:{tool_id}')
+            return await handler(db, agent, input_payload)
+        if handle.transport == TRANSPORT_CLOUD_RELAY:
+            return await self._cloud_relay(handle, tool=tool, agent=agent, input_payload=input_payload)
+        # Tool 面默认不允许 daemon_direct / frontend_direct（设计 11 §6.2）。
+        raise InstanceResolutionError(code='15052', message=f'transport_not_allowed_for_tool:{handle.transport}')
+
+    def _internal_handlers(self) -> dict[str, Any]:
+        """gateway_internal 工具的 handler 注册表（懒构建 + 缓存）。
+
+        键 = manifest ``tool.handler`` 字段；值 = async ``(db, agent, input_payload) -> dict``。
+        取代旧的 ``if app_id == 'knowledge'/'community'`` 硬编码分发（设计 11 §6.2）。
+        """
+        if self._internal_handlers_cache is not None:
+            return self._internal_handlers_cache
         from backend.app.hasn_community.service import community_tool_handlers as handlers
 
-        # 帖子/文章详情走专用资源取数（含可见性鉴权 + reference_cards），其余统一走 handlers 表。
-        if tool_id == 'community.get_post':
-            return await community_service.get_agent_post_resource(
-                db, agent=agent, post_id=str(input_payload['post_id'])
-            )
-        if tool_id == 'community.get_article':
-            return await community_service.get_agent_article_resource(
-                db, agent=agent, article_id=str(input_payload['article_id'])
-            )
-
-        handler_map = {
+        registry: dict[str, Any] = {
+            # 知识库（knowledge:read）
+            'knowledge.search': self._handle_knowledge_search,
+            # 帖子/文章详情走专用资源取数（含可见性鉴权 + reference_cards）
+            'community.get_post': self._handle_community_get_post,
+            'community.get_article': self._handle_community_get_article,
             # 读取（community:read）
             'community.get_feed': handlers.handle_community_get_feed,
             'community.get_comments': handlers.handle_community_get_comments,
@@ -368,10 +403,90 @@ class AiNativeRuntimeGateway:
             'community.create_doc_space': handlers.handle_community_create_doc_space,
             'community.create_doc_node': handlers.handle_community_create_doc_node,
         }
-        handler = handler_map.get(tool_id)
-        if handler is None:
-            raise errors.NotFoundError(msg='AI-Native 工具不存在')
-        return await handler(db, agent, input_payload)
+        self._internal_handlers_cache = registry
+        return registry
+
+    async def _handle_knowledge_search(
+        self, db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await workbench_domain_service.search_current_knowledge(
+            db,
+            user_id=agent.owner_user_id,
+            query=str(input_payload['query']),
+            limit=int(input_payload.get('limit') or 50),
+            dataset_id=input_payload.get('dataset_id'),
+        )
+
+    async def _handle_community_get_post(
+        self, db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await community_service.get_agent_post_resource(
+            db, agent=agent, post_id=str(input_payload['post_id'])
+        )
+
+    async def _handle_community_get_article(
+        self, db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await community_service.get_agent_article_resource(
+            db, agent=agent, article_id=str(input_payload['article_id'])
+        )
+
+    async def _cloud_relay(
+        self,
+        handle: Any,
+        *,
+        tool: dict[str, Any],
+        agent: AgentTokenPayload,
+        input_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """cloud_relay：云端用登记的 app secret HMAC 签名后转发到实例 endpoint（设计 11 §6.2/§10）。
+
+        app secret 仅存云端、此处代签，绝不下发 daemon/前端。签名头遵循 HExt-08 §16.4：
+        X-HASN-App-Id / X-HASN-Timestamp / X-HASN-Nonce / X-HASN-Signature(HMAC-SHA256)。
+        签名串 = app_id\\n timestamp\\n nonce\\n body。
+        """
+        import hashlib
+        import hmac
+        import json
+        import time
+        import uuid
+
+        import httpx
+
+        if not handle.endpoint:
+            raise InstanceResolutionError(code='15050', message='instance_endpoint_missing')
+        secret = (handle.credential or {}).get('value') or ''
+        if not secret:
+            raise InstanceResolutionError(code='15051', message='instance_credential_invalid')
+
+        payload = {
+            'tool_id': tool['tool_id'],
+            'input': input_payload,
+            'actor': {'agent_hasn_id': agent.agent_hasn_id, 'owner_hasn_id': agent.owner_hasn_id},
+        }
+        body = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        ts = str(int(time.time()))
+        nonce = uuid.uuid4().hex
+        signing_string = f'{handle.app_id}\n{ts}\n{nonce}\n{body}'
+        signature = hmac.new(secret.encode('utf-8'), signing_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        headers = {
+            'Content-Type': 'application/json',
+            'X-HASN-App-Id': handle.app_id,
+            'X-HASN-Timestamp': ts,
+            'X-HASN-Nonce': nonce,
+            'X-HASN-Signature': signature,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(handle.endpoint, content=body.encode('utf-8'), headers=headers)
+        except httpx.HTTPError as exc:
+            raise InstanceResolutionError(code='15050', message=f'instance_unreachable:{exc.__class__.__name__}') from exc
+        if resp.status_code != 200:
+            raise InstanceResolutionError(code='15050', message=f'instance_http_{resp.status_code}')
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise InstanceResolutionError(code='15050', message='instance_bad_response') from exc
 
     async def _deny(
         self,
@@ -522,13 +637,14 @@ class AiNativeRuntimeGateway:
             'workspace_key': f'enterprise:{enterprise_id}' if enterprise_id is not None else 'enterprise:unknown',
         }
 
-    async def _ensure_workspace_app_enabled(self, db: AsyncSession, *, workspace: dict[str, Any], app_id: str) -> None:
-        if not await self._is_workspace_app_enabled(db, workspace=workspace, app_id=app_id):
-            raise errors.ForbiddenError(msg='app_not_enabled')
+    async def _is_workspace_app_available(self, db: AsyncSession, *, workspace: dict[str, Any], app_id: str) -> bool:
+        """published 即可用：默认无 workspace_app 记录即可用；仅企业 override 记录 status=disabled 时不可用。
 
-    async def _is_workspace_app_enabled(self, db: AsyncSession, *, workspace: dict[str, Any], app_id: str) -> bool:
+        hasn_workspace_app 从"启用开关（必须有记录才可用）"降级为"企业可选 override（默认零记录即可用）"
+        （设计 11 §4.2）。个人空间永远用公共实例、published 即用。
+        """
         row = await self._get_workspace_app(db, workspace=workspace, app_id=app_id)
-        return row is not None and row.status == 'active'
+        return row is None or row.status != 'disabled'
 
     async def _get_workspace_app(
         self, db: AsyncSession, *, workspace: dict[str, Any], app_id: str
