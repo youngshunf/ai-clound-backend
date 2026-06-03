@@ -178,3 +178,55 @@ async def test_tool_call_inner_ask_rejected_raises(monkeypatch: pytest.MonkeyPat
     ctx = _ctx(capability_modes={'hasn.stub.act': 'ask'})
     with pytest.raises(PermissionError):
         await _call_tool(server).execute(ctx, {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
+
+
+# ── 参数透传健壮性（线上 bug：params 落成空对象 → 兼容三种到达形态）─────────────
+
+
+@pytest.mark.asyncio
+async def test_tool_call_params_as_json_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """部分 Runtime 把 params 序列化成 JSON 字符串 → 服务端应解析。"""
+    server = _server(monkeypatch)
+    result = await _call_tool(server).execute(
+        _ctx(), {'name': 'hasn.stub.act', 'params': '{"content": "hi", "n": 7}'}
+    )
+    assert result == {'echo': {'content': 'hi', 'n': 7}}
+
+
+@pytest.mark.asyncio
+async def test_tool_call_params_flattened_to_top_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """部分 Runtime 不嵌套 params，把内层参数平铺到顶层 → 服务端应收拢。"""
+    server = _server(monkeypatch)
+    result = await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.act', 'content': 'hi', 'n': 9})
+    assert result == {'echo': {'content': 'hi', 'n': 9}}
+
+
+@pytest.mark.asyncio
+async def test_tool_call_nested_params_take_precedence_over_flatten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """嵌套 params 非空时以它为准，不把顶层无关键混进去。"""
+    server = _server(monkeypatch)
+    result = await _call_tool(
+        server
+    ).execute(_ctx(), {'name': 'hasn.stub.act', 'params': {'content': 'real'}, 'noise': 'x'})
+    assert result == {'echo': {'content': 'real'}}
+
+
+@pytest.mark.asyncio
+async def test_tool_call_params_invalid_json_string_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _server(monkeypatch)
+    with pytest.raises(McpToolError) as exc:
+        await _call_tool(server).execute(_ctx(), {'name': 'hasn.stub.act', 'params': '{not json'})
+    assert exc.value.code == McpErrorCode.TOOL_NOT_FOUND
+
+
+def test_tool_call_schema_advertises_open_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    """schema 必须把 params 声明成「开放对象」，否则 function-calling LLM 填不进字段（线上根因）。"""
+    server = _server(monkeypatch)
+    schema = _call_tool(server).input_schema
+    params_schema = schema['properties']['params']
+    assert params_schema.get('additionalProperties') is True  # 允许任意内层字段
+    # 同时容忍对象或 JSON 字符串两种承载
+    assert 'object' in params_schema['type']
+    assert 'string' in params_schema['type']
+    # 顶层放开 → 平铺参数能通过 MCP SDK 的 jsonschema 校验抵达桥
+    assert schema.get('additionalProperties') is True
