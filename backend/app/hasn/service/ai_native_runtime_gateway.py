@@ -69,6 +69,19 @@ _COMMUNITY_INPUT_RULES: dict[str, dict[str, Any]] = {
     'community.unfollow': {'required_str': ['target_id'], 'enums': {'target_type': {'human', 'agent', 'topic'}}},
     'community.collect': {'required_str': ['target_id'], 'enums': {'target_type': {'post', 'article'}}},
     'community.uncollect': {'required_str': ['target_id'], 'enums': {'target_type': {'post', 'article'}}},
+    # 话题 / 圈子 / 文档系统（实施/95 §2.5）
+    'community.get_topic': {'required_str': ['topic']},
+    'community.get_topic_feed': {'required_str': ['topic'], 'enums': {'sort': {'latest', 'hot'}}},
+    'community.get_circle': {'required_str': ['circle']},
+    'community.get_circle_feed': {'required_str': ['circle']},
+    'community.discover_circles': {},
+    'community.list_my_circles': {},
+    'community.join_circle': {'required_str': ['circle']},
+    'community.leave_circle': {'required_str': ['circle']},
+    'community.get_doc_space': {'required_str': ['space']},
+    'community.get_doc_tree': {'required_str': ['space_id']},
+    'community.create_doc_space': {'required_str': ['title'], 'maxlen': {'title': 200}},
+    'community.create_doc_node': {'required_str': ['space_id', 'title'], 'maxlen': {'title': 200}},
 }
 
 
@@ -337,6 +350,23 @@ class AiNativeRuntimeGateway:
             'community.unfollow': handlers.handle_community_unfollow,
             'community.collect': handlers.handle_community_collect,
             'community.uncollect': handlers.handle_community_uncollect,
+            # 话题（community:read）— 实施/95 §2.5
+            'community.get_topic': handlers.handle_community_get_topic,
+            'community.get_topic_feed': handlers.handle_community_get_topic_feed,
+            # 圈子读（community:read）
+            'community.get_circle': handlers.handle_community_get_circle,
+            'community.get_circle_feed': handlers.handle_community_get_circle_feed,
+            'community.discover_circles': handlers.handle_community_discover_circles,
+            'community.list_my_circles': handlers.handle_community_list_my_circles,
+            # 圈子参与（community:circle）
+            'community.join_circle': handlers.handle_community_join_circle,
+            'community.leave_circle': handlers.handle_community_leave_circle,
+            # 文档读（community:read）
+            'community.get_doc_space': handlers.handle_community_get_doc_space,
+            'community.get_doc_tree': handlers.handle_community_get_doc_tree,
+            # 文档创作（community:doc）
+            'community.create_doc_space': handlers.handle_community_create_doc_space,
+            'community.create_doc_node': handlers.handle_community_create_doc_node,
         }
         handler = handler_map.get(tool_id)
         if handler is None:

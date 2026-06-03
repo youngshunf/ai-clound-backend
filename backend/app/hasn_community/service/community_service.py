@@ -247,7 +247,7 @@ class CommunityService:
             .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
             .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
             .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
-            .where(HasnPosts.status == 'published')
+            .where(HasnPosts.status == 'published', HasnPosts.circle_id.is_(None))  # 圈子内容不串主 feed（95 §2.4）
         )
 
         # 关注流：JOIN hasn_follows 过滤为"当前用户关注对象"的内容
@@ -442,6 +442,7 @@ class CommunityService:
             .where(
                 HasnArticles.status == 'published',
                 HasnArticles.visibility != 'private',
+                HasnArticles.circle_id.is_(None),  # 圈子内容不串主 feed（95 §2.4）
             )
         )
 
@@ -566,6 +567,7 @@ class CommunityService:
             .where(
                 HasnArticles.status == 'published',
                 HasnArticles.visibility != 'private',
+                HasnArticles.circle_id.is_(None),  # 圈子内容不串主 feed（95 §2.4）
             )
             .order_by(HasnArticles.published_time.desc(), HasnArticles.article_id.desc())
             .limit(limit)
@@ -611,6 +613,7 @@ class CommunityService:
         visibility: str = 'public',
         comment_policy: str = 'all',
         reference_cards: list[dict[str, Any]] | None = None,
+        circle_id: str | None = None,
     ) -> dict[str, Any]:
         """
         创建帖子（WebUI Owner JWT 通道：作者恒为操作者本人 human）
@@ -619,16 +622,16 @@ class CommunityService:
         Agent 自主发帖只走 MCP + Agent JWT（/api/v1/community/agent/*），
         不接受请求体身份字段，杜绝 as_agent_hasn_id 冒名越权。
 
+        发布汇聚（实施/95 §2.4）：tag 归一→话题关联；circle_id 非空→校验成员+post_policy，
+        approval 进 pending_review，且只进圈子流不进主 feed。
+
         :param db: 数据库会话
-        :param user_id: 用户 ID
-        :param hasn_id: 用户的 hasn_id
-        :param content: 帖子内容
-        :param tags: 话题标签
-        :param skill_tags: 技能标签
-        :param visibility: 可见范围
-        :param comment_policy: 评论策略
+        :param circle_id: 所属圈子（可选，非空只进圈子流）
         :return: 帖子信息
         """
+        from backend.app.hasn_community.service.circle_service import circle_service
+        from backend.app.hasn_community.service.topic_service import topic_service
+
         # 生成 post_id
         post_id = f"p_{uuid4_str()[:12]}"
 
@@ -641,6 +644,12 @@ class CommunityService:
         # TODO: 获取当前 active workspace
         workspace_kind = 'personal'
         workspace_id = str(user_id)
+
+        status = 'published'
+        if circle_id:
+            _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=author_hasn_id)
+            if needs_review:
+                status = 'pending_review'
 
         # 创建帖子
         post = HasnPosts(
@@ -660,16 +669,23 @@ class CommunityService:
             visibility=visibility,
             comment_policy=comment_policy,
             generation_type='human',
-            status='published',
-            published_time=timezone.now(),
+            status=status,
+            circle_id=circle_id,
+            published_time=timezone.now() if status == 'published' else None,
         )
 
         db.add(post)
         await db.flush()
 
+        # 话题归一 + 关联（圈子内/外都打话题）
+        await topic_service.rewrite_content_topics(db, content_type='post', content_id=post_id, owner_hasn_id=owner_hasn_id, tags=tags)
+        if circle_id and status == 'published':
+            await circle_service.bump_content_count(db, circle_id=circle_id)
+
         return {
             'post_id': post_id,
-            'status': 'published',
+            'status': status,
+            'circle_id': circle_id,
             'published_time': post.published_time.isoformat() if post.published_time else None,
         }
 
@@ -2457,6 +2473,8 @@ class CommunityService:
         comment_policy: str = 'all',
         generation_type: str = 'human',
         reference_cards: list[dict[str, Any]] | None = None,
+        circle_id: str | None = None,
+        doc_placement: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         创建文章（WebUI Owner JWT 通道：作者恒为操作者本人 human）
@@ -2465,19 +2483,17 @@ class CommunityService:
         Agent 自主发文只走 MCP + Agent JWT（/api/v1/community/agent/*），
         不接受请求体身份字段，杜绝 as_agent_hasn_id 冒名越权。
 
-        :param db: 数据库会话
-        :param user_id: 用户 ID
-        :param hasn_id: 用户的 hasn_id
-        :param title: 文章标题
-        :param content: 文章内容（Markdown）
-        :param summary: 文章摘要
-        :param cover_url: 封面图片 URL
-        :param tags: 话题标签
-        :param visibility: 可见范围
-        :param comment_policy: 评论策略
+        发布汇聚（实施/95 §2.4）：tag 归一→话题关联；circle_id 校验成员+post_policy；
+        doc_placement 建/复用目录链 → article 叶子落位 → 设可见性/密码。
+
+        :param circle_id: 所属圈子（可选）
+        :param doc_placement: 文集落位（可选，见 17 §6.3）
         :return: 文章信息
         """
         from backend.app.hasn_community.model.hasn_articles import HasnArticles
+        from backend.app.hasn_community.service.circle_service import circle_service
+        from backend.app.hasn_community.service.doc_service import doc_service
+        from backend.app.hasn_community.service.topic_service import topic_service
 
         # 生成 article_id
         article_id = f"art_{uuid4_str()[:12]}"
@@ -2491,6 +2507,12 @@ class CommunityService:
         # TODO: 获取当前 active workspace
         workspace_kind = 'personal'
         workspace_id = str(user_id)
+
+        status = 'published'
+        if circle_id:
+            _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=author_hasn_id)
+            if needs_review:
+                status = 'pending_review'
 
         # 创建文章
         article = HasnArticles(
@@ -2512,16 +2534,31 @@ class CommunityService:
             visibility=visibility,
             comment_policy=comment_policy,
             generation_type=generation_type if generation_type in ALLOWED_GENERATION_TYPES else 'human',
-            status='published',
-            published_time=timezone.now(),
+            status=status,
+            circle_id=circle_id,
+            published_time=timezone.now() if status == 'published' else None,
         )
 
         db.add(article)
         await db.flush()
 
+        # 话题归一 + 关联
+        await topic_service.rewrite_content_topics(db, content_type='article', content_id=article_id, owner_hasn_id=owner_hasn_id, tags=tags)
+        if circle_id and status == 'published':
+            await circle_service.bump_content_count(db, circle_id=circle_id)
+
+        placement_result = None
+        if doc_placement:
+            placement_result = await doc_service.place_article(
+                db, article_id=article_id, article_title=title, actor_hasn_id=owner_hasn_id, owner_user_id=user_id,
+                author_type='human', author_hasn_id=author_hasn_id, placement=doc_placement, allow_visibility=True,
+            )
+
         return {
             'article_id': article_id,
-            'status': 'published',
+            'status': status,
+            'circle_id': circle_id,
+            'doc_placement': placement_result,
             'published_time': article.published_time.isoformat() if article.published_time else None,
         }
 

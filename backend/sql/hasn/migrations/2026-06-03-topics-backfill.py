@@ -17,7 +17,7 @@ import asyncpg
 from backend.app.hasn_community.service.topic_normalize import normalize_topic_name, slugify_topic
 from backend.database.db import uuid4_str
 
-DB = dict(host='127.0.0.1', port=15432, user='mac', database='huanxing')
+DB = {'host': '127.0.0.1', 'port': 15432, 'user': 'mac', 'database': 'huanxing'}
 
 
 async def _resolve_topic(conn: asyncpg.Connection, name: str) -> str | None:

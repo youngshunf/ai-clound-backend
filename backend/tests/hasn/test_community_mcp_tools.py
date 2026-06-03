@@ -1,4 +1,4 @@
-"""社区 Agent MCP 工具集（20 工具）一致性与入参校验单测。
+"""社区 Agent MCP 工具集（32 工具）一致性与入参校验单测。
 
 零漂移守卫：manifest（运行时权威源）的每个社区工具，必须同时有
   - dispatch handler（community_tool_handlers.handle_community_*，或 get_post/get_article 走 service 直取）
@@ -27,14 +27,19 @@ _EXPECTED_TOOLS = {
     'community.mark_notifications_read', 'community.create_post', 'community.create_article',
     'community.create_comment', 'community.like', 'community.unlike', 'community.follow',
     'community.unfollow', 'community.collect', 'community.uncollect',
+    # 话题 / 圈子 / 文档系统（实施/95 §2.5；+12）
+    'community.get_topic', 'community.get_topic_feed',
+    'community.get_circle', 'community.get_circle_feed', 'community.discover_circles', 'community.list_my_circles',
+    'community.join_circle', 'community.leave_circle',
+    'community.get_doc_space', 'community.get_doc_tree', 'community.create_doc_space', 'community.create_doc_node',
 }
 
 
-def test_manifest_has_20_tools_and_capabilities() -> None:
+def test_manifest_has_32_tools_and_capabilities() -> None:
     caps = COMMUNITY_AI_NATIVE_MANIFEST['capabilities']
     tools = COMMUNITY_AI_NATIVE_MANIFEST['tools']
-    assert len(caps) == 20
-    assert len(tools) == 20
+    assert len(caps) == 32
+    assert len(tools) == 32
     cap_ids = {c['tool_id'] for c in caps}
     tool_ids = {t['tool_id'] for t in tools}
     assert cap_ids == tool_ids == _EXPECTED_TOOLS
@@ -56,7 +61,7 @@ def test_every_tool_has_handler_validation_and_scope() -> None:
 
 
 def test_new_scopes_registered() -> None:
-    for scope in ('community:comment', 'community:interact'):
+    for scope in ('community:comment', 'community:interact', 'community:circle', 'community:doc'):
         assert scope in SCOPE_CATALOG
         assert SCOPE_CATALOG[scope]['domain'] == 'community'
         assert scope in DEFAULT_AGENT_SCOPES
@@ -74,7 +79,10 @@ def test_scope_grouping_matches_design() -> None:
         'community.like', 'community.unlike', 'community.follow',
         'community.unfollow', 'community.collect', 'community.uncollect',
     }
-    assert len(by_scope['community:read']) == 11
+    assert by_scope['community:circle'] == {'community.join_circle', 'community.leave_circle'}
+    assert by_scope['community:doc'] == {'community.create_doc_space', 'community.create_doc_node'}
+    # 原 11 读 + 话题2 + 圈子读4 + 文档读2 = 19
+    assert len(by_scope['community:read']) == 19
 
 
 def test_valid_tool_input_create_comment() -> None:

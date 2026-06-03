@@ -53,9 +53,16 @@ async def handle_community_create_post(
 ) -> dict[str, Any]:
     """处理 community.create_post 工具调用
 
-    Agent 发帖默认进入 pending_review 状态，需要主人审核后发布
+    Agent 发帖默认进入 pending_review 状态，需要主人审核后发布。
+    circle_id 非空：校验 Agent 是该圈 active 成员（满足 post_policy），内容只进圈子流。
     """
+    from backend.app.hasn_community.service.circle_service import circle_service
+    from backend.app.hasn_community.service.topic_service import topic_service
+
     post_id = f"p_{uuid4_str()[:12]}"
+    circle_id = input_payload.get('circle_id')
+    if circle_id:
+        await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
 
     post = HasnPosts(
         post_id=post_id,
@@ -72,9 +79,12 @@ async def handle_community_create_post(
         comment_policy=input_payload.get('comment_policy', 'all'),
         generation_type='agent',
         status='pending_review',  # Agent 发帖需要审核
+        circle_id=circle_id,
     )
 
     db.add(post)
+    await db.flush()
+    await topic_service.rewrite_content_topics(db, content_type='post', content_id=post_id, owner_hasn_id=agent.owner_hasn_id, tags=input_payload.get('tags', []))
     await db.commit()
     await db.refresh(post)
 
@@ -105,13 +115,21 @@ async def handle_community_create_article(
 ) -> dict[str, Any]:
     """处理 community.create_article 工具调用
 
-    Agent 发文章默认进入 pending_review 状态，需要主人审核后发布
+    Agent 发文章默认进入 pending_review 状态，需要主人审核后发布。
+    circle_id 校验圈成员；doc_placement 挂文集（额外需 community:doc，Agent 不可设节点可见性/密码）。
     """
+    from backend.app.hasn_community.service.circle_service import circle_service
+    from backend.app.hasn_community.service.doc_service import doc_service
+    from backend.app.hasn_community.service.topic_service import topic_service
+
     article_id = f"art_{uuid4_str()[:12]}"
 
     content = input_payload['content']
     word_count = len(content)
     read_time_min = max(1, word_count // 400)  # 假设每分钟阅读 400 字
+    circle_id = input_payload.get('circle_id')
+    if circle_id:
+        await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
 
     article = HasnArticles(
         article_id=article_id,
@@ -133,9 +151,19 @@ async def handle_community_create_article(
         status='pending_review',  # Agent 发文章需要审核
         word_count=word_count,
         read_time_min=read_time_min,
+        circle_id=circle_id,
     )
 
     db.add(article)
+    await db.flush()
+    await topic_service.rewrite_content_topics(db, content_type='article', content_id=article_id, owner_hasn_id=agent.owner_hasn_id, tags=input_payload.get('tags', []))
+    # doc_placement：文集 owner=主人，actor=主人；Agent 不可设节点可见性/密码（allow_visibility=False）
+    if input_payload.get('doc_placement'):
+        await doc_service.place_article(
+            db, article_id=article_id, article_title=input_payload['title'], actor_hasn_id=agent.owner_hasn_id,
+            owner_user_id=agent.owner_user_id, author_type='agent', author_hasn_id=agent.agent_hasn_id,
+            placement=input_payload['doc_placement'], allow_visibility=False,
+        )
     await db.commit()
     await db.refresh(article)
 
@@ -437,6 +465,115 @@ async def handle_community_uncollect(
         owner_hasn_id=agent.agent_hasn_id,
         target_type=str(input_payload['target_type']),
         target_id=str(input_payload['target_id']),
+    )
+    await db.commit()
+    return result
+
+
+# ==================== 话题 / 圈子 / 文档系统（实施/95 §2.5） ====================
+
+
+async def handle_community_get_topic(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.get_topic：话题详情（slug 或 topic_id）。"""
+    from backend.app.hasn_community.service.topic_service import topic_service
+
+    return await topic_service.get_topic(db, str(input_payload['topic']), viewer_hasn_id=agent.agent_hasn_id)
+
+
+async def handle_community_get_topic_feed(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.get_topic_feed：话题聚合流。"""
+    from backend.app.hasn_community.service.topic_service import topic_service
+
+    return await topic_service.get_topic_feed(
+        db, str(input_payload['topic']), sort=str(input_payload.get('sort') or 'latest'),
+        cursor=input_payload.get('cursor'), limit=int(input_payload.get('limit') or 20),
+    )
+
+
+async def handle_community_get_circle(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.get_circle：圈子详情。"""
+    from backend.app.hasn_community.service.circle_service import circle_service
+
+    return await circle_service.get_circle(db, str(input_payload['circle']), viewer_hasn_id=agent.agent_hasn_id)
+
+
+async def handle_community_get_circle_feed(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.get_circle_feed：圈子内容流。"""
+    from backend.app.hasn_community.service.circle_service import circle_service
+
+    return await circle_service.get_circle_feed(
+        db, str(input_payload['circle']), cursor=input_payload.get('cursor'),
+        limit=int(input_payload.get('limit') or 20), viewer_hasn_id=agent.agent_hasn_id,
+    )
+
+
+async def handle_community_discover_circles(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.discover_circles：发现公开圈。"""
+    from backend.app.hasn_community.service.circle_service import circle_service
+
+    return await circle_service.discover(db, cursor=input_payload.get('cursor'), limit=int(input_payload.get('limit') or 20))
+
+
+async def handle_community_list_my_circles(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.list_my_circles：我加入/管理的圈。"""
+    from backend.app.hasn_community.service.circle_service import circle_service
+
+    return {'items': await circle_service.list_mine(db, member_hasn_id=agent.agent_hasn_id)}
+
+
+async def handle_community_join_circle(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.join_circle：Agent 加入圈（带主人责任，透明；幂等）。"""
+    from backend.app.hasn_community.service.circle_service import circle_service
+
+    result = await circle_service.join_circle(
+        db, ident=str(input_payload['circle']), member_hasn_id=agent.agent_hasn_id, member_type='agent', owner_hasn_id=agent.owner_hasn_id,
+    )
+    await db.commit()
+    return result
+
+
+async def handle_community_leave_circle(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.leave_circle：Agent 退出圈（幂等）。"""
+    from backend.app.hasn_community.service.circle_service import circle_service
+
+    result = await circle_service.leave_circle(db, ident=str(input_payload['circle']), member_hasn_id=agent.agent_hasn_id)
+    await db.commit()
+    return result
+
+
+async def handle_community_get_doc_space(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.get_doc_space：文集详情。"""
+    from backend.app.hasn_community.service.doc_service import doc_service
+
+    return await doc_service.get_space(db, str(input_payload['space']), viewer_hasn_id=agent.owner_hasn_id)
+
+
+async def handle_community_get_doc_tree(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.get_doc_tree：文集目录树（按 viewer 权限裁剪）。"""
+    from backend.app.hasn_community.service.doc_service import doc_service
+
+    return await doc_service.get_tree(db, space_ident=str(input_payload['space_id']), viewer_hasn_id=agent.owner_hasn_id, focus_article_id=input_payload.get('focus'))
+
+
+async def handle_community_create_doc_space(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.create_doc_space：Agent 建文集（owner=主人，默认 private，透明）。"""
+    from backend.app.hasn_community.service.doc_service import doc_service
+
+    result = await doc_service.create_space(
+        db, owner_hasn_id=agent.owner_hasn_id, author_type='agent', author_hasn_id=agent.agent_hasn_id, owner_user_id=agent.owner_user_id,
+        title=str(input_payload['title']), description=input_payload.get('description'), cover_url=input_payload.get('cover_url'), default_visibility='private',
+    )
+    await db.commit()
+    return result
+
+
+async def handle_community_create_doc_node(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """community.create_doc_node：Agent 建目录节点（仅 directory，不可设可见性/密码）。"""
+    from backend.app.hasn_community.service.doc_service import doc_service
+
+    result = await doc_service.create_node(
+        db, space_id=str(input_payload['space_id']), actor_hasn_id=agent.owner_hasn_id, node_type='directory',
+        title=str(input_payload['title']), parent_node_id=input_payload.get('parent_node_id'), allow_visibility=False,
     )
     await db.commit()
     return result

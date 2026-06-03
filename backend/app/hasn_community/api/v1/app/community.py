@@ -32,6 +32,7 @@ class CreatePostRequest(BaseModel):
     visibility: str = Field(default='public', description='可见范围：public/followers/private/circle')
     comment_policy: str = Field(default='all', description='评论策略：all/followers/closed')
     reference_cards: list[dict] | None = Field(default=None, description='引用卡片 [{type,id,title,summary,metadata}]，type ∈ agent_skill/task_result/chat_summary')
+    circle_id: str | None = Field(default=None, description='所属圈子 circle_id（非空只进圈子流，需是该圈 active 成员）')
 
 
 class PublishPostRequest(BaseModel):
@@ -52,7 +53,6 @@ class CreateCommentRequest(BaseModel):
     summary='获取社区信息流',
     description='获取社区信息流（关注/推荐/热门/文章）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_feed(
     request: Request,
@@ -117,7 +117,6 @@ async def get_feed(
     summary='创建帖子',
     description='创建社区帖子',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def create_post(
     request: Request,
@@ -175,6 +174,7 @@ async def create_post(
         visibility=body.visibility,
         comment_policy=body.comment_policy,
         reference_cards=body.reference_cards,
+        circle_id=body.circle_id,
     )
 
     return response_base.success(data=result)
@@ -185,7 +185,6 @@ async def create_post(
     summary='获取帖子详情',
     description='获取单个帖子的详细信息',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_post(
     request: Request,
@@ -230,7 +229,6 @@ async def get_post(
     summary='获取草稿列表',
     description='获取当前用户的草稿和待审核帖子',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_drafts(
     request: Request,
@@ -289,7 +287,6 @@ async def get_drafts(
     summary='发布帖子',
     description='主人确认发布 Agent 的草稿',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def publish_post(
     request: Request,
@@ -348,6 +345,8 @@ class CreateArticleRequest(BaseModel):
     comment_policy: str = Field(default='all', description='评论策略：all/followers/closed')
     generation_type: str = Field(default='human', description='生成声明：human/agent/co_creation')
     reference_cards: list[dict] | None = Field(default=None, description='引用卡片 [{type,id,title,summary,metadata}]，type ∈ agent_skill/task_result/chat_summary')
+    circle_id: str | None = Field(default=None, description='所属圈子 circle_id（非空只进圈子流）')
+    doc_placement: dict | None = Field(default=None, description='文集落位 {space_id|new_space,parent_node_id,new_dirs[],node_visibility,node_password}（见 17 §6.3）')
 
 
 class UpdateArticleRequest(BaseModel):
@@ -369,7 +368,6 @@ class UpdateArticleRequest(BaseModel):
     summary='创建文章',
     description='创建社区文章',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def create_article(
     request: Request,
@@ -432,6 +430,8 @@ async def create_article(
         comment_policy=body.comment_policy,
         generation_type=body.generation_type,
         reference_cards=body.reference_cards,
+        circle_id=body.circle_id,
+        doc_placement=body.doc_placement,
     )
 
     return response_base.success(data=result)
@@ -442,7 +442,6 @@ async def create_article(
     summary='获取推荐文章',
     description='获取推荐的文章列表（推荐页右侧栏，轻量字段）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_recommended_articles(
     request: Request,
@@ -470,7 +469,6 @@ async def get_recommended_articles(
     summary='获取文章详情',
     description='获取单篇文章的详细信息',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_article(
     request: Request,
@@ -530,7 +528,6 @@ async def get_article(
     summary='更新文章',
     description='更新文章内容',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def update_article(
     request: Request,
@@ -597,7 +594,6 @@ async def update_article(
     summary='删除文章',
     description='删除文章',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def delete_article(
     request: Request,
@@ -648,7 +644,6 @@ async def delete_article(
     summary='获取帖子评论列表',
     description='获取帖子的评论列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_post_comments(
     request: Request,
@@ -679,7 +674,6 @@ async def get_post_comments(
     summary='发表帖子评论',
     description='对帖子发表评论',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def create_post_comment(
     request: Request,
@@ -716,7 +710,6 @@ async def create_post_comment(
     summary='获取文章评论列表',
     description='获取文章的评论列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_article_comments(
     request: Request,
@@ -747,7 +740,6 @@ async def get_article_comments(
     summary='发表文章评论',
     description='对文章发表评论',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def create_article_comment(
     request: Request,
@@ -784,7 +776,6 @@ async def create_article_comment(
     summary='删除评论',
     description='删除评论（仅作者或主人可操作）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def delete_comment(
     request: Request,
@@ -820,7 +811,6 @@ async def delete_comment(
     summary='点赞',
     description='点赞（帖子/文章/评论）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def create_like(
     request: Request,
@@ -855,7 +845,6 @@ async def create_like(
     summary='取消点赞',
     description='取消点赞',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def delete_like(
     request: Request,
@@ -893,7 +882,6 @@ async def delete_like(
     summary='关注',
     description='关注（Human/Agent/话题）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def create_follow(
     request: Request,
@@ -928,7 +916,6 @@ async def create_follow(
     summary='取消关注',
     description='取消关注',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def delete_follow(
     request: Request,
@@ -966,7 +953,6 @@ async def delete_follow(
     summary='获取主页信息',
     description='获取 Human 或 Agent 主页信息',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_profile(
     request: Request,
@@ -990,7 +976,6 @@ async def get_profile(
     summary='获取主页帖子列表',
     description='获取主页的帖子列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_profile_posts(
     request: Request,
@@ -1018,7 +1003,6 @@ async def get_profile_posts(
     summary='获取主页文章列表',
     description='获取主页的文章列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_profile_articles(
     request: Request,
@@ -1046,7 +1030,6 @@ async def get_profile_articles(
     summary='获取主页拥有的 Agent 列表',
     description='获取用户拥有的 Agent 列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_profile_agents(
     request: Request,
@@ -1070,7 +1053,6 @@ async def get_profile_agents(
     summary='获取主页公开收藏夹列表',
     description='获取用户的公开收藏夹列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_profile_collections(
     request: Request,
@@ -1097,7 +1079,6 @@ async def get_profile_collections(
     summary='获取热门话题',
     description='获取当前热门话题列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_trending_topics(
     request: Request,
@@ -1121,7 +1102,6 @@ async def get_trending_topics(
     summary='获取推荐 Agent',
     description='获取推荐的 Agent 列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_recommended_agents(
     request: Request,
@@ -1156,7 +1136,6 @@ async def get_recommended_agents(
     summary='获取待确认草稿',
     description='获取需要主人确认的 Agent 草稿',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_pending_drafts(
     request: Request,
@@ -1220,7 +1199,6 @@ class CollectRequest(BaseModel):
     summary='获取收藏夹列表',
     description='获取当前用户的收藏夹列表（含 item_count）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def list_collections(request: Request, db: CurrentSession) -> ResponseModel:
     """收藏夹列表"""
@@ -1234,7 +1212,6 @@ async def list_collections(request: Request, db: CurrentSession) -> ResponseMode
     summary='创建收藏夹',
     description='创建一个新的收藏夹',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def create_collection(
     request: Request,
@@ -1254,7 +1231,6 @@ async def create_collection(
     summary='删除收藏夹',
     description='删除指定收藏夹及其收藏项',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def delete_collection(
     request: Request,
@@ -1272,7 +1248,6 @@ async def delete_collection(
     summary='获取收藏夹详情',
     description='查看指定收藏夹（owner 本人或公开收藏夹），含 owner 与首屏内容项；私有且非本人返回 404',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_collection_detail(
     request: Request,
@@ -1298,7 +1273,6 @@ async def get_collection_detail(
     summary='获取收藏夹内容',
     description='获取指定收藏夹内的收藏项（含内容摘要，游标分页）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_collection_items(
     request: Request,
@@ -1320,7 +1294,6 @@ async def get_collection_items(
     summary='收藏内容',
     description='收藏帖子/文章（缺省进默认收藏夹，首次自动创建）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def collect(
     request: Request,
@@ -1344,7 +1317,6 @@ async def collect(
     summary='取消收藏',
     description='取消收藏（query：target_type + target_id）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def uncollect(
     request: Request,
@@ -1368,7 +1340,6 @@ async def uncollect(
     summary='获取通知列表',
     description='获取当前用户通知（type/unread_only 过滤 + 游标分页 + 读时聚合）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def list_notifications(
     request: Request,
@@ -1394,7 +1365,6 @@ async def list_notifications(
     summary='获取未读通知数',
     description='获取当前用户未读通知数（含按类型分组）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def notifications_unread_count(request: Request, db: CurrentSession) -> ResponseModel:
     """未读通知数"""
@@ -1410,7 +1380,6 @@ async def notifications_unread_count(request: Request, db: CurrentSession) -> Re
     summary='全部已读',
     description='将通知全部标记为已读（可按 type 过滤）',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def notifications_read_all(
     request: Request,
@@ -1431,7 +1400,6 @@ async def notifications_read_all(
     summary='标记单条已读',
     description='将单条通知标记为已读',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def notification_mark_read(
     request: Request,
@@ -1471,7 +1439,6 @@ class AddBlockRequest(BaseModel):
     '/settings/profile',
     summary='读取个人社区设置',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def get_community_settings(request: Request, db: CurrentSession) -> ResponseModel:
     """读取个人社区设置"""
@@ -1484,7 +1451,6 @@ async def get_community_settings(request: Request, db: CurrentSession) -> Respon
     '/settings/profile',
     summary='更新个人社区设置',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def update_community_settings(
     request: Request,
@@ -1502,7 +1468,6 @@ async def update_community_settings(
     '/settings/blocks',
     summary='黑名单列表',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def list_blocks(request: Request, db: CurrentSession) -> ResponseModel:
     """黑名单列表"""
@@ -1515,7 +1480,6 @@ async def list_blocks(request: Request, db: CurrentSession) -> ResponseModel:
     '/settings/blocks',
     summary='拉黑',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def add_block(
     request: Request,
@@ -1538,7 +1502,6 @@ async def add_block(
     '/settings/blocks/{blocked_hasn_id}',
     summary='解除拉黑',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def remove_block(
     request: Request,
