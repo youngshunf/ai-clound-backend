@@ -220,6 +220,27 @@ class HasnSessionsService:
         return session
 
     @staticmethod
+    async def try_get_by_session_id(
+        *, db: AsyncSession, session_id: str, owner_id: str | None = None
+    ) -> HasnSessions | None:
+        """容错版 get_by_session_id：云端不存在该 Session 时返回 None（不抛 404）。
+
+        work-session 是 hasn-node 本地实体（本地 `sessions` 表，scope=summary_only），
+        云端 `hasn_sessions` 不保证有对应行——结果投影不应因此 404。仅在找到却归属
+        不符时仍抛 403。
+        """
+        stmt = select(HasnSessions).where(HasnSessions.session_id == session_id)
+        result = await db.execute(stmt)
+        session = result.scalar_one_or_none()
+
+        if session is None:
+            return None
+        if owner_id is not None and session.owner_id != owner_id:
+            raise errors.ForbiddenError(msg='无权访问该 Session')
+
+        return session
+
+    @staticmethod
     async def list_messages(
         *,
         db: AsyncSession,
@@ -267,12 +288,19 @@ class HasnSessionsService:
         session_id: str,
         projection_data: dict[str, Any],
     ) -> dict[str, Any]:
-        """幂等写入工作会话结果摘要消息。"""
-        session = await HasnSessionsService.get_by_session_id(db=db, session_id=session_id, owner_id=owner_id)
-        agent_id = str(projection_data.get('agent_id') or session.hasn_id)
+        """幂等写入工作会话结果摘要消息。
+
+        work-session 是 hasn-node 本地实体（本地 `sessions` 表，scope=summary_only），
+        云端 `hasn_sessions` 不保证有对应行。因此**不要求**云端先存在 session：缺失时
+        直接用 projection_data 自包含字段（agent_id/origin/title/summary/deep_link）写入
+        主会话卡片消息，并跳过云端 session 回写。鉴权仍由 owner JWT +
+        `_assert_projection_conversation_owned`（会话归属校验）保证。
+        """
+        session = await HasnSessionsService.try_get_by_session_id(db=db, session_id=session_id, owner_id=owner_id)
+        agent_id = str(projection_data.get('agent_id') or (session.hasn_id if session else ''))
         if not agent_id:
-            raise errors.RequestError(msg='Session 缺少 Agent ID')
-        if projection_data.get('agent_id') and projection_data['agent_id'] != session.hasn_id:
+            raise errors.RequestError(msg='缺少 Agent ID，无法投影工作会话结果')
+        if session is not None and projection_data.get('agent_id') and projection_data['agent_id'] != session.hasn_id:
             raise errors.ForbiddenError(msg='投影 Agent 与 Session 不匹配')
 
         conversation_id = await _resolve_projection_conversation(
@@ -292,8 +320,17 @@ class HasnSessionsService:
                 'created': False,
             }
 
-        content_json = _projection_content_json(session=session, agent_id=agent_id, projection_data=projection_data)
-        content_card = _projection_card_body(session=session, content_json=content_json)
+        title = (session.title if session and session.title else None) or projection_data.get('title') or session_id
+        origin_type = (session.origin_type if session else None) or projection_data.get('origin_type') or 'task_run'
+        origin_ref = (session.origin_ref if session else None) or projection_data.get('origin_ref') or ''
+        content_json = _projection_content_json(
+            session_id=session_id,
+            agent_id=agent_id,
+            origin_type=origin_type,
+            origin_ref=origin_ref,
+            projection_data=projection_data,
+        )
+        content_card = _projection_card_body(session_id=session_id, title=title, content_json=content_json)
         validate_card_message_body(content_card)
         result = await db.execute(
             sa.text(
@@ -380,12 +417,13 @@ class HasnSessionsService:
         )
         row = result.mappings().one()
         result_message_id = str(row['id'])
-        _record_projection_on_session(
-            session=session,
-            result_message_id=result_message_id,
-            conversation_id=str(conversation_id),
-            content_json=content_json,
-        )
+        if session is not None:
+            _record_projection_on_session(
+                session=session,
+                result_message_id=result_message_id,
+                conversation_id=str(conversation_id),
+                content_json=content_json,
+            )
         await db.flush()
         return {
             'result_message_id': result_message_id,
@@ -500,15 +538,20 @@ def _projection_dedupe_key(session_id: str, projection_data: dict[str, Any]) -> 
 
 
 def _projection_content_json(
-    *, session: HasnSessions, agent_id: str, projection_data: dict[str, Any]
+    *,
+    session_id: str,
+    agent_id: str,
+    origin_type: str | None,
+    origin_ref: str | None,
+    projection_data: dict[str, Any],
 ) -> dict[str, Any]:
-    deep_link = projection_data.get('deep_link') or f'hasn://webui/tasks/sessions/{session.session_id}'
+    deep_link = projection_data.get('deep_link') or f'hasn://webui/tasks/sessions/{session_id}'
     return {
         'projection_kind': 'work_session_result_summary',
-        'session_id': session.session_id,
+        'session_id': session_id,
         'agent_id': agent_id,
-        'origin_type': session.origin_type,
-        'origin_ref': session.origin_ref,
+        'origin_type': origin_type,
+        'origin_ref': origin_ref,
         'task_id': projection_data.get('task_id'),
         'task_run_id': projection_data.get('task_run_id'),
         'workflow_run_id': projection_data.get('workflow_run_id'),
@@ -517,22 +560,15 @@ def _projection_content_json(
         'summary': projection_data.get('summary') or '',
         'deep_link': deep_link,
         'completion_reason': projection_data.get('completion_reason') or 'manual',
-        'dedupe_key': _projection_dedupe_key(session.session_id, projection_data),
+        'dedupe_key': _projection_dedupe_key(session_id, projection_data),
     }
 
 
-def _projection_content_text(*, session: HasnSessions, content_json: dict[str, Any]) -> str:
-    title = session.title or session.session_id
-    summary = content_json.get('summary') or '已完成。'
-    return f'工作会话「{title}」已完成：{summary}'
-
-
-def _projection_card_body(*, session: HasnSessions, content_json: dict[str, Any]) -> dict[str, Any]:
-    title = session.title or session.session_id
+def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
     task_id = content_json.get('task_id')
     task_run_id = content_json.get('task_run_id')
     event_payload = {
-        'session_id': session.session_id,
+        'session_id': session_id,
     }
     if task_id is not None:
         event_payload['task_id'] = task_id
@@ -554,15 +590,15 @@ def _projection_card_body(*, session: HasnSessions, content_json: dict[str, Any]
         'description': content_json.get('summary') or '工作会话已完成。',
         'source': {
             'kind': 'task',
-            'id': str(task_id or content_json.get('workflow_run_id') or session.session_id),
+            'id': str(task_id or content_json.get('workflow_run_id') or session_id),
             'display_name': '任务系统',
             'verified': True,
         },
         'resource': {
             'type': 'task_session',
-            'id': session.session_id,
+            'id': session_id,
             'app_id': 'tasks',
-            'uri': content_json.get('deep_link') or f'hasn://webui/tasks/sessions/{session.session_id}',
+            'uri': content_json.get('deep_link') or f'hasn://webui/tasks/sessions/{session_id}',
             'access': {
                 'visibility': 'recipient',
                 'readable_by': ['human'],
@@ -580,7 +616,7 @@ def _projection_card_body(*, session: HasnSessions, content_json: dict[str, Any]
             'label': '查看任务',
             'action_id': 'open_task_session',
             'kind': 'open_uri',
-            'uri': content_json.get('deep_link') or f'hasn://webui/tasks/sessions/{session.session_id}',
+            'uri': content_json.get('deep_link') or f'hasn://webui/tasks/sessions/{session_id}',
             'event': {
                 'event_type': 'task.summary.opened',
                 'payload': event_payload,

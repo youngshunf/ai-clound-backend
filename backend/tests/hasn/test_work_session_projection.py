@@ -494,6 +494,86 @@ async def test_projection_is_idempotent_and_writes_summary_message(
     assert db.flushed is True
 
 
+@pytest.mark.asyncio
+async def test_projection_writes_summary_when_cloud_session_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """work-session 只活在 hasn-node 本地 sessions 表、云端无对应行时，投影仍写回主会话。
+
+    回归：此前云端 ``get_by_session_id`` 对缺失 session 抛 404，导致任务结果永远
+    落不回主会话（线上 ``projection_failed status=404``）。现在云端不再强依赖云端
+    session，靠 projection_data 自包含字段写卡片消息。
+    """
+    conversation_id = UUID('00000000-0000-0000-0000-000000000456')
+    db = FakeDb(
+        results=[
+            FakeScalarResult(None),  # try_get_by_session_id -> 云端无该 session
+            FakeMappingResult(None),  # _find_projection_message -> 无重复
+            FakeMappingResult({'id': 988}),  # INSERT ... RETURNING id
+        ]
+    )
+
+    async def fake_ensure_conversation(**kwargs: Any) -> SimpleNamespace:
+        await asyncio.sleep(0)
+        assert kwargs['caller_hasn_id'] == OWNER_ID
+        assert kwargs['peer_hasn_id'] == AGENT_ID
+        return SimpleNamespace(id=conversation_id)
+
+    monkeypatch.setattr(
+        service_module.hasn_conversations_service,
+        'ensure_conversation',
+        fake_ensure_conversation,
+    )
+
+    result = await service_module.hasn_sessions_service.project_work_session_result(
+        db=db,
+        owner_id=OWNER_ID,
+        session_id=SESSION_ID,
+        # 无云端 session：agent_id / origin / title 必须由 daemon 经 projection_data 自带
+        projection_data=_projection_payload(
+            agent_id=AGENT_ID,
+            origin_type='task_run',
+            origin_ref='task_run:123',
+            title='生成日报',
+        ),
+    )
+
+    assert result == {
+        'result_message_id': '988',
+        'conversation_id': str(conversation_id),
+        'dedupe_key': f'work_session_result:{SESSION_ID}:final',
+        'created': True,
+    }
+    insert_params = [
+        params
+        for _stmt, params in db.executed
+        if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
+    ]
+    assert len(insert_params) == 1, 'projection 必须写出一条会话消息'
+    content = json.loads(insert_params[0]['content'])
+    assert content['title'] == '工作会话「生成日报」已完成'
+    assert content['description'] == '已生成客户优先级和跟进建议。'
+    assert content['resource']['id'] == SESSION_ID
+    assert content['resource']['metadata']['agent_id'] == AGENT_ID
+    assert content['resource']['metadata']['origin_type'] == 'task_run'
+    assert content['primary_action']['uri'] == f'hasn://webui/tasks/sessions/{SESSION_ID}'
+    assert db.flushed is True
+
+
+@pytest.mark.asyncio
+async def test_projection_rejects_when_agent_id_missing_and_session_absent() -> None:
+    """云端无 session 且 projection_data 不带 agent_id 时，明确拒绝（不静默写错会话）。"""
+    db = FakeDb(results=[FakeScalarResult(None)])
+
+    with pytest.raises(errors.RequestError):
+        await service_module.hasn_sessions_service.project_work_session_result(
+            db=db,
+            owner_id=OWNER_ID,
+            session_id=SESSION_ID,
+            projection_data=_projection_payload(),  # 无 agent_id
+        )
+
+
 def test_send_message_does_not_return_placeholder(task_sessions_app: FastAPI) -> None:
     with TestClient(task_sessions_app) as client:
         response = client.post(
