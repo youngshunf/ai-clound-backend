@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Query
 
@@ -15,9 +15,7 @@ from backend.app.hasn_community.service.circle_service import circle_service
 from backend.app.hasn_community.service.doc_service import doc_service
 from backend.app.hasn_community.service.topic_service import topic_service
 from backend.common.response.response_schema import ResponseModel, response_base
-
-if TYPE_CHECKING:
-    from backend.database.db import CurrentSession
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 

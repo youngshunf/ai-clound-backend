@@ -6,17 +6,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from backend.app.hasn_community.service.topic_service import topic_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-
-if TYPE_CHECKING:
-    from backend.database.db import CurrentSessionTransaction
+from backend.database.db import CurrentSessionTransaction
 
 router = APIRouter()
 
