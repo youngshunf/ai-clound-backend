@@ -27,6 +27,7 @@ from urllib.parse import quote
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.exception import errors
+from backend.database.redis import redis_client
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.model import S3Storage
 from backend.plugin.s3.utils.file_ops import (
@@ -223,9 +224,68 @@ class StorageService:
         object_key: str,
         expires_in: int = 3600,
     ) -> str:
-        """私有对象的临时签名读 URL（live 签名，无缓存；缓存层见 1c 包装）。"""
+        """私有对象的临时签名读 URL（live 签名，无缓存）。"""
         storage = await cls.get_storage(db, storage_id)
         return await cls._sign_one(storage, object_key, expires_in)
+
+    # ---- Redis 缓存层（1c：margin TTL，缓存 TTL < 签名有效期，命中即免二次签名）----
+
+    @staticmethod
+    def _cache_key(storage_id: int, object_key: str) -> str:
+        return f's3:signed:{storage_id}:{object_key}'
+
+    @classmethod
+    async def signed_url_cached(
+        cls,
+        db: AsyncSession,
+        *,
+        storage_id: int,
+        object_key: str,
+        expires_in: int = 3600,
+    ) -> str:
+        """带缓存的签名读 URL。命中返回缓存；未命中 live 签名并 SETEX(ttl-margin)。"""
+        rk = cls._cache_key(storage_id, object_key)
+        cached = await redis_client.get(rk)
+        if cached:
+            return cached
+        url = await cls.signed_url(db, storage_id=storage_id, object_key=object_key, expires_in=expires_in)
+        await redis_client.setex(rk, max(1, expires_in - SIGN_CACHE_MARGIN_SECONDS), url)
+        return url
+
+    @classmethod
+    async def signed_urls_cached(
+        cls,
+        db: AsyncSession,
+        *,
+        items: Sequence[tuple[int, str]],
+        expires_in: int = 3600,
+    ) -> dict[tuple[int, str], str]:
+        """批量签名（MGET 命中 + 仅对未命中 live 签名）。返回 {(storage_id, object_key): url}。"""
+        if not items:
+            return {}
+        cache_keys = [cls._cache_key(sid, ok) for sid, ok in items]
+        cached_vals = await redis_client.mget(cache_keys)
+        result: dict[tuple[int, str], str] = {}
+        misses: list[tuple[int, str]] = []
+        for item, val in zip(items, cached_vals, strict=True):
+            if val:
+                result[item] = val
+            else:
+                misses.append(item)
+        if not misses:
+            return result
+        # 按 storage_id 预取存储行，避免逐个未命中重复读库
+        storages: dict[int, S3Storage] = {}
+        ttl = max(1, expires_in - SIGN_CACHE_MARGIN_SECONDS)
+        for sid, ok in misses:
+            storage = storages.get(sid)
+            if storage is None:
+                storage = await cls.get_storage(db, sid)
+                storages[sid] = storage
+            url = await cls._sign_one(storage, ok, expires_in)
+            await redis_client.setex(cls._cache_key(sid, ok), ttl, url)
+            result[(sid, ok)] = url
+        return result
 
 
 storage_service: StorageService = StorageService()

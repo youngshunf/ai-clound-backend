@@ -110,3 +110,56 @@ async def test_unknown_sign_strategy_raises(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(svc_mod.s3_storage_dao, 'get', AsyncMock(return_value=storage))
     with pytest.raises(errors.ServerError):
         await StorageService.signed_url(db=object(), storage_id=2, object_key='dm/x.png')
+
+
+class _FakeRedis:
+    """内存 fake，只覆盖 get/setex/mget 三个缓存边界方法。"""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.setex_calls: list[tuple[str, int, str]] = []
+
+    async def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    async def setex(self, key: str, ttl: int, value: str) -> None:
+        self.setex_calls.append((key, ttl, value))
+        self.store[key] = value
+
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        return [self.store.get(k) for k in keys]
+
+
+@pytest.mark.asyncio
+async def test_signed_url_cached_miss_then_hit(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeRedis()
+    monkeypatch.setattr(svc_mod, 'redis_client', fake)
+    sign_spy = AsyncMock(return_value='https://signed/url?sig=1')
+    monkeypatch.setattr(StorageService, 'signed_url', classmethod(lambda cls, db, **kw: sign_spy(**kw)))
+
+    # 未命中：live 签名 + SETEX(ttl = expires_in - margin)
+    url1 = await StorageService.signed_url_cached(db=object(), storage_id=2, object_key='dm/x.png', expires_in=600)
+    assert url1 == 'https://signed/url?sig=1'
+    assert sign_spy.await_count == 1
+    assert fake.setex_calls[0][1] == 600 - svc_mod.SIGN_CACHE_MARGIN_SECONDS  # margin 生效
+
+    # 命中：不再签名
+    url2 = await StorageService.signed_url_cached(db=object(), storage_id=2, object_key='dm/x.png', expires_in=600)
+    assert url2 == 'https://signed/url?sig=1'
+    assert sign_spy.await_count == 1  # 仍是 1，命中缓存
+
+
+@pytest.mark.asyncio
+async def test_signed_urls_cached_batch_only_signs_misses(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeRedis()
+    fake.store[StorageService._cache_key(2, 'dm/a.png')] = 'cached-a'  # 预置一个命中
+    monkeypatch.setattr(svc_mod, 'redis_client', fake)
+    monkeypatch.setattr(svc_mod.s3_storage_dao, 'get', AsyncMock(return_value=_storage(id=2, access='private')))
+    monkeypatch.setattr(svc_mod, 'presign_read_key', AsyncMock(return_value='fresh-signed'))
+
+    items = [(2, 'dm/a.png'), (2, 'dm/b.png')]
+    result = await StorageService.signed_urls_cached(db=object(), items=items, expires_in=600)
+    assert result[(2, 'dm/a.png')] == 'cached-a'  # 命中
+    assert result[(2, 'dm/b.png')] == 'fresh-signed'  # 未命中→签名
+    # 仅未命中的 b 触发 setex
+    assert [c[0] for c in fake.setex_calls] == [StorageService._cache_key(2, 'dm/b.png')]
