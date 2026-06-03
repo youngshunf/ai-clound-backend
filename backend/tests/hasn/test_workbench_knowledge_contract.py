@@ -166,8 +166,9 @@ def test_workbench_registry_auto_installs_knowledge_for_personal_and_enterprise(
 
     registry = WorkbenchAppRegistry.default()
 
-    assert [app.id for app in registry.auto_install_apps('personal')] == ['knowledge']
-    assert [app.id for app in registry.auto_install_apps('enterprise')] == ['knowledge']
+    # community 已作为内置应用纳入自动安装（与 knowledge 同为 install_policy=auto）
+    assert [app.id for app in registry.auto_install_apps('personal')] == ['knowledge', 'community']
+    assert [app.id for app in registry.auto_install_apps('enterprise')] == ['knowledge', 'community']
     assert registry.get('knowledge').entry_route == '/workbench/apps/knowledge'
 
 
@@ -201,8 +202,9 @@ def test_hasn_router_exposes_enterprise_workbench_and_knowledge_routes() -> None
     assert '/api/v1/hasn/enterprises' in routes
     assert '/api/v1/hasn/users/me/workspaces' in routes
     assert '/api/v1/hasn/app/workbench/apps' in routes
-    assert '/api/v1/hasn/app/users/me/knowledge-credentials' in routes
-    assert '/api/v1/hasn/app/users/me/knowledge-credentials/refresh' in routes
+    # 知识库凭据路由已从 /users/me/knowledge-credentials 改名为 /knowledge/credentials（功能未变）
+    assert '/api/v1/hasn/app/knowledge/credentials' in routes
+    assert '/api/v1/hasn/app/knowledge/credentials/refresh' in routes
 
 
 def test_workbench_app_routes_inject_database_sessions() -> None:
