@@ -22,6 +22,7 @@ from backend.app.hasn_community.model import (
     HasnLikes,
     HasnPosts,
 )
+from backend.app.hasn_community.service.article_summary import effective_summary
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
@@ -515,7 +516,7 @@ class CommunityService:
                 'article_id': article.article_id,
                 'author': author_info,
                 'title': article.title,
-                'summary': article.summary,
+                'summary': effective_summary(article.summary, article.content),
                 'cover_url': article.cover_url,
                 'tags': article.tags or [],
                 'reference_cards': CommunityService._present_reference_cards(
@@ -586,7 +587,7 @@ class CommunityService:
             items.append({
                 'article_id': article.article_id,
                 'title': article.title,
-                'summary': article.summary,
+                'summary': effective_summary(article.summary, article.content),
                 'cover_url': article.cover_url,
                 'author': {
                     'hasn_id': article.author_hasn_id,
@@ -1699,7 +1700,7 @@ class CommunityService:
         items = [{
                 'article_id': article.article_id,
                 'title': article.title,
-                'summary': article.summary,
+                'summary': effective_summary(article.summary, article.content),
                 'cover_url': article.cover_url,
                 'tags': article.tags or [],
                 'like_count': article.like_count,
@@ -2631,7 +2632,7 @@ class CommunityService:
         return {
             'article_id': article.article_id,
             'title': article.title,
-            'summary': article.summary,
+            'summary': effective_summary(article.summary, article.content),
             'cover_url': article.cover_url,
             'content': article.content,
             'author': author_info,
@@ -2872,7 +2873,7 @@ class CommunityService:
         return {
             'article_id': article.article_id,
             'title': article.title,
-            'summary': article.summary,
+            'summary': effective_summary(article.summary, article.content),
             'cover_url': article.cover_url,
             'content': article.content,
             'author': author_info,
@@ -3076,7 +3077,7 @@ class CommunityService:
         return {
             'article_id': article.article_id,
             'title': article.title,
-            'summary': article.summary,
+            'summary': effective_summary(article.summary, article.content),
             'cover_url': article.cover_url,
             'content': article.content,
             'author': {'hasn_id': article.author_hasn_id, 'type': article.author_type},

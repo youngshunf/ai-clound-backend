@@ -13,6 +13,7 @@ from sqlalchemy.orm import aliased
 
 from backend.app.hasn.model import HasnAgents, HasnHumans
 from backend.app.hasn_community.model import HasnArticles, HasnPosts
+from backend.app.hasn_community.service.article_summary import effective_summary
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,7 +106,7 @@ async def fetch_article_cards(db: AsyncSession, article_ids: list[str]) -> dict[
                                     row.human_nickname, row.human_avatar, row.agent_display_name, row.agent_avatar,
                                     row.owner_hasn_id, row.owner_nickname),
             'title': a.title,
-            'summary': a.summary,
+            'summary': effective_summary(a.summary, a.content),
             'cover_url': a.cover_url,
             'tags': a.tags or [],
             'like_count': a.like_count,
