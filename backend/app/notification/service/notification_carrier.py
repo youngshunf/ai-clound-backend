@@ -133,6 +133,34 @@ async def _persist_card(
         priority=notif.priority if notif.priority in ('critical', 'high', 'normal', 'low') else 'normal',
         context={'notification_id': notif.id, 'conversation_type': conversation_type},
     )
+
+    # 写 message.received sync_event：让接收方（主人）节点经 sync/pull 镜像这条卡片消息。
+    # persist_message 直写（绕开 route_message）不产生同步事件，缺这步则云端落库但 daemon
+    # 永不镜像 —— 卡片不会出现在本地消息列表。owner 即接收方（recipient_id 恒为 h_ 主人）。
+    from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
+
+    sync_gw = SqlAlchemySyncGateway()
+    await sync_gw._append_sync_event(
+        db,
+        owner_id=recipient_id,
+        hasn_id=recipient_id,
+        event_type='message.received',
+        aggregate_type='message',
+        aggregate_id=str(msg.id),
+        payload={
+            'message_id': str(msg.id),
+            'conversation_id': str(conv.id),
+            'owner_id': recipient_id,
+            'hasn_id': recipient_id,
+            'sender_hasn_id': from_id,
+            'recipient_hasn_id': recipient_id,
+            'direction': 'inbound',
+            'content_type': 'application/x.card+json',
+            'content_body': card_body,
+            'local_id': None,
+            'created_at': int(msg.created_time.timestamp()) if msg.created_time else 0,
+        },
+    )
     return msg.id
 
 

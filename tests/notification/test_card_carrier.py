@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from backend.app.hasn.model.hasn_conversations import HasnConversations
 from backend.app.hasn.model.hasn_messages import HasnMessages
@@ -131,6 +131,18 @@ async def test_agent_source_projects_card_into_owner_agent_conversation(db):
     assert conv.type == 'direct'
     assert conv.relation_type == 'social'
     assert {conv.participant_a_id, conv.participant_b_id} == {owner['hasn_id'], agent_id}
+
+    # 写了 message.received sync_event（否则 daemon 永不镜像这条卡片，本地列表看不到）
+    received = (
+        await db.execute(
+            text(
+                "SELECT count(*) FROM hasn_sync_events "
+                "WHERE owner_id = :o AND event_type = 'message.received' AND aggregate_id = :mid"
+            ),
+            {'o': owner['hasn_id'], 'mid': str(card.id)},
+        )
+    ).scalar()
+    assert received == 1
 
 
 @pytest.mark.asyncio
