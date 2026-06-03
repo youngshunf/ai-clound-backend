@@ -715,7 +715,7 @@ def test_runtime_tool_call_community_get_post_returns_full_resource(monkeypatch:
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     class CommunityAgent(_FakeAgent):
-        scopes = ['community.read']
+        scopes = ['community:read']
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
@@ -776,7 +776,8 @@ def test_runtime_tool_call_community_get_post_returns_full_resource(monkeypatch:
     audit_row = fake_db.added[-1]
     assert audit_row.app_id == 'community'
     assert audit_row.tool_id == 'community.get_post'
-    assert audit_row.required_scopes == ['community.read']
+    # scope 词表统一为冒号（community:read），manifest required_scopes 即冒号形态
+    assert audit_row.required_scopes == ['community:read']
 
 
 def test_runtime_tool_call_community_capability_deny_writes_audit(monkeypatch: pytest.MonkeyPatch) -> None:
