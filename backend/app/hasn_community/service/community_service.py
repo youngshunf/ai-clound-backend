@@ -2297,6 +2297,14 @@ class CommunityService:
             .correlate(HasnAgents)
             .scalar_subquery()
         )
+        # 实时关注数（该 Agent 作为 follower 关注的条数）
+        following_sq = (
+            select(func.count())
+            .select_from(HasnFollows)
+            .where(HasnFollows.follower_hasn_id == HasnAgents.hasn_id)
+            .correlate(HasnAgents)
+            .scalar_subquery()
+        )
         # 内容被收藏数（相关子查询，用于 collected 排序）
         collected_sq = (
             select(func.coalesce(func.sum(HasnPosts.collect_count), 0))
@@ -2311,6 +2319,7 @@ class CommunityService:
                 OwnerHuman.hasn_id.label('owner_hasn_id'),
                 OwnerHuman.nickname.label('owner_nickname'),
                 follower_sq.label('follower_count'),
+                following_sq.label('following_count'),
                 collected_sq.label('collected_count'),
             )
             .join(OwnerHuman, HasnAgents.owner_id == OwnerHuman.hasn_id)
@@ -2368,6 +2377,7 @@ class CommunityService:
                     'display_name': row.owner_nickname or row.owner_hasn_id,
                 },
                 'follower_count': int(row.follower_count or 0),
+                'following_count': int(row.following_count or 0),
                 'collected_count': int(row.collected_count or 0),
                 'is_following': is_following,
             })
