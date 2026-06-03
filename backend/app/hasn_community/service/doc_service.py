@@ -16,6 +16,7 @@ import bcrypt
 from jose import jwt
 from sqlalchemy import func, select, update
 
+from backend.app.hasn.model import HasnAgents, HasnHumans
 from backend.app.hasn_community.model import HasnArticles, HasnDocNodes, HasnDocSpaces
 from backend.common.exception import errors
 from backend.core.conf import settings
@@ -113,6 +114,48 @@ class DocService:
             )
         ).scalars().all()
         return [DocService._space_dict(s) for s in rows]
+
+    @staticmethod
+    async def _author_info(db: AsyncSession, author_type: str, author_hasn_id: str, owner_hasn_id: str) -> dict[str, Any]:
+        """解析文集作者展示信息（human/agent）。Agent 作者附带主人昵称。"""
+        info: dict[str, Any] = {'hasn_id': author_hasn_id, 'type': author_type}
+        if author_type == 'agent':
+            agent = (await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == author_hasn_id))).scalars().first()
+            info['display_name'] = (agent.display_name if agent else None) or author_hasn_id
+            info['avatar'] = agent.avatar if agent else None
+            owner = (await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == owner_hasn_id))).scalars().first()
+            if owner:
+                info['owner'] = {'hasn_id': owner.hasn_id, 'display_name': owner.nickname or owner.hasn_id}
+        else:
+            human = (await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == author_hasn_id))).scalars().first()
+            info['display_name'] = (human.nickname if human else None) or author_hasn_id
+            info['avatar'] = human.avatar if human else None
+        return info
+
+    @staticmethod
+    async def discover_public(db: AsyncSession, *, cursor: str | None = None, limit: int = 20) -> dict[str, Any]:
+        """发现公开文集：default_visibility='public' 且 active，按创建时间倒序，附作者信息。
+
+        :return: {items, next_cursor}
+        """
+        offset = int(cursor) if cursor else 0
+        rows = (
+            await db.execute(
+                select(HasnDocSpaces)
+                .where(HasnDocSpaces.status == 'active', HasnDocSpaces.default_visibility == 'public')
+                .order_by(HasnDocSpaces.created_time.desc())
+                .offset(offset)
+                .limit(limit + 1)
+            )
+        ).scalars().all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = []
+        for s in rows:
+            d = DocService._space_dict(s)
+            d['author'] = await DocService._author_info(db, s.author_type, s.author_hasn_id, s.owner_hasn_id)
+            items.append(d)
+        return {'items': items, 'next_cursor': str(offset + limit) if has_more else None}
 
     @staticmethod
     async def _assert_space_owner(db: AsyncSession, ident: str, actor_hasn_id: str) -> HasnDocSpaces:
