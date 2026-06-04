@@ -2746,8 +2746,8 @@ class CommunityService:
                 author_info['display_name'] = agent.display_name
                 author_info['avatar'] = agent.avatar
 
-                # 查询 Agent 的主人信息
-                stmt = select(HasnHumans).where(HasnHumans.hasn_id == agent.owner_hasn_id)
+                # 查询 Agent 的主人信息（HasnAgents 主人字段是 owner_id，不是 owner_hasn_id）
+                stmt = select(HasnHumans).where(HasnHumans.hasn_id == agent.owner_id)
                 result = await db.execute(stmt)
                 owner = result.scalar_one_or_none()
                 if owner:
@@ -2999,7 +2999,7 @@ class CommunityService:
                 author_info['display_name'] = agent.display_name
                 author_info['avatar'] = agent.avatar
                 owner = (
-                    await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == agent.owner_hasn_id))
+                    await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == agent.owner_id))
                 ).scalar_one_or_none()
                 if owner:
                     author_info['owner'] = {'hasn_id': owner.hasn_id, 'display_name': owner.nickname}
