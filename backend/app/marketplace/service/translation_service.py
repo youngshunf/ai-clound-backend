@@ -164,7 +164,10 @@ Translation:"""
         base_payload: dict[str, Any] = {
             "messages": messages,
             "max_tokens": max_tokens,
-            "stream": False,
+            # 用流式：部分 new-api 网关渠道在 stream=false 时只回空 chunk
+            # (completion_tokens=0)，stream=true 才出内容；解析层已支持 SSE
+            # (_parse_sse_chat_response)。stream=true 对合规网关也通用、无副作用。
+            "stream": True,
         }
 
         # Reasoning models (e.g. qwen3.7-max) emit long reasoning_content and need a
