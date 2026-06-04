@@ -709,26 +709,50 @@ class CommunityService:
         :param limit: 每页条数
         :return: 草稿列表
         """
-        # 草稿条目必须与信息流帖子同形（嵌套 author + content_type='post' + 计数），
-        # WebUI 草稿 tab 复用同一张 PostCard 渲染——否则缺 author 会整页白屏崩溃。
-        # 因此与 get_feed 一样 JOIN 作者/主人表回填展示名与头像。
-        AuthorHuman = aliased(HasnHumans)
-        AuthorAgent = aliased(HasnAgents)
-        OwnerHuman = aliased(HasnHumans)
+        # 草稿条目必须与信息流条目同形（嵌套 author + content_type + 计数），WebUI 草稿
+        # tab 复用同款卡片渲染——否则缺 author 会整页白屏崩溃。因此与 get_feed 一样 JOIN
+        # 作者/主人表回填展示名与头像。
+        #
+        # 草稿箱同时收纳「帖子」与「文章」（含 Agent 自主发文的 pending_review 待审核内容）：
+        # 历史实现只查 HasnPosts，导致 Agent 文章有通知却进不了草稿箱、无法审核（2026-06-04 修复）。
+        from backend.app.hasn_community.model.hasn_articles import HasnArticles
 
-        stmt = (
+        def _build_author(
+            author_type: str,
+            author_hasn_id: str,
+            row: Any,
+        ) -> dict[str, Any]:
+            info: dict[str, Any] = {'hasn_id': author_hasn_id, 'type': author_type}
+            if author_type == 'human':
+                info['display_name'] = row.human_nickname or author_hasn_id
+                info['avatar'] = row.human_avatar
+            else:  # agent
+                info['display_name'] = row.agent_display_name or author_hasn_id
+                info['avatar'] = row.agent_avatar
+                if row.owner_hasn_id:
+                    info['owner'] = {
+                        'hasn_id': row.owner_hasn_id,
+                        'display_name': row.owner_nickname or row.owner_hasn_id,
+                    }
+            return info
+
+        # ---- 帖子草稿 ----
+        PostAuthorHuman = aliased(HasnHumans)
+        PostAuthorAgent = aliased(HasnAgents)
+        PostOwnerHuman = aliased(HasnHumans)
+        post_stmt = (
             select(
                 HasnPosts,
-                AuthorHuman.nickname.label('human_nickname'),
-                AuthorHuman.avatar.label('human_avatar'),
-                AuthorAgent.display_name.label('agent_display_name'),
-                AuthorAgent.avatar.label('agent_avatar'),
-                OwnerHuman.hasn_id.label('owner_hasn_id'),
-                OwnerHuman.nickname.label('owner_nickname'),
+                PostAuthorHuman.nickname.label('human_nickname'),
+                PostAuthorHuman.avatar.label('human_avatar'),
+                PostAuthorAgent.display_name.label('agent_display_name'),
+                PostAuthorAgent.avatar.label('agent_avatar'),
+                PostOwnerHuman.hasn_id.label('owner_hasn_id'),
+                PostOwnerHuman.nickname.label('owner_nickname'),
             )
-            .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
-            .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
-            .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
+            .outerjoin(PostAuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == PostAuthorHuman.hasn_id))
+            .outerjoin(PostAuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == PostAuthorAgent.hasn_id))
+            .outerjoin(PostOwnerHuman, (HasnPosts.author_type == 'agent') & (PostAuthorAgent.owner_id == PostOwnerHuman.hasn_id))
             .where(
                 HasnPosts.owner_hasn_id == hasn_id,
                 HasnPosts.status.in_(['draft', 'pending_review']),
@@ -736,38 +760,46 @@ class CommunityService:
             .order_by(HasnPosts.created_time.desc())
             .limit(limit)
         )
+        post_rows = (await db.execute(post_stmt)).all()
 
-        result = await db.execute(stmt)
-        rows = result.all()
+        # ---- 文章草稿（含 Agent pending_review）----
+        ArtAuthorHuman = aliased(HasnHumans)
+        ArtAuthorAgent = aliased(HasnAgents)
+        ArtOwnerHuman = aliased(HasnHumans)
+        article_stmt = (
+            select(
+                HasnArticles,
+                ArtAuthorHuman.nickname.label('human_nickname'),
+                ArtAuthorHuman.avatar.label('human_avatar'),
+                ArtAuthorAgent.display_name.label('agent_display_name'),
+                ArtAuthorAgent.avatar.label('agent_avatar'),
+                ArtOwnerHuman.hasn_id.label('owner_hasn_id'),
+                ArtOwnerHuman.nickname.label('owner_nickname'),
+            )
+            .outerjoin(ArtAuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == ArtAuthorHuman.hasn_id))
+            .outerjoin(ArtAuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == ArtAuthorAgent.hasn_id))
+            .outerjoin(ArtOwnerHuman, (HasnArticles.author_type == 'agent') & (ArtAuthorAgent.owner_id == ArtOwnerHuman.hasn_id))
+            .where(
+                HasnArticles.owner_hasn_id == hasn_id,
+                HasnArticles.status.in_(['draft', 'pending_review']),
+            )
+            .order_by(HasnArticles.created_time.desc())
+            .limit(limit)
+        )
+        article_rows = (await db.execute(article_stmt)).all()
 
-        items = []
-        for row in rows:
+        # ---- 合并：按 created_time 倒序统一排序，cap 到 limit ----
+        merged: list[tuple[Any, dict[str, Any]]] = []
+
+        for row in post_rows:
             post = row.HasnPosts
-
-            author_info = {
-                'hasn_id': post.author_hasn_id,
-                'type': post.author_type,
-            }
-            if post.author_type == 'human':
-                author_info['display_name'] = row.human_nickname or post.author_hasn_id
-                author_info['avatar'] = row.human_avatar
-            else:  # agent
-                author_info['display_name'] = row.agent_display_name or post.author_hasn_id
-                author_info['avatar'] = row.agent_avatar
-                if row.owner_hasn_id:
-                    author_info['owner'] = {
-                        'hasn_id': row.owner_hasn_id,
-                        'display_name': row.owner_nickname or row.owner_hasn_id,
-                    }
-
             # 草稿未发布：时间退回 created_time 让卡片有时间展示；无点赞/收藏交互。
             draft_time = (
                 post.published_time.isoformat()
                 if post.published_time
                 else (post.created_time.isoformat() if post.created_time else None)
             )
-
-            items.append({
+            merged.append((post.created_time, {
                 'content_type': 'post',
                 'post_id': post.post_id,
                 'status': post.status,
@@ -775,7 +807,7 @@ class CommunityService:
                     'kind': post.origin_workspace_kind,
                     'id': post.origin_workspace_id,
                 },
-                'author': author_info,
+                'author': _build_author(post.author_type, post.author_hasn_id, row),
                 'content': post.content,
                 'tags': post.tags or [],
                 'reference_cards': CommunityService._present_reference_cards(
@@ -787,11 +819,54 @@ class CommunityService:
                 'created_time': post.created_time.isoformat() if post.created_time else None,
                 'is_liked': False,
                 'is_collected': False,
-            })
+            }))
 
+        for row in article_rows:
+            article = row.HasnArticles
+            draft_time = (
+                article.published_time.isoformat()
+                if article.published_time
+                else (article.created_time.isoformat() if article.created_time else None)
+            )
+            merged.append((article.created_time, {
+                'content_type': 'article',
+                'article_id': article.article_id,
+                'status': article.status,
+                'origin_workspace': {
+                    'kind': article.origin_workspace_kind,
+                    'id': article.origin_workspace_id,
+                },
+                'author': _build_author(article.author_type, article.author_hasn_id, row),
+                'title': article.title,
+                'summary': article.summary,
+                'cover_url': article.cover_url,
+                'content': article.content,
+                'tags': article.tags or [],
+                'reference_cards': CommunityService._present_reference_cards(
+                    article.reference_cards, hasn_id
+                ),
+                'like_count': article.like_count or 0,
+                'comment_count': article.comment_count or 0,
+                'read_time_min': article.read_time_min or 0,
+                'published_time': draft_time,
+                'created_time': article.created_time.isoformat() if article.created_time else None,
+                'is_liked': False,
+                'is_collected': False,
+            }))
+
+        # created_time 理论上恒由服务端生成；用极早时间兜底，保证排序稳定（timestamptz 需 aware）。
+        from datetime import datetime as _dt
+        from datetime import timezone as _dt_timezone
+
+        _floor = _dt(1970, 1, 1, tzinfo=_dt_timezone.utc)
+        merged.sort(key=lambda pair: pair[0] or _floor, reverse=True)
+        items = [item for _, item in merged[:limit]]
+
+        # 草稿是主人逐条清空的小型审核队列：历史 cursor 从未在 WHERE 生效（伪分页），
+        # 合并两表后单表 cursor 失去意义，故显式不分页（next_cursor=None）。
         return {
             'items': items,
-            'next_cursor': rows[-1].HasnPosts.post_id if rows else None,
+            'next_cursor': None,
         }
 
     @staticmethod
@@ -833,6 +908,55 @@ class CommunityService:
             'post_id': post_id,
             'status': 'published',
             'published_time': post.published_time.isoformat() if post.published_time else None,
+        }
+
+    @staticmethod
+    async def publish_article(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        hasn_id: str,
+        article_id: str,
+    ) -> dict[str, Any]:
+        """
+        发布文章（主人确认 Agent 的待审核文章 / 自己的草稿）。
+
+        与 publish_post 对称：仅 owner 可发布自己名下 draft/pending_review 的文章。
+        update_article 不改 status（只改正文/元信息），审核发布必须走本方法。
+
+        :param db: 数据库会话
+        :param user_id: 用户 ID
+        :param hasn_id: 用户的 hasn_id
+        :param article_id: 文章 ID
+        :return: 发布结果
+        """
+        from backend.app.hasn_community.model.hasn_articles import HasnArticles
+        from backend.app.hasn_community.service.circle_service import circle_service
+
+        stmt = select(HasnArticles).where(
+            HasnArticles.article_id == article_id,
+            HasnArticles.owner_hasn_id == hasn_id,
+            HasnArticles.status.in_(['draft', 'pending_review']),
+        )
+        result = await db.execute(stmt)
+        article = result.scalars().first()
+
+        if not article:
+            from backend.common.exception import errors
+            raise errors.NotFoundError(msg='文章不存在或无权限')
+
+        article.status = 'published'
+        article.published_time = timezone.now()
+        await db.flush()
+
+        # 圈子文章通过审核计入圈内容数（与 create_article 的 published 分支一致）
+        if article.circle_id:
+            await circle_service.bump_content_count(db, circle_id=article.circle_id)
+
+        return {
+            'article_id': article_id,
+            'status': 'published',
+            'published_time': article.published_time.isoformat() if article.published_time else None,
         }
 
     @staticmethod

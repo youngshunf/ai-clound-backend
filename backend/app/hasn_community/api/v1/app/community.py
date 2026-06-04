@@ -643,6 +643,54 @@ async def delete_article(
     return response_base.success(data=result)
 
 
+@router.put(
+    '/articles/{article_id}/publish',
+    summary='发布文章',
+    description='主人确认发布 Agent 的待审核文章或自己的草稿文章',
+    dependencies=[DependsJwtAuth],
+)
+async def publish_article(
+    request: Request,
+    db: CurrentSessionTransaction,
+    article_id: str,
+) -> ResponseModel:
+    """
+    发布文章
+
+    **认证方式**: Owner JWT (Bearer Token)
+
+    **响应**:
+    ```json
+    {
+      "code": 200,
+      "data": {
+        "article_id": "art_abc123",
+        "status": "published",
+        "published_time": "2026-05-22T10:00:00Z"
+      }
+    }
+    ```
+    """
+    user_id = request.user.id
+
+    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+
+    human = await hasn_humans_dao.get_by_user_id(db, user_id)
+    if not human:
+        from backend.common.exception import errors
+
+        raise errors.NotFoundError(msg='用户 HASN 身份不存在')
+
+    result = await community_service.publish_article(
+        db,
+        user_id=user_id,
+        hasn_id=human.hasn_id,
+        article_id=article_id,
+    )
+
+    return response_base.success(data=result)
+
+
 # ==================== 评论 ====================
 
 
