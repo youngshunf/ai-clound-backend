@@ -49,6 +49,7 @@ class MarketplaceSkillSchemaBase(SchemaBase):
     price: Decimal = Field(description='价格')
     is_private: bool = Field(description='是否私有')
     is_official: bool = Field(description='是否官方技能')
+    is_common: bool = Field(False, description='是否公共技能（默认叠加进每个 Agent 的技能清单）')
     download_count: int = Field(description='下载次数')
     star_count: int = Field(0, description='星标数')
     git_commit_hash: str | None = Field(None, description='最新同步的 commit hash')

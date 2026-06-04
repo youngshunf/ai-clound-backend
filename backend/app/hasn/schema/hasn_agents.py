@@ -189,6 +189,10 @@ class AgentSyncResponse(SchemaBase):
     owner_id: str = Field(description='Owner HASN ID')
     server_revision: int = Field(ge=0, description='当前最大 Profile revision')
     agents: list[AgentSnapshot] = Field(default_factory=list, description='Agent 快照列表')
+    common_skills_revision: str = Field(
+        default='0',
+        description='公共技能集合修订号（全局，daemon 据此变化触发全量活跃绑定 re-provision）',
+    )
 
 
 class UpdateAgentBindingRequest(SchemaBase):
@@ -226,16 +230,21 @@ class AgentProfileResponse(SchemaBase):
     agents_md: str | None = Field(None, description='AGENTS.md 内容')
     user_md: str | None = Field(None, description='USER.md 内容（owner 记忆下发）')
     memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）')
-    skills: list[str] = Field(default_factory=list, description='技能 skill_id 清单')
+    skills: list[str] = Field(default_factory=list, description='技能 skill_id 清单（已叠加公共技能）')
     template_id: str | None = Field(None, description='模板 ID')
     template_version: str | None = Field(None, description='模板版本')
     profile_revision: int = Field(default=1, description='Profile 修订号（跨端同步信标）')
+    common_skills_revision: str = Field(
+        default='0',
+        description='公共技能集合修订号（成员或内容版本变化即变，Runtime 据此重拉公共技能）',
+    )
 
 
 class AgentProfileRevisionResponse(SchemaBase):
-    """轻量轮询：仅返回 Profile 修订号。"""
+    """轻量轮询：仅返回 Profile 修订号 + 公共技能修订号。"""
 
     profile_revision: int = Field(default=1, description='Profile 修订号')
+    common_skills_revision: str = Field(default='0', description='公共技能集合修订号')
 
 
 class MemoryContributeRequest(SchemaBase):

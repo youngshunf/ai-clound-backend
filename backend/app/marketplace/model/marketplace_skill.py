@@ -68,6 +68,11 @@ class MarketplaceSkill(Base):
     price: Mapped[Decimal] = mapped_column(sa.NUMERIC(10, 2), default=0, comment='价格')
     is_private: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=False, comment='是否私有')
     is_official: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=False, comment='是否官方技能')
+    is_common: Mapped[bool] = mapped_column(
+        sa.BOOLEAN(),
+        default=False,
+        comment='是否公共技能（默认叠加进每个 Agent 的技能清单）',
+    )
     download_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='下载次数')
     star_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='星标数')
     repo_path: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='在 huanxing-hub 中的路径')
