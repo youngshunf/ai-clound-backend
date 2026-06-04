@@ -207,6 +207,10 @@ class AiNativeRuntimeGateway:
         capability = self._find_capability(manifest, tool_id)
         input_payload = dict(body.input or {})
 
+        # 令牌重试模型（doc15 §3.1）：批准后 hasn-mcp 带 `X-Capability-Ticket` 头重发同一调用，
+        # 网关在 ask 闸门前验票跳闸。MCP 直连面（server.py）走 ContextVar，本中继面（FastAPI 路由）
+        # 直接读请求头。
+        capability_ticket = request.headers.get('X-Capability-Ticket')
         denied = await self._authorize_tool_call(
             db,
             body=body,
@@ -216,6 +220,7 @@ class AiNativeRuntimeGateway:
             tool=tool,
             capability=capability,
             input_payload=input_payload,
+            capability_ticket=capability_ticket,
         )
         if denied is not None:
             return denied
@@ -268,11 +273,13 @@ class AiNativeRuntimeGateway:
         tool: dict[str, Any],
         capability: dict[str, Any],
         input_payload: dict[str, Any],
+        capability_ticket: str | None = None,
     ) -> dict[str, Any] | None:
         """跑完所有闸门；命中任一返回 deny payload，全过返回 None。
 
-        顺序：app 启用(15002) → 协作模式(15005) → 维度① 三态(deny 15012 / ask 挂起→拒 15013)
-        → 企业角色(15004) → 输入校验(15020)。维度① 走唯一判定服务 CapabilityGuard。
+        顺序：app 启用(15002) → 协作模式(15005) → 维度① 三态(deny 15012 / ask：带有效票跳闸→
+        放行；无票→开审批回 approval_required) → 企业角色(15004) → 输入校验(15020)。维度① 走唯一
+        判定服务 CapabilityGuard。
         """
         tool_name = tool.get('mcp_name') or tool['tool_id']
         # 去掉安装态：published 即可调用，无需任何启用步骤；仅企业 override 显式 disabled 时拒（设计 11 §4.2/§4.3）。
@@ -294,24 +301,27 @@ class AiNativeRuntimeGateway:
                                     capability=capability, tool=tool, code='15012', reason='agent_scope_missing')
         if mode == MODE_ASK:
             # 令牌重试模型（doc15 §3.1）：云端**不长挂**。AI-Native 同步面即「中继路径」
-            # （Hermes→hasn-mcp→BackendGateway→本网关），必须把完整 `approval_required`(MCP_9215)
-            # 信封连同 request_id 回给中继：hasn-mcp 据此挂起 ApprovalBroker、主人批准后带
-            # `X-Capability-Ticket` 重试，云端验票跳闸。绝不当次放行（零 fake）。
-            from backend.app.mcp.ask_gate import ask_approval_gate
-            from backend.common.security.agent_jwt import get_agent_scopes_cached
+            # （Hermes→hasn-mcp→BackendGateway→本网关）。批准后 hasn-mcp 带有效
+            # `X-Capability-Ticket` 重发同一调用 → 验票（agent/tool/args_hash 匹配且 jti 未用）
+            # 成功 → 原子消费后**跳过 ask 闸门**落到下面执行；无票 / 票无效 → 开一条审批请求并把
+            # 完整 `approval_required`(MCP_9215) 信封连同 request_id 回给中继（绝不当次放行，零 fake）。
+            if not await self._consume_capability_ticket(agent, tool_name, input_payload, capability_ticket):
+                from backend.app.mcp.ask_gate import ask_approval_gate
+                from backend.common.security.agent_jwt import get_agent_scopes_cached
 
-            policy = await get_agent_scopes_cached(agent.agent_hasn_id, db)
-            envelope = await ask_approval_gate.open_request(
-                agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
-                tool_name=tool_name, required_scopes=list(tool.get('required_scopes') or []),
-                default_mode=policy.get('default_mode', 'allow'),
-                capability_modes=policy.get('capability_modes'),
-                arguments=input_payload,
-            )
-            return await self._approval_required(
-                db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                capability=capability, tool=tool, envelope=envelope,
-            )
+                policy = await get_agent_scopes_cached(agent.agent_hasn_id, db)
+                envelope = await ask_approval_gate.open_request(
+                    agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
+                    tool_name=tool_name, required_scopes=list(tool.get('required_scopes') or []),
+                    default_mode=policy.get('default_mode', 'allow'),
+                    capability_modes=policy.get('capability_modes'),
+                    arguments=input_payload,
+                )
+                return await self._approval_required(
+                    db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                    capability=capability, tool=tool, envelope=envelope,
+                )
+            # 验票通过 → 落到下面其余闸门 + 执行（工具体只在带票这次运行）。
 
         role_denial = self._enterprise_role_denial(workspace=workspace, capability=capability)
         if role_denial is not None:
@@ -564,6 +574,35 @@ class AiNativeRuntimeGateway:
             'approval': approval,
             'audit_id': audit['id'],
         }
+
+    async def _consume_capability_ticket(
+        self,
+        agent: AgentTokenPayload,
+        tool_name: str,
+        arguments: dict[str, Any],
+        ticket: str | None,
+    ) -> bool:
+        """中继面 ask 验票跳闸（A-P5）。镜像 `mcp/server.py:_consume_capability_ticket`，但票据由
+        FastAPI 请求头 `X-Capability-Ticket` 直接传入（非 MCP 传输层 ContextVar）。
+
+        票有效（签名 + 未过期 + agent/tool/args_hash 匹配 + jti 未用 → 原子消费）→ 标记审批请求
+        consumed + 返回 True（跳过 ask 闸门，工具体只在带票这次运行）；无票 / 票无效 / 重放 → False。
+        """
+        if not ticket:
+            return False
+        from backend.app.mcp.ask_gate import _canonical_args_hash, ask_approval_gate
+        from backend.common.security.capability_ticket import consume_capability_ticket
+
+        claims = await consume_capability_ticket(
+            ticket,
+            agent_hasn_id=agent.agent_hasn_id,
+            tool_name=tool_name,
+            args_hash=_canonical_args_hash(arguments),
+        )
+        if not claims:
+            return False
+        await ask_approval_gate.mark_consumed(str(claims.get('request_id') or ''))
+        return True
 
     async def list_audit(self, db: AsyncSession, *, query: AiNativeAuditQuery) -> dict[str, Any]:
         stmt = sa.select(HasnAiNativeAppAudit)
