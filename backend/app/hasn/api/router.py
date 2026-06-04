@@ -102,6 +102,7 @@ from backend.app.hasn.api.v1.app.hasn_agents import router as app_hasn_agents_ro
 from backend.app.hasn.api.v1.app.hasn_audit_log import router as app_hasn_audit_log_router
 from backend.app.hasn.api.v1.app.hasn_conversations import router as app_hasn_conversations_router
 from backend.app.hasn.api.v1.app.hasn_group_members import router as app_hasn_group_members_router
+from backend.app.hasn.api.v1.app.hasn_groups import router as app_hasn_groups_router
 from backend.app.hasn.api.v1.app.hasn_humans import router as app_hasn_humans_router
 from backend.app.hasn.api.v1.app.hasn_messages import router as app_hasn_messages_router
 from backend.app.hasn.api.v1.app.hasn_notifications import router as app_hasn_notifications_router
@@ -118,6 +119,7 @@ app.include_router(app_hasn_conversations_router, prefix='/conversations', tags=
 app.include_router(app_hasn_messages_router, prefix='/messages', tags=['消息管理'])
 app.include_router(app_hasn_unread_counts_router, prefix='/unread/counts', tags=['未读计数'])
 app.include_router(app_hasn_group_members_router, prefix='/group/members', tags=['群成员管理'])
+app.include_router(app_hasn_groups_router, prefix='/groups', tags=['群组（建群/群管理）'])
 app.include_router(app_hasn_agent_capabilities_router, prefix='/agent/capabilities', tags=['Agent能力'])
 app.include_router(app_hasn_trade_sessions_router, prefix='/trade/sessions', tags=['交易会话'])
 app.include_router(app_hasn_notifications_router, prefix='/notifications', tags=['通知管理'])
@@ -134,6 +136,7 @@ from backend.app.hasn.api.v1.agent.hasn_audit_log import router as agent_hasn_au
 from backend.app.hasn.api.v1.agent.hasn_contacts import router as agent_hasn_contacts_router
 from backend.app.hasn.api.v1.agent.hasn_conversations import router as agent_hasn_conversations_router
 from backend.app.hasn.api.v1.agent.hasn_group_members import router as agent_hasn_group_members_router
+from backend.app.hasn.api.v1.agent.hasn_groups import router as agent_hasn_groups_router
 from backend.app.hasn.api.v1.agent.hasn_humans import router as agent_hasn_humans_router
 from backend.app.hasn.api.v1.agent.hasn_messages import router as agent_hasn_messages_router
 from backend.app.hasn.api.v1.agent.hasn_nodes import router as agent_hasn_nodes_router
@@ -157,6 +160,7 @@ agent.include_router(agent_hasn_conversations_router, prefix='/conversations', t
 agent.include_router(agent_hasn_messages_router, prefix='/messages', tags=['消息管理'])
 agent.include_router(agent_hasn_unread_counts_router, prefix='/unread/counts', tags=['未读计数'])
 agent.include_router(agent_hasn_group_members_router, prefix='/group/members', tags=['群成员管理'])
+agent.include_router(agent_hasn_groups_router, prefix='/groups', tags=['群组（分身只读）'])
 agent.include_router(agent_hasn_agent_capabilities_router, prefix='/agent/capabilities', tags=['Agent能力'])
 agent.include_router(agent_hasn_trade_sessions_router, prefix='/trade/sessions', tags=['交易会话'])
 agent.include_router(agent_hasn_notifications_router, prefix='/notifications', tags=['通知管理'])
