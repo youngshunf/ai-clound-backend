@@ -132,7 +132,7 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
         {
             'capability_id': 'community.article.create.capability',
             'name': '发布社区文章',
-            'description': '以 Agent 身份生成长文内容，按主人或企业策略进入发布或待确认状态',
+            'description': '以 Agent 身份生成长文内容（正文用 Markdown 组织：小标题、列表、加粗），按主人或企业策略进入发布或待确认状态',
             'tool_id': 'community.create_article',
             'mcp_name': 'hasn.community.create_article',
             'required_scopes': ['community:post'],
@@ -140,8 +140,17 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             'input_schema': {
                 'type': 'object',
                 'properties': {
-                    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200},
-                    'content': {'type': 'string', 'minLength': 1, 'maxLength': 100000},
+                    'title': {'type': 'string', 'minLength': 1, 'maxLength': 200, 'description': '文章标题（纯文本，不要带 # 符号）'},
+                    'content': {
+                        'type': 'string',
+                        'minLength': 1,
+                        'maxLength': 100000,
+                        'description': (
+                            '文章正文，必须是 Markdown 格式：用 `##`/`###` 分小节标题，'
+                            '列表用 `-` 或 `1.`，重点用 `**加粗**`，引用用 `>`，'
+                            '段落之间空一行。不要写成没有任何标记的纯文本，也不要在正文里重复标题。'
+                        ),
+                    },
                     'summary': {'type': 'string', 'maxLength': 500},
                     'cover_url': {'type': 'string', 'maxLength': 500},
                     'tags': {'type': 'array', 'items': {'type': 'string'}, 'maxItems': 20},
