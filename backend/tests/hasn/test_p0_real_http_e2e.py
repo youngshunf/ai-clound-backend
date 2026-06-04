@@ -1110,6 +1110,10 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setattr('backend.app.mcp.server.HasnCloudMcpServer._log_tool_call', _fake_mcp_log_tool_call)
     monkeypatch.setattr(onboarding_service_module, 'create_refresh_token', fake_refresh_token_creator)
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _fake_agent_scopes_cached)
+    # auth.py 用 `from ...agent_jwt import get_agent_scopes_cached` 把名字绑进自身命名空间，
+    # 仅 patch 模块属性拦不住它（同 async_db_session 上面那两行）。D3 现查走 auth.py 的引用，
+    # 不补这行会落到真 get_agent_scopes_from_db → 参数化 db.execute(stmt, params) → FakeDb 只收一参炸。
+    monkeypatch.setattr('backend.app.mcp.auth.get_agent_scopes_cached', _fake_agent_scopes_cached)
     monkeypatch.setattr(
         ai_native_gateway_module.workbench_domain_service,
         'search_current_knowledge',
