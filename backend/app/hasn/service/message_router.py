@@ -493,6 +493,8 @@ async def persist_message(
     local_id: str | None = None,
     context: dict | None = None,
     process_blocks: list[dict[str, Any]] | None = None,
+    mentions: list[dict[str, Any]] | None = None,
+    mention_all: bool = False,
 ) -> HasnMessages:
     """持久化消息并更新会话"""
     now = timezone.now()
@@ -512,6 +514,8 @@ async def persist_message(
         reply_to_id=reply_to_id,
         local_id=local_id,
         context=context,
+        mentions=mentions,
+        mention_all=mention_all,
         server_received_at=now,
     )
     db.add(msg)
@@ -590,6 +594,12 @@ async def route_message(
         if not group_perm.get('allowed'):
             return {'error': True, 'code': 2002, 'message': group_perm.get('reason', '无权发送群消息')}
 
+        # @提及（mention_only 策略 + daemon 派发闸的数据载体）：从 context 取出，持久化并随
+        # envelope 下发。daemon(G4) 据 group.agent_policy + 这些 mentions 决定唤醒哪些分身。
+        _grp_ctx = context or {}
+        grp_mentions = _grp_ctx.get('mentions') if isinstance(_grp_ctx.get('mentions'), list) else None
+        grp_mention_all = bool(_grp_ctx.get('mention_all'))
+
         msg = await persist_message(
             db=db,
             conversation_id=group_conv_id,
@@ -601,7 +611,9 @@ async def route_message(
             priority=priority,
             reply_to_id=reply_to_id,
             local_id=local_id,
-            context={**(context or {}), 'conversation_type': 'group', 'group_id': to_id},
+            context={**_grp_ctx, 'conversation_type': 'group', 'group_id': to_id},
+            mentions=grp_mentions,
+            mention_all=grp_mention_all,
         )
 
         members = await list_group_members(db, group_conv_id)
@@ -617,12 +629,18 @@ async def route_message(
         await db.commit()
 
         from_entity_type = 'human' if from_id.startswith('h_') else ('agent' if from_id.startswith('a_') else 'system')
+        # 发言人展示信息（接收侧名册/"本条来自 X"标签用，省去 daemon 反查）。从已载名册取。
+        sender_member = next((m for m in members if m.member_id == from_id), None)
+        from_display_name = getattr(sender_member, 'member_name', None) if sender_member else None
+        from_star_id = getattr(sender_member, 'member_star_id', None) if sender_member else None
         hasn_envelope = {
             'id': msg.id,
             'conversation_id': group_conv_id,
             'from_id': from_id,
             'from_type': msg.from_type,
             'from_entity_type': from_entity_type,
+            'from_display_name': from_display_name,
+            'from_star_id': from_star_id,
             'to_id': to_id,
             'to_type': 4,
             'to_entity_type': 'group',
@@ -634,10 +652,16 @@ async def route_message(
             'reply_to_id': reply_to_id,
             'local_id': local_id,
             'created_time': msg.created_time.isoformat() if msg.created_time else None,
+            # 群级 agent 发言策略 + @提及：daemon(G4) group_participation_gate 的权威数据，
+            # 决定 no_agent/silent 不唤醒、mention_only 仅命中才唤醒、free 唤醒(受配额退避)。
+            'agent_policy': getattr(group, 'agent_policy', None) or 'free',
+            'mentions': grp_mentions,
+            'mention_all': grp_mention_all,
             'group': {
                 'group_id': to_id,
                 'name': group.group_name,
                 'owner_id': group.group_owner_id,
+                'agent_policy': getattr(group, 'agent_policy', None) or 'free',
             },
         }
         payload = {

@@ -19,6 +19,7 @@ class _Group:
     group_name: str = '测试群'
     group_owner_id: str = 'h_owner'
     mute_all: bool = False
+    agent_policy: str = 'free'
 
 
 @dataclass
@@ -26,6 +27,8 @@ class _Member:
     member_id: str
     member_type: str = 'human'
     role: str = 'member'
+    member_name: str = ''
+    member_star_id: str = ''
 
 
 @dataclass
@@ -114,3 +117,63 @@ def test_entity_type_int_supports_group():
     from backend.app.hasn.service.message_router import _entity_type_int
 
     assert _entity_type_int('g:500001') == 4
+
+
+@pytest.mark.asyncio
+async def test_group_envelope_carries_policy_mentions_and_sender(monkeypatch):
+    """G2：群 envelope 富化——agent_policy + mentions + mention_all + 发言人展示名/唤星号。
+
+    这些是 daemon(G4) group_participation_gate 的权威数据（决定唤醒哪些分身）与接收侧
+    名册/"本条来自 X"标签的渲染来源。
+    """
+    from backend.app.hasn.service import message_router as mr
+
+    group = _Group(agent_policy='mention_only')
+    pushed = []
+
+    monkeypatch.setattr(
+        mr,
+        'resolve_target',
+        AsyncMock(return_value={
+            'hasn_id': group.group_id,
+            'entity_type': 'group',
+            'conversation_id': group.id,
+            'owner_id': group.group_owner_id,
+        }),
+    )
+    monkeypatch.setattr(mr, 'get_group_conversation', AsyncMock(return_value=group))
+    monkeypatch.setattr(mr, 'check_group_send_permission', AsyncMock(return_value={'allowed': True}))
+    monkeypatch.setattr(mr, 'persist_message', AsyncMock(return_value=_Msg()))
+    monkeypatch.setattr(
+        mr,
+        'list_group_members',
+        AsyncMock(return_value=[
+            _Member('h_sender', member_name='发送者甲', member_star_id='100#me'),
+            _Member('a_peer', member_type='agent'),
+        ]),
+    )
+    monkeypatch.setattr(mr, '_agent_owner_id', AsyncMock(return_value='h_agent_owner'))
+    monkeypatch.setattr(mr, 'increment_unread_for', AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        mr,
+        '_push_message_to',
+        AsyncMock(side_effect=lambda target, payload: pushed.append((target, payload))),
+    )
+
+    mentions = [{'hasn_id': 'a_peer', 'entity_type': 'agent'}]
+    result = await mr.route_message(
+        _DB(),
+        from_id='h_sender',
+        to_target='g:500001',
+        content={'text': '@分身 在吗'},
+        context={'mentions': mentions, 'mention_all': False},
+    )
+
+    assert result['error'] is False
+    env = pushed[0][1]['params']['message']
+    assert env['agent_policy'] == 'mention_only'
+    assert env['group']['agent_policy'] == 'mention_only'
+    assert env['mentions'] == mentions
+    assert env['mention_all'] is False
+    assert env['from_display_name'] == '发送者甲'
+    assert env['from_star_id'] == '100#me'
