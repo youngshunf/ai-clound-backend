@@ -26,6 +26,7 @@ class McpErrorCode(Enum):
     QUERY_TOO_BROAD = "MCP_9212"
     DIRECT_CALL_DENIED = "MCP_9213"
     LOCAL_EXECUTION_UNAVAILABLE = "MCP_9214"
+    APPROVAL_REQUIRED = "MCP_9215"
 
     def __str__(self) -> str:
         return f"{self.value} {self.name}"

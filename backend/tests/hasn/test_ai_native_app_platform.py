@@ -644,13 +644,14 @@ def test_runtime_tool_call_ask_mode_approved_executes(monkeypatch: pytest.Monkey
             'post_needs_review': False,
         }
 
-    gate_calls: dict[str, Any] = {}
+    open_calls: dict[str, Any] = {}
 
-    async def _gate_approved(*, agent_hasn_id: str, owner_hasn_id: str | None, tool_name: str, arguments: dict) -> None:
-        gate_calls['tool_name'] = tool_name  # 批准（不抛）
+    async def _open_request(**kwargs: Any) -> dict[str, Any]:
+        open_calls['tool_name'] = kwargs.get('tool_name')  # 记录挂起请求（不当次放行）
+        return {'ok': False, 'error': 'approval_required', 'approval': {'request_id': 'areq_stub'}}
 
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _ask)
-    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'gate', _gate_approved)
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
     monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
     monkeypatch.setattr(gateway_module.workbench_domain_service, 'search_current_knowledge', fake_search)
 
@@ -661,15 +662,17 @@ def test_runtime_tool_call_ask_mode_approved_executes(monkeypatch: pytest.Monkey
             headers={'Authorization': 'Bearer test-agent'},
         )
 
+    # 令牌重试模型：同步 AI-Native 面 ask → 记录审批请求 + 当次 15013 pending（主人批准后重发）。
     assert resp.status_code == 200, resp.text
     data = resp.json()['data']
-    assert data['decision'] == 'allow'
-    assert gate_calls['tool_name'] == 'hasn.knowledge.search'  # 确实挂起了 ask 闸门
-    assert fake_db.added[-1].decision == 'allow'
+    assert data['decision'] == 'deny'
+    assert data['error'] == {'code': '15013', 'message': 'agent_capability_ask_pending'}
+    assert open_calls['tool_name'] == 'hasn.knowledge.search'  # 确实记录了 ask 审批请求
+    assert fake_db.added[-1].decision == 'deny'
 
 
 def test_runtime_tool_call_ask_mode_rejected_writes_15013(monkeypatch: pytest.MonkeyPatch) -> None:
-    # ask 被主人拒绝/超时（gate raise PermissionError）→ 15013 deny + 审计，不触达 handler。
+    # 令牌重试模型：ask → 记录审批请求 + 15013 pending + 审计，不触达 handler（主人批准后重发）。
     import backend.app.mcp.ask_gate as ask_gate_module
     import backend.common.security.agent_jwt as agent_jwt_module
 
@@ -689,11 +692,11 @@ def test_runtime_tool_call_ask_mode_rejected_writes_15013(monkeypatch: pytest.Mo
             'post_needs_review': False,
         }
 
-    async def _gate_rejected(*, agent_hasn_id: str, owner_hasn_id: str | None, tool_name: str, arguments: dict) -> None:
-        raise PermissionError('Owner approval required (ask mode, rejected)')
+    async def _open_request(**kwargs: Any) -> dict[str, Any]:
+        return {'ok': False, 'error': 'approval_required', 'approval': {'request_id': 'areq_stub'}}
 
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _ask)
-    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'gate', _gate_rejected)
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
     monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
 
     with TestClient(app) as client:
@@ -706,7 +709,7 @@ def test_runtime_tool_call_ask_mode_rejected_writes_15013(monkeypatch: pytest.Mo
     assert resp.status_code == 200, resp.text
     data = resp.json()['data']
     assert data['decision'] == 'deny'
-    assert data['error'] == {'code': '15013', 'message': 'agent_capability_ask_denied'}
+    assert data['error'] == {'code': '15013', 'message': 'agent_capability_ask_pending'}
     assert fake_db.added[-1].error_code == '15013'
 
 

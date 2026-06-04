@@ -142,13 +142,19 @@ class HasnCloudMcpServer:
             if mode == MODE_DENY:
                 raise PermissionError(f'Capability denied by owner for tool: {tool_name}')
             if mode == MODE_ASK:
-                # D4：仅 owner 主动设 ask 才挂起；不按 risk 强制。批准→继续；拒绝/超时→raise。
+                # D4：仅 owner 主动设 ask 才挂起；不按 risk 强制。令牌重试模型（doc15 §3）：
+                # 云端**不长挂**——开一条审批请求并把 approval_required 信封作为工具结果返回，
+                # 由 daemon ApprovalBroker 发卡片 + 等待 + 换票，hasn-mcp 带票重试。
+                # （带有效一次性票的重试已在 A-P2 验票分支于此前跳闸，不会再进这里。）
                 from backend.app.mcp.ask_gate import ask_approval_gate
 
-                await ask_approval_gate.gate(
+                return await ask_approval_gate.open_request(
                     agent_hasn_id=agent_context.agent_hasn_id,
                     owner_hasn_id=agent_context.owner_hasn_id,
                     tool_name=tool_name,
+                    required_scopes=list(getattr(tool, 'required_scopes', []) or []),
+                    default_mode=agent_context.default_mode,
+                    capability_modes=agent_context.capability_modes,
                     arguments=arguments,
                 )
 

@@ -147,37 +147,42 @@ async def test_tool_call_inner_deny_raises(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_tool_call_inner_ask_approved_executes(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tool_call_inner_ask_returns_approval_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """内层 ask（令牌重试模型）：tool.call 透传 approval_required 信封，内层**不执行**、不 raise。"""
     from backend.app.mcp import ask_gate as ask_gate_module
 
     server = _server(monkeypatch)
-    gated: dict[str, Any] = {}
+    opened: dict[str, Any] = {}
+    envelope = {'ok': False, 'error': 'approval_required', 'code': 'MCP_9215', 'approval': {'request_id': 'areq_meta'}}
 
-    async def _gate(*, agent_hasn_id: str, owner_hasn_id: str | None, tool_name: str, arguments: dict) -> None:  # noqa: RUF029
-        gated['tool'] = tool_name  # 批准（不抛）
+    async def _open_request(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
+        opened['tool_name'] = kwargs.get('tool_name')
+        return envelope
 
-    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'gate', _gate)
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
 
     ctx = _ctx(capability_modes={'hasn.stub.act': 'ask'})
     result = await _call_tool(server).execute(ctx, {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
-    assert result == {'echo': {'content': 'hi'}}
-    assert gated['tool'] == 'hasn.stub.act'  # 内层工具走了 ask 闸门
+    assert result == envelope  # 透传信封；若执行了内层会是 {'echo': ...}
+    assert opened['tool_name'] == 'hasn.stub.act'  # 内层工具确实进了 ask 闸门
 
 
 @pytest.mark.asyncio
-async def test_tool_call_inner_ask_rejected_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tool_call_inner_ask_envelope_carries_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ask 信封带 request_id，供 daemon 驱动卡片审批 + 换票重试。"""
     from backend.app.mcp import ask_gate as ask_gate_module
 
     server = _server(monkeypatch)
 
-    async def _gate_reject(*args: object, **kwargs: object) -> None:  # noqa: RUF029
-        raise PermissionError('rejected')
+    async def _open_request(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
+        return {'ok': False, 'error': 'approval_required', 'code': 'MCP_9215', 'approval': {'request_id': 'areq_xyz'}}
 
-    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'gate', _gate_reject)
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
 
     ctx = _ctx(capability_modes={'hasn.stub.act': 'ask'})
-    with pytest.raises(PermissionError):
-        await _call_tool(server).execute(ctx, {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
+    result = await _call_tool(server).execute(ctx, {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
+    assert result['error'] == 'approval_required'
+    assert result['approval']['request_id'] == 'areq_xyz'
 
 
 # ── 参数透传健壮性（线上 bug：params 落成空对象 → 兼容三种到达形态）─────────────

@@ -293,17 +293,23 @@ class AiNativeRuntimeGateway:
             return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
                                     capability=capability, tool=tool, code='15012', reason='agent_scope_missing')
         if mode == MODE_ASK:
-            # 与 MCP 面一致：owner 设 ask 的能力每次挂起等批准；批准放行，拒绝/超时→15013 deny。
+            # 令牌重试模型（doc15 §3）：云端**不长挂**。本 AI-Native 同步面没有 daemon 换票/
+            # 重试机制，故 ask → 开一条审批请求（主人会收到卡片）+ 当次按 15013 pending 拒绝，
+            # 主人批准后由 Agent 重新发起调用。零 fake：ask 绝不当次放行。
             from backend.app.mcp.ask_gate import ask_approval_gate
-            try:
-                await ask_approval_gate.gate(
-                    agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
-                    tool_name=tool_name, arguments=input_payload,
-                )
-            except PermissionError:
-                return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                        capability=capability, tool=tool, code='15013',
-                                        reason='agent_capability_ask_denied')
+            from backend.common.security.agent_jwt import get_agent_scopes_cached
+
+            policy = await get_agent_scopes_cached(agent.agent_hasn_id, db)
+            await ask_approval_gate.open_request(
+                agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
+                tool_name=tool_name, required_scopes=list(tool.get('required_scopes') or []),
+                default_mode=policy.get('default_mode', 'allow'),
+                capability_modes=policy.get('capability_modes'),
+                arguments=input_payload,
+            )
+            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                                    capability=capability, tool=tool, code='15013',
+                                    reason='agent_capability_ask_pending')
 
         role_denial = self._enterprise_role_denial(workspace=workspace, capability=capability)
         if role_denial is not None:
