@@ -110,7 +110,12 @@ async def test_group_full_lifecycle(http) -> None:
     gid = created['group_id']
 
     mine = _data(await c.get('/api/v1/hasn/app/groups'))['items']
-    assert any(g['group_id'] == gid for g in mine), '建群后应在我的群列表'
+    listed = next((g for g in mine if g['group_id'] == gid), None)
+    assert listed is not None, '建群后应在我的群列表'
+    # 列表附带头像预览名册（前 N 个成员，供 WebUI 拼九宫格群头像）。
+    preview = listed.get('members_preview')
+    assert isinstance(preview, list) and 1 <= len(preview) <= 4, '群列表应含 1~4 个预览成员'
+    assert all('hasn_id' in m and 'member_type' in m for m in preview), '预览成员需含身份字段'
 
     detail = _data(await c.get(f'/api/v1/hasn/app/groups/{gid}'))
     assert detail['group_id'] == gid and len(detail['members']) == 3

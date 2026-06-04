@@ -25,6 +25,8 @@ VALID_AGENT_POLICY = {'free', 'mention_only', 'silent', 'no_agent'}
 _GROUP_ID_BASE = 500000
 _MAX_MEMBERS_DEFAULT = 200
 _ADMIN_ROLES = ('owner', 'admin')
+# 群列表里每个群附带的头像预览成员上限（前 N 个成员，供 WebUI 拼九宫格群头像）。
+_AVATAR_PREVIEW_LIMIT = 4
 
 
 class HasnGroupService:
@@ -227,7 +229,11 @@ class HasnGroupService:
 
     @classmethod
     async def list_my_groups(cls, db: AsyncSession, *, hasn_id: str) -> list[dict[str, Any]]:
-        """列出 hasn_id 作为成员的活跃群（摘要，不含完整名册）。"""
+        """列出 hasn_id 作为成员的活跃群（摘要 + 头像预览名册，不含完整名册）。
+
+        每个群附带 `members_preview`（按入群时间取前 `_AVATAR_PREVIEW_LIMIT` 个成员），
+        供 WebUI 在消息列表拼九宫格群头像；完整名册仍需走 `get_group_detail`。
+        """
         conv_ids = (
             (
                 await db.execute(
@@ -254,7 +260,33 @@ class HasnGroupService:
             .scalars()
             .all()
         )
-        return [cls._group_to_dict(c) for c in convs]
+        # 单次批量取所有群成员（避免逐群 N+1），按入群时间升序便于取前几个作头像。
+        active_ids = [c.id for c in convs]
+        preview_by_conv: dict[Any, list[HasnGroupMembers]] = {}
+        if active_ids:
+            roster_rows = (
+                (
+                    await db.execute(
+                        select(HasnGroupMembers)
+                        .where(HasnGroupMembers.conversation_id.in_(active_ids))
+                        .order_by(HasnGroupMembers.joined_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for m in roster_rows:
+                bucket = preview_by_conv.setdefault(m.conversation_id, [])
+                if len(bucket) < _AVATAR_PREVIEW_LIMIT:
+                    bucket.append(m)
+        result: list[dict[str, Any]] = []
+        for c in convs:
+            data = cls._group_to_dict(c)
+            data['members_preview'] = [
+                cls._member_to_dict(m) for m in preview_by_conv.get(c.id, [])
+            ]
+            result.append(data)
+        return result
 
     @classmethod
     async def get_group_detail(
