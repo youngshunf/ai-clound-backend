@@ -293,23 +293,25 @@ class AiNativeRuntimeGateway:
             return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
                                     capability=capability, tool=tool, code='15012', reason='agent_scope_missing')
         if mode == MODE_ASK:
-            # 令牌重试模型（doc15 §3）：云端**不长挂**。本 AI-Native 同步面没有 daemon 换票/
-            # 重试机制，故 ask → 开一条审批请求（主人会收到卡片）+ 当次按 15013 pending 拒绝，
-            # 主人批准后由 Agent 重新发起调用。零 fake：ask 绝不当次放行。
+            # 令牌重试模型（doc15 §3.1）：云端**不长挂**。AI-Native 同步面即「中继路径」
+            # （Hermes→hasn-mcp→BackendGateway→本网关），必须把完整 `approval_required`(MCP_9215)
+            # 信封连同 request_id 回给中继：hasn-mcp 据此挂起 ApprovalBroker、主人批准后带
+            # `X-Capability-Ticket` 重试，云端验票跳闸。绝不当次放行（零 fake）。
             from backend.app.mcp.ask_gate import ask_approval_gate
             from backend.common.security.agent_jwt import get_agent_scopes_cached
 
             policy = await get_agent_scopes_cached(agent.agent_hasn_id, db)
-            await ask_approval_gate.open_request(
+            envelope = await ask_approval_gate.open_request(
                 agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
                 tool_name=tool_name, required_scopes=list(tool.get('required_scopes') or []),
                 default_mode=policy.get('default_mode', 'allow'),
                 capability_modes=policy.get('capability_modes'),
                 arguments=input_payload,
             )
-            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15013',
-                                    reason='agent_capability_ask_pending')
+            return await self._approval_required(
+                db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                capability=capability, tool=tool, envelope=envelope,
+            )
 
         role_denial = self._enterprise_role_denial(workspace=workspace, capability=capability)
         if role_denial is not None:
@@ -521,6 +523,47 @@ class AiNativeRuntimeGateway:
             context={'reason': reason},
         )
         return self._deny_payload(body.trace_id, code, reason, audit_id=audit['id'])
+
+    async def _approval_required(
+        self,
+        db: AsyncSession,
+        *,
+        body: AiNativeToolCallRequest,
+        workspace: dict[str, Any],
+        agent: AgentTokenPayload | None,
+        manifest: dict[str, Any],
+        capability: dict[str, Any],
+        tool: dict[str, Any],
+        envelope: dict[str, Any],
+    ) -> dict[str, Any]:
+        """ask 命中：写 approval_required 审计 + 回带 request_id 的 MCP_9215 信封（不长挂）。
+
+        中继（hasn-mcp）据 `decision == 'approval_required'` + `approval.request_id`
+        驱动 ApprovalBroker 挂起 → 主人批准换一次性票 → 带 `X-Capability-Ticket` 重试
+        （doc15 §3.1，专利 H10）。`envelope` 即 `ask_approval_gate.open_request()` 的返回。
+        """
+        approval = dict(envelope.get('approval') or {})
+        code = str(envelope.get('code') or 'MCP_9215')
+        message = str(envelope.get('message') or 'agent_capability_ask_pending')
+        audit = await self._write_audit(
+            db,
+            trace_id=body.trace_id,
+            workspace=workspace,
+            agent=agent,
+            manifest=manifest,
+            capability=capability,
+            tool=tool,
+            decision='approval_required',
+            error_code=code,
+            context={'reason': 'agent_capability_ask_pending', 'request_id': approval.get('request_id')},
+        )
+        return {
+            'trace_id': body.trace_id,
+            'decision': 'approval_required',
+            'error': {'code': code, 'message': message},
+            'approval': approval,
+            'audit_id': audit['id'],
+        }
 
     async def list_audit(self, db: AsyncSession, *, query: AiNativeAuditQuery) -> dict[str, Any]:
         stmt = sa.select(HasnAiNativeAppAudit)

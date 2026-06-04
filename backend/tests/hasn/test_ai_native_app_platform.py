@@ -620,8 +620,9 @@ def _knowledge_fake_db() -> _FakeDb:
     )
 
 
-def test_runtime_tool_call_ask_mode_approved_executes(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 三态 ask（owner 设「每次问我」）：runtime 网关也阻塞等批准（与 MCP 一致）。批准→执行 allow。
+def test_runtime_tool_call_ask_mode_returns_approval_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 令牌重试模型（doc15 §3.1）：ask 命中 → 中继路径回完整 approval_required(MCP_9215) 信封 +
+    # request_id，hasn-mcp 据此挂起 ApprovalBroker / 换票重试。绝不当次放行。
     import backend.app.mcp.ask_gate as ask_gate_module
     import backend.common.security.agent_jwt as agent_jwt_module
 
@@ -648,7 +649,18 @@ def test_runtime_tool_call_ask_mode_approved_executes(monkeypatch: pytest.Monkey
 
     async def _open_request(**kwargs: Any) -> dict[str, Any]:
         open_calls['tool_name'] = kwargs.get('tool_name')  # 记录挂起请求（不当次放行）
-        return {'ok': False, 'error': 'approval_required', 'approval': {'request_id': 'areq_stub'}}
+        return {
+            'ok': False,
+            'error': 'approval_required',
+            'code': 'MCP_9215',
+            'message': f'需要主人批准后才能执行：{kwargs.get("tool_name")}',
+            'approval': {
+                'request_id': 'areq_stub',
+                'tool_name': kwargs.get('tool_name'),
+                'args_digest': {},
+                'expires_in': 600,
+            },
+        }
 
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _ask)
     monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
@@ -662,17 +674,18 @@ def test_runtime_tool_call_ask_mode_approved_executes(monkeypatch: pytest.Monkey
             headers={'Authorization': 'Bearer test-agent'},
         )
 
-    # 令牌重试模型：同步 AI-Native 面 ask → 记录审批请求 + 当次 15013 pending（主人批准后重发）。
+    # 令牌重试模型：中继面 ask → 回 approval_required(MCP_9215) + request_id（主人批准后带票重试）。
     assert resp.status_code == 200, resp.text
     data = resp.json()['data']
-    assert data['decision'] == 'deny'
-    assert data['error'] == {'code': '15013', 'message': 'agent_capability_ask_pending'}
+    assert data['decision'] == 'approval_required'
+    assert data['error']['code'] == 'MCP_9215'
+    assert data['approval']['request_id'] == 'areq_stub'  # 中继据此挂起 / 换票
     assert open_calls['tool_name'] == 'hasn.knowledge.search'  # 确实记录了 ask 审批请求
-    assert fake_db.added[-1].decision == 'deny'
+    assert fake_db.added[-1].decision == 'approval_required'
 
 
-def test_runtime_tool_call_ask_mode_rejected_writes_15013(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 令牌重试模型：ask → 记录审批请求 + 15013 pending + 审计，不触达 handler（主人批准后重发）。
+def test_runtime_tool_call_ask_mode_audits_approval_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 令牌重试模型：ask → 记录审批请求 + approval_required(MCP_9215) 审计，不触达 handler（带票重试）。
     import backend.app.mcp.ask_gate as ask_gate_module
     import backend.common.security.agent_jwt as agent_jwt_module
 
@@ -693,7 +706,13 @@ def test_runtime_tool_call_ask_mode_rejected_writes_15013(monkeypatch: pytest.Mo
         }
 
     async def _open_request(**kwargs: Any) -> dict[str, Any]:
-        return {'ok': False, 'error': 'approval_required', 'approval': {'request_id': 'areq_stub'}}
+        return {
+            'ok': False,
+            'error': 'approval_required',
+            'code': 'MCP_9215',
+            'message': f'需要主人批准后才能执行：{kwargs.get("tool_name")}',
+            'approval': {'request_id': 'areq_stub', 'tool_name': kwargs.get('tool_name')},
+        }
 
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _ask)
     monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
@@ -708,9 +727,11 @@ def test_runtime_tool_call_ask_mode_rejected_writes_15013(monkeypatch: pytest.Mo
 
     assert resp.status_code == 200, resp.text
     data = resp.json()['data']
-    assert data['decision'] == 'deny'
-    assert data['error'] == {'code': '15013', 'message': 'agent_capability_ask_pending'}
-    assert fake_db.added[-1].error_code == '15013'
+    assert data['decision'] == 'approval_required'
+    assert data['error']['code'] == 'MCP_9215'
+    assert data['approval']['request_id'] == 'areq_stub'
+    assert fake_db.added[-1].error_code == 'MCP_9215'
+    assert fake_db.added[-1].decision == 'approval_required'
 
 
 def test_runtime_tool_call_community_get_post_returns_full_resource(monkeypatch: pytest.MonkeyPatch) -> None:
