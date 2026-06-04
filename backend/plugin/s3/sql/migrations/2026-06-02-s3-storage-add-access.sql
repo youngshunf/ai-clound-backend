@@ -11,7 +11,8 @@ ALTER TABLE "public"."s3_storage" ADD COLUMN IF NOT EXISTS "sign_strategy" varch
 COMMENT ON COLUMN "public"."s3_storage"."access" IS '访问类型 (public:公开:green/private:私有:orange)';
 COMMENT ON COLUMN "public"."s3_storage"."sign_strategy" IS '签名策略 (cdn_timestamp:CDN时间戳防盗链:blue/s3_presign:S3预签名:green/nginx_secure_link:Nginx防盗链:orange)';
 
--- 既有七牛私有空间：配「时间戳防盗链」CDN 域名时用 cdn_timestamp；否则保持默认 s3_presign。
--- 本行（bucket=hasn）当前承载头像/帖图等公开类资源经 CDN 直读，归为 public。
-UPDATE "public"."s3_storage" SET "access" = 'public' WHERE "bucket" = 'hasn' AND "cdn_domain" IS NOT NULL AND "cdn_domain" <> '';
+-- 注：既有七牛空间（bucket=hasn）实为「私有桶」，保持列默认 'private'，不改 public。
+-- （初版曾误 UPDATE 为 public，已由 2026-06-04-s3-storage-fix-access-private.sql 修正回 private。）
+-- 公开类资源（头像/帖图）经 sys/upload/image 走 storages[0]（与 access 无关 + CDN 直读），
+-- 不受 access 影响；私信附件（dm_attachment）才按 access=private 命中并 s3_presign 签名。
 COMMIT;

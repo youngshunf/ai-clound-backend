@@ -16,6 +16,11 @@ class S3StorageSchemaBase(SchemaBase):
     prefix: str | None = Field(None, description='前缀')
     region: str | None = Field(None, description='区域')
     cdn_domain: str | None = Field(None, description='CDN域名，如 https://cdn.example.com')
+    access: str = Field('private', description='访问类型：public 公开(CDN 直读不签名) / private 私有(签名访问)')
+    sign_strategy: str = Field(
+        's3_presign',
+        description='签名策略(私有时生效)：s3_presign S3预签名 / cdn_timestamp CDN时间戳防盗链 / nginx_secure_link Nginx防盗链',
+    )
     remark: str | None = Field(None, description='备注')
 
 
