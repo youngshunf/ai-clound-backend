@@ -104,7 +104,7 @@ async def add_members(
 
 
 @router.delete('/{group_id}/members/{member_id}', summary='移除成员 / 退群', dependencies=[DependsJwtAuth])
-async def remove_member(
+async def remove_group_member(
     request: Request,
     db: CurrentSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
