@@ -15,6 +15,7 @@ import yaml
 from git import Repo
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.marketplace.crud.crud_marketplace_category import marketplace_category_dao
 from backend.app.marketplace.crud.crud_marketplace_skill import marketplace_skill_dao
 from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.crud.crud_marketplace_skill_version import marketplace_skill_version_dao
@@ -83,8 +84,10 @@ class GitHubSyncService:
 
             # Translate all scanned skills in one batched pass (10 per LLM request)
             # instead of one request per skill — language detection, bilingual
-            # name/description, bilingual tags, and emoji all come back together.
-            translations = await self._batch_translate(skills_data)
+            # name/description, bilingual tags, emoji AND category all come back
+            # together (LLM picks the category from our taxonomy in the same call).
+            categories = await self._load_categories(db)
+            translations = await self._batch_translate(skills_data, categories)
 
             # Sync to database
             synced_count = 0
@@ -305,8 +308,16 @@ class GitHubSyncService:
                 return icon_path
         return None
 
-    async def _batch_translate(self, skills_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Translate all scanned skills in batched LLM requests (10 per request)."""
+    async def _batch_translate(
+        self,
+        skills_data: list[dict[str, Any]],
+        categories: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Translate all scanned skills in batched LLM requests (10 per request).
+
+        When ``categories`` is provided the LLM also returns a ``category`` slug
+        per skill (picked from our taxonomy) in the same call.
+        """
         if not skills_data:
             return []
         items = [
@@ -318,7 +329,22 @@ class GitHubSyncService:
             }
             for skill_data in skills_data
         ]
-        return await translation_service.batch_translate_skill_metadata(items, concurrency=4)
+        return await translation_service.batch_translate_skill_metadata(
+            items, concurrency=4, categories=categories,
+        )
+
+    async def _load_categories(self, db: AsyncSession) -> list[dict[str, Any]]:
+        """Load marketplace categories as {slug, name} for LLM classification."""
+        try:
+            categories = await marketplace_category_dao.get_all(db)
+        except Exception as exc:
+            log.error(f"Failed to load marketplace categories for classification: {exc}")
+            return []
+        return [
+            {'slug': cat.slug, 'name': getattr(cat, 'name', None)}
+            for cat in categories
+            if getattr(cat, 'slug', None)
+        ]
 
     async def _sync_skill(
         self,
@@ -359,7 +385,8 @@ class GitHubSyncService:
             'icon_url': await self._resolve_icon_url(db, skill_data),
             'emoji': skill_data.get('emoji') or translated.get('emoji'),
             'author_name': skill_data.get('author_name'),
-            'category': skill_data.get('category'),
+            # 优先用技能自带 category（huanxing 目录名/frontmatter），否则用 LLM 分类
+            'category': skill_data.get('category') or translated.get('category'),
             'tags': json.dumps(tags, ensure_ascii=False),
             'tags_en': json.dumps(tags_en or tags, ensure_ascii=False),
             'tags_zh': json.dumps(tags_zh or tags, ensure_ascii=False),

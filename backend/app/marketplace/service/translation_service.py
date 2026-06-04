@@ -287,6 +287,7 @@ Translation:"""
         description: str | None = None,
         source_lang: Literal['en', 'zh'] | None = None,
         tag_hints: list[str] | str | None = None,
+        categories: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         Normalize skill metadata to bilingual name, description, and tags.
@@ -305,13 +306,17 @@ Translation:"""
             source_language, target_language, tags_en, tags_zh.
         """
         hints = self.normalize_tag_list(tag_hints)
-        cache_key = f"skill-metadata:{hash((name or '', description or '', tuple(hints), source_lang or ''))}"
+        cat_sig = tuple(sorted(str(c.get('slug') or '') for c in (categories or [])))
+        cache_key = f"skill-metadata:{hash((name or '', description or '', tuple(hints), source_lang or '', cat_sig))}"
         if cache_key in self._translation_cache:
             return self._translation_cache[cache_key]
 
         try:
             raw = await self._complete_chat(
-                self._metadata_messages(name=name, description=description, tag_hints=hints, source_lang=source_lang),
+                self._metadata_messages(
+                    name=name, description=description, tag_hints=hints,
+                    source_lang=source_lang, categories=categories,
+                ),
                 max_tokens=1400,
                 response_format={'type': 'json_object'},
             )
@@ -321,6 +326,7 @@ Translation:"""
                 description=description,
                 tag_hints=hints,
                 source_lang=source_lang,
+                categories=categories,
             )
         except Exception as exc:
             log.error(f"Skill metadata translation failed: {exc}")
@@ -341,6 +347,7 @@ Translation:"""
         description: str | None,
         tag_hints: list[str],
         source_lang: Literal['en', 'zh'] | None,
+        categories: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, str]]:
         payload = {
             'name': name or '',
@@ -348,6 +355,13 @@ Translation:"""
             'tag_hints': tag_hints,
             'source_language_hint': source_lang,
         }
+        category_block = self._category_prompt_block(categories)
+        keys = (
+            'source_language, target_language, name_en, name_zh, '
+            'description_en, description_zh, tags_en, tags_zh, emoji'
+        )
+        if category_block:
+            keys += ', category'
         return [
             {
                 'role': 'system',
@@ -369,9 +383,9 @@ Translation:"""
                     '- Ignore version numbers, "latest", license names, author names, and repository names as tags.\n'
                     '- tag_hints are hints only; do not copy bad hints blindly.\n'
                     '- Pick exactly ONE representative emoji for the skill.\n'
-                    'Return exactly these keys: source_language, target_language, name_en, name_zh, '
-                    'description_en, description_zh, tags_en, tags_zh, emoji.\n\n'
-                    f'Original metadata JSON:\n{json.dumps(payload, ensure_ascii=False)}'
+                    + category_block
+                    + f'Return exactly these keys: {keys}.\n\n'
+                    + f'Original metadata JSON:\n{json.dumps(payload, ensure_ascii=False)}'
                 ),
             },
         ]
@@ -384,6 +398,7 @@ Translation:"""
         description: str | None,
         tag_hints: list[str],
         source_lang: Literal['en', 'zh'] | None,
+        categories: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         data = self._parse_json_object(raw)
         return self._coerce_metadata_dict(
@@ -392,6 +407,7 @@ Translation:"""
             description=description,
             tag_hints=tag_hints,
             source_lang=source_lang,
+            categories=categories,
         )
 
     def _coerce_metadata_dict(
@@ -402,6 +418,7 @@ Translation:"""
         description: str | None,
         tag_hints: list[str],
         source_lang: Literal['en', 'zh'] | None,
+        categories: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Coerce one already-parsed LLM metadata object into the canonical shape."""
         fallback = self._fallback_skill_metadata(
@@ -433,6 +450,7 @@ Translation:"""
             'tags_en': tags_en[:5],
             'tags_zh': tags_zh[:5],
             'emoji': self._clean_emoji(data.get('emoji')) or fallback['emoji'],
+            'category': self._coerce_category(data.get('category'), categories),
         }
 
     def _fallback_skill_metadata(
@@ -464,7 +482,44 @@ Translation:"""
             'tags_en': en_tags[:5],
             'tags_zh': zh_tags[:5],
             'emoji': None,
+            'category': None,
         }
+
+    @staticmethod
+    def _category_prompt_block(categories: list[dict[str, Any]] | None) -> str:
+        """Prompt fragment listing allowed categories; '' when none provided."""
+        if not categories:
+            return ''
+        lines: list[str] = []
+        for cat in categories:
+            slug = str(cat.get('slug') or '').strip()
+            if not slug:
+                continue
+            label = str(cat.get('name') or cat.get('name_zh') or cat.get('name_en') or '').strip()
+            lines.append(f'  - {slug}: {label}' if label else f'  - {slug}')
+        if not lines:
+            return ''
+        return (
+            '- Classify the skill into exactly ONE category and return its slug in a "category" field. '
+            'Choose the single best fit from this list and use the slug EXACTLY as written; '
+            'if nothing fits well use "other" when present.\n'
+            'Available categories (slug: label):\n' + '\n'.join(lines) + '\n'
+        )
+
+    @staticmethod
+    def _coerce_category(value: Any, categories: list[dict[str, Any]] | None) -> str | None:
+        """Validate the LLM-picked category slug against the allowed set."""
+        if not categories:
+            return None
+        slugs = {str(cat.get('slug') or '').strip() for cat in categories if cat.get('slug')}
+        slugs.discard('')
+        candidate = str(value or '').strip()
+        if candidate in slugs:
+            return candidate
+        lower_map = {slug.lower(): slug for slug in slugs}
+        if candidate.lower() in lower_map:
+            return lower_map[candidate.lower()]
+        return 'other' if 'other' in slugs else None
 
     @staticmethod
     def _parse_json_object(raw: str) -> dict[str, Any]:
@@ -590,6 +645,7 @@ Translation:"""
         *,
         batch_size: int | None = None,
         concurrency: int = 1,
+        categories: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Normalize a list of skill metadata in batched LLM calls.
@@ -617,7 +673,7 @@ Translation:"""
 
         async def run_chunk(chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
             async with semaphore:
-                return await self._translate_one_batch(chunk)
+                return await self._translate_one_batch(chunk, categories=categories)
 
         chunk_results = await asyncio.gather(*(run_chunk(chunk) for chunk in chunks))
         flattened: list[dict[str, Any]] = []
@@ -625,7 +681,11 @@ Translation:"""
             flattened.extend(chunk_result)
         return flattened
 
-    async def _translate_one_batch(self, chunk: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _translate_one_batch(
+        self,
+        chunk: list[dict[str, Any]],
+        categories: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         normalized_inputs = [
             {
                 'name': self._clean_text(item.get('name')),
@@ -637,12 +697,12 @@ Translation:"""
         ]
         try:
             raw = await self._complete_chat(
-                self._batch_metadata_messages(normalized_inputs),
+                self._batch_metadata_messages(normalized_inputs, categories=categories),
                 max_tokens=min(12000, 800 * len(chunk) + 800),
                 response_format={'type': 'json_object'},
                 timeout=min(300.0, 45.0 + 20.0 * len(chunk)),
             )
-            return self._coerce_batch_response(raw=raw, inputs=normalized_inputs)
+            return self._coerce_batch_response(raw=raw, inputs=normalized_inputs, categories=categories)
         except Exception as exc:
             log.error(f"Batch skill metadata translation failed ({len(chunk)} items): {exc}")
             return [
@@ -655,7 +715,11 @@ Translation:"""
                 for item in normalized_inputs
             ]
 
-    def _batch_metadata_messages(self, items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    def _batch_metadata_messages(
+        self,
+        items: list[dict[str, Any]],
+        categories: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, str]]:
         payload = [
             {
                 'index': i,
@@ -666,6 +730,13 @@ Translation:"""
             }
             for i, item in enumerate(items)
         ]
+        category_block = self._category_prompt_block(categories)
+        element_keys = (
+            'index, source_language, target_language, name_en, name_zh, '
+            'description_en, description_zh, tags_en, tags_zh, emoji'
+        )
+        if category_block:
+            element_keys += ', category'
         return [
             {
                 'role': 'system',
@@ -687,11 +758,11 @@ Translation:"""
                     '- Ignore version numbers, "latest", license names, author names, and repository names as tags.\n'
                     '- tag_hints are hints only; do not copy bad hints blindly.\n'
                     '- Pick exactly ONE representative emoji for the skill.\n'
-                    'Return strict JSON shaped exactly as {"items": [ ... ]}. '
-                    'Each element must include: index, source_language, target_language, name_en, name_zh, '
-                    'description_en, description_zh, tags_en, tags_zh, emoji. '
-                    'Keep the same index as the input item.\n\n'
-                    f'Input items JSON:\n{json.dumps(payload, ensure_ascii=False)}'
+                    + category_block
+                    + 'Return strict JSON shaped exactly as {"items": [ ... ]}. '
+                    + f'Each element must include: {element_keys}. '
+                    + 'Keep the same index as the input item.\n\n'
+                    + f'Input items JSON:\n{json.dumps(payload, ensure_ascii=False)}'
                 ),
             },
         ]
@@ -701,6 +772,7 @@ Translation:"""
         *,
         raw: str,
         inputs: list[dict[str, Any]],
+        categories: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         parsed = self._parse_json_object(raw)
         raw_items = parsed.get('items')
@@ -734,6 +806,7 @@ Translation:"""
                     description=item['description'],
                     tag_hints=item['tag_hints'],
                     source_lang=item['source_lang'],
+                    categories=categories,
                 )
             )
         return results
