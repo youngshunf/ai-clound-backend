@@ -45,6 +45,18 @@ class _Agent:
     updated_time: datetime | None = None
 
 
+class _FakeDB:
+    """sync_agents 现会查公共技能集合修订号；纯快照映射单测无真实库 ⇒ 返回空公共集合（revision '0'）。"""
+
+    class _Result:
+        @staticmethod
+        def all() -> list:
+            return []
+
+    async def execute(self, *_a: Any, **_k: Any) -> '_FakeDB._Result':
+        return _FakeDB._Result()
+
+
 class _Gateway:
     def __init__(self) -> None:
         self.created_payload: dict[str, Any] | None = None
@@ -179,7 +191,7 @@ async def test_sync_agents_returns_latest_cloud_agent_snapshots() -> None:
     service = HasnAgentProfileService(gateway=gateway)
 
     response = await service.sync_agents(
-        db=None,
+        db=_FakeDB(),
         request=AgentSyncRequest(owner_id='h_owner', after_revision=3),
         user_id=100,
     )
@@ -223,7 +235,7 @@ async def test_sync_agents_without_after_revision_returns_full_authoritative_set
     service = HasnAgentProfileService(gateway=gateway)
 
     response = await service.sync_agents(
-        db=None,
+        db=_FakeDB(),
         request=AgentSyncRequest(owner_id='h_owner', after_revision=None),
         user_id=100,
     )

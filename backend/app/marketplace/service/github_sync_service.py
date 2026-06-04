@@ -9,12 +9,14 @@ import os
 from pathlib import Path
 from typing import Any
 
+import sqlalchemy as sa
 import yaml
 
 from git import Repo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.marketplace.crud.crud_marketplace_skill import marketplace_skill_dao
+from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.crud.crud_marketplace_skill_version import marketplace_skill_version_dao
 from backend.app.marketplace.crud.crud_marketplace_sync_log import marketplace_sync_log_dao
 from backend.app.marketplace.schema.marketplace_skill import CreateMarketplaceSkillParam, UpdateMarketplaceSkillParam
@@ -73,6 +75,12 @@ class GitHubSyncService:
             # Scan for skills
             skills_data = await self._scan_skills()
 
+            # 公共技能标记（doc12 §3.2）：从 hub common-skills.yaml 读公共集合，
+            # 命中的技能打 is_common；下架/移除的在同步末尾统一清除。
+            common_ids = self._load_common_skill_ids()
+            for skill_data in skills_data:
+                skill_data['is_common'] = skill_data.get('skill_id') in common_ids
+
             # Translate all scanned skills in one batched pass (10 per LLM request)
             # instead of one request per skill — language detection, bilingual
             # name/description, bilingual tags, and emoji all come back together.
@@ -91,6 +99,13 @@ class GitHubSyncService:
                     failed_count += 1
                     errors.append(f"{skill_data.get('skill_id', 'unknown')}: {e!s}")
                     log.error(f"Failed to sync skill {skill_data.get('skill_id')}: {e}")
+
+            # 清除已移出 common-skills.yaml 的公共标记，保持 is_common 集合与 hub 一致。
+            # common_ids 为空 ⇒ 清除全部公共标记（无公共技能）。
+            clear_common = sa.update(MarketplaceSkill).where(MarketplaceSkill.is_common.is_(True))
+            if common_ids:
+                clear_common = clear_common.where(MarketplaceSkill.skill_id.notin_(list(common_ids)))
+            await db.execute(clear_common.values(is_common=False))
 
             # Update sync log
             if sync_log_id:
@@ -151,6 +166,26 @@ class GitHubSyncService:
         self.repo.git.submodule('sync', '--recursive')
         with self.repo.git.custom_environment(GIT_HTTP_VERSION='HTTP/1.1'):
             self.repo.git.submodule('update', '--init', '--recursive', '--remote')
+
+    def _load_common_skill_ids(self) -> set[str]:
+        """从 hub `common-skills.yaml` 读取公共技能 skill_id 集合（doc12 §3.2）。
+
+        文件缺失/格式异常 ⇒ 返回空集（零 fake：不臆造公共技能，宁可不标记）。
+        值形如 `huanxing/search/newsnow`，与 marketplace skill_id 同构。
+        """
+        path = Path(self.local_path) / 'common-skills.yaml'
+        if not path.exists():
+            log.warning(f'common-skills.yaml not found under {self.local_path}; no common skills marked')
+            return set()
+        try:
+            data = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            log.error(f'failed to parse common-skills.yaml: {exc}')
+            return set()
+        raw = data.get('skills') if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return set()
+        return {str(item).strip() for item in raw if isinstance(item, str) and item.strip()}
 
     async def _scan_skills(self) -> list[dict[str, Any]]:
         """
@@ -331,6 +366,7 @@ class GitHubSyncService:
             'pricing_type': skill_data.get('pricing_type'),
             'price': skill_data.get('price'),
             'is_official': skill_data.get('is_official'),
+            'is_common': skill_data.get('is_common', False),
             'is_private': skill_data.get('is_private', False),
             'status': 'published',
             'visibility': 'public',

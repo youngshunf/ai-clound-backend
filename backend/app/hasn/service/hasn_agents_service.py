@@ -22,6 +22,7 @@ from backend.app.hasn.schema.hasn_agents import (
     UpdateAgentProfileResponse,
     UpdateHasnAgentsParam,
 )
+from backend.app.marketplace.service.common_skills_service import get_common_skill_snapshot
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
@@ -468,7 +469,15 @@ class HasnAgentProfileService:
         server_revision = max(
             (snapshot.profile_revision for snapshot in snapshots), default=request.after_revision or 0
         )
-        return AgentSyncResponse(owner_id=request.owner_id, server_revision=server_revision, agents=snapshots)
+        # 公共技能集合修订号（全局，doc12 §3.4）：随 is_common 成员/版本变化而变；
+        # daemon 据其变化触发全量活跃绑定 re-provision，Runtime 再拉最新公共技能。
+        _, common_skills_revision = await get_common_skill_snapshot(db)
+        return AgentSyncResponse(
+            owner_id=request.owner_id,
+            server_revision=server_revision,
+            agents=snapshots,
+            common_skills_revision=common_skills_revision,
+        )
 
     async def update_binding(
         self,
@@ -548,9 +557,9 @@ class HasnAgentProfileService:
             raise errors.AuthorizationError(msg='ERR_HASN_OWNER_ACCESS_DENIED')
 
 
-# 云端公共技能默认项：每个 Agent 创建时默认追加进技能清单的 skill_id。
-# 留空＝不注入（零 fake，不臆造 skill_id）；canonical 公共技能列表在 P3 接入。
-_DEFAULT_COMMON_SKILLS: list[str] = []
+# 公共技能不再在建 Agent 时持久化进 hasn_agents.skills（doc12 §3.3 改为读取时叠加）：
+# 由 `GET /api/v1/hasn/agent/profile` 出参把 is_common 集合并入技能清单，成员/版本变化
+# 对全量 Agent 自动生效、零回填。建 Agent 只存 Agent 自装技能。
 
 
 def _normalize_skill_ids(skills: Any) -> list[str]:
@@ -578,21 +587,6 @@ def _normalize_skill_ids(skills: Any) -> list[str]:
     return out
 
 
-def _with_common_skills(skills: Any) -> Any:
-    """把公共技能默认项并入技能清单（保序去重）。仅处理 list[str] 形态。"""
-    if not _DEFAULT_COMMON_SKILLS:
-        return skills
-    if skills is None:
-        return list(_DEFAULT_COMMON_SKILLS)
-    if isinstance(skills, list):
-        merged = list(skills)
-        for sid in _DEFAULT_COMMON_SKILLS:
-            if sid not in merged:
-                merged.append(sid)
-        return merged
-    return skills
-
-
 def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any | None) -> dict[str, Any]:
     template_skills = getattr(template, 'default_skills', None)
     skills = request.skills if request.skills is not None else template_skills
@@ -606,7 +600,8 @@ def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any 
         or getattr(template, 'default_description', None)
         or getattr(template, 'description', None),
         'avatar': request.avatar or getattr(template, 'avatar', None),
-        'skills': _with_common_skills(skills),
+        # 只存 Agent 自装/模板技能；公共技能改为 profile 出参叠加（doc12 §3.3）。
+        'skills': skills,
         'soul_md': request.soul_md if request.soul_md is not None else getattr(template, 'default_soul_md', None),
         'agents_md': (
             request.agents_md if request.agents_md is not None else getattr(template, 'default_agents_md', None)

@@ -23,6 +23,10 @@ from backend.app.hasn.schema.hasn_agents import (
     OwnerMemoryResponse,
 )
 from backend.app.hasn.service.owner_memory_service import owner_memory_service
+from backend.app.marketplace.service.common_skills_service import (
+    get_common_skill_snapshot,
+    merge_skill_ids,
+)
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.log import log
@@ -69,6 +73,12 @@ async def get_agent_profile(
     if row is None:
         raise errors.NotFoundError(msg='ERR_HASN_AGENT_NOT_FOUND')
 
+    # 读取时叠加公共技能（doc12 §3.3）：公共集合在前、Agent 自装在后，保序去重。
+    # 公共技能不持久化进 hasn_agents.skills，只在出参叠加——成员/版本变化对全量 Agent
+    # 自动生效，零回填。common_skills_revision 让 Runtime 据以重拉最新公共技能。
+    common_ids, common_rev = await get_common_skill_snapshot(db)
+    agent_ids = _normalize_skill_ids(getattr(row, 'skills', None))
+
     return response_base.success(
         data=AgentProfileResponse(
             hasn_id=row.hasn_id,
@@ -77,10 +87,11 @@ async def get_agent_profile(
             agents_md=getattr(row, 'agents_md', None),
             user_md=row.user_md,
             memory_md=getattr(row, 'memory_md', None),
-            skills=_normalize_skill_ids(getattr(row, 'skills', None)),
+            skills=merge_skill_ids(common_ids, agent_ids),
             template_id=row.template_id,
             template_version=getattr(row, 'template_version', None),
             profile_revision=int(getattr(row, 'profile_revision', 1) or 1),
+            common_skills_revision=common_rev,
         )
     )
 
@@ -100,7 +111,11 @@ async def get_agent_profile_revision(
     ).scalar_one_or_none()
     if rev is None:
         raise errors.NotFoundError(msg='ERR_HASN_AGENT_NOT_FOUND')
-    return response_base.success(data=AgentProfileRevisionResponse(profile_revision=int(rev or 1)))
+    # 同步叠加公共技能修订号——否则只比 profile_revision 检测不到公共技能变化。
+    _, common_rev = await get_common_skill_snapshot(db)
+    return response_base.success(
+        data=AgentProfileRevisionResponse(profile_revision=int(rev or 1), common_skills_revision=common_rev)
+    )
 
 
 @router.post(
