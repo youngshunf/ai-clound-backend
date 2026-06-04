@@ -36,6 +36,15 @@ from backend.common.log import log
 from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
+# huanxing-skills 目录名 → marketplace_category slug 的别名。
+# 历史目录名与分类表 slug 不完全一致：近义的合并到既有分类，避免重复语义分类。
+# 其余目录名（finance/health/social/utility/search/data/productivity）已补进分类表，原样透传。
+HUANXING_CATEGORY_ALIASES = {
+    'developer': 'development',
+    'creative': 'creativity',
+    'official': 'other',
+}
+
 
 class GitHubSyncService:
     """GitHub sync service for marketplace skills"""
@@ -233,7 +242,7 @@ class GitHubSyncService:
             _, owner_or_category, slug = parts
             namespace = f'huanxing/{owner_or_category}'
             repo_path = f'huanxing-skills/{owner_or_category}/{slug}'
-            category = owner_or_category
+            category = HUANXING_CATEGORY_ALIASES.get(owner_or_category, owner_or_category)
             is_official = True
             source_type = 'huanxing'
         elif root_name == 'github' and len(parts) >= 3:
