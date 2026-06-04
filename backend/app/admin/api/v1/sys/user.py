@@ -23,7 +23,7 @@ from backend.common.security.permission import RequestPermission
 from backend.common.security.rbac import DependsRBAC
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 from backend.plugin.s3.crud.storage import s3_storage_dao
-from backend.plugin.s3.utils.file_ops import build_object_url, write_bytes
+from backend.plugin.s3.utils.file_ops import build_object_url, pick_public_storage, write_bytes
 
 router = APIRouter()
 
@@ -247,9 +247,9 @@ async def upload_user_avatar(
     if len(content) > 10 * 1024 * 1024:  # 10MB
         raise errors.RequestError(msg='文件大小不能超过 10MB')
 
-    # 获取 S3 存储配置
+    # 获取 S3 存储配置（头像为公开资产，优先公共桶 → CDN 直读不签名）
     storages = await s3_storage_dao.get_all(db)
-    s3_storage = storages[0] if storages else None
+    s3_storage = pick_public_storage(storages)
     if not s3_storage:
         raise errors.NotFoundError(
             msg='S3 存储配置不存在。请先在管理后台配置 S3 存储（系统管理 -> S3存储管理），'

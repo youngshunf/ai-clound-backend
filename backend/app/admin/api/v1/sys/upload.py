@@ -9,7 +9,7 @@ from backend.common.response.response_schema import ResponseSchemaModel, respons
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
 from backend.plugin.s3.crud.storage import s3_storage_dao
-from backend.plugin.s3.utils.file_ops import build_object_url, write_bytes
+from backend.plugin.s3.utils.file_ops import build_object_url, pick_public_storage, write_bytes
 from backend.utils.timezone import timezone
 
 router = APIRouter()
@@ -49,7 +49,7 @@ async def upload_image(
         raise errors.RequestError(msg='图片大小不能超过 10MB')
 
     storages = await s3_storage_dao.get_all(db)
-    s3_storage = storages[0] if storages else None
+    s3_storage = pick_public_storage(storages)
     if not s3_storage:
         raise errors.NotFoundError(
             msg='S3 存储配置不存在。请先在管理后台配置 S3 存储（系统管理 -> S3存储管理），'

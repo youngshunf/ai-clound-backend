@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -72,6 +73,21 @@ def get_operator_for_storage(s3_storage: S3Storage) -> AsyncOperator:
         s3_storage.prefix or '/',
         s3_storage.region or 'any',
     )
+
+
+def pick_public_storage(storages: Sequence[S3Storage]) -> S3Storage | None:
+    """为公开资产（头像 / 帖图 / 封面 / 企业 Logo / 模板图标）挑选写入存储。
+
+    公开资产应落公共桶（``access='public'``）：CDN 直读、前端不再来回签名（07 D1/D3）。
+    若环境尚未配置公共桶，则回退到第一个存储行以保持可用（由调用方判空），
+    不静默伪造 URL —— 回退仍是真实可写入的桶，只是访问类型欠优。
+    """
+    if not storages:
+        return None
+    for s3_storage in storages:
+        if getattr(s3_storage, 'access', 'private') == 'public':
+            return s3_storage
+    return storages[0]
 
 
 def build_object_url(s3_storage: S3Storage, path: str) -> str:

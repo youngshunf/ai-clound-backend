@@ -16,7 +16,12 @@ from backend.common.response.response_schema import ResponseSchemaModel, respons
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 from backend.plugin.s3.crud.storage import s3_storage_dao
-from backend.plugin.s3.utils.file_ops import build_object_url, object_key_from_url, presign_read_url
+from backend.plugin.s3.utils.file_ops import (
+    build_object_url,
+    object_key_from_url,
+    pick_public_storage,
+    presign_read_url,
+)
 
 router = APIRouter()
 
@@ -104,7 +109,7 @@ async def get_preset_avatars(db: CurrentSession) -> ResponseSchemaModel[list[dic
     ]
     """
     storages = await s3_storage_dao.get_all(db)
-    s3_storage = storages[0] if storages else None
+    s3_storage = pick_public_storage(storages)
     if not s3_storage:
         raise errors.NotFoundError(msg='S3 存储配置不存在，无法返回预置头像 CDN URL')
 
