@@ -82,6 +82,15 @@ async def test_group_message_fans_out_to_human_and_agent_owner(monkeypatch):
         '_push_message_to',
         AsyncMock(side_effect=lambda target, payload: pushed.append((target, payload))),
     )
+    # G2-b：捕获群离线回放 sync_event。
+    from backend.app.hasn.service import hasn_sync_service as sync_service_module
+
+    sync_calls: list[dict] = []
+    monkeypatch.setattr(
+        sync_service_module.SqlAlchemySyncGateway,
+        '_append_sync_event',
+        AsyncMock(side_effect=lambda _self_db, **kw: sync_calls.append(kw)),
+    )
 
     result = await mr.route_message(
         _DB(),
@@ -98,6 +107,12 @@ async def test_group_message_fans_out_to_human_and_agent_owner(monkeypatch):
     assert pushed[0][1]['method'] == 'hasn.message.received'
     assert pushed[0][1]['params']['message']['to_entity_type'] == 'group'
     assert pushed[0][1]['params']['message']['to_type'] == 4
+    # G2-b 离线回放：发送方 message.sent + 两个不同 owner 的 message.received（h_peer / a_peer 的 owner h_agent_owner）。
+    by_owner = {(c['owner_id'], c['event_type']) for c in sync_calls}
+    assert ('h_sender', 'message.sent') in by_owner
+    assert ('h_peer', 'message.received') in by_owner
+    assert ('h_agent_owner', 'message.received') in by_owner
+    assert all(c['payload']['group_id'] == 'g:500001' for c in sync_calls)
 
 
 @pytest.mark.asyncio
@@ -158,6 +173,13 @@ async def test_group_envelope_carries_policy_mentions_and_sender(monkeypatch):
         mr,
         '_push_message_to',
         AsyncMock(side_effect=lambda target, payload: pushed.append((target, payload))),
+    )
+    from backend.app.hasn.service import hasn_sync_service as sync_service_module
+
+    monkeypatch.setattr(
+        sync_service_module.SqlAlchemySyncGateway,
+        '_append_sync_event',
+        AsyncMock(return_value=None),
     )
 
     mentions = [{'hasn_id': 'a_peer', 'entity_type': 'agent'}]

@@ -626,6 +626,58 @@ async def route_message(
                 if delivery_id != from_id:
                     recipient_ids.add(delivery_id)
 
+        # G2-b 群离线回放：为发送方 owner 写 message.sent、为每个其他成员 owner 写
+        # message.received，使离线成员登录 sync/pull 能补回群历史（对齐单聊语义；群分支
+        # 历史上漏写 sync_event → 离线回放断裂）。owner 维度去重，避免同 owner 既 sent 又 received。
+        from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
+
+        _grp_sync = SqlAlchemySyncGateway()
+        _grp_ct_str = {1: 'text', 2: 'image/*', 3: 'application/octet-stream', 4: 'audio/*', 5: 'application/x.card+json'}.get(content_type, 'text')
+        _grp_created_ts = int(msg.created_time.timestamp()) if msg.created_time else 0
+
+        async def _grp_sync_event(owner_id_: str, hasn_id_: str, event_type: str, direction: str) -> None:
+            await _grp_sync._append_sync_event(
+                db,
+                owner_id=owner_id_,
+                hasn_id=hasn_id_,
+                event_type=event_type,
+                aggregate_type='message',
+                aggregate_id=str(msg.id),
+                payload={
+                    'message_id': str(msg.id),
+                    'conversation_id': group_conv_id,
+                    'owner_id': owner_id_,
+                    'hasn_id': hasn_id_,
+                    'sender_hasn_id': from_id,
+                    'recipient_hasn_id': to_id,
+                    'group_id': to_id,
+                    'conversation_type': 'group',
+                    'direction': direction,
+                    'content_type': _grp_ct_str,
+                    'content_body': content,
+                    'local_id': local_id,
+                    'created_at': _grp_created_ts,
+                },
+            )
+
+        _grp_sender_owner = from_id if from_id.startswith('h_') else await _agent_owner_id(db, from_id)
+        _grp_seen_owner: set[str] = set()
+        if _grp_sender_owner:
+            _grp_seen_owner.add(_grp_sender_owner)
+            await _grp_sync_event(_grp_sender_owner, from_id, 'message.sent', 'outbound')
+        for member in members:
+            if member.member_id == from_id:
+                continue
+            m_owner = (
+                member.member_id
+                if member.member_id.startswith('h_')
+                else await _agent_owner_id(db, member.member_id)
+            )
+            if not m_owner or m_owner in _grp_seen_owner:
+                continue
+            _grp_seen_owner.add(m_owner)
+            await _grp_sync_event(m_owner, member.member_id, 'message.received', 'inbound')
+
         await db.commit()
 
         from_entity_type = 'human' if from_id.startswith('h_') else ('agent' if from_id.startswith('a_') else 'system')
