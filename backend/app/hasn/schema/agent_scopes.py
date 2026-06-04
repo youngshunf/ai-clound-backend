@@ -60,10 +60,12 @@ class AskRequestItem(SchemaBase):
     """一条挂起的 ask 批准请求（主人 UI 列出）"""
 
     request_id: str = Field(description='挂起请求 ID')
-    agent_hasn_id: str = Field(description='发起调用的 Agent')
+    agent_hasn_id: str = Field(default='', description='发起调用的 Agent')
     owner_hasn_id: str | None = Field(default=None, description='所属主人')
     tool_name: str = Field(description='待批准的工具')
-    arguments: dict = Field(default_factory=dict, description='调用参数（供主人判断）')
+    description: str = Field(default='', description='人类可读审批描述（NLG）')
+    args_digest: dict = Field(default_factory=dict, description='入参脱敏摘要（供主人判断，不含敏感原文）')
+    expires_time: str | None = Field(default=None, description='审批超时时间 ISO')
 
 
 class AskRequestsResponse(SchemaBase):
@@ -76,3 +78,9 @@ class AskDecisionRequest(SchemaBase):
     """主人对挂起请求的决定"""
 
     decision: str = Field(description='approve|reject（approved/rejected 亦可）')
+
+
+class GrantApprovalRequest(SchemaBase):
+    """主人批准一条 ask 审批请求（签一次性票据，令牌重试 doc15 §3.3）"""
+
+    scope: str = Field(default='once', description='授权粒度 once（本次）|always（总是，写回 capability_modes=allow）')

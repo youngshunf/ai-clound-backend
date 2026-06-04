@@ -17,6 +17,7 @@ from backend.app.hasn.schema.agent_scopes import (
     AskDecisionRequest,
     AskRequestItem,
     AskRequestsResponse,
+    GrantApprovalRequest,
     UpdateAgentScopesRequest,
 )
 from backend.app.hasn.service.agent_scopes_service import agent_scopes_service
@@ -145,6 +146,33 @@ async def decide_ask_request(
         decision=request_body.decision,
     )
     return response_base.success(data={'request_id': request_id, 'decision': request_body.decision})
+
+
+@router.post(
+    '/agents/{agent_hasn_id}/approvals/{request_id}/grant',
+    summary='批准一条 ask 审批请求（签一次性能力票据）',
+    description=(
+        '主人批准某挂起工具调用：签发一次性能力票据返回给 daemon（带票重试放行）；'
+        'scope=always 额外写回 capability_modes=allow（以后不再 ask）。需要 Owner JWT。'
+    ),
+    dependencies=[DependsJwtAuth],
+)
+async def grant_approval(
+    request: Request,
+    agent_hasn_id: str,
+    request_id: str,
+    request_body: GrantApprovalRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ResponseModel:
+    owner_hasn_id = await _owner_hasn_id(request, db)
+    result = await agent_scopes_service.grant_approval(
+        db=db,
+        agent_hasn_id=agent_hasn_id,
+        owner_hasn_id=owner_hasn_id,
+        request_id=request_id,
+        scope=request_body.scope,
+    )
+    return response_base.success(data=result)
 
 
 # ---------- 兼容别名：旧 /community/settings/agents/{id}（转发同一 service） ----------

@@ -142,21 +142,22 @@ class HasnCloudMcpServer:
             if mode == MODE_DENY:
                 raise PermissionError(f'Capability denied by owner for tool: {tool_name}')
             if mode == MODE_ASK:
-                # D4：仅 owner 主动设 ask 才挂起；不按 risk 强制。令牌重试模型（doc15 §3）：
-                # 云端**不长挂**——开一条审批请求并把 approval_required 信封作为工具结果返回，
-                # 由 daemon ApprovalBroker 发卡片 + 等待 + 换票，hasn-mcp 带票重试。
-                # （带有效一次性票的重试已在 A-P2 验票分支于此前跳闸，不会再进这里。）
-                from backend.app.mcp.ask_gate import ask_approval_gate
+                # 令牌重试（doc15 §3）：先验一次性票据——带有效票（agent/tool/args_hash 匹配且
+                # jti 未用）→ 原子消费后**跳过闸门直接执行**；无票/票无效 → 云端不长挂，开一条审批
+                # 请求并把 approval_required 信封作为工具结果返回，由 daemon 发卡片 + 换票 + 带票重试。
+                if not await self._consume_capability_ticket(agent_context, tool_name, arguments):
+                    from backend.app.mcp.ask_gate import ask_approval_gate
 
-                return await ask_approval_gate.open_request(
-                    agent_hasn_id=agent_context.agent_hasn_id,
-                    owner_hasn_id=agent_context.owner_hasn_id,
-                    tool_name=tool_name,
-                    required_scopes=list(getattr(tool, 'required_scopes', []) or []),
-                    default_mode=agent_context.default_mode,
-                    capability_modes=agent_context.capability_modes,
-                    arguments=arguments,
-                )
+                    return await ask_approval_gate.open_request(
+                        agent_hasn_id=agent_context.agent_hasn_id,
+                        owner_hasn_id=agent_context.owner_hasn_id,
+                        tool_name=tool_name,
+                        required_scopes=list(getattr(tool, 'required_scopes', []) or []),
+                        default_mode=agent_context.default_mode,
+                        capability_modes=agent_context.capability_modes,
+                        arguments=arguments,
+                    )
+                # 验票通过 → 落到下面 _dispatch_by_source 真正执行（工具体只在带票这次运行）。
 
             # 按 source 分发执行
             result = await self._dispatch_by_source(agent_context, tool, source, arguments)
@@ -205,6 +206,36 @@ class HasnCloudMcpServer:
         query = str((arguments or {}).get('query', ''))
         digest = hashlib.sha256(f'{tool_name}|{query}'.encode()).hexdigest()
         return int(digest[:8], 16) % _SUMMARY_AUDIT_SAMPLE_RATE == 0
+
+    async def _consume_capability_ticket(
+        self, agent_context: AgentContext, tool_name: str, arguments: dict[str, Any]
+    ) -> bool:
+        """ask 分支验票跳闸（A-P2）。
+
+        带一次性能力票（`X-Capability-Ticket`，由传输层落入 ContextVar）且其
+        agent/tool/args_hash 与本次调用匹配、jti 未用 → **原子消费** + 标记审批请求 consumed →
+        返回 True（跳过闸门执行）。无票 / 票无效 / 重放 → False（走 open_request 重新审批）。
+        """
+        from backend.app.mcp.context import get_capability_ticket
+
+        ticket = get_capability_ticket()
+        if not ticket:
+            return False
+
+        from backend.app.mcp.ask_gate import _canonical_args_hash, ask_approval_gate
+        from backend.common.security.capability_ticket import consume_capability_ticket
+
+        claims = await consume_capability_ticket(
+            ticket,
+            agent_hasn_id=agent_context.agent_hasn_id,
+            tool_name=tool_name,
+            args_hash=_canonical_args_hash(arguments),
+        )
+        if not claims:
+            return False
+        await ask_approval_gate.mark_consumed(str(claims.get('request_id') or ''))
+        logger.info('Capability ticket consumed for agent %s tool %s', agent_context.hasn_id, tool_name)
+        return True
 
     def _check_tool_permission(self, agent_context: AgentContext, tool: BaseTool) -> bool:
         """检查 Agent 是否有权限调用该工具（维度① 三态：deny→False，allow/ask→True）。"""

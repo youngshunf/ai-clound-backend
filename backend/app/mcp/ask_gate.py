@@ -192,6 +192,7 @@ class AskApprovalGate:
         return [
             {
                 'request_id': row.request_id,
+                'agent_hasn_id': row.agent_hasn_id,
                 'tool_name': row.tool_name,
                 'description': row.description,
                 'args_digest': row.args_digest,
@@ -200,6 +201,19 @@ class AskApprovalGate:
             }
             for row in rows
         ]
+
+    async def mark_consumed(self, request_id: str) -> None:
+        """验票跳闸成功后把审批请求标记为 consumed（best-effort，jti 才是防重放真相）。"""
+        from backend.app.hasn.crud.crud_hasn_agent_approval_requests import hasn_agent_approval_requests_dao
+        from backend.database.db import async_db_session
+
+        try:
+            async with async_db_session.begin() as db:
+                row = await hasn_agent_approval_requests_dao.get_by_request_id(db, request_id)
+                if row is not None and row.status in ('approved', 'pending'):
+                    await hasn_agent_approval_requests_dao.update_model(db, row.id, {'status': 'consumed'})
+        except Exception:
+            logger.exception('Failed to mark approval request consumed: %s', request_id)
 
     async def submit_decision(self, request_id: str, decision: str) -> None:
         """主人对某挂起请求记一个决定（approve/reject）→ 更新 DB 行状态 + decided_time。

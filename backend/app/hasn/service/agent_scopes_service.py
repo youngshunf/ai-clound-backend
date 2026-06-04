@@ -114,5 +114,64 @@ class AgentScopesService:
 
         await ask_approval_gate.submit_decision(request_id, decision)
 
+    async def grant_approval(
+        self, db: AsyncSession, *, agent_hasn_id: str, owner_hasn_id: str, request_id: str, scope: str
+    ) -> dict:
+        """主人批准一条 ask 审批请求 → 签一次性能力票据（令牌重试 doc15 §3.3 / A-P2）。
+
+        scope=always 额外把**实际触发 ask** 的 capability_keys 写回 capability_modes=allow（以后不再 ask）。
+        返回 {request_id, grant_scope, tool_name, capability_ticket}；ticket 仅回 daemon owner 通道，
+        绝不进卡片/日志。仅对 pending 且未超时的请求有效。
+        """
+        await self._assert_owns(db, agent_hasn_id, owner_hasn_id, write=True)
+        from backend.app.hasn.crud.crud_hasn_agent_approval_requests import hasn_agent_approval_requests_dao
+        from backend.common.security.agent_jwt import get_agent_scopes_from_db, update_agent_modes
+        from backend.common.security.capability_ticket import issue_capability_ticket
+        from backend.utils.timezone import timezone
+
+        row = await hasn_agent_approval_requests_dao.get_by_request_id(db, request_id)
+        if row is None or row.agent_hasn_id != agent_hasn_id:
+            raise errors.NotFoundError(msg='审批请求不存在')
+        if row.status != 'pending':
+            raise errors.ForbiddenError(msg=f'审批请求当前状态为 {row.status}，无法批准')
+        if row.expires_time and row.expires_time < timezone.now():
+            await hasn_agent_approval_requests_dao.update_model(
+                db, row.id, {'status': 'timeout', 'decided_time': timezone.now()}
+            )
+            await db.commit()
+            raise errors.ForbiddenError(msg='审批请求已超时')
+
+        grant_scope = 'always' if scope == 'always' else 'once'
+        ticket, jti = issue_capability_ticket(
+            request_id=row.request_id,
+            agent_hasn_id=row.agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            tool_name=row.tool_name,
+            args_hash=row.args_hash,
+        )
+
+        # always：把实际触发 ask 的能力 key 写回 allow（update_agent_modes 自带 commit + 失效缓存）。
+        if grant_scope == 'always' and row.capability_keys:
+            policy = await get_agent_scopes_from_db(db, agent_hasn_id)
+            caps = dict(policy.get('capability_modes') or {})
+            for key in row.capability_keys:
+                caps[key] = 'allow'
+            await update_agent_modes(
+                db, agent_hasn_id, default_mode=policy.get('default_mode', 'allow'), capability_modes=caps
+            )
+
+        await hasn_agent_approval_requests_dao.update_model(
+            db,
+            row.id,
+            {'status': 'approved', 'grant_scope': grant_scope, 'ticket_jti': jti, 'decided_time': timezone.now()},
+        )
+        await db.commit()
+        return {
+            'request_id': row.request_id,
+            'grant_scope': grant_scope,
+            'tool_name': row.tool_name,
+            'capability_ticket': ticket,
+        }
+
 
 agent_scopes_service = AgentScopesService()

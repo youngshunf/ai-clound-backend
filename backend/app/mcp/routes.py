@@ -60,9 +60,14 @@ async def list_tools(
 @router.post("/tools/call", response_model=ToolCallResponse)
 async def call_tool(
     request: ToolCallRequest,
-    agent_context: AgentContextDep
+    agent_context: AgentContextDep,
+    http_request: Request,
 ):
     """调用工具"""
+    from backend.app.mcp.context import set_capability_ticket
+
+    # 一次性能力票据（A-P2 验票跳闸）：带 X-Capability-Ticket 的重试在 call_tool 的 ask 分支验票放行。
+    set_capability_ticket(http_request.headers.get("x-capability-ticket"))
     try:
         result = await mcp_server.call_tool(
             agent_context=agent_context,
@@ -77,6 +82,8 @@ async def call_tool(
     except Exception as e:
         logger.error(f"Failed to call tool: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        set_capability_ticket(None)
 
 
 @router.get("/sse")

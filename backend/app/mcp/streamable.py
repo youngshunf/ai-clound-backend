@@ -25,6 +25,7 @@ from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
     hasn_agent_mcp_keys_service,
 )
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import set_capability_ticket
 from backend.app.mcp.server import mcp_server
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
@@ -235,6 +236,10 @@ class HasnMcpStreamableServer:
             # 将 AgentContext 存储到 ContextVar
             _streamable_agent_context.set(agent_context)
 
+            # 一次性能力票据（A-P2 验票跳闸）：带 X-Capability-Ticket 的重试在 call_tool 的 ask 分支验票放行。
+            ticket_header = headers.get(b'x-capability-ticket')
+            set_capability_ticket(ticket_header.decode('utf-8') if ticket_header else None)
+
             logger.debug(f'Authenticated agent {agent_context.hasn_id} for MCP request')
 
             # 委托给 session_manager 处理实际的 MCP 请求
@@ -258,6 +263,7 @@ class HasnMcpStreamableServer:
         finally:
             # 清理 ContextVar
             _streamable_agent_context.set(None)
+            set_capability_ticket(None)
 
     def create_session_manager(self) -> StreamableHTTPSessionManager:
         """创建 StreamableHTTP 会话管理器"""
