@@ -19,7 +19,10 @@ class S3StorageSchemaBase(SchemaBase):
     access: str = Field('private', description='访问类型：public 公开(CDN 直读不签名) / private 私有(签名访问)')
     sign_strategy: str = Field(
         's3_presign',
-        description='签名策略(私有时生效)：s3_presign S3预签名 / cdn_timestamp CDN时间戳防盗链 / nginx_secure_link Nginx防盗链',
+        description=(
+            '签名策略(私有时生效)：s3_presign S3预签名 / cdn_timestamp CDN时间戳防盗链 / '
+            'qiniu_private 七牛私有下载凭证(e+token,私有桶+回源鉴权) / nginx_secure_link Nginx防盗链'
+        ),
     )
     remark: str | None = Field(None, description='备注')
 

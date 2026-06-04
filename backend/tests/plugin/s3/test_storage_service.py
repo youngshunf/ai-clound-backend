@@ -62,7 +62,9 @@ async def test_upload_routes_to_private_bucket(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(svc_mod, 'write_bytes', write_spy)
 
     data = b'attachment-bytes'
-    ref = await StorageService.upload(db=object(), data=data, category='dm_attachment', filename='a.png', content_type='image/png')
+    ref = await StorageService.upload(
+        db=object(), data=data, category='dm_attachment', filename='a.png', content_type='image/png'
+    )
 
     assert ref.access == 'private'
     assert ref.storage_id == 2  # 选中 private 桶
@@ -78,7 +80,9 @@ async def test_signed_url_dispatches_s3_presign(monkeypatch: pytest.MonkeyPatch)
     storage = _storage(id=2, access='private', sign_strategy='s3_presign')
     monkeypatch.setattr(svc_mod.s3_storage_dao, 'get', AsyncMock(return_value=storage))
     monkeypatch.setattr(
-        svc_mod, 'presign_read_key', AsyncMock(return_value='https://oss.example.com/private-bucket/huanxing/dm/x.png?sig=abc')
+        svc_mod,
+        'presign_read_key',
+        AsyncMock(return_value='https://oss.example.com/private-bucket/huanxing/dm/x.png?sig=abc'),
     )
     url = await StorageService.signed_url(db=object(), storage_id=2, object_key='dm/x.png', expires_in=600)
     assert url.endswith('?sig=abc')
@@ -102,6 +106,31 @@ def test_cdn_timestamp_missing_key_raises() -> None:
     storage = _storage(sign_strategy='cdn_timestamp', remark=None)
     with pytest.raises(errors.ServerError):
         StorageService._cdn_timestamp_url(storage, 'dm/x.png', 600)
+
+
+def test_qiniu_private_signing_algorithm() -> None:
+    """七牛私有下载凭证：token=AK:urlsafe_b64(hmac_sha1(SK, '<url>?e=deadline'))，纯算法真实校验。"""
+    import base64 as _b64
+    import hmac as _hmac
+
+    storage = _storage(sign_strategy='qiniu_private', access_key='AK', secret_key='SK')
+    url = StorageService._qiniu_private_url(storage, 'dm/x.png', 600)
+    assert url.startswith('https://cdn.example.com/huanxing/dm/x.png?e=')
+    assert '&token=AK:' in url
+    # 反算 token 校验：签名串就是 &token= 之前的整段（含 ?e=deadline）
+    to_sign, token_part = url.split('&token=')
+    ak, enc = token_part.split(':', 1)
+    assert ak == 'AK'
+    expected = _b64.urlsafe_b64encode(_hmac.new(b'SK', to_sign.encode(), hashlib.sha1).digest()).decode()
+    assert enc == expected
+
+
+def test_qiniu_private_missing_creds_raises() -> None:
+    """零 fake：qiniu_private 缺 cdn_domain / AK / SK 时抛错，不伪造可读 URL。"""
+    with pytest.raises(errors.ServerError):
+        StorageService._qiniu_private_url(_storage(sign_strategy='qiniu_private', cdn_domain=None), 'dm/x.png', 600)
+    with pytest.raises(errors.ServerError):
+        StorageService._qiniu_private_url(_storage(sign_strategy='qiniu_private', secret_key=''), 'dm/x.png', 600)
 
 
 @pytest.mark.asyncio
@@ -159,7 +188,7 @@ async def test_signed_urls_cached_batch_only_signs_misses(monkeypatch: pytest.Mo
 
     items = [(2, 'dm/a.png'), (2, 'dm/b.png')]
     result = await StorageService.signed_urls_cached(db=object(), items=items, expires_in=600)
-    assert result[(2, 'dm/a.png')] == 'cached-a'  # 命中
-    assert result[(2, 'dm/b.png')] == 'fresh-signed'  # 未命中→签名
+    assert result[2, 'dm/a.png'] == 'cached-a'  # 命中
+    assert result[2, 'dm/b.png'] == 'fresh-signed'  # 未命中→签名
     # 仅未命中的 b 触发 setex
     assert [c[0] for c in fake.setex_calls] == [StorageService._cache_key(2, 'dm/b.png')]

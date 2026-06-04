@@ -5,7 +5,7 @@
 - **公私分桶（07 D1/D3）**：按业务 `category` 决定 `access`（public/private），
   写入对应 `s3_storage` 行。public 走 CDN 直读不签名；private 才签名。
 - **provider 无关签名（07 D8）**：签名器按 `s3_storage.sign_strategy` 分发
-  （`cdn_timestamp` / `s3_presign` / `nginx_secure_link`），provider 差异只活在这一处。
+  （`s3_presign` / `cdn_timestamp` / `qiniu_private` / `nginx_secure_link`），provider 差异只活在这一处。
 - **可移植性（07 D8）**：DB 只持有 `storage_id + object_key`（不存 provider URL），
   展示时由 `cdn_domain`/`endpoint` 现拼；换 provider/CDN 仅改 `s3_storage` 行。
 
@@ -14,28 +14,34 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import os
 import posixpath
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import starmap
+from typing import TYPE_CHECKING
 from urllib.parse import quote
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.exception import errors
 from backend.database.redis import redis_client
 from backend.plugin.s3.crud.storage import s3_storage_dao
-from backend.plugin.s3.model import S3Storage
 from backend.plugin.s3.utils.file_ops import (
     build_object_url,
-    get_operator_for_storage,
     presign_read_key,
     write_bytes,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from backend.plugin.s3.model import S3Storage
 
 # category → (access, 默认签名 TTL 秒)。public 不签名 TTL 取 None（07 §4）。
 CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
@@ -96,7 +102,7 @@ def _ext_of(filename: str | None) -> str:
 def _build_key(category: str, *, filename: str | None, data: bytes) -> str:
     """content-addressed key（07 D7）：{dir}/{YYYY}/{MM}/{DD}/{md5[:12]}{ext}。"""
     directory = CATEGORY_DIR.get(category, 'files')
-    digest = hashlib.md5(data).hexdigest()[:12]  # noqa: S324 仅做内容寻址，非安全用途
+    digest = hashlib.md5(data).hexdigest()[:12]
     now = datetime.now()
     return f'{directory}/{now:%Y/%m/%d}/{digest}{_ext_of(filename)}'
 
@@ -117,7 +123,9 @@ def _cdn_sign_key(storage: S3Storage) -> str:
     env_key = os.getenv('S3_CDN_SIGN_KEY')
     if env_key:
         return env_key
-    raise errors.ServerError(msg='sign_strategy=cdn_timestamp 但未配置 CDN 时间戳防盗链密钥(remark.cdn_sign_key / S3_CDN_SIGN_KEY)')
+    raise errors.ServerError(
+        msg='sign_strategy=cdn_timestamp 但未配置 CDN 时间戳防盗链密钥(remark.cdn_sign_key / S3_CDN_SIGN_KEY)'
+    )
 
 
 class StorageService:
@@ -179,9 +187,32 @@ class StorageService:
             return await presign_read_key(storage, object_key, expires_in)
         if strategy == 'cdn_timestamp':
             return cls._cdn_timestamp_url(storage, object_key, expires_in)
+        if strategy == 'qiniu_private':
+            return cls._qiniu_private_url(storage, object_key, expires_in)
         if strategy == 'nginx_secure_link':
             return cls._nginx_secure_link_url(storage, object_key, expires_in)
         raise errors.ServerError(msg=f'未支持的 sign_strategy: {strategy}')
+
+    @staticmethod
+    def _qiniu_private_url(storage: S3Storage, object_key: str, expires_in: int) -> str:
+        """七牛私有空间下载凭证（e+token）：私有 bucket 经 CDN「回源鉴权」交付。
+
+        七牛侧「回源鉴权」与「时间戳防盗链」互斥，私有 bucket 官方建议用回源鉴权，
+        此时终端访问凭证是 Kodo 私有下载 token，而非 cdn_timestamp 的 sign/t：
+        token = AK:urlsafe_b64(hmac_sha1(SK, '<url>?e=<deadline>'))。
+        """
+        if not storage.cdn_domain:
+            raise errors.ServerError(msg='sign_strategy=qiniu_private 但该存储未配置 cdn_domain')
+        if not storage.access_key or not storage.secret_key:
+            raise errors.ServerError(msg='sign_strategy=qiniu_private 但缺少 access_key/secret_key')
+        prefix = (storage.prefix or '').strip('/')
+        path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
+        base = storage.cdn_domain.rstrip('/') + quote(path, safe='/')
+        deadline = int(datetime.now().timestamp()) + expires_in
+        to_sign = f'{base}?e={deadline}'
+        digest = hmac.new(storage.secret_key.encode(), to_sign.encode(), hashlib.sha1).digest()
+        token = f'{storage.access_key}:{base64.urlsafe_b64encode(digest).decode()}'
+        return f'{to_sign}&token={token}'
 
     @staticmethod
     def _cdn_timestamp_url(storage: S3Storage, object_key: str, expires_in: int) -> str:
@@ -194,15 +225,13 @@ class StorageService:
         encoded_path = quote(path, safe='/')
         expire_ts = int(datetime.now().timestamp()) + expires_in
         t_hex = format(expire_ts, 'x')
-        sign = hashlib.md5(f'{sign_key}{encoded_path}{t_hex}'.encode()).hexdigest()  # noqa: S324 七牛算法规定 md5
+        sign = hashlib.md5(f'{sign_key}{encoded_path}{t_hex}'.encode()).hexdigest()
         base = storage.cdn_domain.rstrip('/')
         return f'{base}{encoded_path}?sign={sign}&t={t_hex}'
 
     @staticmethod
     def _nginx_secure_link_url(storage: S3Storage, object_key: str, expires_in: int) -> str:
         """Nginx secure_link：md5(secret + path + expire) → base64url。"""
-        import base64
-
         sign_key = _cdn_sign_key(storage)
         if not storage.cdn_domain:
             raise errors.ServerError(msg='sign_strategy=nginx_secure_link 但该存储未配置 cdn_domain')
@@ -210,7 +239,7 @@ class StorageService:
         path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
         expire_ts = int(datetime.now().timestamp()) + expires_in
         raw = f'{sign_key}{path}{expire_ts}'.encode()
-        digest = hashlib.md5(raw).digest()  # noqa: S324 nginx secure_link 规定 md5
+        digest = hashlib.md5(raw).digest()
         md5b64 = base64.urlsafe_b64encode(digest).decode().rstrip('=')
         base = storage.cdn_domain.rstrip('/')
         return f'{base}{quote(path, safe="/")}?md5={md5b64}&expires={expire_ts}'
@@ -263,7 +292,7 @@ class StorageService:
         """批量签名（MGET 命中 + 仅对未命中 live 签名）。返回 {(storage_id, object_key): url}。"""
         if not items:
             return {}
-        cache_keys = [cls._cache_key(sid, ok) for sid, ok in items]
+        cache_keys = list(starmap(cls._cache_key, items))
         cached_vals = await redis_client.mget(cache_keys)
         result: dict[tuple[int, str], str] = {}
         misses: list[tuple[int, str]] = []
@@ -284,7 +313,7 @@ class StorageService:
                 storages[sid] = storage
             url = await cls._sign_one(storage, ok, expires_in)
             await redis_client.setex(cls._cache_key(sid, ok), ttl, url)
-            result[(sid, ok)] = url
+            result[sid, ok] = url
         return result
 
 
