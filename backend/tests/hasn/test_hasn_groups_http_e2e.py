@@ -52,9 +52,19 @@ async def http():
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
-    owner_hasn = f'h_grp_{_uid()}'
+    owner_uid = _uid()
+    owner_hasn = f'h_grp_{owner_uid}'
+    # 唯一 star_id（非空）：服务在请求内会 commit 这条 owner，fixture 末尾 rollback 已太迟，
+    # 故每跑一次会“泄漏”一条 owner 行；空 star_id 会撞 idx_hasn_humans_star_id 唯一索引导致
+    # 下次 setup 失败。用唯一 star_id 让残留行互不冲突，测试可重复跑。
     session.add(
-        HasnHumans(hasn_id=owner_hasn, star_id='', user_id=_USER_ID, nickname='群主E2E', status='active')
+        HasnHumans(
+            hasn_id=owner_hasn,
+            star_id=f'sg{owner_uid}',
+            user_id=_USER_ID,
+            nickname='群主E2E',
+            status='active',
+        )
     )
     await session.flush()
 
@@ -112,13 +122,16 @@ async def test_group_full_lifecycle(http) -> None:
     mine = _data(await c.get('/api/v1/hasn/app/groups'))['items']
     listed = next((g for g in mine if g['group_id'] == gid), None)
     assert listed is not None, '建群后应在我的群列表'
-    # 列表附带头像预览名册（前 N 个成员，供 WebUI 拼九宫格群头像）。
+    # 列表附带头像预览名册（前 N≤9 个成员，供 WebUI 拼九宫格群头像，与详情同序）。
     preview = listed.get('members_preview')
-    assert isinstance(preview, list) and 1 <= len(preview) <= 4, '群列表应含 1~4 个预览成员'
+    assert isinstance(preview, list) and 1 <= len(preview) <= 9, '群列表应含 1~9 个预览成员'
     assert all('hasn_id' in m and 'member_type' in m for m in preview), '预览成员需含身份字段'
 
     detail = _data(await c.get(f'/api/v1/hasn/app/groups/{gid}'))
     assert detail['group_id'] == gid and len(detail['members']) == 3
+    # 预览顺序应与详情名册前缀一致（同按入群时间升序），保证列表/详情群头像宫格一致。
+    detail_ids = [m['hasn_id'] for m in detail['members']]
+    assert [m['hasn_id'] for m in preview] == detail_ids[: len(preview)], '预览应是详情名册同序前缀'
 
 
 async def test_group_member_and_policy_management(http) -> None:

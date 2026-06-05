@@ -26,7 +26,8 @@ _GROUP_ID_BASE = 500000
 _MAX_MEMBERS_DEFAULT = 200
 _ADMIN_ROLES = ('owner', 'admin')
 # 群列表里每个群附带的头像预览成员上限（前 N 个成员，供 WebUI 拼九宫格群头像）。
-_AVATAR_PREVIEW_LIMIT = 4
+# 取 9 与详情名册一致：>4 人时列表与详情都拼 3×3 九宫格、显示同一批前 9 个成员（同序）。
+_AVATAR_PREVIEW_LIMIT = 9
 
 
 class HasnGroupService:
@@ -119,10 +120,13 @@ class HasnGroupService:
 
     @staticmethod
     async def _load_members(db: AsyncSession, conv_id: Any) -> list[HasnGroupMembers]:
+        # 按入群时间升序：与列表 members_preview 同序，保证列表/详情群头像宫格成员一致。
         return list(
             (
                 await db.execute(
-                    select(HasnGroupMembers).where(HasnGroupMembers.conversation_id == conv_id)
+                    select(HasnGroupMembers)
+                    .where(HasnGroupMembers.conversation_id == conv_id)
+                    .order_by(HasnGroupMembers.joined_at.asc())
                 )
             )
             .scalars()
