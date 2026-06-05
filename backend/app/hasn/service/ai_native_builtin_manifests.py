@@ -5,6 +5,16 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    # 通知发布能力声明（统一通知设计 §7 / P5）：App 可经 Agent JWT 通道
+    # backend_gateway.for_agent(agent).notification.emit 发通知给主人；
+    # categories = 允许的通知粗类白名单；card_message = 是否可投递卡片承载。
+    'notifications': {
+        'emit': {
+            'categories': ['app', 'commerce', 'reminder'],
+            'card_message': True,
+            'display_name': '社区',
+        }
+    },
     'capabilities': [
         {
             'capability_id': 'community.feed.read.capability',
@@ -1038,6 +1048,15 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    # 通知发布能力声明（统一通知设计 §7 / P5）：知识库可在导入/索引完成等时机
+    # 经 Agent JWT 通道发通知给主人，落知识库服务号会话。
+    'notifications': {
+        'emit': {
+            'categories': ['app', 'reminder'],
+            'card_message': True,
+            'display_name': '知识库',
+        }
+    },
     'capabilities': [
         {
             'capability_id': 'knowledge.search.capability',

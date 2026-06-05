@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter
 
-from backend.app.notification.schema.notification import EmitRequest
+from backend.app.notification.schema.notification import AppEmitRequest, EmitRequest
 from backend.app.notification.service.notification_service import notification_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
@@ -122,5 +122,35 @@ async def emit_to_owner(
         dedupe_key=body.dedupe_key,
         group_key=body.group_key,
         delivery_hint=body.delivery_hint,
+    )
+    return response_base.success(data={'notification_id': notification_id})
+
+
+@router.post('/notifications/app-emit', name='notif_agent_app_emit', summary='AI-Native App 发通知给主人')
+async def app_emit(
+    db: CurrentSessionTransaction,
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    body: AppEmitRequest,
+) -> ResponseModel:
+    """AI-Native App 发通知（§7 / P5，广义 App emit）。
+
+    经 Agent JWT 通道（`backend_gateway.for_agent(agent).notification.emit`）落到本 Agent
+    API surface。云端按 App 已发布 manifest 的 `notifications.emit` 声明校验：App 已声明该能力
+    + category 在白名单内 + 限频（emit 内对 app 源生效）。source 服务端补全（kind=app,
+    id=app_id, on_behalf_of=owner），recipient 恒为本 Agent 的主人（MVP 不跨主人）。
+    """
+    notification_id = await notification_service.app_emit(
+        db,
+        app_id=body.app_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        category=body.category,
+        type=body.type,
+        title=body.title,
+        body=body.body,
+        payload=body.payload,
+        priority=body.priority,
+        dedupe_key=body.dedupe_key,
+        group_key=body.group_key,
+        want_card=body.card,
     )
     return response_base.success(data={'notification_id': notification_id})

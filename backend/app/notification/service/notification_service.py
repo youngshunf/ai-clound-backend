@@ -139,6 +139,67 @@ class NotificationService:
         return row.id
 
     @classmethod
+    async def app_emit(
+        cls,
+        db: AsyncSession,
+        *,
+        app_id: str,
+        owner_hasn_id: str,
+        category: str,
+        type: str,
+        title: str,
+        body: str | None = None,
+        payload: dict[str, Any] | None = None,
+        priority: str | None = None,
+        dedupe_key: str | None = None,
+        group_key: str | None = None,
+        want_card: bool = True,
+    ) -> int:
+        """AI-Native App 发通知（§7 / P5）：校验 manifest 声明 + category 白名单 →
+        `source.kind=app` 经统一 emit() 落权威行 + 卡片承载到 App 服务号会话。
+
+        MVP 边界：recipient 恒为 App 所属 Agent 的主人（不跨主人）。授权 = App 已发布
+        manifest 声明了 `notifications.emit`（= 已安装 + 该能力已声明）；category 须在白名单内；
+        限频复用 emit() 内的 `_apply_rate_limit`（对 app 源生效，防轰炸）。
+        卡片承载受 manifest `card_message` 开关 + 主人偏好双重收敛（delivery_hint 只能在
+        主人未显式关闭时打开 card_message，绝不强开主人关掉的渠道）。
+        """
+        # 延迟导入：registry 依赖 app/hasn（重图），避免模块加载期循环。
+        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+        decl = await ai_native_app_registry.get_emit_declaration(db, app_id)
+        if decl is None:
+            raise errors.ForbiddenError(msg='app_not_authorized_to_emit')
+        categories = decl.get('categories') or []
+        if category not in categories:
+            raise errors.ForbiddenError(msg='category_not_whitelisted')
+
+        delivery_hint = None
+        if want_card and decl.get('card_message'):
+            delivery_hint = {'channels': {'card_message': True}}
+
+        source = {
+            'kind': 'app',
+            'id': app_id,
+            'display_name': decl.get('display_name') or app_id,
+            'on_behalf_of': owner_hasn_id,
+        }
+        return await cls.emit(
+            db,
+            recipient_id=owner_hasn_id,
+            source=source,
+            category=category,
+            type=type,
+            title=title,
+            body=body,
+            payload=payload,
+            priority=priority,
+            dedupe_key=dedupe_key,
+            group_key=group_key,
+            delivery_hint=delivery_hint,
+        )
+
+    @classmethod
     async def _apply_rate_limit(
         cls,
         db: AsyncSession,

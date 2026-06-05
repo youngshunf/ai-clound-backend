@@ -162,6 +162,23 @@ class AINativeAppRegistry:
             return _builtin_manifest_payload(self._builtin_manifests[app_id])
         raise errors.NotFoundError(msg='AI-Native 应用不存在')
 
+    async def get_emit_declaration(self, db: AsyncSession, app_id: str) -> dict[str, Any] | None:
+        """读 App 已发布 manifest 的 `notifications.emit` 声明（统一通知设计 §7 / P5）。
+
+        返回 {categories: [...], card_message: bool, display_name: str} 或 None
+        （App 不存在 / 未发布 / 未声明 notifications.emit → None，即无权发通知）。
+        builtin app 走 ensure_builtin_published 自愈，第三方 app 走已发布行。
+        """
+        manifest: dict[str, Any] | None = None
+        if app_id in self._builtin_manifests:
+            manifest = await self.ensure_builtin_published(db, app_id)
+        else:
+            manifest = await self.get_published_manifest(db, app_id=app_id)
+        if not manifest:
+            return None
+        emit = ((manifest.get('manifest_json') or {}).get('notifications') or {}).get('emit')
+        return emit if isinstance(emit, dict) else None
+
 
 def _manifest_payload(row: HasnAiNativeAppManifest | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):

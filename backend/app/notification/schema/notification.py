@@ -72,3 +72,24 @@ class EmitRequest(SchemaBase):
     dedupe_key: str | None = Field(None, description='去重键')
     group_key: str | None = Field(None, description='聚合键')
     delivery_hint: dict[str, Any] | None = Field(None, description='来源建议承载（受偏好与权限收敛）')
+
+
+class AppEmitRequest(SchemaBase):
+    """AI-Native App 发通知请求体（§7 / P5）。
+
+    身份取自 Agent JWT，source 由服务端按 manifest 补全（kind=app, id=app_id,
+    on_behalf_of=owner）。recipient 恒为本 Agent 的主人（MVP 边界，不在请求体出现）。
+    category 须在该 App manifest 的 `notifications.emit` 白名单内；card 受 manifest
+    `card_message` 开关 + 主人偏好双重收敛。
+    """
+
+    app_id: str = Field(..., min_length=1, description='发通知的 App id（须已发布且声明 notifications.emit）')
+    category: NotificationCategory = Field('app', description='通知粗类（须在 App 白名单内）')
+    type: str = Field(..., description='通知细类（自定义字符串）')
+    title: str = Field(..., min_length=1, max_length=200, description='通知标题')
+    body: str | None = Field(None, description='通知正文')
+    payload: dict[str, Any] = Field(default_factory=dict, description='{actor,target,preview,link,actions}')
+    priority: NotificationPriority = Field('normal', description='优先级')
+    card: bool = Field(True, description='是否请求卡片消息承载（受 manifest card_message + 主人偏好收敛）')
+    dedupe_key: str | None = Field(None, description='去重键')
+    group_key: str | None = Field(None, description='聚合键')
