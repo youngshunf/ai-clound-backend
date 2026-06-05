@@ -47,3 +47,4 @@ from backend.app.hasn.model.hasn_app_publisher import HasnAppPublisher as HasnAp
 from backend.app.hasn.model.hasn_assets import HasnAssets as HasnAssets
 from backend.app.hasn.model.hasn_asset_grants import HasnAssetGrants as HasnAssetGrants
 from backend.app.hasn.model.hasn_agent_approval_requests import HasnAgentApprovalRequests as HasnAgentApprovalRequests
+from backend.app.hasn.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref as HasnOwnerWorkbenchPref
