@@ -47,3 +47,16 @@ def test_agent_emit_requires_jwt_and_body():
     assert 'agent_jwt_auth' in subdeps, 'Agent emit 必须经 Agent JWT 鉴权'
     body = {p.name for p in emit.dependant.body_params}
     assert 'body' in body, 'Agent emit 必须解析请求体'
+
+
+def test_app_emit_requires_jwt_and_body():
+    """AI-Native App emit（§7/P5）路由必须经 Agent JWT 鉴权且解析请求体。"""
+    app_emit = next(
+        (r for r in _notification_routes() if r.path.endswith('/agent/notifications/app-emit')),
+        None,
+    )
+    assert app_emit is not None, '应注册 App emit 路由'
+    subdeps = {getattr(d.call, '__name__', '') for d in app_emit.dependant.dependencies}
+    assert 'agent_jwt_auth' in subdeps, 'App emit 必须经 Agent JWT 鉴权'
+    body = {p.name for p in app_emit.dependant.body_params}
+    assert 'body' in body, 'App emit 必须解析请求体'
