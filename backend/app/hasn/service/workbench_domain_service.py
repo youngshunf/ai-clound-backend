@@ -5,7 +5,6 @@ import secrets
 
 from typing import TYPE_CHECKING, Any
 
-import httpx
 import sqlalchemy as sa
 
 from pypinyin import Style, lazy_pinyin
@@ -24,7 +23,6 @@ from backend.app.hasn.service import ragflow_subscriber as _ragflow_subscriber  
 from backend.app.hasn.service import workspace_notification_subscriber as _workspace_notifications  # noqa: F401
 from backend.app.hasn.service.enterprise_application_service import InviteCodePolicy
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
-from backend.app.hasn.service.ragflow_client import RAGFlowClient
 from backend.app.hasn.service.ragflow_provisioning_service import ragflow_provisioning_service
 from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 from backend.app.hasn.service.workbench_event_bus import workbench_event_bus
@@ -44,11 +42,10 @@ class WorkbenchDomainService:
         *,
         enterprise_bus: EnterpriseEventBus = enterprise_event_bus,
         workbench_bus: EnterpriseEventBus = workbench_event_bus,
-        ragflow_client_factory=RAGFlowClient,
     ) -> None:
+        # RF-CLOUD：云端不再直连 RagFlow 数据面，故移除 ragflow_client_factory。
         self.enterprise_bus = enterprise_bus
         self.workbench_bus = workbench_bus
-        self.ragflow_client_factory = ragflow_client_factory
 
     async def create_enterprise(
         self,
@@ -718,204 +715,9 @@ class WorkbenchDomainService:
             'credential': _credential_payload(credential),
         }
 
-    async def list_current_knowledge_datasets(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: int,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> dict[str, Any]:
-        context = await self._active_knowledge_context(db, user_id=user_id)
-        page_size = max(1, min(int(limit or 50), 200))
-        page = max(1, int(offset or 0) // page_size + 1)
-
-        async def fetch_datasets(current_context: dict[str, Any]):
-            client = self.ragflow_client_factory(current_context['instance'].url)
-            return await client.get(
-                '/api/v1/datasets',
-                params={'page': page, 'page_size': page_size, 'orderby': 'create_time', 'desc': True},
-                headers=_ragflow_auth_headers(current_context['api_key']),
-            )
-
-        dataset_response, context = await self._call_ragflow_with_refresh(
-            db,
-            user_id=user_id,
-            context=context,
-            call=fetch_datasets,
-        )
-        datasets = _ragflow_data_list(dataset_response)
-        items = []
-        for dataset in datasets:
-            dataset_id = str(dataset.get('id') or '')
-            if not dataset_id:
-                continue
-
-            async def fetch_documents(current_context: dict[str, Any]):
-                client = self.ragflow_client_factory(current_context['instance'].url)
-                return await client.get(
-                    f'/api/v1/datasets/{dataset_id}/documents',
-                    params={'page': 1, 'page_size': page_size, 'orderby': 'create_time', 'desc': True},
-                    headers=_ragflow_auth_headers(current_context['api_key']),
-                )
-
-            documents_response, context = await self._call_ragflow_with_refresh(
-                db,
-                user_id=user_id,
-                context=context,
-                call=fetch_documents,
-            )
-            documents = [
-                _document_payload(doc, dataset_id=dataset_id) for doc in _ragflow_documents(documents_response)
-            ]
-            items.append({
-                'id': dataset_id,
-                'name': dataset.get('name') or dataset_id,
-                'document_count': dataset.get('document_count', len(documents)),
-                'documents': documents,
-            })
-        return {'items': items, 'workspace': context['workspace']}
-
-    async def create_current_knowledge_dataset(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: int,
-        name: str,
-        description: str | None = None,
-        embedding_model: str | None = None,
-        language: str | None = None,
-        permission: str | None = None,
-    ) -> dict[str, Any]:
-        context = await self._active_knowledge_context(db, user_id=user_id)
-
-        async def create_dataset(current_context: dict[str, Any]):
-            client = self.ragflow_client_factory(current_context['instance'].url)
-            payload = {'name': name}
-            if description:
-                payload['description'] = description
-            if embedding_model:
-                payload['embedding_model'] = embedding_model
-            if language:
-                payload['language'] = language
-            if permission:
-                payload['permission'] = permission
-
-            return await client.post(
-                '/api/v1/datasets',
-                json=payload,
-                headers=_ragflow_auth_headers(current_context['api_key']),
-            )
-
-        response, context = await self._call_ragflow_with_refresh(
-            db,
-            user_id=user_id,
-            context=context,
-            call=create_dataset,
-        )
-        dataset = _ragflow_data(response)
-        return {
-            'id': str(dataset.get('id') or ''),
-            'name': dataset.get('name') or '',
-            'description': dataset.get('description') or '',
-            'workspace': context['workspace'],
-        }
-
-    async def search_current_knowledge(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: int,
-        query: str,
-        limit: int = 50,
-        dataset_id: str | None = None,
-    ) -> dict[str, Any]:
-        context = await self._active_knowledge_context(db, user_id=user_id)
-        effective_limit = max(1, min(int(limit or 50), 200))
-
-        if dataset_id:
-            resolved_dataset_id = dataset_id
-        else:
-            resolved_dataset_id, context = await self._default_dataset_id(db, user_id=user_id, context=context)
-
-        async def search(current_context: dict[str, Any]):
-            client = self.ragflow_client_factory(current_context['instance'].url)
-            return await client.post(
-                f'/api/v1/datasets/{resolved_dataset_id}/search',
-                json={'question': query, 'top_k': effective_limit, 'page': 1, 'size': effective_limit},
-                headers=_ragflow_auth_headers(current_context['api_key']),
-            )
-
-        response, context = await self._call_ragflow_with_refresh(
-            db,
-            user_id=user_id,
-            context=context,
-            call=search,
-        )
-        chunks = (response.get('data') or {}).get('chunks') or []
-        return {
-            'items': [_search_chunk_payload(chunk, dataset_id=resolved_dataset_id) for chunk in chunks],
-            'workspace': context['workspace'],
-            'dataset_id': resolved_dataset_id,
-        }
-
-    async def upload_current_knowledge_document(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: int,
-        title: str | None,
-        content_text: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        if not content_text.strip():
-            raise errors.RequestError(msg='content_text is required')
-        context = await self._active_knowledge_context(db, user_id=user_id)
-        dataset_id = str((metadata or {}).get('dataset_id') or '')
-        if not dataset_id:
-            dataset_id, context = await self._default_dataset_id(db, user_id=user_id, context=context)
-        doc_name = (title or '').strip() or 'untitled.txt'
-
-        async def create_document(current_context: dict[str, Any]):
-            client = self.ragflow_client_factory(current_context['instance'].url)
-            return await client.post(
-                f'/api/v1/datasets/{dataset_id}/documents?type=empty',
-                json={'name': doc_name},
-                headers=_ragflow_auth_headers(current_context['api_key']),
-            )
-
-        document_response, context = await self._call_ragflow_with_refresh(
-            db,
-            user_id=user_id,
-            context=context,
-            call=create_document,
-        )
-        documents = _ragflow_data_list(document_response)
-        if not documents:
-            raise errors.GatewayError(msg='knowledge_document_create_failed')
-        document = documents[0]
-        document_id = str(document.get('id') or '')
-        if not document_id:
-            raise errors.GatewayError(msg='knowledge_document_create_missing_id')
-
-        async def add_chunk(current_context: dict[str, Any]):
-            client = self.ragflow_client_factory(current_context['instance'].url)
-            return await client.post(
-                f'/api/v1/datasets/{dataset_id}/documents/{document_id}/chunks',
-                json={'content': content_text},
-                headers=_ragflow_auth_headers(current_context['api_key']),
-            )
-
-        _, context = await self._call_ragflow_with_refresh(
-            db,
-            user_id=user_id,
-            context=context,
-            call=add_chunk,
-        )
-        payload = _document_payload(document, dataset_id=dataset_id)
-        payload['content_text'] = content_text
-        payload['metadata'] = metadata or {'dataset_id': dataset_id}
-        return payload
+    # RF-CLOUD：数据面方法（list/create datasets、search、upload）已删除。
+    # 知识库浏览/检索/上传现由 hasn-node daemon 经 KnowledgeAdapter 直连 RagFlow
+    # （控制面/数据面分离，设计 §4.5）；云端 service 只保留凭据下发 + 企业实例配置。
 
     async def get_enterprise_ragflow_instance(
         self, db: AsyncSession, *, enterprise_id: int, user_id: int
@@ -1002,64 +804,9 @@ class WorkbenchDomainService:
         await db.flush()
         return _ragflow_instance_payload(instance)
 
-    async def _active_knowledge_context(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
-        workspace = await self.get_active_workspace(db, user_id=user_id)
-        instance = await self._knowledge_instance_for_workspace(db, workspace=workspace)
-        if instance is None:
-            raise errors.RequestError(msg='knowledge_instance_not_configured')
-        credential = await _scalar(
-            db,
-            sa.select(HasnRagflowCredential).where(
-                HasnRagflowCredential.user_id == user_id,
-                HasnRagflowCredential.instance_id == instance.id,
-            ),
-        )
-        if credential is None or credential.status != 'active':
-            raise errors.RequestError(msg='knowledge_credentials_not_active')
-        api_key = decrypt_ragflow_secret(credential.api_key_encrypted)
-        if not api_key:
-            raise errors.RequestError(msg='knowledge_credentials_not_active')
-        return {'workspace': workspace, 'instance': instance, 'credential': credential, 'api_key': api_key}
-
-    async def _default_dataset_id(
-        self,
-        db: AsyncSession,
-        *,
-        user_id: int,
-        context: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]]:
-        async def fetch_datasets(current_context: dict[str, Any]):
-            client = self.ragflow_client_factory(current_context['instance'].url)
-            return await client.get(
-                '/api/v1/datasets',
-                params={'page': 1, 'page_size': 30, 'orderby': 'create_time', 'desc': True},
-                headers=_ragflow_auth_headers(current_context['api_key']),
-            )
-
-        response, context = await self._call_ragflow_with_refresh(
-            db,
-            user_id=user_id,
-            context=context,
-            call=fetch_datasets,
-        )
-        datasets = _ragflow_data_list(response)
-        if not datasets:
-            raise errors.RequestError(msg='knowledge_dataset_not_found')
-        dataset_id = datasets[0].get('id')
-        if not dataset_id:
-            raise errors.RequestError(msg='knowledge_dataset_not_found')
-        return str(dataset_id), context
-
-    async def _call_ragflow_with_refresh(self, db: AsyncSession, *, user_id: int, context: dict[str, Any], call):
-        try:
-            return await call(context), context
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 401:
-                raise
-            await ragflow_provisioning_service.provision_one(user_id, context['instance'].id)
-            await db.flush()
-            refreshed = await self._active_knowledge_context(db, user_id=user_id)
-            return await call(refreshed), refreshed
+    # RF-CLOUD：数据面热路径（_active_knowledge_context / _default_dataset_id /
+    # _call_ragflow_with_refresh）已随数据面方法一并删除——云端不再直连 RagFlow
+    # 数据面，凭据下发后由 hasn-node daemon 持 api_key 直接检索。
 
     async def _require_enterprise_knowledge_admin(self, db: AsyncSession, *, enterprise_id: int, user_id: int) -> None:
         enterprise = await self._get_enterprise_model(db, enterprise_id)
@@ -1420,62 +1167,9 @@ def _credential_payload(credential) -> dict[str, Any]:
     }
 
 
-def _ragflow_auth_headers(api_key: str) -> dict[str, str]:
-    return {'Authorization': f'Bearer {api_key}'}
-
-
-def _ragflow_data_list(response: dict[str, Any]) -> list[dict[str, Any]]:
-    data = response.get('data')
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    if isinstance(data, dict):
-        for key in ('items', 'docs', 'documents', 'datasets'):
-            value = data.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def _ragflow_documents(response: dict[str, Any]) -> list[dict[str, Any]]:
-    data = response.get('data')
-    if isinstance(data, dict):
-        docs = data.get('docs') or data.get('documents') or data.get('items') or []
-        if isinstance(docs, list):
-            return [item for item in docs if isinstance(item, dict)]
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    return []
-
-
-def _document_payload(document: dict[str, Any], *, dataset_id: str) -> dict[str, Any]:
-    doc_id = str(document.get('id') or document.get('doc_id') or '')
-    title = str(document.get('name') or document.get('title') or doc_id)
-    return {
-        'doc_id': doc_id,
-        'id': doc_id,
-        'title': title,
-        'content_text': document.get('content') or document.get('content_text') or '',
-        'metadata': document.get('meta_fields') or {'dataset_id': dataset_id},
-        'dataset_id': document.get('dataset_id') or dataset_id,
-        'created_at': document.get('create_time') or document.get('created_at'),
-        'updated_at': document.get('update_time') or document.get('updated_at'),
-    }
-
-
-def _search_chunk_payload(chunk: dict[str, Any], *, dataset_id: str) -> dict[str, Any]:
-    doc_id = str(chunk.get('document_id') or chunk.get('doc_id') or chunk.get('id') or '')
-    title = str(chunk.get('document_name') or chunk.get('docnm_kwd') or chunk.get('title') or doc_id)
-    content = chunk.get('content') or chunk.get('content_with_weight') or chunk.get('content_ltks') or ''
-    return {
-        'doc_id': doc_id,
-        'id': doc_id or str(chunk.get('id') or ''),
-        'title': title,
-        'content_text': content,
-        'metadata': {'chunk_id': chunk.get('id'), 'dataset_id': chunk.get('dataset_id') or dataset_id},
-        'dataset_id': chunk.get('dataset_id') or dataset_id,
-        'created_at': chunk.get('create_time') or chunk.get('created_at'),
-        'updated_at': chunk.get('update_time') or chunk.get('updated_at'),
-    }
+# RF-CLOUD：RagFlow 数据面响应解析助手（_ragflow_auth_headers / _ragflow_data_list /
+# _ragflow_documents / _document_payload / _search_chunk_payload）已删除——云端不再
+# 解析 RagFlow 检索/文档响应，该职责下沉至 hasn-node daemon 的 KnowledgeAdapter。
 
 
 workbench_domain_service = WorkbenchDomainService()
