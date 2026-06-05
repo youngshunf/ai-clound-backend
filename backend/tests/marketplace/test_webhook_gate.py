@@ -31,6 +31,11 @@ def test_bundles_added_path_triggers():
     assert has_skill_source_changes([{'modified': [], 'added': ['bundles/research/bundle.yaml'], 'removed': []}]) is True
 
 
+def test_common_bundles_yaml_change_triggers_skill_sync():
+    # 改 common-bundles.yaml（仅公共包集合变化）也须触发同步以重打 is_common。
+    assert has_skill_source_changes(_push('common-bundles.yaml')) is True
+
+
 def test_gitmodules_change_triggers():
     assert has_skill_source_changes(_push('.gitmodules')) is True
 
