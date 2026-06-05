@@ -1089,17 +1089,11 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             },
         }
     ],
-    'tools': [
-        {
-            'tool_id': 'knowledge.search',
-            'mcp_name': 'hasn.knowledge.search',
-            'transport': 'gateway_internal',
-            'handler': 'knowledge.search',
-            'required_scopes': ['knowledge:read'],
-            'risk_level': 'low',
-            'idempotent': True,
-        }
-    ],
+    # RF-CLOUD：knowledge 不再是**可调用的 cloud 工具**（设计 §4.5 方案1 / §9.1）。
+    # `hasn.knowledge.search` 已改为 hasn-node 本地 Platform 工具（RF-MCP）：Agent 经
+    # daemon 进程内 KnowledgeGateway 直连 RagFlow 数据面，云端只发凭证、不中转检索。
+    # 上面的 `capabilities` 声明保留——供 read-through 能力发现 + 权限（knowledge:read）。
+    'tools': [],
     'events': [],
     'reverse_invoke': {'supported': False},
     'audit': {

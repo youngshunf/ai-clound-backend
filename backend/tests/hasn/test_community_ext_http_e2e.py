@@ -53,7 +53,8 @@ async def http():
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     owner_hasn = f'h_e2e_{_uid()}'
-    session.add(HasnHumans(hasn_id=owner_hasn, star_id='', user_id=_USER_ID, nickname='E2E Owner', status='active'))
+    # star_id 唯一索引：用唯一值，空串会与库中既有空串行撞 idx_hasn_humans_star_id。
+    session.add(HasnHumans(hasn_id=owner_hasn, star_id=f's_{_uid()}', user_id=_USER_ID, nickname='E2E Owner', status='active'))
     await session.flush()
 
     async def _yield_session():

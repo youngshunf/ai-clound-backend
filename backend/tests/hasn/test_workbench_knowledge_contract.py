@@ -362,21 +362,8 @@ async def test_knowledge_handlers_delegate_to_domain_service(monkeypatch: pytest
         'refresh_current_knowledge_credentials',
         record('refresh', {'rotated': True}),
     )
-    monkeypatch.setattr(
-        module.workbench_domain_service,
-        'list_current_knowledge_datasets',
-        record('datasets', ['ds1']),
-    )
-    monkeypatch.setattr(
-        module.workbench_domain_service,
-        'search_current_knowledge',
-        record('search', [{'chunk': 'hit'}]),
-    )
-    monkeypatch.setattr(
-        module.workbench_domain_service,
-        'upload_current_knowledge_document',
-        record('upload', {'document_id': 'doc1'}),
-    )
+    # RF-CLOUD：datasets/search/upload 数据面路由已删除（daemon 直连 RagFlow），
+    # 这里只保留控制面路由（凭据 + 企业实例配置）。
     monkeypatch.setattr(
         module.workbench_domain_service,
         'get_enterprise_ragflow_instance',
@@ -403,21 +390,6 @@ async def test_knowledge_handlers_delegate_to_domain_service(monkeypatch: pytest
 
     assert (await module.get_knowledge_credentials(request, db)).data == {'status': 'active'}
     assert (await module.refresh_knowledge_credentials(request, db)).data == {'rotated': True}
-    assert (await module.list_knowledge_datasets(request, db, limit=10, offset=5)).data == ['ds1']
-    assert (
-        await module.search_knowledge(
-            request,
-            db,
-            module.KnowledgeSearchRequest(q=None, limit=None, dataset_id='ds1'),
-        )
-    ).data == [{'chunk': 'hit'}]
-    assert (
-        await module.upload_knowledge_document(
-            request,
-            db,
-            module.KnowledgeUploadRequest(title='Doc', content_text='body', metadata={'source': 'test'}),
-        )
-    ).data == {'document_id': 'doc1'}
     assert (await module.get_enterprise_ragflow_instance(request, db, enterprise_id=42)).data == {'enterprise_id': 42}
     assert (
         await module.save_enterprise_ragflow_instance(
@@ -439,12 +411,6 @@ async def test_knowledge_handlers_delegate_to_domain_service(monkeypatch: pytest
     assert calls == [
         ('credentials', {'db': db, 'user_id': 7}),
         ('refresh', {'db': db, 'user_id': 7}),
-        ('datasets', {'db': db, 'user_id': 7, 'limit': 10, 'offset': 5}),
-        ('search', {'db': db, 'user_id': 7, 'query': '', 'limit': 50, 'dataset_id': 'ds1'}),
-        (
-            'upload',
-            {'db': db, 'user_id': 7, 'title': 'Doc', 'content_text': 'body', 'metadata': {'source': 'test'}},
-        ),
         ('get_instance', {'db': db, 'enterprise_id': 42, 'user_id': 7}),
         (
             'save_instance',

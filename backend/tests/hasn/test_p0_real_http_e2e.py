@@ -1114,10 +1114,12 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     # 仅 patch 模块属性拦不住它（同 async_db_session 上面那两行）。D3 现查走 auth.py 的引用，
     # 不补这行会落到真 get_agent_scopes_from_db → 参数化 db.execute(stmt, params) → FakeDb 只收一参炸。
     monkeypatch.setattr('backend.app.mcp.auth.get_agent_scopes_cached', _fake_agent_scopes_cached)
+    # RF-CLOUD：knowledge.search 不再是可调用 cloud 工具（已下沉本地 RF-MCP）。AI-Native
+    # runtime 的工具调用 + 审计真实 HTTP 覆盖改用 community.get_post（仍是云端 gateway_internal 工具）。
     monkeypatch.setattr(
-        ai_native_gateway_module.workbench_domain_service,
-        'search_current_knowledge',
-        _fake_search_current_knowledge,
+        ai_native_gateway_module.community_service,
+        'get_agent_post_resource',
+        _fake_agent_post_resource,
     )
 
     task_store = InMemoryTaskStore()
@@ -1466,16 +1468,19 @@ async def _fake_agent_scopes_cached(_agent_hasn_id: str, _db: Any) -> dict[str, 
     return {'scopes': ['message.read', 'knowledge.read'], 'post_needs_review': True}
 
 
-async def _fake_search_current_knowledge(
-    _db: Any,
-    *,
-    user_id: int,
-    query: str,
-    limit: int,
-    dataset_id: str | None,
-) -> dict[str, Any]:
-    assert (user_id, limit, dataset_id) == (7, 10, None)
-    return {'items': [{'id': 'chunk-1', 'content': query}], 'total': 1}
+async def _fake_agent_post_resource(_db: Any, *, agent: Any, post_id: str) -> dict[str, Any]:
+    # AI-Native runtime community.get_post handler 的真实 HTTP E2E 替身（RF-CLOUD 后替代 knowledge.search）。
+    assert post_id == 'post_e2e_share'
+    return {
+        'resource': {
+            'type': 'community.post',
+            'id': post_id,
+            'app_id': 'community',
+            'uri': f'hasn://app/community/posts/{post_id}',
+        },
+        'summary': '卡片摘要',
+        'content': '完整正文',
+    }
 
 
 async def _fake_mcp_log_tool_call(*_args: Any, **_kwargs: Any) -> None:
@@ -1519,16 +1524,22 @@ def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_an
 
     mcp_tools = client.post('/mcp/tools/list', headers=agent_mcp_auth, json={})
     assert mcp_tools.status_code == 200, mcp_tools.text
-    assert [tool['name'] for tool in mcp_tools.json()['tools']] == ['hasn.tool.search']
+    # 渐进披露：云端 tools/list 只回 bootstrap（search + call），长尾经 hasn.cloud.tool.call 直调。
+    assert sorted(tool['name'] for tool in mcp_tools.json()['tools']) == [
+        'hasn.cloud.tool.call',
+        'hasn.cloud.tool.search',
+    ]
 
     mcp_search = client.post(
         '/mcp/tools/call',
         headers=agent_mcp_auth,
-        json={'tool_name': 'hasn.tool.search', 'arguments': {'query': 'sources'}},
+        json={'tool_name': 'hasn.cloud.tool.search', 'arguments': {'query': 'sources'}},
     )
     assert mcp_search.status_code == 200, mcp_search.text
     mcp_source_namespaces = {source['namespace'] for source in mcp_search.json()['result']['sources']}
-    assert 'hasn.tool' in mcp_source_namespaces
+    # 渐进披露下 hasn.cloud.tool.search 回的是颗粒化云端命名空间（community/message/...），
+    # 不再是旧的聚合 'hasn.tool'。断言核心云端 App 命名空间确被检索到。
+    assert {'hasn.community', 'hasn.message'} <= mcp_source_namespaces
 
     runtime_report = client.post(
         '/api/v1/hasn/runtime/report',
@@ -1726,12 +1737,13 @@ def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_an
         'workspace_key': 'enterprise:42',
     }
 
+    # RF-CLOUD：runtime 工具调用 + 审计真实 HTTP 覆盖改用 community.get_post（云端 gateway_internal）。
     tool_call = client.post(
-        '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
+        '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
         headers=agent_auth,
         json={
             'workspace': {'kind': 'enterprise', 'enterprise_id': 42},
-            'input': {'query': '唤星工作台', 'limit': 10},
+            'input': {'post_id': 'post_e2e_share'},
             'trace_id': 'trace-tool-enterprise',
         },
     )
@@ -1741,18 +1753,18 @@ def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_an
 
     audit = client.get(
         '/api/v1/ai-native/audit',
-        params={'app_id': 'knowledge', 'agent_hasn_id': 'a_p0_default', 'trace_id': 'trace-tool-enterprise'},
+        params={'app_id': 'community', 'agent_hasn_id': 'a_p0_default', 'trace_id': 'trace-tool-enterprise'},
     )
     assert audit.status_code == 200, audit.text
     assert audit.json()['data']['total'] == 1
-    assert audit.json()['data']['items'][0]['tool_id'] == 'knowledge.search'
+    assert audit.json()['data']['items'][0]['tool_id'] == 'community.get_post'
 
     invalid_input = client.post(
-        '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
+        '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
         headers=agent_auth,
         json={
             'workspace': {'kind': 'enterprise', 'enterprise_id': 42},
-            'input': {'query': '', 'limit': 0},
+            'input': {'post_id': ''},
             'trace_id': 'trace-tool-invalid-input',
         },
     )
@@ -1762,7 +1774,7 @@ def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_an
 
     invalid_input_audit = client.get(
         '/api/v1/ai-native/audit',
-        params={'app_id': 'knowledge', 'agent_hasn_id': 'a_p0_default', 'trace_id': 'trace-tool-invalid-input'},
+        params={'app_id': 'community', 'agent_hasn_id': 'a_p0_default', 'trace_id': 'trace-tool-invalid-input'},
     )
     assert invalid_input_audit.status_code == 200, invalid_input_audit.text
     assert invalid_input_audit.json()['data']['total'] == 1

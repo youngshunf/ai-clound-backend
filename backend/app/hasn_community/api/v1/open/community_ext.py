@@ -9,26 +9,48 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, Request
 
 from backend.app.hasn_community.service.circle_service import circle_service
 from backend.app.hasn_community.service.doc_service import doc_service
 from backend.app.hasn_community.service.topic_service import topic_service
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.database.db import CurrentSession
+from backend.database.db import CurrentSession  # noqa: TC001 — FastAPI 路由依赖注解须运行时可解析，禁放 TYPE_CHECKING
 
 router = APIRouter()
 
 
+async def _optional_viewer_hasn_id(request: Request, db: CurrentSession) -> str | None:
+    """开放路由上的「可选浏览者」：带有效 Owner JWT 时解析其 human hasn_id，匿名则 None。
+
+    daemon 会把 Owner JWT 透传到开放路由（该前缀不在 JWT 排除名单），借此让
+    trending/search 也回填 is_following（登录浏览者刷新后关注态正确，非仅本次会话）。
+
+    经 ``request.scope.get('user')``（而非 ``request.user``）取认证态：生产链路里
+    AuthenticationMiddleware 已把 user 写进 scope，行为一致；但不依赖该中间件被装上，
+    最小挂载/测试场景下也不会触发 starlette 的断言。
+    """
+    user = request.scope.get('user')
+    user_id = getattr(user, 'id', None)
+    if user_id is None:
+        return None
+    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+
+    human = await hasn_humans_dao.get_by_user_id(db, user_id)
+    return human.hasn_id if human else None
+
+
 # ---------- 话题 ----------
 @router.get('/topics/trending', summary='真实 trending 话题', response_model=ResponseModel)
-async def open_topics_trending(db: CurrentSession, limit: Annotated[int, Query(ge=1, le=50)] = 10) -> ResponseModel:
-    return response_base.success(data={'items': await topic_service.get_trending(db, limit=limit)})
+async def open_topics_trending(request: Request, db: CurrentSession, limit: Annotated[int, Query(ge=1, le=50)] = 10) -> ResponseModel:
+    viewer = await _optional_viewer_hasn_id(request, db)
+    return response_base.success(data={'items': await topic_service.get_trending(db, limit=limit, viewer_hasn_id=viewer)})
 
 
 @router.get('/topics/search', summary='话题搜索（前缀+模糊）', response_model=ResponseModel)
-async def open_topics_search(db: CurrentSession, q: Annotated[str, Query(min_length=1)], limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
-    return response_base.success(data={'items': await topic_service.search_topics(db, q, limit=limit)})
+async def open_topics_search(request: Request, db: CurrentSession, q: Annotated[str, Query(min_length=1)], limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
+    viewer = await _optional_viewer_hasn_id(request, db)
+    return response_base.success(data={'items': await topic_service.search_topics(db, q, limit=limit, viewer_hasn_id=viewer)})
 
 
 @router.get('/topics/{ident}', summary='公开话题详情', response_model=ResponseModel)
