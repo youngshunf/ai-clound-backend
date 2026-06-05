@@ -642,9 +642,15 @@ class GitHubSyncService:
         if not body.strip():
             return None, None
 
-        src = source_language if source_language in ('en', 'zh') else (
-            'zh' if any(ord(char) > 127 for char in body) else 'en'
-        )
+        # 正文语言**按正文本身判定**，不沿用 name 推出的 source_language——技能常见
+        # 英文名/中文正文（或反之），按名字判会把正文落到错误的语言侧。
+        detected = translation_service.detect_language(body)
+        if detected in ('en', 'zh'):
+            src = detected
+        elif source_language in ('en', 'zh'):
+            src = source_language
+        else:
+            src = 'zh' if any(ord(char) > 127 for char in body) else 'en'
         tgt = 'zh' if src == 'en' else 'en'
 
         existing_src = getattr(existing_skill, f'body_{src}', None) if existing_skill else None
