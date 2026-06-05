@@ -219,3 +219,22 @@ async def test_owner_isolation(env) -> None:
     assert data_b['owner_hasn_id'] == owner_b
     assert data_b['primary_agent_id'] is None, 'B 无分身 → None（零 fake）'
     assert data_b['briefing_time'] == '08:00', 'B 用默认时刻，不串 A 的 06:00'
+
+
+async def test_builtin_tasks_catalog_lists_daily_briefing(env) -> None:
+    """GET /workbench/builtin-tasks 返回启用目录 + 聚合版本；含种子 daily_briefing。
+
+    种子由迁移 2026-06-05-seed-builtin-daily-briefing.sql 落库（committed）。
+    """
+    c = env.client
+    data = _data(await c.get('/api/v1/hasn/app/workbench/builtin-tasks'))
+    assert 'items' in data and 'catalog_revision' in data
+    assert data['catalog_revision'] >= 1, '聚合版本应 ≥ 启用条目 revision 之和'
+    daily = next((it for it in data['items'] if it['builtin_key'] == 'daily_briefing'), None)
+    assert daily is not None, '种子 daily_briefing 应在目录'
+    assert daily['schedule_type'] == 'cron'
+    assert daily['schedule_config'] == {'expr': '0 8 * * *'}
+    assert daily['skill_bundle'] == 'huanxing/workbench-briefing'
+    assert daily['system_prompt'] and 'workbench.briefing.publish' in daily['system_prompt']
+    # 内部字段不外泄（拉取面只给定义型字段）
+    assert 'id' not in daily and 'created_time' not in daily
