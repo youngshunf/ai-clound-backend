@@ -8,7 +8,7 @@ import hmac
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Header, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.app.marketplace.service.github_app_sync_service import github_app_sync_service
@@ -16,7 +16,7 @@ from backend.app.marketplace.service.github_sync_service import github_sync_serv
 from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.core.conf import settings
-from backend.database.db import CurrentSessionTransaction
+from backend.database.db import async_db_session
 
 router = APIRouter()
 
@@ -78,6 +78,30 @@ def verify_github_signature(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(calculated_signature, expected_signature)
 
 
+async def _run_skill_sync_background() -> None:
+    """后台执行技能全量同步（自带 DB 会话）。
+
+    webhook 接口验签+闸门后立即返回，繁重的 git pull + 全量重扫 + 逐技能翻译
+    在这里跑——GitHub webhook 期望 ~10s 内 2xx，同步耗时长不能阻塞响应。
+    """
+    try:
+        async with async_db_session() as db:
+            result = await github_sync_service.sync_from_github(db, force=True)
+        log.info(f"[Webhook] 后台技能同步完成: {result}")
+    except Exception as exc:
+        log.error(f"[Webhook] 后台技能同步失败: {exc}")
+
+
+async def _run_template_sync_background() -> None:
+    """后台执行模板全量同步（自带 DB 会话）。"""
+    try:
+        async with async_db_session() as db:
+            result = await github_app_sync_service.sync_from_github(db, force=True)
+        log.info(f"[Webhook] 后台模板同步完成: {result}")
+    except Exception as exc:
+        log.error(f"[Webhook] 后台模板同步失败: {exc}")
+
+
 @router.post(
     '/github/skills',
     summary='GitHub Webhook for Skills',
@@ -85,14 +109,15 @@ def verify_github_signature(payload: bytes, signature: str) -> bool:
 )
 async def github_webhook_skills(
     request: Request,
-    db: CurrentSessionTransaction,
+    background_tasks: BackgroundTasks,
     x_hub_signature_256: Annotated[str | None, Header(alias='X-Hub-Signature-256')] = None,
     x_github_event: Annotated[str | None, Header(alias='X-GitHub-Event')] = None,
 ) -> ResponseSchemaModel[WebhookResponse]:
     """
     GitHub webhook endpoint for skills
 
-    Triggered when huanxing-hub repository receives a push event
+    Triggered when huanxing-hub repository receives a push event.
+    验签 + 闸门后立即返回 2xx，全量同步在后台执行（GitHub 期望快速响应）。
     """
     try:
         # Read request body
@@ -119,22 +144,15 @@ async def github_webhook_skills(
                 message="No skill changes detected"
             ))
 
-        # Trigger sync
-        log.info("Triggering skill sync from GitHub webhook")
-        result = await github_sync_service.sync_from_github(db, force=True)
+        # 异步触发：立即返回，繁重同步在后台跑
+        background_tasks.add_task(_run_skill_sync_background)
+        log.info("Queued background skill sync from GitHub webhook")
+        return response_base.success(data=WebhookResponse(
+            message="Skill sync queued (running in background)"
+        ))
 
-        if result.get('success'):
-            return response_base.success(data=WebhookResponse(
-                message="Skill sync completed",
-                synced=result.get('synced', 0),
-                failed=result.get('failed', 0)
-            ))
-        from backend.common.response.response_code import CustomResponse
-        return response_base.fail(
-            res=CustomResponse(code=500, msg=f"Skill sync failed: {result.get('error')}"),
-            data=WebhookResponse(message="Sync failed", synced=0, failed=0)
-        )
-
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"GitHub webhook error: {e}")
         from backend.common.response.response_code import CustomResponse
@@ -151,14 +169,15 @@ async def github_webhook_skills(
 )
 async def github_webhook_templates(
     request: Request,
-    db: CurrentSessionTransaction,
+    background_tasks: BackgroundTasks,
     x_hub_signature_256: Annotated[str | None, Header(alias='X-Hub-Signature-256')] = None,
     x_github_event: Annotated[str | None, Header(alias='X-GitHub-Event')] = None,
 ) -> ResponseSchemaModel[WebhookResponse]:
     """
     GitHub webhook endpoint for templates
 
-    Triggered when huanxing-hub repository receives a push event
+    Triggered when huanxing-hub repository receives a push event.
+    验签 + 闸门后立即返回 2xx，全量同步在后台执行。
     """
     try:
         # Read request body
@@ -195,22 +214,15 @@ async def github_webhook_templates(
                 message="No template changes detected"
             ))
 
-        # Trigger sync
-        log.info("Triggering template sync from GitHub webhook")
-        result = await github_app_sync_service.sync_from_github(db, force=True)
+        # 异步触发：立即返回，繁重同步在后台跑
+        background_tasks.add_task(_run_template_sync_background)
+        log.info("Queued background template sync from GitHub webhook")
+        return response_base.success(data=WebhookResponse(
+            message="Template sync queued (running in background)"
+        ))
 
-        if result.get('success'):
-            return response_base.success(data=WebhookResponse(
-                message="Template sync completed",
-                synced=result.get('synced', 0),
-                failed=result.get('failed', 0)
-            ))
-        from backend.common.response.response_code import CustomResponse
-        return response_base.fail(
-            res=CustomResponse(code=500, msg=f"Template sync failed: {result.get('error')}"),
-            data=WebhookResponse(message="Sync failed", synced=0, failed=0)
-        )
-
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"GitHub webhook error: {e}")
         from backend.common.response.response_code import CustomResponse
