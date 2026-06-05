@@ -21,6 +21,11 @@ from backend.app.marketplace.schema.marketplace_sync_log import (
     CreateMarketplaceSyncLogParam,
     UpdateMarketplaceSyncLogParam
 )
+from backend.app.marketplace.service.skill_content_extractor import (
+    extract_skill_body,
+    list_skill_files,
+    resolve_bilingual_body,
+)
 from backend.app.marketplace.service.translation_service import translation_service
 from backend.common.log import log
 from backend.core.conf import settings
@@ -392,6 +397,12 @@ class ClawHubSyncService:
                 if current_skill:
                     # Create update param with repo_path (本地 huanxing-hub 路径)
                     now = datetime.now()
+                    # 解压后的技能目录里有 SKILL.md 与全部文件 —— 与 github_sync 同源，
+                    # 提取正文(双语)+文件清单(仅名称+大小)供详情页展示。
+                    skill_dir = self.hub_local_path / 'clawhub' / owner_handle / slug
+                    body_en, body_zh, files_json = await self._extract_body_and_files(
+                        current_skill, translated['source_language'], skill_dir,
+                    )
                     update_data = {
                         'skill_id': skill_id,
                         'namespace': namespace,
@@ -401,6 +412,9 @@ class ClawHubSyncService:
                         'name_zh': translated['name_zh'],
                         'description_en': translated['description_en'],
                         'description_zh': translated['description_zh'],
+                        'body_en': body_en,
+                        'body_zh': body_zh,
+                        'files': files_json,
                         'source_language': translated['source_language'],
                         'icon_url': None,
                         'emoji': translated.get('emoji'),
@@ -626,6 +640,29 @@ class ClawHubSyncService:
         except Exception as e:
             log.error(f"Failed to download skill {slug}: {e}")
             return None
+
+    async def _extract_body_and_files(
+        self,
+        existing_skill: Any,
+        source_language: str | None,
+        skill_dir: Path,
+    ) -> tuple[str | None, str | None, str]:
+        """从解压后的技能目录提取正文(双语)+文件清单 JSON。
+
+        与 github_sync 同源（共享 skill_content_extractor）。SKILL.md 缺失或目录
+        不存在时正文留空、文件清单为 ``[]``（零 fake，如实反映“没有正文”）。文件清单
+        仅含名称+大小，不含内容。
+        """
+        skill_md = skill_dir / 'SKILL.md'
+        body = ''
+        if skill_md.exists():  # noqa: ASYNC240
+            try:
+                body = extract_skill_body(skill_md.read_text(encoding='utf-8'))  # noqa: ASYNC240
+            except OSError as exc:
+                log.warning(f"Failed to read SKILL.md at {skill_md}: {exc}")
+        files = list_skill_files(skill_dir) if skill_dir.exists() else []  # noqa: ASYNC240
+        body_en, body_zh = await resolve_bilingual_body(existing_skill, source_language, body)
+        return body_en, body_zh, json.dumps(files, ensure_ascii=False)
 
     @staticmethod
     def _extract_tag_hints(clawhub_skill: dict[str, Any]) -> list[str]:

@@ -30,6 +30,7 @@ from sqlalchemy.pool import NullPool
 from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.service.github_sync_service import GitHubSyncService, github_sync_service
 from backend.app.marketplace.service.search_service import search_service
+from backend.app.marketplace.service.skill_content_extractor import detect_body_source_lang
 from backend.app.marketplace.service.translation_service import translation_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -250,3 +251,93 @@ async def test_resolve_bilingual_body_empty_clears_both_sides():
         source_language='en', body='   ',
     )
     assert body_en is None and body_zh is None      # 空正文 → 两侧清空（诚实：无 readme）
+
+
+@pytest.mark.asyncio
+async def test_resolve_bilingual_body_echo_guard_drops_untranslated(monkeypatch):
+    """零 fake 回声闸门：超长正文可能超模型预算被原样回吐（译文==原文），这不是翻译。
+
+    活体回填发现：一篇 14k+ 中文正文翻译后 body_en 与 body_zh 等长——网关原样回吐。
+    若不拦，会把中文原文当英文译文落库（且变更门控会永久复用该假译文）。
+    修复：译文与原文逐字相同 → 视为未翻译，目标侧置空、序列化时回退源语言正文。
+    """
+    translation_service._translation_cache.clear()
+    chinese_body = '# 代码审查清单\n\n系统、全面的代码审查方法。逐维度有序检查。'
+
+    async def _echo(messages, **kwargs):
+        return chinese_body  # 网关原样回吐源文（退化/超预算）
+
+    monkeypatch.setattr(translation_service, '_complete_chat', _echo)
+
+    body_en, body_zh = await github_sync_service._resolve_bilingual_body(
+        existing_skill=None, source_language='zh', body=chinese_body,
+    )
+    assert body_zh == chinese_body   # 中文正文落中文侧
+    assert body_en is None           # 回声译文被丢弃，不把中文当英文译文落库
+
+
+# --------------------------------------------------------------------------- #
+# 5) clawhub 同源捕获：从解压目录读取正文+文件清单（与 github 共享提取逻辑）
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypatch):
+    """clawhub 同步从解压后的技能目录提取正文(双语)+文件清单，与 github 同源。"""
+    from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
+
+    (tmp_path / 'SKILL.md').write_text(SKILL_MD, encoding='utf-8')  # 正文为英文
+    (tmp_path / 'scripts').mkdir()
+    (tmp_path / 'scripts' / 'run.py').write_text('print("hi")\n', encoding='utf-8')
+    (tmp_path / '__pycache__').mkdir()
+    (tmp_path / '__pycache__' / 'c.bin').write_text('x', encoding='utf-8')  # 应被过滤
+
+    translation_service._translation_cache.clear()
+
+    async def _fake(messages, **kwargs):
+        return '# 演示\n\n已翻译正文。'
+
+    monkeypatch.setattr(translation_service, '_complete_chat', _fake)
+
+    body_en, body_zh, files_json = await clawhub_sync_service._extract_body_and_files(
+        existing_skill=None, source_language='en', skill_dir=tmp_path,
+    )
+    assert body_en.startswith('# Demo Skill')   # 英文正文落英文侧
+    assert body_zh == '# 演示\n\n已翻译正文。'    # 中文侧是译文
+    files = json.loads(files_json)
+    assert [f['path'] for f in files] == ['SKILL.md', 'scripts/run.py']   # __pycache__ 被过滤
+    for f in files:
+        assert set(f.keys()) == {'path', 'size'}, f   # 仅名称+大小，不含内容
+
+
+def test_detect_body_source_lang_cjk_ratio_beats_langdetect():
+    """中英混排技术文档：CJK 占比为主信号，盖过 langdetect 的误判。
+
+    活体回填发现：tencent-mps/university-applications 等中文 SKILL.md（含大量英文 API 名/
+    代码）CJK 占比 25%~29%，langdetect 却判成 'en'，导致中文正文落英文侧。改用 CJK 占比
+    （≥10% 即中文源）后稳定判 'zh'；纯英文文档仍判 'en'。
+    """
+    # 中文正文 + 大量英文 API 名/代码（约 1/4 CJK）→ 必须判 zh（即便 langdetect 说 en）
+    mixed = (
+        '# 腾讯云媒体处理服务（MPS）\n\n## 角色定义\n你是腾讯云 MPS 助手。\n\n'
+        '调用 DescribeTaskDetail / CreateTranscodeTemplate 接口，'
+        'set region=ap-guangzhou, bucket=my-bucket, callback=https://example.com/cb\n'
+        '示例：对视频做转码、截图、审核，输出到 COS 存储桶。'
+    )
+    assert sum(1 for c in mixed if '一' <= c <= '鿿') / len(mixed) >= 0.10
+    assert detect_body_source_lang(mixed, source_language='en') == 'zh'   # 不被 en 名/langdetect 误导
+
+    pure_en = '# Code Review\n\nA systematic approach to reviewing pull requests across stacks.'
+    assert detect_body_source_lang(pure_en, source_language='zh') == 'en'  # 纯英文仍判 en
+
+
+@pytest.mark.asyncio
+async def test_clawhub_extract_missing_skill_md_is_honest_empty(tmp_path: Path):
+    """目录无 SKILL.md → 正文两侧空、文件清单为 []（零 fake，如实反映无正文）。"""
+    from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
+
+    (tmp_path / 'desc.txt').write_text('只有附带文件，没有 SKILL.md', encoding='utf-8')
+    body_en, body_zh, files_json = await clawhub_sync_service._extract_body_and_files(
+        existing_skill=None, source_language='en', skill_dir=tmp_path,
+    )
+    assert body_en is None and body_zh is None
+    assert [f['path'] for f in json.loads(files_json)] == ['desc.txt']   # 文件清单仍如实列出
