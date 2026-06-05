@@ -30,6 +30,7 @@ CREATE TABLE "public"."marketplace_template" (
   "price" numeric(10, 2) NOT NULL DEFAULT 0,
   "is_private" bool NOT NULL DEFAULT false,
   "is_official" bool NOT NULL DEFAULT false,
+  "is_common" bool NOT NULL DEFAULT false,
   "download_count" int4 NOT NULL DEFAULT 0,
   "category" varchar(50) COLLATE "pg_catalog"."default",
   "tags" varchar(500) COLLATE "pg_catalog"."default",
@@ -86,6 +87,7 @@ COMMENT ON COLUMN "public"."marketplace_template"."pricing_type" IS '定价类�
 COMMENT ON COLUMN "public"."marketplace_template"."price" IS '价格';
 COMMENT ON COLUMN "public"."marketplace_template"."is_private" IS '是否私有';
 COMMENT ON COLUMN "public"."marketplace_template"."is_official" IS '是否官方模板';
+COMMENT ON COLUMN "public"."marketplace_template"."is_common" IS '是否公共技能包（默认叠加进每个 Agent 的能力清单）';
 COMMENT ON COLUMN "public"."marketplace_template"."download_count" IS '下载次数';
 COMMENT ON COLUMN "public"."marketplace_template"."category" IS '分类';
 COMMENT ON COLUMN "public"."marketplace_template"."tags" IS '标签，逗号分隔';

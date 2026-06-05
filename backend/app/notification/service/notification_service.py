@@ -267,19 +267,26 @@ class NotificationService:
     async def _fanout_card(db: AsyncSession, *, row: HasnNotifications, source: dict[str, Any]) -> None:
         """卡片承载 fanout：建/取服务号 → 投递卡片 → 回写 delivery.card_message_id（D1 投影回指）。
 
-        - app/system/external 源 → 服务号（sv_）→ service 会话；
+        - app/system/external 源 + 收件方=主人 → 服务号（sv_）⇄ 主人 service 会话（直写）；
+        - app/system/external 源 + 收件方=Agent（§4.5 发 Agent）→ 服务号 ⇄ Agent service 会话，
+          经 route_message 复用 agent dispatch 投 runtime + owner_copy 让主人旁观；
         - agent 源 → 卡片落「主人 ⇄ agent」既有 social 会话（§4.5：agent 本身即会话身份，不建服务号）；
         - user（社交）源 → 默认无卡片承载（不进此分支，category=social 无 card_message）。
         """
         # 延迟导入：carrier 依赖 message_router（重图），避免模块加载期循环。
         from backend.app.notification.service.notification_carrier import (
             deliver_agent_card_to_owner,
+            deliver_card_to_agent,
             deliver_card_to_owner,
         )
         from backend.app.notification.service.service_account_service import service_account_service
 
         src = source or {}
-        if src.get('kind') == 'agent' and src.get('id'):
+        recipient_is_agent = str(row.target_id).startswith('a_')
+
+        # agent 源 → 「主人 ⇄ agent」social 会话（recipient 恒为主人；agent 自己通知主人）。
+        # 收件方本身是 Agent 的 agent→agent 通知出范围（落服务号分支并因 source.kind=agent 不建号而退出）。
+        if src.get('kind') == 'agent' and src.get('id') and not recipient_is_agent:
             card_message_id = await deliver_agent_card_to_owner(
                 db, recipient_id=row.target_id, source=src, notif=row
             )
@@ -290,6 +297,36 @@ class NotificationService:
             await db.flush()
             return
 
+        # 收件方是 Agent（§4.5 发 Agent）：服务号属该 Agent 的主人；卡片落「服务号 ⇄ Agent」
+        # service 会话，经 route_message 复用 agent dispatch 投 runtime + owner_copy 主人旁观。
+        if recipient_is_agent:
+            from backend.app.hasn.model import HasnAgents
+
+            owner_id = (
+                await db.execute(
+                    select(HasnAgents.owner_id).where(HasnAgents.hasn_id == str(row.target_id))
+                )
+            ).scalar_one_or_none()
+            if not owner_id:
+                return
+            account = await service_account_service.get_or_create_for_source(
+                db, owner_id=owner_id, source=src
+            )
+            if account is None:
+                # agent/user 源发 Agent 不建服务号、默认无卡片承载（出范围）
+                return
+            card_message_id = await deliver_card_to_agent(
+                db, agent_id=str(row.target_id), account=account, notif=row
+            )
+            delivery = dict(row.delivery or {})
+            delivery['card_message_id'] = card_message_id
+            delivery['service_account'] = account.sa_hasn_id
+            delivery['card_recipient'] = 'agent'
+            row.delivery = delivery
+            await db.flush()
+            return
+
+        # 收件方是主人（h_）：服务号 ⇄ 主人 service 会话（直写绕权限矩阵，主人自见）。
         account = await service_account_service.get_or_create_for_source(
             db, owner_id=row.target_id, source=src
         )

@@ -447,6 +447,23 @@ def _entity_type_int(hasn_id: str) -> int:
     return 3  # system
 
 
+def _entity_type_str(hasn_id: str) -> str:
+    """hasn_id → 会话 participant_*_type 字符串（与 _entity_type_int 同口径）。
+
+    统一通知服务 D8：服务号 sv_ 作为会话参与方必须落 'service'（不是误判成 'agent'），
+    与「服务号 ⇄ 主人」会话的 participant 类型保持一致。
+    """
+    if hasn_id.startswith('h_'):
+        return 'human'
+    if hasn_id.startswith('a_'):
+        return 'agent'
+    if hasn_id.startswith('sv_'):
+        return 'service'
+    if hasn_id.startswith('g:'):
+        return 'group'
+    return 'system'
+
+
 def _asset_id_from_uri(uri: Any) -> str | None:
     """hasn://asset/{asset_id} → asset_id。"""
     if isinstance(uri, str) and uri.startswith('hasn://asset/'):
@@ -794,7 +811,7 @@ async def route_message(
         content = {k: v for k, v in (content or {}).items() if k in allowed}
 
     # 4. 获取/创建会话
-    from_type = 'human' if from_id.startswith('h_') else 'agent'
+    from_type = _entity_type_str(from_id)
     relation_type = _ctx_relation_type or 'social'
 
     conv = await get_or_create_conversation(

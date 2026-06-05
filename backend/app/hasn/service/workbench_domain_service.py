@@ -23,6 +23,13 @@ from backend.app.hasn.service import ragflow_subscriber as _ragflow_subscriber  
 from backend.app.hasn.service import workspace_notification_subscriber as _workspace_notifications  # noqa: F401
 from backend.app.hasn.service.enterprise_application_service import InviteCodePolicy
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
+from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.hasn.service.instance_resolver import (
+    FACE_UI,
+    InstanceResolutionError,
+    instance_resolver,
+)
+# RF-CLOUD：数据面中转已删，RAGFlowClient 不再被本服务引用，故合并时去掉该 import。
 from backend.app.hasn.service.ragflow_provisioning_service import ragflow_provisioning_service
 from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 from backend.app.hasn.service.workbench_event_bus import workbench_event_bus
@@ -607,6 +614,65 @@ class WorkbenchDomainService:
             manifest['status'] = row.status if row else 'available'
             apps.append(manifest)
         return apps
+
+    async def resolve_app_entry(self, db: AsyncSession, *, user_id: int, app_id: str) -> dict[str, Any]:
+        """解析应用入口句柄（设计 11 §3.1，doc 11「注册即用」）。
+
+        点开应用时按**当前工作空间**解析实例：
+        - 内置 UI 应用（knowledge/community 等，无 AI-Native manifest）→ 云端就地
+          (`gateway_internal`)，仅返回 `entry_route` 供客户端原生导航，无凭据。
+        - 第三方 AI-Native 应用（有已发布 manifest）→ `InstanceResolver.resolve(face=ui)`
+          按企业/公共实例选址；实例未配置等如实抛 15050。
+
+        **凭据绝不下发浏览器**：响应不含 `credential`；daemon_direct 由 daemon 另行持有，
+        cloud_relay 的 app secret 只留云端（设计 11 §0.3/§7.2）。
+        """
+        try:
+            app = workbench_app_registry.get(app_id)
+        except KeyError as exc:
+            raise errors.NotFoundError(msg='工作台应用不存在') from exc
+
+        workspace = await self.get_active_workspace(db, user_id=user_id)
+        ws = {'kind': workspace['kind'], 'enterprise_id': workspace['enterprise_id']}
+
+        transport = 'gateway_internal'
+        instance_id: str | None = None
+        endpoint: str | None = None
+        scope = 'public'
+        expires_at: str | None = None
+
+        manifest = await ai_native_app_registry.get_published_manifest(db, app_id=app_id)
+        if manifest is not None:
+            # 应用同时声明了 AI-Native manifest：尝试按工作空间解析外部 UI 实例并补全句柄。
+            # 但工作台注册的应用其 `entry_route` 是**客户端原生路由**（如 /community、
+            # /workbench/apps/knowledge），UI 导航恒走该原生路由 → gateway_internal；外部实例
+            # 只服务于该应用的数据/工具面（由 daemon/MCP 另行解析），实例未配置不应阻断 UI 入口。
+            # 因此实例未配置（15050）时如实回落到内置句柄（原生路由仍可用），不伪造外部实例。
+            try:
+                handle = await instance_resolver.resolve(
+                    db, app_id=app_id, workspace=ws, face=FACE_UI, manifest=manifest
+                )
+            except InstanceResolutionError:
+                handle = None
+            if handle is not None and not handle.is_internal:
+                transport = handle.transport
+                instance_id = handle.instance_id
+                endpoint = handle.endpoint
+                scope = handle.scope
+                expires_at = handle.expires_at
+
+        return {
+            'app_id': app_id,
+            'entry_route': app.entry_route,
+            'transport': transport,
+            'instance_id': instance_id,
+            'scope': scope,
+            'endpoint': endpoint,
+            # daemon_direct / frontend_direct 需 daemon 另取短期凭据；UI 面恒不下发凭据。
+            'requires_credential': transport in ('daemon_direct', 'frontend_direct'),
+            'expires_at': expires_at,
+            'workspace': ws,
+        }
 
     async def enable_current_workspace_app(self, db: AsyncSession, *, user_id: int, app_id: str) -> dict[str, Any]:
         try:

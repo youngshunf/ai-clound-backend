@@ -222,6 +222,28 @@ async def test_resolve_bilingual_body_reuses_cached_translation(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_bilingual_body_detects_body_language_not_name_hint(monkeypatch):
+    """正文语言按正文本身判定，而非沿用 name 推出的 source_language。
+
+    活体回填发现：英文名/中文正文（source_language='en' 但正文是中文）若按名字判，
+    中文正文会落到英文侧、两侧同为中文。修复后按正文判，src=zh。
+    """
+    translation_service._translation_cache.clear()
+    chinese_body = '# 代码审查清单\n\n系统、全面的代码审查方法。逐维度有序检查，而非随机扫描。'
+
+    async def _fake_complete_chat(messages, **kwargs):
+        return '# Code Review Checklist\n\nA systematic, comprehensive approach.'
+
+    monkeypatch.setattr(translation_service, '_complete_chat', _fake_complete_chat)
+
+    body_en, body_zh = await github_sync_service._resolve_bilingual_body(
+        existing_skill=None, source_language='en', body=chinese_body,
+    )
+    assert body_zh == chinese_body                       # 中文正文落中文侧（不被英文名误导）
+    assert body_en == '# Code Review Checklist\n\nA systematic, comprehensive approach.'  # 英文侧是译文
+
+
+@pytest.mark.asyncio
 async def test_resolve_bilingual_body_empty_clears_both_sides():
     body_en, body_zh = await github_sync_service._resolve_bilingual_body(
         existing_skill=SimpleNamespace(body_en='old', body_zh='旧'),

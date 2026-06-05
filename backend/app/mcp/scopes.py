@@ -41,6 +41,37 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'marketplace:read': {'label_zh': '浏览能力市场', 'domain': 'marketplace', 'risk': 'low', 'description': '搜索/查看技能与模板、列出当前 Agent 已安装技能'},
     'marketplace:install': {'label_zh': '安装/卸载技能', 'domain': 'marketplace', 'risk': 'medium', 'description': '把市场技能装到当前 Agent 或从中卸载（云端权威 + 重物化）'},
     'marketplace:publish': {'label_zh': '打包与发布资源', 'domain': 'marketplace', 'risk': 'high', 'description': '打包本地技能/模板并发布为当前用户资源（默认草稿；公开/送审过主人确认）'},
+    # —— app · presentation（演示文稿 embedded_desktop AI-Native，14-doc/12 §11.12 权威）——
+    'presentation:read': {
+        'label_zh': '查看演示文稿',
+        'domain': 'presentation',
+        'risk': 'low',
+        'description': '列出/查看演示文稿、查询异步生成任务状态',
+    },
+    'presentation:create': {
+        'label_zh': '生成演示大纲',
+        'domain': 'presentation',
+        'risk': 'medium',
+        'description': '生成演示大纲草稿（消耗 LLM 额度，不导出）',
+    },
+    'presentation:generate': {
+        'label_zh': '生成/编辑演示文稿',
+        'domain': 'presentation',
+        'risk': 'high',
+        'description': '生成/编辑/派生完整演示文稿并导出（消耗 LLM 额度并写入本机文件）',
+    },
+    'presentation:manage': {
+        'label_zh': '管理演示文稿',
+        'domain': 'presentation',
+        'risk': 'high',
+        'description': '删除演示文稿、上传 RAG 文档（破坏性/任意写）',
+    },
+    'image:generate': {
+        'label_zh': '生成图片',
+        'domain': 'image',
+        'risk': 'medium',
+        'description': '直连唤星 new-api 图像 API 生成图片（消耗 owner 配额）',
+    },
 }
 
 # source 分组的中文标签（catalog 顶层分组）

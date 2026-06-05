@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.service import message_router
+from backend.common.exception import errors
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -223,3 +224,45 @@ async def deliver_agent_card_to_owner(
         card_body=card_body,
         notif=notif,
     )
+
+
+async def deliver_card_to_agent(
+    db: AsyncSession,
+    *,
+    agent_id: str,
+    account: HasnServiceAccounts,
+    notif: HasnNotifications,
+) -> int:
+    """收件方是 Agent 的通知卡片（§4.5 发 Agent）：经
+    `route_message(from=服务号, to=agent, msg_type=notification)` 投递到「服务号 ⇄ Agent」
+    direct 会话，返回消息 id。
+
+    与 `deliver_card_to_owner`（直写 `_persist_card` 绕权限矩阵）的本质区别：发给 Agent
+    必须走 route_message 才能复用「既有 agent dispatch（投 runtime，让分身去处理这条通知）
+    + 既有 owner_copy（message.received sync_event owner_id=Agent 的主人，主人旁观透明）」。
+    服务号 → Agent 经 permission_engine 默认 ALLOW（iron_laws 全过：service 源 entity_type
+    非 agent、非承诺行为、卡片无敏感字段、relation 非 commerce、未超滑窗限频），无需改权限矩阵。
+    relation_type='service' 使会话落「服务号 ⇄ Agent」service 会话（与「服务号 ⇄ 主人」同源
+    异会话，对应 D6 一个服务号下多条子会话）。
+    """
+    card_body = build_card_body(
+        notif,
+        source_kind=account.kind,
+        source_id=account.sa_hasn_id,
+        source_name=account.display_name or account.sa_hasn_id,
+        source_icon=account.avatar or None,
+        source_verified=account.verified,
+    )
+    result = await message_router.route_message(
+        db,
+        account.sa_hasn_id,
+        agent_id,
+        card_body,
+        content_type=_CONTENT_TYPE_CARD,
+        msg_type='notification',
+        priority=notif.priority if notif.priority in ('critical', 'high', 'normal', 'low') else 'normal',
+        context={'relation_type': 'service', 'notification_id': notif.id, 'conversation_type': 'service'},
+    )
+    if result.get('error'):
+        raise errors.ServerError(msg=f"通知卡片投递 Agent 失败: {result.get('message')}")
+    return int(result['msg_id'])

@@ -694,7 +694,97 @@ class PublishTemplateTool(BaseTool):
         }
 
 
-# 注册清单（server._register_builtin_tools 消费）——3 组 9 个云端工具（package_* 在 hasn-mcp 本地）。
+_PUBLISH_SKILL_PACK_INPUT_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'name': {'type': 'string', 'description': '技能包名称'},
+        'bundle_slug': {'type': 'string', 'description': 'skill pack slug（小写连字符）'},
+        'command_key': {'type': 'string', 'description': "Hermes 命令 key，必须是 '/' + bundle_slug"},
+        'namespace': {'type': 'string', 'description': '命名空间（如 huanxing），可选'},
+        'description': {'type': 'string', 'description': '技能包描述，可选'},
+        'version': {'type': 'string', 'description': '语义化版本，默认 1.0.0'},
+        'hermes_yaml': {
+            'type': 'string',
+            'description': 'Hermes 技能包 YAML（顶层 dict，含非空 skills 成员列表 + 可选 instruction）',
+        },
+        'hermes_bundle_json': {'type': 'object', 'description': 'Hermes bundle JSON（可选，结构化镜像）'},
+        'is_private': {'type': 'boolean', 'description': '是否私有，默认 true'},
+    },
+    'required': ['name', 'bundle_slug', 'command_key', 'hermes_yaml'],
+    'additionalProperties': False,
+}
+
+
+class PublishSkillPackTool(BaseTool):
+    """发布技能包（skill_pack）为**当前用户**的市场资源（marketplace_template）。
+
+    与 publish_template（zip 语义）不同：入参是结构化 hermes_yaml，落库前经
+    skill_pack_service 校验+规范化（B2.2/B2.4），路由与本工具共用同一 upsert（DRY）。
+    """
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.marketplace'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.marketplace.publish_skill_pack'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def risk_level(self) -> str:
+        return 'high'
+
+    @property
+    def description(self) -> str:
+        return '把结构化技能包（hermes_yaml + 成员技能）发布为你（主人）的市场资源；落库前校验规范化'
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return _PUBLISH_SKILL_PACK_INPUT_SCHEMA
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return ['marketplace:publish']
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        from backend.app.marketplace.schema.skill_pack import SkillPackCreateRequest
+        from backend.app.marketplace.service import skill_pack_service
+
+        payload = SkillPackCreateRequest(
+            name=arguments['name'],
+            bundle_slug=arguments['bundle_slug'],
+            command_key=arguments['command_key'],
+            namespace=(arguments.get('namespace') or None),
+            description=(arguments.get('description') or None),
+            version=(arguments.get('version') or '1.0.0'),
+            hermes_yaml=arguments['hermes_yaml'],
+            hermes_bundle_json=(arguments.get('hermes_bundle_json') or {}),
+            is_private=bool(arguments.get('is_private', True)),
+            is_official=False,
+        )
+        async with async_db_session() as db:
+            # 归属由后端从凭证解析（owner_id），不信入参身份。
+            snapshot = await skill_pack_service.upsert_skill_pack(db, payload, author_id=agent_context.owner_id)
+            await db.commit()
+        return {
+            'template_id': snapshot['template_id'],
+            'version': snapshot['version'],
+            'bundle_slug': snapshot['bundle_slug'],
+            'command_key': snapshot['command_key'],
+            'skill_ids': snapshot['skill_ids'],
+            'content_hash': snapshot['content_hash'],
+        }
+
+
+# 注册清单（server._register_builtin_tools 消费）——3 组 10 个云端工具（package_* 在 hasn-mcp 本地）。
 MARKETPLACE_TOOLS: list[type[BaseTool]] = [
     SearchSkillsTool,
     GetSkillTool,
@@ -705,4 +795,5 @@ MARKETPLACE_TOOLS: list[type[BaseTool]] = [
     UninstallSkillTool,
     PublishSkillTool,
     PublishTemplateTool,
+    PublishSkillPackTool,
 ]

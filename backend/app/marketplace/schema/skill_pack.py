@@ -16,7 +16,7 @@ class SkillPackCreateRequest(SchemaBase):
     version: str = Field(default='1.0.0', description='语义化版本')
     hermes_bundle_json: dict[str, Any] = Field(default_factory=dict, description='Hermes bundle JSON')
     hermes_yaml: str = Field(description='Hermes YAML')
-    content_hash: str = Field(description='内容哈希')
+    content_hash: str | None = Field(default=None, description='内容哈希（留空时由 hermes_yaml 规范化后计算）')
     skill_dependencies_versioned: dict[str, Any] | None = Field(default=None, description='带版本号的技能依赖')
     is_private: bool = Field(default=True, description='是否私有')
     is_official: bool = Field(default=False, description='是否官方')

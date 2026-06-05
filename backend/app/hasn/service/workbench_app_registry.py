@@ -19,6 +19,13 @@ class WorkbenchApp:
     collaboration_mode: str = 'none'
     requires_role: str | None = None
     health_check: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    # embedded_desktop AI-Native 应用新增字段（设计 §6.1/§7.2）：
+    # execution_mode 在 WorkbenchApp 层声明（doc02 §1）；ui_kind/window_url/window_origin
+    # 描述本地嵌入式 UI 句柄（窗口经 daemon 同源代理，非 sidecar 真实端口）。
+    execution_mode: str = 'cloud'
+    ui_kind: str | None = None
+    window_url: str | None = None
+    window_origin: str | None = None
 
     def to_manifest(self, *, workspace_kind: str | None = None) -> dict[str, Any]:
         data = {
@@ -31,6 +38,11 @@ class WorkbenchApp:
             'entry_route': self.entry_route,
             'install_policy': self.install_policy,
             'requires_role': self.requires_role,
+            # 三处端到端同步（§6.1 注）：云端 manifest → daemon 透传 → WebUI 接口类型。
+            'execution_mode': self.execution_mode,
+            'ui_kind': self.ui_kind,
+            'window_url': self.window_url,
+            'window_origin': self.window_origin,
         }
         if workspace_kind and self.health_check:
             data['health'] = self.health_check({'workspace_kind': workspace_kind})
@@ -68,6 +80,10 @@ class WorkbenchAppRegistry:
                 install_policy='auto',
             )
         )
+        # Presenton 演示文稿（embedded_desktop AI-Native，设计 §7.2）。延迟导入避免循环依赖。
+        from backend.app.hasn.service.ai_native_builtin_presentation import build_presentation_workbench_app
+
+        registry.register(build_presentation_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:

@@ -59,6 +59,52 @@ def _normalize_skill_ids(skills: Any) -> list[str]:
     return []
 
 
+async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
+    """把 hasn_agents.skill_bundles（[{template_id, version}]）解析为 Runtime 物化所需形态。
+
+    对每个已安装包按 (template_id, version) 取版本（缺 version 取 is_latest），join
+    marketplace_template_version 输出 {bundle_slug, command_key, hermes_yaml}。已下架/缺版本的
+    引用静默跳过（零 fake，不产生空壳包），Runtime 据现存清单物化 skill-bundles/*.yaml。
+    """
+    if not isinstance(bundles_ref, list) or not bundles_ref:
+        return []
+    out: list[dict] = []
+    for ref in bundles_ref:
+        if not isinstance(ref, dict):
+            continue
+        template_id = ref.get('template_id')
+        if not template_id:
+            continue
+        version = ref.get('version')
+        ver_filter = 'AND v.version = :version' if version else 'AND v.is_latest = true'
+        bundle_row = (
+            await db.execute(
+                sa.text(
+                    f'''
+                    SELECT v.bundle_slug, v.command_key, v.hermes_yaml
+                    FROM public.marketplace_template_version v
+                    JOIN public.marketplace_template t ON t.template_id = v.template_id
+                    WHERE v.template_id = :template_id
+                      AND t.template_type = 'skill_pack'
+                      {ver_filter}
+                    LIMIT 1
+                    '''
+                ),
+                {'template_id': template_id, 'version': version},
+            )
+        ).mappings().one_or_none()
+        if bundle_row is None or not bundle_row.get('hermes_yaml'):
+            continue
+        out.append(
+            {
+                'bundle_slug': bundle_row['bundle_slug'],
+                'command_key': bundle_row['command_key'],
+                'hermes_yaml': bundle_row['hermes_yaml'],
+            }
+        )
+    return out
+
+
 @router.get(
     '/profile',
     summary='Agent 直连拉取自己的 Profile（云端权威）',
@@ -78,6 +124,9 @@ async def get_agent_profile(
     # 自动生效，零回填。common_skills_revision 让 Runtime 据以重拉最新公共技能。
     common_ids, common_rev = await get_common_skill_snapshot(db)
     agent_ids = _normalize_skill_ids(getattr(row, 'skills', None))
+    # 已安装技能包（实施/91 B2.5）：解析为 {bundle_slug, command_key, hermes_yaml}，
+    # Runtime 据此物化 skill-bundles/*.yaml（成员技能已并入 skills，此处仅给 hermes 包定义）。
+    skill_bundles = await _resolve_skill_bundles(db, getattr(row, 'skill_bundles', None))
 
     return response_base.success(
         data=AgentProfileResponse(
@@ -88,6 +137,7 @@ async def get_agent_profile(
             user_md=row.user_md,
             memory_md=getattr(row, 'memory_md', None),
             skills=merge_skill_ids(common_ids, agent_ids),
+            skill_bundles=skill_bundles,
             template_id=row.template_id,
             template_version=getattr(row, 'template_version', None),
             profile_revision=int(getattr(row, 'profile_revision', 1) or 1),
