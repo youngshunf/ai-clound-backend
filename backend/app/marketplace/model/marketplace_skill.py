@@ -36,6 +36,16 @@ class MarketplaceSkill(Base):
     name_zh: Mapped[str | None] = mapped_column(sa.String(200), default=None, comment='中文名称')
     description_en: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='英文描述')
     description_zh: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='中文描述')
+    body_en: Mapped[str | None] = mapped_column(
+        UniversalText,
+        default=None,
+        comment='英文正文（SKILL.md frontmatter 之后的 Markdown 正文）',
+    )
+    body_zh: Mapped[str | None] = mapped_column(
+        UniversalText,
+        default=None,
+        comment='中文正文（SKILL.md frontmatter 之后的 Markdown 正文）',
+    )
     source_language: Mapped[str | None] = mapped_column(
         sa.String(10),
         default=None,
@@ -49,6 +59,11 @@ class MarketplaceSkill(Base):
     tags: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='标签，JSON数组字符串')
     tags_en: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='英文标签，JSON数组字符串')
     tags_zh: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='中文标签，JSON数组字符串')
+    files: Mapped[str | None] = mapped_column(
+        UniversalText,
+        default=None,
+        comment='技能目录文件清单，JSON 数组 [{path,size}]（仅名称与大小，不含内容）',
+    )
     source_type: Mapped[str | None] = mapped_column(
         sa.String(20),
         default='github',
