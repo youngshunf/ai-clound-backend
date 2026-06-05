@@ -1,6 +1,6 @@
 from typing import Sequence
 
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -9,6 +9,17 @@ from backend.app.hasn.schema.hasn_workbench_briefing_feedback import CreateHasnW
 
 
 class CRUDHasnWorkbenchBriefingFeedback(CRUDPlus[HasnWorkbenchBriefingFeedback]):
+    @staticmethod
+    async def list_by_owner_period(
+        db: AsyncSession, owner_hasn_id: str, period: str
+    ) -> Sequence[HasnWorkbenchBriefingFeedback]:
+        """取某 owner 某 period 的全部反馈（dismiss/done），用于过滤已忽略的关注项/计划项。"""
+        stmt = select(HasnWorkbenchBriefingFeedback).where(
+            HasnWorkbenchBriefingFeedback.owner_hasn_id == owner_hasn_id,
+            HasnWorkbenchBriefingFeedback.period == period,
+        )
+        return (await db.execute(stmt)).scalars().all()
+
     async def get(self, db: AsyncSession, pk: int) -> HasnWorkbenchBriefingFeedback | None:
         """
         获取HASN 工作台简报反馈（云端权威）

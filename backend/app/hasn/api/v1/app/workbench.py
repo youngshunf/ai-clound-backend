@@ -7,7 +7,11 @@ from fastapi import APIRouter, Request
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.schema.hasn_builtin_task_catalog import BuiltinTaskCatalogResponse
 from backend.app.hasn.schema.hasn_owner_workbench_pref import PutWorkbenchPrefParam, WorkbenchPrefResponse
-from backend.app.hasn.schema.workbench_briefing_document import BriefingDismissParam, BriefingLatestResponse
+from backend.app.hasn.schema.workbench_briefing_document import (
+    BriefingDismissParam,
+    BriefingHistoryResponse,
+    BriefingLatestResponse,
+)
 from backend.app.hasn.service.hasn_workbench_briefing_feedback_service import hasn_workbench_briefing_feedback_service
 from backend.app.hasn.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
 from backend.app.hasn.service.instance_resolver import InstanceResolutionError
@@ -61,9 +65,9 @@ async def list_builtin_tasks(db: CurrentSession) -> ResponseSchemaModel[BuiltinT
     return response_base.success(data=data)
 
 
-@router.get('/workbench/briefing/latest', dependencies=[DependsJwtAuth], summary='读当日最新简报（owner 隔离，空态如实）')
+@router.get('/workbench/briefing/latest', dependencies=[DependsJwtAuth], summary='读当日/指定日简报（owner 隔离，今日视图过滤已忽略项）')
 async def get_briefing_latest(
-    request: Request, db: CurrentSession, period: str | None = None
+    request: Request, db: CurrentSession, period: str | None = None, include_dismissed: bool = False
 ) -> ResponseSchemaModel[BriefingLatestResponse]:
     owner_id = await _resolve_owner_id(request, db)
     row = await hasn_workbench_briefing_service.get_latest(db=db, owner_hasn_id=owner_id, period=period)
@@ -71,6 +75,14 @@ async def get_briefing_latest(
         # 空态如实返回（前端引导「立即生成」，绝不造卡）。
         return response_base.success(data=BriefingLatestResponse(has_briefing=False))
     document = row.document_json or {}
+    # 读已忽略键：今日实时视图据此过滤（刷新不再出现 = dismiss 持久化）；
+    # 历史视图（include_dismissed=true）返回完整文档 + dismissed_refs 供前端标「已忽略」。
+    item_ids, source_refs = await hasn_workbench_briefing_feedback_service.dismissed_keys(
+        db=db, owner_hasn_id=owner_id, period=row.period
+    )
+    dismissed_refs = sorted(item_ids | source_refs)
+    if not include_dismissed and dismissed_refs:
+        document = hasn_workbench_briefing_service.filter_dismissed(document, item_ids, source_refs)
     return response_base.success(
         data=BriefingLatestResponse(
             has_briefing=True,
@@ -78,8 +90,20 @@ async def get_briefing_latest(
             period=row.period,
             generated_at=document.get('generated_at'),
             document=document,
+            dismissed_refs=dismissed_refs,
         )
     )
+
+
+@router.get('/workbench/briefing/history', dependencies=[DependsJwtAuth], summary='历史简报列表（按日倒序，归档往期）')
+async def list_briefing_history(
+    request: Request, db: CurrentSession, limit: int = 60
+) -> ResponseSchemaModel[BriefingHistoryResponse]:
+    owner_id = await _resolve_owner_id(request, db)
+    items = await hasn_workbench_briefing_service.get_history(
+        db=db, owner_hasn_id=owner_id, limit=max(1, min(limit, 180))
+    )
+    return response_base.success(data=BriefingHistoryResponse(items=items))
 
 
 @router.post(
