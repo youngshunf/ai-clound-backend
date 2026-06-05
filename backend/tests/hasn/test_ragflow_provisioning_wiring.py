@@ -259,6 +259,53 @@ async def test_sqlalchemy_actions_delegate_member_lifecycle_to_provisioning_serv
 
 
 @pytest.mark.asyncio
+async def test_revoke_member_pushes_credentials_changed_after_revoking(
+    ragflow_sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """安全关键（设计 §2.3/§9.1）：撤销成员凭据后必须推 KnowledgeCredentialsChanged，
+    否则 daemon 缓存的本地明文 key 不会被丢弃。"""
+    from backend.app.hasn.service.ragflow_subscriber import SqlAlchemyRAGFlowActions
+
+    async with ragflow_sessionmaker.begin() as db:
+        instance = RagflowInstanceStub(
+            scope='enterprise',
+            enterprise_id=55,
+            url='https://knowledge.example',
+            public_pem='pem',
+            status='active',
+        )
+        db.add(instance)
+        await db.flush()
+        db.add(
+            RagflowCredentialStub(
+                user_id=77,
+                instance_id=instance.id,
+                ragflow_user_id='u-77',
+                ragflow_tenant_id='t-77',
+                api_key_encrypted=b'encrypted',
+                status='active',
+            )
+        )
+        await db.flush()
+
+    actions = SqlAlchemyRAGFlowActions(provisioning_service=CapturingProvisioningService())
+    notified: list[int] = []
+
+    async def record(*, user_id: int) -> None:
+        notified.append(user_id)
+
+    actions.notify_credentials_changed = record  # type: ignore[method-assign]
+    await actions.revoke_member(enterprise_id=55, user_id=77)
+
+    assert notified == [77]  # 撤销后推送了一次
+
+    # 对没有任何凭据的成员撤销时不应误推（避免噪声 WS）— credential_ids 为空走 no-op 守卫
+    notified.clear()
+    await actions.revoke_member(enterprise_id=55, user_id=88)  # 88 在该实例无凭据
+    assert notified == []
+
+
+@pytest.mark.asyncio
 async def test_compensation_scan_provisions_approved_members_for_active_instances(
     ragflow_sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -539,3 +586,45 @@ def test_secret_crypto_handles_empty_and_legacy_plaintext(monkeypatch: pytest.Mo
     monkeypatch.setattr(secret_crypto.key_encryption, 'decrypt', raise_for_legacy)
 
     assert secret_crypto.decrypt_ragflow_secret(b'legacy-token') == 'legacy-token'
+
+
+def test_credential_payload_ships_plaintext_key_for_active_only() -> None:
+    """daemon-direct（设计 §2.3/§9.1）：active 凭据下发明文 api_key 供 daemon 建直连适配器；
+    非 active 一律不下发；脱敏占位 api_key_encrypted 仍只回 'stored'（不泄密文）。"""
+    from backend.app.hasn.service.workbench_domain_service import _credential_payload
+    from backend.app.hasn.util.secret_crypto import encrypt_ragflow_secret
+
+    ciphertext = encrypt_ragflow_secret('ragflow-tenant-key')
+
+    def credential(status: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=1,
+            user_id=7,
+            instance_id=3,
+            ragflow_user_id='rf-user',
+            ragflow_tenant_id='rf-tenant',
+            api_key_encrypted=ciphertext,
+            status=status,
+            last_error=None,
+        )
+
+    active = _credential_payload(credential('active'))
+    assert active['api_key'] == 'ragflow-tenant-key'
+    assert active['api_key_encrypted'] == 'stored'  # 占位不泄密文
+
+    for inactive_status in ('pending', 'failed', 'revoked'):
+        payload = _credential_payload(credential(inactive_status))
+        assert payload['api_key'] is None, inactive_status
+        assert payload['api_key_encrypted'] == 'stored'  # 有密文但不下发明文
+
+
+def test_knowledge_write_scopes_registered_with_metadata() -> None:
+    """RF-CLOUD：knowledge:upload/write/grant 三个新 scope 进 catalog（设计 §4.6）。"""
+    from backend.app.mcp.scopes import scope_meta
+
+    for key, expected_risk in (('knowledge:upload', 'medium'), ('knowledge:write', 'medium'), ('knowledge:grant', 'high')):
+        meta = scope_meta(key)
+        assert meta['domain'] == 'knowledge', key
+        assert meta['risk'] == expected_risk, key
+        assert meta['label'] and meta['label'] != key, key  # 有中文 label，未回退到裸 key
+        assert meta['description'], key

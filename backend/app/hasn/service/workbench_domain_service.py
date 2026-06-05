@@ -1397,6 +1397,16 @@ def _ragflow_instance_payload(instance) -> dict[str, Any]:
 
 
 def _credential_payload(credential) -> dict[str, Any]:
+    # The daemon is the sole caller (owner-JWT, behind /knowledge/credentials*).
+    # For daemon-direct it needs the live tenant key to build a RAGFlow adapter;
+    # the daemon then keeps it in its own per-owner encrypted store and redacts
+    # before anything reaches the WebUI/WS (design §2.3). Only an *active*
+    # credential ships a usable key.
+    api_key = (
+        decrypt_ragflow_secret(credential.api_key_encrypted)
+        if credential.status == 'active' and credential.api_key_encrypted
+        else None
+    )
     return {
         'id': credential.id,
         'user_id': credential.user_id,
@@ -1404,6 +1414,7 @@ def _credential_payload(credential) -> dict[str, Any]:
         'ragflow_user_id': credential.ragflow_user_id,
         'ragflow_tenant_id': credential.ragflow_tenant_id,
         'api_key_encrypted': 'stored' if credential.api_key_encrypted else None,
+        'api_key': api_key,
         'status': credential.status,
         'last_error': credential.last_error,
     }
