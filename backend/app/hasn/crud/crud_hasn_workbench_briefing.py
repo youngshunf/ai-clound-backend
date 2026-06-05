@@ -1,6 +1,6 @@
-from typing import Sequence
+from typing import Any, Sequence
 
-from sqlalchemy import Select, select
+from sqlalchemy import Row, Select, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
@@ -21,6 +21,30 @@ class CRUDHasnWorkbenchBriefing(CRUDPlus[HasnWorkbenchBriefing]):
             stmt = stmt.where(HasnWorkbenchBriefing.period == period)
         stmt = stmt.order_by(HasnWorkbenchBriefing.generated_at.desc(), HasnWorkbenchBriefing.id.desc()).limit(1)
         return (await db.execute(stmt)).scalar_one_or_none()
+
+    @staticmethod
+    async def list_summaries_by_owner(
+        db: AsyncSession, owner_hasn_id: str, limit: int = 60
+    ) -> Sequence[Row[Any]]:
+        """列某 owner 历史简报摘要（period 倒序）：period/state/产出时间/总览/关注项数/计划项数。
+
+        用 JSONB 函数取计数与总览，避免为列表拉回整份文档（document_json 可能不小）。
+        """
+        doc = HasnWorkbenchBriefing.document_json
+        stmt = (
+            select(
+                HasnWorkbenchBriefing.period,
+                HasnWorkbenchBriefing.state,
+                doc['generated_at'].astext.label('generated_at'),
+                doc['summary'].astext.label('summary'),
+                func.coalesce(func.jsonb_array_length(doc['focus_items']), 0).label('focus_count'),
+                func.coalesce(func.jsonb_array_length(doc['plans']), 0).label('plan_count'),
+            )
+            .where(HasnWorkbenchBriefing.owner_hasn_id == owner_hasn_id)
+            .order_by(HasnWorkbenchBriefing.period.desc())
+            .limit(limit)
+        )
+        return (await db.execute(stmt)).all()
 
     @staticmethod
     async def upsert_by_owner_period(

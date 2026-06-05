@@ -53,6 +53,55 @@ class HasnWorkbenchBriefingService:
         return await hasn_workbench_briefing_dao.get_latest_by_owner(db, owner_hasn_id, period)
 
     @staticmethod
+    async def get_history(
+        *, db: AsyncSession, owner_hasn_id: str, limit: int = 60
+    ) -> list[dict[str, Any]]:
+        """列某 owner 历史简报（按日 period 倒序），供工作台历史面板按日查看。"""
+        rows = await hasn_workbench_briefing_dao.list_summaries_by_owner(db, owner_hasn_id, limit)
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            generated_at: int | None = None
+            if row.generated_at:
+                try:
+                    generated_at = int(row.generated_at)
+                except (TypeError, ValueError):
+                    generated_at = None
+            out.append(
+                {
+                    'period': row.period,
+                    'state': row.state or 'ready',
+                    'generated_at': generated_at,
+                    'summary': row.summary or '',
+                    'focus_count': int(row.focus_count or 0),
+                    'plan_count': int(row.plan_count or 0),
+                }
+            )
+        return out
+
+    @staticmethod
+    def filter_dismissed(
+        document: dict[str, Any], dismissed_item_ids: set[str], dismissed_source_refs: set[str]
+    ) -> dict[str, Any]:
+        """从文档剔除已忽略的关注项/计划项（item_id 或 source.ref 命中即剔除）。
+
+        返回浅拷贝，**不改存储原文**——历史视图仍能看到完整记录（含被忽略项）。
+        """
+
+        def _keep_focus(item: dict[str, Any]) -> bool:
+            if item.get('item_id') in dismissed_item_ids:
+                return False
+            ref = (item.get('source') or {}).get('ref')
+            return not (ref and ref in dismissed_source_refs)
+
+        def _keep_plan(plan: dict[str, Any]) -> bool:
+            return plan.get('plan_id') not in dismissed_item_ids
+
+        out = dict(document)
+        out['focus_items'] = [i for i in document.get('focus_items', []) if _keep_focus(i)]
+        out['plans'] = [p for p in document.get('plans', []) if _keep_plan(p)]
+        return out
+
+    @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> HasnWorkbenchBriefing:
         """
         获取HASN 工作台每日关注简报（云端权威）

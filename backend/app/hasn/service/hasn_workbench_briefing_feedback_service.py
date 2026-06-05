@@ -36,6 +36,19 @@ class HasnWorkbenchBriefingFeedbackService:
         return row
 
     @staticmethod
+    async def dismissed_keys(
+        *, db: AsyncSession, owner_hasn_id: str, period: str
+    ) -> tuple[set[str], set[str]]:
+        """取某 owner 某 period 已反馈(dismiss/done)的去重键：(item_id 集合, source_ref 集合)。
+
+        关注项/计划项的 item_id 命中 item_id 集合、或其 source.ref 命中 source_ref 集合，即视为已处理。
+        """
+        rows = await hasn_workbench_briefing_feedback_dao.list_by_owner_period(db, owner_hasn_id, period)
+        item_ids = {r.item_id for r in rows if r.item_id}
+        source_refs = {r.source_ref for r in rows if r.source_ref}
+        return item_ids, source_refs
+
+    @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> HasnWorkbenchBriefingFeedback:
         """
         获取HASN 工作台简报反馈（云端权威）

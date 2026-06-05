@@ -101,6 +101,27 @@ class BriefingLatestResponse(SchemaBase):
     period: str | None = Field(default=None, description='周期 YYYY-MM-DD')
     generated_at: int | None = Field(default=None, description='产出时间 epoch ms')
     document: dict | None = Field(default=None, description='完整 BriefingDocument（无则 null）')
+    dismissed_refs: list[str] = Field(
+        default_factory=list,
+        description='该周期已忽略项的键（item_id / source.ref 合集）；今日视图据此过滤，历史视图据此标「已忽略」',
+    )
+
+
+class BriefingHistoryEntry(SchemaBase):
+    """历史简报列表项（按日，period 倒序）。"""
+
+    period: str = Field(description='周期 YYYY-MM-DD')
+    state: str = Field(default='ready', description='状态 generating/ready/failed')
+    generated_at: int | None = Field(default=None, description='产出时间 epoch ms')
+    summary: str = Field(default='', description='一句话总览（列表预览）')
+    focus_count: int = Field(default=0, description='关注项数')
+    plan_count: int = Field(default=0, description='计划项数')
+
+
+class BriefingHistoryResponse(SchemaBase):
+    """历史简报列表响应（app）：往期/已归档简报按日倒序，供工作台历史面板按日查看。"""
+
+    items: list[BriefingHistoryEntry] = Field(default_factory=list, description='按日倒序的历史简报')
 
 
 class BriefingDismissParam(SchemaBase):
