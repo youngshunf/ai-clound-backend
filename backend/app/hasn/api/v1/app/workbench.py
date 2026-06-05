@@ -7,6 +7,9 @@ from fastapi import APIRouter, Request
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.schema.hasn_builtin_task_catalog import BuiltinTaskCatalogResponse
 from backend.app.hasn.schema.hasn_owner_workbench_pref import PutWorkbenchPrefParam, WorkbenchPrefResponse
+from backend.app.hasn.schema.workbench_briefing_document import BriefingDismissParam, BriefingLatestResponse
+from backend.app.hasn.service.hasn_workbench_briefing_feedback_service import hasn_workbench_briefing_feedback_service
+from backend.app.hasn.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
 from backend.app.hasn.service.workbench_builtin_task_service import workbench_builtin_task_service
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.app.hasn.service.workbench_pref_service import workbench_pref_service
@@ -55,6 +58,48 @@ async def update_workbench_pref(
 async def list_builtin_tasks(db: CurrentSession) -> ResponseSchemaModel[BuiltinTaskCatalogResponse]:
     data = await workbench_builtin_task_service.list_enabled(db)
     return response_base.success(data=data)
+
+
+@router.get('/workbench/briefing/latest', dependencies=[DependsJwtAuth], summary='读当日最新简报（owner 隔离，空态如实）')
+async def get_briefing_latest(
+    request: Request, db: CurrentSession, period: str | None = None
+) -> ResponseSchemaModel[BriefingLatestResponse]:
+    owner_id = await _resolve_owner_id(request, db)
+    row = await hasn_workbench_briefing_service.get_latest(db=db, owner_hasn_id=owner_id, period=period)
+    if row is None:
+        # 空态如实返回（前端引导「立即生成」，绝不造卡）。
+        return response_base.success(data=BriefingLatestResponse(has_briefing=False))
+    document = row.document_json or {}
+    return response_base.success(
+        data=BriefingLatestResponse(
+            has_briefing=True,
+            state=row.state,
+            period=row.period,
+            generated_at=document.get('generated_at'),
+            document=document,
+        )
+    )
+
+
+@router.post(
+    '/workbench/briefing/items/{item_id}/dismiss',
+    dependencies=[DependsJwtAuth],
+    summary='标记关注项已处理（反馈闭环，喂下次去重/降权）',
+)
+async def dismiss_briefing_item(
+    request: Request, db: CurrentSessionTransaction, item_id: str, obj: BriefingDismissParam
+) -> ResponseModel:
+    owner_id = await _resolve_owner_id(request, db)
+    await hasn_workbench_briefing_feedback_service.record(
+        db=db,
+        owner_hasn_id=owner_id,
+        period=obj.period,
+        item_id=item_id,
+        action=obj.action,
+        source_ref=obj.source_ref,
+        note=obj.note,
+    )
+    return response_base.success(data={'item_id': item_id, 'action': obj.action})
 
 
 @router.get('/workbench/workspaces/current/apps', dependencies=[DependsJwtAuth], summary='当前工作空间已挂载应用')
