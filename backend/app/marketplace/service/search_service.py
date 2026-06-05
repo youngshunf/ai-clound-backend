@@ -3,6 +3,8 @@ Search Service for Marketplace Skills
 
 Provides search and browse functionality for skills.
 """
+import json
+
 from typing import Any
 
 from sqlalchemy import and_, desc, func, or_, select
@@ -383,17 +385,46 @@ class SearchService:
         }
 
         if detailed:
-            # Add detailed info
+            # 正文（readme）：按请求语言取，缺失回退另一语言；files 仅名称+大小。
+            readme = skill.body_zh if lang == 'zh' else skill.body_en
+            if not readme:
+                readme = skill.body_en if lang == 'zh' else skill.body_zh
+            files = self._parse_files(skill.files)
             result.update({
                 'source_repo_url': skill.source_repo_url,
                 'source_repo_path': skill.source_repo_path,
                 'repo_path': skill.repo_path,
                 'git_commit_hash': skill.git_commit_hash,
                 'synced_at': skill.synced_at.isoformat() if skill.synced_at else None,
-                'translated_at': skill.translated_at.isoformat() if skill.translated_at else None
+                'translated_at': skill.translated_at.isoformat() if skill.translated_at else None,
+                'readme': readme,
+                'readme_en': skill.body_en,
+                'readme_zh': skill.body_zh,
+                'files': files,
+                'file_count': len(files),
             })
 
         return result
+
+    @staticmethod
+    def _parse_files(raw: str | None) -> list[dict[str, Any]]:
+        """Parse the stored files JSON into a list of {path, size}; [] on any error.
+
+        Only path + size are surfaced — file contents are never stored or returned.
+        """
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        files: list[dict[str, Any]] = []
+        for item in data:
+            if isinstance(item, dict) and item.get('path'):
+                files.append({'path': str(item['path']), 'size': item.get('size')})
+        return files
 
     async def search_templates(
         self,

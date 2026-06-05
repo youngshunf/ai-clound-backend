@@ -103,6 +103,68 @@ class TranslationService:
             log.error(f"Translation failed: {e}")
             return text  # Return original text on error
 
+    async def translate_markdown(
+        self,
+        text: str,
+        source_lang: Literal['en', 'zh'],
+        target_lang: Literal['en', 'zh'],
+    ) -> str | None:
+        """Translate a Markdown document body, preserving structure and code.
+
+        Used for SKILL.md bodies (the readme). Unlike :meth:`translate`, this
+        keeps headings/lists/tables/links intact and never touches fenced code,
+        inline code, URLs, file paths, or command names.
+
+        Returns the translated Markdown, or ``None`` on empty input / failure —
+        the caller keeps the target-language side empty rather than fabricating a
+        translation (zero fake; the UI falls back to the original-language body).
+        """
+        if not text or not text.strip():
+            return None
+        if source_lang == target_lang:
+            return text
+
+        cache_key = f'md:{source_lang}:{target_lang}:{hash(text)}'
+        if cache_key in self._translation_cache:
+            return self._translation_cache[cache_key]
+
+        lang_names = {'en': 'English', 'zh': 'Chinese'}
+        try:
+            translated = await self._complete_chat(
+                [
+                    {
+                        'role': 'system',
+                        'content': (
+                            'You are a professional technical translator for Markdown documents. '
+                            'Translate the prose accurately and naturally while preserving ALL '
+                            'Markdown structure exactly: headings, lists, tables, links, images, '
+                            'blockquotes, and inline emphasis. Do NOT translate or modify fenced '
+                            'code blocks, inline code, URLs, file paths, command names, or '
+                            'YAML/JSON. Return only the translated Markdown with no surrounding '
+                            'code fences and no commentary.'
+                        ),
+                    },
+                    {
+                        'role': 'user',
+                        'content': (
+                            f'Translate the following Markdown from {lang_names[source_lang]} '
+                            f'to {lang_names[target_lang]}.\n\n{text}'
+                        ),
+                    },
+                ],
+                max_tokens=min(8000, len(text) + 800),
+                timeout=min(300.0, 60.0 + len(text) / 200.0),
+            )
+        except Exception as exc:
+            log.error(f'Markdown body translation failed: {exc}')
+            return None
+
+        translated = (translated or '').strip()
+        if not translated:
+            return None
+        self._translation_cache[cache_key] = translated
+        return translated
+
     async def _translate_with_llm(
         self,
         text: str,

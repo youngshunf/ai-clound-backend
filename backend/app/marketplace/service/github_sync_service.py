@@ -265,6 +265,9 @@ class GitHubSyncService:
         tag_hints = normalize_tags(metadata.get('tags'))
         icon_path = self._find_local_icon(skill_md_path.parent)
         skill_id = f'{namespace}/{slug}'
+        # SKILL.md 正文（frontmatter 之后的 Markdown）+ 技能目录文件清单（仅名称+大小）。
+        body = self._extract_skill_body(text)
+        files = self._list_skill_files(skill_md_path.parent)
         return {
             'skill_id': skill_id,
             'namespace': namespace,
@@ -276,6 +279,8 @@ class GitHubSyncService:
             'icon_path': icon_path,
             'emoji': metadata.get('emoji'),
             'author_name': metadata.get('author') or metadata.get('author_name'),
+            'body': body,
+            'files': files,
             'tag_hints': tag_hints,
             'pricing_type': metadata.get('pricing_type', 'free'),
             'price': metadata.get('price', 0),
@@ -308,6 +313,41 @@ class GitHubSyncService:
         if not isinstance(data, dict):
             raise TypeError('SKILL.md frontmatter must be a mapping')
         return data
+
+    @staticmethod
+    def _extract_skill_body(markdown: str) -> str:
+        """Return the Markdown body after the YAML frontmatter block.
+
+        When there is no frontmatter the whole document is treated as body.
+        """
+        import re
+
+        match = re.match(r'\A---\s*\n.*?\n---\s*(?:\n|\Z)', markdown, re.DOTALL)
+        body = markdown[match.end():] if match else markdown
+        return body.strip()
+
+    @staticmethod
+    def _list_skill_files(skill_dir: Path) -> list[dict[str, Any]]:
+        """List files under the skill directory (recursive) as {path, size}.
+
+        Only file names (relative POSIX paths) and byte sizes are captured — never
+        file contents. Mirrors the package-zip filters: hidden dirs/files,
+        ``__pycache__`` and ``.pyc`` are skipped. Sorted by path for stable output.
+        """
+        files: list[dict[str, Any]] = []
+        for root, dirs, names in os.walk(skill_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+            for name in names:
+                if name.startswith('.') or name.endswith('.pyc'):
+                    continue
+                file_path = Path(root) / name
+                try:
+                    size = file_path.stat().st_size
+                except OSError:
+                    size = None
+                files.append({'path': file_path.relative_to(skill_dir).as_posix(), 'size': size})
+        files.sort(key=lambda item: item['path'])
+        return files
 
     @staticmethod
     def _find_local_icon(skill_dir: Path) -> Path | None:
@@ -380,6 +420,14 @@ class GitHubSyncService:
         # Check if skill exists
         existing_skill = await marketplace_skill_dao.get_by_id(db, skill_id)
 
+        source_language = translated.get('source_language', skill_data.get('source_language'))
+        # 正文双语：原文存源语言侧，另一侧翻译（变更门控，未变不重译）。
+        body_en, body_zh = await self._resolve_bilingual_body(
+            existing_skill, source_language, skill_data.get('body') or '',
+        )
+        # 文件清单：仅名称+大小，不含内容。
+        files_json = json.dumps(skill_data.get('files') or [], ensure_ascii=False)
+
         # Prepare skill record
         skill_record = {
             'skill_id': skill_id,
@@ -390,7 +438,10 @@ class GitHubSyncService:
             'name_zh': translated.get('name_zh'),
             'description_en': translated.get('description_en'),
             'description_zh': translated.get('description_zh'),
-            'source_language': translated.get('source_language', skill_data.get('source_language')),
+            'body_en': body_en,
+            'body_zh': body_zh,
+            'files': files_json,
+            'source_language': source_language,
             'icon_url': await self._resolve_icon_url(db, skill_data),
             'emoji': skill_data.get('emoji') or translated.get('emoji'),
             'author_name': skill_data.get('author_name'),
@@ -430,6 +481,40 @@ class GitHubSyncService:
         versions = skill_data.get('versions', [])
         for version_data in versions:
             await self._sync_skill_version(db, db_skill_id, skill_id, version_data)
+
+    async def _resolve_bilingual_body(
+        self,
+        existing_skill: MarketplaceSkill | None,
+        source_language: str | None,
+        body: str,
+    ) -> tuple[str | None, str | None]:
+        """Resolve (body_en, body_zh): original on its source side, translation on the other.
+
+        Change-gated: when the existing row already stores the identical source-side
+        body AND a non-empty target-side translation, the cached translation is reused
+        instead of calling the LLM again — so steady-state syncs don't re-translate
+        unchanged readmes. An empty repo body clears both sides (honest: no readme).
+
+        Zero fake: a failed translation leaves the target side ``None`` (the serializer
+        falls back to the original-language body) rather than duplicating the source.
+        """
+        if not body.strip():
+            return None, None
+
+        src = source_language if source_language in ('en', 'zh') else (
+            'zh' if any(ord(char) > 127 for char in body) else 'en'
+        )
+        tgt = 'zh' if src == 'en' else 'en'
+
+        existing_src = getattr(existing_skill, f'body_{src}', None) if existing_skill else None
+        existing_tgt = getattr(existing_skill, f'body_{tgt}', None) if existing_skill else None
+        if existing_skill and existing_src == body and existing_tgt:
+            tgt_body = existing_tgt
+        else:
+            tgt_body = await translation_service.translate_markdown(body, src, tgt)
+
+        sides = {src: body, tgt: tgt_body}
+        return sides.get('en'), sides.get('zh')
 
     async def _resolve_icon_url(self, db: AsyncSession, skill_data: dict[str, Any]) -> str | None:
         icon_url = skill_data.get('icon_url')
