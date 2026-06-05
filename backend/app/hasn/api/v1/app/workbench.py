@@ -10,6 +10,7 @@ from backend.app.hasn.schema.hasn_owner_workbench_pref import PutWorkbenchPrefPa
 from backend.app.hasn.schema.workbench_briefing_document import BriefingDismissParam, BriefingLatestResponse
 from backend.app.hasn.service.hasn_workbench_briefing_feedback_service import hasn_workbench_briefing_feedback_service
 from backend.app.hasn.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
+from backend.app.hasn.service.instance_resolver import InstanceResolutionError
 from backend.app.hasn.service.workbench_builtin_task_service import workbench_builtin_task_service
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.app.hasn.service.workbench_pref_service import workbench_pref_service
@@ -108,7 +109,7 @@ async def current_workspace_apps(request: Request, db: CurrentSessionTransaction
     return response_base.success(data=apps)
 
 
-@router.get('/workbench/apps', dependencies=[DependsJwtAuth], summary='工作台应用市场')
+@router.get('/workbench/apps', dependencies=[DependsJwtAuth], summary='工作台全部已注册应用（注册即用）')
 async def list_workbench_apps(request: Request, db: CurrentSession, workspace_kind: str | None = None) -> ResponseModel:
     apps = await workbench_domain_service.list_workbench_apps(
         db,
@@ -116,6 +117,20 @@ async def list_workbench_apps(request: Request, db: CurrentSession, workspace_ki
         workspace_kind=workspace_kind,
     )
     return response_base.success(data=apps)
+
+
+@router.get(
+    '/workbench/apps/{app_id}/entry',
+    dependencies=[DependsJwtAuth],
+    summary='解析应用入口句柄（按当前空间解析实例，凭据不下发浏览器）',
+)
+async def resolve_workbench_app_entry(request: Request, db: CurrentSession, app_id: str) -> ResponseModel:
+    try:
+        handle = await workbench_domain_service.resolve_app_entry(db, user_id=request.user.id, app_id=app_id)
+    except InstanceResolutionError as exc:
+        # 实例未配置 / 凭据无效 / transport 不允许此面 —— 如实透出错误码（设计 11 §11）。
+        raise errors.ServerError(msg=exc.message, data={'code': exc.code}) from exc
+    return response_base.success(data=handle)
 
 
 @router.post('/workbench/workspaces/current/apps/{app_id}', dependencies=[DependsJwtAuth], summary='挂载应用')
