@@ -188,18 +188,14 @@ from backend.app.hasn.api.v1.open.hasn_agent_capabilities import router as open_
 from backend.app.hasn.api.v1.open.hasn_session_artifacts import router as open_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.open.hasn_session_events import router as open_hasn_session_events_router
 from backend.app.hasn.api.v1.open.hasn_sessions import router as open_hasn_sessions_router
-from backend.app.hasn.api.v1.open.hasn_skill_bundle import router as open_hasn_skill_bundle_router
 from backend.app.hasn.api.v1.open.hasn_task import router as open_hasn_task_router
 from backend.app.hasn.api.v1.open.hasn_task_run import router as open_hasn_task_run_router
 
 open_api = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/open', tags=['HASN 公开接口'])
 
 open_api.include_router(open_hasn_agent_capabilities_router, prefix='/agent/capabilities', tags=['Agent能力发现'])
-open_api.include_router(
-    open_hasn_skill_bundle_router,
-    prefix='/hasn/skill/bundles',
-    tags=['Skill Bundle 定义表（多个 skill 的组合）-Skill Bundle 定义表（多个 skill 的组合）'],
-)
+# 注：hasn_skill_bundle 是 owner 私有任务域资源，无 status/visibility 列，不该有公开端点。
+# open scope 已删除（曾把所有 owner 私有 bundle 无鉴权暴露给匿名）。浏览走 app/agent scope。
 open_api.include_router(open_hasn_task_router, prefix='/hasn/tasks', tags=['任务定义-任务定义'])
 open_api.include_router(open_hasn_task_run_router, prefix='/hasn/task/runs', tags=['任务执行记录-任务执行记录'])
 open_api.include_router(
