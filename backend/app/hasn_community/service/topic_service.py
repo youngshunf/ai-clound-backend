@@ -143,6 +143,20 @@ class TopicService:
         return d
 
     @staticmethod
+    async def _followed_topic_ids(db: AsyncSession, viewer_hasn_id: str | None, topic_ids: list[str]) -> set[str]:
+        """批量查 viewer 已关注的 topic_id 集合（trending/search 回填 is_following，避免逐条查）。"""
+        if not viewer_hasn_id or not topic_ids:
+            return set()
+        rows = await db.execute(
+            select(HasnFollows.target_hasn_id).where(
+                HasnFollows.follower_hasn_id == viewer_hasn_id,
+                HasnFollows.target_type == 'topic',
+                HasnFollows.target_hasn_id.in_(topic_ids),
+            )
+        )
+        return {r[0] for r in rows.all()}
+
+    @staticmethod
     async def get_topic(db: AsyncSession, ident: str, *, viewer_hasn_id: str | None = None, public_only: bool = False) -> dict[str, Any]:
         t = await TopicService._get_by_ident(db, ident)
         if not t or (public_only and t.status != 'active'):
@@ -210,8 +224,11 @@ class TopicService:
         return {'topic': TopicService._topic_dict(t), 'items': items, 'next_cursor': next_cursor}
 
     @staticmethod
-    async def get_trending(db: AsyncSession, *, limit: int = 10, window_days: int = 7) -> list[dict[str, Any]]:
-        """真实 trending：窗口内内容增量 + 总量打分，封禁/归档不计。"""
+    async def get_trending(db: AsyncSession, *, limit: int = 10, window_days: int = 7, viewer_hasn_id: str | None = None) -> list[dict[str, Any]]:
+        """真实 trending：窗口内内容增量 + 总量打分，封禁/归档不计。
+
+        viewer_hasn_id 非空时回填每条 is_following（登录浏览者刷新后关注态正确）。
+        """
         since = timezone.now() - timedelta(days=window_days)
         recent = (
             select(HasnContentTopics.topic_id, func.count().label('recent_cnt'))
@@ -236,10 +253,14 @@ class TopicService:
             d = TopicService._topic_dict(row.HasnTopics)
             d['recent_count'] = int(row.recent_cnt)
             out.append(d)
+        if viewer_hasn_id is not None:
+            followed = await TopicService._followed_topic_ids(db, viewer_hasn_id, [d['topic_id'] for d in out])
+            for d in out:
+                d['is_following'] = d['topic_id'] in followed
         return out
 
     @staticmethod
-    async def search_topics(db: AsyncSession, q: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    async def search_topics(db: AsyncSession, q: str, *, limit: int = 20, viewer_hasn_id: str | None = None) -> list[dict[str, Any]]:
         q = (q or '').strip()
         if not q:
             return []
@@ -250,7 +271,12 @@ class TopicService:
             .order_by(func.lower(HasnTopics.name).like(f'{q.lower()}%').desc(), HasnTopics.content_count.desc())
             .limit(limit)
         )
-        return [TopicService._topic_dict(t) for t in (await db.execute(stmt)).scalars().all()]
+        items = [TopicService._topic_dict(t) for t in (await db.execute(stmt)).scalars().all()]
+        if viewer_hasn_id is not None:
+            followed = await TopicService._followed_topic_ids(db, viewer_hasn_id, [d['topic_id'] for d in items])
+            for d in items:
+                d['is_following'] = d['topic_id'] in followed
+        return items
 
     @staticmethod
     async def create_topic(db: AsyncSession, *, name: str, description: str | None, cover_url: str | None, created_by_hasn_id: str) -> dict[str, Any]:
