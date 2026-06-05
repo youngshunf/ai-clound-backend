@@ -17,6 +17,7 @@ from backend.app.mcp.tools.contact import ContactListTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
 from backend.app.mcp.tools.registry import ToolRegistry
+from backend.app.mcp.tools.workbench import WORKBENCH_TOOLS
 from backend.app.mcp.tools.tool_call import ToolCallTool
 from backend.app.mcp.tools.tool_search import ToolSearchTool
 from backend.app.mcp.tools.user import UserSearchTool
@@ -87,6 +88,10 @@ class HasnCloudMcpServer:
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:
+            self.tool_registry.register(tool_cls())
+
+        # 工作台工具（13-工作台/04-doc §5）：主脑发布每日关注简报。
+        for tool_cls in WORKBENCH_TOOLS:
             self.tool_registry.register(tool_cls())
 
         logger.info(f'Registered {len(self.tool_registry.get_all_tools())} builtin tools')
