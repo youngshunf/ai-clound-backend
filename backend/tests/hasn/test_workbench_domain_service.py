@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import httpx
@@ -108,6 +108,10 @@ class RagflowInstanceStub(_Base):
     default_embd_id: Mapped[str | None] = mapped_column(sa.String(128), default=None)
     default_llm_id: Mapped[str | None] = mapped_column(sa.String(128), default=None)
     status: Mapped[str] = mapped_column(sa.String(16), default='pending_config')
+    # 生产模型按 created_time 排序选当前实例（时间戳字段迁移后）；测试桩需镜像该列，
+    # 否则 _knowledge_instance_for_workspace 的 order_by(created_time) 取属性即 AttributeError。
+    created_time: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
+    updated_time: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True, default=None)
 
 
 class RagflowCredentialStub(_Base):
@@ -140,110 +144,11 @@ class CapturingProvisioningService:
         return
 
 
-class CapturingRAGFlowClient:
-    def __init__(self, base_url: str, calls: list[tuple[str, str, dict]]) -> None:
-        self.base_url = base_url
-        self.calls = calls
-
-    async def get(self, path: str, *, params=None, headers=None):
-        self.calls.append(('GET', path, {'params': params, 'headers': headers}))
-        if path == '/api/v1/datasets':
-            return {
-                'code': 0,
-                'data': [
-                    {'id': 'ds-1', 'name': 'Enterprise KB', 'document_count': 1},
-                ],
-            }
-        if path == '/api/v1/datasets/ds-1/documents':
-            return {
-                'code': 0,
-                'data': {
-                    'docs': [
-                        {'id': 'doc-1', 'name': 'Runbook.txt', 'dataset_id': 'ds-1'},
-                    ],
-                },
-            }
-        raise AssertionError(f'unexpected GET {path}')
-
-    async def post(self, path: str, *, json=None, headers=None):
-        self.calls.append(('POST', path, {'json': json, 'headers': headers}))
-        if path == '/api/v1/datasets/ds-1/search':
-            return {
-                'code': 0,
-                'data': {
-                    'chunks': [
-                        {
-                            'id': 'chunk-1',
-                            'document_id': 'doc-1',
-                            'document_name': 'Runbook.txt',
-                            'content': 'rotate enterprise credentials safely',
-                            'dataset_id': 'ds-1',
-                        },
-                    ],
-                    'total': 1,
-                },
-            }
-        if path == '/api/v1/datasets/ds-1/documents?type=empty':
-            return {
-                'code': 0,
-                'data': [
-                    {'id': 'doc-new', 'name': json['name'], 'dataset_id': 'ds-1'},
-                ],
-            }
-        if path == '/api/v1/datasets/ds-1/documents/doc-new/chunks':
-            return {
-                'code': 0,
-                'data': {'chunk': {'id': 'chunk-new', 'content': json['content']}},
-            }
-        raise AssertionError(f'unexpected POST {path}')
 
 
-class ExpiringRAGFlowClient:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-
-    async def post(self, path: str, *, json=None, headers=None):
-        self.calls.append({'path': path, 'json': json, 'headers': headers})
-        if len(self.calls) == 1:
-            request = httpx.Request('POST', f'https://knowledge.example{path}')
-            response = httpx.Response(401, request=request)
-            raise httpx.HTTPStatusError('unauthorized', request=request, response=response)
-        return {
-            'code': 0,
-            'data': {
-                'chunks': [
-                    {
-                        'id': 'chunk-1',
-                        'document_id': 'doc-1',
-                        'document_name': 'Runbook.txt',
-                        'content': 'fresh token search result',
-                        'dataset_id': 'ds-1',
-                    },
-                ],
-                'total': 1,
-            },
-        }
-
-
-class RefreshingProvisioningService:
-    def __init__(self, db: AsyncSession) -> None:
-        self.db = db
-        self.provisioned: list[tuple[int, int]] = []
-
-    async def provision_one(self, user_id: int, instance_id: int):
-        self.provisioned.append((user_id, instance_id))
-        credential = (
-            await self.db.execute(
-                sa.select(RagflowCredentialStub).where(
-                    RagflowCredentialStub.user_id == user_id,
-                    RagflowCredentialStub.instance_id == instance_id,
-                )
-            )
-        ).scalar_one()
-        credential.api_key_encrypted = b'fresh-token'
-        credential.status = 'active'
-        await self.db.flush()
-        return credential
+# RF-CLOUD：删除数据面单测后，RagFlow 数据面测试桩（CapturingRAGFlowClient /
+# ExpiringRAGFlowClient / RefreshingProvisioningService / _ragflow_service /
+# _seed_active_ragflow_workspace）已随之移除——云端不再直连 RagFlow 数据面。
 
 
 @pytest_asyncio.fixture
@@ -291,45 +196,6 @@ def _service(enterprise_bus: CapturingBus | None = None, workbench_bus: Capturin
     )
 
 
-def _ragflow_service(calls: list[tuple[str, str, dict]]):
-    from backend.app.hasn.service.workbench_domain_service import WorkbenchDomainService
-
-    return WorkbenchDomainService(
-        enterprise_bus=CapturingBus(),
-        workbench_bus=CapturingBus(),
-        ragflow_client_factory=lambda base_url: CapturingRAGFlowClient(base_url, calls),
-    )
-
-
-async def _seed_active_ragflow_workspace(db_session: AsyncSession) -> tuple[int, int]:
-    db_session.add(EnterpriseStub(name='Acme', slug='acme', owner_user_id=11, status='active'))
-    await db_session.flush()
-    enterprise_id = 1
-    db_session.add_all([
-        MembershipStub(enterprise_id=enterprise_id, user_id=12, role='member', status='approved'),
-        ActiveWorkspaceStub(user_id=12, kind='enterprise', enterprise_id=enterprise_id),
-        RagflowInstanceStub(
-            scope='enterprise',
-            enterprise_id=enterprise_id,
-            url='https://knowledge.example',
-            public_pem='pem',
-            status='active',
-        ),
-    ])
-    await db_session.flush()
-    instance_id = 1
-    db_session.add(
-        RagflowCredentialStub(
-            user_id=12,
-            instance_id=instance_id,
-            ragflow_user_id='u-12',
-            ragflow_tenant_id='t-12',
-            api_key_encrypted=b'ragflow-user-token',
-            status='active',
-        )
-    )
-    await db_session.flush()
-    return enterprise_id, instance_id
 
 
 @pytest.mark.asyncio
@@ -903,134 +769,12 @@ async def test_enterprise_ragflow_instance_requires_owner_or_approved_admin(db_s
             )
 
 
-@pytest.mark.asyncio
-async def test_current_knowledge_datasets_are_loaded_from_active_ragflow_instance(
-    db_session: AsyncSession,
-) -> None:
-    calls: list[tuple[str, str, dict]] = []
-    service = _ragflow_service(calls)
-    await _seed_active_ragflow_workspace(db_session)
-
-    result = await service.list_current_knowledge_datasets(db_session, user_id=12, limit=50, offset=0)
-
-    assert result['items'][0]['id'] == 'ds-1'
-    assert result['items'][0]['documents'][0]['doc_id'] == 'doc-1'
-    assert calls == [
-        (
-            'GET',
-            '/api/v1/datasets',
-            {
-                'params': {'page': 1, 'page_size': 50, 'orderby': 'create_time', 'desc': True},
-                'headers': {'Authorization': 'Bearer ragflow-user-token'},
-            },
-        ),
-        (
-            'GET',
-            '/api/v1/datasets/ds-1/documents',
-            {
-                'params': {'page': 1, 'page_size': 50, 'orderby': 'create_time', 'desc': True},
-                'headers': {'Authorization': 'Bearer ragflow-user-token'},
-            },
-        ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_current_knowledge_search_and_upload_proxy_ragflow_with_user_token(
-    db_session: AsyncSession,
-) -> None:
-    calls: list[tuple[str, str, dict]] = []
-    service = _ragflow_service(calls)
-    await _seed_active_ragflow_workspace(db_session)
-
-    search = await service.search_current_knowledge(db_session, user_id=12, query='enterprise credentials', limit=5)
-    upload = await service.upload_current_knowledge_document(
-        db_session,
-        user_id=12,
-        title='Runbook.txt',
-        content_text='rotate enterprise credentials safely',
-        metadata={'dataset_id': 'ds-1'},
-    )
-
-    assert search['items'][0]['doc_id'] == 'doc-1'
-    assert search['items'][0]['content_text'] == 'rotate enterprise credentials safely'
-    assert upload['doc_id'] == 'doc-new'
-    assert calls == [
-        (
-            'GET',
-            '/api/v1/datasets',
-            {
-                'params': {'page': 1, 'page_size': 30, 'orderby': 'create_time', 'desc': True},
-                'headers': {'Authorization': 'Bearer ragflow-user-token'},
-            },
-        ),
-        (
-            'POST',
-            '/api/v1/datasets/ds-1/search',
-            {
-                'json': {'question': 'enterprise credentials', 'top_k': 5, 'page': 1, 'size': 5},
-                'headers': {'Authorization': 'Bearer ragflow-user-token'},
-            },
-        ),
-        (
-            'POST',
-            '/api/v1/datasets/ds-1/documents?type=empty',
-            {
-                'json': {'name': 'Runbook.txt'},
-                'headers': {'Authorization': 'Bearer ragflow-user-token'},
-            },
-        ),
-        (
-            'POST',
-            '/api/v1/datasets/ds-1/documents/doc-new/chunks',
-            {
-                'json': {'content': 'rotate enterprise credentials safely'},
-                'headers': {'Authorization': 'Bearer ragflow-user-token'},
-            },
-        ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_current_knowledge_proxy_blocks_without_active_credential(
-    db_session: AsyncSession,
-) -> None:
-    service = _ragflow_service([])
-    db_session.add(RagflowInstanceStub(scope='public', url='https://knowledge.example', status='active'))
-    await db_session.flush()
-
-    with pytest.raises(errors.RequestError, match='knowledge_credentials_not_active'):
-        await service.search_current_knowledge(db_session, user_id=99, query='missing', limit=5)
-
-
-@pytest.mark.asyncio
-async def test_current_knowledge_search_refreshes_credentials_once_after_ragflow_401(
-    db_session: AsyncSession,
-    monkeypatch,
-) -> None:
-    import backend.app.hasn.service.workbench_domain_service as service_mod
-
-    service = _ragflow_service([])
-    _, instance_id = await _seed_active_ragflow_workspace(db_session)
-    client = ExpiringRAGFlowClient()
-    service.ragflow_client_factory = lambda _base_url: client
-    provisioner = RefreshingProvisioningService(db_session)
-    monkeypatch.setattr(service_mod, 'ragflow_provisioning_service', provisioner, raising=False)
-
-    result = await service.search_current_knowledge(
-        db_session,
-        user_id=12,
-        query='enterprise credentials',
-        limit=5,
-        dataset_id='ds-1',
-    )
-
-    assert result['items'][0]['content_text'] == 'fresh token search result'
-    assert provisioner.provisioned == [(12, instance_id)]
-    assert [call['headers'] for call in client.calls] == [
-        {'Authorization': 'Bearer ragflow-user-token'},
-        {'Authorization': 'Bearer fresh-token'},
-    ]
+# RF-CLOUD：云端数据面方法（list/search/upload current knowledge）已删除——其单测
+# （datasets 加载 / search+upload 代理 / 无凭据拦截 / 401 刷新重试）随之移除。该数据面
+# 现由 hasn-node daemon 经 KnowledgeAdapter 直连 RagFlow，覆盖在 hasn-node 的
+# `workbench_knowledge_contract.rs`（进程内 MCP → KnowledgeBroker → stub RagFlow）。
+# 云端只保留凭据下发 + 企业实例配置的单测（见上方 test_current_knowledge_credentials_* /
+# test_enterprise_ragflow_instance_*）。
 
 
 def service_mod_timezone_now_minus_one_day():

@@ -12,6 +12,7 @@ from backend.app.hasn.service.ragflow_provisioning_service import (
     SqlAlchemyRAGFlowCredentialRepository,
 )
 from backend.app.hasn.service.ws_router import ws_router
+from backend.common.log import log
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -122,6 +123,18 @@ class SqlAlchemyRAGFlowActions:
             credential_ids = [credential.id for credential in credentials]
         for credential_id in credential_ids:
             await self.provisioning_service.revoke_one(credential_id)
+        # 撤销后必须推 WS，否则 daemon 的本地明文 key 不会被丢弃（设计 §2.3/§9.1）。
+        if credential_ids:
+            await self._notify_best_effort(user_id=user_id)
+
+    async def _notify_best_effort(self, *, user_id: int) -> None:
+        # 撤销在 DB 已生效（权威）；WS 通知仅是让 daemon 尽快丢弃本地明文 key 的提速手段，
+        # 即便推送失败 daemon 也会在下次 refresh/401 时发现失效。故通知失败只记日志、绝不上抛，
+        # 以免一个 WS/连接抖动把已完成的撤销流程炸断（设计 §2.3/§9.1）。
+        try:
+            await self.notify_credentials_changed(user_id=user_id)
+        except Exception as exc:  # noqa: BLE001 — 通知是 best-effort，不能让它影响撤销
+            log.warning(f'撤销后推送 KnowledgeCredentialsChanged 失败（user_id={user_id}）: {exc!r}')
 
     async def notify_credentials_changed(self, *, user_id: int) -> None:
         async with async_db_session() as db:
@@ -166,6 +179,9 @@ class SqlAlchemyRAGFlowActions:
             credential_ids = [credential.id for credential in credentials]
         for credential_id in credential_ids:
             await self.provisioning_service.revoke_one(credential_id)
+        # 实例禁用 = 全体成员凭据失效，逐个通知其 daemon 丢弃本地明文 key（设计 §2.3/§9.1）。
+        for member_user_id in member_user_ids:
+            await self._notify_best_effort(user_id=member_user_id)
 
     async def compensate_pending_credentials(self) -> int:
         to_provision: list[tuple[int, int]] = []

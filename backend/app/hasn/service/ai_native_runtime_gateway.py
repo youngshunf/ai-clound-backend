@@ -106,7 +106,9 @@ class AiNativeRuntimeGateway:
         workspace = await self._resolve_workspace(db, agent=agent, requested_workspace=body.workspace)
         manifest = await ai_native_app_registry.ensure_builtin_published(db, 'knowledge')
 
-        tool = manifest['manifest_json']['tools'][0]
+        # RF-CLOUD（设计 §4.5 方案1）：knowledge 不再声明可调用 cloud `tools`（已下沉本地），
+        # 但保留 `capabilities`（含 required_scopes）。工作台知识库发现统一以 capability 为事实源，
+        # 不再读 `tools[0]`（否则 tools 清空后 IndexError）。
         capability = manifest['manifest_json']['capabilities'][0]
         if not await self._is_workspace_app_available(db, workspace=workspace, app_id=manifest['app_id']):
             # 去掉安装态：published 即可用，仅企业 override 显式 disabled 时从发现里隐藏（设计 11 §4）。
@@ -115,7 +117,10 @@ class AiNativeRuntimeGateway:
             return self._capabilities_payload(workspace=workspace, agent=agent, manifest=manifest, tools=[])
         # 维度① 能力授权（D3 活取，唯一判定走 CapabilityGuard）：deny 的工具从发现里隐藏；ask/allow 仍可见。
         mode = await capability_guard.decide(
-            db, agent_hasn_id=agent.agent_hasn_id, tool_name=tool['mcp_name'], required_scopes=tool['required_scopes']
+            db,
+            agent_hasn_id=agent.agent_hasn_id,
+            tool_name=capability['mcp_name'],
+            required_scopes=list(capability.get('required_scopes') or []),
         )
         if mode == MODE_DENY:
             return self._capabilities_payload(workspace=workspace, agent=agent, manifest=manifest, tools=[])
@@ -127,16 +132,18 @@ class AiNativeRuntimeGateway:
             tools=[
                 {
                     'app_id': manifest['app_id'],
-                    'tool_id': tool['tool_id'],
-                    'mcp_name': tool['mcp_name'],
+                    'tool_id': capability['tool_id'],
+                    'mcp_name': capability['mcp_name'],
                     'collaboration_mode': manifest['collaboration_mode'],
                     'display_name': capability['name'],
                     'input_schema': capability['input_schema'],
                     'output_schema': capability['output_schema'],
-                    'required_scopes': tool['required_scopes'],
-                    'risk_level': tool['risk_level'],
-                    'requires_confirmation': False,
-                    'idempotent': tool['idempotent'],
+                    'required_scopes': list(capability.get('required_scopes') or []),
+                    'risk_level': capability['risk_level'],
+                    'requires_confirmation': bool(
+                        (capability.get('human_confirmation') or {}).get('required', False)
+                    ),
+                    'idempotent': bool(capability.get('idempotent', True)),
                 }
             ],
         )
@@ -376,8 +383,8 @@ class AiNativeRuntimeGateway:
         from backend.app.hasn_community.service import community_tool_handlers as handlers
 
         registry: dict[str, Any] = {
-            # 知识库（knowledge:read）
-            'knowledge.search': self._handle_knowledge_search,
+            # RF-CLOUD：knowledge.search 已下沉为 hasn-node 本地 Platform 工具（RF-MCP），
+            # 经 daemon 进程内 KnowledgeGateway 直连 RagFlow，云端不再中转检索数据面。
             # 帖子/文章详情走专用资源取数（含可见性鉴权 + reference_cards）
             'community.get_post': self._handle_community_get_post,
             'community.get_article': self._handle_community_get_article,
@@ -423,17 +430,6 @@ class AiNativeRuntimeGateway:
         }
         self._internal_handlers_cache = registry
         return registry
-
-    async def _handle_knowledge_search(
-        self, db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        return await workbench_domain_service.search_current_knowledge(
-            db,
-            user_id=agent.owner_user_id,
-            query=str(input_payload['query']),
-            limit=int(input_payload.get('limit') or 50),
-            dataset_id=input_payload.get('dataset_id'),
-        )
 
     async def _handle_community_get_post(
         self, db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
@@ -796,23 +792,8 @@ class AiNativeRuntimeGateway:
     def _workspace_role(self, workspace: dict[str, Any]) -> str:
         return workspace.get('role') or ('owner' if workspace['kind'] == 'personal' else 'member')
 
-    def _valid_search_input(self, data: dict[str, Any]) -> bool:
-        query = data.get('query')
-        if not isinstance(query, str) or not query.strip():
-            return False
-        if 'limit' in data and data['limit'] is not None:
-            try:
-                limit = int(data['limit'])
-            except (TypeError, ValueError):
-                return False
-            if limit < 1 or limit > 50:
-                return False
-        dataset_id = data.get('dataset_id')
-        return dataset_id is None or isinstance(dataset_id, str)
-
     def _valid_tool_input(self, tool_id: str, data: dict[str, Any]) -> bool:
-        if tool_id == 'knowledge.search':
-            return self._valid_search_input(data)
+        # RF-CLOUD：knowledge.search 已下沉为本地 Platform 工具，云端不再校验其入参。
         rule = _COMMUNITY_INPUT_RULES.get(tool_id)
         if rule is None:
             return True

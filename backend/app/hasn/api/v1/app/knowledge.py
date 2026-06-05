@@ -25,26 +25,6 @@ class KnowledgeCredentialResponse(BaseModel):
     ragflow_user_id: str | None = Field(None, description="RAGFlow 用户 ID")
 
 
-class KnowledgeSearchRequest(BaseModel):
-    q: str | None = Field(None, description="搜索关键词")
-    limit: int | None = Field(None, description="最大条目数")
-    dataset_id: str | None = Field(None, description="数据集 ID")
-
-
-class CreateDatasetRequest(BaseModel):
-    name: str = Field(..., description="数据集名称")
-    description: str | None = Field(None, description="数据集描述")
-    embedding_model: str | None = Field(None, description="嵌入模型")
-    language: str | None = Field(None, description="语言")
-    permission: str | None = Field(None, description="权限")
-
-
-class KnowledgeUploadRequest(BaseModel):
-    title: str
-    content_text: str
-    metadata: dict[str, object] | None = None
-
-
 class SaveRagflowInstanceRequest(BaseModel):
     url: str
     admin_api_key: str
@@ -75,93 +55,9 @@ async def refresh_knowledge_credentials(request: Request, db: CurrentSessionTran
     return response_base.success(data=data)
 
 
-@router.get(
-    '/knowledge/datasets',
-    summary='获取当前用户的知识库数据集',
-    dependencies=[DependsJwtAuth],
-)
-async def list_knowledge_datasets(
-    request: Request,
-    db: CurrentSession,
-    limit: int = 50,
-    offset: int = 0,
-) -> ResponseModel:
-    try:
-        data = await workbench_domain_service.list_current_knowledge_datasets(
-            db,
-            user_id=request.user.id,
-            limit=limit,
-            offset=offset,
-        )
-        return response_base.success(data=data)
-    except Exception as e:
-        # 如果是凭据未配置或未激活，返回空列表而不是抛出异常
-        error_msg = str(e)
-        if 'knowledge_instance_not_configured' in error_msg or 'knowledge_credentials_not_active' in error_msg:
-            return response_base.success(data={'items': [], 'total': 0})
-        raise
-
-
-@router.post(
-    '/knowledge/datasets',
-    summary='创建知识库数据集',
-    dependencies=[DependsJwtAuth],
-)
-async def create_knowledge_dataset(
-    request: Request,
-    db: CurrentSessionTransaction,
-    body: CreateDatasetRequest,
-) -> ResponseModel:
-    data = await workbench_domain_service.create_current_knowledge_dataset(
-        db,
-        user_id=request.user.id,
-        name=body.name,
-        description=body.description,
-        embedding_model=body.embedding_model,
-        language=body.language,
-        permission=body.permission,
-    )
-    return response_base.success(data=data)
-
-
-@router.post(
-    '/knowledge/search',
-    summary='搜索当前用户的知识库',
-    dependencies=[DependsJwtAuth],
-)
-async def search_knowledge(
-    request: Request,
-    db: CurrentSession,
-    body: KnowledgeSearchRequest,
-) -> ResponseModel:
-    data = await workbench_domain_service.search_current_knowledge(
-        db,
-        user_id=request.user.id,
-        query=body.q or '',
-        limit=body.limit or 50,
-        dataset_id=body.dataset_id,
-    )
-    return response_base.success(data=data)
-
-
-@router.post(
-    '/knowledge/upload',
-    summary='上传知识库文档',
-    dependencies=[DependsJwtAuth],
-)
-async def upload_knowledge_document(
-    request: Request,
-    db: CurrentSessionTransaction,
-    body: KnowledgeUploadRequest,
-) -> ResponseModel:
-    data = await workbench_domain_service.upload_current_knowledge_document(
-        db,
-        user_id=request.user.id,
-        title=body.title,
-        content_text=body.content_text,
-        metadata=body.metadata,
-    )
-    return response_base.success(data=data)
+# RF-CLOUD：数据面中转路由（datasets 列表/创建、search、upload）已删除。
+# owner 工作台的知识库浏览/检索/上传现由 hasn-node daemon 经 KnowledgeAdapter
+# 直连 RagFlow（控制面/数据面分离，设计 §4.5）；云端只保留凭据下发 + 企业实例配置。
 
 
 @router.get(

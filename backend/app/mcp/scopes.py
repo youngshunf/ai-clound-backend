@@ -34,6 +34,9 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'community:circle': {'label_zh': '参与社区圈子', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份加入/退出圈子、在圈内发帖评论（按主人授权与圈策略）'},
     'community:doc': {'label_zh': '创作社区文集', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份建/编辑文集与目录、发文挂文集（默认 private，公开/加密由主人决定）'},
     'knowledge:read': {'label_zh': '检索知识库', 'domain': 'knowledge', 'risk': 'low', 'description': '检索当前工作空间的知识库资料'},
+    'knowledge:upload': {'label_zh': '上传知识库文档', 'domain': 'knowledge', 'risk': 'medium', 'description': '向当前工作空间的知识库上传文档（按主人授权与库白名单）'},
+    'knowledge:write': {'label_zh': '解析/建库写入', 'domain': 'knowledge', 'risk': 'medium', 'description': '触发文档解析入库、新建数据集（写入知识库结构）'},
+    'knowledge:grant': {'label_zh': '代主人改授权', 'domain': 'knowledge', 'risk': 'high', 'description': '代主人调整知识库访问授权（预留，当前不开放）'},
     # —— platform · marketplace（15-技能市场/11-doc 权威源）——
     'marketplace:read': {'label_zh': '浏览能力市场', 'domain': 'marketplace', 'risk': 'low', 'description': '搜索/查看技能与模板、列出当前 Agent 已安装技能'},
     'marketplace:install': {'label_zh': '安装/卸载技能', 'domain': 'marketplace', 'risk': 'medium', 'description': '把市场技能装到当前 Agent 或从中卸载（云端权威 + 重物化）'},

@@ -66,8 +66,10 @@ def test_builtin_knowledge_manifest_matches_p0_contract() -> None:
     assert manifest['capabilities'][0]['mcp_name'] == 'hasn.knowledge.search'
     # P1 词表迁移（点→冒号，#1079）：scope 统一冒号分隔。
     assert manifest['capabilities'][0]['required_scopes'] == ['knowledge:read']
-    assert manifest['tools'][0]['handler'] == 'knowledge.search'
-    assert manifest['tools'][0]['idempotent'] is True
+    # RF-CLOUD（设计 §4.5 方案1 / line 409-411）：knowledge 不再是可调用的 cloud 工具——
+    # `tools` 清空，daemon 经进程内 KnowledgeGateway 直连 RagFlow（RF-MCP）；但保留
+    # `capabilities`（含 required_scopes）供 read-through 能力发现 + 三态权限闸门。
+    assert manifest['tools'] == []
 
 
 def test_manifest_validator_accepts_builtin_knowledge_manifest() -> None:
@@ -262,12 +264,23 @@ def _knowledge_manifest_payload(
     }
 
 
-def _community_manifest_payload() -> dict[str, Any]:
+def _community_manifest_payload(
+    *,
+    collaboration_mode: str | None = None,
+    tool_id_for_roles: str | None = None,
+    workspace_roles: list[str] | None = None,
+) -> dict[str, Any]:
     from backend.app.hasn.service.ai_native_app_registry import _manifest_hash
     from backend.app.hasn.service.ai_native_builtin_manifests import COMMUNITY_AI_NATIVE_MANIFEST
     from backend.utils.timezone import timezone
 
     manifest = deepcopy(COMMUNITY_AI_NATIVE_MANIFEST)
+    if collaboration_mode is not None:
+        manifest['collaboration_mode'] = collaboration_mode
+    if tool_id_for_roles is not None and workspace_roles is not None:
+        for cap in manifest['capabilities']:
+            if cap.get('tool_id') == tool_id_for_roles:
+                cap['workspace_roles'] = workspace_roles
     return {
         'id': None,
         'app_id': manifest['app_id'],
@@ -501,146 +514,39 @@ def test_enterprise_runtime_capabilities_filters_collaboration_none(monkeypatch:
     assert resp.json()['data']['tools'] == []
 
 
-def test_runtime_tool_call_invokes_real_knowledge_search_and_writes_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
-    from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
-
-    fake_db = _FakeDb(
-        workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
-            workspace_kind='personal',
-            user_id=12345,
-            enterprise_id=None,
-            app_id='knowledge',
-            status='active',
-            config={},
-            enabled_by=12345,
-        ),
-    )
-    app = _make_runtime_test_app(fake_db, monkeypatch)
-
-    async def fake_active_workspace(_db: Any, *, user_id: int) -> dict[str, Any]:
-        assert user_id == 12345
-        return {'kind': 'personal', 'enterprise_id': None}
-
-    async def fake_search(_db: Any, *, user_id: int, query: str, limit: int, dataset_id: str | None) -> dict[str, Any]:
-        assert (user_id, query, limit, dataset_id) == (12345, '唤星工作台', 10, None)
-        return {'items': [{'id': 'chunk-1', 'content': query}], 'total': 1}
-
-    monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
-    monkeypatch.setattr(gateway_module.workbench_domain_service, 'search_current_knowledge', fake_search)
-
-    with TestClient(app) as client:
-        resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
-            json={
-                'workspace': None,
-                'input': {'query': '唤星工作台', 'limit': 10, 'dataset_id': None},
-                'trace_id': 'trace-2',
-            },
-            headers={'Authorization': 'Bearer test-agent'},
-        )
-
-    assert resp.status_code == 200, resp.text
-    data = resp.json()['data']
-    assert data['decision'] == 'allow'
-    assert data['result']['items'] == [{'id': 'chunk-1', 'content': '唤星工作台'}]
-    audit_row = fake_db.added[-1]
-    assert data['audit_id'] == audit_row.id
-    assert audit_row.trace_id == 'trace-2'
-    assert audit_row.decision == 'allow'
-
-
-def test_runtime_tool_call_capability_deny_writes_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 三态模型（D1/D3）：缺 scope 不再 deny（默认 allow）；owner 把能力显式设 deny 才硬拦 15012。
-    from backend.app.hasn.model import HasnWorkspaceApp
-    from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
-
-    fake_db = _FakeDb(
-        workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
-            workspace_kind='personal',
-            user_id=12345,
-            enterprise_id=None,
-            app_id='knowledge',
-            status='active',
-            config={},
-            enabled_by=12345,
-        ),
-    )
-    app = _make_runtime_test_app(fake_db, monkeypatch)
-
-    async def fake_active_workspace(_db: Any, *, user_id: int) -> dict[str, Any]:
-        return {'kind': 'personal', 'enterprise_id': None}
-
-    # owner 把 knowledge:read 能力设 deny（三态活取，冒号词表与 manifest required_scopes 一致）→ knowledge.search 被拒。
-    import backend.common.security.agent_jwt as agent_jwt_module
-
-    async def _deny_knowledge(_agent_hasn_id: str, _db: Any) -> dict[str, Any]:
-        return {
-            'default_mode': 'allow',
-            'capability_modes': {'knowledge:read': 'deny'},
-            'scopes': [],
-            'post_needs_review': False,
-        }
-
-    monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _deny_knowledge)
-    monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
-
-    with TestClient(app) as client:
-        resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
-            json={'workspace': None, 'input': {'query': '唤星工作台'}, 'trace_id': 'trace-3'},
-            headers={'Authorization': 'Bearer test-agent'},
-        )
-
-    assert resp.status_code == 200, resp.text
-    data = resp.json()['data']
-    assert data['decision'] == 'deny'
-    assert data['error'] == {'code': '15012', 'message': 'agent_scope_missing'}
-    audit_row = fake_db.added[-1]
-    assert audit_row.decision == 'deny'
-    assert audit_row.error_code == '15012'
-
-
-def _knowledge_fake_db() -> _FakeDb:
-    from backend.app.hasn.model import HasnWorkspaceApp
-
-    return _FakeDb(
-        workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
-            workspace_kind='personal',
-            user_id=12345,
-            enterprise_id=None,
-            app_id='knowledge',
-            status='active',
-            config={},
-            enabled_by=12345,
-        ),
-    )
-
-
 def test_runtime_tool_call_ask_mode_returns_approval_required(monkeypatch: pytest.MonkeyPatch) -> None:
     # 令牌重试模型（doc15 §3.1）：ask 命中 → 中继路径回完整 approval_required(MCP_9215) 信封 +
     # request_id，hasn-mcp 据此挂起 ApprovalBroker / 换票重试。绝不当次放行。
     import backend.app.mcp.ask_gate as ask_gate_module
     import backend.common.security.agent_jwt as agent_jwt_module
 
+    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
-    fake_db = _knowledge_fake_db()
+    fake_db = _FakeDb(
+        workspace={'kind': 'personal', 'enterprise_id': None},
+        app_row=HasnWorkspaceApp(
+            workspace_kind='personal',
+            user_id=12345,
+            enterprise_id=None,
+            app_id='community',
+            status='active',
+            config={},
+            enabled_by=12345,
+        ),
+    )
     app = _make_runtime_test_app(fake_db, monkeypatch)
 
     async def fake_active_workspace(_db: Any, *, user_id: int) -> dict[str, Any]:
         return {'kind': 'personal', 'enterprise_id': None}
 
-    async def fake_search(_db: Any, *, user_id: int, query: str, limit: int, dataset_id: str | None) -> dict[str, Any]:
-        return {'items': [], 'total': 0}
+    async def fake_manifest(_db: Any, _app_id: str) -> dict[str, Any]:
+        return _community_manifest_payload()
 
     async def _ask(_agent_hasn_id: str, _db: Any) -> dict[str, Any]:
         return {
             'default_mode': 'allow',
-            'capability_modes': {'knowledge:read': 'ask'},
+            'capability_modes': {'community:read': 'ask'},
             'scopes': [],
             'post_needs_review': False,
         }
@@ -664,13 +570,13 @@ def test_runtime_tool_call_ask_mode_returns_approval_required(monkeypatch: pytes
 
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _ask)
     monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
+    monkeypatch.setattr(gateway_module.ai_native_app_registry, 'ensure_builtin_published', fake_manifest)
     monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
-    monkeypatch.setattr(gateway_module.workbench_domain_service, 'search_current_knowledge', fake_search)
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
-            json={'workspace': None, 'input': {'query': '唤星'}, 'trace_id': 'trace-ask-ok'},
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
+            json={'workspace': None, 'input': {'post_id': 'post_01J'}, 'trace_id': 'trace-ask-ok'},
             headers={'Authorization': 'Bearer test-agent'},
         )
 
@@ -680,7 +586,7 @@ def test_runtime_tool_call_ask_mode_returns_approval_required(monkeypatch: pytes
     assert data['decision'] == 'approval_required'
     assert data['error']['code'] == 'MCP_9215'
     assert data['approval']['request_id'] == 'areq_stub'  # 中继据此挂起 / 换票
-    assert open_calls['tool_name'] == 'hasn.knowledge.search'  # 确实记录了 ask 审批请求
+    assert open_calls['tool_name'] == 'hasn.community.get_post'  # 确实记录了 ask 审批请求
     assert fake_db.added[-1].decision == 'approval_required'
 
 
@@ -689,18 +595,33 @@ def test_runtime_tool_call_ask_mode_audits_approval_required(monkeypatch: pytest
     import backend.app.mcp.ask_gate as ask_gate_module
     import backend.common.security.agent_jwt as agent_jwt_module
 
+    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
-    fake_db = _knowledge_fake_db()
+    fake_db = _FakeDb(
+        workspace={'kind': 'personal', 'enterprise_id': None},
+        app_row=HasnWorkspaceApp(
+            workspace_kind='personal',
+            user_id=12345,
+            enterprise_id=None,
+            app_id='community',
+            status='active',
+            config={},
+            enabled_by=12345,
+        ),
+    )
     app = _make_runtime_test_app(fake_db, monkeypatch)
 
     async def fake_active_workspace(_db: Any, *, user_id: int) -> dict[str, Any]:
         return {'kind': 'personal', 'enterprise_id': None}
 
+    async def fake_manifest(_db: Any, _app_id: str) -> dict[str, Any]:
+        return _community_manifest_payload()
+
     async def _ask(_agent_hasn_id: str, _db: Any) -> dict[str, Any]:
         return {
             'default_mode': 'allow',
-            'capability_modes': {'knowledge:read': 'ask'},
+            'capability_modes': {'community:read': 'ask'},
             'scopes': [],
             'post_needs_review': False,
         }
@@ -716,12 +637,13 @@ def test_runtime_tool_call_ask_mode_audits_approval_required(monkeypatch: pytest
 
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _ask)
     monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
+    monkeypatch.setattr(gateway_module.ai_native_app_registry, 'ensure_builtin_published', fake_manifest)
     monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
-            json={'workspace': None, 'input': {'query': '唤星'}, 'trace_id': 'trace-ask-no'},
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
+            json={'workspace': None, 'input': {'post_id': 'post_01J'}, 'trace_id': 'trace-ask-no'},
             headers={'Authorization': 'Bearer test-agent'},
         )
 
@@ -741,21 +663,44 @@ def test_runtime_tool_call_ask_mode_with_valid_ticket_bypasses_and_executes(monk
     import backend.common.security.agent_jwt as agent_jwt_module
     import backend.common.security.capability_ticket as ticket_module
 
+    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
-    fake_db = _knowledge_fake_db()
+    fake_db = _FakeDb(
+        workspace={'kind': 'personal', 'enterprise_id': None},
+        app_row=HasnWorkspaceApp(
+            workspace_kind='personal',
+            user_id=12345,
+            enterprise_id=None,
+            app_id='community',
+            status='active',
+            config={},
+            enabled_by=12345,
+        ),
+    )
     app = _make_runtime_test_app(fake_db, monkeypatch)
 
     async def fake_active_workspace(_db: Any, *, user_id: int) -> dict[str, Any]:
         return {'kind': 'personal', 'enterprise_id': None}
 
-    async def fake_search(_db: Any, *, user_id: int, query: str, limit: int, dataset_id: str | None) -> dict[str, Any]:
-        return {'items': [{'id': 'chunk-1', 'content': query}], 'total': 1}
+    async def fake_manifest(_db: Any, _app_id: str) -> dict[str, Any]:
+        return _community_manifest_payload()
+
+    async def fake_get_agent_post(_db: Any, *, agent: Any, post_id: str) -> dict[str, Any]:
+        return {
+            'resource': {
+                'type': 'community.post',
+                'id': post_id,
+                'app_id': 'community',
+                'uri': f'hasn://app/community/posts/{post_id}',
+            },
+            'content': 'x',
+        }
 
     async def _ask(_agent_hasn_id: str, _db: Any) -> dict[str, Any]:
         return {
             'default_mode': 'allow',
-            'capability_modes': {'knowledge:read': 'ask'},
+            'capability_modes': {'community:read': 'ask'},
             'scopes': [],
             'post_needs_review': False,
         }
@@ -778,13 +723,14 @@ def test_runtime_tool_call_ask_mode_with_valid_ticket_bypasses_and_executes(monk
     monkeypatch.setattr(ticket_module, 'consume_capability_ticket', _consume)
     monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
     monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'mark_consumed', _mark_consumed)
+    monkeypatch.setattr(gateway_module.ai_native_app_registry, 'ensure_builtin_published', fake_manifest)
     monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
-    monkeypatch.setattr(gateway_module.workbench_domain_service, 'search_current_knowledge', fake_search)
+    monkeypatch.setattr(gateway_module.community_service, 'get_agent_post_resource', fake_get_agent_post)
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
-            json={'workspace': None, 'input': {'query': '唤星'}, 'trace_id': 'trace-ticket-ok'},
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
+            json={'workspace': None, 'input': {'post_id': 'post_01J'}, 'trace_id': 'trace-ticket-ok'},
             headers={'Authorization': 'Bearer test-agent', 'X-Capability-Ticket': 'tkt_valid'},
         )
 
@@ -792,7 +738,7 @@ def test_runtime_tool_call_ask_mode_with_valid_ticket_bypasses_and_executes(monk
     data = resp.json()['data']
     assert data['decision'] == 'allow'  # 验票跳闸 → 执行
     assert consume_calls['ticket'] == 'tkt_valid'
-    assert consume_calls['tool_name'] == 'hasn.knowledge.search'
+    assert consume_calls['tool_name'] == 'hasn.community.get_post'
     assert marked['request_id'] == 'areq_stub'  # 审批请求标记 consumed
     assert fake_db.added[-1].decision == 'allow'
 
@@ -934,7 +880,7 @@ def test_runtime_tool_call_disabled_app_writes_audit(monkeypatch: pytest.MonkeyP
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
-            app_id='knowledge',
+            app_id='community',
             status='disabled',
             config={},
             enabled_by=12345,
@@ -949,8 +895,8 @@ def test_runtime_tool_call_disabled_app_writes_audit(monkeypatch: pytest.MonkeyP
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
-            json={'workspace': None, 'input': {'query': '唤星工作台'}, 'trace_id': 'trace-disabled'},
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
+            json={'workspace': None, 'input': {'post_id': 'post_01J'}, 'trace_id': 'trace-disabled'},
             headers={'Authorization': 'Bearer test-agent'},
         )
 
@@ -975,7 +921,7 @@ def test_enterprise_runtime_tool_call_role_denial_writes_15004_audit(monkeypatch
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,
-            app_id='knowledge',
+            app_id='community',
             status='active',
             config={},
             enabled_by=12345,
@@ -988,17 +934,19 @@ def test_enterprise_runtime_tool_call_role_denial_writes_15004_audit(monkeypatch
         return _FakeMembership(role='member')
 
     async def fake_manifest(_db: Any, _app_id: str) -> dict[str, Any]:
-        return _knowledge_manifest_payload(workspace_roles=['owner', 'admin'])
+        return _community_manifest_payload(
+            tool_id_for_roles='community.get_post', workspace_roles=['owner', 'admin']
+        )
 
     monkeypatch.setattr(gateway_module.workbench_domain_service, '_approved_membership', fake_membership)
     monkeypatch.setattr(gateway_module.ai_native_app_registry, 'ensure_builtin_published', fake_manifest)
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
             json={
                 'workspace': {'kind': 'enterprise', 'enterprise_id': 7},
-                'input': {'query': '唤星工作台'},
+                'input': {'post_id': 'post_01J'},
                 'trace_id': 'trace-enterprise-role-denied',
             },
             headers={'Authorization': 'Bearer test-agent'},
@@ -1028,7 +976,7 @@ def test_enterprise_runtime_tool_call_collaboration_denial_writes_15005_audit(mo
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,
-            app_id='knowledge',
+            app_id='community',
             status='active',
             config={},
             enabled_by=12345,
@@ -1041,17 +989,17 @@ def test_enterprise_runtime_tool_call_collaboration_denial_writes_15005_audit(mo
         return _FakeMembership(role='admin')
 
     async def fake_manifest(_db: Any, _app_id: str) -> dict[str, Any]:
-        return _knowledge_manifest_payload(collaboration_mode='none')
+        return _community_manifest_payload(collaboration_mode='none')
 
     monkeypatch.setattr(gateway_module.workbench_domain_service, '_approved_membership', fake_membership)
     monkeypatch.setattr(gateway_module.ai_native_app_registry, 'ensure_builtin_published', fake_manifest)
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
             json={
                 'workspace': {'kind': 'enterprise', 'enterprise_id': 7},
-                'input': {'query': '唤星工作台'},
+                'input': {'post_id': 'post_01J'},
                 'trace_id': 'trace-enterprise-collaboration-denied',
             },
             headers={'Authorization': 'Bearer test-agent'},
@@ -1081,7 +1029,7 @@ def test_runtime_tool_call_invalid_input_writes_15020_audit(monkeypatch: pytest.
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
-            app_id='knowledge',
+            app_id='community',
             status='active',
             config={},
             enabled_by=12345,
@@ -1096,10 +1044,10 @@ def test_runtime_tool_call_invalid_input_writes_15020_audit(monkeypatch: pytest.
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
             json={
                 'workspace': None,
-                'input': {'query': '', 'limit': 0},
+                'input': {'post_id': ''},
                 'trace_id': 'trace-invalid-input',
             },
             headers={'Authorization': 'Bearer test-agent'},
@@ -1130,7 +1078,7 @@ async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypa
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
-            app_id='knowledge',
+            app_id='community',
             status='active',
             config={},
             enabled_by=12345,
@@ -1144,7 +1092,7 @@ async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypa
             'agent_name': 'Agent',
             'owner_hasn_id': 'h_001',
             'owner_user_id': 12345,
-            'scopes': ['knowledge.read'],
+            'scopes': ['community.read'],
             'session_uuid': 'session-revoked',
             'exp': datetime.now(timezone.utc).timestamp() + 3600,
         }
@@ -1174,11 +1122,11 @@ async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypa
     data = await gateway_module.ai_native_runtime_gateway.call_tool(
         fake_db,
         request=RequestWithRevokedToken(),
-        app_id='knowledge',
-        tool_id='knowledge.search',
+        app_id='community',
+        tool_id='community.get_post',
         body=AiNativeToolCallRequest(
             workspace=None,
-            input={'query': '唤星工作台'},
+            input={'post_id': 'post_01J'},
             trace_id='trace-revoked-session',
         ),
     )
@@ -1212,8 +1160,8 @@ def test_runtime_tool_call_requires_agent_jwt_dependency(monkeypatch: pytest.Mon
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
-            json={'workspace': None, 'input': {'query': '唤星工作台'}, 'trace_id': 'trace-missing-agent-jwt'},
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
+            json={'workspace': None, 'input': {'post_id': 'post_01J'}, 'trace_id': 'trace-missing-agent-jwt'},
         )
 
     assert resp.status_code == 401, resp.text
@@ -1230,7 +1178,7 @@ def test_runtime_tool_call_inaccessible_workspace_writes_15003_audit(monkeypatch
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,
-            app_id='knowledge',
+            app_id='community',
             status='active',
             config={},
             enabled_by=12345,
@@ -1246,10 +1194,10 @@ def test_runtime_tool_call_inaccessible_workspace_writes_15003_audit(monkeypatch
 
     with TestClient(app) as client:
         resp = client.post(
-            '/api/v1/ai-native/runtime/tools/knowledge/knowledge.search/call',
+            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
             json={
                 'workspace': {'kind': 'enterprise', 'enterprise_id': 7},
-                'input': {'query': '唤星工作台'},
+                'input': {'post_id': 'post_01J'},
                 'trace_id': 'trace-workspace-denied',
             },
             headers={'Authorization': 'Bearer test-agent'},
