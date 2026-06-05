@@ -5,7 +5,9 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Request
 
 from backend.app.hasn.model import HasnHumans
+from backend.app.hasn.schema.hasn_builtin_task_catalog import BuiltinTaskCatalogResponse
 from backend.app.hasn.schema.hasn_owner_workbench_pref import PutWorkbenchPrefParam, WorkbenchPrefResponse
+from backend.app.hasn.service.workbench_builtin_task_service import workbench_builtin_task_service
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.app.hasn.service.workbench_pref_service import workbench_pref_service
 from backend.common.exception import errors
@@ -46,6 +48,12 @@ async def update_workbench_pref(
         briefing_time=obj.briefing_time,
         briefing_sources=obj.briefing_sources,
     )
+    return response_base.success(data=data)
+
+
+@router.get('/workbench/builtin-tasks', dependencies=[DependsJwtAuth], summary='读官方内置任务目录（daemon 拉取播种）')
+async def list_builtin_tasks(db: CurrentSession) -> ResponseSchemaModel[BuiltinTaskCatalogResponse]:
+    data = await workbench_builtin_task_service.list_enabled(db)
     return response_base.success(data=data)
 
 
