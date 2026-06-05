@@ -454,6 +454,94 @@ class HasnAgentProfileService:
 
         return UpdateAgentProfileResponse(agent=_agent_snapshot(agent))
 
+    async def attach_bundle_cloud_first(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        hasn_id: str,
+        package_id: str,
+        version: str | None = None,
+        user_id: int | None = None,
+    ) -> dict[str, Any]:
+        """为 Agent 安装技能包 skill_pack（云端权威，实施/91 B2.5）。
+
+        展开成员 skills[] **在云端做**（云端是 skills[] 权威）：解析 skill_pack 版本 → 成员技能
+        批量并入 hasn_agents.skills（保序去重）→ 记录已安装包引用进 hasn_agents.skill_bundles
+        （按 template_id 去重）→ bump profile_revision → append 同步事件。返回 bundle 快照供 daemon
+        回填本地 cache + provision 物化。幂等：成员与包都已在清单中则不改动不 bump。
+        """
+        import sqlalchemy as sa
+
+        from backend.app.marketplace.service import skill_pack_service
+
+        await self._assert_owner_access(db, owner_id=owner_id, user_id=user_id)
+        agent = await self._get_owned_agent(db, owner_id=owner_id, hasn_id=hasn_id)
+
+        # 解析 skill_pack 版本（指定 version 取该版，否则取 is_latest）。
+        ver_filter = 'AND v.version = :version' if version else 'AND v.is_latest = true'
+        row = (
+            await db.execute(
+                sa.text(
+                    f'''
+                    SELECT t.template_id, v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
+                           COALESCE(v.content_hash, v.file_hash) AS content_hash
+                    FROM public.marketplace_template t
+                    JOIN public.marketplace_template_version v ON v.template_id = t.template_id
+                    WHERE t.template_id = :package_id
+                      AND t.template_type = 'skill_pack'
+                      {ver_filter}
+                    LIMIT 1
+                    '''
+                ),
+                {'package_id': package_id, 'version': version},
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            raise errors.NotFoundError(msg='ERR_MARKETPLACE_SKILL_PACK_NOT_FOUND')
+
+        members = skill_pack_service.member_skill_ids(row['hermes_yaml'])
+        resolved_version = row['version']
+
+        current_skills = _normalize_skill_ids(agent.skills)
+        merged_skills = [*current_skills]
+        for member in members:
+            if member not in merged_skills:
+                merged_skills.append(member)
+
+        current_bundles = list(agent.skill_bundles or [])
+        bundle_ids = {b.get('template_id') for b in current_bundles if isinstance(b, dict)}
+        bundle_changed = package_id not in bundle_ids
+        if bundle_changed:
+            current_bundles = [b for b in current_bundles if not (isinstance(b, dict) and b.get('template_id') == package_id)]
+            current_bundles.append({'template_id': package_id, 'version': resolved_version})
+
+        if merged_skills != current_skills or bundle_changed:
+            agent.skills = merged_skills
+            agent.skill_bundles = current_bundles
+            agent.profile_revision = (agent.profile_revision or 1) + 1
+            await db.flush()
+            await self.gateway.append_agent_sync_event(
+                db,
+                owner_id=owner_id,
+                agent=agent,
+                event_type='agent.updated',
+            )
+
+        return {
+            'agent': _agent_snapshot(agent).model_dump(),
+            'bundle': {
+                'template_id': row['template_id'],
+                'version': resolved_version,
+                'bundle_slug': row['bundle_slug'],
+                'command_key': row['command_key'],
+                'hermes_yaml': row['hermes_yaml'],
+                'content_hash': row['content_hash'],
+                'skill_ids': members,
+            },
+            'profile_revision': int(agent.profile_revision or 1),
+        }
+
     async def sync_agents(
         self, db: AsyncSession, request: AgentSyncRequest, *, user_id: int | None = None
     ) -> AgentSyncResponse:

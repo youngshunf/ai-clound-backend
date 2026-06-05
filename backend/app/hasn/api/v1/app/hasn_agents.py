@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.hasn.model import HasnAgents, HasnHumans
 from backend.app.hasn.schema.hasn_agents import (
+    AgentBundleInstallRequest,
     AgentHeartbeatRequest,
     AgentHeartbeatResponse,
     AgentSkillInstallRequest,
@@ -283,6 +284,37 @@ async def uninstall_agent_skill(
         owner_id=owner,
         hasn_id=hasn_id,
         skill_id=body.skill_id,
+        user_id=user_id,
+    )
+    return response_base.success(data=result)
+
+
+@router.post(
+    '/by-hasn-id/{hasn_id}/bundles/install',
+    summary='daemon 端为 Agent 安装技能包 skill_pack（云端权威）',
+    dependencies=[DependsJwtAuth],
+)
+async def install_agent_bundle(
+    request: Request,
+    db: CurrentSessionTransaction,
+    hasn_id: Annotated[str, Path(description='Agent HASN ID, 如 a_xxx')],
+    body: AgentBundleInstallRequest,
+) -> ResponseSchemaModel[dict]:
+    """为该 Agent 安装技能包：云端展开成员技能并入 hasn_agents.skills、记录包引用进
+    hasn_agents.skill_bundles、bump profile_revision + 同步事件。返回 bundle 快照
+    （含 hermes_yaml / 成员 skill_ids）供 daemon 回填本地 cache，由 runtime re-provision
+    时物化 skill-bundles/*.yaml（云端只持有权威清单，不在此 push 文件）。
+    """
+    user_id = request.user.id
+    owner = (await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))).scalar_one_or_none()
+    if not owner:
+        raise errors.ForbiddenError(msg='当前用户未注册 HASN 身份')
+    result = await agent_profile_service.attach_bundle_cloud_first(
+        db,
+        owner_id=owner,
+        hasn_id=hasn_id,
+        package_id=body.package_id,
+        version=body.version,
         user_id=user_id,
     )
     return response_base.success(data=result)

@@ -179,6 +179,18 @@ class AgentSkillUninstallRequest(SchemaBase):
     skill_id: str = Field(min_length=1, max_length=255, description='技能资源 ID（{namespace}/{slug}）')
 
 
+class AgentBundleInstallRequest(SchemaBase):
+    """daemon 发起的「为 Agent 安装技能包 skill_pack」请求（云端权威，实施/91 B2.5）。
+
+    package_id 为 skill_pack 模板 ID（{namespace}/{slug}）。云端展开成员技能并入
+    hasn_agents.skills、记录包引用进 hasn_agents.skill_bundles、bump profile_revision，
+    返回 bundle 快照（含 hermes_yaml / 成员 skill_ids）供 daemon 回填本地 cache + provision 物化。
+    """
+
+    package_id: str = Field(min_length=1, max_length=255, description='技能包模板 ID（{namespace}/{slug}）')
+    version: str | None = Field(None, max_length=50, description='期望版本（可选，缺省取最新）')
+
+
 class AgentSyncRequest(SchemaBase):
     owner_id: str = Field(description='Owner HASN ID')
     after_revision: int | None = Field(None, ge=0, description='仅返回大于该 Profile revision 的 Agent')
@@ -231,6 +243,10 @@ class AgentProfileResponse(SchemaBase):
     user_md: str | None = Field(None, description='USER.md 内容（owner 记忆下发）')
     memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）')
     skills: list[str] = Field(default_factory=list, description='技能 skill_id 清单（已叠加公共技能）')
+    skill_bundles: list[dict] = Field(
+        default_factory=list,
+        description='已安装技能包清单 [{bundle_slug, command_key, hermes_yaml}]（Runtime 据此物化 skill-bundles/*.yaml）',
+    )
     template_id: str | None = Field(None, description='模板 ID')
     template_version: str | None = Field(None, description='模板版本')
     profile_revision: int = Field(default=1, description='Profile 修订号（跨端同步信标）')

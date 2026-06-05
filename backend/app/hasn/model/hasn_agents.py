@@ -53,6 +53,10 @@ class HasnAgents(Base):
     skills: Mapped[dict | list | None] = mapped_column(
         postgresql.JSONB(), default=None, comment='Agent 技能配置 JSON（云端 Profile 配置源）'
     )
+    skill_bundles: Mapped[list | None] = mapped_column(
+        postgresql.JSONB(), default_factory=list,
+        comment='已安装技能包引用 [{template_id, version}]（成员技能另并入 skills）',
+    )
     soul_md: Mapped[str | None] = mapped_column(
         UniversalText, default=None, comment='Agent SOUL.md 内容（云端 Profile 配置源）'
     )
