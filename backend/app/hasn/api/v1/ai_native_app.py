@@ -7,15 +7,18 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, Request
 
 from backend.app.hasn.model import HasnHumans
+from backend.app.hasn.schema.ai_native_audit import CreateAiNativeAppAuditParam, ReportAiNativeAppAuditParam
 from backend.app.hasn.schema.ai_native_runtime import (
     AiNativeAuditQuery,
     AiNativeRuntimeCapabilitiesRequest,
     AiNativeToolCallRequest,
 )
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.hasn.service.ai_native_audit_service import ai_native_audit_service
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
 from backend.app.hasn.service.app_instance_service import app_instance_service
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
@@ -143,3 +146,25 @@ async def runtime_tool_call(
 @audit_router.get('', summary='AI-Native 审计')
 async def list_ai_native_audit(db: CurrentSession, query: AiNativeAuditQuery = Depends()) -> ResponseModel:
     return response_base.success(data=await ai_native_runtime_gateway.list_audit(db=db, query=query))
+
+
+@audit_router.post('/report', summary='AI-Native 工具调用审计上报（Agent 自报本地工具，D5）')
+async def report_ai_native_audit(
+    db: CurrentSessionTransaction,
+    body: ReportAiNativeAppAuditParam,
+    agent: AgentTokenPayload = DependsAgentJwtAuth,
+) -> ResponseModel:
+    """分身经 `for_agent` 上报「本地执行工具」（如 hasn.presentation.*）的调用审计。
+
+    身份权威：`agent_hasn_id`/`owner_hasn_id` 取自 **Agent JWT**（不取 body，identity by auth），
+    `actor_type` 强制 `agent`。本地审计先在分身侧产生，上报为 best-effort（失败可补传）；
+    此端点只负责落库到 `hasn_ai_native_app_audit`（D5 新建链路，与云端 Runtime 路由审计共表）。
+    """
+    obj = CreateAiNativeAppAuditParam(
+        **body.model_dump(),
+        actor_type='agent',
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+    )
+    await ai_native_audit_service.create(db=db, obj=obj)
+    return response_base.success(data={'trace_id': body.trace_id, 'recorded': True})

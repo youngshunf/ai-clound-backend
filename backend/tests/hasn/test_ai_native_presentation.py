@@ -165,3 +165,118 @@ def test_presentation_emit_declaration_present() -> None:
     assert emit['categories'] == ['app']
     assert emit['card_message'] is True
     assert emit['display_name'] == '演示文稿'
+
+
+@pytest.mark.asyncio
+async def test_agent_audit_report_persists_with_jwt_identity() -> None:
+    """PRES-P4-d（D5）：分身经 Agent JWT POST /ai-native/audit/report 上报本地工具审计。
+
+    真实 HTTP E2E（ASGITransport 走完整路由 + Agent JWT 值依赖 + 统一信封 + 真实 service/DAO）。
+    安全断言（identity by auth）：落库行的 `agent_hasn_id`/`owner_hasn_id` 取自 **Agent JWT**、
+    `actor_type` 强制 `agent`——ReportParam 结构上没有这些身份字段，body 无从冒名。
+    DAO `create_model` 默认仅 `session.add()`，故用 capture-db 截获待落库行断言其字段（零 fake）。
+    """
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from backend.app.hasn.api.v1 import ai_native_app as module
+    from backend.app.hasn.model import HasnAiNativeAppAudit
+    from backend.common.dataclasses import AgentTokenPayload
+    from backend.database.db import get_db_transaction
+
+    # ~38 字符，贴近真实 hasn_id 列宽（本测试用 capture-db 不落真库，长度仅为贴近真实）。
+    agent_hasn_id = 'a_p4d_audit_agent_' + '0' * 20
+    owner_hasn_id = 'h_p4d_audit_owner_' + '0' * 20
+
+    captured: list[HasnAiNativeAppAudit] = []
+
+    class _CaptureDb:
+        """截获 CRUDPlus.create_model 的 session.add(instance)（默认不 flush/commit）。"""
+
+        def add(self, instance: object) -> None:
+            captured.append(instance)  # type: ignore[arg-type]
+
+    async def _fake_db_tx():
+        yield _CaptureDb()
+
+    async def _fake_agent_auth() -> AgentTokenPayload:
+        return AgentTokenPayload(
+            agent_hasn_id=agent_hasn_id,
+            agent_name='P4D 审计测试分身',
+            owner_hasn_id=owner_hasn_id,
+            owner_user_id=990011,
+            scopes=['presentation:generate'],
+            session_uuid='sess_p4d_audit',
+            expire_time='2027-01-01T00:00:00+00:00',
+        )
+
+    app = FastAPI()
+    app.include_router(module.audit_router, prefix='/api/v1/ai-native/audit')
+    app.dependency_overrides[module.DependsAgentJwtAuth.dependency] = _fake_agent_auth
+    app.dependency_overrides[get_db_transaction] = _fake_db_tx
+
+    body = {
+        'trace_id': 'tr_p4d_audit_1',
+        'app_id': 'presentation',
+        'method': 'hasn.presentation.generate',
+        'decision': 'allow',
+        'tool_id': 'hasn.presentation.generate',
+        'required_scopes': ['presentation:generate'],
+        'risk_level': 'write',
+        'context': {'args_digest': 'hasn.presentation.generate｜n_slides=8'},
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        resp = await client.post('/api/v1/ai-native/audit/report', json=body)
+
+    assert resp.status_code == 200, resp.text
+    env = resp.json()
+    assert env['data'] == {'trace_id': 'tr_p4d_audit_1', 'recorded': True}
+
+    assert len(captured) == 1
+    row = captured[0]
+    assert isinstance(row, HasnAiNativeAppAudit)
+    # 身份权威取自 JWT（非 body），actor_type 强制 agent。
+    assert row.agent_hasn_id == agent_hasn_id
+    assert row.owner_hasn_id == owner_hasn_id
+    assert row.actor_type == 'agent'
+    # body 字段如实透传。
+    assert row.app_id == 'presentation'
+    assert row.method == 'hasn.presentation.generate'
+    assert row.tool_id == 'hasn.presentation.generate'
+    assert row.decision == 'allow'
+    assert row.required_scopes == ['presentation:generate']
+    assert row.risk_level == 'write'
+    # 本地工具默认步骤/工作空间。
+    assert row.step == 'local_tool'
+    assert row.workspace_kind == 'personal'
+
+
+@pytest.mark.asyncio
+async def test_agent_audit_report_requires_agent_jwt() -> None:
+    """缺 Agent JWT → 401（端点受 DependsAgentJwtAuth 保护，不接受匿名上报）。"""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from backend.app.hasn.api.v1 import ai_native_app as module
+    from backend.database.db import get_db_transaction
+
+    class _CaptureDb:
+        def add(self, instance: object) -> None:  # pragma: no cover - 不应被调用
+            raise AssertionError('未鉴权不应落库')
+
+    async def _fake_db_tx():
+        yield _CaptureDb()
+
+    app = FastAPI()
+    app.include_router(module.audit_router, prefix='/api/v1/ai-native/audit')
+    app.dependency_overrides[get_db_transaction] = _fake_db_tx  # 不 override 鉴权 → 真实 401
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url='http://test') as client:
+        resp = await client.post(
+            '/api/v1/ai-native/audit/report',
+            json={'trace_id': 't', 'app_id': 'presentation', 'method': 'm', 'decision': 'allow'},
+        )
+    assert resp.status_code == 401, resp.text
