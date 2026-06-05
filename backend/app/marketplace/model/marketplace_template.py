@@ -59,6 +59,9 @@ class MarketplaceTemplate(Base):
     price: Mapped[Decimal] = mapped_column(sa.NUMERIC(), default=None, comment='价格')
     is_private: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='是否私有')
     is_official: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='是否官方模板')
+    is_common: Mapped[bool] = mapped_column(
+        sa.BOOLEAN(), default=False, comment='是否公共技能包（默认叠加进每个 Agent 的能力清单）'
+    )
     download_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='下载次数')
     category: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment='分类')
     tags: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='标签，逗号分隔')

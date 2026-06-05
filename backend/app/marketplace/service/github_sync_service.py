@@ -119,6 +119,14 @@ class GitHubSyncService:
                 clear_common = clear_common.where(MarketplaceSkill.skill_id.notin_(list(common_ids)))
             await db.execute(clear_common.values(is_common=False))
 
+            # 技能包同步（实施/91 B3.3）：扫描 hub bundles/*/bundle.yaml → 落库
+            # marketplace_template(skill_pack)。公共包集合由 common-bundles.yaml 决定，
+            # 每个包按 is_common 显式落标（无单独 reconcile：重扫即覆盖）。
+            bundle_synced, bundle_failed, bundle_errors = await self._sync_bundles(db)
+            synced_count += bundle_synced
+            failed_count += bundle_failed
+            errors.extend(bundle_errors)
+
             # Update sync log
             if sync_log_id:
                 await marketplace_sync_log_dao.update(
@@ -198,6 +206,139 @@ class GitHubSyncService:
         if not isinstance(raw, list):
             return set()
         return {str(item).strip() for item in raw if isinstance(item, str) and item.strip()}
+
+    def _load_common_bundle_slugs(self) -> set[str]:
+        """从 hub `common-bundles.yaml` 读取公共技能包 slug 集合（实施/91 B3.3）。
+
+        与 common-skills.yaml 对称：文件缺失/格式异常 ⇒ 返回空集（零 fake：不臆造公共包）。
+        值形如 `backend-dev`（bundle 目录名，归一化后），云端据此打 marketplace_template.is_common。
+        bundle.yaml 本身不写 is_common（hermes 原生格式纯净，见 B3.4），由此清单决定。
+        """
+        from backend.app.marketplace.service import skill_pack_service
+
+        path = Path(self.local_path) / 'common-bundles.yaml'
+        if not path.exists():
+            log.info(f'common-bundles.yaml not found under {self.local_path}; no common bundles marked')
+            return set()
+        try:
+            data = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            log.error(f'failed to parse common-bundles.yaml: {exc}')
+            return set()
+        raw = data.get('bundles') if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return set()
+        return {
+            skill_pack_service.normalize_slug(str(item))
+            for item in raw
+            if isinstance(item, str) and item.strip()
+        }
+
+    def _scan_bundles(self) -> list[dict[str, Any]]:
+        """扫描 hub `bundles/*/bundle.yaml`，产出可落库的 skill_pack 记录（实施/91 B3.3）。
+
+        非法 bundle（解析失败/skills 空/slug 不自洽）在 _parse_bundle_yaml 内 log.error 跳过，
+        不进结果集（同步期容错，安装期才硬报错）。
+        """
+        out: list[dict[str, Any]] = []
+        root = Path(self.local_path) / 'bundles'
+        if not root.exists():
+            return out
+        for bundle_yaml in sorted(root.glob('*/bundle.yaml')):
+            record = self._parse_bundle_yaml(bundle_yaml)
+            if record:
+                out.append(record)
+        return out
+
+    def _parse_bundle_yaml(self, path: Path) -> dict[str, Any] | None:
+        """解析单个 bundle.yaml（hermes 原生格式）→ 落库记录；非法返回 None（log.error 跳过）。
+
+        四档校验：safe_load 成 dict / skills 非空 list[str] / 目录名归一化 == name 归一化（slug 自洽）。
+        产出：bundle_slug=目录名归一化、template_id='huanxing/'+slug、command_key='/'+slug、
+        hermes_yaml=safe_dump 规范化（剔除 marketplace 维度键 is_common/is_official/version）。
+        """
+        from backend.app.marketplace.service import skill_pack_service
+
+        dir_slug = skill_pack_service.normalize_slug(path.parent.name)
+        if not dir_slug:
+            log.error(f'bundle dir name normalizes to empty: {path}')
+            return None
+        try:
+            spec = yaml.safe_load(path.read_text(encoding='utf-8'))
+        except (OSError, yaml.YAMLError) as exc:
+            log.error(f'failed to parse bundle.yaml {path}: {exc}')
+            return None
+        if not isinstance(spec, dict):
+            log.error(f'bundle.yaml top-level must be a mapping: {path}')
+            return None
+        skills = spec.get('skills')
+        if not isinstance(skills, list) or not skills or not all(isinstance(s, str) and s.strip() for s in skills):
+            log.error(f'bundle.yaml skills must be a non-empty list of strings: {path}')
+            return None
+        name_slug = skill_pack_service.normalize_slug(str(spec.get('name') or dir_slug))
+        if name_slug != dir_slug:
+            log.error(f'bundle.yaml name({name_slug}) inconsistent with dir slug({dir_slug}): {path}')
+            return None
+
+        # marketplace 维度键不属 hermes 原生格式（B3.4），落库前剔除，保证 hermes_yaml 纯净可被上游消费。
+        hermes_spec = {k: v for k, v in spec.items() if k not in ('is_common', 'is_official', 'version')}
+        hermes_yaml = yaml.safe_dump(hermes_spec, allow_unicode=True, sort_keys=False).strip() + '\n'
+        return {
+            'bundle_slug': dir_slug,
+            'template_id': f'huanxing/{dir_slug}',
+            'command_key': f'/{dir_slug}',
+            'name': str(spec.get('name') or dir_slug),
+            'description': spec.get('description'),
+            'hermes_yaml': hermes_yaml,
+            'hermes_bundle_json': hermes_spec,
+            'version': '1.0.0',
+        }
+
+    async def _sync_bundle(self, db: AsyncSession, record: dict[str, Any], *, is_common: bool) -> dict[str, Any]:
+        """把单个 bundle 记录落库 marketplace_template(skill_pack) + version（实施/91 B3.3）。
+
+        复用 B2.4 的 skill_pack_service.upsert_skill_pack（含 B2.2 校验+规范化）。官方 hub 包
+        author_id=None（系统出品，非个人作者），is_official=True，is_common 由调用方按 common-bundles 决定。
+        """
+        from backend.app.marketplace.schema.skill_pack import SkillPackCreateRequest
+        from backend.app.marketplace.service import skill_pack_service
+
+        payload = SkillPackCreateRequest(
+            template_id=record['template_id'],
+            namespace='huanxing',
+            name=record['name'],
+            description=record.get('description'),
+            bundle_slug=record['bundle_slug'],
+            command_key=record['command_key'],
+            version=record['version'],
+            hermes_bundle_json=record['hermes_bundle_json'],
+            hermes_yaml=record['hermes_yaml'],
+            is_private=False,
+            is_official=True,
+        )
+        return await skill_pack_service.upsert_skill_pack(db, payload, author_id=None, is_common=is_common)
+
+    async def _sync_bundles(self, db: AsyncSession) -> tuple[int, int, list[str]]:
+        """扫描 + 落库全部 hub 技能包，返回 (synced, failed, errors)（实施/91 B3.3）。
+
+        每个 bundle 按 common-bundles.yaml 显式落 is_common（重扫即覆盖，无单独 reconcile）。
+        单个 bundle 落库失败计入 failed，不阻断其余（零 fake：如实报错，不假装成功）。
+        """
+        records = self._scan_bundles()
+        if not records:
+            return 0, 0, []
+        common_slugs = self._load_common_bundle_slugs()
+        synced = failed = 0
+        errors: list[str] = []
+        for record in records:
+            try:
+                await self._sync_bundle(db, record, is_common=record['bundle_slug'] in common_slugs)
+                synced += 1
+            except Exception as exc:  # noqa: PERF203, BLE001
+                failed += 1
+                errors.append(f"bundle {record.get('bundle_slug', 'unknown')}: {exc!s}")
+                log.error(f"Failed to sync bundle {record.get('bundle_slug')}: {exc}")
+        return synced, failed, errors
 
     async def _scan_skills(self) -> list[dict[str, Any]]:
         """

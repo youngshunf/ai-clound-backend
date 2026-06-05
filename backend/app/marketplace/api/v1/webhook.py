@@ -36,6 +36,7 @@ def has_skill_source_changes(commits: list[dict]) -> bool:
             path == '.gitmodules'
             or path == 'common-skills.yaml'
             or path.startswith('huanxing-skills/')
+            or path.startswith('bundles/')
             or path == 'github'
             or path.startswith('github/')
             for path in changed

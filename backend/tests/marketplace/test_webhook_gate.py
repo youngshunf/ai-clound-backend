@@ -22,6 +22,15 @@ def test_huanxing_skill_dir_change_triggers():
     assert has_skill_source_changes(_push('huanxing-skills/search/newsnow/SKILL.md')) is True
 
 
+def test_bundle_yaml_change_triggers_skill_sync():
+    # 技能包（实施/91 B3.2）走 skills webhook 同步入 marketplace_template(skill_pack)。
+    assert has_skill_source_changes(_push('bundles/backend-dev/bundle.yaml')) is True
+
+
+def test_bundles_added_path_triggers():
+    assert has_skill_source_changes([{'modified': [], 'added': ['bundles/research/bundle.yaml'], 'removed': []}]) is True
+
+
 def test_gitmodules_change_triggers():
     assert has_skill_source_changes(_push('.gitmodules')) is True
 
