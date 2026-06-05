@@ -19,6 +19,7 @@ from backend.app.marketplace.api.v1.open.browse import router as open_browse_rou
 from backend.app.marketplace.api.v1.open.marketplace_skills import router as open_marketplace_skills_router
 from backend.app.marketplace.api.v1.open.marketplace_template import router as open_marketplace_template_router
 from backend.app.marketplace.api.v1.publish import router as publish_router  # 发布 API
+from backend.app.marketplace.api.v1.skill_pack import router as skill_pack_router  # 技能包（skill_pack）
 from backend.app.marketplace.api.v1.webhook import router as webhook_router  # GitHub Webhook
 from backend.core.conf import settings
 
@@ -33,6 +34,9 @@ app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/marketplace/app', tags=[
 
 app.include_router(app_marketplace_skills_router, prefix='/skills', tags=['技能市场-用户技能'])
 app.include_router(app_marketplace_template_router, prefix='/templates', tags=['技能市场-用户模板'])
+# 技能包 skill_pack（实施/91 B2.1）：先只挂 app scope（Owner JWT）。open 公开浏览延后到 B5
+# （需先补 status/visibility 过滤防泄露，B0 同款教训）。路径 /api/v1/marketplace/app/skill-packs。
+app.include_router(skill_pack_router, prefix='/skill-packs', tags=['技能市场-技能包'])
 
 # --- 公开（无需认证） ---
 open_api = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/marketplace/open', tags=['技能市场'])
