@@ -10,6 +10,7 @@ from backend.app.hasn.service.ai_native_builtin_manifests import (
     COMMUNITY_AI_NATIVE_MANIFEST,
     KNOWLEDGE_AI_NATIVE_MANIFEST,
 )
+from backend.app.hasn.service.ai_native_builtin_presentation import PRESENTATION_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
@@ -32,6 +33,7 @@ class AINativeAppRegistry:
         self._builtin_manifests = {
             'knowledge': KNOWLEDGE_AI_NATIVE_MANIFEST,
             'community': COMMUNITY_AI_NATIVE_MANIFEST,
+            'presentation': PRESENTATION_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
