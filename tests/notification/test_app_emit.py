@@ -15,7 +15,7 @@ from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.service.notification_service import notification_service
 from backend.app.notification.service.service_account_service import service_account_service
 from backend.common.exception import errors
-from tests.notification.conftest import seed_human
+from tests.notification.conftest import seed_agent, seed_human
 
 
 async def _card_messages_to(db, recipient_id: str) -> list[HasnMessages]:
@@ -124,6 +124,60 @@ async def test_app_emit_undeclared_app_forbidden(db):
             type='x',
             title='未声明 App',
         )
+
+
+@pytest.mark.asyncio
+async def test_app_emit_real_agent_jwt_endpoint_e2e(db):
+    """真机 E2E（App→主人收卡片）：真 Agent JWT 签发(写 redis)→真 verify(读 redis)→真端点
+    handler→主人 DB 收卡片。覆盖凭证路径 + AppEmitRequest schema + handler + service + 服务号
+    卡片承载（HTTP 传输/路由层由 test_routes_contract 锁定）。零 Mock：真库 + 真 redis。"""
+    from backend.app.notification.api.v1.agent.notification import app_emit as app_emit_endpoint
+    from backend.app.notification.schema.notification import AppEmitRequest
+    from backend.common.security.agent_jwt import (
+        create_agent_access_token,
+        revoke_agent_token,
+        verify_agent_token,
+    )
+
+    owner = await seed_human(db, nickname='主人')
+    agent = await seed_agent(db, owner_hasn_id=owner['hasn_id'], display_name='我的分身')
+
+    issued = await create_agent_access_token(
+        agent_hasn_id=agent['hasn_id'],
+        agent_name='我的分身',
+        owner_hasn_id=owner['hasn_id'],
+        owner_user_id=owner['user_id'],
+        scopes=['notifications:emit'],
+    )
+    try:
+        # 真凭证校验：解码 + 命中 redis session → AgentTokenPayload（身份恒取自 JWT）
+        token_payload = await verify_agent_token(issued.access_token)
+        assert token_payload.owner_hasn_id == owner['hasn_id']
+
+        body = AppEmitRequest(
+            app_id='community',
+            category='app',
+            type='post_featured',
+            title='你的帖子被加精了',
+            body='恭喜！',
+            payload={'target': {'type': 'post', 'id': 'p1'}, 'link': '/community'},
+            card=True,
+        )
+        resp = await app_emit_endpoint(db, token_payload, body)
+        nid = resp.data['notification_id']
+
+        # 权威行：source.kind=app + on_behalf_of=主人（服务端按 JWT 补全，不读请求体身份）
+        row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
+        assert row.source['kind'] == 'app'
+        assert row.source['on_behalf_of'] == owner['hasn_id']
+
+        # 主人 DB 收到卡片，落 App 服务号会话
+        cards = await _card_messages_to(db, owner['hasn_id'])
+        assert len(cards) == 1
+        assert cards[0].content['source']['kind'] == 'app'
+        assert cards[0].content['title'] == '你的帖子被加精了'
+    finally:
+        await revoke_agent_token(agent['hasn_id'], issued.session_uuid)
 
 
 @pytest.mark.asyncio
