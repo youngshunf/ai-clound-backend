@@ -9,6 +9,8 @@
 --   r2 → r3（2026-06-06）：新增「说人话 · 不暴露技术细节」硬约束——summary/title/evidence 等
 --          面向主人的文字禁止出现工具名(hasn.xxx)/异常原文/堆栈/内部消息编号/错误码等技术词；
 --          来源不可用只说效果不贴报错原文（修复工作台出现 message_id / '_Request' object 等技术语义）
+--   r3 → r4（2026-06-06）：来源不可用统一只报「应用名称 + 状态」（社区通知未获取 / 知识库搜索不可用），
+--          连 task/social/app 内部分类与英文 id 也不暴露，只给主人看得懂的应用中文展示名（含名称对照表）
 -- =====================================================
 INSERT INTO "public"."hasn_builtin_task_catalog"
     ("builtin_key", "name", "description", "schedule_type", "schedule_config",
@@ -30,7 +32,8 @@ VALUES (
     '简报是给主人（普通用户）看的，summary / title / evidence / 计划步骤等一切文字必须是主人能看懂的自然语言：\n'
     '- 禁止出现工具名（如 hasn.community.get_notifications / hasn.knowledge.search）、接口名、函数名、异常或报错原文（如 "''_Request'' object has no attribute ''headers''"）、调用栈、HTTP 状态码、内部消息编号（如 message_id 13）、内部错误码（如 system_disk_overloaded）等任何技术词。\n'
     '- evidence 写主人关心的事实本身（例「张三 3 天前的消息还没回」），不要贴日志行、工具的原始返回或错误堆栈。\n'
-    '- 某来源读取失败 / 不可用 → 只说对主人的影响，例「社区通知今日暂时读不到，已跳过」；绝不把失败的工具名或报错原文写进简报。\n'
+    '- 某来源读取失败 / 不可用 → 只报「应用名称 + 状态」，例「社区通知未获取」「知识库搜索不可用」「演示文稿暂不可用」；只点应用名和效果，绝不写工具名（hasn.xxx）、接口名、报错原文，也不要暴露 task/social/app 这类内部分类或英文 id。\n'
+    '- 应用名称对照（给主人看时一律用中文展示名）：community / 通知 →「社区通知」，knowledge / 检索 →「知识库搜索」，presentation →「演示文稿」，task →「任务」，messages →「消息」，calendar →「日历」；无对应中文名时用该应用自身的展示名，绝不用英文 id 或工具名。\n'
     '- deep_link / app_id / route 这类机器字段只放进 source 或 action 的对应结构字段，不要把它们当正文写给主人看。\n'
     '- 一句话自检：把每条文字念给不懂技术的家人听，对方能听懂才算合格。\n\n'
     '【先采集，再归纳 · 四源 · 只读主人自己的数据】\n'
@@ -40,7 +43,7 @@ VALUES (
     '- app：已挂载 AI-Native 应用里待办的事（知识库挂着的合同、CRM 跟进等，经实例解析的只读 Tool）。\n'
     '- plan：主人的目标与计划进展。\n\n'
     '【零 fake 铁律】\n'
-    '- 某个源读不到 / 工具不可用 / 未授权 → 用主人能看懂的话如实留白或标注「该来源今日暂时不可用」（不带工具名/报错原文），绝不编造关注项或佐证。宁可少一项，不可造一项。\n'
+    '- 某个源读不到 / 工具不可用 / 未授权 → 用「应用名称 + 状态」如实标注（如「社区通知未获取」「知识库搜索不可用」），不带工具名 / 内部分类 / 报错原文，绝不编造关注项或佐证。宁可少一项，不可造一项。\n'
     '- 每个关注项尽量带 source（出处 deep_link，可点开核验）与 evidence（用人话写的佐证），让主人一眼验真。\n'
     '- 今天确实没什么值得关注 → 产出 focus_items 为空、summary 如实说明「今天一切正常」的简报（也要 publish），不要为「看起来有用」而堆砌。\n'
     '- 若已知主人对往期某关注项做过 dismiss，本次不要重复推送同一件事。\n\n'
@@ -59,7 +62,7 @@ VALUES (
     '要求：label 用主人能懂的动词短语（如「查看会话」「去处理」）；deep_link / route 必须指到真实位置；run_task.prompt 必须具体可执行；不要给空壳按钮。\n\n'
     '【流程】采集（源不可达用人话如实标注）→ 归纳 summary + focus_items(带 source/evidence/actions) + 必要的 plans → 调 `hasn.workbench.briefing.publish` 提交；schema 报错就修正重试，直到 published:true。完成后工作台即渲染你这份简报，主人据此一眼看清今天、一键行动。',
     TRUE,
-    3
+    4
 )
 ON CONFLICT ("builtin_key") DO UPDATE SET
     "name"            = EXCLUDED."name",
