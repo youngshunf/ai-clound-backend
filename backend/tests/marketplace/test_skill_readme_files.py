@@ -182,6 +182,33 @@ async def test_detail_readme_falls_back_to_other_language(db_session):
     assert detail_zh['files'] == [] and detail_zh['file_count'] == 0  # 无文件清单 → 空
 
 
+@pytest.mark.asyncio
+async def test_detail_resolves_bare_slug_not_only_namespaced_id(db_session):
+    """技能包/模板成员按裸 slug 命名存储（hermes 成员命名），详情查询必须能用裸 slug 解析，
+    否则真实在库的市场技能会被错判「未在市场找到」（university-applications 404 事故）。"""
+    tag = uuid.uuid4().hex[:8]
+    namespace, slug = 'clawhub/wscats', f'uniapp-{tag}'
+    skill_id = f'{namespace}/{slug}'
+    await _seed_skill(
+        db_session, skill_id, namespace, slug,
+        name='University Applications', body_en='# Apps\n\nbody', files=None,
+    )
+
+    # 完整 namespace/slug 仍解析
+    by_full = await search_service.get_skill_detail(db_session, skill_id, 'zh')
+    assert by_full is not None and by_full['name'] == 'University Applications'
+
+    # 裸 slug（无 namespace）也解析到同一行
+    by_slug = await search_service.get_skill_detail(db_session, slug, 'zh')
+    assert by_slug is not None
+    assert by_slug['skill_id'] == skill_id
+    assert by_slug['name'] == 'University Applications'
+
+    # 不存在的裸 slug 仍诚实返回 None（→ 路由 404 → 前端优雅降级，不伪造）
+    missing = await search_service.get_skill_detail(db_session, f'no-such-{tag}', 'zh')
+    assert missing is None
+
+
 # --------------------------------------------------------------------------- #
 # 3) + 4) 翻译/复用门控：真实 translate_markdown，仅打桩 LLM 网络出口
 # --------------------------------------------------------------------------- #

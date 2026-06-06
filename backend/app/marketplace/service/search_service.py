@@ -153,28 +153,50 @@ class SearchService:
         lang: str = 'zh'
     ) -> dict[str, Any] | None:
         """
-        Get skill detail by namespaced ID.
+        Get skill detail by namespaced ID or bare slug.
+
+        Accepts either the full 'namespace/slug' ID (e.g.
+        'clawhub/wscats/university-applications') or a bare slug
+        (e.g. 'university-applications'). Skill bundles and template
+        "内置能力" store member skills by bare slug (hermes member naming),
+        so detail lookup must resolve those too — otherwise a real
+        marketplace skill is wrongly shown as missing.
 
         Args:
             db: Database session
-            skill_id: Skill ID in 'namespace/slug' format
+            skill_id: Full 'namespace/slug' ID or a bare slug
             lang: Language (zh/en)
 
         Returns:
             Skill detail dict or None
         """
-        if '/' not in skill_id:
-            return None
-
-        namespace, slug = skill_id.rsplit('/', 1)
-        query = select(MarketplaceSkill).where(
-            and_(
-                MarketplaceSkill.namespace == namespace,
-                MarketplaceSkill.slug == slug,
-                MarketplaceSkill.status == PUBLISHED_STATUS,
-                MarketplaceSkill.visibility == PUBLIC_VISIBILITY,
-            )
+        published_public = and_(
+            MarketplaceSkill.status == PUBLISHED_STATUS,
+            MarketplaceSkill.visibility == PUBLIC_VISIBILITY,
         )
+
+        if '/' in skill_id:
+            namespace, slug = skill_id.rsplit('/', 1)
+            query = select(MarketplaceSkill).where(
+                and_(
+                    MarketplaceSkill.namespace == namespace,
+                    MarketplaceSkill.slug == slug,
+                    published_public,
+                )
+            )
+        else:
+            # 裸 slug：slug 基本唯一；偶有重名时按下载量取最热的一个，保证确定性。
+            query = (
+                select(MarketplaceSkill)
+                .where(
+                    and_(
+                        MarketplaceSkill.slug == skill_id,
+                        published_public,
+                    )
+                )
+                .order_by(desc(MarketplaceSkill.download_count))
+                .limit(1)
+            )
 
         result = await db.execute(query)
         skill = result.scalar_one_or_none()
