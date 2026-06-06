@@ -98,6 +98,7 @@ v1.include_router(admin_hasn_ragflow_credential_router, prefix='/ragflow/credent
 # --- 用户端（仅 JWT） ---
 from backend.app.hasn.api.agent_scopes import router as agent_scopes_router
 from backend.app.hasn.api.v1.app.hasn_agent_capabilities import router as app_hasn_agent_capabilities_router
+from backend.app.hasn.api.v1.app.hasn_agent_channel_mirrors import router as app_hasn_agent_channel_mirrors_router
 from backend.app.hasn.api.v1.app.hasn_agents import router as app_hasn_agents_router
 from backend.app.hasn.api.v1.app.hasn_audit_log import router as app_hasn_audit_log_router
 from backend.app.hasn.api.v1.app.hasn_conversations import router as app_hasn_conversations_router
@@ -115,6 +116,11 @@ app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/app', tags=['HASN �
 
 app.include_router(app_hasn_humans_router, prefix='/humans', tags=['用户管理'])
 app.include_router(app_hasn_agents_router, prefix='/agents', tags=['Agent管理'])
+app.include_router(
+    app_hasn_agent_channel_mirrors_router,
+    prefix='/agent-channel-mirrors',
+    tags=['Agent 渠道脱敏摘要跨设备镜像（仅可见性）'],
+)
 app.include_router(app_hasn_conversations_router, prefix='/conversations', tags=['会话管理'])
 app.include_router(app_hasn_messages_router, prefix='/messages', tags=['消息管理'])
 app.include_router(app_hasn_unread_counts_router, prefix='/unread/counts', tags=['未读计数'])

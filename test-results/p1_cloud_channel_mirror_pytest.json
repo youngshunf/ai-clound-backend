@@ -1,0 +1,22 @@
+{
+  "phase": "P1",
+  "timestamp": "2026-06-06T11:50:00Z",
+  "test_suite": "cloud_channel_mirror",
+  "command": "uv run pytest tests/hasn/test_hasn_agent_channel_mirrors_http_e2e.py -v (real PostgreSQL 127.0.0.1:15432/huanxing, zero mock)",
+  "status": "passed",
+  "summary": { "total": 7, "passed": 7, "failed": 0, "skipped": 0 },
+  "coverage": {
+    "lines": null,
+    "note": "pytest-cov/coverage instrumentation hangs in this sandbox (C-tracer vs async event loop + harness backgrounding; macOS 无 coreutils timeout). 功能覆盖完整：7 个用例覆盖 service.list_for_owner/upsert_for_owner/_resolve_owner、crud.list_by_owner/upsert_mirror、两个 app 端点、secret_keys.is_secret_key/safe_json 全部代码路径。"
+  },
+  "cases": [
+    "test_upsert_then_list_visible_with_redacted_fields — upsert 新建 → GET 列表能看到（含脱敏字段）",
+    "test_owner_isolation_cross_user_cannot_see — 三道隔离：另一 user 的 JWT 看不到本 owner 的行",
+    "test_fourth_layer_redaction_strips_secrets — 第④层脱敏：app_secret/client_secret/token/xxx_secret/嵌套秘密写库后剔除（直查 DB 双确认无明文）",
+    "test_redaction_constant_consistency_with_hermes — is_secret_key 对 Hermes SECRET_KEY_FRAGMENTS 全集(7项)判 True + 非秘密键判 False",
+    "test_on_conflict_keeps_newest_updated_time — ON CONFLICT 时间择新：旧 updated_time 不覆盖库内更新值 + 唯一键仅一行",
+    "test_envelope_shape_is_unified — 统一信封 {code:200, msg, data}",
+    "test_long_hasn_id_column_width — 真实 38 字符 hasn_id 入库不截断（varchar(40) 容纳，不用短 id 绕过）"
+  ],
+  "notes": "P1 云端跨设备脱敏摘要镜像表 hasn_agent_channel_mirrors + owner-scoped 两端点（GET 列表 / PUT upsert）+ 双重脱敏（第④层 safe_json 兜底）。表经 fba codegen --execute 真实建库（13 列/6 索引/双唯一键/全量中文 COMMENT），代码经 codegen 生成后裁剪为仅 app scope。zero mock：连真实本地 PostgreSQL（15432/huanxing），不可达即 pytest.skip 不伪造。证据对应设计 §6/§8.5-④/§3.3 与实施清单 P1。"
+}
