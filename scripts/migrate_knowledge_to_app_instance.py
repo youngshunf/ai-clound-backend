@@ -30,15 +30,57 @@ import asyncio
 
 import sqlalchemy as sa
 
-from backend.app.hasn.model import (
-    HasnAppCredential,
-    HasnAppInstance,
-    HasnRagflowCredential,
-    HasnRagflowInstance,
-)
+from sqlalchemy.orm import DeclarativeBase
+
+from backend.app.hasn.model import HasnAppCredential, HasnAppInstance
 from backend.app.hasn.util.secret_crypto import decrypt_ragflow_secret
 from backend.app.llm.core.encryption import key_encryption
 from backend.database.db import async_db_session
+
+
+# 旧表 hasn_ragflow_instance / hasn_ragflow_credential 的「只读 schema 快照」。
+# 实施 03 P5 已删除这两张表的 ORM 模型（model/schema/crud），但本一次性迁移脚本
+# 在「删表前」仍需读它们搬数据 —— 故自带最小映射，解除对已删模型的 import 依赖
+# （独立 DeclarativeBase，不污染应用共享 metadata；仅映射本脚本读取的列）。
+# 用经典 sa.Column 声明（非 Mapped[] 注解）：本脚本顶部有 `from __future__ import
+# annotations`，会把注解变字符串，独立 DeclarativeBase 解析 Mapped[] 易失败；只读
+# 搬数据用经典列最稳。
+class _LegacyBase(DeclarativeBase):
+    pass
+
+
+class HasnRagflowInstance(_LegacyBase):
+    """旧 RAGFlow 实例表只读映射（迁移自带快照）。"""
+
+    __tablename__ = 'hasn_ragflow_instance'
+
+    id = sa.Column(sa.BigInteger, primary_key=True)
+    scope = sa.Column(sa.String(16))
+    enterprise_id = sa.Column(sa.BigInteger)
+    url = sa.Column(sa.String(512))
+    admin_api_key_encrypted = sa.Column(sa.LargeBinary)
+    public_pem = sa.Column(sa.Text)
+    default_embd_id = sa.Column(sa.String(128))
+    default_llm_id = sa.Column(sa.String(128))
+    status = sa.Column(sa.String(16))
+    created_time = sa.Column(sa.DateTime(timezone=True))
+
+
+class HasnRagflowCredential(_LegacyBase):
+    """旧 RAGFlow 用户凭据表只读映射（迁移自带快照）。"""
+
+    __tablename__ = 'hasn_ragflow_credential'
+
+    id = sa.Column(sa.BigInteger, primary_key=True)
+    user_id = sa.Column(sa.BigInteger)
+    instance_id = sa.Column(sa.BigInteger)
+    ragflow_user_id = sa.Column(sa.String(64))
+    ragflow_tenant_id = sa.Column(sa.String(64))
+    api_key_encrypted = sa.Column(sa.LargeBinary)
+    status = sa.Column(sa.String(16))
+    last_error = sa.Column(sa.Text)
+    created_time = sa.Column(sa.DateTime(timezone=True))
+
 
 APP_ID = 'knowledge'
 # UI 默认 transport（不改调用形态，见实施 03 §0.3：knowledge.search 仍 daemon_direct 直连）

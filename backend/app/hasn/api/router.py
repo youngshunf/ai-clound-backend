@@ -20,8 +20,6 @@ from backend.app.hasn.api.v1.admin.hasn_nodes import router as admin_hasn_nodes_
 from backend.app.hasn.api.v1.admin.hasn_notifications import router as admin_hasn_notifications_router
 from backend.app.hasn.api.v1.admin.hasn_owner_api_keys import router as admin_hasn_owner_api_keys_router
 from backend.app.hasn.api.v1.admin.hasn_pending_intents import router as admin_hasn_pending_intents_router
-from backend.app.hasn.api.v1.admin.hasn_ragflow_credential import router as admin_hasn_ragflow_credential_router
-from backend.app.hasn.api.v1.admin.hasn_ragflow_instance import router as admin_hasn_ragflow_instance_router
 from backend.app.hasn.api.v1.admin.hasn_session_artifacts import router as admin_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.admin.hasn_session_events import router as admin_hasn_session_events_router
 from backend.app.hasn.api.v1.admin.hasn_sessions import router as admin_hasn_sessions_router
@@ -92,8 +90,6 @@ v1.include_router(admin_hasn_enterprise_membership_router, prefix='/enterprise/m
 v1.include_router(admin_hasn_enterprise_invite_code_router, prefix='/enterprise/invite-codes', tags=['企业邀请码'])
 v1.include_router(admin_hasn_user_active_workspace_router, prefix='/user/active-workspaces', tags=['活跃工作区'])
 v1.include_router(admin_hasn_workspace_app_router, prefix='/workspace/apps', tags=['工作空间应用'])
-v1.include_router(admin_hasn_ragflow_instance_router, prefix='/ragflow/instances', tags=['RAGFlow 实例'])
-v1.include_router(admin_hasn_ragflow_credential_router, prefix='/ragflow/credentials', tags=['RAGFlow 凭据'])
 
 # --- 用户端（仅 JWT） ---
 from backend.app.hasn.api.agent_scopes import router as agent_scopes_router

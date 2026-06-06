@@ -106,13 +106,13 @@ CRUD_CASES = (
         'id__in',
     ),
     (
-        'backend.app.hasn.crud.crud_hasn_ragflow_credential',
-        'CRUDHasnRagflowCredential',
+        'backend.app.hasn.crud.crud_hasn_app_credential',
+        'CRUDHasnAppCredential',
         'id__in',
     ),
     (
-        'backend.app.hasn.crud.crud_hasn_ragflow_instance',
-        'CRUDHasnRagflowInstance',
+        'backend.app.hasn.crud.crud_hasn_app_instance',
+        'CRUDHasnAppInstance',
         'id__in',
     ),
     (
@@ -233,16 +233,9 @@ SERVICE_CASES = (
         'HasnPendingIntentsService',
         'hasn_pending_intents_dao',
     ),
-    (
-        'backend.app.hasn.service.hasn_ragflow_credential_service',
-        'HasnRagflowCredentialService',
-        'hasn_ragflow_credential_dao',
-    ),
-    (
-        'backend.app.hasn.service.hasn_ragflow_instance_service',
-        'HasnRagflowInstanceService',
-        'hasn_ragflow_instance_dao',
-    ),
+    # 实施 03 收编：hasn_ragflow_{instance,credential}_service 已删除（知识库实例/凭据
+    # 并入 hasn_app_instance/hasn_app_credential，控制面走 instance_resolver +
+    # workbench_domain_service，无 per-table generated service）。
     (
         'backend.app.hasn.service.hasn_suppressed_messages_service',
         'HasnSuppressedMessagesService',

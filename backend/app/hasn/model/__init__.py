@@ -22,8 +22,6 @@ from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemoryContribution
 from backend.app.hasn.model.hasn_ai_native_app_manifest import HasnAiNativeAppManifest as HasnAiNativeAppManifest
 from backend.app.hasn.model.hasn_ai_native_app_audit import HasnAiNativeAppAudit as HasnAiNativeAppAudit
 from backend.app.hasn.model.hasn_pending_intents import HasnPendingIntents as HasnPendingIntents
-from backend.app.hasn.model.hasn_ragflow_credential import HasnRagflowCredential as HasnRagflowCredential
-from backend.app.hasn.model.hasn_ragflow_instance import HasnRagflowInstance as HasnRagflowInstance
 from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages as HasnSuppressedMessages
 from backend.app.hasn.model.hasn_sync_events import HasnSyncEvents as HasnSyncEvents
 from backend.app.hasn.model.hasn_sync_inbox_events import HasnSyncInboxEvents as HasnSyncInboxEvents

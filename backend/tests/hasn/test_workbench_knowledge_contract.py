@@ -18,6 +18,18 @@ REQUIRED_TABLES = (
     'hasn_enterprise_invite_code',
     'hasn_user_active_workspace',
     'hasn_workspace_app',
+)
+
+# 实施 14-AI-Native应用平台/实施/03 收编：知识库（RAGFlow）实例/凭据已并入统一应用平台
+# 底座 hasn_app_instance + hasn_app_credential。这两张表无 per-table service（控制面走
+# instance_resolver + workbench_domain_service），故只校验 sql/model/schema/crud 四件套。
+CONSOLIDATED_APP_TABLES = (
+    'hasn_app_instance',
+    'hasn_app_credential',
+)
+
+# P5 DoD：旧两套表的 model/schema/crud/service/sql 必须物理删除（「只剩一套」）。
+LEGACY_RAGFLOW_TABLES = (
     'hasn_ragflow_instance',
     'hasn_ragflow_credential',
 )
@@ -35,17 +47,43 @@ def test_workbench_plan_sql_and_codegen_foundation_exist() -> None:
         }
         missing.extend(path.relative_to(REPO_ROOT).as_posix() for path in expected if not path.exists())
 
+    for table in CONSOLIDATED_APP_TABLES:
+        expected = {
+            REPO_ROOT / 'backend' / 'sql' / 'hasn' / f'{table}.sql',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'model' / f'{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'schema' / f'{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'crud' / f'crud_{table}.py',
+        }
+        missing.extend(path.relative_to(REPO_ROOT).as_posix() for path in expected if not path.exists())
+
     assert missing == []
+
+
+def test_legacy_ragflow_tables_fully_removed() -> None:
+    """实施 03 P5 DoD：旧 hasn_ragflow_instance/credential 三件套 + SQL 已物理删除。"""
+    leftover: list[str] = []
+    for table in LEGACY_RAGFLOW_TABLES:
+        candidates = {
+            REPO_ROOT / 'backend' / 'sql' / 'hasn' / f'{table}.sql',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'model' / f'{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'schema' / f'{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'crud' / f'crud_{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'service' / f'{table}_service.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'api' / 'v1' / 'admin' / f'{table}.py',
+        }
+        leftover.extend(path.relative_to(REPO_ROOT).as_posix() for path in candidates if path.exists())
+
+    assert leftover == []
 
 
 def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() -> None:
     from pydantic import ValidationError
 
+    from backend.app.hasn.schema.hasn_app_credential import CreateHasnAppCredentialParam
+    from backend.app.hasn.schema.hasn_app_instance import CreateHasnAppInstanceParam
     from backend.app.hasn.schema.hasn_enterprise import CreateHasnEnterpriseParam
     from backend.app.hasn.schema.hasn_enterprise_invite_code import CreateHasnEnterpriseInviteCodeParam
     from backend.app.hasn.schema.hasn_enterprise_membership import CreateHasnEnterpriseMembershipParam
-    from backend.app.hasn.schema.hasn_ragflow_credential import CreateHasnRagflowCredentialParam
-    from backend.app.hasn.schema.hasn_ragflow_instance import CreateHasnRagflowInstanceParam
     from backend.app.hasn.schema.hasn_user_active_workspace import CreateHasnUserActiveWorkspaceParam
     from backend.app.hasn.schema.hasn_workspace_app import CreateHasnWorkspaceAppParam
 
@@ -73,19 +111,25 @@ def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() 
         user_id=8,
         app_id='knowledge',
     )
-    instance = CreateHasnRagflowInstanceParam(
+    # 实施 03 收编：知识库实例/凭据改用通用应用平台底座 schema；RAGFlow 私有字段
+    # （public_pem / ragflow_user_id / ragflow_tenant_id）下沉 config。
+    instance = CreateHasnAppInstanceParam(
+        app_id='knowledge',
         scope='enterprise',
         enterprise_id=1,
-        url='https://knowledge.example',
-        admin_api_key_encrypted=b'encrypted',
-        public_pem='pem',
+        endpoint='https://knowledge.example',
+        transport_default='daemon_direct',
+        credential_ref='enc:admin-key',
+        status='active',
+        config={'public_pem': 'pem', 'default_embd_id': 'embd', 'default_llm_id': 'llm'},
     )
-    credential = CreateHasnRagflowCredentialParam(
+    credential = CreateHasnAppCredentialParam(
+        app_id='knowledge',
         user_id=8,
-        instance_id=1,
-        ragflow_user_id='rf-user',
-        ragflow_tenant_id='rf-tenant',
-        api_key_encrypted=b'secret',
+        app_instance_id=1,
+        credential_ref='enc:user-key',
+        status='pending',
+        config={'ragflow_user_id': 'rf-user', 'ragflow_tenant_id': 'rf-tenant'},
     )
 
     assert enterprise.status == 'active'
@@ -93,21 +137,15 @@ def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() 
     assert invite.used_count == 0
     assert workspace.enterprise_id == 1
     assert workspace_app.status == 'active'
-    assert instance.status == 'pending_config'
+    assert instance.app_id == 'knowledge'
+    assert instance.config['public_pem'] == 'pem'
+    assert credential.config['ragflow_user_id'] == 'rf-user'
     assert credential.status == 'pending'
 
     with pytest.raises(ValidationError):
         CreateHasnUserActiveWorkspaceParam(user_id=8, kind='personal', enterprise_id=1)
     with pytest.raises(ValidationError):
         CreateHasnWorkspaceAppParam(workspace_kind='enterprise', user_id=8, app_id='knowledge')
-    with pytest.raises(ValidationError):
-        CreateHasnRagflowInstanceParam(
-            scope='public',
-            enterprise_id=1,
-            url='https://knowledge.example',
-            admin_api_key_encrypted=b'encrypted',
-            public_pem='pem',
-        )
 
 
 def test_workbench_codegen_admin_api_modules_import_and_mount() -> None:
@@ -120,8 +158,10 @@ def test_workbench_codegen_admin_api_modules_import_and_mount() -> None:
     assert '/api/v1/hasn/enterprise/invite-codes' in routes
     assert '/api/v1/hasn/user/active-workspaces' in routes
     assert '/api/v1/hasn/workspace/apps' in routes
-    assert '/api/v1/hasn/ragflow/instances' in routes
-    assert '/api/v1/hasn/ragflow/credentials' in routes
+    # 实施 03 P5：旧 /ragflow/instances、/ragflow/credentials admin 路由已随收编删除
+    # （知识库凭据走用户端 /api/v1/hasn/app/knowledge/credentials，由 instance_resolver 选实例）。
+    assert '/api/v1/hasn/ragflow/instances' not in routes
+    assert '/api/v1/hasn/ragflow/credentials' not in routes
 
 
 @pytest.mark.asyncio
