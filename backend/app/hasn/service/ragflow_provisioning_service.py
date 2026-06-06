@@ -9,15 +9,29 @@ import httpx
 import sqlalchemy as sa
 
 from backend.app.admin.model.user import User
-from backend.app.hasn.model import HasnRagflowCredential, HasnRagflowInstance
+from backend.app.hasn.model import HasnAppCredential, HasnAppInstance
 from backend.app.hasn.service.ragflow_client import RAGFlowClient
 from backend.app.hasn.util.rsa_pwd import rsa_encrypt_password
-from backend.app.hasn.util.secret_crypto import decrypt_ragflow_secret, encrypt_ragflow_secret
+from backend.app.llm.core.encryption import key_encryption
 from backend.database.db import async_db_session
-from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import async_sessionmaker
+
+# 知识库在统一应用平台底座中的 app_id（实施 03：knowledge 实例/凭据收编进 hasn_app_*）
+KNOWLEDGE_APP_ID = 'knowledge'
+
+
+def _instance_public_pem(instance: HasnAppInstance) -> str:
+    return (instance.config or {}).get('public_pem', '')
+
+
+def _instance_embd_id(instance: HasnAppInstance) -> str | None:
+    return (instance.config or {}).get('default_embd_id')
+
+
+def _instance_llm_id(instance: HasnAppInstance) -> str | None:
+    return (instance.config or {}).get('default_llm_id')
 
 
 class CredentialRepository(Protocol):
@@ -46,7 +60,7 @@ class RAGFlowCredentialForRevoke:
     ragflow_tenant_id: str
     api_key: str
     status: str
-    instance: HasnRagflowInstance
+    instance: HasnAppInstance
 
 
 @dataclass(frozen=True)
@@ -59,16 +73,24 @@ class ProvisionedCredential:
 
 
 class SqlAlchemyRAGFlowCredentialRepository:
+    """知识库 provisioning 持久化层。
+
+    实施 03 收编后读写统一应用平台底座 ``hasn_app_instance`` / ``hasn_app_credential``
+    （app_id='knowledge'），加密统一走 ``key_encryption``（credential_ref 密文串），
+    RAGFlow 私有字段（ragflow_user_id/ragflow_tenant_id）下沉 ``config``。
+    provisioning 业务语义（POST /users → token → embd → dataset）不变。
+    """
+
     def __init__(self, session_factory: async_sessionmaker | None = None) -> None:
         self.session_factory = session_factory or async_db_session
 
-    async def get_instance(self, instance_id: int):
+    async def get_instance(self, instance_id: int) -> HasnAppInstance:
         async with self.session_factory() as db:
             instance = (
-                await db.execute(sa.select(HasnRagflowInstance).where(HasnRagflowInstance.id == instance_id))
+                await db.execute(sa.select(HasnAppInstance).where(HasnAppInstance.id == instance_id))
             ).scalar_one_or_none()
             if instance is None:
-                raise RuntimeError(f'RAGFlow instance {instance_id} not found')
+                raise RuntimeError(f'app instance {instance_id} not found')
             return instance
 
     async def get_user(self, user_id: int):
@@ -82,20 +104,19 @@ class SqlAlchemyRAGFlowCredentialRepository:
         async with self.session_factory.begin() as db:
             credential = await self._find_credential(db, user_id=user_id, instance_id=instance_id)
             if credential is None:
-                credential = HasnRagflowCredential(
+                credential = HasnAppCredential(
+                    app_id=KNOWLEDGE_APP_ID,
                     user_id=user_id,
-                    instance_id=instance_id,
-                    ragflow_user_id='',
-                    ragflow_tenant_id='',
-                    api_key_encrypted=b'',
+                    app_instance_id=instance_id,
+                    credential_ref='',
                     status='pending',
                     last_error=reason,
+                    config={},
                 )
                 db.add(credential)
             elif credential.status != 'active':
                 credential.status = 'pending'
                 credential.last_error = reason
-                self._touch(credential)
             await db.flush()
             return credential
 
@@ -110,24 +131,23 @@ class SqlAlchemyRAGFlowCredentialRepository:
     ):
         async with self.session_factory.begin() as db:
             credential = await self._find_credential(db, user_id=user_id, instance_id=instance_id)
+            config = {'ragflow_user_id': ragflow_user_id, 'ragflow_tenant_id': ragflow_tenant_id}
             if credential is None:
-                credential = HasnRagflowCredential(
+                credential = HasnAppCredential(
+                    app_id=KNOWLEDGE_APP_ID,
                     user_id=user_id,
-                    instance_id=instance_id,
-                    ragflow_user_id=ragflow_user_id,
-                    ragflow_tenant_id=ragflow_tenant_id,
-                    api_key_encrypted=encrypt_ragflow_secret(api_key),
+                    app_instance_id=instance_id,
+                    credential_ref=key_encryption.encrypt(api_key),
                     status='active',
                     last_error=None,
+                    config=config,
                 )
                 db.add(credential)
             else:
-                credential.ragflow_user_id = ragflow_user_id
-                credential.ragflow_tenant_id = ragflow_tenant_id
-                credential.api_key_encrypted = encrypt_ragflow_secret(api_key)
+                credential.credential_ref = key_encryption.encrypt(api_key)
                 credential.status = 'active'
                 credential.last_error = None
-                self._touch(credential)
+                credential.config = config
             await db.flush()
             return ProvisionedCredential(
                 user_id=user_id,
@@ -140,33 +160,35 @@ class SqlAlchemyRAGFlowCredentialRepository:
     async def mark_revoked(self, credential_id: int) -> None:
         async with self.session_factory.begin() as db:
             credential = (
-                await db.execute(sa.select(HasnRagflowCredential).where(HasnRagflowCredential.id == credential_id))
+                await db.execute(sa.select(HasnAppCredential).where(HasnAppCredential.id == credential_id))
             ).scalar_one_or_none()
             if credential is None:
                 return
             credential.status = 'revoked'
             credential.last_error = None
-            self._touch(credential)
 
     async def get_credential(self, credential_id: int):
         async with self.session_factory() as db:
             credential = (
-                await db.execute(sa.select(HasnRagflowCredential).where(HasnRagflowCredential.id == credential_id))
+                await db.execute(sa.select(HasnAppCredential).where(HasnAppCredential.id == credential_id))
             ).scalar_one_or_none()
             if credential is None:
-                raise RuntimeError(f'RAGFlow credential {credential_id} not found')
+                raise RuntimeError(f'app credential {credential_id} not found')
             instance = (
-                await db.execute(sa.select(HasnRagflowInstance).where(HasnRagflowInstance.id == credential.instance_id))
+                await db.execute(
+                    sa.select(HasnAppInstance).where(HasnAppInstance.id == credential.app_instance_id)
+                )
             ).scalar_one_or_none()
             if instance is None:
-                raise RuntimeError(f'RAGFlow instance {credential.instance_id} not found')
+                raise RuntimeError(f'app instance {credential.app_instance_id} not found')
+            config = credential.config or {}
             return RAGFlowCredentialForRevoke(
                 id=credential.id,
                 user_id=credential.user_id,
-                instance_id=credential.instance_id,
-                ragflow_user_id=credential.ragflow_user_id,
-                ragflow_tenant_id=credential.ragflow_tenant_id,
-                api_key=decrypt_ragflow_secret(credential.api_key_encrypted),
+                instance_id=credential.app_instance_id,
+                ragflow_user_id=config.get('ragflow_user_id', ''),
+                ragflow_tenant_id=config.get('ragflow_tenant_id', ''),
+                api_key=key_encryption.decrypt(credential.credential_ref) if credential.credential_ref else '',
                 status=credential.status,
                 instance=instance,
             )
@@ -175,17 +197,12 @@ class SqlAlchemyRAGFlowCredentialRepository:
     async def _find_credential(db, *, user_id: int, instance_id: int):
         return (
             await db.execute(
-                sa.select(HasnRagflowCredential).where(
-                    HasnRagflowCredential.user_id == user_id,
-                    HasnRagflowCredential.instance_id == instance_id,
+                sa.select(HasnAppCredential).where(
+                    HasnAppCredential.user_id == user_id,
+                    HasnAppCredential.app_instance_id == instance_id,
                 )
             )
         ).scalar_one_or_none()
-
-    @staticmethod
-    def _touch(credential) -> None:
-        if hasattr(credential, 'updated_at'):
-            credential.updated_at = timezone.now()
 
 
 class RAGFlowProvisioningService:
@@ -204,9 +221,9 @@ class RAGFlowProvisioningService:
             )
 
         user = await self.repository.get_user(user_id)
-        client = RAGFlowClient(instance.url)
+        client = RAGFlowClient(instance.endpoint)
         password = secrets.token_urlsafe(32)
-        encrypted_password = rsa_encrypt_password(password, instance.public_pem)
+        encrypted_password = rsa_encrypt_password(password, _instance_public_pem(instance))
         response = await client.request(
             'POST',
             '/api/v1/users',
@@ -225,8 +242,8 @@ class RAGFlowProvisioningService:
             '/api/v1/users/me/models',
             json={
                 'tenant_id': ragflow_user_id,
-                'embd_id': instance.default_embd_id,
-                'llm_id': instance.default_llm_id or '',
+                'embd_id': _instance_embd_id(instance),
+                'llm_id': _instance_llm_id(instance) or '',
                 'asr_id': '',
                 'img2txt_id': '',
             },
@@ -252,7 +269,7 @@ class RAGFlowProvisioningService:
         if credential.status == 'revoked' or not credential.api_key:
             await self.repository.mark_revoked(credential_id)
             return
-        client = RAGFlowClient(credential.instance.url)
+        client = RAGFlowClient(credential.instance.endpoint)
         try:
             await client.delete(
                 f'/api/v1/system/tokens/{credential.api_key}',

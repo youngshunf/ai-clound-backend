@@ -43,31 +43,33 @@ class MembershipStub(_Base):
     status: Mapped[str] = mapped_column(sa.String(16), default='pending')
 
 
+# 实施 03 收编后：知识库实例/凭据底层是统一应用平台底座 hasn_app_instance/hasn_app_credential。
+# 桩模型镜像新表（app_id='knowledge'，RAGFlow 私有字段在 config，密文在 credential_ref 字符串）。
 class RagflowInstanceStub(_Base):
-    __tablename__ = 'hasn_ragflow_instance'
+    __tablename__ = 'hasn_app_instance'
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    app_id: Mapped[str] = mapped_column(sa.String(64), default='knowledge')
     scope: Mapped[str] = mapped_column(sa.String(16), default='public')
     enterprise_id: Mapped[int | None] = mapped_column(sa.Integer, default=None)
-    url: Mapped[str] = mapped_column(sa.String(512), default='')
-    admin_api_key_encrypted: Mapped[bytes] = mapped_column(sa.LargeBinary, default=b'')
-    public_pem: Mapped[str] = mapped_column(sa.Text, default='')
-    default_embd_id: Mapped[str | None] = mapped_column(sa.String(128), default=None)
-    default_llm_id: Mapped[str | None] = mapped_column(sa.String(128), default=None)
+    endpoint: Mapped[str | None] = mapped_column(sa.String(512), default=None)
+    transport_default: Mapped[str] = mapped_column(sa.String(24), default='daemon_direct')
+    credential_ref: Mapped[str] = mapped_column(sa.String(512), default='')
     status: Mapped[str] = mapped_column(sa.String(16), default='pending_config')
+    config: Mapped[dict] = mapped_column(sa.JSON, default=dict)
 
 
 class RagflowCredentialStub(_Base):
-    __tablename__ = 'hasn_ragflow_credential'
+    __tablename__ = 'hasn_app_credential'
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    app_id: Mapped[str] = mapped_column(sa.String(64), default='knowledge')
     user_id: Mapped[int] = mapped_column(sa.Integer, default=0)
-    instance_id: Mapped[int] = mapped_column(sa.Integer, default=0)
-    ragflow_user_id: Mapped[str] = mapped_column(sa.String(64), default='')
-    ragflow_tenant_id: Mapped[str] = mapped_column(sa.String(64), default='')
-    api_key_encrypted: Mapped[bytes] = mapped_column(sa.LargeBinary, default=b'')
+    app_instance_id: Mapped[int] = mapped_column(sa.Integer, default=0)
+    credential_ref: Mapped[str] = mapped_column(sa.String(512), default='')
     status: Mapped[str] = mapped_column(sa.String(16), default='pending')
     last_error: Mapped[str | None] = mapped_column(sa.Text, default=None)
+    config: Mapped[dict] = mapped_column(sa.JSON, default=dict)
 
 
 class CapturingProvisioningService:
@@ -197,8 +199,8 @@ async def ragflow_sessionmaker(
     replacements = {
         'User': UserStub,
         'HasnEnterpriseMembership': MembershipStub,
-        'HasnRagflowInstance': RagflowInstanceStub,
-        'HasnRagflowCredential': RagflowCredentialStub,
+        'HasnAppInstance': RagflowInstanceStub,
+        'HasnAppCredential': RagflowCredentialStub,
     }
     for name, replacement in replacements.items():
         if hasattr(provisioning_mod, name):
@@ -229,18 +231,17 @@ async def test_sqlalchemy_actions_delegate_member_lifecycle_to_provisioning_serv
         instance = RagflowInstanceStub(
             scope='enterprise',
             enterprise_id=42,
-            url='https://knowledge.example',
-            public_pem='pem',
+            endpoint='https://knowledge.example',
+            config={'public_pem': 'pem'},
             status='active',
         )
         db.add(instance)
         await db.flush()
         credential = RagflowCredentialStub(
             user_id=99,
-            instance_id=instance.id,
-            ragflow_user_id='u-99',
-            ragflow_tenant_id='t-99',
-            api_key_encrypted=b'encrypted',
+            app_instance_id=instance.id,
+            credential_ref='encrypted',
+            config={'ragflow_user_id': 'u-99', 'ragflow_tenant_id': 't-99'},
             status='active',
         )
         db.add(credential)
@@ -270,8 +271,8 @@ async def test_revoke_member_pushes_credentials_changed_after_revoking(
         instance = RagflowInstanceStub(
             scope='enterprise',
             enterprise_id=55,
-            url='https://knowledge.example',
-            public_pem='pem',
+            endpoint='https://knowledge.example',
+            config={'public_pem': 'pem'},
             status='active',
         )
         db.add(instance)
@@ -279,10 +280,9 @@ async def test_revoke_member_pushes_credentials_changed_after_revoking(
         db.add(
             RagflowCredentialStub(
                 user_id=77,
-                instance_id=instance.id,
-                ragflow_user_id='u-77',
-                ragflow_tenant_id='t-77',
-                api_key_encrypted=b'encrypted',
+                app_instance_id=instance.id,
+                credential_ref='encrypted',
+                config={'ragflow_user_id': 'u-77', 'ragflow_tenant_id': 't-77'},
                 status='active',
             )
         )
@@ -315,8 +315,8 @@ async def test_compensation_scan_provisions_approved_members_for_active_instance
         instance = RagflowInstanceStub(
             scope='enterprise',
             enterprise_id=7,
-            url='https://knowledge.example',
-            public_pem='pem',
+            endpoint='https://knowledge.example',
+            config={'public_pem': 'pem'},
             status='active',
         )
         db.add_all([
@@ -349,8 +349,8 @@ async def test_sqlalchemy_credential_repository_encrypts_and_decrypts_api_key(
         instance = RagflowInstanceStub(
             scope='public',
             enterprise_id=None,
-            url='https://knowledge.example',
-            public_pem='pem',
+            endpoint='https://knowledge.example',
+            config={'public_pem': 'pem'},
             status='active',
         )
         db.add(instance)
@@ -372,12 +372,12 @@ async def test_sqlalchemy_credential_repository_encrypts_and_decrypts_api_key(
             await db.execute(
                 sa.select(RagflowCredentialStub).where(
                     RagflowCredentialStub.user_id == user_id,
-                    RagflowCredentialStub.instance_id == instance_id,
+                    RagflowCredentialStub.app_instance_id == instance_id,
                 )
             )
         ).scalar_one()
         assert row.status == 'active'
-        assert b'ragflow-secret-token' not in row.api_key_encrypted
+        assert 'ragflow-secret-token' not in row.credential_ref
 
     credential = await repository.get_credential(row.id)
 
@@ -389,7 +389,7 @@ async def test_sqlalchemy_credential_repository_encrypts_and_decrypts_api_key(
 async def test_provision_one_marks_pending_when_instance_is_not_active() -> None:
     from backend.app.hasn.service.ragflow_provisioning_service import RAGFlowProvisioningService
 
-    instance = SimpleNamespace(id=501, status='pending_config', url='https://knowledge.example')
+    instance = SimpleNamespace(id=501, status='pending_config', endpoint='https://knowledge.example', config={})
     repository = InMemoryCredentialRepository(instance=instance)
 
     result = await RAGFlowProvisioningService(repository).provision_one(user_id=201, instance_id=501)
@@ -423,10 +423,12 @@ async def test_provision_one_registers_user_sets_models_and_creates_default_data
     instance = SimpleNamespace(
         id=502,
         status='active',
-        url='https://knowledge.example',
-        public_pem='public-pem',
-        default_embd_id='bge-m3@HuanxingNewApi',
-        default_llm_id='gpt-test',
+        endpoint='https://knowledge.example',
+        config={
+            'public_pem': 'public-pem',
+            'default_embd_id': 'bge-m3@HuanxingNewApi',
+            'default_llm_id': 'gpt-test',
+        },
     )
     user = SimpleNamespace(id=201, nickname='')
     repository = InMemoryCredentialRepository(instance=instance, user=user)
@@ -503,7 +505,7 @@ async def test_revoke_one_marks_revoked_without_remote_call_when_already_revoked
         id=11,
         status='revoked',
         api_key='',
-        instance=SimpleNamespace(url='https://knowledge.example'),
+        instance=SimpleNamespace(endpoint='https://knowledge.example'),
     )
     repository = InMemoryCredentialRepository(instance=credential.instance, credential=credential)
 
@@ -524,7 +526,7 @@ async def test_revoke_one_treats_remote_401_as_already_revoked(monkeypatch: pyte
         id=12,
         status='active',
         api_key='old-token',
-        instance=SimpleNamespace(url='https://knowledge.example'),
+        instance=SimpleNamespace(endpoint='https://knowledge.example'),
     )
     repository = InMemoryCredentialRepository(instance=credential.instance, credential=credential)
 
@@ -548,7 +550,7 @@ async def test_revoke_one_propagates_unexpected_remote_failure(monkeypatch: pyte
         id=13,
         status='active',
         api_key='still-live-token',
-        instance=SimpleNamespace(url='https://knowledge.example'),
+        instance=SimpleNamespace(endpoint='https://knowledge.example'),
     )
     repository = InMemoryCredentialRepository(instance=credential.instance, credential=credential)
 
@@ -592,25 +594,26 @@ def test_credential_payload_ships_plaintext_key_for_active_only() -> None:
     """daemon-direct（设计 §2.3/§9.1）：active 凭据下发明文 api_key 供 daemon 建直连适配器；
     非 active 一律不下发；脱敏占位 api_key_encrypted 仍只回 'stored'（不泄密文）。"""
     from backend.app.hasn.service.workbench_domain_service import _credential_payload
-    from backend.app.hasn.util.secret_crypto import encrypt_ragflow_secret
+    from backend.app.llm.core.encryption import key_encryption
 
-    ciphertext = encrypt_ragflow_secret('ragflow-tenant-key')
+    ciphertext = key_encryption.encrypt('ragflow-tenant-key')
 
     def credential(status: str) -> SimpleNamespace:
         return SimpleNamespace(
             id=1,
             user_id=7,
-            instance_id=3,
-            ragflow_user_id='rf-user',
-            ragflow_tenant_id='rf-tenant',
-            api_key_encrypted=ciphertext,
+            app_instance_id=3,
+            credential_ref=ciphertext,
             status=status,
             last_error=None,
+            config={'ragflow_user_id': 'rf-user', 'ragflow_tenant_id': 'rf-tenant'},
         )
 
     active = _credential_payload(credential('active'))
     assert active['api_key'] == 'ragflow-tenant-key'
     assert active['api_key_encrypted'] == 'stored'  # 占位不泄密文
+    assert active['instance_id'] == 3  # 输出字段名保持 instance_id（daemon 契约），底层 app_instance_id
+    assert active['ragflow_user_id'] == 'rf-user'
 
     for inactive_status in ('pending', 'failed', 'revoked'):
         payload = _credential_payload(credential(inactive_status))

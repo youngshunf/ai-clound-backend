@@ -169,19 +169,23 @@ class SqlAlchemyPlatformUserGateway:
     async def _trigger_ragflow_provisioning(self, user_id: int) -> None:
         """异步触发 RAGFlow provisioning（fire-and-forget）"""
         import asyncio
-        from backend.app.hasn.service.ragflow_provisioning_service import RAGFlowProvisioningService
-        from backend.app.hasn.model import HasnRagflowInstance
+        from backend.app.hasn.service.ragflow_provisioning_service import (
+            KNOWLEDGE_APP_ID,
+            RAGFlowProvisioningService,
+        )
+        from backend.app.hasn.model import HasnAppInstance
         from backend.database.db import async_db_session
 
         async def _provision():
             try:
                 async with async_db_session() as provision_db:
-                    # 查询公共 RAGFlow 实例
+                    # 查询公共知识库实例（收编后底层 hasn_app_instance(app_id='knowledge')）
                     result = await provision_db.execute(
-                        sa.select(HasnRagflowInstance)
+                        sa.select(HasnAppInstance)
                         .where(
-                            HasnRagflowInstance.scope == 'public',
-                            HasnRagflowInstance.status == 'active'
+                            HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
+                            HasnAppInstance.scope == 'public',
+                            HasnAppInstance.status == 'active'
                         )
                         .limit(1)
                     )

@@ -10,11 +10,11 @@ import sqlalchemy as sa
 from pypinyin import Style, lazy_pinyin
 
 from backend.app.hasn.model import (
+    HasnAppCredential,
+    HasnAppInstance,
     HasnEnterprise,
     HasnEnterpriseInviteCode,
     HasnEnterpriseMembership,
-    HasnRagflowCredential,
-    HasnRagflowInstance,
     HasnUserActiveWorkspace,
     HasnWorkspaceApp,
 )
@@ -30,10 +30,10 @@ from backend.app.hasn.service.instance_resolver import (
     instance_resolver,
 )
 # RF-CLOUD：数据面中转已删，RAGFlowClient 不再被本服务引用，故合并时去掉该 import。
-from backend.app.hasn.service.ragflow_provisioning_service import ragflow_provisioning_service
+from backend.app.hasn.service.ragflow_provisioning_service import KNOWLEDGE_APP_ID, ragflow_provisioning_service
 from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 from backend.app.hasn.service.workbench_event_bus import workbench_event_bus
-from backend.app.hasn.util.secret_crypto import decrypt_ragflow_secret, encrypt_ragflow_secret
+from backend.app.llm.core.encryption import key_encryption
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -725,9 +725,9 @@ class WorkbenchDomainService:
 
         credential = await _scalar(
             db,
-            sa.select(HasnRagflowCredential).where(
-                HasnRagflowCredential.user_id == user_id,
-                HasnRagflowCredential.instance_id == instance.id,
+            sa.select(HasnAppCredential).where(
+                HasnAppCredential.user_id == user_id,
+                HasnAppCredential.app_instance_id == instance.id,
             ),
         )
         if credential is None:
@@ -752,18 +752,18 @@ class WorkbenchDomainService:
 
         credential = await _scalar(
             db,
-            sa.select(HasnRagflowCredential).where(
-                HasnRagflowCredential.user_id == user_id,
-                HasnRagflowCredential.instance_id == instance.id,
+            sa.select(HasnAppCredential).where(
+                HasnAppCredential.user_id == user_id,
+                HasnAppCredential.app_instance_id == instance.id,
             ),
         )
         if instance.status == 'active' and (credential is None or credential.status != 'active'):
             await ragflow_provisioning_service.provision_one(user_id, instance.id)
             credential = await _scalar(
                 db,
-                sa.select(HasnRagflowCredential).where(
-                    HasnRagflowCredential.user_id == user_id,
-                    HasnRagflowCredential.instance_id == instance.id,
+                sa.select(HasnAppCredential).where(
+                    HasnAppCredential.user_id == user_id,
+                    HasnAppCredential.app_instance_id == instance.id,
                 ),
             )
 
@@ -791,9 +791,10 @@ class WorkbenchDomainService:
         await self._require_enterprise_knowledge_admin(db, enterprise_id=enterprise_id, user_id=user_id)
         instance = await _scalar(
             db,
-            sa.select(HasnRagflowInstance).where(
-                HasnRagflowInstance.scope == 'enterprise',
-                HasnRagflowInstance.enterprise_id == enterprise_id,
+            sa.select(HasnAppInstance).where(
+                HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
+                HasnAppInstance.scope == 'enterprise',
+                HasnAppInstance.enterprise_id == enterprise_id,
             ),
         )
         if instance is None:
@@ -815,32 +816,34 @@ class WorkbenchDomainService:
         await self._require_enterprise_knowledge_admin(db, enterprise_id=enterprise_id, user_id=user_id)
         instance = await _scalar(
             db,
-            sa.select(HasnRagflowInstance).where(
-                HasnRagflowInstance.scope == 'enterprise',
-                HasnRagflowInstance.enterprise_id == enterprise_id,
+            sa.select(HasnAppInstance).where(
+                HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
+                HasnAppInstance.scope == 'enterprise',
+                HasnAppInstance.enterprise_id == enterprise_id,
             ),
         )
+        config = _knowledge_instance_config(
+            public_pem=public_pem, default_embd_id=default_embd_id, default_llm_id=default_llm_id
+        )
         if instance is None:
-            instance = HasnRagflowInstance(
+            instance = HasnAppInstance(
+                app_id=KNOWLEDGE_APP_ID,
                 scope='enterprise',
                 enterprise_id=enterprise_id,
-                url=url,
-                admin_api_key_encrypted=encrypt_ragflow_secret(admin_api_key),
-                public_pem=public_pem,
-                default_embd_id=default_embd_id,
-                default_llm_id=default_llm_id,
+                endpoint=url or None,
+                transport_default='daemon_direct',
+                credential_ref=key_encryption.encrypt(admin_api_key) if admin_api_key else '',
                 status='active',
+                config=config,
             )
             db.add(instance)
         else:
-            instance.url = url
-            instance.admin_api_key_encrypted = encrypt_ragflow_secret(admin_api_key)
-            instance.public_pem = public_pem
-            instance.default_embd_id = default_embd_id
-            instance.default_llm_id = default_llm_id
+            instance.endpoint = url or None
+            if admin_api_key:
+                instance.credential_ref = key_encryption.encrypt(admin_api_key)
+            instance.transport_default = 'daemon_direct'
             instance.status = 'active'
-            if hasattr(instance, 'updated_at'):
-                instance.updated_at = timezone.now()
+            instance.config = config
         await db.flush()
         await db.refresh(instance)
         return _ragflow_instance_payload(instance)
@@ -857,16 +860,15 @@ class WorkbenchDomainService:
         await self._require_enterprise_knowledge_admin(db, enterprise_id=enterprise_id, user_id=user_id)
         instance = await _scalar(
             db,
-            sa.select(HasnRagflowInstance).where(
-                HasnRagflowInstance.scope == 'enterprise',
-                HasnRagflowInstance.enterprise_id == enterprise_id,
+            sa.select(HasnAppInstance).where(
+                HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
+                HasnAppInstance.scope == 'enterprise',
+                HasnAppInstance.enterprise_id == enterprise_id,
             ),
         )
         if instance is None:
             raise errors.NotFoundError(msg='知识库服务配置不存在')
         instance.status = 'disabled'
-        if hasattr(instance, 'updated_at'):
-            instance.updated_at = timezone.now()
         await db.flush()
         return _ragflow_instance_payload(instance)
 
@@ -1029,23 +1031,25 @@ class WorkbenchDomainService:
         if workspace['kind'] == 'personal':
             return await _scalar(
                 db,
-                sa.select(HasnRagflowInstance)
+                sa.select(HasnAppInstance)
                 .where(
-                    HasnRagflowInstance.scope == 'public',
-                    HasnRagflowInstance.status == 'active',
+                    HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
+                    HasnAppInstance.scope == 'public',
+                    HasnAppInstance.status == 'active',
                 )
-                .order_by(HasnRagflowInstance.created_time.desc())
+                .order_by(HasnAppInstance.created_time.desc())
                 .limit(1),
             )
         return await _scalar(
             db,
-            sa.select(HasnRagflowInstance)
+            sa.select(HasnAppInstance)
             .where(
-                HasnRagflowInstance.scope == 'enterprise',
-                HasnRagflowInstance.enterprise_id == workspace['enterprise_id'],
-                HasnRagflowInstance.status == 'active',
+                HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
+                HasnAppInstance.scope == 'enterprise',
+                HasnAppInstance.enterprise_id == workspace['enterprise_id'],
+                HasnAppInstance.status == 'active',
             )
-            .order_by(HasnRagflowInstance.created_time.desc())
+            .order_by(HasnAppInstance.created_time.desc())
             .limit(1),
         )
 
@@ -1195,16 +1199,33 @@ def _workspace_event_payload(row) -> dict[str, Any]:
     }
 
 
+def _knowledge_instance_config(
+    *, public_pem: str | None, default_embd_id: str | None, default_llm_id: str | None
+) -> dict[str, Any]:
+    """RAGFlow 实例私有字段 → hasn_app_instance.config（实施 03 §2.2，空值不落 config）。"""
+    config: dict[str, Any] = {}
+    if public_pem:
+        config['public_pem'] = public_pem
+    if default_embd_id:
+        config['default_embd_id'] = default_embd_id
+    if default_llm_id:
+        config['default_llm_id'] = default_llm_id
+    return config
+
+
 def _ragflow_instance_payload(instance) -> dict[str, Any]:
+    # 收编后底层是 hasn_app_instance(app_id='knowledge')，RAGFlow 私有字段在 config；
+    # 输出字段名保持不变以守住 daemon /knowledge/credentials* 与 webui 企业实例配置契约（实施 03 §5）。
+    config = instance.config or {}
     return {
         'id': getattr(instance, 'id', None),
         'scope': instance.scope,
         'enterprise_id': instance.enterprise_id,
-        'url': instance.url,
-        'admin_api_key_encrypted': 'stored' if instance.admin_api_key_encrypted else None,
-        'public_pem': instance.public_pem,
-        'default_embd_id': instance.default_embd_id,
-        'default_llm_id': instance.default_llm_id,
+        'url': instance.endpoint or '',
+        'admin_api_key_encrypted': 'stored' if instance.credential_ref else None,
+        'public_pem': config.get('public_pem', ''),
+        'default_embd_id': config.get('default_embd_id'),
+        'default_llm_id': config.get('default_llm_id'),
         'status': instance.status,
     }
 
@@ -1215,18 +1236,19 @@ def _credential_payload(credential) -> dict[str, Any]:
     # the daemon then keeps it in its own per-owner encrypted store and redacts
     # before anything reaches the WebUI/WS (design §2.3). Only an *active*
     # credential ships a usable key.
+    config = credential.config or {}
     api_key = (
-        decrypt_ragflow_secret(credential.api_key_encrypted)
-        if credential.status == 'active' and credential.api_key_encrypted
+        key_encryption.decrypt(credential.credential_ref)
+        if credential.status == 'active' and credential.credential_ref
         else None
     )
     return {
         'id': credential.id,
         'user_id': credential.user_id,
-        'instance_id': credential.instance_id,
-        'ragflow_user_id': credential.ragflow_user_id,
-        'ragflow_tenant_id': credential.ragflow_tenant_id,
-        'api_key_encrypted': 'stored' if credential.api_key_encrypted else None,
+        'instance_id': credential.app_instance_id,
+        'ragflow_user_id': config.get('ragflow_user_id', ''),
+        'ragflow_tenant_id': config.get('ragflow_tenant_id', ''),
+        'api_key_encrypted': 'stored' if credential.credential_ref else None,
         'api_key': api_key,
         'status': credential.status,
         'last_error': credential.last_error,

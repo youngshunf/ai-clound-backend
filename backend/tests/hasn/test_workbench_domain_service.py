@@ -96,35 +96,49 @@ class WorkspaceAppStub(_Base):
     enabled_by: Mapped[int | None] = mapped_column(sa.Integer, default=None)
 
 
+# 实施 03 收编后：知识库实例/凭据底层是统一应用平台底座 hasn_app_instance/hasn_app_credential
+# （app_id='knowledge'，RAGFlow 私有字段在 config，密文在 credential_ref 字符串）。
 class RagflowInstanceStub(_Base):
-    __tablename__ = 'hasn_ragflow_instance'
+    __tablename__ = 'hasn_app_instance'
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    app_id: Mapped[str] = mapped_column(sa.String(64), default='knowledge')
     scope: Mapped[str] = mapped_column(sa.String(16), default='public')
     enterprise_id: Mapped[int | None] = mapped_column(sa.Integer, default=None)
-    url: Mapped[str] = mapped_column(sa.String(512), default='')
-    admin_api_key_encrypted: Mapped[bytes] = mapped_column(sa.LargeBinary, default=b'')
-    public_pem: Mapped[str] = mapped_column(sa.Text, default='')
-    default_embd_id: Mapped[str | None] = mapped_column(sa.String(128), default=None)
-    default_llm_id: Mapped[str | None] = mapped_column(sa.String(128), default=None)
+    endpoint: Mapped[str | None] = mapped_column(sa.String(512), default=None)
+    transport_default: Mapped[str] = mapped_column(sa.String(24), default='daemon_direct')
+    credential_ref: Mapped[str] = mapped_column(sa.String(512), default='')
     status: Mapped[str] = mapped_column(sa.String(16), default='pending_config')
-    # 生产模型按 created_time 排序选当前实例（时间戳字段迁移后）；测试桩需镜像该列，
+    config: Mapped[dict] = mapped_column(sa.JSON, default=dict)
+    # 生产模型按 created_time 排序选当前实例；测试桩需镜像该列，
     # 否则 _knowledge_instance_for_workspace 的 order_by(created_time) 取属性即 AttributeError。
     created_time: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
     updated_time: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True, default=None)
 
 
 class RagflowCredentialStub(_Base):
-    __tablename__ = 'hasn_ragflow_credential'
+    __tablename__ = 'hasn_app_credential'
 
     id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    app_id: Mapped[str] = mapped_column(sa.String(64), default='knowledge')
     user_id: Mapped[int] = mapped_column(sa.Integer, default=0)
-    instance_id: Mapped[int] = mapped_column(sa.Integer, default=0)
-    ragflow_user_id: Mapped[str] = mapped_column(sa.String(64), default='')
-    ragflow_tenant_id: Mapped[str] = mapped_column(sa.String(64), default='')
-    api_key_encrypted: Mapped[bytes] = mapped_column(sa.LargeBinary, default=b'')
+    app_instance_id: Mapped[int] = mapped_column(sa.Integer, default=0)
+    credential_ref: Mapped[str] = mapped_column(sa.String(512), default='')
     status: Mapped[str] = mapped_column(sa.String(16), default='pending')
     last_error: Mapped[str | None] = mapped_column(sa.Text, default=None)
+    config: Mapped[dict] = mapped_column(sa.JSON, default=dict)
+
+
+class _IdentityKeyEncryption:
+    """测试用：identity 加解密，避免桩里塞真实 Fernet token（收编后服务用 key_encryption）。"""
+
+    @staticmethod
+    def encrypt(plaintext: str) -> str:
+        return plaintext
+
+    @staticmethod
+    def decrypt(ciphertext: str) -> str:
+        return ciphertext
 
 
 class CapturingBus:
@@ -161,18 +175,14 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         'HasnEnterpriseInviteCode': InviteCodeStub,
         'HasnUserActiveWorkspace': ActiveWorkspaceStub,
         'HasnWorkspaceApp': WorkspaceAppStub,
-        'HasnRagflowInstance': RagflowInstanceStub,
-        'HasnRagflowCredential': RagflowCredentialStub,
+        'HasnAppInstance': RagflowInstanceStub,
+        'HasnAppCredential': RagflowCredentialStub,
         'User': UserStub,
     }
     for name, replacement in replacements.items():
         monkeypatch.setattr(service_mod, name, replacement, raising=True)
 
-    monkeypatch.setattr(
-        service_mod,
-        'decrypt_ragflow_secret',
-        lambda value: value.decode('utf-8') if isinstance(value, bytes) else value,
-    )
+    monkeypatch.setattr(service_mod, 'key_encryption', _IdentityKeyEncryption(), raising=True)
 
     engine = create_async_engine('sqlite+aiosqlite:///:memory:', future=True)
     async with engine.begin() as conn:
@@ -600,38 +610,40 @@ async def test_current_knowledge_credentials_follow_active_workspace(db_session:
     enterprise = await service.create_enterprise(db_session, user_id=31, name='Acme')
 
     public_instance = RagflowInstanceStub(
+        app_id='knowledge',
         scope='public',
         enterprise_id=None,
-        url='https://knowledge.example',
-        admin_api_key_encrypted=b'admin-public',
-        public_pem='pem',
+        endpoint='https://knowledge.example',
+        credential_ref='admin-public',
+        config={'public_pem': 'pem'},
         status='active',
     )
     enterprise_instance = RagflowInstanceStub(
+        app_id='knowledge',
         scope='enterprise',
         enterprise_id=enterprise['id'],
-        url='https://enterprise.example',
-        admin_api_key_encrypted=b'admin-enterprise',
-        public_pem='pem',
+        endpoint='https://enterprise.example',
+        credential_ref='admin-enterprise',
+        config={'public_pem': 'pem'},
         status='active',
     )
     db_session.add_all([public_instance, enterprise_instance])
     await db_session.flush()
     db_session.add_all([
         RagflowCredentialStub(
+            app_id='knowledge',
             user_id=32,
-            instance_id=public_instance.id,
-            ragflow_user_id='u-public',
-            ragflow_tenant_id='t-public',
-            api_key_encrypted=b'key-public',
+            app_instance_id=public_instance.id,
+            credential_ref='key-public',
+            config={'ragflow_user_id': 'u-public', 'ragflow_tenant_id': 't-public'},
             status='active',
         ),
         RagflowCredentialStub(
+            app_id='knowledge',
             user_id=32,
-            instance_id=enterprise_instance.id,
-            ragflow_user_id='u-enterprise',
-            ragflow_tenant_id='t-enterprise',
-            api_key_encrypted=b'key-enterprise',
+            app_instance_id=enterprise_instance.id,
+            credential_ref='key-enterprise',
+            config={'ragflow_user_id': 'u-enterprise', 'ragflow_tenant_id': 't-enterprise'},
             status='active',
         ),
     ])
@@ -662,11 +674,12 @@ async def test_refresh_current_knowledge_credentials_triggers_provision_for_acti
     provisioner = CapturingProvisioningService()
     monkeypatch.setattr(service_mod, 'ragflow_provisioning_service', provisioner, raising=False)
     public_instance = RagflowInstanceStub(
+        app_id='knowledge',
         scope='public',
         enterprise_id=None,
-        url='https://knowledge.example',
-        admin_api_key_encrypted=b'admin-public',
-        public_pem='pem',
+        endpoint='https://knowledge.example',
+        credential_ref='admin-public',
+        config={'public_pem': 'pem'},
         status='active',
     )
     db_session.add(public_instance)

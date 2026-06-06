@@ -5,9 +5,10 @@ from typing import Protocol
 
 import sqlalchemy as sa
 
-from backend.app.hasn.model import HasnEnterpriseMembership, HasnHumans, HasnRagflowCredential, HasnRagflowInstance
+from backend.app.hasn.model import HasnAppCredential, HasnAppInstance, HasnEnterpriseMembership, HasnHumans
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
 from backend.app.hasn.service.ragflow_provisioning_service import (
+    KNOWLEDGE_APP_ID,
     RAGFlowProvisioningService,
     SqlAlchemyRAGFlowCredentialRepository,
 )
@@ -48,6 +49,20 @@ class RecordingRAGFlowActions:
         ))
 
 
+def _new_enterprise_placeholder(enterprise_id: int) -> HasnAppInstance:
+    """企业知识库实例占位（实施 03 收编：底层 hasn_app_instance(app_id='knowledge')）。"""
+    return HasnAppInstance(
+        app_id=KNOWLEDGE_APP_ID,
+        scope='enterprise',
+        enterprise_id=enterprise_id,
+        endpoint=None,
+        transport_default='daemon_direct',
+        credential_ref='',
+        status='pending_config',
+        config={},
+    )
+
+
 class SqlAlchemyRAGFlowActions:
     def __init__(self, provisioning_service: RAGFlowProvisioningService | None = None) -> None:
         self.provisioning_service = provisioning_service or RAGFlowProvisioningService(
@@ -56,39 +71,16 @@ class SqlAlchemyRAGFlowActions:
 
     async def create_placeholder(self, *, enterprise_id: int) -> None:
         async with async_db_session.begin() as db:
-            existing = (
-                await db.execute(
-                    sa.select(HasnRagflowInstance).where(
-                        HasnRagflowInstance.scope == 'enterprise',
-                        HasnRagflowInstance.enterprise_id == enterprise_id,
-                    )
-                )
-            ).scalar_one_or_none()
+            existing = await _enterprise_instance(db, enterprise_id)
             if existing:
                 return
-            db.add(
-                HasnRagflowInstance(
-                    scope='enterprise',
-                    enterprise_id=enterprise_id,
-                    url='',
-                    admin_api_key_encrypted=b'',
-                    public_pem='',
-                    status='pending_config',
-                )
-            )
+            db.add(_new_enterprise_placeholder(enterprise_id))
 
     async def provision_member(self, *, enterprise_id: int, user_id: int) -> None:
         async with async_db_session.begin() as db:
             instance = await _enterprise_instance(db, enterprise_id)
             if instance is None:
-                instance = HasnRagflowInstance(
-                    scope='enterprise',
-                    enterprise_id=enterprise_id,
-                    url='',
-                    admin_api_key_encrypted=b'',
-                    public_pem='',
-                    status='pending_config',
-                )
+                instance = _new_enterprise_placeholder(enterprise_id)
                 db.add(instance)
                 await db.flush()
             instance_id = instance.id
@@ -110,10 +102,10 @@ class SqlAlchemyRAGFlowActions:
             credentials = (
                 (
                     await db.execute(
-                        sa.select(HasnRagflowCredential).where(
-                            HasnRagflowCredential.user_id == user_id,
-                            HasnRagflowCredential.instance_id == instance.id,
-                            HasnRagflowCredential.status != 'revoked',
+                        sa.select(HasnAppCredential).where(
+                            HasnAppCredential.user_id == user_id,
+                            HasnAppCredential.app_instance_id == instance.id,
+                            HasnAppCredential.status != 'revoked',
                         )
                     )
                 )
@@ -167,9 +159,9 @@ class SqlAlchemyRAGFlowActions:
             credentials = (
                 (
                     await db.execute(
-                        sa.select(HasnRagflowCredential).where(
-                            HasnRagflowCredential.instance_id == instance.id,
-                            HasnRagflowCredential.status != 'revoked',
+                        sa.select(HasnAppCredential).where(
+                            HasnAppCredential.app_instance_id == instance.id,
+                            HasnAppCredential.status != 'revoked',
                         )
                     )
                 )
@@ -189,24 +181,25 @@ class SqlAlchemyRAGFlowActions:
             rows = (
                 await db.execute(
                     sa
-                    .select(HasnEnterpriseMembership, HasnRagflowInstance)
+                    .select(HasnEnterpriseMembership, HasnAppInstance)
                     .join(
-                        HasnRagflowInstance,
-                        (HasnRagflowInstance.enterprise_id == HasnEnterpriseMembership.enterprise_id)
-                        & (HasnRagflowInstance.scope == 'enterprise'),
+                        HasnAppInstance,
+                        (HasnAppInstance.enterprise_id == HasnEnterpriseMembership.enterprise_id)
+                        & (HasnAppInstance.app_id == KNOWLEDGE_APP_ID)
+                        & (HasnAppInstance.scope == 'enterprise'),
                     )
                     .where(
                         HasnEnterpriseMembership.status == 'approved',
-                        HasnRagflowInstance.status.in_(('pending_config', 'active')),
+                        HasnAppInstance.status.in_(('pending_config', 'active')),
                     )
                 )
             ).all()
             for membership, instance in rows:
                 credential = (
                     await db.execute(
-                        sa.select(HasnRagflowCredential).where(
-                            HasnRagflowCredential.user_id == membership.user_id,
-                            HasnRagflowCredential.instance_id == instance.id,
+                        sa.select(HasnAppCredential).where(
+                            HasnAppCredential.user_id == membership.user_id,
+                            HasnAppCredential.app_instance_id == instance.id,
                         )
                     )
                 ).scalar_one_or_none()
@@ -263,9 +256,10 @@ ragflow_subscriber.register()
 async def _enterprise_instance(db, enterprise_id: int):
     return (
         await db.execute(
-            sa.select(HasnRagflowInstance).where(
-                HasnRagflowInstance.scope == 'enterprise',
-                HasnRagflowInstance.enterprise_id == enterprise_id,
+            sa.select(HasnAppInstance).where(
+                HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
+                HasnAppInstance.scope == 'enterprise',
+                HasnAppInstance.enterprise_id == enterprise_id,
             )
         )
     ).scalar_one_or_none()
