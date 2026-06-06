@@ -56,14 +56,12 @@ def member_skill_ids(hermes_yaml: str) -> list[str]:
     return out
 
 
-def validate_and_normalize_bundle(payload: SkillPackCreateRequest) -> tuple[str, str]:
-    """校验 + 规范化 hermes_yaml（B2.2，堵透传盲区）。
+def _validate_bundle_structure(payload: SkillPackCreateRequest) -> dict[str, Any]:
+    """结构校验（B2.2，堵透传盲区）：hermes_yaml 可 safe_load 成 dict；skills 为非空
+    list[str]；slug 自洽（归一化 name == bundle_slug，command_key == '/' + bundle_slug）。
 
-    校验：hermes_yaml 可 safe_load 成 dict；skills 为非空 list；slug 自洽
-    （归一化 name == bundle_slug，command_key == '/' + bundle_slug）。
-    规范化：用 yaml.safe_dump 重新序列化为权威 hermes_yaml（不再透传调用方原文）。
-
-    返回 `(normalized_hermes_yaml, content_hash)`。任一不合法抛 `RequestError`。
+    返回 safe_load 后的 spec dict（成员仍是调用方原始字符串，待 resolve 归一）。
+    任一不合法抛 `RequestError`。
     """
     try:
         spec = yaml.safe_load(payload.hermes_yaml)
@@ -86,7 +84,70 @@ def validate_and_normalize_bundle(payload: SkillPackCreateRequest) -> tuple[str,
         raise errors.RequestError(msg=f'hermes_yaml.name 归一化({name_slug}) 与 bundle_slug({expected_slug}) 不一致')
     if payload.command_key != f'/{expected_slug}':
         raise errors.RequestError(msg=f'command_key 必须是 /{expected_slug}')
+    return spec
 
+
+async def _resolve_member_full_id(db: AsyncSession, member: str, *, strict: bool) -> str | None:
+    """把单个成员归一为完整 `namespace/slug` id（实施/92 D-NAMING）。
+
+    - 完整 id（含 '/'）：校验它是「已发布 + 公开」技能；strict 下不是则报错。
+    - 裸 slug：解析为**唯一**的已发布公开技能；命中多个则报错让用户用完整 id 消歧。
+    strict=False（hub 同步等容错路径）下无法解析时返回原值（保留裸 slug，由运行期边界
+    兜底；零 fake，不猜测、不静默丢弃）。
+    """
+    from backend.app.marketplace.crud.crud_marketplace_skill import marketplace_skill_dao
+
+    member = member.strip().strip('/')
+    if '/' in member:
+        namespace, slug = member.rsplit('/', 1)
+        skill = await marketplace_skill_dao.get_by_namespace_slug_public(db, namespace, slug)
+        if skill is not None:
+            return f'{namespace}/{slug}'
+        if strict:
+            raise errors.RequestError(msg=f'技能包成员「{member}」不是已发布的公开技能')
+        return member
+
+    candidates = await marketplace_skill_dao.list_published_public_by_slug(db, member)
+    if len(candidates) == 1:
+        return f'{candidates[0].namespace}/{candidates[0].slug}'
+    if not candidates:
+        if strict:
+            raise errors.RequestError(msg=f'技能包成员「{member}」在市场未找到已发布的公开技能')
+        return member
+    options = ', '.join(f'{c.namespace}/{c.slug}' for c in candidates[:5])
+    if strict:
+        raise errors.RequestError(
+            msg=f'技能包成员 slug「{member}」命中多个技能，请用完整 namespace/slug 消歧：{options}'
+        )
+    return member
+
+
+async def resolve_bundle_members(db: AsyncSession, members: list[str], *, strict: bool = True) -> list[str]:
+    """把成员清单整体归一为完整 id（保序去重，实施/92 D-NAMING）。strict 时任一成员
+    无法解析为已发布公开技能即抛 `RequestError`。"""
+    resolved: list[str] = []
+    for raw in members:
+        full_id = await _resolve_member_full_id(db, str(raw), strict=strict)
+        if full_id and full_id not in resolved:
+            resolved.append(full_id)
+    if not resolved:
+        raise errors.RequestError(msg='hermes_yaml.skills 解析后为空')
+    return resolved
+
+
+async def validate_and_normalize_bundle(
+    db: AsyncSession, payload: SkillPackCreateRequest, *, strict: bool = True
+) -> tuple[str, str]:
+    """校验 + 规范化 hermes_yaml（B2.2 + 实施/92 命名归一）。
+
+    结构校验后把 `skills:` 成员整体归一为完整 `namespace/slug` id（裸 slug 解析回完整 id，
+    strict 下校验已发布公开、重名报错消歧），再用 safe_dump 重新序列化为权威 hermes_yaml。
+
+    返回 `(normalized_hermes_yaml, content_hash)`。任一不合法抛 `RequestError`。
+    """
+    spec = _validate_bundle_structure(payload)
+    resolved = await resolve_bundle_members(db, list(spec['skills']), strict=strict)
+    spec = {**spec, 'skills': resolved}
     # 规范化产出：稳定键序、允许 unicode；落库与 content_hash 都基于它。
     normalized = yaml.safe_dump(spec, allow_unicode=True, sort_keys=False).strip() + '\n'
     return normalized, content_hash(normalized)
@@ -102,12 +163,15 @@ async def upsert_skill_pack(
     *,
     author_id: int | None,
     is_common: bool | None = None,
+    strict_members: bool = True,
 ) -> dict[str, Any]:
-    """落库 skill_pack（template + version upsert），落库前先 B2.2 校验+规范化。
+    """落库 skill_pack（template + version upsert），落库前先 B2.2 校验 + 实施/92 成员命名归一。
 
-    路由 / MCP 工具 / hub 同步共用此入口（DRY）。返回落库后的关键字段快照。
+    路由 / MCP 工具 / hub 同步共用此入口（DRY）。成员一律归一为完整 `namespace/slug` id。
+    strict_members=True 时未发布/重名成员直接报错（hub 同步按包隔离，单包失败不阻断其余）。
+    返回落库后的关键字段快照（skill_ids 为归一后的完整 id）。
     """
-    normalized_yaml, hash_value = validate_and_normalize_bundle(payload)
+    normalized_yaml, hash_value = await validate_and_normalize_bundle(db, payload, strict=strict_members)
     template_id = payload.template_id or template_id_for(payload.namespace, payload.bundle_slug)
 
     template_params: dict[str, Any] = {

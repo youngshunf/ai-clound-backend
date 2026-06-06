@@ -19,14 +19,16 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import pytest_asyncio
+import yaml
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.marketplace.api.v1.skill_pack import router as skill_pack_router
+from backend.app.marketplace.model import MarketplaceSkill
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -59,6 +61,31 @@ class _InjectUser:
 
 def _tag() -> str:
     return uuid.uuid4().hex[:8]
+
+
+async def _seed_skill(session, namespace: str, slug: str, **cols) -> str:
+    """落一条已发布公开技能（实施/92：技能包成员必须是已发布公开技能才能解析）。"""
+    skill_id = f'{namespace}/{slug}'
+    await session.execute(delete(MarketplaceSkill).where(MarketplaceSkill.skill_id == skill_id))
+    session.add(
+        MarketplaceSkill(
+            skill_id=skill_id,
+            namespace=namespace,
+            slug=slug,
+            name=cols.pop('name', slug),
+            status='published',
+            visibility='public',
+            **cols,
+        )
+    )
+    await session.flush()
+    return skill_id
+
+
+async def _seed_default_members(session) -> None:
+    """_payload 默认成员（developer/code-review + productivity/tdd）落库为已发布公开技能。"""
+    await _seed_skill(session, 'developer', 'code-review')
+    await _seed_skill(session, 'productivity', 'tdd')
 
 
 @pytest_asyncio.fixture
@@ -112,6 +139,7 @@ def _payload(slug: str, **over) -> dict:
 
 
 async def test_create_valid_skill_pack_persists_normalized_contract(client):
+    await _seed_default_members(client.session)
     slug = f'backend-dev-{_tag()}'
     r = await client.http.post('/api/v1/marketplace/app/skill-packs', json=_payload(slug))
     assert r.status_code == 200, r.text
@@ -164,6 +192,7 @@ async def test_create_rejects_invalid_hermes_yaml(client):
 
 
 async def test_list_hides_other_owner_private_packs(client):
+    await _seed_default_members(client.session)
     slug = f'priv-{_tag()}'
     # 当前作者的私有包
     await client.http.post('/api/v1/marketplace/app/skill-packs', json=_payload(slug, is_private=True, is_official=False))
@@ -197,3 +226,56 @@ async def test_list_hides_other_owner_private_packs(client):
     slugs = [item['bundle_slug'] for item in r.json()['data']]
     assert slug in slugs
     assert other_slug not in slugs  # 他人私有不可见
+
+
+async def test_create_resolves_bare_slug_member_to_full_id(client):
+    """实施/92 D-NAMING：成员可用裸 slug 提交，落库时归一为完整 namespace/slug id。"""
+    member_slug = f'paper-digest-{_tag()}'
+    await _seed_skill(client.session, 'huanxing/research', member_slug)
+    slug = f'research-pack-{_tag()}'
+    r = await client.http.post(
+        '/api/v1/marketplace/app/skill-packs',
+        json=_payload(
+            slug,
+            hermes_bundle_json={'skills': [member_slug]},
+            hermes_yaml=f'name: {slug}\nskills:\n  - {member_slug}\n',
+        ),
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()['data']
+    # 裸 slug 已归一为完整 id（落库 hermes_yaml 是权威），裸形态不再单独成行
+    assert f'huanxing/research/{member_slug}' in data['hermes_yaml']
+    spec = yaml.safe_load(data['hermes_yaml'])
+    assert spec['skills'] == [f'huanxing/research/{member_slug}']
+
+
+async def test_create_rejects_unpublished_member(client):
+    """成员不是已发布公开技能 → 400（堵 gap#5，禁止打包未发布技能）。"""
+    slug = f'ghost-pack-{_tag()}'
+    ghost = f'ghostns/ghost-{_tag()}'
+    r = await client.http.post(
+        '/api/v1/marketplace/app/skill-packs',
+        json=_payload(
+            slug,
+            hermes_bundle_json={'skills': [ghost]},
+            hermes_yaml=f'name: {slug}\nskills:\n  - {ghost}\n',
+        ),
+    )
+    assert r.status_code == 400, r.text
+
+
+async def test_create_rejects_ambiguous_bare_slug(client):
+    """裸 slug 命中多个命名空间 → 400，要求用完整 namespace/slug 消歧。"""
+    dup_slug = f'dup-{_tag()}'
+    await _seed_skill(client.session, 'huanxing/teamA', dup_slug)
+    await _seed_skill(client.session, 'huanxing/teamB', dup_slug)
+    slug = f'dup-pack-{_tag()}'
+    r = await client.http.post(
+        '/api/v1/marketplace/app/skill-packs',
+        json=_payload(
+            slug,
+            hermes_bundle_json={'skills': [dup_slug]},
+            hermes_yaml=f'name: {slug}\nskills:\n  - {dup_slug}\n',
+        ),
+    )
+    assert r.status_code == 400, r.text
