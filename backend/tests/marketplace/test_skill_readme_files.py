@@ -309,6 +309,27 @@ async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypa
         assert set(f.keys()) == {'path', 'size'}, f   # 仅名称+大小，不含内容
 
 
+def test_split_markdown_for_translation_chunks_without_breaking_fences():
+    """长文档按段落分块（≤budget），且**绝不**切开代码围栏；拼回恢复原文。
+
+    本地翻译网关对超长 Markdown 会原样回吐，分块后逐块翻译可避开。围栏内含空行（多段）
+    时仍须整块留在同一 chunk（``` 计数为偶才允许切块）。
+    """
+    split = translation_service._split_markdown_for_translation
+
+    # 小文档 → 单块（行为不变）
+    assert split('# Hi\n\nshort body') == ['# Hi\n\nshort body']
+
+    # 跨多段落的代码围栏 + 前后散文 → 多块，每块 ``` 平衡，拼回等于原文
+    code = '```python\n' + '\n\n'.join(f'x{i} = {i}' for i in range(60)) + '\n```'
+    doc = 'intro paragraph one.\n\n' + ('prose ' * 80) + '\n\n' + code + '\n\n' + ('tail ' * 80)
+    chunks = split(doc, budget=500)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert c.count('```') % 2 == 0, c[:60]   # 没有块停在未闭合围栏中
+    assert '\n\n'.join(chunks) == doc            # 无损拼回
+
+
 def test_detect_body_source_lang_cjk_ratio_beats_langdetect():
     """中英混排技术文档：CJK 占比为主信号，盖过 langdetect 的误判。
 

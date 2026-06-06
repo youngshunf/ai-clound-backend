@@ -128,6 +128,48 @@ class TranslationService:
         if cache_key in self._translation_cache:
             return self._translation_cache[cache_key]
 
+        # 长文档分块翻译：本地翻译网关对超长 Markdown 会原样回吐（退化），但对约 3.5k 字
+        # 以内的块能稳定翻译。按段落边界切块（不切开代码围栏）逐块翻译再拼接。
+        parts: list[str] = []
+        for chunk in self._split_markdown_for_translation(text):
+            part = await self._translate_markdown_chunk(chunk, source_lang, target_lang)
+            if part is None:
+                return None  # 任一块硬失败 → 整篇放弃（零 fake，不产出半成品），调用方回退原文
+            parts.append(part)
+        translated = '\n\n'.join(parts).strip()
+        if not translated:
+            return None
+        self._translation_cache[cache_key] = translated
+        return translated
+
+    @staticmethod
+    def _split_markdown_for_translation(text: str, budget: int = 3500) -> list[str]:
+        """Split a Markdown doc into chunks under ``budget`` chars on paragraph
+        boundaries, never breaking inside a fenced code block. Small docs stay one chunk.
+        """
+        if len(text) <= budget:
+            return [text]
+        chunks: list[str] = []
+        cur = ''
+        for para in text.split('\n\n'):
+            candidate = f'{cur}\n\n{para}' if cur else para
+            # 仅在当前块未处于未闭合代码围栏内（``` 计数为偶数）时，才允许在此切块
+            if cur and len(candidate) > budget and cur.count('```') % 2 == 0:
+                chunks.append(cur)
+                cur = para
+            else:
+                cur = candidate
+        if cur:
+            chunks.append(cur)
+        return chunks
+
+    async def _translate_markdown_chunk(
+        self,
+        text: str,
+        source_lang: Literal['en', 'zh'],
+        target_lang: Literal['en', 'zh'],
+    ) -> str | None:
+        """Translate a single Markdown chunk via the LLM; ``None`` on failure/empty."""
         lang_names = {'en': 'English', 'zh': 'Chinese'}
         try:
             translated = await self._complete_chat(
@@ -160,10 +202,7 @@ class TranslationService:
             return None
 
         translated = (translated or '').strip()
-        if not translated:
-            return None
-        self._translation_cache[cache_key] = translated
-        return translated
+        return translated or None
 
     async def _translate_with_llm(
         self,
