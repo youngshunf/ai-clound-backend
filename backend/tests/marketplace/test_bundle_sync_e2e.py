@@ -20,10 +20,11 @@ import pytest
 import pytest_asyncio
 import yaml
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.marketplace.model import MarketplaceSkill
 from backend.app.marketplace.service.github_sync_service import GitHubSyncService
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -32,6 +33,16 @@ pytestmark = pytest.mark.asyncio
 
 def _tag() -> str:
     return uuid.uuid4().hex[:8]
+
+
+async def _seed_skill(session, namespace: str, slug: str) -> None:
+    """落一条已发布公开技能（实施/92：技能包成员落库时按完整 id 校验已发布公开才放行）。"""
+    skill_id = f'{namespace}/{slug}'
+    await session.execute(delete(MarketplaceSkill).where(MarketplaceSkill.skill_id == skill_id))
+    session.add(
+        MarketplaceSkill(skill_id=skill_id, namespace=namespace, slug=slug, name=slug, status='published', visibility='public')
+    )
+    await session.flush()
 
 
 def _write_bundle(root, slug: str, *, name: str | None = None, skills: list[str] | None = None,
@@ -58,6 +69,10 @@ async def e2e(tmp_path):
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
+    # 技能包成员落库时按完整 id 校验已发布公开（实施/92 D-NAMING）；生产中 _sync_skill 先于
+    # _sync_bundles 已落这些成员，测试里显式 seed 等价前置条件。
+    await _seed_skill(session, 'huanxing/developer', 'code-review')
+    await _seed_skill(session, 'huanxing/productivity', 'tdd')
     service = GitHubSyncService()
     service.local_path = str(tmp_path)
 

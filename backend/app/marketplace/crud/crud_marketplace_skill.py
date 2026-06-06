@@ -110,6 +110,25 @@ class CRUDMarketplaceSkill(CRUDPlus[MarketplaceSkill]):
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_published_public_by_slug(self, db: AsyncSession, slug: str) -> list[MarketplaceSkill]:
+        """按裸 slug 列出所有「已发布 + 公开」技能（按下载量降序），用于技能包成员命名归一。
+
+        裸 slug 通常唯一；返回多条表示跨命名空间重名，调用方据此报错让用户用完整
+        `namespace/slug` 消歧（D-NAMING：禁止猜测，避免装错技能）。
+        """
+        stmt = (
+            select(MarketplaceSkill)
+            .where(
+                MarketplaceSkill.slug == slug,
+                MarketplaceSkill.namespace.is_not(None),
+                MarketplaceSkill.status == PUBLISHED_STATUS,
+                MarketplaceSkill.visibility == PUBLIC_VISIBILITY,
+            )
+            .order_by(MarketplaceSkill.download_count.desc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_by_namespace_slug_for_user(
         self,
         db: AsyncSession,
