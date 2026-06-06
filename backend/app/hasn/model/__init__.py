@@ -52,3 +52,4 @@ from backend.app.hasn.model.hasn_builtin_task_catalog import HasnBuiltinTaskCata
 from backend.app.hasn.model.hasn_workbench_briefing import HasnWorkbenchBriefing as HasnWorkbenchBriefing
 from backend.app.hasn.model.hasn_workbench_briefing_feedback import HasnWorkbenchBriefingFeedback as HasnWorkbenchBriefingFeedback
 from backend.app.hasn.model.hasn_agent_channel_mirrors import HasnAgentChannelMirrors as HasnAgentChannelMirrors
+from backend.app.hasn.model.hasn_app_credential import HasnAppCredential as HasnAppCredential
