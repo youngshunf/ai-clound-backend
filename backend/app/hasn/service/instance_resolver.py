@@ -137,18 +137,27 @@ class InstanceResolver:
     ) -> dict[str, Any] | None:
         """选实例 + 回落（设计 11 §3.2）：企业自建且 active → 企业实例；否则 / 回落 → 公共实例。"""
         if workspace.get('kind') == 'enterprise' and workspace.get('enterprise_id') is not None:
-            stmt = sa.select(HasnAppInstance).where(
-                HasnAppInstance.app_id == app_id,
-                HasnAppInstance.scope == 'enterprise',
-                HasnAppInstance.enterprise_id == int(workspace['enterprise_id']),
+            stmt = (
+                sa.select(HasnAppInstance)
+                .where(
+                    HasnAppInstance.app_id == app_id,
+                    HasnAppInstance.scope == 'enterprise',
+                    HasnAppInstance.enterprise_id == int(workspace['enterprise_id']),
+                )
+                .order_by(HasnAppInstance.created_time.desc())
             )
             row = (await db.execute(stmt)).scalars().first()
             if row is not None and row.status == 'active':
                 return self._instance_to_dict(row)
-        # 默认 / 回落 → 公共实例
-        stmt = sa.select(HasnAppInstance).where(
-            HasnAppInstance.app_id == app_id,
-            HasnAppInstance.scope == 'public',
+        # 默认 / 回落 → 公共实例（迁移后每 app_id 至多一条 public，partial unique 保证；
+        # 仍补 ORDER BY created_time DESC 作防御，避免历史脏数据下取序不定）
+        stmt = (
+            sa.select(HasnAppInstance)
+            .where(
+                HasnAppInstance.app_id == app_id,
+                HasnAppInstance.scope == 'public',
+            )
+            .order_by(HasnAppInstance.created_time.desc())
         )
         row = (await db.execute(stmt)).scalars().first()
         if row is not None and row.status == 'active':

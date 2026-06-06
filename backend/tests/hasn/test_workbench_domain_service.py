@@ -110,8 +110,8 @@ class RagflowInstanceStub(_Base):
     credential_ref: Mapped[str] = mapped_column(sa.String(512), default='')
     status: Mapped[str] = mapped_column(sa.String(16), default='pending_config')
     config: Mapped[dict] = mapped_column(sa.JSON, default=dict)
-    # 生产模型按 created_time 排序选当前实例；测试桩需镜像该列，
-    # 否则 _knowledge_instance_for_workspace 的 order_by(created_time) 取属性即 AttributeError。
+    # instance_resolver._pick_instance 按 created_time 排序选当前实例；测试桩需镜像该列，
+    # 否则 order_by(created_time) 取属性即 AttributeError。
     created_time: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
     updated_time: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True, default=None)
 

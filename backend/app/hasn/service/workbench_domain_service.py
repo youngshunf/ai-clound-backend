@@ -719,7 +719,7 @@ class WorkbenchDomainService:
 
     async def get_current_knowledge_credentials(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
         workspace = await self.get_active_workspace(db, user_id=user_id)
-        instance = await self._knowledge_instance_for_workspace(db, workspace=workspace)
+        instance = await self._resolve_knowledge_instance(db, workspace=workspace)
         if instance is None:
             return {'workspace': workspace, 'status': 'pending', 'credential': None}
 
@@ -746,7 +746,7 @@ class WorkbenchDomainService:
 
     async def refresh_current_knowledge_credentials(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
         workspace = await self.get_active_workspace(db, user_id=user_id)
-        instance = await self._knowledge_instance_for_workspace(db, workspace=workspace)
+        instance = await self._resolve_knowledge_instance(db, workspace=workspace)
         if instance is None:
             return {'workspace': workspace, 'status': 'pending', 'credential': None}
 
@@ -1027,31 +1027,26 @@ class WorkbenchDomainService:
             row.enabled_by = enabled_by
         return row
 
-    async def _knowledge_instance_for_workspace(self, db: AsyncSession, *, workspace: dict[str, Any]):
-        if workspace['kind'] == 'personal':
-            return await _scalar(
+    async def _resolve_knowledge_instance(self, db: AsyncSession, *, workspace: dict[str, Any]):
+        """经通用 instance_resolver 解析知识库实例（实施 03 P4：删知识库专用解析分支，复用 resolve）。
+
+        与第三方 App 共用同一条 resolve()（企业 active → 企业实例；否则回落公共）。face='ui' → daemon_direct。
+        传入 builtin manifest 跳过 manifest 的 DB 查询；resolve 只返回 active 实例，故返回非 None 即 active。
+        返回完整 ORM 行（凭据查询要 instance.id、序列化要 config/endpoint/status）。
+        """
+        try:
+            handle = await instance_resolver.resolve(
                 db,
-                sa.select(HasnAppInstance)
-                .where(
-                    HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
-                    HasnAppInstance.scope == 'public',
-                    HasnAppInstance.status == 'active',
-                )
-                .order_by(HasnAppInstance.created_time.desc())
-                .limit(1),
+                app_id=KNOWLEDGE_APP_ID,
+                workspace=workspace,
+                face=FACE_UI,
+                manifest=ai_native_app_registry.get_builtin_manifest(KNOWLEDGE_APP_ID),
             )
-        return await _scalar(
-            db,
-            sa.select(HasnAppInstance)
-            .where(
-                HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
-                HasnAppInstance.scope == 'enterprise',
-                HasnAppInstance.enterprise_id == workspace['enterprise_id'],
-                HasnAppInstance.status == 'active',
-            )
-            .order_by(HasnAppInstance.created_time.desc())
-            .limit(1),
-        )
+        except InstanceResolutionError:
+            return None
+        if handle.instance_id is None:
+            return None
+        return await db.get(HasnAppInstance, int(handle.instance_id))
 
 
 async def _scalar(db: AsyncSession, stmt):
