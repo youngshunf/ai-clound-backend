@@ -24,3 +24,6 @@ __pycache__/
 backend/log
 .codegraph/
 backend.log
+
+# 知识库收编迁移：删表前 pg_dump 留底（含加密凭据 blob，仅本地回滚兜底，禁入库）
+test-results/ragflow-migration-backup/
