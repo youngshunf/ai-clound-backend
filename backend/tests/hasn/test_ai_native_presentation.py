@@ -94,7 +94,7 @@ def test_presentation_workbench_app_registered_with_embedded_fields() -> None:
 
     app = workbench_app_registry.get('presentation')
     assert app.execution_mode == 'embedded_desktop'
-    assert app.ui_kind == 'embedded_webview'
+    assert app.ui_kind == 'new_window'
     assert app.window_url == '/api/v1/apps/presentation/ui/upload'
     assert app.window_origin == 'loopback'
     assert app.scope == ('personal',)
@@ -104,7 +104,7 @@ def test_presentation_workbench_app_registered_with_embedded_fields() -> None:
     manifest = app.to_manifest()
     # 三处端到端同步（§6.1）：新字段须随 to_manifest 透传给 daemon/WebUI。
     assert manifest['execution_mode'] == 'embedded_desktop'
-    assert manifest['ui_kind'] == 'embedded_webview'
+    assert manifest['ui_kind'] == 'new_window'
     assert manifest['window_url'] == '/api/v1/apps/presentation/ui/upload'
     assert manifest['window_origin'] == 'loopback'
 

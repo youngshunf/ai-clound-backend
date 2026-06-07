@@ -435,7 +435,9 @@ def build_presentation_workbench_app() -> WorkbenchApp:
         collaboration_mode='none',
         requires_role=None,
         execution_mode='embedded_desktop',
-        ui_kind='embedded_webview',
+        # 启动方式（设计 12 §6.1）：new_window = 工作台点击在独立 OS 窗口打开（推荐）。
+        # WebUI 据此用原生 WebviewWindow 载 window_url（daemon 反代到本地 sidecar）。
+        ui_kind='new_window',
         window_url='/api/v1/apps/presentation/ui/upload',
         window_origin='loopback',
     )
