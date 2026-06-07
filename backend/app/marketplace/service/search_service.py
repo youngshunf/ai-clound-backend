@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.marketplace.model.marketplace_category import MarketplaceCategory
 from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.model.marketplace_template import MarketplaceTemplate
 from backend.app.marketplace.service.resource_id import PUBLIC_VISIBILITY, PUBLISHED_STATUS
@@ -309,7 +310,13 @@ class SearchService:
         ]
 
     async def get_marketplace_categories(self, db: AsyncSession) -> list[dict[str, Any]]:
-        """Get categories with separate public skill/template counts."""
+        """权威分类目录（slug + 中文显示名 + emoji 图标）+ 已发布技能/模板计数。
+
+        驱动 webui **统一分类选择器**（技能 / 技能包 / 分身模板的浏览筛选 + 创建分类）。
+        返回**全量已定义分类**（即便暂无内容也列出，使创建可任选分类、各页选择器一致），
+        并附内容上出现但目录表缺失的孤儿分类（显示名回退为 slug）。
+        每项：`{category: slug, name, icon, skill_count, template_count}`。
+        """
         skill_counts_result = await db.execute(
             select(
                 MarketplaceSkill.category,
@@ -334,18 +341,46 @@ class SearchService:
             )
             .group_by(MarketplaceTemplate.category)
         )
-        categories: dict[str, dict[str, Any]] = {}
-        for row in skill_counts_result.all():
-            categories.setdefault(row.category, {'category': row.category, 'skill_count': 0, 'template_count': 0})
-            categories[row.category]['skill_count'] = row.count
-        for row in template_counts_result.all():
-            categories.setdefault(row.category, {'category': row.category, 'skill_count': 0, 'template_count': 0})
-            categories[row.category]['template_count'] = row.count
-        return sorted(
-            categories.values(),
-            key=lambda item: (item['skill_count'] + item['template_count'], item['category']),
-            reverse=True,
+        skill_counts = {row.category: row.count for row in skill_counts_result.all()}
+        template_counts = {row.category: row.count for row in template_counts_result.all()}
+
+        # 权威目录：按 sort_order 升序（策展顺序），显示名取目录表 name。
+        taxonomy_result = await db.execute(
+            select(
+                MarketplaceCategory.slug,
+                MarketplaceCategory.name,
+                MarketplaceCategory.icon,
+            ).order_by(MarketplaceCategory.sort_order, MarketplaceCategory.slug)
         )
+        ordered: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in taxonomy_result.all():
+            if not row.slug or row.slug in seen:
+                continue
+            seen.add(row.slug)
+            ordered.append(
+                {
+                    'category': row.slug,
+                    'name': row.name or row.slug,
+                    'icon': row.icon,
+                    'skill_count': skill_counts.get(row.slug, 0),
+                    'template_count': template_counts.get(row.slug, 0),
+                }
+            )
+
+        # 孤儿分类：内容上有但目录表没有，显示名回退 slug，按内容量降序附在后面。
+        orphans = [
+            {
+                'category': slug,
+                'name': slug,
+                'icon': None,
+                'skill_count': skill_counts.get(slug, 0),
+                'template_count': template_counts.get(slug, 0),
+            }
+            for slug in (set(skill_counts) | set(template_counts)) - seen
+        ]
+        orphans.sort(key=lambda item: (item['skill_count'] + item['template_count'], item['category']), reverse=True)
+        return ordered + orphans
 
     def _format_skill(
         self,
