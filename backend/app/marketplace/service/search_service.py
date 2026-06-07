@@ -462,6 +462,9 @@ class SearchService:
         query = select(MarketplaceTemplate).where(
             MarketplaceTemplate.status == PUBLISHED_STATUS,
             MarketplaceTemplate.visibility == PUBLIC_VISIBILITY,
+            # 技能包（skill_pack）也是 marketplace_template 行，但有独立浏览页（/skill-packs），
+            # 不应混进「模板」浏览（实施/92-UI 修泄漏）。
+            MarketplaceTemplate.template_type != 'skill_pack',
         )
         if keyword:
             pattern = f'%{keyword}%'

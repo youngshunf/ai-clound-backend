@@ -166,7 +166,13 @@ class MarketplaceTemplateService:
     @staticmethod
     async def list_user_templates(*, db: AsyncSession, user_id: int) -> list[dict[str, Any]]:
         templates = await marketplace_template_dao.get_by_user(db, user_id)
-        return [MarketplaceTemplateService.format_template(template) for template in templates]
+        # 技能包（skill_pack）在「我的发布」有独立 tab（走 /skill-packs?mine=true），
+        # 不混进「模板」tab（实施/92-UI 修泄漏）。
+        return [
+            MarketplaceTemplateService.format_template(template)
+            for template in templates
+            if template.template_type != 'skill_pack'
+        ]
 
     @staticmethod
     async def upload_user_template(

@@ -223,7 +223,7 @@ async def test_list_hides_other_owner_private_packs(client):
 
     r = await client.http.get('/api/v1/marketplace/app/skill-packs')
     assert r.status_code == 200, r.text
-    slugs = [item['bundle_slug'] for item in r.json()['data']]
+    slugs = [item['bundle_slug'] for item in r.json()['data']['items']]
     assert slug in slugs
     assert other_slug not in slugs  # 他人私有不可见
 
@@ -279,3 +279,79 @@ async def test_create_rejects_ambiguous_bare_slug(client):
         ),
     )
     assert r.status_code == 400, r.text
+
+
+# ───────────────────────── 实施/92-UI：分类 + 草稿态 + 我的发布 ─────────────────────────
+
+
+async def test_create_with_category_and_draft_status(client):
+    """webui 创建：带分类 + status='draft' → 落库 category + status='draft' + user_id（进我的发布）。"""
+    await _seed_default_members(client.session)
+    slug = f'cat-{_tag()}'
+    r = await client.http.post(
+        '/api/v1/marketplace/app/skill-packs',
+        json=_payload(slug, category='development', status='draft', is_private=True, is_official=False),
+    )
+    assert r.status_code == 200, r.text
+    row = (
+        await client.session.execute(
+            text(
+                'SELECT category, status, user_id, author_id FROM marketplace_template WHERE template_id = :tid'
+            ),
+            {'tid': f'huanxing/{slug}'},
+        )
+    ).mappings().one()
+    assert row['category'] == 'development'
+    assert row['status'] == 'draft'
+    assert row['user_id'] == _AUTHOR_ID
+    assert row['author_id'] == _AUTHOR_ID
+
+
+async def test_draft_hidden_in_browse_but_shown_in_mine(client):
+    """草稿包：市场浏览（默认）不可见，mine=true 可见（我的发布）。"""
+    await _seed_default_members(client.session)
+    slug = f'draft-{_tag()}'
+    await client.http.post(
+        '/api/v1/marketplace/app/skill-packs',
+        json=_payload(slug, status='draft', is_private=True, is_official=False),
+    )
+    browse = await client.http.get('/api/v1/marketplace/app/skill-packs')
+    assert browse.status_code == 200, browse.text
+    assert slug not in [it['bundle_slug'] for it in browse.json()['data']['items']]
+
+    mine = await client.http.get('/api/v1/marketplace/app/skill-packs', params={'mine': 'true'})
+    assert mine.status_code == 200, mine.text
+    mine_items = {it['bundle_slug']: it for it in mine.json()['data']['items']}
+    assert slug in mine_items
+    assert mine_items[slug]['status'] == 'draft'
+
+
+async def test_browse_filters_by_category(client):
+    """分类筛选：?category=X 只返回该分类的已发布包。"""
+    await _seed_default_members(client.session)
+    a = f'wa-{_tag()}'
+    b = f'wb-{_tag()}'
+    await client.http.post('/api/v1/marketplace/app/skill-packs', json=_payload(a, category='writing'))
+    await client.http.post('/api/v1/marketplace/app/skill-packs', json=_payload(b, category='research'))
+    r = await client.http.get('/api/v1/marketplace/app/skill-packs', params={'category': 'writing'})
+    assert r.status_code == 200, r.text
+    slugs = [it['bundle_slug'] for it in r.json()['data']['items']]
+    assert a in slugs
+    assert b not in slugs
+    # 卡片字段随出参返回（供 ResourceCard 渲染）
+    card = next(it for it in r.json()['data']['items'] if it['bundle_slug'] == a)
+    assert card['category'] == 'writing'
+    assert card['namespace'] == 'huanxing'
+
+
+async def test_publish_action_transitions_draft(client):
+    """我的发布：草稿包 POST /{id}/publish → 进入待审（与模板发布工作流同构）。"""
+    await _seed_default_members(client.session)
+    slug = f'pub-{_tag()}'
+    await client.http.post(
+        '/api/v1/marketplace/app/skill-packs',
+        json=_payload(slug, status='draft', is_private=True, is_official=False),
+    )
+    r = await client.http.post(f'/api/v1/marketplace/app/skill-packs/huanxing/{slug}/publish')
+    assert r.status_code == 200, r.text
+    assert r.json()['data']['status'] == 'pending_review'

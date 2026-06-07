@@ -181,6 +181,9 @@ async def upsert_skill_pack(
         'name': payload.name,
         'description': payload.description,
         'author_id': author_id,
+        # user_id 与 author_id 同源：mine 列表 get_by_user 按 user_id 过滤，缺它则
+        # webui 创建的技能包进不了「我的发布」。
+        'user_id': author_id,
         'price': Decimal('0'),
         'is_private': payload.is_private,
         'is_official': payload.is_official,
@@ -191,25 +194,39 @@ async def upsert_skill_pack(
     is_common_insert_val = ', :is_common' if is_common is not None else ''
     if is_common is not None:
         template_params['is_common'] = is_common
+    # category / status 仅在显式给出时写入/更新，否则保持 DB 现值（hub 同步 / MCP publish
+    # 不传 → 不会把已有分类/状态清成 NULL）。webui 创建走 category=<选中> + status='draft'。
+    category_set = 'category = :category,' if payload.category is not None else ''
+    category_insert_col = ', category' if payload.category is not None else ''
+    category_insert_val = ', :category' if payload.category is not None else ''
+    if payload.category is not None:
+        template_params['category'] = payload.category
+    status_set = 'status = :status,' if payload.status is not None else ''
+    status_insert_col = ', status' if payload.status is not None else ''
+    status_insert_val = ', :status' if payload.status is not None else ''
+    if payload.status is not None:
+        template_params['status'] = payload.status
 
     await db.execute(
         sa.text(
             f'''
             INSERT INTO public.marketplace_template (
                 template_id, namespace, slug, template_type, name, description,
-                author_id, pricing_type, price, is_private, is_official,
-                download_count, source_type, created_time, updated_time{is_common_insert_col}
+                author_id, user_id, pricing_type, price, is_private, is_official,
+                download_count, source_type, created_time, updated_time'''
+            f'''{is_common_insert_col}{category_insert_col}{status_insert_col}
             ) VALUES (
                 :template_id, :namespace, :slug, 'skill_pack', :name, :description,
-                :author_id, 'free', :price, :is_private, :is_official,
-                0, 'local', now(), now(){is_common_insert_val}
+                :author_id, :user_id, 'free', :price, :is_private, :is_official,
+                0, 'local', now(), now()'''
+            f'''{is_common_insert_val}{category_insert_val}{status_insert_val}
             )
             ON CONFLICT (template_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 description = EXCLUDED.description,
                 is_private = EXCLUDED.is_private,
                 is_official = EXCLUDED.is_official,
-                {is_common_set}
+                {is_common_set}{category_set}{status_set}
                 updated_time = now()
             '''
         ),

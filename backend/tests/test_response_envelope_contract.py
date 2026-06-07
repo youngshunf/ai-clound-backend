@@ -78,8 +78,6 @@ _DEBT = {
     'GET /api/v1/hasn/enterprise/invite-codes',
     'GET /api/v1/hasn/enterprise/memberships',
     'GET /api/v1/hasn/enterprises',
-    'GET /api/v1/hasn/ragflow/credentials',
-    'GET /api/v1/hasn/ragflow/instances',
     'GET /api/v1/hasn/user/active-workspaces',
     'GET /api/v1/hasn/workspace/apps',
     'GET /api/v1/huanxing/analytics',
