@@ -99,6 +99,12 @@ _TASK_SYNC_CONFLICT_ERROR = ErrorObject(
 
 TASK_SYNC_EVENT_TYPES = {'task.created', 'task.updated', 'task.deleted'}
 
+# 会话消息事件：客户端推上来后必须落入权威 feed（hasn_sync_events），供换设备 sync/pull
+# 还原完整会话历史。owner↔自己分身的对话本地短路执行、不经 route_message，唯一上云路径
+# 就是这里（见 docs/hasn-node设计文档/02-数据与同步/06-owner与分身会话跨设备同步修复设计.md）。
+# h↔h / 跨 owner 消息由 message_router.route_message 直接写 feed，daemon 侧不重复镜像（去重边界）。
+FEED_MESSAGE_EVENT_TYPES = {'message.sent', 'message.received', 'message.agent_reply'}
+
 
 class TaskSyncConflictError(Exception):
     """Raised when optimistic task revision conflict detection rejects an event."""
@@ -419,6 +425,13 @@ class SqlAlchemySyncGateway:
                 namespace=namespace,
                 event_id=event_id,
             )
+        elif event.event_type in FEED_MESSAGE_EVENT_TYPES:
+            # owner↔自己分身的会话消息（主人提问 message.sent / 分身回复 message.agent_reply）
+            # 本地短路执行、不经 route_message，必须在此落入权威 feed，否则换设备 sync/pull
+            # 永远拉不回（历史 bug：这里只写 inbox 死信表）。message.received 一并支持。
+            server_revision = await self._append_message_feed_event_idempotent(
+                db, owner_id=owner_id, event=event
+            )
         await db.execute(
             sa.text(
                 '''
@@ -465,6 +478,50 @@ class SqlAlchemySyncGateway:
             },
         )
         return server_revision
+
+    async def _append_message_feed_event_idempotent(
+        self, db: AsyncSession, *, owner_id: str, event: ClientEvent
+    ) -> int | None:
+        '''将会话消息事件幂等地追加到权威 feed（hasn_sync_events）。
+
+        幂等键 = (owner_id, aggregate_id, event_type)，其中 aggregate_id 取 payload.message_id
+        （回退 dedupe_key）。同一条镜像消息重复 push 时返回既有 revision、不重复追加。
+        h↔h / 跨 owner 消息由 route_message 用云端数字 message_id 写 feed，与本地 ULID
+        天然不撞键；daemon 侧也不镜像它们，双重保证不双写。
+        '''
+        message_id = event.payload.get('message_id') or event.dedupe_key
+        if not message_id:
+            raise errors.RequestError(msg='ERR_MESSAGE_ID_REQUIRED')
+        existing = await db.execute(
+            sa.text(
+                '''
+                SELECT revision
+                FROM public.hasn_sync_events
+                WHERE owner_id = :owner_id
+                  AND aggregate_type = 'message'
+                  AND aggregate_id = :aggregate_id
+                  AND event_type = :event_type
+                LIMIT 1
+                '''
+            ),
+            {
+                'owner_id': owner_id,
+                'aggregate_id': str(message_id),
+                'event_type': event.event_type,
+            },
+        )
+        existing_row = existing.mappings().first()
+        if existing_row is not None:
+            return int(existing_row['revision'])
+        return await self._append_sync_event(
+            db,
+            owner_id=owner_id,
+            hasn_id=event.hasn_id or owner_id,
+            event_type=event.event_type,
+            aggregate_type='message',
+            aggregate_id=str(message_id),
+            payload={**event.payload, 'client_event_id': event.client_event_id},
+        )
 
     async def save_task_event(self, db: AsyncSession, *, owner_id: str, node_id: str, event: ClientEvent) -> int | None:
         existing_revision = await self.existing_client_event_revision(
