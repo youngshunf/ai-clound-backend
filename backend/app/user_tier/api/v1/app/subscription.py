@@ -12,6 +12,7 @@ import uuid
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func, select
 from decimal import Decimal
 from datetime import datetime
 
@@ -59,6 +60,24 @@ class CreditTransactionItem(BaseModel):
     description: str | None = None
     extra_data: dict | None = None
     created_time: datetime
+
+
+class CreditDailyItem(BaseModel):
+    """积分流水「按日聚合」项（按 Asia/Shanghai 本地日）"""
+    date: str = Field(description='日期 YYYY-MM-DD（Asia/Shanghai 本地日）')
+    consumed: Decimal = Field(description='当日消耗合计（≤0）')
+    granted: Decimal = Field(description='当日入账合计（≥0）')
+    net: Decimal = Field(description='当日净变动')
+    count: int = Field(description='当日流水笔数')
+
+
+class CreditDailyPage(BaseModel):
+    """积分流水按日聚合分页（字段与通用 PageData 对齐，省去 links）"""
+    items: list[CreditDailyItem] = []
+    total: int = Field(description='总天数')
+    page: int
+    size: int
+    total_pages: int
 
 
 class SubscriptionInfoResponse(BaseModel):
@@ -238,6 +257,42 @@ async def get_credit_transactions(
     )
     page_data = await paging_data(db, select_stmt)
     return response_base.success(data=page_data)
+
+
+@router.get(
+    '/transactions/daily',
+    summary='获取积分流水（按日聚合）',
+    description='按本地日（Asia/Shanghai）聚合当前用户的积分流水，返回每日消耗/入账/净额/笔数，分页倒序；用于流水列表，避免逐条 LLM 请求',
+    dependencies=[DependsJwtAuth],
+)
+async def get_credit_transactions_daily(
+    request: Request,
+    db: CurrentSession,
+    page: Annotated[int, Query(ge=1, description='页码')] = 1,
+    size: Annotated[int, Query(ge=1, le=100, description='每页天数')] = 20,
+) -> ResponseSchemaModel[CreditDailyPage]:
+    """用户端积分流水按日聚合（DB 侧 group by 本地日，强制 user_id + app_code 隔离）。"""
+    user_id = request.user.id
+    app_code = request.state.app_code
+
+    stmt = await credit_transaction_dao.get_daily_aggregate_by_user(user_id=user_id, app_code=app_code)
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one() or 0
+    rows = (await db.execute(stmt.limit(size).offset((page - 1) * size))).all()
+
+    items = [
+        CreditDailyItem(
+            date=row.day.strftime('%Y-%m-%d'),
+            consumed=row.consumed,
+            granted=row.granted,
+            net=row.net,
+            count=row.cnt,
+        )
+        for row in rows
+    ]
+    total_pages = (total + size - 1) // size if size else 0
+    return response_base.success(
+        data=CreditDailyPage(items=items, total=total, page=page, size=size, total_pages=total_pages)
+    )
 
 
 def _calculate_remaining_value(

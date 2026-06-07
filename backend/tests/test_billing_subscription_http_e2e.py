@@ -16,7 +16,7 @@ dependency_overrides 把 DependsJwtAuth 换成注入 user_id、get_db 指向真�
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_tz
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -48,6 +48,7 @@ _APP.include_router(app_subscription_router, prefix='/api/v1/user_tier/app/subsc
 add_pagination(_APP)
 
 _TXNS = '/api/v1/user_tier/app/subscription/transactions'
+_DAILY = '/api/v1/user_tier/app/subscription/transactions/daily'
 
 
 def _new_user_id() -> int:
@@ -178,6 +179,66 @@ async def test_transactions_empty_returns_envelope(env) -> None:
     """无流水也返回统一信封 + 空 items（零 fake）。"""
     c = env.client
     data = _data(await c.get(_TXNS, params={'page': 1, 'size': 20}))
+    assert data['items'] == [] and data['total'] == 0
+
+
+async def test_transactions_daily_aggregates_by_local_day(env) -> None:
+    """按日聚合：按 Asia/Shanghai 本地日分组（跨 UTC 日界正确归日）+ 消耗/入账/净额/笔数 + 隔离。"""
+    s, c, uid = env.session, env.client, env.auth_state['user_id']
+    utc = dt_tz.utc
+    # 06-07 12:00Z = 06-07 20:00+08 → 本地 06-07
+    s.add(_txn(uid, ttype='purchase', credits=Decimal('1000'), before=Decimal('0'), after=Decimal('1000'),
+               ref_type='pay_order', desc='充值', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
+    # 06-07 13:00Z = 06-07 21:00+08 → 本地 06-07
+    s.add(_txn(uid, ttype='usage', credits=Decimal('-30'), before=Decimal('1000'), after=Decimal('970'),
+               ref_type='llm_usage', desc='耗1', created=datetime(2026, 6, 7, 13, 0, tzinfo=utc)))
+    # 06-07 20:00Z = 06-08 04:00+08 → 本地 06-08（跨日界）
+    s.add(_txn(uid, ttype='usage', credits=Decimal('-12'), before=Decimal('970'), after=Decimal('958'),
+               ref_type='llm_usage', desc='耗2', created=datetime(2026, 6, 7, 20, 0, tzinfo=utc)))
+    # 隔离：别的用户 + 别的 app_code 不计入
+    s.add(_txn(_new_user_id(), ttype='usage', credits=Decimal('-999'), before=Decimal('0'), after=Decimal('-999'),
+               ref_type='llm_usage', desc='别人', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
+    s.add(_txn(uid, ttype='usage', credits=Decimal('-888'), before=Decimal('0'), after=Decimal('-888'),
+               ref_type='llm_usage', desc='别app', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc), app_code='zhixiaoya'))
+    await s.flush()
+
+    data = _data(await c.get(_DAILY, params={'page': 1, 'size': 20}))
+    items = data['items']
+    assert data['total'] == 2 and len(items) == 2, f'应聚合为两天，实际 {items}'
+    # 倒序：06-08 在前
+    assert items[0]['date'] == '2026-06-08' and items[1]['date'] == '2026-06-07'
+    d8, d7 = items[0], items[1]
+    # 06-07：入账 +1000 / 消耗 -30 / 净 970 / 2 笔
+    assert Decimal(str(d7['granted'])) == Decimal('1000')
+    assert Decimal(str(d7['consumed'])) == Decimal('-30')
+    assert Decimal(str(d7['net'])) == Decimal('970')
+    assert d7['count'] == 2
+    # 06-08：仅消耗 -12 / 净 -12 / 1 笔
+    assert Decimal(str(d8['consumed'])) == Decimal('-12')
+    assert Decimal(str(d8['net'])) == Decimal('-12')
+    assert d8['count'] == 1
+
+
+async def test_transactions_daily_pagination(env) -> None:
+    """按日聚合分页：3 天 size=2 → 第一页两天（倒序）、第二页一天。"""
+    s, c, uid = env.session, env.client, env.auth_state['user_id']
+    utc = dt_tz.utc
+    for day in (5, 6, 7):
+        # 03:00Z = 11:00+08，稳落当地同一天
+        s.add(_txn(uid, ttype='usage', credits=Decimal('-10'), before=Decimal('100'), after=Decimal('90'),
+                   ref_type='llm_usage', desc=f'd{day}', created=datetime(2026, 6, day, 3, 0, tzinfo=utc)))
+    await s.flush()
+
+    p1 = _data(await c.get(_DAILY, params={'page': 1, 'size': 2}))
+    assert p1['total'] == 3 and p1['total_pages'] == 2 and len(p1['items']) == 2
+    assert [it['date'] for it in p1['items']] == ['2026-06-07', '2026-06-06']
+    p2 = _data(await c.get(_DAILY, params={'page': 2, 'size': 2}))
+    assert len(p2['items']) == 1 and p2['items'][0]['date'] == '2026-06-05'
+
+
+async def test_transactions_daily_empty_returns_envelope(env) -> None:
+    """无流水也返回统一信封 + 空 items（零 fake）。"""
+    data = _data(await env.client.get(_DAILY, params={'page': 1, 'size': 20}))
     assert data['items'] == [] and data['total'] == 0
 
 

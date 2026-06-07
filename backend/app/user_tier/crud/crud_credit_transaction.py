@@ -1,6 +1,6 @@
 from typing import Sequence
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -86,6 +86,39 @@ class CRUDCreditTransaction(CRUDPlus[CreditTransaction]):
         if reference_type is not None:
             stmt = stmt.where(CreditTransaction.reference_type == reference_type)
         return stmt.order_by(CreditTransaction.created_time.desc(), CreditTransaction.id.desc())
+
+    async def get_daily_aggregate_by_user(
+        self,
+        *,
+        user_id: int,
+        app_code: str,
+        tz: str = 'Asia/Shanghai',
+    ) -> Select:
+        """用户端积分流水「按日聚合」查询表达式（强制 user_id + app_code 隔离）。
+
+        按本地日（默认 Asia/Shanghai）`date_trunc` 分组，倒序；每组返回当日消耗合计
+        （≤0）、入账合计（≥0）、净变动与笔数。聚合在 DB 完成，避免把每次 LLM 请求都
+        下发到客户端再聚合（否则分页会在日边界切断，统计不正确）。
+        """
+        local_ts = func.timezone(tz, CreditTransaction.created_time)
+        day = func.date_trunc('day', local_ts).label('day')
+        consumed = func.coalesce(
+            func.sum(case((CreditTransaction.credits < 0, CreditTransaction.credits), else_=0)), 0
+        ).label('consumed')
+        granted = func.coalesce(
+            func.sum(case((CreditTransaction.credits > 0, CreditTransaction.credits), else_=0)), 0
+        ).label('granted')
+        net = func.coalesce(func.sum(CreditTransaction.credits), 0).label('net')
+        cnt = func.count().label('cnt')
+        return (
+            select(day, consumed, granted, net, cnt)
+            .where(
+                CreditTransaction.user_id == user_id,
+                CreditTransaction.app_code == app_code,
+            )
+            .group_by(day)
+            .order_by(day.desc())
+        )
 
     async def get_all(self, db: AsyncSession) -> Sequence[CreditTransaction]:
         """
