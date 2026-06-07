@@ -409,6 +409,18 @@ class WsRouterService:
         else:
             return 'online' if await self.is_agent_online(hasn_id) else 'offline'
 
+    async def get_online_map(self, entity_ids: list[str]) -> dict[str, bool]:
+        """批量查 agent 实时在线状态（Redis presence ENTITY_NODE_KEY）。
+
+        ENTITY_NODE_KEY 由 daemon 上线时 add_agent 写入、断线时 unregister_node 清除，
+        因此这是权威的「当前是否被某节点在线持有」判定。**不要**用持久列
+        HasnAgents.online_status —— 它只在心跳时写、断线不清零，会过期误判。
+        """
+        if not entity_ids:
+            return {}
+        nodes = await redis_client.hmget(ENTITY_NODE_KEY, entity_ids)
+        return {eid: (node is not None) for eid, node in zip(entity_ids, nodes)}
+
 
 # 进程内 WebSocket 连接引用（node_id → WebSocket）
 _ws_connections: dict[str, WebSocket] = {}
