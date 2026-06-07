@@ -95,7 +95,8 @@ def test_presentation_workbench_app_registered_with_embedded_fields() -> None:
     app = workbench_app_registry.get('presentation')
     assert app.execution_mode == 'embedded_desktop'
     assert app.ui_kind == 'new_window'
-    assert app.window_url == '/api/v1/apps/presentation/ui/upload'
+    # window_url 指向加载外壳（loading shell），而非直接 ui/upload —— 避免冷启白屏（§6.1）。
+    assert app.window_url == '/api/v1/apps/presentation/loading'
     assert app.window_origin == 'loopback'
     assert app.scope == ('personal',)
     assert app.collaboration_mode == 'none'
@@ -105,7 +106,7 @@ def test_presentation_workbench_app_registered_with_embedded_fields() -> None:
     # 三处端到端同步（§6.1）：新字段须随 to_manifest 透传给 daemon/WebUI。
     assert manifest['execution_mode'] == 'embedded_desktop'
     assert manifest['ui_kind'] == 'new_window'
-    assert manifest['window_url'] == '/api/v1/apps/presentation/ui/upload'
+    assert manifest['window_url'] == '/api/v1/apps/presentation/loading'
     assert manifest['window_origin'] == 'loopback'
 
 

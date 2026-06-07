@@ -436,8 +436,10 @@ def build_presentation_workbench_app() -> WorkbenchApp:
         requires_role=None,
         execution_mode='embedded_desktop',
         # 启动方式（设计 12 §6.1）：new_window = 工作台点击在独立 OS 窗口打开（推荐）。
-        # WebUI 据此用原生 WebviewWindow 载 window_url（daemon 反代到本地 sidecar）。
+        # WebUI 据此用原生 WebviewWindow 载 window_url。window_url 指向 daemon 的「加载外壳」
+        # (loading shell) 而非直接 ui/upload：外壳开窗即出现品牌 spinner、内嵌 iframe 加载真实 UI
+        # 并触发 sidecar 冷启，避免冷启期间窗口白屏空等（外壳由 daemon domains/apps loading_shell 服务）。
         ui_kind='new_window',
-        window_url='/api/v1/apps/presentation/ui/upload',
+        window_url='/api/v1/apps/presentation/loading',
         window_origin='loopback',
     )
