@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -8,11 +8,32 @@ from backend.common.schema import SchemaBase
 # ========== 创建订单（用户端） ==========
 
 class CreatePayOrderParam(SchemaBase):
-    """创建支付订单参数（用户端）"""
-    tier: str = Field(description='目标套餐 star_glow/star_shine/star_glory')
+    """创建支付订单参数（用户端）
+
+    可辨识联合：`order_type` 决定必填字段——
+    - `subscribe`：必填 `tier`（套餐归一枚举 free/pro/advanced/flagship），可选 `billing_cycle`；
+    - `credit_pack`：必填 `package_id`，从 `credit_package` 取价下单（到账回调 `handle_credit_pack_paid` 发积分）。
+    """
+    order_type: str = Field('subscribe', description='订单类型 subscribe | credit_pack')
+    channel_code: str = Field(description='支付渠道编码 wx_native/alipay_qr/alipay_pc')
+    # 订阅时必填
+    tier: str | None = Field(None, description='order_type=subscribe 时必填，目标套餐 free/pro/advanced/flagship')
     billing_cycle: str = Field('monthly', description='计费周期 monthly/yearly')
-    channel_code: str = Field(description='支付渠道编码 wx_native/alipay_pc')
-    auto_renew: bool = Field(True, description='是否开通自动续费')
+    auto_renew: bool = Field(True, description='是否开通自动续费（v1 桌面端恒 false）')
+    # 积分包时必填
+    package_id: int | None = Field(None, description='order_type=credit_pack 时必填，积分包 ID')
+
+    @model_validator(mode='after')
+    def _validate_cross_fields(self) -> 'CreatePayOrderParam':
+        if self.order_type == 'subscribe':
+            if not self.tier:
+                raise ValueError('order_type=subscribe 时必须提供 tier')
+        elif self.order_type == 'credit_pack':
+            if not self.package_id:
+                raise ValueError('order_type=credit_pack 时必须提供 package_id')
+        else:
+            raise ValueError(f'不支持的 order_type: {self.order_type}（仅 subscribe | credit_pack）')
+        return self
 
 
 class CreatePayOrderResponse(SchemaBase):

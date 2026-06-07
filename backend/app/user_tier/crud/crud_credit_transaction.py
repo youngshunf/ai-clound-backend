@@ -63,6 +63,30 @@ class CRUDCreditTransaction(CRUDPlus[CreditTransaction]):
         stmt = stmt.order_by(CreditTransaction.id.desc())
         return stmt
 
+    async def get_select_by_user(
+        self,
+        *,
+        user_id: int,
+        app_code: str,
+        transaction_type: str | None = None,
+        reference_type: str | None = None,
+    ) -> Select:
+        """用户端积分流水查询表达式（强制 user_id + app_code 隔离，按 created_time 倒序）。
+
+        不 join User（用户端无需昵称/手机号），仅返回自己的流水。
+        select 整行实体（非列元组）——分页层 `paging_data` 会对结果 `.unique()`，
+        而 JSONB `extra_data` 列在元组里非 hashable 会炸；ORM 实体可哈希，规避该坑。
+        """
+        stmt = select(CreditTransaction).where(
+            CreditTransaction.user_id == user_id,
+            CreditTransaction.app_code == app_code,
+        )
+        if transaction_type is not None:
+            stmt = stmt.where(CreditTransaction.transaction_type == transaction_type)
+        if reference_type is not None:
+            stmt = stmt.where(CreditTransaction.reference_type == reference_type)
+        return stmt.order_by(CreditTransaction.created_time.desc(), CreditTransaction.id.desc())
+
     async def get_all(self, db: AsyncSession) -> Sequence[CreditTransaction]:
         """
         获取所有积分交易记录

@@ -7,16 +7,19 @@
 """
 
 from datetime import timedelta
+from typing import Annotated
 import uuid
 
-from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel, ConfigDict, Field
 from decimal import Decimal
 from datetime import datetime
 
 from backend.app.user_tier.service.credit_service import credit_service
 from backend.app.user_tier.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.user_tier.crud.crud_credit_package import credit_package_dao
+from backend.app.user_tier.crud.crud_credit_transaction import credit_transaction_dao
+from backend.common.pagination import DependsPagination, PageData, paging_data
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.log import log
 from backend.common.security.jwt import DependsJwtAuth
@@ -40,6 +43,22 @@ class CreditBalanceItem(BaseModel):
     granted_at: datetime
     source_type: str
     description: str | None = None
+
+
+class CreditTransactionItem(BaseModel):
+    """用户端积分流水项（含 LLM 消耗 usage 类）"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    transaction_type: str = Field(description='交易类型 usage/purchase/refund/monthly_grant/subscription_grant/bonus/adjustment')
+    credits: Decimal = Field(description='积分变动数量（正=入账，负=消耗）')
+    balance_before: Decimal
+    balance_after: Decimal
+    reference_id: str | None = None
+    reference_type: str | None = Field(None, description='关联类型 llm_usage/payment/pay_order/system')
+    description: str | None = None
+    extra_data: dict | None = None
+    created_time: datetime
 
 
 class SubscriptionInfoResponse(BaseModel):
@@ -193,6 +212,32 @@ async def get_credit_balance_history(
     ]
 
     return response_base.success(data=items)
+
+
+@router.get(
+    '/transactions',
+    summary='获取积分流水（含 LLM 消耗）',
+    description='分页获取当前用户的积分流水（充值/赠送/月度发放/消耗），按时间倒序，强制数据隔离',
+    dependencies=[DependsJwtAuth, DependsPagination],
+)
+async def get_credit_transactions(
+    request: Request,
+    db: CurrentSession,
+    transaction_type: Annotated[str | None, Query(description='交易类型筛选 usage/purchase/...')] = None,
+    reference_type: Annotated[str | None, Query(description='关联类型筛选 llm_usage/payment/...')] = None,
+) -> ResponseSchemaModel[PageData[CreditTransactionItem]]:
+    """用户端积分流水（含 LLM 消耗 usage 类，reference_type='llm_usage'）。"""
+    user_id = request.user.id
+    app_code = request.state.app_code
+
+    select_stmt = await credit_transaction_dao.get_select_by_user(
+        user_id=user_id,
+        app_code=app_code,
+        transaction_type=transaction_type,
+        reference_type=reference_type,
+    )
+    page_data = await paging_data(db, select_stmt)
+    return response_base.success(data=page_data)
 
 
 def _calculate_remaining_value(

@@ -9,9 +9,9 @@ from backend.common.schema import SchemaBase
 
 class CreatePayOrderParam(SchemaBase):
     """创建支付订单参数（用户端）"""
-    tier: str = Field(description='目标套餐 star_glow/star_shine/star_glory')
+    tier: str = Field(description='目标套餐 free/pro/advanced/flagship')
     billing_cycle: str = Field('monthly', description='计费周期 monthly/yearly')
-    channel_code: str = Field(description='支付渠道编码 wx_native/alipay_pc')
+    channel_code: str = Field(description='支付渠道编码 wx_native/alipay_qr/alipay_pc')
     auto_renew: bool = Field(True, description='是否开通自动续费')
 
 
