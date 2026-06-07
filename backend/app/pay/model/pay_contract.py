@@ -18,7 +18,7 @@ class PayContract(Base):
     user_id: Mapped[int] = mapped_column(sa.BIGINT(), index=True, comment='用户 ID')
     channel_code: Mapped[str] = mapped_column(sa.String(32), comment='渠道编码 wx_papay/alipay_cycle')
     contract_no: Mapped[str] = mapped_column(sa.String(128), unique=True, comment='商户侧签约协议号')
-    tier: Mapped[str] = mapped_column(sa.String(32), comment='签约套餐 star_glow/star_shine/star_glory')
+    tier: Mapped[str] = mapped_column(sa.String(32), comment='签约套餐 free/pro/advanced/flagship')
     billing_cycle: Mapped[str] = mapped_column(sa.String(16), comment='计费周期 monthly/yearly')
     deduct_amount: Mapped[int] = mapped_column(sa.BIGINT(), comment='每期扣款金额（分）')
 
