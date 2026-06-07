@@ -21,6 +21,7 @@ from backend.app.marketplace.schema.marketplace_sync_log import (
     CreateMarketplaceSyncLogParam,
     UpdateMarketplaceSyncLogParam
 )
+from backend.app.marketplace.service.category_taxonomy import normalize_category
 from backend.app.marketplace.service.skill_content_extractor import (
     extract_skill_body,
     list_skill_files,
@@ -526,7 +527,9 @@ class ClawHubSyncService:
         category_slugs = [cat.slug for cat in categories]
 
         # Use keyword matching (LLM classification disabled due to API issues)
-        return self._map_category_from_text(name + ' ' + description, category_slugs)
+        slug = self._map_category_from_text(name + ' ' + description, category_slugs)
+        # 归一兜底：把命中结果收口到权威 12 领域 slug（防止旧 slug 漏网）。
+        return normalize_category(slug)
 
     def _map_category_from_text(self, text: str, available_categories: list[str]) -> str:
         """
@@ -541,23 +544,22 @@ class ClawHubSyncService:
         """
         text_lower = text.lower()
 
-        # Category mapping rules (keyword -> category slug)
+        # 关键词 → 权威 12 领域 slug。按"具体垂直域优先、通用工具兜底"排序，
+        # 命中越靠前优先级越高（finance/health/development/media 等先于 productivity/communication）。
         keyword_map = {
-            'creativity': ['video', 'image', 'generation', 'creative', 'art', 'design', 'nsfw', 'media'],
-            'development': ['code', 'programming', 'development', 'git', 'debug', 'api'],
-            'data': ['data', 'analysis', 'database', 'sql', 'analytics'],
-            'data-analysis': ['data', 'analysis', 'analytics', 'statistics'],
-            'productivity': ['automation', 'workflow', 'task', 'schedule', 'productivity', 'efficiency'],
-            'communication': ['chat', 'communication', 'message', 'email', 'meeting'],
-            'ai-assistant': ['ai', 'llm', 'machine learning', 'model', 'assistant'],
-            'automation': ['automation', 'workflow', 'task', 'schedule'],
-            'content-creation': ['content', 'creation', 'writing', 'blog'],
-            'entertainment': ['game', 'entertainment', 'fun', 'play'],
-            'writing': ['writing', 'write', 'text', 'document'],
-            'video': ['video', 'movie', 'film'],
-            'image': ['image', 'photo', 'picture'],
-            'audio': ['audio', 'music', 'sound'],
-            'media': ['media', 'multimedia']
+            'finance': ['finance', 'invest', 'stock', 'trading', 'crypto', 'payment', '理财', '金融', '股票'],
+            'health': ['health', 'medical', 'fitness', 'diet', 'wellness', '医疗', '健康', '健身'],
+            'development': ['code', 'programming', 'development', 'git', 'debug', 'api', 'sdk', 'compiler'],
+            'data-analysis': ['data', 'analysis', 'analytics', 'database', 'sql', 'statistics', '数据'],
+            'media': ['video', 'image', 'photo', 'picture', 'audio', 'music', 'sound', 'media', 'multimedia', 'film'],
+            'content-creation': ['content', 'writing', 'write', 'blog', 'article', 'copywriting', '文案', '写作'],
+            'creativity': ['creative', 'design', 'art', 'draw', 'illustration', 'nsfw', '设计', '创意'],
+            'search': ['search', 'retrieval', 'lookup', 'index', '检索', '搜索'],
+            'communication': ['chat', 'communication', 'message', 'email', 'meeting', 'social', '沟通', '社交'],
+            'ai-assistant': ['llm', 'machine learning', 'assistant', 'chatbot', 'prompt', '助手'],
+            'entertainment': ['game', 'entertainment', 'fun', 'play', '娱乐', '游戏'],
+            'productivity': ['automation', 'workflow', 'task', 'schedule', 'productivity', 'efficiency',
+                             'utility', 'tool', 'office', '效率', '自动化', '工具'],
         }
 
         # Find matching category

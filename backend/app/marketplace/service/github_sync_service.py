@@ -34,6 +34,7 @@ from backend.app.marketplace.schema.marketplace_sync_log import (
     CreateMarketplaceSyncLogParam,
     UpdateMarketplaceSyncLogParam,
 )
+from backend.app.marketplace.service.category_taxonomy import normalize_category
 from backend.app.marketplace.service.package_validation import normalize_tags
 from backend.app.marketplace.service.translation_service import translation_service
 from backend.app.marketplace.storage.s3_storage import marketplace_storage_service
@@ -41,14 +42,9 @@ from backend.common.log import log
 from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
-# huanxing-skills 目录名 → marketplace_category slug 的别名。
-# 历史目录名与分类表 slug 不完全一致：近义的合并到既有分类，避免重复语义分类。
-# 其余目录名（finance/health/social/utility/search/data/productivity）已补进分类表，原样透传。
-HUANXING_CATEGORY_ALIASES = {
-    'developer': 'development',
-    'creative': 'creativity',
-    'official': 'other',
-}
+# huanxing-skills 目录名 → 权威分类 slug 的归一统一收口到 `category_taxonomy.normalize_category`
+# （旧的 HUANXING_CATEGORY_ALIASES 已并入该表：developer→development、creative→creativity、
+# data→data-analysis、utility→productivity、social→communication、official→other 等）。
 
 
 class GitHubSyncService:
@@ -388,7 +384,7 @@ class GitHubSyncService:
             _, owner_or_category, slug = parts
             namespace = f'huanxing/{owner_or_category}'
             repo_path = f'huanxing-skills/{owner_or_category}/{slug}'
-            category = HUANXING_CATEGORY_ALIASES.get(owner_or_category, owner_or_category)
+            category = normalize_category(owner_or_category)
             is_official = True
             source_type = 'huanxing'
         elif root_name == 'github' and len(parts) >= 3:
@@ -418,7 +414,9 @@ class GitHubSyncService:
             'skill_id': skill_id,
             'namespace': namespace,
             'slug': slug,
-            'category': metadata.get('category') or category,
+            # frontmatter category 归一到权威 slug；huanxing 目录名已归一；github 无自带分类
+            # 时保留 None，交由下游 LLM 分类（_sync_skill 落库时再归一兜底）。
+            'category': normalize_category(metadata.get('category'), default=None) or category,
             'repo_path': repo_path,
             'git_commit_hash': self.repo.head.commit.hexsha if self.repo else None,
             'icon_url': metadata.get('icon_url') or metadata.get('icon_s3_url') or metadata.get('icon_cdn_url'),
@@ -566,8 +564,9 @@ class GitHubSyncService:
             'icon_url': await self._resolve_icon_url(db, skill_data),
             'emoji': skill_data.get('emoji') or translated.get('emoji'),
             'author_name': skill_data.get('author_name'),
-            # 优先用技能自带 category（huanxing 目录名/frontmatter），否则用 LLM 分类
-            'category': skill_data.get('category') or translated.get('category'),
+            # 优先用技能自带 category（huanxing 目录名/frontmatter），否则用 LLM 分类；
+            # 统一归一到权威 12 领域，未命中兜底 'other'（不再产生 NULL 分类）。
+            'category': normalize_category(skill_data.get('category') or translated.get('category')),
             'tags': json.dumps(tags, ensure_ascii=False),
             'tags_en': json.dumps(tags_en or tags, ensure_ascii=False),
             'tags_zh': json.dumps(tags_zh or tags, ensure_ascii=False),

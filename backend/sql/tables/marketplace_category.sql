@@ -19,15 +19,22 @@ COMMENT ON COLUMN "public"."marketplace_category"."parent_slug" IS '父分类标
 COMMENT ON COLUMN "public"."marketplace_category"."sort_order" IS '排序顺序';
 COMMENT ON TABLE "public"."marketplace_category" IS '技能市场分类表';
 
--- 初始分类数据
+-- 初始分类数据：按领域合并后的权威 12 领域 + 其他（事实源 category_taxonomy.py）。
+-- 历史细分类（writing/data/image/audio/video/social/utility/automation/...）已于
+-- 2026-06-07-consolidate-marketplace-categories.sql 合并迁移，不再种子。
 INSERT INTO "public"."marketplace_category" (slug, name, icon, parent_slug, sort_order) VALUES
-  ('content-creation', '内容创作', '📝', NULL, 1),
-  ('data-analysis', '数据分析', '📊', NULL, 2),
-  ('efficiency', '效率工具', '⚡', NULL, 3),
+  ('content-creation', '内容创作', '✍️', NULL, 1),
+  ('creativity', '设计创意', '🎨', NULL, 2),
+  ('media', '媒体处理', '🎬', NULL, 3),
   ('development', '开发工具', '💻', NULL, 4),
-  ('marketing', '营销推广', '📣', NULL, 5),
-  ('design', '设计创意', '🎨', NULL, 6),
-  ('automation', '自动化', '🤖', NULL, 7),
+  ('data-analysis', '数据分析', '📊', NULL, 5),
+  ('productivity', '效率办公', '⚡', NULL, 6),
+  ('ai-assistant', 'AI 助手', '🤖', NULL, 7),
+  ('communication', '沟通社交', '💬', NULL, 8),
+  ('search', '搜索检索', '🔍', NULL, 9),
+  ('finance', '金融理财', '💰', NULL, 10),
+  ('health', '健康医疗', '🏥', NULL, 11),
+  ('entertainment', '娱乐休闲', '🎮', NULL, 12),
   ('other', '其他', '📦', NULL, 99)
 ON CONFLICT (slug) DO UPDATE SET
   name = EXCLUDED.name,
