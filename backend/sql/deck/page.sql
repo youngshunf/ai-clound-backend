@@ -1,0 +1,46 @@
+-- =====================================================
+-- 演示文稿系统（模块 17）云端权威：page 幻灯片表
+-- schema=deck；deck_id 引用 deck.deck(id)（同 schema）；owner_id 冗余便于隔离查询
+-- 生成：uv run fba codegen generate --sql-file backend/sql/deck/page.sql --app deck --schema deck --execute
+-- 设计事实源：docs/hasn-node设计文档/17-演示文稿系统/01-数据模型.md §4/§9
+-- =====================================================
+CREATE SCHEMA IF NOT EXISTS "deck";
+
+CREATE TABLE "deck"."page" (
+  "id"             uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
+  "deck_id"        uuid           NOT NULL,
+  "owner_id"       varchar(40)    NOT NULL,
+  "position"       int            NOT NULL,
+  "title"          varchar(255)   NOT NULL DEFAULT '',
+  "html"           text           NOT NULL DEFAULT '',
+  "notes"          text,
+  "layout_intent"  varchar(32),
+  "status"         varchar(20)    NOT NULL DEFAULT 'empty',
+  "render_state"   jsonb,
+  "thumb_asset_id" varchar(64),
+  "rev"            bigint         NOT NULL DEFAULT 1,
+  "created_time"   timestamptz(6) NOT NULL DEFAULT now(),
+  "updated_time"   timestamptz(6),
+  "deleted_time"   timestamptz(6)
+);
+
+CREATE INDEX "idx_page_deck" ON "deck"."page" ("deck_id", "position");
+-- (deck_id, position) 在未删页内唯一（重排事务维护连续性）
+CREATE UNIQUE INDEX "uq_page_deck_position" ON "deck"."page" ("deck_id", "position") WHERE "deleted_time" IS NULL;
+
+COMMENT ON TABLE  "deck"."page" IS '演示文稿幻灯片（云端权威）';
+COMMENT ON COLUMN "deck"."page"."id" IS '主键 UUID';
+COMMENT ON COLUMN "deck"."page"."deck_id" IS '所属 deck（引用 deck.deck.id）';
+COMMENT ON COLUMN "deck"."page"."owner_id" IS '归属 owner HASN ID（owner 隔离键，冗余自 deck）';
+COMMENT ON COLUMN "deck"."page"."position" IS '页序（0 起，重排改此值；未删页内 (deck_id, position) 唯一）';
+COMMENT ON COLUMN "deck"."page"."title" IS '页标题（来自 outline，便于侧栏/缩略列表）';
+COMMENT ON COLUMN "deck"."page"."html" IS '单页 HTML（自包含文档或片段，见渲染契约）';
+COMMENT ON COLUMN "deck"."page"."notes" IS '演讲者备注（可空）';
+COMMENT ON COLUMN "deck"."page"."layout_intent" IS '版式意图（冗余自 outline，如 cover/data-focus/comparison）';
+COMMENT ON COLUMN "deck"."page"."status" IS '状态 (empty:空:gray/generating:生成中:orange/generated:已生成:green/edited:已编辑:blue/failed:失败:red)';
+COMMENT ON COLUMN "deck"."page"."render_state" IS '渲染/校验结果缓存（缩略图 asset、canvas 校验、溢出标记，JSON）';
+COMMENT ON COLUMN "deck"."page"."thumb_asset_id" IS '该页缩略图资产 id（预览/列表，可空）';
+COMMENT ON COLUMN "deck"."page"."rev" IS '单调版本（乐观并发 + 同步水位）';
+COMMENT ON COLUMN "deck"."page"."created_time" IS '创建时间';
+COMMENT ON COLUMN "deck"."page"."updated_time" IS '更新时间';
+COMMENT ON COLUMN "deck"."page"."deleted_time" IS '软删时间（非空=已删）';
