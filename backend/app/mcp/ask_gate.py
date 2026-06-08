@@ -295,7 +295,10 @@ class AskApprovalGate:
             ],
         }
         try:
-            async with async_db_session.begin() as db:
+            # route_message 自带 commit（见 message_router.py），**不能**再包 `.begin()`——否则
+            # 退出时二次 commit 抛异常 → 误判发卡失败 → 工具被即时拒绝（这正是「设置每次询问却
+            # 0.x 秒就被拒」的根因）。与规范调用面 `mcp/tools/message.py` 一致用裸工厂会话。
+            async with async_db_session() as db:
                 result = await message_router.route_message(
                     db,
                     from_id=agent_hasn_id,
