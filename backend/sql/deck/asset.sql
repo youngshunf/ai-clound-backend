@@ -1,14 +1,15 @@
 -- =====================================================
 -- 演示文稿系统（模块 17）云端权威：asset 资产引用表
 -- 二进制不入 deck 库——存唤星私有桶 public.hasn_assets，deck 只存引用（同源 D6 回流/附件管线）
+-- 主键 bigint 自增（对齐 fba id_key）；deck_id 引用 deck.deck(id) bigint；端云经 server_id 映射，无 uid。
 -- 生成：uv run fba codegen generate --sql-file backend/sql/deck/asset.sql --app deck --schema deck --execute
 -- 设计事实源：docs/hasn-node设计文档/17-演示文稿系统/01-数据模型.md §5/§9
 -- =====================================================
 CREATE SCHEMA IF NOT EXISTS "deck";
 
 CREATE TABLE "deck"."asset" (
-  "id"           uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
-  "deck_id"      uuid           NOT NULL,
+  "id"           bigserial      PRIMARY KEY,
+  "deck_id"      bigint         NOT NULL,
   "owner_id"     varchar(40)    NOT NULL,
   "asset_id"     varchar(64),
   "kind"         varchar(20)    NOT NULL,
@@ -25,8 +26,8 @@ CREATE TABLE "deck"."asset" (
 CREATE INDEX "idx_asset_deck" ON "deck"."asset" ("deck_id");
 
 COMMENT ON TABLE  "deck"."asset" IS '演示文稿资产引用（云端权威；二进制存 public.hasn_assets）';
-COMMENT ON COLUMN "deck"."asset"."id" IS '主键 UUID';
-COMMENT ON COLUMN "deck"."asset"."deck_id" IS '所属 deck（引用 deck.deck.id）';
+COMMENT ON COLUMN "deck"."asset"."id" IS '主键 ID（自增 BigInt）';
+COMMENT ON COLUMN "deck"."asset"."deck_id" IS '所属 deck（引用 deck.deck.id，bigint）';
 COMMENT ON COLUMN "deck"."asset"."owner_id" IS '归属 owner HASN ID（owner 隔离键）';
 COMMENT ON COLUMN "deck"."asset"."asset_id" IS '云端资产 id（引用 public.hasn_assets.asset_id，hasn://asset/{asset_id}）';
 COMMENT ON COLUMN "deck"."asset"."kind" IS '类型 (image:图片:blue/font:字体:gray/export-pptx:PPTX导出:violet/export-pdf:PDF导出:violet/thumb:缩略图:green)';
