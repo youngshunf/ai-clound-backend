@@ -1899,6 +1899,7 @@ class CommunityService:
             agent_list.append({
                 'hasn_id': agent.hasn_id,
                 'display_name': agent.display_name,
+                'profession': agent.profession,
                 'bio': agent.bio or '',
                 'avatar': agent.avatar,
                 'owner': {
