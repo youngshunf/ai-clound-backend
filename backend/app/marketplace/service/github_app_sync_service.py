@@ -139,7 +139,18 @@ class GitHubAppSyncService:
         if not isinstance(data, dict):
             raise TypeError(f'template.yaml must be a mapping: {template_path}')
 
-        display_name = data.get('display_name') or data.get('name') or slug
+        # 模板卡片标题取 YAML `name`（领域专家头衔，如「金融专家」）。历史上这里优先取
+        # `display_name`（人名「明远」），把领域名吃掉了——分身命名体系重构后掰正：name=专家头衔。
+        template_name = data.get('name') or data.get('display_name') or slug
+        # 候选人名池（仅 Agent 模板有）：YAML name_pool 数组 → 逗号拼接入库；缺省回退 display_name。
+        raw_pool = data.get('name_pool')
+        if isinstance(raw_pool, list):
+            name_pool_items = [str(item).strip() for item in raw_pool if str(item).strip()]
+        else:
+            name_pool_items = []
+        if not name_pool_items and data.get('display_name'):
+            name_pool_items = [str(data['display_name']).strip()]
+        name_pool_csv = ','.join(name_pool_items) or None
         description = data.get('description') or ''
         version = str(data.get('version') or '1.0.0')
         namespace = f'huanxing/{category}'
@@ -169,13 +180,14 @@ class GitHubAppSyncService:
             'namespace': namespace,
             'slug': slug,
             'template_type': data.get('template_type') or 'agent_template',
-            'name': str(display_name),
-            'name_en': str(display_name),
-            'name_zh': str(display_name),
+            'name': str(template_name),
+            'name_en': str(template_name),
+            'name_zh': str(template_name),
+            'name_pool': name_pool_csv,
             'description': str(description),
             'description_en': str(description),
             'description_zh': str(description),
-            'source_language': 'zh' if any(ord(c) > 127 for c in str(display_name)) else 'en',
+            'source_language': 'zh' if any(ord(c) > 127 for c in str(template_name)) else 'en',
             'icon_url': data.get('icon_url') or data.get('icon_s3_url') or data.get('icon_cdn_url'),
             'icon_path': icon_path,
             'emoji': data.get('emoji'),

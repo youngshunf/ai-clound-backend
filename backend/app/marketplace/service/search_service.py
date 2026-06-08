@@ -561,6 +561,7 @@ class SearchService:
             'namespace': template.namespace,
             'slug': template.slug,
             'name': template.name or template.name_zh or template.name_en,
+            'name_pool': [n.strip() for n in (template.name_pool or '').split(',') if n.strip()],
             'description': template.description or template.description_zh or template.description_en,
             'icon_url': template.icon_url,
             'emoji': template.emoji,

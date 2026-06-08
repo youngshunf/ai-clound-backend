@@ -65,6 +65,11 @@ class MarketplaceTemplate(Base):
     download_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='下载次数')
     category: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment='分类')
     tags: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='标签，逗号分隔')
+    name_pool: Mapped[str | None] = mapped_column(
+        sa.String(500),
+        default=None,
+        comment='候选人名池（逗号分隔，仅 Agent 模板；创建分身时供用户选择/兜底，display_name 取池首位）',
+    )
     source_type: Mapped[str | None] = mapped_column(
         sa.String(20),
         default=None,

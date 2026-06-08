@@ -116,6 +116,7 @@ class MarketplaceTemplateService:
             'name': template.name,
             'name_en': template.name_en,
             'name_zh': template.name_zh,
+            'name_pool': [n.strip() for n in (template.name_pool or '').split(',') if n.strip()],
             'description': template.description,
             'description_en': template.description_en,
             'description_zh': template.description_zh,

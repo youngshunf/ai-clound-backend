@@ -43,6 +43,7 @@ class MarketplaceTemplateSchemaBase(SchemaBase):
     download_count: int = Field(description='下载次数')
     category: str | None = Field(None, description='分类')
     tags: str | None = Field(None, description='标签，逗号分隔')
+    name_pool: str | None = Field(None, description='候选人名池，逗号分隔（仅 Agent 模板）')
     source_type: str | None = Field(
         None,
         description='来源类型 (github:GitHub:blue/clawhub:ClawHub:green/local:本地:gray)',
