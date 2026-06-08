@@ -87,7 +87,10 @@ async def _run_skill_sync_background() -> None:
     在这里跑——GitHub webhook 期望 ~10s 内 2xx，同步耗时长不能阻塞响应。
     """
     try:
-        async with async_db_session() as db:
+        # 用 .begin() 事务上下文：成功自动 commit、异常自动 rollback。
+        # sync_from_github 只 flush 不 commit，普通 async_db_session() 不自动提交，
+        # 会让全量同步「看似成功（synced>0）实则回滚不落库」。
+        async with async_db_session.begin() as db:
             result = await github_sync_service.sync_from_github(db, force=True)
         log.info(f"[Webhook] 后台技能同步完成: {result}")
     except Exception as exc:
@@ -97,7 +100,8 @@ async def _run_skill_sync_background() -> None:
 async def _run_template_sync_background() -> None:
     """后台执行模板全量同步（自带 DB 会话）。"""
     try:
-        async with async_db_session() as db:
+        # 同上：.begin() 事务上下文确保同步结果真正 commit 落库（见技能同步注释）。
+        async with async_db_session.begin() as db:
             result = await github_app_sync_service.sync_from_github(db, force=True)
         log.info(f"[Webhook] 后台模板同步完成: {result}")
     except Exception as exc:
