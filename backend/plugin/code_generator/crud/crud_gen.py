@@ -44,7 +44,7 @@ class CRUDGen:
               and c.relname not like 'gen_%'
               and n.nspname = :table_schema;
             """
-            stmt = text(sql).bindparams(table_schema='public')
+            stmt = text(sql).bindparams(table_schema=table_schema)
         result = await db.execute(stmt)
         return result.mappings().all()
 
@@ -85,7 +85,7 @@ class CRUDGen:
               and c.relname = :table_name
               and n.nspname = :table_schema;
             """
-            stmt = text(sql).bindparams(table_schema='public', table_name=table_name)
+            stmt = text(sql).bindparams(table_schema=table_schema, table_name=table_name)
         result = await db.execute(stmt)
         row = result.fetchone()
         return row._mapping if row else None
@@ -185,7 +185,7 @@ class CRUDGen:
             order by
               sort;
             """
-            stmt = text(sql).bindparams(table_schema='public', table_name=table_name)
+            stmt = text(sql).bindparams(table_schema=table_schema, table_name=table_name)
         result = await db.execute(stmt)
         return result.mappings().all()
 

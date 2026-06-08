@@ -18,7 +18,7 @@ router = APIRouter()
 @router.get('/tables', summary='获取数据库表')
 async def get_all_tables(
     db: CurrentSession,
-    table_schema: Annotated[str, Query(description='数据库名')] = 'fba',
+    table_schema: Annotated[str, Query(description='数据库 schema 名称')] = 'public',
 ) -> ResponseSchemaModel[list[dict[str, str | None]]]:
     data = await gen_service.get_tables(db=db, table_schema=table_schema)
     return response_base.success(data=data)
