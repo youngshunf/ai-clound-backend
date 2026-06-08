@@ -480,6 +480,7 @@ async def register_hasn_agent(
     agents_md: str | None = None,
     user_md: str | None = None,
     memory_md: str | None = None,
+    profession: str | None = None,
 ) -> dict[str, Any]:
     """
     为已有 Human 注册新 Agent 的 HASN 身份
@@ -564,6 +565,7 @@ async def register_hasn_agent(
             updated = True
         for attr, value in {
             'description': description,
+            'profession': profession,
             'capabilities': capabilities,
             'template_id': template_id,
             'template_version': template_version,
@@ -619,6 +621,7 @@ async def register_hasn_agent(
         type=agent_type,
         node_id=node_id,
         role=role or 'specialist',
+        profession=profession,
         description=description,
         capabilities=capabilities,
         template_id=template_id,

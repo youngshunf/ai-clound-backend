@@ -21,6 +21,8 @@ from backend.app.hasn.schema.hasn_agents import (
     AgentSnapshot,
     AgentSyncRequest,
     AgentSyncResponse,
+    CheckDisplayNameRequest,
+    CheckDisplayNameResponse,
     CloudCreateAgentRequest,
     CloudCreateAgentResponse,
     CreateHasnAgentsParam,
@@ -132,6 +134,27 @@ async def cloud_create_my_hasn_agent(
 ) -> ResponseSchemaModel[CloudCreateAgentResponse]:
     result = await agent_profile_service.create_cloud_first(db=db, request=obj, user_id=request.user.id)
     return response_base.success(data=result)
+
+
+@router.post(
+    '/check-display-name',
+    summary='创建分身前查人名是否可用（display_name 全局唯一）',
+    dependencies=[DependsJwtAuth],
+)
+async def check_agent_display_name(
+    db: CurrentSession,
+    obj: CheckDisplayNameRequest,
+) -> ResponseSchemaModel[CheckDisplayNameResponse]:
+    name = (obj.display_name or '').strip()
+    taken = bool(name) and await agent_profile_service.gateway.is_display_name_taken(db, name)
+    suggestion = None
+    if taken:
+        suggestion = await agent_profile_service.gateway.resolve_unique_display_name(
+            db, desired=name, candidates=obj.candidates
+        )
+    return response_base.success(
+        data=CheckDisplayNameResponse(available=bool(name) and not taken, suggestion=suggestion)
+    )
 
 
 @router.get(

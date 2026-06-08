@@ -32,6 +32,10 @@ class AgentProfileGateway(Protocol):
     async def owns_owner(self, db: AsyncSession, *, owner_id: str, user_id: int) -> bool: ...
     async def get_template(self, db: AsyncSession, *, template_id: str) -> Any | None: ...
     async def create_agent(self, db: AsyncSession, payload: dict[str, Any]) -> tuple[Any, str | None, bool]: ...
+    async def is_display_name_taken(self, db: AsyncSession, display_name: str) -> bool: ...
+    async def resolve_unique_display_name(
+        self, db: AsyncSession, *, desired: str, candidates: list[str] | None = None
+    ) -> str: ...
     async def list_owner_agents(
         self, db: AsyncSession, *, owner_id: str, after_revision: int | None = None
     ) -> list[Any]: ...
@@ -145,6 +149,47 @@ class SqlAlchemyAgentProfileGateway:
 
         return f'{root}-{uuid.uuid4().hex[:6]}'
 
+    @staticmethod
+    async def is_display_name_taken(db: AsyncSession, display_name: str) -> bool:
+        """display_name 全局唯一（应用层校验）：任一未删除分身占用即视为已占。
+
+        注：不加 DB 唯一约束——存量数据已有重复 display_name（历史默认填领域名），
+        硬约束会迁移失败；故收口在创建路径 + 查重端点的应用层。
+        """
+        import sqlalchemy as sa
+
+        name = (display_name or '').strip()
+        if not name:
+            return False
+        row = (
+            await db.execute(
+                sa.select(HasnAgents.id)
+                .where(HasnAgents.display_name == name, HasnAgents.deleted_at.is_(None))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return row is not None
+
+    async def resolve_unique_display_name(
+        self, db: AsyncSession, *, desired: str, candidates: list[str] | None = None
+    ) -> str:
+        """挑一个全局未占用的人名：desired → 候选池按序 → desired+数字后缀。"""
+        desired = (desired or '').strip() or 'AI 分身'
+        if not await self.is_display_name_taken(db, desired):
+            return desired
+        for raw in candidates or []:
+            cand = (raw or '').strip()
+            if cand and cand != desired and not await self.is_display_name_taken(db, cand):
+                return cand
+        root = desired[:56]
+        for suffix in range(2, 1000):
+            cand = f'{root}{suffix}'
+            if not await self.is_display_name_taken(db, cand):
+                return cand
+        import uuid
+
+        return f'{root}-{uuid.uuid4().hex[:4]}'
+
     async def create_agent(self, db: AsyncSession, payload: dict[str, Any]) -> tuple[Any, str | None, bool]:
         from backend.app.hasn.service.hasn_auth import register_hasn_agent
 
@@ -154,11 +199,20 @@ class SqlAlchemyAgentProfileGateway:
             db, owner_id=payload['owner_id'], base_slug=payload['agent_name']
         )
 
+        # display_name 全局唯一：webui 创建前已查重，此处兜底并发竞态——撞名则按候选池/后缀
+        # 挑首个空闲名落库（返回快照即真实存名，daemon/webui 据此回写并按需提示）。
+        display_name = await self.resolve_unique_display_name(
+            db,
+            desired=payload['display_name'],
+            candidates=payload.get('display_name_candidates'),
+        )
+
         result = await register_hasn_agent(
             db=db,
             owner_hasn_id=payload['owner_id'],
             agent_name=agent_name,
-            display_name=payload['display_name'],
+            display_name=display_name,
+            profession=payload.get('profession'),
             agent_type=payload.get('agent_type') or 'desktop',
             node_id=payload.get('node_id'),
             role=payload.get('role') or 'specialist',
@@ -330,13 +384,29 @@ class HasnAgentProfileService:
                 agent.star_id = new_star_id
 
         if 'display_name' in provided and provided['display_name'] is not None:
-            agent.display_name = provided['display_name']
+            new_display_name = provided['display_name']
+            if new_display_name != agent.display_name:
+                # 改名也保 display_name 全局唯一：被他人占用则拒（webui 据错误码再查重/给建议）。
+                dn_conflict = (
+                    await db.execute(
+                        sa.select(HasnAgents.id).where(
+                            HasnAgents.display_name == new_display_name,
+                            HasnAgents.deleted_at.is_(None),
+                            HasnAgents.id != agent.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if dn_conflict is not None:
+                    raise errors.RequestError(msg='ERR_HASN_AGENT_DISPLAY_NAME_TAKEN')
+                agent.display_name = new_display_name
         if 'description' in provided:
             agent.description = provided['description']
         if 'avatar' in provided:
             agent.avatar = provided['avatar']
         if 'role' in provided and provided['role'] is not None:
             agent.role = provided['role']
+        if 'profession' in provided and provided['profession'] is not None:
+            agent.profession = provided['profession']
         if 'tags' in provided and provided['tags'] is not None:
             agent.tags = list(provided['tags'])
         if 'capability_set_id' in provided:
@@ -692,6 +762,9 @@ def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any 
         'template_version': getattr(template, 'template_version', None),
         'agent_name': _resolve_agent_slug(request, template),
         'display_name': request.display_name,
+        'display_name_candidates': request.display_name_candidates,
+        # 领域专家头衔：优先用请求显式传入（webui 据所选模板 name），回退 hasn_agent_templates.name。
+        'profession': request.profession or getattr(template, 'name', None),
         'description': request.description
         or getattr(template, 'default_description', None)
         or getattr(template, 'description', None),
@@ -750,6 +823,7 @@ def _agent_snapshot(agent: Any) -> AgentSnapshot:
         avatar=getattr(agent, 'avatar', None),
         type=getattr(agent, 'type', 'desktop') or 'desktop',
         role=getattr(agent, 'role', 'specialist') or 'specialist',
+        profession=getattr(agent, 'profession', None),
         node_id=getattr(agent, 'node_id', None),
         capabilities=getattr(agent, 'capabilities', None),
         capability_set_id=getattr(agent, 'capability_set_id', None),

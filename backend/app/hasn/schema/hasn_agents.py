@@ -78,6 +78,7 @@ class AgentSnapshot(SchemaBase):
     avatar: str | None = Field(None, description='Agent 头像')
     type: str = Field(default='desktop', description='Agent 类型')
     role: str = Field(default='specialist', description='Agent 角色')
+    profession: str | None = Field(None, description='领域专家头衔（如「金融专家」）')
     node_id: str | None = Field(None, description='驻留节点 ID 摘要')
     capabilities: dict[str, Any] | list[Any] | None = Field(None, description='能力摘要')
     capability_set_id: str | None = Field(None, description='Agent 能力集 ID')
@@ -107,7 +108,11 @@ class CloudCreateAgentRequest(SchemaBase):
     owner_id: str = Field(description='Owner HASN ID')
     template_id: str | None = Field(None, description='模板 ID；空表示自定义')
     agent_name: str | None = Field(None, description='Agent 英文/目录标识；空则云端按显示名/模板生成')
-    display_name: str = Field(description='Agent 显示名')
+    display_name: str = Field(description='Agent 显示名（像人一样的名字，全局唯一）')
+    display_name_candidates: list[str] | None = Field(
+        None, description='候选人名池（来自模板 name_pool）；display_name 撞名时云端按序挑首个空闲'
+    )
+    profession: str | None = Field(None, description='领域专家头衔（如「金融专家」，来自模板 name）')
     description: str | None = Field(None, description='Agent 简介')
     avatar: str | None = Field(None, description='Agent 头像 URL')
     skills: dict[str, Any] | list[Any] | None = Field(None, description='技能配置')
@@ -120,6 +125,20 @@ class CloudCreateAgentRequest(SchemaBase):
     agent_type: str = Field(default='desktop', description='Agent 类型')
     role: str = Field(default='specialist', description='Agent 角色')
     capabilities: dict[str, Any] | list[Any] | None = Field(None, description='能力摘要')
+
+
+class CheckDisplayNameRequest(SchemaBase):
+    """创建分身前查人名是否可用（display_name 全局唯一）。"""
+
+    display_name: str = Field(description='待校验的人名')
+    candidates: list[str] | None = Field(None, description='候选人名池；撞名时据此给建议名')
+
+
+class CheckDisplayNameResponse(SchemaBase):
+    """人名查重结果。"""
+
+    available: bool = Field(description='是否可用（全局未被占用）')
+    suggestion: str | None = Field(None, description='撞名时的建议可用人名；可用时为空')
 
 
 class AgentTokenInfo(SchemaBase):
@@ -147,6 +166,7 @@ class UpdateAgentProfileRequest(SchemaBase):
     description: str | None = Field(None, max_length=280, description='Agent 简介')
     avatar: str | None = Field(None, max_length=500, description='Agent 头像 URL')
     role: str | None = Field(None, min_length=1, max_length=64, description='Agent 角色')
+    profession: str | None = Field(None, max_length=60, description='领域专家头衔（如「金融专家」）')
     star_id: str | None = Field(None, min_length=1, max_length=40, description='Agent 唤星号（同表唯一）')
     tags: list[str] | None = Field(None, description='Agent 标签数组（覆盖式更新）')
     capability_set_id: str | None = Field(None, max_length=80, description='Agent 能力集 ID')

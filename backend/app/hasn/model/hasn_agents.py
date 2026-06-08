@@ -38,6 +38,11 @@ class HasnAgents(Base):
         default='specialist',
         comment='Agent 角色 (primary:主要:blue/specialist:专家:green/service:服务:orange)',
     )
+    profession: Mapped[str | None] = mapped_column(
+        sa.String(60),
+        default=None,
+        comment='领域专家头衔（如「金融专家」，来自模板 name；与人名 display_name 并列展示）',
+    )
     node_id: Mapped[str | None] = mapped_column(
         sa.String(40), default=None, comment='Agent 驻留节点 ID（设备指纹派生，格式: n_{hash}）'
     )
