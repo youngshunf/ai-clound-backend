@@ -1,87 +1,229 @@
-from collections.abc import Sequence
-from typing import Any
+"""演示文稿（模块 17）云端业务服务：owner 隔离的 deck + page CRUD。
 
-from sqlalchemy.ext.asyncio import AsyncSession
+app scope（Owner JWT）与 agent scope（Agent JWT，owner=agent.owner_hasn_id）共用同一组方法，
+仅 `owner_id` 来源不同——身份解析在 api 层完成，service 只认 owner_id 隔离键。
+所有查询强制 `owner_id == owner_id AND deleted_time IS NULL`；跨 owner 访问按"不存在"处理（不泄露存在性）。
+"""
 
-from backend.app.deck.crud.crud_deck import deck_dao
-from backend.app.deck.model import Deck
-from backend.app.deck.schema.deck import CreateDeckParam, DeleteDeckParam, UpdateDeckParam
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from sqlalchemy import func, select
+
+from backend.app.deck.model import Deck, Page
 from backend.common.exception import errors
-from backend.common.pagination import paging_data
+from backend.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+# 允许更新的字段白名单（挡住 owner_id/id/rev/deck_id 等被改）
+_DECK_MUTABLE = (
+    'title',
+    'topic',
+    'status',
+    'language',
+    'outline',
+    'design_contract',
+    'style_profile_id',
+    'cover_asset_id',
+)
+_PAGE_MUTABLE = ('position', 'title', 'html', 'notes', 'layout_intent', 'status', 'render_state', 'thumb_asset_id')
+
+
+def _deck_dict(d: Deck) -> dict[str, Any]:
+    return {
+        'id': d.id,
+        'owner_id': d.owner_id,
+        'title': d.title,
+        'topic': d.topic,
+        'status': d.status,
+        'language': d.language,
+        'outline': d.outline,
+        'design_contract': d.design_contract,
+        'style_profile_id': d.style_profile_id,
+        'page_count': d.page_count,
+        'cover_asset_id': d.cover_asset_id,
+        'source': d.source,
+        'rev': d.rev,
+        'created_time': d.created_time,
+        'updated_time': d.updated_time,
+    }
+
+
+def _page_dict(p: Page) -> dict[str, Any]:
+    return {
+        'id': p.id,
+        'deck_id': p.deck_id,
+        'owner_id': p.owner_id,
+        'position': p.position,
+        'title': p.title,
+        'html': p.html,
+        'notes': p.notes,
+        'layout_intent': p.layout_intent,
+        'status': p.status,
+        'render_state': p.render_state,
+        'thumb_asset_id': p.thumb_asset_id,
+        'rev': p.rev,
+        'created_time': p.created_time,
+        'updated_time': p.updated_time,
+    }
 
 
 class DeckService:
-    @staticmethod
-    async def get(*, db: AsyncSession, pk: int) -> Deck:
-        """
-        获取演示文稿（云端权威）
+    """owner 隔离的 deck/page 服务。所有方法第一参数 db，关键字 owner_id 为隔离键。"""
 
-        :param db: 数据库会话
-        :param pk: 演示文稿（云端权威） ID
-        :return:
-        """
-        deck = await deck_dao.get(db, pk)
-        if not deck:
-            raise errors.NotFoundError(msg='演示文稿（云端权威）不存在')
+    # ---------- deck ----------
+
+    @staticmethod
+    async def create_deck(
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        title: str,
+        topic: str | None = None,
+        language: str = 'zh',
+        source: str = 'manual',
+        style_profile_id: str | None = None,
+    ) -> dict[str, Any]:
+        deck = Deck(
+            owner_id=owner_id,
+            title=title,
+            topic=topic,
+            status='draft',
+            language=language,
+            source=source,
+            style_profile_id=style_profile_id,
+        )
+        db.add(deck)
+        await db.flush()
+        return _deck_dict(deck)
+
+    @staticmethod
+    async def list_decks(db: AsyncSession, *, owner_id: str, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        base = select(Deck).where(Deck.owner_id == owner_id, Deck.deleted_time.is_(None))
+        total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+        rows = (
+            (
+                await db.execute(
+                    base.order_by(Deck.updated_time.desc().nullslast(), Deck.id.desc()).limit(limit).offset(offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {'items': [_deck_dict(d) for d in rows], 'total': int(total)}
+
+    @staticmethod
+    async def _get_owned_deck(db: AsyncSession, *, owner_id: str, deck_id: int) -> Deck:
+        deck = (
+            await db.execute(
+                select(Deck).where(Deck.id == deck_id, Deck.owner_id == owner_id, Deck.deleted_time.is_(None))
+            )
+        ).scalar_one_or_none()
+        if deck is None:
+            raise errors.NotFoundError(msg='演示文稿不存在')
         return deck
 
     @staticmethod
-    async def get_list(db: AsyncSession) -> dict[str, Any]:
-        """
-        获取演示文稿（云端权威）列表
-
-        :param db: 数据库会话
-        :return:
-        """
-        deck_select = await deck_dao.get_select()
-        return await paging_data(db, deck_select)
+    async def get_deck(db: AsyncSession, *, owner_id: str, deck_id: int) -> dict[str, Any]:
+        return _deck_dict(await DeckService._get_owned_deck(db, owner_id=owner_id, deck_id=deck_id))
 
     @staticmethod
-    async def get_all(*, db: AsyncSession) -> Sequence[Deck]:
-        """
-        获取所有演示文稿（云端权威）
-
-        :param db: 数据库会话
-        :return:
-        """
-        deck_list = await deck_dao.get_all(db)
-        return deck_list
-
-    @staticmethod
-    async def create(*, db: AsyncSession, obj: CreateDeckParam) -> None:
-        """
-        创建演示文稿（云端权威）
-
-        :param db: 数据库会话
-        :param obj: 创建演示文稿（云端权威）参数
-        :return:
-        """
-        await deck_dao.create(db, obj)
+    async def update_deck(db: AsyncSession, *, owner_id: str, deck_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+        deck = await DeckService._get_owned_deck(db, owner_id=owner_id, deck_id=deck_id)
+        for key, value in fields.items():
+            if key in _DECK_MUTABLE and value is not None:
+                setattr(deck, key, value)
+        deck.rev += 1
+        await db.flush()
+        return _deck_dict(deck)
 
     @staticmethod
-    async def update(*, db: AsyncSession, pk: int, obj: UpdateDeckParam) -> int:
-        """
-        更新演示文稿（云端权威）
+    async def delete_deck(db: AsyncSession, *, owner_id: str, deck_id: int) -> None:
+        deck = await DeckService._get_owned_deck(db, owner_id=owner_id, deck_id=deck_id)
+        deck.deleted_time = timezone.now()
+        await db.flush()
 
-        :param db: 数据库会话
-        :param pk: 演示文稿（云端权威） ID
-        :param obj: 更新演示文稿（云端权威）参数
-        :return:
-        """
-        count = await deck_dao.update(db, pk, obj)
-        return count
+    # ---------- page ----------
 
     @staticmethod
-    async def delete(*, db: AsyncSession, obj: DeleteDeckParam) -> int:
-        """
-        删除演示文稿（云端权威）
+    async def list_pages(db: AsyncSession, *, owner_id: str, deck_id: int) -> dict[str, Any]:
+        await DeckService._get_owned_deck(db, owner_id=owner_id, deck_id=deck_id)  # owner 闸 + 存在性
+        rows = (
+            (
+                await db.execute(
+                    select(Page)
+                    .where(Page.deck_id == deck_id, Page.owner_id == owner_id, Page.deleted_time.is_(None))
+                    .order_by(Page.position.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {'items': [_page_dict(p) for p in rows], 'total': len(rows)}
 
-        :param db: 数据库会话
-        :param obj: 演示文稿（云端权威） ID 列表
-        :return:
-        """
-        count = await deck_dao.delete(db, obj.pks)
-        return count
+    @staticmethod
+    async def create_page(
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        deck_id: int,
+        position: int,
+        title: str = '',
+        html: str = '',
+        notes: str | None = None,
+        layout_intent: str | None = None,
+        status: str = 'empty',
+    ) -> dict[str, Any]:
+        deck = await DeckService._get_owned_deck(db, owner_id=owner_id, deck_id=deck_id)
+        page = Page(
+            deck_id=deck_id,
+            owner_id=owner_id,
+            position=position,
+            title=title,
+            html=html,
+            notes=notes,
+            layout_intent=layout_intent,
+            status=status,
+        )
+        db.add(page)
+        deck.page_count += 1  # 冗余计数随未删页推进
+        deck.rev += 1
+        await db.flush()
+        return _page_dict(page)
+
+    @staticmethod
+    async def _get_owned_page(db: AsyncSession, *, owner_id: str, page_id: int) -> Page:
+        page = (
+            await db.execute(
+                select(Page).where(Page.id == page_id, Page.owner_id == owner_id, Page.deleted_time.is_(None))
+            )
+        ).scalar_one_or_none()
+        if page is None:
+            raise errors.NotFoundError(msg='幻灯片不存在')
+        return page
+
+    @staticmethod
+    async def update_page(db: AsyncSession, *, owner_id: str, page_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+        page = await DeckService._get_owned_page(db, owner_id=owner_id, page_id=page_id)
+        for key, value in fields.items():
+            if key in _PAGE_MUTABLE and value is not None:
+                setattr(page, key, value)
+        page.rev += 1
+        await db.flush()
+        return _page_dict(page)
+
+    @staticmethod
+    async def delete_page(db: AsyncSession, *, owner_id: str, page_id: int) -> None:
+        page = await DeckService._get_owned_page(db, owner_id=owner_id, page_id=page_id)
+        page.deleted_time = timezone.now()
+        deck = await DeckService._get_owned_deck(db, owner_id=owner_id, deck_id=page.deck_id)
+        if deck.page_count > 0:
+            deck.page_count -= 1
+        deck.rev += 1
+        await db.flush()
 
 
-deck_service: DeckService = DeckService()
+deck_service = DeckService()
