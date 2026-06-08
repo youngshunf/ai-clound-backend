@@ -14,6 +14,8 @@ class HasnNodesSchemaBase(SchemaBase):
     device_fingerprint: str | None = Field(None, description='设备指纹（用于幂等创建和识别同一设备）')
     device_platform: str | None = Field(None, description='设备平台')
     app_version: str | None = Field(None, description='接入端应用版本')
+    ip_address: str | None = Field(None, description='最近一次连接的客户端 IP（v4/v6）')
+    ip_location: str | None = Field(None, description='IP 归属地（GeoLite2 离线解析，缺库时留空表示未知）')
     node_info: dict = Field(description='节点信息 JSON')
     node_key_hash: str | None = Field(None, description='Node Key 的 SHA256 哈希')
     capacity: int = Field(description='最大 Agent 承载量')

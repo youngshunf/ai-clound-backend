@@ -22,6 +22,8 @@ class HasnNodes(Base):
     device_fingerprint: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='设备指纹（用于幂等创建和识别同一设备）')
     device_platform: Mapped[str | None] = mapped_column(sa.String(32), default=None, comment='设备平台 (macos:macOS:blue/windows:Windows:cyan/linux:Linux:green/ios:iOS:purple/android:Android:orange/web:Web:gray/sdk:SDK:yellow/server:Server:red)')
     app_version: Mapped[str | None] = mapped_column(sa.String(32), default=None, comment='接入端应用版本')
+    ip_address: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='最近一次连接的客户端 IP（v4/v6）')
+    ip_location: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='IP 归属地（GeoLite2 离线解析，缺库时留空表示未知）')
     node_info: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='节点信息 JSON')
     node_key_hash: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='Node Key 的 SHA256 哈希')
     capacity: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='最大 Agent 承载量')
