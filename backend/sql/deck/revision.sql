@@ -15,6 +15,7 @@ CREATE TABLE "deck"."revision" (
   "label"        varchar(32)    NOT NULL,
   "snapshot"     jsonb          NOT NULL,
   "created_time" timestamptz(6) NOT NULL DEFAULT now(),
+  "updated_time" timestamptz(6),
   "deleted_time" timestamptz(6)
 );
 
@@ -28,4 +29,5 @@ COMMENT ON COLUMN "deck"."revision"."seq" IS '版本序（单调递增；(deck_i
 COMMENT ON COLUMN "deck"."revision"."label" IS '来源标签 (generated:生成:green/edited:编辑:blue/imported:导入:violet/manual:手动:gray/reverted:回滚:orange)';
 COMMENT ON COLUMN "deck"."revision"."snapshot" IS 'deck + pages 完整快照（JSON；大 deck 可只存基线+diff）';
 COMMENT ON COLUMN "deck"."revision"."created_time" IS '创建时间';
+COMMENT ON COLUMN "deck"."revision"."updated_time" IS '更新时间（revision immutable，恒为空；为对齐 fba DateTimeMixin 保留）';
 COMMENT ON COLUMN "deck"."revision"."deleted_time" IS '软删时间（非空=已删）';
