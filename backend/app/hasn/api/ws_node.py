@@ -263,6 +263,8 @@ async def _recv_loop(
                 await _handle_typing(params, active_entities)
 
             elif method == 'hasn.ping':
+                # P3：应用层心跳续期节点存活 TTL（根治僵尸 presence）。
+                await ws_router.refresh_node_presence(node_id)
                 await websocket.send_json(_frame('hasn.pong', {
                     'ts': params.get('ts'),
                 }))

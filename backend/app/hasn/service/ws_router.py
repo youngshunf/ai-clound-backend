@@ -41,6 +41,13 @@ PUSH_PREFIX = 'hasn:push'
 OFFLINE_PREFIX = 'hasn:offline'
 OFFLINE_TTL = 7 * 86400  # 7 天
 
+# 节点存活心跳键（P3 僵尸回收）：每节点一个带 TTL 的 string 键，注册时写、
+# 应用层 hasn.ping 心跳续期；过期（非优雅退出，无续期）即视为离线 → 其 agent
+# 一并判离线，供他机接管。注意 NODE_CONN_KEY 是单 hash（无法对单字段设 TTL），
+# 故另用 per-node alive 键承载 TTL。daemon 心跳间隔 30s，TTL 90s 留 3 次丢包余量。
+NODE_ALIVE_PREFIX = 'hasn:node_alive'
+NODE_PRESENCE_TTL_SECS = 90
+
 # 兼容别名（旧代码过渡期引用）
 AGENT_NODE_KEY = ENTITY_NODE_KEY
 CLIENT_CONN_KEY = NODE_CONN_KEY
@@ -67,9 +74,22 @@ class WsRouterService:
             'connected_at': timezone.now().isoformat(),
         })
         await redis_client.hset(NODE_CONN_KEY, node_id, conn_info)
+        # P3：写节点存活键（带 TTL），由 hasn.ping 心跳续期；过期即视为离线。
+        await redis_client.set(
+            f'{NODE_ALIVE_PREFIX}:{node_id}', '1', ex=NODE_PRESENCE_TTL_SECS
+        )
 
         # 存储 WebSocket 引用（进程内，用于直接推送）
         _ws_connections[node_id] = ws
+
+    async def refresh_node_presence(self, node_id: str) -> None:
+        """应用层心跳续期节点存活 TTL（hasn.ping 触发）。
+
+        无条件续期：能发 ping 即说明该连接活着。死设备不会发 ping，其键自然过期。
+        """
+        await redis_client.set(
+            f'{NODE_ALIVE_PREFIX}:{node_id}', '1', ex=NODE_PRESENCE_TTL_SECS
+        )
 
     async def unregister_node(self, node_id: str) -> None:
         """注销节点，清理所有实体绑定"""
@@ -90,6 +110,8 @@ class WsRouterService:
         await redis_client.delete(f'{NODE_ENTITIES_PREFIX}:{node_id}')
         # 清理 Node 连接记录
         await redis_client.hdel(NODE_CONN_KEY, node_id)
+        # 清理节点存活键（P3）
+        await redis_client.delete(f'{NODE_ALIVE_PREFIX}:{node_id}')
         # 移除 WebSocket 引用
         _ws_connections.pop(node_id, None)
 
@@ -397,11 +419,22 @@ class WsRouterService:
 
     async def is_human_online(self, hasn_id: str) -> bool:
         nodes = await redis_client.smembers(f'{USER_NODES_PREFIX}:{hasn_id}')
-        return len(nodes) > 0
+        # P3：至少一个节点存活心跳未过期才算在线，僵尸节点不再让 owner 误判在线。
+        for node in nodes:
+            if await self._node_alive(node):
+                return True
+        return False
 
     async def is_agent_online(self, hasn_id: str) -> bool:
         node = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
-        return node is not None
+        if node is None:
+            return False
+        # P3：路由表指向的节点必须仍有存活心跳，否则是僵尸路由（节点已非优雅退出）→ 判离线。
+        return await self._node_alive(node)
+
+    async def _node_alive(self, node_id: str) -> bool:
+        """节点存活键（心跳 TTL）是否仍在。"""
+        return bool(await redis_client.exists(f'{NODE_ALIVE_PREFIX}:{node_id}'))
 
     async def get_entity_node(self, hasn_id: str) -> str | None:
         """返回实体（Agent/Human）当前所在节点 id；不在线返回 None。
@@ -411,9 +444,11 @@ class WsRouterService:
         return await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
 
     async def is_node_online(self, node_id: str) -> bool:
-        """节点是否在线：以共享 Redis NODE_CONN_KEY 为准（跨 worker 权威）。"""
-        conn = await redis_client.hget(NODE_CONN_KEY, node_id)
-        return conn is not None
+        """节点是否在线：以**存活心跳键**为准（P3）。
+
+        心跳过期（非优雅退出，无续期）→ 离线，即便 NODE_CONN_KEY 仍残留（僵尸）。
+        """
+        return await self._node_alive(node_id)
 
     async def disconnect_node(self, node_id: str) -> bool:
         """主动断开某节点：清理路由 presence（释放其 agent 供他机接管）+
@@ -449,7 +484,11 @@ class WsRouterService:
         if not entity_ids:
             return {}
         nodes = await redis_client.hmget(ENTITY_NODE_KEY, entity_ids)
-        return {eid: (node is not None) for eid, node in zip(entity_ids, nodes)}
+        # P3：路由表命中后还需该节点存活心跳未过期，否则是僵尸路由 → 判离线。
+        result: dict[str, bool] = {}
+        for eid, node in zip(entity_ids, nodes):
+            result[eid] = bool(node) and await self._node_alive(node)
+        return result
 
 
 # 进程内 WebSocket 连接引用（node_id → WebSocket）

@@ -14,10 +14,11 @@ import pytest
 
 
 class FakeRedis:
-    """最小 Redis 替身：只实现 presence 读写所需的 hset/hmget。"""
+    """最小 Redis 替身：实现 presence 读写所需的 hset/hmget + 节点存活键 set/exists（P3）。"""
 
     def __init__(self) -> None:
         self.hashes: dict[str, dict[str, Any]] = {}
+        self.strings: dict[str, Any] = {}
 
     async def hset(self, key: str, field: str, value: Any) -> None:
         self.hashes.setdefault(key, {})[field] = value
@@ -25,6 +26,12 @@ class FakeRedis:
     async def hmget(self, key: str, fields: list[str]) -> list[Any]:
         bucket = self.hashes.get(key, {})
         return [bucket.get(field) for field in fields]
+
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:  # noqa: ARG002
+        self.strings[key] = value
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.strings else 0
 
 
 class FakeGateway:
@@ -61,6 +68,8 @@ async def test_get_online_map_reflects_redis_presence(monkeypatch: pytest.Monkey
     redis = FakeRedis()
     monkeypatch.setattr(ws_module, 'redis_client', redis)
     await redis.hset(ws_module.ENTITY_NODE_KEY, 'a_online', 'node-A')
+    # P3：node-A 有存活心跳（未过期）→ a_online 才算真在线。
+    await redis.set(f'{ws_module.NODE_ALIVE_PREFIX}:node-A', '1', ex=90)
 
     router = ws_module.WsRouterService()
     result = await router.get_online_map(['a_online', 'a_offline'])
@@ -79,6 +88,8 @@ async def test_sync_agents_backfills_online_status_from_presence(monkeypatch: py
     monkeypatch.setattr(ws_module, 'redis_client', redis)
     # a_online 在 node-A 有实时 presence；a_offline 没有任何 presence（旧设备已离线）。
     await redis.hset(ws_module.ENTITY_NODE_KEY, 'a_online', 'node-A')
+    # P3：node-A 心跳存活，a_online 才回填 online；a_offline 无路由+无心跳 → offline。
+    await redis.set(f'{ws_module.NODE_ALIVE_PREFIX}:node-A', '1', ex=90)
 
     async def _fake_common_skill_snapshot(db: Any) -> tuple[Any, str]:
         return ([], 'rev-1')

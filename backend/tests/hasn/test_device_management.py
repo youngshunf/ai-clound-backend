@@ -50,6 +50,13 @@ class FakeRedis:
         self.hashes: dict[str, dict[str, Any]] = {}
         self.sets: dict[str, set[Any]] = {}
         self.lists: dict[str, list[Any]] = {}
+        self.strings: dict[str, Any] = {}
+
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:  # noqa: ARG002
+        self.strings[key] = value
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.strings else 0
 
     async def hset(self, key: str, field: str, value: Any) -> None:
         self.hashes.setdefault(key, {})[field] = value
@@ -73,6 +80,7 @@ class FakeRedis:
         self.hashes.pop(key, None)
         self.sets.pop(key, None)
         self.lists.pop(key, None)
+        self.strings.pop(key, None)
 
 
 class FakeWebSocket:
@@ -92,8 +100,9 @@ async def test_node_online_and_entity_node_lookup(monkeypatch):
     module._ws_connections.clear()
     router = module.WsRouterService()
 
+    # P3：在线 = 存活心跳键在（非 NODE_CONN_KEY 残留）。
     assert await router.is_node_online('node_X') is False
-    await redis.hset(module.NODE_CONN_KEY, 'node_X', '{}')
+    await redis.set(f'{module.NODE_ALIVE_PREFIX}:node_X', '1', ex=90)
     assert await router.is_node_online('node_X') is True
 
     assert await router.get_entity_node('a_agent') is None
@@ -117,13 +126,18 @@ async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch):
     ws = FakeWebSocket()
     module._ws_connections[node_id] = ws
 
-    # 模拟节点在线：conn 记录 + 节点实体集合 + 路由表 + owner 节点集合
+    # 模拟节点在线：conn 记录 + 存活心跳键 + 节点实体集合 + 路由表 + owner 节点集合
     await redis.hset(module.NODE_CONN_KEY, node_id, '{}')
+    await redis.set(f'{module.NODE_ALIVE_PREFIX}:{node_id}', '1', ex=90)
     await redis.sadd(f'{module.NODE_ENTITIES_PREFIX}:{node_id}', owner_id)
     await redis.sadd(f'{module.NODE_ENTITIES_PREFIX}:{node_id}', agent_id)
     await redis.hset(module.ENTITY_NODE_KEY, owner_id, node_id)
     await redis.hset(module.ENTITY_NODE_KEY, agent_id, node_id)
     await redis.sadd(f'{module.USER_NODES_PREFIX}:{owner_id}', node_id)
+
+    # 断开前：节点在线、名下 agent 在线（其节点心跳在）
+    assert await router.is_node_online(node_id) is True
+    assert await router.is_agent_online(agent_id) is True
 
     in_process = await router.disconnect_node(node_id)
 
@@ -149,8 +163,11 @@ async def test_disconnect_node_not_in_process_still_clears_presence(monkeypatch)
 
     node_id = 'node_remote'
     await redis.hset(module.NODE_CONN_KEY, node_id, '{}')
+    await redis.set(f'{module.NODE_ALIVE_PREFIX}:{node_id}', '1', ex=90)
     await redis.sadd(f'{module.NODE_ENTITIES_PREFIX}:{node_id}', 'a_x')
     await redis.hset(module.ENTITY_NODE_KEY, 'a_x', node_id)
+
+    assert await router.is_node_online(node_id) is True
 
     in_process = await router.disconnect_node(node_id)
 

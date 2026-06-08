@@ -13,8 +13,15 @@ class FakeRedis:
         self.hashes: dict[str, dict[str, Any]] = {}
         self.sets: dict[str, set[Any]] = {}
         self.lists: dict[str, list[Any]] = {}
+        self.strings: dict[str, Any] = {}
         self.deleted: list[str] = []
         self.expired: list[tuple[str, int]] = []
+
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:  # noqa: ARG002
+        self.strings[key] = value
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.strings else 0
 
     async def hset(self, key: str, field: str, value: Any) -> None:
         self.hashes.setdefault(key, {})[field] = value
@@ -51,6 +58,7 @@ class FakeRedis:
         self.hashes.pop(key, None)
         self.sets.pop(key, None)
         self.lists.pop(key, None)
+        self.strings.pop(key, None)
 
 
 class FakeWebSocket:
