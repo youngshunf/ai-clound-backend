@@ -1744,6 +1744,45 @@ class CommunityService:
         return base
 
     @staticmethod
+    async def _resolve_profile_author(db: AsyncSession, hasn_id: str) -> dict[str, Any]:
+        """
+        解析主页作者身份，构造与信息流条目同形的 author（含 agent 的 owner）。
+
+        主页帖子/文章列表所有条目同属一个 hasn_id（human 或 agent），故只需解析一次，
+        供 get_profile_posts / get_profile_articles 复用，避免前端按 content_type/author
+        渲染失败（缺 author 会渲染成空头像卡）。
+        """
+        author_human = (
+            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
+        ).scalar_one_or_none()
+        if author_human is not None:
+            return {
+                'hasn_id': hasn_id,
+                'type': 'human',
+                'display_name': author_human.nickname or hasn_id,
+                'avatar': author_human.avatar,
+            }
+
+        author_agent = (
+            await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == hasn_id))
+        ).scalar_one_or_none()
+        author_info: dict[str, Any] = {
+            'hasn_id': hasn_id,
+            'type': 'agent',
+            'display_name': (author_agent.display_name if author_agent else None) or hasn_id,
+            'avatar': author_agent.avatar if author_agent else None,
+        }
+        if author_agent and author_agent.owner_id:
+            owner_human = (
+                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == author_agent.owner_id))
+            ).scalar_one_or_none()
+            author_info['owner'] = {
+                'hasn_id': author_agent.owner_id,
+                'display_name': (owner_human.nickname if owner_human else None) or author_agent.owner_id,
+            }
+        return author_info
+
+    @staticmethod
     async def get_profile_posts(
         db: AsyncSession,
         *,
@@ -1775,13 +1814,23 @@ class CommunityService:
         result = await db.execute(stmt)
         posts = result.scalars().all()
 
+        # 作者身份（该列表所有帖子同属 hasn_id）+ 查看者点赞态，与信息流条目同形，
+        # 否则前端复用的帖子卡缺 author/content_type 会渲染成空头像卡。
+        author_info = await CommunityService._resolve_profile_author(db, hasn_id)
+        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
+        post_ids = [post.post_id for post in posts]
+        liked_ids, _ = await CommunityService._batch_reactions(db, viewer_hasn_id, 'post', post_ids)
+
         items = [{
+                'content_type': 'post',
                 'post_id': post.post_id,
+                'author': author_info,
                 'content': post.content,
                 'tags': post.tags or [],
                 'like_count': post.like_count,
                 'comment_count': post.comment_count,
                 'published_time': post.published_time.isoformat() if post.published_time else None,
+                'is_liked': post.post_id in liked_ids,
             } for post in posts]
 
         return {
@@ -1821,15 +1870,31 @@ class CommunityService:
         result = await db.execute(stmt)
         articles = result.scalars().all()
 
+        # 作者身份（该列表所有文章同属 hasn_id）+ 查看者点赞/收藏态，与信息流条目同形
+        author_info = await CommunityService._resolve_profile_author(db, hasn_id)
+        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
+        article_ids = [article.article_id for article in articles]
+        liked_ids, collected_ids = await CommunityService._batch_reactions(
+            db, viewer_hasn_id, 'article', article_ids
+        )
+
         items = [{
+                'content_type': 'article',
                 'article_id': article.article_id,
+                'author': author_info,
                 'title': article.title,
                 'summary': effective_summary(article.summary, article.content),
                 'cover_url': article.cover_url,
                 'tags': article.tags or [],
+                'reference_cards': CommunityService._present_reference_cards(
+                    article.reference_cards, viewer_hasn_id
+                ),
                 'like_count': article.like_count,
                 'comment_count': article.comment_count,
+                'read_time_min': article.read_time_min,
                 'published_time': article.published_time.isoformat() if article.published_time else None,
+                'is_liked': article.article_id in liked_ids,
+                'is_collected': article.article_id in collected_ids,
             } for article in articles]
 
         return {
@@ -1900,6 +1965,7 @@ class CommunityService:
                 'hasn_id': agent.hasn_id,
                 'display_name': agent.display_name,
                 'profession': agent.profession,
+                'description': agent.description,
                 'bio': agent.bio or '',
                 'avatar': agent.avatar,
                 'owner': {
@@ -2495,6 +2561,7 @@ class CommunityService:
                 'hasn_id': agent.hasn_id,
                 'display_name': agent.display_name,
                 'profession': agent.profession,
+                'description': agent.description,
                 'bio': agent.bio or '',
                 'avatar': agent.avatar,
                 'capability_summary': agent.capability_summary_json or {},
