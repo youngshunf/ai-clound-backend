@@ -2493,6 +2493,7 @@ class CommunityService:
             agents.append({
                 'hasn_id': agent.hasn_id,
                 'display_name': agent.display_name,
+                'profession': agent.profession,
                 'bio': agent.bio or '',
                 'avatar': agent.avatar,
                 'capability_summary': agent.capability_summary_json or {},
