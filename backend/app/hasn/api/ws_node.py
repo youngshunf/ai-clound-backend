@@ -18,7 +18,8 @@ from fastapi.security.utils import get_authorization_scheme_param
 from backend.database.db import async_db_session
 from backend.app.hasn.service.hasn_auth import authenticate_ws_connection
 from backend.app.hasn.service.ws_router import ws_router, _ws_connections
-from backend.app.hasn.service import message_router
+from backend.app.hasn.service import geoip_service, message_router
+from backend.app.hasn.service.hasn_nodes_service import hasn_nodes_service
 from backend.utils.timezone import timezone
 
 log = logging.getLogger(__name__)
@@ -27,6 +28,47 @@ router = APIRouter()
 
 # 协议版本
 HASN_PROTOCOL = 'hasn/0.2'
+
+
+def _client_ip(websocket: WebSocket) -> str | None:
+    """从 WS 取真实客户端 IP：优先反代头，回退 socket peer。"""
+    xff = websocket.headers.get('x-forwarded-for')
+    if xff:
+        # 形如 "client, proxy1, proxy2"，取第一跳
+        first = xff.split(',')[0].strip()
+        if first:
+            return first
+    real = websocket.headers.get('x-real-ip')
+    if real and real.strip():
+        return real.strip()
+    client = websocket.client
+    return client.host if client else None
+
+
+async def _backfill_node_metadata(websocket: WebSocket, node_id: str) -> None:
+    """握手后回填设备元数据：客户端 IP + GeoLite2 归属地 + OS/app 版本。
+
+    全程非致命：任何异常只 warn，不影响连接与消息收发（零 Mock，归属地缺失留空）。
+    """
+    try:
+        client_ip = _client_ip(websocket)
+        ip_location = geoip_service.lookup_location(client_ip)
+        device_platform = websocket.headers.get('X-Node-Platform')
+        app_version = websocket.headers.get('X-App-Version')
+        if not (client_ip or device_platform or app_version):
+            return
+        async with async_db_session() as db:
+            await hasn_nodes_service.update_runtime_metadata(
+                db=db,
+                node_id=node_id,
+                ip_address=client_ip,
+                ip_location=ip_location,
+                device_platform=device_platform,
+                app_version=app_version,
+            )
+            await db.commit()
+    except Exception as e:  # noqa: BLE001 - 元数据回填非致命
+        log.warning(f'[HASN] 节点元数据回填失败 (非致命): {e}')
 
 
 def _frame(method: str, params: dict) -> dict:
@@ -98,6 +140,9 @@ async def hasn_node_websocket(
     await ws_router.register_node(
         node_id, node_type, websocket, capacity
     )
+
+    # 2.5 回填设备元数据（IP/归属地/OS/版本），用于设备管理页（非致命）
+    await _backfill_node_metadata(websocket, node_id)
 
     # 3. 自动绑定第一个 Owner（建连时一步完成）
     auto_bound_owner = False

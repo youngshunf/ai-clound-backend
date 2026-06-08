@@ -403,6 +403,36 @@ class WsRouterService:
         node = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
         return node is not None
 
+    async def get_entity_node(self, hasn_id: str) -> str | None:
+        """返回实体（Agent/Human）当前所在节点 id；不在线返回 None。
+
+        用于设备管理页把「名下在线 Agent」归到其所在设备卡。
+        """
+        return await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
+
+    async def is_node_online(self, node_id: str) -> bool:
+        """节点是否在线：以共享 Redis NODE_CONN_KEY 为准（跨 worker 权威）。"""
+        conn = await redis_client.hget(NODE_CONN_KEY, node_id)
+        return conn is not None
+
+    async def disconnect_node(self, node_id: str) -> bool:
+        """主动断开某节点：清理路由 presence（释放其 agent 供他机接管）+
+        关闭其 WS（若连接落在本 worker 进程内）。
+
+        返回 True 表示本进程内确有该连接并已尝试关闭；多 worker 部署下连接可能在
+        其它 worker，此处仅清共享 presence，物理 socket 关闭由该 worker 的收发循环
+        在下一次 IO 失败 / 重认证时完成。
+        """
+        ws = _ws_connections.get(node_id)
+        await self.unregister_node(node_id)
+        if ws is not None:
+            try:
+                await ws.close(code=4002, reason='remote logout')
+            except Exception:
+                pass
+            return True
+        return False
+
     async def get_entity_status(self, hasn_id: str) -> str:
         if hasn_id.startswith('h_'):
             return 'online' if await self.is_human_online(hasn_id) else 'offline'

@@ -92,5 +92,42 @@ class HasnNodesService:
         count = await hasn_nodes_dao.delete(db, obj.pks)
         return count
 
+    @staticmethod
+    async def update_runtime_metadata(
+        *,
+        db: AsyncSession,
+        node_id: str,
+        ip_address: str | None = None,
+        ip_location: str | None = None,
+        device_platform: str | None = None,
+        app_version: str | None = None,
+    ) -> None:
+        """回填节点运行期元数据（客户端 IP / 归属地 / 平台 / 版本）。
+
+        约定：
+        - device_platform / app_version 为 None/空 时跳过，不覆盖既有值；
+        - ip_location **跟随** ip_address：仅当本次拿到 ip_address 才一并写 ip_location，
+          且 ip_location 为 None（私网/无 mmdb/库内查不到）时如实落空，**绝不伪造城市**。
+        """
+        if not node_id:
+            return
+        result = await db.execute(
+            select(HasnNodes).where(
+                HasnNodes.node_id == node_id,
+                HasnNodes.status == 'active',
+            )
+        )
+        node = result.scalar_one_or_none()
+        if node is None:
+            return
+        if ip_address:
+            node.ip_address = ip_address
+            node.ip_location = ip_location  # 跟随 IP：未知归属地如实写 None
+        if device_platform:
+            node.device_platform = device_platform
+        if app_version:
+            node.app_version = app_version
+        await db.flush()
+
 
 hasn_nodes_service: HasnNodesService = HasnNodesService()
