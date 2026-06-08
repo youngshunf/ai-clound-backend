@@ -169,3 +169,35 @@ async def check_expired_api_keys() -> str:
     result_msg = f'API Key 过期检查完成: {expired_count} 个 Key 已标记为过期'
     log.info(f'[ExpiredKeyCheck] {result_msg}')
     return result_msg
+
+
+@shared_task(name='expire_overdue_subscriptions')
+async def expire_overdue_subscriptions() -> str:
+    """每日检查并标记过期订阅（收敛存量 status）。
+
+    付费订阅（subscription_end_date 非空且 < now）若仍为 active → 置 expired。
+    免费版 subscription_end_date 为 NULL，不参与（永不过期）。
+    与 /info 读取时的状态重算（credit_service.get_user_credits_info）口径一致——读路径已
+    实时纠正显示，本任务保证 DB 存量 status 也收敛，供 admin 列表等其它读路径正确。
+    """
+    now = timezone.now()
+
+    async with async_db_session.begin() as db:
+        stmt = (
+            update(UserSubscription)
+            .where(
+                and_(
+                    UserSubscription.status == 'active',
+                    UserSubscription.tier != 'free',
+                    UserSubscription.subscription_end_date.isnot(None),
+                    UserSubscription.subscription_end_date < now,
+                )
+            )
+            .values(status='expired')
+        )
+        result = await db.execute(stmt)
+        expired_count = result.rowcount
+
+    result_msg = f'订阅过期检查完成: {expired_count} 个订阅已标记为过期'
+    log.info(f'[ExpiredSubscription] {result_msg}')
+    return result_msg

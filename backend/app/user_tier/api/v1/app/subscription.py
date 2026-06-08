@@ -12,7 +12,6 @@ import uuid
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
 from decimal import Decimal
 from datetime import datetime
 
@@ -91,6 +90,7 @@ class SubscriptionInfoResponse(BaseModel):
     monthly_credits: Decimal
     current_credits: Decimal
     used_credits: Decimal
+    cycle_consumed_credits: Decimal = Field(default=Decimal('0'), description='本计费周期真实消耗积分（new-api logs 权威）')
     purchased_credits: Decimal
     monthly_remaining: Decimal | None = None
     bonus_remaining: Decimal | None = None
@@ -186,6 +186,7 @@ async def get_my_subscription_info(
         monthly_credits=Decimal(str(info['monthly_credits'])),
         current_credits=Decimal(str(info['current_credits'])),
         used_credits=Decimal(str(info['used_credits'])),
+        cycle_consumed_credits=Decimal(str(info.get('cycle_consumed_credits', 0))),
         purchased_credits=Decimal(str(info['purchased_credits'])),
         monthly_remaining=Decimal(str(info.get('monthly_remaining', 0))),
         bonus_remaining=Decimal(str(info.get('bonus_remaining', 0))),
@@ -273,25 +274,63 @@ async def get_credit_transactions_daily(
     page: Annotated[int, Query(ge=1, description='页码')] = 1,
     size: Annotated[int, Query(ge=1, le=100, description='每页天数')] = 20,
 ) -> ResponseSchemaModel[CreditDailyPage]:
-    """用户端积分流水按日聚合（DB 侧 group by 本地日，强制 user_id + app_code 隔离）。"""
+    """用户端积分流水按日聚合 —— **合并口径**（new-api 消耗 + 内部发放/购买）。
+
+    消耗（请求/token/积分）取自 **new-api logs**（真实 LLM 计量，权威）；入账（月度发放/
+    购买/退款）取自内部 credit_transaction。两源在 Python 里按本地日合并、倒序、分页
+    （在合并结果上分页，避免日边界被切断）。内部 usage 行已废弃、不参与消耗（零重复计）。
+    """
     user_id = request.user.id
     app_code = request.state.app_code
 
-    stmt = await credit_transaction_dao.get_daily_aggregate_by_user(user_id=user_id, app_code=app_code)
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one() or 0
-    rows = (await db.execute(stmt.limit(size).offset((page - 1) * size))).all()
+    from backend.app.user_tier.service.billing_usage_service import billing_usage_service
 
+    # 1) 内部账本：发放/购买/退款（入账，正向）。get_daily_aggregate 的 granted 即正向合计。
+    stmt = await credit_transaction_dao.get_daily_aggregate_by_user(user_id=user_id, app_code=app_code)
+    internal_rows = (await db.execute(stmt)).all()
+
+    # 2) new-api 权威：本地日真实消耗（负向）+ 请求数 + token 数（10 年窗口足够覆盖账户历史）。
+    now = timezone.now()
+    consumed_by_day = await billing_usage_service.get_daily_consumed(
+        db, user_id, now - timedelta(days=3650), now, app_code,
+    )
+
+    # 3) 按本地日合并：入账取内部、消耗/请求/token 取 new-api（new-api 为消耗权威，不叠加内部 usage）。
+    merged: dict[str, dict] = {}
+    for row in internal_rows:
+        key = row.day.strftime('%Y-%m-%d')
+        merged[key] = {
+            'granted': Decimal(str(row.granted or 0)),
+            'consumed': Decimal('0'),
+            'count': int(row.cnt or 0),
+            'request_count': 0,
+            'token_count': 0,
+        }
+    for day, consume in consumed_by_day.items():
+        key = day.strftime('%Y-%m-%d')
+        entry = merged.setdefault(
+            key, {'granted': Decimal('0'), 'consumed': Decimal('0'), 'count': 0, 'request_count': 0, 'token_count': 0}
+        )
+        entry['consumed'] = consume['consumed_credits']  # 已为 ≤0
+        entry['request_count'] = consume['request_count']
+        entry['token_count'] = consume['token_count']
+        entry['count'] += consume['request_count']
+
+    # 4) 按日倒序 + 在合并结果上分页。
+    all_days = sorted(merged.keys(), reverse=True)
+    total = len(all_days)
+    page_days = all_days[(page - 1) * size: (page - 1) * size + size]
     items = [
         CreditDailyItem(
-            date=row.day.strftime('%Y-%m-%d'),
-            consumed=row.consumed,
-            granted=row.granted,
-            net=row.net,
-            count=row.cnt,
-            request_count=row.request_count,
-            token_count=row.token_count,
+            date=key,
+            consumed=merged[key]['consumed'],
+            granted=merged[key]['granted'],
+            net=merged[key]['granted'] + merged[key]['consumed'],
+            count=merged[key]['count'],
+            request_count=merged[key]['request_count'],
+            token_count=merged[key]['token_count'],
         )
-        for row in rows
+        for key in page_days
     ]
     total_pages = (total + size - 1) // size if size else 0
     return response_base.success(

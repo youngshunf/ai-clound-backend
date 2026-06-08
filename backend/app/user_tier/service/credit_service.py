@@ -651,19 +651,45 @@ class CreditService:
         total_credits = sum(b.remaining_amount for b in active_balances)
         total_used = sum(b.used_amount for b in balances)
 
-        # 分类统计（基于有剩余的记录）
+        # 分类统计（基于有剩余的记录）—— 仅展示「购买/赠送」构成；可用积分以 new-api 为准
         monthly_remaining = sum(b.remaining_amount for b in active_balances if b.credit_type == 'monthly')
         purchased_remaining = sum(b.remaining_amount for b in active_balances if b.credit_type == 'purchased')
         bonus_remaining = sum(b.remaining_amount for b in active_balances if b.credit_type == 'bonus')
+
+        # ===== new-api 权威：可用积分 + 本期真实消耗 =====
+        # LLM 网关是 new-api（非内置 litellm）。真实余额=(quota−used_quota)/RATE、真实消耗=logs；
+        # 内部 user_credit_balance 不被 new-api 消耗扣减，故可用积分/本月已用必须实时取 new-api，
+        # 否则会出现「内部显示 20000 可用、实际已大量消耗」的脱节（零 fake，无映射才回退内部）。
+        from backend.app.user_tier.service.billing_usage_service import billing_usage_service
+
+        now = timezone.now()
+        available = await billing_usage_service.get_available_credits(db, user_id, app_code)
+        current_credits = available['available_credits'] if available is not None else total_credits
+
+        # 消耗窗口上界取 min(now, 周期结束)：周期内 → 至今消耗；已过期 → 该周期内消耗（不外溢）
+        cycle_end = min(now, subscription.billing_cycle_end)
+        cycle = await billing_usage_service.get_cycle_consumed(
+            db, user_id, subscription.billing_cycle_start, cycle_end, app_code,
+        )
+        cycle_consumed_credits = cycle['consumed_credits']
+
+        # ===== 状态按日期重算（修复「过期却显示生效中」）=====
+        # status 是存量字段，真实 LLM 走 new-api 从不触发内部 check_credits 翻转 → 永远停在
+        # 上次升级写入的 'active'。读取时按订阅结束日与 now 比对得出有效状态；免费版无结束日，永不过期。
+        effective_status = subscription.status
+        sub_end = getattr(subscription, 'subscription_end_date', None)
+        if subscription.tier != 'free' and sub_end is not None and now > sub_end:
+            effective_status = 'expired'
 
         return {
             'user_id': user_id,
             'tier': subscription.tier,
             'tier_display_name': tier.display_name if tier else subscription.tier,
             'subscription_type': getattr(subscription, 'subscription_type', 'monthly') or 'monthly',
-            'current_credits': float(total_credits),
+            'current_credits': float(current_credits),
             'monthly_credits': float(subscription.monthly_credits),
             'used_credits': float(total_used),
+            'cycle_consumed_credits': float(cycle_consumed_credits),
             'purchased_credits': float(purchased_remaining),
             'monthly_remaining': float(monthly_remaining),
             'bonus_remaining': float(bonus_remaining),
@@ -672,7 +698,7 @@ class CreditService:
             'subscription_start_date': subscription.subscription_start_date.isoformat() if getattr(subscription, 'subscription_start_date', None) else None,
             'subscription_end_date': subscription.subscription_end_date.isoformat() if getattr(subscription, 'subscription_end_date', None) else None,
             'next_grant_date': subscription.next_grant_date.isoformat() if getattr(subscription, 'next_grant_date', None) else None,
-            'status': subscription.status,
+            'status': effective_status,
             'balances': [
                 {
                     'id': b.id,

@@ -25,17 +25,21 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi_pagination import add_pagination
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
+from backend.app.llm.crud.crud_llm_newapi_user_mapping import newapi_direct_dao
+from backend.app.llm.model import LlmNewapiUserMapping
 from backend.app.user_tier.api.v1.app.subscription import router as app_subscription_router
-from backend.app.user_tier.model import CreditTransaction
+from backend.app.user_tier.model import CreditTransaction, UserSubscription
+from backend.app.user_tier.service.billing_usage_service import quota_to_credits
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.core.conf import settings
+from backend.database.db import NEWAPI_DATABASE_URL, SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 from backend.middleware.app_context_middleware import AppContextMiddleware
 
 pytestmark = pytest.mark.asyncio
@@ -183,45 +187,165 @@ async def test_transactions_empty_returns_envelope(env) -> None:
     assert data['items'] == [] and data['total'] == 0
 
 
-async def test_transactions_daily_aggregates_by_local_day(env) -> None:
-    """按日聚合：按 Asia/Shanghai 本地日分组（跨 UTC 日界正确归日）+ 消耗/入账/净额/笔数 + 隔离。"""
+async def test_transactions_daily_grants_internal_usage_not_counted(env) -> None:
+    """按日合并新口径：入账取内部账本；内部 usage 行**不再**计为消耗（消耗权威在 new-api）。
+
+    本测试用户无 new-api 映射 → 消耗/请求/token 全 0；验证入账侧 + 本地日归并 + 隔离，
+    且内部历史 usage 行不被当作消耗。new-api 真实消耗的合并见
+    `test_newapi_authoritative_info_and_daily`（按 new-api 可达性 gated）。
+    """
     s, c, uid = env.session, env.client, env.auth_state['user_id']
     utc = dt_tz.utc
-    # 06-07 12:00Z = 06-07 20:00+08 → 本地 06-07
+    # 06-07 本地：入账 +1000（purchase）+ 一条内部 usage（旧账本遗留，应被忽略）
     s.add(_txn(uid, ttype='purchase', credits=Decimal('1000'), before=Decimal('0'), after=Decimal('1000'),
                ref_type='pay_order', desc='充值', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
-    # 06-07 13:00Z = 06-07 21:00+08 → 本地 06-07（带 token 用量）
     s.add(_txn(uid, ttype='usage', credits=Decimal('-30'), before=Decimal('1000'), after=Decimal('970'),
-               ref_type='llm_usage', desc='耗1', created=datetime(2026, 6, 7, 13, 0, tzinfo=utc),
-               extra={'model_name': 'qwen3-max', 'input_tokens': 1200, 'output_tokens': 300}))
-    # 06-07 20:00Z = 06-08 04:00+08 → 本地 06-08（跨日界）
-    s.add(_txn(uid, ttype='usage', credits=Decimal('-12'), before=Decimal('970'), after=Decimal('958'),
-               ref_type='llm_usage', desc='耗2', created=datetime(2026, 6, 7, 20, 0, tzinfo=utc),
-               extra={'model_name': 'qwen3-max', 'input_tokens': 400, 'output_tokens': 100}))
-    # 隔离：别的用户 + 别的 app_code 不计入
-    s.add(_txn(_new_user_id(), ttype='usage', credits=Decimal('-999'), before=Decimal('0'), after=Decimal('-999'),
-               ref_type='llm_usage', desc='别人', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
-    s.add(_txn(uid, ttype='usage', credits=Decimal('-888'), before=Decimal('0'), after=Decimal('-888'),
-               ref_type='llm_usage', desc='别app', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc), app_code='zhixiaoya'))
+               ref_type='llm_usage', desc='内部usage(应忽略)', created=datetime(2026, 6, 7, 13, 0, tzinfo=utc),
+               extra={'input_tokens': 1200, 'output_tokens': 300}))
+    # 隔离：别的用户 + 别 app 不计入
+    s.add(_txn(_new_user_id(), ttype='purchase', credits=Decimal('999'), before=Decimal('0'), after=Decimal('999'),
+               ref_type='pay_order', desc='别人', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
+    s.add(_txn(uid, ttype='purchase', credits=Decimal('888'), before=Decimal('0'), after=Decimal('888'),
+               ref_type='pay_order', desc='别app', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc), app_code='zhixiaoya'))
     await s.flush()
 
     data = _data(await c.get(_DAILY, params={'page': 1, 'size': 20}))
     items = data['items']
-    assert data['total'] == 2 and len(items) == 2, f'应聚合为两天，实际 {items}'
-    # 倒序：06-08 在前
-    assert items[0]['date'] == '2026-06-08' and items[1]['date'] == '2026-06-07'
-    d8, d7 = items[0], items[1]
-    # 06-07：入账 +1000 / 消耗 -30 / 净 970 / 2 笔；usage 仅 1 笔 → 请求 1 次 / token 1500（1200+300）
+    assert data['total'] == 1 and len(items) == 1, f'仅 06-07 一天（含我的 huanxing 入账），实际 {items}'
+    d7 = items[0]
+    assert d7['date'] == '2026-06-07'
     assert Decimal(str(d7['granted'])) == Decimal('1000')
-    assert Decimal(str(d7['consumed'])) == Decimal('-30')
-    assert Decimal(str(d7['net'])) == Decimal('970')
+    # 内部 usage 不再计为消耗（消耗权威在 new-api，本用户无映射）
+    assert Decimal(str(d7['consumed'])) == Decimal('0'), '内部 usage 不应再计为消耗'
+    assert Decimal(str(d7['net'])) == Decimal('1000')
+    assert d7['request_count'] == 0 and d7['token_count'] == 0, '消耗/请求/token 权威在 new-api'
+    # count 仍含当日全部内部流水（purchase + usage = 2 笔）
     assert d7['count'] == 2
-    assert d7['request_count'] == 1 and d7['token_count'] == 1500
-    # 06-08：仅消耗 -12 / 净 -12 / 1 笔 → 请求 1 次 / token 500（400+100）
-    assert Decimal(str(d8['consumed'])) == Decimal('-12')
-    assert Decimal(str(d8['net'])) == Decimal('-12')
-    assert d8['count'] == 1
-    assert d8['request_count'] == 1 and d8['token_count'] == 500
+
+
+async def test_info_status_expired_recomputed(env) -> None:
+    """/info 状态按订阅结束日重算：付费且已过期 → expired（修复「过期却显示生效中」）。
+
+    只依赖唤星 PG；new-api 不可达时 get_available_credits 优雅降级回退内部，不影响状态判定。
+    """
+    s, c, uid = env.session, env.client, env.auth_state['user_id']
+    now = datetime.now(dt_tz.utc)
+    s.add(UserSubscription(
+        app_code='huanxing', user_id=uid, tier='pro', subscription_type='monthly',
+        monthly_credits=Decimal('1000'), current_credits=Decimal('1000'),
+        used_credits=Decimal('0'), purchased_credits=Decimal('0'),
+        billing_cycle_start=now - timedelta(days=95), billing_cycle_end=now - timedelta(days=65),
+        subscription_start_date=now - timedelta(days=95), subscription_end_date=now - timedelta(days=65),
+        next_grant_date=None, status='active', auto_renew=False, max_agents=3,
+    ))
+    await s.flush()
+
+    data = _data(await c.get('/api/v1/user_tier/app/subscription/info'))
+    assert data['status'] == 'expired', f"已过期付费订阅应判 expired，实际 {data['status']}"
+    assert data['tier'] == 'pro'
+    # cycle_consumed_credits 字段存在（无 new-api 映射 → 0），不再用「额度−剩余」假象
+    assert Decimal(str(data['cycle_consumed_credits'])) == Decimal('0')
+
+
+async def test_newapi_authoritative_info_and_daily(env) -> None:
+    """**真实联调**：new-api 为权威源 —— 可用积分=(quota−used)/RATE、本期消耗/流水取自 logs。
+
+    seed 真实 new-api `users`(quota/used_quota) + `logs`(type=2 跨两本地日) + 唤星映射/订阅，
+    断言 /info current_credits/cycle_consumed_credits 与 /daily 合并消耗。
+    new-api 库不可达或 logs 列缺失 → skip（infra-gated，CI/staging 跑真值）。
+    """
+    s, c, uid = env.session, env.client, env.auth_state['user_id']
+    rate = settings.NEWAPI_CREDITS_TO_QUOTA_RATE
+
+    newapi_engine = create_async_engine(NEWAPI_DATABASE_URL, poolclass=NullPool)
+    try:
+        async with newapi_engine.connect() as probe:
+            await probe.execute(select(1))
+    except Exception as exc:  # noqa: BLE001
+        await newapi_engine.dispose()
+        pytest.skip(f'new-api 库不可达，跳过真实联调: {exc!r}')
+
+    newapi_session = async_sessionmaker(newapi_engine, expire_on_commit=False)()
+    newapi_user_id = None
+    try:
+        # 1) new-api 用户：总额度 20000 积分、已用 1000 积分（quota 单位）
+        try:
+            newapi_user_id = await newapi_direct_dao.create_newapi_user(
+                newapi_session, username=f'hx_e2e_{uid}', display_name='e2e', quota=20_000 * rate,
+            )
+            await newapi_session.execute(
+                text('UPDATE users SET used_quota = :u WHERE id = :id'),
+                {'u': 1_000 * rate, 'id': newapi_user_id},
+            )
+            # 2) 两本地日的消耗日志（type=2）：06-07 用 600 积分 / 06-08 用 400 积分
+            for created_at, q, pt, ct in [
+                (int(datetime(2026, 6, 7, 5, 0, tzinfo=dt_tz.utc).timestamp()), 600 * rate, 1200, 300),
+                (int(datetime(2026, 6, 7, 20, 0, tzinfo=dt_tz.utc).timestamp()), 400 * rate, 400, 100),
+            ]:
+                await newapi_session.execute(
+                    text(
+                        'INSERT INTO logs (user_id, created_at, type, quota, prompt_tokens, completion_tokens, '
+                        'model_name, content, username, token_name) '
+                        "VALUES (:uid, :ts, 2, :q, :pt, :ct, 'qwen3-max', '', '', '')"
+                    ),
+                    {'uid': newapi_user_id, 'ts': created_at, 'q': q, 'pt': pt, 'ct': ct},
+                )
+            await newapi_session.commit()
+        except Exception as exc:  # noqa: BLE001
+            await newapi_session.rollback()
+            pytest.skip(f'new-api 表结构与本测试 seed 不符（schema-gated）: {exc!r}')
+
+        # 3) 唤星侧：映射 + 付费订阅（周期覆盖两条日志）
+        s.add(LlmNewapiUserMapping(
+            huanxing_user_id=uid, newapi_user_id=newapi_user_id,
+            newapi_token_key='e2e', newapi_token_id=0, app_code='huanxing', status='active',
+        ))
+        now = datetime.now(dt_tz.utc)
+        s.add(UserSubscription(
+            app_code='huanxing', user_id=uid, tier='flagship', subscription_type='monthly',
+            monthly_credits=Decimal('20000'), current_credits=Decimal('0'),
+            used_credits=Decimal('0'), purchased_credits=Decimal('0'),
+            billing_cycle_start=datetime(2026, 6, 1, tzinfo=dt_tz.utc), billing_cycle_end=now + timedelta(days=10),
+            subscription_start_date=datetime(2026, 6, 1, tzinfo=dt_tz.utc), subscription_end_date=now + timedelta(days=10),
+            next_grant_date=None, status='active', auto_renew=False, max_agents=10,
+        ))
+        await s.flush()
+
+        # /info：可用积分 = (20000 − 1000) = 19000；本期消耗 = 600+400 = 1000（quota_to_credits）
+        info = _data(await c.get('/api/v1/user_tier/app/subscription/info'))
+        assert Decimal(str(info['current_credits'])) == quota_to_credits(19_000 * rate)
+        assert Decimal(str(info['cycle_consumed_credits'])) == quota_to_credits(1_000 * rate)
+        assert info['status'] == 'active'
+
+        # /daily：消耗按 new-api logs 归本地日 —— 06-07 -600 / 06-08 -400（跨 UTC 日界）
+        daily = _data(await c.get(_DAILY, params={'page': 1, 'size': 20}))
+        by_date = {it['date']: it for it in daily['items']}
+        assert Decimal(str(by_date['2026-06-07']['consumed'])) == -quota_to_credits(600 * rate)
+        assert by_date['2026-06-07']['request_count'] == 1 and by_date['2026-06-07']['token_count'] == 1500
+        assert Decimal(str(by_date['2026-06-08']['consumed'])) == -quota_to_credits(400 * rate)
+        assert by_date['2026-06-08']['request_count'] == 1 and by_date['2026-06-08']['token_count'] == 500
+    finally:
+        # 清理 new-api seed（避免污染共享库）
+        try:
+            if newapi_user_id is not None:
+                import sqlalchemy as _sa
+                await newapi_session.execute(_sa.text('DELETE FROM logs WHERE user_id = :id'), {'id': newapi_user_id})
+                await newapi_session.execute(_sa.text('DELETE FROM users WHERE id = :id'), {'id': newapi_user_id})
+                await newapi_session.commit()
+        except Exception:  # noqa: BLE001
+            await newapi_session.rollback()
+        await newapi_session.close()
+        await newapi_engine.dispose()
+
+
+async def test_quota_to_credits_conversion() -> None:
+    """quota → 积分换算（÷ NEWAPI_CREDITS_TO_QUOTA_RATE），与 credits_to_quota 互逆（纯函数，无 DB）。"""
+    rate = settings.NEWAPI_CREDITS_TO_QUOTA_RATE
+    assert quota_to_credits(rate) == Decimal('1.00')
+    assert quota_to_credits(rate * 1000) == Decimal('1000.00')
+    assert quota_to_credits(rate * 19000) == Decimal('19000.00')
+    assert quota_to_credits(0) == Decimal('0.00')
+    assert quota_to_credits(None) == Decimal('0.00')
 
 
 async def test_transactions_daily_pagination(env) -> None:

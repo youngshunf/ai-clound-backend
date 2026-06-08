@@ -34,6 +34,10 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'grant_yearly_subscription_credits',
         'schedule': TzAwareCrontab('0', '1'),  # 每天凌晨 1 点执行
     },
+    '订阅过期检查': {
+        'task': 'expire_overdue_subscriptions',
+        'schedule': TzAwareCrontab('30', '1'),  # 每天凌晨 1:30（年度发放后收敛存量 status）
+    },
     'Agent 心跳超时检测': {
         'task': 'hasn_check_agent_heartbeat_timeout',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟执行一次

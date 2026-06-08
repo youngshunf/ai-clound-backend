@@ -237,6 +237,77 @@ class CRUDNewApiDirect:
         ]
         return records, total
 
+    @staticmethod
+    async def get_consumption_total(
+        db: AsyncSession,
+        newapi_user_id: int,
+        start_time: int,
+        end_time: int,
+    ) -> dict:
+        """窗口内消耗合计（type=2）：quota / prompt / completion / 请求数。"""
+        result = await db.execute(
+            text("""
+                SELECT COALESCE(SUM(quota), 0) AS quota,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                       COUNT(*) AS request_count
+                FROM logs
+                WHERE user_id = :user_id
+                  AND created_at >= :start_time
+                  AND created_at < :end_time
+                  AND type = 2
+            """),
+            {'user_id': newapi_user_id, 'start_time': start_time, 'end_time': end_time},
+        )
+        row = result.fetchone()
+        if not row:
+            return {'quota': 0, 'prompt_tokens': 0, 'completion_tokens': 0, 'request_count': 0}
+        return {
+            'quota': int(row[0] or 0),
+            'prompt_tokens': int(row[1] or 0),
+            'completion_tokens': int(row[2] or 0),
+            'request_count': int(row[3] or 0),
+        }
+
+    @staticmethod
+    async def get_daily_consumption(
+        db: AsyncSession,
+        newapi_user_id: int,
+        start_time: int,
+        end_time: int,
+    ) -> list[dict]:
+        """按本地日（Asia/Shanghai）聚合消耗日志（type=2），倒序。
+
+        logs.created_at 是 Unix 秒（bigint）；to_timestamp→timezone 转本地时间再 ::date 截断到日。
+        返回每日 {day(date), quota, prompt_tokens, completion_tokens, request_count}。
+        """
+        result = await db.execute(
+            text("""
+                SELECT (timezone('Asia/Shanghai', to_timestamp(created_at)))::date AS day,
+                       COALESCE(SUM(quota), 0) AS quota,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                       COUNT(*) AS request_count
+                FROM logs
+                WHERE user_id = :user_id
+                  AND created_at >= :start_time
+                  AND created_at < :end_time
+                  AND type = 2
+                GROUP BY day
+                ORDER BY day DESC
+            """),
+            {'user_id': newapi_user_id, 'start_time': start_time, 'end_time': end_time},
+        )
+        return [
+            {
+                'day': row[0],
+                'quota': int(row[1] or 0),
+                'prompt_tokens': int(row[2] or 0),
+                'completion_tokens': int(row[3] or 0),
+                'request_count': int(row[4] or 0),
+            }
+            for row in result.fetchall()
+        ]
 
     @staticmethod
     async def disable_newapi_token(db: AsyncSession, token_id: int) -> bool:
