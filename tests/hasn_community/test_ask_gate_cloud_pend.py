@@ -51,6 +51,31 @@ def _bind_session(monkeypatch, db) -> None:
     monkeypatch.setattr('backend.database.db.async_db_session', _FakeMaker())
 
 
+def _bind_session_no_begin(monkeypatch, db) -> None:
+    """同 `_bind_session`，但 `.begin()` 直接抛——锁住「发卡片必须用裸工厂会话」。
+
+    route_message 自带 commit；若发卡片误用 `async_db_session.begin()` 包裹，退出时二次 commit
+    会抛异常 → 误判发卡失败 → 工具被即时拒绝（线上「设置每次询问却 0.x 秒被拒」事故根因）。
+    这里把 `.begin()` 设为抛错，确保发卡片走 `()` 工厂面，否则用例红。
+    """
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FactoryOnlyMaker:
+        def __call__(self):
+            return _SessionCtx()
+
+        def begin(self):
+            raise AssertionError('发审批卡片不得用 async_db_session.begin()（route_message 自带 commit，会二次提交）')
+
+    monkeypatch.setattr('backend.database.db.async_db_session', _FactoryOnlyMaker())
+
+
 async def _approval_row(db, request_id: str):
     from backend.app.hasn.crud.crud_hasn_agent_approval_requests import hasn_agent_approval_requests_dao as dao
 
@@ -90,7 +115,9 @@ async def test_send_approval_card_delivers_card_to_owner_conversation(db, monkey
     """
     owner = await seed_human(db, nickname='挂起主人')
     agent_row = await seed_agent(db, owner_hasn_id=owner['hasn_id'], display_name='挂起分身')
-    _bind_session(monkeypatch, db)
+    # 用「.begin() 会抛」的会话绑定：锁住发卡片必须走裸工厂会话（route_message 自带 commit），
+    # 否则二次提交→发卡失败→工具被即时拒绝（线上事故根因，本断言防回归）。
+    _bind_session_no_begin(monkeypatch, db)
 
     request_id = 'areq_test_card_delivery'
     ok = await ask_approval_gate._send_approval_card(
