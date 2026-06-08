@@ -3,8 +3,8 @@
 真实联调（零 fake）：
 - capability_ticket 模块：issue → consume（有效）→ 再 consume（jti 重放拒）→ 改 args/tool/agent 拒。
   jti 经真实 Redis SETNX 防重放。
-- server 验票跳闸：1st 调用无票→approval_required 信封 + 落 pending；grant 签票→带票重试→
-  **真正执行**拿结果；同票再调→jti 已用→回信封（E1 + E5）。
+- server 验票跳闸（cloud-pend 下）：带有效票→**真正执行**拿结果 + 落 consumed；同票再调→jti 已用
+  →不跳闸、落回云端挂起（不执行）（E1 + E5）。无票分支由云端挂起处理，见 test_ask_gate_cloud_pend。
 - grant_approval(always)：签票 + 把触发 ask 的 capability_keys 写回 capability_modes=allow（E3）。
 """
 
@@ -133,7 +133,15 @@ async def test_ticket_rejects_arg_or_identity_mismatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_token_retry_executes_then_replay_returns_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_token_retry_executes_then_replay_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """令牌重试仍有效 + 重放防护（cloud-pend 下的不变量）。
+
+    cloud-pend（福仔 2026-06-08）下，无票分支不再回 approval_required 信封，而是云端自己挂起
+    （发卡片+轮询裁决）；故本用例聚焦仍然成立的「带有效票一次性放行 + 同票重放被拒不执行」：
+    - 无票待批准用 open_request 预置 pending（等价于主人将看到的待批准项）；
+    - 重放分支（无有效票）落回 request_and_wait，用 monkeypatch 断言它**不执行**（落回挂起拒绝），不真发卡片。
+    """
+    from backend.app.mcp import ask_gate as ask_gate_module
     from backend.app.mcp.server import HasnCloudMcpServer
 
     server = HasnCloudMcpServer()
@@ -145,16 +153,25 @@ async def test_token_retry_executes_then_replay_returns_envelope(monkeypatch: py
     monkeypatch.setattr(server, '_load_app_tools', _noop)
     monkeypatch.setattr(server, '_log_tool_call', _noop)
 
+    # 重放（无有效票）落到云端挂起：这里 stub 成 denied，断言“同票重放不再执行”，不真发卡片。
+    async def _pend_denied(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
+        return {'decision': 'denied', 'request_id': 'areq_replay_pend', 'description': 'x'}
+
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'request_and_wait', _pend_denied)
+
     agent_hasn_id = 'a_retry_001'
     ctx = _ctx(agent_hasn_id, capability_modes={'stub:act': 'ask'})
     args = {'content': 'hi'}
     jti_holder: dict[str, str] = {}
     try:
-        # 1) 无票 → approval_required 信封 + 落 pending
+        # 1) 开一条 ask 审批请求（落 pending，拿 request_id）——等价于主人将看到的待批准项
         set_capability_ticket(None)
-        r1 = await server.call_tool(ctx, 'hasn.stub.act', args)
-        assert r1['error'] == 'approval_required'
-        request_id = r1['approval']['request_id']
+        opened = await ask_approval_gate.open_request(
+            agent_hasn_id=agent_hasn_id, owner_hasn_id='h_ticket_test', tool_name='hasn.stub.act',
+            required_scopes=['stub:act'], default_mode='allow', capability_modes={'stub:act': 'ask'},
+            arguments=args,
+        )
+        request_id = opened['approval']['request_id']
 
         # 2) 主人 grant → 签一次性票（绑定本次 agent/tool/args_hash）
         ticket, jti = issue_capability_ticket(
@@ -173,9 +190,10 @@ async def test_token_retry_executes_then_replay_returns_envelope(monkeypatch: py
             row = await hasn_agent_approval_requests_dao.get_by_request_id(db, request_id)
         assert row.status == 'consumed'
 
-        # 4) 同票再调 → jti 已用 → 回信封（不执行）
+        # 4) 同票再调 → jti 已用 → 不跳闸 → 落回云端挂起（stub 成 denied）→ **不执行**
         r3 = await server.call_tool(ctx, 'hasn.stub.act', args)
-        assert r3['error'] == 'approval_required'
+        assert r3['error'] == 'approval_denied'  # 落回挂起，而非带票执行
+        assert r3 != {'echo': args}
     finally:
         set_capability_ticket(None)
         if 'jti' in jti_holder:

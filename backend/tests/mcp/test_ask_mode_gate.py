@@ -3,8 +3,9 @@
 覆盖：
 - open_request() 自身（真实 PG）：落一条 pending 行 + 返回 approval_required 信封；
   args 脱敏；capability_keys 取实际触发 ask 的 key。
-- server.call_tool 接线：mode=ask→**返回信封、工具体不执行**（不长挂、不 raise）；
-  mode=allow→直接执行（不开审批）；mode=deny→PermissionError。即便 risk=high，allow 也不开审批。
+- server.call_tool 接线（云端挂起 cloud-pend）：mode=ask→挂起轮询裁决，拒绝/超时回**工具错误**、
+  批准放行真执行（工具体审批前不执行，对 agent 透明、不回 approval_required）；mode=allow→直接执行
+  （不开审批）；mode=deny→PermissionError。即便 risk=high，allow 也不开审批。
 
 真实联调：open_request 落 `hasn_agent_approval_requests`（真 PG），测试后清理。
 """
@@ -129,8 +130,12 @@ async def test_open_request_persists_pending_and_returns_envelope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_tool_ask_mode_returns_envelope_without_executing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """mode=ask：call_tool 返回 approval_required 信封，且工具体**未执行**。"""
+async def test_call_tool_ask_mode_denied_does_not_execute(monkeypatch: pytest.MonkeyPatch) -> None:
+    """mode=ask + 主人拒绝（云端挂起 cloud-pend）：call_tool 回工具错误 approval_denied，工具体**未执行**。
+
+    且绝不把 approval_required 信封透给 agent——agent 对 ask 过程无感（截图事故的根因修复）。
+    """
+    from backend.app.mcp import ask_gate as ask_gate_module
     from backend.app.mcp.server import HasnCloudMcpServer
 
     server = HasnCloudMcpServer()
@@ -141,15 +146,47 @@ async def test_call_tool_ask_mode_returns_envelope_without_executing(monkeypatch
         return None
 
     monkeypatch.setattr(server, '_load_app_tools', _noop_load)
+    monkeypatch.setattr(server, '_log_tool_call', _noop_load)
+
+    async def _deny(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
+        return {'decision': 'denied', 'request_id': 'areq_deny', 'description': 'x'}
+
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'request_and_wait', _deny)
 
     ctx = _ctx(default_mode='allow', capability_modes={'stub:act': 'ask'})
     result = await server.call_tool(ctx, 'hasn.stub.act', {'x': 1})
-    request_id = result['approval']['request_id']
-    try:
-        assert result['error'] == 'approval_required'
-        assert tool.executed is False  # 工具体绝不在审批前执行
-    finally:
-        await _delete_request(request_id)
+    assert result['ok'] is False
+    assert result['error'] == 'approval_denied'
+    assert result.get('error') != 'approval_required'  # 不向 agent 暴露审批
+    assert 'approval' not in result and 'request_id' not in result
+    assert tool.executed is False  # 工具体绝不在审批前执行
+
+
+@pytest.mark.asyncio
+async def test_call_tool_ask_mode_approved_executes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """mode=ask + 主人批准（云端挂起 cloud-pend）：call_tool 落到工具体**真执行**（批准放行）。"""
+    from backend.app.mcp import ask_gate as ask_gate_module
+    from backend.app.mcp.server import HasnCloudMcpServer
+
+    server = HasnCloudMcpServer()
+    tool = _StubTool()
+    server.tool_registry.register(tool)
+
+    async def _noop_load(*args: object, **kwargs: object) -> None:  # noqa: RUF029
+        return None
+
+    monkeypatch.setattr(server, '_load_app_tools', _noop_load)
+    monkeypatch.setattr(server, '_log_tool_call', _noop_load)
+
+    async def _approve(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
+        return {'decision': 'approved', 'request_id': 'areq_ok', 'description': 'x'}
+
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'request_and_wait', _approve)
+
+    ctx = _ctx(default_mode='allow', capability_modes={'stub:act': 'ask'})
+    result = await server.call_tool(ctx, 'hasn.stub.act', {'x': 1})
+    assert result == {'executed': True}
+    assert tool.executed is True
 
 
 @pytest.mark.asyncio

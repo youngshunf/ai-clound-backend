@@ -153,7 +153,11 @@ class HasnCloudMcpServer:
                 if not await self._consume_capability_ticket(agent_context, tool_name, arguments):
                     from backend.app.mcp.ask_gate import ask_approval_gate
 
-                    return await ask_approval_gate.open_request(
+                    # 云端挂起(cloud-pend，福仔 2026-06-08 拍板，doc15 A1 修订)：分身经 cloud 直连面
+                    # 调云端工具不经 daemon 中转，故云端**自己挂起**——发审批卡片给主人 + 阻塞轮询
+                    # 裁决，对 agent 透明（agent 只等工具返回，不知道 ask 过程）。批准→落到下面真执行；
+                    # 拒绝/超时→回**工具错误**（绝不把 approval_required 透传给 agent）。
+                    verdict = await ask_approval_gate.request_and_wait(
                         agent_hasn_id=agent_context.agent_hasn_id,
                         owner_hasn_id=agent_context.owner_hasn_id,
                         tool_name=tool_name,
@@ -162,7 +166,14 @@ class HasnCloudMcpServer:
                         capability_modes=agent_context.capability_modes,
                         arguments=arguments,
                     )
-                # 验票通过 → 落到下面 _dispatch_by_source 真正执行（工具体只在带票这次运行）。
+                    if verdict.get('decision') != 'approved':
+                        denied = verdict.get('decision') == 'denied'
+                        return {
+                            'ok': False,
+                            'error': 'approval_denied' if denied else 'approval_timeout',
+                            'message': '主人已拒绝该操作' if denied else '审批超时：主人未在时限内确认',
+                        }
+                # 验票通过 / 主人已批准 → 落到下面 _dispatch_by_source 真正执行（工具体只在放行这次运行）。
 
             # 按 source 分发执行
             result = await self._dispatch_by_source(agent_context, tool, source, arguments)

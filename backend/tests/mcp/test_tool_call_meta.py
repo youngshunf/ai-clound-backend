@@ -147,42 +147,53 @@ async def test_tool_call_inner_deny_raises(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_tool_call_inner_ask_returns_approval_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
-    """内层 ask（令牌重试模型）：tool.call 透传 approval_required 信封，内层**不执行**、不 raise。"""
+async def test_tool_call_inner_ask_approved_executes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """内层 ask（云端挂起 cloud-pend）：主人批准 → tool.call 落到内层**真执行**，对 agent 透明。
+
+    福仔 2026-06-08 拍板：分身经 cloud 直连面命中 ask 时云端自己挂起（发卡片+轮询裁决），
+    批准后直接返回工具结果——agent 只等工具返回，不知道 ask 过程（不再回 approval_required）。
+    """
     from backend.app.mcp import ask_gate as ask_gate_module
 
     server = _server(monkeypatch)
-    opened: dict[str, Any] = {}
-    envelope = {'ok': False, 'error': 'approval_required', 'code': 'MCP_9215', 'approval': {'request_id': 'areq_meta'}}
+    seen: dict[str, Any] = {}
 
-    async def _open_request(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
-        opened['tool_name'] = kwargs.get('tool_name')
-        return envelope
+    async def _request_and_wait(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
+        seen['tool_name'] = kwargs.get('tool_name')
+        return {'decision': 'approved', 'request_id': 'areq_meta', 'description': 'x'}
 
-    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'request_and_wait', _request_and_wait)
 
     ctx = _ctx(capability_modes={'hasn.stub.act': 'ask'})
     result = await _call_tool(server).execute(ctx, {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
-    assert result == envelope  # 透传信封；若执行了内层会是 {'echo': ...}
-    assert opened['tool_name'] == 'hasn.stub.act'  # 内层工具确实进了 ask 闸门
+    assert result == {'echo': {'content': 'hi'}}  # 批准后内层真执行（不是审批信封）
+    assert seen['tool_name'] == 'hasn.stub.act'  # 内层工具确实进了 ask 挂起闸门
 
 
 @pytest.mark.asyncio
-async def test_tool_call_inner_ask_envelope_carries_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ask 信封带 request_id，供 daemon 驱动卡片审批 + 换票重试。"""
+async def test_tool_call_inner_ask_denied_returns_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """内层 ask 被主人拒绝 → 回**工具错误**（approval_denied），绝不把 approval_required/request_id 透给 agent。
+
+    回归截图事故：旧逻辑把 `areq_...` 请求 ID + “需要你批准后才能执行”当工具结果返回给 agent，
+    agent 因此知道了 ask 过程——这正是要修掉的。现在 agent 只看到一个普通工具错误。
+    """
     from backend.app.mcp import ask_gate as ask_gate_module
 
     server = _server(monkeypatch)
 
-    async def _open_request(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
-        return {'ok': False, 'error': 'approval_required', 'code': 'MCP_9215', 'approval': {'request_id': 'areq_xyz'}}
+    async def _request_and_wait(**kwargs: object) -> dict[str, Any]:  # noqa: RUF029
+        return {'decision': 'denied', 'request_id': 'areq_xyz', 'description': 'x'}
 
-    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'open_request', _open_request)
+    monkeypatch.setattr(ask_gate_module.ask_approval_gate, 'request_and_wait', _request_and_wait)
 
     ctx = _ctx(capability_modes={'hasn.stub.act': 'ask'})
     result = await _call_tool(server).execute(ctx, {'name': 'hasn.stub.act', 'params': {'content': 'hi'}})
-    assert result['error'] == 'approval_required'
-    assert result['approval']['request_id'] == 'areq_xyz'
+    assert result['ok'] is False
+    assert result['error'] == 'approval_denied'
+    # agent 对 ask 过程无感：既不执行内层（无 echo），也不泄露 approval_required / request_id。
+    assert 'echo' not in result
+    assert result.get('error') != 'approval_required'
+    assert 'approval' not in result and 'request_id' not in result
 
 
 # ── 参数透传健壮性（线上 bug：params 落成空对象 → 兼容三种到达形态）─────────────
