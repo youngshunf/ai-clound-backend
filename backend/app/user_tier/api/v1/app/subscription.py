@@ -69,6 +69,8 @@ class CreditDailyItem(BaseModel):
     granted: Decimal = Field(description='当日入账合计（≥0）')
     net: Decimal = Field(description='当日净变动')
     count: int = Field(description='当日流水笔数')
+    request_count: int = Field(default=0, description='当日 LLM 请求次数（usage 交易笔数）')
+    token_count: int = Field(default=0, description='当日消耗 token 数（usage 交易 input+output 累加）')
 
 
 class CreditDailyPage(BaseModel):
@@ -262,7 +264,7 @@ async def get_credit_transactions(
 @router.get(
     '/transactions/daily',
     summary='获取积分流水（按日聚合）',
-    description='按本地日（Asia/Shanghai）聚合当前用户的积分流水，返回每日消耗/入账/净额/笔数，分页倒序；用于流水列表，避免逐条 LLM 请求',
+    description='按本地日（Asia/Shanghai）聚合当前用户的积分流水，返回每日消耗/入账/净额/笔数/请求次数/消耗token数，分页倒序；用于流水列表，避免逐条 LLM 请求',
     dependencies=[DependsJwtAuth],
 )
 async def get_credit_transactions_daily(
@@ -286,6 +288,8 @@ async def get_credit_transactions_daily(
             granted=row.granted,
             net=row.net,
             count=row.cnt,
+            request_count=row.request_count,
+            token_count=row.token_count,
         )
         for row in rows
     ]

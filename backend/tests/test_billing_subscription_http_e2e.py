@@ -66,6 +66,7 @@ def _txn(
     desc: str,
     created: datetime,
     app_code: str = 'huanxing',
+    extra: dict | None = None,
 ) -> CreditTransaction:
     txn = CreditTransaction(
         app_code=app_code,
@@ -77,7 +78,7 @@ def _txn(
         reference_id=None,
         reference_type=ref_type,
         description=desc,
-        extra_data=None,
+        extra_data=extra,
     )
     # created_time 是 init=False 自动时间戳，构造后显式赋值以控制排序断言。
     txn.created_time = created
@@ -189,12 +190,14 @@ async def test_transactions_daily_aggregates_by_local_day(env) -> None:
     # 06-07 12:00Z = 06-07 20:00+08 → 本地 06-07
     s.add(_txn(uid, ttype='purchase', credits=Decimal('1000'), before=Decimal('0'), after=Decimal('1000'),
                ref_type='pay_order', desc='充值', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
-    # 06-07 13:00Z = 06-07 21:00+08 → 本地 06-07
+    # 06-07 13:00Z = 06-07 21:00+08 → 本地 06-07（带 token 用量）
     s.add(_txn(uid, ttype='usage', credits=Decimal('-30'), before=Decimal('1000'), after=Decimal('970'),
-               ref_type='llm_usage', desc='耗1', created=datetime(2026, 6, 7, 13, 0, tzinfo=utc)))
+               ref_type='llm_usage', desc='耗1', created=datetime(2026, 6, 7, 13, 0, tzinfo=utc),
+               extra={'model_name': 'qwen3-max', 'input_tokens': 1200, 'output_tokens': 300}))
     # 06-07 20:00Z = 06-08 04:00+08 → 本地 06-08（跨日界）
     s.add(_txn(uid, ttype='usage', credits=Decimal('-12'), before=Decimal('970'), after=Decimal('958'),
-               ref_type='llm_usage', desc='耗2', created=datetime(2026, 6, 7, 20, 0, tzinfo=utc)))
+               ref_type='llm_usage', desc='耗2', created=datetime(2026, 6, 7, 20, 0, tzinfo=utc),
+               extra={'model_name': 'qwen3-max', 'input_tokens': 400, 'output_tokens': 100}))
     # 隔离：别的用户 + 别的 app_code 不计入
     s.add(_txn(_new_user_id(), ttype='usage', credits=Decimal('-999'), before=Decimal('0'), after=Decimal('-999'),
                ref_type='llm_usage', desc='别人', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
@@ -208,15 +211,17 @@ async def test_transactions_daily_aggregates_by_local_day(env) -> None:
     # 倒序：06-08 在前
     assert items[0]['date'] == '2026-06-08' and items[1]['date'] == '2026-06-07'
     d8, d7 = items[0], items[1]
-    # 06-07：入账 +1000 / 消耗 -30 / 净 970 / 2 笔
+    # 06-07：入账 +1000 / 消耗 -30 / 净 970 / 2 笔；usage 仅 1 笔 → 请求 1 次 / token 1500（1200+300）
     assert Decimal(str(d7['granted'])) == Decimal('1000')
     assert Decimal(str(d7['consumed'])) == Decimal('-30')
     assert Decimal(str(d7['net'])) == Decimal('970')
     assert d7['count'] == 2
-    # 06-08：仅消耗 -12 / 净 -12 / 1 笔
+    assert d7['request_count'] == 1 and d7['token_count'] == 1500
+    # 06-08：仅消耗 -12 / 净 -12 / 1 笔 → 请求 1 次 / token 500（400+100）
     assert Decimal(str(d8['consumed'])) == Decimal('-12')
     assert Decimal(str(d8['net'])) == Decimal('-12')
     assert d8['count'] == 1
+    assert d8['request_count'] == 1 and d8['token_count'] == 500
 
 
 async def test_transactions_daily_pagination(env) -> None:
