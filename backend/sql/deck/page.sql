@@ -1,14 +1,15 @@
 -- =====================================================
 -- 演示文稿系统（模块 17）云端权威：page 幻灯片表
--- schema=deck；deck_id 引用 deck.deck(id)（同 schema）；owner_id 冗余便于隔离查询
+-- schema=deck；deck_id 引用 deck.deck(id)（同 schema，bigint）；owner_id 冗余便于隔离查询
+-- 主键 bigint 自增（对齐 fba id_key）；端云经本地 server_id 映射，无 uid 列。
 -- 生成：uv run fba codegen generate --sql-file backend/sql/deck/page.sql --app deck --schema deck --execute
 -- 设计事实源：docs/hasn-node设计文档/17-演示文稿系统/01-数据模型.md §4/§9
 -- =====================================================
 CREATE SCHEMA IF NOT EXISTS "deck";
 
 CREATE TABLE "deck"."page" (
-  "id"             uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
-  "deck_id"        uuid           NOT NULL,
+  "id"             bigserial      PRIMARY KEY,
+  "deck_id"        bigint         NOT NULL,
   "owner_id"       varchar(40)    NOT NULL,
   "position"       int            NOT NULL,
   "title"          varchar(255)   NOT NULL DEFAULT '',
@@ -29,8 +30,8 @@ CREATE INDEX "idx_page_deck" ON "deck"."page" ("deck_id", "position");
 CREATE UNIQUE INDEX "uq_page_deck_position" ON "deck"."page" ("deck_id", "position") WHERE "deleted_time" IS NULL;
 
 COMMENT ON TABLE  "deck"."page" IS '演示文稿幻灯片（云端权威）';
-COMMENT ON COLUMN "deck"."page"."id" IS '主键 UUID';
-COMMENT ON COLUMN "deck"."page"."deck_id" IS '所属 deck（引用 deck.deck.id）';
+COMMENT ON COLUMN "deck"."page"."id" IS '主键 ID（自增 BigInt）';
+COMMENT ON COLUMN "deck"."page"."deck_id" IS '所属 deck（引用 deck.deck.id，bigint）';
 COMMENT ON COLUMN "deck"."page"."owner_id" IS '归属 owner HASN ID（owner 隔离键，冗余自 deck）';
 COMMENT ON COLUMN "deck"."page"."position" IS '页序（0 起，重排改此值；未删页内 (deck_id, position) 唯一）';
 COMMENT ON COLUMN "deck"."page"."title" IS '页标题（来自 outline，便于侧栏/缩略列表）';

@@ -1,14 +1,15 @@
 -- =====================================================
 -- 演示文稿系统（模块 17）云端权威：revision 版本快照表
 -- 撤销/历史/回滚。按节点存（非每次击键）：生成完成、批量编辑、导入、手动保存点
+-- 主键 bigint 自增（对齐 fba id_key）；deck_id 引用 deck.deck(id) bigint；端云经 server_id 映射，无 uid。
 -- 生成：uv run fba codegen generate --sql-file backend/sql/deck/revision.sql --app deck --schema deck --execute
 -- 设计事实源：docs/hasn-node设计文档/17-演示文稿系统/01-数据模型.md §6/§9
 -- =====================================================
 CREATE SCHEMA IF NOT EXISTS "deck";
 
 CREATE TABLE "deck"."revision" (
-  "id"           uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
-  "deck_id"      uuid           NOT NULL,
+  "id"           bigserial      PRIMARY KEY,
+  "deck_id"      bigint         NOT NULL,
   "owner_id"     varchar(40)    NOT NULL,
   "seq"          int            NOT NULL,
   "label"        varchar(32)    NOT NULL,
@@ -20,8 +21,8 @@ CREATE TABLE "deck"."revision" (
 CREATE UNIQUE INDEX "uq_revision_deck_seq" ON "deck"."revision" ("deck_id", "seq");
 
 COMMENT ON TABLE  "deck"."revision" IS '演示文稿版本快照（云端权威历史）';
-COMMENT ON COLUMN "deck"."revision"."id" IS '主键 UUID';
-COMMENT ON COLUMN "deck"."revision"."deck_id" IS '所属 deck（引用 deck.deck.id）';
+COMMENT ON COLUMN "deck"."revision"."id" IS '主键 ID（自增 BigInt）';
+COMMENT ON COLUMN "deck"."revision"."deck_id" IS '所属 deck（引用 deck.deck.id，bigint）';
 COMMENT ON COLUMN "deck"."revision"."owner_id" IS '归属 owner HASN ID（owner 隔离键）';
 COMMENT ON COLUMN "deck"."revision"."seq" IS '版本序（单调递增；(deck_id, seq) 唯一）';
 COMMENT ON COLUMN "deck"."revision"."label" IS '来源标签 (generated:生成:green/edited:编辑:blue/imported:导入:violet/manual:手动:gray/reverted:回滚:orange)';
