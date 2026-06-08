@@ -93,8 +93,18 @@ class AppTool(BaseTool):
         from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
         from backend.database.db import async_db_session
 
+        # 经 MCP 直连面进入：身份与维度① 三态闸门已在 server.call_tool 完成
+        # （能力票走传输层 ContextVar、由 server.py 消费），这里只承载 agent 供网关复用，
+        # 并以 mcp_face=True 标记让网关跳过重复的三态闸门（否则一次性能力票会被二次消费、
+        # 已批准的 ask 调用反被网关重新挂起审批）。headers 置空：MCP 面不经请求头传票，
+        # 同时补齐属性避免网关 `request.headers.get(...)` 抛 AttributeError。
         class _Request:
-            state = type("_State", (), {"agent": agent_context.to_token_payload()})()
+            state = type(
+                "_State",
+                (),
+                {"agent": agent_context.to_token_payload(), "mcp_face": True},
+            )()
+            headers: dict[str, str] = {}
 
         async with async_db_session() as db:
             return await ai_native_runtime_gateway.call_tool(

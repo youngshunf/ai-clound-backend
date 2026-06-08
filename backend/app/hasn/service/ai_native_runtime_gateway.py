@@ -215,9 +215,13 @@ class AiNativeRuntimeGateway:
         input_payload = dict(body.input or {})
 
         # 令牌重试模型（doc15 §3.1）：批准后 hasn-mcp 带 `X-Capability-Ticket` 头重发同一调用，
-        # 网关在 ask 闸门前验票跳闸。MCP 直连面（server.py）走 ContextVar，本中继面（FastAPI 路由）
-        # 直接读请求头。
-        capability_ticket = request.headers.get('X-Capability-Ticket')
+        # 网关在 ask 闸门前验票跳闸。两种到达面：
+        # - 中继面（FastAPI 路由，真实 Request）：维度① 三态闸门由本网关执行，能力票走请求头。
+        # - MCP 直连面（AppTool shim，`state.mcp_face=True`）：维度① 三态 + 验票已在 server.call_tool
+        #   经 ContextVar 完成；本网关跳过重复闸门（skip_mode_gate），否则一次性票会被二次消费、
+        #   已批准的 ask 调用反被网关重新挂起审批。其余 app 专属闸门（启用/协作/角色/输入）照常跑。
+        mcp_face = bool(getattr(request.state, 'mcp_face', False))
+        capability_ticket = request.headers.get('X-Capability-Ticket') if not mcp_face else None
         denied = await self._authorize_tool_call(
             db,
             body=body,
@@ -228,6 +232,7 @@ class AiNativeRuntimeGateway:
             capability=capability,
             input_payload=input_payload,
             capability_ticket=capability_ticket,
+            skip_mode_gate=mcp_face,
         )
         if denied is not None:
             return denied
@@ -281,12 +286,17 @@ class AiNativeRuntimeGateway:
         capability: dict[str, Any],
         input_payload: dict[str, Any],
         capability_ticket: str | None = None,
+        skip_mode_gate: bool = False,
     ) -> dict[str, Any] | None:
         """跑完所有闸门；命中任一返回 deny payload，全过返回 None。
 
         顺序：app 启用(15002) → 协作模式(15005) → 维度① 三态(deny 15012 / ask：带有效票跳闸→
         放行；无票→开审批回 approval_required) → 企业角色(15004) → 输入校验(15020)。维度① 走唯一
         判定服务 CapabilityGuard。
+
+        ``skip_mode_gate``：MCP 直连面（AppTool shim）专用——维度① 三态闸门 + 一次性票验票已在
+        server.call_tool 完成（票走 ContextVar），此处跳过维度① 避免二次验票/二次消费；其余 app
+        专属闸门（启用/协作/角色/输入）server 层不做，仍需在此执行。
         """
         tool_name = tool.get('mcp_name') or tool['tool_id']
         # 去掉安装态：published 即可调用，无需任何启用步骤；仅企业 override 显式 disabled 时拒（设计 11 §4.2/§4.3）。
@@ -299,36 +309,38 @@ class AiNativeRuntimeGateway:
             return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
                                     capability=capability, tool=tool, code='15005', reason=collaboration_denial)
 
-        mode = await capability_guard.decide(
-            db, agent_hasn_id=agent.agent_hasn_id, tool_name=tool_name,
-            required_scopes=list(tool.get('required_scopes') or []),
-        )
-        if mode == MODE_DENY:
-            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15012', reason='agent_scope_missing')
-        if mode == MODE_ASK:
-            # 令牌重试模型（doc15 §3.1）：云端**不长挂**。AI-Native 同步面即「中继路径」
-            # （Hermes→hasn-mcp→BackendGateway→本网关）。批准后 hasn-mcp 带有效
-            # `X-Capability-Ticket` 重发同一调用 → 验票（agent/tool/args_hash 匹配且 jti 未用）
-            # 成功 → 原子消费后**跳过 ask 闸门**落到下面执行；无票 / 票无效 → 开一条审批请求并把
-            # 完整 `approval_required`(MCP_9215) 信封连同 request_id 回给中继（绝不当次放行，零 fake）。
-            if not await self._consume_capability_ticket(agent, tool_name, input_payload, capability_ticket):
-                from backend.app.mcp.ask_gate import ask_approval_gate
-                from backend.common.security.agent_jwt import get_agent_scopes_cached
+        # MCP 直连面：维度① 三态 + 验票已在 server.call_tool 完成，跳过此处避免二次消费一次性票。
+        if not skip_mode_gate:
+            mode = await capability_guard.decide(
+                db, agent_hasn_id=agent.agent_hasn_id, tool_name=tool_name,
+                required_scopes=list(tool.get('required_scopes') or []),
+            )
+            if mode == MODE_DENY:
+                return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                                        capability=capability, tool=tool, code='15012', reason='agent_scope_missing')
+            if mode == MODE_ASK:
+                # 令牌重试模型（doc15 §3.1）：云端**不长挂**。AI-Native 同步面即「中继路径」
+                # （Hermes→hasn-mcp→BackendGateway→本网关）。批准后 hasn-mcp 带有效
+                # `X-Capability-Ticket` 重发同一调用 → 验票（agent/tool/args_hash 匹配且 jti 未用）
+                # 成功 → 原子消费后**跳过 ask 闸门**落到下面执行；无票 / 票无效 → 开一条审批请求并把
+                # 完整 `approval_required`(MCP_9215) 信封连同 request_id 回给中继（绝不当次放行，零 fake）。
+                if not await self._consume_capability_ticket(agent, tool_name, input_payload, capability_ticket):
+                    from backend.app.mcp.ask_gate import ask_approval_gate
+                    from backend.common.security.agent_jwt import get_agent_scopes_cached
 
-                policy = await get_agent_scopes_cached(agent.agent_hasn_id, db)
-                envelope = await ask_approval_gate.open_request(
-                    agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
-                    tool_name=tool_name, required_scopes=list(tool.get('required_scopes') or []),
-                    default_mode=policy.get('default_mode', 'allow'),
-                    capability_modes=policy.get('capability_modes'),
-                    arguments=input_payload,
-                )
-                return await self._approval_required(
-                    db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                    capability=capability, tool=tool, envelope=envelope,
-                )
-            # 验票通过 → 落到下面其余闸门 + 执行（工具体只在带票这次运行）。
+                    policy = await get_agent_scopes_cached(agent.agent_hasn_id, db)
+                    envelope = await ask_approval_gate.open_request(
+                        agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
+                        tool_name=tool_name, required_scopes=list(tool.get('required_scopes') or []),
+                        default_mode=policy.get('default_mode', 'allow'),
+                        capability_modes=policy.get('capability_modes'),
+                        arguments=input_payload,
+                    )
+                    return await self._approval_required(
+                        db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                        capability=capability, tool=tool, envelope=envelope,
+                    )
+                # 验票通过 → 落到下面其余闸门 + 执行（工具体只在带票这次运行）。
 
         role_denial = self._enterprise_role_denial(workspace=workspace, capability=capability)
         if role_denial is not None:
