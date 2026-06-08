@@ -1,21 +1,24 @@
 """回归：联系人「TA 的 AI 分身」必须带真实在线状态 + 正确描述。
 
-在线状态来源：HasnAgents.online_status 列（心跳 last_heartbeat_at 更新的权威
-字段，online/offline），**不是**空置的 HasnAgentRuntimeReports 表——后者对多数
-agent 无任何行，曾导致头像永远显示离线灰点。
+在线状态来源：**Redis presence**（`ws_router.get_online_map`，叠加节点存活心跳
+node_alive 门控），与 `sync_agents` 同源、断线即离线。**不再**读持久列
+`HasnAgents.online_status`——该列由心跳写、断线不清零，agent 非优雅退出后会永远
+停在 online（僵尸在线），P3 的 TTL 僵尸回收只对 Redis presence 生效。持久
+`last_heartbeat_at` 仅作「最后已知时间」展示。
 描述来源：HasnAgents.description（agent 角色介绍，bio 多为空）。
 
 列表端点与详情构造共用 HasnContactsService.fetch_owned_agents_with_status，
 保证集合 / 在线状态 / 描述三者一致。
 
-本单测不依赖真实数据库：mock db.execute 截获 SELECT 并喂入假 agent 行，
-断言（1）查询直接从 hasn_agents 过滤 social_enabled，不 JOIN 运行时上报表；
-（2）映射把 online_status / description / last_heartbeat_at 正确带出。
+本单测不依赖真实数据库：mock db.execute 截获 SELECT 并喂入假 agent 行，Redis
+presence 用 FakeRedis 替身。断言（1）查询直接从 hasn_agents 过滤 social_enabled，
+不 JOIN 运行时上报表；（2）在线状态取自 presence 而非持久列（presence 胜过过期列）。
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,7 +28,22 @@ from sqlalchemy.dialects.postgresql import dialect as pg_dialect
 from backend.app.hasn.service.hasn_contacts_service import HasnContactsService
 
 
-def _fake_agent(suffix: str, online_status: str, heartbeat: datetime | None) -> SimpleNamespace:
+class FakeRedis:
+    """最小 Redis 替身：presence 读取所需 hmget（路由表）+ exists（节点存活键）。"""
+
+    def __init__(self) -> None:
+        self.hashes: dict[str, dict[str, Any]] = {}
+        self.strings: dict[str, Any] = {}
+
+    async def hmget(self, key: str, fields: list[str]) -> list[Any]:
+        bucket = self.hashes.get(key, {})
+        return [bucket.get(f) for f in fields]
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.strings else 0
+
+
+def _fake_agent(suffix: str, online_status: str | None, heartbeat: datetime | None) -> SimpleNamespace:
     return SimpleNamespace(
         hasn_id=f'a_{suffix}',
         star_id=f'star_{suffix}',
@@ -36,6 +54,7 @@ def _fake_agent(suffix: str, online_status: str, heartbeat: datetime | None) -> 
         role='specialist',
         description=f'角色描述{suffix}',
         bio='',
+        # 持久列故意设成与 presence 相反，证明在线判定取自 presence 而非此列。
         online_status=online_status,
         last_heartbeat_at=heartbeat,
     )
@@ -75,13 +94,23 @@ async def test_query_filters_hasn_agents_without_runtime_reports_join() -> None:
 
 
 @pytest.mark.asyncio
-async def test_maps_online_status_and_description_from_agent_row() -> None:
-    """online_status 取自 agent 列；None→offline；description 与 last_seen_at 带出。"""
+async def test_online_status_comes_from_presence_not_stale_column(monkeypatch) -> None:
+    """在线判定取自 Redis presence（node_alive 门控），胜过过期持久列；description/last_seen 带出。"""
+    from backend.app.hasn.service import ws_router as ws_module
+
+    redis = FakeRedis()
+    monkeypatch.setattr(ws_module, 'redis_client', redis)
+    # a_on 路由在 node_X 且 node_X 心跳存活 → 在线（即便持久列写着 offline）。
+    redis.hashes[ws_module.ENTITY_NODE_KEY] = {'a_on': 'node_X'}
+    redis.strings[f'{ws_module.NODE_ALIVE_PREFIX}:node_X'] = '1'
+    # a_zombie 路由仍指向 node_dead，但该节点心跳已过期（无存活键）→ 离线（僵尸回收）。
+    redis.hashes[ws_module.ENTITY_NODE_KEY]['a_zombie'] = 'node_dead'
+
     beat = datetime(2026, 6, 2, 10, 14, tzinfo=timezone.utc)
     agents = [
-        _fake_agent('on', 'online', beat),
-        _fake_agent('off', 'offline', beat),
-        _fake_agent('none', None, None),
+        _fake_agent('on', 'offline', beat),       # 持久列 offline，presence online
+        _fake_agent('zombie', 'online', beat),    # 持久列 online（断线不清零），presence 离线
+        _fake_agent('none', None, None),          # 无任何 presence
     ]
     db, _ = _mock_db(agents)
 

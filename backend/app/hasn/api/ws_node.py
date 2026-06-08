@@ -354,7 +354,33 @@ async def _handle_add_agent(
             db=db,
         )
         await db.commit()
-    agent_id = params.get('agent_id', '')
+        # 折叠心跳：重认领帧若携带 online_status，则顺手把运行时健康写入持久列
+        # （取代原 per-agent HTTP /heartbeat——节点级 WS 已鉴权，无需 Agent JWT；
+        # 见 daemon spawn_binding_heartbeat_worker）。健康写入失败绝不拖垮路由
+        # 注册这条关键路径，故单独 try/except。
+        agent_id = params.get('agent_id', '')
+        if result.get('accepted') and agent_id and params.get('online_status'):
+            try:
+                from backend.app.hasn.schema.hasn_agents import AgentHeartbeatRequest
+                from backend.app.hasn.service.hasn_agents_service import (
+                    agent_profile_service,
+                )
+
+                await agent_profile_service.update_heartbeat(
+                    db,
+                    agent_id,
+                    AgentHeartbeatRequest(
+                        node_id=node_id,
+                        online_status=str(params.get('online_status')),
+                        health_status=params.get('health_status'),
+                        last_heartbeat_at=int(params.get('last_heartbeat_at') or 0),
+                    ),
+                    user_id=None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    'fold-heartbeat persist failed for agent %s: %s', agent_id, exc
+                )
     if result.get('accepted') and agent_id:
         active_entities.add(agent_id)
         offline_msgs = await ws_router.get_offline_messages([agent_id])

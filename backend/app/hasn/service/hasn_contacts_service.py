@@ -113,8 +113,11 @@ class HasnContactsService:
         """
         查询某个 human 名下、对社交可见的 active Agent 及其实时在线状态。
 
-        在线状态取自 HasnAgents.online_status 列（心跳 last_heartbeat_at 更新的
-        权威字段，online/offline）——不是空置的 HasnAgentRuntimeReports 表。
+        在线状态取自 **Redis presence**（`ws_router.get_online_map`，叠加节点存活
+        心跳 node_alive 门控）——与 `sync_agents` 同源、断线即离线。**不再**读持久列
+        `HasnAgents.online_status`：该列由心跳写、断线不清零，agent 非优雅退出后会
+        永远停在 online（僵尸在线）；P3 的 TTL 僵尸回收只对 Redis presence 生效。
+        持久 `last_heartbeat_at` 仅作「最后已知时间」展示，不再当在线权威。
         描述用 HasnAgents.description（agent 的角色介绍，bio 多为空）。
         联系人**列表**端点与**详情**构造共用本方法，保证「TA 的 AI 分身」在
         列表与详情看到的 Agent 集合、在线状态、描述一致（避免 split-brain）。
@@ -123,6 +126,8 @@ class HasnContactsService:
         :param peer_id: 联系人（human）的 hasn_id
         :return: owned_agents 字典列表
         """
+        from backend.app.hasn.service.ws_router import ws_router
+
         agents_result = await db.execute(
             select(HasnAgents).where(
                 HasnAgents.owner_id == peer_id,
@@ -131,8 +136,11 @@ class HasnContactsService:
                 HasnAgents.deleted_at.is_(None),
             )
         )
+        agents = list(agents_result.scalars().all())
+        # 实时在线：Redis presence + node_alive 门控（僵尸节点判离线）。
+        online_map = await ws_router.get_online_map([a.hasn_id for a in agents])
         owned_agents: list[dict[str, Any]] = []
-        for agent in agents_result.scalars().all():
+        for agent in agents:
             owned_agents.append(
                 {
                     "hasn_id": agent.hasn_id,
@@ -144,7 +152,7 @@ class HasnContactsService:
                     "role": agent.role,
                     "description": agent.description,
                     "bio": agent.bio,
-                    "online_status": agent.online_status or "offline",
+                    "online_status": "online" if online_map.get(agent.hasn_id) else "offline",
                     "last_seen_at": (
                         agent.last_heartbeat_at.isoformat() if agent.last_heartbeat_at else None
                     ),
