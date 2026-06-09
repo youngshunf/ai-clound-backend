@@ -18,7 +18,7 @@ from starlette_context.plugins import RequestIdPlugin
 from backend import __version__
 from backend.common.cache.pubsub import cache_pubsub_manager
 from backend.common.exception.exception_handler import register_exception
-from backend.common.log import set_custom_logfile, setup_logging
+from backend.common.log import log, set_custom_logfile, setup_logging
 from backend.common.observability.otel import init_otel
 from backend.common.response.response_code import StandardResponseCode
 from backend.core.conf import settings
@@ -49,6 +49,19 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     # 创建数据库表
     await create_tables()
+
+    # 应用目录播种（C2，设计 §6.1）：hasn_app_catalog 是工作台展示 DB 权威，
+    # 启动期从内置注册表幂等播种缺失行（已存在行不被覆盖，运营改动保留）。
+    try:
+        from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
+        from backend.database.db import async_db_session
+
+        async with async_db_session.begin() as seed_db:
+            seeded = await ensure_catalog_seeded(seed_db)
+        if seeded:
+            log.info(f'应用目录播种：新增 {seeded} 行内置应用')
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f'应用目录播种失败（忽略，运行期 Admin 可补）: {exc!r}')
 
     # 初始化 redis
     await redis_client.init()
