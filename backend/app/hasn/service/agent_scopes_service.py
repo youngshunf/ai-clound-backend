@@ -21,6 +21,20 @@ from backend.common.security.agent_jwt import (
     update_agent_modes,
 )
 
+# 审批请求非 pending 时回给主人的友好中文文案（不暴露 timeout/consumed 等英文状态机词）。
+_STALE_APPROVAL_MESSAGES: dict[str, str] = {
+    'timeout': '这条请求已超时，无法再确认',
+    'expired': '这条请求已超时，无法再确认',
+    'approved': '这条请求刚刚已经确认过了',
+    'denied': '这条请求已被拒绝',
+    'consumed': '这条请求已经处理过了',
+}
+
+
+def _friendly_stale_message(status: str) -> str:
+    """把审批行的内部状态翻成主人能看懂的中文提示。"""
+    return _STALE_APPROVAL_MESSAGES.get(status, '这条请求已处理，无需重复操作')
+
 
 class AgentScopesService:
     """Agent 权限管理服务"""
@@ -152,13 +166,13 @@ class AgentScopesService:
         from backend.utils.timezone import timezone
 
         if row.status != 'pending':
-            raise errors.ForbiddenError(msg=f'审批请求当前状态为 {row.status}，无法批准')
+            raise errors.ForbiddenError(msg=_friendly_stale_message(row.status))
         if row.expires_time and row.expires_time < timezone.now():
             await hasn_agent_approval_requests_dao.update_model(
                 db, row.id, {'status': 'timeout', 'decided_time': timezone.now()}
             )
             await db.commit()
-            raise errors.ForbiddenError(msg='审批请求已超时')
+            raise errors.ForbiddenError(msg=_friendly_stale_message('timeout'))
 
         grant_scope = 'always' if scope == 'always' else 'once'
         ticket, jti = issue_capability_ticket(
