@@ -55,6 +55,20 @@ class MarketplaceStorageService:
             region=s3_storage.region or 'any',
         ), s3_storage
 
+    async def _resolve_public_storage_id(self, db: AsyncSession, storage_id: int | None) -> int | None:
+        """图标是公开展示资产：未显式指定存储时，优先落到 access='public' 的存储桶。
+
+        默认存储（storages[0]）通常是私有桶，其 URL 需签名，浏览器直取会 401，
+        图标在前端表现为占位图。图标必须走公共桶，URL 才能被 <img> 直接加载。
+        """
+        if storage_id is not None:
+            return storage_id
+        storages = await s3_storage_dao.get_all(db)
+        for storage in storages:
+            if getattr(storage, 'access', None) == 'public':
+                return storage.id
+        return None  # 无公共桶配置则回退默认行为（storages[0]）
+
     @staticmethod
     def _calculate_hash(content: bytes) -> str:
         """计算内容的 SHA256 哈希值"""
@@ -182,6 +196,7 @@ class MarketplaceStorageService:
         :param storage_id: 存储配置ID
         :return: icon_url
         """
+        storage_id = await self._resolve_public_storage_id(db, storage_id)
         op, s3_storage = await self._get_operator(db, storage_id)
 
         # 提取扩展名
@@ -214,6 +229,7 @@ class MarketplaceStorageService:
         """
         上传图标（hash 去重：内容未变则跳过上传，返回已有 URL）
         """
+        storage_id = await self._resolve_public_storage_id(db, storage_id)
         op, s3_storage = await self._get_operator(db, storage_id)
         content_hash = self._calculate_hash(content)
 
