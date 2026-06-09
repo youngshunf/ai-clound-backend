@@ -1266,6 +1266,19 @@ class SqlAlchemySyncGateway:
         aggregate_id: str,
         payload: dict[str, Any],
     ) -> tuple[int, str]:
+        # 串行化同一 owner 的 revision 分配。hasn_sync_events 的
+        # uq_hasn_sync_events_owner_revision (owner_id, revision) 唯一约束要求每个 owner 的
+        # revision 连续无冲突，但 "SELECT MAX(revision)+1" 看不到其它事务尚未提交的行：两个
+        # 并发写（如同一 owner 的两个 memory 抽取任务 push）会都读到 N、都算出 N+1、都
+        # INSERT，触发 UniqueViolationError。用事务级 advisory lock 按 owner 分桶把 revision
+        # 分配串起来——后到的事务阻塞到前一个提交后再读 MAX，拿到正确的下一个值；锁在事务
+        # 结束（commit/rollback）时自动释放。这是 Postgres 生成 gapless 序列的标准做法，无需
+        # 新表 / 迁移播种，MAX 推导与现存数据天然一致。hashtext 哈希分桶极少量跨 owner 串行
+        # 亦无害。所有写入方都经 _append_sync_event(_with_id)，此处加锁即覆盖全部 callsite。
+        await db.execute(
+            sa.text('SELECT pg_advisory_xact_lock(hashtext(CAST(:owner_id AS text)))'),
+            {'owner_id': owner_id},
+        )
         revision_result = await db.execute(
             sa.text(
                 '''
