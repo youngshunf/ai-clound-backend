@@ -3,6 +3,8 @@ from fastapi import APIRouter
 from backend.app.hasn.api.v1.admin.hasn_agent_capabilities import router as admin_hasn_agent_capabilities_router
 from backend.app.hasn.api.v1.admin.hasn_agent_runtime_reports import router as admin_hasn_agent_runtime_reports_router
 from backend.app.hasn.api.v1.admin.hasn_agents import router as admin_hasn_agents_router
+from backend.app.hasn.api.v1.admin.hasn_app_catalog import router as admin_hasn_app_catalog_router
+from backend.app.hasn.api.v1.admin.hasn_app_entitlement import router as admin_hasn_app_entitlement_router
 from backend.app.hasn.api.v1.admin.hasn_audit_log import router as admin_hasn_audit_log_router
 from backend.app.hasn.api.v1.admin.hasn_channel_bindings import router as admin_hasn_channel_bindings_router
 from backend.app.hasn.api.v1.admin.hasn_clients import router as admin_hasn_clients_router
@@ -240,6 +242,8 @@ app.include_router(app_users_search_router, tags=['HASN Users'])
 app.include_router(app_profile_router, prefix='/profile', tags=['合并 Profile (sys_user + hasn_humans)'])
 
 # --- IM 业务 API ---
+from backend.app.hasn.api.v1.app.hasn_agent_mcp_keys import router as app_hasn_agent_mcp_keys_router
+from backend.app.hasn.api.v1.app.hasn_assets_app import router as app_hasn_assets_router
 from backend.app.hasn.api.v1.app.hasn_im import router as app_hasn_im_router
 from backend.app.hasn.api.v1.app.hasn_session_artifacts import router as app_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.app.hasn_session_events import router as app_hasn_session_events_router
@@ -250,8 +254,6 @@ from backend.app.hasn.api.v1.app.hasn_task_api import router as app_hasn_task_ap
 from backend.app.hasn.api.v1.app.hasn_task_run import router as app_hasn_task_run_router
 from backend.app.hasn.api.v1.app.hasn_task_sessions import router as app_hasn_task_sessions_router
 from backend.app.hasn.api.v1.app.hasn_task_sessions import work_sessions_router
-from backend.app.hasn.api.v1.app.hasn_agent_mcp_keys import router as app_hasn_agent_mcp_keys_router
-from backend.app.hasn.api.v1.app.hasn_assets_app import router as app_hasn_assets_router
 
 app.include_router(app_hasn_im_router, prefix='/im', tags=['HASN IM 业务'])
 app.include_router(app_hasn_api_keys_router, tags=['HASN API Key'])
@@ -295,3 +297,5 @@ v1.include_router(
 v1.include_router(
     admin_hasn_session_artifacts_router, prefix='/hasn/session/artifactss', tags=['HASN 会话产物-HASN 会话产物']
 )
+v1.include_router(admin_hasn_app_catalog_router, prefix='/hasn/app/catalogs', tags=['AI-Native 应用目录'])
+v1.include_router(admin_hasn_app_entitlement_router, prefix='/hasn/app/entitlements', tags=['AI-Native 应用权益'])
