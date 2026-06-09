@@ -20,6 +20,7 @@ from backend.app.marketplace.crud.crud_marketplace_skill import marketplace_skil
 from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.crud.crud_marketplace_skill_version import marketplace_skill_version_dao
 from backend.app.marketplace.crud.crud_marketplace_sync_log import marketplace_sync_log_dao
+from backend.app.marketplace.storage.s3_storage import marketplace_storage_service
 from backend.app.marketplace.schema.marketplace_skill import CreateMarketplaceSkillParam, UpdateMarketplaceSkillParam
 from backend.app.marketplace.schema.marketplace_skill_version import (
     CreateMarketplaceSkillVersionParam,
@@ -282,18 +283,30 @@ class GitHubSyncService:
             return None
 
         # marketplace 维度键不属 hermes 原生格式（B3.4），落库前剔除，保证 hermes_yaml 纯净可被上游消费。
-        hermes_spec = {k: v for k, v in spec.items() if k not in ('is_common', 'is_official', 'version')}
+        # display_name（中文展示名）同属 marketplace 维度：hermes 用 name(=slug) 做命令匹配，故一并剔除。
+        hermes_spec = {k: v for k, v in spec.items() if k not in ('is_common', 'is_official', 'version', 'display_name')}
         hermes_yaml = yaml.safe_dump(hermes_spec, allow_unicode=True, sort_keys=False).strip() + '\n'
         return {
             'bundle_slug': dir_slug,
             'template_id': f'huanxing/{dir_slug}',
             'command_key': f'/{dir_slug}',
-            'name': str(spec.get('name') or dir_slug),
+            # 落库 name 取中文 display_name 供卡片展示，缺省回退 slug；slug 标识仍存 bundle_slug/command_key。
+            'name': str(spec.get('display_name') or spec.get('name') or dir_slug),
             'description': spec.get('description'),
+            'icon_path': self._find_bundle_icon(path.parent),
             'hermes_yaml': hermes_yaml,
             'hermes_bundle_json': hermes_spec,
             'version': '1.0.0',
         }
+
+    @staticmethod
+    def _find_bundle_icon(bundle_dir: Path) -> Path | None:
+        """技能包目录下的可选图标（icon.svg 优先）；缺失返回 None（卡片回退 emoji/占位）。"""
+        for icon_name in ('icon.svg', 'icon.png', 'icon.jpg', 'icon.jpeg'):
+            icon_path = bundle_dir / icon_name
+            if icon_path.exists():
+                return icon_path
+        return None
 
     async def _sync_bundle(self, db: AsyncSession, record: dict[str, Any], *, is_common: bool) -> dict[str, Any]:
         """把单个 bundle 记录落库 marketplace_template(skill_pack) + version（实施/91 B3.3）。
@@ -304,11 +317,25 @@ class GitHubSyncService:
         from backend.app.marketplace.schema.skill_pack import SkillPackCreateRequest
         from backend.app.marketplace.service import skill_pack_service
 
+        # 本地有 icon.svg → 上传到公共桶（marketplace_storage_service 已对图标默认落 access=public 桶，
+        # URL 浏览器可直取），icon_url 回填进 payload；缺图标则保持 None（不覆盖现值）。
+        icon_url: str | None = None
+        icon_path = record.get('icon_path')
+        if icon_path:
+            icon_url = await marketplace_storage_service.upload_icon(
+                db=db,
+                item_type='template',
+                item_id=record['template_id'],
+                content=Path(icon_path).read_bytes(),  # noqa: ASYNC240
+                filename=Path(icon_path).name,
+            )
+
         payload = SkillPackCreateRequest(
             template_id=record['template_id'],
             namespace='huanxing',
             name=record['name'],
             description=record.get('description'),
+            icon_url=icon_url,
             bundle_slug=record['bundle_slug'],
             command_key=record['command_key'],
             version=record['version'],

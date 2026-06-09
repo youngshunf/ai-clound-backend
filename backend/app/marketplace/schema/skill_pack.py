@@ -9,8 +9,9 @@ from backend.common.schema import SchemaBase
 class SkillPackCreateRequest(SchemaBase):
     template_id: str | None = Field(default=None, description='模板 ID；为空时按 bundle_slug 生成')
     namespace: str | None = Field(default=None, description='命名空间')
-    name: str = Field(description='技能包名称')
+    name: str = Field(description='技能包名称（落库 marketplace_template.name；hub 同步时取 bundle.yaml 的中文 display_name，缺省回退 slug）')
     description: str | None = Field(default=None, description='技能包描述')
+    icon_url: str | None = Field(default=None, description='图标 URL（hub 同步上传 icon.svg 到公共桶后回填；留空则不覆盖现值）')
     category: str | None = Field(default=None, description='分类（与 marketplace_category 共用）')
     bundle_slug: str = Field(description='skill pack slug')
     command_key: str = Field(description='Hermes 命令 key')

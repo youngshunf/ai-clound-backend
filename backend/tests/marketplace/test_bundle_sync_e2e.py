@@ -45,7 +45,8 @@ async def _seed_skill(session, namespace: str, slug: str) -> None:
     await session.flush()
 
 
-def _write_bundle(root, slug: str, *, name: str | None = None, skills: list[str] | None = None,
+def _write_bundle(root, slug: str, *, name: str | None = None, display_name: str | None = None,
+                  skills: list[str] | None = None,
                   instruction: str = '先跑测试，再 code review。') -> None:
     bdir = root / 'bundles' / slug
     bdir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +56,8 @@ def _write_bundle(root, slug: str, *, name: str | None = None, skills: list[str]
         'skills': skills if skills is not None else ['huanxing/developer/code-review'],
         'instruction': instruction,
     }
+    if display_name is not None:
+        spec['display_name'] = display_name
     (bdir / 'bundle.yaml').write_text(yaml.safe_dump(spec, allow_unicode=True, sort_keys=False), encoding='utf-8')
 
 
@@ -160,6 +163,34 @@ async def test_sync_bundles_content_change_bumps_hash_and_common_toggle(e2e):
     second = await _fetch_pack(e2e.session, tid)
     assert second['content_hash'] != hash1          # 内容变 → hash 变
     assert second['is_common'] is False             # 移出公共集合 → 重扫落 false
+
+
+async def test_sync_bundle_display_name_maps_to_name(e2e):
+    """bundle.yaml 的中文 display_name 落库 marketplace_template.name（卡片展示用）；
+
+    slug 标识仍存 bundle_slug/command_key；hermes_yaml 保持纯净（display_name 属 marketplace
+    维度不进 hermes 包，hermes 的 name 仍是 slug 供命令匹配）。
+    （icon.svg → 公共桶 icon_url 的上传路径走真实 S3，由活体同步 + test_icon_public_storage 覆盖，
+    此处不打 S3 保持单测稳定。）
+    """
+    slug = f'pack-dn-{_tag()}'
+    _write_bundle(e2e.root, slug, display_name='测试中文名')
+    synced, failed, errors = await e2e.service._sync_bundles(e2e.session)
+    assert (synced, failed) == (1, 0), (synced, failed, errors)
+
+    name = (
+        await e2e.session.execute(
+            text('SELECT name FROM marketplace_template WHERE template_id = :tid'),
+            {'tid': f'huanxing/{slug}'},
+        )
+    ).scalar()
+    assert name == '测试中文名'  # display_name → DB name
+
+    pack = await _fetch_pack(e2e.session, f'huanxing/{slug}')
+    assert pack is not None and pack['bundle_slug'] == slug  # slug 标识不受影响
+    spec = yaml.safe_load(pack['hermes_yaml'])
+    assert 'display_name' not in spec  # marketplace 维度不进 hermes 包
+    assert spec['name'] == slug  # hermes name 仍是 slug
 
 
 async def test_sync_bundles_skips_invalid(e2e):

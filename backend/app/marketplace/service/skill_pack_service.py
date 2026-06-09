@@ -206,6 +206,13 @@ async def upsert_skill_pack(
     status_insert_val = ', :status' if payload.status is not None else ''
     if payload.status is not None:
         template_params['status'] = payload.status
+    # icon_url 仅在显式给出时写入/更新（hub 同步上传 icon.svg 后传入），否则保持 DB 现值
+    # （MCP publish / webui 创建不传 → 不会把已有图标清成 NULL）。
+    icon_url_set = 'icon_url = :icon_url,' if payload.icon_url is not None else ''
+    icon_url_insert_col = ', icon_url' if payload.icon_url is not None else ''
+    icon_url_insert_val = ', :icon_url' if payload.icon_url is not None else ''
+    if payload.icon_url is not None:
+        template_params['icon_url'] = payload.icon_url
 
     await db.execute(
         sa.text(
@@ -214,19 +221,19 @@ async def upsert_skill_pack(
                 template_id, namespace, slug, template_type, name, description,
                 author_id, user_id, pricing_type, price, is_private, is_official,
                 download_count, source_type, created_time, updated_time'''
-            f'''{is_common_insert_col}{category_insert_col}{status_insert_col}
+            f'''{is_common_insert_col}{category_insert_col}{status_insert_col}{icon_url_insert_col}
             ) VALUES (
                 :template_id, :namespace, :slug, 'skill_pack', :name, :description,
                 :author_id, :user_id, 'free', :price, :is_private, :is_official,
                 0, 'local', now(), now()'''
-            f'''{is_common_insert_val}{category_insert_val}{status_insert_val}
+            f'''{is_common_insert_val}{category_insert_val}{status_insert_val}{icon_url_insert_val}
             )
             ON CONFLICT (template_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 description = EXCLUDED.description,
                 is_private = EXCLUDED.is_private,
                 is_official = EXCLUDED.is_official,
-                {is_common_set}{category_set}{status_set}
+                {is_common_set}{category_set}{status_set}{icon_url_set}
                 updated_time = now()
             '''
         ),
