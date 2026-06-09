@@ -7,7 +7,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, and_, or_, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database.db import async_db_session
@@ -321,27 +321,45 @@ async def get_or_create_conversation(
     participant_b_type: str,
     relation_type: str = 'social',
 ) -> HasnConversations:
-    """获取或创建单聊会话（约定 a < b 字典序保证唯一性）"""
-    # 排序保证唯一性
+    """获取或创建单聊会话。
+
+    唯一性不变量：一对参与者（排序后 a<b）只允许**一个** direct 会话，
+    **与 relation_type 无关**——同一对人/人-agent 永远收敛到同一行
+    （对齐 DB partial unique index `uq_hasn_conversations_direct`）。
+    relation_type 仅作为新建时的初值，不参与查找键。
+
+    并发安全：用事务级 advisory lock 按「参与者对」分桶串行化「查-改」，
+    消除并发下两个事务都 SELECT 不到对方未提交行、双双 INSERT 出重复行的
+    竞态（同 `hasn_sync_service` 的 revision 分配套路）。锁随事务结束自动释放。
+    """
+    # 排序保证唯一性（与 DB partial unique index 一致）
     if participant_a_id > participant_b_id:
         participant_a_id, participant_b_id = participant_b_id, participant_a_id
         participant_a_type, participant_b_type = participant_b_type, participant_a_type
 
-    # 查找已有会话
+    # 事务级 advisory lock：按参与者对分桶串行化查改，杜绝重复行竞态。
+    await db.execute(
+        text('SELECT pg_advisory_xact_lock(hashtext(:pair_key))'),
+        {'pair_key': f'hasn_conv_direct:{participant_a_id}:{participant_b_id}'},
+    )
+
+    # 查找已有会话（仅按 type+参与者对，不含 relation_type）；存量去重前可能有
+    # 多行，取最早 created_time 为 canonical，与清洗迁移的选取口径一致。
     result = await db.execute(
-        select(HasnConversations).where(
+        select(HasnConversations)
+        .where(
             HasnConversations.type == 'direct',
             HasnConversations.participant_a_id == participant_a_id,
             HasnConversations.participant_b_id == participant_b_id,
-            HasnConversations.relation_type == relation_type,
         )
+        .order_by(HasnConversations.created_time.asc())
     )
-    conv = result.scalar_one_or_none()
+    conv = result.scalars().first()
 
     if conv:
         return conv
 
-    # 创建新会话
+    # 创建新会话（direct 标准默认值，与 hasn_conversations_service.ensure_conversation 对齐）
     conv = HasnConversations(
         type='direct',
         relation_type=relation_type,
@@ -349,6 +367,14 @@ async def get_or_create_conversation(
         participant_b_id=participant_b_id,
         participant_a_type=participant_a_type,
         participant_b_type=participant_b_type,
+        agent_policy='free',
+        join_policy='',
+        max_members=2,
+        allow_invite=False,
+        mute_all=False,
+        member_count=2,
+        message_count=0,
+        status='active',
     )
     db.add(conv)
     await db.flush()

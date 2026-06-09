@@ -95,16 +95,19 @@ class HasnConversationsService:
         """
         确保会话存在（如果不存在则创建）
 
-        用于 1:1 会话的幂等创建。根据排序后的参与者对查找或创建会话。
+        用于 1:1 会话的幂等创建。**单一去重收口**：委托
+        `message_router.get_or_create_conversation`（事务级 advisory lock +
+        仅按排序后参与者对去重，与 relation_type 无关），保证同一对参与者
+        跨调用方、跨设备始终收敛到同一行，并发也不产生重复行。
 
         :param db: 数据库会话
         :param caller_hasn_id: 调用者的 HASN ID
         :param peer_hasn_id: 对方的 HASN ID
-        :param relation_type: 关系类型，默认 'social'
+        :param relation_type: 关系类型，默认 'social'（仅新建初值，不参与去重键）
         :return: 会话对象
         """
-        # 对参与者 ID 排序，确保同一对用户总是得到相同的会话
-        participant_a, participant_b = sorted([caller_hasn_id, peer_hasn_id])
+        # 局部导入避免 service ↔ message_router 循环依赖
+        from backend.app.hasn.service.message_router import get_or_create_conversation
 
         # 确定参与者类型（h_ 开头是 human，a_ 开头是 agent）
         def get_participant_type(hasn_id: str) -> str:
@@ -115,43 +118,18 @@ class HasnConversationsService:
             else:
                 raise errors.BadRequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
 
-        participant_a_type = get_participant_type(participant_a)
-        participant_b_type = get_participant_type(participant_b)
+        # 校验两侧 HASN ID 格式（排序与去重在 get_or_create 内部完成）
+        caller_type = get_participant_type(caller_hasn_id)
+        peer_type = get_participant_type(peer_hasn_id)
 
-        # 查找现有会话
-        stmt = select(HasnConversations).where(
-            HasnConversations.type == 'direct',
-            HasnConversations.participant_a_id == participant_a,
-            HasnConversations.participant_b_id == participant_b,
+        return await get_or_create_conversation(
+            db,
+            caller_hasn_id,
+            caller_type,
+            peer_hasn_id,
+            peer_type,
+            relation_type,
         )
-        result = await db.execute(stmt)
-        conversation = result.scalar_one_or_none()
-
-        if conversation:
-            return conversation
-
-        # 创建新会话
-        new_conversation = HasnConversations(
-            type='direct',
-            relation_type=relation_type,
-            participant_a_id=participant_a,
-            participant_b_id=participant_b,
-            participant_a_type=participant_a_type,
-            participant_b_type=participant_b_type,
-            agent_policy='free',
-            join_policy='',
-            max_members=2,
-            allow_invite=False,
-            mute_all=False,
-            member_count=2,
-            message_count=0,
-            status='active',
-        )
-        db.add(new_conversation)
-        await db.flush()
-        await db.refresh(new_conversation)
-
-        return new_conversation
 
 
 hasn_conversations_service: HasnConversationsService = HasnConversationsService()
