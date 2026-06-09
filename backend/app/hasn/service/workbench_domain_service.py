@@ -33,6 +33,7 @@ from backend.app.hasn.service.instance_resolver import (
 from backend.app.hasn.service.ragflow_provisioning_service import KNOWLEDGE_APP_ID, ragflow_provisioning_service
 from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 from backend.app.hasn.service.workbench_event_bus import workbench_event_bus
+from backend.app.hasn.service import app_catalog_service
 from backend.app.llm.core.encryption import key_encryption
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
@@ -605,12 +606,19 @@ class WorkbenchDomainService:
     ) -> list[dict[str, Any]]:
         workspace = await self.get_active_workspace(db, user_id=user_id)
         effective_kind = workspace_kind or workspace['kind']
+        # 防御性幂等播种：生产由启动期 reconcile 保证已 seed（此处仅一次存在性 SELECT、零写）；
+        # 兜底未 seed 环境（测试 / seed 失败）也能返回内置应用，不破坏工作台。
+        await app_catalog_service.ensure_catalog_seeded(db)
         rows = await self._workspace_app_rows(db, workspace=workspace, user_id=user_id)
         row_by_app_id = {row.app_id: row for row in rows}
+        # C2：catalog（DB 权威）取代硬编码 registry 作为展示目录来源（设计 §6.3）。
+        # launch 字段（ui_kind/window_url/window_origin）迁移期仍从本地 registry overlay，
+        # registry 在 C6 退役后由 daemon 本地提供（设计 §3 边界）。
+        reg_by_id = {a.id: a for a in workbench_app_registry.list()}
         apps = []
-        for app in workbench_app_registry.list(effective_kind):
-            manifest = app.to_manifest(workspace_kind=effective_kind)
-            row = row_by_app_id.get(app.id)
+        for cat in await app_catalog_service.list_published_catalog(db, kind=effective_kind):
+            manifest = app_catalog_service.catalog_to_manifest(cat, registry_app=reg_by_id.get(cat.app_id))
+            row = row_by_app_id.get(cat.app_id)
             manifest['status'] = row.status if row else 'available'
             apps.append(manifest)
         return apps
@@ -627,10 +635,11 @@ class WorkbenchDomainService:
         **凭据绝不下发浏览器**：响应不含 `credential`；daemon_direct 由 daemon 另行持有，
         cloud_relay 的 app secret 只留云端（设计 11 §0.3/§7.2）。
         """
-        try:
-            app = workbench_app_registry.get(app_id)
-        except KeyError as exc:
-            raise errors.NotFoundError(msg='工作台应用不存在') from exc
+        # C2：应用存在性 + entry_route 以 catalog（DB 权威，仅 published）为准（设计 §6.3）。
+        await app_catalog_service.ensure_catalog_seeded(db)  # 防御性幂等（同 list_workbench_apps）
+        cat = await app_catalog_service.get_published_catalog(db, app_id=app_id)
+        if cat is None:
+            raise errors.NotFoundError(msg='工作台应用不存在')
 
         workspace = await self.get_active_workspace(db, user_id=user_id)
         ws = {'kind': workspace['kind'], 'enterprise_id': workspace['enterprise_id']}
@@ -663,7 +672,7 @@ class WorkbenchDomainService:
 
         return {
             'app_id': app_id,
-            'entry_route': app.entry_route,
+            'entry_route': cat.entry_route,
             'transport': transport,
             'instance_id': instance_id,
             'scope': scope,

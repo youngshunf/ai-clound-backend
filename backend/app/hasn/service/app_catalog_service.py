@@ -101,3 +101,52 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
         .values(status='expired', updated_time=now)
     )
     return result.rowcount or 0
+
+
+# ============================ C2：catalog 作为展示权威 ============================
+
+
+def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: WorkbenchApp | None = None) -> dict:
+    """把 catalog 行映射为工作台 manifest（与 ``WorkbenchApp.to_manifest`` 同形 + ``icon_asset_uri``）。
+
+    launch 字段（ui_kind/window_url/window_origin）catalog 不存——迁移期从本地 ``registry_app``
+    overlay；registry 在 C6 退役后由 daemon 本地提供（对齐设计 §3 边界「本地 builtin 只保留 launch 字段」）。
+    """
+    return {
+        'id': cat.app_id,
+        'name': cat.name,
+        'icon': cat.icon,
+        'icon_asset_uri': cat.icon_asset_uri,
+        'description': cat.description,
+        'scope': list(cat.scope or []),
+        'collaboration_mode': cat.collaboration_mode,
+        'entry_route': cat.entry_route,
+        'install_policy': 'auto' if cat.default_mount else 'manual',
+        'requires_role': cat.requires_role,
+        'execution_mode': cat.execution_mode,
+        'ui_kind': registry_app.ui_kind if registry_app else None,
+        'window_url': registry_app.window_url if registry_app else None,
+        'window_origin': registry_app.window_origin if registry_app else None,
+    }
+
+
+async def list_published_catalog(db: AsyncSession, *, kind: str | None = None) -> list[HasnAppCatalog]:
+    """已上架 catalog 行（按 sort_order 升序），可选按可挂载空间类型（personal/enterprise）过滤。"""
+    stmt = (
+        sa.select(HasnAppCatalog)
+        .where(HasnAppCatalog.status == 'published')
+        .order_by(HasnAppCatalog.sort_order, HasnAppCatalog.id)
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+    if kind is not None:
+        rows = [r for r in rows if kind in (r.scope or [])]
+    return rows
+
+
+async def get_published_catalog(db: AsyncSession, *, app_id: str) -> HasnAppCatalog | None:
+    """取单个**已上架** catalog 行；不存在或已下架返回 None（下架即任何人不可用）。"""
+    stmt = sa.select(HasnAppCatalog).where(
+        HasnAppCatalog.app_id == app_id,
+        HasnAppCatalog.status == 'published',
+    )
+    return (await db.execute(stmt)).scalars().first()
