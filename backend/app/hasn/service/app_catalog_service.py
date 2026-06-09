@@ -43,6 +43,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'knowledge': 10,
     'community': 20,
     'presentation': 30,
+    'deck': 35,
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -75,7 +76,7 @@ def _catalog_row_from_workbench_app(app: WorkbenchApp) -> dict:
         'billing_cycle': 'once',
         'trial_days': 0,
         'sku_ref': None,
-        # 这三个 builtin 都有对应 code manifest。
+        # 现有 builtin（knowledge/community/presentation/deck）都有对应 code manifest。
         'manifest_present': True,
     }
 

@@ -84,6 +84,10 @@ class WorkbenchAppRegistry:
         from backend.app.hasn.service.ai_native_builtin_presentation import build_presentation_workbench_app
 
         registry.register(build_presentation_workbench_app())
+        # 自研演示文稿 deck（local_tool AI-Native，模块 17 §6.2；与 Presenton 研发期并存，install_policy=manual）。
+        from backend.app.deck.manifest import build_deck_workbench_app
+
+        registry.register(build_deck_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:

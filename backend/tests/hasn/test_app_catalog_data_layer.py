@@ -49,7 +49,7 @@ register_exception(_APP)
 _APP.include_router(admin_catalog_router, prefix='/api/v1/hasn/hasn/app/catalogs')
 
 _CATALOG = '/api/v1/hasn/hasn/app/catalogs'
-_SEED_APP_IDS = {'knowledge', 'community', 'presentation'}
+_SEED_APP_IDS = {'knowledge', 'community', 'presentation', 'deck'}
 
 
 def _uid() -> str:
@@ -131,17 +131,18 @@ def _data(resp: httpx.Response):
 
 
 async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
-    """播种后三内置行齐备（全 free），二次播种零插入；display 像素等价默认值。
+    """播种后内置行齐备（全 free），二次播种零插入；display 像素等价默认值。
 
     注：dev DB 由运行中云端 register_init reconcile 已 seed（C2），故首次 inserted 可能为 0；
-    幂等语义只保证「调用后三行齐备 + display 正确」，不假设调用前为空。
+    幂等语义只保证「调用后内置行齐备 + display 正确」，不假设调用前为空。
+    内置集随注册新增（knowledge/community/presentation/deck），见 _SEED_APP_IDS。
     """
     db = env.session
     await ensure_catalog_seeded(db)
 
     rows = (await db.execute(sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id.in_(_SEED_APP_IDS)))).scalars().all()
     by_id = {r.app_id: r for r in rows}
-    assert set(by_id) >= _SEED_APP_IDS, f'三内置 app 应全部存在: {set(by_id)}'
+    assert set(by_id) >= _SEED_APP_IDS, f'内置 app 应全部存在: {set(by_id)}'
     # 迁移 M2 不变量：保持现状全免费。
     assert all(r.access_type == 'free' for r in by_id.values())
     # display 与 WorkbenchAppRegistry 一致。
@@ -150,6 +151,11 @@ async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
     assert by_id['community'].icon == 'users-round'
     assert by_id['presentation'].execution_mode == 'embedded_desktop'
     assert by_id['knowledge'].status == 'published'
+    # deck（自研演示文稿，模块 17）：local_tool + 研发期手动安装（default_mount=False，与 Presenton 并存）。
+    assert by_id['deck'].execution_mode == 'local_tool'
+    assert by_id['deck'].source == 'builtin'
+    assert by_id['deck'].default_mount is False
+    assert by_id['deck'].sort_order == 35
 
     # 二次播种幂等：不再插入。
     again = await ensure_catalog_seeded(db)
