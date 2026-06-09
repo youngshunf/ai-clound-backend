@@ -41,18 +41,14 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'marketplace:read': {'label_zh': '浏览能力市场', 'domain': 'marketplace', 'risk': 'low', 'description': '搜索/查看技能与模板、列出当前 Agent 已安装技能'},
     'marketplace:install': {'label_zh': '安装/卸载技能', 'domain': 'marketplace', 'risk': 'medium', 'description': '把市场技能装到当前 Agent 或从中卸载（云端权威 + 重物化）'},
     'marketplace:publish': {'label_zh': '打包与发布资源', 'domain': 'marketplace', 'risk': 'high', 'description': '打包本地技能/模板并发布为当前用户资源（默认草稿；公开/送审过主人确认）'},
-    # —— app · deck（自研演示文稿系统，模块 17 §3；区别于下方 Presenton 的 presentation:*）——
-    'deck:read': {
-        'label_zh': '查看演示文稿',
-        'domain': 'deck',
-        'risk': 'low',
-        'description': '列出/查看主人的演示文稿与幻灯片页（owner 隔离）',
-    },
-    'deck:write': {
-        'label_zh': '创建/编辑演示文稿',
+    # —— app · deck（自研演示文稿系统，模块 17 §6；区别于下方 Presenton 的 presentation:*）——
+    # 落地真相：写类 8 工具统一 deck:manage（deck.rs MANAGE_SCOPE，出厂 Ask 三态可覆盖）；
+    # 读类 4 工具无 required_scopes 故不在此登记（早期设计稿的 deck:read/deck:write 未落地，已删）。
+    'deck:manage': {
+        'label_zh': '管理演示文稿',
         'domain': 'deck',
         'risk': 'medium',
-        'description': '以 Agent 身份建/改/删主人的演示文稿与页（owner 隔离）',
+        'description': '以 Agent 身份建/改/删主人的演示文稿、页与大纲（owner 隔离；读类无需授权）',
     },
     # —— app · presentation（演示文稿 embedded_desktop AI-Native，14-doc/12 §11.12 权威）——
     'presentation:read': {

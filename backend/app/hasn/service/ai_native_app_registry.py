@@ -4,6 +4,7 @@ import hashlib
 
 from typing import TYPE_CHECKING, Any
 
+from backend.app.deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
 from backend.app.hasn.service.ai_native_builtin_presentation import PRESENTATION_AI_NATIVE_MANIFEST
@@ -32,6 +33,7 @@ class AINativeAppRegistry:
             'knowledge': KNOWLEDGE_AI_NATIVE_MANIFEST,
             'community': COMMUNITY_AI_NATIVE_MANIFEST,
             'presentation': PRESENTATION_AI_NATIVE_MANIFEST,
+            'deck': DECK_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
