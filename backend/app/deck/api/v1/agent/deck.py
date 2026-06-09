@@ -59,7 +59,7 @@ class UpdatePageRequest(BaseModel):
 
 
 @router.post('/decks', summary='分身创建演示文稿')
-async def create_deck(
+async def agent_create_deck(
     db: CurrentSessionTransaction, body: CreateDeckRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
@@ -76,7 +76,7 @@ async def create_deck(
 
 
 @router.get('/decks', summary='分身的（主人）演示文稿列表')
-async def list_decks(
+async def agent_list_decks(
     db: CurrentSession, limit: int = 20, offset: int = 0, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_READ])
@@ -85,7 +85,7 @@ async def list_decks(
 
 
 @router.get('/decks/{deck_id}', summary='演示文稿详情')
-async def get_deck(
+async def agent_get_deck(
     db: CurrentSession, deck_id: int, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_READ])
@@ -94,7 +94,7 @@ async def get_deck(
 
 
 @router.put('/decks/{deck_id}', summary='更新演示文稿')
-async def update_deck(
+async def agent_update_deck(
     db: CurrentSessionTransaction, deck_id: int, body: UpdateDeckRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
@@ -103,7 +103,7 @@ async def update_deck(
 
 
 @router.delete('/decks/{deck_id}', summary='删除演示文稿（软删）')
-async def delete_deck(
+async def agent_delete_deck(
     db: CurrentSessionTransaction, deck_id: int, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
@@ -112,7 +112,7 @@ async def delete_deck(
 
 
 @router.get('/decks/{deck_id}/pages', summary='幻灯片列表')
-async def list_pages(
+async def agent_list_pages(
     db: CurrentSession, deck_id: int, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_READ])
@@ -121,7 +121,7 @@ async def list_pages(
 
 
 @router.post('/decks/{deck_id}/pages', summary='新增幻灯片')
-async def create_page(
+async def agent_create_page(
     db: CurrentSessionTransaction, deck_id: int, body: CreatePageRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
@@ -140,7 +140,7 @@ async def create_page(
 
 
 @router.put('/pages/{page_id}', summary='更新幻灯片')
-async def update_page(
+async def agent_update_page(
     db: CurrentSessionTransaction, page_id: int, body: UpdatePageRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
@@ -149,7 +149,7 @@ async def update_page(
 
 
 @router.delete('/pages/{page_id}', summary='删除幻灯片（软删）')
-async def delete_page(
+async def agent_delete_page(
     db: CurrentSessionTransaction, page_id: int, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
