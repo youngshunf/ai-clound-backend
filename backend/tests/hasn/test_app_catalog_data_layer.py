@@ -131,10 +131,13 @@ def _data(resp: httpx.Response):
 
 
 async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
-    """首次播种插入三内置行（全 free），二次播种零插入；display 像素等价默认值。"""
+    """播种后三内置行齐备（全 free），二次播种零插入；display 像素等价默认值。
+
+    注：dev DB 由运行中云端 register_init reconcile 已 seed（C2），故首次 inserted 可能为 0；
+    幂等语义只保证「调用后三行齐备 + display 正确」，不假设调用前为空。
+    """
     db = env.session
-    inserted = await ensure_catalog_seeded(db)
-    assert inserted >= 1, '首次播种应至少插入缺失的内置行'
+    await ensure_catalog_seeded(db)
 
     rows = (await db.execute(sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id.in_(_SEED_APP_IDS)))).scalars().all()
     by_id = {r.app_id: r for r in rows}
@@ -156,13 +159,17 @@ async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
 async def test_seed_does_not_overwrite_existing_display(env) -> None:
     """已存在行的 display/价格不被代码回写（代码不覆盖运营改动，设计 §6.1）。"""
     db = env.session
-    # 先插入一个被「运营改过」的 knowledge 行（改名 + 付费）。
-    db.add(HasnAppCatalog(**_catalog_kwargs('knowledge', name='运营改名', access_type='tier', min_tier='pro')))
+    await ensure_catalog_seeded(db)  # 确保 knowledge 行存在
+    # 把已存在的 knowledge 行改成被「运营改过」的样子（改名 + 付费），会话内变更，结束回滚还原。
+    row = (await db.execute(sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id == 'knowledge'))).scalars().one()
+    row.name = '运营改名'
+    row.access_type = 'tier'
+    row.min_tier = 'pro'
     await db.flush()
 
     await ensure_catalog_seeded(db)
 
-    row = (await db.execute(sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id == 'knowledge'))).scalars().one()
+    await db.refresh(row)
     assert row.name == '运营改名', '已存在行不应被 seed 覆盖'
     assert row.access_type == 'tier', '已存在行定价不应被 seed 覆盖'
 

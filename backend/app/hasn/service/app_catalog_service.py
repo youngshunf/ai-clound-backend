@@ -20,11 +20,21 @@ import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
+from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.workbench_app_registry import WorkbenchApp, workbench_app_registry
+from backend.app.user_tier.model import UserSubscription
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
+
+# 默认应用标识（订阅档与 billing 同源，见 [[project_billing_newapi_authoritative_source]]）。
+_DEFAULT_APP_CODE = 'huanxing'
+
+# 订阅档高低序（设计 §5.4 枚举 free/pro/advanced/flagship）。未知档位保守按最低 free 处理。
+_TIER_RANK: dict[str, int] = {'free': 0, 'pro': 1, 'advanced': 2, 'flagship': 3}
 
 # 工作台排序（小在前）。未列出的 app 落到默认值之后。
 _CATALOG_SORT_ORDER: dict[str, int] = {
@@ -150,3 +160,167 @@ async def get_published_catalog(db: AsyncSession, *, app_id: str) -> HasnAppCata
         HasnAppCatalog.status == 'published',
     )
     return (await db.execute(stmt)).scalars().first()
+
+
+async def get_catalog(db: AsyncSession, *, app_id: str) -> HasnAppCatalog | None:
+    """取单个 catalog 行（**任意状态**）；用于准入闸门——下架的付费 app 须 deny 而非静默放行。"""
+    stmt = sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id == app_id)
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def resolve_owner_hasn_id(db: AsyncSession, *, user_id: int) -> str | None:
+    """唤星平台 user_id → owner hasn_id（h_xxx）；无映射返回 None。"""
+    stmt = sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id)
+    return (await db.execute(stmt)).scalars().first()
+
+
+# ============================ C4：商业化准入（resolve_app_access + 三闸门） ============================
+
+
+def _tier_rank(tier: str | None) -> int:
+    """订阅档高低序；未知/None 保守按最低 free=0。"""
+    return _TIER_RANK.get((tier or 'free'), 0)
+
+
+async def _resolve_owner_user_id(db: AsyncSession, owner_hasn_id: str) -> int | None:
+    """owner hasn_id（h_xxx）→ 唤星平台 user_id；无映射返回 None（按 free 兜底）。"""
+    stmt = sa.select(HasnHumans.user_id).where(HasnHumans.hasn_id == owner_hasn_id)
+    user_id = (await db.execute(stmt)).scalars().first()
+    return int(user_id) if user_id else None
+
+
+async def owner_effective_tier(db: AsyncSession, *, owner_hasn_id: str) -> str:
+    """owner 的**有效订阅档**（实时读，零新增存储；复用 billing UserSubscription）。
+
+    存储的 ``tier`` 字段过期不降级（只 ``status`` 翻 expired，见 credit_service.get_user_credits_info）；
+    准入须按日期重算：``status`` 已过期或订阅结束日已过 → 有效档位回落 ``free``。免费档无结束日永不过期。
+    """
+    user_id = await _resolve_owner_user_id(db, owner_hasn_id)
+    if user_id is None:
+        return 'free'
+    stmt = sa.select(UserSubscription).where(
+        UserSubscription.user_id == user_id,
+        UserSubscription.app_code == _DEFAULT_APP_CODE,
+    )
+    sub = (await db.execute(stmt)).scalars().first()
+    if sub is None or sub.tier == 'free' or not sub.tier:
+        return 'free'
+    now = timezone.now()
+    if sub.status == 'expired':
+        return 'free'
+    if sub.subscription_end_date is not None and now > sub.subscription_end_date:
+        return 'free'
+    return sub.tier
+
+
+async def get_active_entitlement(
+    db: AsyncSession, *, app_id: str, subject_type: str, subject_id: str
+) -> HasnAppEntitlement | None:
+    """取该主体对该 app 的**有效**权益行（active 且未过期；``expires_at IS NULL`` 视为永久买断）。"""
+    now = timezone.now()
+    stmt = sa.select(HasnAppEntitlement).where(
+        HasnAppEntitlement.app_id == app_id,
+        HasnAppEntitlement.subject_type == subject_type,
+        HasnAppEntitlement.subject_id == subject_id,
+        HasnAppEntitlement.status == 'active',
+        sa.or_(
+            HasnAppEntitlement.expires_at.is_(None),
+            HasnAppEntitlement.expires_at > now,
+        ),
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def _has_used_trial(
+    db: AsyncSession, *, app_id: str, subject_type: str, subject_id: str
+) -> bool:
+    """该主体是否已对此 app 用过试用（任何状态的 source=trial 行都算，强制「只能开一次」）。"""
+    stmt = sa.select(HasnAppEntitlement.id).where(
+        HasnAppEntitlement.app_id == app_id,
+        HasnAppEntitlement.subject_type == subject_type,
+        HasnAppEntitlement.subject_id == subject_id,
+        HasnAppEntitlement.source == 'trial',
+    )
+    return (await db.execute(stmt)).scalars().first() is not None
+
+
+def _price_payload(cat: HasnAppCatalog) -> dict | None:
+    """购买价信息（设计 §5.2 price 字段）；无价返回 None。"""
+    if cat.price_amount is None:
+        return None
+    return {
+        'amount': float(cat.price_amount),
+        'unit': cat.price_unit or 'cny',
+        'cycle': cat.billing_cycle or 'once',
+    }
+
+
+async def resolve_app_access(
+    db: AsyncSession,
+    *,
+    catalog: HasnAppCatalog,
+    owner_hasn_id: str,
+    subject_type: str = 'owner',
+) -> dict:
+    """统一准入决策函数（设计 §5.2）。返回 AppAccess dict。
+
+    判定顺序（§5.2）：
+      1. status != published → disabled（下架，任何人不可用）
+      2. free → allowed/free
+      3. tier → owner 有效档位 ≥ min_tier ? allowed/tier_ok : need_upgrade（附 trial_available）
+      4. purchase → 有 active 权益 ? allowed/entitled（trial 来源则 trialing）: need_purchase（附 trial_available）
+
+    subject_id 取 owner_hasn_id（owner 维度）；企业维度由调用方传 subject_type='enterprise' + 对应 subject_id。
+    """
+    subject_id = owner_hasn_id
+
+    def _access(
+        *,
+        allowed: bool,
+        reason: str,
+        requires: str | None = None,
+        trial_available: bool = False,
+        entitlement_expires_at: datetime | None = None,
+    ) -> dict:
+        return {
+            'allowed': allowed,
+            'reason': reason,
+            'requires': requires,
+            'min_tier': catalog.min_tier,
+            'price': _price_payload(catalog) if requires == 'purchase' else None,
+            'trial_available': trial_available,
+            'entitlement_expires_at': (
+                entitlement_expires_at.isoformat() if entitlement_expires_at else None
+            ),
+        }
+
+    if catalog.status != 'published':
+        return _access(allowed=False, reason='disabled')
+
+    access_type = catalog.access_type or 'free'
+    if access_type == 'free':
+        return _access(allowed=True, reason='free')
+
+    if access_type == 'tier':
+        effective_tier = await owner_effective_tier(db, owner_hasn_id=owner_hasn_id)
+        if _tier_rank(effective_tier) >= _tier_rank(catalog.min_tier):
+            return _access(allowed=True, reason='tier_ok')
+        trial_available = bool(catalog.trial_days) and not await _has_used_trial(
+            db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id
+        )
+        return _access(allowed=False, reason='need_upgrade', requires='upgrade', trial_available=trial_available)
+
+    if access_type == 'purchase':
+        ent = await get_active_entitlement(
+            db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id
+        )
+        if ent is not None:
+            reason = 'trialing' if ent.source == 'trial' else 'entitled'
+            return _access(allowed=True, reason=reason, entitlement_expires_at=ent.expires_at)
+        trial_available = bool(catalog.trial_days) and not await _has_used_trial(
+            db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id
+        )
+        return _access(allowed=False, reason='need_purchase', requires='purchase', trial_available=trial_available)
+
+    # 未知 access_type 保守拒绝（不静默放行付费能力）。
+    return _access(allowed=False, reason='disabled')

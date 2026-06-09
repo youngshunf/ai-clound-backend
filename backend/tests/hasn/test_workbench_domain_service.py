@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import httpx
@@ -183,6 +184,21 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         monkeypatch.setattr(service_mod, name, replacement, raising=True)
 
     monkeypatch.setattr(service_mod, 'key_encryption', _IdentityKeyEncryption(), raising=True)
+
+    # C4：enable_current_workspace_app 经 catalog 做存在性 + 准入。本套件是 SQLite-stub
+    # 编排单测（无 hasn_app_catalog 表），故把 catalog 存在性/准入桩为「注册 app 即免费可挂载」；
+    # 准入闸门真实行为见 test_app_catalog_access.py（真实 PG）。
+    import backend.app.hasn.service.app_catalog_service as catalog_mod
+    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+
+    async def _stub_get_published_catalog(_db, *, app_id):  # noqa: RUF029
+        try:
+            workbench_app_registry.get(app_id)
+        except KeyError:
+            return None
+        return SimpleNamespace(app_id=app_id, access_type='free', status='published')
+
+    monkeypatch.setattr(catalog_mod, 'get_published_catalog', _stub_get_published_catalog, raising=True)
 
     engine = create_async_engine('sqlite+aiosqlite:///:memory:', future=True)
     async with engine.begin() as conn:

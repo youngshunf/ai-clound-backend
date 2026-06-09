@@ -7,6 +7,7 @@ import sqlalchemy as sa
 from fastapi.security.utils import get_authorization_scheme_param
 
 from backend.app.hasn.model import HasnAiNativeAppAudit, HasnWorkspaceApp
+from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.agent_capability_guard import capability_guard
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.instance_resolver import (
@@ -303,6 +304,14 @@ class AiNativeRuntimeGateway:
         if not await self._is_workspace_app_available(db, workspace=workspace, app_id=manifest['app_id']):
             return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
                                     capability=capability, tool=tool, code='15002', reason='app_disabled_by_enterprise')
+
+        # C4 闸门③（设计 §5.3③，安全关键）：付费 app 的 entitlement 维度。
+        # **两条到达面都过**（中继路由 + MCP 直连面 shim），不放进 `skip_mode_gate` 块——
+        # 否则分身经 MCP 直连面即可绕过付费墙白嫖（见 [[feedback_ai_native_gateway_two_call_faces]]）。
+        # 仅付费 app（catalog 存在且 access_type != free）才判定；无 catalog 行 / free → 跳过零开销。
+        if (denial := await self._entitlement_denial(db, app_id=manifest['app_id'], agent=agent)) is not None:
+            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                                    capability=capability, tool=tool, code='15030', reason=denial)
 
         collaboration_denial = self._collaboration_denial(workspace=workspace, manifest=manifest)
         if collaboration_denial is not None:
@@ -741,6 +750,22 @@ class AiNativeRuntimeGateway:
         """
         row = await self._get_workspace_app(db, workspace=workspace, app_id=app_id)
         return row is None or row.status != 'disabled'
+
+    async def _entitlement_denial(
+        self, db: AsyncSession, *, app_id: str, agent: AgentTokenPayload
+    ) -> str | None:
+        """付费 app 准入维度（设计 §5.3③）：未准入返回审计 reason，准入/免费返回 None。
+
+        只有 catalog 中存在且 ``access_type != free`` 的 app 才判定（无 catalog 行 / free 零开销跳过）。
+        owner 维度按 ``agent.owner_hasn_id`` 实时判 tier / active entitlement（零映射，安全路径直取）。
+        """
+        cat = await app_catalog_service.get_catalog(db, app_id=app_id)
+        if cat is None or (cat.access_type or 'free') == 'free':
+            return None
+        access = await app_catalog_service.resolve_app_access(
+            db, catalog=cat, owner_hasn_id=agent.owner_hasn_id
+        )
+        return None if access['allowed'] else 'entitlement_denied'
 
     async def _get_workspace_app(
         self, db: AsyncSession, *, workspace: dict[str, Any], app_id: str
