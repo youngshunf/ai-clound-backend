@@ -181,6 +181,43 @@ class UpdateAgentProfileResponse(SchemaBase):
     agent: AgentSnapshot = Field(description='更新后的 Agent 快照（云端权威）')
 
 
+class AgentRuntimeModels(SchemaBase):
+    """per-agent 4 槽模型选择（None=跟随主模型，runtime 不写对应键即回退 auto）。"""
+
+    main: str | None = Field(None, max_length=120, description='主模型 model.default（强模型；空=平台默认）')
+    fast: str | None = Field(
+        None, max_length=120, description='快速模型，扇出到廉价文本辅助任务 auxiliary.*（空=跟随主模型）'
+    )
+    vision: str | None = Field(None, max_length=120, description='视觉模型 auxiliary.vision（空=跟随主模型）')
+    delegation: str | None = Field(None, max_length=120, description='子分身模型 delegation.model（空=跟随主模型）')
+
+
+class AgentRuntimeConfig(SchemaBase):
+    """per-agent hermes runtime 原生配置（云端权威，全部可空=跟随默认）。"""
+
+    models: AgentRuntimeModels = Field(default_factory=AgentRuntimeModels, description='4 槽模型选择')
+    working_directory: str | None = Field(
+        None, max_length=500, description='agent 工作目录 TERMINAL_CWD（绝对路径；空=默认隔离工作区）'
+    )
+    max_turns: int | None = Field(None, ge=1, le=1000, description='单任务最大执行轮数（空=默认 50）')
+    gateway_timeout: int | None = Field(
+        None, ge=30, le=7200, description='运行时网关无活动超时秒（空=默认 600；区别于权限页审批超时）'
+    )
+    memory_enabled: bool | None = Field(None, description='长期记忆系统开关（空=默认开）')
+    user_profile_enabled: bool | None = Field(None, description='主人画像注入开关（空=默认开）')
+    timezone: str | None = Field(None, max_length=64, description='agent 执行时区（空=默认 Asia/Shanghai）')
+
+
+class GetAgentRuntimeConfigResponse(SchemaBase):
+    """读取/更新 Agent 运行时配置出参（未设项为 None）。"""
+
+    config: AgentRuntimeConfig = Field(description='当前 runtime 配置')
+
+
+class UpdateAgentRuntimeConfigRequest(AgentRuntimeConfig):
+    """更新 Agent 运行时配置入参（覆盖式：webui 取当前值再整体提交）。"""
+
+
 class AgentSkillInstallRequest(SchemaBase):
     """daemon 发起的「为 Agent 装配技能」请求（云端权威）。
 
@@ -273,6 +310,10 @@ class AgentProfileResponse(SchemaBase):
     common_skills_revision: str = Field(
         default='0',
         description='公共技能集合修订号（成员或内容版本变化即变，Runtime 据此重拉公共技能）',
+    )
+    runtime_config: dict | None = Field(
+        None,
+        description='hermes runtime 原生配置（4 槽模型/工作目录/knobs；Runtime 据此写 config.yaml/.env，空=全默认）',
     )
 
 

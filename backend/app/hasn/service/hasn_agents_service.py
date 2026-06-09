@@ -10,6 +10,7 @@ from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
 from backend.app.hasn.model import HasnAgents
 from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.app.hasn.schema.hasn_agents import (
+    AgentRuntimeConfig,
     AgentSnapshot,
     AgentSyncRequest,
     AgentSyncResponse,
@@ -428,6 +429,48 @@ class HasnAgentProfileService:
         )
 
         return UpdateAgentProfileResponse(agent=_agent_snapshot(agent))
+
+    async def get_runtime_config(
+        self, db: AsyncSession, *, owner_id: str, hasn_id: str, user_id: int | None = None
+    ) -> AgentRuntimeConfig:
+        """读取 Agent 的 hermes runtime 原生配置（未设项为 None）。
+
+        owner 归属校验：当前用户须拥有该 owner + Agent 须属于该 owner。存量行
+        runtime_config_json 为 NULL → 返回全默认（全 None）。
+        """
+        await self._assert_owner_access(db, owner_id=owner_id, user_id=user_id)
+        agent = await self._get_owned_agent(db, owner_id=owner_id, hasn_id=hasn_id)
+        raw = getattr(agent, 'runtime_config_json', None) or {}
+        return AgentRuntimeConfig.model_validate(raw)
+
+    async def update_runtime_config(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        hasn_id: str,
+        config: AgentRuntimeConfig,
+        user_id: int | None = None,
+    ) -> AgentRuntimeConfig:
+        """覆盖式更新 Agent 的 hermes runtime 原生配置（云端权威）。
+
+        落库后 bump profile_revision + append `agent.updated` 同步事件（经单一
+        chokepoint `_append_sync_event`，advisory lock 串行化 gapless revision），
+        daemon 据返回值回写本地镜像并下发 runtime。
+        """
+        await self._assert_owner_access(db, owner_id=owner_id, user_id=user_id)
+        agent = await self._get_owned_agent(db, owner_id=owner_id, hasn_id=hasn_id)
+        agent.runtime_config_json = config.model_dump(mode='json')
+        if hasattr(agent, 'profile_revision'):
+            agent.profile_revision = (agent.profile_revision or 1) + 1
+        await db.flush()
+        await self.gateway.append_agent_sync_event(
+            db,
+            owner_id=owner_id,
+            agent=agent,
+            event_type='agent.updated',
+        )
+        return AgentRuntimeConfig.model_validate(agent.runtime_config_json or {})
 
     async def _get_owned_agent(self, db: AsyncSession, *, owner_id: str, hasn_id: str) -> Any:
         """按 (hasn_id, owner_id) 取 Agent；不存在或不归属则 404。"""

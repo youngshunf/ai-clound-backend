@@ -142,6 +142,9 @@ async def get_agent_profile(
             template_version=getattr(row, 'template_version', None),
             profile_revision=int(getattr(row, 'profile_revision', 1) or 1),
             common_skills_revision=common_rev,
+            # hermes runtime 原生配置下行（拉取式兜底，补充 daemon PUT 的即时 push）：
+            # Runtime provision/reconcile 时据此写 config.yaml/.env。空=全默认。
+            runtime_config=getattr(row, 'runtime_config_json', None),
         )
     )
 

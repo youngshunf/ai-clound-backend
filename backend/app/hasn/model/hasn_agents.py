@@ -28,6 +28,11 @@ class HasnAgents(Base):
     capability_summary_json: Mapped[dict | None] = mapped_column(
         postgresql.JSONB(), default=None, comment='Agent 能力概览 JSON（擅长领域/可执行技能，社区主页展示）'
     )
+    runtime_config_json: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(),
+        default=None,
+        comment='Agent hermes runtime 原生配置（4 槽模型/工作目录/max_turns/网关超时/记忆开关/时区；云端权威，下发写入 runtime config.yaml/.env）',
+    )
     type: Mapped[str] = mapped_column(
         sa.String(20),
         default='',

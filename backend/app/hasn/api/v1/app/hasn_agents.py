@@ -26,10 +26,12 @@ from backend.app.hasn.schema.hasn_agents import (
     CloudCreateAgentRequest,
     CloudCreateAgentResponse,
     CreateHasnAgentsParam,
+    GetAgentRuntimeConfigResponse,
     GetHasnAgentsDetail,
     UpdateAgentBindingRequest,
     UpdateAgentProfileRequest,
     UpdateAgentProfileResponse,
+    UpdateAgentRuntimeConfigRequest,
     UpdateHasnAgentsParam,
 )
 from backend.app.hasn.service.hasn_agents_service import agent_profile_service, hasn_agents_service
@@ -252,6 +254,50 @@ async def update_my_hasn_agent_profile(
         user_id=user_id,
     )
     return response_base.success(data=result)
+
+
+@router.get(
+    '/by-hasn-id/{hasn_id}/runtime-config',
+    summary='读取 Agent 的 hermes runtime 原生配置（Owner JWT）',
+    dependencies=[DependsJwtAuth],
+)
+async def get_my_hasn_agent_runtime_config(
+    request: Request,
+    db: CurrentSession,
+    hasn_id: Annotated[str, Path(description='Agent HASN ID, 如 a_xxx')],
+) -> ResponseSchemaModel[GetAgentRuntimeConfigResponse]:
+    """daemon 代理读取：4 槽模型/工作目录/max_turns/网关超时/记忆开关/时区（未设项为 None）。"""
+    user_id = request.user.id
+    owner = (await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))).scalar_one_or_none()
+    if not owner:
+        raise errors.ForbiddenError(msg='当前用户未注册 HASN 身份')
+    config = await agent_profile_service.get_runtime_config(
+        db, owner_id=owner, hasn_id=hasn_id, user_id=user_id
+    )
+    return response_base.success(data=GetAgentRuntimeConfigResponse(config=config))
+
+
+@router.put(
+    '/by-hasn-id/{hasn_id}/runtime-config',
+    summary='更新 Agent 的 hermes runtime 原生配置（Owner JWT，云端权威）',
+    dependencies=[DependsJwtAuth],
+)
+async def update_my_hasn_agent_runtime_config(
+    request: Request,
+    db: CurrentSessionTransaction,
+    hasn_id: Annotated[str, Path(description='Agent HASN ID, 如 a_xxx')],
+    body: UpdateAgentRuntimeConfigRequest,
+) -> ResponseSchemaModel[GetAgentRuntimeConfigResponse]:
+    """覆盖式更新：落库 + bump profile_revision + append 同步事件；daemon 据返回值回写
+    本地镜像并下发 runtime（主模型→/llm 通道，其余→/runtime-config 端点写 config.yaml/.env）。"""
+    user_id = request.user.id
+    owner = (await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))).scalar_one_or_none()
+    if not owner:
+        raise errors.ForbiddenError(msg='当前用户未注册 HASN 身份')
+    config = await agent_profile_service.update_runtime_config(
+        db, owner_id=owner, hasn_id=hasn_id, config=body, user_id=user_id
+    )
+    return response_base.success(data=GetAgentRuntimeConfigResponse(config=config))
 
 
 @router.post(
