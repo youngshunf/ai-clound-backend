@@ -5,6 +5,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Request
 
 from backend.app.hasn.model import HasnHumans
+from backend.app.hasn.schema.hasn_app_entitlement import GetHasnAppEntitlementDetail
 from backend.app.hasn.schema.hasn_builtin_task_catalog import BuiltinTaskCatalogResponse
 from backend.app.hasn.schema.hasn_owner_workbench_pref import PutWorkbenchPrefParam, WorkbenchPrefResponse
 from backend.app.hasn.schema.workbench_briefing_document import (
@@ -12,6 +13,7 @@ from backend.app.hasn.schema.workbench_briefing_document import (
     BriefingHistoryResponse,
     BriefingLatestResponse,
 )
+from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.hasn_workbench_briefing_feedback_service import hasn_workbench_briefing_feedback_service
 from backend.app.hasn.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
 from backend.app.hasn.service.instance_resolver import InstanceResolutionError
@@ -167,3 +169,36 @@ async def enable_workbench_app(request: Request, db: CurrentSessionTransaction, 
 async def disable_workbench_app(request: Request, db: CurrentSessionTransaction, app_id: str) -> ResponseModel:
     data = await workbench_domain_service.disable_current_workspace_app(db, user_id=request.user.id, app_id=app_id)
     return response_base.success(data=data)
+
+
+# ============================ C5：付费应用 试用 / 我的权益（owner 维度） ============================
+
+
+@router.post(
+    '/workbench/apps/{app_id}/trial',
+    dependencies=[DependsJwtAuth],
+    summary='开通付费应用试用（每个 app 仅一次，写 owner 维度试用权益）',
+)
+async def open_app_trial(request: Request, db: CurrentSessionTransaction, app_id: str) -> ResponseModel:
+    owner_id = await _resolve_owner_id(request, db)
+    catalog = await app_catalog_service.get_catalog(db, app_id=app_id)
+    if catalog is None:
+        raise errors.NotFoundError(msg='应用不存在')
+    # open_trial 内含校验（published + 付费 + trial_days>0 + 未用过 + 无 active 权益），违反抛 4xx。
+    ent = await app_catalog_service.open_trial(db, catalog=catalog, owner_hasn_id=owner_id)
+    return response_base.success(data=GetHasnAppEntitlementDetail.model_validate(ent))
+
+
+@router.get(
+    '/workbench/entitlements',
+    dependencies=[DependsJwtAuth],
+    summary='我的应用权益（owner 维度，含试用/购买/管理员授予）',
+)
+async def list_my_entitlements(
+    request: Request, db: CurrentSession, active_only: bool = False
+) -> ResponseModel:
+    owner_id = await _resolve_owner_id(request, db)
+    rows = await app_catalog_service.list_entitlements(
+        db, subject_type='owner', subject_id=owner_id, active_only=active_only
+    )
+    return response_base.success(data=[GetHasnAppEntitlementDetail.model_validate(r) for r in rows])

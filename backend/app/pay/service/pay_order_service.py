@@ -177,9 +177,13 @@ class PayOrderService:
         user_ip: str | None = None,
         app_code: str = 'huanxing',
     ) -> CreatePayOrderResponse:
-        """创建支付订单。据 `order_type` 分支：订阅 vs 积分包（真实支付，零 mock）。"""
+        """创建支付订单。据 `order_type` 分支：订阅 / 积分包 / 应用购买（真实支付，零 mock）。"""
         if obj.order_type == 'credit_pack':
             return await PayOrderService._create_credit_pack_order(
+                db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
+            )
+        if obj.order_type == 'app_purchase':
+            return await PayOrderService._create_app_purchase_order(
                 db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
             )
         return await PayOrderService._create_subscribe_order(
@@ -318,6 +322,79 @@ class PayOrderService:
                 'package_id': package.id,
                 'credit_amount': float(total_credits),
             },
+        }
+        await pay_order_dao.create(db, order_dict)
+
+        qr_code_url, pay_url = PayOrderService._invoke_channel_create(
+            channel, merchant_config,
+            order_no=order_no, amount=pay_amount, subject=subject,
+            body=body, user_ip=user_ip,
+        )
+
+        return CreatePayOrderResponse(
+            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
+            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            expire_time=expire_time,
+        )
+
+    @staticmethod
+    async def _create_app_purchase_order(
+        *,
+        db: AsyncSession,
+        user_id: int,
+        obj: CreatePayOrderParam,
+        user_ip: str | None,
+        app_code: str,
+    ) -> CreatePayOrderResponse:
+        """AI-Native 应用购买真实下单（设计 §5.4）。
+
+        从 `hasn_app_catalog` 取价（须 published + access_type=purchase + 有价）；app_id 写入
+        `extra_data.app_id`，到账由 `handle_app_purchase_paid` 回调读取并写 owner 维度权益。
+        已有有效权益的不重复下单（幂等前置，避免重复扣费）。
+        """
+        # 延迟导入避免 pay → hasn 顶层循环依赖（与 user_tier dao 同为业务定价来源）。
+        from backend.app.hasn.service import app_catalog_service
+
+        catalog = await app_catalog_service.get_published_catalog(db, app_id=obj.app_id)
+        if catalog is None:
+            raise errors.RequestError(msg=f'应用不存在或已下架: {obj.app_id}')
+        if (catalog.access_type or 'free') != 'purchase':
+            raise errors.RequestError(msg='该应用不是购买型，无需下单')
+        if catalog.price_amount is None or float(catalog.price_amount) <= 0:
+            raise errors.RequestError(msg='该应用未配置购买价格')
+
+        owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
+        if owner_hasn_id and await app_catalog_service.get_active_entitlement(
+            db, app_id=catalog.app_id, subject_type='owner', subject_id=owner_hasn_id
+        ):
+            raise errors.RequestError(msg='已拥有该应用，无需重复购买')
+
+        pay_amount = int(float(catalog.price_amount) * 100)
+        subject = f'唤星AI-应用购买-{catalog.name}'
+        body = f'购买应用「{catalog.name}」'
+
+        channel, merchant_config = await PayOrderService._resolve_channel(db, obj.channel_code)
+
+        order_no = _generate_order_no()
+        now = timezone.now()
+        expire_time = now + timedelta(minutes=ORDER_EXPIRE_MINUTES)
+
+        order_dict = {
+            'order_no': order_no,
+            'user_id': user_id,
+            'channel_id': channel.id,
+            'channel_code': channel.code,
+            'order_type': 'app_purchase',
+            'subject': subject,
+            'body': body,
+            'target_tier': None,
+            # catalog.billing_cycle（once/month/year）→ 回调据此算权益到期。
+            'billing_cycle': catalog.billing_cycle,
+            'amount': pay_amount,
+            'pay_amount': pay_amount,
+            'expire_time': expire_time,
+            'user_ip': user_ip,
+            'extra_data': {'app_code': app_code, 'app_id': catalog.app_id},
         }
         await pay_order_dao.create(db, order_dict)
 

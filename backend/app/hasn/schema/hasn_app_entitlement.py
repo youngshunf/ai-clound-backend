@@ -38,3 +38,12 @@ class GetHasnAppEntitlementDetail(HasnAppEntitlementSchemaBase):
     id: int
     created_time: datetime
     updated_time: datetime | None = None
+
+
+class AdminGrantEntitlementParam(SchemaBase):
+    """管理员授予权益参数（语义化，幂等：已有 active 直接返回）。"""
+
+    app_id: str = Field(description='应用 app_id')
+    subject_type: str = Field('owner', description='权益主体 owner/enterprise')
+    subject_id: str = Field(description='主体 ID（owner=hasn_id / enterprise=enterprise_id）')
+    expires_at: datetime | None = Field(None, description='过期时间，不传=永久授予')

@@ -12,9 +12,10 @@ class CreatePayOrderParam(SchemaBase):
 
     可辨识联合：`order_type` 决定必填字段——
     - `subscribe`：必填 `tier`（套餐归一枚举 free/pro/advanced/flagship），可选 `billing_cycle`；
-    - `credit_pack`：必填 `package_id`，从 `credit_package` 取价下单（到账回调 `handle_credit_pack_paid` 发积分）。
+    - `credit_pack`：必填 `package_id`，从 `credit_package` 取价下单（到账回调 `handle_credit_pack_paid` 发积分）；
+    - `app_purchase`：必填 `app_id`，从 `hasn_app_catalog` 取价下单（到账回调 `handle_app_purchase_paid` 写权益）。
     """
-    order_type: str = Field('subscribe', description='订单类型 subscribe | credit_pack')
+    order_type: str = Field('subscribe', description='订单类型 subscribe | credit_pack | app_purchase')
     channel_code: str = Field(description='支付渠道编码 wx_native/alipay_qr/alipay_pc')
     # 订阅时必填
     tier: str | None = Field(None, description='order_type=subscribe 时必填，目标套餐 free/pro/advanced/flagship')
@@ -22,6 +23,8 @@ class CreatePayOrderParam(SchemaBase):
     auto_renew: bool = Field(True, description='是否开通自动续费（v1 桌面端恒 false）')
     # 积分包时必填
     package_id: int | None = Field(None, description='order_type=credit_pack 时必填，积分包 ID')
+    # AI-Native 应用购买时必填
+    app_id: str | None = Field(None, description='order_type=app_purchase 时必填，应用目录 app_id')
 
     @model_validator(mode='after')
     def _validate_cross_fields(self) -> 'CreatePayOrderParam':
@@ -31,8 +34,11 @@ class CreatePayOrderParam(SchemaBase):
         elif self.order_type == 'credit_pack':
             if not self.package_id:
                 raise ValueError('order_type=credit_pack 时必须提供 package_id')
+        elif self.order_type == 'app_purchase':
+            if not self.app_id:
+                raise ValueError('order_type=app_purchase 时必须提供 app_id')
         else:
-            raise ValueError(f'不支持的 order_type: {self.order_type}（仅 subscribe | credit_pack）')
+            raise ValueError(f'不支持的 order_type: {self.order_type}（仅 subscribe | credit_pack | app_purchase）')
         return self
 
 

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
@@ -23,6 +24,7 @@ from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.workbench_app_registry import WorkbenchApp, workbench_app_registry
 from backend.app.user_tier.model import UserSubscription
+from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -324,3 +326,107 @@ async def resolve_app_access(
 
     # 未知 access_type 保守拒绝（不静默放行付费能力）。
     return _access(allowed=False, reason='disabled')
+
+
+# ============================ C5：权益写操作（试用 / 购买 / admin 授予 / 撤销） ============================
+
+# 购买周期 → 权益时长（天）。``once`` = 永久买断（expires_at=None）。
+_PURCHASE_CYCLE_DAYS: dict[str, int] = {'month': 30, 'monthly': 30, 'year': 365, 'yearly': 365}
+
+
+def purchase_expiry(billing_cycle: str | None):
+    """按 billing_cycle 计算购买权益到期时间；``once``/未知周期 → None（永久买断）。"""
+    days = _PURCHASE_CYCLE_DAYS.get(billing_cycle or 'once')
+    return timezone.now() + timedelta(days=days) if days else None
+
+
+async def open_trial(
+    db: AsyncSession, *, catalog: HasnAppCatalog, owner_hasn_id: str, subject_type: str = 'owner'
+) -> HasnAppEntitlement:
+    """owner 主动开通一次试用（设计 §5.1）。写 source=trial 权益，``expires_at = now + trial_days``。
+
+    校验：app 须 published + 付费(tier/purchase) + trial_days>0 + 未用过试用 + 无 active 权益。
+    违反则抛 ForbiddenError/RequestError（调用方转 4xx）。
+    """
+    if catalog.status != 'published':
+        raise errors.ForbiddenError(msg='应用已下架')
+    if (catalog.access_type or 'free') == 'free' or not catalog.trial_days:
+        raise errors.RequestError(msg='该应用不支持试用')
+    subject_id = owner_hasn_id
+    if await _has_used_trial(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id):
+        raise errors.RequestError(msg='试用机会已用过')
+    if await get_active_entitlement(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id):
+        raise errors.RequestError(msg='已有有效权益，无需试用')
+    now = timezone.now()
+    ent = HasnAppEntitlement(
+        app_id=catalog.app_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        source='trial',
+        status='active',
+        granted_at=now,
+        expires_at=now + timedelta(days=catalog.trial_days),
+    )
+    db.add(ent)
+    await db.flush()
+    return ent
+
+
+async def grant_entitlement(
+    db: AsyncSession,
+    *,
+    app_id: str,
+    subject_type: str,
+    subject_id: str,
+    source: str,
+    order_ref: str | None = None,
+    expires_at=None,
+) -> HasnAppEntitlement:
+    """写一条 active 权益（购买回调 / admin 授予共用）。已有 active 则幂等返回（不重复发）。
+
+    唯一约束 ``uq_app_entitlement_active`` 保证每主体每 app 至多一条 active，故先查后写。
+    """
+    existing = await get_active_entitlement(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
+    if existing is not None:
+        return existing
+    ent = HasnAppEntitlement(
+        app_id=app_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        source=source,
+        status='active',
+        order_ref=order_ref,
+        granted_at=timezone.now(),
+        expires_at=expires_at,
+    )
+    db.add(ent)
+    await db.flush()
+    return ent
+
+
+async def revoke_entitlement(db: AsyncSession, *, entitlement_id: int) -> bool:
+    """撤销权益（置 status=revoked）。返回是否实际改动。"""
+    result = await db.execute(
+        sa.update(HasnAppEntitlement)
+        .where(HasnAppEntitlement.id == entitlement_id, HasnAppEntitlement.status == 'active')
+        .values(status='revoked', updated_time=timezone.now())
+    )
+    return (result.rowcount or 0) > 0
+
+
+async def list_entitlements(
+    db: AsyncSession, *, subject_type: str, subject_id: str, active_only: bool = False
+) -> list[HasnAppEntitlement]:
+    """列某主体的权益（owner「我的已购」/ admin 查某主体）。"""
+    stmt = sa.select(HasnAppEntitlement).where(
+        HasnAppEntitlement.subject_type == subject_type,
+        HasnAppEntitlement.subject_id == subject_id,
+    )
+    if active_only:
+        now = timezone.now()
+        stmt = stmt.where(
+            HasnAppEntitlement.status == 'active',
+            sa.or_(HasnAppEntitlement.expires_at.is_(None), HasnAppEntitlement.expires_at > now),
+        )
+    stmt = stmt.order_by(HasnAppEntitlement.id.desc())
+    return list((await db.execute(stmt)).scalars().all())

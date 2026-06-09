@@ -3,12 +3,15 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 
 from backend.app.hasn.schema.hasn_app_entitlement import (
+    AdminGrantEntitlementParam,
     CreateHasnAppEntitlementParam,
     DeleteHasnAppEntitlementParam,
     GetHasnAppEntitlementDetail,
     UpdateHasnAppEntitlementParam,
 )
+from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.hasn_app_entitlement_service import hasn_app_entitlement_service
+from backend.common.exception import errors
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -87,3 +90,47 @@ async def delete_hasn_app_entitlement(db: CurrentSessionTransaction, obj: Delete
     if count > 0:
         return response_base.success()
     return response_base.fail()
+
+
+# ============================ C5：语义化授予 / 撤销（对齐 resolve_app_access 准入语义） ============================
+
+
+@router.post(
+    '/grant',
+    summary='管理员授予应用权益（幂等，source=admin_grant，对齐 active 唯一约束）',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:entitlement:add')),
+        DependsRBAC,
+    ],
+    name='admin_grant_app_entitlement',
+)
+async def grant_app_entitlement(
+    db: CurrentSessionTransaction, obj: AdminGrantEntitlementParam
+) -> ResponseSchemaModel[GetHasnAppEntitlementDetail]:
+    ent = await app_catalog_service.grant_entitlement(
+        db,
+        app_id=obj.app_id,
+        subject_type=obj.subject_type,
+        subject_id=obj.subject_id,
+        source='admin_grant',
+        expires_at=obj.expires_at,
+    )
+    return response_base.success(data=GetHasnAppEntitlementDetail.model_validate(ent))
+
+
+@router.post(
+    '/{pk}/revoke',
+    summary='管理员撤销应用权益（软撤销 status=revoked，非物理删除）',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:entitlement:edit')),
+        DependsRBAC,
+    ],
+    name='admin_revoke_app_entitlement',
+)
+async def revoke_app_entitlement(
+    db: CurrentSessionTransaction, pk: Annotated[int, Path(description='权益 ID')]
+) -> ResponseModel:
+    ok = await app_catalog_service.revoke_entitlement(db, entitlement_id=pk)
+    if not ok:
+        raise errors.RequestError(msg='权益不存在或非 active 状态')
+    return response_base.success()
