@@ -615,11 +615,16 @@ class WorkbenchDomainService:
         # launch 字段（ui_kind/window_url/window_origin）迁移期仍从本地 registry overlay，
         # registry 在 C6 退役后由 daemon 本地提供（设计 §3 边界）。
         reg_by_id = {a.id: a for a in workbench_app_registry.list()}
+        # C4 闸门①：每行附 access（§5.2）。owner 维度准入用 owner hasn_id（tier/purchase 实时判定）。
+        owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
         apps = []
         for cat in await app_catalog_service.list_published_catalog(db, kind=effective_kind):
             manifest = app_catalog_service.catalog_to_manifest(cat, registry_app=reg_by_id.get(cat.app_id))
             row = row_by_app_id.get(cat.app_id)
             manifest['status'] = row.status if row else 'available'
+            manifest['access'] = await app_catalog_service.resolve_app_access(
+                db, catalog=cat, owner_hasn_id=owner_hasn_id or ''
+            )
             apps.append(manifest)
         return apps
 
@@ -684,10 +689,19 @@ class WorkbenchDomainService:
         }
 
     async def enable_current_workspace_app(self, db: AsyncSession, *, user_id: int, app_id: str) -> dict[str, Any]:
-        try:
-            workbench_app_registry.get(app_id)
-        except KeyError as exc:
-            raise errors.NotFoundError(msg='工作台应用不存在') from exc
+        # C4 闸门②：挂载前置准入（catalog 为存在性 + 商业化权威）。下架/未准入直接拒，
+        # data 带 access（reason/requires/min_tier/price），前端据此弹升级/购买（设计 §5.3②）。
+        cat = await app_catalog_service.get_published_catalog(db, app_id=app_id)
+        if cat is None:
+            raise errors.NotFoundError(msg='工作台应用不存在')
+        # 免费 app 直接放行（不必解析 owner / 订阅）；仅付费 app 才判定准入。
+        if (cat.access_type or 'free') != 'free':
+            owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
+            access = await app_catalog_service.resolve_app_access(
+                db, catalog=cat, owner_hasn_id=owner_hasn_id or ''
+            )
+            if not access['allowed']:
+                raise errors.ForbiddenError(msg=access['reason'], data=access)
         workspace = await self.get_active_workspace(db, user_id=user_id)
         row = await self._upsert_workspace_app(
             db,
