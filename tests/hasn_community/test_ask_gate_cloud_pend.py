@@ -19,6 +19,7 @@ from sqlalchemy import text
 
 from backend.app.mcp import ask_gate as ask_gate_module
 from backend.app.mcp.ask_gate import ask_approval_gate
+from backend.common.exception import errors
 from backend.utils.timezone import timezone
 from tests.hasn_community.conftest import seed_agent, seed_human
 
@@ -124,9 +125,8 @@ async def test_send_approval_card_delivers_card_to_owner_conversation(db, monkey
         request_id=request_id,
         agent_hasn_id=agent_row['hasn_id'],
         owner_hasn_id=owner['hasn_id'],
-        tool_name=_TOOL,
-        description='请求执行【发布社区帖子】',
-        args_digest={'content': '一条需要主人批准的帖子'},
+        required_scopes=_SCOPES,
+        description='请求发布社区内容',
         capability_keys=[_TOOL, *_SCOPES],
     )
     assert ok is True, '卡片应真实投递成功（agent→其主人是透明可达路径）'
@@ -256,3 +256,58 @@ async def test_request_and_wait_denies_when_card_delivery_fails(db, monkeypatch)
     assert verdict['decision'] == 'denied', verdict
     row = await _approval_row(db, verdict['request_id'])
     assert row is not None and row.status == 'timeout', row
+
+
+@pytest.mark.asyncio
+async def test_grant_authorizes_by_approval_owner_even_if_agent_owner_is_stale(db, monkeypatch):
+    """cloud-pend 点「本次允许」403 根因修复：裁决授权按**审批行 owner**，不按 agent.owner_id。
+
+    复现用户场景：分身的 hasn_agents.owner_id 与当前主人不一致（身份迁移/历史脏数据），
+    但这条审批就是这位主人触发并送达的——主人理应能批准（旧逻辑据 agent.owner_id 误判 403）。
+    同时验证另一主人仍不能批准（授权不放松，仍绑定到该审批所属主人）。
+    """
+    from backend.app.hasn.service.agent_scopes_service import agent_scopes_service
+
+    owner = await seed_human(db, nickname='审批主人')
+    other = await seed_human(db, nickname='路人甲')
+    agent_row = await seed_agent(db, owner_hasn_id=owner['hasn_id'], display_name='被审批分身')
+    _bind_session(monkeypatch, db)
+
+    env = await ask_approval_gate.open_request(
+        agent_hasn_id=agent_row['hasn_id'],
+        owner_hasn_id=owner['hasn_id'],
+        tool_name=_TOOL,
+        required_scopes=_SCOPES,
+        default_mode='allow',
+        capability_modes={_TOOL: 'ask'},
+        arguments={'content': '需要主人批准的帖子'},
+    )
+    request_id = env['approval']['request_id']
+
+    # 模拟脏数据：把 agent.owner_id 改成与当前主人不一致（旧逻辑会据此 403）。
+    await db.execute(
+        text('UPDATE hasn_agents SET owner_id = :x WHERE hasn_id = :a'),
+        {'x': 'h_stale_owner_xxx', 'a': agent_row['hasn_id']},
+    )
+
+    # 另一主人不能批准（pending 行 + owner 不符 → 403），证明授权未放松。
+    with pytest.raises(errors.ForbiddenError):
+        await agent_scopes_service.grant_approval(
+            db=db,
+            agent_hasn_id=agent_row['hasn_id'],
+            owner_hasn_id=other['hasn_id'],
+            request_id=request_id,
+            scope='once',
+        )
+
+    # 审批所属主人仍可批准（即便 agent.owner_id 已脏）——这正是 cloud-pend 403 的修复。
+    result = await agent_scopes_service.grant_approval(
+        db=db,
+        agent_hasn_id=agent_row['hasn_id'],
+        owner_hasn_id=owner['hasn_id'],
+        request_id=request_id,
+        scope='once',
+    )
+    assert result['grant_scope'] == 'once', result
+    row = await _approval_row(db, request_id)
+    assert row is not None and row.status == 'approved', row

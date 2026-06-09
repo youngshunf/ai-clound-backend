@@ -91,12 +91,23 @@ def _ask_capability_keys(
     return ask_keys or [tool_name]
 
 
-def _describe(tool_name: str, required_scopes: list[str], digest: dict[str, Any]) -> str:
-    """NLG 审批描述：能力中文 label（scopes.py）+ 关键参数摘要。"""
-    labels = [scope_meta(scope)['label'] for scope in (required_scopes or [])]
-    capability = '、'.join(dict.fromkeys(labels)) if labels else tool_name
-    arg_preview = '；'.join(f'{k}={v}' for k, v in list(digest.items())[:3])
-    description = f'请求执行【{capability}】' + (f'：{arg_preview}' if arg_preview else '')
+def _capability_text(required_scopes: list[str]) -> tuple[str, str]:
+    """(权限中文名, 能力说明) —— 都取自 scopes.py 展示元数据。
+
+    面向主人的友好展示：**只讲“要什么权限、能做什么”，绝不写工具名（如
+    hasn.community.create_post），也不暴露调用参数**（主人无需关心这些技术细节）。
+    """
+    metas = [scope_meta(scope) for scope in (required_scopes or [])]
+    labels = list(dict.fromkeys(m['label'] for m in metas if m.get('label')))
+    descs = list(dict.fromkeys(m['description'] for m in metas if m.get('description')))
+    label = '、'.join(labels) if labels else '一项操作'
+    return label, '；'.join(descs)
+
+
+def _describe(tool_name: str, required_scopes: list[str]) -> str:
+    """审批描述（落库 purpose / 挂起列表展示）：能力中文名 + 说明，**不写工具名、不带参数**。"""
+    label, desc = _capability_text(required_scopes)
+    description = f'请求{label}' + (f'：{desc}' if desc else '')
     return description[:_DESCRIPTION_LIMIT]
 
 
@@ -123,7 +134,7 @@ class AskApprovalGate:
         args_hash = _canonical_args_hash(arguments)
         args_digest = _redact_digest(arguments)
         capability_keys = _ask_capability_keys(tool_name, required_scopes, default_mode, capability_modes)
-        description = _describe(tool_name, required_scopes, args_digest)
+        description = _describe(tool_name, required_scopes)
         expires_time = timezone.now() + timedelta(seconds=APPROVAL_TTL_SECONDS)
 
         await self._persist_pending(
@@ -185,7 +196,7 @@ class AskApprovalGate:
         args_hash = _canonical_args_hash(arguments)
         args_digest = _redact_digest(arguments)
         capability_keys = _ask_capability_keys(tool_name, required_scopes, default_mode, capability_modes)
-        description = _describe(tool_name, required_scopes, args_digest)
+        description = _describe(tool_name, required_scopes)
         deadline = timezone.now() + timedelta(seconds=CLOUD_WAIT_SECONDS)
 
         await self._persist_pending(
@@ -211,9 +222,8 @@ class AskApprovalGate:
             request_id=request_id,
             agent_hasn_id=agent_hasn_id,
             owner_hasn_id=owner_hasn_id,
-            tool_name=tool_name,
+            required_scopes=required_scopes,
             description=description,
-            args_digest=args_digest,
             capability_keys=capability_keys,
         )
         if not card_sent:
@@ -230,9 +240,8 @@ class AskApprovalGate:
         request_id: str,
         agent_hasn_id: str,
         owner_hasn_id: str,
-        tool_name: str,
+        required_scopes: list[str],
         description: str,
-        args_digest: dict[str, Any],
         capability_keys: list[str],
     ) -> bool:
         """把 A 类审批卡片（`agent_tool_approval`，doc15 §7.1）发到 Agent↔主人 1:1 会话。
@@ -241,16 +250,19 @@ class AskApprovalGate:
         + 每个授权 action 的 payload.request_id 一致），以便主人点按钮时走既有 daemon
         `emit_card_action` → 云端 grant/deny 解析路径。经 `route_message` 投递（含跨设备 sync_event +
         WS 推送）。失败返回 False（调用方零 fake 处理）。
+
+        面向主人友好展示：卡片只讲“谁、想要什么权限、能做什么”，**不写工具名、不暴露参数**。
         """
         from backend.app.hasn.service import message_router
         from backend.database.db import async_db_session
 
-        scopes_label = ', '.join(capability_keys) if capability_keys else tool_name
         display = await self._agent_display(agent_hasn_id)
-        digest_text = json.dumps(args_digest, ensure_ascii=False)[:200] if args_digest else '—'
+        label, capability_desc = _capability_text(required_scopes)
+        # 「请求能力」字段：权限中文名 +（能力说明），不含工具名/参数。
+        ability_value = f'{label}（{capability_desc}）' if capability_desc else label
         card = {
             'schema_version': 'hasn.card/0.1',
-            'title': f'「{display}」请求批准一次操作',
+            'title': f'「{display}」想请你确认一项操作',
             'description': description,
             'source': {'kind': 'agent', 'id': agent_hasn_id, 'display_name': display},
             'resource': {
@@ -260,8 +272,7 @@ class AskApprovalGate:
                 'status': 'pending',
             },
             'fields': [
-                {'label': '能力', 'value': f'{tool_name} ({scopes_label})'},
-                {'label': '对象/参数', 'value': digest_text},
+                {'label': '请求能力', 'value': ability_value},
             ],
             'authorization_request': {
                 'request_id': request_id,

@@ -34,6 +34,24 @@ class AgentScopesService:
             verb = '修改' if write else '访问'
             raise errors.ForbiddenError(msg=f'无权{verb}该 Agent 的权限配置')
 
+    async def _assert_owns_approval(
+        self, db: AsyncSession, agent_hasn_id: str, owner_hasn_id: str, request_id: str
+    ):
+        """校验某审批请求确归当前主人裁决，返回该行；否则 404/403。
+
+        **权威按审批行的 owner_hasn_id**（创建时记录、也即审批卡片送达对象），不再用
+        agent.owner_id 间接判断——分身归属可能因身份迁移与历史审批不一致，会误把合法主人
+        判成无权（线上 cloud-pend 点按钮 403 的根因）。审批行 owner 才是“这条审批该谁批”。
+        """
+        from backend.app.hasn.crud.crud_hasn_agent_approval_requests import hasn_agent_approval_requests_dao
+
+        row = await hasn_agent_approval_requests_dao.get_by_request_id(db, request_id)
+        if row is None or row.agent_hasn_id != agent_hasn_id:
+            raise errors.NotFoundError(msg='审批请求不存在')
+        if row.owner_hasn_id != owner_hasn_id:
+            raise errors.ForbiddenError(msg='无权处理该审批请求')
+        return row
+
     def _config_from_policy(self, cfg: dict) -> AgentScopesConfig:
         return AgentScopesConfig(
             scopes=cfg.get('scopes', []),
@@ -108,8 +126,12 @@ class AgentScopesService:
     async def decide_ask_request(
         self, db: AsyncSession, agent_hasn_id: str, owner_hasn_id: str, request_id: str, decision: str
     ) -> None:
-        """主人对某挂起 ask 请求做批准/拒绝决定（P6）。"""
-        await self._assert_owns(db, agent_hasn_id, owner_hasn_id, write=True)
+        """主人对某挂起 ask 请求做批准/拒绝决定（P6）。
+
+        授权按**审批行的 owner_hasn_id**（创建时记录、也即审批卡片送达对象）校验，而非
+        agent.owner_id——分身归属可能因身份迁移与当前不一致，审批行的 owner 才是“该谁批”的权威。
+        """
+        await self._assert_owns_approval(db, agent_hasn_id, owner_hasn_id, request_id)
         from backend.app.mcp.ask_gate import ask_approval_gate
 
         await ask_approval_gate.submit_decision(request_id, decision)
@@ -123,15 +145,12 @@ class AgentScopesService:
         返回 {request_id, grant_scope, tool_name, capability_ticket}；ticket 仅回 daemon owner 通道，
         绝不进卡片/日志。仅对 pending 且未超时的请求有效。
         """
-        await self._assert_owns(db, agent_hasn_id, owner_hasn_id, write=True)
+        row = await self._assert_owns_approval(db, agent_hasn_id, owner_hasn_id, request_id)
         from backend.app.hasn.crud.crud_hasn_agent_approval_requests import hasn_agent_approval_requests_dao
         from backend.common.security.agent_jwt import get_agent_scopes_from_db, update_agent_modes
         from backend.common.security.capability_ticket import issue_capability_ticket
         from backend.utils.timezone import timezone
 
-        row = await hasn_agent_approval_requests_dao.get_by_request_id(db, request_id)
-        if row is None or row.agent_hasn_id != agent_hasn_id:
-            raise errors.NotFoundError(msg='审批请求不存在')
         if row.status != 'pending':
             raise errors.ForbiddenError(msg=f'审批请求当前状态为 {row.status}，无法批准')
         if row.expires_time and row.expires_time < timezone.now():
