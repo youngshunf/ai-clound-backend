@@ -6,11 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
-from backend.app.hasn.service.ai_native_builtin_manifests import (
-    COMMUNITY_AI_NATIVE_MANIFEST,
-    KNOWLEDGE_AI_NATIVE_MANIFEST,
-)
 from backend.app.hasn.service.ai_native_builtin_presentation import PRESENTATION_AI_NATIVE_MANIFEST
+from backend.app.hasn.service.builtin_manifests.community import COMMUNITY_AI_NATIVE_MANIFEST
+from backend.app.hasn.service.builtin_manifests.knowledge import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
