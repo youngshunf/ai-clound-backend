@@ -36,6 +36,9 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transact
 pytestmark = pytest.mark.asyncio
 
 _AUTHOR_ID = 970077
+# 技能包默认成员（_payload 的 hermes_yaml 引用这两个完整 id，故种子必须用这两个固定值）。
+# 它们以「裸分类名/slug」存在，是本测试专用桩；teardown 按 id 兜底删除，禁止泄漏进共享本地库。
+_MEMBER_SKILL_IDS = ['developer/code-review', 'productivity/tdd']
 
 _APP = FastAPI()
 _APP.include_router(skill_pack_router, prefix='/api/v1/marketplace/app/skill-packs')
@@ -84,8 +87,9 @@ async def _seed_skill(session, namespace: str, slug: str, **cols) -> str:
 
 async def _seed_default_members(session) -> None:
     """_payload 默认成员（developer/code-review + productivity/tdd）落库为已发布公开技能。"""
-    await _seed_skill(session, 'developer', 'code-review')
-    await _seed_skill(session, 'productivity', 'tdd')
+    for skill_id in _MEMBER_SKILL_IDS:
+        namespace, slug = skill_id.rsplit('/', 1)
+        await _seed_skill(session, namespace, slug)
 
 
 @pytest_asyncio.fixture
@@ -118,6 +122,25 @@ async def client():
         _APP.dependency_overrides.clear()
         await session.rollback()
         await session.close()
+        # 显式硬清理（兜底）：成员桩与作者包在「真实 :8020 commit / 中途提交 / 用例中断」时
+        # rollback 盖不住，会以「无名无图无描述」破卡片污染共享本地库的市场浏览。按本测试已知
+        # 作者 id + 固定成员 id 删除，幂等且只命中测试自造数据，不触碰真实 huanxing/* 行。
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    'DELETE FROM marketplace_template_version WHERE template_id IN '
+                    '(SELECT template_id FROM marketplace_template WHERE author_id = ANY(:authors))'
+                ),
+                {'authors': [_AUTHOR_ID, _AUTHOR_ID + 1]},
+            )
+            await conn.execute(
+                text('DELETE FROM marketplace_template WHERE author_id = ANY(:authors)'),
+                {'authors': [_AUTHOR_ID, _AUTHOR_ID + 1]},
+            )
+            await conn.execute(
+                text('DELETE FROM marketplace_skill WHERE skill_id = ANY(:ids)'),
+                {'ids': _MEMBER_SKILL_IDS},
+            )
         await engine.dispose()
 
 
