@@ -45,9 +45,9 @@ from backend.utils.timezone import timezone
 
 pytestmark = pytest.mark.asyncio
 
-# 真实前缀：app workbench → /api/v1/hasn/app；admin entitlement → /api/v1/hasn + /hasn/app/entitlements。
+# 真实前缀：app workbench → /api/v1/hasn/app；admin entitlement → /api/v1/hasn/app-entitlements（admin scope，无 /app/ 段）。
 _APP_PREFIX = '/api/v1/hasn/app'
-_ADMIN_PREFIX = '/api/v1/hasn/hasn/app/entitlements'
+_ADMIN_PREFIX = '/api/v1/hasn/app-entitlements'
 
 
 def _uid() -> str:

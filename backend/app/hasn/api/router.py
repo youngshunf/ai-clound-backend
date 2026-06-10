@@ -297,5 +297,5 @@ v1.include_router(
 v1.include_router(
     admin_hasn_session_artifacts_router, prefix='/hasn/session/artifactss', tags=['HASN 会话产物-HASN 会话产物']
 )
-v1.include_router(admin_hasn_app_catalog_router, prefix='/hasn/app/catalogs', tags=['AI-Native 应用目录'])
-v1.include_router(admin_hasn_app_entitlement_router, prefix='/hasn/app/entitlements', tags=['AI-Native 应用权益'])
+v1.include_router(admin_hasn_app_catalog_router, prefix='/app-catalogs', tags=['AI-Native 应用目录'])
+v1.include_router(admin_hasn_app_entitlement_router, prefix='/app-entitlements', tags=['AI-Native 应用权益'])

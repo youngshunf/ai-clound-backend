@@ -45,10 +45,10 @@ pytestmark = pytest.mark.asyncio
 _APP = FastAPI()
 _APP.add_middleware(ContextMiddleware, plugins=(RequestIdPlugin(),))
 register_exception(_APP)
-# admin v1 前缀 /api/v1/hasn + codegen include 前缀 /hasn/app/catalogs（既有双 hasn 约定）。
-_APP.include_router(admin_catalog_router, prefix='/api/v1/hasn/hasn/app/catalogs')
+# admin v1 前缀 /api/v1/hasn + include 前缀 /app-catalogs（admin scope，无 /app/ 段避免与 app-scope 混淆）。
+_APP.include_router(admin_catalog_router, prefix='/api/v1/hasn/app-catalogs')
 
-_CATALOG = '/api/v1/hasn/hasn/app/catalogs'
+_CATALOG = '/api/v1/hasn/app-catalogs'
 _SEED_APP_IDS = {'knowledge', 'community', 'presentation', 'deck'}
 
 

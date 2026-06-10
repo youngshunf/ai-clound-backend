@@ -1,7 +1,7 @@
 -- =====================================================
 -- AI-Native 应用管理：管理端菜单 + 字典（PostgreSQL，幂等）
 -- 模块 16 / 实施 06 C5 管理面：应用目录(catalog) + 应用权益(entitlement)
---   后端 admin 路由：/api/v1/hasn/app/catalogs、/api/v1/hasn/app/entitlements
+--   后端 admin 路由：/api/v1/hasn/app-catalogs、/api/v1/hasn/app-entitlements（admin scope，无 /app/ 段）
 --   前端视图：apps/web-antdv-next/src/views/hasn/{hasn_app_catalog,hasn_app_entitlement}/index.vue
 -- 幂等键：菜单按 name 唯一定位（route name）；字典按 code + (type_code,value) NOT EXISTS。
 -- 说明：codegen 生成的 *_menu.sql 把两个菜单都命名为「AI-Native管理」(标题冲突) 且平铺到 /hasn，
