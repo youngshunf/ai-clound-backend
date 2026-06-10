@@ -405,6 +405,37 @@ class PublishService:
             return None
         return await db.get(Revision, site.current_revision_id)
 
+    # ---------------- 公开查看（/s/{slug}，[03] §3） ----------------
+
+    @staticmethod
+    async def get_site_by_slug(db: AsyncSession, *, slug: str) -> Site | None:
+        """按 slug 取 site（任意 owner，公开查看用；软删返回 None）。"""
+        return (
+            await db.execute(select(Site).where(Site.slug == slug, Site.deleted_time.is_(None)))
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def is_expired(site: Site) -> bool:
+        return site.expires_at is not None and site.expires_at <= timezone.now()
+
+    @staticmethod
+    async def increment_view_count(db: AsyncSession, *, site_id: int) -> None:
+        """访问计数 +1（best-effort，统计非鉴权；失败不抛）。"""
+        try:
+            await db.execute(
+                Site.__table__.update().where(Site.id == site_id).values(view_count=Site.view_count + 1)
+            )
+            await db.flush()
+        except Exception:  # noqa: BLE001 统计不可阻塞查看
+            pass
+
+    @staticmethod
+    async def verify_unlock(db: AsyncSession, *, site: Site, password: str) -> bool:
+        """password 可见性：校验口令（[03] §3 /unlock）。"""
+        if site.visibility != 'password' or not site.password_hash:
+            return False
+        return verify_password(password, site.password_hash)
+
     # ---------------- 浏览器访问票（private，[01] §3.1） ----------------
 
     @staticmethod

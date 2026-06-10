@@ -11,6 +11,7 @@ from fastapi import APIRouter
 
 from backend.app.publish.api.v1.agent.site import router as site_agent_router
 from backend.app.publish.api.v1.app.site import router as site_app_router
+from backend.app.publish.api.v1.open.hosting import router as hosting_router
 from backend.core.conf import settings
 
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/app', tags=['网页发布-用户端'])
@@ -18,3 +19,7 @@ app.include_router(site_app_router)
 
 agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/agent', tags=['网页发布-Agent端'])
 agent.include_router(site_agent_router)
+
+# 公开查看面 /s/{slug}（根路径，独立分享域名；无 /api/v1 前缀）
+hosting = APIRouter(tags=['网页发布-公开查看'])
+hosting.include_router(hosting_router)
