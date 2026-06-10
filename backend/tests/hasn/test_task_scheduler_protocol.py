@@ -317,8 +317,9 @@ async def test_scheduler_dispatch_result_roundtrip_is_readable_from_app_task_run
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from backend.app.hasn.api.v1.agent import hasn_task_run as agent_task_run_module
-    from backend.app.hasn.api.v1.app import hasn_task_run as app_task_run_module
     from backend.app.hasn.service import task_scheduler as module
+    from backend.app.hasn_task.api.v1.app import run as app_task_run_module
+    from backend.app.hasn_task.api.v1.app import task as app_task_module
     from backend.common.security.jwt import DependsJwtAuth
 
     fastapi_app = FastAPI()
@@ -330,7 +331,7 @@ async def test_scheduler_dispatch_result_roundtrip_is_readable_from_app_task_run
     )
     fastapi_app.include_router(
         app_task_run_module.router,
-        prefix='/api/v1/hasn/app/hasn/task/runs',
+        prefix='/api/v1/hasn-task/app',
     )
 
     async def fake_agent_auth(request: Request):
@@ -410,7 +411,7 @@ async def test_scheduler_dispatch_result_roundtrip_is_readable_from_app_task_run
         return task_record
 
     monkeypatch.setattr(app_task_run_module.hasn_task_run_service, 'get', fake_get_run)
-    monkeypatch.setattr(app_task_run_module.hasn_task_service, 'get', fake_get_task)
+    monkeypatch.setattr(app_task_module.hasn_task_service, 'get', fake_get_task)
 
     with TestClient(fastapi_app) as client:
         report = client.post(
@@ -425,7 +426,7 @@ async def test_scheduler_dispatch_result_roundtrip_is_readable_from_app_task_run
                 'duration_ms': 1200,
             },
         )
-        detail = client.get(f'/api/v1/hasn/app/hasn/task/runs/{task_run.id}')
+        detail = client.get(f'/api/v1/hasn-task/app/runs/{task_run.id}')
 
     assert report.status_code == 200, report.text
     assert report.json()['data'] == {'run_id': task_run.id, 'status': 'success'}
@@ -471,23 +472,28 @@ def test_task_and_skill_bundle_schemas_use_name_lists() -> None:
 
 def test_hasn_app_router_mounts_task_management_routes() -> None:
     from backend.app.hasn.api.router import app
+    from backend.app.hasn_task.api.router import app as hasn_task_app
 
     routes = {route.path for route in app.routes}
+    hasn_task_routes = {route.path for route in hasn_task_app.routes}
 
-    assert '/api/v1/hasn/app/hasn/tasks' in routes
+    # M8 退役：旧 app/hasn 任务 CRUD 面已删除，任务面收口到 hasn_task 应用
+    assert '/api/v1/hasn/app/hasn/tasks' not in routes
     assert '/api/v1/hasn/app/hasn/skill/bundles' in routes
+    assert '/api/v1/hasn-task/app/tasks' in hasn_task_routes
+    assert '/api/v1/hasn-task/app/sync/push' in hasn_task_routes
 
 
 def test_app_task_create_overrides_owner_from_authenticated_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from backend.app.hasn.api.v1.app import hasn_task as module
+    from backend.app.hasn_task.api.v1.app import task as module
     from backend.common.security.jwt import DependsJwtAuth
 
     fastapi_app = FastAPI()
     fastapi_app.add_middleware(ContextMiddleware, plugins=[RequestIdPlugin(validate=True)])
     register_exception(fastapi_app)
-    fastapi_app.include_router(module.router, prefix='/api/v1/hasn/app/hasn/tasks')
+    fastapi_app.include_router(module.router, prefix='/api/v1/hasn-task/app')
 
     captured: dict[str, Any] = {}
 
@@ -498,19 +504,19 @@ def test_app_task_create_overrides_owner_from_authenticated_user(
     async def fake_db() -> FakeDbSession:
         return FakeDbSession([FakeResult(SimpleNamespace(hasn_id='h_owner'))])
 
-    async def fake_create(*, db: Any, obj: Any) -> dict[str, Any]:
+    async def fake_create(*, db: Any, obj: Any) -> Any:
         captured['db'] = db
         captured['obj'] = obj
-        return {'id': 999, 'owner_id': obj.owner_id}
+        return SimpleNamespace(id=999, owner_id=obj.owner_id)
 
-    monkeypatch.setattr(module.hasn_task_service, 'create', fake_create)
+    monkeypatch.setattr(module.hasn_task_service, 'create_with_schedule', fake_create)
     fastapi_app.dependency_overrides[DependsJwtAuth.dependency] = fake_agent_auth
     fastapi_app.dependency_overrides[get_db] = fake_db
     fastapi_app.dependency_overrides[get_db_transaction] = fake_db
 
     with TestClient(fastapi_app) as client:
         response = client.post(
-            '/api/v1/hasn/app/hasn/tasks',
+            '/api/v1/hasn-task/app/tasks',
             json={
                 'owner_id': 'h_other',
                 'agent_id': 'a_agent',
@@ -535,13 +541,13 @@ def test_app_task_create_overrides_owner_from_authenticated_user(
 def test_app_task_detail_rejects_foreign_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from backend.app.hasn.api.v1.app import hasn_task as module
+    from backend.app.hasn_task.api.v1.app import task as module
     from backend.common.security.jwt import DependsJwtAuth
 
     fastapi_app = FastAPI()
     fastapi_app.add_middleware(ContextMiddleware, plugins=[RequestIdPlugin(validate=True)])
     register_exception(fastapi_app)
-    fastapi_app.include_router(module.router, prefix='/api/v1/hasn/app/hasn/tasks')
+    fastapi_app.include_router(module.router, prefix='/api/v1/hasn-task/app')
 
     async def fake_agent_auth(request: Request):
         request.scope['user'] = SimpleNamespace(id=7)
@@ -559,21 +565,23 @@ def test_app_task_detail_rejects_foreign_owner(
     fastapi_app.dependency_overrides[get_db_transaction] = fake_db
 
     with TestClient(fastapi_app) as client:
-        response = client.get('/api/v1/hasn/app/hasn/tasks/123')
+        response = client.get('/api/v1/hasn-task/app/tasks/123')
 
-    assert response.status_code == 403
+    # 新面跨户返回 404（不泄露存在性，owned_task 守卫）
+    assert response.status_code == 404
 
 
 def test_app_task_run_detail_rejects_foreign_task_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from backend.app.hasn.api.v1.app import hasn_task_run as module
+    from backend.app.hasn_task.api.v1.app import run as module
+    from backend.app.hasn_task.api.v1.app import task as task_module
     from backend.common.security.jwt import DependsJwtAuth
 
     fastapi_app = FastAPI()
     fastapi_app.add_middleware(ContextMiddleware, plugins=[RequestIdPlugin(validate=True)])
     register_exception(fastapi_app)
-    fastapi_app.include_router(module.router, prefix='/api/v1/hasn/app/hasn/task/runs')
+    fastapi_app.include_router(module.router, prefix='/api/v1/hasn-task/app')
 
     async def fake_agent_auth(request: Request):
         request.scope['user'] = SimpleNamespace(id=7)
@@ -589,15 +597,16 @@ def test_app_task_run_detail_rejects_foreign_task_owner(
         return SimpleNamespace(id=pk, owner_id='h_other')
 
     monkeypatch.setattr(module.hasn_task_run_service, 'get', fake_get_run)
-    monkeypatch.setattr(module.hasn_task_service, 'get', fake_get_task)
+    monkeypatch.setattr(task_module.hasn_task_service, 'get', fake_get_task)
     fastapi_app.dependency_overrides[DependsJwtAuth.dependency] = fake_agent_auth
     fastapi_app.dependency_overrides[get_db] = fake_db
     fastapi_app.dependency_overrides[get_db_transaction] = fake_db
 
     with TestClient(fastapi_app) as client:
-        response = client.get('/api/v1/hasn/app/hasn/task/runs/456')
+        response = client.get('/api/v1/hasn-task/app/runs/456')
 
-    assert response.status_code == 403
+    # 新面跨户返回 404（不泄露存在性，owned_task 守卫）
+    assert response.status_code == 404
 
 
 def _session_ctx(session: Any):

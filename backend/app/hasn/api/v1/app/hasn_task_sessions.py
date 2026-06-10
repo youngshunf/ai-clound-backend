@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.hasn.api.v1.app.hasn_task import _current_owner_id
+from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.model import HasnAgents
 from backend.app.hasn.service.hasn_sessions_service import hasn_sessions_service
 from backend.common.exception import errors
@@ -27,6 +27,16 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 work_sessions_router = APIRouter()
+
+
+async def _current_owner_id(request: Request, db: CurrentSession) -> str:
+    owner_id = getattr(request.user, 'hasn_id', None)
+    if owner_id:
+        return owner_id
+    hasn_human = await hasn_humans_dao.get_by_user_id(db, user_id=request.user.id)
+    if not hasn_human:
+        raise errors.ForbiddenError(msg='当前用户未注册 HASN 身份')
+    return hasn_human.hasn_id
 
 
 class SessionUpsertRequest(BaseModel):

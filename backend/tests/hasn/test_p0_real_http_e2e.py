@@ -15,8 +15,9 @@ from backend.app.hasn.api.v1 import message_hub as message_hub_api
 from backend.app.hasn.api.v1 import onboarding as onboarding_api
 from backend.app.hasn.api.v1.app import knowledge as knowledge_api
 from backend.app.hasn.api.v1.app import hasn_skill_bundle as skill_bundle_api
-from backend.app.hasn.api.v1.app import hasn_task as task_api
-from backend.app.hasn.api.v1.app import hasn_task_run as task_run_api
+from backend.app.hasn_task.api.v1.app import run as task_run_api
+from backend.app.hasn_task.api.v1.app import sync as task_sync_api
+from backend.app.hasn_task.api.v1.app import task as task_api
 from backend.app.hasn.api.v1.app import hasn_task_sessions as task_sessions_api
 from backend.app.hasn_community.api.v1.app import community as community_api
 from backend.app.hasn.api.v1.app import workspace as workspace_api
@@ -494,6 +495,11 @@ class InMemoryTaskRunStore:
             for record in self.records.values()
             if (task := self.task_store.records.get(record.task_id)) is not None and task.owner_id == owner_id
         ]
+        items.sort(key=lambda record: record.id, reverse=True)
+        return _page_payload(items)
+
+    async def get_list_by_task_id(self, db: Any, *, task_id: int) -> dict[str, Any]:
+        items = [record for record in self.records.values() if record.task_id == task_id]
         items.sort(key=lambda record: record.id, reverse=True)
         return _page_payload(items)
 
@@ -1023,8 +1029,9 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app.include_router(workspace_api.router, prefix='/api/v1/hasn')
     app.include_router(knowledge_api.router, prefix='/api/v1/hasn/app')
     app.include_router(skill_bundle_api.router, prefix='/api/v1/hasn/app/hasn/skill/bundles')
-    app.include_router(task_api.router, prefix='/api/v1/hasn/app/hasn/tasks')
-    app.include_router(task_run_api.router, prefix='/api/v1/hasn/app/hasn/task/runs')
+    app.include_router(task_api.router, prefix='/api/v1/hasn-task/app')
+    app.include_router(task_run_api.router, prefix='/api/v1/hasn-task/app')
+    app.include_router(task_sync_api.router, prefix='/api/v1/hasn-task/app')
     app.include_router(task_sessions_api.router, prefix='/api/v1/hasn/app')
     app.include_router(community_api.router, prefix='/api/v1/community/app')
     app.include_router(task_sessions_api.work_sessions_router, prefix='/api/v1/hasn')
@@ -1096,7 +1103,7 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         request.state.agent = payload
         return payload
 
-    app.dependency_overrides[sync_api.DependsAgentJwtAuth.dependency] = fake_agent_jwt
+    app.dependency_overrides[task_sync_api.DependsAgentJwtAuth.dependency] = fake_agent_jwt
     monkeypatch.setattr(onboarding_api, 'jwt_decode', lambda _token: SimpleNamespace(id=7))
 
     async def fake_token_creator(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
@@ -1133,7 +1140,7 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     task_run_store = InMemoryTaskRunStore(task_store=task_store)
 
     monkeypatch.setattr(task_api.hasn_task_service, 'get_list_by_owner', task_store.get_list_by_owner)
-    monkeypatch.setattr(task_api.hasn_task_service, 'create', task_store.create)
+    monkeypatch.setattr(task_api.hasn_task_service, 'create_with_schedule', task_store.create)
     monkeypatch.setattr(task_api.hasn_task_service, 'get', task_store.get)
     monkeypatch.setattr(task_api.hasn_task_service, 'update', task_store.update)
     monkeypatch.setattr(task_api.hasn_task_service, 'delete', task_store.delete)
@@ -1142,11 +1149,11 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setattr(skill_bundle_api.hasn_skill_bundle_service, 'get', skill_bundle_store.get)
     monkeypatch.setattr(skill_bundle_api.hasn_skill_bundle_service, 'update', skill_bundle_store.update)
     monkeypatch.setattr(skill_bundle_api.hasn_skill_bundle_service, 'delete', skill_bundle_store.delete)
-    monkeypatch.setattr(task_run_api.hasn_task_run_service, 'get_list_by_owner', task_run_store.get_list_by_owner)
-    monkeypatch.setattr(task_run_api.hasn_task_run_service, 'create', task_run_store.create)
+    monkeypatch.setattr(task_run_api.hasn_task_run_service, 'get_list_by_task_id', task_run_store.get_list_by_task_id)
     monkeypatch.setattr(task_run_api.hasn_task_run_service, 'get', task_run_store.get)
-    monkeypatch.setattr(task_run_api.hasn_task_run_service, 'update', task_run_store.update)
-    monkeypatch.setattr(task_run_api.hasn_task_run_service, 'delete', task_run_store.delete)
+    # 新面无 owner POST/DELETE run 路由（run 由 daemon 同步/Agent 上报产生），流测试直接播种 store
+    app.state.task_store = task_store
+    app.state.task_run_store = task_run_store
 
     community_post = {
         'content_type': 'post',
@@ -1262,7 +1269,10 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setattr(workspace_notification_subscriber, 'actions', RecordingWorkspaceNotificationActions())
 
     sync_gateway = InMemorySyncGateway()
-    monkeypatch.setattr(sync_api, 'hasn_sync_service', HasnSyncService(gateway=sync_gateway))
+    fake_sync_service = HasnSyncService(gateway=sync_gateway)
+    monkeypatch.setattr(sync_api, 'hasn_sync_service', fake_sync_service)
+    # 新面 task sync 模块持有自己的 hasn_sync_service 引用，须同步替换
+    monkeypatch.setattr(task_sync_api, 'hasn_sync_service', fake_sync_service)
 
     message_gateway = InMemoryMessageGateway(
         recipients={
@@ -1448,6 +1458,7 @@ def make_sync_auth_app(monkeypatch: pytest.MonkeyPatch, user_id: int = 7) -> tup
     app.add_middleware(ContextMiddleware, plugins=[RequestIdPlugin(validate=True)])
     register_exception(app)
     app.include_router(sync_api.router, prefix='/api/v1/hasn')
+    app.include_router(task_sync_api.router, prefix='/api/v1/hasn-task/app')
 
     async def fake_db():
         yield FakeDb()
@@ -1457,7 +1468,10 @@ def make_sync_auth_app(monkeypatch: pytest.MonkeyPatch, user_id: int = 7) -> tup
     app.dependency_overrides[sync_api.DependsJwtAuth.dependency] = _fake_jwt_user(user_id)
 
     sync_gateway = InMemorySyncGateway()
-    monkeypatch.setattr(sync_api, 'hasn_sync_service', HasnSyncService(gateway=sync_gateway))
+    fake_sync_service = HasnSyncService(gateway=sync_gateway)
+    monkeypatch.setattr(sync_api, 'hasn_sync_service', fake_sync_service)
+    # 新面 task sync 模块持有自己的 hasn_sync_service 引用，须同步替换
+    monkeypatch.setattr(task_sync_api, 'hasn_sync_service', fake_sync_service)
     return app, sync_gateway
 
 
@@ -1894,12 +1908,12 @@ def test_task_sync_push_pull_deduplicates_and_uses_task_cursor(monkeypatch: pyte
     }
 
     first_push = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers=auth,
         json={'owner_id': 'h_p0_owner', 'node_id': 'n_a', 'events': [task_event]},
     )
     duplicate_push = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers=auth,
         json={'owner_id': 'h_p0_owner', 'node_id': 'n_a', 'events': [task_event]},
     )
@@ -1909,7 +1923,7 @@ def test_task_sync_push_pull_deduplicates_and_uses_task_cursor(monkeypatch: pyte
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner:0'},
     )
     task_pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers=auth,
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
     )
@@ -1937,7 +1951,7 @@ def test_task_sync_push_rejects_private_runtime_metadata(monkeypatch: pytest.Mon
     client = TestClient(app)
 
     response = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers={'Authorization': 'Bearer jwt-p0-task-sync'},
         json={
             'owner_id': 'h_p0_owner',
@@ -1974,7 +1988,7 @@ def test_task_sync_delete_tombstone_reaches_next_task_pull(monkeypatch: pytest.M
     auth = {'Authorization': 'Bearer jwt-p0-task-sync'}
 
     response = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers=auth,
         json={
             'owner_id': 'h_p0_owner',
@@ -1996,7 +2010,7 @@ def test_task_sync_delete_tombstone_reaches_next_task_pull(monkeypatch: pytest.M
         },
     )
     pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers=auth,
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0'},
     )
@@ -2044,17 +2058,17 @@ def test_task_sync_push_rejects_stale_base_revision(monkeypatch: pytest.MonkeyPa
     }
 
     created = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers=auth,
         json={'owner_id': 'h_p0_owner', 'node_id': 'n_a', 'events': [create_event]},
     )
     stale = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers=auth,
         json={'owner_id': 'h_p0_owner', 'node_id': 'n_b', 'events': [stale_update_event]},
     )
     pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers=auth,
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
     )
@@ -2094,12 +2108,12 @@ def test_task_sync_pull_follows_agent_runtime_host_assignment(monkeypatch: pytes
     }
 
     created = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers={**auth, 'X-Node-Id': 'n_local'},
         json={'owner_id': 'h_p0_owner', 'node_id': 'n_local', 'events': [task_event]},
     )
     local_initial_pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers={**auth, 'X-Node-Id': 'n_local'},
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
     )
@@ -2124,7 +2138,7 @@ def test_task_sync_pull_follows_agent_runtime_host_assignment(monkeypatch: pytes
         },
     )
     old_node_incremental_pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers={**auth, 'X-Node-Id': 'n_local'},
         json={
             'owner_id': 'h_p0_owner',
@@ -2133,7 +2147,7 @@ def test_task_sync_pull_follows_agent_runtime_host_assignment(monkeypatch: pytes
         },
     )
     cloud_node_pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers={**auth, 'X-Node-Id': 'n_cloud'},
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
     )
@@ -2160,7 +2174,7 @@ def test_task_run_summary_requires_agent_jwt_and_is_idempotent(monkeypatch: pyte
     agent_auth = {'Authorization': 'Bearer agent.jwt.task'}
 
     owner_response = client.post(
-        '/api/v1/hasn/tasks/runs/summary',
+        '/api/v1/hasn-task/app/runs/summary',
         headers=owner_auth,
         json={
             'run_id': 456,
@@ -2173,7 +2187,7 @@ def test_task_run_summary_requires_agent_jwt_and_is_idempotent(monkeypatch: pyte
         },
     )
     first = client.post(
-        '/api/v1/hasn/tasks/runs/summary',
+        '/api/v1/hasn-task/app/runs/summary',
         headers=agent_auth,
         json={
             'run_id': 456,
@@ -2191,7 +2205,7 @@ def test_task_run_summary_requires_agent_jwt_and_is_idempotent(monkeypatch: pyte
         },
     )
     duplicate = client.post(
-        '/api/v1/hasn/tasks/runs/summary',
+        '/api/v1/hasn-task/app/runs/summary',
         headers=agent_auth,
         json={
             'run_id': 456,
@@ -2204,7 +2218,7 @@ def test_task_run_summary_requires_agent_jwt_and_is_idempotent(monkeypatch: pyte
         },
     )
     pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers=owner_auth,
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0'},
     )
@@ -2224,7 +2238,7 @@ def test_task_run_summary_keeps_legacy_run_id_separate_from_task_uuid(monkeypatc
     agent_auth = {'Authorization': 'Bearer agent.jwt.task'}
 
     response = client.post(
-        '/api/v1/hasn/tasks/runs/summary',
+        '/api/v1/hasn-task/app/runs/summary',
         headers=agent_auth,
         json={
             'run_id': 456,
@@ -2236,7 +2250,7 @@ def test_task_run_summary_keeps_legacy_run_id_separate_from_task_uuid(monkeypatc
         },
     )
     pull = client.post(
-        '/api/v1/hasn/tasks/sync/pull',
+        '/api/v1/hasn-task/app/sync/pull',
         headers={'Authorization': 'Bearer jwt-p0-real-http'},
         json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0'},
     )
@@ -2257,7 +2271,7 @@ def test_task_run_summary_rejects_other_agent_task(monkeypatch: pytest.MonkeyPat
     auth = {'Authorization': 'Bearer agent.jwt.task'}
 
     task_push = client.post(
-        '/api/v1/hasn/tasks/sync/push',
+        '/api/v1/hasn-task/app/sync/push',
         headers={'Authorization': 'Bearer jwt-p0-real-http'},
         json={
             'owner_id': 'h_p0_owner',
@@ -2279,7 +2293,7 @@ def test_task_run_summary_rejects_other_agent_task(monkeypatch: pytest.MonkeyPat
         },
     )
     response = client.post(
-        '/api/v1/hasn/tasks/runs/summary',
+        '/api/v1/hasn-task/app/runs/summary',
         headers=auth,
         json={
             'run_id': 789,
@@ -2296,7 +2310,8 @@ def test_task_run_summary_rejects_other_agent_task(monkeypatch: pytest.MonkeyPat
 
 
 def test_p0_real_http_flow_covers_task_system_routes(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = TestClient(make_app(monkeypatch))
+    app = make_app(monkeypatch)
+    client = TestClient(app)
     auth = {'Authorization': 'Bearer jwt-p0-real-http'}
 
     bundle_create = client.post(
@@ -2318,7 +2333,7 @@ def test_p0_real_http_flow_covers_task_system_routes(monkeypatch: pytest.MonkeyP
     assert bundle_create.json()['data']['owner_id'] == 'h_p0_owner'
 
     task_create = client.post(
-        '/api/v1/hasn/app/hasn/tasks',
+        '/api/v1/hasn-task/app/tasks',
         headers=auth,
         json={
             'owner_id': 'h_other_owner',
@@ -2349,21 +2364,21 @@ def test_p0_real_http_flow_covers_task_system_routes(monkeypatch: pytest.MonkeyP
         },
     )
     assert task_create.status_code == 200, task_create.text
-    task_id = task_create.json()['data']['id']
-    assert task_create.json()['data']['owner_id'] == 'h_p0_owner'
-    assert task_create.json()['data']['skill_bundle_ids'] == ['backend-dev']
+    task_id = task_create.json()['data']['task_id']
 
-    tasks = client.get('/api/v1/hasn/app/hasn/tasks', headers=auth)
+    tasks = client.get('/api/v1/hasn-task/app/tasks', headers=auth)
     assert tasks.status_code == 200, tasks.text
     assert tasks.json()['data']['total'] == 1
     assert tasks.json()['data']['items'][0]['id'] == task_id
 
-    task_detail = client.get(f'/api/v1/hasn/app/hasn/tasks/{task_id}', headers=auth)
+    task_detail = client.get(f'/api/v1/hasn-task/app/tasks/{task_id}', headers=auth)
     assert task_detail.status_code == 200, task_detail.text
     assert task_detail.json()['data']['name'] == '日报任务'
+    assert task_detail.json()['data']['owner_id'] == 'h_p0_owner'
+    assert task_detail.json()['data']['skill_bundle_ids'] == ['backend-dev']
 
     task_update = client.put(
-        f'/api/v1/hasn/app/hasn/tasks/{task_id}',
+        f'/api/v1/hasn-task/app/tasks/{task_id}',
         headers=auth,
         json={
             'owner_id': 'h_other_owner',
@@ -2394,39 +2409,40 @@ def test_p0_real_http_flow_covers_task_system_routes(monkeypatch: pytest.MonkeyP
         },
     )
     assert task_update.status_code == 200, task_update.text
-    assert task_update.json()['data'] is None
+    assert task_update.json()['data'] == {'updated': 1}
 
-    task_run_create = client.post(
-        '/api/v1/hasn/app/hasn/task/runs',
-        headers=auth,
-        json={
-            'task_id': task_id,
-            'agent_id': 'a_p0_default',
-            'session_id': 'sess_task_1',
-            'source_conversation_id': None,
-            'source_message_id': None,
-            'runtime_node_id': 'n_p0_desktop',
-            'status': 'pending',
-            'started_at': None,
-            'finished_at': None,
-            'duration_ms': None,
-            'prompt_snapshot': 'Skill bundles: backend-dev\n\n生成日报',
-            'output': None,
-            'error': None,
-            'model': None,
-            'token_usage': None,
-            'create_time': '2026-05-22T09:00:00Z',
-        },
+    # 新面不提供 owner POST run（run 由 daemon 同步/Agent 上报产生），直接播种 store 验读路径
+    run_store = app.state.task_run_store
+    task_run_id = run_store.next_id
+    run_store.records[task_run_id] = TaskRunRecord(
+        id=task_run_id,
+        task_id=task_id,
+        agent_id='a_p0_default',
+        session_id='sess_task_1',
+        source_conversation_id=None,
+        source_message_id=None,
+        runtime_node_id='n_p0_desktop',
+        status='pending',
+        started_at=None,
+        finished_at=None,
+        duration_ms=None,
+        prompt_snapshot='Skill bundles: backend-dev\n\n生成日报',
+        output=None,
+        error=None,
+        model=None,
+        token_usage=None,
+        create_time=_fixture_time(),
+        created_time=_fixture_time(),
+        updated_time=None,
     )
-    assert task_run_create.status_code == 200, task_run_create.text
-    task_run_id = task_run_create.json()['data']['id']
+    run_store.next_id += 1
 
-    task_runs = client.get('/api/v1/hasn/app/hasn/task/runs', headers=auth)
+    task_runs = client.get(f'/api/v1/hasn-task/app/tasks/{task_id}/runs', headers=auth)
     assert task_runs.status_code == 200, task_runs.text
     assert task_runs.json()['data']['total'] == 1
     assert task_runs.json()['data']['items'][0]['task_id'] == task_id
 
-    task_run_detail = client.get(f'/api/v1/hasn/app/hasn/task/runs/{task_run_id}', headers=auth)
+    task_run_detail = client.get(f'/api/v1/hasn-task/app/runs/{task_run_id}', headers=auth)
     assert task_run_detail.status_code == 200, task_run_detail.text
     assert task_run_detail.json()['data']['session_id'] == 'sess_task_1'
 
@@ -2499,10 +2515,9 @@ def test_p0_real_http_flow_covers_task_system_routes(monkeypatch: pytest.MonkeyP
     assert bundle_list.status_code == 200, bundle_list.text
     assert bundle_list.json()['data']['items'][0]['description'] == 'Backend feature work updated'
 
-    assert client.delete(f'/api/v1/hasn/app/hasn/task/runs/{task_run_id}', headers=auth).status_code == 200
-    assert client.delete(f'/api/v1/hasn/app/hasn/tasks/{task_id}', headers=auth).status_code == 200
+    assert client.delete(f'/api/v1/hasn-task/app/tasks/{task_id}', headers=auth).status_code == 200
     assert client.delete(f'/api/v1/hasn/app/hasn/skill/bundles/{bundle_id}', headers=auth).status_code == 200
 
-    task_list_after_delete = client.get('/api/v1/hasn/app/hasn/tasks', headers=auth)
+    task_list_after_delete = client.get('/api/v1/hasn-task/app/tasks', headers=auth)
     assert task_list_after_delete.status_code == 200
     assert task_list_after_delete.json()['data']['total'] == 0

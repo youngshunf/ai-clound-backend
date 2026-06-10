@@ -80,8 +80,6 @@ _DEBT = {
     'POST /api/v1/hasn/runtime/report',
     'POST /api/v1/hasn/sync/pull',
     'POST /api/v1/hasn/sync/push',
-    'POST /api/v1/hasn/tasks/sync/pull',
-    'POST /api/v1/hasn/tasks/sync/push',
     # hasn_task 模块（从 app/hasn 拆出）任务定义同步：daemon 侧 .send_json() 配对，同上 hasn/sync 系列
     'POST /api/v1/hasn-task/app/sync/pull',
     'POST /api/v1/hasn-task/app/sync/push',
