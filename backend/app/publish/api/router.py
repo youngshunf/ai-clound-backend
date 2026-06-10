@@ -1,0 +1,20 @@
+"""通用网页发布与分享（模块 18，app_id=publish）模块路由聚合。
+
+- /api/v1/publish/app/*    用户端（Owner JWT，owner 隔离）——daemon PublishBroker 调
+- /api/v1/publish/agent/*  Agent 端（Agent JWT，owner=agent.owner_hasn_id，scope 闸 publish:read/write）
+- /s/{slug}                公开查看端点（独立分享域名，无鉴权外壳；见 hosting.py，P3 接入）
+
+注：publish 为 owner 内容，不开 admin scope；公开面是 /s/{slug} 而非 open CRUD。
+"""
+
+from fastapi import APIRouter
+
+from backend.app.publish.api.v1.agent.site import router as site_agent_router
+from backend.app.publish.api.v1.app.site import router as site_app_router
+from backend.core.conf import settings
+
+app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/app', tags=['网页发布-用户端'])
+app.include_router(site_app_router)
+
+agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/agent', tags=['网页发布-Agent端'])
+agent.include_router(site_agent_router)

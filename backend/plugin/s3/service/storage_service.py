@@ -33,6 +33,7 @@ from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import (
     build_object_url,
     presign_read_key,
+    read_bytes,
     write_bytes,
 )
 
@@ -50,6 +51,9 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     'general_file': ('public', None),
     'dm_attachment': ('private', 3600),
     'private_doc': ('private', 3600),
+    # 网页发布制品（模块 18）：私有桶；语义独立于 dm_attachment，**不触发 extract 抽取流水线**
+    # （extract 由 register_asset(extract_status='pending') 这层显式触发，本类别不进那条路径）。
+    'published_artifact': ('private', 3600),
 }
 
 # category → 对象前缀目录（key 的第一段，content-addressed 之上）。
@@ -59,6 +63,7 @@ CATEGORY_DIR: dict[str, str] = {
     'general_file': 'files',
     'dm_attachment': 'dm',
     'private_doc': 'docs',
+    'published_artifact': 'published',
 }
 
 # 缓存 margin：缓存 TTL = 签名有效期 - margin，保证缓存命中时签名仍有效（1c）。
@@ -256,6 +261,27 @@ class StorageService:
         """私有对象的临时签名读 URL（live 签名，无缓存）。"""
         storage = await cls.get_storage(db, storage_id)
         return await cls._sign_one(storage, object_key, expires_in)
+
+    @classmethod
+    async def read_bytes(cls, db: AsyncSession, *, storage_id: int, object_key: str) -> bytes:
+        """服务端读取私有桶对象的全部字节（平台级新增，模块 18 首个消费者）。
+
+        访客经 /s/{slug}/content 取制品时，服务端经此代吐内容，访客拿不到私有桶长效地址。
+        """
+        storage = await cls.get_storage(db, storage_id)
+        return await read_bytes(storage, object_key)
+
+    @classmethod
+    async def read_stream(
+        cls, db: AsyncSession, *, storage_id: int, object_key: str, chunk_size: int = 65536
+    ):
+        """服务端流式读私有桶对象（异步生成器，逐 chunk yield）。
+
+        single-html 制品代吐用；制品 ≤25MB（[01] §7 不变量 5），整读后分块下发。
+        """
+        data = await cls.read_bytes(db, storage_id=storage_id, object_key=object_key)
+        for i in range(0, len(data), chunk_size):
+            yield data[i : i + chunk_size]
 
     # ---- Redis 缓存层（1c：margin TTL，缓存 TTL < 签名有效期，命中即免二次签名）----
 

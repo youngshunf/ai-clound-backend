@@ -1,3 +1,4 @@
+from backend.app.publish.api.router import v1 as publish_v1, app as publish_app, agent as publish_agent, open_api as publish_open, app as publish_app, agent as publish_agent, open_api as publish_open
 from fastapi import APIRouter
 
 from backend.app.admin.api.router import client as admin_client
@@ -8,6 +9,8 @@ from backend.app.deck.api.router import agent as deck_agent
 from backend.app.deck.api.router import app as deck_app
 from backend.app.hasn_task.api.router import agent as hasn_task_agent
 from backend.app.hasn_task.api.router import app as hasn_task_app
+from backend.app.publish.api.router import agent as publish_agent
+from backend.app.publish.api.router import app as publish_app
 from backend.app.hasn.api.router import (
     agent as hasn_agent,
 )
@@ -129,6 +132,10 @@ router.include_router(deck_agent)             # 演示文稿 Agent API（/api/v1
 router.include_router(hasn_task_app)          # 任务系统 用户端 API（/api/v1/hasn-task/app，Owner JWT + 同步/摘要）
 router.include_router(hasn_task_agent)        # 任务系统 Agent API（/api/v1/hasn-task/agent，Agent JWT，task:read/manage/run）
 
+# 通用网页发布与分享（AI-Native 应用 publish，模块 18，独立 PG schema=webpublish）
+router.include_router(publish_app)            # 发布 用户端 API（/api/v1/publish/app，Owner JWT，owner 隔离）
+router.include_router(publish_agent)          # 发布 Agent API（/api/v1/publish/agent，Agent JWT，publish:read/write）
+
 # 统一通知服务（§9，单一 emit 入口 + 通知中心权威视图 + 主人偏好）
 router.include_router(notification_app)        # 通知 用户端 API（/api/v1/notifications/app，Owner JWT）
 router.include_router(notification_agent)      # 通知 Agent API（/api/v1/notifications/agent，Agent JWT）
@@ -153,3 +160,8 @@ router.include_router(marketplace_app)
 router.include_router(marketplace_admin)
 router.include_router(marketplace_open)
 router.include_router(marketplace_webhook)
+
+router.include_router(publish_v1)
+router.include_router(publish_app)
+router.include_router(publish_agent)
+router.include_router(publish_open)
