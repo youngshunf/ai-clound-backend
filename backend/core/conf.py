@@ -121,6 +121,10 @@ class Settings(BaseSettings):
 
     # RAGFlow 公共实例配置
     RAGFLOW_PUBLIC_URL: str = ''  # RAGFlow 服务地址，如 http://127.0.0.1:18082
+
+    # 网页发布（模块 18）：制品内容绝不在 API 主域渲染——/s/* 整面落独立分享域名（usercontent 模式）。
+    # 形如 https://share.huanxing.ai；为空时回退请求 origin（仅 dev/同域，生产必须配独立域名）。
+    WEB_PUBLISH_SHARE_ORIGIN: str = ''
     RAGFLOW_PUBLIC_RSA_PUBLIC_KEY: str = ''  # RAGFlow RSA 公钥（PEM 格式），用于加密注册密码
     RAGFLOW_DEFAULT_EMBD_ID: str = 'BAAI/bge-large-zh-v1.5'  # 默认 embedding 模型
     RAGFLOW_DEFAULT_LLM_ID: str = 'deepseek-chat'  # 默认 LLM 模型
@@ -159,6 +163,8 @@ class Settings(BaseSettings):
         rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
         rf'^{FASTAPI_API_V1_PATH}/user_tier/agent/.*$',  # 订阅积分 Agent API（使用 X-Agent-Key 认证，不走 JWT）
         rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # AI 自动获客 Agent API（使用 X-Agent-Key 认证，不走 JWT）
+        rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$',  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
+        r'^/s/[^/]+(/.*)?$',  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
     ]
 
     # 用户安全

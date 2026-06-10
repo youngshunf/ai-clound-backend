@@ -46,6 +46,14 @@ _GENUINE = {
     'GET /api/v1/huanxing/app/docs/{pk}/export',
     'GET /api/v1/marketplace/open/skills/{resource_id:path}/download',
     'GET /api/v1/marketplace/open/templates/{resource_id:path}/download',
+    # 网页发布公开查看面 /s/*（模块 18，独立分享域名）：浏览器直接加载的公开 HTML 外壳 /
+    # 二进制制品 / 解锁 JSON——制品内容绝不在 API 主域以信封套壳；/content 恒带 CSP sandbox（见 hosting.py）
+    'GET /s/{slug}',
+    'POST /s/{slug}/unlock',
+    'GET /s/{slug}/content',
+    'GET /s/{slug}/assets/{name:path}',
+    # Runtime 派发代理面 SSE（云端形态）：text/event-stream 逐事件透传，非 JSON 信封
+    'POST /api/v1/hasn/agent/runtime/runs',
     # 重定向 / 外部 OAuth 回调
     'GET /api/v1/oauth2/github/callback',
     'GET /api/v1/oauth2/google/callback',
@@ -74,6 +82,9 @@ _DEBT = {
     'POST /api/v1/hasn/sync/push',
     'POST /api/v1/hasn/tasks/sync/pull',
     'POST /api/v1/hasn/tasks/sync/push',
+    # hasn_task 模块（从 app/hasn 拆出）任务定义同步：daemon 侧 .send_json() 配对，同上 hasn/sync 系列
+    'POST /api/v1/hasn-task/app/sync/pull',
+    'POST /api/v1/hasn-task/app/sync/push',
     # hasn 企业 / ragflow / workspace：业务 JSON 但 handler 无 response_model 注解
     'GET /api/v1/hasn/enterprise/invite-codes',
     'GET /api/v1/hasn/enterprise/memberships',

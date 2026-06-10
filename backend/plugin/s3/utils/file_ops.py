@@ -183,6 +183,25 @@ async def presign_read_url(s3_storage: S3Storage, url: str, expires_in: int = 36
     }
 
 
+async def read_bytes(s3_storage: S3Storage, object_key: str) -> bytes:
+    """服务端读取私有桶对象字节（presign GET + httpx 取，provider 无关，对称 write_bytes）。
+
+    模块 18 网页发布托管：访客不接触私有桶长效地址，由服务端 read_stream 代吐。
+    """
+    signed = await presign_read_key(s3_storage, object_key, 300)
+    try:
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            response = await client.get(signed)
+            response.raise_for_status()
+            return response.content
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text[:300] if e.response.text else e.response.reason_phrase
+        raise errors.ServerError(msg=f'读取 S3 对象失败: HTTP {e.response.status_code} {detail}')
+    except Exception as e:
+        log.exception(f'S3 读取失败: {type(e).__name__}: {e!r}')
+        raise errors.ServerError(msg=f'读取 S3 对象失败: {type(e).__name__}: {e!s}')
+
+
 async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content_type: str | None = None) -> None:
     """Write bytes via a short-lived signed PUT URL.
 

@@ -25,6 +25,8 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'task:read': {'label_zh': '查看任务进度与结果', 'domain': 'task', 'risk': 'low', 'description': '查任务定义/run/结果/历史（hasn.task.list/get/list_runs/get_run/query_results）'},
     'task:manage': {'label_zh': '管理任务', 'domain': 'task', 'risk': 'medium', 'description': '建/改/暂停/恢复/删任务（hasn.task.create/update/pause/resume/delete）'},
     'task:run': {'label_zh': '触发任务执行', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次任务执行（hasn.task.run_now）'},
+    'publish:read': {'label_zh': '查看发布内容', 'domain': 'publish', 'risk': 'low', 'description': '列出/查看主人的网页发布与分享链接（hasn.publish.get/list）'},
+    'publish:write': {'label_zh': '发布与管理网页', 'domain': 'publish', 'risk': 'medium', 'description': '创建/更新/删除网页发布、改可见性、生成分享链接（hasn.publish.create/update/set_visibility/revoke/delete）'},
     # 兼容历史默认词表（DEFAULT_AGENT_SCOPES）——展示用
     'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
     'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},
