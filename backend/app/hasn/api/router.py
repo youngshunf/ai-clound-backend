@@ -135,6 +135,7 @@ app.include_router(agent_scopes_router, tags=['Agent权限管理'])
 # --- Agent（Agent Key） ---
 from backend.app.hasn.api.v1.agent.hasn_agent_capabilities import router as agent_hasn_agent_capabilities_router
 from backend.app.hasn.api.v1.agent.hasn_agent_profile import router as agent_hasn_agent_profile_router
+from backend.app.hasn.api.v1.agent.hasn_agent_runtime import router as agent_hasn_agent_runtime_router
 from backend.app.hasn.api.v1.agent.hasn_agents import router as agent_hasn_agents_router
 from backend.app.hasn.api.v1.agent.hasn_audit_log import router as agent_hasn_audit_log_router
 from backend.app.hasn.api.v1.agent.hasn_contacts import router as agent_hasn_contacts_router
@@ -158,6 +159,7 @@ agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/agent', tags=['HA
 agent.include_router(agent_hasn_humans_router, prefix='/humans', tags=['用户管理'])
 agent.include_router(agent_hasn_agents_router, prefix='/agents', tags=['Agent管理'])
 agent.include_router(agent_hasn_agent_profile_router, tags=['Agent Profile（云端权威）'])
+agent.include_router(agent_hasn_agent_runtime_router, prefix='/runtime', tags=['云端 Runtime 派发代理（双形态）'])
 agent.include_router(agent_hasn_contacts_router, prefix='/contacts', tags=['联系人管理'])
 agent.include_router(agent_hasn_conversations_router, prefix='/conversations', tags=['会话管理'])
 agent.include_router(agent_hasn_messages_router, prefix='/messages', tags=['消息管理'])

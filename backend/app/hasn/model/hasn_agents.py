@@ -33,6 +33,11 @@ class HasnAgents(Base):
         default=None,
         comment='Agent hermes runtime 原生配置（4 槽模型/工作目录/max_turns/网关超时/记忆开关/时区；云端权威，下发写入 runtime config.yaml/.env）',
     )
+    runtime_location: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='local',
+        comment='运行位置 (local:本地:blue/cloud:云端:green)',
+    )
     type: Mapped[str] = mapped_column(
         sa.String(20),
         default='',

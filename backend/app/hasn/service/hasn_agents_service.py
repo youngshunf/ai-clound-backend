@@ -241,6 +241,11 @@ class SqlAlchemyAgentProfileGateway:
             agent.profile_source = 'cloud'
         if not getattr(agent, 'profile_revision', None):
             agent.profile_revision = 1
+        # 运行位置（双形态 Runtime，设计 08/02）：仅新建分身按请求落库（默认 local）；幂等命中
+        # 已有分身时不改位置——切换位置是 detach + 重新 bind 的显式动作，不在创建路径覆盖。
+        if not bool(result.get('already_exists')) and hasattr(agent, 'runtime_location'):
+            location = payload.get('runtime_location') or 'local'
+            agent.runtime_location = location if location in ('local', 'cloud') else 'local'
         await db.flush()
         return agent, result.get('agent_key'), bool(result.get('already_exists'))
 
@@ -596,7 +601,7 @@ class HasnAgentProfileService:
         row = (
             await db.execute(
                 sa.text(
-                    f'''
+                    f"""
                     SELECT t.template_id, v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
                            COALESCE(v.content_hash, v.file_hash) AS content_hash
                     FROM public.marketplace_template t
@@ -605,7 +610,7 @@ class HasnAgentProfileService:
                       AND t.template_type = 'skill_pack'
                       {ver_filter}
                     LIMIT 1
-                    '''
+                    """
                 ),
                 {'package_id': package_id, 'version': version},
             )
@@ -823,6 +828,8 @@ def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any 
         # provision 首次缺省时落盘、已有非空不覆盖（见 hermes-runtime provisioning）。
         'memory_md': request.memory_md if request.memory_md is not None else getattr(template, 'default_memory_md', None),
         'runtime_type': request.runtime_type or getattr(template, 'default_runtime_type', None) or 'hermes',
+        # 运行位置（双形态 Runtime，设计 08/02）：local（默认，本地非沙箱）/ cloud（云端 Docker 沙箱）。
+        'runtime_location': (getattr(request, 'runtime_location', None) or 'local'),
         'node_id': request.node_id,
         'agent_type': request.agent_type,
         'role': request.role,
@@ -865,6 +872,7 @@ def _agent_snapshot(agent: Any) -> AgentSnapshot:
         description=getattr(agent, 'description', None),
         avatar=getattr(agent, 'avatar', None),
         type=getattr(agent, 'type', 'desktop') or 'desktop',
+        runtime_location=getattr(agent, 'runtime_location', 'local') or 'local',
         role=getattr(agent, 'role', 'specialist') or 'specialist',
         profession=getattr(agent, 'profession', None),
         node_id=getattr(agent, 'node_id', None),

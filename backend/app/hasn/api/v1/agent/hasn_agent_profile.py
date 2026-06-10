@@ -80,7 +80,7 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
         bundle_row = (
             await db.execute(
                 sa.text(
-                    f'''
+                    f"""
                     SELECT v.bundle_slug, v.command_key, v.hermes_yaml
                     FROM public.marketplace_template_version v
                     JOIN public.marketplace_template t ON t.template_id = v.template_id
@@ -88,7 +88,7 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
                       AND t.template_type = 'skill_pack'
                       {ver_filter}
                     LIMIT 1
-                    '''
+                    """
                 ),
                 {'template_id': template_id, 'version': version},
             )
@@ -132,6 +132,7 @@ async def get_agent_profile(
         data=AgentProfileResponse(
             hasn_id=row.hasn_id,
             display_name=row.display_name,
+            runtime_location=getattr(row, 'runtime_location', 'local') or 'local',
             soul_md=row.soul_md,
             agents_md=getattr(row, 'agents_md', None),
             user_md=row.user_md,

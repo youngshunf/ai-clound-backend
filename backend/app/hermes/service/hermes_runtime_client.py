@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json as jsonlib
-from collections.abc import AsyncIterator
+
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from backend.core.conf import settings
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @dataclass(slots=True)
@@ -176,6 +179,30 @@ class HermesRuntimeClient:
 
     async def get_run_events(self, runtime_profile_id: str, run_id: str, trace_id: str | None = None) -> Any:
         return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/runs/{run_id}/events', trace_id=trace_id)
+
+    async def start_gateway_by_profile(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
+        """Idempotently start the upstream gateway for a profile (control-plane).
+
+        Mirrors the daemon's C2 dispatch self-heal: the data plane (POST /v1/runs +
+        SSE events) goes daemon/relay → upstream gateway directly, but the gateway
+        must be running first. Sidecar keys this by profile_id (e.g. ``100001-assistant``).
+        """
+        return await self._request(
+            'POST', f'/runtime/v1/profiles/{runtime_profile_id}/gateway/start', json={}, trace_id=trace_id
+        )
+
+    async def get_upstream_endpoint(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
+        """Resolve the upstream hermes-agent gateway endpoint for daemon/relay-direct SSE.
+
+        Returns ``{api_server_host, api_server_port, api_server_key, runs_create_path,
+        runs_events_path_template, runs_cancel_path_template}``. The sidecar stays
+        control-plane only; the cloud relay then dispatches POST /v1/runs + SSE events
+        directly to this (same-machine 127.0.0.1) gateway — one less hop, no double
+        SSE parse. See hosted_runtime.upstream_endpoint (C2).
+        """
+        return await self._request(
+            'GET', f'/runtime/v1/profiles/{runtime_profile_id}/upstream_endpoint', trace_id=trace_id
+        )
 
     async def apply_template(
         self,

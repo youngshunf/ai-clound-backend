@@ -19,6 +19,7 @@ class HasnAgentsSchemaBase(SchemaBase):
     type: str = Field(
         description='Agent 类型 (desktop:桌面端:blue/mobile:手机端:green/cloud:云端:purple/web:网页端:orange)'
     )
+    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue/cloud:云端:green)')
     role: str = Field(description='Agent 角色 (primary:主要:blue/specialist:专家:green/service:服务:orange)')
     node_id: str | None = Field(None, description='Agent 驻留节点 ID（设备指纹派生）')
     home_client_id: int | None = Field(None, description='本地 Agent 归属客户端 ID')
@@ -77,6 +78,7 @@ class AgentSnapshot(SchemaBase):
     description: str | None = Field(None, description='Agent 简介')
     avatar: str | None = Field(None, description='Agent 头像')
     type: str = Field(default='desktop', description='Agent 类型')
+    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue/cloud:云端:green)')
     role: str = Field(default='specialist', description='Agent 角色')
     profession: str | None = Field(None, description='领域专家头衔（如「金融专家」）')
     node_id: str | None = Field(None, description='驻留节点 ID 摘要')
@@ -121,6 +123,10 @@ class CloudCreateAgentRequest(SchemaBase):
     user_md: str | None = Field(None, description='USER.md 内容')
     memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）；空则取模板种子')
     runtime_type: str | None = Field(None, description='期望本地绑定 Runtime 类型')
+    runtime_location: str = Field(
+        default='local',
+        description='运行位置 (local:本地非沙箱可访问授权目录/cloud:云端 Docker 沙箱)；默认 local',
+    )
     node_id: str | None = Field(None, description='创建发起节点 ID')
     agent_type: str = Field(default='desktop', description='Agent 类型')
     role: str = Field(default='specialist', description='Agent 角色')
@@ -295,6 +301,7 @@ class AgentProfileResponse(SchemaBase):
 
     hasn_id: str = Field(description='HASN Agent ID')
     display_name: str = Field(description='Agent 显示名')
+    runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue/cloud:云端:green)')
     soul_md: str | None = Field(None, description='SOUL.md 内容')
     agents_md: str | None = Field(None, description='AGENTS.md 内容')
     user_md: str | None = Field(None, description='USER.md 内容（owner 记忆下发）')
@@ -315,6 +322,32 @@ class AgentProfileResponse(SchemaBase):
         None,
         description='hermes runtime 原生配置（4 槽模型/工作目录/knobs；Runtime 据此写 config.yaml/.env，空=全默认）',
     )
+
+
+class RuntimeRunRequest(SchemaBase):
+    """云端 runtime 派发请求（Agent JWT，仅 runtime_location=cloud 分身）。
+
+    daemon 把它本地为 local 分身组装的 /v1/runs 派发信封（input/message/stream/
+    dispatch_id/instructions/tools/...）整体放进 payload，并携带其 binding metadata
+    里的 runtime_profile_id；云端据 profile_id 经 sidecar 控制面拿上游 gateway 端点，
+    直连 POST /v1/runs 启动 run，并把 SSE 事件逐帧中继回 daemon。
+    """
+
+    runtime_profile_id: str = Field(description='hermes 上游 profile_id（如 100001-assistant），由 daemon 携带')
+    payload: dict[str, Any] = Field(description='/v1/runs 派发信封（daemon 组装，云端不重组）')
+    trace_id: str | None = Field(None, description='链路追踪 ID（透传到 runtime header）')
+
+
+class RuntimeRunCancelRequest(SchemaBase):
+    """取消进行中的云端 run。"""
+
+    runtime_profile_id: str = Field(description='hermes 上游 profile_id')
+    trace_id: str | None = Field(None, description='链路追踪 ID')
+
+
+class RuntimeRunCancelResponse(SchemaBase):
+    run_id: str = Field(description='被取消的 run_id')
+    cancelled: bool = Field(description='是否成功取消')
 
 
 class AgentProfileRevisionResponse(SchemaBase):
