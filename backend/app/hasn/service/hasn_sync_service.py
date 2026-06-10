@@ -281,7 +281,7 @@ class SqlAlchemySyncGateway:
                       NOT (e.payload ? 'visible_node_ids')
                       AND EXISTS (
                         SELECT 1
-                        FROM public.hasn_task_assignment a
+                        FROM hasn_task.assignment a
                         WHERE a.owner_id = e.owner_id
                           AND a.task_uuid = COALESCE(e.payload->>'task_uuid', e.payload->>'task_id', e.aggregate_id)
                           AND a.assignment_state = 'assigned'
@@ -292,7 +292,7 @@ class SqlAlchemySyncGateway:
                       NOT (e.payload ? 'visible_node_ids')
                       AND NOT EXISTS (
                         SELECT 1
-                        FROM public.hasn_task_assignment a
+                        FROM hasn_task.assignment a
                         WHERE a.owner_id = e.owner_id
                           AND a.task_uuid = COALESCE(e.payload->>'task_uuid', e.payload->>'task_id', e.aggregate_id)
                           AND a.assignment_state = 'assigned'
@@ -618,7 +618,7 @@ class SqlAlchemySyncGateway:
                     repeat_completed,
                     created_time,
                     updated_time
-                FROM public.hasn_task
+                FROM hasn_task.task
                 WHERE owner_id = :owner_id
                   AND agent_id = :agent_id
                   AND task_uuid IS NOT NULL
@@ -640,7 +640,7 @@ class SqlAlchemySyncGateway:
             sa.text(
                 '''
                 SELECT executor_kind, executor_node_id, binding_id, assignment_state
-                FROM public.hasn_task_assignment
+                FROM hasn_task.assignment
                 WHERE owner_id = :owner_id
                   AND task_uuid = :task_uuid
                 ORDER BY updated_time DESC NULLS LAST, id DESC
@@ -664,7 +664,7 @@ class SqlAlchemySyncGateway:
         await db.execute(
             sa.text(
                 '''
-                DELETE FROM public.hasn_task_assignment
+                DELETE FROM hasn_task.assignment
                 WHERE owner_id = :owner_id
                   AND task_uuid = :task_uuid
                 '''
@@ -674,7 +674,7 @@ class SqlAlchemySyncGateway:
         await db.execute(
             sa.text(
                 '''
-                INSERT INTO public.hasn_task_assignment (
+                INSERT INTO hasn_task.assignment (
                     task_uuid,
                     owner_id,
                     agent_id,
@@ -773,7 +773,7 @@ class SqlAlchemySyncGateway:
             sa.text(
                 '''
                 SELECT task_revision, state
-                FROM public.hasn_task
+                FROM hasn_task.task
                 WHERE owner_id = :owner_id
                   AND task_uuid = :task_uuid
                 LIMIT 1
@@ -812,7 +812,7 @@ class SqlAlchemySyncGateway:
         await db.execute(
             sa.text(
                 '''
-                INSERT INTO public.hasn_task (
+                INSERT INTO hasn_task.task (
                     owner_id,
                     agent_id,
                     name,
@@ -908,7 +908,7 @@ class SqlAlchemySyncGateway:
                     catchup_limit = EXCLUDED.catchup_limit,
                     enabled = EXCLUDED.enabled,
                     state = CASE
-                        WHEN public.hasn_task.state = 'deleted' AND EXCLUDED.state <> 'deleted' THEN public.hasn_task.state
+                        WHEN hasn_task.task.state = 'deleted' AND EXCLUDED.state <> 'deleted' THEN hasn_task.task.state
                         ELSE EXCLUDED.state
                     END,
                     next_run_at = EXCLUDED.next_run_at,
@@ -917,7 +917,7 @@ class SqlAlchemySyncGateway:
                     repeat_completed = EXCLUDED.repeat_completed,
                     executor_policy = EXCLUDED.executor_policy,
                     executor_node_id = EXCLUDED.executor_node_id,
-                    task_revision = public.hasn_task.task_revision + 1,
+                    task_revision = hasn_task.task.task_revision + 1,
                     deleted_at = EXCLUDED.deleted_at,
                     updated_time = EXCLUDED.updated_time
                 '''
@@ -1020,7 +1020,7 @@ class SqlAlchemySyncGateway:
             sa.text(
                 '''
                 SELECT owner_id, agent_id
-                FROM public.hasn_task
+                FROM hasn_task.task
                 WHERE task_uuid = :task_uuid
                 LIMIT 1
                 '''
@@ -1042,7 +1042,7 @@ class SqlAlchemySyncGateway:
         result = await db.execute(
             sa.text(
                 '''
-                INSERT INTO public.hasn_task_run_summary (
+                INSERT INTO hasn_task.run_summary (
                     run_uuid,
                     task_uuid,
                     owner_id,
@@ -1084,7 +1084,7 @@ class SqlAlchemySyncGateway:
                     now()
                 )
                 ON CONFLICT (dedupe_key) DO UPDATE SET
-                    updated_time = public.hasn_task_run_summary.updated_time
+                    updated_time = hasn_task.run_summary.updated_time
                 RETURNING
                     run_uuid,
                     task_uuid,
