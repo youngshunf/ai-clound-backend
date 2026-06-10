@@ -27,6 +27,11 @@ router = APIRouter()
 # 上传上限（Stage 0 定）：图 10MB / 语音 25MB / 文件 50MB。
 _MAX_SIZE = {'image': 10 * 1024 * 1024, 'voice': 25 * 1024 * 1024, 'file': 50 * 1024 * 1024}
 
+# 本端点允许的 category（默认消息附件；published_artifact 为模块 18 网页发布制品，私有桶、不抽取）。
+_ALLOWED_CATEGORIES = {'dm_attachment', 'published_artifact'}
+# 发布制品上限（bundle-zip 可较大）。
+_PUBLISHED_ARTIFACT_MAX_SIZE = 200 * 1024 * 1024
+
 
 async def _current_owner_hasn_id(db: CurrentSession, user_id: int) -> str:
     owner_hasn_id = (
@@ -53,7 +58,10 @@ async def upload_asset(
     width: Annotated[int | None, Form()] = None,
     height: Annotated[int | None, Form()] = None,
     duration_ms: Annotated[int | None, Form()] = None,
+    category: Annotated[str, Form()] = 'dm_attachment',
 ) -> ResponseSchemaModel[UploadedAsset]:
+    if category not in _ALLOWED_CATEGORIES:
+        raise errors.RequestError(msg=f'不支持的资产类别：{category}')
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
     content_type = file.content_type or 'application/octet-stream'
     kind = _kind_of(content_type)
@@ -61,12 +69,14 @@ async def upload_asset(
     data = await file.read()
     if not data:
         raise errors.RequestError(msg='文件为空')
-    limit = _MAX_SIZE.get(kind, _MAX_SIZE['file'])
+    # 发布制品（模块 18）走独立大上限；其余按 kind 限额。
+    is_published = category == 'published_artifact'
+    limit = _PUBLISHED_ARTIFACT_MAX_SIZE if is_published else _MAX_SIZE.get(kind, _MAX_SIZE['file'])
     if len(data) > limit:
         raise errors.RequestError(msg=f'{kind} 超出大小上限 {limit // (1024 * 1024)}MB')
 
     ref = await storage_service.upload(
-        db, data, category='dm_attachment', filename=file.filename, content_type=content_type
+        db, data, category=category, filename=file.filename, content_type=content_type
     )
     asset = await hasn_asset_service.register_asset(
         db,
@@ -76,6 +86,8 @@ async def upload_asset(
         width=width,
         height=height,
         duration_ms=duration_ms,
+        # 发布制品不进语义抽取流水线（自包含 HTML/zip，非消息附件）。
+        extract_status='done' if is_published else 'pending',
     )
     return response_base.success(
         data=UploadedAsset(

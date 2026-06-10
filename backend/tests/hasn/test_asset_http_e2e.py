@@ -24,10 +24,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.api.v1.app.hasn_assets_app import router as assets_router
-from backend.app.hasn.model import HasnConversations
+from backend.app.hasn.model import HasnAssets, HasnConversations
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import hasn_asset_service as asset_svc_mod
 from backend.app.hasn.service.message_router import _grant_private_attachments
+from backend.common.exception import errors
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 from backend.plugin.s3.model import S3Storage
@@ -53,7 +54,7 @@ async def e2e(monkeypatch):
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -81,7 +82,7 @@ async def e2e(monkeypatch):
     await session.flush()
 
     # 只 mock S3 网络边界：write 不落真实七牛、签名不打真实 S3/Redis
-    async def _noop_write(*a, **k):
+    async def _noop_write(*a, **k) -> None:
         return None
 
     monkeypatch.setattr(storage_mod, 'write_bytes', _noop_write)
@@ -95,7 +96,7 @@ async def e2e(monkeypatch):
     async def _yield_session():
         yield session
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=current['uid'])
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'
@@ -119,7 +120,7 @@ async def e2e(monkeypatch):
         await engine.dispose()
 
 
-async def test_upload_send_resolve_three_state(e2e):
+async def test_upload_send_resolve_three_state(e2e) -> None:
     c = e2e.client
 
     # 1) owner A 经真实 HTTP 上传一张图（私有桶 dm_attachment）
@@ -164,3 +165,35 @@ async def test_upload_send_resolve_three_state(e2e):
     item = r.json()['data'][0]
     assert item['display_url'].startswith('https://signed/')
     assert item['expires_at'] is not None
+
+
+async def test_upload_published_artifact_skips_extract(e2e) -> None:
+    """模块 18：category=published_artifact 落私有桶且 extract_status=done（不进抽取流水线）。"""
+    e2e.current['uid'] = e2e.uid_a
+    resp = await e2e.client.post(
+        '/api/v1/hasn/app/assets/upload',
+        files={'file': ('site.html', b'<!doctype html><h1>hi</h1>', 'text/html')},
+        data={'category': 'published_artifact'},
+    )
+    assert resp.status_code == 200, resp.text
+    asset_id = resp.json()['data']['asset_id']
+    await e2e.session.flush()
+
+    row = (
+        await e2e.session.execute(select(HasnAssets).where(HasnAssets.asset_id == asset_id))
+    ).scalar_one()
+    # 私有桶 + 不抽取（已 done，跳过语义抽取流水线）
+    assert row.access == 'private'
+    assert row.extract_status == 'done'
+    assert row.kind == 'file'
+
+
+async def test_upload_rejects_unknown_category(e2e) -> None:
+    """白名单外 category 直接抛 RequestError（真实外壳落 400），不静默落库。"""
+    e2e.current['uid'] = e2e.uid_a
+    with pytest.raises(errors.RequestError):
+        await e2e.client.post(
+            '/api/v1/hasn/app/assets/upload',
+            files={'file': ('x.bin', b'data', 'application/octet-stream')},
+            data={'category': 'arbitrary_evil'},
+        )
