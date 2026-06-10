@@ -6,6 +6,7 @@ from backend.app.api.v1.app import app_router as mobile_app_v1_router
 from backend.app.api.v1.auth import auth_router as mobile_auth_v1_router
 from backend.app.deck.api.router import agent as deck_agent
 from backend.app.deck.api.router import app as deck_app
+from backend.app.hasn_task.api.router import app as hasn_task_app
 from backend.app.hasn.api.router import (
     agent as hasn_agent,
 )
@@ -122,6 +123,9 @@ router.include_router(community_admin)        # 社区 管理端 API（/api/v1/c
 # 演示文稿（自研 PPT 系统，模块 17，独立 PG schema=deck）
 router.include_router(deck_app)               # 演示文稿 用户端 API（/api/v1/deck/app，Owner JWT，owner 隔离）
 router.include_router(deck_agent)             # 演示文稿 Agent API（/api/v1/deck/agent，Agent JWT，deck:read/write）
+
+# 任务系统（AI-Native 应用 hasn_task，模块 12，独立 PG schema=hasn_task）
+router.include_router(hasn_task_app)          # 任务系统 用户端 API（/api/v1/hasn-task/app，Owner JWT + 同步/摘要）
 
 # 统一通知服务（§9，单一 emit 入口 + 通知中心权威视图 + 主人偏好）
 router.include_router(notification_app)        # 通知 用户端 API（/api/v1/notifications/app，Owner JWT）
