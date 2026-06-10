@@ -250,10 +250,19 @@ async def test_create_enterprise_approves_owner_and_installs_knowledge(db_sessio
     owner = (await db_session.execute(sa.select(MembershipStub).where(MembershipStub.enterprise_id == 1))).scalar_one()
     assert (owner.user_id, owner.role, owner.status) == (11, 'owner', 'approved')
 
-    app = (
-        await db_session.execute(sa.select(WorkspaceAppStub).where(WorkspaceAppStub.enterprise_id == 1))
-    ).scalar_one()
-    assert (app.workspace_kind, app.app_id, app.status, app.enabled_by) == ('enterprise', 'knowledge', 'active', 11)
+    # 企业工作空间自动安装 = registry 中 enterprise scope + install_policy=auto 的全部应用（随注册表演进）
+    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+
+    expected_auto = {app.id for app in workbench_app_registry.auto_install_apps('enterprise')}
+    apps = (
+        (await db_session.execute(sa.select(WorkspaceAppStub).where(WorkspaceAppStub.enterprise_id == 1)))
+        .scalars()
+        .all()
+    )
+    assert {app.app_id for app in apps} == expected_auto
+    assert 'knowledge' in expected_auto
+    for app in apps:
+        assert (app.workspace_kind, app.status, app.enabled_by) == ('enterprise', 'active', 11)
 
 
 @pytest.mark.asyncio
@@ -387,7 +396,10 @@ async def test_list_user_workspaces_returns_cloud_aggregated_workspace_stats(
     assert enterprise_workspace['industry'] == 'software'
     assert enterprise_workspace['company_size'] == '11-50'
     assert enterprise_workspace['member_count'] == 3
-    assert enterprise_workspace['app_count'] == 1
+    # 企业 app_count = 建企业时自动安装的应用数（registry enterprise auto，disabled-app 不计）
+    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+
+    assert enterprise_workspace['app_count'] == len(workbench_app_registry.auto_install_apps('enterprise'))
     assert enterprise_workspace['admin_count'] == 2
 
 

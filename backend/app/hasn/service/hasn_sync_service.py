@@ -612,6 +612,9 @@ class SqlAlchemySyncGateway:
                     schedule_display,
                     enabled,
                     state,
+                    continuation_enabled,
+                    enable_subagents,
+                    created_by_kind,
                     next_run_at,
                     run_count,
                     repeat_times,
@@ -846,6 +849,9 @@ class SqlAlchemySyncGateway:
                     task_revision,
                     deleted_at,
                     created_by,
+                    continuation_enabled,
+                    enable_subagents,
+                    created_by_kind,
                     created_time,
                     updated_time
                 ) VALUES (
@@ -882,6 +888,9 @@ class SqlAlchemySyncGateway:
                     1,
                     :deleted_at,
                     :created_by,
+                    :continuation_enabled,
+                    :enable_subagents,
+                    :created_by_kind,
                     :created_time,
                     :updated_time
                 )
@@ -919,6 +928,9 @@ class SqlAlchemySyncGateway:
                     executor_node_id = EXCLUDED.executor_node_id,
                     task_revision = hasn_task.task.task_revision + 1,
                     deleted_at = EXCLUDED.deleted_at,
+                    continuation_enabled = EXCLUDED.continuation_enabled,
+                    enable_subagents = EXCLUDED.enable_subagents,
+                    created_by_kind = EXCLUDED.created_by_kind,
                     updated_time = EXCLUDED.updated_time
                 '''
             ),
@@ -1781,6 +1793,9 @@ def _task_storage_row(
         'binding_id': _optional_string(payload.get('binding_id')),
         'deleted_at': _coerce_datetime_or_none(payload.get('deleted_at')) if state == 'deleted' else None,
         'created_by': _optional_string(payload.get('created_by')),
+        'continuation_enabled': bool(payload.get('continuation_enabled', False)),
+        'enable_subagents': bool(payload.get('enable_subagents', False)),
+        'created_by_kind': str(payload.get('created_by_kind') or 'owner'),
         'created_time': created_time,
         'updated_time': timestamp,
     }
@@ -1809,6 +1824,9 @@ def _task_sync_payload(
         'schedule_display': stored_task['schedule_display'],
         'enabled': stored_task['enabled'],
         'state': stored_task['state'],
+        'continuation_enabled': stored_task['continuation_enabled'],
+        'enable_subagents': stored_task['enable_subagents'],
+        'created_by_kind': stored_task['created_by_kind'],
         'next_run_at': payload.get('next_run_at'),
         'run_count': stored_task['run_count'],
         'repeat_times': stored_task['repeat_times'],
@@ -1840,6 +1858,9 @@ def _task_sync_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
         'schedule_display': row.get('schedule_display'),
         'enabled': bool(row.get('enabled', True)),
         'state': str(row.get('state') or 'scheduled'),
+        'continuation_enabled': bool(row.get('continuation_enabled', False)),
+        'enable_subagents': bool(row.get('enable_subagents', False)),
+        'created_by_kind': str(row.get('created_by_kind') or 'owner'),
         'next_run_at': _timestamp_or_original(row.get('next_run_at')),
         'run_count': _optional_int(row.get('run_count')) or 0,
         'repeat_times': _optional_int(row.get('repeat_times')),

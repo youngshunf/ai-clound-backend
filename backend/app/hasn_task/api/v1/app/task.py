@@ -161,3 +161,43 @@ async def disable_my_task(
     await owned_task(request, db, task_id)
     task = await hasn_task_service.disable_task(db=db, task_id=task_id)
     return response_base.success(data={'task_id': task.id, 'enabled': task.enabled})
+
+
+@router.post(
+    '/tasks/{task_id}/approve',
+    summary='同意 agent 建的周期任务（pending_approval → scheduled，D4 业务态）',
+    dependencies=[DependsJwtAuth],
+    name='hasn_task_app_approve',
+)
+async def approve_my_task(
+    request: Request,
+    db: CurrentSessionTransaction,
+    task_id: Annotated[int, Path(description='任务 ID')],
+) -> ResponseModel:
+    from backend.app.hasn_task.service.agent_task_service import agent_task_service
+
+    task = await owned_task(request, db, task_id)
+    if not task.task_uuid:
+        raise errors.RequestError(msg='任务缺少端云稳定 ID，无法审批')
+    data = await agent_task_service.approve_task(db, owner_id=task.owner_id, task_uuid=task.task_uuid)
+    return response_base.success(data={'task': data})
+
+
+@router.post(
+    '/tasks/{task_id}/reject',
+    summary='拒绝 agent 建的周期任务（pending_approval → rejected，软删可见）',
+    dependencies=[DependsJwtAuth],
+    name='hasn_task_app_reject',
+)
+async def reject_my_task(
+    request: Request,
+    db: CurrentSessionTransaction,
+    task_id: Annotated[int, Path(description='任务 ID')],
+) -> ResponseModel:
+    from backend.app.hasn_task.service.agent_task_service import agent_task_service
+
+    task = await owned_task(request, db, task_id)
+    if not task.task_uuid:
+        raise errors.RequestError(msg='任务缺少端云稳定 ID，无法审批')
+    data = await agent_task_service.reject_task(db, owner_id=task.owner_id, task_uuid=task.task_uuid)
+    return response_base.success(data={'task': data})

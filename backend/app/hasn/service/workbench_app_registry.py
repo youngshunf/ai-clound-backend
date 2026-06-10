@@ -88,6 +88,10 @@ class WorkbenchAppRegistry:
         from backend.app.deck.manifest import build_deck_workbench_app
 
         registry.register(build_deck_workbench_app())
+        # 任务系统 hasn_task（local_tool AI-Native，模块 12 设计 06 §4）。延迟导入避免循环依赖。
+        from backend.app.hasn_task.service.ai_native_manifest import build_hasn_task_workbench_app
+
+        registry.register(build_hasn_task_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:

@@ -297,6 +297,10 @@ class TaskRecord:
     executor_node_id: str | None
     task_revision: int
     deleted_at: Any
+    # M1（任务系统 AI-Native 化）schema 新列，CreateHasnTaskParam.model_dump() 会带出
+    continuation_enabled: bool = False
+    enable_subagents: bool = False
+    created_by_kind: str = 'owner'
 
 
 @dataclass
@@ -335,6 +339,8 @@ class TaskRunRecord:
     create_time: Any
     created_time: Any
     updated_time: Any
+    # M1（任务系统 AI-Native 化）run 新列
+    continued_from_run_id: str | None = None
 
 
 def _fixture_time() -> datetime:

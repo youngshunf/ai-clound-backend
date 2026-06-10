@@ -21,8 +21,10 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'contact:request': {'label_zh': '发送联系请求', 'domain': 'contact', 'risk': 'low', 'description': '向某用户发起加联系/好友请求'},
     'message:read': {'label_zh': '读取/搜索聊天记录', 'domain': 'message', 'risk': 'low', 'description': '读取会话历史、跨会话搜索聊天记录'},
     'message:send': {'label_zh': '发送消息', 'domain': 'message', 'risk': 'low', 'description': '给用户/Agent/会话发消息（走真实路由与关系门控）'},
-    'task:create': {'label_zh': '发起任务', 'domain': 'task', 'risk': 'low', 'description': '发起一个任务交给 Runtime 执行'},
-    'task:read': {'label_zh': '查看任务进度与结果', 'domain': 'task', 'risk': 'low', 'description': '查任务/会话状态、进度事件与产物'},
+    # task:create 已废弃（R5 收口，设计 12/06 §5.1）：语义并入 task:manage（建/改）+ task:run（触发）。
+    'task:read': {'label_zh': '查看任务进度与结果', 'domain': 'task', 'risk': 'low', 'description': '查任务定义/run/结果/历史（hasn.task.list/get/list_runs/get_run/query_results）'},
+    'task:manage': {'label_zh': '管理任务', 'domain': 'task', 'risk': 'medium', 'description': '建/改/暂停/恢复/删任务（hasn.task.create/update/pause/resume/delete）'},
+    'task:run': {'label_zh': '触发任务执行', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次任务执行（hasn.task.run_now）'},
     # 兼容历史默认词表（DEFAULT_AGENT_SCOPES）——展示用
     'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
     'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},
