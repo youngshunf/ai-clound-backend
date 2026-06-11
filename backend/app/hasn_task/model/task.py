@@ -94,3 +94,9 @@ class HasnTask(HasnTaskAppBase):
         sa.BOOLEAN(), default=False, comment='允许任务会话内使用子分身 delegate_task（D5）'
     )
     created_by_kind: Mapped[str] = mapped_column(sa.String(16), default='owner', comment=CREATED_BY_KIND_COMMENT)
+    workflow_uuid: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='所属工作流稳定 UUID（NULL=独立任务，非工作流节点，W3）'
+    )
+    node_key: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='图内稳定节点标识（如 research-cost），同图唯一'
+    )

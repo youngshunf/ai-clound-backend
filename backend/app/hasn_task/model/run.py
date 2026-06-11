@@ -54,3 +54,9 @@ class HasnTaskRun(HasnTaskAppBase):
     continued_from_run_id: Mapped[str | None] = mapped_column(
         sa.String(64), default=None, comment='本次 run 接续自哪条 run（端云稳定 run UUID，接续链 D2）'
     )
+    workflow_run_uuid: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='所属工作流执行实例稳定 UUID（NULL=独立任务 run）'
+    )
+    node_key: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='本次执行对应的图内节点标识'
+    )
