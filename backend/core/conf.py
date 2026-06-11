@@ -165,20 +165,10 @@ class Settings(BaseSettings):
         rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # AI 自动获客 Agent API（使用 X-Agent-Key 认证，不走 JWT）
         rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$',  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
         r'^/s/[^/]+(/.*)?$',  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
-        # 以下为 Agent JWT（Bearer）自鉴权面：Agent JWT 的 sub 是 a_* 非数字 user_id，
-        # Owner JWT 中间件解析必 401（Token 已失效）。这些路由全部带 DependsAgentJwtAuth
-        # 自行验签+Redis 吊销检查，必须从 Owner 中间件放行（守卫测试：
-        # tests/test_agent_jwt_middleware_exclude.py）。
-        rf'^{FASTAPI_API_V1_PATH}/hasn-task/app/runs/summary$',  # hasn_task run 摘要上报（Agent JWT）
-        rf'^{FASTAPI_API_V1_PATH}/hasn-task/agent/.*$',  # hasn_task Agent API（Agent JWT）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/tasks/runs/summary$',  # app/hasn 侧 run 摘要上报别名（Agent JWT）
-        rf'^{FASTAPI_API_V1_PATH}/notifications/agent/.*$',  # 统一通知 Agent API（Agent JWT）
-        rf'^{FASTAPI_API_V1_PATH}/community/agent/.*$',  # 社区 Agent API（Agent JWT）
-        rf'^{FASTAPI_API_V1_PATH}/deck/agent/.*$',  # 演示文稿 Agent API（Agent JWT）
-        rf'^{FASTAPI_API_V1_PATH}/integration/agent/.*$',  # 集成 Agent API（Agent JWT）
-        rf'^{FASTAPI_API_V1_PATH}/ai-native/runtime/.*$',  # AI-Native Runtime Gateway（Agent JWT）
-        # AI-Native 审计上报（Agent JWT；GET /audit 列表仍走 Owner 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/ai-native/audit/report$',
+        # 注：Agent JWT（Bearer，token_type=agent）的整类放行已不再依赖路径白名单——
+        # JwtAuthMiddleware.extract_token 通过 is_agent_token 按 token 类型分流放行，
+        # 交由路由自身的 DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
+        # 上面 *_agent/* 模式保留的是 X-Agent-Key（无 Authorization 头）等非 Bearer 自鉴权面。
     ]
 
     # 用户安全

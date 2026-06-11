@@ -112,6 +112,25 @@ def jwt_decode_agent(token: str) -> AgentTokenPayload:
         raise errors.TokenError(msg=f'Agent Token 解析失败: {e!s}')
 
 
+def is_agent_token(token: str) -> bool:
+    """不验签快速判断 Bearer 是否为 Agent JWT（仅用于 Owner JWT 中间件分流）。
+
+    Agent JWT 的 ``token_type='agent'`` 且 ``sub`` 为 ``a_*``（非数字 user_id）；
+    Owner JWT 中间件会对其做 ``int(sub)`` 解析必抛 → 401「Token 已失效，请重新登录」，
+    请求根本到不了路由自身的 ``DependsAgentJwtAuth``。中间件据此放行所有 Agent 面，
+    无需逐路由维护路径白名单。
+
+    安全性：此处仅做「不拿它当 Owner 解」的分流判断，**不基于未验签 claim 授权**；
+    真验签 + Redis 吊销检查仍由路由的 ``verify_agent_token`` 完成，伪造 ``token_type``
+    的无效 token 会被路由验签拒绝。
+    """
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except Exception:
+        return False
+    return isinstance(claims, dict) and claims.get('token_type') == 'agent'
+
+
 async def create_agent_access_token(
     agent_hasn_id: str,
     agent_name: str,

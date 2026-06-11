@@ -10,6 +10,7 @@ from backend.app.admin.schema.user import GetUserInfoWithRelationDetail
 from backend.common.context import ctx
 from backend.common.exception.errors import TokenError
 from backend.common.log import log
+from backend.common.security.agent_jwt import is_agent_token
 from backend.common.security.jwt import jwt_authentication
 from backend.core.conf import settings
 from backend.utils.serializers import MsgSpecJSONResponse
@@ -74,6 +75,12 @@ class JwtAuthMiddleware(AuthenticationBackend):
 
         scheme, token = get_authorization_scheme_param(authorization)
         if scheme.lower() != 'bearer':
+            return None
+
+        # Agent JWT（token_type=agent，sub=a_*）不走 Owner JWT 中间件：Owner 解析会对
+        # 非数字 sub 做 int() 抛 401。这里按 token 类型分流放行，交由路由自身的
+        # DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
+        if is_agent_token(token):
             return None
 
         return token
