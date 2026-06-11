@@ -265,16 +265,24 @@ class GitHubAppSyncService:
         icon_path = template_data.pop('icon_path', None)
         skill_dependencies_versioned = template_data.pop('skill_dependencies_versioned', None)
 
-        if icon_path and not template_data.get('icon_url'):
-            template_data['icon_url'] = await marketplace_storage_service.upload_icon(
-                db=db,
-                item_type='template',
-                item_id=template_id,
-                content=Path(icon_path).read_bytes(),  # noqa: ASYNC240
-                filename=Path(icon_path).name,
-            )
-
         existing_template = await marketplace_template_dao.get_by_id(db, template_id)
+
+        # 图标上传非致命：S3/CDN 写入抖动或凭据问题不应阻断整个模板同步——
+        # persona(soul_md)/技能/定价等内容字段远比图标重要。失败则记告警、保留 DB 中
+        # 已有 icon_url（首次同步无则置 None），继续把内容字段写库。
+        if icon_path and not template_data.get('icon_url'):
+            try:
+                template_data['icon_url'] = await marketplace_storage_service.upload_icon(
+                    db=db,
+                    item_type='template',
+                    item_id=template_id,
+                    content=Path(icon_path).read_bytes(),  # noqa: ASYNC240
+                    filename=Path(icon_path).name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning('icon upload failed for template %s, keeping existing icon: %s', template_id, exc)
+                template_data['icon_url'] = existing_template.icon_url if existing_template else None
+
         if existing_template:
             await marketplace_template_dao.update(
                 db,
