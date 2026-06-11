@@ -38,6 +38,10 @@ _SCOPE_READ = 'task:read'
 _SCOPE_MANAGE = 'task:manage'
 _SCOPE_RUN = 'task:run'
 
+_WSCOPE_READ = 'workflow:read'
+_WSCOPE_MANAGE = 'workflow:manage'
+_WSCOPE_RUN = 'workflow:run'
+
 
 def _cap(
     *,
@@ -81,6 +85,193 @@ def _cap(
             'default_page_rank': page_rank,
         },
     }
+
+
+def _wcap(
+    *,
+    name: str,
+    title: str,
+    description: str,
+    scope: str | None,
+    risk_level: str,
+    properties: dict,
+    required: list[str],
+    page_rank: int,
+    tags: list[str],
+) -> dict:
+    """hasn.workflow.* 能力声明（多任务编排 DAG，节点复用 task；写类按 risk_level 出厂三态）。"""
+    write_like = scope in (_WSCOPE_MANAGE, _WSCOPE_RUN)
+    return {
+        'capability_id': f'hasn_task.workflow_{name}.capability',
+        'name': title,
+        'description': description,
+        'tool_id': f'hasn_task.workflow_{name}',
+        'mcp_name': f'hasn.workflow.{name}',
+        'required_scopes': [scope] if scope else [],
+        'workspace_roles': ['owner'],
+        'input_schema': {
+            'type': 'object',
+            'properties': properties,
+            'required': required,
+            'additionalProperties': False,
+        },
+        'output_schema': {'type': 'object'},
+        'risk_level': risk_level,
+        'human_confirmation': (
+            {'required': 'policy', 'policy_ref': 'owner_tristate'} if write_like else {'required': False}
+        ),
+        'result_writeback': ['audit', 'agent_message'],
+        'discovery': {
+            'exposure': 'on_demand',
+            'summary': description,
+            'tags': tags,
+            'schema_visibility': 'authorized_agents',
+            'default_page_rank': page_rank,
+        },
+    }
+
+
+_NODE_SPEC = {
+    'type': 'array',
+    'description': (
+        '节点列表 [{node_key, agent_id?, prompt, system_prompt?, '
+        'skill_bundle_refs?, enabled_toolsets?, enable_subagents?}]'
+    ),
+}
+_EDGE_SPEC = {'type': 'array', 'description': '依赖边列表 [{parent, child}]（建图时无环校验）'}
+
+_WORKFLOW_CAPABILITIES = [
+    _wcap(
+        name='create',
+        title='建工作流',
+        description=(
+            '一次声明整图（节点+依赖边），把大任务拆成多个可并行/交叉/依赖的子任务。节点可跨分身。'
+            'agent 建带定时的工作流 → pending_approval 业务态待主人确认；一次性直接可跑。'
+        ),
+        scope=_WSCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'name': {'type': 'string', 'minLength': 1, 'description': '工作流名称'},
+            'goal': {'type': ['string', 'null'], 'description': '总目标（整图验收口径）'},
+            'nodes': _NODE_SPEC,
+            'edges': _EDGE_SPEC,
+            'schedule_type': {'enum': ['once', 'interval', 'cron'], 'default': 'once', 'description': '整图定时'},
+            'schedule_config': {'type': 'object', 'description': '调度配置'},
+        },
+        required=['name', 'nodes'],
+        page_rank=30,
+        tags=['workflow', 'create', 'graph'],
+    ),
+    _wcap(
+        name='add_node',
+        title='增量加节点',
+        description='向已有工作流增量加一个节点（task）。',
+        scope=_WSCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'workflow_id': {'type': 'string', 'minLength': 1},
+            'node': {'type': 'object', 'description': '节点声明 {node_key, agent_id?, prompt, ...}'},
+        },
+        required=['workflow_id', 'node'],
+        page_rank=31,
+        tags=['workflow', 'node', 'manage'],
+    ),
+    _wcap(
+        name='add_edge',
+        title='增量加边',
+        description='向已有工作流加一条依赖边（加边时无环校验）。',
+        scope=_WSCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'workflow_id': {'type': 'string', 'minLength': 1},
+            'parent': {'type': 'string', 'minLength': 1},
+            'child': {'type': 'string', 'minLength': 1},
+        },
+        required=['workflow_id', 'parent', 'child'],
+        page_rank=32,
+        tags=['workflow', 'edge', 'manage'],
+    ),
+    _wcap(
+        name='list_agents',
+        title='发现可用分身',
+        description='列 owner 可用分身 + 各自专长（编排前映射节点→分身，对齐 kanban Step 0）。',
+        scope=_WSCOPE_READ,
+        risk_level='low',
+        properties={},
+        required=[],
+        page_rank=33,
+        tags=['workflow', 'agents', 'read'],
+    ),
+    _wcap(
+        name='get',
+        title='查工作流',
+        description='查工作流图 + 节点 + 边 + 最近一次执行各节点状态。',
+        scope=_WSCOPE_READ,
+        risk_level='low',
+        properties={'workflow_id': {'type': 'string', 'minLength': 1}},
+        required=['workflow_id'],
+        page_rank=34,
+        tags=['workflow', 'get', 'read'],
+    ),
+    _wcap(
+        name='get_node_result',
+        title='取节点产出',
+        description='取某节点本次/最近一次执行的完整产出（§6 深查出口，避免把全图历史塞进 prompt）。',
+        scope=_WSCOPE_READ,
+        risk_level='low',
+        properties={
+            'workflow_id': {'type': 'string', 'minLength': 1},
+            'node_key': {'type': 'string', 'minLength': 1},
+        },
+        required=['workflow_id', 'node_key'],
+        page_rank=35,
+        tags=['workflow', 'node', 'result', 'read'],
+    ),
+    _wcap(
+        name='run',
+        title='立即触发整图',
+        description='立即触发一次整图执行（一个 workflow_run）。',
+        scope=_WSCOPE_RUN,
+        risk_level='medium',
+        properties={'workflow_id': {'type': 'string', 'minLength': 1}},
+        required=['workflow_id'],
+        page_rank=36,
+        tags=['workflow', 'run', 'trigger'],
+    ),
+    _wcap(
+        name='pause',
+        title='暂停工作流',
+        description='暂停工作流（active → paused，停止后续定时 fire）。',
+        scope=_WSCOPE_MANAGE,
+        risk_level='low',
+        properties={'workflow_id': {'type': 'string', 'minLength': 1}},
+        required=['workflow_id'],
+        page_rank=37,
+        tags=['workflow', 'pause', 'manage'],
+    ),
+    _wcap(
+        name='cancel',
+        title='取消执行/归档',
+        description='取消正在跑的整图执行（未完节点 cancelled）或归档工作流（破坏性）。',
+        scope=_WSCOPE_MANAGE,
+        risk_level='high',
+        properties={'workflow_id': {'type': 'string', 'minLength': 1}},
+        required=['workflow_id'],
+        page_rank=38,
+        tags=['workflow', 'cancel', 'manage'],
+    ),
+    _wcap(
+        name='list',
+        title='列工作流',
+        description='列主人的工作流（含状态/调度/最近执行）。',
+        scope=_WSCOPE_READ,
+        risk_level='low',
+        properties={'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20}},
+        required=[],
+        page_rank=39,
+        tags=['workflow', 'list', 'read'],
+    ),
+]
 
 
 _SCHEDULE_PROPS = {
@@ -277,6 +468,9 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
     'endpoints': {'tool_endpoint': None, 'event_endpoint': None, 'component_origin': 'loopback'},
     'audit': {'fields': list(_AUDIT_FIELDS)},
 }
+
+# 多任务编排（工作流）能力随 hasn_task 应用同一 manifest 暴露（节点复用 task；scope workflow:*）。
+HASN_TASK_AI_NATIVE_MANIFEST['capabilities'].extend(_WORKFLOW_CAPABILITIES)
 
 
 def build_hasn_task_workbench_app() -> WorkbenchApp:

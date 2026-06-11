@@ -9,15 +9,19 @@
 from fastapi import APIRouter
 
 from backend.app.hasn_task.api.v1.agent.task import router as task_agent_router
+from backend.app.hasn_task.api.v1.agent.workflow import router as workflow_agent_router
 from backend.app.hasn_task.api.v1.app.run import router as task_run_app_router
 from backend.app.hasn_task.api.v1.app.sync import router as task_sync_app_router
 from backend.app.hasn_task.api.v1.app.task import router as task_app_router
+from backend.app.hasn_task.api.v1.app.workflow import router as workflow_app_router
 from backend.core.conf import settings
 
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn-task/app', tags=['任务系统-用户端'])
 app.include_router(task_app_router)
 app.include_router(task_run_app_router)
 app.include_router(task_sync_app_router)
+app.include_router(workflow_app_router)
 
 agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn-task/agent', tags=['任务系统-Agent端'])
 agent.include_router(task_agent_router)
+agent.include_router(workflow_agent_router)
