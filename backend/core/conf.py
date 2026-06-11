@@ -331,8 +331,8 @@ class Settings(BaseSettings):
     ##################################################
     # [ LLM ] 网关配置
     ##################################################
-    # .env LLM 加密密钥
-    LLM_ENCRYPTION_KEY: str | None = None
+    # .env LLM 网关加密密钥 (Fernet, 可通过 Fernet.generate_key() 生成)
+    LLM_ENCRYPTION_KEY: str = ''
     # LLM API 网关 URL
     LLM_API_BASE_URL: str | None = None
     # 默认 LLM 模型 — 透传给 hasn-node daemon 的 phone/verify 响应
@@ -412,21 +412,6 @@ class Settings(BaseSettings):
     OAUTH2_GOOGLE_REDIRECT_URI: str
     OAUTH2_FRONTEND_LOGIN_REDIRECT_URI: str
     OAUTH2_FRONTEND_BINDING_REDIRECT_URI: str
-
-    ##################################################
-    # [ LLM Gateway ]
-    ##################################################
-    # .env LLM 网关加密密钥
-    LLM_ENCRYPTION_KEY: str = ''  # Fernet 加密密钥 (可通过 Fernet.generate_key() 生成)
-
-    ##################################################
-    # [ SMS ] Aliyun
-    ##################################################
-    # .env
-    SMS_ALIYUN_ACCESS_KEY_ID: str = ''
-    SMS_ALIYUN_ACCESS_KEY_SECRET: str = ''
-    SMS_ALIYUN_SIGN_NAME: str = ''
-    SMS_ALIYUN_TEMPLATE_CODE: str = ''
 
     ##################################################
     # [ Plugin ] email
