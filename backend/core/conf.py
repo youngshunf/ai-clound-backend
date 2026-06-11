@@ -471,8 +471,8 @@ class Settings(BaseSettings):
             values['FASTAPI_OPENAPI_URL'] = None
             values['FASTAPI_STATIC_FILES'] = False
 
-            # task
-            values['CELERY_BROKER'] = 'rabbitmq'
+            # task —— broker 由 .env 的 CELERY_BROKER 决定（默认 redis）；
+            # 生产若要用 RabbitMQ，在 .env 显式设置 CELERY_BROKER=rabbitmq（不再硬编码）
 
             # Grafana
             values['GRAFANA_METRICS_ENABLE'] = True
