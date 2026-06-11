@@ -86,6 +86,13 @@ async def list_decks(request: Request, db: CurrentSession, limit: int = 20, offs
     return response_base.success(data=data)
 
 
+@router.get('/style-profiles', summary='可复用样式列表（系统内置 37 风格 ∪ 我的自定义）', dependencies=[DependsJwtAuth])
+async def list_style_profiles(request: Request, db: CurrentSession) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await deck_service.list_style_profiles(db, owner_id=owner_id)
+    return response_base.success(data=data)
+
+
 @router.get('/decks/{deck_id}', summary='演示文稿详情', dependencies=[DependsJwtAuth])
 async def get_deck(request: Request, db: CurrentSession, deck_id: int) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)

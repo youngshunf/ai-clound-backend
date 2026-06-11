@@ -75,6 +75,15 @@ async def agent_create_deck(
     return response_base.success(data=data)
 
 
+@router.get('/style-profiles', summary='可复用样式列表（系统内置 37 风格 ∪ 主人自定义）')
+async def agent_list_style_profiles(
+    db: CurrentSession, agent: AgentTokenPayload = DependsAgentJwtAuth
+) -> ResponseModel:
+    check_scopes(agent, [_SCOPE_READ])
+    data = await deck_service.list_style_profiles(db, owner_id=agent.owner_hasn_id)
+    return response_base.success(data=data)
+
+
 @router.get('/decks', summary='分身的（主人）演示文稿列表')
 async def agent_list_decks(
     db: CurrentSession, limit: int = 20, offset: int = 0, agent: AgentTokenPayload = DependsAgentJwtAuth

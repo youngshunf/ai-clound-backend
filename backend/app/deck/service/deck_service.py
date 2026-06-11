@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
-from backend.app.deck.model import Deck, Page
+from backend.app.deck.model import Deck, Page, StyleProfile
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
+
+# builtin（系统内置）风格的归属 owner 哨兵：对所有 owner 可见、不属于任何真实 owner。
+BUILTIN_OWNER = 'system'
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +52,20 @@ def _deck_dict(d: Deck) -> dict[str, Any]:
         'rev': d.rev,
         'created_time': d.created_time,
         'updated_time': d.updated_time,
+    }
+
+
+def _style_profile_dict(s: StyleProfile) -> dict[str, Any]:
+    return {
+        'slug': s.slug,
+        'label': s.label,
+        'description': s.description,
+        'source': s.source,
+        'design_contract': s.design_contract,
+        'style_prompt': s.style_prompt,
+        'rev': s.rev,
+        'created_time': s.created_time,
+        'updated_time': s.updated_time,
     }
 
 
@@ -224,6 +241,24 @@ class DeckService:
             deck.page_count -= 1
         deck.rev += 1
         await db.flush()
+
+    @staticmethod
+    async def list_style_profiles(db: AsyncSession, *, owner_id: str) -> dict[str, Any]:
+        """可复用样式列表 = 系统内置（source='builtin'，对所有 owner 可见）∪ 该 owner 自定义。
+
+        owner 隔离：仅返回 `owner_id == owner_id`（custom）或 `source == 'builtin'`（system）的未删行；
+        绝不泄露其它 owner 的 custom 样式。builtin 优先、再按 slug 升序，给前端/分身稳定顺序。
+        """
+        stmt = (
+            select(StyleProfile)
+            .where(
+                StyleProfile.deleted_time.is_(None),
+                or_(StyleProfile.owner_id == owner_id, StyleProfile.source == 'builtin'),
+            )
+            .order_by((StyleProfile.source == 'builtin').desc(), StyleProfile.slug.asc())
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        return {'items': [_style_profile_dict(s) for s in rows], 'total': len(rows)}
 
 
 deck_service = DeckService()
