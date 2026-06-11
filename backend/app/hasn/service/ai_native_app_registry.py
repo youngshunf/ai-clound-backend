@@ -12,6 +12,7 @@ from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_N
 from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
+from backend.app.publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
@@ -36,6 +37,7 @@ class AINativeAppRegistry:
             'presentation': PRESENTATION_AI_NATIVE_MANIFEST,
             'deck': DECK_AI_NATIVE_MANIFEST,
             'hasn_task': HASN_TASK_AI_NATIVE_MANIFEST,
+            'publish': PUBLISH_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:

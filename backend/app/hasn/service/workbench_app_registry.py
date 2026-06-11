@@ -92,6 +92,10 @@ class WorkbenchAppRegistry:
         from backend.app.hasn_task.service.ai_native_manifest import build_hasn_task_workbench_app
 
         registry.register(build_hasn_task_workbench_app())
+        # 通用网页发布与分享 publish（local_tool AI-Native，模块 18）。延迟导入避免循环依赖。
+        from backend.app.publish.manifest import build_publish_workbench_app
+
+        registry.register(build_publish_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:
