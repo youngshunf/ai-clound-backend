@@ -41,10 +41,6 @@ from backend.app.huanxing.api.router import app as huanxing_app
 from backend.app.huanxing.api.router import open_api as huanxing_open
 from backend.app.huanxing.api.router import user_api as huanxing_user
 from backend.app.huanxing.api.router import v1 as huanxing_v1
-from backend.app.integration.api.router import agent as integration_agent
-from backend.app.integration.api.router import app as integration_app
-from backend.app.integration.api.router import open_api as integration_open
-from backend.app.integration.api.router import v1 as integration_v1
 from backend.app.lead_automation.api.router import (
     agent as lead_automation_agent,
 )
@@ -147,12 +143,6 @@ router.include_router(notification_admin)      # 通知 管理端 API（/api/v1/
 router.include_router(hermes_v1)
 router.include_router(hermes_app)
 router.include_router(hermes_internal)    # runtime ↔ backend 内部 service token 调用（X-Internal-Token）
-
-# Integration（第三方应用集成）
-router.include_router(integration_v1)     # 集成管理端 API
-router.include_router(integration_app)    # 集成用户端 API
-router.include_router(integration_agent)  # 集成 Agent API
-router.include_router(integration_open)   # 集成公开 API
 
 # 移动端 App API (M1: /api/v1/app/...)
 router.include_router(mobile_app_v1_router)  # 移动端用户端 API (owner_api_keys/current 等)
