@@ -18,7 +18,7 @@ class StyleProfile(DeckBase):
     slug: Mapped[str] = mapped_column(sa.String(64), default='', comment='样式 slug（同 owner 下唯一；人读标识）')
     label: Mapped[str] = mapped_column(sa.String(128), default='', comment='展示名')
     description: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='描述（可空）')
-    source: Mapped[str] = mapped_column(sa.String(16), default='', comment='来源 custom/override')
+    source: Mapped[str] = mapped_column(sa.String(16), default='', comment='来源 builtin/custom/override')
     design_contract: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='预设视觉契约')
     style_prompt: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='注入生成的风格提示词片段')
     owner_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='owner 隔离键')

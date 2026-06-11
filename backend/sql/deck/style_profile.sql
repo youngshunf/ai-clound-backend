@@ -30,7 +30,7 @@ COMMENT ON COLUMN "deck"."style_profile"."id" IS '主键 ID（自增 BigInt）';
 COMMENT ON COLUMN "deck"."style_profile"."slug" IS '样式 slug（如 minimal-white；同 owner 下唯一；人读标识）';
 COMMENT ON COLUMN "deck"."style_profile"."label" IS '展示名';
 COMMENT ON COLUMN "deck"."style_profile"."description" IS '描述（可空）';
-COMMENT ON COLUMN "deck"."style_profile"."source" IS '来源 (custom:自定义:blue/override:覆盖内置:orange)';
+COMMENT ON COLUMN "deck"."style_profile"."source" IS '来源 (builtin:内置:gray/custom:自定义:blue/override:覆盖内置:orange)';
 COMMENT ON COLUMN "deck"."style_profile"."design_contract" IS '预设的 DesignContract（JSON）';
 COMMENT ON COLUMN "deck"."style_profile"."style_prompt" IS '注入生成的风格提示词片段';
 COMMENT ON COLUMN "deck"."style_profile"."owner_id" IS '归属 owner HASN ID（owner 隔离键）';
