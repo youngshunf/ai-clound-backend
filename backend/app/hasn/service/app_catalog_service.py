@@ -44,6 +44,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'community': 20,
     'presentation': 30,
     'deck': 35,
+    'publish': 40,
 }
 _DEFAULT_SORT_ORDER = 100
 
