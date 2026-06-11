@@ -163,6 +163,16 @@ class GitHubAppSyncService:
         # Agent Profile 内容（云端权威化）：把模板目录里的三份文档抽取入库，
         # 创建 Agent 时云端据此物化进 hasn_agents.{soul_md,agents_md,user_md}。
         soul_md = self._read_optional_text(template_dir / 'SOUL.md')
+        # HASN 公民行为机制：全模板共享一份权威源 templates/_platform/HASN.md，
+        # sync 时 prepend 到每个模板的 soul_md。它落进 hermes always-loaded 的 stable
+        # 身份槽（SOUL.md），让任意分身（本地/云端）都知道自己运行在 HASN 网络、如何用
+        # 渐进式 MCP 行动（看联系人/发消息/建任务/卡住装技能）、以及对主人透明等边界。
+        # 占位符（{{owner_nickname}} 等）在 register_hasn_agent 渲染。模板 SOUL.md 保持纯
+        # 人格、不重复机制——更新机制只改这一份文件并重新 sync。
+        hasn_block = self._read_optional_text(
+            Path(self.local_path) / 'templates' / '_platform' / 'HASN.md'
+        )
+        soul_md = self._compose_soul_md(hasn_block, soul_md)
         agents_md = self._read_optional_text(template_dir / 'AGENTS.md')
         # USER.md 是 owner 维度（描述主人，与 agent persona 无关），全模板共用一份权威源
         # templates/USER.md；若某模板自带 USER.md 则按模板覆盖（当前约定无 per-template）。
@@ -231,6 +241,23 @@ class GitHubAppSyncService:
         if not path.exists():
             return None
         return path.read_text(encoding='utf-8')
+
+    @staticmethod
+    def _compose_soul_md(hasn_block: str | None, persona_soul: str | None) -> str | None:
+        """把共享 HASN 公民块 prepend 到模板人格 SOUL.md。
+
+        - 共享块缺失 → 原样返回人格（零侵入、不阻断 sync）。
+        - 人格缺失 → 仅返回共享块（至少保证分身知道自己在 HASN 网络）。
+        - 两者都在 → `HASN 块\n\n人格`，块尾已自带 `---` 分隔。
+        幂等：每次从 hub 文件重新读取纯人格 SOUL.md，绝不把合成结果写回 hub，故无双重前缀。
+        """
+        block = (hasn_block or '').strip()
+        persona = (persona_soul or '').strip()
+        if not block:
+            return persona_soul
+        if not persona:
+            return f'{block}\n'
+        return f'{block}\n\n{persona}\n'
 
     async def _sync_template(self, db: AsyncSession, template_data: dict[str, Any]) -> None:
         template_id = template_data['template_id']
