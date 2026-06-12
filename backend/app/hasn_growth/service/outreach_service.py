@@ -28,8 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
+from backend.app.hasn_growth.service.audit_service import log_event
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.common.exception import errors
@@ -386,6 +388,49 @@ class GrowthOutreachService:
             ref_id=str(m.id),
         )
         return _outreach_to_dict(m)
+
+    @classmethod
+    async def build_send_material(
+        cls, db: AsyncSession, *, user_id: int, message_id: int, actor_user_id: int
+    ) -> dict[str, Any]:
+        """manual_assist「复制发送」素材包（设计 §8.2 G4）：返回 approved 话术 + 素材链接 +
+        **明文联系方式（仅此处渲染）**，并落一条 `pii_read` 审计（payload 不含明文，只记 target_ref/渠道）。
+
+        仅 owner 自己的数据（跨户 → NotFound）；仅 approved 触达可取（owner 拿去手动发）。
+        """
+        m = await cls._load_message(db, user_id=user_id, message_id=message_id)
+        if m.status != 'approved':
+            raise errors.ForbiddenError(msg=f'仅已批准触达可取复制发送素材包（当前 {m.status}）')
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=m.customer_id)
+
+        # pii_read 审计：payload 经 assert_audit_payload_safe 守卫，绝不含明文 PII（只记目的/渠道/客户 id）。
+        audit = log_event(
+            event_type='pii_read',
+            actor_user_id=actor_user_id,
+            actor_role='owner',
+            target_table='outreach_message',
+            target_count=1,
+            target_ref=str(message_id),
+            payload={'purpose': 'manual_assist_send_material', 'channel': m.channel, 'customer_id': m.customer_id},
+        )
+        db.add(LeadAuditLog(**audit))
+        await db.flush()
+
+        return {
+            'message_id': m.id,
+            'customer_id': m.customer_id,
+            'customer_name': customer.contact_name or customer.company_name,
+            'channel': m.channel,
+            'content': m.content,  # 已批准话术（含主人改稿）
+            'content_assets': m.content_assets or {},  # 素材链接（图/文件等）
+            'intent_note': m.intent_note,
+            'contact': {  # 明文联系方式——仅此处渲染，供主人复制发送
+                'email': customer.email,
+                'phone': customer.phone,
+                'wechat': customer.wechat,
+                'im_refs': customer.im_refs or {},
+            },
+        }
 
     @classmethod
     async def mark_sending(cls, db: AsyncSession, *, user_id: int, message_id: int) -> dict[str, Any]:

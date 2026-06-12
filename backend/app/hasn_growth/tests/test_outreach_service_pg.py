@@ -17,6 +17,7 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
+from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
@@ -195,3 +196,46 @@ async def test_inbound_reply_emits_owner_notification(session) -> None:
     ).scalars().all()
     assert notif, '客户回复应给主人落一条 growth.reply.received 通知'
     assert any('回复' in (n.title or '') for n in notif)
+
+
+async def test_send_material_returns_plaintext_and_audits(session) -> None:
+    """M6 manual_assist：approved 触达 → 复制发送素材包回明文联系方式 + 落 pii_read 审计。"""
+    uid = 992000 + int(uuid.uuid4().int % 9000)
+    other_uid = uid + 1
+    cid = await _qualified_customer(session, user_id=uid, email='buy@eta.com', company='Eta')
+
+    m = await growth_outreach_service.send_outreach(
+        session, user_id=uid, customer_id=cid, channel='manual_assist', content='您好，约个时间聊聊', agent_id='a_z1'
+    )
+    # 仅 approved 可取素材包；pending 取 → Forbidden
+    with pytest.raises(errors.ForbiddenError):
+        await growth_outreach_service.build_send_material(
+            session, user_id=uid, message_id=m['id'], actor_user_id=uid
+        )
+    await growth_outreach_service.approve_outreach(session, user_id=uid, message_id=m['id'], approver_user_id=uid)
+
+    packet = await growth_outreach_service.build_send_material(
+        session, user_id=uid, message_id=m['id'], actor_user_id=uid
+    )
+    # 明文联系方式仅此处渲染
+    assert packet['contact']['phone'] == '13800138000'
+    assert packet['contact']['email'] == 'buy@eta.com'
+    assert packet['content'] == '您好，约个时间聊聊'
+    assert packet['channel'] == 'manual_assist'
+
+    # 落了一条 pii_read 审计，且 payload 不含明文 PII（assert_audit_payload_safe 已在 service 内守卫）
+    audits = (
+        await session.execute(
+            select(LeadAuditLog).where(
+                LeadAuditLog.event_type == 'pii_read', LeadAuditLog.target_ref == str(m['id'])
+            )
+        )
+    ).scalars().all()
+    assert audits and audits[0].actor_user_id == uid
+    assert '13800138000' not in str(audits[0].payload) and 'buy@eta.com' not in str(audits[0].payload)
+
+    # 跨户：他人取本户素材包 → NotFound
+    with pytest.raises(errors.NotFoundError):
+        await growth_outreach_service.build_send_material(
+            session, user_id=other_uid, message_id=m['id'], actor_user_id=other_uid
+        )

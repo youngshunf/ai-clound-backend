@@ -116,6 +116,18 @@ async def reject_outreach(
     return response_base.success(data=data)
 
 
+@router.get(
+    '/outreach/{message_id}/send-material',
+    summary='[Owner] manual_assist 复制发送素材包（明文联系方式，pii_read 审计）',
+    dependencies=[DependsJwtAuth],
+)
+async def send_material(request: Request, db: CurrentSessionTransaction, message_id: int) -> ResponseModel:
+    data = await growth_outreach_service.build_send_material(
+        db, user_id=request.user.id, message_id=message_id, actor_user_id=request.user.id
+    )
+    return response_base.success(data=data)
+
+
 @router.post('/outreach/{message_id}/sent', summary='[Owner] 标记已发送（manual_assist）', dependencies=[DependsJwtAuth])
 async def mark_sent(
     request: Request, db: CurrentSessionTransaction, message_id: int, obj: MarkSentParam
