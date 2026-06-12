@@ -47,7 +47,7 @@ class AgentWriteDocRequest(BaseModel):
     folder_id: int | None = Field(default=None)
 
 
-@router.post('/search', summary='Agent 检索知识库（hasn.knowledge.search）')
+@router.post('/search', summary='Agent 检索知识库（hasn.knowledge.search）', name='knowledge_agent_search')
 async def agent_search(
     db: CurrentSession, agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], body: AgentSearchRequest
 ) -> ResponseModel:

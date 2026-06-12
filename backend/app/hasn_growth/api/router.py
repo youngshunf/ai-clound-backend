@@ -141,6 +141,8 @@ v1.include_router(admin_optout_record_router, prefix='/optout-records', tags=['�
 
 # 获客漏斗业务面（M3：funnel/outreach/opportunity/report）——仅挂 canonical /api/v1/growth/*
 # owner: /api/v1/growth/app/* ；agent: /api/v1/growth/agent/* ；open: /api/v1/growth/open/*
-app.include_router(app_growth_router, tags=['获客漏斗-用户端'])
-agent.include_router(agent_growth_router, tags=['获客漏斗-Agent'])
-open_api.include_router(open_forms_router, tags=['获客表单回流-公开'])
+# agent/app 两面有同名 handler（list_customers 等）→ 路由名加 scope 前缀保证全局唯一
+# （ensure_unique_route_names 全局校验，否则 app 启动即抛 Non-unique route name）。
+app.include_router(_prefix_route_names(app_growth_router, 'growth_app_'), tags=['获客漏斗-用户端'])
+agent.include_router(_prefix_route_names(agent_growth_router, 'growth_agent_'), tags=['获客漏斗-Agent'])
+open_api.include_router(_prefix_route_names(open_forms_router, 'growth_open_'), tags=['获客表单回流-公开'])
