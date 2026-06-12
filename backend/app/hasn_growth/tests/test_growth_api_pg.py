@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_router
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.api.v1.open.forms import router as open_forms_router
@@ -154,6 +155,14 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     sent = _ok(await c.post(f'{A}/outreach', json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好，想聊聊获客', 'intent_note': '破冰'}))
     mid = sent['id']
     assert sent['status'] == 'pending_approval'
+
+    # M4 通知卡片：触达待审批 → 给主人发一条 reminder（type=growth.outreach.pending）。
+    notif = (
+        await e2e.session.execute(
+            select(HasnNotifications).where(HasnNotifications.type == 'growth.outreach.pending')
+        )
+    ).scalars().all()
+    assert any(n.target_id.startswith('h_grw_') for n in notif), '触达待审批应落一条主人通知卡片'
 
     # --- Owner: 待审队列含这条，approve（改话术） ---
     pending = _ok(await c.get(f'{O}/outreach/pending'))

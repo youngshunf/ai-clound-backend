@@ -24,6 +24,7 @@ from backend.app.hasn_growth.schema.funnel import (
 )
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
@@ -216,6 +217,15 @@ async def send_outreach(
         content_assets=obj.content_assets,
         opportunity_id=obj.opportunity_id,
     )
+    # 触达待审批 → 通知主人去审批队列（仅 pending_approval；放行/拦截不打扰）。
+    if data.get('status') == 'pending_approval':
+        await growth_notification_service.outreach_pending_approval(
+            db,
+            agent=agent,
+            message_id=int(data['id']),
+            customer_id=obj.customer_id,
+            channel=obj.channel,
+        )
     return response_base.success(data=data)
 
 
@@ -272,6 +282,10 @@ async def update_stage(
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
     )
+    # 商机阶段变更 → 通知主人。
+    await growth_notification_service.opportunity_stage_changed(
+        db, agent=agent, opportunity_id=opportunity_id, stage=obj.stage, name=data.get('name')
+    )
     return response_base.success(data=data)
 
 
@@ -292,6 +306,15 @@ async def close_deal(
         lost_reason=obj.lost_reason,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
+    )
+    # 成交/流失登记 → 通知主人（仅登记，不自动收款）。
+    await growth_notification_service.deal_closed(
+        db,
+        agent=agent,
+        opportunity_id=opportunity_id,
+        result=obj.result,
+        amount=data.get('amount'),
+        name=data.get('name'),
     )
     return response_base.success(data=data)
 
