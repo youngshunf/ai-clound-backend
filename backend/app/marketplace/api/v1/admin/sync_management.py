@@ -23,6 +23,10 @@ class SyncRequest(BaseModel):
     """Sync request model"""
     force: bool = False
     skill_ids: list[str] | None = None
+    # ClawHub 同步专用（github 同步忽略）：
+    limit: int | None = None  # top-N 上限（None=用配置默认；0=不截断）
+    min_downloads: int | None = None  # 下载量阈值：只同步 downloads 严格大于该值（None=用配置默认）
+    dry_run: bool = False  # 只评估不落库：返回命中数量+占用预估
 
 
 class RetranslateRequest(BaseModel):
@@ -69,7 +73,10 @@ async def trigger_clawhub_sync(
     result = await clawhub_sync_service.sync_from_clawhub(
         db=db,
         force=request.force,
-        skill_ids=request.skill_ids
+        skill_ids=request.skill_ids,
+        limit=request.limit,
+        min_downloads=request.min_downloads,
+        dry_run=request.dry_run
     )
     return result
 

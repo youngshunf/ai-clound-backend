@@ -366,6 +366,11 @@ class Settings(BaseSettings):
     # ClawHub 定时同步每次抓取的技能数量上限：
     #   本地/测试默认 100；生产环境在 .env 设为 0 表示全量同步
     MARKETPLACE_CLAWHUB_SYNC_LIMIT: int = 100
+    # ClawHub 下载量阈值：只同步 stats.downloads 严格大于该值的技能。
+    #   0 = 不设阈值（全收）；生产设为 100 即"下载量超过 100 才同步"。
+    MARKETPLACE_CLAWHUB_MIN_DOWNLOADS: int = 0
+    # ClawHub 技能解压目录累计占用硬上限(GB)：达到即暂停后续下载（安全兜底）。
+    MARKETPLACE_CLAWHUB_MAX_DISK_GB: float = 50.0
 
     # 市场缓存配置
     MARKETPLACE_CACHE_DIR: str = '/tmp/marketplace-cache'
