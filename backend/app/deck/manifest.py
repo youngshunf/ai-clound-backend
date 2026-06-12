@@ -6,10 +6,10 @@
 - docs/hasn-node设计文档/14-AI-Native应用平台/15-AI-Native应用命名空间与目录约定.md（ADR-15：manifest 与应用代码同目录）
 
 deck 是**最轻形态**的 AI-Native 应用：引擎分布在 daemon(Rust) + webui(TS) + 按需 headless 渲染，
-无独立重 sidecar、无 Python/ML/LibreOffice、无常驻进程（[06] §7）。区别于 Presenton（`presentation`，
-embedded_desktop sidecar），二者研发期并存、达质量门后 deck 继承 presentation 槽位退役 Presenton（[07] §7）。
+无独立重 sidecar、无 Python/ML/LibreOffice、无常驻进程（[06] §7）。deck 是唯一默认演示文稿应用
+（早期接入的 Presenton/embedded_desktop sidecar 已彻底删除，deck 接管演示文稿能力，[07] §7）。
 
-⚠️ 方案 A（同 presentation §7.3）：`tools[]` **置空数组**——`hasn.deck.*` 工具数据面在本地
+⚠️ 方案 A：`tools[]` **置空数组**——`hasn.deck.*` 工具数据面在本地
 （hasn-mcp `built_in_deck_tools()`，`source=Local`/`ExecutionLocation::Local`），不经云端 Runtime
 Gateway，故不进 `tools[]`（自造 transport 会静默过 validate_manifest 变潜伏炸弹）。工具靠 hasn-mcp
 注册、bootstrap 发现；`capabilities[]` 只承载**发现/权限元数据**控制面记录（不参与 `_dispatch_tool` 路由）。
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
 
 
-# 与既有 AI-Native 审计共表的字段集（同 presentation §11.5）。
+# 与既有 AI-Native 审计共表的字段集。
 _AUDIT_FIELDS = [
     'trace_id',
     'workspace',
@@ -330,10 +330,9 @@ DECK_AI_NATIVE_MANIFEST = {
 def build_deck_workbench_app() -> WorkbenchApp:
     """构造 deck 的 WorkbenchApp（[07] §6.2）。延迟导入避免循环依赖。
 
-    研发期与 Presenton（presentation）并存：deck 取 ``install_policy='manual'``（不自动挂载，
-    避免工作台出现两个「演示文稿」），仅作可安装 app 供 dogfood；达质量门后（P7 退役）翻 auto 并移除
-    presentation。UI 为 webui 原生路由（``ui_kind=None`` 内联导航至 ``entry_route``，同 knowledge/community），
-    非 sidecar、非独立窗口。
+    deck 是唯一默认演示文稿应用：取 ``install_policy='auto'``（注册即自动挂载；早期接入的 Presenton
+    已彻底删除，不再有两个「演示文稿」并存的问题）。UI 为 webui 原生路由（``ui_kind=None`` 内联导航至
+    ``entry_route``，同 knowledge/community），非 sidecar、非独立窗口。
     """
     from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
 
@@ -344,8 +343,8 @@ def build_deck_workbench_app() -> WorkbenchApp:
         description='用自然语言驱动分身生成、编辑、预览并导出演示文稿（自研引擎，本地优先 + 跨设备同步）',
         scope=('personal',),
         entry_route='/workbench/apps/deck',
-        # 研发期手动安装；退役 Presenton 时翻 auto（[07] §7）。
-        install_policy='manual',
+        # 唯一默认演示文稿应用：自动挂载（Presenton 已删除，[07] §7）。
+        install_policy='auto',
         collaboration_mode='none',
         requires_role=None,
         execution_mode='local_tool',

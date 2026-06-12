@@ -42,7 +42,6 @@ _TIER_RANK: dict[str, int] = {'free': 0, 'pro': 1, 'advanced': 2, 'flagship': 3}
 _CATALOG_SORT_ORDER: dict[str, int] = {
     'knowledge': 10,
     'community': 20,
-    'presentation': 30,
     'deck': 35,
     'publish': 40,
 }
@@ -77,7 +76,7 @@ def _catalog_row_from_workbench_app(app: WorkbenchApp) -> dict:
         'billing_cycle': 'once',
         'trial_days': 0,
         'sku_ref': None,
-        # 现有 builtin（knowledge/community/presentation/deck）都有对应 code manifest。
+        # 现有 builtin（knowledge/community/deck）都有对应 code manifest。
         'manifest_present': True,
     }
 

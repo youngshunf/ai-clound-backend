@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 from backend.app.deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
-from backend.app.hasn.service.ai_native_builtin_presentation import PRESENTATION_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
@@ -34,7 +33,6 @@ class AINativeAppRegistry:
         self._builtin_manifests = {
             'knowledge': KNOWLEDGE_AI_NATIVE_MANIFEST,
             'community': COMMUNITY_AI_NATIVE_MANIFEST,
-            'presentation': PRESENTATION_AI_NATIVE_MANIFEST,
             'deck': DECK_AI_NATIVE_MANIFEST,
             'hasn_task': HASN_TASK_AI_NATIVE_MANIFEST,
             'publish': PUBLISH_AI_NATIVE_MANIFEST,

@@ -118,10 +118,10 @@ async def test_list_apps_field_equivalence_from_catalog(env) -> None:
     # display 与 registry 等价。
     assert by_id['knowledge']['name'] == '知识库'
     assert by_id['knowledge']['icon'] == 'book-open'
-    # launch 字段从本地 registry overlay：presentation 的独立窗口 URL 必须保留。
-    if 'presentation' in by_id:
-        assert by_id['presentation']['window_url'] == '/api/v1/apps/presentation/loading'
-        assert by_id['presentation']['execution_mode'] == 'embedded_desktop'
+    # launch 字段从本地 registry overlay：deck（local_tool 内联路由）的 entry_route 必须保留。
+    if 'deck' in by_id:
+        assert by_id['deck']['entry_route'] == '/workbench/apps/deck'
+        assert by_id['deck']['execution_mode'] == 'local_tool'
 
 
 async def test_disabled_catalog_app_disappears(env) -> None:

@@ -44,8 +44,8 @@ class ReportAiNativeAppAuditParam(SchemaBase):
     """
 
     trace_id: str = Field(description='trace id（分身侧生成，幂等/排错用）')
-    app_id: str = Field(description='应用 ID（如 presentation）')
-    method: str = Field(description='调用方法（工具名，如 hasn.presentation.generate）')
+    app_id: str = Field(description='应用 ID（如 deck）')
+    method: str = Field(description='调用方法（工具名，如 hasn.deck.create）')
     decision: str = Field(description='allow/deny/ask')
     step: str = Field('local_tool', description='审计步骤（本地工具固定 local_tool）')
     workspace_kind: str = Field('personal', description='workspace 类型（embedded_desktop 本地默认 personal）')

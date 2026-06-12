@@ -154,7 +154,7 @@ async def report_ai_native_audit(
     body: ReportAiNativeAppAuditParam,
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    """分身经 `for_agent` 上报「本地执行工具」（如 hasn.presentation.*）的调用审计。
+    """分身经 `for_agent` 上报「本地执行工具」（如 hasn.deck.*）的调用审计。
 
     身份权威：`agent_hasn_id`/`owner_hasn_id` 取自 **Agent JWT**（不取 body，identity by auth），
     `actor_type` 强制 `agent`。本地审计先在分身侧产生，上报为 best-effort（失败可补传）；

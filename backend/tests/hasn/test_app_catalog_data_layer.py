@@ -1,7 +1,7 @@
 """C1 应用目录与权益数据层 真实 PostgreSQL 测试 + 进程内 HTTP E2E（零 mock）。
 
 覆盖：
-- ``ensure_catalog_seeded`` 幂等播种（knowledge/community/presentation 三行、全 free、像素等价默认值）
+- ``ensure_catalog_seeded`` 幂等播种（knowledge/community/deck 三行、全 free、像素等价默认值）
 - ``hasn_app_catalog_service`` CRUD（create/get/update/delete）
 - ``hasn_app_entitlement`` 行级 CRUD + ``sweep_expired_entitlements`` 过期兜底
 - Admin catalog 读端点 HTTP E2E（分页列表 + 详情，统一信封）
@@ -49,7 +49,7 @@ register_exception(_APP)
 _APP.include_router(admin_catalog_router, prefix='/api/v1/hasn/app-catalogs')
 
 _CATALOG = '/api/v1/hasn/app-catalogs'
-_SEED_APP_IDS = {'knowledge', 'community', 'presentation', 'deck'}
+_SEED_APP_IDS = {'knowledge', 'community', 'deck'}
 
 
 def _uid() -> str:
@@ -135,7 +135,7 @@ async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
 
     注：dev DB 由运行中云端 register_init reconcile 已 seed（C2），故首次 inserted 可能为 0；
     幂等语义只保证「调用后内置行齐备 + display 正确」，不假设调用前为空。
-    内置集随注册新增（knowledge/community/presentation/deck），见 _SEED_APP_IDS。
+    内置集随注册新增（knowledge/community/deck），见 _SEED_APP_IDS。
     """
     db = env.session
     await ensure_catalog_seeded(db)
@@ -149,12 +149,11 @@ async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
     assert by_id['knowledge'].name == '知识库'
     assert by_id['knowledge'].icon == 'book-open'
     assert by_id['community'].icon == 'users-round'
-    assert by_id['presentation'].execution_mode == 'embedded_desktop'
     assert by_id['knowledge'].status == 'published'
-    # deck（自研演示文稿，模块 17）：local_tool + 研发期手动安装（default_mount=False，与 Presenton 并存）。
+    # deck（自研演示文稿，模块 17）：local_tool + 自动挂载（default_mount=True，唯一默认演示文稿应用）。
     assert by_id['deck'].execution_mode == 'local_tool'
     assert by_id['deck'].source == 'builtin'
-    assert by_id['deck'].default_mount is False
+    assert by_id['deck'].default_mount is True
     assert by_id['deck'].sort_order == 35
 
     # 二次播种幂等：不再插入。

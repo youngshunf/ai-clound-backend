@@ -206,11 +206,18 @@ def test_workbench_registry_auto_installs_knowledge_for_personal_and_enterprise(
 
     registry = WorkbenchAppRegistry.default()
 
-    # community 已作为内置应用纳入自动安装（与 knowledge 同为 install_policy=auto）；
-    # presentation（演示文稿 embedded_desktop，设计 §7.2）scope=personal + install_policy=auto，
-    # 故 personal 工作空间额外自动安装，enterprise 不含（presentation 仅 personal scope）。
-    assert [app.id for app in registry.auto_install_apps('personal')] == ['knowledge', 'community', 'presentation']
-    assert [app.id for app in registry.auto_install_apps('enterprise')] == ['knowledge', 'community']
+    # 内置应用均 install_policy=auto；按 scope 过滤自动安装：
+    # - deck（自研演示文稿，模块 17）scope=personal，唯一默认演示文稿应用（presentation 已删除）；
+    # - hasn_task scope=(personal, enterprise)，两空间皆自动安装；
+    # - publish scope=personal，仅 personal 自动安装。
+    assert [app.id for app in registry.auto_install_apps('personal')] == [
+        'knowledge',
+        'community',
+        'deck',
+        'hasn_task',
+        'publish',
+    ]
+    assert [app.id for app in registry.auto_install_apps('enterprise')] == ['knowledge', 'community', 'hasn_task']
     assert registry.get('knowledge').entry_route == '/workbench/apps/knowledge'
 
 

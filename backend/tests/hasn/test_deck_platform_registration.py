@@ -5,7 +5,7 @@
 - capabilities scope 与落地 hasn-mcp 工具一致（写类 deck:manage / 读类无 scope；12 个；mcp_name 全 hasn.deck.*）。
 - scopes.py 登记 deck:manage（早期占位 deck:read/deck:write 已删）。
 - WorkbenchApp 形态（local_tool / 手动安装 / 内联路由）。
-- 真实 PG：``ensure_catalog_seeded`` 播种 deck 行（local_tool/builtin/free/manual/sort 35）；
+- 真实 PG：``ensure_catalog_seeded`` 播种 deck 行（local_tool/builtin/free/auto/sort 35）；
   ``ensure_builtin_published`` 把 deck manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等。
 
 事实源: docs/hasn-node设计文档/17-演示文稿系统/07-安全权限与平台接入.md §6；
@@ -103,11 +103,11 @@ def test_deck_notifications_emit_declared() -> None:
 
 
 def test_deck_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 手动安装（研发期与 Presenton 并存）+ 内联路由（非新窗口）。"""
+    """WorkbenchApp：local_tool + 自动挂载（唯一默认演示文稿应用）+ 内联路由（非新窗口）。"""
     app = build_deck_workbench_app()
     assert app.id == 'deck'
     assert app.execution_mode == 'local_tool'
-    assert app.install_policy == 'manual'
+    assert app.install_policy == 'auto'
     assert app.collaboration_mode == 'none'
     assert app.scope == ('personal',)
     assert app.entry_route == '/workbench/apps/deck'
@@ -141,7 +141,7 @@ async def db():
 
 @pytest.mark.asyncio
 async def test_deck_seeded_into_catalog(db) -> None:
-    """ensure_catalog_seeded 把 deck 落 hasn_app_catalog（local_tool/builtin/free/manual/sort 35）。"""
+    """ensure_catalog_seeded 把 deck 落 hasn_app_catalog（local_tool/builtin/free/auto/sort 35）。"""
     await ensure_catalog_seeded(db)
     row = (
         await db.execute(sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id == 'deck'))
@@ -151,7 +151,7 @@ async def test_deck_seeded_into_catalog(db) -> None:
     assert row.status == 'published'
     assert row.execution_mode == 'local_tool'
     assert row.access_type == 'free'
-    assert row.default_mount is False, '研发期手动安装（与 Presenton 并存）'
+    assert row.default_mount is True, 'deck 自动挂载（唯一默认演示文稿应用）'
     assert row.sort_order == 35
     assert row.entry_route == '/workbench/apps/deck'
     assert 'personal' in (row.scope or [])

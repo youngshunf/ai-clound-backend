@@ -80,11 +80,7 @@ class WorkbenchAppRegistry:
                 install_policy='auto',
             )
         )
-        # Presenton 演示文稿（embedded_desktop AI-Native，设计 §7.2）。延迟导入避免循环依赖。
-        from backend.app.hasn.service.ai_native_builtin_presentation import build_presentation_workbench_app
-
-        registry.register(build_presentation_workbench_app())
-        # 自研演示文稿 deck（local_tool AI-Native，模块 17 §6.2；与 Presenton 研发期并存，install_policy=manual）。
+        # 自研演示文稿 deck（local_tool AI-Native，模块 17 §6.2；唯一默认演示文稿应用，install_policy=auto）。
         from backend.app.deck.manifest import build_deck_workbench_app
 
         registry.register(build_deck_workbench_app())
