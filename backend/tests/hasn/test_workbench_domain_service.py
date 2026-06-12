@@ -177,7 +177,6 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         'HasnUserActiveWorkspace': ActiveWorkspaceStub,
         'HasnWorkspaceApp': WorkspaceAppStub,
         'HasnAppInstance': RagflowInstanceStub,
-        'HasnAppCredential': RagflowCredentialStub,
         'User': UserStub,
     }
     for name, replacement in replacements.items():
@@ -630,95 +629,6 @@ async def test_workbench_rejects_unknown_apps_and_protects_auto_installed_person
         await service.enable_current_workspace_app(db_session, user_id=21, app_id='missing-app')
     with pytest.raises(errors.RequestError, match='auto_installed_personal_app_cannot_be_disabled'):
         await service.disable_current_workspace_app(db_session, user_id=21, app_id='knowledge')
-
-
-@pytest.mark.asyncio
-async def test_current_knowledge_credentials_follow_active_workspace(db_session: AsyncSession) -> None:
-    service = _service()
-    enterprise = await service.create_enterprise(db_session, user_id=31, name='Acme')
-
-    public_instance = RagflowInstanceStub(
-        app_id='knowledge',
-        scope='public',
-        enterprise_id=None,
-        endpoint='https://knowledge.example',
-        credential_ref='admin-public',
-        config={'public_pem': 'pem'},
-        status='active',
-    )
-    enterprise_instance = RagflowInstanceStub(
-        app_id='knowledge',
-        scope='enterprise',
-        enterprise_id=enterprise['id'],
-        endpoint='https://enterprise.example',
-        credential_ref='admin-enterprise',
-        config={'public_pem': 'pem'},
-        status='active',
-    )
-    db_session.add_all([public_instance, enterprise_instance])
-    await db_session.flush()
-    db_session.add_all([
-        RagflowCredentialStub(
-            app_id='knowledge',
-            user_id=32,
-            app_instance_id=public_instance.id,
-            credential_ref='key-public',
-            config={'ragflow_user_id': 'u-public', 'ragflow_tenant_id': 't-public'},
-            status='active',
-        ),
-        RagflowCredentialStub(
-            app_id='knowledge',
-            user_id=32,
-            app_instance_id=enterprise_instance.id,
-            credential_ref='key-enterprise',
-            config={'ragflow_user_id': 'u-enterprise', 'ragflow_tenant_id': 't-enterprise'},
-            status='active',
-        ),
-    ])
-    await db_session.flush()
-
-    personal = await service.get_current_knowledge_credentials(db_session, user_id=32)
-    await service.apply_enterprise(
-        db_session, enterprise_id=enterprise['id'], user_id=32, apply_message=None, invite_code=None
-    )
-    await service.approve_application(db_session, enterprise_id=enterprise['id'], app_id=2, decided_by=31)
-    await service.switch_active_workspace(db_session, user_id=32, kind='enterprise', enterprise_id=enterprise['id'])
-    enterprise_credentials = await service.get_current_knowledge_credentials(db_session, user_id=32)
-
-    assert personal['workspace'] == {'kind': 'personal', 'enterprise_id': None}
-    assert personal['credential']['ragflow_user_id'] == 'u-public'
-    assert enterprise_credentials['workspace'] == {'kind': 'enterprise', 'enterprise_id': enterprise['id']}
-    assert enterprise_credentials['credential']['ragflow_user_id'] == 'u-enterprise'
-
-
-@pytest.mark.asyncio
-async def test_refresh_current_knowledge_credentials_triggers_provision_for_active_instance(
-    db_session: AsyncSession,
-    monkeypatch,
-) -> None:
-    import backend.app.hasn.service.workbench_domain_service as service_mod
-
-    service = _service()
-    provisioner = CapturingProvisioningService()
-    monkeypatch.setattr(service_mod, 'ragflow_provisioning_service', provisioner, raising=False)
-    public_instance = RagflowInstanceStub(
-        app_id='knowledge',
-        scope='public',
-        enterprise_id=None,
-        endpoint='https://knowledge.example',
-        credential_ref='admin-public',
-        config={'public_pem': 'pem'},
-        status='active',
-    )
-    db_session.add(public_instance)
-    await db_session.flush()
-
-    refreshed = await service.refresh_current_knowledge_credentials(db_session, user_id=32)
-
-    assert provisioner.provisioned == [(32, public_instance.id)]
-    assert refreshed['workspace'] == {'kind': 'personal', 'enterprise_id': None}
-    assert refreshed['status'] == 'pending'
-    assert refreshed['credential'] is None
 
 
 @pytest.mark.asyncio

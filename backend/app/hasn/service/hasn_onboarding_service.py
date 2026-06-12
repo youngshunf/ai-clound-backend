@@ -161,48 +161,7 @@ class SqlAlchemyPlatformUserGateway:
         await db.flush()
         await db.refresh(user)
 
-        # 用户注册钩子：异步触发 RAGFlow provisioning
-        await self._trigger_ragflow_provisioning(user.id)
-
         return user, True
-
-    async def _trigger_ragflow_provisioning(self, user_id: int) -> None:
-        """异步触发 RAGFlow provisioning（fire-and-forget）"""
-        import asyncio
-        from backend.app.hasn.service.ragflow_provisioning_service import (
-            KNOWLEDGE_APP_ID,
-            RAGFlowProvisioningService,
-        )
-        from backend.app.hasn.model import HasnAppInstance
-        from backend.database.db import async_db_session
-
-        async def _provision():
-            try:
-                async with async_db_session() as provision_db:
-                    # 查询公共知识库实例（收编后底层 hasn_app_instance(app_id='knowledge')）
-                    result = await provision_db.execute(
-                        sa.select(HasnAppInstance)
-                        .where(
-                            HasnAppInstance.app_id == KNOWLEDGE_APP_ID,
-                            HasnAppInstance.scope == 'public',
-                            HasnAppInstance.status == 'active'
-                        )
-                        .limit(1)
-                    )
-                    public_instance = result.scalar_one_or_none()
-
-                    if public_instance:
-                        provisioning = RAGFlowProvisioningService()
-                        await provisioning.provision_one(user_id, public_instance.id)
-                        log.info(f'RAGFlow provisioning triggered for user {user_id}')
-                    else:
-                        log.warning(f'No active public RAGFlow instance found for user {user_id}')
-            except Exception as exc:
-                log.error(f'RAGFlow provisioning failed for user {user_id}: {exc}')
-
-        # Fire-and-forget: 不阻塞用户注册流程
-        asyncio.create_task(_provision())
-
 
 class SqlAlchemyLlmCredentialIssuer:
     async def issue(self, db: AsyncSession, user: Any) -> tuple[str | None, str | None, str | None]:

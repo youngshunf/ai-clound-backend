@@ -1,4 +1,7 @@
-"""HASN 知识库凭据 - 用户端 API
+"""HASN 知识库企业实例登记 - 用户端 API（DEPRECATED，P3 企业自托管再启用或重做）
+
+凭据下发面（/knowledge/credentials*）已随知识库 AI-Native 重做退役（设计 §7.1）：
+RAGFlow 凭据为平台 service key、只活云端，不再 per-user 下发任何终端。
 
 认证方式: DependsJwtAuth（仅当前登录用户）
 数据隔离: 通过 request.user.id 限制为用户自己的数据
@@ -15,44 +18,12 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 router = APIRouter()
 
 
-class KnowledgeCredentialResponse(BaseModel):
-    """知识库凭据响应"""
-
-    status: str = Field(..., description="凭据状态: not_provisioned | pending | active | revoked")
-    url: str | None = Field(None, description="RAGFlow 服务地址")
-    api_key: str | None = Field(None, description="API Key（已解密）")
-    instance_id: int | None = Field(None, description="实例 ID")
-    ragflow_user_id: str | None = Field(None, description="RAGFlow 用户 ID")
-
-
 class SaveRagflowInstanceRequest(BaseModel):
     url: str
     admin_api_key: str
     public_pem: str
     default_embd_id: str | None = None
     default_llm_id: str | None = None
-
-
-@router.get(
-    '/knowledge/credentials',
-    summary='获取当前用户的知识库凭据',
-    description='获取当前用户的 RAGFlow 凭据，用于 daemon 初始化知识库适配器',
-    dependencies=[DependsJwtAuth],
-)
-async def get_knowledge_credentials(request: Request, db: CurrentSession) -> ResponseModel:
-    data = await workbench_domain_service.get_current_knowledge_credentials(db, user_id=request.user.id)
-    return response_base.success(data=data)
-
-
-@router.post(
-    '/knowledge/credentials/refresh',
-    summary='刷新当前用户的知识库凭据',
-    description='刷新当前用户的 RAGFlow 凭据，用于 daemon 在工作空间切换后重建适配器状态',
-    dependencies=[DependsJwtAuth],
-)
-async def refresh_knowledge_credentials(request: Request, db: CurrentSessionTransaction) -> ResponseModel:
-    data = await workbench_domain_service.refresh_current_knowledge_credentials(db, user_id=request.user.id)
-    return response_base.success(data=data)
 
 
 # RF-CLOUD：数据面中转路由（datasets 列表/创建、search、upload）已删除。

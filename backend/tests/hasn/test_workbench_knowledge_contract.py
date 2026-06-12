@@ -221,28 +221,6 @@ def test_workbench_registry_auto_installs_knowledge_for_personal_and_enterprise(
     assert registry.get('knowledge').entry_route == '/workbench/apps/knowledge'
 
 
-@pytest.mark.asyncio
-async def test_ragflow_subscriber_reacts_to_enterprise_hooks() -> None:
-    from backend.app.hasn.service.ragflow_subscriber import RAGFlowSubscriber, RecordingRAGFlowActions
-
-    actions = RecordingRAGFlowActions()
-    subscriber = RAGFlowSubscriber(actions=actions)
-
-    await subscriber.on_enterprise_created({'enterprise_id': 42, 'owner_user_id': 7})
-    await subscriber.on_member_approved({'enterprise_id': 42, 'user_id': 8})
-    await subscriber.on_member_left({'enterprise_id': 42, 'user_id': 8})
-    await subscriber.on_workspace_switched({'user_id': 8})
-    await subscriber.on_enterprise_disbanded({'enterprise_id': 42, 'member_user_ids': [7, 8]})
-
-    assert actions.calls == [
-        ('create_placeholder', {'enterprise_id': 42}),
-        ('provision_member', {'enterprise_id': 42, 'user_id': 8}),
-        ('revoke_member', {'enterprise_id': 42, 'user_id': 8}),
-        ('notify_credentials_changed', {'user_id': 8}),
-        ('disable_enterprise_instance', {'enterprise_id': 42, 'member_user_ids': [7, 8]}),
-    ]
-
-
 def test_hasn_router_exposes_enterprise_workbench_and_knowledge_routes() -> None:
     from backend.app.hasn.api.router import app, v1
 
@@ -251,9 +229,17 @@ def test_hasn_router_exposes_enterprise_workbench_and_knowledge_routes() -> None
     assert '/api/v1/hasn/enterprises' in routes
     assert '/api/v1/hasn/users/me/workspaces' in routes
     assert '/api/v1/hasn/app/workbench/apps' in routes
-    # 知识库凭据路由已从 /users/me/knowledge-credentials 改名为 /knowledge/credentials（功能未变）
-    assert '/api/v1/hasn/app/knowledge/credentials' in routes
-    assert '/api/v1/hasn/app/knowledge/credentials/refresh' in routes
+    # 凭据下发面已随知识库 AI-Native 重做退役（设计 §7.1）：凭据=平台 service key 只活云端
+    assert '/api/v1/hasn/app/knowledge/credentials' not in routes
+    assert '/api/v1/hasn/app/knowledge/credentials/refresh' not in routes
+    # 知识库数据面归位独立模块 /api/v1/knowledge/*（app/hasn_knowledge）
+    from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
+    from backend.app.hasn_knowledge.api.router import app as knowledge_app
+
+    knowledge_routes = {route.path for router in (knowledge_app, knowledge_agent) for route in router.routes}
+    assert '/api/v1/knowledge/app/kbs' in knowledge_routes
+    assert '/api/v1/knowledge/app/search' in knowledge_routes
+    assert '/api/v1/knowledge/agent/search' in knowledge_routes
 
 
 def test_workbench_app_routes_inject_database_sessions() -> None:
@@ -399,18 +385,7 @@ async def test_knowledge_handlers_delegate_to_domain_service(monkeypatch: pytest
 
         return inner
 
-    monkeypatch.setattr(
-        module.workbench_domain_service,
-        'get_current_knowledge_credentials',
-        record('credentials', {'status': 'active'}),
-    )
-    monkeypatch.setattr(
-        module.workbench_domain_service,
-        'refresh_current_knowledge_credentials',
-        record('refresh', {'rotated': True}),
-    )
-    # RF-CLOUD：datasets/search/upload 数据面路由已删除（daemon 直连 RagFlow），
-    # 这里只保留控制面路由（凭据 + 企业实例配置）。
+    # 凭据下发面已退役（设计 §7.1）；本测试只覆盖暂留的企业实例登记面（DEPRECATED，P3 重评）。
     monkeypatch.setattr(
         module.workbench_domain_service,
         'get_enterprise_ragflow_instance',
@@ -435,8 +410,6 @@ async def test_knowledge_handlers_delegate_to_domain_service(monkeypatch: pytest
     request = SimpleNamespace(user=SimpleNamespace(id=7))
     db = object()
 
-    assert (await module.get_knowledge_credentials(request, db)).data == {'status': 'active'}
-    assert (await module.refresh_knowledge_credentials(request, db)).data == {'rotated': True}
     assert (await module.get_enterprise_ragflow_instance(request, db, enterprise_id=42)).data == {'enterprise_id': 42}
     assert (
         await module.save_enterprise_ragflow_instance(
@@ -456,8 +429,6 @@ async def test_knowledge_handlers_delegate_to_domain_service(monkeypatch: pytest
     assert (await module.disable_enterprise_ragflow_instance(request, db, enterprise_id=42)).data == {'disabled': True}
 
     assert calls == [
-        ('credentials', {'db': db, 'user_id': 7}),
-        ('refresh', {'db': db, 'user_id': 7}),
         ('get_instance', {'db': db, 'enterprise_id': 42, 'user_id': 7}),
         (
             'save_instance',

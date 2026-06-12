@@ -43,7 +43,6 @@ _GENUINE = {
     'GET /api/v1/client/version/latest-mac.yml',
     'GET /api/v1/client/version/latest.yml',
     'GET /api/v1/code-generation/generations/{pk}',
-    'GET /api/v1/huanxing/app/docs/{pk}/export',
     'GET /api/v1/marketplace/open/skills/{resource_id:path}/download',
     'GET /api/v1/marketplace/open/templates/{resource_id:path}/download',
     # 知识库原件下载（D10）：私有桶流式二进制透传（StreamingResponse），信封满足不了
