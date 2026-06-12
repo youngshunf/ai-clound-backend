@@ -162,7 +162,8 @@ class Settings(BaseSettings):
         rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$',  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
         rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
         rf'^{FASTAPI_API_V1_PATH}/user_tier/agent/.*$',  # 订阅积分 Agent API（使用 X-Agent-Key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # AI 自动获客 Agent API（使用 X-Agent-Key 认证，不走 JWT）
+        rf'^{FASTAPI_API_V1_PATH}/growth/agent/.*$',  # 获客 Agent API（Agent JWT，handler 自鉴权，不走 Owner JWT 中间件）
+        rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # 获客旧前缀 Agent API（薄转发过渡，M8 退役）
         rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$',  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
         r'^/s/[^/]+(/.*)?$',  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
         # 注：Agent JWT（Bearer，token_type=agent）的整类放行已不再依赖路径白名单——
