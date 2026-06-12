@@ -68,8 +68,6 @@ class AgentScopesService:
 
     def _config_from_policy(self, cfg: dict) -> AgentScopesConfig:
         return AgentScopesConfig(
-            scopes=cfg.get('scopes', []),
-            post_needs_review=cfg.get('post_needs_review', False),
             default_mode=cfg.get('default_mode', 'allow'),
             capability_modes=cfg.get('capability_modes', {}),
         )
@@ -95,7 +93,6 @@ class AgentScopesService:
             agent_hasn_id=agent_hasn_id,
             default_mode=request.default_mode,
             capability_modes=request.capability_modes,
-            post_needs_review=request.post_needs_review,
         )
 
         cfg = await get_agent_scopes_cached(agent_hasn_id, db)

@@ -37,9 +37,8 @@ async def test_agent_scopes_service_get_update_and_authorization(monkeypatch: py
         assert hasn_id == 'a_agent'
         return agent
 
+    # v3：判定真相只剩 default_mode + capability_modes（scopes/post_needs_review 列已 drop）。
     state: dict[str, object] = {
-        'scopes': ['message:read'],
-        'post_needs_review': True,
         'default_mode': 'allow',
         'capability_modes': {},
     }
@@ -55,8 +54,6 @@ async def test_agent_scopes_service_get_update_and_authorization(monkeypatch: py
         # 模拟写库后缓存最新值（D3：失效后下次现查）
         state['default_mode'] = kwargs['default_mode']
         state['capability_modes'] = kwargs['capability_modes']
-        if kwargs.get('post_needs_review') is not None:
-            state['post_needs_review'] = kwargs['post_needs_review']
 
     monkeypatch.setattr(module.hasn_agents_dao, 'get_by_hasn_id', get_by_hasn_id)
     monkeypatch.setattr(module, 'get_agent_scopes_cached', get_cached)
@@ -64,8 +61,6 @@ async def test_agent_scopes_service_get_update_and_authorization(monkeypatch: py
 
     service = module.AgentScopesService()
     config = await service.get_agent_scopes(object(), 'a_agent', 'h_owner')
-    assert config.scopes == ['message:read']
-    assert config.post_needs_review is True
     assert config.default_mode == 'allow'
     assert config.capability_modes == {}
 
@@ -76,7 +71,6 @@ async def test_agent_scopes_service_get_update_and_authorization(monkeypatch: py
         UpdateAgentScopesRequest(
             default_mode='ask',
             capability_modes={'message:send': 'deny'},
-            post_needs_review=False,
         ),
     )
     # D3：写表参数命中 update_agent_modes，不签发 JWT。

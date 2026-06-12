@@ -6,21 +6,21 @@ from backend.common.schema import SchemaBase
 
 
 class AgentScopesConfig(SchemaBase):
-    """Agent 权限配置（含三态 default_mode/capability_modes）"""
+    """Agent 三态授权配置（判定真相：default_mode + capability_modes）。
 
-    scopes: list[str] = Field(default_factory=list, description='Agent 权限列表（审计快照）')
-    post_needs_review: bool = Field(default=False, description='发帖是否需要审核')
+    v3（16-doc D-v3-2）起不再含 scopes 数组 / post_needs_review 业务字段——
+    判定只看默认模式 + 每能力 override，社区审核由社区模块自理。
+    """
+
     default_mode: str = Field(default='allow', description='默认模式 allow|ask|deny')
     capability_modes: dict[str, str] = Field(default_factory=dict, description='每能力 override {key: allow|ask|deny}')
 
 
 class UpdateAgentScopesRequest(SchemaBase):
-    """更新 Agent 权限请求（三态；scopes 为兼容字段，可选）"""
+    """更新 Agent 三态授权请求（default_mode + capability_modes）"""
 
     default_mode: str = Field(default='allow', description='默认模式 allow|ask|deny')
     capability_modes: dict[str, str] = Field(default_factory=dict, description='每能力 override {key: allow|ask|deny}')
-    post_needs_review: bool | None = Field(default=None, description='发帖是否需要审核（None 表示不改）')
-    scopes: list[str] | None = Field(default=None, description='兼容字段，可选（审计快照）')
 
 
 class UpdateAgentScopesResponse(SchemaBase):
