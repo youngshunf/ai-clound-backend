@@ -1,0 +1,368 @@
+"""知识库用户端 API。
+
+路由前缀: /api/v1/knowledge/app
+认证方式: Owner JWT（owner hasn_id 由登录用户解析），owner 隔离；daemon 代理为 /api/v1/knowledge/*。
+
+设计事实源：知识库AI-Native应用重设计（RAGFlow处理后端）.md §2.3 App surface。
+"""
+
+from __future__ import annotations
+
+from typing import Annotated
+from urllib.parse import quote
+
+from fastapi import APIRouter, File, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.app.hasn_knowledge.service.error_adapter import to_http_error
+from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
+from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
+from backend.common.exception import errors
+from backend.common.response.response_schema import ResponseModel, response_base
+from backend.common.security.jwt import DependsJwtAuth
+from backend.database.db import CurrentSession, CurrentSessionTransaction
+
+router = APIRouter()
+
+
+async def _resolve_owner(db: CurrentSession, request: Request) -> str:
+    """登录用户 → HASN 主人 hasn_id（owner 隔离键）。"""
+    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    if not human:
+        raise errors.NotFoundError(msg='用户 HASN 身份不存在')
+    return human.hasn_id
+
+
+class CreateKbRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128, description='库名')
+    description: str | None = Field(default=None, max_length=512, description='描述')
+
+
+class CreateFolderRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128, description='目录名')
+    parent_id: int | None = Field(default=None, description='父目录 ID（空=库根）')
+
+
+class UpdateFolderRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128, description='重命名')
+    parent_id: int | None = Field(default=None, description='移动到目录 ID')
+    move_to_root: bool = Field(default=False, description='移动到库根')
+
+
+class CreateNativeDocRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200, description='标题')
+    content: str = Field(default='', description='Markdown 正文')
+    folder_id: int | None = Field(default=None, description='目录 ID（空=库根）')
+
+
+class UpdateDocumentRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200, description='标题')
+    content: str | None = Field(default=None, description='Markdown 正文（仅 native）')
+    folder_id: int | None = Field(default=None, description='移动到目录 ID')
+    move_to_root: bool = Field(default=False, description='移动到库根')
+
+
+class SearchRequest(BaseModel):
+    question: str = Field(min_length=1, description='检索问题')
+    kb_ids: list[int] | None = Field(default=None, description='限定知识库（空=全部）')
+    top_k: int = Field(default=8, ge=1, le=50, description='返回片段数')
+    similarity_threshold: float | None = Field(default=None, ge=0, le=1, description='相似度阈值')
+    agent_hasn_id: str | None = Field(default=None, description='以分身视角检索（grant 预览）')
+
+
+class PutGrantRequest(BaseModel):
+    mode: str = Field(description='授权模式 inherit/restricted/denied')
+    kb_ids: list[int] = Field(default_factory=list, description='restricted 白名单')
+
+
+# ---------- kb ----------
+
+
+@router.get('/kbs', summary='列知识库', dependencies=[DependsJwtAuth])
+async def list_kbs(request: Request, db: CurrentSession) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.list_kbs(db, owner_id))
+
+
+@router.post('/kbs', summary='建知识库（同步建处理后端索引库）', dependencies=[DependsJwtAuth])
+async def create_kb(request: Request, db: CurrentSessionTransaction, body: CreateKbRequest) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    try:
+        data = await knowledge_service.create_kb(db, owner_id, name=body.name, description=body.description)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.create_kb', context={'kb_id': data['id']}
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/kbs/{kb_id}', summary='删知识库（级联删索引库与文档行）', dependencies=[DependsJwtAuth])
+async def delete_kb(request: Request, db: CurrentSessionTransaction, kb_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    try:
+        await knowledge_service.delete_kb(db, owner_id, kb_id)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.delete_kb', context={'kb_id': kb_id}
+    )
+    return response_base.success()
+
+
+# ---------- folders（D9）----------
+
+
+@router.get('/kbs/{kb_id}/folders', summary='目录树（平铺，前端按 parent_id 组树）', dependencies=[DependsJwtAuth])
+async def list_folders(request: Request, db: CurrentSession, kb_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.list_folders(db, owner_id, kb_id))
+
+
+@router.post('/kbs/{kb_id}/folders', summary='建目录', dependencies=[DependsJwtAuth])
+async def create_folder(
+    request: Request, db: CurrentSessionTransaction, kb_id: int, body: CreateFolderRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.create_folder(db, owner_id, kb_id, name=body.name, parent_id=body.parent_id)
+    return response_base.success(data=data)
+
+
+@router.put('/folders/{folder_id}', summary='重命名/移动目录', dependencies=[DependsJwtAuth])
+async def update_folder(
+    request: Request, db: CurrentSessionTransaction, folder_id: int, body: UpdateFolderRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.update_folder(
+        db, owner_id, folder_id, name=body.name, parent_id=body.parent_id, move_to_root=body.move_to_root
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/folders/{folder_id}', summary='删目录（仅空目录，非空如实拒）', dependencies=[DependsJwtAuth])
+async def delete_folder(request: Request, db: CurrentSessionTransaction, folder_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    await knowledge_service.delete_folder(db, owner_id, folder_id)
+    return response_base.success()
+
+
+# ---------- documents ----------
+
+
+@router.get('/kbs/{kb_id}/documents', summary='列文档（触发索引状态读时对账）', dependencies=[DependsJwtAuth])
+async def list_documents(
+    request: Request,
+    db: CurrentSessionTransaction,
+    kb_id: int,
+    folder_id: Annotated[int | None, Query(description='目录过滤：缺省=全库，0=库根，>0=指定目录')] = None,
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.list_documents(db, owner_id, kb_id, folder_id=folder_id)
+    return response_base.success(data=data)
+
+
+@router.post('/kbs/{kb_id}/documents', summary='上传文档（原件落私有桶+推引擎副本，自动索引）', dependencies=[DependsJwtAuth])
+async def upload_document(
+    request: Request,
+    db: CurrentSessionTransaction,
+    kb_id: int,
+    file: Annotated[UploadFile, File(description='文档文件')],
+    folder_id: Annotated[int | None, Query(description='目录 ID（空=库根）')] = None,
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data_bytes = await file.read()
+    try:
+        data = await knowledge_service.upload_file_document(
+            db,
+            owner_id,
+            kb_id,
+            filename=file.filename or 'untitled',
+            data=data_bytes,
+            mime=file.content_type or 'application/octet-stream',
+            folder_id=folder_id,
+            source='ui',
+        )
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    await knowledge_service.write_ui_audit(
+        db,
+        owner_id=owner_id,
+        user_id=request.user.id,
+        method='ui.upload_document',
+        context={'kb_id': kb_id, 'doc_id': data['id'], 'name': data['name']},
+    )
+    return response_base.success(data=data)
+
+
+@router.get('/documents/{doc_id}', summary='文档详情（native 含正文）', dependencies=[DependsJwtAuth])
+async def get_document(request: Request, db: CurrentSession, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.get_document(db, owner_id, doc_id))
+
+
+@router.delete('/documents/{doc_id}', summary='删文档（引擎副本删净）', dependencies=[DependsJwtAuth])
+async def delete_document(request: Request, db: CurrentSessionTransaction, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    try:
+        await knowledge_service.delete_document(db, owner_id, doc_id)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.delete_document', context={'doc_id': doc_id}
+    )
+    return response_base.success()
+
+
+@router.get(
+    '/documents/{doc_id}/download',
+    summary='下载原文件（私有桶流式，不经处理引擎，D10）',
+    dependencies=[DependsJwtAuth],
+)
+async def download_document(request: Request, db: CurrentSession, doc_id: int) -> StreamingResponse:
+    owner_id = await _resolve_owner(db, request)
+    name, mime, stream = await knowledge_service.download_document(db, owner_id, doc_id)
+    return StreamingResponse(
+        stream,
+        media_type=mime,
+        headers={'Content-Disposition': f"attachment; filename*=UTF-8''{quote(name)}"},
+    )
+
+
+@router.post('/documents/{doc_id}/reindex', summary='重新索引（file 从桶重放/native 以正文重放）', dependencies=[DependsJwtAuth])
+async def reindex_document(request: Request, db: CurrentSessionTransaction, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    try:
+        data = await knowledge_service.reindex_document(db, owner_id, doc_id)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.reindex_document', context={'doc_id': doc_id}
+    )
+    return response_base.success(data=data)
+
+
+# ---------- native documents（D9）----------
+
+
+@router.post('/kbs/{kb_id}/documents/native', summary='创建原生文档（正文落 PG，保存即索引）', dependencies=[DependsJwtAuth])
+async def create_native_document(
+    request: Request, db: CurrentSessionTransaction, kb_id: int, body: CreateNativeDocRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.create_native_document(
+        db, owner_id, kb_id, title=body.title, content=body.content, folder_id=body.folder_id, source='ui'
+    )
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.create_native_doc',
+        context={'kb_id': kb_id, 'doc_id': data['id']},
+    )
+    return response_base.success(data=data)
+
+
+@router.put('/documents/{doc_id}', summary='更新文档（native 保存即重索引；移动目录不重索引）', dependencies=[DependsJwtAuth])
+async def update_document(
+    request: Request, db: CurrentSessionTransaction, doc_id: int, body: UpdateDocumentRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.update_native_document(
+        db,
+        owner_id,
+        doc_id,
+        title=body.title,
+        content=body.content,
+        folder_id=body.folder_id,
+        move_to_root=body.move_to_root,
+        source='ui',
+    )
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.update_document', context={'doc_id': doc_id}
+    )
+    return response_base.success(data=data)
+
+
+@router.get('/documents/{doc_id}/content', summary='原生文档正文（PG 权威，不经引擎）', dependencies=[DependsJwtAuth])
+async def get_native_content(request: Request, db: CurrentSession, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.get_native_content(db, owner_id, doc_id))
+
+
+@router.get('/documents/{doc_id}/versions', summary='版本历史', dependencies=[DependsJwtAuth])
+async def list_versions(request: Request, db: CurrentSession, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.list_versions(db, owner_id, doc_id))
+
+
+@router.get('/documents/{doc_id}/versions/{version_no}', summary='版本快照', dependencies=[DependsJwtAuth])
+async def get_version(request: Request, db: CurrentSession, doc_id: int, version_no: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.get_version(db, owner_id, doc_id, version_no))
+
+
+@router.post(
+    '/documents/{doc_id}/versions/{version_no}/restore',
+    summary='恢复版本（落新版本+重索引）',
+    dependencies=[DependsJwtAuth],
+)
+async def restore_version(
+    request: Request, db: CurrentSessionTransaction, doc_id: int, version_no: int
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.restore_version(db, owner_id, doc_id, version_no, source='ui')
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.restore_version',
+        context={'doc_id': doc_id, 'version_no': version_no},
+    )
+    return response_base.success(data=data)
+
+
+# ---------- 检索 / 审计 / 授权 ----------
+
+
+@router.post('/search', summary='检索（dataset 注入由 service 单点收口）', dependencies=[DependsJwtAuth])
+async def search(request: Request, db: CurrentSession, body: SearchRequest) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    try:
+        data = await knowledge_service.search(
+            db,
+            owner_id,
+            question=body.question,
+            kb_ids=body.kb_ids,
+            top_k=body.top_k,
+            similarity_threshold=body.similarity_threshold,
+            agent_hasn_id=body.agent_hasn_id,
+        )
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    return response_base.success(data=data)
+
+
+@router.get('/audit', summary='知识库操作审计（域审计+App 工具审计合并视图）', dependencies=[DependsJwtAuth])
+async def list_audit(
+    request: Request,
+    db: CurrentSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.list_audit(db, owner_id, limit=limit, offset=offset))
+
+
+@router.get('/agent-grants/{agent_hasn_id}', summary='读分身知识库白名单（维度②）', dependencies=[DependsJwtAuth])
+async def get_agent_grant(request: Request, db: CurrentSession, agent_hasn_id: str) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    return response_base.success(data=await knowledge_service.get_agent_grant(db, owner_id, agent_hasn_id))
+
+
+@router.put('/agent-grants/{agent_hasn_id}', summary='写分身知识库白名单（维度②）', dependencies=[DependsJwtAuth])
+async def put_agent_grant(
+    request: Request, db: CurrentSessionTransaction, agent_hasn_id: str, body: PutGrantRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.put_agent_grant(db, owner_id, agent_hasn_id, mode=body.mode, kb_ids=body.kb_ids)
+    await knowledge_service.write_ui_audit(
+        db, owner_id=owner_id, user_id=request.user.id, method='ui.update_agent_grant',
+        context={'agent_hasn_id': agent_hasn_id, 'mode': body.mode},
+    )
+    return response_base.success(data=data)

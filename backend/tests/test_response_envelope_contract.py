@@ -46,6 +46,8 @@ _GENUINE = {
     'GET /api/v1/huanxing/app/docs/{pk}/export',
     'GET /api/v1/marketplace/open/skills/{resource_id:path}/download',
     'GET /api/v1/marketplace/open/templates/{resource_id:path}/download',
+    # 知识库原件下载（D10）：私有桶流式二进制透传（StreamingResponse），信封满足不了
+    'GET /api/v1/knowledge/app/documents/{doc_id}/download',
     # 网页发布公开查看面 /s/*（模块 18，独立分享域名）：浏览器直接加载的公开 HTML 外壳 /
     # 二进制制品 / 解锁 JSON——制品内容绝不在 API 主域以信封套壳；/content 恒带 CSP sandbox（见 hosting.py）
     'GET /s/{slug}',
