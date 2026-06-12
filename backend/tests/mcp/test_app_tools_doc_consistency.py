@@ -10,10 +10,13 @@ import re
 
 from pathlib import Path
 
+from backend.app.deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.ai_native_builtin_manifests import (
     COMMUNITY_AI_NATIVE_MANIFEST,
     KNOWLEDGE_AI_NATIVE_MANIFEST,
 )
+from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
+from backend.app.publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 
 _APPS_DIR = Path(__file__).resolve().parents[2] / 'app' / 'mcp' / 'apps'
 
@@ -49,3 +52,15 @@ def test_community_doc_matches_manifest() -> None:
 
 def test_knowledge_doc_matches_manifest() -> None:
     assert _parse_doc_rows('knowledge') == _manifest_rows(KNOWLEDGE_AI_NATIVE_MANIFEST)
+
+
+def test_deck_doc_matches_manifest() -> None:
+    assert _parse_doc_rows('deck') == _manifest_rows(DECK_AI_NATIVE_MANIFEST)
+
+
+def test_publish_doc_matches_manifest() -> None:
+    assert _parse_doc_rows('publish') == _manifest_rows(PUBLISH_AI_NATIVE_MANIFEST)
+
+
+def test_hasn_task_doc_matches_manifest() -> None:
+    assert _parse_doc_rows('hasn_task') == _manifest_rows(HASN_TASK_AI_NATIVE_MANIFEST)

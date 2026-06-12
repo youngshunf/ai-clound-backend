@@ -1,69 +1,34 @@
-"""Scope 元数据注册表（catalog 中文化 / 分组 / 风险展示的集中声明）。
+"""Scope 展示元数据聚合器（catalog 中文化 / 分组 / 风险展示）。
 
-设计事实源：13-doc §4.2（scopes.py 集中声明）；platform 部分以 14-doc §3 为权威源。
-
-判定真相仍是各 `BaseTool.required_scopes`（分散但准确）+ 三态 mode；本表只负责
-**展示元数据**（中文 label / domain / risk / 描述），通过 scope key 关联。
-catalog 渲染缺失元数据时回退到 scope key 本身（不崩、不造假）。
+设计事实源：16-工具授权统一与权限声明 Manifest 化 D-v3-3。
+- **判定真相**仍是各 `BaseTool.required_scopes` + 三态 mode；本模块只负责**展示元数据**
+  （中文 label / domain / risk / 描述），通过 scope key 关联。risk 仅 UI 提示（不强制确认，D4）。
+- **声明源按应用组织**（不再一个大文件混所有应用域）：platform 域在 `platform_scopes.py`；
+  app 域随各应用目录的 `scopes.py`（deck/hasn_community/hasn_task/publish）+ knowledge 声明在
+  其 manifest 模块。本文件只把它们**聚合**成统一查询表，新增/删除应用只动该应用目录、不动大文件。
+- catalog 渲染缺失元数据时回退到 scope key 本身（不崩、不造假）。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# scope_key -> {label_zh, domain, risk, description}
-# risk 仅 UI 提示（不强制确认，D4）；社交/平台工具一律 low。
+from backend.app.deck.scopes import DECK_SCOPE_CATALOG
+from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_SCOPE_CATALOG
+from backend.app.hasn_community.scopes import COMMUNITY_SCOPE_CATALOG
+from backend.app.hasn_task.scopes import HASN_TASK_SCOPE_CATALOG
+from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
+from backend.app.publish.scopes import PUBLISH_SCOPE_CATALOG
+
+# 聚合视图：platform（平台域）∪ app（各应用目录声明）。
+# scope_key 在各源不重叠（platform vs app 互斥）；如有重叠，后者覆盖前者（app 优先于历史兜底）。
 SCOPE_CATALOG: dict[str, dict[str, str]] = {
-    # —— platform（14-doc §3 权威）——
-    'user:search': {'label_zh': '搜索用户', 'domain': 'user', 'risk': 'low', 'description': '按唤星号/昵称搜索 HASN 用户（人或 Agent）'},
-    'user:read': {'label_zh': '查看用户资料', 'domain': 'user', 'risk': 'low', 'description': '查看用户/Agent 主页详情'},
-    'contact:read': {'label_zh': '查看联系人', 'domain': 'contact', 'risk': 'low', 'description': '列出主人语境下的联系人与关系状态'},
-    'contact:request': {'label_zh': '发送联系请求', 'domain': 'contact', 'risk': 'low', 'description': '向某用户发起加联系/好友请求'},
-    'message:read': {'label_zh': '读取/搜索聊天记录', 'domain': 'message', 'risk': 'low', 'description': '读取会话历史、跨会话搜索聊天记录'},
-    'message:send': {'label_zh': '发送消息', 'domain': 'message', 'risk': 'low', 'description': '给用户/Agent/会话发消息（走真实路由与关系门控）'},
-    # task:create 已废弃（R5 收口，设计 12/06 §5.1）：语义并入 task:manage（建/改）+ task:run（触发）。
-    'task:read': {'label_zh': '查看任务进度与结果', 'domain': 'task', 'risk': 'low', 'description': '查任务定义/run/结果/历史（hasn.task.list/get/list_runs/get_run/query_results）'},
-    'task:manage': {'label_zh': '管理任务', 'domain': 'task', 'risk': 'medium', 'description': '建/改/暂停/恢复/删任务（hasn.task.create/update/pause/resume/delete）'},
-    'task:run': {'label_zh': '触发任务执行', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次任务执行（hasn.task.run_now）'},
-    # —— task · workflow（多任务编排/DAG，模块 12 设计 07；节点复用 task，归 hasn_task 应用）——
-    'workflow:read': {'label_zh': '查看工作流', 'domain': 'task', 'risk': 'low', 'description': '查工作流图/节点结果/执行历史、发现可用分身（hasn.workflow.get/get_node_result/list/list_agents）'},
-    'workflow:manage': {'label_zh': '管理工作流', 'domain': 'task', 'risk': 'medium', 'description': '建/增删节点与边/暂停/取消工作流（hasn.workflow.create/add_node/add_edge/pause/cancel）'},
-    'workflow:run': {'label_zh': '触发工作流执行', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次整图执行（hasn.workflow.run）'},
-    'publish:read': {'label_zh': '查看发布内容', 'domain': 'publish', 'risk': 'low', 'description': '列出/查看主人的网页发布与分享链接（hasn.publish.get/list）'},
-    'publish:write': {'label_zh': '发布与管理网页', 'domain': 'publish', 'risk': 'medium', 'description': '创建/更新/删除网页发布、改可见性、生成分享链接（hasn.publish.create/update/set_visibility/revoke/delete）'},
-    # 兼容历史默认词表（DEFAULT_AGENT_SCOPES）——展示用
-    'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
-    'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},
-    # —— app（builtin AI-Native，与 manifest required_scopes 对齐）——
-    'community:read': {'label_zh': '读取社区内容', 'domain': 'community', 'risk': 'low', 'description': '读取社区信息流/帖子/文章/评论/主页/通知'},
-    'community:post': {'label_zh': '发布社区内容', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份发帖/发文（按策略审核）'},
-    'community:comment': {'label_zh': '评论社区内容', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份评论/回复帖子或文章（按策略审核）'},
-    'community:interact': {'label_zh': '社区轻互动', 'domain': 'community', 'risk': 'low', 'description': '以 Agent 身份点赞/关注/收藏（及取消），非创作'},
-    'community:circle': {'label_zh': '参与社区圈子', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份加入/退出圈子、在圈内发帖评论（按主人授权与圈策略）'},
-    'community:doc': {'label_zh': '创作社区文集', 'domain': 'community', 'risk': 'medium', 'description': '以 Agent 身份建/编辑文集与目录、发文挂文集（默认 private，公开/加密由主人决定）'},
-    'knowledge:read': {'label_zh': '检索知识库', 'domain': 'knowledge', 'risk': 'low', 'description': '检索当前工作空间的知识库资料'},
-    'knowledge:upload': {'label_zh': '上传知识库文档', 'domain': 'knowledge', 'risk': 'medium', 'description': '向当前工作空间的知识库上传文档（按主人授权与库白名单）'},
-    'knowledge:write': {'label_zh': '解析/建库写入', 'domain': 'knowledge', 'risk': 'medium', 'description': '触发文档解析入库、新建数据集（写入知识库结构）'},
-    'knowledge:grant': {'label_zh': '代主人改授权', 'domain': 'knowledge', 'risk': 'high', 'description': '代主人调整知识库访问授权（预留，当前不开放）'},
-    # —— platform · marketplace（15-技能市场/11-doc 权威源）——
-    'marketplace:read': {'label_zh': '浏览能力市场', 'domain': 'marketplace', 'risk': 'low', 'description': '搜索/查看技能与模板、列出当前 Agent 已安装技能'},
-    'marketplace:install': {'label_zh': '安装/卸载技能', 'domain': 'marketplace', 'risk': 'medium', 'description': '把市场技能装到当前 Agent 或从中卸载（云端权威 + 重物化）'},
-    'marketplace:publish': {'label_zh': '打包与发布资源', 'domain': 'marketplace', 'risk': 'high', 'description': '打包本地技能/模板并发布为当前用户资源（默认草稿；公开/送审过主人确认）'},
-    # —— app · deck（自研演示文稿系统，模块 17 §6；唯一演示文稿应用，Presenton 已删除）——
-    # 落地真相：写类 8 工具统一 deck:manage（deck.rs MANAGE_SCOPE，出厂 Ask 三态可覆盖）；
-    # 读类 4 工具无 required_scopes 故不在此登记（早期设计稿的 deck:read/deck:write 未落地，已删）。
-    'deck:manage': {
-        'label_zh': '管理演示文稿',
-        'domain': 'deck',
-        'risk': 'medium',
-        'description': '以 Agent 身份建/改/删主人的演示文稿、页与大纲（owner 隔离；读类无需授权）',
-    },
-    'image:generate': {
-        'label_zh': '生成图片',
-        'domain': 'image',
-        'risk': 'medium',
-        'description': '直连唤星 new-api 图像 API 生成图片（消耗 owner 配额）',
-    },
+    **PLATFORM_SCOPE_CATALOG,
+    **DECK_SCOPE_CATALOG,
+    **COMMUNITY_SCOPE_CATALOG,
+    **KNOWLEDGE_SCOPE_CATALOG,
+    **HASN_TASK_SCOPE_CATALOG,
+    **PUBLISH_SCOPE_CATALOG,
 }
 
 # source 分组的中文标签（catalog 顶层分组）

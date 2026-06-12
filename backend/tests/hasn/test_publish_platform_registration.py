@@ -73,8 +73,8 @@ def test_publish_capabilities_match_landed_tools() -> None:
         short = cap['tool_id'].split('.', 1)[1]
         if short in _WRITE_TOOLS:
             assert cap['required_scopes'] == [_MANAGE_SCOPE], f'{short} 写类应为 publish:write'
-            # 出厂 Ask（三态由 owner 覆盖；敏感可见性升级另有执行期硬闸）。
-            assert cap['human_confirmation'].get('required') == 'policy'
+            # 出厂全 Allow 免确认（16-doc D-v3-1）；owner 可设 ask/deny override；敏感可见性另有执行期硬闸。
+            assert cap['human_confirmation'].get('required') is False
         else:
             assert cap['required_scopes'] == [], f'{short} 读类应无 required_scopes（与落地空 scope 一致）'
             assert cap['human_confirmation'].get('required') is False

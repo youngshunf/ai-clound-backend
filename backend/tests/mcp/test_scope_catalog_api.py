@@ -76,3 +76,29 @@ def test_catalog_entries_carry_display_metadata() -> None:
     assert send['domain'] == 'message'
     assert send['description']
     assert any(t.endswith('message.send') for t in send['tools'])
+
+
+def test_app_scope_labels_come_from_per_app_modules() -> None:
+    """v3-3：catalog 取 label 用的 `scope_meta` 把 app 域元数据解析到各应用目录声明。
+
+    `build_scope_catalog`（本文件上方测试覆盖其分组/三态）对每个 scope_key 调
+    `scope_meta(scope_key)` 取中文 label/domain（line 127）；`scope_meta` 读聚合的
+    SCOPE_CATALOG = platform_scopes.py ∪ 各 app scopes.py。验证 app 域 label 来自
+    各应用目录、platform 域来自 platform_scopes——新增/删除应用只动该应用目录。
+    """
+    from backend.app.mcp.scopes import scope_meta
+
+    deck = scope_meta('deck:manage')  # backend/app/deck/scopes.py
+    assert deck['label'] == '管理演示文稿'
+    assert deck['domain'] == 'deck'
+
+    pub = scope_meta('publish:write')  # backend/app/publish/scopes.py
+    assert pub['label'] == '发布与管理网页'
+    assert pub['domain'] == 'publish'
+
+    task = scope_meta('workflow:manage')  # backend/app/hasn_task/scopes.py（workflow 归 task 域）
+    assert task['domain'] == 'task'
+
+    msg = scope_meta('message:send')  # backend/app/mcp/platform_scopes.py
+    assert msg['domain'] == 'message'
+    assert msg['label'] == '发送消息'

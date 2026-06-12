@@ -99,7 +99,7 @@ def _write_cap(
     tags: list[str],
     risk_level: str = 'medium',
 ) -> dict:
-    """写类能力（required_scopes=deck:manage，出厂 Ask 三态由 owner 覆盖，[07] §1）。"""
+    """写类能力（required_scopes=deck:manage；出厂 Allow，owner 可设 ask/deny override，16-doc D-v3-1）。"""
     return {
         'capability_id': f'deck.{name}.capability',
         'name': title,
@@ -116,8 +116,8 @@ def _write_cap(
         },
         'output_schema': {'type': 'object'},
         'risk_level': risk_level,
-        # 出厂 Ask（高危保守）；owner 三态 override 经 daemon CapabilityModeResolver 生效（doc93 P4-c）。
-        'human_confirmation': {'required': 'policy', 'policy_ref': 'owner_tristate'},
+        # 出厂全 Allow，无需确认（16-doc D-v3-1）；risk_level 仅 UI 提示，owner 可设 ask/deny override。
+        'human_confirmation': {'required': False},
         'result_writeback': ['agent_message', 'audit'],
         'discovery': {
             'exposure': 'on_demand',

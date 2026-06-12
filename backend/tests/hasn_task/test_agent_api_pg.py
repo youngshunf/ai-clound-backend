@@ -91,8 +91,8 @@ def test_ai_native_manifest_registered() -> None:
     assert 'task:read' in caps['hasn.task.query_results']['required_scopes']
     assert 'hasn.task.run_now' in caps
     assert 'task:run' in caps['hasn.task.run_now']['required_scopes']
-    # 写类工具走统一授权开关（owner 三态），读类免确认（D4 工具授权面）
-    assert caps['hasn.task.create']['human_confirmation']['required'] == 'policy'
+    # 出厂全 Allow 免确认（16-doc D-v3-1）；owner 可设 ask/deny override（D4 工具授权面）
+    assert caps['hasn.task.create']['human_confirmation']['required'] is False
     assert caps['hasn.task.list']['human_confirmation'] == {'required': False}
 
 
