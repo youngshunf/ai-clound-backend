@@ -7,3 +7,4 @@ from backend.app.marketplace.model.marketplace_sop import MarketplaceSop as Mark
 from backend.app.marketplace.model.marketplace_sop_version import MarketplaceSopVersion as MarketplaceSopVersion
 from backend.app.marketplace.model.marketplace_download import MarketplaceDownload as MarketplaceDownload
 from backend.app.marketplace.model.marketplace_sync_log import MarketplaceSyncLog as MarketplaceSyncLog
+from backend.app.marketplace.model.marketplace_personal_skill import MarketplacePersonalSkill as MarketplacePersonalSkill
