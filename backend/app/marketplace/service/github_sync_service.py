@@ -725,16 +725,30 @@ class GitHubSyncService:
         # 文件清单：仅名称+大小，不含内容。
         files_json = json.dumps(skill_data.get('files') or [], ensure_ascii=False)
 
+        # 元数据双语：源语言侧存 SKILL.md 原文**逐字**（与正文门控 resolve_bilingual_body 同构），
+        # 另一侧存 LLM 译文。否则 LLM 会重排源文（改标点/去换行），导致下次同步源文逐字比对永远
+        # 不命中、每次都全量重译——变更门控（metadata_unchanged）就失效了。
+        name_en = translated.get('name_en')
+        name_zh = translated.get('name_zh')
+        description_en = translated.get('description_en')
+        description_zh = translated.get('description_zh')
+        verbatim_name = skill_data.get('name') or ''
+        verbatim_desc = skill_data.get('description') or ''
+        if source_language == 'zh':
+            name_zh, description_zh = verbatim_name, verbatim_desc
+        elif source_language == 'en':
+            name_en, description_en = verbatim_name, verbatim_desc
+
         # Prepare skill record
         skill_record = {
             'skill_id': skill_id,
             'namespace': skill_data.get('namespace'),
             'slug': skill_data.get('slug'),
             'name': name,
-            'name_en': translated.get('name_en'),
-            'name_zh': translated.get('name_zh'),
-            'description_en': translated.get('description_en'),
-            'description_zh': translated.get('description_zh'),
+            'name_en': name_en,
+            'name_zh': name_zh,
+            'description_en': description_en,
+            'description_zh': description_zh,
             'body_en': body_en,
             'body_zh': body_zh,
             'files': files_json,
