@@ -44,6 +44,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'community': 20,
     'deck': 35,
     'publish': 40,
+    'growth': 45,  # 获客（设计 §3.2 约 40，置于 publish 之后；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 

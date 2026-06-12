@@ -16,6 +16,7 @@ from typing import Any
 from backend.app.deck.scopes import DECK_SCOPE_CATALOG
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn_community.scopes import COMMUNITY_SCOPE_CATALOG
+from backend.app.hasn_growth.scopes import HASN_GROWTH_SCOPE_CATALOG
 from backend.app.hasn_task.scopes import HASN_TASK_SCOPE_CATALOG
 from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
 from backend.app.publish.scopes import PUBLISH_SCOPE_CATALOG
@@ -28,6 +29,7 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     **COMMUNITY_SCOPE_CATALOG,
     **KNOWLEDGE_SCOPE_CATALOG,
     **HASN_TASK_SCOPE_CATALOG,
+    **HASN_GROWTH_SCOPE_CATALOG,
     **PUBLISH_SCOPE_CATALOG,
 }
 

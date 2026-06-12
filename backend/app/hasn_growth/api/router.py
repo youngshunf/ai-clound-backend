@@ -14,6 +14,14 @@ from backend.app.hasn_growth.api.v1.admin.lead_export_batch import router as adm
 from backend.app.hasn_growth.api.v1.admin.lead_export_item import router as admin_lead_export_item_router
 from backend.app.hasn_growth.api.v1.admin.lead_audit_log import router as admin_lead_audit_log_router
 from backend.app.hasn_growth.api.v1.admin.business import router as admin_business_router
+# --- 7 张新业务表管理端 CRUD（M2，仅挂 canonical /api/v1/growth/*，不进 lead-automation 转发面） ---
+from backend.app.hasn_growth.api.v1.admin.customer import router as admin_customer_router
+from backend.app.hasn_growth.api.v1.admin.opportunity import router as admin_opportunity_router
+from backend.app.hasn_growth.api.v1.admin.outreach_message import router as admin_outreach_message_router
+from backend.app.hasn_growth.api.v1.admin.activity import router as admin_activity_router
+from backend.app.hasn_growth.api.v1.admin.playbook import router as admin_playbook_router
+from backend.app.hasn_growth.api.v1.admin.form_submission import router as admin_form_submission_router
+from backend.app.hasn_growth.api.v1.admin.optout_record import router as admin_optout_record_router
 # --- 用户端（仅 JWT） ---
 from backend.app.hasn_growth.api.v1.app.lead_source_config import router as app_lead_source_config_router
 from backend.app.hasn_growth.api.v1.app.lead_collection_job import router as app_lead_collection_job_router
@@ -104,3 +112,12 @@ def _build_routers(seg: str) -> tuple[APIRouter, APIRouter, APIRouter, APIRouter
 v1, app, open_api, agent = _build_routers('growth')
 # 薄转发：/api/v1/lead-automation/*（M8 退役）
 legacy_v1, legacy_app, legacy_open, legacy_agent = _build_routers('lead-automation')
+
+# 7 张新业务表管理端 CRUD：只挂 canonical /api/v1/growth/*（这些表从不属于 lead-automation 历史面）
+v1.include_router(admin_customer_router, prefix='/customers', tags=['获客客户-管理'])
+v1.include_router(admin_opportunity_router, prefix='/opportunitys', tags=['获客商机-管理'])
+v1.include_router(admin_outreach_message_router, prefix='/outreach-messages', tags=['获客触达消息-管理'])
+v1.include_router(admin_activity_router, prefix='/activitys', tags=['获客活动时间线-管理'])
+v1.include_router(admin_playbook_router, prefix='/playbooks', tags=['获客打法模板-管理'])
+v1.include_router(admin_form_submission_router, prefix='/form-submissions', tags=['获客表单回流-管理'])
+v1.include_router(admin_optout_record_router, prefix='/optout-records', tags=['获客退订登记-管理'])
