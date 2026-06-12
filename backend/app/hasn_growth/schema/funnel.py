@@ -28,6 +28,12 @@ class UpdateCustomerParam(SchemaBase):
     )
 
 
+class ChannelSettingParam(SchemaBase):
+    wechat_auto_send_confirmed: bool = Field(
+        description='微信自动发送已确认（J1 高风险闸门；UI 二次确认后才置 true，关闭随时）'
+    )
+
+
 class LogActivityParam(SchemaBase):
     kind: str = Field(description='活动类型 note/call/meeting/...')
     content: str = Field(min_length=1, max_length=2000)

@@ -19,7 +19,11 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.lead_contact import LeadContact
-from backend.app.hasn_growth.service.dispatch_service import growth_dispatch_service, set_wechat_auto_send
+from backend.app.hasn_growth.service.dispatch_service import (
+    get_channel_setting,
+    growth_dispatch_service,
+    set_wechat_auto_send,
+)
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.common.exception import errors
@@ -398,3 +402,17 @@ async def test_dispatch_wechat_j1_gate(session) -> None:
     stat2 = await growth_dispatch_service.dispatch_approved_batch(session, limit=200, now_hour=10)
     assert stat2['wechat_unconfirmed'] == 0
     assert await _msg_status(session, mid) == 'failed'
+
+
+async def test_channel_setting_roundtrip(session) -> None:
+    """M7 渠道设置：缺省安全关 → 开 → 关，幂等可重复（owner GET/PUT 端点的 service 路径）。"""
+    uid = 990500 + int(uuid.uuid4().int % 400)
+    # 缺省（无设置行）= 安全默认关
+    assert (await get_channel_setting(session, user_id=uid)) == {'wechat_auto_send_confirmed': False}
+    # 开（UI 二次确认后写入）
+    await set_wechat_auto_send(session, user_id=uid, confirmed=True)
+    assert (await get_channel_setting(session, user_id=uid)) == {'wechat_auto_send_confirmed': True}
+    # 关（随时可关）+ upsert 幂等
+    await set_wechat_auto_send(session, user_id=uid, confirmed=False)
+    await set_wechat_auto_send(session, user_id=uid, confirmed=False)
+    assert (await get_channel_setting(session, user_id=uid)) == {'wechat_auto_send_confirmed': False}

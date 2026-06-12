@@ -10,6 +10,7 @@ from fastapi import APIRouter, Query, Request
 
 from backend.app.hasn_growth.schema.funnel import (
     ApproveOutreachParam,
+    ChannelSettingParam,
     CloseDealParam,
     CreateOpportunityParam,
     LogActivityParam,
@@ -18,6 +19,7 @@ from backend.app.hasn_growth.schema.funnel import (
     RejectOutreachParam,
     UpdateStageParam,
 )
+from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
@@ -204,6 +206,26 @@ async def register_optout(request: Request, db: CurrentSessionTransaction, obj: 
     data = await growth_outreach_service.register_optout(
         db, user_id=request.user.id, channel=obj.channel, address=obj.address, reason=obj.reason, source='owner'
     )
+    return response_base.success(data=data)
+
+
+# ---------------- 渠道设置（J1 微信自动发送开关，发送 worker 据此放行） ----------------
+
+
+@router.get('/channel-setting', summary='[Owner] 渠道设置（微信自动发送开关）', dependencies=[DependsJwtAuth])
+async def get_channel_setting(request: Request, db: CurrentSession) -> ResponseModel:
+    data = await dispatch_service.get_channel_setting(db, user_id=request.user.id)
+    return response_base.success(data=data)
+
+
+@router.put('/channel-setting', summary='[Owner] 设置微信自动发送（J1，UI 二次确认后写入）', dependencies=[DependsJwtAuth])
+async def update_channel_setting(
+    request: Request, db: CurrentSessionTransaction, obj: ChannelSettingParam
+) -> ResponseModel:
+    await dispatch_service.set_wechat_auto_send(
+        db, user_id=request.user.id, confirmed=obj.wechat_auto_send_confirmed
+    )
+    data = await dispatch_service.get_channel_setting(db, user_id=request.user.id)
     return response_base.success(data=data)
 
 

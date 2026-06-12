@@ -67,6 +67,11 @@ async def set_wechat_auto_send(db: AsyncSession, *, user_id: int, confirmed: boo
     )
 
 
+async def get_channel_setting(db: AsyncSession, *, user_id: int) -> dict[str, Any]:
+    """owner 渠道设置（缺省=安全默认：微信自动发送关）。M7 渠道开关页读取。"""
+    return {'wechat_auto_send_confirmed': await _wechat_auto_send_confirmed(db, user_id)}
+
+
 async def _attempt_send(db: AsyncSession, message: OutreachMessage) -> dict[str, Any]:
     """尝试经渠道 sender 真实发送。无可用 transport → channel_unavailable（零 fake，不假装已发送）。"""
     sender = _CHANNEL_SENDERS.get(message.channel)
