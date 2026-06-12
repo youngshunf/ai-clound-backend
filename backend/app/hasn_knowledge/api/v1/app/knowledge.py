@@ -321,7 +321,7 @@ async def restore_version(
 
 
 @router.post('/search', summary='检索（dataset 注入由 service 单点收口）', dependencies=[DependsJwtAuth])
-async def search(request: Request, db: CurrentSession, body: SearchRequest) -> ResponseModel:
+async def search(request: Request, db: CurrentSessionTransaction, body: SearchRequest) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     try:
         data = await knowledge_service.search(
@@ -335,6 +335,20 @@ async def search(request: Request, db: CurrentSession, body: SearchRequest) -> R
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
+    # 检索审计（设计 §3.3）：记 result_count + kb 覆盖度，支撑「异常批量检索提醒」。
+    await knowledge_service.write_ui_audit(
+        db,
+        owner_id=owner_id,
+        user_id=request.user.id,
+        method='ui.search',
+        context={
+            'question': body.question[:120],
+            'kb_ids': body.kb_ids,
+            'agent_view': body.agent_hasn_id,
+            'result_count': data.get('total'),
+            'kb_count': data.get('kb_count'),
+        },
+    )
     return response_base.success(data=data)
 
 
