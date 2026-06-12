@@ -46,6 +46,9 @@ _GENUINE = {
     'GET /api/v1/huanxing/app/docs/{pk}/export',
     'GET /api/v1/marketplace/open/skills/{resource_id:path}/download',
     'GET /api/v1/marketplace/open/templates/{resource_id:path}/download',
+    # 个人技能库私有包带鉴权下载（SKILLSYNC-C2 难点5）：Agent JWT 校验 owner 归属后
+    # StreamingResponse 直回 zip 字节（不 302 跳私有桶，因 hermes urllib 取私有技能会 401）
+    'GET /api/v1/marketplace/agent/personal-skills/{personal_skill_id:path}/download',
     # 网页发布公开查看面 /s/*（模块 18，独立分享域名）：浏览器直接加载的公开 HTML 外壳 /
     # 二进制制品 / 解锁 JSON——制品内容绝不在 API 主域以信封套壳；/content 恒带 CSP sandbox（见 hosting.py）
     'GET /s/{slug}',

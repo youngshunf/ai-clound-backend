@@ -12,6 +12,12 @@ from backend.app.marketplace.api.v1.admin.marketplace_template_version import (
 )
 from backend.app.marketplace.api.v1.admin.review import router as admin_review_router
 from backend.app.marketplace.api.v1.admin.sync_management import router as admin_sync_management_router
+from backend.app.marketplace.api.v1.agent.marketplace_personal_skill import (
+    router as agent_marketplace_personal_skill_router,
+)
+from backend.app.marketplace.api.v1.app.marketplace_personal_skill import (
+    router as app_marketplace_personal_skill_router,
+)
 from backend.app.marketplace.api.v1.app.marketplace_skills import router as app_marketplace_skills_router
 from backend.app.marketplace.api.v1.app.marketplace_template import router as app_marketplace_template_router
 from backend.app.marketplace.api.v1.marketplace_download import router as marketplace_download_router
@@ -37,6 +43,15 @@ app.include_router(app_marketplace_template_router, prefix='/templates', tags=['
 # 技能包 skill_pack（实施/91 B2.1）：先只挂 app scope（Owner JWT）。open 公开浏览延后到 B5
 # （需先补 status/visibility 过滤防泄露，B0 同款教训）。路径 /api/v1/marketplace/app/skill-packs。
 app.include_router(skill_pack_router, prefix='/skill-packs', tags=['技能市场-技能包'])
+# 个人技能库（SKILLSYNC-C2）：owner 维度个人技能管理（含自动同步 upsert / 目录上传 / 一键发布 / 装配分身）。
+app.include_router(app_marketplace_personal_skill_router, prefix='/personal-skills', tags=['技能市场-个人技能库'])
+
+# --- Agent（Agent JWT） ---
+# 个人技能私有包带鉴权下载（供 hermes provisioning 跨设备物化，难点5）。
+agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/marketplace/agent', tags=['技能市场-Agent'])
+agent.include_router(
+    agent_marketplace_personal_skill_router, prefix='/personal-skills', tags=['技能市场-个人技能库']
+)
 
 # --- 公开（无需认证） ---
 open_api = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/marketplace/open', tags=['技能市场'])

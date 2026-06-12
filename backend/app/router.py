@@ -70,6 +70,7 @@ from backend.app.hasn_growth.api.router import (
 from backend.app.llm.api.router import app as llm_app
 from backend.app.llm.api.router import v1 as llm_v1
 from backend.app.marketplace.api.router import admin as marketplace_admin
+from backend.app.marketplace.api.router import agent as marketplace_agent
 from backend.app.marketplace.api.router import app as marketplace_app
 from backend.app.marketplace.api.router import open_api as marketplace_open
 from backend.app.marketplace.api.router import publish as marketplace_publish
@@ -170,4 +171,5 @@ router.include_router(mobile_auth_v1_router)  # 移动端认证 API (/api/v1/aut
 router.include_router(marketplace_app)
 router.include_router(marketplace_admin)
 router.include_router(marketplace_open)
+router.include_router(marketplace_agent)
 router.include_router(marketplace_webhook)

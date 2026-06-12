@@ -572,6 +572,54 @@ class HasnAgentProfileService:
 
         return UpdateAgentProfileResponse(agent=_agent_snapshot(agent))
 
+    async def attach_personal_skill_cloud_first(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        hasn_id: str,
+        personal_skill_id: str,
+        user_id: int,
+    ) -> UpdateAgentProfileResponse:
+        """把个人技能（个人技能库 SSOT）装配到 Agent（云端权威，SKILLSYNC-C2）。
+
+        与 attach_skill_cloud_first 的区别：校验对象是 marketplace_personal_skill（owner 私有库），
+        **不要求**技能是已发布 public 市场技能——这正是"运行时自学/本地上传的私有技能"装配到分身、
+        进而跨设备物化的路径。写入：把 personal_skill_id 并入 hasn_agents.skills（保序去重）→ bump
+        profile_revision → append 同步事件（触发跨设备 provisioning 物化）。幂等：已在清单则不改动。
+        """
+        import sqlalchemy as sa
+
+        from backend.app.marketplace.model.marketplace_personal_skill import MarketplacePersonalSkill
+
+        await self._assert_owner_access(db, owner_id=owner_id, user_id=user_id)
+        agent = await self._get_owned_agent(db, owner_id=owner_id, hasn_id=hasn_id)
+
+        skill = (
+            await db.execute(
+                sa.select(MarketplacePersonalSkill).where(
+                    (MarketplacePersonalSkill.user_id == user_id)
+                    & (MarketplacePersonalSkill.personal_skill_id == personal_skill_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if skill is None:
+            raise errors.NotFoundError(msg='ERR_PERSONAL_SKILL_NOT_FOUND')
+
+        current = _normalize_skill_ids(agent.skills)
+        if skill.personal_skill_id not in current:
+            agent.skills = [*current, skill.personal_skill_id]
+            agent.profile_revision = (agent.profile_revision or 1) + 1
+            await db.flush()
+            await self.gateway.append_agent_sync_event(
+                db,
+                owner_id=owner_id,
+                agent=agent,
+                event_type='agent.updated',
+            )
+
+        return UpdateAgentProfileResponse(agent=_agent_snapshot(agent))
+
     async def attach_bundle_cloud_first(
         self,
         db: AsyncSession,
