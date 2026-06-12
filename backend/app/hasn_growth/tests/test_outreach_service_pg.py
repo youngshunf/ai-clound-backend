@@ -11,7 +11,7 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -239,3 +239,89 @@ async def test_send_material_returns_plaintext_and_audits(session) -> None:
         await growth_outreach_service.build_send_material(
             session, user_id=other_uid, message_id=m['id'], actor_user_id=other_uid
         )
+
+
+async def _owner_with_task(sess, *, uid: int, state: str) -> tuple[str, str]:
+    """建主人身份 + 一条指定 state 的 hasn_task 跟进任务，返回 (owner_hasn_id, task_uuid)。"""
+    tag = uuid.uuid4().hex[:8]
+    owner_hasn = f'h_j3_{tag}'
+    task_uuid = f'tk_j3_{tag}'
+    sess.add(HasnHumans(hasn_id=owner_hasn, star_id=f's_{uid}', user_id=uid, nickname='主人', status='active'))
+    await sess.flush()
+    await sess.execute(
+        text(
+            'INSERT INTO hasn_task.task (owner_id, agent_id, name, prompt, schedule_type, schedule_config, state, task_uuid) '
+            "VALUES (:o, :a, :n, :p, 'interval', '{}'::jsonb, :st, :u)"
+        ),
+        {'o': owner_hasn, 'a': 'a_j3', 'n': '跟进任务', 'p': '跟进客户', 'st': state, 'u': task_uuid},
+    )
+    await sess.flush()
+    return owner_hasn, task_uuid
+
+
+async def test_j3_inbound_triggers_run_now_and_debounces(session) -> None:
+    """M6 J3：客户回复 → 绑定跟进任务（scheduled）则触发 run_now；10 分钟窗口内第二条回复防抖合并。"""
+    uid = 994000 + int(uuid.uuid4().int % 5000)
+    owner_hasn, task_uuid = await _owner_with_task(session, uid=uid, state='scheduled')
+    cid = await _qualified_customer(session, user_id=uid, email=f'j3a{uuid.uuid4().hex[:6]}@eta.com', company='EtaJ3')
+    # 分身绑定跟进任务（复用客户 PATCH followup_task_id 路径）
+    await growth_funnel_service.update_customer_profile(
+        session, user_id=uid, customer_id=cid, followup_task_id=task_uuid
+    )
+
+    # 第一条回复 → run_now 触发
+    r1 = await growth_outreach_service.record_inbound_reply(
+        session, user_id=uid, customer_id=cid, channel='wechat', content='可以聊聊'
+    )
+    assert r1['followup_trigger'] == {'triggered': True, 'reason': 'run_now'}
+    # run_now 真生效：任务 next_run_at 被置（云端置位，节点本地 tick 拾取）
+    nra = (
+        await session.execute(
+            text('SELECT next_run_at FROM hasn_task.task WHERE owner_id = :o AND task_uuid = :u'),
+            {'o': owner_hasn, 'u': task_uuid},
+        )
+    ).scalar_one()
+    assert nra is not None
+
+    # 第二条回复（同窗口）→ 防抖合并，不再触发
+    r2 = await growth_outreach_service.record_inbound_reply(
+        session, user_id=uid, customer_id=cid, channel='wechat', content='你那边方便吗'
+    )
+    assert r2['followup_trigger'] == {'triggered': False, 'reason': 'debounced'}
+
+
+async def test_j3_no_followup_task_is_noop(session) -> None:
+    """M6 J3：客户未绑定跟进任务 → 不触发（兜底：任务 interval 节奏照常，不丢跟进），且不报错。"""
+    uid = 995000 + int(uuid.uuid4().int % 5000)
+    session.add(
+        HasnHumans(hasn_id=f'h_j3n_{uuid.uuid4().hex[:8]}', star_id=f's_{uid}', user_id=uid, nickname='主人', status='active')
+    )
+    await session.flush()
+    cid = await _qualified_customer(session, user_id=uid, email=f'j3n{uuid.uuid4().hex[:6]}@eta.com', company='EtaJ3N')
+
+    r = await growth_outreach_service.record_inbound_reply(
+        session, user_id=uid, customer_id=cid, channel='wechat', content='我再看看'
+    )
+    assert r['followup_trigger'] == {'triggered': False, 'reason': 'no_followup_task'}
+
+
+async def test_j3_unrunnable_task_degrades(session) -> None:
+    """M6 J3：跟进任务非 scheduled/paused（如待审批）→ 如实不触发、不报错、不占防抖。"""
+    uid = 996000 + int(uuid.uuid4().int % 5000)
+    _owner, task_uuid = await _owner_with_task(session, uid=uid, state='pending_approval')
+    cid = await _qualified_customer(session, user_id=uid, email=f'j3r{uuid.uuid4().hex[:6]}@eta.com', company='EtaJ3R')
+    await growth_funnel_service.update_customer_profile(
+        session, user_id=uid, customer_id=cid, followup_task_id=task_uuid
+    )
+
+    r = await growth_outreach_service.record_inbound_reply(
+        session, user_id=uid, customer_id=cid, channel='wechat', content='在的'
+    )
+    assert r['followup_trigger'] == {'triggered': False, 'reason': 'task_not_runnable'}
+    # 不占防抖：客户 last_followup_trigger_at 仍为空，任务空闲后下条回复可即时触发
+    trig_at = (
+        await session.execute(
+            text('SELECT last_followup_trigger_at FROM hasn_growth.customer WHERE id = :c'), {'c': cid}
+        )
+    ).scalar_one()
+    assert trig_at is None

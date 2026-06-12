@@ -172,6 +172,7 @@ async def update_customer(
         intent_score=obj.intent_score,
         tags=obj.tags,
         lifecycle_status=obj.lifecycle_status,
+        followup_task_id=obj.followup_task_id,
     )
     return response_base.success(data=data)
 

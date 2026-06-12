@@ -34,6 +34,7 @@ from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.service.audit_service import log_event
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_task.service.agent_task_service import agent_task_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -54,6 +55,9 @@ _QUOTA_STATUSES = ('pending_approval', 'approved', 'sending', 'sent', 'replied')
 # quiet hours 默认窗口 [09:00, 21:00)（§10.3，客户时区缺省随主人时区，此处用服务端时区近似）。
 _QUIET_START_HOUR = 9
 _QUIET_END_HOUR = 21
+
+# J3 即时跟进防抖：同客户 10 分钟窗口仅触发一次 run_now（§M6，云端侧窗口合并）。
+_FOLLOWUP_DEBOUNCE_MINUTES = 10
 
 
 def _norm_address(value: str | None) -> str | None:
@@ -482,6 +486,40 @@ class GrowthOutreachService:
         return _outreach_to_dict(m)
 
     @classmethod
+    async def _maybe_trigger_followup(
+        cls, db: AsyncSession, *, customer: Customer, owner_hasn_id: str | None
+    ) -> dict[str, Any]:
+        """J3 即时跟进：客户回复后，若已绑定跟进任务则复用 hasn_task run_now 触发即时跟进。
+
+        run_now 仅置 next_run_at=now，由持有 runtime 的节点本地 tick 拾取（中心不 tick；设计 §14.2）。
+        旁路逻辑，不影响入站落库；返回 {'triggered': bool, 'reason': str}：
+        - no_followup_task：未绑定跟进任务 → 不触发（兜底：任务自身 interval 节奏照常推进，不丢跟进）
+        - debounced：10 分钟窗口内已触发过 → 合并（同客户仅触发一次）
+        - task_not_runnable：任务非 scheduled/paused（如待审批/已拒/已完）→ 如实不触发、不占防抖（任务可运行后下条回复可即时触发）。
+          注：节点本地运行中的任务在云端仍为 scheduled，run_now 正常成功置位，运行重叠由节点侧 R1 天然兜底，与本分支无关。
+        - task_not_found：followup_task_id 失效 → 如实不触发
+        - run_now：成功触发，记录防抖时刻
+        """
+        task_uuid = customer.followup_task_id
+        if not task_uuid:
+            return {'triggered': False, 'reason': 'no_followup_task'}
+        if not owner_hasn_id:
+            return {'triggered': False, 'reason': 'no_owner'}
+        now = timezone.now()
+        last = customer.last_followup_trigger_at
+        if last is not None and (now - last) < timedelta(minutes=_FOLLOWUP_DEBOUNCE_MINUTES):
+            return {'triggered': False, 'reason': 'debounced'}
+        try:
+            await agent_task_service.run_now(db, owner_id=owner_hasn_id, task_uuid=task_uuid)
+        except errors.NotFoundError:
+            return {'triggered': False, 'reason': 'task_not_found'}
+        except errors.RequestError:
+            # 任务非 scheduled/paused（待审批/已拒/已完等）：如实不触发，不占防抖，任务可运行后下条回复可即时触发
+            return {'triggered': False, 'reason': 'task_not_runnable'}
+        customer.last_followup_trigger_at = now
+        return {'triggered': True, 'reason': 'run_now'}
+
+    @classmethod
     async def record_inbound_reply(
         cls,
         db: AsyncSession,
@@ -541,7 +579,12 @@ class GrowthOutreachService:
                 channel=channel,
                 excerpt=content[:120],
             )
-        return _outreach_to_dict(message)
+        # J3：即时跟进 run_now（防抖 10min；复用任务同步接缝下行，无跟进任务则 interval 兜底）。
+        trigger = await cls._maybe_trigger_followup(db, customer=customer, owner_hasn_id=owner_hasn_id)
+        await db.flush()
+        result = _outreach_to_dict(message)
+        result['followup_trigger'] = trigger
+        return result
 
     @staticmethod
     async def list_pending_approvals(

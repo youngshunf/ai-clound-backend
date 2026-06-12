@@ -23,6 +23,9 @@ class UpdateCustomerParam(SchemaBase):
     intent_score: float | None = Field(default=None, ge=0, le=100)
     tags: list[str] | None = Field(default=None)
     lifecycle_status: str | None = Field(default=None, description='生命周期态')
+    followup_task_id: str | None = Field(
+        default=None, max_length=64, description='绑定当前跟进任务（hasn_task task_uuid，J3 即时跟进据此触发 run_now）'
+    )
 
 
 class LogActivityParam(SchemaBase):

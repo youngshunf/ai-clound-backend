@@ -286,6 +286,7 @@ class GrowthFunnelService:
         intent_score: float | None = None,
         tags: list | None = None,
         lifecycle_status: str | None = None,
+        followup_task_id: str | None = None,
     ) -> dict[str, Any]:
         customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
         if profile is not None:
@@ -299,6 +300,9 @@ class GrowthFunnelService:
             # 止损标 silent：累计静默轮次（设计 §7 止损）
             if lifecycle_status == 'silent':
                 customer.silent_round_count = (customer.silent_round_count or 0) + 1
+        if followup_task_id is not None:
+            # 绑定/换绑当前跟进任务（J3 即时跟进据此触发 run_now）；空串解绑。
+            customer.followup_task_id = followup_task_id or None
         customer.last_activity_at = timezone.now()
         await db.flush()
         return _customer_to_dict(customer, reveal_pii=False)

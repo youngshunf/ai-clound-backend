@@ -35,4 +35,7 @@ class Customer(HasnGrowthAppBase):
     tags: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
     last_activity_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
     next_followup_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
+    last_followup_trigger_at: Mapped[datetime | None] = mapped_column(
+        TimeZone, default=None, comment='J3 即时跟进 run_now 上次触发时刻（云端 10 分钟防抖窗口）'
+    )
     silent_round_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
