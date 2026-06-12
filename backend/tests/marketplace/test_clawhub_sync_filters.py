@@ -72,6 +72,42 @@ def test_filter_limit_caps_after_threshold() -> None:
     assert [s['slug'] for s in out] == ['s9', 's8', 's7']
 
 
+# ── 真实人气过滤（require_engagement：downloads>0 或 stars>0） ────────────────
+def test_require_engagement_drops_zero_zero_skills() -> None:
+    # "按真实人气来"：丢弃 downloads=0 且 stars=0 的占位/冷门技能，
+    # 但 downloads>0 或 stars>0 任一即保留。与 min_downloads=0（全收）正交叠加。
+    svc = ClawHubSyncService()
+    skills = [
+        _skill('dead', 0, stars=0),  # 0/0 -> 丢
+        _skill('starred', 0, stars=7),  # 仅有 star -> 留
+        _skill('downloaded', 5, stars=0),  # 仅有下载 -> 留
+        _skill('hot', 900, stars=12),  # 都有 -> 留
+    ]
+    out = svc._filter_skills(skills, limit=0, min_downloads=0, require_engagement=True)
+    assert {s['slug'] for s in out} == {'starred', 'downloaded', 'hot'}
+
+
+def test_require_engagement_default_off_keeps_zero_zero() -> None:
+    # 不传 require_engagement（默认 False）时，min_downloads=0 仍是"全收"，含 0/0。
+    svc = ClawHubSyncService()
+    skills = [_skill('dead', 0, stars=0), _skill('hot', 5, stars=1)]
+    out = svc._filter_skills(skills, limit=0, min_downloads=0)
+    assert {s['slug'] for s in out} == {'dead', 'hot'}
+
+
+def test_require_engagement_top_n_by_downloads_then_stars() -> None:
+    # 取真实人气前 N：先丢 0/0，再按 (downloads, stars) 降序截前 N。
+    svc = ClawHubSyncService()
+    skills = [
+        _skill('dead', 0, stars=0),
+        _skill('a', 100, stars=1),
+        _skill('b', 100, stars=9),  # downloads 同 a，stars 更高 -> 排在 a 前
+        _skill('c', 300, stars=0),
+    ]
+    out = svc._filter_skills(skills, limit=2, min_downloads=0, require_engagement=True)
+    assert [s['slug'] for s in out] == ['c', 'b']
+
+
 # ── 磁盘大小度量（50G 闸的核心） ─────────────────────────────────────────────
 def test_dir_size_bytes_sums_files(tmp_path: Path) -> None:
     (tmp_path / 'a.txt').write_bytes(b'x' * 100)

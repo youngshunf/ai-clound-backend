@@ -14,6 +14,11 @@
     uv run python scripts/run_clawhub_sync.py --min-downloads 100 --limit 0 \
         --no-translate-body --resume
 
+    # 按真实人气取前 1 万：只收 downloads>0 或 stars>0 的，按 (下载,star) 降序截前 10000，
+    # 不会用更新时间凑数补满 0/0 冷门技能（--min-downloads 0 保留"不卡死载，全收再排序"语义）
+    uv run python scripts/run_clawhub_sync.py --min-downloads 0 --limit 10000 \
+        --require-engagement --no-translate-body --resume
+
     # 完整翻译（含正文双语，慢且费 LLM——仅小批量/补译时用）
     uv run python scripts/run_clawhub_sync.py --min-downloads 100 --limit 0
 
@@ -55,6 +60,11 @@ async def main() -> int:
         '--batch-commit-size', type=int, default=50,
         help='每处理 N 个技能提交一次（崩溃只丢最近一批、进度可见；默认 50）'
     )
+    parser.add_argument(
+        '--require-engagement', action='store_true',
+        help='只同步"有真实人气"的技能（downloads>0 或 stars>0），丢弃 0/0 占位技能。'
+             '取前 N 个真实人气技能时配 --limit 用，避免按更新时间凑数补满冷门技能。'
+    )
     args = parser.parse_args()
 
     async with async_db_session() as db:
@@ -68,6 +78,7 @@ async def main() -> int:
             translate_body=args.translate_body,
             batch_commit_size=args.batch_commit_size,
             resume=args.resume,
+            require_engagement=args.require_engagement,
         )
 
     print('=== ClawHub sync result ===')
