@@ -568,10 +568,14 @@ lead_automation_business_service = LeadAutomationBusinessService()
 
 
 def model_to_dict(model: Any) -> dict[str, Any]:
+    # 注意：meta_data 列的 DB 名是 'metadata'，其 column.key 也是 'metadata'，
+    # 但 ORM 属性名是 'meta_data'。直接 getattr(model, column.key) 会取到 SQLAlchemy
+    # 类级 .metadata（MetaData 对象）导致序列化炸。改经 mapper 取真实 ORM 属性名。
+    mapper = sa.inspect(model).mapper
     data = {}
     for column in model.__table__.columns:
-        value = getattr(model, column.key)
-        data['metadata' if column.key == 'meta_data' else column.name] = value
+        attr = mapper.get_property_by_column(column).key
+        data[column.name] = getattr(model, attr)
     return data
 
 

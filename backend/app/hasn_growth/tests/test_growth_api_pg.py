@@ -187,3 +187,30 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     e2e.state.owner_uid = e2e.other_uid
     miss = await c.get(f'{A}/customers/{cid}')
     assert miss.status_code == 404, miss.text
+
+
+async def test_agent_collect_and_outreach_status(e2e) -> None:
+    """M4 接缝：collect.start/status（采集子域包装）+ outreach.status（按客户查触达）。"""
+    c = e2e.client
+    A = '/api/v1/growth/agent'
+
+    # --- collect.start：发起采集 → 恒落主人私有池 ---
+    job = _ok(await c.post(f'{A}/collect', json={'keyword': 'SaaS 获客', 'max_pages': 3}))
+    assert job['status'] == 'pending' and job['lead_scope'] == 'user' and job['user_id'] == e2e.owner_uid
+    job_id = job['id']
+
+    # --- collect.status：查同一任务 ---
+    status = _ok(await c.get(f'{A}/collect/{job_id}'))
+    assert status['id'] == job_id and status['keyword'] == 'SaaS 获客'
+
+    # --- outreach.status：qualify→send 后按客户查到该触达 ---
+    cust = _ok(await c.post(f'{A}/leads/{e2e.lead_id}/qualify', json={'qualify_reason': '高意向'}))
+    cid = cust['id']
+    sent = _ok(await c.post(f'{A}/outreach', json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好', 'intent_note': '破冰'}))
+    msgs = _ok(await c.get(f'{A}/outreach', params={'customer_id': cid}))
+    assert any(m['id'] == sent['id'] and m['status'] == 'pending_approval' for m in msgs)
+
+    # --- 跨户：他 owner 查本户采集任务 → 403 Forbidden ---
+    e2e.state.owner_uid = e2e.other_uid
+    miss = await c.get(f'{A}/collect/{job_id}')
+    assert miss.status_code == 403, miss.text

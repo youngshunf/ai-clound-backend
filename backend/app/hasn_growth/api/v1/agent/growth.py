@@ -11,6 +11,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
+from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.schema.funnel import (
     CloseDealParam,
     CreateOpportunityParam,
@@ -21,6 +22,7 @@ from backend.app.hasn_growth.schema.funnel import (
     UpdateCustomerParam,
     UpdateStageParam,
 )
+from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
@@ -38,6 +40,29 @@ _PII_SCOPE = 'growth:pii'
 
 def _reveal(agent: AgentTokenPayload) -> bool:
     return _PII_SCOPE in (agent.scopes or [])
+
+
+# ---------------- 采集（收编子域包装：hasn.growth.collect.*） ----------------
+
+
+@router.post('/collect', summary='[Agent] 发起采集任务（collect.start）', dependencies=[DependsAgentJwtAuth])
+async def start_collect(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    obj: CreateLeadJobParam,
+) -> ResponseModel:
+    # 身份取自 JWT：恒落主人私有池（user_scope），分身无权操作公共池采集。
+    payload = obj.model_copy(update={'user_id': agent.owner_user_id, 'lead_scope': 'user'})
+    data = await lead_automation_business_service.create_job(db=db, obj=payload)
+    return response_base.success(data=data)
+
+
+@router.get('/collect/{job_id}', summary='[Agent] 采集任务状态（collect.status）', dependencies=[DependsAgentJwtAuth])
+async def collect_status(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession, job_id: int
+) -> ResponseModel:
+    data = await lead_automation_business_service.get_job(db, job_id=job_id, user_id=agent.owner_user_id)
+    return response_base.success(data=data)
 
 
 # ---------------- 线索 ----------------
@@ -190,6 +215,19 @@ async def send_outreach(
         intent_note=obj.intent_note,
         content_assets=obj.content_assets,
         opportunity_id=obj.opportunity_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.get('/outreach', summary='[Agent] 触达消息状态/回复（outreach.status）', dependencies=[DependsAgentJwtAuth])
+async def outreach_status(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    customer_id: Annotated[int, Query()],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> ResponseModel:
+    data = await growth_outreach_service.list_customer_outreach(
+        db, user_id=agent.owner_user_id, customer_id=customer_id, limit=limit
     )
     return response_base.success(data=data)
 
