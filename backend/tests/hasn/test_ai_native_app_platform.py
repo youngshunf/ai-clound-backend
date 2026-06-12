@@ -59,17 +59,26 @@ def test_builtin_knowledge_manifest_matches_p0_contract() -> None:
     manifest = KNOWLEDGE_AI_NATIVE_MANIFEST
 
     assert manifest['app_id'] == 'knowledge'
-    assert manifest['version'] == '1.0.0'
+    assert manifest['version'] == '2.0.0'
     assert manifest['workspace_scope'] == ['personal', 'enterprise']
     assert manifest['collaboration_mode'] == 'workspace_shared'
     assert manifest['capabilities'][0]['tool_id'] == 'knowledge.search'
     assert manifest['capabilities'][0]['mcp_name'] == 'hasn.knowledge.search'
-    # P1 词表迁移（点→冒号，#1079）：scope 统一冒号分隔。
     assert manifest['capabilities'][0]['required_scopes'] == ['knowledge:read']
-    # RF-CLOUD（设计 §4.5 方案1 / line 409-411）：knowledge 不再是可调用的 cloud 工具——
-    # `tools` 清空，daemon 经进程内 KnowledgeGateway 直连 RagFlow（RF-MCP）；但保留
-    # `capabilities`（含 required_scopes）供 read-through 能力发现 + 三态权限闸门。
-    assert manifest['tools'] == []
+    # AI-Native 重做（《知识库AI-Native应用重设计（RAGFlow处理后端）》§2.4）：工具回归
+    # manifest App 工具（transport=gateway_internal，handler 落 knowledge service），
+    # 本地与云端 Runtime 同一通路；`commit_document` 退役（上传即自动解析，D6）。
+    tool_ids = [t['tool_id'] for t in manifest['tools']]
+    assert tool_ids == [
+        'knowledge.search',
+        'knowledge.list_datasets',
+        'knowledge.fetch_doc',
+        'knowledge.upload_document',
+        'knowledge.write_doc',
+    ]
+    assert all(t['transport'] == 'gateway_internal' for t in manifest['tools'])
+    assert all(t['handler'] == t['tool_id'] for t in manifest['tools'])
+    assert 'knowledge.commit_document' not in tool_ids
 
 
 def test_manifest_validator_accepts_builtin_knowledge_manifest() -> None:

@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS customer (
     next_followup_at timestamptz,
     silent_round_count int NOT NULL DEFAULT 0,
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz NOT NULL DEFAULT now(),
+    updated_time timestamptz DEFAULT now(),
     CONSTRAINT uq_growth_customer_user_lead UNIQUE (user_id, lead_contact_id)
 );
 COMMENT ON TABLE customer IS '获客客户（qualified 线索 / inbound 直建）';
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS opportunity (
     close_note text,
     created_by_kind varchar(16) NOT NULL DEFAULT 'agent',
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz NOT NULL DEFAULT now()
+    updated_time timestamptz DEFAULT now()
 );
 COMMENT ON TABLE opportunity IS '获客商机（阶段推进 + 金额 + 成交/败因登记）';
 COMMENT ON COLUMN opportunity.stage IS '阶段 (contacted:已触达:blue/replied:已回应:cyan/proposal:已发提案:purple/negotiation:商务洽谈:orange/closed_won:成交:green/closed_lost:流失:red)';
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS outreach_message (
     compliance_check jsonb NOT NULL DEFAULT '{}'::jsonb,
     dedupe_key varchar(64),
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz NOT NULL DEFAULT now(),
+    updated_time timestamptz DEFAULT now(),
     CONSTRAINT uq_growth_outreach_dedupe UNIQUE (dedupe_key)
 );
 COMMENT ON TABLE outreach_message IS '获客触达消息（出/入双向，审批状态机核心表）';
@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS activity (
     ref_id varchar(64),
     occurred_at timestamptz NOT NULL DEFAULT now(),
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz NOT NULL DEFAULT now()
+    updated_time timestamptz DEFAULT now()
 );
 COMMENT ON TABLE activity IS '获客客户活动时间线（触达/回复/阶段变更/任务 run/人工备注统一流水）';
 COMMENT ON COLUMN activity.kind IS '类型 (outreach:触达:blue/reply:回复:green/stage_change:阶段变更:orange/task_run:任务:cyan/note:备注:gray/call:电话:purple/meeting:会议:purple/qualify:晋级:blue/close:成交:green)';
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS playbook (
     exit_rule jsonb NOT NULL DEFAULT '{}'::jsonb,
     is_builtin boolean NOT NULL DEFAULT false,
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz NOT NULL DEFAULT now()
+    updated_time timestamptz DEFAULT now()
 );
 COMMENT ON TABLE playbook IS '获客打法模板（目标画像 + 触达节奏 + 话术要点），内置 + 自定义';
 COMMENT ON COLUMN playbook.user_id IS '归属主人（可空=内置 playbook）';
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS form_submission (
     customer_id bigint,
     source_meta jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz NOT NULL DEFAULT now()
+    updated_time timestamptz DEFAULT now()
 );
 COMMENT ON TABLE form_submission IS '获客落地页表单回流（inbound 线索缓冲区）';
 COMMENT ON COLUMN form_submission.status IS '状态 (pending:待处理:gray/converted:已转化:green/rejected:已拒绝:red/spam:垃圾:red)';
@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS optout_record (
     reason varchar(500),
     source varchar(64),
     created_time timestamptz NOT NULL DEFAULT now(),
-    updated_time timestamptz NOT NULL DEFAULT now(),
+    updated_time timestamptz DEFAULT now(),
     CONSTRAINT uq_growth_optout_user_channel_addr UNIQUE (user_id, channel, address_hash)
 );
 COMMENT ON TABLE optout_record IS '获客退订/勿扰登记（合规硬约束，outreach.send 入口硬查，命中即 blocked_optout）';

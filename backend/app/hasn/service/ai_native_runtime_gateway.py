@@ -402,10 +402,16 @@ class AiNativeRuntimeGateway:
         if self._internal_handlers_cache is not None:
             return self._internal_handlers_cache
         from backend.app.hasn_community.service import community_tool_handlers as handlers
+        from backend.app.hasn_knowledge.service import tool_handlers as knowledge_handlers
 
         registry: dict[str, Any] = {
-            # RF-CLOUD：knowledge.search 已下沉为 hasn-node 本地 Platform 工具（RF-MCP），
-            # 经 daemon 进程内 KnowledgeGateway 直连 RagFlow，云端不再中转检索数据面。
+            # 知识库（AI-Native 重做：工具回归 manifest App 工具，handler 落 knowledge service，
+            # RAGFlow 为云端内部处理后端——《知识库AI-Native应用重设计》§2.4/§3）
+            'knowledge.search': knowledge_handlers.handle_knowledge_search,
+            'knowledge.list_datasets': knowledge_handlers.handle_knowledge_list_datasets,
+            'knowledge.fetch_doc': knowledge_handlers.handle_knowledge_fetch_doc,
+            'knowledge.upload_document': knowledge_handlers.handle_knowledge_upload_document,
+            'knowledge.write_doc': knowledge_handlers.handle_knowledge_write_doc,
             # 帖子/文章详情走专用资源取数（含可见性鉴权 + reference_cards）
             'community.get_post': self._handle_community_get_post,
             'community.get_article': self._handle_community_get_article,

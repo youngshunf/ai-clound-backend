@@ -198,8 +198,11 @@ async def hasn_node_websocket(
     except Exception as e:
         log.error(f'WebSocket 异常: {node_id} - {e}')
     finally:
-        # 7. 清理：注销节点 + 清理所有实体
-        await ws_router.unregister_node(node_id)
+        # 7. 清理：注销节点 + 清理所有实体（best-effort，绝不让清理异常冒泡出 ASGI handler）
+        try:
+            await ws_router.unregister_node(node_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning(f'[HASN] 节点清理失败 (非致命): {node_id} - {e}')
 
 async def _recv_loop(
     websocket: WebSocket,

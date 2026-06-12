@@ -6,6 +6,8 @@ from backend.app.api.v1.app import app_router as mobile_app_v1_router
 from backend.app.api.v1.auth import auth_router as mobile_auth_v1_router
 from backend.app.deck.api.router import agent as deck_agent
 from backend.app.deck.api.router import app as deck_app
+from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
+from backend.app.hasn_knowledge.api.router import app as knowledge_app
 from backend.app.hasn_task.api.router import agent as hasn_task_agent
 from backend.app.hasn_task.api.router import app as hasn_task_app
 from backend.app.publish.api.router import agent as publish_agent
@@ -144,6 +146,10 @@ router.include_router(community_admin)        # 社区 管理端 API（/api/v1/c
 # 演示文稿（自研 PPT 系统，模块 17，独立 PG schema=deck）
 router.include_router(deck_app)               # 演示文稿 用户端 API（/api/v1/deck/app，Owner JWT，owner 隔离）
 router.include_router(deck_agent)             # 演示文稿 Agent API（/api/v1/deck/agent，Agent JWT，deck:read/write）
+
+# 知识库（AI-Native 应用 knowledge，独立 PG schema=hasn_knowledge，RAGFlow 为内部处理后端）
+router.include_router(knowledge_app)          # 知识库 用户端 API（/api/v1/knowledge/app，Owner JWT，owner 隔离）
+router.include_router(knowledge_agent)        # 知识库 Agent API（/api/v1/knowledge/agent，Agent JWT，knowledge:read/upload/write）
 
 # 任务系统（AI-Native 应用 hasn_task，模块 12，独立 PG schema=hasn_task）
 router.include_router(hasn_task_app)          # 任务系统 用户端 API（/api/v1/hasn-task/app，Owner JWT + 同步/摘要）

@@ -92,28 +92,38 @@ class WsRouterService:
         )
 
     async def unregister_node(self, node_id: str) -> None:
-        """注销节点，清理所有实体绑定"""
-        # 拿到该 Node 上的所有实体
-        entity_ids = await redis_client.smembers(f'{NODE_ENTITIES_PREFIX}:{node_id}')
+        """注销节点，清理所有实体绑定。
 
-        for hasn_id in entity_ids:
-            # 从统一路由表移除
-            existing = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
-            if existing == node_id:
-                await redis_client.hdel(ENTITY_NODE_KEY, hasn_id)
+        断连清理是 best-effort：redis 不可用 / 连接 transport 已关闭（断连与 event-loop
+        拆除并发、或池中陈旧连接）时只记 warning，绝不抛出——否则异常会冒泡出 WS
+        handler 的 finally，触发 "Application callable raised an exception"。漏清的
+        presence 键带 TTL（NODE_ALIVE_PREFIX）会自然过期自愈；进程内 WS 引用无论如何都移除。
+        """
+        try:
+            # 拿到该 Node 上的所有实体
+            entity_ids = await redis_client.smembers(f'{NODE_ENTITIES_PREFIX}:{node_id}')
 
-            # 如果是 Human，从 user_nodes 移除
-            if hasn_id.startswith('h_'):
-                await redis_client.srem(f'{USER_NODES_PREFIX}:{hasn_id}', node_id)
+            for hasn_id in entity_ids:
+                # 从统一路由表移除
+                existing = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
+                if existing == node_id:
+                    await redis_client.hdel(ENTITY_NODE_KEY, hasn_id)
 
-        # 清理 Node 实体集合
-        await redis_client.delete(f'{NODE_ENTITIES_PREFIX}:{node_id}')
-        # 清理 Node 连接记录
-        await redis_client.hdel(NODE_CONN_KEY, node_id)
-        # 清理节点存活键（P3）
-        await redis_client.delete(f'{NODE_ALIVE_PREFIX}:{node_id}')
-        # 移除 WebSocket 引用
-        _ws_connections.pop(node_id, None)
+                # 如果是 Human，从 user_nodes 移除
+                if hasn_id.startswith('h_'):
+                    await redis_client.srem(f'{USER_NODES_PREFIX}:{hasn_id}', node_id)
+
+            # 清理 Node 实体集合
+            await redis_client.delete(f'{NODE_ENTITIES_PREFIX}:{node_id}')
+            # 清理 Node 连接记录
+            await redis_client.hdel(NODE_CONN_KEY, node_id)
+            # 清理节点存活键（P3）
+            await redis_client.delete(f'{NODE_ALIVE_PREFIX}:{node_id}')
+        except Exception as e:  # noqa: BLE001 - 清理尽力而为，redis 故障不得炸断连路径
+            logger.warning(f'[HASN] 注销节点 redis 清理失败 (非致命，TTL 自愈): {node_id} - {e}')
+        finally:
+            # 移除 WebSocket 引用（进程内，无论 redis 是否可用都要做）
+            _ws_connections.pop(node_id, None)
 
     # ─── 现行控制平面：Owner Binding / Agent Presence ───
 
