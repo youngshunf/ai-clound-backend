@@ -46,6 +46,10 @@ from backend.app.hasn_growth.api.v1.agent.lead_export_batch import router as age
 from backend.app.hasn_growth.api.v1.agent.lead_export_item import router as agent_lead_export_item_router
 from backend.app.hasn_growth.api.v1.agent.lead_audit_log import router as agent_lead_audit_log_router
 from backend.app.hasn_growth.api.v1.agent.business import router as agent_business_router
+# --- 获客漏斗业务面（M3：funnel/outreach/opportunity/report，仅挂 canonical /api/v1/growth/*） ---
+from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_router
+from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
+from backend.app.hasn_growth.api.v1.open.forms import router as open_forms_router
 # --- 公开（无需认证） ---
 from backend.app.hasn_growth.api.v1.open.lead_source_config import router as open_lead_source_config_router
 from backend.app.hasn_growth.api.v1.open.lead_collection_job import router as open_lead_collection_job_router
@@ -121,3 +125,9 @@ v1.include_router(admin_activity_router, prefix='/activitys', tags=['获客活�
 v1.include_router(admin_playbook_router, prefix='/playbooks', tags=['获客打法模板-管理'])
 v1.include_router(admin_form_submission_router, prefix='/form-submissions', tags=['获客表单回流-管理'])
 v1.include_router(admin_optout_record_router, prefix='/optout-records', tags=['获客退订登记-管理'])
+
+# 获客漏斗业务面（M3：funnel/outreach/opportunity/report）——仅挂 canonical /api/v1/growth/*
+# owner: /api/v1/growth/app/* ；agent: /api/v1/growth/agent/* ；open: /api/v1/growth/open/*
+app.include_router(app_growth_router, tags=['获客漏斗-用户端'])
+agent.include_router(agent_growth_router, tags=['获客漏斗-Agent'])
+open_api.include_router(open_forms_router, tags=['获客表单回流-公开'])
