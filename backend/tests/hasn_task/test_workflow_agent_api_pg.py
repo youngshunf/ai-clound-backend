@@ -97,8 +97,8 @@ def test_manifest_has_workflow_capabilities() -> None:
     assert 'workflow:read' in caps['hasn.workflow.get']['required_scopes']
     assert 'workflow:run' in caps['hasn.workflow.run']['required_scopes']
     assert caps['hasn.workflow.cancel']['risk_level'] == 'high'
-    # 写类走统一授权开关；读类免确认
-    assert caps['hasn.workflow.create']['human_confirmation']['required'] == 'policy'
+    # 出厂全 Allow 免确认（16-doc D-v3-1）；owner 可设 ask/deny override。
+    assert caps['hasn.workflow.create']['human_confirmation']['required'] is False
     assert caps['hasn.workflow.list']['human_confirmation'] == {'required': False}
 
 

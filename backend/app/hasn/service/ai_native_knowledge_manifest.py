@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# knowledge 域 scope 展示元数据（16-doc D-v3-3：app 域 scope 元数据随应用声明落地，
+# 由 app/mcp/scopes.py 聚合）。判定真相是工具 required_scopes + 三态 mode；本表仅展示元数据。
+KNOWLEDGE_SCOPE_CATALOG: dict[str, dict[str, str]] = {
+    'knowledge:read': {'label_zh': '检索知识库', 'domain': 'knowledge', 'risk': 'low', 'description': '检索当前工作空间的知识库资料'},
+    'knowledge:upload': {'label_zh': '上传知识库文档', 'domain': 'knowledge', 'risk': 'medium', 'description': '向当前工作空间的知识库上传文档（按主人授权与库白名单）'},
+    'knowledge:write': {'label_zh': '解析/建库写入', 'domain': 'knowledge', 'risk': 'medium', 'description': '触发文档解析入库、新建数据集（写入知识库结构）'},
+    'knowledge:grant': {'label_zh': '代主人改授权', 'domain': 'knowledge', 'risk': 'high', 'description': '代主人调整知识库访问授权（预留，当前不开放）'},
+}
+
 KNOWLEDGE_AI_NATIVE_MANIFEST = {
     'app_id': 'knowledge',
     'version': '1.0.0',
