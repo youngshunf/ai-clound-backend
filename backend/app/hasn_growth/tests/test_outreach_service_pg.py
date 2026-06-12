@@ -19,6 +19,7 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.service.dispatch_service import growth_dispatch_service, set_wechat_auto_send
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.common.exception import errors
@@ -325,3 +326,75 @@ async def test_j3_unrunnable_task_degrades(session) -> None:
         )
     ).scalar_one()
     assert trig_at is None
+
+
+async def _approved_outreach(sess, *, uid: int, cid: int, channel: str, content: str = '您好，跟进一下我们的方案') -> int:
+    """建一条 approved 出站触达（首触达必审 → 主人批准），返回 message_id。"""
+    m = await growth_outreach_service.send_outreach(
+        sess, user_id=uid, customer_id=cid, channel=channel, content=content, agent_id='a_disp'
+    )
+    assert m['status'] == 'pending_approval'
+    a = await growth_outreach_service.approve_outreach(sess, user_id=uid, message_id=m['id'], approver_user_id=uid)
+    assert a['status'] == 'approved'
+    return a['id']
+
+
+async def _msg_status(sess, mid: int) -> str:
+    return (
+        await sess.execute(text('SELECT status FROM hasn_growth.outreach_message WHERE id = :m'), {'m': mid})
+    ).scalar_one()
+
+
+async def test_dispatch_quiet_hours_queues(session) -> None:
+    """M6 worker：静默时段（窗口外）→ 挂起，触达保持 approved 不发。"""
+    uid = 997000 + int(uuid.uuid4().int % 4000)
+    cid = await _qualified_customer(session, user_id=uid, email=f'dq{uuid.uuid4().hex[:6]}@eta.com', company='EtaDQ')
+    mid = await _approved_outreach(session, uid=uid, cid=cid, channel='email')
+
+    stat = await growth_dispatch_service.dispatch_approved_batch(session, limit=200, now_hour=3)
+    assert stat['queued_quiet_hours'] >= 1
+    assert await _msg_status(session, mid) == 'approved'  # 未发，保持待发
+
+
+async def test_dispatch_skips_manual_assist(session) -> None:
+    """M6 worker：manual_assist 渠道 owner 手动发，worker 不接管 → 跳过保持 approved。"""
+    uid = 998000 + int(uuid.uuid4().int % 4000)
+    cid = await _qualified_customer(session, user_id=uid, email=f'dm{uuid.uuid4().hex[:6]}@eta.com', company='EtaDM')
+    mid = await _approved_outreach(session, uid=uid, cid=cid, channel='manual_assist')
+
+    stat = await growth_dispatch_service.dispatch_approved_batch(session, limit=200, now_hour=10)
+    assert stat['skipped_manual'] >= 1
+    assert await _msg_status(session, mid) == 'approved'
+
+
+async def test_dispatch_channel_unavailable_marks_failed(session) -> None:
+    """M6 worker：无可用 transport → channel_unavailable → mark_failed + 建议回退 manual_assist（零 fake，不假装已发）。"""
+    uid = 999000 + int(uuid.uuid4().int % 900)
+    cid = await _qualified_customer(session, user_id=uid, email=f'du{uuid.uuid4().hex[:6]}@eta.com', company='EtaDU')
+    mid = await _approved_outreach(session, uid=uid, cid=cid, channel='email')
+
+    stat = await growth_dispatch_service.dispatch_approved_batch(session, limit=200, now_hour=10)
+    assert stat['failed'] >= 1
+    assert await _msg_status(session, mid) == 'failed'
+    err = (
+        await session.execute(text('SELECT error_message FROM hasn_growth.outreach_message WHERE id = :m'), {'m': mid})
+    ).scalar_one()
+    assert 'channel_unavailable' in (err or '') and 'manual_assist' in (err or '')
+
+
+async def test_dispatch_wechat_j1_gate(session) -> None:
+    """M6 worker：微信 J1 闸门——未确认 → 跳过保持 approved（恒 manual）；确认后才进 worker。"""
+    uid = 991000 + int(uuid.uuid4().int % 4000)
+    cid = await _qualified_customer(session, user_id=uid, email=f'dw{uuid.uuid4().hex[:6]}@eta.com', company='EtaDW')
+    mid = await _approved_outreach(session, uid=uid, cid=cid, channel='wechat')
+
+    # 未确认 → 跳过，保持 approved
+    stat1 = await growth_dispatch_service.dispatch_approved_batch(session, limit=200, now_hour=10)
+    assert stat1['wechat_unconfirmed'] >= 1
+    assert await _msg_status(session, mid) == 'approved'
+
+    # owner 确认微信自动发送（M7 UI 二次确认开关）后才进 worker（无 wechat transport → 如实 failed）
+    await set_wechat_auto_send(session, user_id=uid, confirmed=True)
+    stat2 = await growth_dispatch_service.dispatch_approved_batch(session, limit=200, now_hour=10)
+    assert stat2['wechat_unconfirmed'] == 0
+    assert await _msg_status(session, mid) == 'failed'

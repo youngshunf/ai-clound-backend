@@ -46,4 +46,8 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'marketplace_sync_clawhub',
         'schedule': TzAwareCrontab('0', '*/8'),  # 每 8 小时（00:00 / 08:00 / 16:00）
     },
+    '获客-触达发送 worker': {
+        'task': 'growth_dispatch_approved_outreach',
+        'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟扫 approved 触达分发（quiet hours 窗口内才实发）
+    },
 }
