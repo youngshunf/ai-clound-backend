@@ -55,8 +55,7 @@ def _cap(
     page_rank: int,
     tags: list[str],
 ) -> dict:
-    """hasn.task.* 能力声明（读类 scope=task:read 低危免确认；写类按 risk_level 出厂三态）。"""
-    write_like = scope in (_SCOPE_MANAGE, _SCOPE_RUN)
+    """hasn.task.* 能力声明（读/写类一律出厂 Allow 免确认，16-doc D-v3-1；owner 可设 ask/deny override）。"""
     return {
         'capability_id': f'hasn_task.{name}.capability',
         'name': title,
@@ -73,9 +72,7 @@ def _cap(
         },
         'output_schema': {'type': 'object'},
         'risk_level': risk_level,
-        'human_confirmation': (
-            {'required': 'policy', 'policy_ref': 'owner_tristate'} if write_like else {'required': False}
-        ),
+        'human_confirmation': {'required': False},
         'result_writeback': ['audit', 'agent_message'],
         'discovery': {
             'exposure': 'on_demand',
@@ -99,8 +96,7 @@ def _wcap(
     page_rank: int,
     tags: list[str],
 ) -> dict:
-    """hasn.workflow.* 能力声明（多任务编排 DAG，节点复用 task；写类按 risk_level 出厂三态）。"""
-    write_like = scope in (_WSCOPE_MANAGE, _WSCOPE_RUN)
+    """hasn.workflow.* 能力声明（多任务编排 DAG，节点复用 task；读/写类一律出厂 Allow，16-doc D-v3-1）。"""
     return {
         'capability_id': f'hasn_task.workflow_{name}.capability',
         'name': title,
@@ -117,9 +113,7 @@ def _wcap(
         },
         'output_schema': {'type': 'object'},
         'risk_level': risk_level,
-        'human_confirmation': (
-            {'required': 'policy', 'policy_ref': 'owner_tristate'} if write_like else {'required': False}
-        ),
+        'human_confirmation': {'required': False},
         'result_writeback': ['audit', 'agent_message'],
         'discovery': {
             'exposure': 'on_demand',

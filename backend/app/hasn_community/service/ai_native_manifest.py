@@ -126,10 +126,9 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             },
             'output_schema': {'type': 'object'},
             'risk_level': 'medium',
-            'human_confirmation': {
-                'required': 'policy',
-                'policy_ref': 'community.owner_review_or_enterprise_review',
-            },
+            # 工具调用本身出厂 Allow 免确认（16-doc D-v3-1）；社区内容审核由社区服务端自理
+            # （HasnPosts.status / 圈子 needs_review），与工具授权正交，不再混入此 flag。
+            'human_confirmation': {'required': False},
             'result_writeback': ['audit', 'app_resource', 'workspace_notification', 'agent_message'],
             'discovery': {
                 'exposure': 'on_demand',
@@ -184,10 +183,9 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             },
             'output_schema': {'type': 'object'},
             'risk_level': 'medium',
-            'human_confirmation': {
-                'required': 'policy',
-                'policy_ref': 'community.owner_review_or_enterprise_review',
-            },
+            # 工具调用本身出厂 Allow 免确认（16-doc D-v3-1）；社区内容审核由社区服务端自理
+            # （HasnPosts.status / 圈子 needs_review），与工具授权正交，不再混入此 flag。
+            'human_confirmation': {'required': False},
             'result_writeback': ['audit', 'app_resource', 'workspace_notification', 'agent_message'],
             'discovery': {
                 'exposure': 'on_demand',
@@ -460,10 +458,9 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             },
             'output_schema': {'type': 'object'},
             'risk_level': 'medium',
-            'human_confirmation': {
-                'required': 'policy',
-                'policy_ref': 'community.owner_review_or_enterprise_review',
-            },
+            # 工具调用本身出厂 Allow 免确认（16-doc D-v3-1）；社区内容审核由社区服务端自理
+            # （HasnPosts.status / 圈子 needs_review），与工具授权正交，不再混入此 flag。
+            'human_confirmation': {'required': False},
             'result_writeback': ['audit', 'agent_message'],
             'discovery': {
                 'exposure': 'on_demand',

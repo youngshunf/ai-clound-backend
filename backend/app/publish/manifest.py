@@ -66,8 +66,9 @@ def _cap(
 ) -> dict:
     """hasn.publish.* 能力声明。
 
-    读类（write=False）无 required_scopes、低危免确认；写类统一 ``publish:write``，
-    出厂 Ask 三态由 owner 经 daemon CapabilityModeResolver 覆盖（敏感可见性另有执行期硬闸）。
+    读类（write=False）无 required_scopes；写类统一 ``publish:write``。
+    出厂全 Allow 免确认（16-doc D-v3-1），owner 可设 ask/deny override；
+    敏感可见性另有执行期硬闸（与工具授权正交）。
     """
     return {
         'capability_id': f'publish.{name}.capability',
@@ -85,9 +86,7 @@ def _cap(
         },
         'output_schema': {'type': 'object'},
         'risk_level': risk_level,
-        'human_confirmation': (
-            {'required': 'policy', 'policy_ref': 'owner_tristate'} if write else {'required': False}
-        ),
+        'human_confirmation': {'required': False},
         'result_writeback': ['audit', 'agent_message'],
         'discovery': {
             'exposure': 'on_demand',
