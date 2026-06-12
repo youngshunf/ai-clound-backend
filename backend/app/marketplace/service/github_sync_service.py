@@ -5,6 +5,7 @@ Syncs skills from huanxing-hub GitHub repository to database.
 """
 import json
 import os
+import re
 
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,103 @@ from backend.utils.timezone import timezone
 # data→data-analysis、utility→productivity、social→communication、official→other 等）。
 
 
+# 增量同步：webhook 触发只处理本次 push 真正改动的技能，避免每次全量重扫 + 全量重译
+# （LLM 浪费且毫无意义）。下面是纯函数，便于单测，不依赖 DB / 网络。
+
+# 子模块 gitlink 形如 `github/baoyu-skills`（单段、无更深路径）。只有它或 .gitmodules
+# 变更才需要刷新子模块；普通主仓 push 不碰子模块，跳过 `submodule update --remote`
+# 这步慢操作（生产机连 github.com 极慢，曾首次克隆卡死数十分钟）。
+_SUBMODULE_GITLINK_RE = re.compile(r'^github/[^/]+$')
+
+
+def collect_changed_paths(commits: list[dict]) -> set[str]:
+    """从 webhook push payload 的 commits 收集本次改动的全部文件路径（增删改并集）。"""
+    paths: set[str] = set()
+    for commit in commits or []:
+        for key in ('added', 'modified', 'removed'):
+            for path in commit.get(key) or []:
+                if isinstance(path, str) and path:
+                    paths.add(path)
+    return paths
+
+
+def skill_dir_touched(repo_path: str, changed_paths: set[str]) -> bool:
+    """技能目录 `repo_path`（如 huanxing-skills/official/foo）是否被本次改动命中。
+
+    命中 = 有任一改动路径落在该技能目录下（SKILL.md、references/*、icon 等都算）。
+    """
+    if not repo_path:
+        return False
+    prefix = repo_path.rstrip('/') + '/'
+    return any(path == repo_path or path.startswith(prefix) for path in changed_paths)
+
+
+def submodule_refresh_needed(changed_paths: set[str]) -> bool:
+    """是否需要刷新 git 子模块：仅当 .gitmodules 改动或某子模块 gitlink 指针变更时。"""
+    return '.gitmodules' in changed_paths or any(
+        _SUBMODULE_GITLINK_RE.match(path) for path in changed_paths
+    )
+
+
+def common_skills_changed(changed_paths: set[str]) -> bool:
+    """common-skills.yaml 是否改动（决定要不要全表重对账 is_common 公共标记）。"""
+    return 'common-skills.yaml' in changed_paths
+
+
+def bundles_changed(changed_paths: set[str]) -> bool:
+    """技能包来源是否改动（common-bundles.yaml 或 bundles/ 下任意文件）。"""
+    return 'common-bundles.yaml' in changed_paths or any(
+        path.startswith('bundles/') for path in changed_paths
+    )
+
+
+def metadata_unchanged(scanned: dict[str, Any], existing: MarketplaceSkill | None) -> bool:
+    """扫描到的技能 name/description/tags 是否与库内现有译文的源文一致（→ 可复用缓存译文）。
+
+    与正文门控（resolve_bilingual_body）同构：源文未变且双语译文齐全时复用，
+    省掉一次 LLM 元数据翻译。任一不满足 → 返回 False，照常送 LLM 重译。
+    """
+    if existing is None:
+        return False
+    if (existing.name or '') != (scanned.get('name') or ''):
+        return False
+    # 源文描述存在 description_{source_language} 一侧（另一侧是译文）。
+    src = existing.source_language or 'en'
+    existing_src_desc = existing.description_zh if src == 'zh' else existing.description_en
+    if (existing_src_desc or '') != (scanned.get('description') or ''):
+        return False
+    # 双语译文必须齐全，否则复用会丢失一侧。
+    if not (existing.name_en and existing.name_zh and existing.description_en and existing.description_zh):
+        return False
+    scanned_tags = translation_service.normalize_tag_list(scanned.get('tag_hints'))
+    try:
+        existing_tags = translation_service.normalize_tag_list(json.loads(existing.tags or '[]'))
+    except (ValueError, TypeError):
+        existing_tags = []
+    return scanned_tags == existing_tags
+
+
+def translation_from_existing(existing: MarketplaceSkill) -> dict[str, Any]:
+    """用库内现有行拼出 _batch_translate 等价输出（复用缓存译文，零 LLM）。"""
+    def _loads(value: str | None) -> list:
+        try:
+            return json.loads(value) if value else []
+        except (ValueError, TypeError):
+            return []
+
+    return {
+        'name_en': existing.name_en,
+        'name_zh': existing.name_zh,
+        'description_en': existing.description_en,
+        'description_zh': existing.description_zh,
+        'tags_en': _loads(existing.tags_en),
+        'tags_zh': _loads(existing.tags_zh),
+        'emoji': existing.emoji,
+        'category': existing.category,
+        'source_language': existing.source_language,
+    }
+
+
 class GitHubSyncService:
     """GitHub sync service for marketplace skills"""
 
@@ -56,17 +154,25 @@ class GitHubSyncService:
         self.local_path = getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub')
         self.repo: Repo | None = None
 
-    async def sync_from_github(self, db: AsyncSession, force: bool = False) -> dict[str, Any]:  # noqa: FBT001, FBT002
+    async def sync_from_github(  # noqa: FBT001, FBT002
+        self,
+        db: AsyncSession,
+        force: bool = False,
+        changed_paths: set[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Sync skills from GitHub repository
 
         Args:
             db: Database session
-            force: Force full sync (ignore last sync time)
+            force: Force full sync（全量重扫；admin / 手动重 seed 用）
+            changed_paths: 本次 push 改动的文件路径集。提供且非 force 时走**增量**——
+                只处理命中变更路径的技能、跳过子模块刷新、按需对账，避免全量重译浪费 LLM。
 
         Returns:
             Sync result with statistics
         """
+        incremental = changed_paths is not None and not force
         sync_log_id = None
         try:
             # Create sync log
@@ -81,11 +187,20 @@ class GitHubSyncService:
             await db.flush()
             sync_log_id = sync_log.id if sync_log else None
 
-            # Clone or pull repository
-            await self._update_repository()
+            # Clone or pull repository。增量模式且本次 push 未改动子模块指针时跳过
+            # `submodule update --remote`（外部 github 技能库），只 git pull 主仓——
+            # 这一步是同步耗时大头（生产机连 github.com 慢），无谓刷新毫无意义。
+            update_submodules = (not incremental) or submodule_refresh_needed(changed_paths or set())
+            await self._update_repository(update_submodules=update_submodules)
 
             # Scan for skills
             skills_data = await self._scan_skills()
+
+            # 增量：只保留本次 push 命中变更路径的技能（其余跳过翻译+落库）。
+            if incremental:
+                scanned_total = len(skills_data)
+                skills_data = [s for s in skills_data if skill_dir_touched(s.get('repo_path', ''), changed_paths)]
+                log.info(f"[GitHub增量] 扫描 {scanned_total} 个技能 → 命中变更 {len(skills_data)} 个")
 
             # 公共技能标记（doc12 §3.2）：从 hub common-skills.yaml 读公共集合，
             # 命中的技能打 is_common；下架/移除的在同步末尾统一清除。
@@ -93,12 +208,11 @@ class GitHubSyncService:
             for skill_data in skills_data:
                 skill_data['is_common'] = skill_data.get('skill_id') in common_ids
 
-            # Translate all scanned skills in one batched pass (10 per LLM request)
-            # instead of one request per skill — language detection, bilingual
-            # name/description, bilingual tags, emoji AND category all come back
-            # together (LLM picks the category from our taxonomy in the same call).
+            # Translate scanned skills in batched LLM requests, **change-gated**：
+            # name/description/tags 与库内现有译文源文一致的技能直接复用缓存译文，
+            # 只把真改动的送 LLM。无变化的 push → 0 次元数据翻译。
             categories = await self._load_categories(db)
-            translations = await self._batch_translate(skills_data, categories)
+            translations = await self._batch_translate(db, skills_data, categories)
 
             # Sync to database
             synced_count = 0
@@ -115,19 +229,22 @@ class GitHubSyncService:
                     log.error(f"Failed to sync skill {skill_data.get('skill_id')}: {e}")
 
             # 清除已移出 common-skills.yaml 的公共标记，保持 is_common 集合与 hub 一致。
-            # common_ids 为空 ⇒ 清除全部公共标记（无公共技能）。
-            clear_common = sa.update(MarketplaceSkill).where(MarketplaceSkill.is_common.is_(True))
-            if common_ids:
-                clear_common = clear_common.where(MarketplaceSkill.skill_id.notin_(list(common_ids)))
-            await db.execute(clear_common.values(is_common=False))
+            # 全量模式总是对账；增量模式仅当 common-skills.yaml 本次改动才全表对账
+            # （未改动时被处理技能的 is_common 已在 upsert 落对，无需全表扫）。
+            if (not incremental) or common_skills_changed(changed_paths or set()):
+                clear_common = sa.update(MarketplaceSkill).where(MarketplaceSkill.is_common.is_(True))
+                if common_ids:
+                    clear_common = clear_common.where(MarketplaceSkill.skill_id.notin_(list(common_ids)))
+                await db.execute(clear_common.values(is_common=False))
 
             # 技能包同步（实施/91 B3.3）：扫描 hub bundles/*/bundle.yaml → 落库
-            # marketplace_template(skill_pack)。公共包集合由 common-bundles.yaml 决定，
-            # 每个包按 is_common 显式落标（无单独 reconcile：重扫即覆盖）。
-            bundle_synced, bundle_failed, bundle_errors = await self._sync_bundles(db)
-            synced_count += bundle_synced
-            failed_count += bundle_failed
-            errors.extend(bundle_errors)
+            # marketplace_template(skill_pack)。全量模式总是跑；增量仅当 bundles/ 或
+            # common-bundles.yaml 改动才跑（无 LLM，但避免无谓全扫）。
+            if (not incremental) or bundles_changed(changed_paths or set()):
+                bundle_synced, bundle_failed, bundle_errors = await self._sync_bundles(db)
+                synced_count += bundle_synced
+                failed_count += bundle_failed
+                errors.extend(bundle_errors)
 
             # Update sync log
             if sync_log_id:
@@ -172,8 +289,12 @@ class GitHubSyncService:
                 'error': str(e),
             }
 
-    async def _update_repository(self) -> None:
-        """Clone or pull the GitHub repository"""
+    async def _update_repository(self, update_submodules: bool = True) -> None:  # noqa: FBT001, FBT002
+        """Clone or pull the GitHub repository.
+
+        update_submodules=False 时只 git pull 主仓、跳过子模块刷新（增量主仓 push 用），
+        避免连 github.com 拉外部技能库这步慢操作。首次 clone 始终带子模块（保证存在）。
+        """
         if os.path.exists(self.local_path):  # noqa: ASYNC240
             # Pull latest changes
             log.info(f"Pulling latest changes from {self.repo_url}")
@@ -184,6 +305,10 @@ class GitHubSyncService:
             # Clone repository
             log.info(f"Cloning repository from {self.repo_url}")
             self.repo = Repo.clone_from(self.repo_url, self.local_path, multi_options=['--recurse-submodules'])
+
+        if not update_submodules:
+            log.info("增量同步：跳过 git 子模块刷新（主仓 push 未改动子模块指针）")
+            return
 
         self.repo.git.submodule('sync', '--recursive')
         with self.repo.git.custom_environment(GIT_HTTP_VERSION='HTTP/1.1'):
@@ -505,28 +630,54 @@ class GitHubSyncService:
 
     async def _batch_translate(
         self,
+        db: AsyncSession,
         skills_data: list[dict[str, Any]],
         categories: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Translate all scanned skills in batched LLM requests (10 per request).
+        """Translate scanned skills in batched LLM requests (10 per request), **change-gated**.
+
+        name/description/tags 与库内现有译文源文一致的技能直接复用缓存译文（零 LLM），
+        只把真改动 / 新增的技能送 LLM。与正文门控 resolve_bilingual_body 同构，
+        避免每次 webhook 全量重译造成的巨大且毫无意义的 LLM 消耗。
 
         When ``categories`` is provided the LLM also returns a ``category`` slug
         per skill (picked from our taxonomy) in the same call.
         """
         if not skills_data:
             return []
-        items = [
-            {
-                'name': skill_data.get('name', ''),
-                'description': skill_data.get('description', ''),
-                'tag_hints': skill_data.get('tag_hints'),
-                'source_lang': skill_data.get('source_language'),
-            }
-            for skill_data in skills_data
-        ]
-        return await translation_service.batch_translate_skill_metadata(
-            items, concurrency=4, categories=categories,
-        )
+
+        # 一次性取出所有命中技能的现有行，用于变更门控（避免逐个 get_by_id）。
+        skill_ids = [s.get('skill_id') for s in skills_data if s.get('skill_id')]
+        existing_map: dict[str, MarketplaceSkill] = {}
+        if skill_ids:
+            rows = (
+                await db.execute(sa.select(MarketplaceSkill).where(MarketplaceSkill.skill_id.in_(skill_ids)))
+            ).scalars().all()
+            existing_map = {row.skill_id: row for row in rows}
+
+        results: list[dict[str, Any] | None] = [None] * len(skills_data)
+        pending: list[tuple[int, dict[str, Any]]] = []
+        for index, skill_data in enumerate(skills_data):
+            existing = existing_map.get(skill_data.get('skill_id'))
+            if metadata_unchanged(skill_data, existing):
+                results[index] = translation_from_existing(existing)
+            else:
+                pending.append((index, {
+                    'name': skill_data.get('name', ''),
+                    'description': skill_data.get('description', ''),
+                    'tag_hints': skill_data.get('tag_hints'),
+                    'source_lang': skill_data.get('source_language'),
+                }))
+
+        if pending:
+            translated = await translation_service.batch_translate_skill_metadata(
+                [item for _, item in pending], concurrency=4, categories=categories,
+            )
+            for (index, _), result in zip(pending, translated):
+                results[index] = result
+
+        log.info(f"[GitHub翻译] 元数据：{len(pending)} 需译 / {len(skills_data) - len(pending)} 复用缓存")
+        return results
 
     async def _load_categories(self, db: AsyncSession) -> list[dict[str, Any]]:
         """Load marketplace categories as {slug, name} for LLM classification."""

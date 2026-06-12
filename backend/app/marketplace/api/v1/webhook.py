@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.app.marketplace.service.github_app_sync_service import github_app_sync_service
-from backend.app.marketplace.service.github_sync_service import github_sync_service
+from backend.app.marketplace.service.github_sync_service import collect_changed_paths, github_sync_service
 from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.core.conf import settings
@@ -80,19 +80,20 @@ def verify_github_signature(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(calculated_signature, expected_signature)
 
 
-async def _run_skill_sync_background() -> None:
-    """后台执行技能全量同步（自带 DB 会话）。
+async def _run_skill_sync_background(changed_paths: set[str] | None = None) -> None:
+    """后台执行技能**增量**同步（自带 DB 会话）。
 
-    webhook 接口验签+闸门后立即返回，繁重的 git pull + 全量重扫 + 逐技能翻译
-    在这里跑——GitHub webhook 期望 ~10s 内 2xx，同步耗时长不能阻塞响应。
+    webhook 接口验签+闸门后立即返回，git pull + 扫描 + 翻译在这里跑——GitHub webhook
+    期望 ~10s 内 2xx，同步耗时长不能阻塞响应。传入本次 push 的变更路径 → 只处理改动的
+    技能、跳过子模块刷新、变更门控翻译，避免每次全量重译造成巨大且无谓的 LLM 消耗。
     """
     try:
         # 用 .begin() 事务上下文：成功自动 commit、异常自动 rollback。
         # sync_from_github 只 flush 不 commit，普通 async_db_session() 不自动提交，
-        # 会让全量同步「看似成功（synced>0）实则回滚不落库」。
+        # 会让同步「看似成功（synced>0）实则回滚不落库」。
         async with async_db_session.begin() as db:
-            result = await github_sync_service.sync_from_github(db, force=True)
-        log.info(f"[Webhook] 后台技能同步完成: {result}")
+            result = await github_sync_service.sync_from_github(db, changed_paths=changed_paths or set())
+        log.info(f"[Webhook] 后台技能增量同步完成: {result}")
     except Exception as exc:
         log.error(f"[Webhook] 后台技能同步失败: {exc}")
 
@@ -144,15 +145,18 @@ async def github_webhook_skills(
                 message=f"Ignored event: {x_github_event}"
             ))
 
-        if not has_skill_source_changes(payload.get('commits', [])):
+        commits = payload.get('commits', [])
+        if not has_skill_source_changes(commits):
             log.info("No skill changes detected, skipping sync")
             return response_base.success(data=WebhookResponse(
                 message="No skill changes detected"
             ))
 
-        # 异步触发：立即返回，繁重同步在后台跑
-        background_tasks.add_task(_run_skill_sync_background)
-        log.info("Queued background skill sync from GitHub webhook")
+        # 异步触发：立即返回，增量同步在后台跑。传入本次 push 的变更路径，
+        # 只处理改动的技能（增量），避免全量重扫 + 全量重译的 LLM 浪费。
+        changed_paths = collect_changed_paths(commits)
+        background_tasks.add_task(_run_skill_sync_background, changed_paths)
+        log.info(f"Queued background incremental skill sync from GitHub webhook ({len(changed_paths)} changed paths)")
         return response_base.success(data=WebhookResponse(
             message="Skill sync queued (running in background)"
         ))
