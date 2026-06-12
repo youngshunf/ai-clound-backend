@@ -117,12 +117,11 @@ def metadata_unchanged(scanned: dict[str, Any], existing: MarketplaceSkill | Non
     # 双语译文必须齐全，否则复用会丢失一侧。
     if not (existing.name_en and existing.name_zh and existing.description_en and existing.description_zh):
         return False
-    scanned_tags = translation_service.normalize_tag_list(scanned.get('tag_hints'))
-    try:
-        existing_tags = translation_service.normalize_tag_list(json.loads(existing.tags or '[]'))
-    except (ValueError, TypeError):
-        existing_tags = []
-    return scanned_tags == existing_tags
+    # 不比对 tags：库内 tags 是 LLM 生成的（tags = tags_en or tags_zh or tag_hints，LLM 优先），
+    # 而扫描侧 tag_hints 是 SKILL.md frontmatter 标签——多数技能无 frontmatter tags（tag_hints=[]），
+    # 两者不同源，比对必然不命中。name+description（源文逐字）一致即视作元数据未变：
+    # LLM 据其生成的 tags/emoji/category 也不会变，复用缓存是正确的。
+    return True
 
 
 def translation_from_existing(existing: MarketplaceSkill) -> dict[str, Any]:

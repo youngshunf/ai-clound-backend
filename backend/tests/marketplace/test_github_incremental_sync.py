@@ -131,8 +131,11 @@ def test_metadata_unchanged_false_when_description_changed():
     assert metadata_unchanged(_scanned(description='改过的描述'), _row()) is False
 
 
-def test_metadata_unchanged_false_when_tags_changed():
-    assert metadata_unchanged(_scanned(tag_hints=['社区']), _row()) is False
+def test_metadata_unchanged_ignores_tag_hints_diff():
+    # tags 不参与门控：库内 tags 是 LLM 生成（tags = tags_en or tags_zh or tag_hints，
+    # LLM 优先），与扫描侧 frontmatter tag_hints 不同源；name+description 一致即命中。
+    assert metadata_unchanged(_scanned(tag_hints=['社区']), _row()) is True
+    assert metadata_unchanged(_scanned(tag_hints=[]), _row()) is True
 
 
 def test_metadata_unchanged_false_when_translation_missing():
