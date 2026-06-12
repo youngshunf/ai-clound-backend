@@ -3,6 +3,7 @@ ClawHub Sync Service
 
 Syncs skills from ClawHub marketplace to Huanxing marketplace.
 """
+import asyncio
 import json
 import shutil
 import zipfile
@@ -361,29 +362,55 @@ class ClawHubSyncService:
         seen_cursors: set[str] = set()
         max_pages = 2000  # 安全兜底：单次最多翻 2000 页（20 万技能）
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for _ in range(max_pages):
+        # 关 keep-alive（每页用新连接）：观测到 clawhub 偶发把某条连接停在「已建立但
+        # 不回数据」的半开态，此时复用该连接会一直阻塞，且 httpx 自身的 read timeout
+        # 不一定触发 → 整段枚举僵死。每页新连接 + 下方 asyncio.wait_for 硬超时双保险。
+        limits = httpx.Limits(max_keepalive_connections=0)
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            for page_idx in range(max_pages):
                 params: dict[str, Any] = {'pageSize': page_size}
                 if cursor:
                     params['cursor'] = cursor
-                try:
-                    response = await client.get(f"{self.clawhub_api_url}/skills", params=params)
-                    response.raise_for_status()
-                    data = response.json()
-                except Exception as e:
-                    log.error(f"Failed to fetch skills from ClawHub (cursor={cursor!r}): {e}")
+
+                # 每页最多 3 次尝试；asyncio.wait_for 是兜底硬超时——即便 httpx 的 read
+                # timeout 因半开连接没触发，wait_for 也会在 25s 强制取消该请求并换新连接重试。
+                data: dict[str, Any] | None = None
+                for attempt in range(3):
+                    try:
+                        response = await asyncio.wait_for(
+                            client.get(f"{self.clawhub_api_url}/skills", params=params),
+                            timeout=25.0,
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        break
+                    except Exception as e:
+                        log.warning(
+                            f"[clawhub] 枚举第 {page_idx + 1} 页失败"
+                            f"（尝试 {attempt + 1}/3, cursor={cursor!r}）：{type(e).__name__}: {e}"
+                        )
+                        if attempt < 2:
+                            await asyncio.sleep(2.0 * (attempt + 1))
+
+                if data is None:
+                    log.error(
+                        f"[clawhub] 枚举第 {page_idx + 1} 页连续 3 次失败，终止枚举（已累计 {len(skills)} 个）"
+                    )
                     break
 
                 items = data.get('items', [])
                 if not items:
                     break
                 skills.extend(items)
+                log.info(f"[clawhub] 枚举进度：第 {page_idx + 1} 页 +{len(items)} 个，累计 {len(skills)}")
 
                 cursor = data.get('nextCursor')
                 if not cursor or cursor in seen_cursors:
                     break
                 seen_cursors.add(cursor)
 
+        log.info(f"[clawhub] 枚举完成：共 {len(skills)} 个技能")
         return skills
 
     async def _fetch_specific_skills(self, skill_ids: list[str]) -> list[dict[str, Any]]:
