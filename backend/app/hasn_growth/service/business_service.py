@@ -25,6 +25,7 @@ from backend.app.hasn_growth.service.cleaner_service import clean_raw_record
 from backend.app.hasn_growth.service.dedupe_service import dedupe_key
 from backend.app.hasn_growth.service.export_service import build_csv_export
 from backend.app.hasn_growth.service.firecrawl_client import FirecrawlClient
+from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
 from backend.common.exception import errors
 
@@ -204,6 +205,14 @@ class LeadAutomationBusinessService:
         job.finished_at = datetime.now(UTC)
         job.status = _final_status(job, request_count)
         await db.flush()
+
+        # 计量上报（G7：采集按量计积分，获客只报量不自建账本；best-effort 不阻断）。
+        await growth_metering_service.report_crawl_usage(
+            db,
+            user_id=getattr(job, 'user_id', None) or user_id,
+            job_id=job.id,
+            success_count=job.firecrawl_success_count,
+        )
         return model_to_dict(job)
 
     async def get_job(self, db: AsyncSession, *, job_id: int, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:
