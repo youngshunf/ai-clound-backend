@@ -19,6 +19,7 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.playbook import Playbook
 from backend.app.hasn_growth.service.dispatch_service import (
     get_channel_setting,
     growth_dispatch_service,
@@ -26,6 +27,7 @@ from backend.app.hasn_growth.service.dispatch_service import (
 )
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.playbook_service import playbook_service
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -416,3 +418,27 @@ async def test_channel_setting_roundtrip(session) -> None:
     await set_wechat_auto_send(session, user_id=uid, confirmed=False)
     await set_wechat_auto_send(session, user_id=uid, confirmed=False)
     assert (await get_channel_setting(session, user_id=uid)) == {'wechat_auto_send_confirmed': False}
+
+
+async def test_playbook_list_for_owner_builtin_and_isolation(session) -> None:
+    """M7 打法管理：owner 见内置 ∪ 本人自定义，不见他人自定义；内置排前（只读展示）。"""
+    uid_a = 991000 + int(uuid.uuid4().int % 400)
+    uid_b = uid_a + 7777
+    mine = Playbook(user_id=uid_a, name='我的获客打法', is_builtin=False, enabled=True, goal='约见')
+    others = Playbook(user_id=uid_b, name='别人的打法', is_builtin=False, enabled=True)
+    session.add_all([mine, others])
+    await session.flush()
+
+    rows = await playbook_service.list_for_owner(session, user_id=uid_a)
+    names = [r['name'] for r in rows]
+    assert '我的获客打法' in names  # 本人自定义可见
+    assert '别人的打法' not in names  # 他人自定义不可见（owner 隔离）
+    builtins = [r for r in rows if r['is_builtin']]
+    assert builtins, '内置打法（M5 seed）应存在'
+    # 内置排前：第一条内置的下标 < 第一条非内置的下标
+    first_builtin = next(i for i, r in enumerate(rows) if r['is_builtin'])
+    first_custom = next((i for i, r in enumerate(rows) if not r['is_builtin']), len(rows))
+    assert first_builtin < first_custom
+    # 只读字段齐备（打法管理页渲染目标/节奏/语气/止损）
+    for key in ('id', 'name', 'goal', 'target_profile', 'cadence', 'tone_guide', 'exit_rule', 'is_builtin'):
+        assert key in rows[0]

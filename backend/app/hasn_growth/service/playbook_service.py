@@ -1,5 +1,7 @@
 from typing import Any, Sequence
 
+import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_playbook import playbook_dao
@@ -7,6 +9,22 @@ from backend.app.hasn_growth.model import Playbook
 from backend.app.hasn_growth.schema.playbook import CreatePlaybookParam, DeletePlaybookParam, UpdatePlaybookParam
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
+
+
+def _playbook_to_dict(p: Playbook) -> dict[str, Any]:
+    """owner 视图序列化（打法管理页只读展示：目标/节奏/语气/止损）。"""
+    return {
+        'id': p.id,
+        'name': p.name,
+        'enabled': p.enabled,
+        'goal': p.goal,
+        'target_profile': p.target_profile,
+        'cadence': p.cadence,
+        'tone_guide': p.tone_guide,
+        'exit_rule': p.exit_rule,
+        'is_builtin': p.is_builtin,
+        'user_id': p.user_id,
+    }
 
 
 class PlaybookService:
@@ -45,6 +63,28 @@ class PlaybookService:
         """
         playbook_list = await playbook_dao.get_all(db)
         return playbook_list
+
+    @staticmethod
+    async def list_for_owner(db: AsyncSession, *, user_id: int) -> list[dict[str, Any]]:
+        """owner 可见打法列表（内置 ∪ 本人自定义），打法管理页只读展示。
+
+        内置（``is_builtin=true`` 或 ``user_id IS NULL``）对所有 owner 可见；自定义仅本人。
+        内置排前，再按名称稳定排序。
+        """
+        rows = (
+            await db.execute(
+                sa.select(Playbook)
+                .where(
+                    sa.or_(
+                        Playbook.is_builtin.is_(True),
+                        Playbook.user_id.is_(None),
+                        Playbook.user_id == user_id,
+                    )
+                )
+                .order_by(Playbook.is_builtin.desc(), Playbook.name.asc(), Playbook.id.asc())
+            )
+        ).scalars().all()
+        return [_playbook_to_dict(p) for p in rows]
 
     @staticmethod
     async def create(*, db: AsyncSession, obj: CreatePlaybookParam) -> None:

@@ -23,6 +23,7 @@ from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.playbook_service import playbook_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -226,6 +227,15 @@ async def update_channel_setting(
         db, user_id=request.user.id, confirmed=obj.wechat_auto_send_confirmed
     )
     data = await dispatch_service.get_channel_setting(db, user_id=request.user.id)
+    return response_base.success(data=data)
+
+
+# ---------------- 打法管理（只读：内置 ∪ 本人自定义） ----------------
+
+
+@router.get('/playbooks', summary='[Owner] 打法列表（内置 + 自定义，目标/节奏/语气/止损）', dependencies=[DependsJwtAuth])
+async def list_playbooks(request: Request, db: CurrentSession) -> ResponseModel:
+    data = await playbook_service.list_for_owner(db, user_id=request.user.id)
     return response_base.success(data=data)
 
 
