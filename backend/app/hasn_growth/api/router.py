@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+from fastapi.routing import APIRoute
 
 from backend.core.conf import settings
 
@@ -100,7 +101,19 @@ def _build_routers(seg: str) -> tuple[APIRouter, APIRouter, APIRouter, APIRouter
     return _v1, _app, _open, _agent
 
 
+def _prefix_route_names(router: APIRouter, prefix: str) -> APIRouter:
+    """给 router 内全部路由名加前缀，避免与 canonical 同名（route name 全局唯一，
+    薄转发与 canonical 双挂载同一批子路由会产生重名，详见 utils.openapi.ensure_unique_route_names）。"""
+    for route in router.routes:
+        if isinstance(route, APIRoute):
+            route.name = f'{prefix}{route.name}'
+            route.operation_id = route.name
+    return router
+
+
 # canonical：/api/v1/growth/*
 v1, app, open_api, agent = _build_routers('growth')
-# 薄转发：/api/v1/lead-automation/*（M8 退役）
-legacy_v1, legacy_app, legacy_open, legacy_agent = _build_routers('lead-automation')
+# 薄转发：/api/v1/lead-automation/*（M8 退役）——路由名加 legacy_ 前缀保持全局唯一
+legacy_v1, legacy_app, legacy_open, legacy_agent = (
+    _prefix_route_names(r, 'legacy_') for r in _build_routers('lead-automation')
+)
