@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# knowledge 应用 ID（凭据下发/provisioning 已退役，仅企业实例登记面仍引用）
+KNOWLEDGE_APP_ID = 'knowledge'
+
 import re
 import secrets
 
@@ -10,7 +13,6 @@ import sqlalchemy as sa
 from pypinyin import Style, lazy_pinyin
 
 from backend.app.hasn.model import (
-    HasnAppCredential,
     HasnAppInstance,
     HasnEnterprise,
     HasnEnterpriseInviteCode,
@@ -19,7 +21,6 @@ from backend.app.hasn.model import (
     HasnWorkspaceApp,
 )
 from backend.app.admin.model.user import User
-from backend.app.hasn.service import ragflow_subscriber as _ragflow_subscriber  # noqa: F401
 from backend.app.hasn.service import workspace_notification_subscriber as _workspace_notifications  # noqa: F401
 from backend.app.hasn.service.enterprise_application_service import InviteCodePolicy
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
@@ -30,7 +31,6 @@ from backend.app.hasn.service.instance_resolver import (
     instance_resolver,
 )
 # RF-CLOUD：数据面中转已删，RAGFlowClient 不再被本服务引用，故合并时去掉该 import。
-from backend.app.hasn.service.ragflow_provisioning_service import KNOWLEDGE_APP_ID, ragflow_provisioning_service
 from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 from backend.app.hasn.service.workbench_event_bus import workbench_event_bus
 from backend.app.hasn.service import app_catalog_service
@@ -740,70 +740,6 @@ class WorkbenchDomainService:
         await self.workbench_bus.publish('on_app_disabled', payload)
         return _workspace_app_payload(row)
 
-    async def get_current_knowledge_credentials(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
-        workspace = await self.get_active_workspace(db, user_id=user_id)
-        instance = await self._resolve_knowledge_instance(db, workspace=workspace)
-        if instance is None:
-            return {'workspace': workspace, 'status': 'pending', 'credential': None}
-
-        credential = await _scalar(
-            db,
-            sa.select(HasnAppCredential).where(
-                HasnAppCredential.user_id == user_id,
-                HasnAppCredential.app_instance_id == instance.id,
-            ),
-        )
-        if credential is None:
-            return {
-                'workspace': workspace,
-                'status': 'pending',
-                'instance': _ragflow_instance_payload(instance),
-                'credential': None,
-            }
-        return {
-            'workspace': workspace,
-            'status': credential.status,
-            'instance': _ragflow_instance_payload(instance),
-            'credential': _credential_payload(credential),
-        }
-
-    async def refresh_current_knowledge_credentials(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
-        workspace = await self.get_active_workspace(db, user_id=user_id)
-        instance = await self._resolve_knowledge_instance(db, workspace=workspace)
-        if instance is None:
-            return {'workspace': workspace, 'status': 'pending', 'credential': None}
-
-        credential = await _scalar(
-            db,
-            sa.select(HasnAppCredential).where(
-                HasnAppCredential.user_id == user_id,
-                HasnAppCredential.app_instance_id == instance.id,
-            ),
-        )
-        if instance.status == 'active' and (credential is None or credential.status != 'active'):
-            await ragflow_provisioning_service.provision_one(user_id, instance.id)
-            credential = await _scalar(
-                db,
-                sa.select(HasnAppCredential).where(
-                    HasnAppCredential.user_id == user_id,
-                    HasnAppCredential.app_instance_id == instance.id,
-                ),
-            )
-
-        if credential is None:
-            return {
-                'workspace': workspace,
-                'status': 'pending',
-                'instance': _ragflow_instance_payload(instance),
-                'credential': None,
-            }
-        return {
-            'workspace': workspace,
-            'status': credential.status,
-            'instance': _ragflow_instance_payload(instance),
-            'credential': _credential_payload(credential),
-        }
-
     # RF-CLOUD：数据面方法（list/create datasets、search、upload）已删除。
     # 知识库浏览/检索/上传现由 hasn-node daemon 经 KnowledgeAdapter 直连 RagFlow
     # （控制面/数据面分离，设计 §4.5）；云端 service 只保留凭据下发 + 企业实例配置。
@@ -1245,31 +1181,6 @@ def _ragflow_instance_payload(instance) -> dict[str, Any]:
         'default_embd_id': config.get('default_embd_id'),
         'default_llm_id': config.get('default_llm_id'),
         'status': instance.status,
-    }
-
-
-def _credential_payload(credential) -> dict[str, Any]:
-    # The daemon is the sole caller (owner-JWT, behind /knowledge/credentials*).
-    # For daemon-direct it needs the live tenant key to build a RAGFlow adapter;
-    # the daemon then keeps it in its own per-owner encrypted store and redacts
-    # before anything reaches the WebUI/WS (design §2.3). Only an *active*
-    # credential ships a usable key.
-    config = credential.config or {}
-    api_key = (
-        key_encryption.decrypt(credential.credential_ref)
-        if credential.status == 'active' and credential.credential_ref
-        else None
-    )
-    return {
-        'id': credential.id,
-        'user_id': credential.user_id,
-        'instance_id': credential.app_instance_id,
-        'ragflow_user_id': config.get('ragflow_user_id', ''),
-        'ragflow_tenant_id': config.get('ragflow_tenant_id', ''),
-        'api_key_encrypted': 'stored' if credential.credential_ref else None,
-        'api_key': api_key,
-        'status': credential.status,
-        'last_error': credential.last_error,
     }
 
 

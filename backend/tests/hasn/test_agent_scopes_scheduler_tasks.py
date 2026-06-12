@@ -181,26 +181,3 @@ async def test_node_scheduler_selects_nodes_and_enqueues_provision(monkeypatch: 
     assert redis.expired[-1] == (f'{module.PUSH_PREFIX}:node-large', 3600)
 
 
-@pytest.mark.asyncio
-async def test_ragflow_compensation_task_returns_count_and_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn import tasks as module
-
-    class SuccessActions:
-        async def compensate_pending_credentials(self) -> int:
-            return 3
-
-    monkeypatch.setattr(module, 'SqlAlchemyRAGFlowActions', SuccessActions)
-    assert await module.hasn_ragflow_compensate_pending_credentials._orig_run() == 'created=3'
-
-    class FailingActions:
-        async def compensate_pending_credentials(self) -> int:
-            raise RuntimeError('down')
-
-    def retry(*, exc: Exception, countdown: int) -> Exception:
-        assert countdown == 60
-        return RuntimeError(f'retry:{exc}')
-
-    monkeypatch.setattr(module, 'SqlAlchemyRAGFlowActions', FailingActions)
-    monkeypatch.setattr(module.hasn_ragflow_compensate_pending_credentials, 'retry', retry)
-    with pytest.raises(RuntimeError, match='retry:down'):
-        await module.hasn_ragflow_compensate_pending_credentials._orig_run()
