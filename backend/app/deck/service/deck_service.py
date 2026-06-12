@@ -223,10 +223,45 @@ class DeckService:
         return page
 
     @staticmethod
+    async def _move_page_to_position(db: AsyncSession, *, page: Page, new_position: int) -> None:
+        """把 page 移到 new_position；若该位被同 deck 另一未删页占用则与之原子交换。
+
+        重排序由调用方（daemon 同步 / webui）逐页 PUT 绝对 position 实现；逐条落库时
+        中间态会让两页短暂落在同一 position，撞 `(deck_id, position) WHERE deleted_time IS NULL`
+        部分唯一索引。这里在同一事务内用「临时负位」两段式腾挪做两页交换，避开约束。
+        负位置对未删页天然空闲（position >= 0），故临时位安全。逐页交换对任意推送顺序
+        都收敛到目标排列（每次只换被推页与当前占位页）。
+        """
+        old_position = page.position
+        occupant = (
+            await db.execute(
+                select(Page).where(
+                    Page.deck_id == page.deck_id,
+                    Page.deleted_time.is_(None),
+                    Page.position == new_position,
+                    Page.id != page.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if occupant is None:
+            page.position = new_position
+            return
+        # 两段式：本页先停到临时负位腾出 old_position → 占位页落 old_position → 本页落 new_position。
+        page.position = -(page.id + 1)
+        await db.flush()
+        occupant.position = old_position
+        occupant.rev += 1
+        await db.flush()
+        page.position = new_position
+
+    @staticmethod
     async def update_page(db: AsyncSession, *, owner_id: str, page_id: int, fields: dict[str, Any]) -> dict[str, Any]:
         page = await DeckService._get_owned_page(db, owner_id=owner_id, page_id=page_id)
+        new_position = fields.get('position')
+        if new_position is not None and new_position != page.position:
+            await DeckService._move_page_to_position(db, page=page, new_position=new_position)
         for key, value in fields.items():
-            if key in _PAGE_MUTABLE and value is not None:
+            if key in _PAGE_MUTABLE and key != 'position' and value is not None:
                 setattr(page, key, value)
         page.rev += 1
         await db.flush()
