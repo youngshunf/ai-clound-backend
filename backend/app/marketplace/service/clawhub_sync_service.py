@@ -4,14 +4,15 @@ ClawHub Sync Service
 Syncs skills from ClawHub marketplace to Huanxing marketplace.
 """
 import json
-import os
 import shutil
 import zipfile
+
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.marketplace.crud.crud_marketplace_skill import marketplace_skill_dao
@@ -19,12 +20,13 @@ from backend.app.marketplace.crud.crud_marketplace_skill_version import marketpl
 from backend.app.marketplace.crud.crud_marketplace_sync_log import marketplace_sync_log_dao
 from backend.app.marketplace.schema.marketplace_sync_log import (
     CreateMarketplaceSyncLogParam,
-    UpdateMarketplaceSyncLogParam
+    UpdateMarketplaceSyncLogParam,
 )
 from backend.app.marketplace.service.category_taxonomy import normalize_category
 from backend.app.marketplace.service.skill_content_extractor import (
     extract_skill_body,
     list_skill_files,
+    raw_bilingual_body,
     resolve_bilingual_body,
 )
 from backend.app.marketplace.service.translation_service import translation_service
@@ -35,7 +37,7 @@ from backend.core.conf import settings
 class ClawHubSyncService:
     """ClawHub sync service for marketplace skills"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.clawhub_api_url = getattr(settings, 'CLAWHUB_API_URL', 'https://clawhub.ai/api/v1')
         self.hub_local_path = Path(getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub'))
         self.sync_filters = {
@@ -61,6 +63,9 @@ class ClawHubSyncService:
         limit: int | None = None,
         min_downloads: int | None = None,
         dry_run: bool = False,
+        translate_body: bool = True,
+        batch_commit_size: int = 50,
+        resume: bool = False,
     ) -> dict[str, Any]:
         """
         Sync skills from ClawHub
@@ -76,6 +81,13 @@ class ClawHubSyncService:
                 0 -> no threshold). 例如 100 = "下载量超过 100 才同步"。
             dry_run: 只评估不落库：枚举 + 按阈值过滤后，统计命中数量与磁盘占用预估，
                 不下载、不翻译、不写库、不建同步日志。用于先确认规模再全量。
+            translate_body: True（默认）逐技能翻译 SKILL.md 正文（双语，按 3500 字符
+                分块，长文档多次 LLM）；False 时正文**原文填充**（detected 源语言侧存原文、
+                另一侧 null，序列化器回退显示原文），**零正文 LLM**——大批量灌库时把每技能
+                的 LLM 调用从「1 元数据 + N 正文块」降到「1 元数据」，名称/描述照常翻译。
+            batch_commit_size: 每处理 N 个技能 commit 一次（崩溃只丢最近一批、进度可见、
+                可断点续传）。
+            resume: True 时跳过库中已存在的 clawhub slug（重跑只补未同步的，不重复翻译/下载）。
 
         Returns:
             Sync result with statistics
@@ -110,7 +122,8 @@ class ClawHubSyncService:
             # Flush to get the ID
             await db.flush()
             # Query the newly created log (get the latest one)
-            from sqlalchemy import select, desc
+            from sqlalchemy import desc, select
+
             from backend.app.marketplace.model import MarketplaceSyncLog
             stmt = select(MarketplaceSyncLog).order_by(desc(MarketplaceSyncLog.id)).limit(1)
             result = await db.execute(stmt)
@@ -128,8 +141,14 @@ class ClawHubSyncService:
             # Filter skills (downloads 阈值 + 排序 + top-N 截断)
             filtered_skills = self._filter_skills(skills_data, effective_limit, effective_min_downloads)
 
-            # Sync to database（逐个落库 + 磁盘硬闸；提取成 helper 降复杂度）
-            outcome = await self._sync_filtered_skills(db, filtered_skills)
+            # Sync to database（逐个落库 + 磁盘硬闸 + 分批提交/断点续传；提取成 helper 降复杂度）
+            outcome = await self._sync_filtered_skills(
+                db,
+                filtered_skills,
+                translate_body=translate_body,
+                batch_commit_size=batch_commit_size,
+                resume=resume,
+            )
             paused_reason = outcome['paused_reason']
 
             # 状态：磁盘暂停或有失败 -> partial；否则 success。
@@ -155,6 +174,7 @@ class ClawHubSyncService:
                 'synced': outcome['synced'],
                 'failed': outcome['failed'],
                 'skipped_disk': outcome['skipped_disk'],
+                'skipped_existing': outcome.get('skipped_existing', 0),
                 'paused': paused_reason is not None,
                 'paused_reason': paused_reason,
                 'errors': outcome['errors']
@@ -180,45 +200,147 @@ class ClawHubSyncService:
         self,
         db: AsyncSession,
         filtered_skills: list[dict[str, Any]],
+        *,
+        translate_body: bool = True,
+        batch_commit_size: int = 50,
+        resume: bool = False,
     ) -> dict[str, Any]:
-        """逐个落库 filtered_skills；clawhub 目录占用达上限即暂停后续下载（安全兜底）。
+        """逐个落库 filtered_skills；分批提交 + 断点续传 + 磁盘硬闸（安全兜底）。
 
-        按 downloads 降序处理（先收高价值），单个失败不中断整体。返回计数 + 暂停原因。
+        按 downloads 降序处理（先收高价值）。健壮性：
+        - resume=True 先跳过库中已存在的 clawhub slug（重跑只补未同步的）。
+        - 名称/描述/标签**批量预翻译**（多技能拼一次 LLM，slug→译文），正文按
+          ``translate_body`` 决定翻不翻（原文填充时正文零 LLM）。
+        - 每个技能在 SAVEPOINT 内落库：单个失败只回滚自己、不污染整批事务。
+        - 每 ``batch_commit_size`` 个 ``commit`` 一次：崩溃只丢最近一批、进度可见、可续传。
+        - 磁盘硬闸每批检查一次（避免每技能 rglob 的 O(n²) 开销）。
         """
         synced_count = 0
         failed_count = 0
         skipped_disk = 0
+        skipped_existing = 0
         errors: list[str] = []
         paused_reason: str | None = None
-        total = len(filtered_skills)
         clawhub_root = self.hub_local_path / 'clawhub'
 
-        for index, skill_data in enumerate(filtered_skills):
-            used = self._dir_size_bytes(clawhub_root)
-            if used >= self.max_disk_bytes:
-                skipped_disk = total - index
-                paused_reason = (
-                    f"DISK_CAP_REACHED: clawhub 占用 {used / 1024 ** 3:.2f}GB "
-                    f">= 上限 {self.max_disk_bytes / 1024 ** 3:.0f}GB，"
-                    f"在第 {index}/{total} 个技能处暂停，剩余 {skipped_disk} 个未同步"
+        # 断点续传：剔除库中已存在的 slug（不重复翻译/下载）。
+        if resume:
+            existing = await self._existing_clawhub_slugs(db)
+            before = len(filtered_skills)
+            filtered_skills = [s for s in filtered_skills if s.get('slug') not in existing]
+            skipped_existing = before - len(filtered_skills)
+            if skipped_existing:
+                log.info(
+                    f"[clawhub] resume：跳过 {skipped_existing} 个已同步技能，"
+                    f"待同步 {len(filtered_skills)} 个"
                 )
-                log.warning(paused_reason)
-                break
+
+        total = len(filtered_skills)
+        commit_size = max(1, batch_commit_size)
+
+        # 名称/描述/标签批量预翻译：slug -> 译文 dict（缺失项 _sync_skill 回退逐条）。
+        prepared_map = await self._batch_prepare_metadata(filtered_skills)
+
+        for index, skill_data in enumerate(filtered_skills):
+            # 磁盘硬闸：每批起始检查一次（rglob 昂贵，不每技能跑）。
+            if index % commit_size == 0:
+                used = self._dir_size_bytes(clawhub_root)
+                if used >= self.max_disk_bytes:
+                    skipped_disk = total - index
+                    paused_reason = (
+                        f"DISK_CAP_REACHED: clawhub 占用 {used / 1024 ** 3:.2f}GB "
+                        f">= 上限 {self.max_disk_bytes / 1024 ** 3:.0f}GB，"
+                        f"在第 {index}/{total} 个技能处暂停，剩余 {skipped_disk} 个未同步"
+                    )
+                    log.warning(paused_reason)
+                    break
+            slug = skill_data.get('slug')
             try:
-                await self._sync_skill(db, skill_data)
+                # SAVEPOINT：单技能失败只回滚自己，不污染整批事务（async session
+                # 一旦 flush 出错会进入 PendingRollback，savepoint 隔离避免连累后续）。
+                async with db.begin_nested():
+                    await self._sync_skill(
+                        db,
+                        skill_data,
+                        prepared=prepared_map.get(slug),
+                        translate_body=translate_body,
+                    )
                 synced_count += 1
             except Exception as e:
                 failed_count += 1
-                errors.append(f"{skill_data.get('slug', 'unknown')}: {str(e)}")
-                log.error(f"Failed to sync skill {skill_data.get('slug')}: {e}")
+                errors.append(f"{slug or 'unknown'}: {e!s}")
+                log.error(f"Failed to sync skill {slug}: {e}")
+
+            # 分批提交：每 commit_size 个落盘一次。
+            if (index + 1) % commit_size == 0:
+                try:
+                    await db.commit()
+                    log.info(
+                        f"[clawhub] 进度 {index + 1}/{total} 已提交"
+                        f"（synced={synced_count} failed={failed_count}）"
+                    )
+                except Exception as e:
+                    await db.rollback()
+                    errors.append(f"batch_commit@{index + 1}: {e!s}")
+                    log.error(f"[clawhub] 分批提交失败 @ {index + 1}: {e}")
 
         return {
             'synced': synced_count,
             'failed': failed_count,
             'skipped_disk': skipped_disk,
+            'skipped_existing': skipped_existing,
             'errors': errors,
             'paused_reason': paused_reason,
         }
+
+    async def _existing_clawhub_slugs(self, db: AsyncSession) -> set[str]:
+        """库中已存在的 clawhub 技能 slug 集合（断点续传用，避免重复翻译/下载）。"""
+        from sqlalchemy import select
+
+        from backend.app.marketplace.model import MarketplaceSkill
+
+        stmt = select(MarketplaceSkill.slug).where(MarketplaceSkill.source_type == 'clawhub')
+        result = await db.execute(stmt)
+        return {row for row in result.scalars().all() if row}
+
+    async def _batch_prepare_metadata(
+        self,
+        skills: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """批量预翻译 name/description/tags（多技能拼一次 LLM），返回 slug -> 译文 dict。
+
+        复用 ``translation_service.batch_translate_skill_metadata``（默认 10 个/批），把
+        13377 个技能的元数据 LLM 调用从「逐条 13377 次」压到「~批数」。整体异常时回退空
+        dict，由 ``_sync_skill`` 逐条翻译兜底（不影响正确性，只影响调用次数）。
+        """
+        if not skills:
+            return {}
+        items = [
+            {
+                'name': s.get('displayName') or s.get('slug'),
+                'description': s.get('summary', ''),
+                'tag_hints': self._extract_tag_hints(s),
+                'source_lang': None,
+            }
+            for s in skills
+        ]
+        batch_size = int(getattr(settings, 'TRANSLATION_BATCH_SIZE', 10) or 10)
+        concurrency = int(getattr(settings, 'MARKETPLACE_CLAWHUB_TRANSLATE_CONCURRENCY', 3) or 3)
+        try:
+            results = await translation_service.batch_translate_skill_metadata(
+                items,
+                batch_size=batch_size,
+                concurrency=concurrency,
+            )
+        except Exception as e:
+            log.warning(f"[clawhub] 批量元数据翻译失败，回退逐条翻译：{e}")
+            return {}
+        prepared: dict[str, dict[str, Any]] = {}
+        for skill, result in zip(skills, results):
+            slug = skill.get('slug')
+            if slug and result:
+                prepared[slug] = result
+        return prepared
 
     async def _fetch_all_skills(self) -> list[dict[str, Any]]:
         """
@@ -434,13 +556,24 @@ class ClawHubSyncService:
             'top_by_downloads': top,
         }
 
-    async def _sync_skill(self, db: AsyncSession, clawhub_skill: dict[str, Any]):
+    async def _sync_skill(
+        self,
+        db: AsyncSession,
+        clawhub_skill: dict[str, Any],
+        *,
+        prepared: dict[str, Any] | None = None,
+        translate_body: bool = True,
+    ) -> None:
         """
         Sync a single skill from ClawHub to database
 
         Args:
             db: Database session
             clawhub_skill: ClawHub skill data
+            prepared: 预翻译好的元数据（name_en/zh、description_en/zh、source_language、
+                tags_en/zh、emoji）。批量同步先 ``_batch_prepare_metadata`` 拼一次 LLM，
+                这里直接复用；None 时回退逐条 ``translate_skill_metadata``（单技能/webhook 路径）。
+            translate_body: True 翻译 SKILL.md 正文（双语）；False 正文原文填充（零正文 LLM）。
         """
         # Get owner handle from detail API
         slug = clawhub_skill['slug']
@@ -463,7 +596,8 @@ class ClawHubSyncService:
         name = clawhub_skill.get('displayName') or slug
         description = clawhub_skill.get('summary', '')
 
-        translated = await translation_service.translate_skill_metadata(
+        # 批量预翻译命中则复用（省 LLM）；否则逐条翻译兜底。
+        translated = prepared or await translation_service.translate_skill_metadata(
             name=name,
             description=description,
             tag_hints=self._extract_tag_hints(clawhub_skill),
@@ -478,7 +612,7 @@ class ClawHubSyncService:
         # Prepare skill record
         from backend.app.marketplace.schema.marketplace_skill import (
             CreateMarketplaceSkillParam,
-            UpdateMarketplaceSkillParam
+            UpdateMarketplaceSkillParam,
         )
 
         now = datetime.now()
@@ -554,6 +688,7 @@ class ClawHubSyncService:
                     skill_dir = self.hub_local_path / 'clawhub' / owner_handle / slug
                     body_en, body_zh, files_json = await self._extract_body_and_files(
                         current_skill, translated['source_language'], skill_dir,
+                        translate_body=translate_body,
                     )
                     update_data = {
                         'skill_id': skill_id,
@@ -591,14 +726,18 @@ class ClawHubSyncService:
                     await marketplace_skill_dao.update(db, current_skill.id, update_param)
 
             # Sync version metadata
-            await self._sync_skill_version(db, skill_id_for_version, latest_version)
+            await self._sync_skill_version(
+                db, skill_id_for_version, latest_version, translate_body=translate_body,
+            )
 
     async def _sync_skill_version(
         self,
         db: AsyncSession,
         skill_id: str,
-        version_data: dict[str, Any]
-    ):
+        version_data: dict[str, Any],
+        *,
+        translate_body: bool = True,
+    ) -> None:
         """
         Sync a skill version
 
@@ -606,6 +745,7 @@ class ClawHubSyncService:
             db: Database session
             skill_id: Skill ID (e.g., "clawhub/my-skill")
             version_data: Version data from ClawHub
+            translate_body: False 时 changelog 也算「内容」，原文填充不翻译（零 LLM）。
         """
         version = version_data.get('version', '1.0.0')
 
@@ -614,17 +754,18 @@ class ClawHubSyncService:
             db, skill_id, version
         )
 
-        # Translate changelog
+        # Translate changelog（translate_body=False 时原文填充，不调 LLM）
         changelog = version_data.get('changelog', '')
-        if changelog:
+        if changelog and translate_body:
             translated_changelog = await translation_service.translate_skill_metadata(
                 description=changelog
             )
             changelog_en = translated_changelog['description_en']
-            changelog_zh = translated_changelog['description_zh']
+            translated_changelog['description_zh']
+        elif changelog:
+            changelog_en = changelog  # 原文填充（changelog_en 作默认展示）
         else:
             changelog_en = None
-            changelog_zh = None
 
         # Convert timestamp to datetime
         created_at = version_data.get('createdAt')
@@ -636,7 +777,7 @@ class ClawHubSyncService:
         # Prepare version record
         from backend.app.marketplace.schema.marketplace_skill_version import (
             CreateMarketplaceSkillVersionParam,
-            UpdateMarketplaceSkillVersionParam
+            UpdateMarketplaceSkillVersionParam,
         )
 
         version_data_dict = {
@@ -726,10 +867,9 @@ class ClawHubSyncService:
         # Default to 'other' if available, otherwise first category
         if 'other' in available_categories:
             return 'other'
-        elif available_categories:
+        if available_categories:
             return available_categories[0]
-        else:
-            return 'other'
+        return 'other'
 
     async def _download_skill_file(
         self,
@@ -777,15 +917,15 @@ class ClawHubSyncService:
 
                 # Extract the zip file
                 if zipfile.is_zipfile(zip_file):
-                    log.info(f"Extracting skill file...")
+                    log.info("Extracting skill file...")
                     with zipfile.ZipFile(zip_file, 'r') as zip_ref:
                         zip_ref.extractall(skill_dir)
 
                     # Remove the zip file after extraction
                     zip_file.unlink()
-                    log.info(f"Extracted and removed zip file")
+                    log.info("Extracted and removed zip file")
                 else:
-                    log.warning(f"Downloaded file is not a zip file, keeping as-is")
+                    log.warning("Downloaded file is not a zip file, keeping as-is")
 
                 # Return the relative path from hub root
                 return f"clawhub/{owner_handle}/{slug}"
@@ -799,30 +939,37 @@ class ClawHubSyncService:
         existing_skill: Any,
         source_language: str | None,
         skill_dir: Path,
+        *,
+        translate_body: bool = True,
     ) -> tuple[str | None, str | None, str]:
         """从解压后的技能目录提取正文(双语)+文件清单 JSON。
 
         与 github_sync 同源（共享 skill_content_extractor）。SKILL.md 缺失或目录
         不存在时正文留空、文件清单为 ``[]``（零 fake，如实反映“没有正文”）。文件清单
         仅含名称+大小，不含内容。
+
+        translate_body=True 时调 ``resolve_bilingual_body`` 翻译正文（双语，分块多次
+        LLM）；False 时调 ``raw_bilingual_body`` 原文填充（源语言侧存原文、另一侧 null，
+        序列化器回退显示原文）——大批量灌库省掉正文逐块翻译的几万次 LLM。
         """
         skill_md = skill_dir / 'SKILL.md'
         body = ''
-        if skill_md.exists():  # noqa: ASYNC240
+        if skill_md.exists():
             try:
-                body = extract_skill_body(skill_md.read_text(encoding='utf-8'))  # noqa: ASYNC240
+                body = extract_skill_body(skill_md.read_text(encoding='utf-8'))
             except OSError as exc:
                 log.warning(f"Failed to read SKILL.md at {skill_md}: {exc}")
         files = list_skill_files(skill_dir) if skill_dir.exists() else []  # noqa: ASYNC240
-        body_en, body_zh = await resolve_bilingual_body(existing_skill, source_language, body)
+        if translate_body:
+            body_en, body_zh = await resolve_bilingual_body(existing_skill, source_language, body)
+        else:
+            body_en, body_zh = raw_bilingual_body(source_language, body)
         return body_en, body_zh, json.dumps(files, ensure_ascii=False)
 
     @staticmethod
     def _extract_tag_hints(clawhub_skill: dict[str, Any]) -> list[str]:
         tags = clawhub_skill.get('tags')
-        if isinstance(tags, list):
-            normalized = [str(tag).strip() for tag in tags if str(tag).strip()]
-        elif isinstance(tags, dict):
+        if isinstance(tags, (list, dict)):
             normalized = [str(tag).strip() for tag in tags if str(tag).strip()]
         elif isinstance(tags, str):
             normalized = [tag.strip() for tag in tags.split(',') if tag.strip()]

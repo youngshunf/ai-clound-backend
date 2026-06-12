@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlparse
 
 from backend.app.marketplace.service.clawhub_sync_service import ClawHubSyncService
+from backend.app.marketplace.service.skill_content_extractor import raw_bilingual_body
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -145,3 +146,46 @@ def test_fetch_all_skills_follows_cursor() -> None:
         thread.join(timeout=5)
 
     assert [s['slug'] for s in skills] == ['s0', 's1', 's2', 's3', 's4']
+
+
+# ── 正文原文填充（translate_body=False 路径，零 LLM） ─────────────────────────
+def test_raw_bilingual_body_english_keeps_original_on_en_side() -> None:
+    # 英文正文 -> 原文落 body_en，body_zh 留 None（序列化器回退显示原文）。
+    body_en, body_zh = raw_bilingual_body(None, 'This is a plain English readme body.')
+    assert body_en == 'This is a plain English readme body.'
+    assert body_zh is None
+
+
+def test_raw_bilingual_body_chinese_keeps_original_on_zh_side() -> None:
+    # 中文正文 -> 原文落 body_zh，body_en 留 None。
+    text = '这是一段中文技能说明正文内容，用于验证原文填充落在中文侧。'
+    body_en, body_zh = raw_bilingual_body(None, text)
+    assert body_zh == text
+    assert body_en is None
+
+
+def test_raw_bilingual_body_empty_clears_both_sides() -> None:
+    assert raw_bilingual_body(None, '   ') == (None, None)
+
+
+def test_extract_body_and_files_raw_mode_skips_translation(tmp_path: Path) -> None:
+    # translate_body=False：从 SKILL.md 提取正文，原文填充（不调 translate_markdown/LLM），
+    # 文件清单含 SKILL.md。整条路径纯本地、零网络。
+    skill_dir = tmp_path / 'owner' / 'demo'
+    skill_dir.mkdir(parents=True)
+    (skill_dir / 'SKILL.md').write_text(
+        'A concise English skill body for raw-fill verification.', encoding='utf-8'
+    )
+    svc = ClawHubSyncService()
+    body_en, body_zh, files_json = asyncio.run(
+        svc._extract_body_and_files(None, None, skill_dir, translate_body=False)
+    )
+    assert body_en is not None and 'raw-fill verification' in body_en
+    assert body_zh is None  # 未翻译，另一侧留空
+    assert 'SKILL.md' in files_json
+
+
+def test_batch_prepare_metadata_empty_is_noop() -> None:
+    # 空列表不触发任何 LLM，直接返回空映射。
+    svc = ClawHubSyncService()
+    assert asyncio.run(svc._batch_prepare_metadata([])) == {}

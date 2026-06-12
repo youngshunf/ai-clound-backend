@@ -15,13 +15,17 @@ one implementation instead of drifting copies.
 
 from __future__ import annotations
 
+import operator
 import os
 import re
-from pathlib import Path
-from typing import Any
 
-from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
 from backend.app.marketplace.service.translation_service import translation_service
+
+if TYPE_CHECKING:
+    from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 
 _FRONTMATTER_RE = re.compile(r'\A---\s*\n.*?\n---\s*(?:\n|\Z)', re.DOTALL)
 
@@ -82,7 +86,7 @@ def list_skill_files(skill_dir: Path) -> list[dict[str, Any]]:
             except OSError:
                 size = None
             files.append({'path': file_path.relative_to(skill_dir).as_posix(), 'size': size})
-    files.sort(key=lambda item: item['path'])
+    files.sort(key=operator.itemgetter('path'))
     return files
 
 
@@ -124,4 +128,27 @@ async def resolve_bilingual_body(
         tgt_body = None
 
     sides = {src: body, tgt: tgt_body}
+    return sides.get('en'), sides.get('zh')
+
+
+def raw_bilingual_body(
+    source_language: str | None,
+    body: str,
+) -> tuple[str | None, str | None]:
+    """Resolve ``(body_en, body_zh)`` WITHOUT translating: original text on its
+    detected source side, ``None`` on the other.
+
+    Used by bulk seed syncs that intentionally skip body translation (cost/time):
+    the readme is stored as-is on its own language side, and the serializer falls
+    back to that side for the other language. Zero fake — we never duplicate the
+    source text mislabeled as a translation. An empty body clears both sides.
+
+    No I/O / no LLM, so this is a plain (sync) function unlike
+    :func:`resolve_bilingual_body`.
+    """
+    if not body.strip():
+        return None, None
+    src = detect_body_source_lang(body, source_language)
+    tgt = 'zh' if src == 'en' else 'en'
+    sides = {src: body, tgt: None}
     return sides.get('en'), sides.get('zh')

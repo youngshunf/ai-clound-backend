@@ -10,7 +10,11 @@
     # 先评估：只统计 downloads>100 的命中数量 + 预估占用，不下载不翻译不落库
     uv run python scripts/run_clawhub_sync.py --dry-run --min-downloads 100
 
-    # 再全量同步 downloads>100（不截断 top-N，磁盘到 50G 自动暂停）
+    # 大批量灌库推荐：名称/描述照翻（批量），正文原文填充（零正文 LLM），分批提交可续传
+    uv run python scripts/run_clawhub_sync.py --min-downloads 100 --limit 0 \
+        --no-translate-body --resume
+
+    # 完整翻译（含正文双语，慢且费 LLM——仅小批量/补译时用）
     uv run python scripts/run_clawhub_sync.py --min-downloads 100 --limit 0
 
     # 指定技能子集
@@ -39,6 +43,18 @@ async def main() -> int:
     )
     parser.add_argument('--limit', type=int, default=None, help='top-N 上限（默认用配置；0=不截断）')
     parser.add_argument('--skill-id', action='append', dest='skill_ids', default=None, help='限定到某些 slug（可重复）')
+    parser.add_argument(
+        '--no-translate-body', dest='translate_body', action='store_false', default=True,
+        help='正文不翻译、原文填充（零正文 LLM）；名称/描述仍批量翻译。大批量灌库推荐。'
+    )
+    parser.add_argument(
+        '--resume', action='store_true',
+        help='跳过库中已存在的 clawhub slug（重跑只补未同步的，不重复翻译/下载）'
+    )
+    parser.add_argument(
+        '--batch-commit-size', type=int, default=50,
+        help='每处理 N 个技能提交一次（崩溃只丢最近一批、进度可见；默认 50）'
+    )
     args = parser.parse_args()
 
     async with async_db_session() as db:
@@ -49,6 +65,9 @@ async def main() -> int:
             limit=args.limit,
             min_downloads=args.min_downloads,
             dry_run=args.dry_run,
+            translate_body=args.translate_body,
+            batch_commit_size=args.batch_commit_size,
+            resume=args.resume,
         )
 
     print('=== ClawHub sync result ===')
