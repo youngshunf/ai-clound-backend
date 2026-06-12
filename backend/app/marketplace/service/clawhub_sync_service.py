@@ -67,6 +67,7 @@ class ClawHubSyncService:
         translate_body: bool = True,
         batch_commit_size: int = 50,
         resume: bool = False,
+        require_engagement: bool = False,
     ) -> dict[str, Any]:
         """
         Sync skills from ClawHub
@@ -89,6 +90,9 @@ class ClawHubSyncService:
             batch_commit_size: 每处理 N 个技能 commit 一次（崩溃只丢最近一批、进度可见、
                 可断点续传）。
             resume: True 时跳过库中已存在的 clawhub slug（重跑只补未同步的，不重复翻译/下载）。
+            require_engagement: True 时只同步"有真实人气"的技能（downloads>0 或 stars>0），
+                丢弃 downloads=0 且 stars=0 的占位/冷门技能。取前 N 个真实人气技能时用它过滤噪音，
+                避免 top-N 用更新时间凑数补满 0/0 技能。
 
         Returns:
             Sync result with statistics
@@ -104,7 +108,12 @@ class ClawHubSyncService:
                 skills_data = await self._fetch_specific_skills(skill_ids)
             else:
                 skills_data = await self._fetch_all_skills()
-            filtered_skills = self._filter_skills(skills_data, effective_limit, effective_min_downloads)
+            filtered_skills = self._filter_skills(
+                skills_data,
+                effective_limit,
+                effective_min_downloads,
+                require_engagement=require_engagement,
+            )
             return self._build_dry_run_report(
                 total_fetched=len(skills_data),
                 filtered=filtered_skills,
@@ -140,7 +149,12 @@ class ClawHubSyncService:
                 skills_data = await self._fetch_all_skills()
 
             # Filter skills (downloads 阈值 + 排序 + top-N 截断)
-            filtered_skills = self._filter_skills(skills_data, effective_limit, effective_min_downloads)
+            filtered_skills = self._filter_skills(
+                skills_data,
+                effective_limit,
+                effective_min_downloads,
+                require_engagement=require_engagement,
+            )
 
             # Sync to database（逐个落库 + 磁盘硬闸 + 分批提交/断点续传；提取成 helper 降复杂度）
             outcome = await self._sync_filtered_skills(
@@ -486,11 +500,16 @@ class ClawHubSyncService:
     def _downloads_of(skill: dict[str, Any]) -> int:
         return (skill.get('stats') or {}).get('downloads') or 0
 
+    @staticmethod
+    def _stars_of(skill: dict[str, Any]) -> int:
+        return (skill.get('stats') or {}).get('stars') or 0
+
     def _filter_skills(
         self,
         skills: list[dict[str, Any]],
         limit: int | None = None,
         min_downloads: int = 0,
+        require_engagement: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Filter skills based on sync criteria
@@ -500,6 +519,9 @@ class ClawHubSyncService:
             limit: Top-N cap after sorting (falsy / <=0 -> full sync, no cap)
             min_downloads: 下载量阈值，只保留 stats.downloads **严格大于** 该值的技能
                 （<=0 -> 不设阈值，全收，向后兼容旧默认同步）。例如 100 = "下载量超过 100 才同步"。
+            require_engagement: 只保留"有真实人气"的技能，即 downloads>0 **或** stars>0
+                （丢弃 downloads=0 且 stars=0 的占位/冷门技能）。与 min_downloads 正交叠加：
+                取前 N 个真实人气技能时用它过滤噪音，避免按更新时间凑数补满 0/0 技能。
 
         Returns:
             Filtered list of skills（按 downloads 降序，再 stars、再更新时间）
@@ -510,11 +532,17 @@ class ClawHubSyncService:
             if threshold > 0
             else list(skills)
         )
+        if require_engagement:
+            eligible = [
+                s
+                for s in eligible
+                if self._downloads_of(s) > 0 or self._stars_of(s) > 0
+            ]
         ranked = sorted(
             eligible,
             key=lambda skill: (
                 self._downloads_of(skill),
-                (skill.get('stats') or {}).get('stars') or 0,
+                self._stars_of(skill),
                 skill.get('updatedAt') or skill.get('createdAt') or 0,
             ),
             reverse=True,
