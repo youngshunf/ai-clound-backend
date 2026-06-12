@@ -85,6 +85,125 @@ def test_absorb_migration_sets_schema_and_renames_de_prefixed() -> None:
         assert f"'{new_name}'" in mig
 
 
+# ============================ M2：7 张新业务表 + 应用注册 ============================
+
+_GROWTH_TABLES = (
+    'customer',
+    'opportunity',
+    'outreach_message',
+    'activity',
+    'playbook',
+    'form_submission',
+    'optout_record',
+)
+
+
+def test_m2_seven_new_tables_codegen_artifacts_exist() -> None:
+    """7 张新表 codegen 产物：model/schema/crud/service + admin API（业务 app/agent/open 留 M3 手写）。"""
+    app_root = ROOT / 'backend/app/hasn_growth'
+    for table in _GROWTH_TABLES:
+        assert (app_root / f'model/{table}.py').exists(), table
+        assert (app_root / f'schema/{table}.py').exists(), table
+        assert (app_root / f'crud/crud_{table}.py').exists(), table
+        assert (app_root / f'service/{table}_service.py').exists(), table
+        assert (app_root / f'api/v1/admin/{table}.py').exists(), table
+
+
+def test_m2_new_business_tables_have_no_generic_app_agent_open_crud() -> None:
+    """新业务表的通用 app/agent/open CRUD 已删除：避免无 owner 隔离/无脱敏的 PII 泄漏面（M3 手写业务 API）。"""
+    app_root = ROOT / 'backend/app/hasn_growth'
+    for scope in ('app', 'agent', 'open'):
+        for table in _GROWTH_TABLES:
+            assert not (app_root / f'api/v1/{scope}/{table}.py').exists(), f'{scope}/{table}'
+
+
+def test_m2_new_models_inherit_growth_schema_base() -> None:
+    """7 张新 model 继承 HasnGrowthAppBase → 落 hasn_growth schema（ADR-15 强隔离）。"""
+    model_dir = ROOT / 'backend/app/hasn_growth/model'
+    for table in _GROWTH_TABLES:
+        src = (model_dir / f'{table}.py').read_text(encoding='utf-8')
+        assert 'from backend.app.hasn_growth.model._base import HasnGrowthAppBase' in src, table
+        assert '(HasnGrowthAppBase):' in src, table
+        assert '(Base):' not in src, table
+
+
+def test_m2_new_models_map_to_hasn_growth_schema() -> None:
+    """SQLAlchemy 映射：7 张新表 schema == hasn_growth。"""
+    from backend.app.hasn_growth.model.activity import Activity
+    from backend.app.hasn_growth.model.customer import Customer
+    from backend.app.hasn_growth.model.form_submission import FormSubmission
+    from backend.app.hasn_growth.model.opportunity import Opportunity
+    from backend.app.hasn_growth.model.optout_record import OptoutRecord
+    from backend.app.hasn_growth.model.outreach_message import OutreachMessage
+    from backend.app.hasn_growth.model.playbook import Playbook
+
+    for model in (Customer, Opportunity, OutreachMessage, Activity, Playbook, FormSubmission, OptoutRecord):
+        assert model.__table__.schema == 'hasn_growth', model.__name__
+
+
+def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
+    sql = (ROOT / 'backend/sql/hasn_growth/002_create_growth_tables.sql').read_text(encoding='utf-8')
+    for table in _GROWTH_TABLES:
+        assert f'CREATE TABLE IF NOT EXISTS {table}' in sql, table
+        assert f'COMMENT ON TABLE {table}' in sql, table
+    # 关键约束（设计 §5.2）
+    assert 'uq_growth_customer_user_lead' in sql
+    assert 'REFERENCES contact(id)' in sql  # customer.lead_contact_id 物理外键（收编后同 schema）
+    assert 'uq_growth_outreach_dedupe' in sql
+    assert 'uq_growth_optout_user_channel_addr' in sql
+    # 字典字段带色值注释
+    assert 'blocked_optout:退订拦截:red' in sql
+    assert 'pending_approval:待审批:orange' in sql
+
+
+def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
+    """7 张新业务表管理端 CRUD 只挂 canonical /api/v1/growth/*，不进 lead-automation 转发面。"""
+    from backend.app.hasn_growth.api.router import legacy_v1, v1
+
+    v1_paths = {getattr(r, 'path', '') for r in v1.routes}
+    legacy_paths = {getattr(r, 'path', '') for r in legacy_v1.routes}
+    assert any('/api/v1/growth/customers' == p for p in v1_paths)
+    assert any('/api/v1/growth/opportunitys' == p for p in v1_paths)
+    assert any('/api/v1/growth/optout-records' == p for p in v1_paths)
+    # legacy 不含新业务表
+    assert not any('customers' in p for p in legacy_paths)
+    assert not any('optout-records' in p for p in legacy_paths)
+
+
+def test_m2_app_registration_manifest_scope_catalog() -> None:
+    """应用注册：manifest（app_id=growth，17 工具）+ 5 scope + WorkbenchApp（manual）齐备。"""
+    from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry
+    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+    from backend.app.hasn_growth.service.ai_native_manifest import GROWTH_AI_NATIVE_MANIFEST
+    from backend.app.mcp.scopes import SCOPE_CATALOG
+
+    # 命名铁律：app_id=growth（de-prefixed），模块/schema 仍 hasn_growth
+    assert GROWTH_AI_NATIVE_MANIFEST['app_id'] == 'growth'
+    assert GROWTH_AI_NATIVE_MANIFEST['execution_mode'] == 'cloud'
+    caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
+    assert len(caps) == 17
+    assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
+    # 所有 required_scopes 冒号词表
+    for c in caps:
+        for s in c['required_scopes']:
+            assert ':' in s and '.' not in s, s
+
+    # manifest registry
+    reg = AINativeAppRegistry()
+    assert reg.get_builtin_manifest('growth')['app_id'] == 'growth'
+
+    # 5 scope 聚合进 SCOPE_CATALOG
+    for s in ('growth:read', 'growth:manage', 'growth:outreach', 'growth:collect', 'growth:pii'):
+        assert s in SCOPE_CATALOG, s
+
+    # WorkbenchApp：manual install（default_mount=FALSE）
+    wapp = workbench_app_registry.get('growth')
+    assert wapp.id == 'growth'
+    assert wapp.name == '获客'
+    assert wapp.install_policy == 'manual'
+    assert 'growth' not in {a.id for a in workbench_app_registry.auto_install_apps('personal')}
+
+
 def test_business_layer_does_not_replace_generated_crud() -> None:
     business_source = (ROOT / 'backend/app/hasn_growth/service/business_service.py').read_text(encoding='utf-8')
 

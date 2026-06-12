@@ -8,3 +8,10 @@ from backend.app.hasn_growth.model.lead_rejected_record import LeadRejectedRecor
 from backend.app.hasn_growth.model.lead_export_batch import LeadExportBatch as LeadExportBatch
 from backend.app.hasn_growth.model.lead_export_item import LeadExportItem as LeadExportItem
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog as LeadAuditLog
+from backend.app.hasn_growth.model.customer import Customer as Customer
+from backend.app.hasn_growth.model.opportunity import Opportunity as Opportunity
+from backend.app.hasn_growth.model.outreach_message import OutreachMessage as OutreachMessage
+from backend.app.hasn_growth.model.activity import Activity as Activity
+from backend.app.hasn_growth.model.playbook import Playbook as Playbook
+from backend.app.hasn_growth.model.form_submission import FormSubmission as FormSubmission
+from backend.app.hasn_growth.model.optout_record import OptoutRecord as OptoutRecord
