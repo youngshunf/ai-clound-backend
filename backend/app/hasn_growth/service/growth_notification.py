@@ -1,10 +1,12 @@
-"""获客通知卡片（设计 07 §6.4 / 实施 91 M4）。
+"""获客通知卡片（设计 07 §6.4 / 实施 91 M4 + M6）。
 
 分身（agent）经获客工具触发的关键业务事件 → 给主人发统一通知卡片（`notification_service.emit`），
-deep_link 进获客页（`/growth/*`，与 daemon owner 面路由对齐）。source 恒为 agent（on_behalf_of=主人）。
+deep_link 进获客页（`/growth/*`，与 daemon owner 面路由对齐）。
 
-本模块只覆盖 **agent 调用同步可知** 的三事件：触达待审批 / 商机阶段变更 / 成交。
-另两事件（新线索批次 / 客户回复）由 M6 采集 worker 与回复事件驱动链路在落库时触发，归 M6。
+事件分两类 source：
+- **agent 调用同步可知**（M4 三事件：触达待审批 / 商机阶段变更 / 成交）→ source.kind='agent'（on_behalf_of=主人）。
+- **系统/渠道事件驱动**（M6 两事件：客户回复 / 新线索批次）→ source.kind='system'（采集 worker 落库 /
+  渠道 inbound 回流时触发，无 agent 同步上下文）。
 
 通知为业务旁路：与 hasn_task 一致**内联 emit**（同事务），通知基础设施异常即如实失败（零 fake）。
 """
@@ -27,6 +29,11 @@ def _source(agent: AgentTokenPayload) -> dict[str, Any]:
         'display_name': agent.agent_name,
         'on_behalf_of': agent.owner_hasn_id,
     }
+
+
+def _system_source(owner_hasn_id: str) -> dict[str, Any]:
+    """系统/渠道事件 source：无 agent 同步上下文（采集 worker / 渠道 inbound 回流）。"""
+    return {'kind': 'system', 'id': 'growth', 'display_name': '获客', 'on_behalf_of': owner_hasn_id}
 
 
 class GrowthNotificationService:
@@ -103,6 +110,65 @@ class GrowthNotificationService:
                 'deep_link': f'/growth/opportunities/{opportunity_id}',
             },
             dedupe_key=f'growth.deal.closed:{opportunity_id}',
+        )
+
+
+    # ---------- M6：系统/渠道事件驱动（无 agent 同步上下文） ----------
+
+    @staticmethod
+    async def inbound_reply_received(
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        customer_id: int,
+        customer_name: str | None,
+        channel: str,
+        excerpt: str | None = None,
+    ) -> None:
+        """客户回复：渠道 inbound 回流落库时通知主人去看 / 跟进（J3 即时跟进的人侧提醒）。"""
+        who = f'客户「{customer_name}」' if customer_name else '一位客户'
+        await notification_service.emit(
+            db,
+            recipient_id=owner_hasn_id,
+            source=_system_source(owner_hasn_id),
+            category='reminder',
+            type='growth.reply.received',  # type 列 varchar(30)，勿超长
+            title=f'{who}回复了你的{channel}触达',
+            body=(excerpt or None),
+            payload={
+                'target': {'kind': 'customer', 'id': str(customer_id)},
+                'channel': channel,
+                'deep_link': f'/growth/customers/{customer_id}',
+            },
+            dedupe_key=f'growth.reply.received:{customer_id}',
+        )
+
+    @staticmethod
+    async def leads_collected_batch(
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        job_id: int,
+        new_count: int,
+        keyword: str | None = None,
+    ) -> None:
+        """新线索批次：采集 worker 完成一批采集落库时通知主人去筛（new_count<=0 不发，零噪声）。"""
+        if new_count <= 0:
+            return
+        kw = f'「{keyword}」' if keyword else ''
+        await notification_service.emit(
+            db,
+            recipient_id=owner_hasn_id,
+            source=_system_source(owner_hasn_id),
+            category='reminder',
+            type='growth.leads.collected',  # type 列 varchar(30)，勿超长
+            title=f'采集{kw}完成，新增 {new_count} 条线索待筛选',
+            payload={
+                'target': {'kind': 'lead_collection_job', 'id': str(job_id)},
+                'new_count': new_count,
+                'deep_link': '/growth/leads',
+            },
+            dedupe_key=f'growth.leads.collected:{job_id}',
         )
 
 

@@ -15,6 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
@@ -163,3 +165,33 @@ async def test_outreach_compliance_gates(session) -> None:
         session, user_id=uid, customer_id=co, channel='wechat', content='在吗'
     )
     assert blocked_opt['status'] == 'blocked_optout'
+
+
+async def test_inbound_reply_emits_owner_notification(session) -> None:
+    """M6：客户回复（inbound 落库）→ 给主人发一条 growth.reply.received 通知卡片。
+
+    需主人有 HasnHumans 行（user_id↔hasn_id）才解析得到 recipient；无身份则诚实不发（不造假）。
+    """
+    tag = uuid.uuid4().hex[:8]
+    uid = 990000 + int(uuid.uuid4().int % 9000)
+    owner_hasn = f'h_grw_{tag}'
+    session.add(
+        HasnHumans(hasn_id=owner_hasn, star_id=f's_{uid}', user_id=uid, nickname='主人', status='active')
+    )
+    await session.flush()
+    cid = await _qualified_customer(session, user_id=uid, email=f'reply{tag}@zeta.com', company='Zeta')
+
+    await growth_outreach_service.record_inbound_reply(
+        session, user_id=uid, customer_id=cid, channel='wechat', content='可以聊聊，周三下午方便'
+    )
+
+    notif = (
+        await session.execute(
+            select(HasnNotifications).where(
+                HasnNotifications.type == 'growth.reply.received',
+                HasnNotifications.target_id == owner_hasn,
+            )
+        )
+    ).scalars().all()
+    assert notif, '客户回复应给主人落一条 growth.reply.received 通知'
+    assert any('回复' in (n.title or '') for n in notif)

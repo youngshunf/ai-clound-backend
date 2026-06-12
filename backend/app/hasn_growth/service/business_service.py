@@ -8,6 +8,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_growth.model import (
     LeadAuditLog,
     LeadCollectionJob,
@@ -25,6 +26,7 @@ from backend.app.hasn_growth.service.cleaner_service import clean_raw_record
 from backend.app.hasn_growth.service.dedupe_service import dedupe_key
 from backend.app.hasn_growth.service.export_service import build_csv_export
 from backend.app.hasn_growth.service.firecrawl_client import FirecrawlClient
+from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
 from backend.common.exception import errors
@@ -213,6 +215,19 @@ class LeadAutomationBusinessService:
             job_id=job.id,
             success_count=job.firecrawl_success_count,
         )
+        # M6 通知卡片：新线索批次落库 → 提醒主人去筛（仅主人私有采集 + 有新增有效线索时）。
+        if job.lead_scope == 'user' and job.user_id and job.valid_count > 0:
+            owner_hasn_id = (
+                await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == job.user_id))
+            ).scalar_one_or_none()
+            if owner_hasn_id:
+                await growth_notification_service.leads_collected_batch(
+                    db,
+                    owner_hasn_id=owner_hasn_id,
+                    job_id=job.id,
+                    new_count=job.valid_count,
+                    keyword=job.keyword,
+                )
         return model_to_dict(job)
 
     async def get_job(self, db: AsyncSession, *, job_id: int, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:

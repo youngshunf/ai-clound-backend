@@ -26,10 +26,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
+from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -481,6 +483,19 @@ class GrowthOutreachService:
             ref_table='outreach_message',
             ref_id=str(message.id),
         )
+        # M6 通知卡片：客户回复 → 提醒主人（J3 即时跟进的人侧提醒）。owner hasn_id 由 user_id 解析。
+        owner_hasn_id = (
+            await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))
+        ).scalar_one_or_none()
+        if owner_hasn_id:
+            await growth_notification_service.inbound_reply_received(
+                db,
+                owner_hasn_id=owner_hasn_id,
+                customer_id=customer_id,
+                customer_name=customer.contact_name or customer.company_name,
+                channel=channel,
+                excerpt=content[:120],
+            )
         return _outreach_to_dict(message)
 
     @staticmethod
