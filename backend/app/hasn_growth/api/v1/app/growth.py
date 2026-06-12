@@ -13,9 +13,11 @@ from backend.app.hasn_growth.schema.funnel import (
     ChannelSettingParam,
     CloseDealParam,
     CreateOpportunityParam,
+    DismissLeadParam,
     LogActivityParam,
     MarkSentParam,
     OptoutParam,
+    QualifyLeadParam,
     RejectOutreachParam,
     UpdateStageParam,
 )
@@ -30,6 +32,57 @@ from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+
+
+# ---------------- 线索池（主人看自己池子，可手动晋级/淘汰，回明文） ----------------
+
+
+@router.get('/leads', summary='[Owner] 线索池检索', dependencies=[DependsJwtAuth])
+async def list_leads(
+    request: Request,
+    db: CurrentSession,
+    q: str | None = Query(default=None),
+    min_score: float | None = Query(default=None, ge=0, le=100),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> ResponseModel:
+    data = await growth_funnel_service.search_leads(
+        db, user_id=request.user.id, query=q, min_score=min_score, limit=limit, reveal_pii=True
+    )
+    return response_base.success(data=data)
+
+
+@router.get('/leads/{lead_contact_id}', summary='[Owner] 线索详情', dependencies=[DependsJwtAuth])
+async def get_lead(request: Request, db: CurrentSession, lead_contact_id: int) -> ResponseModel:
+    data = await growth_funnel_service.get_lead(
+        db, user_id=request.user.id, lead_contact_id=lead_contact_id, reveal_pii=True
+    )
+    return response_base.success(data=data)
+
+
+@router.post('/leads/{lead_contact_id}/qualify', summary='[Owner] 线索晋级客户', dependencies=[DependsJwtAuth])
+async def qualify_lead(
+    request: Request, db: CurrentSessionTransaction, lead_contact_id: int, obj: QualifyLeadParam
+) -> ResponseModel:
+    # owner 手动晋级：无 owner_agent_id（非分身操作），后续触达由分身/主人按需发起。
+    data = await growth_funnel_service.qualify_lead(
+        db,
+        user_id=request.user.id,
+        lead_contact_id=lead_contact_id,
+        profile=obj.profile,
+        intent_score=obj.intent_score,
+        owner_agent_id=None,
+    )
+    return response_base.success(data=data)
+
+
+@router.post('/leads/{lead_contact_id}/dismiss', summary='[Owner] 线索不合格', dependencies=[DependsJwtAuth])
+async def dismiss_lead(
+    request: Request, db: CurrentSessionTransaction, lead_contact_id: int, obj: DismissLeadParam
+) -> ResponseModel:
+    data = await growth_funnel_service.dismiss_lead(
+        db, user_id=request.user.id, lead_contact_id=lead_contact_id, reason=obj.reason
+    )
+    return response_base.success(data=data)
 
 
 # ---------------- CRM 读（主人看自己数据，回明文） ----------------
