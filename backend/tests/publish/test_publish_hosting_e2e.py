@@ -124,7 +124,12 @@ async def test_unlisted_shell_and_noindex(host: SimpleNamespace) -> None:
     assert '测试发布' in r.text
     assert 'sandbox="allow-scripts"' in r.text  # 外壳用 sandbox iframe
     assert r.headers.get('X-Robots-Tag') == 'noindex, nofollow'  # unlisted 恒 noindex
-    assert 'frame-ancestors' in r.headers.get('Content-Security-Policy', '')
+    csp = r.headers.get('Content-Security-Policy', '')
+    assert 'frame-ancestors' in csp
+    # 外壳是可信生成 HTML：CSP 必须放行其**自身内联** style/script，否则 #frame 100% 被拦
+    # → iframe 退化默认尺寸、演示只剩一小块（回归守卫）。
+    assert "style-src 'unsafe-inline'" in csp
+    assert "script-src 'unsafe-inline'" in csp
 
 
 async def test_public_indexing_toggle(host: SimpleNamespace) -> None:

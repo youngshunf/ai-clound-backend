@@ -138,9 +138,17 @@ async def viewer_shell(request: Request, db: CurrentSession, slug: str, vt: str 
         return err
     await publish_service.increment_view_count(db, site_id=site.id)
     origin = _share_origin(request)
+    # 查看器外壳是本服务生成的**可信** HTML（title 经 html.escape，无用户脚本注入面）：
+    # 必须允许它**自身的内联 style/script**，否则 `#frame{width/height:100%}` 等内联样式被 CSP
+    # 拦掉 → iframe 退化成浏览器默认 ~300×150、外壳脚本（全屏/底栏）也失效 → 演示只剩一小块。
+    # 真正不可信的发布制品在 /content 子 iframe，自带 `sandbox allow-scripts` 的独立 CSP，
+    # 与本外壳 CSP 互不影响（见 _content_csp）。
     headers = {
         'X-Frame-Options': 'SAMEORIGIN',
-        'Content-Security-Policy': f"frame-ancestors 'self'; default-src 'self' {origin}",
+        'Content-Security-Policy': (
+            f"frame-ancestors 'self'; default-src 'self' {origin}; "
+            "style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+        ),
         **_noindex_headers(site),
     }
     vt_qs = f'?vt={html.escape(vt)}' if vt else ''
