@@ -123,6 +123,9 @@ async def test_unlisted_shell_and_noindex(host: SimpleNamespace) -> None:
     assert r.status_code == 200, r.text
     assert '测试发布' in r.text
     assert 'sandbox="allow-scripts"' in r.text  # 外壳用 sandbox iframe
+    # iframe 必须委派 fullscreen 权限：否则沙箱 opaque origin 子帧内「放映」requestFullscreen 被静默拒绝，
+    # 只剩 CSS 放映态（铺满 iframe≠真·全屏）→ 用户报「点放映只是浏览器全屏」。回归守卫。
+    assert 'allow="fullscreen"' in r.text
     assert r.headers.get('X-Robots-Tag') == 'noindex, nofollow'  # unlisted 恒 noindex
     csp = r.headers.get('Content-Security-Policy', '')
     assert 'frame-ancestors' in csp

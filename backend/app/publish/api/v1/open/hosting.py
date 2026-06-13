@@ -271,6 +271,11 @@ def _viewer_shell_html(slug: str, title: str, allow_present: bool, vt_qs: str) -
     t = html.escape(title or '分享')
     s = html.escape(slug)
     present = 'true' if allow_present else 'false'
+    # iframe 必须带 `allow="fullscreen"`（+ legacy `allowfullscreen`）：制品在 `sandbox="allow-scripts"`
+    # 的 opaque origin 子帧里跑，内置查看运行时点「放映」会 `element.requestFullscreen()`。沙箱本身不含
+    # fullscreen flag、不拦全屏，但**全屏须经 Permissions-Policy 委派**——没有 allow，浏览器静默拒绝内层
+    # requestFullscreen → 只剩运行时的 CSS 放映态（铺满 iframe=铺满浏览器视口），用户看到「只是浏览器全屏、
+    # 没进真·全屏」。委派后内层请求把 iframe 升为原生全屏，deck 铺满整屏（回归守卫见 hosting e2e）。
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{t} · 唤星</title><style>
 html,body{{margin:0;height:100%;background:#0b0b0f;overflow:hidden}}
@@ -281,7 +286,7 @@ opacity:0;transition:opacity .2s;pointer-events:none}}
 #bar.show{{opacity:1;pointer-events:auto}}#bar button{{background:transparent;border:1px solid #3f3f46;color:#e5e7eb;
 border-radius:6px;padding:4px 10px;font-size:13px;cursor:pointer}}
 </style></head><body>
-<iframe id="frame" sandbox="allow-scripts" src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
+<iframe id="frame" sandbox="allow-scripts" allow="fullscreen" allowfullscreen src="/s/{s}/content{vt_qs}" title="{t}"></iframe>
 <div id="bar"><span>{t}</span><button onclick="fs()">全屏</button></div>
 <script>
 var presentable={present};var bar=document.getElementById('bar');var idle;
