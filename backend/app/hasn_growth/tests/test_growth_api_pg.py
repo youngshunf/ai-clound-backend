@@ -223,3 +223,41 @@ async def test_agent_collect_and_outreach_status(e2e) -> None:
     e2e.state.owner_uid = e2e.other_uid
     miss = await c.get(f'{A}/collect/{job_id}')
     assert miss.status_code == 403, miss.text
+
+
+async def test_owner_create_lead_via_http(e2e) -> None:
+    """M-UI：主人在 UI 手动建线索（AI-native 宗旨：UI 给人操作）。
+
+    owner 私有池、source_type=manual、status=active，回明文（自己的数据）；建后出现在线索池检索；
+    公司名与联系人名都空 → 400（线索无意义）。
+    """
+    c = e2e.client
+    O = '/api/v1/growth/app'
+
+    # --- 建线索：公司名 + 联系方式 ---
+    created = _ok(
+        await c.post(
+            f'{O}/leads',
+            json={
+                'company_name': '星尘科技',
+                'contact_name': '李雷',
+                'email': 'lilei@xingchen.com',
+                'phone': '13900139000',
+                'industry': 'SaaS',
+                'city': '深圳',
+                'note': '展会认识',
+            },
+        )
+    )
+    assert created['lead_contact_id'] and created['source_type'] == 'manual'
+    assert created['status'] == 'active'
+    assert created['company_name'] == '星尘科技'
+    assert created['email'] == 'lilei@xingchen.com'  # owner 看自己数据回明文
+
+    # --- 建的线索出现在 owner 线索池检索 ---
+    leads = _ok(await c.get(f'{O}/leads', params={'q': '星尘'}))
+    assert any(item['lead_contact_id'] == created['lead_contact_id'] for item in leads)
+
+    # --- 校验：公司名与联系人名都空 → 400 ---
+    bad = await c.post(f'{O}/leads', json={'email': 'noname@x.com'})
+    assert bad.status_code == 400, bad.text

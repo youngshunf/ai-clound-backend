@@ -12,6 +12,7 @@ from backend.app.hasn_growth.schema.funnel import (
     ApproveOutreachParam,
     ChannelSettingParam,
     CloseDealParam,
+    CreateLeadParam,
     CreateOpportunityParam,
     DismissLeadParam,
     LogActivityParam,
@@ -47,6 +48,25 @@ async def list_leads(
 ) -> ResponseModel:
     data = await growth_funnel_service.search_leads(
         db, user_id=request.user.id, query=q, min_score=min_score, limit=limit, reveal_pii=True
+    )
+    return response_base.success(data=data)
+
+
+@router.post('/leads', summary='[Owner] 手动新建线索', dependencies=[DependsJwtAuth])
+async def create_lead(request: Request, db: CurrentSessionTransaction, obj: CreateLeadParam) -> ResponseModel:
+    # AI-native 宗旨：UI 给人操作。主人可手动建线索（owner 私有池），与分身 collect 采集互补。
+    data = await growth_funnel_service.create_manual_lead(
+        db,
+        user_id=request.user.id,
+        company_name=obj.company_name,
+        contact_name=obj.contact_name,
+        email=obj.email,
+        phone=obj.phone,
+        website=obj.website,
+        industry=obj.industry,
+        city=obj.city,
+        note=obj.note,
+        confidence_score=obj.intent_score,
     )
     return response_base.success(data=data)
 

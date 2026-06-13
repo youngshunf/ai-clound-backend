@@ -142,6 +142,56 @@ class GrowthFunnelService:
             raise errors.NotFoundError(msg='线索不存在或无权访问')
         return lead
 
+    @staticmethod
+    async def create_manual_lead(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        company_name: str | None = None,
+        contact_name: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        website: str | None = None,
+        industry: str | None = None,
+        city: str | None = None,
+        note: str | None = None,
+        confidence_score: float | None = None,
+    ) -> dict[str, Any]:
+        """主人在 UI 手动新建线索（owner 私有池，source_type=manual）。
+
+        AI-native 宗旨：UI 给人操作。主人手动建线索与分身 `collect` 采集互补；至少公司名或联系人名
+        之一，否则线索无意义。明文 PII 落库（owner 自己的数据），出参对自己 reveal。
+        """
+
+        def _clean(v: str | None) -> str | None:
+            v = v.strip() if v else None
+            return v or None
+
+        company_name = _clean(company_name)
+        contact_name = _clean(contact_name)
+        if not company_name and not contact_name:
+            raise errors.RequestError(msg='请至少填写公司名或联系人名')
+
+        lead = LeadContact(
+            lead_no=_gen_no('LEAD'),
+            lead_scope='user',
+            user_id=user_id,
+            company_name=company_name,
+            contact_name=contact_name,
+            email=_clean(email),
+            phone=_clean(phone),
+            website=_clean(website),
+            industry=_clean(industry),
+            city=_clean(city),
+            source_type='manual',
+            status='active',
+            confidence_score=confidence_score if confidence_score is not None else 60,
+            meta_data={'note': note.strip()} if note and note.strip() else {},
+        )
+        db.add(lead)
+        await db.flush()
+        return _lead_to_dict(lead, reveal_pii=True)
+
     # ----------------------------- 晋级 / 淘汰 -----------------------------
 
     @staticmethod
