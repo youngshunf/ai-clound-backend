@@ -1,0 +1,97 @@
+{
+  "mcp_url": "http://127.0.0.1:8030/api/v1/mcp/streamable",
+  "L1_bootstrap": [
+    "hasn.cloud.tool.call",
+    "hasn.cloud.tool.search"
+  ],
+  "L1_discovered": [
+    "hasn.marketplace.search_skills",
+    "hasn.marketplace.get_skill",
+    "hasn.marketplace.search_templates",
+    "hasn.marketplace.get_template",
+    "hasn.marketplace.list_installed",
+    "hasn.marketplace.install_skill",
+    "hasn.marketplace.uninstall_skill",
+    "hasn.marketplace.publish_skill",
+    "hasn.marketplace.publish_template"
+  ],
+  "L2_search_count": 5,
+  "L2_get_real": {
+    "found": true,
+    "skill": {
+      "skill_id": "github/anthropics-skills/xlsx",
+      "namespace": "github/anthropics-skills",
+      "slug": "xlsx",
+      "name": "Excel 表格处理",
+      "description": "读取、编辑、创建和转换 .xlsx、.csv 等表格文件。适用于清洗杂乱数据、计算公式及生成表格交付物。",
+      "icon_url": null,
+      "emoji": "📊",
+      "author_name": null,
+      "category": null,
+      "tags": "[\"电子表格\", \"数据清洗\", \"CSV/TSV\", \"Excel自动化\"]",
+      "tags_en": "[\"Spreadsheet\", \"Data Cleaning\", \"CSV/TSV\", \"Excel Automation\"]",
+      "tags_zh": "[\"电子表格\", \"数据清洗\", \"CSV/TSV\", \"Excel自动化\"]",
+      "download_count": 0,
+      "star_count": 0,
+      "is_official": false,
+      "pricing_type": "free",
+      "price": 0,
+      "source_type": "github",
+      "status": "published",
+      "visibility": "public",
+      "user_id": null,
+      "hasn_id": null,
+      "created_time": "2026-05-29T11:53:05.681753+00:00",
+      "updated_time": "2026-05-29T14:16:05.017722+00:00",
+      "source_repo_url": null,
+      "source_repo_path": null,
+      "repo_path": "github/anthropics-skills/skills/xlsx",
+      "git_commit_hash": "bf8d1507cbc378f973d091025aee0c4a37c43daa",
+      "synced_at": "2026-05-29T11:53:05.681646+00:00",
+      "translated_at": "2026-05-29T14:16:04.996883+00:00"
+    }
+  },
+  "L2_get_missing": {
+    "found": false,
+    "reason": "技能不存在或未发布（不可见）"
+  },
+  "L3_install_missing": {
+    "skill_id": "user/h_nope/does-not-exist-xyz",
+    "installed": false,
+    "reachable": false,
+    "reason": "ERR_MARKETPLACE_SKILL_NOT_FOUND"
+  },
+  "L3_install_real": {
+    "skill_id": "github/anthropics-skills/xlsx",
+    "installed": true,
+    "reachable": true,
+    "revision": 6
+  },
+  "L4_installed_ids": [
+    "huanxing/health/calorie-counter",
+    "huanxing/health/eye-care",
+    "huanxing/health/first-aid",
+    "huanxing/health/fitness",
+    "huanxing/health/healthy-eating",
+    "huanxing/health/meditation-guide",
+    "huanxing/health/mental-wellness",
+    "huanxing/health/posture-reminder",
+    "huanxing/health/sleep-optimizer",
+    "huanxing/health/water-reminder",
+    "huanxing/health/habit-tracker",
+    "huanxing/health/personal-trainer",
+    "huanxing/health/nutrition",
+    "huanxing/health/cooking-recipe",
+    "huanxing/health/fasting-tracker",
+    "clawhub/wscats/university-applications",
+    "github/anthropics-skills/xlsx"
+  ],
+  "L4_uninstall": {
+    "skill_id": "github/anthropics-skills/xlsx",
+    "uninstalled": true,
+    "revision": 7
+  },
+  "L5_deny_gone": true,
+  "L5_deny_call": "Capability denied by owner for tool: hasn.marketplace.install_skill",
+  "summary_ok": true
+}

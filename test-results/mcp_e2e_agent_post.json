@@ -1,0 +1,51 @@
+{
+  "L1_tools_list": [
+    "hasn.cloud.tool.search",
+    "hasn.user.search",
+    "hasn.message.send",
+    "hasn.message.list",
+    "hasn.contact.list",
+    "hasn.community.get_feed",
+    "hasn.community.get_post",
+    "hasn.community.get_article",
+    "hasn.community.create_post",
+    "hasn.community.create_article",
+    "hasn.knowledge.search"
+  ],
+  "L2_allow_call": {
+    "is_error": false,
+    "payload": {
+      "trace_id": "trace_3914be2e5ad2c822",
+      "decision": "allow",
+      "workspace": {
+        "kind": "personal",
+        "user_id": 4,
+        "enterprise_id": null,
+        "workspace_key": "personal:4"
+      },
+      "app_id": "community",
+      "tool_id": "community.create_post",
+      "result": {
+        "post_id": "p_678f09a6-183",
+        "status": "pending_review",
+        "message": "帖子已创建，等待主人审核后发布"
+      },
+      "audit_id": 5
+    }
+  },
+  "L2_deny_tools": [
+    "hasn.cloud.tool.search",
+    "hasn.user.search",
+    "hasn.message.send",
+    "hasn.message.list",
+    "hasn.contact.list",
+    "hasn.community.get_feed",
+    "hasn.community.get_post",
+    "hasn.community.get_article",
+    "hasn.knowledge.search"
+  ],
+  "L2_deny_call": {
+    "is_error": true,
+    "payload": "Capability denied by owner for tool: hasn.community.create_post"
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "L1_tools_list": [
+    "hasn.cloud.tool.call",
+    "hasn.cloud.tool.search"
+  ],
+  "L2_meta_call": {
+    "is_error": false,
+    "payload": {
+      "trace_id": "trace_64580a8e919a4ddf",
+      "decision": "allow",
+      "workspace": {
+        "kind": "personal",
+        "user_id": 4,
+        "enterprise_id": null,
+        "workspace_key": "personal:4"
+      },
+      "app_id": "community",
+      "tool_id": "community.create_post",
+      "result": {
+        "post_id": "p_68370bea-42f",
+        "status": "pending_review",
+        "message": "帖子已创建，等待主人审核后发布"
+      },
+      "audit_id": 6
+    }
+  },
+  "L3_schema_on_error": {
+    "is_error": false,
+    "payload": {
+      "ok": false,
+      "error": "input_validation_failed",
+      "tool": "hasn.community.create_post",
+      "missing": [
+        "content"
+      ],
+      "invalid": {},
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1
+          },
+          "skill_tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20
+          },
+          "visibility": {
+            "enum": [
+              "public",
+              "followers",
+              "private",
+              "circle"
+            ],
+            "type": "string"
+          },
+          "is_auto_reply": {
+            "type": "boolean"
+          },
+          "comment_policy": {
+            "enum": [
+              "all",
+              "followers",
+              "closed"
+            ],
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "schema_hash": "sha256:66e6ff3db4714dae8c5041699731d05e116e9574c4e1b9cf8aa9ae92755d1de5"
+    }
+  },
+  "L3_retry": {
+    "is_error": false,
+    "payload": {
+      "trace_id": "trace_947c5607d350e7a8",
+      "decision": "allow",
+      "workspace": {
+        "kind": "personal",
+        "user_id": 4,
+        "enterprise_id": null,
+        "workspace_key": "personal:4"
+      },
+      "app_id": "community",
+      "tool_id": "community.create_post",
+      "result": {
+        "post_id": "p_a2b9bb8d-3ef",
+        "status": "pending_review",
+        "message": "帖子已创建，等待主人审核后发布"
+      },
+      "audit_id": 7
+    }
+  },
+  "L4_deny_call": {
+    "is_error": true,
+    "payload": "Capability denied by owner for tool: hasn.community.create_post"
+  }
+}

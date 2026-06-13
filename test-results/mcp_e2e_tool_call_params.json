@@ -1,0 +1,114 @@
+{
+  "S0_no_params": {
+    "is_error": false,
+    "payload": {
+      "ok": false,
+      "error": "input_validation_failed",
+      "tool": "hasn.community.search",
+      "missing": [
+        "query"
+      ],
+      "invalid": {},
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20
+          },
+          "type": {
+            "enum": [
+              "post",
+              "article"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 50,
+            "minimum": 1
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "schema_hash": "sha256:30a17735442eb3a87a2ebe2ae7a1e80a1575d4fa483bcf59a2ef79a2b3e87f26"
+    }
+  },
+  "S1_nested_object": {
+    "is_error": false,
+    "payload": {
+      "trace_id": "trace_135e8c1d57f0894f",
+      "decision": "allow",
+      "workspace": {
+        "kind": "personal",
+        "user_id": 4,
+        "enterprise_id": null,
+        "workspace_key": "personal:4"
+      },
+      "app_id": "community",
+      "tool_id": "community.search",
+      "result": {
+        "items": [],
+        "next_cursor": null
+      },
+      "audit_id": 28
+    }
+  },
+  "S2_json_string": {
+    "is_error": false,
+    "payload": {
+      "trace_id": "trace_135e8c1d57f0894f",
+      "decision": "allow",
+      "workspace": {
+        "kind": "personal",
+        "user_id": 4,
+        "enterprise_id": null,
+        "workspace_key": "personal:4"
+      },
+      "app_id": "community",
+      "tool_id": "community.search",
+      "result": {
+        "items": [],
+        "next_cursor": null
+      },
+      "audit_id": 29
+    }
+  },
+  "S3_flattened": {
+    "is_error": false,
+    "payload": {
+      "trace_id": "trace_135e8c1d57f0894f",
+      "decision": "allow",
+      "workspace": {
+        "kind": "personal",
+        "user_id": 4,
+        "enterprise_id": null,
+        "workspace_key": "personal:4"
+      },
+      "app_id": "community",
+      "tool_id": "community.search",
+      "result": {
+        "items": [],
+        "next_cursor": null
+      },
+      "audit_id": 30
+    }
+  },
+  "summary_ok": true
+}
