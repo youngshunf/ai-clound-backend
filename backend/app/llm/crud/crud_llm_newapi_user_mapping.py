@@ -68,12 +68,24 @@ class CRUDNewApiDirect:
         quota: int = 50000,
         group: str = 'default',
     ) -> int:
-        """在 new-api users 表创建用户，返回 user_id"""
+        """在 new-api users 表创建用户，返回 user_id。
+
+        幂等：撞 username 唯一约束（users_username_key）时**复用**已存在的 new-api
+        用户而非抛 IntegrityError。这是跨库非原子写的自愈——new-api 用户/token 在
+        `newapi_async_db_session.begin()` 独立事务里当场提交，唤星侧映射表
+        （llm_newapi_user_mapping）却写在外层事务，外层一旦回滚就留下「孤儿
+        new-api 用户 + 映射缺失」；此后每次手机登录 ensure_newapi_user 查不到映射
+        → 重复裸 INSERT 撞 users_username_key → verify 接口 500 → 该老用户永久登
+        不进（2026-06-13 福仔账号事故，trace_id 4372f610...）。ON CONFLICT DO
+        UPDATE 让冲突时也走 RETURNING 拿回现有用户 id（SET 为同值即 no-op），映射
+        照常写入，一次性自愈，且对所有处于该孤儿态的老用户生效。
+        """
         result = await db.execute(
             text("""
                 INSERT INTO users (username, password, display_name, role, status, quota, used_quota,
                                    request_count, "group", aff_code, aff_count, aff_quota, aff_history)
                 VALUES (:username, :password, :display_name, 1, 1, :quota, 0, 0, :group, :aff_code, 0, 0, 0)
+                ON CONFLICT (username) DO UPDATE SET username = EXCLUDED.username
                 RETURNING id
             """),
             {
