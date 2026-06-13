@@ -18,6 +18,7 @@ from backend.app.mcp.tools.message import (
     _build_agent_card_body,
     _derive_name,
     _resolve_attachments,
+    _resolve_to_target,
 )
 
 
@@ -82,6 +83,29 @@ def test_build_agent_card_body_no_link_has_no_primary_action() -> None:
     body = _build_agent_card_body('a_x', '小智', {'title': '纯文字卡片'})
     assert body['primary_action'] is None
     assert body['actions'] == []
+
+
+# ── 主人寻址哨兵（"owner" → owner_hasn_id）──────────────────
+
+
+def test_resolve_to_target_owner_sentinel() -> None:
+    """保留值 "owner"/"@owner"（大小写、首尾空白无关）→ 解析为主人 hasn_id。"""
+    assert _resolve_to_target('owner', 'h_owner_123') == 'h_owner_123'
+    assert _resolve_to_target('@owner', 'h_owner_123') == 'h_owner_123'
+    assert _resolve_to_target('  OWNER  ', 'h_owner_123') == 'h_owner_123'
+
+
+def test_resolve_to_target_passthrough_non_sentinel() -> None:
+    """非哨兵目标（HASN ID / 唤星号）原样透传，不受影响。"""
+    assert _resolve_to_target('h_someone', 'h_owner_123') == 'h_someone'
+    assert _resolve_to_target('a_friend_agent', 'h_owner_123') == 'a_friend_agent'
+    assert _resolve_to_target('200001', 'h_owner_123') == '200001'
+
+
+def test_resolve_to_target_owner_missing_rejected() -> None:
+    """主人身份缺失时用 "owner" 哨兵 → 抛错不静默（避免误发到错误目标）。"""
+    with pytest.raises(RuntimeError, match='主人身份'):
+        _resolve_to_target('owner', None)
 
 
 # ── 活体 DB（真实 hasn_assets 解析 + 归属校验）─────────────────

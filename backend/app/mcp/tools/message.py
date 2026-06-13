@@ -32,6 +32,12 @@ _CT_FILE = 3
 _CT_VOICE = 4
 _CT_CARD = 5
 
+# 寻址主人的保留哨兵：分身的每轮身份注入只给主人画像自由文本，**不含**主人 hasn_id/唤星号
+# （identity-owner 模板只注入 owner_portrait.text），分身无法可靠拿到主人的 `to`。云端 AgentContext
+# 已带 owner_hasn_id，故在工具层把这两个保留值解析成主人本人——让「通知主人」对任何技能都可靠
+# （deck 产出卡片、获客/简报回流等共用）。`@` 前缀不会与 hasn_id（h_/a_）或唤星号（数字/自定义 id）撞。
+_OWNER_TARGET_SENTINELS = {'owner', '@owner'}
+
 _KIND_TO_CONTENT_TYPE = {'image': _CT_IMAGE, 'file': _CT_FILE, 'voice': _CT_VOICE}
 _MIME_EXT = {
     'image/png': '.png',
@@ -45,6 +51,19 @@ _MIME_EXT = {
     'application/pdf': '.pdf',
     'text/plain': '.txt',
 }
+
+
+def _resolve_to_target(to_target: Any, owner_hasn_id: str | None) -> str:
+    """把分身给的 `to` 解析成真实接收者：保留值 "owner"/"@owner" → 主人本人，其余原样透传。
+
+    分身的身份注入只含主人画像自由文本、不含主人 hasn_id/唤星号，故给保留哨兵让「通知主人」可靠。
+    主人身份缺失（owner_hasn_id 为空）→ 抛错不静默，避免把卡片误发到错误目标。
+    """
+    if str(to_target).strip().lower() in _OWNER_TARGET_SENTINELS:
+        if not owner_hasn_id:
+            raise RuntimeError('无法解析主人身份（owner_hasn_id 缺失），请稍后重试或指定具体接收者')
+        return owner_hasn_id
+    return str(to_target)
 
 
 def _asset_id_from_uri(uri: Any) -> str | None:
@@ -204,7 +223,13 @@ class MessageSendTool(BaseTool):
         return {
             'type': 'object',
             'properties': {
-                'to': {'type': 'string', 'description': '接收者 HASN ID / 唤星号 / 会话目标'},
+                'to': {
+                    'type': 'string',
+                    'description': (
+                        '接收者 HASN ID / 唤星号 / 会话目标；发给你自己的主人时填保留值 "owner"'
+                        '（你的身份注入不含主人 id，要通知主人就用 "owner"，别去猜主人的 HASN ID）。'
+                    ),
+                },
                 'content': {
                     'type': 'string',
                     'description': '消息文本内容（纯文本消息必填；发附件/卡片时作为附带说明，可选）',
@@ -261,6 +286,9 @@ class MessageSendTool(BaseTool):
         to_target = arguments.get('to')
         if not to_target:
             raise RuntimeError('Missing required arguments: to')
+
+        # 主人寻址哨兵 → 解析为主人本人（身份注入不含主人 id，见 _OWNER_TARGET_SENTINELS 注释）。
+        to_target = _resolve_to_target(to_target, agent_context.owner_hasn_id)
 
         text = arguments.get('content')
         attachments_uris = arguments.get('attachments') or []
