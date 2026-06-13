@@ -65,8 +65,8 @@ from backend.app.hasn_growth.api.v1.open.lead_audit_log import router as open_le
 from backend.app.hasn_growth.api.v1.open.business import router as open_business_router
 
 # ========================================
-# 收编路由（设计 07 §5.0）：canonical 前缀 /api/v1/growth/*；
-# 旧 /api/v1/lead-automation/* 保薄转发过渡（双挂载同一批子路由），M8 退役。
+# 收编路由（设计 07 §5.0）：canonical 前缀 /api/v1/growth/*。
+# 旧 /api/v1/lead-automation/* 薄转发已于 M8 退役（2026-06-13）——_build_routers 现仅构建 canonical。
 # ========================================
 
 
@@ -114,8 +114,8 @@ def _build_routers(seg: str) -> tuple[APIRouter, APIRouter, APIRouter, APIRouter
 
 
 def _prefix_route_names(router: APIRouter, prefix: str) -> APIRouter:
-    """给 router 内全部路由名加前缀，避免与 canonical 同名（route name 全局唯一，
-    薄转发与 canonical 双挂载同一批子路由会产生重名，详见 utils.openapi.ensure_unique_route_names）。"""
+    """给 router 内全部路由名加前缀，保证 route name 全局唯一（app/agent 两 scope 有同名
+    handler 如 list_customers，需加 scope 前缀区分；详见 utils.openapi.ensure_unique_route_names）。"""
     for route in router.routes:
         if isinstance(route, APIRoute):
             route.name = f'{prefix}{route.name}'
@@ -124,11 +124,8 @@ def _prefix_route_names(router: APIRouter, prefix: str) -> APIRouter:
 
 
 # canonical：/api/v1/growth/*
+# （旧 /api/v1/lead-automation/* 薄转发已于 M8 退役 2026-06-13——管理端前端确认全量切 /api/v1/growth/* 后双中心清零）
 v1, app, open_api, agent = _build_routers('growth')
-# 薄转发：/api/v1/lead-automation/*（M8 退役）——路由名加 legacy_ 前缀保持全局唯一
-legacy_v1, legacy_app, legacy_open, legacy_agent = (
-    _prefix_route_names(r, 'legacy_') for r in _build_routers('lead-automation')
-)
 
 # 7 张新业务表管理端 CRUD：只挂 canonical /api/v1/growth/*（这些表从不属于 lead-automation 历史面）
 v1.include_router(admin_customer_router, prefix='/customers', tags=['获客客户-管理'])

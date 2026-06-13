@@ -157,17 +157,17 @@ def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
 
 
 def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
-    """7 张新业务表管理端 CRUD 只挂 canonical /api/v1/growth/*，不进 lead-automation 转发面。"""
-    from backend.app.hasn_growth.api.router import legacy_v1, v1
+    """7 张新业务表管理端 CRUD 挂 canonical /api/v1/growth/*；旧 lead-automation 薄转发已 M8 退役。"""
+    import backend.app.hasn_growth.api.router as growth_router_mod
+    from backend.app.hasn_growth.api.router import v1
 
     v1_paths = {getattr(r, 'path', '') for r in v1.routes}
-    legacy_paths = {getattr(r, 'path', '') for r in legacy_v1.routes}
     assert any('/api/v1/growth/customers' == p for p in v1_paths)
     assert any('/api/v1/growth/opportunitys' == p for p in v1_paths)
     assert any('/api/v1/growth/optout-records' == p for p in v1_paths)
-    # legacy 不含新业务表
-    assert not any('customers' in p for p in legacy_paths)
-    assert not any('optout-records' in p for p in legacy_paths)
+    # M8 退役：legacy_* 符号已删除，旧 /api/v1/lead-automation/* 转发面整体清零（双中心归一）
+    assert not hasattr(growth_router_mod, 'legacy_v1')
+    assert not any('lead-automation' in p for p in v1_paths)
 
 
 def test_m2_app_registration_manifest_scope_catalog() -> None:
@@ -225,9 +225,9 @@ def test_business_api_and_tasks_are_registered_beside_codegen_crud() -> None:
     assert 'admin_business_router' in router_source
     assert 'open_business_router' in router_source
     assert 'agent_business_router' in router_source
-    # canonical /growth + 薄转发 /lead-automation 双挂载
+    # canonical /growth 单挂载（旧 /lead-automation 薄转发已 M8 退役 2026-06-13，双中心归一）
     assert "_build_routers('growth')" in router_source
-    assert "_build_routers('lead-automation')" in router_source
+    assert "_build_routers('lead-automation')" not in router_source
     assert "post('/jobs'" in app_business
     assert "post('/jobs/{job_id}/run'" in app_business
     assert "get('/jobs/{job_id}'" in app_business

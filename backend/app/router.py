@@ -44,7 +44,7 @@ from backend.app.huanxing.api.router import open_api as huanxing_open
 from backend.app.huanxing.api.router import user_api as huanxing_user
 from backend.app.huanxing.api.router import v1 as huanxing_v1
 # 获客（hasn_growth，采集子域收编，独立 PG schema=hasn_growth）
-# canonical 前缀 /api/v1/growth/*；旧 /api/v1/lead-automation/* 薄转发过渡（M8 退役）
+# canonical 前缀 /api/v1/growth/*（旧 /api/v1/lead-automation/* 薄转发已于 M8 退役 2026-06-13）
 from backend.app.hasn_growth.api.router import (
     agent as growth_agent,
 )
@@ -56,18 +56,6 @@ from backend.app.hasn_growth.api.router import (
 )
 from backend.app.hasn_growth.api.router import (
     v1 as growth_v1,
-)
-from backend.app.hasn_growth.api.router import (
-    legacy_agent as lead_automation_agent,
-)
-from backend.app.hasn_growth.api.router import (
-    legacy_app as lead_automation_app,
-)
-from backend.app.hasn_growth.api.router import (
-    legacy_open as lead_automation_open,
-)
-from backend.app.hasn_growth.api.router import (
-    legacy_v1 as lead_automation_v1,
 )
 from backend.app.llm.api.router import app as llm_app
 from backend.app.llm.api.router import v1 as llm_v1
@@ -98,16 +86,11 @@ router.include_router(task_v1)
 router.include_router(llm_v1)
 router.include_router(llm_app)
 router.include_router(openclaw_v1)  # Openclaw Gateway API
-# 获客 canonical 前缀 /api/v1/growth/*
+# 获客 canonical 前缀 /api/v1/growth/*（旧 /api/v1/lead-automation/* 薄转发已于 M8 退役 2026-06-13）
 router.include_router(growth_v1)
 router.include_router(growth_app)
 router.include_router(growth_agent)
 router.include_router(growth_open)
-# 旧 /api/v1/lead-automation/* 薄转发过渡（管理端前端切换后 M8 退役）
-router.include_router(lead_automation_v1)
-router.include_router(lead_automation_app)
-router.include_router(lead_automation_agent)
-router.include_router(lead_automation_open)
 
 router.include_router(projects_v1)
 router.include_router(user_tier_v1)
