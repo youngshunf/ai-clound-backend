@@ -10,12 +10,28 @@ import uuid
 
 import pytest
 
+from backend.app.hasn.model.hasn_assets import HasnAssets
 from backend.app.hasn_knowledge.model import Document, Folder, Kb
+from backend.app.hasn_knowledge.service import tool_handlers
 from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
+from backend.utils.timezone import timezone
 
 pytestmark = pytest.mark.asyncio
+
+
+def _agent(owner_id: str, agent_id: str, scopes: list[str] | None = None) -> AgentTokenPayload:
+    return AgentTokenPayload(
+        agent_hasn_id=agent_id,
+        agent_name='测试分身',
+        owner_hasn_id=owner_id,
+        owner_user_id=1,
+        scopes=scopes or ['knowledge:read', 'knowledge:write', 'knowledge:upload'],
+        session_uuid=f's-{agent_id}',
+        expire_time=timezone.now(),
+    )
 
 
 def _kb_row(owner_id: str, tag: str) -> Kb:
@@ -201,3 +217,95 @@ async def test_empty_native_document_is_not_indexed(session):
     )
     assert whitespace['parse_status'] == 'parsed'
     assert whitespace['chunk_count'] == 0
+
+
+async def test_agent_folder_crud_via_handlers(session):
+    """分身经工具 handler 维护目录：建/列/重命名/移动/删（全套 CRUD，inherit 全可达）。"""
+    tag = uuid.uuid4().hex[:8]
+    owner, agent = f'h_test_{tag}', f'a_test_{tag}'
+    kb = _kb_row(owner, tag)
+    session.add(kb)
+    await session.flush()
+    a = _agent(owner, agent)
+
+    created = await tool_handlers.handle_knowledge_create_folder(session, a, {'kb_id': kb.id, 'name': '甲'})
+    assert created['name'] == '甲'
+    assert created['parent_id'] is None
+
+    child = await tool_handlers.handle_knowledge_create_folder(
+        session, a, {'kb_id': kb.id, 'name': '乙', 'parent_id': created['id']}
+    )
+    assert child['parent_id'] == created['id']
+
+    listed = await tool_handlers.handle_knowledge_list_folders(session, a, {'kb_id': kb.id})
+    assert {f['name'] for f in listed['folders']} >= {'甲', '乙'}
+
+    renamed = await tool_handlers.handle_knowledge_update_folder(
+        session, a, {'folder_id': created['id'], 'name': '甲改'}
+    )
+    assert renamed['name'] == '甲改'
+
+    moved = await tool_handlers.handle_knowledge_update_folder(
+        session, a, {'folder_id': child['id'], 'move_to_root': True}
+    )
+    assert moved['parent_id'] is None
+
+    deleted = await tool_handlers.handle_knowledge_delete_folder(session, a, {'folder_id': child['id']})
+    assert deleted['deleted'] is True
+    # 非空目录拒删（甲改 仍是占位无文档但无子——这里删空的 甲改 应成功）
+    await tool_handlers.handle_knowledge_delete_folder(session, a, {'folder_id': created['id']})
+
+
+async def test_agent_folder_ops_gated_by_grant(session):
+    """目录工具走维度② 可达性闸门：restricted 白名单外的库一律拒（建/列都拒）。"""
+    tag = uuid.uuid4().hex[:8]
+    owner, agent = f'h_test_{tag}', f'a_test_{tag}'
+    kb1, kb2 = _kb_row(owner, f'{tag}1'), _kb_row(owner, f'{tag}2')
+    session.add_all([kb1, kb2])
+    await session.flush()
+    await knowledge_service.put_agent_grant(session, owner, agent, mode='restricted', kb_ids=[kb1.id])
+    a = _agent(owner, agent)
+
+    # kb1 可达：建目录成功
+    ok = await tool_handlers.handle_knowledge_create_folder(session, a, {'kb_id': kb1.id, 'name': '甲'})
+    assert ok['name'] == '甲'
+    # kb2 不可达：建目录 / 列目录都拒
+    with pytest.raises(errors.ForbiddenError):
+        await tool_handlers.handle_knowledge_create_folder(session, a, {'kb_id': kb2.id, 'name': '甲'})
+    with pytest.raises(errors.ForbiddenError):
+        await tool_handlers.handle_knowledge_list_folders(session, a, {'kb_id': kb2.id})
+
+
+async def test_agent_upload_asset_rejections(session):
+    """asset_uri 上传的纯逻辑闸门：二选一约束 + 资产不存在 + 越权他人资产（happy path 走真机 E2E）。"""
+    tag = uuid.uuid4().hex[:8]
+    owner, other, agent = f'h_test_{tag}', f'h_other_{tag}', f'a_test_{tag}'
+    kb = _kb_row(owner, tag)
+    session.add(kb)
+    await session.flush()
+    a = _agent(owner, agent)
+
+    # 二选一：都不给 → 拒
+    with pytest.raises(errors.RequestError):
+        await tool_handlers.handle_knowledge_upload_document(session, a, {'kb_id': kb.id, 'title': 'x'})
+    # 二选一：都给 → 拒
+    with pytest.raises(errors.RequestError):
+        await tool_handlers.handle_knowledge_upload_document(
+            session, a, {'kb_id': kb.id, 'title': 'x', 'content_text': 'y', 'asset_uri': 'hasn://asset/whatever'}
+        )
+    # 资产不存在 → 按「不存在」
+    with pytest.raises(errors.NotFoundError):
+        await tool_handlers.handle_knowledge_upload_document(
+            session, a, {'kb_id': kb.id, 'title': 'x', 'asset_uri': 'hasn://asset/nonexist'}
+        )
+    # 别人主人名下的资产 → 越权拒（防把别人的文件塞进自己库）
+    asset = HasnAssets(
+        asset_id=f'ast_{tag}', owner_hasn_id=other, access='private', storage_id=1,
+        object_key='k', kind='file', mime='application/pdf', size_bytes=10,
+    )
+    session.add(asset)
+    await session.flush()
+    with pytest.raises(errors.ForbiddenError):
+        await tool_handlers.handle_knowledge_upload_document(
+            session, a, {'kb_id': kb.id, 'title': 'x', 'asset_uri': f'hasn://asset/ast_{tag}'}
+        )

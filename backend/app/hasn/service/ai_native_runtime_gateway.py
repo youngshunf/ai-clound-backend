@@ -412,6 +412,10 @@ class AiNativeRuntimeGateway:
             'knowledge.fetch_doc': knowledge_handlers.handle_knowledge_fetch_doc,
             'knowledge.upload_document': knowledge_handlers.handle_knowledge_upload_document,
             'knowledge.write_doc': knowledge_handlers.handle_knowledge_write_doc,
+            'knowledge.list_folders': knowledge_handlers.handle_knowledge_list_folders,
+            'knowledge.create_folder': knowledge_handlers.handle_knowledge_create_folder,
+            'knowledge.update_folder': knowledge_handlers.handle_knowledge_update_folder,
+            'knowledge.delete_folder': knowledge_handlers.handle_knowledge_delete_folder,
             # 帖子/文章详情走专用资源取数（含可见性鉴权 + reference_cards）
             'community.get_post': self._handle_community_get_post,
             'community.get_article': self._handle_community_get_article,

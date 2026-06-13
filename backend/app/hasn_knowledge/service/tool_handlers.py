@@ -93,26 +93,104 @@ async def handle_knowledge_fetch_doc(
 async def handle_knowledge_upload_document(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.upload_document：content_text → service 侧转文件（Agent 不构造 multipart）。"""
+    """knowledge.upload_document：content_text(文本) 或 asset_uri(已在私有桶的真实文件) 二选一上传并索引。
+
+    - content_text → service 侧转 .txt（Agent 不构造 multipart）；
+    - asset_uri(hasn://asset/...) → 取桶字节建文档副本（资产须属同一主人，越权如实拒）。
+    """
     kb_id = int(input_payload['kb_id'])
     await _assert_kb_reachable(db, agent, kb_id)
     title = str(input_payload['title']).strip() or 'untitled'
-    filename = title if '.' in title.rsplit('/', 1)[-1] else f'{title}.txt'
     folder_id = input_payload.get('folder_id')
+    folder_id_int = int(folder_id) if folder_id is not None else None
+    content_text = input_payload.get('content_text')
+    asset_uri = input_payload.get('asset_uri')
+    if bool(content_text) == bool(asset_uri):
+        raise errors.RequestError(msg='content_text 与 asset_uri 必须二选一')
     try:
+        if asset_uri:
+            return await knowledge_service.upload_asset_document(
+                db,
+                agent.owner_hasn_id,
+                kb_id,
+                asset_uri=str(asset_uri),
+                title=title,
+                folder_id=folder_id_int,
+                source='agent',
+                agent_hasn_id=agent.agent_hasn_id,
+            )
+        filename = title if '.' in title.rsplit('/', 1)[-1] else f'{title}.txt'
         return await knowledge_service.upload_file_document(
             db,
             agent.owner_hasn_id,
             kb_id,
             filename=filename,
-            data=str(input_payload['content_text']).encode('utf-8'),
+            data=str(content_text).encode('utf-8'),
             mime='text/plain',
-            folder_id=int(folder_id) if folder_id is not None else None,
+            folder_id=folder_id_int,
             source='agent',
             agent_hasn_id=agent.agent_hasn_id,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
+
+
+# ---------- 目录（folder）：分身帮主人维护知识库目录树（全套 CRUD）----------
+
+
+async def handle_knowledge_list_folders(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.list_folders：列某可达知识库的目录树（平铺，按 parent_id 组树）。"""
+    kb_id = int(input_payload['kb_id'])
+    await _assert_kb_reachable(db, agent, kb_id)
+    folders = await knowledge_service.list_folders(db, agent.owner_hasn_id, kb_id)
+    return {'folders': folders}
+
+
+async def handle_knowledge_create_folder(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.create_folder：在可达知识库里新建目录。"""
+    kb_id = int(input_payload['kb_id'])
+    await _assert_kb_reachable(db, agent, kb_id)
+    parent_id = input_payload.get('parent_id')
+    return await knowledge_service.create_folder(
+        db,
+        agent.owner_hasn_id,
+        kb_id,
+        name=str(input_payload['name']),
+        parent_id=int(parent_id) if parent_id is not None else None,
+    )
+
+
+async def handle_knowledge_update_folder(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.update_folder：重命名/移动目录（按 folder_id 反查所属 kb 做可达性闸门）。"""
+    folder_id = int(input_payload['folder_id'])
+    folder = await knowledge_service.get_folder(db, agent.owner_hasn_id, folder_id)
+    await _assert_kb_reachable(db, agent, int(folder['kb_id']))
+    parent_id = input_payload.get('parent_id')
+    return await knowledge_service.update_folder(
+        db,
+        agent.owner_hasn_id,
+        folder_id,
+        name=input_payload.get('name'),
+        parent_id=int(parent_id) if parent_id is not None else None,
+        move_to_root=bool(input_payload.get('move_to_root', False)),
+    )
+
+
+async def handle_knowledge_delete_folder(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.delete_folder：删空目录（非空如实拒）。"""
+    folder_id = int(input_payload['folder_id'])
+    folder = await knowledge_service.get_folder(db, agent.owner_hasn_id, folder_id)
+    await _assert_kb_reachable(db, agent, int(folder['kb_id']))
+    await knowledge_service.delete_folder(db, agent.owner_hasn_id, folder_id)
+    return {'deleted': True, 'folder_id': folder_id}
 
 
 async def handle_knowledge_write_doc(

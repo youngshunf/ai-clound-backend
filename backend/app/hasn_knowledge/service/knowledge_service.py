@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import uuid
 
 from typing import TYPE_CHECKING, Any
@@ -191,6 +192,10 @@ class KnowledgeService:
         if folder is None:
             raise errors.NotFoundError(msg='目录不存在')
         return folder
+
+    async def get_folder(self, db: AsyncSession, owner_id: str, folder_id: int) -> dict[str, Any]:
+        """读单个目录（owner 隔离）；供 agent 面按 folder_id 反查所属 kb 做可达性闸门。"""
+        return _folder_dict(await self._get_folder(db, owner_id, folder_id))
 
     async def list_folders(self, db: AsyncSession, owner_id: str, kb_id: int) -> list[dict[str, Any]]:
         await self._get_kb(db, owner_id, kb_id)
@@ -433,6 +438,52 @@ class KnowledgeService:
         await self._push_copy_to_engine(db, kb, doc, filename=filename, data=data, mime=mime)
         await self._refresh_kb_counts(db, kb)
         return _document_dict(doc)
+
+    @staticmethod
+    def _asset_filename(title: str, mime: str | None) -> str:
+        """资产入库文件名：title 已带扩展名则用之；否则按 MIME 猜扩展名补全（让引擎按类型解析）。"""
+        name = (title or 'untitled').strip() or 'untitled'
+        if '.' in name.rsplit('/', 1)[-1]:
+            return name
+        ext = mimetypes.guess_extension(mime or '') or ''
+        return f'{name}{ext}'
+
+    async def upload_asset_document(
+        self,
+        db: AsyncSession,
+        owner_id: str,
+        kb_id: int,
+        *,
+        asset_uri: str,
+        title: str,
+        folder_id: int | None = None,
+        source: str = 'agent',
+        agent_hasn_id: str | None = None,
+    ) -> dict[str, Any]:
+        """asset_uri 入库：引用已在私有桶的真实文件（agent 生成的图/收到的文件等）→ 取桶字节→建文档副本。
+
+        越权防护：资产必须属于同一主人（asset.owner_hasn_id == owner_id），否则如实拒。
+        语义对齐 D10：知识库文档自持其原件副本，源资产不动。
+        """
+        asset_id = asset_uri.rsplit('/', 1)[-1]
+        asset = await hasn_asset_service.get_by_asset_id(db, asset_id)
+        if asset is None:
+            raise errors.NotFoundError(msg='资产不存在')
+        if asset.owner_hasn_id != owner_id:
+            raise errors.ForbiddenError(msg='该资产不属于你的主人，无法入库')
+        data = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=asset.object_key)
+        filename = self._asset_filename(title, asset.mime)
+        return await self.upload_file_document(
+            db,
+            owner_id,
+            kb_id,
+            filename=filename,
+            data=data,
+            mime=asset.mime or 'application/octet-stream',
+            folder_id=folder_id,
+            source=source,
+            agent_hasn_id=agent_hasn_id,
+        )
 
     async def _push_copy_to_engine(
         self, db: AsyncSession, kb: Kb, doc: Document, *, filename: str, data: bytes, mime: str
