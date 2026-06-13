@@ -172,3 +172,32 @@ async def test_native_version_bookkeeping_without_engine(session):
     moved = await knowledge_service.update_native_document(session, owner, doc['id'], folder_id=folder['id'])
     assert moved['current_version'] == 3
     assert moved['folder_id'] == folder['id']
+
+
+async def test_empty_native_document_is_not_indexed(session):
+    """空白原生文档（如「新建文档」初始态）不推引擎、不误报索引失败：直接 parsed/0 chunks。
+
+    回归：旧版无条件推空正文给 RAGFlow，引擎解析空文档必失败 → UI 一建文档就「正在重新
+    索引…」隔会儿「索引失败」。修复后空正文不触引擎（无 ragflow_document_id 可删），纯 PG 置 parsed。
+    """
+    tag = uuid.uuid4().hex[:8]
+    owner = f'h_test_{tag}'
+    kb = _kb_row(owner, tag)
+    session.add(kb)
+    await session.flush()
+
+    # 空正文（「无标题文档」+ 空白正文）→ 不触引擎、直接就绪。
+    blank = await knowledge_service.create_native_document(
+        session, owner, kb.id, title='无标题文档', content='', source='ui'
+    )
+    assert blank['parse_status'] == 'parsed'
+    assert blank['chunk_count'] == 0
+    doc = await session.get(Document, blank['id'])
+    assert doc.ragflow_document_id is None  # 从未推过引擎
+
+    # 仅空白（空格/换行）也视为空，同样不触引擎。
+    whitespace = await knowledge_service.create_native_document(
+        session, owner, kb.id, title='占位', content='  \n\t ', source='ui'
+    )
+    assert whitespace['parse_status'] == 'parsed'
+    assert whitespace['chunk_count'] == 0

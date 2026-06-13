@@ -438,6 +438,24 @@ class KnowledgeService:
         self, db: AsyncSession, kb: Kb, doc: Document, *, filename: str, data: bytes, mime: str
     ) -> None:
         """推副本给 RAGFlow + 触发解析；失败如实落 failed（原件/正文已安全，可重试索引）。"""
+        # 空正文无可索引内容（如刚新建的空白原生文档/被清空的文档）：不推引擎，
+        # 否则 RAGFlow 解析空文档必失败 → 误报「索引失败」。删残留副本后置 parsed/0 chunks。
+        if not data.strip():
+            if doc.ragflow_document_id:
+                try:
+                    client, _ = await resolve_knowledge_instance(db)
+                    await client.delete_documents(
+                        dataset_id=kb.ragflow_dataset_id, ids=[doc.ragflow_document_id]
+                    )
+                except KnowledgeProviderError:
+                    pass  # 引擎不可达/副本已不存在：尽力而为，本地状态仍归零
+                doc.ragflow_document_id = None
+            doc.parse_status = 'parsed'
+            doc.parse_error = None
+            doc.chunk_count = 0
+            doc.updated_time = timezone.now()
+            await db.flush()
+            return
         try:
             client, _ = await resolve_knowledge_instance(db)
             if doc.ragflow_document_id:
