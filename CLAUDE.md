@@ -18,5 +18,6 @@
 
 - **主仓库（主 clone）始终停在主分支 `huanxing`，不随意切换。**
 - **小修复 / 小 UI 改 / 文档** → 直接在 `huanxing` 上做 → 跑最小校验 → 立即提交，不新建分支。
-- **稍复杂的功能** → 从 `huanxing` `git worktree add ../<名> -b <分支>` 拉独立工作树开发，主仓库不动；完成后回 `huanxing` 合并、删 worktree。
-- 一句话：**新建分支 = 必走 worktree**。提交用 `git commit -m "..." -- <你的文件>` 精确提交，发现别的会话的脏/staged 改动**不要碰**；push 前先 `git fetch origin huanxing` 整合，**禁止 force-push**。
+- **稍复杂的功能** → 从 `huanxing` `git worktree add ../<名> -b <分支>` 拉独立工作树开发，主仓库不动；完成后**回主 clone `huanxing` 合并、再从主 clone push**、删 worktree。
+- **铁律：禁止在 worktree 里直接推送代码——所有代码必须先合并回主 clone，再从主 clone 推送**（福仔 2026-06-13）：❌ 禁止 worktree 里 `git push origin HEAD:huanxing`（只推动 origin/huanxing，主 clone 不前进）；本机/CI 从主 clone 编译运行，worktree 直推后主 clone 停在旧 commit → 重编"没变化"。✅ 正确：worktree 开发完 → `cd` 回主 clone（停 `huanxing`）→ `git fetch origin huanxing` →（落后则 merge 整合）→ `git merge <分支>` → 主 clone `git push origin huanxing` → 删 worktree。撞别会话脏文件则协调或外科 `git checkout <分支> -- <文件>`，**绝不**退回 worktree 直推。
+- 一句话：**新建分支 = 必走 worktree**。提交用 `git commit -m "..." -- <你的文件>` 精确提交，发现别的会话的脏/staged 改动**不要碰**；push **一律在主 clone**，push 前先 `git fetch origin huanxing` 整合，**禁止 force-push**。
