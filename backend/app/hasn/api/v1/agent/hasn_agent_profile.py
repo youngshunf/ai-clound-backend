@@ -82,8 +82,8 @@ async def _resolve_skill_bundles(db: Any, bundles_ref: Any) -> list[dict]:
                 sa.text(
                     f"""
                     SELECT v.bundle_slug, v.command_key, v.hermes_yaml
-                    FROM public.marketplace_template_version v
-                    JOIN public.marketplace_template t ON t.template_id = v.template_id
+                    FROM hasn_marketplace.marketplace_template_version v
+                    JOIN hasn_marketplace.marketplace_template t ON t.template_id = v.template_id
                     WHERE v.template_id = :template_id
                       AND t.template_type = 'skill_pack'
                       {ver_filter}

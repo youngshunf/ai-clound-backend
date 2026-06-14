@@ -3,11 +3,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, UniversalText, TimeZone
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import id_key, UniversalText, TimeZone
 from backend.utils.timezone import timezone
 
 
-class MarketplacePersonalSkill(Base):
+class MarketplacePersonalSkill(MarketplaceBase):
     """个人技能同步表（个人技能库 SSOT）"""
 
     __tablename__ = 'marketplace_personal_skill'

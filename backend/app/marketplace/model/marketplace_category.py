@@ -3,10 +3,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import id_key
 
 
-class MarketplaceCategory(Base):
+class MarketplaceCategory(MarketplaceBase):
     """技能市场分类表"""
 
     __tablename__ = 'marketplace_category'

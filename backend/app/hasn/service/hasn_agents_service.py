@@ -652,8 +652,8 @@ class HasnAgentProfileService:
                     f"""
                     SELECT t.template_id, v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
                            COALESCE(v.content_hash, v.file_hash) AS content_hash
-                    FROM public.marketplace_template t
-                    JOIN public.marketplace_template_version v ON v.template_id = t.template_id
+                    FROM hasn_marketplace.marketplace_template t
+                    JOIN hasn_marketplace.marketplace_template_version v ON v.template_id = t.template_id
                     WHERE t.template_id = :package_id
                       AND t.template_type = 'skill_pack'
                       {ver_filter}

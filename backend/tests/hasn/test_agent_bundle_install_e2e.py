@@ -109,7 +109,7 @@ async def e2e():
     await session.execute(
         text(
             '''
-            INSERT INTO marketplace_template (template_id, namespace, slug, template_type, name,
+            INSERT INTO hasn_marketplace.marketplace_template (template_id, namespace, slug, template_type, name,
                 author_id, pricing_type, price, is_private, is_official, status, download_count,
                 source_type, created_time, updated_time)
             VALUES (:tid, 'huanxing', :slug, 'skill_pack', :slug, :author, 'free', 0, false, true,
@@ -121,7 +121,7 @@ async def e2e():
     await session.execute(
         text(
             '''
-            INSERT INTO marketplace_template_version (template_id, version, bundle_slug, command_key,
+            INSERT INTO hasn_marketplace.marketplace_template_version (template_id, version, bundle_slug, command_key,
                 hermes_yaml, content_hash, file_hash, is_latest, published_at, created_time, updated_time)
             VALUES (:tid, '1.0.0', :slug, :cmd, :yaml, 'sha256:deadbeef', 'deadbeef', true, now(), now(), now())
             '''

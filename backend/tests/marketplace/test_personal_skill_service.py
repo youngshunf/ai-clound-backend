@@ -201,7 +201,7 @@ async def test_upsert_roundtrip_dedup_and_bump(session) -> None:
         session, user_id=user_id, personal_skill_id=skill.personal_skill_id
     )
     remaining = await session.execute(
-        text('SELECT 1 FROM marketplace_personal_skill WHERE personal_skill_id = :pid'),
+        text('SELECT 1 FROM hasn_marketplace.marketplace_personal_skill WHERE personal_skill_id = :pid'),
         {'pid': skill.personal_skill_id},
     )
     assert remaining.scalar_one_or_none() is None

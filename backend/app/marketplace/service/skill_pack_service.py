@@ -217,7 +217,7 @@ async def upsert_skill_pack(
     await db.execute(
         sa.text(
             f'''
-            INSERT INTO public.marketplace_template (
+            INSERT INTO hasn_marketplace.marketplace_template (
                 template_id, namespace, slug, template_type, name, description,
                 author_id, user_id, pricing_type, price, is_private, is_official,
                 download_count, source_type, created_time, updated_time'''
@@ -242,7 +242,7 @@ async def upsert_skill_pack(
     await db.execute(
         sa.text(
             '''
-            UPDATE public.marketplace_template_version
+            UPDATE hasn_marketplace.marketplace_template_version
             SET is_latest = false, updated_time = now()
             WHERE template_id = :template_id
             '''
@@ -252,7 +252,7 @@ async def upsert_skill_pack(
     await db.execute(
         sa.text(
             '''
-            INSERT INTO public.marketplace_template_version (
+            INSERT INTO hasn_marketplace.marketplace_template_version (
                 template_id, version, changelog, skill_dependencies_versioned,
                 bundle_slug, command_key, hermes_bundle_json, hermes_yaml,
                 content_hash, file_hash, is_latest, published_at, created_time, updated_time

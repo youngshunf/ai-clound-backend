@@ -91,8 +91,8 @@ async def list_skill_packs(
         sa.text(
             f'''
             SELECT count(*)
-            FROM public.marketplace_template t
-            JOIN public.marketplace_template_version v
+            FROM hasn_marketplace.marketplace_template t
+            JOIN hasn_marketplace.marketplace_template_version v
               ON v.template_id = t.template_id AND v.is_latest = true
             WHERE {where_sql}
             '''
@@ -107,8 +107,8 @@ async def list_skill_packs(
         sa.text(
             f'''
             SELECT {_LIST_COLUMNS}
-            FROM public.marketplace_template t
-            JOIN public.marketplace_template_version v
+            FROM hasn_marketplace.marketplace_template t
+            JOIN hasn_marketplace.marketplace_template_version v
               ON v.template_id = t.template_id AND v.is_latest = true
             WHERE {where_sql}
             ORDER BY {order_sql}

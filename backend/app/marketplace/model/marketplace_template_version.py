@@ -5,11 +5,12 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, TimeZone, UniversalText, id_key
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import TimeZone, UniversalText, id_key
 from backend.utils.timezone import timezone
 
 
-class MarketplaceTemplateVersion(Base):
+class MarketplaceTemplateVersion(MarketplaceBase):
     """模板版本表"""
 
     __tablename__ = 'marketplace_template_version'

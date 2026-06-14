@@ -3,11 +3,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, UniversalText, TimeZone
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import id_key, UniversalText, TimeZone
 from backend.utils.timezone import timezone
 
 
-class MarketplaceSyncLog(Base):
+class MarketplaceSyncLog(MarketplaceBase):
     """技能市场同步日志表"""
 
     __tablename__ = 'marketplace_sync_log'

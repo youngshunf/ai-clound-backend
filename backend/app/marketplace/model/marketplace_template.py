@@ -5,10 +5,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, TimeZone, UniversalText, id_key
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import TimeZone, UniversalText, id_key
 
 
-class MarketplaceTemplate(Base):
+class MarketplaceTemplate(MarketplaceBase):
     """技能市场模板表（Agent模板/技能包/SOP包）"""
 
     __tablename__ = 'marketplace_template'

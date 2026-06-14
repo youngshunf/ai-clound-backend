@@ -101,8 +101,8 @@ async def _fetch_pack(session, template_id: str) -> dict | None:
                 '''
                 SELECT t.template_type, t.is_official, t.is_common, t.namespace,
                        v.bundle_slug, v.command_key, v.hermes_yaml, v.content_hash, v.file_hash, v.is_latest
-                FROM marketplace_template t
-                JOIN marketplace_template_version v ON v.template_id = t.template_id AND v.is_latest
+                FROM hasn_marketplace.marketplace_template t
+                JOIN hasn_marketplace.marketplace_template_version v ON v.template_id = t.template_id AND v.is_latest
                 WHERE t.template_id = :tid
                 '''
             ),
@@ -180,7 +180,7 @@ async def test_sync_bundle_display_name_maps_to_name(e2e):
 
     name = (
         await e2e.session.execute(
-            text('SELECT name FROM marketplace_template WHERE template_id = :tid'),
+            text('SELECT name FROM hasn_marketplace.marketplace_template WHERE template_id = :tid'),
             {'tid': f'huanxing/{slug}'},
         )
     ).scalar()

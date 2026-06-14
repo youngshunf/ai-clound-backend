@@ -128,17 +128,17 @@ async def client():
         async with engine.begin() as conn:
             await conn.execute(
                 text(
-                    'DELETE FROM marketplace_template_version WHERE template_id IN '
-                    '(SELECT template_id FROM marketplace_template WHERE author_id = ANY(:authors))'
+                    'DELETE FROM hasn_marketplace.marketplace_template_version WHERE template_id IN '
+                    '(SELECT template_id FROM hasn_marketplace.marketplace_template WHERE author_id = ANY(:authors))'
                 ),
                 {'authors': [_AUTHOR_ID, _AUTHOR_ID + 1]},
             )
             await conn.execute(
-                text('DELETE FROM marketplace_template WHERE author_id = ANY(:authors)'),
+                text('DELETE FROM hasn_marketplace.marketplace_template WHERE author_id = ANY(:authors)'),
                 {'authors': [_AUTHOR_ID, _AUTHOR_ID + 1]},
             )
             await conn.execute(
-                text('DELETE FROM marketplace_skill WHERE skill_id = ANY(:ids)'),
+                text('DELETE FROM hasn_marketplace.marketplace_skill WHERE skill_id = ANY(:ids)'),
                 {'ids': _MEMBER_SKILL_IDS},
             )
         await engine.dispose()
@@ -178,8 +178,8 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client):
             text(
                 '''
                 SELECT t.template_type, v.bundle_slug, v.command_key, v.hermes_yaml, v.content_hash
-                FROM marketplace_template t
-                JOIN marketplace_template_version v ON v.template_id = t.template_id AND v.is_latest
+                FROM hasn_marketplace.marketplace_template t
+                JOIN hasn_marketplace.marketplace_template_version v ON v.template_id = t.template_id AND v.is_latest
                 WHERE t.template_id = :tid
                 '''
             ),
@@ -224,7 +224,7 @@ async def test_list_hides_other_owner_private_packs(client):
     await client.session.execute(
         text(
             '''
-            INSERT INTO marketplace_template (template_id, namespace, slug, template_type, name,
+            INSERT INTO hasn_marketplace.marketplace_template (template_id, namespace, slug, template_type, name,
                 author_id, pricing_type, price, is_private, is_official, download_count, source_type,
                 created_time, updated_time)
             VALUES (:tid, 'huanxing', :slug, 'skill_pack', :slug, :other, 'free', 0, true, false, 0, 'local', now(), now())
@@ -235,7 +235,7 @@ async def test_list_hides_other_owner_private_packs(client):
     await client.session.execute(
         text(
             '''
-            INSERT INTO marketplace_template_version (template_id, version, bundle_slug, command_key,
+            INSERT INTO hasn_marketplace.marketplace_template_version (template_id, version, bundle_slug, command_key,
                 hermes_yaml, content_hash, file_hash, is_latest, published_at, created_time, updated_time)
             VALUES (:tid, '1.0.0', :slug, :cmd, 'name: x\nskills:\n  - a\n', 'sha256:x', 'sha256:x', true, now(), now(), now())
             '''
@@ -319,7 +319,7 @@ async def test_create_with_category_and_draft_status(client):
     row = (
         await client.session.execute(
             text(
-                'SELECT category, status, user_id, author_id FROM marketplace_template WHERE template_id = :tid'
+                'SELECT category, status, user_id, author_id FROM hasn_marketplace.marketplace_template WHERE template_id = :tid'
             ),
             {'tid': f'huanxing/{slug}'},
         )

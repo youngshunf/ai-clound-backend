@@ -4,11 +4,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, TimeZone, UniversalText, id_key
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import TimeZone, UniversalText, id_key
 from backend.utils.timezone import timezone
 
 
-class MarketplaceDownload(Base):
+class MarketplaceDownload(MarketplaceBase):
     """用户下载记录表"""
 
     __tablename__ = 'marketplace_download'

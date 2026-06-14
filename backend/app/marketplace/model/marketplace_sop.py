@@ -4,10 +4,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, UniversalText
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import id_key, UniversalText
 
 
-class MarketplaceSop(Base):
+class MarketplaceSop(MarketplaceBase):
     """SOP 工作流市场表"""
 
     __tablename__ = 'marketplace_sop'

@@ -4,11 +4,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, TimeZone, UniversalText, id_key
+from backend.app.marketplace.model._base import MarketplaceBase
+from backend.common.model import TimeZone, UniversalText, id_key
 from backend.utils.timezone import timezone
 
 
-class MarketplaceSkillVersion(Base):
+class MarketplaceSkillVersion(MarketplaceBase):
     """技能版本表"""
 
     __tablename__ = 'marketplace_skill_version'

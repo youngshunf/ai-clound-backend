@@ -3,7 +3,7 @@
 -- 幂等：personal_skill_id 复用原 skill_id（唯一），ON CONFLICT DO NOTHING；并以 (user_id, slug) NOT EXISTS 兜底。
 -- 字段映射：origin=user-upload；body 取 COALESCE(body_zh, body_en)；package_url/file_hash/file_size 取最新版本；
 --           已 published 的回指 published_skill_id=skill_id。
-INSERT INTO "public"."marketplace_personal_skill" (
+INSERT INTO "hasn_marketplace"."marketplace_personal_skill" (
   personal_skill_id, user_id, hasn_id, slug, name, description, body, files,
   origin, content_hash, version, package_url, file_hash, file_size,
   icon_url, emoji, category, tags, visibility, published_skill_id,
@@ -33,10 +33,10 @@ SELECT
   ms.synced_at,
   ms.created_time,
   ms.updated_time
-FROM "public"."marketplace_skill" ms
+FROM "hasn_marketplace"."marketplace_skill" ms
 LEFT JOIN LATERAL (
   SELECT package_url, file_hash, file_size
-  FROM "public"."marketplace_skill_version" sv
+  FROM "hasn_marketplace"."marketplace_skill_version" sv
   WHERE sv.skill_id = ms.skill_id AND sv.is_latest = true
   LIMIT 1
 ) v ON true
@@ -44,7 +44,7 @@ WHERE ms.source_type = 'user'
   AND ms.user_id IS NOT NULL
   AND ms.slug IS NOT NULL
   AND NOT EXISTS (
-    SELECT 1 FROM "public"."marketplace_personal_skill" p
+    SELECT 1 FROM "hasn_marketplace"."marketplace_personal_skill" p
     WHERE p.user_id = ms.user_id AND p.slug = ms.slug
   )
 ON CONFLICT (personal_skill_id) DO NOTHING;

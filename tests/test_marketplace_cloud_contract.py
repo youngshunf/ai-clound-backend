@@ -182,7 +182,14 @@ def _admin_template_payload(
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine('sqlite+aiosqlite:///:memory:', future=True)
+    # marketplace 模型已落独立 PG schema hasn_marketplace（ADR-15 轴①）。SQLite 无 schema 概念，
+    # 会把 `hasn_marketplace.` 当作 attached database 名而报 unknown database；
+    # 用 schema_translate_map 把该 schema 翻译为 None（无 schema），DDL/DML 都退化到本地表名。
+    engine = create_async_engine(
+        'sqlite+aiosqlite:///:memory:',
+        future=True,
+        execution_options={'schema_translate_map': {'hasn_marketplace': None}},
+    )
     async with engine.begin() as conn:
         for table in (
             MarketplaceSkill.__table__,

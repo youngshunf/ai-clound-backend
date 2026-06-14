@@ -46,7 +46,7 @@ async def test_categories_return_name_icon_and_counts(session):
     cname = '测试分类显示名'
     await session.execute(
         text(
-            'INSERT INTO marketplace_category (slug, name, icon, sort_order, created_time, updated_time) '
+            'INSERT INTO hasn_marketplace.marketplace_category (slug, name, icon, sort_order, created_time, updated_time) '
             'VALUES (:s, :n, :i, 999, now(), now())'
         ),
         {'s': slug, 'n': cname, 'i': '🧪'},
@@ -82,7 +82,7 @@ async def test_defined_category_listed_even_without_content(session):
     slug = f'empty{uuid.uuid4().hex[:10]}'
     await session.execute(
         text(
-            'INSERT INTO marketplace_category (slug, name, icon, sort_order, created_time, updated_time) '
+            'INSERT INTO hasn_marketplace.marketplace_category (slug, name, icon, sort_order, created_time, updated_time) '
             'VALUES (:s, :n, NULL, 998, now(), now())'
         ),
         {'s': slug, 'n': '空分类'},
