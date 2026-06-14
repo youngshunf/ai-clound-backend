@@ -33,7 +33,7 @@ from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_r
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.api.v1.open.forms import router as open_forms_router
 from backend.app.hasn_growth.model.lead_contact import LeadContact
-from backend.app.publish.model.site import Site
+from backend.app.hasn_publish.model.site import Site
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth

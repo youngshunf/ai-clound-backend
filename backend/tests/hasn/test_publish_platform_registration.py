@@ -27,7 +27,7 @@ from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.app.publish.manifest import PUBLISH_AI_NATIVE_MANIFEST, build_publish_workbench_app
+from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST, build_publish_workbench_app
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 if TYPE_CHECKING:

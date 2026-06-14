@@ -4,7 +4,7 @@ import hashlib
 
 from typing import TYPE_CHECKING, Any
 
-from backend.app.deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
@@ -12,7 +12,7 @@ from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.service.ai_native_manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
-from backend.app.publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone

@@ -4,15 +4,15 @@ from backend.app.admin.api.router import client as admin_client
 from backend.app.admin.api.router import v1 as admin_v1
 from backend.app.api.v1.app import app_router as mobile_app_v1_router
 from backend.app.api.v1.auth import auth_router as mobile_auth_v1_router
-from backend.app.deck.api.router import agent as deck_agent
-from backend.app.deck.api.router import app as deck_app
+from backend.app.hasn_deck.api.router import agent as deck_agent
+from backend.app.hasn_deck.api.router import app as deck_app
 from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
 from backend.app.hasn_knowledge.api.router import app as knowledge_app
 from backend.app.hasn_task.api.router import agent as hasn_task_agent
 from backend.app.hasn_task.api.router import app as hasn_task_app
-from backend.app.publish.api.router import agent as publish_agent
-from backend.app.publish.api.router import app as publish_app
-from backend.app.publish.api.router import hosting as publish_hosting
+from backend.app.hasn_publish.api.router import agent as publish_agent
+from backend.app.hasn_publish.api.router import app as publish_app
+from backend.app.hasn_publish.api.router import hosting as publish_hosting
 from backend.app.hasn.api.router import (
     agent as hasn_agent,
 )
@@ -138,7 +138,7 @@ router.include_router(knowledge_agent)        # 知识库 Agent API（/api/v1/kn
 router.include_router(hasn_task_app)          # 任务系统 用户端 API（/api/v1/hasn-task/app，Owner JWT + 同步/摘要）
 router.include_router(hasn_task_agent)        # 任务系统 Agent API（/api/v1/hasn-task/agent，Agent JWT，task:read/manage/run）
 
-# 通用网页发布与分享（AI-Native 应用 publish，模块 18，独立 PG schema=webpublish）
+# 通用网页发布与分享（AI-Native 应用 publish，模块 18，独立 PG schema=hasn_publish）
 router.include_router(publish_app)            # 发布 用户端 API（/api/v1/publish/app，Owner JWT，owner 隔离）
 router.include_router(publish_agent)          # 发布 Agent API（/api/v1/publish/agent，Agent JWT，publish:read/write）
 router.include_router(publish_hosting)        # 发布 公开查看面 /s/{slug}（独立分享域名，无鉴权外壳 + CSP sandbox）

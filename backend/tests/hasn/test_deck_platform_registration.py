@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.deck.manifest import DECK_AI_NATIVE_MANIFEST, build_deck_workbench_app
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST, build_deck_workbench_app
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded

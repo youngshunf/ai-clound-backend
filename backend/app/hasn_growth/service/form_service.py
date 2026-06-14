@@ -17,7 +17,7 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.form_submission import FormSubmission
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
-from backend.app.publish.model.site import Site
+from backend.app.hasn_publish.model.site import Site
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 

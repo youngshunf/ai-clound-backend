@@ -10,13 +10,13 @@ import re
 
 from pathlib import Path
 
-from backend.app.deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.ai_native_builtin_manifests import (
     COMMUNITY_AI_NATIVE_MANIFEST,
     KNOWLEDGE_AI_NATIVE_MANIFEST,
 )
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
-from backend.app.publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 
 _APPS_DIR = Path(__file__).resolve().parents[2] / 'app' / 'mcp' / 'apps'
 

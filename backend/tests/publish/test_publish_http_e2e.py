@@ -34,9 +34,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.publish.api.v1.agent.site import router as agent_site_router
-from backend.app.publish.api.v1.app.site import router as app_site_router
-from backend.app.publish.service.publish_service import publish_service, visibility_rank
+from backend.app.hasn_publish.api.v1.agent.site import router as agent_site_router
+from backend.app.hasn_publish.api.v1.app.site import router as app_site_router
+from backend.app.hasn_publish.service.publish_service import publish_service, visibility_rank
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
@@ -254,7 +254,7 @@ async def test_visibility_four_states(e2e: SimpleNamespace) -> None:
 
     # 库里确认 password_hash 已清
     pw = (
-        await e2e.session.execute(text('SELECT password_hash FROM webpublish.site WHERE id = :i'), {'i': sid})
+        await e2e.session.execute(text('SELECT password_hash FROM hasn_publish.site WHERE id = :i'), {'i': sid})
     ).scalar_one()
     assert pw is None
 
@@ -313,7 +313,7 @@ async def test_owner_isolation(e2e: SimpleNamespace) -> None:
     sid = created['site']['id']
     # 把这条改成 other_owner 的（直接改库），owner 再读应 404
     await e2e.session.execute(
-        text('UPDATE webpublish.site SET owner_id = :o WHERE id = :i'), {'o': e2e.other_owner, 'i': sid}
+        text('UPDATE hasn_publish.site SET owner_id = :o WHERE id = :i'), {'o': e2e.other_owner, 'i': sid}
     )
     await e2e.session.flush()
     r = await c.get(f'/api/v1/publish/app/sites/{sid}')

@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
-from backend.app.publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 
 # 跨仓契约：local_tool App → 本地 hasn-mcp capability_scopes() 声明的管理能力键集合。
 # hasn_task 同时含 task.rs（task:manage/task:run）与 workflow.rs（workflow:manage/workflow:run）。

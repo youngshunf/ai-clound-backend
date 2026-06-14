@@ -81,7 +81,7 @@ class WorkbenchAppRegistry:
             )
         )
         # 自研演示文稿 deck（local_tool AI-Native，模块 17 §6.2；唯一默认演示文稿应用，install_policy=auto）。
-        from backend.app.deck.manifest import build_deck_workbench_app
+        from backend.app.hasn_deck.manifest import build_deck_workbench_app
 
         registry.register(build_deck_workbench_app())
         # 任务系统 hasn_task（local_tool AI-Native，模块 12 设计 06 §4）。延迟导入避免循环依赖。
@@ -89,7 +89,7 @@ class WorkbenchAppRegistry:
 
         registry.register(build_hasn_task_workbench_app())
         # 通用网页发布与分享 publish（local_tool AI-Native，模块 18）。延迟导入避免循环依赖。
-        from backend.app.publish.manifest import build_publish_workbench_app
+        from backend.app.hasn_publish.manifest import build_publish_workbench_app
 
         registry.register(build_publish_workbench_app())
         # 获客 growth（cloud AI-Native，schema hasn_growth；install_policy=manual 非默认挂载）。延迟导入避免循环依赖。

@@ -29,8 +29,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.publish.api.v1.open.hosting import _content_csp, _share_origin, router as hosting_router
-from backend.app.publish.service.publish_service import publish_service
+from backend.app.hasn_publish.api.v1.open.hosting import _content_csp, _share_origin, router as hosting_router
+from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db
 
 if TYPE_CHECKING:

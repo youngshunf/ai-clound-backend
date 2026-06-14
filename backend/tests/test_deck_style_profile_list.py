@@ -16,8 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.deck.model import StyleProfile
-from backend.app.deck.service.deck_service import BUILTIN_OWNER, deck_service
+from backend.app.hasn_deck.model import StyleProfile
+from backend.app.hasn_deck.service.deck_service import BUILTIN_OWNER, deck_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
