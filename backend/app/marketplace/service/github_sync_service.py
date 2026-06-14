@@ -30,6 +30,7 @@ from backend.app.marketplace.schema.marketplace_skill_version import (
 from backend.app.marketplace.service.skill_content_extractor import (
     extract_skill_body,
     list_skill_files,
+    raw_bilingual_body,
     resolve_bilingual_body,
 )
 from backend.app.marketplace.schema.marketplace_sync_log import (
@@ -158,6 +159,7 @@ class GitHubSyncService:
         db: AsyncSession,
         force: bool = False,
         changed_paths: set[str] | None = None,
+        translate_body: bool = True,
     ) -> dict[str, Any]:
         """
         Sync skills from GitHub repository
@@ -167,6 +169,9 @@ class GitHubSyncService:
             force: Force full sync（全量重扫；admin / 手动重 seed 用）
             changed_paths: 本次 push 改动的文件路径集。提供且非 force 时走**增量**——
                 只处理命中变更路径的技能、跳过子模块刷新、按需对账，避免全量重译浪费 LLM。
+            translate_body: True（默认）翻译 SKILL.md 正文（双语，分块多次 LLM）；False 时
+                正文原文填充（源语言侧存原文、另一侧 null，零正文 LLM）。大批量回填 body_en
+                时用 False——名称/描述仍走变更门控批量翻译，只省掉正文逐块翻译的巨量 LLM。
 
         Returns:
             Sync result with statistics
@@ -220,7 +225,7 @@ class GitHubSyncService:
 
             for skill_data, translated in zip(skills_data, translations):
                 try:
-                    await self._sync_skill(db, skill_data, translated)
+                    await self._sync_skill(db, skill_data, translated, translate_body=translate_body)
                     synced_count += 1
                 except Exception as e:  # noqa: PERF203
                     failed_count += 1
@@ -696,6 +701,7 @@ class GitHubSyncService:
         db: AsyncSession,
         skill_data: dict[str, Any],
         translated: dict[str, Any],
+        translate_body: bool = True,  # noqa: FBT001, FBT002
     ) -> None:
         """
         Sync a single skill to database
@@ -704,6 +710,7 @@ class GitHubSyncService:
             db: Database session
             skill_data: Skill metadata
             translated: Pre-computed bilingual translation for this skill
+            translate_body: True 翻译正文双语；False 正文原文填充（零正文 LLM）
         """
         skill_id = skill_data['skill_id']
 
@@ -718,9 +725,14 @@ class GitHubSyncService:
 
         source_language = translated.get('source_language', skill_data.get('source_language'))
         # 正文双语：原文存源语言侧，另一侧翻译（变更门控，未变不重译）。
-        body_en, body_zh = await self._resolve_bilingual_body(
-            existing_skill, source_language, skill_data.get('body') or '',
-        )
+        # translate_body=False 时只填原文（源语言侧），另一侧 null，零正文 LLM——
+        # 大批量回填 body_en 用，省掉正文逐块翻译的巨量 LLM（与 clawhub 同构）。
+        if translate_body:
+            body_en, body_zh = await self._resolve_bilingual_body(
+                existing_skill, source_language, skill_data.get('body') or '',
+            )
+        else:
+            body_en, body_zh = raw_bilingual_body(source_language, skill_data.get('body') or '')
         # 文件清单：仅名称+大小，不含内容。
         files_json = json.dumps(skill_data.get('files') or [], ensure_ascii=False)
 
