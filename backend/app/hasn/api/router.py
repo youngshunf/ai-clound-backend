@@ -228,7 +228,6 @@ from backend.app.hasn.api.v1.app.hasn_nodes import router as app_hasn_nodes_rout
 from backend.app.hasn.api.v1.app.hasn_owner_api_keys import router as app_hasn_owner_api_keys_router
 from backend.app.hasn.api.v1.app.profile import router as app_profile_router
 from backend.app.hasn.api.v1.app.search import router as app_users_search_router
-from backend.app.hasn.api.v1.app.workbench import router as workbench_router
 from backend.app.hasn.api.v1.app.workspace import router as workspace_router
 from backend.app.hasn.api.v1.node_control import router as node_control_router
 
@@ -236,7 +235,6 @@ app.include_router(app_contacts_router, tags=['联系人管理'])
 app.include_router(app_hasn_auth_router, tags=['HASN认证'])
 v1.include_router(enterprise_router, tags=['企业与工作空间'])
 v1.include_router(workspace_router, tags=['工作区切换'])
-app.include_router(workbench_router, tags=['工作台'])
 app.include_router(app_users_search_router, tags=['HASN Users'])
 app.include_router(app_profile_router, prefix='/profile', tags=['合并 Profile (sys_user + hasn_humans)'])
 

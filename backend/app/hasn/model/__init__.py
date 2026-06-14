@@ -45,10 +45,7 @@ from backend.app.hasn.model.hasn_app_publisher import HasnAppPublisher as HasnAp
 from backend.app.hasn.model.hasn_assets import HasnAssets as HasnAssets
 from backend.app.hasn.model.hasn_asset_grants import HasnAssetGrants as HasnAssetGrants
 from backend.app.hasn.model.hasn_agent_approval_requests import HasnAgentApprovalRequests as HasnAgentApprovalRequests
-from backend.app.hasn.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref as HasnOwnerWorkbenchPref
 from backend.app.hasn.model.hasn_builtin_task_catalog import HasnBuiltinTaskCatalog as HasnBuiltinTaskCatalog
-from backend.app.hasn.model.hasn_workbench_briefing import HasnWorkbenchBriefing as HasnWorkbenchBriefing
-from backend.app.hasn.model.hasn_workbench_briefing_feedback import HasnWorkbenchBriefingFeedback as HasnWorkbenchBriefingFeedback
 from backend.app.hasn.model.hasn_agent_channel_mirrors import HasnAgentChannelMirrors as HasnAgentChannelMirrors
 from backend.app.hasn.model.hasn_app_credential import HasnAppCredential as HasnAppCredential
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog as HasnAppCatalog

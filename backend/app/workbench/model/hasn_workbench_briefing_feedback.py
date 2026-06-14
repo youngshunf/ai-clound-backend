@@ -3,10 +3,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, UniversalText
+from backend.app.workbench.model._base import WorkbenchBase
+from backend.common.model import id_key, UniversalText
 
 
-class HasnWorkbenchBriefingFeedback(Base):
+class HasnWorkbenchBriefingFeedback(WorkbenchBase):
     """HASN 工作台简报反馈（云端权威）"""
 
     __tablename__ = 'hasn_workbench_briefing_feedback'

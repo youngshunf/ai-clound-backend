@@ -4,11 +4,12 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, TimeZone
+from backend.app.workbench.model._base import WorkbenchBase
+from backend.common.model import id_key, TimeZone
 from backend.utils.timezone import timezone
 
 
-class HasnWorkbenchBriefing(Base):
+class HasnWorkbenchBriefing(WorkbenchBase):
     """HASN 工作台每日关注简报（云端权威）"""
 
     __tablename__ = 'hasn_workbench_briefing'

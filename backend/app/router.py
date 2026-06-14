@@ -79,6 +79,8 @@ from backend.app.billing.api.router import user_tier_open
 from backend.app.billing.api.router import user_tier_agent
 from backend.app.projects.api.router import v1 as projects_v1
 from backend.app.task.api.router import v1 as task_v1
+# 工作台（workbench）= 原 app/hasn 工作台子域按 ADR-15 §4 抽出；URL /api/v1/hasn/app/workbench/* 保持不变
+from backend.app.workbench.api.router import workbench_app
 
 router = APIRouter()
 
@@ -105,6 +107,9 @@ router.include_router(admin_client)       # 桌面端版本检测公开 API
 router.include_router(pay_v1)             # 支付管理 API
 router.include_router(pay_app)            # 支付-用户端 API
 router.include_router(pay_open)           # 支付-公开回调 API
+
+# 工作台（workbench 应用，URL /api/v1/hasn/app/workbench/*）
+router.include_router(workbench_app)
 
 # 唤星
 router.include_router(huanxing_v1)

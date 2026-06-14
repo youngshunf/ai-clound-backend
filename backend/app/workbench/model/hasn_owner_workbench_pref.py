@@ -4,10 +4,11 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key
+from backend.app.workbench.model._base import WorkbenchBase
+from backend.common.model import id_key
 
 
-class HasnOwnerWorkbenchPref(Base):
+class HasnOwnerWorkbenchPref(WorkbenchBase):
     """HASN 主人工作台偏好（主脑指针 + 每日简报偏好）"""
 
     __tablename__ = 'hasn_owner_workbench_pref'

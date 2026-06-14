@@ -4,8 +4,8 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
-from backend.app.hasn.model import HasnWorkbenchBriefingFeedback
-from backend.app.hasn.schema.hasn_workbench_briefing_feedback import CreateHasnWorkbenchBriefingFeedbackParam, UpdateHasnWorkbenchBriefingFeedbackParam
+from backend.app.workbench.model import HasnWorkbenchBriefingFeedback
+from backend.app.workbench.schema.hasn_workbench_briefing_feedback import CreateHasnWorkbenchBriefingFeedbackParam, UpdateHasnWorkbenchBriefingFeedbackParam
 
 
 class CRUDHasnWorkbenchBriefingFeedback(CRUDPlus[HasnWorkbenchBriefingFeedback]):

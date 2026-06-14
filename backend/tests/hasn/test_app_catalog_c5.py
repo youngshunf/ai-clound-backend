@@ -30,7 +30,7 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.admin.hasn_app_entitlement import router as admin_entitlement_router
-from backend.app.hasn.api.v1.app.workbench import router as workbench_router
+from backend.app.workbench.api.v1.app.workbench import router as workbench_router
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans

@@ -5,8 +5,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
-from backend.app.hasn.model import HasnOwnerWorkbenchPref
-from backend.app.hasn.schema.hasn_owner_workbench_pref import CreateHasnOwnerWorkbenchPrefParam, UpdateHasnOwnerWorkbenchPrefParam
+from backend.app.workbench.model import HasnOwnerWorkbenchPref
+from backend.app.workbench.schema.hasn_owner_workbench_pref import CreateHasnOwnerWorkbenchPrefParam, UpdateHasnOwnerWorkbenchPrefParam
 
 
 class CRUDHasnOwnerWorkbenchPref(CRUDPlus[HasnOwnerWorkbenchPref]):

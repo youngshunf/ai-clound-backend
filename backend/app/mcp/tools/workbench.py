@@ -118,7 +118,7 @@ class PublishBriefingTool(BaseTool):
         }
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        from backend.app.hasn.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
+        from backend.app.workbench.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
 
         document = arguments.get('document')
         if not isinstance(document, dict):

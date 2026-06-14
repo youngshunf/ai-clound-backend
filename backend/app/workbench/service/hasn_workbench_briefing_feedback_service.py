@@ -2,9 +2,9 @@ from typing import Any, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.crud.crud_hasn_workbench_briefing_feedback import hasn_workbench_briefing_feedback_dao
-from backend.app.hasn.model import HasnWorkbenchBriefingFeedback
-from backend.app.hasn.schema.hasn_workbench_briefing_feedback import CreateHasnWorkbenchBriefingFeedbackParam, DeleteHasnWorkbenchBriefingFeedbackParam, UpdateHasnWorkbenchBriefingFeedbackParam
+from backend.app.workbench.crud.crud_hasn_workbench_briefing_feedback import hasn_workbench_briefing_feedback_dao
+from backend.app.workbench.model import HasnWorkbenchBriefingFeedback
+from backend.app.workbench.schema.hasn_workbench_briefing_feedback import CreateHasnWorkbenchBriefingFeedbackParam, DeleteHasnWorkbenchBriefingFeedbackParam, UpdateHasnWorkbenchBriefingFeedbackParam
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

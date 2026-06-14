@@ -26,11 +26,11 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.hasn.api.v1.app.workbench import router as app_workbench_router
+from backend.app.workbench.api.v1.app.workbench import router as app_workbench_router
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.hasn.model.hasn_workbench_briefing_feedback import HasnWorkbenchBriefingFeedback
-from backend.app.hasn.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
+from backend.app.workbench.model.hasn_workbench_briefing_feedback import HasnWorkbenchBriefingFeedback
+from backend.app.workbench.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction

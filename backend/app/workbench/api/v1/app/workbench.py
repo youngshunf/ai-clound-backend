@@ -7,19 +7,19 @@ from fastapi import APIRouter, Request
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.schema.hasn_app_entitlement import GetHasnAppEntitlementDetail
 from backend.app.hasn.schema.hasn_builtin_task_catalog import BuiltinTaskCatalogResponse
-from backend.app.hasn.schema.hasn_owner_workbench_pref import PutWorkbenchPrefParam, WorkbenchPrefResponse
-from backend.app.hasn.schema.workbench_briefing_document import (
+from backend.app.workbench.schema.hasn_owner_workbench_pref import PutWorkbenchPrefParam, WorkbenchPrefResponse
+from backend.app.workbench.schema.workbench_briefing_document import (
     BriefingDismissParam,
     BriefingHistoryResponse,
     BriefingLatestResponse,
 )
 from backend.app.hasn.service import app_catalog_service
-from backend.app.hasn.service.hasn_workbench_briefing_feedback_service import hasn_workbench_briefing_feedback_service
-from backend.app.hasn.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
+from backend.app.workbench.service.hasn_workbench_briefing_feedback_service import hasn_workbench_briefing_feedback_service
+from backend.app.workbench.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
 from backend.app.hasn.service.instance_resolver import InstanceResolutionError
-from backend.app.hasn.service.workbench_builtin_task_service import workbench_builtin_task_service
+from backend.app.hasn_task.service.builtin_task_service import workbench_builtin_task_service
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
-from backend.app.hasn.service.workbench_pref_service import workbench_pref_service
+from backend.app.workbench.service.workbench_pref_service import workbench_pref_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth

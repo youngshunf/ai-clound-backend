@@ -5,8 +5,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
-from backend.app.hasn.model import HasnWorkbenchBriefing
-from backend.app.hasn.schema.hasn_workbench_briefing import CreateHasnWorkbenchBriefingParam, UpdateHasnWorkbenchBriefingParam
+from backend.app.workbench.model import HasnWorkbenchBriefing
+from backend.app.workbench.schema.hasn_workbench_briefing import CreateHasnWorkbenchBriefingParam, UpdateHasnWorkbenchBriefingParam
 from backend.utils.timezone import timezone
 
 

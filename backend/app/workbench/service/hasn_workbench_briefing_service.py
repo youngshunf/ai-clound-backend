@@ -4,10 +4,10 @@ from typing import Any, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.crud.crud_hasn_workbench_briefing import hasn_workbench_briefing_dao
-from backend.app.hasn.model import HasnWorkbenchBriefing
-from backend.app.hasn.schema.hasn_workbench_briefing import CreateHasnWorkbenchBriefingParam, DeleteHasnWorkbenchBriefingParam, UpdateHasnWorkbenchBriefingParam
-from backend.app.hasn.schema.workbench_briefing_document import BriefingDocument
+from backend.app.workbench.crud.crud_hasn_workbench_briefing import hasn_workbench_briefing_dao
+from backend.app.workbench.model import HasnWorkbenchBriefing
+from backend.app.workbench.schema.hasn_workbench_briefing import CreateHasnWorkbenchBriefingParam, DeleteHasnWorkbenchBriefingParam, UpdateHasnWorkbenchBriefingParam
+from backend.app.workbench.schema.workbench_briefing_document import BriefingDocument
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
