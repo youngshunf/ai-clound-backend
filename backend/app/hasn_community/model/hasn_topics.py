@@ -3,11 +3,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, UniversalText, TimeZone
+from backend.common.model import id_key, UniversalText, TimeZone
+from backend.app.hasn_community.model._base import CommunityBase
 from backend.utils.timezone import timezone
 
 
-class HasnTopics(Base):
+class HasnTopics(CommunityBase):
     """社区话题实体表"""
 
     __tablename__ = 'hasn_topics'

@@ -3,11 +3,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, TimeZone
+from backend.common.model import id_key, TimeZone
+from backend.app.hasn_community.model._base import CommunityBase
 from backend.utils.timezone import timezone
 
 
-class HasnCommunityBlocks(Base):
+class HasnCommunityBlocks(CommunityBase):
     """社区黑名单表（doc-13 §2.3.2）
 
     简单关联表（一对多），仅需 block/unblock/list，逻辑放在 community_service，

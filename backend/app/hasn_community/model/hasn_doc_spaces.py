@@ -3,10 +3,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, UniversalText
+from backend.common.model import id_key, UniversalText
+from backend.app.hasn_community.model._base import CommunityBase
 
 
-class HasnDocSpaces(Base):
+class HasnDocSpaces(CommunityBase):
     """社区文集/知识库表"""
 
     __tablename__ = 'hasn_doc_spaces'

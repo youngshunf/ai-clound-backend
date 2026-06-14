@@ -3,10 +3,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key
+from backend.common.model import id_key
+from backend.app.hasn_community.model._base import CommunityBase
 
 
-class HasnContentTopics(Base):
+class HasnContentTopics(CommunityBase):
     """内容与话题关联表"""
 
     __tablename__ = 'hasn_content_topics'

@@ -3,11 +3,12 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, TimeZone
+from backend.common.model import id_key, TimeZone
+from backend.app.hasn_community.model._base import CommunityBase
 from backend.utils.timezone import timezone
 
 
-class HasnCollectionItems(Base):
+class HasnCollectionItems(CommunityBase):
     """社区收藏项表"""
 
     __tablename__ = 'hasn_collection_items'
