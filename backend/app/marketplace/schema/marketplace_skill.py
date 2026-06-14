@@ -28,6 +28,7 @@ class MarketplaceSkillSchemaBase(SchemaBase):
     description_zh: str | None = Field(None, description='中文描述')
     body_en: str | None = Field(None, description='英文正文（SKILL.md frontmatter 之后的 Markdown 正文）')
     body_zh: str | None = Field(None, description='中文正文（SKILL.md frontmatter 之后的 Markdown 正文）')
+    files: str | None = Field(None, description='技能目录文件清单 JSON（仅名称+大小，不含内容）')
     source_language: str | None = Field(None, description='源语言（en/zh，用于判断哪个是原文）')
     icon_url: str | None = Field(None, description='SVG图标URL')
     emoji: str | None = Field(None, description='emoji图标')
