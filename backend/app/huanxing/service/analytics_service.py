@@ -35,22 +35,22 @@ class AnalyticsService:
         """概览指标"""
         # 总用户数 / 今日新增
         total_users = (await db.execute(
-            text('SELECT count(*) FROM user_subscription')
+            text('SELECT count(*) FROM hasn_billing.user_subscription')
         )).scalar() or 0
 
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         new_users_today = (await db.execute(
-            text('SELECT count(*) FROM user_subscription WHERE created_time >= :d'),
+            text('SELECT count(*) FROM hasn_billing.user_subscription WHERE created_time >= :d'),
             {'d': today_start}
         )).scalar() or 0
 
         # 总积分消耗
         total_usage_credits = (await db.execute(
-            text("SELECT COALESCE(SUM(ABS(credits)), 0) FROM credit_transaction WHERE transaction_type = 'usage'")
+            text("SELECT COALESCE(SUM(ABS(credits)), 0) FROM hasn_billing.credit_transaction WHERE transaction_type = 'usage'")
         )).scalar() or Decimal('0')
 
         period_usage_credits = (await db.execute(
-            text("SELECT COALESCE(SUM(ABS(credits)), 0) FROM credit_transaction WHERE transaction_type = 'usage' AND created_time >= :d"),
+            text("SELECT COALESCE(SUM(ABS(credits)), 0) FROM hasn_billing.credit_transaction WHERE transaction_type = 'usage' AND created_time >= :d"),
             {'d': start_date}
         )).scalar() or Decimal('0')
 
@@ -66,11 +66,11 @@ class AnalyticsService:
 
         # 充值收入（purchase + subscription_upgrade）
         total_income_credits = (await db.execute(
-            text("SELECT COALESCE(SUM(credits), 0) FROM credit_transaction WHERE transaction_type IN ('purchase', 'subscription_upgrade')")
+            text("SELECT COALESCE(SUM(credits), 0) FROM hasn_billing.credit_transaction WHERE transaction_type IN ('purchase', 'subscription_upgrade')")
         )).scalar() or Decimal('0')
 
         period_income_credits = (await db.execute(
-            text("SELECT COALESCE(SUM(credits), 0) FROM credit_transaction WHERE transaction_type IN ('purchase', 'subscription_upgrade') AND created_time >= :d"),
+            text("SELECT COALESCE(SUM(credits), 0) FROM hasn_billing.credit_transaction WHERE transaction_type IN ('purchase', 'subscription_upgrade') AND created_time >= :d"),
             {'d': start_date}
         )).scalar() or Decimal('0')
 
@@ -119,7 +119,7 @@ class AnalyticsService:
                 LEFT JOIN (
                     SELECT date_trunc('day', created_time)::date as day,
                            SUM(ABS(credits)) as c
-                    FROM credit_transaction
+                    FROM hasn_billing.credit_transaction
                     WHERE transaction_type = 'usage'
                       AND created_time >= CURRENT_DATE - :days * interval '1 day'
                     GROUP BY 1
@@ -177,7 +177,7 @@ class AnalyticsService:
         rows = (await db.execute(
             text("""
                 SELECT tier, count(*) as cnt
-                FROM user_subscription
+                FROM hasn_billing.user_subscription
                 WHERE status = 'active'
                 GROUP BY tier
                 ORDER BY cnt DESC

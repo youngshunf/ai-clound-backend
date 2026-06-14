@@ -73,7 +73,7 @@ async def handle_app_purchase_paid(order: Any) -> None:
 
 def register_app_purchase_callback() -> None:
     """注册应用购买支付回调 — 在应用启动时调用（registrar）。"""
-    from backend.app.pay.core.callback import register_pay_callback
+    from backend.app.billing.core.callback import register_pay_callback
 
     register_pay_callback('app_purchase', handle_app_purchase_paid)
     log.info('[AppPurchase] 已注册应用购买支付回调 (app_purchase)')

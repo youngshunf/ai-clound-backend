@@ -167,7 +167,7 @@ async def phone_login(
         )
 
         # 初始化订阅和赠送积分
-        from backend.app.user_tier.service.credit_service import credit_service
+        from backend.app.billing.service.credit_service import credit_service
         await credit_service.get_or_create_subscription(db, user.id)
 
     # 更新最后登录时间

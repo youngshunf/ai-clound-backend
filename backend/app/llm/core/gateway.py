@@ -32,7 +32,7 @@ from backend.app.llm.schema.proxy import (
     ChatCompletionUsage,
     ChatMessage,
 )
-from backend.app.user_tier.service.credit_service import credit_service, InsufficientCreditsError
+from backend.app.billing.service.credit_service import credit_service, InsufficientCreditsError
 from backend.common.exception.errors import HTTPError
 from backend.common.log import log
 from backend.database.db import async_db_session

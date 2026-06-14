@@ -69,15 +69,16 @@ from backend.app.notification.api.router import admin as notification_admin
 from backend.app.notification.api.router import agent as notification_agent
 from backend.app.notification.api.router import app as notification_app
 from backend.app.openclaw.api.router import v1 as openclaw_v1
-from backend.app.pay.api.router import app as pay_app
-from backend.app.pay.api.router import open_api as pay_open
-from backend.app.pay.api.router import v1 as pay_v1
+# 计费（billing）= 支付 pay + 订阅积分 user_tier 合并（ADR-15 §4）；URL 前缀 /api/v1/pay 与 /api/v1/user_tier 保持不变
+from backend.app.billing.api.router import pay_v1
+from backend.app.billing.api.router import pay_app
+from backend.app.billing.api.router import pay_open
+from backend.app.billing.api.router import user_tier_v1
+from backend.app.billing.api.router import user_tier_app
+from backend.app.billing.api.router import user_tier_open
+from backend.app.billing.api.router import user_tier_agent
 from backend.app.projects.api.router import v1 as projects_v1
 from backend.app.task.api.router import v1 as task_v1
-from backend.app.user_tier.api.router import agent as user_tier_agent
-from backend.app.user_tier.api.router import app as user_tier_app
-from backend.app.user_tier.api.router import open_api as user_tier_open
-from backend.app.user_tier.api.router import v1 as user_tier_v1
 
 router = APIRouter()
 

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_growth.service.metering_service import growth_metering_service
-from backend.app.user_tier.service.credit_service import credit_service
+from backend.app.billing.service.credit_service import credit_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio

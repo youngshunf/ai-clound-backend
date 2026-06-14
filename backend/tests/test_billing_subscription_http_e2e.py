@@ -33,9 +33,9 @@ from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.llm.crud.crud_llm_newapi_user_mapping import newapi_direct_dao
 from backend.app.llm.model import LlmNewapiUserMapping
-from backend.app.user_tier.api.v1.app.subscription import router as app_subscription_router
-from backend.app.user_tier.model import CreditTransaction, UserSubscription
-from backend.app.user_tier.service.billing_usage_service import quota_to_credits
+from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
+from backend.app.billing.model import CreditTransaction, UserSubscription
+from backend.app.billing.service.billing_usage_service import quota_to_credits
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.core.conf import settings
@@ -375,7 +375,7 @@ def test_create_pay_order_param_cross_field_validation() -> None:
     """B0：可辨识联合跨字段校验。"""
     import pydantic
 
-    from backend.app.pay.schema.pay_order import CreatePayOrderParam
+    from backend.app.billing.schema.pay_order import CreatePayOrderParam
 
     # 合法
     assert CreatePayOrderParam(order_type='subscribe', tier='pro', channel_code='wx_native').tier == 'pro'
@@ -393,9 +393,9 @@ def test_create_pay_order_param_cross_field_validation() -> None:
 
 def test_build_client_routes_alipay_qr() -> None:
     """B0'：渠道工厂把 alipay_qr 路由到 AlipayQrClient（当面付），alipay_pc → AlipayPcClient。"""
-    from backend.app.pay.service.channel.alipay_pc import AlipayPcClient
-    from backend.app.pay.service.channel.alipay_qr import AlipayQrClient
-    from backend.app.pay.service.pay_order_service import _build_client
+    from backend.app.billing.service.channel.alipay_pc import AlipayPcClient
+    from backend.app.billing.service.channel.alipay_qr import AlipayQrClient
+    from backend.app.billing.service.pay_order_service import _build_client
 
     cfg = {'appId': 'x', 'serverUrl': 'https://openapi-sandbox.dl.alipaydev.com/gateway.do', 'privateKey': 'k', 'alipayPublicKey': 'p'}
     qr_channel = SimpleNamespace(code='alipay_qr', id=999, config=cfg, extra_config=None)

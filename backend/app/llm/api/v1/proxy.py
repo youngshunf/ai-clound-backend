@@ -21,7 +21,7 @@ from backend.app.llm.schema.proxy import (
     EmbeddingResponse,
 )
 from backend.app.llm.service.gateway_service import gateway_service
-from backend.app.user_tier.service.credit_service import InsufficientCreditsError
+from backend.app.billing.service.credit_service import InsufficientCreditsError
 from backend.common.exception import errors
 from backend.common.exception.errors import HTTPError
 from backend.common.log import log

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.admin.model.user import User
 from backend.app.huanxing.crud.crud_huanxing_user import huanxing_user_dao
-from backend.app.user_tier.model.user_subscription import UserSubscription
+from backend.app.billing.model.user_subscription import UserSubscription
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession

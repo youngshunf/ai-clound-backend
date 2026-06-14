@@ -76,7 +76,7 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     cache_pubsub_manager.start_listener()
 
     # 注册支付业务回调
-    from backend.app.user_tier.service.pay_callbacks import register_callbacks
+    from backend.app.billing.service.pay_callbacks import register_callbacks
     register_callbacks()
 
     # 注册 AI-Native 应用购买支付回调（C5：购买成功 → 写应用权益）

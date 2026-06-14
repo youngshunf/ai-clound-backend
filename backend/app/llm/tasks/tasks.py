@@ -10,7 +10,7 @@ from backend.app.llm.crud.crud_media_task import media_task_dao
 from backend.app.llm.crud.crud_provider import provider_dao
 from backend.app.llm.enums import MediaErrorCode, MediaTaskStatus
 from backend.app.task.celery import celery_app
-from backend.app.user_tier.service.credit_service import credit_service
+from backend.app.billing.service.credit_service import credit_service
 from backend.common.log import log
 from backend.database.db import async_db_session
 from backend.plugin.s3.crud.storage import s3_storage_dao

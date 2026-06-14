@@ -30,7 +30,7 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
-from backend.app.user_tier.model import UserSubscription
+from backend.app.billing.model import UserSubscription
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL

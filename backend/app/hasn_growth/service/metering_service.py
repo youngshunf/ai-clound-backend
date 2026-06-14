@@ -17,7 +17,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.user_tier.service.credit_service import InsufficientCreditsError, credit_service
+from backend.app.billing.service.credit_service import InsufficientCreditsError, credit_service
 from backend.common.log import log
 
 # 采集单条成功的积分单价（开发期 0=free；上线由计费模块定价，运营改环境变量不动代码）。

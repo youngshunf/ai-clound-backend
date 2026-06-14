@@ -15,7 +15,7 @@ from backend.app.llm.crud.crud_model_config import model_config_dao
 from backend.app.llm.crud.crud_provider import provider_dao
 from backend.app.llm.enums import MediaErrorCode, MediaTaskStatus, MediaType
 from backend.app.llm.model.media_task import MediaTask
-from backend.app.user_tier.service.credit_service import credit_service
+from backend.app.billing.service.credit_service import credit_service
 from backend.common.exception.errors import HTTPError
 from backend.common.log import log
 from backend.utils.timezone import timezone

@@ -23,7 +23,7 @@ from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.workbench_app_registry import WorkbenchApp, workbench_app_registry
-from backend.app.user_tier.model import UserSubscription
+from backend.app.billing.model import UserSubscription
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
