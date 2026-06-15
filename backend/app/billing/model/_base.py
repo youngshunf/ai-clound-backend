@@ -9,8 +9,8 @@ URL 前缀保持不变以兼容 daemon `domains/billing/cloud.rs::BillingCloud` 
 共享表（身份 public.hasn_humans/hasn_agents、用户 public.sys_user、new-api 映射等）仍留原 schema，
 跨 schema 全限定引用；ORM 经各自基类自动落到所属 schema。
 
-⚠️ 存量表搬迁（ADR-15 §5 §7）：billing 的 12 张表（pay_* 6 张 + credit_*/subscription_*/
-user_*/model_credit_rate 6 张）已存在于 public，由
+⚠️ 存量表搬迁（ADR-15 §5 §7）：billing 的 13 张表（pay_* 7 张，含 pay_app 支付应用配置
++ credit_*/subscription_*/user_*/model_credit_rate 6 张）已存在于 public，由
 `backend/sql/billing/migrations/2026-06-14-move-billing-tables-to-hasn-billing-schema.sql`
 幂等 `ALTER TABLE ... SET SCHEMA hasn_billing` 搬迁；ORM 经本基类自动落到新 schema。
 ⚠️ 凡裸 raw SQL（`text(...)`）引用 billing 表必须显式全限定 `hasn_billing.<table>`

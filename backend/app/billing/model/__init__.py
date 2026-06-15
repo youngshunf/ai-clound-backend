@@ -1,4 +1,5 @@
 # 支付（原 app/pay）
+from backend.app.billing.model.pay_app import PayApp as PayApp
 from backend.app.billing.model.pay_merchant import PayMerchant as PayMerchant
 from backend.app.billing.model.pay_channel import PayChannel as PayChannel
 from backend.app.billing.model.pay_order import PayOrder as PayOrder
