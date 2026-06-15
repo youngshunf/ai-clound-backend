@@ -23,6 +23,7 @@ from backend.app.hasn_creator.model.competitor import Competitor
 from backend.app.hasn_creator.model.content import Content
 from backend.app.hasn_creator.model.content_insight import ContentInsight
 from backend.app.hasn_creator.model.content_stage import ContentStage
+from backend.app.hasn_creator.model.playbook import Playbook
 from backend.app.hasn_creator.model.profile import Profile
 from backend.app.hasn_creator.model.project import Project
 from backend.app.hasn_creator.model.publish import Publish
@@ -716,16 +717,83 @@ class CreatorService:
         confidence: float | None = None,
         created_by_agent_id: str | None = None,
     ) -> dict[str, Any]:
-        """沉淀一条内容洞察（复盘结论）。
+        """沉淀一条内容洞察并据 proposed_action **原子回写**进化（设计 §7，进化引擎灵魂）。
 
-        M4 仅落库记录（action_taken 留空）；据 proposed_action 原子回写
-        profile.pillar_weights / viral_pattern / playbook 在 M5（进化闭环）补齐。
-        evidence_json 暂存 proposed_action 供 M5 消费，零 fake（不假装已回写）。
+        三处回写（同事务，要么全成要么随事务回滚）：
+        1. ``pillar_weight_delta`` → 累加进 `profile.pillar_weights`（下次按权重选支柱）；
+        2. ``new_viral_pattern`` → 入 `viral_pattern` 库（source=ai_extracted；下次 pattern.search 命中）；
+        3. ``playbook_patch`` → patch 本项目自有 playbook（内置/他人 playbook 不动，如实跳过）。
+
+        `action_taken` 如实记录**实际**做了什么（零 fake：跳过的写明 skipped 原因），供留痕审计。
         """
         proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        action = proposed_action or {}
+        action_taken: dict[str, Any] = {}
+
+        # ① 画像支柱权重：累加 delta（下界 0），记 pillar_weights_updated_at。
+        weight_delta = action.get('pillar_weight_delta') or {}
+        if isinstance(weight_delta, dict) and weight_delta:
+            prof = (await db.execute(sa.select(Profile).where(Profile.project_id == project_id))).scalars().first()
+            if prof is not None:
+                weights = dict(prof.pillar_weights or {})
+                applied: dict[str, float] = {}
+                for pillar, delta in weight_delta.items():
+                    try:
+                        new_w = round(float(weights.get(pillar, 0)) + float(delta), 4)
+                    except (TypeError, ValueError):
+                        continue
+                    weights[pillar] = max(new_w, 0.0)
+                    applied[pillar] = weights[pillar]
+                if applied:
+                    prof.pillar_weights = weights
+                    prof.pillar_weights_updated_at = datetime.datetime.now(datetime.timezone.utc)
+                    action_taken['pillar_weights'] = applied
+            else:
+                action_taken['pillar_weights_skipped'] = '画像不存在'
+
+        # ② 爆款模式库：提炼新钩子/结构入库（归属继承 project；viral_pattern 无 assignee 列）。
+        new_pattern = action.get('new_viral_pattern') or {}
+        if isinstance(new_pattern, dict) and new_pattern.get('name') and new_pattern.get('pattern_type'):
+            vp = ViralPattern(
+                project_id=project_id,
+                user_id=proj.user_id,
+                enterprise_id=proj.enterprise_id,
+                owner_scope=proj.owner_scope,
+                name=str(new_pattern['name'])[:200],
+                pattern_type=str(new_pattern['pattern_type'])[:24],
+                template=new_pattern.get('template'),
+                description=new_pattern.get('description'),
+                example=new_pattern.get('example'),
+                tags=new_pattern.get('tags') or [],
+                source='ai_extracted',
+                is_builtin=False,
+                success_rate=Decimal(str(new_pattern['success_rate']))
+                if new_pattern.get('success_rate') is not None
+                else Decimal('0'),
+            )
+            db.add(vp)
+            await db.flush()
+            action_taken['viral_pattern_id'] = vp.id
+
+        # ③ 账号打法：patch 本项目自有 playbook（内置/他人不动，如实跳过）。
+        playbook_patch = action.get('playbook_patch') or {}
+        if isinstance(playbook_patch, dict) and playbook_patch and proj.playbook_id:
+            pb = (await db.execute(sa.select(Playbook).where(Playbook.id == proj.playbook_id))).scalars().first()
+            if pb is None:
+                action_taken['playbook_skipped'] = 'playbook 不存在'
+            elif pb.is_builtin or (pb.user_id is not None and pb.user_id != proj.user_id):
+                action_taken['playbook_skipped'] = '内置或他人 playbook，不可改'
+            else:
+                allowed = {'goal', 'content_strategy', 'cadence', 'tone_guide', 'red_lines'}
+                patched = [k for k, v in playbook_patch.items() if k in allowed and v is not None]
+                for k in patched:
+                    setattr(pb, k, playbook_patch[k])
+                action_taken['playbook_patched'] = patched
+
+        # 留痕：evidence 存 proposed_action 原文，action_taken 存实际动作。
         evidence = dict(evidence_json or {})
-        if proposed_action:
-            evidence['proposed_action'] = proposed_action
+        if action:
+            evidence['proposed_action'] = action
         row = ContentInsight(
             project_id=project_id,
             created_by_agent_id=created_by_agent_id,
@@ -733,7 +801,7 @@ class CreatorService:
             insight_type=insight_type or 'lesson',
             summary=summary or '',
             evidence_json=evidence,
-            action_taken={},
+            action_taken=action_taken,
             confidence=Decimal(str(confidence)) if confidence is not None else Decimal('0'),
             **_child_ownership(proj),
         )
