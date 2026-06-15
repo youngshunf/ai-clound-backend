@@ -222,6 +222,6 @@ def test_extract_body_and_files_raw_mode_skips_translation(tmp_path: Path) -> No
 
 
 def test_batch_prepare_metadata_empty_is_noop() -> None:
-    # 空列表不触发任何 LLM，直接返回空映射。
+    # 空列表不触发任何 LLM，直接返回空映射（existing_by_slug 一并传空）。
     svc = ClawHubSyncService()
-    assert asyncio.run(svc._batch_prepare_metadata([])) == {}
+    assert asyncio.run(svc._batch_prepare_metadata([], {})) == {}

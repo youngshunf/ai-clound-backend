@@ -14,7 +14,9 @@ from typing import Any
 
 import httpx
 
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from backend.app.marketplace.crud.crud_marketplace_skill import marketplace_skill_dao
 from backend.app.marketplace.crud.crud_marketplace_skill_version import marketplace_skill_version_dao
@@ -24,6 +26,11 @@ from backend.app.marketplace.schema.marketplace_sync_log import (
     UpdateMarketplaceSyncLogParam,
 )
 from backend.app.marketplace.service.category_taxonomy import normalize_category
+# 复用 github_sync 已验证的元数据变更门控（同构、零行为差异），避免每轮全量重译元数据。
+from backend.app.marketplace.service.github_sync_service import (
+    metadata_unchanged,
+    translation_from_existing,
+)
 from backend.app.marketplace.service.skill_content_extractor import (
     extract_skill_body,
     list_skill_files,
@@ -74,7 +81,9 @@ class ClawHubSyncService:
 
         Args:
             db: Database session
-            force: Force full sync (ignore last sync time)
+            force: 全量重建（admin 手动）。True 时**不做增量分区**——所有命中技能都重新
+                下载 + 重新元数据翻译（绕过"上游版本未变就跳过"与元数据变更门控）。
+                周期同步**不要** force（默认 False 即增量：版本未变只刷人气计数、零下载零翻译）。
             skill_ids: Specific skill IDs to sync (sync all if None)
             limit: Override the configured top-N cap for this run
                 (None -> use settings default; 0 -> full sync, no cap)
@@ -156,10 +165,11 @@ class ClawHubSyncService:
                 require_engagement=require_engagement,
             )
 
-            # Sync to database（逐个落库 + 磁盘硬闸 + 分批提交/断点续传；提取成 helper 降复杂度）
+            # Sync to database（增量分区 + 逐个落库 + 磁盘硬闸 + 分批提交/断点续传）
             outcome = await self._sync_filtered_skills(
                 db,
                 filtered_skills,
+                force=force,
                 translate_body=translate_body,
                 batch_commit_size=batch_commit_size,
                 resume=resume,
@@ -190,6 +200,7 @@ class ClawHubSyncService:
                 'failed': outcome['failed'],
                 'skipped_disk': outcome['skipped_disk'],
                 'skipped_existing': outcome.get('skipped_existing', 0),
+                'skipped_unchanged': outcome.get('skipped_unchanged', 0),
                 'paused': paused_reason is not None,
                 'paused_reason': paused_reason,
                 'errors': outcome['errors']
@@ -216,15 +227,22 @@ class ClawHubSyncService:
         db: AsyncSession,
         filtered_skills: list[dict[str, Any]],
         *,
+        force: bool = False,
         translate_body: bool = True,
         batch_commit_size: int = 50,
         resume: bool = False,
     ) -> dict[str, Any]:
-        """逐个落库 filtered_skills；分批提交 + 断点续传 + 磁盘硬闸（安全兜底）。
+        """逐个落库 filtered_skills；**增量分区** + 分批提交 + 断点续传 + 磁盘硬闸。
 
-        按 downloads 降序处理（先收高价值）。健壮性：
+        按 downloads 降序处理（先收高价值）。增量（核心省 token/带宽）：先取库内 clawhub
+        现有行，按「上游 latestVersion 已存在 + 已有正文/文件」把技能分成两组：
+        - **跳过组**（version 未变）：只廉价刷新 download/star 人气计数，**零下载、零翻译**。
+        - **处理组**（新增 / 版本变更 / ``force``）：才走元数据变更门控批量翻译 + 下载 + 正文翻译。
+        ``force=True`` 时不分区，全部进处理组（admin 手动全量重建）。
+
+        其余健壮性同前：
         - resume=True 先跳过库中已存在的 clawhub slug（重跑只补未同步的）。
-        - 名称/描述/标签**批量预翻译**（多技能拼一次 LLM，slug→译文），正文按
+        - 名称/描述/标签**批量预翻译**（变更门控，未变复用缓存零 LLM），正文按
           ``translate_body`` 决定翻不翻（原文填充时正文零 LLM）。
         - 每个技能在 SAVEPOINT 内落库：单个失败只回滚自己、不污染整批事务。
         - 每 ``batch_commit_size`` 个 ``commit`` 一次：崩溃只丢最近一批、进度可见、可续传。
@@ -234,15 +252,23 @@ class ClawHubSyncService:
         failed_count = 0
         skipped_disk = 0
         skipped_existing = 0
+        skipped_unchanged = 0
         errors: list[str] = []
         paused_reason: str | None = None
         clawhub_root = self.hub_local_path / 'clawhub'
 
+        # 库内现有 clawhub 行（slug -> 元数据行，load_only 不取正文内容）+
+        # 有正文的 skill_id 集合 + 各 skill_id 的库内最新版本号（增量判定用）。
+        existing_by_slug = await self._existing_clawhub_skills_by_slug(db)
+        body_skill_ids = await self._clawhub_skill_ids_with_body(db)
+        latest_versions = await self._latest_versions_by_skill_id(
+            db, [row.skill_id for row in existing_by_slug.values()]
+        )
+
         # 断点续传：剔除库中已存在的 slug（不重复翻译/下载）。
         if resume:
-            existing = await self._existing_clawhub_slugs(db)
             before = len(filtered_skills)
-            filtered_skills = [s for s in filtered_skills if s.get('slug') not in existing]
+            filtered_skills = [s for s in filtered_skills if s.get('slug') not in existing_by_slug]
             skipped_existing = before - len(filtered_skills)
             if skipped_existing:
                 log.info(
@@ -250,13 +276,46 @@ class ClawHubSyncService:
                     f"待同步 {len(filtered_skills)} 个"
                 )
 
-        total = len(filtered_skills)
+        # 增量分区：上游版本未变 + 已有正文/文件 → 跳过组（仅刷计数）。force 时全部处理。
+        process: list[dict[str, Any]] = []
+        unchanged: list[tuple[dict[str, Any], Any]] = []
+        if force:
+            process = list(filtered_skills)
+        else:
+            for skill_data in filtered_skills:
+                existing = existing_by_slug.get(skill_data.get('slug'))
+                if existing is not None and self._is_version_unchanged(
+                    existing, skill_data, latest_versions, body_skill_ids
+                ):
+                    unchanged.append((skill_data, existing))
+                else:
+                    process.append(skill_data)
+
+        now = datetime.now()
+        # 跳过组：廉价刷新人气计数（零 LLM / 零下载），让 download/star 不至于冻结。
+        for skill_data, existing in unchanged:
+            try:
+                async with db.begin_nested():
+                    await self._refresh_engagement(db, existing, skill_data, now)
+                skipped_unchanged += 1
+            except Exception as e:
+                failed_count += 1
+                errors.append(f"{skill_data.get('slug') or 'unknown'}(refresh): {e!s}")
+                log.error(f"Failed to refresh engagement {skill_data.get('slug')}: {e}")
+        if skipped_unchanged:
+            await db.commit()  # 落地计数刷新，避免与处理组堆在一个大事务里
+            log.info(
+                f"[clawhub] 增量：{skipped_unchanged} 个版本未变只刷计数，"
+                f"{len(process)} 个需处理"
+            )
+
+        total = len(process)
         commit_size = max(1, batch_commit_size)
 
-        # 名称/描述/标签批量预翻译：slug -> 译文 dict（缺失项 _sync_skill 回退逐条）。
-        prepared_map = await self._batch_prepare_metadata(filtered_skills)
+        # 处理组：名称/描述/标签批量预翻译（变更门控，未变复用缓存零 LLM；缺失回退逐条）。
+        prepared_map = await self._batch_prepare_metadata(process, existing_by_slug, force=force)
 
-        for index, skill_data in enumerate(filtered_skills):
+        for index, skill_data in enumerate(process):
             # 磁盘硬闸：每批起始检查一次（rglob 昂贵，不每技能跑）。
             if index % commit_size == 0:
                 used = self._dir_size_bytes(clawhub_root)
@@ -277,6 +336,7 @@ class ClawHubSyncService:
                     await self._sync_skill(
                         db,
                         skill_data,
+                        existing=existing_by_slug.get(slug),
                         prepared=prepared_map.get(slug),
                         translate_body=translate_body,
                     )
@@ -304,57 +364,187 @@ class ClawHubSyncService:
             'failed': failed_count,
             'skipped_disk': skipped_disk,
             'skipped_existing': skipped_existing,
+            'skipped_unchanged': skipped_unchanged,
             'errors': errors,
             'paused_reason': paused_reason,
         }
 
-    async def _existing_clawhub_slugs(self, db: AsyncSession) -> set[str]:
-        """库中已存在的 clawhub 技能 slug 集合（断点续传用，避免重复翻译/下载）。"""
-        from sqlalchemy import select
+    async def _existing_clawhub_skills_by_slug(self, db: AsyncSession) -> dict[str, Any]:
+        """库中现有 clawhub 技能：slug -> 行（load_only 只取增量判定/门控所需列，不取正文）。
 
+        正文 body_en/body_zh 不在这里加载（可能很大）——是否有正文改用
+        ``_clawhub_skill_ids_with_body`` 的轻量集合判断，避免把全部技能正文读进内存。
+        """
         from backend.app.marketplace.model import MarketplaceSkill
 
-        stmt = select(MarketplaceSkill.slug).where(MarketplaceSkill.source_type == 'clawhub')
+        stmt = (
+            select(MarketplaceSkill)
+            .options(
+                load_only(
+                    MarketplaceSkill.id,
+                    MarketplaceSkill.skill_id,
+                    MarketplaceSkill.slug,
+                    MarketplaceSkill.namespace,
+                    MarketplaceSkill.name,
+                    MarketplaceSkill.name_en,
+                    MarketplaceSkill.name_zh,
+                    MarketplaceSkill.description_en,
+                    MarketplaceSkill.description_zh,
+                    MarketplaceSkill.source_language,
+                    MarketplaceSkill.tags_en,
+                    MarketplaceSkill.tags_zh,
+                    MarketplaceSkill.emoji,
+                    MarketplaceSkill.category,
+                    MarketplaceSkill.author_name,
+                    MarketplaceSkill.repo_path,
+                )
+            )
+            .where(MarketplaceSkill.source_type == 'clawhub')
+        )
+        result = await db.execute(stmt)
+        return {row.slug: row for row in result.scalars().all() if row.slug}
+
+    async def _clawhub_skill_ids_with_body(self, db: AsyncSession) -> set[str]:
+        """有正文（body_en 或 body_zh 非空）的 clawhub skill_id 集合（只判存在，不取内容）。"""
+        from backend.app.marketplace.model import MarketplaceSkill
+
+        stmt = select(MarketplaceSkill.skill_id).where(
+            MarketplaceSkill.source_type == 'clawhub',
+            or_(MarketplaceSkill.body_en.isnot(None), MarketplaceSkill.body_zh.isnot(None)),
+        )
         result = await db.execute(stmt)
         return {row for row in result.scalars().all() if row}
+
+    async def _latest_versions_by_skill_id(
+        self, db: AsyncSession, skill_ids: list[str]
+    ) -> dict[str, str]:
+        """库内各 clawhub 技能的最新版本号：skill_id -> version（is_latest=True）。"""
+        if not skill_ids:
+            return {}
+        from backend.app.marketplace.model import MarketplaceSkillVersion
+
+        stmt = select(MarketplaceSkillVersion.skill_id, MarketplaceSkillVersion.version).where(
+            MarketplaceSkillVersion.skill_id.in_(skill_ids),
+            MarketplaceSkillVersion.is_latest.is_(True),
+        )
+        result = await db.execute(stmt)
+        return {skill_id: version for skill_id, version in result.all() if skill_id}
+
+    @staticmethod
+    def _is_version_unchanged(
+        existing: Any,
+        skill_data: dict[str, Any],
+        latest_versions: dict[str, str],
+        body_skill_ids: set[str],
+    ) -> bool:
+        """上游 latestVersion 与库内最新版本一致、且已有正文+本地路径 → 可整条跳过。
+
+        三者缺一不可：没有上游版本号无从比对；没有正文/repo_path 说明上次没下全，
+        必须重新下载补齐（不能只刷计数）。命中即「内容未变」，本轮零下载零翻译。
+        """
+        upstream_version = (skill_data.get('latestVersion') or {}).get('version')
+        if not upstream_version:
+            return False
+        if existing.skill_id not in body_skill_ids:
+            return False
+        if not getattr(existing, 'repo_path', None):
+            return False
+        return latest_versions.get(existing.skill_id) == upstream_version
+
+    async def _refresh_engagement(
+        self, db: AsyncSession, existing: Any, skill_data: dict[str, Any], now: datetime
+    ) -> None:
+        """版本未变时只刷新人气计数（download/star）+ synced_at（部分 UPDATE，零 LLM）。"""
+        stats = skill_data.get('stats', {})
+        await marketplace_skill_dao.update_model(
+            db,
+            existing.id,
+            {
+                'download_count': stats.get('downloads', 0),
+                'star_count': stats.get('stars', 0),
+                'synced_at': now,
+            },
+        )
+
+    @staticmethod
+    def _bilingual_metadata(
+        translated: dict[str, Any], *, name: str, description: str
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        """name/description 源语言侧存**原文逐字**、另一侧存 LLM 译文。
+
+        与正文门控 ``resolve_bilingual_body`` / github_sync 同构。否则源侧存 LLM 重排
+        文本（改标点/去换行），下次同步源文逐字比对永不命中 → 元数据变更门控失效、每轮全量重译。
+        """
+        name_en = translated.get('name_en')
+        name_zh = translated.get('name_zh')
+        description_en = translated.get('description_en')
+        description_zh = translated.get('description_zh')
+        src = translated.get('source_language')
+        if src == 'zh':
+            name_zh, description_zh = name, description
+        elif src == 'en':
+            name_en, description_en = name, description
+        return name_en, name_zh, description_en, description_zh
 
     async def _batch_prepare_metadata(
         self,
         skills: list[dict[str, Any]],
+        existing_by_slug: dict[str, Any],
+        *,
+        force: bool = False,
     ) -> dict[str, dict[str, Any]]:
         """批量预翻译 name/description/tags（多技能拼一次 LLM），返回 slug -> 译文 dict。
 
-        复用 ``translation_service.batch_translate_skill_metadata``（默认 10 个/批），把
-        13377 个技能的元数据 LLM 调用从「逐条 13377 次」压到「~批数」。整体异常时回退空
-        dict，由 ``_sync_skill`` 逐条翻译兜底（不影响正确性，只影响调用次数）。
+        **变更门控**（核心省 token，与 github_sync 同构）：源文（name/description）与库内
+        现有译文源文一致的技能直接复用缓存译文（``translation_from_existing``，零 LLM），
+        只把真改动 / 新增 / ``force`` 的技能送 LLM（``batch_translate_skill_metadata``，
+        默认 10 个/批）。整体异常时回退逐条（``_sync_skill`` 兜底 ``translate_skill_metadata``）。
         """
         if not skills:
             return {}
-        items = [
-            {
-                'name': s.get('displayName') or s.get('slug'),
-                'description': s.get('summary', ''),
-                'tag_hints': self._extract_tag_hints(s),
-                'source_lang': None,
-            }
-            for s in skills
-        ]
-        batch_size = int(getattr(settings, 'TRANSLATION_BATCH_SIZE', 10) or 10)
-        concurrency = int(getattr(settings, 'MARKETPLACE_CLAWHUB_TRANSLATE_CONCURRENCY', 3) or 3)
-        try:
-            results = await translation_service.batch_translate_skill_metadata(
-                items,
-                batch_size=batch_size,
-                concurrency=concurrency,
-            )
-        except Exception as e:
-            log.warning(f"[clawhub] 批量元数据翻译失败，回退逐条翻译：{e}")
-            return {}
         prepared: dict[str, dict[str, Any]] = {}
-        for skill, result in zip(skills, results):
-            slug = skill.get('slug')
-            if slug and result:
-                prepared[slug] = result
+        pending_items: list[dict[str, Any]] = []
+        pending_slugs: list[str | None] = []
+        for s in skills:
+            slug = s.get('slug')
+            existing = existing_by_slug.get(slug)
+            scanned = {
+                'name': s.get('displayName') or slug,
+                'description': s.get('summary', '') or '',
+            }
+            if (not force) and existing is not None and metadata_unchanged(scanned, existing):
+                prepared[slug] = translation_from_existing(existing)
+            else:
+                pending_items.append(
+                    {
+                        'name': scanned['name'],
+                        'description': scanned['description'],
+                        'tag_hints': self._extract_tag_hints(s),
+                        'source_lang': None,
+                    }
+                )
+                pending_slugs.append(slug)
+
+        if pending_items:
+            batch_size = int(getattr(settings, 'TRANSLATION_BATCH_SIZE', 10) or 10)
+            concurrency = int(getattr(settings, 'MARKETPLACE_CLAWHUB_TRANSLATE_CONCURRENCY', 3) or 3)
+            try:
+                results = await translation_service.batch_translate_skill_metadata(
+                    pending_items,
+                    batch_size=batch_size,
+                    concurrency=concurrency,
+                )
+            except Exception as e:
+                log.warning(f"[clawhub] 批量元数据翻译失败，回退逐条翻译：{e}")
+                results = [None] * len(pending_items)
+            for slug, result in zip(pending_slugs, results):
+                if slug and result:
+                    prepared[slug] = result
+
+        log.info(
+            f"[clawhub] 元数据：{len(pending_items)} 需译 / "
+            f"{len(skills) - len(pending_items)} 复用缓存"
+        )
         return prepared
 
     async def _fetch_all_skills(self) -> list[dict[str, Any]]:
@@ -616,6 +806,7 @@ class ClawHubSyncService:
         db: AsyncSession,
         clawhub_skill: dict[str, Any],
         *,
+        existing: Any | None = None,
         prepared: dict[str, Any] | None = None,
         translate_body: bool = True,
     ) -> None:
@@ -625,31 +816,33 @@ class ClawHubSyncService:
         Args:
             db: Database session
             clawhub_skill: ClawHub skill data
+            existing: 库内现有行（按 slug 预加载，load_only）。命中时复用其 ``author_name``
+                作 owner（省掉每技能 detail API 调用）+ ``skill_id``；None 时按新技能处理
+                （查 detail API 取 owner）。
             prepared: 预翻译好的元数据（name_en/zh、description_en/zh、source_language、
                 tags_en/zh、emoji）。批量同步先 ``_batch_prepare_metadata`` 拼一次 LLM，
                 这里直接复用；None 时回退逐条 ``translate_skill_metadata``（单技能/webhook 路径）。
             translate_body: True 翻译 SKILL.md 正文（双语）；False 正文原文填充（零正文 LLM）。
         """
-        # Get owner handle from detail API
         slug = clawhub_skill['slug']
 
-        # Fetch full skill details to get owner info
-        owner_handle = await self._get_skill_owner(slug)
-
-        # Convert ClawHub format to Huanxing format
-        # Format: clawhub/{owner_handle}/{slug}
-        skill_id = f"clawhub/{owner_handle}/{slug}"
-        namespace = f"clawhub/{owner_handle}"
-
-        # Check if skill exists
-        existing_skill = await marketplace_skill_dao.get_by_id(db, skill_id)
+        # owner：已存技能复用库内 author_name（省掉每技能 detail API 调用）；新技能才查详情。
+        if existing is not None:
+            owner_handle = existing.author_name or 'community'
+            skill_id = existing.skill_id
+            namespace = existing.namespace or f"clawhub/{owner_handle}"
+        else:
+            owner_handle = await self._get_skill_owner(slug)
+            skill_id = f"clawhub/{owner_handle}/{slug}"
+            namespace = f"clawhub/{owner_handle}"
+        existing_skill = existing
 
         # Get stats
         stats = clawhub_skill.get('stats', {})
 
         # Translate name and description
         name = clawhub_skill.get('displayName') or slug
-        description = clawhub_skill.get('summary', '')
+        description = clawhub_skill.get('summary', '') or ''
 
         # 批量预翻译命中则复用（省 LLM）；否则逐条翻译兜底。
         translated = prepared or await translation_service.translate_skill_metadata(
@@ -660,8 +853,12 @@ class ClawHubSyncService:
         tags_en = translation_service.normalize_tag_list(translated.get('tags_en'))
         tags_zh = translation_service.normalize_tag_list(translated.get('tags_zh'))
         tags = tags_en or tags_zh or [slug]
+        # 源语言侧存原文逐字（让下次同步的元数据变更门控能命中）。
+        name_en, name_zh, description_en, description_zh = self._bilingual_metadata(
+            translated, name=name, description=description,
+        )
 
-        # Map category based on slug or summary using LLM
+        # Map category based on slug or summary (keyword matching, no LLM)
         category = await self._classify_skill(db, name, description)
 
         # Prepare skill record
@@ -676,10 +873,10 @@ class ClawHubSyncService:
             'namespace': namespace,
             'slug': slug,
             'name': name,
-            'name_en': translated['name_en'],
-            'name_zh': translated['name_zh'],
-            'description_en': translated['description_en'],
-            'description_zh': translated['description_zh'],
+            'name_en': name_en,
+            'name_zh': name_zh,
+            'description_en': description_en,
+            'description_zh': description_zh,
             'source_language': translated['source_language'],
             'icon_url': None,
             'emoji': translated.get('emoji'),
@@ -809,14 +1006,16 @@ class ClawHubSyncService:
             db, skill_id, version
         )
 
-        # Translate changelog（translate_body=False 时原文填充，不调 LLM）
+        # changelog 变更门控：该版本已存在 → 复用库内 changelog（**零 LLM**，避免每轮重译）；
+        # 仅真正新版本且 translate_body 才送 LLM；translate_body=False 时原文填充。
         changelog = version_data.get('changelog', '')
-        if changelog and translate_body:
+        if existing_version is not None:
+            changelog_en = existing_version.changelog
+        elif changelog and translate_body:
             translated_changelog = await translation_service.translate_skill_metadata(
                 description=changelog
             )
             changelog_en = translated_changelog['description_en']
-            translated_changelog['description_zh']
         elif changelog:
             changelog_en = changelog  # 原文填充（changelog_en 作默认展示）
         else:
