@@ -1,0 +1,438 @@
+"""new-api 管理 HTTP API 客户端（唯一出站通道，替代 DB 直连第二引擎）。
+
+设计要点（详见 docs/AI网关/实施/2026-06-15-...迁移方案.md §13 实测修正）：
+
+- **唯一出站通道**：所有对 new-api 管理面的访问都经此类，封装 `{success,message,data}`
+  信封、超时、降级。
+- **鉴权（admin 通道）**：`Authorization=<root access_token>` + `New-Api-User=<root_id>`
+  （`NEWAPI_ADMIN_USER_ID`，默认 1）。new-api `authHelper` 要求 `New-Api-User` 必须等于
+  access_token 持有者 id（无跨用户冒充），故管理类操作以 root 身份 + 显式目标定位，
+  **不用 `/self` 冒充他人**。
+- **代用户建 relay token**：new-api 无 admin 建 token 接口；建 token 必须以用户身份
+  （`POST /api/token/`，UserAuth=调用方）。流程：admin 设密码 → 用户 login（独立 cookie
+  jar）→ `GET /api/user/token` 铸用户 access_token → 用该 token（cookieless）AddToken →
+  admin `admin_token` 取明文 key。用户 access_token 由 service 加密存映射表复用。
+- **trust_env=False**（强制）：本机/生产可能配 HTTP_PROXY/ALL_PROXY，httpx 默认会把
+  localhost:3180 也走代理 → 503/ERR。new-api 是内网服务，绝不经外部代理。
+- **不自动重试非幂等 POST**（与项目网关铁律一致）；连接级错误如实抛出。
+- **降级**：调用方按需 try/except 本类抛出的 NewApiError → None/0/空，绝不 500、绝不造假。
+
+单位约定：本客户端是 new-api 边界适配器，方法层面**只说 new-api 原生 `quota`（整数微单位）**。
+积分↔quota 的 ×/÷ QUOTA_PER_DOLLAR 由 `app/newapi` 的单位工具（service 层）统一封装，
+业务层只认「积分 = $」。
+"""
+
+from __future__ import annotations
+
+import secrets
+import string
+from typing import Any
+
+import httpx
+
+from backend.common.log import log
+from backend.core.conf import settings
+
+
+class NewApiError(Exception):
+    """new-api 管理 API 调用失败（非 2xx 或 success=false 或连接异常）。
+
+    调用方决定是否降级（读类常降级为 None/0/空），写类一般直接抛出。
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, endpoint: str | None = None) -> None:
+        self.status_code = status_code
+        self.endpoint = endpoint
+        super().__init__(message)
+
+
+def _gen_password(length: int = 18) -> str:
+    """生成 new-api 用户密码（8~20 字符约束内）：字母+数字，避免特殊字符歧义。"""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+
+class NewApiAdminClient:
+    """new-api 管理 API 客户端（httpx, trust_env=False）。"""
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        access_token: str | None = None,
+        admin_user_id: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        self.base_url = (base_url or settings.NEWAPI_ADMIN_BASE_URL).rstrip('/')
+        self.access_token = access_token if access_token is not None else settings.NEWAPI_ADMIN_ACCESS_TOKEN
+        self.admin_user_id = admin_user_id if admin_user_id is not None else settings.NEWAPI_ADMIN_USER_ID
+        self.timeout = timeout if timeout is not None else settings.NEWAPI_HTTP_TIMEOUT_SECONDS
+
+    # ------------------------------------------------------------------ #
+    # 底层请求 / 信封解包
+    # ------------------------------------------------------------------ #
+    def _admin_headers(self) -> dict[str, str]:
+        return {
+            'Authorization': self.access_token,
+            'New-Api-User': str(self.admin_user_id),
+        }
+
+    def _new_client(self) -> httpx.AsyncClient:
+        # trust_env=False：绝不经外部代理访问内网 new-api（见类 docstring）。
+        return httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout, trust_env=False)
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> Any:
+        """发请求并解包信封，返回 `data` 字段；失败抛 NewApiError（如实记录）。"""
+        own_client = client is None
+        c = client or self._new_client()
+        try:
+            resp = await c.request(method, path, headers=headers, params=params, json=json)
+        except httpx.HTTPError as e:  # 连接 / 超时等
+            log.warning(f'[new-api] {method} {path} 传输失败: {e!r}')
+            raise NewApiError(f'new-api 不可达: {e}', endpoint=path) from e
+        finally:
+            if own_client:
+                await c.aclose()
+
+        if resp.status_code >= 400:
+            raise NewApiError(
+                f'new-api {method} {path} HTTP {resp.status_code}: {resp.text[:200]}',
+                status_code=resp.status_code,
+                endpoint=path,
+            )
+        try:
+            body = resp.json()
+        except ValueError as e:
+            raise NewApiError(f'new-api {method} {path} 返回非 JSON: {resp.text[:200]}', endpoint=path) from e
+
+        if not body.get('success', False):
+            raise NewApiError(
+                f'new-api {method} {path} success=false: {body.get("message")!r}',
+                status_code=resp.status_code,
+                endpoint=path,
+            )
+        return body.get('data')
+
+    # ------------------------------------------------------------------ #
+    # 状态 / 启动校验
+    # ------------------------------------------------------------------ #
+    async def get_status(self) -> dict:
+        """GET /status（无鉴权）。返回 data，含 quota_per_unit。"""
+        return await self._request('GET', '/status')
+
+    async def get_quota_per_unit(self) -> int | None:
+        data = await self.get_status()
+        val = (data or {}).get('quota_per_unit')
+        return int(val) if val is not None else None
+
+    # ------------------------------------------------------------------ #
+    # 用户管理（admin 通道）
+    # ------------------------------------------------------------------ #
+    async def search_user_by_username(self, username: str) -> dict | None:
+        """按 keyword 模糊搜，精确匹配 username 返回该用户对象；无则 None。"""
+        data = await self._request(
+            'GET', '/user/search', headers=self._admin_headers(), params={'keyword': username, 'page_size': 50}
+        )
+        items = (data or {}).get('items') or []
+        for it in items:
+            if it.get('username') == username:
+                return it
+        return None
+
+    async def create_user(self, *, username: str, password: str, display_name: str) -> None:
+        """CreateUser（admin）。不返回 id（须随后 search 取 id）。"""
+        await self._request(
+            'POST',
+            '/user/',
+            headers=self._admin_headers(),
+            json={'username': username, 'password': password, 'display_name': display_name or username},
+        )
+
+    async def ensure_user(self, *, username: str, display_name: str) -> int:
+        """幂等确保 new-api 用户存在，返回 newapi_user_id。
+
+        撞 username（已存在）→ 复用其 id（替代旧 DB ON CONFLICT 自愈）。
+        """
+        existing = await self.search_user_by_username(username)
+        if existing:
+            return int(existing['id'])
+        # 不存在 → 创建（密码用后由 service bootstrap access_token 时重设，这里随机占位）
+        await self.create_user(username=username, password=_gen_password(), display_name=display_name)
+        created = await self.search_user_by_username(username)
+        if not created:
+            raise NewApiError(f'CreateUser 后 search 不到用户 {username}', endpoint='/user/')
+        return int(created['id'])
+
+    async def get_user(self, newapi_user_id: int) -> dict | None:
+        """GET /user/:id（admin）。返回含 quota/used_quota/request_count 的用户对象。"""
+        data = await self._request('GET', f'/user/{newapi_user_id}', headers=self._admin_headers())
+        return data
+
+    async def get_user_quota(self, newapi_user_id: int) -> dict | None:
+        """返回 {id, quota, used_quota, request_count}（与旧 DAO 同形），无则 None。"""
+        data = await self.get_user(newapi_user_id)
+        if not data:
+            return None
+        return {
+            'id': data.get('id'),
+            'quota': int(data.get('quota') or 0),
+            'used_quota': int(data.get('used_quota') or 0),
+            'request_count': int(data.get('request_count') or 0),
+        }
+
+    async def set_user_quota(self, *, newapi_user_id: int, quota: int) -> None:
+        """覆盖式设置 users.quota（admin，ManageUser action=add_quota mode=override）。"""
+        await self._request(
+            'POST',
+            '/user/manage',
+            headers=self._admin_headers(),
+            json={'id': newapi_user_id, 'action': 'add_quota', 'mode': 'override', 'value': int(quota)},
+        )
+
+    async def set_user_password(self, *, newapi_user_id: int, username: str, password: str) -> None:
+        """重设用户密码（admin，UpdateUser）。用于 bootstrap access_token / 孤儿恢复。"""
+        await self._request(
+            'PUT',
+            '/user/',
+            headers=self._admin_headers(),
+            json={'id': newapi_user_id, 'username': username, 'password': password},
+        )
+
+    async def delete_user(self, newapi_user_id: int) -> bool:
+        """DELETE /user/:id（admin）。返回是否成功（失败降级 False，不抛）。"""
+        try:
+            await self._request('DELETE', f'/user/{newapi_user_id}', headers=self._admin_headers())
+            return True
+        except NewApiError as e:
+            log.warning(f'[new-api] delete_user id={newapi_user_id} 失败: {e}')
+            return False
+
+    async def get_batch_users_quota(self, newapi_user_ids: list[int]) -> dict[int, dict]:
+        """批量取 quota（无批量接口 → 逐个 GET /user/:id）。返回 {id: {quota,used_quota,request_count}}。
+
+        管理端只对当前页 N 条调用；单个失败时跳过该用户（如实降级），不整体 500。
+        """
+        out: dict[int, dict] = {}
+        for uid in newapi_user_ids:
+            try:
+                info = await self.get_user_quota(uid)
+            except NewApiError as e:
+                log.warning(f'[new-api] get_batch_users_quota uid={uid} 跳过: {e}')
+                continue
+            if info:
+                out[int(uid)] = {
+                    'quota': info['quota'],
+                    'used_quota': info['used_quota'],
+                    'request_count': info['request_count'],
+                }
+        return out
+
+    # ------------------------------------------------------------------ #
+    # 代用户铸 access_token + 建 relay token
+    # ------------------------------------------------------------------ #
+    async def bootstrap_user_access_token(self, *, newapi_user_id: int, username: str) -> str:
+        """为用户铸 new-api access_token（管理面身份令牌，配 New-Api-User 用）。
+
+        admin 设临时密码 → 用户 login（独立 cookie jar）→ GET /user/token。
+        返回明文 access_token（service 负责加密落库复用）。
+        """
+        password = _gen_password()
+        await self.set_user_password(newapi_user_id=newapi_user_id, username=username, password=password)
+        # 独立 client 持 login 会话（cookie jar 不污染 admin 调用）
+        async with self._new_client() as login_c:
+            await self._request(
+                'POST', '/user/login', json={'username': username, 'password': password}, client=login_c
+            )
+            token = await self._request(
+                'GET', '/user/token', headers={'New-Api-User': str(newapi_user_id)}, client=login_c
+            )
+        if not token or not isinstance(token, str):
+            raise NewApiError(f'铸 access_token 失败 user={username}', endpoint='/user/token')
+        return token
+
+    async def add_token(
+        self,
+        *,
+        user_access_token: str,
+        newapi_user_id: int,
+        name: str,
+        unlimited_quota: bool = True,
+        remain_quota: int = 0,
+        expired_time: int = -1,
+    ) -> None:
+        """以用户身份建 relay token（AddToken）。不返回 id/key（须随后 admin 查取）。"""
+        user_headers = {'Authorization': user_access_token, 'New-Api-User': str(newapi_user_id)}
+        await self._request(
+            'POST',
+            '/token/',
+            headers=user_headers,
+            json={
+                'name': name,
+                'unlimited_quota': unlimited_quota,
+                'remain_quota': int(remain_quota),
+                'expired_time': int(expired_time),
+                'model_limits_enabled': False,
+            },
+        )
+
+    async def find_token(self, *, username: str, name: str) -> dict | None:
+        """admin 按 username 搜该用户 token，按 name 精确匹配，多个取最大 id（最新）。"""
+        data = await self._request(
+            'GET', '/admin_token/search', headers=self._admin_headers(), params={'username': username, 'page_size': 100}
+        )
+        items = (data or {}).get('items') or []
+        matched = [it for it in items if it.get('name') == name]
+        if not matched:
+            return None
+        return max(matched, key=lambda it: it.get('id') or 0)
+
+    async def get_token(self, token_id: int) -> dict | None:
+        """admin 取单个 token（key 脱敏）。"""
+        return await self._request('GET', f'/admin_token/{token_id}', headers=self._admin_headers())
+
+    async def get_token_remain_quota(self, token_id: int) -> int | None:
+        data = await self.get_token(token_id)
+        if not data:
+            return None
+        return int(data.get('remain_quota') or 0)
+
+    async def get_token_key(self, token_id: int) -> str:
+        """admin 取 token 明文 key（POST /admin_token/:id/key）。"""
+        data = await self._request('POST', f'/admin_token/{token_id}/key', headers=self._admin_headers())
+        key = (data or {}).get('key')
+        if not key:
+            raise NewApiError(f'取 token key 失败 id={token_id}', endpoint=f'/admin_token/{token_id}/key')
+        return key
+
+    async def disable_token(self, token_id: int) -> bool:
+        """软禁用 token（status=2，PUT /admin_token/?status_only=1）。返回是否成功。"""
+        try:
+            await self._request(
+                'PUT',
+                '/admin_token/',
+                headers=self._admin_headers(),
+                params={'status_only': '1'},
+                json={'id': token_id, 'status': 2},
+            )
+            return True
+        except NewApiError as e:
+            log.warning(f'[new-api] disable_token id={token_id} 失败: {e}')
+            return False
+
+    async def provision_user_relay_token(
+        self,
+        *,
+        newapi_user_id: int,
+        username: str,
+        user_access_token: str,
+        name: str,
+        unlimited_quota: bool = True,
+    ) -> tuple[int, str]:
+        """建 relay token 并取回 (token_id, 明文 key) 的高层封装。
+
+        AddToken（用户身份）→ admin find by name → admin get plaintext key。
+        """
+        await self.add_token(
+            user_access_token=user_access_token,
+            newapi_user_id=newapi_user_id,
+            name=name,
+            unlimited_quota=unlimited_quota,
+        )
+        token = await self.find_token(username=username, name=name)
+        if not token:
+            raise NewApiError(f'AddToken 后查不到 token name={name} user={username}', endpoint='/admin_token/search')
+        token_id = int(token['id'])
+        key = await self.get_token_key(token_id)
+        return token_id, key
+
+    # ------------------------------------------------------------------ #
+    # 日志 / 用量（admin 通道，以 username/user_id 定位）
+    # ------------------------------------------------------------------ #
+    async def get_logs(
+        self,
+        *,
+        username: str | None = None,
+        token_name: str | None = None,
+        model_name: str | None = None,
+        log_type: int = 2,
+        start_timestamp: int,
+        end_timestamp: int,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[dict], int]:
+        """GET /log/（admin）。返回 (items, total)。type=2 为消费日志。"""
+        params: dict[str, Any] = {
+            'type': log_type,
+            'start_timestamp': start_timestamp,
+            'end_timestamp': end_timestamp,
+            'p': page,
+            'page_size': page_size,
+        }
+        if username:
+            params['username'] = username
+        if token_name:
+            params['token_name'] = token_name
+        if model_name:
+            params['model_name'] = model_name
+        data = await self._request('GET', '/log/', headers=self._admin_headers(), params=params)
+        items = (data or {}).get('items') or []
+        total = int((data or {}).get('total') or 0)
+        return items, total
+
+    async def get_log_stat(
+        self,
+        *,
+        username: str | None = None,
+        token_name: str | None = None,
+        model_name: str | None = None,
+        log_type: int = 2,
+        start_timestamp: int,
+        end_timestamp: int,
+    ) -> dict:
+        """GET /log/stat（admin）。返回 {quota, rpm, tpm}（quota=窗口 SUM；rpm/tpm 为 60s 快照）。"""
+        params: dict[str, Any] = {
+            'type': log_type,
+            'start_timestamp': start_timestamp,
+            'end_timestamp': end_timestamp,
+        }
+        if username:
+            params['username'] = username
+        if token_name:
+            params['token_name'] = token_name
+        if model_name:
+            params['model_name'] = model_name
+        data = await self._request('GET', '/log/stat', headers=self._admin_headers(), params=params)
+        return data or {}
+
+    async def get_quota_data(
+        self,
+        *,
+        username: str,
+        start_timestamp: int,
+        end_timestamp: int,
+    ) -> list[dict]:
+        """GET /data/?username=（admin）。QuotaData 行（按 model+hour 桶聚合）。
+
+        每行：{model_name, created_at(unix 秒, hour 对齐), quota, token_used, count, ...}。
+        token_used = prompt+completion 合计。
+        """
+        data = await self._request(
+            'GET',
+            '/data/',
+            headers=self._admin_headers(),
+            params={'username': username, 'start_timestamp': start_timestamp, 'end_timestamp': end_timestamp},
+        )
+        return data or []
+
+
+# 模块单例（admin 通道默认配置；service 直接 import 使用）
+newapi_admin_client = NewApiAdminClient()
