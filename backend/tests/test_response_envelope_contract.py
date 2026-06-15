@@ -26,17 +26,8 @@ from backend.plugin.core import build_final_router
 # ---- 真例外（统一信封满足不了，永久保留）----
 _GENUINE = {
     # OpenAI/Anthropic 兼容代理：外部 SDK / hermes runtime 按原生形状解析，套信封即违反协议
-    'GET /api/v1/llm/proxy/',
-    'GET /api/v1/llm/proxy/v1/images/generations/{task_id}',
-    'GET /api/v1/llm/proxy/v1/models',
-    'GET /api/v1/llm/proxy/v1/videos/generations/{task_id}',
-    'POST /api/v1/llm/proxy/api/event_logging/batch',
-    'POST /api/v1/llm/proxy/v1/chat/completions',
-    'POST /api/v1/llm/proxy/v1/embeddings',
-    'POST /api/v1/llm/proxy/v1/images/generations',
-    'POST /api/v1/llm/proxy/v1/messages',
-    'POST /api/v1/llm/proxy/v1/messages/count_tokens',
-    'POST /api/v1/llm/proxy/v1/videos/generations',
+    # 注：自建 /api/v1/llm/proxy/* 网关已随 NEWAPI-P6 删除（OpenAI 兼容面下沉 new-api 自身），
+    # 故此处仅保留仍存活的 hermes agent chat 兼容代理。
     'POST /api/v1/hermes/app/agents/{agent_id}/chat/completions',
     # 文件 / YAML / 下载 / 导出（返回二进制或文本文件，非 JSON 业务体）
     'GET /api/v1/client/version/latest-linux.yml',
@@ -91,8 +82,6 @@ _DEBT = {
     'GET /api/v1/hasn/enterprise/invite-codes',
     'GET /api/v1/hasn/enterprise/memberships',
     'GET /api/v1/hasn/enterprises',
-    'GET /api/v1/hasn/user/active-workspaces',
-    'GET /api/v1/hasn/workspace/apps',
     'GET /api/v1/huanxing/analytics',
     # marketplace open 浏览：daemon 侧用 .send_json() 配对
     'GET /api/v1/marketplace/open/categories',
