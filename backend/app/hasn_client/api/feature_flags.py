@@ -30,7 +30,7 @@ from fastapi import APIRouter, Path
 from pydantic import Field
 from sqlalchemy import select
 
-from backend.app.models.feature_flag import FeatureFlag, FeatureFlagAssignment
+from backend.app.hasn_client.model.feature_flag import FeatureFlag, FeatureFlagAssignment
 from backend.common.response.response_schema import (
     ResponseSchemaModel,
     response_base,

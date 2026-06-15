@@ -32,8 +32,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
-from backend.app.api.v1.app import telemetry as telemetry_module
-from backend.app.models.telemetry_event import (
+from backend.app.hasn_client.api import telemetry as telemetry_module
+from backend.app.hasn_client.model.telemetry_event import (
     TELEMETRY_EVENT_TYPE_VALUES,
     TelemetryEvent,
     TelemetryEventType,

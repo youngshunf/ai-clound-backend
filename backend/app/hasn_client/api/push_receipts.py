@@ -24,8 +24,8 @@ from fastapi import APIRouter, Request
 from pydantic import Field
 from sqlalchemy import select
 
-from backend.app.models.push_receipt import PushReceipt
-from backend.app.models.push_token import PUSH_CHANNEL_VALUES, PushChannel
+from backend.app.hasn_client.model.push_receipt import PushReceipt
+from backend.app.hasn_client.model.push_token import PUSH_CHANNEL_VALUES, PushChannel
 from backend.common.response.response_schema import (
     ResponseSchemaModel,
     response_base,

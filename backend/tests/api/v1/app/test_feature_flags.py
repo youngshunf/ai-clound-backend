@@ -24,7 +24,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.api.v1.app import feature_flags as feature_flags_module
+from backend.app.hasn_client.api import feature_flags as feature_flags_module
 from backend.database.db import get_db
 
 FAKE_HASN_ID = 'h_100001'

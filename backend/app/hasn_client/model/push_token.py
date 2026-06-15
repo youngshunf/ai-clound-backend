@@ -27,8 +27,8 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.models._encryption import EncryptedToken
-from backend.app.models.push_token_audit import PushTokenAudit, register_audit_listeners
+from backend.app.hasn_client.model._encryption import EncryptedToken
+from backend.app.hasn_client.model.push_token_audit import PushTokenAudit, register_audit_listeners
 from backend.common.model import Base, TimeZone, id_key
 from backend.utils.timezone import timezone
 
