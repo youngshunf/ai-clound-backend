@@ -39,3 +39,7 @@ class Customer(HasnGrowthAppBase):
         TimeZone, default=None, comment='J3 即时跟进 run_now 上次触发时刻（云端 10 分钟防抖窗口）'
     )
     silent_round_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
+    # 企业化双模归属（GE1，设计 v3 §6.7）：personal→holder=user_id；enterprise→holder=enterprise_id+assignee。
+    owner_scope: Mapped[str] = mapped_column(sa.String(16), default='personal', comment='归属模式 (personal:个人:blue/enterprise:企业:purple)')
+    enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='企业 ID（enterprise 模式；personal 为 NULL）')
+    assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='负责人 hasn_id（enterprise 模式跟进人；与 owner_agent_id 分身维度并存）')

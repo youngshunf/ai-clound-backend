@@ -24,3 +24,7 @@ class FormSubmission(HasnGrowthAppBase):
     status: Mapped[str] = mapped_column(sa.String(16), default='', comment='状态 (pending:待处理:gray/converted:已转化:green/rejected:已拒绝:red/spam:垃圾:red)')
     customer_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     source_meta: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='UTM/referrer/IP hash（反滥用 + 归因）')
+    # 企业化双模归属（GE1，设计 v3 §6.7）：inbound 留资归企业池/分配。
+    owner_scope: Mapped[str] = mapped_column(sa.String(16), default='personal', comment='归属模式 (personal:个人:blue/enterprise:企业:purple)')
+    enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='企业 ID（enterprise 模式；personal 为 NULL）')
+    assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='负责人 hasn_id（enterprise 模式）')

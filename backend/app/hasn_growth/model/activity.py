@@ -24,3 +24,7 @@ class Activity(HasnGrowthAppBase):
     ref_table: Mapped[str | None] = mapped_column(sa.String(32), default=None, comment=None)
     ref_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     occurred_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment=None)
+    # 企业化双模归属（GE1，设计 v3 §6.7）：承自客户，便于企业全量时间线聚合。
+    owner_scope: Mapped[str] = mapped_column(sa.String(16), default='personal', comment='归属模式 (personal:个人:blue/enterprise:企业:purple)')
+    enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='企业 ID（enterprise 模式；personal 为 NULL）')
+    assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='负责人 hasn_id（enterprise 模式，承自客户）')

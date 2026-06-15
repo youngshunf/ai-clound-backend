@@ -30,3 +30,7 @@ class Opportunity(HasnGrowthAppBase):
     lost_reason: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment=None)
     close_note: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     created_by_kind: Mapped[str] = mapped_column(sa.String(16), default='', comment='创建者 (owner:主人:blue/agent:分身:violet)')
+    # 企业化双模归属（GE1，设计 v3 §6.7）。
+    owner_scope: Mapped[str] = mapped_column(sa.String(16), default='personal', comment='归属模式 (personal:个人:blue/enterprise:企业:purple)')
+    enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='企业 ID（enterprise 模式；personal 为 NULL）')
+    assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='负责人 hasn_id（enterprise 模式）')

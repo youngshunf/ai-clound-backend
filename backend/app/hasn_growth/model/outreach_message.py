@@ -37,3 +37,7 @@ class OutreachMessage(HasnGrowthAppBase):
     error_message: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     compliance_check: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
     dedupe_key: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
+    # 企业化双模归属（GE1，设计 v3 §6.7）：审批永远归 assignee 的主人维度。
+    owner_scope: Mapped[str] = mapped_column(sa.String(16), default='personal', comment='归属模式 (personal:个人:blue/enterprise:企业:purple)')
+    enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='企业 ID（enterprise 模式；personal 为 NULL）')
+    assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='负责人 hasn_id（enterprise 模式，审批归其主人）')
