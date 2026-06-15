@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.model.opportunity import Opportunity
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
+from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -44,6 +45,9 @@ def _opportunity_to_dict(o: Opportunity) -> dict[str, Any]:
         'lost_reason': o.lost_reason,
         'close_note': o.close_note,
         'created_by_kind': o.created_by_kind,
+        'owner_scope': o.owner_scope,
+        'enterprise_id': o.enterprise_id,
+        'assignee': o.assignee,
         'created_time': o.created_time,
     }
 
@@ -52,14 +56,13 @@ class GrowthOpportunityService:
     """商机/成交，全 user_id 隔离，跨户 → NotFound。"""
 
     @staticmethod
-    async def _load(db: AsyncSession, *, user_id: int, opportunity_id: int) -> Opportunity:
-        o = (
-            await db.execute(
-                sa.select(Opportunity).where(
-                    Opportunity.id == opportunity_id, Opportunity.user_id == user_id
-                )
-            )
-        ).scalar_one_or_none()
+    async def _load(
+        db: AsyncSession, *, user_id: int, opportunity_id: int, scope: GrowthScope | None = None
+    ) -> Opportunity:
+        stmt = apply_scope(
+            sa.select(Opportunity).where(Opportunity.id == opportunity_id), Opportunity, user_id=user_id, scope=scope
+        )
+        o = (await db.execute(stmt)).scalar_one_or_none()
         if not o:
             raise errors.NotFoundError(msg='商机不存在或无权访问')
         return o
@@ -78,11 +81,12 @@ class GrowthOpportunityService:
         expected_close_at: Any = None,
         created_by_kind: str = 'agent',
         actor_id: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        """立商机：建 opportunity + 客户态置 opportunity + 时间线留痕。"""
+        """立商机：建 opportunity + 客户态置 opportunity + 时间线留痕。商机继承客户归属（owner_scope/enterprise_id/assignee）。"""
         if stage not in _VALID_STAGES:
             raise errors.RequestError(msg=f'非法商机阶段：{stage}')
-        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         opp = Opportunity(
             opportunity_no=_gen_no('OPP'),
             customer_id=customer_id,
@@ -94,6 +98,9 @@ class GrowthOpportunityService:
             probability=probability,
             expected_close_at=expected_close_at,
             created_by_kind=created_by_kind,
+            owner_scope=customer.owner_scope,
+            enterprise_id=customer.enterprise_id,
+            assignee=customer.assignee,
         )
         db.add(opp)
         # 客户进入「已立商机」生命周期（不回退已成交/流失）。
@@ -125,11 +132,12 @@ class GrowthOpportunityService:
         note: str | None = None,
         actor_kind: str = 'agent',
         actor_id: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
         """推进/倒退商机阶段（允许倒退；每次写 stage_change 谁/何时/为何）。成交收口走 close_deal。"""
         if stage not in _OPEN_STAGES:
             raise errors.RequestError(msg=f'阶段流转仅限 {_OPEN_STAGES}；成交/流失请用 close_deal')
-        o = await cls._load(db, user_id=user_id, opportunity_id=opportunity_id)
+        o = await cls._load(db, user_id=user_id, opportunity_id=opportunity_id, scope=scope)
         if o.stage in _CLOSED_STAGES:
             raise errors.ForbiddenError(msg=f'商机已收口（{o.stage}），不可再改阶段')
         old = o.stage
@@ -162,11 +170,12 @@ class GrowthOpportunityService:
         lost_reason: str | None = None,
         actor_kind: str = 'agent',
         actor_id: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
         """成交/流失登记（result='won'|'lost'）。won 入 funnel 金额统计；lost 留败因复盘。"""
         if result not in ('won', 'lost'):
             raise errors.RequestError(msg="result 只能是 'won' 或 'lost'")
-        o = await cls._load(db, user_id=user_id, opportunity_id=opportunity_id)
+        o = await cls._load(db, user_id=user_id, opportunity_id=opportunity_id, scope=scope)
         if o.stage in _CLOSED_STAGES:
             raise errors.ForbiddenError(msg=f'商机已收口（{o.stage}），不可重复登记')
         now = timezone.now()
@@ -183,7 +192,7 @@ class GrowthOpportunityService:
             o.close_note = close_note
         await db.flush()
         # 客户态联动。
-        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=o.customer_id)
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=o.customer_id, scope=scope)
         customer.lifecycle_status = 'won' if result == 'won' else 'lost'
         await db.flush()
         await GrowthFunnelService._add_activity(
@@ -205,8 +214,10 @@ class GrowthOpportunityService:
         return _opportunity_to_dict(o)
 
     @classmethod
-    async def get_opportunity(cls, db: AsyncSession, *, user_id: int, opportunity_id: int) -> dict[str, Any]:
-        o = await cls._load(db, user_id=user_id, opportunity_id=opportunity_id)
+    async def get_opportunity(
+        cls, db: AsyncSession, *, user_id: int, opportunity_id: int, scope: GrowthScope | None = None
+    ) -> dict[str, Any]:
+        o = await cls._load(db, user_id=user_id, opportunity_id=opportunity_id, scope=scope)
         return _opportunity_to_dict(o)
 
     @staticmethod
@@ -217,9 +228,13 @@ class GrowthOpportunityService:
         customer_id: int | None = None,
         stage: str | None = None,
         open_only: bool = False,
+        assignee: str | None = None,
         limit: int = 50,
+        scope: GrowthScope | None = None,
     ) -> list[dict[str, Any]]:
-        stmt = sa.select(Opportunity).where(Opportunity.user_id == user_id)
+        stmt = apply_scope(sa.select(Opportunity), Opportunity, user_id=user_id, scope=scope)
+        if assignee and scope is not None and scope.is_enterprise:
+            stmt = stmt.where(Opportunity.assignee == assignee)
         if customer_id is not None:
             stmt = stmt.where(Opportunity.customer_id == customer_id)
         if stage is not None:

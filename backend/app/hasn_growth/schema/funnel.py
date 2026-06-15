@@ -119,3 +119,9 @@ class OptoutParam(SchemaBase):
     channel: str = Field(default='all', max_length=24)
     address: str = Field(min_length=1, description='退订的联系方式（仅算 hash，不落明文）')
     reason: str | None = Field(default=None, max_length=500)
+
+
+class AssignOwnerParam(SchemaBase):
+    """企业经理分配/转移客户负责人（GE4，仅 enterprise 经理；assignee 为人或分身 hasn_id）。"""
+
+    assignee: str = Field(min_length=1, max_length=64, description='新负责人 hasn_id（人或分身）')

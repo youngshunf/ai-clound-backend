@@ -13,6 +13,7 @@ from fastapi import APIRouter, Query
 
 from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.schema.funnel import (
+    AssignOwnerParam,
     CloseDealParam,
     CreateOpportunityParam,
     DismissLeadParam,
@@ -28,6 +29,7 @@ from backend.app.hasn_growth.service.growth_notification import growth_notificat
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
@@ -41,6 +43,16 @@ _PII_SCOPE = 'growth:pii'
 
 def _reveal(agent: AgentTokenPayload) -> bool:
     return _PII_SCOPE in (agent.scopes or [])
+
+
+async def _agent_scope(db: CurrentSession, agent: AgentTokenPayload, view: str = 'team') -> GrowthScope:
+    """分身代主人解析获客上下文：身份恒取自 JWT（owner_user_id/owner_hasn_id），assignee 键为主人 hasn_id。
+
+    分身是企业成员（主人）名下的行动者；它看到/操作的就是主人在该企业的归属裁剪后数据。
+    """
+    return await resolve_growth_scope(
+        db, user_id=agent.owner_user_id, owner_hasn_id=agent.owner_hasn_id, view=view
+    )
 
 
 # ---------------- 采集（收编子域包装：hasn.growth.collect.*） ----------------
@@ -99,6 +111,8 @@ async def qualify_lead(
     lead_contact_id: int,
     obj: QualifyLeadParam,
 ) -> ResponseModel:
+    # 企业模式下晋级的客户落企业池、assignee=主人 hasn_id（个人模式落个人池）。
+    scope = await _agent_scope(db, agent)
     data = await growth_funnel_service.qualify_lead(
         db,
         user_id=agent.owner_user_id,
@@ -106,6 +120,7 @@ async def qualify_lead(
         profile=obj.profile,
         intent_score=obj.intent_score,
         owner_agent_id=agent.agent_hasn_id,
+        scope=scope,
     )
     return response_base.success(data=data)
 
@@ -131,20 +146,25 @@ async def list_customers(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSession,
     lifecycle_status: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query()] = 'team',
+    assignee: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent, view=view)
     data = await growth_funnel_service.list_customers(
-        db, user_id=agent.owner_user_id, lifecycle_status=lifecycle_status, limit=limit, reveal_pii=_reveal(agent)
+        db, user_id=agent.owner_user_id, lifecycle_status=lifecycle_status, assignee=assignee,
+        limit=limit, reveal_pii=_reveal(agent), scope=scope,
     )
-    return response_base.success(data=data)
+    return response_base.success(data={'items': data, 'scope': scope.to_meta()})
 
 
 @router.get('/customers/{customer_id}', summary='[Agent] 客户详情', dependencies=[DependsAgentJwtAuth])
 async def get_customer(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession, customer_id: int
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_funnel_service.get_customer(
-        db, user_id=agent.owner_user_id, customer_id=customer_id, reveal_pii=_reveal(agent)
+        db, user_id=agent.owner_user_id, customer_id=customer_id, reveal_pii=_reveal(agent), scope=scope
     )
     return response_base.success(data=data)
 
@@ -153,7 +173,10 @@ async def get_customer(
 async def customer_timeline(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession, customer_id: int
 ) -> ResponseModel:
-    data = await growth_funnel_service.customer_timeline(db, user_id=agent.owner_user_id, customer_id=customer_id)
+    scope = await _agent_scope(db, agent)
+    data = await growth_funnel_service.customer_timeline(
+        db, user_id=agent.owner_user_id, customer_id=customer_id, scope=scope
+    )
     return response_base.success(data=data)
 
 
@@ -164,6 +187,7 @@ async def update_customer(
     customer_id: int,
     obj: UpdateCustomerParam,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_funnel_service.update_customer_profile(
         db,
         user_id=agent.owner_user_id,
@@ -173,6 +197,7 @@ async def update_customer(
         tags=obj.tags,
         lifecycle_status=obj.lifecycle_status,
         followup_task_id=obj.followup_task_id,
+        scope=scope,
     )
     return response_base.success(data=data)
 
@@ -184,6 +209,7 @@ async def log_activity(
     customer_id: int,
     obj: LogActivityParam,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_funnel_service.log_activity(
         db,
         user_id=agent.owner_user_id,
@@ -193,6 +219,27 @@ async def log_activity(
         opportunity_id=obj.opportunity_id,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/customers/{customer_id}/reassign',
+    summary='[Agent] 分配/转移负责人（仅企业经理主人的分身）',
+    name='growth_agent_reassign_customer',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def reassign_customer(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    customer_id: int,
+    obj: AssignOwnerParam,
+) -> ResponseModel:
+    # 分身代经理主人分配；非经理由 service can_manage_assignment 拒。
+    scope = await _agent_scope(db, agent, view='team')
+    data = await growth_funnel_service.reassign_customer(
+        db, user_id=agent.owner_user_id, customer_id=customer_id, new_assignee=obj.assignee, scope=scope
     )
     return response_base.success(data=data)
 
@@ -206,6 +253,7 @@ async def send_outreach(
     db: CurrentSessionTransaction,
     obj: SendOutreachParam,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_outreach_service.send_outreach(
         db,
         user_id=agent.owner_user_id,
@@ -217,6 +265,7 @@ async def send_outreach(
         intent_note=obj.intent_note,
         content_assets=obj.content_assets,
         opportunity_id=obj.opportunity_id,
+        scope=scope,
     )
     # 触达待审批 → 通知主人去审批队列（仅 pending_approval；放行/拦截不打扰）。
     if data.get('status') == 'pending_approval':
@@ -237,8 +286,9 @@ async def outreach_status(
     customer_id: Annotated[int, Query()],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_outreach_service.list_customer_outreach(
-        db, user_id=agent.owner_user_id, customer_id=customer_id, limit=limit
+        db, user_id=agent.owner_user_id, customer_id=customer_id, limit=limit, scope=scope
     )
     return response_base.success(data=data)
 
@@ -252,6 +302,7 @@ async def create_opportunity(
     db: CurrentSessionTransaction,
     obj: CreateOpportunityParam,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_opportunity_service.create_opportunity(
         db,
         user_id=agent.owner_user_id,
@@ -263,6 +314,7 @@ async def create_opportunity(
         probability=obj.probability,
         created_by_kind='agent',
         actor_id=agent.agent_hasn_id,
+        scope=scope,
     )
     return response_base.success(data=data)
 
@@ -274,6 +326,7 @@ async def update_stage(
     opportunity_id: int,
     obj: UpdateStageParam,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_opportunity_service.update_stage(
         db,
         user_id=agent.owner_user_id,
@@ -282,6 +335,7 @@ async def update_stage(
         note=obj.note,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
+        scope=scope,
     )
     # 商机阶段变更 → 通知主人。
     await growth_notification_service.opportunity_stage_changed(
@@ -325,7 +379,10 @@ async def close_deal(
 
 @router.get('/report/funnel', summary='[Agent] 漏斗总览', dependencies=[DependsAgentJwtAuth])
 async def report_funnel(
-    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    view: Annotated[str, Query()] = 'team',
 ) -> ResponseModel:
-    data = await growth_report_service.funnel_overview(db, user_id=agent.owner_user_id)
+    scope = await _agent_scope(db, agent, view=view)
+    data = await growth_report_service.funnel_overview(db, user_id=agent.owner_user_id, scope=scope)
     return response_base.success(data=data)

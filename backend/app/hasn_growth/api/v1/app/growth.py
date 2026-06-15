@@ -10,6 +10,7 @@ from fastapi import APIRouter, Query, Request
 
 from backend.app.hasn_growth.schema.funnel import (
     ApproveOutreachParam,
+    AssignOwnerParam,
     ChannelSettingParam,
     CloseDealParam,
     CreateLeadParam,
@@ -28,6 +29,7 @@ from backend.app.hasn_growth.service.opportunity_flow_service import growth_oppo
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.playbook_service import playbook_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.hasn_growth.service.scope_context import resolve_growth_scope
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -113,23 +115,33 @@ async def list_customers(
     request: Request,
     db: CurrentSession,
     lifecycle_status: str | None = Query(default=None),
+    view: str = Query(default='team', description='企业视图意图 team/mine（个人模式无效；销售恒只见自己）'),
+    assignee: str | None = Query(default=None, description='企业经理按负责人 hasn_id 过滤（个人/销售传入无害）'),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
     data = await growth_funnel_service.list_customers(
-        db, user_id=request.user.id, lifecycle_status=lifecycle_status, limit=limit, reveal_pii=True
+        db, user_id=request.user.id, lifecycle_status=lifecycle_status, assignee=assignee,
+        limit=limit, reveal_pii=True, scope=scope,
     )
-    return response_base.success(data=data)
+    return response_base.success(data={'items': data, 'scope': scope.to_meta()})
 
 
 @router.get('/customers/{customer_id}', summary='[Owner] 客户详情', dependencies=[DependsJwtAuth])
 async def get_customer(request: Request, db: CurrentSession, customer_id: int) -> ResponseModel:
-    data = await growth_funnel_service.get_customer(db, user_id=request.user.id, customer_id=customer_id, reveal_pii=True)
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_funnel_service.get_customer(
+        db, user_id=request.user.id, customer_id=customer_id, reveal_pii=True, scope=scope
+    )
     return response_base.success(data=data)
 
 
 @router.get('/customers/{customer_id}/timeline', summary='[Owner] 客户时间线', dependencies=[DependsJwtAuth])
 async def customer_timeline(request: Request, db: CurrentSession, customer_id: int) -> ResponseModel:
-    data = await growth_funnel_service.customer_timeline(db, user_id=request.user.id, customer_id=customer_id)
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_funnel_service.customer_timeline(
+        db, user_id=request.user.id, customer_id=customer_id, scope=scope
+    )
     return response_base.success(data=data)
 
 
@@ -137,6 +149,7 @@ async def customer_timeline(request: Request, db: CurrentSession, customer_id: i
 async def log_activity(
     request: Request, db: CurrentSessionTransaction, customer_id: int, obj: LogActivityParam
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_funnel_service.log_activity(
         db,
         user_id=request.user.id,
@@ -146,6 +159,24 @@ async def log_activity(
         opportunity_id=obj.opportunity_id,
         actor_kind='owner',
         actor_id=str(request.user.id),
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/customers/{customer_id}/reassign',
+    summary='[Owner] 分配/转移负责人（仅企业经理）',
+    name='growth_app_reassign_customer',
+    dependencies=[DependsJwtAuth],
+)
+async def reassign_customer(
+    request: Request, db: CurrentSessionTransaction, customer_id: int, obj: AssignOwnerParam
+) -> ResponseModel:
+    # 经理按企业全量操作（view=team）；非经理由 service can_manage_assignment 拒。
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view='team')
+    data = await growth_funnel_service.reassign_customer(
+        db, user_id=request.user.id, customer_id=customer_id, new_assignee=obj.assignee, scope=scope
     )
     return response_base.success(data=data)
 
@@ -160,15 +191,32 @@ async def list_pending(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> ResponseModel:
+    # 审批恒按 assignee=自己（_approval_scope 强制 view=mine）：经理也只批自己名下，不代审。
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_outreach_service.list_pending_approvals(
-        db, user_id=request.user.id, limit=limit, offset=offset
+        db, user_id=request.user.id, limit=limit, offset=offset, scope=scope
     )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/outreach/team-overview',
+    summary='[Owner] 团队待审批聚合（仅企业经理）',
+    name='growth_app_team_approval_overview',
+    dependencies=[DependsJwtAuth],
+)
+async def team_approval_overview(request: Request, db: CurrentSession) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view='team')
+    data = await growth_outreach_service.team_approval_overview(db, user_id=request.user.id, scope=scope)
     return response_base.success(data=data)
 
 
 @router.get('/customers/{customer_id}/outreach', summary='[Owner] 客户触达历史', dependencies=[DependsJwtAuth])
 async def list_customer_outreach(request: Request, db: CurrentSession, customer_id: int) -> ResponseModel:
-    data = await growth_outreach_service.list_customer_outreach(db, user_id=request.user.id, customer_id=customer_id)
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_outreach_service.list_customer_outreach(
+        db, user_id=request.user.id, customer_id=customer_id, scope=scope
+    )
     return response_base.success(data=data)
 
 
@@ -176,8 +224,10 @@ async def list_customer_outreach(request: Request, db: CurrentSession, customer_
 async def approve_outreach(
     request: Request, db: CurrentSessionTransaction, message_id: int, obj: ApproveOutreachParam
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_outreach_service.approve_outreach(
-        db, user_id=request.user.id, message_id=message_id, approver_user_id=request.user.id, edited_content=obj.edited_content
+        db, user_id=request.user.id, message_id=message_id, approver_user_id=request.user.id,
+        edited_content=obj.edited_content, scope=scope,
     )
     return response_base.success(data=data)
 
@@ -186,8 +236,10 @@ async def approve_outreach(
 async def reject_outreach(
     request: Request, db: CurrentSessionTransaction, message_id: int, obj: RejectOutreachParam
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_outreach_service.reject_outreach(
-        db, user_id=request.user.id, message_id=message_id, approver_user_id=request.user.id, reason=obj.reason
+        db, user_id=request.user.id, message_id=message_id, approver_user_id=request.user.id,
+        reason=obj.reason, scope=scope,
     )
     return response_base.success(data=data)
 
@@ -198,8 +250,9 @@ async def reject_outreach(
     dependencies=[DependsJwtAuth],
 )
 async def send_material(request: Request, db: CurrentSessionTransaction, message_id: int) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_outreach_service.build_send_material(
-        db, user_id=request.user.id, message_id=message_id, actor_user_id=request.user.id
+        db, user_id=request.user.id, message_id=message_id, actor_user_id=request.user.id, scope=scope
     )
     return response_base.success(data=data)
 
@@ -208,8 +261,9 @@ async def send_material(request: Request, db: CurrentSessionTransaction, message
 async def mark_sent(
     request: Request, db: CurrentSessionTransaction, message_id: int, obj: MarkSentParam
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_outreach_service.mark_sent(
-        db, user_id=request.user.id, message_id=message_id, channel_actual=obj.channel_actual
+        db, user_id=request.user.id, message_id=message_id, channel_actual=obj.channel_actual, scope=scope
     )
     return response_base.success(data=data)
 
@@ -221,6 +275,7 @@ async def mark_sent(
 async def create_opportunity(
     request: Request, db: CurrentSessionTransaction, obj: CreateOpportunityParam
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_opportunity_service.create_opportunity(
         db,
         user_id=request.user.id,
@@ -232,6 +287,7 @@ async def create_opportunity(
         probability=obj.probability,
         created_by_kind='owner',
         actor_id=str(request.user.id),
+        scope=scope,
     )
     return response_base.success(data=data)
 
@@ -242,10 +298,14 @@ async def list_opportunities(
     db: CurrentSession,
     customer_id: int | None = Query(default=None),
     open_only: bool = Query(default=False),
+    view: str = Query(default='team', description='企业视图意图 team/mine'),
+    assignee: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
     data = await growth_opportunity_service.list_opportunities(
-        db, user_id=request.user.id, customer_id=customer_id, open_only=open_only, limit=limit
+        db, user_id=request.user.id, customer_id=customer_id, open_only=open_only,
+        assignee=assignee, limit=limit, scope=scope,
     )
     return response_base.success(data=data)
 
@@ -254,9 +314,10 @@ async def list_opportunities(
 async def update_stage(
     request: Request, db: CurrentSessionTransaction, opportunity_id: int, obj: UpdateStageParam
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_opportunity_service.update_stage(
         db, user_id=request.user.id, opportunity_id=opportunity_id, stage=obj.stage, note=obj.note,
-        actor_kind='owner', actor_id=str(request.user.id),
+        actor_kind='owner', actor_id=str(request.user.id), scope=scope,
     )
     return response_base.success(data=data)
 
@@ -265,9 +326,11 @@ async def update_stage(
 async def close_deal(
     request: Request, db: CurrentSessionTransaction, opportunity_id: int, obj: CloseDealParam
 ) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await growth_opportunity_service.close_deal(
         db, user_id=request.user.id, opportunity_id=opportunity_id, result=obj.result, amount=obj.amount,
         close_note=obj.close_note, lost_reason=obj.lost_reason, actor_kind='owner', actor_id=str(request.user.id),
+        scope=scope,
     )
     return response_base.success(data=data)
 
@@ -316,18 +379,27 @@ async def list_playbooks(request: Request, db: CurrentSession) -> ResponseModel:
 
 
 @router.get('/report/funnel', summary='[Owner] 漏斗总览', dependencies=[DependsJwtAuth])
-async def report_funnel(request: Request, db: CurrentSession) -> ResponseModel:
-    data = await growth_report_service.funnel_overview(db, user_id=request.user.id)
+async def report_funnel(
+    request: Request, db: CurrentSession, view: str = Query(default='team')
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
+    data = await growth_report_service.funnel_overview(db, user_id=request.user.id, scope=scope)
     return response_base.success(data=data)
 
 
 @router.get('/report/stages', summary='[Owner] 商机阶段分布', dependencies=[DependsJwtAuth])
-async def report_stages(request: Request, db: CurrentSession) -> ResponseModel:
-    data = await growth_report_service.stage_distribution(db, user_id=request.user.id)
+async def report_stages(
+    request: Request, db: CurrentSession, view: str = Query(default='team')
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
+    data = await growth_report_service.stage_distribution(db, user_id=request.user.id, scope=scope)
     return response_base.success(data=data)
 
 
 @router.get('/report/lifecycle', summary='[Owner] 客户生命周期分布', dependencies=[DependsJwtAuth])
-async def report_lifecycle(request: Request, db: CurrentSession) -> ResponseModel:
-    data = await growth_report_service.lifecycle_distribution(db, user_id=request.user.id)
+async def report_lifecycle(
+    request: Request, db: CurrentSession, view: str = Query(default='team')
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
+    data = await growth_report_service.lifecycle_distribution(db, user_id=request.user.id, scope=scope)
     return response_base.success(data=data)

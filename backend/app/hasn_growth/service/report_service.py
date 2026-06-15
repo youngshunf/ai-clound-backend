@@ -16,6 +16,7 @@ from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.opportunity import Opportunity
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
+from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope
 from backend.utils.timezone import timezone
 
 _OPEN_STAGES = ('contacted', 'replied', 'proposal', 'negotiation')
@@ -27,8 +28,8 @@ class GrowthReportService:
     """漏斗统计，全 user_id 隔离。"""
 
     @staticmethod
-    async def funnel_overview(db: AsyncSession, *, user_id: int) -> dict[str, Any]:
-        # 线索池：本户线索中未拒绝未晋级的（仍待跟进）。
+    async def funnel_overview(db: AsyncSession, *, user_id: int, scope: GrowthScope | None = None) -> dict[str, Any]:
+        # 线索池：本户线索中未拒绝未晋级的（仍待跟进）。线索池本里程碑未企业化，恒按 user_id（owner 池）。
         lead_pool = (
             await db.execute(
                 sa.select(sa.func.count())
@@ -42,36 +43,36 @@ class GrowthReportService:
 
         following = (
             await db.execute(
-                sa.select(sa.func.count())
-                .select_from(Customer)
-                .where(Customer.user_id == user_id, Customer.lifecycle_status.in_(_FOLLOWING_LIFECYCLE))
+                apply_scope(sa.select(sa.func.count()).select_from(Customer), Customer, user_id=user_id, scope=scope).where(
+                    Customer.lifecycle_status.in_(_FOLLOWING_LIFECYCLE)
+                )
             )
         ).scalar_one()
 
         opp_count, opp_amount = (
             await db.execute(
-                sa.select(sa.func.count(), sa.func.coalesce(sa.func.sum(Opportunity.amount), 0))
-                .where(Opportunity.user_id == user_id, Opportunity.stage.in_(_OPEN_STAGES))
+                apply_scope(
+                    sa.select(sa.func.count(), sa.func.coalesce(sa.func.sum(Opportunity.amount), 0)),
+                    Opportunity, user_id=user_id, scope=scope,
+                ).where(Opportunity.stage.in_(_OPEN_STAGES))
             )
         ).one()
 
         month_start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         won_count, won_amount = (
             await db.execute(
-                sa.select(sa.func.count(), sa.func.coalesce(sa.func.sum(Opportunity.amount), 0))
-                .where(
-                    Opportunity.user_id == user_id,
-                    Opportunity.stage == 'closed_won',
-                    Opportunity.won_at >= month_start,
-                )
+                apply_scope(
+                    sa.select(sa.func.count(), sa.func.coalesce(sa.func.sum(Opportunity.amount), 0)),
+                    Opportunity, user_id=user_id, scope=scope,
+                ).where(Opportunity.stage == 'closed_won', Opportunity.won_at >= month_start)
             )
         ).one()
 
         pending_approvals = (
             await db.execute(
-                sa.select(sa.func.count())
-                .select_from(OutreachMessage)
-                .where(OutreachMessage.user_id == user_id, OutreachMessage.status == 'pending_approval')
+                apply_scope(
+                    sa.select(sa.func.count()).select_from(OutreachMessage), OutreachMessage, user_id=user_id, scope=scope
+                ).where(OutreachMessage.status == 'pending_approval')
             )
         ).scalar_one()
 
@@ -84,22 +85,20 @@ class GrowthReportService:
         }
 
     @staticmethod
-    async def stage_distribution(db: AsyncSession, *, user_id: int) -> dict[str, int]:
+    async def stage_distribution(db: AsyncSession, *, user_id: int, scope: GrowthScope | None = None) -> dict[str, int]:
         rows = (
             await db.execute(
-                sa.select(Opportunity.stage, sa.func.count())
-                .where(Opportunity.user_id == user_id)
+                apply_scope(sa.select(Opportunity.stage, sa.func.count()), Opportunity, user_id=user_id, scope=scope)
                 .group_by(Opportunity.stage)
             )
         ).all()
         return {stage: int(count) for stage, count in rows}
 
     @staticmethod
-    async def lifecycle_distribution(db: AsyncSession, *, user_id: int) -> dict[str, int]:
+    async def lifecycle_distribution(db: AsyncSession, *, user_id: int, scope: GrowthScope | None = None) -> dict[str, int]:
         rows = (
             await db.execute(
-                sa.select(Customer.lifecycle_status, sa.func.count())
-                .where(Customer.user_id == user_id)
+                apply_scope(sa.select(Customer.lifecycle_status, sa.func.count()), Customer, user_id=user_id, scope=scope)
                 .group_by(Customer.lifecycle_status)
             )
         ).all()

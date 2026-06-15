@@ -19,7 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.opportunity import Opportunity
+from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.service.pii import mask_contact_fields
+from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope, can_manage_assignment
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -54,6 +57,9 @@ def _customer_to_dict(c: Customer, *, reveal_pii: bool) -> dict[str, Any]:
         'intent_score': float(c.intent_score) if c.intent_score is not None else 0.0,
         'lifecycle_status': c.lifecycle_status,
         'owner_agent_id': c.owner_agent_id,
+        'owner_scope': c.owner_scope,
+        'enterprise_id': c.enterprise_id,
+        'assignee': c.assignee,
         'followup_task_id': c.followup_task_id,
         'tags': c.tags,
         'last_activity_at': c.last_activity_at,
@@ -203,17 +209,23 @@ class GrowthFunnelService:
         profile: dict | None = None,
         intent_score: float | None = None,
         owner_agent_id: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        """线索晋级为客户（建 customer + 画像快照 + 回写线索态 + qualify 活动）。幂等：已晋级返回既有客户。"""
+        """线索晋级为客户（建 customer + 画像快照 + 回写线索态 + qualify 活动）。幂等：已晋级返回既有客户。
+
+        enterprise 上下文：客户落 owner_scope='enterprise'+enterprise_id，assignee 默认=晋级人（经理可后续转移）；
+        去重键随之改为 (enterprise_id, lead_contact_id)。personal 行为不变。
+        """
         lead = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
 
-        existing = (
-            await db.execute(
-                sa.select(Customer).where(
-                    Customer.user_id == user_id, Customer.lead_contact_id == lead_contact_id
-                )
-            )
-        ).scalar_one_or_none()
+        is_ent = scope is not None and scope.is_enterprise
+        # 去重键双模：enterprise 按 (enterprise_id, lead)；personal 按 (user_id, lead)。不含 assignee（同企业同线索唯一）。
+        dedupe_stmt = sa.select(Customer).where(Customer.lead_contact_id == lead_contact_id)
+        if is_ent:
+            dedupe_stmt = dedupe_stmt.where(Customer.owner_scope == 'enterprise', Customer.enterprise_id == scope.enterprise_id)
+        else:
+            dedupe_stmt = dedupe_stmt.where(Customer.owner_scope == 'personal', Customer.user_id == user_id)
+        existing = (await db.execute(dedupe_stmt)).scalar_one_or_none()
         if existing:
             return _customer_to_dict(existing, reveal_pii=False)
 
@@ -232,6 +244,9 @@ class GrowthFunnelService:
             intent_score=score,
             lifecycle_status='active',
             owner_agent_id=owner_agent_id,
+            owner_scope='enterprise' if is_ent else 'personal',
+            enterprise_id=scope.enterprise_id if is_ent else None,
+            assignee=scope.owner_hasn_id if is_ent else None,
             tags=[],
             silent_round_count=0,
             last_activity_at=timezone.now(),
@@ -272,43 +287,48 @@ class GrowthFunnelService:
         *,
         user_id: int,
         lifecycle_status: str | None = None,
+        assignee: str | None = None,
         limit: int = 20,
         reveal_pii: bool = False,
+        scope: GrowthScope | None = None,
     ) -> list[dict[str, Any]]:
-        stmt = sa.select(Customer).where(Customer.user_id == user_id)
+        stmt = apply_scope(sa.select(Customer), Customer, user_id=user_id, scope=scope)
         if lifecycle_status:
             stmt = stmt.where(Customer.lifecycle_status == lifecycle_status)
+        # 负责人筛选器（GE5.4）：经理可在企业全量基础上按某成员过滤；个人/销售传入无害（与 scope 取交集）。
+        if assignee and scope is not None and scope.is_enterprise:
+            stmt = stmt.where(Customer.assignee == assignee)
         stmt = stmt.order_by(Customer.intent_score.desc(), Customer.id.desc()).limit(min(limit, 100))
         rows = (await db.execute(stmt)).scalars().all()
         return [_customer_to_dict(r, reveal_pii=reveal_pii) for r in rows]
 
     @staticmethod
-    async def _load_customer(db: AsyncSession, *, user_id: int, customer_id: int) -> Customer:
-        customer = (
-            await db.execute(
-                sa.select(Customer).where(Customer.id == customer_id, Customer.user_id == user_id)
-            )
-        ).scalar_one_or_none()
+    async def _load_customer(
+        db: AsyncSession, *, user_id: int, customer_id: int, scope: GrowthScope | None = None
+    ) -> Customer:
+        stmt = apply_scope(sa.select(Customer).where(Customer.id == customer_id), Customer, user_id=user_id, scope=scope)
+        customer = (await db.execute(stmt)).scalar_one_or_none()
         if not customer:
             raise errors.NotFoundError(msg='客户不存在或无权访问')
         return customer
 
     @staticmethod
     async def get_customer(
-        db: AsyncSession, *, user_id: int, customer_id: int, reveal_pii: bool = False
+        db: AsyncSession, *, user_id: int, customer_id: int, reveal_pii: bool = False, scope: GrowthScope | None = None
     ) -> dict[str, Any]:
-        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         return _customer_to_dict(customer, reveal_pii=reveal_pii)
 
     @staticmethod
     async def customer_timeline(
-        db: AsyncSession, *, user_id: int, customer_id: int, limit: int = 30
+        db: AsyncSession, *, user_id: int, customer_id: int, limit: int = 30, scope: GrowthScope | None = None
     ) -> list[dict[str, Any]]:
-        await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        # 先 _load_customer（按 scope 校验可见性），通过后按 customer_id 取时间线（已门控，无需再按 user_id 隔离）。
+        await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         rows = (
             await db.execute(
                 sa.select(Activity)
-                .where(Activity.user_id == user_id, Activity.customer_id == customer_id)
+                .where(Activity.customer_id == customer_id)
                 .order_by(Activity.occurred_at.desc(), Activity.id.desc())
                 .limit(min(limit, 100))
             )
@@ -337,8 +357,9 @@ class GrowthFunnelService:
         tags: list | None = None,
         lifecycle_status: str | None = None,
         followup_task_id: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         if profile is not None:
             customer.profile_json = profile
         if intent_score is not None:
@@ -368,8 +389,9 @@ class GrowthFunnelService:
         opportunity_id: int | None = None,
         actor_kind: str = 'agent',
         actor_id: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         activity = await GrowthFunnelService._add_activity(
             db,
             user_id=user_id,
@@ -381,6 +403,43 @@ class GrowthFunnelService:
             actor_id=actor_id,
         )
         return {'id': activity.id, 'kind': activity.kind, 'occurred_at': activity.occurred_at}
+
+    @staticmethod
+    async def reassign_customer(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        customer_id: int,
+        new_assignee: str,
+        scope: GrowthScope | None = None,
+    ) -> dict[str, Any]:
+        """分配/转移负责人（GE4，仅企业经理）：改 customer.assignee 并级联下游 opportunity/outreach/activity，留痕。
+
+        非经理（个人/销售）→ ForbiddenError（前端不渲染入口，后端仍是唯一防线）。
+        """
+        if not can_manage_assignment(scope):
+            raise errors.ForbiddenError(msg='需要经理权限才能分配/转移负责人')
+        new_assignee = (new_assignee or '').strip()
+        if not new_assignee:
+            raise errors.RequestError(msg='负责人不能为空')
+        # 经理按企业全量加载（view=team），不受 restrict_to_self 限制。
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
+        customer.assignee = new_assignee
+        await db.flush()
+        # 级联：同客户的商机/触达/活动 assignee 一并更新，保持企业归属一致（看板/审批队列即时反映转移）。
+        for model in (Opportunity, OutreachMessage, Activity):
+            await db.execute(sa.update(model).where(model.customer_id == customer_id).values(assignee=new_assignee))
+        await db.flush()
+        await GrowthFunnelService._add_activity(
+            db,
+            user_id=user_id,
+            customer_id=customer_id,
+            kind='note',
+            content=f'负责人转移为 {new_assignee}',
+            actor_kind='owner',
+            actor_id=scope.owner_hasn_id if scope else None,
+        )
+        return _customer_to_dict(customer, reveal_pii=False)
 
     @staticmethod
     async def _add_activity(
@@ -396,6 +455,14 @@ class GrowthFunnelService:
         ref_table: str | None = None,
         ref_id: str | None = None,
     ) -> Activity:
+        # 活动继承客户归属（owner_scope/enterprise_id/assignee），便于企业全量时间线聚合；
+        # 单条轻量 SELECT，免去把 scope 透传到每个调用点（DRY）。
+        cust = (
+            await db.execute(
+                sa.select(Customer.owner_scope, Customer.enterprise_id, Customer.assignee).where(Customer.id == customer_id)
+            )
+        ).first()
+        o_scope, ent_id, assignee = cust if cust else ('personal', None, None)
         activity = Activity(
             customer_id=customer_id,
             opportunity_id=opportunity_id,
@@ -406,14 +473,15 @@ class GrowthFunnelService:
             actor_id=actor_id,
             ref_table=ref_table,
             ref_id=ref_id,
+            owner_scope=o_scope,
+            enterprise_id=ent_id,
+            assignee=assignee,
             occurred_at=timezone.now(),
         )
         db.add(activity)
-        # 同步客户最近活动游标
+        # 同步客户最近活动游标（按 id，已由调用方门控可见性；不再按 user_id 过滤以兼容企业客户）。
         await db.execute(
-            sa.update(Customer)
-            .where(Customer.id == customer_id, Customer.user_id == user_id)
-            .values(last_activity_at=timezone.now())
+            sa.update(Customer).where(Customer.id == customer_id).values(last_activity_at=timezone.now())
         )
         await db.flush()
         return activity

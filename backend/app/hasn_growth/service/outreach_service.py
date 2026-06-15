@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import re
 
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 from uuid import uuid4
@@ -34,6 +35,7 @@ from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.service.audit_service import log_event
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope
 from backend.app.hasn_task.service.agent_task_service import agent_task_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
@@ -107,6 +109,17 @@ def _outreach_to_dict(m: OutreachMessage) -> dict[str, Any]:
         'workflow_run_id': m.workflow_run_id,
         'created_time': m.created_time,
     }
+
+
+def _approval_scope(scope: GrowthScope | None) -> GrowthScope | None:
+    """审批/取材维度：enterprise 下恒收敛到 assignee=自己（经理不代审他人名下触达，GE5.2 铁律）。
+
+    经理 view=team 时也强制按「我的」过滤触达消息——经理只在审批页获「团队审批态」只读总览（另一端点），
+    写操作（批/拒/取材/标已发）始终回落 assignee 的主人。
+    """
+    if scope is None or not scope.is_enterprise or scope.restrict_to_self:
+        return scope
+    return replace(scope, view='mine')
 
 
 class GrowthOutreachService:
@@ -200,14 +213,18 @@ class GrowthOutreachService:
     # ---------- 状态机 ----------
 
     @staticmethod
-    async def _load_message(db: AsyncSession, *, user_id: int, message_id: int) -> OutreachMessage:
-        m = (
-            await db.execute(
-                sa.select(OutreachMessage).where(
-                    OutreachMessage.id == message_id, OutreachMessage.user_id == user_id
-                )
-            )
-        ).scalar_one_or_none()
+    async def _load_message(
+        db: AsyncSession, *, user_id: int, message_id: int, scope: GrowthScope | None = None
+    ) -> OutreachMessage:
+        # 审批/取材按 scope 门控：enterprise 下审批永远归 assignee 的主人维度（apply_scope 企业分支恒带
+        # assignee 条件——见下方 list_pending_approvals 说明），经理不代审他人名下触达（GE5.2 铁律）。
+        stmt = apply_scope(
+            sa.select(OutreachMessage).where(OutreachMessage.id == message_id),
+            OutreachMessage,
+            user_id=user_id,
+            scope=_approval_scope(scope),
+        )
+        m = (await db.execute(stmt)).scalar_one_or_none()
         if not m:
             raise errors.NotFoundError(msg='触达消息不存在或无权访问')
         return m
@@ -260,13 +277,14 @@ class GrowthOutreachService:
         task_run_id: str | None = None,
         workflow_run_id: str | None = None,
         whitelist_auto_send: bool = False,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        """分身发起触达：合规检查 → 落 outreach_message（状态机定 status）→ 记 activity。
+        """分身发起触达：合规检查 → 落 outreach_message（状态机定 status）→ 记 activity。触达继承客户归属。
 
         whitelist_auto_send：主人对「客户×渠道」开了自动放行（M6/owner 设置驱动，本期由调用方传入）。
         首触达永不豁免（G4）。返回 outreach 字典（含 status）；被拦截也落库返回（分身学习）。
         """
-        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
 
         compliance = await cls.check_compliance(
             db, user_id=user_id, customer=customer, channel=channel, content=content
@@ -317,6 +335,9 @@ class GrowthOutreachService:
             workflow_run_id=workflow_run_id,
             compliance_check=compliance['checks'],
             dedupe_key=dedupe_key,
+            owner_scope=customer.owner_scope,
+            enterprise_id=customer.enterprise_id,
+            assignee=customer.assignee,
         )
         db.add(message)
         await db.flush()
@@ -351,9 +372,10 @@ class GrowthOutreachService:
         message_id: int,
         approver_user_id: int,
         edited_content: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        """owner 审批通过（可改话术后批，修改进版本留痕）。"""
-        m = await cls._load_message(db, user_id=user_id, message_id=message_id)
+        """owner 审批通过（可改话术后批，修改进版本留痕）。enterprise 下仅 assignee 主人可批。"""
+        m = await cls._load_message(db, user_id=user_id, message_id=message_id, scope=scope)
         if m.status != 'pending_approval':
             raise errors.ForbiddenError(msg=f'仅待审批触达可批准（当前 {m.status}）')
         if edited_content is not None and edited_content != m.content:
@@ -370,10 +392,11 @@ class GrowthOutreachService:
 
     @classmethod
     async def reject_outreach(
-        cls, db: AsyncSession, *, user_id: int, message_id: int, approver_user_id: int, reason: str
+        cls, db: AsyncSession, *, user_id: int, message_id: int, approver_user_id: int, reason: str,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        """owner 拒绝（reason 回流 timeline，分身下轮学习）。"""
-        m = await cls._load_message(db, user_id=user_id, message_id=message_id)
+        """owner 拒绝（reason 回流 timeline，分身下轮学习）。enterprise 下仅 assignee 主人可拒。"""
+        m = await cls._load_message(db, user_id=user_id, message_id=message_id, scope=scope)
         if m.status != 'pending_approval':
             raise errors.ForbiddenError(msg=f'仅待审批触达可拒绝（当前 {m.status}）')
         m.status = 'rejected'
@@ -395,17 +418,18 @@ class GrowthOutreachService:
 
     @classmethod
     async def build_send_material(
-        cls, db: AsyncSession, *, user_id: int, message_id: int, actor_user_id: int
+        cls, db: AsyncSession, *, user_id: int, message_id: int, actor_user_id: int,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
         """manual_assist「复制发送」素材包（设计 §8.2 G4）：返回 approved 话术 + 素材链接 +
         **明文联系方式（仅此处渲染）**，并落一条 `pii_read` 审计（payload 不含明文，只记 target_ref/渠道）。
 
-        仅 owner 自己的数据（跨户 → NotFound）；仅 approved 触达可取（owner 拿去手动发）。
+        仅 owner 自己的数据（跨户 → NotFound）；仅 approved 触达可取（owner 拿去手动发）。enterprise 下仅 assignee 主人。
         """
-        m = await cls._load_message(db, user_id=user_id, message_id=message_id)
+        m = await cls._load_message(db, user_id=user_id, message_id=message_id, scope=scope)
         if m.status != 'approved':
             raise errors.ForbiddenError(msg=f'仅已批准触达可取复制发送素材包（当前 {m.status}）')
-        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=m.customer_id)
+        customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=m.customer_id, scope=scope)
 
         # pii_read 审计：payload 经 assert_audit_payload_safe 守卫，绝不含明文 PII（只记目的/渠道/客户 id）。
         audit = log_event(
@@ -448,10 +472,11 @@ class GrowthOutreachService:
 
     @classmethod
     async def mark_sent(
-        cls, db: AsyncSession, *, user_id: int, message_id: int, channel_actual: str | None = None
+        cls, db: AsyncSession, *, user_id: int, message_id: int, channel_actual: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
         """发送成功（manual_assist 主人「已发送」或 worker 成功；approved/sending → sent）。"""
-        m = await cls._load_message(db, user_id=user_id, message_id=message_id)
+        m = await cls._load_message(db, user_id=user_id, message_id=message_id, scope=scope)
         if m.status not in ('approved', 'sending'):
             raise errors.ForbiddenError(msg=f'仅已批准/发送中触达可标记已发送（当前 {m.status}）')
         m.status = 'sent'
@@ -588,12 +613,13 @@ class GrowthOutreachService:
 
     @staticmethod
     async def list_pending_approvals(
-        db: AsyncSession, *, user_id: int, limit: int = 50, offset: int = 0
+        db: AsyncSession, *, user_id: int, limit: int = 50, offset: int = 0, scope: GrowthScope | None = None
     ) -> list[dict[str, Any]]:
+        # 「我名下待批队列」：enterprise 下恒按 assignee=自己（经理不代审，团队审批态总览另走 team_approval_overview）。
+        stmt = apply_scope(sa.select(OutreachMessage), OutreachMessage, user_id=user_id, scope=_approval_scope(scope))
         rows = (
             await db.execute(
-                sa.select(OutreachMessage)
-                .where(OutreachMessage.user_id == user_id, OutreachMessage.status == 'pending_approval')
+                stmt.where(OutreachMessage.status == 'pending_approval')
                 .order_by(OutreachMessage.created_time.asc(), OutreachMessage.id.asc())
                 .limit(min(limit, 200))
                 .offset(offset)
@@ -602,14 +628,45 @@ class GrowthOutreachService:
         return [_outreach_to_dict(m) for m in rows]
 
     @staticmethod
-    async def list_customer_outreach(
-        db: AsyncSession, *, user_id: int, customer_id: int, limit: int = 50
+    async def team_approval_overview(
+        db: AsyncSession, *, user_id: int, scope: GrowthScope | None = None
     ) -> list[dict[str, Any]]:
-        await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        """经理「团队审批态」只读总览（GE5.2）：按 assignee 聚合待批数 + 最早等待时长。写仍归 assignee 主人。
+
+        仅企业经理可见有意义数据；个人/销售/无 scope 返回空（前端不渲染该 tab）。
+        """
+        if scope is None or not scope.is_enterprise or not scope.is_manager:
+            return []
+        rows = (
+            await db.execute(
+                sa.select(
+                    OutreachMessage.assignee,
+                    sa.func.count(),
+                    sa.func.min(OutreachMessage.created_time),
+                )
+                .where(
+                    OutreachMessage.owner_scope == 'enterprise',
+                    OutreachMessage.enterprise_id == scope.enterprise_id,
+                    OutreachMessage.status == 'pending_approval',
+                )
+                .group_by(OutreachMessage.assignee)
+            )
+        ).all()
+        return [
+            {'assignee': assignee, 'pending_count': int(cnt), 'earliest_waiting_at': earliest}
+            for assignee, cnt, earliest in rows
+        ]
+
+    @staticmethod
+    async def list_customer_outreach(
+        db: AsyncSession, *, user_id: int, customer_id: int, limit: int = 50, scope: GrowthScope | None = None
+    ) -> list[dict[str, Any]]:
+        # 先按 scope 门控客户可见性，通过后按 customer_id 取触达历史（已门控）。
+        await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         rows = (
             await db.execute(
                 sa.select(OutreachMessage)
-                .where(OutreachMessage.user_id == user_id, OutreachMessage.customer_id == customer_id)
+                .where(OutreachMessage.customer_id == customer_id)
                 .order_by(OutreachMessage.created_time.desc(), OutreachMessage.id.desc())
                 .limit(min(limit, 200))
             )
