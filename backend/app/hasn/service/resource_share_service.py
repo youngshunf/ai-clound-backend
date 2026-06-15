@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import and_, or_, select
 
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
-from backend.app.hasn.model import HasnEnterpriseMembership, HasnResourceShare
+from backend.app.hasn.model import HasnEnterpriseMemberRole, HasnEnterpriseMembership, HasnResourceShare
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -69,6 +69,50 @@ class ResourceShareService:
         )
         return [(int(eid), role) for eid, role in rows]
 
+    @staticmethod
+    async def _role_grantee_ids(
+        db: AsyncSession,
+        *,
+        subject_owner_hasn_id: str,
+        resource_enterprise_id: int | None,
+        memberships: list[tuple[int, str]],
+    ) -> set[str]:
+        """主体 S 命中的 role grantee_id 集合（仅当产物属某企业时有意义，§6.5/§4.2(4)）。
+
+        - 内置成员角色：按 S 在 `resource_enterprise_id` 的成员 role 推导，含包含关系
+          owner ⊇ admin ⊇ member（grantee_id = `builtin:owner|admin|member`）。
+        - 自定义角色 / 部门：查 `hasn_enterprise_member_role`（user_id × enterprise_id），
+          grantee_id = str(role_id)。
+        """
+        if resource_enterprise_id is None:
+            return set()
+        ids: set[str] = set()
+        # 内置成员角色（含包含关系）
+        role_in_ent = next((role for eid, role in memberships if eid == resource_enterprise_id), None)
+        if role_in_ent is not None:
+            ids.add('builtin:member')
+            if role_in_ent in _ENTERPRISE_ADMIN_ROLES:
+                ids.add('builtin:admin')
+            if role_in_ent == 'owner':
+                ids.add('builtin:owner')
+        # 自定义角色 / 部门
+        human = await hasn_humans_dao.get_by_hasn_id(db, subject_owner_hasn_id)
+        if human is not None:
+            rows = (
+                (
+                    await db.execute(
+                        select(HasnEnterpriseMemberRole.role_id).where(
+                            HasnEnterpriseMemberRole.user_id == human.user_id,
+                            HasnEnterpriseMemberRole.enterprise_id == resource_enterprise_id,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            ids.update(str(int(rid)) for rid in rows)
+        return ids
+
     # ---------- 有效权限判定（§6.5） ----------
 
     @staticmethod
@@ -114,9 +158,15 @@ class ResourceShareService:
         elif resource_visibility == 'link':
             effective = _max_perm(effective, 'viewer')
 
-        # 4. explicit_grant：hasn_resource_share 命中主体（直接/经主人/经企业）的最高 active 权限
+        # 4. explicit_grant：hasn_resource_share 命中主体（直接/经主人/经企业/经 role）的最高 active 权限
         human_ids = {subject_owner_hasn_id}
         agent_ids = {subject_hasn_id} if subject_kind == 'agent' else set()
+        role_grantee_ids = await ResourceShareService._role_grantee_ids(
+            db,
+            subject_owner_hasn_id=subject_owner_hasn_id,
+            resource_enterprise_id=resource_enterprise_id,
+            memberships=memberships,
+        )
         conds = []
         if human_ids:
             conds.append(and_(HasnResourceShare.grantee_type == 'human', HasnResourceShare.grantee_id.in_(human_ids)))
@@ -127,6 +177,13 @@ class ResourceShareService:
                 and_(
                     HasnResourceShare.grantee_type == 'enterprise',
                     HasnResourceShare.grantee_id.in_([str(e) for e in member_enterprise_ids]),
+                )
+            )
+        if role_grantee_ids:
+            conds.append(
+                and_(
+                    HasnResourceShare.grantee_type == 'role',
+                    HasnResourceShare.grantee_id.in_(role_grantee_ids),
                 )
             )
         if conds:

@@ -51,3 +51,5 @@ from backend.app.hasn.model.hasn_app_credential import HasnAppCredential as Hasn
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog as HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement as HasnAppEntitlement
 from backend.app.hasn.model.hasn_resource_share import HasnResourceShare as HasnResourceShare
+from backend.app.hasn.model.hasn_enterprise_role import HasnEnterpriseRole as HasnEnterpriseRole
+from backend.app.hasn.model.hasn_enterprise_member_role import HasnEnterpriseMemberRole as HasnEnterpriseMemberRole
