@@ -19,6 +19,7 @@ from backend.app.hasn.model import (
     HasnEnterpriseMemberRole,
     HasnEnterpriseMembership,
     HasnEnterpriseRole,
+    HasnHumans,
 )
 from backend.app.admin.model.user import User
 from backend.app.workbench.model import HasnOwnerWorkbenchPref
@@ -166,12 +167,14 @@ class WorkbenchDomainService:
         return {'items': [_enterprise_payload(item) for item in items], 'q': q}
 
     async def list_members(self, db: AsyncSession, *, enterprise_id: int) -> dict[str, Any]:
+        # 附 hasn_id（join HasnHumans）：获客 GE5「分配负责人」需按成员 hasn_id 设 assignee。
         members = (
             (
                 await db.execute(
                     sa
-                    .select(HasnEnterpriseMembership, User)
+                    .select(HasnEnterpriseMembership, User, HasnHumans.hasn_id)
                     .outerjoin(User, User.id == HasnEnterpriseMembership.user_id)
+                    .outerjoin(HasnHumans, HasnHumans.user_id == HasnEnterpriseMembership.user_id)
                     .where(HasnEnterpriseMembership.enterprise_id == enterprise_id)
                     .order_by(HasnEnterpriseMembership.id.asc())
                 )
@@ -179,7 +182,9 @@ class WorkbenchDomainService:
             .all()
         )
         return {
-            'items': [_membership_payload(member, user) for member, user in members],
+            'items': [
+                _membership_payload(member, user, hasn_id=hasn_id) for member, user, hasn_id in members
+            ],
             'enterprise_id': enterprise_id,
         }
 
@@ -1156,11 +1161,12 @@ def _enterprise_payload(enterprise) -> dict[str, Any]:
     }
 
 
-def _membership_payload(membership, user=None) -> dict[str, Any]:
+def _membership_payload(membership, user=None, *, hasn_id: str | None = None) -> dict[str, Any]:
     return {
         'id': membership.id,
         'enterprise_id': membership.enterprise_id,
         'user_id': membership.user_id,
+        'hasn_id': hasn_id,
         'nickname': getattr(user, 'nickname', None),
         'phone': getattr(user, 'phone', None),
         'role': membership.role,
