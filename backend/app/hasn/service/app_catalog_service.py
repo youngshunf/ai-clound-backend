@@ -45,6 +45,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'deck': 35,
     'publish': 40,
     'growth': 45,  # 获客（设计 §3.2 约 40，置于 publish 之后；default_mount=FALSE 由 install_policy=manual 推导）
+    'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -106,7 +107,8 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
     """
     now = timezone.now()
     result = await db.execute(
-        sa.update(HasnAppEntitlement)
+        sa
+        .update(HasnAppEntitlement)
         .where(
             HasnAppEntitlement.status == 'active',
             HasnAppEntitlement.expires_at.is_not(None),
@@ -147,7 +149,8 @@ def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: WorkbenchApp | Non
 async def list_published_catalog(db: AsyncSession, *, kind: str | None = None) -> list[HasnAppCatalog]:
     """已上架 catalog 行（按 sort_order 升序），可选按可挂载空间类型（personal/enterprise）过滤。"""
     stmt = (
-        sa.select(HasnAppCatalog)
+        sa
+        .select(HasnAppCatalog)
         .where(HasnAppCatalog.status == 'published')
         .order_by(HasnAppCatalog.sort_order, HasnAppCatalog.id)
     )
@@ -235,9 +238,7 @@ async def get_active_entitlement(
     return (await db.execute(stmt)).scalars().first()
 
 
-async def _has_used_trial(
-    db: AsyncSession, *, app_id: str, subject_type: str, subject_id: str
-) -> bool:
+async def _has_used_trial(db: AsyncSession, *, app_id: str, subject_type: str, subject_id: str) -> bool:
     """该主体是否已对此 app 用过试用（任何状态的 source=trial 行都算，强制「只能开一次」）。"""
     stmt = sa.select(HasnAppEntitlement.id).where(
         HasnAppEntitlement.app_id == app_id,
@@ -293,9 +294,7 @@ async def resolve_app_access(
             'min_tier': catalog.min_tier,
             'price': _price_payload(catalog) if requires == 'purchase' else None,
             'trial_available': trial_available,
-            'entitlement_expires_at': (
-                entitlement_expires_at.isoformat() if entitlement_expires_at else None
-            ),
+            'entitlement_expires_at': (entitlement_expires_at.isoformat() if entitlement_expires_at else None),
         }
 
     if catalog.status != 'published':
@@ -315,9 +314,7 @@ async def resolve_app_access(
         return _access(allowed=False, reason='need_upgrade', requires='upgrade', trial_available=trial_available)
 
     if access_type == 'purchase':
-        ent = await get_active_entitlement(
-            db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id
-        )
+        ent = await get_active_entitlement(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id)
         if ent is not None:
             reason = 'trialing' if ent.source == 'trial' else 'entitled'
             return _access(allowed=True, reason=reason, entitlement_expires_at=ent.expires_at)
@@ -411,24 +408,31 @@ async def grant_entitlement(
 async def _post_grant_seed(db: AsyncSession, *, app_id: str, subject_type: str, subject_id: str) -> None:
     """权益生效后的应用自播种钩子（GE3）。
 
-    企业开通获客（growth）→ 自播种该企业的 playbook（幂等）。平台层不硬依赖应用层：用局部 late import，
-    仅在 growth+enterprise 分支触发；其它应用/个人开通不受影响。播种本身幂等，新/旧权益路径都安全调用。
+    企业开通获客（growth）/ 创作（creator）→ 自播种该企业的 playbook（幂等）。平台层不硬依赖应用层：
+    用局部 late import，仅在对应 app+enterprise 分支触发；其它应用/个人开通不受影响。播种本身幂等，
+    新/旧权益路径都安全调用。
     """
-    if subject_type != 'enterprise' or app_id != 'growth':
+    if subject_type != 'enterprise':
         return
     try:
         enterprise_id = int(subject_id)
     except (TypeError, ValueError):
         return
-    from backend.app.hasn_growth.service.enterprise_seed_service import ensure_growth_enterprise_seeded
+    if app_id == 'growth':
+        from backend.app.hasn_growth.service.enterprise_seed_service import ensure_growth_enterprise_seeded
 
-    await ensure_growth_enterprise_seeded(db, enterprise_id=enterprise_id)
+        await ensure_growth_enterprise_seeded(db, enterprise_id=enterprise_id)
+    elif app_id == 'creator':
+        from backend.app.hasn_creator.service.enterprise_seed_service import ensure_creator_enterprise_seeded
+
+        await ensure_creator_enterprise_seeded(db, enterprise_id=enterprise_id)
 
 
 async def revoke_entitlement(db: AsyncSession, *, entitlement_id: int) -> bool:
     """撤销权益（置 status=revoked）。返回是否实际改动。"""
     result = await db.execute(
-        sa.update(HasnAppEntitlement)
+        sa
+        .update(HasnAppEntitlement)
         .where(HasnAppEntitlement.id == entitlement_id, HasnAppEntitlement.status == 'active')
         .values(status='revoked', updated_time=timezone.now())
     )
