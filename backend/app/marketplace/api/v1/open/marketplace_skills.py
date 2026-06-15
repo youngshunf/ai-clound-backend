@@ -30,8 +30,11 @@ async def list_skills(
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     sort: Annotated[str | None, Query()] = None,
     sort_by: Annotated[str | None, Query()] = None,
+    skill_ids: Annotated[str | None, Query(description='逗号分隔 skill_id，仅返回这些技能（批量解析元数据用）')] = None,
+    is_common: Annotated[bool | None, Query(description='只取公共技能(true)/只取非公共(false)/不过滤(省略)')] = None,
 ) -> dict[str, Any]:
     tag_list = [tag.strip() for tag in tags.split(',')] if tags else None
+    skill_id_list = [sid.strip() for sid in skill_ids.split(',') if sid.strip()] if skill_ids else None
     return await search_service.search_skills(
         db=db,
         category=category,
@@ -42,6 +45,8 @@ async def list_skills(
         page=page,
         page_size=page_size,
         sort_by=sort or sort_by or 'popular',
+        skill_ids=skill_id_list,
+        is_common=is_common,
     )
 
 

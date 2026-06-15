@@ -31,6 +31,8 @@ class SearchService:
         page: int = 1,
         page_size: int = 20,
         sort_by: str = 'popular',
+        skill_ids: list[str] | None = None,
+        is_common: bool | None = None,
     ) -> dict[str, Any]:
         """
         Search skills with filters
@@ -46,6 +48,8 @@ class SearchService:
             page: Page number (1-indexed)
             page_size: Items per page
             sort_by: Sort method (popular/latest/downloads/stars)
+            skill_ids: 仅返回这些 skill_id（精确批量解析元数据用，分身技能页按此拉名称/描述/icon）
+            is_common: 只取公共技能（True）/ 只取非公共（False）/ 不过滤（None）
 
         Returns:
             Dict with skills list and pagination info
@@ -64,6 +68,8 @@ class SearchService:
             source_type=source_type,
             namespace=namespace,
             lang=lang,
+            skill_ids=skill_ids,
+            is_common=is_common,
         )
 
         # Count total
@@ -102,7 +108,14 @@ class SearchService:
         source_type: str | None,
         namespace: str | None,
         lang: str,
+        skill_ids: list[str] | None = None,
+        is_common: bool | None = None,
     ) -> Any:
+        if skill_ids:
+            # 精确批量解析：分身技能页传入本分身已装的 skill_id 全集，一次拉全元数据。
+            query = query.where(MarketplaceSkill.skill_id.in_(skill_ids))
+        if is_common is not None:
+            query = query.where(MarketplaceSkill.is_common.is_(is_common))
         if keyword:
             query = query.where(self._skill_keyword_clause(keyword, lang))
         if category:
@@ -430,6 +443,7 @@ class SearchService:
             'download_count': skill.download_count,
             'star_count': skill.star_count,
             'is_official': skill.is_official,
+            'is_common': skill.is_common,
             'pricing_type': skill.pricing_type,
             'price': float(skill.price) if skill.price else 0,
             'source_type': skill.source_type,
@@ -477,10 +491,7 @@ class SearchService:
             return []
         if not isinstance(data, list):
             return []
-        files: list[dict[str, Any]] = []
-        for item in data:
-            if isinstance(item, dict) and item.get('path'):
-                files.append({'path': str(item['path']), 'size': item.get('size')})
+        files: list[dict[str, Any]] = [{'path': str(item['path']), 'size': item.get('size')} for item in data if isinstance(item, dict) and item.get('path')]
         return files
 
     async def search_templates(
