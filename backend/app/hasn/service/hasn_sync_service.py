@@ -1184,7 +1184,7 @@ class SqlAlchemySyncGateway:
         result = await db.execute(
             sa.text(
                 '''
-                INSERT INTO public.memory_namespace_revisions (
+                INSERT INTO hasn_memory.namespace_revision (
                     sync_scope_kind,
                     sync_scope_id,
                     namespace,
@@ -1203,7 +1203,7 @@ class SqlAlchemySyncGateway:
                 )
                 ON CONFLICT (sync_scope_kind, sync_scope_id, namespace)
                 DO UPDATE SET
-                    revision = public.memory_namespace_revisions.revision + 1,
+                    revision = hasn_memory.namespace_revision.revision + 1,
                     updated_at = now(),
                     updated_time = now()
                 RETURNING revision
@@ -1229,7 +1229,7 @@ class SqlAlchemySyncGateway:
         await db.execute(
             sa.text(
                 '''
-                UPDATE public.memory_namespace_revisions
+                UPDATE hasn_memory.namespace_revision
                 SET last_event_id = :event_id,
                     updated_time = now()
                 WHERE sync_scope_kind = :sync_scope_kind
