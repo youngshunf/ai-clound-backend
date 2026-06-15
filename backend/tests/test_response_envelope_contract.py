@@ -26,17 +26,7 @@ from backend.plugin.core import build_final_router
 # ---- 真例外（统一信封满足不了，永久保留）----
 _GENUINE = {
     # OpenAI/Anthropic 兼容代理：外部 SDK / hermes runtime 按原生形状解析，套信封即违反协议
-    'GET /api/v1/llm/proxy/',
-    'GET /api/v1/llm/proxy/v1/images/generations/{task_id}',
-    'GET /api/v1/llm/proxy/v1/models',
-    'GET /api/v1/llm/proxy/v1/videos/generations/{task_id}',
-    'POST /api/v1/llm/proxy/api/event_logging/batch',
-    'POST /api/v1/llm/proxy/v1/chat/completions',
-    'POST /api/v1/llm/proxy/v1/embeddings',
-    'POST /api/v1/llm/proxy/v1/images/generations',
-    'POST /api/v1/llm/proxy/v1/messages',
-    'POST /api/v1/llm/proxy/v1/messages/count_tokens',
-    'POST /api/v1/llm/proxy/v1/videos/generations',
+    # （旧 /api/v1/llm/proxy/* 系列已随 app/llm 自建网关删除——NEWAPI-P6 new-api 解耦）
     'POST /api/v1/hermes/app/agents/{agent_id}/chat/completions',
     # 文件 / YAML / 下载 / 导出（返回二进制或文本文件，非 JSON 业务体）
     'GET /api/v1/client/version/latest-linux.yml',
@@ -87,12 +77,11 @@ _DEBT = {
     # hasn_task 模块（从 app/hasn 拆出）任务定义同步：daemon 侧 .send_json() 配对，同上 hasn/sync 系列
     'POST /api/v1/hasn-task/app/sync/pull',
     'POST /api/v1/hasn-task/app/sync/push',
-    # hasn 企业 / ragflow / workspace：业务 JSON 但 handler 无 response_model 注解
+    # hasn 企业 / ragflow：业务 JSON 但 handler 无 response_model 注解
+    # （旧 active-workspaces / workspace/apps 已随 workspace 拆除删除——应用平台 v3 P3）
     'GET /api/v1/hasn/enterprise/invite-codes',
     'GET /api/v1/hasn/enterprise/memberships',
     'GET /api/v1/hasn/enterprises',
-    'GET /api/v1/hasn/user/active-workspaces',
-    'GET /api/v1/hasn/workspace/apps',
     'GET /api/v1/huanxing/analytics',
     # marketplace open 浏览：daemon 侧用 .send_json() 配对
     'GET /api/v1/marketplace/open/categories',
