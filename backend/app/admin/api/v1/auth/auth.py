@@ -9,7 +9,7 @@ from backend.app.admin.schema.phone_auth import GetLLMTokenResponse
 from backend.app.admin.schema.token import GetLoginToken, GetNewToken, GetSwaggerToken, RefreshTokenParam
 from backend.app.admin.schema.user import AuthLoginParam
 from backend.app.admin.service.auth_service import auth_service
-from backend.app.llm.service.llm_newapi_user_mapping_service import llm_newapi_user_mapping_service
+from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.core.conf import settings

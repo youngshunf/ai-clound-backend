@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from backend.app.admin.model.user import User
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
-from backend.app.llm.service.api_key_service import api_key_service
+from backend.app.newapi.apikey.service import api_key_service
 from backend.app.marketplace.model import MarketplaceSkillVersion, MarketplaceTemplateVersion
 from backend.app.marketplace.service.marketplace_skill_service import marketplace_skill_service
 from backend.app.marketplace.service.marketplace_template_service import marketplace_template_service

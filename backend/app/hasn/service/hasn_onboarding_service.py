@@ -166,7 +166,7 @@ class SqlAlchemyPlatformUserGateway:
 
 class SqlAlchemyLlmCredentialIssuer:
     async def issue(self, db: AsyncSession, user: Any) -> tuple[str | None, str | None, str | None]:
-        from backend.app.llm.service.llm_newapi_user_mapping_service import (
+        from backend.app.newapi.service import (
             llm_newapi_user_mapping_service,
         )
 

@@ -35,7 +35,7 @@ from backend.app.hasn.service.instance_resolver import (
 from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 from backend.app.hasn.service.workbench_event_bus import workbench_event_bus
 from backend.app.hasn.service import app_catalog_service
-from backend.app.llm.core.encryption import key_encryption
+from backend.common.security.encryption import key_encryption
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 

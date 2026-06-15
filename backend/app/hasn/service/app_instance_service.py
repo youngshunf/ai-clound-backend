@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 from backend.app.hasn.model import HasnAiNativeAppManifest, HasnAppInstance, HasnAppPublisher
 from backend.app.hasn.service import ai_native_app_registry as _registry_mod
-from backend.app.llm.core.encryption import key_encryption
+from backend.common.security.encryption import key_encryption
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 

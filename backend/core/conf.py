@@ -59,11 +59,18 @@ class Settings(BaseSettings):
     DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'
 
-    # new-api 独立数据库（与主库同一 PostgreSQL 实例，不同 database）
-    NEWAPI_DATABASE_SCHEMA: str = 'newapi'
+    # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）。
+    # NEWAPI_QUOTA_PER_DOLLAR = new-api QuotaPerUnit（协议精度，非业务费率）。
+    # （NEWAPI_DATABASE_SCHEMA + 旧别名 NEWAPI_CREDITS_TO_QUOTA_RATE 已随第二数据库引擎删除，2026-06-15。）
+    NEWAPI_QUOTA_PER_DOLLAR: int = 500_000
 
-    # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）
-    NEWAPI_CREDITS_TO_QUOTA_RATE: int = 500_000
+    # new-api 管理 HTTP API（DB 直连 → HTTP 管理 API 迁移，2026-06-15）
+    # admin/root access_token + New-Api-User: <NEWAPI_ADMIN_USER_ID> 走 admin 端点；
+    # 详见 docs/AI网关/实施/2026-06-15-new-api解耦改API与删除自建LLM模块迁移方案.md §13。
+    NEWAPI_ADMIN_BASE_URL: str = 'http://localhost:3180/api'
+    NEWAPI_ADMIN_ACCESS_TOKEN: str = ''
+    NEWAPI_ADMIN_USER_ID: int = 1
+    NEWAPI_HTTP_TIMEOUT_SECONDS: int = 15
 
     # 新用户注册赠送积分
     NEWAPI_REGISTER_BONUS_CREDITS: int = 500

@@ -18,7 +18,7 @@ from backend.app.hasn.schema.hasn_agent_mcp_keys import (
     IssueAgentMcpKeyParam,
     IssuedAgentMcpKey,
 )
-from backend.app.llm.core.encryption import key_encryption
+from backend.common.security.encryption import key_encryption
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.utils.timezone import timezone

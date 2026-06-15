@@ -8,7 +8,7 @@ from backend.app.billing.model.pay_notify_log import PayNotifyLog as PayNotifyLo
 from backend.app.billing.model.pay_refund import PayRefund as PayRefund
 
 # 订阅积分（原 app/user_tier）
-from backend.app.billing.model.model_credit_rate import ModelCreditRate as ModelCreditRate
+# model_credit_rate（D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦，扣费改 new-api 用量对账）。
 from backend.app.billing.model.subscription_tier import SubscriptionTier as SubscriptionTier
 from backend.app.billing.model.user_subscription import UserSubscription as UserSubscription
 from backend.app.billing.model.credit_package import CreditPackage as CreditPackage

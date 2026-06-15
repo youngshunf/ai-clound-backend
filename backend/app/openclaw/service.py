@@ -192,7 +192,7 @@ async def verify_gateway_token(
     import logging
     log = logging.getLogger(__name__)
     
-    from backend.app.llm.service.api_key_service import api_key_service
+    from backend.app.newapi.apikey.service import api_key_service
     from backend.core.conf import settings
     
     stmt = select(GatewayConfig).where(GatewayConfig.gateway_token == token)
