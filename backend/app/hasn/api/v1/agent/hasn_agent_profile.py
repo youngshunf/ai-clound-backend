@@ -25,6 +25,7 @@ from backend.app.hasn.schema.hasn_agents import (
 from backend.app.hasn.service.owner_memory_service import owner_memory_service
 from backend.app.marketplace.service.common_skills_service import (
     get_common_skill_snapshot,
+    get_installed_skills_revision,
     merge_skill_ids,
 )
 from backend.common.dataclasses import AgentTokenPayload
@@ -135,6 +136,8 @@ async def get_agent_profile(
     # 自动生效，零回填。common_skills_revision 让 Runtime 据以重拉最新公共技能。
     common_ids, common_rev = await get_common_skill_snapshot(db)
     agent_ids = _normalize_skill_ids(getattr(row, 'skills', None))
+    # 自装技能内容修订号（doc14 §B4）：自装技能内容升级即变，Runtime 据此重拉已装技能。
+    installed_rev = await get_installed_skills_revision(db, agent_ids)
     # 已安装技能包（实施/91 B2.5）：解析为 {bundle_slug, command_key, hermes_yaml}，
     # Runtime 据此物化 skill-bundles/*.yaml（成员技能已并入 skills，此处仅给 hermes 包定义）。
     skill_bundles = await _resolve_skill_bundles(db, getattr(row, 'skill_bundles', None))
@@ -154,6 +157,7 @@ async def get_agent_profile(
             template_version=getattr(row, 'template_version', None),
             profile_revision=int(getattr(row, 'profile_revision', 1) or 1),
             common_skills_revision=common_rev,
+            installed_skills_revision=installed_rev,
             # hermes runtime 原生配置下行（拉取式兜底，补充 daemon PUT 的即时 push）：
             # Runtime provision/reconcile 时据此写 config.yaml/.env。空=全默认。
             runtime_config=getattr(row, 'runtime_config_json', None),
@@ -169,17 +173,26 @@ async def get_agent_profile_revision(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSession,
 ) -> ResponseSchemaModel[AgentProfileRevisionResponse]:
-    rev = (
+    row = (
         await db.execute(
-            sa.select(HasnAgents.profile_revision).where(HasnAgents.hasn_id == agent.agent_hasn_id).limit(1)
+            sa.select(HasnAgents.profile_revision, HasnAgents.skills)
+            .where(HasnAgents.hasn_id == agent.agent_hasn_id)
+            .limit(1)
         )
-    ).scalar_one_or_none()
-    if rev is None:
+    ).one_or_none()
+    if row is None:
         raise errors.NotFoundError(msg='ERR_HASN_AGENT_NOT_FOUND')
-    # 同步叠加公共技能修订号——否则只比 profile_revision 检测不到公共技能变化。
+    rev, skills = row
+    # 同步叠加公共技能修订号 + 自装技能内容修订号——否则只比 profile_revision 检测不到
+    # 公共技能 / 已装技能的内容变化（doc14 §B4）。
     _, common_rev = await get_common_skill_snapshot(db)
+    installed_rev = await get_installed_skills_revision(db, _normalize_skill_ids(skills))
     return response_base.success(
-        data=AgentProfileRevisionResponse(profile_revision=int(rev or 1), common_skills_revision=common_rev)
+        data=AgentProfileRevisionResponse(
+            profile_revision=int(rev or 1),
+            common_skills_revision=common_rev,
+            installed_skills_revision=installed_rev,
+        )
     )
 
 

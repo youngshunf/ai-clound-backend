@@ -128,6 +128,40 @@ async def get_common_skill_ids(db: AsyncSession) -> list[str]:
     return skill_ids
 
 
+async def get_installed_skills_revision(db: AsyncSession, skill_ids: list[str]) -> str:
+    """Agent 自装技能的内容修订号（doc14 §B4）。
+
+    = sha256(sorted "id@指纹" 行)[:16]，指纹取 ``COALESCE(content_hash, file_hash, version)``。
+    与 common_skills_revision 同构但作用于 **Agent 自装技能集**（profile.skills 里非公共的那部分，
+    含技能包成员）——让"已安装技能内容升级"也能被桌面端检测并重拉，而不只是公共技能。
+    空集合（无自装技能）→ 稳定空值 ``'0'``（零 fake）。
+    """
+    ids = sorted({sid for sid in (skill_ids or []) if sid})
+    if not ids:
+        return EMPTY_COMMON_SKILLS_REVISION
+    latest_version = (
+        sa.select(
+            MarketplaceSkillVersion.skill_id.label('skill_id'),
+            sa.func.coalesce(
+                MarketplaceSkillVersion.content_hash,
+                MarketplaceSkillVersion.file_hash,
+                MarketplaceSkillVersion.version,
+            ).label('fingerprint'),
+        )
+        .where(MarketplaceSkillVersion.is_latest.is_(True), MarketplaceSkillVersion.skill_id.in_(ids))
+        .subquery()
+    )
+    rows = (await db.execute(sa.select(latest_version.c.skill_id, latest_version.c.fingerprint))).all()
+    by_id: dict[str, str] = {}
+    for skill_id, fingerprint in rows:
+        key = str(skill_id)
+        if key not in by_id:
+            by_id[key] = str(fingerprint or '')
+    # 已装但市场无版本行的技能（如私有上传未落 version）仍计入 id（指纹空），保证增删可感知。
+    lines = [f'{sid}@{by_id.get(sid, "")}' for sid in ids]
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
 def merge_skill_ids(common_ids: list[str], agent_ids: list[str]) -> list[str]:
     """公共技能在前、Agent 自装在后，保序去重。"""
     merged: list[str] = []

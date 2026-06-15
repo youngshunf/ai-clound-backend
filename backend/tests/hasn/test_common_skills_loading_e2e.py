@@ -233,3 +233,35 @@ async def test_content_hash_change_bumps_revision_without_version_change(e2e):
     await e2e.session.flush()
     rev3 = (await _get_profile(c))['common_skills_revision']
     assert rev3 not in (rev1, rev2), (rev1, rev2, rev3)
+
+
+async def test_installed_skills_revision_tracks_self_installed_content(e2e):
+    """doc14 §B4：Agent **自装技能内容**升级 → installed_skills_revision 变（独立于公共技能）。"""
+    c = e2e.client
+    data0 = await _get_profile(c)
+    inst0 = data0['installed_skills_revision']
+    common0 = data0['common_skills_revision']
+
+    # 自装技能（own_skill，profile.skills 里非公共那部分）落一个带 content_hash 的版本行。
+    e2e.session.add(
+        MarketplaceSkillVersion(skill_id=e2e.own_skill, version='1.0.0', is_latest=True, content_hash='ih1')
+    )
+    await e2e.session.flush()
+    data1 = await _get_profile(c)
+    inst1 = data1['installed_skills_revision']
+    assert inst1 != inst0, (inst0, inst1)                  # 自装技能加版本指纹 → installed 变
+    assert data1['common_skills_revision'] == common0      # 公共技能修订号不受影响（解耦）
+
+    # 仅改自装技能 content_hash（版本仍 1.0.0）→ installed 再变。
+    await e2e.session.execute(
+        update(MarketplaceSkillVersion)
+        .where(MarketplaceSkillVersion.skill_id == e2e.own_skill, MarketplaceSkillVersion.is_latest.is_(True))
+        .values(content_hash='ih2')
+    )
+    await e2e.session.flush()
+    inst2 = (await _get_profile(c))['installed_skills_revision']
+    assert inst2 not in (inst0, inst1), (inst0, inst1, inst2)
+
+    # 轻量 revision 端点同样带 installed_skills_revision。
+    r = await c.get('/api/v1/hasn/agent/profile/revision')
+    assert r.json()['data']['installed_skills_revision'] == inst2

@@ -318,6 +318,10 @@ class AgentProfileResponse(SchemaBase):
         default='0',
         description='公共技能集合修订号（成员或内容版本变化即变，Runtime 据此重拉公共技能）',
     )
+    installed_skills_revision: str = Field(
+        default='0',
+        description='Agent 自装技能内容修订号（自装技能内容升级即变，Runtime 据此重拉已装技能；doc14 §B4）',
+    )
     runtime_config: dict | None = Field(
         None,
         description='hermes runtime 原生配置（4 槽模型/工作目录/knobs；Runtime 据此写 config.yaml/.env，空=全默认）',
@@ -351,10 +355,11 @@ class RuntimeRunCancelResponse(SchemaBase):
 
 
 class AgentProfileRevisionResponse(SchemaBase):
-    """轻量轮询：仅返回 Profile 修订号 + 公共技能修订号。"""
+    """轻量轮询：仅返回 Profile 修订号 + 公共技能修订号 + 自装技能内容修订号。"""
 
     profile_revision: int = Field(default=1, description='Profile 修订号')
     common_skills_revision: str = Field(default='0', description='公共技能集合修订号')
+    installed_skills_revision: str = Field(default='0', description='Agent 自装技能内容修订号（doc14 §B4）')
 
 
 # [ADR-15 收编兼容 re-export] Owner 记忆 DTO 已迁入 `app/hasn_memory.schema.owner_memory`。
