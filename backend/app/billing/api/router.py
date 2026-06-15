@@ -30,7 +30,7 @@ from backend.app.billing.api.v1.admin.credit_balance import router as admin_bala
 from backend.app.billing.api.v1.admin.transaction import router as admin_transaction_router
 from backend.app.billing.api.v1.admin.package import router as admin_package_router
 from backend.app.billing.api.v1.admin.tier import router as admin_tier_router
-from backend.app.billing.api.v1.admin.rate import router as admin_rate_router
+# admin.rate（模型积分费率 model_credit_rate，D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦）。
 from backend.app.billing.api.v1.admin.newapi_quota import router as admin_newapi_quota_router
 
 # ── 订阅积分 app / open / agent ──
@@ -69,7 +69,7 @@ user_tier_v1.include_router(admin_balance_router, prefix='/balances', tags=['管
 user_tier_v1.include_router(admin_transaction_router, prefix='/transactions', tags=['管理-积分交易'])
 user_tier_v1.include_router(admin_package_router, prefix='/packages', tags=['管理-积分包'])
 user_tier_v1.include_router(admin_tier_router, prefix='/tiers', tags=['管理-订阅等级'])
-user_tier_v1.include_router(admin_rate_router, prefix='/rates', tags=['管理-模型费率'])
+# /rates（模型积分费率 model_credit_rate，D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦）。
 user_tier_v1.include_router(admin_newapi_quota_router, prefix='/newapi-quota', tags=['管理-Token额度用量'])
 
 user_tier_app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/user_tier/app', tags=['订阅积分-用户端'])

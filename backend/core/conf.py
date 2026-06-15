@@ -59,13 +59,9 @@ class Settings(BaseSettings):
     DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'
 
-    # new-api 独立数据库（与主库同一 PostgreSQL 实例，不同 database）
-    NEWAPI_DATABASE_SCHEMA: str = 'newapi'
-
-    # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）
-    # NEWAPI_QUOTA_PER_DOLLAR 为新名（= new-api QuotaPerUnit，协议精度非业务费率）；
-    # NEWAPI_CREDITS_TO_QUOTA_RATE 保留为旧别名直至 P6 清理，二者同值。
-    NEWAPI_CREDITS_TO_QUOTA_RATE: int = 500_000
+    # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）。
+    # NEWAPI_QUOTA_PER_DOLLAR = new-api QuotaPerUnit（协议精度，非业务费率）。
+    # （NEWAPI_DATABASE_SCHEMA + 旧别名 NEWAPI_CREDITS_TO_QUOTA_RATE 已随第二数据库引擎删除，2026-06-15。）
     NEWAPI_QUOTA_PER_DOLLAR: int = 500_000
 
     # new-api 管理 HTTP API（DB 直连 → HTTP 管理 API 迁移，2026-06-15）

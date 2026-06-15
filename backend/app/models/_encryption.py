@@ -8,7 +8,7 @@
 
 规范源: docs/架构设计/移动端/04-推送触达与后台运行模型详细设计.md §13.2.
 
-设计要点 (与 backend/app/llm/core/encryption.py 对齐但独立, 两套密钥分别轮换):
+设计要点 (与 backend/common/security/encryption.py 对齐但独立, 两套密钥分别轮换):
 - 单例 Fernet 复用, 避免每次加解密重建
 - `EncryptedToken` TypeDecorator 暴露 `str` 给 ORM, 底层存 `bytes`, 避免业务层感知加密
 - `reset_fernet_for_tests()` 供单元测试切换临时密钥 / 触发重新初始化

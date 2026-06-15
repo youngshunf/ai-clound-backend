@@ -25,13 +25,13 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi_pagination import add_pagination
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.newapi.crud import newapi_direct_dao
+from backend.app.newapi.client import NewApiError, newapi_admin_client
 from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
 from backend.app.billing.model import CreditTransaction, UserSubscription
@@ -39,7 +39,7 @@ from backend.app.billing.service.billing_usage_service import quota_to_credits
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.core.conf import settings
-from backend.database.db import NEWAPI_DATABASE_URL, SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 from backend.middleware.app_context_middleware import AppContextMiddleware
 
 pytestmark = pytest.mark.asyncio
@@ -248,54 +248,33 @@ async def test_info_status_expired_recomputed(env) -> None:
 
 
 async def test_newapi_authoritative_info_and_daily(env) -> None:
-    """**真实联调**：new-api 为权威源 —— 可用积分=(quota−used)/RATE、本期消耗/流水取自 logs。
+    """**真实联调**：new-api 为权威源 —— 可用积分 = (quota − used_quota)/RATE，经 HTTP 管理 API 读取。
 
-    seed 真实 new-api `users`(quota/used_quota) + `logs`(type=2 跨两本地日) + 唤星映射/订阅，
-    断言 /info current_credits/cycle_consumed_credits 与 /daily 合并消耗。
-    new-api 库不可达或 logs 列缺失 → skip（infra-gated，CI/staging 跑真值）。
+    解耦后（2026-06-15）唤星不再直连 new-api 数据库：本测试经 `newapi_admin_client`（HTTP）
+    创建真实 new-api 用户并 `set_user_quota`，再建唤星映射/订阅，断言 /info current_credits 反映
+    new-api 权威额度（新建用户 used_quota=0 → 可用=全额）、cycle_consumed=0（无真实流量）。
+
+    > 历史 `logs`（type=2 消耗明细）无法经 HTTP 管理 API 注入（只由真实中转流量写入），
+    > 故不再 seed 假日志、不再断言 /daily 的逐日消耗——那需真实计费流量，属 staging 真值验证。
+    new-api 不可达 → skip（infra-gated）。
     """
     s, c, uid = env.session, env.client, env.auth_state['user_id']
-    rate = settings.NEWAPI_CREDITS_TO_QUOTA_RATE
+    rate = settings.NEWAPI_QUOTA_PER_DOLLAR
 
-    newapi_engine = create_async_engine(NEWAPI_DATABASE_URL, poolclass=NullPool)
     try:
-        async with newapi_engine.connect() as probe:
-            await probe.execute(select(1))
+        status = await newapi_admin_client.get_status()  # 返回 /status 配置块（非 {success,data} 信封）
     except Exception as exc:  # noqa: BLE001
-        await newapi_engine.dispose()
-        pytest.skip(f'new-api 库不可达，跳过真实联调: {exc!r}')
+        pytest.skip(f'new-api 管理 API 不可达，跳过真实联调: {exc!r}')
+    if not status:
+        pytest.skip('new-api 管理 API 未就绪（/status 空响应），跳过真实联调')
 
-    newapi_session = async_sessionmaker(newapi_engine, expire_on_commit=False)()
     newapi_user_id = None
     try:
-        # 1) new-api 用户：总额度 20000 积分、已用 1000 积分（quota 单位）
-        try:
-            newapi_user_id = await newapi_direct_dao.create_newapi_user(
-                newapi_session, username=f'hx_e2e_{uid}', display_name='e2e', quota=20_000 * rate,
-            )
-            await newapi_session.execute(
-                text('UPDATE users SET used_quota = :u WHERE id = :id'),
-                {'u': 1_000 * rate, 'id': newapi_user_id},
-            )
-            # 2) 两本地日的消耗日志（type=2）：06-07 用 600 积分 / 06-08 用 400 积分
-            for created_at, q, pt, ct in [
-                (int(datetime(2026, 6, 7, 5, 0, tzinfo=dt_tz.utc).timestamp()), 600 * rate, 1200, 300),
-                (int(datetime(2026, 6, 7, 20, 0, tzinfo=dt_tz.utc).timestamp()), 400 * rate, 400, 100),
-            ]:
-                await newapi_session.execute(
-                    text(
-                        'INSERT INTO logs (user_id, created_at, type, quota, prompt_tokens, completion_tokens, '
-                        'model_name, content, username, token_name) '
-                        "VALUES (:uid, :ts, 2, :q, :pt, :ct, 'qwen3-max', '', '', '')"
-                    ),
-                    {'uid': newapi_user_id, 'ts': created_at, 'q': q, 'pt': pt, 'ct': ct},
-                )
-            await newapi_session.commit()
-        except Exception as exc:  # noqa: BLE001
-            await newapi_session.rollback()
-            pytest.skip(f'new-api 表结构与本测试 seed 不符（schema-gated）: {exc!r}')
+        # 1) 经 HTTP 创建真实 new-api 用户并设额度为 20000 积分（quota 单位）；新建用户 used_quota=0
+        newapi_user_id = await newapi_admin_client.ensure_user(username=f'hx_e2e_{uid}', display_name='e2e')
+        await newapi_admin_client.set_user_quota(newapi_user_id=newapi_user_id, quota=20_000 * rate)
 
-        # 3) 唤星侧：映射 + 付费订阅（周期覆盖两条日志）
+        # 2) 唤星侧：映射 + 付费订阅
         s.add(LlmNewapiUserMapping(
             huanxing_user_id=uid, newapi_user_id=newapi_user_id,
             newapi_token_key='e2e', newapi_token_id=0, app_code='huanxing', status='active',
@@ -311,36 +290,28 @@ async def test_newapi_authoritative_info_and_daily(env) -> None:
         ))
         await s.flush()
 
-        # /info：可用积分 = (20000 − 1000) = 19000；本期消耗 = 600+400 = 1000（quota_to_credits）
+        # /info：可用积分 = (20000 − 0) = 20000（new-api 权威，新建用户 used_quota=0）；本期消耗 = 0（无流量）
         info = _data(await c.get('/api/v1/user_tier/app/subscription/info'))
-        assert Decimal(str(info['current_credits'])) == quota_to_credits(19_000 * rate)
-        assert Decimal(str(info['cycle_consumed_credits'])) == quota_to_credits(1_000 * rate)
+        assert Decimal(str(info['current_credits'])) == quota_to_credits(20_000 * rate)
+        assert Decimal(str(info['cycle_consumed_credits'])) == Decimal('0')
         assert info['status'] == 'active'
 
-        # /daily：消耗按 new-api logs 归本地日 —— 06-07 -600 / 06-08 -400（跨 UTC 日界）
+        # /daily：无真实计费流量 → new-api 消耗 0；端点正常返回统一信封（不再 seed 假日志）
         daily = _data(await c.get(_DAILY, params={'page': 1, 'size': 20}))
-        by_date = {it['date']: it for it in daily['items']}
-        assert Decimal(str(by_date['2026-06-07']['consumed'])) == -quota_to_credits(600 * rate)
-        assert by_date['2026-06-07']['request_count'] == 1 and by_date['2026-06-07']['token_count'] == 1500
-        assert Decimal(str(by_date['2026-06-08']['consumed'])) == -quota_to_credits(400 * rate)
-        assert by_date['2026-06-08']['request_count'] == 1 and by_date['2026-06-08']['token_count'] == 500
+        for it in daily['items']:
+            assert Decimal(str(it['consumed'])) == Decimal('0'), 'new-api 无真实流量，消耗应为 0'
     finally:
-        # 清理 new-api seed（避免污染共享库）
-        try:
-            if newapi_user_id is not None:
-                import sqlalchemy as _sa
-                await newapi_session.execute(_sa.text('DELETE FROM logs WHERE user_id = :id'), {'id': newapi_user_id})
-                await newapi_session.execute(_sa.text('DELETE FROM users WHERE id = :id'), {'id': newapi_user_id})
-                await newapi_session.commit()
-        except Exception:  # noqa: BLE001
-            await newapi_session.rollback()
-        await newapi_session.close()
-        await newapi_engine.dispose()
+        # 清理：经 HTTP 删除 new-api 用户（避免污染共享实例）
+        if newapi_user_id is not None:
+            try:
+                await newapi_admin_client.delete_user(newapi_user_id)
+            except NewApiError:
+                pass
 
 
 async def test_quota_to_credits_conversion() -> None:
-    """quota → 积分换算（÷ NEWAPI_CREDITS_TO_QUOTA_RATE），与 credits_to_quota 互逆（纯函数，无 DB）。"""
-    rate = settings.NEWAPI_CREDITS_TO_QUOTA_RATE
+    """quota → 积分换算（÷ NEWAPI_QUOTA_PER_DOLLAR），与 credits_to_quota 互逆（纯函数，无 DB）。"""
+    rate = settings.NEWAPI_QUOTA_PER_DOLLAR
     assert quota_to_credits(rate) == Decimal('1.00')
     assert quota_to_credits(rate * 1000) == Decimal('1000.00')
     assert quota_to_credits(rate * 19000) == Decimal('19000.00')

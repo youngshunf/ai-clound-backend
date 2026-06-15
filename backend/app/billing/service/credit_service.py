@@ -2,7 +2,6 @@
 @author Ysf
 """
 
-import asyncio
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Sequence
@@ -11,83 +10,13 @@ from sqlalchemy import select, update, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.crud.crud_credit_transaction import credit_transaction_dao
-from backend.app.billing.crud.crud_model_credit_rate import model_credit_rate_dao
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.crud.crud_user_subscription import user_subscription_dao
-from backend.app.billing.model import CreditTransaction, ModelCreditRate, SubscriptionTier, UserSubscription, UserCreditBalance
+from backend.app.billing.model import CreditTransaction, SubscriptionTier, UserSubscription, UserCreditBalance
 from backend.app.billing.schema.credit_transaction import CreateCreditTransactionParam
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.utils.timezone import timezone
-
-
-class CreditRateCache:
-    """积分费率缓存
-
-    使用内存缓存避免高频数据库查询，支持 TTL 过期
-    """
-
-    def __init__(self, ttl_seconds: int = 300):
-        """
-        :param ttl_seconds: 缓存过期时间（秒），默认 5 分钟
-        """
-        self._cache: dict[int, tuple[ModelCreditRate | None, float]] = {}
-        self._ttl = ttl_seconds
-        self._lock = asyncio.Lock()
-
-    def get(self, model_id: int) -> tuple[ModelCreditRate | None, bool]:
-        """
-        获取缓存
-
-        :param model_id: 模型 ID
-        :return: (费率配置, 是否命中缓存)
-        """
-        if model_id not in self._cache:
-            return None, False
-
-        rate, cached_at = self._cache[model_id]
-        now = datetime.now().timestamp()
-
-        if now - cached_at > self._ttl:
-            # 缓存过期
-            del self._cache[model_id]
-            return None, False
-
-        return rate, True
-
-    def set(self, model_id: int, rate: ModelCreditRate | None) -> None:
-        """
-        设置缓存
-
-        :param model_id: 模型 ID
-        :param rate: 费率配置
-        """
-        self._cache[model_id] = (rate, datetime.now().timestamp())
-
-    def invalidate(self, model_id: int | None = None) -> None:
-        """
-        失效缓存
-
-        :param model_id: 模型 ID，None 表示失效所有缓存
-        """
-        if model_id is None:
-            self._cache.clear()
-            log.debug('[Credit] All rate cache invalidated')
-        elif model_id in self._cache:
-            del self._cache[model_id]
-            log.debug(f'[Credit] Rate cache invalidated for model_id={model_id}')
-
-    def stats(self) -> dict[str, Any]:
-        """获取缓存统计信息"""
-        return {
-            'size': len(self._cache),
-            'ttl_seconds': self._ttl,
-            'model_ids': list(self._cache.keys()),
-        }
-
-
-# 全局缓存实例
-credit_rate_cache = CreditRateCache(ttl_seconds=300)
 
 
 class InsufficientCreditsError(errors.HTTPError):
@@ -117,14 +46,13 @@ class SubscriptionExpiredError(errors.HTTPError):
 
 
 class CreditService:
-    """积分核心服务"""
+    """积分核心服务
 
-    # 默认积分费率 (如果模型没有配置费率)
-    # 标准比例: 1M tokens = 输入 5 积分 / 输出 15 积分
-    # 即 1K tokens = 输入 0.005 积分 / 输出 0.015 积分
-    DEFAULT_BASE_CREDIT_PER_1K = Decimal('1.0')
-    DEFAULT_INPUT_MULTIPLIER = Decimal('0.5')
-    DEFAULT_OUTPUT_MULTIPLIER = Decimal('1.5')
+    计费消费侧（按模型费率计算/扣费）原由自建 LLM 网关 gateway.py 承担，已随网关删除
+    （2026-06-15 new-api 解耦）；积分扣减改由 new-api 用量对账每小时回扣
+    （app/newapi/credit_sync_service.reconcile_all）。本服务只保留积分余额账本原语
+    （add_credits / deduct_credits / check_credits / get_total_available_credits）。
+    """
 
     async def get_or_create_subscription(
         self,
@@ -214,100 +142,6 @@ class CreditService:
         )
 
         return subscription
-
-    async def get_model_credit_rate(
-        self,
-        db: AsyncSession,
-        model_id: int,
-        use_cache: bool = True,
-    ) -> ModelCreditRate | None:
-        """
-        获取模型积分费率（支持缓存）
-
-        :param db: 数据库会话
-        :param model_id: 模型 ID
-        :param use_cache: 是否使用缓存，默认 True
-        :return: 模型积分费率
-        """
-        # 尝试从缓存获取
-        if use_cache:
-            cached_rate, hit = credit_rate_cache.get(model_id)
-            if hit:
-                log.debug(f'[Credit] Rate cache hit for model_id={model_id}')
-                return cached_rate
-
-        # 从数据库查询
-        rate = await model_credit_rate_dao.select_model_by_column(db, model_id=model_id, enabled=True)
-
-        # 写入缓存
-        credit_rate_cache.set(model_id, rate)
-
-        if rate:
-            log.debug(
-                f'[Credit] Rate loaded for model_id={model_id}: '
-                f'base={rate.base_credit_per_1k_tokens}, '
-                f'input_mult={rate.input_multiplier}, '
-                f'output_mult={rate.output_multiplier}'
-            )
-        else:
-            log.debug(f'[Credit] No rate config for model_id={model_id}, will use defaults')
-
-        return rate
-
-    def invalidate_rate_cache(self, model_id: int | None = None) -> None:
-        """
-        失效积分费率缓存
-
-        :param model_id: 模型 ID，None 表示失效所有缓存
-        """
-        credit_rate_cache.invalidate(model_id)
-
-    def calculate_credits(
-        self,
-        input_tokens: int,
-        output_tokens: int,
-        rate: ModelCreditRate | None = None,
-        model_name: str | None = None,
-    ) -> Decimal:
-        """
-        计算积分消耗
-
-        :param input_tokens: 输入 tokens
-        :param output_tokens: 输出 tokens
-        :param rate: 模型积分费率
-        :param model_name: 模型名称（用于日志）
-        :return: 积分消耗
-        """
-        # 获取费率配置
-        if rate:
-            base_credit = rate.base_credit_per_1k_tokens
-            input_mult = rate.input_multiplier
-            output_mult = rate.output_multiplier
-            rate_source = f'config(model_id={rate.model_id})'
-        else:
-            base_credit = self.DEFAULT_BASE_CREDIT_PER_1K
-            input_mult = self.DEFAULT_INPUT_MULTIPLIER
-            output_mult = self.DEFAULT_OUTPUT_MULTIPLIER
-            rate_source = 'default'
-
-        # 计算积分
-        input_credits = (Decimal(input_tokens) / 1000) * base_credit * input_mult
-        output_credits = (Decimal(output_tokens) / 1000) * base_credit * output_mult
-        total_credits = input_credits + output_credits
-
-        # 向上取整到小数点后2位
-        result = total_credits.quantize(Decimal('0.01'))
-
-        # 记录详细日志
-        model_info = f' ({model_name})' if model_name else ''
-        log.info(
-            f'[Credit] Calculate{model_info}: '
-            f'in={input_tokens} out={output_tokens} tokens | '
-            f'rate={rate_source} (base={base_credit}, in_mult={input_mult}, out_mult={output_mult}) | '
-            f'credits={result} (in={input_credits.quantize(Decimal("0.0001"))}, out={output_credits.quantize(Decimal("0.0001"))})'
-        )
-
-        return result
 
     # 最小积分阈值：用户至少需要有这么多积分才能发起请求
     # 这是为了防止零积分用户发起请求后无法扣费的问题
