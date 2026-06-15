@@ -265,3 +265,40 @@ async def test_installed_skills_revision_tracks_self_installed_content(e2e):
     # 轻量 revision 端点同样带 installed_skills_revision。
     r = await c.get('/api/v1/hasn/agent/profile/revision')
     assert r.json()['data']['installed_skills_revision'] == inst2
+
+
+async def test_profile_exposes_per_skill_content_fingerprints(e2e):
+    """doc14 §C4：profile 出 skill_content_hashes 映射，供 hermes 只重下指纹变化的技能。
+
+    指纹与 common/installed revision 同源（COALESCE content_hash→file_hash→version），
+    缺版本行的技能不出现（hermes 据此回落总是重下）。
+    """
+    c = e2e.client
+    # 初始：common_skill 版本无 content_hash/file_hash → 指纹回落 version '1.0.0'；
+    # own_skill 还没版本行 → 不出现在映射里。
+    data0 = await _get_profile(c)
+    fp0 = data0['skill_content_hashes']
+    assert fp0.get(e2e.common_skill) == '1.0.0', fp0
+    assert e2e.own_skill not in fp0, fp0
+
+    # 给 common_skill 写 content_hash → 映射改为该指纹（content_hash 优先于 version）。
+    await e2e.session.execute(
+        update(MarketplaceSkillVersion)
+        .where(MarketplaceSkillVersion.skill_id == e2e.common_skill, MarketplaceSkillVersion.is_latest.is_(True))
+        .values(content_hash='cf_v1')
+    )
+    await e2e.session.flush()
+    fp1 = (await _get_profile(c))['skill_content_hashes']
+    assert fp1.get(e2e.common_skill) == 'cf_v1', fp1
+
+    # 改 content_hash → 映射指纹随之变（hermes 据此判定该技能需重下）。
+    await e2e.session.execute(
+        update(MarketplaceSkillVersion)
+        .where(MarketplaceSkillVersion.skill_id == e2e.common_skill, MarketplaceSkillVersion.is_latest.is_(True))
+        .values(content_hash='cf_v2')
+    )
+    await e2e.session.flush()
+    data2 = await _get_profile(c)
+    assert data2['skill_content_hashes'].get(e2e.common_skill) == 'cf_v2'
+    # 指纹与公共修订号同源：指纹变了，common_skills_revision 也必然变（不会悖论）。
+    assert data2['common_skills_revision'] != data0['common_skills_revision']

@@ -162,6 +162,45 @@ async def get_installed_skills_revision(db: AsyncSession, skill_ids: list[str]) 
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
+async def get_skills_content_fingerprints(
+    db: AsyncSession, skill_ids: list[str]
+) -> dict[str, str]:
+    """返回 {skill_id: 指纹} 映射，指纹取 ``COALESCE(content_hash, file_hash, version)``。
+
+    供 hermes runtime 做 **per-skill 增量重拉**（doc14 §C4）：runtime 拿到每个技能的当前
+    指纹，与本地 provision lock 里记录的指纹逐一比对，**只重下指纹变化的技能**，未变的跳过，
+    省流量与 gateway 重启抖动。指纹与 ``common_skills_revision`` / ``installed_skills_revision``
+    同源（同一 COALESCE），保证"某技能指纹变" ⟺ "对应 revision 变"一致，不会出现 revision
+    说变了但 per-skill 比对全相同的悖论。市场无版本行的技能不出现在映射里（runtime 回落为
+    总是重下，诚实不臆造指纹）。空入参 → 空映射。
+    """
+    ids = sorted({sid for sid in (skill_ids or []) if sid})
+    if not ids:
+        return {}
+    latest_version = (
+        sa.select(
+            MarketplaceSkillVersion.skill_id.label('skill_id'),
+            sa.func.coalesce(
+                MarketplaceSkillVersion.content_hash,
+                MarketplaceSkillVersion.file_hash,
+                MarketplaceSkillVersion.version,
+            ).label('fingerprint'),
+        )
+        .where(MarketplaceSkillVersion.is_latest.is_(True), MarketplaceSkillVersion.skill_id.in_(ids))
+        .subquery()
+    )
+    rows = (await db.execute(sa.select(latest_version.c.skill_id, latest_version.c.fingerprint))).all()
+    fingerprints: dict[str, str] = {}
+    for skill_id, fingerprint in rows:
+        key = str(skill_id)
+        fp = str(fingerprint or '')
+        # 指纹为空（content_hash/file_hash/version 全空）的技能不纳入——runtime 据此回落
+        # 为总是重下，避免用空字符串"假装稳定"反而误判未变。
+        if key not in fingerprints and fp:
+            fingerprints[key] = fp
+    return fingerprints
+
+
 def merge_skill_ids(common_ids: list[str], agent_ids: list[str]) -> list[str]:
     """公共技能在前、Agent 自装在后，保序去重。"""
     merged: list[str] = []

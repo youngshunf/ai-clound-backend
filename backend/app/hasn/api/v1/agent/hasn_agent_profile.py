@@ -26,6 +26,7 @@ from backend.app.hasn.service.owner_memory_service import owner_memory_service
 from backend.app.marketplace.service.common_skills_service import (
     get_common_skill_snapshot,
     get_installed_skills_revision,
+    get_skills_content_fingerprints,
     merge_skill_ids,
 )
 from backend.common.dataclasses import AgentTokenPayload
@@ -142,6 +143,10 @@ async def get_agent_profile(
     # Runtime 据此物化 skill-bundles/*.yaml（成员技能已并入 skills，此处仅给 hermes 包定义）。
     skill_bundles = await _resolve_skill_bundles(db, getattr(row, 'skill_bundles', None))
 
+    merged_skill_ids = merge_skill_ids(common_ids, agent_ids)
+    # per-skill 指纹映射（doc14 §C4）：让 hermes 只重下指纹变化的技能，省全量重拉。
+    skill_fingerprints = await get_skills_content_fingerprints(db, merged_skill_ids)
+
     return response_base.success(
         data=AgentProfileResponse(
             hasn_id=row.hasn_id,
@@ -151,7 +156,8 @@ async def get_agent_profile(
             agents_md=getattr(row, 'agents_md', None),
             user_md=row.user_md,
             memory_md=getattr(row, 'memory_md', None),
-            skills=merge_skill_ids(common_ids, agent_ids),
+            skills=merged_skill_ids,
+            skill_content_hashes=skill_fingerprints,
             skill_bundles=skill_bundles,
             template_id=row.template_id,
             template_version=getattr(row, 'template_version', None),
