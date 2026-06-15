@@ -81,7 +81,9 @@ async def test_enterprise_seed_idempotent(session) -> None:
     await session.flush()
 
     added = await ensure_creator_enterprise_seeded(session, enterprise_id=_ENT)
-    assert added == 1
+    # M9 seed 后库内已有真实内置 playbook（种草号/科普号/品牌号）→ 复制「本测试手动加的 1 条 + 真实内置」；
+    # 只断言 ≥1 且本测试那条被复制（精确数受全局 seed 影响，不锁死）。
+    assert added >= 1
     # 企业副本：enterprise_id=本企业、is_builtin=False、content_strategy 拷贝
     copy = (
         (
