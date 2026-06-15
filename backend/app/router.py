@@ -1,3 +1,4 @@
+from backend.app.hasn_creator.api.router import v1 as hasn_creator_v1, app as hasn_creator_app, agent as hasn_creator_agent, open_api as hasn_creator_open  # 创作（hasn_creator，独立 PG schema，URL /api/v1/creator/*）
 from fastapi import APIRouter
 
 from backend.app.admin.api.router import client as admin_client
@@ -170,3 +171,8 @@ router.include_router(marketplace_admin)
 router.include_router(marketplace_open)
 router.include_router(marketplace_agent)
 router.include_router(marketplace_webhook)
+
+router.include_router(hasn_creator_v1)
+router.include_router(hasn_creator_app)
+router.include_router(hasn_creator_agent)
+router.include_router(hasn_creator_open)
