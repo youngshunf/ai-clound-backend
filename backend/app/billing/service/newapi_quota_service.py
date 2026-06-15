@@ -11,8 +11,8 @@ from sqlalchemy import select, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.admin.model import User
-from backend.app.llm.crud.crud_llm_newapi_user_mapping import llm_newapi_user_mapping_dao, newapi_direct_dao
-from backend.app.llm.model import LlmNewapiUserMapping
+from backend.app.newapi.crud import llm_newapi_user_mapping_dao, newapi_direct_dao
+from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.app.billing.model import UserSubscription
 from backend.app.billing.schema.newapi_quota import (
     AdminNewApiUserList,

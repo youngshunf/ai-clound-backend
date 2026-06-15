@@ -27,7 +27,7 @@ from backend.common.security.jwt import (
 from backend.core.conf import settings
 from backend.database.db import uuid4_str
 from backend.database.redis import redis_client
-from backend.app.llm.service.llm_newapi_user_mapping_service import llm_newapi_user_mapping_service
+from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.utils.dynamic_config import load_login_config
 from backend.utils.timezone import timezone
 

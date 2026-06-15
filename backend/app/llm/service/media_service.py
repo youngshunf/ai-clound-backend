@@ -9,7 +9,7 @@ from backend.app.llm.core.media_gateway import media_gateway
 from backend.app.llm.enums import MediaType
 from backend.app.llm.schema.image import ImageDataItem, ImageGenerationRequest, ImageGenerationResponse, ImageUsage
 from backend.app.llm.schema.video import VideoDataItem, VideoGenerationRequest, VideoGenerationResponse, VideoUsage
-from backend.app.llm.service.api_key_service import api_key_service
+from backend.app.newapi.apikey.service import api_key_service
 from backend.common.exception import errors
 from backend.common.log import log
 

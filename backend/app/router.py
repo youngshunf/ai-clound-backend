@@ -59,6 +59,9 @@ from backend.app.hasn_growth.api.router import (
 )
 from backend.app.llm.api.router import app as llm_app
 from backend.app.llm.api.router import v1 as llm_v1
+# new-api 集成模块（D1/D5）：自建 API Key + new-api 用户映射/用量。URL 前缀 /api/v1/llm/* 保持不变。
+from backend.app.newapi.api.router import app as newapi_app
+from backend.app.newapi.api.router import v1 as newapi_v1
 from backend.app.marketplace.api.router import admin as marketplace_admin
 from backend.app.marketplace.api.router import agent as marketplace_agent
 from backend.app.marketplace.api.router import app as marketplace_app
@@ -88,6 +91,8 @@ router.include_router(admin_v1)
 router.include_router(task_v1)
 router.include_router(llm_v1)
 router.include_router(llm_app)
+router.include_router(newapi_v1)    # new-api API Key 管理 + 用户映射管理（/api/v1/llm/api-keys, /newapi-mappings）
+router.include_router(newapi_app)   # new-api 用量与额度（/api/v1/llm/app/newapi）
 router.include_router(openclaw_v1)  # Openclaw Gateway API
 # 获客 canonical 前缀 /api/v1/growth/*（旧 /api/v1/lead-automation/* 薄转发已于 M8 退役 2026-06-13）
 router.include_router(growth_v1)

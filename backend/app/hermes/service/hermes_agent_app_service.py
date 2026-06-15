@@ -16,7 +16,7 @@ from backend.app.hermes.model import (
     HermesAgentRuntimeState,
 )
 from backend.app.hermes.service.hermes_runtime_client import HermesRuntimeClient, HermesRuntimeError
-from backend.app.llm.service.llm_newapi_user_mapping_service import LlmNewapiUserMappingService
+from backend.app.newapi.service import LlmNewapiUserMappingService
 from backend.app.admin.model.user import User
 from backend.app.marketplace.model.marketplace_template import MarketplaceTemplate
 from backend.app.marketplace.model.marketplace_template_version import MarketplaceTemplateVersion
@@ -374,7 +374,6 @@ class HermesAgentAppService:
         user_id: int,
         payload: Any,
         trace_id: str | None = None,
-        newapi_db: AsyncSession | None = None,
     ) -> dict[str, Any]:
         if getattr(payload, 'llm_mode', 'platform') == 'byok':
             raise errors.RequestError(msg='MVP 暂不支持 BYOK 模式，请使用 platform 模式')
@@ -473,38 +472,36 @@ class HermesAgentAppService:
                 apply_payload['user_append'] = payload.user_profile
             await self.runtime_client.apply_template(runtime_profile_id, apply_payload, trace_id=trace_id)
 
-            if newapi_db is not None:
-                issued = await LlmNewapiUserMappingService.ensure_agent_token(
-                    db, newapi_db, agent_id=agent_id, user_id=user_id,
-                )
-                raw_token_key = issued.get('raw_token_key')
-                if raw_token_key:
-                    credential_payload = {
-                        'token_key': f'sk-{raw_token_key}',
-                        'base_url': getattr(
-                            settings,
-                            'HUANXING_HERMES_PLATFORM_LLM_BASE_URL',
-                            'https://api.huanxing.ai/api/v1/llm/proxy/v1',
-                        ),
-                        'default_model': llm_model,
-                    }
+            # 经 new-api 管理 API 签发 Agent 级 token（client 模块单例，无需 DB 会话）
+            issued = await LlmNewapiUserMappingService.ensure_agent_token(
+                db, agent_id=agent_id, user_id=user_id,
+            )
+            raw_token_key = issued.get('raw_token_key')
+            if raw_token_key:
+                credential_payload = {
+                    'token_key': f'sk-{raw_token_key}',
+                    'base_url': getattr(
+                        settings,
+                        'HUANXING_HERMES_PLATFORM_LLM_BASE_URL',
+                        'https://api.huanxing.ai/api/v1/llm/proxy/v1',
+                    ),
+                    'default_model': llm_model,
+                }
+                try:
+                    await self.runtime_client.install_credential(
+                        runtime_profile_id, credential_payload, trace_id=trace_id,
+                    )
+                except HermesRuntimeError:
+                    # 失败回滚链：撤销刚签发的 token，再删 runtime profile（皆 swallow）
                     try:
-                        await self.runtime_client.install_credential(
-                            runtime_profile_id, credential_payload, trace_id=trace_id,
-                        )
-                    except HermesRuntimeError:
-                        # 失败回滚链：撤销刚签发的 token，再删 runtime profile（皆 swallow）
-                        try:
-                            await LlmNewapiUserMappingService.revoke_agent_token(
-                                db, newapi_db, agent_id,
-                            )
-                        except Exception:
-                            pass
-                        try:
-                            await self.runtime_client.delete_agent(runtime_profile_id, trace_id=trace_id)
-                        except Exception:
-                            pass
-                        raise
+                        await LlmNewapiUserMappingService.revoke_agent_token(db, agent_id)
+                    except Exception:
+                        pass
+                    try:
+                        await self.runtime_client.delete_agent(runtime_profile_id, trace_id=trace_id)
+                    except Exception:
+                        pass
+                    raise
 
             if payload.soul is not None:
                 await self.runtime_client.put_soul(runtime_profile_id, payload.soul, trace_id=trace_id)
@@ -656,14 +653,13 @@ class HermesAgentAppService:
         user_id: int,
         agent_id: str,
         trace_id: str | None = None,
-        newapi_db: AsyncSession | None = None,
     ) -> dict[str, Any]:
         """Reverse cleanup（PROMPT.md §5.3）：
         stop_gateway → uninstall_credential → revoke_agent_token → runtime.delete_agent
         → local record(deleted_time=now)。每一步 runtime/token 调用 swallow，因为：
         - gateway 可能本来就停
         - credential 可能没装（apply_template 之前就失败的 agent）
-        - token 可能没签发（newapi_db 不可用时）
+        - token 可能没签发（从未签发的 agent）
         - runtime profile 可能已不在
         本地 record 写不动属真错误，仍然抛。
         """
@@ -684,12 +680,11 @@ class HermesAgentAppService:
                 await self.runtime_client.uninstall_credential(runtime_profile_id, trace_id=trace_id)
             except HermesRuntimeError:
                 pass
-        # 3. revoke agent token (only when newapi_db plumbed through)
-        if newapi_db is not None:
-            try:
-                await LlmNewapiUserMappingService.revoke_agent_token(db, newapi_db, agent_id)
-            except Exception:
-                pass
+        # 3. revoke agent token（经 new-api 管理 API，swallow——可能从未签发）
+        try:
+            await LlmNewapiUserMappingService.revoke_agent_token(db, agent_id)
+        except Exception:
+            pass
         # 4. runtime.delete_agent
         if runtime_profile_id:
             try:

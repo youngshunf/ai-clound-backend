@@ -8,7 +8,8 @@ from backend.app.llm.model.model_group import ModelGroup
 from backend.app.llm.model.provider import ModelProvider
 from backend.app.llm.model.rate_limit import RateLimitConfig
 from backend.app.llm.model.usage_log import UsageLog
-from backend.app.llm.model.user_api_key import UserApiKey
+
+# UserApiKey / LlmNewapiUserMapping 已迁出至 app/newapi（D1/D5，2026-06-15），不再从此处导出。
 
 __all__ = [
     'CompressUsageLog',
@@ -19,6 +20,4 @@ __all__ = [
     'ModelProvider',
     'RateLimitConfig',
     'UsageLog',
-    'UserApiKey',
 ]
-from backend.app.llm.model.llm_newapi_user_mapping import LlmNewapiUserMapping as LlmNewapiUserMapping

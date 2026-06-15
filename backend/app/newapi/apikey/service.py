@@ -4,12 +4,11 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.llm.core.encryption import key_encryption
-from backend.app.llm.crud.crud_rate_limit import rate_limit_dao
-from backend.app.llm.crud.crud_user_api_key import user_api_key_dao
-from backend.app.llm.enums import ApiKeyStatus
-from backend.app.llm.model.user_api_key import UserApiKey
-from backend.app.llm.schema.user_api_key import (
+from backend.common.security.encryption import key_encryption
+from backend.app.newapi.apikey.crud import user_api_key_dao
+from backend.app.newapi.apikey.enums import ApiKeyStatus
+from backend.app.newapi.apikey.model import UserApiKey
+from backend.app.newapi.apikey.schema import (
     CreateUserApiKeyParam,
     CreateUserApiKeyResponse,
     GetUserApiKeyDetail,
@@ -93,11 +92,7 @@ class ApiKeyService:
     @staticmethod
     async def create(db: AsyncSession, obj: CreateUserApiKeyParam, user_id: int) -> CreateUserApiKeyResponse:
         """创建 API Key"""
-        # 检查速率限制配置是否存在
-        if obj.rate_limit_config_id:
-            config = await rate_limit_dao.get(db, obj.rate_limit_config_id)
-            if not config:
-                raise errors.NotFoundError(msg='速率限制配置不存在')
+        # rate_limit_config_id 为自由配置列（无外键），网关删除后不再做 RateLimitConfig 校验（§7.3）
 
         # 生成 API Key
         full_key, display_prefix = key_encryption.generate_api_key()
@@ -133,11 +128,7 @@ class ApiKeyService:
         if not is_admin and api_key.user_id != user_id:
             raise errors.ForbiddenError(msg='无权修改此 API Key')
 
-        # 检查速率限制配置是否存在
-        if obj.rate_limit_config_id:
-            config = await rate_limit_dao.get(db, obj.rate_limit_config_id)
-            if not config:
-                raise errors.NotFoundError(msg='速率限制配置不存在')
+        # rate_limit_config_id 为自由配置列（无外键），网关删除后不再做 RateLimitConfig 校验（§7.3）
 
         return await user_api_key_dao.update(db, pk, obj)
 

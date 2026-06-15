@@ -8,8 +8,8 @@ from decimal import Decimal
 from celery import shared_task
 from sqlalchemy import select, and_, update
 
-from backend.app.llm.enums import ApiKeyStatus
-from backend.app.llm.model.user_api_key import UserApiKey
+from backend.app.newapi.apikey.enums import ApiKeyStatus
+from backend.app.newapi.apikey.model import UserApiKey
 from backend.app.billing.model import UserSubscription, UserCreditBalance, CreditTransaction
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.common.log import log

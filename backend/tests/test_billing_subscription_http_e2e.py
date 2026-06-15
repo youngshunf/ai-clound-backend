@@ -31,8 +31,8 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.llm.crud.crud_llm_newapi_user_mapping import newapi_direct_dao
-from backend.app.llm.model import LlmNewapiUserMapping
+from backend.app.newapi.crud import newapi_direct_dao
+from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
 from backend.app.billing.model import CreditTransaction, UserSubscription
 from backend.app.billing.service.billing_usage_service import quota_to_credits

@@ -18,7 +18,7 @@ from backend.app.admin.schema.phone_auth import (
     SendCodeParam,
     SendCodeResponse,
 )
-from backend.app.llm.service.llm_newapi_user_mapping_service import llm_newapi_user_mapping_service
+from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.app.openclaw.schema import GatewayConfigCreate
 from backend.app.openclaw.service import create_gateway_config
 from backend.common.exception import errors
@@ -157,7 +157,7 @@ async def phone_login(
         await db.refresh(user)
 
         # 自动创建 new-api 用户 + 永不过期的 API Key（新用户赠送积分）
-        from backend.app.llm.service.llm_newapi_user_mapping_service import credits_to_quota
+        from backend.app.newapi.service import credits_to_quota
         bonus_quota = credits_to_quota(settings.NEWAPI_REGISTER_BONUS_CREDITS)
         mapping = await llm_newapi_user_mapping_service.ensure_newapi_user(
             db, user.id,

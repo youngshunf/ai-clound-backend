@@ -12,7 +12,7 @@ from backend.app.llm.schema.usage_log import (
     QuotaInfo,
     UsageSummary,
 )
-from backend.app.llm.service.api_key_service import api_key_service
+from backend.app.newapi.apikey.service import api_key_service
 from backend.app.llm.service.usage_service import usage_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseSchemaModel, response_base

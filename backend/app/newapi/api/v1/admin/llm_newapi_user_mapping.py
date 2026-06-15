@@ -2,13 +2,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
 
-from backend.app.llm.schema.llm_newapi_user_mapping import (
+from backend.app.newapi.schema.llm_newapi_user_mapping import (
     CreateLlmNewapiUserMappingParam,
     DeleteLlmNewapiUserMappingParam,
     GetLlmNewapiUserMappingDetail,
     UpdateLlmNewapiUserMappingParam,
 )
-from backend.app.llm.service.llm_newapi_user_mapping_service import llm_newapi_user_mapping_service
+from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth

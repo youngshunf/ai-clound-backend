@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from backend.app.llm.schema.user_api_key import (
+from backend.app.newapi.apikey.schema import (
     AdminCreateUserApiKeyParam,
     CreateUserApiKeyParam,
     CreateUserApiKeyResponse,
@@ -12,7 +12,7 @@ from backend.app.llm.schema.user_api_key import (
     GetUserApiKeyList,
     UpdateUserApiKeyParam,
 )
-from backend.app.llm.service.api_key_service import api_key_service
+from backend.app.newapi.apikey.service import api_key_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -52,7 +52,7 @@ async def get_all_api_keys(
     ],
 )
 async def get_full_api_key(db: CurrentSession, pk: int) -> ResponseSchemaModel:
-    from backend.app.llm.core.encryption import key_encryption
+    from backend.common.security.encryption import key_encryption
     api_key = await api_key_service.get(db, pk)
     try:
         full_key = key_encryption.decrypt(api_key.key_encrypted)

@@ -8,8 +8,8 @@ from sqlalchemy import Select, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
-from backend.app.llm.model import LlmNewapiUserMapping
-from backend.app.llm.schema.llm_newapi_user_mapping import CreateLlmNewapiUserMappingParam, UpdateLlmNewapiUserMappingParam
+from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
+from backend.app.newapi.schema.llm_newapi_user_mapping import CreateLlmNewapiUserMappingParam, UpdateLlmNewapiUserMappingParam
 
 
 class CRUDLlmNewapiUserMapping(CRUDPlus[LlmNewapiUserMapping]):

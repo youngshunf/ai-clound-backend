@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import Field
 
-from backend.app.llm.enums import ApiKeyStatus
+from backend.app.newapi.apikey.enums import ApiKeyStatus
 from backend.common.schema import SchemaBase
 
 

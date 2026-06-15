@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.admin.model.user import User
-from backend.app.llm.model.user_api_key import UserApiKey
-from backend.app.llm.schema.user_api_key import CreateUserApiKeyParam, UpdateUserApiKeyParam
+from backend.app.newapi.apikey.model import UserApiKey
+from backend.app.newapi.apikey.schema import CreateUserApiKeyParam, UpdateUserApiKeyParam
 from backend.utils.timezone import timezone
 
 

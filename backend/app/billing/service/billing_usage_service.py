@@ -19,7 +19,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.llm.crud.crud_llm_newapi_user_mapping import (
+from backend.app.newapi.crud import (
     llm_newapi_user_mapping_dao,
     newapi_direct_dao,
 )

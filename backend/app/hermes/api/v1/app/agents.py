@@ -15,7 +15,6 @@ from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import (
     CurrentSession,
     CurrentSessionTransaction,
-    NewApiSessionTransaction,
 )
 
 router = APIRouter()
@@ -83,7 +82,6 @@ async def list_agents(
 async def create_agent(
     request: Request,
     db: CurrentSessionTransaction,
-    newapi_db: NewApiSessionTransaction,
     payload: CreateAgentPayload,
 ) -> ResponseModel:
     try:
@@ -92,7 +90,6 @@ async def create_agent(
             user_id=request.user.id,
             payload=payload,
             trace_id=_trace_id(request),
-            newapi_db=newapi_db,
         )
         return response_base.success(data=data)
     except HermesRuntimeError as exc:
@@ -123,7 +120,6 @@ async def update_agent(
 async def delete_agent(
     request: Request,
     db: CurrentSessionTransaction,
-    newapi_db: NewApiSessionTransaction,
     agent_id: Annotated[str, Path()],
 ) -> ResponseModel:
     try:
@@ -132,7 +128,6 @@ async def delete_agent(
             user_id=request.user.id,
             agent_id=agent_id,
             trace_id=_trace_id(request),
-            newapi_db=newapi_db,
         )
         return response_base.success(data=data)
     except HermesRuntimeError as exc:

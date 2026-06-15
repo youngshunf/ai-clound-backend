@@ -14,17 +14,17 @@ from fastapi import APIRouter, Query, Request
 from sqlalchemy import select
 
 from backend.app.hermes.model import HermesAgent
-from backend.app.llm.schema.llm_newapi_user_mapping import (
+from backend.app.newapi.schema.llm_newapi_user_mapping import (
     NewApiMappingInfo,
     NewApiQuotaInfo,
     NewApiUsageDetail,
     NewApiUsageSummary,
 )
-from backend.app.llm.service.llm_newapi_user_mapping_service import llm_newapi_user_mapping_service
+from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, NewApiSession
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 
@@ -47,7 +47,6 @@ async def get_newapi_quota(request: Request, db: CurrentSession) -> ResponseSche
 async def get_newapi_usage_summary(
     request: Request,
     db: CurrentSession,
-    newapi_db: NewApiSession,
     start_time: Annotated[int | None, Query(description='开始时间 (unix timestamp)')] = None,
     end_time: Annotated[int | None, Query(description='结束时间 (unix timestamp)')] = None,
     agent_id: Annotated[
@@ -80,7 +79,7 @@ async def get_newapi_usage_summary(
         raise errors.ForbiddenError(msg='无权查看该 Agent 用量')
 
     data = await llm_newapi_user_mapping_service.get_usage_summary_by_agent(
-        db, newapi_db, agent_id, start_time, end_time,
+        db, agent_id, start_time, end_time,
     )
     return response_base.success(data=data)
 

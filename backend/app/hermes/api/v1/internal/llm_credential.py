@@ -10,15 +10,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from backend.app.llm.service.llm_newapi_user_mapping_service import (
+from backend.app.newapi.service import (
     llm_newapi_user_mapping_service,
 )
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.internal_auth import require_runtime_internal_token
-from backend.database.db import (
-    CurrentSession,
-    NewApiSession,
-)
+from backend.database.db import CurrentSession
 from backend.utils.timezone import timezone as _tz
 
 
@@ -40,7 +37,6 @@ class IssueCredentialPayload(BaseModel):
 )
 async def issue_credential(
     db: CurrentSession,
-    newapi_db: NewApiSession,
     payload: IssueCredentialPayload,
 ) -> ResponseModel:
     """签发或复用 Agent 级 newapi token。
@@ -49,7 +45,7 @@ async def issue_credential(
     - 否则签发新 token（raw_token_key 仅此次返回，DB 只存 prefix + sha256）
     """
     issued = await llm_newapi_user_mapping_service.ensure_agent_token(
-        db, newapi_db,
+        db,
         agent_id=payload.agent_id,
         user_id=payload.user_id,
         model_allowlist=payload.model_allowlist,
@@ -80,12 +76,11 @@ class RevokeCredentialPayload(BaseModel):
 )
 async def revoke_credential(
     db: CurrentSession,
-    newapi_db: NewApiSession,
     payload: RevokeCredentialPayload,
 ) -> ResponseModel:
     """撤销 Agent 当前未撤销的 token。幂等：已撤销/不存在 → revoked=False。"""
     revoked = await llm_newapi_user_mapping_service.revoke_agent_token(
-        db, newapi_db, payload.agent_id,
+        db, payload.agent_id,
     )
     return response_base.success(
         data={
@@ -108,7 +103,6 @@ class RotateCredentialPayload(BaseModel):
 )
 async def rotate_credential(
     db: CurrentSession,
-    newapi_db: NewApiSession,
     payload: RotateCredentialPayload,
 ) -> ResponseModel:
     """旋转 Agent token：先撤销旧 token，再签发新 token。
@@ -116,7 +110,7 @@ async def rotate_credential(
     raw_token_key 仅本接口返回；DB 只存 prefix + sha256。
     """
     issued = await llm_newapi_user_mapping_service.rotate_agent_token(
-        db, newapi_db,
+        db,
         agent_id=payload.agent_id,
         user_id=payload.user_id,
     )

@@ -7,8 +7,8 @@ from datetime import timedelta
 from sqlalchemy import select, and_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.llm.enums import ApiKeyStatus
-from backend.app.llm.model.user_api_key import UserApiKey
+from backend.app.newapi.apikey.enums import ApiKeyStatus
+from backend.app.newapi.apikey.model import UserApiKey
 from backend.app.billing.model import UserSubscription
 from backend.common.log import log
 from backend.utils.timezone import timezone
@@ -21,7 +21,7 @@ class SubscriptionService:
     async def _sync_newapi_quota(db: AsyncSession, user_id: int, tier_name: str) -> None:
         """同步 new-api quota（内部方法，失败不阻断主流程）"""
         try:
-            from backend.app.llm.service.llm_newapi_user_mapping_service import llm_newapi_user_mapping_service
+            from backend.app.newapi.service import llm_newapi_user_mapping_service
             quota = llm_newapi_user_mapping_service.tier_to_quota(tier_name)
             await llm_newapi_user_mapping_service.sync_quota(db, user_id, quota)
         except Exception as e:

@@ -2,9 +2,8 @@
 
 from fastapi import APIRouter
 
-from backend.app.llm.api.v1 import api_keys, compress_stats, images, media_tasks, model_alias, model_groups, models, providers, proxy, rate_limits, usage, videos
-from backend.app.llm.api.v1.admin.llm_newapi_user_mapping import router as admin_llm_newapi_user_mapping_router
-from backend.app.llm.api.v1.app.llm_newapi_user_mapping import router as app_llm_newapi_user_mapping_router
+# api_keys / newapi 用户映射已迁出至 app/newapi（D1/D5，2026-06-15），路由改由 app/newapi/api/router.py 注册。
+from backend.app.llm.api.v1 import compress_stats, images, media_tasks, model_alias, model_groups, models, providers, proxy, rate_limits, usage, videos
 
 from backend.core.conf import settings
 
@@ -25,9 +24,6 @@ v1.include_router(model_groups.router, prefix='/model-groups', tags=['LLM 模型
 # 速率限制配置
 v1.include_router(rate_limits.router, prefix='/rate-limits', tags=['LLM 速率限制配置'])
 
-# API Key 管理
-v1.include_router(api_keys.router, prefix='/api-keys', tags=['LLM API Key 管理'])
-
 # 代理 API
 v1.include_router(proxy.router, prefix='/proxy', tags=['LLM 代理'])
 
@@ -46,12 +42,9 @@ v1.include_router(images.router, prefix='/proxy/v1/images', tags=['媒体生成 
 # 视频生成 API
 v1.include_router(videos.router, prefix='/proxy/v1/videos', tags=['媒体生成 - 视频'])
 
-# new-api 用户映射管理（管理端）
-v1.include_router(admin_llm_newapi_user_mapping_router, prefix='/newapi-mappings', tags=['new-api 用户映射管理'])
+# new-api 用户映射管理（管理端）+ 用量查询已迁出至 app/newapi/api/router.py（D5），此处不再挂载。
 
 
 # --- 用户端（仅 JWT） ---
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/llm/app')
-
-# new-api 用量查询与额度
-app.include_router(app_llm_newapi_user_mapping_router, prefix='/newapi', tags=['new-api 用量与额度'])
+# new-api 用量与额度（用户端）已迁出至 app/newapi/api/router.py（D5），此处不再挂载。

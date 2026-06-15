@@ -16,7 +16,7 @@ from backend.app.llm.schema.proxy import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
-from backend.app.llm.service.api_key_service import api_key_service
+from backend.app.newapi.apikey.service import api_key_service
 from backend.common.log import log
 from backend.core.conf import settings
 from backend.database.db import async_db_session
