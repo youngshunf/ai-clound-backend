@@ -33,6 +33,10 @@ class UpdateProjectParam(SchemaBase):
     status: str | None = Field(default=None, description='active/paused/archived')
 
 
+class ReassignProjectParam(SchemaBase):
+    new_assignee: str = Field(description='新负责人主人 hasn_id（须为本企业 approved 成员）', max_length=128)
+
+
 class SetProfileParam(SchemaBase):
     """设置/更新项目画像（1:1 upsert）。字段子集，service 白名单校验。"""
 

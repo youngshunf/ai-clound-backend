@@ -23,6 +23,8 @@ from backend.app.hasn_creator.model.competitor import Competitor
 from backend.app.hasn_creator.model.content import Content
 from backend.app.hasn_creator.model.content_insight import ContentInsight
 from backend.app.hasn_creator.model.content_stage import ContentStage
+from backend.app.hasn_creator.model.draft import Draft
+from backend.app.hasn_creator.model.media import Media
 from backend.app.hasn_creator.model.playbook import Playbook
 from backend.app.hasn_creator.model.profile import Profile
 from backend.app.hasn_creator.model.project import Project
@@ -32,7 +34,9 @@ from backend.app.hasn_creator.model.viral_pattern import ViralPattern
 from backend.app.hasn_creator.service.scope_context import (
     CreatorScope,
     apply_scope,
+    can_manage_assignment,
     ownership_fields,
+    validate_enterprise_member_hasn_id,
 )
 from backend.common.exception import errors
 
@@ -195,6 +199,40 @@ class CreatorService:
         for k, v in fields.items():
             if k in allowed and v is not None:
                 setattr(proj, k, v)
+        await db.flush()
+        return _to_dict(proj)
+
+    # 项目下所有子对象表（双模归属冗余 assignee）—— reassign 时整体级联迁负责人。
+    _CHILD_MODELS = (Profile, Account, Competitor, Topic, Content, ContentStage, ContentInsight, Publish, Draft, Media)
+
+    @staticmethod
+    async def reassign_project(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        project_id: int,
+        new_assignee: str,
+    ) -> dict[str, Any]:
+        """企业主编把项目转给另一名成员（§6.7 双模归属落地）。
+
+        - 仅企业主编（owner/admin）可操作；个人/运营调用一律拒（`can_manage_assignment`）。
+        - new_assignee 必须是本企业 approved 成员的主人 hasn_id（不许转给企业外的人）。
+        - 整体级联：project + 全部子对象的 assignee 一并改写，使新负责人在「我的」视图看得到全套。
+        """
+        if not can_manage_assignment(scope):
+            raise errors.ForbiddenError(msg='只有企业主编可以分配/转移项目负责人')
+        assert scope is not None and scope.enterprise_id is not None  # can_manage_assignment 已保证
+        proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        if not await validate_enterprise_member_hasn_id(
+            db, enterprise_id=scope.enterprise_id, owner_hasn_id=new_assignee
+        ):
+            raise errors.RequestError(msg='目标负责人不是本企业成员')
+        proj.assignee = new_assignee
+        for model in CreatorService._CHILD_MODELS:
+            await db.execute(
+                sa.update(model).where(model.project_id == project_id).values(assignee=new_assignee)
+            )
         await db.flush()
         return _to_dict(proj)
 

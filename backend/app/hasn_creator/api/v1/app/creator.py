@@ -23,6 +23,7 @@ from backend.app.hasn_creator.schema.owner import (
     LogCompetitorParam,
     LogInsightParam,
     MarkPublishedParam,
+    ReassignProjectParam,
     SaveStageParam,
     SetProfileParam,
     SubmitPublishParam,
@@ -91,6 +92,26 @@ async def update_project(
         scope=scope,
         project_id=project_id,
         fields=obj.model_dump(exclude_none=True),
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{project_id}/reassign',
+    name='creator_app_reassign_project',
+    summary='[Owner] 转移项目负责人（企业主编）',
+    dependencies=[DependsJwtAuth],
+)
+async def reassign_project(
+    request: Request, db: CurrentSessionTransaction, project_id: int, obj: ReassignProjectParam
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.reassign_project(
+        db,
+        user_id=request.user.id,
+        scope=scope,
+        project_id=project_id,
+        new_assignee=obj.new_assignee,
     )
     return response_base.success(data=data)
 

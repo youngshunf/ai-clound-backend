@@ -209,3 +209,72 @@ async def test_owner_cross_user_isolation(session) -> None:
     proj = _ok(await owner_api.create_project(_req(uid=925201), session, CreateProjectParam(name='A号')))
     with pytest.raises(errors.NotFoundError):
         await owner_api.get_project(_req(uid=925202), session, proj['id'])
+
+
+async def _seed_enterprise(session, *, ent_id: int, mgr_uid: int, mgr_hasn: str, mem_uid: int, mem_hasn: str) -> None:
+    """播种一个最小企业上下文：主编(owner)+运营(member)，各自 active_enterprise 指向本企业。"""
+    from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
+    from backend.app.hasn.model.hasn_humans import HasnHumans
+    from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+
+    session.add_all(
+        [
+            HasnHumans(hasn_id=mgr_hasn, star_id=str(mgr_uid), user_id=mgr_uid, nickname='主编A', status='active'),
+            HasnHumans(hasn_id=mem_hasn, star_id=str(mem_uid), user_id=mem_uid, nickname='运营B', status='active'),
+            HasnEnterpriseMembership(enterprise_id=ent_id, user_id=mgr_uid, role='owner', status='approved'),
+            HasnEnterpriseMembership(enterprise_id=ent_id, user_id=mem_uid, role='member', status='approved'),
+            HasnOwnerWorkbenchPref(owner_hasn_id=mgr_hasn, active_enterprise_id=ent_id),
+            HasnOwnerWorkbenchPref(owner_hasn_id=mem_hasn, active_enterprise_id=ent_id),
+        ]
+    )
+    await session.flush()
+
+
+async def test_owner_reassign_project_cascades_and_guards(session) -> None:
+    """企业主编转移项目负责人（§6.7 双模归属）：级联子对象 + 角色/成员守卫。
+
+    主编 A 建企业项目（assignee=A）+ 一条内容（继承 assignee=A）→ 转给运营 B：
+    project 与子内容 assignee 均变 B，B 在「我的」视图看得到、A 看不到（运营恒只看自己）。
+    守卫：转给非成员 → RequestError；运营 B 自己调 reassign → ForbiddenError。
+    """
+    from backend.common.exception import errors
+
+    ent_id, mgr_uid, mem_uid = 7799011, 925301, 925302
+    mgr_hasn, mem_hasn = 'h_mgrA_creator', 'h_memB_creator'
+    await _seed_enterprise(
+        session, ent_id=ent_id, mgr_uid=mgr_uid, mgr_hasn=mgr_hasn, mem_uid=mem_uid, mem_hasn=mem_hasn
+    )
+    mgr, mem = _req(uid=mgr_uid), _req(uid=mem_uid)
+
+    # 主编建企业项目（落 enterprise 归属，assignee=主编）+ 一条内容。
+    proj = _ok(await owner_api.create_project(mgr, session, CreateProjectParam(name='企业美食号')))
+    pid = proj['id']
+    assert proj['owner_scope'] == 'enterprise'
+    assert proj['assignee'] == mgr_hasn
+    content = _ok(await owner_api.create_content(mgr, session, CreateContentParam(project_id=pid, title='企业内容')))
+    cid = content['id']
+
+    # 运营 B 此刻看不到（assignee=主编，非 B）。
+    from backend.app.hasn_creator.schema.owner import ReassignProjectParam
+
+    mem_listed_before = _ok(await owner_api.list_projects(mem, session, status=None, view='mine', limit=50))
+    assert not any(p['id'] == pid for p in mem_listed_before['items'])
+
+    # 守卫①：转给非本企业成员 → RequestError。
+    with pytest.raises(errors.RequestError):
+        await owner_api.reassign_project(mgr, session, pid, ReassignProjectParam(new_assignee='h_outsider_x'))
+
+    # 守卫②：运营 B 无分配权 → ForbiddenError。
+    with pytest.raises(errors.ForbiddenError):
+        await owner_api.reassign_project(mem, session, pid, ReassignProjectParam(new_assignee=mem_hasn))
+
+    # 主编把项目转给运营 B → project + 子内容 assignee 均变 B。
+    reassigned = _ok(await owner_api.reassign_project(mgr, session, pid, ReassignProjectParam(new_assignee=mem_hasn)))
+    assert reassigned['assignee'] == mem_hasn
+
+    # 现在 B 在「我的」视图看得到，且内容也跟着迁。
+    mem_listed_after = _ok(await owner_api.list_projects(mem, session, status=None, view='mine', limit=50))
+    assert any(p['id'] == pid for p in mem_listed_after['items'])
+    mem_content = _ok(await owner_api.get_content(mem, session, cid))
+    assert mem_content['title'] == '企业内容'  # service 返回扁平内容（含 stages/publishes 键）
+    assert mem_content['assignee'] == mem_hasn

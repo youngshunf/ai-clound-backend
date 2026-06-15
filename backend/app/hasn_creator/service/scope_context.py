@@ -182,3 +182,25 @@ def ownership_fields(scope: CreatorScope | None, *, user_id: int) -> dict:
 def can_manage_assignment(scope: CreatorScope | None) -> bool:
     """是否有分配/转移负责人权限：仅企业主编（owner/admin）。个人/运营不可分配。"""
     return scope is not None and scope.is_enterprise and scope.is_manager
+
+
+async def validate_enterprise_member_hasn_id(
+    db: AsyncSession, *, enterprise_id: int, owner_hasn_id: str
+) -> bool:
+    """校验 owner_hasn_id 是该企业的 approved 成员（reassign 目标合法性）。
+
+    assignee 键是主人 hasn_id；成员表 `hasn_enterprise_membership` 按 user_id，故 join `HasnHumans`
+    把 hasn_id→user_id 再查成员资格。非成员/不存在 → False（拒绝把项目转给企业外的人）。
+    """
+    row = (
+        await db.execute(
+            sa.select(HasnEnterpriseMembership.id)
+            .join(HasnHumans, HasnHumans.user_id == HasnEnterpriseMembership.user_id)
+            .where(
+                HasnEnterpriseMembership.enterprise_id == enterprise_id,
+                HasnHumans.hasn_id == owner_hasn_id,
+                HasnEnterpriseMembership.status.in_(_MEMBERSHIP_ACTIVE),
+            )
+        )
+    ).first()
+    return row is not None
