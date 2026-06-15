@@ -700,6 +700,78 @@ class CreatorService:
         await db.flush()
         return _to_dict(p)
 
+    # 文案阶段优先级（成品包正文取最高优先且最新版本的阶段）。
+    _BODY_STAGE_PRIORITY = ('final_draft', 'first_draft', 'outline')
+
+    @staticmethod
+    async def assemble_publish_package(
+        db: AsyncSession, *, user_id: int, scope: CreatorScope | None, publish_id: int
+    ) -> dict[str, Any]:
+        """组装 manual_assist 成品包（设计 §10 P0 主路径）：文案 + 封面/配图 + 话题标签 + 发布建议。
+
+        供主人「复制成品包」手动发到平台后回填 url/数据（零外部依赖、零封号风险）。
+        正文取最高优先阶段（final_draft>first_draft>outline）的最新版本；配图汇总各阶段 asset_refs；
+        话题标签取 content.metadata_json.hashtags。``ready`` 标识正文是否齐备（无正文如实 False，不造假）。
+        """
+        p = await CreatorService._load_publish(db, publish_id=publish_id, user_id=user_id, scope=scope)
+        content = (await db.execute(sa.select(Content).where(Content.id == p.content_id))).scalars().first()
+        stages = (
+            (
+                await db.execute(
+                    sa
+                    .select(ContentStage)
+                    .where(ContentStage.content_id == p.content_id)
+                    .order_by(ContentStage.version.desc(), ContentStage.created_time.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # 正文：按优先级取首个命中阶段的最新版本（stages 已按 version desc 排序）。
+        body_stage = None
+        for stage_name in CreatorService._BODY_STAGE_PRIORITY:
+            body_stage = next((s for s in stages if s.stage == stage_name), None)
+            if body_stage is not None:
+                break
+        cover_stage = next((s for s in stages if s.stage == 'cover'), None)
+        cover_refs = list(cover_stage.asset_refs or []) if cover_stage else []
+        # 配图：封面 refs 领先（成品包封面在前），再接其余各阶段 asset_refs（保序去重）。
+        assets: list[Any] = list(cover_refs)
+        seen: set[str] = {repr(ref) for ref in cover_refs}
+        for s in stages:
+            for ref in s.asset_refs or []:
+                key = repr(ref)
+                if key not in seen:
+                    seen.add(key)
+                    assets.append(ref)
+        acc = (await db.execute(sa.select(Account).where(Account.id == p.account_id))).scalars().first()
+        meta = content.metadata_json or {} if content else {}
+        return {
+            'publish_id': p.id,
+            'content_id': p.content_id,
+            'status': p.status,
+            'method': p.method,
+            'platform': p.platform,
+            'title': content.title if content else None,
+            'content_tracks': content.content_tracks if content else None,
+            'body_text': body_stage.content_text if body_stage else None,
+            'body_stage': body_stage.stage if body_stage else None,
+            'cover': cover_refs[0] if cover_refs else None,
+            'assets': assets,
+            'hashtags': list(meta.get('hashtags') or []),
+            'publish_note': p.publish_note,
+            'publish_url': p.publish_url,
+            'account': {
+                'id': acc.id,
+                'platform': acc.platform,
+                'nickname': acc.nickname,
+                'home_url': acc.home_url,
+            }
+            if acc
+            else None,
+            'ready': bool(body_stage and body_stage.content_text),
+        }
+
     # ============================ insight（进化沉淀；回写在 M5/insight_service）============================
 
     @staticmethod
