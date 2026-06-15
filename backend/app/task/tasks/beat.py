@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from celery.schedules import schedule
 
 from backend.app.task.utils.tzcrontab import TzAwareCrontab
@@ -44,7 +46,9 @@ LOCAL_BEAT_SCHEDULE = {
     },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
-        'schedule': TzAwareCrontab('0', '*/8'),  # 每 8 小时（00:00 / 08:00 / 16:00）
+        # 每 3 天增量同步一次（真 72h 间隔）。增量：上游版本未变只刷计数、零下载零翻译；
+        # 磁盘硬闸 MARKETPLACE_CLAWHUB_MAX_DISK_GB（默认 50GB）——clawhub 目录占用达上限即暂停下载。
+        'schedule': schedule(timedelta(days=3)),
     },
     '获客-触达发送 worker': {
         'task': 'growth_dispatch_approved_outreach',

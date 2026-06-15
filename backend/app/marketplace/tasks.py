@@ -1,8 +1,9 @@
 """技能市场定时任务
 
-ClawHub 定时同步：每 8 小时把 ClawHub 市场的热门技能同步到唤星技能市场。
+ClawHub 定时同步：每 3 天增量把 ClawHub 市场的热门技能同步到唤星技能市场。
 - 本地/测试：默认抓取 Top 100（settings.MARKETPLACE_CLAWHUB_SYNC_LIMIT）
 - 生产环境：在 .env 把 MARKETPLACE_CLAWHUB_SYNC_LIMIT 设为 0 表示全量同步
+- 磁盘上限：MARKETPLACE_CLAWHUB_MAX_DISK_GB（默认 50GB），clawhub 目录占用达上限即暂停下载。
 
 调度入口在 backend/app/task/tasks/beat.py 的 LOCAL_BEAT_SCHEDULE，
 任务名 'marketplace_sync_clawhub' 由 celery autodiscover 注册（见 task/celery.py）。
@@ -16,7 +17,7 @@ from backend.database.db import async_db_session
 
 @celery_app.task(name='marketplace_sync_clawhub')
 async def marketplace_sync_clawhub() -> str:
-    """ClawHub 定时同步任务（每 8 小时执行一次）
+    """ClawHub 定时同步任务（每 3 天执行一次）
 
     **增量**：不传 force —— 上游 latestVersion 未变的技能只刷人气计数（零下载、零翻译），
     仅新增 / 版本变更的技能才走元数据门控翻译 + 下载 + 正文翻译。没有新技能时整轮几乎零
