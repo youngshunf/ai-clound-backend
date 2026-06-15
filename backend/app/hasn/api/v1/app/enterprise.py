@@ -226,7 +226,12 @@ async def list_roles(request: Request, db: CurrentSession, enterprise_id: int) -
     return response_base.success(data=data)
 
 
-@router.post('/enterprises/{enterprise_id}/roles', dependencies=[DependsJwtAuth], summary='创建角色 / 部门')
+@router.post(
+    '/enterprises/{enterprise_id}/roles',
+    dependencies=[DependsJwtAuth],
+    summary='创建角色 / 部门',
+    name='create_enterprise_role',
+)
 async def create_role(
     request: Request, db: CurrentSessionTransaction, enterprise_id: int, body: CreateRoleRequest
 ) -> ResponseModel:
@@ -240,7 +245,12 @@ async def create_role(
     return response_base.success(data=data)
 
 
-@router.patch('/enterprises/{enterprise_id}/roles/{role_id}', dependencies=[DependsJwtAuth], summary='改名 / 改类型')
+@router.patch(
+    '/enterprises/{enterprise_id}/roles/{role_id}',
+    dependencies=[DependsJwtAuth],
+    summary='改名 / 改类型',
+    name='update_enterprise_role',
+)
 async def update_role(
     request: Request, db: CurrentSessionTransaction, enterprise_id: int, role_id: int, body: UpdateRoleRequest
 ) -> ResponseModel:
