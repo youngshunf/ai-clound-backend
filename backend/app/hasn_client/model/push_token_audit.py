@@ -22,6 +22,7 @@ from sqlalchemy import event
 from sqlalchemy import insert as sql_insert
 from sqlalchemy.orm import Mapped, mapped_column
 
+from backend.app.hasn_client.model._base import APP_SCHEMA
 from backend.common.model import Base, TimeZone
 from backend.utils.timezone import timezone
 
@@ -35,7 +36,7 @@ class PushTokenAudit(Base):
     __table_args__ = (
         sa.Index('ix_push_token_audit_hasn_id', 'hasn_id'),
         sa.Index('ix_push_token_audit_push_token_id', 'push_token_id'),
-        {'comment': 'push_tokens 读写审计表 (B10)'},
+        {'comment': 'push_tokens 读写审计表 (B10)', 'schema': APP_SCHEMA},
     )
 
     id: Mapped[int] = mapped_column(

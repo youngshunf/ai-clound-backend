@@ -27,7 +27,7 @@ from fastapi import APIRouter, Path, Request
 from pydantic import Field
 from sqlalchemy import delete, select
 
-from backend.app.models.push_token import PUSH_CHANNEL_VALUES, PushChannel, PushToken
+from backend.app.hasn_client.model.push_token import PUSH_CHANNEL_VALUES, PushChannel, PushToken
 from backend.common.response.response_schema import (
     ResponseModel,
     ResponseSchemaModel,

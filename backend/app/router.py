@@ -2,8 +2,8 @@ from fastapi import APIRouter
 
 from backend.app.admin.api.router import client as admin_client
 from backend.app.admin.api.router import v1 as admin_v1
-from backend.app.api.v1.app import app_router as mobile_app_v1_router
-from backend.app.api.v1.auth import auth_router as mobile_auth_v1_router
+from backend.app.hasn_client.api.router import client_router
+from backend.app.api.v1.auth import auth_router as client_auth_v1_router
 from backend.app.hasn_deck.api.router import agent as deck_agent
 from backend.app.hasn_deck.api.router import app as deck_app
 from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
@@ -162,9 +162,9 @@ router.include_router(hermes_v1)
 router.include_router(hermes_app)
 router.include_router(hermes_internal)    # runtime ↔ backend 内部 service token 调用（X-Internal-Token）
 
-# 移动端 App API (M1: /api/v1/app/...)
-router.include_router(mobile_app_v1_router)  # 移动端用户端 API (owner_api_keys/current 等)
-router.include_router(mobile_auth_v1_router)  # 移动端认证 API (/api/v1/auth/logout 等)
+# 客户端 companion API（hasn_client 应用，URL /api/v1/app/* 兼容；ADR-15 收编 R2）
+router.include_router(client_router)  # 客户端用户端 API (owner_api_keys/push/telemetry/feature-flags)
+router.include_router(client_auth_v1_router)  # 客户端认证 API (/api/v1/auth/logout 等；auth 暂留平台底座位置)
 router.include_router(marketplace_app)
 router.include_router(marketplace_admin)
 router.include_router(marketplace_open)

@@ -32,18 +32,18 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from backend.app.models._encryption import (
+from backend.app.hasn_client.model._encryption import (
     EncryptedToken,
     decrypt_push_token,
     encrypt_push_token,
     reset_fernet_for_tests,
 )
-from backend.app.models.push_token import (
+from backend.app.hasn_client.model.push_token import (
     PUSH_CHANNEL_VALUES,
     PushChannel,
     PushToken,
 )
-from backend.app.models.push_token_audit import register_audit_listeners
+from backend.app.hasn_client.model.push_token_audit import register_audit_listeners
 
 # ---------------------------------------------------------------------------
 # 1. PushChannel 枚举契约

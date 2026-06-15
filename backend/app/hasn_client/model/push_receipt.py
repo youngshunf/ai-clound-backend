@@ -21,6 +21,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
+from backend.app.hasn_client.model._base import APP_SCHEMA
 from backend.common.model import Base, TimeZone, id_key
 from backend.utils.timezone import timezone
 
@@ -32,7 +33,7 @@ class PushReceipt(Base):
     __table_args__ = (
         sa.Index('ix_push_receipts_trace_id', 'trace_id'),
         sa.Index('ix_push_receipts_hasn_id', 'hasn_id'),
-        {'comment': 'M1 移动端推送到达回执表 (友盟 U-Push 到达率上报)'},
+        {'comment': 'M1 移动端推送到达回执表 (友盟 U-Push 到达率上报)', 'schema': APP_SCHEMA},
     )
 
     id: Mapped[id_key] = mapped_column(init=False)

@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from starlette.status import HTTP_401_UNAUTHORIZED
 
-from backend.app.api.v1.app import owner_api_keys as owner_module
+from backend.app.hasn_client.api import owner_api_keys as owner_module
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import get_db_transaction
 

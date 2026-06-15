@@ -32,8 +32,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 
-from backend.app.api.v1.app import push_receipts as push_receipts_module
-from backend.app.models.push_receipt import PushReceipt
+from backend.app.hasn_client.api import push_receipts as push_receipts_module
+from backend.app.hasn_client.model.push_receipt import PushReceipt
 from backend.common.exception import errors
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import get_db_transaction

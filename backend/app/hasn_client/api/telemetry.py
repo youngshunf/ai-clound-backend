@@ -27,7 +27,7 @@ from fastapi import APIRouter, Request
 from pydantic import Field
 from sqlalchemy import select
 
-from backend.app.models.telemetry_event import (
+from backend.app.hasn_client.model.telemetry_event import (
     TELEMETRY_EVENT_TYPE_VALUES,
     TelemetryEvent,
 )

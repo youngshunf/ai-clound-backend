@@ -29,7 +29,7 @@ import httpx
 
 from sqlalchemy import func, select
 
-from backend.app.models.push_token import PushChannel, PushToken
+from backend.app.hasn_client.model.push_token import PushChannel, PushToken
 from backend.common.observability.prometheus import (
     PUSH_DISPATCHED_TOTAL,
     PUSH_LATENCY_SECONDS,

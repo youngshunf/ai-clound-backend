@@ -29,6 +29,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
+from backend.app.hasn_client.model._base import APP_SCHEMA
 from backend.common.model import Base, TimeZone, id_key
 from backend.utils.timezone import timezone
 
@@ -66,7 +67,7 @@ class TelemetryEvent(Base):
         sa.Index('ix_telemetry_events_hasn_id', 'hasn_id'),
         sa.Index('ix_telemetry_events_event_type', 'event_type'),
         sa.Index('ix_telemetry_events_occurred_at', 'occurred_at'),
-        {'comment': 'M1 移动端业务埋点表 (友盟 U-App 并行双写, §6.1)'},
+        {'comment': 'M1 移动端业务埋点表 (友盟 U-App 并行双写, §6.1)', 'schema': APP_SCHEMA},
     )
 
     id: Mapped[id_key] = mapped_column(init=False)
