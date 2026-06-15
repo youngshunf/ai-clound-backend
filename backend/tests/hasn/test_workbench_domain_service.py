@@ -62,6 +62,15 @@ class UserStub(_Base):
     phone: Mapped[str | None] = mapped_column(sa.String(11), default=None)
 
 
+# 获客 GE5：list_members 现 join hasn_humans 取成员 hasn_id（分配负责人需按 hasn_id 设 assignee）。
+class HumansStub(_Base):
+    __tablename__ = 'hasn_humans'
+
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(sa.Integer, default=0)
+    hasn_id: Mapped[str] = mapped_column(sa.String(40), default='')
+
+
 class InviteCodeStub(_Base):
     __tablename__ = 'hasn_enterprise_invite_code'
 
@@ -180,6 +189,7 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         # 应用平台 v3 P3（设计 17 决策①）：HasnWorkspaceApp 已从 service 删除（挂载废除），不再 patch。
         'HasnAppInstance': RagflowInstanceStub,
         'User': UserStub,
+        'HasnHumans': HumansStub,
     }
     for name, replacement in replacements.items():
         monkeypatch.setattr(service_mod, name, replacement, raising=True)
@@ -413,6 +423,8 @@ async def test_list_members_returns_cloud_user_profile_fields(db_session: AsyncS
         UserStub(id=11, username='owner', nickname='阿月', phone='13800138000'),
         UserStub(id=12, username='member', nickname='小林', phone='13900139000'),
         MembershipStub(enterprise_id=enterprise['id'], user_id=12, role='member', status='approved'),
+        # 获客 GE5：仅 user 12 有 hasn 身份 → list_members 应回 hasn_id；缺身份者诚实留空。
+        HumansStub(user_id=12, hasn_id='h_member_12'),
     ])
     await db_session.flush()
 
@@ -423,6 +435,9 @@ async def test_list_members_returns_cloud_user_profile_fields(db_session: AsyncS
     assert by_user_id[11]['phone'] == '13800138000'
     assert by_user_id[12]['nickname'] == '小林'
     assert by_user_id[12]['phone'] == '13900139000'
+    # GE5 新增：成员 hasn_id（join hasn_humans）——有身份回值，无身份留 None。
+    assert by_user_id[12]['hasn_id'] == 'h_member_12'
+    assert by_user_id[11].get('hasn_id') is None
 
 
 @pytest.mark.asyncio
