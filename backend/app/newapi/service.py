@@ -67,6 +67,74 @@ SUMMARY_PAGE_SIZE = 100
 MAX_SUMMARY_PAGES = 50
 
 
+# ========== 模块级取数 helpers（service + billing 复用，避免重复 username 解析/聚合）==========
+
+async def resolve_newapi_username(mapping: LlmNewapiUserMapping) -> str:
+    """从 new-api 用户对象取 username（稳定来源，兼容历史无 username 列的映射）。
+
+    取不到时退回约定用户名 `hx_{huanxing_user_id}`（与 ensure_user 一致）。
+    """
+    try:
+        user = await newapi_admin_client.get_user(mapping.newapi_user_id)
+    except NewApiError as e:
+        log.warning(f'[NewApi] 解析 username 失败 newapi_user_id={mapping.newapi_user_id}: {e}')
+        user = None
+    if user and user.get('username'):
+        return str(user['username'])
+    return f'{DEFAULT_USERNAME_PREFIX}{mapping.huanxing_user_id}'
+
+
+async def aggregate_logs_by_model(
+    username: str | None,
+    start_time: int,
+    end_time: int,
+    *,
+    token_name: str | None = None,
+) -> list[dict]:
+    """分页拉 /log/ 并按 model_name 聚合（prompt/completion/quota/请求数）。
+
+    /data/ 是 model+hour 桶聚合但 token_used 合并（无 prompt/completion 拆分），
+    故需要拆分的概览统计走 /log/ 逐页聚合。到 MAX_SUMMARY_PAGES 顶会告警（非静默截断）。
+    """
+    by_model: dict[str, dict] = {}
+    truncated = False
+    for page in range(1, MAX_SUMMARY_PAGES + 1):
+        try:
+            items, _total = await newapi_admin_client.get_logs(
+                username=username,
+                token_name=token_name,
+                start_timestamp=start_time,
+                end_timestamp=end_time,
+                page=page,
+                page_size=SUMMARY_PAGE_SIZE,
+            )
+        except NewApiError as e:
+            log.warning(f'[NewApi] 读取用量日志失败（username={username} page={page}）: {e}')
+            break
+        if not items:
+            break
+        for it in items:
+            model = it.get('model_name') or ''
+            agg = by_model.setdefault(
+                model,
+                {'model_name': model, 'prompt_tokens': 0, 'completion_tokens': 0, 'quota': 0, 'request_count': 0},
+            )
+            agg['prompt_tokens'] += int(it.get('prompt_tokens') or 0)
+            agg['completion_tokens'] += int(it.get('completion_tokens') or 0)
+            agg['quota'] += int(it.get('quota') or 0)
+            agg['request_count'] += 1
+        if len(items) < SUMMARY_PAGE_SIZE:
+            break
+        if page == MAX_SUMMARY_PAGES:
+            truncated = True
+    if truncated:
+        log.warning(
+            f'[NewApi] 用量聚合到达分页上限 {MAX_SUMMARY_PAGES} 页'
+            f'（username={username} token_name={token_name}），结果可能不完整'
+        )
+    return sorted(by_model.values(), key=lambda r: r['quota'], reverse=True)
+
+
 class LlmNewapiUserMappingService:
 
     # ========== 基础 CRUD（唤星库）==========
@@ -100,21 +168,6 @@ class LlmNewapiUserMappingService:
         return await llm_newapi_user_mapping_dao.delete(db, obj.pks)
 
     # ========== 凭证解析 helpers ==========
-
-    @staticmethod
-    async def _resolve_username(mapping: LlmNewapiUserMapping) -> str:
-        """从 new-api 用户对象取 username（稳定来源，兼容历史无 username 列的映射）。
-
-        取不到时退回约定用户名 `hx_{huanxing_user_id}`（与 ensure_user 一致）。
-        """
-        try:
-            user = await newapi_admin_client.get_user(mapping.newapi_user_id)
-        except NewApiError as e:
-            log.warning(f'[NewApi] 解析 username 失败 newapi_user_id={mapping.newapi_user_id}: {e}')
-            user = None
-        if user and user.get('username'):
-            return str(user['username'])
-        return f'{DEFAULT_USERNAME_PREFIX}{mapping.huanxing_user_id}'
 
     @staticmethod
     async def _ensure_user_access_token(
@@ -263,57 +316,6 @@ class LlmNewapiUserMappingService:
         )
 
     @staticmethod
-    async def _aggregate_logs_by_model(
-        username: str | None,
-        start_time: int,
-        end_time: int,
-        *,
-        token_name: str | None = None,
-    ) -> list[dict]:
-        """分页拉 /log/ 并按 model_name 聚合（prompt/completion/quota/请求数）。
-
-        /data/ 是 model+hour 桶聚合但 token_used 合并（无 prompt/completion 拆分），
-        故需要拆分的概览统计走 /log/ 逐页聚合。到 MAX_SUMMARY_PAGES 顶会告警（非静默截断）。
-        """
-        by_model: dict[str, dict] = {}
-        truncated = False
-        for page in range(1, MAX_SUMMARY_PAGES + 1):
-            try:
-                items, _total = await newapi_admin_client.get_logs(
-                    username=username,
-                    token_name=token_name,
-                    start_timestamp=start_time,
-                    end_timestamp=end_time,
-                    page=page,
-                    page_size=SUMMARY_PAGE_SIZE,
-                )
-            except NewApiError as e:
-                log.warning(f'[NewApi] 读取用量日志失败（username={username} page={page}）: {e}')
-                break
-            if not items:
-                break
-            for it in items:
-                model = it.get('model_name') or ''
-                agg = by_model.setdefault(
-                    model,
-                    {'model_name': model, 'prompt_tokens': 0, 'completion_tokens': 0, 'quota': 0, 'request_count': 0},
-                )
-                agg['prompt_tokens'] += int(it.get('prompt_tokens') or 0)
-                agg['completion_tokens'] += int(it.get('completion_tokens') or 0)
-                agg['quota'] += int(it.get('quota') or 0)
-                agg['request_count'] += 1
-            if len(items) < SUMMARY_PAGE_SIZE:
-                break
-            if page == MAX_SUMMARY_PAGES:
-                truncated = True
-        if truncated:
-            log.warning(
-                f'[NewApi] 用量聚合到达分页上限 {MAX_SUMMARY_PAGES} 页'
-                f'（username={username} token_name={token_name}），结果可能不完整'
-            )
-        return sorted(by_model.values(), key=lambda r: r['quota'], reverse=True)
-
-    @staticmethod
     async def get_usage_summary(
         db: AsyncSession,
         huanxing_user_id: int,
@@ -327,8 +329,8 @@ class LlmNewapiUserMappingService:
         if not mapping:
             raise errors.NotFoundError(msg='用户未关联 LLM 服务')
 
-        username = await LlmNewapiUserMappingService._resolve_username(mapping)
-        rows = await LlmNewapiUserMappingService._aggregate_logs_by_model(username, start_time, end_time)
+        username = await resolve_newapi_username(mapping)
+        rows = await aggregate_logs_by_model(username, start_time, end_time)
         items = [NewApiUsageSummaryItem(**row) for row in rows]
 
         return NewApiUsageSummary(
@@ -358,7 +360,7 @@ class LlmNewapiUserMappingService:
         if not mapping:
             raise errors.NotFoundError(msg='用户未关联 LLM 服务')
 
-        username = await LlmNewapiUserMappingService._resolve_username(mapping)
+        username = await resolve_newapi_username(mapping)
         page = (offset // limit) + 1 if limit else 1
         try:
             items, total = await newapi_admin_client.get_logs(
@@ -446,7 +448,7 @@ class LlmNewapiUserMappingService:
         mapping = await llm_newapi_user_mapping_dao.get_by_user(db, user_id)
         if not mapping:
             raise errors.ServerError(msg='new-api 映射缺失，无法签发 Agent token')
-        username = await LlmNewapiUserMappingService._resolve_username(mapping)
+        username = await resolve_newapi_username(mapping)
         access_token = await LlmNewapiUserMappingService._ensure_user_access_token(db, mapping, username)
 
         token_name = f'{name}:{agent_id}'
@@ -563,9 +565,9 @@ class LlmNewapiUserMappingService:
             return {'agent_id': agent_id, 'period': [start_time, end_time], 'by_model': []}
 
         mapping = await llm_newapi_user_mapping_dao.get_by_user(db, record.user_id)
-        username = await LlmNewapiUserMappingService._resolve_username(mapping) if mapping else None
+        username = await resolve_newapi_username(mapping) if mapping else None
         token_name = f'{AGENT_TOKEN_NAME_PREFIX}:{agent_id}'
-        rows = await LlmNewapiUserMappingService._aggregate_logs_by_model(
+        rows = await aggregate_logs_by_model(
             username, start_time, end_time, token_name=token_name
         )
         return {

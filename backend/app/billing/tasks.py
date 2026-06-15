@@ -171,6 +171,25 @@ async def check_expired_api_keys() -> str:
     return result_msg
 
 
+@shared_task(name='newapi_hourly_credit_sync')
+async def newapi_hourly_credit_sync() -> str:
+    """§5A.5 每小时积分账本对账：把 new-api 真实消费增量回扣账本 + 重设 quota = 账本剩余。
+
+    遍历所有 active new-api 映射用户，逐用户独立事务对账（单用户失败不影响其余，
+    new-api 不可达则跳过该用户、下轮重试，绝不臆造扣减——零 fake）。
+    """
+    from backend.app.newapi.credit_sync_service import credit_sync_service
+
+    summary = await credit_sync_service.reconcile_all()
+    result_msg = (
+        f'积分账本每小时对账完成: 共 {summary["total"]} 户, '
+        f'有消费 {summary["ok"]} / 无变化 {summary["no_delta"]} / 跳过 {summary["skipped"]} / 失败 {summary["failed"]}, '
+        f'合计回扣 {summary["consumed_credits_total"]} 积分'
+    )
+    log.info(f'[CreditSync] {result_msg}')
+    return result_msg
+
+
 @shared_task(name='expire_overdue_subscriptions')
 async def expire_overdue_subscriptions() -> str:
     """每日检查并标记过期订阅（收敛存量 status）。

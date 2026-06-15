@@ -20,6 +20,7 @@ from backend.app.billing.model.pay_order import PayOrder
 from backend.app.billing.service.credit_service import credit_service
 from backend.app.billing.service.subscription_service import subscription_service
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
+from backend.app.newapi.credit_sync_service import credit_sync_service
 from backend.common.log import log
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
@@ -88,6 +89,10 @@ async def handle_subscribe_paid(order: PayOrder) -> None:
             app_code=app_code,
         )
 
+        # 4. 入账后令 new-api 可用额度 = 账本剩余×RATE（§5A.4/D6；权威镜像，
+        #    覆盖 upgrade_subscription 的 tier-quota 推送，确保含本次赠送的全部余额）
+        await credit_sync_service.sync_quota_to_balance(db, user_id, app_code=app_code)
+
         log.info(
             f'[PayCallback] 积分发放完成: user_id={user_id}, '
             f'credits={grant_credits}, tier={target_tier}'
@@ -125,6 +130,10 @@ async def handle_credit_pack_paid(order: PayOrder) -> None:
             expires_at=None,
             app_code=app_code,
         )
+
+        # 入账后把 new-api 可用额度推到账本剩余×RATE（§5A.4/D6，补缺口 2：
+        # 此前积分包只写账本不推 new-api → 买了用不了）
+        await credit_sync_service.sync_quota_to_balance(db, user_id, app_code=app_code)
 
     log.info(f'[PayCallback] 积分包发放完成: user_id={user_id}, credits={credit_amount}')
 

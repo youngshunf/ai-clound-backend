@@ -1,46 +1,48 @@
-"""计费用量取数服务 —— new-api 为权威计量源。
+"""计费用量取数服务 —— new-api 为权威计量源（经 HTTP 管理 API，无 DB 直连）。
 
-唤星的 LLM 网关是 new-api（非内置 litellm）。真实的「可用额度」与「消耗」都在 new-api 库：
-- `users.quota / used_quota`：账户总额度 / 已用额度（quota 单位，÷ NEWAPI_CREDITS_TO_QUOTA_RATE = 唤星积分）
-- `logs`（type=2）：每次 LLM 调用的 prompt/completion tokens + quota 消耗明细
+唤星的 LLM 网关是 new-api。真实的「可用额度」与「消耗」都在 new-api：
+- `users.quota / used_quota`：账户总额度 / 已用额度（quota 微单位，÷ NEWAPI_QUOTA_PER_DOLLAR = 唤星积分）
+- `/api/log`（type=2）：每次 LLM 调用的 prompt/completion tokens + quota 明细
+- `/api/data`：按 model+hour 聚合（token_used=prompt+completion 合计、quota、count）
 
-本服务把 new-api 的 quota 单位换算回唤星积分，供订阅概览「可用积分 / 本月已用」与
-积分流水「按日消耗」读取。**唤星侧只把套餐额度下推到 new-api（quota），消耗由 new-api 记账**，
-因此可用积分 = (quota − used_quota)/RATE 必须实时取 new-api，不能读内部 user_credit_balance
-（那套内部账本不被 new-api 消耗扣减、会和真实消耗脱节）。
+可用积分 = (quota − used_quota)/RATE 必须实时取 new-api（§5A D7：展示用实时 new-api），
+不能读内部 user_credit_balance（账本每小时才回扣，会和真实消耗有滞后）。
 
-无 new-api 映射的遗留用户 → 返回 None/空，由调用方如实回退/置零，绝不伪造（零 fake）。
+无 new-api 映射的遗留用户 / new-api 不可达 → 返回 None/空/0，由调用方如实回退，绝不伪造（零 fake）。
+
+2026-06-15 解耦：`newapi_async_db_session + newapi_direct_dao` → `newapi_admin_client`。
 
 @author Ysf
 """
 
 from datetime import date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.newapi.crud import (
-    llm_newapi_user_mapping_dao,
-    newapi_direct_dao,
-)
+from backend.app.newapi.client import NewApiError, newapi_admin_client
+from backend.app.newapi.crud import llm_newapi_user_mapping_dao
+from backend.app.newapi.service import resolve_newapi_username
 from backend.common.log import log
 from backend.core.conf import settings
-from backend.database.db import newapi_async_db_session
+
+_SHANGHAI_TZ = ZoneInfo('Asia/Shanghai')
 
 
 def quota_to_credits(quota: int | None) -> Decimal:
     """new-api quota → 唤星积分（与 credits_to_quota 互逆，保留两位小数）。"""
-    rate = settings.NEWAPI_CREDITS_TO_QUOTA_RATE or 1
+    rate = settings.NEWAPI_QUOTA_PER_DOLLAR or 1
     return (Decimal(int(quota or 0)) / Decimal(rate)).quantize(Decimal('0.01'))
 
 
 def _to_unix(value: datetime) -> int:
-    """tz-aware/naive datetime → Unix 秒（new-api logs.created_at 口径）。"""
+    """tz-aware/naive datetime → Unix 秒（new-api 时间口径）。"""
     return int(value.timestamp())
 
 
 class BillingUsageService:
-    """new-api 权威的可用积分 / 消耗取数（跨库：唤星映射表 + new-api 库）。"""
+    """new-api 权威的可用积分 / 消耗取数（唤星映射表 + new-api 管理 API）。"""
 
     @staticmethod
     async def get_available_credits(
@@ -48,7 +50,7 @@ class BillingUsageService:
         user_id: int,
         app_code: str = 'huanxing',
     ) -> dict | None:
-        """实时可用积分（new-api 权威）。无映射或 new-api 无此用户 → None。
+        """实时可用积分（new-api 权威）。无映射或 new-api 无此用户/不可达 → None。
 
         返回 {available_credits, total_credits, used_credits, request_count}（积分为 Decimal）。
         """
@@ -56,10 +58,9 @@ class BillingUsageService:
         if not mapping:
             return None
         try:
-            async with newapi_async_db_session() as newapi_db:
-                quota = await newapi_direct_dao.get_newapi_user_quota(newapi_db, mapping.newapi_user_id)
-        except Exception as exc:  # noqa: BLE001
-            # new-api 库不可达 → 降级让调用方回退内部账本（不 500 整个订阅页），如实记录
+            quota = await newapi_admin_client.get_user_quota(mapping.newapi_user_id)
+        except NewApiError as exc:
+            # new-api 不可达 → 降级让调用方回退（不 500 整个订阅页），如实记录
             log.warning(f'[BillingUsage] new-api quota 读取失败，降级: user_id={user_id}, error={exc!r}')
             return None
         if not quota:
@@ -81,25 +82,29 @@ class BillingUsageService:
         end: datetime,
         app_code: str = 'huanxing',
     ) -> dict:
-        """计费周期内的真实消耗（new-api logs）。无映射 → 全 0。
+        """计费周期内的真实消耗（new-api /api/data 聚合）。无映射/不可达 → 全 0。
 
         返回 {consumed_credits(Decimal), request_count, token_count}。
         """
+        zero = {'consumed_credits': Decimal('0'), 'request_count': 0, 'token_count': 0}
         mapping = await llm_newapi_user_mapping_dao.get_by_user(db, user_id, app_code)
         if not mapping:
-            return {'consumed_credits': Decimal('0'), 'request_count': 0, 'token_count': 0}
+            return zero
+        username = await resolve_newapi_username(mapping)
         try:
-            async with newapi_async_db_session() as newapi_db:
-                total = await newapi_direct_dao.get_consumption_total(
-                    newapi_db, mapping.newapi_user_id, _to_unix(start), _to_unix(end),
-                )
-        except Exception as exc:  # noqa: BLE001
+            rows = await newapi_admin_client.get_quota_data(
+                username=username, start_timestamp=_to_unix(start), end_timestamp=_to_unix(end)
+            )
+        except NewApiError as exc:
             log.warning(f'[BillingUsage] new-api 周期消耗读取失败，降级为 0: user_id={user_id}, error={exc!r}')
-            return {'consumed_credits': Decimal('0'), 'request_count': 0, 'token_count': 0}
+            return zero
+        quota_sum = sum(int(r.get('quota') or 0) for r in rows)
+        token_sum = sum(int(r.get('token_used') or 0) for r in rows)
+        req_sum = sum(int(r.get('count') or 0) for r in rows)
         return {
-            'consumed_credits': quota_to_credits(total['quota']),
-            'request_count': total['request_count'],
-            'token_count': total['prompt_tokens'] + total['completion_tokens'],
+            'consumed_credits': quota_to_credits(quota_sum),
+            'request_count': req_sum,
+            'token_count': token_sum,
         }
 
     @staticmethod
@@ -110,30 +115,40 @@ class BillingUsageService:
         end: datetime,
         app_code: str = 'huanxing',
     ) -> dict[date, dict]:
-        """按本地日聚合的真实消耗（new-api logs）。无映射 → 空 dict。
+        """按本地日（Asia/Shanghai）聚合的真实消耗（new-api /api/data）。无映射/不可达 → 空 dict。
 
+        /api/data 行是 model+hour 桶（created_at 已 hour 对齐）；按本地日归并。
         返回 {day(date): {consumed_credits(Decimal,≤0), request_count, token_count}}。
         消耗以**负数**返回，便于与内部发放/购买（正数）按日合并。
         """
         mapping = await llm_newapi_user_mapping_dao.get_by_user(db, user_id, app_code)
         if not mapping:
             return {}
+        username = await resolve_newapi_username(mapping)
         try:
-            async with newapi_async_db_session() as newapi_db:
-                rows = await newapi_direct_dao.get_daily_consumption(
-                    newapi_db, mapping.newapi_user_id, _to_unix(start), _to_unix(end),
-                )
-        except Exception as exc:  # noqa: BLE001
+            rows = await newapi_admin_client.get_quota_data(
+                username=username, start_timestamp=_to_unix(start), end_timestamp=_to_unix(end)
+            )
+        except NewApiError as exc:
             log.warning(f'[BillingUsage] new-api 按日消耗读取失败，降级为空: user_id={user_id}, error={exc!r}')
             return {}
-        result: dict[date, dict] = {}
+        # 按本地日累加 hour 桶
+        acc: dict[date, dict] = {}
         for row in rows:
-            result[row['day']] = {
-                'consumed_credits': -quota_to_credits(row['quota']),
-                'request_count': row['request_count'],
-                'token_count': row['prompt_tokens'] + row['completion_tokens'],
+            ts = int(row.get('created_at') or 0)
+            day = datetime.fromtimestamp(ts, tz=_SHANGHAI_TZ).date()
+            bucket = acc.setdefault(day, {'quota': 0, 'token_used': 0, 'count': 0})
+            bucket['quota'] += int(row.get('quota') or 0)
+            bucket['token_used'] += int(row.get('token_used') or 0)
+            bucket['count'] += int(row.get('count') or 0)
+        return {
+            day: {
+                'consumed_credits': -quota_to_credits(b['quota']),
+                'request_count': b['count'],
+                'token_count': b['token_used'],
             }
-        return result
+            for day, b in acc.items()
+        }
 
 
 billing_usage_service = BillingUsageService()
