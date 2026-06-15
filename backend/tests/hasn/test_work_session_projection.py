@@ -132,7 +132,7 @@ def _projection_payload(**overrides: Any) -> dict[str, Any]:
         'summary': '已生成客户优先级和跟进建议。',
         'status': 'success',
         'completion_reason': 'auto_on_final',
-        'deep_link': f'hasn://webui/tasks/sessions/{SESSION_ID}',
+        'deep_link': f'hasn://tasks/sessions/{SESSION_ID}',
         'task_id': 123,
         'task_run_id': 456,
     }
@@ -472,10 +472,10 @@ async def test_projection_is_idempotent_and_writes_summary_message(
     assert content['resource']['type'] == 'task_session'
     assert content['resource']['id'] == SESSION_ID
     assert content['resource']['app_id'] == 'tasks'
-    assert content['resource']['uri'] == f'hasn://webui/tasks/sessions/{SESSION_ID}'
+    assert content['resource']['uri'] == f'hasn://tasks/sessions/{SESSION_ID}'
     assert content['primary_action']['action_id'] == 'open_task_session'
     assert content['primary_action']['kind'] == 'open_uri'
-    assert content['primary_action']['uri'] == f'hasn://webui/tasks/sessions/{SESSION_ID}'
+    assert content['primary_action']['uri'] == f'hasn://tasks/sessions/{SESSION_ID}'
     assert content['primary_action']['event'] == {
         'event_type': 'task.summary.opened',
         'payload': {
@@ -487,7 +487,7 @@ async def test_projection_is_idempotent_and_writes_summary_message(
     assert {'label': '状态', 'value': 'success'} in content['fields']
     assert {'label': '完成原因', 'value': 'auto_on_final'} in content['fields']
     projection = session.summary_checkpoint_json
-    assert projection['deep_link'] == f'hasn://webui/tasks/sessions/{SESSION_ID}'
+    assert projection['deep_link'] == f'hasn://tasks/sessions/{SESSION_ID}'
     assert projection['dedupe_key'] == f'work_session_result:{SESSION_ID}:final'
     assert 'system prompt' not in json.dumps(content).lower()
     assert session.summary_checkpoint_json['result_message_id'] == '987'
@@ -556,7 +556,7 @@ async def test_projection_writes_summary_when_cloud_session_absent(
     assert content['resource']['id'] == SESSION_ID
     assert content['resource']['metadata']['agent_id'] == AGENT_ID
     assert content['resource']['metadata']['origin_type'] == 'task_run'
-    assert content['primary_action']['uri'] == f'hasn://webui/tasks/sessions/{SESSION_ID}'
+    assert content['primary_action']['uri'] == f'hasn://tasks/sessions/{SESSION_ID}'
     assert db.flushed is True
 
 

@@ -268,7 +268,7 @@ class AskApprovalGate:
             'resource': {
                 'type': 'agent_tool_approval',
                 'id': request_id,
-                'uri': f'hasn://webui/agents/{agent_hasn_id}/approvals/{request_id}',
+                'uri': f'hasn://agents/{agent_hasn_id}/approvals/{request_id}',
                 'status': 'pending',
             },
             'fields': [

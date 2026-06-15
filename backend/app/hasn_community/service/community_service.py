@@ -53,16 +53,16 @@ class CommunityService:
     def _build_reference_uri(card_type: str, resource_id: str, metadata: dict[str, Any]) -> str | None:
         """服务端按 (type, id, metadata) 派生 hasn:// 跳转 URI（不信任客户端 uri，杜绝注入）。"""
         if card_type == 'task_result':
-            return f'hasn://webui/tasks/sessions/{resource_id}'
+            return f'hasn://tasks/sessions/{resource_id}'
         if card_type == 'chat_summary':
-            base = f'hasn://webui/messages/c/{resource_id}'
+            base = f'hasn://messages/c/{resource_id}'
             message_id = metadata.get('message_id')
             return f'{base}#{message_id}' if message_id else base
         if card_type == 'agent_skill':
             agent_hasn_id = metadata.get('agent_hasn_id')
             if not agent_hasn_id:
                 return None
-            return f'hasn://webui/agents/{agent_hasn_id}/skills?skill={resource_id}'
+            return f'hasn://agents/{agent_hasn_id}/skills?skill={resource_id}'
         return None
 
     @staticmethod
@@ -1073,7 +1073,7 @@ class CommunityService:
                 'type': 'community.post',
                 'id': post.post_id,
                 'app_id': 'community',
-                'uri': f'hasn://app/community/posts/{post.post_id}',
+                'uri': f'hasn://community/posts/{post.post_id}',
             },
             'summary': summary,
             'content': post.content,
@@ -2876,7 +2876,7 @@ class CommunityService:
                 'type': 'community.article',
                 'id': article.article_id,
                 'app_id': 'community',
-                'uri': f'hasn://app/community/articles/{article.article_id}',
+                'uri': f'hasn://community/articles/{article.article_id}',
             },
             'summary': article.summary or _safe_summary(article.content),
             'content': article.content,

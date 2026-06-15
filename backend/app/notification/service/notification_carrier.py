@@ -59,8 +59,9 @@ def build_card_body(
     link = data.get('link')
     primary_action = None
     if link:
-        # 仅接受 hasn/http/https；相对路径包装成 hasn://app{link}
-        uri = link if link.startswith(('hasn:', 'http:', 'https:')) else f'hasn://app{link}'
+        # 仅接受 hasn/http/https；相对路径 `/<域>/...` 提升为 canonical `hasn://<域>/...`
+        # （首段即资源域，客户端无关；`hasn:/` + `/foo/bar` → `hasn://foo/bar`）。
+        uri = link if link.startswith(('hasn:', 'http:', 'https:')) else f'hasn:/{link}'
         primary_action = {
             'label': '查看',
             'action_id': f'open_{notif.id}',

@@ -542,7 +542,7 @@ def _projection_content_json(
     origin_ref: str | None,
     projection_data: dict[str, Any],
 ) -> dict[str, Any]:
-    deep_link = projection_data.get('deep_link') or f'hasn://webui/tasks/sessions/{session_id}'
+    deep_link = projection_data.get('deep_link') or f'hasn://tasks/sessions/{session_id}'
     return {
         'projection_kind': 'work_session_result_summary',
         'session_id': session_id,
@@ -595,7 +595,7 @@ def _projection_card_body(*, session_id: str, title: str, content_json: dict[str
             'type': 'task_session',
             'id': session_id,
             'app_id': 'tasks',
-            'uri': content_json.get('deep_link') or f'hasn://webui/tasks/sessions/{session_id}',
+            'uri': content_json.get('deep_link') or f'hasn://tasks/sessions/{session_id}',
             'access': {
                 'visibility': 'recipient',
                 'readable_by': ['human'],
@@ -613,7 +613,7 @@ def _projection_card_body(*, session_id: str, title: str, content_json: dict[str
             'label': '查看任务',
             'action_id': 'open_task_session',
             'kind': 'open_uri',
-            'uri': content_json.get('deep_link') or f'hasn://webui/tasks/sessions/{session_id}',
+            'uri': content_json.get('deep_link') or f'hasn://tasks/sessions/{session_id}',
             'event': {
                 'event_type': 'task.summary.opened',
                 'payload': event_payload,
