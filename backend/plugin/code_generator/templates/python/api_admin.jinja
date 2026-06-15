@@ -19,7 +19,7 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 router = APIRouter()
 
 
-@router.get('/{pk}', summary='获取{{ doc_comment }}详情', dependencies=[DependsJwtAuth], name='admin_get_{{ table_name }}')
+@router.get('/{pk}', summary='获取{{ doc_comment }}详情', dependencies=[DependsJwtAuth], name='{{ app_name }}_admin_get_{{ table_name }}')
 async def get_{{ table_name }}(
     db: CurrentSession, pk: Annotated[int, Path(description='{{ doc_comment }} ID')]
 ) -> ResponseSchemaModel[Get{{ schema_name }}Detail]:
@@ -34,7 +34,7 @@ async def get_{{ table_name }}(
         DependsJwtAuth,
         DependsPagination,
     ],
-    name='admin_get_{{ table_name }}_paginated',
+    name='{{ app_name }}_admin_get_{{ table_name }}_paginated',
 )
 async def get_{{ table_name }}_paginated(db: CurrentSession) -> ResponseSchemaModel[PageData[Get{{ schema_name }}Detail]]:
     page_data = await {{ table_name }}_service.get_list(db=db)
@@ -48,7 +48,7 @@ async def get_{{ table_name }}_paginated(db: CurrentSession) -> ResponseSchemaMo
         Depends(RequestPermission('{{ permission }}:add')),
         DependsRBAC,
     ],
-    name='admin_create_{{ table_name }}',
+    name='{{ app_name }}_admin_create_{{ table_name }}',
 )
 async def create_{{ table_name }}(db: CurrentSessionTransaction, obj: Create{{ schema_name }}Param) -> ResponseModel:
     await {{ table_name }}_service.create(db=db, obj=obj)
@@ -62,7 +62,7 @@ async def create_{{ table_name }}(db: CurrentSessionTransaction, obj: Create{{ s
         Depends(RequestPermission('{{ permission }}:edit')),
         DependsRBAC,
     ],
-    name='admin_update_{{ table_name }}',
+    name='{{ app_name }}_admin_update_{{ table_name }}',
 )
 async def update_{{ table_name }}(
     db: CurrentSessionTransaction, pk: Annotated[int, Path(description='{{ doc_comment }} ID')], obj: Update{{ schema_name }}Param
@@ -80,7 +80,7 @@ async def update_{{ table_name }}(
         Depends(RequestPermission('{{ permission }}:del')),
         DependsRBAC,
     ],
-    name='admin_delete_{{ table_name }}',
+    name='{{ app_name }}_admin_delete_{{ table_name }}',
 )
 async def delete_{{ table_name }}(db: CurrentSessionTransaction, obj: Delete{{ schema_name }}Param) -> ResponseModel:
     count = await {{ table_name }}_service.delete(db=db, obj=obj)

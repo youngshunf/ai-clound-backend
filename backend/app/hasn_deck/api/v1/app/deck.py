@@ -139,7 +139,12 @@ async def list_shares(request: Request, db: CurrentSession, deck_id: int) -> Res
     return response_base.success(data=data)
 
 
-@router.put('/decks/{deck_id}/visibility', summary='设置可见性（私有/企业可见/链接）', dependencies=[DependsJwtAuth])
+@router.put(
+    '/decks/{deck_id}/visibility',
+    summary='设置可见性（私有/企业可见/链接）',
+    dependencies=[DependsJwtAuth],
+    name='deck_app_set_visibility',
+)
 async def set_visibility(
     request: Request, db: CurrentSessionTransaction, deck_id: int, body: SetVisibilityRequest
 ) -> ResponseModel:

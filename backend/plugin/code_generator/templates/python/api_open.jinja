@@ -19,7 +19,7 @@ router = APIRouter()
     '',
     summary='获取{{ doc_comment }}列表',
     dependencies=[DependsPagination],
-    name='open_get_{{ table_name }}',
+    name='{{ app_name }}_open_get_{{ table_name }}',
 )
 async def get_{{ table_name }}(
     db: CurrentSession,
@@ -31,7 +31,7 @@ async def get_{{ table_name }}(
 @router.get(
     '/{pk}',
     summary='获取{{ doc_comment }}详情',
-    name='open_get_{{ table_name }}_detail',
+    name='{{ app_name }}_open_get_{{ table_name }}_detail',
 )
 async def get_{{ table_name }}_detail(
     db: CurrentSession,

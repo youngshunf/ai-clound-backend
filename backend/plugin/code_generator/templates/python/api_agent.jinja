@@ -25,7 +25,7 @@ router = APIRouter()
     '',
     summary='{{ doc_comment }}列表',
     dependencies=[DependsAgentJwtAuth],
-    name='agent_list_{{ table_name }}',
+    name='{{ app_name }}_agent_list_{{ table_name }}',
 )
 async def agent_list_{{ table_name }}(
     request: Request,
@@ -41,7 +41,7 @@ async def agent_list_{{ table_name }}(
     '',
     summary='创建{{ doc_comment }}',
     dependencies=[DependsAgentJwtAuth],
-    name='agent_create_{{ table_name }}',
+    name='{{ app_name }}_agent_create_{{ table_name }}',
 )
 async def agent_create_{{ table_name }}(
     request: Request,
@@ -57,7 +57,7 @@ async def agent_create_{{ table_name }}(
     '/{pk}',
     summary='获取{{ doc_comment }}详情',
     dependencies=[DependsAgentJwtAuth],
-    name='agent_get_{{ table_name }}',
+    name='{{ app_name }}_agent_get_{{ table_name }}',
 )
 async def agent_get_{{ table_name }}(
     request: Request,
@@ -76,7 +76,7 @@ async def agent_get_{{ table_name }}(
     '/{pk}',
     summary='更新{{ doc_comment }}',
     dependencies=[DependsAgentJwtAuth],
-    name='agent_update_{{ table_name }}',
+    name='{{ app_name }}_agent_update_{{ table_name }}',
 )
 async def agent_update_{{ table_name }}(
     request: Request,
@@ -99,7 +99,7 @@ async def agent_update_{{ table_name }}(
     '/{pk}',
     summary='删除{{ doc_comment }}',
     dependencies=[DependsAgentJwtAuth],
-    name='agent_delete_{{ table_name }}',
+    name='{{ app_name }}_agent_delete_{{ table_name }}',
 )
 async def agent_delete_{{ table_name }}(
     request: Request,

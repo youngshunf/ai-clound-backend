@@ -146,7 +146,12 @@ async def update_site(
     return response_base.success(data=data)
 
 
-@router.patch('/sites/{site_id}/visibility', summary='改可见性/口令/过期/能力', dependencies=[DependsJwtAuth])
+@router.patch(
+    '/sites/{site_id}/visibility',
+    summary='改可见性/口令/过期/能力',
+    dependencies=[DependsJwtAuth],
+    name='publish_app_set_visibility',
+)
 async def set_visibility(
     request: Request, db: CurrentSessionTransaction, site_id: int, body: SetVisibilityRequest
 ) -> ResponseModel:
