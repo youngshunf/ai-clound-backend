@@ -16,7 +16,9 @@ from backend.app.hasn.model import (
     HasnAppInstance,
     HasnEnterprise,
     HasnEnterpriseInviteCode,
+    HasnEnterpriseMemberRole,
     HasnEnterpriseMembership,
+    HasnEnterpriseRole,
 )
 from backend.app.admin.model.user import User
 from backend.app.workbench.model import HasnOwnerWorkbenchPref
@@ -386,6 +388,219 @@ class WorkbenchDomainService:
         invite.revoked = True
         await db.flush()
         return _invite_payload(invite)
+
+    # ── 企业角色 / 部门管理（应用平台 v3 P3 §4.2(4)/§6.5）──────────────────────
+    # 仅企业 owner / admin 可管理本企业角色；跨企业隔离：role / member_role 行均带
+    # enterprise_id，所有读写都按 enterprise_id 限定，绝不跨企业串。
+
+    async def _require_enterprise_admin(
+        self, db: AsyncSession, *, enterprise_id: int, user_id: int, action: str
+    ) -> None:
+        enterprise = await self._get_enterprise_model(db, enterprise_id)
+        if enterprise.owner_user_id == user_id:
+            return
+        membership = await self._approved_membership(db, enterprise_id=enterprise_id, user_id=user_id)
+        if membership is not None and membership.role in {'owner', 'admin'}:
+            return
+        raise errors.ForbiddenError(msg=f'仅企业所有者或管理员可{action}')
+
+    async def _get_role_model(self, db: AsyncSession, *, enterprise_id: int, role_id: int) -> HasnEnterpriseRole:
+        role = await _scalar(
+            db,
+            sa.select(HasnEnterpriseRole).where(
+                HasnEnterpriseRole.id == role_id,
+                HasnEnterpriseRole.enterprise_id == enterprise_id,
+            ),
+        )
+        if role is None:
+            raise errors.NotFoundError(msg='角色 / 部门不存在')
+        return role
+
+    async def list_roles(self, db: AsyncSession, *, enterprise_id: int, operator_user_id: int) -> dict[str, Any]:
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='查看企业角色'
+        )
+        roles = (
+            (
+                await db.execute(
+                    sa.select(HasnEnterpriseRole)
+                    .where(HasnEnterpriseRole.enterprise_id == enterprise_id)
+                    .order_by(HasnEnterpriseRole.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        member_counts = await _grouped_count(
+            db,
+            sa.select(HasnEnterpriseMemberRole.role_id, sa.func.count())
+            .where(HasnEnterpriseMemberRole.enterprise_id == enterprise_id)
+            .group_by(HasnEnterpriseMemberRole.role_id),
+        )
+        return {
+            'enterprise_id': enterprise_id,
+            'items': [_role_payload(role, member_count=member_counts.get(role.id, 0)) for role in roles],
+        }
+
+    async def create_role(
+        self, db: AsyncSession, *, enterprise_id: int, operator_user_id: int, name: str, kind: str = 'role'
+    ) -> dict[str, Any]:
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='创建企业角色'
+        )
+        clean_name = (name or '').strip()
+        if not clean_name:
+            raise errors.RequestError(msg='角色 / 部门名称不能为空')
+        if len(clean_name) > 64:
+            raise errors.RequestError(msg='角色 / 部门名称不能超过 64 个字符')
+        if kind not in {'role', 'department'}:
+            raise errors.RequestError(msg='kind 只能是 role 或 department')
+        existing = await _scalar(
+            db,
+            sa.select(HasnEnterpriseRole.id).where(
+                HasnEnterpriseRole.enterprise_id == enterprise_id,
+                HasnEnterpriseRole.name == clean_name,
+            ),
+        )
+        if existing is not None:
+            raise errors.ConflictError(msg='同名角色 / 部门已存在')
+        role = HasnEnterpriseRole(enterprise_id=enterprise_id, name=clean_name, kind=kind)
+        db.add(role)
+        await db.flush()
+        await db.refresh(role)
+        return _role_payload(role, member_count=0)
+
+    async def update_role(
+        self,
+        db: AsyncSession,
+        *,
+        enterprise_id: int,
+        operator_user_id: int,
+        role_id: int,
+        name: str | None = None,
+        kind: str | None = None,
+    ) -> dict[str, Any]:
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='修改企业角色'
+        )
+        role = await self._get_role_model(db, enterprise_id=enterprise_id, role_id=role_id)
+        if name is not None:
+            clean_name = name.strip()
+            if not clean_name:
+                raise errors.RequestError(msg='角色 / 部门名称不能为空')
+            if len(clean_name) > 64:
+                raise errors.RequestError(msg='角色 / 部门名称不能超过 64 个字符')
+            if clean_name != role.name:
+                duplicate = await _scalar(
+                    db,
+                    sa.select(HasnEnterpriseRole.id).where(
+                        HasnEnterpriseRole.enterprise_id == enterprise_id,
+                        HasnEnterpriseRole.name == clean_name,
+                        HasnEnterpriseRole.id != role_id,
+                    ),
+                )
+                if duplicate is not None:
+                    raise errors.ConflictError(msg='同名角色 / 部门已存在')
+                role.name = clean_name
+        if kind is not None:
+            if kind not in {'role', 'department'}:
+                raise errors.RequestError(msg='kind 只能是 role 或 department')
+            role.kind = kind
+        role.updated_time = timezone.now()
+        await db.flush()
+        member_count = await _scalar(
+            db,
+            sa.select(sa.func.count())
+            .select_from(HasnEnterpriseMemberRole)
+            .where(HasnEnterpriseMemberRole.role_id == role_id),
+        )
+        return _role_payload(role, member_count=int(member_count or 0))
+
+    async def delete_role(self, db: AsyncSession, *, enterprise_id: int, operator_user_id: int, role_id: int) -> None:
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='删除企业角色'
+        )
+        role = await self._get_role_model(db, enterprise_id=enterprise_id, role_id=role_id)
+        # 无 FK 级联：先按 enterprise_id + role_id 清成员关联，再删角色本身。
+        await db.execute(
+            sa.delete(HasnEnterpriseMemberRole).where(
+                HasnEnterpriseMemberRole.enterprise_id == enterprise_id,
+                HasnEnterpriseMemberRole.role_id == role_id,
+            )
+        )
+        await db.delete(role)
+        await db.flush()
+
+    async def list_role_members(
+        self, db: AsyncSession, *, enterprise_id: int, operator_user_id: int, role_id: int
+    ) -> dict[str, Any]:
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='查看企业角色成员'
+        )
+        await self._get_role_model(db, enterprise_id=enterprise_id, role_id=role_id)
+        rows = (
+            await db.execute(
+                sa.select(HasnEnterpriseMemberRole, User)
+                .join(User, User.id == HasnEnterpriseMemberRole.user_id, isouter=True)
+                .where(
+                    HasnEnterpriseMemberRole.enterprise_id == enterprise_id,
+                    HasnEnterpriseMemberRole.role_id == role_id,
+                )
+                .order_by(HasnEnterpriseMemberRole.id.asc())
+            )
+        ).all()
+        return {
+            'enterprise_id': enterprise_id,
+            'role_id': role_id,
+            'items': [
+                {
+                    'user_id': mr.user_id,
+                    'nickname': getattr(user, 'nickname', None),
+                    'phone': getattr(user, 'phone', None),
+                    'assigned_at': _datetime_payload(getattr(mr, 'created_time', None)),
+                }
+                for mr, user in rows
+            ],
+        }
+
+    async def grant_member_role(
+        self, db: AsyncSession, *, enterprise_id: int, operator_user_id: int, role_id: int, user_id: int
+    ) -> dict[str, Any]:
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='授予企业角色'
+        )
+        await self._get_role_model(db, enterprise_id=enterprise_id, role_id=role_id)
+        # 仅可授予本企业 approved 成员，不能给非成员挂角色（跨企业隔离的第二道闸）。
+        membership = await self._approved_membership(db, enterprise_id=enterprise_id, user_id=user_id)
+        if membership is None:
+            raise errors.RequestError(msg='该用户不是本企业成员')
+        existing = await _scalar(
+            db,
+            sa.select(HasnEnterpriseMemberRole.id).where(
+                HasnEnterpriseMemberRole.role_id == role_id,
+                HasnEnterpriseMemberRole.user_id == user_id,
+            ),
+        )
+        if existing is None:
+            db.add(HasnEnterpriseMemberRole(enterprise_id=enterprise_id, user_id=user_id, role_id=role_id))
+            await db.flush()
+        return {'enterprise_id': enterprise_id, 'role_id': role_id, 'user_id': user_id, 'granted': True}
+
+    async def revoke_member_role(
+        self, db: AsyncSession, *, enterprise_id: int, operator_user_id: int, role_id: int, user_id: int
+    ) -> None:
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='撤销企业角色'
+        )
+        await self._get_role_model(db, enterprise_id=enterprise_id, role_id=role_id)
+        await db.execute(
+            sa.delete(HasnEnterpriseMemberRole).where(
+                HasnEnterpriseMemberRole.enterprise_id == enterprise_id,
+                HasnEnterpriseMemberRole.role_id == role_id,
+                HasnEnterpriseMemberRole.user_id == user_id,
+            )
+        )
+        await db.flush()
 
     async def list_user_workspaces(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
         active = await self.get_active_workspace(db, user_id=user_id)
@@ -955,6 +1170,18 @@ def _membership_payload(membership, user=None) -> dict[str, Any]:
         'invite_code': membership.invite_code,
         'decided_by': membership.decided_by,
         'decision_note': membership.decision_note,
+    }
+
+
+def _role_payload(role, *, member_count: int = 0) -> dict[str, Any]:
+    return {
+        'id': role.id,
+        'enterprise_id': role.enterprise_id,
+        'name': role.name,
+        'kind': role.kind,
+        'member_count': member_count,
+        'created_at': _datetime_payload(getattr(role, 'created_time', None)),
+        'updated_at': _datetime_payload(getattr(role, 'updated_time', None)),
     }
 
 

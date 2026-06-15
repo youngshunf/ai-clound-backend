@@ -44,6 +44,16 @@ class CreateInviteCodeRequest(BaseModel):
     auto_approve: bool = False
 
 
+class CreateRoleRequest(BaseModel):
+    name: str = Field(description='角色 / 部门名称')
+    kind: str = Field(default='role', description='类型：role 角色 / department 部门')
+
+
+class UpdateRoleRequest(BaseModel):
+    name: str | None = None
+    kind: str | None = None
+
+
 @router.post('/enterprises', dependencies=[DependsJwtAuth], summary='创建企业')
 async def create_enterprise(
     request: Request, db: CurrentSessionTransaction, body: CreateEnterpriseRequest
@@ -202,3 +212,102 @@ async def create_invite_code(
 async def revoke_invite_code(db: CurrentSessionTransaction, enterprise_id: int, code: str) -> ResponseModel:
     data = await workbench_domain_service.revoke_invite_code(db, enterprise_id=enterprise_id, code=code)
     return response_base.success(data=data)
+
+
+# ── 企业角色 / 部门管理（应用平台 v3 P3 §4.2(4)/§6.5）──────────────────────────
+# owner / admin 鉴权与跨企业隔离在 workbench_domain_service 内强制（operator_user_id=请求人）。
+
+
+@router.get('/enterprises/{enterprise_id}/roles', dependencies=[DependsJwtAuth], summary='企业角色 / 部门列表')
+async def list_roles(request: Request, db: CurrentSession, enterprise_id: int) -> ResponseModel:
+    data = await workbench_domain_service.list_roles(
+        db, enterprise_id=enterprise_id, operator_user_id=request.user.id
+    )
+    return response_base.success(data=data)
+
+
+@router.post('/enterprises/{enterprise_id}/roles', dependencies=[DependsJwtAuth], summary='创建角色 / 部门')
+async def create_role(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, body: CreateRoleRequest
+) -> ResponseModel:
+    data = await workbench_domain_service.create_role(
+        db,
+        enterprise_id=enterprise_id,
+        operator_user_id=request.user.id,
+        name=body.name,
+        kind=body.kind,
+    )
+    return response_base.success(data=data)
+
+
+@router.patch('/enterprises/{enterprise_id}/roles/{role_id}', dependencies=[DependsJwtAuth], summary='改名 / 改类型')
+async def update_role(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, role_id: int, body: UpdateRoleRequest
+) -> ResponseModel:
+    data = await workbench_domain_service.update_role(
+        db,
+        enterprise_id=enterprise_id,
+        operator_user_id=request.user.id,
+        role_id=role_id,
+        name=body.name,
+        kind=body.kind,
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/enterprises/{enterprise_id}/roles/{role_id}', dependencies=[DependsJwtAuth], summary='删除角色 / 部门')
+async def delete_role(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, role_id: int
+) -> ResponseModel:
+    await workbench_domain_service.delete_role(
+        db, enterprise_id=enterprise_id, operator_user_id=request.user.id, role_id=role_id
+    )
+    return response_base.success()
+
+
+@router.get(
+    '/enterprises/{enterprise_id}/roles/{role_id}/members', dependencies=[DependsJwtAuth], summary='角色成员列表'
+)
+async def list_role_members(
+    request: Request, db: CurrentSession, enterprise_id: int, role_id: int
+) -> ResponseModel:
+    data = await workbench_domain_service.list_role_members(
+        db, enterprise_id=enterprise_id, operator_user_id=request.user.id, role_id=role_id
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/enterprises/{enterprise_id}/roles/{role_id}/members/{user_id}',
+    dependencies=[DependsJwtAuth],
+    summary='授予成员角色 / 部门',
+)
+async def grant_member_role(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, role_id: int, user_id: int
+) -> ResponseModel:
+    data = await workbench_domain_service.grant_member_role(
+        db,
+        enterprise_id=enterprise_id,
+        operator_user_id=request.user.id,
+        role_id=role_id,
+        user_id=user_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.delete(
+    '/enterprises/{enterprise_id}/roles/{role_id}/members/{user_id}',
+    dependencies=[DependsJwtAuth],
+    summary='撤销成员角色 / 部门',
+)
+async def revoke_member_role(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, role_id: int, user_id: int
+) -> ResponseModel:
+    await workbench_domain_service.revoke_member_role(
+        db,
+        enterprise_id=enterprise_id,
+        operator_user_id=request.user.id,
+        role_id=role_id,
+        user_id=user_id,
+    )
+    return response_base.success()
