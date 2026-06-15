@@ -17,7 +17,6 @@ from backend.app.hasn.model import (
     HasnEnterprise,
     HasnEnterpriseInviteCode,
     HasnEnterpriseMembership,
-    HasnWorkspaceApp,
 )
 from backend.app.admin.model.user import User
 from backend.app.workbench.model import HasnOwnerWorkbenchPref
@@ -99,13 +98,8 @@ class WorkbenchDomainService:
                 decided_at=timezone.now(),
             )
         )
-        await self.ensure_auto_apps(
-            db,
-            workspace_kind='enterprise',
-            user_id=None,
-            enterprise_id=enterprise.id,
-            enabled_by=user_id,
-        )
+        # 应用平台 v3 P3（设计 17 决策①）：应用一律开箱即用，挂载概念废除
+        # （`hasn_workspace_app` 退役）——建企业不再 ensure_auto_apps 写挂载行。
         await db.flush()
         await self.enterprise_bus.publish(
             'on_enterprise_created',
@@ -443,22 +437,18 @@ class WorkbenchDomainService:
         return {'active': active, 'available': available, 'user_id': user_id}
 
     async def _personal_workspace_stats(self, db: AsyncSession, *, user_id: int) -> dict[str, int]:
-        app_count = await _scalar(
-            db,
-            sa
-            .select(sa.func.count())
-            .select_from(HasnWorkspaceApp)
-            .where(
-                HasnWorkspaceApp.workspace_kind == 'personal',
-                HasnWorkspaceApp.user_id == user_id,
-                HasnWorkspaceApp.status == 'active',
-            ),
-        )
+        # 应用平台 v3 P3（设计 17 决策①）：挂载废除，app_count = 该空间「开箱即用」的已发布
+        # 应用数（catalog kind=personal），不再数 `hasn_workspace_app` 挂载行。
+        app_count = await self._published_app_count(db, kind='personal')
         return {
             'member_count': 1,
-            'app_count': int(app_count or 0),
+            'app_count': app_count,
             'admin_count': 1,
         }
+
+    async def _published_app_count(self, db: AsyncSession, *, kind: str) -> int:
+        """该 workspace_kind 下已发布应用数（开箱即用，同 kind 所有空间一致）。"""
+        return len(await app_catalog_service.list_published_catalog(db, kind=kind))
 
     async def _enterprise_workspace_stats(
         self,
@@ -490,22 +480,14 @@ class WorkbenchDomainService:
             )
             .group_by(HasnEnterpriseMembership.enterprise_id),
         )
-        app_counts = await _grouped_count(
-            db,
-            sa
-            .select(HasnWorkspaceApp.enterprise_id, sa.func.count())
-            .where(
-                HasnWorkspaceApp.workspace_kind == 'enterprise',
-                HasnWorkspaceApp.enterprise_id.in_(enterprise_ids),
-                HasnWorkspaceApp.status == 'active',
-            )
-            .group_by(HasnWorkspaceApp.enterprise_id),
-        )
+        # 应用平台 v3 P3（设计 17 决策①）：挂载废除，企业 app_count = 已发布企业应用数
+        # （开箱即用，同 kind 所有企业一致），不再按 `hasn_workspace_app` 分组数挂载行。
+        app_count = await self._published_app_count(db, kind='enterprise')
 
         return {
             enterprise_id: {
                 'member_count': member_counts.get(enterprise_id, 0),
-                'app_count': app_counts.get(enterprise_id, 0),
+                'app_count': app_count,
                 'admin_count': admin_counts.get(enterprise_id, 0),
             }
             for enterprise_id in enterprise_ids
@@ -570,48 +552,9 @@ class WorkbenchDomainService:
         )
         return next_workspace
 
-    async def ensure_auto_apps(
-        self,
-        db: AsyncSession,
-        *,
-        workspace_kind: str,
-        user_id: int | None,
-        enterprise_id: int | None,
-        enabled_by: int | None,
-    ) -> list[dict[str, Any]]:
-        rows = []
-        for app in workbench_app_registry.auto_install_apps(workspace_kind):
-            row = await self._upsert_workspace_app(
-                db,
-                workspace_kind=workspace_kind,
-                user_id=user_id,
-                enterprise_id=enterprise_id,
-                app_id=app.id,
-                status='active',
-                enabled_by=enabled_by,
-            )
-            rows.append(_workspace_app_payload(row))
-        return rows
-
-    async def list_current_workspace_apps(self, db: AsyncSession, *, user_id: int) -> list[dict[str, Any]]:
-        workspace = await self.get_active_workspace(db, user_id=user_id)
-        await self.ensure_auto_apps(
-            db,
-            workspace_kind=workspace['kind'],
-            user_id=user_id if workspace['kind'] == 'personal' else None,
-            enterprise_id=workspace['enterprise_id'],
-            enabled_by=user_id,
-        )
-        rows = await self._workspace_app_rows(db, workspace=workspace, user_id=user_id)
-        manifests = []
-        for row in rows:
-            if row.status != 'active':
-                continue
-            manifest = workbench_app_registry.get(row.app_id).to_manifest(workspace_kind=workspace['kind'])
-            manifest['status'] = row.status
-            manifest['workspace_kind'] = row.workspace_kind
-            manifests.append(manifest)
-        return manifests
+    # 应用平台 v3 P3（设计 17 决策①）：挂载概念废除（`hasn_workspace_app` 退役），
+    # ensure_auto_apps / list_current_workspace_apps（"已挂载应用"）已删除——应用一律开箱即用，
+    # 展示目录由 list_workbench_apps（catalog ∩ entitlement）权威给出。
 
     async def list_workbench_apps(
         self, db: AsyncSession, *, user_id: int, workspace_kind: str | None = None
@@ -701,57 +644,9 @@ class WorkbenchDomainService:
             'workspace': ws,
         }
 
-    async def enable_current_workspace_app(self, db: AsyncSession, *, user_id: int, app_id: str) -> dict[str, Any]:
-        # C4 闸门②：挂载前置准入（catalog 为存在性 + 商业化权威）。下架/未准入直接拒，
-        # data 带 access（reason/requires/min_tier/price），前端据此弹升级/购买（设计 §5.3②）。
-        cat = await app_catalog_service.get_published_catalog(db, app_id=app_id)
-        if cat is None:
-            raise errors.NotFoundError(msg='工作台应用不存在')
-        # 免费 app 直接放行（不必解析 owner / 订阅）；仅付费 app 才判定准入。
-        if (cat.access_type or 'free') != 'free':
-            owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
-            access = await app_catalog_service.resolve_app_access(
-                db, catalog=cat, owner_hasn_id=owner_hasn_id or ''
-            )
-            if not access['allowed']:
-                raise errors.ForbiddenError(msg=access['reason'], data=access)
-        workspace = await self.get_active_workspace(db, user_id=user_id)
-        row = await self._upsert_workspace_app(
-            db,
-            workspace_kind=workspace['kind'],
-            user_id=user_id if workspace['kind'] == 'personal' else None,
-            enterprise_id=workspace['enterprise_id'],
-            app_id=app_id,
-            status='active',
-            enabled_by=user_id,
-        )
-        await db.flush()
-        payload = _workspace_event_payload(row)
-        await self.workbench_bus.publish('on_app_enabled', payload)
-        return _workspace_app_payload(row)
-
-    async def disable_current_workspace_app(self, db: AsyncSession, *, user_id: int, app_id: str) -> dict[str, Any]:
-        try:
-            app = workbench_app_registry.get(app_id)
-        except KeyError as exc:
-            raise errors.NotFoundError(msg='工作台应用不存在') from exc
-        workspace = await self.get_active_workspace(db, user_id=user_id)
-        if workspace['kind'] == 'personal' and app.install_policy == 'auto':
-            raise errors.RequestError(msg='auto_installed_personal_app_cannot_be_disabled')
-        row = await self._get_workspace_app(
-            db,
-            workspace_kind=workspace['kind'],
-            user_id=user_id if workspace['kind'] == 'personal' else None,
-            enterprise_id=workspace['enterprise_id'],
-            app_id=app_id,
-        )
-        if row is None:
-            raise errors.NotFoundError(msg='工作空间应用不存在')
-        row.status = 'disabled'
-        await db.flush()
-        payload = _workspace_event_payload(row)
-        await self.workbench_bus.publish('on_app_disabled', payload)
-        return _workspace_app_payload(row)
+    # 应用平台 v3 P3（设计 17 决策①）：enable/disable_current_workspace_app（挂载/卸载）已删除。
+    # 应用一律开箱即用，是否可用纯由商业化准入决定（list_workbench_apps 每行附 access，
+    # 付费走 resolve_app_access，§5.2）；不再有"挂载开关"写 `hasn_workspace_app`。
 
     # RF-CLOUD：数据面方法（list/create datasets、search、upload）已删除。
     # 知识库浏览/检索/上传现由 hasn-node daemon 经 KnowledgeAdapter 直连 RagFlow
@@ -928,73 +823,9 @@ class WorkbenchDomainService:
             },
         )
 
-    async def _workspace_app_rows(self, db: AsyncSession, *, workspace: dict[str, Any], user_id: int):
-        stmt = sa.select(HasnWorkspaceApp)
-        if workspace['kind'] == 'personal':
-            stmt = stmt.where(HasnWorkspaceApp.workspace_kind == 'personal', HasnWorkspaceApp.user_id == user_id)
-        else:
-            stmt = stmt.where(
-                HasnWorkspaceApp.workspace_kind == 'enterprise',
-                HasnWorkspaceApp.enterprise_id == workspace['enterprise_id'],
-            )
-        return (await db.execute(stmt.order_by(HasnWorkspaceApp.id.asc()))).scalars().all()
-
-    async def _get_workspace_app(
-        self,
-        db: AsyncSession,
-        *,
-        workspace_kind: str,
-        user_id: int | None,
-        enterprise_id: int | None,
-        app_id: str,
-    ):
-        stmt = sa.select(HasnWorkspaceApp).where(
-            HasnWorkspaceApp.workspace_kind == workspace_kind,
-            HasnWorkspaceApp.app_id == app_id,
-        )
-        if workspace_kind == 'personal':
-            stmt = stmt.where(HasnWorkspaceApp.user_id == user_id)
-        else:
-            stmt = stmt.where(HasnWorkspaceApp.enterprise_id == enterprise_id)
-        return await _scalar(db, stmt)
-
-    async def _upsert_workspace_app(
-        self,
-        db: AsyncSession,
-        *,
-        workspace_kind: str,
-        user_id: int | None,
-        enterprise_id: int | None,
-        app_id: str,
-        status: str,
-        enabled_by: int | None,
-    ):
-        if app_id not in {app.id for app in workbench_app_registry.list(workspace_kind)}:
-            raise errors.NotFoundError(msg='工作台应用不存在')
-        row = await self._get_workspace_app(
-            db,
-            workspace_kind=workspace_kind,
-            user_id=user_id,
-            enterprise_id=enterprise_id,
-            app_id=app_id,
-        )
-        if row is None:
-            row = HasnWorkspaceApp(
-                workspace_kind=workspace_kind,
-                user_id=user_id,
-                enterprise_id=enterprise_id,
-                app_id=app_id,
-                status=status,
-                config={},
-                enabled_by=enabled_by,
-            )
-            db.add(row)
-            await db.flush()
-            await db.refresh(row)
-        else:
-            row.status = status
-            row.enabled_by = enabled_by
-        return row
+    # 应用平台 v3 P3（设计 17 决策①）：挂载行私有读写助手
+    # （_workspace_app_rows / _get_workspace_app / _upsert_workspace_app）随 `hasn_workspace_app`
+    # 退役一并删除。
 
     async def _resolve_knowledge_instance(self, db: AsyncSession, *, workspace: dict[str, Any]):
         """经通用 instance_resolver 解析知识库实例（实施 03 P4：删知识库专用解析分支，复用 resolve）。
@@ -1138,28 +969,6 @@ def _invite_payload(invite) -> dict[str, Any]:
         'expires_at': invite.expires_at,
         'auto_approve': invite.auto_approve,
         'revoked': invite.revoked,
-    }
-
-
-def _workspace_app_payload(row) -> dict[str, Any]:
-    return {
-        'id': row.id,
-        'workspace_kind': row.workspace_kind,
-        'user_id': row.user_id,
-        'enterprise_id': row.enterprise_id,
-        'app_id': row.app_id,
-        'status': row.status,
-        'config': row.config,
-        'enabled_by': row.enabled_by,
-    }
-
-
-def _workspace_event_payload(row) -> dict[str, Any]:
-    return {
-        'workspace_kind': row.workspace_kind,
-        'user_id': row.user_id,
-        'enterprise_id': row.enterprise_id,
-        'app_id': row.app_id,
     }
 
 

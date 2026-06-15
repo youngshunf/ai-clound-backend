@@ -23,7 +23,7 @@ from backend.app.hasn_community.api.v1.app import community as community_api
 from backend.app.hasn.api.v1.app import workspace as workspace_api
 from backend.app.hasn.api.v1 import sync as sync_api
 from backend.app.mcp.routes import mcp_router
-from backend.app.hasn.model import HasnAiNativeAppAudit, HasnSessions, HasnUserActiveWorkspace
+from backend.app.hasn.model import HasnAiNativeAppAudit, HasnSessions
 from backend.common.dataclasses import AgentTokenPayload
 from backend.app.hasn.schema.hasn_message_hub import InboxItem, InboxPullRequest, InboxPullResponse
 from backend.app.hasn.schema.hasn_onboarding import SandboxSummary
@@ -156,8 +156,8 @@ class FakeUserGateway:
 
 class FakeDb:
     def __init__(self) -> None:
-        self.workspace_apps: dict[tuple[str, int | None, int | None, str], SimpleNamespace] = {}
-        self.active_workspaces: dict[int, SimpleNamespace] = {}
+        # 应用平台 v3 P3（设计 17 决策①②）：hasn_workspace_app / hasn_user_active_workspace
+        # 已退役删表，FakeDb 不再持有 workspace_apps / active_workspaces。
         self.enterprise_memberships: dict[tuple[int, int], SimpleNamespace] = {}
         self.humans_by_user_id: dict[int, SimpleNamespace] = {}
         self.agents_by_hasn_id: dict[str, SimpleNamespace] = {}
@@ -178,19 +178,6 @@ class FakeDb:
                 and (params.get('status_1') is None or agent.status == params.get('status_1'))
             ]
             return _ScalarResult(rows)
-        if 'hasn_workspace_app' in sql:
-            row = self.workspace_apps.get(
-                (
-                    params.get('workspace_kind_1'),
-                    params.get('user_id_1'),
-                    params.get('enterprise_id_1'),
-                    params.get('app_id_1'),
-                )
-            )
-            return _ScalarResult([row] if row is not None else [])
-        if 'hasn_user_active_workspace' in sql:
-            row = self.active_workspaces.get(params.get('user_id_1'))
-            return _ScalarResult([row] if row is not None else [])
         if 'hasn_enterprise_membership' in sql:
             row = self.enterprise_memberships.get((params.get('enterprise_id_1'), params.get('user_id_1')))
             return _ScalarResult([row] if row is not None else [])
@@ -214,9 +201,6 @@ class FakeDb:
         return _ScalarResult([])
 
     def add(self, row: Any) -> None:
-        if row.__class__.__name__ == 'HasnUserActiveWorkspace':
-            self.active_workspaces[int(row.user_id)] = row
-            return
         if isinstance(row, HasnSessions):
             self.sessions_by_id[row.session_id] = row
             return
@@ -1305,20 +1289,6 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     )
 
     redis.values[f'{SMS_CODE_PREFIX}:13800138000'] = '123456'
-    fake_db_instance.workspace_apps[('personal', 7, None, 'knowledge')] = SimpleNamespace(
-        workspace_kind='personal',
-        user_id=7,
-        enterprise_id=None,
-        app_id='knowledge',
-        status='active',
-    )
-    fake_db_instance.workspace_apps[('enterprise', None, 42, 'knowledge')] = SimpleNamespace(
-        workspace_kind='enterprise',
-        user_id=None,
-        enterprise_id=42,
-        app_id='knowledge',
-        status='active',
-    )
     fake_db_instance.enterprise_memberships[(42, 7)] = SimpleNamespace(
         enterprise_id=42,
         user_id=7,
@@ -1335,7 +1305,6 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         status='active',
         star_id='100001#assistant',
     )
-    fake_db_instance.active_workspaces[7] = HasnUserActiveWorkspace(user_id=7, kind='personal', enterprise_id=None)
     return app
 
 

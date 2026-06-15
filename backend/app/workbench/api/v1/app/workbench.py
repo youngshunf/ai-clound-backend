@@ -129,10 +129,8 @@ async def dismiss_briefing_item(
     return response_base.success(data={'item_id': item_id, 'action': obj.action})
 
 
-@router.get('/workbench/workspaces/current/apps', dependencies=[DependsJwtAuth], summary='当前工作空间已挂载应用')
-async def current_workspace_apps(request: Request, db: CurrentSessionTransaction) -> ResponseModel:
-    apps = await workbench_domain_service.list_current_workspace_apps(db, user_id=request.user.id)
-    return response_base.success(data=apps)
+# 应用平台 v3 P3（设计 17 决策①）：当前空间「已挂载应用」端点已删除——应用一律开箱即用，
+# 工作台展示统一走下面的 GET /workbench/apps（catalog ∩ entitlement）。
 
 
 @router.get('/workbench/apps', dependencies=[DependsJwtAuth], summary='工作台全部已注册应用（注册即用）')
@@ -159,16 +157,8 @@ async def resolve_workbench_app_entry(request: Request, db: CurrentSession, app_
     return response_base.success(data=handle)
 
 
-@router.post('/workbench/workspaces/current/apps/{app_id}', dependencies=[DependsJwtAuth], summary='挂载应用')
-async def enable_workbench_app(request: Request, db: CurrentSessionTransaction, app_id: str) -> ResponseModel:
-    data = await workbench_domain_service.enable_current_workspace_app(db, user_id=request.user.id, app_id=app_id)
-    return response_base.success(data=data)
-
-
-@router.delete('/workbench/workspaces/current/apps/{app_id}', dependencies=[DependsJwtAuth], summary='卸载应用')
-async def disable_workbench_app(request: Request, db: CurrentSessionTransaction, app_id: str) -> ResponseModel:
-    data = await workbench_domain_service.disable_current_workspace_app(db, user_id=request.user.id, app_id=app_id)
-    return response_base.success(data=data)
+# 应用平台 v3 P3（设计 17 决策①）：挂载/卸载端点（POST/DELETE current/apps/{app_id}）已删除——
+# 应用开箱即用，无挂载开关；付费墙在 GET /workbench/apps 的 access 字段 + invoke 时把关。
 
 
 # ============================ C5：付费应用 试用 / 我的权益（owner 维度） ============================

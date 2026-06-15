@@ -34,8 +34,6 @@ from backend.app.hasn.api.v1.admin.hasn_task_run import router as admin_hasn_tas
 from backend.app.hasn.api.v1.admin.hasn_tenant_sandboxes import router as admin_hasn_tenant_sandboxes_router
 from backend.app.hasn.api.v1.admin.hasn_trade_sessions import router as admin_hasn_trade_sessions_router
 from backend.app.hasn.api.v1.admin.hasn_unread_counts import router as admin_hasn_unread_counts_router
-from backend.app.hasn.api.v1.admin.hasn_user_active_workspace import router as admin_hasn_user_active_workspace_router
-from backend.app.hasn.api.v1.admin.hasn_workspace_app import router as admin_hasn_workspace_app_router
 from backend.app.hasn.api.v1.ai_native_app import apps_router as ai_native_apps_router
 from backend.app.hasn.api.v1.ai_native_app import audit_router as ai_native_audit_router
 from backend.app.hasn.api.v1.ai_native_app import runtime_router as ai_native_runtime_router
@@ -90,8 +88,7 @@ v1.include_router(admin_hasn_tenant_sandboxes_router, prefix='/tenant/sandboxes'
 v1.include_router(admin_hasn_enterprise_router, prefix='/enterprises', tags=['企业管理'])
 v1.include_router(admin_hasn_enterprise_membership_router, prefix='/enterprise/memberships', tags=['企业成员关系'])
 v1.include_router(admin_hasn_enterprise_invite_code_router, prefix='/enterprise/invite-codes', tags=['企业邀请码'])
-v1.include_router(admin_hasn_user_active_workspace_router, prefix='/user/active-workspaces', tags=['活跃工作区'])
-v1.include_router(admin_hasn_workspace_app_router, prefix='/workspace/apps', tags=['工作空间应用'])
+# 应用平台 v3 P3（设计 17 决策①②）：active-workspaces / workspace-apps 管理路由随两表退役一并删除。
 
 # --- 用户端（仅 JWT） ---
 from backend.app.hasn.api.agent_scopes import router as agent_scopes_router

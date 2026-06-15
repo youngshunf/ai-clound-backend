@@ -29,10 +29,8 @@ from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
-from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.app.billing.model import UserSubscription
 from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 from backend.utils.timezone import timezone
 
@@ -272,19 +270,9 @@ async def test_disabled_status_denies(db) -> None:
     assert access['reason'] == 'disabled'
 
 
-# ============================ 闸门②挂载前置准入 ============================
-
-
-async def test_mount_gate_blocks_unpaid_app(db) -> None:
-    """付费未准入 app 挂载被拒，ForbiddenError 携 access（前端据此弹升级/购买）。"""
-    app_id = f'tier_{_uid()}'
-    db.add(_catalog(app_id, access_type='tier', min_tier='pro', trial_days=7))
-    await db.flush()
-    fresh_user = 920_000_000 + int(_uid(), 16) % 1_000_000  # 无订阅 → free
-    with pytest.raises(errors.ForbiddenError) as ei:
-        await workbench_domain_service.enable_current_workspace_app(db, user_id=fresh_user, app_id=app_id)
-    assert ei.value.data['reason'] == 'need_upgrade'
-    assert ei.value.data['requires'] == 'upgrade'
+# 应用平台 v3 P3（设计 17 决策①）：闸门②「挂载前置准入」随挂载概念废除而删除——
+# enable_current_workspace_app 已从 service 移除，付费准入改由闸门①（resolve_app_access，
+# 列表内联付费墙）与闸门③（Runtime Gateway entitlement）两道把守。
 
 
 # ============================ 闸门③Runtime Gateway entitlement 维度 ============================

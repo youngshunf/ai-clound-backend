@@ -177,7 +177,7 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         'HasnEnterpriseMembership': MembershipStub,
         'HasnEnterpriseInviteCode': InviteCodeStub,
         'HasnOwnerWorkbenchPref': WorkbenchPrefStub,
-        'HasnWorkspaceApp': WorkspaceAppStub,
+        # 应用平台 v3 P3（设计 17 决策①）：HasnWorkspaceApp 已从 service 删除（挂载废除），不再 patch。
         'HasnAppInstance': RagflowInstanceStub,
         'User': UserStub,
     }
@@ -210,6 +210,13 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         return SimpleNamespace(app_id=app_id, access_type='free', status='published')
 
     monkeypatch.setattr(catalog_mod, 'get_published_catalog', _stub_get_published_catalog, raising=True)
+
+    # 应用平台 v3 P3：workspace 卡片 app_count = 该 kind 已发布应用数（开箱即用）。stub 世界
+    # 无 hasn_app_catalog 表 → 用 registry 同 kind 应用集模拟「已发布目录」。
+    async def _stub_list_published_catalog(_db, *, kind):  # noqa: RUF029
+        return [SimpleNamespace(app_id=app.id) for app in workbench_app_registry.list(kind)]
+
+    monkeypatch.setattr(catalog_mod, 'list_published_catalog', _stub_list_published_catalog, raising=True)
 
     engine = create_async_engine('sqlite+aiosqlite:///:memory:', future=True)
     async with engine.begin() as conn:
@@ -261,19 +268,14 @@ async def test_create_enterprise_approves_owner_and_installs_knowledge(db_sessio
     owner = (await db_session.execute(sa.select(MembershipStub).where(MembershipStub.enterprise_id == 1))).scalar_one()
     assert (owner.user_id, owner.role, owner.status) == (11, 'owner', 'approved')
 
-    # 企业工作空间自动安装 = registry 中 enterprise scope + install_policy=auto 的全部应用（随注册表演进）
-    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
-
-    expected_auto = {app.id for app in workbench_app_registry.auto_install_apps('enterprise')}
+    # 应用平台 v3 P3（设计 17 决策①）：挂载废除——建企业不再写 hasn_workspace_app 行
+    # （应用一律开箱即用）；故此处不再断言"自动安装应用"。
     apps = (
         (await db_session.execute(sa.select(WorkspaceAppStub).where(WorkspaceAppStub.enterprise_id == 1)))
         .scalars()
         .all()
     )
-    assert {app.app_id for app in apps} == expected_auto
-    assert 'knowledge' in expected_auto
-    for app in apps:
-        assert (app.workspace_kind, app.status, app.enabled_by) == ('enterprise', 'active', 11)
+    assert apps == []
 
 
 @pytest.mark.asyncio
@@ -380,37 +382,26 @@ async def test_list_user_workspaces_returns_cloud_aggregated_workspace_stats(
         MembershipStub(enterprise_id=enterprise['id'], user_id=12, role='admin', status='approved'),
         MembershipStub(enterprise_id=enterprise['id'], user_id=13, role='member', status='approved'),
         MembershipStub(enterprise_id=enterprise['id'], user_id=14, role='admin', status='pending'),
-        WorkspaceAppStub(
-            workspace_kind='enterprise',
-            enterprise_id=enterprise['id'],
-            app_id='disabled-app',
-            status='disabled',
-        ),
-        WorkspaceAppStub(
-            workspace_kind='personal',
-            user_id=12,
-            app_id='personal-tool',
-            status='active',
-        ),
     ])
     await db_session.flush()
 
     workspaces = await service.list_user_workspaces(db_session, user_id=12)
 
+    # 应用平台 v3 P3（设计 17 决策①）：挂载废除，app_count = 该空间「开箱即用」的
+    # 已发布应用数（按 kind 从目录统计），不再来自 hasn_workspace_app 行。
+    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+
     personal = workspaces['available'][0]
     enterprise_workspace = workspaces['available'][1]
     assert personal['member_count'] == 1
-    assert personal['app_count'] == 1
+    assert personal['app_count'] == len(workbench_app_registry.list('personal'))
     assert personal['admin_count'] == 1
     assert enterprise_workspace['description'] == 'Ops workspace'
     assert enterprise_workspace['logo'] == 'https://cdn.example.com/assets/enterprise-logos/acme.png'
     assert enterprise_workspace['industry'] == 'software'
     assert enterprise_workspace['company_size'] == '11-50'
     assert enterprise_workspace['member_count'] == 3
-    # 企业 app_count = 建企业时自动安装的应用数（registry enterprise auto，disabled-app 不计）
-    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
-
-    assert enterprise_workspace['app_count'] == len(workbench_app_registry.auto_install_apps('enterprise'))
+    assert enterprise_workspace['app_count'] == len(workbench_app_registry.list('enterprise'))
     assert enterprise_workspace['admin_count'] == 2
 
 
@@ -594,53 +585,9 @@ async def test_delete_enterprise_falls_back_all_active_members_and_emits_disband
     ) in bus.events
 
 
-@pytest.mark.asyncio
-async def test_enterprise_workbench_app_enable_disable_uses_current_workspace_and_hooks(
-    db_session: AsyncSession,
-) -> None:
-    workbench_bus = CapturingBus()
-    service = _service(workbench_bus=workbench_bus)
-    enterprise = await service.create_enterprise(db_session, user_id=21, name='Acme')
-    await service.switch_active_workspace(
-        db_session,
-        user_id=21,
-        kind='enterprise',
-        enterprise_id=enterprise['id'],
-    )
-    disabled = await service.disable_current_workspace_app(db_session, user_id=21, app_id='knowledge')
-    enabled = await service.enable_current_workspace_app(db_session, user_id=21, app_id='knowledge')
-
-    assert disabled['status'] == 'disabled'
-    assert enabled['status'] == 'active'
-    assert workbench_bus.events == [
-        (
-            'on_app_disabled',
-            {'workspace_kind': 'enterprise', 'user_id': None, 'enterprise_id': enterprise['id'], 'app_id': 'knowledge'},
-        ),
-        (
-            'on_app_enabled',
-            {'workspace_kind': 'enterprise', 'user_id': None, 'enterprise_id': enterprise['id'], 'app_id': 'knowledge'},
-        ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_workbench_rejects_unknown_apps_and_protects_auto_installed_personal_apps(
-    db_session: AsyncSession,
-) -> None:
-    service = _service()
-    await service.ensure_auto_apps(
-        db_session,
-        workspace_kind='personal',
-        user_id=21,
-        enterprise_id=None,
-        enabled_by=21,
-    )
-
-    with pytest.raises(errors.NotFoundError):
-        await service.enable_current_workspace_app(db_session, user_id=21, app_id='missing-app')
-    with pytest.raises(errors.RequestError, match='auto_installed_personal_app_cannot_be_disabled'):
-        await service.disable_current_workspace_app(db_session, user_id=21, app_id='knowledge')
+# 应用平台 v3 P3（设计 17 决策①）：挂载废除——
+# enable/disable_current_workspace_app、ensure_auto_apps 已从 service 删除（应用一律开箱即用），
+# 相关的「企业启停应用 + 钩子」「拒绝未知应用 + 保护自动安装应用」两条用例随之删除。
 
 
 @pytest.mark.asyncio

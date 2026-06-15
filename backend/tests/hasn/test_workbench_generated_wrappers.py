@@ -144,16 +144,8 @@ CRUD_CASES = (
         'CRUDHasnUnreadCounts',
         'id__in',
     ),
-    (
-        'backend.app.hasn.crud.crud_hasn_user_active_workspace',
-        'CRUDHasnUserActiveWorkspace',
-        'user_id__in',
-    ),
-    (
-        'backend.app.hasn.crud.crud_hasn_workspace_app',
-        'CRUDHasnWorkspaceApp',
-        'id__in',
-    ),
+    # 应用平台 v3 P3（设计 17 决策①②）：crud_hasn_user_active_workspace /
+    # crud_hasn_workspace_app 随两表退役一并删除。
 )
 
 SERVICE_CASES = (
@@ -265,16 +257,8 @@ SERVICE_CASES = (
         'HasnUnreadCountsService',
         'hasn_unread_counts_dao',
     ),
-    (
-        'backend.app.hasn.service.hasn_user_active_workspace_service',
-        'HasnUserActiveWorkspaceService',
-        'hasn_user_active_workspace_dao',
-    ),
-    (
-        'backend.app.hasn.service.hasn_workspace_app_service',
-        'HasnWorkspaceAppService',
-        'hasn_workspace_app_dao',
-    ),
+    # 应用平台 v3 P3（设计 17 决策①②）：hasn_user_active_workspace_service /
+    # hasn_workspace_app_service 随两表退役一并删除。
 )
 
 GENERATED_API_MODULES = (

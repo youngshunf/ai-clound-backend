@@ -6,7 +6,7 @@ import sqlalchemy as sa
 
 from fastapi.security.utils import get_authorization_scheme_param
 
-from backend.app.hasn.model import HasnAiNativeAppAudit, HasnWorkspaceApp
+from backend.app.hasn.model import HasnAiNativeAppAudit
 from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.agent_capability_guard import capability_guard
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
@@ -111,9 +111,9 @@ class AiNativeRuntimeGateway:
         # 但保留 `capabilities`（含 required_scopes）。工作台知识库发现统一以 capability 为事实源，
         # 不再读 `tools[0]`（否则 tools 清空后 IndexError）。
         capability = manifest['manifest_json']['capabilities'][0]
-        if not await self._is_workspace_app_available(db, workspace=workspace, app_id=manifest['app_id']):
-            # 去掉安装态：published 即可用，仅企业 override 显式 disabled 时从发现里隐藏（设计 11 §4）。
-            return self._capabilities_payload(workspace=workspace, agent=agent, manifest=manifest, tools=[])
+        # 应用平台 v3 P3（设计 17 决策①）：挂载概念废除（`hasn_workspace_app` 退役）——
+        # published 即可发现，不再有企业 override「显式 disabled 隐藏」一档；商业化准入由
+        # _entitlement_denial 在调用面把关（发现面保持可见，付费墙在 invoke 时弹）。
         if not self._can_discover_tool(workspace=workspace, manifest=manifest, capability=capability):
             return self._capabilities_payload(workspace=workspace, agent=agent, manifest=manifest, tools=[])
         # 维度① 能力授权（D3 活取，唯一判定走 CapabilityGuard）：deny 的工具从发现里隐藏；ask/allow 仍可见。
@@ -300,10 +300,8 @@ class AiNativeRuntimeGateway:
         专属闸门（启用/协作/角色/输入）server 层不做，仍需在此执行。
         """
         tool_name = tool.get('mcp_name') or tool['tool_id']
-        # 去掉安装态：published 即可调用，无需任何启用步骤；仅企业 override 显式 disabled 时拒（设计 11 §4.2/§4.3）。
-        if not await self._is_workspace_app_available(db, workspace=workspace, app_id=manifest['app_id']):
-            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15002', reason='app_disabled_by_enterprise')
+        # 应用平台 v3 P3（设计 17 决策①）：挂载概念废除（`hasn_workspace_app` 退役）——
+        # published 即可调用，无任何启用/企业 override 步骤；准入仅由下方 entitlement 维度把关。
 
         # C4 闸门③（设计 §5.3③，安全关键）：付费 app 的 entitlement 维度。
         # **两条到达面都过**（中继路由 + MCP 直连面 shim），不放进 `skip_mode_gate` 块——
@@ -752,15 +750,6 @@ class AiNativeRuntimeGateway:
             'workspace_key': f'enterprise:{enterprise_id}' if enterprise_id is not None else 'enterprise:unknown',
         }
 
-    async def _is_workspace_app_available(self, db: AsyncSession, *, workspace: dict[str, Any], app_id: str) -> bool:
-        """published 即可用：默认无 workspace_app 记录即可用；仅企业 override 记录 status=disabled 时不可用。
-
-        hasn_workspace_app 从"启用开关（必须有记录才可用）"降级为"企业可选 override（默认零记录即可用）"
-        （设计 11 §4.2）。个人空间永远用公共实例、published 即用。
-        """
-        row = await self._get_workspace_app(db, workspace=workspace, app_id=app_id)
-        return row is None or row.status != 'disabled'
-
     async def _entitlement_denial(
         self, db: AsyncSession, *, app_id: str, agent: AgentTokenPayload
     ) -> str | None:
@@ -777,18 +766,8 @@ class AiNativeRuntimeGateway:
         )
         return None if access['allowed'] else 'entitlement_denied'
 
-    async def _get_workspace_app(
-        self, db: AsyncSession, *, workspace: dict[str, Any], app_id: str
-    ) -> HasnWorkspaceApp | None:
-        stmt = sa.select(HasnWorkspaceApp).where(
-            HasnWorkspaceApp.workspace_kind == workspace['kind'],
-            HasnWorkspaceApp.app_id == app_id,
-        )
-        if workspace['kind'] == 'personal':
-            stmt = stmt.where(HasnWorkspaceApp.user_id == workspace.get('user_id'))
-        else:
-            stmt = stmt.where(HasnWorkspaceApp.enterprise_id == workspace.get('enterprise_id'))
-        return (await db.execute(stmt)).scalars().first()
+    # 应用平台 v3 P3（设计 17 决策①）：挂载概念废除——_get_workspace_app（查 hasn_workspace_app
+    # 挂载行）已删除，发现/调用准入只看 catalog published + entitlement（_entitlement_denial）。
 
     def _find_tool(self, manifest: dict[str, Any], tool_id: str) -> dict[str, Any]:
         for tool in manifest['manifest_json'].get('tools') or []:

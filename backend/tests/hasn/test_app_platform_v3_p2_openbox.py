@@ -4,11 +4,12 @@
 **不再叠加 per-workspace 挂载态**后（设计 17 §6.1，实施台账 P2 首项）：
 
 - 免费 app **零挂载记录直出**：从未 enable 也出现在工作台，`status='available'`、`access.allowed=True`
-  （开箱即用——挂载概念废除，`hasn_workspace_app` 退役，P3/P4 删表）。
+  （开箱即用——挂载概念废除，`hasn_workspace_app` 已于 P3 退役删表）。
 - 付费 app **未开通显示付费墙**：仍出现在列表（`status='available'`），但 `access.allowed=False`
   携 `reason/requires/min_tier`，前端据此原位渲染升级/购买（付费墙随列表内联，无需挂载动作）。
-- **挂载行不影响展示**：即使存在一条 `status='disabled'` 的 `hasn_workspace_app` 行，列表仍恒
-  `available`——证明展示态已与挂载解耦（解耦是 P3 删表的前置）。
+
+注：P2 阶段曾有「disabled 挂载行不影响展示」一档证明展示态与挂载解耦；P3 已删 `hasn_workspace_app`
+表（设计 17 决策①），挂载概念彻底不复存在，该档随表退役删除。
 
 事实源: docs/hasn-node设计文档/14-AI-Native应用平台/17-应用平台v3-去工作空间绑定与产物级协作.md §6.1；
 实施台账: docs/hasn-node设计文档/14-AI-Native应用平台/实施/08-应用平台v3重构实施.md P2。
@@ -31,7 +32,6 @@ from starlette_context.plugins import RequestIdPlugin
 from backend.app.workbench.api.v1.app.workbench import router as app_workbench_router
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.hasn.model.hasn_workspace_app import HasnWorkspaceApp
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -151,14 +151,6 @@ async def test_free_app_available_without_mount(env) -> None:
     assert app['access']['allowed'] is True
     assert app['access']['reason'] == 'free'
 
-    # 确证：库里确实没有该 app 的任何挂载行——展示不依赖挂载。
-    rows = (
-        await env.session.execute(
-            sa.select(HasnWorkspaceApp).where(HasnWorkspaceApp.app_id == app_id)
-        )
-    ).scalars().all()
-    assert rows == [], '不应为开箱即用 app 创建挂载行'
-
 
 async def test_paid_app_shows_paywall_inline(env) -> None:
     """付费(tier)未开通：仍在列表(status='available')，但 access 携付费墙信息。"""
@@ -175,20 +167,3 @@ async def test_paid_app_shows_paywall_inline(env) -> None:
     assert access['requires'] == 'upgrade'
     assert access['min_tier'] == 'pro'
     assert access['trial_available'] is True
-
-
-async def test_mount_row_does_not_affect_display(env) -> None:
-    """挂载态与展示解耦：存在 disabled 挂载行时列表仍恒 available（P3 删表前置）。"""
-    app_id = f'p2decouple_{_uid()}'
-    env.session.add(_catalog(app_id, access_type='free'))
-    # 故意塞一条 disabled 挂载行（旧挂载机制的残留）——新逻辑须无视它。
-    env.session.add(HasnWorkspaceApp(
-        workspace_kind='personal', user_id=env.user_id, enterprise_id=None,
-        app_id=app_id, status='disabled', enabled_by=env.user_id,
-    ))
-    await env.session.flush()
-
-    by_id = await _list(env)
-    assert app_id in by_id
-    assert by_id[app_id]['status'] == 'available', 'disabled 挂载行不应让 app 在工作台消失/置灰'
-    assert by_id[app_id]['access']['allowed'] is True
