@@ -999,12 +999,15 @@ def test_runtime_tool_call_invalid_input_writes_15020_audit(monkeypatch: pytest.
     assert resp.status_code == 200, resp.text
     data = resp.json()['data']
     assert data['decision'] == 'deny'
-    assert data['error'] == {'code': '15020', 'message': 'input_schema_invalid'}
+    # 入参绑定接缝（候选①）：按 capability.input_schema 校验后，15020 reason 由通用
+    # 'input_schema_invalid' 升级为字段级 'input_invalid:<field>:<reason>'（更可调试）。
+    # post_id 必填字符串给空串 → 'required'。
+    assert data['error'] == {'code': '15020', 'message': 'input_invalid:post_id:required'}
     audit_row = fake_db.added[-1]
     assert audit_row.trace_id == 'trace-invalid-input'
     assert audit_row.decision == 'deny'
     assert audit_row.error_code == '15020'
-    assert audit_row.context == {'reason': 'input_schema_invalid'}
+    assert audit_row.context == {'reason': 'input_invalid:post_id:required'}
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from backend.app.hasn.service.instance_resolver import (
 )
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.app.hasn_community.service.community_service import community_service
+from backend.app.mcp.tools.input_binding import ToolInputError, bind_tool_input
 from backend.common.exception import errors
 from backend.common.security.agent_jwt import jwt_decode_agent
 from backend.common.security.scope_policy import MODE_ASK, MODE_DENY
@@ -214,6 +215,19 @@ class AiNativeRuntimeGateway:
         tool = self._find_tool(manifest, tool_id)
         capability = self._find_capability(manifest, tool_id)
         input_payload = dict(body.input or {})
+
+        # 入参绑定接缝（候选①）：按 capability.input_schema 校验 + 强转 + 回填默认，使 manifest
+        # 成为工具入参的唯一事实源——下游授权闸门与 handler 都拿到规范化 typed 入参（也让
+        # ask_gate 的 args_hash 规范化）。声明字段从严（缺必填/转不动/越枚举/越界 → 15020 deny），
+        # 未声明字段原样透传（向后兼容，不破坏现有 handler）。
+        try:
+            input_payload = bind_tool_input(capability.get('input_schema'), input_payload)
+        except ToolInputError as exc:
+            return await self._deny(
+                db, body=body, workspace=workspace, agent=agent, manifest=manifest,
+                capability=capability, tool=tool, code='15020',
+                reason=f'input_invalid:{exc.field}:{exc.reason}',
+            )
 
         # 令牌重试模型（doc15 §3.1）：批准后 hasn-mcp 带 `X-Capability-Ticket` 头重发同一调用，
         # 网关在 ask 闸门前验票跳闸。两种到达面：
