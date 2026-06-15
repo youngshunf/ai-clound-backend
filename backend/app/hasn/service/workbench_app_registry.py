@@ -96,6 +96,10 @@ class WorkbenchAppRegistry:
         from backend.app.hasn_growth.manifest import build_growth_workbench_app
 
         registry.register(build_growth_workbench_app())
+        # 创作运营 creator（cloud AI-Native，schema hasn_creator；install_policy=manual 非默认挂载）。延迟导入避免循环依赖。
+        from backend.app.hasn_creator.manifest import build_creator_workbench_app
+
+        registry.register(build_creator_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:

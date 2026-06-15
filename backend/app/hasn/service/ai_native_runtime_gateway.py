@@ -414,10 +414,34 @@ class AiNativeRuntimeGateway:
         if self._internal_handlers_cache is not None:
             return self._internal_handlers_cache
         from backend.app.hasn_community.service import community_tool_handlers as handlers
+        from backend.app.hasn_creator.service import creator_tool_handlers as creator_handlers
         from backend.app.hasn_growth.service import growth_tool_handlers as growth_handlers
         from backend.app.hasn_knowledge.service import tool_handlers as knowledge_handlers
 
         registry: dict[str, Any] = {
+            # 创作运营（纯云端业务应用：定位/创作/审核/发布/复盘/进化，零本地操作 → 工具全走云端
+            # gateway_internal，不经 hasn-node 本地 hasn-mcp / daemon Agent 代理；handler 落 hasn_creator service）
+            'creator.project_list': creator_handlers.handle_project_list,
+            'creator.project_get': creator_handlers.handle_project_get,
+            'creator.project_create': creator_handlers.handle_project_create,
+            'creator.profile_get': creator_handlers.handle_profile_get,
+            'creator.profile_analyze': creator_handlers.handle_profile_analyze,
+            'creator.profile_set': creator_handlers.handle_profile_set,
+            'creator.account_add': creator_handlers.handle_account_add,
+            'creator.account_list': creator_handlers.handle_account_list,
+            'creator.competitor_log': creator_handlers.handle_competitor_log,
+            'creator.topic_suggest': creator_handlers.handle_topic_suggest,
+            'creator.content_create': creator_handlers.handle_content_create,
+            'creator.content_list': creator_handlers.handle_content_list,
+            'creator.content_get': creator_handlers.handle_content_get,
+            'creator.content_update': creator_handlers.handle_content_update,
+            'creator.content_stage_save': creator_handlers.handle_content_stage_save,
+            'creator.publish_submit': creator_handlers.handle_publish_submit,
+            'creator.publish_list': creator_handlers.handle_publish_list,
+            'creator.publish_update_metrics': creator_handlers.handle_publish_update_metrics,
+            'creator.insight_log': creator_handlers.handle_insight_log,
+            'creator.pattern_search': creator_handlers.handle_pattern_search,
+            'creator.report_overview': creator_handlers.handle_report_overview,
             # 获客（纯云端业务应用：CRM/获客/触达/成交，零本地操作 → 工具全走云端 gateway_internal，
             # 不经 hasn-node 本地 hasn-mcp / daemon Agent 代理；handler 落 hasn_growth service）
             'growth.collect_start': growth_handlers.handle_growth_collect_start,
