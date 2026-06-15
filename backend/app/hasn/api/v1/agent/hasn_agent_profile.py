@@ -40,7 +40,13 @@ router = APIRouter()
 def _normalize_skill_ids(skills: Any) -> list[str]:
     """把 hasn_agents.skills（JSONB）归一化为 skill_id 字符串清单。
 
-    兼容三种历史形态：list[str] / list[{skill_id|id}] / {skill_id: version}。
+    兼容四种历史形态：
+      - list[str]：``['huanxing/x', ...]``
+      - list[{skill_id|id}]：``[{'skill_id': 'huanxing/x'}, ...]``
+      - {skill_id: version}：``{'huanxing/x': '1.0'}``（key 即 skill_id，value 是版本号）
+      - {'enabled': [<skill_id>...]}：旧 onboarding 误写的包裹形态——真实成员藏在
+        ``enabled`` 的**值**里（list），不是 key。若不识别，会把 ``['enabled']`` 当成
+        唯一技能下发，导致该 Agent 真实技能全不 provision（生产 2 个旧「全能助理」分身命中）。
     """
     if skills is None:
         return []
@@ -55,6 +61,11 @@ def _normalize_skill_ids(skills: Any) -> list[str]:
                     out.append(str(sid))
         return out
     if isinstance(skills, dict):
+        # 包裹形态：成员在 enabled 的值里（list）。{skill_id: version} 形态 value 是版本号
+        # 字符串，故按「值是不是 list」区分两者。
+        enabled = skills.get('enabled')
+        if isinstance(enabled, list):
+            return _normalize_skill_ids(enabled)
         return [str(key) for key in skills if key]
     return []
 
