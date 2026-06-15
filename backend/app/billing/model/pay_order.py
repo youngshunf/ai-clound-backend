@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.billing.model._base import BillingBase
+from backend.app.billing.model._base import APP_SCHEMA, BillingBase
 from backend.common.model import id_key, TimeZone
 
 
@@ -25,7 +25,7 @@ class PayOrder(BillingBase):
     expire_time: Mapped[datetime] = mapped_column(TimeZone, comment='订单过期时间')
 
     # 有默认值的字段在后
-    channel_id: Mapped[int | None] = mapped_column(sa.BIGINT(), sa.ForeignKey('pay_channel.id'), default=None, comment='关联支付渠道 ID')
+    channel_id: Mapped[int | None] = mapped_column(sa.BIGINT(), sa.ForeignKey(f'{APP_SCHEMA}.pay_channel.id'), default=None, comment='关联支付渠道 ID')
     channel_code: Mapped[str | None] = mapped_column(sa.String(32), default=None, comment='渠道编码（冗余）')
     body: Mapped[str | None] = mapped_column(sa.String(256), default=None, comment='订单描述')
     target_tier: Mapped[str | None] = mapped_column(sa.String(32), default=None, comment='目标套餐')
