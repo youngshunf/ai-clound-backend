@@ -10,6 +10,7 @@ from backend.app.hasn.model import HasnAiNativeAppManifest
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
+from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
@@ -39,6 +40,8 @@ class AINativeAppRegistry:
             'publish': PUBLISH_AI_NATIVE_MANIFEST,
             # 获客（app_id=growth，模块/schema hasn_growth）。键用 app_id（de-prefixed，community 先例）。
             'growth': GROWTH_AI_NATIVE_MANIFEST,
+            # 创作运营（app_id=creator，模块/schema hasn_creator）。键用 app_id（de-prefixed）。
+            'creator': CREATOR_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:

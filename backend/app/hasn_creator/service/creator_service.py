@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from backend.app.hasn_creator.model.account import Account
 from backend.app.hasn_creator.model.competitor import Competitor
 from backend.app.hasn_creator.model.content import Content
+from backend.app.hasn_creator.model.content_insight import ContentInsight
 from backend.app.hasn_creator.model.content_stage import ContentStage
 from backend.app.hasn_creator.model.profile import Profile
 from backend.app.hasn_creator.model.project import Project
@@ -697,6 +698,48 @@ class CreatorService:
             content.status = 'analyzing'
         await db.flush()
         return _to_dict(p)
+
+    # ============================ insight（进化沉淀；回写在 M5/insight_service）============================
+
+    @staticmethod
+    async def log_insight(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        project_id: int,
+        insight_type: str,
+        summary: str,
+        period: str | None = None,
+        evidence_json: dict[str, Any] | None = None,
+        proposed_action: dict[str, Any] | None = None,
+        confidence: float | None = None,
+        created_by_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """沉淀一条内容洞察（复盘结论）。
+
+        M4 仅落库记录（action_taken 留空）；据 proposed_action 原子回写
+        profile.pillar_weights / viral_pattern / playbook 在 M5（进化闭环）补齐。
+        evidence_json 暂存 proposed_action 供 M5 消费，零 fake（不假装已回写）。
+        """
+        proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        evidence = dict(evidence_json or {})
+        if proposed_action:
+            evidence['proposed_action'] = proposed_action
+        row = ContentInsight(
+            project_id=project_id,
+            created_by_agent_id=created_by_agent_id,
+            period=period,
+            insight_type=insight_type or 'lesson',
+            summary=summary or '',
+            evidence_json=evidence,
+            action_taken={},
+            confidence=Decimal(str(confidence)) if confidence is not None else Decimal('0'),
+            **_child_ownership(proj),
+        )
+        db.add(row)
+        await db.flush()
+        return _to_dict(row)
 
     # ============================ viral_pattern / report ============================
 
