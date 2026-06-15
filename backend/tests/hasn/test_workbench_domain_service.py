@@ -76,12 +76,14 @@ class InviteCodeStub(_Base):
     revoked: Mapped[bool] = mapped_column(sa.Boolean, default=False)
 
 
-class ActiveWorkspaceStub(_Base):
-    __tablename__ = 'hasn_user_active_workspace'
+# 应用平台 v3 P3：身份上下文从退役的 hasn_user_active_workspace 改为
+# hasn_owner_workbench_pref.active_enterprise_id 瘦指针（owner-scoped 每人一行）。
+class WorkbenchPrefStub(_Base):
+    __tablename__ = 'hasn_owner_workbench_pref'
 
-    user_id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
-    kind: Mapped[str] = mapped_column(sa.String(16), default='personal')
-    enterprise_id: Mapped[int | None] = mapped_column(sa.Integer, default=None)
+    id: Mapped[int] = mapped_column(sa.Integer, primary_key=True, autoincrement=True)
+    owner_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='', unique=True)
+    active_enterprise_id: Mapped[int | None] = mapped_column(sa.Integer, default=None)
 
 
 class WorkspaceAppStub(_Base):
@@ -174,7 +176,7 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         'HasnEnterprise': EnterpriseStub,
         'HasnEnterpriseMembership': MembershipStub,
         'HasnEnterpriseInviteCode': InviteCodeStub,
-        'HasnUserActiveWorkspace': ActiveWorkspaceStub,
+        'HasnOwnerWorkbenchPref': WorkbenchPrefStub,
         'HasnWorkspaceApp': WorkspaceAppStub,
         'HasnAppInstance': RagflowInstanceStub,
         'User': UserStub,
@@ -183,6 +185,16 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
         monkeypatch.setattr(service_mod, name, replacement, raising=True)
 
     monkeypatch.setattr(service_mod, 'key_encryption', _IdentityKeyEncryption(), raising=True)
+
+    # P3：身份上下文用 pref.active_enterprise_id（按 owner_hasn_id 定位），服务经
+    # app_catalog_service.resolve_owner_hasn_id 把 user_id 映射成 owner hasn_id。stub 世界
+    # 无 hasn_humans 表 → 桩为稳定映射 f'h_{user_id}'，使 get/switch/fallback 可在 SQLite 跑通。
+    import backend.app.hasn.service.app_catalog_service as catalog_mod
+
+    async def _stub_resolve_owner_hasn_id(_db, *, user_id):  # noqa: RUF029
+        return f'h_{user_id}'
+
+    monkeypatch.setattr(catalog_mod, 'resolve_owner_hasn_id', _stub_resolve_owner_hasn_id, raising=True)
 
     # C4：enable_current_workspace_app 经 catalog 做存在性 + 准入。本套件是 SQLite-stub
     # 编排单测（无 hasn_app_catalog 表），故把 catalog 存在性/准入桩为「注册 app 即免费可挂载」；

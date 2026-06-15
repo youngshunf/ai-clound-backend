@@ -23,3 +23,8 @@ class HasnOwnerWorkbenchPref(WorkbenchBase):
         default_factory=lambda: ['task', 'social', 'app', 'plan'],
         comment='简报数据源开关（JSONB 数组：task/social/app/plan）',
     )
+    # 应用平台 v3 P3：身份上下文瘦指针（替代退役的 hasn_user_active_workspace，设计 17 §4.2(1)）。
+    # null=个人上下文；非 null=当前以该企业身份新建产物 / 看哪批列表。顶栏「当前企业」下拉切换它。
+    active_enterprise_id: Mapped[int | None] = mapped_column(
+        sa.BigInteger(), default=None, comment='当前企业上下文 ID（null=个人）'
+    )

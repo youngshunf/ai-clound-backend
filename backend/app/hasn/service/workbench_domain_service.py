@@ -17,10 +17,10 @@ from backend.app.hasn.model import (
     HasnEnterprise,
     HasnEnterpriseInviteCode,
     HasnEnterpriseMembership,
-    HasnUserActiveWorkspace,
     HasnWorkspaceApp,
 )
 from backend.app.admin.model.user import User
+from backend.app.workbench.model import HasnOwnerWorkbenchPref
 from backend.app.hasn.service import workspace_notification_subscriber as _workspace_notifications  # noqa: F401
 from backend.app.hasn.service.enterprise_application_service import InviteCodePolicy
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
@@ -511,19 +511,32 @@ class WorkbenchDomainService:
             for enterprise_id in enterprise_ids
         }
 
-    async def get_active_workspace(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
-        active = await _scalar(
+    async def _pref_row(self, db: AsyncSession, *, owner_hasn_id: str) -> HasnOwnerWorkbenchPref | None:
+        """取 owner 的工作台偏好行（每人一行）；不存在返回 None。"""
+        return await _scalar(
             db,
-            sa.select(HasnUserActiveWorkspace).where(HasnUserActiveWorkspace.user_id == user_id),
+            sa.select(HasnOwnerWorkbenchPref).where(HasnOwnerWorkbenchPref.owner_hasn_id == owner_hasn_id),
         )
-        if active is None:
+
+    async def get_active_workspace(self, db: AsyncSession, *, user_id: int) -> dict[str, Any]:
+        # 应用平台 v3 P3：身份上下文从 hasn_user_active_workspace（已退役）改读
+        # hasn_owner_workbench_pref.active_enterprise_id 瘦指针（设计 17 §4.2(1)）。
+        # 返回契约 {kind, enterprise_id} 保持不变（kind 派生：null→personal，非 null→enterprise），
+        # 8 个消费者无需改动。
+        owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
+        if not owner_hasn_id:
             return {'kind': 'personal', 'enterprise_id': None}
-        if active.kind == 'enterprise':
-            membership = await self._approved_membership(db, enterprise_id=active.enterprise_id, user_id=user_id)
-            if membership is None:
-                await self._set_active_workspace(db, user_id=user_id, kind='personal', enterprise_id=None)
-                return {'kind': 'personal', 'enterprise_id': None}
-        return {'kind': active.kind, 'enterprise_id': active.enterprise_id}
+        pref = await self._pref_row(db, owner_hasn_id=owner_hasn_id)
+        enterprise_id = pref.active_enterprise_id if pref is not None else None
+        if enterprise_id is None:
+            return {'kind': 'personal', 'enterprise_id': None}
+        # 自愈：active_enterprise 已失去 approved 成员资格（被移除 / 企业停用）→ 复位个人。
+        membership = await self._approved_membership(db, enterprise_id=enterprise_id, user_id=user_id)
+        if membership is None:
+            if pref is not None:
+                pref.active_enterprise_id = None
+            return {'kind': 'personal', 'enterprise_id': None}
+        return {'kind': 'enterprise', 'enterprise_id': enterprise_id}
 
     async def switch_active_workspace(
         self,
@@ -545,11 +558,10 @@ class WorkbenchDomainService:
                 raise errors.ForbiddenError(msg='未加入该企业')
 
         prev = await self.get_active_workspace(db, user_id=user_id)
-        next_workspace = await self._set_active_workspace(
+        next_workspace = await self._set_active_enterprise(
             db,
             user_id=user_id,
-            kind=kind,
-            enterprise_id=enterprise_id,
+            enterprise_id=enterprise_id if kind == 'enterprise' else None,
         )
         await db.flush()
         await self.enterprise_bus.publish(
@@ -877,46 +889,43 @@ class WorkbenchDomainService:
             ),
         )
 
-    async def _set_active_workspace(
+    async def _set_active_enterprise(
         self,
         db: AsyncSession,
         *,
         user_id: int,
-        kind: str,
         enterprise_id: int | None,
     ) -> dict[str, Any]:
-        active = await _scalar(
-            db,
-            sa.select(HasnUserActiveWorkspace).where(HasnUserActiveWorkspace.user_id == user_id),
-        )
-        if active is None:
-            db.add(HasnUserActiveWorkspace(user_id=user_id, kind=kind, enterprise_id=enterprise_id))
+        # 应用平台 v3 P3：身份上下文写 hasn_owner_workbench_pref.active_enterprise_id 瘦指针
+        # （owner-scoped 每人一行）。需 owner_hasn_id 定位偏好行；无 hasn_humans（owner_hasn_id 缺）
+        # 的用户只能是个人上下文，无法持久化企业指针——返回派生结果，不静默造行。
+        owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
+        kind = 'enterprise' if enterprise_id is not None else 'personal'
+        if not owner_hasn_id:
+            return {'kind': kind, 'enterprise_id': enterprise_id}
+        pref = await self._pref_row(db, owner_hasn_id=owner_hasn_id)
+        if pref is None:
+            db.add(HasnOwnerWorkbenchPref(owner_hasn_id=owner_hasn_id, active_enterprise_id=enterprise_id))
         else:
-            active.kind = kind
-            active.enterprise_id = enterprise_id
-            if hasattr(active, 'switched_at'):
-                active.switched_at = timezone.now()
+            pref.active_enterprise_id = enterprise_id
         return {'kind': kind, 'enterprise_id': enterprise_id}
 
     async def _fallback_to_personal_if_active(self, db: AsyncSession, *, user_id: int, enterprise_id: int) -> None:
-        active = await _scalar(
-            db,
-            sa.select(HasnUserActiveWorkspace).where(
-                HasnUserActiveWorkspace.user_id == user_id,
-                HasnUserActiveWorkspace.kind == 'enterprise',
-                HasnUserActiveWorkspace.enterprise_id == enterprise_id,
-            ),
-        )
-        if active is None:
+        # 成员被移除 / 主动退出企业时，若该企业正是当前上下文 → 复位个人（清 active_enterprise_id）。
+        owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
+        if not owner_hasn_id:
             return
-        prev = {'kind': 'enterprise', 'enterprise_id': enterprise_id}
-        active.kind = 'personal'
-        active.enterprise_id = None
-        if hasattr(active, 'switched_at'):
-            active.switched_at = timezone.now()
+        pref = await self._pref_row(db, owner_hasn_id=owner_hasn_id)
+        if pref is None or pref.active_enterprise_id != enterprise_id:
+            return
+        pref.active_enterprise_id = None
         await self.enterprise_bus.publish(
             'on_workspace_switched',
-            {'user_id': user_id, 'prev_workspace': prev, 'next_workspace': {'kind': 'personal', 'enterprise_id': None}},
+            {
+                'user_id': user_id,
+                'prev_workspace': {'kind': 'enterprise', 'enterprise_id': enterprise_id},
+                'next_workspace': {'kind': 'personal', 'enterprise_id': None},
+            },
         )
 
     async def _workspace_app_rows(self, db: AsyncSession, *, workspace: dict[str, Any], user_id: int):
