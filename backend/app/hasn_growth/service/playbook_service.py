@@ -24,6 +24,8 @@ def _playbook_to_dict(p: Playbook) -> dict[str, Any]:
         'exit_rule': p.exit_rule,
         'is_builtin': p.is_builtin,
         'user_id': p.user_id,
+        'owner_scope': p.owner_scope,
+        'enterprise_id': p.enterprise_id,
     }
 
 
@@ -65,22 +67,28 @@ class PlaybookService:
         return playbook_list
 
     @staticmethod
-    async def list_for_owner(db: AsyncSession, *, user_id: int) -> list[dict[str, Any]]:
-        """owner 可见打法列表（内置 ∪ 本人自定义），打法管理页只读展示。
+    async def list_for_owner(
+        db: AsyncSession, *, user_id: int, enterprise_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """owner 可见打法列表（内置 ∪ 本人自定义 ∪ 企业 playbook），打法管理页只读展示。
 
-        内置（``is_builtin=true`` 或 ``user_id IS NULL``）对所有 owner 可见；自定义仅本人。
+        - 内置（``is_builtin=true`` 或 ``user_id IS NULL`` 且 owner_scope!='enterprise'）对所有 owner 可见；
+        - 自定义（owner_scope='personal'）仅本人；
+        - 企业 playbook（owner_scope='enterprise'）：仅当前企业上下文成员可见（GE3 自播种产物）。
         内置排前，再按名称稳定排序。
         """
+        visibility = [
+            sa.and_(Playbook.is_builtin.is_(True), Playbook.owner_scope != 'enterprise'),
+            sa.and_(Playbook.owner_scope == 'personal', Playbook.user_id == user_id),
+        ]
+        if enterprise_id is not None:
+            visibility.append(
+                sa.and_(Playbook.owner_scope == 'enterprise', Playbook.enterprise_id == enterprise_id)
+            )
         rows = (
             await db.execute(
                 sa.select(Playbook)
-                .where(
-                    sa.or_(
-                        Playbook.is_builtin.is_(True),
-                        Playbook.user_id.is_(None),
-                        Playbook.user_id == user_id,
-                    )
-                )
+                .where(sa.or_(*visibility))
                 .order_by(Playbook.is_builtin.desc(), Playbook.name.asc(), Playbook.id.asc())
             )
         ).scalars().all()

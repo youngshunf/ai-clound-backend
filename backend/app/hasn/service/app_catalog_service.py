@@ -390,6 +390,7 @@ async def grant_entitlement(
     """
     existing = await get_active_entitlement(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
     if existing is not None:
+        await _post_grant_seed(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
         return existing
     ent = HasnAppEntitlement(
         app_id=app_id,
@@ -403,7 +404,25 @@ async def grant_entitlement(
     )
     db.add(ent)
     await db.flush()
+    await _post_grant_seed(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
     return ent
+
+
+async def _post_grant_seed(db: AsyncSession, *, app_id: str, subject_type: str, subject_id: str) -> None:
+    """权益生效后的应用自播种钩子（GE3）。
+
+    企业开通获客（growth）→ 自播种该企业的 playbook（幂等）。平台层不硬依赖应用层：用局部 late import，
+    仅在 growth+enterprise 分支触发；其它应用/个人开通不受影响。播种本身幂等，新/旧权益路径都安全调用。
+    """
+    if subject_type != 'enterprise' or app_id != 'growth':
+        return
+    try:
+        enterprise_id = int(subject_id)
+    except (TypeError, ValueError):
+        return
+    from backend.app.hasn_growth.service.enterprise_seed_service import ensure_growth_enterprise_seeded
+
+    await ensure_growth_enterprise_seeded(db, enterprise_id=enterprise_id)
 
 
 async def revoke_entitlement(db: AsyncSession, *, entitlement_id: int) -> bool:

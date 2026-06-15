@@ -369,9 +369,11 @@ async def update_channel_setting(
 # ---------------- 打法管理（只读：内置 ∪ 本人自定义） ----------------
 
 
-@router.get('/playbooks', summary='[Owner] 打法列表（内置 + 自定义，目标/节奏/语气/止损）', dependencies=[DependsJwtAuth])
+@router.get('/playbooks', summary='[Owner] 打法列表（内置 + 自定义 + 企业，目标/节奏/语气/止损）', dependencies=[DependsJwtAuth])
 async def list_playbooks(request: Request, db: CurrentSession) -> ResponseModel:
-    data = await playbook_service.list_for_owner(db, user_id=request.user.id)
+    # 企业上下文成员额外可见本企业 playbook（GE3 自播种产物）；个人上下文 enterprise_id 为 None。
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await playbook_service.list_for_owner(db, user_id=request.user.id, enterprise_id=scope.enterprise_id)
     return response_base.success(data=data)
 
 
