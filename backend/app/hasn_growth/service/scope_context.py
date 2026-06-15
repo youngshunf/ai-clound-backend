@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 
 if TYPE_CHECKING:

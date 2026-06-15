@@ -15,8 +15,8 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
+from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.playbook import Playbook

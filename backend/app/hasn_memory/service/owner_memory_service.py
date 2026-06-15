@@ -21,7 +21,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.app.hasn.model import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
 from backend.common.log import log
 from backend.utils.timezone import timezone

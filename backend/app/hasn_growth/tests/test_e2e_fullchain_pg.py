@@ -30,7 +30,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_router
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.model.lead_contact import LeadContact

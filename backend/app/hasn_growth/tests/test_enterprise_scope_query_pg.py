@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref

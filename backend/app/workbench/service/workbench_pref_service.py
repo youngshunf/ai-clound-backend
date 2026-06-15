@@ -19,8 +19,8 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn_core import HasnAgents
 from backend.app.workbench.crud.crud_hasn_owner_workbench_pref import hasn_owner_workbench_pref_dao
-from backend.app.hasn.model import HasnAgents
 from backend.app.workbench.model import HasnOwnerWorkbenchPref
 from backend.app.workbench.schema.hasn_owner_workbench_pref import WorkbenchPrefResponse
 from backend.common.exception import errors

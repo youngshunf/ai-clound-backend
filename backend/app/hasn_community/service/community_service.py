@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Text, and_, cast, func, or_, select, text
 from sqlalchemy.orm import aliased
 
-from backend.app.hasn.model import HasnAgents, HasnHumans
 from backend.app.hasn_community.model import (
     HasnArticles,
     HasnCollectionItems,
@@ -23,6 +22,7 @@ from backend.app.hasn_community.model import (
     HasnPosts,
 )
 from backend.app.hasn_community.service.article_summary import effective_summary
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
@@ -2783,9 +2783,8 @@ class CommunityService:
         :param article_id: 文章 ID
         :return: 文章详情
         """
-        from backend.app.hasn.model.hasn_agents import HasnAgents
-        from backend.app.hasn.model.hasn_humans import HasnHumans
         from backend.app.hasn_community.model.hasn_articles import HasnArticles
+        from backend.app.hasn_core import HasnAgents, HasnHumans
 
         # 查询文章
         stmt = select(HasnArticles).where(HasnArticles.article_id == article_id)

@@ -16,7 +16,7 @@ import sqlalchemy as sa
 
 from fastapi import APIRouter, Query, Request
 
-from backend.app.hasn.model import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_memory.schema.owner_memory import (
     OwnerMemoryContributionItem,
     OwnerMemoryContributionsResponse,

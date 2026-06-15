@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -61,8 +62,8 @@ async def get_current_owner_api_key_for_user(db, user_id: int) -> _CurrentKeyRes
 
     测试会直接 monkeypatch 本函数以解耦 DB。
     """
-    from backend.app.hasn.model.hasn_humans import HasnHumans
     from backend.app.hasn.model.hasn_owner_api_keys import HasnOwnerApiKeys
+    from backend.app.hasn_core import HasnHumans
     from backend.common.exception import errors
 
     result = await db.execute(

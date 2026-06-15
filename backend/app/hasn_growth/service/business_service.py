@@ -8,7 +8,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model import (
     LeadAuditLog,
     LeadCollectionJob,

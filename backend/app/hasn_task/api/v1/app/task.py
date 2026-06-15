@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 
-from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_task.schema.task import (
     CreateHasnTaskParam,

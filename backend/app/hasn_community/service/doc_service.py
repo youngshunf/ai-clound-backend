@@ -16,8 +16,8 @@ import bcrypt
 from jose import jwt
 from sqlalchemy import func, select, update
 
-from backend.app.hasn.model import HasnAgents, HasnHumans
 from backend.app.hasn_community.model import HasnArticles, HasnDocNodes, HasnDocSpaces
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.database.db import uuid4_str

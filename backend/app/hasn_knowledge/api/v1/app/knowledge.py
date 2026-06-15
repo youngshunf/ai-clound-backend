@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn_knowledge.service.error_adapter import to_http_error
 from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError

@@ -6,9 +6,8 @@
 
 from typing import Any
 
-from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
 from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
-from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.app.hasn_core import hasn_agents_dao, hasn_humans_dao
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session

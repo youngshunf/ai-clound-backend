@@ -80,7 +80,7 @@ class TelemetryIngestSummary(SchemaBase):
 
 async def _resolve_hasn_id(db: Any, user_id: int) -> str:
     """反查当前用户的 hasn_id; 未开通 → NotFoundError."""
-    from backend.app.hasn.model.hasn_humans import HasnHumans
+    from backend.app.hasn_core import HasnHumans
     from backend.common.exception import errors
 
     result = await db.execute(

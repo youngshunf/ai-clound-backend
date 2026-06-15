@@ -6,11 +6,12 @@ from starlette.background import BackgroundTask, BackgroundTasks
 from backend.app.admin.crud.crud_menu import menu_dao
 from backend.app.admin.crud.crud_user import user_dao
 from backend.app.admin.model import User
-from backend.app.admin.schema.token import GetLoginToken, GetNewToken, AgentTokenInfo
+from backend.app.admin.schema.token import AgentTokenInfo, GetLoginToken, GetNewToken
 from backend.app.admin.schema.user import AuthLoginParam
 from backend.app.admin.service.login_log_service import login_log_service
 from backend.app.admin.service.user_password_history_service import password_security_service
 from backend.app.admin.utils.password_security import password_verify
+from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.common.context import ctx
 from backend.common.enums import LoginLogStatusType
 from backend.common.exception import errors
@@ -27,7 +28,6 @@ from backend.common.security.jwt import (
 from backend.core.conf import settings
 from backend.database.db import uuid4_str
 from backend.database.redis import redis_client
-from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.utils.dynamic_config import load_login_config
 from backend.utils.timezone import timezone
 
@@ -187,8 +187,7 @@ class AuthService:
             # 批量签发 Agent JWT
             agent_tokens_list = []
             try:
-                from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
-                from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
+                from backend.app.hasn_core import hasn_agents_dao, hasn_humans_dao
                 from backend.common.security.agent_jwt import create_agent_access_token, get_agent_scopes_cached
 
                 # 查询用户的 hasn_id

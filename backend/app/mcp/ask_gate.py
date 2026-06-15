@@ -371,7 +371,7 @@ class AskApprovalGate:
         try:
             from sqlalchemy import select
 
-            from backend.app.hasn.model.hasn_agents import HasnAgents
+            from backend.app.hasn_core import HasnAgents
             from backend.database.db import async_db_session
 
             async with async_db_session() as db:

@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Header, status
 
-from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
+from backend.app.hasn_core import hasn_agents_dao
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.security.agent_jwt import (

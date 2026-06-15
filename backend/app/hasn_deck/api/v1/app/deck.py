@@ -8,7 +8,7 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base

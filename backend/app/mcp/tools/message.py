@@ -16,14 +16,13 @@ from typing import Any
 
 from sqlalchemy import select
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.service import message_router
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn_core import HasnAgents
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
-
 
 # content_type 整数码：对齐 message_router.persist_message 预览分支 + ws_node 字符串映射。
 _CT_TEXT = 1

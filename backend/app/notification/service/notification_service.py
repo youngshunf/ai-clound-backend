@@ -300,7 +300,7 @@ class NotificationService:
         # 收件方是 Agent（§4.5 发 Agent）：服务号属该 Agent 的主人；卡片落「服务号 ⇄ Agent」
         # service 会话，经 route_message 复用 agent dispatch 投 runtime + owner_copy 主人旁观。
         if recipient_is_agent:
-            from backend.app.hasn.model import HasnAgents
+            from backend.app.hasn_core import HasnAgents
 
             owner_id = (
                 await db.execute(

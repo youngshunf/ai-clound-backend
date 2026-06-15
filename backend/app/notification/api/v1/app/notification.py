@@ -21,7 +21,7 @@ router = APIRouter()
 
 async def _require_owner_hasn_id(db, user_id: int) -> str:
     """解析当前 Owner 的 human hasn_id（不存在则 404）。"""
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
     from backend.common.exception import errors
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from backend.app.hasn.model import HasnAgents, HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.notification.service.notification_service import notification_service as _unified
 
 if TYPE_CHECKING:

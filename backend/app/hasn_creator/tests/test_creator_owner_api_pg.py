@@ -214,7 +214,7 @@ async def test_owner_cross_user_isolation(session) -> None:
 async def _seed_enterprise(session, *, ent_id: int, mgr_uid: int, mgr_hasn: str, mem_uid: int, mem_hasn: str) -> None:
     """播种一个最小企业上下文：主编(owner)+运营(member)，各自 active_enterprise 指向本企业。"""
     from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
-    from backend.app.hasn.model.hasn_humans import HasnHumans
+    from backend.app.hasn_core import HasnHumans
     from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 
     session.add_all(

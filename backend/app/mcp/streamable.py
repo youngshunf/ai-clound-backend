@@ -16,14 +16,13 @@ from mcp.server import Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.types import Receive, Scope, Send
 
-from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
-from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
     KEY_PREFIX as AGENT_MCP_KEY_PREFIX,
 )
 from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
     hasn_agent_mcp_keys_service,
 )
+from backend.app.hasn_core import HasnHumans, hasn_agents_dao
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.context import set_capability_ticket
 from backend.app.mcp.server import mcp_server

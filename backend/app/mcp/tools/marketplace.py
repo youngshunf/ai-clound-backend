@@ -380,7 +380,7 @@ class ListInstalledTool(BaseTool):
         return ['marketplace:read']
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
+        from backend.app.hasn_core import hasn_agents_dao
         from backend.app.marketplace.service.search_service import search_service
 
         async with async_db_session() as db:

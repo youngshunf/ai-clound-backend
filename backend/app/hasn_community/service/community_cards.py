@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.orm import aliased
 
-from backend.app.hasn.model import HasnAgents, HasnHumans
 from backend.app.hasn_community.model import HasnArticles, HasnPosts
 from backend.app.hasn_community.service.article_summary import effective_summary
+from backend.app.hasn_core import HasnAgents, HasnHumans
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

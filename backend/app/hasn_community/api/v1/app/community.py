@@ -156,7 +156,7 @@ async def create_post(
     user_id = request.user.id
 
     # TODO: 获取用户的 hasn_id
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -263,7 +263,7 @@ async def get_drafts(
     """
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -312,7 +312,7 @@ async def publish_post(
     """
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -410,7 +410,7 @@ async def create_article(
     """
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -512,7 +512,7 @@ async def get_article(
     """
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -569,7 +569,7 @@ async def update_article(
     """
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -625,7 +625,7 @@ async def delete_article(
     """
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -673,7 +673,7 @@ async def publish_article(
     """
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -739,7 +739,7 @@ async def create_post_comment(
     """发表帖子评论"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -805,7 +805,7 @@ async def create_article_comment(
     """发表文章评论"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -840,7 +840,7 @@ async def delete_comment(
     """删除评论"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -876,7 +876,7 @@ async def create_like(
     """点赞"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -910,7 +910,7 @@ async def delete_like(
     """取消点赞"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -947,7 +947,7 @@ async def create_follow(
     """关注"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -981,7 +981,7 @@ async def delete_follow(
     """取消关注"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -1201,7 +1201,7 @@ async def get_pending_drafts(
     """获取待确认草稿"""
     user_id = request.user.id
 
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
     if not human:
@@ -1225,7 +1225,7 @@ async def get_pending_drafts(
 
 async def _require_human_hasn_id(db, user_id: int) -> str:
     """解析当前 Owner 的 human hasn_id（不存在则 404）。"""
-    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+    from backend.app.hasn_core import hasn_humans_dao
     from backend.common.exception import errors
 
     human = await hasn_humans_dao.get_by_user_id(db, user_id)
