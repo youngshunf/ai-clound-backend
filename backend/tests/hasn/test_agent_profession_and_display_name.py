@@ -7,6 +7,7 @@ monkeypatch 全局唯一查重（避免真实 DB），断言：
   3. resolve_unique_display_name 在候选池耗尽时退化为数字后缀
 register 自身落库由 hasn_auth 真实 DB 集成 + E2E 覆盖。
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -14,12 +15,12 @@ from typing import Any
 
 import pytest
 
+from backend.app.hasn.schema.hasn_agents import CloudCreateAgentRequest
 from backend.app.hasn.service import hasn_auth as hasn_auth_module
 from backend.app.hasn.service.hasn_agents_service import (
     SqlAlchemyAgentProfileGateway,
     _merge_agent_create_payload,
 )
-from backend.app.hasn.schema.hasn_agents import CloudCreateAgentRequest
 
 
 def test_merge_payload_carries_profession_and_candidates() -> None:
@@ -66,7 +67,11 @@ def _capture_register(monkeypatch) -> dict[str, Any]:
 
     async def _fake_register(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
-        return {'agent': SimpleNamespace(hasn_id='a_test', profile_revision=1), 'agent_key': 'k', 'already_exists': False}
+        return {
+            'agent': SimpleNamespace(hasn_id='a_test', profile_revision=1),
+            'agent_key': 'k',
+            'already_exists': False,
+        }
 
     monkeypatch.setattr(hasn_auth_module, 'register_hasn_agent', _fake_register, raising=True)
     return captured
@@ -99,9 +104,7 @@ async def test_resolve_unique_display_name_falls_back_to_suffix(monkeypatch) -> 
     """候选池全被占 → 退化为数字后缀。"""
     _patch_uniqueness(monkeypatch, taken={'明远', '思齐'})
     gateway = SqlAlchemyAgentProfileGateway()
-    resolved = await gateway.resolve_unique_display_name(
-        db=None, desired='明远', candidates=['明远', '思齐']
-    )
+    resolved = await gateway.resolve_unique_display_name(db=None, desired='明远', candidates=['明远', '思齐'])
     assert resolved == '明远2'
 
 
@@ -112,3 +115,47 @@ async def test_resolve_unique_display_name_returns_desired_when_free(monkeypatch
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_unique_display_name(db=None, desired='明远', candidates=['思齐'])
     assert resolved == '明远'
+
+
+@pytest.mark.asyncio
+async def test_default_agent_name_returns_base_when_free(monkeypatch) -> None:
+    """默认分身基名（星诺）全局未占用 → 原样返回，不加主人后缀。"""
+    _patch_uniqueness(monkeypatch, taken=set())
+    gateway = SqlAlchemyAgentProfileGateway()
+    resolved = await gateway.resolve_default_agent_display_name(
+        db=None, base='星诺', owner_nickname='福仔', owner_id='h_owner_1'
+    )
+    assert resolved == '星诺'
+
+
+@pytest.mark.asyncio
+async def test_default_agent_name_derives_from_owner_nickname_on_collision(monkeypatch) -> None:
+    """基名被占用 → 用主人昵称派生（星诺·福仔），而非数字尾巴。"""
+    _patch_uniqueness(monkeypatch, taken={'星诺'})
+    gateway = SqlAlchemyAgentProfileGateway()
+    resolved = await gateway.resolve_default_agent_display_name(
+        db=None, base='星诺', owner_nickname='福仔', owner_id='h_owner_1'
+    )
+    assert resolved == '星诺·福仔'
+
+
+@pytest.mark.asyncio
+async def test_default_agent_name_numbers_when_owner_nickname_also_taken(monkeypatch) -> None:
+    """基名 + 主人昵称派生都被占 → 在派生名后顺延数字（同主人昵称的两个用户）。"""
+    _patch_uniqueness(monkeypatch, taken={'星诺', '星诺·福仔'})
+    gateway = SqlAlchemyAgentProfileGateway()
+    resolved = await gateway.resolve_default_agent_display_name(
+        db=None, base='星诺', owner_nickname='福仔', owner_id='h_owner_1'
+    )
+    assert resolved == '星诺·福仔2'
+
+
+@pytest.mark.asyncio
+async def test_default_agent_name_falls_back_to_owner_fragment_without_nickname(monkeypatch) -> None:
+    """基名被占且主人无昵称 → 用 owner_id 片段兜底（星诺·xyz789）。"""
+    _patch_uniqueness(monkeypatch, taken={'星诺'})
+    gateway = SqlAlchemyAgentProfileGateway()
+    resolved = await gateway.resolve_default_agent_display_name(
+        db=None, base='星诺', owner_nickname='', owner_id='h_owner_xyz789'
+    )
+    assert resolved == '星诺·xyz789'

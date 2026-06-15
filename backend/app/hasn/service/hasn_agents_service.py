@@ -37,6 +37,9 @@ class AgentProfileGateway(Protocol):
     async def resolve_unique_display_name(
         self, db: AsyncSession, *, desired: str, candidates: list[str] | None = None
     ) -> str: ...
+    async def resolve_default_agent_display_name(
+        self, db: AsyncSession, *, base: str, owner_nickname: str | None, owner_id: str
+    ) -> str: ...
     async def list_owner_agents(
         self, db: AsyncSession, *, owner_id: str, after_revision: int | None = None
     ) -> list[Any]: ...
@@ -132,7 +135,8 @@ class SqlAlchemyAgentProfileGateway:
         async def _taken(name: str) -> bool:
             row = (
                 await db.execute(
-                    sa.select(HasnAgents.id)
+                    sa
+                    .select(HasnAgents.id)
                     .where(HasnAgents.owner_id == owner_id, HasnAgents.agent_name == name)
                     .limit(1)
                 )
@@ -164,7 +168,8 @@ class SqlAlchemyAgentProfileGateway:
             return False
         row = (
             await db.execute(
-                sa.select(HasnAgents.id)
+                sa
+                .select(HasnAgents.id)
                 .where(HasnAgents.display_name == name, HasnAgents.deleted_at.is_(None))
                 .limit(1)
             )
@@ -190,6 +195,37 @@ class SqlAlchemyAgentProfileGateway:
         import uuid
 
         return f'{root}-{uuid.uuid4().hex[:4]}'
+
+    async def resolve_default_agent_display_name(
+        self, db: AsyncSession, *, base: str, owner_nickname: str | None, owner_id: str
+    ) -> str:
+        """默认分身昵称全局唯一化：基名 → 基名·主人昵称 → 基名·主人昵称N → 基名·<owner 片段>。
+
+        昵称仍全局唯一（is_display_name_taken），但默认分身基名（如「星诺」）会被多用户共享，
+        撞名时用「主人昵称」做可读区分符（如「星诺·福仔」），而非数字尾巴（福仔 2026-06-15 选定）。
+        仅用于 onboarding 默认分身的**首次**命名；不对已存在分身重算——否则 is_display_name_taken
+        会把分身自己那行算成已占而每次登录误改名。
+        """
+        base = (base or '').strip() or 'AI 分身'
+        if not await self.is_display_name_taken(db, base):
+            return base
+        nick = (owner_nickname or '').strip()
+        if nick:
+            derived = f'{base}·{nick}'
+            if not await self.is_display_name_taken(db, derived):
+                return derived
+            for suffix in range(2, 1000):
+                candidate = f'{base}·{nick}{suffix}'
+                if not await self.is_display_name_taken(db, candidate):
+                    return candidate
+        fragment = ''.join(ch for ch in (owner_id or '') if ch.isalnum())[-6:]
+        if fragment:
+            candidate = f'{base}·{fragment}'
+            if not await self.is_display_name_taken(db, candidate):
+                return candidate
+        import uuid
+
+        return f'{base}·{uuid.uuid4().hex[:4]}'
 
     async def create_agent(self, db: AsyncSession, payload: dict[str, Any]) -> tuple[Any, str | None, bool]:
         from backend.app.hasn.service.hasn_auth import register_hasn_agent
@@ -647,9 +683,10 @@ class HasnAgentProfileService:
         # 解析 skill_pack 版本（指定 version 取该版，否则取 is_latest）。
         ver_filter = 'AND v.version = :version' if version else 'AND v.is_latest = true'
         row = (
-            await db.execute(
-                sa.text(
-                    f"""
+            (
+                await db.execute(
+                    sa.text(
+                        f"""
                     SELECT t.template_id, v.version, v.bundle_slug, v.command_key, v.hermes_yaml,
                            COALESCE(v.content_hash, v.file_hash) AS content_hash
                     FROM hasn_marketplace.marketplace_template t
@@ -659,10 +696,13 @@ class HasnAgentProfileService:
                       {ver_filter}
                     LIMIT 1
                     """
-                ),
-                {'package_id': package_id, 'version': version},
+                    ),
+                    {'package_id': package_id, 'version': version},
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
         if row is None:
             raise errors.NotFoundError(msg='ERR_MARKETPLACE_SKILL_PACK_NOT_FOUND')
 
@@ -679,7 +719,9 @@ class HasnAgentProfileService:
         bundle_ids = {b.get('template_id') for b in current_bundles if isinstance(b, dict)}
         bundle_changed = package_id not in bundle_ids
         if bundle_changed:
-            current_bundles = [b for b in current_bundles if not (isinstance(b, dict) and b.get('template_id') == package_id)]
+            current_bundles = [
+                b for b in current_bundles if not (isinstance(b, dict) and b.get('template_id') == package_id)
+            ]
             current_bundles.append({'template_id': package_id, 'version': resolved_version})
 
         if merged_skills != current_skills or bundle_changed:
@@ -874,7 +916,9 @@ def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any 
         'user_md': request.user_md if request.user_md is not None else getattr(template, 'default_user_md', None),
         # MEMORY.md 由模板种子（§ 记录格式最小起点），Agent 运行后用记忆工具自演化回写；
         # provision 首次缺省时落盘、已有非空不覆盖（见 hermes-runtime provisioning）。
-        'memory_md': request.memory_md if request.memory_md is not None else getattr(template, 'default_memory_md', None),
+        'memory_md': request.memory_md
+        if request.memory_md is not None
+        else getattr(template, 'default_memory_md', None),
         'runtime_type': request.runtime_type or getattr(template, 'default_runtime_type', None) or 'hermes',
         # 运行位置（双形态 Runtime，设计 08/02）：local（默认，本地非沙箱）/ cloud（云端 Docker 沙箱）。
         'runtime_location': (getattr(request, 'runtime_location', None) or 'local'),

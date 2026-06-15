@@ -21,9 +21,11 @@ import sqlalchemy as sa
 
 from backend.app.admin.crud.crud_user import user_dao
 from backend.app.admin.model import User
+from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
+from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.schema.hasn_onboarding import (
-    AgentTokenInfo,
     AgentSummary,
+    AgentTokenInfo,
     HumanSummary,
     OnboardingEnsureRequest,
     OnboardingEnsureResponse,
@@ -34,12 +36,10 @@ from backend.app.hasn.schema.hasn_onboarding import (
     PhoneVerifyResponse,
     SandboxSummary,
 )
-from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
-from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.service import hasn_auth as hasn_auth_service
+from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.app.marketplace.crud.crud_marketplace_template import marketplace_template_dao
 from backend.app.marketplace.crud.crud_marketplace_template_version import marketplace_template_version_dao
-from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.security.jwt import create_access_token, create_refresh_token
@@ -163,6 +163,7 @@ class SqlAlchemyPlatformUserGateway:
 
         return user, True
 
+
 class SqlAlchemyLlmCredentialIssuer:
     async def issue(self, db: AsyncSession, user: Any) -> tuple[str | None, str | None, str | None]:
         from backend.app.llm.service.llm_newapi_user_mapping_service import (
@@ -241,31 +242,45 @@ class SqlAlchemyOnboardingGateway:
         )
 
     async def ensure_default_agent(self, db: AsyncSession, owner_id: str, node_id: str | None) -> tuple[Any, bool]:
-        # 采用 hub `assistant` 模板（云端权威源 marketplace_template，由 github_app_sync
-        # 同步）。把 SOUL/AGENTS/USER + 技能物化进 hasn_agents——与「WebUI 手动建 assistant」
-        # 等价。register_hasn_agent 的幂等分支会在这些值非 None 且变化时回填存量空壳默认
-        # Agent 并 bump profile_revision，故无需迁移脚本。
+        # 采用 hub `assistant` 模板（云端权威源 marketplace_template，由 github_app_sync 同步），
+        # 把 SOUL/AGENTS/USER + 技能 + 专家头衔(profession) + 头像 物化进 hasn_agents——与
+        # 「WebUI 手动建 assistant」等价。
+        #
+        # 字段映射（2026-06-15 修正，原先把 tpl.name 错当 display_name、漏了 profession/avatar、
+        # skills 形态错误）：
+        #   - display_name ← name_pool 首位（如「星诺」）；全局唯一化见下
+        #   - profession   ← tpl.name（专家头衔，如「全能助理」）
+        #   - avatar       ← tpl.icon_url
+        #   - skills       ← list[str]（_normalize_skill_ids 兼容形态；原 {'enabled': [...]} 会被
+        #                     profile 下发端点误读成 ['enabled']，把模板技能整组丢掉）
+        from backend.app.hasn.model import HasnAgents, HasnHumans
+        from backend.app.hasn.service.hasn_agents_service import agent_profile_service
+
         tpl = await marketplace_template_dao.get_by_id(db, DEFAULT_AGENT_TEMPLATE_ID)
-        display_name = DEFAULT_AGENT_DISPLAY_NAME
-        description = DEFAULT_AGENT_DESCRIPTION
+        base_name = DEFAULT_AGENT_DISPLAY_NAME
+        description: str | None = DEFAULT_AGENT_DESCRIPTION
+        profession: str | None = None
+        avatar: str | None = None
         template_id: str | None = None
         template_version: str | None = None
         soul_md: str | None = None
         agents_md: str | None = None
         user_md: str | None = None
         memory_md: str | None = None
-        skills: dict[str, Any] | None = None
+        skills: list[str] | None = None
         if tpl is not None:
             template_id = DEFAULT_AGENT_TEMPLATE_ID
-            display_name = tpl.name or DEFAULT_AGENT_DISPLAY_NAME
+            # name_pool 首位是昵称基名（星诺）；tpl.name（全能助理）是专家头衔 → profession。
+            name_pool = [s.strip() for s in (tpl.name_pool or '').split(',') if s.strip()]
+            base_name = name_pool[0] if name_pool else (tpl.name or DEFAULT_AGENT_DISPLAY_NAME)
+            profession = tpl.name or None
+            avatar = tpl.icon_url or None
             description = tpl.description or DEFAULT_AGENT_DESCRIPTION
             soul_md = tpl.soul_md
             agents_md = tpl.agents_md
             user_md = tpl.user_md
             memory_md = getattr(tpl, 'memory_md', None)
-            enabled_skills = [s.strip() for s in (tpl.skill_dependencies or '').split(',') if s.strip()]
-            if enabled_skills:
-                skills = {'enabled': enabled_skills}
+            skills = [s.strip() for s in (tpl.skill_dependencies or '').split(',') if s.strip()] or None
             version = await marketplace_template_version_dao.get_latest_by_template(db, DEFAULT_AGENT_TEMPLATE_ID)
             template_version = getattr(version, 'version', None)
         else:
@@ -275,11 +290,43 @@ class SqlAlchemyOnboardingGateway:
                 'creating default agent without persona (run github_app_sync)',
                 DEFAULT_AGENT_TEMPLATE_ID,
             )
+
+        # onboarding 在登录路径幂等执行：对「已存在」的默认分身不重算昵称、不 clobber 用户可能
+        # 已自定义的 skills/persona——只一次性回填「当前为空」的 profession/avatar；存量已坏分身
+        # （display_name 历史被填成专家头衔）由独立一次性脚本修复，不混进登录路径。
+        existing = (
+            await db.execute(
+                sa.select(HasnAgents).where(
+                    HasnAgents.owner_id == owner_id,
+                    HasnAgents.agent_name == DEFAULT_AGENT_NAME,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            display_name = existing.display_name
+            profession = profession if not getattr(existing, 'profession', None) else None
+            avatar = avatar if not getattr(existing, 'avatar', None) else None
+            template_id = template_id if not getattr(existing, 'template_id', None) else None
+            template_version = template_version if template_id else None
+            description = None
+            skills = None
+            soul_md = agents_md = user_md = memory_md = None
+        else:
+            # 新建：昵称基名（星诺）全局撞名时用「主人昵称」派生（星诺·福仔），不再每个用户都同名。
+            owner_nickname = (
+                await db.execute(sa.select(HasnHumans.nickname).where(HasnHumans.hasn_id == owner_id))
+            ).scalar_one_or_none()
+            display_name = await agent_profile_service.gateway.resolve_default_agent_display_name(
+                db, base=base_name, owner_nickname=owner_nickname, owner_id=owner_id
+            )
+
         result = await hasn_auth_service.register_hasn_agent(
             db=db,
             owner_hasn_id=owner_id,
             agent_name=DEFAULT_AGENT_NAME,
             display_name=display_name,
+            profession=profession,
+            avatar=avatar,
             agent_type='cloud',
             node_id=node_id,
             role='primary',
