@@ -1,9 +1,27 @@
-# app/hasn 平台核心 façade 与 god-file 拆分 — 设计提案（待评审）
+# app/hasn 平台核心 façade 与 god-file 拆分 — 设计提案
 
-> 状态：**Design Ready，待福仔过目/redline**（架构候选③+④，"先锁设计再执行"）
+> 状态：**候选③ 已部分落地（P1 身份 façade + P2 应用平台服务 façade + P4 守卫），P3 长尾经评估暂不做；候选④ god-file 拆分待启动**。福仔 redline：façade 落点=`app/hasn_core`、身份 JOIN=方案 A、身份先行、加 import-lint 守卫。
 > 范围：仅 huanxing-cloud-backend，纯**导入依赖收敛 + 文件内部分解**。**不动 DB schema、不动任何 URL、不动业务行为**。
 > 关联：架构候选①（入参绑定接缝，已落地 `f763ce8e`）、候选⑥（死代码清理，已落地 `6bbbcbe1`）。
 > 背景：`app/hasn` 是 39676 行 / 355 文件的遗留巨型模块，团队已陆续拆出 hasn_community / hasn_growth / hasn_task / hasn_deck / hasn_publish / hasn_knowledge / hasn_memory / billing / workbench 等独立模块（ADR-15）。但拆分**制造了边界、却没人定义边界的接口**——这正是本提案要补的两件事。
+
+---
+
+## ⛳ 落地状态（2026-06-16 执行回写）
+
+| 阶段 | 状态 | commit | 说明 |
+|---|---|---|---|
+| **P1 身份 façade** | ✅ 已落地推送 | `ce836b37`(骨架+7单测) / `03f61e71`(41文件迁移) | 新建 `app/hasn_core`（落点按 redline）。`IdentityFacade`+`HumanRef`/`AgentRef` DTO（方案 A：re-export `HasnHumans`/`HasnAgents` 模型 + `hasn_humans_dao`/`hasn_agents_dao` 单例，零行为变化）。41 个兄弟文件身份 import 收敛到 `from backend.app.hasn_core import …`，身份反向 import 残留 **0**。 |
+| **P2 应用平台 façade** | ✅ 已落地推送 | `60fc0ddf` | 新建 `app/hasn_core/app_platform.py`（**services-only 深接缝**）。12 个 consumer 迁移。**关键修正**：façade 只暴露服务 + 对外 schema，**不**暴露 `WorkbenchApp` 数据类 / `HasnAppInstance`·`HasnAiNativeAppAudit` 模型——它们被各应用 manifest 在 registry 构建期消费（manifest 属应用平台内部），façade 化会成环（实测 `hasn_deck/manifest` 触发 partially-initialized circular import）。这类叶子数据类型由定义处直接 import。 |
+| **P4 守卫** | ✅ 已落地推送 | `391b0001` | `test_facade_reachback_guard`：扫描 app/ 非 hasn/非 hasn_core 模块，锁死 P1/P2 两条**已收编**接缝的回归。**有意只守这两条**，非「禁止一切 `from backend.app.hasn.`」。 |
+| **P3 长尾白名单** | ⏸️ 评估后暂不做 | — | 见下「P3 重估」。实测非身份反向 import 远超设计估值（~80 行 vs 估 ~22），且**异质、属平台原语**（conversations/messages/contacts/sessions/nodes/ws_router/asset/sync/audit/notifications/approval/enterprise…），主要被 `mcp/*`、`notification/*` 消费。把它们塞进一张扁平白名单 = **浅接缝（pass-through index）**，deletion test 不过关，反把 `hasn_core` 变成 god re-exporter。 |
+| **候选④ god-file 拆分** | ⬜ 待启动 | — | `hasn_sync_service.py`(2209) 先做、`community_service.py`(3429) 错峰。属**内部分解**（非 import 收敛），风险更高、应独立专注一轮做。 |
+
+### P3 重估（为何暂不做）
+
+设计原估「76 处反向 import、~43 身份 + ~13 应用平台 + ~9 长尾」。**实测纠偏**：总反向 import ~123 行（设计漏算了 `mcp/*`、`notification/*`、`huanxing/*`、`hasn_creator/*`、`hasn_client/*` 等非「10 个抽出模块」的消费者）。P1 收掉 43（身份），P2 收掉 ~31（应用平台服务/schema），**仍余 ~80 行**长尾。
+
+这 80 行的目标是**平台原语**（`ws_router`、`hasn_conversations_service`、`hasn_messages_service`、`hasn_contacts_service`、`hasn_asset_service`、`hasn_sync_service`、`hasn_audit_log_service`、`crud_hasn_agent_approval_requests`、`model.hasn_notifications`、`model.hasn_enterprise_membership` 等），它们**本就是平台核心**、被 `mcp/*` 与 `notification/*` 合法消费。给每个建 façade 收益甚微；统一塞进 `hasn_core/__init__` 扁平白名单则是浅接缝。**结论**：P1+P2 已收掉两条**真深接缝**（身份、应用平台服务），剩余长尾保持现状、由 P4 守卫**只守已收编的两条**、不扩面。若未来某平台原语子系统（如 messaging、sync）独立成深接缝再单独 façade 化。
 
 ---
 
