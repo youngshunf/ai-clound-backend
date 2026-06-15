@@ -28,6 +28,7 @@ from backend.app.marketplace.schema.marketplace_skill_version import (
     UpdateMarketplaceSkillVersionParam,
 )
 from backend.app.marketplace.service.skill_content_extractor import (
+    compute_skill_content_hash,
     extract_skill_body,
     list_skill_files,
     raw_bilingual_body,
@@ -566,6 +567,8 @@ class GitHubSyncService:
         # SKILL.md 正文（frontmatter 之后的 Markdown）+ 技能目录文件清单（仅名称+大小）。
         body = self._extract_skill_body(text)
         files = self._list_skill_files(skill_md_path.parent)
+        # 源内容指纹（doc14 §A1）：驱动 common_skills_revision，替代恒定的 frontmatter version。
+        content_hash = compute_skill_content_hash(skill_md_path.parent, text)
         return {
             'skill_id': skill_id,
             'namespace': namespace,
@@ -592,11 +595,13 @@ class GitHubSyncService:
             'description': metadata.get('description'),
             'version': str(metadata.get('version') or '1.0.0'),
             'changelog': metadata.get('changelog') or f"Version {metadata.get('version') or '1.0.0'}",
+            'content_hash': content_hash,
             'versions': [{
                 'version': str(metadata.get('version') or '1.0.0'),
                 'changelog': metadata.get('changelog') or f"Version {metadata.get('version') or '1.0.0'}",
                 'package_url': metadata.get('package_url'),
                 'file_hash': metadata.get('file_hash'),
+                'content_hash': content_hash,
                 'file_size': metadata.get('file_size'),
                 'is_latest': True,
             }],
@@ -860,6 +865,7 @@ class GitHubSyncService:
             'changelog': version_data.get('changelog'),
             'package_url': version_data.get('package_url'),
             'file_hash': version_data.get('file_hash'),
+            'content_hash': version_data.get('content_hash'),
             'file_size': version_data.get('file_size'),
             'is_latest': version_data.get('is_latest', True),
             'published_at': version_data.get('published_at') or timezone.now(),

@@ -11,6 +11,7 @@ class MarketplaceSkillVersionSchemaBase(SchemaBase):
     changelog: str | None = Field(None, description='版本更新日志')
     package_url: str | None = Field(None, description='完整包下载URL')
     file_hash: str | None = Field(None, description='SHA256校验值')
+    content_hash: str | None = Field(None, description='源内容指纹（驱动 common_skills_revision，区别于 file_hash 下载包指纹）')
     file_size: int | None = Field(None, description='包大小（字节）')
     is_latest: bool = Field(description='是否为最新版本')
     published_at: datetime = Field(description='发布时间')

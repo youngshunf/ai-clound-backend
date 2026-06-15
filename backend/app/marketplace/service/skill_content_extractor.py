@@ -15,6 +15,7 @@ one implementation instead of drifting copies.
 
 from __future__ import annotations
 
+import hashlib
 import operator
 import os
 import re
@@ -88,6 +89,50 @@ def list_skill_files(skill_dir: Path) -> list[dict[str, Any]]:
             files.append({'path': file_path.relative_to(skill_dir).as_posix(), 'size': size})
     files.sort(key=operator.itemgetter('path'))
     return files
+
+
+def _normalize_text_for_hash(text: str) -> str:
+    """规范化文本用于稳定指纹：统一换行 + 去每行行尾空白 + 去首尾空白。
+
+    避免 CRLF/LF 差异、行尾多余空格造成的 content_hash 抖动（否则每次同步都误判
+    内容变化、桌面端反复重拉）。
+    """
+    unified = text.replace('\r\n', '\n').replace('\r', '\n')
+    return '\n'.join(line.rstrip() for line in unified.split('\n')).strip()
+
+
+def compute_skill_content_hash(skill_dir: Path, skill_md_text: str) -> str:
+    """技能源内容指纹（doc14 §A1）：sha256(规范化SKILL.md 全文 + 排序后附带文件指纹)[:16]。
+
+    - SKILL.md 全文（含 frontmatter + 正文）按 `_normalize_text_for_hash` 规范化后入哈希，
+      逐字覆盖技能说明的任何改动。
+    - 附带文件（脚本/参考/icon，**不含 SKILL.md 自身**，其内容已经由上面的全文覆盖）按相对
+      路径排序，每个文件入 `path:sha256(原始字节)`——附带文件改动（含二进制 icon）也会变指纹。
+    - 与 list_skill_files 同一套过滤：跳过隐藏目录/文件、__pycache__、.pyc。
+    - 截断到 16 hex（与 common_skills_revision 短码同量级），稳定可比较、零随机/时间。
+    """
+    h = hashlib.sha256()
+    h.update(_normalize_text_for_hash(skill_md_text).encode('utf-8'))
+    h.update(b'\n--FILES--\n')
+    digests: list[str] = []
+    for root, dirs, names in os.walk(skill_dir):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+        for name in names:
+            if name.startswith('.') or name.endswith('.pyc'):
+                continue
+            file_path = Path(root) / name
+            rel = file_path.relative_to(skill_dir).as_posix()
+            if rel == 'SKILL.md':
+                continue  # 全文已单独入哈希，避免重复计入
+            try:
+                file_digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            except OSError:
+                file_digest = 'unreadable'
+            digests.append(f'{rel}:{file_digest}')
+    for line in sorted(digests):
+        h.update(line.encode('utf-8'))
+        h.update(b'\n')
+    return h.hexdigest()[:16]
 
 
 async def resolve_bilingual_body(

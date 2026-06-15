@@ -195,3 +195,41 @@ async def test_revision_stable_when_nothing_changes(e2e):
     a = await _get_profile(c)
     b = await _get_profile(c)
     assert a['common_skills_revision'] == b['common_skills_revision']
+
+
+async def test_content_hash_change_bumps_revision_without_version_change(e2e):
+    """doc14 §B3 核心修复：**版本不变（恒 1.0.0）、仅 content_hash 变** → revision 变。
+
+    这正是 doc12 饿死的场景——官方技能 frontmatter 无 version、同步器恒赋 1.0.0，旧实现用
+    version 当指纹时改正文 revision 纹丝不动、桌面端永不重拉。改用 content_hash 后此用例必须红→绿。
+    """
+    c = e2e.client
+    # 给公共技能的 latest 版本行写一个初始 content_hash（version 保持 1.0.0）。
+    await e2e.session.execute(
+        update(MarketplaceSkillVersion)
+        .where(MarketplaceSkillVersion.skill_id == e2e.common_skill, MarketplaceSkillVersion.is_latest.is_(True))
+        .values(content_hash='hash_v1')
+    )
+    await e2e.session.flush()
+    rev1 = (await _get_profile(c))['common_skills_revision']
+
+    # 只改 content_hash（模拟"改了 SKILL.md 正文"），version 仍是 1.0.0、不新增版本行。
+    await e2e.session.execute(
+        update(MarketplaceSkillVersion)
+        .where(MarketplaceSkillVersion.skill_id == e2e.common_skill, MarketplaceSkillVersion.is_latest.is_(True))
+        .values(content_hash='hash_v2')
+    )
+    await e2e.session.flush()
+    rev2 = (await _get_profile(c))['common_skills_revision']
+
+    assert rev2 != rev1, (rev1, rev2)  # content_hash 变 → 修订号变 → 桌面端自动重拉（bug 修复字面验收）
+
+    # content_hash 缺失时回落 file_hash/version（COALESCE）——clawhub 等无 content_hash 的技能仍可驱动。
+    await e2e.session.execute(
+        update(MarketplaceSkillVersion)
+        .where(MarketplaceSkillVersion.skill_id == e2e.common_skill, MarketplaceSkillVersion.is_latest.is_(True))
+        .values(content_hash=None, file_hash='zip_abc')
+    )
+    await e2e.session.flush()
+    rev3 = (await _get_profile(c))['common_skills_revision']
+    assert rev3 not in (rev1, rev2), (rev1, rev2, rev3)
