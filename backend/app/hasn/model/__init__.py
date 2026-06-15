@@ -1,4 +1,5 @@
 from backend.app.hasn.model.hasn_agent_capabilities import HasnAgentCapabilities as HasnAgentCapabilities
+from backend.app.hasn.model.hasn_agent_scope import HasnAgentScope as HasnAgentScope
 from backend.app.hasn.model.hasn_agent_runtime_reports import HasnAgentRuntimeReports as HasnAgentRuntimeReports
 from backend.app.hasn.model.hasn_agent_templates import HasnAgentTemplates as HasnAgentTemplates
 from backend.app.hasn.model.hasn_agents import HasnAgents as HasnAgents
