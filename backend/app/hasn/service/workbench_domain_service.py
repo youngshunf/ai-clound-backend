@@ -609,8 +609,10 @@ class WorkbenchDomainService:
         # 防御性幂等播种：生产由启动期 reconcile 保证已 seed（此处仅一次存在性 SELECT、零写）；
         # 兜底未 seed 环境（测试 / seed 失败）也能返回内置应用，不破坏工作台。
         await app_catalog_service.ensure_catalog_seeded(db)
-        rows = await self._workspace_app_rows(db, workspace=workspace, user_id=user_id)
-        row_by_app_id = {row.app_id: row for row in rows}
+        # 应用平台 v3 P2（entitlement 收口，开箱即用，设计 17 §6.1）：展示目录 =
+        # **catalog(published) ∩ entitlement**，**不再叠加 per-workspace 挂载态**——挂载概念
+        # 废除（`hasn_workspace_app` 退役，P3/P4 删表），已发布应用对 owner 恒 `available`，
+        # 是否可用纯由准入决定（免费恒真 / 付费走 `resolve_app_access`，§5.2）。
         # C2：catalog（DB 权威）取代硬编码 registry 作为展示目录来源（设计 §6.3）。
         # launch 字段（ui_kind/window_url/window_origin）迁移期仍从本地 registry overlay，
         # registry 在 C6 退役后由 daemon 本地提供（设计 §3 边界）。
@@ -620,8 +622,7 @@ class WorkbenchDomainService:
         apps = []
         for cat in await app_catalog_service.list_published_catalog(db, kind=effective_kind):
             manifest = app_catalog_service.catalog_to_manifest(cat, registry_app=reg_by_id.get(cat.app_id))
-            row = row_by_app_id.get(cat.app_id)
-            manifest['status'] = row.status if row else 'available'
+            manifest['status'] = 'available'
             manifest['access'] = await app_catalog_service.resolve_app_access(
                 db, catalog=cat, owner_hasn_id=owner_hasn_id or ''
             )
