@@ -84,7 +84,7 @@ class AgentContext:
 
     def tool_mode(self, tool: object) -> str:
         """工具的有效三态（维度①）：走统一判定服务 CapabilityGuard（已预取策略，无需取库）。"""
-        from backend.app.hasn.service.agent_capability_guard import capability_guard
+        from backend.app.hasn_core.app_platform import capability_guard
 
         return capability_guard.resolve_from_policy(
             self.default_mode,

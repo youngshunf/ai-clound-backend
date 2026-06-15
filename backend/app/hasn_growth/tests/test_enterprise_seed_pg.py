@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.service.app_catalog_service import grant_entitlement
+from backend.app.hasn_core.app_platform import grant_entitlement
 from backend.app.hasn_growth.model.playbook import Playbook
 from backend.app.hasn_growth.service.enterprise_seed_service import ensure_growth_enterprise_seeded
 from backend.app.hasn_growth.service.playbook_service import playbook_service

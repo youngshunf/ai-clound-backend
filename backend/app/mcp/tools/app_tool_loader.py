@@ -75,7 +75,7 @@ async def load_published_app_tools() -> list[AppTool]:
     经 ai_native_app_registry.list_published_manifests（已合并 builtin + DB）；
     每个 capability → AppTool。零 fake：无发布 manifest → []。
     """
-    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+    from backend.app.hasn_core.app_platform import ai_native_app_registry
     from backend.database.db import async_db_session
 
     tools: list[AppTool] = []

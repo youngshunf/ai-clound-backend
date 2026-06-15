@@ -13,8 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.service import app_catalog_service as catalog_svc
-from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.hasn_core.app_platform import ai_native_app_registry
+from backend.app.hasn_core.app_platform import app_catalog_service as catalog_svc
 from backend.app.hasn_creator.model.playbook import Playbook
 from backend.app.hasn_creator.service.enterprise_seed_service import ensure_creator_enterprise_seeded
 from backend.database.db import SQLALCHEMY_DATABASE_URL

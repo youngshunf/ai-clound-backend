@@ -2,6 +2,7 @@
 
 import secrets
 import time
+
 from datetime import timedelta
 from typing import Any
 
@@ -12,11 +13,13 @@ from backend.app.billing.core.config import (
     ORDER_EXPIRE_MINUTES,
     PAY_ORDER_NOTIFY_URL,
 )
+from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_pay_channel import pay_channel_dao
 from backend.app.billing.crud.crud_pay_contract import pay_contract_dao
 from backend.app.billing.crud.crud_pay_merchant import pay_merchant_dao
 from backend.app.billing.crud.crud_pay_notify_log import pay_notify_log_dao
 from backend.app.billing.crud.crud_pay_order import pay_order_dao
+from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model.pay_order import PayOrder
 from backend.app.billing.schema.pay_order import (
     CreatePayOrderParam,
@@ -24,8 +27,6 @@ from backend.app.billing.schema.pay_order import (
     PayOrderStatusResponse,
 )
 from backend.app.billing.service.channel.base import PayClient
-from backend.app.billing.crud.crud_credit_package import credit_package_dao
-from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.pagination import paging_data
@@ -353,7 +354,7 @@ class PayOrderService:
         已有有效权益的不重复下单（幂等前置，避免重复扣费）。
         """
         # 延迟导入避免 pay → hasn 顶层循环依赖（与 user_tier dao 同为业务定价来源）。
-        from backend.app.hasn.service import app_catalog_service
+        from backend.app.hasn_core.app_platform import app_catalog_service
 
         catalog = await app_catalog_service.get_published_catalog(db, app_id=obj.app_id)
         if catalog is None:

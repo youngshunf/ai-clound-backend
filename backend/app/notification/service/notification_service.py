@@ -165,7 +165,7 @@ class NotificationService:
         主人未显式关闭时打开 card_message，绝不强开主人关掉的渠道）。
         """
         # 延迟导入：registry 依赖 app/hasn（重图），避免模块加载期循环。
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+        from backend.app.hasn_core.app_platform import ai_native_app_registry
 
         decl = await ai_native_app_registry.get_emit_declaration(db, app_id)
         if decl is None:

@@ -89,8 +89,7 @@ class AppTool(BaseTool):
         agent_context: AgentContext,
         arguments: dict[str, Any],
     ) -> Any:
-        from backend.app.hasn.schema.ai_native_runtime import AiNativeToolCallRequest
-        from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
+        from backend.app.hasn_core.app_platform import AiNativeToolCallRequest, ai_native_runtime_gateway
         from backend.database.db import async_db_session
 
         # 经 MCP 直连面进入：身份与维度① 三态闸门已在 server.call_tool 完成

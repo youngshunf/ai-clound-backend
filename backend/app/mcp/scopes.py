@@ -13,14 +13,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.hasn_deck.scopes import DECK_SCOPE_CATALOG
-from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn_community.scopes import COMMUNITY_SCOPE_CATALOG
+from backend.app.hasn_core.app_platform import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn_creator.scopes import CREATOR_SCOPE_CATALOG
+from backend.app.hasn_deck.scopes import DECK_SCOPE_CATALOG
 from backend.app.hasn_growth.scopes import HASN_GROWTH_SCOPE_CATALOG
+from backend.app.hasn_publish.scopes import PUBLISH_SCOPE_CATALOG
 from backend.app.hasn_task.scopes import HASN_TASK_SCOPE_CATALOG
 from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
-from backend.app.hasn_publish.scopes import PUBLISH_SCOPE_CATALOG
 
 # 聚合视图：platform（平台域）∪ app（各应用目录声明）。
 # scope_key 在各源不重叠（platform vs app 互斥）；如有重叠，后者覆盖前者（app 优先于历史兜底）。

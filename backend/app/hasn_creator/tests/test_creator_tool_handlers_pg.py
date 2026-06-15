@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway as gateway
+from backend.app.hasn_core.app_platform import ai_native_runtime_gateway as gateway
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.service import creator_tool_handlers as H
 from backend.common.dataclasses import AgentTokenPayload

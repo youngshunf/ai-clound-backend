@@ -27,8 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
 from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.common.dataclasses import AgentTokenPayload

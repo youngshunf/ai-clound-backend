@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[4]
 
 # 采集子域收编（设计 07 §5.0）：app/lead_automation → app/hasn_growth，
@@ -159,6 +158,7 @@ def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
 def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
     """7 张新业务表管理端 CRUD 挂 canonical /api/v1/growth/*；旧 lead-automation 薄转发已 M8 退役。"""
     import backend.app.hasn_growth.api.router as growth_router_mod
+
     from backend.app.hasn_growth.api.router import v1
 
     v1_paths = {getattr(r, 'path', '') for r in v1.routes}
@@ -172,8 +172,7 @@ def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
 
 def test_m2_app_registration_manifest_scope_catalog() -> None:
     """应用注册：manifest（app_id=growth，17 工具）+ 5 scope + WorkbenchApp（manual）齐备。"""
-    from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry
-    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+    from backend.app.hasn_core.app_platform import AINativeAppRegistry, workbench_app_registry
     from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
     from backend.app.mcp.scopes import SCOPE_CATALOG
 

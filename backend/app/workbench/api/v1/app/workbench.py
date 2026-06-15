@@ -4,12 +4,14 @@ import sqlalchemy as sa
 
 from fastapi import APIRouter, Request
 
-from backend.app.hasn.schema.hasn_app_entitlement import GetHasnAppEntitlementDetail
-from backend.app.hasn.schema.hasn_builtin_task_catalog import BuiltinTaskCatalogResponse
-from backend.app.hasn.service import app_catalog_service
-from backend.app.hasn.service.instance_resolver import InstanceResolutionError
-from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core.app_platform import (
+    BuiltinTaskCatalogResponse,
+    GetHasnAppEntitlementDetail,
+    InstanceResolutionError,
+    app_catalog_service,
+    workbench_domain_service,
+)
 from backend.app.hasn_task.service.builtin_task_service import workbench_builtin_task_service
 from backend.app.workbench.schema.hasn_owner_workbench_pref import PutWorkbenchPrefParam, WorkbenchPrefResponse
 from backend.app.workbench.schema.workbench_briefing_document import (
