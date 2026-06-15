@@ -135,6 +135,54 @@ async def aggregate_logs_by_model(
     return sorted(by_model.values(), key=lambda r: r['quota'], reverse=True)
 
 
+async def summarize_usage(username: str | None, start_time: int, end_time: int) -> dict:
+    """分页拉 /log/ 汇总为 UsageSummary 形状（用于 `/api/v1/llm/usage/summary`）。
+
+    username=None → 汇总全部用户（超管口径）。new-api type=2 消费日志只记可计费的成功调用，
+    故 success=total、error=0（如实：错误不计费、不在消费日志）。total_cost = 积分（= $）。
+    不可达 → 全 0（调用方如实回退，零 fake）。
+    """
+    requests = prompt = completion = quota = use_time_sum = 0
+    truncated = False
+    for page in range(1, MAX_SUMMARY_PAGES + 1):
+        try:
+            items, _total = await newapi_admin_client.get_logs(
+                username=username,
+                start_timestamp=start_time,
+                end_timestamp=end_time,
+                page=page,
+                page_size=SUMMARY_PAGE_SIZE,
+            )
+        except NewApiError as e:
+            log.warning(f'[NewApi] 用量汇总读取失败（username={username} page={page}）: {e}')
+            break
+        if not items:
+            break
+        for it in items:
+            requests += 1
+            prompt += int(it.get('prompt_tokens') or 0)
+            completion += int(it.get('completion_tokens') or 0)
+            quota += int(it.get('quota') or 0)
+            use_time_sum += int(it.get('use_time') or 0)
+        if len(items) < SUMMARY_PAGE_SIZE:
+            break
+        if page == MAX_SUMMARY_PAGES:
+            truncated = True
+    if truncated:
+        log.warning(f'[NewApi] 用量汇总到达分页上限 {MAX_SUMMARY_PAGES} 页（username={username}），结果可能不完整')
+    avg_latency_ms = round((use_time_sum / requests) * 1000) if requests else 0
+    return {
+        'total_requests': requests,
+        'success_requests': requests,
+        'error_requests': 0,
+        'total_tokens': prompt + completion,
+        'total_input_tokens': prompt,
+        'total_output_tokens': completion,
+        'total_cost': quota_to_credits(quota),  # 积分 = $（1:1）
+        'avg_latency_ms': avg_latency_ms,
+    }
+
+
 class LlmNewapiUserMappingService:
 
     # ========== 基础 CRUD（唤星库）==========

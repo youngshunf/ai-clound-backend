@@ -33,6 +33,10 @@ import httpx
 from backend.common.log import log
 from backend.core.conf import settings
 
+# 模型注册表分页拉取上限（list_available_models）——安全护栏，非静默截断。
+MODEL_LIST_PAGE_SIZE = 100
+MODEL_LIST_MAX_PAGES = 50
+
 
 class NewApiError(Exception):
     """new-api 管理 API 调用失败（非 2xx 或 success=false 或连接异常）。
@@ -412,6 +416,31 @@ class NewApiAdminClient:
             params['model_name'] = model_name
         data = await self._request('GET', '/log/stat', headers=self._admin_headers(), params=params)
         return data or {}
+
+    async def list_available_models(self) -> list[dict]:
+        """GET /api/models/（admin，AdminAuth）。分页拉 new-api 模型注册表，返回 status==1 的项。
+
+        用作「可用模型目录」的权威源（解耦后 new-api 为模型权威；策展元数据已退化为默认/启发式）。
+        每项含 `{id, model_name, description, icon, vendor_id, status, ...}`。
+        分页到 MODEL_LIST_MAX_PAGES 上限即止（非静默：到顶告警）。
+        """
+        out: list[dict] = []
+        for page in range(1, MODEL_LIST_MAX_PAGES + 1):
+            data = await self._request(
+                'GET',
+                '/models/',
+                headers=self._admin_headers(),
+                params={'p': page, 'page_size': MODEL_LIST_PAGE_SIZE},
+            )
+            items = (data or {}).get('items') or []
+            if not items:
+                break
+            out.extend(items)
+            if len(items) < MODEL_LIST_PAGE_SIZE:
+                break
+            if page == MODEL_LIST_MAX_PAGES:
+                log.warning(f'[new-api] list_available_models 到达分页上限 {MODEL_LIST_MAX_PAGES} 页，结果可能不完整')
+        return [m for m in out if int(m.get('status') or 0) == 1]
 
     async def get_quota_data(
         self,

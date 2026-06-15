@@ -3,14 +3,14 @@
 from fastapi import APIRouter
 
 # api_keys / newapi 用户映射已迁出至 app/newapi（D1/D5，2026-06-15），路由改由 app/newapi/api/router.py 注册。
-from backend.app.llm.api.v1 import compress_stats, images, media_tasks, model_alias, model_groups, models, providers, proxy, rate_limits, usage, videos
+# usage / models 的「存活」路径（/usage/summary、/models/available）已迁出 app/newapi（删网关前置，2026-06-15）。
+from backend.app.llm.api.v1 import compress_stats, images, media_tasks, model_alias, model_groups, providers, proxy, rate_limits, videos
 
 from backend.core.conf import settings
 
 v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/llm')
 
-# 模型管理
-v1.include_router(models.router, prefix='/models', tags=['LLM 模型管理'])
+# 模型管理（/models/available 已迁 app/newapi；其余 admin CRUD 随网关删除，不再挂载）
 
 # 模型别名映射
 v1.include_router(model_alias.router, prefix='/model-alias', tags=['LLM 模型别名映射'])
@@ -27,8 +27,7 @@ v1.include_router(rate_limits.router, prefix='/rate-limits', tags=['LLM 速率�
 # 代理 API
 v1.include_router(proxy.router, prefix='/proxy', tags=['LLM 代理'])
 
-# 用量统计
-v1.include_router(usage.router, prefix='/usage', tags=['LLM 用量统计'])
+# 用量统计（/usage/summary 已迁 app/newapi；其余 daily/logs/quota 随网关删除，不再挂载）
 
 # 压缩统计（管理后台）
 v1.include_router(compress_stats.router, prefix='/compress-stats', tags=['LLM 压缩统计'])

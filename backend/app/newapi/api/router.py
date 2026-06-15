@@ -14,6 +14,8 @@ from fastapi import APIRouter
 
 from backend.app.newapi.api.v1.admin.llm_newapi_user_mapping import router as admin_newapi_mapping_router
 from backend.app.newapi.api.v1.app.llm_newapi_user_mapping import router as app_newapi_mapping_router
+from backend.app.newapi.api.v1.llm_models import router as llm_models_router
+from backend.app.newapi.api.v1.llm_usage import router as llm_usage_router
 from backend.app.newapi.apikey.api import router as api_keys_router
 from backend.core.conf import settings
 
@@ -21,6 +23,11 @@ from backend.core.conf import settings
 v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/llm')
 v1.include_router(api_keys_router, prefix='/api-keys', tags=['LLM API Key 管理'])
 v1.include_router(admin_newapi_mapping_router, prefix='/newapi-mappings', tags=['new-api 用户映射管理'])
+# 删网关后接管的两条「存活」路径（daemon 依赖；new-api 权威，无 DB 直连）：
+#   GET /api/v1/llm/usage/summary    用量汇总（Owner JWT）
+#   GET /api/v1/llm/models/available 可用模型目录（公开）
+v1.include_router(llm_usage_router, prefix='/usage', tags=['LLM 用量（new-api 权威）'])
+v1.include_router(llm_models_router, prefix='/models', tags=['LLM 可用模型（new-api 权威）'])
 
 # 用户端（沿用 /api/v1/llm/app 前缀）
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/llm/app')
