@@ -400,9 +400,30 @@ class AiNativeRuntimeGateway:
         if self._internal_handlers_cache is not None:
             return self._internal_handlers_cache
         from backend.app.hasn_community.service import community_tool_handlers as handlers
+        from backend.app.hasn_growth.service import growth_tool_handlers as growth_handlers
         from backend.app.hasn_knowledge.service import tool_handlers as knowledge_handlers
 
         registry: dict[str, Any] = {
+            # 获客（纯云端业务应用：CRM/获客/触达/成交，零本地操作 → 工具全走云端 gateway_internal，
+            # 不经 hasn-node 本地 hasn-mcp / daemon Agent 代理；handler 落 hasn_growth service）
+            'growth.collect_start': growth_handlers.handle_growth_collect_start,
+            'growth.collect_status': growth_handlers.handle_growth_collect_status,
+            'growth.lead_search': growth_handlers.handle_growth_lead_search,
+            'growth.lead_get': growth_handlers.handle_growth_lead_get,
+            'growth.lead_qualify': growth_handlers.handle_growth_lead_qualify,
+            'growth.lead_dismiss': growth_handlers.handle_growth_lead_dismiss,
+            'growth.customer_list': growth_handlers.handle_growth_customer_list,
+            'growth.customer_get': growth_handlers.handle_growth_customer_get,
+            'growth.customer_timeline': growth_handlers.handle_growth_customer_timeline,
+            'growth.customer_update_profile': growth_handlers.handle_growth_customer_update_profile,
+            'growth.activity_log': growth_handlers.handle_growth_activity_log,
+            'growth.customer_reassign': growth_handlers.handle_growth_customer_reassign,
+            'growth.outreach_send': growth_handlers.handle_growth_outreach_send,
+            'growth.outreach_status': growth_handlers.handle_growth_outreach_status,
+            'growth.opportunity_create': growth_handlers.handle_growth_opportunity_create,
+            'growth.opportunity_update_stage': growth_handlers.handle_growth_opportunity_update_stage,
+            'growth.deal_close': growth_handlers.handle_growth_deal_close,
+            'growth.report_funnel': growth_handlers.handle_growth_report_funnel,
             # 知识库（AI-Native 重做：工具回归 manifest App 工具，handler 落 knowledge service，
             # RAGFlow 为云端内部处理后端——《知识库AI-Native应用重设计》§2.4/§3）
             'knowledge.search': knowledge_handlers.handle_knowledge_search,

@@ -93,7 +93,7 @@ class WorkbenchAppRegistry:
 
         registry.register(build_publish_workbench_app())
         # 获客 growth（cloud AI-Native，schema hasn_growth；install_policy=manual 非默认挂载）。延迟导入避免循环依赖。
-        from backend.app.hasn_growth.service.ai_native_manifest import build_growth_workbench_app
+        from backend.app.hasn_growth.manifest import build_growth_workbench_app
 
         registry.register(build_growth_workbench_app())
         return registry

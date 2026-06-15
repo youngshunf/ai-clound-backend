@@ -10,7 +10,7 @@ from backend.app.hasn.model import HasnAiNativeAppManifest
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
-from backend.app.hasn_growth.service.ai_native_manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.common.exception import errors

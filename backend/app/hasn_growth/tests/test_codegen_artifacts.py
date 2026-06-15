@@ -174,19 +174,27 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     """应用注册：manifest（app_id=growth，17 工具）+ 5 scope + WorkbenchApp（manual）齐备。"""
     from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry
     from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
-    from backend.app.hasn_growth.service.ai_native_manifest import GROWTH_AI_NATIVE_MANIFEST
+    from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
     from backend.app.mcp.scopes import SCOPE_CATALOG
 
     # 命名铁律：app_id=growth（de-prefixed），模块/schema 仍 hasn_growth
     assert GROWTH_AI_NATIVE_MANIFEST['app_id'] == 'growth'
     assert GROWTH_AI_NATIVE_MANIFEST['execution_mode'] == 'cloud'
+    # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
+    assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
     caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
-    assert len(caps) == 17
+    assert len(caps) == 18  # 17 漏斗工具 + customer_reassign（GE4 企业经理分配负责人）
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
     # 所有 required_scopes 冒号词表
     for c in caps:
         for s in c['required_scopes']:
             assert ':' in s and '.' not in s, s
+
+    # tools[] 由 capabilities 派生，每条 gateway_internal + handler 指向云端 handler 注册表键。
+    tools = GROWTH_AI_NATIVE_MANIFEST['tools']
+    assert len(tools) == len(caps)
+    assert {t['tool_id'] for t in tools} == {c['tool_id'] for c in caps}
+    assert all(t['transport'] == 'gateway_internal' and t['handler'].startswith('growth.') for t in tools)
 
     # manifest registry
     reg = AINativeAppRegistry()
