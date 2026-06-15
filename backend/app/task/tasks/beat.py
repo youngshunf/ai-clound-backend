@@ -26,10 +26,6 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'backend.app.task.tasks.db_log.tasks.delete_db_login_log',
         'schedule': TzAwareCrontab('0', '0', day_of_month='15'),
     },
-    '每日系统选题生成': {
-        'task': 'daily_topic_recommendation_task',
-        'schedule': TzAwareCrontab('0', '3'),
-    },
     '年度订阅积分发放': {
         'task': 'grant_yearly_subscription_credits',
         'schedule': TzAwareCrontab('0', '1'),  # 每天凌晨 1 点执行
