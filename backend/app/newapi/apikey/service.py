@@ -283,13 +283,8 @@ class ApiKeyService:
         if api_key.custom_monthly_tokens:
             default_limits['monthly_token_limit'] = api_key.custom_monthly_tokens
 
-        # 如果有速率限制配置，使用配置
-        if api_key.rate_limit_config_id:
-            config = await rate_limit_dao.get(db, api_key.rate_limit_config_id)
-            if config and config.enabled:
-                default_limits['rpm_limit'] = config.rpm_limit
-                default_limits['daily_token_limit'] = config.daily_token_limit
-                default_limits['monthly_token_limit'] = config.monthly_token_limit
+        # RateLimitConfig 表随自建 LLM 网关删除（2026-06-15，§7.3）：rate_limit_config_id 已是
+        # 无外键的自由配置列，不再做配置查找；每 Key 限额由上面的 custom_* 字段直接提供。
 
         return default_limits
 
