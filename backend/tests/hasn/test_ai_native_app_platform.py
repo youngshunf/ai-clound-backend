@@ -184,6 +184,16 @@ class _ScalarResult:
         return list(self._rows)
 
 
+class _WorkspaceAppStub:
+    """应用平台 v3 P3：hasn_workspace_app 已退役（挂载概念废除），gateway 不再查该表。
+    历史用例仍构造「挂载行」入参，此处保留轻量 stub 占位——_FakeDb 已不再消费它。
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
 class _FakeDb:
     def __init__(
         self,
@@ -352,12 +362,11 @@ def _make_runtime_test_app(
 
 
 def test_runtime_capabilities_returns_current_workspace_knowledge_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -396,47 +405,17 @@ def test_runtime_capabilities_returns_current_workspace_knowledge_tool(monkeypat
     assert data['tools'][0]['required_scopes'] == ['knowledge:read']
 
 
-def test_runtime_capabilities_filters_disabled_workspace_app(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
-    from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
-
-    fake_db = _FakeDb(
-        workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
-            workspace_kind='personal',
-            user_id=12345,
-            enterprise_id=None,
-            app_id='knowledge',
-            status='disabled',
-            config={},
-            enabled_by=12345,
-        ),
-    )
-    app = _make_runtime_test_app(fake_db, monkeypatch)
-
-    async def fake_active_workspace(_db: Any, *, user_id: int) -> dict[str, Any]:
-        return {'kind': 'personal', 'enterprise_id': None}
-
-    monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
-
-    with TestClient(app) as client:
-        resp = client.post(
-            '/api/v1/ai-native/runtime/capabilities',
-            json={'workspace': None, 'include_disabled': False, 'trace_id': 'trace-disabled-discovery'},
-            headers={'Authorization': 'Bearer test-agent'},
-        )
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()['data']['tools'] == []
+# 应用平台 v3 P3（设计 17 决策①）：test_runtime_capabilities_filters_disabled_workspace_app 已删除——
+# 「企业 override 显式 disabled 从发现里隐藏」一档随 hasn_workspace_app 退役不复存在
+# （published 即可发现，付费墙在 invoke 时把关）。
 
 
 def test_enterprise_runtime_capabilities_filter_by_workspace_role(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace=None,
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,
@@ -481,12 +460,11 @@ def test_enterprise_runtime_capabilities_filter_by_workspace_role(monkeypatch: p
 
 
 def test_enterprise_runtime_capabilities_filters_collaboration_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace=None,
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,
@@ -529,12 +507,11 @@ def test_runtime_tool_call_ask_mode_returns_approval_required(monkeypatch: pytes
     import backend.app.mcp.ask_gate as ask_gate_module
     import backend.common.security.agent_jwt as agent_jwt_module
 
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -604,12 +581,11 @@ def test_runtime_tool_call_ask_mode_audits_approval_required(monkeypatch: pytest
     import backend.app.mcp.ask_gate as ask_gate_module
     import backend.common.security.agent_jwt as agent_jwt_module
 
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -672,12 +648,11 @@ def test_runtime_tool_call_ask_mode_with_valid_ticket_bypasses_and_executes(monk
     import backend.common.security.agent_jwt as agent_jwt_module
     import backend.common.security.capability_ticket as ticket_module
 
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -753,7 +728,6 @@ def test_runtime_tool_call_ask_mode_with_valid_ticket_bypasses_and_executes(monk
 
 
 def test_runtime_tool_call_community_get_post_returns_full_resource(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     class CommunityAgent(_FakeAgent):
@@ -761,7 +735,7 @@ def test_runtime_tool_call_community_get_post_returns_full_resource(monkeypatch:
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -824,12 +798,11 @@ def test_runtime_tool_call_community_get_post_returns_full_resource(monkeypatch:
 
 def test_runtime_tool_call_community_capability_deny_writes_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     # 三态模型（D1/D3）：owner 把 community:read 能力设 deny → community.get_article 被拒 15012。
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -879,54 +852,17 @@ def test_runtime_tool_call_community_capability_deny_writes_audit(monkeypatch: p
     assert audit_row.error_code == '15012'
 
 
-def test_runtime_tool_call_disabled_app_writes_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
-    from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
-
-    fake_db = _FakeDb(
-        workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
-            workspace_kind='personal',
-            user_id=12345,
-            enterprise_id=None,
-            app_id='community',
-            status='disabled',
-            config={},
-            enabled_by=12345,
-        ),
-    )
-    app = _make_runtime_test_app(fake_db, monkeypatch)
-
-    async def fake_active_workspace(_db: Any, *, user_id: int) -> dict[str, Any]:
-        return {'kind': 'personal', 'enterprise_id': None}
-
-    monkeypatch.setattr(gateway_module.workbench_domain_service, 'get_active_workspace', fake_active_workspace)
-
-    with TestClient(app) as client:
-        resp = client.post(
-            '/api/v1/ai-native/runtime/tools/community/community.get_post/call',
-            json={'workspace': None, 'input': {'post_id': 'post_01J'}, 'trace_id': 'trace-disabled'},
-            headers={'Authorization': 'Bearer test-agent'},
-        )
-
-    assert resp.status_code == 200, resp.text
-    data = resp.json()['data']
-    assert data['decision'] == 'deny'
-    # 设计 11 §4.2/§4.3：去掉安装态后 15002 语义改为"App 被企业 override 显式 disabled"
-    # （workspace_app 记录 status=disabled 才拒；默认无记录即可用，published 即用）。
-    assert data['error'] == {'code': '15002', 'message': 'app_disabled_by_enterprise'}
-    audit_row = fake_db.added[-1]
-    assert audit_row.decision == 'deny'
-    assert audit_row.error_code == '15002'
+# 应用平台 v3 P3（设计 17 决策①）：test_runtime_tool_call_disabled_app_writes_audit 已删除——
+# 15002「app_disabled_by_enterprise」拒绝档随 hasn_workspace_app 退役不复存在（published 即可调用，
+# 准入仅由 entitlement 维度把关）。
 
 
 def test_enterprise_runtime_tool_call_role_denial_writes_15004_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace=None,
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,
@@ -976,12 +912,11 @@ def test_enterprise_runtime_tool_call_role_denial_writes_15004_audit(monkeypatch
 
 
 def test_enterprise_runtime_tool_call_collaboration_denial_writes_15005_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace=None,
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,
@@ -1029,12 +964,11 @@ def test_enterprise_runtime_tool_call_collaboration_denial_writes_15005_audit(mo
 
 
 def test_runtime_tool_call_invalid_input_writes_15020_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -1075,7 +1009,6 @@ def test_runtime_tool_call_invalid_input_writes_15020_audit(monkeypatch: pytest.
 
 @pytest.mark.asyncio
 async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.schema.ai_native_runtime import AiNativeToolCallRequest
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
     from backend.common.security import agent_jwt as agent_jwt_module
@@ -1083,7 +1016,7 @@ async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypa
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -1151,11 +1084,10 @@ async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypa
 
 
 def test_runtime_tool_call_requires_agent_jwt_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
 
     fake_db = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='personal',
             user_id=12345,
             enterprise_id=None,
@@ -1178,12 +1110,11 @@ def test_runtime_tool_call_requires_agent_jwt_dependency(monkeypatch: pytest.Mon
 
 
 def test_runtime_tool_call_inaccessible_workspace_writes_15003_audit(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.model import HasnWorkspaceApp
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
     fake_db = _FakeDb(
         workspace=None,
-        app_row=HasnWorkspaceApp(
+        app_row=_WorkspaceAppStub(
             workspace_kind='enterprise',
             user_id=None,
             enterprise_id=7,

@@ -16,6 +16,12 @@ REQUIRED_TABLES = (
     'hasn_enterprise',
     'hasn_enterprise_membership',
     'hasn_enterprise_invite_code',
+)
+
+# 应用平台 v3 P3（设计 17 决策①②）：hasn_workspace_app（挂载）与 hasn_user_active_workspace
+# （重 workspace 实体）已退役删表 + model/schema/crud/service/admin-api 物理删除——
+# 「应用一律开箱即用」+「身份上下文收缩为 hasn_owner_workbench_pref.active_enterprise_id 瘦指针」。
+LEGACY_WORKSPACE_TABLES = (
     'hasn_user_active_workspace',
     'hasn_workspace_app',
 )
@@ -76,16 +82,30 @@ def test_legacy_ragflow_tables_fully_removed() -> None:
     assert leftover == []
 
 
-def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() -> None:
-    from pydantic import ValidationError
+def test_legacy_workspace_tables_fully_removed() -> None:
+    """应用平台 v3 P3 DoD：hasn_workspace_app / hasn_user_active_workspace 的
+    sql/model/schema/crud/service/admin-api 全部物理删除（挂载 + 重 workspace 实体退役）。"""
+    leftover: list[str] = []
+    for table in LEGACY_WORKSPACE_TABLES:
+        candidates = {
+            REPO_ROOT / 'backend' / 'sql' / 'hasn' / f'{table}.sql',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'model' / f'{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'schema' / f'{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'crud' / f'crud_{table}.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'service' / f'{table}_service.py',
+            REPO_ROOT / 'backend' / 'app' / 'hasn' / 'api' / 'v1' / 'admin' / f'{table}.py',
+        }
+        leftover.extend(path.relative_to(REPO_ROOT).as_posix() for path in candidates if path.exists())
 
+    assert leftover == []
+
+
+def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() -> None:
     from backend.app.hasn.schema.hasn_app_credential import CreateHasnAppCredentialParam
     from backend.app.hasn.schema.hasn_app_instance import CreateHasnAppInstanceParam
     from backend.app.hasn.schema.hasn_enterprise import CreateHasnEnterpriseParam
     from backend.app.hasn.schema.hasn_enterprise_invite_code import CreateHasnEnterpriseInviteCodeParam
     from backend.app.hasn.schema.hasn_enterprise_membership import CreateHasnEnterpriseMembershipParam
-    from backend.app.hasn.schema.hasn_user_active_workspace import CreateHasnUserActiveWorkspaceParam
-    from backend.app.hasn.schema.hasn_workspace_app import CreateHasnWorkspaceAppParam
 
     enterprise = CreateHasnEnterpriseParam(
         name='Acme',
@@ -100,16 +120,6 @@ def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() 
         enterprise_id=1,
         code='JOIN-ACME',
         created_by=7,
-    )
-    workspace = CreateHasnUserActiveWorkspaceParam(
-        user_id=8,
-        kind='enterprise',
-        enterprise_id=1,
-    )
-    workspace_app = CreateHasnWorkspaceAppParam(
-        workspace_kind='personal',
-        user_id=8,
-        app_id='knowledge',
     )
     # 实施 03 收编：知识库实例/凭据改用通用应用平台底座 schema；RAGFlow 私有字段
     # （public_pem / ragflow_user_id / ragflow_tenant_id）下沉 config。
@@ -135,17 +145,10 @@ def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() 
     assert enterprise.status == 'active'
     assert membership.status == 'pending'
     assert invite.used_count == 0
-    assert workspace.enterprise_id == 1
-    assert workspace_app.status == 'active'
     assert instance.app_id == 'knowledge'
     assert instance.config['public_pem'] == 'pem'
     assert credential.config['ragflow_user_id'] == 'rf-user'
     assert credential.status == 'pending'
-
-    with pytest.raises(ValidationError):
-        CreateHasnUserActiveWorkspaceParam(user_id=8, kind='personal', enterprise_id=1)
-    with pytest.raises(ValidationError):
-        CreateHasnWorkspaceAppParam(workspace_kind='enterprise', user_id=8, app_id='knowledge')
 
 
 def test_workbench_codegen_admin_api_modules_import_and_mount() -> None:
@@ -156,8 +159,9 @@ def test_workbench_codegen_admin_api_modules_import_and_mount() -> None:
     assert '/api/v1/hasn/enterprises' in routes
     assert '/api/v1/hasn/enterprise/memberships' in routes
     assert '/api/v1/hasn/enterprise/invite-codes' in routes
-    assert '/api/v1/hasn/user/active-workspaces' in routes
-    assert '/api/v1/hasn/workspace/apps' in routes
+    # 应用平台 v3 P3（设计 17 决策①②）：挂载 + 重 workspace 实体退役，两套 admin 路由随表删除。
+    assert '/api/v1/hasn/user/active-workspaces' not in routes
+    assert '/api/v1/hasn/workspace/apps' not in routes
     # 实施 03 P5：旧 /ragflow/instances、/ragflow/credentials admin 路由已随收编删除
     # （知识库凭据走用户端 /api/v1/hasn/app/knowledge/credentials，由 instance_resolver 选实例）。
     assert '/api/v1/hasn/ragflow/instances' not in routes
@@ -224,7 +228,11 @@ def test_workbench_registry_auto_installs_knowledge_for_personal_and_enterprise(
 def test_hasn_router_exposes_enterprise_workbench_and_knowledge_routes() -> None:
     from backend.app.hasn.api.router import app, v1
 
-    routes = {route.path for router in (v1, app) for route in router.routes}
+    # ADR-15 批次3：工作台 API 抽出独立模块 backend.app.workbench（schema hasn_workbench），
+    # 路由器 workbench_app 仍挂同一 prefix /api/v1/hasn/app（节点无感知）。
+    from backend.app.workbench.api.router import workbench_app
+
+    routes = {route.path for router in (v1, app, workbench_app) for route in router.routes}
 
     assert '/api/v1/hasn/enterprises' in routes
     assert '/api/v1/hasn/users/me/workspaces' in routes
@@ -271,13 +279,12 @@ def test_workbench_app_routes_inject_database_sessions() -> None:
 
 @pytest.mark.asyncio
 async def test_workbench_app_handlers_delegate_to_domain_service(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.api.v1.app import workbench as module
+    """应用平台 v3 P3（设计 17 决策①）：挂载废除——current/enable/disable workspace-app
+    端点已删除，工作台只剩 list_workbench_apps（catalog ∩ entitlement，开箱即用）。
+    （ADR-15 批次3：工作台 handler 已迁 backend.app.workbench.api.v1.app.workbench。）"""
+    from backend.app.workbench.api.v1.app import workbench as module
 
     calls: list[tuple[str, dict]] = []
-
-    async def list_current_workspace_apps(db: object, *, user_id: int) -> list[str]:  # noqa: RUF029
-        calls.append(('current', {'db': db, 'user_id': user_id}))
-        return ['knowledge']
 
     async def list_workbench_apps(  # noqa: RUF029
         db: object,
@@ -288,47 +295,14 @@ async def test_workbench_app_handlers_delegate_to_domain_service(monkeypatch: py
         calls.append(('market', {'db': db, 'user_id': user_id, 'workspace_kind': workspace_kind}))
         return ['knowledge', 'chat']
 
-    async def enable_current_workspace_app(  # noqa: RUF029
-        db: object,
-        *,
-        user_id: int,
-        app_id: str,
-    ) -> dict[str, object]:
-        calls.append(('enable', {'db': db, 'user_id': user_id, 'app_id': app_id}))
-        return {'app_id': app_id, 'status': 'active'}
-
-    async def disable_current_workspace_app(  # noqa: RUF029
-        db: object,
-        *,
-        user_id: int,
-        app_id: str,
-    ) -> dict[str, object]:
-        calls.append(('disable', {'db': db, 'user_id': user_id, 'app_id': app_id}))
-        return {'app_id': app_id, 'status': 'disabled'}
-
-    monkeypatch.setattr(module.workbench_domain_service, 'list_current_workspace_apps', list_current_workspace_apps)
     monkeypatch.setattr(module.workbench_domain_service, 'list_workbench_apps', list_workbench_apps)
-    monkeypatch.setattr(module.workbench_domain_service, 'enable_current_workspace_app', enable_current_workspace_app)
-    monkeypatch.setattr(module.workbench_domain_service, 'disable_current_workspace_app', disable_current_workspace_app)
 
     request = SimpleNamespace(user=SimpleNamespace(id=7))
     db = object()
 
-    assert (await module.current_workspace_apps(request, db)).data == ['knowledge']
     assert (await module.list_workbench_apps(request, db, workspace_kind='enterprise')).data == ['knowledge', 'chat']
-    assert (await module.enable_workbench_app(request, db, 'knowledge')).data == {
-        'app_id': 'knowledge',
-        'status': 'active',
-    }
-    assert (await module.disable_workbench_app(request, db, 'knowledge')).data == {
-        'app_id': 'knowledge',
-        'status': 'disabled',
-    }
     assert calls == [
-        ('current', {'db': db, 'user_id': 7}),
         ('market', {'db': db, 'user_id': 7, 'workspace_kind': 'enterprise'}),
-        ('enable', {'db': db, 'user_id': 7, 'app_id': 'knowledge'}),
-        ('disable', {'db': db, 'user_id': 7, 'app_id': 'knowledge'}),
     ]
 
 
