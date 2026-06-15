@@ -28,6 +28,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
+from backend.app.hasn_client.model._base import APP_SCHEMA
 from backend.common.model import Base, id_key
 
 
@@ -37,7 +38,7 @@ class FeatureFlag(Base):
     __tablename__ = 'feature_flags'
     __table_args__ = (
         sa.UniqueConstraint('key', name='uq_feature_flags_key'),
-        {'comment': 'M1 内测灰度 feature flag 注册表 [D10]'},
+        {'comment': 'M1 内测灰度 feature flag 注册表 [D10]', 'schema': APP_SCHEMA},
     )
 
     id: Mapped[id_key] = mapped_column(init=False)
@@ -72,13 +73,13 @@ class FeatureFlagAssignment(Base):
             name='uq_feature_flag_assignments_flag_hasn',
         ),
         sa.Index('ix_feature_flag_assignments_hasn_id', 'hasn_id'),
-        {'comment': 'M1 内测灰度白名单 (按 hasn_id 覆盖 default_enabled) [D10]'},
+        {'comment': 'M1 内测灰度白名单 (按 hasn_id 覆盖 default_enabled) [D10]', 'schema': APP_SCHEMA},
     )
 
     id: Mapped[id_key] = mapped_column(init=False)
     flag_id: Mapped[int] = mapped_column(
         sa.BigInteger(),
-        sa.ForeignKey('feature_flags.id', ondelete='CASCADE'),
+        sa.ForeignKey(f'{APP_SCHEMA}.feature_flags.id', ondelete='CASCADE'),
         nullable=False,
         default=0,
         comment='关联 feature_flags.id',
