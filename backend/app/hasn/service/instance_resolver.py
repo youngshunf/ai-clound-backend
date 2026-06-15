@@ -184,7 +184,7 @@ class InstanceResolver:
         - daemon_direct / frontend_direct：短期 token（P4 性能档，Tool 面不走）。
         """
         if transport == TRANSPORT_CLOUD_RELAY:
-            from backend.app.llm.core.encryption import key_encryption
+            from backend.common.security.encryption import key_encryption
 
             ref = instance.get('credential_ref')
             if not ref:

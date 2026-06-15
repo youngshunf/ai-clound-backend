@@ -17,7 +17,7 @@ import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_app_instance import HasnAppInstance
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError, RAGFlowClient
-from backend.app.llm.core.encryption import key_encryption
+from backend.common.security.encryption import key_encryption
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
