@@ -1,6 +1,6 @@
 # app/hasn 平台核心 façade 与 god-file 拆分 — 设计提案
 
-> 状态：**候选③ 已部分落地（P1 身份 façade + P2 应用平台服务 façade + P4 守卫），P3 长尾经评估暂不做；候选④ god-file 拆分待启动**。福仔 redline：façade 落点=`app/hasn_core`、身份 JOIN=方案 A、身份先行、加 import-lint 守卫。
+> 状态：**候选③ 已部分落地（P1 身份 façade + P2 应用平台服务 façade + P4 守卫），P3 长尾经评估暂不做；候选④ god-file 拆分 sync slice-1（纯编解码层 `_sync_codec`）已落地，DB god-class 余下 slice 暂缓**。福仔 redline：façade 落点=`app/hasn_core`、身份 JOIN=方案 A、身份先行、加 import-lint 守卫。
 > 范围：仅 huanxing-cloud-backend，纯**导入依赖收敛 + 文件内部分解**。**不动 DB schema、不动任何 URL、不动业务行为**。
 > 关联：架构候选①（入参绑定接缝，已落地 `f763ce8e`）、候选⑥（死代码清理，已落地 `6bbbcbe1`）。
 > 背景：`app/hasn` 是 39676 行 / 355 文件的遗留巨型模块，团队已陆续拆出 hasn_community / hasn_growth / hasn_task / hasn_deck / hasn_publish / hasn_knowledge / hasn_memory / billing / workbench 等独立模块（ADR-15）。但拆分**制造了边界、却没人定义边界的接口**——这正是本提案要补的两件事。
@@ -15,7 +15,7 @@
 | **P2 应用平台 façade** | ✅ 已落地推送 | `60fc0ddf` | 新建 `app/hasn_core/app_platform.py`（**services-only 深接缝**）。12 个 consumer 迁移。**关键修正**：façade 只暴露服务 + 对外 schema，**不**暴露 `WorkbenchApp` 数据类 / `HasnAppInstance`·`HasnAiNativeAppAudit` 模型——它们被各应用 manifest 在 registry 构建期消费（manifest 属应用平台内部），façade 化会成环（实测 `hasn_deck/manifest` 触发 partially-initialized circular import）。这类叶子数据类型由定义处直接 import。 |
 | **P4 守卫** | ✅ 已落地推送 | `391b0001` | `test_facade_reachback_guard`：扫描 app/ 非 hasn/非 hasn_core 模块，锁死 P1/P2 两条**已收编**接缝的回归。**有意只守这两条**，非「禁止一切 `from backend.app.hasn.`」。 |
 | **P3 长尾白名单** | ⏸️ 评估后暂不做 | — | 见下「P3 重估」。实测非身份反向 import 远超设计估值（~80 行 vs 估 ~22），且**异质、属平台原语**（conversations/messages/contacts/sessions/nodes/ws_router/asset/sync/audit/notifications/approval/enterprise…），主要被 `mcp/*`、`notification/*` 消费。把它们塞进一张扁平白名单 = **浅接缝（pass-through index）**，deletion test 不过关，反把 `hasn_core` 变成 god re-exporter。 |
-| **候选④ god-file 拆分** | ⬜ 待启动 | — | `hasn_sync_service.py`(2209) 先做、`community_service.py`(3429) 错峰。属**内部分解**（非 import 收敛），风险更高、应独立专注一轮做。 |
+| **候选④ god-file 拆分** | 🟡 slice-1 已落地推送 | `1311e2d6` | **sync slice-1（纯编解码层）已落地**：`hasn_sync_service.py`(2209→1701) 抽出 34 个纯函数 + 5 个纯数据常量 + `TaskSyncConflictError` → `_sync_codec.py`(581)，外部方法签名/行为零变化（AST 逐字搬运），新增 33 个零夹具单测 `test_sync_codec.py`。验证：ruff F 全清（HEAD 42→41 零新增）、app import 1547 路由不变、`TaskSyncConflictError` 跨模块 identity 稳定。**剩余 slice**：DB god-class `SqlAlchemySyncGateway`(~1100) 与 `HasnSyncService` orchestrator 仍是巨石，但 DB 绑定、进一步拆分边际收益递减、风险升高，**暂缓**（最高价值的纯逻辑可测性已达成）。`community_service.py`(3429) 同法可做、错峰另起一轮。 |
 
 ### P3 重估（为何暂不做）
 
