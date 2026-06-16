@@ -53,3 +53,6 @@ from backend.app.hasn.model.hasn_resource_share import HasnResourceShare as Hasn
 from backend.app.hasn.model.hasn_enterprise_role import HasnEnterpriseRole as HasnEnterpriseRole
 from backend.app.hasn.model.hasn_enterprise_member_role import HasnEnterpriseMemberRole as HasnEnterpriseMemberRole
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts as HasnArtifacts
+from backend.app.hasn.model.hasn_platform_default_config import (
+    HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,
+)
