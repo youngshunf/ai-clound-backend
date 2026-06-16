@@ -266,6 +266,16 @@ class GitHubSyncService:
                 )
                 await db.commit()
 
+            # 公共技能集合（is_common 技能/包）可能因本次同步而变 → 主动 push
+            # hasn.sync.invalidate(common_skills)，让在线 daemon 秒级 re-provision 拉最新公共技能，
+            # 而非等轮询/握手（doc02-07 M2）。best-effort：推送失败不影响同步结果。
+            try:
+                from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+                await sync_bump('common_skills', db)
+            except Exception as e:
+                log.warning(f'[HASN] common_skills invalidate 推送失败 (非致命): {e}')
+
             return {  # noqa: TRY300
                 'success': True,
                 'synced': synced_count,

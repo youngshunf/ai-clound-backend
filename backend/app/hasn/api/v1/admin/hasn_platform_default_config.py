@@ -4,6 +4,8 @@
 节点媒体模型（image/tts/stt）+ agent 运行时四槽默认（main/fast/vision/delegation）。
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 
 from backend.app.hasn.schema.hasn_platform_default_config import (
@@ -17,6 +19,8 @@ from backend.common.security.jwt import DependsJwtAuth
 from backend.common.security.permission import RequestPermission
 from backend.common.security.rbac import DependsRBAC
 from backend.database.db import CurrentSession, CurrentSessionTransaction
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -48,4 +52,13 @@ async def update_platform_default_config(
     data = await platform_default_config_service.update_config(
         db, config=PlatformDefaultConfig.model_validate(obj.model_dump()), updated_by=updated_by
     )
+    # 平台默认配置变更 → 主动 push hasn.sync.invalidate(platform_config) 给在线节点（doc02-07 M2）：
+    # 在线 daemon 秒级重拉 /platform-config 并应用，离线节点靠重连握手对账。best-effort，
+    # 推送失败绝不影响配置已写入。
+    try:
+        from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+        await sync_bump('platform_config', db)
+    except Exception as e:
+        log.warning(f'[HASN] platform_config invalidate 推送失败 (非致命): {e}')
     return response_base.success(data=data)
