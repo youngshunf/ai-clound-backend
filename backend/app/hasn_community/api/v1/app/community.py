@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 
 from backend.app.hasn_community.service.community_service import community_service
+from backend.app.hasn_community.service.settings_service import community_settings_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -1498,7 +1499,7 @@ class AddBlockRequest(BaseModel):
 async def get_community_settings(request: Request, db: CurrentSession) -> ResponseModel:
     """读取个人社区设置"""
     hasn_id = await _require_human_hasn_id(db, request.user.id)
-    result = await community_service.get_community_settings(db, hasn_id=hasn_id)
+    result = await community_settings_service.get_community_settings(db, hasn_id=hasn_id)
     return response_base.success(data=result)
 
 
@@ -1515,7 +1516,7 @@ async def update_community_settings(
     """更新个人社区设置（部分 patch）"""
     hasn_id = await _require_human_hasn_id(db, request.user.id)
     patch = body.model_dump(exclude_none=True)
-    result = await community_service.update_community_settings(db, hasn_id=hasn_id, patch=patch)
+    result = await community_settings_service.update_community_settings(db, hasn_id=hasn_id, patch=patch)
     return response_base.success(data=result)
 
 
@@ -1527,7 +1528,7 @@ async def update_community_settings(
 async def list_blocks(request: Request, db: CurrentSession) -> ResponseModel:
     """黑名单列表"""
     hasn_id = await _require_human_hasn_id(db, request.user.id)
-    result = await community_service.list_blocks(db, blocker_hasn_id=hasn_id)
+    result = await community_settings_service.list_blocks(db, blocker_hasn_id=hasn_id)
     return response_base.success(data=result)
 
 
@@ -1543,7 +1544,7 @@ async def add_block(
 ) -> ResponseModel:
     """拉黑"""
     hasn_id = await _require_human_hasn_id(db, request.user.id)
-    result = await community_service.add_block(
+    result = await community_settings_service.add_block(
         db,
         blocker_hasn_id=hasn_id,
         blocked_hasn_id=body.blocked_hasn_id,
@@ -1565,7 +1566,7 @@ async def remove_block(
 ) -> ResponseModel:
     """解除拉黑"""
     hasn_id = await _require_human_hasn_id(db, request.user.id)
-    result = await community_service.remove_block(
+    result = await community_settings_service.remove_block(
         db, blocker_hasn_id=hasn_id, blocked_hasn_id=blocked_hasn_id
     )
     return response_base.success(data=result)
