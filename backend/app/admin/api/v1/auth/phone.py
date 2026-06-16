@@ -19,8 +19,6 @@ from backend.app.admin.schema.phone_auth import (
     SendCodeResponse,
 )
 from backend.app.newapi.service import llm_newapi_user_mapping_service
-from backend.app.openclaw.schema import GatewayConfigCreate
-from backend.app.openclaw.service import create_gateway_config
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth, create_access_token, create_refresh_token
@@ -213,15 +211,6 @@ async def phone_login(
         log.error(f'new-api 用户创建失败: {e}')
         raise errors.ServerError(msg='LLM 服务初始化失败，请稍后重试')
 
-    # 获取或创建 Gateway Token
-    gateway_token_response = await create_gateway_config(
-        db,
-        user_id=user.id,
-        data=GatewayConfigCreate(openclaw_config=None),
-        auto_commit=False,
-    )
-    gateway_token = gateway_token_response.gateway_token
-
     # 构建用户信息
     user_info = PhoneLoginUserInfo(
         uuid=user.uuid,
@@ -255,7 +244,6 @@ async def phone_login(
             llm_token=llm_token,
             llm_base_url=settings.LLM_API_BASE_URL,
             agent_key=settings.AGENT_SECRET_KEY.split(',')[0].strip(),
-            gateway_token=gateway_token,
             hasn_node_key=hasn_node_key,
             hasn_node_id=hasn_node_id,
             owner_key=owner_key,

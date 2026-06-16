@@ -103,11 +103,6 @@ _DEBT = {
     'POST /api/v1/marketplace/admin/sync/github',
     'POST /api/v1/marketplace/admin/sync/github/templates',
     'POST /api/v1/marketplace/admin/sync/retranslate',
-    # openclaw gateway
-    'GET /api/v1/openclaw/gateway/configs',
-    'PATCH /api/v1/openclaw/gateway/config',
-    'POST /api/v1/openclaw/gateway/token',
-    'POST /api/v1/openclaw/gateway/verify-token',
 }
 
 KNOWN_NON_ENVELOPE = _GENUINE | _DEBT

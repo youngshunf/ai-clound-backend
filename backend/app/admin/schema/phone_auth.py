@@ -42,7 +42,6 @@ class PhoneLoginResponse(SchemaBase):
     llm_token: str = Field(description='LLM API Token')
     llm_base_url: str | None = Field(default=None, description='LLM API Base URL')
     agent_key: str = Field(description='Agent Key（用于 X-Agent-Key 认证，桌面端调用 hx_* API）')
-    gateway_token: str = Field(description='Gateway 认证 Token')
     hasn_node_key: str | None = Field(default=None, description='HASN Node Key（hasn_nk_ 前缀，用于 WebSocket 认证）')
     hasn_node_id: str | None = Field(default=None, description='HASN 节点 ID（n_ 前缀，用于展示和日志）')
     owner_key: str | None = Field(default=None, description='HASN Owner API Key（hasn_ok_ 前缀，用于文档/云函数等用户级 API 认证）')

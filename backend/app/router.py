@@ -77,7 +77,6 @@ from backend.app.marketplace.api.router import webhook as marketplace_webhook
 from backend.app.notification.api.router import admin as notification_admin
 from backend.app.notification.api.router import agent as notification_agent
 from backend.app.notification.api.router import app as notification_app
-from backend.app.openclaw.api.router import v1 as openclaw_v1
 # 计费（billing）= 支付 pay + 订阅积分 user_tier 合并（ADR-15 §4）；URL 前缀 /api/v1/pay 与 /api/v1/user_tier 保持不变
 from backend.app.billing.api.router import pay_v1
 from backend.app.billing.api.router import pay_app
@@ -96,7 +95,6 @@ router.include_router(admin_v1)
 router.include_router(task_v1)
 router.include_router(newapi_v1)    # /api/v1/llm/*：API Key 管理 + 用户映射 + 用量汇总 + 可用模型目录（接管原 app/llm 存活路径）
 router.include_router(newapi_app)   # new-api 用量与额度（/api/v1/llm/app/newapi）
-router.include_router(openclaw_v1)  # Openclaw Gateway API
 # 获客 canonical 前缀 /api/v1/growth/*（旧 /api/v1/lead-automation/* 薄转发已于 M8 退役 2026-06-13）
 router.include_router(growth_v1)
 router.include_router(growth_app)
