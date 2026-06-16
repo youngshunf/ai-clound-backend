@@ -181,6 +181,17 @@ async def hasn_node_websocket(
             connected_params['owner_id'] = owner_hasn_id
             connected_params['owner_count'] = 1
 
+        # 配置/目录 revision 握手对账（doc02-07）：daemon 据此追平离线期间错过的
+        # builtin_catalog / common_skills / platform_config 变更（重连即对账，
+        # 无需重新登录）。读 Redis 缓存，cheap；失败非致命（不影响连接建立）。
+        try:
+            from backend.app.hasn.service.sync_invalidate_service import get_all_revisions
+
+            async with async_db_session() as db:
+                connected_params['revisions'] = await get_all_revisions(db)
+        except Exception as e:  # revision 握手非致命
+            log.warning(f'[HASN] 计算 sync revisions 失败 (非致命): {e}')
+
         await websocket.send_json(_frame('hasn.connected', connected_params))
 
         # 5. 自动推送离线消息（Owner 已绑定）

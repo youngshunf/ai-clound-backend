@@ -333,6 +333,44 @@ class WsRouterService:
         else:
             return await self._push_to_entity(target_hasn_id, payload_json)
 
+    async def broadcast_sync_invalidate(
+        self, kind: str, revision: str, owner_id: str | None = None
+    ) -> int:
+        """向在线节点推送 ``hasn.sync.invalidate``（配置/目录变更信号，doc02-07）。
+
+        - ``owner_id=None`` → 全部在线节点（全局 kind：builtin_catalog/common_skills/
+          platform_config）；指定 → 仅该 owner 的在线节点（owner 定向 kind，如 agents）。
+        - 单 worker 部署下 ``_ws_connections`` 持有全部连接，遍历即完整覆盖。
+        - **不入离线队列**：invalidate 是幂等「去拉最新」信号，离线节点靠重连
+          ``hasn.connected`` 握手对账追平；单个连接发送失败也不影响其它。
+        - 返回成功 push 的节点数。
+        """
+        payload_json = json.dumps(
+            {
+                'hasn': 'hasn/0.2',
+                'method': 'hasn.sync.invalidate',
+                'params': {'kind': kind, 'revision': revision},
+            },
+            ensure_ascii=False,
+        )
+
+        if owner_id:
+            node_ids = await redis_client.smembers(f'{USER_NODES_PREFIX}:{owner_id}')
+        else:
+            node_ids = set(_ws_connections.keys())
+
+        pushed = 0
+        for nid in node_ids:
+            ws = _ws_connections.get(nid)
+            if ws is None:
+                continue
+            try:
+                await ws.send_text(payload_json)
+                pushed += 1
+            except Exception:  # 单连接失败不影响其它；离线靠握手对账
+                pass
+        return pushed
+
     async def push_to_owner_excluding_agent_node(
         self, owner_id: str, agent_id: str, payload: dict
     ) -> bool:
