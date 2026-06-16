@@ -197,16 +197,16 @@ def _builtin_skill_bundle_ids(item: HasnBuiltinTaskCatalog) -> list[str]:
 async def seed_builtin_tasks(db: AsyncSession, owner_id: str) -> list[str]:
     """INSERT-only 播种内置任务进 hasn_task.task。
 
-    - 仅播种全局上线（catalog.enabled=true）的条目。
+    - 播种「全部」内置条目（**不**按 catalog.enabled 过滤）：内置任务必须人人都有，
+      只是初始启停态不同（daily_briefing 默认开、其余默认停，用户手动启用即可）。
+      `enabled` 是「官方上/下线」开关（仅影响《可更新》提示、refresh-builtin 可用性），
+      绝不 gate 播种——早期 `where enabled=true` 是 M5 之前「daemon 本地物化」旧模型的遗留过滤，
+      退役本地物化、改走「真实 task 行 + 普通同步」后此过滤导致 enabled=false 的条目永不播种（bug）。
     - 解析承接分身：target_agent_type 匹配的内置 agent（只取一个，最早创建）；无则回退主脑。
     - (owner_id, builtin_key) 已存在存活行 → 跳过（INSERT-only 铁律，绝不自动覆盖用户修改）。
     - 初始 enabled = catalog.default_enabled（之后归用户）；daily_briefing 特例沿用 owner 简报偏好。
     """
-    catalog = (
-        await db.execute(
-            sa.select(HasnBuiltinTaskCatalog).where(HasnBuiltinTaskCatalog.enabled.is_(True))
-        )
-    ).scalars().all()
+    catalog = (await db.execute(sa.select(HasnBuiltinTaskCatalog))).scalars().all()
     if not catalog:
         return []
 

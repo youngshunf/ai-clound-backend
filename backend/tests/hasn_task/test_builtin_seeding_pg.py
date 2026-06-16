@@ -7,8 +7,9 @@
   reconcile 跳过；专业分身 content_operator / sales_advisor 经真实 register_hasn_agent 建并 stamp builtin_agent_key）。
 - §6.1 seed_builtin_tasks（INSERT-only，经 save_task_event 走权威 upsert + hasn_sync_events feed）：
   daily_briefing 绑主脑（target NULL 回退）、daily_hot_topic 绑 content_operator（按类型匹配）、
-  enabled=catalog.default_enabled（daily_briefing True / daily_hot_topic False）、created_by_kind='builtin'。
-  enabled=false 的目录条目（growth_* / creator_*）不播种。每条播种发 task.created 同步事件供 daemon 拉取。
+  enabled=catalog.default_enabled（daily_briefing True / 其余 False）、created_by_kind='builtin'。
+  全部内置条目都播种（不按 catalog.enabled 过滤）：内置任务人人都有，growth_*/creator_*（catalog.enabled=false
+  官方下线）也照样播种、初始停用、用户手动启用。每条播种发 task.created 同步事件供 daemon 拉取。
 - INSERT-only 铁律：再播种零新增；用户改 enabled 不被官方覆盖。
 - §6.6 可更新检测 + 手动更新：catalog revision 抬升 → builtin_update_available True →
   refresh 应用官方定义、保留 enabled/agent_id、追平 builtin_synced_revision → 可更新消失。
@@ -136,11 +137,12 @@ async def test_seed_binds_by_type_and_emits_sync_event(session) -> None:
     by_key = await _agents_by_key(session, owner)
 
     seeded = await seed_builtin_tasks(session, owner_id=owner)
-    assert 'daily_briefing' in seeded, 'daily_briefing（enabled）应被播种'
-    assert 'daily_hot_topic' in seeded, 'daily_hot_topic（enabled）应被播种'
-    # enabled=false 的目录条目不播种
-    assert 'growth_daily_briefing' not in seeded
-    assert 'creator_operate' not in seeded
+    # 全部内置条目都播种（不再按 catalog.enabled 过滤）；初始 enabled 取 default_enabled。
+    assert 'daily_briefing' in seeded, 'daily_briefing 应被播种'
+    assert 'daily_hot_topic' in seeded, 'daily_hot_topic 应被播种'
+    # enabled=false（官方下线）的条目也必须播种——内置任务人人都有，只是初始停用、用户手动启用。
+    assert 'growth_daily_briefing' in seeded, 'growth_*（enabled=false）也必须播种'
+    assert 'creator_operate' in seeded, 'creator_*（enabled=false）也必须播种'
 
     tasks = {
         t.builtin_key: t
@@ -161,6 +163,15 @@ async def test_seed_binds_by_type_and_emits_sync_event(session) -> None:
     assert hot.agent_id == by_key['content_operator'].hasn_id, 'daily_hot_topic 应绑内容运营官'
     assert hot.enabled is False, 'daily_hot_topic 首播应 enabled=False（default_enabled）'
     assert hot.system_prompt and '内容运营官' in hot.system_prompt
+    # growth_*/creator_*：catalog.enabled=false（官方下线）但仍必须播种，按类型绑专业内置 agent，
+    # 初始 enabled=default_enabled=False（首播停用、用户手动启用即可）。
+    growth = tasks['growth_daily_briefing']
+    assert growth.agent_id == by_key['sales_advisor'].hasn_id, 'growth 应绑销售顾问'
+    assert growth.created_by_kind == 'builtin'
+    assert growth.enabled is False, 'growth 首播应停用（default_enabled=False）'
+    creator = tasks['creator_operate']
+    assert creator.agent_id == by_key['content_operator'].hasn_id, 'creator 应绑内容运营官'
+    assert creator.enabled is False, 'creator 首播应停用（default_enabled=False）'
 
     # 每条播种均发 task.created 同步事件（daemon 经普通 task sync 拉取）
     evrows = (
