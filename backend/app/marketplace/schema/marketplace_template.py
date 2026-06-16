@@ -40,6 +40,8 @@ class MarketplaceTemplateSchemaBase(SchemaBase):
     price: Decimal = Field(description='价格')
     is_private: bool = Field(description='是否私有')
     is_official: bool = Field(description='是否官方模板')
+    builtin: bool = Field(False, description='是否内置 agent 模板（注册时自动创建）')
+    builtin_key: str | None = Field(None, description='内置 agent 类型键（内置任务 target_agent_type 按此匹配）')
     download_count: int = Field(description='下载次数')
     category: str | None = Field(None, description='分类')
     tags: str | None = Field(None, description='标签，逗号分隔')

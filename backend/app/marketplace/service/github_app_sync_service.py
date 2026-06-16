@@ -206,6 +206,10 @@ class GitHubAppSyncService:
             'price': (data.get('pricing') or {}).get('price', data.get('price', 0)),
             'is_private': False,
             'is_official': True,
+            # 内置 agent 标志（内置定时任务体系 §4.2）：builtin=true 注册时自动创建；
+            # builtin_key 是内置任务 target_agent_type 的匹配纽带。仅 builtin=true 时取 builtin_key。
+            'builtin': bool(data.get('builtin', False)),
+            'builtin_key': (str(data['builtin_key']).strip() if data.get('builtin') and data.get('builtin_key') else None),
             'download_count': 0,
             'category': data.get('category') or category,
             'tags': ','.join(tags),
