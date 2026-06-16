@@ -1,0 +1,50 @@
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import ConfigDict, Field
+
+from backend.common.schema import SchemaBase
+
+
+class HasnArtifactsSchemaBase(SchemaBase):
+    """分身产物登记表（分身产出的图片/文件/文档/演示文稿/网页等的溯源指针）基础模型"""
+    artifact_id: str = Field(description='产物 ID (art_<ulid> 公开标识)')
+    agent_hasn_id: str = Field(description='产出分身 hasn_id')
+    owner_hasn_id: str = Field(description='分身主人 hasn_id (归属 + 隔离键)')
+    kind: str = Field(description='产物类型 (image:图片:blue/voice:语音:purple/file:文件:gray/document:文档:cyan/deck:演示文稿:violet/webpage:网页:green/dataset:数据集:orange/other:其它:default)')
+    title: str | None = Field(None, description='展示标题 (工具给/文件名/截断的 prompt)')
+    summary: str | None = Field(None, description='简要描述')
+    asset_id: str | None = Field(None, description='关联资产 ID (public.hasn_assets.asset_id，image/voice/file 主路径)')
+    resource_uri: str | None = Field(None, description='hasn:// 资源 URI (客户端无关，deck/webpage/外部结果无 asset 本体时用)')
+    conversation_id: str | UUID | None = Field(None, description='来源会话 ID (public.hasn_conversations.id)')
+    message_id: int | None = Field(None, description='来源消息 ID (public.hasn_messages.id)')
+    session_id: str | None = Field(None, description='来源本地 runtime session (ULID)')
+    source_tool: str | None = Field(None, description='产出工具全名 (hasn.image.generate)')
+    source_kind: str = Field(description='产出来源 (tool_output:工具产出:blue/task_result:任务成果:violet/upload:上传:gray/external:外部结果:orange)')
+    dispatch_id: str | None = Field(None, description='派发关联 (审计/去重)')
+    meta_data: dict = Field(description='元数据 (mime/size/width/height 冗余 + 工具上下文快照)')
+    status: str = Field(description='状态 (active:正常:green/deleted:已删:red)')
+
+
+class CreateHasnArtifactsParam(HasnArtifactsSchemaBase):
+    """创建分身产物登记表（分身产出的图片/文件/文档/演示文稿/网页等的溯源指针）参数"""
+
+
+class UpdateHasnArtifactsParam(HasnArtifactsSchemaBase):
+    """更新分身产物登记表（分身产出的图片/文件/文档/演示文稿/网页等的溯源指针）参数"""
+
+
+class DeleteHasnArtifactsParam(SchemaBase):
+    """删除分身产物登记表（分身产出的图片/文件/文档/演示文稿/网页等的溯源指针）参数"""
+
+    pks: list[int] = Field(description='分身产物登记表（分身产出的图片/文件/文档/演示文稿/网页等的溯源指针） ID 列表')
+
+
+class GetHasnArtifactsDetail(HasnArtifactsSchemaBase):
+    """分身产物登记表（分身产出的图片/文件/文档/演示文稿/网页等的溯源指针）详情"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_time: datetime
+    updated_time: datetime | None = None
