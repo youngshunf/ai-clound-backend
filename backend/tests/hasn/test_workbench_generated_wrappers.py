@@ -130,11 +130,6 @@ CRUD_CASES = (
         'id__in',
     ),
     (
-        'backend.app.hasn.crud.crud_hasn_tenant_sandboxes',
-        'CRUDHasnTenantSandboxes',
-        'id__in',
-    ),
-    (
         'backend.app.hasn.crud.crud_hasn_trade_sessions',
         'CRUDHasnTradeSessions',
         'id__in',
@@ -243,11 +238,6 @@ SERVICE_CASES = (
         'hasn_sync_inbox_events_dao',
     ),
     (
-        'backend.app.hasn.service.hasn_tenant_sandboxes_service',
-        'HasnTenantSandboxesService',
-        'hasn_tenant_sandboxes_dao',
-    ),
-    (
         'backend.app.hasn.service.hasn_trade_sessions_service',
         'HasnTradeSessionsService',
         'hasn_trade_sessions_dao',
@@ -281,7 +271,6 @@ GENERATED_API_MODULES = (
     'backend.app.hasn.api.v1.admin.hasn_suppressed_messages',
     'backend.app.hasn.api.v1.admin.hasn_sync_events',
     'backend.app.hasn.api.v1.admin.hasn_sync_inbox_events',
-    'backend.app.hasn.api.v1.admin.hasn_tenant_sandboxes',
     'backend.app.hasn.api.v1.admin.hasn_trade_sessions',
     'backend.app.hasn.api.v1.admin.hasn_unread_counts',
     'backend.app.hasn.api.v1.open.hasn_agent_capabilities',

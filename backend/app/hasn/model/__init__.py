@@ -26,7 +26,6 @@ from backend.app.hasn.model.hasn_pending_intents import HasnPendingIntents as Ha
 from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages as HasnSuppressedMessages
 from backend.app.hasn.model.hasn_sync_events import HasnSyncEvents as HasnSyncEvents
 from backend.app.hasn.model.hasn_sync_inbox_events import HasnSyncInboxEvents as HasnSyncInboxEvents
-from backend.app.hasn.model.hasn_tenant_sandboxes import HasnTenantSandboxes as HasnTenantSandboxes
 from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
 # 应用平台 v3 P3（设计 17 决策①②）：hasn_user_active_workspace（被 active_enterprise_id 瘦指针取代）

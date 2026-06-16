@@ -35,7 +35,6 @@ CODEGEN_SQL_FILES = [
     "hasn_suppressed_messages.sql",
     "hasn_sync_events.sql",
     "hasn_sync_inbox_events.sql",
-    "hasn_tenant_sandboxes.sql",
     "hasn_trade_sessions.sql",
     "hasn_unread_counts.sql",
 ]
@@ -51,7 +50,6 @@ REQUIRED_S1_TABLES = {
     "hasn_suppressed_messages",
     "hasn_pending_intents",
     "hasn_channel_bindings",
-    "hasn_tenant_sandboxes",
 }
 
 PRIVATE_RUNTIME_COLUMNS = {

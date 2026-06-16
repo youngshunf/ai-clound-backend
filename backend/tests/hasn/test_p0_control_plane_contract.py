@@ -29,7 +29,6 @@ CONTROL_PLANE_CODEGEN_TABLES = (
     'hasn_suppressed_messages',
     'hasn_sync_events',
     'hasn_sync_inbox_events',
-    'hasn_tenant_sandboxes',
 )
 
 

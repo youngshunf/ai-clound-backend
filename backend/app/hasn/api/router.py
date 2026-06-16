@@ -31,7 +31,6 @@ from backend.app.hasn.api.v1.admin.hasn_sync_events import router as admin_hasn_
 from backend.app.hasn.api.v1.admin.hasn_sync_inbox_events import router as admin_hasn_sync_inbox_events_router
 from backend.app.hasn.api.v1.admin.hasn_task import router as admin_hasn_task_router
 from backend.app.hasn.api.v1.admin.hasn_task_run import router as admin_hasn_task_run_router
-from backend.app.hasn.api.v1.admin.hasn_tenant_sandboxes import router as admin_hasn_tenant_sandboxes_router
 from backend.app.hasn.api.v1.admin.hasn_trade_sessions import router as admin_hasn_trade_sessions_router
 from backend.app.hasn.api.v1.admin.hasn_unread_counts import router as admin_hasn_unread_counts_router
 from backend.app.hasn.api.v1.ai_native_app import apps_router as ai_native_apps_router
@@ -84,7 +83,6 @@ v1.include_router(
 )
 v1.include_router(admin_hasn_sync_events_router, prefix='/sync/events', tags=['HASN Sync events'])
 v1.include_router(admin_hasn_sync_inbox_events_router, prefix='/sync/inbox/events', tags=['HASN Sync inbox events'])
-v1.include_router(admin_hasn_tenant_sandboxes_router, prefix='/tenant/sandboxes', tags=['HASN Tenant sandboxes'])
 v1.include_router(admin_hasn_enterprise_router, prefix='/enterprises', tags=['企业管理'])
 v1.include_router(admin_hasn_enterprise_membership_router, prefix='/enterprise/memberships', tags=['企业成员关系'])
 v1.include_router(admin_hasn_enterprise_invite_code_router, prefix='/enterprise/invite-codes', tags=['企业邀请码'])

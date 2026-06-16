@@ -34,7 +34,6 @@ from backend.app.hasn.schema.hasn_onboarding import (
     PhoneSendCodeResponse,
     PhoneVerifyRequest,
     PhoneVerifyResponse,
-    SandboxSummary,
 )
 from backend.app.hasn.service import hasn_auth as hasn_auth_service
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
@@ -134,7 +133,6 @@ class OnboardingGateway(Protocol):
     async def consume_pending_intent(
         self, db: AsyncSession, pending_intent_id: str, owner_id: str, agent_hasn_id: str
     ) -> bool: ...
-    async def get_sandbox_summary(self, db: AsyncSession, owner_id: str) -> SandboxSummary | None: ...
 
 
 class SqlAlchemyPlatformUserGateway:
@@ -377,34 +375,6 @@ class SqlAlchemyOnboardingGateway:
         )
         return result.first() is not None
 
-    async def get_sandbox_summary(self, db: AsyncSession, owner_id: str) -> SandboxSummary | None:
-        """Return existing S3 sandbox route if present; never creates a sandbox in S2."""
-        try:
-            result = await db.execute(
-                sa.text(
-                    """
-                    SELECT sandbox_id, state, router_base_url
-                    FROM public.hasn_tenant_sandboxes
-                    WHERE owner_id = :owner_id
-                      AND state <> 'deleted'
-                    ORDER BY updated_time DESC NULLS LAST, created_time DESC
-                    LIMIT 1
-                    """
-                ),
-                {'owner_id': owner_id},
-            )
-            row = result.mappings().first()
-        except Exception:
-            return None
-
-        if not row:
-            return None
-        return SandboxSummary(
-            sandbox_id=row['sandbox_id'],
-            status=_sandbox_status(row['state']),
-            base_url=row['router_base_url'],
-        )
-
 
 @dataclass(slots=True)
 class HasnPhoneAuthService:
@@ -537,7 +507,6 @@ class HasnOnboardingService:
             owner_user_id=user_id,
         )
 
-        sandbox = await self.gateway.get_sandbox_summary(db, human.hasn_id)
         return OnboardingEnsureResponse(
             human=HumanSummary(
                 human_id=human.hasn_id,
@@ -562,7 +531,8 @@ class HasnOnboardingService:
                 scopes=agent_token.scopes,
                 expire_time=agent_token.access_token_expire_time.isoformat(),
             ),
-            sandbox=sandbox,
+            # hasn_tenant_sandboxes 已退役（沙箱功能从未建设，恒 None）；响应字段保留兼容 daemon。
+            sandbox=None,
             sync_cursor=f'owner:{human.hasn_id}:0',
         )
 
