@@ -787,11 +787,17 @@ class HasnAgentProfileService:
         # 公共技能集合修订号（全局，doc12 §3.4）：随 is_common 成员/版本变化而变；
         # daemon 据其变化触发全量活跃绑定 re-provision，Runtime 再拉最新公共技能。
         _, common_skills_revision = await get_common_skill_snapshot(db)
+        # 平台默认配置修订号（全局，PDC）：节点媒体模型 + agent 运行时四槽默认变化即变；
+        # daemon 据其变化拉取 /platform-config 全量配置并应用（media 覆盖层 + 活跃绑定 re-provision）。
+        from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
+
+        _, platform_config_revision = await platform_default_config_service.get_effective_config(db)
         return AgentSyncResponse(
             owner_id=request.owner_id,
             server_revision=server_revision,
             agents=snapshots,
             common_skills_revision=common_skills_revision,
+            platform_config_revision=platform_config_revision,
         )
 
     async def update_binding(

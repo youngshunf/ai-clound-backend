@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_platform_default_config import HasnPlatformDefaultConfig
-from backend.app.hasn.schema.hasn_agents import AgentRuntimeModels
+from backend.app.hasn.schema.hasn_agents import AgentRuntimeConfig, AgentRuntimeModels
 from backend.app.hasn.schema.hasn_platform_default_config import (
     PlatformDefaultConfig,
     PlatformDefaultConfigResponse,
@@ -111,6 +111,27 @@ class PlatformDefaultConfigService:
         """取平台默认 agent 运行时四槽（供 per-agent coalesce）。"""
         config, _ = await self.get_effective_config(db)
         return config.agent_runtime.models
+
+    async def build_effective_runtime_config(self, db: AsyncSession, raw: dict | None) -> dict | None:
+        """把平台默认四槽合并进 per-agent runtime_config（runtime-facing 出参，如 Agent /profile 拉取）。
+
+        - 仅合并 models 槽（agent 显式非空必胜，None → 平台默认）；knobs 原样透传（本期不做平台默认）。
+        - raw=None 且平台四槽全空 → None（保持"全默认"语义，零行为变化）。
+        - **不用于 owner GET 编辑器出参**：那里须返回 raw（null=跟随默认），否则覆盖式 PUT 会把平台默认冻结为 agent 显式值。
+        """
+        platform_models = await self.get_platform_runtime_models(db)
+        has_platform = any([
+            platform_models.main,
+            platform_models.fast,
+            platform_models.vision,
+            platform_models.delegation,
+        ])
+        if raw is None and not has_platform:
+            return None
+        cfg = AgentRuntimeConfig.model_validate(raw or {})
+        merged = coalesce_runtime_models(cfg.models, platform_models)
+        cfg = cfg.model_copy(update={'models': merged})
+        return cfg.model_dump(mode='json')
 
     async def update_config(
         self, db: AsyncSession, *, config: PlatformDefaultConfig, updated_by: str | None

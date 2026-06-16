@@ -23,6 +23,7 @@ from backend.app.hasn.schema.hasn_agents import (
     OwnerMemoryResponse,
 )
 from backend.app.hasn.service.owner_memory_service import owner_memory_service
+from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
 from backend.app.marketplace.service.common_skills_service import (
     get_common_skill_snapshot,
     get_installed_skills_revision,
@@ -147,6 +148,12 @@ async def get_agent_profile(
     # per-skill 指纹映射（doc14 §C4）：让 hermes 只重下指纹变化的技能，省全量重拉。
     skill_fingerprints = await get_skills_content_fingerprints(db, merged_skill_ids)
 
+    # PDC：把平台默认 agent 运行时四槽 coalesce 进 runtime_config（runtime-facing 拉取式兜底）。
+    # agent 显式非空必胜，None → 平台默认；agent 无配置且平台四槽全空 → None（保持"全默认"）。
+    effective_runtime_config = await platform_default_config_service.build_effective_runtime_config(
+        db, getattr(row, 'runtime_config_json', None)
+    )
+
     return response_base.success(
         data=AgentProfileResponse(
             hasn_id=row.hasn_id,
@@ -166,7 +173,8 @@ async def get_agent_profile(
             installed_skills_revision=installed_rev,
             # hermes runtime 原生配置下行（拉取式兜底，补充 daemon PUT 的即时 push）：
             # Runtime provision/reconcile 时据此写 config.yaml/.env。空=全默认。
-            runtime_config=getattr(row, 'runtime_config_json', None),
+            # 已 coalesce 平台默认四槽（PDC）：per-agent 未设的模型槽回落平台默认。
+            runtime_config=effective_runtime_config,
         )
     )
 

@@ -271,6 +271,10 @@ class AgentSyncResponse(SchemaBase):
         default='0',
         description='公共技能集合修订号（全局，daemon 据此变化触发全量活跃绑定 re-provision）',
     )
+    platform_config_revision: str = Field(
+        default='0',
+        description='平台默认配置修订号（节点媒体模型 + agent 运行时四槽默认；daemon 据此变化拉取并应用 PDC）',
+    )
 
 
 class UpdateAgentBindingRequest(SchemaBase):
