@@ -63,6 +63,10 @@ class HasnTaskSchemaBase(SchemaBase):
     continuation_enabled: bool = Field(False, description='任务接续：把上次成功 run 的结果注入下次 session（D2）')
     enable_subagents: bool = Field(False, description='允许任务会话内使用子分身 delegate_task（D5）')
     created_by_kind: str = Field('owner', description='创建者类别 owner/agent/builtin')
+    builtin_key: str | None = Field(None, description='内置任务全局唯一键（仅内置任务非空）')
+    builtin_synced_revision: int | None = Field(
+        None, description='播种/更新时同步的 catalog revision（可更新检测基准）'
+    )
 
 
 class CreateHasnTaskParam(HasnTaskSchemaBase):
@@ -87,3 +91,6 @@ class GetHasnTaskDetail(HasnTaskSchemaBase):
     id: int
     created_time: datetime
     updated_time: datetime | None = None
+    builtin_update_available: bool = Field(
+        False, description='官方目录有更新可手动拉取（读时 join catalog 派生，不落库）'
+    )

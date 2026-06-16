@@ -283,6 +283,17 @@ class SqlAlchemyAgentProfileGateway:
             location = payload.get('runtime_location') or 'local'
             agent.runtime_location = location if location in ('local', 'cloud') else 'local'
         await db.flush()
+        # 触发点 2（设计 §6.1）：新建分身后跑 INSERT-only 播种——若有内置任务此前因无对应类型
+        # 分身回退绑了主脑则保持现状（INSERT-only 不重绑），尚未播种的条目则补 INSERT 绑到合适分身。
+        # best-effort：播种失败绝不阻断分身创建。
+        try:
+            from backend.app.hasn_task.service.builtin_seeding_service import seed_builtin_tasks
+
+            await seed_builtin_tasks(db, owner_id=payload['owner_id'])
+        except Exception as exc:  # noqa: BLE001
+            from backend.common.log import log
+
+            log.warning('create_agent: seed_builtin_tasks best-effort failed: {!r}', exc)
         return agent, result.get('agent_key'), bool(result.get('already_exists'))
 
     async def list_owner_agents(

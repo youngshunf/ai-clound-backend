@@ -330,6 +330,9 @@ class SqlAlchemyOnboardingGateway:
             agent_type='cloud',
             node_id=node_id,
             role='primary',
+            # 主脑 = assistant 内置模板：标记 builtin_agent_key 让 reconcile_builtin_agents
+            # 据此判存在跳过（不重复创建主脑），同时让 target_agent_type='assistant' 的内置任务命中。
+            builtin_agent_key='assistant',
             description=description,
             capabilities=[DEFAULT_AGENT_TEMPLATE],
             created_via='onboarding',
@@ -504,6 +507,19 @@ class HasnOnboardingService:
         node = await self.gateway.ensure_node(db, user_id, human.hasn_id, request)
         binding = await self.gateway.ensure_owner_binding(db, node.node_id, human.hasn_id)
         agent, _ = await self.gateway.ensure_default_agent(db, human.hasn_id, node.node_id)
+
+        # 内置定时任务体系（§5.1）：建主脑后建齐内置 agent，再 INSERT-only 播种内置任务。
+        # best-effort：失败不阻断 onboarding（IM-first），存量用户下次登录幂等补建/补播种。
+        try:
+            from backend.app.hasn_task.service.builtin_seeding_service import (
+                reconcile_builtin_agents,
+                seed_builtin_tasks,
+            )
+
+            await reconcile_builtin_agents(db, owner_id=human.hasn_id, node_id=node.node_id)
+            await seed_builtin_tasks(db, owner_id=human.hasn_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning('builtin agent/task seeding failed during onboarding for %s: %s', human.hasn_id, exc)
 
         if request.pending_intent_id:
             await self.gateway.consume_pending_intent(

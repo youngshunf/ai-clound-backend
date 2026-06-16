@@ -20,6 +20,11 @@ from backend.app.hasn_task.schema.task import (
     GetHasnTaskDetail,
     UpdateHasnTaskParam,
 )
+from backend.app.hasn_task.service.builtin_seeding_service import (
+    builtin_update_available,
+    load_builtin_catalog_map,
+    update_builtin_task_from_catalog,
+)
 from backend.app.hasn_task.service.task_service import hasn_task_service
 from backend.common.exception import errors
 from backend.common.pagination import DependsPagination, PageData
@@ -62,6 +67,17 @@ async def list_my_tasks(
 ) -> ResponseSchemaModel[PageData[GetHasnTaskDetail]]:
     owner_id = await current_owner_id(request, db)
     page_data = await hasn_task_service.get_list_by_owner(db=db, owner_id=owner_id)
+    # 读时派生「可更新」：join catalog 比对 builtin_synced_revision（不落库，§6.6）。
+    cat_map = await load_builtin_catalog_map(db)
+    items = []
+    for row in page_data.items:
+        detail = GetHasnTaskDetail.model_validate(row)
+        if detail.builtin_key:
+            detail.builtin_update_available = builtin_update_available(
+                cat_map.get(detail.builtin_key), detail.builtin_synced_revision
+            )
+        items.append(detail)
+    page_data.items = items
     return response_base.success(data=page_data)
 
 
@@ -94,7 +110,13 @@ async def get_my_task(
     task_id: Annotated[int, Path(description='任务 ID')],
 ) -> ResponseModel:
     task = await owned_task(request, db, task_id)
-    return response_base.success(data=GetHasnTaskDetail.model_validate(task))
+    detail = GetHasnTaskDetail.model_validate(task)
+    if detail.builtin_key:
+        cat_map = await load_builtin_catalog_map(db)
+        detail.builtin_update_available = builtin_update_available(
+            cat_map.get(detail.builtin_key), detail.builtin_synced_revision
+        )
+    return response_base.success(data=detail)
 
 
 @router.put(
@@ -126,9 +148,33 @@ async def delete_my_task(
     db: CurrentSessionTransaction,
     task_id: Annotated[int, Path(description='任务 ID')],
 ) -> ResponseModel:
-    await owned_task(request, db, task_id)
+    task = await owned_task(request, db, task_id)
+    # 内置任务可改不可删（设计 §6.3）：只能停用，不能删除。
+    if task.created_by_kind == 'builtin':
+        raise errors.ForbiddenError(msg='内置任务不可删除，只能停用')
     count = await hasn_task_service.delete(db=db, obj=DeleteHasnTaskParam(pks=[task_id]))
     return response_base.success(data={'deleted': count})
+
+
+@router.post(
+    '/tasks/{task_id}/refresh-builtin',
+    summary='把内置任务更新到官方最新版（§6.6 用户手动决策，绝不自动调用）',
+    dependencies=[DependsJwtAuth],
+    name='hasn_task_app_refresh_builtin',
+)
+async def refresh_my_builtin_task(
+    request: Request,
+    db: CurrentSessionTransaction,
+    task_id: Annotated[int, Path(description='任务 ID')],
+) -> ResponseModel:
+    """应用官方目录的最新定义（保留用户 enabled/agent_id），追平 builtin_synced_revision。"""
+    task = await owned_task(request, db, task_id)
+    if not task.task_uuid:
+        raise errors.RequestError(msg='任务缺少端云稳定 ID，无法更新')
+    updated = await update_builtin_task_from_catalog(db, owner_id=task.owner_id, task_uuid=task.task_uuid)
+    return response_base.success(
+        data={'task_id': updated.id, 'builtin_synced_revision': updated.builtin_synced_revision}
+    )
 
 
 @router.post(

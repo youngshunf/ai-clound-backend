@@ -843,6 +843,8 @@ class SqlAlchemySyncGateway:
                     continuation_enabled,
                     enable_subagents,
                     created_by_kind,
+                    builtin_key,
+                    builtin_synced_revision,
                     created_time,
                     updated_time
                 ) VALUES (
@@ -882,6 +884,8 @@ class SqlAlchemySyncGateway:
                     :continuation_enabled,
                     :enable_subagents,
                     :created_by_kind,
+                    :builtin_key,
+                    :builtin_synced_revision,
                     :created_time,
                     :updated_time
                 )
@@ -922,6 +926,10 @@ class SqlAlchemySyncGateway:
                     continuation_enabled = EXCLUDED.continuation_enabled,
                     enable_subagents = EXCLUDED.enable_subagents,
                     created_by_kind = EXCLUDED.created_by_kind,
+                    builtin_key = COALESCE(EXCLUDED.builtin_key, hasn_task.task.builtin_key),
+                    builtin_synced_revision = COALESCE(
+                        EXCLUDED.builtin_synced_revision, hasn_task.task.builtin_synced_revision
+                    ),
                     updated_time = EXCLUDED.updated_time
                 '''
             ),
