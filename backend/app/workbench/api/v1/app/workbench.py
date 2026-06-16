@@ -138,12 +138,9 @@ async def dismiss_briefing_item(
 
 
 @router.get('/workbench/apps', dependencies=[DependsJwtAuth], summary='工作台全部已注册应用（注册即用）')
-async def list_workbench_apps(request: Request, db: CurrentSession, workspace_kind: str | None = None) -> ResponseModel:
-    apps = await workbench_domain_service.list_workbench_apps(
-        db,
-        user_id=request.user.id,
-        workspace_kind=workspace_kind,
-    )
+async def list_workbench_apps(request: Request, db: CurrentSession) -> ResponseModel:
+    # 应用平台 v3（去工作空间绑定）：工作台清单与激活空间无关，故不再接收 workspace_kind。
+    apps = await workbench_domain_service.list_workbench_apps(db, user_id=request.user.id)
     return response_base.success(data=apps)
 
 

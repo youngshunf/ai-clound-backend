@@ -290,9 +290,9 @@ async def test_workbench_app_handlers_delegate_to_domain_service(monkeypatch: py
         db: object,
         *,
         user_id: int,
-        workspace_kind: str | None,
     ) -> list[str]:
-        calls.append(('market', {'db': db, 'user_id': user_id, 'workspace_kind': workspace_kind}))
+        # 应用平台 v3（去工作空间绑定）：工作台清单与激活空间无关，handler 不再透传 workspace_kind。
+        calls.append(('market', {'db': db, 'user_id': user_id}))
         return ['knowledge', 'chat']
 
     monkeypatch.setattr(module.workbench_domain_service, 'list_workbench_apps', list_workbench_apps)
@@ -300,9 +300,9 @@ async def test_workbench_app_handlers_delegate_to_domain_service(monkeypatch: py
     request = SimpleNamespace(user=SimpleNamespace(id=7))
     db = object()
 
-    assert (await module.list_workbench_apps(request, db, workspace_kind='enterprise')).data == ['knowledge', 'chat']
+    assert (await module.list_workbench_apps(request, db)).data == ['knowledge', 'chat']
     assert calls == [
-        ('market', {'db': db, 'user_id': 7, 'workspace_kind': 'enterprise'}),
+        ('market', {'db': db, 'user_id': 7}),
     ]
 
 

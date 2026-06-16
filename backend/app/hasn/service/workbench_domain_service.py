@@ -657,18 +657,18 @@ class WorkbenchDomainService:
         return {'active': active, 'available': available, 'user_id': user_id}
 
     async def _personal_workspace_stats(self, db: AsyncSession, *, user_id: int) -> dict[str, int]:
-        # 应用平台 v3 P3（设计 17 决策①）：挂载废除，app_count = 该空间「开箱即用」的已发布
-        # 应用数（catalog kind=personal），不再数 `hasn_workspace_app` 挂载行。
-        app_count = await self._published_app_count(db, kind='personal')
+        # 应用平台 v3（去工作空间绑定）：app_count = 已发布应用总数（与激活空间无关，
+        # 与工作台清单同口径——切空间不切换应用，故各空间 app_count 一致）。
+        app_count = await self._published_app_count(db)
         return {
             'member_count': 1,
             'app_count': app_count,
             'admin_count': 1,
         }
 
-    async def _published_app_count(self, db: AsyncSession, *, kind: str) -> int:
-        """该 workspace_kind 下已发布应用数（开箱即用，同 kind 所有空间一致）。"""
-        return len(await app_catalog_service.list_published_catalog(db, kind=kind))
+    async def _published_app_count(self, db: AsyncSession) -> int:
+        """已发布应用总数（开箱即用，与激活空间无关，所有空间一致）。"""
+        return len(await app_catalog_service.list_published_catalog(db))
 
     async def _enterprise_workspace_stats(
         self,
@@ -700,9 +700,9 @@ class WorkbenchDomainService:
             )
             .group_by(HasnEnterpriseMembership.enterprise_id),
         )
-        # 应用平台 v3 P3（设计 17 决策①）：挂载废除，企业 app_count = 已发布企业应用数
-        # （开箱即用，同 kind 所有企业一致），不再按 `hasn_workspace_app` 分组数挂载行。
-        app_count = await self._published_app_count(db, kind='enterprise')
+        # 应用平台 v3（去工作空间绑定）：企业 app_count = 已发布应用总数（与个人空间同口径，
+        # 切空间不切换应用），不再按 kind 裁剪、更不按 `hasn_workspace_app` 分组数挂载行。
+        app_count = await self._published_app_count(db)
 
         return {
             enterprise_id: {
@@ -777,25 +777,25 @@ class WorkbenchDomainService:
     # 展示目录由 list_workbench_apps（catalog ∩ entitlement）权威给出。
 
     async def list_workbench_apps(
-        self, db: AsyncSession, *, user_id: int, workspace_kind: str | None = None
+        self, db: AsyncSession, *, user_id: int
     ) -> list[dict[str, Any]]:
-        workspace = await self.get_active_workspace(db, user_id=user_id)
-        effective_kind = workspace_kind or workspace['kind']
         # 防御性幂等播种：生产由启动期 reconcile 保证已 seed（此处仅一次存在性 SELECT、零写）；
         # 兜底未 seed 环境（测试 / seed 失败）也能返回内置应用，不破坏工作台。
         await app_catalog_service.ensure_catalog_seeded(db)
-        # 应用平台 v3 P2（entitlement 收口，开箱即用，设计 17 §6.1）：展示目录 =
-        # **catalog(published) ∩ entitlement**，**不再叠加 per-workspace 挂载态**——挂载概念
-        # 废除（`hasn_workspace_app` 退役，P3/P4 删表），已发布应用对 owner 恒 `available`，
-        # 是否可用纯由准入决定（免费恒真 / 付费走 `resolve_app_access`，§5.2）。
-        # C2：catalog（DB 权威）取代硬编码 registry 作为展示目录来源（设计 §6.3）。
+        # 应用平台 v3（去工作空间绑定，设计 17 §6.1）：展示目录 = **catalog(published) ∩
+        # entitlement**，**与激活空间无关**——切个人/企业不切换应用列表（福仔 2026-06-16 明确：
+        # 挂载概念已废除，工作空间只决定「用 AI-Native 应用时的共享上下文」，不裁剪工作台清单）。
+        # 故此处**不再按激活空间 kind 过滤目录**（旧 `list_published_catalog(kind=...)` 残留已去除）；
+        # 应用是否可用纯由商业化准入决定（免费恒真 / 付费走 `resolve_app_access`，§5.2）。
+        # 切空间的真实影响在 `resolve_app_entry`（按空间解析实例/数据面）与运行时能力（capabilities），
+        # 不在本清单。C2：catalog（DB 权威）取代硬编码 registry 作为展示目录来源（设计 §6.3）。
         # launch 字段（ui_kind/window_url/window_origin）迁移期仍从本地 registry overlay，
         # registry 在 C6 退役后由 daemon 本地提供（设计 §3 边界）。
         reg_by_id = {a.id: a for a in workbench_app_registry.list()}
         # C4 闸门①：每行附 access（§5.2）。owner 维度准入用 owner hasn_id（tier/purchase 实时判定）。
         owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
         apps = []
-        for cat in await app_catalog_service.list_published_catalog(db, kind=effective_kind):
+        for cat in await app_catalog_service.list_published_catalog(db):
             manifest = app_catalog_service.catalog_to_manifest(cat, registry_app=reg_by_id.get(cat.app_id))
             manifest['status'] = 'available'
             manifest['access'] = await app_catalog_service.resolve_app_access(

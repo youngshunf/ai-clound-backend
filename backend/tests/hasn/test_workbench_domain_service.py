@@ -221,9 +221,10 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
 
     monkeypatch.setattr(catalog_mod, 'get_published_catalog', _stub_get_published_catalog, raising=True)
 
-    # 应用平台 v3 P3：workspace 卡片 app_count = 该 kind 已发布应用数（开箱即用）。stub 世界
-    # 无 hasn_app_catalog 表 → 用 registry 同 kind 应用集模拟「已发布目录」。
-    async def _stub_list_published_catalog(_db, *, kind):  # noqa: RUF029
+    # 应用平台 v3（去工作空间绑定）：workspace 卡片 app_count = 已发布应用总数（与激活空间
+    # 无关）。stub 世界无 hasn_app_catalog 表 → 用 registry 全量模拟「已发布目录」；保留可选
+    # kind 形参仅为兼容旧调用（生产已不传 kind）。
+    async def _stub_list_published_catalog(_db, *, kind=None):  # noqa: RUF029
         return [SimpleNamespace(app_id=app.id) for app in workbench_app_registry.list(kind)]
 
     monkeypatch.setattr(catalog_mod, 'list_published_catalog', _stub_list_published_catalog, raising=True)
@@ -397,21 +398,22 @@ async def test_list_user_workspaces_returns_cloud_aggregated_workspace_stats(
 
     workspaces = await service.list_user_workspaces(db_session, user_id=12)
 
-    # 应用平台 v3 P3（设计 17 决策①）：挂载废除，app_count = 该空间「开箱即用」的
-    # 已发布应用数（按 kind 从目录统计），不再来自 hasn_workspace_app 行。
+    # 应用平台 v3（去工作空间绑定）：app_count = 已发布应用总数（与激活空间无关——切空间
+    # 不切换应用，故个人/企业 app_count 同口径一致），不再按 kind 裁剪、不再来自挂载行。
     from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 
+    total_apps = len(workbench_app_registry.list())
     personal = workspaces['available'][0]
     enterprise_workspace = workspaces['available'][1]
     assert personal['member_count'] == 1
-    assert personal['app_count'] == len(workbench_app_registry.list('personal'))
+    assert personal['app_count'] == total_apps
     assert personal['admin_count'] == 1
     assert enterprise_workspace['description'] == 'Ops workspace'
     assert enterprise_workspace['logo'] == 'https://cdn.example.com/assets/enterprise-logos/acme.png'
     assert enterprise_workspace['industry'] == 'software'
     assert enterprise_workspace['company_size'] == '11-50'
     assert enterprise_workspace['member_count'] == 3
-    assert enterprise_workspace['app_count'] == len(workbench_app_registry.list('enterprise'))
+    assert enterprise_workspace['app_count'] == total_apps
     assert enterprise_workspace['admin_count'] == 2
 
 
