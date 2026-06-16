@@ -81,6 +81,9 @@ class AgentSnapshot(SchemaBase):
     runtime_location: str = Field(default='local', description='运行位置 (local:本地:blue/cloud:云端:green)')
     role: str = Field(default='specialist', description='Agent 角色')
     profession: str | None = Field(None, description='领域专家头衔（如「金融专家」）')
+    builtin_agent_key: str | None = Field(
+        None, description='内置 agent 标识 slug（如 daily_briefing/growth/creator）；用户自建分身为空'
+    )
     node_id: str | None = Field(None, description='驻留节点 ID 摘要')
     capabilities: dict[str, Any] | list[Any] | None = Field(None, description='能力摘要')
     capability_set_id: str | None = Field(None, description='Agent 能力集 ID')

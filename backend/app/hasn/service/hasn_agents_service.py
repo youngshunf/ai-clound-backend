@@ -978,6 +978,7 @@ def _agent_snapshot(agent: Any) -> AgentSnapshot:
         runtime_location=getattr(agent, 'runtime_location', 'local') or 'local',
         role=getattr(agent, 'role', 'specialist') or 'specialist',
         profession=getattr(agent, 'profession', None),
+        builtin_agent_key=getattr(agent, 'builtin_agent_key', None),
         node_id=getattr(agent, 'node_id', None),
         capabilities=getattr(agent, 'capabilities', None),
         capability_set_id=getattr(agent, 'capability_set_id', None),
