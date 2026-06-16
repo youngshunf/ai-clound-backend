@@ -264,6 +264,11 @@ class SqlAlchemySyncGateway:
                     CAST(:node_id AS text) IS NULL
                     OR :node_id = ''
                     OR event_type = 'task_run.summary_reported'
+                    -- 内置任务（cloud seed）按 owner 广播到所有节点：云端播种时尚不知道哪个
+                    -- 节点承载承接分身的 runtime，故 created_by_kind='builtin' 的 task 事件对
+                    -- owner 名下每个节点可见，由本地调度器按 runtime 是否在位决定是否真正派发。
+                    -- （普通任务仍按 executor-pinned 模型路由，此分支仅放宽内置任务可见性。）
+                    OR e.payload->>'created_by_kind' = 'builtin'
                     OR (
                       jsonb_typeof(e.payload->'visible_node_ids') = 'array'
                       AND jsonb_exists(e.payload->'visible_node_ids', :node_id)

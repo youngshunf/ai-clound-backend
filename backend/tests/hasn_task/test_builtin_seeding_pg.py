@@ -37,7 +37,9 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn.schema.hasn_sync import ClientEvent
 from backend.app.hasn.service.hasn_auth import register_hasn_agent
+from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
 from backend.app.hasn_task.api.v1.app.task import router as app_task_router
 from backend.app.hasn_task.model.builtin_catalog import HasnBuiltinTaskCatalog
 from backend.app.hasn_task.model.task import HasnTask
@@ -173,6 +175,63 @@ async def test_seed_binds_by_type_and_emits_sync_event(session) -> None:
     ).mappings().all()
     emitted = {r['bk'] for r in evrows}
     assert {'daily_briefing', 'daily_hot_topic'} <= emitted, f'内置任务同步事件缺失: {emitted}'
+
+
+async def test_builtin_event_broadcasts_to_all_owner_nodes(session) -> None:
+    """§6.2 修复：内置任务 task.created 事件按 owner 广播到 owner 名下所有节点（不被 executor-pinning 排除）。
+
+    根因：seed 经 save_task_event 用占位 node_id='cloud-builtin-seed' 写入，会 stamp 事件 payload.node_id
+    且建 assignment(executor='cloud-builtin-seed')；而 daemon 拉取时带真实 X-Node-Id，旧 pull_task_events
+    的 node 可见性谓词把内置事件排除 → 内置任务下行到零个真实节点。修复加 created_by_kind='builtin' 广播分支。
+    回归守卫：普通节点固定任务仍只对其 executor 节点可见（executor-pinning 不回归）。
+    """
+    owner, _ = await _make_owner(session)
+    await _bootstrap_owner_agents(session, owner)
+    await seed_builtin_tasks(session, owner_id=owner)
+    by_key = await _agents_by_key(session, owner)
+    gw = hasn_sync_service.gateway
+
+    # 任意真实 daemon 节点（≠ seed 占位 'cloud-builtin-seed'）都应收到内置事件广播
+    for node in ('n_deviceA', 'n_deviceB'):
+        events = await gw.pull_task_events(session, owner_id=owner, node_id=node, after_revision=0, limit=200)
+        bks = {e.payload.get('builtin_key') for e in events if e.payload.get('created_by_kind') == 'builtin'}
+        assert {'daily_briefing', 'daily_hot_topic'} <= bks, f'节点 {node} 应收到内置任务广播，实得 {bks}'
+
+    # 回归守卫：deviceA 创建的普通任务对 deviceB 不可见（executor-pinning 保持）
+    normal_uuid = str(uuid.uuid4())
+    normal_payload = {
+        'task_id': normal_uuid,
+        'agent_id': by_key['assistant'].hasn_id,
+        'name': '普通节点固定任务',
+        'description': '回归守卫',
+        'prompt': 'noop',
+        'schedule_type': 'cron',
+        'schedule_config': {'expr': '0 9 * * *'},
+        'enabled': True,
+        'state': 'scheduled',
+        'created_by_kind': 'owner',
+    }
+    await gw.save_task_event(
+        session,
+        owner_id=owner,
+        node_id='n_deviceA',
+        event=ClientEvent(
+            client_event_id=f'normal_{normal_uuid}',
+            event_type='task.created',
+            payload={'task': normal_payload},
+            hasn_id=by_key['assistant'].hasn_id,
+        ),
+    )
+
+    def _uuids(events: list) -> set[str]:
+        return {e.payload.get('task_uuid') or e.payload.get('task_id') for e in events}
+
+    a_events = await gw.pull_task_events(session, owner_id=owner, node_id='n_deviceA', after_revision=0, limit=200)
+    b_events = await gw.pull_task_events(session, owner_id=owner, node_id='n_deviceB', after_revision=0, limit=200)
+    assert normal_uuid in _uuids(a_events), '普通任务应对其 executor 节点 deviceA 可见'
+    assert normal_uuid not in _uuids(b_events), (
+        '回归：普通任务不应广播到非 executor 节点 deviceB（executor-pinning 必须保持）'
+    )
 
 
 async def test_insert_only_idempotent_and_preserves_user_edit(session) -> None:
