@@ -234,6 +234,44 @@ async def test_builtin_event_broadcasts_to_all_owner_nodes(session) -> None:
     )
 
 
+async def test_builtin_event_carries_cloud_numeric_server_id(session) -> None:
+    """§6.6/run-now 修复：内置任务 task.created 同步事件 payload 必须带云端整型主键 server_id。
+
+    根因：upsert 无 RETURNING，事件 payload 的 server_id 取自播种 payload（播种前不知数字 id）→ 恒 None →
+    下行节点本地存 server_id=None → daemon run-now（start_task_run 要求数字 id）与 §6.6 手动更新均失败。
+    修复：upsert RETURNING id 回填进事件 payload.server_id。本测断言事件 server_id == 云端 hasn_task.task.id。
+    """
+    owner, _ = await _make_owner(session)
+    await _bootstrap_owner_agents(session, owner)
+    await seed_builtin_tasks(session, owner_id=owner)
+    gw = hasn_sync_service.gateway
+
+    # 云端真实整型主键（builtin_key → id）
+    rows = (
+        await session.execute(
+            select(HasnTask.id, HasnTask.builtin_key, HasnTask.task_uuid).where(
+                HasnTask.owner_id == owner,
+                HasnTask.builtin_key.isnot(None),
+            )
+        )
+    ).all()
+    id_by_uuid = {str(r.task_uuid): int(r.id) for r in rows}
+    assert id_by_uuid, '应已播种内置任务并分配整型主键'
+    assert all(v > 0 for v in id_by_uuid.values())
+
+    events = await gw.pull_task_events(session, owner_id=owner, node_id='n_deviceX', after_revision=0, limit=200)
+    builtin_events = [e for e in events if e.payload.get('created_by_kind') == 'builtin']
+    assert builtin_events, '应能拉到内置任务 task.created 事件'
+    for e in builtin_events:
+        uuid_key = str(e.payload.get('task_uuid') or e.payload.get('task_id'))
+        expected = id_by_uuid.get(uuid_key)
+        assert expected is not None, f'事件 {uuid_key} 应对应一条云端内置任务行'
+        assert e.payload.get('server_id') == expected, (
+            f'内置任务 {e.payload.get("builtin_key")} 同步事件 server_id 应为云端整型主键 '
+            f'{expected}，实得 {e.payload.get("server_id")}（None=run-now/§6.6 会失败）'
+        )
+
+
 async def test_insert_only_idempotent_and_preserves_user_edit(session) -> None:
     """INSERT-only：再播种零新增；用户改 enabled 后再播种不被官方覆盖。"""
     owner, _ = await _make_owner(session)

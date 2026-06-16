@@ -808,7 +808,7 @@ class SqlAlchemySyncGateway:
             sort_keys=True,
             default=str,
         )
-        await db.execute(
+        task_upsert_result = await db.execute(
             sa.text(
                 '''
                 INSERT INTO hasn_task.task (
@@ -936,6 +936,7 @@ class SqlAlchemySyncGateway:
                         EXCLUDED.builtin_synced_revision, hasn_task.task.builtin_synced_revision
                     ),
                     updated_time = EXCLUDED.updated_time
+                RETURNING id
                 '''
             ),
             {
@@ -951,6 +952,13 @@ class SqlAlchemySyncGateway:
                 'schedule_config': schedule_config,
             },
         )
+        # 把云端整型主键（bigserial id）回填进同步事件 payload 的 server_id。
+        # 云端原生任务（内置任务 cloud seed / 跨设备下行）在播种前不知道这个数字 id，
+        # 因此下行节点本地一直存 server_id=None，导致「立即执行」run-now 与 §6.6 手动
+        # 更新（refresh-builtin）都因「task id 非数字」失败。upsert 后 RETURNING id 拿到
+        # 权威整型主键，注入 payload（普通任务亦无害——值即该行权威 id，幂等）。
+        task_server_id = int(task_upsert_result.scalar_one())
+        event_payload = {**event_payload, 'server_id': task_server_id}
         await self._upsert_current_assignment(
             db,
             task_uuid=task_uuid,
