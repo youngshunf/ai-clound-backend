@@ -68,16 +68,19 @@ async def list_my_tasks(
     owner_id = await current_owner_id(request, db)
     page_data = await hasn_task_service.get_list_by_owner(db=db, owner_id=owner_id)
     # 读时派生「可更新」：join catalog 比对 builtin_synced_revision（不落库，§6.6）。
+    # 注意：paging_data 返回的是 dict（model_dump），items 是 dict 键——必须用 page_data['items']；
+    # 误写 page_data.items 会拿到内建方法 dict.items（不可迭代）→ 500，daemon 吞 500 后
+    # builtin_update_available 静默恒 false（«可更新» 功能整体失效）。详见 builtin task lifecycle E2E。
     cat_map = await load_builtin_catalog_map(db)
     items = []
-    for row in page_data.items:
+    for row in page_data['items']:
         detail = GetHasnTaskDetail.model_validate(row)
         if detail.builtin_key:
             detail.builtin_update_available = builtin_update_available(
                 cat_map.get(detail.builtin_key), detail.builtin_synced_revision
             )
         items.append(detail)
-    page_data.items = items
+    page_data['items'] = items
     return response_base.success(data=page_data)
 
 

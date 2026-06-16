@@ -95,7 +95,7 @@ async def session() -> AsyncIterator:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -354,7 +354,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -425,3 +425,31 @@ async def test_detail_exposes_builtin_update_available(e2e: SimpleNamespace) -> 
     r1 = await e2e.client.get(f'/api/v1/hasn-task/app/tasks/{hot.id}')
     d1 = r1.json()['data']
     assert d1['builtin_update_available'] is True, 'detail 应派生出可更新'
+
+
+async def test_list_exposes_builtin_update_available(e2e: SimpleNamespace) -> None:
+    """读路径列表：GET /tasks 必须 200（回归守卫——paging_data 返回 dict，handler 误用
+    `page_data.items`（=内建方法 dict.items，不可迭代）曾致 500、daemon 吞 500 后
+    builtin_update_available 静默恒 false。修复为 `page_data['items']` 后此测应过）。
+    同时断言抬升 catalog revision 后列表里对应内置任务派生出可更新。"""
+    # 未抬升：列表 200 且内置任务 builtin_update_available=False（关键：此前会 500）
+    r0 = await e2e.client.get('/api/v1/hasn-task/app/tasks')
+    assert r0.status_code == 200, r0.text
+    page0 = r0.json()['data']
+    items0 = {it['builtin_key']: it for it in page0['items'] if it.get('builtin_key')}
+    assert 'daily_hot_topic' in items0, '列表应含内置任务'
+    assert items0['daily_hot_topic']['builtin_update_available'] is False
+
+    # 抬升官方 revision → 列表里该内置任务派生出可更新
+    cat = (
+        await e2e.session.execute(
+            select(HasnBuiltinTaskCatalog).where(HasnBuiltinTaskCatalog.builtin_key == 'daily_hot_topic')
+        )
+    ).scalar_one()
+    cat.revision = (cat.revision or 0) + 1
+    await e2e.session.flush()
+
+    r1 = await e2e.client.get('/api/v1/hasn-task/app/tasks')
+    assert r1.status_code == 200, r1.text
+    items1 = {it['builtin_key']: it for it in r1.json()['data']['items'] if it.get('builtin_key')}
+    assert items1['daily_hot_topic']['builtin_update_available'] is True, '列表应派生出可更新'
