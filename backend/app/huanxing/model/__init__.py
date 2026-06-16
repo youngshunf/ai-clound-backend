@@ -1,5 +1,6 @@
-from backend.app.huanxing.model.huanxing_server import HuanxingServer as HuanxingServer
-from backend.app.huanxing.model.huanxing_user import HuanxingUser as HuanxingUser
+# huanxing_server / huanxing_user 两表（HASN 化之前的旧 sidecar 服务器/用户登记机制）已于
+# 2026-06-16 退役：桌面端零引用、外部消费方为空，model/CRUD/service/API 全删，两表经
+# sql/huanxing/migrations DROP。详见 api/router.py 注释。
 
 # 支付模块已迁移到独立的 backend.app.billing（原 app/pay 合并入 billing，ADR-15 §4），以下重新导出以保持兼容
 # pay_app 同属支付域（原 pay_module 6 表之一，pay_channel/order/contract 的 app_id 外键指向它），
