@@ -205,8 +205,8 @@ class MessageSendTool(BaseTool):
         return (
             '给某用户/Agent/会话发消息（走真实路由：解析目标→关系权限→会话→投递→主人透明）。'
             '可发：纯文本（content）、图片/语音/文件（attachments 传 hasn://asset/ 资产引用，'
-            '来自 hasn.image.generate / hasn.voice.synthesize 等）、信息卡片（card：title 必填，'
-            '可含 description/fields/link）。'
+            '来自 hasn.asset.create 上传你自己的内容、或 hasn.image.generate / hasn.voice.synthesize '
+            '生成）、信息卡片（card：title 必填，可含 description/fields/link）。'
         )
 
     @property

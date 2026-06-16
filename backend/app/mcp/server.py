@@ -12,6 +12,7 @@ from typing import Any
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.tool_directory import ToolDirectoryService
+from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
@@ -82,6 +83,9 @@ class HasnCloudMcpServer:
         # 消息工具
         self.tool_registry.register(MessageSendTool())
         self.tool_registry.register(MessageListTool())
+
+        # 资产工具：把分身自己的内容（SVG/base64 图片/文本…）上传成 hasn://asset，供消息附件引用。
+        self.tool_registry.register(AssetCreateTool())
 
         # 联系人工具
         self.tool_registry.register(ContactListTool())
