@@ -45,7 +45,6 @@ from backend.app.hasn.service.hasn_onboarding_service import (
 )
 from backend.app.hasn.service import hasn_onboarding_service as onboarding_service_module
 from backend.app.hasn.model import HasnAiNativeAppAudit
-from backend.app.hasn.service.ragflow_subscriber import RecordingRAGFlowActions, ragflow_subscriber
 from backend.app.hasn.service.hasn_sync_service import HasnSyncService
 from backend.app.hasn.service.workspace_notification_subscriber import (
     RecordingWorkspaceNotificationActions,
@@ -1184,10 +1183,12 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     async def fake_community_feed(
         _db: Any,
         *,
-        user_id: int,
-        feed_type: str,
-        cursor: str | None,
-        limit: int,
+        user_id: int | None = None,
+        feed_type: str = 'recommend',
+        tag: str | None = None,
+        q: str | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
     ) -> dict[str, Any]:
         assert user_id == 7
         assert limit >= 1
@@ -1249,7 +1250,6 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         'hasn_onboarding_service',
         HasnOnboardingService(gateway=FakeOnboardingGateway(), agent_tokens=FakeAgentTokenIssuer(redis)),
     )
-    monkeypatch.setattr(ragflow_subscriber, 'actions', RecordingRAGFlowActions())
     monkeypatch.setattr(workspace_notification_subscriber, 'actions', RecordingWorkspaceNotificationActions())
 
     sync_gateway = InMemorySyncGateway()
