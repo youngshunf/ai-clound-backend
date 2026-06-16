@@ -27,8 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.api.v1.agent.hasn_skill_bundle import router as bundle_router
-from backend.app.hasn.model.hasn_skill_bundle import HasnSkillBundle
+from backend.app.hasn_task.api.v1.agent.skill_bundle import router as bundle_router
+from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth

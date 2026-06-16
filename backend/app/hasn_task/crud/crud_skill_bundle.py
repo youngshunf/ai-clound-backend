@@ -4,8 +4,8 @@ from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
-from backend.app.hasn.model import HasnSkillBundle
-from backend.app.hasn.schema.hasn_skill_bundle import CreateHasnSkillBundleParam, UpdateHasnSkillBundleParam
+from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle
+from backend.app.hasn_task.schema.skill_bundle import CreateHasnSkillBundleParam, UpdateHasnSkillBundleParam
 
 
 class CRUDHasnSkillBundle(CRUDPlus[HasnSkillBundle]):

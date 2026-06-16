@@ -1,14 +1,14 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path
 
-from backend.app.hasn.schema.hasn_skill_bundle import (
+from backend.app.hasn_task.schema.skill_bundle import (
     CreateHasnSkillBundleParam,
     DeleteHasnSkillBundleParam,
     GetHasnSkillBundleDetail,
     UpdateHasnSkillBundleParam,
 )
-from backend.app.hasn.service.hasn_skill_bundle_service import hasn_skill_bundle_service
+from backend.app.hasn_task.service.skill_bundle_service import hasn_skill_bundle_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -19,7 +19,12 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 router = APIRouter()
 
 
-@router.get('/{pk}', summary='获取Skill Bundle 定义表（多个 skill 的组合）详情', dependencies=[DependsJwtAuth], name='admin_get_hasn_skill_bundle')
+@router.get(
+    '/{pk}',
+    summary='获取Skill Bundle 定义表（多个 skill 的组合）详情',
+    dependencies=[DependsJwtAuth],
+    name='admin_get_hasn_skill_bundle',
+)
 async def get_hasn_skill_bundle(
     db: CurrentSession, pk: Annotated[int, Path(description='Skill Bundle 定义表（多个 skill 的组合） ID')]
 ) -> ResponseSchemaModel[GetHasnSkillBundleDetail]:
@@ -65,7 +70,9 @@ async def create_hasn_skill_bundle(db: CurrentSessionTransaction, obj: CreateHas
     name='admin_update_hasn_skill_bundle',
 )
 async def update_hasn_skill_bundle(
-    db: CurrentSessionTransaction, pk: Annotated[int, Path(description='Skill Bundle 定义表（多个 skill 的组合） ID')], obj: UpdateHasnSkillBundleParam
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='Skill Bundle 定义表（多个 skill 的组合） ID')],
+    obj: UpdateHasnSkillBundleParam,
 ) -> ResponseModel:
     count = await hasn_skill_bundle_service.update(db=db, pk=pk, obj=obj)
     if count > 0:

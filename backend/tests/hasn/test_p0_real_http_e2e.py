@@ -14,7 +14,7 @@ from backend.app.hasn.api.v1 import ai_native_app as ai_native_api
 from backend.app.hasn.api.v1 import message_hub as message_hub_api
 from backend.app.hasn.api.v1 import onboarding as onboarding_api
 from backend.app.hasn.api.v1.app import knowledge as knowledge_api
-from backend.app.hasn.api.v1.app import hasn_skill_bundle as skill_bundle_api
+from backend.app.hasn_task.api.v1.app import skill_bundle as skill_bundle_api
 from backend.app.hasn_task.api.v1.app import run as task_run_api
 from backend.app.hasn_task.api.v1.app import sync as task_sync_api
 from backend.app.hasn_task.api.v1.app import task as task_api

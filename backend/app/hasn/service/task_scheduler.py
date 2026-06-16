@@ -22,7 +22,7 @@ from croniter import croniter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model.hasn_skill_bundle import HasnSkillBundle
+from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle
 from backend.app.hasn.model.hasn_task import HasnTask
 from backend.app.hasn.model.hasn_task_run import HasnTaskRun
 from backend.app.hasn.service.ws_router import ws_router

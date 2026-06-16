@@ -11,7 +11,7 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.agent import hasn_task_run as agent_task_run_api
-from backend.app.hasn.schema.hasn_skill_bundle import CreateHasnSkillBundleParam
+from backend.app.hasn_task.schema.skill_bundle import CreateHasnSkillBundleParam
 from backend.app.hasn.schema.hasn_task import CreateHasnTaskParam
 from backend.app.hasn.service import task_scheduler as task_scheduler_module
 from backend.app.hasn.service.task_scheduler import TaskSchedulerService

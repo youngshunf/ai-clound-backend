@@ -25,7 +25,7 @@ from backend.app.hasn.api.v1.admin.hasn_pending_intents import router as admin_h
 from backend.app.hasn.api.v1.admin.hasn_session_artifacts import router as admin_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.admin.hasn_session_events import router as admin_hasn_session_events_router
 from backend.app.hasn.api.v1.admin.hasn_sessions import router as admin_hasn_sessions_router
-from backend.app.hasn.api.v1.admin.hasn_skill_bundle import router as admin_hasn_skill_bundle_router
+from backend.app.hasn_task.api.v1.admin.skill_bundle import router as admin_hasn_skill_bundle_router
 from backend.app.hasn.api.v1.admin.hasn_suppressed_messages import router as admin_hasn_suppressed_messages_router
 from backend.app.hasn.api.v1.admin.hasn_sync_events import router as admin_hasn_sync_events_router
 from backend.app.hasn.api.v1.admin.hasn_sync_inbox_events import router as admin_hasn_sync_inbox_events_router
@@ -144,7 +144,7 @@ from backend.app.hasn.api.v1.agent.hasn_notifications import router as agent_has
 from backend.app.hasn.api.v1.agent.hasn_session_artifacts import router as agent_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.agent.hasn_session_events import router as agent_hasn_session_events_router
 from backend.app.hasn.api.v1.agent.hasn_sessions import router as agent_hasn_sessions_router
-from backend.app.hasn.api.v1.agent.hasn_skill_bundle import router as agent_hasn_skill_bundle_router
+from backend.app.hasn_task.api.v1.agent.skill_bundle import router as agent_hasn_skill_bundle_router
 from backend.app.hasn.api.v1.agent.hasn_task_run import router as agent_hasn_task_run_router
 from backend.app.hasn.api.v1.agent.hasn_trade_sessions import router as agent_hasn_trade_sessions_router
 from backend.app.hasn.api.v1.agent.hasn_unread_counts import router as agent_hasn_unread_counts_router
@@ -240,7 +240,7 @@ from backend.app.hasn.api.v1.app.hasn_im import router as app_hasn_im_router
 from backend.app.hasn.api.v1.app.hasn_session_artifacts import router as app_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.app.hasn_session_events import router as app_hasn_session_events_router
 from backend.app.hasn.api.v1.app.hasn_sessions import router as app_hasn_sessions_router
-from backend.app.hasn.api.v1.app.hasn_skill_bundle import router as app_hasn_skill_bundle_router
+from backend.app.hasn_task.api.v1.app.skill_bundle import router as app_hasn_skill_bundle_router
 from backend.app.hasn.api.v1.app.hasn_task_sessions import router as app_hasn_task_sessions_router
 from backend.app.hasn.api.v1.app.hasn_task_sessions import work_sessions_router
 

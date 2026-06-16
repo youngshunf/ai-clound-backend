@@ -30,7 +30,6 @@ from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as Hasn
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
 # 应用平台 v3 P3（设计 17 决策①②）：hasn_user_active_workspace（被 active_enterprise_id 瘦指针取代）
 # 与 hasn_workspace_app（挂载概念废除）两模型已删除。
-from backend.app.hasn.model.hasn_skill_bundle import HasnSkillBundle as HasnSkillBundle
 from backend.app.hasn.model.hasn_task import HasnTask as HasnTask
 from backend.app.hasn.model.hasn_task_assignment import HasnTaskAssignment as HasnTaskAssignment
 from backend.app.hasn.model.hasn_task_run import HasnTaskRun as HasnTaskRun

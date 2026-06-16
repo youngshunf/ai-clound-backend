@@ -3,17 +3,18 @@
 认证方式: DependsJwtAuth（仅当前登录用户）
 数据隔离: 通过 request.user.id 限制为用户自己的数据
 """
+
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
-from backend.app.hasn.schema.hasn_skill_bundle import (
+from backend.app.hasn_task.schema.skill_bundle import (
     CreateHasnSkillBundleParam,
     GetHasnSkillBundleDetail,
     UpdateHasnSkillBundleParam,
 )
-from backend.app.hasn.service.hasn_skill_bundle_service import hasn_skill_bundle_service
+from backend.app.hasn_task.service.skill_bundle_service import hasn_skill_bundle_service
 from backend.common.exception import errors
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
@@ -121,7 +122,8 @@ async def delete_my_hasn_skill_bundle(
     hasn_skill_bundle = await hasn_skill_bundle_service.get(db=db, pk=pk)
     if hasn_skill_bundle.owner_id != owner_id:
         raise errors.ForbiddenError(msg='无权删除该Skill Bundle 定义表（多个 skill 的组合）')
-    from backend.app.hasn.schema.hasn_skill_bundle import DeleteHasnSkillBundleParam
+    from backend.app.hasn_task.schema.skill_bundle import DeleteHasnSkillBundleParam
+
     count = await hasn_skill_bundle_service.delete(db=db, obj=DeleteHasnSkillBundleParam(pks=[pk]))
     if count > 0:
         return response_base.success()

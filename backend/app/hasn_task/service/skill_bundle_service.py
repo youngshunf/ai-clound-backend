@@ -3,9 +3,13 @@ from typing import Any, Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.crud.crud_hasn_skill_bundle import hasn_skill_bundle_dao
-from backend.app.hasn.model import HasnSkillBundle
-from backend.app.hasn.schema.hasn_skill_bundle import CreateHasnSkillBundleParam, DeleteHasnSkillBundleParam, UpdateHasnSkillBundleParam
+from backend.app.hasn_task.crud.crud_skill_bundle import hasn_skill_bundle_dao
+from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle
+from backend.app.hasn_task.schema.skill_bundle import (
+    CreateHasnSkillBundleParam,
+    DeleteHasnSkillBundleParam,
+    UpdateHasnSkillBundleParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

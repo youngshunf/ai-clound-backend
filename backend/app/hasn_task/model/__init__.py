@@ -4,6 +4,7 @@ from backend.app.hasn_task.model.assignment import HasnTaskAssignment as HasnTas
 from backend.app.hasn_task.model.builtin_catalog import HasnBuiltinTaskCatalog as HasnBuiltinTaskCatalog
 from backend.app.hasn_task.model.run import HasnTaskRun as HasnTaskRun
 from backend.app.hasn_task.model.run_summary import HasnTaskRunSummary as HasnTaskRunSummary
+from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle as HasnSkillBundle
 from backend.app.hasn_task.model.task import HasnTask as HasnTask
 from backend.app.hasn_task.model.workflow import HasnWorkflow as HasnWorkflow
 from backend.app.hasn_task.model.workflow_edge import HasnWorkflowEdge as HasnWorkflowEdge

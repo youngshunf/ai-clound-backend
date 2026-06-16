@@ -3,15 +3,16 @@
 认证方式: Agent JWT (Bearer token)
 Agent 信息: 通过 request.state.agent 获取
 """
+
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 
-from backend.app.hasn.schema.hasn_skill_bundle import (
+from backend.app.hasn_task.schema.skill_bundle import (
     CreateHasnSkillBundleParam,
     UpdateHasnSkillBundleParam,
 )
-from backend.app.hasn.service.hasn_skill_bundle_service import hasn_skill_bundle_service
+from backend.app.hasn_task.service.skill_bundle_service import hasn_skill_bundle_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.pagination import DependsPagination
@@ -111,7 +112,8 @@ async def agent_delete_hasn_skill_bundle(
     hasn_skill_bundle = await hasn_skill_bundle_service.get(db=db, pk=pk)
     if hasn_skill_bundle.owner_id != agent.owner_hasn_id:
         raise errors.ForbiddenError(msg='无权删除该技能包')
-    from backend.app.hasn.schema.hasn_skill_bundle import DeleteHasnSkillBundleParam
+    from backend.app.hasn_task.schema.skill_bundle import DeleteHasnSkillBundleParam
+
     count = await hasn_skill_bundle_service.delete(db=db, obj=DeleteHasnSkillBundleParam(pks=[pk]))
     if count > 0:
         return response_base.success()
