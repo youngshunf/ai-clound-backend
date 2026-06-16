@@ -86,7 +86,6 @@ from backend.app.billing.api.router import user_tier_v1
 from backend.app.billing.api.router import user_tier_app
 from backend.app.billing.api.router import user_tier_open
 from backend.app.billing.api.router import user_tier_agent
-from backend.app.projects.api.router import v1 as projects_v1
 from backend.app.task.api.router import v1 as task_v1
 # 工作台（workbench）= 原 app/hasn 工作台子域按 ADR-15 §4 抽出；URL /api/v1/hasn/app/workbench/* 保持不变
 from backend.app.workbench.api.router import workbench_app
@@ -104,7 +103,6 @@ router.include_router(growth_app)
 router.include_router(growth_agent)
 router.include_router(growth_open)
 
-router.include_router(projects_v1)
 router.include_router(user_tier_v1)
 router.include_router(user_tier_app)      # 订阅积分-用户端 API
 router.include_router(user_tier_open)     # 订阅积分-公开 API
