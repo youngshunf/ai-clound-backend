@@ -130,6 +130,7 @@ async def test_asset_create_e2e_real_db_and_storage() -> None:
 
     from sqlalchemy import delete, select
 
+    from backend.app.hasn.model import HasnArtifacts
     from backend.app.hasn.model.hasn_assets import HasnAssets
     from backend.app.mcp.tools.message import _resolve_attachments
     from backend.database.db import async_db_session
@@ -192,8 +193,38 @@ async def test_asset_create_e2e_real_db_and_storage() -> None:
             # —— 安全：他人 owner 解析同一资产被拒（归属隔离）——
             with pytest.raises(RuntimeError, match='不属于'):
                 await _resolve_attachments(db, 'h_other_owner', [svg_result['uri']])
+
+            # —— 产物自动登记：上传成功即在 hasn_artifacts 落一条（source_kind='upload'）——
+            artifact = (
+                await db.execute(
+                    select(HasnArtifacts).where(HasnArtifacts.asset_id == svg_result['asset_id'])
+                )
+            ).scalar_one_or_none()
+            assert artifact is not None, '上传的资产应自动登记到产物表'
+            assert artifact.agent_hasn_id == 'a_asset_test_agent'  # 身份取自 Agent 凭证
+            assert artifact.owner_hasn_id == owner
+            assert artifact.kind == 'image'
+            assert artifact.source_kind == 'upload'
+            assert artifact.source_tool == 'hasn.asset.create'
+            assert artifact.title == 'diagram.svg'
+            assert artifact.status == 'active'
+            # metadata 快照冗余 mime/size，便于离线展示
+            assert artifact.meta_data['mime'] == 'image/svg+xml'
+            assert artifact.meta_data['size'] == len(_SVG.encode('utf-8'))
+
+            # PNG 上传也各自登记一条（宽高进 metadata）
+            png_artifact = (
+                await db.execute(
+                    select(HasnArtifacts).where(HasnArtifacts.asset_id == png_result['asset_id'])
+                )
+            ).scalar_one_or_none()
+            assert png_artifact is not None
+            assert png_artifact.source_kind == 'upload'
+            assert png_artifact.meta_data.get('width') == 1
+            assert png_artifact.meta_data.get('height') == 1
     finally:
         if created_ids:
             async with async_db_session() as db:
+                await db.execute(delete(HasnArtifacts).where(HasnArtifacts.asset_id.in_(created_ids)))
                 await db.execute(delete(HasnAssets).where(HasnAssets.asset_id.in_(created_ids)))
                 await db.commit()

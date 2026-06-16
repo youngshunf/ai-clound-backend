@@ -17,20 +17,32 @@ base64 图片字节、文本 / 文档……）经本工具落 owner 私有桶 + 
 - 大小按 kind 限额（图 10MB / 语音 25MB / 文件 50MB），与 owner 端点一致；超限 / 空 /
   非法 base64 一律抛错暴露，不伪造。
 - 私有桶（`category=dm_attachment`），与消息附件同语义；展示经 resolve 鉴权签名。
+
+产物自动登记（docs/Agent产物系统/00-...md §4.3 / D2「文件上传类」）：
+- 上传成功后在同事务内 best-effort 登记一条 `hasn_artifacts`（`source_kind='upload'`），分身上传的
+  内容即进 owner 的产物时间线，无需分身显式调记录工具。用 SAVEPOINT 隔离——登记失败只回滚该行、
+  不连累已落桶的资产，仅告警（§8 best-effort：捕获失败不阻断工具结果）。
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import logging
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
+from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
-from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 from backend.plugin.s3.service.storage_service import storage_service
+
+if TYPE_CHECKING:
+    from backend.app.mcp.auth import AgentContext
+
+logger = logging.getLogger(__name__)
 
 # 与 owner 上传端点 _MAX_SIZE 对齐（hasn_assets_app.py）：图 10MB / 语音 25MB / 文件 50MB。
 _MAX_SIZE = {'image': 10 * 1024 * 1024, 'voice': 25 * 1024 * 1024, 'file': 50 * 1024 * 1024}
@@ -217,6 +229,13 @@ class AssetCreateTool(BaseTool):
                 height=height,
                 duration_ms=duration_ms,
             )
+            # 产物自动登记（设计 §4.3 / D2「文件上传类」→ source_kind='upload'）：
+            # 分身把自己的内容上传即一条产物，进 owner 产物时间线，无需分身显式调记录工具。
+            # best-effort：用 SAVEPOINT 隔离，登记失败只回滚这一条、不连累已落桶的资产，仅告警不抛错（§8）。
+            await self._record_artifact_best_effort(
+                db, agent_context=agent_context, owner_hasn_id=owner_hasn_id, asset=asset, kind=kind,
+                mime=ref.mime, size=ref.size, filename=filename, width=width, height=height, duration_ms=duration_ms,
+            )
             # async_db_session() 退出只 close 不 commit；写资产须显式提交，否则回滚不落库。
             await db.commit()
 
@@ -230,3 +249,54 @@ class AssetCreateTool(BaseTool):
             'height': height,
             'duration_ms': duration_ms,
         }
+
+    async def _record_artifact_best_effort(
+        self,
+        db: Any,
+        *,
+        agent_context: AgentContext,
+        owner_hasn_id: str,
+        asset: Any,
+        kind: str,
+        mime: str,
+        size: int,
+        filename: str,
+        width: int | None,
+        height: int | None,
+        duration_ms: int | None,
+    ) -> None:
+        """把刚上传的资产登记成一条分身产物（best-effort）。
+
+        身份取自 Agent 凭证（不自报）：分身 = `agent_context.agent_hasn_id`、归属 = `owner_hasn_id`。
+        上传场景无会话/消息上下文（资产先生成、后单独 `hasn.message.send` 引用），故不带 conversation/message，
+        产物跳转锚诚实留空。用 SAVEPOINT 隔离：登记失败只回滚这一条、不连累已落桶的资产，仅告警不抛错。
+        """
+        metadata: dict[str, Any] = {'mime': mime, 'size': size}
+        if width is not None:
+            metadata['width'] = width
+        if height is not None:
+            metadata['height'] = height
+        if duration_ms is not None:
+            metadata['duration_ms'] = duration_ms
+        try:
+            async with db.begin_nested():  # SAVEPOINT：登记失败只回滚这一行，资产仍提交。
+                await hasn_artifacts_service.record(
+                    db,
+                    agent_hasn_id=agent_context.agent_hasn_id,
+                    owner_hasn_id=owner_hasn_id,
+                    params=RecordArtifactParam(
+                        kind=kind,
+                        title=filename,
+                        asset_id=asset.asset_id,
+                        source_tool=self.name,
+                        source_kind='upload',
+                        metadata=metadata,
+                    ),
+                )
+        except Exception as exc:  # best-effort：任何登记异常都吞掉只告警，绝不阻断已成功的资产上传
+            logger.warning(
+                'hasn.asset.create 产物自动登记失败（资产 %s 已上传，不阻断）：%s',
+                asset.asset_id,
+                exc,
+                exc_info=True,
+            )
