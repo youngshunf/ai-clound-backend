@@ -287,3 +287,13 @@ v1.include_router(
 )
 v1.include_router(admin_hasn_app_catalog_router, prefix='/app-catalogs', tags=['AI-Native 应用目录'])
 v1.include_router(admin_hasn_app_entitlement_router, prefix='/app-entitlements', tags=['AI-Native 应用权益'])
+
+# --- 分身产物（Artifacts，AF-2）：独立顶层路由组 /api/v1/artifacts/*（不挂 /hasn 下，平台 primitive）---
+from backend.app.hasn.api.v1.agent.hasn_artifacts import router as agent_hasn_artifacts_router
+from backend.app.hasn.api.v1.app.hasn_artifacts import router as app_hasn_artifacts_router
+
+artifacts_agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/artifacts/agent', tags=['分身产物 Agent端'])
+artifacts_agent.include_router(agent_hasn_artifacts_router)
+
+artifacts_app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/artifacts/app', tags=['分身产物 用户端'])
+artifacts_app.include_router(app_hasn_artifacts_router)
