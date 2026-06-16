@@ -53,6 +53,11 @@ class HasnAgents(Base):
         default=None,
         comment='领域专家头衔（如「金融专家」，来自模板 name；与人名 display_name 并列展示）',
     )
+    builtin_agent_key: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        default=None,
+        comment='内置 agent 类型键（来自模板 builtin_key）；非内置 agent 为 NULL',
+    )
     node_id: Mapped[str | None] = mapped_column(
         sa.String(40), default=None, comment='Agent 驻留节点 ID（设备指纹派生，格式: n_{hash}）'
     )

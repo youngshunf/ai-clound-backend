@@ -3,9 +3,9 @@ from decimal import Decimal
 
 import sqlalchemy as sa
 
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
-from backend.app.marketplace.model._base import MarketplaceBase
+from backend.app.marketplace.model._base import APP_SCHEMA, MarketplaceBase
 from backend.common.model import TimeZone, UniversalText, id_key
 
 
@@ -13,6 +13,19 @@ class MarketplaceTemplate(MarketplaceBase):
     """技能市场模板表（Agent模板/技能包/SOP包）"""
 
     __tablename__ = 'marketplace_template'
+
+    @declared_attr.directive
+    def __table_args__(cls):  # noqa: N805
+        # 内置 agent 类型键全局唯一（仅非空时约束）
+        return (
+            sa.Index(
+                'uq_marketplace_template_builtin_key',
+                'builtin_key',
+                unique=True,
+                postgresql_where=sa.text('builtin_key IS NOT NULL'),
+            ),
+            {'comment': cls.__doc__ or '', 'schema': APP_SCHEMA},
+        )
 
     id: Mapped[id_key] = mapped_column(init=False)
     template_id: Mapped[str] = mapped_column(sa.String(255), default='', comment='模板唯一标识')
@@ -62,6 +75,14 @@ class MarketplaceTemplate(MarketplaceBase):
     is_official: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='是否官方模板')
     is_common: Mapped[bool] = mapped_column(
         sa.BOOLEAN(), default=False, comment='是否公共技能包（默认叠加进每个 Agent 的能力清单）'
+    )
+    builtin: Mapped[bool] = mapped_column(
+        sa.BOOLEAN(), default=False, comment='是否内置 agent 模板（注册时自动创建）'
+    )
+    builtin_key: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        default=None,
+        comment='内置 agent 类型键（内置任务 target_agent_type 按此匹配）',
     )
     download_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='下载次数')
     category: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment='分类')

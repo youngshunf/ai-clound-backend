@@ -37,6 +37,14 @@ class HasnBuiltinTaskCatalog(HasnTaskAppBase):
         comment='系统提示词（约束输出统一格式）',
     )
     enabled: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='全局上/下线开关')
+    default_enabled: Mapped[bool] = mapped_column(
+        sa.BOOLEAN(), default=True, comment='播种时默认启用态（false=需用户手动开启）'
+    )
+    target_agent_type: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        default=None,
+        comment='承接该任务的内置 agent 类型键(builtin_key)；NULL 表示绑定主脑',
+    )
     min_node_version: Mapped[str | None] = mapped_column(
         sa.String(32),
         default=None,

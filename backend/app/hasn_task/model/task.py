@@ -5,9 +5,9 @@ from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
-from backend.app.hasn_task.model._base import HasnTaskAppBase
+from backend.app.hasn_task.model._base import APP_SCHEMA, HasnTaskAppBase
 from backend.common.model import TimeZone, UniversalText, id_key
 
 TASK_STATE_COMMENT = (
@@ -22,6 +22,20 @@ class HasnTask(HasnTaskAppBase):
     """任务定义表"""
 
     __tablename__ = 'task'
+
+    @declared_attr.directive
+    def __table_args__(cls):  # noqa: N805
+        # 内置任务去重键：一个 owner 同一 builtin_key 只允许一行存活（支撑 INSERT-only「已存在则跳过」）
+        return (
+            sa.Index(
+                'uq_task_owner_builtin_key',
+                'owner_id',
+                'builtin_key',
+                unique=True,
+                postgresql_where=sa.text('builtin_key IS NOT NULL AND deleted_at IS NULL'),
+            ),
+            {'comment': cls.__doc__ or '', 'schema': APP_SCHEMA},
+        )
 
     id: Mapped[id_key] = mapped_column(init=False)
     owner_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='任务归属 owner')
@@ -94,6 +108,14 @@ class HasnTask(HasnTaskAppBase):
         sa.BOOLEAN(), default=False, comment='允许任务会话内使用子分身 delegate_task（D5）'
     )
     created_by_kind: Mapped[str] = mapped_column(sa.String(16), default='owner', comment=CREATED_BY_KIND_COMMENT)
+    builtin_key: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='内置任务来源键（=builtin_catalog.builtin_key）；用户任务为 NULL'
+    )
+    builtin_synced_revision: Mapped[int | None] = mapped_column(
+        sa.BIGINT(),
+        default=None,
+        comment='内置任务已同步的 catalog.revision；用于检测官方是否有更新（用户任务为 NULL）',
+    )
     workflow_uuid: Mapped[str | None] = mapped_column(
         sa.String(64), default=None, comment='所属工作流稳定 UUID（NULL=独立任务，非工作流节点，W3）'
     )
