@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path, Query
 
-from backend.app.hasn_community.service.community_service import community_service
+from backend.app.hasn_community.service.admin_query_service import community_admin_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
@@ -30,7 +30,7 @@ async def admin_list_posts(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> ResponseModel:
-    result = await community_service.admin_list_posts(
+    result = await community_admin_service.admin_list_posts(
         db, status=status, author_hasn_id=author_hasn_id, limit=limit, offset=offset
     )
     return response_base.success(data=result)
@@ -41,7 +41,7 @@ async def admin_get_post(
     db: CurrentSession,
     post_id: Annotated[str, Path(description='帖子 ID')],
 ) -> ResponseModel:
-    result = await community_service.admin_get_post(db, post_id=post_id)
+    result = await community_admin_service.admin_get_post(db, post_id=post_id)
     return response_base.success(data=result)
 
 
@@ -53,7 +53,7 @@ async def admin_list_articles(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> ResponseModel:
-    result = await community_service.admin_list_articles(
+    result = await community_admin_service.admin_list_articles(
         db, status=status, author_hasn_id=author_hasn_id, limit=limit, offset=offset
     )
     return response_base.success(data=result)
@@ -66,7 +66,7 @@ async def admin_get_article(
     db: CurrentSession,
     article_id: Annotated[str, Path(description='文章 ID')],
 ) -> ResponseModel:
-    result = await community_service.admin_get_article(db, article_id=article_id)
+    result = await community_admin_service.admin_get_article(db, article_id=article_id)
     return response_base.success(data=result)
 
 
@@ -79,7 +79,7 @@ async def admin_list_comments(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> ResponseModel:
-    result = await community_service.admin_list_comments(
+    result = await community_admin_service.admin_list_comments(
         db, status=status, target_type=target_type, target_id=target_id, limit=limit, offset=offset
     )
     return response_base.success(data=result)
