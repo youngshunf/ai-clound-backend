@@ -32,6 +32,12 @@ from backend.app.hasn.api.router import (
 from backend.app.hasn.api.router import (
     ws as hasn_ws,
 )
+from backend.app.hasn.api.router import (
+    artifacts_agent as hasn_artifacts_agent,
+)
+from backend.app.hasn.api.router import (
+    artifacts_app as hasn_artifacts_app,
+)
 from backend.app.hasn_community.api.router import admin as community_admin
 from backend.app.hasn_community.api.router import agent as community_agent
 from backend.app.hasn_community.api.router import app as community_app
@@ -128,6 +134,8 @@ router.include_router(hasn_agent)         # HASN Agent API
 router.include_router(hasn_open)          # HASN 公开 API
 router.include_router(hasn_ws)            # HASN WebSocket 端点
 router.include_router(hasn_ai_native)      # AI-Native 应用平台 API
+router.include_router(hasn_artifacts_agent)  # 分身产物 Agent API（/api/v1/artifacts/agent，Agent JWT）
+router.include_router(hasn_artifacts_app)    # 分身产物 用户端 API（/api/v1/artifacts/app，Owner JWT）
 
 # HASN 社区（从 hasn 巨型模块拆分的独立模块 hasn_community）
 router.include_router(community_app)          # 社区 用户端 API（/api/v1/community/app）

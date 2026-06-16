@@ -48,3 +48,69 @@ class GetHasnArtifactsDetail(HasnArtifactsSchemaBase):
     id: int
     created_time: datetime
     updated_time: datetime | None = None
+
+
+# ============================================================================
+# 产物系统专用请求/响应模型（AF-2）：身份不入参，由凭证自识别；序列化经 resolve_assets。
+# ============================================================================
+
+
+class RecordArtifactParam(SchemaBase):
+    """Agent 登记一条产物的入参（不含 agent/owner 身份字段——身份取自 Agent JWT）。"""
+
+    kind: str = Field(
+        'other',
+        description='产物类型 (image/voice/file/document/deck/webpage/dataset/other)',
+    )
+    title: str | None = Field(None, description='展示标题')
+    summary: str | None = Field(None, description='简要描述')
+    asset_id: str | None = Field(None, description='关联资产 ID（image/voice/file 主路径）')
+    resource_uri: str | None = Field(None, description='hasn:// 资源 URI（deck/webpage 等无 asset 本体时用）')
+    conversation_id: str | None = Field(None, description='来源会话 ID（UUID 字符串）')
+    message_id: int | None = Field(None, description='来源消息 ID')
+    session_id: str | None = Field(None, description='来源本地 runtime session（ULID）')
+    source_tool: str | None = Field(None, description='产出工具全名（hasn.image.generate）')
+    source_kind: str = Field('tool_output', description='产出来源 (tool_output/task_result/upload/external)')
+    dispatch_id: str | None = Field(None, description='派发关联（审计/去重）')
+    metadata: dict = Field(default_factory=dict, description='元数据快照（mime/size/width/height 等）')
+
+
+class RecordArtifactResult(SchemaBase):
+    """登记结果（返回 artifact_id；去重命中时返回既有 id）。"""
+
+    artifact_id: str = Field(description='产物 ID')
+
+
+class ArtifactItem(SchemaBase):
+    """产物列表项（已派生跳转链接；图片含签名 display_url）。"""
+
+    artifact_id: str
+    kind: str
+    title: str | None = None
+    summary: str | None = None
+    asset_id: str | None = None
+    resource_uri: str | None = None
+    conversation_id: str | None = None
+    message_id: int | None = None
+    session_id: str | None = None
+    source_tool: str | None = None
+    source_kind: str = 'tool_output'
+    source_link: str | None = Field(None, description='点击跳转来源的 hasn:// URI')
+    display_url: str | None = Field(None, description='可展示签名 URL（图片缩略图/预览，有时效）')
+    created_time: datetime
+
+
+class ArtifactDetail(ArtifactItem):
+    """产物详情（额外含下载 URL 与元数据）。"""
+
+    download_url: str | None = Field(None, description='下载签名 URL（有时效）')
+    metadata: dict = Field(default_factory=dict)
+
+
+class ArtifactListData(SchemaBase):
+    """产物分页列表信封。"""
+
+    items: list[ArtifactItem]
+    total: int
+    page: int
+    size: int
