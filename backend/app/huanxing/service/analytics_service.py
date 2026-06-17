@@ -1,12 +1,38 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy import text, func
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.common.log import log
 
 
 class AnalyticsService:
     """分析看板服务"""
+
+    @staticmethod
+    def _is_missing_legacy_usage_table(exc: ProgrammingError) -> bool:
+        msg = str(exc).lower()
+        return 'llm_usage_log' in msg and ('undefinedtable' in msg or 'does not exist' in msg)
+
+    async def _execute_usage_scalar(self, db: AsyncSession, sql: str, params: dict | None = None) -> int:
+        try:
+            return int((await db.execute(text(sql), params or {})).scalar() or 0)
+        except ProgrammingError as exc:
+            if self._is_missing_legacy_usage_table(exc):
+                log.warning('[analytics] legacy llm_usage_log missing, usage scalar fallback to 0')
+                return 0
+            raise
+
+    async def _execute_usage_rows(self, db: AsyncSession, sql: str, params: dict | None = None) -> list:
+        try:
+            return list((await db.execute(text(sql), params or {})).fetchall())
+        except ProgrammingError as exc:
+            if self._is_missing_legacy_usage_table(exc):
+                log.warning('[analytics] legacy llm_usage_log missing, usage rows fallback to empty')
+                return []
+            raise
 
     async def get_analytics(self, *, db: AsyncSession, days: int = 30) -> dict:
         now = datetime.now()
@@ -55,14 +81,11 @@ class AnalyticsService:
         )).scalar() or Decimal('0')
 
         # API 调用次数
-        total_api_calls = (await db.execute(
-            text('SELECT count(*) FROM llm_usage_log')
-        )).scalar() or 0
+        total_api_calls = await self._execute_usage_scalar(db, 'SELECT count(*) FROM llm_usage_log')
 
-        period_api_calls = (await db.execute(
-            text('SELECT count(*) FROM llm_usage_log WHERE created_time >= :d'),
-            {'d': start_date}
-        )).scalar() or 0
+        period_api_calls = await self._execute_usage_scalar(
+            db, 'SELECT count(*) FROM llm_usage_log WHERE created_time >= :d', {'d': start_date}
+        )
 
         # 充值收入（purchase + subscription_upgrade）
         total_income_credits = (await db.execute(
@@ -88,8 +111,9 @@ class AnalyticsService:
     async def _get_trends(self, db: AsyncSession, days: int) -> dict:
         """按天趋势"""
         # API 调用趋势
-        api_rows = (await db.execute(
-            text("""
+        api_rows = await self._execute_usage_rows(
+            db,
+            """
                 SELECT d::date as day, COALESCE(c, 0) as count
                 FROM generate_series(
                     CURRENT_DATE - :days * interval '1 day',
@@ -103,9 +127,9 @@ class AnalyticsService:
                     GROUP BY 1
                 ) t ON d::date = t.day
                 ORDER BY d
-            """),
-            {'days': days}
-        )).fetchall()
+            """,
+            {'days': days},
+        )
 
         # 积分消耗趋势
         credit_rows = (await db.execute(
@@ -130,8 +154,9 @@ class AnalyticsService:
         )).fetchall()
 
         # Token 消耗趋势
-        token_rows = (await db.execute(
-            text("""
+        token_rows = await self._execute_usage_rows(
+            db,
+            """
                 SELECT d::date as day, COALESCE(c, 0) as total
                 FROM generate_series(
                     CURRENT_DATE - :days * interval '1 day',
@@ -146,30 +171,43 @@ class AnalyticsService:
                     GROUP BY 1
                 ) t ON d::date = t.day
                 ORDER BY d
-            """),
-            {'days': days}
-        )).fetchall()
+            """,
+            {'days': days},
+        )
+
+        if not api_rows:
+            dates = [
+                (datetime.now().date() - timedelta(days=days) + timedelta(days=i)).isoformat()
+                for i in range(days + 1)
+            ]
+            api_calls = [0] * len(dates)
+        else:
+            dates = [str(r[0]) for r in api_rows]
+            api_calls = [int(r[1]) for r in api_rows]
+
+        token_usage = [0] * len(dates) if not token_rows else [int(r[1]) for r in token_rows]
 
         return {
-            'dates': [str(r[0]) for r in api_rows],
-            'api_calls': [int(r[1]) for r in api_rows],
+            'dates': dates,
+            'api_calls': api_calls,
             'credit_usage': [float(r[1]) for r in credit_rows],
-            'token_usage': [int(r[1]) for r in token_rows],
+            'token_usage': token_usage,
         }
 
     async def _get_model_distribution(self, db: AsyncSession, start_date: datetime) -> list[dict]:
         """模型调用分布"""
-        rows = (await db.execute(
-            text("""
+        rows = await self._execute_usage_rows(
+            db,
+            """
                 SELECT model_name, count(*) as calls
                 FROM llm_usage_log
                 WHERE created_time >= :d
                 GROUP BY model_name
                 ORDER BY calls DESC
                 LIMIT 10
-            """),
-            {'d': start_date}
-        )).fetchall()
+            """,
+            {'d': start_date},
+        )
         return [{'name': r[0], 'value': int(r[1])} for r in rows]
 
     async def _get_tier_distribution(self, db: AsyncSession) -> list[dict]:
@@ -193,8 +231,9 @@ class AnalyticsService:
 
     async def _get_token_ranking(self, db: AsyncSession, start_date: datetime) -> list[dict]:
         """Token 消耗排行（按模型）"""
-        rows = (await db.execute(
-            text("""
+        rows = await self._execute_usage_rows(
+            db,
+            """
                 SELECT model_name,
                        SUM(input_tokens) as input_t,
                        SUM(output_tokens) as output_t,
@@ -205,9 +244,9 @@ class AnalyticsService:
                 GROUP BY model_name
                 ORDER BY total_t DESC
                 LIMIT 10
-            """),
-            {'d': start_date}
-        )).fetchall()
+            """,
+            {'d': start_date},
+        )
         return [{
             'model': r[0],
             'input_tokens': int(r[1]),
