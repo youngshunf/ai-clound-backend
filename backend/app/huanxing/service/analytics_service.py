@@ -21,6 +21,7 @@ class AnalyticsService:
             return int((await db.execute(text(sql), params or {})).scalar() or 0)
         except ProgrammingError as exc:
             if self._is_missing_legacy_usage_table(exc):
+                await db.rollback()
                 log.warning('[analytics] legacy llm_usage_log missing, usage scalar fallback to 0')
                 return 0
             raise
@@ -30,6 +31,7 @@ class AnalyticsService:
             return list((await db.execute(text(sql), params or {})).fetchall())
         except ProgrammingError as exc:
             if self._is_missing_legacy_usage_table(exc):
+                await db.rollback()
                 log.warning('[analytics] legacy llm_usage_log missing, usage rows fallback to empty')
                 return []
             raise
