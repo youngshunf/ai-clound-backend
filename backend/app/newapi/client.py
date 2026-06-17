@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import secrets
 import string
+
 from typing import Any
 
 import httpx
@@ -170,7 +171,15 @@ class NewApiAdminClient:
         if existing:
             return int(existing['id'])
         # 不存在 → 创建（密码用后由 service bootstrap access_token 时重设，这里随机占位）
-        await self.create_user(username=username, password=_gen_password(), display_name=display_name)
+        try:
+            await self.create_user(username=username, password=_gen_password(), display_name=display_name)
+        except NewApiError:
+            # search/create 之间可能被并发请求创建；也可能存在历史孤儿用户但 search 索引短暂未命中。
+            recovered = await self.search_user_by_username(username)
+            if recovered:
+                log.warning(f'[new-api] CreateUser 冲突后复用已有用户 username={username} id={recovered.get("id")}')
+                return int(recovered['id'])
+            raise
         created = await self.search_user_by_username(username)
         if not created:
             raise NewApiError(f'CreateUser 后 search 不到用户 {username}', endpoint='/user/')
