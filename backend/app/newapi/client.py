@@ -352,14 +352,30 @@ class NewApiAdminClient:
     ) -> tuple[int, str]:
         """建 relay token 并取回 (token_id, 明文 key) 的高层封装。
 
-        AddToken（用户身份）→ admin find by name → admin get plaintext key。
+        admin find by name（历史残留/重试幂等复用）→ AddToken（用户身份）
+        → admin find by name → admin get plaintext key。
         """
-        await self.add_token(
-            user_access_token=user_access_token,
-            newapi_user_id=newapi_user_id,
-            name=name,
-            unlimited_quota=unlimited_quota,
-        )
+        existing = await self.find_token(username=username, name=name)
+        if existing:
+            token_id = int(existing['id'])
+            key = await self.get_token_key(token_id)
+            return token_id, key
+
+        try:
+            await self.add_token(
+                user_access_token=user_access_token,
+                newapi_user_id=newapi_user_id,
+                name=name,
+                unlimited_quota=unlimited_quota,
+            )
+        except NewApiError:
+            recovered = await self.find_token(username=username, name=name)
+            if recovered:
+                token_id = int(recovered['id'])
+                log.warning(f'[new-api] AddToken 失败后复用已有 token username={username} name={name} id={token_id}')
+                key = await self.get_token_key(token_id)
+                return token_id, key
+            raise
         token = await self.find_token(username=username, name=name)
         if not token:
             raise NewApiError(f'AddToken 后查不到 token name={name} user={username}', endpoint='/admin_token/search')

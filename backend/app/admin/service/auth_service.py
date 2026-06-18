@@ -294,7 +294,7 @@ class AuthService:
 
         user = await user_dao.get(db, token_payload.id)
         if not user:
-            raise errors.NotFoundError(msg='用户不存在')
+            raise errors.TokenError(msg='Refresh Token 已过期，请重新登录')
         if not user.status:
             raise errors.AuthorizationError(msg='用户已被锁定, 请联系统管理员')
         if not user.is_multi_login and await redis_client.get_prefix(f'{settings.TOKEN_REDIS_PREFIX}:{user.id}:*'):
