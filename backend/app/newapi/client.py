@@ -185,6 +185,29 @@ class NewApiAdminClient:
             raise NewApiError(f'CreateUser 后 search 不到用户 {username}', endpoint='/user/')
         return int(created['id'])
 
+    async def ensure_user_group(self, *, newapi_user_id: int, group: str) -> bool:
+        """确保 new-api 用户分组为 `group`（relay 渠道按用户分组匹配可用渠道）。
+
+        new-api admin CreateUser（POST /user/）不接受 group 字段 → 新建用户分组为空字符串
+        → relay 报「No available channel for model X under group  ()」（空组匹配不到任何渠道）。
+        本方法读用户对象，分组已正确则 no-op（返回 False）；否则取**整个用户对象**仅改 group
+        回 PUT（UpdateUser 强制保留 quota、空密码视为保留，安全），返回是否发生更新。
+
+        `group` 为空字符串时不强制（沿用 new-api 行为），直接返回 False。
+        """
+        if not group:
+            return False
+        user = await self.get_user(newapi_user_id)
+        if not user:
+            raise NewApiError(f'设分组前取用户失败 id={newapi_user_id}', endpoint=f'/user/{newapi_user_id}')
+        if (user.get('group') or '') == group:
+            return False
+        payload = dict(user)
+        payload['group'] = group
+        await self._request('PUT', '/user/', headers=self._admin_headers(), json=payload)
+        log.info(f'[new-api] 用户 {newapi_user_id} 分组由 {user.get("group")!r} 修正为 {group!r}')
+        return True
+
     async def get_user(self, newapi_user_id: int) -> dict | None:
         """GET /user/:id（admin）。返回含 quota/used_quota/request_count 的用户对象。"""
         data = await self._request('GET', f'/user/{newapi_user_id}', headers=self._admin_headers())

@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     NEWAPI_ADMIN_ACCESS_TOKEN: str = ''
     NEWAPI_ADMIN_USER_ID: int = 1
     NEWAPI_HTTP_TIMEOUT_SECONDS: int = 15
+    # new-api 用户默认分组：relay 渠道按「用户分组」匹配可用渠道（token 空组继承用户组）。
+    # new-api admin CreateUser 不接受 group 字段 → 新建用户分组为空字符串 → relay 报
+    # 「No available channel for model X under group  ()」（空组匹配不到任何渠道）。
+    # 故建用户后须显式把分组设为此值；空字符串表示不强制（沿用 new-api 行为）。
+    NEWAPI_DEFAULT_USER_GROUP: str = 'default'
 
     # 新用户注册赠送积分
     NEWAPI_REGISTER_BONUS_CREDITS: int = 500

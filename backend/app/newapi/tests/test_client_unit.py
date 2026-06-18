@@ -61,3 +61,44 @@ async def test_provision_user_relay_token_reuses_existing_token_before_add() -> 
     client.find_token.assert_awaited_once_with(username='13800138000', name='huanxing 默认 Key')
     client.get_token_key.assert_awaited_once_with(601)
     client.add_token.assert_not_awaited()
+
+
+def _client() -> NewApiAdminClient:
+    return NewApiAdminClient(base_url='http://newapi.local/api', access_token='admin-token', admin_user_id=1)
+
+
+async def test_ensure_user_group_sets_group_when_empty() -> None:
+    """空组用户（API 化创建未带 group）应被整对象回 PUT 修正为目标分组，relay 才能匹配渠道."""
+    client = _client()
+    client.get_user = AsyncMock(  # type: ignore[method-assign]
+        return_value={'id': 8, 'username': '18687200686', 'group': '', 'quota': 500000}
+    )
+    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    changed = await client.ensure_user_group(newapi_user_id=8, group='default')
+
+    assert changed is True
+    method, path = client._request.await_args.args
+    payload = client._request.await_args.kwargs['json']
+    assert (method, path) == ('PUT', '/user/')
+    assert payload['group'] == 'default'
+    assert payload['quota'] == 500000  # 整对象回写，不丢额度
+
+
+async def test_ensure_user_group_noop_when_already_correct() -> None:
+    """分组已正确 → 不发 PUT（幂等），返回 False."""
+    client = _client()
+    client.get_user = AsyncMock(return_value={'id': 8, 'group': 'default'})  # type: ignore[method-assign]
+    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    assert await client.ensure_user_group(newapi_user_id=8, group='default') is False
+    client._request.assert_not_awaited()
+
+
+async def test_ensure_user_group_noop_when_target_empty() -> None:
+    """目标分组为空字符串 → 不强制（沿用 new-api 行为），不触碰用户."""
+    client = _client()
+    client.get_user = AsyncMock()  # type: ignore[method-assign]
+
+    assert await client.ensure_user_group(newapi_user_id=8, group='') is False
+    client.get_user.assert_not_awaited()

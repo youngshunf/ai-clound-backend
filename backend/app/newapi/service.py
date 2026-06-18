@@ -344,6 +344,14 @@ class LlmNewapiUserMappingService:
             valid_key = await LlmNewapiUserMappingService._reconcile_mapping_key(
                 db, existing, username=username or None
             )
+            # 自愈：API 化创建早期未设分组的历史用户（分组为空 → relay 报 no available channel）。
+            # 幂等：分组已正确则 no-op；new-api 不可达时不阻断登录（同 _reconcile_mapping_key 容错）。
+            try:
+                await newapi_admin_client.ensure_user_group(
+                    newapi_user_id=existing.newapi_user_id, group=settings.NEWAPI_DEFAULT_USER_GROUP
+                )
+            except NewApiError as e:
+                log.warning(f'[NewApi] 用户 {existing.huanxing_user_id} 分组自愈失败（不阻断登录）: {e}')
             return NewApiMappingInfo(
                 huanxing_user_id=existing.huanxing_user_id,
                 newapi_user_id=existing.newapi_user_id,
