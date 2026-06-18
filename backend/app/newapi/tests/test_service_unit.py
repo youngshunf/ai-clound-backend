@@ -50,6 +50,7 @@ async def test_ensure_newapi_user_recovers_orphan_newapi_user_after_local_mappin
             endpoint='/user/',
         )
     )
+    client.ensure_user_group = AsyncMock()  # type: ignore[method-assign]
     client.set_user_quota = AsyncMock()  # type: ignore[method-assign]
     client.bootstrap_user_access_token = AsyncMock(return_value='user-access-token')  # type: ignore[method-assign]
     client.provision_user_relay_token = AsyncMock(return_value=(601, 'relay-token-key'))  # type: ignore[method-assign]
@@ -71,6 +72,8 @@ async def test_ensure_newapi_user_recovers_orphan_newapi_user_after_local_mappin
     assert mapping.newapi_token_id == 601
     assert key_encryption.decrypt(mapping.newapi_access_token) == 'user-access-token'
     assert client.search_user_by_username.await_count == 2
+    # 新建分支必须把用户设为 default 分组，否则空组 relay 报 no available channel（新用户首次对话即挂）。
+    client.ensure_user_group.assert_awaited_once_with(newapi_user_id=117, group='default')
     client.set_user_quota.assert_awaited_once()
     client.bootstrap_user_access_token.assert_awaited_once_with(newapi_user_id=117, username='13800138000')
     client.provision_user_relay_token.assert_awaited_once_with(
