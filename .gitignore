@@ -19,6 +19,7 @@ venv/
 
 # Production env (contains secrets)
 backend/.env.prod
+backend/.env*.bak-*
 *.pyc
 __pycache__/
 backend/log
