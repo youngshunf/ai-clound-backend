@@ -488,8 +488,20 @@ class HasnOnboardingService:
 
             await reconcile_builtin_agents(db, owner_id=human.hasn_id, node_id=node.node_id)
             await seed_builtin_tasks(db, owner_id=human.hasn_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning('builtin agent/task seeding failed during onboarding for %s: %s', human.hasn_id, exc)
+
+        # 自愈：内置/默认分身名首登时若主人未设昵称会被烙进手机号掩码（186****2019），
+        # 存量用户即便已设真实昵称分身仍显示手机号 → 每次登录幂等把这类后缀刷成真实昵称。
+        # 新用户此刻昵称仍是手机号掩码，方法内部短路不动（无 churn）。best-effort 不阻断登录。
+        try:
+            from backend.app.hasn.service.hasn_agents_service import agent_profile_service
+
+            await agent_profile_service.refresh_seeded_agent_display_names(
+                db, owner_id=human.hasn_id, current_nickname=getattr(human, 'nickname', None)
+            )
+        except Exception as exc:
+            log.warning('refresh seeded agent names failed during onboarding for %s: %s', human.hasn_id, exc)
 
         if request.pending_intent_id:
             await self.gateway.consume_pending_intent(

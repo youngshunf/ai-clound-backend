@@ -1,4 +1,5 @@
 import re
+import string
 
 from collections.abc import Sequence
 from typing import Any, Protocol
@@ -27,6 +28,45 @@ from backend.app.marketplace.service.common_skills_service import get_common_ski
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
+
+# 默认分身/内置分身名形如 `{基名}·{主人昵称}`，分隔符为 U+00B7 间隔号。
+DEFAULT_AGENT_NAME_SEPARATOR = '·'
+# 主人尚未设昵称时的手机号掩码兜底（见 get_or_create_phone_user: f'{phone[:3]}****{phone[-4:]}'）。
+# onboarding 在登录路径建分身时若主人未设昵称，后缀会被烙进这个掩码 → 需在设昵称/登录时刷新。
+PHONE_MASK_NICKNAME_RE = re.compile(r'^\d{3}\*{4}\d{4}$')
+
+
+def compute_seeded_name_refresh(
+    current_display: str | None, *, new_nickname: str | None, previous_nickname: str | None
+) -> str | None:
+    """纯逻辑：给定内置/默认分身当前 display_name 与新/旧主人昵称，算出应刷新成的新名。
+
+    仅当 display_name 形如 `{base}·{suffix}` 且 suffix 的昵称部分（去掉撞名数字尾）∈
+    {手机号掩码, previous_nickname} 时视为「系统自动派生、需刷新」，返回 `{base}·{new_nickname}`；
+    否则返回 None（用户手动取的名 / 无后缀 / 新昵称不可用 / 已是目标名 → 不动）。
+
+    不查 DB、不做全局唯一化（唯一化由调用方在落库前补上）。抽成纯函数便于确定性单测。
+    """
+    nick = (new_nickname or '').strip()
+    # 新昵称为空 / 仍是手机号掩码 → 无可改进
+    if not nick or PHONE_MASK_NICKNAME_RE.match(nick):
+        return None
+    current = (current_display or '').strip()
+    sep = current.rfind(DEFAULT_AGENT_NAME_SEPARATOR)
+    if sep <= 0:
+        return None  # 无后缀（基名全局唯一、未烙昵称）
+    base = current[:sep]
+    suffix = current[sep + len(DEFAULT_AGENT_NAME_SEPARATOR) :]
+    prev = (previous_nickname or '').strip()
+    # 手机号掩码整段匹配——手机号全局唯一，后缀不会再带撞名数字尾，故不可对它做 rstrip
+    # （否则会把 186****2019 的尾部 2019 当成撞名尾剥掉而漏判）。
+    is_phone = bool(PHONE_MASK_NICKNAME_RE.match(suffix))
+    # 旧昵称可能带撞名数字尾（小福 / 小福2 同名两用户）→ 去尾后比对。
+    is_prev = bool(prev) and (suffix == prev or suffix.rstrip(string.digits) == prev)
+    if not (is_phone or is_prev):
+        return None  # 后缀是用户主动取的名字 → 不碰
+    candidate = f'{base}{DEFAULT_AGENT_NAME_SEPARATOR}{nick}'
+    return candidate if candidate != current else None
 
 
 class AgentProfileGateway(Protocol):
@@ -290,7 +330,7 @@ class SqlAlchemyAgentProfileGateway:
             from backend.app.hasn_task.service.builtin_seeding_service import seed_builtin_tasks
 
             await seed_builtin_tasks(db, owner_id=payload['owner_id'])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             from backend.common.log import log
 
             log.warning('create_agent: seed_builtin_tasks best-effort failed: {!r}', exc)
@@ -523,6 +563,104 @@ class HasnAgentProfileService:
             event_type='agent.updated',
         )
         return AgentRuntimeConfig.model_validate(agent.runtime_config_json or {})
+
+    async def refresh_seeded_agent_display_names(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        current_nickname: str | None,
+        previous_nickname: str | None = None,
+    ) -> list[str]:
+        """把 owner 名下系统播种(内置/默认)分身的「自动派生后缀」刷新为当前真实昵称。
+
+        背景：内置/默认分身名 = `{基名}·{主人昵称}`（基名如「星诺/星创」全局共享，必撞名
+        → resolve_default_agent_display_name 必追加主人昵称后缀）。onboarding 在登录路径建
+        分身时主人尚未设昵称、HasnHumans.nickname 仍是手机号掩码（186****2019），后缀因此被
+        烙进手机号；主人之后改昵称没有回写分身 → 分身一直显示手机号（本次 bug）。
+
+        本方法在两处调用以收口：
+          - profile 更新（主人设/改昵称）：previous_nickname=旧昵称、current_nickname=新昵称。
+          - onboarding（每次登录幂等自愈）：current_nickname=当前昵称、previous_nickname=None，
+            仅修后缀为手机号掩码的存量坏分身。
+
+        只动「确属系统派生」的分身（builtin_agent_key 非空，含主脑 assistant）且 display_name
+        形如 `{base}·{suffix}`，suffix 的昵称部分 ∈ {手机号掩码, previous_nickname}；base 原样
+        保留只换后缀，新候选做全局唯一化（排除自身行）。绝不 clobber 用户手动改的名字。
+
+        返回被改名后的新 display_name 列表（供日志/测试断言）。
+        """
+        import sqlalchemy as sa
+
+        nick = (current_nickname or '').strip()
+        # 新昵称为空 / 仍是手机号掩码 → 无可改进，避免无谓 churn（新用户首登场景在此短路）。
+        if not nick or PHONE_MASK_NICKNAME_RE.match(nick):
+            return []
+        prev = (previous_nickname or '').strip()
+
+        rows = (
+            (
+                await db.execute(
+                    sa.select(HasnAgents).where(
+                        HasnAgents.owner_id == owner_id,
+                        HasnAgents.builtin_agent_key.isnot(None),
+                        HasnAgents.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        renamed: list[str] = []
+        for agent in rows:
+            current = (agent.display_name or '').strip()
+            candidate = compute_seeded_name_refresh(current, new_nickname=nick, previous_nickname=prev)
+            if candidate is None:
+                continue
+            new_name = await self._resolve_unique_display_name_excluding(db, desired=candidate, exclude_id=agent.id)
+            if new_name == current:
+                continue
+            agent.display_name = new_name
+            if hasattr(agent, 'profile_revision'):
+                agent.profile_revision = (agent.profile_revision or 1) + 1
+            await db.flush()
+            await self.gateway.append_agent_sync_event(db, owner_id=owner_id, agent=agent, event_type='agent.updated')
+            renamed.append(new_name)
+        return renamed
+
+    async def _resolve_unique_display_name_excluding(self, db: AsyncSession, *, desired: str, exclude_id: int) -> str:
+        """全局未占用的 display_name（排除自身行）：desired → desired+数字后缀 → desired-<rand>。"""
+        import sqlalchemy as sa
+
+        async def _taken(name: str) -> bool:
+            name = (name or '').strip()
+            if not name:
+                return False
+            row = (
+                await db.execute(
+                    sa
+                    .select(HasnAgents.id)
+                    .where(
+                        HasnAgents.display_name == name,
+                        HasnAgents.deleted_at.is_(None),
+                        HasnAgents.id != exclude_id,
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return row is not None
+
+        desired = (desired or '').strip() or 'AI 分身'
+        if not await _taken(desired):
+            return desired
+        for suffix in range(2, 1000):
+            candidate = f'{desired}{suffix}'
+            if not await _taken(candidate):
+                return candidate
+        import uuid
+
+        return f'{desired}-{uuid.uuid4().hex[:4]}'
 
     async def _get_owned_agent(self, db: AsyncSession, *, owner_id: str, hasn_id: str) -> Any:
         """按 (hasn_id, owner_id) 取 Agent；不存在或不归属则 404。"""
