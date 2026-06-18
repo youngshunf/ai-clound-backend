@@ -16,6 +16,7 @@ Redis 数据结构：
 
 import json
 import logging
+
 from datetime import timedelta
 from typing import Any
 
@@ -25,12 +26,12 @@ from fastapi import WebSocket
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.database.redis import redis_client
-from backend.utils.timezone import timezone
-
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.service.hasn_auth import verify_owner_proof
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
+from backend.app.hasn.service.ws_delivery_bus import ws_delivery_bus
+from backend.database.redis import redis_client
+from backend.utils.timezone import timezone
 
 # Redis 键
 NODE_CONN_KEY = 'hasn:node_conn'
@@ -119,7 +120,7 @@ class WsRouterService:
             await redis_client.hdel(NODE_CONN_KEY, node_id)
             # 清理节点存活键（P3）
             await redis_client.delete(f'{NODE_ALIVE_PREFIX}:{node_id}')
-        except Exception as e:  # noqa: BLE001 - 清理尽力而为，redis 故障不得炸断连路径
+        except Exception as e:
             logger.warning(f'[HASN] 注销节点 redis 清理失败 (非致命，TTL 自愈): {node_id} - {e}')
         finally:
             # 移除 WebSocket 引用（进程内，无论 redis 是否可用都要做）
@@ -330,8 +331,7 @@ class WsRouterService:
 
         if target_type == 'human':
             return await self._push_to_human(target_hasn_id, payload_json)
-        else:
-            return await self._push_to_entity(target_hasn_id, payload_json)
+        return await self._push_to_entity(target_hasn_id, payload_json)
 
     async def broadcast_sync_invalidate(
         self, kind: str, revision: str, owner_id: str | None = None
@@ -340,10 +340,11 @@ class WsRouterService:
 
         - ``owner_id=None`` → 全部在线节点（全局 kind：builtin_catalog/common_skills/
           platform_config）；指定 → 仅该 owner 的在线节点（owner 定向 kind，如 agents）。
-        - 单 worker 部署下 ``_ws_connections`` 持有全部连接，遍历即完整覆盖。
+        - 跨 worker 经投递总线 fan-out（owner 定向逐节点、全局走 broadcast），
+          多 worker 部署下也能覆盖落在其它 worker 的连接。
         - **不入离线队列**：invalidate 是幂等「去拉最新」信号，离线节点靠重连
           ``hasn.connected`` 握手对账追平；单个连接发送失败也不影响其它。
-        - 返回成功 push 的节点数。
+        - 返回在线节点数（best-effort 计数）。
         """
         payload_json = json.dumps(
             {
@@ -356,20 +357,13 @@ class WsRouterService:
 
         if owner_id:
             node_ids = await redis_client.smembers(f'{USER_NODES_PREFIX}:{owner_id}')
-        else:
-            node_ids = set(_ws_connections.keys())
+            for nid in node_ids:
+                await self._send_or_publish(nid, payload_json)
+            return len(node_ids)
 
-        pushed = 0
-        for nid in node_ids:
-            ws = _ws_connections.get(nid)
-            if ws is None:
-                continue
-            try:
-                await ws.send_text(payload_json)
-                pushed += 1
-            except Exception:  # 单连接失败不影响其它；离线靠握手对账
-                pass
-        return pushed
+        # 全局：跨 worker 广播给所有在线 node（每个 worker 下发其本地全部连接）
+        await ws_delivery_bus.publish_broadcast(payload_json)
+        return await redis_client.hlen(NODE_CONN_KEY)
 
     async def push_to_owner_excluding_agent_node(
         self, owner_id: str, agent_id: str, payload: dict
@@ -387,46 +381,61 @@ class WsRouterService:
         payload_json = json.dumps(payload, ensure_ascii=False)
         return await self._push_to_human(owner_id, payload_json, exclude)
 
+    async def _send_or_publish(self, node_id: str, payload_json: str) -> None:
+        """投给某 node：连接在本 worker 直发；否则经投递总线交给持有它的 worker。
+
+        多 worker（``--workers N``）部署下 ``_ws_connections`` 只含**本进程** accept 的
+        连接，本地 miss **不代表离线**——必须经 Redis pub/sub fan-out 让真正持有该连接的
+        worker 下发。这替换了旧的 ``rpush hasn:push:{node_id}``（一个无消费者的死队列，
+        是「多 worker 完全收不到消息」的根因）。
+        """
+        ws = _ws_connections.get(node_id)
+        if ws is not None:
+            try:
+                await ws.send_text(payload_json)
+                return
+            except Exception:
+                pass
+        await ws_delivery_bus.publish_to_node(node_id, payload_json)
+
     async def _push_to_human(
         self, hasn_id: str, payload_json: str, exclude_nodes: set[str] | None = None
     ) -> bool:
-        """Human 消息 → 广播所有在线节点（exclude_nodes 跳过已经由其它路由收到本消息的节点）"""
+        """Human 消息 → 投所有在线节点（exclude_nodes 跳过已由其它路由收到本消息的节点）。
+
+        在线判定以 Redis presence（``user_nodes``）为权威：有在线节点即逐个
+        ``_send_or_publish``（跨 worker 经投递总线）；无在线节点才入离线队列。
+        """
         node_ids = await redis_client.smembers(f'{USER_NODES_PREFIX}:{hasn_id}')
         if exclude_nodes:
             node_ids = {nid for nid in node_ids if nid not in exclude_nodes}
-        pushed = False
+
+        if not node_ids:
+            await self._enqueue_offline(hasn_id, payload_json)
+            return False
 
         for nid in node_ids:
-            ws = _ws_connections.get(nid)
-            if ws:
-                try:
-                    await ws.send_text(payload_json)
-                    pushed = True
-                    continue
-                except Exception:
-                    pass
-            # 回退到 Redis 队列
-            await redis_client.rpush(f'{PUSH_PREFIX}:{nid}', payload_json)
-            pushed = True
+            await self._send_or_publish(nid, payload_json)
+        return True
 
-        if not pushed:
-            await self._enqueue_offline(hasn_id, payload_json)
+    async def push_self_sync(self, owner_id: str, payload: dict, exclude_node: str) -> None:
+        """多端自同步：把发送方自己的消息回显给该 owner 的**其它**在线节点
+        （跳过发送节点 ``exclude_node``）。
 
-        return pushed
+        仅在线 best-effort，**不入离线队列**：发送端本端已有该消息、且消息已落库，
+        离线补推会造成重复 self_sent 回显。跨 worker 经投递总线。
+        """
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        node_ids = await redis_client.smembers(f'{USER_NODES_PREFIX}:{owner_id}')
+        for nid in node_ids:
+            if nid != exclude_node:
+                await self._send_or_publish(nid, payload_json)
 
     async def _push_to_entity(self, hasn_id: str, payload_json: str) -> bool:
-        """Agent/通用实体消息 → 查统一路由表"""
+        """Agent/通用实体消息 → 查统一路由表（跨 worker 经投递总线）"""
         node_id = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
         if node_id:
-            ws = _ws_connections.get(node_id)
-            if ws:
-                try:
-                    await ws.send_text(payload_json)
-                    return True
-                except Exception:
-                    pass
-            # WS 不可用 → Redis 队列
-            await redis_client.rpush(f'{PUSH_PREFIX}:{node_id}', payload_json)
+            await self._send_or_publish(node_id, payload_json)
             return True
 
         # 离线
@@ -519,8 +528,7 @@ class WsRouterService:
     async def get_entity_status(self, hasn_id: str) -> str:
         if hasn_id.startswith('h_'):
             return 'online' if await self.is_human_online(hasn_id) else 'offline'
-        else:
-            return 'online' if await self.is_agent_online(hasn_id) else 'offline'
+        return 'online' if await self.is_agent_online(hasn_id) else 'offline'
 
     async def get_online_map(self, entity_ids: list[str]) -> dict[str, bool]:
         """批量查 agent 实时在线状态（Redis presence ENTITY_NODE_KEY）。

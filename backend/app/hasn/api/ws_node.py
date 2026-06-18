@@ -15,11 +15,11 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.security.utils import get_authorization_scheme_param
 
-from backend.database.db import async_db_session
-from backend.app.hasn.service.hasn_auth import authenticate_ws_connection
-from backend.app.hasn.service.ws_router import ws_router, _ws_connections
 from backend.app.hasn.service import geoip_service, message_router
+from backend.app.hasn.service.hasn_auth import authenticate_ws_connection
 from backend.app.hasn.service.hasn_nodes_service import hasn_nodes_service
+from backend.app.hasn.service.ws_router import ws_router
+from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
 log = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ async def _backfill_node_metadata(websocket: WebSocket, node_id: str) -> None:
                 app_version=app_version,
             )
             await db.commit()
-    except Exception as e:  # noqa: BLE001 - 元数据回填非致命
+    except Exception as e:
         log.warning(f'[HASN] 节点元数据回填失败 (非致命): {e}')
 
 
@@ -80,7 +80,7 @@ def _frame(method: str, params: dict) -> dict:
     }
 
 
-def _response(req_id: str, result: dict = None, error: dict = None) -> dict:
+def _response(req_id: str, result: dict | None = None, error: dict | None = None) -> dict:
     """构造标准 HASN 响应帧"""
     resp = {'hasn': HASN_PROTOCOL, 'id': req_id}
     if error:
@@ -93,7 +93,7 @@ def _response(req_id: str, result: dict = None, error: dict = None) -> dict:
 @router.websocket('/ws/node')
 async def hasn_node_websocket(
     websocket: WebSocket,
-):
+) -> None:
     """HASN 统一节点 WebSocket 端点（所有节点类型共用）
 
     认证方式（v2.1）：
@@ -212,8 +212,9 @@ async def hasn_node_websocket(
         # 7. 清理：注销节点 + 清理所有实体（best-effort，绝不让清理异常冒泡出 ASGI handler）
         try:
             await ws_router.unregister_node(node_id)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.warning(f'[HASN] 节点清理失败 (非致命): {node_id} - {e}')
+
 
 async def _recv_loop(
     websocket: WebSocket,
@@ -391,7 +392,7 @@ async def _handle_add_agent(
                     ),
                     user_id=None,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning(
                     'fold-heartbeat persist failed for agent %s: %s', agent_id, exc
                 )
@@ -491,8 +492,9 @@ async def _handle_agent_deregister(
     active_entities.discard(hasn_id)
 
     # DB 标记删除
-    from backend.app.hasn.model.hasn_agents import HasnAgents
     from sqlalchemy import update
+
+    from backend.app.hasn.model.hasn_agents import HasnAgents
 
     async with async_db_session() as db:
         await db.execute(
@@ -587,10 +589,7 @@ async def _handle_send(
     if result.get('deduped'):
         return
 
-    # 多端同步：推送给发送方的其他节点
-    from backend.database.redis import redis_client
-    from backend.app.hasn.service.ws_router import USER_NODES_PREFIX
-
+    # 多端同步：推送给发送方的其他节点（跨 worker 经投递总线，跳过本发送节点）
     # 找出 from_id 对应的 owner（如果是 Agent，找 owner 的其他节点）
     sync_target = from_id if from_id.startswith('h_') else None
     if not sync_target:
@@ -619,15 +618,7 @@ async def _handle_send(
                 'created_time': timezone.now().isoformat(),
             },
         })
-        other_nodes = await redis_client.smembers(f'{USER_NODES_PREFIX}:{sync_target}')
-        for nid in other_nodes:
-            if nid != node_id:
-                other_ws = _ws_connections.get(nid)
-                if other_ws:
-                    try:
-                        await other_ws.send_json(sender_payload)
-                    except Exception:
-                        pass
+        await ws_router.push_self_sync(sync_target, sender_payload, node_id)
 
 
 async def _handle_read(params: dict, active_entities: set[str]) -> None:

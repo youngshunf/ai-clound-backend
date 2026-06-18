@@ -60,7 +60,7 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
             seeded = await ensure_catalog_seeded(seed_db)
         if seeded:
             log.info(f'应用目录播种：新增 {seeded} 行内置应用')
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(f'应用目录播种失败（忽略，运行期 Admin 可补）: {exc!r}')
 
     # 初始化 redis
@@ -74,6 +74,11 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # 启动缓存 Pub/Sub 监听器
     cache_pubsub_manager.start_listener()
+
+    # 启动 WS 跨 worker 投递总线（每个 worker 进程一份）：多 worker 部署下，消息/同步
+    # 帧要投给连接落在别的 worker 的 node 时经此 Redis pub/sub fan-out 下发。
+    from backend.app.hasn.service.ws_delivery_bus import ws_delivery_bus
+    ws_delivery_bus.start_listener()
 
     # 注册支付业务回调
     from backend.app.billing.service.pay_callbacks import register_callbacks
@@ -96,6 +101,10 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # 停止缓存 Pub/Sub 监听器
     await cache_pubsub_manager.stop_listener()
+
+    # 停止 WS 跨 worker 投递总线
+    from backend.app.hasn.service.ws_delivery_bus import ws_delivery_bus
+    await ws_delivery_bus.stop_listener()
 
     if settings.HASN_TASK_CENTER_SCHEDULER_ENABLED:
         from backend.app.hasn.service.task_scheduler import task_scheduler

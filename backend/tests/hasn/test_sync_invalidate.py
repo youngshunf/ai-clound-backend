@@ -21,6 +21,7 @@ class FakeRedis:
     def __init__(self) -> None:
         self.strings: dict[str, Any] = {}
         self.sets: dict[str, set[Any]] = {}
+        self.hashes: dict[str, dict[str, Any]] = {}
 
     async def get(self, key: str) -> Any:
         return self.strings.get(key)
@@ -30,6 +31,9 @@ class FakeRedis:
 
     async def smembers(self, key: str) -> set[Any]:
         return set(self.sets.get(key, set()))
+
+    async def hlen(self, key: str) -> int:
+        return len(self.hashes.get(key, {}))
 
 
 class FakeWS:
@@ -81,36 +85,49 @@ async def test_compute_builtin_catalog_revision_stable_and_changes() -> None:
 
 @pytest.mark.asyncio
 async def test_broadcast_sync_invalidate_global_and_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """多 worker 化后：全局广播经投递总线 publish_broadcast（每 worker 下发本地连接），
+    owner 定向逐节点 _send_or_publish（本 worker 直发、跨 worker 经总线）。"""
     from backend.app.hasn.service import ws_router as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
 
+    # spy 投递总线（替代真实 Redis pub/sub）
+    broadcasts: list[str] = []
+    node_publishes: list[tuple[str, str]] = []
+
+    async def _spy_broadcast(payload_json: str) -> None:
+        broadcasts.append(payload_json)
+
+    async def _spy_to_node(node_id: str, payload_json: str) -> None:
+        node_publishes.append((node_id, payload_json))
+
+    monkeypatch.setattr(module.ws_delivery_bus, 'publish_broadcast', _spy_broadcast)
+    monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy_to_node)
+
     ws_a = FakeWS()
-    ws_b = FakeWS()
-    module._ws_connections['node-a'] = ws_a
-    module._ws_connections['node-b'] = ws_b
+    module._ws_connections['node-a'] = ws_a  # node-a 连接在本 worker
     router = module.WsRouterService()
 
-    # 全局广播 → 两个在线节点都收到
+    # 全局广播 → 经投递总线 publish_broadcast；返回在线节点数（NODE_CONN_KEY 有 2 个）
+    redis.hashes[module.NODE_CONN_KEY] = {'node-a': 'x', 'node-b': 'y'}
     pushed = await router.broadcast_sync_invalidate('builtin_catalog', 'rev1')
     assert pushed == 2
-    frame = json.loads(ws_a.sent[-1])
+    assert len(broadcasts) == 1
+    frame = json.loads(broadcasts[0])
     assert frame['method'] == 'hasn.sync.invalidate'
     assert frame['params'] == {'kind': 'builtin_catalog', 'revision': 'rev1'}
 
-    # owner 定向 → 仅该 owner 的在线节点（node-a），node-b 不再收到新帧
-    redis.sets[f'{module.USER_NODES_PREFIX}:h_o'] = {'node-a'}
+    # owner 定向 → 该 owner 的在线节点：node-a 本地直发、node-b 不在本 worker 经总线
+    redis.sets[f'{module.USER_NODES_PREFIX}:h_o'] = {'node-a', 'node-b'}
     pushed_owner = await router.broadcast_sync_invalidate('agents', 'rev2', owner_id='h_o')
-    assert pushed_owner == 1
-    assert json.loads(ws_a.sent[-1])['params']['revision'] == 'rev2'
-    assert json.loads(ws_b.sent[-1])['params']['revision'] == 'rev1'  # 未被重复推送
-
-    # 单连接发送失败不影响计数其余（这里只有 node-a，失败即 0）
-    module._ws_connections.clear()
-    module._ws_connections['node-fail'] = FakeWS(fail=True)
-    assert await router.broadcast_sync_invalidate('common_skills', 'rev3') == 0
+    assert pushed_owner == 2
+    assert json.loads(ws_a.sent[-1])['params']['revision'] == 'rev2'  # node-a 本地直发
+    # node-b 不在本 worker → 经投递总线 publish_to_node
+    nb = [p for n, p in node_publishes if n == 'node-b']
+    assert len(nb) == 1
+    assert json.loads(nb[0])['params']['revision'] == 'rev2'
 
     module._ws_connections.clear()
 

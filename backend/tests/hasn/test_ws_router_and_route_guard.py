@@ -17,7 +17,7 @@ class FakeRedis:
         self.deleted: list[str] = []
         self.expired: list[tuple[str, int]] = []
 
-    async def set(self, key: str, value: Any, ex: int | None = None) -> None:  # noqa: ARG002
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:
         self.strings[key] = value
 
     async def exists(self, key: str) -> int:
@@ -196,9 +196,17 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
     assert agent_push is True
 
     module._ws_connections['node-1'] = FakeWebSocket(fail=True)
+    # 本地连接发送失败 → 退回投递总线（跨 worker），不再写已废弃的 PUSH_PREFIX 死队列
+    bus_published: list[tuple[str, str]] = []
+
+    async def _spy_bus(node_id: str, payload_json: str) -> None:
+        bus_published.append((node_id, payload_json))
+
+    monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy_bus)
     queued = await router.push_message_to('a_agent', {'created_time': '3', 'body': 'queue'})
     assert queued is True
-    assert redis.lists[f'{module.PUSH_PREFIX}:node-1']
+    assert any(n == 'node-1' for n, _ in bus_published)
+    assert f'{module.PUSH_PREFIX}:node-1' not in redis.lists  # 旧死队列不再写
 
     offline = await router.push_message_to('a_missing', {'created_time': '0', 'body': 'offline'})
     assert offline is False
