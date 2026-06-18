@@ -6,7 +6,7 @@ CREATE TABLE "public"."llm_newapi_user_mapping" (
     "id"                bigserial PRIMARY KEY,
     "huanxing_user_id"  bigint NOT NULL,
     "newapi_user_id"    bigint NOT NULL,
-    "newapi_token_key"  varchar(48) NOT NULL,
+    "newapi_token_key"  varchar(128) NOT NULL,
     "newapi_token_id"   bigint NOT NULL,
     "app_code"          varchar(32) NOT NULL DEFAULT 'huanxing',
     "status"            varchar(16) NOT NULL DEFAULT 'active',

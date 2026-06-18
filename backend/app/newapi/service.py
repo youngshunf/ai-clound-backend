@@ -279,7 +279,7 @@ class LlmNewapiUserMappingService:
         access_token = await newapi_admin_client.bootstrap_user_access_token(
             newapi_user_id=newapi_user_id, username=newapi_username
         )
-        # 4. 建默认 relay token + 取明文 key（new-api 自生成 48 字符 alnum，无前缀）
+        # 4. 建默认 relay token + 取明文 key（存裸 key，无 sk- 前缀）
         token_id, token_key = await newapi_admin_client.provision_user_relay_token(
             newapi_user_id=newapi_user_id,
             username=newapi_username,

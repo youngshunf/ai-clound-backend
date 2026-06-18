@@ -87,7 +87,7 @@ async def test_full_credential_lifecycle():
             name='huanxing-default',
         )
         assert token_id > 0
-        assert isinstance(key, str) and len(key) >= 32  # new-api 自生成 48 字符 alnum，无 sk- 前缀
+        assert isinstance(key, str) and len(key) >= 32  # new-api 自生成裸 key，无 sk- 前缀
         assert not key.startswith('sk-')
 
         # 6. find_token + get_token_remain_quota
