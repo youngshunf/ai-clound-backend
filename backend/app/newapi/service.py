@@ -12,7 +12,10 @@ quota = 积分 × NEWAPI_QUOTA_PER_DOLLAR（=new-api QuotaPerUnit，协议精度
 """
 
 import hashlib
-from typing import Any, Sequence
+import operator
+
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,8 +42,8 @@ from backend.common.security.encryption import key_encryption
 from backend.core.conf import settings
 from backend.utils.timezone import timezone as _tz
 
-
 # ========== 单位换算（1 积分 = $1；quota = 积分 × QUOTA_PER_DOLLAR）==========
+
 
 def credits_to_quota(credits: int) -> int:
     """唤星积分 → new-api quota（整数微单位）。"""
@@ -54,10 +57,10 @@ def quota_to_credits(quota: int) -> float:
 
 # 各套餐默认 quota（当 subscription_tier.features 中未配置 newapi_quota 时使用）
 DEFAULT_TIER_QUOTA = {
-    'free': credits_to_quota(100),        # 微星 100 积分
-    'pro': credits_to_quota(1_000),       # 明星 1,000 积分
+    'free': credits_to_quota(100),  # 微星 100 积分
+    'pro': credits_to_quota(1_000),  # 明星 1,000 积分
     'advanced': credits_to_quota(5_000),  # 恒星 5,000 积分
-    'flagship': credits_to_quota(20_000), # 超新星 20,000 积分
+    'flagship': credits_to_quota(20_000),  # 超新星 20,000 积分
 }
 
 DEFAULT_USERNAME_PREFIX = 'hx_'
@@ -68,6 +71,7 @@ MAX_SUMMARY_PAGES = 50
 
 
 # ========== 模块级取数 helpers（service + billing 复用，避免重复 username 解析/聚合）==========
+
 
 async def resolve_newapi_username(mapping: LlmNewapiUserMapping) -> str:
     """从 new-api 用户对象取 username（稳定来源，兼容历史无 username 列的映射）。
@@ -132,7 +136,7 @@ async def aggregate_logs_by_model(
             f'[NewApi] 用量聚合到达分页上限 {MAX_SUMMARY_PAGES} 页'
             f'（username={username} token_name={token_name}），结果可能不完整'
         )
-    return sorted(by_model.values(), key=lambda r: r['quota'], reverse=True)
+    return sorted(by_model.values(), key=operator.itemgetter('quota'), reverse=True)
 
 
 async def summarize_usage(username: str | None, start_time: int, end_time: int) -> dict:
@@ -184,7 +188,6 @@ async def summarize_usage(username: str | None, start_time: int, end_time: int) 
 
 
 class LlmNewapiUserMappingService:
-
     # ========== 基础 CRUD（唤星库）==========
 
     @staticmethod
@@ -218,9 +221,7 @@ class LlmNewapiUserMappingService:
     # ========== 凭证解析 helpers ==========
 
     @staticmethod
-    async def _ensure_user_access_token(
-        db: AsyncSession, mapping: LlmNewapiUserMapping, username: str
-    ) -> str:
+    async def _ensure_user_access_token(db: AsyncSession, mapping: LlmNewapiUserMapping, username: str) -> str:
         """取该用户已加密缓存的 access_token；缺失/解密失败则现铸并落库复用。
 
         建/旋转 relay token 必须以用户身份（new-api 无 admin 建 token 接口），
@@ -237,6 +238,87 @@ class LlmNewapiUserMappingService:
         mapping.newapi_access_token = key_encryption.encrypt(token)
         await db.flush()
         return token
+
+    @staticmethod
+    async def _newapi_token_active(token_id: int) -> bool:
+        """new-api 侧该 token 是否仍有效（存在且未禁用）。
+
+        清理唤星库但保留 new-api 数据后，唤星侧缓存的 token 可能在 new-api 已不存在/被禁用，
+        relay 调用即报 401「无效的令牌」。本判定以 new-api 为权威源。
+
+        **保守降级**：传输层不可达（`status_code is None`）→ 返回 True（视为有效，不无谓重建/旋转，
+        避免 new-api 短暂抖动时误伤）；只有拿到确定应答（404 / success=false / 明确禁用）才判失效。
+        """
+        try:
+            tok = await newapi_admin_client.get_token(token_id)
+        except NewApiError as e:
+            # 传输不可达（status_code is None）→ 保守视为有效；确定应答（404/success=false）→ 失效
+            return e.status_code is None
+        if tok is None:
+            return False
+        status = tok.get('status')
+        return status is None or int(status) == 1
+
+    @staticmethod
+    async def _reconcile_mapping_key(
+        db: AsyncSession, mapping: LlmNewapiUserMapping, *, username: str | None = None
+    ) -> str:
+        """以 new-api 为权威校验/对齐 mapping 缓存的 newapi_token_key，返回当前有效明文 key。
+
+        解决「清理唤星库但保留 new-api 数据」后两边 key 漂移导致 relay 401「无效的令牌」：
+        - token 仍有效 → 取权威明文 key，与缓存不一致则就地对齐（修复存量漂移行）。
+        - token 确定失效（不存在/禁用/取 key 失败）→ 以用户身份 find-or-create 默认 relay token，
+          写回新的 token_id + key（provision 内部幂等：先按名复用历史 token，无则新建）。
+
+        **保守降级**：任何环节遇到「传输层不可达」（`status_code is None`）或重建抛错，
+        一律返回缓存 key（不破坏登录），留待下次再自愈。
+        """
+        name = f'{mapping.app_code or "huanxing"} 默认 Key'
+        try:
+            tok = await newapi_admin_client.get_token(mapping.newapi_token_id)
+        except NewApiError as e:
+            if e.status_code is None:
+                return mapping.newapi_token_key  # 不可达 → 保守返回缓存
+            tok = None  # 确定应答：token 不存在 → 落到重建
+        if tok is not None and (tok.get('status') is None or int(tok.get('status') or 0) == 1):
+            try:
+                authoritative = await newapi_admin_client.get_token_key(mapping.newapi_token_id)
+            except NewApiError as e:
+                if e.status_code is None:
+                    return mapping.newapi_token_key
+                authoritative = None
+            if authoritative:
+                if authoritative != mapping.newapi_token_key:
+                    log.warning(
+                        f'[NewApi] 自愈：映射 key 与 new-api 权威漂移已对齐 '
+                        f'huanxing_user_id={mapping.huanxing_user_id} token_id={mapping.newapi_token_id}'
+                    )
+                    mapping.newapi_token_key = authoritative
+                    await db.flush()
+                return authoritative
+            # 取不到明文 key（确定应答）→ 视为失效，落到重建
+
+        # 重建：token 确定失效 → 以用户身份 find-or-create 默认 relay token
+        username = username or await resolve_newapi_username(mapping)
+        try:
+            access_token = await LlmNewapiUserMappingService._ensure_user_access_token(db, mapping, username)
+            token_id, key = await newapi_admin_client.provision_user_relay_token(
+                newapi_user_id=mapping.newapi_user_id,
+                username=username,
+                user_access_token=access_token,
+                name=name,
+            )
+        except NewApiError as e:
+            log.warning(f'[NewApi] 自愈重建默认 relay token 失败 huanxing_user_id={mapping.huanxing_user_id}: {e}')
+            return mapping.newapi_token_key  # 重建失败（含不可达）→ 保守返回缓存，下次再试
+        log.warning(
+            f'[NewApi] 自愈：映射 token 失效已重建 user={mapping.huanxing_user_id} '
+            f'old_token_id={mapping.newapi_token_id} new_token_id={token_id}'
+        )
+        mapping.newapi_token_id = token_id
+        mapping.newapi_token_key = key
+        await db.flush()
+        return key
 
     # ========== new-api 集成业务逻辑（经 HTTP 管理 API）==========
 
@@ -257,10 +339,15 @@ class LlmNewapiUserMappingService:
         """
         existing = await llm_newapi_user_mapping_dao.get_by_user(db, huanxing_user_id, app_code)
         if existing:
+            # 自愈：缓存 key 可能在 new-api 已失效（清库保留 new-api 数据后两边漂移）。
+            # 以权威侧校验/对齐/重建，避免每次登录都返回坏 key → relay 401「无效的令牌」。
+            valid_key = await LlmNewapiUserMappingService._reconcile_mapping_key(
+                db, existing, username=username or None
+            )
             return NewApiMappingInfo(
                 huanxing_user_id=existing.huanxing_user_id,
                 newapi_user_id=existing.newapi_user_id,
-                newapi_token_key=existing.newapi_token_key,
+                newapi_token_key=valid_key,
                 app_code=existing.app_code,
                 status=existing.status,
             )
@@ -270,9 +357,7 @@ class LlmNewapiUserMappingService:
         display = nickname or newapi_username
 
         # 1. 幂等确保 new-api 用户（撞 username → 复用，替代旧 DB ON CONFLICT 自愈）
-        newapi_user_id = await newapi_admin_client.ensure_user(
-            username=newapi_username, display_name=display
-        )
+        newapi_user_id = await newapi_admin_client.ensure_user(username=newapi_username, display_name=display)
         # 2. 覆盖式设额度（token 无限额度，用户额度由 users.quota 统一控制）
         await newapi_admin_client.set_user_quota(newapi_user_id=newapi_user_id, quota=quota)
         # 3. 铸用户 access_token（建 relay token 必须以用户身份）
@@ -483,14 +568,22 @@ class LlmNewapiUserMappingService:
         result = await db.execute(stmt)
         existing = result.scalar_one_or_none()
         if existing:
-            return {
-                'agent_id': agent_id,
-                'newapi_user_id': existing.newapi_user_id,
-                'newapi_token_id': existing.newapi_token_id,
-                'token_key_prefix': existing.token_key_prefix,
-                'raw_token_key': None,
-                'reused': True,
-            }
+            # 自愈：复用前以 new-api 为权威校验该 Agent token 是否仍有效。
+            # 清库保留 new-api 后该 token 可能已失效 → 调用 LLM 报 401「无效的令牌」。
+            if await LlmNewapiUserMappingService._newapi_token_active(existing.newapi_token_id):
+                return {
+                    'agent_id': agent_id,
+                    'newapi_user_id': existing.newapi_user_id,
+                    'newapi_token_id': existing.newapi_token_id,
+                    'token_key_prefix': existing.token_key_prefix,
+                    'raw_token_key': None,
+                    'reused': True,
+                }
+            # 确定失效 → 撤销本地记录（不调 disable_token：token 已不在 new-api），下方重签全新。
+            # raw_token_key 会随重签返回，调用方据此把新凭证重装进 runtime。
+            log.warning(f'[NewApi] 自愈：Agent {agent_id} token(id={existing.newapi_token_id}) 在 new-api 失效，重签')
+            existing.revoked_at = _tz.now()
+            await db.flush()
 
         # 3. 取父 user 映射（access_token + username），新签 agent relay token
         mapping = await llm_newapi_user_mapping_dao.get_by_user(db, user_id)
@@ -527,8 +620,7 @@ class LlmNewapiUserMappingService:
         await db.flush()
 
         log.info(
-            f'[NewApi] Agent {agent_id} token 已签发：'
-            f'newapi_token_id={newapi_token_id}, prefix={token_key_prefix}'
+            f'[NewApi] Agent {agent_id} token 已签发：newapi_token_id={newapi_token_id}, prefix={token_key_prefix}'
         )
 
         return {
@@ -591,7 +683,9 @@ class LlmNewapiUserMappingService:
         await LlmNewapiUserMappingService.revoke_agent_token(db, agent_id)
         # 2. 签发新（旧记录 revoked_at 已置位，ensure_agent_token 不会复用）
         return await LlmNewapiUserMappingService.ensure_agent_token(
-            db, agent_id=agent_id, user_id=user_id,
+            db,
+            agent_id=agent_id,
+            user_id=user_id,
         )
 
     @staticmethod
@@ -615,14 +709,41 @@ class LlmNewapiUserMappingService:
         mapping = await llm_newapi_user_mapping_dao.get_by_user(db, record.user_id)
         username = await resolve_newapi_username(mapping) if mapping else None
         token_name = f'{AGENT_TOKEN_NAME_PREFIX}:{agent_id}'
-        rows = await aggregate_logs_by_model(
-            username, start_time, end_time, token_name=token_name
-        )
+        rows = await aggregate_logs_by_model(username, start_time, end_time, token_name=token_name)
         return {
             'agent_id': agent_id,
             'period': [start_time, end_time],
             'by_model': rows,
         }
+
+    @staticmethod
+    async def reconcile_all_mappings(db: AsyncSession, *, dry_run: bool = False) -> dict:
+        """批量对账：让全部 llm_newapi_user_mapping 行的 key 与 new-api 权威重新一致（救急用）。
+
+        用于「清理唤星库但保留 new-api 数据」后存量行的一次性修复。逐行走 _reconcile_mapping_key
+        （token 仍在→对齐 key；token 失效→find-or-create 重建），返回报告。dry_run 时只统计不写。
+        """
+        rows = await llm_newapi_user_mapping_dao.get_all(db)
+        report = {'total': len(rows), 'aligned': 0, 'rebuilt': 0, 'unchanged': 0, 'errors': 0}
+        for m in rows:
+            before_id, before_key = m.newapi_token_id, m.newapi_token_key
+            try:
+                new_key = await LlmNewapiUserMappingService._reconcile_mapping_key(db, m)
+            except Exception as e:
+                report['errors'] += 1
+                log.warning(f'[NewApi] 对账失败 huanxing_user_id={m.huanxing_user_id}: {e}')
+                continue
+            if m.newapi_token_id != before_id:
+                report['rebuilt'] += 1
+            elif new_key != before_key:
+                report['aligned'] += 1
+            else:
+                report['unchanged'] += 1
+        if dry_run:
+            await db.rollback()
+        else:
+            await db.commit()
+        return report
 
     @staticmethod
     def tier_to_quota(tier_name: str, features: dict | None = None) -> int:
