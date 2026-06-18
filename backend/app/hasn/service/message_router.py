@@ -600,6 +600,18 @@ async def persist_message(
 
 # ─── 消息路由主入口 ───
 
+async def _find_message_by_local_id(db: AsyncSession, local_id: str) -> HasnMessages | None:
+    """按客户端 local_id 查既有消息，用于出站投递重发的幂等去重。
+
+    hasn_messages 上 local_id 全局唯一（partial unique index，NULL 不约束），故全表
+    精确匹配即可命中唯一行；返回 None 表示从未落库（首次投递，正常路由）。
+    """
+    result = await db.execute(
+        select(HasnMessages).where(HasnMessages.local_id == local_id).limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def route_message(
     db: AsyncSession,
     from_id: str,
@@ -619,6 +631,22 @@ async def route_message(
 
     返回: {msg_id, conversation_id, status, local_id}
     """
+    # 0. 幂等去重（local_id）：daemon 出站投递队列在断连/重连后会重发同一帧（带相同
+    #    local_id），用于补达「发出去丢在断连窗口」的消息。若该 local_id 已落库（hasn_messages
+    #    上有唯一索引 idx_hasn_msg_local_id），直接回原 msg_id+conversation_id，**不二次落库、
+    #    不二次投递**——发送端据此补到 ack（标记已达），对方绝不会收到重复消息。
+    if local_id:
+        existing = await _find_message_by_local_id(db, local_id)
+        if existing is not None:
+            return {
+                'error': False,
+                'msg_id': existing.id,
+                'conversation_id': str(existing.conversation_id),
+                'status': 'sent',
+                'local_id': local_id,
+                'deduped': True,
+            }
+
     # 1. 目标解析
     target_info = await resolve_target(db, to_target)
     if not target_info:

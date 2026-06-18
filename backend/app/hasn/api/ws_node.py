@@ -581,6 +581,12 @@ async def _handle_send(
         'timestamp': timezone.now().isoformat(),
     }))
 
+    # 出站重发命中幂等去重：该消息首发时已落库并投递、且已给发送方其它端做过多端同步。
+    # 这里只需补回 ACK（让发送端把出站队列里这条标记已达、停止重发），**不可**再次多端同步，
+    # 否则发送方其它设备会收到重复的 self_sent 回显。
+    if result.get('deduped'):
+        return
+
     # 多端同步：推送给发送方的其他节点
     from backend.database.redis import redis_client
     from backend.app.hasn.service.ws_router import USER_NODES_PREFIX
