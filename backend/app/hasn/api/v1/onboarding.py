@@ -44,7 +44,7 @@ async def refresh_hasn_token(
     user = await user_dao.get(db, token_payload.id)
     if not user:
         from backend.common.exception import errors
-        raise errors.NotFoundError(msg='用户不存在')
+        raise errors.TokenError(msg='Refresh Token 已过期，请重新登录')
     if not user.status:
         from backend.common.exception import errors
         raise errors.AuthorizationError(msg='用户已被锁定')
