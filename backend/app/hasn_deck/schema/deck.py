@@ -18,6 +18,7 @@ class DeckSchemaBase(SchemaBase):
     page_count: int = Field(description='页数冗余计数（= page 行数，便于列表）')
     cover_asset_id: str | None = Field(None, description='封面缩略图资产 id（引用 public.hasn_assets.asset_id，可空）')
     source: str = Field(description='来源 (agent:分身生成:violet/manual:手建:gray/imported:导入:blue)')
+    bound_agent_id: str | None = Field(None, description='协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；负责后续生成/精修）')
     rev: int = Field(description='单调版本（乐观并发 + 同步水位，每次写 +1）')
     deleted_time: datetime | None = Field(None, description='软删时间（非空=已删，不物理删以便同步感知）')
 

@@ -29,7 +29,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -41,7 +41,7 @@ async def session():
         await engine.dispose()
 
 
-async def test_explicit_share_human_editor(session):
+async def test_explicit_share_human_editor(session) -> None:
     """A 私有 deck → 共享给 B(editor) → B 可看可改不可删 → 撤销后 B 不可见。"""
     tag = uuid.uuid4().hex[:8]
     a = Subject.human(f'h_a_{tag}')
@@ -82,7 +82,7 @@ async def test_explicit_share_human_editor(session):
         await deck_service.get_deck(session, subject=b, deck_id=deck_id)
 
 
-async def test_optimistic_lock_stale_version(session):
+async def test_optimistic_lock_stale_version(session) -> None:
     """页级乐观锁：expected_version 不匹配 → 409 ConflictError。"""
     tag = uuid.uuid4().hex[:8]
     a = Subject.human(f'h_a_{tag}')
@@ -100,7 +100,7 @@ async def test_optimistic_lock_stale_version(session):
         await deck_service.update_page(session, subject=a, page_id=page_id, fields={'html': 'v3'}, expected_version=base_rev)
 
 
-async def test_share_to_agent_can_edit(session):
+async def test_share_to_agent_can_edit(session) -> None:
     """共享给某分身（grantee=agent）→ 该分身工具可代操作；但删除需 manager 被拒。"""
     tag = uuid.uuid4().hex[:8]
     a = Subject.human(f'h_a_{tag}')
@@ -128,7 +128,7 @@ async def test_share_to_agent_can_edit(session):
         await deck_service.delete_deck(session, subject=agent, deck_id=deck_id)
 
 
-async def test_list_accessible_includes_shared(session):
+async def test_list_accessible_includes_shared(session) -> None:
     """list_accessible_decks：B 的列表含「共享给我的」deck，relation=shared。"""
     tag = uuid.uuid4().hex[:8]
     a = Subject.human(f'h_a_{tag}')
@@ -145,7 +145,7 @@ async def test_list_accessible_includes_shared(session):
     assert by_id[shared['id']]['my_permission'] == 'viewer'
 
 
-async def test_viewer_cannot_edit(session):
+async def test_viewer_cannot_edit(session) -> None:
     """viewer 只读：可 get/list_pages，但改页被拒。"""
     tag = uuid.uuid4().hex[:8]
     a = Subject.human(f'h_a_{tag}')
@@ -161,7 +161,7 @@ async def test_viewer_cannot_edit(session):
         await deck_service.update_page(session, subject=b, page_id=page['id'], fields={'html': 'hack'})
 
 
-async def test_manager_can_manage_shares(session):
+async def test_manager_can_manage_shares(session) -> None:
     """被授 manager 的协作者可管理共享名单；editor 不可。"""
     tag = uuid.uuid4().hex[:8]
     a = Subject.human(f'h_a_{tag}')
@@ -179,3 +179,34 @@ async def test_manager_can_manage_shares(session):
     # C(editor) 不可管理共享名单
     with pytest.raises(errors.ForbiddenError):
         await deck_service.list_shares(session, subject=c, deck_id=deck['id'])
+
+
+async def test_bound_agent_id_roundtrips_create_update_list(session) -> None:
+    """协作分身绑定：创建即绑定 → 详情/列表回带 → update 改绑（DECKBIND）。"""
+    tag = uuid.uuid4().hex[:8]
+    owner = Subject.human(f'h_o_{tag}')
+    agent_a = f'a_{tag}_1'
+    agent_b = f'a_{tag}_2'
+
+    # 创建即绑定 agent_a
+    deck = await deck_service.create_deck(
+        session, owner_id=owner.hasn_id, title='融资路演', source='agent', bound_agent_id=agent_a
+    )
+    deck_id = deck['id']
+    assert deck['bound_agent_id'] == agent_a
+    assert deck['source'] == 'agent'
+
+    # 详情回带绑定
+    got = await deck_service.get_deck(session, subject=owner, deck_id=deck_id)
+    assert got['bound_agent_id'] == agent_a
+
+    # 列表回带绑定
+    listed = await deck_service.list_accessible_decks(session, subject=owner)
+    mine = next(d for d in listed['items'] if d['id'] == deck_id)
+    assert mine['bound_agent_id'] == agent_a
+
+    # 改绑 agent_b（owner 可改）
+    updated = await deck_service.update_deck(
+        session, subject=owner, deck_id=deck_id, fields={'bound_agent_id': agent_b}
+    )
+    assert updated['bound_agent_id'] == agent_b

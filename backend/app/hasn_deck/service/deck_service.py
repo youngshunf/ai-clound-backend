@@ -39,6 +39,7 @@ _DECK_MUTABLE = (
     'design_contract',
     'style_profile_id',
     'cover_asset_id',
+    'bound_agent_id',
 )
 _PAGE_MUTABLE = ('position', 'title', 'html', 'notes', 'layout_intent', 'status', 'render_state', 'thumb_asset_id')
 
@@ -74,6 +75,7 @@ def _deck_dict(d: Deck, *, my_permission: str | None = None, relation: str | Non
         'page_count': d.page_count,
         'cover_asset_id': d.cover_asset_id,
         'source': d.source,
+        'bound_agent_id': d.bound_agent_id,
         'owner_scope': d.owner_scope,
         'enterprise_id': d.enterprise_id,
         'visibility': d.visibility,
@@ -173,6 +175,7 @@ class DeckService:
         language: str = 'zh',
         source: str = 'manual',
         style_profile_id: str | None = None,
+        bound_agent_id: str | None = None,
         owner_scope: str = 'personal',
         enterprise_id: int | None = None,
         visibility: str = 'private',
@@ -185,6 +188,7 @@ class DeckService:
             language=language,
             source=source,
             style_profile_id=style_profile_id,
+            bound_agent_id=bound_agent_id,
             owner_scope=owner_scope,
             enterprise_id=enterprise_id,
             visibility=visibility,

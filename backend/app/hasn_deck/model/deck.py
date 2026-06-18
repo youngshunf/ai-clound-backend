@@ -26,6 +26,9 @@ class Deck(DeckBase):
     page_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='页数冗余计数')
     cover_asset_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='封面资产 id')
     source: Mapped[str] = mapped_column(sa.String(16), default='', comment='来源 agent/manual/imported')
+    bound_agent_id: Mapped[str | None] = mapped_column(
+        sa.String(40), default=None, comment='协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；负责后续生成/精修）'
+    )
     # 应用平台 v3 §4.2(3) 产物级协作快路径列
     owner_scope: Mapped[str] = mapped_column(sa.String(16), default='personal', comment='归属 personal/enterprise')
     enterprise_id: Mapped[int | None] = mapped_column(sa.BigInteger(), default=None, comment='归属企业 ID（enterprise 必填）')

@@ -24,6 +24,7 @@ CREATE TABLE "hasn_deck"."deck" (
   "page_count"       int            NOT NULL DEFAULT 0,
   "cover_asset_id"   varchar(64),
   "source"           varchar(16)    NOT NULL DEFAULT 'manual',
+  "bound_agent_id"   varchar(40),
   "rev"              bigint         NOT NULL DEFAULT 1,
   "created_time"     timestamptz(6) NOT NULL DEFAULT now(),
   "updated_time"     timestamptz(6),
@@ -45,6 +46,7 @@ COMMENT ON COLUMN "hasn_deck"."hasn_deck"."style_profile_id" IS '引用的 Style
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."page_count" IS '页数冗余计数（= page 行数，便于列表）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."cover_asset_id" IS '封面缩略图资产 id（引用 public.hasn_assets.asset_id，可空）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."source" IS '来源 (agent:分身生成:violet/manual:手建:gray/imported:导入:blue)';
+COMMENT ON COLUMN "hasn_deck"."hasn_deck"."bound_agent_id" IS '协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；负责后续生成/精修，改绑需二次确认）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."rev" IS '单调版本（乐观并发 + 同步水位，每次写 +1）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."created_time" IS '创建时间';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."updated_time" IS '更新时间';

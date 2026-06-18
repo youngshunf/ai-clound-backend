@@ -24,6 +24,7 @@ class CreateDeckRequest(BaseModel):
     language: str = Field(default='zh', description='主语言')
     source: str = Field(default='manual', description='来源 agent/manual/imported')
     style_profile_id: str | None = Field(default=None, description='引用的 StyleProfile slug')
+    bound_agent_id: str | None = Field(default=None, description='协作分身 HASN ID（创建即绑定）')
 
 
 class UpdateDeckRequest(BaseModel):
@@ -35,6 +36,7 @@ class UpdateDeckRequest(BaseModel):
     design_contract: dict | None = None
     style_profile_id: str | None = None
     cover_asset_id: str | None = None
+    bound_agent_id: str | None = Field(default=None, description='协作分身 HASN ID（改绑）')
 
 
 class CreatePageRequest(BaseModel):
@@ -88,6 +90,7 @@ async def create_deck(request: Request, db: CurrentSessionTransaction, body: Cre
         language=body.language,
         source=body.source,
         style_profile_id=body.style_profile_id,
+        bound_agent_id=body.bound_agent_id,
     )
     return response_base.success(data=data)
 
