@@ -102,3 +102,72 @@ async def test_ensure_user_group_noop_when_target_empty() -> None:
 
     assert await client.ensure_user_group(newapi_user_id=8, group='') is False
     client.get_user.assert_not_awaited()
+
+
+async def test_set_user_quota_updateuser_path_when_put_takes_effect() -> None:
+    """生产构建：PUT /user/（UpdateUser）即生效 → 回读校验通过，不再回退 ManageUser."""
+    client = _client()
+    client.get_user = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            {'id': 8, 'group': 'default', 'quota': 0, 'used_quota': 100},  # 取整对象
+            {'id': 8, 'quota': 5_000_000, 'used_quota': 100},  # PUT 后回读：已生效
+        ]
+    )
+    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    await client.set_user_quota(newapi_user_id=8, quota=5_000_000)
+
+    assert client._request.await_count == 1  # 只发了 PUT，未回退
+    method, path = client._request.await_args.args
+    payload = client._request.await_args.kwargs['json']
+    assert (method, path) == ('PUT', '/user/')
+    assert payload['quota'] == 5_000_000
+    assert payload['group'] == 'default'  # 整对象回写，不丢其它字段
+
+
+async def test_set_user_quota_falls_back_to_manageuser_when_put_noops() -> None:
+    """另一类构建：PUT 忽略 quota（回读仍旧值）→ 回退 ManageUser add_quota override 并校验通过."""
+    client = _client()
+    client.get_user = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            {'id': 8, 'group': 'default', 'quota': 0},  # 取整对象
+            {'id': 8, 'quota': 0},  # PUT 后回读：未生效（no-op）
+            {'id': 8, 'quota': 5_000_000},  # ManageUser 后回读：已生效
+        ]
+    )
+    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    await client.set_user_quota(newapi_user_id=8, quota=5_000_000)
+
+    assert client._request.await_count == 2
+    first, second = client._request.await_args_list
+    assert first.args[:2] == ('PUT', '/user/')
+    assert second.args[:2] == ('POST', '/user/manage')
+    assert second.kwargs['json'] == {
+        'id': 8,
+        'action': 'add_quota',
+        'mode': 'override',
+        'value': 5_000_000,
+    }
+
+
+async def test_set_user_quota_raises_when_neither_mechanism_takes_effect() -> None:
+    """两条机制回读都未生效 → 抛 NewApiError（禁静默漂移，这正是历史 quota=0 的失败模式）."""
+    client = _client()
+    client.get_user = AsyncMock(return_value={'id': 8, 'group': 'default', 'quota': 0})  # type: ignore[method-assign]
+    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(NewApiError):
+        await client.set_user_quota(newapi_user_id=8, quota=5_000_000)
+    assert client._request.await_count == 2  # 两条机制都尝试过
+
+
+async def test_set_user_quota_raises_when_user_missing() -> None:
+    """设 quota 前取不到用户 → 抛 NewApiError，且不发任何写请求."""
+    client = _client()
+    client.get_user = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    client._request = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(NewApiError):
+        await client.set_user_quota(newapi_user_id=999, quota=1)
+    client._request.assert_not_awaited()

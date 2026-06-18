@@ -225,13 +225,48 @@ class NewApiAdminClient:
             'request_count': int(data.get('request_count') or 0),
         }
 
+    async def _quota_equals(self, newapi_user_id: int, expected: int) -> bool:
+        """回读校验：new-api 当前 quota 是否等于 expected（设 quota 自校验用）。"""
+        info = await self.get_user_quota(newapi_user_id)
+        return bool(info and int(info.get('quota') or 0) == int(expected))
+
     async def set_user_quota(self, *, newapi_user_id: int, quota: int) -> None:
-        """覆盖式设置 users.quota（admin，ManageUser action=add_quota mode=override）。"""
+        """覆盖式设置 users.quota（admin），按序试两条机制 + 回读校验，命中即止。
+
+        ⚠️ new-api 不同构建对「设 quota」支持的端点**相反，且都对失败谎报 success=True**：
+          - 生产构建（实测 117.72.92.229）：`UpdateUser`(PUT /user/) 认 quota；
+            `ManageUser`(POST /user/manage action=add_quota) 静默 no-op（这正是新用户 quota=0 的根因）。
+          - 另一些构建（如本地契约测试机）：恰好相反——add_quota 有效、PUT 忽略 quota。
+        故不能信任任一端点的 success，必须**回读校验**：先 UpdateUser，再回退 ManageUser，
+        两条都未生效才抛（quota 是计费关键，禁静默漂移）。
+        """
+        quota = int(quota)
+
+        # 机制 1：UpdateUser —— 取整对象 → 改 quota → PUT /user/（生产有效，空密码视为保留）
+        user = await self.get_user(newapi_user_id)
+        if not user:
+            raise NewApiError(f'设 quota 前取用户失败 id={newapi_user_id}', endpoint=f'/user/{newapi_user_id}')
+        payload = dict(user)
+        payload['quota'] = quota
+        await self._request('PUT', '/user/', headers=self._admin_headers(), json=payload)
+        if await self._quota_equals(newapi_user_id, quota):
+            log.info(f'[new-api] 用户 {newapi_user_id} quota 设为 {quota}（UpdateUser）')
+            return
+
+        # 机制 2：ManageUser add_quota override（部分构建有效）
         await self._request(
             'POST',
             '/user/manage',
             headers=self._admin_headers(),
-            json={'id': newapi_user_id, 'action': 'add_quota', 'mode': 'override', 'value': int(quota)},
+            json={'id': newapi_user_id, 'action': 'add_quota', 'mode': 'override', 'value': quota},
+        )
+        if await self._quota_equals(newapi_user_id, quota):
+            log.info(f'[new-api] 用户 {newapi_user_id} quota 设为 {quota}（ManageUser add_quota）')
+            return
+
+        raise NewApiError(
+            f'设 quota 失败：UpdateUser 与 ManageUser 回读均未生效 id={newapi_user_id} target={quota}',
+            endpoint='/user/',
         )
 
     async def set_user_password(self, *, newapi_user_id: int, username: str, password: str) -> None:
