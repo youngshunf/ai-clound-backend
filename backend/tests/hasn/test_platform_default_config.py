@@ -29,10 +29,23 @@ from backend.database.db import async_db_session
 pytestmark = pytest.mark.asyncio(loop_scope='module')
 
 
-def _config(*, image=None, main=None, fast=None, vision=None, delegation=None) -> PlatformDefaultConfig:
+def _config(
+    *,
+    image: list[str] | None = None,
+    video: list[str] | None = None,
+    main: str | None = None,
+    fast: str | None = None,
+    vision: str | None = None,
+    delegation: str | None = None,
+) -> PlatformDefaultConfig:
     return PlatformDefaultConfig.model_validate({
         'node': {
-            'media': {'image_models': image or ['gpt-image-2'], 'tts_models': ['tts-1'], 'stt_models': ['whisper-1']}
+            'media': {
+                'image_models': image or ['gpt-image-2'],
+                'tts_models': ['tts-1'],
+                'stt_models': ['whisper-1'],
+                'video_models': video or [],
+            }
         },
         'agent_runtime': {'models': {'main': main, 'fast': fast, 'vision': vision, 'delegation': delegation}},
     })
@@ -43,8 +56,19 @@ async def test_factory_default_when_no_row() -> None:
         cfg, rev = await svc.get_effective_config(db)
         # 无行 → 出厂默认（与 config/default.toml [media] 对齐），revision 稳定可比较。
         assert cfg.node.media.image_models == DEFAULT_PLATFORM_CONFIG['node']['media']['image_models']
+        # 视频默认空：视频渠道需运营在 new-api 开通后再经 Admin 下发（PV4）。
+        assert cfg.node.media.video_models == DEFAULT_PLATFORM_CONFIG['node']['media']['video_models'] == []
         _cfg2, rev2 = await svc.get_effective_config(db)
         assert rev == rev2 and rev != ''
+
+
+async def test_update_persists_video_models_for_node_downlink() -> None:
+    async with async_db_session() as db:
+        # 运营下发视频模型 → node.media.video_models 落库并回读（daemon 据此覆盖本机 config）。
+        resp = await svc.update_config(db, config=_config(video=['sora-1', 'kling-1']), updated_by='pytest')
+        cfg, rev = await svc.get_effective_config(db)
+        assert rev == resp.revision
+        assert cfg.node.media.video_models == ['sora-1', 'kling-1']
 
 
 async def test_update_changes_revision_and_persists_in_txn() -> None:

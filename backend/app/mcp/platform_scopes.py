@@ -25,6 +25,7 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'marketplace:publish': {'label_zh': '打包与发布资源', 'domain': 'marketplace', 'risk': 'high', 'description': '打包本地技能/模板并发布为当前用户资源（默认草稿；公开/送审过主人确认）'},
     # —— platform · 媒体（hasn-mcp 本地媒体工具，直连 new-api）——
     'image:generate': {'label_zh': '生成图片', 'domain': 'image', 'risk': 'medium', 'description': '直连唤星 new-api 图像 API 生成图片（消耗 owner 配额）'},
+    'video:generate': {'label_zh': '生成视频', 'domain': 'video', 'risk': 'high', 'description': '直连唤星 new-api 视频 API（task 式异步：提交→轮询）生成视频，单价远高于图片、消耗 owner 配额，故独立授权档'},
     # —— platform · 资产（hasn.asset.create：分身把自己的内容上传成 hasn://asset）——
     'asset:create': {'label_zh': '上传媒体资产', 'domain': 'asset', 'risk': 'medium', 'description': '把分身的内容（SVG/图片/文件等）上传到私有桶并注册资产，供消息附件引用'},
     # —— 历史默认词表（DEFAULT_AGENT_SCOPES）——展示兜底，无对应 cloud 工具亦不崩 ——

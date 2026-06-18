@@ -102,3 +102,8 @@ def test_app_scope_labels_come_from_per_app_modules() -> None:
     msg = scope_meta('message:send')  # backend/app/mcp/platform_scopes.py
     assert msg['domain'] == 'message'
     assert msg['label'] == '发送消息'
+
+    # 视频生成走独立 video:generate 档（单价高于图片，owner 可单独管控）。
+    video = scope_meta('video:generate')  # backend/app/mcp/platform_scopes.py
+    assert video['domain'] == 'video'
+    assert video['label'] == '生成视频'

@@ -21,6 +21,10 @@ class PlatformMediaDefaults(SchemaBase):
     image_models: list[str] = Field(default_factory=list, description='图像生成模型 failover 顺序')
     tts_models: list[str] = Field(default_factory=list, description='语音合成模型 failover 顺序')
     stt_models: list[str] = Field(default_factory=list, description='语音识别模型 failover 顺序')
+    video_models: list[str] = Field(
+        default_factory=list,
+        description='视频生成模型 failover 顺序（task 式异步）。默认空——视频渠道需运营先在 new-api 开通后再下发',
+    )
 
 
 class PlatformNodeDefaults(SchemaBase):
