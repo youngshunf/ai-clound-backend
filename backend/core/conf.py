@@ -77,8 +77,9 @@ class Settings(BaseSettings):
     # 故建用户后须显式把分组设为此值；空字符串表示不强制（沿用 new-api 行为）。
     NEWAPI_DEFAULT_USER_GROUP: str = 'default'
 
-    # 新用户注册赠送积分
-    NEWAPI_REGISTER_BONUS_CREDITS: int = 500
+    # 新用户注册赠送积分（口径统一为 $100=100 积分，与免费档 subscription_tier(free).monthly_credits 一致；
+    # 最终对账以账本为准，此值仅作新建用户初始 new-api quota，避免「先 $500 后被对账打回 $100」的瞬时不一致）
+    NEWAPI_REGISTER_BONUS_CREDITS: int = 100
 
     # .env Redis
     REDIS_HOST: str
