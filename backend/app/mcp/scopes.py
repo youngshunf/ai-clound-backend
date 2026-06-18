@@ -17,6 +17,7 @@ from backend.app.hasn_community.scopes import COMMUNITY_SCOPE_CATALOG
 from backend.app.hasn_core.app_platform import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn_creator.scopes import CREATOR_SCOPE_CATALOG
 from backend.app.hasn_deck.scopes import DECK_SCOPE_CATALOG
+from backend.app.hasn_designsystem.scopes import DESIGNSYSTEM_SCOPE_CATALOG
 from backend.app.hasn_growth.scopes import HASN_GROWTH_SCOPE_CATALOG
 from backend.app.hasn_publish.scopes import PUBLISH_SCOPE_CATALOG
 from backend.app.hasn_task.scopes import HASN_TASK_SCOPE_CATALOG
@@ -27,6 +28,7 @@ from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
 SCOPE_CATALOG: dict[str, dict[str, str]] = {
     **PLATFORM_SCOPE_CATALOG,
     **DECK_SCOPE_CATALOG,
+    **DESIGNSYSTEM_SCOPE_CATALOG,
     **COMMUNITY_SCOPE_CATALOG,
     **KNOWLEDGE_SCOPE_CATALOG,
     **HASN_TASK_SCOPE_CATALOG,
