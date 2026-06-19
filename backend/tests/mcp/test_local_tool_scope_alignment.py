@@ -22,21 +22,25 @@ from __future__ import annotations
 import pytest
 
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
-from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
+from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 
 # 跨仓契约：local_tool App → 本地 hasn-mcp capability_scopes() 声明的管理能力键集合。
 # hasn_task 同时含 task.rs（task:manage/task:run）与 workflow.rs（workflow:manage/workflow:run）。
+# film（源自 VideoClaw）：13 写类工具 → film:write；artifact.upload → film:export（crates/hasn-mcp/src/film.rs 钉死）。
 EXPECTED_MANAGEMENT_SCOPES: dict[str, set[str]] = {
     'deck': {'deck:manage'},
     'publish': {'publish:write'},
     'hasn_task': {'task:manage', 'task:run', 'workflow:manage', 'workflow:run'},
+    'film': {'film:write', 'film:export'},
 }
 
 _MANIFESTS = {
     'deck': DECK_AI_NATIVE_MANIFEST,
     'publish': PUBLISH_AI_NATIVE_MANIFEST,
     'hasn_task': HASN_TASK_AI_NATIVE_MANIFEST,
+    'film': FILM_AI_NATIVE_MANIFEST,
 }
 
 

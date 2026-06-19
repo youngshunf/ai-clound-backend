@@ -18,6 +18,7 @@ from backend.app.hasn_core.app_platform import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn_creator.scopes import CREATOR_SCOPE_CATALOG
 from backend.app.hasn_deck.scopes import DECK_SCOPE_CATALOG
 from backend.app.hasn_designsystem.scopes import DESIGNSYSTEM_SCOPE_CATALOG
+from backend.app.hasn_film.scopes import FILM_SCOPE_CATALOG
 from backend.app.hasn_growth.scopes import HASN_GROWTH_SCOPE_CATALOG
 from backend.app.hasn_publish.scopes import PUBLISH_SCOPE_CATALOG
 from backend.app.hasn_task.scopes import HASN_TASK_SCOPE_CATALOG
@@ -35,6 +36,7 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     **HASN_GROWTH_SCOPE_CATALOG,
     **CREATOR_SCOPE_CATALOG,
     **PUBLISH_SCOPE_CATALOG,
+    **FILM_SCOPE_CATALOG,
 }
 
 # source 分组的中文标签（catalog 顶层分组）

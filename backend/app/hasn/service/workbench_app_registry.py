@@ -105,6 +105,11 @@ class WorkbenchAppRegistry:
         from backend.app.hasn_designsystem.manifest import build_designsystem_workbench_app
 
         registry.register(build_designsystem_workbench_app())
+        # 视频生成 film（local_tool AI-Native，源自 VideoClaw；install_policy=manual 非默认挂载——
+        # 本期 VC-P4 只铸 scope+注册 manifest，启动入口随 P8 webui+catalog 行落地）。延迟导入避免循环依赖。
+        from backend.app.hasn_film.manifest import build_film_workbench_app
+
+        registry.register(build_film_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:

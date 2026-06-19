@@ -19,13 +19,13 @@ from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 
+from backend.app.billing.model import UserSubscription
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
-from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.workbench_app_registry import WorkbenchApp, workbench_app_registry
 from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
-from backend.app.billing.model import UserSubscription
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -48,6 +48,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'publish': 40,
     'growth': 45,  # 获客（设计 §3.2 约 40，置于 publish 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
+    'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 

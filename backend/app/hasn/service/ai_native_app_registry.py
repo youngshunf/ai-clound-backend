@@ -12,6 +12,7 @@ from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_N
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
+from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
@@ -45,6 +46,8 @@ class AINativeAppRegistry:
             'creator': CREATOR_AI_NATIVE_MANIFEST,
             # 自研设计系统生成应用（app_id=designsystem，模块 14/20；local_tool，DS-P7 铸 scope）。
             'designsystem': DESIGNSYSTEM_AI_NATIVE_MANIFEST,
+            # 视频生成应用（app_id=film，源自 VideoClaw，模块 14/实施 10；local_tool，VC-P4 铸 scope）。
+            'film': FILM_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:

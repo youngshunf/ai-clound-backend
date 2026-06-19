@@ -50,6 +50,13 @@ DEFAULT_AGENT_SCOPES = [
     # check_scopes 仍按此 claim 校验，故 Agent 调云端 designsystem/agent/* 写类必须在此铸入。
     'designsystem:write',
     'designsystem:publish',
+    # film 视频生成应用（14-doc/18 设计；VC-P4 铸 scope）。读类 list/get/stage.artifact 落 :read；
+    # 写类（建项目/各阶段生成/sandbox/pipeline/stage.intervene/continue）落 :write（出厂 Ask）；
+    # 上传产物到云端 artifact.upload 落 :export。check_scopes 按此 claim 校验，Agent 调 film 本地工具
+    # 经 daemon 三态闸门需这些 claim 在册。
+    'film:read',
+    'film:write',
+    'film:export',
 ]
 
 
