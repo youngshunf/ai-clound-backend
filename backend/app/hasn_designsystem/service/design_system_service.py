@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -73,6 +74,33 @@ def _content_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()
 
 
+# 预览色板：从 tokens.css 抽这几个 token 作列表卡迷你 mockup 的色（key → tokens.css 变量名）。
+_PREVIEW_TOKENS = {
+    'bg': '--bg',
+    'surface': '--surface',
+    'fg': '--fg',
+    'muted': '--muted',
+    'border': '--border',
+    'accent': '--accent',
+    'accent_on': '--accent-on',
+}
+# 仅取顶层 :root 里 `--name: value;` 的简单声明（确定性正则，不引 CSS 解析器；值取到分号前并 strip）。
+_CSS_VAR_RE = re.compile(r'(--[a-z0-9-]+)\s*:\s*([^;]+);')
+
+
+def _extract_preview_swatches(tokens_css: str | None) -> dict[str, str] | None:
+    """从 tokens.css denorm 出预览色板（{bg,surface,fg,muted,border,accent,accent_on}）。
+
+    供列表卡渲染迷你预览图，免逐项取产物。缺 tokens.css 或一个关键 token 都没命中 → None（零 fake，
+    不编造颜色）；命中部分则只带命中的键（前端按缺失降级）。值原样保留（含 #hex / oklch / rgb 等）。
+    """
+    if not tokens_css:
+        return None
+    found = {name: value.strip() for name, value in _CSS_VAR_RE.findall(tokens_css)}
+    swatches = {key: found[var] for key, var in _PREVIEW_TOKENS.items() if found.get(var)}
+    return swatches or None
+
+
 def _ds_dict(d: DesignSystem) -> dict[str, Any]:
     return {
         'id': d.id,
@@ -89,6 +117,7 @@ def _ds_dict(d: DesignSystem) -> dict[str, Any]:
         'current_revision_id': d.current_revision_id,
         'content_hash': d.content_hash,
         'bound_agent_id': d.bound_agent_id,
+        'preview_swatches': d.preview_swatches,
         'created_time': d.created_time.isoformat() if d.created_time else None,
         'updated_time': d.updated_time.isoformat() if d.updated_time else None,
     }
@@ -249,6 +278,8 @@ class DesignSystemService:
             d.grade = grade
             d.recommend_rebuild = recommend_rebuild
             d.content_hash = hashed
+            # 列表卡预览色板：denorm 当前版 tokens.css 关键色，前端列表渲染迷你预览（无 tokens → None）。
+            d.preview_swatches = _extract_preview_swatches(content.get('tokens_css'))
         d.updated_time = now
 
         # 落新版 revision（rev_no = 当前 max + 1）
@@ -604,6 +635,8 @@ class DesignSystemService:
         content = {k: getattr(rev, k) for k in _REVISION_CONTENT}
         d.current_revision_id = rev.id
         d.content_hash = _content_hash(content)
+        # 采用/回滚版本同步刷新列表卡预览色板（denorm 自该版 tokens.css）。
+        d.preview_swatches = _extract_preview_swatches(rev.tokens_css)
         summary = (rev.token_contract_report_json or {}).get('summary') if isinstance(rev.token_contract_report_json, dict) else None
         if isinstance(summary, dict):
             d.score = summary.get('score')

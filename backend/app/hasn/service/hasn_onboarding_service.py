@@ -491,9 +491,9 @@ class HasnOnboardingService:
         except Exception as exc:
             log.warning('builtin agent/task seeding failed during onboarding for %s: %s', human.hasn_id, exc)
 
-        # DS-P6 官方内置设计系统（全局 owner='system'，INSERT-only 幂等）：首个登录用户触发播种，
-        # 之后所有 onboarding 走一次轻量 slug 存在性查询即短路。best-effort：失败不阻断登录。
-        # 设计事实源：docs/hasn-node设计文档/14-AI-Native应用平台/实施/12-设计系统生成应用实施清单.md（P6）。
+        # DS-P6 官方内置设计系统（全局 owner='system'，reconcile：新增/换代替换/退役）：每次登录跑一次
+        # 轻量对账，内容未变即幂等短路；官方库换代时自动落新版+退役旧占位（如历史遗留『官方暖沙』）。
+        # best-effort：失败不阻断登录。设计事实源：docs/.../实施/12-设计系统生成应用实施清单.md（P6）。
         try:
             from backend.app.hasn_designsystem.service.builtin_seeding_service import (
                 seed_builtin_design_systems,

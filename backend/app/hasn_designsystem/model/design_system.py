@@ -2,6 +2,7 @@ from datetime import datetime
 
 import sqlalchemy as sa
 
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.hasn_designsystem.model._base import DesignSystemBase
@@ -49,6 +50,13 @@ class DesignSystem(DesignSystemBase):
         sa.String(40),
         default=None,
         comment='协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；生成它的分身，负责后续精修，改绑需二次确认）',
+    )
+    # 列表卡预览色板：denorm 自当前版 tokens.css 的关键色，供前端列表渲染迷你 mockup 当「预览图」，
+    # 免去逐项取产物/渲染。形如 {bg,surface,fg,muted,border,accent,accent_on}，随 save/set_current 刷新。
+    preview_swatches: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(),
+        default=None,
+        comment='列表卡预览色板（denorm 自当前版 tokens.css 关键色，前端列表渲染迷你预览）',
     )
     deleted_time: Mapped[datetime | None] = mapped_column(
         TimeZone, default=None, comment='软删时间（非空=已删，不物理删以便同步感知）'
