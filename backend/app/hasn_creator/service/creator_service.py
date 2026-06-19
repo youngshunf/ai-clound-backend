@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn_creator.model.account import Account
 from backend.app.hasn_creator.model.competitor import Competitor
 from backend.app.hasn_creator.model.content import Content
@@ -108,6 +109,27 @@ class CreatorService:
         return proj
 
     @staticmethod
+    async def _validate_assignee_agent(db: AsyncSession, *, scope: CreatorScope | None, agent_id: str) -> None:
+        """校验 assignee_agent_id 是本 owner 名下分身（同 deck/copilot）；不是则 404 不泄露他人分身是否存在。
+
+        负责运营的分身只能绑自己名下（owner_hasn_id == 当前行动主人）。owner_hasn_id 缺失（未解析出主人）
+        时一律拒——不许在无法核实归属的情况下落任何分身绑定（零信任边界）。
+        """
+        owner_hasn_id = scope.owner_hasn_id if scope else None
+        if not owner_hasn_id:
+            raise errors.NotFoundError(msg='指定的负责分身不存在或不属于你')
+        row = (
+            await db.execute(
+                sa.select(HasnAgents.id).where(
+                    HasnAgents.hasn_id == agent_id,
+                    HasnAgents.owner_id == owner_hasn_id,
+                )
+            )
+        ).first()
+        if row is None:
+            raise errors.NotFoundError(msg='指定的负责分身不存在或不属于你')
+
+    @staticmethod
     async def create_project(
         db: AsyncSession,
         *,
@@ -120,7 +142,9 @@ class CreatorService:
         playbook_id: int | None = None,
         assignee_agent_id: str | None = None,
     ) -> dict[str, Any]:
-        """建项目（运营单元根）+ 1:1 空画像。落双模归属。"""
+        """建项目（运营单元根）+ 1:1 空画像。落双模归属。绑定分身须归本 owner（建时即校验）。"""
+        if assignee_agent_id:
+            await CreatorService._validate_assignee_agent(db, scope=scope, agent_id=assignee_agent_id)
         own = ownership_fields(scope, user_id=user_id)
         proj = Project(
             project_no=_gen_no('PROJ'),
@@ -187,6 +211,10 @@ class CreatorService:
         fields: dict[str, Any],
     ) -> dict[str, Any]:
         proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        # 改绑负责分身（assignee_agent_id）须先校验新分身归本 owner（改绑不能随便改成别人的分身）。
+        new_agent = fields.get('assignee_agent_id')
+        if new_agent:
+            await CreatorService._validate_assignee_agent(db, scope=scope, agent_id=new_agent)
         allowed = {
             'name',
             'description',
