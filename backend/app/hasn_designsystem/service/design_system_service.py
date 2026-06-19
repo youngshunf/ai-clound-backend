@@ -14,15 +14,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, or_, select
 
+from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_designsystem.model import Collaborator, DesignSystem, Revision
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
+
+log = logging.getLogger(__name__)
+
+# 共享产物类型（统一 resource_share 表里的 designsystem 命名空间，与 deck/doc/knowledge 并列）。
+RESOURCE_TYPE = 'designsystem'
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -123,12 +130,33 @@ class DesignSystemService:
         return d
 
     @staticmethod
-    def _assert_readable(d: DesignSystem, viewer_owner_hasn_id: str, *, enterprise_id: int | None = None) -> None:
+    def _readable_fast(d: DesignSystem, viewer_owner_hasn_id: str, *, enterprise_id: int | None = None) -> bool:
+        """快路径可读：builtin / owner / 同企业。命中即可读，无需查 resource_share。"""
         if d.is_builtin:
-            return
+            return True
         if d.owner_hasn_id == viewer_owner_hasn_id:
-            return
+            return True
         if enterprise_id is not None and d.enterprise_id == enterprise_id:
+            return True
+        return False
+
+    async def _assert_can_read(
+        self, db: AsyncSession, d: DesignSystem, viewer_owner_hasn_id: str, *, enterprise_id: int | None = None
+    ) -> None:
+        """可读判定（P9）：快路径 builtin/owner/企业；否则查 resource_share 显式共享（viewer↑）。"""
+        if self._readable_fast(d, viewer_owner_hasn_id, enterprise_id=enterprise_id):
+            return
+        perm = await resource_share_service.resolve_effective_permission(
+            db,
+            subject_hasn_id=viewer_owner_hasn_id,
+            subject_kind='human',
+            subject_owner_hasn_id=viewer_owner_hasn_id,
+            resource_type=RESOURCE_TYPE,
+            resource_id=str(d.id),
+            resource_owner_hasn_id=d.owner_hasn_id,
+            resource_enterprise_id=d.enterprise_id,
+        )
+        if rank(perm) >= rank('viewer'):
             return
         raise errors.ForbiddenError(msg='无权访问该设计系统')
 
@@ -185,18 +213,37 @@ class DesignSystemService:
                 await db.flush()
         else:
             d = await self._get_alive(db, design_system_id)
-            if d.owner_hasn_id != owner or d.is_builtin:
-                raise errors.ForbiddenError(msg='无权修改该设计系统')
+            if d.is_builtin:
+                raise errors.ForbiddenError(msg='无权修改内置设计系统')
+            if d.owner_hasn_id != owner:
+                # 非 owner → 必须是有 editor↑ 权限的协作方（D6 协作分身改 tokens）。
+                perm = await resource_share_service.resolve_effective_permission(
+                    db,
+                    subject_hasn_id=subject.hasn_id,
+                    subject_kind=subject.kind,
+                    subject_owner_hasn_id=subject.owner_hasn_id,
+                    resource_type=RESOURCE_TYPE,
+                    resource_id=str(d.id),
+                    resource_owner_hasn_id=d.owner_hasn_id,
+                    resource_enterprise_id=d.enterprise_id,
+                )
+                if rank(perm) < rank('editor'):
+                    raise errors.ForbiddenError(msg='无权修改该设计系统')
 
-        # 根字段更新（白名单：不允许改 owner/slug/is_builtin）
-        d.name = name
-        if category is not None:
-            d.category = category
-        d.source_kind = source_kind
-        d.score = score
-        d.grade = grade
-        d.recommend_rebuild = recommend_rebuild
-        d.content_hash = hashed
+        # D6：owner（或其分身）改 → 直接落当前版；协作方（editor）改 → 出新版「待 owner 确认」，
+        # 不动 owner 当前态（保留/丢弃由 owner 经 set_current_revision 裁决）。
+        advance_current = design_system_id is None or d.owner_hasn_id == owner
+
+        # 根字段更新（白名单：不允许改 owner/slug/is_builtin）——仅「落当前版」时生效。
+        if advance_current:
+            d.name = name
+            if category is not None:
+                d.category = category
+            d.source_kind = source_kind
+            d.score = score
+            d.grade = grade
+            d.recommend_rebuild = recommend_rebuild
+            d.content_hash = hashed
         d.updated_time = now
 
         # 落新版 revision（rev_no = 当前 max + 1）
@@ -222,11 +269,13 @@ class DesignSystemService:
         )
         db.add(rev)
         await db.flush()
-        d.current_revision_id = rev.id
+        if advance_current:
+            d.current_revision_id = rev.id
         await db.commit()
         await db.refresh(d)
         out = _ds_dict(d)
         out['revision'] = _revision_dict(rev, with_content=False)
+        out['pending'] = not advance_current  # True=协作待确认版（未落当前态）
         return out
 
     async def list_visible(
@@ -239,10 +288,17 @@ class DesignSystemService:
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """可见域 = builtin ∪ owner ∪ 企业（共享 ACL 在 P9 补）。"""
+        """可见域 = builtin ∪ owner ∪ 企业 ∪ 显式共享给我的（P9 resource_share）。"""
         conds = [DesignSystem.is_builtin.is_(True), DesignSystem.owner_hasn_id == viewer_owner_hasn_id]
         if enterprise_id is not None:
             conds.append(DesignSystem.enterprise_id == enterprise_id)
+        # 显式共享给我（直接共享给人 / 经我所在企业）→ 并入可见域。
+        shared_ids = await resource_share_service.shared_resource_ids_for_human(
+            db, resource_type=RESOURCE_TYPE, human_hasn_id=viewer_owner_hasn_id
+        )
+        shared_int_ids = [int(sid) for sid in shared_ids if sid.isdigit()]
+        if shared_int_ids:
+            conds.append(DesignSystem.id.in_(shared_int_ids))
         where = [DesignSystem.deleted_time.is_(None), or_(*conds)]
         if category:
             where.append(DesignSystem.category == category)
@@ -274,7 +330,7 @@ class DesignSystemService:
         with_current_revision: bool = True,
     ) -> dict[str, Any]:
         d = await self._get_alive(db, design_system_id)
-        self._assert_readable(d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
+        await self._assert_can_read(db, d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
         out = _ds_dict(d)
         if with_current_revision and d.current_revision_id is not None:
             rev = await db.get(Revision, d.current_revision_id)
@@ -297,7 +353,7 @@ class DesignSystemService:
         enterprise_id: int | None = None,
     ) -> dict[str, Any]:
         d = await self._get_alive(db, design_system_id)
-        self._assert_readable(d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
+        await self._assert_can_read(db, d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
         rows = (
             (
                 await db.execute(
@@ -323,7 +379,7 @@ class DesignSystemService:
         if rev is None:
             raise errors.NotFoundError(msg='版本不存在')
         d = await self._get_alive(db, rev.design_system_id)
-        self._assert_readable(d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
+        await self._assert_can_read(db, d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
         return _revision_dict(rev)
 
     async def compute_owner_revision(self, db: AsyncSession, *, owner_hasn_id: str) -> str:
@@ -371,13 +427,165 @@ class DesignSystemService:
         self, db: AsyncSession, *, design_system_id: int, viewer_owner_hasn_id: str
     ) -> dict[str, Any]:
         d = await self._get_alive(db, design_system_id)
-        self._assert_readable(d, viewer_owner_hasn_id)
+        await self._assert_can_read(db, d, viewer_owner_hasn_id)
         rows = (
             (await db.execute(select(Collaborator).where(Collaborator.design_system_id == design_system_id)))
             .scalars()
             .all()
         )
         return {'total': len(rows), 'items': [{'id': r.id, 'agent_hasn_id': r.agent_hasn_id} for r in rows]}
+
+    async def remove_collaborator(
+        self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str, agent_hasn_id: str
+    ) -> dict[str, Any]:
+        """owner 解绑一个协作分身。"""
+        d = await self._get_alive(db, design_system_id)
+        if d.owner_hasn_id != owner_hasn_id or d.is_builtin:
+            raise errors.ForbiddenError(msg='无权管理该设计系统协作分身')
+        existing = (
+            await db.execute(
+                select(Collaborator).where(
+                    Collaborator.design_system_id == design_system_id,
+                    Collaborator.agent_hasn_id == agent_hasn_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            return {'removed': False}
+        await db.delete(existing)
+        await db.commit()
+        return {'removed': True}
+
+    # ── 分享（人↔人，复用 resource_share；P9）──────────────────────────────
+    async def _assert_owner(self, db: AsyncSession, design_system_id: int, owner_hasn_id: str) -> DesignSystem:
+        d = await self._get_alive(db, design_system_id)
+        if d.owner_hasn_id != owner_hasn_id or d.is_builtin:
+            raise errors.ForbiddenError(msg='仅 owner 可管理该设计系统的共享')
+        return d
+
+    async def share(
+        self,
+        db: AsyncSession,
+        *,
+        design_system_id: int,
+        owner_hasn_id: str,
+        grantee_type: str,
+        grantee_id: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        """共享给他人（viewer/editor）。manager 是 owner 专属，不开放授予。"""
+        d = await self._assert_owner(db, design_system_id, owner_hasn_id)
+        if permission not in ('viewer', 'editor'):
+            raise errors.RequestError(msg='共享权限仅支持 viewer / editor')
+        if grantee_type not in ('human', 'agent', 'enterprise'):
+            raise errors.RequestError(msg='不支持的授权对象类型')
+        row = await resource_share_service.upsert_share(
+            db,
+            resource_type=RESOURCE_TYPE,
+            resource_id=str(d.id),
+            owner_hasn_id=owner_hasn_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+            granted_by=owner_hasn_id,
+        )
+        # P10：被分享 → 通知人 grantee（同事务 best-effort，通知挂了不连累分享主行为）。
+        await self._emit_share_notification(
+            db, design_system=d, grantee_type=grantee_type, grantee_id=grantee_id, permission=permission
+        )
+        await db.commit()
+        return row
+
+    @staticmethod
+    async def _emit_share_notification(
+        db: AsyncSession, *, design_system: DesignSystem, grantee_type: str, grantee_id: str, permission: str
+    ) -> None:
+        """被分享通知（P10）：仅人 grantee 有通知中心 → 只通知 human；agent/enterprise 跳过（零 fake，不发给无人）。"""
+        if grantee_type != 'human':
+            return
+        try:
+            from backend.app.notification.service.notification_service import notification_service
+
+            perm_label = '可编辑' if permission == 'editor' else '可查看'
+            await notification_service.emit(
+                db,
+                recipient_id=grantee_id,
+                source={
+                    'kind': 'app',
+                    'id': RESOURCE_TYPE,
+                    'display_name': '设计系统',
+                    'on_behalf_of': design_system.owner_hasn_id,
+                },
+                category='app',
+                type='designsystem.shared',  # type 列 varchar(30)，勿超长
+                title=f'有人给你分享了设计系统「{design_system.name}」（{perm_label}）',
+                payload={
+                    'target': {'kind': RESOURCE_TYPE, 'id': str(design_system.id)},
+                    'permission': permission,
+                    'deep_link': '/designsystem',
+                },
+                dedupe_key=f'designsystem.shared:{design_system.id}:{grantee_id}',
+            )
+        except Exception as e:  # 通知 best-effort
+            log.warning('[designsystem] 分享通知发送失败 (非致命): %s', e)
+
+    async def list_shares(
+        self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str
+    ) -> dict[str, Any]:
+        d = await self._assert_owner(db, design_system_id, owner_hasn_id)
+        rows = await resource_share_service.list_shares(db, resource_type=RESOURCE_TYPE, resource_id=str(d.id))
+        return {
+            'total': len(rows),
+            'items': [
+                {
+                    'id': r['id'],
+                    'grantee_type': r['grantee_type'],
+                    'grantee_id': r['grantee_id'],
+                    'permission': r['permission'],
+                    'granted_by': r['granted_by'],
+                    'created_time': r['created_time'].isoformat() if r['created_time'] else None,
+                }
+                for r in rows
+            ],
+        }
+
+    async def revoke_share(
+        self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str, grantee_type: str, grantee_id: str
+    ) -> dict[str, Any]:
+        d = await self._assert_owner(db, design_system_id, owner_hasn_id)
+        ok = await resource_share_service.revoke_share(
+            db, resource_type=RESOURCE_TYPE, resource_id=str(d.id), grantee_type=grantee_type, grantee_id=grantee_id
+        )
+        await db.commit()
+        return {'revoked': ok}
+
+    # ── D6：采用 / 回滚版本（owner 裁决，含协作待确认版）─────────────────────
+    async def set_current_revision(
+        self, db: AsyncSession, *, design_system_id: int, revision_id: int, owner_hasn_id: str
+    ) -> dict[str, Any]:
+        """把某一版设为当前版（采用协作待确认版 或 回滚到历史版）。owner-only。
+
+        回填根字段：content_hash 从该版内容重算（驱动 daemon 增量重拉）；score/grade/recommend
+        从该版评分报告 summary 取（确定性，非 LLM）。
+        """
+        d = await self._assert_owner(db, design_system_id, owner_hasn_id)
+        rev = await db.get(Revision, revision_id)
+        if rev is None or rev.design_system_id != design_system_id:
+            raise errors.NotFoundError(msg='版本不存在')
+        content = {k: getattr(rev, k) for k in _REVISION_CONTENT}
+        d.current_revision_id = rev.id
+        d.content_hash = _content_hash(content)
+        summary = (rev.token_contract_report_json or {}).get('summary') if isinstance(rev.token_contract_report_json, dict) else None
+        if isinstance(summary, dict):
+            d.score = summary.get('score')
+            d.grade = summary.get('grade')
+            d.recommend_rebuild = bool(summary.get('recommendRebuild', False))
+        d.updated_time = timezone.now()
+        await db.commit()
+        await db.refresh(d)
+        out = _ds_dict(d)
+        out['current_revision'] = _revision_dict(rev)
+        return out
 
 
 design_system_service: DesignSystemService = DesignSystemService()
