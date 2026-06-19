@@ -53,6 +53,7 @@ from backend.utils.timezone import timezone
 
 _READ_SCOPE = 'plan:read'
 _WRITE_SCOPE = 'plan:write'
+_SCHEDULE_SCOPE = 'plan:schedule'  # PLAN-P4b：Motion 自动排程（schedule/reschedule）独立 scope
 
 
 # ============================ 纯 Python（无 DB）============================
@@ -80,21 +81,23 @@ def test_plan_in_builtin_registry() -> None:
 
 
 def test_plan_scopes_registered_in_catalog() -> None:
-    """scopes.py 登记 plan:read/:write（聚合进全局 SCOPE_CATALOG，供三态权限 UI 中文化）。"""
-    for scope in (_READ_SCOPE, _WRITE_SCOPE):
+    """scopes.py 登记 plan:read/:write/:schedule（聚合进全局 SCOPE_CATALOG，供三态权限 UI 中文化）。"""
+    for scope in (_READ_SCOPE, _WRITE_SCOPE, _SCHEDULE_SCOPE):
         assert scope in SCOPE_CATALOG
         assert scope_meta(scope)['domain'] == 'plan'
     assert scope_meta(_READ_SCOPE)['label'] == '查看规划数据'
     assert scope_meta(_WRITE_SCOPE)['label'] == '管理规划数据'
+    assert scope_meta(_SCHEDULE_SCOPE)['label'] == '自动排程日历'
 
 
 def test_plan_scopes_minted_into_agent_jwt() -> None:
-    """铸 scope：plan:read/:write 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带二者。
+    """铸 scope：plan:read/:write/:schedule 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带三者。
 
     生产真相：JWT scopes claim 的唯一固定来源是 DEFAULT_AGENT_SCOPES。Agent 调云端 plan/agent/*
-    写类时 check_scopes 据此放行——故二者必须在该常量内，并经真实 encode/decode 存活。
+    写类/排程时 check_scopes 据此放行——故三者必须在该常量内，并经真实 encode/decode 存活。
+    （schedule/reschedule 经 hasn-mcp 复合工具落 plan:schedule，PLAN-P4b 铸入。）
     """
-    for scope in (_READ_SCOPE, _WRITE_SCOPE):
+    for scope in (_READ_SCOPE, _WRITE_SCOPE, _SCHEDULE_SCOPE):
         assert scope in DEFAULT_AGENT_SCOPES
 
     expire = timezone.now() + timedelta(seconds=3600)
@@ -110,7 +113,7 @@ def test_plan_scopes_minted_into_agent_jwt() -> None:
         'exp': timezone.to_utc(expire).timestamp(),
     }
     decoded = jwt_decode_agent(jwt_encode_agent(payload))
-    for scope in (_READ_SCOPE, _WRITE_SCOPE):
+    for scope in (_READ_SCOPE, _WRITE_SCOPE, _SCHEDULE_SCOPE):
         assert scope in decoded.scopes
 
 

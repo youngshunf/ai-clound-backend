@@ -59,10 +59,12 @@ DEFAULT_AGENT_SCOPES = [
     'film:export',
     # plan 规划与目标管理应用（19-doc 设计 §9.1；PLAN-P1 铸 scope）。分身经 hasn.plan.* 管理主人的
     # 目标/计划/待办/日程/习惯：读类 list/get/today 无 scope（确定性读，不设假闸门）；写类（建/改/删/
-    # 排期/打卡/捕获/triage/decompose）落 :write（出厂 Allow）。排程 :schedule / 委托 :delegate 随
-    # P4/P5 落地再铸。check_scopes 按此 claim 校验，Agent 调 /api/v1/plan/agent/* 写类必须在此铸入。
+    # 排期/打卡/捕获/triage/decompose）落 :write（出厂 Allow）；排程（schedule/reschedule，Motion 自动
+    # 排程建/删 flex 块）落 :schedule（出厂 Allow，独立 scope 便于 owner 单独管控，PLAN-P4b 铸）。委托
+    # :delegate 随 P5 落地再铸。check_scopes 按此 claim 校验，Agent 调 /api/v1/plan/agent/* 写类必须在此铸入。
     'plan:read',
     'plan:write',
+    'plan:schedule',
 ]
 
 
