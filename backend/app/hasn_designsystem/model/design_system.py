@@ -44,6 +44,12 @@ class DesignSystem(DesignSystemBase):
     content_hash: Mapped[str] = mapped_column(
         sa.String(128), default='', comment='当前版内容 hash（供同步 revision diff）'
     )
+    # AppCollab（doc21 / 实施21 AC-P3）：协作分身绑定（与 deck DECKBIND 同模型——主会话派发阵营）。
+    bound_agent_id: Mapped[str | None] = mapped_column(
+        sa.String(40),
+        default=None,
+        comment='协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；生成它的分身，负责后续精修，改绑需二次确认）',
+    )
     deleted_time: Mapped[datetime | None] = mapped_column(
         TimeZone, default=None, comment='软删时间（非空=已删，不物理删以便同步感知）'
     )

@@ -25,6 +25,7 @@ CREATE TABLE "hasn_designsystem"."design_system" (
   "enterprise_id"       bigint,
   "current_revision_id" bigint,
   "content_hash"        varchar(128)   NOT NULL DEFAULT '',
+  "bound_agent_id"      varchar(40),
   "created_time"        timestamptz(6) NOT NULL DEFAULT now(),
   "updated_time"        timestamptz(6),
   "deleted_time"        timestamptz(6),

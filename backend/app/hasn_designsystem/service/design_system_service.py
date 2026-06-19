@@ -58,11 +58,11 @@ class Subject:
     owner_hasn_id: str  # 背后主人（human 时 == hasn_id）
 
     @staticmethod
-    def human(hasn_id: str) -> 'Subject':
+    def human(hasn_id: str) -> Subject:
         return Subject(hasn_id=hasn_id, kind='human', owner_hasn_id=hasn_id)
 
     @staticmethod
-    def agent(agent_hasn_id: str, owner_hasn_id: str) -> 'Subject':
+    def agent(agent_hasn_id: str, owner_hasn_id: str) -> Subject:
         return Subject(hasn_id=agent_hasn_id, kind='agent', owner_hasn_id=owner_hasn_id)
 
 
@@ -88,6 +88,7 @@ def _ds_dict(d: DesignSystem) -> dict[str, Any]:
         'enterprise_id': d.enterprise_id,
         'current_revision_id': d.current_revision_id,
         'content_hash': d.content_hash,
+        'bound_agent_id': d.bound_agent_id,
         'created_time': d.created_time.isoformat() if d.created_time else None,
         'updated_time': d.updated_time.isoformat() if d.updated_time else None,
     }
@@ -136,9 +137,7 @@ class DesignSystemService:
             return True
         if d.owner_hasn_id == viewer_owner_hasn_id:
             return True
-        if enterprise_id is not None and d.enterprise_id == enterprise_id:
-            return True
-        return False
+        return bool(enterprise_id is not None and d.enterprise_id == enterprise_id)
 
     async def _assert_can_read(
         self, db: AsyncSession, d: DesignSystem, viewer_owner_hasn_id: str, *, enterprise_id: int | None = None
@@ -230,6 +229,12 @@ class DesignSystemService:
                 if rank(perm) < rank('editor'):
                     raise errors.ForbiddenError(msg='无权修改该设计系统')
 
+        # AppCollab（doc21 / 实施21 AC-P3）：创建即绑定生成它的分身（DECKBIND 同模型）。
+        # bind-only-if-unbound——未绑定且作者是分身 → 绑该分身；已绑定不因再次 save 静默改绑
+        # （改绑只走 owner 二次确认 set_bound_agent）。owner 本人 save 不绑（无分身可绑）。
+        if d.bound_agent_id is None and subject.kind == 'agent':
+            d.bound_agent_id = subject.hasn_id
+
         # D6：owner（或其分身）改 → 直接落当前版；协作方（editor）改 → 出新版「待 owner 确认」，
         # 不动 owner 当前态（保留/丢弃由 owner 经 set_current_revision 裁决）。
         advance_current = design_system_id is None or d.owner_hasn_id == owner
@@ -277,6 +282,30 @@ class DesignSystemService:
         out['revision'] = _revision_dict(rev, with_content=False)
         out['pending'] = not advance_current  # True=协作待确认版（未落当前态）
         return out
+
+    async def set_bound_agent(
+        self,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        design_system_id: int,
+        bound_agent_id: str | None,
+    ) -> dict[str, Any]:
+        """owner 显式改绑/解绑协作分身（AppCollab AC-P3，对称 deck）。
+
+        仅 owner 可改（绑定是 owner 概念，总指向 owner 名下分身）；`None` = 解绑。
+        UI 经二次确认调用（`BoundAgentControl`），与 save() 的 bind-only-if-unbound 互补。
+        """
+        d = await self._get_alive(db, design_system_id)
+        if d.is_builtin:
+            raise errors.ForbiddenError(msg='内置设计系统不可绑定协作分身')
+        if d.owner_hasn_id != owner_hasn_id:
+            raise errors.ForbiddenError(msg='只有 owner 可改绑协作分身')
+        d.bound_agent_id = bound_agent_id
+        d.updated_time = timezone.now()
+        await db.commit()
+        await db.refresh(d)
+        return _ds_dict(d)
 
     async def list_visible(
         self,
