@@ -69,6 +69,47 @@ def compute_seeded_name_refresh(
     return candidate if candidate != current else None
 
 
+# USER.md 模板首行 `称呼: {{owner_nickname}}`（见 huanxing-hub/templates/USER.md）——主人称呼即
+# 分身如何称呼主人。建档时 register_hasn_agent 把 {{owner_nickname}} 渲染成当时 HasnHumans.nickname；
+# 主人未设昵称时是手机号掩码 → 烙进 USER.md，且渲染只在建档做一次、serve/runtime 端不再替换，
+# 主人之后改昵称这行不会自动刷新 → 分身一直按手机号掩码称呼主人（本次 bug）。半/全角冒号都兜。
+_USER_MD_OWNER_LABEL_RE = re.compile(r'^([ \t]*称呼[:：][ \t]*)(.*?)([ \t]*)$', re.MULTILINE)
+
+
+def compute_user_md_owner_refresh(
+    user_md: str | None, *, new_nickname: str | None, previous_nickname: str | None
+) -> str | None:
+    """纯逻辑：把 USER.md `称呼:` 行里的旧主人称呼（手机号掩码 / previous_nickname）刷成新昵称。
+
+    仅当该行当前值 ∈ {手机号掩码, previous_nickname}（即系统建档渲染的、非主人手改）时替换；空值 /
+    已是别的内容（含已是新昵称）→ 不动。返回刷新后的完整 user_md；无可改进返回 None。
+    只动 `称呼:` 行，绝不在正文里全局替换（previous_nickname 可能是普通词，全局替换会误伤正文）。
+    不查 DB，抽成纯函数便于确定性单测。
+    """
+    if not user_md:
+        return None
+    nick = (new_nickname or '').strip()
+    # 新昵称为空 / 仍是手机号掩码 → 无可改进（新用户首登在此短路）
+    if not nick or PHONE_MASK_NICKNAME_RE.match(nick):
+        return None
+    prev = (previous_nickname or '').strip()
+
+    changed = False
+
+    def _sub(match: 're.Match[str]') -> str:
+        nonlocal changed
+        label, value, trailing = match.group(1), match.group(2).strip(), match.group(3)
+        is_phone = bool(PHONE_MASK_NICKNAME_RE.match(value))
+        is_prev = bool(prev) and value == prev
+        if value and value != nick and (is_phone or is_prev):
+            changed = True
+            return f'{label}{nick}{trailing}'
+        return match.group(0)
+
+    updated = _USER_MD_OWNER_LABEL_RE.sub(_sub, user_md)
+    return updated if changed else None
+
+
 class AgentProfileGateway(Protocol):
     async def owns_owner(self, db: AsyncSession, *, owner_id: str, user_id: int) -> bool: ...
     async def get_template(self, db: AsyncSession, *, template_id: str) -> Any | None: ...
@@ -572,21 +613,26 @@ class HasnAgentProfileService:
         current_nickname: str | None,
         previous_nickname: str | None = None,
     ) -> list[str]:
-        """把 owner 名下系统播种(内置/默认)分身的「自动派生后缀」刷新为当前真实昵称。
+        """把 owner 名下分身里被烙进的旧主人昵称/手机号掩码刷新为当前真实昵称（两个维度）。
 
-        背景：内置/默认分身名 = `{基名}·{主人昵称}`（基名如「星诺/星创」全局共享，必撞名
-        → resolve_default_agent_display_name 必追加主人昵称后缀）。onboarding 在登录路径建
-        分身时主人尚未设昵称、HasnHumans.nickname 仍是手机号掩码（186****2019），后缀因此被
-        烙进手机号；主人之后改昵称没有回写分身 → 分身一直显示手机号（本次 bug）。
+        背景：onboarding 在登录路径建分身时主人尚未设昵称、HasnHumans.nickname 仍是手机号掩码
+        （186****2019）；主人之后改昵称没有回写分身 → 两处一直显示/称呼手机号掩码（本次 bug）：
+          1. 分身自己的 display_name：内置/默认分身名 = `{基名}·{主人昵称}`（基名如「星诺/星创」
+             全局共享必撞名 → 追加主人昵称后缀），后缀被烙进手机号。
+          2. 分身记忆里的 USER.md（user_md 列）：模板首行 `称呼: {{owner_nickname}}` 建档即渲染成
+             当时昵称（手机号掩码），之后不再替换 → 分身读 USER.md 一直按手机号掩码称呼主人。
 
         本方法在两处调用以收口：
           - profile 更新（主人设/改昵称）：previous_nickname=旧昵称、current_nickname=新昵称。
           - onboarding（每次登录幂等自愈）：current_nickname=当前昵称、previous_nickname=None，
-            仅修后缀为手机号掩码的存量坏分身。
+            仅修值为手机号掩码的存量坏分身。
 
-        只动「确属系统派生」的分身（builtin_agent_key 非空，含主脑 assistant）且 display_name
-        形如 `{base}·{suffix}`，suffix 的昵称部分 ∈ {手机号掩码, previous_nickname}；base 原样
-        保留只换后缀，新候选做全局唯一化（排除自身行）。绝不 clobber 用户手动改的名字。
+        维度① display_name 只动「确属系统派生」的分身（builtin_agent_key 非空，含主脑 assistant）
+        且名字形如 `{base}·{suffix}`、suffix ∈ {手机号掩码, previous_nickname}，base 原样保留只换
+        后缀并全局唯一化（排除自身行）。维度② USER.md `称呼:` 行是 owner 维度（所有分身共享语义），
+        故对 owner 名下全部分身生效，但同样只在该行值 ∈ {手机号掩码, previous_nickname} 时替换。
+        两个维度都绝不 clobber 用户手动改的名字/称呼。任一维度改动即 bump profile_revision 并下发
+        同步事件（Runtime 据 profile_revision 变化重拉 USER.md，分身随即按新昵称称呼主人）。
 
         返回被改名后的新 display_name 列表（供日志/测试断言）。
         """
@@ -598,12 +644,13 @@ class HasnAgentProfileService:
             return []
         prev = (previous_nickname or '').strip()
 
+        # user_md（USER.md 称呼）是 owner 维度，所有分身共享语义 → 不再按 builtin_agent_key 过滤，
+        # 取 owner 名下全部未删分身；display_name 维度在循环内按 builtin_agent_key 再 gate。
         rows = (
             (
                 await db.execute(
                     sa.select(HasnAgents).where(
                         HasnAgents.owner_id == owner_id,
-                        HasnAgents.builtin_agent_key.isnot(None),
                         HasnAgents.deleted_at.is_(None),
                     )
                 )
@@ -614,19 +661,36 @@ class HasnAgentProfileService:
 
         renamed: list[str] = []
         for agent in rows:
-            current = (agent.display_name or '').strip()
-            candidate = compute_seeded_name_refresh(current, new_nickname=nick, previous_nickname=prev)
-            if candidate is None:
-                continue
-            new_name = await self._resolve_unique_display_name_excluding(db, desired=candidate, exclude_id=agent.id)
-            if new_name == current:
-                continue
-            agent.display_name = new_name
-            if hasattr(agent, 'profile_revision'):
-                agent.profile_revision = (agent.profile_revision or 1) + 1
-            await db.flush()
-            await self.gateway.append_agent_sync_event(db, owner_id=owner_id, agent=agent, event_type='agent.updated')
-            renamed.append(new_name)
+            touched = False
+
+            # 维度①：分身自己的 display_name 后缀（仅系统播种的内置/默认分身）。
+            if agent.builtin_agent_key:
+                current = (agent.display_name or '').strip()
+                candidate = compute_seeded_name_refresh(current, new_nickname=nick, previous_nickname=prev)
+                if candidate is not None:
+                    new_name = await self._resolve_unique_display_name_excluding(
+                        db, desired=candidate, exclude_id=agent.id
+                    )
+                    if new_name != current:
+                        agent.display_name = new_name
+                        renamed.append(new_name)
+                        touched = True
+
+            # 维度②：USER.md `称呼:` 行（owner 维度，所有分身）——把旧称呼刷成新昵称。
+            new_user_md = compute_user_md_owner_refresh(
+                getattr(agent, 'user_md', None), new_nickname=nick, previous_nickname=prev
+            )
+            if new_user_md is not None:
+                agent.user_md = new_user_md
+                touched = True
+
+            if touched:
+                if hasattr(agent, 'profile_revision'):
+                    agent.profile_revision = (agent.profile_revision or 1) + 1
+                await db.flush()
+                await self.gateway.append_agent_sync_event(
+                    db, owner_id=owner_id, agent=agent, event_type='agent.updated'
+                )
         return renamed
 
     async def _resolve_unique_display_name_excluding(self, db: AsyncSession, *, desired: str, exclude_id: int) -> str:
