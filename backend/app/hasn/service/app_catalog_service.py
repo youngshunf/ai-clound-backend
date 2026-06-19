@@ -50,6 +50,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
+    'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -79,6 +80,14 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是会议副驾的执行分身：边听会议/通话的双方对话，边给关键要点、可追问的问题、待办与易错点；'
         '克制不刷屏、宁缺毋滥。会后按结构化纪要方法产出纪要落产物。只在本工作会话内工作，'
         '听不清就如实标注，零 fake、失败如实报错。',
+    ),
+    # 规划与目标管理用专属「私人参谋长」分身（hub 模板 planner，builtin_key=planner，PLAN-P4 落地）。
+    # 一个分身既当参谋长（拆目标/排计划/简报复盘）又当执行秘书（捕获/排期/委托）。
+    'plan': (
+        'planner',
+        '你是主人的私人参谋长 + 执行秘书：帮主人把模糊想法收敛成目标/关键结果，拆成可执行的计划与待办，'
+        '合理排期到日历，每日给简报、定期做复盘；只调用 hasn.plan.* 工具就地管理主人的规划数据，'
+        '尊重主人的最终决定权，零 fake、失败如实报错。',
     ),
 }
 

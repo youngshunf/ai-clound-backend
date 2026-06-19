@@ -1,0 +1,442 @@
+"""规划与目标管理 Owner/WebUI 端 API（P1）。
+
+路由前缀: /api/v1/plan/app
+认证方式: Owner JWT（owner hasn_id 由登录用户解析，绝不读请求体身份）。
+
+定位：daemon `domains/plan` 的 webui-facing 读写通道——hasn-node daemon 以 Owner JWT
+（`BackendGateway::owner_transport`）回源这些端点，本地 SQLite 镜像做 local_first，WebUI 只调 daemon。
+与 agent 端（`/api/v1/plan/agent/*`）共用同一 `plan_service`，仅身份来源不同。
+"""
+
+import logging
+
+from datetime import datetime
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Body, Path, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.hasn_core import hasn_humans_dao
+from backend.app.hasn_plan.service.plan_app_service import plan_service
+from backend.common.exception import errors
+from backend.common.response.response_schema import ResponseModel, response_base
+from backend.common.security.jwt import DependsJwtAuth
+from backend.database.db import CurrentSession, CurrentSessionTransaction
+
+router = APIRouter()
+log = logging.getLogger(__name__)
+
+
+async def _resolve_owner(db: AsyncSession, request: Request) -> str:
+    """登录用户 → HASN 主人 hasn_id。"""
+    human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
+    if not human:
+        raise errors.NotFoundError(msg='用户 HASN 身份不存在')
+    return human.hasn_id
+
+
+async def _bump_plan_sync(db: AsyncSession, owner_hasn_id: str) -> None:
+    """owner 写点后 → WSPUSH ``hasn.sync.invalidate(plan)`` 给该 owner 在线节点（best-effort）。
+
+    P2 接 WSPUSH kind:plan 失效桥；本期 owner 写后不阻塞（KIND_PLAN 尚未铸入则静默跳过）。
+    """
+    try:
+        from backend.app.hasn.service import sync_invalidate_service as siv
+
+        kind = getattr(siv, 'KIND_PLAN', None)
+        if kind is not None:
+            await siv.bump(kind, db, owner_id=owner_hasn_id)
+    except Exception as e:  # 推送 best-effort
+        log.warning('[plan] sync invalidate 推送失败 (非致命): %s', e)
+
+
+# ── goal ──────────────────────────────────────────────────────────────────────
+@router.get('/goals', summary='我的目标列表', dependencies=[DependsJwtAuth])
+async def app_list_goals(
+    request: Request, db: CurrentSession, status: Annotated[str | None, Query()] = None
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.list_goals(db, owner=owner, status=status))
+
+
+@router.post('/goals', summary='创建目标', dependencies=[DependsJwtAuth])
+async def app_create_goal(
+    request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.create_goal(db, owner=owner, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.get('/goals/{pk}', summary='目标详情（含 KR）', dependencies=[DependsJwtAuth])
+async def app_get_goal(request: Request, db: CurrentSession, pk: Annotated[int, Path(ge=1)]) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.get_goal(db, owner=owner, pk=pk))
+
+
+@router.put('/goals/{pk}', summary='更新目标', dependencies=[DependsJwtAuth])
+async def app_update_goal(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.update_goal(db, owner=owner, pk=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.delete('/goals/{pk}', summary='删除目标', dependencies=[DependsJwtAuth])
+async def app_delete_goal(
+    request: Request, db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    await plan_service.delete_goal(db, owner=owner, pk=pk)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data={'deleted': True})
+
+
+@router.post('/goals/{pk}/recompute-progress', summary='重算目标进度（派生）', dependencies=[DependsJwtAuth])
+async def app_recompute_goal(
+    request: Request, db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.recompute_goal_progress(db, owner=owner, pk=pk))
+
+
+@router.post('/goals/{pk}/key-results', summary='添加 KR', dependencies=[DependsJwtAuth])
+async def app_create_kr(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.create_kr(db, owner=owner, goal_id=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.put('/key-results/{kr_id}', summary='更新 KR', dependencies=[DependsJwtAuth])
+async def app_update_kr(
+    request: Request,
+    db: CurrentSessionTransaction,
+    kr_id: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.update_kr(db, owner=owner, kr_id=kr_id, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.delete('/key-results/{kr_id}', summary='删除 KR', dependencies=[DependsJwtAuth])
+async def app_delete_kr(
+    request: Request, db: CurrentSessionTransaction, kr_id: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    await plan_service.delete_kr(db, owner=owner, kr_id=kr_id)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data={'deleted': True})
+
+
+# ── plan ──────────────────────────────────────────────────────────────────────
+@router.get('/plans', summary='我的计划列表', dependencies=[DependsJwtAuth])
+async def app_list_plans(
+    request: Request,
+    db: CurrentSession,
+    status: Annotated[str | None, Query()] = None,
+    goal_id: Annotated[int | None, Query()] = None,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.list_plans(db, owner=owner, status=status, goal_id=goal_id))
+
+
+@router.post('/plans', summary='创建计划', dependencies=[DependsJwtAuth])
+async def app_create_plan(
+    request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.create_plan(db, owner=owner, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.get('/plans/{pk}', summary='计划详情（含里程碑）', dependencies=[DependsJwtAuth])
+async def app_get_plan(request: Request, db: CurrentSession, pk: Annotated[int, Path(ge=1)]) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.get_plan(db, owner=owner, pk=pk))
+
+
+@router.put('/plans/{pk}', summary='更新计划', dependencies=[DependsJwtAuth])
+async def app_update_plan(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.update_plan(db, owner=owner, pk=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.delete('/plans/{pk}', summary='删除计划', dependencies=[DependsJwtAuth])
+async def app_delete_plan(
+    request: Request, db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    await plan_service.delete_plan(db, owner=owner, pk=pk)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data={'deleted': True})
+
+
+@router.post('/plans/{pk}/bound-agent', summary='设置/解绑计划协作分身（AppCollab）', dependencies=[DependsJwtAuth])
+async def app_set_plan_bound_agent(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.set_plan_bound_agent(db, owner=owner, pk=pk, bound_agent_id=body.get('bound_agent_id'))
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post('/plans/{pk}/milestones', summary='添加里程碑', dependencies=[DependsJwtAuth])
+async def app_create_milestone(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.create_milestone(db, owner=owner, plan_id=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.put('/milestones/{milestone_id}', summary='更新里程碑', dependencies=[DependsJwtAuth])
+async def app_update_milestone(
+    request: Request,
+    db: CurrentSessionTransaction,
+    milestone_id: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.update_milestone(db, owner=owner, milestone_id=milestone_id, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.delete('/milestones/{milestone_id}', summary='删除里程碑', dependencies=[DependsJwtAuth])
+async def app_delete_milestone(
+    request: Request, db: CurrentSessionTransaction, milestone_id: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    await plan_service.delete_milestone(db, owner=owner, milestone_id=milestone_id)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data={'deleted': True})
+
+
+# ── todo ──────────────────────────────────────────────────────────────────────
+@router.get('/todos', summary='我的待办列表', dependencies=[DependsJwtAuth])
+async def app_list_todos(
+    request: Request,
+    db: CurrentSession,
+    status: Annotated[str | None, Query()] = None,
+    actor: Annotated[str | None, Query()] = None,
+    plan_id: Annotated[int | None, Query()] = None,
+    goal_id: Annotated[int | None, Query()] = None,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(
+        data=await plan_service.list_todos(
+            db, owner=owner, status=status, actor=actor, plan_id=plan_id, goal_id=goal_id
+        )
+    )
+
+
+@router.post('/todos', summary='创建待办', dependencies=[DependsJwtAuth])
+async def app_create_todo(
+    request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.create_todo(db, owner=owner, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.get('/todos/{pk}', summary='待办详情', dependencies=[DependsJwtAuth])
+async def app_get_todo(request: Request, db: CurrentSession, pk: Annotated[int, Path(ge=1)]) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.get_todo(db, owner=owner, pk=pk))
+
+
+@router.put('/todos/{pk}', summary='更新待办', dependencies=[DependsJwtAuth])
+async def app_update_todo(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.update_todo(db, owner=owner, pk=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.delete('/todos/{pk}', summary='删除待办', dependencies=[DependsJwtAuth])
+async def app_delete_todo(
+    request: Request, db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    await plan_service.delete_todo(db, owner=owner, pk=pk)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data={'deleted': True})
+
+
+# ── event（日历）────────────────────────────────────────────────────────────────
+@router.get('/events', summary='日程列表（区间）', dependencies=[DependsJwtAuth])
+async def app_list_events(
+    request: Request,
+    db: CurrentSession,
+    start: Annotated[datetime | None, Query()] = None,
+    end: Annotated[datetime | None, Query()] = None,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.list_events(db, owner=owner, start=start, end=end))
+
+
+@router.post('/events', summary='创建日程/时间块', dependencies=[DependsJwtAuth])
+async def app_create_event(
+    request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.create_event(db, owner=owner, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.put('/events/{pk}', summary='更新日程', dependencies=[DependsJwtAuth])
+async def app_update_event(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.update_event(db, owner=owner, pk=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.delete('/events/{pk}', summary='删除日程', dependencies=[DependsJwtAuth])
+async def app_delete_event(
+    request: Request, db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    await plan_service.delete_event(db, owner=owner, pk=pk)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data={'deleted': True})
+
+
+@router.post('/events/{pk}/reschedule', summary='拖动改期（自动锁定，§8.1）', dependencies=[DependsJwtAuth])
+async def app_reschedule_event(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    start_at = datetime.fromisoformat(str(body['start_at']))
+    end_at = datetime.fromisoformat(str(body['end_at']))
+    data = await plan_service.reschedule_event(
+        db, owner=owner, pk=pk, start_at=start_at, end_at=end_at, lock=bool(body.get('lock', True))
+    )
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+# ── habit ───────────────────────────────────────────────────────────────────────
+@router.get('/habits', summary='习惯列表', dependencies=[DependsJwtAuth])
+async def app_list_habits(
+    request: Request, db: CurrentSession, status: Annotated[str | None, Query()] = None
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.list_habits(db, owner=owner, status=status))
+
+
+@router.post('/habits', summary='创建习惯', dependencies=[DependsJwtAuth])
+async def app_create_habit(
+    request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.create_habit(db, owner=owner, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.put('/habits/{pk}', summary='更新习惯', dependencies=[DependsJwtAuth])
+async def app_update_habit(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.update_habit(db, owner=owner, pk=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.delete('/habits/{pk}', summary='删除习惯', dependencies=[DependsJwtAuth])
+async def app_delete_habit(
+    request: Request, db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    await plan_service.delete_habit(db, owner=owner, pk=pk)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data={'deleted': True})
+
+
+@router.post('/habits/{pk}/checkin', summary='打卡', dependencies=[DependsJwtAuth])
+async def app_checkin_habit(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.checkin_habit(db, owner=owner, habit_id=pk, data=body)
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+# ── preference + today ───────────────────────────────────────────────────────────
+@router.get('/preference', summary='排程偏好', dependencies=[DependsJwtAuth])
+async def app_get_preference(request: Request, db: CurrentSession) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.get_preference(db, owner=owner))
+
+
+@router.put('/preference', summary='更新排程偏好', dependencies=[DependsJwtAuth])
+async def app_upsert_preference(
+    request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.upsert_preference(db, owner=owner, data=body))
+
+
+@router.get('/today', summary='今日首屏聚合（§10.2）', dependencies=[DependsJwtAuth])
+async def app_today(
+    request: Request,
+    db: CurrentSession,
+    start: Annotated[datetime, Query(description='当日起 ISO datetime（用户时区）')],
+    end: Annotated[datetime, Query(description='当日止 ISO datetime（用户时区）')],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    return response_base.success(data=await plan_service.today_overview(db, owner=owner, day_start=start, day_end=end))

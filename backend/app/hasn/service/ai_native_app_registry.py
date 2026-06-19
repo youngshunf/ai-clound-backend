@@ -14,6 +14,7 @@ from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.common.exception import errors
@@ -48,6 +49,8 @@ class AINativeAppRegistry:
             'designsystem': DESIGNSYSTEM_AI_NATIVE_MANIFEST,
             # 视频生成应用（app_id=film，源自 VideoClaw，模块 14/实施 10；local_tool，VC-P4 铸 scope）。
             'film': FILM_AI_NATIVE_MANIFEST,
+            # 规划与目标管理应用（app_id=plan，模块/schema hasn_plan，模块 19；local_tool，PLAN-P1 铸 scope）。
+            'plan': PLAN_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:

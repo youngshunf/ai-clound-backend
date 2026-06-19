@@ -115,6 +115,11 @@ class WorkbenchAppRegistry:
         from backend.app.hasn_copilot.manifest import build_copilot_workbench_app
 
         registry.register(build_copilot_workbench_app())
+        # 规划与目标管理 plan（local_tool AI-Native，schema hasn_plan，模块 19；install_policy=manual
+        # 非默认挂载——PLAN-P1 只铸 scope+注册 manifest，启动入口随 webui+catalog 行落地）。延迟导入避免循环依赖。
+        from backend.app.hasn_plan.manifest import build_plan_workbench_app
+
+        registry.register(build_plan_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:
