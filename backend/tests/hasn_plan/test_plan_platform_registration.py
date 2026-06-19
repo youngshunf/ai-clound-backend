@@ -54,6 +54,7 @@ from backend.utils.timezone import timezone
 _READ_SCOPE = 'plan:read'
 _WRITE_SCOPE = 'plan:write'
 _SCHEDULE_SCOPE = 'plan:schedule'  # PLAN-P4b：Motion 自动排程（schedule/reschedule）独立 scope
+_DELEGATE_SCOPE = 'plan:delegate'  # PLAN-P5：委托派发起工作会话（出厂 Ask，主人确认后派）
 
 
 # ============================ 纯 Python（无 DB）============================
@@ -81,13 +82,16 @@ def test_plan_in_builtin_registry() -> None:
 
 
 def test_plan_scopes_registered_in_catalog() -> None:
-    """scopes.py 登记 plan:read/:write/:schedule（聚合进全局 SCOPE_CATALOG，供三态权限 UI 中文化）。"""
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _SCHEDULE_SCOPE):
+    """scopes.py 登记 plan:read/:write/:schedule/:delegate（聚合进全局 SCOPE_CATALOG，供三态权限 UI 中文化）。"""
+    for scope in (_READ_SCOPE, _WRITE_SCOPE, _SCHEDULE_SCOPE, _DELEGATE_SCOPE):
         assert scope in SCOPE_CATALOG
         assert scope_meta(scope)['domain'] == 'plan'
     assert scope_meta(_READ_SCOPE)['label'] == '查看规划数据'
     assert scope_meta(_WRITE_SCOPE)['label'] == '管理规划数据'
     assert scope_meta(_SCHEDULE_SCOPE)['label'] == '自动排程日历'
+    assert scope_meta(_DELEGATE_SCOPE)['label'] == '委托分身执行'
+    # 委托是高影响动作（起工作会话、耗配额）：风险标 high，与 read/write/schedule 区分。
+    assert scope_meta(_DELEGATE_SCOPE)['risk'] == 'high'
 
 
 def test_plan_scopes_minted_into_agent_jwt() -> None:

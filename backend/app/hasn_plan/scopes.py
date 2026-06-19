@@ -8,7 +8,8 @@
 - 写类（capture/triage/CRUD/decompose/event 等改 owner 数据的）统一 `plan:write`（出厂 Allow，owner 三态可覆盖）；
 - 排程（schedule/reschedule，PLAN-P4b）统一 `plan:schedule`（出厂 Allow，独立 scope 便于 owner 单独管控自动排程）；
 - 读类（list/get）无 required_scopes（不在此登记，避免假闸门）；
-- 委托（plan:delegate）随 P5 落地再铸。
+- 委托（delegate，PLAN-P5）统一 `plan:delegate`（出厂 **Ask**——委托派发起工作会话、消耗模型配额、是主动行为，
+  主人确认后再派；落地真相在 `plan.rs::Delegate` `default_capability_mode=Ask`）。
 """
 
 from __future__ import annotations
@@ -31,5 +32,11 @@ PLAN_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'domain': 'plan',
         'risk': 'medium',
         'description': '以 Agent 身份按 Motion 风格把待办自动排进/重排主人的日历空档（建/删弹性时间块，owner 隔离）',
+    },
+    'plan:delegate': {
+        'label_zh': '委托分身执行',
+        'domain': 'plan',
+        'risk': 'high',
+        'description': '以 Agent 身份把待办/计划委托给分身经工作会话真执行（出厂 Ask，主人确认后派）',
     },
 }
