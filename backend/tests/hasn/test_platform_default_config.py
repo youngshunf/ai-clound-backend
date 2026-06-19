@@ -59,7 +59,7 @@ async def test_factory_default_when_no_row() -> None:
         # 视频默认空：视频渠道需运营在 new-api 开通后再经 Admin 下发（PV4）。
         assert cfg.node.media.video_models == DEFAULT_PLATFORM_CONFIG['node']['media']['video_models'] == []
         _cfg2, rev2 = await svc.get_effective_config(db)
-        assert rev == rev2 and rev != ''
+        assert rev == rev2 and rev
 
 
 async def test_update_persists_video_models_for_node_downlink() -> None:
@@ -69,6 +69,38 @@ async def test_update_persists_video_models_for_node_downlink() -> None:
         cfg, rev = await svc.get_effective_config(db)
         assert rev == resp.revision
         assert cfg.node.media.video_models == ['sora-1', 'kling-1']
+
+
+async def test_factory_default_includes_film_section_unconfigured() -> None:
+    """出厂默认含 node.film：五类模型空 + package_manifest_url 空（honest 未配置，VC-P2-C1）。
+
+    daemon engine_manifest_url() 读 node.film.package_manifest_url——空时返 None →
+    引擎状态 manifest_configured=false，webui 显示「引擎包未配置」，绝不瞎拉不存在的地址。
+    """
+    async with async_db_session() as db:
+        cfg, _rev = await svc.get_effective_config(db)
+        # downloadable_local 引擎包地址默认空 = 未配置（运营托管包后经 Admin 填）。
+        assert not cfg.node.film.package_manifest_url
+        assert not DEFAULT_PLATFORM_CONFIG['node']['film']['package_manifest_url']
+        # 五类模型默认空 → daemon 退回本机 config [film]。
+        assert cfg.node.film.llm_models == []
+        assert cfg.node.film.video_models == []
+
+
+async def test_update_persists_film_manifest_url_for_node_downlink() -> None:
+    """运营下发引擎包地址 → node.film.package_manifest_url 落库回读（daemon 据此下载安装引擎）。"""
+    async with async_db_session() as db:
+        config = PlatformDefaultConfig.model_validate({
+            'node': {
+                'media': {'image_models': ['gpt-image-2'], 'tts_models': [], 'stt_models': [], 'video_models': []},
+                'film': {'package_manifest_url': 'https://cdn.example.com/film/manifest.json'},
+            },
+            'agent_runtime': {'models': {'main': None, 'fast': None, 'vision': None, 'delegation': None}},
+        })
+        resp = await svc.update_config(db, config=config, updated_by='pytest')
+        cfg, rev = await svc.get_effective_config(db)
+        assert rev == resp.revision
+        assert cfg.node.film.package_manifest_url == 'https://cdn.example.com/film/manifest.json'
 
 
 async def test_update_changes_revision_and_persists_in_txn() -> None:

@@ -27,10 +27,30 @@ class PlatformMediaDefaults(SchemaBase):
     )
 
 
+class PlatformFilmDefaults(SchemaBase):
+    """VideoClaw 视频引擎（film 应用）节点级默认。
+
+    五类模型 failover 列表（空=daemon 退回本机 ``config [film]``）；``package_manifest_url`` 为
+    ``downloadable_local`` 引擎分发包 manifest 地址（空=未配置，daemon 据此 honest 拒绝下载，
+    绝不瞎拉）。运营在 new-api 开通模型 / 对象存储托管引擎包后，经 Admin 平台默认配置下发。
+    """
+
+    llm_models: list[str] = Field(default_factory=list, description='脚本/规划 LLM failover 顺序')
+    vlm_models: list[str] = Field(default_factory=list, description='视觉理解 VLM failover 顺序')
+    image_t2i_models: list[str] = Field(default_factory=list, description='文生图模型 failover 顺序')
+    image_it2i_models: list[str] = Field(default_factory=list, description='图生图模型 failover 顺序')
+    video_models: list[str] = Field(default_factory=list, description='视频生成模型 failover 顺序')
+    package_manifest_url: str = Field(
+        default='',
+        description='downloadable_local 引擎分发包 manifest 地址（对象存储签名 URL）。空=未配置——运营托管包后在 Admin 填',
+    )
+
+
 class PlatformNodeDefaults(SchemaBase):
     """节点级平台默认。"""
 
     media: PlatformMediaDefaults = Field(default_factory=PlatformMediaDefaults, description='媒体模型默认')
+    film: PlatformFilmDefaults = Field(default_factory=PlatformFilmDefaults, description='视频引擎默认')
 
 
 class PlatformAgentRuntimeDefaults(SchemaBase):

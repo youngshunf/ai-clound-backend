@@ -43,7 +43,19 @@ DEFAULT_PLATFORM_CONFIG: dict = {
             # 视频默认空：视频渠道尚需运营在 new-api 开通后，经 Admin 平台默认配置下发，
             # 否则填非空模型名会让分身 hasn.video.generate 直接撞 503 无渠道。
             'video_models': [],
-        }
+        },
+        # VideoClaw 视频引擎（film 应用 downloadable_local）默认：五类模型 failover 全空
+        # （daemon 退回本机 config [film]）；package_manifest_url 空=未配置——运营把按架构
+        # 构建的引擎包托管到对象存储后，在 Admin 填签名 URL，daemon 据此下载安装本机引擎。
+        # 空时 daemon engine_manifest_url() 返 None → 引擎状态 manifest_configured=false。
+        'film': {
+            'llm_models': [],
+            'vlm_models': [],
+            'image_t2i_models': [],
+            'image_it2i_models': [],
+            'video_models': [],
+            'package_manifest_url': '',
+        },
     },
     'agent_runtime': {
         'models': {
