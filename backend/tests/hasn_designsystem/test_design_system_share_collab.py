@@ -213,6 +213,62 @@ async def test_remove_collaborator(session) -> None:
     assert r2['removed'] is False
 
 
+async def test_share_human_emits_notification(session) -> None:
+    """分享给人 grantee → 落一条权威通知行（type=designsystem.shared, target=grantee）。"""
+    from backend.app.hasn.model.hasn_notifications import HasnNotifications
+
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    b_id = f'h_b_{tag}'
+
+    saved = await design_system_service.save(
+        session, subject=a, design_system_id=None, slug=f'nt-{tag}', name='通知用',
+        content=_content('#151515', score=70, grade='fair'),
+    )
+    ds_id = saved['id']
+    await design_system_service.share(
+        session, design_system_id=ds_id, owner_hasn_id=a.hasn_id,
+        grantee_type='human', grantee_id=b_id, permission='editor',
+    )
+    row = (
+        await session.execute(
+            select(HasnNotifications).where(
+                HasnNotifications.target_id == b_id,
+                HasnNotifications.type == 'designsystem.shared',
+            )
+        )
+    ).scalar_one_or_none()
+    assert row is not None
+    assert str(ds_id) in (row.title or '') or str(ds_id) == str((row.data or {}).get('target', {}).get('id'))
+
+
+async def test_share_agent_grantee_no_notification(session) -> None:
+    """分享给 agent grantee → 不发通知（agent 无通知中心，零 fake 不发给无人）。"""
+    from backend.app.hasn.model.hasn_notifications import HasnNotifications
+
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    agent_id = f'a_g_{tag}'
+
+    saved = await design_system_service.save(
+        session, subject=a, design_system_id=None, slug=f'na-{tag}', name='给分身',
+        content=_content('#161616', score=70, grade='fair'),
+    )
+    await design_system_service.share(
+        session, design_system_id=saved['id'], owner_hasn_id=a.hasn_id,
+        grantee_type='agent', grantee_id=agent_id, permission='editor',
+    )
+    row = (
+        await session.execute(
+            select(HasnNotifications).where(
+                HasnNotifications.target_id == agent_id,
+                HasnNotifications.type == 'designsystem.shared',
+            )
+        )
+    ).scalar_one_or_none()
+    assert row is None
+
+
 async def test_share_rejects_manager(session) -> None:
     """manager 是 owner 专属档位，不开放授予。"""
     tag = uuid.uuid4().hex[:8]

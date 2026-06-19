@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,8 @@ from backend.app.hasn.service.resource_share_service import rank, resource_share
 from backend.app.hasn_designsystem.model import Collaborator, DesignSystem, Revision
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
+
+log = logging.getLogger(__name__)
 
 # 共享产物类型（统一 resource_share 表里的 designsystem 命名空间，与 deck/doc/knowledge 并列）。
 RESOURCE_TYPE = 'designsystem'
@@ -486,8 +489,45 @@ class DesignSystemService:
             permission=permission,
             granted_by=owner_hasn_id,
         )
+        # P10：被分享 → 通知人 grantee（同事务 best-effort，通知挂了不连累分享主行为）。
+        await self._emit_share_notification(
+            db, design_system=d, grantee_type=grantee_type, grantee_id=grantee_id, permission=permission
+        )
         await db.commit()
         return row
+
+    @staticmethod
+    async def _emit_share_notification(
+        db: AsyncSession, *, design_system: DesignSystem, grantee_type: str, grantee_id: str, permission: str
+    ) -> None:
+        """被分享通知（P10）：仅人 grantee 有通知中心 → 只通知 human；agent/enterprise 跳过（零 fake，不发给无人）。"""
+        if grantee_type != 'human':
+            return
+        try:
+            from backend.app.notification.service.notification_service import notification_service
+
+            perm_label = '可编辑' if permission == 'editor' else '可查看'
+            await notification_service.emit(
+                db,
+                recipient_id=grantee_id,
+                source={
+                    'kind': 'app',
+                    'id': RESOURCE_TYPE,
+                    'display_name': '设计系统',
+                    'on_behalf_of': design_system.owner_hasn_id,
+                },
+                category='app',
+                type='designsystem.shared',  # type 列 varchar(30)，勿超长
+                title=f'有人给你分享了设计系统「{design_system.name}」（{perm_label}）',
+                payload={
+                    'target': {'kind': RESOURCE_TYPE, 'id': str(design_system.id)},
+                    'permission': permission,
+                    'deep_link': '/designsystem',
+                },
+                dedupe_key=f'designsystem.shared:{design_system.id}:{grantee_id}',
+            )
+        except Exception as e:  # 通知 best-effort
+            log.warning('[designsystem] 分享通知发送失败 (非致命): %s', e)
 
     async def list_shares(
         self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str
