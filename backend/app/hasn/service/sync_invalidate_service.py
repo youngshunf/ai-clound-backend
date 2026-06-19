@@ -37,10 +37,34 @@ REV_TTL_SECS = 3600
 KIND_BUILTIN_CATALOG = 'builtin_catalog'
 KIND_COMMON_SKILLS = 'common_skills'
 KIND_PLATFORM_CONFIG = 'platform_config'
-KINDS = (KIND_BUILTIN_CATALOG, KIND_COMMON_SKILLS, KIND_PLATFORM_CONFIG)
+KIND_DESIGNSYSTEM = 'designsystem'
+KINDS = (KIND_BUILTIN_CATALOG, KIND_COMMON_SKILLS, KIND_PLATFORM_CONFIG, KIND_DESIGNSYSTEM)
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
+# 设计系统库为空时的稳定指纹（同上约定）
+EMPTY_DESIGNSYSTEM_REVISION = 'empty'
+
+
+async def compute_designsystem_revision(db: AsyncSession) -> str:
+    """设计系统全局指纹：sha256(sorted "id@content_hash" 行)[:16]，对齐 common_skills_revision。
+
+    任一设计系统的 ``content_hash`` 变（save 落新版）或增删 → 指纹变 → 在线节点对账各自
+    owner 镜像（云端权威，节点只拉自己可见域 builtin∪owner∪共享）。软删行（``deleted_time``
+    非空）落出集合 → 删一套 → 集合缩小 → 指纹变 → 镜像感知下线。
+    """
+    from backend.app.hasn_designsystem.model.design_system import DesignSystem
+
+    rows = (
+        await db.execute(
+            sa.select(DesignSystem.id, DesignSystem.content_hash).where(DesignSystem.deleted_time.is_(None))
+        )
+    ).all()
+    lines = sorted(f'{ds_id}@{content_hash or ""}' for ds_id, content_hash in rows)
+    if not lines:
+        return EMPTY_DESIGNSYSTEM_REVISION
+    signature = '\n'.join(lines)
+    return hashlib.sha256(signature.encode('utf-8')).hexdigest()[:16]
 
 
 async def compute_builtin_catalog_revision(db: AsyncSession) -> str:
@@ -76,6 +100,8 @@ async def _compute_revision(kind: str, db: AsyncSession) -> str:
 
         _, rev = await platform_default_config_service.get_effective_config(db)
         return rev
+    if kind == KIND_DESIGNSYSTEM:
+        return await compute_designsystem_revision(db)
     raise ValueError(f'unknown sync kind: {kind}')
 
 

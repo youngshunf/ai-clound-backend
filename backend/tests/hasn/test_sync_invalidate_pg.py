@@ -26,6 +26,7 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.service import sync_invalidate_service as svc
 from backend.app.hasn.service.platform_default_config_service import platform_default_config_service
+from backend.app.hasn_designsystem.model.design_system import DesignSystem
 from backend.app.hasn_task.model.builtin_catalog import HasnBuiltinTaskCatalog
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -93,3 +94,36 @@ async def test_builtin_catalog_revision_real_schema_and_changes(session: AsyncSe
     await session.flush()
     after = await svc.compute_builtin_catalog_revision(session)
     assert after != before, '新增 catalog 行后 builtin_catalog_revision 未变化'
+
+
+async def test_designsystem_revision_real_schema_changes_and_bump_consistent(session: AsyncSession) -> None:
+    """DS-P5：designsystem_revision 跑真实 schema 返回稳定指纹；新增设计系统行 → 指纹变；
+
+    bump('designsystem') 推/缓存的 revision == compute_designsystem_revision 权威值（一致性）；
+    且已纳入 KINDS → get_all_revisions 握手快照含 designsystem 键。事务末尾回滚不留脏数据。
+    """
+    before = await svc.compute_designsystem_revision(session)
+    assert isinstance(before, str) and before
+
+    # 插入一行临时设计系统（事务末尾回滚）→ 全局指纹必须变化
+    probe_hash = f'h_{uuid.uuid4().hex[:12]}'
+    session.add(
+        DesignSystem(
+            owner_hasn_id='hasn:human:wspush-ds-probe',
+            name='WSPUSH 探针设计系统',
+            slug=f'wspush-ds-{uuid.uuid4().hex[:8]}',
+            source_kind='generated',
+            content_hash=probe_hash,
+        )
+    )
+    await session.flush()
+    after = await svc.compute_designsystem_revision(session)
+    assert after != before, '新增设计系统行后 designsystem_revision 未变化'
+
+    # bump 推/缓存的 revision == 权威重算值（daemon 拉取时算出同一值才能正确对账）
+    bumped = await svc.bump('designsystem', session)
+    assert bumped == after, '推送的 designsystem revision 与权威重算值不一致'
+
+    # 已纳入握手全量快照
+    revisions = await svc.get_all_revisions(session)
+    assert 'designsystem' in revisions, 'get_all_revisions 握手快照缺 designsystem 键'

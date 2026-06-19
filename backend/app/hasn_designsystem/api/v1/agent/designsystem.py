@@ -9,10 +9,13 @@ scope 闸（与 scopes.py / hasn-mcp 声明对齐）：
 - 协作绑定（collaborator）→ designsystem:publish（按需，默认 Ask）。
 """
 
+import logging
+
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.app.hasn_designsystem.service.import_service import import_design_source
@@ -22,6 +25,7 @@ from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth, check_sc
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 _SCOPE_WRITE = 'designsystem:write'
 _SCOPE_PUBLISH = 'designsystem:publish'
@@ -29,6 +33,22 @@ _SCOPE_PUBLISH = 'designsystem:publish'
 
 def _subject(agent: AgentTokenPayload) -> Subject:
     return Subject.agent(agent.agent_hasn_id, agent.owner_hasn_id)
+
+
+async def _bump_designsystem_sync(db: AsyncSession, owner_hasn_id: str) -> None:
+    """设计系统写点（save/delete）后 → WSPUSH ``hasn.sync.invalidate(designsystem)`` 给该 owner 在线节点。
+
+    在线 daemon 秒级对账本地镜像（read_through 回填），离线节点靠重连 ``hasn.connected`` 握手对账。
+    owner-scoped 推送：只扰动改动者本人的在线设备，其它 owner 在重连时凭全局 revision 自然追平
+    （设计 doc14/实施12 P5「online 全局 push 是侵入操作」之缓解）。best-effort，推送失败绝不影响写入。
+    """
+    try:
+        from backend.app.hasn.service.sync_invalidate_service import KIND_DESIGNSYSTEM
+        from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+        await sync_bump(KIND_DESIGNSYSTEM, db, owner_id=owner_hasn_id)
+    except Exception as e:  # 推送 best-effort
+        log.warning('[designsystem] sync invalidate 推送失败 (非致命): %s', e)
 
 
 class SaveDesignSystemRequest(BaseModel):
@@ -40,7 +60,9 @@ class SaveDesignSystemRequest(BaseModel):
         'components_html/components_manifest_json/token_contract_report_json'
     )
     category: str | None = Field(default=None, max_length=48)
-    source_kind: str = Field(default='generated', max_length=32, description='generated/imported_shadcn/imported_github/...')
+    source_kind: str = Field(
+        default='generated', max_length=32, description='generated/imported_shadcn/imported_github/...'
+    )
     score: int | None = Field(default=None, ge=0, le=100)
     grade: str | None = Field(default=None, max_length=16)
     recommend_rebuild: bool = False
@@ -80,6 +102,7 @@ async def agent_save_design_system(
         note=body.note,
         enterprise_id=body.enterprise_id,
     )
+    await _bump_designsystem_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
 
 
@@ -87,10 +110,10 @@ async def agent_save_design_system(
 async def agent_list_design_systems(
     db: CurrentSession,
     agent: AgentTokenPayload = DependsAgentJwtAuth,
-    category: str | None = Query(default=None),
-    enterprise_id: int | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    category: Annotated[str | None, Query()] = None,
+    enterprise_id: Annotated[int | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ResponseModel:
     data = await design_system_service.list_visible(
         db,
@@ -108,7 +131,7 @@ async def agent_get_design_system(
     db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
-    enterprise_id: int | None = Query(default=None),
+    enterprise_id: Annotated[int | None, Query()] = None,
 ) -> ResponseModel:
     data = await design_system_service.get(
         db, design_system_id=design_system_id, viewer_owner_hasn_id=agent.owner_hasn_id, enterprise_id=enterprise_id
@@ -124,6 +147,7 @@ async def agent_delete_design_system(
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
     await design_system_service.delete(db, design_system_id=design_system_id, owner_hasn_id=agent.owner_hasn_id)
+    await _bump_designsystem_sync(db, agent.owner_hasn_id)
     return response_base.success()
 
 
@@ -151,18 +175,14 @@ async def agent_get_revision(
 
 
 @router.get('/owner-revision', summary='owner 维度同步水位（content-hash 聚合 revision）')
-async def agent_owner_revision(
-    db: CurrentSession, agent: AgentTokenPayload = DependsAgentJwtAuth
-) -> ResponseModel:
+async def agent_owner_revision(db: CurrentSession, agent: AgentTokenPayload = DependsAgentJwtAuth) -> ResponseModel:
     rev = await design_system_service.compute_owner_revision(db, owner_hasn_id=agent.owner_hasn_id)
     return response_base.success(data={'owner_revision': rev})
 
 
 # ── 导入三入口（DS-P3）：产 tokens.css 草稿交分身 compile ──────────────────────
 @router.post('/import', summary='导入 shadcn/github/screenshot → tokens.css 草稿（草稿≠最终）')
-async def agent_import(
-    body: ImportRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
-) -> ResponseModel:
+async def agent_import(body: ImportRequest, agent: AgentTokenPayload = DependsAgentJwtAuth) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
     data = await import_design_source(body.source, body.ref)
     return response_base.success(data=data)
