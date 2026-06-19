@@ -6,6 +6,7 @@ from backend.app.admin.api.router import client as admin_client
 from backend.app.admin.api.router import v1 as admin_v1
 from backend.app.hasn_client.api.router import client_router
 from backend.app.api.v1.auth import auth_router as client_auth_v1_router
+from backend.app.hasn_copilot.api.router import app as copilot_app
 from backend.app.hasn_deck.api.router import agent as deck_agent
 from backend.app.hasn_deck.api.router import app as deck_app
 from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
@@ -151,6 +152,9 @@ router.include_router(knowledge_agent)        # 知识库 Agent API（/api/v1/kn
 # 任务系统（AI-Native 应用 hasn_task，模块 12，独立 PG schema=hasn_task）
 router.include_router(hasn_task_app)          # 任务系统 用户端 API（/api/v1/hasn-task/app，Owner JWT + 同步/摘要）
 router.include_router(hasn_task_agent)        # 任务系统 Agent API（/api/v1/hasn-task/agent，Agent JWT，task:read/manage/run）
+
+# 会议副驾（潜行会议副驾，模块 copilot，独立 PG schema=hasn_copilot）数据底座
+router.include_router(copilot_app)            # 会议副驾 用户端 API（/api/v1/copilot/app，Owner JWT，owner 硬隔离）
 
 # 通用网页发布与分享（AI-Native 应用 publish，模块 18，独立 PG schema=hasn_publish）
 router.include_router(publish_app)            # 发布 用户端 API（/api/v1/publish/app，Owner JWT，owner 隔离）
