@@ -38,7 +38,16 @@ KIND_BUILTIN_CATALOG = 'builtin_catalog'
 KIND_COMMON_SKILLS = 'common_skills'
 KIND_PLATFORM_CONFIG = 'platform_config'
 KIND_DESIGNSYSTEM = 'designsystem'
+# 全局 kind：单一全局 revision，进 get_all_revisions 握手快照，bump(owner_id=None) 全局广播。
 KINDS = (KIND_BUILTIN_CATALOG, KIND_COMMON_SKILLS, KIND_PLATFORM_CONFIG, KIND_DESIGNSYSTEM)
+
+# owner 定向 kind（doc02-07 LF-P3）：revision 是「某 owner 维度」的指纹，对全局握手无意义，
+# 故**不进 KINDS / get_all_revisions 握手快照**——离线追平靠该 owner 任务镜像的周期 sync_pull，
+# 在线即时刷新靠 bump_owner 向该 owner 在线节点 push。daemon 收到不据 revision 去重、收到即拉。
+KIND_TASKS = 'tasks'
+OWNER_KINDS = (KIND_TASKS,)
+# 某 owner 任务镜像为空时的稳定指纹
+EMPTY_TASKS_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -80,6 +89,29 @@ async def compute_builtin_catalog_revision(db: AsyncSession) -> str:
         return EMPTY_BUILTIN_CATALOG_REVISION
     signature = '\n'.join(lines)
     return hashlib.sha256(signature.encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_tasks_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的任务镜像指纹：sha256(sorted "task_uuid@task_revision" 行)[:16]。
+
+    ``task_revision`` 是任务定义的服务端单调修订号，任一任务被建/改（含状态机迁移：审批、
+    暂停、删除软标记等都会 bump revision 或增删行）→ 集合内某行的指纹变 → 整体指纹变。
+    仅作 invalidate 帧的 ``revision`` 字段：daemon 不据此去重、收到即拉，值变即「该 owner
+    有任务变化」的信号。软删行（``deleted_at`` 非空）落出集合 → 删一个 → 集合缩小 → 指纹变。
+    """
+    from backend.app.hasn_task.model.task import HasnTask
+
+    rows = (
+        await db.execute(
+            sa.select(HasnTask.task_uuid, HasnTask.task_revision).where(
+                HasnTask.owner_id == owner_id, HasnTask.deleted_at.is_(None)
+            )
+        )
+    ).all()
+    lines = sorted(f'{task_uuid}@{revision}' for task_uuid, revision in rows if task_uuid)
+    if not lines:
+        return EMPTY_TASKS_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
 async def _compute_revision(kind: str, db: AsyncSession) -> str:
@@ -157,4 +189,32 @@ async def bump(kind: str, db: AsyncSession, *, owner_id: str | None = None) -> s
         )
     except Exception as exc:  # 推送 best-effort，不拖垮写点
         logger.warning('[sync] broadcast invalidate failed kind=%s: %s', kind, exc)
+    return rev
+
+
+async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
+    """owner 定向写点（如任务变更）：重算该 owner 维度 revision → 仅 push 给该 owner 在线节点。
+
+    与全局 ``bump`` 的差异：
+      - revision 是 per-owner 维度，**不写全局 Redis revision 缓存**（无全局键），
+        **不进 get_all_revisions 握手快照**（per-owner 指纹对全局握手无意义；离线追平靠
+        该 owner 任务镜像的周期 ``sync_pull``）。
+      - push best-effort，不抛：失败不拖垮写点，靠周期 sync_pull 兜底追平。
+
+    返回新 revision。
+    """
+    if kind not in OWNER_KINDS:
+        raise ValueError(f'unknown owner sync kind: {kind}')
+    if kind == KIND_TASKS:
+        rev = await compute_owner_tasks_revision(db, owner_id)
+    else:  # pragma: no cover - OWNER_KINDS 当前只有 tasks，新增 kind 须在此补分支
+        raise ValueError(f'unsupported owner sync kind: {kind}')
+
+    from backend.app.hasn.service.ws_router import ws_router
+
+    try:
+        pushed = await ws_router.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
+        logger.info('[sync] invalidate kind=%s rev=%s pushed=%d owner=%s', kind, rev, pushed, owner_id)
+    except Exception as exc:  # 推送 best-effort，不拖垮写点
+        logger.warning('[sync] broadcast invalidate failed kind=%s owner=%s: %s', kind, owner_id, exc)
     return rev

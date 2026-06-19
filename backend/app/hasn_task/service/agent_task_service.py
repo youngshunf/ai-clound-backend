@@ -236,6 +236,11 @@ class AgentTaskService:
         await hasn_sync_service.gateway.save_task_event(
             db, owner_id=owner_id, node_id=CLOUD_AGENT_NODE_ID, event=event
         )
+        # LF-P3：任务变更后向该 owner 在线节点 push hasn.sync.invalidate{kind:tasks}，
+        # 在线 daemon 秒级对账任务镜像 → daemon→webui 失效桥 → 任务页即时刷新（不再绑死轮询）。
+        from backend.app.hasn.service.sync_invalidate_service import KIND_TASKS, bump_owner
+
+        await bump_owner(KIND_TASKS, db, owner_id)
 
     @classmethod
     def _event_payload_from_row(cls, row: dict[str, Any], **overrides: Any) -> dict[str, Any]:

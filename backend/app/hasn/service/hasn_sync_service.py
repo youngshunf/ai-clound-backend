@@ -1615,6 +1615,12 @@ class HasnSyncService:
             if server_revision is not None:
                 max_server_revision = max(max_server_revision, int(server_revision))
         accepted = len(request.events) - len(rejected)
+        # LF-P3：本设备推上来的任务变更被接受后，向该 owner 其它在线节点 push
+        # hasn.sync.invalidate{kind:tasks}，让它们秒级对账任务镜像（跨设备即时刷新）。
+        if accepted > 0:
+            from backend.app.hasn.service.sync_invalidate_service import KIND_TASKS, bump_owner
+
+            await bump_owner(KIND_TASKS, db, owner_id=request.owner_id)
         return SyncPushResponse(
             accepted=accepted,
             rejected=rejected,
