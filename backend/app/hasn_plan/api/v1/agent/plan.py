@@ -31,13 +31,14 @@ _SCOPE_WRITE = 'plan:write'
 
 
 async def _bump_plan_sync(db: AsyncSession, owner_hasn_id: str) -> None:
-    """分身写点后 → WSPUSH ``hasn.sync.invalidate(plan)`` 给该 owner 在线节点（best-effort）。"""
+    """分身写点后 → WSPUSH ``hasn.sync.invalidate(plan)`` 给该 owner 在线节点（best-effort）。
+
+    plan 是 owner 定向 kind（PLAN-P2，对齐 tasks）：走 ``bump_owner`` 仅推该 owner 的在线节点。
+    """
     try:
         from backend.app.hasn.service import sync_invalidate_service as siv
 
-        kind = getattr(siv, 'KIND_PLAN', None)
-        if kind is not None:
-            await siv.bump(kind, db, owner_id=owner_hasn_id)
+        await siv.bump_owner(siv.KIND_PLAN, db, owner_hasn_id)
     except Exception as e:
         log.warning('[plan] agent sync invalidate 推送失败 (非致命): %s', e)
 

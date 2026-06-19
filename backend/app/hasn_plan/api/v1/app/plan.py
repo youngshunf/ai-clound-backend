@@ -38,14 +38,13 @@ async def _resolve_owner(db: AsyncSession, request: Request) -> str:
 async def _bump_plan_sync(db: AsyncSession, owner_hasn_id: str) -> None:
     """owner 写点后 → WSPUSH ``hasn.sync.invalidate(plan)`` 给该 owner 在线节点（best-effort）。
 
-    P2 接 WSPUSH kind:plan 失效桥；本期 owner 写后不阻塞（KIND_PLAN 尚未铸入则静默跳过）。
+    plan 是 owner 定向 kind（PLAN-P2，对齐 tasks）：走 ``bump_owner`` 仅推该 owner 的在线节点，
+    revision 是 per-owner 维度（不进全局握手）。push 失败不抛——离线设备靠重连握手 + 周期对账追平。
     """
     try:
         from backend.app.hasn.service import sync_invalidate_service as siv
 
-        kind = getattr(siv, 'KIND_PLAN', None)
-        if kind is not None:
-            await siv.bump(kind, db, owner_id=owner_hasn_id)
+        await siv.bump_owner(siv.KIND_PLAN, db, owner_hasn_id)
     except Exception as e:  # 推送 best-effort
         log.warning('[plan] sync invalidate 推送失败 (非致命): %s', e)
 

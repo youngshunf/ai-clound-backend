@@ -45,9 +45,14 @@ KINDS = (KIND_BUILTIN_CATALOG, KIND_COMMON_SKILLS, KIND_PLATFORM_CONFIG, KIND_DE
 # 故**不进 KINDS / get_all_revisions 握手快照**——离线追平靠该 owner 任务镜像的周期 sync_pull，
 # 在线即时刷新靠 bump_owner 向该 owner 在线节点 push。daemon 收到不据 revision 去重、收到即拉。
 KIND_TASKS = 'tasks'
-OWNER_KINDS = (KIND_TASKS,)
+# owner 定向：规划应用（plan）数据变更（任一设备/分身增删改目标/计划/待办/日程/习惯）。
+# 与 tasks 同形态——per-owner 指纹，不进全局握手，靠 bump_owner push + 周期 sync_pull 兜底。
+KIND_PLAN = 'plan'
+OWNER_KINDS = (KIND_TASKS, KIND_PLAN)
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
+# 某 owner 规划数据为空时的稳定指纹（同上约定）
+EMPTY_PLAN_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -112,6 +117,30 @@ async def compute_owner_tasks_revision(db: AsyncSession, owner_id: str) -> str:
     if not lines:
         return EMPTY_TASKS_REVISION
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_plan_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的规划数据指纹：sha256(sorted "table:id@updated_time" 行)[:16]。
+
+    跨核心五表（goal/plan/todo/event/habit）聚合该 owner 的行，任一行被建/改/软移除
+    （status→archived/cancelled/done 也会落 ``updated_time``）→ 集合内某行指纹变 → 整体指纹变。
+    仅作 invalidate 帧的 ``revision`` 字段：daemon 不据此去重、收到即拉该 owner 的 plan 镜像。
+    """
+    from backend.app.hasn_plan.model.event import Event
+    from backend.app.hasn_plan.model.goal import Goal
+    from backend.app.hasn_plan.model.habit import Habit
+    from backend.app.hasn_plan.model.plan import Plan
+    from backend.app.hasn_plan.model.todo import Todo
+
+    lines: list[str] = []
+    for label, model in (('goal', Goal), ('plan', Plan), ('todo', Todo), ('event', Event), ('habit', Habit)):
+        rows = (
+            await db.execute(sa.select(model.id, model.updated_time).where(model.owner_hasn_id == owner_id))
+        ).all()
+        lines.extend(f'{label}:{row_id}@{updated.isoformat() if updated else ""}' for row_id, updated in rows)
+    if not lines:
+        return EMPTY_PLAN_REVISION
+    return hashlib.sha256('\n'.join(sorted(lines)).encode('utf-8')).hexdigest()[:16]
 
 
 async def _compute_revision(kind: str, db: AsyncSession) -> str:
@@ -207,7 +236,9 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         raise ValueError(f'unknown owner sync kind: {kind}')
     if kind == KIND_TASKS:
         rev = await compute_owner_tasks_revision(db, owner_id)
-    else:  # pragma: no cover - OWNER_KINDS 当前只有 tasks，新增 kind 须在此补分支
+    elif kind == KIND_PLAN:
+        rev = await compute_owner_plan_revision(db, owner_id)
+    else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 
     from backend.app.hasn.service.ws_router import ws_router
