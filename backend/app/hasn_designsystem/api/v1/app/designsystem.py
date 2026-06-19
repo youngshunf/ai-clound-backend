@@ -280,3 +280,29 @@ async def app_set_current_revision(
     )
     await _bump_designsystem_sync(db, owner)
     return response_base.success(data=data)
+
+
+# ── 协作分身绑定（AppCollab AC-P3a：与 deck DECKBIND 同模型——单一主协作分身，区别于多协作者名单）──
+class BoundAgentRequest(BaseModel):
+    bound_agent_id: str | None = Field(
+        default=None, description='协作分身 hasn_id（owner 名下 a_* 分身）；null/省略 = 解绑'
+    )
+
+
+@router.post(
+    '/design-systems/{design_system_id}/bound-agent',
+    summary='设置/改绑/解绑协作分身（owner 二次确认；与 deck DECKBIND 同模型）',
+    dependencies=[DependsJwtAuth],
+)
+async def app_set_bound_agent(
+    request: Request,
+    db: CurrentSessionTransaction,
+    design_system_id: Annotated[int, Path(ge=1)],
+    body: BoundAgentRequest,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.set_bound_agent(
+        db, owner_hasn_id=owner, design_system_id=design_system_id, bound_agent_id=body.bound_agent_id
+    )
+    await _bump_designsystem_sync(db, owner)
+    return response_base.success(data=data)
