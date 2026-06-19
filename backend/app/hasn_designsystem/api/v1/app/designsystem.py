@@ -165,3 +165,118 @@ async def app_delete_design_system(
     await design_system_service.delete(db, design_system_id=design_system_id, owner_hasn_id=owner)
     await _bump_designsystem_sync(db, owner)
     return response_base.success(data={'deleted': True})
+
+
+# ── 分享与协作（DS-P9：复用 resource_share；owner-only 管理）────────────────────────
+class ShareRequest(BaseModel):
+    grantee_type: str = Field(description='human | agent | enterprise')
+    grantee_id: str = Field(min_length=1, description='被授予者 ID（人/分身 hasn_id 或企业 id）')
+    permission: str = Field(description='viewer | editor')
+
+
+class GranteeRef(BaseModel):
+    grantee_type: str = Field(description='human | agent | enterprise')
+    grantee_id: str = Field(min_length=1)
+
+
+class CollaboratorRef(BaseModel):
+    agent_hasn_id: str = Field(min_length=1, description='协作分身 hasn_id（owner 名下）')
+
+
+@router.get('/design-systems/{design_system_id}/shares', summary='共享名单（owner）', dependencies=[DependsJwtAuth])
+async def app_list_shares(
+    request: Request, db: CurrentSession, design_system_id: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.list_shares(db, design_system_id=design_system_id, owner_hasn_id=owner)
+    return response_base.success(data=data)
+
+
+@router.post('/design-systems/{design_system_id}/shares', summary='共享给他人（viewer/editor）', dependencies=[DependsJwtAuth])
+async def app_share(
+    request: Request,
+    db: CurrentSessionTransaction,
+    design_system_id: Annotated[int, Path(ge=1)],
+    body: ShareRequest,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.share(
+        db,
+        design_system_id=design_system_id,
+        owner_hasn_id=owner,
+        grantee_type=body.grantee_type,
+        grantee_id=body.grantee_id,
+        permission=body.permission,
+    )
+    await _bump_designsystem_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post('/design-systems/{design_system_id}/shares/revoke', summary='撤销共享（owner）', dependencies=[DependsJwtAuth])
+async def app_revoke_share(
+    request: Request,
+    db: CurrentSessionTransaction,
+    design_system_id: Annotated[int, Path(ge=1)],
+    body: GranteeRef,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.revoke_share(
+        db,
+        design_system_id=design_system_id,
+        owner_hasn_id=owner,
+        grantee_type=body.grantee_type,
+        grantee_id=body.grantee_id,
+    )
+    await _bump_designsystem_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post('/design-systems/{design_system_id}/collaborators', summary='绑定协作分身（owner）', dependencies=[DependsJwtAuth])
+async def app_add_collaborator(
+    request: Request,
+    db: CurrentSessionTransaction,
+    design_system_id: Annotated[int, Path(ge=1)],
+    body: CollaboratorRef,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.add_collaborator(
+        db, design_system_id=design_system_id, owner_hasn_id=owner, agent_hasn_id=body.agent_hasn_id
+    )
+    await _bump_designsystem_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/design-systems/{design_system_id}/collaborators/remove', summary='解绑协作分身（owner）', dependencies=[DependsJwtAuth]
+)
+async def app_remove_collaborator(
+    request: Request,
+    db: CurrentSessionTransaction,
+    design_system_id: Annotated[int, Path(ge=1)],
+    body: CollaboratorRef,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.remove_collaborator(
+        db, design_system_id=design_system_id, owner_hasn_id=owner, agent_hasn_id=body.agent_hasn_id
+    )
+    await _bump_designsystem_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/design-systems/{design_system_id}/revisions/{revision_id}/set-current',
+    summary='采用/回滚到指定版本（owner，含协作待确认版）',
+    dependencies=[DependsJwtAuth],
+)
+async def app_set_current_revision(
+    request: Request,
+    db: CurrentSessionTransaction,
+    design_system_id: Annotated[int, Path(ge=1)],
+    revision_id: Annotated[int, Path(ge=1)],
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.set_current_revision(
+        db, design_system_id=design_system_id, revision_id=revision_id, owner_hasn_id=owner
+    )
+    await _bump_designsystem_sync(db, owner)
+    return response_base.success(data=data)
