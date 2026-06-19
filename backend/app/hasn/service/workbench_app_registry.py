@@ -110,6 +110,11 @@ class WorkbenchAppRegistry:
         from backend.app.hasn_film.manifest import build_film_workbench_app
 
         registry.register(build_film_workbench_app())
+        # 会议副驾 copilot（local_tool AI-Native，无 Agent 工具——走工作会话派发；schema hasn_copilot；
+        # install_policy=manual 非默认挂载，完整实时副驾依赖桌面端原生隐身/音频）。延迟导入避免循环依赖。
+        from backend.app.hasn_copilot.manifest import build_copilot_workbench_app
+
+        registry.register(build_copilot_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:

@@ -49,6 +49,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'growth': 45,  # 获客（设计 §3.2 约 40，置于 publish 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
+    'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -70,6 +71,14 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         'content_operator',
         '你是内容运营应用的执行分身：围绕账号定位做选题、创作与发布编排，沉淀可复用打法；'
         '只调用 hasn.creator.* 工具，产出对客可用的成品，零 fake，失败如实报错。',
+    ),
+    # 会议副驾用专属「会议副驾」分身（hub 模板 meeting-copilot，builtin_key=meeting_copilot），
+    # 非 content_operator——会议实时副驾是独立专长。
+    'copilot': (
+        'meeting_copilot',
+        '你是会议副驾的执行分身：边听会议/通话的双方对话，边给关键要点、可追问的问题、待办与易错点；'
+        '克制不刷屏、宁缺毋滥。会后按结构化纪要方法产出纪要落产物。只在本工作会话内工作，'
+        '听不清就如实标注，零 fake、失败如实报错。',
     ),
 }
 
