@@ -26,6 +26,7 @@ CREATE TABLE "hasn_designsystem"."design_system" (
   "current_revision_id" bigint,
   "content_hash"        varchar(128)   NOT NULL DEFAULT '',
   "bound_agent_id"      varchar(40),
+  "preview_swatches"    jsonb,
   "created_time"        timestamptz(6) NOT NULL DEFAULT now(),
   "updated_time"        timestamptz(6),
   "deleted_time"        timestamptz(6),
@@ -50,6 +51,8 @@ COMMENT ON COLUMN "hasn_designsystem"."design_system"."is_builtin" IS '是否官
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."enterprise_id" IS '归属企业 ID（null=个人；非空=企业私有，引用 public.hasn_enterprise）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."current_revision_id" IS '当前版 revision.id（指向最新 revision）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."content_hash" IS '当前版内容 hash（供同步 revision diff）';
+COMMENT ON COLUMN "hasn_designsystem"."design_system"."bound_agent_id" IS '协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；生成它的分身，负责后续精修，改绑需二次确认）';
+COMMENT ON COLUMN "hasn_designsystem"."design_system"."preview_swatches" IS '列表卡预览色板（denorm 自当前版 tokens.css 关键色，前端列表渲染迷你预览）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."created_time" IS '创建时间';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."updated_time" IS '更新时间';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."deleted_time" IS '软删时间（非空=已删，不物理删以便同步感知）';
