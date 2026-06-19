@@ -1,21 +1,19 @@
-from backend.app.hasn_creator.api.router import v1 as hasn_creator_v1, app as hasn_creator_app, agent as hasn_creator_agent, open_api as hasn_creator_open  # 创作（hasn_creator，独立 PG schema，URL /api/v1/creator/*）
-from backend.app.hasn_designsystem.api.router import v1 as hasn_designsystem_v1  # 设计系统生成（hasn_designsystem，独立 PG schema，URL /api/v1/designsystem/*；当前仅 agent 端）
 from fastapi import APIRouter
 
 from backend.app.admin.api.router import client as admin_client
 from backend.app.admin.api.router import v1 as admin_v1
-from backend.app.hasn_client.api.router import client_router
 from backend.app.api.v1.auth import auth_router as client_auth_v1_router
-from backend.app.hasn_copilot.api.router import app as copilot_app
-from backend.app.hasn_deck.api.router import agent as deck_agent
-from backend.app.hasn_deck.api.router import app as deck_app
-from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
-from backend.app.hasn_knowledge.api.router import app as knowledge_app
-from backend.app.hasn_task.api.router import agent as hasn_task_agent
-from backend.app.hasn_task.api.router import app as hasn_task_app
-from backend.app.hasn_publish.api.router import agent as publish_agent
-from backend.app.hasn_publish.api.router import app as publish_app
-from backend.app.hasn_publish.api.router import hosting as publish_hosting
+
+# 计费（billing）= 支付 pay + 订阅积分 user_tier 合并（ADR-15 §4）；URL 前缀 /api/v1/pay 与 /api/v1/user_tier 保持不变
+from backend.app.billing.api.router import (
+    pay_app,
+    pay_open,
+    pay_v1,
+    user_tier_agent,
+    user_tier_app,
+    user_tier_open,
+    user_tier_v1,
+)
 from backend.app.hasn.api.router import (
     agent as hasn_agent,
 )
@@ -26,6 +24,12 @@ from backend.app.hasn.api.router import (
     app as hasn_app,
 )
 from backend.app.hasn.api.router import (
+    artifacts_agent as hasn_artifacts_agent,
+)
+from backend.app.hasn.api.router import (
+    artifacts_app as hasn_artifacts_app,
+)
+from backend.app.hasn.api.router import (
     open_api as hasn_open,
 )
 from backend.app.hasn.api.router import (
@@ -34,24 +38,24 @@ from backend.app.hasn.api.router import (
 from backend.app.hasn.api.router import (
     ws as hasn_ws,
 )
-from backend.app.hasn.api.router import (
-    artifacts_agent as hasn_artifacts_agent,
-)
-from backend.app.hasn.api.router import (
-    artifacts_app as hasn_artifacts_app,
-)
+from backend.app.hasn_client.api.router import client_router
 from backend.app.hasn_community.api.router import admin as community_admin
 from backend.app.hasn_community.api.router import agent as community_agent
 from backend.app.hasn_community.api.router import app as community_app
 from backend.app.hasn_community.api.router import open_api as community_open
-from backend.app.hermes.api.router import app as hermes_app
-from backend.app.hermes.api.router import internal as hermes_internal
-from backend.app.hermes.api.router import v1 as hermes_v1
-from backend.app.huanxing.api.router import agent as huanxing_agent
-from backend.app.huanxing.api.router import app as huanxing_app
-from backend.app.huanxing.api.router import open_api as huanxing_open
-from backend.app.huanxing.api.router import user_api as huanxing_user
-from backend.app.huanxing.api.router import v1 as huanxing_v1
+from backend.app.hasn_copilot.api.router import app as copilot_app
+from backend.app.hasn_creator.api.router import agent as hasn_creator_agent
+from backend.app.hasn_creator.api.router import app as hasn_creator_app
+from backend.app.hasn_creator.api.router import open_api as hasn_creator_open
+from backend.app.hasn_creator.api.router import (  # 创作（hasn_creator，独立 PG schema，URL /api/v1/creator/*）
+    v1 as hasn_creator_v1,
+)
+from backend.app.hasn_deck.api.router import agent as deck_agent
+from backend.app.hasn_deck.api.router import app as deck_app
+from backend.app.hasn_designsystem.api.router import (
+    v1 as hasn_designsystem_v1,  # 设计系统生成（hasn_designsystem，独立 PG schema，URL /api/v1/designsystem/*；当前仅 agent 端）
+)
+
 # 获客（hasn_growth，采集子域收编，独立 PG schema=hasn_growth）
 # canonical 前缀 /api/v1/growth/*（旧 /api/v1/lead-automation/* 薄转发已于 M8 退役 2026-06-13）
 from backend.app.hasn_growth.api.router import (
@@ -66,28 +70,40 @@ from backend.app.hasn_growth.api.router import (
 from backend.app.hasn_growth.api.router import (
     v1 as growth_v1,
 )
-# 自建 LLM 网关 app/llm 已删除（2026-06-15 new-api 解耦）；/api/v1/llm/* 全部由 app/newapi 接管。
-# new-api 集成模块（D1/D5）：自建 API Key + new-api 用户映射 + 用量汇总 + 可用模型目录。URL 前缀 /api/v1/llm/* 不变。
-from backend.app.newapi.api.router import app as newapi_app
-from backend.app.newapi.api.router import v1 as newapi_v1
+from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
+from backend.app.hasn_knowledge.api.router import app as knowledge_app
+from backend.app.hasn_plan.api.router import (
+    v1 as hasn_plan_v1,  # 规划与目标管理（hasn_plan，独立 PG schema，URL /api/v1/plan/*；app+agent 双端）
+)
+from backend.app.hasn_publish.api.router import agent as publish_agent
+from backend.app.hasn_publish.api.router import app as publish_app
+from backend.app.hasn_publish.api.router import hosting as publish_hosting
+from backend.app.hasn_task.api.router import agent as hasn_task_agent
+from backend.app.hasn_task.api.router import app as hasn_task_app
+from backend.app.hermes.api.router import app as hermes_app
+from backend.app.hermes.api.router import internal as hermes_internal
+from backend.app.hermes.api.router import v1 as hermes_v1
+from backend.app.huanxing.api.router import agent as huanxing_agent
+from backend.app.huanxing.api.router import app as huanxing_app
+from backend.app.huanxing.api.router import open_api as huanxing_open
+from backend.app.huanxing.api.router import user_api as huanxing_user
+from backend.app.huanxing.api.router import v1 as huanxing_v1
 from backend.app.marketplace.api.router import admin as marketplace_admin
 from backend.app.marketplace.api.router import agent as marketplace_agent
 from backend.app.marketplace.api.router import app as marketplace_app
 from backend.app.marketplace.api.router import open_api as marketplace_open
 from backend.app.marketplace.api.router import publish as marketplace_publish
 from backend.app.marketplace.api.router import webhook as marketplace_webhook
+
+# 自建 LLM 网关 app/llm 已删除（2026-06-15 new-api 解耦）；/api/v1/llm/* 全部由 app/newapi 接管。
+# new-api 集成模块（D1/D5）：自建 API Key + new-api 用户映射 + 用量汇总 + 可用模型目录。URL 前缀 /api/v1/llm/* 不变。
+from backend.app.newapi.api.router import app as newapi_app
+from backend.app.newapi.api.router import v1 as newapi_v1
 from backend.app.notification.api.router import admin as notification_admin
 from backend.app.notification.api.router import agent as notification_agent
 from backend.app.notification.api.router import app as notification_app
-# 计费（billing）= 支付 pay + 订阅积分 user_tier 合并（ADR-15 §4）；URL 前缀 /api/v1/pay 与 /api/v1/user_tier 保持不变
-from backend.app.billing.api.router import pay_v1
-from backend.app.billing.api.router import pay_app
-from backend.app.billing.api.router import pay_open
-from backend.app.billing.api.router import user_tier_v1
-from backend.app.billing.api.router import user_tier_app
-from backend.app.billing.api.router import user_tier_open
-from backend.app.billing.api.router import user_tier_agent
 from backend.app.task.api.router import v1 as task_v1
+
 # 工作台（workbench）= 原 app/hasn 工作台子域按 ADR-15 §4 抽出；URL /api/v1/hasn/app/workbench/* 保持不变
 from backend.app.workbench.api.router import workbench_app
 
@@ -187,3 +203,5 @@ router.include_router(hasn_creator_agent)
 router.include_router(hasn_creator_open)
 
 router.include_router(hasn_designsystem_v1)
+
+router.include_router(hasn_plan_v1)
