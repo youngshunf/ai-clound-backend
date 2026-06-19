@@ -174,6 +174,9 @@ async def seed_builtin_design_systems(db: AsyncSession) -> dict[str, list[str]]:
         await db.flush()
         _assign_root(current, entry, content, hashed, now)
         current.current_revision_id = rev.id
+        # 显式 flush 切版后的 current_revision_id：与新建分支（SAVEPOINT 内已 flush）对齐，
+        # 确保 FK 在本事务内即落库——否则调用方在 commit 前 refresh 会读到旧版（漏掉换代）。
+        await db.flush()
         updated.append(slug)
 
     # 退役：DB 有、seed 无 → 软删（历史遗留官方库占位条目，如旧『官方暖沙』）。
