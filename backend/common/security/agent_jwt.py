@@ -45,6 +45,11 @@ DEFAULT_AGENT_SCOPES = [
     'marketplace:read',
     'marketplace:install',
     'marketplace:publish',
+    # designsystem 自研设计系统应用（14-doc/20 设计 §7；DS-P7 铸 scope）。写类 import/save 落 :write；
+    # 分享/发布（P9/P10）落 :publish。读类与确定性纯函数无 scope（不在此登记，避免假闸门）。
+    # check_scopes 仍按此 claim 校验，故 Agent 调云端 designsystem/agent/* 写类必须在此铸入。
+    'designsystem:write',
+    'designsystem:publish',
 ]
 
 

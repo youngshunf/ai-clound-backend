@@ -100,6 +100,11 @@ class WorkbenchAppRegistry:
         from backend.app.hasn_creator.manifest import build_creator_workbench_app
 
         registry.register(build_creator_workbench_app())
+        # 自研设计系统 designsystem（local_tool AI-Native，schema hasn_designsystem；install_policy=manual
+        # 非默认挂载——本期只铸 scope+注册 manifest，启动入口随 P8 webui+catalog 行落地）。延迟导入避免循环依赖。
+        from backend.app.hasn_designsystem.manifest import build_designsystem_workbench_app
+
+        registry.register(build_designsystem_workbench_app())
         return registry
 
     def register(self, app: WorkbenchApp) -> None:

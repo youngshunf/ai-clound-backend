@@ -4,16 +4,17 @@ import hashlib
 
 from typing import TYPE_CHECKING, Any
 
-from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
-from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
@@ -42,6 +43,8 @@ class AINativeAppRegistry:
             'growth': GROWTH_AI_NATIVE_MANIFEST,
             # 创作运营（app_id=creator，模块/schema hasn_creator）。键用 app_id（de-prefixed）。
             'creator': CREATOR_AI_NATIVE_MANIFEST,
+            # 自研设计系统生成应用（app_id=designsystem，模块 14/20；local_tool，DS-P7 铸 scope）。
+            'designsystem': DESIGNSYSTEM_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
@@ -222,7 +225,7 @@ def _builtin_manifest_payload(manifest: dict[str, Any], *, manifest_hash: str | 
 
 def _manifest_hash(manifest: dict[str, Any]) -> str:
     payload = repr(manifest).encode('utf-8')
-    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    return f'sha256:{hashlib.sha256(payload).hexdigest()}'
 
 
 ai_native_app_registry: AINativeAppRegistry = AINativeAppRegistry()
