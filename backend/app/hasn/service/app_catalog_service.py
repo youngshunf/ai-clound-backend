@@ -21,8 +21,10 @@ import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.workbench_app_registry import WorkbenchApp, workbench_app_registry
+from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.app.billing.model import UserSubscription
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
@@ -48,6 +50,27 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
+
+# AppCollab（doc21 §4.3/§5.4）：应用默认承接的内置 agent 类型键 + 唤起分身注入的业务提示词模板。
+# 同型键 = 一个分身默认服务多应用（deck/designsystem/creator 同为 content_operator → 一个「内容运营官」服务三应用）。
+# 未列出的应用 default_agent_type=NULL（回退主脑）、work_session_system_prompt=NULL（仅用本次指令）。
+_CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
+    'deck': (
+        'content_operator',
+        '你是演示文稿应用的执行分身：把主人的诉求做成结构清晰、视觉专业的演示文稿，'
+        '只调用 hasn.deck.* 工具就地生成与精修；产出对客可用的成品，零 fake，失败如实报错。',
+    ),
+    'designsystem': (
+        'content_operator',
+        '你是设计系统应用的执行分身：产出渲染目标无关的 token 契约 + 组件库，下游一律 var(--token) 消费；'
+        '只调用 hasn.designsystem.* 工具，零 fake，失败如实报错。',
+    ),
+    'creator': (
+        'content_operator',
+        '你是内容运营应用的执行分身：围绕账号定位做选题、创作与发布编排，沉淀可复用打法；'
+        '只调用 hasn.creator.* 工具，产出对客可用的成品，零 fake，失败如实报错。',
+    ),
+}
 
 
 def _catalog_row_from_workbench_app(app: WorkbenchApp) -> dict:
@@ -80,6 +103,9 @@ def _catalog_row_from_workbench_app(app: WorkbenchApp) -> dict:
         'sku_ref': None,
         # 现有 builtin（knowledge/community/deck）都有对应 code manifest。
         'manifest_present': True,
+        # AppCollab：默认承接分身类型 + 业务提示词（doc21 §4.3）。未列出的应用留 None。
+        'default_agent_type': _CATALOG_AGENT_DEFAULTS.get(app.id, (None, None))[0],
+        'work_session_system_prompt': _CATALOG_AGENT_DEFAULTS.get(app.id, (None, None))[1],
     }
 
 
@@ -98,6 +124,56 @@ async def ensure_catalog_seeded(db: AsyncSession) -> int:
     if inserted:
         await db.flush()
     return inserted
+
+
+async def resolve_default_agent_for_app(
+    db: AsyncSession, *, owner_id: str, app_id: str
+) -> str | None:
+    """AppCollab（doc21 §7.2）：打开应用时默认承接的分身 hasn_id。
+
+    算法对称 ``builtin_seeding_service.seed_builtin_tasks`` 的「按类型取一、回退主脑」：
+    1. 读 ``catalog.default_agent_type``；
+    2. 非空则取 owner 名下 ``builtin_agent_key == default_agent_type`` 的最早活跃分身；
+    3. 命中即返回；否则回退主脑（``workbench_pref.primary_agent_id`` → ``role='primary'`` → 首个活跃）。
+
+    无任何活跃分身返回 ``None``（诚实空态，调用方提示先建分身）。同型键 = 一个分身默认服务多应用。
+    """
+    agents = list(
+        (
+            await db.execute(
+                sa.select(HasnAgents)
+                .where(HasnAgents.owner_id == owner_id, HasnAgents.status == 'active')
+                .order_by(HasnAgents.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not agents:
+        return None
+
+    catalog = await get_catalog(db, app_id=app_id)
+    want = (catalog.default_agent_type or '') if catalog else ''
+    if want:
+        for a in agents:
+            if a.builtin_agent_key == want:
+                return a.hasn_id
+
+    # 回退主脑：pref.primary_agent_id → role=primary → 首个活跃。
+    pref_pid = (
+        await db.execute(
+            sa.select(HasnOwnerWorkbenchPref.primary_agent_id).where(
+                HasnOwnerWorkbenchPref.owner_hasn_id == owner_id
+            )
+        )
+    ).scalar_one_or_none()
+    by_id = {a.hasn_id: a for a in agents}
+    if pref_pid and pref_pid in by_id:
+        return pref_pid
+    for a in agents:
+        if a.role == 'primary':
+            return a.hasn_id
+    return agents[0].hasn_id
 
 
 async def sweep_expired_entitlements(db: AsyncSession) -> int:

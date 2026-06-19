@@ -37,3 +37,13 @@ class HasnAppCatalog(Base):
     trial_days: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='试用天数（0=无试用）')
     sku_ref: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='对接计费商品/订单 SKU（预留）')
     manifest_present: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='是否有对应 code manifest（部署期回填）')
+    default_agent_type: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        default=None,
+        comment='打开本应用默认承接的内置 agent 类型键(=marketplace_template.builtin_key)；NULL=回退主脑(AppCollab doc21 §4.3/§7)',
+    )
+    work_session_system_prompt: Mapped[str | None] = mapped_column(
+        sa.Text(),
+        default=None,
+        comment='唤起分身时注入 work_session 的应用业务提示词(职责/产出形态/调用工具/零fake)，与本次指令组合(AppCollab doc21 §5.4)',
+    )
