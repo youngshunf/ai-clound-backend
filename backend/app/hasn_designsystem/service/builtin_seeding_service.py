@@ -1,8 +1,9 @@
 """DS-P6 官方内置设计系统播种（reconcile：新增 / 内容变更替换 / 退役删除）。
 
-读已提交的 seed JSON（唤星自研生成器 `crates/hasn-designsystem-core/examples/gen_builtin.rs` 用
-确定性 token 契约引擎产出的 12 套产品视角中文设计系统：tokens.css 真源 + 派生 design-tokens.json/
-tailwind-v4.css + 评分报告 + 组件样例 + 中文 DESIGN.md + 列表卡预览色板），落成 ``owner='system'``、
+读已提交的 seed JSON（唤星自研生成器 `crates/hasn-designsystem-core/examples/gen_builtin.rs` 从
+父仓 `external/open-design`(Apache-2.0) 提取 150 套设计系统，用确定性 token 契约引擎真算评分并
+**去品牌中文化**：tokens.css 真源(剥注释+去专有品牌字体+冠中文头) + 派生 design-tokens.json/
+tailwind-v4.css + 评分报告 + 中性组件样例 + 中文设计说明 + 列表卡预览色板），落成 ``owner='system'``、
 ``is_builtin=True``、``source_kind='seed'`` 的**全局只读**设计系统 + 首版 revision。评分均
 excellent/100（生成器侧设了「非 excellent 即报错」的准入闸）。
 

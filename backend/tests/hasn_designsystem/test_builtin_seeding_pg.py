@@ -1,7 +1,7 @@
 """DS-P6 官方内置设计系统播种真实 PG 验收（零 mock）。
 
-覆盖 P6 验收（doc12 P6）+ 内置库修复（福仔 2026-06-19）：
-- seed JSON 12 套产品视角中文命名设计系统（极简墨白 / 科技深蓝 …），评分均 excellent/100、契约合规；
+覆盖 P6 验收（doc12 P6）+ 内置库修复（福仔 2026-06-19）+ Open Design 150 套重做（ODLIB）：
+- seed JSON 150 套去品牌中文化设计系统（源自 Open Design，中文产品名 + 中文分类），评分均 excellent/100、契约合规；
 - seed_builtin_design_systems reconcile：seed slug 落成 owner='system'、is_builtin=True、
   source_kind='seed' 的全局只读设计系统 + 首版 revision（含完整 token 契约内容）+ 预览色板；
 - 幂等：内容未变再跑一次零变更（created/updated/retired 全空）；
@@ -90,7 +90,8 @@ def test_seed_json_meets_acceptance_gate() -> None:
         assert c['tokens_css'] and ':root' in c['tokens_css'], f'{e["slug"]} tokens.css 缺失'
         assert isinstance(c['design_tokens_json'], dict) and c['design_tokens_json'].get('summary')
         assert c['tailwind_css'] and '@theme' in c['tailwind_css']
-        assert c['design_md'] and len(c['design_md']) > 100, f'{e["slug"]} DESIGN.md 过短'
+        # 设计说明（中文）：150 套各一段简洁说明（配色/排版/圆角/场景），非空且非占位 stub。
+        assert c['design_md'] and len(c['design_md']) > 40, f'{e["slug"]} 设计说明过短'
         assert c['components_html'] and '<' in c['components_html']
         assert isinstance(c['components_manifest_json'], dict)
         assert isinstance(c['token_contract_report_json'], dict)
@@ -145,7 +146,7 @@ async def test_seed_inserts_builtin_with_revisions_and_is_idempotent(session: As
         assert rev.author_id == 'system'
         assert rev.tokens_css and ':root' in rev.tokens_css
         assert isinstance(rev.design_tokens_json, dict) and rev.design_tokens_json.get('summary')
-        assert rev.design_md and len(rev.design_md) > 100
+        assert rev.design_md and len(rev.design_md) > 40
 
     assert len(cats_seen) >= 6, f'落库品类多样性不足（仅 {len(cats_seen)} 类）'
 

@@ -369,7 +369,10 @@ class DesignSystemService:
                     select(DesignSystem)
                     .where(*where)
                     .order_by(
-                        DesignSystem.is_builtin.desc(), DesignSystem.updated_time.desc(), DesignSystem.id.desc()
+                        # owner 自己/共享给我的（非 builtin）排在官方内置库之前：内置库 150 套不该把
+                        # 「我的设计」挤出首页（默认 limit=50 时尤甚）。webui 两 Tab 各自客户端按
+                        # is_builtin 过滤同一份列表（daemon 取 200 全返），此序保证两 Tab 都不丢数据。
+                        DesignSystem.is_builtin.asc(), DesignSystem.updated_time.desc(), DesignSystem.id.desc()
                     )
                     .limit(limit)
                     .offset(offset)
