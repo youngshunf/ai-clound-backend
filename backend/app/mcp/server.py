@@ -112,17 +112,21 @@ class HasnCloudMcpServer:
             工具列表
         """
         try:
-            await self._load_app_tools(agent_context)
-
             # 渐进式暴露（设计 03 §9）：默认只回 bootstrap 元工具（tool.search + tool.call）。
+            # 这两个元工具在 __init__ 启动期已静态注册（registry.BOOTSTRAP_TOOL_NAMES），
+            # 不依赖按 agent/owner 动态加载的 app 工具——故此处**不**调 _load_app_tools()，
+            # 省掉 list_tools 路径上每次 keepalive 都白跑一遍的 DB/网络加载。
+            # （hermes Runtime 每 180s 拿 list_tools 当连通性探测，调用量虽小但纯属浪费。）
             # 长尾工具不进清单，function-calling Runtime 经 hasn.cloud.tool.call 直调任意
-            # canonical name（legacy_all 全量暴露已退役）。`namespace` 仅兼容保留，不收窄。
+            # canonical name；tool.call/tool.search 在各自路径里自行 _load_app_tools 加载目录。
+            # `namespace` 仅兼容保留，不收窄。
             available_tools = self.tool_directory.list_bootstrap_tools(agent_context)
         except Exception as e:
             logger.error(f'Error listing tools: {e!s}', exc_info=True)
             raise
         else:
-            logger.info(f'Agent {agent_context.hasn_id} listed {len(available_tools)} tools')
+            # 例行 keepalive 探测，降到 DEBUG，避免刷屏（对齐 daemon 侧 hasn-mcp server.rs）。
+            logger.debug(f'Agent {agent_context.hasn_id} listed {len(available_tools)} tools')
             return available_tools
 
     async def call_tool(self, agent_context: AgentContext, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
