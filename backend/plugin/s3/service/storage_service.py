@@ -54,6 +54,10 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     # 网页发布制品（模块 18）：私有桶；语义独立于 dm_attachment，**不触发 extract 抽取流水线**
     # （extract 由 register_asset(extract_status='pending') 这层显式触发，本类别不进那条路径）。
     'published_artifact': ('private', 3600),
+    # downloadable_local 应用引擎分发包（模块 14 / FILMPUB）：**公共桶、不签名、无 TTL**。
+    # daemon 是无鉴权纯 GET 下载（install.rs::http_get_bytes）+ sha256 校验，URL 必须长效公开，
+    # 不能是会过期的签名 URL——故归 public，与 user_avatar 等同策略。
+    'film_engine': ('public', None),
 }
 
 # category → 对象前缀目录（key 的第一段，content-addressed 之上）。
@@ -64,6 +68,7 @@ CATEGORY_DIR: dict[str, str] = {
     'dm_attachment': 'dm',
     'private_doc': 'docs',
     'published_artifact': 'published',
+    'film_engine': 'film-engine',
 }
 
 # 缓存 margin：缓存 TTL = 签名有效期 - margin，保证缓存命中时签名仍有效（1c）。

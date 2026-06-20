@@ -194,6 +194,97 @@ async def get_all_app_configs(db: AsyncSession) -> dict[str, dict]:
     return {app_id: cfg for app_id, cfg in rows if cfg}
 
 
+def merge_engine_package(
+    config_json: dict | None,
+    *,
+    os_arch: str,
+    version: str,
+    key: str,
+    url: str,
+    sha256: str,
+    size: int,
+) -> dict:
+    """把一个引擎分发包条目并入 ``config_json.engine``，返回**新** dict（不原地改）。
+
+    语义（与 ``scripts/build/package-film-engine.sh`` 的 manifest 累积一致，FILMPUB）：
+    - 同版本：累积/覆盖对应 ``os_arch`` 包条目（多架构分别发布合进同一 manifest）。
+    - 版本跃迁（已有非空 version 且与本次不同）：旧 packages 全清空重来——旧架构包不属于新版本，
+      留着会让 daemon 下到版本不匹配的包。
+    - ``version`` 为空字符串视为「未发布过」，直接采用本次 version。
+    """
+    existing = dict(config_json or {})
+    engine = dict(existing.get('engine') or {})
+    prev_version = (engine.get('version') or '').strip()
+    packages = dict(engine.get('packages') or {})
+    if prev_version and prev_version != version:
+        packages = {}
+    packages[os_arch] = {'key': key, 'url': url, 'sha256': sha256, 'size': size}
+    engine['version'] = version
+    engine['packages'] = packages
+    existing['engine'] = engine
+    return existing
+
+
+async def publish_engine_package(
+    db: AsyncSession,
+    *,
+    pk: int,
+    os_arch: str,
+    version: str,
+    data: bytes,
+    filename: str,
+    expected_sha256: str | None = None,
+) -> dict:
+    """上传引擎分发包到**公共桶**并写入对应 catalog 行的 ``config_json.engine``（FILMPUB）。
+
+    顺序约束（先上传、可达后再写配置，否则全网 daemon 会去下 404）：
+    1. 服务端**权威**计算 sha256 + size（``expected_sha256`` 给了则交叉校验，防上传损坏）。
+    2. ``StorageService.upload(category='film_engine')`` 落公共桶，得不签名 CDN 直读 URL。
+    3. ``merge_engine_package`` 并入 ``config_json.engine``（新 dict 整体赋回，触发 JSONB 脏标记）。
+    4. ``sync_bump('platform_config')`` push 失效 → 在线 daemon 秒级重拉 engine manifest。
+
+    返回写入后的 engine 配置（``{version, packages}``）。
+    """
+    import hashlib
+
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+    from backend.plugin.s3.service.storage_service import StorageService
+
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if expected_sha256 and expected_sha256.lower() != actual_sha256.lower():
+        raise errors.RequestError(
+            msg=f'引擎包 sha256 不匹配：客户端 {expected_sha256}，服务端 {actual_sha256}（上传损坏）'
+        )
+
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+
+    object_key = f'film-engine/{catalog.app_id}/{version}/{filename}'
+    ref = await StorageService.upload(
+        db,
+        data,
+        category='film_engine',
+        filename=filename,
+        content_type='application/zip',
+        key=object_key,
+    )
+
+    catalog.config_json = merge_engine_package(
+        catalog.config_json,
+        os_arch=os_arch,
+        version=version,
+        key=object_key,
+        url=ref.stable_url,
+        sha256=actual_sha256,
+        size=len(data),
+    )
+    await db.flush()
+    await sync_bump('platform_config', db)
+    return catalog.config_json['engine']
+
+
 async def resolve_default_agent_for_app(db: AsyncSession, *, owner_id: str, app_id: str) -> str | None:
     """AppCollab（doc21 §7.2）：打开应用时默认承接的分身 hasn_id。
 

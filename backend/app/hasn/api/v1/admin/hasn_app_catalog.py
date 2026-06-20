@@ -2,7 +2,7 @@ import logging
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, File, Form, Path, UploadFile
 
 from backend.app.hasn.schema.hasn_app_catalog import (
     CreateHasnAppCatalogParam,
@@ -10,6 +10,7 @@ from backend.app.hasn.schema.hasn_app_catalog import (
     GetHasnAppCatalogDetail,
     UpdateHasnAppCatalogParam,
 )
+from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.hasn_app_catalog_service import hasn_app_catalog_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
@@ -85,6 +86,38 @@ async def update_hasn_app_catalog(
             log.warning(f'[HASN] app_catalog 变更 platform_config invalidate 推送失败 (非致命): {e}')
         return response_base.success()
     return response_base.fail()
+
+
+@router.post(
+    '/{pk}/engine-package',
+    summary='上传 downloadable_local 引擎分发包并写入 config_json.engine（FILMPUB 一键发布）',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:catalog:edit')),
+        DependsRBAC,
+    ],
+    name='admin_publish_engine_package',
+)
+async def publish_engine_package(
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='AI-Native 应用目录（云端权威） ID')],
+    file: Annotated[UploadFile, File(description='引擎分发包 zip（顶层含 backend/）')],
+    os_arch: Annotated[str, Form(description='目标架构，如 darwin-aarch64 / linux-x86_64')],
+    version: Annotated[str, Form(description='引擎版本（多架构须同版本）')],
+    sha256: Annotated[str | None, Form(description='客户端算的 sha256，交叉校验上传完整性')] = None,
+) -> ResponseSchemaModel[dict]:
+    # 服务端权威算 sha256/size → 落公共桶 → 并入 config_json.engine → sync_bump（push 全网 daemon）。
+    # 顺序：先上传可达再写配置，绝不让 daemon 去下 404（详见 service.publish_engine_package）。
+    data = await file.read()
+    engine = await app_catalog_service.publish_engine_package(
+        db,
+        pk=pk,
+        os_arch=os_arch,
+        version=version,
+        data=data,
+        filename=file.filename or f'film-{os_arch}-{version}.zip',
+        expected_sha256=sha256,
+    )
+    return response_base.success(data=engine)
 
 
 @router.delete(
