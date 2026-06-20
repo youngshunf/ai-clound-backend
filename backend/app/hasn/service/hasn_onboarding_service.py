@@ -174,7 +174,17 @@ class SqlAlchemyLlmCredentialIssuer:
             username=user.phone or user.username,
             nickname=user.nickname or '',
         )
-        return f'sk-{mapping.newapi_token_key}', settings.LLM_API_BASE_URL, settings.LLM_DEFAULT_MODEL
+        # 只下发 per-owner 的 token + base_url；**主模型一律留空（None）**。
+        # 历史上这里回 `settings.LLM_DEFAULT_MODEL`（恒为 'gpt-5.5'），会被 daemon 镜像进
+        # `owner_llm_credentials.llm_model`，并在主模型解析链
+        # `per_agent.or(owner_model).or(platform_default_main).or(configured_model)` 里
+        # 以 `owner_model` 身份**恒先命中**——直接把平台默认配置下发（PDC）的
+        # `agent_runtime.models.main` 永久架空（运营在 Admin 改了也下不去）。
+        # 全局默认模型的唯一权威是 PDC 单行（platform_default_config）+ 节点 config
+        # `configured_model` 兜底；此处不再注入「全局默认伪装成 per-owner 偏好」。
+        # daemon 收到 None 即把本地镜像列覆盖为 NULL（session.rs 覆盖式 upsert），
+        # 存量 owner 下次登录自愈，无需迁移。未来若要真正的 per-user 选模型，再写真实值。
+        return f'sk-{mapping.newapi_token_key}', settings.LLM_API_BASE_URL, None
 
 
 class SqlAlchemyAgentTokenIssuer:

@@ -290,3 +290,31 @@ async def test_onboarding_ensure_closes_old_user_default_agent_and_pending_inten
     assert response.sync_cursor == 'owner:h_owner_1:0'
     assert gateway.consumed == [('pi_resume_1', 'h_owner_1', 'a_default_1')]
     assert set(gateway.node_infos[0]).isdisjoint(PRIVATE_NODE_INFO_KEYS)
+
+
+@pytest.mark.asyncio
+async def test_llm_credential_issuer_never_sends_global_default_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实 LLM 凭据下发只给 token+base_url，主模型恒为 None——绝不下发全局默认模型。
+
+    回归锁：历史上 ``issue()`` 回 ``settings.LLM_DEFAULT_MODEL``（恒 'gpt-5.5'），会被 daemon
+    镜像进 ``owner_llm_credentials.llm_model`` 并在主模型解析链里以 ``owner_model`` 身份恒先命中，
+    把平台默认配置下发（PDC）的 ``agent_runtime.models.main`` 永久架空（运营改了也下不去）。
+    全局默认模型唯一权威是 PDC 单行 + 节点 config 兜底；此处必须留空。
+    """
+    from backend.app.hasn.service.hasn_onboarding_service import SqlAlchemyLlmCredentialIssuer
+    from backend.app.newapi.service import llm_newapi_user_mapping_service
+
+    async def _fake_ensure_newapi_user(*_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(newapi_token_key='tok_xyz')
+
+    # 隔离外部 new-api 依赖（测试的是 issuer 的「选模型」决策，不是 new-api 本身）。
+    monkeypatch.setattr(
+        llm_newapi_user_mapping_service, 'ensure_newapi_user', _fake_ensure_newapi_user
+    )
+
+    user = FakeUser(id=42, username='13800000000', nickname='测试主人', phone='13800000000')
+    token, base_url, model = await SqlAlchemyLlmCredentialIssuer().issue(db=None, user=user)
+
+    assert token == 'sk-tok_xyz'
+    assert base_url  # per-owner base_url 仍下发
+    assert model is None  # 关键断言：主模型留空，平台默认当权威
