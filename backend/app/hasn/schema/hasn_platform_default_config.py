@@ -27,30 +27,10 @@ class PlatformMediaDefaults(SchemaBase):
     )
 
 
-class PlatformFilmDefaults(SchemaBase):
-    """VideoClaw 视频引擎（film 应用）节点级默认。
-
-    五类模型 failover 列表（空=daemon 退回本机 ``config [film]``）；``package_manifest_url`` 为
-    ``downloadable_local`` 引擎分发包 manifest 地址（空=未配置，daemon 据此 honest 拒绝下载，
-    绝不瞎拉）。运营在 new-api 开通模型 / 对象存储托管引擎包后，经 Admin 平台默认配置下发。
-    """
-
-    llm_models: list[str] = Field(default_factory=list, description='脚本/规划 LLM failover 顺序')
-    vlm_models: list[str] = Field(default_factory=list, description='视觉理解 VLM failover 顺序')
-    image_t2i_models: list[str] = Field(default_factory=list, description='文生图模型 failover 顺序')
-    image_it2i_models: list[str] = Field(default_factory=list, description='图生图模型 failover 顺序')
-    video_models: list[str] = Field(default_factory=list, description='视频生成模型 failover 顺序')
-    package_manifest_url: str = Field(
-        default='',
-        description='downloadable_local 引擎分发包 manifest 地址（对象存储签名 URL）。空=未配置——运营托管包后在 Admin 填',
-    )
-
-
 class PlatformNodeDefaults(SchemaBase):
     """节点级平台默认。"""
 
     media: PlatformMediaDefaults = Field(default_factory=PlatformMediaDefaults, description='媒体模型默认')
-    film: PlatformFilmDefaults = Field(default_factory=PlatformFilmDefaults, description='视频引擎默认')
 
 
 class PlatformAgentRuntimeDefaults(SchemaBase):
@@ -60,11 +40,22 @@ class PlatformAgentRuntimeDefaults(SchemaBase):
 
 
 class PlatformDefaultConfig(SchemaBase):
-    """平台默认配置（覆盖式整体）。"""
+    """平台默认配置（覆盖式整体）。
+
+    ``node``/``agent_runtime`` 是真·平台默认（Admin「平台默认配置」页编辑、覆盖式 PUT 写回 PDC 表）；
+    ``app_configs`` 是**只读下发聚合**——各 AI-Native 应用自治的 ``hasn_app_catalog.config_json``
+    （如 film 的 5 类模型 + 引擎包 manifest 内联），权威在 catalog、管理端编辑 catalog，这里只搭
+    platform-config 下发通道（compute_revision 涵盖→daemon 重拉→从 ``app_configs.<app_id>`` 读）。
+    **PUT 写回不得反向写 catalog**（service.update_config 落 PDC 表时丢弃 app_configs）。
+    """
 
     node: PlatformNodeDefaults = Field(default_factory=PlatformNodeDefaults, description='节点级默认')
     agent_runtime: PlatformAgentRuntimeDefaults = Field(
         default_factory=PlatformAgentRuntimeDefaults, description='agent 运行时默认'
+    )
+    app_configs: dict = Field(
+        default_factory=dict,
+        description='各 AI-Native 应用平台级配置聚合（app_id→config_json），源自 hasn_app_catalog.config_json，只读下发',
     )
 
 

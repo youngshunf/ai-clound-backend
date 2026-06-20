@@ -16,8 +16,11 @@
 from __future__ import annotations
 
 import pytest
+import sqlalchemy as sa
 
+from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefaultConfig
+from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn.service.platform_default_config_service import (
     DEFAULT_PLATFORM_CONFIG,
 )
@@ -71,36 +74,62 @@ async def test_update_persists_video_models_for_node_downlink() -> None:
         assert cfg.node.media.video_models == ['sora-1', 'kling-1']
 
 
-async def test_factory_default_includes_film_section_unconfigured() -> None:
-    """出厂默认含 node.film：五类模型空 + package_manifest_url 空（honest 未配置，VC-P2-C1）。
+async def test_no_film_section_in_pdc_factory_default() -> None:
+    """PDC 出厂默认不再含 node.film（FILMCFG-1：应用专属配置迁出到 hasn_app_catalog.config_json）。
 
-    daemon engine_manifest_url() 读 node.film.package_manifest_url——空时返 None →
-    引擎状态 manifest_configured=false，webui 显示「引擎包未配置」，绝不瞎拉不存在的地址。
+    node 只保留跨应用的 media 默认；film 的 5 类模型 + 引擎包 manifest 现由 catalog 承载、
+    经 app_configs 聚合下发——见 test_app_configs_aggregated_from_catalog。
     """
+    assert 'film' not in DEFAULT_PLATFORM_CONFIG['node']
     async with async_db_session() as db:
         cfg, _rev = await svc.get_effective_config(db)
-        # downloadable_local 引擎包地址默认空 = 未配置（运营托管包后经 Admin 填）。
-        assert not cfg.node.film.package_manifest_url
-        assert not DEFAULT_PLATFORM_CONFIG['node']['film']['package_manifest_url']
-        # 五类模型默认空 → daemon 退回本机 config [film]。
-        assert cfg.node.film.llm_models == []
-        assert cfg.node.film.video_models == []
+        # schema 也已无 node.film 字段。
+        assert not hasattr(cfg.node, 'film')
 
 
-async def test_update_persists_film_manifest_url_for_node_downlink() -> None:
-    """运营下发引擎包地址 → node.film.package_manifest_url 落库回读（daemon 据此下载安装引擎）。"""
+async def test_app_configs_aggregated_from_catalog() -> None:
+    """catalog.config_json 经 get_effective_config 聚合进 app_configs 下发，改值 bump revision（FILMCFG-1）。
+
+    管理端在 hasn_app_catalog 直接编辑应用配置（如 film 引擎 manifest 内联）→ 下发响应的
+    app_configs.<app_id> 即随之变 → compute_revision 涵盖 → revision 变 → daemon 重拉。
+    """
+    async with async_db_session() as db:
+        await ensure_catalog_seeded(db)  # 确保 film 行存在（build_film_workbench_app 已注册）
+        _cfg_before, rev_before = await svc.get_effective_config(db)
+        film_cfg = {
+            'models': {'llm': ['gpt-5'], 'vlm': [], 'image_t2i': [], 'image_it2i': [], 'video': ['kling-1']},
+            'engine': {
+                'version': '1.0.0',
+                'packages': {'darwin-arm64': {'url': 'https://cdn/x.zip', 'sha256': 'ab', 'size': 1}},
+            },
+        }
+        await db.execute(sa.update(HasnAppCatalog).where(HasnAppCatalog.app_id == 'film').values(config_json=film_cfg))
+        await db.flush()
+        cfg, rev_after = await svc.get_effective_config(db)
+        # 聚合下发：daemon 从 app_configs.film 读，取代原 PDC node.film。
+        assert cfg.app_configs.get('film') == film_cfg
+        # catalog 配置变 → revision 变（daemon 比对重拉）。
+        assert rev_after != rev_before
+
+
+async def test_pdc_update_does_not_persist_app_configs() -> None:
+    """PUT PDC 不把 app_configs 反向写进 PDC 表（catalog 才是应用配置权威，FILMCFG-1）。
+
+    即使入参误带 app_configs（聚合回传/前端误填），update_config 落库前剥除——PDC 单行只存
+    node + agent_runtime，绝不冻结应用配置造成与 catalog 漂移。
+    """
     async with async_db_session() as db:
         config = PlatformDefaultConfig.model_validate({
             'node': {
-                'media': {'image_models': ['gpt-image-2'], 'tts_models': [], 'stt_models': [], 'video_models': []},
-                'film': {'package_manifest_url': 'https://cdn.example.com/film/manifest.json'},
+                'media': {'image_models': ['gpt-image-2'], 'tts_models': [], 'stt_models': [], 'video_models': []}
             },
             'agent_runtime': {'models': {'main': None, 'fast': None, 'vision': None, 'delegation': None}},
+            'app_configs': {'film': {'models': {'llm': ['injected-should-be-dropped']}}},
         })
-        resp = await svc.update_config(db, config=config, updated_by='pytest')
-        cfg, rev = await svc.get_effective_config(db)
-        assert rev == resp.revision
-        assert cfg.node.film.package_manifest_url == 'https://cdn.example.com/film/manifest.json'
+        await svc.update_config(db, config=config, updated_by='pytest')
+        row = await svc._get_row(db)
+        assert row is not None
+        assert 'app_configs' not in (row.config_json or {})
 
 
 async def test_update_changes_revision_and_persists_in_txn() -> None:

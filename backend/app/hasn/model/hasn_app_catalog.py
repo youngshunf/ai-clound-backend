@@ -47,3 +47,8 @@ class HasnAppCatalog(Base):
         default=None,
         comment='唤起分身时注入 work_session 的应用业务提示词(职责/产出形态/调用工具/零fake)，与本次指令组合(AppCollab doc21 §5.4)',
     )
+    config_json: Mapped[dict] = mapped_column(
+        postgresql.JSONB(),
+        default_factory=dict,
+        comment='应用专属平台级配置 JSON（每应用自治，如 film 5 类模型 failover + 引擎包 manifest 内联）；管理端直接编辑，platform-config 聚合下发',
+    )

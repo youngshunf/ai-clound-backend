@@ -44,18 +44,9 @@ DEFAULT_PLATFORM_CONFIG: dict = {
             # 否则填非空模型名会让分身 hasn.video.generate 直接撞 503 无渠道。
             'video_models': [],
         },
-        # VideoClaw 视频引擎（film 应用 downloadable_local）默认：五类模型 failover 全空
-        # （daemon 退回本机 config [film]）；package_manifest_url 空=未配置——运营把按架构
-        # 构建的引擎包托管到对象存储后，在 Admin 填签名 URL，daemon 据此下载安装本机引擎。
-        # 空时 daemon engine_manifest_url() 返 None → 引擎状态 manifest_configured=false。
-        'film': {
-            'llm_models': [],
-            'vlm_models': [],
-            'image_t2i_models': [],
-            'image_it2i_models': [],
-            'video_models': [],
-            'package_manifest_url': '',
-        },
+        # 应用专属配置（如 film 视频引擎 5 类模型 + 引擎包 manifest）已迁出 PDC，改由
+        # hasn_app_catalog.config_json 权威承载、本服务 get_effective_config 聚合成
+        # ``app_configs`` 下发（FILMCFG-1）；node 这里只保留跨应用的节点级媒体默认。
     },
     'agent_runtime': {
         'models': {
@@ -101,14 +92,22 @@ class PlatformDefaultConfigService:
     async def get_effective_config(self, db: AsyncSession) -> tuple[PlatformDefaultConfig, str]:
         """取生效配置 + revision。
 
-        无行 → 出厂默认 + compute_revision(默认)（确定性，daemon 拉到稳定 revision）。
-        有行但 revision 为空（历史/迁移） → 据 config_json 现算（保持比对稳定）。
+        PDC 单行只承载 node + agent_runtime；各 AI-Native 应用专属配置由 hasn_app_catalog.config_json
+        权威承载，这里聚合成 ``app_configs`` 拼进下发（FILMCFG-1）。
+
+        revision 始终据"含 app_configs 的完整 dump"现算（compute_revision），而非取 row.revision——
+        因为 PDC row.revision 只覆盖 node/agent_runtime（update_config 写库时已剥除 app_configs），
+        若沿用会漏掉 catalog 配置变更。现算确保 catalog config_json 变 → revision 变 → daemon 重拉。
         """
+        # 局部导入打破 service ↔ service 循环依赖（app_catalog_service 不反向依赖本服务）。
+        from backend.app.hasn.service.app_catalog_service import get_all_app_configs
+
         row = await self._get_row(db)
         raw = row.config_json if (row and row.config_json) else DEFAULT_PLATFORM_CONFIG
         config = PlatformDefaultConfig.model_validate(raw)
+        config = config.model_copy(update={'app_configs': await get_all_app_configs(db)})
         dumped = config.model_dump(mode='json')
-        revision = row.revision if (row and row.revision) else compute_revision(dumped)
+        revision = compute_revision(dumped)
         return config, revision
 
     async def get_response(self, db: AsyncSession) -> PlatformDefaultConfigResponse:
@@ -151,29 +150,37 @@ class PlatformDefaultConfigService:
     async def update_config(
         self, db: AsyncSession, *, config: PlatformDefaultConfig, updated_by: str | None
     ) -> PlatformDefaultConfigResponse:
-        """Admin 覆盖式写 + 重算 revision；首次保存即建单行。
+        """Admin 覆盖式写 PDC 单行（node + agent_runtime）+ 重算 row.revision；首次保存即建单行。
+
+        ``app_configs`` 是各应用 hasn_app_catalog.config_json 的只读聚合，权威不在 PDC——写库前
+        必须剥除，否则会把应用配置反向冻结进 PDC 行（污染权威、且与 catalog 漂移）。
+
+        返回的 config/revision 经 get_effective_config 重新组装，使响应 revision 与真实下发口径
+        （含 app_configs）一致，避免 Admin 看到的 revision 与 daemon 拉到的不符。
 
         不在此 commit（API 经 CurrentSessionTransaction 自动提交），仅 flush。
         """
         config_json = config.model_dump(mode='json')
-        revision = compute_revision(config_json)
+        config_json.pop('app_configs', None)  # PDC 表只存 node + agent_runtime
+        row_revision = compute_revision(config_json)
         row = await self._get_row(db)
         if row is None:
             row = HasnPlatformDefaultConfig(
                 config_key=_CONFIG_KEY,
                 config_json=config_json,
-                revision=revision,
+                revision=row_revision,
                 updated_by=updated_by,
             )
             db.add(row)
         else:
             row.config_json = config_json
-            row.revision = revision
+            row.revision = row_revision
             row.updated_by = updated_by
         await db.flush()
         await db.refresh(row)
+        effective, revision = await self.get_effective_config(db)
         return PlatformDefaultConfigResponse(
-            config=config,
+            config=effective,
             revision=revision,
             updated_by=row.updated_by,
             updated_time=row.updated_time,

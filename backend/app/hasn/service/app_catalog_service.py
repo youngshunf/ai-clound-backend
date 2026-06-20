@@ -92,6 +92,30 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
 }
 
 
+# 应用专属平台级配置默认骨架（catalog.config_json，FILMCFG-1）。
+# 取代原 PDC node.film 通道：film 的 5 类模型 failover + 引擎包 manifest（内联）跟着应用走。
+# 仅作首次播种默认（INSERT-only，不覆盖运营已填值）；空骨架运营在管理端 JSON 编辑器填。
+# 未列出的应用 config_json 默认 {}（暂无平台级配置需求）。
+_CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
+    # VideoClaw 视频引擎：5 类模型 failover（空=daemon 退回本机 config [film]）+ 引擎分发包
+    # manifest 内联（version + 按架构 packages{os-arch: {url, sha256, size}}；空=未配置，
+    # daemon honest 拒绝下载）。运营在 new-api 开通模型 / 对象存储托管引擎包后经管理端填。
+    'film': {
+        'models': {
+            'llm': [],
+            'vlm': [],
+            'image_t2i': [],
+            'image_it2i': [],
+            'video': [],
+        },
+        'engine': {
+            'version': '',
+            'packages': {},
+        },
+    },
+}
+
+
 def _catalog_row_from_workbench_app(app: WorkbenchApp) -> dict:
     """把 WorkbenchApp 映射为 catalog 行的默认值（迁移期单一来源）。
 
@@ -125,6 +149,8 @@ def _catalog_row_from_workbench_app(app: WorkbenchApp) -> dict:
         # AppCollab：默认承接分身类型 + 业务提示词（doc21 §4.3）。未列出的应用留 None。
         'default_agent_type': _CATALOG_AGENT_DEFAULTS.get(app.id, (None, None))[0],
         'work_session_system_prompt': _CATALOG_AGENT_DEFAULTS.get(app.id, (None, None))[1],
+        # 应用专属平台级配置默认骨架（FILMCFG-1）。仅首次播种，运营改值经管理端落 config_json。
+        'config_json': dict(_CATALOG_DEFAULT_CONFIG.get(app.id, {})),
     }
 
 
@@ -145,9 +171,18 @@ async def ensure_catalog_seeded(db: AsyncSession) -> int:
     return inserted
 
 
-async def resolve_default_agent_for_app(
-    db: AsyncSession, *, owner_id: str, app_id: str
-) -> str | None:
+async def get_all_app_configs(db: AsyncSession) -> dict[str, dict]:
+    """聚合各应用平台级配置（``catalog.config_json``）成 ``{app_id: config_json}``（FILMCFG-1）。
+
+    供 ``platform_default_config_service.get_effective_config`` 拼进 platform-config 下发响应的
+    ``app_configs`` 字段——daemon 由此从 ``app_configs.<app_id>`` 读应用配置（取代原 PDC node.film）。
+    仅返回 config_json 非空（``{}`` 视为未配置）的应用，避免下发噪音。
+    """
+    rows = (await db.execute(sa.select(HasnAppCatalog.app_id, HasnAppCatalog.config_json))).all()
+    return {app_id: cfg for app_id, cfg in rows if cfg}
+
+
+async def resolve_default_agent_for_app(db: AsyncSession, *, owner_id: str, app_id: str) -> str | None:
     """AppCollab（doc21 §7.2）：打开应用时默认承接的分身 hasn_id。
 
     算法对称 ``builtin_seeding_service.seed_builtin_tasks`` 的「按类型取一、回退主脑」：
@@ -160,7 +195,8 @@ async def resolve_default_agent_for_app(
     agents = list(
         (
             await db.execute(
-                sa.select(HasnAgents)
+                sa
+                .select(HasnAgents)
                 .where(HasnAgents.owner_id == owner_id, HasnAgents.status == 'active')
                 .order_by(HasnAgents.id.asc())
             )
@@ -181,9 +217,7 @@ async def resolve_default_agent_for_app(
     # 回退主脑：pref.primary_agent_id → role=primary → 首个活跃。
     pref_pid = (
         await db.execute(
-            sa.select(HasnOwnerWorkbenchPref.primary_agent_id).where(
-                HasnOwnerWorkbenchPref.owner_hasn_id == owner_id
-            )
+            sa.select(HasnOwnerWorkbenchPref.primary_agent_id).where(HasnOwnerWorkbenchPref.owner_hasn_id == owner_id)
         )
     ).scalar_one_or_none()
     by_id = {a.hasn_id: a for a in agents}
