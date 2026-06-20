@@ -105,16 +105,20 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
 # 仅作首次播种默认（INSERT-only，不覆盖运营已填值）；空骨架运营在管理端 JSON 编辑器填。
 # 未列出的应用 config_json 默认 {}（暂无平台级配置需求）。
 _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
-    # VideoClaw 视频引擎：5 类模型 failover（空=daemon 退回本机 config [film]）+ 引擎分发包
-    # manifest 内联（version + 按架构 packages{os-arch: {url, sha256, size}}；空=未配置，
-    # daemon honest 拒绝下载）。运营在 new-api 开通模型 / 对象存储托管引擎包后经管理端填。
+    # VideoClaw 视频引擎：5 类模型 failover + 引擎分发包 manifest 内联。
+    # 出厂给出**完整骨架 + 示例模型名**（不是空 {} / 空数组）：管理端「编辑配置」弹框开箱即见
+    # 结构，运营/主人**只改模型名**即可用，不必从零手写整份 JSON。示例名（gpt-5 / gpt-image-2 /
+    # kling-1）是**占位模板**——务必换成各自 new-api 已开通的真实模型；视频尤其需先在 new-api
+    # 开通视频渠道，否则分身调用会 honest 撞渠道错误（零 fake：daemon 如实报错，绝不伪造成功）。
+    # 引擎 manifest（version + 按架构 packages{os-arch: {url, sha256, size}}）留空：dev 用 fork
+    # 源码树即可跑，prod 由运营在对象存储托管引擎包后经管理端填。
     'film': {
         'models': {
-            'llm': [],
-            'vlm': [],
-            'image_t2i': [],
-            'image_it2i': [],
-            'video': [],
+            'llm': ['gpt-5'],
+            'vlm': ['gpt-5'],
+            'image_t2i': ['gpt-image-2'],
+            'image_it2i': ['gpt-image-2'],
+            'video': ['kling-1'],
         },
         'engine': {
             'version': '',
