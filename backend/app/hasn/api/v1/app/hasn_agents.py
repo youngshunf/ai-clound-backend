@@ -256,6 +256,35 @@ async def update_my_hasn_agent_profile(
     return response_base.success(data=result)
 
 
+@router.delete(
+    '/by-hasn-id/{hasn_id}',
+    summary='daemon 端按 hasn_id 硬删 Agent（云端权威·物理删除·不可恢复）',
+    dependencies=[DependsJwtAuth],
+)
+async def delete_my_hasn_agent_by_hasn_id(
+    request: Request,
+    db: CurrentSessionTransaction,
+    hasn_id: Annotated[str, Path(description='Agent HASN ID, 如 a_xxx')],
+) -> ResponseModel:
+    """daemon「真删除分身」按 hasn_id 物理删除 hasn_agents 行（owner 隔离）。
+
+    与 PATCH `status=archived` 的软归档**本质不同**——本端点物理 DELETE、不可恢复。
+    daemon 删除链路：先停 hermes gateway → 调本端点删云端权威记录 → 成功后才清
+    本地 profile / runtime binding 镜像（云端权威，失败即中止不留本地残骸）。
+    """
+    user_id = request.user.id
+    owner = (await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))).scalar_one_or_none()
+    if not owner:
+        raise errors.ForbiddenError(msg='当前用户未注册 HASN 身份')
+    await agent_profile_service.delete_profile_cloud_first(
+        db,
+        owner_id=owner,
+        hasn_id=hasn_id,
+        user_id=user_id,
+    )
+    return response_base.success()
+
+
 @router.get(
     '/by-hasn-id/{hasn_id}/runtime-config',
     summary='读取 Agent 的 hermes runtime 原生配置（Owner JWT）',

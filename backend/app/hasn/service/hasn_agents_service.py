@@ -563,6 +563,40 @@ class HasnAgentProfileService:
 
         return UpdateAgentProfileResponse(agent=_agent_snapshot(agent))
 
+    async def delete_profile_cloud_first(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        hasn_id: str,
+        user_id: int | None = None,
+    ) -> str:
+        """云端权威硬删 Agent（物理 DELETE hasn_agents 行），返回被删 hasn_id。
+
+        daemon「真删除分身」链路调用：daemon 先停 hermes gateway，再调本端点删云端
+        权威记录，成功后才清本地 profile/runtime binding 镜像。与 PATCH
+        status=archived 的软归档**本质不同**——本方法物理删除、不可恢复。
+        owner 隔离按 (hasn_id, owner_id)；不归属或不存在则 404。
+        """
+        import sqlalchemy as sa
+
+        await self._assert_owner_access(db, owner_id=owner_id, user_id=user_id)
+
+        agent = (
+            await db.execute(
+                sa.select(HasnAgents).where(
+                    HasnAgents.hasn_id == hasn_id,
+                    HasnAgents.owner_id == owner_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if agent is None:
+            raise errors.NotFoundError(msg='ERR_HASN_AGENT_NOT_FOUND')
+
+        await db.delete(agent)
+        await db.flush()
+        return hasn_id
+
     async def get_runtime_config(
         self, db: AsyncSession, *, owner_id: str, hasn_id: str, user_id: int | None = None
     ) -> AgentRuntimeConfig:
