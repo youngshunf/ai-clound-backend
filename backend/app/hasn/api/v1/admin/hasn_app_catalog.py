@@ -1,3 +1,5 @@
+import logging
+
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
@@ -15,6 +17,8 @@ from backend.common.security.jwt import DependsJwtAuth
 from backend.common.security.permission import RequestPermission
 from backend.common.security.rbac import DependsRBAC
 from backend.database.db import CurrentSession, CurrentSessionTransaction
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -69,6 +73,16 @@ async def update_hasn_app_catalog(
 ) -> ResponseModel:
     count = await hasn_app_catalog_service.update(db=db, pk=pk, obj=obj)
     if count > 0:
+        # 应用目录配置（含 config_json，如 film 视频引擎 5 类模型）变更 → push hasn.sync.invalidate
+        # (platform_config) 给在线节点（FILMCFG-1：config_json 经 platform-config 通道下发的 app_configs）。
+        # 在线 daemon 秒级重拉并应用——这是「编辑配置→保存→改模型名即生效」真正下发到桌面端的环。
+        # best-effort：推送失败绝不影响配置已写入；离线节点靠重连握手对账追平。
+        try:
+            from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+            await sync_bump('platform_config', db)
+        except Exception as e:
+            log.warning(f'[HASN] app_catalog 变更 platform_config invalidate 推送失败 (非致命): {e}')
         return response_base.success()
     return response_base.fail()
 
