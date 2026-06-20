@@ -1,7 +1,7 @@
 """AppCollab AC-P1 真实 PG 数据层测试（零 mock）。
 
 覆盖 doc21 §4.3/§5.4/§7.2：
-  1) catalog 播种回填「默认承接分身类型 + 业务提示词」——deck/designsystem/creator 同绑
+  1) catalog 播种回填「默认承接分身类型 + 业务提示词」——deck/designsystem/creator/film 同绑
      content_operator 且 prompt 非空；未列出的 knowledge 留 NULL（回退主脑）。
   2) resolve_default_agent_for_app：default_agent_type 命中 builtin_agent_key → 返该分身；
      无匹配 → 回退主脑（pref.primary_agent_id → role=primary → 首个活跃）；
@@ -34,7 +34,7 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
 
-_BOUND_APPS = ('deck', 'designsystem', 'creator')
+_BOUND_APPS = ('deck', 'designsystem', 'creator', 'film')
 
 
 def _uid() -> str:

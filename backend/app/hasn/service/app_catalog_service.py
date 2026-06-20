@@ -55,7 +55,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
 _DEFAULT_SORT_ORDER = 100
 
 # AppCollab（doc21 §4.3/§5.4）：应用默认承接的内置 agent 类型键 + 唤起分身注入的业务提示词模板。
-# 同型键 = 一个分身默认服务多应用（deck/designsystem/creator 同为 content_operator → 一个「内容运营官」服务三应用）。
+# 同型键 = 一个分身默认服务多应用（deck/designsystem/creator/film 同为 content_operator → 一个「内容运营官」服务四应用）。
 # 未列出的应用 default_agent_type=NULL（回退主脑）、work_session_system_prompt=NULL（仅用本次指令）。
 _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
     'deck': (
@@ -72,6 +72,14 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         'content_operator',
         '你是内容运营应用的执行分身：围绕账号定位做选题、创作与发布编排，沉淀可复用打法；'
         '只调用 hasn.creator.* 工具，产出对客可用的成品，零 fake，失败如实报错。',
+    ),
+    # 视频生成（源自 VideoClaw）也归「内容运营官（content_operator）」——视频是内容运营的一种产出形态，
+    # 不另起「视频分身」（AC-P6 福仔拍板复用 content_operator）。一个分身默认服务 deck/designsystem/creator/film 四应用。
+    'film': (
+        'content_operator',
+        '你是视频生成应用的执行分身：把主人的创意做成完整的短视频，按脚本→角色设定→分镜→参考图→'
+        '片段生成→合成的流水线推进；只调用 hasn.film.* 工具就地生成与精修；产出对客可用的成品，'
+        '零 fake，失败如实报错。',
     ),
     # 会议副驾用专属「会议副驾」分身（hub 模板 meeting-copilot，builtin_key=meeting_copilot），
     # 非 content_operator——会议实时副驾是独立专长。
