@@ -28,6 +28,8 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'video:generate': {'label_zh': '生成视频', 'domain': 'video', 'risk': 'high', 'description': '直连唤星 new-api 视频 API（task 式异步：提交→轮询）生成视频，单价远高于图片、消耗 owner 配额，故独立授权档'},
     # —— platform · 资产（hasn.asset.create：分身把自己的内容上传成 hasn://asset）——
     'asset:create': {'label_zh': '上传媒体资产', 'domain': 'asset', 'risk': 'medium', 'description': '把分身的内容（SVG/图片/文件等）上传到私有桶并注册资产，供消息附件引用'},
+    # —— platform · 工作会话（hasn.session.ask：分身在工作会话里主动向主人提问、挂起会话等答复）——
+    'session:ask': {'label_zh': '向主人提问', 'domain': 'session', 'risk': 'low', 'description': '工作会话中需主人决策/补关键信息时挂起会话、投提问卡到主会话等主人答复（绝不替主人臆测）'},
     # —— 历史默认词表（DEFAULT_AGENT_SCOPES）——展示兜底，无对应 cloud 工具亦不崩 ——
     'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
     'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},

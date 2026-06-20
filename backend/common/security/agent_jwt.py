@@ -67,6 +67,11 @@ DEFAULT_AGENT_SCOPES = [
     'plan:write',
     'plan:schedule',
     'plan:delegate',
+    # session 工作会话自我控制（doc12-09 / 实施93 SA-P3）。平台级、非应用——任意工作会话里
+    # 分身需要主人决策/补关键信息时调 hasn.session.ask（execution_location=Local）把会话挂起、
+    # 投提问卡到主会话，绝不替主人臆测。出厂 **Allow**（暂停问主人是低风险且鼓励的协作行为）。
+    # 工具在本地 daemon 执行，此 claim 仅供云端 check_scopes 校验在册。
+    'session:ask',
 ]
 
 

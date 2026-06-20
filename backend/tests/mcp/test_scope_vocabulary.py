@@ -33,6 +33,19 @@ def test_default_agent_scopes_all_colon() -> None:
         assert ':' in scope, f'DEFAULT_AGENT_SCOPES 非 domain:action: {scope}'
 
 
+def test_session_ask_scope_registered_and_documented() -> None:
+    """实施93 SA-P3：session:ask 平台级 scope 出厂铸入 + 有展示元数据（零漂移守卫）。"""
+    from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
+
+    # 出厂 Allow：每个分身的 JWT 默认带 session:ask（工作会话里可向主人提问）。
+    assert 'session:ask' in DEFAULT_AGENT_SCOPES
+    # 展示元数据齐备（catalog 中文 label/domain/description），webui 权限页不漏词。
+    meta = PLATFORM_SCOPE_CATALOG.get('session:ask')
+    assert meta is not None, 'session:ask 缺 PLATFORM_SCOPE_CATALOG 展示元数据'
+    assert meta['domain'] == 'session'
+    assert meta['label_zh']
+
+
 def test_builtin_manifests_required_scopes_all_colon() -> None:
     from backend.app.hasn.service.ai_native_builtin_manifests import (
         COMMUNITY_AI_NATIVE_MANIFEST,
