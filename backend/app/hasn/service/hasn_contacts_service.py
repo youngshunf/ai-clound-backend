@@ -150,6 +150,7 @@ class HasnContactsService:
                     "avatar": agent.avatar,
                     "type": agent.type,
                     "role": agent.role,
+                    "profession": agent.profession,
                     "description": agent.description,
                     "bio": agent.bio,
                     "online_status": "online" if online_map.get(agent.hasn_id) else "offline",

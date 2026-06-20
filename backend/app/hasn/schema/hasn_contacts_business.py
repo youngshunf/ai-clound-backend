@@ -73,6 +73,7 @@ class AgentPeerOut(BaseModel):
     avatar: str | None = None
     type: str = 'desktop'
     role: str = 'specialist'
+    profession: str | None = None  # 领域专家头衔 (HasnAgents.profession)，分身卡专家名称
     description: str | None = None
     bio: str | None = None
     online_status: str = 'offline'

@@ -52,6 +52,7 @@ def _fake_agent(suffix: str, online_status: str | None, heartbeat: datetime | No
         avatar=None,
         type='desktop',
         role='specialist',
+        profession=f'专家{suffix}',
         description=f'角色描述{suffix}',
         bio='',
         # 持久列故意设成与 presence 相反，证明在线判定取自 presence 而非此列。
@@ -117,6 +118,7 @@ async def test_online_status_comes_from_presence_not_stale_column(monkeypatch) -
     out = await HasnContactsService.fetch_owned_agents_with_status(db, 'h_owner')
 
     assert [a['online_status'] for a in out] == ['online', 'offline', 'offline']
+    assert out[0]['profession'] == '专家on'  # 专家名称带出，供联系人名下分身卡展示
     assert out[0]['description'] == '角色描述on'
     assert out[0]['last_seen_at'] == beat.isoformat()
     assert out[2]['last_seen_at'] is None
