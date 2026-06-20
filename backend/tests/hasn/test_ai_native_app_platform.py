@@ -214,6 +214,8 @@ class _FakeDb:
         if 'hasn_ai_native_app_audit' in sql:
             rows = list(self.audit_rows)
             params = getattr(stmt.compile(), 'params', {})
+            if 'owner_hasn_id_1' in params:
+                rows = [row for row in rows if row.owner_hasn_id == params['owner_hasn_id_1']]
             if 'workspace_kind_1' in params:
                 rows = [row for row in rows if row.workspace_kind == params['workspace_kind_1']]
             if 'app_id_1' in params:
@@ -342,6 +344,18 @@ def _make_runtime_test_app(
         app.dependency_overrides[module.DependsAgentJwtAuth.dependency] = fake_agent_auth
     app.dependency_overrides[get_db] = fake_db_session
     app.dependency_overrides[get_db_transaction] = fake_db_transaction
+
+    # 审计 GET 端点已改为 owner-scope（DependsJwtAuth + 服务端按 owner_hasn_id 硬过滤）：
+    # 测试 app 放行 owner 鉴权并把登录人固定解析为 _FakeAgent.owner_hasn_id，让 owner
+    # 过滤在用例里真实生效（rows 的 owner_hasn_id 决定可见性，他人 owner 行被隔离）。
+    async def fake_owner_auth() -> None:
+        return None
+
+    async def fake_require_owner(_db: Any, _request: Any) -> str:
+        return _FakeAgent.owner_hasn_id
+
+    app.dependency_overrides[module.DependsJwtAuth.dependency] = fake_owner_auth
+    monkeypatch.setattr(module, '_require_owner_hasn_id', fake_require_owner)
     if patch_agent:
         monkeypatch.setattr(module.ai_native_runtime_gateway, '_require_agent', lambda _request: _FakeAgent())
         monkeypatch.setattr(
@@ -1337,3 +1351,78 @@ def test_runtime_audit_route_applies_created_at_range_filters(monkeypatch: pytes
     data = resp.json()['data']
     assert data['total'] == 1
     assert data['items'][0]['trace_id'] == 'trace-in-range'
+
+
+def test_runtime_audit_route_owner_scope_isolates_other_owners(monkeypatch: pytest.MonkeyPatch) -> None:
+    """安全：审计列表 owner-scope 硬过滤——即便客户端传他人分身的 agent_hasn_id，
+
+    服务端按登录人 owner_hasn_id 过滤，只返回自己名下分身的审计，绝不泄露他人分身的工具调用。
+    `_make_runtime_test_app` 把登录人固定解析为 _FakeAgent.owner_hasn_id（'h_001'）。
+    """
+    from backend.app.hasn.model import HasnAiNativeAppAudit
+
+    mine = HasnAiNativeAppAudit(
+        trace_id='trace-mine',
+        step='local_tool',
+        workspace_kind='personal',
+        user_id=12345,
+        enterprise_id=None,
+        app_id='deck',
+        app_version='1.0.0',
+        actor_type='agent',
+        agent_hasn_id='a_001',
+        owner_hasn_id='h_001',
+        session_uuid='session-001',
+        method='hasn.deck.create',
+        capability_id=None,
+        tool_id='deck.create',
+        event_type='tool_call',
+        required_scopes=['deck:write'],
+        agent_scopes_snapshot=['deck:write'],
+        workspace_role='owner',
+        risk_level='low',
+        decision='allow',
+        confirmation_id=None,
+        result_ref=None,
+        error_code=None,
+        context={},
+    )
+    mine.id = 50
+    theirs = HasnAiNativeAppAudit(
+        trace_id='trace-theirs',
+        step='local_tool',
+        workspace_kind='personal',
+        user_id=99999,
+        enterprise_id=None,
+        app_id='deck',
+        app_version='1.0.0',
+        actor_type='agent',
+        agent_hasn_id='a_999',
+        owner_hasn_id='h_999',
+        session_uuid='session-999',
+        method='hasn.deck.create',
+        capability_id=None,
+        tool_id='deck.create',
+        event_type='tool_call',
+        required_scopes=['deck:write'],
+        agent_scopes_snapshot=['deck:write'],
+        workspace_role='owner',
+        risk_level='low',
+        decision='allow',
+        confirmation_id=None,
+        result_ref=None,
+        error_code=None,
+        context={},
+    )
+    theirs.id = 51
+    fake_db = _FakeDb(workspace=None, audit_rows=[mine, theirs])
+    app = _make_runtime_test_app(fake_db, monkeypatch)
+
+    with TestClient(app) as client:
+        # 故意传他人分身 ID：owner 过滤兜底，仍读不到他人审计。
+        resp = client.get('/api/v1/ai-native/audit', params={'agent_hasn_id': 'a_999'})
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()['data']
+    assert data['total'] == 0
+    assert all(item['owner_hasn_id'] == 'h_001' for item in data['items'])

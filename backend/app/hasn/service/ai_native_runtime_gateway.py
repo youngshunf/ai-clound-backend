@@ -688,8 +688,20 @@ class AiNativeRuntimeGateway:
         await ask_approval_gate.mark_consumed(str(claims.get('request_id') or ''))
         return True
 
-    async def list_audit(self, db: AsyncSession, *, query: AiNativeAuditQuery) -> dict[str, Any]:
+    async def list_audit(
+        self,
+        db: AsyncSession,
+        *,
+        query: AiNativeAuditQuery,
+        owner_hasn_id: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
         stmt = sa.select(HasnAiNativeAppAudit)
+        # owner-scope 硬过滤（服务端权威，防越权读他人分身审计）：调用方传入登录人 hasn_id 后，
+        # 只返回 owner_hasn_id 命中的行；不取 query（identity by auth）。`agent_hasn_id` 仅作进一步
+        # 收窄——即便客户端传他人分身 ID，也被 owner 过滤兜底，读不到别人的审计。
+        if owner_hasn_id:
+            stmt = stmt.where(HasnAiNativeAppAudit.owner_hasn_id == owner_hasn_id)
         if query.workspace_kind:
             stmt = stmt.where(HasnAiNativeAppAudit.workspace_kind == query.workspace_kind)
         if query.app_id:
@@ -702,7 +714,10 @@ class AiNativeRuntimeGateway:
             stmt = stmt.where(HasnAiNativeAppAudit.created_at >= query.created_at_from)
         if query.created_at_to:
             stmt = stmt.where(HasnAiNativeAppAudit.created_at <= query.created_at_to)
-        rows = (await db.execute(stmt.order_by(HasnAiNativeAppAudit.id.desc()))).scalars().all()
+        capped = max(1, min(limit, 500))
+        rows = (
+            await db.execute(stmt.order_by(HasnAiNativeAppAudit.id.desc()).limit(capped))
+        ).scalars().all()
         return {'items': [self._audit_payload(row) for row in rows], 'total': len(rows)}
 
     def _require_agent(self, request: Request) -> AgentTokenPayload:

@@ -143,9 +143,19 @@ async def runtime_tool_call(
     return response_base.success(data=data)
 
 
-@audit_router.get('', summary='AI-Native 审计')
-async def list_ai_native_audit(db: CurrentSession, query: AiNativeAuditQuery = Depends()) -> ResponseModel:
-    return response_base.success(data=await ai_native_runtime_gateway.list_audit(db=db, query=query))
+@audit_router.get('', summary='AI-Native 审计', dependencies=[DependsJwtAuth])
+async def list_ai_native_audit(
+    request: Request, db: CurrentSession, query: AiNativeAuditQuery = Depends()
+) -> ResponseModel:
+    """Owner 视角的 AI-Native 工具调用审计列表。
+
+    owner 鉴权（`DependsJwtAuth`）+ 服务端按 `owner_hasn_id` 硬过滤：只返回当前登录人名下分身的
+    工具调用审计；`agent_hasn_id` 仅作进一步收窄（传他人分身 ID 也被 owner 过滤兜底，读不到别人的）。
+    """
+    owner_hasn_id = await _require_owner_hasn_id(db, request)
+    return response_base.success(
+        data=await ai_native_runtime_gateway.list_audit(db=db, query=query, owner_hasn_id=owner_hasn_id)
+    )
 
 
 @audit_router.post('/report', summary='AI-Native 工具调用审计上报（Agent 自报本地工具，D5）')
