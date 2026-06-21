@@ -570,6 +570,9 @@ class GitHubSyncService:
         for field in ('name', 'description'):
             if not metadata.get(field):
                 raise ValueError(f"SKILL.md frontmatter missing {field}: {skill_md_path}")
+        # 展示名优先取中文 display_name（SKILL.md frontmatter）；缺省回退 name（官方技能 name 多为英文 slug，
+        # 桌面端卡片直接显示该字段，故中文展示名走 display_name 才不会露出 growth-playbook 这类英文标识）。
+        display_name = str(metadata.get('display_name') or metadata.get('name'))
 
         tag_hints = normalize_tags(metadata.get('tags'))
         icon_path = self._find_local_icon(skill_md_path.parent)
@@ -600,8 +603,8 @@ class GitHubSyncService:
             'is_official': is_official,
             'is_private': False,
             'source_type': source_type,
-            'source_language': 'zh' if any(ord(c) > 127 for c in str(metadata.get('name'))) else 'en',
-            'name': metadata.get('name'),
+            'source_language': 'zh' if any(ord(c) > 127 for c in display_name) else 'en',
+            'name': display_name,
             'description': metadata.get('description'),
             'version': str(metadata.get('version') or '1.0.0'),
             'changelog': metadata.get('changelog') or f"Version {metadata.get('version') or '1.0.0'}",
