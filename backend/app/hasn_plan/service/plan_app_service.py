@@ -189,23 +189,25 @@ class PlanService:
         await db.flush()
 
     async def recompute_goal_progress(self, db: AsyncSession, *, owner: str, pk: int) -> dict:
-        """派生进度：KR 达成率均值（§5.5#4 不接受前端直填）。无 KR 时兜底为 0。"""
+        """派生进度：可量化 KR 达成率均值（§5.5#4 不接受前端直填）。
+
+        target_value 未设定（=0）的 KR **不可度量**，从均值中排除（此前误把 target=0
+        当成 100% 达成 → 「未命名指标 100%」假象；与 webui PLANFIX-1 诚实化口径一致：
+        未设定不冒充已达成）。无可度量 KR 时进度兜底为 0。
+        """
         goal = await self._get_goal(db, owner=owner, pk=pk)
         krs = (await db.execute(sa.select(GoalKeyResult).where(GoalKeyResult.goal_id == pk))).scalars().all()
-        if krs:
-            ratios = []
-            for k in krs:
-                target = float(k.target_value or 0)
-                cur = float(k.current_value or 0)
-                if target == 0:
-                    ratios.append(1.0 if cur >= 0 else 0.0)
-                elif k.direction == 'down':
-                    ratios.append(max(0.0, min(1.0, (2 * target - cur) / target)))
-                else:
-                    ratios.append(max(0.0, min(1.0, cur / target)))
-            goal.progress_pct = round(sum(ratios) / len(ratios) * 100)
-        else:
-            goal.progress_pct = 0
+        ratios = []
+        for k in krs:
+            target = float(k.target_value or 0)
+            if target == 0:
+                continue  # 未设定目标值 → 不可度量，不计入均值
+            cur = float(k.current_value or 0)
+            if k.direction == 'down':
+                ratios.append(max(0.0, min(1.0, (2 * target - cur) / target)))
+            else:
+                ratios.append(max(0.0, min(1.0, cur / target)))
+        goal.progress_pct = round(sum(ratios) / len(ratios) * 100) if ratios else 0
         await db.flush()
         return serialize(goal)
 

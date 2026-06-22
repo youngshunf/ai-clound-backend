@@ -221,6 +221,20 @@ async def test_goal_kr_plan_crud_and_progress(db: AsyncSession) -> None:
     assert 0 <= recomputed['progress_pct'] <= 100
 
     plan = await plan_service.create_plan(db, owner=owner, data={'goal_id': gid, 'title': '12 周训练计划'})
+
+    # PLANFIX-5：未设定目标值(target=0)的 KR 不冒充 100%（此前误当已达成）。
+    goal2 = await plan_service.create_goal(db, owner=owner, data={'title': '减重目标'})
+    g2 = goal2['id']
+    await plan_service.create_kr(db, owner=owner, goal_id=g2, data={'metric': '未命名指标', 'target_value': 0})
+    only_unset = await plan_service.recompute_goal_progress(db, owner=owner, pk=g2)
+    assert only_unset['progress_pct'] == 0, '仅未设定 KR 的目标进度应为 0，不应冒充 100%'
+    # 再加一个可量化 KR：均值只算可度量项（未设定项被排除）。
+    await plan_service.create_kr(
+        db, owner=owner, goal_id=g2, data={'metric': '体重', 'current_value': 80, 'target_value': 80, 'direction': 'up'}
+    )
+    mixed = await plan_service.recompute_goal_progress(db, owner=owner, pk=g2)
+    assert mixed['progress_pct'] == 100, '可量化 KR 已达成 → 100%（未设定项不拉低也不充数）'
+
     assert plan['goal_id'] == gid
     pid = plan['id']
     await plan_service.create_milestone(db, owner=owner, plan_id=pid, data={'title': '第 4 周体测'})
