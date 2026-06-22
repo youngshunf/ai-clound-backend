@@ -22,6 +22,7 @@ from backend.app.hasn_film.scopes import FILM_SCOPE_CATALOG
 from backend.app.hasn_growth.scopes import HASN_GROWTH_SCOPE_CATALOG
 from backend.app.hasn_plan.scopes import PLAN_SCOPE_CATALOG
 from backend.app.hasn_publish.scopes import PUBLISH_SCOPE_CATALOG
+from backend.app.hasn_reel.scopes import REEL_SCOPE_CATALOG
 from backend.app.hasn_task.scopes import HASN_TASK_SCOPE_CATALOG
 from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
 
@@ -38,6 +39,7 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     **CREATOR_SCOPE_CATALOG,
     **PUBLISH_SCOPE_CATALOG,
     **FILM_SCOPE_CATALOG,
+    **REEL_SCOPE_CATALOG,
     **PLAN_SCOPE_CATALOG,
 }
 

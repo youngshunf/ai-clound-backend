@@ -368,7 +368,10 @@ _CAPABILITIES = [
             'asset_refs': {
                 'type': ['array', 'null'],
                 'items': {'type': 'object'},
-                'description': '素材引用（图/视频 asset uri）',
+                'description': (
+                    '素材/成片引用，每项为云端引用 {kind:"cloud", asset_uri:"hasn://asset/..."} '
+                    '或本地引用 {kind:"local", path, node_id, uploaded:false}（重资产成片本地优先不自动上云，doc19 §5.5）'
+                ),
             },
             'source_type': {'type': ['string', 'null'], 'description': 'ai_generated/human_edited'},
         },

@@ -49,6 +49,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'growth': 45,  # 获客（设计 §3.2 约 40，置于 publish 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
+    'reel': 57,  # 短视频合成（源自 MoneyPrinterTurbo，瘦引擎应用；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
 }
@@ -114,6 +115,16 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '片段生成→合成的流水线推进；只调用 hasn.film.* 工具就地生成与精修；产出对客可用的成品，'
         '零 fake，失败如实报错。',
     ),
+    # 短视频合成（源自 MoneyPrinterTurbo）也归「内容运营官（content_operator）」——它是创作运营的
+    # 合成式视频能力提供方（doc19 §5.5）：项目/素材库/成品/审核发布全用 creator，reel 只出「合成」能力。
+    # 一个分身默认服务 deck/designsystem/creator/film/reel 等多应用。
+    'reel': (
+        'content_operator',
+        '你是短视频合成应用的执行分身：在创作运营的内容流水线里，把脚本/主题（取自内容项）配上素材'
+        '（取自创作运营素材库，自带优先、不足才补库存）、配音与字幕，用 hasn.reel.* 工具本地合成出'
+        '口播/带货/资讯类短视频；成片本地优先、重资产不自动上云，归属与发布走创作运营。'
+        '只调用 hasn.reel.* 工具，文案与成片在确认点摊给主人，零 fake，失败如实报错。',
+    ),
     # 会议副驾用专属「会议副驾」分身（hub 模板 meeting-copilot，builtin_key=meeting_copilot），
     # 非 content_operator——会议实时副驾是独立专长。
     'copilot': (
@@ -156,6 +167,60 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
         'engine': {
             'version': '',
             'packages': {},
+        },
+    },
+    # 短视频合成（reel，源自 MoneyPrinterTurbo，doc19 §6.4）：合成式管线，**只有 llm（文案/搜索词）
+    # + tts（配音）+ stt（字幕，可选）三类模型，绝无 image/video 生成模型**（不烧视频 token）。
+    # 出厂给出**完整骨架 + 示例值**（管理端「编辑配置」开箱即见结构），运营/主人改值即可：
+    #   - models.llm 示例名 gpt-5 是占位模板，换成 new-api 已开通的真实模型（reel **无需开通视频渠道**）；
+    #     models.stt 默认空（字幕默认走 edge 时间戳，subtitle_provider=whisper 时才下 whisper 模型）。
+    #   - tts 默认 edge（免费微软），可切 platform（走 hasn.voice.synthesize / owner 配额）。
+    #   - material.platform_keys 是平台统一兜底素材 key（M2）：**留空占位，运营在管理端填**，绝不硬编码
+    #     真实 key；owner 可在应用内自填（多 key 轮换避限流，doc19 §6.3）。
+    #   - engine.bundled_deps=['ffmpeg','imagemagick']（reel 特有本地合成依赖，M3/N5）；engine manifest
+    #     （version + 按架构 packages）留空：dev 用 fork 源码树即可跑，prod 由运营经管理端/FILMPUB 填。
+    'reel': {
+        'models': {
+            'llm': ['gpt-5'],
+            'tts': ['edge'],
+            'stt': [],
+        },
+        'tts': {
+            'tts_provider': 'edge',
+            'voice_name': 'zh-CN-XiaoxiaoNeural',
+            'voice_rate': 1.0,
+        },
+        'subtitle': {
+            'subtitle_provider': 'edge',
+            'whisper_model_size': 'large-v3',
+        },
+        'material': {
+            'video_source': 'pexels',
+            'platform_keys': {
+                'pexels': [],
+                'pixabay': [],
+            },
+        },
+        'video': {
+            'video_aspect': '9:16',
+            'video_clip_duration': 5,
+            'subtitle_style': {
+                'font_name': '',
+                'font_size': 60,
+                'stroke_color': '#000000',
+                'text_color': '#FFFFFF',
+                'position': 'bottom',
+            },
+            'bgm': {
+                'bgm_type': 'random',
+                'bgm_volume': 0.2,
+            },
+            'video_count': 1,
+        },
+        'engine': {
+            'version': '',
+            'packages': {},
+            'bundled_deps': ['ffmpeg', 'imagemagick'],
         },
     },
 }

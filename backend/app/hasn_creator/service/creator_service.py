@@ -95,6 +95,59 @@ def _child_ownership(project: Project) -> dict[str, Any]:
     }
 
 
+def _normalize_asset_refs(asset_refs: list | None) -> list[Any]:
+    """校验阶段产出的素材引用 shape（doc19 §5.5：在历史云端引用之上加本地引用，**向后兼容不改既有形态**）。
+
+    历史上 content_stage.asset_refs 是云端引用（封面/配图落私有桶），存为**裸字符串** `hasn://asset/...`
+    （owner API schema `asset_refs: list[str]`）或 `{kind:'cloud', asset_uri}` 对象。reel 成片是重资产、
+    本地优先不自动上云（doc19 N20），故扩出**本地引用**——成片字节留本机、只记路径 + 设备 node_id，webui
+    据 `kind=='local'`（+ node_id）判「本机可直开 / 他机需该设备在线或显式上云」。
+
+    **不重写既有形态**（避免破坏现有调用方/webui 的 round-trip）：
+      - 裸字符串 `'hasn://asset/...'` → 原样保留（云端引用，必须非空；webui 视无 ``kind=='local'`` 即云端）。
+      - 任意已有 dict（含 `{kind:'cloud', asset_uri}` / `{asset_uri}` / 其它历史形态）→ **非 local** 一律原样
+        透传（不强校验、不改 shape，保护未知历史数据）。
+      - **本地引用** `{kind:'local', path, node_id, uploaded?}` → **严格校验**（path/node_id 必填非空 str；
+        uploaded 可选 bool 缺省 False）并归一（补 uploaded 默认）；这是本次唯一强约束的新 shape。
+
+    仅对 **kind=='local'** 的非法 shape fail-fast 抛 RequestError（不写脏本地引用）；非 list / 含非 str 非
+    dict 元素也拒。``None`` / 空数组 → 返回 ``[]``。
+    """
+    if not asset_refs:
+        return []
+    if not isinstance(asset_refs, list):
+        raise errors.RequestError(msg='asset_refs 必须是数组')
+
+    normalized: list[Any] = []
+    for idx, ref in enumerate(asset_refs):
+        # 历史形态：裸字符串 = 云端 hasn://asset/ 引用（owner API schema list[str]）。原样保留。
+        if isinstance(ref, str):
+            if not ref.strip():
+                raise errors.RequestError(msg=f'asset_refs[{idx}] 云端引用不能是空字符串')
+            normalized.append(ref)
+            continue
+        if not isinstance(ref, dict):
+            raise errors.RequestError(msg=f'asset_refs[{idx}] 必须是字符串或对象（{{kind, ...}}）')
+
+        if ref.get('kind') == 'local':
+            # 本地引用：唯一强校验的新 shape（重资产成片本地优先，doc19 N20）。
+            path = ref.get('path')
+            node_id = ref.get('node_id')
+            if not isinstance(path, str) or not path.strip():
+                raise errors.RequestError(msg=f'asset_refs[{idx}] 本地引用缺少 path（非空字符串）')
+            if not isinstance(node_id, str) or not node_id.strip():
+                raise errors.RequestError(msg=f'asset_refs[{idx}] 本地引用缺少 node_id（非空字符串，标识所在设备）')
+            uploaded = ref.get('uploaded', False)
+            if not isinstance(uploaded, bool):
+                raise errors.RequestError(msg=f'asset_refs[{idx}] uploaded 必须是布尔值')
+            normalized.append({'kind': 'local', 'path': path, 'node_id': node_id, 'uploaded': uploaded})
+        else:
+            # 非 local 的既有 dict（cloud/历史形态）原样透传，保护现有 round-trip 与未知历史数据。
+            normalized.append(ref)
+
+    return normalized
+
+
 class CreatorService:
     """创作运营领域服务（归属隔离 + 状态机）。"""
 
@@ -603,8 +656,14 @@ class CreatorService:
         asset_refs: list | None = None,
         source_type: str = 'ai_generated',
     ) -> dict[str, Any]:
-        """保存阶段产出（同 content+stage 已存在则 bump version 新建一版，留迭代痕迹）。"""
+        """保存阶段产出（同 content+stage 已存在则 bump version 新建一版，留迭代痕迹）。
+
+        asset_refs 支持云端引用（``{kind:'cloud', asset_uri}``）+ 本地引用（``{kind:'local', path,
+        node_id, uploaded}``，doc19 §5.5：reel 成片重资产本地优先不自动上云）。shape 经 _normalize_asset_refs
+        校验，非法 shape fail-fast 抛 RequestError（不写脏数据）。
+        """
         c = await CreatorService._load_content(db, content_id=content_id, user_id=user_id, scope=scope)
+        normalized_refs = _normalize_asset_refs(asset_refs)
         prev = (
             await db.execute(
                 sa.select(sa.func.coalesce(sa.func.max(ContentStage.version), 0)).where(
@@ -617,7 +676,7 @@ class CreatorService:
             project_id=c.project_id,
             stage=stage,
             content_text=content_text,
-            asset_refs=asset_refs or [],
+            asset_refs=normalized_refs,
             status='draft',
             version=int(prev) + 1,
             source_type=source_type,

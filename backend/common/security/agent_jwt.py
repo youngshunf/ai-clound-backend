@@ -57,6 +57,13 @@ DEFAULT_AGENT_SCOPES = [
     'film:read',
     'film:write',
     'film:export',
+    # reel 短视频合成应用（14-doc/19 设计 §7；reel-P4 铸 scope）。读类 task.list/get/material.search 落
+    # :read；写类（generate/script.draft/preview/compose）落 :write（出厂 Ask——合成花配额/本地资源）；
+    # 上传成片到云端 artifact.upload 落 :export（出厂 Ask）。check_scopes 按此 claim 校验，Agent 调 reel
+    # 本地工具经 daemon 三态闸门需这些 claim 在册（同 film）。
+    'reel:read',
+    'reel:write',
+    'reel:export',
     # plan 规划与目标管理应用（19-doc 设计 §9.1；PLAN-P1 铸 scope）。分身经 hasn.plan.* 管理主人的
     # 目标/计划/待办/日程/习惯：读类 list/get/today 无 scope（确定性读，不设假闸门）；写类（建/改/删/
     # 排期/打卡/捕获/triage/decompose）落 :write（出厂 Allow）；排程（schedule/reschedule，Motion 自动

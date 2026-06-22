@@ -265,6 +265,108 @@ async def test_enterprise_scope_member_restrict(session) -> None:
         await creator_service.get_project(session, user_id=member2.user_id, scope=member2, project_id=p1['id'])
 
 
+async def test_save_stage_local_asset_refs(session) -> None:
+    """阶段产出 asset_refs 支持云端 + 本地引用（doc19 §5.5：reel 成片重资产本地优先不自动上云）。
+
+    向后兼容：裸字符串 / 既有 cloud dict **原样保留**（不破坏现有 round-trip）；本地引用
+    {kind:'local', path, node_id, uploaded} 严格校验并归一（补 uploaded 默认）。webui 据 kind=='local' 分流。
+    """
+    scope = _personal_scope()
+    proj = await creator_service.create_project(session, user_id=_UID_A, scope=scope, name='短视频号')
+    content = await creator_service.create_content(
+        session, user_id=_UID_A, scope=scope, project_id=proj['id'], title='秋天热饮', content_tracks='video'
+    )
+    cid = content['id']
+
+    # 1) 本地成片引用（reel 出片后 content_operator 调 content.stage.save 落本地路径 + node_id）。
+    s_local = await creator_service.save_stage(
+        session,
+        user_id=_UID_A,
+        scope=scope,
+        content_id=cid,
+        stage='final_draft',
+        asset_refs=[{'kind': 'local', 'path': '/Users/x/reel/_work/t1/final-1.mp4', 'node_id': 'node-mac-1', 'uploaded': False}],
+    )
+    assert s_local['asset_refs'] == [
+        {'kind': 'local', 'path': '/Users/x/reel/_work/t1/final-1.mp4', 'node_id': 'node-mac-1', 'uploaded': False}
+    ]
+
+    # 1b) 本地引用缺省 uploaded → 归一补 False。
+    s_local2 = await creator_service.save_stage(
+        session,
+        user_id=_UID_A,
+        scope=scope,
+        content_id=cid,
+        stage='voiceover',
+        asset_refs=[{'kind': 'local', 'path': '/p/audio.mp3', 'node_id': 'node-mac-1'}],
+    )
+    assert s_local2['asset_refs'] == [{'kind': 'local', 'path': '/p/audio.mp3', 'node_id': 'node-mac-1', 'uploaded': False}]
+
+    # 2) 历史裸字符串云端引用（封面图落私有桶）→ 原样保留（向后兼容）。
+    s_cloud = await creator_service.save_stage(
+        session, user_id=_UID_A, scope=scope, content_id=cid, stage='cover', asset_refs=['hasn://asset/cover-1.png']
+    )
+    assert s_cloud['asset_refs'] == ['hasn://asset/cover-1.png']
+
+    # 3) 既有 cloud dict → 原样透传（不重写 shape，保护现有 round-trip）。
+    s_clouddict = await creator_service.save_stage(
+        session,
+        user_id=_UID_A,
+        scope=scope,
+        content_id=cid,
+        stage='storyboard',
+        asset_refs=[{'kind': 'cloud', 'asset_uri': 'hasn://asset/legacy-1'}],
+    )
+    assert s_clouddict['asset_refs'] == [{'kind': 'cloud', 'asset_uri': 'hasn://asset/legacy-1'}]
+
+    # 4) 混合一阶段多引用（本地成片 + 裸字符串云端封面）。
+    s_mixed = await creator_service.save_stage(
+        session,
+        user_id=_UID_A,
+        scope=scope,
+        content_id=cid,
+        stage='final_draft',  # 同 stage 再存 → version bump
+        asset_refs=[
+            {'kind': 'local', 'path': '/p/final-2.mp4', 'node_id': 'node-mac-1'},
+            'hasn://asset/thumb',
+        ],
+    )
+    assert s_mixed['version'] == 2
+    assert s_mixed['asset_refs'] == [
+        {'kind': 'local', 'path': '/p/final-2.mp4', 'node_id': 'node-mac-1', 'uploaded': False},
+        'hasn://asset/thumb',
+    ]
+
+
+async def test_save_stage_rejects_invalid_asset_refs(session) -> None:
+    """非法 asset_refs shape fail-fast 抛 RequestError（仅 local 引用强校验；非 str/非 dict / 空串也拒）。
+
+    向后兼容下只对 kind=='local' 严格校验；非 local dict（含 {kind:'cloud'} 缺 asset_uri / 未知 kind / {}）
+    一律透传不拒（保护历史数据），故不在此列。
+    """
+    scope = _personal_scope()
+    proj = await creator_service.create_project(session, user_id=_UID_A, scope=scope, name='短视频号2')
+    content = await creator_service.create_content(
+        session, user_id=_UID_A, scope=scope, project_id=proj['id'], title='t', content_tracks='video'
+    )
+    cid = content['id']
+
+    bad_refs = [
+        [{'kind': 'local', 'path': '/p'}],  # local 缺 node_id
+        [{'kind': 'local', 'node_id': 'n'}],  # local 缺 path
+        [{'kind': 'local', 'path': '', 'node_id': 'n'}],  # local path 空串
+        [{'kind': 'local', 'path': '/p', 'node_id': ''}],  # local node_id 空串
+        [{'kind': 'local', 'path': '/p', 'node_id': 'n', 'uploaded': 'yes'}],  # uploaded 非 bool
+        [123],  # 元素非 str 非 dict
+        [''],  # 空字符串（不能作云端引用）
+    ]
+    for refs in bad_refs:
+        with pytest.raises(errors.RequestError):
+            await creator_service.save_stage(
+                session, user_id=_UID_A, scope=scope, content_id=cid, stage='final_draft', asset_refs=refs
+            )
+
+
 async def test_search_patterns_builtin(session) -> None:
     """爆款搜索：命中全局内置 + 自己的。"""
     scope = _personal_scope()
