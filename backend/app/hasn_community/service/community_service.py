@@ -2889,6 +2889,50 @@ class CommunityService:
         }
 
     @staticmethod
+    async def delete_post(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        hasn_id: str,
+        post_id: str,
+    ) -> dict[str, Any]:
+        """
+        删除帖子（与 delete_article 对称）
+
+        :param db: 数据库会话
+        :param user_id: 用户 ID
+        :param hasn_id: 用户的 hasn_id
+        :param post_id: 帖子 ID
+        :return: 删除结果
+        """
+        # 查询帖子
+        stmt = select(HasnPosts).where(HasnPosts.post_id == post_id)
+        result = await db.execute(stmt)
+        post = result.scalar_one_or_none()
+
+        if not post:
+            from backend.common.exception import errors
+
+            raise errors.NotFoundError(msg='帖子不存在')
+
+        # 验证权限（只有作者或主人可以删除）
+        if post.author_hasn_id != hasn_id and post.owner_hasn_id != hasn_id:
+            from backend.common.exception import errors
+
+            raise errors.ForbiddenError(msg='无权删除此帖子')
+
+        # 软删除
+        post.status = 'deleted'
+        post.updated_time = timezone.now()
+
+        await db.flush()
+
+        return {
+            'post_id': post_id,
+            'status': 'deleted',
+        }
+
+    @staticmethod
     async def delete_article(
         db: AsyncSession,
         *,

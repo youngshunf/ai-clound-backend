@@ -598,6 +598,53 @@ async def update_article(
 
 
 @router.delete(
+    '/posts/{post_id}',
+    summary='删除帖子',
+    description='删除帖子（草稿 / 已发布），软删除',
+    dependencies=[DependsJwtAuth],
+)
+async def delete_post(
+    request: Request,
+    db: CurrentSessionTransaction,
+    post_id: str,
+) -> ResponseModel:
+    """
+    删除帖子
+
+    **认证方式**: Owner JWT (Bearer Token)
+
+    **响应**:
+    ```json
+    {
+      "code": 200,
+      "data": {
+        "post_id": "p_abc123",
+        "status": "deleted"
+      }
+    }
+    ```
+    """
+    user_id = request.user.id
+
+    from backend.app.hasn_core import hasn_humans_dao
+
+    human = await hasn_humans_dao.get_by_user_id(db, user_id)
+    if not human:
+        from backend.common.exception import errors
+
+        raise errors.NotFoundError(msg='用户 HASN 身份不存在')
+
+    result = await community_service.delete_post(
+        db,
+        user_id=user_id,
+        hasn_id=human.hasn_id,
+        post_id=post_id,
+    )
+
+    return response_base.success(data=result)
+
+
+@router.delete(
     '/articles/{article_id}',
     summary='删除文章',
     description='删除文章',
