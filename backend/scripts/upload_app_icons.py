@@ -29,7 +29,7 @@ from backend.database.db import async_db_session
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import build_object_url, pick_public_storage, write_bytes
 
-# 10 个内置应用（deck 已有图标、不覆盖）。app_id 即源 SVG 文件名 + 公共桶对象名。
+# 11 个内置应用（deck 已有图标、不覆盖）。app_id 即源 SVG 文件名 + 公共桶对象名。
 APP_IDS = (
     'knowledge',
     'community',
@@ -41,6 +41,7 @@ APP_IDS = (
     'copilot',
     'plan',
     'hasn_task',
+    'reel',
 )
 
 # scripts → backend → huanxing-cloud-backend → huanxing-project（兄弟仓 hasn-node 在此层）
