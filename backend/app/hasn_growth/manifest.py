@@ -448,8 +448,8 @@ def build_growth_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='growth',
         name='获客',
-        icon='target',
-        description='让分身替你找线索、做跟进、促成交，每一步对你透明',
+        icon='brand-growth',
+        description='让分身替你找客户、做跟进、促成交——每条线索、每一步推进都摆在你眼前。',
         scope=('personal', 'enterprise'),
         collaboration_mode='workspace_shared',
         entry_route='/growth',

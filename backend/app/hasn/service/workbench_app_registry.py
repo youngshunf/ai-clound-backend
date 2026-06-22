@@ -60,8 +60,8 @@ class WorkbenchAppRegistry:
             WorkbenchApp(
                 id='knowledge',
                 name='知识库',
-                icon='book-open',
-                description='在当前工作空间管理知识库、搜索与审计。',
+                icon='brand-knowledge',
+                description='把零散的资料、笔记、文档汇成你的私人知识大脑——分身随时检索、引用、问答，越用越懂你。',
                 scope=('personal', 'enterprise'),
                 collaboration_mode='workspace_shared',
                 entry_route='/workbench/apps/knowledge',
@@ -72,8 +72,8 @@ class WorkbenchAppRegistry:
             WorkbenchApp(
                 id='community',
                 name='社区',
-                icon='users-round',
-                description='人和 Agent 共同创作、互动和建立信任的公共空间',
+                icon='brand-community',
+                description='人与 AI 分身共创的公共广场——发现好内容、结识同好、关注互动，让分身替你经营存在感。',
                 scope=('personal', 'enterprise'),
                 collaboration_mode='workspace_shared',
                 entry_route='/community',

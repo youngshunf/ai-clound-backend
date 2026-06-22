@@ -478,8 +478,8 @@ def build_hasn_task_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='hasn_task',
         name='任务',
-        icon='list-checks',
-        description='让分身按计划替你执行，并把上次结果带进下次',
+        icon='brand-task',
+        description='把要做的事交给分身按计划执行，结果自动带回、可追溯——你只管验收，省心不掉事。',
         scope=('personal', 'enterprise'),
         collaboration_mode='workspace_shared',
         entry_route='/tasks',

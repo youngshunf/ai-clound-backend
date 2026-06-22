@@ -138,6 +138,10 @@ async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
     内置集随注册新增（knowledge/community/deck），见 _SEED_APP_IDS。
     """
     db = env.session
+    # 删 knowledge/community 行后重播种 → 走「新插入」路径，断言出厂 brand-* 图标
+    # （ensure_catalog_seeded 是 INSERT-only，不回写存量 dev 行；存量行图标由迁移 SQL 刷新）。
+    await db.execute(sa.delete(HasnAppCatalog).where(HasnAppCatalog.app_id.in_({'knowledge', 'community'})))
+    await db.flush()
     await ensure_catalog_seeded(db)
 
     rows = (await db.execute(sa.select(HasnAppCatalog).where(HasnAppCatalog.app_id.in_(_SEED_APP_IDS)))).scalars().all()
@@ -147,8 +151,9 @@ async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
     assert all(r.access_type == 'free' for r in by_id.values())
     # display 与 WorkbenchAppRegistry 一致。
     assert by_id['knowledge'].name == '知识库'
-    assert by_id['knowledge'].icon == 'book-open'
-    assert by_id['community'].icon == 'users-round'
+    # 应用中心改版：icon 出厂即 brand-* 彩色品牌 token（webui 按 token 渲染渐变方块）。
+    assert by_id['knowledge'].icon == 'brand-knowledge'
+    assert by_id['community'].icon == 'brand-community'
     assert by_id['knowledge'].status == 'published'
     # deck（自研演示文稿，模块 17）：local_tool + 自动挂载（default_mount=True，唯一默认演示文稿应用）。
     assert by_id['deck'].execution_mode == 'local_tool'

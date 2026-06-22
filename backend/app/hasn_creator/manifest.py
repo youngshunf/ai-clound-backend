@@ -533,8 +533,8 @@ def build_creator_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='creator',
         name='创作运营',
-        icon='pen-tool',
-        description='让分身替你做账号定位、选题创作、审核发布、数据复盘，每一步对你透明',
+        icon='brand-creator',
+        description='让分身替你做账号定位、选题创作、审核发布、数据复盘——内容运营一条龙，越做越有章法。',
         scope=('personal', 'enterprise'),
         collaboration_mode='workspace_shared',
         entry_route='/creator',

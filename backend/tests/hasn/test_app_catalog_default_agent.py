@@ -2,7 +2,7 @@
 
 覆盖 doc21 §4.3/§5.4/§7.2：
   1) catalog 播种回填「默认承接分身类型 + 业务提示词」——deck/designsystem/creator/film 同绑
-     content_operator 且 prompt 非空；未列出的 knowledge 留 NULL（回退主脑）。
+     content_operator 且 prompt 非空；knowledge 绑 assistant（应用中心改版：原 NULL → assistant）。
   2) resolve_default_agent_for_app：default_agent_type 命中 builtin_agent_key → 返该分身；
      无匹配 → 回退主脑（pref.primary_agent_id → role=primary → 首个活跃）；
      无任何活跃分身 → None（诚实空态）。
@@ -107,8 +107,10 @@ async def _make_owner(db) -> tuple[str, int]:
 
 
 async def test_catalog_seed_populates_default_agent_type(session) -> None:
-    # 删三行后重播种 → 走「新插入」路径，断言静态默认表生效（不依赖既有迁移 UPDATE）。
-    await session.execute(sa.delete(HasnAppCatalog).where(HasnAppCatalog.app_id.in_(_BOUND_APPS)))
+    # 删相关行后重播种 → 走「新插入」路径，断言静态默认表生效（不依赖既有迁移 UPDATE）。
+    # knowledge 一并删除：应用中心改版后它绑 assistant，需走重插入才能断言新默认（INSERT-only 不回写存量）。
+    seed_apps = (*_BOUND_APPS, 'knowledge')
+    await session.execute(sa.delete(HasnAppCatalog).where(HasnAppCatalog.app_id.in_(seed_apps)))
     await session.flush()
 
     await ensure_catalog_seeded(session)
@@ -116,9 +118,7 @@ async def test_catalog_seed_populates_default_agent_type(session) -> None:
     rows = {
         r.app_id: r
         for r in (
-            await session.execute(
-                select(HasnAppCatalog).where(HasnAppCatalog.app_id.in_((*_BOUND_APPS, 'knowledge')))
-            )
+            await session.execute(select(HasnAppCatalog).where(HasnAppCatalog.app_id.in_(seed_apps)))
         )
         .scalars()
         .all()
@@ -126,8 +126,9 @@ async def test_catalog_seed_populates_default_agent_type(session) -> None:
     for app_id in _BOUND_APPS:
         assert rows[app_id].default_agent_type == 'content_operator', app_id
         assert rows[app_id].work_session_system_prompt, app_id
-    # 未列出的应用回退主脑：default_agent_type 必须为空。
-    assert rows['knowledge'].default_agent_type is None
+    # 应用中心改版：knowledge 现绑「全能助理（assistant）」（此前未列出 → NULL 回退主脑）。
+    assert rows['knowledge'].default_agent_type == 'assistant'
+    assert rows['knowledge'].work_session_system_prompt
 
 
 async def test_resolve_returns_matching_builtin_agent(session) -> None:

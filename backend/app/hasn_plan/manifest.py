@@ -80,8 +80,8 @@ def build_plan_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='plan',
         name='规划',
-        icon='calendar-check',
-        description='主人的目标/计划/待办/日程可视化大脑，分身是你的私人参谋长 + 执行秘书。',
+        icon='brand-plan',
+        description='你的目标、计划、待办、日程可视化大脑——分身当参谋长替你拆解目标，当执行秘书替你排期复盘。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/workbench/apps/plan',

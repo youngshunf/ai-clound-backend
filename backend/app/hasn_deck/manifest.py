@@ -339,8 +339,8 @@ def build_deck_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='deck',
         name='演示文稿',
-        icon='presentation',
-        description='用自然语言驱动分身生成、编辑、预览并导出演示文稿（自研引擎，本地优先 + 跨设备同步）',
+        icon='brand-deck',
+        description='一句话生成专业演示文稿——分身替你搭框架、配图表、精修排版，本地预览随时导出 PPT。',
         scope=('personal',),
         entry_route='/workbench/apps/deck',
         # 唯一默认演示文稿应用：自动挂载（Presenton 已删除，[07] §7）。

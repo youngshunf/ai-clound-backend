@@ -263,8 +263,8 @@ def build_designsystem_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='designsystem',
         name='设计系统',
-        icon='palette',
-        description='给分身确定性的设计 token 契约刀：编译/派生/校验/抽取 + 导入/存取设计系统。',
+        icon='brand-designsystem',
+        description='给分身一把确定性的设计契约刀——编译、派生、校验设计 token 与组件，导入导出一气呵成。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/workbench/apps/designsystem',

@@ -50,11 +50,8 @@ def build_copilot_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='copilot',
         name='会议副驾',
-        icon='headphones',
-        description=(
-            '边听会议/通话边给要点、可追问的问题、待办与易错点，会后产出结构化纪要落产物；'
-            '克制不刷屏，转写与建议本地优先。'
-        ),
+        icon='brand-copilot',
+        description='开会、通话时边听边给要点、追问与待办，会后自动产出结构化纪要——克制不刷屏，只在你需要时出现。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/workbench/apps/copilot',

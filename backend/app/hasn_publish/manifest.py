@@ -254,8 +254,8 @@ def build_publish_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='publish',
         name='网页发布',
-        icon='share-2',
-        description='把分身产出的网页、海报、演示一键发布成稳定分享链接，主人控可见性',
+        icon='brand-publish',
+        description='把分身做好的网页、海报、演示一键变成稳定分享链接，谁能看、看多久你说了算。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/publish',

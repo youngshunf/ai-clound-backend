@@ -325,8 +325,8 @@ def build_film_workbench_app() -> WorkbenchApp:
     return WorkbenchApp(
         id='film',
         name='视频生成',
-        icon='film',
-        description='把一个想法做成完整视频：剧本→角色/场景→分镜→参考图→片段→成片，逐阶段停点确认；产物本地权威。',
+        icon='brand-film',
+        description='把一个创意做成完整视频——脚本→角色→分镜→参考图→片段→成片，分身逐阶段推进，每步你可确认。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/workbench/apps/film',
