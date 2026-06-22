@@ -30,7 +30,7 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.admin.hasn_app_entitlement import router as admin_entitlement_router
-from backend.app.workbench.api.v1.app.workbench import router as workbench_router
+from backend.app.home.api.v1.app.home import router as workbench_router
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
@@ -308,7 +308,7 @@ async def test_purchase_expiry_cycles() -> None:
 
 
 async def test_http_open_trial_and_list_entitlements(env) -> None:
-    """POST /workbench/apps/{id}/trial → 写试用；GET /workbench/entitlements → 我的权益含该行。"""
+    """POST /apps/{id}/trial → 写试用；GET /apps/entitlements → 我的权益含该行。"""
     db = env.session
     owner, user_id = await _seed_owner(db)
     env.state.user_id = user_id  # 让 _resolve_owner_id 命中这个 owner
@@ -316,16 +316,16 @@ async def test_http_open_trial_and_list_entitlements(env) -> None:
     db.add(cat)
     await db.flush()
 
-    created = _data(await env.client.post(f'{_APP_PREFIX}/workbench/apps/{cat.app_id}/trial'))
+    created = _data(await env.client.post(f'{_APP_PREFIX}/apps/{cat.app_id}/trial'))
     assert created['app_id'] == cat.app_id
     assert created['source'] == 'trial'
     assert created['status'] == 'active'
 
-    listed = _data(await env.client.get(f'{_APP_PREFIX}/workbench/entitlements'))
+    listed = _data(await env.client.get(f'{_APP_PREFIX}/apps/entitlements'))
     assert any(e['app_id'] == cat.app_id and e['source'] == 'trial' for e in listed)
 
     # active_only 过滤同样命中（试用未过期）。
-    listed_active = _data(await env.client.get(f'{_APP_PREFIX}/workbench/entitlements?active_only=true'))
+    listed_active = _data(await env.client.get(f'{_APP_PREFIX}/apps/entitlements?active_only=true'))
     assert any(e['app_id'] == cat.app_id for e in listed_active)
 
 
@@ -334,7 +334,7 @@ async def test_http_trial_unknown_app_404(env) -> None:
     db = env.session
     _, user_id = await _seed_owner(db)
     env.state.user_id = user_id
-    resp = await env.client.post(f'{_APP_PREFIX}/workbench/apps/nope_{_uid()}/trial')
+    resp = await env.client.post(f'{_APP_PREFIX}/apps/nope_{_uid()}/trial')
     assert resp.status_code == 404, resp.text
 
 

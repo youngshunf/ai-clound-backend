@@ -1,6 +1,6 @@
 """C2 目录权威切换 真实 PostgreSQL HTTP E2E（零 mock）。
 
-验证 `list_workbench_apps` / `resolve_app_entry` 改读 `hasn_app_catalog`（DB 权威）后：
+验证 `list_apps` / `resolve_app_entry` 改读 `hasn_app_catalog`（DB 权威）后：
 - 工作台列表与现状**字段等价**（manifest 形状不变 + 携带 launch overlay 字段）。
 - catalog `status=disabled` 的应用从列表/入口消失（下架即不可用，设计 §5.2/§6.3）。
 - 入口 `entry_route` 取自 catalog。
@@ -22,7 +22,7 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.workbench.api.v1.app.workbench import router as app_workbench_router
+from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.common.exception.exception_handler import register_exception
@@ -36,9 +36,9 @@ _APP.add_middleware(ContextMiddleware, plugins=(RequestIdPlugin(),))
 register_exception(_APP)
 _APP.include_router(app_workbench_router, prefix='/api/v1/hasn/app')
 
-_APPS = '/api/v1/hasn/app/workbench/apps'
+_APPS = '/api/v1/hasn/app/apps'
 
-# 现状 manifest（WorkbenchApp.to_manifest）的字段集合——C2 必须保持等价。
+# 现状 manifest（App.to_manifest）的字段集合——C2 必须保持等价。
 _MANIFEST_KEYS = {
     'id', 'name', 'icon', 'description', 'scope', 'collaboration_mode',
     'entry_route', 'install_policy', 'requires_role', 'execution_mode',
@@ -120,7 +120,7 @@ async def test_list_apps_field_equivalence_from_catalog(env) -> None:
     assert by_id['knowledge']['icon'] == 'brand-knowledge'  # 应用中心改版：出厂 brand-* 品牌 token
     # launch 字段从本地 registry overlay：deck（local_tool 内联路由）的 entry_route 必须保留。
     if 'deck' in by_id:
-        assert by_id['deck']['entry_route'] == '/workbench/apps/deck'
+        assert by_id['deck']['entry_route'] == '/apps/deck'
         assert by_id['deck']['execution_mode'] == 'local_tool'
 
 
@@ -143,9 +143,9 @@ async def test_disabled_catalog_app_disappears(env) -> None:
 
 
 async def test_entry_route_from_catalog(env) -> None:
-    """入口 entry_route 取自 catalog（community → /community）。"""
+    """入口 entry_route 取自 catalog（community → /apps/community）。"""
     handle = _data(await env.client.get(f'{_APPS}/community/entry'))
     assert handle['app_id'] == 'community'
-    assert handle['entry_route'] == '/community'
+    assert handle['entry_route'] == '/apps/community'
     assert handle['transport'] == 'gateway_internal'
     assert 'credential' not in handle

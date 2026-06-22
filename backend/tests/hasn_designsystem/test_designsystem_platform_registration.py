@@ -7,7 +7,7 @@
 - scopes.py 登记 designsystem:write/:publish（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
 - **铸 scope**：designsystem:write/:publish 进 DEFAULT_AGENT_SCOPES（JWT scopes claim 唯一固定来源），
   且 Agent JWT 编解码忠实携带二者——否则 Agent 调云端 designsystem/agent/* 写类被 check_scopes 403。
-- WorkbenchApp 形态（local_tool / 手动安装 / 内联路由；本期不自动挂载，入口随 P8 webui+catalog 落地）。
+- App 形态（local_tool / 手动安装 / 内联路由；本期不自动挂载，入口随 P8 webui+catalog 落地）。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等。
 
 事实源: docs/hasn-node设计文档/14-AI-Native应用平台/20-设计系统生成应用(自研)架构设计.md §7；
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn_designsystem.manifest import (
     DESIGNSYSTEM_AI_NATIVE_MANIFEST,
-    build_designsystem_workbench_app,
+    build_designsystem_app,
 )
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.common.security.agent_jwt import (
@@ -141,14 +141,14 @@ def test_designsystem_notifications_emit_declared() -> None:
 
 
 def test_designsystem_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 手动安装（本期不自动挂载）+ 内联路由（非新窗口）。"""
-    app = build_designsystem_workbench_app()
+    """App：local_tool + 手动安装（本期不自动挂载）+ 内联路由（非新窗口）。"""
+    app = build_designsystem_app()
     assert app.id == 'designsystem'
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'manual'
     assert app.collaboration_mode == 'none'
     assert app.scope == ('personal',)
-    assert app.entry_route == '/workbench/apps/designsystem'
+    assert app.entry_route == '/apps/designsystem'
     assert app.ui_kind is None
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(DESIGNSYSTEM_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)

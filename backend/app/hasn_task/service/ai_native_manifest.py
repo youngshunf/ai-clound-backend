@@ -1,4 +1,4 @@
-"""任务系统（hasn_task，模块 12）AI-Native 内置 manifest + WorkbenchApp 声明。
+"""任务系统（hasn_task，模块 12）AI-Native 内置 manifest + App 声明。
 
 设计事实源：
 - docs/hasn-node设计文档/12-任务系统实施方案/06-任务系统AI-Native应用化重构设计.md §4/§5
@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 _AUDIT_FIELDS = [
     'trace_id',
@@ -467,22 +467,22 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
 HASN_TASK_AI_NATIVE_MANIFEST['capabilities'].extend(_WORKFLOW_CAPABILITIES)
 
 
-def build_hasn_task_workbench_app() -> WorkbenchApp:
-    """构造 hasn_task 的 WorkbenchApp（catalog seed 源 + 工作台入口）。
+def build_hasn_task_app() -> App:
+    """构造 hasn_task 的 App（catalog seed 源 + 工作台入口）。
 
     UI 为 webui 原生路由（``ui_kind=None`` 内联导航至 ``/tasks``，同 knowledge/community），
     非 sidecar、非独立窗口；execution_mode=local_tool（本地工具驱动 + 原生 UI）。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='hasn_task',
         name='任务',
         icon='brand-task',
         description='把要做的事交给分身按计划执行，结果自动带回、可追溯——你只管验收，省心不掉事。',
         scope=('personal', 'enterprise'),
         collaboration_mode='workspace_shared',
-        entry_route='/tasks',
+        entry_route='/apps/tasks',
         install_policy='auto',
         execution_mode='local_tool',
     )

@@ -32,7 +32,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 # 与既有 AI-Native 审计共表的字段集（同 deck）。
 _AUDIT_FIELDS = [
@@ -246,28 +246,28 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_designsystem_workbench_app() -> WorkbenchApp:
-    """designsystem WorkbenchApp（local_tool / 内联路由 / 非自动挂载）。
+def build_designsystem_app() -> App:
+    """designsystem App（local_tool / 内联路由 / 非自动挂载）。
 
     - ``install_policy='manual'``：本期（P7）只铸 scope + 注册 manifest，**不自动挂载**到工作台；
       用户可见的启动入口随 P8 的 webui 工作台 + ``hasn_app_catalog`` 目录行落地（同 growth/creator
-      先例）。注册到 workbench_app_registry 是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
+      先例）。注册到 app_catalog_registry 是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
     - ``collaboration_mode='none'`` / ``scope=('personal',)`` 必须与 manifest 对齐（validate 闸门：
       ``workspace_scope ⊆ scope`` 且 ``collaboration_mode`` 相等）。
     - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 webui（非 embedded sidecar）。
 
-    延迟导入 WorkbenchApp 避免循环依赖（workbench_app_registry 模块加载即 default() 反向引用本模块）。
+    延迟导入 App 避免循环依赖（app_catalog_registry 模块加载即 default() 反向引用本模块）。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='designsystem',
         name='设计系统',
         icon='brand-designsystem',
         description='给分身一把确定性的设计契约刀——编译、派生、校验设计 token 与组件，导入导出一气呵成。',
         scope=('personal',),
         collaboration_mode='none',
-        entry_route='/workbench/apps/designsystem',
+        entry_route='/apps/designsystem',
         install_policy='manual',
         execution_mode='local_tool',
         ui_kind=None,

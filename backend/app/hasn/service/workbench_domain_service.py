@@ -12,6 +12,7 @@ import sqlalchemy as sa
 
 from pypinyin import Style, lazy_pinyin
 
+from backend.app.admin.model.user import User
 from backend.app.hasn.model import (
     HasnAppInstance,
     HasnEnterprise,
@@ -21,23 +22,23 @@ from backend.app.hasn.model import (
     HasnEnterpriseRole,
     HasnHumans,
 )
-from backend.app.admin.model.user import User
-from backend.app.workbench.model import HasnOwnerWorkbenchPref
+from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service import workspace_notification_subscriber as _workspace_notifications  # noqa: F401
+from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+# RF-CLOUD：数据面中转已删，RAGFlowClient 不再被本服务引用，故合并时去掉该 import。
+from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+from backend.app.hasn.service.app_event_bus import app_event_bus
 from backend.app.hasn.service.enterprise_application_service import InviteCodePolicy
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
-from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.instance_resolver import (
     FACE_UI,
     InstanceResolutionError,
     instance_resolver,
 )
-# RF-CLOUD：数据面中转已删，RAGFlowClient 不再被本服务引用，故合并时去掉该 import。
-from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
-from backend.app.hasn.service.workbench_event_bus import workbench_event_bus
-from backend.app.hasn.service import app_catalog_service
-from backend.common.security.encryption import key_encryption
+from backend.app.home.model import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
+from backend.common.security.encryption import key_encryption
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -51,11 +52,11 @@ class WorkbenchDomainService:
         self,
         *,
         enterprise_bus: EnterpriseEventBus = enterprise_event_bus,
-        workbench_bus: EnterpriseEventBus = workbench_event_bus,
+        app_bus: EnterpriseEventBus = app_event_bus,
     ) -> None:
         # RF-CLOUD：云端不再直连 RagFlow 数据面，故移除 ragflow_client_factory。
         self.enterprise_bus = enterprise_bus
-        self.workbench_bus = workbench_bus
+        self.app_bus = app_bus
 
     async def create_enterprise(
         self,
@@ -774,9 +775,9 @@ class WorkbenchDomainService:
 
     # 应用平台 v3 P3（设计 17 决策①）：挂载概念废除（`hasn_workspace_app` 退役），
     # ensure_auto_apps / list_current_workspace_apps（"已挂载应用"）已删除——应用一律开箱即用，
-    # 展示目录由 list_workbench_apps（catalog ∩ entitlement）权威给出。
+    # 展示目录由 list_apps（catalog ∩ entitlement）权威给出。
 
-    async def list_workbench_apps(
+    async def list_apps(
         self, db: AsyncSession, *, user_id: int
     ) -> list[dict[str, Any]]:
         # 防御性幂等播种：生产由启动期 reconcile 保证已 seed（此处仅一次存在性 SELECT、零写）；
@@ -791,7 +792,7 @@ class WorkbenchDomainService:
         # 不在本清单。C2：catalog（DB 权威）取代硬编码 registry 作为展示目录来源（设计 §6.3）。
         # launch 字段（ui_kind/window_url/window_origin）迁移期仍从本地 registry overlay，
         # registry 在 C6 退役后由 daemon 本地提供（设计 §3 边界）。
-        reg_by_id = {a.id: a for a in workbench_app_registry.list()}
+        reg_by_id = {a.id: a for a in app_catalog_registry.list()}
         # C4 闸门①：每行附 access（§5.2）。owner 维度准入用 owner hasn_id（tier/purchase 实时判定）。
         owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
         apps = []
@@ -817,7 +818,7 @@ class WorkbenchDomainService:
         cloud_relay 的 app secret 只留云端（设计 11 §0.3/§7.2）。
         """
         # C2：应用存在性 + entry_route 以 catalog（DB 权威，仅 published）为准（设计 §6.3）。
-        await app_catalog_service.ensure_catalog_seeded(db)  # 防御性幂等（同 list_workbench_apps）
+        await app_catalog_service.ensure_catalog_seeded(db)  # 防御性幂等（同 list_apps）
         cat = await app_catalog_service.get_published_catalog(db, app_id=app_id)
         if cat is None:
             raise errors.NotFoundError(msg='工作台应用不存在')
@@ -835,7 +836,7 @@ class WorkbenchDomainService:
         if manifest is not None:
             # 应用同时声明了 AI-Native manifest：尝试按工作空间解析外部 UI 实例并补全句柄。
             # 但工作台注册的应用其 `entry_route` 是**客户端原生路由**（如 /community、
-            # /workbench/apps/knowledge），UI 导航恒走该原生路由 → gateway_internal；外部实例
+            # /apps/knowledge），UI 导航恒走该原生路由 → gateway_internal；外部实例
             # 只服务于该应用的数据/工具面（由 daemon/MCP 另行解析），实例未配置不应阻断 UI 入口。
             # 因此实例未配置（15050）时如实回落到内置句柄（原生路由仍可用），不伪造外部实例。
             try:
@@ -865,7 +866,7 @@ class WorkbenchDomainService:
         }
 
     # 应用平台 v3 P3（设计 17 决策①）：enable/disable_current_workspace_app（挂载/卸载）已删除。
-    # 应用一律开箱即用，是否可用纯由商业化准入决定（list_workbench_apps 每行附 access，
+    # 应用一律开箱即用，是否可用纯由商业化准入决定（list_apps 每行附 access，
     # 付费走 resolve_app_access，§5.2）；不再有"挂载开关"写 `hasn_workspace_app`。
 
     # RF-CLOUD：数据面方法（list/create datasets、search、upload）已删除。

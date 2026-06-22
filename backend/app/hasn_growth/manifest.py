@@ -1,4 +1,4 @@
-"""获客（hasn_growth，app_id=growth）AI-Native 内置 manifest + WorkbenchApp 声明。
+"""获客（hasn_growth，app_id=growth）AI-Native 内置 manifest + App 声明。
 
 设计事实源：
 - docs/AI自动获客任务系统/07-获客营销全链路AI-Native应用设计.md §3（应用身份/catalog/scope）+ §6（工具面）
@@ -32,7 +32,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 _AUDIT_FIELDS = [
     'trace_id',
@@ -436,23 +436,23 @@ GROWTH_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_growth_workbench_app() -> WorkbenchApp:
-    """构造 growth 的 WorkbenchApp（catalog seed 源 + 工作台入口）。
+def build_growth_app() -> App:
+    """构造 growth 的 App（catalog seed 源 + 工作台入口）。
 
     UI 为 webui 原生路由（``ui_kind=None`` 内联导航至 ``/growth``，同 knowledge/community）。
     execution_mode=cloud（业务逻辑云端，工具走 gateway_internal）；install_policy=manual（获客非人人需要，
     default_mount=FALSE，用户在工作台主动挂载，设计 §3.2）。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='growth',
         name='获客',
         icon='brand-growth',
         description='让分身替你找客户、做跟进、促成交——每条线索、每一步推进都摆在你眼前。',
         scope=('personal', 'enterprise'),
         collaboration_mode='workspace_shared',
-        entry_route='/growth',
+        entry_route='/apps/growth',
         install_policy='manual',
         execution_mode='cloud',
     )

@@ -210,11 +210,11 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     # 编排单测（无 hasn_app_catalog 表），故把 catalog 存在性/准入桩为「注册 app 即免费可挂载」；
     # 准入闸门真实行为见 test_app_catalog_access.py（真实 PG）。
     import backend.app.hasn.service.app_catalog_service as catalog_mod
-    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+    from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 
     async def _stub_get_published_catalog(_db, *, app_id):  # noqa: RUF029
         try:
-            workbench_app_registry.get(app_id)
+            app_catalog_registry.get(app_id)
         except KeyError:
             return None
         return SimpleNamespace(app_id=app_id, access_type='free', status='published')
@@ -225,7 +225,7 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     # 无关）。stub 世界无 hasn_app_catalog 表 → 用 registry 全量模拟「已发布目录」；保留可选
     # kind 形参仅为兼容旧调用（生产已不传 kind）。
     async def _stub_list_published_catalog(_db, *, kind=None):  # noqa: RUF029
-        return [SimpleNamespace(app_id=app.id) for app in workbench_app_registry.list(kind)]
+        return [SimpleNamespace(app_id=app.id) for app in app_catalog_registry.list(kind)]
 
     monkeypatch.setattr(catalog_mod, 'list_published_catalog', _stub_list_published_catalog, raising=True)
 
@@ -242,12 +242,12 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     await engine.dispose()
 
 
-def _service(enterprise_bus: CapturingBus | None = None, workbench_bus: CapturingBus | None = None):
+def _service(enterprise_bus: CapturingBus | None = None, app_bus: CapturingBus | None = None):
     from backend.app.hasn.service.workbench_domain_service import WorkbenchDomainService
 
     return WorkbenchDomainService(
         enterprise_bus=enterprise_bus or CapturingBus(),
-        workbench_bus=workbench_bus or CapturingBus(),
+        app_bus=app_bus or CapturingBus(),
     )
 
 
@@ -400,9 +400,9 @@ async def test_list_user_workspaces_returns_cloud_aggregated_workspace_stats(
 
     # 应用平台 v3（去工作空间绑定）：app_count = 已发布应用总数（与激活空间无关——切空间
     # 不切换应用，故个人/企业 app_count 同口径一致），不再按 kind 裁剪、不再来自挂载行。
-    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+    from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 
-    total_apps = len(workbench_app_registry.list())
+    total_apps = len(app_catalog_registry.list())
     personal = workspaces['available'][0]
     enterprise_workspace = workspaces['available'][1]
     assert personal['member_count'] == 1

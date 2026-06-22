@@ -9,7 +9,7 @@
   且 Agent JWT 编解码忠实携带三者——否则 Agent 调云端 reel 本地工具经 daemon 三态闸门缺 claim。
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 == {reel:write, reel:export}
   （= hasn-node crates/hasn-mcp/src/reel.rs capability_scopes() 契约，见 test_local_tool_scope_alignment）。
-- WorkbenchApp 形态（local_tool / 手动安装 / 瘦引擎页 /apps/reel；瘦引擎应用按需装，内容创作在创作运营）。
+- App 形态（local_tool / 手动安装 / 瘦引擎页 /apps/reel；瘦引擎应用按需装，内容创作在创作运营）。
 - catalog 出厂源：sort_order / default_agent_type(content_operator) / config_json（仅 llm+tts+stt 三类模型，
   无 image/video；bundled_deps=ffmpeg/imagemagick）。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等；
@@ -48,7 +48,7 @@ from backend.app.hasn.service.app_catalog_service import (
     get_catalog,
 )
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
-from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST, build_reel_workbench_app
+from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST, build_reel_app
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.common.security.agent_jwt import (
     DEFAULT_AGENT_SCOPES,
@@ -174,8 +174,8 @@ def test_reel_notifications_emit_declared() -> None:
 
 
 def test_reel_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 手动安装（瘦引擎应用按需装）+ 瘦引擎页 /apps/reel（非新窗口）。"""
-    app = build_reel_workbench_app()
+    """App：local_tool + 手动安装（瘦引擎应用按需装）+ 瘦引擎页 /apps/reel（非新窗口）。"""
+    app = build_reel_app()
     assert app.id == 'reel'
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'manual'

@@ -35,7 +35,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 # 与既有 AI-Native 审计共表的字段集（同 deck/designsystem/film）。
 _AUDIT_FIELDS = [
@@ -261,22 +261,22 @@ REEL_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_reel_workbench_app() -> WorkbenchApp:
-    """reel WorkbenchApp（local_tool / 瘦引擎页路由 / 非自动挂载）。
+def build_reel_app() -> App:
+    """reel App（local_tool / 瘦引擎页路由 / 非自动挂载）。
 
     - ``install_policy='manual'``：reel 是瘦引擎应用（doc19 §4.2/N19），按需装，不自动挂载到工作台
       （``default_mount=FALSE`` 由 install_policy 推导）。内容创作在创作运营完成（§5.5）。
-      注册到 workbench_app_registry 是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
+      注册到 app_catalog_registry 是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
     - ``collaboration_mode='none'`` / ``scope=('personal',)`` 必须与 manifest 对齐（validate 闸门）。
     - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 webui 瘦引擎页（非 embedded sidecar、非 iframe）。
     - ``entry_route='/apps/reel'``：瘦引擎页（引擎管理 + 临时合成 sandbox），路由统一在 `/apps` 前缀下
       （2026-06-22 路由重构，doc19 §3/§4.2）。
 
-    延迟导入 WorkbenchApp 避免循环依赖。
+    延迟导入 App 避免循环依赖。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='reel',
         name='短视频合成',
         icon='brand-reel',

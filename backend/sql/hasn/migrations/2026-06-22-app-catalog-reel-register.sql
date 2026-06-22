@@ -4,7 +4,7 @@
 --   品牌图标，供 daemon 镜像 catalog、注入 sidecar、webui 展示。
 --
 -- catalog 是工作台展示 DB 权威（C2）；出厂源（app_catalog_service：_CATALOG_SORT_ORDER /
---   _CATALOG_AGENT_DEFAULTS / _CATALOG_DEFAULT_CONFIG['reel'] + workbench_app_registry 注册）已同步同值，
+--   _CATALOG_AGENT_DEFAULTS / _CATALOG_DEFAULT_CONFIG['reel'] + app_catalog_registry 注册）已同步同值，
 --   新部署经 ensure_catalog_seeded 自动 INSERT 即得本值；本迁移为**存量 dev/prod** 显式建行（部署后立即可见，
 --   不必等应用重启跑 seed），并回填 config_json / icon_asset_uri / default_agent_type。
 -- 幂等：

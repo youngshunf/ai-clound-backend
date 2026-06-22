@@ -8,7 +8,7 @@
 - scopes.py 登记 plan:read/:write（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
 - **铸 scope**：plan:read/:write 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带二者。
 - catalog 默认绑定（AppCollab doc21）：plan → planner 内置分身类型 + work_session_system_prompt。
-- WorkbenchApp 形态（local_tool / 手动安装 / 内联路由 / ui_kind=None）。
+- App 形态（local_tool / 手动安装 / 内联路由 / ui_kind=None）。
 
 真实 PostgreSQL（schema hasn_plan，dev DB 已应用迁移；会话内回滚不污染）：
 - ``ensure_builtin_published`` 落 manifest 行且 hash 自愈幂等。
@@ -41,9 +41,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
-from backend.app.hasn.service.app_catalog_service import _catalog_row_from_workbench_app
-from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
-from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST, build_plan_workbench_app
+from backend.app.hasn.service.app_catalog_service import _catalog_row_from_app
+from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST, build_plan_app
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.common.exception import errors
@@ -124,11 +124,11 @@ def test_plan_scopes_minted_into_agent_jwt() -> None:
 def test_plan_catalog_default_agent_binding() -> None:
     """AppCollab：plan catalog 行默认承接 planner 内置分身类型 + 非空 work_session_system_prompt（doc21 §4.3）。
 
-    catalog 行由 ``_catalog_row_from_workbench_app`` 从 ``_CATALOG_AGENT_DEFAULTS['plan']`` 派生；
+    catalog 行由 ``_catalog_row_from_app`` 从 ``_CATALOG_AGENT_DEFAULTS['plan']`` 派生；
     运行时 ``resolve_default_agent_for_app`` 据此 default_agent_type 匹配 owner 名下 builtin_agent_key=='planner'
     的分身（命中即承接，否则回退主脑）。本测验证目录默认绑定数据正确，不触 DB。
     """
-    row = _catalog_row_from_workbench_app(build_plan_workbench_app())
+    row = _catalog_row_from_app(build_plan_app())
     assert row['default_agent_type'] == 'planner'
     assert row['work_session_system_prompt'] and '参谋长' in row['work_session_system_prompt']
 
@@ -142,20 +142,20 @@ def test_plan_notifications_emit_declared() -> None:
 
 
 def test_plan_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 手动安装（本期不自动挂载）+ 内联路由（非新窗口）。"""
-    app = build_plan_workbench_app()
+    """App：local_tool + 手动安装（本期不自动挂载）+ 内联路由（非新窗口）。"""
+    app = build_plan_app()
     assert app.id == 'plan'
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'manual'
     assert app.collaboration_mode == 'none'
     assert app.scope == ('personal',)
-    assert app.entry_route == '/workbench/apps/plan'
+    assert app.entry_route == '/apps/plan'
     assert app.ui_kind is None
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(PLAN_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)
     assert PLAN_AI_NATIVE_MANIFEST['collaboration_mode'] == app.collaboration_mode
-    # 已注册到 workbench_app_registry（validate_manifest 硬前置）。
-    assert any(a.id == 'plan' for a in workbench_app_registry.list())
+    # 已注册到 app_catalog_registry（validate_manifest 硬前置）。
+    assert any(a.id == 'plan' for a in app_catalog_registry.list())
 
 
 # ============================ 真实 PostgreSQL ============================

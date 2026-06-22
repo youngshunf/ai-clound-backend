@@ -1,4 +1,4 @@
-"""通用网页发布与分享（publish，模块 18）AI-Native 内置 manifest + WorkbenchApp 声明。
+"""通用网页发布与分享（publish，模块 18）AI-Native 内置 manifest + App 声明。
 
 设计事实源：
 - docs/hasn-node设计文档/18-通用网页发布与分享/00-总览.md / 03-工具与接口.md
@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 # 与既有 AI-Native 审计共表的字段集（同 deck/hasn_task §11.5）。
 _AUDIT_FIELDS = [
@@ -242,23 +242,23 @@ PUBLISH_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_publish_workbench_app() -> WorkbenchApp:
-    """构造 publish 的 WorkbenchApp（catalog seed 源 + 工作台入口）。延迟导入避免循环依赖。
+def build_publish_app() -> App:
+    """构造 publish 的 App（catalog seed 源 + 工作台入口）。延迟导入避免循环依赖。
 
     UI 为 webui 原生路由（``ui_kind=None`` 内联导航至 ``/publish``「我发布的」，同 knowledge/community/
     deck/hasn_task），非 sidecar、非独立窗口；execution_mode=local_tool（本地工具驱动 + 原生 UI）。
     install_policy=auto（免费、注册即用）。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='publish',
         name='网页发布',
         icon='brand-publish',
         description='把分身做好的网页、海报、演示一键变成稳定分享链接，谁能看、看多久你说了算。',
         scope=('personal',),
         collaboration_mode='none',
-        entry_route='/publish',
+        entry_route='/apps/publish',
         install_policy='auto',
         execution_mode='local_tool',
     )

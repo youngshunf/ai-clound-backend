@@ -1,7 +1,7 @@
 """会议副驾（copilot，模块「桌面端潜行会议副驾」）工作台平台接入 真实测试（零 mock）。
 
-覆盖把会议副驾注册成工作台应用（WorkbenchApp + ``ensure_catalog_seeded`` 播种 ``hasn_app_catalog``）：
-- WorkbenchApp 形态（local_tool / 非自动挂载 manual / 原生 webui 路由 ``/workbench/apps/copilot`` / ui_kind=None）。
+覆盖把会议副驾注册成工作台应用（App + ``ensure_catalog_seeded`` 播种 ``hasn_app_catalog``）：
+- App 形态（local_tool / 非自动挂载 manual / 原生 webui 路由 ``/apps/copilot`` / ui_kind=None）。
 - 会议副驾 **无 Agent 工具、无 AI-Native tool manifest、无 scope**（走工作会话派发，同 knowledge/community）。
 - 真实 PG：``ensure_catalog_seeded`` 播种 copilot 行（local_tool/builtin/free/manual/sort 60，status=published
   → 工作台应用网格才出现「会议副驾」入口）；AppCollab default_agent_type=meeting_copilot（打开默认承接会议副驾分身）。
@@ -22,8 +22,8 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
-from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
-from backend.app.hasn_copilot.manifest import build_copilot_workbench_app
+from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+from backend.app.hasn_copilot.manifest import build_copilot_app
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 if TYPE_CHECKING:
@@ -31,22 +31,22 @@ if TYPE_CHECKING:
 
 
 def test_copilot_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 非自动挂载（manual）+ 原生 webui 路由 /workbench/apps/copilot。"""
-    app = build_copilot_workbench_app()
+    """App：local_tool + 非自动挂载（manual）+ 原生 webui 路由 /apps/copilot。"""
+    app = build_copilot_app()
     assert app.id == 'copilot'
     assert app.name == '会议副驾'
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'manual'
     assert app.collaboration_mode == 'none'
     assert app.scope == ('personal',)
-    assert app.entry_route == '/workbench/apps/copilot'
+    assert app.entry_route == '/apps/copilot'
     assert app.ui_kind is None  # 原生 webui 页（模式 A），非 sidecar iframe
 
 
 def test_copilot_registered_in_workbench_registry() -> None:
-    """copilot 已进 workbench_app_registry（ensure_catalog_seeded 据此播种）。"""
-    ids = {a.id for a in workbench_app_registry.list()}
-    assert 'copilot' in ids, '会议副驾必须在 workbench_app_registry 注册，否则工作台应用网格不显示'
+    """copilot 已进 app_catalog_registry（ensure_catalog_seeded 据此播种）。"""
+    ids = {a.id for a in app_catalog_registry.list()}
+    assert 'copilot' in ids, '会议副驾必须在 app_catalog_registry 注册，否则工作台应用网格不显示'
 
 
 # ============================ 真实 PostgreSQL ============================
@@ -97,7 +97,7 @@ async def test_copilot_seeded_into_catalog(db: AsyncSession) -> None:
     assert row.access_type == 'free'
     assert row.default_mount is False, '非自动挂载（install_policy=manual）'
     assert row.sort_order == 60
-    assert row.entry_route == '/workbench/apps/copilot'
+    assert row.entry_route == '/apps/copilot'
     assert 'personal' in (row.scope or [])
     assert row.manifest_present is True
     # AppCollab（doc21 §4.3）：打开会议副驾默认承接「会议副驾」分身（builtin_key=meeting_copilot）。

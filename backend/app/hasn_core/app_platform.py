@@ -28,28 +28,28 @@ from backend.app.hasn.service.agent_capability_guard import capability_guard
 from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry, ai_native_app_registry
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
+from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 from backend.app.hasn.service.app_catalog_service import grant_entitlement
 from backend.app.hasn.service.instance_resolver import InstanceResolutionError
-from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 
-# 注意：`WorkbenchApp` 数据类与 `HasnAppInstance`/`HasnAiNativeAppAudit` 模型**不**经本 façade 暴露——
+# 注意：`App` 数据类与 `HasnAppInstance`/`HasnAiNativeAppAudit` 模型**不**经本 façade 暴露——
 # 它们是被「应用清单（manifest）」在子系统构建期消费的叶子数据类型，manifest 属于应用平台**内部**
 # （registry 构建时即 import 各应用 manifest），若 manifest 反过来 import 本 façade 会成环。
 # 这类叶子数据类型由其定义处直接 import；本 façade 只聚合应用平台**服务**入口（深接缝、零环）。
 
 __all__ = [
+    'KNOWLEDGE_SCOPE_CATALOG',
     'AINativeAppRegistry',
     'AiNativeToolCallRequest',
     'BuiltinTaskCatalogResponse',
     'GetHasnAppEntitlementDetail',
     'InstanceResolutionError',
-    'KNOWLEDGE_SCOPE_CATALOG',
     'ai_native_app_registry',
     'ai_native_runtime_gateway',
+    'app_catalog_registry',
     'app_catalog_service',
     'capability_guard',
     'grant_entitlement',
-    'workbench_app_registry',
     'workbench_domain_service',
 ]
