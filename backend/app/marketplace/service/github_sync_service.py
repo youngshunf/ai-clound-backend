@@ -582,6 +582,15 @@ class GitHubSyncService:
         files = self._list_skill_files(skill_md_path.parent)
         # 源内容指纹（doc14 §A1）：驱动 common_skills_revision，替代恒定的 frontmatter version。
         content_hash = compute_skill_content_hash(skill_md_path.parent, text)
+        # changelog frontmatter 既可写成单行字符串，也可写成多行 YAML 列表（多版本记录）；
+        # 但下游 CreateMarketplaceSkillVersionParam.changelog 只接受 str → 列表归一为换行拼接，
+        # 否则带列表 changelog 的技能（如 creator-playbook/plan-playbook）会在版本落库时被 pydantic 拒掉。
+        raw_changelog = metadata.get('changelog')
+        if isinstance(raw_changelog, list):
+            changelog = '\n'.join(str(item) for item in raw_changelog)
+        else:
+            changelog = raw_changelog
+        changelog = changelog or f"Version {metadata.get('version') or '1.0.0'}"
         return {
             'skill_id': skill_id,
             'namespace': namespace,
@@ -607,11 +616,11 @@ class GitHubSyncService:
             'name': display_name,
             'description': metadata.get('description'),
             'version': str(metadata.get('version') or '1.0.0'),
-            'changelog': metadata.get('changelog') or f"Version {metadata.get('version') or '1.0.0'}",
+            'changelog': changelog,
             'content_hash': content_hash,
             'versions': [{
                 'version': str(metadata.get('version') or '1.0.0'),
-                'changelog': metadata.get('changelog') or f"Version {metadata.get('version') or '1.0.0'}",
+                'changelog': changelog,
                 'package_url': metadata.get('package_url'),
                 'file_hash': metadata.get('file_hash'),
                 'content_hash': content_hash,
