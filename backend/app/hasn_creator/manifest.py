@@ -1,4 +1,4 @@
-"""创作运营（hasn_creator，app_id=creator）AI-Native 内置 manifest + WorkbenchApp 声明。
+"""创作运营（hasn_creator，app_id=creator）AI-Native 内置 manifest + App 声明。
 
 设计事实源：
 - docs/自媒体创作运营/00-自媒体创作运营全链路AI-Native应用设计.md §3（应用身份/形态）+ §6（工具面 17 行 21 工具）
@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 _AUDIT_FIELDS = [
     'trace_id',
@@ -521,23 +521,23 @@ CREATOR_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_creator_workbench_app() -> WorkbenchApp:
-    """构造 creator 的 WorkbenchApp（catalog seed 源 + 工作台入口）。
+def build_creator_app() -> App:
+    """构造 creator 的 App（catalog seed 源 + 工作台入口）。
 
     UI 为 webui 原生路由（``ui_kind=None`` 内联导航至 ``/creator``，同 knowledge/community/growth）。
     execution_mode=cloud（业务逻辑云端，工具走 gateway_internal）；install_policy=manual（创作运营非人人需要，
     default_mount=FALSE，用户在工作台主动挂载，设计 §3.2）。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='creator',
         name='创作运营',
         icon='brand-creator',
         description='让分身替你做账号定位、选题创作、审核发布、数据复盘——内容运营一条龙，越做越有章法。',
         scope=('personal', 'enterprise'),
         collaboration_mode='workspace_shared',
-        entry_route='/creator',
+        entry_route='/apps/creator',
         install_policy='manual',
         execution_mode='cloud',
     )

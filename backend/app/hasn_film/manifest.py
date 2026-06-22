@@ -30,7 +30,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 # 与既有 AI-Native 审计共表的字段集（同 deck/designsystem）。
 _AUDIT_FIELDS = [
@@ -309,27 +309,27 @@ FILM_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_film_workbench_app() -> WorkbenchApp:
-    """film WorkbenchApp（local_tool / 内联路由 / 非自动挂载）。
+def build_film_app() -> App:
+    """film App（local_tool / 内联路由 / 非自动挂载）。
 
     - ``install_policy='manual'``：本期（P4）只铸 scope + 注册 manifest，**不自动挂载**到工作台；
       用户可见的启动入口随 P8 webui + ``hasn_app_catalog`` 目录行落地（同 designsystem/creator 先例）。
-      注册到 workbench_app_registry 是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
+      注册到 app_catalog_registry 是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
     - ``collaboration_mode='none'`` / ``scope=('personal',)`` 必须与 manifest 对齐（validate 闸门）。
     - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 webui（非 embedded sidecar）。
 
-    延迟导入 WorkbenchApp 避免循环依赖。
+    延迟导入 App 避免循环依赖。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='film',
         name='视频生成',
         icon='brand-film',
         description='把一个创意做成完整视频——脚本→角色→分镜→参考图→片段→成片，分身逐阶段推进，每步你可确认。',
         scope=('personal',),
         collaboration_mode='none',
-        entry_route='/workbench/apps/film',
+        entry_route='/apps/film',
         install_policy='manual',
         execution_mode='local_tool',
         ui_kind=None,

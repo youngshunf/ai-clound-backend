@@ -29,7 +29,7 @@ from backend.app.hasn.service.app_catalog_service import (
     ensure_catalog_seeded,
     resolve_default_agent_for_app,
 )
-from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio

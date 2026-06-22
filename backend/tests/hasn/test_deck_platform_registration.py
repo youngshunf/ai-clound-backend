@@ -4,7 +4,7 @@
 - manifest 通过 ``validate_manifest``（含 workbench_app 一致性闸门）；进 ``_builtin_manifests``。
 - capabilities scope 与落地 hasn-mcp 工具一致（写类 deck:manage / 读类无 scope；12 个；mcp_name 全 hasn.deck.*）。
 - scopes.py 登记 deck:manage（早期占位 deck:read/deck:write 已删）。
-- WorkbenchApp 形态（local_tool / 手动安装 / 内联路由）。
+- App 形态（local_tool / 手动安装 / 内联路由）。
 - 真实 PG：``ensure_catalog_seeded`` 播种 deck 行（local_tool/builtin/free/auto/sort 35）；
   ``ensure_builtin_published`` 把 deck manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等。
 
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST, build_deck_workbench_app
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST, build_deck_app
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
@@ -103,14 +103,14 @@ def test_deck_notifications_emit_declared() -> None:
 
 
 def test_deck_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 自动挂载（唯一默认演示文稿应用）+ 内联路由（非新窗口）。"""
-    app = build_deck_workbench_app()
+    """App：local_tool + 自动挂载（唯一默认演示文稿应用）+ 内联路由（非新窗口）。"""
+    app = build_deck_app()
     assert app.id == 'deck'
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'auto'
     assert app.collaboration_mode == 'none'
     assert app.scope == ('personal',)
-    assert app.entry_route == '/workbench/apps/deck'
+    assert app.entry_route == '/apps/deck'
     assert app.ui_kind is None
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(DECK_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)
@@ -153,7 +153,7 @@ async def test_deck_seeded_into_catalog(db) -> None:
     assert row.access_type == 'free'
     assert row.default_mount is True, 'deck 自动挂载（唯一默认演示文稿应用）'
     assert row.sort_order == 35
-    assert row.entry_route == '/workbench/apps/deck'
+    assert row.entry_route == '/apps/deck'
     assert 'personal' in (row.scope or [])
 
 

@@ -22,7 +22,7 @@ from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
 from backend.app.hasn_task.model.builtin_catalog import HasnBuiltinTaskCatalog
 from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_task.service.task_service import calc_next_run_at
-from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.log import log
 from backend.utils.timezone import timezone
 

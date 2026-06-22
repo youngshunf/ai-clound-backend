@@ -84,9 +84,9 @@ def test_builtin_knowledge_manifest_matches_p0_contract() -> None:
 def test_manifest_validator_accepts_builtin_knowledge_manifest() -> None:
     from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry
     from backend.app.hasn.service.ai_native_builtin_manifests import KNOWLEDGE_AI_NATIVE_MANIFEST
-    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+    from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 
-    registry = AINativeAppRegistry(workbench_registry=workbench_app_registry)
+    registry = AINativeAppRegistry(catalog_registry=app_catalog_registry)
 
     result = registry.validate_manifest(KNOWLEDGE_AI_NATIVE_MANIFEST)
 
@@ -120,22 +120,22 @@ def test_manifest_validator_rejects_unknown_workbench_app() -> None:
 def test_manifest_validator_rejects_scope_and_collaboration_drift() -> None:
     from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry
     from backend.app.hasn.service.ai_native_builtin_manifests import KNOWLEDGE_AI_NATIVE_MANIFEST
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp, WorkbenchAppRegistry
+    from backend.app.hasn.service.app_catalog_registry import App, AppCatalogRegistry
 
-    workbench = WorkbenchAppRegistry()
+    workbench = AppCatalogRegistry()
     workbench.register(
-        WorkbenchApp(
+        App(
             id='knowledge',
             name='知识库',
             icon='book-open',
             description='个人知识库',
             scope=('personal',),
             collaboration_mode='none',
-            entry_route='/workbench/apps/knowledge',
+            entry_route='/apps/knowledge',
             install_policy='auto',
         )
     )
-    registry = AINativeAppRegistry(workbench_registry=workbench)
+    registry = AINativeAppRegistry(catalog_registry=workbench)
 
     result = registry.validate_manifest(KNOWLEDGE_AI_NATIVE_MANIFEST)
 
@@ -159,9 +159,9 @@ def test_hasn_router_mounts_ai_native_app_routes() -> None:
 async def test_publish_builtin_manifest_uses_published_status() -> None:
     from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry
     from backend.app.hasn.service.ai_native_builtin_manifests import KNOWLEDGE_AI_NATIVE_MANIFEST
-    from backend.app.hasn.service.workbench_app_registry import workbench_app_registry
+    from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 
-    registry = AINativeAppRegistry(workbench_registry=workbench_app_registry)
+    registry = AINativeAppRegistry(catalog_registry=app_catalog_registry)
     saved = await registry.publish_builtin(None, 'knowledge')
 
     assert saved['app_id'] == 'knowledge'

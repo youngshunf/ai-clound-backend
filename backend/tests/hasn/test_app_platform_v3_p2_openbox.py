@@ -1,6 +1,6 @@
 """应用平台 v3 P2「entitlement 收口 / 开箱即用」真实 PostgreSQL HTTP E2E（零 mock）。
 
-验证 `list_workbench_apps`（`GET /workbench/apps`）改为 **catalog(published) ∩ entitlement**、
+验证 `list_apps`（`GET /apps`）改为 **catalog(published) ∩ entitlement**、
 **不再叠加 per-workspace 挂载态**后（设计 17 §6.1，实施台账 P2 首项）：
 
 - 免费 app **零挂载记录直出**：从未 enable 也出现在工作台，`status='available'`、`access.allowed=True`
@@ -29,7 +29,7 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.workbench.api.v1.app.workbench import router as app_workbench_router
+from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.common.exception.exception_handler import register_exception
@@ -43,7 +43,7 @@ _APP.add_middleware(ContextMiddleware, plugins=(RequestIdPlugin(),))
 register_exception(_APP)
 _APP.include_router(app_workbench_router, prefix='/api/v1/hasn/app')
 
-_APPS = '/api/v1/hasn/app/workbench/apps'
+_APPS = '/api/v1/hasn/app/apps'
 
 
 def _uid() -> str:
@@ -70,7 +70,7 @@ def _catalog(app_id: str, **over) -> HasnAppCatalog:
         'execution_mode': 'cloud',
         'scope': ['personal'],
         'collaboration_mode': 'none',
-        'entry_route': f'/workbench/apps/{app_id}',
+        'entry_route': f'/apps/{app_id}',
         'sort_order': 500,
         'default_mount': False,
         'requires_role': None,

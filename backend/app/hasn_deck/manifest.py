@@ -1,4 +1,4 @@
-"""唤星自研演示文稿（deck，模块 17）AI-Native 内置 manifest + WorkbenchApp 声明。
+"""唤星自研演示文稿（deck，模块 17）AI-Native 内置 manifest + App 声明。
 
 设计事实源：
 - docs/hasn-node设计文档/17-演示文稿系统/07-安全权限与平台接入.md §6（注册/manifest/工作台接入）
@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 
 # 与既有 AI-Native 审计共表的字段集。
@@ -327,22 +327,22 @@ DECK_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_deck_workbench_app() -> WorkbenchApp:
-    """构造 deck 的 WorkbenchApp（[07] §6.2）。延迟导入避免循环依赖。
+def build_deck_app() -> App:
+    """构造 deck 的 App（[07] §6.2）。延迟导入避免循环依赖。
 
     deck 是唯一默认演示文稿应用：取 ``install_policy='auto'``（注册即自动挂载；早期接入的 Presenton
     已彻底删除，不再有两个「演示文稿」并存的问题）。UI 为 webui 原生路由（``ui_kind=None`` 内联导航至
     ``entry_route``，同 knowledge/community），非 sidecar、非独立窗口。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='deck',
         name='演示文稿',
         icon='brand-deck',
         description='一句话生成专业演示文稿——分身替你搭框架、配图表、精修排版，本地预览随时导出 PPT。',
         scope=('personal',),
-        entry_route='/workbench/apps/deck',
+        entry_route='/apps/deck',
         # 唯一默认演示文稿应用：自动挂载（Presenton 已删除，[07] §7）。
         install_policy='auto',
         collaboration_mode='none',

@@ -30,7 +30,7 @@ from backend.app.hasn.model.hasn_enterprise import HasnEnterprise
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
-from backend.app.workbench.model import HasnOwnerWorkbenchPref
+from backend.app.home.model import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 

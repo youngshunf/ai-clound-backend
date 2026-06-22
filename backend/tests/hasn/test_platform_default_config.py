@@ -98,7 +98,7 @@ async def test_app_configs_aggregated_from_catalog() -> None:
     app_configs.<app_id> 即随之变 → compute_revision 涵盖 → revision 变 → daemon 重拉。
     """
     async with async_db_session() as db:
-        await ensure_catalog_seeded(db)  # 确保 film 行存在（build_film_workbench_app 已注册）
+        await ensure_catalog_seeded(db)  # 确保 film 行存在（build_film_app 已注册）
         _cfg_before, rev_before = await svc.get_effective_config(db)
         film_cfg = {
             'models': {'llm': ['gpt-5'], 'vlm': [], 'image_t2i': [], 'image_it2i': [], 'video': ['kling-1']},

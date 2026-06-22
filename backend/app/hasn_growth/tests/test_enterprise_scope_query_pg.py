@@ -29,7 +29,7 @@ from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMemb
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.model.customer import Customer
-from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction

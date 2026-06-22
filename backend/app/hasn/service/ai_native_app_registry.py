@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
-from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry, workbench_app_registry
+from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, app_catalog_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
@@ -33,8 +33,8 @@ class ManifestValidationResult:
 
 
 class AINativeAppRegistry:
-    def __init__(self, *, workbench_registry: WorkbenchAppRegistry | None = None) -> None:
-        self.workbench_registry = workbench_registry or workbench_app_registry
+    def __init__(self, *, catalog_registry: AppCatalogRegistry | None = None) -> None:
+        self.catalog_registry = catalog_registry or app_catalog_registry
         self._builtin_manifests = {
             'knowledge': KNOWLEDGE_AI_NATIVE_MANIFEST,
             'community': COMMUNITY_AI_NATIVE_MANIFEST,
@@ -75,15 +75,15 @@ class AINativeAppRegistry:
             errors_list.append('version_required')
 
         try:
-            workbench_app = self.workbench_registry.get(app_id)
+            registered_app = self.catalog_registry.get(app_id)
         except KeyError:
             errors_list.append('workbench_app_not_found')
-            workbench_app = None
+            registered_app = None
 
-        if workbench_app is not None:
-            if any(scope not in workbench_app.scope for scope in workspace_scope):
+        if registered_app is not None:
+            if any(scope not in registered_app.scope for scope in workspace_scope):
                 errors_list.append('workspace_scope_exceeds_workbench_scope')
-            if collaboration_mode != workbench_app.collaboration_mode:
+            if collaboration_mode != registered_app.collaboration_mode:
                 errors_list.append('collaboration_mode_mismatch')
 
         manifest_hash = _manifest_hash(manifest)

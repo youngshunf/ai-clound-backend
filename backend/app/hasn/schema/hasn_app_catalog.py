@@ -9,7 +9,7 @@ from backend.common.schema import SchemaBase
 class HasnAppCatalogSchemaBase(SchemaBase):
     """AI-Native 应用目录（云端权威）基础模型"""
 
-    app_id: str = Field(description='应用唯一标识（与 manifest.app_id / WorkbenchApp.id 一致）')
+    app_id: str = Field(description='应用唯一标识（与 manifest.app_id / App.id 一致）')
     name: str = Field(description='显示名称')
     icon: str = Field(description='图标 token（前端 ICON_REGISTRY 映射）')
     icon_asset_uri: str | None = Field(

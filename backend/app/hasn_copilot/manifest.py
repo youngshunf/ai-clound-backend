@@ -8,12 +8,12 @@
 待办与易错点，会后产出结构化纪要落产物。与 deck/film 不同——**它没有 Agent 调用的 ``hasn.*``
 MCP 工具**（实时转写/建议/纪要都在工作会话里由分身完成，hasn-node ``domains/copilot`` 的
 工作会话 + 投影卡片 + 本地镜像 + 产物本地优先存储驱动），故 **不注册 AI-Native tool manifest、
-不铸 scope**（同 knowledge/community 这类「无 Agent 工具」的应用，只需 WorkbenchApp 工作台入口）。
+不铸 scope**（同 knowledge/community 这类「无 Agent 工具」的应用，只需 App 工作台入口）。
 
 ⚠️ execution_mode='local_tool' / ui_kind=None（原生 webui 页，模式 A）：数据与工作会话在本地
 daemon（``domains/copilot`` 本地镜像 + 产物本地优先存储），非云端执行、非 sidecar iframe。
-注册到 ``workbench_app_registry`` → ``ensure_catalog_seeded`` 幂等播种 ``hasn_app_catalog``
-（status=published）→ 工作台应用网格出现「会议副驾」入口（点进 ``/workbench/apps/copilot``
+注册到 ``app_catalog_registry`` → ``ensure_catalog_seeded`` 幂等播种 ``hasn_app_catalog``
+（status=published）→ 工作台应用网格出现「会议副驾」入口（点进 ``/apps/copilot``
 载体 B 工作台页：会议历史 / 产物库 / 设置）。
 
 ⚠️ install_policy='manual'：会议副驾的完整实时副驾能力（隐身悬浮窗 + 系统/麦克风双轨采集）依赖
@@ -30,11 +30,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 
-def build_copilot_workbench_app() -> WorkbenchApp:
-    """会议副驾 WorkbenchApp（local_tool / 原生 webui 路由 / 非自动挂载）。
+def build_copilot_app() -> App:
+    """会议副驾 App（local_tool / 原生 webui 路由 / 非自动挂载）。
 
     - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 webui 工作台页（模式 A），
       数据在本地 daemon ``domains/copilot``（工作会话 + 投影 + 产物本地优先）。
@@ -43,18 +43,18 @@ def build_copilot_workbench_app() -> WorkbenchApp:
     - ``install_policy='manual'``：完整实时副驾依赖桌面端原生隐身/音频，不强制挂载；
       工作台目录可见可进入（载体 B 回看历史会话/产物/设置）。
 
-    延迟导入 WorkbenchApp 避免循环依赖。
+    延迟导入 App 避免循环依赖。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='copilot',
         name='会议副驾',
         icon='brand-copilot',
         description='开会、通话时边听边给要点、追问与待办，会后自动产出结构化纪要——克制不刷屏，只在你需要时出现。',
         scope=('personal',),
         collaboration_mode='none',
-        entry_route='/workbench/apps/copilot',
+        entry_route='/apps/copilot',
         install_policy='manual',
         execution_mode='local_tool',
         ui_kind=None,

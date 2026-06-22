@@ -67,12 +67,12 @@ def _uid() -> str:
 
 
 def test_workbench_registry_contains_hasn_task() -> None:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchAppRegistry
+    from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry
 
-    registry = WorkbenchAppRegistry.default()
+    registry = AppCatalogRegistry.default()
     app = next((a for a in registry.list() if a.id == 'hasn_task'), None)
     assert app is not None, 'workbench registry 缺 hasn_task'
-    assert app.entry_route == '/tasks'
+    assert app.entry_route == '/apps/tasks'
     assert app.install_policy == 'auto'
 
 

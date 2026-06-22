@@ -4,7 +4,7 @@
 - manifest 通过 ``validate_manifest``（含 workbench_app 一致性闸门）；进 ``_builtin_manifests``。
 - capabilities scope 与落地 hasn-mcp 工具一致（写类 publish:write / 读类无 scope；7 个；mcp_name 全 hasn.publish.*）。
 - scopes.py 登记 publish:read / publish:write。
-- WorkbenchApp 形态（local_tool / 自动安装 / 内联路由 /publish）。
+- App 形态（local_tool / 自动安装 / 内联路由 /publish）。
 - 真实 PG：``ensure_catalog_seeded`` 播种 publish 行（local_tool/builtin/free/auto/sort 40）；
   ``ensure_builtin_published`` 把 publish manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等。
 
@@ -27,7 +27,7 @@ from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST, build_publish_workbench_app
+from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST, build_publish_app
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 if TYPE_CHECKING:
@@ -90,14 +90,14 @@ def test_publish_scopes_registered() -> None:
 
 
 def test_publish_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 自动安装（免费注册即用）+ 内联路由 /publish（非新窗口）。"""
-    app = build_publish_workbench_app()
+    """App：local_tool + 自动安装（免费注册即用）+ 内联路由 /apps/publish（非新窗口）。"""
+    app = build_publish_app()
     assert app.id == 'publish'
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'auto'
     assert app.collaboration_mode == 'none'
     assert app.scope == ('personal',)
-    assert app.entry_route == '/publish'
+    assert app.entry_route == '/apps/publish'
     assert app.ui_kind is None
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(PUBLISH_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)
@@ -140,7 +140,7 @@ async def test_publish_seeded_into_catalog(db: AsyncSession) -> None:
     assert row.access_type == 'free'
     assert row.default_mount is True, '免费注册即用（install_policy=auto）'
     assert row.sort_order == 40
-    assert row.entry_route == '/publish'
+    assert row.entry_route == '/apps/publish'
     assert 'personal' in (row.scope or [])
     assert row.manifest_present is True
 

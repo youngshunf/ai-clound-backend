@@ -215,7 +215,7 @@ async def _seed_enterprise(session, *, ent_id: int, mgr_uid: int, mgr_hasn: str,
     """播种一个最小企业上下文：主编(owner)+运营(member)，各自 active_enterprise 指向本企业。"""
     from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
     from backend.app.hasn_core import HasnHumans
-    from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+    from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 
     session.add_all(
         [

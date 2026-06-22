@@ -171,8 +171,8 @@ def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
 
 
 def test_m2_app_registration_manifest_scope_catalog() -> None:
-    """应用注册：manifest（app_id=growth，17 工具）+ 5 scope + WorkbenchApp（manual）齐备。"""
-    from backend.app.hasn_core.app_platform import AINativeAppRegistry, workbench_app_registry
+    """应用注册：manifest（app_id=growth，17 工具）+ 5 scope + App（manual）齐备。"""
+    from backend.app.hasn_core.app_platform import AINativeAppRegistry, app_catalog_registry
     from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
     from backend.app.mcp.scopes import SCOPE_CATALOG
 
@@ -203,12 +203,12 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     for s in ('growth:read', 'growth:manage', 'growth:outreach', 'growth:collect', 'growth:pii'):
         assert s in SCOPE_CATALOG, s
 
-    # WorkbenchApp：manual install（default_mount=FALSE）
-    wapp = workbench_app_registry.get('growth')
+    # App：manual install（default_mount=FALSE）
+    wapp = app_catalog_registry.get('growth')
     assert wapp.id == 'growth'
     assert wapp.name == '获客'
     assert wapp.install_policy == 'manual'
-    assert 'growth' not in {a.id for a in workbench_app_registry.auto_install_apps('personal')}
+    assert 'growth' not in {a.id for a in app_catalog_registry.auto_install_apps('personal')}
 
 
 def test_business_layer_does_not_replace_generated_crud() -> None:

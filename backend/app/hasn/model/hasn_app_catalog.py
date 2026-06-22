@@ -15,7 +15,7 @@ class HasnAppCatalog(Base):
     __tablename__ = 'hasn_app_catalog'
 
     id: Mapped[id_key] = mapped_column(init=False)
-    app_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='应用唯一标识（与 manifest.app_id / WorkbenchApp.id 一致）')
+    app_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='应用唯一标识（与 manifest.app_id / App.id 一致）')
     name: Mapped[str] = mapped_column(sa.String(64), default='', comment='显示名称')
     icon: Mapped[str] = mapped_column(sa.String(64), default='', comment='图标 token（前端 ICON_REGISTRY 映射）')
     icon_asset_uri: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment='自定义图标资产 URI（优先于 token），hasn://asset/{id} 或 https')

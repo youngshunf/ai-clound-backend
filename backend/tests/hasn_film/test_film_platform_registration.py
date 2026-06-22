@@ -9,7 +9,7 @@
   且 Agent JWT 编解码忠实携带三者——否则 Agent 调云端 film/agent/* 写类被 check_scopes 403。
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 == {film:write, film:export}
   （= hasn-node crates/hasn-mcp/src/film.rs capability_scopes() 契约，见 test_local_tool_scope_alignment）。
-- WorkbenchApp 形态（local_tool / 手动安装 / 内联路由；本期不自动挂载，入口随 P8 webui+catalog 落地）。
+- App 形态（local_tool / 手动安装 / 内联路由；本期不自动挂载，入口随 P8 webui+catalog 落地）。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等。
 
 事实源: docs/hasn-node设计文档/14-AI-Native应用平台/18-VideoClaw视频生成应用接入与按需下载形态设计.md §7；
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
-from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST, build_film_workbench_app
+from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST, build_film_app
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.common.security.agent_jwt import (
     DEFAULT_AGENT_SCOPES,
@@ -181,14 +181,14 @@ def test_film_notifications_emit_declared() -> None:
 
 
 def test_film_workbench_app_shape() -> None:
-    """WorkbenchApp：local_tool + 手动安装（本期不自动挂载）+ 内联路由（非新窗口）。"""
-    app = build_film_workbench_app()
+    """App：local_tool + 手动安装（本期不自动挂载）+ 内联路由（非新窗口）。"""
+    app = build_film_app()
     assert app.id == 'film'
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'manual'
     assert app.collaboration_mode == 'none'
     assert app.scope == ('personal',)
-    assert app.entry_route == '/workbench/apps/film'
+    assert app.entry_route == '/apps/film'
     assert app.ui_kind is None
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(FILM_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)

@@ -3,7 +3,7 @@
 设计事实源：docs/hasn-node设计文档/14-AI-Native应用平台/16-应用目录与商业化管理统一设计.md
 
 职责：
-- ``ensure_catalog_seeded``：从 ``workbench_app_registry`` 幂等播种 ``hasn_app_catalog``（迁移 M2）。
+- ``ensure_catalog_seeded``：从 ``app_catalog_registry`` 幂等播种 ``hasn_app_catalog``（迁移 M2）。
   **只插入缺失行，绝不回写已存在行的 display/价格**——这是「代码不覆盖运营改动」的关键
   （区别于 manifest 的 hash 自愈逻辑，见设计 §6.1）。
 - ``sweep_expired_entitlements``：把 ``expires_at < now`` 的 active 权益置 expired（设计 §5.4 定时兜底）。
@@ -24,8 +24,8 @@ from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.hasn.service.workbench_app_registry import WorkbenchApp, workbench_app_registry
-from backend.app.workbench.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+from backend.app.hasn.service.app_catalog_registry import App, app_catalog_registry
+from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -161,8 +161,8 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
 }
 
 
-def _catalog_row_from_workbench_app(app: WorkbenchApp) -> dict:
-    """把 WorkbenchApp 映射为 catalog 行的默认值（迁移期单一来源）。
+def _catalog_row_from_app(app: App) -> dict:
+    """把 App 映射为 catalog 行的默认值（迁移期单一来源）。
 
     新增字段（source/status/商业化…）取保守默认：全部内置、已上架、免费。
     """
@@ -206,10 +206,10 @@ async def ensure_catalog_seeded(db: AsyncSession) -> int:
     """
     existing = set((await db.execute(sa.select(HasnAppCatalog.app_id))).scalars().all())
     inserted = 0
-    for app in workbench_app_registry.list():
+    for app in app_catalog_registry.list():
         if app.id in existing:
             continue
-        db.add(HasnAppCatalog(**_catalog_row_from_workbench_app(app)))
+        db.add(HasnAppCatalog(**_catalog_row_from_app(app)))
         inserted += 1
     if inserted:
         await db.flush()
@@ -387,8 +387,8 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
 # ============================ C2：catalog 作为展示权威 ============================
 
 
-def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: WorkbenchApp | None = None) -> dict:
-    """把 catalog 行映射为工作台 manifest（与 ``WorkbenchApp.to_manifest`` 同形 + ``icon_asset_uri``）。
+def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: App | None = None) -> dict:
+    """把 catalog 行映射为工作台 manifest（与 ``App.to_manifest`` 同形 + ``icon_asset_uri``）。
 
     launch 字段（ui_kind/window_url/window_origin）catalog 不存——迁移期从本地 ``registry_app``
     overlay；registry 在 C6 退役后由 daemon 本地提供（对齐设计 §3 边界「本地 builtin 只保留 launch 字段」）。

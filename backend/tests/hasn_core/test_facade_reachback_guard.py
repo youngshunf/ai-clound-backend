@@ -11,7 +11,7 @@ P1（身份 façade）+ P2（应用平台服务 façade）已把两条**深接�
 > 注意：本守卫**只**守这两条**已收编**的接缝，不是「禁止一切 `from backend.app.hasn.`」——
 > 平台原语（conversations / messages / contacts / sessions / nodes / ws_router / asset /
 > sync / audit / notifications 等）仍是平台核心，尚未建 façade，故**不在**禁列里（见设计提案
-> P3 长尾，经评估为浅接缝、暂不收敛）。`WorkbenchApp` 数据类亦不在禁列——它被各应用 manifest
+> P3 长尾，经评估为浅接缝、暂不收敛）。`App` 数据类亦不在禁列——它被各应用 manifest
 > 在子系统构建期消费，属应用平台内部，经定义处直接 import（façade 化会成环，见 P2）。
 """
 
@@ -56,8 +56,8 @@ _BANNED: tuple[tuple[re.Pattern[str], str], ...] = (
         'from backend.app.hasn_core.app_platform import …',
     ),
     (
-        re.compile(r'from\s+backend\.app\.hasn\.service\.workbench_app_registry\s+import\s+workbench_app_registry\b'),
-        'from backend.app.hasn_core.app_platform import workbench_app_registry',
+        re.compile(r'from\s+backend\.app\.hasn\.service\.app_catalog_registry\s+import\s+app_catalog_registry\b'),
+        'from backend.app.hasn_core.app_platform import app_catalog_registry',
     ),
     (
         re.compile(r'from\s+backend\.app\.hasn\.service\.app_catalog_service\s+import'),

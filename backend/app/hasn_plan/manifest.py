@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
 # 与既有 AI-Native 审计共表的字段集（同 deck/designsystem）。
 _AUDIT_FIELDS = [
@@ -64,27 +64,27 @@ PLAN_AI_NATIVE_MANIFEST = {
 }
 
 
-def build_plan_workbench_app() -> WorkbenchApp:
-    """plan WorkbenchApp（local_tool / 内联路由 / 非自动挂载）。
+def build_plan_app() -> App:
+    """plan App（local_tool / 内联路由 / 非自动挂载）。
 
     - ``install_policy='manual'``：与 growth/creator/designsystem 先例一致——注册 manifest + 铸 scope，
-      用户可见启动入口随 webui 工作台 + ``hasn_app_catalog`` 目录行落地。注册到 workbench_app_registry
+      用户可见启动入口随 webui 工作台 + ``hasn_app_catalog`` 目录行落地。注册到 app_catalog_registry
       是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
     - ``collaboration_mode='none'`` / ``scope=('personal',)`` 必须与 manifest 对齐（validate 闸门）。
     - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 webui（非 embedded sidecar）。
 
-    延迟导入 WorkbenchApp 避免循环依赖（workbench_app_registry 加载即 default() 反向引用本模块）。
+    延迟导入 App 避免循环依赖（app_catalog_registry 加载即 default() 反向引用本模块）。
     """
-    from backend.app.hasn.service.workbench_app_registry import WorkbenchApp
+    from backend.app.hasn.service.app_catalog_registry import App
 
-    return WorkbenchApp(
+    return App(
         id='plan',
         name='规划',
         icon='brand-plan',
         description='你的目标、计划、待办、日程可视化大脑——分身当参谋长替你拆解目标，当执行秘书替你排期复盘。',
         scope=('personal',),
         collaboration_mode='none',
-        entry_route='/workbench/apps/plan',
+        entry_route='/apps/plan',
         install_policy='manual',
         execution_mode='local_tool',
         ui_kind=None,

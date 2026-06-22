@@ -83,6 +83,9 @@ from backend.app.hasn_task.api.router import app as hasn_task_app
 from backend.app.hermes.api.router import app as hermes_app
 from backend.app.hermes.api.router import internal as hermes_internal
 from backend.app.hermes.api.router import v1 as hermes_v1
+
+# 应用/首页（home）= 原 app/hasn 工作台子域按 ADR-15 §4 抽出；URL /api/v1/hasn/app/{apps,home}/*
+from backend.app.home.api.router import home_app
 from backend.app.huanxing.api.router import agent as huanxing_agent
 from backend.app.huanxing.api.router import app as huanxing_app
 from backend.app.huanxing.api.router import open_api as huanxing_open
@@ -103,9 +106,6 @@ from backend.app.notification.api.router import admin as notification_admin
 from backend.app.notification.api.router import agent as notification_agent
 from backend.app.notification.api.router import app as notification_app
 from backend.app.task.api.router import v1 as task_v1
-
-# 工作台（workbench）= 原 app/hasn 工作台子域按 ADR-15 §4 抽出；URL /api/v1/hasn/app/workbench/* 保持不变
-from backend.app.workbench.api.router import workbench_app
 
 router = APIRouter()
 
@@ -131,8 +131,8 @@ router.include_router(pay_v1)             # 支付管理 API
 router.include_router(pay_app)            # 支付-用户端 API
 router.include_router(pay_open)           # 支付-公开回调 API
 
-# 工作台（workbench 应用，URL /api/v1/hasn/app/workbench/*）
-router.include_router(workbench_app)
+# 应用/首页（home 模块，URL /api/v1/hasn/app/{apps,home}/*）
+router.include_router(home_app)
 
 # 唤星
 router.include_router(huanxing_v1)

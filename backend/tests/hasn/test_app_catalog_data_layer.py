@@ -149,7 +149,7 @@ async def test_ensure_catalog_seeded_is_idempotent(env) -> None:
     assert set(by_id) >= _SEED_APP_IDS, f'内置 app 应全部存在: {set(by_id)}'
     # 迁移 M2 不变量：保持现状全免费。
     assert all(r.access_type == 'free' for r in by_id.values())
-    # display 与 WorkbenchAppRegistry 一致。
+    # display 与 AppCatalogRegistry 一致。
     assert by_id['knowledge'].name == '知识库'
     # 应用中心改版：icon 出厂即 brand-* 彩色品牌 token（webui 按 token 渲染渐变方块）。
     assert by_id['knowledge'].icon == 'brand-knowledge'
