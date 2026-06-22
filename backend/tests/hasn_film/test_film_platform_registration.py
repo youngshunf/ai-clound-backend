@@ -134,6 +134,18 @@ def test_film_scopes_registered_in_catalog() -> None:
     assert scope_meta(_EXPORT_SCOPE)['label'] == '上传/分享视频产物'
 
 
+def test_film_scope_factory_defaults_match_local_enforcement() -> None:
+    """出厂默认成为唯一真相：film:read 出厂 Allow，film:write/:export 出厂 Ask（= film.rs 本地出厂态）。
+
+    缺陷 3 修复契约：scope_meta(default_mode) 必须等于 hasn-mcp film.rs 的
+    default_capability_mode()，否则云端 catalog 静息态会与本地 CapabilityModeMirror
+    实际执行分裂（权限页显示「允许」但每次调用仍审批）。
+    """
+    assert scope_meta(_READ_SCOPE)['default_mode'] == 'allow'
+    assert scope_meta(_WRITE_SCOPE)['default_mode'] == 'ask'
+    assert scope_meta(_EXPORT_SCOPE)['default_mode'] == 'ask'
+
+
 def test_film_scopes_minted_into_agent_jwt() -> None:
     """铸 scope：film:read/:write/:export 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带三者。
 

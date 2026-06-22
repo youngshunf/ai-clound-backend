@@ -57,7 +57,9 @@ def scope_meta(scope_key: str) -> dict[str, Any]:
             'label': meta['label_zh'],
             'domain': meta.get('domain', ''),
             'risk': meta.get('risk', 'low'),
+            # 出厂默认三态：声明源未标注则回退 allow（与本地 resolver 缺省一致）。
+            'default_mode': meta.get('default_mode', 'allow'),
             'description': meta.get('description', ''),
         }
     domain = scope_key.split(':', 1)[0] if ':' in scope_key else ''
-    return {'label': scope_key, 'domain': domain, 'risk': 'low', 'description': ''}
+    return {'label': scope_key, 'domain': domain, 'risk': 'low', 'default_mode': 'allow', 'description': ''}

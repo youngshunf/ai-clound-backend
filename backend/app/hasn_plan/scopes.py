@@ -37,6 +37,7 @@ PLAN_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_zh': '委托分身执行',
         'domain': 'plan',
         'risk': 'high',
+        'default_mode': 'ask',
         'description': '以 Agent 身份把待办/计划委托给分身经工作会话真执行（出厂 Ask，主人确认后派）',
     },
 }

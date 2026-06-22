@@ -37,7 +37,8 @@ class ScopeCapability(SchemaBase):
     domain: str = Field(default='', description='所属域')
     risk: str = Field(default='low', description='风险等级 low|medium|high（仅 UI 提示）')
     description: str = Field(default='', description='用途描述')
-    mode: str = Field(description='当前三态 allow|ask|deny')
+    default_mode: str = Field(default='allow', description='出厂默认三态 allow|ask|deny（唯一真相：未覆盖时的静息态，花钱类如 film:write 为 ask）')
+    mode: str = Field(description='当前生效三态 allow|ask|deny（= override 优先，否则 default_mode）')
     tools: list[str] = Field(default_factory=list, description='覆盖的工具 canonical 名')
 
 

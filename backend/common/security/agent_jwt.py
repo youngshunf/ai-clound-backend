@@ -395,13 +395,24 @@ async def update_agent_modes(
         default_mode = 'allow'
     caps_json = _json.dumps(capability_modes or {}, ensure_ascii=False)
 
+    # UPSERT（不是裸 UPDATE）：老 Agent 可能从未插入过 scopes 行（create_default_agent_scopes 在
+    # 其创建之后才引入，或迁移期遗漏）。裸 UPDATE 在无行时影响 0 行、**静默丢弃**主人的权限更改
+    # （含审批「总是允许」写回），且云端仍回 200 → 调用方误以为已保存（线上「总是允许写回成功但
+    # hasn_agent_scopes 无记录」的根因）。owner_hasn_id 由 hasn_agents 现查派生，无需改调用签名；
+    # Agent 必存在（service 层 _assert_owns 先校验），故 INSERT...SELECT 必命中。
+    # 投影用 a.hasn_id 列本身（WHERE 已保证 = :agent_hasn_id），使 :agent_hasn_id 只出现一次——
+    # 否则同名绑定既落 SELECT 投影位又落 WHERE，asyncpg 推不出类型（AmbiguousParameterError，生产同炸）。
+    # :default_mode/:capability_modes 显式 CAST，确保 prepared 语句类型明确。
     await db.execute(
         text("""
-            UPDATE hasn_agent_scopes
-            SET default_mode = :default_mode,
-                capability_modes = CAST(:capability_modes AS jsonb),
-                updated_time = NOW()
-            WHERE agent_hasn_id = :agent_hasn_id
+            INSERT INTO hasn_agent_scopes (agent_hasn_id, owner_hasn_id, default_mode, capability_modes)
+            SELECT a.hasn_id, a.owner_id, CAST(:default_mode AS varchar), CAST(:capability_modes AS jsonb)
+            FROM hasn_agents a
+            WHERE a.hasn_id = :agent_hasn_id
+            ON CONFLICT (agent_hasn_id) DO UPDATE
+                SET default_mode = EXCLUDED.default_mode,
+                    capability_modes = EXCLUDED.capability_modes,
+                    updated_time = NOW()
         """),
         {'agent_hasn_id': agent_hasn_id, 'default_mode': default_mode, 'capability_modes': caps_json},
     )

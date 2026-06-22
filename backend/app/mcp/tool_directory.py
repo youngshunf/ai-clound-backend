@@ -125,13 +125,18 @@ class ToolDirectoryService:
             for scope_key in sorted(grouped.get(source, {})):
                 entry = grouped[source][scope_key]
                 meta = scope_meta(scope_key)
+                # 出厂默认成为唯一真相：每条能力的静息态由其 per-capability 出厂默认决定
+                # （忽略全局 default_mode），与本地 CapabilityModeMirror 缺省回落 Rust 出厂默认一致。
+                # owner 在 capability_modes 显式覆盖时优先；未覆盖则呈现出厂默认（花钱类如实显示「每次询问」）。
+                factory_default = meta.get('default_mode', 'allow')
                 capabilities.append({
                     'key': scope_key,
                     'label': meta['label'],
                     'domain': meta['domain'],
                     'risk': meta.get('risk') or entry.get('risk', 'low'),
                     'description': meta['description'],
-                    'mode': resolve_capability_mode(default_mode, capability_modes, scope_key),
+                    'default_mode': factory_default,
+                    'mode': resolve_capability_mode(factory_default, capability_modes, scope_key),
                     'tools': sorted(entry['tools']),
                 })
             sources.append({

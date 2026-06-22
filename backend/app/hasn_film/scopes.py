@@ -24,12 +24,14 @@ FILM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_zh': '生成与编辑视频',
         'domain': 'film',
         'risk': 'medium',
+        'default_mode': 'ask',
         'description': '建项目、跑各阶段生成（剧本/角色/分镜/参考图/片段/后期）与短流程（消耗主人配额，默认需确认）',
     },
     'film:export': {
         'label_zh': '上传/分享视频产物',
         'domain': 'film',
         'risk': 'medium',
+        'default_mode': 'ask',
         'description': '把本地视频产物显式上传到云端私有桶以分享/跨设备查看（本地权威，默认需主人确认）',
     },
 }

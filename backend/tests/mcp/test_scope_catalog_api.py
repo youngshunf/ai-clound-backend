@@ -41,11 +41,23 @@ def test_catalog_groups_by_source_and_reserves_external_empty() -> None:
     assert 'message:send' in platform_keys
 
 
-def test_catalog_default_all_allow() -> None:
+def test_catalog_mode_equals_factory_default_when_no_override() -> None:
+    """出厂默认成为唯一真相：无 override 时每条能力 mode = 其 per-capability 出厂默认。
+
+    catalog 每条出参 default_mode（出厂态）+ mode（生效态）；无 override 时二者相等。
+    message:send（平台社交工具，不花钱）出厂 allow。
+    """
     catalog = mcp_server.tool_directory.build_scope_catalog(_ctx())
     for source in catalog['sources']:
         for cap in source['capabilities']:
-            assert cap['mode'] == 'allow', f'{cap["key"]} 默认应 allow（默认全开）'
+            assert 'default_mode' in cap, f'{cap["key"]} 应出参 default_mode'
+            assert cap['mode'] == cap['default_mode'], (
+                f'{cap["key"]} 无 override 时 mode 应等于出厂默认 {cap["default_mode"]}'
+            )
+    platform = next(s for s in catalog['sources'] if s['source'] == 'platform')
+    send = next(c for c in platform['capabilities'] if c['key'] == 'message:send')
+    assert send['default_mode'] == 'allow'
+    assert send['mode'] == 'allow'
 
 
 def test_catalog_capability_override_reflected() -> None:
@@ -55,16 +67,24 @@ def test_catalog_capability_override_reflected() -> None:
     platform = next(s for s in catalog['sources'] if s['source'] == 'platform')
     send = next(c for c in platform['capabilities'] if c['key'] == 'message:send')
     assert send['mode'] == 'deny'
-    # 其它能力仍随 default_mode=allow
+    # 其它能力无 override → 回落各自出厂默认（不再随全局 default_mode）。
     others = [c for c in platform['capabilities'] if c['key'] != 'message:send']
-    assert all(c['mode'] == 'allow' for c in others)
+    assert all(c['mode'] == c['default_mode'] for c in others)
 
 
-def test_catalog_default_mode_ask_propagates() -> None:
+def test_catalog_global_default_mode_does_not_override_factory() -> None:
+    """缺陷 3 修复：全局 default_mode 不再驱动 per-capability 静息态——出厂默认才是唯一真相。
+
+    本地 CapabilityModeMirror 解析只认显式 override + 工具出厂默认、不消费云端全局 default_mode；
+    catalog 必须同构（否则权限页显示与本地执行分裂——「全是允许但每次仍审批」即此 bug）。故即便
+    default_mode='ask'，未被 owner 显式覆盖的 message:send（出厂 allow）仍呈现 allow。
+    """
     catalog = mcp_server.tool_directory.build_scope_catalog(_ctx(default_mode='ask'))
+    # 顶层 default_mode 仍透传（信封兼容），但不再驱动 per-capability mode。
     assert catalog['default_mode'] == 'ask'
     platform = next(s for s in catalog['sources'] if s['source'] == 'platform')
-    assert all(c['mode'] == 'ask' for c in platform['capabilities'])
+    send = next(c for c in platform['capabilities'] if c['key'] == 'message:send')
+    assert send['mode'] == 'allow', '全局 default_mode=ask 不应把出厂 allow 的能力变 ask'
 
 
 def test_catalog_entries_carry_display_metadata() -> None:
@@ -107,3 +127,5 @@ def test_app_scope_labels_come_from_per_app_modules() -> None:
     video = scope_meta('video:generate')  # backend/app/mcp/platform_scopes.py
     assert video['domain'] == 'video'
     assert video['label'] == '生成视频'
+    # 出厂 Ask（花钱、= hasn.video.generate 本地工具出厂态），与本地执行同构。
+    assert video['default_mode'] == 'ask'
