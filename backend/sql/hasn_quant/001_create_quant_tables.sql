@@ -52,7 +52,9 @@ CREATE INDEX IF NOT EXISTS idx_quant_strategy_agent ON quant_strategy (agent_has
 -- ========== 4.2 quant_backtest_run — 回测任务 + 绩效 ==========
 CREATE TABLE IF NOT EXISTS quant_backtest_run (
     id bigserial PRIMARY KEY,
-    strategy_id bigint NOT NULL REFERENCES quant_strategy(id),
+    -- 可空：内联/即席回测（无已存策略，分身直接给 builtin/code 跑）→ strategy_id 为 NULL；
+    -- 关联已存策略时引用 quant_strategy(id)，策略删除则置空（保留回测历史绩效）。
+    strategy_id bigint REFERENCES quant_strategy(id) ON DELETE SET NULL,
     owner_hasn_id varchar(64) NOT NULL,
     agent_hasn_id varchar(64),
     params jsonb NOT NULL DEFAULT '{}'::jsonb,

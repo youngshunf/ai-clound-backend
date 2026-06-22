@@ -16,7 +16,9 @@ class QuantBacktestRun(HasnQuantAppBase):
     __tablename__ = 'quant_backtest_run'
 
     id: Mapped[id_key] = mapped_column(init=False)
-    strategy_id: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment=None)
+    strategy_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='关联策略 id（可空：内联/即席回测无已存策略；策略删除则置空保留绩效）'
+    )
     owner_hasn_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='归属主人 hasn_id（行级隔离）')
     agent_hasn_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     params: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='本次回测覆盖参数（快照，不回指策略当前值）')
