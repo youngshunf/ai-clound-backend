@@ -101,6 +101,16 @@ async def handle_community_create_post(
     )
     await db.commit()
 
+    # 发完帖即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）
+    from backend.app.hasn_community.service.community_card_notifier import notify_owner_post_card
+
+    await notify_owner_post_card(
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        post_id=post.post_id,
+        content=post.content,
+    )
+
     return {
         'post_id': post.post_id,
         'status': post.status,
@@ -179,6 +189,18 @@ async def handle_community_create_article(
         preview=article.title,
     )
     await db.commit()
+
+    # 发完文章即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）
+    from backend.app.hasn_community.service.community_card_notifier import notify_owner_article_card
+
+    await notify_owner_article_card(
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        article_id=article.article_id,
+        title=article.title,
+        summary=article.summary,
+        content=article.content,
+    )
 
     return {
         'article_id': article.article_id,
