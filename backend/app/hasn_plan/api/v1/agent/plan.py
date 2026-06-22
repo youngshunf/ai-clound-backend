@@ -126,7 +126,10 @@ async def agent_create_plan(
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
     check_scopes(agent, [_SCOPE_WRITE])
-    data = await plan_service.create_plan(db, owner=agent.owner_hasn_id, data=body)
+    # 缺省把计划绑定到「调用方分身自己」（身份取自 Agent JWT，非请求体自报）；要绑别的分身才在 body 显式传 bound_agent_id。
+    data = await plan_service.create_plan(
+        db, owner=agent.owner_hasn_id, data=body, default_bound_agent=agent.agent_hasn_id
+    )
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
 

@@ -251,6 +251,33 @@ async def test_goal_kr_plan_crud_and_progress(db: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_plan_auto_binds_calling_agent(db: AsyncSession) -> None:
+    """分身经 agent 通道建计划缺省自动绑「调用方分身自己」（身份取自 JWT，不让分身自报）；
+    要绑别的分身才显式传 bound_agent_id 覆盖；owner/webui 通道（无 default_bound_agent）不自动绑。"""
+    owner = _owner()
+    caller_agent = 'a_planner_self'
+
+    # ① 分身建计划、body 不带 bound_agent_id → 自动绑到调用方分身自己。
+    auto = await plan_service.create_plan(
+        db, owner=owner, data={'title': '自动绑自己的计划'}, default_bound_agent=caller_agent
+    )
+    assert auto['bound_agent_id'] == caller_agent, '分身建计划应自动绑定调用方自己，不该让分身自报'
+
+    # ② 分身显式传别的分身 → 覆盖，绑给指定分身（委托场景）。
+    override = await plan_service.create_plan(
+        db,
+        owner=owner,
+        data={'title': '委托给子分身的计划', 'bound_agent_id': 'a_subagent'},
+        default_bound_agent=caller_agent,
+    )
+    assert override['bound_agent_id'] == 'a_subagent', '显式 bound_agent_id 应覆盖自动默认'
+
+    # ③ owner/webui 通道（不传 default_bound_agent）→ 不自动绑，由主人在 UI 显式选。
+    manual = await plan_service.create_plan(db, owner=owner, data={'title': '主人手动建的计划'})
+    assert not manual.get('bound_agent_id'), 'owner 手动建计划不应自动绑分身'
+
+
+@pytest.mark.asyncio
 async def test_owner_isolation_goal_plan(db: AsyncSession) -> None:
     """跨 owner 不可见、不可改、不可删：owner A 的目标对 owner B 一律 NotFound。"""
     owner_a, owner_b = _owner(), _owner()

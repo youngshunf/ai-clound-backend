@@ -273,10 +273,17 @@ class PlanService:
         data['milestones'] = [serialize(m) for m in ms]
         return data
 
-    async def create_plan(self, db: AsyncSession, *, owner: str, data: dict) -> dict:
+    async def create_plan(
+        self, db: AsyncSession, *, owner: str, data: dict, default_bound_agent: str | None = None
+    ) -> dict:
         fields = _pick(_PLAN_FIELDS, data)
         if 'goal_id' in fields:
             await self._get_goal(db, owner=owner, pk=fields['goal_id'])  # 归属校验：计划只能挂自己的目标
+        # 分身经 agent 通道建计划：缺省绑定「调用方分身自己」（default_bound_agent 来自 Agent JWT，不让分身自报）。
+        # 分身本就是创建者，不该让它记得把自己 id 填进来；要绑给「别的分身」时才显式传 bound_agent_id 覆盖。
+        # owner 经 app(webui) 通道手动建计划不自动绑（default_bound_agent=None，由主人在 UI 显式选协作分身）。
+        if default_bound_agent and not (fields.get('bound_agent_id') or '').strip():
+            fields['bound_agent_id'] = default_bound_agent
         row = Plan(owner_hasn_id=owner, **fields)
         db.add(row)
         await db.flush()
