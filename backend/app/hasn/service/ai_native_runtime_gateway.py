@@ -418,6 +418,7 @@ class AiNativeRuntimeGateway:
         from backend.app.hasn_finance.service import finance_tool_handlers as finance_handlers
         from backend.app.hasn_growth.service import growth_tool_handlers as growth_handlers
         from backend.app.hasn_knowledge.service import tool_handlers as knowledge_handlers
+        from backend.app.mcp.apps.quant import quant_tool_handlers as quant_handlers
 
         registry: dict[str, Any] = {
             # 创作运营（纯云端业务应用：定位/创作/审核/发布/复盘/进化，零本地操作 → 工具全走云端
@@ -532,6 +533,14 @@ class AiNativeRuntimeGateway:
             'finance.futures_quote_history': finance_handlers.handle_futures_quote_history,
             'finance.macro_indicator': finance_handlers.handle_macro_indicator,
             'finance.bond_quote_history': finance_handlers.handle_bond_quote_history,
+            # 量化交易（cloud-brokered 业务应用：5 个回测线工具，gateway_internal → quant_service →
+            # quant_engine_provider → quant-engine-service；唯一接触 NautilusTrader 处隔离独立服务。模块 14 doc23 §3/§6。
+            # 实盘线 deploy_live/submit_order/resume 受 P0-闸1 硬闸 + 真钱 gated，本期不注册）
+            'quant.save_strategy': quant_handlers.handle_save_strategy,
+            'quant.list_strategies': quant_handlers.handle_list_strategies,
+            'quant.get_strategy': quant_handlers.handle_get_strategy,
+            'quant.backtest': quant_handlers.handle_backtest,
+            'quant.get_backtest': quant_handlers.handle_get_backtest,
         }
         self._internal_handlers_cache = registry
         return registry

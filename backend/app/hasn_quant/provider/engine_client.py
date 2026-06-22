@@ -4,9 +4,10 @@
 **不 import nautilus**（重依赖隔离在 huanxing-apps/quant-engine-service）。超时/不可达/非 JSON 一律归一成
 诚实异常或 ok:false 信封（零 fake，绝不造假绩效）。
 
-⚠️ 配置来源（QUANT_ENGINE_URL / QUANT_ENGINE_TOKEN / QUANT_ENGINE_TIMEOUT）暂从 `os.environ` 直读，
-**不入 `backend/core/conf.py`**——因 conf.py 当前被并发 finance 会话占用（未提交脏改动），不可混提交。
-待 finance 落库解锁后，应将这三项提升进 `settings`（对齐 FINANCE_SERVICE_*），本层只换取值入口、契约不变。
+配置来源：`QUANT_ENGINE_URL / QUANT_ENGINE_TOKEN / QUANT_ENGINE_TIMEOUT`——**进程环境变量优先，回退 `settings`**
+（`backend/core/conf.py`，对齐 FINANCE_SERVICE_*）。pydantic-settings 在导入期一次性读 env/.env 进 `settings`，
+故 prod 配置经 .env / 进程 env 均生效；测试在运行时 `os.environ` 注入引擎地址（自启 loopback 引擎）也即时生效。
+本层是唯一取值入口、契约不变。
 
 引擎契约（quant-engine-service service/app.py）：
 - POST   /v1/backtests        提交回测（job 式）→ {job_id, status, ...}
@@ -24,6 +25,8 @@ from typing import Any
 
 import httpx
 
+from backend.core.conf import settings
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0
@@ -34,21 +37,22 @@ class QuantEngineError(RuntimeError):
 
 
 def _engine_base() -> str:
-    return (os.environ.get('QUANT_ENGINE_URL') or '').rstrip('/')
+    # 进程环境变量优先（运行时可覆盖，测试自启引擎用），回退 settings（.env / 启动期 env）。
+    return (os.environ.get('QUANT_ENGINE_URL') or settings.QUANT_ENGINE_URL or '').rstrip('/')
 
 
 def _engine_timeout() -> float:
     raw = os.environ.get('QUANT_ENGINE_TIMEOUT')
-    if not raw:
-        return _DEFAULT_TIMEOUT
-    try:
-        return float(raw)
-    except ValueError:
-        return _DEFAULT_TIMEOUT
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            return _DEFAULT_TIMEOUT
+    return float(settings.QUANT_ENGINE_TIMEOUT or _DEFAULT_TIMEOUT)
 
 
 def _auth_headers() -> dict[str, str]:
-    token = os.environ.get('QUANT_ENGINE_TOKEN')
+    token = os.environ.get('QUANT_ENGINE_TOKEN') or settings.QUANT_ENGINE_TOKEN
     return {'Authorization': f'Bearer {token}'} if token else {}
 
 

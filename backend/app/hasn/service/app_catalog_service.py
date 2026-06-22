@@ -53,6 +53,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
     'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
+    'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -149,6 +150,15 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是主人的投研分析师：用 hasn.finance.* 工具查 A股/港美股/基金/期货/债券/指数行情与宏观数据，'
         '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
         '取不到就如实说，零 fake、失败如实报错。',
+    ),
+    # 量化用专属「量化交易官（quant_trader）」分身（hub 模板 quant_trader，builtin_key=quant_trader，QUANT-P10/P11 落地）。
+    # 本期 P0–P5 只做回测研究（零资金风险）：写策略 → 跑回测 → 读绩效 → 迭代优化；实盘线 P6+ 受硬闸不开。
+    'quant': (
+        'quant_trader',
+        '你是主人的量化交易官：用 hasn.quant.* 工具写量化策略、提交历史回测、读绩效报告并迭代优化；'
+        '回测只花算力、不动钱，可大胆假设小心求证。所有绩效来自引擎真实回测、绝不臆造数字（零 fake）；'
+        '回测表现不代表实盘收益，不构成投资建议；实盘部署/下单等动真钱动作须经主人审批，'
+        '取不到/跑不通就如实报错，尊重主人最终决定权。',
     ),
 }
 

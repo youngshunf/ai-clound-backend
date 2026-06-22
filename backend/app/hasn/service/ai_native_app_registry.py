@@ -17,6 +17,7 @@ from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.common.exception import errors
@@ -58,6 +59,10 @@ class AINativeAppRegistry:
             # 金融数据（app_id=finance，模块/schema hasn_finance，模块 24；纯云端只读数据应用，
             # 工具全走 gateway_internal → finance_provider → finance-data-service，唯一接触 akshare 处隔离独立服务）。
             'finance': FINANCE_AI_NATIVE_MANIFEST,
+            # 量化交易（app_id=quant，模块/schema hasn_quant，模块 14 doc23；cloud-brokered 业务应用，
+            # 5 个回测线工具走 gateway_internal → quant_service → quant_engine_provider → quant-engine-service，
+            # 唯一接触 NautilusTrader 处隔离独立服务。实盘线 P6+ 受 P0-闸1 硬闸，本期不在 manifest 暴露）。
+            'quant': QUANT_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:

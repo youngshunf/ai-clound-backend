@@ -23,6 +23,7 @@ from backend.app.hasn_finance.scopes import FINANCE_SCOPE_CATALOG
 from backend.app.hasn_growth.scopes import HASN_GROWTH_SCOPE_CATALOG
 from backend.app.hasn_plan.scopes import PLAN_SCOPE_CATALOG
 from backend.app.hasn_publish.scopes import PUBLISH_SCOPE_CATALOG
+from backend.app.hasn_quant.scopes import QUANT_SCOPE_CATALOG
 from backend.app.hasn_reel.scopes import REEL_SCOPE_CATALOG
 from backend.app.hasn_task.scopes import HASN_TASK_SCOPE_CATALOG
 from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
@@ -43,6 +44,7 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     **REEL_SCOPE_CATALOG,
     **PLAN_SCOPE_CATALOG,
     **FINANCE_SCOPE_CATALOG,
+    **QUANT_SCOPE_CATALOG,
 }
 
 # source 分组的中文标签（catalog 顶层分组）

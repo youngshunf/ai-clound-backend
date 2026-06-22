@@ -12,9 +12,9 @@ handler 再调 `quant_service`（落 hasn_quant PG）+ 经 `quant_engine_provide
   backtest / get_backtest / save_strategy / list_strategies / get_strategy。
   实盘线（deploy_live / submit_order / resume，出厂 ask，P6+）受 P0-闸1 产品/法务硬闸，本文件不实现。
 
-⚠️ 注册待办（被并发 finance 会话占用的 `app/mcp/routes.py` + `ai_native_runtime_gateway.py` 阻塞）：
-  待其落库后，在 gateway 的 app→handler 映射注册 `quant` 5 工具（参见 creator 注册块），
-  并在 `app/mcp/scopes.py` 聚合 `QUANT_SCOPE_CATALOG`、`app_catalog_registry` 注册 `build_quant_app()`。
+注册（QUANT-P2/P3 已落）：`ai_native_runtime_gateway._internal_handlers()` 按 handler 键 `quant.<name>` 注册本 5
+  handler；`hasn_quant.manifest.QUANT_AI_NATIVE_MANIFEST` 声明能力/工具面；`app/mcp/scopes.py` 聚合
+  `QUANT_SCOPE_CATALOG`；`app_catalog_registry` 注册 `build_quant_app()`。
 """
 
 from __future__ import annotations
@@ -113,7 +113,8 @@ async def handle_get_backtest(
     )
 
 
-# 工具键 → handler 映射（gateway 注册用；解锁 routes.py 后接入）。
+# mcp_name → handler 便捷映射（测试/自省用）。gateway 实际注册按 manifest 的 handler 键 `quant.<name>`，
+# 直接引用本模块 handle_*（见 `ai_native_runtime_gateway._internal_handlers()`），不消费本 dict。
 QUANT_TOOL_HANDLERS = {
     'hasn.quant.save_strategy': handle_save_strategy,
     'hasn.quant.list_strategies': handle_list_strategies,

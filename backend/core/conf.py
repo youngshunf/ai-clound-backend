@@ -148,6 +148,12 @@ class Settings(BaseSettings):
     FINANCE_SERVICE_TOKEN: str = ''  # 内部 svc-token（Bearer，对齐数据服务 FIN_SVC_TOKEN）
     FINANCE_SERVICE_TIMEOUT: int = 30  # HTTP 超时（秒）
 
+    # 量化交易引擎服务（quant-engine-service，独立部署，模块 14 doc23）：唯一接触 NautilusTrader 的地方，
+    # 主云端经 quant_engine_provider（httpx）中转提交/轮询回测（agent 工具面 + owner read-API 共用）。
+    QUANT_ENGINE_URL: str = ''  # 引擎服务地址，如 http://quant-svc.internal:8000（为空时 provider 抛 QuantEngineError / healthz 归一 service_unconfigured）
+    QUANT_ENGINE_TOKEN: str = ''  # 内部 svc-token（Bearer，对齐引擎服务 QUANT_SVC_TOKEN；空则引擎仅允许本机回环，开发态）
+    QUANT_ENGINE_TIMEOUT: int = 30  # HTTP 超时（秒）
+
     # Token
     TOKEN_ALGORITHM: str = 'HS256'
     TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24  # 1 天

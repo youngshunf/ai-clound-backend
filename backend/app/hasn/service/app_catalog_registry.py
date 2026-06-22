@@ -130,6 +130,12 @@ class AppCatalogRegistry:
         from backend.app.hasn_finance.manifest import build_finance_app
 
         registry.register(build_finance_app())
+        # 量化交易 quant（cloud-brokered AI-Native，schema hasn_quant，模块 14 doc23；install_policy=manual
+        # 非默认挂载——专业量化工作台，hasn.quant.* 工具经 quant_engine_provider → quant-engine-service 跑回测。
+        # 本期 P0–P5 回测研究平台零资金风险；实盘线 P6+ 受 P0-闸1 产品/法务硬闸）。延迟导入避免循环依赖。
+        from backend.app.hasn_quant.manifest import build_quant_app
+
+        registry.register(build_quant_app())
         return registry
 
     def register(self, app: App) -> None:

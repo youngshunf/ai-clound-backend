@@ -55,6 +55,10 @@ from backend.app.hasn_deck.api.router import app as deck_app
 
 # 金融数据（hasn_finance，模块 24）：仅 owner 只读看板面，URL /api/v1/finance/app/*
 from backend.app.hasn_finance.api.router import app as finance_app
+
+# 量化研究（hasn_quant，模块 14 doc23）：管理端（v1 JWT+RBAC）+ owner 业务面（app 仅 JWT，行级隔离）；
+# codegen 裸 open/agent 面刻意不挂载（公开无鉴权读写=越权大洞；Agent 走云端 MCP 不经 REST）。URL /api/v1/hasn_quant{,/app}/*
+from backend.app.hasn_quant.api.router import app as hasn_quant_app, v1 as hasn_quant_v1
 from backend.app.hasn_designsystem.api.router import (
     v1 as hasn_designsystem_v1,  # 设计系统生成（hasn_designsystem，独立 PG schema，URL /api/v1/designsystem/*；当前仅 agent 端）
 )
@@ -211,3 +215,7 @@ router.include_router(hasn_plan_v1)
 
 # 金融数据（hasn_finance，模块 24）：owner 只读看板面 /api/v1/finance/app/*（共用 finance_provider）
 router.include_router(finance_app)
+
+# 量化研究（hasn_quant，模块 14 doc23）：管理端 + owner 业务面（行级隔离回测研究）。
+router.include_router(hasn_quant_v1)
+router.include_router(hasn_quant_app)
