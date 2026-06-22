@@ -37,6 +37,15 @@ class PlatformAgentRuntimeDefaults(SchemaBase):
     """平台默认 agent 运行时配置（分身未显式设对应槽时回落）。"""
 
     models: AgentRuntimeModels = Field(default_factory=AgentRuntimeModels, description='4 槽模型平台默认')
+    model_fallback_pool: list[str] = Field(
+        default_factory=list,
+        description=(
+            '主模型 failover 全局兜底池（有序模型名，同一 new-api 网关只换模型名）。'
+            'daemon 据此为每个分身的已解析主模型生成兜底链（剔除主模型自身、去重、保序），随 LLM '
+            '凭据下发，runtime 物化为 fallback_providers。空=无兜底（单模型，行为不回归）。'
+            '主人只配主模型，平台维护此池'
+        ),
+    )
 
 
 class PlatformDefaultConfig(SchemaBase):

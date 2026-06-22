@@ -54,7 +54,11 @@ DEFAULT_PLATFORM_CONFIG: dict = {
             'fast': None,
             'vision': None,
             'delegation': None,
-        }
+        },
+        # 主模型 failover 全局兜底池（有序）。默认空=无兜底（单模型，行为不回归）；
+        # 运营按需在 Admin「平台默认配置」页填入同网关可用的备选模型名，daemon 据此为每个
+        # 分身的已解析主模型生成兜底链（剔除主模型自身、去重、保序）下发 runtime（LLMFAIL）。
+        'model_fallback_pool': [],
     },
 }
 

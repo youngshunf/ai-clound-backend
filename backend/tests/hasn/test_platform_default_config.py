@@ -40,6 +40,7 @@ def _config(
     fast: str | None = None,
     vision: str | None = None,
     delegation: str | None = None,
+    fallback_pool: list[str] | None = None,
 ) -> PlatformDefaultConfig:
     return PlatformDefaultConfig.model_validate({
         'node': {
@@ -50,7 +51,10 @@ def _config(
                 'video_models': video or [],
             }
         },
-        'agent_runtime': {'models': {'main': main, 'fast': fast, 'vision': vision, 'delegation': delegation}},
+        'agent_runtime': {
+            'models': {'main': main, 'fast': fast, 'vision': vision, 'delegation': delegation},
+            'model_fallback_pool': fallback_pool or [],
+        },
     })
 
 
@@ -142,6 +146,32 @@ async def test_update_changes_revision_and_persists_in_txn() -> None:
         assert rev == resp.revision
         assert cfg.node.media.image_models == ['gpt-image-1']
         assert cfg.agent_runtime.models.main == 'gpt-5'
+
+
+async def test_factory_default_fallback_pool_empty() -> None:
+    """出厂默认主模型兜底池为空（LLMFAIL）——无兜底，单模型行为不回归。"""
+    async with async_db_session() as db:
+        cfg, _rev = await svc.get_effective_config(db)
+        assert cfg.agent_runtime.model_fallback_pool == []
+        assert DEFAULT_PLATFORM_CONFIG['agent_runtime']['model_fallback_pool'] == []
+
+
+async def test_update_persists_model_fallback_pool_for_runtime_downlink() -> None:
+    """运营下发主模型兜底池 → agent_runtime.model_fallback_pool 落库并回读，且 bump revision（LLMFAIL）。
+
+    daemon 据此池为每个分身的已解析主模型生成兜底链下发 runtime（剔除主模型自身、去重、保序）。
+    """
+    async with async_db_session() as db:
+        _, base_rev = await svc.get_effective_config(db)
+        resp = await svc.update_config(
+            db,
+            config=_config(main='gpt-5.5', fallback_pool=['gpt-4o', 'claude-sonnet-4-6']),
+            updated_by='pytest',
+        )
+        assert resp.revision != base_rev  # 兜底池属 PDC 权威 → 改值 bump revision → daemon 重拉。
+        cfg, rev = await svc.get_effective_config(db)
+        assert rev == resp.revision
+        assert cfg.agent_runtime.model_fallback_pool == ['gpt-4o', 'claude-sonnet-4-6']
 
 
 async def test_build_effective_runtime_config_coalesce() -> None:
