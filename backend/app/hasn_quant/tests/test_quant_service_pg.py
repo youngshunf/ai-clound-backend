@@ -255,3 +255,96 @@ async def test_save_strategy_validation(engine_service, session) -> None:
     )
     assert s2['version'] == 2
     assert s2['params']['fast_ema_period'] == 5
+
+
+# ============================ Owner read-API（HTTP 业务面，行级隔离 + 统一信封） ============================
+#
+# 证明 QUANT-P3 owner read-API（webui 经 daemon 薄代理调用的那一面）端到端成立：
+#   Owner JWT 身份（user_id → hasn_id 真实解析自 hasn_humans） → 包裹 quant_service → 真引擎回测
+#   → 统一信封返回。直驱 endpoint 函数（避开 Starlette 鉴权中间件，仍真打 owner 解析/服务/引擎/PG）。
+
+from types import SimpleNamespace  # noqa: E402
+
+from backend.app.hasn.model.hasn_humans import HasnHumans  # noqa: E402
+from backend.app.hasn_quant.api.v1.app import quant as owner_api  # noqa: E402
+from backend.app.hasn_quant.schema.owner import SaveStrategyParam, SubmitBacktestParam  # noqa: E402
+
+_OWNER_USER_ID = 990_271  # 测试专用，session 回滚不留痕
+_OWNER_HASN = 'h_test_quant_api'
+
+
+async def _seed_owner(session) -> SimpleNamespace:
+    """种一行 hasn_humans 映射 user_id→hasn_id，并返回带 .user.id 的 stub Request。"""
+    # star_id 走唯一索引（存量行多为空串）→ 给唯一非空值避撞；session 回滚不留痕。
+    session.add(
+        HasnHumans(hasn_id=_OWNER_HASN, star_id='qt_990271', user_id=_OWNER_USER_ID, status='active')
+    )
+    await session.flush()
+    return SimpleNamespace(user=SimpleNamespace(id=_OWNER_USER_ID))
+
+
+async def _poll_owner_until_terminal(req, session, *, backtest_id: int, timeout: float = 90.0) -> dict:
+    deadline = time.time() + timeout
+    last: dict = {}
+    while time.time() < deadline:
+        resp = await owner_api.get_backtest(req, session, backtest_id)
+        last = resp.data
+        if last['status'] in ('succeeded', 'failed'):
+            return last
+        await asyncio.sleep(1.0)
+    return last
+
+
+async def test_owner_api_backtest_full_loop(engine_service, session) -> None:
+    """Owner 经 read-API 写策略→提交回测→轮询绩效（真身份解析 + 真引擎 + 统一信封）。"""
+    req = await _seed_owner(session)
+
+    saved = await owner_api.save_strategy(
+        req,
+        session,
+        SaveStrategyParam(
+            name='Owner EMA 策略',
+            builtin_strategy='ema_cross_long_only',
+            params={'fast_ema_period': 10, 'slow_ema_period': 20, 'trade_size': 0.5},
+            instrument_ids=['ETHUSDT.BINANCE'],
+        ),
+    )
+    strat = saved.data
+    assert strat['id'] > 0
+    assert strat['owner_hasn_id'] == _OWNER_HASN  # 身份取自 JWT→hasn_humans，非 body
+    assert strat['agent_hasn_id'] is None  # owner 直接操作，非分身代理
+
+    submitted = await owner_api.submit_backtest(
+        req, session, SubmitBacktestParam(strategy_id=strat['id'])
+    )
+    bt = submitted.data
+    assert bt['status'] in ('queued', 'running')
+    assert bt['engine_job_id']
+
+    # 列表/详情走 read-API（行级隔离生效：只见自己的）
+    listed = (await owner_api.list_strategies(req, session)).data
+    assert any(s['id'] == strat['id'] for s in listed['items'])
+
+    final = await _poll_owner_until_terminal(req, session, backtest_id=bt['id'])
+    assert final['status'] == 'succeeded', f'回测未成功（真实引擎错误透传）: {final.get("error")}'
+    assert final['metrics']['trades_count'] >= 1
+    assert final['equity_curve'] and len(final['equity_curve']) >= 2
+    assert final['error'] is None
+
+
+async def test_owner_api_inline_backtest(engine_service, session) -> None:
+    """Owner 即席回测（不存策略，回落内置 EMA）：strategy_id 为 None 仍真跑出绩效。"""
+    req = await _seed_owner(session)
+    submitted = await owner_api.submit_backtest(req, session, SubmitBacktestParam())
+    bt = submitted.data
+    assert bt['strategy_id'] is None
+    final = await _poll_owner_until_terminal(req, session, backtest_id=bt['id'])
+    assert final['status'] == 'succeeded', f'{final.get("error")}'
+    assert final['metrics']['fills_count'] >= 1
+
+
+async def test_owner_api_requires_hasn_identity(session) -> None:
+    """无 hasn_humans 映射的账号访问 read-API → ForbiddenError（行级隔离前提，不放行）。"""
+    req = SimpleNamespace(user=SimpleNamespace(id=424_242))  # 未种映射
+    with pytest.raises(errors.ForbiddenError):
+        await owner_api.list_strategies(req, session)
