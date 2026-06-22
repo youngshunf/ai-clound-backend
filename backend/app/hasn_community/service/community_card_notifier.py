@@ -5,6 +5,8 @@
 卡片 schema 对齐 hasn-node `card_messages::build_community_card`，webui CardMessage 渲染、点击
 primary_action 的 `hasn://community/{posts|articles}/{id}` 进详情页。
 
+卡片正文做产品化表达：「{分身名}发布了一篇社区{帖子|文章}」+ 状态 + 是否需审核 + 内容预览。
+
 best-effort：投递失败只告警，绝不影响发帖/发文本身（发帖事务已独立提交）。
 """
 
@@ -22,6 +24,18 @@ _CT_CARD = 5
 
 _ARTICLE = 'article'
 
+# 状态中文标签（与社区帖子/文章 status 字段取值对齐）。
+_STATUS_LABELS = {
+    'pending_review': '待主人审核',
+    'published': '已发布',
+    'draft': '草稿',
+    'rejected': '已退回',
+}
+
+
+def _status_label(status: str | None) -> str:
+    return _STATUS_LABELS.get(status or '', status or '未知')
+
 
 def _preview(text: str | None, limit: int) -> str:
     value = ' '.join((text or '').split())
@@ -34,35 +48,41 @@ def build_community_resource_card(
     resource_type: str,
     resource_id: str,
     *,
-    title: str,
-    summary: str,
-    author_name: str | None = None,
+    author_name: str | None,
+    status: str | None,
+    preview: str,
+    resource_title: str | None = None,
 ) -> dict[str, Any]:
-    """构造社区帖子/文章卡片体（过 validate_card_message_body 自检后返回 dict）。"""
+    """构造社区帖子/文章卡片体（过 validate_card_message_body 自检后返回 dict）。
+
+    标题=「{分身名}发布了一篇社区{帖子|文章}」；fields 携状态+（待审时）审核提示；
+    点击 primary_action 进 hasn://community/... 详情。
+    """
     is_article = resource_type == _ARTICLE
     plural = 'articles' if is_article else 'posts'
     resource_kind = 'community.article' if is_article else 'community.post'
     id_field = 'article_id' if is_article else 'post_id'
     noun = '文章' if is_article else '帖子'
     uri = f'hasn://community/{plural}/{resource_id}'
+    author = author_name or '你的分身'
 
-    fields: list[dict[str, str]] = []
-    if author_name:
-        fields.append({'label': '作者', 'value': author_name})
-    fields.append({'label': '类型', 'value': noun})
+    headline = f'{author}发布了一篇社区{noun}'
+    fields: list[dict[str, str]] = [{'label': '状态', 'value': _status_label(status)}]
+    if status == 'pending_review':
+        fields.append({'label': '提示', 'value': '需你确认后才会公开发布'})
 
     body = {
         'schema_version': 'hasn.card/0.1',
-        'title': title,
-        'description': summary or None,
+        'title': headline,
+        'description': preview or None,
         'source': {'kind': 'app', 'id': 'community', 'display_name': '社区', 'verified': True},
         'resource': {
             'type': resource_kind,
             'id': resource_id,
             'app_id': 'community',
             'uri': uri,
-            'title': title,
-            'summary': summary or None,
+            'title': resource_title or headline,
+            'summary': preview or None,
             'access': {
                 'visibility': 'conversation',
                 'readable_by': ['human', 'agent'],
@@ -71,7 +91,7 @@ def build_community_resource_card(
         },
         'fields': fields,
         'primary_action': {
-            'label': f'打开{noun}',
+            'label': f'查看{noun}',
             'action_id': f'open_community_{resource_type}',
             'kind': 'open_uri',
             'uri': uri,
@@ -91,9 +111,10 @@ async def notify_owner_resource_card(
     owner_hasn_id: str,
     resource_type: str,
     resource_id: str,
-    title: str,
-    summary: str,
-    author_name: str | None = None,
+    author_name: str | None,
+    status: str | None,
+    preview: str,
+    resource_title: str | None = None,
 ) -> None:
     """给主人投社区发布知情卡（best-effort）。用独立 db 会话，发帖事务不受影响。"""
     if not agent_hasn_id or not owner_hasn_id or not resource_id:
@@ -102,9 +123,10 @@ async def notify_owner_resource_card(
         card = build_community_resource_card(
             resource_type,
             resource_id,
-            title=title,
-            summary=summary,
             author_name=author_name,
+            status=status,
+            preview=preview,
+            resource_title=resource_title,
         )
         async with async_db_session() as db:
             result = await message_router.route_message(
@@ -127,17 +149,20 @@ async def notify_owner_post_card(
     *,
     agent_hasn_id: str,
     owner_hasn_id: str,
+    author_name: str | None,
     post_id: str,
     content: str,
+    status: str | None,
 ) -> None:
-    """帖子（无标题）：标题取正文首段预览、摘要取较长预览。"""
+    """帖子（无标题）：正文预览作为内容描述。"""
     await notify_owner_resource_card(
         agent_hasn_id=agent_hasn_id,
         owner_hasn_id=owner_hasn_id,
         resource_type='post',
         resource_id=post_id,
-        title=_preview(content, 30) or '社区帖子',
-        summary=_preview(content, 80),
+        author_name=author_name,
+        status=status,
+        preview=_preview(content, 90),
     )
 
 
@@ -145,17 +170,22 @@ async def notify_owner_article_card(
     *,
     agent_hasn_id: str,
     owner_hasn_id: str,
+    author_name: str | None,
     article_id: str,
     title: str,
     summary: str | None,
     content: str,
+    status: str | None,
 ) -> None:
-    """文章：标题用真实标题，摘要优先用 summary、缺省回落正文预览。"""
+    """文章：标题做内容描述（缺则回落摘要/正文预览），resource.title 保留真实标题。"""
+    preview = (title or '').strip() or _preview(summary, 90) or _preview(content, 90)
     await notify_owner_resource_card(
         agent_hasn_id=agent_hasn_id,
         owner_hasn_id=owner_hasn_id,
         resource_type='article',
         resource_id=article_id,
-        title=title or '社区文章',
-        summary=_preview(summary, 80) or _preview(content, 80),
+        author_name=author_name,
+        status=status,
+        preview=preview,
+        resource_title=title or None,
     )

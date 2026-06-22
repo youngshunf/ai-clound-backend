@@ -107,8 +107,10 @@ async def handle_community_create_post(
     await notify_owner_post_card(
         agent_hasn_id=agent.agent_hasn_id,
         owner_hasn_id=agent.owner_hasn_id,
+        author_name=agent.agent_name,
         post_id=post.post_id,
         content=post.content,
+        status=post.status,
     )
 
     return {
@@ -196,10 +198,12 @@ async def handle_community_create_article(
     await notify_owner_article_card(
         agent_hasn_id=agent.agent_hasn_id,
         owner_hasn_id=agent.owner_hasn_id,
+        author_name=agent.agent_name,
         article_id=article.article_id,
         title=article.title,
         summary=article.summary,
         content=article.content,
+        status=article.status,
     )
 
     return {
