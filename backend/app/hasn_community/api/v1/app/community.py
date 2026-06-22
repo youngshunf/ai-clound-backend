@@ -1048,6 +1048,75 @@ async def delete_follow(
     return response_base.success()
 
 
+# ==================== 我的社区（点赞 / 关注 / 粉丝）====================
+
+
+@router.get(
+    '/my/likes',
+    summary='我点赞过的内容',
+    description='当前用户点赞过的帖子与文章（按点赞时间倒序），item 与 feed 同形',
+    dependencies=[DependsJwtAuth],
+)
+async def get_my_likes(
+    request: Request,
+    db: CurrentSession,
+    cursor: str | None = None,
+    limit: int = 20,
+) -> ResponseModel:
+    """我点赞过的内容（帖子 + 文章）。"""
+    result = await community_service.get_my_liked_items(
+        db,
+        user_id=request.user.id,
+        cursor=cursor,
+        limit=limit,
+    )
+    return response_base.success(data=result)
+
+
+@router.get(
+    '/my/following',
+    summary='我关注的人',
+    description='当前用户关注的对象（human/agent），附富化身份卡片',
+    dependencies=[DependsJwtAuth],
+)
+async def get_my_following(
+    request: Request,
+    db: CurrentSession,
+    cursor: str | None = None,
+    limit: int = 20,
+) -> ResponseModel:
+    """我关注的对象列表。"""
+    result = await community_service.list_following(
+        db,
+        user_id=request.user.id,
+        cursor=cursor,
+        limit=limit,
+    )
+    return response_base.success(data=result)
+
+
+@router.get(
+    '/my/followers',
+    summary='关注我的人',
+    description='关注当前用户的对象（粉丝），附富化身份卡片与回关态',
+    dependencies=[DependsJwtAuth],
+)
+async def get_my_followers(
+    request: Request,
+    db: CurrentSession,
+    cursor: str | None = None,
+    limit: int = 20,
+) -> ResponseModel:
+    """关注我的对象列表（粉丝）。"""
+    result = await community_service.list_followers(
+        db,
+        user_id=request.user.id,
+        cursor=cursor,
+        limit=limit,
+    )
+    return response_base.success(data=result)
+
+
 # ==================== 主页 ====================
 
 

@@ -455,6 +455,374 @@ class CommunityService:
         }
 
     @staticmethod
+    async def _fetch_post_items(
+        db: AsyncSession, viewer_hasn_id: str | None, post_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """按 id 取一批帖子并富化为 feed 同形 item，返回 {post_id: item}（已下架的略过）。"""
+        if not post_ids:
+            return {}
+        AuthorHuman = aliased(HasnHumans)
+        AuthorAgent = aliased(HasnAgents)
+        OwnerHuman = aliased(HasnHumans)
+        stmt = (
+            select(
+                HasnPosts,
+                AuthorHuman.nickname.label('human_nickname'),
+                AuthorHuman.avatar.label('human_avatar'),
+                AuthorAgent.display_name.label('agent_display_name'),
+                AuthorAgent.avatar.label('agent_avatar'),
+                OwnerHuman.hasn_id.label('owner_hasn_id'),
+                OwnerHuman.nickname.label('owner_nickname'),
+            )
+            .outerjoin(AuthorHuman, (HasnPosts.author_type == 'human') & (HasnPosts.author_hasn_id == AuthorHuman.hasn_id))
+            .outerjoin(AuthorAgent, (HasnPosts.author_type == 'agent') & (HasnPosts.author_hasn_id == AuthorAgent.hasn_id))
+            .outerjoin(OwnerHuman, (HasnPosts.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
+            .where(HasnPosts.post_id.in_(post_ids), HasnPosts.status == 'published')
+        )
+        rows = (await db.execute(stmt)).all()
+        _, collected_ids = await CommunityService._batch_reactions(db, viewer_hasn_id, 'post', post_ids)
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            post = row.HasnPosts
+            author_info: dict[str, Any] = {'hasn_id': post.author_hasn_id, 'type': post.author_type}
+            if post.author_type == 'human':
+                author_info['display_name'] = row.human_nickname or post.author_hasn_id
+                author_info['avatar'] = row.human_avatar
+            else:
+                author_info['display_name'] = row.agent_display_name or post.author_hasn_id
+                author_info['avatar'] = row.agent_avatar
+                if row.owner_hasn_id:
+                    author_info['owner'] = {
+                        'hasn_id': row.owner_hasn_id,
+                        'display_name': row.owner_nickname or row.owner_hasn_id,
+                    }
+            result[post.post_id] = {
+                'content_type': 'post',
+                'post_id': post.post_id,
+                'origin_workspace': {
+                    'kind': post.origin_workspace_kind,
+                    'id': post.origin_workspace_id,
+                },
+                'author': author_info,
+                'content': post.content,
+                'tags': post.tags or [],
+                'reference_cards': _present_reference_cards(post.reference_cards, viewer_hasn_id),
+                'like_count': post.like_count,
+                'comment_count': post.comment_count,
+                'published_time': post.published_time.isoformat() if post.published_time else None,
+                'is_liked': True,
+                'is_collected': post.post_id in collected_ids,
+            }
+        return result
+
+    @staticmethod
+    async def _fetch_article_items(
+        db: AsyncSession, viewer_hasn_id: str | None, article_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """按 id 取一批文章并富化为 feed 同形 item，返回 {article_id: item}（已下架的略过）。"""
+        if not article_ids:
+            return {}
+        AuthorHuman = aliased(HasnHumans)
+        AuthorAgent = aliased(HasnAgents)
+        OwnerHuman = aliased(HasnHumans)
+        stmt = (
+            select(
+                HasnArticles,
+                AuthorHuman.nickname.label('human_nickname'),
+                AuthorHuman.avatar.label('human_avatar'),
+                AuthorAgent.display_name.label('agent_display_name'),
+                AuthorAgent.avatar.label('agent_avatar'),
+                OwnerHuman.hasn_id.label('owner_hasn_id'),
+                OwnerHuman.nickname.label('owner_nickname'),
+            )
+            .outerjoin(AuthorHuman, (HasnArticles.author_type == 'human') & (HasnArticles.author_hasn_id == AuthorHuman.hasn_id))
+            .outerjoin(AuthorAgent, (HasnArticles.author_type == 'agent') & (HasnArticles.author_hasn_id == AuthorAgent.hasn_id))
+            .outerjoin(OwnerHuman, (HasnArticles.author_type == 'agent') & (AuthorAgent.owner_id == OwnerHuman.hasn_id))
+            .where(HasnArticles.article_id.in_(article_ids), HasnArticles.status == 'published')
+        )
+        rows = (await db.execute(stmt)).all()
+        _, collected_ids = await CommunityService._batch_reactions(db, viewer_hasn_id, 'article', article_ids)
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            article = row.HasnArticles
+            author_info: dict[str, Any] = {'hasn_id': article.author_hasn_id, 'type': article.author_type}
+            if article.author_type == 'human':
+                author_info['display_name'] = row.human_nickname or article.author_hasn_id
+                author_info['avatar'] = row.human_avatar
+            else:
+                author_info['display_name'] = row.agent_display_name or article.author_hasn_id
+                author_info['avatar'] = row.agent_avatar
+                if row.owner_hasn_id:
+                    author_info['owner'] = {
+                        'hasn_id': row.owner_hasn_id,
+                        'display_name': row.owner_nickname or row.owner_hasn_id,
+                    }
+            result[article.article_id] = {
+                'content_type': 'article',
+                'article_id': article.article_id,
+                'author': author_info,
+                'title': article.title,
+                'summary': effective_summary(article.summary, article.content),
+                'cover_url': article.cover_url,
+                'tags': article.tags or [],
+                'reference_cards': _present_reference_cards(article.reference_cards, viewer_hasn_id),
+                'like_count': article.like_count,
+                'comment_count': article.comment_count,
+                'read_time_min': article.read_time_min,
+                'published_time': article.published_time.isoformat() if article.published_time else None,
+                'is_liked': True,
+                'is_collected': article.article_id in collected_ids,
+            }
+        return result
+
+    @staticmethod
+    async def get_my_liked_items(
+        db: AsyncSession,
+        *,
+        user_id: int | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """当前用户点赞过的内容（帖子 + 文章），按点赞时间倒序。
+
+        - 读 hasn_likes（target_type in post/article），keyset 游标按 like.id 倒序（cursor=末条 like.id）
+        - 富化为与 feed 同形的 content item（is_liked 恒 True；is_collected 批量回填）
+        - 目标已删除/下架则 JOIN 不到自动略过（零 fake，不返回幽灵条目）
+        """
+        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, user_id)
+        if not viewer_hasn_id:
+            return {'items': [], 'next_cursor': None}
+
+        like_stmt = select(HasnLikes.id, HasnLikes.target_type, HasnLikes.target_id).where(
+            HasnLikes.user_hasn_id == viewer_hasn_id,
+            HasnLikes.target_type.in_(['post', 'article']),
+        )
+        if cursor:
+            try:
+                like_stmt = like_stmt.where(HasnLikes.id < int(cursor))
+            except ValueError:
+                pass
+        like_stmt = like_stmt.order_by(HasnLikes.id.desc()).limit(limit + 1)
+        like_rows = (await db.execute(like_stmt)).all()
+
+        has_more = len(like_rows) > limit
+        like_rows = like_rows[:limit]
+
+        post_ids = [r.target_id for r in like_rows if r.target_type == 'post']
+        article_ids = [r.target_id for r in like_rows if r.target_type == 'article']
+        post_map = await CommunityService._fetch_post_items(db, viewer_hasn_id, post_ids)
+        article_map = await CommunityService._fetch_article_items(db, viewer_hasn_id, article_ids)
+
+        items: list[dict[str, Any]] = []
+        for r in like_rows:
+            item = post_map.get(r.target_id) if r.target_type == 'post' else article_map.get(r.target_id)
+            if item is not None:
+                items.append(item)
+
+        next_cursor = str(like_rows[-1].id) if has_more and like_rows else None
+        return {'items': items, 'next_cursor': next_cursor}
+
+    @staticmethod
+    async def _enrich_relations(
+        db: AsyncSession, entries: list[tuple[str, str]]
+    ) -> dict[str, dict[str, Any]]:
+        """把一批 (hasn_id, type) 富化为身份卡片，返回 {hasn_id: card}。
+
+        - agent → display_name/avatar/bio/profession(专家名称)/owner(主人 hasn_id+昵称+头像)
+        - human → nickname/avatar/bio/region(地区，由 sys_user province/city/district 拼接)
+        """
+        from backend.app.admin.model.user import User
+
+        human_ids = [hid for hid, t in entries if t == 'human']
+        agent_ids = [hid for hid, t in entries if t == 'agent']
+        result: dict[str, dict[str, Any]] = {}
+
+        if human_ids:
+            human_rows = (
+                await db.execute(
+                    select(
+                        HasnHumans.hasn_id,
+                        HasnHumans.nickname,
+                        HasnHumans.avatar,
+                        HasnHumans.bio,
+                        User.province,
+                        User.city,
+                        User.district,
+                    )
+                    .outerjoin(User, HasnHumans.user_id == User.id)
+                    .where(HasnHumans.hasn_id.in_(human_ids))
+                )
+            ).all()
+            for r in human_rows:
+                region = ' '.join(p for p in (r.province, r.city, r.district) if p)
+                result[r.hasn_id] = {
+                    'hasn_id': r.hasn_id,
+                    'type': 'human',
+                    'display_name': r.nickname or r.hasn_id,
+                    'avatar': r.avatar or '',
+                    'bio': r.bio or '',
+                    'region': region,
+                }
+
+        if agent_ids:
+            agent_rows = (
+                await db.execute(
+                    select(
+                        HasnAgents.hasn_id,
+                        HasnAgents.display_name,
+                        HasnAgents.avatar,
+                        HasnAgents.bio,
+                        HasnAgents.profession,
+                        HasnAgents.owner_id,
+                    ).where(HasnAgents.hasn_id.in_(agent_ids))
+                )
+            ).all()
+            owner_ids = [r.owner_id for r in agent_rows if r.owner_id]
+            owner_map: dict[str, dict[str, Any]] = {}
+            if owner_ids:
+                owner_rows = (
+                    await db.execute(
+                        select(HasnHumans.hasn_id, HasnHumans.nickname, HasnHumans.avatar).where(
+                            HasnHumans.hasn_id.in_(owner_ids)
+                        )
+                    )
+                ).all()
+                owner_map = {
+                    o.hasn_id: {
+                        'hasn_id': o.hasn_id,
+                        'display_name': o.nickname or o.hasn_id,
+                        'avatar': o.avatar or '',
+                    }
+                    for o in owner_rows
+                }
+            for r in agent_rows:
+                result[r.hasn_id] = {
+                    'hasn_id': r.hasn_id,
+                    'type': 'agent',
+                    'display_name': r.display_name or r.hasn_id,
+                    'avatar': r.avatar or '',
+                    'bio': r.bio or '',
+                    'profession': r.profession or '',
+                    'owner': owner_map.get(r.owner_id),
+                }
+        return result
+
+    @staticmethod
+    async def list_following(
+        db: AsyncSession,
+        *,
+        user_id: int | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """当前用户关注的对象列表（human/agent），按关注时间倒序，附富化身份卡片。"""
+        viewer = await CommunityService._resolve_human_hasn_id(db, user_id)
+        if not viewer:
+            return {'items': [], 'next_cursor': None}
+
+        stmt = select(
+            HasnFollows.id, HasnFollows.target_type, HasnFollows.target_hasn_id, HasnFollows.created_time
+        ).where(
+            HasnFollows.follower_hasn_id == viewer,
+            HasnFollows.target_type.in_(['human', 'agent']),
+        )
+        if cursor:
+            try:
+                stmt = stmt.where(HasnFollows.id < int(cursor))
+            except ValueError:
+                pass
+        stmt = stmt.order_by(HasnFollows.id.desc()).limit(limit + 1)
+        rows = (await db.execute(stmt)).all()
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+
+        entries = [(r.target_hasn_id, r.target_type) for r in rows]
+        enriched = await CommunityService._enrich_relations(db, entries)
+
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            base = enriched.get(r.target_hasn_id)
+            if base is None:
+                continue
+            item = dict(base)
+            item['is_following'] = True
+            item['followed_time'] = r.created_time.isoformat() if r.created_time else None
+            items.append(item)
+
+        next_cursor = str(rows[-1].id) if has_more and rows else None
+        return {'items': items, 'next_cursor': next_cursor}
+
+    @staticmethod
+    async def list_followers(
+        db: AsyncSession,
+        *,
+        user_id: int | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """关注当前用户的对象列表（粉丝），按关注时间倒序，附富化身份卡片与回关态。
+
+        hasn_follows 不存 follower_type，故按 follower_hasn_id 命中 hasn_agents 判为 agent，否则 human。
+        """
+        viewer = await CommunityService._resolve_human_hasn_id(db, user_id)
+        if not viewer:
+            return {'items': [], 'next_cursor': None}
+
+        stmt = select(HasnFollows.id, HasnFollows.follower_hasn_id, HasnFollows.created_time).where(
+            HasnFollows.target_hasn_id == viewer,
+        )
+        if cursor:
+            try:
+                stmt = stmt.where(HasnFollows.id < int(cursor))
+            except ValueError:
+                pass
+        stmt = stmt.order_by(HasnFollows.id.desc()).limit(limit + 1)
+        rows = (await db.execute(stmt)).all()
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+
+        follower_ids = [r.follower_hasn_id for r in rows]
+        agent_id_set: set[str] = set()
+        following_back: set[str] = set()
+        if follower_ids:
+            agent_id_set = set(
+                (
+                    await db.execute(
+                        select(HasnAgents.hasn_id).where(HasnAgents.hasn_id.in_(follower_ids))
+                    )
+                ).scalars().all()
+            )
+            following_back = set(
+                (
+                    await db.execute(
+                        select(HasnFollows.target_hasn_id).where(
+                            HasnFollows.follower_hasn_id == viewer,
+                            HasnFollows.target_hasn_id.in_(follower_ids),
+                        )
+                    )
+                ).scalars().all()
+            )
+
+        entries = [(fid, 'agent' if fid in agent_id_set else 'human') for fid in follower_ids]
+        enriched = await CommunityService._enrich_relations(db, entries)
+
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            base = enriched.get(r.follower_hasn_id)
+            if base is None:
+                continue
+            item = dict(base)
+            item['is_follower'] = True
+            item['is_following'] = r.follower_hasn_id in following_back
+            item['followed_time'] = r.created_time.isoformat() if r.created_time else None
+            items.append(item)
+
+        next_cursor = str(rows[-1].id) if has_more and rows else None
+        return {'items': items, 'next_cursor': next_cursor}
+
+    @staticmethod
     async def get_recommended_articles(
         db: AsyncSession,
         *,
