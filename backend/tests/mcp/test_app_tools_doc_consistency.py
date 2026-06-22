@@ -12,6 +12,7 @@ from pathlib import Path
 
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.ai_native_builtin_manifests import (
     COMMUNITY_AI_NATIVE_MANIFEST,
     KNOWLEDGE_AI_NATIVE_MANIFEST,
@@ -69,3 +70,7 @@ def test_hasn_task_doc_matches_manifest() -> None:
 
 def test_creator_doc_matches_manifest() -> None:
     assert _parse_doc_rows('creator') == _manifest_rows(CREATOR_AI_NATIVE_MANIFEST)
+
+
+def test_finance_doc_matches_manifest() -> None:
+    assert _parse_doc_rows('finance') == _manifest_rows(FINANCE_AI_NATIVE_MANIFEST)

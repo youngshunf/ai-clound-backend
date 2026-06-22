@@ -142,6 +142,12 @@ class Settings(BaseSettings):
     RAGFLOW_DEFAULT_EMBD_ID: str = 'BAAI/bge-large-zh-v1.5'  # 默认 embedding 模型
     RAGFLOW_DEFAULT_LLM_ID: str = 'deepseek-chat'  # 默认 LLM 模型
 
+    # 金融数据服务（finance-data-service，独立部署，模块 24 doc）：唯一接触 akshare 的地方，
+    # 主云端经 finance_provider（httpx）中转取数（agent 工具面 + owner read-API 共用）。
+    FINANCE_SERVICE_URL: str = ''  # 数据服务地址，如 http://finance-svc.internal:8000（为空时 provider 归一 service_unconfigured）
+    FINANCE_SERVICE_TOKEN: str = ''  # 内部 svc-token（Bearer，对齐数据服务 FIN_SVC_TOKEN）
+    FINANCE_SERVICE_TIMEOUT: int = 30  # HTTP 超时（秒）
+
     # Token
     TOKEN_ALGORITHM: str = 'HS256'
     TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24  # 1 天

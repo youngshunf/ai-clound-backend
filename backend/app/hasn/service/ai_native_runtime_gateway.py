@@ -415,6 +415,7 @@ class AiNativeRuntimeGateway:
             return self._internal_handlers_cache
         from backend.app.hasn_community.service import community_tool_handlers as handlers
         from backend.app.hasn_creator.service import creator_tool_handlers as creator_handlers
+        from backend.app.hasn_finance.service import finance_tool_handlers as finance_handlers
         from backend.app.hasn_growth.service import growth_tool_handlers as growth_handlers
         from backend.app.hasn_knowledge.service import tool_handlers as knowledge_handlers
 
@@ -515,6 +516,22 @@ class AiNativeRuntimeGateway:
             # 文档创作（community:doc）
             'community.create_doc_space': handlers.handle_community_create_doc_space,
             'community.create_doc_node': handlers.handle_community_create_doc_node,
+            # 金融数据（纯云端只读数据应用：14 工具全 finance:read，gateway_internal → finance_provider →
+            # finance-data-service；唯一接触 akshare 处隔离独立服务，主云端进程不引 akshare。模块 24 §4/§5）
+            'finance.stock_quote_history': finance_handlers.handle_stock_quote_history,
+            'finance.stock_realtime': finance_handlers.handle_stock_realtime,
+            'finance.stock_info': finance_handlers.handle_stock_info,
+            'finance.stock_fund_flow': finance_handlers.handle_stock_fund_flow,
+            'finance.stock_billboard': finance_handlers.handle_stock_billboard,
+            'finance.stock_financial': finance_handlers.handle_stock_financial,
+            'finance.hk_quote_history': finance_handlers.handle_hk_quote_history,
+            'finance.us_quote_history': finance_handlers.handle_us_quote_history,
+            'finance.index_quote_history': finance_handlers.handle_index_quote_history,
+            'finance.fund_nav_history': finance_handlers.handle_fund_nav_history,
+            'finance.fund_position': finance_handlers.handle_fund_position,
+            'finance.futures_quote_history': finance_handlers.handle_futures_quote_history,
+            'finance.macro_indicator': finance_handlers.handle_macro_indicator,
+            'finance.bond_quote_history': finance_handlers.handle_bond_quote_history,
         }
         self._internal_handlers_cache = registry
         return registry

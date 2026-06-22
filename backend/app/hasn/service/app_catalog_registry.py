@@ -125,6 +125,11 @@ class AppCatalogRegistry:
         from backend.app.hasn_plan.manifest import build_plan_app
 
         registry.register(build_plan_app())
+        # 金融数据 finance（cloud AI-Native，schema hasn_finance，模块 24；install_policy=manual
+        # 非默认挂载——纯云端只读数据应用，14 工具经 finance_provider → finance-data-service 取数）。延迟导入避免循环依赖。
+        from backend.app.hasn_finance.manifest import build_finance_app
+
+        registry.register(build_finance_app())
         return registry
 
     def register(self, app: App) -> None:

@@ -52,6 +52,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'reel': 57,  # 短视频合成（源自 MoneyPrinterTurbo，瘦引擎应用；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
+    'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -140,6 +141,14 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是主人的私人参谋长 + 执行秘书：帮主人把模糊想法收敛成目标/关键结果，拆成可执行的计划与待办，'
         '合理排期到日历，每日给简报、定期做复盘；只调用 hasn.plan.* 工具就地管理主人的规划数据，'
         '尊重主人的最终决定权，零 fake、失败如实报错。',
+    ),
+    # 金融数据用专属「投研分析师（analyst）」分身（hub 模板 analyst，builtin_key=analyst，FIN-S8 落地）。
+    # 行情/基本面/宏观全只读取数 → 分析师只查不动，给出有数据支撑的研判。
+    'finance': (
+        'analyst',
+        '你是主人的投研分析师：用 hasn.finance.* 工具查 A股/港美股/基金/期货/债券/指数行情与宏观数据，'
+        '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
+        '取不到就如实说，零 fake、失败如实报错。',
     ),
 }
 

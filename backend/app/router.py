@@ -52,6 +52,9 @@ from backend.app.hasn_creator.api.router import (  # 创作（hasn_creator，独
 )
 from backend.app.hasn_deck.api.router import agent as deck_agent
 from backend.app.hasn_deck.api.router import app as deck_app
+
+# 金融数据（hasn_finance，模块 24）：仅 owner 只读看板面，URL /api/v1/finance/app/*
+from backend.app.hasn_finance.api.router import app as finance_app
 from backend.app.hasn_designsystem.api.router import (
     v1 as hasn_designsystem_v1,  # 设计系统生成（hasn_designsystem，独立 PG schema，URL /api/v1/designsystem/*；当前仅 agent 端）
 )
@@ -205,3 +208,6 @@ router.include_router(hasn_creator_open)
 router.include_router(hasn_designsystem_v1)
 
 router.include_router(hasn_plan_v1)
+
+# 金融数据（hasn_finance，模块 24）：owner 只读看板面 /api/v1/finance/app/*（共用 finance_provider）
+router.include_router(finance_app)

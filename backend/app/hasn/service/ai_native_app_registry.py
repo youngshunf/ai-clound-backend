@@ -13,6 +13,7 @@ from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
+from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
@@ -54,6 +55,9 @@ class AINativeAppRegistry:
             'reel': REEL_AI_NATIVE_MANIFEST,
             # 规划与目标管理应用（app_id=plan，模块/schema hasn_plan，模块 19；local_tool，PLAN-P1 铸 scope）。
             'plan': PLAN_AI_NATIVE_MANIFEST,
+            # 金融数据（app_id=finance，模块/schema hasn_finance，模块 24；纯云端只读数据应用，
+            # 工具全走 gateway_internal → finance_provider → finance-data-service，唯一接触 akshare 处隔离独立服务）。
+            'finance': FINANCE_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
