@@ -74,7 +74,7 @@ def test_studio_manifest_validates() -> None:
 
 
 def test_studio_in_builtin_registry() -> None:
-    """studio 进 _builtin_manifests；cloud-brokered 形态；P2 不暴露 tools/capabilities。"""
+    """studio 进 _builtin_manifests；cloud-brokered 形态；P3 暴露 12 工具（read/write allow，render/export ask）。"""
     builtin_ids = {m['app_id'] for m in ai_native_app_registry.list_builtin_apps()}
     assert 'studio' in builtin_ids
     manifest = ai_native_app_registry.get_builtin_manifest('studio')
@@ -82,9 +82,9 @@ def test_studio_in_builtin_registry() -> None:
     assert manifest['version'] == '1.0.0'
     assert manifest['execution_mode'] == 'cloud'
     assert manifest['transport_mode'] == 'cloud'
-    # P2：工具面随 P3 落地，本期不暴露（避免声明指向尚不存在的 gateway handler）。
-    assert manifest['tools'] == []
-    assert manifest['capabilities'] == []
+    # STUDIO-P3：工具面落地（12 工具 = capabilities，gateway_internal handler）。
+    assert len(manifest['tools']) == 12
+    assert len(manifest['capabilities']) == 12
 
 
 def test_studio_notifications_emit_declared() -> None:
@@ -92,6 +92,65 @@ def test_studio_notifications_emit_declared() -> None:
     emit = STUDIO_AI_NATIVE_MANIFEST['notifications']['emit']
     assert emit['card_message'] is True
     assert emit['display_name'] == '视频引擎'
+
+
+def test_studio_p3_tools_scope_three_states() -> None:
+    """STUDIO-P3：12 工具的 scope/三态出厂一致——read/write=allow（不确认），render/export=ask（确认）。"""
+    expected_mcp_names = {
+        'hasn.studio.list_pipelines',
+        'hasn.studio.list_projects',
+        'hasn.studio.get_project',
+        'hasn.studio.list_assets',
+        'hasn.studio.list_artifacts',
+        'hasn.studio.get_render_job',
+        'hasn.studio.save_project',
+        'hasn.studio.save_storyboard',
+        'hasn.studio.run_pipeline',
+        'hasn.studio.render',
+        'hasn.studio.run_tool',
+        'hasn.studio.export',
+    }
+    caps = STUDIO_AI_NATIVE_MANIFEST['capabilities']
+    assert {c['mcp_name'] for c in caps} == expected_mcp_names
+
+    by_name = {c['mcp_name']: c for c in caps}
+    # read/write 出厂 allow（human_confirmation.required=False）。
+    for name in (
+        'hasn.studio.list_pipelines',
+        'hasn.studio.list_projects',
+        'hasn.studio.get_project',
+        'hasn.studio.list_assets',
+        'hasn.studio.list_artifacts',
+        'hasn.studio.get_render_job',
+        'hasn.studio.save_project',
+        'hasn.studio.save_storyboard',
+    ):
+        assert by_name[name]['human_confirmation']['required'] is False, f'{name} 出厂应 allow'
+    # render/run_pipeline/run_tool/export 出厂 ask（human_confirmation.required=True，花算力/外发）。
+    for name in (
+        'hasn.studio.run_pipeline',
+        'hasn.studio.render',
+        'hasn.studio.run_tool',
+        'hasn.studio.export',
+    ):
+        assert by_name[name]['human_confirmation']['required'] is True, f'{name} 出厂应 ask'
+
+    # required_scopes 对齐：read/write/render/export。
+    assert by_name['hasn.studio.list_pipelines']['required_scopes'] == ['studio:read']
+    assert by_name['hasn.studio.save_project']['required_scopes'] == ['studio:write']
+    assert by_name['hasn.studio.run_pipeline']['required_scopes'] == ['studio:render']
+    assert by_name['hasn.studio.run_tool']['required_scopes'] == ['studio:render']
+    assert by_name['hasn.studio.export']['required_scopes'] == ['studio:export']
+
+
+def test_studio_p3_tool_handlers_registered_in_gateway() -> None:
+    """STUDIO-P3：manifest 每个 tool.handler 都在 gateway _internal_handlers() 注册表里（零悬挂声明）。"""
+    from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
+
+    registry = ai_native_runtime_gateway._internal_handlers()
+    for tool in STUDIO_AI_NATIVE_MANIFEST['tools']:
+        assert tool['transport'] == 'gateway_internal'
+        assert tool['handler'] in registry, f'gateway 缺 handler: {tool["handler"]}'
 
 
 def test_studio_workbench_app_shape() -> None:

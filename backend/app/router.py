@@ -59,6 +59,10 @@ from backend.app.hasn_finance.api.router import app as finance_app
 # 量化研究（hasn_quant，模块 14 doc23）：管理端（v1 JWT+RBAC）+ owner 业务面（app 仅 JWT，行级隔离）；
 # codegen 裸 open/agent 面刻意不挂载（公开无鉴权读写=越权大洞；Agent 走云端 MCP 不经 REST）。URL /api/v1/hasn_quant{,/app}/*
 from backend.app.hasn_quant.api.router import app as hasn_quant_app, v1 as hasn_quant_v1
+
+# 统一视频引擎（hasn_studio，模块 14 doc22）：管理端（v1 JWT+RBAC）+ owner 业务面（app 仅 JWT，行级隔离）；
+# codegen 裸 open/agent 面刻意不挂载（公开无鉴权读写=越权大洞；Agent 走云端 MCP 不经 REST）。URL /api/v1/hasn_studio{,/app}/*
+from backend.app.hasn_studio.api.router import app as hasn_studio_app, v1 as hasn_studio_v1
 from backend.app.hasn_designsystem.api.router import (
     v1 as hasn_designsystem_v1,  # 设计系统生成（hasn_designsystem，独立 PG schema，URL /api/v1/designsystem/*；当前仅 agent 端）
 )
@@ -219,3 +223,7 @@ router.include_router(finance_app)
 # 量化研究（hasn_quant，模块 14 doc23）：管理端 + owner 业务面（行级隔离回测研究）。
 router.include_router(hasn_quant_v1)
 router.include_router(hasn_quant_app)
+
+# 统一视频引擎（hasn_studio，模块 14 doc22）：管理端 + owner 业务面（行级隔离视频工作台）。
+router.include_router(hasn_studio_v1)
+router.include_router(hasn_studio_app)

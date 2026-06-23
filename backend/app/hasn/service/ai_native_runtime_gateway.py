@@ -419,6 +419,7 @@ class AiNativeRuntimeGateway:
         from backend.app.hasn_growth.service import growth_tool_handlers as growth_handlers
         from backend.app.hasn_knowledge.service import tool_handlers as knowledge_handlers
         from backend.app.mcp.apps.quant import quant_tool_handlers as quant_handlers
+        from backend.app.mcp.apps.studio import studio_tool_handlers as studio_handlers
 
         registry: dict[str, Any] = {
             # 创作运营（纯云端业务应用：定位/创作/审核/发布/复盘/进化，零本地操作 → 工具全走云端
@@ -541,6 +542,22 @@ class AiNativeRuntimeGateway:
             'quant.get_strategy': quant_handlers.handle_get_strategy,
             'quant.backtest': quant_handlers.handle_backtest,
             'quant.get_backtest': quant_handlers.handle_get_backtest,
+            # 统一视频引擎（cloud-brokered 业务应用，模块 14 doc22 §3/§3.5）：12 工具 gateway_internal →
+            # studio_service → montage_engine_provider → montage-engine-service；唯一接触 OpenMontage/Remotion 处
+            # 隔离独立服务。read/write 出厂 allow；render/run_pipeline/run_tool/export 出厂 ask（花算力/外发）。
+            # 双重身份：任意应用的分身都能编排调 studio.run_pipeline，产物经 hasn://asset/ 回填组合（零数据合并）。
+            'studio.list_pipelines': studio_handlers.handle_list_pipelines,
+            'studio.list_projects': studio_handlers.handle_list_projects,
+            'studio.get_project': studio_handlers.handle_get_project,
+            'studio.list_assets': studio_handlers.handle_list_assets,
+            'studio.list_artifacts': studio_handlers.handle_list_artifacts,
+            'studio.get_render_job': studio_handlers.handle_get_render_job,
+            'studio.save_project': studio_handlers.handle_save_project,
+            'studio.save_storyboard': studio_handlers.handle_save_storyboard,
+            'studio.run_pipeline': studio_handlers.handle_run_pipeline,
+            'studio.render': studio_handlers.handle_render,
+            'studio.run_tool': studio_handlers.handle_run_tool,
+            'studio.export': studio_handlers.handle_export,
         }
         self._internal_handlers_cache = registry
         return registry
