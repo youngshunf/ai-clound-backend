@@ -17,6 +17,7 @@ class Kb(KnowledgeBase):
     owner_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='归属 owner HASN ID（owner 隔离键，引用 public.hasn_humans）')
     scope: Mapped[str] = mapped_column(sa.String(16), default='', comment='工作区语义 (personal:个人:blue/enterprise:企业:purple)')
     enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='企业 ID（scope=enterprise 必填）')
+    visibility: Mapped[str] = mapped_column(sa.String(16), default='private', comment='可见面 (private:私有:gray/enterprise:企业可见:blue/link:链接:cyan)')
     name: Mapped[str] = mapped_column(sa.String(128), default='', comment='库名')
     description: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='描述')
     ragflow_dataset_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='RAGFlow dataset 映射（唯一，派生物）')

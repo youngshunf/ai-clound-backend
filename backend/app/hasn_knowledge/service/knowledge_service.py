@@ -15,6 +15,7 @@ from __future__ import annotations
 import mimetypes
 import uuid
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
@@ -23,6 +24,7 @@ from sqlalchemy import func, select
 
 from backend.app.hasn.model.hasn_ai_native_app_audit import HasnAiNativeAppAudit
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_knowledge.model import AgentKbGrant, Document, DocumentVersion, Folder, Kb
 from backend.app.hasn_knowledge.service.instance import resolve_knowledge_instance
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError, RAGFlowClient
@@ -44,13 +46,36 @@ ROOT_FOLDER_SENTINEL = 0
 
 _GRANT_MODES = ('inherit', 'restricted', 'denied')
 
+# 知识库接入平台产物级协作（应用平台 v3 §6）：resource_share 的 resource_type。
+_RESOURCE_TYPE = 'knowledge'
 
-def _kb_dict(kb: Kb) -> dict[str, Any]:
-    return {
+
+@dataclass(frozen=True)
+class Subject:
+    """操作主体：人或分身（分身背后总有主人）。与 deck 同构。"""
+
+    hasn_id: str
+    kind: str  # 'human' | 'agent'
+    owner_hasn_id: str  # 背后主人（human 时 == hasn_id）
+
+    @staticmethod
+    def human(hasn_id: str) -> Subject:
+        return Subject(hasn_id=hasn_id, kind='human', owner_hasn_id=hasn_id)
+
+    @staticmethod
+    def agent(agent_hasn_id: str, owner_hasn_id: str) -> Subject:
+        return Subject(hasn_id=agent_hasn_id, kind='agent', owner_hasn_id=owner_hasn_id)
+
+
+def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None = None) -> dict[str, Any]:
+    out = {
         'id': kb.id,
+        'owner_id': kb.owner_id,
         'name': kb.name,
         'description': kb.description,
         'scope': kb.scope,
+        'enterprise_id': kb.enterprise_id,
+        'visibility': kb.visibility,
         'embedding_model': kb.embedding_model,
         'document_count': kb.document_count,
         'chunk_count': kb.chunk_count,
@@ -58,6 +83,11 @@ def _kb_dict(kb: Kb) -> dict[str, Any]:
         'created_time': kb.created_time,
         'updated_time': kb.updated_time,
     }
+    if my_permission is not None:
+        out['my_permission'] = my_permission
+    if relation is not None:
+        out['relation'] = relation
+    return out
 
 
 def _folder_dict(f: Folder) -> dict[str, Any]:
@@ -128,6 +158,215 @@ class KnowledgeService:
         if kb is None:
             raise errors.NotFoundError(msg='知识库不存在')
         return kb
+
+    # ---------- 产物级协作：权限闸（app/human 路；agent 路仍走 owner_id+维度② grant）----------
+    #
+    # 复用纪律：现有 owner_id keyed 方法（文档/目录/正文/检索）一字不动——文档/目录行的
+    # owner_id 恒等于其所属库的 owner_id，所以「先 authorize 闸，再用 kb.owner_id 委托旧方法」
+    # 对库主人与被分享者都返回正确结果，零重写、零回归。被分享编辑者新建的行也随 kb.owner_id
+    # 归属库（对齐 deck：page.owner_id = deck.owner_id）。
+
+    async def _load_kb(self, db: AsyncSession, kb_id: int) -> Kb:
+        """按 id 取未删 kb（不做 owner 过滤；access 交给权限闸）。"""
+        kb = (
+            await db.execute(select(Kb).where(Kb.id == kb_id, Kb.deleted_time.is_(None)))
+        ).scalar_one_or_none()
+        if kb is None:
+            raise errors.NotFoundError(msg='知识库不存在')
+        return kb
+
+    async def _effective_permission(self, db: AsyncSession, *, kb: Kb, subject: Subject) -> str:
+        return await resource_share_service.resolve_effective_permission(
+            db,
+            subject_hasn_id=subject.hasn_id,
+            subject_kind=subject.kind,
+            subject_owner_hasn_id=subject.owner_hasn_id,
+            resource_type=_RESOURCE_TYPE,
+            resource_id=str(kb.id),
+            resource_owner_hasn_id=kb.owner_id,
+            resource_owner_scope=kb.scope or 'personal',
+            resource_enterprise_id=kb.enterprise_id,
+            resource_visibility=kb.visibility or 'private',
+        )
+
+    async def authorize_kb(self, db: AsyncSession, *, subject: Subject, kb_id: int, need: str) -> Kb:
+        """校验 subject 对 kb 至少有 need 权限；不足则报错（none→不存在不泄露，其它→无权限）。返回 kb。"""
+        kb = await self._load_kb(db, kb_id)
+        eff = await self._effective_permission(db, kb=kb, subject=subject)
+        if rank(eff) < rank(need):
+            if rank(eff) == 0:
+                raise errors.NotFoundError(msg='知识库不存在')
+            raise errors.ForbiddenError(msg='没有该操作权限')
+        return kb
+
+    async def authorize_doc(self, db: AsyncSession, *, subject: Subject, doc_id: int, need: str) -> Kb:
+        """按 doc_id 反查所属 kb 并校验权限；返回 kb（caller 用 kb.owner_id 委托旧方法）。"""
+        doc = (
+            await db.execute(select(Document).where(Document.id == doc_id, Document.deleted_time.is_(None)))
+        ).scalar_one_or_none()
+        if doc is None:
+            raise errors.NotFoundError(msg='文档不存在')
+        return await self.authorize_kb(db, subject=subject, kb_id=doc.kb_id, need=need)
+
+    async def authorize_folder(self, db: AsyncSession, *, subject: Subject, folder_id: int, need: str) -> Kb:
+        """按 folder_id 反查所属 kb 并校验权限；返回 kb。"""
+        folder = (
+            await db.execute(select(Folder).where(Folder.id == folder_id, Folder.deleted_time.is_(None)))
+        ).scalar_one_or_none()
+        if folder is None:
+            raise errors.NotFoundError(msg='目录不存在')
+        return await self.authorize_kb(db, subject=subject, kb_id=folder.kb_id, need=need)
+
+    async def list_accessible_kbs(self, db: AsyncSession, *, subject: Subject) -> list[dict[str, Any]]:
+        """可访问知识库 = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。"""
+        human = subject.owner_hasn_id
+        memberships = await resource_share_service.acting_human_memberships(db, human)
+        member_enterprise_ids = {eid for eid, _ in memberships}
+
+        # 1. 我拥有的（保持原 owner 隔离语义，relation=owner / manager）
+        owned = (
+            (
+                await db.execute(
+                    select(Kb).where(Kb.owner_id == human, Kb.deleted_time.is_(None)).order_by(Kb.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        owned_ids = {kb.id for kb in owned}
+
+        # 2. 共享给我的（直接给人 / 给我企业 / 给我这个分身）
+        shared_ids: set[str] = set(
+            await resource_share_service.shared_resource_ids_for_human(
+                db, resource_type=_RESOURCE_TYPE, human_hasn_id=human
+            )
+        )
+        if subject.kind == 'agent':
+            shared_ids |= await self._shared_kb_ids_for_agent(db, agent_hasn_id=subject.hasn_id)
+
+        # 3. 企业可见的库 id
+        ent_ids: set[int] = set()
+        if member_enterprise_ids:
+            ent_ids = set(
+                (
+                    await db.execute(
+                        select(Kb.id).where(
+                            Kb.deleted_time.is_(None),
+                            Kb.scope == 'enterprise',
+                            Kb.visibility == 'enterprise',
+                            Kb.enterprise_id.in_(member_enterprise_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        extra_ids = {int(i) for i in shared_ids if i.isdigit()} | ent_ids
+        extra_ids -= owned_ids
+        extra_kbs: list[Kb] = []
+        if extra_ids:
+            extra_kbs = list(
+                (await db.execute(select(Kb).where(Kb.id.in_(extra_ids), Kb.deleted_time.is_(None)))).scalars().all()
+            )
+
+        items: list[dict[str, Any]] = [
+            _kb_dict(kb, my_permission='manager', relation='owner') for kb in owned
+        ]
+        for kb in extra_kbs:
+            eff = await self._effective_permission(db, kb=kb, subject=subject)
+            if rank(eff) == 0:
+                continue
+            relation = 'enterprise' if (kb.id in ent_ids and str(kb.id) not in shared_ids) else 'shared'
+            items.append(_kb_dict(kb, my_permission=eff, relation=relation))
+        return items
+
+    @staticmethod
+    async def _shared_kb_ids_for_agent(db: AsyncSession, *, agent_hasn_id: str) -> set[str]:
+        from backend.app.hasn.model import HasnResourceShare
+
+        rows = (
+            (
+                await db.execute(
+                    select(HasnResourceShare.resource_id).where(
+                        HasnResourceShare.resource_type == _RESOURCE_TYPE,
+                        HasnResourceShare.status == 'active',
+                        HasnResourceShare.grantee_type == 'agent',
+                        HasnResourceShare.grantee_id == agent_hasn_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return set(rows)
+
+    # ---------- 共享管理（manager 权）----------
+
+    async def list_shares(self, db: AsyncSession, *, subject: Subject, kb_id: int) -> dict[str, Any]:
+        kb = await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
+        shares = await resource_share_service.list_shares(db, resource_type=_RESOURCE_TYPE, resource_id=str(kb_id))
+        return {
+            'kb_id': kb_id,
+            'scope': kb.scope,
+            'enterprise_id': kb.enterprise_id,
+            'visibility': kb.visibility,
+            'shares': shares,
+        }
+
+    async def set_visibility(
+        self, db: AsyncSession, *, subject: Subject, kb_id: int, visibility: str, enterprise_id: int | None = None
+    ) -> dict[str, Any]:
+        kb = await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
+        if visibility not in ('private', 'enterprise', 'link'):
+            raise errors.RequestError(msg='非法可见性')
+        if visibility == 'enterprise':
+            target_ent = enterprise_id if enterprise_id is not None else kb.enterprise_id
+            if target_ent is None:
+                raise errors.ForbiddenError(msg='个人知识库需先归属企业才能设为企业可见')
+            memberships = await resource_share_service.acting_human_memberships(db, subject.owner_hasn_id)
+            if target_ent not in {eid for eid, _ in memberships}:
+                raise errors.ForbiddenError(msg='你不是该企业成员')
+            kb.scope = 'enterprise'
+            kb.enterprise_id = target_ent
+        kb.visibility = visibility
+        kb.updated_time = timezone.now()
+        await db.flush()
+        return _kb_dict(kb)
+
+    async def add_share(
+        self,
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        kb_id: int,
+        grantee_type: str,
+        grantee_id: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        if grantee_type not in ('human', 'agent', 'enterprise'):
+            raise errors.RequestError(msg='仅支持 human/agent/enterprise 协作者')
+        if permission not in ('viewer', 'editor', 'manager'):
+            raise errors.RequestError(msg='非法权限档')
+        kb = await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
+        return await resource_share_service.upsert_share(
+            db,
+            resource_type=_RESOURCE_TYPE,
+            resource_id=str(kb_id),
+            owner_hasn_id=kb.owner_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+            granted_by=subject.hasn_id,
+        )
+
+    async def revoke_share(
+        self, db: AsyncSession, *, subject: Subject, kb_id: int, grantee_type: str, grantee_id: str
+    ) -> bool:
+        await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
+        return await resource_share_service.revoke_share(
+            db, resource_type=_RESOURCE_TYPE, resource_id=str(kb_id), grantee_type=grantee_type, grantee_id=grantee_id
+        )
 
     async def list_kbs(self, db: AsyncSession, owner_id: str) -> list[dict[str, Any]]:
         rows = (
