@@ -100,6 +100,40 @@ class CommunityService:
         return liked, collected
 
     @staticmethod
+    async def _enrich_authors(db: AsyncSession, authors: list[dict[str, Any]]) -> None:
+        """给一批已序列化的 author dict（含 hasn_id/type）就地补「专家名称 + 实时在线态」。
+
+        - profession：批量查 HasnAgents.profession（仅 agent 作者）。社区作者可为全网任意分身，
+          云端 hasn_agents 是权威，故能给出所有作者的专家头衔（不像 daemon 本地镜像仅自有分身有值）。
+        - online_status：Redis presence（ws_router.get_online_map），断线即 offline，不读持久列避免僵尸在线。
+
+        诚实留空：查不到 profession → ''；human 作者不设这两个字段。daemon 社区镜像存整条
+        source_json 原样回放，故云端补的字段冷读/热读都带，无需 daemon 侧改动。
+        """
+        agent_ids = list(
+            {a['hasn_id'] for a in authors if a.get('type') == 'agent' and a.get('hasn_id')}
+        )
+        if not agent_ids:
+            return
+        from backend.app.hasn.service.ws_router import ws_router
+
+        prof_rows = (
+            await db.execute(
+                select(HasnAgents.hasn_id, HasnAgents.profession).where(
+                    HasnAgents.hasn_id.in_(agent_ids)
+                )
+            )
+        ).all()
+        prof_map = {r.hasn_id: (r.profession or '') for r in prof_rows}
+        online_map = await ws_router.get_online_map(agent_ids)
+        for a in authors:
+            if a.get('type') != 'agent':
+                continue
+            hid = a.get('hasn_id')
+            a['profession'] = prof_map.get(hid, '')
+            a['online_status'] = 'online' if online_map.get(hid) else 'offline'
+
+    @staticmethod
     async def get_feed(
         db: AsyncSession,
         *,
@@ -279,6 +313,7 @@ class CommunityService:
             elif last.published_time:
                 next_cursor = f'{last.published_time.isoformat()}|{last.post_id}'
 
+        await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         return {
             'items': items,
             'next_cursor': next_cursor,
@@ -449,6 +484,7 @@ class CommunityService:
             if last.published_time:
                 next_cursor = f'{last.published_time.isoformat()}|{last.article_id}'
 
+        await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         return {
             'items': items,
             'next_cursor': next_cursor,
@@ -620,6 +656,7 @@ class CommunityService:
                 items.append(item)
 
         next_cursor = str(like_rows[-1].id) if has_more and like_rows else None
+        await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         return {'items': items, 'next_cursor': next_cursor}
 
     @staticmethod
@@ -1143,6 +1180,7 @@ class CommunityService:
         merged.sort(key=lambda pair: pair[0] or _floor, reverse=True)
         items = [item for _, item in merged[:limit]]
 
+        await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         # 草稿是主人逐条清空的小型审核队列：历史 cursor 从未在 WHERE 生效（伪分页），
         # 合并两表后单表 cursor 失去意义，故显式不分页（next_cursor=None）。
         return {
@@ -1303,7 +1341,7 @@ class CommunityService:
         )
 
         # 构建 author 信息
-        author_info = {
+        author_info: dict[str, Any] = {
             'hasn_id': post.author_hasn_id,
             'type': post.author_type,
         }
@@ -1321,6 +1359,7 @@ class CommunityService:
                     'display_name': row.owner_nickname or row.owner_hasn_id,
                 }
 
+        await CommunityService._enrich_authors(db, [author_info])
         return {
             'content_type': 'post',
             'post_id': post.post_id,
@@ -1476,6 +1515,7 @@ class CommunityService:
                 'created_time': comment.created_time.isoformat() if comment.created_time else None,
             })
 
+        await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         return {
             'items': items,
             'next_cursor': rows[-1].HasnComments.comment_id if rows else None,
@@ -2947,6 +2987,7 @@ class CommunityService:
                 'is_collected': False,
             })
 
+        await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
         return {
             'items': items,
             'next_cursor': rows[-1].HasnPosts.post_id if rows else None,
@@ -3089,7 +3130,7 @@ class CommunityService:
             raise errors.NotFoundError(msg='文章不存在')
 
         # 查询作者信息
-        author_info = {'hasn_id': article.author_hasn_id, 'type': article.author_type}
+        author_info: dict[str, Any] = {'hasn_id': article.author_hasn_id, 'type': article.author_type}
 
         if article.author_type == 'human':
             stmt = select(HasnHumans).where(HasnHumans.hasn_id == article.author_hasn_id)
@@ -3123,6 +3164,7 @@ class CommunityService:
         is_liked = article.article_id in liked_ids
         is_collected = article.article_id in collected_ids
 
+        await CommunityService._enrich_authors(db, [author_info])
         return {
             'article_id': article.article_id,
             'title': article.title,
