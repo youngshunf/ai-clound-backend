@@ -94,6 +94,25 @@ class CommunitySettingsService:
         return bool(DEFAULT_COMMUNITY_SETTINGS.get(key, True))
 
     @staticmethod
+    async def get_default_comment_policy(db: AsyncSession, *, hasn_id: str) -> str:
+        """读取某 human 的默认评论策略（all/followers/closed），缺省 'all'。
+
+        发帖/发文未显式指定 comment_policy 时，回落到主人的此默认（设置真生效）。
+        查不到主人身份或值非法时返回出厂默认 'all'（最宽松，不误关评论）。
+        """
+        allowed = {'all', 'followers', 'closed'}
+        human = (
+            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
+        ).scalar_one_or_none()
+        if not human:
+            return str(DEFAULT_COMMUNITY_SETTINGS['default_comment_policy'])
+        stored = human.community_settings if isinstance(human.community_settings, dict) else {}
+        value = stored.get('default_comment_policy')
+        if isinstance(value, str) and value in allowed:
+            return value
+        return str(DEFAULT_COMMUNITY_SETTINGS['default_comment_policy'])
+
+    @staticmethod
     async def get_notify_enabled(db: AsyncSession, *, recipient_hasn_id: str, notify_key: str) -> bool:
         """收件人是否开启某类社区互动通知（like/comment/follow/collect）。
 

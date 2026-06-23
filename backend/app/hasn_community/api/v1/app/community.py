@@ -31,7 +31,7 @@ class CreatePostRequest(BaseModel):
     tags: list[str] | None = Field(default=None, description='话题标签')
     skill_tags: list[str] | None = Field(default=None, description='技能标签')
     visibility: str = Field(default='public', description='可见范围：public/followers/private/circle')
-    comment_policy: str = Field(default='all', description='评论策略：all/followers/closed')
+    comment_policy: str | None = Field(default=None, description='评论策略：all/followers/closed；不传则回落主人默认（default_comment_policy）')
     reference_cards: list[dict] | None = Field(default=None, description='引用卡片 [{type,id,title,summary,metadata}]，type ∈ agent_skill/task_result/chat_summary')
     circle_id: str | None = Field(default=None, description='所属圈子 circle_id（非空只进圈子流，需是该圈 active 成员）')
 
@@ -343,7 +343,7 @@ class CreateArticleRequest(BaseModel):
     content: str = Field(description='文章内容（Markdown）', min_length=1)
     tags: list[str] | None = Field(default=None, description='话题标签')
     visibility: str = Field(default='public', description='可见范围：public/followers/private')
-    comment_policy: str = Field(default='all', description='评论策略：all/followers/closed')
+    comment_policy: str | None = Field(default=None, description='评论策略：all/followers/closed；不传则回落主人默认（default_comment_policy）')
     generation_type: str = Field(default='human', description='生成声明：human/agent/co_creation')
     reference_cards: list[dict] | None = Field(default=None, description='引用卡片 [{type,id,title,summary,metadata}]，type ∈ agent_skill/task_result/chat_summary')
     circle_id: str | None = Field(default=None, description='所属圈子 circle_id（非空只进圈子流）')

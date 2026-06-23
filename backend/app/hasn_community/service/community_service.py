@@ -991,7 +991,7 @@ class CommunityService:
         tags: list[str] | None = None,
         skill_tags: list[str] | None = None,
         visibility: str = 'public',
-        comment_policy: str = 'all',
+        comment_policy: str | None = None,
         reference_cards: list[dict[str, Any]] | None = None,
         circle_id: str | None = None,
     ) -> dict[str, Any]:
@@ -1020,6 +1020,10 @@ class CommunityService:
         author_hasn_id = hasn_id
         author_user_id = user_id
         owner_hasn_id = hasn_id
+
+        # 评论策略：未显式指定 → 回落主人默认（default_comment_policy 设置真生效）
+        if comment_policy is None:
+            comment_policy = await community_settings_service.get_default_comment_policy(db, hasn_id=owner_hasn_id)
 
         # TODO: 获取当前 active workspace
         workspace_kind = 'personal'
@@ -1583,6 +1587,39 @@ class CommunityService:
         }
 
     @staticmethod
+    async def _assert_can_comment(
+        db: AsyncSession,
+        *,
+        policy: str | None,
+        author_hasn_id: str | None,
+        commenter_hasn_id: str,
+    ) -> None:
+        """按内容的 comment_policy 把关评论权限（comment_policy 设置真生效）。
+
+        - 作者本人评论自己内容：恒允许（不被自己的策略锁死）；
+        - closed：拒绝（仅作者可评论）；
+        - followers：要求评论者已关注作者（HasnFollows）；
+        - all / 缺省：放行。
+        """
+        if not author_hasn_id or commenter_hasn_id == author_hasn_id:
+            return
+        if policy == 'closed':
+            raise errors.RequestError(msg='作者已关闭该内容的评论')
+        if policy == 'followers':
+            follows = (
+                await db.execute(
+                    select(HasnFollows.follower_hasn_id)
+                    .where(
+                        HasnFollows.follower_hasn_id == commenter_hasn_id,
+                        HasnFollows.target_hasn_id == author_hasn_id,
+                    )
+                    .limit(1)
+                )
+            ).first()
+            if follows is None:
+                raise errors.RequestError(msg='该内容仅允许作者的关注者评论')
+
+    @staticmethod
     async def create_comment(
         db: AsyncSession,
         *,
@@ -1613,12 +1650,13 @@ class CommunityService:
         """
         comment_id = f"cmt_{uuid4_str()[:12]}"
 
-        # 先取目标内容作者（拉黑双向闸 + 后续计数/通知共用一次取数），取不到作者则不拦（目标可能已删）。
+        # 先取目标内容作者 + 评论策略（拉黑闸/评论策略闸 + 后续计数/通知共用一次取数），取不到作者则不拦（目标可能已删）。
         target_post = None
         target_article = None
         target_author_hasn_id = None
         target_author_type = None
         target_owner_hasn_id = None
+        target_comment_policy = None
         if target_type == 'post':
             target_post = (
                 await db.execute(select(HasnPosts).where(HasnPosts.post_id == target_id))
@@ -1627,6 +1665,7 @@ class CommunityService:
                 target_author_hasn_id = target_post.author_hasn_id
                 target_author_type = target_post.author_type
                 target_owner_hasn_id = target_post.owner_hasn_id
+                target_comment_policy = target_post.comment_policy
         elif target_type == 'article':
             target_article = (
                 await db.execute(select(HasnArticles).where(HasnArticles.article_id == target_id))
@@ -1635,12 +1674,21 @@ class CommunityService:
                 target_author_hasn_id = target_article.author_hasn_id
                 target_author_type = target_article.author_type
                 target_owner_hasn_id = target_article.owner_hasn_id
+                target_comment_policy = target_article.comment_policy
 
         # 拉黑双向闸：评论者与内容作者互为拉黑关系（任一方向）→ 拒绝评论。
         if target_author_hasn_id and await community_settings_service.is_blocked_between(
             db, a_hasn_id=hasn_id, b_hasn_id=target_author_hasn_id
         ):
             raise errors.RequestError(msg='你与作者存在拉黑关系，无法评论')
+
+        # 评论策略闸（comment_policy 设置真生效）：closed 仅作者可评论；followers 仅作者关注者可评论。
+        await CommunityService._assert_can_comment(
+            db,
+            policy=target_comment_policy,
+            author_hasn_id=target_author_hasn_id,
+            commenter_hasn_id=hasn_id,
+        )
 
         # 确定 root_id
         root_id = None
@@ -3116,7 +3164,7 @@ class CommunityService:
         cover_url: str | None = None,
         tags: list[str] | None = None,
         visibility: str = 'public',
-        comment_policy: str = 'all',
+        comment_policy: str | None = None,
         generation_type: str = 'human',
         reference_cards: list[dict[str, Any]] | None = None,
         circle_id: str | None = None,
@@ -3149,6 +3197,10 @@ class CommunityService:
         author_hasn_id = hasn_id
         author_user_id = user_id
         owner_hasn_id = hasn_id
+
+        # 评论策略：未显式指定 → 回落主人默认（default_comment_policy 设置真生效）
+        if comment_policy is None:
+            comment_policy = await community_settings_service.get_default_comment_policy(db, hasn_id=owner_hasn_id)
 
         # TODO: 获取当前 active workspace
         workspace_kind = 'personal'

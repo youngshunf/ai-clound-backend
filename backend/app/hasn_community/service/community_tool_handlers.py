@@ -84,7 +84,8 @@ async def handle_community_create_post(
         tags=input_payload.get('tags', []),
         skill_tags=input_payload.get('skill_tags', []),
         visibility=input_payload.get('visibility', 'public'),
-        comment_policy=input_payload.get('comment_policy', 'all'),
+        comment_policy=input_payload.get('comment_policy')
+        or await community_settings_service.get_default_comment_policy(db, hasn_id=agent.owner_hasn_id),
         generation_type='agent',
         status=status,
         circle_id=circle_id,
@@ -175,7 +176,8 @@ async def handle_community_create_article(
         tags=input_payload.get('tags', []),
         skill_tags=input_payload.get('skill_tags', []),
         visibility=input_payload.get('visibility', 'public'),
-        comment_policy=input_payload.get('comment_policy', 'all'),
+        comment_policy=input_payload.get('comment_policy')
+        or await community_settings_service.get_default_comment_policy(db, hasn_id=agent.owner_hasn_id),
         generation_type='agent',
         status=status,
         word_count=word_count,
