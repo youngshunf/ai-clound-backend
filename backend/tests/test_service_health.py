@@ -28,11 +28,19 @@ if TYPE_CHECKING:
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
-    """/v1/healthz → 200 {ok,version}；其它路径 → 404（仍是一个 HTTP 响应=可达）。"""
+    """/v1/healthz → 200 {ok,version}；/health → 200 {service,status}（hermes 形态，无 ok 键）；其它 → 404。"""
 
     def do_GET(self) -> None:
         if self.path == '/v1/healthz':
             body = b'{"ok": true, "version": "9.9.9"}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == '/health':
+            # hermes-runtime /health：无 ok 键、status='ok'（auth 之前响应 200）。
+            body = b'{"service": "huanxing-hermes-runtime", "status": "ok"}'
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
@@ -114,6 +122,23 @@ async def test_reachable_non_pooled_any_http(
 
     assert report.status == 'up'
     assert 'HTTP 404' in report.detail
+
+
+@pytest.mark.asyncio
+async def test_hermes_up_via_health_path(monkeypatch: pytest.MonkeyPatch, health_server: int) -> None:
+    """hermes（health_path='/health'，pooled=False）：真实 200 /health → status=up。
+
+    hermes /health 无 ``ok`` 键（status='ok'），健康判据 ``resp.is_success and body.ok != False``
+    对其成立（``None != False``），故 up；探活用临时 client（非池），不污染连接池。
+    """
+    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_BASE_URL', f'http://127.0.0.1:{health_server}')
+    monkeypatch.delenv('HUANXING_HERMES_RUNTIME_API_TOKEN', raising=False)
+
+    report = await check_service_health(get_service_spec('hermes'))
+
+    assert report.status == 'up'
+    assert report.detail == 'ok'
+    assert report.latency_ms is not None
 
 
 @pytest.mark.asyncio

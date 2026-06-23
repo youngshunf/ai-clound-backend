@@ -11,27 +11,48 @@ hasn_app_instance(app_id='knowledge', scope='public')。
 """
 
 import asyncio
+import os
 
 import sqlalchemy as sa
 
 from backend.app.hasn.model import HasnAppInstance
+from backend.common.service_registry import service_endpoint
+from backend.common.services_config import service_overrides
 from backend.core.conf import settings
 from backend.database.db import async_db_session
 
 KNOWLEDGE_APP_ID = 'knowledge'
 
 
-async def seed_public_ragflow():
-    """从配置文件 Seed 公共知识库实例（hasn_app_instance, app_id='knowledge', scope='public'）。"""
+def _bootstrap_value(env_attr: str, override_key: str, overrides: dict) -> str:
+    """bootstrap 字段解析：显式 env → settings → services.toml [service.ragflow]（保留原值不裁剪，PEM 含换行）。"""
+    value = os.environ.get(env_attr)
+    if value is None:
+        value = getattr(settings, env_attr, '') or ''
+    if not value:
+        value = str(overrides.get(override_key) or '')
+    return value
 
-    url = settings.RAGFLOW_PUBLIC_URL
-    public_key = settings.RAGFLOW_PUBLIC_RSA_PUBLIC_KEY
-    default_embd_id = settings.RAGFLOW_DEFAULT_EMBD_ID
-    default_llm_id = settings.RAGFLOW_DEFAULT_LLM_ID
+
+async def seed_public_ragflow():
+    """从统一服务目录 Seed 公共知识库实例（hasn_app_instance, app_id='knowledge', scope='public'）。
+
+    bootstrap 配置经 service_registry/services_config 统一解析：base_url 走
+    service_endpoint('ragflow')（env RAGFLOW_PUBLIC_URL → settings → [service.ragflow].url →
+    dev 回落约定端口）；RSA 公钥 / 默认 embd/llm 走 [service.ragflow] 扩展字段（env RAGFLOW_* 仍优先）。
+    **数据面 per-instance 加密凭据（credential_ref）不在此处，保持 DB 加密存、零改动。**
+    """
+
+    ep = service_endpoint('ragflow')
+    overrides = service_overrides('ragflow')
+    url = ep.base_url
+    public_key = _bootstrap_value('RAGFLOW_PUBLIC_RSA_PUBLIC_KEY', 'rsa_public_key', overrides)
+    default_embd_id = _bootstrap_value('RAGFLOW_DEFAULT_EMBD_ID', 'default_embd_id', overrides)
+    default_llm_id = _bootstrap_value('RAGFLOW_DEFAULT_LLM_ID', 'default_llm_id', overrides)
 
     if not url:
-        print("⚠️  未配置 RAGFlow 公共实例（RAGFLOW_PUBLIC_URL 为空）")
-        print("   请在 .env 中配置后重试")
+        print("⚠️  未配置 RAGFlow 公共实例（prod 下 RAGFLOW_PUBLIC_URL / [service.ragflow].url 均为空）")
+        print("   请在 .env 或 services.toml [service.ragflow] 中配置后重试（dev 会回落本机约定端口）")
         return None
 
     if not public_key:
