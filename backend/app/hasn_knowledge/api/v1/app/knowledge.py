@@ -129,14 +129,24 @@ async def delete_kb(request: Request, db: CurrentSessionTransaction, kb_id: int)
 # ---------- 共享管理（仅 manager 权） ----------
 
 
-@router.get('/kbs/{kb_id}/shares', summary='查看知识库共享名单', dependencies=[DependsJwtAuth])
+@router.get(
+    '/kbs/{kb_id}/shares',
+    summary='查看知识库共享名单',
+    name='knowledge_app_list_shares',
+    dependencies=[DependsJwtAuth],
+)
 async def list_shares(request: Request, db: CurrentSession, kb_id: int) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     data = await knowledge_service.list_shares(db, subject=Subject.human(owner_id), kb_id=kb_id)
     return response_base.success(data=data)
 
 
-@router.put('/kbs/{kb_id}/visibility', summary='设置可见性（私有/企业可见/链接）', dependencies=[DependsJwtAuth])
+@router.put(
+    '/kbs/{kb_id}/visibility',
+    summary='设置可见性（私有/企业可见/链接）',
+    name='knowledge_app_set_visibility',
+    dependencies=[DependsJwtAuth],
+)
 async def set_visibility(
     request: Request, db: CurrentSessionTransaction, kb_id: int, body: SetVisibilityRequest
 ) -> ResponseModel:
@@ -147,7 +157,12 @@ async def set_visibility(
     return response_base.success(data=data)
 
 
-@router.post('/kbs/{kb_id}/shares', summary='添加/更新协作者（人/分身/企业）', dependencies=[DependsJwtAuth])
+@router.post(
+    '/kbs/{kb_id}/shares',
+    summary='添加/更新协作者（人/分身/企业）',
+    name='knowledge_app_add_share',
+    dependencies=[DependsJwtAuth],
+)
 async def add_share(
     request: Request, db: CurrentSessionTransaction, kb_id: int, body: AddShareRequest
 ) -> ResponseModel:
@@ -163,7 +178,12 @@ async def add_share(
     return response_base.success(data=data)
 
 
-@router.delete('/kbs/{kb_id}/shares', summary='撤销协作者', dependencies=[DependsJwtAuth])
+@router.delete(
+    '/kbs/{kb_id}/shares',
+    summary='撤销协作者',
+    name='knowledge_app_revoke_share',
+    dependencies=[DependsJwtAuth],
+)
 async def revoke_share(
     request: Request, db: CurrentSessionTransaction, kb_id: int, grantee_type: str, grantee_id: str
 ) -> ResponseModel:
