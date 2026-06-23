@@ -216,7 +216,13 @@ async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content
         headers = dict(getattr(signed, 'headers', {}) or {})
         if content_type:
             headers.setdefault('Content-Type', content_type)
-        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+        # 写超时按体量生成：大对象（如 400MB+ 引擎分发包，FILMPUB/reel）单次 PUT 远超 30s，
+        # 固定 30s 必撞 httpx WriteTimeout。按 ≥500KB/s 折算 + 120s 下限 / 30min 上限，
+        # 小文件仍在下限内秒级完成（上限是兜底天花板，不是固定延迟）。
+        upload_timeout = min(1800.0, max(120.0, len(contents) / (500 * 1024)))
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(upload_timeout, connect=20.0), trust_env=False
+        ) as client:
             response = await client.request(
                 getattr(signed, 'method', 'PUT') or 'PUT',
                 signed.url,
