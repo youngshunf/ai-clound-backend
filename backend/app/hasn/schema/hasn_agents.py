@@ -208,7 +208,7 @@ class AgentRuntimeConfig(SchemaBase):
     working_directory: str | None = Field(
         None, max_length=500, description='agent 工作目录 TERMINAL_CWD（绝对路径；空=默认隔离工作区）'
     )
-    max_turns: int | None = Field(None, ge=1, le=1000, description='单任务最大执行轮数（空=默认 50）')
+    max_turns: int | None = Field(None, ge=1, le=1000, description='单任务最大执行轮数（空=默认 200）')
     gateway_timeout: int | None = Field(
         None, ge=30, le=7200, description='运行时网关无活动超时秒（空=默认 600；区别于权限页审批超时）'
     )
