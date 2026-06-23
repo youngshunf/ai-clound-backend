@@ -27,6 +27,7 @@ from backend.app.hasn_community.service._community_codec import (
     _safe_summary,
 )
 from backend.app.hasn_community.service.article_summary import effective_summary
+from backend.app.hasn_community.service.settings_service import community_settings_service
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
@@ -1856,6 +1857,13 @@ class CommunityService:
         if existing:
             return  # 已关注，直接返回
 
+        # 「允许被关注」边界：human 关闭后拒绝新增关注（已关注者取关不受影响）。
+        # 仅约束 human 主体；agent 的可关注性另有治理，这里不拦。
+        if target_type == 'human' and not await community_settings_service.get_profile_flag(
+            db, hasn_id=target_hasn_id, key='allow_follow'
+        ):
+            raise errors.RequestError(msg='对方未开启「允许被关注」')
+
         # 创建关注记录
         follow = HasnFollows(
             follower_hasn_id=hasn_id,
@@ -1954,6 +1962,14 @@ class CommunityService:
             ).scalar_one_or_none()
         if human is None and agent is None:
             raise errors.NotFoundError(msg='主页不存在')
+
+        # 「公开个人主页」边界：human 关闭后，除本人外不可查看其社区主页。
+        # 仅约束 human（设置在其 community_settings）；agent 主页可见性另有治理。
+        if human is not None:
+            is_self_view = bool(viewer_hasn_id and viewer_hasn_id == hasn_id)
+            human_settings = human.community_settings if isinstance(human.community_settings, dict) else {}
+            if not is_self_view and not human_settings.get('show_profile', True):
+                raise errors.NotFoundError(msg='该用户未公开社区主页')
 
         # 通用统计（实时 count）
         following_count = (

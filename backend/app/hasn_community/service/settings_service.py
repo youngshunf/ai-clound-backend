@@ -76,6 +76,24 @@ class CommunitySettingsService:
         return await CommunitySettingsService.get_community_settings(db, hasn_id=hasn_id)
 
     @staticmethod
+    async def get_profile_flag(db: AsyncSession, *, hasn_id: str, key: str) -> bool:
+        """读取某 human 的顶层布尔社区设置（show_profile / searchable / allow_follow）。
+
+        缺省取出厂默认（均为 True）；非 human（agent / 未知 hasn_id）无此偏好 → 同样
+        返回出厂默认 True（这些边界只约束「人」的主页，分身主页/可见性另有治理）。
+        """
+        human = (
+            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == hasn_id))
+        ).scalar_one_or_none()
+        if not human:
+            return bool(DEFAULT_COMMUNITY_SETTINGS.get(key, True))
+        stored = human.community_settings if isinstance(human.community_settings, dict) else {}
+        value = stored.get(key)
+        if isinstance(value, bool):
+            return value
+        return bool(DEFAULT_COMMUNITY_SETTINGS.get(key, True))
+
+    @staticmethod
     async def get_notify_enabled(db: AsyncSession, *, recipient_hasn_id: str, notify_key: str) -> bool:
         """收件人是否开启某类社区互动通知（like/comment/follow/collect）。
 
