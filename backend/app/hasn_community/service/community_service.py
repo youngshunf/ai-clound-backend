@@ -16,6 +16,7 @@ from backend.app.hasn_community.model import (
     HasnCollectionItems,
     HasnCollections,
     HasnComments,
+    HasnCommunityBlocks,
     HasnFollows,
     HasnLikes,
     HasnPosts,
@@ -135,6 +136,43 @@ class CommunityService:
             a['online_status'] = 'online' if online_map.get(hid) else 'offline'
 
     @staticmethod
+    def _apply_visibility_filters(
+        stmt: Any,
+        *,
+        content_model: Any,
+        author_human: Any,
+        viewer_hasn_id: str | None,
+        exclude_unsearchable_authors: bool = False,
+    ) -> Any:
+        """在信息流/搜索取数语句上叠加「可被搜索」与「黑名单双向」过滤（设置真生效）。
+
+        - exclude_unsearchable_authors（仅搜索路径传 True）：剔除作者 human 显式
+          searchable=False 的内容；分身作者不受此约束（与 show_profile/allow_follow 一致，
+          这些边界只治理「人」的可见性，分身可见性另有治理）。JSONB 缺省键 → 视为可被搜索。
+        - viewer_hasn_id 非空：剔除与 viewer 互为拉黑关系（任一方向）的作者内容，
+          双向都看不到对方（黑名单语义）。viewer 匿名（None）时不施加（无身份可比对）。
+        """
+        if exclude_unsearchable_authors:
+            stmt = stmt.where(
+                or_(
+                    content_model.author_type != 'human',
+                    author_human.community_settings['searchable'].astext.is_distinct_from('false'),
+                )
+            )
+        if viewer_hasn_id:
+            blocked_by_me = select(HasnCommunityBlocks.blocked_hasn_id).where(
+                HasnCommunityBlocks.blocker_hasn_id == viewer_hasn_id
+            )
+            blocked_me = select(HasnCommunityBlocks.blocker_hasn_id).where(
+                HasnCommunityBlocks.blocked_hasn_id == viewer_hasn_id
+            )
+            stmt = stmt.where(
+                content_model.author_hasn_id.notin_(blocked_by_me),
+                content_model.author_hasn_id.notin_(blocked_me),
+            )
+        return stmt
+
+    @staticmethod
     async def get_feed(
         db: AsyncSession,
         *,
@@ -144,6 +182,7 @@ class CommunityService:
         q: str | None = None,
         cursor: str | None = None,
         limit: int = 20,
+        exclude_unsearchable_authors: bool = False,
     ) -> dict[str, Any]:
         """
         获取社区信息流
@@ -216,6 +255,15 @@ class CommunityService:
         # 关键词搜索：帖子正文 ILIKE（值经 bind 参数化，无注入风险）
         if q and q.strip():
             stmt = stmt.where(HasnPosts.content.ilike(f'%{q.strip()}%'))
+
+        # 「可被搜索」+「黑名单双向」过滤（设置真生效）
+        stmt = CommunityService._apply_visibility_filters(
+            stmt,
+            content_model=HasnPosts,
+            author_human=AuthorHuman,
+            viewer_hasn_id=viewer_hasn_id,
+            exclude_unsearchable_authors=exclude_unsearchable_authors,
+        )
 
         is_hot = feed_type == 'hot'
 
@@ -348,9 +396,11 @@ class CommunityService:
             viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, user_id)
             return await CommunityService._get_articles_feed(
                 db, viewer_hasn_id=viewer_hasn_id, tag=tag, q=q, cursor=cursor, limit=limit,
+                exclude_unsearchable_authors=True,
             )
         return await CommunityService.get_feed(
             db, user_id=user_id, feed_type='recommend', tag=tag, q=q, cursor=cursor, limit=limit,
+            exclude_unsearchable_authors=True,
         )
 
     @staticmethod
@@ -362,6 +412,7 @@ class CommunityService:
         q: str | None = None,
         cursor: str | None = None,
         limit: int = 20,
+        exclude_unsearchable_authors: bool = False,
     ) -> dict[str, Any]:
         """
         文章信息流（hasn_articles）
@@ -410,6 +461,15 @@ class CommunityService:
                     HasnArticles.content.ilike(kw),
                 )
             )
+
+        # 「可被搜索」+「黑名单双向」过滤（设置真生效）
+        stmt = CommunityService._apply_visibility_filters(
+            stmt,
+            content_model=HasnArticles,
+            author_human=AuthorHuman,
+            viewer_hasn_id=viewer_hasn_id,
+            exclude_unsearchable_authors=exclude_unsearchable_authors,
+        )
 
         # keyset 游标（published_time 倒序 + article_id 兜底）
         if cursor:
@@ -1553,6 +1613,35 @@ class CommunityService:
         """
         comment_id = f"cmt_{uuid4_str()[:12]}"
 
+        # 先取目标内容作者（拉黑双向闸 + 后续计数/通知共用一次取数），取不到作者则不拦（目标可能已删）。
+        target_post = None
+        target_article = None
+        target_author_hasn_id = None
+        target_author_type = None
+        target_owner_hasn_id = None
+        if target_type == 'post':
+            target_post = (
+                await db.execute(select(HasnPosts).where(HasnPosts.post_id == target_id))
+            ).scalars().first()
+            if target_post:
+                target_author_hasn_id = target_post.author_hasn_id
+                target_author_type = target_post.author_type
+                target_owner_hasn_id = target_post.owner_hasn_id
+        elif target_type == 'article':
+            target_article = (
+                await db.execute(select(HasnArticles).where(HasnArticles.article_id == target_id))
+            ).scalars().first()
+            if target_article:
+                target_author_hasn_id = target_article.author_hasn_id
+                target_author_type = target_article.author_type
+                target_owner_hasn_id = target_article.owner_hasn_id
+
+        # 拉黑双向闸：评论者与内容作者互为拉黑关系（任一方向）→ 拒绝评论。
+        if target_author_hasn_id and await community_settings_service.is_blocked_between(
+            db, a_hasn_id=hasn_id, b_hasn_id=target_author_hasn_id
+        ):
+            raise errors.RequestError(msg='你与作者存在拉黑关系，无法评论')
+
         # 确定 root_id
         root_id = None
         if parent_id:
@@ -1589,30 +1678,12 @@ class CommunityService:
 
         is_visible = status == 'visible'
 
-        # 更新目标的评论计数（仅可见评论计数）+ 捕获内容作者信息（用于通知）
-        target_author_hasn_id = None
-        target_author_type = None
-        target_owner_hasn_id = None
-        if target_type == 'post':
-            post_stmt = select(HasnPosts).where(HasnPosts.post_id == target_id)
-            post_result = await db.execute(post_stmt)
-            post = post_result.scalars().first()
-            if post:
-                if is_visible:
-                    post.comment_count += 1
-                target_author_hasn_id = post.author_hasn_id
-                target_author_type = post.author_type
-                target_owner_hasn_id = post.owner_hasn_id
-        elif target_type == 'article':
-            article_stmt = select(HasnArticles).where(HasnArticles.article_id == target_id)
-            article_result = await db.execute(article_stmt)
-            article = article_result.scalars().first()
-            if article:
-                if is_visible:
-                    article.comment_count += 1
-                target_author_hasn_id = article.author_hasn_id
-                target_author_type = article.author_type
-                target_owner_hasn_id = article.owner_hasn_id
+        # 更新目标的评论计数（仅可见评论计数；作者信息已在前置取数捕获，复用同一 ORM 对象不再二次查询）
+        if is_visible:
+            if target_post is not None:
+                target_post.comment_count += 1
+            elif target_article is not None:
+                target_article.comment_count += 1
 
         await db.flush()
 
@@ -1856,6 +1927,12 @@ class CommunityService:
 
         if existing:
             return  # 已关注，直接返回
+
+        # 拉黑双向闸：与对方互为拉黑关系（任一方向）→ 拒绝建立关注。
+        if await community_settings_service.is_blocked_between(
+            db, a_hasn_id=hasn_id, b_hasn_id=target_hasn_id
+        ):
+            raise errors.RequestError(msg='你与对方存在拉黑关系，无法关注')
 
         # 「允许被关注」边界：human 关闭后拒绝新增关注（已关注者取关不受影响）。
         # 仅约束 human 主体；agent 的可关注性另有治理，这里不拦。

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from backend.app.hasn_community.model import HasnCommunityBlocks
 from backend.app.hasn_core import HasnHumans
@@ -133,6 +133,37 @@ class CommunitySettingsService:
         if isinstance(value, bool):
             return value
         return bool(DEFAULT_COMMUNITY_SETTINGS['agent_post_review'])
+
+    @staticmethod
+    async def is_blocked_between(
+        db: AsyncSession, *, a_hasn_id: str, b_hasn_id: str
+    ) -> bool:
+        """a 与 b 之间是否存在拉黑关系（任一方向）。
+
+        关注 / 评论的双向闸：只要一方拉黑了另一方（无论谁拉黑谁），即视为存在拉黑关系，
+        据此拒绝建立关注或评论对方内容。缺参或自我比较一律返回 False（不拦自己）。
+        """
+        if not a_hasn_id or not b_hasn_id or a_hasn_id == b_hasn_id:
+            return False
+        row = (
+            await db.execute(
+                select(HasnCommunityBlocks.id)
+                .where(
+                    or_(
+                        and_(
+                            HasnCommunityBlocks.blocker_hasn_id == a_hasn_id,
+                            HasnCommunityBlocks.blocked_hasn_id == b_hasn_id,
+                        ),
+                        and_(
+                            HasnCommunityBlocks.blocker_hasn_id == b_hasn_id,
+                            HasnCommunityBlocks.blocked_hasn_id == a_hasn_id,
+                        ),
+                    )
+                )
+                .limit(1)
+            )
+        ).first()
+        return row is not None
 
     @staticmethod
     async def list_blocks(db: AsyncSession, *, blocker_hasn_id: str) -> dict[str, Any]:
