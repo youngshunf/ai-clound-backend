@@ -90,6 +90,21 @@ _REGISTRY: dict[str, ServiceSpec] = {
             pooled=True,
             derive_token=True,
         ),
+        # montage：OpenMontage fork 薄服务壳（统一视频引擎，cloud-brokered）。自研、两端受控 →
+        # 派生令牌；池化（云端 broker 经 service_http 连接池调用）。约定端口 8002（dev 不撞）。
+        # default_timeout=600：渲染段是同步可能耗时的合成调用（P0 实测 ≈3.5–4× 视频时长单核）。
+        ServiceSpec(
+            name='montage',
+            title='视频引擎服务',
+            default_port=8002,
+            url_attr='MONTAGE_ENGINE_URL',
+            token_attr='MONTAGE_ENGINE_TOKEN',
+            timeout_attr='MONTAGE_ENGINE_TIMEOUT',
+            health_path='/v1/healthz',
+            pooled=True,
+            derive_token=True,
+            default_timeout=600.0,
+        ),
         # 以下为外部/已部署服务：用各自第三方/bespoke 真实鉴权，绝不派生令牌（derive_token=False）。
         # ragflow/hermes 自有 transport（RSA / 双向 bespoke token）维持原样，目录登记仅供健康可见。
         ServiceSpec(
