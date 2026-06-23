@@ -19,18 +19,15 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from typing import Any
 
 import httpx
 
 from backend.common.service_http import get_service_client
-from backend.core.conf import settings
+from backend.common.service_registry import service_endpoint
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_TIMEOUT = 30.0
 
 
 class QuantEngineError(RuntimeError):
@@ -38,22 +35,15 @@ class QuantEngineError(RuntimeError):
 
 
 def _engine_base() -> str:
-    # 进程环境变量优先（运行时可覆盖，测试自启引擎用），回退 settings（.env / 启动期 env）。
-    return (os.environ.get('QUANT_ENGINE_URL') or settings.QUANT_ENGINE_URL or '').rstrip('/')
+    return service_endpoint('quant').base_url
 
 
 def _engine_timeout() -> float:
-    raw = os.environ.get('QUANT_ENGINE_TIMEOUT')
-    if raw:
-        try:
-            return float(raw)
-        except ValueError:
-            return _DEFAULT_TIMEOUT
-    return float(settings.QUANT_ENGINE_TIMEOUT or _DEFAULT_TIMEOUT)
+    return service_endpoint('quant').timeout
 
 
 def _auth_headers() -> dict[str, str]:
-    token = os.environ.get('QUANT_ENGINE_TOKEN') or settings.QUANT_ENGINE_TOKEN
+    token = service_endpoint('quant').token
     return {'Authorization': f'Bearer {token}'} if token else {}
 
 

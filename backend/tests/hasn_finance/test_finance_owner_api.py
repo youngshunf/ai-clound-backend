@@ -80,6 +80,9 @@ async def test_healthz_wraps_envelope_and_honest_when_unconfigured(
     authed_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """healthz：200 + 统一信封；服务未配置 → data.ok=false service_unconfigured（零 fake）。"""
+    # 钉 prod：service_registry 在 dev 下会把空 URL 回落本机约定端口（零配置便利），
+    # 而本测试要验证「未配置 → 诚实 service_unconfigured」的 prod 契约，故显式钉死环境。
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'prod', raising=False)
     monkeypatch.setattr(settings, 'FINANCE_SERVICE_URL', '', raising=False)
     resp = await authed_client.get(f'{_BASE}/healthz')
     assert resp.status_code == 200, resp.text
@@ -95,6 +98,7 @@ async def test_quote_history_envelope_honest_when_unconfigured(
     authed_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A股K线：服务未配置 → 200 + data.ok=false（绝不伪造行情/0），interface 透传。"""
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'prod', raising=False)  # 见 healthz 用例说明
     monkeypatch.setattr(settings, 'FINANCE_SERVICE_URL', '', raising=False)
     resp = await authed_client.get(f'{_BASE}/stock/quote-history', params={'symbol': '600519'})
     assert resp.status_code == 200, resp.text
@@ -116,6 +120,7 @@ async def test_macro_indicator_defaults_cpi(
     authed_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """宏观指标：indicator 有默认 cpi，无必填；未配置仍诚实 ok=false。"""
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'prod', raising=False)  # 见 healthz 用例说明
     monkeypatch.setattr(settings, 'FINANCE_SERVICE_URL', '', raising=False)
     resp = await authed_client.get(f'{_BASE}/macro/indicator')
     assert resp.status_code == 200, resp.text

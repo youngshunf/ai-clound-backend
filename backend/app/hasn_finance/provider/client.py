@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from backend.common.service_http import get_service_client
-from backend.core.conf import settings
+from backend.common.service_registry import service_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -34,18 +34,18 @@ class FinanceProvider:
         数据服务自带错误归一（业务失败也回 200 + ok:false）；本层只处理**传输层**失败
         （服务未配置/不可达/超时/非 JSON）→ 同样归一成诚实 ok:false，绝不抛、绝不造假。
         """
-        base = (settings.FINANCE_SERVICE_URL or '').rstrip('/')
-        if not base:
+        endpoint = service_endpoint('finance')
+        if not endpoint.base_url:
             return _error('service_unconfigured', '金融数据服务未配置（FINANCE_SERVICE_URL 为空）', interface)
         headers: dict[str, str] = {}
-        if settings.FINANCE_SERVICE_TOKEN:
-            headers['Authorization'] = f'Bearer {settings.FINANCE_SERVICE_TOKEN}'
+        if endpoint.token:
+            headers['Authorization'] = f'Bearer {endpoint.token}'
         body = {'interface': interface, 'params': params or {}}
         try:
             # 进程级单例连接池（keep-alive 复用 + HTTP/2 best-effort）；超时 per-request 传入。
             client = get_service_client('finance')
             resp = await client.post(
-                f'{base}/v1/query', json=body, headers=headers, timeout=settings.FINANCE_SERVICE_TIMEOUT
+                f'{endpoint.base_url}/v1/query', json=body, headers=headers, timeout=endpoint.timeout
             )
             resp.raise_for_status()
             data = resp.json()
@@ -63,12 +63,12 @@ class FinanceProvider:
 
     async def healthz(self) -> dict[str, Any]:
         """探活数据服务（owner 看板诊断用）。"""
-        base = (settings.FINANCE_SERVICE_URL or '').rstrip('/')
-        if not base:
+        endpoint = service_endpoint('finance')
+        if not endpoint.base_url:
             return {'ok': False, 'error': 'service_unconfigured', 'message': '金融数据服务未配置'}
         try:
             client = get_service_client('finance')
-            resp = await client.get(f'{base}/v1/healthz', timeout=5)
+            resp = await client.get(f'{endpoint.base_url}/v1/healthz', timeout=5)
             resp.raise_for_status()
             return resp.json()
         except (httpx.HTTPError, ValueError) as exc:
