@@ -127,8 +127,19 @@ class TopicService:
 
     @staticmethod
     async def _get_by_ident(db: AsyncSession, ident: str) -> HasnTopics | None:
+        # 先按权威标识解析：tpc_ 前缀走 topic_id，否则走 slug。
         col = HasnTopics.topic_id if ident.startswith('tpc_') else HasnTopics.slug
-        return (await db.execute(select(HasnTopics).where(col == ident))).scalars().first()
+        hit = (await db.execute(select(HasnTopics).where(col == ident))).scalars().first()
+        if hit:
+            return hit
+        # 兜底：按归一话题名解析。帖子/文章 tags 存的是名称，中文名 slug 回退为随机 t-xxx，
+        # 仅按 slug 命不中；按 lower(name)（唯一索引）兜底，让标签点击对中文标签也可达。
+        norm = normalize_topic_name(ident)
+        if not norm:
+            return None
+        return (
+            await db.execute(select(HasnTopics).where(func.lower(HasnTopics.name) == norm.lower()))
+        ).scalars().first()
 
     @staticmethod
     def _topic_dict(t: HasnTopics, *, is_following: bool | None = None) -> dict[str, Any]:
