@@ -26,6 +26,9 @@ DEFAULT_COMMUNITY_SETTINGS: dict[str, Any] = {
     'searchable': True,
     'allow_follow': True,
     'default_comment_policy': 'all',
+    # 主人是否要求审核名下分身的社区内容（发帖/发文/评论）后才公开。
+    # 出厂 True = 维持「分身内容默认进 pending_review 待主人审核」的既有行为。
+    'agent_post_review': True,
     'notify': {'like': True, 'comment': True, 'follow': True, 'collect': True},
 }
 
@@ -71,6 +74,24 @@ class CommunitySettingsService:
         human.community_settings = current
         await db.flush()
         return await CommunitySettingsService.get_community_settings(db, hasn_id=hasn_id)
+
+    @staticmethod
+    async def get_agent_post_review(db: AsyncSession, *, owner_hasn_id: str) -> bool:
+        """主人是否要求审核名下分身的社区内容（发帖/发文/评论）后才公开。
+
+        默认 True（出厂维持「分身内容进 pending_review 待审核」）。查不到主人身份时
+        保守返回 True——宁可多一道审核，绝不因取设置失败而把分身内容直接放出去。
+        """
+        human = (
+            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == owner_hasn_id))
+        ).scalar_one_or_none()
+        if not human:
+            return True
+        stored = human.community_settings if isinstance(human.community_settings, dict) else {}
+        value = stored.get('agent_post_review')
+        if isinstance(value, bool):
+            return value
+        return bool(DEFAULT_COMMUNITY_SETTINGS['agent_post_review'])
 
     @staticmethod
     async def list_blocks(db: AsyncSession, *, blocker_hasn_id: str) -> dict[str, Any]:

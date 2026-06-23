@@ -5,8 +5,10 @@ from typing import TYPE_CHECKING, Any
 from backend.app.hasn_community.model import HasnArticles, HasnPosts
 from backend.app.hasn_community.service.community_service import community_service
 from backend.app.hasn_community.service.notification_service import notification_service
+from backend.app.hasn_community.service.settings_service import community_settings_service
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
+from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,8 +63,14 @@ async def handle_community_create_post(
 
     post_id = f"p_{uuid4_str()[:12]}"
     circle_id = input_payload.get('circle_id')
+
+    # 主人「分身内容审核」设置：开（默认）=进 pending_review 待主人审核；关=直接 published 公开。
+    review_on = await community_settings_service.get_agent_post_review(db, owner_hasn_id=agent.owner_hasn_id)
+    status = 'pending_review' if review_on else 'published'
     if circle_id:
-        await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
+        _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
+        if needs_review:
+            status = 'pending_review'  # 圈子自身要求审核：无论主人设置如何一律先审
 
     post = HasnPosts(
         post_id=post_id,
@@ -78,30 +86,33 @@ async def handle_community_create_post(
         visibility=input_payload.get('visibility', 'public'),
         comment_policy=input_payload.get('comment_policy', 'all'),
         generation_type='agent',
-        status='pending_review',  # Agent 发帖需要审核
+        status=status,
         circle_id=circle_id,
+        published_time=timezone.now() if status == 'published' else None,
     )
 
     db.add(post)
     await db.flush()
     await topic_service.rewrite_content_topics(db, content_type='post', content_id=post_id, owner_hasn_id=agent.owner_hasn_id, tags=input_payload.get('tags', []))
+    if circle_id and status == 'published':
+        await circle_service.bump_content_count(db, circle_id=circle_id)
     await db.commit()
     await db.refresh(post)
 
-    # 通知主人：Agent 草稿待确认（doc-13 §2.1.3）
-    from backend.app.hasn_community.service.notification_service import notification_service
-
-    await notification_service.notify_draft_pending(
-        db,
-        owner_hasn_id=agent.owner_hasn_id,
-        agent_hasn_id=agent.agent_hasn_id,
-        content_type='post',
-        content_id=post.post_id,
-        preview=post.content,
-    )
-    await db.commit()
+    # 仅待审稿通知主人「草稿待确认」（doc-13 §2.1.3）；直接发布无需审核通知。
+    if post.status == 'pending_review':
+        await notification_service.notify_draft_pending(
+            db,
+            owner_hasn_id=agent.owner_hasn_id,
+            agent_hasn_id=agent.agent_hasn_id,
+            content_type='post',
+            content_id=post.post_id,
+            preview=post.content,
+        )
+        await db.commit()
 
     # 发完帖即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）
+    # 卡片文案按 status 自动区分「待主人审核」/「已发布」。
     from backend.app.hasn_community.service.community_card_notifier import notify_owner_post_card
 
     await notify_owner_post_card(
@@ -116,7 +127,7 @@ async def handle_community_create_post(
     return {
         'post_id': post.post_id,
         'status': post.status,
-        'message': '帖子已创建，等待主人审核后发布',
+        'message': '帖子已创建，等待主人审核后发布' if post.status == 'pending_review' else '帖子已发布',
     }
 
 
@@ -140,8 +151,14 @@ async def handle_community_create_article(
     word_count = len(content)
     read_time_min = max(1, word_count // 400)  # 假设每分钟阅读 400 字
     circle_id = input_payload.get('circle_id')
+
+    # 主人「分身内容审核」设置：开（默认）=进 pending_review 待主人审核；关=直接 published 公开。
+    review_on = await community_settings_service.get_agent_post_review(db, owner_hasn_id=agent.owner_hasn_id)
+    status = 'pending_review' if review_on else 'published'
     if circle_id:
-        await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
+        _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
+        if needs_review:
+            status = 'pending_review'  # 圈子自身要求审核：无论主人设置如何一律先审
 
     article = HasnArticles(
         article_id=article_id,
@@ -160,10 +177,11 @@ async def handle_community_create_article(
         visibility=input_payload.get('visibility', 'public'),
         comment_policy=input_payload.get('comment_policy', 'all'),
         generation_type='agent',
-        status='pending_review',  # Agent 发文章需要审核
+        status=status,
         word_count=word_count,
         read_time_min=read_time_min,
         circle_id=circle_id,
+        published_time=timezone.now() if status == 'published' else None,
     )
 
     db.add(article)
@@ -176,23 +194,25 @@ async def handle_community_create_article(
             owner_user_id=agent.owner_user_id, author_type='agent', author_hasn_id=agent.agent_hasn_id,
             placement=input_payload['doc_placement'], allow_visibility=False,
         )
+    if circle_id and status == 'published':
+        await circle_service.bump_content_count(db, circle_id=circle_id)
     await db.commit()
     await db.refresh(article)
 
-    # 通知主人：Agent 草稿待确认（doc-13 §2.1.3）
-    from backend.app.hasn_community.service.notification_service import notification_service
-
-    await notification_service.notify_draft_pending(
-        db,
-        owner_hasn_id=agent.owner_hasn_id,
-        agent_hasn_id=agent.agent_hasn_id,
-        content_type='article',
-        content_id=article.article_id,
-        preview=article.title,
-    )
-    await db.commit()
+    # 仅待审稿通知主人「草稿待确认」（doc-13 §2.1.3）；直接发布无需审核通知。
+    if article.status == 'pending_review':
+        await notification_service.notify_draft_pending(
+            db,
+            owner_hasn_id=agent.owner_hasn_id,
+            agent_hasn_id=agent.agent_hasn_id,
+            content_type='article',
+            content_id=article.article_id,
+            preview=article.title,
+        )
+        await db.commit()
 
     # 发完文章即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）
+    # 卡片文案按 status 自动区分「待主人审核」/「已发布」。
     from backend.app.hasn_community.service.community_card_notifier import notify_owner_article_card
 
     await notify_owner_article_card(
@@ -211,7 +231,7 @@ async def handle_community_create_article(
         'status': article.status,
         'word_count': article.word_count,
         'read_time_min': article.read_time_min,
-        'message': '文章已创建，等待主人审核后发布',
+        'message': '文章已创建，等待主人审核后发布' if article.status == 'pending_review' else '文章已发布',
     }
 
 
@@ -361,8 +381,14 @@ async def handle_community_create_comment(
     agent: AgentTokenPayload,
     input_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """community.create_comment：Agent 以本人身份评论/回复，默认 pending_review 待主人审核。"""
+    """community.create_comment：Agent 以本人身份评论/回复。
+
+    主人「分身内容审核」设置：开（默认）=进 pending_review 待主人审核；关=直接 visible 公开
+    （create_comment 内部在 visible 时已计数 + 通知内容作者）。
+    """
     content = str(input_payload['content'])
+    review_on = await community_settings_service.get_agent_post_review(db, owner_hasn_id=agent.owner_hasn_id)
+    status = 'pending_review' if review_on else 'visible'
     result = await community_service.create_comment(
         db,
         target_type=str(input_payload['target_type']),
@@ -373,22 +399,23 @@ async def handle_community_create_comment(
         user_id=None,
         author_type='agent',
         owner_hasn_id=agent.owner_hasn_id,
-        status='pending_review',
+        status=status,
     )
-    # 通知主人：Agent 评论待确认（与发帖/发文一致）
-    await notification_service.notify_draft_pending(
-        db,
-        owner_hasn_id=agent.owner_hasn_id,
-        agent_hasn_id=agent.agent_hasn_id,
-        content_type='comment',
-        content_id=result['comment_id'],
-        preview=content,
-    )
+    # 仅待审评论才通知主人「待确认」；直接公开的评论由 create_comment 内部通知内容作者。
+    if result['status'] == 'pending_review':
+        await notification_service.notify_draft_pending(
+            db,
+            owner_hasn_id=agent.owner_hasn_id,
+            agent_hasn_id=agent.agent_hasn_id,
+            content_type='comment',
+            content_id=result['comment_id'],
+            preview=content,
+        )
     await db.commit()
     return {
         'comment_id': result['comment_id'],
         'status': result['status'],
-        'message': '评论已创建，等待主人审核后发布',
+        'message': '评论已创建，等待主人审核后发布' if result['status'] == 'pending_review' else '评论已发布',
     }
 
 
