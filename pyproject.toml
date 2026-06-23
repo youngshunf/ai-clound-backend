@@ -78,6 +78,7 @@ dependencies = [
   # Git 操作
   "gitpython>=3.1.43",
   "geoip2>=5.2.0",
+  "httpx[http2]>=0.28.1",
 ]
 dynamic = ["version"]
 

@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import logging
+
 from typing import Any
 
 import httpx
 
+from backend.common.service_http import get_service_client
 from backend.core.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -40,10 +42,13 @@ class FinanceProvider:
             headers['Authorization'] = f'Bearer {settings.FINANCE_SERVICE_TOKEN}'
         body = {'interface': interface, 'params': params or {}}
         try:
-            async with httpx.AsyncClient(timeout=settings.FINANCE_SERVICE_TIMEOUT) as client:
-                resp = await client.post(f'{base}/v1/query', json=body, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
+            # 进程级单例连接池（keep-alive 复用 + HTTP/2 best-effort）；超时 per-request 传入。
+            client = get_service_client('finance')
+            resp = await client.post(
+                f'{base}/v1/query', json=body, headers=headers, timeout=settings.FINANCE_SERVICE_TIMEOUT
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.TimeoutException:
             return _error('upstream_timeout', '数据源超时，请稍后重试', interface)
         except httpx.HTTPStatusError as exc:
@@ -62,10 +67,10 @@ class FinanceProvider:
         if not base:
             return {'ok': False, 'error': 'service_unconfigured', 'message': '金融数据服务未配置'}
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(f'{base}/v1/healthz')
-                resp.raise_for_status()
-                return resp.json()
+            client = get_service_client('finance')
+            resp = await client.get(f'{base}/v1/healthz', timeout=5)
+            resp.raise_for_status()
+            return resp.json()
         except (httpx.HTTPError, ValueError) as exc:
             return {'ok': False, 'error': 'upstream_error', 'message': f'{exc.__class__.__name__}'}
 

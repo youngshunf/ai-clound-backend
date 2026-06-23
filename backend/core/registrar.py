@@ -113,6 +113,10 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     # 释放 snowflake 节点
     await snowflake.shutdown()
 
+    # 关闭内部独立服务（finance/quant 等）HTTP 连接池（进程级单例）
+    from backend.common.service_http import close_service_http_clients
+    await close_service_http_clients()
+
     # 关闭 redis 连接
     await redis_client.aclose()
 

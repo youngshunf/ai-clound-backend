@@ -11,7 +11,7 @@
 
 引擎契约（quant-engine-service service/app.py）：
 - POST   /v1/backtests        提交回测（job 式）→ {job_id, status, ...}
-- GET    /v1/backtests/{id}   轮询状态/绩效     → {job_id, status, result:{metrics, equity_curve, error, duration_secs}, ...}
+- GET    /v1/backtests/{id}   轮询状态/绩效     → {job_id, status, result:{metrics, equity_curve, error, ...}, ...}
 - GET    /v1/healthz          探活（无鉴权）
 鉴权：内网 Bearer 令牌（QUANT_ENGINE_TOKEN；空则引擎仅允许本机回环，开发态）。
 """
@@ -25,6 +25,7 @@ from typing import Any
 
 import httpx
 
+from backend.common.service_http import get_service_client
 from backend.core.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -65,10 +66,13 @@ class QuantEngineProvider:
         if not base:
             raise QuantEngineError('量化引擎服务未配置（QUANT_ENGINE_URL 为空）')
         try:
-            async with httpx.AsyncClient(timeout=_engine_timeout()) as client:
-                resp = await client.post(f'{base}/v1/backtests', json=request, headers=_auth_headers())
-                resp.raise_for_status()
-                data = resp.json()
+            # 进程级单例连接池（keep-alive 复用 + HTTP/2 best-effort）；超时 per-request 传入。
+            client = get_service_client('quant')
+            resp = await client.post(
+                f'{base}/v1/backtests', json=request, headers=_auth_headers(), timeout=_engine_timeout()
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.TimeoutException as exc:
             raise QuantEngineError('引擎服务提交超时') from exc
         except httpx.HTTPStatusError as exc:
@@ -86,10 +90,12 @@ class QuantEngineProvider:
         if not base:
             raise QuantEngineError('量化引擎服务未配置（QUANT_ENGINE_URL 为空）')
         try:
-            async with httpx.AsyncClient(timeout=_engine_timeout()) as client:
-                resp = await client.get(f'{base}/v1/backtests/{job_id}', headers=_auth_headers())
-                resp.raise_for_status()
-                data = resp.json()
+            client = get_service_client('quant')
+            resp = await client.get(
+                f'{base}/v1/backtests/{job_id}', headers=_auth_headers(), timeout=_engine_timeout()
+            )
+            resp.raise_for_status()
+            data = resp.json()
         except httpx.TimeoutException as exc:
             raise QuantEngineError('引擎服务轮询超时') from exc
         except httpx.HTTPStatusError as exc:
@@ -107,11 +113,11 @@ class QuantEngineProvider:
         if not base:
             return {'ok': False, 'error': 'service_unconfigured', 'message': '量化引擎服务未配置'}
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(f'{base}/v1/healthz')
-                resp.raise_for_status()
-                body = resp.json()
-                return {'ok': True, **(body if isinstance(body, dict) else {})}
+            client = get_service_client('quant')
+            resp = await client.get(f'{base}/v1/healthz', timeout=5)
+            resp.raise_for_status()
+            body = resp.json()
+            return {'ok': True, **(body if isinstance(body, dict) else {})}
         except (httpx.HTTPError, ValueError) as exc:
             return {'ok': False, 'error': 'upstream_error', 'message': exc.__class__.__name__}
 
