@@ -14,11 +14,11 @@ from backend.utils.timezone import timezone
 
 router = APIRouter()
 
-# 通用图片上传白名单：jpg/png/gif/webp/svg，≤10MB。
+# 通用图片上传白名单：jpg/png/gif/webp/svg，≤50MB。
 # 说明：SVG 作为图标资产由 <img> 渲染（脚本不执行），且本接口仅限管理员（Owner JWT）上传，
 # 与 marketplace icon.svg 落公共桶的既有约定一致。
 ALLOWED_IMAGE_TYPES = ('image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml')
-MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10MB
+MAX_IMAGE_BYTES = 50 * 1024 * 1024  # 50MB（与 daemon/webui 图片上限一致）
 IMAGE_EXT_BY_MIME = {
     'image/jpeg': 'jpg',
     'image/png': 'png',
@@ -38,7 +38,7 @@ async def upload_image(
 
     - 鉴权：Owner JWT（本地 daemon 以主人身份代理；WebUI 只调 daemon，不直连云端）。
     - 支持格式：jpg / jpeg / png / gif / webp / svg。
-    - 最大体积：10MB。
+    - 最大体积：50MB。
     - 对象 key：``images/{YYYY}/{MM}/{DD}/{uuid}.{ext}``，文件名用 uuid 防冲突、不暴露原始名。
     - 返回：稳定的 CDN / S3 URL，可直接写入文章封面、正文配图等。
     """
@@ -49,7 +49,7 @@ async def upload_image(
     if not content:
         raise errors.RequestError(msg='上传图片不能为空')
     if len(content) > MAX_IMAGE_BYTES:
-        raise errors.RequestError(msg='图片大小不能超过 10MB')
+        raise errors.RequestError(msg='图片大小不能超过 50MB')
 
     storages = await s3_storage_dao.get_all(db)
     s3_storage = pick_public_storage(storages)

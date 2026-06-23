@@ -24,13 +24,22 @@ from backend.plugin.s3.service.storage_service import storage_service
 
 router = APIRouter()
 
-# 上传上限（Stage 0 定）：图 10MB / 语音 25MB / 文件 50MB。
-_MAX_SIZE = {'image': 10 * 1024 * 1024, 'voice': 25 * 1024 * 1024, 'file': 50 * 1024 * 1024}
+# 上传上限：图 50MB / 语音 25MB / 文件 1GB（与 daemon MAX_*_UPLOAD_BYTES、webui 三层一致）。
+_MAX_SIZE = {'image': 50 * 1024 * 1024, 'voice': 25 * 1024 * 1024, 'file': 1024 * 1024 * 1024}
 
 # 本端点允许的 category（默认消息附件；published_artifact 为模块 18 网页发布制品，私有桶、不抽取）。
 _ALLOWED_CATEGORIES = {'dm_attachment', 'published_artifact'}
 # 发布制品上限（bundle-zip 可较大）。
 _PUBLISHED_ARTIFACT_MAX_SIZE = 200 * 1024 * 1024
+
+# kind → 中文名词 + 友好大小文案（超限提示用，避免把内部 kind/裸字节抛给用户；与 webui 提示同口径）。
+_KIND_NOUN = {'image': '图片', 'voice': '语音', 'file': '文件'}
+
+
+def _human_size(num_bytes: int) -> str:
+    """字节 → 友好大小文案（≥1GB 用 GB，否则 MB）。"""
+    mb = num_bytes // (1024 * 1024)
+    return f'{mb // 1024}GB' if mb >= 1024 else f'{mb}MB'
 
 
 async def _current_owner_hasn_id(db: CurrentSession, user_id: int) -> str:
@@ -73,7 +82,8 @@ async def upload_asset(
     is_published = category == 'published_artifact'
     limit = _PUBLISHED_ARTIFACT_MAX_SIZE if is_published else _MAX_SIZE.get(kind, _MAX_SIZE['file'])
     if len(data) > limit:
-        raise errors.RequestError(msg=f'{kind} 超出大小上限 {limit // (1024 * 1024)}MB')
+        noun = _KIND_NOUN.get(kind, '文件')
+        raise errors.RequestError(msg=f'{noun}不能超过 {_human_size(limit)}')
 
     ref = await storage_service.upload(
         db, data, category=category, filename=file.filename, content_type=content_type

@@ -14,7 +14,7 @@ base64 图片字节、文本 / 文档……）经本工具落 owner 私有桶 + 
 
 零 Fake + 安全：
 - 资产 `owner_hasn_id` 取自 Agent JWT（`AgentContext.owner_hasn_id`），不由分身自报。
-- 大小按 kind 限额（图 10MB / 语音 25MB / 文件 50MB），与 owner 端点一致；超限 / 空 /
+- 大小按 kind 限额（图 50MB / 语音 25MB / 文件 1GB），与 owner 端点一致；超限 / 空 /
   非法 base64 一律抛错暴露，不伪造。
 - 私有桶（`category=dm_attachment`），与消息附件同语义；展示经 resolve 鉴权签名。
 
@@ -44,8 +44,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 与 owner 上传端点 _MAX_SIZE 对齐（hasn_assets_app.py）：图 10MB / 语音 25MB / 文件 50MB。
-_MAX_SIZE = {'image': 10 * 1024 * 1024, 'voice': 25 * 1024 * 1024, 'file': 50 * 1024 * 1024}
+# 与 owner 上传端点 _MAX_SIZE 对齐（hasn_assets_app.py）：图 50MB / 语音 25MB / 文件 1GB。
+_MAX_SIZE = {'image': 50 * 1024 * 1024, 'voice': 25 * 1024 * 1024, 'file': 1024 * 1024 * 1024}
 
 # 资产无原始文件名时，按 mime 合成下载名后缀。
 _MIME_EXT = {
