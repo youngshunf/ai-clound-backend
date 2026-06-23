@@ -103,16 +103,20 @@ _REGISTRY: dict[str, ServiceSpec] = {
             pooled=False,
             derive_token=False,
         ),
+        # hermes：自研 runtime（固定服务级 Bearer，双向另有 RUNTIME_INTERNAL_TOKEN）。控制面调用
+        # 经 service_endpoint 取连接三元组；health_path='/health'（server.py 在 auth 之前响应 200，无鉴权）。
+        # default_timeout=10 保持 hermes 历史默认（HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS）。
         ServiceSpec(
             name='hermes',
             title='Hermes Runtime',
             default_port=8765,
             url_attr='HUANXING_HERMES_RUNTIME_BASE_URL',
             token_attr='HUANXING_HERMES_RUNTIME_API_TOKEN',
-            timeout_attr=None,
-            health_path=None,
+            timeout_attr='HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS',
+            health_path='/health',
             pooled=False,
             derive_token=False,
+            default_timeout=10.0,
         ),
         # newapi：池化但不派生——`NewApiAdminClient` 经进程级连接池复用连接，但 token 是外部
         # new-api 系统的真实 admin 密钥，绝不能落入 master 派生分支（故 derive_token=False）。

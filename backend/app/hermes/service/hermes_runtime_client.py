@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from backend.common.service_registry import service_endpoint
 from backend.core.conf import settings
 
 if TYPE_CHECKING:
@@ -47,9 +48,19 @@ class HermesRuntimeClient:
         api_token: str | None = None,
         timeout_seconds: float | None = None,
     ) -> None:
-        self.base_url = (base_url or getattr(settings, 'HUANXING_HERMES_RUNTIME_BASE_URL', '')).rstrip('/')
-        self.api_token = api_token if api_token is not None else getattr(settings, 'HUANXING_HERMES_RUNTIME_API_TOKEN', '')
-        self.timeout_seconds = timeout_seconds or getattr(settings, 'HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS', 10.0)
+        # 连接三元组经统一服务目录解析（env HUANXING_HERMES_RUNTIME_* → settings → services.toml
+        # [service.hermes] → dev 本机回落 127.0.0.1:8765）。token 不派生（derive_token=False，固定服务级
+        # Bearer）。HUANXING_HERMES_RUNTIME_ID 与 RUNTIME_INTERNAL_TOKEN 是非连接配置，仍读 settings。
+        ep = service_endpoint('hermes')
+        self.base_url = (base_url or ep.base_url or getattr(settings, 'HUANXING_HERMES_RUNTIME_BASE_URL', '')).rstrip('/')
+        self.api_token = (
+            api_token
+            if api_token is not None
+            else (ep.token or getattr(settings, 'HUANXING_HERMES_RUNTIME_API_TOKEN', ''))
+        )
+        self.timeout_seconds = (
+            timeout_seconds or ep.timeout or getattr(settings, 'HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS', 10.0)
+        )
 
     def _headers(self, trace_id: str | None = None) -> dict[str, str]:
         headers = {'Content-Type': 'application/json'}

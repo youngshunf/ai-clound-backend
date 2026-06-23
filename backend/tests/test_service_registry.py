@@ -163,6 +163,30 @@ def test_newapi_pooled_but_not_derived(monkeypatch: pytest.MonkeyPatch) -> None:
     assert token != hmac.new(b'master-xyz', b'newapi', hashlib.sha256).hexdigest()
 
 
+def test_hermes_endpoint_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """hermes 经 service_endpoint 解析连接三元组：dev 回落 8765、默认超时 10、env 覆盖、token 不派生。"""
+    for key in ('HUANXING_HERMES_RUNTIME_BASE_URL', 'HUANXING_HERMES_RUNTIME_API_TOKEN', 'HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS'):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(settings, 'HUANXING_HERMES_RUNTIME_BASE_URL', '', raising=False)
+    monkeypatch.setattr(settings, 'HUANXING_HERMES_RUNTIME_API_TOKEN', '', raising=False)
+    monkeypatch.setattr(settings, 'HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS', 10, raising=False)
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
+    monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')  # 即便有主密钥也不派生
+
+    ep = service_endpoint('hermes')
+    assert ep.base_url == 'http://127.0.0.1:8765'  # dev 零配置回落约定端口
+    assert ep.timeout == pytest.approx(10.0)  # default_timeout=10（hermes 历史默认）
+    assert not ep.token  # derive_token=False → 不派生
+
+    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_BASE_URL', 'http://hermes.internal:9999/')
+    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_API_TOKEN', 'svc-tok')
+    monkeypatch.setenv('HUANXING_HERMES_RUNTIME_TIMEOUT_SECONDS', '25')
+    ep2 = service_endpoint('hermes')
+    assert ep2.base_url == 'http://hermes.internal:9999'  # env 覆盖 + 去尾斜杠
+    assert ep2.token == 'svc-tok'
+    assert ep2.timeout == pytest.approx(25.0)
+
+
 def test_registry_catalog_complete() -> None:
     """目录登记了全部已知内部服务，且 pooled / derive_token 两维度取值符合 doc25 决策矩阵。"""
     names = {s.name for s in iter_services()}
