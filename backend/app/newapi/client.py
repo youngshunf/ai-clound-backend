@@ -32,6 +32,8 @@ from typing import Any
 import httpx
 
 from backend.common.log import log
+from backend.common.service_http import get_service_client
+from backend.common.service_registry import service_endpoint
 from backend.core.conf import settings
 
 # 模型注册表分页拉取上限（list_available_models）——安全护栏，非静默截断。
@@ -68,10 +70,15 @@ class NewApiAdminClient:
         admin_user_id: int | None = None,
         timeout: float | None = None,
     ) -> None:
-        self.base_url = (base_url or settings.NEWAPI_ADMIN_BASE_URL).rstrip('/')
-        self.access_token = access_token if access_token is not None else settings.NEWAPI_ADMIN_ACCESS_TOKEN
+        # 连接三元组经统一服务目录解析（解析链：env NEWAPI_ADMIN_* → settings → services.toml
+        # [service.newapi] → dev 本机回落）。token 走 derive_token=False 分支，**绝不派生**——
+        # 仍是外部 new-api 系统的真实 admin 密钥。NEWAPI_ADMIN_BASE_URL 自带 /api 默认，故
+        # ep.base_url 恒含 /api（dev 端口回落 :3180 仅在 settings 默认被显式清空时才会触发）。
+        ep = service_endpoint('newapi')
+        self.base_url = (base_url or ep.base_url or settings.NEWAPI_ADMIN_BASE_URL).rstrip('/')
+        self.access_token = access_token if access_token is not None else (ep.token or settings.NEWAPI_ADMIN_ACCESS_TOKEN)
         self.admin_user_id = admin_user_id if admin_user_id is not None else settings.NEWAPI_ADMIN_USER_ID
-        self.timeout = timeout if timeout is not None else settings.NEWAPI_HTTP_TIMEOUT_SECONDS
+        self.timeout = timeout if timeout is not None else (ep.timeout or settings.NEWAPI_HTTP_TIMEOUT_SECONDS)
 
     # ------------------------------------------------------------------ #
     # 底层请求 / 信封解包
@@ -83,7 +90,11 @@ class NewApiAdminClient:
         }
 
     def _new_client(self) -> httpx.AsyncClient:
-        # trust_env=False：绝不经外部代理访问内网 new-api（见类 docstring）。
+        """独立短命 client（带 base_url + 独立 cookie jar）——**仅供 login 等需要会话隔离的流程**。
+
+        trust_env=False：绝不经外部代理访问内网 new-api（见类 docstring）。普通 admin 调用走
+        进程级连接池（见 :meth:`_request` 默认路径），不用本方法。
+        """
         return httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout, trust_env=False)
 
     async def _request(
@@ -96,17 +107,24 @@ class NewApiAdminClient:
         json: dict[str, Any] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> Any:
-        """发请求并解包信封，返回 `data` 字段；失败抛 NewApiError（如实记录）。"""
-        own_client = client is None
-        c = client or self._new_client()
+        """发请求并解包信封，返回 `data` 字段；失败抛 NewApiError（如实记录）。
+
+        两条路径：
+        - **caller 传入 client**（login cookie jar 隔离流）：用它 + relative path（client 自带
+          base_url），**由 caller 负责关闭**（其 ``async with`` 收尾），本方法不关。
+        - **默认**（无 caller client）：走进程级连接池单例 ``get_service_client('newapi')``——
+          **绝不 aclose**（lifespan 统一关），且池单例无 base_url，须用**绝对 URL**
+          （``self.base_url + path``）。超时 per-request 传入。trust_env=False 已是池的全局默认。
+        """
+        if client is not None:
+            c, request_url = client, path  # caller 持有的隔离 client（自带 base_url），caller 负责关闭
+        else:
+            c, request_url = get_service_client('newapi'), f'{self.base_url}{path}'  # 池单例无 base_url → 绝对 URL
         try:
-            resp = await c.request(method, path, headers=headers, params=params, json=json)
+            resp = await c.request(method, request_url, headers=headers, params=params, json=json, timeout=self.timeout)
         except httpx.HTTPError as e:  # 连接 / 超时等
             log.warning(f'[new-api] {method} {path} 传输失败: {e!r}')
             raise NewApiError(f'new-api 不可达: {e}', endpoint=path) from e
-        finally:
-            if own_client:
-                await c.aclose()
 
         if resp.status_code >= 400:
             raise NewApiError(

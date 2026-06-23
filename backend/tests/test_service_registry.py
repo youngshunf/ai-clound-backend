@@ -134,7 +134,7 @@ def test_explicit_token_overrides_derivation(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_non_pooled_service_not_derived(monkeypatch: pytest.MonkeyPatch) -> None:
-    """非 pooled 服务（ragflow，有自有鉴权）即便有主密钥也不派生 token。"""
+    """derive_token=False 服务（ragflow，有自有鉴权）即便有主密钥也不派生 token。"""
     monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
     monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')
     monkeypatch.delenv('RAGFLOW_PUBLIC_URL', raising=False)
@@ -143,14 +143,42 @@ def test_non_pooled_service_not_derived(monkeypatch: pytest.MonkeyPatch) -> None
     assert not service_endpoint('ragflow').token
 
 
+def test_newapi_pooled_but_not_derived(monkeypatch: pytest.MonkeyPatch) -> None:
+    """newapi 池化（pooled=True）但 derive_token=False：即便有主密钥也**绝不**派生 token。
+
+    硬闸：守护「池化≠派生」的语义拆分——newapi 用外部 new-api 系统真实 admin 密钥，未显式配时
+    必须留空（由调用方按未配处理），绝不能落入 master 派生分支被覆盖成派生值。
+    """
+    spec = get_service_spec('newapi')
+    assert spec.pooled is True  # 走连接池
+    assert spec.derive_token is False  # 但不派生
+
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
+    monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')
+    monkeypatch.delenv('NEWAPI_ADMIN_ACCESS_TOKEN', raising=False)
+    monkeypatch.setattr(settings, 'NEWAPI_ADMIN_ACCESS_TOKEN', '', raising=False)
+
+    token = service_endpoint('newapi').token
+    assert token == ''  # 未显式配 → 留空，**不**等于派生值
+    assert token != hmac.new(b'master-xyz', b'newapi', hashlib.sha256).hexdigest()
+
+
 def test_registry_catalog_complete() -> None:
-    """目录登记了全部已知内部服务。"""
+    """目录登记了全部已知内部服务，且 pooled / derive_token 两维度取值符合 doc25 决策矩阵。"""
     names = {s.name for s in iter_services()}
     assert {'finance', 'quant', 'ragflow', 'hermes', 'newapi'} <= names
-    # finance/quant 走连接池，其余为目录登记 only
+    # pooled：finance/quant/newapi 走连接池 + 健康复用池；ragflow/hermes 用临时 client
     assert get_service_spec('finance').pooled is True
     assert get_service_spec('quant').pooled is True
+    assert get_service_spec('newapi').pooled is True
     assert get_service_spec('ragflow').pooled is False
+    assert get_service_spec('hermes').pooled is False
+    # derive_token：仅我方自研、两端受控的 finance/quant 派生；其余用真实/第三方鉴权，绝不派生
+    assert get_service_spec('finance').derive_token is True
+    assert get_service_spec('quant').derive_token is True
+    assert get_service_spec('newapi').derive_token is False
+    assert get_service_spec('ragflow').derive_token is False
+    assert get_service_spec('hermes').derive_token is False
 
 
 def test_unknown_service_raises() -> None:

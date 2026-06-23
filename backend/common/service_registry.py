@@ -8,9 +8,10 @@
 - :func:`service_endpoint` 按登记解析 ``base_url / token / timeout``，多源合并：
   **显式 env/settings 优先 → 结构化文件 ``services.toml`` 的 [service.<name>] 块 → dev 本机约定回落 →
   prod 留空**（由 provider 归一 ``service_unconfigured``，绝不在 prod 静默连本机掩盖漏配）。
-- **令牌集中派生**：pooled 服务（finance/quant）若未显式配 token，则从单个 ``master_secret``
+- **令牌集中派生**：``derive_token`` 服务（finance/quant）若未显式配 token，则从单个 ``master_secret``
   派生 ``HMAC-SHA256(master_secret, 服务名)``（见 ``services_config``），与服务端逐字节一致，
-  两边无需各配。非 pooled 服务（ragflow/hermes/newapi）有自有鉴权，**不派生**。
+  两边无需各配。``derive_token=False`` 的服务（ragflow/hermes/newapi）用第三方/外部/bespoke 真实
+  鉴权，**绝不派生**。``pooled`` 与 ``derive_token`` 是两个独立维度：newapi 池化但不派生。
 - 结构化部署值与主密钥都在 ``services.toml``（一服务一块，不再散落 .env），事实源见 doc25。
 - :func:`iter_services` / 健康检查消费此目录，给统一管理页「一页看全部内部服务死活」。
 
@@ -44,8 +45,10 @@ class ServiceSpec:
     token_attr: str | None  # settings 中的 bearer token 字段名（None=无鉴权）
     timeout_attr: str | None  # settings 中的超时(秒)字段名（None=用 default_timeout）
     health_path: str | None  # 健康检查路径（None=仅做连通性探测，任何 HTTP 响应即视为可达）
-    pooled: bool  # True=经 service_http 连接池 + service_endpoint 取数（finance/quant）；
-    # False=目录登记仅供健康可见性，其自有 transport 维持原样（ragflow/hermes/newapi）
+    pooled: bool  # True=经 service_http 进程级连接池 + 健康复用池（finance/quant/newapi）；
+    # False=健康用临时 client、其自有 transport 维持原样（ragflow/hermes）
+    derive_token: bool  # True=未显式配 token 时从 master_secret 派生（仅我方自研、两端受控：finance/quant）；
+    # False=有第三方/外部/bespoke 真实鉴权，绝不派生（ragflow/hermes/newapi）
     default_timeout: float = 30.0
 
 
@@ -74,6 +77,7 @@ _REGISTRY: dict[str, ServiceSpec] = {
             timeout_attr='FINANCE_SERVICE_TIMEOUT',
             health_path='/v1/healthz',
             pooled=True,
+            derive_token=True,
         ),
         ServiceSpec(
             name='quant',
@@ -84,8 +88,10 @@ _REGISTRY: dict[str, ServiceSpec] = {
             timeout_attr='QUANT_ENGINE_TIMEOUT',
             health_path='/v1/healthz',
             pooled=True,
+            derive_token=True,
         ),
-        # 以下为「目录登记 only」：仅供统一健康页可见，其自有 transport（RSA/bespoke auth）不改。
+        # 以下为外部/已部署服务：用各自第三方/bespoke 真实鉴权，绝不派生令牌（derive_token=False）。
+        # ragflow/hermes 自有 transport（RSA / 双向 bespoke token）维持原样，目录登记仅供健康可见。
         ServiceSpec(
             name='ragflow',
             title='RAGFlow 知识库',
@@ -95,6 +101,7 @@ _REGISTRY: dict[str, ServiceSpec] = {
             timeout_attr=None,
             health_path=None,
             pooled=False,
+            derive_token=False,
         ),
         ServiceSpec(
             name='hermes',
@@ -105,7 +112,11 @@ _REGISTRY: dict[str, ServiceSpec] = {
             timeout_attr=None,
             health_path=None,
             pooled=False,
+            derive_token=False,
         ),
+        # newapi：池化但不派生——`NewApiAdminClient` 经进程级连接池复用连接，但 token 是外部
+        # new-api 系统的真实 admin 密钥，绝不能落入 master 派生分支（故 derive_token=False）。
+        # health_path='/status'（base 含 /api → 命中 /api/status，无鉴权）。
         ServiceSpec(
             name='newapi',
             title='New-API 网关',
@@ -113,8 +124,9 @@ _REGISTRY: dict[str, ServiceSpec] = {
             url_attr='NEWAPI_ADMIN_BASE_URL',
             token_attr='NEWAPI_ADMIN_ACCESS_TOKEN',
             timeout_attr='NEWAPI_HTTP_TIMEOUT_SECONDS',
-            health_path=None,
-            pooled=False,
+            health_path='/status',
+            pooled=True,
+            derive_token=False,
         ),
     )
 }
@@ -151,13 +163,17 @@ def _resolve_base_url(spec: ServiceSpec, overrides: dict) -> tuple[str, bool]:
 
 
 def _resolve_token(spec: ServiceSpec, overrides: dict, name: str) -> str:
-    """token：显式 env/settings → services.toml 显式 → 主密钥派生（仅 pooled 服务）→ ''。"""
+    """token：显式 env/settings → services.toml 显式 → 主密钥派生（仅 ``derive_token`` 服务）→ ''。
+
+    派生判据是 ``spec.derive_token`` 而非 ``spec.pooled``：newapi 池化（pooled=True）但用外部真实
+    admin 密钥（derive_token=False），绝不能误派生覆盖；ragflow/hermes 两者皆 False。
+    """
     token = ''
     if spec.token_attr:
         token = os.environ.get(spec.token_attr) or getattr(settings, spec.token_attr, '') or ''
     if not token:
         token = str(overrides.get('token') or '')
-    if not token and spec.pooled:
+    if not token and spec.derive_token:
         token = derive_service_token(master_secret(), name)
     return token
 
