@@ -5,10 +5,13 @@
 （finance 用 `FINANCE_SERVICE_*`、quant 用 `QUANT_ENGINE_*`），服务一多就乱、易漏配、易配错文件。
 本模块把每个内部服务**登记一次**（端口 / 健康路径 / 对应 settings 字段），成为唯一目录：
 
-- :func:`service_endpoint` 按登记解析 ``base_url / token / timeout``：
-  **显式 settings/.env 优先**；dev 环境未配则回落 ``http://127.0.0.1:{default_port}``（本机零配置，
-  服务在约定端口起来即可连）；prod 未配则留空 → 由 provider 归一 ``service_unconfigured``
-  （绝不在 prod 静默连本机地址掩盖漏配）。
+- :func:`service_endpoint` 按登记解析 ``base_url / token / timeout``，多源合并：
+  **显式 env/settings 优先 → 结构化文件 ``services.toml`` 的 [service.<name>] 块 → dev 本机约定回落 →
+  prod 留空**（由 provider 归一 ``service_unconfigured``，绝不在 prod 静默连本机掩盖漏配）。
+- **令牌集中派生**：pooled 服务（finance/quant）若未显式配 token，则从单个 ``master_secret``
+  派生 ``HMAC-SHA256(master_secret, 服务名)``（见 ``services_config``），与服务端逐字节一致，
+  两边无需各配。非 pooled 服务（ragflow/hermes/newapi）有自有鉴权，**不派生**。
+- 结构化部署值与主密钥都在 ``services.toml``（一服务一块，不再散落 .env），事实源见 doc25。
 - :func:`iter_services` / 健康检查消费此目录，给统一管理页「一页看全部内部服务死活」。
 
 **为何不引 Nacos/Consul**：内部服务是固定的一小撮单例、单机部署、cloud-brokered（云端是唯一消费方），
@@ -22,6 +25,11 @@ import os
 
 from dataclasses import dataclass
 
+from backend.common.services_config import (
+    derive_service_token,
+    master_secret,
+    service_overrides,
+)
 from backend.core.conf import settings
 
 
@@ -129,40 +137,59 @@ def _is_dev() -> bool:
     return getattr(settings, 'ENVIRONMENT', 'prod') == 'dev'
 
 
+def _resolve_base_url(spec: ServiceSpec, overrides: dict) -> tuple[str, bool]:
+    """base_url：显式 env/settings 优先 → services.toml → dev 本机约定回落 → prod 留空。"""
+    configured_url = (os.environ.get(spec.url_attr) or getattr(settings, spec.url_attr, '') or '').strip()
+    if configured_url:
+        return configured_url, True
+    toml_url = str(overrides.get('url') or '').strip()
+    if toml_url:
+        return toml_url, True
+    if _is_dev() and spec.default_port:
+        return f'http://127.0.0.1:{spec.default_port}', False
+    return '', False
+
+
+def _resolve_token(spec: ServiceSpec, overrides: dict, name: str) -> str:
+    """token：显式 env/settings → services.toml 显式 → 主密钥派生（仅 pooled 服务）→ ''。"""
+    token = ''
+    if spec.token_attr:
+        token = os.environ.get(spec.token_attr) or getattr(settings, spec.token_attr, '') or ''
+    if not token:
+        token = str(overrides.get('token') or '')
+    if not token and spec.pooled:
+        token = derive_service_token(master_secret(), name)
+    return token
+
+
+def _resolve_timeout(spec: ServiceSpec, overrides: dict) -> float:
+    """timeout：显式 env/settings → services.toml → default。"""
+    raw_timeout: object = None
+    if spec.timeout_attr:
+        raw_timeout = os.environ.get(spec.timeout_attr) or getattr(settings, spec.timeout_attr, None)
+    if not raw_timeout:
+        raw_timeout = overrides.get('timeout')
+    if not raw_timeout:
+        return spec.default_timeout
+    try:
+        return float(raw_timeout)
+    except (TypeError, ValueError):
+        return spec.default_timeout
+
+
 def service_endpoint(name: str) -> ServiceEndpoint:
-    """解析服务连接参数：显式配置优先 → dev 本机默认回落 → prod 留空（归一 service_unconfigured）。
+    """解析服务连接参数：显式配置优先 → services.toml → dev 本机默认回落 → prod 留空。
 
     :param name: 已登记的服务名（如 'finance' / 'quant'）。
     :return: :class:`ServiceEndpoint`；``base_url`` 为 '' 表示 prod 未配，调用方应归一 service_unconfigured。
     """
     spec = get_service_spec(name)
-
-    # 进程环境变量优先（运行时可覆盖，测试自启 loopback 服务用），回退 settings（.env / 启动期 env）。
-    configured_url = (os.environ.get(spec.url_attr) or getattr(settings, spec.url_attr, '') or '').strip()
-    if configured_url:
-        base_url, configured = configured_url, True
-    elif _is_dev() and spec.default_port:
-        base_url, configured = f'http://127.0.0.1:{spec.default_port}', False
-    else:
-        base_url, configured = '', False
-
-    token = ''
-    if spec.token_attr:
-        token = os.environ.get(spec.token_attr) or getattr(settings, spec.token_attr, '') or ''
-
-    timeout: float = spec.default_timeout
-    if spec.timeout_attr:
-        raw = os.environ.get(spec.timeout_attr) or getattr(settings, spec.timeout_attr, None)
-        if raw:
-            try:
-                timeout = float(raw)
-            except (TypeError, ValueError):
-                timeout = spec.default_timeout
-
+    overrides = service_overrides(name)
+    base_url, configured = _resolve_base_url(spec, overrides)
     return ServiceEndpoint(
         name=name,
         base_url=base_url.rstrip('/'),
-        token=token,
-        timeout=timeout,
+        token=_resolve_token(spec, overrides, name),
+        timeout=_resolve_timeout(spec, overrides),
         configured=configured,
     )

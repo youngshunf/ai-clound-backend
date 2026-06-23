@@ -1,18 +1,38 @@
-"""service_registry 单测：约定式解析（os.environ 优先 → settings → dev 本机默认 → prod 留空）。
+"""service_registry 单测：约定式解析 + services.toml 覆盖 + 令牌集中派生。
 
-纯函数测试，无 DB / 无 HTTP。覆盖零配置 dev、prod 漏配留空、显式覆盖、token/timeout 解析、目录完整性。
+纯函数测试，无 DB / 无 HTTP。覆盖零配置 dev、prod 漏配留空、显式覆盖、主密钥派生、目录完整性。
+autouse fixture 隔离真实 services.toml（指向不存在路径 + 清缓存 + 清主密钥 env），任何环境可绿。
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+
+from typing import TYPE_CHECKING
+
 import pytest
 
+from backend.common import services_config
 from backend.common.service_registry import (
     get_service_spec,
     iter_services,
     service_endpoint,
 )
 from backend.core.conf import settings
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def _isolate_services_config(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """隔离磁盘上的真实 services.toml 与主密钥 env，保证测试确定、任何机器可绿。"""
+    monkeypatch.setenv('HUANXING_SERVICES_CONFIG', '/nonexistent/services.toml')
+    monkeypatch.delenv('HUANXING_INTERNAL_SERVICE_SECRET', raising=False)
+    services_config.reload_services_config()
+    yield
+    services_config.reload_services_config()
 
 
 def _clear_finance_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -24,7 +44,7 @@ def _clear_finance_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_dev_unconfigured_falls_back_to_localhost(monkeypatch: pytest.MonkeyPatch) -> None:
-    """dev 环境未配 → 回落本机约定端口（零配置），configured=False。"""
+    """dev 环境未配 → 回落本机约定端口（零配置），configured=False，无主密钥则 token 空。"""
     _clear_finance_env(monkeypatch)
     monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
 
@@ -85,6 +105,42 @@ def test_timeout_resolution_and_fallback(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(settings, 'FINANCE_SERVICE_TIMEOUT', 0)  # 0/空 → 回落默认
     assert service_endpoint('finance').timeout == pytest.approx(30.0)
+
+
+def test_token_derived_from_master_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pooled 服务未显式配 token → 从单个 master_secret 派生 HMAC(master, 服务名)；各服务互不相同。"""
+    _clear_finance_env(monkeypatch)
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
+    monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')
+
+    def _expect(name: str) -> str:
+        return hmac.new(b'master-xyz', name.encode(), hashlib.sha256).hexdigest()
+
+    fin = service_endpoint('finance').token
+    quant = service_endpoint('quant').token
+    assert fin == _expect('finance')
+    assert quant == _expect('quant')
+    assert fin != quant  # 同一主密钥派生出的各服务 token 互异（按服务名）
+
+
+def test_explicit_token_overrides_derivation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式 token（env/settings）始终压过主密钥派生（逃生口 / 向后兼容）。"""
+    _clear_finance_env(monkeypatch)
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
+    monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')
+    monkeypatch.setattr(settings, 'FINANCE_SERVICE_TOKEN', 'explicit-tok')
+
+    assert service_endpoint('finance').token == 'explicit-tok'
+
+
+def test_non_pooled_service_not_derived(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非 pooled 服务（ragflow，有自有鉴权）即便有主密钥也不派生 token。"""
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
+    monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')
+    monkeypatch.delenv('RAGFLOW_PUBLIC_URL', raising=False)
+    monkeypatch.setattr(settings, 'RAGFLOW_PUBLIC_URL', '', raising=False)
+
+    assert not service_endpoint('ragflow').token
 
 
 def test_registry_catalog_complete() -> None:
