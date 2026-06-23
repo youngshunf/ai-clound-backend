@@ -136,6 +136,12 @@ class AppCatalogRegistry:
         from backend.app.hasn_quant.manifest import build_quant_app
 
         registry.register(build_quant_app())
+        # 统一视频引擎 studio（cloud-brokered AI-Native，schema hasn_studio，模块 14 doc22；install_policy=manual
+        # 非默认挂载——专业视频工作台，hasn.studio.* 工具经 montage_engine_provider → montage-engine-service
+        # 跑渲染/出片。本期 P2 只铸数据层 + 目录/scope/manifest 骨架，工具面随 P3 落地）。延迟导入避免循环依赖。
+        from backend.app.hasn_studio.manifest import build_studio_app
+
+        registry.register(build_studio_app())
         return registry
 
     def register(self, app: App) -> None:

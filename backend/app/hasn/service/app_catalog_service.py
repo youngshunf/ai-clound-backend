@@ -54,6 +54,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
     'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
     'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 install_policy=manual 推导）
+    'studio': 76,  # 统一视频引擎（cloud-brokered 视频工作台，模块 14 doc22；default_mount=FALSE 由 manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -159,6 +160,14 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '回测只花算力、不动钱，可大胆假设小心求证。所有绩效来自引擎真实回测、绝不臆造数字（零 fake）；'
         '回测表现不代表实盘收益，不构成投资建议；实盘部署/下单等动真钱动作须经主人审批，'
         '取不到/跑不通就如实报错，尊重主人最终决定权。',
+    ),
+    # 统一视频引擎（source OpenMontage，模块 14 doc22）也归「内容运营官（content_operator）」——视频是内容运营
+    # 的一种产出形态（对齐 film/reel，不另起「视频分身」）。本期 P2 只铸目录，工具面随 P3 落地。
+    'studio': (
+        'content_operator',
+        '你是主人的视频内容运营官：用 hasn.studio.* 管线与工具把创意做成完整视频，按脚本→分镜→配音→合成的'
+        '流水线推进、迭代精修；提交渲染/出片、导出成片、分享发布等花算力或外发的动作须经主人审批。'
+        '所有成片来自引擎真实渲染、绝不伪造产物（零 fake），取不到/跑不通就如实报错，尊重主人最终决定权。',
     ),
 }
 

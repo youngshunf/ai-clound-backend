@@ -19,6 +19,7 @@ from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST
+from backend.app.hasn_studio.manifest import STUDIO_AI_NATIVE_MANIFEST
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
@@ -63,6 +64,10 @@ class AINativeAppRegistry:
             # 5 个回测线工具走 gateway_internal → quant_service → quant_engine_provider → quant-engine-service，
             # 唯一接触 NautilusTrader 处隔离独立服务。实盘线 P6+ 受 P0-闸1 硬闸，本期不在 manifest 暴露）。
             'quant': QUANT_AI_NATIVE_MANIFEST,
+            # 统一视频引擎（app_id=studio，模块/schema hasn_studio，模块 14 doc22；cloud-brokered 业务应用，
+            # 工具面随 P3 落地经 gateway_internal → studio_service → montage_engine_provider → montage-engine-service。
+            # 本期 P2 manifest 骨架不暴露 tools/capabilities，待 P3 接 service + 云端 handler 后再补）。
+            'studio': STUDIO_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
