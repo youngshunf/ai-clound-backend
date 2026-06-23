@@ -187,6 +187,24 @@ def test_hermes_endpoint_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ep2.timeout == pytest.approx(25.0)
 
 
+def test_ragflow_endpoint_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ragflow 经 service_endpoint 解析：dev 回落 18082、env 覆盖、token 不派生（第三方 RSA 凭据在 DB）。"""
+    monkeypatch.delenv('RAGFLOW_PUBLIC_URL', raising=False)
+    monkeypatch.setattr(settings, 'RAGFLOW_PUBLIC_URL', '', raising=False)
+    monkeypatch.setattr(settings, 'ENVIRONMENT', 'dev')
+    monkeypatch.setenv('HUANXING_INTERNAL_SERVICE_SECRET', 'master-xyz')  # 即便有主密钥也不派生
+
+    ep = service_endpoint('ragflow')
+    assert ep.base_url == 'http://127.0.0.1:18082'  # dev 零配置回落约定端口
+    assert ep.configured is False
+    assert not ep.token  # derive_token=False → 不派生（per-instance RSA 凭据加密存 hasn_app_instance）
+
+    monkeypatch.setenv('RAGFLOW_PUBLIC_URL', 'http://ragflow.internal:18082/')
+    ep2 = service_endpoint('ragflow')
+    assert ep2.base_url == 'http://ragflow.internal:18082'  # env 覆盖 + 去尾斜杠
+    assert ep2.configured is True
+
+
 def test_registry_catalog_complete() -> None:
     """目录登记了全部已知内部服务，且 pooled / derive_token 两维度取值符合 doc25 决策矩阵。"""
     names = {s.name for s in iter_services()}
