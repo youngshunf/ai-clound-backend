@@ -100,3 +100,16 @@ class RedisMonitorInfo(SchemaBase):
 
     info: RedisServerInfo = Field(description='服务器信息')
     stats: list[RedisCommandStat] = Field(description='命令统计')
+
+
+class ServiceHealthInfo(SchemaBase):
+    """内部独立服务健康快照（service_registry 目录 → 一页看全部死活）"""
+
+    name: str = Field(description='规范服务名')
+    title: str = Field(description='展示名')
+    status: str = Field(description='状态 (up:运行中/down:不可达/unconfigured:未配置)')
+    configured: bool = Field(description='是否显式配置（False=dev 本机回落或未配）')
+    base_url: str = Field(description='解析后的基址（无凭据；未配为空）')
+    latency_ms: int | None = Field(default=None, description='探活往返耗时（毫秒）；未发网络为 null')
+    version: str | None = Field(default=None, description='健康响应中的版本（若有）')
+    detail: str = Field(description='人读说明')
