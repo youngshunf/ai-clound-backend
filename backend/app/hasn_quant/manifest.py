@@ -40,11 +40,24 @@ _SCOPE_WRITE = 'quant:write'
 _SCOPE_BACKTEST = 'quant:backtest'
 
 # 引擎内置数据集（quant-engine-service 合成行情，§6；回测无需上传数据，分身按调性选场景）。
+# ⚠️ 须与引擎 CATALOG（真相源）+ webui DATASETS 同源：
+#   huanxing-apps/quant-engine-service/service/datasets.py::CATALOG
+#   hasn-node/webui/src/pages/apps/quant/QuantWorkbenchPage.tsx::DATASETS
+# 多标的（ETH/BTC/ADA）× 多形态（震荡/趋势/波动/反转/横盘/暴涨暴跌/牛熊）。仍是合成数据，仅供策略管线验证。
 _DATASETS = [
+    # ETH（历史键，向后兼容已有回测）
     'synthetic-oscillator-eth',
     'synthetic-uptrend-eth',
     'synthetic-downtrend-eth',
     'synthetic-volatile-eth',
+    # BTC
+    'synthetic-uptrend-btc',
+    'synthetic-oscillator-btc',
+    'synthetic-reversal-btc',
+    'synthetic-spike-crash-btc',
+    # ADA
+    'synthetic-sideways-ada',
+    'synthetic-bull-bear-ada',
 ]
 
 
@@ -174,7 +187,8 @@ _CAPABILITIES = [
                 'type': 'string',
                 'enum': list(_DATASETS),
                 'default': 'synthetic-oscillator-eth',
-                'description': '回测数据集（引擎内置合成行情：震荡/上升/下降/高波动）',
+                'description': '回测数据集（引擎内置合成行情，多标的 ETH/BTC/ADA × 多形态：'
+                '震荡/上升/下降/高波动/趋势反转/横盘整理/暴涨暴跌/牛熊切换）',
             },
             'params': {'type': 'object', 'description': '覆盖策略参数（可选）'},
             'starting_balance': {'type': 'number', 'exclusiveMinimum': 0, 'default': 1000000, 'description': '初始资金'},
