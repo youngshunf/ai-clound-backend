@@ -76,6 +76,29 @@ class CommunitySettingsService:
         return await CommunitySettingsService.get_community_settings(db, hasn_id=hasn_id)
 
     @staticmethod
+    async def get_notify_enabled(db: AsyncSession, *, recipient_hasn_id: str, notify_key: str) -> bool:
+        """收件人是否开启某类社区互动通知（like/comment/follow/collect）。
+
+        通知开关是「人」的偏好（doc-13 §通知）：
+        - 收件人是 human → 读其 community_settings.notify.{key}，缺省取出厂默认（True）；
+        - 收件人不是 human（agent / 未知）→ 无此偏好，返回 True 不抑制
+          （分身被赞/被关注的直达副本照常落库；主人的 relay 副本另由主人自己的偏好把关）。
+        查不到主人身份或 key 不在通知矩阵时一律返回 True——绝不因取设置失败而把通知吞掉。
+        """
+        human = (
+            await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == recipient_hasn_id))
+        ).scalar_one_or_none()
+        if not human:
+            return True
+        stored = human.community_settings if isinstance(human.community_settings, dict) else {}
+        notify = stored.get('notify') if isinstance(stored.get('notify'), dict) else {}
+        value = notify.get(notify_key)
+        if isinstance(value, bool):
+            return value
+        default_notify = DEFAULT_COMMUNITY_SETTINGS['notify']
+        return bool(default_notify.get(notify_key, True))
+
+    @staticmethod
     async def get_agent_post_review(db: AsyncSession, *, owner_hasn_id: str) -> bool:
         """主人是否要求审核名下分身的社区内容（发帖/发文/评论）后才公开。
 

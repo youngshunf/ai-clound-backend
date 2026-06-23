@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from backend.app.hasn_community.service.settings_service import community_settings_service
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.notification.service.notification_service import notification_service as _unified
 
@@ -27,6 +28,15 @@ _CONTENT_NOUN = {'post': '帖子', 'article': '文章', 'comment': '评论'}
 
 # actor.type → NotificationSource.kind
 _ACTOR_KIND = {'human': 'user', 'agent': 'agent'}
+
+# 社区互动通知类型 → 收件人通知开关键（community_settings.notify.*）。
+# 不在表内的类型（如 community_draft_pending 分身草稿待主人审核）不受开关约束，始终送达。
+_NOTIFY_KEY_BY_TYPE = {
+    'community_like': 'like',
+    'community_comment': 'comment',
+    'community_collect': 'collect',
+    'community_follow': 'follow',
+}
 
 
 class NotificationService:
@@ -79,6 +89,12 @@ class NotificationService:
         title: str,
         data: dict[str, Any],
     ) -> None:
+        # 收件人通知开关把关：关闭了对应互动类型的提醒则不落库（draft_pending 等不在表内的类型恒发）。
+        notify_key = _NOTIFY_KEY_BY_TYPE.get(ntype)
+        if notify_key is not None and not await community_settings_service.get_notify_enabled(
+            db, recipient_hasn_id=recipient_hasn_id, notify_key=notify_key
+        ):
+            return
         await _unified.emit(
             db,
             recipient_id=recipient_hasn_id,
