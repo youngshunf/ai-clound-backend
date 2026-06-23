@@ -42,6 +42,7 @@ APP_IDS = (
     'plan',
     'hasn_task',
     'reel',
+    'quant',
 )
 
 # scripts → backend → huanxing-cloud-backend → huanxing-project（兄弟仓 hasn-node 在此层）
