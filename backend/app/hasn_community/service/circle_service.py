@@ -233,6 +233,68 @@ class CircleService:
         return {'circle_id': c.circle_id, 'member_hasn_id': invitee_hasn_id, 'status': 'active'}
 
     @staticmethod
+    async def _enrich_members(db: AsyncSession, members: list[dict[str, Any]]) -> None:
+        """给一批已序列化的圈子成员 dict 就地补「昵称/头像 + 专家名称 + 主人 + 实时在线态」。
+
+        圈子成员 dict 只存 member_hasn_id/member_type/owner_hasn_id，原样下发会让 WebUI
+        露出裸 HASN ID。这里批量回填身份信息，让前端统一走公共 AgentIdentity 组件渲染：
+
+        - human 成员：nickname/avatar（HasnHumans 权威）。
+        - agent 成员：display_name/avatar/profession（HasnAgents 权威，全网分身都有头衔）
+          + owner_display_name（主人昵称，HasnHumans）+ online_status（Redis presence，断线即
+          offline，不读持久列避免僵尸在线）。
+
+        诚实留空：查不到 profession → ''；display_name 兜底用 member_hasn_id（前端再兜底）。
+        """
+        from backend.app.hasn.service.ws_router import ws_router
+        from backend.app.hasn_core import HasnAgents, HasnHumans
+
+        human_ids = {m['member_hasn_id'] for m in members if m.get('member_type') == 'human'}
+        agent_ids = {m['member_hasn_id'] for m in members if m.get('member_type') == 'agent'}
+        owner_ids = {m['owner_hasn_id'] for m in members if m.get('member_type') == 'agent' and m.get('owner_hasn_id')}
+
+        human_map: dict[str, Any] = {}
+        if human_ids or owner_ids:
+            rows = (
+                await db.execute(
+                    select(HasnHumans.hasn_id, HasnHumans.nickname, HasnHumans.avatar).where(
+                        HasnHumans.hasn_id.in_(human_ids | owner_ids)
+                    )
+                )
+            ).all()
+            human_map = {r.hasn_id: r for r in rows}
+
+        agent_map: dict[str, Any] = {}
+        if agent_ids:
+            rows = (
+                await db.execute(
+                    select(
+                        HasnAgents.hasn_id,
+                        HasnAgents.display_name,
+                        HasnAgents.avatar,
+                        HasnAgents.profession,
+                    ).where(HasnAgents.hasn_id.in_(agent_ids))
+                )
+            ).all()
+            agent_map = {r.hasn_id: r for r in rows}
+        online_map = await ws_router.get_online_map(list(agent_ids)) if agent_ids else {}
+
+        for m in members:
+            hid = m['member_hasn_id']
+            if m.get('member_type') == 'agent':
+                a = agent_map.get(hid)
+                m['display_name'] = (a.display_name if a else None) or hid
+                m['avatar'] = a.avatar if a else None
+                m['profession'] = (a.profession or '') if a else ''
+                owner = human_map.get(m.get('owner_hasn_id'))
+                m['owner_display_name'] = owner.nickname if owner else None
+                m['online_status'] = 'online' if online_map.get(hid) else 'offline'
+            else:
+                h = human_map.get(hid)
+                m['display_name'] = (h.nickname if h else None) or hid
+                m['avatar'] = h.avatar if h else None
+
+    @staticmethod
     async def list_members(db: AsyncSession, *, ident: str, status: str = 'active', limit: int = 50) -> list[dict[str, Any]]:
         c = await CircleService._get(db, ident)
         if not c:
@@ -241,11 +303,13 @@ class CircleService:
         if status != 'all':
             stmt = stmt.where(HasnCircleMembers.status == status)
         stmt = stmt.order_by(HasnCircleMembers.role, HasnCircleMembers.created_time).limit(limit)
-        return [
+        members = [
             {'member_hasn_id': m.member_hasn_id, 'member_type': m.member_type, 'role': m.role, 'status': m.status,
              'owner_hasn_id': m.owner_hasn_id, 'joined_time': m.joined_time.isoformat() if m.joined_time else None}
             for m in (await db.execute(stmt)).scalars().all()
         ]
+        await CircleService._enrich_members(db, members)
+        return members
 
     @staticmethod
     async def list_mine(db: AsyncSession, *, member_hasn_id: str) -> list[dict[str, Any]]:
