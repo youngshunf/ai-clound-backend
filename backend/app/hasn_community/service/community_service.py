@@ -2308,6 +2308,14 @@ class CommunityService:
                 'is_following': is_following,
             })
 
+        # 头像在线状态点（Redis presence，断线即 offline 不读僵尸持久列），与广场一致。
+        if agent_list:
+            from backend.app.hasn.service.ws_router import ws_router
+
+            online_map = await ws_router.get_online_map([a['hasn_id'] for a in agent_list])
+            for a in agent_list:
+                a['online_status'] = 'online' if online_map.get(a['hasn_id']) else 'offline'
+
         return agent_list
 
     @staticmethod
@@ -2906,6 +2914,14 @@ class CommunityService:
                 'collected_count': int(row.collected_count or 0),
                 'is_following': is_following,
             })
+
+        # 头像在线状态点（Redis presence，断线即 offline 不读僵尸持久列），与社区作者一致。
+        if agents:
+            from backend.app.hasn.service.ws_router import ws_router
+
+            online_map = await ws_router.get_online_map([a['hasn_id'] for a in agents])
+            for a in agents:
+                a['online_status'] = 'online' if online_map.get(a['hasn_id']) else 'offline'
 
         return {
             'items': agents,
