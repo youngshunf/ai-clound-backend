@@ -12,25 +12,28 @@ from __future__ import annotations
 import secrets
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jose import JWTError, jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_publish.model import Revision, Site
 from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 # ---- 常量 ----
 _SLUG_ALPHABET = '23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ'  # 去易混字符
 _SLUG_LEN = 12
 _SLUG_MAX_RETRY = 6
 VISIBILITY_ORDER = ('private', 'password', 'unlisted', 'public')
-VALID_KINDS = ('deck', 'report', 'page', 'dashboard', 'other')
+# 'video'：studio 统一视频引擎成片对外发布（doc22 §3.6 / §9 S18，M18 web 发布全复用；列是开放字符串，无 DDL 变更）。
+VALID_KINDS = ('deck', 'report', 'page', 'dashboard', 'video', 'other')
 MAX_REVISIONS_PER_SITE = 20
 VIEW_TICKET_TTL_SECONDS = 600  # 10 分钟
 _VIEW_TICKET_TYPE = 'publish_view_ticket'
@@ -123,9 +126,7 @@ class PublishService:
     async def _alloc_slug(db: AsyncSession) -> str:
         for _ in range(_SLUG_MAX_RETRY):
             slug = _gen_slug()
-            exists = (
-                await db.execute(select(Site.id).where(Site.slug == slug).limit(1))
-            ).scalar_one_or_none()
+            exists = (await db.execute(select(Site.id).where(Site.slug == slug).limit(1))).scalar_one_or_none()
             if exists is None:
                 return slug
         raise errors.ServerError(msg='slug 分配失败（多次冲突）')
@@ -422,11 +423,9 @@ class PublishService:
     async def increment_view_count(db: AsyncSession, *, site_id: int) -> None:
         """访问计数 +1（best-effort，统计非鉴权；失败不抛）。"""
         try:
-            await db.execute(
-                Site.__table__.update().where(Site.id == site_id).values(view_count=Site.view_count + 1)
-            )
+            await db.execute(Site.__table__.update().where(Site.id == site_id).values(view_count=Site.view_count + 1))
             await db.flush()
-        except Exception:  # noqa: BLE001 统计不可阻塞查看
+        except Exception:
             pass
 
     @staticmethod

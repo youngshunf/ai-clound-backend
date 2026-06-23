@@ -39,6 +39,7 @@ _SCOPE_READ = 'studio:read'
 _SCOPE_WRITE = 'studio:write'
 _SCOPE_RENDER = 'studio:render'
 _SCOPE_EXPORT = 'studio:export'
+_SCOPE_SHARE = 'studio:share'
 
 
 def _cap(
@@ -107,7 +108,7 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 12 个工具（设计 §3 / §3.5）。顺序即 tools[] 顺序：读(6) → 写(2) → 渲染(3) → 导出(1)。
+# 14 个工具（设计 §3 / §3.5 / §3.6）。顺序即 tools[] 顺序：读(6) → 写(2) → 渲染(3) → 导出(1) → 分享/发布(2)。
 _CAPABILITIES = [
     # ---------------- 读（studio:read，出厂 allow，idempotent） ----------------
     _cap(
@@ -292,6 +293,47 @@ _CAPABILITIES = [
         tags=['studio', 'export'],
         ask=True,
         risk_level='medium',
+    ),
+    # ---------------- 分享 / 发布（studio:share，出厂 ask=外发；§3.6 全复用 resource_share + M18） ----------------
+    _cap(
+        name='share',
+        title='分享视频项目/成品',
+        description='把视频项目或成片分享给人或分身（viewer/editor/manager，全复用平台 resource_share，须主人审批）。'
+        '分享给分身（grantee_type=agent）即能力授权：该分身的 hasn.studio.* 可在权限内操作该产物。',
+        scope=_SCOPE_SHARE,
+        properties={
+            'resource_type': {'type': 'string', 'enum': ['project', 'artifact'], 'description': '分享对象类型'},
+            'resource_id': {'type': 'integer', 'minimum': 1, 'description': '项目 id 或成品 id'},
+            'grantee_type': {'type': 'string', 'enum': ['human', 'agent', 'enterprise'], 'description': '协作者类型'},
+            'grantee_id': {'type': 'string', 'minLength': 1, 'description': '人/分身 hasn_id 或企业 id'},
+            'permission': {'type': 'string', 'enum': ['viewer', 'editor', 'manager'], 'description': '权限档'},
+        },
+        required=['resource_type', 'resource_id', 'grantee_type', 'grantee_id', 'permission'],
+        page_rank=41,
+        tags=['studio', 'share', 'collaboration'],
+        ask=True,
+    ),
+    _cap(
+        name='publish',
+        title='发布成片为可分享网页',
+        description='把成片对外公开发布为可分享网页（/s/{slug}，全复用 M18 web 发布；外发，须主人审批）。'
+        '签名 URL 只在访问时现解析（不烤进页面）。已发布过则更新（slug/URL 不变）。',
+        scope=_SCOPE_SHARE,
+        properties={
+            'artifact_id': {'type': 'integer', 'minimum': 1, 'description': '成品 id（list_artifacts 返回）'},
+            'title': {'type': 'string', 'description': '对外标题（可选，缺省用成品标题）'},
+            'visibility': {
+                'type': 'string',
+                'enum': ['private', 'password', 'unlisted', 'public'],
+                'description': '可见性（缺省 unlisted）',
+            },
+            'password': {'type': 'string', 'description': 'visibility=password 时口令（可选）'},
+            'allow_download': {'type': 'boolean', 'description': '是否允许下载成片（可选，默认否）'},
+        },
+        required=['artifact_id'],
+        page_rank=42,
+        tags=['studio', 'publish', 'share'],
+        ask=True,
     ),
 ]
 

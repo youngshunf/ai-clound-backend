@@ -14,6 +14,7 @@ HTTP 仍 200（传输成功、业务态在 data.status/data.error 里），零 f
 """
 
 from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
 from backend.app.hasn_studio.provider import montage_engine_provider
@@ -25,7 +26,7 @@ from backend.app.hasn_studio.schema.owner import (
     SaveProjectParam,
     SaveStoryboardParam,
 )
-from backend.app.hasn_studio.service.studio_service import studio_service
+from backend.app.hasn_studio.service.studio_service import Subject, studio_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -40,6 +41,27 @@ async def _owner(db: CurrentSession | CurrentSessionTransaction, request: Reques
     if not owner_hasn_id:
         raise errors.ForbiddenError(msg='当前账号未关联唤星身份，无法访问视频引擎')
     return owner_hasn_id
+
+
+async def _subject(db: CurrentSession | CurrentSessionTransaction, request: Request) -> Subject:
+    """owner JWT → 操作主体（human）。分享/可访问列表/发布按 Subject 走 resource_share。"""
+    return Subject.human(await _owner(db, request))
+
+
+# ---------------- 分享 / 发布 请求体 ----------------
+
+
+class AddShareRequest(BaseModel):
+    grantee_type: str = Field(description='human/agent/enterprise')
+    grantee_id: str = Field(min_length=1, description='被授权对象 ID（人/分身 hasn_id 或企业 id）')
+    permission: str = Field(description='viewer/editor/manager')
+
+
+class PublishArtifactRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=200, description='对外标题（缺省用成品标题）')
+    visibility: str = Field(default='unlisted', description='private/password/unlisted/public')
+    password: str | None = Field(default=None, description='visibility=password 时口令明文')
+    allow_download: bool = Field(default=False, description='是否允许下载成片')
 
 
 # ============================ 引擎健康 + 管线目录 ============================
@@ -60,10 +82,10 @@ async def list_pipelines() -> ResponseModel:
 # ============================ 项目 ============================
 
 
-@router.get('/projects', summary='[Owner] 项目列表', dependencies=[DependsJwtAuth])
+@router.get('/projects', summary='[Owner] 项目列表（我的 ∪ 共享给我的）', dependencies=[DependsJwtAuth])
 async def list_projects(request: Request, db: CurrentSession) -> ResponseModel:
-    owner_hasn_id = await _owner(db, request)
-    items = await studio_service.list_projects(db, owner_hasn_id=owner_hasn_id)
+    subject = await _subject(db, request)
+    items = await studio_service.list_accessible_projects(db, subject=subject)
     return response_base.success(data={'items': items})
 
 
@@ -112,19 +134,17 @@ async def list_assets(request: Request, db: CurrentSession, project_id: int) -> 
     return response_base.success(data={'items': items})
 
 
-@router.get('/artifacts', summary='[Owner] 成品列表（换签名 URL）', dependencies=[DependsJwtAuth])
+@router.get('/artifacts', summary='[Owner] 成品列表（我的 ∪ 共享给我的，换签名 URL）', dependencies=[DependsJwtAuth])
 async def list_artifacts(request: Request, db: CurrentSession, project_id: int | None = None) -> ResponseModel:
-    owner_hasn_id = await _owner(db, request)
-    items = await studio_service.list_artifacts(db, owner_hasn_id=owner_hasn_id, project_id=project_id)
+    subject = await _subject(db, request)
+    items = await studio_service.list_accessible_artifacts(db, subject=subject, project_id=project_id)
     return response_base.success(data={'items': items})
 
 
 @router.post('/artifacts/export', summary='[Owner] 导出成片（签名下载 URL）', dependencies=[DependsJwtAuth])
 async def export_artifact(request: Request, db: CurrentSession, obj: ExportParam) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
-    data = await studio_service.export(
-        db, owner_hasn_id=owner_hasn_id, artifact_id=obj.artifact_id, fmt=obj.format
-    )
+    data = await studio_service.export(db, owner_hasn_id=owner_hasn_id, artifact_id=obj.artifact_id, fmt=obj.format)
     return response_base.success(data=data)
 
 
@@ -177,3 +197,119 @@ async def get_render_job(request: Request, db: CurrentSessionTransaction, render
     owner_hasn_id = await _owner(db, request)
     data = await studio_service.get_render_job(db, owner_hasn_id=owner_hasn_id, render_job_id=render_job_id)
     return response_base.success(data=data)
+
+
+# ============================ 分享协作（项目；§3.6 全复用 resource_share） ============================
+
+
+@router.get('/projects/{project_id}/shares', summary='[Owner] 查看项目协作名单', dependencies=[DependsJwtAuth])
+async def list_project_shares(request: Request, db: CurrentSession, project_id: int) -> ResponseModel:
+    subject = await _subject(db, request)
+    data = await studio_service.list_project_shares(db, subject=subject, project_id=project_id)
+    return response_base.success(data=data)
+
+
+@router.post('/projects/{project_id}/shares', summary='[Owner] 添加/更新项目协作者', dependencies=[DependsJwtAuth])
+async def add_project_share(
+    request: Request, db: CurrentSessionTransaction, project_id: int, body: AddShareRequest
+) -> ResponseModel:
+    subject = await _subject(db, request)
+    data = await studio_service.add_project_share(
+        db,
+        subject=subject,
+        project_id=project_id,
+        grantee_type=body.grantee_type,
+        grantee_id=body.grantee_id,
+        permission=body.permission,
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/projects/{project_id}/shares', summary='[Owner] 撤销项目协作者', dependencies=[DependsJwtAuth])
+async def revoke_project_share(
+    request: Request, db: CurrentSessionTransaction, project_id: int, grantee_type: str, grantee_id: str
+) -> ResponseModel:
+    subject = await _subject(db, request)
+    ok = await studio_service.revoke_project_share(
+        db, subject=subject, project_id=project_id, grantee_type=grantee_type, grantee_id=grantee_id
+    )
+    return response_base.success(data={'revoked': ok})
+
+
+# ============================ 分享协作（成品；§3.6 全复用 resource_share） ============================
+
+
+@router.get('/artifacts/{artifact_id}/shares', summary='[Owner] 查看成品协作名单', dependencies=[DependsJwtAuth])
+async def list_artifact_shares(request: Request, db: CurrentSession, artifact_id: int) -> ResponseModel:
+    subject = await _subject(db, request)
+    data = await studio_service.list_artifact_shares(db, subject=subject, artifact_id=artifact_id)
+    return response_base.success(data=data)
+
+
+@router.post('/artifacts/{artifact_id}/shares', summary='[Owner] 添加/更新成品协作者', dependencies=[DependsJwtAuth])
+async def add_artifact_share(
+    request: Request, db: CurrentSessionTransaction, artifact_id: int, body: AddShareRequest
+) -> ResponseModel:
+    subject = await _subject(db, request)
+    data = await studio_service.add_artifact_share(
+        db,
+        subject=subject,
+        artifact_id=artifact_id,
+        grantee_type=body.grantee_type,
+        grantee_id=body.grantee_id,
+        permission=body.permission,
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/artifacts/{artifact_id}/shares', summary='[Owner] 撤销成品协作者', dependencies=[DependsJwtAuth])
+async def revoke_artifact_share(
+    request: Request, db: CurrentSessionTransaction, artifact_id: int, grantee_type: str, grantee_id: str
+) -> ResponseModel:
+    subject = await _subject(db, request)
+    ok = await studio_service.revoke_artifact_share(
+        db, subject=subject, artifact_id=artifact_id, grantee_type=grantee_type, grantee_id=grantee_id
+    )
+    return response_base.success(data={'revoked': ok})
+
+
+# ============================ 对外公开发布（成品；M18 web 发布全复用） ============================
+
+
+@router.get('/artifacts/{artifact_id}/publish', summary='[Owner] 读取成片对外发布态', dependencies=[DependsJwtAuth])
+async def get_artifact_publication(request: Request, db: CurrentSession, artifact_id: int) -> ResponseModel:
+    subject = await _subject(db, request)
+    site = await studio_service.get_artifact_publication(db, subject=subject, artifact_id=artifact_id)
+    return response_base.success(data={'site': site})
+
+
+@router.post(
+    '/artifacts/{artifact_id}/publish',
+    summary='[Owner] 发布成片为可分享网页（/s/{slug}）',
+    dependencies=[DependsJwtAuth],
+)
+async def publish_artifact(
+    request: Request, db: CurrentSessionTransaction, artifact_id: int, body: PublishArtifactRequest
+) -> ResponseModel:
+    subject = await _subject(db, request)
+    data = await studio_service.publish_artifact(
+        db,
+        subject=subject,
+        artifact_id=artifact_id,
+        title=body.title,
+        visibility=body.visibility,
+        password=body.password,
+        allow_download=body.allow_download,
+    )
+    return response_base.success(data=data)
+
+
+@router.delete(
+    '/artifacts/{artifact_id}/publish',
+    summary='[Owner] 撤销成片对外发布（URL 返回 410）',
+    dependencies=[DependsJwtAuth],
+)
+async def unpublish_artifact(request: Request, db: CurrentSessionTransaction, artifact_id: int) -> ResponseModel:
+    subject = await _subject(db, request)
+    ok = await studio_service.unpublish_artifact(db, subject=subject, artifact_id=artifact_id)
+    return response_base.success(data={'revoked': ok})

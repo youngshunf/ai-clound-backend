@@ -16,7 +16,7 @@ handler 再调 `studio_service`（落 hasn_studio PG）+ 经 `montage_engine_pro
 归一）；渲染类（run_pipeline/render）service 内已把失败落 job.status=failed + 透传 error（零 fake），
 handler 不再额外处理。
 
-注册：`ai_native_runtime_gateway._internal_handlers()` 按 handler 键 `studio.<name>` 注册本 10 handler；
+注册：`ai_native_runtime_gateway._internal_handlers()` 按 handler 键 `studio.<name>` 注册本 14 handler；
 `hasn_studio.manifest.STUDIO_AI_NATIVE_MANIFEST` 声明能力/工具面；`app/mcp/scopes.py` 聚合
 `STUDIO_SCOPE_CATALOG`；`app_catalog_registry` 注册 `build_studio_app()`。
 """
@@ -25,7 +25,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from backend.app.hasn_studio.service.studio_service import studio_service
+from backend.app.hasn_studio.service.studio_service import Subject, studio_service
+from backend.common.exception import errors
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +41,11 @@ def _int(payload: dict[str, Any], key: str) -> int:
 def _opt_int(payload: dict[str, Any], key: str) -> int | None:
     val = payload.get(key)
     return int(val) if val is not None else None
+
+
+def _subject(agent: AgentTokenPayload) -> Subject:
+    """分身身份恒取自 Agent JWT claims（PLANFIX-6）：分享/发布按分身主体走 resource_share。"""
+    return Subject.agent(agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id)
 
 
 # ---------------- 读（studio:read，出厂 allow） ----------------
@@ -150,9 +156,7 @@ async def handle_run_pipeline(
     )
 
 
-async def handle_render(
-    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
-) -> dict[str, Any]:
+async def handle_render(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
     """较低层直渲染：(project_id, props?|demo?, composition_id?, pipeline_key?) → 落 render_job + broker。"""
     return await studio_service.render(
         db,
@@ -167,9 +171,7 @@ async def handle_render(
     )
 
 
-async def handle_run_tool(
-    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
-) -> dict[str, Any]:
+async def handle_run_tool(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
     """原子工具透传（创作段，provider 可能花钱 → studio:render ask）。broker POST /v1/tools/{tool_name}。"""
     return await studio_service.run_tool(
         db,
@@ -183,15 +185,65 @@ async def handle_run_tool(
 # ---------------- 导出（studio:export，出厂 ask） ----------------
 
 
-async def handle_export(
-    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
-) -> dict[str, Any]:
+async def handle_export(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
     """导出成片（owner 隔离 + 序列化边界换 CDN 签名 URL）。"""
     return await studio_service.export(
         db,
         owner_hasn_id=agent.owner_hasn_id,
         artifact_id=_int(input_payload, 'artifact_id'),
         fmt=input_payload.get('format'),
+    )
+
+
+# ---------------- 分享 / 发布（studio:share，出厂 ask=外发） ----------------
+
+
+async def handle_share(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """分享项目/成品给人或分身（resource_share 全复用，需 manager 权）。
+
+    resource_type='project'|'artifact'；grantee_type='human'|'agent'|'enterprise'；permission viewer/editor/manager。
+    分享给分身（grantee_type='agent'）= 能力授权：该分身的 hasn.studio.* 即可操作此产物（受 permission 约束）。
+    """
+    resource_type = str(input_payload.get('resource_type') or '')
+    subject = _subject(agent)
+    resource_id = _int(input_payload, 'resource_id')
+    grantee_type = str(input_payload.get('grantee_type') or '')
+    grantee_id = str(input_payload.get('grantee_id') or '')
+    permission = str(input_payload.get('permission') or '')
+    if resource_type == 'project':
+        return await studio_service.add_project_share(
+            db,
+            subject=subject,
+            project_id=resource_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+        )
+    if resource_type == 'artifact':
+        return await studio_service.add_artifact_share(
+            db,
+            subject=subject,
+            artifact_id=resource_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+        )
+    raise errors.RequestError(msg="resource_type 仅支持 'project' 或 'artifact'")
+
+
+async def handle_publish(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    """把成片对外发布为可分享网页（/s/{slug}，M18 web 发布全复用，需 manager 权）。
+
+    出厂 ask（外发）：签名 URL 只在 /s/{slug} serve 期现解析（不烤进 HTML）。已发布过则更新现有 Site。
+    """
+    return await studio_service.publish_artifact(
+        db,
+        subject=_subject(agent),
+        artifact_id=_int(input_payload, 'artifact_id'),
+        title=input_payload.get('title'),
+        visibility=str(input_payload.get('visibility') or 'unlisted'),
+        password=input_payload.get('password'),
+        allow_download=bool(input_payload.get('allow_download') or False),
     )
 
 
@@ -210,4 +262,6 @@ STUDIO_TOOL_HANDLERS = {
     'hasn.studio.render': handle_render,
     'hasn.studio.run_tool': handle_run_tool,
     'hasn.studio.export': handle_export,
+    'hasn.studio.share': handle_share,
+    'hasn.studio.publish': handle_publish,
 }

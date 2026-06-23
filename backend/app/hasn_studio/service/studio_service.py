@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,7 @@ from sqlalchemy import select
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_studio.model import StudioArtifact, StudioAsset, StudioProject, StudioRenderJob
 from backend.app.hasn_studio.provider import StudioEngineError, montage_engine_provider
 from backend.common.exception import errors
@@ -50,6 +52,37 @@ _TERMINAL = ('succeeded', 'failed', 'canceled')
 # 成品物化用的私有桶上传类别（不触发 extract 抽取流水线；语义=已发布制品/产物字节）。
 _ARTIFACT_UPLOAD_CATEGORY = 'published_artifact'
 
+# 产物级协作（应用平台 v3 §6 / doc22 §3.6 全复用）：resource_share 的 resource_type。
+# studio 有两类可分享产物：项目（容器：管线/素材/分镜，editor 可改、可派渲染）+ 成品（最终视频）。
+_RESOURCE_TYPE_PROJECT = 'studio_project'
+_RESOURCE_TYPE_ARTIFACT = 'studio_artifact'
+# studio 项目/成品**无独立 visibility/scope/enterprise 列**（doc22 §3.1 数据模型；不同于知识库 Kb）：
+# 分享是「纯显式 ACL」（owner ∪ 经 resource_share 共享）。故有效权限判定的可见性/企业三参恒取保守默认
+# （personal / 无企业 / private）——visibility_grant 永不命中，唯 owner_grant + explicit_grant 生效。
+_DEFAULT_OWNER_SCOPE = 'personal'
+_DEFAULT_VISIBILITY = 'private'
+# 协作者档位（与知识库一致：viewer 只读 / editor 可改可派渲染 / manager 可再分享）。
+_PERMISSIONS = ('viewer', 'editor', 'manager')
+# 协作者类型（与知识库一致；分享给 agent = 能力授权，该分身 hasn.studio.* 可操作此产物）。
+_GRANTEE_TYPES = ('human', 'agent', 'enterprise')
+
+
+@dataclass(frozen=True)
+class Subject:
+    """操作主体：人或分身（分身背后总有主人）。与 knowledge/deck 同构。"""
+
+    hasn_id: str
+    kind: str  # 'human' | 'agent'
+    owner_hasn_id: str  # 背后主人（human 时 == hasn_id）
+
+    @staticmethod
+    def human(hasn_id: str) -> Subject:
+        return Subject(hasn_id=hasn_id, kind='human', owner_hasn_id=hasn_id)
+
+    @staticmethod
+    def agent(agent_hasn_id: str, owner_hasn_id: str) -> Subject:
+        return Subject(hasn_id=agent_hasn_id, kind='agent', owner_hasn_id=owner_hasn_id)
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -62,13 +95,408 @@ def _asset_uri(asset_id: str) -> str:
 def _asset_id_from_uri(uri: str | None) -> str | None:
     """从 hasn://asset/<id> 抽 asset_id；非该形态返回 None（不臆造）。"""
     if uri and uri.startswith(_ASSET_URI_PREFIX):
-        aid = uri[len(_ASSET_URI_PREFIX):].strip()
+        aid = uri[len(_ASSET_URI_PREFIX) :].strip()
         return aid or None
     return None
 
 
 class StudioService:
     """统一视频引擎业务线编排（owner 隔离 + 引擎 broker + 成品物化）。无 mock：渲染真打引擎、成品真落库。"""
+
+    # ================================================================ 产物级协作：权限闸（doc22 §3.6 全复用）
+    #
+    # 复用纪律（对齐 knowledge）：现有 owner_hasn_id keyed 方法（项目/素材/成品/渲染读写）一字不动——
+    # 「先 authorize 闸判权，再用 row.owner_hasn_id 委托旧方法」对产物主人与被分享者都返回正确结果，
+    # 零重写、零回归。被分享 editor 新建/派渲染的 job/artifact 仍随产物 owner_hasn_id 归属（行级隔离键）。
+    #
+    # studio 项目/成品**无 visibility/scope/enterprise 列**（doc22 §3.1）→ 分享 = 纯显式 ACL，
+    # 有效权限 = max(owner_grant, explicit_grant)；可见性/企业三参恒传保守默认（见模块常量）。
+
+    @staticmethod
+    async def _load_project_unconstrained(db: AsyncSession, project_id: int) -> StudioProject:
+        """按 id 取项目（不做 owner 过滤；access 交给权限闸）。"""
+        row = (await db.execute(select(StudioProject).where(StudioProject.id == project_id))).scalar_one_or_none()
+        if row is None:
+            raise errors.NotFoundError(msg='视频项目不存在')
+        return row
+
+    @staticmethod
+    async def _load_artifact_unconstrained(db: AsyncSession, artifact_id: int) -> StudioArtifact:
+        """按 id 取成品（不做 owner 过滤；access 交给权限闸）。"""
+        row = (await db.execute(select(StudioArtifact).where(StudioArtifact.id == artifact_id))).scalar_one_or_none()
+        if row is None:
+            raise errors.NotFoundError(msg='成品不存在')
+        return row
+
+    @staticmethod
+    async def _effective_project_permission(db: AsyncSession, *, project: StudioProject, subject: Subject) -> str:
+        return await resource_share_service.resolve_effective_permission(
+            db,
+            subject_hasn_id=subject.hasn_id,
+            subject_kind=subject.kind,
+            subject_owner_hasn_id=subject.owner_hasn_id,
+            resource_type=_RESOURCE_TYPE_PROJECT,
+            resource_id=str(project.id),
+            resource_owner_hasn_id=project.owner_hasn_id,
+            resource_owner_scope=_DEFAULT_OWNER_SCOPE,
+            resource_enterprise_id=None,
+            resource_visibility=_DEFAULT_VISIBILITY,
+        )
+
+    @staticmethod
+    async def _effective_artifact_permission(db: AsyncSession, *, artifact: StudioArtifact, subject: Subject) -> str:
+        return await resource_share_service.resolve_effective_permission(
+            db,
+            subject_hasn_id=subject.hasn_id,
+            subject_kind=subject.kind,
+            subject_owner_hasn_id=subject.owner_hasn_id,
+            resource_type=_RESOURCE_TYPE_ARTIFACT,
+            resource_id=str(artifact.id),
+            resource_owner_hasn_id=artifact.owner_hasn_id,
+            resource_owner_scope=_DEFAULT_OWNER_SCOPE,
+            resource_enterprise_id=None,
+            resource_visibility=_DEFAULT_VISIBILITY,
+        )
+
+    @staticmethod
+    async def authorize_project(db: AsyncSession, *, subject: Subject, project_id: int, need: str) -> StudioProject:
+        """校验 subject 对项目至少有 need 权限。不足报错（none→不存在不泄露，其它→无权限）。返回项目行
+        （caller 用 row.owner_hasn_id 委托旧 owner-keyed 方法）。"""
+        project = await StudioService._load_project_unconstrained(db, project_id)
+        eff = await StudioService._effective_project_permission(db, project=project, subject=subject)
+        if rank(eff) < rank(need):
+            if rank(eff) == 0:
+                raise errors.NotFoundError(msg='视频项目不存在')
+            raise errors.ForbiddenError(msg='没有该操作权限')
+        return project
+
+    @staticmethod
+    async def authorize_artifact(db: AsyncSession, *, subject: Subject, artifact_id: int, need: str) -> StudioArtifact:
+        """校验 subject 对成品至少有 need 权限。不足报错。返回成品行（caller 用 row.owner_hasn_id 委托旧方法）。"""
+        artifact = await StudioService._load_artifact_unconstrained(db, artifact_id)
+        eff = await StudioService._effective_artifact_permission(db, artifact=artifact, subject=subject)
+        if rank(eff) < rank(need):
+            if rank(eff) == 0:
+                raise errors.NotFoundError(msg='成品不存在')
+            raise errors.ForbiddenError(msg='没有该操作权限')
+        return artifact
+
+    @staticmethod
+    async def _shared_ids_for_agent(db: AsyncSession, *, resource_type: str, agent_hasn_id: str) -> set[str]:
+        """某分身经「显式共享给该 agent」能看到的产物 id 集合。"""
+        from backend.app.hasn.model import HasnResourceShare
+
+        rows = (
+            (
+                await db.execute(
+                    select(HasnResourceShare.resource_id).where(
+                        HasnResourceShare.resource_type == resource_type,
+                        HasnResourceShare.status == 'active',
+                        HasnResourceShare.grantee_type == 'agent',
+                        HasnResourceShare.grantee_id == agent_hasn_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return set(rows)
+
+    @staticmethod
+    async def list_accessible_projects(db: AsyncSession, *, subject: Subject) -> list[dict[str, Any]]:
+        """可访问视频项目 = 我拥有的 ∪ 共享给我的，每条带 relation('owner'|'shared') + my_permission。"""
+        human = subject.owner_hasn_id
+        owned = (
+            (
+                await db.execute(
+                    select(StudioProject).where(StudioProject.owner_hasn_id == human).order_by(StudioProject.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        owned_ids = {p.id for p in owned}
+
+        shared_ids: set[str] = set(
+            await resource_share_service.shared_resource_ids_for_human(
+                db, resource_type=_RESOURCE_TYPE_PROJECT, human_hasn_id=human
+            )
+        )
+        if subject.kind == 'agent':
+            shared_ids |= await StudioService._shared_ids_for_agent(
+                db, resource_type=_RESOURCE_TYPE_PROJECT, agent_hasn_id=subject.hasn_id
+            )
+        extra_ids = {int(i) for i in shared_ids if i.isdigit()} - owned_ids
+        extra: list[StudioProject] = []
+        if extra_ids:
+            extra = list(
+                (await db.execute(select(StudioProject).where(StudioProject.id.in_(extra_ids)))).scalars().all()
+            )
+
+        items: list[dict[str, Any]] = [_serialize_project(p, my_permission='manager', relation='owner') for p in owned]
+        for p in extra:
+            eff = await StudioService._effective_project_permission(db, project=p, subject=subject)
+            if rank(eff) == 0:
+                continue
+            items.append(_serialize_project(p, my_permission=eff, relation='shared'))
+        return items
+
+    @staticmethod
+    async def list_accessible_artifacts(
+        db: AsyncSession, *, subject: Subject, project_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """可访问成品 = 我拥有的 ∪ 共享给我的，每条带 relation + my_permission，序列化边界换签名 URL。
+
+        签名 URL 用各成品 **owner_hasn_id** 解析（owner 恒可读自己资产；被分享者看到的是产物主人的资产）。
+        可选 project_id 过滤（owned 与 shared 都收敛到该项目）。
+        """
+        human = subject.owner_hasn_id
+        owned_conds = [StudioArtifact.owner_hasn_id == human]
+        if project_id is not None:
+            owned_conds.append(StudioArtifact.project_id == project_id)
+        owned = (
+            (await db.execute(select(StudioArtifact).where(*owned_conds).order_by(StudioArtifact.id.desc())))
+            .scalars()
+            .all()
+        )
+        owned_ids = {a.id for a in owned}
+
+        shared_ids: set[str] = set(
+            await resource_share_service.shared_resource_ids_for_human(
+                db, resource_type=_RESOURCE_TYPE_ARTIFACT, human_hasn_id=human
+            )
+        )
+        if subject.kind == 'agent':
+            shared_ids |= await StudioService._shared_ids_for_agent(
+                db, resource_type=_RESOURCE_TYPE_ARTIFACT, agent_hasn_id=subject.hasn_id
+            )
+        extra_ids = {int(i) for i in shared_ids if i.isdigit()} - owned_ids
+        extra: list[StudioArtifact] = []
+        if extra_ids:
+            extra_conds = [StudioArtifact.id.in_(extra_ids)]
+            if project_id is not None:
+                extra_conds.append(StudioArtifact.project_id == project_id)
+            extra = list((await db.execute(select(StudioArtifact).where(*extra_conds))).scalars().all())
+
+        rows: list[tuple[StudioArtifact, str, str]] = [(a, 'manager', 'owner') for a in owned]
+        for a in extra:
+            eff = await StudioService._effective_artifact_permission(db, artifact=a, subject=subject)
+            if rank(eff) == 0:
+                continue
+            rows.append((a, eff, 'shared'))
+
+        # 按各成品自己的 owner 分组批量换签名 URL（不同 owner 的资产分别解析，避免越权读不到）。
+        url_map: dict[str, str] = {}
+        owner_to_uris: dict[str, list[str | None]] = {}
+        for a, _, _ in rows:
+            owner_to_uris.setdefault(a.owner_hasn_id, []).extend([a.video_asset_uri, a.thumbnail_asset_uri])
+        for owner, uris in owner_to_uris.items():
+            url_map.update(await StudioService._resolve_asset_urls(db, owner_hasn_id=owner, uris=uris))
+        return [_serialize_artifact(a, url_map, my_permission=perm, relation=rel) for a, perm, rel in rows]
+
+    # ---------------- 共享名单管理（项目；manager 权） ----------------
+
+    @staticmethod
+    async def list_project_shares(db: AsyncSession, *, subject: Subject, project_id: int) -> dict[str, Any]:
+        await StudioService.authorize_project(db, subject=subject, project_id=project_id, need='manager')
+        shares = await resource_share_service.list_shares(
+            db, resource_type=_RESOURCE_TYPE_PROJECT, resource_id=str(project_id)
+        )
+        return {'project_id': project_id, 'shares': shares}
+
+    @staticmethod
+    async def add_project_share(
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        project_id: int,
+        grantee_type: str,
+        grantee_id: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        """加/改一条项目协作授权（grantee=agent 即能力授权：该分身 hasn.studio.* 可操作此项目）。"""
+        StudioService._validate_share_input(grantee_type, permission)
+        project = await StudioService.authorize_project(db, subject=subject, project_id=project_id, need='manager')
+        return await resource_share_service.upsert_share(
+            db,
+            resource_type=_RESOURCE_TYPE_PROJECT,
+            resource_id=str(project_id),
+            owner_hasn_id=project.owner_hasn_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+            granted_by=subject.hasn_id,
+        )
+
+    @staticmethod
+    async def revoke_project_share(
+        db: AsyncSession, *, subject: Subject, project_id: int, grantee_type: str, grantee_id: str
+    ) -> bool:
+        await StudioService.authorize_project(db, subject=subject, project_id=project_id, need='manager')
+        return await resource_share_service.revoke_share(
+            db,
+            resource_type=_RESOURCE_TYPE_PROJECT,
+            resource_id=str(project_id),
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+        )
+
+    # ---------------- 共享名单管理（成品；manager 权） ----------------
+
+    @staticmethod
+    async def list_artifact_shares(db: AsyncSession, *, subject: Subject, artifact_id: int) -> dict[str, Any]:
+        await StudioService.authorize_artifact(db, subject=subject, artifact_id=artifact_id, need='manager')
+        shares = await resource_share_service.list_shares(
+            db, resource_type=_RESOURCE_TYPE_ARTIFACT, resource_id=str(artifact_id)
+        )
+        return {'artifact_id': artifact_id, 'shares': shares}
+
+    @staticmethod
+    async def add_artifact_share(
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        artifact_id: int,
+        grantee_type: str,
+        grantee_id: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        """加/改一条成品协作授权（grantee=agent 即能力授权：该分身 hasn.studio.* 可操作此成品）。"""
+        StudioService._validate_share_input(grantee_type, permission)
+        artifact = await StudioService.authorize_artifact(db, subject=subject, artifact_id=artifact_id, need='manager')
+        return await resource_share_service.upsert_share(
+            db,
+            resource_type=_RESOURCE_TYPE_ARTIFACT,
+            resource_id=str(artifact_id),
+            owner_hasn_id=artifact.owner_hasn_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+            granted_by=subject.hasn_id,
+        )
+
+    @staticmethod
+    async def revoke_artifact_share(
+        db: AsyncSession, *, subject: Subject, artifact_id: int, grantee_type: str, grantee_id: str
+    ) -> bool:
+        await StudioService.authorize_artifact(db, subject=subject, artifact_id=artifact_id, need='manager')
+        return await resource_share_service.revoke_share(
+            db,
+            resource_type=_RESOURCE_TYPE_ARTIFACT,
+            resource_id=str(artifact_id),
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+        )
+
+    @staticmethod
+    def _validate_share_input(grantee_type: str, permission: str) -> None:
+        if grantee_type not in _GRANTEE_TYPES:
+            raise errors.RequestError(msg='仅支持 human/agent/enterprise 协作者')
+        if permission not in _PERMISSIONS:
+            raise errors.RequestError(msg='非法权限档')
+
+    # ================================================================ 对外公开发布（M18 web 发布全复用）
+    #
+    # doc22 §3.6 / §9 S18：成片对外公开走模块 18（hasn_publish）——零新表零新发布逻辑。
+    # 复用 PublishService.create_site/update_site/get_by_source（kind='video'，source_app='studio'，
+    # source_ref=<artifact_id>）。**关键（资产纪律）**：revision.asset_id 直接存成片的 hasn_assets id +
+    # runtime='video-landing' → /s/{slug} 渲染时**才**用该 asset 现解析签名 URL 生成 <video> 落地页
+    # （绝不在发布期把签名 URL 烤进静态 HTML，对齐「signed URL 只在序列化/serve 边界」）。
+
+    @staticmethod
+    async def publish_artifact(
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        artifact_id: int,
+        title: str | None = None,
+        visibility: str = 'unlisted',
+        password: str | None = None,
+        allow_download: bool = False,
+    ) -> dict[str, Any]:
+        """把一个成片对外发布为可分享网页（需 manager 权）。已发布过则更新现有 Site（slug/URL 不变）。
+
+        返回 publish service 的 {site, revision}（site.slug 即 /s/{slug} 路径）。
+        """
+        from backend.app.hasn_publish.service.publish_service import publish_service
+
+        artifact = await StudioService.authorize_artifact(db, subject=subject, artifact_id=artifact_id, need='manager')
+        asset_id = _asset_id_from_uri(artifact.video_asset_uri)
+        if not asset_id:
+            raise errors.RequestError(msg='该成品暂无可发布的成片资产')
+        pub_title = (title or artifact.title or '视频').strip()[:200] or '视频'
+        manifest = {'media_kind': 'video', 'resolution': artifact.resolution}
+
+        existing = await publish_service.get_by_source(
+            db, owner_id=artifact.owner_hasn_id, source_app='studio', source_ref=str(artifact_id)
+        )
+        if existing is not None:
+            # 已发布过 → 更新内容（新 revision，slug 不变）+ 同步可见性/口令/下载能力。
+            result = await publish_service.update_site(
+                db,
+                owner_id=artifact.owner_hasn_id,
+                site_id=existing['id'],
+                asset_id=asset_id,
+                runtime='video-landing',
+                content_hash='',
+                size_bytes=0,
+                manifest_json=manifest,
+            )
+            site = await publish_service.set_visibility(
+                db,
+                owner_id=artifact.owner_hasn_id,
+                site_id=existing['id'],
+                visibility=visibility,
+                password=password,
+                allow_download=allow_download,
+            )
+            result['site'] = site
+            return result
+
+        return await publish_service.create_site(
+            db,
+            owner_id=artifact.owner_hasn_id,
+            publisher_agent_id=subject.hasn_id if subject.kind == 'agent' else None,
+            kind='video',
+            title=pub_title,
+            asset_id=asset_id,
+            runtime='video-landing',
+            content_hash='',
+            size_bytes=0,
+            manifest_json=manifest,
+            visibility=visibility,
+            password=password,
+            allow_present=False,  # 视频落地页无放映态
+            allow_download=allow_download,
+            source_app='studio',
+            source_ref=str(artifact_id),
+        )
+
+    @staticmethod
+    async def get_artifact_publication(
+        db: AsyncSession, *, subject: Subject, artifact_id: int
+    ) -> dict[str, Any] | None:
+        """读取某成片的对外发布态（需 viewer 权；未发布返回 None）。"""
+        from backend.app.hasn_publish.service.publish_service import publish_service
+
+        artifact = await StudioService.authorize_artifact(db, subject=subject, artifact_id=artifact_id, need='viewer')
+        return await publish_service.get_by_source(
+            db, owner_id=artifact.owner_hasn_id, source_app='studio', source_ref=str(artifact_id)
+        )
+
+    @staticmethod
+    async def unpublish_artifact(db: AsyncSession, *, subject: Subject, artifact_id: int) -> bool:
+        """撤销成片对外发布（需 manager 权；URL 返回 410）。返回是否命中已发布 Site。"""
+        from backend.app.hasn_publish.service.publish_service import publish_service
+
+        artifact = await StudioService.authorize_artifact(db, subject=subject, artifact_id=artifact_id, need='manager')
+        existing = await publish_service.get_by_source(
+            db, owner_id=artifact.owner_hasn_id, source_app='studio', source_ref=str(artifact_id)
+        )
+        if existing is None:
+            return False
+        await publish_service.revoke(db, owner_id=artifact.owner_hasn_id, site_id=existing['id'])
+        return True
 
     # ================================================================ 管线目录（broker）
 
@@ -137,9 +565,7 @@ class StudioService:
     async def list_projects(db: AsyncSession, *, owner_hasn_id: str) -> list[dict[str, Any]]:
         """列出某主人全部项目（行级隔离，最近优先）。"""
         stmt = (
-            select(StudioProject)
-            .where(StudioProject.owner_hasn_id == owner_hasn_id)
-            .order_by(StudioProject.id.desc())
+            select(StudioProject).where(StudioProject.owner_hasn_id == owner_hasn_id).order_by(StudioProject.id.desc())
         )
         rows = (await db.execute(stmt)).scalars().all()
         return [_serialize_project(r) for r in rows]
@@ -215,9 +641,7 @@ class StudioService:
         format 参数当前仅记录（引擎成片即 mp4，转码非 P3 范围）；零 fake——asset 解析不到则无 download_url。
         """
         row = await StudioService._load_artifact(db, owner_hasn_id=owner_hasn_id, artifact_id=artifact_id)
-        url_map = await StudioService._resolve_asset_urls(
-            db, owner_hasn_id=owner_hasn_id, uris=[row.video_asset_uri]
-        )
+        url_map = await StudioService._resolve_asset_urls(db, owner_hasn_id=owner_hasn_id, uris=[row.video_asset_uri])
         download_url = url_map.get(row.video_asset_uri)
         return {
             'artifact_id': row.id,
@@ -360,9 +784,7 @@ class StudioService:
     # ================================================================ 渲染 job 读 + 成品物化
 
     @staticmethod
-    async def get_render_job(
-        db: AsyncSession, *, owner_hasn_id: str, render_job_id: int
-    ) -> dict[str, Any]:
+    async def get_render_job(db: AsyncSession, *, owner_hasn_id: str, render_job_id: int) -> dict[str, Any]:
         """读渲染 job（owner 隔离）。非终态且有 engine_job_id → 惰性轮询引擎落 status/progress/stage/cost。
 
         成功首次轮询到（且本 job 尚无 artifact）→ 物化成品（取片 + 上传私有桶 + 落 studio_artifact +
@@ -412,9 +834,7 @@ class StudioService:
         记录真实错误到 job.error（不覆盖既有 error 前缀），绝不 fake。
         """
         existing = (
-            await db.execute(
-                select(StudioArtifact.id).where(StudioArtifact.render_job_id == job.id).limit(1)
-            )
+            await db.execute(select(StudioArtifact.id).where(StudioArtifact.render_job_id == job.id).limit(1))
         ).scalar_one_or_none()
         if existing is not None:
             return
@@ -508,9 +928,7 @@ class StudioService:
 
     @staticmethod
     async def _load_project(db: AsyncSession, *, owner_hasn_id: str, project_id: int) -> StudioProject:
-        stmt = select(StudioProject).where(
-            StudioProject.id == project_id, StudioProject.owner_hasn_id == owner_hasn_id
-        )
+        stmt = select(StudioProject).where(StudioProject.id == project_id, StudioProject.owner_hasn_id == owner_hasn_id)
         row = (await db.execute(stmt)).scalar_one_or_none()
         if row is None:
             raise errors.NotFoundError(msg='视频项目不存在')
@@ -537,9 +955,7 @@ class StudioService:
         return row
 
     @staticmethod
-    async def _resolve_asset_urls(
-        db: AsyncSession, *, owner_hasn_id: str, uris: list[str | None]
-    ) -> dict[str, str]:
+    async def _resolve_asset_urls(db: AsyncSession, *, owner_hasn_id: str, uris: list[str | None]) -> dict[str, str]:
         """批量把 hasn://asset/<id> 换 owner 可读签名 URL；返回 {原始 uri: signed_url}。"""
         uri_to_id: dict[str, str] = {}
         for uri in uris:
@@ -610,8 +1026,10 @@ def _artifact_title(job: StudioRenderJob, snapshot: dict[str, Any]) -> str:
     return f'{pk} 成片'[:200]
 
 
-def _serialize_project(row: StudioProject) -> dict[str, Any]:
-    return {
+def _serialize_project(
+    row: StudioProject, *, my_permission: str | None = None, relation: str | None = None
+) -> dict[str, Any]:
+    out = {
         'id': row.id,
         'owner_hasn_id': row.owner_hasn_id,
         'agent_hasn_id': row.agent_hasn_id,
@@ -625,6 +1043,11 @@ def _serialize_project(row: StudioProject) -> dict[str, Any]:
         'created_time': _iso(getattr(row, 'created_time', None)),
         'updated_time': _iso(getattr(row, 'updated_time', None)),
     }
+    if my_permission is not None:
+        out['my_permission'] = my_permission
+    if relation is not None:
+        out['relation'] = relation
+    return out
 
 
 def _serialize_asset(row: StudioAsset) -> dict[str, Any]:
@@ -662,8 +1085,14 @@ def _serialize_render_job(row: StudioRenderJob) -> dict[str, Any]:
     }
 
 
-def _serialize_artifact(row: StudioArtifact, url_map: dict[str, str]) -> dict[str, Any]:
-    return {
+def _serialize_artifact(
+    row: StudioArtifact,
+    url_map: dict[str, str],
+    *,
+    my_permission: str | None = None,
+    relation: str | None = None,
+) -> dict[str, Any]:
+    out = {
         'id': row.id,
         'project_id': row.project_id,
         'render_job_id': row.render_job_id,
@@ -683,6 +1112,11 @@ def _serialize_artifact(row: StudioArtifact, url_map: dict[str, str]) -> dict[st
         'meta': row.meta or {},
         'created_time': _iso(getattr(row, 'created_time', None)),
     }
+    if my_permission is not None:
+        out['my_permission'] = my_permission
+    if relation is not None:
+        out['relation'] = relation
+    return out
 
 
 studio_service = StudioService()

@@ -558,6 +558,9 @@ class AiNativeRuntimeGateway:
             'studio.render': studio_handlers.handle_render,
             'studio.run_tool': studio_handlers.handle_run_tool,
             'studio.export': studio_handlers.handle_export,
+            # 分享/发布（§3.6 全复用 resource_share + M18 web 发布）：出厂 ask（外发，主人裁决）。
+            'studio.share': studio_handlers.handle_share,
+            'studio.publish': studio_handlers.handle_publish,
         }
         self._internal_handlers_cache = registry
         return registry

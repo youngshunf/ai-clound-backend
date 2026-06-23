@@ -74,7 +74,7 @@ def test_studio_manifest_validates() -> None:
 
 
 def test_studio_in_builtin_registry() -> None:
-    """studio 进 _builtin_manifests；cloud-brokered 形态；P3 暴露 12 工具（read/write allow，render/export ask）。"""
+    """studio 进 _builtin_manifests；cloud-brokered 形态；P3+P6 暴露 14 工具（read/write allow，render/export/share ask）。"""
     builtin_ids = {m['app_id'] for m in ai_native_app_registry.list_builtin_apps()}
     assert 'studio' in builtin_ids
     manifest = ai_native_app_registry.get_builtin_manifest('studio')
@@ -82,9 +82,9 @@ def test_studio_in_builtin_registry() -> None:
     assert manifest['version'] == '1.0.0'
     assert manifest['execution_mode'] == 'cloud'
     assert manifest['transport_mode'] == 'cloud'
-    # STUDIO-P3：工具面落地（12 工具 = capabilities，gateway_internal handler）。
-    assert len(manifest['tools']) == 12
-    assert len(manifest['capabilities']) == 12
+    # STUDIO-P3 工具面（12）+ STUDIO-P6 分享/发布（2）= 14 工具（= capabilities，gateway_internal handler）。
+    assert len(manifest['tools']) == 14
+    assert len(manifest['capabilities']) == 14
 
 
 def test_studio_notifications_emit_declared() -> None:
@@ -95,7 +95,7 @@ def test_studio_notifications_emit_declared() -> None:
 
 
 def test_studio_p3_tools_scope_three_states() -> None:
-    """STUDIO-P3：12 工具的 scope/三态出厂一致——read/write=allow（不确认），render/export=ask（确认）。"""
+    """STUDIO-P3+P6：14 工具的 scope/三态出厂一致——read/write=allow（不确认），render/export/share=ask（确认）。"""
     expected_mcp_names = {
         'hasn.studio.list_pipelines',
         'hasn.studio.list_projects',
@@ -109,6 +109,8 @@ def test_studio_p3_tools_scope_three_states() -> None:
         'hasn.studio.render',
         'hasn.studio.run_tool',
         'hasn.studio.export',
+        'hasn.studio.share',
+        'hasn.studio.publish',
     }
     caps = STUDIO_AI_NATIVE_MANIFEST['capabilities']
     assert {c['mcp_name'] for c in caps} == expected_mcp_names
@@ -126,21 +128,25 @@ def test_studio_p3_tools_scope_three_states() -> None:
         'hasn.studio.save_storyboard',
     ):
         assert by_name[name]['human_confirmation']['required'] is False, f'{name} 出厂应 allow'
-    # render/run_pipeline/run_tool/export 出厂 ask（human_confirmation.required=True，花算力/外发）。
+    # render/run_pipeline/run_tool/export/share/publish 出厂 ask（human_confirmation.required=True，花算力/外发）。
     for name in (
         'hasn.studio.run_pipeline',
         'hasn.studio.render',
         'hasn.studio.run_tool',
         'hasn.studio.export',
+        'hasn.studio.share',
+        'hasn.studio.publish',
     ):
         assert by_name[name]['human_confirmation']['required'] is True, f'{name} 出厂应 ask'
 
-    # required_scopes 对齐：read/write/render/export。
+    # required_scopes 对齐：read/write/render/export/share。
     assert by_name['hasn.studio.list_pipelines']['required_scopes'] == ['studio:read']
     assert by_name['hasn.studio.save_project']['required_scopes'] == ['studio:write']
     assert by_name['hasn.studio.run_pipeline']['required_scopes'] == ['studio:render']
     assert by_name['hasn.studio.run_tool']['required_scopes'] == ['studio:render']
     assert by_name['hasn.studio.export']['required_scopes'] == ['studio:export']
+    assert by_name['hasn.studio.share']['required_scopes'] == ['studio:share']
+    assert by_name['hasn.studio.publish']['required_scopes'] == ['studio:share']
 
 
 def test_studio_p3_tool_handlers_registered_in_gateway() -> None:
@@ -246,10 +252,7 @@ async def test_studio_tables_in_hasn_studio_schema(db: AsyncSession) -> None:
     """4 张表都建在 hasn_studio schema，绝不落 public（ADR-15 应用独立 schema）。"""
     rows = (
         await db.execute(
-            sa.text(
-                'SELECT table_schema, table_name FROM information_schema.tables '
-                'WHERE table_name = ANY(:names)'
-            ),
+            sa.text('SELECT table_schema, table_name FROM information_schema.tables WHERE table_name = ANY(:names)'),
             {'names': list(_STUDIO_TABLES)},
         )
     ).all()

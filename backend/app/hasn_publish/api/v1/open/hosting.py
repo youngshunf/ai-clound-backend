@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import html
 
+from typing import TYPE_CHECKING, Annotated
+
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -26,8 +28,10 @@ from pydantic import BaseModel, Field
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.core.conf import settings
-from backend.database.db import CurrentSession
 from backend.database.redis import redis_client
+
+if TYPE_CHECKING:
+    from backend.database.db import CurrentSession
 
 router = APIRouter()
 
@@ -56,7 +60,7 @@ async def _rate_limited(key: str, *, window: int, limit: int) -> bool:
         if count == 1:
             await redis_client.expire(key, window)
         return count > limit
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -73,10 +77,10 @@ def _content_csp(origin: str) -> str:
     return (
         'sandbox allow-scripts; '
         "default-src 'none'; "
-        f"img-src {origin} data: blob:; "
+        f'img-src {origin} data: blob:; '
         f"style-src {origin} 'unsafe-inline'; "
-        f"font-src {origin} data:; "
-        f"media-src {origin} data: blob:; "
+        f'font-src {origin} data:; '
+        f'media-src {origin} data: blob:; '
         f"script-src {origin} 'unsafe-inline'; "
         "connect-src 'none'; "
         "base-uri 'none'; "
@@ -100,9 +104,7 @@ async def _authorize_view(
     site = await publish_service.get_site_by_slug(db, slug=slug)
     if site is None or site.status == 'revoked':
         # 不存在/已撤销：限速探测 + 404/410
-        if await _rate_limited(
-            f'publish:probe:{_client_ip(request)}', window=_PROBE_WINDOW_SECONDS, limit=_PROBE_MAX
-        ):
+        if await _rate_limited(f'publish:probe:{_client_ip(request)}', window=_PROBE_WINDOW_SECONDS, limit=_PROBE_MAX):
             return None, JSONResponse(status_code=429, content={'code': 429, 'msg': '请求过于频繁', 'data': None})
         if site is None:
             return None, JSONResponse(status_code=404, content={'code': 404, 'msg': '分享不存在', 'data': None})
@@ -123,7 +125,9 @@ async def _authorize_view(
 
 
 @router.get('/s/{slug}', summary='发布查看器外壳')
-async def viewer_shell(request: Request, db: CurrentSession, slug: str, vt: str | None = Query(default=None)) -> Response:
+async def viewer_shell(
+    request: Request, db: CurrentSession, slug: str, vt: Annotated[str | None, Query()] = None
+) -> Response:
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         # password 未授权时返回输口令页（200 + 表单），其余原样
@@ -171,7 +175,9 @@ async def unlock(request: Request, db: CurrentSession, slug: str, body: UnlockRe
 
 
 @router.get('/s/{slug}/content', summary='取制品内容（服务端代吐 + CSP sandbox）')
-async def content(request: Request, db: CurrentSession, slug: str, vt: str | None = Query(default=None)) -> Response:
+async def content(
+    request: Request, db: CurrentSession, slug: str, vt: Annotated[str | None, Query()] = None
+) -> Response:
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         return err
@@ -191,6 +197,23 @@ async def content(request: Request, db: CurrentSession, slug: str, vt: str | Non
         'Referrer-Policy': 'no-referrer',
         **_noindex_headers(site),
     }
+    if revision.runtime == 'video-landing':
+        # studio 视频成片落地页（doc22 §3.6 / §9 S18）：revision.asset_id 指向成片本身（hasn_assets）。
+        # **serve 边界现解析签名 URL**（绝不在发布期烤进 HTML），生成单页 <video> 落地。media-src
+        # 显式放行成片签名 URL host（私有桶 CDN 域）+ 站点 origin（见 _content_csp_for_video）。
+        resolved = await hasn_asset_service.resolve(db, requester_hasn_id=site.owner_id, asset_ids=[revision.asset_id])
+        video_url = next((r.display_url for r in resolved if r.asset_id == revision.asset_id), None)
+        if not video_url:
+            return JSONResponse(status_code=410, content={'code': 410, 'msg': '成片资产不可用', 'data': None})
+        headers = {
+            'Content-Security-Policy': _content_csp_for_video(origin, video_url),
+            'X-Content-Type-Options': 'nosniff',
+            'Referrer-Policy': 'no-referrer',
+            **_noindex_headers(site),
+        }
+        return HTMLResponse(
+            content=_video_landing_html(site.title, video_url, allow_download=site.allow_download), headers=headers
+        )
     if revision.runtime == 'single-html':
         stream = storage_service.read_stream(db, storage_id=asset.storage_id, object_key=asset.object_key)
         return StreamingResponse(stream, media_type='text/html; charset=utf-8', headers=base_headers)
@@ -204,7 +227,7 @@ async def content(request: Request, db: CurrentSession, slug: str, vt: str | Non
 
 @router.get('/s/{slug}/assets/{name:path}', summary='bundle-zip 子资源（复数 assets）')
 async def asset(
-    request: Request, db: CurrentSession, slug: str, name: str, vt: str | None = Query(default=None)
+    request: Request, db: CurrentSession, slug: str, name: str, vt: Annotated[str | None, Query()] = None
 ) -> Response:
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
@@ -230,6 +253,52 @@ async def asset(
 
 
 # ---------- helpers ----------
+
+
+def _origin_of(url: str) -> str:
+    """从 URL 抽 scheme://host[:port] 作为 CSP host-source（解析失败回退 https: 通配，宁松不锁死视频）。"""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme and parts.netloc:
+        return f'{parts.scheme}://{parts.netloc}'
+    return 'https:'
+
+
+def _content_csp_for_video(origin: str, video_url: str) -> str:
+    """video-landing 的 CSP：sandbox（opaque origin）+ 放行成片 CDN host（media-src）+ 断外联。
+
+    与 _content_csp 同基调，但 media-src 额外含成片签名 URL 的 host（私有桶/CDN 域），否则 <video> 拉不到流。
+    """
+    media_host = _origin_of(video_url)
+    return (
+        'sandbox allow-scripts; '
+        "default-src 'none'; "
+        f'img-src {origin} {media_host} data: blob:; '
+        f"style-src {origin} 'unsafe-inline'; "
+        f'media-src {origin} {media_host} data: blob:; '
+        f"script-src {origin} 'unsafe-inline'; "
+        "connect-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'none'"
+    )
+
+
+def _video_landing_html(title: str, video_url: str, *, allow_download: bool) -> str:
+    """单页 <video> 落地（成片对外公开）。title 经 html.escape；video_url 是 serve 期现解析的签名 URL。"""
+    t = html.escape(title or '视频')
+    src = html.escape(video_url, quote=True)
+    download_attr = '' if allow_download else ' controlsList="nodownload" disablePictureInPicture'
+    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{t} · 唤星</title><style>
+html,body{{margin:0;height:100%;background:#0b0b0f;display:flex;flex-direction:column}}
+header{{color:#e5e7eb;font:600 15px system-ui,-apple-system,sans-serif;padding:14px 18px}}
+main{{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:0 16px 16px}}
+video{{max-width:100%;max-height:100%;border-radius:12px;background:#000;outline:none}}
+</style></head><body>
+<header>{t}</header>
+<main><video src="{src}" controls playsinline preload="metadata"{download_attr}></video></main>
+</body></html>"""
 
 
 def _bundle_entry(manifest: dict | None, name: str) -> dict | None:
