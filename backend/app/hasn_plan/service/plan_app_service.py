@@ -55,6 +55,7 @@ _TODO_FIELDS = {
     'deadline_label',
     'min_block_minutes',
     'active_work_session_id',
+    'output_spec',
     'source',
     'completed_time',
 }

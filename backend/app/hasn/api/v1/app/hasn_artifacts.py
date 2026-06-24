@@ -67,6 +67,25 @@ async def list_owner_artifacts(
     return response_base.success(data=ArtifactListData(items=items, total=total, page=page, size=size))
 
 
+@router.get(
+    '/artifacts/by-origin',
+    summary='列某业务对象产出的产物（按 origin_ref 反查，规划详情产物轨）',
+    dependencies=[DependsJwtAuth],
+)
+async def list_artifacts_by_origin(
+    request: Request,
+    db: CurrentSession,
+    origin_ref: Annotated[str, Query(description='业务资源回指，如 resource:plan:todo:{id}')],
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> ResponseSchemaModel[ArtifactListData]:
+    owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
+    items, total = await hasn_artifacts_service.list_by_origin(
+        db, owner_hasn_id=owner_hasn_id, origin_ref=origin_ref, page=page, size=size
+    )
+    return response_base.success(data=ArtifactListData(items=items, total=total, page=page, size=size))
+
+
 @router.get('/artifacts/{artifact_id}', summary='产物详情（含签名 URL）', dependencies=[DependsJwtAuth])
 async def get_artifact_detail(
     request: Request,

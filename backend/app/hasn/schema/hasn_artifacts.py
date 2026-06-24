@@ -14,8 +14,10 @@ class HasnArtifactsSchemaBase(SchemaBase):
     kind: str = Field(description='产物类型 (image:图片:blue/voice:语音:purple/file:文件:gray/document:文档:cyan/deck:演示文稿:violet/webpage:网页:green/dataset:数据集:orange/other:其它:default)')
     title: str | None = Field(None, description='展示标题 (工具给/文件名/截断的 prompt)')
     summary: str | None = Field(None, description='简要描述')
+    body: str | None = Field(None, description='文本/markdown 正文直接入库 (kind=document 文本产物用，不上传文件)')
     asset_id: str | None = Field(None, description='关联资产 ID (public.hasn_assets.asset_id，image/voice/file 主路径)')
     resource_uri: str | None = Field(None, description='hasn:// 资源 URI (客户端无关，deck/webpage/外部结果无 asset 本体时用)')
+    origin_ref: str | None = Field(None, description='产出所属业务资源 (resource:plan:todo:{id} 等，按业务反查)')
     conversation_id: str | UUID | None = Field(None, description='来源会话 ID (public.hasn_conversations.id)')
     message_id: int | None = Field(None, description='来源消息 ID (public.hasn_messages.id)')
     session_id: str | None = Field(None, description='来源本地 runtime session (ULID)')
@@ -64,8 +66,10 @@ class RecordArtifactParam(SchemaBase):
     )
     title: str | None = Field(None, description='展示标题')
     summary: str | None = Field(None, description='简要描述')
+    body: str | None = Field(None, description='文本/markdown 正文直接入库（kind=document 文本产物用，不上传文件）')
     asset_id: str | None = Field(None, description='关联资产 ID（image/voice/file 主路径）')
     resource_uri: str | None = Field(None, description='hasn:// 资源 URI（deck/webpage 等无 asset 本体时用）')
+    origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等，按业务反查）')
     conversation_id: str | None = Field(None, description='来源会话 ID（UUID 字符串）')
     message_id: int | None = Field(None, description='来源消息 ID')
     session_id: str | None = Field(None, description='来源本地 runtime session（ULID）')
@@ -88,8 +92,10 @@ class ArtifactItem(SchemaBase):
     kind: str
     title: str | None = None
     summary: str | None = None
+    body: str | None = Field(None, description='文本/markdown 正文（kind=document 文本产物，前端内联渲染）')
     asset_id: str | None = None
     resource_uri: str | None = None
+    origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等）')
     conversation_id: str | None = None
     message_id: int | None = None
     session_id: str | None = None

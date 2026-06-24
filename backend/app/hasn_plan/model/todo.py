@@ -47,6 +47,11 @@ class Todo(PlanBase):
         default=None,
         comment='AppCollab 快路径：委托执行当前/最近工作会话（逻辑引用，权威经 origin_ref 反查）',
     )
+    output_spec: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(),
+        default=None,
+        comment='输出要求 (期望产物 kind/format/验收 + required，编排期定义，分身执行据此产出并落 hasn_artifacts)',
+    )
     source: Mapped[str] = mapped_column(
         sa.String(16),
         default='manual',

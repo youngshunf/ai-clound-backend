@@ -13,10 +13,10 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model import HasnAgents, HasnArtifacts
 from backend.app.hasn.schema.hasn_artifacts import (
@@ -27,8 +27,11 @@ from backend.app.hasn.schema.hasn_artifacts import (
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.common.exception import errors
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 # 允许的产物类型（白名单，越界归一为 other）。
-_ALLOWED_KINDS = {'image', 'voice', 'file', 'document', 'deck', 'webpage', 'dataset', 'other'}
+_ALLOWED_KINDS = {'image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other'}
 _ALLOWED_SOURCE_KINDS = {'tool_output', 'task_result', 'upload', 'external'}
 
 
@@ -94,8 +97,10 @@ class HasnArtifactsService:
 
         身份由调用方注入（取自 Agent JWT），绝不信任 body 里的 agent/owner。
         """
-        if not params.asset_id and not params.resource_uri:
-            raise errors.RequestError(msg='产物必须带 asset_id 或 resource_uri 其一')
+        # 产物本体三选一：body（文本/markdown 直接入库）/ asset_id（二进制）/ resource_uri（hasn:// 资源）。
+        # 文本产物走 body 不上传文件（P6）。
+        if not params.asset_id and not params.resource_uri and not params.body:
+            raise errors.RequestError(msg='产物必须带 body、asset_id 或 resource_uri 其一')
 
         kind = params.kind if params.kind in _ALLOWED_KINDS else 'other'
         source_kind = params.source_kind if params.source_kind in _ALLOWED_SOURCE_KINDS else 'tool_output'
@@ -125,8 +130,10 @@ class HasnArtifactsService:
             kind=kind,
             title=(params.title or None),
             summary=(params.summary or None),
+            body=(params.body or None),
             asset_id=(params.asset_id or None),
             resource_uri=(params.resource_uri or None),
+            origin_ref=(params.origin_ref or None),
             conversation_id=conv,
             message_id=params.message_id,
             session_id=(params.session_id or None),
@@ -164,8 +171,10 @@ class HasnArtifactsService:
             kind=row.kind,
             title=row.title,
             summary=row.summary,
+            body=row.body,
             asset_id=row.asset_id,
             resource_uri=row.resource_uri,
+            origin_ref=row.origin_ref,
             conversation_id=str(row.conversation_id) if row.conversation_id else None,
             message_id=row.message_id,
             session_id=row.session_id,
@@ -234,6 +243,46 @@ class HasnArtifactsService:
         conds = [HasnArtifacts.owner_hasn_id == owner_hasn_id, HasnArtifacts.status == 'active']
         if kind:
             conds.append(HasnArtifacts.kind == kind)
+        total = (
+            await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
+        ).scalar_one()
+        rows = (
+            (
+                await db.execute(
+                    select(HasnArtifacts)
+                    .where(*conds)
+                    .order_by(HasnArtifacts.created_time.desc(), HasnArtifacts.id.desc())
+                    .offset(max(0, (page - 1) * size))
+                    .limit(size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        url_map = await cls._resolve_urls(
+            db, owner_hasn_id=owner_hasn_id, asset_ids=[r.asset_id for r in rows if r.asset_id]
+        )
+        return [cls._to_item(r, url_map) for r in rows], total
+
+    @classmethod
+    async def list_by_origin(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        origin_ref: str,
+        page: int = 1,
+        size: int = 50,
+    ) -> tuple[list[ArtifactItem], int]:
+        """列某业务对象（origin_ref，如 resource:plan:todo:{id}）产出的产物（时间线倒序）。
+
+        owner 隔离：仅返回本 owner 名下产物。规划详情产物轨（P6-C）按此反查。
+        """
+        conds = [
+            HasnArtifacts.owner_hasn_id == owner_hasn_id,
+            HasnArtifacts.origin_ref == origin_ref,
+            HasnArtifacts.status == 'active',
+        ]
         total = (
             await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
         ).scalar_one()

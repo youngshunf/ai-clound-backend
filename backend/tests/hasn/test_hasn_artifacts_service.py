@@ -35,7 +35,15 @@ async def _fake_sign(_db, *, items, expires_in=3600):
 
 
 async def _make_agent(db, *, owner_hasn_id: str, agent_hasn_id: str) -> None:
-    db.add(HasnAgents(hasn_id=agent_hasn_id, owner_id=owner_hasn_id, display_name='测试分身'))
+    # star_id 唯一：用 agent_hasn_id 派生，避开本地库既有 star_id='' 行的唯一冲突。
+    db.add(
+        HasnAgents(
+            hasn_id=agent_hasn_id,
+            star_id=f'star_{agent_hasn_id[-16:]}',
+            owner_id=owner_hasn_id,
+            display_name='测试分身',
+        )
+    )
     await db.flush()
 
 
@@ -91,6 +99,61 @@ async def test_record_dedup_and_validation() -> None:
                 params=RecordArtifactParam(kind='banana', resource_uri='hasn://deck/d_1'),
             )
             assert aid3 != aid1
+        finally:
+            await db.rollback()
+
+
+async def test_body_artifact_origin_ref_and_video_kind() -> None:
+    """P6：文本产物只带 body 直接入库（不上传文件）+ video kind 放行 + 按 origin_ref 反查。"""
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    origin = f'resource:plan:todo:{uuid4().hex[:8]}'
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+
+            # 文本/markdown 产物：只带 body（无 asset_id/resource_uri）也能登记，正文直接入库
+            aid_doc = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    title='竞品调研报告',
+                    body='# 竞品调研\n\n## 市场概览\n...结论可执行',
+                    origin_ref=origin,
+                    source_kind='task_result',
+                    source_tool='hasn.artifact.record',
+                ),
+            )
+            assert aid_doc.startswith('art_')
+
+            # video kind 放行（非归一为 other），同一 origin_ref
+            aid_video = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='video', title='成片', resource_uri='hasn://asset/ast_demo', origin_ref=origin
+                ),
+            )
+
+            # 按 origin_ref 反查 → 2 条（document + video），document 带 body、kind 未被归一
+            items, total = await hasn_artifacts_service.list_by_origin(
+                db, owner_hasn_id=owner, origin_ref=origin
+            )
+            assert total == 2
+            by_id = {it.artifact_id: it for it in items}
+            assert by_id[aid_doc].body and by_id[aid_doc].body.startswith('# 竞品调研')
+            assert by_id[aid_doc].origin_ref == origin
+            assert by_id[aid_video].kind == 'video'  # 放行未归一 other
+
+            # 不同 owner 反查同一 origin_ref → 隔离为空
+            other_items, other_total = await hasn_artifacts_service.list_by_origin(
+                db, owner_hasn_id=_short_id('hasnOther'), origin_ref=origin
+            )
+            assert other_total == 0 and other_items == []
         finally:
             await db.rollback()
 
