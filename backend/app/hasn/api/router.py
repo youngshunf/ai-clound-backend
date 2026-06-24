@@ -18,17 +18,16 @@ from backend.app.hasn.api.v1.admin.hasn_group_members import router as admin_has
 from backend.app.hasn.api.v1.admin.hasn_humans import router as admin_hasn_humans_router
 from backend.app.hasn.api.v1.admin.hasn_messages import router as admin_hasn_messages_router
 from backend.app.hasn.api.v1.admin.hasn_node_bindings import router as admin_hasn_node_bindings_router
-from backend.app.hasn.api.v1.admin.hasn_platform_default_config import (
-    router as admin_hasn_platform_default_config_router,
-)
 from backend.app.hasn.api.v1.admin.hasn_nodes import router as admin_hasn_nodes_router
 from backend.app.hasn.api.v1.admin.hasn_notifications import router as admin_hasn_notifications_router
 from backend.app.hasn.api.v1.admin.hasn_owner_api_keys import router as admin_hasn_owner_api_keys_router
 from backend.app.hasn.api.v1.admin.hasn_pending_intents import router as admin_hasn_pending_intents_router
+from backend.app.hasn.api.v1.admin.hasn_platform_default_config import (
+    router as admin_hasn_platform_default_config_router,
+)
 from backend.app.hasn.api.v1.admin.hasn_session_artifacts import router as admin_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.admin.hasn_session_events import router as admin_hasn_session_events_router
 from backend.app.hasn.api.v1.admin.hasn_sessions import router as admin_hasn_sessions_router
-from backend.app.hasn_task.api.v1.admin.skill_bundle import router as admin_hasn_skill_bundle_router
 from backend.app.hasn.api.v1.admin.hasn_suppressed_messages import router as admin_hasn_suppressed_messages_router
 from backend.app.hasn.api.v1.admin.hasn_sync_events import router as admin_hasn_sync_events_router
 from backend.app.hasn.api.v1.admin.hasn_sync_inbox_events import router as admin_hasn_sync_inbox_events_router
@@ -44,6 +43,7 @@ from backend.app.hasn.api.v1.message_hub import router as message_hub_router
 # --- 管理端（JWT + RBAC） ---
 from backend.app.hasn.api.v1.onboarding import router as onboarding_router
 from backend.app.hasn.api.v1.sync import router as sync_router
+from backend.app.hasn_task.api.v1.admin.skill_bundle import router as admin_hasn_skill_bundle_router
 from backend.core.conf import settings
 
 ai_native = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/ai-native', tags=['AI-Native 应用平台'])
@@ -108,6 +108,7 @@ from backend.app.hasn.api.v1.app.hasn_unread_counts import router as app_hasn_un
 from backend.app.hasn.api.v1.app.knowledge import router as app_knowledge_router
 from backend.app.hasn.api.v1.app.owner_memory import router as app_owner_memory_router
 from backend.app.hasn.api.v1.app.platform_config import router as app_platform_config_router
+from backend.app.hasn.api.v1.app.suppressed_release import router as app_suppressed_release_router
 
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/app', tags=['HASN 用户端'])
 
@@ -130,6 +131,7 @@ app.include_router(app_hasn_audit_log_router, prefix='/audit/logs', tags=['审�
 app.include_router(app_knowledge_router, tags=['知识库'])
 app.include_router(app_owner_memory_router, prefix='/owner', tags=['Owner 记忆（主人透明）'])
 app.include_router(app_platform_config_router, prefix='/platform', tags=['平台默认配置（节点下发）'])
+app.include_router(app_suppressed_release_router, tags=['入站门控抑制箱放行'])
 app.include_router(agent_scopes_router, tags=['Agent权限管理'])
 
 # --- Agent（Agent Key） ---
@@ -149,10 +151,10 @@ from backend.app.hasn.api.v1.agent.hasn_notifications import router as agent_has
 from backend.app.hasn.api.v1.agent.hasn_session_artifacts import router as agent_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.agent.hasn_session_events import router as agent_hasn_session_events_router
 from backend.app.hasn.api.v1.agent.hasn_sessions import router as agent_hasn_sessions_router
-from backend.app.hasn_task.api.v1.agent.skill_bundle import router as agent_hasn_skill_bundle_router
 from backend.app.hasn.api.v1.agent.hasn_task_run import router as agent_hasn_task_run_router
 from backend.app.hasn.api.v1.agent.hasn_trade_sessions import router as agent_hasn_trade_sessions_router
 from backend.app.hasn.api.v1.agent.hasn_unread_counts import router as agent_hasn_unread_counts_router
+from backend.app.hasn_task.api.v1.agent.skill_bundle import router as agent_hasn_skill_bundle_router
 
 agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/agent', tags=['HASN Agent端'])
 
@@ -245,9 +247,9 @@ from backend.app.hasn.api.v1.app.hasn_im import router as app_hasn_im_router
 from backend.app.hasn.api.v1.app.hasn_session_artifacts import router as app_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.app.hasn_session_events import router as app_hasn_session_events_router
 from backend.app.hasn.api.v1.app.hasn_sessions import router as app_hasn_sessions_router
-from backend.app.hasn_task.api.v1.app.skill_bundle import router as app_hasn_skill_bundle_router
 from backend.app.hasn.api.v1.app.hasn_task_sessions import router as app_hasn_task_sessions_router
 from backend.app.hasn.api.v1.app.hasn_task_sessions import work_sessions_router
+from backend.app.hasn_task.api.v1.app.skill_bundle import router as app_hasn_skill_bundle_router
 
 app.include_router(app_hasn_im_router, prefix='/im', tags=['HASN IM 业务'])
 app.include_router(app_hasn_api_keys_router, tags=['HASN API Key'])
