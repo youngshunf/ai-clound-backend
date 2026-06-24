@@ -118,6 +118,11 @@ class HasnAgents(Base):
     social_enabled: Mapped[bool] = mapped_column(
         sa.Boolean, default=True, comment='是否对外开启社交可见 (true:社交可见/false:仅自用)，默认开启，用户可手动关闭'
     )
+    inbound_policy: Mapped[str] = mapped_column(
+        sa.String(20),
+        default='auto',
+        comment='外部入站消息门控策略 (auto:自动放行:green/manual_strangers:陌生人需放行:orange/manual_all:全部需放行:red)，默认自动，主人可设手动审阅',
+    )
     binding_node_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='Agent 当前绑定的 node ID')
     binding_status: Mapped[str] = mapped_column(
         sa.String(32),
