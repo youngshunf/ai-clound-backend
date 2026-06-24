@@ -4,13 +4,16 @@
   可选 `query` 子串过滤、`include_agents` 带出好友名下的 agent。
 - `hasn.contact.search`：按昵称/唤星号/备注名搜索主人的联系人（好友 + 好友名下的 agent）。
   返回项的 `contact_hasn_id` 可直接用作 `hasn.message.send` 的 `to`，打通"搜联系人→发消息"闭环。
+- `hasn.contact.request`：代主人向某用户（或其分身）发起好友请求，打通"搜陌生人(hasn.user.search)
+  →发起加好友"闭环。复用 HasnContactsService.request_contact（人端 owner 端点同一实现）。
 
-两者均直接走 DAO 真实查询（不经请求作用域的 paging_data，故可在 MCP 调用栈外运行）。零 mock。
+读类直接走 DAO 真实查询；写类（request）走 service 单一实现。零 mock。
 """
 
 from typing import Any
 
 from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
+from backend.app.hasn.service.hasn_contacts_service import ContactRequestError, HasnContactsService
 from backend.app.hasn_core import hasn_agents_dao, hasn_humans_dao
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
@@ -253,3 +256,74 @@ class ContactSearchTool(BaseTool):
                 limit=limit,
             )
             return {'contacts': contacts, 'total': len(contacts), 'query': query}
+
+
+class ContactRequestTool(BaseTool):
+    """代主人发起好友请求（target 接受唤星号或 HASN ID；human 或好友的分身）。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.contact.request'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.contact'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '代主人向某用户发起好友请求（target 为对方唤星号或 HASN ID，可指向 human 或好友的分身）。'
+            '配合 hasn.user.search（全网发现陌生人）打通"搜到人→发起加好友"闭环；请求需对方/分身主人通过后才建立联系。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'target': {
+                    'type': 'string',
+                    'description': (
+                        '对方唤星号（human 唤星号 / agent xxx#yyy）或 HASN ID（h_*/a_*，'
+                        '可取自 hasn.user.search / hasn.contact.search 结果）'
+                    ),
+                },
+                'message': {
+                    'type': 'string',
+                    'description': '可选：好友请求附言',
+                },
+            },
+            'required': ['target'],
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return ['contact:request']
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        # 维度① 能力授权由 server.call_tool 三态 mode 统一判定（D3），工具内不二次校验。
+        target = str(arguments.get('target') or '').strip()
+        if not target:
+            return {'ok': False, 'error': 'target 不能为空（对方唤星号或 HASN ID）'}
+        message = str(arguments.get('message') or '') or None
+        async with async_db_session() as db:
+            try:
+                # 代主人加好友：requester = 主人本人（owner），非分身。审批人=对方/分身主人。
+                result = await HasnContactsService.request_contact(
+                    db,
+                    requester_hasn_id=agent_context.owner_hasn_id,
+                    target=target,
+                    message=message,
+                    add_source='agent_discovery',
+                )
+            except ContactRequestError as e:
+                return {'ok': False, 'error': e.msg}
+            return {'ok': True, **result}

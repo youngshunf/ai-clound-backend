@@ -33,7 +33,7 @@ from backend.app.hasn.schema.hasn_contacts_business import (
     HasnTrustLevelReq,
 )
 from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn.service.hasn_contacts_service import HasnContactsService
+from backend.app.hasn.service.hasn_contacts_service import ContactRequestError, HasnContactsService
 from backend.app.hasn.service.ws_router import ws_router
 from backend.common.response.response_code import CustomResponse
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -64,19 +64,6 @@ async def _push_contact_event(target_hasn_id: str, payload: dict) -> None:
         return
 
 
-async def _resolve_star_id(db, star_id: str):
-    """解析唤星号 → 实体 (human 或 agent)"""
-    if '#' in star_id:
-        agent = await hasn_agents_dao.get_by_star_id(db, star_id)
-        if agent:
-            return agent, 'agent'
-    else:
-        human = await hasn_humans_dao.get_by_star_id(db, star_id)
-        if human:
-            return human, 'human'
-    return None, None
-
-
 def _agent_peer_out(agent) -> HasnContactPeerOut:
     """把一个 HasnAgents 行整形成 type='agent' 的 peer 输出（列表/请求/连接事件复用）。"""
     return HasnContactPeerOut(
@@ -85,98 +72,6 @@ def _agent_peer_out(agent) -> HasnContactPeerOut:
         name=_peer_display_name(agent, peer_type='agent'),
         type='agent',
         avatar=getattr(agent, 'avatar', None),
-    )
-
-
-async def _send_agent_contact_request(db, *, requester_id: str, agent, message: str | None, add_source: str = 'other'):
-    """普通朋友请求把好友的『分身』加为联系人（agent 目标，审批人=分身主人）。
-
-    与 human 目标的本质区别：目标保持为分身本体（to_type='agent'、to_id=分身 hasn_id），
-    审批人是分身主人。主人是好友是本流程的前置，不再当作"已是好友"冲突拦截。
-    通过后请求方获得一条 peer_type='agent' 的 social 边，信任等级与『请求方↔主人』一致。
-    """
-    agent_id = agent.hasn_id
-    owner_id = getattr(agent, 'owner_id', None) or agent_id
-    msg_text = message or ''
-
-    if owner_id == requester_id:
-        return response_base.fail(res=CustomResponse(code=400, msg='不能添加自己的分身'))
-
-    # 已是该分身的联系人（agent 级 connected 边）
-    existing = await hasn_contacts_dao.get_relation(db, requester_id, agent_id, 'social')
-    if existing and existing.status == 'connected':
-        return response_base.fail(res=CustomResponse(code=400, msg='你已添加该分身'))
-
-    # 被分身主人拉黑（主人 → 我 方向 trust_level=0）
-    reverse = await hasn_contacts_dao.get_relation(db, owner_id, requester_id, 'social')
-    if reverse and reverse.trust_level == 0:
-        return response_base.fail(res=CustomResponse(code=400, msg='无法发送请求'))
-
-    target_peer = _agent_peer_out(agent)
-
-    # 已有待处理 agent 请求 → 幂等返回（Option A 重试 / daemon 兜底重发都安全，不报错）
-    pending = await hasn_contact_requests_dao.get_active_pending(db, requester_id, agent_id, 'social')
-    if pending:
-        return response_base.success(
-            data=HasnContactRequestOut(
-                request_id=pending.id,
-                status='pending',
-                created_at=pending.created_time,
-                channel_source=pending.channel_source,
-                add_source=pending.add_source,
-                target=target_peer,
-                message=pending.message or '',
-            ).model_dump()
-        )
-
-    # 信任等级与主人一致：取 请求方↔主人 social trust（默认 2）
-    owner_relation = await hasn_contacts_dao.get_relation(db, requester_id, owner_id, 'social')
-    trust_level = owner_relation.trust_level if owner_relation else 2
-
-    req = await hasn_contact_requests_dao.create_request(
-        db,
-        from_id=requester_id,
-        to_id=agent_id,
-        to_owner_id=owner_id,
-        to_type='agent',
-        relation_type='social',
-        requested_trust_level=trust_level,
-        message=message,
-        channel_source='manual',
-        add_source=add_source,
-    )
-    await db.commit()
-
-    requester = await hasn_humans_dao.get_by_hasn_id(db, requester_id)
-    from_peer = HasnContactPeerOut(
-        hasn_id=requester_id,
-        star_id=getattr(requester, 'star_id', '') or '',
-        name=_peer_display_name(requester, peer_type='human') if requester else '',
-        type='human',
-    )
-    await _push_contact_event(
-        owner_id,
-        {
-            'method': 'hasn.contact.request_received',
-            'params': {
-                'owner_id': owner_id,
-                'request_id': req.id,
-                'from_peer': from_peer.model_dump(),
-                'target': target_peer.model_dump(),
-                'message': msg_text,
-            },
-        },
-    )
-    return response_base.success(
-        data=HasnContactRequestOut(
-            request_id=req.id,
-            status='pending',
-            created_at=req.created_time,
-            channel_source=req.channel_source,
-            add_source=req.add_source,
-            target=target_peer,
-            message=msg_text,
-        ).model_dump()
     )
 
 
@@ -192,94 +87,35 @@ async def send_contact_request(
     两类目标：
     - human 唤星号 → 加好友（owner 级，加人）；目标即审批人本人。
     - agent 唤星号 → 请求把好友的『分身』加为联系人（agent 级）；审批人=分身主人，
-      不再坍缩成主人、也不因主人已是好友而拦截（详见 _send_agent_contact_request）。
+      不再坍缩成主人、也不因主人已是好友而拦截。
     校验：无 connected 关系 + 无 pending 请求 + 未被对方拉黑。
+    单一实现在 HasnContactsService.request_contact（人端与 Agent 平台工具共用，杜绝两份漂移）。
     """
     hasn_id = auth.get('effective_id', auth['hasn_id'])
 
-    # 解析目标
-    target, target_type = await _resolve_star_id(db, obj_in.target_star_id)
-    if not target:
-        return response_base.fail(res=CustomResponse(code=400, msg=f'唤星号 {obj_in.target_star_id} 不存在'))
-
-    # agent 目标走分身级请求/审批闭环（审批人=分身主人）。
-    if target_type == 'agent':
-        return await _send_agent_contact_request(
-            db, requester_id=hasn_id, agent=target, message=obj_in.message, add_source=obj_in.add_source
+    # 单一实现：解析目标(human/agent) + 校验 + 落 pending 请求 + 推审批方事件，全在 service。
+    # （Agent 平台工具 hasn.contact.request 复用同一 HasnContactsService.request_contact。）
+    try:
+        result = await HasnContactsService.request_contact(
+            db,
+            requester_hasn_id=hasn_id,
+            target=obj_in.target_star_id,
+            message=obj_in.message,
+            add_source=obj_in.add_source,
         )
-
-    # human 目标：目标即审批人本人。
-    to_id = target.hasn_id
-    to_owner_id = target.hasn_id
-    target_peer = HasnContactPeerOut(
-        hasn_id=target.hasn_id,
-        star_id=target.star_id,
-        name=_peer_display_name(target, peer_type='human'),
-        type='human',
-    )
-
-    if to_id == hasn_id:
-        return response_base.fail(res=CustomResponse(code=400, msg='不能添加自己为好友'))
-
-    # 校验 1：已是好友（connected）
-    existing = await hasn_contacts_dao.get_relation(db, hasn_id, to_id, 'social')
-    if existing and existing.status == 'connected':
-        return response_base.fail(res=CustomResponse(code=400, msg='你们已经是好友'))
-
-    # 校验 2：是否被对方拉黑（对方 → 我 方向 trust_level=0）
-    reverse = await hasn_contacts_dao.get_relation(db, to_id, hasn_id, 'social')
-    if reverse and reverse.trust_level == 0:
-        return response_base.fail(res=CustomResponse(code=400, msg='无法向对方发送好友请求'))
-
-    # 校验 3：已有待处理请求（部分唯一索引兜底，应用层先行拦截给友好提示）
-    pending = await hasn_contact_requests_dao.get_active_pending(db, hasn_id, to_id, 'social')
-    if pending:
-        return response_base.fail(res=CustomResponse(code=400, msg='已有待处理的好友请求'))
-
-    # 创建 pending 请求（不再在 hasn_contacts 建行）
-    req = await hasn_contact_requests_dao.create_request(
-        db,
-        from_id=hasn_id,
-        to_id=to_id,
-        to_owner_id=to_owner_id,
-        relation_type='social',
-        requested_trust_level=2,
-        message=obj_in.message,
-        channel_source='manual',
-        add_source=obj_in.add_source,
-    )
-    await db.commit()
-
-    sender = await hasn_humans_dao.get_by_hasn_id(db, hasn_id)
-    sender_peer = HasnContactPeerOut(
-        hasn_id=hasn_id,
-        star_id=getattr(sender, 'star_id', ''),
-        name=_peer_display_name(sender, peer_type='human') if sender else '',
-        type='human',
-    )
-    await _push_contact_event(
-        to_owner_id,
-        {
-            'method': 'hasn.contact.request_received',
-            'params': {
-                'owner_id': to_owner_id,
-                'request_id': req.id,
-                'from_peer': sender_peer.model_dump(),
-                'target': target_peer.model_dump(),
-                'message': obj_in.message,
-            },
-        },
-    )
+    except ContactRequestError as e:
+        return response_base.fail(res=CustomResponse(code=400, msg=e.msg))
 
     return response_base.success(
         data=HasnContactRequestOut(
-            request_id=req.id,
-            status='pending',
-            created_at=req.created_time,
-            channel_source=req.channel_source,
-            add_source=req.add_source,
-            target=target_peer,
-            message=obj_in.message,
+            request_id=result['request_id'],
+            status=result['status'],
+            relation_type=result['relation_type'],
+            created_at=result['created_at'],
+            channel_source=result['channel_source'],
+            add_source=result['add_source'],
+            target=HasnContactPeerOut(**result['target']),
+            message=result['message'],
         ).model_dump()
     )
 

@@ -38,6 +38,8 @@ DEFAULT_AGENT_SCOPES = [
     'community:doc',
     'message:read',
     'contact:read',
+    # 代主人发起好友请求（hasn.contact.request 平台工具）。三态默认 allow，本数组仅审计快照。
+    'contact:request',
     'task:execute',
     'knowledge:read',
     'profile:read',
