@@ -1,4 +1,4 @@
-"""一次性运维：把 10 个应用中心彩色品牌图标 SVG 上传到公共桶 ``app-icons/``。
+"""一次性运维：把内置应用中心彩色品牌图标 SVG 上传到公共桶 ``app-icons/``。
 
 背景：工作台「应用中心」卡片图标走 ``hasn_app_catalog.icon_asset_uri``（图片优先于 token，
 见 ``WorkbenchAppCard``）。此前除 deck 外 10 个内置应用 ``icon_asset_uri`` 为 NULL、前端落
@@ -29,7 +29,7 @@ from backend.database.db import async_db_session
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import build_object_url, pick_public_storage, write_bytes
 
-# 11 个内置应用（deck 已有图标、不覆盖）。app_id 即源 SVG 文件名 + 公共桶对象名。
+# 内置应用（deck 已有图标、不覆盖）。app_id 即源 SVG 文件名 + 公共桶对象名。
 APP_IDS = (
     'knowledge',
     'community',
@@ -43,6 +43,7 @@ APP_IDS = (
     'hasn_task',
     'reel',
     'quant',
+    'studio',
 )
 
 # scripts → backend → huanxing-cloud-backend → huanxing-project（兄弟仓 hasn-node 在此层）
