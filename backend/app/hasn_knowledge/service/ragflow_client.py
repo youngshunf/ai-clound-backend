@@ -15,6 +15,16 @@ from typing import Any
 
 import httpx
 
+# 超时（秒）：引擎不在线/挂起时尽快失败、给主人友好提示，而非长时间转圈。
+# 元数据类操作（建库/删库/列文档/触发解析）走默认；上传/检索是合法耗时操作，读超时单独放宽。
+DEFAULT_TIMEOUT = 25.0
+# 连接超时单独收短：引擎完全离线（端口拒绝/无人应答）时快速失败，不必等满整个读超时。
+CONNECT_TIMEOUT = 10.0
+# 文件上传：上传副本可能较大，读超时留余量（连接超时仍短，离线快速失败）。
+UPLOAD_TIMEOUT = 60.0
+# 检索：向量检索应较快，30s 足够；超时即归一为引擎不可用。
+RETRIEVAL_TIMEOUT = 30.0
+
 
 class KnowledgeProviderError(Exception):
     """处理后端故障（错误码见设计 §6，emitter=cloud）。"""
@@ -33,10 +43,24 @@ def _provider_unauthorized(detail: str) -> KnowledgeProviderError:
     return KnowledgeProviderError('knowledge_provider_unauthorized', detail)
 
 
+def _build_timeout(total: float) -> httpx.Timeout:
+    """构造 httpx 超时：连接超时收短（离线快速失败），读/写/池超时用 total。"""
+    return httpx.Timeout(total, connect=min(CONNECT_TIMEOUT, total))
+
+
+def _map_request_error(exc: httpx.HTTPError) -> KnowledgeProviderError:
+    """把底层 httpx 异常归一成对主人友好、不泄露 RAGFlow 实现名的提示。"""
+    if isinstance(exc, httpx.ConnectError):
+        return _provider_unreachable('无法连接知识库引擎，可能尚未启动，请稍后重试')
+    if isinstance(exc, httpx.TimeoutException):
+        return _provider_unreachable('知识库引擎响应超时，可能正在繁忙或未就绪，请稍后重试')
+    return _provider_unreachable('知识库引擎暂时不可用，请稍后重试')
+
+
 class RAGFlowClient:
     """RAGFlow HTTP API 数据面封装（/api/v1，Bearer service key）。"""
 
-    def __init__(self, base_url: str, api_key: str, timeout: float = 60.0) -> None:
+    def __init__(self, base_url: str, api_key: str, timeout: float = DEFAULT_TIMEOUT) -> None:
         self.base_url = base_url.rstrip('/')
         self._api_key = api_key
         self.timeout = timeout
@@ -56,12 +80,14 @@ class RAGFlowClient:
         timeout: float | None = None,
     ) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=timeout or self.timeout) as client:
+            async with httpx.AsyncClient(
+                base_url=self.base_url, timeout=_build_timeout(timeout or self.timeout)
+            ) as client:
                 response = await client.request(
                     method, path, json=json, params=params, files=files, headers=self._headers
                 )
         except httpx.HTTPError as exc:
-            raise _provider_unreachable(f'RAGFlow 请求失败：{exc.__class__.__name__}') from exc
+            raise _map_request_error(exc) from exc
         if response.status_code in (401, 403):
             raise _provider_unauthorized('RAGFlow service key 无效或权限不足（运营级故障）')
         if response.status_code >= 500:
@@ -83,10 +109,10 @@ class RAGFlowClient:
 
     async def _request_bytes(self, method: str, path: str) -> bytes:
         try:
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=_build_timeout(self.timeout)) as client:
                 response = await client.request(method, path, headers=self._headers)
         except httpx.HTTPError as exc:
-            raise _provider_unreachable(f'RAGFlow 请求失败：{exc.__class__.__name__}') from exc
+            raise _map_request_error(exc) from exc
         if response.status_code in (401, 403):
             raise _provider_unauthorized('RAGFlow service key 无效或权限不足')
         if response.status_code >= 400:
@@ -111,7 +137,7 @@ class RAGFlowClient:
             'POST',
             f'/api/v1/datasets/{dataset_id}/documents',
             files={'file': (filename, data, mime or 'application/octet-stream')},
-            timeout=120.0,
+            timeout=UPLOAD_TIMEOUT,
         )
         docs = body.get('data') or []
         if not docs:
@@ -168,5 +194,5 @@ class RAGFlowClient:
         }
         if similarity_threshold is not None:
             payload['similarity_threshold'] = similarity_threshold
-        body = await self._request('POST', '/api/v1/retrieval', json=payload, timeout=120.0)
+        body = await self._request('POST', '/api/v1/retrieval', json=payload, timeout=RETRIEVAL_TIMEOUT)
         return body.get('data') or {}
