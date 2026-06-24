@@ -52,6 +52,78 @@ _CONTENT_TYPE_STR = {
 }
 
 
+def _preview_from_content(content: Any) -> str:
+    """从消息 content（JSONB dict / 文本）提取一段简短预览文本（最长 80 字）。"""
+    text = ''
+    if isinstance(content, dict):
+        raw = content.get('text') or content.get('content') or ''
+        text = raw if isinstance(raw, str) else ''
+    elif isinstance(content, str):
+        text = content
+    text = text.strip().replace('\n', ' ')
+    return text[:80]
+
+
+def _original_body_from_content(content: Any) -> str:
+    """构造 daemon 端 `extract_text_from_body` 可解析的 `{"text": ...}` JSON 串。"""
+    import json
+
+    text = ''
+    if isinstance(content, dict):
+        raw = content.get('text') or content.get('content') or ''
+        text = raw if isinstance(raw, str) else ''
+    elif isinstance(content, str):
+        text = content
+    return json.dumps({'text': text}, ensure_ascii=False)
+
+
+async def list_suppressed_for_owner(db: AsyncSession, *, owner_id: str) -> list[dict[str, Any]]:
+    """列出主人名下、对主人可见的全部被抑制消息（门控 + 运行时入站类），供 daemon 镜像桥拉取。
+
+    owner 隔离：只返回 `owner_id` 名下 `visible_to_owner=true` 的行。每行携带 `suppress_reason`
+    （daemon 据此分诊放行三分）、`message_preview`、`original_body`，按 message_id 升序。
+    """
+    rows = (
+        await db.execute(
+            sa.text(
+                """
+                SELECT s.id              AS suppressed_id,
+                       s.message_id      AS message_id,
+                       s.owner_id        AS owner_id,
+                       s.hasn_id         AS hasn_id,
+                       s.conversation_id::text AS conversation_id,
+                       s.suppress_reason AS suppress_reason,
+                       s.created_time    AS created_time,
+                       m.content         AS content
+                FROM public.hasn_suppressed_messages s
+                LEFT JOIN public.hasn_messages m ON m.id = s.message_id
+                WHERE s.owner_id = :owner_id
+                  AND s.visible_to_owner = true
+                ORDER BY s.message_id ASC
+                """
+            ),
+            {'owner_id': owner_id},
+        )
+    ).mappings().all()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        content = row['content']
+        items.append(
+            {
+                'suppressed_id': str(row['suppressed_id']),
+                'message_id': str(row['message_id']),
+                'conversation_id': str(row['conversation_id']),
+                'agent_hasn_id': row['hasn_id'],
+                'reason': row['suppress_reason'] or 'permission_denied',
+                'created_at': int(row['created_time'].timestamp()) if row['created_time'] else 0,
+                'message_preview': _preview_from_content(content),
+                'original_body': _original_body_from_content(content),
+            }
+        )
+    return items
+
+
 async def _load_suppressed(db: AsyncSession, *, owner_id: str, message_id: int) -> HasnSuppressedMessages | None:
     """加载主人名下的抑制箱行（owner 隔离：只能放行自己的抑制消息）。"""
     result = await db.execute(

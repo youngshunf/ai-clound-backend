@@ -14,12 +14,30 @@ from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn.service.inbound_release import MODE_ONCE, release_suppressed
+from backend.app.hasn.service.inbound_release import (
+    MODE_ONCE,
+    list_suppressed_for_owner,
+    release_suppressed,
+)
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSessionTransaction
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+
+
+@router.get(
+    '/suppressed',
+    summary='列出主人名下被入站门控抑制的消息（Owner JWT，供 daemon 镜像桥拉取）',
+    dependencies=[DependsJwtAuth],
+)
+async def list_suppressed_messages(
+    db: CurrentSession,
+    auth: Annotated[dict, Depends(hasn_auth)],
+) -> ResponseModel:
+    owner_id = auth['hasn_id']
+    items = await list_suppressed_for_owner(db, owner_id=owner_id)
+    return response_base.success(data={'items': items})
 
 
 class SuppressedReleaseRequest(BaseModel):
