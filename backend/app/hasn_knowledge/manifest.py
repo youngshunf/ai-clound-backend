@@ -68,7 +68,7 @@ def _tool(*, name: str, scopes: list[str], risk_level: str, idempotent: bool) ->
 
 KNOWLEDGE_AI_NATIVE_MANIFEST = {
     'app_id': 'knowledge',
-    'version': '2.0.0',
+    'version': '2.1.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
     # 通知发布能力声明保留：索引完成/失败可经服务号通知 owner（P2 接线）。
@@ -108,6 +108,31 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             tags=['knowledge', 'read'],
         ),
         _cap(
+            name='create_kb',
+            title='新建知识库',
+            description='替主人新建一个知识库（库归主人所有；返回 kb_id，可随即向其上传/写文档）',
+            scopes=['knowledge:write'],
+            properties={
+                'name': {'type': 'string', 'minLength': 1, 'maxLength': 100},
+                'description': {'type': ['string', 'null'], 'maxLength': 500},
+            },
+            required=['name'],
+            risk_level='medium',
+            page_rank=9,
+            tags=['knowledge', 'kb', 'write'],
+        ),
+        _cap(
+            name='delete_kb',
+            title='删除知识库',
+            description='删除主人的整个知识库（级联删除其全部文档与目录，不可恢复）',
+            scopes=['knowledge:write'],
+            properties={'kb_id': {'type': 'integer'}},
+            required=['kb_id'],
+            risk_level='high',
+            page_rank=28,
+            tags=['knowledge', 'kb', 'write', 'destructive'],
+        ),
+        _cap(
             name='fetch_doc',
             title='读取文档',
             description='读取知识库文档解析后的文本内容（原生文档返回正文，文件返回分块文本）',
@@ -117,6 +142,20 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             risk_level='low',
             page_rank=12,
             tags=['knowledge', 'read'],
+        ),
+        _cap(
+            name='list_documents',
+            title='列出文档',
+            description='列出某知识库的文档（可按目录 folder_id 过滤：省略=全库，传 0=库根，>0=指定目录）',
+            scopes=['knowledge:read'],
+            properties={
+                'kb_id': {'type': 'integer'},
+                'folder_id': {'type': ['integer', 'null']},
+            },
+            required=['kb_id'],
+            risk_level='low',
+            page_rank=14,
+            tags=['knowledge', 'doc', 'read'],
         ),
         _cap(
             name='upload_document',
@@ -134,6 +173,17 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             risk_level='medium',
             page_rank=20,
             tags=['knowledge', 'upload', 'write'],
+        ),
+        _cap(
+            name='delete_document',
+            title='删除文档',
+            description='删除主人知识库中的一篇文档（含其索引副本，不可恢复）',
+            scopes=['knowledge:write'],
+            properties={'doc_id': {'type': 'integer'}},
+            required=['doc_id'],
+            risk_level='medium',
+            page_rank=26,
+            tags=['knowledge', 'doc', 'write', 'destructive'],
         ),
         _cap(
             name='write_doc',
@@ -209,8 +259,12 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
     'tools': [
         _tool(name='search', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='list_datasets', scopes=['knowledge:read'], risk_level='low', idempotent=True),
+        _tool(name='create_kb', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
+        _tool(name='delete_kb', scopes=['knowledge:write'], risk_level='high', idempotent=False),
         _tool(name='fetch_doc', scopes=['knowledge:read'], risk_level='low', idempotent=True),
+        _tool(name='list_documents', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='upload_document', scopes=['knowledge:upload'], risk_level='medium', idempotent=False),
+        _tool(name='delete_document', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
         _tool(name='write_doc', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
         _tool(name='list_folders', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='create_folder', scopes=['knowledge:write'], risk_level='low', idempotent=False),

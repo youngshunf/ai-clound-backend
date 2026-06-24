@@ -135,6 +135,71 @@ async def handle_knowledge_upload_document(
         raise to_http_error(exc) from exc
 
 
+# ---------- 知识库（kb）+ 文档：分身替主人维护库与文档（建库/删库/列文档/删文档）----------
+
+
+async def handle_knowledge_create_kb(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.create_kb：替主人新建知识库（库归主人 owner_hasn_id 所有；inherit 默认即可达）。"""
+    name = str(input_payload['name']).strip()
+    if not name:
+        raise errors.RequestError(msg='知识库名称不能为空')
+    description = input_payload.get('description')
+    try:
+        return await knowledge_service.create_kb(
+            db,
+            agent.owner_hasn_id,
+            name=name,
+            description=str(description).strip() if description else None,
+        )
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+
+
+async def handle_knowledge_delete_kb(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.delete_kb：删主人的整库（级联删文档/目录）；可达性闸门后删。"""
+    kb_id = int(input_payload['kb_id'])
+    await _assert_kb_reachable(db, agent, kb_id)
+    try:
+        await knowledge_service.delete_kb(db, agent.owner_hasn_id, kb_id)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    return {'deleted': True, 'kb_id': kb_id}
+
+
+async def handle_knowledge_list_documents(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.list_documents：列某可达知识库的文档（folder_id 省略=全库 / 0=库根 / >0=指定目录）。"""
+    kb_id = int(input_payload['kb_id'])
+    await _assert_kb_reachable(db, agent, kb_id)
+    folder_id = input_payload.get('folder_id')
+    docs = await knowledge_service.list_documents(
+        db,
+        agent.owner_hasn_id,
+        kb_id,
+        folder_id=int(folder_id) if folder_id is not None else None,
+    )
+    return {'documents': docs}
+
+
+async def handle_knowledge_delete_document(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.delete_document：删主人知识库中的一篇文档（按 doc_id 反查所属 kb 做可达性闸门）。"""
+    doc_id = int(input_payload['doc_id'])
+    doc = await knowledge_service.get_document(db, agent.owner_hasn_id, doc_id)
+    await _assert_kb_reachable(db, agent, int(doc['kb_id']))
+    try:
+        await knowledge_service.delete_document(db, agent.owner_hasn_id, doc_id)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    return {'deleted': True, 'doc_id': doc_id}
+
+
 # ---------- 目录（folder）：分身帮主人维护知识库目录树（全套 CRUD）----------
 
 
@@ -178,7 +243,7 @@ async def handle_knowledge_update_folder(
         folder_id,
         name=input_payload.get('name'),
         parent_id=int(parent_id) if parent_id is not None else None,
-        move_to_root=bool(input_payload.get('move_to_root', False)),
+        move_to_root=bool(input_payload.get('move_to_root')),
     )
 
 

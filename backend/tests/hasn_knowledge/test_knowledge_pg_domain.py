@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from backend.app.hasn.model.hasn_assets import HasnAssets
-from backend.app.hasn_knowledge.model import Document, Folder, Kb
+from backend.app.hasn_knowledge.model import Document, Kb
 from backend.app.hasn_knowledge.service import tool_handlers
 from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
@@ -49,7 +49,7 @@ def _kb_row(owner_id: str, tag: str) -> Kb:
     )
 
 
-async def test_folder_tree_rules(session):
+async def test_folder_tree_rules(session) -> None:
     tag = uuid.uuid4().hex[:8]
     owner = f'h_test_{tag}'
     kb = _kb_row(owner, tag)
@@ -99,7 +99,7 @@ async def test_folder_tree_rules(session):
     assert {f['name'] for f in folders} >= {'甲', '乙', '丙', '空目录'}
 
 
-async def test_agent_grant_three_modes(session):
+async def test_agent_grant_three_modes(session) -> None:
     tag = uuid.uuid4().hex[:8]
     owner = f'h_test_{tag}'
     agent = f'a_test_{tag}'
@@ -138,7 +138,7 @@ async def test_agent_grant_three_modes(session):
     assert len(visible) == 2
 
 
-async def test_owner_row_isolation(session):
+async def test_owner_row_isolation(session) -> None:
     tag = uuid.uuid4().hex[:8]
     owner_a, owner_b = f'h_a_{tag}', f'h_b_{tag}'
     kb = _kb_row(owner_a, tag)
@@ -157,7 +157,7 @@ async def test_owner_row_isolation(session):
     assert [k['id'] for k in kbs] == [kb.id]
 
 
-async def test_native_version_bookkeeping_without_engine(session):
+async def test_native_version_bookkeeping_without_engine(session) -> None:
     """版本记账（纯 PG 断言；引擎同步状态由真实 E2E 验证，这里只看 PG 权威侧不丢正文）。"""
     tag = uuid.uuid4().hex[:8]
     owner = f'h_test_{tag}'
@@ -190,7 +190,7 @@ async def test_native_version_bookkeeping_without_engine(session):
     assert moved['folder_id'] == folder['id']
 
 
-async def test_empty_native_document_is_not_indexed(session):
+async def test_empty_native_document_is_not_indexed(session) -> None:
     """空白原生文档（如「新建文档」初始态）不推引擎、不误报索引失败：直接 parsed/0 chunks。
 
     回归：旧版无条件推空正文给 RAGFlow，引擎解析空文档必失败 → UI 一建文档就「正在重新
@@ -219,7 +219,7 @@ async def test_empty_native_document_is_not_indexed(session):
     assert whitespace['chunk_count'] == 0
 
 
-async def test_agent_folder_crud_via_handlers(session):
+async def test_agent_folder_crud_via_handlers(session) -> None:
     """分身经工具 handler 维护目录：建/列/重命名/移动/删（全套 CRUD，inherit 全可达）。"""
     tag = uuid.uuid4().hex[:8]
     owner, agent = f'h_test_{tag}', f'a_test_{tag}'
@@ -256,7 +256,7 @@ async def test_agent_folder_crud_via_handlers(session):
     await tool_handlers.handle_knowledge_delete_folder(session, a, {'folder_id': created['id']})
 
 
-async def test_agent_folder_ops_gated_by_grant(session):
+async def test_agent_folder_ops_gated_by_grant(session) -> None:
     """目录工具走维度② 可达性闸门：restricted 白名单外的库一律拒（建/列都拒）。"""
     tag = uuid.uuid4().hex[:8]
     owner, agent = f'h_test_{tag}', f'a_test_{tag}'
@@ -276,7 +276,100 @@ async def test_agent_folder_ops_gated_by_grant(session):
         await tool_handlers.handle_knowledge_list_folders(session, a, {'kb_id': kb2.id})
 
 
-async def test_agent_upload_asset_rejections(session):
+async def test_agent_list_documents_via_handler(session) -> None:
+    """分身经 list_documents 工具列文档（纯 PG：直插 Document 行，不触引擎）。
+
+    folder_id 省略=全库 / 0=库根 / >0=指定目录（与 service 语义一致）。
+    """
+    tag = uuid.uuid4().hex[:8]
+    owner, agent = f'h_test_{tag}', f'a_test_{tag}'
+    kb = _kb_row(owner, tag)
+    session.add(kb)
+    await session.flush()
+    a = _agent(owner, agent)
+
+    folder = await knowledge_service.create_folder(session, owner, kb.id, name='归档', parent_id=None)
+    # 库根一篇（folder_id=None，库根哨兵 0 在 service 里映射为 folder_id IS NULL）+ 目录里一篇（直插，绕过引擎）。
+    session.add_all(
+        [
+            Document(
+                kb_id=kb.id, folder_id=None, owner_id=owner, kind='native', name='根文档',
+                size_bytes=0, mime_type='text/markdown', content='根', asset_uri=None, current_version=1,
+                ragflow_document_id=None, parse_status='parsed', parse_error=None, chunk_count=0,
+                source='ui', agent_hasn_id=None,
+            ),
+            Document(
+                kb_id=kb.id, folder_id=folder['id'], owner_id=owner, kind='native', name='归档文档',
+                size_bytes=0, mime_type='text/markdown', content='档', asset_uri=None, current_version=1,
+                ragflow_document_id=None, parse_status='parsed', parse_error=None, chunk_count=0,
+                source='ui', agent_hasn_id=None,
+            ),
+        ]
+    )
+    await session.flush()
+
+    # 省略 folder_id：全库两篇都见。
+    all_docs = await tool_handlers.handle_knowledge_list_documents(session, a, {'kb_id': kb.id})
+    assert {d['name'] for d in all_docs['documents']} == {'根文档', '归档文档'}
+    # 指定目录：只见该目录那篇。
+    in_folder = await tool_handlers.handle_knowledge_list_documents(
+        session, a, {'kb_id': kb.id, 'folder_id': folder['id']}
+    )
+    assert {d['name'] for d in in_folder['documents']} == {'归档文档'}
+    # 库根（folder_id=0）：只见根那篇。
+    in_root = await tool_handlers.handle_knowledge_list_documents(session, a, {'kb_id': kb.id, 'folder_id': 0})
+    assert {d['name'] for d in in_root['documents']} == {'根文档'}
+
+
+async def test_agent_kb_doc_ops_gated_by_grant(session) -> None:
+    """kb/文档写工具走维度② 可达性闸门：restricted 白名单外的库一律拒（删库/列文档/删文档）。
+
+    闸门在调引擎前抛 ForbiddenError，故无需真实 RAGFlow（happy path 见真机 E2E）。
+    """
+    tag = uuid.uuid4().hex[:8]
+    owner, agent = f'h_test_{tag}', f'a_test_{tag}'
+    kb1, kb2 = _kb_row(owner, f'{tag}1'), _kb_row(owner, f'{tag}2')
+    session.add_all([kb1, kb2])
+    await session.flush()
+    # kb2 不在白名单（仅 kb1 可达）。
+    await knowledge_service.put_agent_grant(session, owner, agent, mode='restricted', kb_ids=[kb1.id])
+    a = _agent(owner, agent)
+
+    # kb2 直插一篇文档（用于验删文档反查 kb 的闸门）。
+    session.add(
+        Document(
+            kb_id=kb2.id, folder_id=None, owner_id=owner, kind='native', name='不可达文档',
+            size_bytes=0, mime_type='text/markdown', content='x', asset_uri=None, current_version=1,
+            ragflow_document_id=None, parse_status='parsed', parse_error=None, chunk_count=0,
+            source='ui', agent_hasn_id=None,
+        )
+    )
+    await session.flush()
+    doc2 = (await knowledge_service.list_documents(session, owner, kb2.id))[0]
+
+    # 不可达库：列文档 / 删库 / 删其文档 全拒（且在触引擎前）。
+    with pytest.raises(errors.ForbiddenError):
+        await tool_handlers.handle_knowledge_list_documents(session, a, {'kb_id': kb2.id})
+    with pytest.raises(errors.ForbiddenError):
+        await tool_handlers.handle_knowledge_delete_kb(session, a, {'kb_id': kb2.id})
+    with pytest.raises(errors.ForbiddenError):
+        await tool_handlers.handle_knowledge_delete_document(session, a, {'doc_id': doc2['id']})
+
+    # 可达库：列文档放行（kb1 暂无文档 → 空列表，不抛）。
+    ok = await tool_handlers.handle_knowledge_list_documents(session, a, {'kb_id': kb1.id})
+    assert ok['documents'] == []
+
+
+async def test_agent_create_kb_rejects_blank_name(session) -> None:
+    """create_kb 空名（纯空白）在触引擎前如实拒（RequestError），不产出空库。"""
+    tag = uuid.uuid4().hex[:8]
+    owner, agent = f'h_test_{tag}', f'a_test_{tag}'
+    a = _agent(owner, agent)
+    with pytest.raises(errors.RequestError):
+        await tool_handlers.handle_knowledge_create_kb(session, a, {'name': '   '})
+
+
+async def test_agent_upload_asset_rejections(session) -> None:
     """asset_uri 上传的纯逻辑闸门：二选一约束 + 资产不存在 + 越权他人资产（happy path 走真机 E2E）。"""
     tag = uuid.uuid4().hex[:8]
     owner, other, agent = f'h_test_{tag}', f'h_other_{tag}', f'a_test_{tag}'

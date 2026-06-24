@@ -59,7 +59,7 @@ def test_builtin_knowledge_manifest_matches_p0_contract() -> None:
     manifest = KNOWLEDGE_AI_NATIVE_MANIFEST
 
     assert manifest['app_id'] == 'knowledge'
-    assert manifest['version'] == '2.0.0'
+    assert manifest['version'] == '2.1.0'
     assert manifest['workspace_scope'] == ['personal', 'enterprise']
     assert manifest['collaboration_mode'] == 'workspace_shared'
     assert manifest['capabilities'][0]['tool_id'] == 'knowledge.search'
@@ -68,13 +68,23 @@ def test_builtin_knowledge_manifest_matches_p0_contract() -> None:
     # AI-Native 重做（《知识库AI-Native应用重设计（RAGFlow处理后端）》§2.4）：工具回归
     # manifest App 工具（transport=gateway_internal，handler 落 knowledge service），
     # 本地与云端 Runtime 同一通路；`commit_document` 退役（上传即自动解析，D6）。
+    # 2.1.0：补齐 kb 生命周期（create_kb/delete_kb）+ 文档 列/删（list_documents/delete_document），
+    # 让分身能完整操作知识库应用（建库→建目录→上传/写文档→列/删文档→删库）。
     tool_ids = [t['tool_id'] for t in manifest['tools']]
     assert tool_ids == [
         'knowledge.search',
         'knowledge.list_datasets',
+        'knowledge.create_kb',
+        'knowledge.delete_kb',
         'knowledge.fetch_doc',
+        'knowledge.list_documents',
         'knowledge.upload_document',
+        'knowledge.delete_document',
         'knowledge.write_doc',
+        'knowledge.list_folders',
+        'knowledge.create_folder',
+        'knowledge.update_folder',
+        'knowledge.delete_folder',
     ]
     assert all(t['transport'] == 'gateway_internal' for t in manifest['tools'])
     assert all(t['handler'] == t['tool_id'] for t in manifest['tools'])
