@@ -5,35 +5,45 @@
 """
 
 import uuid
+
 from typing import Any
 
-from sqlalchemy import select, and_, or_, func, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.database.db import async_db_session
-from backend.utils.timezone import timezone
-
-from backend.app.hasn.model import HasnHumans, HasnMessages, HasnConversations, HasnUnreadCounts
-from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.model.hasn_contacts import HasnContacts
-from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
 from backend.app.hasn.constants import (
-    check_action_permission,
-    compute_effective_permissions,
     ALLOW,
     CONFIRM,
     DENY,
     SCOPE_LTD,
+    check_action_permission,
 )
+from backend.app.hasn.model import HasnConversations, HasnHumans, HasnMessages, HasnUnreadCounts
+from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_contacts import HasnContacts
+from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
+from backend.app.hasn.service import sync_invalidate_service
+
+# 入站门控（外部→Agent 全门控，设计 05/06）：五闸判定 + 抑制记录
+from backend.app.hasn.service.inbound_gatekeeper import (
+    REJECT_SILENT,
+    SUPPRESS,
+    evaluate_inbound,
+    record_suppression,
+)
+
 # Phase 7 (07-02): A 路线中央判决器；替换 check_relation_permission 在 route_message 中的调用
 from backend.app.hasn.service.permission_engine import permission_engine
-
+from backend.common.log import log
+from backend.utils.timezone import timezone
 
 # ─── 目标解析 ───
+
 
 async def _push_message_to(hasn_id: str, payload: dict[str, Any]) -> None:
     """延迟导入 WS 路由器，避免服务模块启动时与 binding_event_service 循环导入。"""
     from backend.app.hasn.service.ws_router import ws_router
+
     await ws_router.push_message_to(hasn_id, payload)
 
 
@@ -45,9 +55,7 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
     """
     # 直接是 HASN ID
     if target.startswith('h_'):
-        result = await db.execute(
-            select(HasnHumans).where(HasnHumans.hasn_id == target)
-        )
+        result = await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == target))
         human = result.scalar_one_or_none()
         if human:
             return {
@@ -59,9 +67,7 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
         return None
 
     if target.startswith('a_'):
-        result = await db.execute(
-            select(HasnAgents).where(HasnAgents.hasn_id == target)
-        )
+        result = await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == target))
         agent = result.scalar_one_or_none()
         if agent:
             return {
@@ -98,9 +104,7 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
     # Star ID 解析
     if '#' in target:
         # Agent Star ID: 100001#star
-        result = await db.execute(
-            select(HasnAgents).where(HasnAgents.star_id == target)
-        )
+        result = await db.execute(select(HasnAgents).where(HasnAgents.star_id == target))
         agent = result.scalar_one_or_none()
         if agent:
             return {
@@ -112,9 +116,7 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
             }
     else:
         # Human Star ID: 100001 或 fuzi
-        result = await db.execute(
-            select(HasnHumans).where(HasnHumans.star_id == target)
-        )
+        result = await db.execute(select(HasnHumans).where(HasnHumans.star_id == target))
         human = result.scalar_one_or_none()
         if human:
             return {
@@ -128,6 +130,7 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
 
 
 # ─── 关系与权限检查 ───
+
 
 async def check_relation_permission(
     db: AsyncSession,
@@ -169,12 +172,8 @@ async def check_relation_permission(
 
     # 同一 Owner 的 Agent 之间 → 始终允许
     if sender_id.startswith('a_') and receiver_id.startswith('a_'):
-        sender_agent = await db.execute(
-            select(HasnAgents.owner_id).where(HasnAgents.hasn_id == sender_id)
-        )
-        receiver_agent = await db.execute(
-            select(HasnAgents.owner_id).where(HasnAgents.hasn_id == receiver_id)
-        )
+        sender_agent = await db.execute(select(HasnAgents.owner_id).where(HasnAgents.hasn_id == sender_id))
+        receiver_agent = await db.execute(select(HasnAgents.owner_id).where(HasnAgents.hasn_id == receiver_id))
         s_owner = sender_agent.scalar()
         r_owner = receiver_agent.scalar()
         if s_owner and r_owner and s_owner == r_owner:
@@ -186,17 +185,13 @@ async def check_relation_permission(
     receiver_lookup = receiver_id
 
     if sender_id.startswith('a_'):
-        result = await db.execute(
-            select(HasnAgents.owner_id).where(HasnAgents.hasn_id == sender_id)
-        )
+        result = await db.execute(select(HasnAgents.owner_id).where(HasnAgents.hasn_id == sender_id))
         owner = result.scalar()
         if owner:
             sender_lookup = owner
 
     if receiver_id.startswith('a_'):
-        result = await db.execute(
-            select(HasnAgents.owner_id).where(HasnAgents.hasn_id == receiver_id)
-        )
+        result = await db.execute(select(HasnAgents.owner_id).where(HasnAgents.hasn_id == receiver_id))
         owner = result.scalar()
         if owner:
             receiver_lookup = owner
@@ -288,30 +283,31 @@ async def check_relation_permission(
 
 def _msg_type_to_action(msg_type: str) -> str:
     """将消息类型映射到权限矩阵的行为类型"""
-    _map = {
-        'message':            'send_message',
-        'text':               'send_message',
-        'contact_request':    'send_message',
-        'contact_accept':     'send_message',
-        'contact_reject':     'send_message',
-        'discovery_query':    'view_public_info',
-        'schedule_query':     'view_schedule',
-        'preference_query':   'view_preferences',
-        'location_query':     'view_location',
-        'appointment':        'make_appointment',
-        'commitment':         'make_commitment',
-        'sensitive_query':    'view_sensitive',
-        'product_inquiry':    'product_inquiry',
-        'trade_comm':         'trade_communication',
-        'push_notification':  'send_push',
-        'order_comm':         'order_communication',
-        'decrypt_address':    'decrypt_address',
+    map_ = {
+        'message': 'send_message',
+        'text': 'send_message',
+        'contact_request': 'send_message',
+        'contact_accept': 'send_message',
+        'contact_reject': 'send_message',
+        'discovery_query': 'view_public_info',
+        'schedule_query': 'view_schedule',
+        'preference_query': 'view_preferences',
+        'location_query': 'view_location',
+        'appointment': 'make_appointment',
+        'commitment': 'make_commitment',
+        'sensitive_query': 'view_sensitive',
+        'product_inquiry': 'product_inquiry',
+        'trade_comm': 'trade_communication',
+        'push_notification': 'send_push',
+        'order_comm': 'order_communication',
+        'decrypt_address': 'decrypt_address',
         'professional_consult': 'professional_consult',
     }
-    return _map.get(msg_type, 'send_message')
+    return map_.get(msg_type, 'send_message')
 
 
 # ─── 会话管理 ───
+
 
 async def get_or_create_conversation(
     db: AsyncSession,
@@ -395,9 +391,7 @@ async def get_group_conversation(db: AsyncSession, group_id: str) -> HasnConvers
 
 async def list_group_members(db: AsyncSession, conversation_id: str) -> list[HasnGroupMembers]:
     """列出群活跃成员。当前模型无 removed_at/status 字段，存在即视为成员。"""
-    result = await db.execute(
-        select(HasnGroupMembers).where(HasnGroupMembers.conversation_id == conversation_id)
-    )
+    result = await db.execute(select(HasnGroupMembers).where(HasnGroupMembers.conversation_id == conversation_id))
     return list(result.scalars().all())
 
 
@@ -450,25 +444,28 @@ async def increment_unread_for(db: AsyncSession, conversation_id: str, hasn_id: 
     if unread:
         unread.unread_count = (unread.unread_count or 0) + 1
     else:
-        db.add(HasnUnreadCounts(
-            hasn_id=hasn_id,
-            conversation_id=conversation_id,
-            unread_count=1,
-            last_read_msg_id=0,
-        ))
+        db.add(
+            HasnUnreadCounts(
+                hasn_id=hasn_id,
+                conversation_id=conversation_id,
+                unread_count=1,
+                last_read_msg_id=0,
+            )
+        )
 
 
 # ─── 消息持久化 ───
+
 
 def _entity_type_int(hasn_id: str) -> int:
     """hasn_id → from_type/to_type 数字"""
     if hasn_id.startswith('h_'):
         return 1  # human
-    elif hasn_id.startswith('a_'):
+    if hasn_id.startswith('a_'):
         return 2  # agent
-    elif hasn_id.startswith('g:'):
+    if hasn_id.startswith('g:'):
         return 4  # group
-    elif hasn_id.startswith('sv_'):
+    if hasn_id.startswith('sv_'):
         return 5  # service（服务号，统一通知服务 D8；不复用 3=system）
     return 3  # system
 
@@ -493,7 +490,7 @@ def _entity_type_str(hasn_id: str) -> str:
 def _asset_id_from_uri(uri: Any) -> str | None:
     """hasn://asset/{asset_id} → asset_id。"""
     if isinstance(uri, str) and uri.startswith('hasn://asset/'):
-        candidate = uri[len('hasn://asset/'):].strip('/')
+        candidate = uri[len('hasn://asset/') :].strip('/')
         return candidate or None
     return None
 
@@ -505,11 +502,7 @@ async def _grant_private_attachments(db: AsyncSession, conversation_id: str, con
     attachments = content.get('attachments')
     if not isinstance(attachments, list) or not attachments:
         return
-    asset_ids = [
-        aid
-        for a in attachments
-        if isinstance(a, dict) and (aid := _asset_id_from_uri(a.get('uri')))
-    ]
+    asset_ids = [aid for a in attachments if isinstance(a, dict) and (aid := _asset_id_from_uri(a.get('uri')))]
     if not asset_ids:
         return
     # 延迟 import 避免潜在循环依赖
@@ -518,9 +511,7 @@ async def _grant_private_attachments(db: AsyncSession, conversation_id: str, con
     assets = await hasn_asset_service.get_many(db, asset_ids)
     for asset in assets.values():
         if asset.access == 'private':
-            await hasn_asset_service.grant_to_conversation(
-                db, asset_id=asset.asset_id, conversation_id=conversation_id
-            )
+            await hasn_asset_service.grant_to_conversation(db, asset_id=asset.asset_id, conversation_id=conversation_id)
 
 
 async def persist_message(
@@ -600,16 +591,80 @@ async def persist_message(
 
 # ─── 消息路由主入口 ───
 
+
 async def _find_message_by_local_id(db: AsyncSession, local_id: str) -> HasnMessages | None:
     """按客户端 local_id 查既有消息，用于出站投递重发的幂等去重。
 
     hasn_messages 上 local_id 全局唯一（partial unique index，NULL 不约束），故全表
     精确匹配即可命中唯一行；返回 None 表示从未落库（首次投递，正常路由）。
     """
-    result = await db.execute(
-        select(HasnMessages).where(HasnMessages.local_id == local_id).limit(1)
-    )
+    result = await db.execute(select(HasnMessages).where(HasnMessages.local_id == local_id).limit(1))
     return result.scalar_one_or_none()
+
+
+async def _suppress_inbound(
+    db: AsyncSession,
+    *,
+    from_id: str,
+    agent_info: dict[str, Any],
+    content: dict,
+    content_type: int,
+    msg_type: str,
+    priority: str,
+    reply_to_id: int | None,
+    local_id: str | None,
+    context: dict | None,
+    reason: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """入站门控未过：落库消息为受抑制态 + 写抑制箱 + WSPUSH，不投递不唤醒 runtime。
+
+    被门控的外部→Agent 消息保留 message_id 与正文、visible_to_owner=true，主人在抑制箱可见、
+    放行后才真正投递+唤醒（设计 06：记录不丢弃）。不写 message.received sync_event，故不污染
+    主人正常会话列表，仅经抑制箱镜像（WSPUSH suppressed kind）呈现。
+    """
+    to_id = agent_info['hasn_id']
+    owner_id = agent_info.get('owner_id') or ''
+    from_type = _entity_type_str(from_id)
+    conv = await get_or_create_conversation(db, from_id, from_type, to_id, 'agent', 'social')
+    msg = await persist_message(
+        db=db,
+        conversation_id=str(conv.id),
+        from_id=from_id,
+        to_id=to_id,
+        content=content,
+        content_type=content_type,
+        msg_type=msg_type,
+        priority=priority,
+        reply_to_id=reply_to_id,
+        local_id=local_id,
+        context=context,
+    )
+    await record_suppression(
+        db,
+        message_id=msg.id,
+        owner_id=owner_id,
+        hasn_id=to_id,
+        conversation_id=str(conv.id),
+        reason=reason,
+        policy_snapshot=snapshot,
+    )
+    await db.commit()
+    # WSPUSH：触发该 owner 在线 daemon 拉取抑制箱镜像（best-effort，不拖垮写点）
+    if owner_id:
+        try:
+            await sync_invalidate_service.bump_owner('suppressed', db, owner_id)
+        except Exception as exc:
+            log.warning(f'[inbound_gate] bump suppressed failed: {exc}')
+    return {
+        'error': False,
+        'status': 'suppressed',
+        'suppress_reason': reason,
+        'msg_id': msg.id,
+        'conversation_id': str(conv.id),
+        'local_id': local_id,
+        'suppressed': True,
+    }
 
 
 async def route_message(
@@ -667,9 +722,9 @@ async def route_message(
 
         # @提及（mention_only 策略 + daemon 派发闸的数据载体）：从 context 取出，持久化并随
         # envelope 下发。daemon(G4) 据 group.agent_policy + 这些 mentions 决定唤醒哪些分身。
-        _grp_ctx = context or {}
-        grp_mentions = _grp_ctx.get('mentions') if isinstance(_grp_ctx.get('mentions'), list) else None
-        grp_mention_all = bool(_grp_ctx.get('mention_all'))
+        grp_ctx = context or {}
+        grp_mentions = grp_ctx.get('mentions') if isinstance(grp_ctx.get('mentions'), list) else None
+        grp_mention_all = bool(grp_ctx.get('mention_all'))
 
         msg = await persist_message(
             db=db,
@@ -682,7 +737,7 @@ async def route_message(
             priority=priority,
             reply_to_id=reply_to_id,
             local_id=local_id,
-            context={**_grp_ctx, 'conversation_type': 'group', 'group_id': to_id},
+            context={**grp_ctx, 'conversation_type': 'group', 'group_id': to_id},
             mentions=grp_mentions,
             mention_all=grp_mention_all,
         )
@@ -702,12 +757,18 @@ async def route_message(
         # 历史上漏写 sync_event → 离线回放断裂）。owner 维度去重，避免同 owner 既 sent 又 received。
         from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
 
-        _grp_sync = SqlAlchemySyncGateway()
-        _grp_ct_str = {1: 'text', 2: 'image/*', 3: 'application/octet-stream', 4: 'audio/*', 5: 'application/x.card+json'}.get(content_type, 'text')
-        _grp_created_ts = int(msg.created_time.timestamp()) if msg.created_time else 0
+        grp_sync = SqlAlchemySyncGateway()
+        grp_ct_str = {
+            1: 'text',
+            2: 'image/*',
+            3: 'application/octet-stream',
+            4: 'audio/*',
+            5: 'application/x.card+json',
+        }.get(content_type, 'text')
+        grp_created_ts = int(msg.created_time.timestamp()) if msg.created_time else 0
 
         async def _grp_sync_event(owner_id_: str, hasn_id_: str, event_type: str, direction: str) -> None:
-            await _grp_sync._append_sync_event(
+            await grp_sync._append_sync_event(
                 db,
                 owner_id=owner_id_,
                 hasn_id=hasn_id_,
@@ -724,29 +785,27 @@ async def route_message(
                     'group_id': to_id,
                     'conversation_type': 'group',
                     'direction': direction,
-                    'content_type': _grp_ct_str,
+                    'content_type': grp_ct_str,
                     'content_body': content,
                     'local_id': local_id,
-                    'created_at': _grp_created_ts,
+                    'created_at': grp_created_ts,
                 },
             )
 
-        _grp_sender_owner = from_id if from_id.startswith('h_') else await _agent_owner_id(db, from_id)
-        _grp_seen_owner: set[str] = set()
-        if _grp_sender_owner:
-            _grp_seen_owner.add(_grp_sender_owner)
-            await _grp_sync_event(_grp_sender_owner, from_id, 'message.sent', 'outbound')
+        grp_sender_owner = from_id if from_id.startswith('h_') else await _agent_owner_id(db, from_id)
+        grp_seen_owner: set[str] = set()
+        if grp_sender_owner:
+            grp_seen_owner.add(grp_sender_owner)
+            await _grp_sync_event(grp_sender_owner, from_id, 'message.sent', 'outbound')
         for member in members:
             if member.member_id == from_id:
                 continue
             m_owner = (
-                member.member_id
-                if member.member_id.startswith('h_')
-                else await _agent_owner_id(db, member.member_id)
+                member.member_id if member.member_id.startswith('h_') else await _agent_owner_id(db, member.member_id)
             )
-            if not m_owner or m_owner in _grp_seen_owner:
+            if not m_owner or m_owner in grp_seen_owner:
                 continue
-            _grp_seen_owner.add(m_owner)
+            grp_seen_owner.add(m_owner)
             await _grp_sync_event(m_owner, member.member_id, 'message.received', 'inbound')
 
         await db.commit()
@@ -793,7 +852,7 @@ async def route_message(
             'params': {
                 'to_id': to_id,
                 'message': hasn_envelope,
-            }
+            },
         }
         for recipient_id in sorted(recipient_ids):
             await _push_message_to(recipient_id, payload)
@@ -813,35 +872,82 @@ async def route_message(
 
     # 3. Phase 7 (07-02): A 路线 —— 中央统一判决（替换 Phase 3 的 check_relation_permission 调用；
     # 旧 fn 定义保留供回滚/灰度，不再从 route_message 调用）
-    _ctx_meta = (context or {}) if context else {}
-    _ctx_relation_type = _ctx_meta.get('relation_type') or (
-        'social' if to_id.startswith('h_') or to_id.startswith('a_') else 'social'
+    ctx_meta = (context or {}) if context else {}
+    ctx_relation_type = ctx_meta.get('relation_type') or (
+        'social' if to_id.startswith(('h_', 'a_')) else 'social'
     )
-    _ctx_from_entity_type = (
-        'human' if from_id.startswith('h_') else ('agent' if from_id.startswith('a_') else 'system')
-    )
-    _ctx_to_entity_type = target_info.get('entity_type', 'agent')
+    ctx_from_entity_type = 'human' if from_id.startswith('h_') else ('agent' if from_id.startswith('a_') else 'system')
+    ctx_to_entity_type = target_info.get('entity_type', 'agent')
+
+    # 3.0 入站门控（外部 → Agent 全门控，设计 05/06）：仅普通消息、接收方是 Agent、发送方非其
+    # Owner 时启用。未过门控 → 记录进主人抑制箱（不静默丢弃），主人放行后才真正投递+唤醒。
+    # 限流（abuse_restricted）按 D3 由下方 permission_engine DENY 路径落抑制箱，本闸不含限流。
+    if (
+        ctx_to_entity_type == 'agent'
+        and from_id != target_info.get('owner_id')
+        and msg_type not in ('notification', 'system')
+    ):
+        gate = await evaluate_inbound(db, from_id=from_id, agent_info=target_info, relation_type=ctx_relation_type)
+        if gate.action == REJECT_SILENT:
+            return {'error': True, 'code': 2002, 'message': '对方已将你屏蔽'}
+        if gate.action == SUPPRESS:
+            return await _suppress_inbound(
+                db,
+                from_id=from_id,
+                agent_info=target_info,
+                content=content,
+                content_type=content_type,
+                msg_type=msg_type,
+                priority=priority,
+                reply_to_id=reply_to_id,
+                local_id=local_id,
+                context=context,
+                reason=gate.reason or 'permission_denied',
+                snapshot=gate.snapshot,
+            )
+
     perm_result = await permission_engine.evaluate(
         db,
         sender={
             'hasn_id': from_id,
-            'entity_type': _ctx_from_entity_type,
+            'entity_type': ctx_from_entity_type,
         },
         receiver={
             'hasn_id': to_id,
             'owner_id': target_info.get('owner_id'),
-            'entity_type': _ctx_to_entity_type,
+            'entity_type': ctx_to_entity_type,
         },
         envelope={
             'msg_type': msg_type,
             'content': content,
-            'relation_type': _ctx_relation_type,
-            'metadata': _ctx_meta,
-            'from_entity_type': _ctx_from_entity_type,
+            'relation_type': ctx_relation_type,
+            'metadata': ctx_meta,
+            'from_entity_type': ctx_from_entity_type,
         },
     )
 
     if perm_result.decision == DENY:
+        # 限流（iron_law_6）DENY 对外部→Agent → 入抑制箱(abuse_restricted) 让主人可放行；
+        # 其它硬违规（身份未声明/commerce free_chat 等）保持静默拒绝（协议级，不进抑制箱）。
+        if (
+            ctx_to_entity_type == 'agent'
+            and from_id != target_info.get('owner_id')
+            and perm_result.matched_rule == 'iron_law_6'
+        ):
+            return await _suppress_inbound(
+                db,
+                from_id=from_id,
+                agent_info=target_info,
+                content=content,
+                content_type=content_type,
+                msg_type=msg_type,
+                priority=priority,
+                reply_to_id=reply_to_id,
+                local_id=local_id,
+                context=context,
+                reason='abuse_restricted',
+                snapshot={'limit_kind': 'rate', 'error_code': perm_result.error_code},
+            )
         return {
             'error': True,
             'code': perm_result.error_code or 2002,
@@ -866,11 +972,9 @@ async def route_message(
 
     # 4. 获取/创建会话
     from_type = _entity_type_str(from_id)
-    relation_type = _ctx_relation_type or 'social'
+    relation_type = ctx_relation_type or 'social'
 
-    conv = await get_or_create_conversation(
-        db, from_id, from_type, to_id, to_type, relation_type
-    )
+    conv = await get_or_create_conversation(db, from_id, from_type, to_id, to_type, relation_type)
 
     # 5. 持久化
     msg = await persist_message(
@@ -891,8 +995,15 @@ async def route_message(
 
     # 写入同步事件，供登录时通过 sync/pull 恢复历史消息
     from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
-    _sync_gw = SqlAlchemySyncGateway()
-    content_type_str = {1: 'text', 2: 'image/*', 3: 'application/octet-stream', 4: 'audio/*', 5: 'application/x.card+json'}.get(content_type, 'text')
+
+    sync_gw = SqlAlchemySyncGateway()
+    content_type_str = {
+        1: 'text',
+        2: 'image/*',
+        3: 'application/octet-stream',
+        4: 'audio/*',
+        5: 'application/x.card+json',
+    }.get(content_type, 'text')
 
     # 为发送方写入 message.sent 事件
     if from_id.startswith('a_'):
@@ -900,16 +1011,14 @@ async def route_message(
         # hasn_agents_service 里并不存在的 get_agent_by_hasn_id —— 该错误导入
         # 会在 commit 之后、投递之前抛 ImportError，导致 Agent 回复持久化成功
         # 却从不推送给收件人（跨 owner「人收 Agent 回复」永远收不到）。
-        _sender_owner_row = await db.execute(
-            select(HasnAgents.owner_id).where(HasnAgents.hasn_id == from_id)
-        )
-        sender_owner_id = _sender_owner_row.scalar_one_or_none()
+        sender_owner_row = await db.execute(select(HasnAgents.owner_id).where(HasnAgents.hasn_id == from_id))
+        sender_owner_id = sender_owner_row.scalar_one_or_none()
     else:
         # Human 发送的消息，from_id 就是 owner_id
         sender_owner_id = from_id
 
     if sender_owner_id:
-        await _sync_gw._append_sync_event(
+        await sync_gw._append_sync_event(
             db,
             owner_id=sender_owner_id,
             hasn_id=from_id,
@@ -934,7 +1043,7 @@ async def route_message(
     # 为接收方写入 message.received 事件
     recipient_owner_id = target_info.get('owner_id') if to_id.startswith('a_') else to_id
     if recipient_owner_id:
-        await _sync_gw._append_sync_event(
+        await sync_gw._append_sync_event(
             db,
             owner_id=recipient_owner_id,
             hasn_id=to_id,
@@ -993,7 +1102,7 @@ async def route_message(
         'params': {
             'to_id': to_id,
             'message': hasn_envelope,
-        }
+        },
     }
 
     # 7. 投递
@@ -1003,9 +1112,8 @@ async def route_message(
     # 主人 daemon 上时同一节点会收两遍 → 镜像两次 + 派发 runtime 两次（发一条收两条回复）。
     if to_entity_type == 'agent' and target_info.get('owner_id') and target_info.get('owner_id') != to_id:
         from backend.app.hasn.service.ws_router import ws_router
-        await ws_router.push_to_owner_excluding_agent_node(
-            target_info['owner_id'], to_id, payload
-        )
+
+        await ws_router.push_to_owner_excluding_agent_node(target_info['owner_id'], to_id, payload)
 
     return {
         'error': False,
@@ -1017,6 +1125,7 @@ async def route_message(
 
 
 # ─── 已读处理 ───
+
 
 async def mark_read(
     db: AsyncSession,
@@ -1050,15 +1159,14 @@ async def mark_read(
 
 # ─── 消息撤回 ───
 
+
 async def recall_message(
     db: AsyncSession,
     hasn_id: str,
     msg_id: int,
 ) -> dict[str, Any]:
     """撤回消息"""
-    result = await db.execute(
-        select(HasnMessages).where(HasnMessages.id == msg_id)
-    )
+    result = await db.execute(select(HasnMessages).where(HasnMessages.id == msg_id))
     msg = result.scalar_one_or_none()
 
     if not msg:
@@ -1104,6 +1212,7 @@ async def recall_message(
 
 # ─── Phase 7 (07-02): A 路线 confirm_required 暂存 helper ───
 
+
 async def _stash_pending_commitment(
     db: AsyncSession,
     *,
@@ -1119,8 +1228,9 @@ async def _stash_pending_commitment(
     SQLAlchemy text() 参数化，避免 SQL 注入 (T-07-02-02)。
     """
     import json
-    import uuid
-    from datetime import datetime, timedelta, timezone as dt_tz
+
+    from datetime import datetime, timedelta
+    from datetime import timezone as dt_tz
 
     from sqlalchemy import text
 

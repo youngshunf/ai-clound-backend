@@ -48,11 +48,16 @@ KIND_TASKS = 'tasks'
 # owner 定向：规划应用（plan）数据变更（任一设备/分身增删改目标/计划/待办/日程/习惯）。
 # 与 tasks 同形态——per-owner 指纹，不进全局握手，靠 bump_owner push + 周期 sync_pull 兜底。
 KIND_PLAN = 'plan'
-OWNER_KINDS = (KIND_TASKS, KIND_PLAN)
+# owner 定向：入站门控抑制箱（外部→Agent 被门控的消息记录变更）。daemon 收到即拉 owner 的
+# 抑制箱镜像（含云端门控产出的 social_disabled/permission_denied/agent_frozen/abuse_restricted/manual_only）。
+KIND_SUPPRESSED = 'suppressed'
+OWNER_KINDS = (KIND_TASKS, KIND_PLAN, KIND_SUPPRESSED)
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
 # 某 owner 规划数据为空时的稳定指纹（同上约定）
 EMPTY_PLAN_REVISION = 'empty'
+# 某 owner 抑制箱为空时的稳定指纹（同上约定）
+EMPTY_SUPPRESSED_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -134,13 +139,34 @@ async def compute_owner_plan_revision(db: AsyncSession, owner_id: str) -> str:
 
     lines: list[str] = []
     for label, model in (('goal', Goal), ('plan', Plan), ('todo', Todo), ('event', Event), ('habit', Habit)):
-        rows = (
-            await db.execute(sa.select(model.id, model.updated_time).where(model.owner_hasn_id == owner_id))
-        ).all()
+        rows = (await db.execute(sa.select(model.id, model.updated_time).where(model.owner_hasn_id == owner_id))).all()
         lines.extend(f'{label}:{row_id}@{updated.isoformat() if updated else ""}' for row_id, updated in rows)
     if not lines:
         return EMPTY_PLAN_REVISION
     return hashlib.sha256('\n'.join(sorted(lines)).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_suppressed_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的抑制箱指纹：sha256(sorted "message_id@resolved_at" 行)[:16]。
+
+    聚合该 owner 名下 visible_to_owner 的抑制记录，任一被建（新门控/可达性暂留）或解除
+    （resolved_at 落值）→ 集合内某行指纹变 → 整体指纹变。仅作 invalidate 帧的 ``revision``
+    字段：daemon 不据此去重、收到即拉该 owner 的抑制箱镜像。
+    """
+    from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages
+
+    rows = (
+        await db.execute(
+            sa.select(HasnSuppressedMessages.message_id, HasnSuppressedMessages.resolved_at).where(
+                HasnSuppressedMessages.owner_id == owner_id,
+                HasnSuppressedMessages.visible_to_owner.is_(True),
+            )
+        )
+    ).all()
+    lines = sorted(f'{mid}@{resolved.isoformat() if resolved else ""}' for mid, resolved in rows)
+    if not lines:
+        return EMPTY_SUPPRESSED_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
 async def _compute_revision(kind: str, db: AsyncSession) -> str:
@@ -238,6 +264,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_tasks_revision(db, owner_id)
     elif kind == KIND_PLAN:
         rev = await compute_owner_plan_revision(db, owner_id)
+    elif kind == KIND_SUPPRESSED:
+        rev = await compute_owner_suppressed_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 
