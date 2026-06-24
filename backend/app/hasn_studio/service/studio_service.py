@@ -54,7 +54,7 @@ _TERMINAL = ('succeeded', 'failed', 'canceled')
 _ARTIFACT_UPLOAD_CATEGORY = 'published_artifact'
 
 # 产物级协作（应用平台 v3 §6 / doc22 §3.6 全复用）：resource_share 的 resource_type。
-# studio 有两类可分享产物：项目（容器：管线/素材/分镜，editor 可改、可派渲染）+ 成品（最终视频）。
+# studio 有两类可分享产物：项目（容器：流水线/素材/分镜，editor 可改、可派渲染）+ 成品（最终视频）。
 _RESOURCE_TYPE_PROJECT = 'studio_project'
 _RESOURCE_TYPE_ARTIFACT = 'studio_artifact'
 # studio 项目/成品**无独立 visibility/scope/enterprise 列**（doc22 §3.1 数据模型；不同于知识库 Kb）：
@@ -499,11 +499,11 @@ class StudioService:
         await publish_service.revoke(db, owner_id=artifact.owner_hasn_id, site_id=existing['id'])
         return True
 
-    # ================================================================ 管线目录（broker）
+    # ================================================================ 流水线目录（broker）
 
     @staticmethod
     async def list_pipelines() -> dict[str, Any]:
-        """经 broker 取引擎管线目录（只 production）。传输/业务失败抛 StudioEngineError（handler/上层处理）。"""
+        """经 broker 取引擎流水线目录（只 production）。传输/业务失败抛 StudioEngineError（handler/上层处理）。"""
         data = await montage_engine_provider.list_pipelines()
         pipelines = data.get('pipelines') or []
         return {'pipelines': pipelines, 'count': data.get('count', len(pipelines))}

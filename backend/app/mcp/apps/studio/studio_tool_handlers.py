@@ -54,7 +54,7 @@ def _subject(agent: AgentTokenPayload) -> Subject:
 async def handle_list_pipelines(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """经 broker 取引擎管线目录（只 production）。"""
+    """经 broker 取引擎流水线目录（只 production）。"""
     return await studio_service.list_pipelines()
 
 

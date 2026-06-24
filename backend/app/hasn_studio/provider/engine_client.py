@@ -1,6 +1,6 @@
 """montage_engine_provider —— 主云端 → montage-engine-service 的薄 HTTP client（设计 doc22 §3）。
 
-**唯一耦合点**：StudioService（渲染提交/轮询/取片/原子工具/管线目录）经本 provider 说话引擎服务；
+**唯一耦合点**：StudioService（渲染提交/轮询/取片/原子工具/流水线目录）经本 provider 说话引擎服务；
 换部署/换引擎/双活只动这一层。**不 import OpenMontage/Remotion**（重依赖隔离在
 huanxing-apps/montage-engine-service）。超时/不可达/非 JSON/非 2xx/引擎 ok:false 一律归一成诚实异常
 （``StudioEngineError``，零 fake，绝不造假产物/绩效）。
@@ -13,7 +13,7 @@ huanxing-apps/montage-engine-service）。超时/不可达/非 JSON/非 2xx/引�
 引擎契约（huanxing-apps/montage-engine-service/service/app.py，内网 Bearer + Host 闸）。引擎返回**它自己**的
 ``{ok, service, interface, <payload>}`` 信封（业务失败仍 HTTP 200；坏请求/未知工具/未知 job 返 400/404）：
 - GET  /v1/healthz                     探活（无鉴权）→ {ok, service, version, pipelines, tools, ...}
-- GET  /v1/pipelines                   管线目录（只 production）→ ok 信封 {count, pipelines:[...]}
+- GET  /v1/pipelines                   流水线目录（只 production）→ ok 信封 {count, pipelines:[...]}
 - GET  /v1/tools                       原子工具目录 → ok 信封 {count, tools:[...]}
 - POST /v1/tools/{tool_name}           执行原子工具 body {inputs:{...}} → ok 信封 {result}
 - POST /v1/render                      提交渲染 body {props?|demo?, pipeline_key?, composition_id?}
@@ -81,7 +81,7 @@ class StudioEngineProvider:
     """调 montage-engine-service（Bearer 内网令牌 + 超时 + 信封解包 + 错误归一）。"""
 
     async def list_pipelines(self) -> dict[str, Any]:
-        """管线目录（只 production）。返回 {count, pipelines:[...]}。传输/业务失败抛 StudioEngineError。"""
+        """流水线目录（只 production）。返回 {count, pipelines:[...]}。传输/业务失败抛 StudioEngineError。"""
         return await self._get('/v1/pipelines', interface='pipelines')
 
     async def list_tools(self) -> dict[str, Any]:

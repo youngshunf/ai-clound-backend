@@ -113,8 +113,8 @@ _CAPABILITIES = [
     # ---------------- 读（studio:read，出厂 allow，idempotent） ----------------
     _cap(
         name='list_pipelines',
-        title='列出可用视频管线',
-        description='经引擎取可用视频管线目录（只 production；如 cinematic/montage 等，含 key/标题/说明）。只读。',
+        title='列出可用视频流水线',
+        description='经引擎取可用视频流水线目录（只 production；如 cinematic/montage 等，含 key/标题/说明）。只读。',
         scope=_SCOPE_READ,
         properties={},
         required=[],
@@ -125,7 +125,7 @@ _CAPABILITIES = [
     _cap(
         name='list_projects',
         title='列出我的视频项目',
-        description='列出当前主人名下的全部视频项目（owner 隔离，最近优先，含状态/默认管线）。只读。',
+        description='列出当前主人名下的全部视频项目（owner 隔离，最近优先，含状态/默认流水线）。只读。',
         scope=_SCOPE_READ,
         properties={},
         required=[],
@@ -136,7 +136,7 @@ _CAPABILITIES = [
     _cap(
         name='get_project',
         title='查看视频项目详情',
-        description='按 project_id 读取一个视频项目详情（含设置/默认管线 + 其素材列表，owner 隔离）。只读。',
+        description='按 project_id 读取一个视频项目详情（含设置/默认流水线 + 其素材列表，owner 隔离）。只读。',
         scope=_SCOPE_READ,
         properties={'project_id': {'type': 'integer', 'minimum': 1, 'description': '项目 id'}},
         required=['project_id'],
@@ -187,13 +187,13 @@ _CAPABILITIES = [
         name='save_project',
         title='保存/更新视频项目',
         description='新建或更新视频项目（不出片、不花算力，分身可随便迭代）。新建必带 title；传 project_id 则按 '
-        'owner 隔离更新。可设默认管线/设置/封面/绑定分身/状态。',
+        'owner 隔离更新。可设默认流水线/设置/封面/绑定分身/状态。',
         scope=_SCOPE_WRITE,
         properties={
             'project_id': {'type': 'integer', 'minimum': 1, 'description': '更新已存项目时传其 id；新建则不传'},
             'title': {'type': 'string', 'minLength': 1, 'description': '项目标题（新建必填）'},
             'description': {'type': 'string', 'description': '项目说明（可选）'},
-            'default_pipeline_key': {'type': 'string', 'description': '项目默认管线 key（来自 list_pipelines）'},
+            'default_pipeline_key': {'type': 'string', 'description': '项目默认流水线 key（来自 list_pipelines）'},
             'settings': {'type': 'object', 'description': '项目设置（调性/分辨率/默认参数/品牌，喂渲染缺省）'},
             'cover_asset_uri': {'type': 'string', 'description': '封面 hasn://asset/（可选）'},
             'bound_agent_id': {'type': 'string', 'description': '绑定协作分身 hasn_id（可选）'},
@@ -224,13 +224,13 @@ _CAPABILITIES = [
     # ---------------- 渲染（studio:render，出厂 ask；run_tool 同 ask=可能花钱） ----------------
     _cap(
         name='run_pipeline',
-        title='跑管线出片',
-        description='复合主入口：按 (project_id, pipeline_key, input) 跑视频管线出片（脚本→分镜→配音→合成，'
+        title='跑流水线出片',
+        description='复合主入口：按 (project_id, pipeline_key, input) 跑视频流水线出片（脚本→分镜→配音→合成，'
         '花算力，须主人审批）。job 式：立即返回任务 ref，用 get_render_job 轮询。可被任意应用的分身跨应用编排调用。',
         scope=_SCOPE_RENDER,
         properties={
             'project_id': {'type': 'integer', 'minimum': 1, 'description': '项目 id'},
-            'pipeline_key': {'type': 'string', 'description': '管线 key（缺省回落项目 default_pipeline_key）'},
+            'pipeline_key': {'type': 'string', 'description': '流水线 key（缺省回落项目 default_pipeline_key）'},
             'input': {
                 'type': 'object',
                 'description': '渲染入参（props/demo/composition_id 透传引擎；脚本/素材引用/参数）',
@@ -254,7 +254,7 @@ _CAPABILITIES = [
             'props': {'type': 'object', 'description': '合成入参（与 demo 二选一）'},
             'demo': {'type': 'string', 'description': '内置 demo-props 名（与 props 二选一，自检用）'},
             'composition_id': {'type': 'string', 'description': '合成 id（可选）'},
-            'pipeline_key': {'type': 'string', 'description': '管线 key（缺省回落项目 default_pipeline_key）'},
+            'pipeline_key': {'type': 'string', 'description': '流水线 key（缺省回落项目 default_pipeline_key）'},
             'work_session_id': {'type': 'string', 'description': '触发的工作会话 id（可选）'},
         },
         required=['project_id'],
@@ -372,7 +372,7 @@ def build_studio_app() -> App:
     - ``execution_mode='cloud'``：分身工具经云端 MCP → 云端后端 Broker → 引擎服务（非本地工具、非 sidecar iframe）。
     - ``install_policy='manual'``：统一视频引擎是专业能力，按需装、不自动挂载到工作台（对齐 creator/finance/quant）。
     - ``collaboration_mode='none'`` / ``scope=('personal',)``：个人模式（分享协作走 resource_share，§3.6 全复用）。
-    - ``entry_route='/apps/studio'``：自建视频工作台（项目/管线/素材/成品库，随 webui 落地）。
+    - ``entry_route='/apps/studio'``：自建视频工作台（项目/流水线/素材/成品库，随 webui 落地）。
     - ``default_agent_type`` 由 catalog DB 行承载（content_operator「内容运营官」），不在 App dataclass。
 
     延迟导入 App 避免循环依赖。
@@ -383,7 +383,7 @@ def build_studio_app() -> App:
         id='studio',
         name='视频引擎',
         icon='brand-studio',
-        description='统一视频引擎工作台——主人挑管线、派分身出片（脚本→分镜→配音→合成），成品库一键管理'
+        description='统一视频引擎工作台——主人挑流水线、派分身出片（脚本→分镜→配音→合成），成品库一键管理'
         '（cloud-brokered，算力按量计费）。',
         scope=('personal',),
         collaboration_mode='none',

@@ -30,7 +30,7 @@ INSERT INTO hasn_app_catalog (
     '视频引擎',
     'brand-studio',
     'http://hasn-pub-cdn.dcfuture.cn/huanxing/app-icons/studio.svg',
-    '统一视频引擎工作台——主人挑管线、派分身出片（脚本→分镜→配音→合成），成品库一键管理（cloud-brokered，算力按量计费）。',
+    '统一视频引擎工作台——主人挑流水线、派分身出片（脚本→分镜→配音→合成），成品库一键管理（cloud-brokered，算力按量计费）。',
     'builtin',
     'published',
     'cloud',
@@ -49,7 +49,7 @@ INSERT INTO hasn_app_catalog (
     NULL,
     true,
     'content_operator',
-    '你是主人的视频内容运营官：用 hasn.studio.* 管线与工具把创意做成完整视频，按脚本→分镜→配音→合成的流水线推进、迭代精修；提交渲染/出片、导出成片、分享发布等花算力或外发的动作须经主人审批。所有成片来自引擎真实渲染、绝不伪造产物（零 fake），取不到/跑不通就如实报错，尊重主人最终决定权。',
+    '你是主人的视频内容运营官：用 hasn.studio.* 流水线与工具把创意做成完整视频，按脚本→分镜→配音→合成的流水线推进、迭代精修；提交渲染/出片、导出成片、分享发布等花算力或外发的动作须经主人审批。所有成片来自引擎真实渲染、绝不伪造产物（零 fake），取不到/跑不通就如实报错，尊重主人最终决定权。',
     '{}'::jsonb
 )
 ON CONFLICT (app_id) DO NOTHING;
@@ -57,7 +57,7 @@ ON CONFLICT (app_id) DO NOTHING;
 -- ② 回填 default_agent_type（存量 studio 行未绑定时，沿用 IS NULL 守卫不覆盖运营改动）。
 UPDATE hasn_app_catalog
 SET default_agent_type = 'content_operator',
-    work_session_system_prompt = '你是主人的视频内容运营官：用 hasn.studio.* 管线与工具把创意做成完整视频，按脚本→分镜→配音→合成的流水线推进、迭代精修；提交渲染/出片、导出成片、分享发布等花算力或外发的动作须经主人审批。所有成片来自引擎真实渲染、绝不伪造产物（零 fake），取不到/跑不通就如实报错，尊重主人最终决定权。'
+    work_session_system_prompt = '你是主人的视频内容运营官：用 hasn.studio.* 流水线与工具把创意做成完整视频，按脚本→分镜→配音→合成的流水线推进、迭代精修；提交渲染/出片、导出成片、分享发布等花算力或外发的动作须经主人审批。所有成片来自引擎真实渲染、绝不伪造产物（零 fake），取不到/跑不通就如实报错，尊重主人最终决定权。'
 WHERE app_id = 'studio' AND default_agent_type IS NULL;
 
 -- ③ 回填品牌图标（出厂品牌资产无条件设定；若公共桶 studio.svg 未传则 webui 回落 icon token）。

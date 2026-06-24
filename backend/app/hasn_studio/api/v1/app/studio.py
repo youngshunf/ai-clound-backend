@@ -1,6 +1,6 @@
 """统一视频引擎用户端（owner）业务 API（设计 doc22 §3 owner read-API + 工作台）。
 
-认证：Owner JWT。主人在 WebUI `/apps/studio` 操作全链路——建项目 / 存分镜 / 挑管线 / 派分身出片 /
+认证：Owner JWT。主人在 WebUI `/apps/studio` 操作全链路——建项目 / 存分镜 / 挑流水线 / 派分身出片 /
 轮询渲染 / 管成品 / 导出。**WebUI 经 daemon `/api/v1/studio/*` 薄代理调用本面**（铁律：WebUI 不直连
 云端、不直连引擎）。
 
@@ -70,7 +70,7 @@ class SetMediaCredentialRequest(BaseModel):
     value: str = Field(min_length=1, description='凭据明文（加密落库，绝不回参/记录）')
 
 
-# ============================ 引擎健康 + 管线目录 ============================
+# ============================ 引擎健康 + 流水线目录 ============================
 
 
 @router.get('/healthz', summary='[Owner] 视频引擎探活', dependencies=[DependsJwtAuth])
@@ -79,9 +79,9 @@ async def studio_healthz() -> ResponseModel:
     return response_base.success(data=await montage_engine_provider.healthz())
 
 
-@router.get('/pipelines', summary='[Owner] 可用视频管线', dependencies=[DependsJwtAuth])
+@router.get('/pipelines', summary='[Owner] 可用视频流水线', dependencies=[DependsJwtAuth])
 async def list_pipelines() -> ResponseModel:
-    """经 broker 取引擎管线目录（只 production）。引擎不可达 → 透传真实错误（零 fake）。"""
+    """经 broker 取引擎流水线目录（只 production）。引擎不可达 → 透传真实错误（零 fake）。"""
     return response_base.success(data=await studio_service.list_pipelines())
 
 
@@ -157,7 +157,7 @@ async def export_artifact(request: Request, db: CurrentSession, obj: ExportParam
 # ============================ 渲染（job 式） ============================
 
 
-@router.post('/render/pipeline', summary='[Owner] 跑管线出片（花算力，job 式）', dependencies=[DependsJwtAuth])
+@router.post('/render/pipeline', summary='[Owner] 跑流水线出片（花算力，job 式）', dependencies=[DependsJwtAuth])
 async def run_pipeline(request: Request, db: CurrentSessionTransaction, obj: RunPipelineParam) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await studio_service.run_pipeline(
