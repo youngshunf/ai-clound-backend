@@ -14,14 +14,14 @@ from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.tool_directory import ToolDirectoryService
 from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
-from backend.app.mcp.tools.contact import ContactListTool
+from backend.app.mcp.tools.contact import ContactListTool, ContactSearchTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
 from backend.app.mcp.tools.registry import ToolRegistry
-from backend.app.mcp.tools.workbench import WORKBENCH_TOOLS
 from backend.app.mcp.tools.tool_call import ToolCallTool
 from backend.app.mcp.tools.tool_search import ToolSearchTool
 from backend.app.mcp.tools.user import UserSearchTool
+from backend.app.mcp.tools.workbench import WORKBENCH_TOOLS
 from backend.common.security.scope_policy import MODE_ASK, MODE_DENY
 
 logger = logging.getLogger(__name__)
@@ -87,8 +87,9 @@ class HasnCloudMcpServer:
         # 资产工具：把分身自己的内容（SVG/base64 图片/文本…）上传成 hasn://asset，供消息附件引用。
         self.tool_registry.register(AssetCreateTool())
 
-        # 联系人工具
+        # 联系人工具：列出 + 按昵称/唤星号搜索（含好友名下 agent），打通"搜联系人→发消息"闭环。
         self.tool_registry.register(ContactListTool())
+        self.tool_registry.register(ContactSearchTool())
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:
