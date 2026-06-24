@@ -88,11 +88,18 @@ class StudioEngineProvider:
         """原子工具目录。返回 {count, tools:[...]}。"""
         return await self._get('/v1/tools', interface='tools')
 
-    async def run_tool(self, tool_name: str, inputs: dict[str, Any]) -> dict[str, Any]:
-        """执行一个原子工具（创作段，provider 可能花钱）。返回 {result}。未知工具引擎返 404 → StudioEngineError。"""
-        return await self._post(
-            f'/v1/tools/{tool_name}', body={'inputs': dict(inputs or {})}, interface=f'tools.{tool_name}'
-        )
+    async def run_tool(
+        self, tool_name: str, inputs: dict[str, Any], *, credentials: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        """执行一个原子工具（创作段，provider 可能花钱）。返回 {result}。未知工具引擎返 404 → StudioEngineError。
+
+        ``credentials`` 是云端按主人身份解析的 ``{ENV_NAME: value}`` 临时媒体凭据覆盖表（doc22 §5 P7）：
+        引擎瞬时套用、**绝不持久**。仅非空时进 body（无凭据则引擎那条工具自报缺凭据，零 fake）。
+        """
+        body: dict[str, Any] = {'inputs': dict(inputs or {})}
+        if credentials:
+            body['credentials'] = dict(credentials)
+        return await self._post(f'/v1/tools/{tool_name}', body=body, interface=f'tools.{tool_name}')
 
     async def submit_render(
         self,
@@ -101,11 +108,13 @@ class StudioEngineProvider:
         demo: str | None = None,
         pipeline_key: str | None = None,
         composition_id: str | None = None,
+        credentials: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """提交一次渲染（job 式）。返回引擎渲染 snapshot（含 job_id/status/progress/stage/...）。
 
         ``demo`` 是引擎内置 demo-props 名（字符串，与 props 二选一）。缺 props/demo → 引擎返 400
-        bad_request → StudioEngineError；传输层失败同样抛。
+        bad_request → StudioEngineError；传输层失败同样抛。``credentials`` 同 run_tool：云端解析的临时
+        媒体凭据 ENV 覆盖表，引擎瞬时套用、绝不持久；仅非空时进 body。
         """
         body: dict[str, Any] = {}
         if props is not None:
@@ -116,6 +125,8 @@ class StudioEngineProvider:
             body['pipeline_key'] = pipeline_key
         if composition_id is not None:
             body['composition_id'] = composition_id
+        if credentials:
+            body['credentials'] = dict(credentials)
         return await self._post('/v1/render', body=body, interface='render')
 
     async def get_render(self, job_id: str) -> dict[str, Any]:

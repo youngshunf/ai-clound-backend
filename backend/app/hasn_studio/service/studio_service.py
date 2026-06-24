@@ -37,6 +37,7 @@ from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_studio.model import StudioArtifact, StudioAsset, StudioProject, StudioRenderJob
 from backend.app.hasn_studio.provider import StudioEngineError, montage_engine_provider
+from backend.app.hasn_studio.service.media_credentials import resolve_media_credentials
 from backend.common.exception import errors
 from backend.plugin.s3.service.storage_service import StorageService
 
@@ -741,12 +742,16 @@ class StudioService:
             progress=0,
             work_session_id=work_session_id,
         )
+        # 按主人身份解析临时媒体凭据 ENV 覆盖表（doc22 §5 P7）：网关族用主人 new-api token（OWNER 配额计费）、
+        # 长尾族用主人 BYO / 平台兜底。引擎瞬时套用、绝不持久；解析失败保守（缺则省略，零 fake）。
+        credentials = await resolve_media_credentials(db, owner_hasn_id=owner_hasn_id)
         try:
             snapshot = await montage_engine_provider.submit_render(
                 props=input_payload.get('props'),
                 demo=input_payload.get('demo'),
                 pipeline_key=pipeline_key or None,
                 composition_id=input_payload.get('composition_id'),
+                credentials=credentials,
             )
             job.engine_job_id = snapshot.get('job_id')
             job.status = _coerce_status(snapshot.get('status'), default='running')
@@ -779,7 +784,9 @@ class StudioService:
         """
         if not tool_name:
             raise errors.RequestError(msg='tool_name 必填')
-        return await montage_engine_provider.run_tool(tool_name, dict(inputs or {}))
+        # 原子工具创作段同样按主人身份下发临时媒体凭据（doc22 §5 P7）：引擎只套用该工具读的 ENV。
+        credentials = await resolve_media_credentials(db, owner_hasn_id=owner_hasn_id)
+        return await montage_engine_provider.run_tool(tool_name, dict(inputs or {}), credentials=credentials)
 
     # ================================================================ 渲染 job 读 + 成品物化
 
@@ -988,12 +995,23 @@ def _coerce_status(value: Any, *, default: str) -> str:
 
 
 def _build_cost(snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    """从引擎 snapshot 提成本计量（duration_sec → 合成段 CPU 计量；provider 用量若引擎带则透传）。"""
+    """从引擎 snapshot 提成本计量落 ``studio_render_job.cost``（doc22 §5 P7 metering）。
+
+    **只透传引擎真给的字段，绝不臆造**：``duration_sec``（合成段 CPU 计量）+ 引擎 ``cost`` 对象里的
+    ``total_usd / credits / gpu_sec / provider_usage`` 等（OpenMontage ``cost_tracker`` 的 reconcile 结果）。
+
+    **唤星账本折算（已接 vs 待办）**：网关族（image/tts/stt/video）经 new-api 用主人**自己**的 relay token
+    出账，其用量**已自动**并入主人 new-api 账本（无需此处二次扣减——这是走网关路的根本好处）。BYO 长尾
+    provider（fal/Suno/HeyGen）由主人自带 key 直接对 provider 付费，唤星不经手金钱；如未来要把 BYO 用量也
+    折算成唤星积分扣减，是独立账本钩子——见下 ``# TODO(P9)``，本期只如实落 cost、不做二次扣减。
+    """
     cost: dict[str, Any] = {}
     if snapshot.get('duration_sec') is not None:
         cost['duration_sec'] = snapshot['duration_sec']
     if snapshot.get('cost') is not None and isinstance(snapshot['cost'], dict):
         cost.update(snapshot['cost'])
+    # TODO(P9): 若要把 BYO 长尾 provider 的 total_usd 折算成唤星积分扣减（gateway 族已自动并账，无需此步），
+    #           在此处对 cost['total_usd'] 调 credit_service 扣减一次（带 idempotency key = engine_job_id 防重）。
     return cost or None
 
 

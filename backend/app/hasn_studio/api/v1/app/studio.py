@@ -26,6 +26,7 @@ from backend.app.hasn_studio.schema.owner import (
     SaveProjectParam,
     SaveStoryboardParam,
 )
+from backend.app.hasn_studio.service import media_credentials
 from backend.app.hasn_studio.service.studio_service import Subject, studio_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -62,6 +63,11 @@ class PublishArtifactRequest(BaseModel):
     visibility: str = Field(default='unlisted', description='private/password/unlisted/public')
     password: str | None = Field(default=None, description='visibility=password 时口令明文')
     allow_download: bool = Field(default=False, description='是否允许下载成片')
+
+
+class SetMediaCredentialRequest(BaseModel):
+    provider: str = Field(min_length=1, description='媒体 provider 标识（fal/suno/heygen …）')
+    value: str = Field(min_length=1, description='凭据明文（加密落库，绝不回参/记录）')
 
 
 # ============================ 引擎健康 + 管线目录 ============================
@@ -312,4 +318,40 @@ async def publish_artifact(
 async def unpublish_artifact(request: Request, db: CurrentSessionTransaction, artifact_id: int) -> ResponseModel:
     subject = await _subject(db, request)
     ok = await studio_service.unpublish_artifact(db, subject=subject, artifact_id=artifact_id)
+    return response_base.success(data={'revoked': ok})
+
+
+# ==================== 媒体凭据 BYO 管理（owner-via-webui，非 agent 工具；doc22 §5 P7） ====================
+#
+# 长尾媒体 provider（fal/Suno/HeyGen …）的自带 key。**owner 专属**——刻意不开 MCP 工具 / agent scope：
+# 媒体凭据管理是主人经 WebUI 的能力，分身不该读写主人凭据。加密落 hasn_app_credential（app_id='studio'），
+# **绝不**回明文/密文，只回脱敏状态（has_key + status）。网关族（image/tts/stt/video）经 new-api 用主人自己
+# 的 token，不在此配。
+
+
+@router.get('/credentials', summary='[Owner] 媒体凭据状态（脱敏，含族路由）', dependencies=[DependsJwtAuth])
+async def list_media_credentials(request: Request, db: CurrentSession) -> ResponseModel:
+    """列长尾媒体 provider 的凭据状态（只 has_key/status，绝不回值）+ 族路由表（哪些族走网关/BYO）。"""
+    owner_hasn_id = await _owner(db, request)
+    items = await media_credentials.list_byo_credentials(db, owner_hasn_id=owner_hasn_id)
+    return response_base.success(data={'items': items, 'family_routing': media_credentials.family_routing()})
+
+
+@router.post('/credentials', summary='[Owner] 配置/更换媒体 provider 自带 key', dependencies=[DependsJwtAuth])
+async def set_media_credential(
+    request: Request, db: CurrentSessionTransaction, body: SetMediaCredentialRequest
+) -> ResponseModel:
+    """主人配/换某 provider 的 BYO key：加密 upsert（绝不回明文/密文，只回脱敏结果）。"""
+    owner_hasn_id = await _owner(db, request)
+    data = await media_credentials.upsert_byo_credential(
+        db, owner_hasn_id=owner_hasn_id, provider=body.provider, value=body.value
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/credentials', summary='[Owner] 吊销媒体 provider 自带 key', dependencies=[DependsJwtAuth])
+async def revoke_media_credential(request: Request, db: CurrentSessionTransaction, provider: str) -> ResponseModel:
+    """吊销主人某 provider 的 BYO key（清密文 + status=revoked）。"""
+    owner_hasn_id = await _owner(db, request)
+    ok = await media_credentials.revoke_byo_credential(db, owner_hasn_id=owner_hasn_id, provider=provider)
     return response_base.success(data={'revoked': ok})

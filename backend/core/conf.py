@@ -154,6 +154,14 @@ class Settings(BaseSettings):
     QUANT_ENGINE_TOKEN: str = ''  # 内部 svc-token（Bearer，对齐引擎服务 QUANT_SVC_TOKEN；空则引擎仅允许本机回环，开发态）
     QUANT_ENGINE_TIMEOUT: int = 30  # HTTP 超时（秒）
 
+    # 统一视频引擎（studio / montage-engine-service）BYO 长尾媒体凭据平台兜底（doc22 §5 P7）：
+    # 主人没自带 key 时，对该 provider 用平台公共 key（运营自费），为空则该 provider 跳过（诚实，零 fake）。
+    # 网关族（image/tts/stt/video）不在此——它们经 new-api 用主人自己的 relay token（OWNER 配额计费），
+    # 不需要平台 BYO key。下列仅长尾 provider（fal / suno / heygen …），与 media_credentials.py 路由表对齐。
+    MONTAGE_FALLBACK_FAL_KEY: str = ''  # fal.ai / Kling 等图像/视频 provider 平台兜底 key（env FAL_KEY）
+    MONTAGE_FALLBACK_SUNO_KEY: str = ''  # Suno 音乐 provider 平台兜底 key（env SUNO_API_KEY）
+    MONTAGE_FALLBACK_HEYGEN_KEY: str = ''  # HeyGen 数字人 provider 平台兜底 key（env HEYGEN_API_KEY）
+
     # Token
     TOKEN_ALGORITHM: str = 'HS256'
     TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24  # 1 天
