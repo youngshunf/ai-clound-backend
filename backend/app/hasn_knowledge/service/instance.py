@@ -54,7 +54,7 @@ async def resolve_knowledge_instance(db: AsyncSession) -> tuple[RAGFlowClient, K
         raise KnowledgeProviderError('knowledge_instance_not_configured', '知识库实例缺少 default_embd_id 配置')
     try:
         api_key = key_encryption.decrypt(row.credential_ref)
-    except Exception as exc:  # noqa: BLE001 —— 解密失败=运营配置故障，如实报、绝不静默回退明文
+    except Exception as exc:
         raise KnowledgeProviderError('knowledge_instance_not_configured', 'service key 解密失败（检查密钥配置）') from exc
     client = RAGFlowClient(row.endpoint, api_key)
     return client, KnowledgeInstanceConfig(

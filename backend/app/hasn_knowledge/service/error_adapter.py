@@ -9,8 +9,12 @@
 
 from __future__ import annotations
 
-from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
+from typing import TYPE_CHECKING
+
 from backend.common.exception import errors
+
+if TYPE_CHECKING:
+    from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
 
 
 def to_http_error(exc: KnowledgeProviderError) -> errors.BaseExceptionError:

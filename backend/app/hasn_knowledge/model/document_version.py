@@ -1,10 +1,9 @@
-from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.hasn_knowledge.model._base import KnowledgeBase
-from backend.common.model import id_key, UniversalText
+from backend.common.model import UniversalText, id_key
 
 
 class DocumentVersion(KnowledgeBase):

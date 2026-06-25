@@ -30,7 +30,7 @@ async def _wait_parsed(session, owner: str, kb_id: int, doc_id: int) -> dict:
     raise AssertionError(f'文档 {doc_id} 在 {PARSE_TIMEOUT_SECONDS}s 内未完成解析（仍 {doc["parse_status"]}）')
 
 
-async def test_full_pipeline_real_engine(session, ragflow_ready):
+async def test_full_pipeline_real_engine(session, ragflow_ready) -> None:
     tag = uuid.uuid4().hex[:8]
     owner = f'h_e2e_{tag}'
     other_owner = f'h_e2e_other_{tag}'
@@ -91,7 +91,7 @@ async def test_full_pipeline_real_engine(session, ragflow_ready):
         assert other == {'chunks': [], 'total': 0, 'kb_count': 0}
 
         # 9. 下载原件（私有桶流式，代码路径不触达引擎，D10）
-        name, mime, stream = await knowledge_service.download_document(session, owner, file_doc['id'])
+        name, _mime, stream = await knowledge_service.download_document(session, owner, file_doc['id'])
         assert name == file_doc['name']
         downloaded = b''
         async for chunk in stream:
@@ -99,7 +99,7 @@ async def test_full_pipeline_real_engine(session, ragflow_ready):
         assert marker.encode() in downloaded
 
         # 10. 原生文档保存即重向量化：编辑后旧引擎副本被替换（ragflow_document_id 更换）
-        before_rf_id = native_done['parse_status'] and (
+        native_done['parse_status'] and (
             await knowledge_service.get_document(session, owner, native_doc['id'])
         )
         updated = await knowledge_service.update_native_document(

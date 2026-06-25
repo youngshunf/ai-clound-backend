@@ -27,7 +27,7 @@ from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_knowledge.model import AgentKbGrant, Document, DocumentVersion, Folder, Kb
 from backend.app.hasn_knowledge.service.instance import resolve_knowledge_instance
-from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError, RAGFlowClient
+from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
 from backend.common.exception import errors
 from backend.plugin.s3.service.storage_service import storage_service
 from backend.utils.timezone import timezone
