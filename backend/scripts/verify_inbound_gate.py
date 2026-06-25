@@ -7,7 +7,7 @@
 import asyncio
 import uuid
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_contacts import HasnContacts
@@ -28,7 +28,7 @@ FRIEND = 'h_gv_friend'
 BLOCKED = 'h_gv_blocked'
 
 
-async def _cleanup(session):
+async def _cleanup(session) -> None:
     await session.execute(delete(HasnSuppressedMessages).where(HasnSuppressedMessages.owner_id == OWNER))
     await session.execute(delete(HasnContacts).where(HasnContacts.owner_id == OWNER))
     await session.execute(delete(HasnAgents).where(HasnAgents.owner_id == OWNER))
@@ -51,7 +51,7 @@ async def _mk_agent(session, hasn_id, *, status='active', social=True, policy='a
     return {'hasn_id': hasn_id, 'owner_id': OWNER}
 
 
-async def _mk_contact(session, peer_id, *, trust, status='connected', relation='social'):
+async def _mk_contact(session, peer_id, *, trust, status='connected', relation='social') -> None:
     session.add(
         HasnContacts(
             owner_id=OWNER,
@@ -65,7 +65,7 @@ async def _mk_contact(session, peer_id, *, trust, status='connected', relation='
     await session.commit()
 
 
-async def main():
+async def main() -> None:
     results = []
     async with async_db_session() as session:
         await _cleanup(session)
@@ -74,7 +74,7 @@ async def main():
         await _mk_contact(session, FRIEND, trust=3)  # 朋友 → social[3] ALLOW
         await _mk_contact(session, BLOCKED, trust=0, status='blocked')  # 黑名单
 
-        def check(name, outcome, want_action, want_reason=None):
+        def check(name, outcome, want_action, want_reason=None) -> None:
             ok = outcome.action == want_action and (want_reason is None or outcome.reason == want_reason)
             results.append((name, ok, f'{outcome.action}/{outcome.reason}'))
 

@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 
@@ -43,12 +43,12 @@ async def finance_healthz() -> ResponseModel:
 
 @router.get('/stock/quote-history', summary='[Owner] A股历史K线', dependencies=[DependsJwtAuth])
 async def stock_quote_history(
-    symbol: str = Query(..., min_length=1, description='A股代码，如 600519'),
-    period: str | None = Query(default=None, description='daily/weekly/monthly'),
-    start_date: str | None = Query(default=None, description='起始日 YYYYMMDD'),
-    end_date: str | None = Query(default=None, description='结束日 YYYYMMDD'),
-    adjust: str | None = Query(default=None, description='复权 qfq/hfq/空'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='A股代码，如 600519')],
+    period: Annotated[str | None, Query(description='daily/weekly/monthly')] = None,
+    start_date: Annotated[str | None, Query(description='起始日 YYYYMMDD')] = None,
+    end_date: Annotated[str | None, Query(description='结束日 YYYYMMDD')] = None,
+    adjust: Annotated[str | None, Query(description='复权 qfq/hfq/空')] = None,
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query(
         'stock.quote_history',
@@ -59,24 +59,24 @@ async def stock_quote_history(
 
 @router.get('/stock/realtime', summary='[Owner] A股实时行情', dependencies=[DependsJwtAuth])
 async def stock_realtime(
-    symbols: str = Query(..., min_length=1, description='代码逗号分隔，如 600519,000001'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbols: Annotated[str, Query(min_length=1, description='代码逗号分隔，如 600519,000001')],
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('stock.realtime', _params(symbols=symbols, limit=limit))
     return response_base.success(data=data)
 
 
 @router.get('/stock/info', summary='[Owner] 个股基本面/简介', dependencies=[DependsJwtAuth])
-async def stock_info(symbol: str = Query(..., min_length=1, description='A股代码')) -> ResponseModel:
+async def stock_info(symbol: Annotated[str, Query(min_length=1, description='A股代码')]) -> ResponseModel:
     data = await finance_provider.query('stock.info', _params(symbol=symbol))
     return response_base.success(data=data)
 
 
 @router.get('/stock/fund-flow', summary='[Owner] 个股资金流向', dependencies=[DependsJwtAuth])
 async def stock_fund_flow(
-    symbol: str = Query(..., min_length=1, description='A股代码'),
-    market: str | None = Query(default=None, description='sh/sz/bj'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='A股代码')],
+    market: Annotated[str | None, Query(description='sh/sz/bj')] = None,
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('stock.fund_flow', _params(symbol=symbol, market=market, limit=limit))
     return response_base.success(data=data)
@@ -84,9 +84,9 @@ async def stock_fund_flow(
 
 @router.get('/stock/billboard', summary='[Owner] 龙虎榜', dependencies=[DependsJwtAuth])
 async def stock_billboard(
-    start_date: str = Query(..., min_length=1, description='起始日 YYYYMMDD'),
-    end_date: str = Query(..., min_length=1, description='结束日 YYYYMMDD'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    start_date: Annotated[str, Query(min_length=1, description='起始日 YYYYMMDD')],
+    end_date: Annotated[str, Query(min_length=1, description='结束日 YYYYMMDD')],
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query(
         'stock.billboard', _params(start_date=start_date, end_date=end_date, limit=limit)
@@ -96,8 +96,8 @@ async def stock_billboard(
 
 @router.get('/stock/financial', summary='[Owner] 财务摘要', dependencies=[DependsJwtAuth])
 async def stock_financial(
-    symbol: str = Query(..., min_length=1, description='A股代码'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='A股代码')],
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('stock.financial', _params(symbol=symbol, limit=limit))
     return response_base.success(data=data)
@@ -108,12 +108,12 @@ async def stock_financial(
 
 @router.get('/hk/quote-history', summary='[Owner] 港股历史K线', dependencies=[DependsJwtAuth])
 async def hk_quote_history(
-    symbol: str = Query(..., min_length=1, description='港股代码 5 位，如 00700'),
-    period: str | None = Query(default=None),
-    start_date: str | None = Query(default=None),
-    end_date: str | None = Query(default=None),
-    adjust: str | None = Query(default=None),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='港股代码 5 位，如 00700')],
+    period: Annotated[str | None, Query()] = None,
+    start_date: Annotated[str | None, Query()] = None,
+    end_date: Annotated[str | None, Query()] = None,
+    adjust: Annotated[str | None, Query()] = None,
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query(
         'hk.quote_history',
@@ -124,12 +124,12 @@ async def hk_quote_history(
 
 @router.get('/us/quote-history', summary='[Owner] 美股历史K线', dependencies=[DependsJwtAuth])
 async def us_quote_history(
-    symbol: str = Query(..., min_length=1, description='美股代码，如 105.AAPL'),
-    period: str | None = Query(default=None),
-    start_date: str | None = Query(default=None),
-    end_date: str | None = Query(default=None),
-    adjust: str | None = Query(default=None),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='美股代码，如 105.AAPL')],
+    period: Annotated[str | None, Query()] = None,
+    start_date: Annotated[str | None, Query()] = None,
+    end_date: Annotated[str | None, Query()] = None,
+    adjust: Annotated[str | None, Query()] = None,
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query(
         'us.quote_history',
@@ -140,11 +140,11 @@ async def us_quote_history(
 
 @router.get('/index/quote-history', summary='[Owner] 指数历史K线', dependencies=[DependsJwtAuth])
 async def index_quote_history(
-    symbol: str = Query(..., min_length=1, description='指数代码，如 000001'),
-    period: str | None = Query(default=None),
-    start_date: str | None = Query(default=None),
-    end_date: str | None = Query(default=None),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='指数代码，如 000001')],
+    period: Annotated[str | None, Query()] = None,
+    start_date: Annotated[str | None, Query()] = None,
+    end_date: Annotated[str | None, Query()] = None,
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query(
         'index.quote_history',
@@ -158,9 +158,9 @@ async def index_quote_history(
 
 @router.get('/fund/nav-history', summary='[Owner] 基金历史净值', dependencies=[DependsJwtAuth])
 async def fund_nav_history(
-    symbol: str = Query(..., min_length=1, description='基金代码'),
-    indicator: str | None = Query(default=None, description='默认 单位净值走势'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='基金代码')],
+    indicator: Annotated[str | None, Query(description='默认 单位净值走势')] = None,
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('fund.nav_history', _params(symbol=symbol, indicator=indicator, limit=limit))
     return response_base.success(data=data)
@@ -168,9 +168,9 @@ async def fund_nav_history(
 
 @router.get('/fund/position', summary='[Owner] 基金持仓', dependencies=[DependsJwtAuth])
 async def fund_position(
-    symbol: str = Query(..., min_length=1, description='基金代码'),
-    date: str | None = Query(default=None, description='报告年份，如 2024'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='基金代码')],
+    date: Annotated[str | None, Query(description='报告年份，如 2024')] = None,
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('fund.position', _params(symbol=symbol, date=date, limit=limit))
     return response_base.success(data=data)
@@ -178,8 +178,8 @@ async def fund_position(
 
 @router.get('/futures/quote-history', summary='[Owner] 期货历史行情', dependencies=[DependsJwtAuth])
 async def futures_quote_history(
-    symbol: str = Query(..., min_length=1, description='期货合约代码，如 V2501'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='期货合约代码，如 V2501')],
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('futures.quote_history', _params(symbol=symbol, limit=limit))
     return response_base.success(data=data)
@@ -187,8 +187,8 @@ async def futures_quote_history(
 
 @router.get('/bond/quote-history', summary='[Owner] 债券历史行情', dependencies=[DependsJwtAuth])
 async def bond_quote_history(
-    symbol: str = Query(..., min_length=1, description='债券代码，如 sh010107'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    symbol: Annotated[str, Query(min_length=1, description='债券代码，如 sh010107')],
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('bond.quote_history', _params(symbol=symbol, limit=limit))
     return response_base.success(data=data)
@@ -199,8 +199,8 @@ async def bond_quote_history(
 
 @router.get('/macro/indicator', summary='[Owner] 宏观指标', dependencies=[DependsJwtAuth])
 async def macro_indicator(
-    indicator: str = Query(default='cpi', description='cpi/ppi/gdp/pmi'),
-    limit: int | None = Query(default=None, ge=1, le=300),
+    indicator: Annotated[str, Query(description='cpi/ppi/gdp/pmi')] = 'cpi',
+    limit: Annotated[int | None, Query(ge=1, le=300)] = None,
 ) -> ResponseModel:
     data = await finance_provider.query('macro.indicator', _params(indicator=indicator, limit=limit))
     return response_base.success(data=data)
