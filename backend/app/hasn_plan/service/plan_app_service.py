@@ -116,9 +116,39 @@ def _coerce_temporal(key: str, value: Any) -> Any:
     return value
 
 
+# priority 列是 SMALLINT(1:低/2:中/3:高)，但 MCP 工具 schema 历史声明为 string，分身常传 "high"/"medium"/"low"
+# 语义值（也可能传数字串 "3" 或已是 int）。untyped body 不转则字符串直写 SMALLINT 列 → PostgreSQL 报错 500。
+# 此处统一归一化：语义词/数字串/int 一律落成 1–3 的整数，无法识别回落默认中等，绝不把字符串透传到 DB。
+_PRIORITY_LABELS = {'low': 1, 'medium': 2, 'normal': 2, 'mid': 2, 'high': 3, 'urgent': 3}
+_PRIORITY_DEFAULT = 2
+
+
+def _coerce_priority(value: Any) -> int:
+    """priority 语义值/数字串/int → SMALLINT(1–3)；无法识别回落默认中等。"""
+    if isinstance(value, bool):  # bool 是 int 子类，单独挡（True/False 非有效优先级）
+        return _PRIORITY_DEFAULT
+    if isinstance(value, int):
+        return min(max(value, 1), 3)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _PRIORITY_LABELS:
+            return _PRIORITY_LABELS[s]
+        if s.lstrip('-').isdigit():
+            return min(max(int(s), 1), 3)
+    return _PRIORITY_DEFAULT
+
+
+def _coerce_field(key: str, value: Any) -> Any:
+    """字段值归一化：priority 语义/数字串 → SMALLINT；时间字段 ISO 串 → date/datetime/time。"""
+    if key == 'priority':
+        return _coerce_priority(value)
+    return _coerce_temporal(key, value)
+
+
 def _pick(fields: set[str], data: dict[str, Any]) -> dict[str, Any]:
-    """仅保留白名单字段且值不为 None（None 视为「不设置」，由 DB 默认/原值兜底）；时间类字段 ISO 串转类型。"""
-    return {k: _coerce_temporal(k, v) for k, v in data.items() if k in fields and v is not None}
+    """仅保留白名单字段且值不为 None（None 视为「不设置」，由 DB 默认/原值兜底）；
+    时间类字段 ISO 串转类型、priority 归一化为 SMALLINT。"""
+    return {k: _coerce_field(k, v) for k, v in data.items() if k in fields and v is not None}
 
 
 def serialize(row: Any) -> dict[str, Any]:
