@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.content_stage import (
     UpdateContentStageParam,
 )
 from backend.app.hasn_creator.service.content_stage_service import content_stage_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_content_stage(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await content_stage_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_content_stage(
     db: CurrentSessionTransaction,
     obj: CreateContentStageParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await content_stage_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_content_stage(
     db: CurrentSession,
     pk: Annotated[int, Path(description='阶段产出；调研/大纲/初稿/终稿/封面/分镜/口播 ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     content_stage = await content_stage_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if content_stage.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_content_stage(
     pk: Annotated[int, Path(description='阶段产出；调研/大纲/初稿/终稿/封面/分镜/口播 ID')],
     obj: UpdateContentStageParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    content_stage = await content_stage_service.get(db=db, pk=pk)
+    await content_stage_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if content_stage.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该阶段产出；调研/大纲/初稿/终稿/封面/分镜/口播')
@@ -106,8 +100,7 @@ async def agent_delete_content_stage(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='阶段产出；调研/大纲/初稿/终稿/封面/分镜/口播 ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    content_stage = await content_stage_service.get(db=db, pk=pk)
+    await content_stage_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if content_stage.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该阶段产出；调研/大纲/初稿/终稿/封面/分镜/口播')

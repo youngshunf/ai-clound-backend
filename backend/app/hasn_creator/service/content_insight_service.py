@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_creator.crud.crud_content_insight import content_insight_dao
 from backend.app.hasn_creator.model import ContentInsight
-from backend.app.hasn_creator.schema.content_insight import CreateContentInsightParam, DeleteContentInsightParam, UpdateContentInsightParam
+from backend.app.hasn_creator.schema.content_insight import (
+    CreateContentInsightParam,
+    DeleteContentInsightParam,
+    UpdateContentInsightParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

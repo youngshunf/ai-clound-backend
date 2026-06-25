@@ -67,7 +67,7 @@ async def _setup_content_with_account(session, scope):
 async def test_manual_assist_package_full(session) -> None:
     """成品包齐备：文案+封面+配图+话题标签+发布建议，含发布状态机闭环。"""
     scope = _scope()
-    pid, aid, cid = await _setup_content_with_account(session, scope)
+    _pid, aid, cid = await _setup_content_with_account(session, scope)
 
     # 备稿：终稿 + 封面 + 配图
     await creator_service.save_stage(

@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_creator.crud.crud_content_stage import content_stage_dao
 from backend.app.hasn_creator.model import ContentStage
-from backend.app.hasn_creator.schema.content_stage import CreateContentStageParam, DeleteContentStageParam, UpdateContentStageParam
+from backend.app.hasn_creator.schema.content_stage import (
+    CreateContentStageParam,
+    DeleteContentStageParam,
+    UpdateContentStageParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

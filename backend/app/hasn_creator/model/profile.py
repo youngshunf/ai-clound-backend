@@ -1,12 +1,12 @@
 from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key, UniversalText, TimeZone
 from backend.app.hasn_creator.model._base import HasnCreatorAppBase
-from backend.utils.timezone import timezone
+from backend.common.model import TimeZone, UniversalText, id_key
 
 
 class Profile(HasnCreatorAppBase):

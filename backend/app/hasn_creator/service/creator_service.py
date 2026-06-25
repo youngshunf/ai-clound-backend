@@ -966,7 +966,7 @@ class CreatorService:
                 is_builtin=False,
                 success_rate=Decimal(str(new_pattern['success_rate']))
                 if new_pattern.get('success_rate') is not None
-                else Decimal('0'),
+                else Decimal(0),
             )
             db.add(vp)
             await db.flush()
@@ -999,7 +999,7 @@ class CreatorService:
             summary=summary or '',
             evidence_json=evidence,
             action_taken=action_taken,
-            confidence=Decimal(str(confidence)) if confidence is not None else Decimal('0'),
+            confidence=Decimal(str(confidence)) if confidence is not None else Decimal(0),
             **_child_ownership(proj),
         )
         db.add(row)

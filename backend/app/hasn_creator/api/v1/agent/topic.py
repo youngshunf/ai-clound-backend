@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.topic import (
     UpdateTopicParam,
 )
 from backend.app.hasn_creator.service.topic_service import topic_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_topic(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await topic_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_topic(
     db: CurrentSessionTransaction,
     obj: CreateTopicParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await topic_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_topic(
     db: CurrentSession,
     pk: Annotated[int, Path(description='选题池；按画像 + 热点 + 竞品推荐选题 + 采纳/跳过 ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     topic = await topic_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if topic.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_topic(
     pk: Annotated[int, Path(description='选题池；按画像 + 热点 + 竞品推荐选题 + 采纳/跳过 ID')],
     obj: UpdateTopicParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    topic = await topic_service.get(db=db, pk=pk)
+    await topic_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if topic.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该选题池；按画像 + 热点 + 竞品推荐选题 + 采纳/跳过')
@@ -106,8 +100,7 @@ async def agent_delete_topic(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='选题池；按画像 + 热点 + 竞品推荐选题 + 采纳/跳过 ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    topic = await topic_service.get(db=db, pk=pk)
+    await topic_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if topic.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该选题池；按画像 + 热点 + 竞品推荐选题 + 采纳/跳过')

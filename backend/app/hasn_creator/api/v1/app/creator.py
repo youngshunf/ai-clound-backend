@@ -14,29 +14,33 @@ active_enterprise → 角色裁剪）。一律返回统一信封（ResponseModel
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Annotated
+
 from fastapi import APIRouter, Query, Request
 
-from backend.app.hasn_creator.schema.owner import (
-    AddAccountParam,
-    CreateContentParam,
-    CreateProjectParam,
-    LogCompetitorParam,
-    LogInsightParam,
-    MarkPublishedParam,
-    ReassignProjectParam,
-    SaveStageParam,
-    SetProfileParam,
-    SubmitPublishParam,
-    SuggestTopicsParam,
-    UpdateContentParam,
-    UpdateMetricsParam,
-    UpdateProjectParam,
-)
 from backend.app.hasn_creator.service.creator_service import creator_service
 from backend.app.hasn_creator.service.scope_context import resolve_creator_scope
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+
+if TYPE_CHECKING:
+    from backend.app.hasn_creator.schema.owner import (
+        AddAccountParam,
+        CreateContentParam,
+        CreateProjectParam,
+        LogCompetitorParam,
+        LogInsightParam,
+        MarkPublishedParam,
+        ReassignProjectParam,
+        SaveStageParam,
+        SetProfileParam,
+        SubmitPublishParam,
+        SuggestTopicsParam,
+        UpdateContentParam,
+        UpdateMetricsParam,
+        UpdateProjectParam,
+    )
+    from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
@@ -48,9 +52,9 @@ router = APIRouter()
 async def list_projects(
     request: Request,
     db: CurrentSession,
-    status: str | None = Query(default=None),
-    view: str = Query(default='team', description='企业内主编可切 mine'),
-    limit: int = Query(default=50, ge=1, le=200),
+    status: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query(description='企业内主编可切 mine')] = 'team',
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id, view=view)
     items = await creator_service.list_projects(db, user_id=request.user.id, scope=scope, status=status, limit=limit)
@@ -185,8 +189,8 @@ async def list_topics(
     request: Request,
     db: CurrentSession,
     project_id: int,
-    status: int | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    status: Annotated[int | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id)
     items = await creator_service.list_topics(
@@ -213,11 +217,11 @@ async def suggest_topics(
 async def list_content(
     request: Request,
     db: CurrentSession,
-    project_id: int | None = Query(default=None),
-    status: str | None = Query(default=None),
-    review_status: str | None = Query(default=None),
-    view: str = Query(default='team'),
-    limit: int = Query(default=50, ge=1, le=200),
+    project_id: Annotated[int | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    review_status: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query()] = 'team',
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id, view=view)
     items = await creator_service.list_content(
@@ -304,10 +308,10 @@ async def save_stage(
 async def list_publish(
     request: Request,
     db: CurrentSession,
-    project_id: int | None = Query(default=None),
-    content_id: int | None = Query(default=None),
-    status: str | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=200),
+    project_id: Annotated[int | None, Query()] = None,
+    content_id: Annotated[int | None, Query()] = None,
+    status: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id)
     items = await creator_service.list_publish(
@@ -385,10 +389,10 @@ async def update_metrics(
 async def search_patterns(
     request: Request,
     db: CurrentSession,
-    project_id: int | None = Query(default=None),
-    pattern_type: str | None = Query(default=None),
-    q: str | None = Query(default=None),
-    limit: int = Query(default=30, ge=1, le=100),
+    project_id: Annotated[int | None, Query()] = None,
+    pattern_type: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
 ) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id)
     items = await creator_service.search_patterns(
@@ -419,8 +423,8 @@ async def log_insight(request: Request, db: CurrentSessionTransaction, obj: LogI
 async def report_overview(
     request: Request,
     db: CurrentSession,
-    project_id: int | None = Query(default=None),
-    view: str = Query(default='team'),
+    project_id: Annotated[int | None, Query()] = None,
+    view: Annotated[str, Query()] = 'team',
 ) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id, view=view)
     data = await creator_service.report_overview(db, user_id=request.user.id, scope=scope, project_id=project_id)

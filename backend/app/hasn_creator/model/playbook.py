@@ -3,8 +3,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import UniversalText, id_key
 from backend.app.hasn_creator.model._base import HasnCreatorAppBase
+from backend.common.model import UniversalText, id_key
 
 
 class Playbook(HasnCreatorAppBase):

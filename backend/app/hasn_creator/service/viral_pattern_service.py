@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_creator.crud.crud_viral_pattern import viral_pattern_dao
 from backend.app.hasn_creator.model import ViralPattern
-from backend.app.hasn_creator.schema.viral_pattern import CreateViralPatternParam, DeleteViralPatternParam, UpdateViralPatternParam
+from backend.app.hasn_creator.schema.viral_pattern import (
+    CreateViralPatternParam,
+    DeleteViralPatternParam,
+    UpdateViralPatternParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

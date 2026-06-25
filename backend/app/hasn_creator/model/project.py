@@ -1,10 +1,9 @@
-from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key, UniversalText
 from backend.app.hasn_creator.model._base import HasnCreatorAppBase
+from backend.common.model import UniversalText, id_key
 
 
 class Project(HasnCreatorAppBase):

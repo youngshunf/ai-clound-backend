@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.publish import (
     UpdatePublishParam,
 )
 from backend.app.hasn_creator.service.publish_service import publish_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_publish(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await publish_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_publish(
     db: CurrentSessionTransaction,
     obj: CreatePublishParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await publish_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_publish(
     db: CurrentSession,
     pk: Annotated[int, Path(description='发布记录（= content × account：发到某平台账号 + 数据指标） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     publish = await publish_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if publish.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_publish(
     pk: Annotated[int, Path(description='发布记录（= content × account：发到某平台账号 + 数据指标） ID')],
     obj: UpdatePublishParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    publish = await publish_service.get(db=db, pk=pk)
+    await publish_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if publish.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该发布记录（= content × account：发到某平台账号 + 数据指标）')
@@ -106,8 +100,7 @@ async def agent_delete_publish(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='发布记录（= content × account：发到某平台账号 + 数据指标） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    publish = await publish_service.get(db=db, pk=pk)
+    await publish_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if publish.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该发布记录（= content × account：发到某平台账号 + 数据指标）')

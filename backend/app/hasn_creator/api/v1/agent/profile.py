@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.profile import (
     UpdateProfileParam,
 )
 from backend.app.hasn_creator.service.profile_service import profile_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_profile(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await profile_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_profile(
     db: CurrentSessionTransaction,
     obj: CreateProfileParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await profile_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_profile(
     db: CurrentSession,
     pk: Annotated[int, Path(description='项目画像（1:1 project）；定位参数 + 内容支柱权重（进化核心） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     profile = await profile_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if profile.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_profile(
     pk: Annotated[int, Path(description='项目画像（1:1 project）；定位参数 + 内容支柱权重（进化核心） ID')],
     obj: UpdateProfileParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    profile = await profile_service.get(db=db, pk=pk)
+    await profile_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if profile.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该项目画像（1:1 project）；定位参数 + 内容支柱权重（进化核心）')
@@ -106,8 +100,7 @@ async def agent_delete_profile(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='项目画像（1:1 project）；定位参数 + 内容支柱权重（进化核心） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    profile = await profile_service.get(db=db, pk=pk)
+    await profile_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if profile.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该项目画像（1:1 project）；定位参数 + 内容支柱权重（进化核心）')

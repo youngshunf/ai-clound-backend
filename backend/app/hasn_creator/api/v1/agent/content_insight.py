@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.content_insight import (
     UpdateContentInsightParam,
 )
 from backend.app.hasn_creator.service.content_insight_service import content_insight_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_content_insight(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await content_insight_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_content_insight(
     db: CurrentSessionTransaction,
     obj: CreateContentInsightParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await content_insight_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_content_insight(
     db: CurrentSession,
     pk: Annotated[int, Path(description='内容洞察（复盘结构化结论，进化沉淀核心） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     content_insight = await content_insight_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if content_insight.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_content_insight(
     pk: Annotated[int, Path(description='内容洞察（复盘结构化结论，进化沉淀核心） ID')],
     obj: UpdateContentInsightParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    content_insight = await content_insight_service.get(db=db, pk=pk)
+    await content_insight_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if content_insight.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该内容洞察（复盘结构化结论，进化沉淀核心）')
@@ -106,8 +100,7 @@ async def agent_delete_content_insight(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='内容洞察（复盘结构化结论，进化沉淀核心） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    content_insight = await content_insight_service.get(db=db, pk=pk)
+    await content_insight_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if content_insight.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该内容洞察（复盘结构化结论，进化沉淀核心）')

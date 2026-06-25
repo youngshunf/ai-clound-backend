@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.viral_pattern import (
     UpdateViralPatternParam,
 )
 from backend.app.hasn_creator.service.viral_pattern_service import viral_pattern_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_viral_pattern(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await viral_pattern_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_viral_pattern(
     db: CurrentSessionTransaction,
     obj: CreateViralPatternParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await viral_pattern_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_viral_pattern(
     db: CurrentSession,
     pk: Annotated[int, Path(description='爆款模式库；钩子/结构/标题/CTA，usage + success_rate（可全局 project_id NULL） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     viral_pattern = await viral_pattern_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if viral_pattern.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_viral_pattern(
     pk: Annotated[int, Path(description='爆款模式库；钩子/结构/标题/CTA，usage + success_rate（可全局 project_id NULL） ID')],
     obj: UpdateViralPatternParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    viral_pattern = await viral_pattern_service.get(db=db, pk=pk)
+    await viral_pattern_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if viral_pattern.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该爆款模式库；钩子/结构/标题/CTA，usage + success_rate（可全局 project_id NULL）')
@@ -106,8 +100,7 @@ async def agent_delete_viral_pattern(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='爆款模式库；钩子/结构/标题/CTA，usage + success_rate（可全局 project_id NULL） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    viral_pattern = await viral_pattern_service.get(db=db, pk=pk)
+    await viral_pattern_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if viral_pattern.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该爆款模式库；钩子/结构/标题/CTA，usage + success_rate（可全局 project_id NULL）')

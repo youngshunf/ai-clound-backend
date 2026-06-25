@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.competitor import (
     UpdateCompetitorParam,
 )
 from backend.app.hasn_creator.service.competitor_service import competitor_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_competitor(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await competitor_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_competitor(
     db: CurrentSessionTransaction,
     obj: CreateCompetitorParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await competitor_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_competitor(
     db: CurrentSession,
     pk: Annotated[int, Path(description='竞品账号（定位/选题调研输入） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     competitor = await competitor_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if competitor.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_competitor(
     pk: Annotated[int, Path(description='竞品账号（定位/选题调研输入） ID')],
     obj: UpdateCompetitorParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    competitor = await competitor_service.get(db=db, pk=pk)
+    await competitor_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if competitor.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该竞品账号（定位/选题调研输入）')
@@ -106,8 +100,7 @@ async def agent_delete_competitor(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='竞品账号（定位/选题调研输入） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    competitor = await competitor_service.get(db=db, pk=pk)
+    await competitor_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if competitor.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该竞品账号（定位/选题调研输入）')

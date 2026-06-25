@@ -1,4 +1,3 @@
-from datetime import datetime
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -6,8 +5,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key, UniversalText
 from backend.app.hasn_creator.model._base import HasnCreatorAppBase
+from backend.common.model import UniversalText, id_key
 
 
 class ContentInsight(HasnCreatorAppBase):
@@ -22,7 +21,7 @@ class ContentInsight(HasnCreatorAppBase):
     enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     created_by_agent_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
-    period: Mapped[str | None] = mapped_column(sa.String(20), default=None, comment='复盘周期（2026-W24 周报 / content:{id} 单篇）')
+    period: Mapped[str | None] = mapped_column(sa.String(20), default=None, comment=f'复盘周期（2026-W24 周报 / content:{id} 单篇）')
     insight_type: Mapped[str] = mapped_column(sa.String(24), default='', comment='类型 (pillar_performance:支柱表现:blue/hook_pattern:钩子套路:purple/timing:发布时间:orange/audience:受众:cyan/lesson:教训:gray)')
     summary: Mapped[str] = mapped_column(UniversalText, default='', comment=None)
     evidence_json: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='数据证据（哪些 content/publish 的哪些指标支撑）')

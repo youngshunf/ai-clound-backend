@@ -1,56 +1,59 @@
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
 
-from backend.core.conf import settings
-
-# --- 管理端（JWT + RBAC） ---
-from backend.app.hasn_creator.api.v1.admin.project import router as admin_project_router
-from backend.app.hasn_creator.api.v1.admin.playbook import router as admin_playbook_router
-from backend.app.hasn_creator.api.v1.admin.profile import router as admin_profile_router
 from backend.app.hasn_creator.api.v1.admin.account import router as admin_account_router
 from backend.app.hasn_creator.api.v1.admin.competitor import router as admin_competitor_router
 from backend.app.hasn_creator.api.v1.admin.content import router as admin_content_router
-from backend.app.hasn_creator.api.v1.admin.content_stage import router as admin_content_stage_router
-from backend.app.hasn_creator.api.v1.admin.topic import router as admin_topic_router
-from backend.app.hasn_creator.api.v1.admin.draft import router as admin_draft_router
-from backend.app.hasn_creator.api.v1.admin.publish import router as admin_publish_router
-from backend.app.hasn_creator.api.v1.admin.media import router as admin_media_router
 from backend.app.hasn_creator.api.v1.admin.content_insight import router as admin_content_insight_router
-from backend.app.hasn_creator.api.v1.admin.viral_pattern import router as admin_viral_pattern_router
+from backend.app.hasn_creator.api.v1.admin.content_stage import router as admin_content_stage_router
+from backend.app.hasn_creator.api.v1.admin.draft import router as admin_draft_router
 from backend.app.hasn_creator.api.v1.admin.hot_topic import router as admin_hot_topic_router
-# --- 用户端（仅 JWT）：owner 业务面（包裹 creator_service，企业化裁剪），替代 codegen 裸 CRUD ---
-# WebUI 经 daemon /api/v1/creator/* 薄代理调用 /api/v1/creator/app/*（铁律）。
-from backend.app.hasn_creator.api.v1.app.creator import router as app_creator_router
-# --- Agent（Agent Key） ---
-from backend.app.hasn_creator.api.v1.agent.project import router as agent_project_router
-from backend.app.hasn_creator.api.v1.agent.playbook import router as agent_playbook_router
-from backend.app.hasn_creator.api.v1.agent.profile import router as agent_profile_router
+from backend.app.hasn_creator.api.v1.admin.media import router as admin_media_router
+from backend.app.hasn_creator.api.v1.admin.playbook import router as admin_playbook_router
+from backend.app.hasn_creator.api.v1.admin.profile import router as admin_profile_router
+
+# --- 管理端（JWT + RBAC） ---
+from backend.app.hasn_creator.api.v1.admin.project import router as admin_project_router
+from backend.app.hasn_creator.api.v1.admin.publish import router as admin_publish_router
+from backend.app.hasn_creator.api.v1.admin.topic import router as admin_topic_router
+from backend.app.hasn_creator.api.v1.admin.viral_pattern import router as admin_viral_pattern_router
 from backend.app.hasn_creator.api.v1.agent.account import router as agent_account_router
 from backend.app.hasn_creator.api.v1.agent.competitor import router as agent_competitor_router
 from backend.app.hasn_creator.api.v1.agent.content import router as agent_content_router
-from backend.app.hasn_creator.api.v1.agent.content_stage import router as agent_content_stage_router
-from backend.app.hasn_creator.api.v1.agent.topic import router as agent_topic_router
-from backend.app.hasn_creator.api.v1.agent.draft import router as agent_draft_router
-from backend.app.hasn_creator.api.v1.agent.publish import router as agent_publish_router
-from backend.app.hasn_creator.api.v1.agent.media import router as agent_media_router
 from backend.app.hasn_creator.api.v1.agent.content_insight import router as agent_content_insight_router
-from backend.app.hasn_creator.api.v1.agent.viral_pattern import router as agent_viral_pattern_router
+from backend.app.hasn_creator.api.v1.agent.content_stage import router as agent_content_stage_router
+from backend.app.hasn_creator.api.v1.agent.draft import router as agent_draft_router
 from backend.app.hasn_creator.api.v1.agent.hot_topic import router as agent_hot_topic_router
-# --- 公开（无需认证） ---
-from backend.app.hasn_creator.api.v1.open.project import router as open_project_router
-from backend.app.hasn_creator.api.v1.open.playbook import router as open_playbook_router
-from backend.app.hasn_creator.api.v1.open.profile import router as open_profile_router
+from backend.app.hasn_creator.api.v1.agent.media import router as agent_media_router
+from backend.app.hasn_creator.api.v1.agent.playbook import router as agent_playbook_router
+from backend.app.hasn_creator.api.v1.agent.profile import router as agent_profile_router
+
+# --- Agent（Agent Key） ---
+from backend.app.hasn_creator.api.v1.agent.project import router as agent_project_router
+from backend.app.hasn_creator.api.v1.agent.publish import router as agent_publish_router
+from backend.app.hasn_creator.api.v1.agent.topic import router as agent_topic_router
+from backend.app.hasn_creator.api.v1.agent.viral_pattern import router as agent_viral_pattern_router
+
+# --- 用户端（仅 JWT）：owner 业务面（包裹 creator_service，企业化裁剪），替代 codegen 裸 CRUD ---
+# WebUI 经 daemon /api/v1/creator/* 薄代理调用 /api/v1/creator/app/*（铁律）。
+from backend.app.hasn_creator.api.v1.app.creator import router as app_creator_router
 from backend.app.hasn_creator.api.v1.open.account import router as open_account_router
 from backend.app.hasn_creator.api.v1.open.competitor import router as open_competitor_router
 from backend.app.hasn_creator.api.v1.open.content import router as open_content_router
-from backend.app.hasn_creator.api.v1.open.content_stage import router as open_content_stage_router
-from backend.app.hasn_creator.api.v1.open.topic import router as open_topic_router
-from backend.app.hasn_creator.api.v1.open.draft import router as open_draft_router
-from backend.app.hasn_creator.api.v1.open.publish import router as open_publish_router
-from backend.app.hasn_creator.api.v1.open.media import router as open_media_router
 from backend.app.hasn_creator.api.v1.open.content_insight import router as open_content_insight_router
-from backend.app.hasn_creator.api.v1.open.viral_pattern import router as open_viral_pattern_router
+from backend.app.hasn_creator.api.v1.open.content_stage import router as open_content_stage_router
+from backend.app.hasn_creator.api.v1.open.draft import router as open_draft_router
 from backend.app.hasn_creator.api.v1.open.hot_topic import router as open_hot_topic_router
+from backend.app.hasn_creator.api.v1.open.media import router as open_media_router
+from backend.app.hasn_creator.api.v1.open.playbook import router as open_playbook_router
+from backend.app.hasn_creator.api.v1.open.profile import router as open_profile_router
+
+# --- 公开（无需认证） ---
+from backend.app.hasn_creator.api.v1.open.project import router as open_project_router
+from backend.app.hasn_creator.api.v1.open.publish import router as open_publish_router
+from backend.app.hasn_creator.api.v1.open.topic import router as open_topic_router
+from backend.app.hasn_creator.api.v1.open.viral_pattern import router as open_viral_pattern_router
+from backend.core.conf import settings
 
 # ========================================
 # 管理端 API（JWT + RBAC）
@@ -72,6 +75,7 @@ v1.include_router(admin_media_router, prefix='/medias', tags=['素材库；配�
 v1.include_router(admin_content_insight_router, prefix='/content/insights', tags=['内容洞察（复盘结构化结论，进化沉淀核心）-内容洞察（复盘结构化结论，进化沉淀核心）'])
 v1.include_router(admin_viral_pattern_router, prefix='/viral/patterns', tags=['爆款模式库；钩子/结构/标题/CTA，usage + success_rate（可全局 project_id NULL）-爆款模式库；钩子/结构/标题/CTA，usage + success_rate（可全局 project_id NULL）'])
 v1.include_router(admin_hot_topic_router, prefix='/hot/topics', tags=['热榜快照（全局，去重，喂选题；可选数据源）-热榜快照（全局，去重，喂选题；可选数据源）'])
+
 
 def _prefix_route_names(router: APIRouter, prefix: str) -> APIRouter:
     """给 router 内全部路由名加前缀，保证 route name 全局唯一（FastAPI route.name 默认取函数名且

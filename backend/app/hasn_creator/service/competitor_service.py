@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_creator.crud.crud_competitor import competitor_dao
 from backend.app.hasn_creator.model import Competitor
-from backend.app.hasn_creator.schema.competitor import CreateCompetitorParam, DeleteCompetitorParam, UpdateCompetitorParam
+from backend.app.hasn_creator.schema.competitor import (
+    CreateCompetitorParam,
+    DeleteCompetitorParam,
+    UpdateCompetitorParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

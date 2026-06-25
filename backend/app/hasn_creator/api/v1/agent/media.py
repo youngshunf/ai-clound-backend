@@ -12,8 +12,6 @@ from backend.app.hasn_creator.schema.media import (
     UpdateMediaParam,
 )
 from backend.app.hasn_creator.service.media_service import media_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_media(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
     data = await media_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_media(
     db: CurrentSessionTransaction,
     obj: CreateMediaParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await media_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_media(
     db: CurrentSession,
     pk: Annotated[int, Path(description='素材库；配图/封面/视频/模板（私有桶引用） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     media = await media_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if media.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_media(
     pk: Annotated[int, Path(description='素材库；配图/封面/视频/模板（私有桶引用） ID')],
     obj: UpdateMediaParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    media = await media_service.get(db=db, pk=pk)
+    await media_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if media.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该素材库；配图/封面/视频/模板（私有桶引用）')
@@ -106,8 +100,7 @@ async def agent_delete_media(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='素材库；配图/封面/视频/模板（私有桶引用） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    media = await media_service.get(db=db, pk=pk)
+    await media_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if media.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该素材库；配图/封面/视频/模板（私有桶引用）')
