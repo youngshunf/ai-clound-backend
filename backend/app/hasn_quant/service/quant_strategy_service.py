@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_quant.crud.crud_quant_strategy import quant_strategy_dao
 from backend.app.hasn_quant.model import QuantStrategy
-from backend.app.hasn_quant.schema.quant_strategy import CreateQuantStrategyParam, DeleteQuantStrategyParam, UpdateQuantStrategyParam
+from backend.app.hasn_quant.schema.quant_strategy import (
+    CreateQuantStrategyParam,
+    DeleteQuantStrategyParam,
+    UpdateQuantStrategyParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

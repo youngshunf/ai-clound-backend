@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_quant.crud.crud_quant_backtest_run import quant_backtest_run_dao
 from backend.app.hasn_quant.model import QuantBacktestRun
-from backend.app.hasn_quant.schema.quant_backtest_run import CreateQuantBacktestRunParam, DeleteQuantBacktestRunParam, UpdateQuantBacktestRunParam
+from backend.app.hasn_quant.schema.quant_backtest_run import (
+    CreateQuantBacktestRunParam,
+    DeleteQuantBacktestRunParam,
+    UpdateQuantBacktestRunParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

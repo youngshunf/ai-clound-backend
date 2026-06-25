@@ -15,13 +15,14 @@
 
 from fastapi import APIRouter
 
-from backend.core.conf import settings
+from backend.app.hasn_quant.api.v1.admin.quant_backtest_run import router as admin_quant_backtest_run_router
 
 # --- 管理端（JWT + RBAC）：运营控制台 ---
 from backend.app.hasn_quant.api.v1.admin.quant_strategy import router as admin_quant_strategy_router
-from backend.app.hasn_quant.api.v1.admin.quant_backtest_run import router as admin_quant_backtest_run_router
+
 # --- 用户端（仅 JWT）：owner 业务面（包裹 quant_service，行级隔离），替代 codegen 裸 CRUD ---
 from backend.app.hasn_quant.api.v1.app.quant import router as app_quant_router
+from backend.core.conf import settings
 
 # ========================================
 # 管理端 API（JWT + RBAC）  前缀: /api/v1/hasn_quant/

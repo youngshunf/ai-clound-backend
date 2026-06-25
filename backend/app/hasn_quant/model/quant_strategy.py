@@ -3,8 +3,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key, UniversalText
 from backend.app.hasn_quant.model._base import HasnQuantAppBase
+from backend.common.model import UniversalText, id_key
 
 
 class QuantStrategy(HasnQuantAppBase):

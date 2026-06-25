@@ -16,15 +16,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_quant.model import QuantBacktestRun, QuantStrategy
 from backend.app.hasn_quant.provider import quant_engine_provider
 from backend.app.hasn_quant.provider.engine_client import QuantEngineError
 from backend.common.exception import errors
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # 默认合成数据集（确定性、自包含、无外部数据依赖；引擎 datasets.CATALOG）。
 _DEFAULT_DATASET = 'synthetic-oscillator-eth'

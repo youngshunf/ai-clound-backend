@@ -102,11 +102,11 @@ def engine_service():
     )
     try:
         _wait_healthy(proc, base)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         proc.terminate()
         try:
             out = proc.communicate(timeout=5)[0] or ''
-        except Exception:  # noqa: BLE001
+        except Exception:
             out = ''
         pytest.skip(f'引擎服务未就绪，跳过: {exc}\n{out[-800:]}')
 
@@ -122,7 +122,7 @@ def engine_service():
         proc.terminate()
         try:
             proc.wait(timeout=10)
-        except Exception:  # noqa: BLE001
+        except Exception:
             proc.kill()
 
 
@@ -132,7 +132,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
