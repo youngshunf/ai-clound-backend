@@ -17,6 +17,7 @@ from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
+from backend.app.mcp.tools.plan import PLAN_TOOLS
 from backend.app.mcp.tools.registry import ToolRegistry
 from backend.app.mcp.tools.tool_call import ToolCallTool
 from backend.app.mcp.tools.tool_search import ToolSearchTool
@@ -92,6 +93,12 @@ class HasnCloudMcpServer:
         self.tool_registry.register(ContactListTool())
         self.tool_registry.register(ContactSearchTool())
         self.tool_registry.register(ContactRequestTool())
+
+        # 规划工具（19-规划与目标管理）：goal/project/todo/event/habit CRUD + capture/triage/today/preference。
+        # 这些「纯云端代理」工具从 hasn-node 本地 hasn-mcp 迁来（不操作本地文件/数据 → 走云端 platform tool）；
+        # 仍留本地的是有真本地编排/计算的 decompose/briefing/review/schedule/reschedule/delegate/validate。
+        for plan_tool in PLAN_TOOLS:
+            self.tool_registry.register(plan_tool)
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:
