@@ -122,6 +122,14 @@ class HermesRuntimeClient:
             )
         return body
 
+    async def probe(self, trace_id: str | None = None) -> dict[str, Any]:
+        """控制面可达性探活（全局，非 per-agent）：命中 hermes-runtime /runtime/v1/probe。
+
+        与 daemon 本地探活 `RuntimeAdapter.probe` 对端同构——返回成功即「云端 runtime 进程在跑、
+        可服务分身」。不可达由 `_request` 抛 `HermesRuntimeError`（连接失败/超时/4xx/5xx）。
+        """
+        return await self._request('GET', '/runtime/v1/probe', trace_id=trace_id)
+
     async def ensure_agent(self, payload: dict[str, Any], trace_id: str | None = None) -> dict[str, Any]:
         return await self._request('POST', '/runtime/v1/agents', json=payload, trace_id=trace_id)
 

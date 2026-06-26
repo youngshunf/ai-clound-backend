@@ -366,6 +366,20 @@ class RuntimeRunCancelResponse(SchemaBase):
     cancelled: bool = Field(description='是否成功取消')
 
 
+class RuntimeHealthResponse(SchemaBase):
+    """云端分身运行时健康（供 daemon 判可达性，双形态 Runtime 设计 08/02 §81）。
+
+    语义：云端 runtime 控制面可达 = `online=True`（对齐「关机后仍在线」——云端常驻、
+    网关按需起，冷网关不判降级）；控制面不可达 = `online=False`（零 fake，如实报离线）。
+    daemon 据此写本地 `binding_runtime_state`，让云端分身的可达性来自云端真实健康，
+    而非本地 hermes 探活（本地对云端分身根本没有它的网关）。
+    """
+
+    online: bool = Field(description='云端 runtime 控制面是否可达（可服务该分身）')
+    health: str = Field(description="健康度：'ok'（可达）/'offline'（不可达）")
+    detail: str | None = Field(None, description='细节（gateway_running/gateway_idle/不可达原因等，仅供观测）')
+
+
 class AgentProfileRevisionResponse(SchemaBase):
     """轻量轮询：仅返回 Profile 修订号 + 公共技能修订号 + 自装技能内容修订号。"""
 
@@ -378,8 +392,16 @@ class AgentProfileRevisionResponse(SchemaBase):
 # 保持既有 importer（本文件 + agent 侧 hasn_agent_profile.py）兼容；新代码请直接从 hasn_memory 导入。
 from backend.app.hasn_memory.schema.owner_memory import (  # noqa: E402
     MemoryContributeRequest as MemoryContributeRequest,
+)
+from backend.app.hasn_memory.schema.owner_memory import (
     MemoryContributeResponse as MemoryContributeResponse,
+)
+from backend.app.hasn_memory.schema.owner_memory import (
     OwnerMemoryContributionItem as OwnerMemoryContributionItem,
+)
+from backend.app.hasn_memory.schema.owner_memory import (
     OwnerMemoryContributionsResponse as OwnerMemoryContributionsResponse,
+)
+from backend.app.hasn_memory.schema.owner_memory import (
     OwnerMemoryResponse as OwnerMemoryResponse,
 )

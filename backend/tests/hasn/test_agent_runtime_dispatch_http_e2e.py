@@ -63,6 +63,15 @@ def _uid() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _offline_client() -> HermesRuntimeClient:
+    """真正断开上游的 client：构造器对 base_url='' 会回落服务目录（dev 机上可能解析到
+    一个真实在应答的 hermes 端点），这里构造后强制置空 base_url，确保 `_request` 命中
+    「base_url 未配置」守卫、稳定抛 runtime_unavailable，不依赖本机是否跑着 hermes。"""
+    client = HermesRuntimeClient()
+    client.base_url = ''
+    return client
+
+
 @pytest_asyncio.fixture
 async def e2e():
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
@@ -199,9 +208,7 @@ async def test_relay_owner_mismatch_forbidden(e2e) -> None:
 async def test_relay_cloud_unreachable_yields_sse_error_not_fake_success(e2e, monkeypatch) -> None:
     # cloud 分身 + 合法 profile_id，但上游 runtime 不可达（base_url 空）→ 200 SSE，
     # body 为 event: error + runtime_unavailable（零 fake：不伪造成功）。
-    monkeypatch.setattr(
-        hasn_agent_runtime_dispatch_service, 'runtime_client', HermesRuntimeClient(base_url='')
-    )
+    monkeypatch.setattr(hasn_agent_runtime_dispatch_service, 'runtime_client', _offline_client())
     e2e.ident.agent_hasn_id = e2e.agent_cloud
     e2e.ident.owner_hasn_id = e2e.owner1
     r = await e2e.client.post(
@@ -211,3 +218,59 @@ async def test_relay_cloud_unreachable_yields_sse_error_not_fake_success(e2e, mo
     assert r.status_code == 200, r.text
     assert 'event: error' in r.text
     assert 'runtime_unavailable' in r.text
+
+
+# ---- 云端 runtime 健康端点 GET /api/v1/hasn/agent/runtime/health（修「云端分身显示离线」）----
+
+
+async def test_health_local_agent_forbidden(e2e) -> None:
+    # local 分身查云端健康面 → 403（应经本地探活，不走云端健康面）。
+    e2e.ident.agent_hasn_id = e2e.agent_local
+    e2e.ident.owner_hasn_id = e2e.owner1
+    r = await e2e.client.get(
+        '/api/v1/hasn/agent/runtime/health', params={'runtime_profile_id': '100001-local'}
+    )
+    assert r.status_code == 403, r.text
+
+
+async def test_health_owner_mismatch_forbidden(e2e) -> None:
+    # JWT owner ≠ 行 owner → 403（防越权读别 owner 分身的健康）。
+    e2e.ident.agent_hasn_id = e2e.agent_cloud
+    e2e.ident.owner_hasn_id = e2e.owner2
+    r = await e2e.client.get(
+        '/api/v1/hasn/agent/runtime/health', params={'runtime_profile_id': '100001-cloud'}
+    )
+    assert r.status_code == 403, r.text
+
+
+async def test_health_cloud_unreachable_reports_offline_not_fake(e2e, monkeypatch) -> None:
+    # 控制面不可达（base_url 空）→ online=False, health=offline（零 fake：如实报离线，不伪造在线）。
+    monkeypatch.setattr(
+        hasn_agent_runtime_dispatch_service, 'runtime_client', HermesRuntimeClient(base_url='')
+    )
+    e2e.ident.agent_hasn_id = e2e.agent_cloud
+    e2e.ident.owner_hasn_id = e2e.owner1
+    r = await e2e.client.get(
+        '/api/v1/hasn/agent/runtime/health', params={'runtime_profile_id': '100001-cloud'}
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()['data']
+    assert data['online'] is False
+    assert data['health'] == 'offline'
+
+
+async def test_health_cloud_reachable_reports_online() -> None:
+    # 控制面可达 → online=True, health=ok（对齐「关机后仍在线」：冷网关不判降级）。
+    # 用「指向 stub 上游」的真实 client 走 service 映射逻辑；真机上游属 infra-gated。
+    class _StubReachableClient:
+        async def probe(self, trace_id: str | None = None) -> dict[str, str]:
+            return {'status': 'online'}  # 控制面 200
+
+        async def get_gateway_status(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, bool]:
+            return {'running': False}  # 网关懒启动未起 → detail 标 idle，但不降级
+
+    svc = hasn_agent_runtime_dispatch_service.__class__(runtime_client=_StubReachableClient())
+    result = await svc.cloud_runtime_health(runtime_profile_id='100001-cloud')
+    assert result['online'] is True
+    assert result['health'] == 'ok'
+    assert result['detail'] == 'gateway_idle'

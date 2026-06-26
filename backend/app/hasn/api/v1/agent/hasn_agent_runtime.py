@@ -15,6 +15,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from backend.app.hasn.schema.hasn_agents import (
+    RuntimeHealthResponse,
     RuntimeRunCancelRequest,
     RuntimeRunCancelResponse,
     RuntimeRunRequest,
@@ -54,6 +55,29 @@ async def create_runtime_run(
         trace_id=body.trace_id,
     )
     return StreamingResponse(generator, media_type='text/event-stream')
+
+
+@router.get(
+    '/health',
+    summary='云端分身运行时健康（供 daemon 判可达性，双形态 Runtime 设计 08/02 §81）',
+)
+async def get_cloud_runtime_health(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    runtime_profile_id: str,
+) -> ResponseSchemaModel[RuntimeHealthResponse]:
+    # 复用 resolve_cloud_profile 的归属校验 + 云端形态闸门：身份恒取自 Agent JWT，
+    # 仅 runtime_location=cloud 分身可查；local 分身/越权 → 403。
+    profile_id = await hasn_agent_runtime_dispatch_service.resolve_cloud_profile(
+        db,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        runtime_profile_id=runtime_profile_id,
+    )
+    result = await hasn_agent_runtime_dispatch_service.cloud_runtime_health(
+        runtime_profile_id=profile_id
+    )
+    return response_base.success(data=RuntimeHealthResponse(**result))
 
 
 @router.post(

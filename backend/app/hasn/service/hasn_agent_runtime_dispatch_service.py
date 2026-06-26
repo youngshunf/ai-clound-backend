@@ -90,6 +90,40 @@ class HasnAgentRuntimeDispatchService:
             raise errors.RequestError(msg='runtime_profile_id is required')
         return profile_id
 
+    async def cloud_runtime_health(
+        self,
+        *,
+        runtime_profile_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """探云端 runtime 健康 → {online, health, detail}（供 daemon 判云端分身可达性）。
+
+        语义（对齐双形态设计 08/02 §81「可达性 Gate 不感知位置」+「关机后仍在线」）：
+        - **控制面可达 = online**：云端 runtime 进程在跑、可服务该分身。`health='ok'`。
+          网关是「首次派发时懒启动」的——冷网关**不**判降级（否则没发过消息的云端分身永远
+          显示「暂时离线」），只在 detail 里如实标 gateway_idle/gateway_unprovisioned。
+        - **控制面不可达 = offline**：`online=False, health='offline'`（零 fake，如实报离线，
+          不伪造在线）。
+        """
+        try:
+            await self.runtime_client.probe(trace_id=trace_id)
+        except HermesRuntimeError as exc:
+            return {
+                'online': False,
+                'health': 'offline',
+                'detail': exc.error or 'runtime_unavailable',
+            }
+        # 控制面可达 → 在线。再查 per-agent 网关 running 仅作观测细节，不改 online/health 判定。
+        detail = 'gateway_unknown'
+        try:
+            status = await self.runtime_client.get_gateway_status(runtime_profile_id, trace_id=trace_id)
+            running = bool(status.get('running')) if isinstance(status, dict) else False
+            detail = 'gateway_running' if running else 'gateway_idle'
+        except HermesRuntimeError:
+            # 控制面在、但该分身网关未起/未 provision（懒启动）→ 仍按需可服务，不降级。
+            detail = 'gateway_unprovisioned'
+        return {'online': True, 'health': 'ok', 'detail': detail}
+
     async def relay_run_stream(
         self,
         *,
