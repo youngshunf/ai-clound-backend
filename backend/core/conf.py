@@ -161,11 +161,10 @@ class Settings(BaseSettings):
     FIRECRAWL_API_KEY: str = ''  # firecrawl API Key（自托管可空）
 
     # hasn_growth 线索结构化提取 LLM（方案 A：firecrawl 只抓 markdown，结构化提取在后端调
-    # new-api 网关完成；详见 docs/AI自动获客任务系统/08-...）。base_url 或 api_key 为空则
-    # 跳过 LLM 提取，cleaner 退回正则兜底，不影响采集主链路。
-    GROWTH_LLM_BASE_URL: str = ''  # OpenAI 兼容网关，如 https://llm.dcfuture.cn/v1
-    GROWTH_LLM_API_KEY: str = ''  # 网关 API Key
-    GROWTH_LLM_MODEL: str = 'agnes-2.0-flash'  # 结构化提取模型
+    # new-api 网关完成；详见 docs/AI自动获客任务系统/08-...）。网关 base_url/key 复用上方
+    # LLM_API_BASE_URL/LLM_API_KEY，这里只配提取模型名；网关任一为空则跳过 LLM 提取，
+    # cleaner 退回正则兜底，不影响采集主链路。
+    GROWTH_LLM_MODEL: str = 'agnes-2.0-flash'  # 结构化提取模型（new-api 模型名）
 
     # 统一视频引擎（studio / montage-engine-service）BYO 长尾媒体凭据平台兜底（doc22 §5 P7）：
     # 主人没自带 key 时，对该 provider 用平台公共 key（运营自费），为空则该 provider 跳过（诚实，零 fake）。
@@ -382,6 +381,9 @@ class Settings(BaseSettings):
     LLM_ENCRYPTION_KEY: str = ''
     # LLM API 网关 URL
     LLM_API_BASE_URL: str | None = None
+    # LLM API 网关 Key（OpenAI 兼容 Bearer；new-api 等）。获客线索结构化提取（hasn_growth 方案A）
+    # 复用此对 base_url/key，仅模型名走 GROWTH_LLM_MODEL，不再单独配 GROWTH_LLM_BASE_URL/API_KEY。
+    LLM_API_KEY: str = ''
     # 默认 LLM 模型 — 透传给 hasn-node daemon 的 phone/verify 响应
     # `llm_model` 字段，由 daemon 写入每个 hermes profile 的
     # `config.yaml::model.default`。Vendor 可通过 .env 覆盖

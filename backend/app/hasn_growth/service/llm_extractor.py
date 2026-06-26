@@ -165,11 +165,15 @@ class LeadLLMExtractor:
 
 
 def build_default_extractor() -> LeadLLMExtractor | None:
-    """按 settings 构造默认提取器；未配置 base_url/api_key 则返回 None（跳过 LLM 提取）。"""
+    """构造默认提取器，复用平台 LLM 网关（``LLM_API_BASE_URL`` / ``LLM_API_KEY``，即 new-api
+    OpenAI 兼容端点）；网关 base_url/key 任一为空则返回 None（跳过 LLM 提取，cleaner 退回正则兜底）。
+
+    模型名走 ``GROWTH_LLM_MODEL``（new-api 模型，默认 agnes-2.0-flash），无需单独配网关地址/密钥。
+    """
     from backend.core.conf import settings
 
-    base_url = (settings.GROWTH_LLM_BASE_URL or '').strip()
-    api_key = (settings.GROWTH_LLM_API_KEY or '').strip()
+    base_url = (settings.LLM_API_BASE_URL or '').strip()
+    api_key = (settings.LLM_API_KEY or '').strip()
     if not base_url or not api_key:
         return None
     model = (settings.GROWTH_LLM_MODEL or 'agnes-2.0-flash').strip()
