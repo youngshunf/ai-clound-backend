@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-
 NORMALIZATION_VERSION = 'v1'
 EMAIL_RE = re.compile(r'(?<![\w.+-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})(?![\w.-])')
 
@@ -66,13 +65,26 @@ def normalize_phone(value: str | None, *, country_hint: str = 'CN') -> str | Non
     if raw.startswith('+'):
         return f'+{digits}' if 8 <= len(digits) <= 15 else None
     country = (country_hint or 'CN').upper()
-    if country == 'CN' and re.fullmatch(r'1\d{10}', digits):
-        return f'+86{digits}'
+    if country == 'CN':
+        # 中国大陆手机号：1[3-9] 开头共 11 位
+        if re.fullmatch(r'1[3-9]\d{9}', digits):
+            return f'+86{digits}'
+        # 带国家码 86 的手机号（13 位，必须 86 开头）
+        if re.fullmatch(r'861[3-9]\d{9}', digits):
+            return f'+{digits}'
+        # 固定电话：0 + 区号 + 本地号（整体以 0 开头共 10-12 位）
+        if re.fullmatch(r'0\d{9,11}', digits):
+            return f'+86{digits[1:]}'
+        # 400/800 企业服务号（10 位）
+        if re.fullmatch(r'[48]00\d{7}', digits):
+            return f'+86{digits}'
+        return None
     if country == 'US' and len(digits) == 10:
         return f'+1{digits}'
     if country in {'GB', 'UK'} and digits.startswith('0') and 10 <= len(digits) <= 11:
         return f'+44{digits[1:]}'
-    if 8 <= len(digits) <= 15 and digits.startswith(('86', '1', '44')):
+    # 其它国家/已带国家码：必须明确以 86/44 国家码开头，避免把普通数字串误判为电话
+    if digits.startswith(('86', '44')) and 10 <= len(digits) <= 15:
         return f'+{digits}'
     return None
 

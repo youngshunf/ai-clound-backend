@@ -154,6 +154,12 @@ class Settings(BaseSettings):
     QUANT_ENGINE_TOKEN: str = ''  # 内部 svc-token（Bearer，对齐引擎服务 QUANT_SVC_TOKEN；空则引擎仅允许本机回环，开发态）
     QUANT_ENGINE_TIMEOUT: int = 30  # HTTP 超时（秒）
 
+    # 获客采集引擎（firecrawl，独立部署，模块 07 doc）：唯一接触 firecrawl 的地方，hasn_growth
+    # 采集 provider 经 FirecrawlClient（httpx）搜索/抓取/抽取线索。为空时回落
+    # DEFAULT_FIRECRAWL_BASE_URL；api_key 为空则不带 Authorization（自托管 USE_DB_AUTHENTICATION=false）。
+    FIRECRAWL_BASE_URL: str = ''  # firecrawl 服务地址，如 http://firecrawl-svc.internal:3002
+    FIRECRAWL_API_KEY: str = ''  # firecrawl API Key（自托管可空）
+
     # 统一视频引擎（studio / montage-engine-service）BYO 长尾媒体凭据平台兜底（doc22 §5 P7）：
     # 主人没自带 key 时，对该 provider 用平台公共 key（运营自费），为空则该 provider 跳过（诚实，零 fake）。
     # 网关族（image/tts/stt/video）不在此——它们经 new-api 用主人自己的 relay token（OWNER 配额计费），

@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model import (
@@ -21,20 +19,28 @@ from backend.app.hasn_growth.model import (
     LeadRejectedRecord,
     LeadSourceConfig,
 )
-from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.service.cleaner_service import clean_raw_record
 from backend.app.hasn_growth.service.dedupe_service import dedupe_key
 from backend.app.hasn_growth.service.export_service import build_csv_export
-from backend.app.hasn_growth.service.firecrawl_client import FirecrawlClient
+from backend.app.hasn_growth.service.firecrawl_client import DEFAULT_FIRECRAWL_BASE_URL, FirecrawlClient
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
 from backend.common.exception import errors
+from backend.core.conf import settings
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 
 
 class LeadAutomationBusinessService:
     def __init__(self, firecrawl_client: FirecrawlClient | None = None) -> None:
-        self.firecrawl_client = firecrawl_client or FirecrawlClient()
+        self.firecrawl_client = firecrawl_client or FirecrawlClient(
+            base_url=settings.FIRECRAWL_BASE_URL or DEFAULT_FIRECRAWL_BASE_URL,
+            api_key=settings.FIRECRAWL_API_KEY or None,
+        )
 
     async def create_job(self, db: AsyncSession, obj: CreateLeadJobParam) -> dict[str, Any]:
         user_id = None if obj.lead_scope == 'public' else obj.user_id
@@ -135,6 +141,18 @@ class LeadAutomationBusinessService:
                     'content_hash': _sha256((item.markdown or item.raw_text or item.source_url or '').strip().lower()),
                     'metadata': {**item.metadata, **raw_html_metadata},
                 }
+                # 同 job 内容去重：firecrawl 对反爬/占位站可能对多个 URL 返回相同内容（相同
+                # content_hash，如知乎登录墙占位页），唯一约束 uq_lead_raw_record_job_hash 会拒绝
+                # 重复——这里先查重跳过，避免 IntegrityError 回滚整个采集 job（生产采集必遇重复内容）。
+                duplicate_raw = await db.execute(
+                    sa.select(LeadRawRecord.id).where(
+                        LeadRawRecord.job_id == job.id,
+                        LeadRawRecord.content_hash == raw_dict['content_hash'],
+                    )
+                )
+                if duplicate_raw.scalar_one_or_none() is not None:
+                    job.duplicate_count += 1
+                    continue
                 raw_record = LeadRawRecord(
                     job_id=job.id,
                     firecrawl_request_id=firecrawl_request.id,
