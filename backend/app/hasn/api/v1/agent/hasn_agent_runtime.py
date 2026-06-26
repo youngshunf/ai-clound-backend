@@ -72,7 +72,15 @@ async def create_runtime_run(
         payload=body.payload,
         trace_id=body.trace_id,
     )
-    return StreamingResponse(generator, media_type='text/event-stream')
+    # SSE over nginx 加固：`X-Accel-Buffering: no` 关闭 nginx 对该响应的缓冲（帧立即下行、
+    # 不被 proxy_buffering 攒整段）；配合 relay_run_stream 内置心跳，避免首帧前静默期
+    # （沙箱冷启动 + provision + LLM 首 token 易 >60s）撞 nginx proxy_read_timeout 切断长连接
+    # （症状：daemon 侧 `cloud runtime relay SSE read failed: error decoding response body`）。
+    return StreamingResponse(
+        generator,
+        media_type='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
 
 
 @router.get(

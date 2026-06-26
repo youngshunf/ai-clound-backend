@@ -13,6 +13,8 @@ relay → 上游 gateway 直连，一跳，不二次解析 SSE。
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json as jsonlib
 
 from typing import TYPE_CHECKING, Any
@@ -47,6 +49,53 @@ def _sse_error(error: str, *, details: str | None = None, status_code: int | Non
     if status_code is not None:
         payload['status_code'] = status_code
     return f'event: error\ndata: {jsonlib.dumps(payload)}\n\n'.encode()
+
+
+# SSE 心跳：上游静默期每 _SSE_KEEPALIVE_INTERVAL 秒发一个 SSE 注释帧（`:` 开头、无 data 行），
+# 让 nginx/中间代理看到数据流动，不在首帧前的静默期（沙箱冷启动 + provision + LLM 首 token）
+# 触发 proxy_read_timeout(60s) 切断长连接。注释帧被 daemon parse_relay_sse_frame 安全忽略
+# （data 为空 → (None, false)），不污染回帧。
+_SSE_KEEPALIVE_INTERVAL = 15.0
+_SSE_KEEPALIVE_FRAME = b': keepalive\n\n'
+
+
+async def _with_keepalive(
+    inner: AsyncIterator[bytes], interval: float = _SSE_KEEPALIVE_INTERVAL
+) -> AsyncIterator[bytes]:
+    """给上游 SSE 字节流套心跳：`interval` 秒内上游无新字节就 yield 一个 SSE 注释帧。
+
+    上游真有数据/正常结束则原样透传；上游意外异常透传给消费侧重抛（不静默吞，保零 fake）。
+    `inner` 自身已把控制面/数据面错误转成 SSE error 帧，故心跳层几乎只在首帧前空窗起作用。
+    """
+    queue: asyncio.Queue[bytes | Exception | None] = asyncio.Queue()
+
+    async def _pump() -> None:
+        try:
+            async for item in inner:
+                await queue.put(item)
+        except Exception as exc:
+            await queue.put(exc)
+        finally:
+            # None 哨兵 = 上游结束（inner 只 yield bytes，永不 yield None）。
+            await queue.put(None)
+
+    task = asyncio.create_task(_pump())
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=interval)
+            except TimeoutError:
+                yield _SSE_KEEPALIVE_FRAME
+                continue
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 class HasnAgentRuntimeDispatchService:
@@ -125,6 +174,26 @@ class HasnAgentRuntimeDispatchService:
         return {'online': True, 'health': 'ok', 'detail': detail}
 
     async def relay_run_stream(
+        self,
+        *,
+        runtime_profile_id: str,
+        payload: dict[str, Any],
+        trace_id: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        """云端 → daemon 的 SSE 中继（套心跳保活）。
+
+        实际中继逻辑在 `_relay_run_stream_inner`；外层用 `_with_keepalive` 包一层，首帧前的
+        静默期（沙箱冷启动 + provision + LLM 首 token，易 >60s）周期性发 SSE 注释帧，避免
+        nginx proxy_read_timeout 在 daemon↔本服务这段切断长连接。本生成器在路由返回
+        StreamingResponse 后执行——**不得**触碰请求级 db 会话。
+        """
+        inner = self._relay_run_stream_inner(
+            runtime_profile_id=runtime_profile_id, payload=payload, trace_id=trace_id
+        )
+        async for chunk in _with_keepalive(inner):
+            yield chunk
+
+    async def _relay_run_stream_inner(
         self,
         *,
         runtime_profile_id: str,
