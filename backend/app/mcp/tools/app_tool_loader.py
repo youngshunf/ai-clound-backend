@@ -30,11 +30,25 @@ def _split_mcp_name(mcp_name: str) -> tuple[str, str] | None:
 
 
 def build_app_tools_from_manifest(manifest_payload: dict[str, Any]) -> list[AppTool]:
-    """从单个 manifest payload 的 capabilities 构造 AppTool 列表。"""
+    """从单个 manifest payload 的 capabilities 构造 AppTool 列表。
+
+    **仅投影云端可调度的 capability**：一个 capability 是云端工具，当且仅当其
+    ``tool_id`` 出现在 manifest 的 ``tools[]``（云端 Runtime Gateway 的 handler 清单，
+    与 ``ai_native_runtime_gateway._find_tool`` 调度权威一致）。本地数据面应用
+    （task/deck/publish/film/reel 等，``tools[]`` 置空、capability 仅承载发现/权限
+    控制面元数据）的 capability **不**投影成云端工具——否则 `tool.search` 会把它们
+    宣称为 `execution_location=cloud` 可调，调用却因无云端 handler 报「AI-Native 工具
+    不存在」（发现/调度契约漂移）。这类工具的数据面在本地 hasn-mcp，由本地 MCP 面发现调用。
+    零 fake：``tools[]`` 空 → 不投影任何云端工具。
+    """
     manifest_json = manifest_payload.get('manifest_json') or {}
     app_id = manifest_json.get('app_id') or manifest_payload.get('app_id')
     if not app_id:
         return []
+
+    cloud_tool_ids = {
+        t.get('tool_id') for t in (manifest_json.get('tools') or []) if t.get('tool_id')
+    }
 
     installation_id = f'manifest:{manifest_payload.get("id") or app_id}'
     tools: list[AppTool] = []
@@ -42,6 +56,9 @@ def build_app_tools_from_manifest(manifest_payload: dict[str, Any]) -> list[AppT
         mcp_name = cap.get('mcp_name')
         tool_id = cap.get('tool_id')
         if not mcp_name or not tool_id:
+            continue
+        # 调度权威：无对应云端 handler（tool_id 不在 tools[]）的 capability 不进云端发现面。
+        if tool_id not in cloud_tool_ids:
             continue
         split = _split_mcp_name(str(mcp_name))
         if split is None:

@@ -10,15 +10,15 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from backend.app.hasn.service.ai_native_builtin_manifests import (
+    COMMUNITY_AI_NATIVE_MANIFEST,
+    KNOWLEDGE_AI_NATIVE_MANIFEST,
+)
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.server import HasnCloudMcpServer
 from backend.app.mcp.tools.app_tool_loader import (
     build_app_tools_from_manifest,
     load_published_app_tools,
-)
-from backend.app.hasn.service.ai_native_builtin_manifests import (
-    COMMUNITY_AI_NATIVE_MANIFEST,
-    KNOWLEDGE_AI_NATIVE_MANIFEST,
 )
 
 
@@ -55,6 +55,40 @@ def test_build_app_tools_from_community_manifest() -> None:
 def test_build_app_tools_zero_fake_on_empty() -> None:
     assert build_app_tools_from_manifest({}) == []
     assert build_app_tools_from_manifest({'manifest_json': {'app_id': 'x', 'capabilities': []}}) == []
+
+
+def test_build_app_tools_skips_local_data_plane_manifest() -> None:
+    """本地数据面应用（tools[] 置空、capability 仅承载发现元数据）不投影成云端工具。
+
+    回归：曾把这类 capability 全标 execution_location=cloud 投影，导致 tool.search 宣称
+    可云端调用、实际无云端 handler → 调用报「AI-Native 工具不存在」（发现/调度契约漂移）。
+    """
+    manifest = {
+        'app_id': 'localapp',
+        'tools': [],  # 数据面在本地 hasn-mcp，云端无 handler
+        'capabilities': [
+            {'mcp_name': 'hasn.localapp.list', 'tool_id': 'localapp.list', 'description': 'list'},
+            {'mcp_name': 'hasn.localapp.get', 'tool_id': 'localapp.get', 'description': 'get'},
+        ],
+    }
+    assert build_app_tools_from_manifest(_payload(manifest)) == []
+
+
+def test_build_app_tools_only_projects_cloud_dispatchable_capabilities() -> None:
+    """混合 manifest：仅投影 tool_id 命中 tools[]（云端 handler 清单）的 capability。
+
+    与 ai_native_runtime_gateway._find_tool 的调度权威一致——发现面不得宽于调度面。
+    """
+    manifest = {
+        'app_id': 'mixed',
+        'tools': [{'tool_id': 'mixed.cloud_op'}],  # 仅此有云端 handler
+        'capabilities': [
+            {'mcp_name': 'hasn.mixed.cloud_op', 'tool_id': 'mixed.cloud_op', 'description': 'cloud'},
+            {'mcp_name': 'hasn.mixed.local_op', 'tool_id': 'mixed.local_op', 'description': 'local'},
+        ],
+    }
+    names = {t.name for t in build_app_tools_from_manifest(_payload(manifest))}
+    assert names == {'hasn.mixed.cloud_op'}, '只有有云端 handler 的能力进发现面'
 
 
 @pytest.mark.asyncio
