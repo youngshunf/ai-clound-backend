@@ -19,9 +19,11 @@ def score_cleaned_lead(cleaned: Any, *, existing_score: int | float = 0, source_
         score += 5
     if getattr(cleaned, 'source_url', None):
         score += 10
-    if getattr(cleaned, 'extract_mode', None) in {'scrape_json', 'extract'} or getattr(cleaned, 'metadata', {}).get(
-        'structured_payload_present'
-    ):
+    # 结构化提取成功（firecrawl 原生 extract / scrape_json，或方案 A 后端 LLM 提取 llm_backend）加分；
+    # llm_backend 当前也会被 metadata.structured_payload_present 兜住，这里显式列入更鲁棒（doc08 §7 ③）。
+    if getattr(cleaned, 'extract_mode', None) in {'scrape_json', 'extract', 'llm_backend'} or getattr(
+        cleaned, 'metadata', {}
+    ).get('structured_payload_present'):
         score += 10
     if (getattr(cleaned, 'llm_confidence', None) or 0) >= 0.8:
         score += 10
