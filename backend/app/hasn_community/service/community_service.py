@@ -2890,12 +2890,12 @@ class CommunityService:
             """
             WITH tagged AS (
                 SELECT unnest(tags) AS tag, like_count, comment_count, published_time
-                FROM hasn_posts
+                FROM hasn_community.hasn_posts
                 WHERE status = 'published'
                   AND published_time >= now() - make_interval(days => :days)
                 UNION ALL
                 SELECT unnest(tags) AS tag, like_count, comment_count, published_time
-                FROM hasn_articles
+                FROM hasn_community.hasn_articles
                 WHERE status = 'published'
                   AND published_time >= now() - make_interval(days => :days)
             )

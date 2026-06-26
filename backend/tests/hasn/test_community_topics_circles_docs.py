@@ -10,9 +10,10 @@ import uuid
 
 import pytest
 import pytest_asyncio
+
 from sqlalchemy import select
-from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_community.model import HasnContentTopics, HasnDocNodes
 from backend.app.hasn_community.service.circle_service import circle_service
@@ -67,6 +68,20 @@ async def test_publish_links_topics_and_feed(pg) -> None:
     topic_id = links[0].topic_id
     feed = await topic_service.get_topic_feed(pg, topic_id, public_only=True)
     assert any(i.get('post_id') == pid for i in feed['items']), '发文应进话题聚合流'
+
+
+async def test_trending_topics_schema_qualified(pg) -> None:
+    """热门话题聚合裸 SQL 必须按 hasn_community schema 全限定（回归：曾用非限定 hasn_posts/hasn_articles → UndefinedTableError）。"""
+    owner = f'h_{_uid()}'
+    tag = f'Trend{_uid()}'
+    # 发一篇带唯一 tag 的已发布帖（human 主社区 → published）
+    res = await community_service.create_post(pg, user_id=1, hasn_id=owner, content='trending probe', tags=[tag])
+    assert res['status'] == 'published'
+    # 关键：不应抛 ProgrammingError(relation does not exist)，返回结构化话题列表
+    topics = await community_service.get_trending_topics(pg, limit=200, days=7)
+    assert isinstance(topics, list)
+    assert all({'topic', 'post_count', 'trend'} <= set(t) for t in topics)
+    assert any(t['topic'] == tag for t in topics), '刚发布的 tag 应出现在热门话题聚合中'
 
 
 async def test_follow_topic_rename_no_break(pg) -> None:
