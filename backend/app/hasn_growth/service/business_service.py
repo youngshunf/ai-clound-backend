@@ -27,6 +27,7 @@ from backend.app.hasn_growth.service.growth_notification import growth_notificat
 from backend.app.hasn_growth.service.llm_extractor import LeadLLMExtractor, build_default_extractor
 from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
+from backend.app.hasn_growth.service.url_dedup_service import UrlDedupService
 from backend.common.exception import errors
 from backend.core.conf import settings
 
@@ -79,7 +80,10 @@ class LeadAutomationBusinessService:
         job.started_at = datetime.now(UTC)
         request_count = 0
         for source_type in _as_list(job.source_types):
+            if job.valid_count >= job.max_results:
+                break  # ④ 精确配额：已凑够目标有效线索数，停止后续数据源（省抓取成本）
             request_count += 1
+            dedup = UrlDedupService(db, job_id=job.id, source_type=source_type)
             try:
                 provider = get_provider(source_type)
                 items = await provider.crawl(
@@ -95,6 +99,7 @@ class LeadAutomationBusinessService:
                     ),
                     firecrawl_client=self.firecrawl_client,
                     llm_extractor=self.llm_extractor,
+                    dedup=dedup,
                 )
             except Exception as exc:
                 await self._persist_rejected(
@@ -109,7 +114,14 @@ class LeadAutomationBusinessService:
 
             job.firecrawl_success_count += 1
             job.total_found += len(items)
-            for item in items[: job.max_results]:
+            for item in items:
+                if job.valid_count >= job.max_results:
+                    break  # ④ 已凑够目标有效线索数，停止处理剩余抓取项
+                # ② 登记到已抓 URL 池（outcome 据是否取到正文；lead_yield 在新增有效线索后回填）
+                await dedup.register(
+                    item.source_url or '',
+                    outcome='succeeded' if (item.markdown or '').strip() else 'empty',
+                )
                 firecrawl_request = LeadFirecrawlRequest(
                     job_id=job.id,
                     source_type=item.source_type,
@@ -226,6 +238,7 @@ class LeadAutomationBusinessService:
                 )
                 if created:
                     job.valid_count += 1
+                    await dedup.bump_lead_yield(item.source_url or '')
                 else:
                     raw_record.status = 'duplicate'
                     job.duplicate_count += 1

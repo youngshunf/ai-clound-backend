@@ -4,6 +4,10 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
+# ② URL 去重 / ④ 精确配额：搜索候选数与单源抓取的硬上限，防 search 返回过多失控烧成本（doc08 §4.4/§7）
+_SEARCH_LIMIT_CAP = 50
+_CRAWL_HARD_CAP = 50
+
 
 @dataclass(slots=True)
 class CrawlRequest:
@@ -44,6 +48,10 @@ class LeadLLMExtractorLike(Protocol):
     async def extract(self, markdown: str | None, *, source_url: str | None = None) -> dict[str, Any] | None: ...
 
 
+class UrlDedupLike(Protocol):
+    async def filter_unseen(self, urls: list[str]) -> list[str]: ...
+
+
 class BaseProvider:
     source_type = ''
 
@@ -53,13 +61,17 @@ class BaseProvider:
         *,
         firecrawl_client: FirecrawlLike,
         llm_extractor: LeadLLMExtractorLike | None = None,
+        dedup: UrlDedupLike | None = None,
     ) -> list[CrawledItem]:
         options = request.config.get('firecrawl_options', {})
         schema_version = options.get('schema_version', 'lead_v1')
         prompt_version = options.get('prompt_version', 'lead_extract_v1')
         urls = await self._resolve_urls(request, firecrawl_client=firecrawl_client)
+        if dedup is not None:
+            # ② URL 级去重：抓取前剔除近期已成功抓过的 URL（登记由 business 落库时做，避免重复计数）
+            urls = await dedup.filter_unseen(urls)
         items = []
-        for url in urls[: request.max_results]:
+        for url in urls[:_CRAWL_HARD_CAP]:
             if options.get('extract_mode') == 'extract':
                 # 兼容路径：firecrawl 原生 extract（仅当 firecrawl 自身配了可用 LLM 时有效）
                 result = await firecrawl_client.extract_leads([url], schema_version, prompt_version)
