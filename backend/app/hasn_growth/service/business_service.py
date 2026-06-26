@@ -24,6 +24,7 @@ from backend.app.hasn_growth.service.dedupe_service import dedupe_key
 from backend.app.hasn_growth.service.export_service import build_csv_export
 from backend.app.hasn_growth.service.firecrawl_client import DEFAULT_FIRECRAWL_BASE_URL, FirecrawlClient
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.llm_extractor import LeadLLMExtractor, build_default_extractor
 from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
 from backend.common.exception import errors
@@ -36,11 +37,17 @@ if TYPE_CHECKING:
 
 
 class LeadAutomationBusinessService:
-    def __init__(self, firecrawl_client: FirecrawlClient | None = None) -> None:
+    def __init__(
+        self,
+        firecrawl_client: FirecrawlClient | None = None,
+        llm_extractor: LeadLLMExtractor | None = None,
+    ) -> None:
         self.firecrawl_client = firecrawl_client or FirecrawlClient(
             base_url=settings.FIRECRAWL_BASE_URL or DEFAULT_FIRECRAWL_BASE_URL,
             api_key=settings.FIRECRAWL_API_KEY or None,
         )
+        # 方案 A：firecrawl 只抓 markdown，结构化提取由后端 LLM 完成（未配置则为 None，退正则兜底）。
+        self.llm_extractor = llm_extractor or build_default_extractor()
 
     async def create_job(self, db: AsyncSession, obj: CreateLeadJobParam) -> dict[str, Any]:
         user_id = None if obj.lead_scope == 'public' else obj.user_id
@@ -87,6 +94,7 @@ class LeadAutomationBusinessService:
                         config=job.request_config or {},
                     ),
                     firecrawl_client=self.firecrawl_client,
+                    llm_extractor=self.llm_extractor,
                 )
             except Exception as exc:
                 await self._persist_rejected(

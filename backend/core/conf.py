@@ -160,6 +160,13 @@ class Settings(BaseSettings):
     FIRECRAWL_BASE_URL: str = ''  # firecrawl 服务地址，如 http://firecrawl-svc.internal:3002
     FIRECRAWL_API_KEY: str = ''  # firecrawl API Key（自托管可空）
 
+    # hasn_growth 线索结构化提取 LLM（方案 A：firecrawl 只抓 markdown，结构化提取在后端调
+    # new-api 网关完成；详见 docs/AI自动获客任务系统/08-...）。base_url 或 api_key 为空则
+    # 跳过 LLM 提取，cleaner 退回正则兜底，不影响采集主链路。
+    GROWTH_LLM_BASE_URL: str = ''  # OpenAI 兼容网关，如 https://llm.dcfuture.cn/v1
+    GROWTH_LLM_API_KEY: str = ''  # 网关 API Key
+    GROWTH_LLM_MODEL: str = 'agnes-2.0-flash'  # 结构化提取模型
+
     # 统一视频引擎（studio / montage-engine-service）BYO 长尾媒体凭据平台兜底（doc22 §5 P7）：
     # 主人没自带 key 时，对该 provider 用平台公共 key（运营自费），为空则该 provider 跳过（诚实，零 fake）。
     # 网关族（image/tts/stt/video）不在此——它们经 new-api 用主人自己的 relay token（OWNER 配额计费），

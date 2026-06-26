@@ -35,14 +35,25 @@ class CrawledItem:
 
 class FirecrawlLike(Protocol):
     async def search(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]: ...
+    async def scrape_markdown(self, url: str) -> dict[str, Any]: ...
     async def scrape_lead_json(self, url: str, schema_version: str, prompt_version: str) -> dict[str, Any]: ...
     async def extract_leads(self, urls: list[str], schema_version: str, prompt_version: str) -> dict[str, Any]: ...
+
+
+class LeadLLMExtractorLike(Protocol):
+    async def extract(self, markdown: str | None, *, source_url: str | None = None) -> dict[str, Any] | None: ...
 
 
 class BaseProvider:
     source_type = ''
 
-    async def crawl(self, request: CrawlRequest, *, firecrawl_client: FirecrawlLike) -> list[CrawledItem]:
+    async def crawl(
+        self,
+        request: CrawlRequest,
+        *,
+        firecrawl_client: FirecrawlLike,
+        llm_extractor: LeadLLMExtractorLike | None = None,
+    ) -> list[CrawledItem]:
         options = request.config.get('firecrawl_options', {})
         schema_version = options.get('schema_version', 'lead_v1')
         prompt_version = options.get('prompt_version', 'lead_extract_v1')
@@ -50,11 +61,30 @@ class BaseProvider:
         items = []
         for url in urls[: request.max_results]:
             if options.get('extract_mode') == 'extract':
+                # 兼容路径：firecrawl 原生 extract（仅当 firecrawl 自身配了可用 LLM 时有效）
                 result = await firecrawl_client.extract_leads([url], schema_version, prompt_version)
             else:
-                result = await firecrawl_client.scrape_lead_json(url, schema_version, prompt_version)
+                # 方案 A 主路径：firecrawl 只抓 markdown，结构化提取下沉到后端 LLM（doc08 §3）
+                result = await firecrawl_client.scrape_markdown(url)
+                await self._apply_backend_llm(result, url, llm_extractor)
             items.append(self._result_to_item(result, fallback_url=url))
         return items
+
+    @staticmethod
+    async def _apply_backend_llm(
+        result: dict[str, Any], url: str, llm_extractor: LeadLLMExtractorLike | None
+    ) -> None:
+        """firecrawl 未返结构化时，用 markdown 调后端 LLM 补 structured_payload；失败静默退正则兜底。"""
+        if llm_extractor is None or result.get('structured_payload') or not result.get('markdown'):
+            return
+        extracted = await llm_extractor.extract(result['markdown'], source_url=result.get('source_url') or url)
+        if not extracted or not extracted.get('structured_payload'):
+            return
+        result['structured_payload'] = extracted['structured_payload']
+        result['llm_confidence'] = extracted.get('llm_confidence')
+        result['extract_mode'] = 'llm_backend'
+        result['llm_schema_version'] = extracted.get('schema_version')
+        result['llm_prompt_version'] = extracted.get('prompt_version')
 
     async def _resolve_urls(self, request: CrawlRequest, *, firecrawl_client: FirecrawlLike) -> list[str]:
         if self._is_url_like(request.keyword):
