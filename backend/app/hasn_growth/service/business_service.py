@@ -24,6 +24,7 @@ from backend.app.hasn_growth.service.dedupe_service import dedupe_key
 from backend.app.hasn_growth.service.export_service import build_csv_export
 from backend.app.hasn_growth.service.firecrawl_client import DEFAULT_FIRECRAWL_BASE_URL, FirecrawlClient
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.industry_tagging_service import IndustryTaggingService
 from backend.app.hasn_growth.service.llm_extractor import LeadLLMExtractor, build_default_extractor
 from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
@@ -78,6 +79,8 @@ class LeadAutomationBusinessService:
             raise errors.ForbiddenError(msg='无权执行该采集任务')
         job.status = 'running'
         job.started_at = datetime.now(UTC)
+        # 2.2 行业标准化打标器（job 级缓存字典；规则优先，配了 new-api 网关才走 LLM 兜底）。
+        tagger = IndustryTaggingService(db, enable_llm=self.llm_extractor is not None)
         request_count = 0
         for source_type in _as_list(job.source_types):
             if job.valid_count >= job.max_results:
@@ -217,6 +220,13 @@ class LeadAutomationBusinessService:
                     )
                     job.invalid_count += 1
                     continue
+
+                # 2.2 行业标准化打标：原始行业文本 → 标准 code（公共池按 code 检索归一）；不中保留原文。
+                industry_code = await tagger.normalize(
+                    raw_industry=cleaned.industry, company_name=cleaned.company_name
+                )
+                if industry_code:
+                    cleaned.industry = industry_code
 
                 created, contact, match_dimension = await self._upsert_contact(
                     db,

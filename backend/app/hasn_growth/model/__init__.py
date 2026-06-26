@@ -16,3 +16,4 @@ from backend.app.hasn_growth.model.playbook import Playbook as Playbook
 from backend.app.hasn_growth.model.form_submission import FormSubmission as FormSubmission
 from backend.app.hasn_growth.model.optout_record import OptoutRecord as OptoutRecord
 from backend.app.hasn_growth.model.crawled_url import CrawledUrl as CrawledUrl
+from backend.app.hasn_growth.model.industry_tag import IndustryTag as IndustryTag
