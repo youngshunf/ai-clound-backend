@@ -26,6 +26,7 @@ from backend.app.hasn_growth.service.opportunity_flow_service import growth_oppo
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
+from backend.common.log import log
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,9 +43,7 @@ def _reveal(agent: AgentTokenPayload) -> bool:
 
 async def _scope(db: AsyncSession, agent: AgentTokenPayload, view: str = 'team') -> GrowthScope:
     """分身代主人解析获客上下文：身份恒取自 JWT，assignee 键为主人 hasn_id。"""
-    return await resolve_growth_scope(
-        db, user_id=agent.owner_user_id, owner_hasn_id=agent.owner_hasn_id, view=view
-    )
+    return await resolve_growth_scope(db, user_id=agent.owner_user_id, owner_hasn_id=agent.owner_hasn_id, view=view)
 
 
 def _int(payload: dict[str, Any], key: str) -> int:
@@ -54,13 +53,39 @@ def _int(payload: dict[str, Any], key: str) -> int:
 # ---------------- 采集（hasn.growth.collect.*） ----------------
 
 
+def _enqueue_collection_job_after_commit(db: AsyncSession, job_id: int) -> None:
+    """注册 after_commit 钩子：本事务真正提交后才把采集 job 入 Celery 队列异步执行（方案A）。
+
+    避免 enqueue-in-transaction race——采集 worker 是独立进程、用新 DB session，若在事务提交
+    前 ``.delay()``，worker 可能读不到尚未提交的 job（报"任务不存在"）。after_commit 保证 job
+    已落库可见才入队；事务回滚则钩子不触发（不会出现"入了队却无 job"的孤儿任务）。broker 不
+    可达时 best-effort 记日志、不让已落库的工具调用失败（job 留 pending，owner 可在 UI 手动运行兜底）。
+    """
+    from sqlalchemy import event
+
+    def _enqueue(_sync_session: Any) -> None:
+        try:
+            from backend.app.hasn_growth.tasks import lead_automation_run_job
+
+            lead_automation_run_job.delay(job_id)
+            log.info(f'[GrowthCollect] 采集 job 已入队异步执行: job_id={job_id}')
+        except Exception as exc:
+            log.error(f'[GrowthCollect] 采集 job 入队失败 job_id={job_id}: {exc!r}（job 已落库，可手动运行）')
+
+    event.listen(db.sync_session, 'after_commit', _enqueue, once=True)
+
+
 async def handle_growth_collect_start(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     # 身份取自 JWT：恒落主人私有池（user_scope），分身无权操作公共池采集。
     obj = CreateLeadJobParam.model_validate(input_payload)
     payload = obj.model_copy(update={'user_id': agent.owner_user_id, 'lead_scope': 'user'})
-    return await lead_automation_business_service.create_job(db=db, obj=payload)
+    job = await lead_automation_business_service.create_job(db=db, obj=payload)
+    # 方案A：建 pending job 后，事务提交时入 Celery 队列异步执行采集（firecrawl→清洗→去重→入库），
+    # 不阻塞本 MCP 工具调用；分身随后用 collect.status 轮询真实进度。
+    _enqueue_collection_job_after_commit(db, int(job['id']))
+    return job
 
 
 async def handle_growth_collect_status(
@@ -90,7 +115,9 @@ async def handle_growth_lead_get(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     return await growth_funnel_service.get_lead(
-        db, user_id=agent.owner_user_id, lead_contact_id=_int(input_payload, 'lead_contact_id'),
+        db,
+        user_id=agent.owner_user_id,
+        lead_contact_id=_int(input_payload, 'lead_contact_id'),
         reveal_pii=_reveal(agent),
     )
 
@@ -115,7 +142,9 @@ async def handle_growth_lead_dismiss(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     return await growth_funnel_service.dismiss_lead(
-        db, user_id=agent.owner_user_id, lead_contact_id=_int(input_payload, 'lead_contact_id'),
+        db,
+        user_id=agent.owner_user_id,
+        lead_contact_id=_int(input_payload, 'lead_contact_id'),
         reason=input_payload.get('reason'),
     )
 
@@ -144,8 +173,11 @@ async def handle_growth_customer_get(
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
     return await growth_funnel_service.get_customer(
-        db, user_id=agent.owner_user_id, customer_id=_int(input_payload, 'customer_id'),
-        reveal_pii=_reveal(agent), scope=scope,
+        db,
+        user_id=agent.owner_user_id,
+        customer_id=_int(input_payload, 'customer_id'),
+        reveal_pii=_reveal(agent),
+        scope=scope,
     )
 
 
@@ -198,8 +230,11 @@ async def handle_growth_customer_reassign(
     # 分身代经理主人分配负责人；非经理由 service can_manage_assignment 拒。
     scope = await _scope(db, agent, view='team')
     return await growth_funnel_service.reassign_customer(
-        db, user_id=agent.owner_user_id, customer_id=_int(input_payload, 'customer_id'),
-        new_assignee=str(input_payload['assignee']), scope=scope,
+        db,
+        user_id=agent.owner_user_id,
+        customer_id=_int(input_payload, 'customer_id'),
+        new_assignee=str(input_payload['assignee']),
+        scope=scope,
     )
 
 
@@ -240,8 +275,11 @@ async def handle_growth_outreach_status(
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
     return await growth_outreach_service.list_customer_outreach(
-        db, user_id=agent.owner_user_id, customer_id=_int(input_payload, 'customer_id'),
-        limit=int(input_payload.get('limit', 50)), scope=scope,
+        db,
+        user_id=agent.owner_user_id,
+        customer_id=_int(input_payload, 'customer_id'),
+        limit=int(input_payload.get('limit', 50)),
+        scope=scope,
     )
 
 
@@ -284,8 +322,11 @@ async def handle_growth_opportunity_update_stage(
         scope=scope,
     )
     await growth_notification_service.opportunity_stage_changed(
-        db, agent=agent, opportunity_id=_int(input_payload, 'opportunity_id'),
-        stage=input_payload.get('stage'), name=data.get('name'),
+        db,
+        agent=agent,
+        opportunity_id=_int(input_payload, 'opportunity_id'),
+        stage=input_payload.get('stage'),
+        name=data.get('name'),
     )
     return data
 

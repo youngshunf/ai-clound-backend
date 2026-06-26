@@ -23,13 +23,14 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import ForbiddenError
@@ -50,7 +51,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -60,32 +61,46 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     owner_uid = 960000 + int(uuid.uuid4().int % 9000)
     agent_hasn = f'a_gtc_{tag}'
 
-    session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active'))
+    session.add(
+        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active')
+    )
     lead = LeadContact(
-        lead_no=f'L{tag.upper()}', lead_scope='user', user_id=owner_uid, company_name='Acme',
-        contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='valid', confidence_score=72,
+        lead_no=f'L{tag.upper()}',
+        lead_scope='user',
+        user_id=owner_uid,
+        company_name='Acme',
+        contact_name='王五',
+        email='wangwu@acme.com',
+        phone='13800138000',
+        source_type='firecrawl',
+        status='valid',
+        confidence_score=72,
     )
     session.add(lead)
     await session.flush()
 
     def _agent(scopes: list[str]) -> AgentTokenPayload:
         return AgentTokenPayload(
-            agent_hasn_id=agent_hasn, agent_name=f'agent_{tag}', owner_hasn_id=owner,
-            owner_user_id=owner_uid, scopes=scopes, session_uuid=f'sess_{tag}',
+            agent_hasn_id=agent_hasn,
+            agent_name=f'agent_{tag}',
+            owner_hasn_id=owner,
+            owner_user_id=owner_uid,
+            scopes=scopes,
+            session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
 
     try:
-        yield SimpleNamespace(session=session, owner=owner, owner_uid=owner_uid, agent_hasn=agent_hasn,
-                              lead_id=lead.id, agent=_agent)
+        yield SimpleNamespace(
+            session=session, owner=owner, owner_uid=owner_uid, agent_hasn=agent_hasn, lead_id=lead.id, agent=_agent
+        )
     finally:
         await session.rollback()
         await session.close()
         await engine.dispose()
 
 
-async def test_all_18_growth_tools_resolve_in_gateway_registry() -> None:
+async def test_all_18_growth_tools_resolve_in_gateway_registry() -> None:  # noqa: RUF029
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
     assert len(handlers) == 18
@@ -95,7 +110,7 @@ async def test_all_18_growth_tools_resolve_in_gateway_registry() -> None:
         assert callable(_REG[h])
 
 
-async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx) -> None:
+async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleNamespace) -> None:
     """单客户生命周期经云端 handler 链：检索(脱敏)→晋级→列客户(scope)→记活动→触达必审→商机→成交→漏斗。"""
     s, agent = ctx.session, ctx.agent(['agent', 'growth:read', 'growth:manage', 'growth:outreach', 'growth:collect'])
 
@@ -123,16 +138,27 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx) -> None:
     await _REG['growth.activity_log'](s, agent, {'customer_id': cid, 'kind': 'note', 'content': '电话沟通良好'})
 
     # 触达：首触达必 pending_approval（不可豁免）
-    sent = await _REG['growth.outreach_send'](s, agent, {
-        'customer_id': cid, 'channel': 'manual_assist', 'content': '您好，想聊聊获客', 'intent_note': '破冰',
-    })
+    sent = await _REG['growth.outreach_send'](
+        s,
+        agent,
+        {
+            'customer_id': cid,
+            'channel': 'manual_assist',
+            'content': '您好，想聊聊获客',
+            'intent_note': '破冰',
+        },
+    )
     assert sent['status'] == 'pending_approval'
 
     # 商机：立 → 推进 → 成交
-    opp = await _REG['growth.opportunity_create'](s, agent, {'customer_id': cid, 'name': '年度 SaaS 订阅', 'amount': 120000})
+    opp = await _REG['growth.opportunity_create'](
+        s, agent, {'customer_id': cid, 'name': '年度 SaaS 订阅', 'amount': 120000}
+    )
     oid = opp['id']
     assert opp['stage'] == 'contacted'
-    o1 = await _REG['growth.opportunity_update_stage'](s, agent, {'opportunity_id': oid, 'stage': 'proposal', 'note': '发了提案'})
+    o1 = await _REG['growth.opportunity_update_stage'](
+        s, agent, {'opportunity_id': oid, 'stage': 'proposal', 'note': '发了提案'}
+    )
     assert o1['stage'] == 'proposal'
     closed = await _REG['growth.deal_close'](s, agent, {'opportunity_id': oid, 'result': 'won', 'amount': 118000})
     assert closed['stage'] == 'closed_won'
@@ -142,7 +168,7 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx) -> None:
     assert funnel['won_this_month']['count'] >= 1 and funnel['won_this_month']['amount'] >= 118000
 
 
-async def test_growth_cloud_tools_pii_scope_reveals_plaintext(ctx) -> None:
+async def test_growth_cloud_tools_pii_scope_reveals_plaintext(ctx: SimpleNamespace) -> None:
     """持 growth:pii 增强 scope 的 agent → 读类回明文（默认脱敏，PII 边界经 handler 透传）。"""
     s = ctx.session
     masked = await _REG['growth.lead_search'](s, ctx.agent(['agent', 'growth:read']), {'query': 'Acme'})
@@ -151,9 +177,70 @@ async def test_growth_cloud_tools_pii_scope_reveals_plaintext(ctx) -> None:
     assert revealed and revealed[0]['email'] == 'wangwu@acme.com'
 
 
-async def test_growth_cloud_tools_reassign_requires_manager(ctx) -> None:
+async def test_growth_cloud_tools_reassign_requires_manager(ctx: SimpleNamespace) -> None:
     """customer.reassign 经 handler 落到经理闸门：个人模式（非经理）→ ForbiddenError。"""
     s, agent = ctx.session, ctx.agent(['agent', 'growth:read', 'growth:manage'])
     cust = await _REG['growth.lead_qualify'](s, agent, {'lead_contact_id': ctx.lead_id, 'intent_score': 60})
     with pytest.raises(ForbiddenError):
         await _REG['growth.customer_reassign'](s, agent, {'customer_id': cust['id'], 'assignee': 'h_other'})
+
+
+async def test_collect_start_enqueues_run_job_on_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """方案A 采集执行链路：collect.start 建 pending job → 事务 commit 后才入 Celery 队列（时序正确）。
+
+    证明分身调 hasn.growth.collect.start 不再"建了 job 却不会跑"——after_commit 钩子在事务提交
+    后把 lead_automation_run_job 入队异步执行采集；提交前不入队（避免 worker 读不到未提交的 job）。
+    用独立 session（同库）真实建/删，验证真实 commit 触发，不污染其它测试。
+    """
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(select(1))
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
+
+    import backend.app.hasn_growth.tasks as growth_tasks
+
+    enqueued: list[int] = []
+    monkeypatch.setattr(growth_tasks.lead_automation_run_job, 'delay', lambda job_id: enqueued.append(job_id))
+
+    tag = uuid.uuid4().hex[:8]
+    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    session = async_sessionmaker(engine, expire_on_commit=False)()
+    job_id: int | None = None
+    try:
+        agent = AgentTokenPayload(
+            agent_hasn_id=f'a_cs_{tag}',
+            agent_name=f'agent_{tag}',
+            owner_hasn_id=f'h_cs_{tag}',
+            owner_user_id=owner_uid,
+            scopes=['agent', 'growth:collect'],
+            session_uuid=f'sess_{tag}',
+            expire_time=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        job = await _REG['growth.collect_start'](session, agent, {'keyword': f'kw_{tag}', 'max_results': 5})
+        job_id = int(job['id'])
+        assert job['status'] == 'pending'
+        assert enqueued == [], '事务提交前不应入队（避免 worker 读不到未提交的 job）'
+
+        await session.commit()
+        assert enqueued == [job_id], '事务提交后 after_commit 钩子应把采集 job 入队异步执行'
+    finally:
+        if job_id is not None:
+            await session.execute(delete(LeadCollectionJob).where(LeadCollectionJob.id == job_id))
+            await session.commit()
+        await session.close()
+        await engine.dispose()
+
+
+async def test_collection_job_impl_skips_missing_job() -> None:
+    """方案A 幂等守卫：job 不存在 → 早返回 not_found，不进 run_job（不打 firecrawl 网络、无副作用）。"""
+    from backend.app.hasn_growth.tasks import _run_collection_job_impl
+
+    missing_id = 990_000_000 + int(uuid.uuid4().int % 9_000_000)
+    try:
+        result = await _run_collection_job_impl(missing_id)
+    except Exception as exc:
+        pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
+    assert result == {'job_id': missing_id, 'skipped': 'not_found'}
