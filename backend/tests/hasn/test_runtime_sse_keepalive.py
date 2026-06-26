@@ -13,11 +13,13 @@ from __future__ import annotations
 import asyncio
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 
 from backend.app.hasn.service.hasn_agent_runtime_dispatch_service import (
     _SSE_KEEPALIVE_FRAME,
+    HasnAgentRuntimeDispatchService,
     _with_keepalive,
 )
 
@@ -66,3 +68,18 @@ async def test_reraises_upstream_exception() -> None:
 
     with pytest.raises(RuntimeError, match='upstream blew up'):
         await _collect(_with_keepalive(_boom(), interval=10.0))
+
+
+async def test_relay_run_stream_unexpected_error_becomes_sse_error_not_decoding_error() -> None:
+    # control-plane 抛非 HermesRuntimeError 的未预期异常（inner 的 try 不 catch 它）→ 必须被
+    # relay_run_stream 的兜底转成明确 SSE error 帧，绝不逃逸到 StreamingResponse（否则 daemon
+    # 只看到 error decoding response body、拿不到真因）。
+    svc = HasnAgentRuntimeDispatchService(runtime_client=AsyncMock())
+    svc.runtime_client.start_gateway_by_profile = AsyncMock(side_effect=ValueError('boom upstream'))
+
+    frames = [chunk async for chunk in svc.relay_run_stream(runtime_profile_id='p1', payload={})]
+    body = b''.join(frames).decode()
+
+    assert 'event: error' in body
+    assert 'runtime_relay_internal_error' in body
+    assert 'boom upstream' in body

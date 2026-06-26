@@ -190,8 +190,17 @@ class HasnAgentRuntimeDispatchService:
         inner = self._relay_run_stream_inner(
             runtime_profile_id=runtime_profile_id, payload=payload, trace_id=trace_id
         )
-        async for chunk in _with_keepalive(inner):
-            yield chunk
+        try:
+            async for chunk in _with_keepalive(inner):
+                yield chunk
+        except Exception as exc:
+            # 兜底：任何从 inner / 心跳层逃逸的未预期异常（上游返回意外结构、int(port) 之类
+            # 的类型/解析错误等，不属于已捕获的 HermesRuntimeError / httpx.HTTPError）都转成
+            # SSE error 帧 + 记完整 traceback，绝不让异常逃逸到 StreamingResponse——否则连接
+            # 非正常关闭，daemon 侧只能看到无意义的 error decoding response body、拿不到真正的
+            # 错误原因（零 fake：如实把内部错误下行，不伪造成功）。
+            log.exception(f'cloud relay unexpected error for {runtime_profile_id}: {exc}')
+            yield _sse_error('runtime_relay_internal_error', details=str(exc))
 
     async def _relay_run_stream_inner(
         self,
