@@ -290,6 +290,8 @@ _CAPABILITIES = [
 
 FINANCE_AI_NATIVE_MANIFEST = {
     'app_id': 'finance',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'finance': '金融数据（行情/财报/资讯查询）'},
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',

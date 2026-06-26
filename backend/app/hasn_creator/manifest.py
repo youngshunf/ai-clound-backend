@@ -497,6 +497,8 @@ _CAPABILITIES = [
 
 CREATOR_AI_NATIVE_MANIFEST = {
     'app_id': 'creator',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'creator': '创作运营（选题/创作/审核/发布/复盘）'},
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',

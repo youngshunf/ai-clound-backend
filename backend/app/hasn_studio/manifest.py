@@ -340,6 +340,8 @@ _CAPABILITIES = [
 
 STUDIO_AI_NATIVE_MANIFEST = {
     'app_id': 'studio',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'studio': '视频引擎（统一流水线合成视频）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',

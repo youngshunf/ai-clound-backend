@@ -107,6 +107,8 @@ _SOURCE_REF_SCHEMA = {
 
 PUBLISH_AI_NATIVE_MANIFEST = {
     'app_id': 'publish',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'publish': '网页发布（建站/可见性/撤回）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',

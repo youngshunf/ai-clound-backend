@@ -218,6 +218,8 @@ _CAPABILITIES = [
 
 QUANT_AI_NATIVE_MANIFEST = {
     'app_id': 'quant',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'quant': '量化交易（策略回测/数据集/结果）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',

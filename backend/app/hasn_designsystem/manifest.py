@@ -119,6 +119,8 @@ def _write_cap(
 
 DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
     'app_id': 'designsystem',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'designsystem': '设计系统（令牌编译/校验/组件抽取）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',

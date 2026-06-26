@@ -125,6 +125,8 @@ _PROJECT_ID = {'project_id': {'type': 'string', 'minLength': 1, 'description': '
 
 FILM_AI_NATIVE_MANIFEST = {
     'app_id': 'film',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'film': '影视创作（多阶段流水线/分镜/角色）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',

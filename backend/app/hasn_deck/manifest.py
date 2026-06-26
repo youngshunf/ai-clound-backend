@@ -156,6 +156,8 @@ _OUTLINE_ITEM_SCHEMA = {
 
 DECK_AI_NATIVE_MANIFEST = {
     'app_id': 'deck',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'deck': '演示文稿（创建/编辑/大纲/导出）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',

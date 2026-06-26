@@ -39,6 +39,8 @@ _AUDIT_FIELDS = [
 
 PLAN_AI_NATIVE_MANIFEST = {
     'app_id': 'plan',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'plan': '规划（目标/计划/待办/简报/复盘）'},
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',

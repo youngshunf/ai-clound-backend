@@ -2,6 +2,8 @@ from __future__ import annotations
 
 COMMUNITY_AI_NATIVE_MANIFEST = {
     'app_id': 'community',
+    # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
+    'domain_summary': {'community': '社区（帖子/文章/评论/关注/点赞）'},
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
