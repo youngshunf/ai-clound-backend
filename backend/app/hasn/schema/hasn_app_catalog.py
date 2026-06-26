@@ -49,6 +49,18 @@ class UpdateHasnAppCatalogParam(HasnAppCatalogSchemaBase):
     """更新AI-Native 应用目录（云端权威）参数"""
 
 
+class UpdateHasnAppCatalogConfigParam(SchemaBase):
+    """仅更新应用专属平台级配置 JSON（config_json）——管理端「编辑配置」专用。
+
+    「编辑配置」只改 config_json 一项（如 reel/film 引擎的模型名），不应被迫回填整行（app_id/name/
+    icon…），故独立 partial schema：只收 config_json，避免全字段 UpdateHasnAppCatalogParam 的必填校验。
+    """
+
+    config_json: dict = Field(
+        description='应用专属平台级配置 JSON（每应用自治，如 reel/film 引擎模型）；platform-config 聚合下发'
+    )
+
+
 class DeleteHasnAppCatalogParam(SchemaBase):
     """删除AI-Native 应用目录（云端权威）参数"""
 

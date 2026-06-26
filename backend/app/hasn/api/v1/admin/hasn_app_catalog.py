@@ -8,6 +8,7 @@ from backend.app.hasn.schema.hasn_app_catalog import (
     CreateHasnAppCatalogParam,
     DeleteHasnAppCatalogParam,
     GetHasnAppCatalogDetail,
+    UpdateHasnAppCatalogConfigParam,
     UpdateHasnAppCatalogParam,
 )
 from backend.app.hasn.service import app_catalog_service
@@ -84,6 +85,37 @@ async def update_hasn_app_catalog(
             await sync_bump('platform_config', db)
         except Exception as e:
             log.warning(f'[HASN] app_catalog 变更 platform_config invalidate 推送失败 (非致命): {e}')
+        return response_base.success()
+    return response_base.fail()
+
+
+@router.put(
+    '/{pk}/config',
+    summary='仅更新应用专属平台级配置 JSON（管理端「编辑配置」，只改 config_json）',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:catalog:edit')),
+        DependsRBAC,
+    ],
+    name='admin_update_hasn_app_catalog_config',
+)
+async def update_hasn_app_catalog_config(
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='AI-Native 应用目录（云端权威） ID')],
+    obj: UpdateHasnAppCatalogConfigParam,
+) -> ResponseModel:
+    # 管理端「编辑配置」只改 config_json 一项（如 reel/film 引擎模型名），不应被迫回填整行
+    # （app_id/name/icon…），否则会撞 UpdateHasnAppCatalogParam 全字段必填校验报「app_id 字段为必填项」。
+    count = await hasn_app_catalog_service.update_config(db=db, pk=pk, config_json=obj.config_json)
+    if count > 0:
+        # 与全字段 update 一致：config_json 变更 → push hasn.sync.invalidate(platform_config)，
+        # 在线 daemon 秒级重拉并应用——这是「编辑配置→保存→改模型名即生效」下发到桌面端的环。
+        # best-effort：推送失败绝不影响配置已写入；离线节点靠重连握手对账追平。
+        try:
+            from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+            await sync_bump('platform_config', db)
+        except Exception as e:
+            log.warning(f'[HASN] app_catalog config 变更 platform_config invalidate 推送失败 (非致命): {e}')
         return response_base.success()
     return response_base.fail()
 

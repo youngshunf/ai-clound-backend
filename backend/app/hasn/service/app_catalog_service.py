@@ -200,8 +200,9 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
     # 短视频合成（reel，源自 MoneyPrinterTurbo，doc19 §6.4）：合成式管线，**只有 llm（文案/搜索词）
     # + tts（配音）+ stt（字幕，可选）三类模型，绝无 image/video 生成模型**（不烧视频 token）。
     # 出厂给出**完整骨架 + 示例值**（管理端「编辑配置」开箱即见结构），运营/主人改值即可：
-    #   - models.llm 示例名 gpt-5 是占位模板，换成 new-api 已开通的真实模型（reel **无需开通视频渠道**）；
-    #     models.stt 默认空（字幕默认走 edge 时间戳，subtitle_provider=whisper 时才下 whisper 模型）。
+    #   - models.llm 默认 agnes-2.0-flash（new-api 已开通的真实文案模型，reel **无需开通视频渠道**），
+    #     运营可在管理端「编辑配置」换成其它已开通模型；models.stt 默认空（字幕默认走 edge 时间戳，
+    #     subtitle_provider=whisper 时才下 whisper 模型）。
     #   - tts 默认 edge（免费微软），可切 platform（走 hasn.voice.synthesize / owner 配额）。
     #   - material.platform_keys 是平台统一兜底素材 key（M2）：**留空占位，运营在管理端填**，绝不硬编码
     #     真实 key；owner 可在应用内自填（多 key 轮换避限流，doc19 §6.3）。
@@ -209,7 +210,7 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
     #     （version + 按架构 packages）留空：dev 用 fork 源码树即可跑，prod 由运营经管理端/FILMPUB 填。
     'reel': {
         'models': {
-            'llm': ['gpt-5'],
+            'llm': ['agnes-2.0-flash'],
             'tts': ['edge'],
             'stt': [],
         },

@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +52,17 @@ class CRUDHasnAppCatalog(CRUDPlus[HasnAppCatalog]):
         :return:
         """
         return await self.update_model(db, pk, obj)
+
+    async def update_config(self, db: AsyncSession, pk: int, config_json: dict) -> int:
+        """
+        仅更新 config_json 一列（管理端「编辑配置」），不触碰其余字段
+
+        :param db: 数据库会话
+        :param pk: AI-Native 应用目录（云端权威） ID
+        :param config_json: 应用专属平台级配置 JSON
+        :return:
+        """
+        return await self.update_model(db, pk, {'config_json': config_json})
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         """
