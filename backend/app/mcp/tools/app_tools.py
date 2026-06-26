@@ -105,7 +105,11 @@ class AppTool(BaseTool):
             )()
             headers: dict[str, str] = {}
 
-        async with async_db_session() as db:
+        # 用 .begin()（自动提交事务），与 HTTP 工具调用面 CurrentSessionTransaction 语义对齐：
+        # 网关 dispatch 全程在本 session 内只 flush（业务行 + 审计行），从不自己 commit；
+        # async_db_session()（无 begin）退出只 close 不 commit → 经 MCP 直连面的 App 写类工具
+        # （creator/knowledge/... 凡 handler 自身不 commit 的）会返回成功却整体回滚不落库。
+        async with async_db_session.begin() as db:
             return await ai_native_runtime_gateway.call_tool(
                 db,
                 request=_Request(),
