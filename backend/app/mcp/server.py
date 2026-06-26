@@ -12,11 +12,13 @@ from typing import Any
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.tool_directory import ToolDirectoryService
+from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
+from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
 from backend.app.mcp.tools.plan import PLAN_TOOLS
 from backend.app.mcp.tools.registry import ToolRegistry
 from backend.app.mcp.tools.tool_call import ToolCallTool
@@ -99,6 +101,17 @@ class HasnCloudMcpServer:
         # 仍留本地的是有真本地编排/计算的 decompose/briefing/review/schedule/reschedule/delegate/validate。
         for plan_tool in PLAN_TOOLS:
             self.tool_registry.register(plan_tool)
+
+        # 通知工具（统一通知 §7）：AI-Native App 以 App 身份给主人发通知。
+        # 从 hasn-node 本地 hasn-mcp 迁来（纯云端代理 → 走云端 platform tool）。
+        for notification_tool in NOTIFICATION_TOOLS:
+            self.tool_registry.register(notification_tool)
+
+        # 产物工具（产物化 P6）：分身显式登记一条产物（文本/markdown 直接入库等）。
+        # 从 hasn-node 本地 hasn-mcp 迁来（纯云端代理 → 走云端 platform tool；
+        # audited 自动捕获机制仍留本地，因其拦截本地工具执行的副作用）。
+        for artifact_tool in ARTIFACT_TOOLS:
+            self.tool_registry.register(artifact_tool)
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:
