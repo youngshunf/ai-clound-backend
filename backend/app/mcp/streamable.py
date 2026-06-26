@@ -4,6 +4,7 @@ HASN 云端 MCP StreamableHTTP Server
 使用 MCP SDK 的 StreamableHTTP 协议暴露云端工具
 """
 
+import json
 import logging
 
 from contextvars import ContextVar
@@ -25,6 +26,7 @@ from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
 from backend.app.hasn_core import HasnHumans, hasn_agents_dao
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.context import set_capability_ticket
+from backend.app.mcp.json_encoding import json_default
 from backend.app.mcp.server import mcp_server
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
@@ -96,10 +98,13 @@ class HasnMcpStreamableServer:
                 # 调用现有的 HasnCloudMcpServer
                 result = await mcp_server.call_tool(agent_context, name, arguments)
 
-                # 转换为 MCP TextContent
-                import json
-
-                return [types.TextContent(type='text', text=json.dumps(result, ensure_ascii=False, indent=2))]
+                # 转换为 MCP TextContent（default=json_default：兜底 datetime/Decimal，序列化边界绝不崩）
+                return [
+                    types.TextContent(
+                        type='text',
+                        text=json.dumps(result, ensure_ascii=False, indent=2, default=json_default),
+                    )
+                ]
 
             except Exception as e:
                 logger.error(f'Error calling tool {name}: {e}', exc_info=True)
