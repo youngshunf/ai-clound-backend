@@ -16,6 +16,7 @@ from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
+from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
 from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
@@ -112,6 +113,12 @@ class HasnCloudMcpServer:
         # audited 自动捕获机制仍留本地，因其拦截本地工具执行的副作用）。
         for artifact_tool in ARTIFACT_TOOLS:
             self.tool_registry.register(artifact_tool)
+
+        # 设计系统工具（14-DS-P4 云端权威 4 工具）：import/save/list/get。
+        # 从 hasn-node 本地 hasn-mcp 迁来（纯云端权威 → 走云端 platform tool；
+        # 本地仅留确定性纯函数 compile_tokens/derive/validate/extract_components）。
+        for designsystem_tool in DESIGNSYSTEM_TOOLS:
+            self.tool_registry.register(designsystem_tool)
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:
