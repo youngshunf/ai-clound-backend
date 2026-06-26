@@ -23,8 +23,12 @@ from backend.app.hasn.schema.hasn_agents import (
 from backend.app.hasn.service.hasn_agent_runtime_dispatch_service import (
     hasn_agent_runtime_dispatch_service,
 )
+from backend.app.hasn.service.hasn_agent_runtime_provision_service import (
+    ensure_cloud_profile_provisioned,
+)
 from backend.app.hermes.service.hermes_runtime_client import HermesRuntimeError
 from backend.common.dataclasses import AgentTokenPayload
+from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession
@@ -49,6 +53,20 @@ async def create_runtime_run(
         owner_hasn_id=agent.owner_hasn_id,
         runtime_profile_id=body.runtime_profile_id,
     )
+    # provision-on-demand（双形态「provision 分叉」补缺）：云端分身首次/缺失时，由云端用 platform
+    # LLM 把 profile 补 provision 到云端 hermes（覆盖存量分身 + 换/重启 hermes 自愈）。db 仍在请求级
+    # 会话内（StreamingResponse 返回后才关）。best-effort：provision 失败不在此抛（保持 SSE 错误语义
+    # 统一），让下面 relay 阶段如实报 profile_not_found。
+    try:
+        await ensure_cloud_profile_provisioned(
+            db,
+            agent_hasn_id=agent.agent_hasn_id,
+            owner_hasn_id=agent.owner_hasn_id,
+            profile_id=profile_id,
+            trace_id=body.trace_id,
+        )
+    except HermesRuntimeError as exc:
+        log.warning(f'cloud provision-on-demand failed for {profile_id}: {exc}; relay will report')
     generator = hasn_agent_runtime_dispatch_service.relay_run_stream(
         runtime_profile_id=profile_id,
         payload=body.payload,

@@ -458,6 +458,29 @@ class HasnAgentProfileService:
                 log.error(f'为 Agent {agent.hasn_id} 签发 JWT 失败: {e}')
                 # JWT 签发失败不影响 Agent 创建
 
+            # 云端形态分身：创建即 provision 到云端 hermes（platform LLM），让新分身首次派发秒回。
+            # best-effort：provision 失败不阻断创建——dispatch 阶段会兜底补 provision（自愈）。
+            if getattr(agent, 'runtime_location', None) == 'cloud':
+                try:
+                    from backend.app.hasn.service.hasn_agent_runtime_provision_service import (
+                        cloud_profile_id_for,
+                        ensure_cloud_profile_provisioned,
+                    )
+
+                    cloud_profile_id = await cloud_profile_id_for(
+                        db, owner_hasn_id=request.owner_id, agent_name=agent.agent_name
+                    )
+                    await ensure_cloud_profile_provisioned(
+                        db,
+                        agent_hasn_id=agent.hasn_id,
+                        owner_hasn_id=request.owner_id,
+                        profile_id=cloud_profile_id,
+                    )
+                except Exception as e:
+                    from backend.common.log import log
+
+                    log.warning(f'云端分身 {agent.hasn_id} 创建时 provision 失败（dispatch 阶段会兜底）: {e}')
+
         return CloudCreateAgentResponse(
             agent=_agent_snapshot(agent),
             agent_key=agent_key,
