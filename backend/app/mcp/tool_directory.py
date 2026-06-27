@@ -147,6 +147,21 @@ class ToolDirectoryService:
 
         return {'default_mode': default_mode, 'sources': sources}
 
+    def cloud_tool_namespaces(self) -> set[str]:
+        """云端实际可达工具（platform + app，排除 local 源）的 namespace 集合。
+
+        供 `tool.search` 描述判定哪些 `domain_summary` 域真在云端面可调：deck/task/workflow/
+        reel/film/publish 等纯本地工具（manifest `tools=[]`、`transport_mode='local'`）不进云端
+        注册表，其域不应在云端目录里被宣传成可搜——否则云端分身据此去搜/调会扑空、报「本地工具
+        不可用」。plan/designsystem 虽 manifest 为 local，但其工具经 TOOLMIG 迁成 platform 工具、
+        在册，故仍判为云端可达（如实保留）。
+        """
+        return {
+            self._namespace_for_tool(tool)
+            for tool in self._registry.get_all_tools()
+            if self._source_for_tool(tool) != 'local'
+        }
+
     def _match_tools(
         self,
         tools: list[BaseTool],

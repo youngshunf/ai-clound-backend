@@ -39,6 +39,7 @@ def test_searchable_domains_aggregates_namespaces() -> None:
 
 
 def test_description_lists_searchable_domains() -> None:
+    # 不传 cloud_namespaces（保守回落）：列全部域、不标注，例子用云端可达工具。
     desc = _build_search_description()
     assert '可搜索的应用域' in desc
     # 福仔示例：deck → 演示文稿相关。
@@ -48,3 +49,25 @@ def test_description_lists_searchable_domains() -> None:
     # 三种 query 用法仍在描述里（取 schema / 关键词搜 / 来源分类）。
     assert 'tool:<工具名>' in desc
     assert 'sources' in desc
+    # 不传可达集时不应标注「仅本地分身」（不臆造可达性）。
+    assert '仅本地分身' not in desc
+    # 示例工具必须是云端真实可达的（不再用 deck 这类纯本地工具误导）。
+    assert 'tool:hasn.deck.create' not in desc
+
+
+def test_description_marks_local_only_domains() -> None:
+    """传入云端可达 namespace 集合后：纯本地域标「仅本地分身」、云端域不标、附说明。"""
+    # 模拟云端面：community/plan 可达（plan 经 TOOLMIG 迁成 platform 工具），deck/task/workflow 不可达。
+    cloud_ns = {'hasn.community', 'hasn.plan'}
+    desc = _build_search_description(cloud_ns)
+    assert '- community：' in desc
+    assert '仅本地分身' not in desc.split('- community：', 1)[1].split('\n', 1)[0]  # community 行不带标注
+    # plan 在云端可达（platform 工具）→ 不标注。
+    plan_line = next(line for line in desc.splitlines() if line.startswith('- plan：'))
+    assert '仅本地分身' not in plan_line
+    # deck/task/workflow 云端够不到 → 各自标注「仅本地分身」。
+    for ns in ('deck', 'task', 'workflow'):
+        line = next(line for line in desc.splitlines() if line.startswith(f'- {ns}：'))
+        assert '（仅本地分身）' in line, f'{ns} 应标注仅本地分身'
+    # 有本地域时附整体说明，告知云端分身转用本地分身。
+    assert '本地运行时工具，云端分身不可调用' in desc

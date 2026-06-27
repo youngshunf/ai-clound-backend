@@ -38,14 +38,25 @@ def _searchable_app_domains() -> list[tuple[str, str]]:
     return sorted(pairs.items())
 
 
-def _build_search_description() -> str:
-    """固定用法说明 + 数据驱动的「可搜索的应用域」目录（按 manifest domain_summary 汇聚）。"""
+_LOCAL_ONLY_SUFFIX = '（仅本地分身）'
+
+
+def _build_search_description(cloud_namespaces: set[str] | None = None) -> str:
+    """固定用法说明 + 数据驱动的「可搜索的应用域」目录（按 manifest domain_summary 汇聚）。
+
+    ``cloud_namespaces``（``{'hasn.community', 'hasn.plan', ...}``）= 云端面实际可达工具的
+    namespace 集合（由 ``ToolDirectoryService.cloud_tool_namespaces()`` 提供）。传入时，目录里
+    云端够不到的纯本地域（deck/task/workflow/reel/film/publish——manifest ``tools=[]``、工具只在
+    daemon hasn-mcp 本地注册）会被标注「仅本地分身」并附说明：**云端分身据此知道这些是本地运行时
+    工具、自己调不到（不会再扑空报「本地工具不可用」），如主人需要应转用本地分身**。不传（如纯函数
+    单测或汇聚失败回落）则不标注、列全部域（保守不臆造可达性）。
+    """
     base = (
         '发现并取用当前 Agent 可用的云端 MCP 工具（来源/摘要/schema）。query 用法：\n'
         '- "sources"：列出工具来源分类（platform/app 计数）\n'
         '- "platform" / "apps" / "app.<域>"（如 "app.community"）：按来源/应用域列工具\n'
-        '- "<关键词>"（如 "community"、"演示文稿"、"回测"）：按工具名/描述/域模糊搜索\n'
-        '- "tool:<工具名>"（如 "tool:hasn.deck.create"）：取该工具完整 schema'
+        '- "<关键词>"（如 "community"、"知识库"、"回测"）：按工具名/描述/域模糊搜索\n'
+        '- "tool:<工具名>"（如 "tool:hasn.community.create_post"）：取该工具完整 schema'
     )
     try:
         domains = _searchable_app_domains()
@@ -54,8 +65,22 @@ def _build_search_description() -> str:
         return base
     if not domains:
         return base
-    lines = '\n'.join(f'- {ns}：{label}' for ns, label in domains)
-    return f'{base}\n可搜索的应用域（用关键词搜该域工具）：\n{lines}'
+    has_local_only = False
+    rows: list[str] = []
+    for ns, label in domains:
+        if cloud_namespaces is not None and f'hasn.{ns}' not in cloud_namespaces:
+            rows.append(f'- {ns}：{label}{_LOCAL_ONLY_SUFFIX}')
+            has_local_only = True
+        else:
+            rows.append(f'- {ns}：{label}')
+    lines = '\n'.join(rows)
+    note = (
+        f'\n注：标「{_LOCAL_ONLY_SUFFIX[1:-1]}」的域是本地运行时工具，云端分身不可调用'
+        '；如主人需要请转用本地分身。'
+        if has_local_only
+        else ''
+    )
+    return f'{base}\n可搜索的应用域（用关键词搜该域工具）：\n{lines}{note}'
 
 
 class ToolSearchTool(BaseTool):
@@ -74,8 +99,14 @@ class ToolSearchTool(BaseTool):
 
     @property
     def description(self) -> str:
-        # 动态描述：每新增一个 AI-Native 应用（manifest 声明 domain_summary）即自动多一行域目录。
-        return _build_search_description()
+        # 动态描述：每新增一个 AI-Native 应用（manifest 声明 domain_summary）即自动多一行域目录；
+        # 纯本地域（云端注册表里无工具）标「仅本地分身」，免得云端分身据目录去搜/调扑空。
+        try:
+            cloud_namespaces = self._directory.cloud_tool_namespaces()
+        except Exception:  # 描述仅作引导，取云端可达集失败不应炸 tools/list；回落不标注全量列。
+            logger.warning('compute cloud tool namespaces failed', exc_info=True)
+            cloud_namespaces = None
+        return _build_search_description(cloud_namespaces)
 
     @property
     def input_schema(self) -> dict[str, Any]:
