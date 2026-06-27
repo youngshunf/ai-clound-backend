@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
 from backend.app.hasn_memory.service.owner_profile_coverage_service import owner_profile_coverage_service
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
+from backend.common.log import log
 from backend.database.db import async_db_session
 
 NAMESPACE = 'hasn.owner'
@@ -67,4 +69,84 @@ class OwnerCoverageGetTool(BaseTool):
             )
 
 
-OWNER_TOOLS: list[BaseTool] = [OwnerCoverageGetTool()]
+class OwnerMemoryContributeTool(BaseTool):
+    """采访建档时把「了解到的一段主人信息」写入 owner 记忆（contribute→合并→重判闭环）。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.owner.memory.contribute'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '把采访/相处中了解到的一段主人信息写入 owner 记忆。每问到一段（如某个兴趣、工作角色、'
+            '近期目标）就调一次，content 写自然语言的「事实陈述」（如「主人是后端工程师，主攻 Rust 与分布式系统」'
+            '「主人近期目标是三个月内通过 PMP 认证」），落 contribution(pending) 并尽力触发一次 owner 级合并'
+            '（合并进 owner_memory.content，version+1）。合并成功后再调 hasn.owner.coverage.get 即拿到重判后的'
+            '最新缺口（写入→合并→重判闭环）。owner/agent 身份恒取自调用凭证，绝不入参；隐私克制：居住地址只写'
+            '粗粒度（城市/城区级，不写门牌），主人未明说的别替他臆造。返回 {accepted, merged, version}。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'content': {
+                    'type': 'string',
+                    'description': '一段关于主人的自然语言事实陈述（采访所得），非空。',
+                    'minLength': 1,
+                },
+            },
+            'required': ['content'],
+            'additionalProperties': False,
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        # 写自己主人记忆是分身本职（对齐既有 Agent REST /memory/contribute 无 scope 门）；
+        # owner 隔离由 agent_context.owner_hasn_id 强制，经 MCP 网关审计。
+        return []
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> Any:
+        content = str(arguments.get('content') or '').strip()
+        if not content:
+            return {'accepted': False, 'merged': False, 'version': None, 'reason': 'empty_content'}
+        owner_id = agent_context.owner_hasn_id
+        # 复用既有 owner_memory_service（与 Agent REST /memory/contribute 同一服务、同一语义）：
+        # 先落 contribution 并提交（即便合并失败也不丢观察），再尽力合并；合并失败如实延后、零 fake。
+        async with async_db_session() as db:
+            accepted = await owner_memory_service.contribute(
+                db, owner_id=owner_id, agent_hasn_id=agent_context.hasn_id, content=content
+            )
+            if not accepted.get('accepted'):
+                await db.rollback()
+                return {'accepted': False, 'merged': False, 'version': None, 'reason': accepted.get('reason')}
+            await db.commit()
+            merged = False
+            version: int | None = None
+            try:
+                outcome = await owner_memory_service.merge_owner_memory(db, owner_id=owner_id)
+                merged = bool(outcome.get('merged'))
+                version = outcome.get('version')
+                await db.commit()
+            except Exception as exc:  # noqa: BLE001 — 合并失败不丢贡献，留待下次（零 fake，不产生假合并）
+                await db.rollback()
+                log.warning(f'owner memory merge deferred for {owner_id}: {exc}')
+            return {
+                'accepted': True,
+                'merged': merged,
+                'version': version,
+                'contribution_id': accepted.get('contribution_id'),
+            }
+
+
+OWNER_TOOLS: list[BaseTool] = [OwnerCoverageGetTool(), OwnerMemoryContributeTool()]
