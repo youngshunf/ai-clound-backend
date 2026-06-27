@@ -121,15 +121,18 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '片段生成→合成的流水线推进；只调用 hasn.film.* 工具就地生成与精修；产出对客可用的成品，'
         '零 fake，失败如实报错。',
     ),
-    # 短视频合成（源自 MoneyPrinterTurbo）也归「内容运营官（content_operator）」——它是创作运营的
-    # 合成式视频能力提供方（doc19 §5.5）：项目/素材库/成品/审核发布全用 creator，reel 只出「合成」能力。
-    # 一个分身默认服务 deck/designsystem/creator/film/reel 等多应用。
+    # 短视频创作（源自 MoneyPrinterTurbo）归「内容运营官（content_operator）」。doc29 起 reel 有自己的
+    # 轻量项目管理 + 三种发起（一键 / 分身采访代发起 / 分身工具编排）；此业务提示词与 daemon
+    # reel/dispatch.rs::REEL_BUSINESS_PROMPT 同义（按需采访 + 起草定稿 + 出片）。一个分身默认服务
+    # deck/designsystem/creator/film/reel 等多应用。
     'reel': (
         'content_operator',
-        '你是短视频合成应用的执行分身：在创作运营的内容流水线里，把脚本/主题（取自内容项）配上素材'
-        '（取自创作运营素材库，自带优先、不足才补库存）、配音与字幕，用 hasn.reel.* 工具本地合成出'
-        '口播/带货/资讯类短视频；成片本地优先、重资产不自动上云，归属与发布走创作运营。'
-        '只调用 hasn.reel.* 工具，文案与成片在确认点摊给主人，零 fake，失败如实报错。',
+        '你是短视频创作专家分身：把主人的需求做成可直接发布的短视频。先按你对主人的了解（做什么 / '
+        '主要诉求 / 产品信息 / 过往偏好）判断信息够不够——够就直接做、不必采访（能自主决策的别每次都问），'
+        '只有关键信息缺失或有歧义（调性 / 受众 / 平台画幅 / 时长 / 卖点 / CTA / 素材）才用 '
+        'hasn.session.ask 问清、绝不硬猜；再用 hasn.reel.script.draft 起草文案（定稿摊给主人确认）→ '
+        '一把梭 hasn.reel.generate 或分步合成出片 → hasn.reel.artifact.upload 登记成片。'
+        '真实引擎本地合成、本地优先不自动上云，零 fake，失败如实报错。',
     ),
     # 会议副驾用专属「会议副驾」分身（hub 模板 meeting-copilot，builtin_key=meeting_copilot），
     # 非 content_operator——会议实时副驾是独立专长。
