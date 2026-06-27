@@ -374,7 +374,11 @@ _CAPABILITIES = [
             'name': {'type': 'string', 'minLength': 1},
             'amount': {'type': ['number', 'null']},
             'currency': {'type': ['string', 'null']},
-            'stage': {'type': ['string', 'null'], 'description': '初始阶段（默认 contacted）'},
+            'stage': {
+                'type': ['string', 'null'],
+                'enum': ['contacted', 'replied', 'proposal', 'negotiation', 'closed_won', 'closed_lost', None],
+                'description': '初始阶段（默认 contacted）',
+            },
             'probability': {'type': ['number', 'null'], 'minimum': 0, 'maximum': 1, 'description': '赢率 0-1'},
         },
         required=['customer_id', 'name'],
@@ -390,7 +394,11 @@ _CAPABILITIES = [
         risk_level='medium',
         properties={
             'opportunity_id': {'type': 'integer'},
-            'stage': {'type': 'string', 'description': 'contacted/replied/proposal/negotiation/closed_won/closed_lost'},
+            'stage': {
+                'type': 'string',
+                'enum': ['contacted', 'replied', 'proposal', 'negotiation'],
+                'description': '目标阶段，仅限 contacted/replied/proposal/negotiation；成交/流失请用 deal.close',
+            },
             'note': {'type': ['string', 'null']},
         },
         required=['opportunity_id', 'stage'],
