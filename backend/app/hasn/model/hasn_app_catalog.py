@@ -52,3 +52,16 @@ class HasnAppCatalog(Base):
         default_factory=dict,
         comment='应用专属平台级配置 JSON（每应用自治，如 film 5 类模型 failover + 引擎包 manifest 内联）；管理端直接编辑，platform-config 聚合下发',
     )
+    # APPBETA-1：发布阶段（内测）+ 自定义角标。release_phase 与 status（上架/下架）正交：
+    # 内测是「发布阶段」不是「上架状态」，灰度/全量内测应用仍需 status='published' 才进列表。
+    release_phase: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='ga',
+        comment='发布阶段 (ga:正式:green/beta_full:全量内测:blue/beta_gray:灰度内测:orange)',
+    )
+    badge_text: Mapped[str | None] = mapped_column(
+        sa.String(32), default=None, comment='自定义角标文字（如 热门/推荐/限免；空=无角标）'
+    )
+    badge_color: Mapped[str | None] = mapped_column(
+        sa.String(16), default=None, comment='角标颜色 hex（如 #10B981；空=品牌默认紫）'
+    )

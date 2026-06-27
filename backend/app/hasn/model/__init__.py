@@ -56,3 +56,4 @@ from backend.app.hasn.model.hasn_artifacts import HasnArtifacts as HasnArtifacts
 from backend.app.hasn.model.hasn_platform_default_config import (
     HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,
 )
+from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess as HasnAppBetaAccess

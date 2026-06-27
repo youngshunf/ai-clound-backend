@@ -39,6 +39,12 @@ class HasnAppCatalogSchemaBase(SchemaBase):
         default_factory=dict,
         description='应用专属平台级配置 JSON（每应用自治，如 film 5 类模型 failover + 引擎包 manifest 内联）；管理端直接编辑 JSON，platform-config 聚合下发',
     )
+    # APPBETA-1：发布阶段（内测）+ 自定义角标。给默认值，旧管理端表单不传也合法。
+    release_phase: str = Field(
+        default='ga', description='发布阶段 (ga:正式:green/beta_full:全量内测:blue/beta_gray:灰度内测:orange)'
+    )
+    badge_text: str | None = Field(default=None, description='自定义角标文字（如 热门/推荐/限免；空=无角标）')
+    badge_color: str | None = Field(default=None, description='角标颜色 hex（如 #10B981；空=品牌默认紫）')
 
 
 class CreateHasnAppCatalogParam(HasnAppCatalogSchemaBase):
