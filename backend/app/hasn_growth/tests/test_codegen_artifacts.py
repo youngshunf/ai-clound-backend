@@ -182,7 +182,8 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
     assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
     caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
-    assert len(caps) == 18  # 17 漏斗工具 + customer_reassign（GE4 企业经理分配负责人）
+    # 19 = 17 漏斗工具 + customer_reassign（GE4 企业经理分配负责人）+ lead_request（2.1 用户端「请求线索」先查池入口）
+    assert len(caps) == 19
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
     # 所有 required_scopes 冒号词表
     for c in caps:

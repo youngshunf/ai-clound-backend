@@ -89,21 +89,6 @@ class LeadAutomationBusinessService:
             dedup = UrlDedupService(db, job_id=job.id, source_type=source_type)
             try:
                 provider = get_provider(source_type)
-                items = await provider.crawl(
-                    CrawlRequest(
-                        job_id=job.id,
-                        keyword=job.keyword,
-                        source_type=source_type,
-                        lead_scope=job.lead_scope,
-                        user_id=job.user_id,
-                        max_pages=job.max_pages,
-                        max_results=job.max_results,
-                        config=job.request_config or {},
-                    ),
-                    firecrawl_client=self.firecrawl_client,
-                    llm_extractor=self.llm_extractor,
-                    dedup=dedup,
-                )
             except Exception as exc:
                 await self._persist_rejected(
                     db,
@@ -115,11 +100,45 @@ class LeadAutomationBusinessService:
                 job.firecrawl_failed_count += 1
                 continue
 
-            job.firecrawl_success_count += 1
-            job.total_found += len(items)
-            for item in items:
+            # 2.4 真流式收口：逐条抓取消费，每抓**下一条前**查"够 N 没"，够了即停 provider（不再多抓·
+            # 省 firecrawl/LLM 成本，补爬精确到条零冗余·doc93 2.4）。抓取异常按数据源粒度兜底，
+            # 已抓到的有效线索保留（区别一次性 crawl 的整源 all-or-nothing）。
+            stream = provider.crawl_stream(
+                CrawlRequest(
+                    job_id=job.id,
+                    keyword=job.keyword,
+                    source_type=source_type,
+                    lead_scope=job.lead_scope,
+                    user_id=job.user_id,
+                    max_pages=job.max_pages,
+                    max_results=job.max_results,
+                    config=job.request_config or {},
+                ),
+                firecrawl_client=self.firecrawl_client,
+                llm_extractor=self.llm_extractor,
+                dedup=dedup,
+                should_continue=lambda: job.valid_count < job.max_results,
+            )
+            job.firecrawl_success_count += 1  # 乐观计数：抓取成功（首条抓取即异常则在 except 回退）
+            while True:
                 if job.valid_count >= job.max_results:
-                    break  # ④ 已凑够目标有效线索数，停止处理剩余抓取项
+                    break  # ④ 已凑够目标有效线索数，停止处理/抓取剩余项（generator 不再被拉取 → 停抓）
+                try:
+                    item = await stream.__anext__()
+                except StopAsyncIteration:
+                    break  # 候选 URL 抓完
+                except Exception as exc:  # 本数据源抓取失败（firecrawl/LLM）→ 回退乐观计数、记失败、跳过该源
+                    job.firecrawl_success_count -= 1
+                    job.firecrawl_failed_count += 1
+                    await self._persist_rejected(
+                        db,
+                        job_id=job.id,
+                        source_type=source_type,
+                        reason='firecrawl_failed',
+                        error_message=str(exc),
+                    )
+                    break
+                job.total_found += 1
                 # ② 登记到已抓 URL 池（outcome 据是否取到正文；lead_yield 在新增有效线索后回填）
                 await dedup.register(
                     item.source_url or '',

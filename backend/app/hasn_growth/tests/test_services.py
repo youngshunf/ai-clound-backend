@@ -7,7 +7,11 @@ from backend.app.hasn_growth.service.business_service import _contact_field_requ
 from backend.app.hasn_growth.service.cleaner_service import clean_raw_record, normalize_email, normalize_phone
 from backend.app.hasn_growth.service.dedupe_service import InMemoryLeadStore, upsert_lead
 from backend.app.hasn_growth.service.export_service import build_csv_export
-from backend.app.hasn_growth.service.firecrawl_client import FirecrawlClient, FirecrawlHTTPError, FirecrawlTransportError
+from backend.app.hasn_growth.service.firecrawl_client import (
+    FirecrawlClient,
+    FirecrawlHTTPError,
+    FirecrawlTransportError,
+)
 from backend.app.hasn_growth.service.provider_registry import PROVIDERS, CrawlRequest, get_provider
 from backend.app.hasn_growth.service.retention_service import archive_expired_contacts
 from backend.app.hasn_growth.service.scoring_service import score_cleaned_lead
@@ -156,15 +160,15 @@ def test_provider_registry_contains_five_sources_and_rejects_unknown() -> None:
 @pytest.mark.asyncio
 async def test_provider_returns_crawled_items_from_firecrawl_client() -> None:
     class FakeFirecrawl:
-        async def scrape_lead_json(self, url: str, schema_version: str, prompt_version: str):
+        # 方案 A 主路径：firecrawl 只抓 markdown；这里直接连 structured_payload 一并返回，
+        # _apply_backend_llm 见已有 structured_payload + llm_extractor=None 即短路（不另调后端 LLM）。
+        async def scrape_markdown(self, url: str):
             return {
                 'source_url': url,
                 'title': 'Public web result',
                 'markdown': 'sales@example.org (415) 555-2671',
                 'structured_payload': {'emails': ['sales@example.org'], 'phones': ['(415) 555-2671']},
                 'extract_mode': 'scrape_json',
-                'llm_schema_version': schema_version,
-                'llm_prompt_version': prompt_version,
                 'attempt_count': 1,
             }
 
@@ -195,7 +199,7 @@ async def test_provider_searches_keyword_then_scrapes_result_urls() -> None:
                 {'url': 'https://beta.example/contact', 'title': 'Beta Contact'},
             ]
 
-        async def scrape_lead_json(self, url: str, schema_version: str, prompt_version: str):
+        async def scrape_markdown(self, url: str):
             calls.append(('scrape', url))
             return {
                 'source_url': url,
@@ -203,8 +207,6 @@ async def test_provider_searches_keyword_then_scrapes_result_urls() -> None:
                 'markdown': 'sales@company.test (415) 555-2671',
                 'structured_payload': {'emails': ['sales@company.test'], 'phones': ['(415) 555-2671']},
                 'extract_mode': 'scrape_json',
-                'llm_schema_version': schema_version,
-                'llm_prompt_version': prompt_version,
                 'attempt_count': 1,
             }
 
@@ -272,6 +274,75 @@ async def test_provider_can_use_firecrawl_extract_mode_from_options() -> None:
     assert calls == [('extract', ['https://www.iana.org/contact'], 'lead_v2', 'lead_prompt_v2')]
     assert items[0].extract_mode == 'extract'
     assert items[0].structured_payload['emails'] == ['iana@iana.org']
+
+
+@pytest.mark.asyncio
+async def test_crawl_stream_stops_early_when_should_continue_returns_false() -> None:
+    """2.4 真流式收口：should_continue() 转 False 后 generator 不再抓后续候选 URL（省 firecrawl/LLM 成本）。
+
+    模拟 business_service.run_job 的「够 N 没」判定：拿够 3 条即停。10 个候选 URL 只应抓 3 个，
+    剩余 7 个不被 scrape（一次性 crawl 会全抓 → 这正是 2.4 要消除的冗余）。
+    """
+    scraped: list[str] = []
+
+    class FakeFirecrawl:
+        async def search(self, query: str, *, limit: int = 5) -> list[dict]:
+            return [{'url': f'https://site{i}.example/contact'} for i in range(10)]
+
+        async def scrape_markdown(self, url: str):
+            scraped.append(url)
+            return {'source_url': url, 'markdown': f'sales@{url} 138 1234 5678', 'structured_payload': {'emails': ['x@y.z']}}
+
+    provider = get_provider('public_web')
+    # should_continue 以已抓数（scraped）为判据：抓下一条前查，凑够 3 条即停（每抓一条 scraped 先 +1，再 yield）。
+    yielded: list = [
+        item
+        async for item in provider.crawl_stream(
+            CrawlRequest(
+                job_id=1,
+                keyword='工业机器人 集成商 联系方式',
+                source_type='public_web',
+                lead_scope='public',
+                max_results=3,
+                config={'firecrawl_options': {'search_limit': 10}},
+            ),
+            firecrawl_client=FakeFirecrawl(),
+            should_continue=lambda: len(scraped) < 3,
+        )
+    ]
+
+    assert len(yielded) == 3
+    assert len(scraped) == 3  # 仅抓 3 个，剩 7 个候选未抓 → 早停省成本
+    assert scraped == [f'https://site{i}.example/contact' for i in range(3)]
+
+
+@pytest.mark.asyncio
+async def test_crawl_returns_all_candidates_when_no_should_continue() -> None:
+    """向后兼容：crawl()（不传 should_continue）仍抓全部候选并返回列表。"""
+    scraped: list[str] = []
+
+    class FakeFirecrawl:
+        async def search(self, query: str, *, limit: int = 5) -> list[dict]:
+            return [{'url': f'https://site{i}.example/contact'} for i in range(4)]
+
+        async def scrape_markdown(self, url: str):
+            scraped.append(url)
+            return {'source_url': url, 'markdown': 'sales@x.y', 'structured_payload': {'emails': ['a@b.c']}}
+
+    provider = get_provider('public_web')
+    items = await provider.crawl(
+        CrawlRequest(
+            job_id=1,
+            keyword='工业机器人',
+            source_type='public_web',
+            lead_scope='public',
+            config={'firecrawl_options': {'search_limit': 4}},
+        ),
+        firecrawl_client=FakeFirecrawl(),
+    )
+
+    assert len(items) == 4
+    assert len(scraped) == 4
 
 
 @pytest.mark.asyncio

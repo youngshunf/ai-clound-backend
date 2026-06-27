@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable
 
 # ② URL 去重 / ④ 精确配额：搜索候选数与单源抓取的硬上限，防 search 返回过多失控烧成本（doc08 §4.4/§7）
 _SEARCH_LIMIT_CAP = 50
@@ -55,6 +58,40 @@ class UrlDedupLike(Protocol):
 class BaseProvider:
     source_type = ''
 
+    async def crawl_stream(
+        self,
+        request: CrawlRequest,
+        *,
+        firecrawl_client: FirecrawlLike,
+        llm_extractor: LeadLLMExtractorLike | None = None,
+        dedup: UrlDedupLike | None = None,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[CrawledItem]:
+        """④ 真流式收口：逐条抓取，每抓**下一条前**查 ``should_continue()``，False 即停（doc08 §7 / doc93 2.4）。
+
+        调用方（business_service.run_job）传 ``lambda: job.valid_count < job.max_results``——
+        凑够目标有效线索即停止抓取剩余候选 URL，**省 firecrawl/LLM 成本，补爬精确到条零冗余**。
+        ``should_continue=None`` 时退化为抓全部候选（``crawl`` 列表包装即走此路径，向后兼容）。
+        """
+        options = request.config.get('firecrawl_options', {})
+        schema_version = options.get('schema_version', 'lead_v1')
+        prompt_version = options.get('prompt_version', 'lead_extract_v1')
+        urls = await self._resolve_urls(request, firecrawl_client=firecrawl_client)
+        if dedup is not None:
+            # ② URL 级去重：抓取前剔除近期已成功抓过的 URL（登记由 business 落库时做，避免重复计数）
+            urls = await dedup.filter_unseen(urls)
+        for url in urls[:_CRAWL_HARD_CAP]:
+            if should_continue is not None and not should_continue():
+                break  # ④ 调用方已凑够目标 → 不再抓后续 URL（真流式收口·省成本）
+            if options.get('extract_mode') == 'extract':
+                # 兼容路径：firecrawl 原生 extract（仅当 firecrawl 自身配了可用 LLM 时有效）
+                result = await firecrawl_client.extract_leads([url], schema_version, prompt_version)
+            else:
+                # 方案 A 主路径：firecrawl 只抓 markdown，结构化提取下沉到后端 LLM（doc08 §3）
+                result = await firecrawl_client.scrape_markdown(url)
+                await self._apply_backend_llm(result, url, llm_extractor)
+            yield self._result_to_item(result, fallback_url=url)
+
     async def crawl(
         self,
         request: CrawlRequest,
@@ -63,24 +100,13 @@ class BaseProvider:
         llm_extractor: LeadLLMExtractorLike | None = None,
         dedup: UrlDedupLike | None = None,
     ) -> list[CrawledItem]:
-        options = request.config.get('firecrawl_options', {})
-        schema_version = options.get('schema_version', 'lead_v1')
-        prompt_version = options.get('prompt_version', 'lead_extract_v1')
-        urls = await self._resolve_urls(request, firecrawl_client=firecrawl_client)
-        if dedup is not None:
-            # ② URL 级去重：抓取前剔除近期已成功抓过的 URL（登记由 business 落库时做，避免重复计数）
-            urls = await dedup.filter_unseen(urls)
-        items = []
-        for url in urls[:_CRAWL_HARD_CAP]:
-            if options.get('extract_mode') == 'extract':
-                # 兼容路径：firecrawl 原生 extract（仅当 firecrawl 自身配了可用 LLM 时有效）
-                result = await firecrawl_client.extract_leads([url], schema_version, prompt_version)
-            else:
-                # 方案 A 主路径：firecrawl 只抓 markdown，结构化提取下沉到后端 LLM（doc08 §3）
-                result = await firecrawl_client.scrape_markdown(url)
-                await self._apply_backend_llm(result, url, llm_extractor)
-            items.append(self._result_to_item(result, fallback_url=url))
-        return items
+        """一次性抓全部候选（向后兼容包装；可中断流式走 ``crawl_stream``）。"""
+        return [
+            item
+            async for item in self.crawl_stream(
+                request, firecrawl_client=firecrawl_client, llm_extractor=llm_extractor, dedup=dedup
+            )
+        ]
 
     @staticmethod
     async def _apply_backend_llm(
