@@ -80,6 +80,6 @@ async def test_enterprise_provider_skips_when_unconfigured(monkeypatch) -> None:
     monkeypatch.setattr(settings, 'ENTERPRISE_INFO_API_BASE', '')
     monkeypatch.setattr(settings, 'ENTERPRISE_INFO_API_KEY', '')
     provider = get_provider('enterprise')
-    req = CrawlRequest(job_id=1, keyword='示例科技', source_type='enterprise', lead_scope='public')
+    req = CrawlRequest(job_id=1, keyword='示例科技', source_type='enterprise')
     items = [item async for item in provider.crawl_stream(req, firecrawl_client=None)]
     assert items == []

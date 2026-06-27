@@ -18,7 +18,7 @@ class LeadCollectionJob(HasnGrowthAppBase):
     job_no: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
     keyword: Mapped[str] = mapped_column(sa.String(200), default='', comment=None)
     source_types: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
-    lead_scope: Mapped[str] = mapped_column(sa.String(16), default='', comment=None)
+    # user_id = 谁发起的采集（run_job 跑完据此为发起者建 lead_ref）；统一池后不再有 lead_scope。
     user_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     status: Mapped[str] = mapped_column(sa.String(24), default='', comment=None)
     max_pages: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)

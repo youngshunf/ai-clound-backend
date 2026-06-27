@@ -56,12 +56,11 @@ class LeadAutomationBusinessService:
 
     async def create_job(self, db: AsyncSession, obj: CreateLeadJobParam) -> dict[str, Any]:
         # 统一线索池：采集结果恒进公共池；job.user_id 记「谁发起的采集」（collect→主人 / backfill→请求者 / 系统→None），
-        # run_job 跑完为发起者建 lead_ref（用户引用），线索同时供众包复用。lead_scope 列为过渡遗留（不再决定线索归属·切片3 drop）。
+        # run_job 跑完为发起者建 lead_ref（用户引用），线索同时供众包复用。
         job = LeadCollectionJob(
             job_no=f'LAJ{datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")}',
             keyword=obj.keyword,
             source_types=obj.source_types,
-            lead_scope=obj.lead_scope,
             user_id=obj.user_id,
             status='pending',
             max_pages=obj.max_pages,
@@ -112,7 +111,6 @@ class LeadAutomationBusinessService:
                     job_id=job.id,
                     keyword=job.keyword,
                     source_type=source_type,
-                    lead_scope=job.lead_scope,
                     user_id=job.user_id,
                     max_pages=job.max_pages,
                     max_results=job.max_results,
@@ -473,7 +471,6 @@ class LeadAutomationBusinessService:
         batch = LeadExportBatch(
             batch_no=batch_no,
             user_id=user_id,
-            lead_scope='user',
             filter_payload=filter_payload or {},
             format='csv',
             total_count=result.batch['total_count'],

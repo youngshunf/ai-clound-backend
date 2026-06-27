@@ -23,7 +23,6 @@ class CrawlRequest:
     job_id: int
     keyword: str
     source_type: str
-    lead_scope: str
     user_id: int | None = None
     max_pages: int = 5
     max_results: int = 100

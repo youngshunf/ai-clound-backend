@@ -64,8 +64,8 @@ async def start_collect(
     db: CurrentSessionTransaction,
     obj: CreateLeadJobParam,
 ) -> ResponseModel:
-    # 身份取自 JWT：恒落主人私有池（user_scope），分身无权操作公共池采集。
-    payload = obj.model_copy(update={'user_id': agent.owner_user_id, 'lead_scope': 'user'})
+    # 身份取自 JWT：记 owner 为采集发起者（统一池——采集入公共池，run_job 跑完为发起者建 lead_ref）。
+    payload = obj.model_copy(update={'user_id': agent.owner_user_id})
     data = await lead_automation_business_service.create_job(db=db, obj=payload)
     return response_base.success(data=data)
 

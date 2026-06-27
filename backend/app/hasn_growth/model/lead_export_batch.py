@@ -17,7 +17,6 @@ class LeadExportBatch(HasnGrowthAppBase):
     id: Mapped[id_key] = mapped_column(init=False)
     batch_no: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
     user_id: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment=None)
-    lead_scope: Mapped[str] = mapped_column(sa.String(16), default='', comment=None)
     filter_payload: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
     format: Mapped[str] = mapped_column(sa.String(16), default='', comment=None)
     total_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)

@@ -79,9 +79,9 @@ def _enqueue_collection_job_after_commit(db: AsyncSession, job_id: int) -> None:
 async def handle_growth_collect_start(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    # 身份取自 JWT：恒落主人私有池（user_scope），分身无权操作公共池采集。
+    # 身份取自 JWT：记 owner 为采集发起者（统一池——采集入公共池，run_job 跑完为发起者建 lead_ref）。
     obj = CreateLeadJobParam.model_validate(input_payload)
-    payload = obj.model_copy(update={'user_id': agent.owner_user_id, 'lead_scope': 'user'})
+    payload = obj.model_copy(update={'user_id': agent.owner_user_id})
     job = await lead_automation_business_service.create_job(db=db, obj=payload)
     # 方案A：建 pending job 后，事务提交时入 Celery 队列异步执行采集（firecrawl→清洗→去重→入库），
     # 不阻塞本 MCP 工具调用；分身随后用 collect.status 轮询真实进度。

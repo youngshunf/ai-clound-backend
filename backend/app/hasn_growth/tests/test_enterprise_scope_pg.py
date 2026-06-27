@@ -64,7 +64,7 @@ async def session() -> AsyncIterator:
 
 async def _make_lead(session, *, tag: str, uid: int) -> LeadContact:
     lead = LeadContact(
-        lead_no=f'LGE1{tag}', lead_scope='user', user_id=uid, company_name='Acme',
+        lead_no=f'LGE1{tag}', user_id=uid, company_name='Acme',
         contact_name='王五', source_type='manual', status='valid', confidence_score=70,
     )
     session.add(lead)

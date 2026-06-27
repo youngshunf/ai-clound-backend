@@ -208,7 +208,7 @@ async def test_agent_collect_and_outreach_status(e2e) -> None:
 
     # --- collect.start：发起采集 → 恒落主人私有池 ---
     job = _ok(await c.post(f'{A}/collect', json={'keyword': 'SaaS 获客', 'max_pages': 3}))
-    assert job['status'] == 'pending' and job['lead_scope'] == 'user' and job['user_id'] == e2e.owner_uid
+    assert job['status'] == 'pending' and job['user_id'] == e2e.owner_uid
     job_id = job['id']
 
     # --- collect.status：查同一任务 ---

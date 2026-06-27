@@ -152,7 +152,7 @@ async def test_maps_provider_skips_when_unconfigured(monkeypatch) -> None:
     monkeypatch.setattr(settings, 'AMAP_API_KEY', '')
     monkeypatch.setattr(settings, 'BAIDU_MAP_AK', '')
     provider = get_provider('maps')
-    req = CrawlRequest(job_id=1, keyword='科技公司', source_type='maps', lead_scope='public', config={'city': '杭州'})
+    req = CrawlRequest(job_id=1, keyword='科技公司', source_type='maps', config={'city': '杭州'})
 
     items = [item async for item in provider.crawl_stream(req, firecrawl_client=None)]
     assert items == []

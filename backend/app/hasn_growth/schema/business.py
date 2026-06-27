@@ -10,15 +10,13 @@ from backend.common.schema import SchemaBase
 class CreateLeadJobParam(SchemaBase):
     keyword: str = Field(min_length=1, max_length=200, description='采集关键词或 URL')
     source_types: list[str] = Field(default_factory=lambda: ['public_web'], description='来源类型')
-    lead_scope: str = Field(default='user', pattern='^(public|user)$', description='线索池')
-    user_id: int | None = Field(default=None, description='用户 ID')
+    user_id: int | None = Field(default=None, description='发起采集的用户 ID（run_job 跑完为其建 lead_ref）')
     max_pages: int = Field(default=5, ge=1, le=100)
     max_results: int = Field(default=100, ge=1, le=10000)
     request_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExportLeadParam(SchemaBase):
-    lead_scope: str = Field(default='user')
     filter_payload: dict[str, Any] = Field(default_factory=dict)
     user_id: int = Field(default=0)
 

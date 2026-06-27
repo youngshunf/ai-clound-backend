@@ -163,7 +163,7 @@ async def test_request_leads_shortfall_and_consume(session, monkeypatch) -> None
     for i in range(3):
         session.add(
             LeadContact(
-                lead_no=f'LQ{tag.upper()}{i}', lead_scope='public', company_name=uniq,
+                lead_no=f'LQ{tag.upper()}{i}', company_name=uniq,
                 contact_name='池主', email=f'p{i}@uniq.com', source_type='firecrawl',
                 status='valid', confidence_score=80,
             )

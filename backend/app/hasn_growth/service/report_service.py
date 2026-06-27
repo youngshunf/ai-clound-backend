@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.model.customer import Customer
-from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.model.opportunity import Opportunity
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope
@@ -29,14 +29,15 @@ class GrowthReportService:
 
     @staticmethod
     async def funnel_overview(db: AsyncSession, *, user_id: int, scope: GrowthScope | None = None) -> dict[str, Any]:
-        # 线索池：本户线索中未拒绝未晋级的（仍待跟进）。线索池本里程碑未企业化，恒按 user_id（owner 池）。
+        # 线索池：本户引用中仍待跟进的线索（统一池——归属/状态落 lead_ref，status='new' 即未晋级未忽略）。
+        # 恒按 user_id（owner 引用），本里程碑未企业化。
         lead_pool = (
             await db.execute(
                 sa.select(sa.func.count())
-                .select_from(LeadContact)
+                .select_from(LeadRef)
                 .where(
-                    LeadContact.user_id == user_id,
-                    LeadContact.status.notin_(['rejected', 'qualified']),
+                    LeadRef.user_id == user_id,
+                    LeadRef.status == 'new',
                 )
             )
         ).scalar_one()

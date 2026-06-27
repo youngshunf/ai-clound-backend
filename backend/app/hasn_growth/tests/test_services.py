@@ -180,7 +180,7 @@ async def test_provider_returns_crawled_items_from_firecrawl_client() -> None:
 
     provider = get_provider('public_web')
     items = await provider.crawl(
-        CrawlRequest(job_id=1, keyword='example.com', source_type='public_web', lead_scope='public'),
+        CrawlRequest(job_id=1, keyword='example.com', source_type='public_web'),
         firecrawl_client=FakeFirecrawl(),
     )
 
@@ -219,7 +219,6 @@ async def test_provider_searches_keyword_then_scrapes_result_urls() -> None:
             job_id=1,
             keyword='深圳 工业机器人 集成商 联系方式',
             source_type='public_web',
-            lead_scope='public',
             max_results=2,
             config={'firecrawl_options': {'search_limit': 5}},
         ),
@@ -268,7 +267,6 @@ async def test_provider_can_use_firecrawl_extract_mode_from_options() -> None:
             job_id=1,
             keyword='https://www.iana.org/contact',
             source_type='public_web',
-            lead_scope='public',
             config={'firecrawl_options': {'extract_mode': 'extract', 'schema_version': 'lead_v2', 'prompt_version': 'lead_prompt_v2'}},
         ),
         firecrawl_client=FakeFirecrawl(),
@@ -305,7 +303,6 @@ async def test_crawl_stream_stops_early_when_should_continue_returns_false() -> 
                 job_id=1,
                 keyword='工业机器人 集成商 联系方式',
                 source_type='public_web',
-                lead_scope='public',
                 max_results=3,
                 config={'firecrawl_options': {'search_limit': 10}},
             ),
@@ -338,7 +335,6 @@ async def test_crawl_returns_all_candidates_when_no_should_continue() -> None:
             job_id=1,
             keyword='工业机器人',
             source_type='public_web',
-            lead_scope='public',
             config={'firecrawl_options': {'search_limit': 4}},
         ),
         firecrawl_client=FakeFirecrawl(),

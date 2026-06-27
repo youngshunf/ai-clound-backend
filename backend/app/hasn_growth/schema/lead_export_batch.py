@@ -8,7 +8,6 @@ class LeadExportBatchSchemaBase(SchemaBase):
     """Lead CSV export batch基础模型"""
     batch_no: str = Field(description='None')
     user_id: int = Field(description='None')
-    lead_scope: str = Field(description='None')
     filter_payload: dict = Field(description='None')
     format: str = Field(description='None')
     total_count: int = Field(description='None')

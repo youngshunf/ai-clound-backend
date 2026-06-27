@@ -239,7 +239,6 @@ class LeadPoolQueryService:
                     db,
                     CreateLeadJobParam(
                         keyword=search,
-                        lead_scope='public',
                         user_id=user_id,
                         max_results=gap,
                         request_config={'region': region, 'city': city, 'industry': industry},

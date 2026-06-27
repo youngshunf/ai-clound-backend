@@ -192,7 +192,7 @@ async def test_growth_cloud_tools_reassign_requires_manager(ctx: SimpleNamespace
 async def test_lead_request_pool_hit_delivers_without_backfill(ctx: SimpleNamespace) -> None:
     """2.1 先查池：命中 M≥N → 直接交付 N 条（零采集成本，无补爬 job）。PII 默认脱敏。
 
-    query_pool 公共池语义不限 lead_scope——seed 的 'Acme'（lead_scope=user）也会被查到。
+    query_pool 查公共池（pool_visibility=public）——seed 的 'Acme' 即公共池线索，会被查到。
     """
     s, agent = ctx.session, ctx.agent(['agent', 'growth:read', 'growth:collect'])
     result = await _REG['growth.lead_request'](s, agent, {'keyword': 'Acme', 'limit': 1})
@@ -213,7 +213,6 @@ async def test_lead_request_gap_triggers_backfill(ctx: SimpleNamespace) -> None:
     job = (
         await s.execute(select(LeadCollectionJob).where(LeadCollectionJob.id == result['backfill_job_id']))
     ).scalar_one()
-    assert job.lead_scope == 'public'
     assert job.max_results == 3
     assert miss in job.keyword
 

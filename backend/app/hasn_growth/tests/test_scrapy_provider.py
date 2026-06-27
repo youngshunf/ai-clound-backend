@@ -93,7 +93,7 @@ async def test_scrapy_provider_skips_when_unconfigured(monkeypatch) -> None:
     monkeypatch.setattr(settings, 'ENVIRONMENT', 'prod')
     monkeypatch.delenv('LEAD_CRAWLER_URL', raising=False)
     provider = get_provider('yellow_pages')
-    req = CrawlRequest(job_id=1, keyword='建材批发', source_type='yellow_pages', lead_scope='public')
+    req = CrawlRequest(job_id=1, keyword='建材批发', source_type='yellow_pages')
 
     items = [item async for item in provider.crawl_stream(req, firecrawl_client=None)]
     assert items == []
