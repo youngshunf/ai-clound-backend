@@ -44,7 +44,7 @@ SCHEDULE_FIELDS = ('schedule_type', 'schedule_config', 'timezone')
 _TASK_COLUMNS = (
     'id, task_uuid, owner_id, agent_id, name, description, prompt, system_prompt, '
     'skill_bundle_ids, skill_bundle_refs, skill_ids, skill_refs, enabled_toolsets, '
-    'schedule_type, schedule_config, schedule_display, timezone, misfire_policy, '
+    'schedule_type, schedule_config, schedule_display, risk_level, timezone, misfire_policy, '
     'enabled, state, next_run_at, last_run_at, last_status, run_count, repeat_times, repeat_completed, '
     'task_revision, created_by, created_by_kind, continuation_enabled, enable_subagents, '
     'created_time, updated_time, deleted_at'
@@ -67,6 +67,7 @@ def task_to_public(row: dict[str, Any]) -> dict[str, Any]:
         'schedule_type': row.get('schedule_type'),
         'schedule_config': _as_dict(row.get('schedule_config')),
         'schedule_display': row.get('schedule_display'),
+        'risk_level': row.get('risk_level') or 'low',
         'timezone': row.get('timezone'),
         'state': row.get('state'),
         'enabled': row.get('enabled'),
@@ -291,6 +292,13 @@ class AgentTaskService:
         if schedule_type not in ('once', *PERIODIC_TYPES):
             raise errors.RequestError(msg=f'未知调度类型: {schedule_type}')
 
+        # KNOWU §4.5 风险分级：分身按工作性质显式标 risk_level（low=只读/只对主人本人，high=有外部后果）。
+        # 缺省（未标）→ None，沿用既有 D4 默认（周期任务待主人确认）。
+        risk_raw = params.get('risk_level')
+        risk_level = str(risk_raw).strip().lower() if risk_raw not in (None, '') else None
+        if risk_level is not None and risk_level not in ('low', 'high'):
+            raise errors.RequestError(msg=f'未知风险等级: {risk_level}')
+
         now = timezone.now()
         # R4 幂等键：短窗口同参 → 返回已建任务而非新建
         existing = await db.execute(
@@ -324,10 +332,18 @@ class AgentTaskService:
         if (count.scalar() or 0) >= CREATE_RATE_LIMIT_PER_HOUR:
             raise errors.RequestError(msg=f'建任务过于频繁（上限 {CREATE_RATE_LIMIT_PER_HOUR}/小时），稍后再试')
 
-        # D4 业务态
+        # D4 业务态 + KNOWU §4.5 风险分级闸：
+        # - risk=high → pending_approval（有外部后果，复用既有审批卡链路）
+        # - risk=low  → scheduled（只读/只对主人本人，自动跑；§7.2 低风险周期追踪任务即走此路）
+        # - 未标 risk  → 沿用既有 D4：周期任务待确认（pending_approval），once 直接 scheduled
         is_periodic = schedule_type in PERIODIC_TYPES
-        state = 'pending_approval' if is_periodic else 'scheduled'
-        next_run_at = None if is_periodic else calc_next_run_at(schedule_type, schedule_config)
+        if risk_level == 'high':
+            state = 'pending_approval'
+        elif risk_level == 'low':
+            state = 'scheduled'
+        else:
+            state = 'pending_approval' if is_periodic else 'scheduled'
+        next_run_at = None if state == 'pending_approval' else calc_next_run_at(schedule_type, schedule_config)
 
         task_uuid = f'tsk_{uuid.uuid4().hex}'
         payload = {
@@ -340,6 +356,7 @@ class AgentTaskService:
             'skill_bundle_refs': list(params.get('skill_bundle_refs') or []),
             'schedule_type': schedule_type,
             'schedule_config': schedule_config,
+            'risk_level': risk_level or 'low',
             'timezone': str(params.get('timezone') or 'Asia/Shanghai'),
             'enabled': True,
             'state': state,

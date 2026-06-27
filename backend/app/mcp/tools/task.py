@@ -130,6 +130,14 @@ _SPECS: list[dict[str, Any]] = [
                 'prompt': {'type': 'string', 'minLength': 1, 'description': '任务执行提示'},
                 'agent_id': {'type': ['string', 'null'], 'description': '目标分身，缺省=当前分身'},
                 **_SCHEDULE_PROPS,
+                'risk_level': {
+                    'enum': ['low', 'high'],
+                    'description': (
+                        '风险等级：low=只读/只对主人本人（提醒/汇报/整理/查询，直接 scheduled 自动跑）；'
+                        'high=有外部后果或不可逆（外发/花钱/改外部数据，落 pending_approval 等主人批）。'
+                        '缺省时由调度类型决定（周期任务待主人确认）。'
+                    ),
+                },
                 'system_prompt': {'type': ['string', 'null'], 'description': '系统提示词（可选）'},
                 'skill_bundle_refs': {'type': 'array', 'description': '市场技能包引用（可选）'},
                 'continuation_enabled': {'type': 'boolean', 'description': '任务接续（D2）'},

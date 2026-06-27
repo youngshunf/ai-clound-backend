@@ -308,6 +308,13 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
                 'prompt': {'type': 'string', 'minLength': 1, 'description': '任务执行提示'},
                 'agent_id': {'type': ['string', 'null'], 'description': '目标分身，缺省=当前分身'},
                 **_SCHEDULE_PROPS,
+                'risk_level': {
+                    'enum': ['low', 'high'],
+                    'description': (
+                        '风险等级：low=只读/只对主人本人（直接 scheduled 自动跑）；'
+                        'high=有外部后果或不可逆（落 pending_approval 等主人批）。缺省由调度类型决定。'
+                    ),
+                },
                 'system_prompt': {'type': ['string', 'null'], 'description': '系统提示词（可选）'},
                 'skill_bundle_refs': {'type': 'array', 'description': '市场技能包引用（可选）'},
                 'continuation_enabled': {'type': 'boolean', 'default': False, 'description': '任务接续（D2）'},

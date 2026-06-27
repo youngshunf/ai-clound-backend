@@ -121,6 +121,15 @@ def _assert_task_revision_not_stale(
         raise TaskSyncConflictError
 
 
+_VALID_RISK_LEVELS = {'low', 'high'}
+
+
+def _normalize_risk_level(value: Any) -> str:
+    """风险等级收敛为合法枚举（low/high），缺省/非法 → low（与列默认一致，KNOWU §4.5）。"""
+    risk = str(value or '').strip().lower()
+    return risk if risk in _VALID_RISK_LEVELS else 'low'
+
+
 def _task_storage_row(
     owner_id: str,
     task_uuid: str,
@@ -154,6 +163,7 @@ def _task_storage_row(
         'schedule_type': str(payload.get('schedule_type') or 'once'),
         'schedule_config': _coerce_dict(payload.get('schedule_config')),
         'schedule_display': _optional_string(payload.get('schedule_display')),
+        'risk_level': _normalize_risk_level(payload.get('risk_level')),
         'timezone': str(payload.get('timezone') or 'Asia/Shanghai'),
         'misfire_policy': str(payload.get('misfire_policy') or 'skip'),
         'catchup_limit': _optional_int(payload.get('catchup_limit')),
@@ -200,6 +210,7 @@ def _task_sync_payload(
         'schedule_type': stored_task['schedule_type'],
         'schedule_config': stored_task['schedule_config'],
         'schedule_display': stored_task['schedule_display'],
+        'risk_level': stored_task.get('risk_level', 'low'),
         'enabled': stored_task['enabled'],
         'state': stored_task['state'],
         'continuation_enabled': stored_task['continuation_enabled'],
@@ -236,6 +247,7 @@ def _task_sync_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
         'schedule_type': str(row.get('schedule_type') or 'once'),
         'schedule_config': _coerce_dict(row.get('schedule_config')),
         'schedule_display': row.get('schedule_display'),
+        'risk_level': _normalize_risk_level(row.get('risk_level')),
         'enabled': bool(row.get('enabled', True)),
         'state': str(row.get('state') or 'scheduled'),
         'continuation_enabled': bool(row.get('continuation_enabled', False)),

@@ -409,6 +409,76 @@ async def test_catalog_seed_and_free_access(e2e: SimpleNamespace) -> None:
     assert access['reason'] == 'free'
 
 
+# ---------- KNOWU §4.5 风险分级闸：risk_level → 初始 status ----------
+
+
+async def _risk_in_db(session: object, owner: str, task_id: str) -> str:
+    """回读权威行的 risk_level 列，证实端到端事件投影真落库（非仅 projection）。"""
+    row = await session.execute(  # type: ignore[attr-defined]
+        text('SELECT risk_level FROM hasn_task.task WHERE owner_id = :o AND task_uuid = :t'),
+        {'o': owner, 't': task_id},
+    )
+    return row.scalar_one()
+
+
+async def test_risk_low_once_scheduled(e2e: SimpleNamespace) -> None:
+    """risk=low + once → scheduled（默认场景，risk 与调度同向）。"""
+    data = await _create(
+        e2e.client, '低风险一次性', 'once', {'run_at': '2099-02-01T08:00:00+08:00'}, risk_level='low'
+    )
+    task = data['task']
+    assert task['state'] == 'scheduled'
+    assert task['risk_level'] == 'low'
+    assert task['next_run_at'] is not None
+    assert await _risk_in_db(e2e.session, e2e.owner, task['task_id']) == 'low'
+
+
+async def test_risk_high_once_pending_approval(e2e: SimpleNamespace) -> None:
+    """risk=high → pending_approval（即便 once 也要主人批，§7.4 外部后果闸）。"""
+    data = await _create(
+        e2e.client, '高风险外发', 'once', {'run_at': '2099-02-01T09:00:00+08:00'}, risk_level='high'
+    )
+    task = data['task']
+    assert task['state'] == 'pending_approval'
+    assert task['risk_level'] == 'high'
+    assert task['next_run_at'] is None
+    assert await _risk_in_db(e2e.session, e2e.owner, task['task_id']) == 'high'
+
+
+async def test_risk_low_periodic_overrides_to_scheduled(e2e: SimpleNamespace) -> None:
+    """risk=low + interval → scheduled（§7.2：低风险周期追踪任务自动跑，越过周期默认待批）。"""
+    data = await _create(e2e.client, '每周复盘汇报', 'interval', {'minutes': 10080}, risk_level='low')
+    task = data['task']
+    assert task['state'] == 'scheduled'
+    assert task['risk_level'] == 'low'
+    assert task['next_run_at'] is not None
+    assert await _risk_in_db(e2e.session, e2e.owner, task['task_id']) == 'low'
+
+
+async def test_unspecified_risk_periodic_keeps_legacy_pending(e2e: SimpleNamespace) -> None:
+    """未标 risk + interval → pending_approval（沿用既有 D4，未声明不擅自自动跑），列默认 low。"""
+    data = await _create(e2e.client, '未标风险周期', 'interval', {'minutes': 1440})
+    task = data['task']
+    assert task['state'] == 'pending_approval'
+    assert task['risk_level'] == 'low'  # 列默认（风险性质），与 status 正交
+    assert await _risk_in_db(e2e.session, e2e.owner, task['task_id']) == 'low'
+
+
+async def test_invalid_risk_rejected(e2e: SimpleNamespace) -> None:
+    """非法 risk_level → 400（不静默吞）。"""
+    r = await e2e.client.post(
+        '/api/v1/hasn-task/agent/tasks',
+        json={
+            'name': '非法风险',
+            'prompt': 'x',
+            'schedule_type': 'once',
+            'schedule_config': {'run_at': '2099-02-01T08:00:00+08:00'},
+            'risk_level': 'medium',
+        },
+    )
+    assert r.status_code == 400, r.text
+
+
 async def test_cross_owner_isolation(e2e: SimpleNamespace) -> None:
     c = e2e.client
     data = await _create(c, '私有任务', 'once', {'run_at': '2099-08-01T08:00:00+08:00'})

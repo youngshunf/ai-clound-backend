@@ -30,6 +30,7 @@ class AgentCreateTaskRequest(BaseModel):
     agent_id: str | None = Field(default=None, description='目标分身，缺省=当前分身')
     schedule_type: str = Field(description='调度类型 once/interval/cron')
     schedule_config: dict = Field(default_factory=dict, description='调度配置')
+    risk_level: str | None = Field(default=None, description='风险等级 low/high（KNOWU §4.5；缺省由调度类型决定）')
     description: str | None = None
     system_prompt: str | None = None
     skill_bundle_refs: list[dict] = Field(default_factory=list)
