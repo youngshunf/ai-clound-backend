@@ -142,6 +142,12 @@ class AppCatalogRegistry:
         from backend.app.hasn_studio.manifest import build_studio_app
 
         registry.register(build_studio_app())
+        # 矢量设计 design（local_tool AI-Native 本地 sidecar，源自 OpenPencil，模块 14 doc27；install_policy=manual
+        # 非默认挂载——OpenPencil 引擎随桌面端下发，hasn.design.* 工具经 daemon DesignBroker → pen-mcp 在主人
+        # 画布上出图。本期 OP-P3-B/C 铸 scope + 注册 manifest + 轻登记表，工具面随 OP-P3-A 落地）。延迟导入。
+        from backend.app.hasn_design.manifest import build_design_app
+
+        registry.register(build_design_app())
         return registry
 
     def register(self, app: App) -> None:

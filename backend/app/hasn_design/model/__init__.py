@@ -1,0 +1,1 @@
+from backend.app.hasn_design.model.hasn_design_project import HasnDesignProject as HasnDesignProject
