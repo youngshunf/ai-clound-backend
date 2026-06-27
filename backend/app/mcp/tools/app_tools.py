@@ -105,12 +105,14 @@ class AppTool(BaseTool):
             )()
             headers: dict[str, str] = {}
 
-        # 用 .begin()（自动提交事务），与 HTTP 工具调用面 CurrentSessionTransaction 语义对齐：
-        # 网关 dispatch 全程在本 session 内只 flush（业务行 + 审计行），从不自己 commit；
-        # async_db_session()（无 begin）退出只 close 不 commit → 经 MCP 直连面的 App 写类工具
-        # （creator/knowledge/... 凡 handler 自身不 commit 的）会返回成功却整体回滚不落库。
-        async with async_db_session.begin() as db:
-            return await ai_native_runtime_gateway.call_tool(
+        # 裸 session + 末尾显式 commit（对齐平台工具 asset.create 模式）：网关 dispatch 全程只
+        # flush（业务行 + 审计行）、从不自己 commit——末尾 commit 落库（修非自 commit 的 App 写类
+        # creator/knowledge/... 经 MCP 直连面返回成功却整体回滚不落库）。
+        # 不用 async_db_session.begin()：community 等 handler 自身 db.commit() 会在 begin() 上下文里
+        # 提前关闭事务，随后网关 flush 审计行撞「Can't operate on closed transaction」；裸 session
+        # 允许 handler 多次 commit，末尾 commit 再提交审计行。异常时 __aexit__ 关闭 session 自动回滚。
+        async with async_db_session() as db:
+            result = await ai_native_runtime_gateway.call_tool(
                 db,
                 request=_Request(),
                 app_id=self.app_id,
@@ -122,6 +124,8 @@ class AppTool(BaseTool):
                     trace_id=self._trace_id(agent_context, arguments),
                 ),
             )
+            await db.commit()
+            return result
 
     def _trace_id(self, agent_context: AgentContext, arguments: dict[str, Any]) -> str:
         canonical_arguments = json.dumps(arguments, sort_keys=True, separators=(",", ":"), default=str)

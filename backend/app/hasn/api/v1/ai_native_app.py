@@ -134,12 +134,16 @@ async def runtime_capabilities(
 )
 async def runtime_tool_call(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     app_id: str,
     tool_id: str,
     body: AiNativeToolCallRequest,
 ) -> ResponseModel:
+    # 裸 session + 末尾显式 commit（对齐 MCP 直连面 AppTool.execute）：网关 dispatch 全程只 flush，
+    # 末尾 commit 落库。不用 CurrentSessionTransaction(begin)——community 等 handler 自身 db.commit()
+    # 会在 begin() 上下文里提前关闭事务，随后网关 flush 审计行撞「closed transaction」。
     data = await ai_native_runtime_gateway.call_tool(db=db, request=request, app_id=app_id, tool_id=tool_id, body=body)
+    await db.commit()
     return response_base.success(data=data)
 
 
