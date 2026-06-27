@@ -27,6 +27,7 @@ from backend.app.mcp.tools.tool_call import ToolCallTool
 from backend.app.mcp.tools.tool_search import ToolSearchTool
 from backend.app.mcp.tools.user import UserSearchTool
 from backend.app.mcp.tools.workbench import WORKBENCH_TOOLS
+from backend.app.mcp.tools.workflow import WORKFLOW_TOOLS
 from backend.common.security.scope_policy import MODE_ASK, MODE_DENY
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,12 @@ class HasnCloudMcpServer:
         # 执行 fire/调度仍由本地/云端 Runtime Host 基于 task sync mirror 自行 tick（中心不 tick）。
         for task_tool in TASK_TOOLS:
             self.tool_registry.register(task_tool)
+
+        # 工作流工具（12-多任务编排 DAG）：create/list_agents/get/get_node_result/run/pause/cancel/list。
+        # 从 hasn-node 本地 hasn-mcp 迁来（不依赖本地操作 → 走云端 platform tool，TOOLMIG2）；
+        # add_node/add_edge 不在 agent 工具面（经 create 一次声明整图）；整图 fire 仍由 Runtime Host tick。
+        for workflow_tool in WORKFLOW_TOOLS:
+            self.tool_registry.register(workflow_tool)
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:
