@@ -14,7 +14,8 @@ import json
 
 from typing import Any
 
-import httpx
+from backend.common.llm import LLMChatClient, LLMError
+from backend.common.log import log
 
 # schema/prompt 版本写进 raw_record，便于回溯（设计 05 §8 LLM 抽取风控）。
 GROWTH_EXTRACT_SCHEMA_VERSION = 'lead_v1'
@@ -126,10 +127,8 @@ class LeadLLMExtractor:
     """调用 OpenAI 兼容网关（new-api）做线索结构化提取。"""
 
     def __init__(self, *, base_url: str, api_key: str, model: str, timeout: float = 60.0) -> None:
-        self.base_url = base_url.rstrip('/')
-        self.api_key = api_key
         self.model = model
-        self.timeout = timeout
+        self._llm = LLMChatClient(base_url=base_url, api_key=api_key, model=model, timeout=timeout)
 
     async def extract(self, markdown: str | None, *, source_url: str | None = None) -> dict[str, Any] | None:
         """从 markdown 提取结构化线索字段；任何失败返回 None（不抛，退回正则兜底）。
@@ -138,20 +137,16 @@ class LeadLLMExtractor:
         """
         if not markdown or not markdown.strip():
             return None
-        payload = {
-            'model': self.model,
-            'messages': build_extract_messages(markdown),
-            'temperature': 0,
-            'max_tokens': 800,
-            'response_format': {'type': 'json_object'},
-            'stream': False,
-        }
-        headers = {'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'}
-        async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
-            resp = await client.post(f'{self.base_url}/chat/completions', json=payload, headers=headers)
-            resp.raise_for_status()
-            body = resp.json()
-        content = (body.get('choices') or [{}])[0].get('message', {}).get('content')
+        try:
+            content = await self._llm.complete(
+                build_extract_messages(markdown),
+                temperature=0,
+                max_tokens=800,
+                response_format={'type': 'json_object'},
+            )
+        except LLMError as exc:
+            log.warning(f'[LeadLLMExtractor] LLM 提取失败，退回正则兜底: {exc!r}')
+            return None
         structured = parse_extract_response(content)
         if not structured:
             return None

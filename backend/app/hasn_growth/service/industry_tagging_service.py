@@ -108,26 +108,14 @@ class IndustryTaggingService:
             '你是行业分类助手。从下面的行业字典里选出最匹配的一个行业 code；若都不匹配，只回 none。'
             f'只回 code 或 none，不要解释。\n\n行业字典：\n{catalog}\n\n待分类文本：{text}'
         )
-        payload = {
-            'model': model,
-            'messages': [{'role': 'user', 'content': prompt}],
-            'temperature': 0,
-            'max_tokens': 20,
-            'stream': False,
-        }
-        headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
-        try:
-            import httpx
+        from backend.common.llm import LLMChatClient, LLMError
 
-            async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
-                resp = await client.post(
-                    f'{base_url.rstrip("/")}/chat/completions', json=payload, headers=headers
-                )
-                resp.raise_for_status()
-                body = resp.json()
-            answer = ((body.get('choices') or [{}])[0].get('message', {}).get('content') or '').strip().lower()
-        except Exception as exc:
+        try:
+            content = await LLMChatClient(
+                base_url=base_url, api_key=api_key, model=model, timeout=30.0
+            ).complete([{'role': 'user', 'content': prompt}], temperature=0, max_tokens=20)
+        except LLMError as exc:
             log.warning(f'[IndustryTagging] LLM 分类失败，保留原始行业: {exc!r}')
             return None
-        answer = answer.strip('`').strip()
+        answer = (content or '').strip().lower().strip('`').strip()
         return answer if answer in codes else None

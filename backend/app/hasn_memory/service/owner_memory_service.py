@@ -5,7 +5,7 @@
 owner_memory(version++)，把贡献标 merged，并把该 owner 所有 Agent 的 user_md 覆盖为
 新内容、bump profile_revision —— Runtime 轮询 revision 变化后重新拉取下发。
 
-零 mock 零 fake：默认走真实 new-api 网关（复用 translation_service 的 chat 客户端）；
+零 mock 零 fake：默认走真实 new-api 网关（统一 backend.common.llm 客户端）；
 LLM 失败则保留 contribution=pending、不动 owner_memory（不产生假合并）。
 
 ADR-15 收编：本 service 从 `app/hasn/service/owner_memory_service.py` 迁入 `app/hasn_memory`；
@@ -36,10 +36,10 @@ _MERGE_MAX_TOKENS = 2000
 
 
 async def _default_llm_complete(messages: list[dict[str, str]]) -> str:
-    """默认 LLM completion：复用 marketplace translation_service 的 new-api 客户端。"""
-    from backend.app.marketplace.service.translation_service import translation_service
+    """默认 LLM completion：走统一 new-api 客户端（默认模型 settings.LLM_DEFAULT_MODEL）。"""
+    from backend.common.llm import llm_client
 
-    return await translation_service._complete_chat(messages, max_tokens=_MERGE_MAX_TOKENS)
+    return await llm_client.complete(messages, max_tokens=_MERGE_MAX_TOKENS)
 
 
 class OwnerMemoryService:

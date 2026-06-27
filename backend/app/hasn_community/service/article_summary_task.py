@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 
-import httpx
 from sqlalchemy import select
 
 from backend.app.hasn_community.model import HasnArticles
@@ -38,25 +37,22 @@ async def _call_platform_llm(content: str) -> str | None:
     if not base_url or not api_key:
         logger.info('article summary: 平台 LLM 未配置，跳过 LLM 提取（保留正文兜底）')
         return None
-    payload = {
-        'model': _platform_model(),
-        'messages': [
-            {'role': 'system', 'content': '你是中文摘要助手。用一句话（不超过 80 字）概括文章主旨，直接输出摘要正文，不要任何前缀、引号或解释。'},
-            {'role': 'user', 'content': content[:_MAX_CONTENT_CHARS]},
-        ],
-        'max_tokens': 256,
-        'temperature': 0.3,
-        'stream': False,
-    }
-    url = base_url.rstrip('/') + '/chat/completions'
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, json=payload, headers={'Authorization': f'Bearer {api_key}'})
-        resp.raise_for_status()
-        data = resp.json()
-    choices = data.get('choices') or []
-    if not choices:
+    from backend.common.llm import LLMChatClient, LLMError
+
+    # 保留平台代理 endpoint/凭据/模型（平台买单），仅走统一传输（trust_env=False + 重试 + SSE 兼容）。
+    client = LLMChatClient(base_url=base_url, api_key=api_key, model=_platform_model(), timeout=30.0)
+    try:
+        text = await client.complete(
+            [
+                {'role': 'system', 'content': '你是中文摘要助手。用一句话（不超过 80 字）概括文章主旨，直接输出摘要正文，不要任何前缀、引号或解释。'},
+                {'role': 'user', 'content': content[:_MAX_CONTENT_CHARS]},
+            ],
+            max_tokens=256,
+            temperature=0.3,
+        )
+    except LLMError as exc:
+        logger.warning('article summary: 平台 LLM 调用失败，跳过（保留正文兜底）err=%r', exc)
         return None
-    text = (choices[0].get('message') or {}).get('content') or ''
     return ' '.join(text.split()).strip()[:_SUMMARY_MAX_LEN] or None
 
 

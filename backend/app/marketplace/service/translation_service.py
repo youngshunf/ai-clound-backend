@@ -4,9 +4,9 @@ import json
 import re
 from typing import Any, Literal
 
-import httpx
 from langdetect import detect, LangDetectException
 
+from backend.common.llm import LLMChatClient
 from backend.common.log import log
 from backend.core.conf import settings
 
@@ -19,6 +19,12 @@ class TranslationService:
 
     def __init__(self):
         self._translation_cache = {}  # Simple in-memory cache
+        # 统一 LLM 客户端：翻译走 TRANSLATION_MODEL/FALLBACK/TIMEOUT，默认 new-api 网关。
+        self._llm = LLMChatClient(
+            model=getattr(settings, 'TRANSLATION_MODEL', 'gpt-4o-mini'),
+            fallback_model=getattr(settings, 'TRANSLATION_FALLBACK_MODEL', 'gpt-5.5'),
+            timeout=float(getattr(settings, 'TRANSLATION_TIMEOUT', 120.0)),
+        )
 
     def detect_language(self, text: str) -> Literal['en', 'zh', 'unknown']:
         """
@@ -250,137 +256,19 @@ Translation:"""
         response_format: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> str:
-        """Call the configured chat completion API and return message content."""
-        # Get LLM configuration
-        api_base = getattr(settings, 'LLM_API_BASE_URL', 'http://127.0.0.1:3180')
-        if not api_base.endswith('/v1'):
-            api_base = f"{api_base}/v1"
-        api_key = getattr(settings, 'LLM_API_KEY', 'sk-system-translation')
-        primary_model = getattr(settings, 'TRANSLATION_MODEL', 'gpt-4o-mini')
-        fallback_model = getattr(settings, 'TRANSLATION_FALLBACK_MODEL', 'gpt-5.5')
-        models = [primary_model]
-        if fallback_model and fallback_model != primary_model:
-            models.append(fallback_model)
+        """Call the unified LLM client and return message content.
 
-        base_payload: dict[str, Any] = {
-            "messages": messages,
-            "max_tokens": max_tokens,
-            # 用流式：部分 new-api 网关渠道在 stream=false 时只回空 chunk
-            # (completion_tokens=0)，stream=true 才出内容；解析层已支持 SSE
-            # (_parse_sse_chat_response)。stream=true 对合规网关也通用、无副作用。
-            "stream": True,
-        }
-
-        # Reasoning models (e.g. qwen3.7-max) emit long reasoning_content and need a
-        # generous read timeout, especially for multi-item batch requests.
-        request_timeout = timeout if timeout is not None else float(getattr(settings, 'TRANSLATION_TIMEOUT', 120.0))
-        async with httpx.AsyncClient(timeout=request_timeout) as client:
-            for model_index, model in enumerate(models):
-                payload = {**base_payload, "model": model}
-                if response_format:
-                    payload["response_format"] = response_format
-                attempts = 3
-                for attempt in range(attempts):
-                    translated = await self._post_chat_completion(client, api_base, api_key, payload, model, attempt)
-                    if translated:
-                        return translated
-                    # Back off before retrying transient gateway errors (503/429/etc.).
-                    if attempt < attempts - 1:
-                        await asyncio.sleep(2.0 * (attempt + 1))
-
-                if model_index > 0 and response_format:
-                    relaxed_payload = {**base_payload, "model": model}
-                    translated = await self._post_chat_completion(
-                        client,
-                        api_base,
-                        api_key,
-                        relaxed_payload,
-                        model,
-                        attempts,
-                    )
-                    if translated:
-                        return translated
-
-            raise Exception("Invalid LLM response: empty content")
-
-    async def _post_chat_completion(
-        self,
-        client: httpx.AsyncClient,
-        api_base: str,
-        api_key: str,
-        payload: dict[str, Any],
-        model: str,
-        attempt: int,
-    ) -> str | None:
-        response = await client.post(
-            f"{api_base}/chat/completions",
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-            }
+        Transport, SSE parsing, retry/backoff, model fallback and ``trust_env=False`` are
+        centralized in :class:`backend.common.llm.LLMChatClient` (configured in ``__init__``
+        with TRANSLATION_MODEL/FALLBACK/TIMEOUT). Raises on total failure (callers catch and
+        fall back to the original text — zero fake).
+        """
+        return await self._llm.complete(
+            messages,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            timeout=timeout,
         )
-
-        if response.status_code != 200:
-            log.error(f"LLM API error: {response.status_code} - {response.text}")
-            # Transient gateway errors: let the caller retry with backoff.
-            if response.status_code in {408, 425, 429, 500, 502, 503, 504}:
-                return None
-            raise Exception(f"LLM API error: {response.status_code}")
-
-        content_type = response.headers.get('content-type', '')
-        result = (
-            self._parse_sse_chat_response(response.text)
-            if 'text/event-stream' in content_type
-            else response.json()
-        )
-
-        translated = self._extract_chat_content(result)
-        if translated:
-            return translated
-
-        log.warning(f"LLM API returned empty content on model {model} attempt {attempt + 1}: {result}")
-        return None
-
-    @staticmethod
-    def _extract_chat_content(result: dict[str, Any]) -> str | None:
-        choices = result.get('choices')
-        if not isinstance(choices, list) or not choices:
-            return None
-        chunks: list[str] = []
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            message = choice.get('message')
-            if isinstance(message, dict) and message.get('content'):
-                chunks.append(str(message['content']))
-            delta = choice.get('delta')
-            if isinstance(delta, dict) and delta.get('content'):
-                chunks.append(str(delta['content']))
-        content = ''.join(chunks).strip()
-        return content or None
-
-    @classmethod
-    def _parse_sse_chat_response(cls, text: str) -> dict[str, Any]:
-        choices: list[dict[str, Any]] = []
-        usage: dict[str, Any] | None = None
-        for line in text.splitlines():
-            line = line.strip()
-            if not line.startswith('data:'):
-                continue
-            payload = line.removeprefix('data:').strip()
-            if not payload or payload == '[DONE]':
-                continue
-            try:
-                chunk = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            if chunk.get('usage'):
-                usage = chunk['usage']
-            for choice in chunk.get('choices') or []:
-                if isinstance(choice, dict):
-                    choices.append(choice)
-        return {'choices': choices, 'usage': usage}
 
     async def translate_skill_metadata(
         self,

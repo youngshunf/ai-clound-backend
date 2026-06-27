@@ -62,11 +62,9 @@ def test_coerce_batch_response_maps_by_index_and_falls_back_for_missing():
 
 
 def test_retryable_status_codes_documented_in_post_handler():
-    # Guard against accidentally removing transient-error handling.
-    import inspect
+    # Guard against accidentally removing transient-error handling. Transport (retry on
+    # transient gateway errors) now lives in the unified backend.common.llm client.
+    from backend.common.llm.client import _TRANSIENT_STATUS
 
-    from backend.app.marketplace.service import translation_service as mod
-
-    src = inspect.getsource(mod.TranslationService._post_chat_completion)
-    for code in ('429', '503', '500', '502', '504'):
-        assert code in src
+    for code in (429, 503, 500, 502, 504):
+        assert code in _TRANSIENT_STATUS
