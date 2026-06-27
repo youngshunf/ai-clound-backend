@@ -56,6 +56,10 @@ class AgentContext:
         # 默认全开（allow）；streamable 鉴权后用 get_agent_scopes_cached 现查覆盖。
         self.default_mode = default_mode
         self.capability_modes = capability_modes or {}
+        # P7 第三方 MCP 网关：本请求该 Agent 可发现/可调的 external 工具 canonical 名集合
+        # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。
+        # external 工具全局共享注册表实例，但发现/调用资格按此集合 per-request 过滤，杜绝串号。
+        self.external_allowed_tools: set[str] = set()
 
     @classmethod
     def from_token_payload(

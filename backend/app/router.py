@@ -1,3 +1,4 @@
+from backend.app.external_mcp.api.router import admin as external_mcp_admin, app as external_mcp_app
 from backend.app.hasn_reel.api.router import app as hasn_reel_app, v1 as hasn_reel_v1
 from fastapi import APIRouter
 
@@ -233,3 +234,9 @@ router.include_router(hasn_studio_app)
 # codegen 裸 open/agent 面刻意不挂载（公开无鉴权读写=越权大洞；Agent 走云端 MCP 不经 REST）。URL /api/v1/hasn_reel{,/app}/*
 router.include_router(hasn_reel_v1)
 router.include_router(hasn_reel_app)
+
+# 第三方 MCP 网关管理面（external_mcp，MCP统一工具体系 doc10/实施99 P7-D）：owner 面（app 仅 JWT，
+# 行级隔离我的 MCP 配置/凭据/绑定）+ 平台 admin 面（JWT+RBAC，system-origin 平台 key/配额）；
+# 刻意不挂 open/agent 裸 CRUD（越权大洞），Agent 经云端 MCP 代理而非 REST 触达 external 工具。
+router.include_router(external_mcp_app)
+router.include_router(external_mcp_admin)

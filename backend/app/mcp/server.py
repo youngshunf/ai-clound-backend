@@ -9,6 +9,7 @@ import logging
 
 from typing import Any
 
+from backend.app.external_mcp.external_tool import load_external_mcp_tools_for_agent
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.runtime_visibility import is_tool_hidden_for_runtime
@@ -204,6 +205,7 @@ class HasnCloudMcpServer:
             logger.info(f'Agent {agent_context.hasn_id} calling tool: {tool_name}')
 
             await self._load_app_tools(agent_context)
+            await self._load_external_mcp_tools(agent_context)
 
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
@@ -350,13 +352,18 @@ class HasnCloudMcpServer:
         """按 source 分发到对应 handler（04 §7）。
 
         platform / app 在云端 server 内由各自 BaseTool.execute 自路由其 handler
-        （app → ai_native_runtime_gateway）。external 在 P7 前云端无承接。
+        （app → ai_native_runtime_gateway）。external（第三方 MCP，P7）由 ExternalMcpTool.execute
+        委托 ExternalMcpGateway.proxy_call 代理到第三方 server（binding/health/secret/quota 全校验）。
         """
         if source == 'external':
-            raise McpToolError(
-                McpErrorCode.TOOL_NOT_FOUND,
-                'external MCP tools are not enabled on the cloud server (P7)',
-            )
+            tool_name = getattr(tool, 'name', '')
+            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
+            if tool_name not in allowed:
+                # 防御性兜底：external 工具不在本 Agent 授权集合 → 拒绝（发现层已挡，此为执行层兜底）。
+                raise McpToolError(
+                    McpErrorCode.DIRECT_CALL_DENIED,
+                    f'Agent 无权调用该外部 MCP 工具: {tool_name}',
+                )
         return await tool.execute(agent_context, arguments)
 
     async def _load_app_tools(self, agent_context: AgentContext) -> None:
@@ -372,6 +379,23 @@ class HasnCloudMcpServer:
                 self.tool_registry.register(tool)
         except Exception as e:
             logger.error(f'Failed to load app tools: {e}', exc_info=True)
+
+    async def _load_external_mcp_tools(self, agent_context: AgentContext) -> None:
+        """P7：解析该 Agent 的第三方 MCP binding，投影成 source='external' 工具入注册表。
+
+        - 工具实例全局共享、幂等注册（canonical 名全局唯一，server namespace 保证不撞）。
+        - 发现/调用资格按 `agent_context.external_allowed_tools`（gate1 owner 启用 + gate2
+          binding allowed_tools）per-request 过滤，工具实例**不**携带 agent 状态，杜绝串号。
+        """
+        try:
+            tools = await load_external_mcp_tools_for_agent(agent_context)
+            for tool in tools:
+                if not self.tool_registry.get_tool(tool.name):
+                    self.tool_registry.register(tool)
+            agent_context.external_allowed_tools = {tool.name for tool in tools}
+        except Exception as e:
+            logger.error(f'Failed to load external MCP tools: {e}', exc_info=True)
+            agent_context.external_allowed_tools = set()
 
     async def _log_tool_call(
         self,

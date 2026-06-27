@@ -102,13 +102,15 @@ class ToolDirectoryService:
         """聚合「全部可见工具」的 required_scopes → 按 source 分组 → 每条标三态 mode + 元数据。
 
         D2：catalog 列全部工具（含社交，一视同仁），按来源分组，每条带三态当前值。
-        对象级关系门控（维度②）不进 catalog（工具运行时返回）。external 分组为空（Q5）。
+        对象级关系门控（维度②）不进 catalog（工具运行时返回）。external 分组按本 Agent
+        binding 派生（仅列其授权的第三方 MCP 工具，P7；未绑定则该分组为空）。
         """
         from backend.app.mcp.scopes import SOURCE_LABELS, scope_meta
         from backend.common.security.scope_policy import resolve_capability_mode
 
         default_mode = getattr(agent_context, 'default_mode', 'allow')
         capability_modes = getattr(agent_context, 'capability_modes', {}) or {}
+        external_allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
 
         # source -> scope_key -> {tools: set, risk}
         grouped: dict[str, dict[str, dict[str, Any]]] = {'platform': {}, 'app': {}, 'external': {}}
@@ -116,6 +118,9 @@ class ToolDirectoryService:
             source = self._source_for_tool(tool)
             if source == 'local':
                 continue  # 本地工具不在云端 catalog
+            # external 工具实例全局共享 → 只列本 Agent binding 授权的，杜绝串号泄漏他人工具名。
+            if source == 'external' and tool.name not in external_allowed:
+                continue
             bucket = grouped.setdefault(source, {})
             for scope in tool.required_scopes:
                 entry = bucket.setdefault(scope, {'tools': set(), 'risk': getattr(tool, 'risk_level', 'low')})
@@ -236,6 +241,13 @@ class ToolDirectoryService:
         }
 
     def _can_discover(self, agent_context: AgentContext, tool: BaseTool) -> bool:
+        # P7 第三方 MCP 网关：external 工具实例全局共享，发现资格按本 Agent binding
+        # （gate1 owner 启用 + gate2 allowed_tools，由 server 注入 external_allowed_tools）
+        # per-request 过滤——不在授权集合的一律不可见，杜绝跨 Agent 串号。
+        if self._source_for_tool(tool) == 'external':
+            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
+            if tool.name not in allowed:
+                return False
         # 维度① 能力授权（D3 活取三态）：mode != deny 即可见（ask 也可见）；默认全开。
         # 维度② 对象可达性不在这里，由工具运行时返回。
         if agent_context.is_tool_denied(tool):
