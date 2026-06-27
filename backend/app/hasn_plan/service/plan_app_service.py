@@ -552,6 +552,32 @@ class PlanService:
         await db.flush()
         return serialize(row)
 
+    async def claim_proactive_planning(self, db: AsyncSession, *, owner: str) -> bool:
+        """主动规划闭环「恰好一次」原子认领（KNOWU §7，Open Q#3 事件驱动 + 幂等标记）。
+
+        5 维画像首次全 sufficient 时，分身从「被动」切「主动」需触发一次主动规划工作会话。
+        多设备/多次刷新可能并发触发，这里用 `preference` owner 单例行的 `proactive_planned`
+        作跨设备持久幂等标记：原子 `INSERT ... ON CONFLICT DO UPDATE ... WHERE proactive_planned=false`
+        —— 行不存在则插入并认领；行已存在且标记 false 则更新认领；标记已为 true 则 WHERE 不命中、
+        不返回任何行。`RETURNING id` 是否有行即「本次是否认领成功」，保证全局只有一方赢。
+
+        依赖 `uq_plan_preference_owner` 唯一索引（迁移 2026-06-27 已建）作 ON CONFLICT 目标。
+        返回 True=本次认领成功（调用方应触发主动规划）；False=此前已认领（幂等跳过）。
+        """
+        stmt = sa.text(
+            """
+            INSERT INTO hasn_plan.preference (owner_hasn_id, proactive_planned, created_time, updated_time)
+            VALUES (:owner, true, now(), now())
+            ON CONFLICT (owner_hasn_id)
+            DO UPDATE SET proactive_planned = true, updated_time = now()
+            WHERE hasn_plan.preference.proactive_planned = false
+            RETURNING id
+            """
+        )
+        claimed_id = (await db.execute(stmt, {'owner': owner})).scalar()
+        await db.flush()
+        return claimed_id is not None
+
     # ── 「今日」聚合（设计 §10.2 首屏）──────────────────────────────────────────
     async def today_overview(self, db: AsyncSession, *, owner: str, day_start: datetime, day_end: datetime) -> dict:
         """今日首屏数据：当日时间块 + 需主人/分身分流的待办 + 目标进度环。"""

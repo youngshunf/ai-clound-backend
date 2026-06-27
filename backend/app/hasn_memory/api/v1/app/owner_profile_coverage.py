@@ -13,12 +13,15 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Request
 
 from backend.app.hasn_core import HasnHumans
-from backend.app.hasn_memory.schema.owner_profile_coverage import OwnerProfileCoverageResponse
+from backend.app.hasn_memory.schema.owner_profile_coverage import (
+    OwnerProactiveClaimResponse,
+    OwnerProfileCoverageResponse,
+)
 from backend.app.hasn_memory.service.owner_profile_coverage_service import owner_profile_coverage_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
@@ -45,3 +48,33 @@ async def get_my_profile_coverage(
     owner_id = await _resolve_owner_id(request, db)
     coverage = await owner_profile_coverage_service.assess_if_stale(db, owner_id=owner_id)
     return response_base.success(data=OwnerProfileCoverageResponse(**coverage))
+
+
+@router.post(
+    '/proactive-planning/claim',
+    summary='主动规划闭环「恰好一次」认领（5 维全 sufficient 后切主动）',
+    dependencies=[DependsJwtAuth],
+)
+async def claim_proactive_planning(
+    request: Request,
+    db: CurrentSessionTransaction,
+) -> ResponseSchemaModel[OwnerProactiveClaimResponse]:
+    """画像全 sufficient 后，分身从「被动」切「主动」的触发点（KNOWU §7 / Open Q#3 事件驱动 + 幂等）。
+
+    服务端二次把关 all_sufficient（不信任客户端判定）：未全充分 → 不认领、直接返回。
+    全充分则经 plan_service 原子 ON CONFLICT 认领，跨设备/多次刷新只赢一次。
+    返回 claimed=True 时由调用方（daemon）真正派发主动规划工作会话。
+    """
+    owner_id = await _resolve_owner_id(request, db)
+    coverage = await owner_profile_coverage_service.get_coverage(db, owner_id=owner_id)
+    if not coverage.get('all_sufficient'):
+        return response_base.success(
+            data=OwnerProactiveClaimResponse(claimed=False, all_sufficient=False)
+        )
+    # 惰性导入避开 hasn_memory ↔ hasn_plan 跨模块循环引用。
+    from backend.app.hasn_plan.service.plan_app_service import plan_service
+
+    claimed = await plan_service.claim_proactive_planning(db, owner=owner_id)
+    return response_base.success(
+        data=OwnerProactiveClaimResponse(claimed=claimed, all_sufficient=True)
+    )

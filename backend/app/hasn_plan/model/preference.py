@@ -24,3 +24,7 @@ class Preference(PlanBase):
     briefing_morning_time: Mapped[time | None] = mapped_column(sa.TIME(), default=None, comment=None)
     briefing_evening_time: Mapped[time | None] = mapped_column(sa.TIME(), default=None, comment=None)
     timezone: Mapped[str] = mapped_column(sa.String(48), default='Asia/Shanghai', comment=None)
+    # KNOWU §7：主动规划闭环幂等标记（首次 all_sufficient 原子认领一次，跨设备持久）
+    proactive_planned: Mapped[bool] = mapped_column(
+        sa.Boolean(), default=False, comment='主动规划闭环是否已触发（首次 all_sufficient 认领一次）'
+    )

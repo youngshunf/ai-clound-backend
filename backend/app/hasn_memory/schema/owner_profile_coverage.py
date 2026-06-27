@@ -58,6 +58,15 @@ class OwnerProfileCoverageResponse(SchemaBase):
     memory_version: int = Field(0, description='当前 owner_memory 版本（判定依据）')
 
 
+class OwnerProactiveClaimResponse(SchemaBase):
+    """主动规划闭环「恰好一次」认领结果（KNOWU §7 主动切换触发）。"""
+
+    claimed: bool = Field(
+        description='本次是否认领成功（true=应触发主动规划工作会话；false=画像未全 sufficient 或此前已认领）'
+    )
+    all_sufficient: bool = Field(description='5 维是否全部 sufficient（认领的前置门）')
+
+
 class GetOwnerProfileCoverageDetail(OwnerProfileCoverageSchemaBase):
     """主人画像完整度详情（带主键/时间，调试用）。"""
 
