@@ -32,6 +32,7 @@ from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import ForbiddenError
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -100,10 +101,11 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         await engine.dispose()
 
 
-async def test_all_18_growth_tools_resolve_in_gateway_registry() -> None:  # noqa: RUF029
+async def test_all_19_growth_tools_resolve_in_gateway_registry() -> None:  # noqa: RUF029
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
-    assert len(handlers) == 18
+    assert len(handlers) == 19  # 2.1 新增 lead_request（请求线索·用户端默认入口）
+    assert 'growth.lead_request' in handlers
     for h in handlers:
         assert h.startswith('growth.'), h
         assert h in _REG, f'manifest 声明的工具 handler {h} 未在网关注册表中'
@@ -183,6 +185,44 @@ async def test_growth_cloud_tools_reassign_requires_manager(ctx: SimpleNamespace
     cust = await _REG['growth.lead_qualify'](s, agent, {'lead_contact_id': ctx.lead_id, 'intent_score': 60})
     with pytest.raises(ForbiddenError):
         await _REG['growth.customer_reassign'](s, agent, {'customer_id': cust['id'], 'assignee': 'h_other'})
+
+
+async def test_lead_request_pool_hit_delivers_without_backfill(ctx: SimpleNamespace) -> None:
+    """2.1 先查池：命中 M≥N → 直接交付 N 条（零采集成本，无补爬 job）。PII 默认脱敏。
+
+    query_pool 公共池语义不限 lead_scope——seed 的 'Acme'（lead_scope=user）也会被查到。
+    """
+    s, agent = ctx.session, ctx.agent(['agent', 'growth:read', 'growth:collect'])
+    result = await _REG['growth.lead_request'](s, agent, {'keyword': 'Acme', 'limit': 1})
+    assert result['delivered'] >= 1
+    assert result['from_pool'] == result['delivered']
+    assert result['backfill_job_id'] is None, 'M≥N 不应触发补爬'
+    assert result['leads'] and result['leads'][0]['email'] == 'w***@acme.com', '读类默认脱敏'
+
+
+async def test_lead_request_gap_triggers_backfill(ctx: SimpleNamespace) -> None:
+    """2.1 缺口补爬：查池命中 M<N → 交付 M 条 + 后台补爬 job（公共池·max_results=N−M）。"""
+    s, agent = ctx.session, ctx.agent(['agent', 'growth:collect'])
+    miss = f'zzq{uuid.uuid4().hex[:8]}'  # 不会命中任何已有线索的关键词
+    result = await _REG['growth.lead_request'](s, agent, {'keyword': miss, 'limit': 3})
+    assert result['delivered'] == 0
+    assert result['backfill_job_id'] is not None, 'M<N 应触发补爬 job'
+    # 补爬 job 应为公共池采集、max_results=缺口 N−M=3
+    job = (
+        await s.execute(select(LeadCollectionJob).where(LeadCollectionJob.id == result['backfill_job_id']))
+    ).scalar_one()
+    assert job.lead_scope == 'public'
+    assert job.max_results == 3
+    assert miss in job.keyword
+
+
+async def test_query_pool_filters_by_keyword(ctx: SimpleNamespace) -> None:
+    """2.1 LeadPoolQueryService.query_pool：关键词命中返回，未命中返回空（真实 PG 查询）。"""
+    s = ctx.session
+    hit = await lead_pool_query_service.query_pool(s, keyword='Acme', limit=10)
+    assert any(r.id == ctx.lead_id for r in hit), '关键词 Acme 应命中 seed 线索'
+    miss = await lead_pool_query_service.query_pool(s, keyword=f'no{uuid.uuid4().hex[:8]}match', limit=10)
+    assert miss == [], '不存在的关键词应返回空'
 
 
 async def test_collect_start_enqueues_run_job_on_commit(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -447,6 +447,7 @@ class AiNativeRuntimeGateway:
             'creator.report_overview': creator_handlers.handle_report_overview,
             # 获客（纯云端业务应用：CRM/获客/触达/成交，零本地操作 → 工具全走云端 gateway_internal，
             # 不经 hasn-node 本地 hasn-mcp / daemon Agent 代理；handler 落 hasn_growth service）
+            'growth.lead_request': growth_handlers.handle_growth_lead_request,
             'growth.collect_start': growth_handlers.handle_growth_collect_start,
             'growth.collect_status': growth_handlers.handle_growth_collect_status,
             'growth.lead_search': growth_handlers.handle_growth_lead_search,

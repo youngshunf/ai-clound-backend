@@ -116,14 +116,39 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 获客 17 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
-# customer_reassign（GE4 企业经理分配负责人）为第 18 条。
+# 获客 19 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
+# lead_request（2.1 请求线索·用户端默认入口）为第 1 条；customer_reassign（GE4）为第 19 条。
 _CAPABILITIES = [
+    _cap(
+        name='lead_request',
+        mcp_suffix='lead.request',
+        title='请求线索',
+        description=(
+            '请求线索（用户端默认入口）：平台**先查公共池**命中即交付（零采集成本），'
+            '缺口才后台**补爬**回流公共池补足。按行业/地区/关键词/城市检索，行业自动归一到标准类目。'
+            'PII 默认脱敏（需 growth:pii 才回明文）。'
+        ),
+        scope=_SCOPE_COLLECT,
+        risk_level='medium',
+        properties={
+            'industry': {'type': ['string', 'null'], 'description': '行业（如「LED显示屏」，自动归一标准类目检索）'},
+            'region': {'type': ['string', 'null'], 'description': '地区/省'},
+            'city': {'type': ['string', 'null'], 'description': '城市'},
+            'keyword': {'type': ['string', 'null'], 'description': '关键词（公司/产品等自由文本）'},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 500, 'default': 20, 'description': '请求线索条数 N'},
+        },
+        required=[],
+        page_rank=9,
+        tags=['growth', 'lead', 'request', 'collect'],
+    ),
     _cap(
         name='collect_start',
         mcp_suffix='collect.start',
-        title='发起线索采集',
-        description='按关键词/URL 发起采集任务（包装 collection_job 创建，驱动既有采集引擎）。恒落主人私有池。',
+        title='发起线索采集（高级/补爬）',
+        description=(
+            '按关键词/URL 直接发起采集任务（包装 collection_job 创建，驱动既有采集引擎）。恒落主人私有池。'
+            '**用户端默认走 lead.request 请求线索**；本工具为高级/管理员显式补爬入口。'
+        ),
         scope=_SCOPE_COLLECT,
         risk_level='medium',
         properties={

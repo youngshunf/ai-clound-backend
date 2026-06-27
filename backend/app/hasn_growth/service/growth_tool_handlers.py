@@ -22,6 +22,7 @@ from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
@@ -94,6 +95,30 @@ async def handle_growth_collect_status(
     return await lead_automation_business_service.get_job(
         db, job_id=_int(input_payload, 'job_id'), user_id=agent.owner_user_id
     )
+
+
+async def handle_growth_lead_request(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """请求线索（用户端默认入口·2.1）：先查公共池命中即交付（零采集成本），缺口才后台补爬回流。
+
+    身份取自 JWT。返回 {delivered, from_pool, backfill_job_id, requested, leads}；有补爬 job 时
+    挂 after_commit 钩子入队（与 collect.start 同时序保护：提交前 worker 读不到未提交 job）。
+    """
+    result = await lead_pool_query_service.request_leads(
+        db,
+        user_id=agent.owner_user_id,
+        limit=int(input_payload.get('limit', 20)),
+        industry=input_payload.get('industry'),
+        region=input_payload.get('region'),
+        keyword=input_payload.get('keyword') or input_payload.get('q'),
+        city=input_payload.get('city'),
+        reveal_pii=_reveal(agent),
+    )
+    backfill_job_id = result.get('backfill_job_id')
+    if backfill_job_id:
+        _enqueue_collection_job_after_commit(db, int(backfill_job_id))
+    return result
 
 
 # ---------------- 线索 ----------------
