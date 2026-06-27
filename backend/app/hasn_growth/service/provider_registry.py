@@ -4,6 +4,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
+from backend.app.hasn_growth.service.maps_place_client import poi_to_structured, search_place_pois
+from backend.common.log import log
+from backend.core.conf import settings
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
@@ -182,7 +186,54 @@ def get_provider(source_type: str) -> BaseProvider:
 
 @register('maps')
 class MapsProvider(BaseProvider):
-    pass
+    """地图 POI 源（doc93 §3.2 混合架构）：直连高德/百度 Place API 出 POI，**跳过 firecrawl + LLM**。
+
+    POI 本就结构化（公司名/地址/电话/行政区）→ 预置 ``structured_payload``，下游 cleaner_service
+    直接落库（与 LLM 提取产物同键）。``city`` 取自任务 ``config.city/region``；未配 key 则诚实跳过
+    （零 fake·真实 key 由运营配置·真抓 E2E infra-gated）。
+    """
+
+    async def crawl_stream(
+        self,
+        request: CrawlRequest,
+        *,
+        firecrawl_client: FirecrawlLike,
+        llm_extractor: LeadLLMExtractorLike | None = None,
+        dedup: UrlDedupLike | None = None,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[CrawledItem]:
+        amap_key = (settings.AMAP_API_KEY or '').strip()
+        baidu_ak = (settings.BAIDU_MAP_AK or '').strip()
+        if not amap_key and not baidu_ak:
+            log.warning(
+                '[MapsProvider] 未配 AMAP_API_KEY / BAIDU_MAP_AK，maps 源跳过'
+                '（doc93 §3.2·真实 key 由运营配置·infra-gated）'
+            )
+            return  # 空生成器：诚实不出数，不 fake
+        cfg = request.config or {}
+        city = str(cfg.get('city') or cfg.get('region') or '').strip()
+        limit = min(max(request.max_results, 1), _CRAWL_HARD_CAP)
+        pois = await search_place_pois(
+            keyword=request.keyword, city=city, limit=limit, amap_key=amap_key, baidu_ak=baidu_ak
+        )
+        emitted = 0
+        for poi in pois:
+            if should_continue is not None and not should_continue():
+                break  # ④ 真流式收口：调用方已凑够目标 → 不再产出后续 POI（与 firecrawl 路径一致）
+            structured = poi_to_structured(poi)
+            yield CrawledItem(
+                source_type=self.source_type,
+                source_url=f'maps://{poi.get("source", "amap")}/{structured["company_name"]}',
+                title=structured['company_name'],
+                structured_payload=structured,
+                llm_confidence=0.9,  # POI 来自权威 Place API（已结构化），高可信
+                extract_mode='maps_poi',
+                raw_payload=poi,
+                metadata={'maps_source': poi.get('source'), 'location': poi.get('location')},
+            )
+            emitted += 1
+            if emitted >= limit:
+                break
 
 
 @register('yellow_pages')

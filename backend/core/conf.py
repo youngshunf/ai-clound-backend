@@ -172,6 +172,18 @@ class Settings(BaseSettings):
     GROWTH_FREE_LEADS_PER_MONTH: int = 50  # 每用户每月免费可领取线索条数
     GROWTH_LEAD_UNIT_PRICE_FEN: int = 100  # 购买线索单价（分/条），默认 ¥1.00/条
 
+    # 获客采集 — 地图 POI 源（doc93 §3.2 maps 混合架构）：地图走官方 Place API 直出 POI，
+    # **跳过 firecrawl + LLM**（POI 本就结构化）。高德优先，回落百度；都为空则 maps 源诚实跳过
+    # （不 fake，真实 key 由运营配置，真抓 E2E infra-gated）。配置即生效，不动代码。
+    AMAP_API_KEY: str = ''  # 高德地图 Web 服务 API Key（env AMAP_API_KEY）
+    BAIDU_MAP_AK: str = ''  # 百度地图 Web 服务 AK（env BAIDU_MAP_AK）
+
+    # 获客采集 — 住宅代理池（doc93 §4.1 反爬底座）：**平台成本·运营配置·不向用户计费**。
+    # firecrawl 自托管侧配 PROXY_SERVER 环境变量、Scrapy 侧走代理中间件；此处仅作云端侧的
+    # 代理出口配置接缝（传给 lead-crawler-service 的抓取请求），为空表示不启用代理。
+    # 凭据仅服务端持有，**绝不入库 / 绝不提交**（真实账号 infra-gated）。
+    GROWTH_PROXY_POOL_URL: str = ''  # 住宅代理出口 URL（如 socks5h://user:pass@host:port），env GROWTH_PROXY_POOL_URL
+
     # 统一视频引擎（studio / montage-engine-service）BYO 长尾媒体凭据平台兜底（doc22 §5 P7）：
     # 主人没自带 key 时，对该 provider 用平台公共 key（运营自费），为空则该 provider 跳过（诚实，零 fake）。
     # 网关族（image/tts/stt/video）不在此——它们经 new-api 用主人自己的 relay token（OWNER 配额计费），

@@ -123,7 +123,12 @@ async def test_period_reset_zeroes_free_used(session, monkeypatch) -> None:
 async def test_handle_lead_pack_paid_grants_real(monkeypatch) -> None:
     """线索购买支付回调真实写库（独立 session·提交）→ 余额增加；用完即清理。"""
     from backend.app.hasn_growth.service.lead_pack_callback import handle_lead_pack_paid
-    from backend.database.db import async_db_session
+    from backend.database.db import async_db_session, async_engine
+
+    # 本测试用全局 async_db_session（验真实回调的提交路径），其连接池绑定到首次使用的事件循环；
+    # pytest-asyncio 每个测试一个新循环，全套运行时池里残留上个测试循环的连接 → "got Future
+    # attached to a different loop"。先 dispose 强制在当前循环重建连接，令本测试与运行顺序无关。
+    await async_engine.dispose()
 
     uid = _uid()
     order = SimpleNamespace(
