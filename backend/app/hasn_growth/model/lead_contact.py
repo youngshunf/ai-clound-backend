@@ -18,6 +18,9 @@ class LeadContact(HasnGrowthAppBase):
 
     id: Mapped[id_key] = mapped_column(init=False)
     lead_no: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
+    # 统一线索池：pool_visibility 区分公共可匹配/私有；lead_scope/user_id 为过渡列（切到 lead_ref 后由
+    # 2026-06-27-drop-contact-scope-columns.sql 删除·见 lead_ref 引用表）。
+    pool_visibility: Mapped[str] = mapped_column(sa.String(16), default='public', comment=None)
     lead_scope: Mapped[str] = mapped_column(sa.String(16), default='', comment=None)
     user_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     company_name: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment=None)

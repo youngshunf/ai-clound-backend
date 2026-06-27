@@ -18,3 +18,4 @@ from backend.app.hasn_growth.model.optout_record import OptoutRecord as OptoutRe
 from backend.app.hasn_growth.model.crawled_url import CrawledUrl as CrawledUrl
 from backend.app.hasn_growth.model.industry_tag import IndustryTag as IndustryTag
 from backend.app.hasn_growth.model.lead_quota import LeadQuota as LeadQuota
+from backend.app.hasn_growth.model.lead_ref import LeadRef as LeadRef
