@@ -1,13 +1,19 @@
 import uuid
-from datetime import timedelta
-from typing import Any, Sequence
 
-from sqlalchemy import select
+from collections.abc import Sequence
+from datetime import timedelta
+from typing import Any
+
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_node_bindings import hasn_node_bindings_dao
 from backend.app.hasn.model import HasnNodeBindings
-from backend.app.hasn.schema.hasn_node_bindings import CreateHasnNodeBindingsParam, DeleteHasnNodeBindingsParam, UpdateHasnNodeBindingsParam
+from backend.app.hasn.schema.hasn_node_bindings import (
+    CreateHasnNodeBindingsParam,
+    DeleteHasnNodeBindingsParam,
+    UpdateHasnNodeBindingsParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
@@ -88,11 +94,16 @@ class HasnNodeBindingsService:
 
     @staticmethod
     async def get_active_binding(*, db: AsyncSession, node_id: str, owner_id: str) -> HasnNodeBindings | None:
+        # Core/05 §5.2 租约失效：status=active 且 expires_at > now 才算有效（expires_at 列
+        # NOT NULL，默认绑定 +7 天、可续期）。过期 binding 即使 status 仍 active 也 MUST NOT
+        # 参与路由 / 鉴权；异常 NULL（不该发生）经 SQL 三值逻辑天然 fail-closed 不返回。
+        now = timezone.now()
         result = await db.execute(
             select(HasnNodeBindings).where(
                 HasnNodeBindings.node_id == node_id,
                 HasnNodeBindings.owner_id == owner_id,
                 HasnNodeBindings.status == 'active',
+                HasnNodeBindings.expires_at > now,
             )
         )
         return result.scalar_one_or_none()
@@ -158,13 +169,34 @@ class HasnNodeBindingsService:
 
     @staticmethod
     async def list_active_bindings(*, db: AsyncSession, node_id: str) -> Sequence[HasnNodeBindings]:
+        # Core/05 §5.2: 仅返回未过期的 active 租约（过期视为已失效，不参与路由）。
+        now = timezone.now()
         result = await db.execute(
             select(HasnNodeBindings).where(
                 HasnNodeBindings.node_id == node_id,
                 HasnNodeBindings.status == 'active',
+                HasnNodeBindings.expires_at > now,
             ).order_by(HasnNodeBindings.created_time.desc())
         )
         return result.scalars().all()
+
+    @staticmethod
+    async def expire_stale_bindings(*, db: AsyncSession) -> int:
+        """Sweeper：把已过期（expires_at <= now）仍标 active 的租约改 status=expired。
+
+        查询热路径已用 expires_at 过滤兜住安全（过期 binding 不参与路由）；本 sweeper
+        负责把状态落实为 expired，供设备管理页 / 审计反映真实租约状态。返回清理条数。
+        """
+        now = timezone.now()
+        result = await db.execute(
+            update(HasnNodeBindings)
+            .where(
+                HasnNodeBindings.status == 'active',
+                HasnNodeBindings.expires_at <= now,
+            )
+            .values(status='expired', updated_time=now)
+        )
+        return result.rowcount or 0
 
 
 hasn_node_bindings_service: HasnNodeBindingsService = HasnNodeBindingsService()

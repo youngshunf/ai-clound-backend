@@ -115,12 +115,16 @@ async def hasn_node_websocket(
             await websocket.close(code=4001, reason=f'不支持的认证方式: {scheme}，请使用 Bearer 或 OwnerKey')
             return
 
-        # 读取 node_id（客户端设备指纹派生）
-        node_id = (
-            websocket.headers.get('X-Node-Id')
-            or websocket.query_params.get('node_id')
-            or f'n_tmp_{id(websocket)}'  # Web 端兜底
-        )
+        # 读取 node_id（客户端设备指纹派生）。Core/05 §5.1: node_id MUST 由设备指纹
+        # 派生，服务端禁止用进程内地址凭空伪造——缺失 X-Node-Id（且无显式 node_id query）
+        # 直接拒连，避免伪造的临时 node_id 被当真身份注册节点 / 落入 binding 参与路由。
+        node_id = websocket.headers.get('X-Node-Id') or websocket.query_params.get('node_id')
+        if not node_id:
+            await websocket.close(
+                code=4001,
+                reason='缺少 X-Node-Id 节点标识（Core/05 §5.1：node_id 必须由设备指纹派生）',
+            )
+            return
         node_name = websocket.headers.get('X-Node-Name')
 
         auth = await authenticate_ws_connection(scheme, credentials, node_id, node_name)

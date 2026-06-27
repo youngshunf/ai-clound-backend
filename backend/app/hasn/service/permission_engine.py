@@ -41,23 +41,38 @@ class PermissionEngine:
                 await self._audit_safe(db, sender, receiver, iron)
                 return iron
 
-            # 2. 灰度委托 route_guard 做 diff log (不阻断；灰度期 1 周)
-            try:
-                legacy_ok = await route_guard.check_permission(
-                    db,
-                    sender.get('hasn_id', ''),
-                    receiver.get('hasn_id', ''),
-                    envelope.get('relation_type', 'social'),
-                )
-                if not legacy_ok:
-                    log.warning(
-                        f'[perm_engine] matrix allow 但 route_guard deny: '
-                        f'{sender.get("hasn_id")} → {receiver.get("hasn_id")}'
+            # 2. 矩阵层 H2H 关系门控（C1 安全修复）：人→人普通消息不经入站门控
+            #    （inbound_gatekeeper 只管 to=Agent），历史在此默认 ALLOW → 陌生人可直发，
+            #    违反 Core/04 §1 发布门禁。这里对 H2H 调 route_guard 关系判定（无关系 / 黑名单
+            #    → DENY）。涉及 Agent / service / system 的消息不在此拦截：to=Agent 已由
+            #    inbound_gatekeeper 五闸门控；service→Agent / Agent→主人 等各有链路。
+            sender_id = sender.get('hasn_id', '')
+            receiver_id = receiver.get('hasn_id', '')
+            if (
+                sender.get('entity_type') == 'human'
+                and receiver.get('entity_type') == 'human'
+                and sender_id
+                and sender_id != receiver_id
+            ):
+                try:
+                    h2h_ok = await route_guard.check_permission(
+                        db, sender_id, receiver_id,
+                        envelope.get('relation_type', 'social'),
                     )
-            except Exception as exc:
-                log.warning(f'[perm_engine] route_guard 灰度调用失败, 忽略: {exc}')
+                except Exception as exc:
+                    log.warning(f'[perm_engine] H2H route_guard 异常, fail-closed DENY: {exc}')
+                    h2h_ok = False
+                if not h2h_ok:
+                    deny = DecisionResult(
+                        decision=DENY,
+                        reason='no relationship: stranger H2H message blocked (Core/04 §1)',
+                        matched_rule='matrix_h2h_relation',
+                        error_code=2002,
+                    )
+                    await self._audit_safe(db, sender, receiver, deny, severity='warning')
+                    return deny
 
-            # 3. 矩阵默认 ALLOW (细粒度矩阵留给 spawner 工具层 phase)
+            # 3. 矩阵放行（H2H 已过关系门控；细粒度 action 矩阵留工具层 phase）
             result = DecisionResult(
                 decision=ALLOW,
                 reason='matrix passed',

@@ -381,7 +381,8 @@ async def register_hasn_identity(
         }
 
     # 生成 HASN ID 和 Star ID
-    hasn_id = f'h_{uuid.uuid4()}'
+    # Core/02 §2.1: ^h_[a-z0-9]{16,22}$（hex 全小写 20 字符合规；旧 uuid4() 带连字符共 36 字符违规）
+    hasn_id = f'h_{uuid.uuid4().hex[:20]}'
     star_id = await _next_star_id(db)
 
     # 创建 Human
@@ -422,7 +423,7 @@ def _format_created_at(value: Any) -> str:
     dt = value or timezone.now()
     try:
         return dt.strftime('%Y-%m-%d')
-    except Exception:  # noqa: BLE001 — 任意时间类型兜底成字符串
+    except Exception:
         return str(dt)
 
 
@@ -532,23 +533,23 @@ async def register_hasn_agent(
     if existing_agent:
         # 建档即替换（幂等回填同样要完整）：用现存 star_id/hasn_id/创建时间渲染占位符，
         # 再参与下面的「变了才更新」比较，避免把带 {{}} 的模板原文回填进权威 profile。
-        _eff_display = display_name or existing_agent.display_name
-        _created = _format_created_at(getattr(existing_agent, 'created_time', None))
+        eff_display = display_name or existing_agent.display_name
+        created = _format_created_at(getattr(existing_agent, 'created_time', None))
         soul_md = _render_for(
-            soul_md, agent_display=_eff_display, a_name=existing_agent.agent_name,
-            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=_created,
+            soul_md, agent_display=eff_display, a_name=existing_agent.agent_name,
+            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=created,
         )
         agents_md = _render_for(
-            agents_md, agent_display=_eff_display, a_name=existing_agent.agent_name,
-            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=_created,
+            agents_md, agent_display=eff_display, a_name=existing_agent.agent_name,
+            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=created,
         )
         user_md = _render_for(
-            user_md, agent_display=_eff_display, a_name=existing_agent.agent_name,
-            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=_created,
+            user_md, agent_display=eff_display, a_name=existing_agent.agent_name,
+            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=created,
         )
         memory_md = _render_for(
-            memory_md, agent_display=_eff_display, a_name=existing_agent.agent_name,
-            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=_created,
+            memory_md, agent_display=eff_display, a_name=existing_agent.agent_name,
+            a_star=existing_agent.star_id, a_id=existing_agent.hasn_id, a_created=created,
         )
         # 幂等更新：如果属性变了，更新记录
         updated = False
@@ -591,27 +592,27 @@ async def register_hasn_agent(
         }
 
     # 生成身份
-    agent_hasn_id = f'a_{uuid.uuid4()}'
+    agent_hasn_id = f'a_{uuid.uuid4().hex[:20]}'  # Core/02 §2.1: ^a_[a-z0-9]{16,22}$（同 human 修正）
     agent_star_id = f'{owner.star_id}#{agent_name}'
     agent_key, agent_key_hash = _generate_agent_key()
 
     # 建档即替换：star_id/hasn_id 已分配，用真实值渲染 persona/记忆占位符再落库（落库即权威）。
-    _created = _format_created_at(None)
+    created = _format_created_at(None)
     soul_md = _render_for(
         soul_md, agent_display=display_name, a_name=agent_name,
-        a_star=agent_star_id, a_id=agent_hasn_id, a_created=_created,
+        a_star=agent_star_id, a_id=agent_hasn_id, a_created=created,
     )
     agents_md = _render_for(
         agents_md, agent_display=display_name, a_name=agent_name,
-        a_star=agent_star_id, a_id=agent_hasn_id, a_created=_created,
+        a_star=agent_star_id, a_id=agent_hasn_id, a_created=created,
     )
     user_md = _render_for(
         user_md, agent_display=display_name, a_name=agent_name,
-        a_star=agent_star_id, a_id=agent_hasn_id, a_created=_created,
+        a_star=agent_star_id, a_id=agent_hasn_id, a_created=created,
     )
     memory_md = _render_for(
         memory_md, agent_display=display_name, a_name=agent_name,
-        a_star=agent_star_id, a_id=agent_hasn_id, a_created=_created,
+        a_star=agent_star_id, a_id=agent_hasn_id, a_created=created,
     )
 
     agent = HasnAgents(

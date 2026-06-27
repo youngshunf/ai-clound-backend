@@ -20,7 +20,6 @@ import pytest
 
 from backend.app.hasn.constants import ALLOW, CONFIRM, DENY, SCOPE_LTD
 
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -133,7 +132,7 @@ def _extract_pushed_envelope(push_mock) -> dict:
 
 
 # ── Test 1: ALLOW → push + envelope 含 permission ──
-async def test_allow_pushes_with_permission(monkeypatch):
+async def test_allow_pushes_with_permission(monkeypatch) -> None:
     mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
     from backend.app.hasn.service.message_router import route_message
 
@@ -150,7 +149,7 @@ async def test_allow_pushes_with_permission(monkeypatch):
     assert envelope['permission']['decision'] == 'allow'
 
 
-async def test_agent_target_also_pushes_to_owner_without_runtime(monkeypatch):
+async def test_agent_target_also_pushes_to_owner_without_runtime(monkeypatch) -> None:
     """发给 Agent 的消息不依赖 Runtime 在线；Owner 在线节点也收到同一 IM 消息。"""
     mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
     from backend.app.hasn.service import message_router as mr
@@ -166,6 +165,12 @@ async def test_agent_target_also_pushes_to_owner_without_runtime(monkeypatch):
             'name': 'receiver-agent',
             'owner_id': 'h_owner',
         }),
+    )
+    # to=Agent 走 INGATE 入站门控；本用例只验证 permission 出口，放行入站门控
+    # （否则 _fake_db() MagicMock 喂给 evaluate_inbound 的真实查询会 fail-closed suppress）。
+    monkeypatch.setattr(
+        mr, 'evaluate_inbound',
+        AsyncMock(return_value=SimpleNamespace(action='allow')),
     )
 
     result = await route_message(
@@ -187,7 +192,7 @@ async def test_agent_target_also_pushes_to_owner_without_runtime(monkeypatch):
 
 
 # ── Test 2: DENY → 不 push，返回 error ──
-async def test_deny_returns_error_no_push(monkeypatch):
+async def test_deny_returns_error_no_push(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=DENY, perm_reason='blocked', error_code=2002,
     )
@@ -204,7 +209,7 @@ async def test_deny_returns_error_no_push(monkeypatch):
 
 
 # ── Test 3: CONFIRM → 调 _stash_pending_commitment，不 push ──
-async def test_confirm_stashes_no_push(monkeypatch):
+async def test_confirm_stashes_no_push(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=CONFIRM, perm_reason='need confirm',
     )
@@ -222,7 +227,7 @@ async def test_confirm_stashes_no_push(monkeypatch):
 
 
 # ── Test 4: SCOPE_LTD → mask content 仅保留 allowed_fields ──
-async def test_scope_limited_applies_mask(monkeypatch):
+async def test_scope_limited_applies_mask(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=SCOPE_LTD, allowed_fields=['body'],
     )
@@ -240,7 +245,7 @@ async def test_scope_limited_applies_mask(monkeypatch):
 
 
 # ── Test 5: ALLOW & SCOPE_LTD 都带 permission 子对象 ──
-async def test_envelope_contains_permission_always(monkeypatch):
+async def test_envelope_contains_permission_always(monkeypatch) -> None:
     for decision, fields in [(ALLOW, None), (SCOPE_LTD, ['body'])]:
         mocks = _patch_router_pipeline(
             monkeypatch, perm_decision=decision, allowed_fields=fields,
@@ -257,7 +262,7 @@ async def test_envelope_contains_permission_always(monkeypatch):
 
 
 # ── Test 6: legacy check_relation_permission 已不被 route_message 调用 ──
-async def test_legacy_check_relation_permission_not_called(monkeypatch):
+async def test_legacy_check_relation_permission_not_called(monkeypatch) -> None:
     mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
     from backend.app.hasn.service.message_router import route_message
 

@@ -8,6 +8,8 @@ permission_engine 自身保证审计因果链)。命中任一铁律即返回 Dec
 """
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,8 +53,55 @@ def _infer_behavior(envelope: dict[str, Any]) -> str:
     return (envelope.get('metadata') or {}).get('behavior', 'free_chat')
 
 
+# ── 敏感值模式 (铁律④：不止看键名，还要查文本值里的真实敏感数据) ──
+_ID_CARD_RE = re.compile(r'(?<!\d)\d{17}[\dXx](?!\d)')        # 中国身份证 18 位（末位可 X）
+_CARD_CANDIDATE_RE = re.compile(r'(?<!\d)\d{13,19}(?!\d)')    # 银行卡 / 信用卡候选 13-19 位
+
+
+def _luhn_valid(number: str) -> bool:
+    """Luhn 校验（银行卡 / 信用卡通用）：降低普通长数字（订单号 / 时间戳）误判为卡号。"""
+    total = 0
+    for i, ch in enumerate(reversed(number)):
+        d = ord(ch) - 48
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _iter_text_values(value: Any) -> list[str]:
+    """递归收集 content 内所有字符串值（铁律④值级扫描用：含 content.text 等嵌套）。"""
+    out: list[str] = []
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, dict):
+        for v in value.values():
+            out.extend(_iter_text_values(v))
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            out.extend(_iter_text_values(v))
+    return out
+
+
 def _contains_sensitive(content: dict[str, Any]) -> bool:
-    return any(k in _SENSITIVE_FIELDS for k in (content or {}).keys())
+    """铁律④敏感检测：① content 顶层键名命中敏感字段白名单；或 ② 任一文本值
+    （含 content.text 等嵌套）匹配身份证 / 通过 Luhn 的银行卡号模式。
+
+    旧实现只查键名（content 含 'id_card' 键），漏掉真实消息把卡号 / 身份证写进
+    content.text 文本值的场景——本修复补上值级正则 + Luhn 扫描。
+    """
+    content = content or {}
+    if any(k in _SENSITIVE_FIELDS for k in content.keys()):
+        return True
+    for text in _iter_text_values(content):
+        if _ID_CARD_RE.search(text):
+            return True
+        for match in _CARD_CANDIDATE_RE.finditer(text):
+            if _luhn_valid(match.group()):
+                return True
+    return False
 
 
 def _non_sensitive_fields(envelope: dict[str, Any]) -> list[str]:

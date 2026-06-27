@@ -15,7 +15,6 @@ import pytest
 
 from backend.app.hasn.constants import ALLOW, CONFIRM, DENY, SCOPE_LTD
 
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -47,7 +46,7 @@ def _patch_redis_pass(monkeypatch) -> None:
 
 
 # ── ① Agent 身份透明 ──
-async def test_iron_law_1_agent_must_declare_identity(monkeypatch):
+async def test_iron_law_1_agent_must_declare_identity(monkeypatch) -> None:
     from backend.app.hasn.service.iron_laws import check_iron_laws
 
     _patch_redis_pass(monkeypatch)
@@ -63,7 +62,7 @@ async def test_iron_law_1_agent_must_declare_identity(monkeypatch):
 
 
 # ── ② Owner 绝对控制权 ──
-async def test_iron_law_2_owner_controls_own_agent(monkeypatch):
+async def test_iron_law_2_owner_controls_own_agent(monkeypatch) -> None:
     from backend.app.hasn.service.iron_laws import check_iron_laws
 
     _patch_redis_pass(monkeypatch)
@@ -77,7 +76,7 @@ async def test_iron_law_2_owner_controls_own_agent(monkeypatch):
 
 
 # ── ③ 承诺需人类确认 ──
-async def test_iron_law_3_commitment_requires_confirm(monkeypatch):
+async def test_iron_law_3_commitment_requires_confirm(monkeypatch) -> None:
     from backend.app.hasn.service.iron_laws import check_iron_laws
 
     _patch_redis_pass(monkeypatch)
@@ -92,7 +91,7 @@ async def test_iron_law_3_commitment_requires_confirm(monkeypatch):
 
 
 # ── ④ 敏感数据禁区 ──
-async def test_iron_law_4_sensitive_data_scope_limited(monkeypatch):
+async def test_iron_law_4_sensitive_data_scope_limited(monkeypatch) -> None:
     from backend.app.hasn.service.iron_laws import check_iron_laws
 
     _patch_redis_pass(monkeypatch)
@@ -111,7 +110,7 @@ async def test_iron_law_4_sensitive_data_scope_limited(monkeypatch):
 
 
 # ── ⑤ 通信边界强制 ──
-async def test_iron_law_5_commerce_blocks_free_chat(monkeypatch):
+async def test_iron_law_5_commerce_blocks_free_chat(monkeypatch) -> None:
     from backend.app.hasn.service.iron_laws import check_iron_laws
 
     _patch_redis_pass(monkeypatch)
@@ -126,7 +125,7 @@ async def test_iron_law_5_commerce_blocks_free_chat(monkeypatch):
 
 
 # ── ⑥ 频率限制 ──
-async def test_iron_law_6_rate_limit_exceeded(monkeypatch):
+async def test_iron_law_6_rate_limit_exceeded(monkeypatch) -> None:
     from backend.app.hasn.service import iron_laws as mod
 
     # 让 zcard 返回 100 (>= 100 触发 deny)
@@ -149,7 +148,7 @@ async def test_iron_law_6_rate_limit_exceeded(monkeypatch):
 
 
 # ── 全部 pass ──
-async def test_iron_laws_all_pass_returns_none(monkeypatch):
+async def test_iron_laws_all_pass_returns_none(monkeypatch) -> None:
     _patch_redis_pass(monkeypatch)
     from backend.app.hasn.service.iron_laws import check_iron_laws
 
@@ -158,4 +157,47 @@ async def test_iron_laws_all_pass_returns_none(monkeypatch):
 
     # human-to-human, social, free_chat, no sensitive data → 全部 pass
     result = await check_iron_laws(None, sender, receiver, _envelope())
+    assert result is None
+
+
+# ── ④值检测（C4 安全修复）：content.text 里的真实身份证 / 银行卡，旧实现只查键名会漏 ──
+async def test_iron_law_4_detects_id_card_in_text(monkeypatch) -> None:
+    _patch_redis_pass(monkeypatch)
+    from backend.app.hasn.service.iron_laws import check_iron_laws
+
+    sender = {'hasn_id': 'h_a', 'entity_type': 'human'}
+    receiver = {'hasn_id': 'h_b', 'entity_type': 'human'}
+    env = _envelope(content={'body': '我的身份证号是 110101199003078515 麻烦记一下'})
+
+    result = await check_iron_laws(None, sender, receiver, env)
+    assert result is not None
+    assert result.decision == SCOPE_LTD
+    assert result.matched_rule == 'iron_law_4'
+
+
+async def test_iron_law_4_detects_bank_card_luhn(monkeypatch) -> None:
+    _patch_redis_pass(monkeypatch)
+    from backend.app.hasn.service.iron_laws import check_iron_laws
+
+    sender = {'hasn_id': 'h_a', 'entity_type': 'human'}
+    receiver = {'hasn_id': 'h_b', 'entity_type': 'human'}
+    # 通过 Luhn 校验的银行卡号（Visa 测试号 4532015112830366）
+    env = _envelope(content={'body': '卡号 4532015112830366 帮我转一下'})
+
+    result = await check_iron_laws(None, sender, receiver, env)
+    assert result is not None
+    assert result.decision == SCOPE_LTD
+    assert result.matched_rule == 'iron_law_4'
+
+
+async def test_iron_law_4_normal_short_numbers_not_flagged(monkeypatch) -> None:
+    _patch_redis_pass(monkeypatch)
+    from backend.app.hasn.service.iron_laws import check_iron_laws
+
+    sender = {'hasn_id': 'h_a', 'entity_type': 'human'}
+    receiver = {'hasn_id': 'h_b', 'entity_type': 'human'}
+    # 普通短数字（订单号 / 金额）不应误判为敏感 → 全部 pass（不误杀）
+    env = _envelope(content={'body': '订单号 20260626 共 100 元已收到'})
+
+    result = await check_iron_laws(None, sender, receiver, env)
     assert result is None

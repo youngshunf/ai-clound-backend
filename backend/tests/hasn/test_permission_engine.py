@@ -17,7 +17,6 @@ import pytest
 
 from backend.app.hasn.constants import ALLOW, CONFIRM, DENY, SCOPE_LTD
 
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -34,10 +33,7 @@ def _patch_engine_deps(monkeypatch, *, iron_result=None, legacy_ok=True, audit_r
         raising=False,
     )
 
-    if audit_raises:
-        audit_mock = AsyncMock(side_effect=RuntimeError('audit DB down'))
-    else:
-        audit_mock = AsyncMock(return_value=None)
+    audit_mock = AsyncMock(side_effect=RuntimeError('audit DB down')) if audit_raises else AsyncMock(return_value=None)
     monkeypatch.setattr(
         eng_mod.hasn_audit_log_service, 'append', audit_mock, raising=False,
     )
@@ -56,7 +52,7 @@ def _entities():
 
 
 # ── Test 1: Fail-closed on internal exception ──
-async def test_evaluate_fail_closed_on_exception(monkeypatch):
+async def test_evaluate_fail_closed_on_exception(monkeypatch) -> None:
     from backend.app.hasn.service import permission_engine as eng_mod
 
     # check_iron_laws 抛异常 → evaluate 必须 Fail-closed DENY
@@ -79,7 +75,7 @@ async def test_evaluate_fail_closed_on_exception(monkeypatch):
 
 
 # ── Test 2: iron_laws 返回 DENY 直接透传 + audit warning ──
-async def test_evaluate_passes_through_iron_law_deny(monkeypatch):
+async def test_evaluate_passes_through_iron_law_deny(monkeypatch) -> None:
     from backend.app.hasn.service.iron_laws import DecisionResult
 
     iron_deny = DecisionResult(
@@ -104,7 +100,7 @@ async def test_evaluate_passes_through_iron_law_deny(monkeypatch):
 
 
 # ── Test 3: iron_laws None + 灰度 route_guard 允许 → matrix ALLOW ──
-async def test_evaluate_matrix_allow_when_legacy_agrees(monkeypatch):
+async def test_evaluate_matrix_allow_when_legacy_agrees(monkeypatch) -> None:
     mocks = _patch_engine_deps(monkeypatch, iron_result=None, legacy_ok=True)
 
     from backend.app.hasn.service.permission_engine import permission_engine
@@ -118,23 +114,45 @@ async def test_evaluate_matrix_allow_when_legacy_agrees(monkeypatch):
     mocks['audit'].assert_called_once()
 
 
-# ── Test 4: iron_laws None + 灰度 route_guard 拒绝 → 灰度仅 diff log，不阻断 ──
-async def test_evaluate_grayscale_does_not_block(monkeypatch):
+# ── Test 4: iron_laws None + H2H route_guard 拒绝 → DENY（C1 陌生人门控，Core/04 §1）──
+async def test_evaluate_h2h_stranger_denied(monkeypatch) -> None:
     _patch_engine_deps(monkeypatch, iron_result=None, legacy_ok=False)
 
     from backend.app.hasn.service.permission_engine import permission_engine
 
-    sender, receiver, envelope = _entities()
+    sender, receiver, envelope = _entities()  # 双方 human（H2H）
     result = await permission_engine.evaluate(
         None, sender=sender, receiver=receiver, envelope=envelope,
     )
-    # 即使 route_guard 返回 False，灰度期 evaluate 仍返回 ALLOW
+    # H2H 且无关系（route_guard False）→ DENY（不再灰度放行；修复陌生人直发）
+    assert result.decision == DENY
+    assert result.matched_rule == 'matrix_h2h_relation'
+    assert result.error_code == 2002
+
+
+# ── Test 4c: receiver=Agent 时不套用 H2H 门控（to=Agent 由 inbound_gatekeeper 管）──
+async def test_evaluate_non_h2h_not_relation_gated(monkeypatch) -> None:
+    # route_guard 即使 False，receiver=agent 也不应被 H2H 门控拦截 → 维持矩阵 ALLOW，
+    # 避免误伤 service→Agent / 跨 owner Agent 路径（它们有各自门控）。
+    _patch_engine_deps(monkeypatch, iron_result=None, legacy_ok=False)
+
+    from backend.app.hasn.service.permission_engine import permission_engine
+
+    sender = {'hasn_id': 'h_sender', 'entity_type': 'human'}
+    receiver = {'hasn_id': 'a_agent', 'entity_type': 'agent', 'owner_id': 'h_other'}
+    envelope = {
+        'msg_type': 'message', 'content': {'body': 'x'},
+        'relation_type': 'social', 'metadata': {}, 'from_entity_type': 'human',
+    }
+    result = await permission_engine.evaluate(
+        None, sender=sender, receiver=receiver, envelope=envelope,
+    )
     assert result.decision == ALLOW
     assert result.matched_rule == 'matrix'
 
 
 # ── Test 5: snake_case decision 字面量与 Rust PermissionDecision 字节对齐 ──
-async def test_decision_literals_byte_aligned_with_rust():
+async def test_decision_literals_byte_aligned_with_rust() -> None:
     """断言 constants 字面量与 07-01 Rust 侧 serde rename_all='snake_case' 输出对齐。"""
     assert ALLOW == 'allow'
     assert DENY == 'deny'
@@ -151,7 +169,7 @@ async def test_decision_literals_byte_aligned_with_rust():
 
 
 # ── Test 6: audit 失败不阻断主流程 (Rule 2 / D-03 partial) ──
-async def test_audit_failure_does_not_break_flow(monkeypatch):
+async def test_audit_failure_does_not_break_flow(monkeypatch) -> None:
     _patch_engine_deps(
         monkeypatch, iron_result=None, legacy_ok=True, audit_raises=True,
     )
