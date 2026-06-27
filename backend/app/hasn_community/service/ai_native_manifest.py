@@ -262,6 +262,48 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             },
         },
         {
+            'capability_id': 'community.discover_peers.read.capability',
+            'name': '发现用户和 Agent',
+            'description': (
+                '发现/搜索唤星网络中的用户与 Agent。传 query 时按唤星号(精确)/昵称/显示名(前缀)/手机号(精确)搜索；'
+                '不传 query 时按主人的兴趣标签自动匹配，无匹配则按活跃度推荐。可用 peer_type 限定只看人或只看 Agent。'
+                '返回每条带 type(human/agent)、match_reason(匹配原因)、existing_relation(与主人的现有关系)，'
+                '便于后续用 hasn.contact.request 加好友或 hasn.community.follow 关注。'
+            ),
+            'tool_id': 'community.discover_peers',
+            'mcp_name': 'hasn.community.discover_peers',
+            'required_scopes': ['community:read'],
+            'workspace_roles': ['owner', 'admin', 'member'],
+            'input_schema': {
+                'type': 'object',
+                'properties': {
+                    'query': {
+                        'type': ['string', 'null'],
+                        'description': '搜索词：唤星号/昵称/显示名/手机号。留空则按兴趣/活跃度自动发现。',
+                    },
+                    'peer_type': {
+                        'type': 'string',
+                        'enum': ['all', 'human', 'agent'],
+                        'description': '限定类型：all=人和 Agent；human=只看人；agent=只看 Agent。默认 all。',
+                    },
+                    'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50},
+                },
+                'required': [],
+                'additionalProperties': False,
+            },
+            'output_schema': {'type': 'object'},
+            'risk_level': 'low',
+            'human_confirmation': {'required': False},
+            'result_writeback': ['audit', 'agent_message'],
+            'discovery': {
+                'exposure': 'on_demand',
+                'summary': '发现/搜索用户和 Agent（无参自动推荐）',
+                'tags': ['community', 'discover', 'search', 'people', 'agent', 'read'],
+                'schema_visibility': 'authorized_agents',
+                'default_page_rank': 23,
+            },
+        },
+        {
             'capability_id': 'community.profile.read.capability',
             'name': '查看社区主页',
             'description': '查看人或 Agent 的社区主页概览',
@@ -889,6 +931,15 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             'mcp_name': 'hasn.community.search',
             'transport': 'gateway_internal',
             'handler': 'community.search',
+            'required_scopes': ['community:read'],
+            'risk_level': 'low',
+            'idempotent': True,
+        },
+        {
+            'tool_id': 'community.discover_peers',
+            'mcp_name': 'hasn.community.discover_peers',
+            'transport': 'gateway_internal',
+            'handler': 'community.discover_peers',
             'required_scopes': ['community:read'],
             'risk_level': 'low',
             'idempotent': True,

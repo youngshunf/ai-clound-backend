@@ -3069,6 +3069,305 @@ class CommunityService:
             'next_cursor': str(offset + limit) if has_more else None,
         }
 
+    # ==================== 发现用户与 Agent（统一搜索 + 无参自动推荐）====================
+
+    @staticmethod
+    def _peer_human_item(human: HasnHumans, *, match_reason: str, rank: int) -> dict[str, Any]:
+        """把 HasnHumans 行规范成统一发现结果 item（人）。"""
+        return {
+            '_rank': rank,
+            'hasn_id': human.hasn_id,
+            'star_id': human.star_id,
+            'type': 'human',
+            'name': human.nickname or human.star_id or '',
+            'avatar': human.avatar,
+            'bio': human.bio or '',
+            'tags': list(human.tags or []),
+            'profession': None,
+            'owner': None,
+            'match_reason': match_reason,
+            'existing_relation': None,
+        }
+
+    @staticmethod
+    def _peer_agent_item(
+        agent: HasnAgents,
+        *,
+        owner_hasn_id: str | None,
+        owner_name: str | None,
+        follower_count: int,
+        match_reason: str,
+        rank: int,
+    ) -> dict[str, Any]:
+        """把 HasnAgents 行规范成统一发现结果 item（分身）。"""
+        return {
+            '_rank': rank,
+            'hasn_id': agent.hasn_id,
+            'star_id': agent.star_id,
+            'type': 'agent',
+            'name': agent.display_name or agent.agent_name or '',
+            'avatar': agent.avatar,
+            'bio': agent.bio or agent.description or '',
+            'tags': list(agent.tags or []),
+            'profession': agent.profession,
+            'owner': {
+                'hasn_id': owner_hasn_id,
+                'display_name': owner_name or owner_hasn_id or '',
+            },
+            'follower_count': int(follower_count or 0),
+            'match_reason': match_reason,
+            'existing_relation': None,
+        }
+
+    @staticmethod
+    def _human_searchable_cond() -> Any:
+        """人是否允许被搜索/发现：community_settings.searchable 缺省或非 'false' 即可见（CS-RF-345）。"""
+        searchable_txt = HasnHumans.community_settings['searchable'].astext
+        return or_(searchable_txt.is_(None), searchable_txt != 'false')
+
+    @staticmethod
+    async def _discover_agent_rows(
+        db: AsyncSession,
+        *,
+        extra_where: list[Any],
+        order_by: list[Any],
+        limit: int,
+        exclude_owner_hasn_id: str | None,
+    ) -> list[Any]:
+        """查询可发现的分身（社交开放 + 未删 + owner join + 实时粉丝数），供搜索/推荐复用。"""
+        owner_human = aliased(HasnHumans)
+        follower_sq = (
+            select(func.count())
+            .select_from(HasnFollows)
+            .where(
+                HasnFollows.target_type == 'agent',
+                HasnFollows.target_hasn_id == HasnAgents.hasn_id,
+            )
+            .correlate(HasnAgents)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(
+                HasnAgents,
+                owner_human.hasn_id.label('owner_hasn_id'),
+                owner_human.nickname.label('owner_nickname'),
+                follower_sq.label('follower_count'),
+            )
+            .join(owner_human, HasnAgents.owner_id == owner_human.hasn_id)
+            .where(HasnAgents.social_enabled == True, HasnAgents.deleted_at.is_(None))  # noqa: E712
+        )
+        if exclude_owner_hasn_id:
+            stmt = stmt.where(HasnAgents.owner_id != exclude_owner_hasn_id)
+        for cond in extra_where:
+            stmt = stmt.where(cond)
+        stmt = stmt.order_by(*order_by).limit(limit)
+        return list((await db.execute(stmt)).all())
+
+    @staticmethod
+    async def discover_peers(
+        db: AsyncSession,
+        *,
+        viewer_user_id: int | None = None,
+        query: str | None = None,
+        peer_type: str = 'all',
+        limit: int = 12,
+    ) -> dict[str, Any]:
+        """发现用户和 Agent（统一搜索 + 无参自动推荐）。
+
+        - **传 query**：唤星号精确（含 `#` 查 agent，否则查 human）+ 昵称(human)/显示名(agent) 前缀
+          + 手机号(human)精确，human 与 agent 一起返回。
+        - **不传 query**：按主人 `tags`（兴趣）匹配 human（标签重叠）+ agent（标签/专业匹配）；
+          无兴趣信号或命中不足时回落「活跃度推荐」（agent 按粉丝数，human 按近期）。
+
+        每条带 `type`(human/agent)、`match_reason`、`existing_relation`（从主人视角，驱动「已是好友/已发送」）。
+        隐私：human 仅 active 且尊重 `searchable` 设置；agent 仅 social_enabled。从主人视角排除自己与名下分身。
+
+        :return: {items, total, mode}
+        """
+        from operator import itemgetter
+
+        from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
+        from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
+        from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+
+        q = (query or '').strip()
+        peer_type = peer_type if peer_type in ('all', 'human', 'agent') else 'all'
+        want_human = peer_type in ('all', 'human')
+        want_agent = peer_type in ('all', 'agent')
+        limit = max(1, min(int(limit or 12), 50))
+        self_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _push(item: dict[str, Any]) -> None:
+            if item['hasn_id'] in seen or item['hasn_id'] == self_hasn_id:
+                return
+            seen.add(item['hasn_id'])
+            candidates.append(item)
+
+        if q:
+            await CommunityService._discover_by_query(
+                db, q=q, self_hasn_id=self_hasn_id, want_human=want_human,
+                want_agent=want_agent, limit=limit, push=_push,
+                humans_dao=hasn_humans_dao, agents_dao=hasn_agents_dao,
+            )
+            mode = 'search'
+        else:
+            await CommunityService._discover_auto(
+                db, self_hasn_id=self_hasn_id, want_human=want_human,
+                want_agent=want_agent, limit=limit, push=_push, humans_dao=hasn_humans_dao,
+            )
+            mode = 'discover'
+
+        candidates.sort(key=itemgetter('_rank'), reverse=True)
+        items = candidates[:limit]
+
+        for item in items:
+            item.pop('_rank', None)
+            relation = None
+            if self_hasn_id:
+                relation = await hasn_contacts_dao.get_relation(db, self_hasn_id, item['hasn_id'], 'social')
+            item['existing_relation'] = relation.status if relation else None
+
+        return {'items': items, 'total': len(items), 'mode': mode}
+
+    @staticmethod
+    async def _discover_by_query(
+        db: AsyncSession, *, q: str, self_hasn_id: str | None, want_human: bool,
+        want_agent: bool, limit: int, push: Any, humans_dao: Any, agents_dao: Any,
+    ) -> None:
+        """query 模式：人与分身分头搜，结果汇入 push。"""
+        if want_human:
+            await CommunityService._query_humans(
+                db, q=q, self_hasn_id=self_hasn_id, limit=limit, push=push, humans_dao=humans_dao
+            )
+        if want_agent:
+            await CommunityService._query_agents(
+                db, q=q, self_hasn_id=self_hasn_id, limit=limit, push=push, agents_dao=agents_dao
+            )
+
+    @staticmethod
+    async def _query_humans(
+        db: AsyncSession, *, q: str, self_hasn_id: str | None, limit: int, push: Any, humans_dao: Any
+    ) -> None:
+        """query·人：唤星号精确 + 昵称前缀（仅 searchable）+ 手机号精确。"""
+        if '#' not in q:
+            human = await humans_dao.get_by_star_id(db, q)
+            if human and human.status == 'active':
+                push(CommunityService._peer_human_item(human, match_reason='唤星号精确', rank=100))
+        for h in await humans_dao.search_by_name(db, prefix=q, limit=limit, exclude_hasn_id=self_hasn_id):
+            if await community_settings_service.get_profile_flag(db, hasn_id=h.hasn_id, key='searchable'):
+                push(CommunityService._peer_human_item(h, match_reason='昵称匹配', rank=80))
+        phone_match = await humans_dao.search_by_phone(db, q, exclude_hasn_id=self_hasn_id)
+        if phone_match and phone_match.status == 'active':
+            push(CommunityService._peer_human_item(phone_match, match_reason='手机号精确', rank=100))
+
+    @staticmethod
+    async def _query_agents(
+        db: AsyncSession, *, q: str, self_hasn_id: str | None, limit: int, push: Any, agents_dao: Any
+    ) -> None:
+        """query·分身：唤星号精确（含 #）+ 显示名前缀。"""
+        if '#' in q:
+            agent = await agents_dao.get_by_star_id(db, q)
+            if agent and agent.social_enabled and agent.deleted_at is None and agent.owner_id != self_hasn_id:
+                push(CommunityService._peer_agent_item(
+                    agent, owner_hasn_id=agent.owner_id, owner_name=None,
+                    follower_count=0, match_reason='唤星号精确', rank=100,
+                ))
+        name_cond = func.lower(HasnAgents.display_name).like(f'{q.lower()}%')
+        rows = await CommunityService._discover_agent_rows(
+            db, extra_where=[name_cond], order_by=[HasnAgents.created_time.desc()],
+            limit=limit, exclude_owner_hasn_id=self_hasn_id,
+        )
+        for row in rows:
+            push(CommunityService._peer_agent_item(
+                row.HasnAgents, owner_hasn_id=row.owner_hasn_id, owner_name=row.owner_nickname,
+                follower_count=row.follower_count, match_reason='名称匹配', rank=80,
+            ))
+
+    @staticmethod
+    async def _discover_auto(
+        db: AsyncSession, *, self_hasn_id: str | None, want_human: bool,
+        want_agent: bool, limit: int, push: Any, humans_dao: Any,
+    ) -> None:
+        """无参模式：解析主人兴趣，人与分身分头「兴趣→活跃」推荐。"""
+        interests: list[str] = []
+        if self_hasn_id:
+            me = await humans_dao.get_by_hasn_id(db, self_hasn_id)
+            interests = [t for t in (me.tags or []) if t][:20] if me else []
+        if want_human:
+            await CommunityService._discover_humans(
+                db, interests=interests, self_hasn_id=self_hasn_id, limit=limit, push=push
+            )
+        if want_agent:
+            await CommunityService._discover_agents(
+                db, interests=interests, self_hasn_id=self_hasn_id, limit=limit, push=push
+            )
+
+    @staticmethod
+    async def _discover_humans(
+        db: AsyncSession, *, interests: list[str], self_hasn_id: str | None, limit: int, push: Any
+    ) -> None:
+        """无参·人：先 tags 兴趣重叠，再近期注册活跃回落（均 active + searchable）。"""
+        from sqlalchemy.dialects.postgresql import ARRAY
+
+        searchable = CommunityService._human_searchable_cond()
+        base = [HasnHumans.status == 'active', searchable]
+        if self_hasn_id:
+            base.append(HasnHumans.hasn_id != self_hasn_id)
+        if interests:
+            stmt = (
+                select(HasnHumans)
+                .where(*base, HasnHumans.tags.op('&&')(cast(interests, ARRAY(Text))))
+                .order_by(HasnHumans.id.desc())
+                .limit(limit)
+            )
+            for h in (await db.execute(stmt)).scalars().all():
+                matched = next((t for t in (h.tags or []) if t in interests), None)
+                push(CommunityService._peer_human_item(
+                    h, match_reason=f'兴趣匹配:{matched}' if matched else '兴趣匹配', rank=60,
+                ))
+        stmt = select(HasnHumans).where(*base).order_by(HasnHumans.id.desc()).limit(limit)
+        for h in (await db.execute(stmt)).scalars().all():
+            push(CommunityService._peer_human_item(h, match_reason='活跃推荐', rank=40))
+
+    @staticmethod
+    async def _discover_agents(
+        db: AsyncSession, *, interests: list[str], self_hasn_id: str | None, limit: int, push: Any
+    ) -> None:
+        """无参·分身：先 tags/专业兴趣匹配，再按粉丝活跃回落。"""
+        from sqlalchemy.dialects.postgresql import ARRAY
+
+        if interests:
+            # HasnAgents.tags 是 JSONB（非 PG 数组），用 jsonb_exists_any 判与兴趣交集
+            cond = or_(
+                func.jsonb_exists_any(HasnAgents.tags, cast(interests, ARRAY(Text))),
+                HasnAgents.profession.in_(interests),
+            )
+            rows = await CommunityService._discover_agent_rows(
+                db, extra_where=[cond], order_by=[HasnAgents.created_time.desc()],
+                limit=limit, exclude_owner_hasn_id=self_hasn_id,
+            )
+            for row in rows:
+                agent = row.HasnAgents
+                matched = next((t for t in (agent.tags or []) if t in interests), agent.profession)
+                push(CommunityService._peer_agent_item(
+                    agent, owner_hasn_id=row.owner_hasn_id, owner_name=row.owner_nickname,
+                    follower_count=row.follower_count,
+                    match_reason=f'兴趣匹配:{matched}' if matched else '兴趣匹配', rank=60,
+                ))
+        rows = await CommunityService._discover_agent_rows(
+            db, extra_where=[],
+            order_by=[text('follower_count DESC'), HasnAgents.last_heartbeat_at.desc().nullslast()],
+            limit=limit, exclude_owner_hasn_id=self_hasn_id,
+        )
+        for row in rows:
+            push(CommunityService._peer_agent_item(
+                row.HasnAgents, owner_hasn_id=row.owner_hasn_id, owner_name=row.owner_nickname,
+                follower_count=row.follower_count, match_reason='活跃推荐', rank=40,
+            ))
+
     # ==================== 待确认草稿 ====================
 
     @staticmethod

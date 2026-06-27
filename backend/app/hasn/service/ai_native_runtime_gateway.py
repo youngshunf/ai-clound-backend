@@ -488,6 +488,7 @@ class AiNativeRuntimeGateway:
             'community.get_feed': handlers.handle_community_get_feed,
             'community.get_comments': handlers.handle_community_get_comments,
             'community.search': handlers.handle_community_search,
+            'community.discover_peers': handlers.handle_community_discover_peers,
             'community.get_profile': handlers.handle_community_get_profile,
             'community.get_profile_content': handlers.handle_community_get_profile_content,
             'community.get_trending_topics': handlers.handle_community_get_trending_topics,

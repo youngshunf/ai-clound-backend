@@ -274,6 +274,21 @@ async def handle_community_search(
     )
 
 
+async def handle_community_discover_peers(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """community.discover_peers：发现用户和 Agent（传 query 走唤星号/昵称/手机号搜索；不传走兴趣/活跃自动推荐）。"""
+    return await community_service.discover_peers(
+        db,
+        viewer_user_id=agent.owner_user_id,
+        query=input_payload.get('query'),
+        peer_type=str(input_payload.get('peer_type') or 'all'),
+        limit=int(input_payload.get('limit') or 12),
+    )
+
+
 async def handle_community_get_profile(
     db: AsyncSession,
     agent: AgentTokenPayload,
