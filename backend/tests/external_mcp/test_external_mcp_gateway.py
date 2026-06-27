@@ -175,6 +175,13 @@ async def _cleanup_server(mcp_id: str, *, agent_hasn_id: str | None = None, secr
 async def _insert_loopback_server(*, name: str, endpoint: str, owner_hasn_id: str) -> str:
     """直接落一行 remote_service server 指向回环 stub（绕注册期回环 UX 闸——运行期 introspect/
     proxy 路径本就不重校回环，此处复用其代理链路做真实 socket E2E）。返回 mcp_id。"""
+    return await _insert_server(name=name, endpoint=endpoint, origin='owner', owner_hasn_id=owner_hasn_id)
+
+
+async def _insert_server(
+    *, name: str, endpoint: str, origin: str = 'owner', owner_hasn_id: str | None = None
+) -> str:
+    """直接落一行 remote_service server（管理面测试用；endpoint 不一定连接）。返回 mcp_id。"""
     from backend.app.external_mcp.service.gateway_service import _new_id
 
     mcp_id = _new_id('mcp')
@@ -187,9 +194,9 @@ async def _insert_loopback_server(*, name: str, endpoint: str, owner_hasn_id: st
                 hosting='remote_service',
                 transport='http',
                 endpoint=endpoint,
-                origin='owner',
+                origin=origin,
                 owner_hasn_id=owner_hasn_id,
-                scope='owner',
+                scope='owner' if origin != 'system' else 'system',
                 risk_level='medium',
                 advertised_tools_cache=[],
                 health_status='unknown',
@@ -409,3 +416,134 @@ async def test_unbound_agent_resolves_empty() -> None:
         agent_hasn_id=f'a_nobody_{_suffix()}', owner_hasn_id=f'h_nobody_{_suffix()}'
     )
     assert tools == []
+
+
+# --------------------------------------------------------------------------- #
+# 6. 管理面（P7-D）：凭据生命周期 + header 注入 + 行级隔离 + 列表/删除
+# --------------------------------------------------------------------------- #
+
+
+async def test_resolve_headers_substitutes_embedded_secret() -> None:
+    """`Authorization: Bearer secret://...` → 解析为 `Bearer <明文>`；撤销后 CREDENTIAL_MISSING（软挡）。"""
+    uri = secret_store.build_uri(origin='system', owner_hasn_id=None, server=f'qcc{_suffix()}', key='credential')
+    try:
+        await secret_store.write(secret_uri=uri, plaintext='tok-abc-123', origin='system')
+        resolved = await external_mcp_gateway._resolve_headers({'Authorization': f'Bearer {uri}', 'X-Plain': 'keep'})
+        assert resolved['Authorization'] == 'Bearer tok-abc-123'  # 嵌入式替换：保留 scheme 前缀
+        assert resolved['X-Plain'] == 'keep'  # 非凭据值原样透传
+        # 撤销后建连解析失败（撤销后调用软挡的实现点）。
+        await secret_store.revoke(uri)
+        with pytest.raises(McpToolError) as exc:
+            await external_mcp_gateway._resolve_headers({'Authorization': f'Bearer {uri}'})
+        assert exc.value.code == McpErrorCode.CREDENTIAL_MISSING
+    finally:
+        await secret_store.revoke(uri)
+
+
+async def test_management_credential_lifecycle_and_listing() -> None:
+    """owner 写凭据 → header 模板落库 + credential_configured；轮换；撤销；删除连带清理。"""
+    name = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    mcp_id = await _insert_server(
+        name=name, endpoint='https://api.qcc.example.com/mcp', origin='owner', owner_hasn_id=owner
+    )
+    cred_uri = secret_store.build_uri(origin='owner', owner_hasn_id=owner, server=name, key='credential')
+    try:
+        # 写凭据（明文 → 密文落库 + header 模板）。
+        res = await external_mcp_gateway.set_credential(mcp_id=mcp_id, plaintext='qcc-token-1', owner_hasn_id=owner)
+        assert res['credential_configured'] is True
+        assert res['auth_header'] == 'Authorization'
+        assert await secret_store.resolve(cred_uri) == 'qcc-token-1'
+
+        # 列表出参：credential_configured + credential_header，且**不回显明文/密文**。
+        servers = await external_mcp_gateway.list_servers(owner_hasn_id=owner, include_system=False)
+        mine = next(s for s in servers if s['mcp_id'] == mcp_id)
+        assert mine['credential_configured'] is True
+        assert mine['credential_header'] == 'Authorization'
+        assert 'headers' not in mine and 'ciphertext' not in mine  # 明文/密文绝不出 API
+
+        # 轮换：同 URI 覆盖。
+        await external_mcp_gateway.set_credential(mcp_id=mcp_id, plaintext='qcc-token-2', owner_hasn_id=owner)
+        assert await secret_store.resolve(cred_uri) == 'qcc-token-2'
+
+        # 撤销：删密文（header 模板保留 → 解析阶段软挡）。
+        revoked = await external_mcp_gateway.revoke_credential(mcp_id=mcp_id, owner_hasn_id=owner)
+        assert revoked['revoked'] is True
+        assert await secret_store.resolve(cred_uri) is None
+
+        # 删除：连带删 server。
+        assert await external_mcp_gateway.delete_server(mcp_id=mcp_id, owner_hasn_id=owner) is True
+        assert await external_mcp_gateway.get_server_detail(mcp_id=mcp_id, owner_hasn_id=owner) is None
+    finally:
+        await _cleanup_server(mcp_id, secret_uri=cred_uri)
+
+
+async def test_management_perm_isolation_and_quota() -> None:
+    """owner 不能管 system server；admin 不能管 owner server；配额仅 system。"""
+    owner = f'h_owner_{_suffix()}'
+    sys_id = await _insert_server(name=f'qcc{_suffix()}', endpoint='https://qcc.example.com/mcp', origin='system')
+    own_id = await _insert_server(
+        name=f'gmail{_suffix()}', endpoint='https://gmail.example.com/mcp', origin='owner', owner_hasn_id=owner
+    )
+    try:
+        # owner 配 system server 凭据 → 拒。
+        with pytest.raises(McpToolError) as e1:
+            await external_mcp_gateway.set_credential(mcp_id=sys_id, plaintext='x', owner_hasn_id=owner)
+        assert e1.value.code == McpErrorCode.DIRECT_CALL_DENIED
+        # admin 配 owner server 凭据 → 拒（admin 仅 system）。
+        with pytest.raises(McpToolError) as e2:
+            await external_mcp_gateway.set_credential(mcp_id=own_id, plaintext='x', is_admin=True)
+        assert e2.value.code == McpErrorCode.DIRECT_CALL_DENIED
+        # 配额仅适用 system-origin：对 owner server 配额 → 拒。
+        with pytest.raises(McpToolError) as e3:
+            await external_mcp_gateway.set_server_quota(mcp_id=own_id, per_owner_daily_quota=10, rate_limit_per_min=5)
+        assert e3.value.code == McpErrorCode.DIRECT_CALL_DENIED
+        # 对 system server 配额 → 成功落库。
+        q = await external_mcp_gateway.set_server_quota(mcp_id=sys_id, per_owner_daily_quota=200, rate_limit_per_min=30)
+        assert q['per_owner_daily_quota'] == 200 and q['rate_limit_per_min'] == 30
+
+        # owner 列表含自己的 owner server + system 共享（include_system=True）。
+        listed = await external_mcp_gateway.list_servers(owner_hasn_id=owner, include_system=True)
+        ids = {s['mcp_id'] for s in listed}
+        assert own_id in ids and sys_id in ids
+        # include_system=False 只见自己的。
+        own_only = await external_mcp_gateway.list_servers(owner_hasn_id=owner, include_system=False)
+        own_ids = {s['mcp_id'] for s in own_only}
+        assert own_id in own_ids and sys_id not in own_ids
+    finally:
+        await _cleanup_server(sys_id)
+        await _cleanup_server(own_id)
+
+
+async def test_management_credential_unblocks_proxy_auth(stub_mcp_endpoint: str) -> None:
+    """凭据写入后 proxy 建连真实带上 `Authorization: Bearer <明文>`（stub 回显校验注入生效）。"""
+    name = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    agent = f'a_agent_{_suffix()}'
+    mcp_id = await _insert_loopback_server(name=name, endpoint=stub_mcp_endpoint, owner_hasn_id=owner)
+    cred_uri = secret_store.build_uri(origin='owner', owner_hasn_id=owner, server=name, key='credential')
+    try:
+        await external_mcp_gateway.set_credential(mcp_id=mcp_id, plaintext='live-bearer-xyz', owner_hasn_id=owner)
+        await external_mcp_gateway.introspect_server(mcp_id)  # 自省带凭据建连成功（无 CREDENTIAL_MISSING）
+        await external_mcp_gateway.create_binding(
+            agent_hasn_id=agent, owner_hasn_id=owner, mcp_id=mcp_id, allowed_raw_names=['company-search']
+        )
+        result = await external_mcp_gateway.proxy_call(
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            tool_name=f'hasn.ext.{name}.company_search',
+            arguments={'keyword': '唤星'},
+        )
+        assert result['ok'] is True and '唤星' in result['text']
+        # 撤销后 proxy 建连软挡（CREDENTIAL_MISSING）。
+        await external_mcp_gateway.revoke_credential(mcp_id=mcp_id, owner_hasn_id=owner)
+        with pytest.raises(McpToolError) as exc:
+            await external_mcp_gateway.proxy_call(
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                tool_name=f'hasn.ext.{name}.company_search',
+                arguments={'keyword': '唤星'},
+            )
+        assert exc.value.code == McpErrorCode.CREDENTIAL_MISSING
+    finally:
+        await _cleanup_server(mcp_id, secret_uri=cred_uri)

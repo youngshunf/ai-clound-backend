@@ -33,11 +33,13 @@ def is_secret_ref(value: object) -> bool:
 
 
 def is_plaintext_credential(value: object) -> bool:
-    """config 中是否疑似明文凭据（非 secret:// 的非空字符串 → 拒绝，02 §6）。
+    """config 中是否疑似明文凭据（不含 secret:// 引用的非空字符串 → 拒绝，02 §6）。
 
     仅对**凭据键**调用（如 Authorization / *_KEY / *_TOKEN）；普通配置值不在此判定。
+    判定按「是否含 secret:// 引用」而非「是否以 secret:// 开头」——因为 `Authorization`
+    常写成 `Bearer secret://...`（scheme 前缀 + 引用），这类**含引用**的模板不算明文。
     """
-    return isinstance(value, str) and bool(value.strip()) and not value.startswith('secret://')
+    return isinstance(value, str) and bool(value.strip()) and 'secret://' not in value
 
 
 class SecretStore:

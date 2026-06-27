@@ -15,17 +15,18 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 
 from backend.app.external_mcp.model import ExternalMcpBinding, ExternalMcpServer
 from backend.app.external_mcp.service.mcp_client import ExternalMcpClientError, RemoteMcpClient
 from backend.app.external_mcp.service.quota import quota_service
-from backend.app.external_mcp.service.secret_store import is_secret_ref, secret_store
+from backend.app.external_mcp.service.secret_store import secret_store
 from backend.app.external_mcp.service.validation import (
     RegistrationError,
     validate_credential_values,
@@ -39,6 +40,12 @@ from backend.database.db import async_db_session
 logger = logging.getLogger(__name__)
 
 _RAW_NAME_SAFE = str.maketrans({'-': '_', '.': '_', '/': '_', ' ': '_'})
+
+# 嵌入在 header/env 值里的 secret:// 引用 token（用于明文替换，如 'Bearer secret://...'）。
+_SECRET_REF_TOKEN = re.compile(r'secret://[A-Za-z0-9._/\-]+')
+
+# 凭据在 server 内的确定性 key（管理面写入/轮换/撤销复用同一 secret_uri）。
+_CREDENTIAL_KEY = 'credential'
 
 
 def _new_id(prefix: str) -> str:
@@ -162,19 +169,30 @@ class ExternalMcpGateway:
     # ---------- 自省 ----------
 
     async def _resolve_headers(self, headers: dict[str, Any]) -> dict[str, str]:
-        """把 headers 里的 secret:// 引用解析成明文（仅建连内部用，绝不日志/回显）。"""
+        """把 headers 里的 secret:// 引用解析成明文（仅建连内部用，绝不日志/回显）。
+
+        支持**嵌入式**引用：`Authorization: 'Bearer secret://system/qcc/credential'`
+        会把其中的 `secret://...` 段替换成明文 → `Bearer <token>`（不止整值替换）。
+        任一引用解析为 None（未配置/已撤销）→ CREDENTIAL_MISSING（撤销后软挡的实现点）。
+        """
         resolved: dict[str, str] = {}
         for key, value in (headers or {}).items():
-            if is_secret_ref(value):
-                plaintext = await secret_store.resolve(value)
+            if not isinstance(value, str):
+                continue
+            refs = _SECRET_REF_TOKEN.findall(value)
+            if not refs:
+                resolved[str(key)] = value
+                continue
+            out = value
+            for ref in refs:
+                plaintext = await secret_store.resolve(ref)
                 if plaintext is None:
                     raise McpToolError(
                         McpErrorCode.CREDENTIAL_MISSING,
-                        f'凭据 {value} 不可解析（未配置或已撤销），请重新配置',
+                        f'凭据 {ref} 不可解析（未配置或已撤销），请重新配置',
                     )
-                resolved[str(key)] = plaintext
-            elif isinstance(value, str):
-                resolved[str(key)] = value
+                out = out.replace(ref, plaintext)
+            resolved[str(key)] = out
         return resolved
 
     async def introspect_server(self, mcp_id: str) -> dict[str, Any]:
@@ -435,6 +453,211 @@ class ExternalMcpGateway:
             'structured': structured,
             'raw': raw_result,
         }
+
+    # ---------- 管理面（owner/admin 配置 + 凭据生命周期，10 §7.1 / P7-D）----------
+
+    def _credential_uri(self, server: dict[str, Any]) -> str:
+        """该 server 的确定性凭据 secret_uri（写入/轮换/撤销复用同一引用）。"""
+        return secret_store.build_uri(
+            origin=server['origin'],
+            owner_hasn_id=server.get('owner_hasn_id'),
+            server=server['name'],
+            key=_CREDENTIAL_KEY,
+        )
+
+    @staticmethod
+    def _server_to_public_dict(server: ExternalMcpServer) -> dict[str, Any]:
+        """管理面出参：剔除 headers/env 值（可能含 secret:// 引用），只暴露是否已配凭据 + 工具计数。"""
+        headers = server.headers or {}
+        tools = server.advertised_tools_cache or []
+        return {
+            'mcp_id': server.mcp_id,
+            'name': server.name,
+            'display_name': server.display_name,
+            'hosting': server.hosting,
+            'transport': server.transport,
+            'endpoint': server.endpoint,
+            'origin': server.origin,
+            'owner_hasn_id': server.owner_hasn_id,
+            'risk_level': server.risk_level,
+            'health_status': server.health_status,
+            'health_detail': server.health_detail,
+            'tools_count': len(tools) if isinstance(tools, list) else 0,
+            'tools_hash': server.tools_hash,
+            'credential_configured': any('secret://' in str(v) for v in headers.values()),
+            'credential_header': next((str(k) for k, v in headers.items() if 'secret://' in str(v)), None),
+            'per_owner_daily_quota': server.per_owner_daily_quota,
+            'rate_limit_per_min': server.rate_limit_per_min,
+            'status': server.status,
+        }
+
+    async def list_servers(self, *, owner_hasn_id: str, include_system: bool = True) -> list[dict[str, Any]]:
+        """列出 owner 自配 server（+ 可选 system 共享 server，供绑定）。"""
+        async with async_db_session() as db:
+            if include_system:
+                where = or_(
+                    ExternalMcpServer.owner_hasn_id == owner_hasn_id,
+                    ExternalMcpServer.origin == 'system',
+                )
+            else:
+                where = ExternalMcpServer.owner_hasn_id == owner_hasn_id
+            rows = (
+                await db.execute(select(ExternalMcpServer).where(where).order_by(ExternalMcpServer.id.desc()))
+            ).scalars().all()
+        return [self._server_to_public_dict(r) for r in rows]
+
+    async def list_servers_admin(self, *, origin: str = 'system') -> list[dict[str, Any]]:
+        """Admin 列出某 origin 的 server（默认 system 平台预置）。"""
+        async with async_db_session() as db:
+            rows = (
+                await db.execute(
+                    select(ExternalMcpServer).where(ExternalMcpServer.origin == origin).order_by(ExternalMcpServer.id.desc())
+                )
+            ).scalars().all()
+        return [self._server_to_public_dict(r) for r in rows]
+
+    async def get_server_detail(
+        self, *, mcp_id: str, owner_hasn_id: str | None = None, is_admin: bool = False
+    ) -> dict[str, Any] | None:
+        """server 详情（含 advertised_tools）。owner 行级隔离：只能看自己的 + system。"""
+        async with async_db_session() as db:
+            row = (
+                await db.execute(select(ExternalMcpServer).where(ExternalMcpServer.mcp_id == mcp_id))
+            ).scalar_one_or_none()
+        if row is None:
+            return None
+        if not is_admin and owner_hasn_id is not None:
+            if row.owner_hasn_id != owner_hasn_id and row.origin != 'system':
+                return None
+        detail = self._server_to_public_dict(row)
+        detail['advertised_tools'] = row.advertised_tools_cache or []
+        return detail
+
+    def _check_server_manage_perm(self, server: dict[str, Any], *, owner_hasn_id: str | None, is_admin: bool) -> None:
+        """配置/删除/凭据写入的权限闸：admin 管 system；owner 管自己的 owner/marketplace server。"""
+        if is_admin:
+            if server['origin'] != 'system':
+                raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, 'admin 仅管理 system-origin server')
+            return
+        if server['origin'] not in {'owner', 'marketplace'} or server.get('owner_hasn_id') != owner_hasn_id:
+            raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, '无权管理该 external MCP server')
+
+    async def set_credential(
+        self,
+        *,
+        mcp_id: str,
+        plaintext: str,
+        owner_hasn_id: str | None = None,
+        is_admin: bool = False,
+        auth_header: str = 'Authorization',
+        auth_scheme: str = 'Bearer',
+    ) -> dict[str, Any]:
+        """写入/轮换凭据：明文 → 加密落库（确定性 URI）→ 把 header 模板写进 server.headers。明文永不回显。"""
+        server = await self._get_server(mcp_id)
+        if server is None:
+            raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'server 不存在: {mcp_id}')
+        self._check_server_manage_perm(server, owner_hasn_id=owner_hasn_id, is_admin=is_admin)
+        secret_uri = self._credential_uri(server)
+        await secret_store.write(
+            secret_uri=secret_uri,
+            plaintext=plaintext,
+            origin=server['origin'],
+            owner_hasn_id=server.get('owner_hasn_id'),
+        )
+        header_value = f'{auth_scheme} {secret_uri}'.strip() if auth_scheme else secret_uri
+        async with async_db_session.begin() as db:
+            row = (
+                await db.execute(select(ExternalMcpServer).where(ExternalMcpServer.mcp_id == mcp_id))
+            ).scalar_one_or_none()
+            if row is not None:
+                headers = dict(row.headers or {})
+                headers[auth_header] = header_value
+                row.headers = headers
+        return {'mcp_id': mcp_id, 'credential_configured': True, 'auth_header': auth_header}
+
+    async def revoke_credential(
+        self, *, mcp_id: str, owner_hasn_id: str | None = None, is_admin: bool = False
+    ) -> dict[str, Any]:
+        """撤销凭据：删密文（header 模板保留）→ 后续建连解析失败 = 软挡提示重配（10 §7.1）。"""
+        server = await self._get_server(mcp_id)
+        if server is None:
+            raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'server 不存在: {mcp_id}')
+        self._check_server_manage_perm(server, owner_hasn_id=owner_hasn_id, is_admin=is_admin)
+        removed = await secret_store.revoke(self._credential_uri(server))
+        return {'mcp_id': mcp_id, 'revoked': removed}
+
+    async def set_server_status(
+        self, *, mcp_id: str, status: str, owner_hasn_id: str | None = None, is_admin: bool = False
+    ) -> dict[str, Any]:
+        """启用/停用 server（owner 管自己的，admin 管 system）。"""
+        if status not in {'active', 'disabled'}:
+            raise McpToolError(McpErrorCode.CONFIG_SCHEMA_INVALID, f'非法 status: {status}')
+        server = await self._get_server(mcp_id)
+        if server is None:
+            raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'server 不存在: {mcp_id}')
+        self._check_server_manage_perm(server, owner_hasn_id=owner_hasn_id, is_admin=is_admin)
+        async with async_db_session.begin() as db:
+            row = (
+                await db.execute(select(ExternalMcpServer).where(ExternalMcpServer.mcp_id == mcp_id))
+            ).scalar_one_or_none()
+            if row is not None:
+                row.status = status
+        return {'mcp_id': mcp_id, 'status': status}
+
+    async def set_server_quota(
+        self, *, mcp_id: str, per_owner_daily_quota: int, rate_limit_per_min: int
+    ) -> dict[str, Any]:
+        """Admin 配 system-origin 平台 key 的 per-owner 配额/限流（10 §7.2）。"""
+        async with async_db_session.begin() as db:
+            row = (
+                await db.execute(select(ExternalMcpServer).where(ExternalMcpServer.mcp_id == mcp_id))
+            ).scalar_one_or_none()
+            if row is None:
+                raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'server 不存在: {mcp_id}')
+            if row.origin != 'system':
+                raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, '配额仅适用于 system-origin 平台 key')
+            row.per_owner_daily_quota = max(0, int(per_owner_daily_quota))
+            row.rate_limit_per_min = max(0, int(rate_limit_per_min))
+        return {
+            'mcp_id': mcp_id,
+            'per_owner_daily_quota': max(0, int(per_owner_daily_quota)),
+            'rate_limit_per_min': max(0, int(rate_limit_per_min)),
+        }
+
+    async def delete_server(
+        self, *, mcp_id: str, owner_hasn_id: str | None = None, is_admin: bool = False
+    ) -> bool:
+        """删除 server：撤销凭据 + 删该 server 全部 binding + 删 server 行。"""
+        server = await self._get_server(mcp_id)
+        if server is None:
+            return False
+        self._check_server_manage_perm(server, owner_hasn_id=owner_hasn_id, is_admin=is_admin)
+        await secret_store.revoke(self._credential_uri(server))
+        async with async_db_session.begin() as db:
+            await db.execute(delete(ExternalMcpBinding).where(ExternalMcpBinding.mcp_id == mcp_id))
+            await db.execute(delete(ExternalMcpServer).where(ExternalMcpServer.mcp_id == mcp_id))
+        return True
+
+    async def list_bindings(self, *, owner_hasn_id: str) -> list[dict[str, Any]]:
+        """列出该 owner 名下全部 Agent↔server 绑定（管理面展示）。"""
+        async with async_db_session() as db:
+            rows = (
+                await db.execute(
+                    select(ExternalMcpBinding)
+                    .where(ExternalMcpBinding.owner_hasn_id == owner_hasn_id)
+                    .order_by(ExternalMcpBinding.id.desc())
+                )
+            ).scalars().all()
+        return [
+            {
+                'binding_id': r.binding_id,
+                'agent_hasn_id': r.agent_hasn_id,
+                'mcp_id': r.mcp_id,
+                'enabled': r.enabled,
+                'allowed_tools': r.allowed_tools or [],
+            }
+            for r in rows
+        ]
 
     # ---------- DB helpers ----------
 
