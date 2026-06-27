@@ -1,3 +1,4 @@
+from backend.app.hasn_reel.api.router import app as hasn_reel_app, v1 as hasn_reel_v1
 from fastapi import APIRouter
 
 from backend.app.admin.api.router import client as admin_client
@@ -227,3 +228,8 @@ router.include_router(hasn_quant_app)
 # 统一视频引擎（hasn_studio，模块 14 doc22）：管理端 + owner 业务面（行级隔离视频工作台）。
 router.include_router(hasn_studio_v1)
 router.include_router(hasn_studio_app)
+
+# 短视频（hasn_reel，模块 14 doc29）：管理端（v1 JWT+RBAC）+ owner 业务面（app 仅 JWT，行级隔离项目化创作）；
+# codegen 裸 open/agent 面刻意不挂载（公开无鉴权读写=越权大洞；Agent 走云端 MCP 不经 REST）。URL /api/v1/hasn_reel{,/app}/*
+router.include_router(hasn_reel_v1)
+router.include_router(hasn_reel_app)
