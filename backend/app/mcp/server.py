@@ -16,6 +16,7 @@ from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
+from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
@@ -133,6 +134,13 @@ class HasnCloudMcpServer:
         # add_node/add_edge 不在 agent 工具面（经 create 一次声明整图）；整图 fire 仍由 Runtime Host tick。
         for workflow_tool in WORKFLOW_TOOLS:
             self.tool_registry.register(workflow_tool)
+
+        # 演示文稿工具（17-deck）：create/get/list/outline.set/page.write(_batch)/page.edit/page.delete/
+        # page.reorder/delete/style.list/style.get（读 4 无 scope，写 8 = deck:manage）。
+        # 从 hasn-node 本地 hasn-mcp 迁来（TOOLMIG2-P3，福仔选 B：完整迁 deck）；骨架校验 + 按 position
+        # upsert 编排 + 整图重排在云端忠实复刻（page_skeleton.py / deck_service.reorder_pages），云端分身可完整创作。
+        for deck_tool in DECK_TOOLS:
+            self.tool_registry.register(deck_tool)
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:

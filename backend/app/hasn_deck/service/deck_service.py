@@ -525,6 +525,42 @@ class DeckService:
         deck.rev += 1
         await db.flush()
 
+    @staticmethod
+    async def reorder_pages(
+        db: AsyncSession, *, subject: Subject, deck_id: int, ordered_page_ids: list[int]
+    ) -> dict[str, Any]:
+        """按给定的全集页 id 顺序重排该 deck 的页序（对齐 hasn-node daemon broker.reorder_pages）。
+
+        `ordered_page_ids` 必须**恰为**该 deck 全部未删页 id（不多不少）。两段式重排：先把所有页
+        移到唯一的临时负位（避开 (deck_id, position) 唯一约束冲突），再按目标序赋 0..N-1 正位。
+        """
+        deck = await DeckService._get_deck(db, deck_id)
+        await DeckService._authorize_deck(db, deck=deck, subject=subject, need='editor')
+        pages = (
+            (
+                await db.execute(
+                    select(Page).where(Page.deck_id == deck_id, Page.deleted_time.is_(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {p.id: p for p in pages}
+        given = [int(pid) for pid in ordered_page_ids]
+        if sorted(given) != sorted(by_id.keys()):
+            raise errors.RequestError(msg='page_ids 必须恰为该演示文稿的全部页 id（不多不少）')
+        # 阶段一：全部移到唯一临时负位（-(id+1) 必不相撞）。
+        for p in pages:
+            p.position = -(p.id + 1)
+        await db.flush()
+        # 阶段二：按目标序赋正位。
+        for idx, pid in enumerate(given):
+            by_id[pid].position = idx
+            by_id[pid].rev += 1
+        deck.rev += 1
+        await db.flush()
+        return {'items': [_page_dict(by_id[pid]) for pid in given], 'total': len(given)}
+
     # ---------- style profiles（owner 隔离不变） ----------
 
     @staticmethod
