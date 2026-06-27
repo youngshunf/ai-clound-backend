@@ -33,7 +33,8 @@ _SLUG_LEN = 12
 _SLUG_MAX_RETRY = 6
 VISIBILITY_ORDER = ('private', 'password', 'unlisted', 'public')
 # 'video'：studio 统一视频引擎成片对外发布（doc22 §3.6 / §9 S18，M18 web 发布全复用；列是开放字符串，无 DDL 变更）。
-VALID_KINDS = ('deck', 'report', 'page', 'dashboard', 'video', 'other')
+# 'design'：OpenPencil 矢量设计成品对外发布（doc27 §P3-C / OP-P3-9，A 成品分享复用 M18；同为开放字符串，无 DDL 变更）。
+VALID_KINDS = ('deck', 'report', 'page', 'dashboard', 'video', 'design', 'other')
 MAX_REVISIONS_PER_SITE = 20
 VIEW_TICKET_TTL_SECONDS = 600  # 10 分钟
 _VIEW_TICKET_TYPE = 'publish_view_ticket'
