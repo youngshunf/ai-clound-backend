@@ -22,6 +22,7 @@ from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
 from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
 from backend.app.mcp.tools.plan import PLAN_TOOLS
 from backend.app.mcp.tools.registry import ToolRegistry
+from backend.app.mcp.tools.task import TASK_TOOLS
 from backend.app.mcp.tools.tool_call import ToolCallTool
 from backend.app.mcp.tools.tool_search import ToolSearchTool
 from backend.app.mcp.tools.user import UserSearchTool
@@ -119,6 +120,12 @@ class HasnCloudMcpServer:
         # 本地仅留确定性纯函数 compile_tokens/derive/validate/extract_components）。
         for designsystem_tool in DESIGNSYSTEM_TOOLS:
             self.tool_registry.register(designsystem_tool)
+
+        # 任务工具（12-任务系统）：create/list/get/update/pause/resume/delete/run_now/list_runs/get_run/query_results。
+        # 从 hasn-node 本地 hasn-mcp 迁来（不依赖本地操作 → 走云端 platform tool，TOOLMIG2）；
+        # 执行 fire/调度仍由本地/云端 Runtime Host 基于 task sync mirror 自行 tick（中心不 tick）。
+        for task_tool in TASK_TOOLS:
+            self.tool_registry.register(task_tool)
 
         # 技能市场工具（15-技能市场/11-doc）：浏览/装卸/发布 9 个云端工具。
         for tool_cls in MARKETPLACE_TOOLS:
