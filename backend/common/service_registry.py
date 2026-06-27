@@ -105,6 +105,21 @@ _REGISTRY: dict[str, ServiceSpec] = {
             derive_token=True,
             default_timeout=600.0,
         ),
+        # lead-crawler：Scrapy 黄页/B2B 深爬服务（doc93 §3.1，cloud-brokered）。自研、两端受控 →
+        # 派生令牌；池化（云端 broker 经 service_http 连接池调用）。约定端口 8003（dev 不撞）。
+        # default_timeout=120：Scrapy 列表分页 → 详情页定向深爬是可能耗时的同步抓取（带 playwright 渲染）。
+        ServiceSpec(
+            name='lead-crawler',
+            title='获客深爬服务',
+            default_port=8003,
+            url_attr='LEAD_CRAWLER_URL',
+            token_attr='LEAD_CRAWLER_TOKEN',
+            timeout_attr='LEAD_CRAWLER_TIMEOUT',
+            health_path='/v1/healthz',
+            pooled=True,
+            derive_token=True,
+            default_timeout=120.0,
+        ),
         # 以下为外部/已部署服务：用各自第三方/bespoke 真实鉴权，绝不派生令牌（derive_token=False）。
         # ragflow/hermes 自有 transport（RSA / 双向 bespoke token）维持原样，目录登记仅供健康可见。
         ServiceSpec(

@@ -160,6 +160,14 @@ class Settings(BaseSettings):
     FIRECRAWL_BASE_URL: str = ''  # firecrawl 服务地址，如 http://firecrawl-svc.internal:3002
     FIRECRAWL_API_KEY: str = ''  # firecrawl API Key（自托管可空）
 
+    # 获客深爬服务（lead-crawler-service，独立部署，doc93 §3.1·huanxing-apps B 类）：Scrapy 有独立
+    # Twisted reactor 与 FastAPI async 冲突 → 独立内部服务。ScrapyProvider（yellow_pages/b2b）
+    # 经此 cloud-brokered 中转 POST /v1/crawl 出详情页线索。为空时 provider 归一 service_unconfigured
+    # （prod 未配诚实不出数·零 fake）。Bearer 令牌由 services.toml master_secret 派生（对齐 finance/quant）。
+    LEAD_CRAWLER_URL: str = ''  # 深爬服务地址，如 http://lead-crawler.internal:8003（为空时 provider 归一 service_unconfigured）
+    LEAD_CRAWLER_TOKEN: str = ''  # 内部 svc-token（Bearer，空则从 master_secret 派生）
+    LEAD_CRAWLER_TIMEOUT: int = 120  # HTTP 超时（秒，深爬可能耗时）
+
     # hasn_growth 线索结构化提取 LLM（方案 A：firecrawl 只抓 markdown，结构化提取在后端调
     # new-api 网关完成；详见 docs/AI自动获客任务系统/08-...）。网关 base_url/key 复用上方
     # LLM_API_BASE_URL/LLM_API_KEY，这里只配提取模型名；网关任一为空则跳过 LLM 提取，

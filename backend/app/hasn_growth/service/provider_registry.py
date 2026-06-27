@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from backend.app.hasn_growth.service.maps_place_client import poi_to_structured, search_place_pois
+from backend.app.hasn_growth.service.scrapy_crawler_client import crawl_leads, scrapy_item_to_structured
 from backend.common.log import log
 from backend.core.conf import settings
 
@@ -237,17 +238,65 @@ class MapsProvider(BaseProvider):
 
 
 @register('yellow_pages')
-class YellowPagesProvider(BaseProvider):
-    pass
+@register('b2b')
+class ScrapyProvider(BaseProvider):
+    """黄页/B2B 深爬源（doc93 §3.1 混合架构）：cloud-brokered 调 lead-crawler-service 出详情页线索。
+
+    Scrapy 有独立 Twisted reactor 与 FastAPI async 冲突 → 抓取下沉到独立服务，本 provider 仅中转
+    （**daemon 不反代**）。服务返回**已结构化** items（spider 列表分页→详情页深爬）→ 预置
+    ``structured_payload`` 跳过 LLM。服务未配/不可达 → 诚实产空（零 fake·真实部署 E2E infra-gated）。
+    一个类经叠加装饰器同时承载 ``yellow_pages`` 与 ``b2b`` 两个 source_type（spider 规则由服务侧分流）。
+    """
+
+    async def crawl_stream(
+        self,
+        request: CrawlRequest,
+        *,
+        firecrawl_client: FirecrawlLike,
+        llm_extractor: LeadLLMExtractorLike | None = None,
+        dedup: UrlDedupLike | None = None,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[CrawledItem]:
+        limit = min(max(request.max_results, 1), _CRAWL_HARD_CAP)
+        result = await crawl_leads(
+            source_type=self.source_type,
+            keyword=request.keyword,
+            max_results=limit,
+            options=request.config.get('crawler_options') if isinstance(request.config, dict) else None,
+        )
+        if not result.get('ok'):
+            log.warning(
+                '[ScrapyProvider] %s 深爬未出数（%s）：%s',
+                self.source_type,
+                result.get('error'),
+                result.get('message'),
+            )
+            return  # 空生成器：诚实不出数，不 fake
+        emitted = 0
+        for item in result.get('items') or []:
+            if not isinstance(item, dict):
+                continue
+            if should_continue is not None and not should_continue():
+                break  # ④ 真流式收口：调用方已凑够目标 → 不再产出后续 item
+            structured = scrapy_item_to_structured(item)
+            if not structured['company_name']:
+                continue  # 无主体名的 item 丢弃（与各 parser 一致）
+            yield CrawledItem(
+                source_type=self.source_type,
+                source_url=str(item.get('source_url') or item.get('url') or '') or None,
+                title=str(item.get('title') or structured['company_name']) or None,
+                structured_payload=structured,
+                llm_confidence=0.85,  # spider 定向抽取，较 LLM 提取更稳定
+                extract_mode='scrapy',
+                raw_payload=item,
+            )
+            emitted += 1
+            if emitted >= limit:
+                break
 
 
 @register('social_media')
 class SocialMediaProvider(BaseProvider):
-    pass
-
-
-@register('b2b')
-class B2BProvider(BaseProvider):
     pass
 
 
