@@ -179,7 +179,13 @@ async def _insert_loopback_server(*, name: str, endpoint: str, owner_hasn_id: st
 
 
 async def _insert_server(
-    *, name: str, endpoint: str, origin: str = 'owner', owner_hasn_id: str | None = None
+    *,
+    name: str,
+    endpoint: str,
+    origin: str = 'owner',
+    owner_hasn_id: str | None = None,
+    per_owner_daily_quota: int = 0,
+    rate_limit_per_min: int = 0,
 ) -> str:
     """直接落一行 remote_service server（管理面测试用；endpoint 不一定连接）。返回 mcp_id。"""
     from backend.app.external_mcp.service.gateway_service import _new_id
@@ -201,6 +207,8 @@ async def _insert_server(
                 advertised_tools_cache=[],
                 health_status='unknown',
                 status='active',
+                per_owner_daily_quota=per_owner_daily_quota,
+                rate_limit_per_min=rate_limit_per_min,
             )
         )
     return mcp_id
@@ -547,3 +555,55 @@ async def test_management_credential_unblocks_proxy_auth(stub_mcp_endpoint: str)
         assert exc.value.code == McpErrorCode.CREDENTIAL_MISSING
     finally:
         await _cleanup_server(mcp_id, secret_uri=cred_uri)
+
+
+# --------------------------------------------------------------------------- #
+# 7. 平台 key 治理（P7-C/E）：system-origin per-owner 每日配额真实生效（MCP_9216）
+# --------------------------------------------------------------------------- #
+
+
+async def test_system_origin_daily_quota_enforced(stub_mcp_endpoint: str) -> None:
+    """system-origin 平台 server 配 per_owner_daily_quota=1：第 1 次代理成功落账本，
+    第 2 次 enforce 命中今日配额 → MCP_9216 QUOTA_EXCEEDED（真实 PG 账本聚合，零 mock）。"""
+    name = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    agent = f'a_agent_{_suffix()}'
+    mcp_id = await _insert_server(
+        name=name,
+        endpoint=stub_mcp_endpoint,
+        origin='system',
+        owner_hasn_id=None,
+        per_owner_daily_quota=1,
+    )
+    try:
+        # 自省填充 advertised_tools_cache（proxy 的 tools_hash 校验需命中）。
+        await external_mcp_gateway.introspect_server(mcp_id)
+        await external_mcp_gateway.create_binding(
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            mcp_id=mcp_id,
+            allowed_raw_names=['company-search'],
+        )
+        # 第 1 次：配额未用尽（used=0 < 1）→ 成功 + 记账。
+        first = await external_mcp_gateway.proxy_call(
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            tool_name=f'hasn.ext.{name}.company_search',
+            arguments={'keyword': '小米'},
+            trace_id='quota-1',
+        )
+        assert first['ok'] is True
+        # 第 2 次：今日已用尽（used=1 >= 1）→ enforce 前置挡 MCP_9216。
+        with pytest.raises(McpToolError) as exc:
+            await external_mcp_gateway.proxy_call(
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                tool_name=f'hasn.ext.{name}.company_search',
+                arguments={'keyword': '腾讯'},
+                trace_id='quota-2',
+            )
+        assert exc.value.code == McpErrorCode.QUOTA_EXCEEDED
+        # 账本仅 1 条成功（被挡的第 2 次不应记成成功）。
+        assert await external_mcp_gateway_usage_count(mcp_id=mcp_id, owner=owner) == 1
+    finally:
+        await _cleanup_server(mcp_id, agent_hasn_id=agent)
