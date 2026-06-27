@@ -7,6 +7,7 @@ from backend.app.hasn_design.api.v1.admin.hasn_design_project import router as a
 from backend.app.hasn_design.api.v1.agent.hasn_design_project import router as agent_hasn_design_project_router
 
 # --- 用户端（仅 JWT） ---
+from backend.app.hasn_design.api.v1.app.design_share import router as app_design_share_router
 from backend.app.hasn_design.api.v1.app.hasn_design_project import router as app_hasn_design_project_router
 
 # --- 公开（无需认证） ---
@@ -41,6 +42,12 @@ app.include_router(
     app_hasn_design_project_router,
     prefix='/hasn-design-project',
     tags=['矢量设计-设计项目（用户端）'],
+)
+
+# 分享协作（项目；全复用泛型 resource_share）——路径 /api/v1/hasn_design/app/projects/{project_id}/shares
+app.include_router(
+    app_design_share_router,
+    tags=['矢量设计-设计项目分享（用户端）'],
 )
 
 # ========================================
