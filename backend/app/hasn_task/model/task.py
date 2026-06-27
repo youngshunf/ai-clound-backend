@@ -16,6 +16,7 @@ TASK_STATE_COMMENT = (
     'needs_skill_install:待安装技能:orange/pending_approval:待审批:orange/rejected:已拒绝:gray)'
 )
 CREATED_BY_KIND_COMMENT = '创建者类别 (owner:主人:blue/agent:分身:violet/builtin:内置:gray)'
+RISK_LEVEL_COMMENT = '风险等级 (low:低风险:green/high:高风险:orange)'
 
 
 class HasnTask(HasnTaskAppBase):
@@ -108,6 +109,11 @@ class HasnTask(HasnTaskAppBase):
         sa.BOOLEAN(), default=False, comment='允许任务会话内使用子分身 delegate_task（D5）'
     )
     created_by_kind: Mapped[str] = mapped_column(sa.String(16), default='owner', comment=CREATED_BY_KIND_COMMENT)
+    risk_level: Mapped[str] = mapped_column(
+        sa.String(10),
+        default='low',
+        comment=RISK_LEVEL_COMMENT,
+    )
     builtin_key: Mapped[str | None] = mapped_column(
         sa.String(64), default=None, comment='内置任务来源键（=builtin_catalog.builtin_key）；用户任务为 NULL'
     )

@@ -110,6 +110,7 @@ from backend.app.hasn.api.v1.app.knowledge import router as app_knowledge_router
 from backend.app.hasn.api.v1.app.owner_memory import router as app_owner_memory_router
 from backend.app.hasn.api.v1.app.platform_config import router as app_platform_config_router
 from backend.app.hasn.api.v1.app.suppressed_release import router as app_suppressed_release_router
+from backend.app.hasn_memory.api.router import app_owner_profile_coverage_router
 
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/app', tags=['HASN 用户端'])
 
@@ -131,6 +132,7 @@ app.include_router(app_hasn_notifications_router, prefix='/notifications', tags=
 app.include_router(app_hasn_audit_log_router, prefix='/audit/logs', tags=['审计日志'])
 app.include_router(app_knowledge_router, tags=['知识库'])
 app.include_router(app_owner_memory_router, prefix='/owner', tags=['Owner 记忆（主人透明）'])
+app.include_router(app_owner_profile_coverage_router, prefix='/owner', tags=['主人画像完整度（了解主人）'])
 app.include_router(app_platform_config_router, prefix='/platform', tags=['平台默认配置（节点下发）'])
 app.include_router(app_suppressed_release_router, tags=['入站门控抑制箱放行'])
 app.include_router(agent_scopes_router, tags=['Agent权限管理'])

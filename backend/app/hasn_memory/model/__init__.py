@@ -14,3 +14,4 @@ from backend.app.hasn_memory.model.episodic_turn import EpisodicTurn as Episodic
 from backend.app.hasn_memory.model.semantic_fact import SemanticFact as SemanticFact
 from backend.app.hasn_memory.model.memory_event import MemoryEvent as MemoryEvent
 from backend.app.hasn_memory.model.extraction_job import ExtractionJob as ExtractionJob
+from backend.app.hasn_memory.model.owner_profile_coverage import OwnerProfileCoverage as OwnerProfileCoverage
