@@ -62,9 +62,10 @@ async def session() -> AsyncIterator:
         await engine.dispose()
 
 
-async def _make_lead(session, *, tag: str, uid: int) -> LeadContact:
+async def _make_lead(session, *, tag: str) -> LeadContact:
+    # 统一线索池：contact 无 user_id（公共池行）。本 helper 仅为 Customer 测试提供 lead_contact_id FK。
     lead = LeadContact(
-        lead_no=f'LGE1{tag}', user_id=uid, company_name='Acme',
+        lead_no=f'LGE1{tag}', company_name='Acme',
         contact_name='王五', source_type='manual', status='valid', confidence_score=70,
     )
     session.add(lead)
@@ -106,7 +107,7 @@ async def test_migration_idempotent_and_columns_present(session) -> None:
 
 async def test_existing_row_defaults_personal(session) -> None:
     await _apply_migration(session)
-    lead = await _make_lead(session, tag='df', uid=951001)
+    lead = await _make_lead(session, tag='df')
     # 不显式给 owner_scope —— 应落 DB DEFAULT 'personal'
     cust = Customer(customer_no='GE1DF1', user_id=951001, lead_contact_id=lead.id, source_kind='manual', lifecycle_status='active')
     session.add(cust)
@@ -119,7 +120,7 @@ async def test_existing_row_defaults_personal(session) -> None:
 
 async def test_enterprise_row_carries_holder_and_assignee(session) -> None:
     await _apply_migration(session)
-    lead = await _make_lead(session, tag='en', uid=951002)
+    lead = await _make_lead(session, tag='en')
     cust = Customer(
         customer_no='GE1EN1', user_id=951002, lead_contact_id=lead.id, source_kind='manual',
         lifecycle_status='active', owner_scope='enterprise', enterprise_id=8801, assignee='h_sales_a',
@@ -134,7 +135,7 @@ async def test_enterprise_row_carries_holder_and_assignee(session) -> None:
 
 async def test_dual_mode_unique_constraints(session) -> None:
     await _apply_migration(session)
-    lead = await _make_lead(session, tag='uq', uid=951003)
+    lead = await _make_lead(session, tag='uq')
 
     # personal 首条
     session.add(Customer(customer_no='GE1UQ_P1', user_id=951003, lead_contact_id=lead.id, source_kind='manual', lifecycle_status='active'))

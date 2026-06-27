@@ -9,7 +9,6 @@ from backend.common.schema import SchemaBase
 class LeadContactSchemaBase(SchemaBase):
     """Valid deduplicated lead contact基础模型"""
     lead_no: str = Field(description='None')
-    user_id: int | None = Field(None, description='None')
     company_name: str | None = Field(None, description='None')
     contact_name: str | None = Field(None, description='None')
     email: str | None = Field(None, description='None')

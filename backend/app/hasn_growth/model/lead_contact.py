@@ -18,11 +18,9 @@ class LeadContact(HasnGrowthAppBase):
 
     id: Mapped[id_key] = mapped_column(init=False)
     lead_no: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
-    # 统一线索池：pool_visibility 区分公共可匹配/私有。归属与用户级状态全部下沉 lead_ref 引用表。
+    # 统一线索池：pool_visibility 区分公共可匹配/私有。归属与用户级状态全部下沉 lead_ref 引用表，
+    # contact 行不再有 user_id（公共池行无单一归属，用户拥有=lead_ref 引用）。
     pool_visibility: Mapped[str] = mapped_column(sa.String(16), default='public', comment=None)
-    # 过渡列（已弃用）：统一池后线索不再按 user_id 归属（归属=lead_ref）。仍被 codegen CRUD 面
-    # （/api/v1/growth/lead/contacts app/agent/open 按行归属判定）引用，待该面去留决策后随迁移 drop。
-    user_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     company_name: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment=None)
     contact_name: Mapped[str | None] = mapped_column(sa.String(100), default=None, comment=None)
     email: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment=None)

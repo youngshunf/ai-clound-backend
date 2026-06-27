@@ -30,9 +30,15 @@ def test_codegen_generated_all_crud_model_schema_api_files() -> None:
         assert (app_root / f'crud/crud_{table}.py').exists()
         assert (app_root / f'service/{table}_service.py').exists()
         assert (app_root / f'api/v1/admin/{table}.py').exists()
-        assert (app_root / f'api/v1/app/{table}.py').exists()
-        assert (app_root / f'api/v1/agent/{table}.py').exists()
-        assert (app_root / f'api/v1/open/{table}.py').exists()
+        # lead_contact 的 app/agent/open 通用 CRUD 已删（统一线索池 slice3b·福仔决策）：公共池行无按行归属，
+        # 用户/Agent 线索面走 /leads(funnel_service)+lead_ref，仅保留 admin 运维 CRUD；其余表保持四 scope。
+        if table != 'lead_contact':
+            assert (app_root / f'api/v1/app/{table}.py').exists()
+            assert (app_root / f'api/v1/agent/{table}.py').exists()
+            assert (app_root / f'api/v1/open/{table}.py').exists()
+    # lead_contact 三 scope 文件确已删除（防回归再生成）
+    for scope in ('app', 'agent', 'open'):
+        assert not (app_root / f'api/v1/{scope}/lead_contact.py').exists(), scope
 
     # 收编完成后旧目录删除，不留双中心
     assert not (ROOT / 'backend/app/lead_automation').exists()
