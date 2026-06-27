@@ -81,6 +81,18 @@ async def _resolve_owner_user_id(db: AsyncSession, owner_hasn_id: str) -> int:
     return int(human.user_id)
 
 
+async def _owner_phone(db: AsyncSession, user_id: int) -> str | None:
+    """取 owner 手机号——云端 runtime owner-scoped 目录的 owner_key 用 phone（hermes 侧兜底
+    owner_user_id）。落地路径 {runtime_root}/{phone}/{profile_id}/workspace，每个用户的
+    agent-profile 聚合在同一手机号目录下（福仔 2026-06-27）。"""
+    from backend.app.admin.model import User
+
+    phone = (
+        await db.execute(sa.select(User.phone).where(User.id == user_id).limit(1))
+    ).scalar_one_or_none()
+    return str(phone) if phone else None
+
+
 async def cloud_profile_id_for(db: AsyncSession, *, owner_hasn_id: str, agent_name: str) -> str:
     """云端分身 runtime profile_id = ``{owner.star_id}-{agent_name}``（与 daemon binding metadata
     profile_ref / dispatch 同口径）。创建时云端自算（dispatch 时由 daemon 携带，无需算）。"""
@@ -144,10 +156,14 @@ async def ensure_cloud_profile_provisioned(
     # 1. ensure_agent：建 profile 骨架 + LLM 配置（agent_id 用 profile_id，与 daemon
     #    dispatch/adapter 同口径）。仅新建时调；已存在则下方只刷新凭据。
     if not profile_exists:
+        # owner_phone 作 hermes owner-scoped 目录 key（{runtime_root}/{phone}/{profile_id}）；
+        # 空则 hermes 侧自动兜底 owner_user_id。
+        owner_phone = await _owner_phone(db, user_id)
         await client.ensure_agent(
             {
                 'agent_id': profile_id,
                 'owner_user_id': str(user_id),
+                'owner_phone': owner_phone,
                 'agent_name': agent_name,
                 'avatar': getattr(agent_row, 'avatar', None),
                 'timezone': 'Asia/Shanghai',
