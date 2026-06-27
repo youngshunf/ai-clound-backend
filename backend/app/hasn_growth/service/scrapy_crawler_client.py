@@ -19,6 +19,7 @@ import httpx
 
 from backend.common.service_http import get_service_client
 from backend.common.service_registry import service_endpoint
+from backend.core.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,31 @@ _SERVICE = 'lead-crawler'
 
 def _error(error: str, message: str) -> dict[str, Any]:
     return {'ok': False, 'error': error, 'message': message, 'items': []}
+
+
+def build_crawl_body(
+    *,
+    source_type: str,
+    keyword: str,
+    max_results: int,
+    options: dict[str, Any] | None,
+    proxy_url: str,
+) -> dict[str, Any]:
+    """构造 /v1/crawl 请求体（纯函数，便于单测代理透传）。
+
+    doc93 §4.1：云端集中配的住宅代理出口（平台成本）以 ``proxy_url`` override 透传给深爬服务，
+    服务侧自身 ``LEAD_PROXY_URL`` 为兜底；``proxy_url`` 为空则不带（不暴露空字段）。
+    """
+    body: dict[str, Any] = {
+        'source_type': source_type,
+        'keyword': keyword,
+        'max_results': max_results,
+        'options': options or {},
+    }
+    proxy = (proxy_url or '').strip()
+    if proxy:
+        body['proxy_url'] = proxy
+    return body
 
 
 def scrapy_item_to_structured(item: dict[str, Any]) -> dict[str, Any]:
@@ -71,12 +97,13 @@ async def crawl_leads(
     headers: dict[str, str] = {}
     if endpoint.token:
         headers['Authorization'] = f'Bearer {endpoint.token}'
-    body = {
-        'source_type': source_type,
-        'keyword': keyword,
-        'max_results': max_results,
-        'options': options or {},
-    }
+    body = build_crawl_body(
+        source_type=source_type,
+        keyword=keyword,
+        max_results=max_results,
+        options=options,
+        proxy_url=settings.GROWTH_PROXY_POOL_URL or '',
+    )
     try:
         client = get_service_client(_SERVICE)
         resp = await client.post(

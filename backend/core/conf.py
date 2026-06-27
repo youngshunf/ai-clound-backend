@@ -186,6 +186,13 @@ class Settings(BaseSettings):
     AMAP_API_KEY: str = ''  # 高德地图 Web 服务 API Key（env AMAP_API_KEY）
     BAIDU_MAP_AK: str = ''  # 百度地图 Web 服务 AK（env BAIDU_MAP_AK）
 
+    # 获客采集 — 企业工商官方 API 源（doc93 §3.3，可选）：企查查/天眼查官方 API 直返结构化企业信息，
+    # 作为硬爬的「可切换的更稳路径」。端点 + key 由运营按所用厂商配置（不硬编码厂商 URL，避免猜错），
+    # 响应走防御式多键解析（兼容企查查/天眼查字段名）。base/key 任一为空 → enterprise 源诚实跳过
+    # （零 fake，真实账号 infra-gated）。key 只进 .env / 密钥管理，**绝不入库 / 绝不提交**。
+    ENTERPRISE_INFO_API_BASE: str = ''  # 工商 API 搜索端点（env ENTERPRISE_INFO_API_BASE）
+    ENTERPRISE_INFO_API_KEY: str = ''  # 工商 API key/token（env ENTERPRISE_INFO_API_KEY）
+
     # 获客采集 — 住宅代理池（doc93 §4.1 反爬底座）：**平台成本·运营配置·不向用户计费**。
     # firecrawl 自托管侧配 PROXY_SERVER 环境变量、Scrapy 侧走代理中间件；此处仅作云端侧的
     # 代理出口配置接缝（传给 lead-crawler-service 的抓取请求），为空表示不启用代理。

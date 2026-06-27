@@ -10,7 +10,10 @@ from __future__ import annotations
 import pytest
 
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
-from backend.app.hasn_growth.service.scrapy_crawler_client import scrapy_item_to_structured
+from backend.app.hasn_growth.service.scrapy_crawler_client import (
+    build_crawl_body,
+    scrapy_item_to_structured,
+)
 from backend.core.conf import settings
 
 
@@ -58,6 +61,28 @@ def test_scrapy_provider_registered_for_both_source_types() -> None:
     b2b = get_provider('b2b')
     assert type(yp).__name__ == 'ScrapyProvider' and yp.source_type == 'yellow_pages'
     assert type(b2b).__name__ == 'ScrapyProvider' and b2b.source_type == 'b2b'
+
+
+def test_build_crawl_body_omits_proxy_when_empty() -> None:
+    """doc93 §4.1：未配代理 → body 不带 proxy_url（不暴露空字段）。"""
+    body = build_crawl_body(
+        source_type='yellow_pages', keyword='建材', max_results=20, options=None, proxy_url=''
+    )
+    assert body == {'source_type': 'yellow_pages', 'keyword': '建材', 'max_results': 20, 'options': {}}
+    assert 'proxy_url' not in body
+
+
+def test_build_crawl_body_passes_proxy_when_set() -> None:
+    """doc93 §4.1：云端集中配的住宅代理出口透传给深爬服务作 override（去首尾空白）。"""
+    body = build_crawl_body(
+        source_type='b2b',
+        keyword='医疗器械',
+        max_results=10,
+        options={'detail_link_css': 'a'},
+        proxy_url='  socks5h://u:p@host:39080  ',
+    )
+    assert body['proxy_url'] == 'socks5h://u:p@host:39080'
+    assert body['options'] == {'detail_link_css': 'a'}
 
 
 @pytest.mark.asyncio

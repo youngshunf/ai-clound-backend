@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
+from backend.app.hasn_growth.service.enterprise_info_client import search_enterprises
 from backend.app.hasn_growth.service.maps_place_client import poi_to_structured, search_place_pois
 from backend.app.hasn_growth.service.scrapy_crawler_client import crawl_leads, scrapy_item_to_structured
 from backend.common.log import log
@@ -289,6 +290,56 @@ class ScrapyProvider(BaseProvider):
                 llm_confidence=0.85,  # spider 定向抽取，较 LLM 提取更稳定
                 extract_mode='scrapy',
                 raw_payload=item,
+            )
+            emitted += 1
+            if emitted >= limit:
+                break
+
+
+@register('enterprise')
+class EnterpriseInfoProvider(BaseProvider):
+    """企业工商官方 API 源（doc93 §3.3 可选）：企查查/天眼查等官方 API 直返结构化企业信息。
+
+    作为硬爬的「可切换的更稳路径」。端点 + key 由运营按所用厂商配置（`ENTERPRISE_INFO_API_BASE` +
+    `ENTERPRISE_INFO_API_KEY`），响应走防御式多键解析（兼容多厂商字段名）→ 预置 structured_payload
+    跳过 LLM。未配 base/key → 诚实跳过（零 fake·真实账号 E2E infra-gated）。
+    """
+
+    async def crawl_stream(
+        self,
+        request: CrawlRequest,
+        *,
+        firecrawl_client: FirecrawlLike,
+        llm_extractor: LeadLLMExtractorLike | None = None,
+        dedup: UrlDedupLike | None = None,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[CrawledItem]:
+        api_base = (settings.ENTERPRISE_INFO_API_BASE or '').strip()
+        api_key = (settings.ENTERPRISE_INFO_API_KEY or '').strip()
+        if not api_base or not api_key:
+            log.warning(
+                '[EnterpriseInfoProvider] 未配 ENTERPRISE_INFO_API_BASE / _API_KEY，enterprise 源跳过'
+                '（doc93 §3.3·可选源·真实账号 infra-gated）'
+            )
+            return  # 空生成器：诚实不出数，不 fake
+        cfg = request.config or {}
+        region = str(cfg.get('region') or cfg.get('province') or '').strip()
+        limit = min(max(request.max_results, 1), _CRAWL_HARD_CAP)
+        records = await search_enterprises(
+            keyword=request.keyword, region=region, limit=limit, api_base=api_base, api_key=api_key
+        )
+        emitted = 0
+        for structured in records:
+            if should_continue is not None and not should_continue():
+                break  # ④ 真流式收口：调用方已凑够目标 → 不再产出后续记录
+            yield CrawledItem(
+                source_type=self.source_type,
+                source_url=f'enterprise://{structured["company_name"]}',
+                title=structured['company_name'],
+                structured_payload=structured,
+                llm_confidence=0.95,  # 工商官方 API（权威结构化），最高可信
+                extract_mode='enterprise_api',
+                raw_payload=structured,
             )
             emitted += 1
             if emitted >= limit:
