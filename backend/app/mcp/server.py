@@ -21,6 +21,7 @@ from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
 from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
+from backend.app.mcp.tools.owner import OWNER_TOOLS
 from backend.app.mcp.tools.plan import PLAN_TOOLS
 from backend.app.mcp.tools.registry import ToolRegistry
 from backend.app.mcp.tools.task import TASK_TOOLS
@@ -105,6 +106,11 @@ class HasnCloudMcpServer:
         # 仍留本地的是有真本地编排/计算的 decompose/briefing/review/schedule/reschedule/delegate/validate。
         for plan_tool in PLAN_TOOLS:
             self.tool_registry.register(plan_tool)
+
+        # 主人画像工具（19-了解主人）：hasn.owner.coverage.get — 采访分身读「主人 5 维画像还缺哪几维」，
+        # 定向采访（缺什么采访什么）。纯云端只读，直调 OwnerProfileCoverageService.assess_if_stale。
+        for owner_tool in OWNER_TOOLS:
+            self.tool_registry.register(owner_tool)
 
         # 通知工具（统一通知 §7）：AI-Native App 以 App 身份给主人发通知。
         # 从 hasn-node 本地 hasn-mcp 迁来（纯云端代理 → 走云端 platform tool）。
