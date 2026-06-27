@@ -166,6 +166,12 @@ class Settings(BaseSettings):
     # cleaner 退回正则兜底，不影响采集主链路。
     GROWTH_LLM_MODEL: str = 'agnes-2.0-flash'  # 结构化提取模型（new-api 模型名）
 
+    # 获客线索付费（doc93 §4.2）：用户「请求线索」前置额度闸——免费额度内放行，超额走支付购买。
+    # 线索是**独立支付商品**，按支付订单结算，**不走 new-api 积分**（doc93 line 165 铁律）。
+    # 免费额度按月重置（lead_quota.period_key 变更即归零）；单价按条计（分），运营改环境变量不动代码。
+    GROWTH_FREE_LEADS_PER_MONTH: int = 50  # 每用户每月免费可领取线索条数
+    GROWTH_LEAD_UNIT_PRICE_FEN: int = 100  # 购买线索单价（分/条），默认 ¥1.00/条
+
     # 统一视频引擎（studio / montage-engine-service）BYO 长尾媒体凭据平台兜底（doc22 §5 P7）：
     # 主人没自带 key 时，对该 provider 用平台公共 key（运营自费），为空则该 provider 跳过（诚实，零 fake）。
     # 网关族（image/tts/stt/video）不在此——它们经 new-api 用主人自己的 relay token（OWNER 配额计费），

@@ -30,6 +30,7 @@ from backend.app.billing.service.channel.base import PayClient
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.pagination import paging_data
+from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
 
@@ -185,6 +186,10 @@ class PayOrderService:
             )
         if obj.order_type == 'app_purchase':
             return await PayOrderService._create_app_purchase_order(
+                db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
+            )
+        if obj.order_type == 'lead_pack':
+            return await PayOrderService._create_lead_pack_order(
                 db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
             )
         return await PayOrderService._create_subscribe_order(
@@ -396,6 +401,69 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code, 'app_id': catalog.app_id},
+        }
+        await pay_order_dao.create(db, order_dict)
+
+        qr_code_url, pay_url = PayOrderService._invoke_channel_create(
+            channel, merchant_config,
+            order_no=order_no, amount=pay_amount, subject=subject,
+            body=body, user_ip=user_ip,
+        )
+
+        return CreatePayOrderResponse(
+            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
+            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            expire_time=expire_time,
+        )
+
+    @staticmethod
+    async def _create_lead_pack_order(
+        *,
+        db: AsyncSession,
+        user_id: int,
+        obj: CreatePayOrderParam,
+        user_ip: str | None,
+        app_code: str,
+    ) -> CreatePayOrderResponse:
+        """线索购买真实下单（doc93 §4.2 线索付费）。
+
+        线索是**独立支付商品**，按条计价（`GROWTH_LEAD_UNIT_PRICE_FEN` 分/条·运营改环境变量不动代码），
+        **不走 new-api 积分**（doc93 line 165 铁律）。lead_count 写入 `extra_data`，到账由
+        `handle_lead_pack_paid` 回调读取并增加用户可领取线索额度（purchased_balance）。
+        定价纯由 config 决定，**不耦合 hasn_growth**（额度发放经回调注册机制解耦）。
+        """
+        count = int(obj.lead_count or 0)
+        if count <= 0:
+            raise errors.RequestError(msg='购买线索条数必须大于 0')
+        unit_fen = int(settings.GROWTH_LEAD_UNIT_PRICE_FEN)
+        if unit_fen <= 0:
+            raise errors.RequestError(msg='线索单价未配置（GROWTH_LEAD_UNIT_PRICE_FEN）')
+        pay_amount = unit_fen * count
+
+        subject = f'唤星AI-线索购买-{count}条'
+        body = f'购买线索 {count} 条（获客公共池）'
+
+        channel, merchant_config = await PayOrderService._resolve_channel(db, obj.channel_code)
+
+        order_no = _generate_order_no()
+        now = timezone.now()
+        expire_time = now + timedelta(minutes=ORDER_EXPIRE_MINUTES)
+
+        order_dict = {
+            'order_no': order_no,
+            'user_id': user_id,
+            'channel_id': channel.id,
+            'channel_code': channel.code,
+            'order_type': 'lead_pack',
+            'subject': subject,
+            'body': body,
+            'target_tier': None,
+            'billing_cycle': None,
+            'amount': pay_amount,
+            'pay_amount': pay_amount,
+            'expire_time': expire_time,
+            'user_ip': user_ip,
+            'extra_data': {'app_code': app_code, 'lead_count': count, 'unit_price_fen': unit_fen},
         }
         await pay_order_dao.create(db, order_dict)
 

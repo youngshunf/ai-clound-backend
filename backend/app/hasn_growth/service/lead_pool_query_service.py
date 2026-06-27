@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
-from backend.app.hasn_growth.model import LeadContact
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from backend.app.hasn_growth.model import LeadContact, LeadQuota
 from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 
@@ -24,6 +26,8 @@ from backend.app.hasn_growth.service.business_service import lead_automation_bus
 from backend.app.hasn_growth.service.funnel_service import _lead_to_dict
 from backend.app.hasn_growth.service.industry_tagging_service import IndustryTaggingService
 from backend.common.log import log
+from backend.core.conf import settings
+from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,9 +73,101 @@ class LeadPoolQueryService:
         stmt = stmt.order_by(LeadContact.confidence_score.desc().nullslast()).limit(min(limit, _POOL_QUERY_HARD_CAP))
         return list((await db.execute(stmt)).scalars().all())
 
+    @staticmethod
+    def _free_per_month() -> int:
+        """每用户每月免费可领取线索条数（doc93 §4.2·可配·运营改环境变量不动代码）。"""
+        return max(0, int(settings.GROWTH_FREE_LEADS_PER_MONTH))
+
+    @staticmethod
+    def _current_period() -> str:
+        """免费额度归属月 key（YYYY-MM·时区感知·跨月即归零 free_used）。"""
+        return timezone.now().strftime('%Y-%m')
+
+    async def _quota_snapshot(self, db: AsyncSession, *, user_id: int) -> dict[str, int]:
+        """只读额度快照（**不建行**）：{free_per_month, free_used, free_remaining, purchased_balance}。
+
+        免费已用按当前 period 计——账本 period_key 与当前月不一致视为本月未用（0），保持只读。
+        """
+        free_per_month = self._free_per_month()
+        period = self._current_period()
+        row = (
+            await db.execute(sa.select(LeadQuota).where(LeadQuota.user_id == user_id))
+        ).scalar_one_or_none()
+        free_used = row.free_used if (row and row.period_key == period) else 0
+        purchased = row.purchased_balance if row else 0
+        free_remaining = max(0, free_per_month - free_used)
+        return {
+            'free_per_month': free_per_month,
+            'free_used': free_used,
+            'free_remaining': free_remaining,
+            'purchased_balance': purchased,
+        }
+
+    async def _get_or_init_quota_row(self, db: AsyncSession, *, user_id: int, lock: bool = False) -> LeadQuota:
+        """取/建用户额度账本行（UPSERT 幂等·并发安全）并做跨月免费额度归零。
+
+        先 `INSERT ... ON CONFLICT(user_id) DO NOTHING` 确保行存在（避免并发双插），再
+        `SELECT [FOR UPDATE]` 读回；若 period_key 落后于当前月则归零 free_used（免费额度按月重置）。
+        仅 flush，**不 commit**（事务由调用方/handler 掌握）。
+        """
+        period = self._current_period()
+        await db.execute(
+            pg_insert(LeadQuota)
+            .values(user_id=user_id, period_key=period)
+            .on_conflict_do_nothing(index_elements=['user_id'])
+        )
+        stmt = sa.select(LeadQuota).where(LeadQuota.user_id == user_id)
+        if lock:
+            stmt = stmt.with_for_update()
+        row = (await db.execute(stmt)).scalar_one()
+        if row.period_key != period:
+            row.period_key = period
+            row.free_used = 0
+        return row
+
     async def _check_quota(self, db: AsyncSession, *, user_id: int, requested: int) -> int:
-        """额度闸接缝（阶段二 no-op：放行全部请求量；阶段四 4.2 填实免费额度 + 超额走支付）。"""
-        return requested
+        """额度闸（doc93 §4.2 填实 2.1 接缝）：放行量 = min(请求量, 本月免费剩余 + 购买余额)。
+
+        免费额度内放行；超额部分由 `request_leads` 返回 `shortfall` 引导**支付购买**（不走积分）。
+        只读快照（不建行）：纯检查不污染账本，真正扣减在交付后 `_consume_quota`。
+        """
+        snap = await self._quota_snapshot(db, user_id=user_id)
+        available = snap['free_remaining'] + snap['purchased_balance']
+        return min(int(requested), max(0, available))
+
+    async def _consume_quota(self, db: AsyncSession, *, user_id: int, count: int) -> dict[str, int]:
+        """交付后扣减额度：**先扣免费、再扣购买**。返回 {from_free, from_purchased}。
+
+        count 应 ≤ `_check_quota` 放行量（仅按**实际交付**的池命中数扣，缺口补爬回流池的不在此扣）。
+        行级锁防并发双扣；仅 flush，事务由调用方掌握。
+        """
+        if count <= 0:
+            return {'from_free': 0, 'from_purchased': 0}
+        row = await self._get_or_init_quota_row(db, user_id=user_id, lock=True)
+        free_remaining = max(0, self._free_per_month() - row.free_used)
+        from_free = min(count, free_remaining)
+        from_purchased = min(count - from_free, row.purchased_balance)
+        row.free_used += from_free
+        row.purchased_balance -= from_purchased
+        row.consumed_total += from_free + from_purchased
+        row.updated_time = timezone.now()
+        await db.flush()
+        return {'from_free': from_free, 'from_purchased': from_purchased}
+
+    async def grant_purchased_leads(self, db: AsyncSession, *, user_id: int, count: int) -> int:
+        """支付到账：增加可领取线索余额（永不过期·doc93 §4.2 line 165 不走积分）。返回新余额。
+
+        由 `lead_pack` 支付成功回调 `handle_lead_pack_paid` 调用。行级锁 + flush；事务由回调的
+        `async_db_session.begin()` 提交。
+        """
+        if count <= 0:
+            return 0
+        row = await self._get_or_init_quota_row(db, user_id=user_id, lock=True)
+        row.purchased_balance += int(count)
+        row.purchased_total += int(count)
+        row.updated_time = timezone.now()
+        await db.flush()
+        return row.purchased_balance
 
     @staticmethod
     def _backfill_keyword(
@@ -99,15 +195,24 @@ class LeadPoolQueryService:
         非空时，**调用方（handler）须挂 after_commit 钩子入队该 job**（提交前 worker 读不到未提交 job·
         对齐 collect.start 时序，见 [[project_growth_collect_execution_chain_landed]]）。
         """
-        n = await self._check_quota(db, user_id=user_id, requested=max(1, int(limit)))
+        requested = max(1, int(limit))
+        # 额度闸（doc93 §4.2）：放行量 = min(请求量, 免费剩余 + 购买余额)；超额引导支付购买。
+        n = await self._check_quota(db, user_id=user_id, requested=requested)
         # 行业归一到 code 再查池（2.2 入库已归一·两侧同口径才命中）；归一不中保留原文兜底 ilike。
         industry_match = industry
         if industry and industry.strip():
             code = await IndustryTaggingService(db).normalize(raw_industry=industry)
             industry_match = code or industry
-        hits = await self.query_pool(db, industry=industry_match, region=region, keyword=keyword, city=city, limit=n)
+        hits = (
+            await self.query_pool(db, industry=industry_match, region=region, keyword=keyword, city=city, limit=n)
+            if n > 0
+            else []
+        )
         delivered = hits[:n]
         leads = [_lead_to_dict(r, reveal_pii=reveal_pii) for r in delivered]
+
+        # 交付后扣减额度（仅按**实际交付**的池命中扣·先免费后购买）；缺口补爬回流池的不在此扣。
+        await self._consume_quota(db, user_id=user_id, count=len(delivered))
 
         backfill_job_id: int | None = None
         gap = n - len(delivered)
@@ -126,12 +231,24 @@ class LeadPoolQueryService:
                 )
                 backfill_job_id = int(job['id'])
                 log.info(f'[LeadPool] 查池命中 {len(delivered)}/{n}，缺口 {gap} 触发补爬 job={backfill_job_id}')
+
+        snap = await self._quota_snapshot(db, user_id=user_id)
+        # shortfall：请求量中被额度闸拦下、需**支付购买**才能领取的条数（doc93 §4.2）。
+        shortfall = max(0, requested - n)
         return {
             'delivered': len(delivered),
             'from_pool': len(delivered),
             'backfill_job_id': backfill_job_id,
-            'requested': n,
+            'requested': requested,
+            'allowed': n,
+            'shortfall': shortfall,
             'leads': leads,
+            'quota': {
+                'free_per_month': snap['free_per_month'],
+                'free_remaining': snap['free_remaining'],
+                'purchased_balance': snap['purchased_balance'],
+                'unit_price_fen': max(0, int(settings.GROWTH_LEAD_UNIT_PRICE_FEN)),
+            },
         }
 
 

@@ -88,6 +88,10 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     from backend.app.hasn.service.app_purchase_callback import register_app_purchase_callback
     register_app_purchase_callback()
 
+    # 注册获客线索购买支付回调（doc93 §4.2：购买成功 → 增加可领取线索额度·不走积分）
+    from backend.app.hasn_growth.service.lead_pack_callback import register_lead_pack_callback
+    register_lead_pack_callback()
+
     # v2.1 默认由本地/云端 Runtime Host 调度任务；旧中心 scheduler 仅显式打开时运行。
     if settings.HASN_TASK_CENTER_SCHEDULER_ENABLED:
         from backend.app.hasn.service.task_scheduler import task_scheduler

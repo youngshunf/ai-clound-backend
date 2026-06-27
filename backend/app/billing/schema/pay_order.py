@@ -13,9 +13,11 @@ class CreatePayOrderParam(SchemaBase):
     可辨识联合：`order_type` 决定必填字段——
     - `subscribe`：必填 `tier`（套餐归一枚举 free/pro/advanced/flagship），可选 `billing_cycle`；
     - `credit_pack`：必填 `package_id`，从 `credit_package` 取价下单（到账回调 `handle_credit_pack_paid` 发积分）；
-    - `app_purchase`：必填 `app_id`，从 `hasn_app_catalog` 取价下单（到账回调 `handle_app_purchase_paid` 写权益）。
+    - `app_purchase`：必填 `app_id`，从 `hasn_app_catalog` 取价下单（到账回调 `handle_app_purchase_paid` 写权益）；
+    - `lead_pack`：必填 `lead_count`，按条计价（`GROWTH_LEAD_UNIT_PRICE_FEN`）下单（到账回调
+      `handle_lead_pack_paid` 增加可领取线索额度）。线索是独立支付商品，**不走 new-api 积分**（doc93 §4.2）。
     """
-    order_type: str = Field('subscribe', description='订单类型 subscribe | credit_pack | app_purchase')
+    order_type: str = Field('subscribe', description='订单类型 subscribe | credit_pack | app_purchase | lead_pack')
     channel_code: str = Field(description='支付渠道编码 wx_native/alipay_qr/alipay_pc')
     # 订阅时必填
     tier: str | None = Field(None, description='order_type=subscribe 时必填，目标套餐 free/pro/advanced/flagship')
@@ -25,6 +27,8 @@ class CreatePayOrderParam(SchemaBase):
     package_id: int | None = Field(None, description='order_type=credit_pack 时必填，积分包 ID')
     # AI-Native 应用购买时必填
     app_id: str | None = Field(None, description='order_type=app_purchase 时必填，应用目录 app_id')
+    # 线索购买时必填（doc93 §4.2 线索付费）
+    lead_count: int | None = Field(None, description='order_type=lead_pack 时必填，购买线索条数（按条计价）')
 
     @model_validator(mode='after')
     def _validate_cross_fields(self) -> 'CreatePayOrderParam':
@@ -37,8 +41,14 @@ class CreatePayOrderParam(SchemaBase):
         elif self.order_type == 'app_purchase':
             if not self.app_id:
                 raise ValueError('order_type=app_purchase 时必须提供 app_id')
+        elif self.order_type == 'lead_pack':
+            if not self.lead_count or self.lead_count <= 0:
+                raise ValueError('order_type=lead_pack 时必须提供 lead_count（>0）')
         else:
-            raise ValueError(f'不支持的 order_type: {self.order_type}（仅 subscribe | credit_pack | app_purchase）')
+            raise ValueError(
+                f'不支持的 order_type: {self.order_type}'
+                '（仅 subscribe | credit_pack | app_purchase | lead_pack）'
+            )
         return self
 
 
