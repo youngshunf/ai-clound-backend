@@ -257,7 +257,10 @@ class HasnAgentRuntimeDispatchService:
                     return
 
                 # 数据面 2：SSE GET events → 逐帧中继（read 无超时，由上游终态收口）。
-                events_path = events_path_template.replace(f'{run_id}', str(run_id))
+                # ⚠️ replace 的第一参必须是**字面占位符** '{run_id}'，不是 f'{run_id}'——后者会被
+                # 插值成 run_id 的实际值，模板里没有该串 → 占位符原样残留 → GET 字面 /v1/runs/{run_id}
+                # /events → 上游 404（曾让所有云端分身对话报 runtime_events_rejected/decoding error）。
+                events_path = events_path_template.replace('{run_id}', str(run_id))  # noqa: RUF027
                 async with client.stream('GET', f'{base_url}{events_path}', headers=headers) as events:
                     if events.status_code >= 400:
                         body = await events.aread()
@@ -288,7 +291,8 @@ class HasnAgentRuntimeDispatchService:
         if not host or not port or not key:
             raise HermesRuntimeError(error='upstream_endpoint_unconfigured', trace_id=trace_id)
         cancel_template = endpoint.get('runs_cancel_path_template') or f'/v1/runs/{run_id}/cancel'
-        cancel_path = cancel_template.replace(f'{run_id}', str(run_id))
+        # 同上：字面占位符 '{run_id}'，不是 f'{run_id}'（endpoint 返回带占位符模板时才会触发 bug）。
+        cancel_path = cancel_template.replace('{run_id}', str(run_id))  # noqa: RUF027
         base_url = f'http://{host}:{int(port)}'
         headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
         try:
