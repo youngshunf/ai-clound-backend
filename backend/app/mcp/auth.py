@@ -37,6 +37,7 @@ class AgentContext:
         token_payload: AgentTokenPayload | None = None,
         default_mode: str = 'allow',
         capability_modes: dict | None = None,
+        runtime_location: str = 'cloud',
     ) -> None:
         self.hasn_id = hasn_id
         self.owner_id = owner_id
@@ -47,6 +48,10 @@ class AgentContext:
         self.owner_hasn_id = owner_hasn_id
         self.session_uuid = session_uuid
         self._token_payload = token_payload
+        # 运行位置（local/cloud/remote）：决定云端 MCP 面是否对本地分身隐藏 deck/task/
+        # workflow（TOOLMIG2-P4，见 runtime_visibility）。默认 'cloud'=可见，绝不误伤——
+        # 仅鉴权时从 HasnAgents.runtime_location 显式灌入 'local' 才隐藏。
+        self.runtime_location = runtime_location
         # 维度① 三态能力授权（D3：消费时活取，凭证不再承载授权权威）。
         # 默认全开（allow）；streamable 鉴权后用 get_agent_scopes_cached 现查覆盖。
         self.default_mode = default_mode
@@ -61,6 +66,7 @@ class AgentContext:
         metadata: dict | None = None,
         default_mode: str = 'allow',
         capability_modes: dict | None = None,
+        runtime_location: str = 'cloud',
     ) -> 'AgentContext':
         return cls(
             hasn_id=payload.agent_hasn_id,
@@ -74,6 +80,7 @@ class AgentContext:
             token_payload=payload,
             default_mode=default_mode,
             capability_modes=capability_modes,
+            runtime_location=runtime_location,
         )
 
     def apply_policy(self, policy: dict) -> None:
@@ -184,7 +191,11 @@ async def get_agent_context(
         if agent.status != 'active':
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f'Agent is {agent.status}')
 
-        context = AgentContext.from_token_payload(payload, agent_status=agent.status)
+        context = AgentContext.from_token_payload(
+            payload,
+            agent_status=agent.status,
+            runtime_location=getattr(agent, 'runtime_location', 'cloud') or 'cloud',
+        )
         # D3 消费时活取：JWT scopes 仅审计快照，三态判定现查 DB（凭证与授权解耦）。
         policy = await get_agent_scopes_cached(x_hasn_agent_id, db)
         context.apply_policy(policy)

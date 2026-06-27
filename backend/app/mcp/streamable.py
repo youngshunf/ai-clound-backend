@@ -181,7 +181,11 @@ class HasnMcpStreamableServer:
                 session_uuid=f'amk_{record.id}',
                 expire_time=record.expire_time or timezone.now(),
             )
-            context = AgentContext.from_token_payload(payload, agent_status=agent.status)
+            context = AgentContext.from_token_payload(
+                payload,
+                agent_status=agent.status,
+                runtime_location=getattr(agent, 'runtime_location', 'cloud') or 'cloud',
+            )
             # D3 消费时活取：不用 key 上冻结的 scopes 判定，用 agent_hasn_id 现查三态策略。
             policy = await get_agent_scopes_cached(record.agent_hasn_id, db)
             context.apply_policy(policy)
@@ -210,7 +214,11 @@ class HasnMcpStreamableServer:
             if agent.status != 'active':
                 raise ValueError(f'Agent is {agent.status}')
 
-            context = AgentContext.from_token_payload(payload, agent_status=agent.status)
+            context = AgentContext.from_token_payload(
+                payload,
+                agent_status=agent.status,
+                runtime_location=getattr(agent, 'runtime_location', 'cloud') or 'cloud',
+            )
             # D3 消费时活取：JWT scopes 仅审计快照，三态判定现查 DB。
             policy = await get_agent_scopes_cached(hasn_id, db)
             context.apply_policy(policy)

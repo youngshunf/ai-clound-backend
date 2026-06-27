@@ -8,6 +8,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from backend.app.mcp.runtime_visibility import is_namespace_hidden_for_runtime
+
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
     from backend.app.mcp.tools.base import BaseTool
@@ -236,7 +238,14 @@ class ToolDirectoryService:
     def _can_discover(self, agent_context: AgentContext, tool: BaseTool) -> bool:
         # 维度① 能力授权（D3 活取三态）：mode != deny 即可见（ask 也可见）；默认全开。
         # 维度② 对象可达性不在这里，由工具运行时返回。
-        return not agent_context.is_tool_denied(tool)
+        if agent_context.is_tool_denied(tool):
+            return False
+        # 运行位置收口（TOOLMIG2-P4）：本地分身在云端面隐藏 deck/task/workflow（其用本地面
+        # 那份本地优先引擎），避免同一分身在两个 MCP 面看到重名工具。见 runtime_visibility。
+        return not is_namespace_hidden_for_runtime(
+            self._namespace_for_tool(tool),
+            getattr(agent_context, 'runtime_location', 'cloud'),
+        )
 
     def _source_for_tool(self, tool: BaseTool) -> ToolSource:
         return getattr(tool, 'source', 'platform')

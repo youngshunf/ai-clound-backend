@@ -11,6 +11,7 @@ from typing import Any
 
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
+from backend.app.mcp.runtime_visibility import is_tool_hidden_for_runtime
 from backend.app.mcp.tool_directory import ToolDirectoryService
 from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.asset import AssetCreateTool
@@ -206,6 +207,15 @@ class HasnCloudMcpServer:
 
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
+
+            # 运行位置守卫（TOOLMIG2-P4）：本地分身在云端面不得调 deck/task/workflow（其用
+            # 本地面那份本地优先引擎）。发现面已隐藏；此为执行面兜底，连 hasn.cloud.tool.call
+            # 透传（委托回本方法重入）也一并拦住。见 runtime_visibility。
+            if is_tool_hidden_for_runtime(tool_name, getattr(agent_context, 'runtime_location', 'cloud')):
+                raise McpToolError(
+                    McpErrorCode.TOOL_NOT_FOUND,
+                    f'{tool_name} 在云端面对本地分身不可用：本地分身请使用本地工具面（hasn-local）的同名工具',
+                )
 
             # 维度① 能力授权（D3 活取三态）：deny→拒；ask→挂起主人批准（P6）；allow→执行。
             # 维度② 对象可达性由社交工具 execute 内部 check_relation_permission 返回，与此正交。
