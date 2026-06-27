@@ -76,6 +76,14 @@ DEFAULT_AGENT_SCOPES = [
     'plan:write',
     'plan:schedule',
     'plan:delegate',
+    # design 矢量设计应用（14-doc/27 设计 §5.3/§5.4；OP-P3-B 铸 scope）。本地 sidecar 工具
+    # （源自 OpenPencil）：读类 get/get_selection/read_nodes/find_empty_space/get_design_prompt/export 落
+    # :read；写类（batch_design/分层 skeleton·content·refine/节点增改/set_variables·set_themes）落 :write
+    # （创作类出厂 Allow，破坏性 delete/replace 出厂 Ask）；出码 codegen 落 :codegen（出厂 Allow）。
+    # check_scopes 按此 claim 校验，Agent 调 design 本地工具经 daemon 三态闸门需这些 claim 在册（同 reel/film）。
+    'design:read',
+    'design:write',
+    'design:codegen',
     # session 工作会话自我控制（doc12-09 / 实施93 SA-P3）。平台级、非应用——任意工作会话里
     # 分身需要主人决策/补关键信息时调 hasn.session.ask（execution_location=Local）把会话挂起、
     # 投提问卡到主会话，绝不替主人臆测。出厂 **Allow**（暂停问主人是低风险且鼓励的协作行为）。

@@ -26,6 +26,7 @@ from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.app_catalog_registry import App, app_catalog_registry
+from backend.app.hasn_design.manifest import DESIGN_BUSINESS_PROMPT
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
@@ -56,6 +57,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
     'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 install_policy=manual 推导）
     'studio': 76,  # 统一视频引擎（cloud-brokered 视频工作台，模块 14 doc22；default_mount=FALSE 由 manual 推导）
+    'design': 78,  # 矢量设计（local_tool 本地 sidecar，源自 OpenPencil，doc27；default_mount=FALSE 由 manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -170,6 +172,13 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '流水线推进、迭代精修；提交渲染/出片、导出成片、分享发布等花算力或外发的动作须经主人审批。'
         '所有成片来自引擎真实渲染、绝不伪造产物（零 fake），取不到/跑不通就如实报错，尊重主人最终决定权。',
     ),
+    # 矢量设计（source OpenPencil，模块 14 doc27）用专属「设计师（designer）」分身（hub 模板 designer，
+    # builtin_key=designer，OP-P5 落地）——矢量/UI 设计是独立专长（区别于 content_operator 的内容运营）。
+    # 业务提示词单一事实源在 manifest.DESIGN_BUSINESS_PROMPT（教 open_document→分层出图→export 登记产物→定稿摊主人）。
+    'design': (
+        'designer',
+        DESIGN_BUSINESS_PROMPT,
+    ),
 }
 
 
@@ -253,6 +262,18 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
             'version': '',
             'packages': {},
             'bundled_deps': ['ffmpeg', 'imagemagick'],
+        },
+    },
+    # 矢量设计（design，源自 OpenPencil，doc27 §4.3/§7/§9）：本地 sidecar = OpenPencil node-server web 编辑器 +
+    # pen-mcp 双进程，引擎包随桌面端下发（无云端算力成本，区别于 studio 云服务）。design 生成走分身自己的 LLM
+    # （new-api），sidecar/pen-mcp 本身做 DSL 解析/自动布局/渲染（无独立模型配置）——故 config_json 只承载
+    # engine 分发骨架（bundled_deps=['node']：sidecar 是 Node 服务，需 Node runtime，doc27 §9 风险#4）。
+    # version + 按架构 packages 留空：dev 用 fork 源码树即可跑，prod 由运营经管理端/FILMPUB 填。
+    'design': {
+        'engine': {
+            'version': '',
+            'packages': {},
+            'bundled_deps': ['node'],
         },
     },
 }
@@ -671,9 +692,7 @@ async def resolve_app_access(
     # 仅「被邀请或申请且通过审批」的主体可见可用；未授权 → 锁定（need_beta / beta_pending），
     # 客户端据此渲染锁定卡 +「申请内测」/「审核中」。beta_full（全量内测）/ ga 不门控，正常走准入。
     if (catalog.release_phase or 'ga') == 'beta_gray':
-        beta = await get_beta_access(
-            db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id
-        )
+        beta = await get_beta_access(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id)
         if beta is None or beta.status != 'approved':
             reason = 'beta_pending' if (beta is not None and beta.status == 'pending') else 'need_beta'
             return _access(allowed=False, reason=reason, requires='beta')

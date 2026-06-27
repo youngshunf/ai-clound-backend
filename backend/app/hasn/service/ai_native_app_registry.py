@@ -11,6 +11,7 @@ from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, ap
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
@@ -68,6 +69,10 @@ class AINativeAppRegistry:
             # 工具面随 P3 落地经 gateway_internal → studio_service → montage_engine_provider → montage-engine-service。
             # 本期 P2 manifest 骨架不暴露 tools/capabilities，待 P3 接 service + 云端 handler 后再补）。
             'studio': STUDIO_AI_NATIVE_MANIFEST,
+            # 矢量设计（app_id=design，源自 OpenPencil，模块 14 doc27；local_tool 本地 sidecar 应用，
+            # hasn.design.* 工具在本地 hasn-mcp（design.rs，OP-P3-A 待落）经 DesignBroker → pen-mcp 出图，
+            # 云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
+            'design': DESIGN_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:
