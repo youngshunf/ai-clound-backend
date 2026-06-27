@@ -14,6 +14,13 @@ from backend.app.hasn_core.app_platform import (
 )
 from backend.app.hasn_task.service.builtin_task_service import workbench_builtin_task_service
 
+# APPBETA-2：灰度内测申请入参/详情。with `from __future__ import annotations` 需运行时导入
+# （body 模型移进 TYPE_CHECKING 会被 FastAPI 误判成 query），noqa 阻止 ruff 再挪。
+from backend.app.hasn.schema.hasn_app_beta_access import (  # noqa: TC001
+    ApplyHasnAppBetaParam,
+    GetHasnAppBetaAccessDetail,
+)
+
 # FastAPI 据 PutWorkbenchPrefParam/WorkbenchPrefResponse 这些 Pydantic 模型解析请求体/响应；
 # 配合 `from __future__ import annotations` 必须保持运行时导入（移入 TYPE_CHECKING 会让 body
 # 参数被误判成 query，触发 422）。noqa 阻止 ruff TC001 再次把它挪进 TYPE_CHECKING。
@@ -185,6 +192,25 @@ async def open_app_trial(request: Request, db: CurrentSessionTransaction, app_id
     # open_trial 内含校验（published + 付费 + trial_days>0 + 未用过 + 无 active 权益），违反抛 4xx。
     ent = await app_catalog_service.open_trial(db, catalog=catalog, owner_hasn_id=owner_id)
     return response_base.success(data=GetHasnAppEntitlementDetail.model_validate(ent))
+
+
+@router.post(
+    '/apps/{app_id}/beta/apply',
+    dependencies=[DependsJwtAuth],
+    summary='申请灰度内测（owner 维度，写 pending 待管理员审批）',
+)
+async def apply_app_beta(
+    request: Request, db: CurrentSessionTransaction, app_id: str, obj: ApplyHasnAppBetaParam | None = None
+) -> ResponseModel:
+    owner_id = await _resolve_owner_id(request, db)
+    catalog = await app_catalog_service.get_catalog(db, app_id=app_id)
+    if catalog is None:
+        raise errors.NotFoundError(msg='应用不存在')
+    # apply_beta 内含校验（published + release_phase=beta_gray），非灰度应用抛 4xx；幂等可重复申请。
+    row = await app_catalog_service.apply_beta(
+        db, catalog=catalog, owner_hasn_id=owner_id, note=(obj.note if obj else None)
+    )
+    return response_base.success(data=GetHasnAppBetaAccessDetail.model_validate(row))
 
 
 @router.get(

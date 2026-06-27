@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from backend.app.hasn.api.v1.admin.hasn_agent_capabilities import router as admin_hasn_agent_capabilities_router
 from backend.app.hasn.api.v1.admin.hasn_agent_runtime_reports import router as admin_hasn_agent_runtime_reports_router
 from backend.app.hasn.api.v1.admin.hasn_agents import router as admin_hasn_agents_router
+from backend.app.hasn.api.v1.admin.hasn_app_beta_access import router as admin_hasn_app_beta_access_router
 from backend.app.hasn.api.v1.admin.hasn_app_catalog import router as admin_hasn_app_catalog_router
 from backend.app.hasn.api.v1.admin.hasn_app_entitlement import router as admin_hasn_app_entitlement_router
 from backend.app.hasn.api.v1.admin.hasn_audit_log import router as admin_hasn_audit_log_router
@@ -292,6 +293,7 @@ v1.include_router(
 )
 v1.include_router(admin_hasn_app_catalog_router, prefix='/app-catalogs', tags=['AI-Native 应用目录'])
 v1.include_router(admin_hasn_app_entitlement_router, prefix='/app-entitlements', tags=['AI-Native 应用权益'])
+v1.include_router(admin_hasn_app_beta_access_router, prefix='/app-beta-access', tags=['AI-Native 应用灰度内测'])
 v1.include_router(
     admin_hasn_platform_default_config_router, prefix='/platform-default-config', tags=['平台默认配置（节点下发）']
 )

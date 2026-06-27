@@ -30,6 +30,28 @@ class DeleteHasnAppBetaAccessParam(SchemaBase):
     pks: list[int] = Field(description='AI-Native 应用灰度内测访问（云端权威） ID 列表')
 
 
+# APPBETA-2：业务入参（申请 / 邀请 / 审批），非标准 CRUD。
+class ApplyHasnAppBetaParam(SchemaBase):
+    """owner 申请灰度内测（app-scope，app_id 走路径，主体取登录身份）。"""
+
+    note: str | None = Field(None, description='申请理由（可空）')
+
+
+class InviteHasnAppBetaParam(SchemaBase):
+    """管理员邀请某主体进灰度内测（直接通过）。"""
+
+    app_id: str = Field(description='应用唯一标识')
+    subject_id: str = Field(description='被邀请主体 ID（owner=hasn_id）')
+    subject_type: str = Field('owner', description='主体类型 (owner/enterprise)')
+    note: str | None = Field(None, description='邀请备注（可空）')
+
+
+class DecideHasnAppBetaParam(SchemaBase):
+    """管理员审批一条灰度内测申请（通过 / 拒绝）。"""
+
+    note: str | None = Field(None, description='审批备注（可空）')
+
+
 class GetHasnAppBetaAccessDetail(HasnAppBetaAccessSchemaBase):
     """AI-Native 应用灰度内测访问（云端权威）详情"""
 

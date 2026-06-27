@@ -21,6 +21,7 @@ import sqlalchemy as sa
 
 from backend.app.billing.model import UserSubscription
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
@@ -504,6 +505,11 @@ def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: App | None = None)
         'ui_kind': registry_app.ui_kind if registry_app else None,
         'window_url': registry_app.window_url if registry_app else None,
         'window_origin': registry_app.window_origin if registry_app else None,
+        # APPBETA-2：发布阶段（ga/beta_full/beta_gray）+ 自定义角标（文字+颜色）。
+        # 客户端据 release_phase 渲染「内测」标识、据 badge 渲染右上角自定义角标；
+        # 灰度门控（beta_gray 未授权 → 锁定卡 + 申请）由 access 字段承载（resolve_app_access）。
+        'release_phase': cat.release_phase or 'ga',
+        'badge': ({'text': cat.badge_text, 'color': cat.badge_color or None} if cat.badge_text else None),
     }
 
 
@@ -661,6 +667,18 @@ async def resolve_app_access(
     if catalog.status != 'published':
         return _access(allowed=False, reason='disabled')
 
+    # APPBETA-2：灰度内测门控（在商业化准入之前）。release_phase=beta_gray 的应用
+    # 仅「被邀请或申请且通过审批」的主体可见可用；未授权 → 锁定（need_beta / beta_pending），
+    # 客户端据此渲染锁定卡 +「申请内测」/「审核中」。beta_full（全量内测）/ ga 不门控，正常走准入。
+    if (catalog.release_phase or 'ga') == 'beta_gray':
+        beta = await get_beta_access(
+            db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id
+        )
+        if beta is None or beta.status != 'approved':
+            reason = 'beta_pending' if (beta is not None and beta.status == 'pending') else 'need_beta'
+            return _access(allowed=False, reason=reason, requires='beta')
+        # 已通过审批 → 落到下方商业化准入（灰度应用仍可叠加 free/tier/purchase）。
+
     access_type = catalog.access_type or 'free'
     if access_type == 'free':
         return _access(allowed=True, reason='free')
@@ -815,4 +833,131 @@ async def list_entitlements(
             sa.or_(HasnAppEntitlement.expires_at.is_(None), HasnAppEntitlement.expires_at > now),
         )
     stmt = stmt.order_by(HasnAppEntitlement.id.desc())
+    return list((await db.execute(stmt)).scalars().all())
+
+
+# ============================ APPBETA：灰度内测访问（申请 / 邀请 / 审批 / 门控查询） ============================
+
+
+async def get_beta_access(
+    db: AsyncSession, *, app_id: str, subject_type: str, subject_id: str
+) -> HasnAppBetaAccess | None:
+    """取某主体对某 app 的灰度内测访问行（唯一约束 (app,subject) 保证至多一行）。"""
+    stmt = sa.select(HasnAppBetaAccess).where(
+        HasnAppBetaAccess.app_id == app_id,
+        HasnAppBetaAccess.subject_type == subject_type,
+        HasnAppBetaAccess.subject_id == subject_id,
+    )
+    return (await db.execute(stmt)).scalars().first()
+
+
+async def apply_beta(
+    db: AsyncSession,
+    *,
+    catalog: HasnAppCatalog,
+    owner_hasn_id: str,
+    note: str | None = None,
+    subject_type: str = 'owner',
+) -> HasnAppBetaAccess:
+    """owner 主动申请灰度内测（status→pending 待管理员审批）。
+
+    校验：app 须 published + release_phase=beta_gray（非灰度应用无需申请）。
+    幂等（唯一约束 (app,subject)）：已 approved/pending → 原样返回；rejected / 无行 →
+    写/重置为 pending（允许被拒后再申请）。
+    """
+    if catalog.status != 'published':
+        raise errors.ForbiddenError(msg='应用未上架')
+    if (catalog.release_phase or 'ga') != 'beta_gray':
+        raise errors.RequestError(msg='该应用无需申请内测')
+    subject_id = owner_hasn_id
+    existing = await get_beta_access(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id)
+    if existing is not None:
+        if existing.status in ('approved', 'pending'):
+            return existing
+        # rejected → 允许再申请：重置为 pending
+        existing.status = 'pending'
+        existing.source = 'apply'
+        existing.note = note
+        existing.decided_by = None
+        existing.decided_at = None
+        existing.updated_time = timezone.now()
+        await db.flush()
+        return existing
+    row = HasnAppBetaAccess(
+        app_id=catalog.app_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        source='apply',
+        status='pending',
+        note=note,
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def invite_beta(
+    db: AsyncSession,
+    *,
+    app_id: str,
+    subject_id: str,
+    subject_type: str = 'owner',
+    decided_by: str | None = None,
+    note: str | None = None,
+) -> HasnAppBetaAccess:
+    """管理员邀请某主体进灰度内测（直接 approved，无需对方申请）。幂等：已有行 → 升为 approved。"""
+    existing = await get_beta_access(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
+    now = timezone.now()
+    if existing is not None:
+        existing.status = 'approved'
+        existing.source = 'invite'
+        if note is not None:
+            existing.note = note
+        existing.decided_by = decided_by
+        existing.decided_at = now
+        existing.updated_time = now
+        await db.flush()
+        return existing
+    row = HasnAppBetaAccess(
+        app_id=app_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        source='invite',
+        status='approved',
+        note=note,
+        decided_by=decided_by,
+        decided_at=now,
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def decide_beta(
+    db: AsyncSession, *, pk: int, approve: bool, decided_by: str | None = None, note: str | None = None
+) -> HasnAppBetaAccess:
+    """管理员审批一条灰度内测申请：approve→approved / 否则 rejected。"""
+    row = (await db.execute(sa.select(HasnAppBetaAccess).where(HasnAppBetaAccess.id == pk))).scalars().first()
+    if row is None:
+        raise errors.NotFoundError(msg='内测申请不存在')
+    row.status = 'approved' if approve else 'rejected'
+    if note is not None:
+        row.note = note
+    row.decided_by = decided_by
+    row.decided_at = timezone.now()
+    row.updated_time = timezone.now()
+    await db.flush()
+    return row
+
+
+async def list_beta_access(
+    db: AsyncSession, *, app_id: str | None = None, status: str | None = None
+) -> list[HasnAppBetaAccess]:
+    """管理员列灰度内测访问（可按 app_id / status 过滤），最新在前。"""
+    stmt = sa.select(HasnAppBetaAccess)
+    if app_id:
+        stmt = stmt.where(HasnAppBetaAccess.app_id == app_id)
+    if status:
+        stmt = stmt.where(HasnAppBetaAccess.status == status)
+    stmt = stmt.order_by(HasnAppBetaAccess.id.desc())
     return list((await db.execute(stmt)).scalars().all())
