@@ -21,10 +21,13 @@ from backend.app.hasn_growth.schema.funnel import (
     OptoutParam,
     QualifyLeadParam,
     RejectOutreachParam,
+    RequestLeadsParam,
     UpdateStageParam,
 )
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.growth_tool_handlers import _enqueue_collection_job_after_commit
+from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.playbook_service import playbook_service
@@ -71,6 +74,29 @@ async def create_lead(request: Request, db: CurrentSessionTransaction, obj: Crea
         confidence_score=obj.intent_score,
     )
     return response_base.success(data=data)
+
+
+@router.post('/leads/request', summary='[Owner] 请求线索（先查池→缺口补爬）', dependencies=[DependsJwtAuth])
+async def request_leads(request: Request, db: CurrentSessionTransaction, obj: RequestLeadsParam) -> ResponseModel:
+    """阶段二 2.3 用户端默认入口：平台**先查公共池**命中即交付（零采集成本），缺口才后台补爬回流。
+
+    向用户表达「请求线索」而非「发起采集」（采集是平台黑盒）。命中即交付主人明文 PII（自己领取的线索）；
+    有补爬 job 时挂 after_commit 钩子入队（提交后 worker 才读得到 job·与 collect.start 同时序保护）。
+    """
+    result = await lead_pool_query_service.request_leads(
+        db,
+        user_id=request.user.id,
+        limit=obj.limit,
+        industry=obj.industry,
+        region=obj.region,
+        keyword=obj.keyword,
+        city=obj.city,
+        reveal_pii=True,
+    )
+    backfill_job_id = result.get('backfill_job_id')
+    if backfill_job_id:
+        _enqueue_collection_job_after_commit(db, int(backfill_job_id))
+    return response_base.success(data=result)
 
 
 @router.get('/leads/{lead_contact_id}', summary='[Owner] 线索详情', dependencies=[DependsJwtAuth])

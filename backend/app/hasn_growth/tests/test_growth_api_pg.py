@@ -261,3 +261,44 @@ async def test_owner_create_lead_via_http(e2e) -> None:
     # --- 校验：公司名与联系人名都空 → 400 ---
     bad = await c.post(f'{O}/leads', json={'email': 'noname@x.com'})
     assert bad.status_code == 400, bad.text
+
+
+async def test_owner_request_leads_via_http(e2e) -> None:
+    """阶段二 2.3：主人「请求线索」→ 先查公共池命中即交付（明文），缺口触发后台补爬 job。
+
+    向用户表达「请求线索」而非「发起采集」（采集是平台黑盒，doc08 §4 数据飞轮）。命中即交付主人明文
+    PII（自己领取的线索）；池中不足 N 时交付 M + 后台补爬 N−M 回流公共池（backfill_job_id 非空）。
+    """
+    c = e2e.client
+    O = '/api/v1/growth/app'
+
+    # 公共池播种一条唯一关键词线索（query_pool 不限 lead_scope = 公共池语义）。
+    tag = uuid.uuid4().hex[:8]
+    uniq = f'唯一查询词{tag}'
+    e2e.session.add(
+        LeadContact(
+            lead_no=f'LP{tag.upper()}',
+            lead_scope='public',
+            company_name=uniq,
+            contact_name='池主',
+            email='pool@uniq.com',
+            phone='13700137000',
+            industry='SaaS',
+            city='北京',
+            source_type='firecrawl',
+            status='valid',
+            confidence_score=88,
+        )
+    )
+    await e2e.session.flush()
+
+    # --- 请求 1 条 → 命中即交付，明文（owner 看自己领取的线索），无缺口不补爬 ---
+    one = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 1}))
+    assert one['delivered'] == 1 and one['from_pool'] == 1
+    assert one['backfill_job_id'] is None
+    assert one['leads'][0]['email'] == 'pool@uniq.com'  # owner 明文（reveal_pii=True）
+
+    # --- 请求 5 条但池中仅 1 条命中 → 交付 1 + 缺口 4 触发后台补爬 job ---
+    gap = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 5}))
+    assert gap['delivered'] == 1 and gap['requested'] == 5
+    assert gap['backfill_job_id'], '缺口应触发后台补爬 job'

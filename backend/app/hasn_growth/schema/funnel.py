@@ -36,6 +36,20 @@ class CreateLeadParam(SchemaBase):
     intent_score: float | None = Field(default=None, ge=0, le=100, description='初始匹配分（缺省 60）')
 
 
+class RequestLeadsParam(SchemaBase):
+    """主人「请求线索」（阶段二 2.3 用户端默认入口）：先查公共池命中即交付，缺口才后台补爬。
+
+    向用户表达「请求线索」而非「发起采集」——采集是平台黑盒行为（doc08 §4 数据飞轮）。
+    行业/地区/关键词/城市任一维度可选；数量上限护 DB。
+    """
+
+    industry: str | None = Field(default=None, max_length=100, description='行业（归一到标准 code 再查池）')
+    region: str | None = Field(default=None, max_length=100, description='地区/省（ilike 模糊）')
+    city: str | None = Field(default=None, max_length=100, description='城市（ilike 模糊）')
+    keyword: str | None = Field(default=None, max_length=200, description='关键词（公司名/行业/联系人 ilike）')
+    limit: int = Field(default=20, ge=1, le=100, description='请求线索数量 N')
+
+
 class UpdateCustomerParam(SchemaBase):
     profile: dict[str, Any] | None = Field(default=None)
     intent_score: float | None = Field(default=None, ge=0, le=100)
