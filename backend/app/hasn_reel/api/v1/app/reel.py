@@ -36,21 +36,21 @@ async def _owner(db: CurrentSession | CurrentSessionTransaction, request: Reques
 
 
 @router.get('/projects', summary='[Owner] 列短视频项目', dependencies=[DependsJwtAuth])
-async def list_projects(request: Request, db: CurrentSession, include_archived: bool = False) -> ResponseModel:
+async def list_reel_projects(request: Request, db: CurrentSession, include_archived: bool = False) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await reel_service.list_projects(db, owner_hasn_id=owner_hasn_id, include_archived=include_archived)
     return response_base.success(data=data)
 
 
 @router.get('/projects/{project_id}', summary='[Owner] 项目详情（含创作历史）', dependencies=[DependsJwtAuth])
-async def get_project(request: Request, db: CurrentSession, project_id: int) -> ResponseModel:
+async def get_reel_project(request: Request, db: CurrentSession, project_id: int) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await reel_service.get_project(db, owner_hasn_id=owner_hasn_id, project_id=project_id)
     return response_base.success(data=data)
 
 
 @router.post('/projects', summary='[Owner] 新建/更新短视频项目', dependencies=[DependsJwtAuth])
-async def save_project(request: Request, db: CurrentSessionTransaction, obj: SaveProjectParam) -> ResponseModel:
+async def save_reel_project(request: Request, db: CurrentSessionTransaction, obj: SaveProjectParam) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await reel_service.save_project(
         db,
@@ -67,7 +67,7 @@ async def save_project(request: Request, db: CurrentSessionTransaction, obj: Sav
 
 
 @router.delete('/projects/{project_id}', summary='[Owner] 删除项目（含其创作元数据）', dependencies=[DependsJwtAuth])
-async def delete_project(request: Request, db: CurrentSessionTransaction, project_id: int) -> ResponseModel:
+async def delete_reel_project(request: Request, db: CurrentSessionTransaction, project_id: int) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     await reel_service.delete_project(db, owner_hasn_id=owner_hasn_id, project_id=project_id)
     return response_base.success()
