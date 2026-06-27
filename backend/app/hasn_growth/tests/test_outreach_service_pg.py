@@ -19,6 +19,7 @@ from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.model.playbook import Playbook
 from backend.app.hasn_growth.service.dispatch_service import (
     get_channel_setting,
@@ -55,17 +56,18 @@ async def session():
 async def _qualified_customer(sess, *, user_id: int, email: str, company: str) -> int:
     lead = LeadContact(
         lead_no=f'L{uuid.uuid4().hex[:10].upper()}',
-        lead_scope='user',
-        user_id=user_id,
+        pool_visibility='public',
         company_name=company,
         contact_name='李四',
         email=email,
         phone='13800138000',
         source_type='firecrawl',
-        status='valid',
+        status='new',
         confidence_score=70,
     )
     sess.add(lead)
+    await sess.flush()
+    sess.add(LeadRef(user_id=user_id, lead_contact_id=lead.id, source='collect', status='new'))
     await sess.flush()
     cust = await growth_funnel_service.qualify_lead(sess, user_id=user_id, lead_contact_id=lead.id)
     return cust['id']

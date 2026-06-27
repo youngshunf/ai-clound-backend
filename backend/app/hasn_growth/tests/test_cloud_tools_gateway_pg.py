@@ -32,6 +32,7 @@ from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import ForbiddenError
@@ -67,17 +68,18 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     )
     lead = LeadContact(
         lead_no=f'L{tag.upper()}',
-        lead_scope='user',
-        user_id=owner_uid,
+        pool_visibility='public',
         company_name='Acme',
         contact_name='王五',
         email='wangwu@acme.com',
         phone='13800138000',
         source_type='firecrawl',
-        status='valid',
+        status='new',
         confidence_score=72,
     )
     session.add(lead)
+    await session.flush()
+    session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
 
     def _agent(scopes: list[str]) -> AgentTokenPayload:

@@ -1,7 +1,9 @@
-"""获客漏斗服务 M3-a 真实 PG 验收（零 mock，事务末尾回滚不污染库）。
+"""获客漏斗服务真实 PG 验收（零 mock，事务末尾回滚不污染库）。
 
-覆盖：线索检索/详情（PII 脱敏 vs reveal）、qualify（建客户+回写线索态+qualify 活动+幂等）、
-客户列表/详情/时间线、画像更新（silent 累计）、活动记录、dismiss、跨户隔离。
+统一线索池模型：contact = 纯公共池（每条线索全局一份，pool_visibility 区分公共/私有）；
+用户对线索的拥有与状态（new/qualified/dismissed）落 lead_ref 引用表，不污染池行。
+覆盖：检索/详情（PII 脱敏 vs reveal·均经 lead_ref JOIN）、qualify（建客户+ref 态 qualified+幂等）、
+客户列表/详情/时间线、画像更新、dismiss（ref 态 dismissed）、手动建线索（私有池+引用）、跨户隔离（无 ref 即不可见）。
 需要 export DATABASE_PORT=15432。
 """
 
@@ -17,6 +19,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -43,10 +46,10 @@ async def session():
 
 
 async def _seed_lead(sess, *, user_id: int, email: str, phone: str, company: str) -> LeadContact:
+    """统一池：建公共池线索 + 为 user_id 建 lead_ref 引用（模拟采集入池后授予发起者）。"""
     lead = LeadContact(
         lead_no=f'L{uuid.uuid4().hex[:10].upper()}',
-        lead_scope='user',  # ck_lead_contact_scope: user 作用域必须 user_id 非空
-        user_id=user_id,
+        pool_visibility='public',
         company_name=company,
         contact_name='张三',
         email=email,
@@ -54,12 +57,22 @@ async def _seed_lead(sess, *, user_id: int, email: str, phone: str, company: str
         industry='SaaS',
         source_type='firecrawl',
         keyword='CRM',
-        status='valid',
+        status='new',
         confidence_score=78.5,
     )
     sess.add(lead)
     await sess.flush()
+    sess.add(LeadRef(user_id=user_id, lead_contact_id=lead.id, source='collect', status='new'))
+    await sess.flush()
     return lead
+
+
+async def _ref_of(sess, *, user_id: int, lead_contact_id: int) -> LeadRef:
+    return (
+        await sess.execute(
+            select(LeadRef).where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == lead_contact_id)
+        )
+    ).scalar_one()
 
 
 async def test_funnel_full_flow(session) -> None:
@@ -67,19 +80,20 @@ async def test_funnel_full_flow(session) -> None:
     other_uid = uid + 1
     lead = await _seed_lead(session, user_id=uid, email='zhangsan@acme.com', phone='13800138000', company='Acme')
 
-    # 1) 检索：默认脱敏
+    # 1) 检索（lead_ref JOIN）：默认脱敏
     found = await growth_funnel_service.search_leads(session, user_id=uid, query='Acme', limit=10)
     assert any(r['lead_contact_id'] == lead.id for r in found)
     hit = next(r for r in found if r['lead_contact_id'] == lead.id)
     assert hit['email'] == 'z***@acme.com'
     assert hit['phone'] == '1380****8000'
+    assert hit['status'] == 'new'  # 用户级状态来自 lead_ref
 
     # 2) 详情 reveal=True 回明文
     revealed = await growth_funnel_service.get_lead(session, user_id=uid, lead_contact_id=lead.id, reveal_pii=True)
     assert revealed['email'] == 'zhangsan@acme.com'
     assert revealed['phone'] == '13800138000'
 
-    # 3) qualify → 建客户 + 回写线索态 + qualify 活动
+    # 3) qualify → 建客户 + ref 态 qualified + qualify 活动
     cust = await growth_funnel_service.qualify_lead(
         session, user_id=uid, lead_contact_id=lead.id, profile={'pain': '获客难'}, intent_score=80, owner_agent_id='a_x1'
     )
@@ -87,8 +101,8 @@ async def test_funnel_full_flow(session) -> None:
     assert cust['email'] == 'z***@acme.com'  # 出参脱敏
     assert cust['lifecycle_status'] == 'active'
     customer_id = cust['id']
-    refreshed_lead = (await session.execute(select(LeadContact).where(LeadContact.id == lead.id))).scalar_one()
-    assert refreshed_lead.status == 'qualified'
+    ref = await _ref_of(session, user_id=uid, lead_contact_id=lead.id)
+    assert ref.status == 'qualified'  # 用户级状态落引用层，不污染池行
 
     # 4) qualify 幂等
     cust2 = await growth_funnel_service.qualify_lead(session, user_id=uid, lead_contact_id=lead.id)
@@ -117,10 +131,12 @@ async def test_funnel_full_flow(session) -> None:
     kinds = {t['kind'] for t in timeline}
     assert 'qualify' in kinds and 'note' in kinds
 
-    # 8) dismiss 另一条线索
+    # 8) dismiss 另一条线索 → ref 态 dismissed
     lead2 = await _seed_lead(session, user_id=uid, email='b@b.com', phone='13900139000', company='Beta')
     res = await growth_funnel_service.dismiss_lead(session, user_id=uid, lead_contact_id=lead2.id, reason='行业不符')
-    assert res['status'] == 'rejected'
+    assert res['status'] == 'dismissed'
+    ref2 = await _ref_of(session, user_id=uid, lead_contact_id=lead2.id)
+    assert ref2.status == 'dismissed' and ref2.dismiss_reason == '行业不符'
     # dismiss 后不再出现在检索
     after = await growth_funnel_service.search_leads(session, user_id=uid, query='Beta', limit=10)
     assert all(r['lead_contact_id'] != lead2.id for r in after)
@@ -128,6 +144,38 @@ async def test_funnel_full_flow(session) -> None:
     # 9) 跨户隔离：他人查本户客户 → NotFound
     with pytest.raises(errors.NotFoundError):
         await growth_funnel_service.get_customer(session, user_id=other_uid, customer_id=customer_id)
-    # 他人检索看不到本户线索（user 作用域私有）
+    # 他人无 lead_ref → 检索看不到该线索（统一池：拥有 = 有引用）
     other_found = await growth_funnel_service.search_leads(session, user_id=other_uid, query='Acme', limit=10)
     assert all(r['lead_contact_id'] != lead.id for r in other_found)
+
+
+async def test_create_manual_lead_pool_and_ref(session) -> None:
+    """手动建线索：落私有池行（不进公共匹配）+ 建用户引用（source=manual，note 落引用层）。"""
+    uid = 980000 + int(uuid.uuid4().int % 9000)
+    created = await growth_funnel_service.create_manual_lead(
+        session,
+        user_id=uid,
+        company_name='手动公司',
+        contact_name='李四',
+        email='lisi@manual.com',
+        phone='13700137000',
+        note='展会换的名片',
+    )
+    cid = created['lead_contact_id']
+    # 池行私有
+    contact = (await session.execute(select(LeadContact).where(LeadContact.id == cid))).scalar_one()
+    assert contact.pool_visibility == 'private'
+    assert contact.source_type == 'manual'
+    # 引用层：source=manual + note
+    ref = await _ref_of(session, user_id=uid, lead_contact_id=cid)
+    assert ref.source == 'manual'
+    assert ref.note == '展会换的名片'
+    assert ref.status == 'new'
+    # 出现在该用户检索
+    found = await growth_funnel_service.search_leads(session, user_id=uid, query='手动公司', limit=10)
+    assert any(r['lead_contact_id'] == cid for r in found)
+    assert created['note'] == '展会换的名片'
+
+    # 缺公司名+联系人名 → 拒绝（问题1：空壳不入池）
+    with pytest.raises(errors.RequestError):
+        await growth_funnel_service.create_manual_lead(session, user_id=uid, company_name='', contact_name='')

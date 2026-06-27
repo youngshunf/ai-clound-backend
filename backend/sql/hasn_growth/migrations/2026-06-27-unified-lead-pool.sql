@@ -32,6 +32,11 @@ COMMENT ON COLUMN lead_ref.status IS '状态 (new:新线索:blue/qualified:已�
 ALTER TABLE contact ADD COLUMN IF NOT EXISTS pool_visibility varchar(16) NOT NULL DEFAULT 'public';
 COMMENT ON COLUMN contact.pool_visibility IS '池可见性 (public:公共池:green/private:私有:gray)';
 
+-- 2.5) 删旧 scope 约束（编码已废弃的「public+user_id NULL / user+user_id NOT NULL」scope 模型）。
+--      统一池后新建池行不再设 lead_scope（默认 ''），会违反旧 CHECK；过渡列本身待 drop-columns 迁移删除。
+ALTER TABLE contact DROP CONSTRAINT IF EXISTS ck_lead_contact_scope;
+ALTER TABLE collection_job DROP CONSTRAINT IF EXISTS ck_lead_collection_job_scope;
+
 -- 3) 重算全局 dedupe_key（去 lead_scope/user_id，与 service 切到的全局键同源：sha256(规整值)）
 --    旧值含 scope+user 复合，统一池后必须按全局值去重，否则同一线索跨用户重复入池。
 UPDATE contact SET dedupe_key_email = encode(digest(email_normalized, 'sha256'), 'hex')

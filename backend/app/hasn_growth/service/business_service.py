@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model import (
     LeadAuditLog,
@@ -16,6 +18,7 @@ from backend.app.hasn_growth.model import (
     LeadExportItem,
     LeadFirecrawlRequest,
     LeadRawRecord,
+    LeadRef,
     LeadRejectedRecord,
     LeadSourceConfig,
 )
@@ -52,15 +55,14 @@ class LeadAutomationBusinessService:
         self.llm_extractor = llm_extractor or build_default_extractor()
 
     async def create_job(self, db: AsyncSession, obj: CreateLeadJobParam) -> dict[str, Any]:
-        user_id = None if obj.lead_scope == 'public' else obj.user_id
-        if obj.lead_scope == 'user' and user_id is None:
-            user_id = 0
+        # 统一线索池：采集结果恒进公共池；job.user_id 记「谁发起的采集」（collect→主人 / backfill→请求者 / 系统→None），
+        # run_job 跑完为发起者建 lead_ref（用户引用），线索同时供众包复用。lead_scope 列为过渡遗留（不再决定线索归属·切片3 drop）。
         job = LeadCollectionJob(
             job_no=f'LAJ{datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")}',
             keyword=obj.keyword,
             source_types=obj.source_types,
             lead_scope=obj.lead_scope,
-            user_id=user_id,
+            user_id=obj.user_id,
             status='pending',
             max_pages=obj.max_pages,
             max_results=obj.max_results,
@@ -75,13 +77,15 @@ class LeadAutomationBusinessService:
         job = await db.get(LeadCollectionJob, job_id)
         if job is None:
             raise errors.NotFoundError(msg='采集任务不存在')
-        if not admin and user_id is not None and job.lead_scope != 'public' and job.user_id != user_id:
+        if not admin and user_id is not None and job.user_id is not None and job.user_id != user_id:
             raise errors.ForbiddenError(msg='无权执行该采集任务')
         job.status = 'running'
         job.started_at = datetime.now(UTC)
         # 2.2 行业标准化打标器（job 级缓存字典；规则优先，配了 new-api 网关才走 LLM 兜底）。
         tagger = IndustryTaggingService(db, enable_llm=self.llm_extractor is not None)
         request_count = 0
+        # 统一线索池：本 job 涉及的池线索 id（新建+命中复用），跑完为发起者 job.user_id 批量建 lead_ref（众包+引用）。
+        acquired_contact_ids: set[int] = set()
         for source_type in _as_list(job.source_types):
             if job.valid_count >= job.max_results:
                 break  # ④ 精确配额：已凑够目标有效线索数，停止后续数据源（省抓取成本）
@@ -250,10 +254,25 @@ class LeadAutomationBusinessService:
                 created, contact, match_dimension = await self._upsert_contact(
                     db,
                     cleaned=cleaned,
-                    lead_scope=job.lead_scope,
-                    user_id=job.user_id,
                     keyword=job.keyword,
                 )
+                if contact is None:
+                    # 空壳（无公司名/联系人名）→ 不入池（问题1根因修复），记拒绝
+                    await self._persist_rejected(
+                        db,
+                        job_id=job.id,
+                        raw_record_id=raw_record.id,
+                        firecrawl_request_id=firecrawl_request.id,
+                        source_type=item.source_type,
+                        source_url=item.source_url,
+                        reason='missing_name',
+                        email=cleaned.email,
+                        phone=cleaned.phone,
+                        metadata=cleaned.metadata,
+                    )
+                    raw_record.status = 'invalid'
+                    job.invalid_count += 1
+                    continue
                 db.add(
                     LeadContactSource(
                         lead_contact_id=contact.id,
@@ -265,6 +284,7 @@ class LeadAutomationBusinessService:
                         meta_data=cleaned.metadata,
                     )
                 )
+                acquired_contact_ids.add(contact.id)  # 新建或命中复用都计入发起者引用（众包池一份·用户各自引用）
                 if created:
                     job.valid_count += 1
                     await dedup.bump_lead_yield(item.source_url or '')
@@ -274,6 +294,10 @@ class LeadAutomationBusinessService:
 
         job.finished_at = datetime.now(UTC)
         job.status = _final_status(job, request_count)
+        # 统一线索池：采集结果已入公共池；为发起者建用户引用（owner 经 lead_ref 拥有·线索同时众包复用）。
+        # 系统采集（job.user_id 空）只入池不建引用。
+        if job.user_id and acquired_contact_ids:
+            await self._grant_refs(db, user_id=job.user_id, contact_ids=acquired_contact_ids, source='collect')
         await db.flush()
 
         # 计量上报（G7：采集按量计积分，获客只报量不自建账本；best-effort 不阻断）。
@@ -283,8 +307,8 @@ class LeadAutomationBusinessService:
             job_id=job.id,
             success_count=job.firecrawl_success_count,
         )
-        # M6 通知卡片：新线索批次落库 → 提醒主人去筛（仅主人私有采集 + 有新增有效线索时）。
-        if job.lead_scope == 'user' and job.user_id and job.valid_count > 0:
+        # M6 通知卡片：新线索批次落库 → 提醒发起者去筛（有发起者 + 有新增有效线索时）。
+        if job.user_id and job.valid_count > 0:
             owner_hasn_id = (
                 await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == job.user_id))
             ).scalar_one_or_none()
@@ -302,7 +326,7 @@ class LeadAutomationBusinessService:
         job = await db.get(LeadCollectionJob, job_id)
         if job is None:
             raise errors.NotFoundError(msg='采集任务不存在')
-        if not admin and job.lead_scope != 'public' and job.user_id != user_id:
+        if not admin and job.user_id is not None and job.user_id != user_id:
             raise errors.ForbiddenError(msg='无权访问该采集任务')
         return model_to_dict(job)
 
@@ -318,9 +342,8 @@ class LeadAutomationBusinessService:
         if job_id is not None:
             stmt = stmt.where(LeadRejectedRecord.job_id == job_id)
         if not admin:
-            visible_jobs = sa.select(LeadCollectionJob.id).where(
-                sa.or_(LeadCollectionJob.lead_scope == 'public', LeadCollectionJob.user_id == user_id)
-            )
+            # 统一线索池：用户只看自己发起的采集任务的拒绝记录（job.user_id = 发起者）。
+            visible_jobs = sa.select(LeadCollectionJob.id).where(LeadCollectionJob.user_id == user_id)
             stmt = stmt.where(LeadRejectedRecord.job_id.in_(visible_jobs))
         rows = [model_to_dict(row) for row in (await db.execute(stmt)).scalars().all()]
         for row in rows:
@@ -354,10 +377,24 @@ class LeadAutomationBusinessService:
         admin: bool = False,
         masked: bool = True,
     ) -> list[dict[str, Any]]:
-        stmt = sa.select(LeadContact).order_by(LeadContact.id.desc())
-        if not admin:
-            stmt = stmt.where(sa.or_(LeadContact.lead_scope == 'public', LeadContact.user_id == user_id))
-        rows = [model_to_dict(row) for row in (await db.execute(stmt)).scalars().all()]
+        # 统一线索池：非 admin 返回「该用户引用的线索」（lead_ref JOIN contact），用户级状态取自 ref；
+        # admin 返回全公共池（池级 status）。已忽略（dismissed）的引用不出现在用户列表。
+        if admin:
+            stmt = sa.select(LeadContact).order_by(LeadContact.id.desc())
+            rows = [model_to_dict(row) for row in (await db.execute(stmt)).scalars().all()]
+        else:
+            join_stmt = (
+                sa.select(LeadContact, LeadRef)
+                .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
+                .where(LeadRef.user_id == user_id, LeadRef.status != 'dismissed')
+                .order_by(LeadContact.id.desc())
+            )
+            rows = []
+            for contact, ref in (await db.execute(join_stmt)).all():
+                data = model_to_dict(contact)
+                data['status'] = ref.status  # 用户级状态覆盖池级（new/qualified）
+                data['ref_source'] = ref.source
+                rows.append(data)
         if masked:
             for row in rows:
                 row['email'] = _mask_email(row.get('email'))
@@ -447,9 +484,7 @@ class LeadAutomationBusinessService:
         )
         db.add(batch)
         await db.flush()
-        contact_ids = []
         for item in result.items:
-            contact_ids.append(item['lead_contact_id'])
             db.add(
                 LeadExportItem(
                     batch_id=batch.id,
@@ -458,12 +493,7 @@ class LeadAutomationBusinessService:
                     snapshot=item['snapshot'],
                 )
             )
-        if contact_ids:
-            await db.execute(
-                sa.update(LeadContact)
-                .where(LeadContact.id.in_(contact_ids))
-                .values(status='exported', last_exported_at=datetime.now(UTC))
-            )
+        # 统一线索池：导出是用户私有动作，不再把共享池行标 status='exported'（一人导出不应影响他人视图）。
         db.add(
             LeadAuditLog(
                 event_type='export',
@@ -583,11 +613,18 @@ class LeadAutomationBusinessService:
         await db.flush()
         return model_to_dict(audit)
 
-    async def _upsert_contact(self, db: AsyncSession, *, cleaned, lead_scope: str, user_id: int | None, keyword: str):
+    async def _upsert_contact(self, db: AsyncSession, *, cleaned, keyword: str):
+        """统一线索池入池：全局去重（按 email/phone/domain 全局 dedupe_key 命中即复用池行），恒落公共池。
+
+        空壳（公司名/联系人名全空）→ 拒绝不入池（返回 contact=None·问题1根因修复，避免「线索没有任何信息」）。
+        返回 (created, contact|None, match_dimension)；match_dimension='rejected' 表示空壳被拒。
+        """
+        if not ((cleaned.company_name or '').strip() or (cleaned.contact_name or '').strip()):
+            return False, None, 'rejected'
         keys = {
-            'email': dedupe_key(cleaned.email_normalized, lead_scope=lead_scope, user_id=user_id),
-            'phone': dedupe_key(cleaned.phone_normalized, lead_scope=lead_scope, user_id=user_id),
-            'domain': dedupe_key(cleaned.domain, lead_scope=lead_scope, user_id=user_id),
+            'email': dedupe_key(cleaned.email_normalized),
+            'phone': dedupe_key(cleaned.phone_normalized),
+            'domain': dedupe_key(cleaned.domain),
         }
         for dimension in ('email', 'phone', 'domain'):
             key = keys[dimension]
@@ -600,8 +637,7 @@ class LeadAutomationBusinessService:
                 return False, existing, dimension
         contact = LeadContact(
             lead_no=f'LEAD{datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")}',
-            lead_scope=lead_scope,
-            user_id=user_id,
+            pool_visibility='public',
             company_name=cleaned.company_name,
             contact_name=cleaned.contact_name,
             email=cleaned.email,
@@ -629,6 +665,18 @@ class LeadAutomationBusinessService:
         db.add(contact)
         await db.flush()
         return True, contact, 'new'
+
+    @staticmethod
+    async def _grant_refs(db: AsyncSession, *, user_id: int, contact_ids: set[int], source: str) -> None:
+        """统一线索池：为用户批量建线索引用（幂等·已引用则跳过）。采集/补爬跑完调用，让发起者「拥有」入池线索。"""
+        if not user_id or not contact_ids:
+            return
+        await db.execute(
+            pg_insert(LeadRef)
+            .values([{'user_id': user_id, 'lead_contact_id': cid, 'source': source, 'status': 'new'} for cid in contact_ids])
+            .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
+        )
+        await db.flush()
 
     async def _persist_rejected(self, db: AsyncSession, *, job_id: int, reason: str, **kwargs: Any) -> None:
         db.add(

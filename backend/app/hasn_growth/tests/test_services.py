@@ -111,7 +111,8 @@ def test_scoring_is_deterministic_and_rewards_traceable_contact_data() -> None:
     assert score_cleaned_lead(cleaned) == 100
 
 
-def test_dedupe_uses_email_phone_domain_order_and_scope_isolation() -> None:
+def test_dedupe_uses_email_phone_domain_order_globally() -> None:
+    """统一线索池：全局去重（仅按规整 email/phone/domain，不含 scope/user）。同一线索全局只一份。"""
     store = InMemoryLeadStore()
     first = clean_raw_record(
         {
@@ -122,7 +123,7 @@ def test_dedupe_uses_email_phone_domain_order_and_scope_isolation() -> None:
         min_contact_fields=['email', 'phone'],
         country_hint='US',
     )
-    inserted = upsert_lead(store, first, lead_scope='public', user_id=None, keyword='crm')
+    inserted = upsert_lead(store, first, keyword='crm')
 
     second = clean_raw_record(
         {
@@ -138,14 +139,16 @@ def test_dedupe_uses_email_phone_domain_order_and_scope_isolation() -> None:
         min_contact_fields=['email', 'phone'],
         country_hint='US',
     )
-    duplicate_by_domain = upsert_lead(store, second, lead_scope='public', user_id=None, keyword='crm')
-    user_pool_insert = upsert_lead(store, first, lead_scope='user', user_id=7, keyword='crm')
+    duplicate_by_domain = upsert_lead(store, second, keyword='crm')
+    # 再插同一条 first：统一池全局去重 → 复用（不再因 scope 另起一行）
+    reinsert_same = upsert_lead(store, first, keyword='crm')
 
     assert inserted.created is True
     assert duplicate_by_domain.created is False
     assert duplicate_by_domain.match_dimension == 'domain'
-    assert user_pool_insert.created is True
-    assert len(store.contacts) == 2
+    assert reinsert_same.created is False
+    assert reinsert_same.match_dimension == 'email'
+    assert len(store.contacts) == 1
 
 
 def test_provider_registry_contains_five_sources_and_rejects_unknown() -> None:

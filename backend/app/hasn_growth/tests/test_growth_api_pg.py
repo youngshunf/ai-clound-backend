@@ -33,6 +33,7 @@ from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_r
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.api.v1.open.forms import router as open_forms_router
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_publish.model.site import Site
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
@@ -78,13 +79,15 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     session.add(HasnHumans(hasn_id=f'{owner}o', star_id=f's_{other_uid}', user_id=other_uid, nickname='他人', status='active'))
     # 采集线索（owner 私有）
     lead = LeadContact(
-        lead_no=f'L{tag.upper()}', lead_scope='user', user_id=owner_uid, company_name='Acme',
+        lead_no=f'L{tag.upper()}', pool_visibility='public', company_name='Acme',
         contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='valid', confidence_score=72,
+        source_type='firecrawl', status='new', confidence_score=72,
     )
     session.add(lead)
     # 落地页（供 open 表单回流解析 owner）
     session.add(Site(owner_id=owner, kind='page', title='获客落地页', slug=publish_ref, status='active', visibility='public'))
+    await session.flush()
+    session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
 
     async def _yield_session() -> AsyncIterator:  # noqa: RUF029
@@ -228,8 +231,8 @@ async def test_agent_collect_and_outreach_status(e2e) -> None:
 async def test_owner_create_lead_via_http(e2e) -> None:
     """M-UI：主人在 UI 手动建线索（AI-native 宗旨：UI 给人操作）。
 
-    owner 私有池、source_type=manual、status=active，回明文（自己的数据）；建后出现在线索池检索；
-    公司名与联系人名都空 → 400（线索无意义）。
+    owner 私有池、source_type=manual、status=new（用户级状态来自 lead_ref），回明文（自己的数据）；
+    建后出现在线索池检索；公司名与联系人名都空 → 400（线索无意义）。
     """
     c = e2e.client
     O = '/api/v1/growth/app'
@@ -250,7 +253,7 @@ async def test_owner_create_lead_via_http(e2e) -> None:
         )
     )
     assert created['lead_contact_id'] and created['source_type'] == 'manual'
-    assert created['status'] == 'active'
+    assert created['status'] == 'new'  # 用户级状态来自 lead_ref（新建即 new）
     assert created['company_name'] == '星尘科技'
     assert created['email'] == 'lilei@xingchen.com'  # owner 看自己数据回明文
 
@@ -278,7 +281,7 @@ async def test_owner_request_leads_via_http(e2e) -> None:
     e2e.session.add(
         LeadContact(
             lead_no=f'LP{tag.upper()}',
-            lead_scope='public',
+            pool_visibility='public',
             company_name=uniq,
             contact_name='池主',
             email='pool@uniq.com',

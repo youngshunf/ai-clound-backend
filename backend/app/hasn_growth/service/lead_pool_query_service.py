@@ -18,7 +18,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.app.hasn_growth.model import LeadContact, LeadQuota
+from backend.app.hasn_growth.model import LeadContact, LeadQuota, LeadRef
 from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 
@@ -51,9 +51,11 @@ class LeadPoolQueryService:
         """按公共池维度查 lead_contact（**不限 lead_scope = 公共池语义**），按置信度倒序返回 limit 条。
 
         industry 期望传标准 code（2.2 已把入库行业归一到 code），ilike 既命中 code 也兜底旧自由文本；
-        region/city/keyword 各维度 ilike 模糊匹配。排除 rejected。
+        region/city/keyword 各维度 ilike 模糊匹配。仅公共池（pool_visibility='public'）、排除 rejected。
         """
-        stmt = sa.select(LeadContact).where(LeadContact.status != 'rejected')
+        stmt = sa.select(LeadContact).where(
+            LeadContact.pool_visibility == 'public', LeadContact.status != 'rejected'
+        )
         if industry and industry.strip():
             stmt = stmt.where(LeadContact.industry.ilike(f'%{industry.strip()}%'))
         if region and region.strip():
@@ -209,15 +211,28 @@ class LeadPoolQueryService:
             else []
         )
         delivered = hits[:n]
+        # 统一线索池：为命中的每条池线索建用户引用（ON CONFLICT 跳过已引用）；只对**本次新建引用**扣额度
+        # （用户重复请求已拥有的线索不重复计费）。用户列表 = lead_ref JOIN contact，引用即「拥有」。
+        newly_acquired = 0
+        for lead in delivered:
+            res = await db.execute(
+                pg_insert(LeadRef)
+                .values(user_id=user_id, lead_contact_id=lead.id, source='request', status='new')
+                .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
+            )
+            if (res.rowcount or 0) > 0:
+                newly_acquired += 1
+        await db.flush()
         leads = [_lead_to_dict(r, reveal_pii=reveal_pii) for r in delivered]
 
-        # 交付后扣减额度（仅按**实际交付**的池命中扣·先免费后购买）；缺口补爬回流池的不在此扣。
-        await self._consume_quota(db, user_id=user_id, count=len(delivered))
+        # 交付后扣减额度（仅按**本次新获得**的线索扣·先免费后购买）；已拥有的复请求、缺口补爬回流的不在此扣。
+        await self._consume_quota(db, user_id=user_id, count=newly_acquired)
 
         backfill_job_id: int | None = None
         gap = n - len(delivered)
         if gap > 0:
-            # 缺口补爬：公共池采集 job（回流公共池），max_results=N−M 精确补足；无可用搜索词则不补。
+            # 缺口补爬：公共池采集 job（回流公共池），max_results=N−M 精确补足；记发起者 user_id，
+            # run_job 跑完为其建引用（补爬到的线索自动进发起者列表）。无可用搜索词则不补。
             search = self._backfill_keyword(keyword=keyword, industry=industry, region=region, city=city)
             if search:
                 job = await lead_automation_business_service.create_job(
@@ -225,6 +240,7 @@ class LeadPoolQueryService:
                     CreateLeadJobParam(
                         keyword=search,
                         lead_scope='public',
+                        user_id=user_id,
                         max_results=gap,
                         request_config={'region': region, 'city': city, 'industry': industry},
                     ),
@@ -237,6 +253,7 @@ class LeadPoolQueryService:
         shortfall = max(0, requested - n)
         return {
             'delivered': len(delivered),
+            'newly_acquired': newly_acquired,
             'from_pool': len(delivered),
             'backfill_job_id': backfill_job_id,
             'requested': requested,

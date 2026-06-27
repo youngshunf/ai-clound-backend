@@ -14,13 +14,16 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.model.opportunity import Opportunity
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
+from backend.app.hasn_growth.service.dedupe_service import dedupe_key
 from backend.app.hasn_growth.service.pii import mask_contact_fields
 from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope, can_manage_assignment
 from backend.common.exception import errors
@@ -70,7 +73,9 @@ def _customer_to_dict(c: Customer, *, reveal_pii: bool) -> dict[str, Any]:
     return mask_contact_fields(data, reveal=reveal_pii)
 
 
-def _lead_to_dict(c: LeadContact, *, reveal_pii: bool) -> dict[str, Any]:
+def _lead_to_dict(c: LeadContact, *, ref: LeadRef | None = None, reveal_pii: bool) -> dict[str, Any]:
+    # 统一线索池：用户级状态（new/qualified/dismissed）与备注来自 lead_ref（非池行）；
+    # 无 ref（如刚 request 交付的池行）默认 'new'。
     data = {
         'lead_contact_id': c.id,
         'lead_no': c.lead_no,
@@ -85,7 +90,9 @@ def _lead_to_dict(c: LeadContact, *, reveal_pii: bool) -> dict[str, Any]:
         'city': c.city,
         'source_type': c.source_type,
         'keyword': c.keyword,
-        'status': c.status,
+        'status': ref.status if ref is not None else 'new',
+        'ref_source': ref.source if ref is not None else None,
+        'note': ref.note if ref is not None else None,
         'confidence_score': float(c.confidence_score) if c.confidence_score is not None else 0.0,
     }
     return mask_contact_fields(data, reveal=reveal_pii)
@@ -106,10 +113,11 @@ class GrowthFunnelService:
         limit: int = 20,
         reveal_pii: bool = False,
     ) -> list[dict[str, Any]]:
-        """检索线索池（owner 自己的线索 + 全局未归属池），关键词/评分过滤，默认脱敏。"""
-        stmt = sa.select(LeadContact).where(
-            sa.or_(LeadContact.user_id == user_id, LeadContact.user_id.is_(None)),
-            LeadContact.status != 'rejected',
+        """检索「该用户引用的线索」（lead_ref JOIN contact），关键词/评分过滤，默认脱敏。已忽略的不返回。"""
+        stmt = (
+            sa.select(LeadContact, LeadRef)
+            .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
+            .where(LeadRef.user_id == user_id, LeadRef.status != 'dismissed')
         )
         if query:
             like = f'%{query}%'
@@ -124,29 +132,29 @@ class GrowthFunnelService:
         if min_score is not None:
             stmt = stmt.where(LeadContact.confidence_score >= min_score)
         stmt = stmt.order_by(LeadContact.confidence_score.desc().nullslast()).limit(min(limit, 100))
-        rows = (await db.execute(stmt)).scalars().all()
-        return [_lead_to_dict(r, reveal_pii=reveal_pii) for r in rows]
+        rows = (await db.execute(stmt)).all()
+        return [_lead_to_dict(c, ref=r, reveal_pii=reveal_pii) for c, r in rows]
 
     @staticmethod
     async def get_lead(
         db: AsyncSession, *, user_id: int, lead_contact_id: int, reveal_pii: bool = False
     ) -> dict[str, Any]:
-        lead = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
-        return _lead_to_dict(lead, reveal_pii=reveal_pii)
+        contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
+        return _lead_to_dict(contact, ref=ref, reveal_pii=reveal_pii)
 
     @staticmethod
-    async def _load_lead(db: AsyncSession, *, user_id: int, lead_contact_id: int) -> LeadContact:
-        lead = (
+    async def _load_lead(db: AsyncSession, *, user_id: int, lead_contact_id: int) -> tuple[LeadContact, LeadRef]:
+        """加载「该用户引用的某条线索」(contact, ref)；无引用 → NotFound（统一池：拥有 = 有 lead_ref）。"""
+        row = (
             await db.execute(
-                sa.select(LeadContact).where(
-                    LeadContact.id == lead_contact_id,
-                    sa.or_(LeadContact.user_id == user_id, LeadContact.user_id.is_(None)),
-                )
+                sa.select(LeadContact, LeadRef)
+                .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
+                .where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == lead_contact_id)
             )
-        ).scalar_one_or_none()
-        if not lead:
+        ).first()
+        if not row:
             raise errors.NotFoundError(msg='线索不存在或无权访问')
-        return lead
+        return row[0], row[1]
 
     @staticmethod
     async def create_manual_lead(
@@ -163,11 +171,14 @@ class GrowthFunnelService:
         note: str | None = None,
         confidence_score: float | None = None,
     ) -> dict[str, Any]:
-        """主人在 UI 手动新建线索（owner 私有池，source_type=manual）。
+        """主人在 UI 手动登记线索（统一线索池：默认私有 pool_visibility='private'，不进公共匹配·福仔决策）。
 
-        AI-native 宗旨：UI 给人操作。主人手动建线索与分身 `collect` 采集互补；至少公司名或联系人名
-        之一，否则线索无意义。明文 PII 落库（owner 自己的数据），出参对自己 reveal。
+        AI-native 宗旨：UI 给人操作。手动登记先按全局 dedupe_key 查池，命中则复用既有池行（统一池一份），
+        否则建私有池行；再建用户引用（lead_ref，note 落引用层）。至少公司名或联系人名之一。
         """
+        from urllib.parse import urlparse
+
+        from backend.app.hasn_growth.service.cleaner_service import normalize_email, normalize_phone
 
         def _clean(v: str | None) -> str | None:
             v = v.strip() if v else None
@@ -178,25 +189,68 @@ class GrowthFunnelService:
         if not company_name and not contact_name:
             raise errors.RequestError(msg='请至少填写公司名或联系人名')
 
-        lead = LeadContact(
-            lead_no=_gen_no('LEAD'),
-            lead_scope='user',
-            user_id=user_id,
-            company_name=company_name,
-            contact_name=contact_name,
-            email=_clean(email),
-            phone=_clean(phone),
-            website=_clean(website),
-            industry=_clean(industry),
-            city=_clean(city),
-            source_type='manual',
-            status='active',
-            confidence_score=confidence_score if confidence_score is not None else 60,
-            meta_data={'note': note.strip()} if note and note.strip() else {},
+        email = _clean(email)
+        phone = _clean(phone)
+        website = _clean(website)
+        email_n = normalize_email(email) if email else None
+        phone_n = normalize_phone(phone, country_hint='CN') if phone else None
+        domain = None
+        if website:
+            netloc = urlparse(website if '://' in website else f'http://{website}').netloc
+            domain = netloc.removeprefix('www.').lower() or None
+        keys = {'email': dedupe_key(email_n), 'phone': dedupe_key(phone_n), 'domain': dedupe_key(domain)}
+
+        # 全局去重：池中已有同 email/phone/domain 的线索 → 复用（统一池一份），否则建私有池行。
+        contact = None
+        for dim in ('email', 'phone', 'domain'):
+            if keys[dim]:
+                contact = await db.scalar(
+                    sa.select(LeadContact).where(getattr(LeadContact, f'dedupe_key_{dim}') == keys[dim])
+                )
+                if contact is not None:
+                    break
+        if contact is None:
+            contact = LeadContact(
+                lead_no=_gen_no('LEAD'),
+                pool_visibility='private',  # 手动登记默认仅自己可见，不进公共匹配
+                company_name=company_name,
+                contact_name=contact_name,
+                email=email,
+                email_normalized=email_n,
+                phone=phone,
+                phone_normalized=phone_n,
+                website=website,
+                domain=domain,
+                industry=_clean(industry),
+                city=_clean(city),
+                source_type='manual',
+                status='active',
+                confidence_score=confidence_score if confidence_score is not None else 60,
+                dedupe_key_email=keys['email'],
+                dedupe_key_phone=keys['phone'],
+                dedupe_key_domain=keys['domain'],
+                meta_data={},
+            )
+            db.add(contact)
+            await db.flush()
+
+        # 建用户引用（幂等：已引用则跳过）；note 为用户私有备注，落引用层。
+        await db.execute(
+            pg_insert(LeadRef)
+            .values(
+                user_id=user_id,
+                lead_contact_id=contact.id,
+                source='manual',
+                status='new',
+                note=(note.strip() if note and note.strip() else None),
+            )
+            .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
         )
-        db.add(lead)
         await db.flush()
-        return _lead_to_dict(lead, reveal_pii=True)
+        ref = await db.scalar(
+            sa.select(LeadRef).where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == contact.id)
+        )
+        return _lead_to_dict(contact, ref=ref, reveal_pii=True)
 
     # ----------------------------- 晋级 / 淘汰 -----------------------------
 
@@ -216,7 +270,7 @@ class GrowthFunnelService:
         enterprise 上下文：客户落 owner_scope='enterprise'+enterprise_id，assignee 默认=晋级人（经理可后续转移）；
         去重键随之改为 (enterprise_id, lead_contact_id)。personal 行为不变。
         """
-        lead = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
+        contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
 
         is_ent = scope is not None and scope.is_enterprise
         # 去重键双模：enterprise 按 (enterprise_id, lead)；personal 按 (user_id, lead)。不含 assignee（同企业同线索唯一）。
@@ -229,16 +283,16 @@ class GrowthFunnelService:
         if existing:
             return _customer_to_dict(existing, reveal_pii=False)
 
-        score = intent_score if intent_score is not None else (float(lead.confidence_score or 0))
+        score = intent_score if intent_score is not None else (float(contact.confidence_score or 0))
         customer = Customer(
             customer_no=_gen_no('CUS'),
             user_id=user_id,
             lead_contact_id=lead_contact_id,
-            source_kind=_SOURCE_KIND_MAP.get(lead.source_type or 'manual', 'outbound_crawl'),
-            company_name=lead.company_name,
-            contact_name=lead.contact_name,
-            email=lead.email,
-            phone=lead.phone,
+            source_kind=_SOURCE_KIND_MAP.get(contact.source_type or 'manual', 'outbound_crawl'),
+            company_name=contact.company_name,
+            contact_name=contact.contact_name,
+            email=contact.email,
+            phone=contact.phone,
             im_refs={},
             profile_json=profile or {},
             intent_score=score,
@@ -252,7 +306,7 @@ class GrowthFunnelService:
             last_activity_at=timezone.now(),
         )
         db.add(customer)
-        lead.status = 'qualified'
+        ref.status = 'qualified'  # 用户级状态落引用层，不污染公共池行
         await db.flush()
         await GrowthFunnelService._add_activity(
             db,
@@ -269,15 +323,12 @@ class GrowthFunnelService:
     async def dismiss_lead(
         db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str
     ) -> dict[str, Any]:
-        """标记线索不合格（status=rejected + reason 入 meta，不再推荐）。"""
-        lead = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
-        lead.status = 'rejected'
-        meta = dict(lead.meta_data or {})
-        meta['dismiss_reason'] = reason
-        meta['dismissed_at'] = timezone.now().isoformat()
-        lead.meta_data = meta
+        """用户忽略该线索（ref.status=dismissed + dismiss_reason，落引用层不污染公共池行；列表/检索不再返回）。"""
+        contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
+        ref.status = 'dismissed'
+        ref.dismiss_reason = reason
         await db.flush()
-        return {'lead_contact_id': lead.id, 'status': 'rejected', 'reason': reason}
+        return {'lead_contact_id': contact.id, 'status': 'dismissed', 'reason': reason}
 
     # ----------------------------- 客户 -----------------------------
 

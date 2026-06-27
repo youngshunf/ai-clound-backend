@@ -34,6 +34,7 @@ from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_router
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.model.lead_contact import LeadContact
+from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
@@ -78,11 +79,13 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
 
     session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active'))
     lead = LeadContact(
-        lead_no=f'L{tag.upper()}', lead_scope='user', user_id=owner_uid, company_name='Acme',
+        lead_no=f'L{tag.upper()}', pool_visibility='public', company_name='Acme',
         contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='valid', confidence_score=72,
+        source_type='firecrawl', status='new', confidence_score=72,
     )
     session.add(lead)
+    await session.flush()
+    session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
     # J3 跟进任务（scheduled）——客户回复触发 run_now 的绑定目标
     await session.execute(

@@ -22,26 +22,35 @@ class InMemoryLeadStore:
     sources: list[dict[str, Any]] = field(default_factory=list)
 
 
-def dedupe_key(value: str | None, *, lead_scope: str, user_id: int | None) -> str | None:
+def dedupe_key(value: str | None) -> str | None:
+    """统一线索池**全局**去重键：仅按规整值 sha256，不再含 lead_scope/user_id。
+
+    统一池后同一线索全局只一份（同 email/phone/domain 命中即复用），用户对线索的拥有关系落 lead_ref。
+    """
     if not value:
         return None
-    scope_user = user_id or 0
-    raw = f'{value}|{lead_scope}|{scope_user}'
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def _has_name(cleaned: CleanedLead) -> bool:
+    """空壳校验：公司名或联系人名至少一个非空，否则视为无意义线索（不入池·问题1根因修复）。"""
+    return bool((cleaned.company_name or '').strip() or (cleaned.contact_name or '').strip())
 
 
 def upsert_lead(
     store: InMemoryLeadStore,
     cleaned: CleanedLead,
     *,
-    lead_scope: str,
-    user_id: int | None,
     keyword: str | None,
+    pool_visibility: str = 'public',
 ) -> DedupeResult:
+    # 空壳不入池：公司名/联系人名全空 = 采集提取失败的无信息行，直接拒绝（避免「线索没有任何信息」）。
+    if not _has_name(cleaned):
+        return DedupeResult(contact={}, created=False, match_dimension='rejected')
     keys = {
-        'email': dedupe_key(cleaned.email_normalized, lead_scope=lead_scope, user_id=user_id),
-        'phone': dedupe_key(cleaned.phone_normalized, lead_scope=lead_scope, user_id=user_id),
-        'domain': dedupe_key(cleaned.domain, lead_scope=lead_scope, user_id=user_id),
+        'email': dedupe_key(cleaned.email_normalized),
+        'phone': dedupe_key(cleaned.phone_normalized),
+        'domain': dedupe_key(cleaned.domain),
     }
     for dimension in ('email', 'phone', 'domain'):
         key = keys[dimension]
@@ -56,8 +65,7 @@ def upsert_lead(
     contact = {
         'id': len(store.contacts) + 1,
         'lead_no': f'LEAD{len(store.contacts) + 1:08d}',
-        'lead_scope': lead_scope,
-        'user_id': user_id,
+        'pool_visibility': pool_visibility,
         'company_name': cleaned.company_name,
         'contact_name': cleaned.contact_name,
         'email': cleaned.email,
