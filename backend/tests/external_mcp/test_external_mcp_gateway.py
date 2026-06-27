@@ -1,0 +1,411 @@
+"""第三方 MCP 网关 P7-A/B 真实集成测试（事实源 10/02）。
+
+零 mock 原则：
+- DB：真实本地 PostgreSQL(15432)，跑 register/bind/secret/usage 全链路，结束清理自建行。
+- 出站 MCP client：起一个**真实** MCP streamable-HTTP stub server（Starlette+uvicorn，随机端口，
+  真实 socket + 真实 httpx + 真实 initialize→tools/list→tools/call + SSE 解析），不 mock 我们的代码。
+
+覆盖：
+1. 注册校验 —— 合法 remote_service/http 落库；非法 transport×hosting 组合被拒（10 §4.1）。
+2. secret:// 凭据 —— write→resolve 往返 + revoke 后软挡（10 §7.1）。
+3. 归一纯函数 —— normalize_tool canonical 名 + risk + tools_hash 稳定（10 §3）。
+4. 自省+绑定+解析+代理 全链路 —— 真实 server 自省工具 → owner 绑定 Agent → resolve gate1/gate2 →
+   proxy_call 真实 tools/call 往返 → usage 记账（10 §6）。
+5. 门控 —— 未绑定 Agent resolve 为空；proxy_call 未授权工具被拒（10 §6）。
+
+需要：export DATABASE_PORT=15432（本地 huanxing 库）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import socket
+
+from uuid import uuid4
+
+import pytest
+import pytest_asyncio
+import uvicorn
+
+from sqlalchemy import delete
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
+
+from backend.app.external_mcp.model import (
+    ExternalMcpBinding,
+    ExternalMcpSecret,
+    ExternalMcpServer,
+    ExternalMcpUsage,
+)
+from backend.app.external_mcp.service.gateway_service import ExternalMcpGateway, external_mcp_gateway
+from backend.app.external_mcp.service.secret_store import is_secret_ref, secret_store
+from backend.app.external_mcp.service.validation import RegistrationError
+from backend.app.mcp.errors import McpErrorCode, McpToolError
+from backend.database.db import async_db_session
+
+# 多个真实-DB async 测试共享同一 module 级事件循环，避免连接池被上一个已关闭 loop 回收。
+pytestmark = pytest.mark.asyncio(loop_scope='module')
+
+
+def _suffix() -> str:
+    return uuid4().hex[:10]
+
+
+# --------------------------------------------------------------------------- #
+# 真实 MCP streamable-HTTP stub server（被自省/代理真实连上）
+# --------------------------------------------------------------------------- #
+
+
+def _rpc_ok(req_id, result: dict) -> dict:
+    return {'jsonrpc': '2.0', 'id': req_id, 'result': result}
+
+
+async def _mcp_endpoint(request: Request) -> Response:
+    """最小 MCP server：initialize / notifications/initialized / tools/list / tools/call。"""
+    body = await request.json()
+    method = body.get('method')
+    req_id = body.get('id')
+
+    if method == 'initialize':
+        resp = JSONResponse(
+            _rpc_ok(
+                req_id,
+                {
+                    'protocolVersion': '2025-03-26',
+                    'capabilities': {'tools': {}},
+                    'serverInfo': {'name': 'stub-mcp', 'version': '0.0.1'},
+                },
+            )
+        )
+        resp.headers['Mcp-Session-Id'] = 'stub-session-1'
+        return resp
+
+    if method == 'notifications/initialized':
+        return Response(status_code=202)
+
+    if method == 'tools/list':
+        return JSONResponse(
+            _rpc_ok(
+                req_id,
+                {
+                    'tools': [
+                        {
+                            'name': 'company-search',
+                            'title': '企业检索',
+                            'description': '按名称检索企业',
+                            'inputSchema': {
+                                'type': 'object',
+                                'properties': {'keyword': {'type': 'string'}},
+                                'required': ['keyword'],
+                            },
+                            'annotations': {'readOnlyHint': True},
+                        },
+                        {
+                            'name': 'risk.fetch',
+                            'description': '拉取企业风险（写副作用工具，无 readOnlyHint）',
+                            'inputSchema': {'type': 'object', 'properties': {'id': {'type': 'string'}}},
+                        },
+                    ]
+                },
+            )
+        )
+
+    if method == 'tools/call':
+        params = body.get('params') or {}
+        name = params.get('name')
+        args = params.get('arguments') or {}
+        # 用 SSE 返回，顺带验证 client 的 text/event-stream 解析路径。
+        payload = _rpc_ok(
+            req_id,
+            {
+                'content': [{'type': 'text', 'text': f'called {name} with {args}'}],
+                'isError': False,
+            },
+        )
+        import json as _json
+
+        sse = f'event: message\ndata: {_json.dumps(payload)}\n\n'
+        return Response(content=sse, media_type='text/event-stream')
+
+    return JSONResponse({'jsonrpc': '2.0', 'id': req_id, 'error': {'code': -32601, 'message': 'method not found'}})
+
+
+def _free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+@pytest_asyncio.fixture(scope='module', loop_scope='module')
+async def stub_mcp_endpoint():
+    """启动真实 uvicorn MCP stub server，yield 其 /mcp endpoint URL，结束优雅关闭。"""
+    app = Starlette(routes=[Route('/mcp', _mcp_endpoint, methods=['POST'])])
+    port = _free_port()
+    config = uvicorn.Config(app, host='127.0.0.1', port=port, log_level='warning', lifespan='off')
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve())
+    # 等待真实就绪。
+    for _ in range(100):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    assert server.started, 'stub MCP server 未能启动'
+    try:
+        yield f'http://127.0.0.1:{port}/mcp'
+    finally:
+        server.should_exit = True
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=5)
+
+
+async def _cleanup_server(mcp_id: str, *, agent_hasn_id: str | None = None, secret_uri: str | None = None) -> None:
+    async with async_db_session.begin() as db:
+        await db.execute(delete(ExternalMcpUsage).where(ExternalMcpUsage.mcp_id == mcp_id))
+        await db.execute(delete(ExternalMcpBinding).where(ExternalMcpBinding.mcp_id == mcp_id))
+        await db.execute(delete(ExternalMcpServer).where(ExternalMcpServer.mcp_id == mcp_id))
+        if secret_uri:
+            await db.execute(delete(ExternalMcpSecret).where(ExternalMcpSecret.secret_uri == secret_uri))
+
+
+async def _insert_loopback_server(*, name: str, endpoint: str, owner_hasn_id: str) -> str:
+    """直接落一行 remote_service server 指向回环 stub（绕注册期回环 UX 闸——运行期 introspect/
+    proxy 路径本就不重校回环，此处复用其代理链路做真实 socket E2E）。返回 mcp_id。"""
+    from backend.app.external_mcp.service.gateway_service import _new_id
+
+    mcp_id = _new_id('mcp')
+    async with async_db_session.begin() as db:
+        db.add(
+            ExternalMcpServer(
+                mcp_id=mcp_id,
+                name=name,
+                display_name=name,
+                hosting='remote_service',
+                transport='http',
+                endpoint=endpoint,
+                origin='owner',
+                owner_hasn_id=owner_hasn_id,
+                scope='owner',
+                risk_level='medium',
+                advertised_tools_cache=[],
+                health_status='unknown',
+                status='active',
+            )
+        )
+    return mcp_id
+
+
+# --------------------------------------------------------------------------- #
+# 1. 纯函数：归一 + tools_hash
+# --------------------------------------------------------------------------- #
+
+
+def test_normalize_tool_canonical_and_risk() -> None:
+    gw = ExternalMcpGateway()
+    read_meta = gw.normalize_tool(
+        server_name='qcc',
+        raw_tool={'name': 'company-search', 'annotations': {'readOnlyHint': True}, 'inputSchema': {'type': 'object'}},
+        origin='system',
+    )
+    assert read_meta['name'] == 'hasn.ext.qcc.company_search'  # 连字符合法化为下划线
+    assert read_meta['raw_name'] == 'company-search'
+    assert read_meta['risk_level'] == 'low'  # readOnlyHint=True → low
+    assert read_meta['required_scopes'] == ['mcp:tool://hasn.ext.qcc.company_search']
+
+    write_meta = gw.normalize_tool(
+        server_name='qcc',
+        raw_tool={'name': 'risk.fetch', 'inputSchema': {'type': 'object'}},
+        origin='system',
+    )
+    assert write_meta['name'] == 'hasn.ext.qcc.risk_fetch'
+    assert write_meta['risk_level'] == 'medium'  # 无 readOnlyHint → medium 起步
+
+
+def test_compute_tools_hash_stable_and_order_independent() -> None:
+    gw = ExternalMcpGateway()
+    a = {'name': 'hasn.ext.x.a', 'schema_hash': 'h1'}
+    b = {'name': 'hasn.ext.x.b', 'schema_hash': 'h2'}
+    assert gw.compute_tools_hash([a, b]) == gw.compute_tools_hash([b, a])  # 排序稳定
+    assert gw.compute_tools_hash([a]) != gw.compute_tools_hash([a, b])  # 内容变 → hash 变
+
+
+# --------------------------------------------------------------------------- #
+# 2. 注册校验：transport×hosting 矩阵（10 §4.1）
+# --------------------------------------------------------------------------- #
+
+
+async def test_register_rejects_illegal_transport_hosting() -> None:
+    # remote_service 必须有 endpoint。
+    with pytest.raises(RegistrationError):
+        await external_mcp_gateway.register_server(
+            name=f'bad_{_suffix()}', hosting='remote_service', transport='http', endpoint=None
+        )
+    # stdio 只能 local_process。
+    with pytest.raises(RegistrationError):
+        await external_mcp_gateway.register_server(
+            name=f'bad_{_suffix()}', hosting='remote_service', transport='stdio', command='x'
+        )
+    # remote_service 不能指 loopback。
+    with pytest.raises(RegistrationError):
+        await external_mcp_gateway.register_server(
+            name=f'bad_{_suffix()}',
+            hosting='remote_service',
+            transport='http',
+            endpoint='http://127.0.0.1:9/mcp',
+        )
+
+
+async def test_register_server_persists_and_conflicts() -> None:
+    """register_server 合法落库（公网端点，不连接）；重名 → TOOL_NAME_CONFLICT。"""
+    name = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    mcp_id = None
+    try:
+        server = await external_mcp_gateway.register_server(
+            name=name,
+            hosting='remote_service',
+            transport='http',
+            origin='owner',
+            owner_hasn_id=owner,
+            endpoint='https://api.qcc.example.com/mcp',
+            per_owner_daily_quota=100,
+            rate_limit_per_min=20,
+        )
+        mcp_id = server['mcp_id']
+        assert server['name'] == name
+        assert server['status'] == 'active'
+        assert server['endpoint'] == 'https://api.qcc.example.com/mcp'
+        assert server['per_owner_daily_quota'] == 100
+        # 重名冲突（10 §4 namespace 全局唯一）。
+        with pytest.raises(McpToolError) as exc:
+            await external_mcp_gateway.register_server(
+                name=name, hosting='remote_service', transport='http',
+                origin='owner', owner_hasn_id=owner, endpoint='https://other.example.com/mcp',
+            )
+        assert exc.value.code == McpErrorCode.TOOL_NAME_CONFLICT
+    finally:
+        if mcp_id:
+            await _cleanup_server(mcp_id)
+
+
+# --------------------------------------------------------------------------- #
+# 3. secret:// 凭据生命周期（10 §7.1）
+# --------------------------------------------------------------------------- #
+
+
+async def test_secret_store_roundtrip_and_revoke() -> None:
+    uri = secret_store.build_uri(origin='system', owner_hasn_id=None, server=f'qcc{_suffix()}', key='bearer')
+    assert is_secret_ref(uri)
+    try:
+        returned = await secret_store.write(secret_uri=uri, plaintext='super-secret-token', origin='system')
+        assert returned == uri  # 只回引用，绝不回明文
+        assert await secret_store.exists(uri)
+        assert await secret_store.resolve(uri) == 'super-secret-token'  # 解密往返
+        # 轮换：同 URI 覆盖。
+        await secret_store.write(secret_uri=uri, plaintext='rotated-token', origin='system')
+        assert await secret_store.resolve(uri) == 'rotated-token'
+        # 撤销：删除后 resolve 软挡 None。
+        assert await secret_store.revoke(uri) is True
+        assert await secret_store.resolve(uri) is None
+        assert await secret_store.exists(uri) is False
+    finally:
+        await secret_store.revoke(uri)
+
+
+# --------------------------------------------------------------------------- #
+# 4. 全链路：注册 → 自省 → 绑定 → 解析 → 代理调用（真实 server）
+# --------------------------------------------------------------------------- #
+
+
+async def test_full_lifecycle_register_introspect_bind_proxy(stub_mcp_endpoint: str) -> None:
+    name = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    agent = f'a_agent_{_suffix()}'
+    mcp_id = None
+    try:
+        # 落库一行 remote_service server 指向真实回环 stub（绕注册期回环 UX 闸；运行期代理链路
+        # 本就不重校回环——此处对其做真实 socket 自省/代理 E2E）。
+        mcp_id = await _insert_loopback_server(name=name, endpoint=stub_mcp_endpoint, owner_hasn_id=owner)
+
+        # 自省（真实 httpx → stub tools/list）。
+        introspected = await external_mcp_gateway.introspect_server(mcp_id)
+        assert introspected['health'] == 'healthy'
+        names = {t['name'] for t in introspected['tools']}
+        assert names == {f'hasn.ext.{name}.company_search', f'hasn.ext.{name}.risk_fetch'}
+        assert introspected['tools_hash']
+
+        # 绑定（owner 授权 agent 只用 company-search 一个工具）。
+        binding = await external_mcp_gateway.create_binding(
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            mcp_id=mcp_id,
+            allowed_raw_names=['company-search'],
+        )
+        assert len(binding['allowed_tools']) == 1
+        assert binding['allowed_tools'][0]['tool_name'] == f'hasn.ext.{name}.company_search'
+
+        # 解析（gate1 owner 命中 + gate2 binding 命中 → 只返回授权的 1 个工具）。
+        tools = await external_mcp_gateway.resolve_agent_external_tools(agent_hasn_id=agent, owner_hasn_id=owner)
+        assert [t['name'] for t in tools] == [f'hasn.ext.{name}.company_search']
+
+        # 代理调用（真实 tools/call 经 SSE 往返）。
+        result = await external_mcp_gateway.proxy_call(
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            tool_name=f'hasn.ext.{name}.company_search',
+            arguments={'keyword': '小米'},
+            trace_id='trace-1',
+        )
+        assert result['ok'] is True
+        assert result['is_error'] is False
+        assert 'company-search' in result['text']
+        assert '小米' in result['text']
+
+        # 记账落库（成功一条）。
+        summary = await external_mcp_gateway_usage_count(mcp_id=mcp_id, owner=owner)
+        assert summary >= 1
+
+        # 门控：调用未授权工具 risk.fetch → TOOL_NOT_ALLOWED。
+        with pytest.raises(McpToolError) as exc:
+            await external_mcp_gateway.proxy_call(
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                tool_name=f'hasn.ext.{name}.risk_fetch',
+                arguments={},
+            )
+        assert exc.value.code == McpErrorCode.TOOL_NOT_ALLOWED
+    finally:
+        if mcp_id:
+            await _cleanup_server(mcp_id)
+
+
+async def external_mcp_gateway_usage_count(*, mcp_id: str, owner: str) -> int:
+    from sqlalchemy import func, select
+
+    async with async_db_session() as db:
+        return int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(ExternalMcpUsage)
+                    .where(ExternalMcpUsage.mcp_id == mcp_id, ExternalMcpUsage.caller_owner_hasn_id == owner)
+                )
+            ).scalar_one()
+            or 0
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 5. 门控：未绑定 Agent 解析为空
+# --------------------------------------------------------------------------- #
+
+
+async def test_unbound_agent_resolves_empty() -> None:
+    tools = await external_mcp_gateway.resolve_agent_external_tools(
+        agent_hasn_id=f'a_nobody_{_suffix()}', owner_hasn_id=f'h_nobody_{_suffix()}'
+    )
+    assert tools == []

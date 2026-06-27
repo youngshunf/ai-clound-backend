@@ -27,6 +27,10 @@ class McpErrorCode(Enum):
     DIRECT_CALL_DENIED = "MCP_9213"
     LOCAL_EXECUTION_UNAVAILABLE = "MCP_9214"
     APPROVAL_REQUIRED = "MCP_9215"
+    # P7 第三方 MCP 网关：平台 key（system-origin）配额超限。
+    # 注：事实源 10 §7.2 以 "如 MCP_9214 QUOTA_EXCEEDED" 举例，但 9214 已被
+    # LOCAL_EXECUTION_UNAVAILABLE 占用，故配额码取下一个空位 9216。
+    QUOTA_EXCEEDED = "MCP_9216"
 
     def __str__(self) -> str:
         return f"{self.value} {self.name}"
