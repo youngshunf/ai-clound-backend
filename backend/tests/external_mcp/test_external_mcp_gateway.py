@@ -40,10 +40,14 @@ from backend.app.external_mcp.model import (
     ExternalMcpServer,
     ExternalMcpUsage,
 )
+from backend.app.external_mcp.external_tool import load_external_mcp_tools_for_agent
 from backend.app.external_mcp.service.gateway_service import ExternalMcpGateway, external_mcp_gateway
 from backend.app.external_mcp.service.secret_store import is_secret_ref, secret_store
 from backend.app.external_mcp.service.validation import RegistrationError
+from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
+from backend.app.mcp.tool_directory import ToolDirectoryService, ToolSearchQuery
+from backend.app.mcp.tools.registry import ToolRegistry
 from backend.database.db import async_db_session
 
 # 多个真实-DB async 测试共享同一 module 级事件循环，避免连接池被上一个已关闭 loop 回收。
@@ -607,3 +611,123 @@ async def test_system_origin_daily_quota_enforced(stub_mcp_endpoint: str) -> Non
         assert await external_mcp_gateway_usage_count(mcp_id=mcp_id, owner=owner) == 1
     finally:
         await _cleanup_server(mcp_id, agent_hasn_id=agent)
+
+
+# --------------------------------------------------------------------------- #
+# 8. P7-E：分身经云端 MCP「发现+派发」层端到端（qcc 形态 = system-origin 平台 key）
+#    —— 区别于上文 gateway-direct 测试：此处走 server 暴露/派发层
+#    （tool_directory.ToolDirectoryService 投影 + external_tool.ExternalMcpTool.execute），
+#    验证 tool.search 各层级真实暴露 external、代理往返、用量归因、明文零泄露、跨 Agent 隔离。
+# --------------------------------------------------------------------------- #
+
+
+def _agent_ctx(*, agent: str, owner: str, trace_id: str = 'p7e') -> AgentContext:
+    return AgentContext(
+        hasn_id=agent,
+        owner_id=100001,
+        scopes=[],
+        agent_status='active',
+        metadata={'trace_id': trace_id},
+        owner_hasn_id=owner,
+    )
+
+
+async def _registry_for_agent(ctx: AgentContext) -> ToolRegistry:
+    """模拟 server.py 入站：解析该 Agent external 工具 → 注入 external_allowed_tools → 入注册表。"""
+    tools = await load_external_mcp_tools_for_agent(ctx)
+    ctx.external_allowed_tools = {t.name for t in tools}
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    return registry
+
+
+async def test_p7e_agent_path_discover_dispatch_attribute_no_leak(stub_mcp_endpoint: str) -> None:
+    """qcc 形态 system-origin 平台 server：自省→绑定→分身经 tool.search 各层级发现
+    `hasn.ext.{ns}.*`→ExternalMcpTool.execute 真实代理 → 用量归因到调用 owner → 平台 key 明文零泄露。"""
+    ns = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    agent = f'a_agent_{_suffix()}'
+    platform_key = f'qcc-platform-bearer-{_suffix()}'
+    mcp_id = await _insert_server(name=ns, endpoint=stub_mcp_endpoint, origin='system', owner_hasn_id=None)
+    try:
+        # 平台 key（system-origin，admin 写）：明文加密落库、注入出站、分身永不接触。
+        await external_mcp_gateway.set_credential(mcp_id=mcp_id, plaintext=platform_key, is_admin=True)
+        await external_mcp_gateway.introspect_server(mcp_id)
+        await external_mcp_gateway.create_binding(
+            agent_hasn_id=agent, owner_hasn_id=owner, mcp_id=mcp_id, allowed_raw_names=['company-search']
+        )
+
+        # ---- 发现层：server 注入 external_allowed_tools + ToolDirectory 投影 ----
+        ctx = _agent_ctx(agent=agent, owner=owner, trace_id='p7e-1')
+        registry = await _registry_for_agent(ctx)
+        # 仅授权 1 个工具被投影成 source='external'。
+        assert {t.name for t in registry.get_all_tools()} == {f'hasn.ext.{ns}.company_search'}
+
+        directory = ToolDirectoryService(registry)
+        # hasn.cloud.tool.search 'sources' 层级：external 分组真实派生（不再恒空）。
+        sources = await directory.search(ctx, ToolSearchQuery(query='sources', detail='sources'))
+        ext_sources = [s for s in sources['sources'] if s['source'] == 'external']
+        assert ext_sources and ext_sources[0]['namespace'] == f'hasn.ext.{ns}'
+        assert ext_sources[0]['visible_tool_count'] == 1
+        # 'external' 源层级 + 命名空间层级 + tool: 精确层级都命中。
+        by_source = await directory.search(ctx, ToolSearchQuery(query='external', source='external'))
+        assert [t['name'] for t in by_source['tools']] == [f'hasn.ext.{ns}.company_search']
+        by_ns = await directory.search(ctx, ToolSearchQuery(query=f'hasn.ext.{ns}'))
+        assert any(t['name'] == f'hasn.ext.{ns}.company_search' for t in by_ns['tools'])
+        by_tool = await directory.search(
+            ctx, ToolSearchQuery(query=f'tool:hasn.ext.{ns}.company_search', detail='schema')
+        )
+        assert [s['name'] for s in by_tool['schemas']] == [f'hasn.ext.{ns}.company_search']
+
+        # ---- 明文零泄露：平台 key 绝不出现在任何 agent 面投影 ----
+        import json as _json
+
+        blob = _json.dumps([sources, by_source, by_ns, by_tool], ensure_ascii=False, default=str)
+        assert platform_key not in blob
+
+        # ---- 派发层：ExternalMcpTool.execute → gateway.proxy_call → 真实 stub SSE 往返 ----
+        tool = next(t for t in registry.get_all_tools() if t.name == f'hasn.ext.{ns}.company_search')
+        result = await tool.execute(ctx, {'keyword': '小米'})
+        assert result['ok'] is True and result['is_error'] is False
+        assert 'company-search' in result['text'] and '小米' in result['text']
+
+        # 用量归因到调用 owner（平台 key 计费摊给调用方）。
+        assert await external_mcp_gateway_usage_count(mcp_id=mcp_id, owner=owner) >= 1
+    finally:
+        with contextlib.suppress(Exception):
+            await external_mcp_gateway.revoke_credential(mcp_id=mcp_id, is_admin=True)
+        await _cleanup_server(mcp_id)
+
+
+async def test_p7e_external_discovery_isolated_across_agents(stub_mcp_endpoint: str) -> None:
+    """平台 server 实例全局共享，发现/调用资格按本 Agent binding——未绑定 Agent 一无所见
+    （即便把已绑定 Agent 的注册表塞给它，_can_discover 仍按 external_allowed_tools 挡，杜绝串号）。"""
+    ns = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    bound = f'a_bound_{_suffix()}'
+    other = f'a_other_{_suffix()}'
+    mcp_id = await _insert_server(name=ns, endpoint=stub_mcp_endpoint, origin='system', owner_hasn_id=None)
+    try:
+        await external_mcp_gateway.introspect_server(mcp_id)
+        await external_mcp_gateway.create_binding(
+            agent_hasn_id=bound, owner_hasn_id=owner, mcp_id=mcp_id, allowed_raw_names=['company-search']
+        )
+        # 已绑定 Agent：发现到 1 个。
+        bound_ctx = _agent_ctx(agent=bound, owner=owner)
+        bound_reg = await _registry_for_agent(bound_ctx)
+        assert {t.name for t in bound_reg.get_all_tools()} == {f'hasn.ext.{ns}.company_search'}
+
+        # 未绑定 Agent（同 owner）：resolve 为空。
+        other_ctx = _agent_ctx(agent=other, owner=owner)
+        assert await load_external_mcp_tools_for_agent(other_ctx) == []
+
+        # 串号防线：把 bound 的注册表交给 other_ctx（空 external_allowed_tools）→ tool.search 仍看不到。
+        other_ctx.external_allowed_tools = set()
+        directory = ToolDirectoryService(bound_reg)
+        leaked = await directory.search(other_ctx, ToolSearchQuery(query='external', source='external'))
+        assert leaked['tools'] == []
+        sources = await directory.search(other_ctx, ToolSearchQuery(query='sources', detail='sources'))
+        assert all(s['source'] != 'external' for s in sources['sources'])
+    finally:
+        await _cleanup_server(mcp_id)
