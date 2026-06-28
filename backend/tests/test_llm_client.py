@@ -181,12 +181,35 @@ async def test_complete_sse_response(_no_backoff):
 
 
 @pytest.mark.asyncio
-async def test_complete_hard_error_raises(_no_backoff):
+async def test_complete_failover_on_hard_error(_no_backoff):
+    """硬错误（非瞬时 4xx，如 model_not_found / 余额不足）也触发模型 failover，不再直接抛。
+
+    这正是「一个模型挂了，自动切换下一个」：链上某模型返回 4xx 硬错误时切下一个，整条链
+    穷尽才抛 LLMError（修 gpt-5.5 余额不足直接卡死、不切换的问题）。
+    """
+    seen: list[str] = []
+
+    def handler(request):
+        import json
+
+        model = json.loads(request.content)['model']
+        seen.append(model)
+        if model == 'm1':
+            return httpx.Response(404, text='model_not_found')  # 硬错误（非瞬时）→ 应切下一个
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'recovered'}}]})
+
+    out = await _client(handler, models=['m1', 'm2']).complete([{'role': 'user', 'content': 'hi'}])
+    assert out == 'recovered'
+    assert seen == ['m1', 'm2']  # m1 硬错误后切到 m2
+
+
+@pytest.mark.asyncio
+async def test_complete_all_models_hard_error_raises(_no_backoff):
     def handler(_request):
-        return httpx.Response(400, text='bad request')  # 非瞬时 → 直接抛
+        return httpx.Response(400, text='bad request')  # 全链非瞬时硬错误 → 穷尽后抛
 
     with pytest.raises(LLMError):
-        await _client(handler).complete([{'role': 'user', 'content': 'hi'}])
+        await _client(handler, models=['m1', 'm2']).complete([{'role': 'user', 'content': 'hi'}])
 
 
 @pytest.mark.asyncio

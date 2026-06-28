@@ -148,25 +148,34 @@ class LLMChatClient:
         request_timeout = timeout if timeout is not None else (self._default_timeout or _DEFAULT_TIMEOUT)
 
         async with self._http_client(request_timeout) as client:
+            last_error: str | None = None
             for model_index, model_name in enumerate(model_chain):
                 payload = {**base_payload, 'model': model_name}
                 if response_format:
                     payload['response_format'] = response_format
-                for attempt in range(_MAX_ATTEMPTS):
-                    content = await self._post(client, base_url, api_key, payload, model_name, attempt)
-                    if content:
-                        return content
-                    if attempt < _MAX_ATTEMPTS - 1:
-                        await asyncio.sleep(2.0 * (attempt + 1))
-                # fallback 模型上若带 response_format 仍失败，放宽一次（部分模型不支持 json mode）。
-                if model_index > 0 and response_format:
-                    content = await self._post(
-                        client, base_url, api_key, {**base_payload, 'model': model_name}, model_name, _MAX_ATTEMPTS
-                    )
-                    if content:
-                        return content
+                try:
+                    for attempt in range(_MAX_ATTEMPTS):
+                        content = await self._post(client, base_url, api_key, payload, model_name, attempt)
+                        if content:
+                            return content
+                        if attempt < _MAX_ATTEMPTS - 1:
+                            await asyncio.sleep(2.0 * (attempt + 1))
+                    # fallback 模型上若带 response_format 仍失败，放宽一次（部分模型不支持 json mode）。
+                    if model_index > 0 and response_format:
+                        content = await self._post(
+                            client, base_url, api_key, {**base_payload, 'model': model_name}, model_name, _MAX_ATTEMPTS
+                        )
+                        if content:
+                            return content
+                    last_error = f'{model_name}: 空内容'
+                except LLMError as exc:
+                    # 该模型硬错误（非瞬时 4xx：model_not_found / 余额不足 / 鉴权等）→ 记录并切下一个
+                    # 模型（failover：「一个模型挂了，自动切换下一个」），整条链穷尽才抛。
+                    last_error = f'{model_name}: {exc}'
+                    log.warning(f'LLM 模型 {model_name} 失败，切换下一个: {exc}')
+                    continue
 
-        raise LLMError('LLM 返回空内容（已穷尽模型与重试）')
+        raise LLMError(f'LLM 穷尽模型链仍失败（{last_error or "空内容"}）')
 
     async def complete_json(
         self,
