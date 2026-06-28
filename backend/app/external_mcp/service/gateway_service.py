@@ -361,7 +361,11 @@ class ExternalMcpGateway:
         arguments: dict[str, Any],
         trace_id: str | None = None,
     ) -> dict[str, Any]:
-        """代理一次 external 工具调用（10 §6 全校验链 + 平台 key 治理 + 记账）。"""
+        """代理一次 external 工具调用（10 §6 全校验链 + 平台 key 治理 + 记账）。
+
+        Agent 视角入口：要求该 Agent 已被 owner binding 授权该 server 的该工具。
+        system-origin 平台工具的「服务端内部」调用走 call_system_tool（绕过 per-agent binding）。
+        """
         ns = self._namespace_of(tool_name)
         server = await self._get_server_by_name(ns)
         if server is None:
@@ -390,17 +394,7 @@ class ExternalMcpGateway:
             raise McpToolError(McpErrorCode.SERVER_CIRCUIT_BROKEN, f"server '{ns}' 已熔断，暂不可用")
 
         # tools_hash 校验：缓存里仍能找到该工具（schema 漂移 → 9210 + re-probe）。
-        cache_by_canonical = {m['name']: m for m in (server.get('advertised_tools_cache') or [])}
-        if tool_name not in cache_by_canonical:
-            # 触发 re-probe 一次再判定。
-            await self.introspect_server(server['mcp_id'])
-            server = await self._get_server(server['mcp_id']) or server
-            cache_by_canonical = {m['name']: m for m in (server.get('advertised_tools_cache') or [])}
-            if tool_name not in cache_by_canonical:
-                raise McpToolError(
-                    McpErrorCode.SCHEMA_HASH_MISMATCH,
-                    f'工具 {tool_name} 在第三方已变更/下线（tools_hash 不一致），已触发 re-probe',
-                )
+        server = await self._ensure_canonical_cached(server, tool_name)
 
         # 平台 key 配额/限流（system-origin）。
         await quota_service.enforce(
@@ -410,24 +404,120 @@ class ExternalMcpGateway:
             per_owner_daily_quota=server['per_owner_daily_quota'],
             rate_limit_per_min=server['rate_limit_per_min'],
         )
+        return await self._perform_remote_call(
+            server=server,
+            tool_name=tool_name,
+            raw_name=raw_name,
+            arguments=arguments,
+            caller_owner_hasn_id=owner_hasn_id,
+            caller_agent_hasn_id=agent_hasn_id,
+            trace_id=trace_id,
+        )
 
-        # 注入 secret → 调第三方 → 归一。
+    async def call_system_tool(
+        self,
+        *,
+        owner_hasn_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        agent_hasn_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """system-origin 平台工具的「服务端内部」调用接缝（架构A）。
+
+        供上层业务模块（如 hasn_growth read-through 企业数据中台）以平台身份调用共享平台 key 的
+        system-origin MCP（如 qcc），**无需 owner 为某 Agent 显式 binding**——平台 key 全 owner
+        共享、token 平台持有（绝不下发分身），per-agent 绑定在这里没有意义。
+
+        与 proxy_call 的差异：
+        - 只放行 origin='system' 的 server（owner/marketplace 自带 key 的仍须 proxy_call + binding）；
+        - 绕过 binding / allowed_tools 校验，raw_name 直接取自 server 工具缓存；
+        - 配额 / 限流 / 记账仍按 caller owner 归因（10 §7.2），caller_agent 可空（系统发起标 'system'）。
+        """
+        ns = self._namespace_of(tool_name)
+        server = await self._get_server_by_name(ns)
+        if server is None:
+            raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'external server 不存在: {ns}')
+        if server['origin'] != 'system':
+            raise McpToolError(
+                McpErrorCode.DIRECT_CALL_DENIED,
+                f"call_system_tool 仅服务 system-origin 平台工具（{ns} origin={server['origin']}）",
+            )
+        if server['status'] != 'active':
+            raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, f"server '{ns}' 已停用")
+        if server['health_status'] == 'circuit_broken':
+            raise McpToolError(McpErrorCode.SERVER_CIRCUIT_BROKEN, f"server '{ns}' 已熔断，暂不可用")
+
+        # raw_name 取自工具缓存（system 调用无 binding；缺则 re-probe 一次）。
+        server = await self._ensure_canonical_cached(server, tool_name)
+        cache_by_canonical = {m['name']: m for m in (server.get('advertised_tools_cache') or [])}
+        raw_name = cache_by_canonical[tool_name]['raw_name']
+
+        await quota_service.enforce(
+            mcp_id=server['mcp_id'],
+            origin=server['origin'],
+            owner_hasn_id=owner_hasn_id,
+            per_owner_daily_quota=server['per_owner_daily_quota'],
+            rate_limit_per_min=server['rate_limit_per_min'],
+        )
+        return await self._perform_remote_call(
+            server=server,
+            tool_name=tool_name,
+            raw_name=raw_name,
+            arguments=arguments,
+            caller_owner_hasn_id=owner_hasn_id,
+            caller_agent_hasn_id=agent_hasn_id or 'system',
+            trace_id=trace_id,
+        )
+
+    async def _ensure_canonical_cached(self, server: dict[str, Any], tool_name: str) -> dict[str, Any]:
+        """确保 canonical tool_name 在 server 工具缓存中（缺则 re-probe 一次）；返回可能已刷新的 server。
+
+        schema 漂移 / 工具下线 → re-probe 后仍找不到 → SCHEMA_HASH_MISMATCH（10 §6 / 9210）。
+        """
+        cache = {m['name']: m for m in (server.get('advertised_tools_cache') or [])}
+        if tool_name in cache:
+            return server
+        await self.introspect_server(server['mcp_id'])
+        server = await self._get_server(server['mcp_id']) or server
+        cache = {m['name']: m for m in (server.get('advertised_tools_cache') or [])}
+        if tool_name not in cache:
+            raise McpToolError(
+                McpErrorCode.SCHEMA_HASH_MISMATCH,
+                f'工具 {tool_name} 在第三方已变更/下线（tools_hash 不一致），已触发 re-probe',
+            )
+        return server
+
+    async def _perform_remote_call(
+        self,
+        *,
+        server: dict[str, Any],
+        tool_name: str,
+        raw_name: str,
+        arguments: dict[str, Any],
+        caller_owner_hasn_id: str,
+        caller_agent_hasn_id: str,
+        trace_id: str | None,
+    ) -> dict[str, Any]:
+        """建连（注入 secret）→ 调第三方 → 归一 → 记账（10 §6）。前置校验由调用方负责。
+
+        proxy_call / call_system_tool 共用此执行核心，确保 secret 解析、归一、记账行为一致。
+        """
         success = False
         try:
             headers = await self._resolve_headers(server['headers'])
             client = RemoteMcpClient(endpoint=server['endpoint'], headers=headers)
             raw_result = await client.call_tool(raw_name, arguments)
             success = True
-            normalized = self._normalize_call_result(raw_result)
-            return normalized
+            return self._normalize_call_result(raw_result)
         except ExternalMcpClientError as exc:
             raise McpToolError(McpErrorCode.SERVER_UNHEALTHY, f'第三方 MCP 调用失败: {exc}') from exc
         finally:
             await quota_service.record(
                 mcp_id=server['mcp_id'],
                 origin=server['origin'],
-                caller_owner_hasn_id=owner_hasn_id,
-                caller_agent_hasn_id=agent_hasn_id,
+                caller_owner_hasn_id=caller_owner_hasn_id,
+                caller_agent_hasn_id=caller_agent_hasn_id,
                 tool_name=tool_name,
                 trace_id=trace_id,
                 success=success,

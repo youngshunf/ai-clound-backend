@@ -731,3 +731,128 @@ async def test_p7e_external_discovery_isolated_across_agents(stub_mcp_endpoint: 
         assert all(s['source'] != 'external' for s in sources['sources'])
     finally:
         await _cleanup_server(mcp_id)
+
+
+# --------------------------------------------------------------------------- #
+# 9. 架构A：call_system_tool 服务端接缝（system-origin 平台工具，绕 per-agent binding）
+#    —— 获客 hasn_growth read-through 路径：业务层以平台身份调 qcc，无需为每个分身建 binding。
+# --------------------------------------------------------------------------- #
+
+
+async def _usage_first_agent_of(*, mcp_id: str, owner: str) -> str | None:
+    """该 (mcp_id, owner) 最早一条记账的 caller_agent_hasn_id（验证 'system' 哨兵 / agent 归因）。"""
+    from sqlalchemy import select
+
+    async with async_db_session() as db:
+        return (
+            await db.execute(
+                select(ExternalMcpUsage.caller_agent_hasn_id)
+                .where(ExternalMcpUsage.mcp_id == mcp_id, ExternalMcpUsage.caller_owner_hasn_id == owner)
+                .order_by(ExternalMcpUsage.id.asc())
+            )
+        ).scalars().first()
+
+
+async def test_call_system_tool_bypasses_binding_and_attributes_owner(stub_mcp_endpoint: str) -> None:
+    """system-origin 平台 server 经 call_system_tool 被服务端以平台身份调用——**无需 per-agent binding**
+    （获客 hasn_growth read-through 路径）。配额/记账仍按 caller owner 归因；未传 agent 记账落 'system'
+    哨兵，传 agent 则归该 agent。平台 key 明文零泄露。"""
+    ns = f'qcc{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    platform_key = f'qcc-platform-bearer-{_suffix()}'
+    mcp_id = await _insert_server(name=ns, endpoint=stub_mcp_endpoint, origin='system', owner_hasn_id=None)
+    try:
+        await external_mcp_gateway.set_credential(mcp_id=mcp_id, plaintext=platform_key, is_admin=True)
+        await external_mcp_gateway.introspect_server(mcp_id)
+
+        # 关键：未建任何 binding，直接以平台身份调用（架构A 绕 binding）。
+        result = await external_mcp_gateway.call_system_tool(
+            owner_hasn_id=owner,
+            tool_name=f'hasn.ext.{ns}.company_search',
+            arguments={'keyword': '小米'},
+            trace_id='sys-1',
+        )
+        assert result['ok'] is True and result['is_error'] is False
+        assert 'company-search' in result['text'] and '小米' in result['text']
+
+        # 记账归调用 owner；未传 agent → caller_agent 'system' 哨兵。
+        assert await external_mcp_gateway_usage_count(mcp_id=mcp_id, owner=owner) == 1
+        assert await _usage_first_agent_of(mcp_id=mcp_id, owner=owner) == 'system'
+
+        # 传 agent_hasn_id 时记账归该 agent（第 2 条）。
+        await external_mcp_gateway.call_system_tool(
+            owner_hasn_id=owner,
+            tool_name=f'hasn.ext.{ns}.company_search',
+            arguments={'keyword': '腾讯'},
+            agent_hasn_id=f'a_caller_{_suffix()}',
+        )
+        assert await external_mcp_gateway_usage_count(mcp_id=mcp_id, owner=owner) == 2
+
+        # 明文零泄露：平台 key 不出现在归一返回。
+        import json as _json
+
+        assert platform_key not in _json.dumps(result, ensure_ascii=False, default=str)
+    finally:
+        with contextlib.suppress(Exception):
+            await external_mcp_gateway.revoke_credential(mcp_id=mcp_id, is_admin=True)
+        await _cleanup_server(mcp_id)
+
+
+async def test_call_system_tool_rejects_non_system_origin(stub_mcp_endpoint: str) -> None:
+    """call_system_tool 只服务 system-origin；owner-origin（自带 key）server → DIRECT_CALL_DENIED
+    （owner server 仍须走 proxy_call + binding，平台接缝不为其代付/绕授权）。"""
+    ns = f'gmail{_suffix()}'
+    owner = f'h_owner_{_suffix()}'
+    mcp_id = await _insert_server(name=ns, endpoint=stub_mcp_endpoint, origin='owner', owner_hasn_id=owner)
+    try:
+        with pytest.raises(McpToolError) as exc:
+            await external_mcp_gateway.call_system_tool(
+                owner_hasn_id=owner,
+                tool_name=f'hasn.ext.{ns}.company_search',
+                arguments={'keyword': 'x'},
+            )
+        assert exc.value.code == McpErrorCode.DIRECT_CALL_DENIED
+    finally:
+        await _cleanup_server(mcp_id)
+
+
+async def test_seed_qcc_servers_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """qcc_seed 幂等：首次注册 system remote_service server，二次全部 existed 不重复建行；
+    参数形态正确（origin=system / hosting=remote_service / transport=http / qcc endpoint）。
+    用测试专属 namespace 隔离，不碰真实 qcc_* 平台行。"""
+    from backend.app.external_mcp import qcc_seed
+
+    sfx = _suffix()
+    test_specs = (
+        qcc_seed.QccServerSpec(f'qcctest_company_{sfx}', 'company', '测试·工商'),
+        qcc_seed.QccServerSpec(f'qcctest_risk_{sfx}', 'risk', '测试·风险'),
+    )
+    monkeypatch.setattr(qcc_seed, 'QCC_SERVERS', test_specs)
+    mcp_ids: list[str] = []
+    try:
+        # 首次：全部 registered（不传 token、不自省，纯注册逻辑）。
+        first = await qcc_seed.seed_qcc_servers(bearer_token=None, introspect=False)
+        assert [r['action'] for r in first] == ['registered', 'registered']
+        assert all(r['credential_written'] is False for r in first)
+        mcp_ids = [r['mcp_id'] for r in first]
+
+        # 形态正确：endpoint 指向真实 qcc；落库 origin/hosting/transport 正确。
+        assert first[0]['endpoint'] == 'https://agent.qcc.com/mcp/company/stream'
+        detail = await external_mcp_gateway.get_server_detail(mcp_id=mcp_ids[0], is_admin=True)
+        assert detail is not None
+        assert detail['origin'] == 'system'
+        assert detail['hosting'] == 'remote_service'
+        assert detail['transport'] == 'http'
+
+        # 二次：全部 existed（幂等，复用同一行）。
+        second = await qcc_seed.seed_qcc_servers(bearer_token=None, introspect=False)
+        assert [r['action'] for r in second] == ['existed', 'existed']
+        assert {r['mcp_id'] for r in second} == set(mcp_ids)
+
+        # 平台目录里每个测试 namespace 只有一行。
+        sysservers = await external_mcp_gateway.list_servers_admin(origin='system')
+        for spec in test_specs:
+            assert len([s for s in sysservers if s['name'] == spec.namespace]) == 1
+    finally:
+        for mcp_id in mcp_ids:
+            await _cleanup_server(mcp_id)
