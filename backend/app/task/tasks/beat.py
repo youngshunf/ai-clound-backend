@@ -54,4 +54,11 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'growth_dispatch_approved_outreach',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟扫 approved 触达分发（quiet hours 窗口内才实发）
     },
+    'Owner 记忆 pending 合并兜底重试': {
+        'task': 'owner_memory_retry_pending_merges',
+        # 每 10 分钟扫一次滞留 pending（同步内联合并失败的兜底重试）。只重试最老 pending 已超
+        # 120s 的 owner，避开刚 contribute 的内联路径；网关恢复后下一轮即合并下发，杜绝采访完
+        # coverage 永不更新。
+        'schedule': TzAwareCrontab('*/10'),
+    },
 }

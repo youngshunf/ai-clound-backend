@@ -15,6 +15,7 @@ ADR-15 收编：本 service 从 `app/hasn/service/owner_memory_service.py` 迁�
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
@@ -24,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
 from backend.common.log import log
+from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -33,6 +35,10 @@ if TYPE_CHECKING:
 LlmComplete = Callable[[list[dict[str, str]]], Awaitable[str]]
 
 _MERGE_MAX_TOKENS = 2000
+# pending 合并兜底重试 sweeper（MEMFIX-3）：只重试「最老 pending 已超过此秒数」的 owner，
+# 避开刚 contribute 的同步内联合并（决策「保持同步内联，只加重试兜底」）。
+_SWEEP_MIN_AGE_SECONDS = 120
+_SWEEP_MAX_OWNERS = 50  # 单轮最多处理 owner 数（防一轮 sweep 跑太久占住 celery worker）
 
 
 async def _default_llm_complete(messages: list[dict[str, str]]) -> str:
@@ -195,6 +201,60 @@ class OwnerMemoryService:
             'contributions_merged': len(contribution_ids),
             'agents_updated': agents_updated,
         }
+
+    async def sweep_pending_merges(
+        self,
+        *,
+        min_age_seconds: int = _SWEEP_MIN_AGE_SECONDS,
+        max_owners: int = _SWEEP_MAX_OWNERS,
+        owner_ids: list[str] | None = None,
+        llm_complete: LlmComplete | None = None,
+    ) -> dict[str, Any]:
+        """扫描有滞留 pending contribution 的 owner，逐个重跑合并（同步内联失败的兜底重试）。
+
+        同步内联合并（contribute 热路径）若因 LLM 网关挂/余额不足失败，贡献留 pending。本
+        sweeper 由 celery beat 周期触发，把这些滞留贡献重新合并下发——配合 failover 模型链，
+        网关恢复后下一轮即合并成功，杜绝「采访完 coverage 永不更新」。
+
+        只挑「最老 pending 已超过 ``min_age_seconds``」的 owner，避开刚 contribute、同步内联
+        正在处理的同一批观察（防与热路径双合并）。逐 owner 独立事务：单个 owner 合并失败（LLM
+        仍挂）不影响其余、pending 留到下轮再试（零 fake，不产生假合并）。
+
+        ``owner_ids`` 可选：限定只扫这些 owner（用于运维定向补合并 / 测试隔离，不波及其他 owner
+        的真实数据）；缺省扫全部有滞留 pending 的 owner。
+
+        返回 {candidates, merged, no_pending, failed}。
+        """
+        cutoff = timezone.now() - timedelta(seconds=max(0, min_age_seconds))
+        async with async_db_session() as db:
+            candidate_query = (
+                sa.select(HasnOwnerMemoryContribution.owner_id)
+                .where(HasnOwnerMemoryContribution.status == 'pending')
+                .group_by(HasnOwnerMemoryContribution.owner_id)
+                .having(sa.func.min(HasnOwnerMemoryContribution.created_time) <= cutoff)
+                .order_by(sa.func.min(HasnOwnerMemoryContribution.created_time).asc())
+                .limit(max(1, max_owners))
+            )
+            if owner_ids is not None:
+                candidate_query = candidate_query.where(
+                    HasnOwnerMemoryContribution.owner_id.in_(owner_ids)
+                )
+            candidates = list((await db.execute(candidate_query)).scalars().all())
+
+        summary = {'candidates': len(candidates), 'merged': 0, 'no_pending': 0, 'failed': 0}
+        for owner_id in candidates:
+            try:
+                async with async_db_session.begin() as db:
+                    outcome = await self.merge_owner_memory(db, owner_id=owner_id, llm_complete=llm_complete)
+                if outcome.get('merged'):
+                    summary['merged'] += 1
+                else:
+                    # 候选时有 pending，到合并时已无（同步内联抢先处理）——非失败，正常竞态。
+                    summary['no_pending'] += 1
+            except Exception as exc:  # noqa: BLE001 — 单 owner 合并失败不影响其余，留待下轮（零 fake）
+                summary['failed'] += 1
+                log.warning(f'owner memory sweep retry failed for {owner_id}: {exc}')
+        return summary
 
 
 def _merge_messages(current: str, observations: list[str]) -> list[dict[str, str]]:
