@@ -131,6 +131,49 @@ async def test_resolve_env_for_owner_resolves_secret_refs() -> None:
         await _cleanup(mcp_id, secret_uri=secret_uri)
 
 
+async def test_register_with_env_secrets_writes_refs_and_resolves() -> None:
+    """env_secrets 明文 → 服务端建 secret:// 引用 + 加密落库 + 合并进 env；明文绝不落 env；resolve-env 还原。"""
+    owner = f'o_{_suffix()}'
+    name = f'gmail_{_suffix()}'
+    secret_uri = secret_store.build_uri(origin='owner', owner_hasn_id=owner, server=name, key='GMAIL_TOKEN')
+    server = await external_mcp_gateway.register_server(
+        name=name,
+        hosting='local_process',
+        transport='stdio',
+        origin='owner',
+        owner_hasn_id=owner,
+        command='npx',
+        args=['-y', '@modelcontextprotocol/server-gmail'],
+        env={'LOG_LEVEL': 'info'},
+        env_secrets={'GMAIL_TOKEN': 'tok-PLAINTEXT-IN'},
+    )
+    mcp_id = server['mcp_id']
+    try:
+        # 落库 env：非凭据明文原样 + 凭据键是 secret:// 引用（绝无明文）。
+        assert server['env']['LOG_LEVEL'] == 'info'
+        assert server['env']['GMAIL_TOKEN'] == secret_uri
+        assert 'tok-PLAINTEXT-IN' not in str(server['env'])
+        # 密文已落库，建连解析还原明文。
+        resolved = await external_mcp_gateway.resolve_env_for_owner(mcp_id=mcp_id, owner_hasn_id=owner)
+        assert resolved == {'LOG_LEVEL': 'info', 'GMAIL_TOKEN': 'tok-PLAINTEXT-IN'}
+    finally:
+        await _cleanup(mcp_id, secret_uri=secret_uri)
+
+
+async def test_register_env_secrets_rejected_for_remote_service() -> None:
+    """remote_service 传 env_secrets → 拒（凭据走 credential/headers，云端建连）。"""
+    with pytest.raises(RegistrationError):
+        await external_mcp_gateway.register_server(
+            name=f'remote_{_suffix()}',
+            hosting='remote_service',
+            transport='http',
+            origin='owner',
+            owner_hasn_id=f'o_{_suffix()}',
+            endpoint='https://mcp.example.com/stream',
+            env_secrets={'API_TOKEN': 'should-be-rejected'},
+        )
+
+
 async def test_resolve_env_credential_missing_after_revoke() -> None:
     """撤销凭据后 resolve-env → CREDENTIAL_MISSING（撤销后软挡，doc101 §2.1.2）。"""
     owner = f'o_{_suffix()}'

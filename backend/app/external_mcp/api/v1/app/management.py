@@ -85,6 +85,7 @@ async def register_server(request: Request, db: CurrentSession, obj: RegisterOwn
         command=obj.command,
         args=obj.args,
         env=obj.env,
+        env_secrets=obj.env_secrets,
         display_name=obj.display_name,
         scope='owner',
         risk_level=obj.risk_level,

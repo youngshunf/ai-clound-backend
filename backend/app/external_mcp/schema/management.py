@@ -30,7 +30,12 @@ class RegisterOwnerServerParam(BaseModel):
     # local_process 专属：本机 spawn 的可执行 + 参数 + 环境变量（env 值含凭据须 secret:// 引用）。
     command: str | None = Field(default=None, max_length=512, description='[local_process stdio] 直 exec 的可执行（不经 shell）')
     args: list[str] = Field(default_factory=list, description='[local_process] spawn 参数数组')
-    env: dict[str, str] = Field(default_factory=dict, description='[local_process] 子进程 env（凭据值须 secret:// 引用）')
+    env: dict[str, str] = Field(default_factory=dict, description='[local_process] 子进程 env 非凭据项（明文，如 LOG_LEVEL）；凭据项走 env_secrets')
+    # local_process 凭据项明文：服务端建 secret:// 引用 + 加密落库 + 合并进 env（明文不入 env/不入同步/不回显）。
+    env_secrets: dict[str, str] = Field(
+        default_factory=dict,
+        description='[local_process] 子进程 env 凭据项明文（key→明文）；服务端转 secret:// 引用加密落库，永不回显',
+    )
     risk_level: str = Field(default='medium', description='风险等级 low/medium/high')
     # 凭据（可选，提供则注册后立即写入并接进 header 模板）。
     credential: str | None = Field(default=None, description='明文凭据（如 bearer token），写后永不回显')

@@ -116,6 +116,7 @@ class ExternalMcpGateway:
         command: str | None = None,
         args: list | None = None,
         env: dict | None = None,
+        env_secrets: dict | None = None,
         headers: dict | None = None,
         display_name: str | None = None,
         scope: str = 'owner',
@@ -123,17 +124,36 @@ class ExternalMcpGateway:
         per_owner_daily_quota: int = 0,
         rate_limit_per_min: int = 0,
     ) -> dict[str, Any]:
-        """注册第三方 MCP server（校验 → 落库）。返回 server dict。"""
+        """注册第三方 MCP server（校验 → 落库）。返回 server dict。
+
+        `env_secrets`（local_process 专用）：key→明文凭据。服务端为每项建确定性 `secret://` 引用、
+        加密落库（明文绝不入 `env`/不入同步/不回显），再把引用合并进 `env`——故落库 `env` 只含
+        非凭据明文 + `secret://` 引用，建连时 daemon 经 resolve-env 实时解析（doc101 §2.1.2）。
+        """
         name = validate_server_namespace(name)
         validate_transport_hosting(hosting=hosting, transport=transport, endpoint=endpoint, command=command)
-        validate_credential_values(headers, where='headers')
-        validate_credential_values(env, where='env')
         # local_process 禁 system-origin（平台 key 绝不下发设备，doc101 §0.1）——防御性硬闸，
-        # 不依赖调用方 origin 恒为 owner。
+        # 不依赖调用方 origin 恒为 owner。先于写密文，避免给非法承载/归属写入凭据。
         if hosting == 'local_process' and origin == 'system':
             raise RegistrationError('local_process 禁止 system-origin（平台 key 绝不下发设备，doc101 §0.1）')
         if origin in {'owner', 'marketplace'} and not owner_hasn_id:
             raise RegistrationError(f'{origin}-origin server 必须指定 owner_hasn_id')
+        # env_secrets 明文 → secret:// 引用 + 加密落库 + 合并进 env（明文绝不落 env）。仅 local_process 适用。
+        env = dict(env or {})
+        if env_secrets:
+            if hosting != 'local_process':
+                raise RegistrationError('env_secrets 仅 local_process 适用（remote_service 凭据走 credential/headers）')
+            for key, plaintext in env_secrets.items():
+                if not plaintext or not str(plaintext).strip():
+                    raise RegistrationError(f'env_secrets.{key} 明文不能为空')
+                secret_uri = secret_store.build_uri(origin=origin, owner_hasn_id=owner_hasn_id, server=name, key=key)
+                await secret_store.write(
+                    secret_uri=secret_uri, plaintext=str(plaintext), origin=origin, owner_hasn_id=owner_hasn_id
+                )
+                env[key] = secret_uri
+        # 合并后统一校验：env 凭据键必须是 secret:// 引用（明文直填凭据键 → 拒，强制走 env_secrets）。
+        validate_credential_values(headers, where='headers')
+        validate_credential_values(env, where='env')
 
         mcp_id = _new_id('mcp')
         async with async_db_session.begin() as db:
