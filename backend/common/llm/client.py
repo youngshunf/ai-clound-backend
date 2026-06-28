@@ -53,6 +53,7 @@ class LLMChatClient:
         base_url: str | None = None,
         api_key: str | None = None,
         model: str | None = None,
+        models: list[str] | None = None,
         fallback_model: str | None = None,
         timeout: float | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -60,6 +61,7 @@ class LLMChatClient:
         self._base_url_override = base_url
         self._api_key_override = api_key
         self._default_model = model
+        self._default_models = models  # 实例级默认 failover 链覆盖（优先于 settings.LLM_DEFAULT_MODELS）
         self._fallback_model = fallback_model
         self._default_timeout = timeout
         self._transport = transport  # 仅测试注入；生产为 None（默认 trust_env=False 客户端）
@@ -93,11 +95,32 @@ class LLMChatClient:
                 return chain
         if model:
             return [model]  # 显式 per-call 模型 → 就用它（不叠 instance fallback）
-        primary = self._default_model or (settings.LLM_DEFAULT_MODEL or _FALLBACK_MODEL_NAME)
-        chain = [primary]
-        if self._fallback_model and self._fallback_model != primary:
-            chain.append(self._fallback_model)
-        return chain
+        return self._default_model_chain()
+
+    def _default_model_chain(self) -> list[str]:
+        """无 per-call 模型时的默认 failover 链。
+
+        优先级（实例显式配置永远赢过全局默认，避免给 translation/article_summary 等指定了
+        ``model=`` 的实例被全局链覆盖）：
+        1. 实例 ``models``（显式整条链）
+        2. 实例 ``model``（+ 可选 ``fallback_model``）—— 构造方明确选的单模型/对
+        3. ``settings.LLM_DEFAULT_MODELS``（全局默认 failover 链，逐模型自动切换）—— 模块单例
+           ``llm_client`` 走这条，让 owner 记忆合并 / 画像判定等后端任务默认就带 failover
+        4. ``settings.LLM_DEFAULT_MODEL`` / 兜底名
+        """
+        if self._default_models:
+            chain = [m.strip() for m in self._default_models if m and m.strip()]
+            if chain:
+                return chain
+        if self._default_model:
+            chain = [self._default_model]
+            if self._fallback_model and self._fallback_model != self._default_model:
+                chain.append(self._fallback_model)
+            return chain
+        configured = [m.strip() for m in (settings.LLM_DEFAULT_MODELS or []) if m and m.strip()]
+        if configured:
+            return configured
+        return [settings.LLM_DEFAULT_MODEL or _FALLBACK_MODEL_NAME]
 
     async def complete(
         self,

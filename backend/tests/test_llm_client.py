@@ -47,6 +47,30 @@ def test_model_chain():
     assert dedup._model_chain(None, None) == ['same']
 
 
+def test_default_model_chain_uses_settings_failover():
+    """无 per-instance/per-call 模型的客户端默认走 settings.LLM_DEFAULT_MODELS 整条 failover 链。"""
+    from backend.core.conf import settings
+
+    configured = [m for m in settings.LLM_DEFAULT_MODELS if m]
+    assert len(configured) >= 2, '默认应配多模型 failover 链（owner 记忆合并等后端任务靠它兜底）'
+    c = LLMChatClient(base_url='http://x', api_key='k')
+    assert c._model_chain(None, None) == configured
+
+
+def test_instance_config_beats_settings_chain():
+    """实例显式 models / model 永远赢过全局默认链（不被全局链覆盖）。"""
+    assert LLMChatClient(base_url='http://x', api_key='k', models=['only'])._model_chain(None, None) == ['only']
+    assert LLMChatClient(base_url='http://x', api_key='k', model='solo')._model_chain(None, None) == ['solo']
+
+
+def test_module_singleton_carries_failover_chain():
+    """模块单例 llm_client（owner 记忆合并 / 画像判定走它）默认带 failover 链。"""
+    from backend.common.llm import llm_client
+    from backend.core.conf import settings
+
+    assert llm_client._model_chain(None, None) == [m for m in settings.LLM_DEFAULT_MODELS if m]
+
+
 # ---- 纯解析 ----
 
 
@@ -117,6 +141,33 @@ async def test_complete_model_fallback(_no_backoff):
     out = await _client(handler, model='m1', fallback_model='m2').complete([{'role': 'user', 'content': 'hi'}])
     assert out == 'second'
     assert 'm1' in seen and 'm2' in seen
+
+
+@pytest.mark.asyncio
+async def test_complete_default_chain_failover(_no_backoff):
+    """无 per-call 模型时走全局默认 failover 链：前两个模型 5xx 穷尽后自动切到第三个成功。
+
+    这正是 owner 记忆合并的实际路径（merge 调 llm_client.complete 不带 model）——证明默认
+    单模型挂了会沿链自动切换，而不是直接抛 LLMError 把贡献永久搁置。
+    """
+    from backend.core.conf import settings
+
+    chain = [m for m in settings.LLM_DEFAULT_MODELS if m]
+    assert len(chain) >= 3
+    seen: list[str] = []
+
+    def handler(request):
+        import json
+
+        model = json.loads(request.content)['model']
+        seen.append(model)
+        if model in chain[:2]:
+            return httpx.Response(500, text='gateway rejects this model')  # 前两模型全挂
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'third'}}]})
+
+    out = await _client(handler).complete([{'role': 'user', 'content': 'hi'}])
+    assert out == 'third'
+    assert list(dict.fromkeys(seen)) == chain[:3]  # 按链顺序逐个尝试到第三个
 
 
 @pytest.mark.asyncio

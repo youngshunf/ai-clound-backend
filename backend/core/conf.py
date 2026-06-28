@@ -423,6 +423,12 @@ class Settings(BaseSettings):
     # （例如 `LLM_DEFAULT_MODEL='qwen-max'`）。后续若要按用户级别
     # 区分模型，可在 user 表加 `llm_model` 列让该值优先覆盖。
     LLM_DEFAULT_MODEL: str = 'gpt-5.5'
+    # 云端后端**内部** LLM 任务（owner 记忆合并 / 画像完整度判定 / 翻译 / 获客提取 等，
+    # 统一经 backend.common.llm.llm_client）的默认 **failover 模型链**：逐模型自动切换，
+    # 前一个失败/空回退下一个，整条穷尽才算失败。区别于上面的 `LLM_DEFAULT_MODEL`
+    # （那个透传给 hermes 作 **agent 运行时**默认模型，不是后端自身任务）。
+    # 可经 .env 覆盖（JSON 数组，如 `LLM_DEFAULT_MODELS='["m1","m2"]'`）。
+    LLM_DEFAULT_MODELS: list[str] = ['deepseek-v4-flash', 'deepseek-v4-pro', 'qwen3.7-plus']
     # LiteLLM 调试模式（生产环境建议关闭）
     LITELLM_DEBUG: bool = False
 
