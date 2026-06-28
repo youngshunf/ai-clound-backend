@@ -42,6 +42,7 @@ class _Agent:
     skills: dict[str, Any] | None = field(default_factory=lambda: {'enabled': ['chat']})
     soul_md: str | None = '# SOUL'
     user_md: str | None = '# USER'
+    memory_md: str | None = '# MEMORY'
     profile_revision: int = 3
     status: str = 'active'
     created_via: str = 'client'
@@ -154,3 +155,63 @@ async def test_update_profile_persists_disabled_status_and_emits_sync_event() ->
     assert gateway.sync_events == [
         {'owner_id': 'h_owner', 'agent_id': 'a_target', 'event_type': 'agent.updated'}
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_profile_persists_memory_fields_and_bumps_revision() -> None:
+    """doc10 PUT：PATCH soul_md/user_md/memory_md 三段记忆真落库 + bump revision + 回快照携新值。
+
+    记忆 tab「核心人设/主人档案/分身笔记」编辑保存的云端权威写入路径。daemon 据返回快照
+    镜像到本地 MemoryStore（单一事实源），revision 自增触发 runtime 重拉。
+    """
+    from backend.app.hasn.schema.hasn_agents import UpdateAgentProfileRequest
+
+    agent = _Agent(soul_md='# OLD SOUL', user_md='# OLD USER', memory_md='# OLD MEM', profile_revision=3)
+    db = _FakeDB(agent)
+    gateway = _Gateway()
+    service = _service(gateway)
+
+    response = await service.update_profile_cloud_first(
+        db,
+        owner_id='h_owner',
+        hasn_id='a_target',
+        request=UpdateAgentProfileRequest(soul_md='# NEW SOUL', user_md='# NEW USER', memory_md='# NEW MEM'),
+        user_id=100,
+    )
+
+    assert agent.soul_md == '# NEW SOUL'  # 真落库（权威源）
+    assert agent.user_md == '# NEW USER'
+    assert agent.memory_md == '# NEW MEM'
+    assert agent.profile_revision == 4  # bump → daemon WSPUSH/重拉
+    # 回快照携新值，daemon 据此镜像本地 MemoryStore
+    assert response.agent.soul_md == '# NEW SOUL'
+    assert response.agent.user_md == '# NEW USER'
+    assert response.agent.memory_md == '# NEW MEM'
+    assert gateway.sync_events == [
+        {'owner_id': 'h_owner', 'agent_id': 'a_target', 'event_type': 'agent.updated'}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_profile_partial_only_writes_provided_memory_field() -> None:
+    """partial 语义：只传 soul_md（含空串=清空该段）不动 user_md/memory_md。
+
+    记忆 tab 每次只 PUT 一类（soul/user/memory），不得波及其它两段。
+    """
+    from backend.app.hasn.schema.hasn_agents import UpdateAgentProfileRequest
+
+    agent = _Agent(soul_md='# OLD SOUL', user_md='# KEEP USER', memory_md='# KEEP MEM')
+    db = _FakeDB(agent)
+    service = _service(_Gateway())
+
+    await service.update_profile_cloud_first(
+        db,
+        owner_id='h_owner',
+        hasn_id='a_target',
+        request=UpdateAgentProfileRequest(soul_md=''),  # 清空人设
+        user_id=100,
+    )
+
+    assert agent.soul_md == ''  # 空串=清空（键传入即写，与 description/avatar 一致）
+    assert agent.user_md == '# KEEP USER'  # 未传 → 保留云端现值
+    assert agent.memory_md == '# KEEP MEM'  # 未传 → 保留云端现值

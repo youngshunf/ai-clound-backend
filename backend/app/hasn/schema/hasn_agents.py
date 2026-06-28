@@ -184,6 +184,13 @@ class UpdateAgentProfileRequest(SchemaBase):
         None,
         description='Agent 状态/生命周期 (active/disabled/revoked/archived/deleted)',
     )
+    # 记忆三段（doc10 PUT 记忆 tab 编辑保存写云端权威）。owner 在「记忆」tab 编辑
+    # 核心人设 / 主人档案 / 分身笔记 → daemon PATCH 上行 → 云端落库为权威源 →
+    # 回 AgentSnapshot 给 daemon 镜像，profile_revision 自增触发 runtime 重拉。
+    # partial 语义：键传入即写（含空串=清空该段），未传则保留云端现值。
+    soul_md: str | None = Field(None, description='SOUL.md 内容（核心人设）')
+    user_md: str | None = Field(None, description='USER.md 内容（主人档案）')
+    memory_md: str | None = Field(None, description='MEMORY.md 内容（分身自我演化记忆/笔记）')
 
 
 class UpdateAgentProfileResponse(SchemaBase):

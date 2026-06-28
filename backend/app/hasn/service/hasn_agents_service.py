@@ -572,6 +572,15 @@ class HasnAgentProfileService:
             agent.persona_ref = provided['persona_ref']
         if 'status' in provided and provided['status'] is not None:
             agent.status = provided['status']
+        # 记忆三段（doc10 PUT）：owner 在「记忆」tab 编辑保存写云端权威。partial 语义按
+        # `in provided`（键传入即写，含空串=清空该段），与 description/avatar 一致。daemon
+        # 据返回快照镜像到本地 MemoryStore（单一事实源），profile_revision 自增触发重拉。
+        if 'soul_md' in provided:
+            agent.soul_md = provided['soul_md']
+        if 'user_md' in provided:
+            agent.user_md = provided['user_md']
+        if 'memory_md' in provided:
+            agent.memory_md = provided['memory_md']
 
         if hasattr(agent, 'profile_revision'):
             agent.profile_revision = (agent.profile_revision or 1) + 1
