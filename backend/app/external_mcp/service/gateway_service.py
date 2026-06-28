@@ -128,6 +128,10 @@ class ExternalMcpGateway:
         validate_transport_hosting(hosting=hosting, transport=transport, endpoint=endpoint, command=command)
         validate_credential_values(headers, where='headers')
         validate_credential_values(env, where='env')
+        # local_process 禁 system-origin（平台 key 绝不下发设备，doc101 §0.1）——防御性硬闸，
+        # 不依赖调用方 origin 恒为 owner。
+        if hosting == 'local_process' and origin == 'system':
+            raise RegistrationError('local_process 禁止 system-origin（平台 key 绝不下发设备，doc101 §0.1）')
         if origin in {'owner', 'marketplace'} and not owner_hasn_id:
             raise RegistrationError(f'{origin}-origin server 必须指定 owner_hasn_id')
 
@@ -168,15 +172,15 @@ class ExternalMcpGateway:
 
     # ---------- 自省 ----------
 
-    async def _resolve_headers(self, headers: dict[str, Any]) -> dict[str, str]:
-        """把 headers 里的 secret:// 引用解析成明文（仅建连内部用，绝不日志/回显）。
+    async def _resolve_secret_map(self, config_map: dict[str, Any] | None) -> dict[str, str]:
+        """把一个 config map（headers / env）里的 secret:// 引用解析成明文（仅建连内部用，绝不日志/回显）。
 
-        支持**嵌入式**引用：`Authorization: 'Bearer secret://system/qcc/credential'`
-        会把其中的 `secret://...` 段替换成明文 → `Bearer <token>`（不止整值替换）。
+        支持**嵌入式**引用：`Authorization: 'Bearer secret://system/qcc/credential'` 会把其中的
+        `secret://...` 段替换成明文 → `Bearer <token>`（不止整值替换）。非字符串值跳过。
         任一引用解析为 None（未配置/已撤销）→ CREDENTIAL_MISSING（撤销后软挡的实现点）。
         """
         resolved: dict[str, str] = {}
-        for key, value in (headers or {}).items():
+        for key, value in (config_map or {}).items():
             if not isinstance(value, str):
                 continue
             refs = _SECRET_REF_TOKEN.findall(value)
@@ -193,6 +197,46 @@ class ExternalMcpGateway:
                     )
                 out = out.replace(ref, plaintext)
             resolved[str(key)] = out
+        return resolved
+
+    async def _resolve_headers(self, headers: dict[str, Any]) -> dict[str, str]:
+        """remote_service 建连：把 headers 的 secret:// 引用解析成明文（委托 [`_resolve_secret_map`]）。"""
+        return await self._resolve_secret_map(headers)
+
+    async def resolve_env_for_owner(self, *, mcp_id: str, owner_hasn_id: str) -> dict[str, str]:
+        """local_process 建连凭据实时解析（P7-G G3，doc101 §2.1.2）。
+
+        返回该 server 的 `env`，把其中嵌入的 `secret://` 引用解析为明文——**仅此一处把明文下发给 owner
+        自己的 daemon**（owner 解析 owner 自己的密钥是合法使用，非「下发」），注入子进程 env 后即用即弃。
+        明文绝不落审计/日志（只记一条「凭据被设备解析」审计行：owner/mcp_id/时间/键名，无明文值）。
+
+        安全闸（doc101 §0.1）：
+        - 仅 `local_process` 承载（remote_service 凭据由云端建连，绝不下发设备）；
+        - 仅 **非 system-origin**（平台 key 绝不下发设备）；
+        - 仅属本 owner 的 owner/marketplace server（行级隔离）。
+        任一引用未配置/已撤销 → CREDENTIAL_MISSING（撤销后软挡）。
+        """
+        server = await self._get_server(mcp_id)
+        if server is None:
+            raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'server 不存在: {mcp_id}')
+        if server['hosting'] != 'local_process':
+            raise RegistrationError('resolve-env 仅 local_process（remote_service 凭据云端建连，绝不下发设备）')
+        if server['origin'] == 'system':
+            raise McpToolError(
+                McpErrorCode.DIRECT_CALL_DENIED,
+                'system-origin 平台 key 绝不下发设备（local_process 禁 system，doc101 §0.1）',
+            )
+        if server.get('owner_hasn_id') != owner_hasn_id:
+            raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, '无权解析该 server 的凭据（行级隔离）')
+
+        resolved = await self._resolve_secret_map(server.get('env'))
+        # 审计：凭据被设备解析（owner/mcp_id/时间/键名，**无明文值**）。
+        logger.info(
+            'external_mcp resolve-env owner=%s mcp_id=%s keys=%s',
+            owner_hasn_id,
+            mcp_id,
+            sorted((server.get('env') or {}).keys()),
+        )
         return resolved
 
     async def introspect_server(self, mcp_id: str) -> dict[str, Any]:

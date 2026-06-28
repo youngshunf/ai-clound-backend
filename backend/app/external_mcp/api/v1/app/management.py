@@ -72,16 +72,19 @@ async def get_server(request: Request, db: CurrentSession, mcp_id: str = Path(..
     return response_base.success(data=data)
 
 
-@router.post('/servers', summary='[Owner] 注册 remote_service 第三方 MCP（origin=owner）', dependencies=[DependsJwtAuth])
+@router.post('/servers', summary='[Owner] 注册第三方 MCP（remote_service / local_process，origin=owner）', dependencies=[DependsJwtAuth])
 async def register_server(request: Request, db: CurrentSession, obj: RegisterOwnerServerParam) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     server = await external_mcp_gateway.register_server(
         name=obj.name,
-        hosting='remote_service',
+        hosting=obj.hosting,
         transport=obj.transport,
         origin='owner',
         owner_hasn_id=owner_hasn_id,
         endpoint=obj.endpoint,
+        command=obj.command,
+        args=obj.args,
+        env=obj.env,
         display_name=obj.display_name,
         scope='owner',
         risk_level=obj.risk_level,
@@ -106,6 +109,24 @@ async def introspect_server(request: Request, db: CurrentSession, mcp_id: str = 
         raise errors.ForbiddenError(msg='无权自省该 server（仅限自配 server）')
     data = await external_mcp_gateway.introspect_server(mcp_id)
     return response_base.success(data=data)
+
+
+@router.post(
+    '/servers/{mcp_id}/resolve-env',
+    summary='[Owner] 建连时解析 local_process server 的 env 凭据（实时下发本机 daemon）',
+    dependencies=[DependsJwtAuth],
+)
+async def resolve_server_env(request: Request, db: CurrentSession, mcp_id: str = Path(...)) -> ResponseModel:
+    """local_process 建连凭据实时解析（P7-G G3，doc101 §2.1.2）。
+
+    daemon 在 spawn 本机子进程前调本端点，取该 server 的 env 把 `secret://` 引用解析为明文，注入子进程
+    env 后即用即弃。**仅此一处把明文下发给 owner 自己的 daemon**（owner 解析 owner 自己的密钥是合法使用，
+    非「下发」）；明文不落审计/日志。仅 local_process + 非 system-origin + 属本 owner 的 server 可解析。
+    任一引用未配置/已撤销 → CREDENTIAL_MISSING（撤销后软挡）。
+    """
+    owner_hasn_id = await _owner(db, request)
+    env = await external_mcp_gateway.resolve_env_for_owner(mcp_id=mcp_id, owner_hasn_id=owner_hasn_id)
+    return response_base.success(data={'mcp_id': mcp_id, 'env': env})
 
 
 @router.put('/servers/{mcp_id}/credential', summary='[Owner] 写入/轮换 server 凭据（明文不回显）', dependencies=[DependsJwtAuth])
