@@ -232,15 +232,27 @@ async def contribute_owner_memory(
     )
     merged = False
     version: int | None = None
+    merge_deferred = False
+    merge_error: str | None = None
     if accepted.get('accepted'):
         try:
             outcome = await owner_memory_service.merge_owner_memory(db, owner_id=agent.owner_hasn_id)
             merged = bool(outcome.get('merged'))
             version = outcome.get('version')
         except Exception as exc:
+            # 合并失败如实透出（merge_deferred + 原因摘要），让 runtime/分身别误以为已合并、
+            # 也别编造不存在的「后台异步合并」；贡献已入库、留待下次重试（零 fake）。
+            merge_deferred = True
+            merge_error = (str(exc).strip() or exc.__class__.__name__)[:200]
             log.warning(f'owner memory merge deferred for {agent.owner_hasn_id}: {exc}')
     return response_base.success(
-        data=MemoryContributeResponse(accepted=bool(accepted.get('accepted')), merged=merged, version=version)
+        data=MemoryContributeResponse(
+            accepted=bool(accepted.get('accepted')),
+            merged=merged,
+            version=version,
+            merge_deferred=merge_deferred,
+            merge_error=merge_error,
+        )
     )
 
 

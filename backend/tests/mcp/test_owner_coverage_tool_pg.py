@@ -75,15 +75,26 @@ async def test_coverage_get_tool_returns_five_dimensions(session):
         HasnOwnerMemory(owner_id=owner, content='主人画像', version=1, last_merged_time=timezone.now())
     )
     await session.commit()
-    for dim in ('work', 'interests'):
+    # 落齐全 5 维（work/interests 充分，其余 missing），evidence_version 与 owner_memory 版本一致
+    # → assess_if_stale 走快读路径、不触发 LLM 重判，断言确定且不依赖 LLM 可用性（failover 链可用后
+    # assess 会真打模型重判，若只落 2 维会强制重判并覆盖预置行 → 此处落齐 5 维走读路径）。
+    seeded_status = {
+        'work': 'sufficient',
+        'interests': 'sufficient',
+        'residence': 'missing',
+        'goals': 'missing',
+        'life_plan': 'missing',
+    }
+    for dim, status in seeded_status.items():
+        is_sufficient = status == 'sufficient'
         await owner_profile_coverage_dao.upsert(
             session,
             owner_id=owner,
             dimension=dim,
-            status='sufficient',
-            confidence=Decimal('0.8'),
-            summary='ok',
-            missing_hint=None,
+            status=status,
+            confidence=Decimal('0.8') if is_sufficient else Decimal('0'),
+            summary='ok' if is_sufficient else None,
+            missing_hint=None if is_sufficient else 'todo',
             evidence_version=1,
             assessed_time=timezone.now(),
         )
@@ -153,6 +164,60 @@ async def test_memory_contribute_tool_lands_contribution(session):
             delete(HasnOwnerMemoryContribution).where(HasnOwnerMemoryContribution.owner_id == owner)
         )
         await session.execute(delete(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == owner))
+        await session.commit()
+
+
+async def test_memory_contribute_tool_merge_deferred_on_failure(session, monkeypatch):
+    """合并失败时如实透出 merge_deferred + merge_error；贡献仍落库（零 fake，不产生假合并）。
+
+    用 monkeypatch 让 merge_owner_memory 抛错（模拟 LLM 网关挂/余额不足等 infra 失败，不伪造业务
+    数据）——验证工具返回 accepted=True、merged=False、merge_deferred=True、merge_error 非空，
+    且 contribution 仍被持久化（pending，留待后续重试）。
+    """
+    from backend.app.mcp.tools import owner as owner_tool_mod
+
+    owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError('simulated LLM gateway failure')
+
+    monkeypatch.setattr(owner_tool_mod.owner_memory_service, 'merge_owner_memory', _boom)
+    try:
+        tool = OwnerMemoryContributeTool()
+        result = await tool.execute(
+            AgentContext(
+                hasn_id='a_knowu_interviewer',
+                owner_id=0,
+                scopes=[],
+                agent_status='active',
+                metadata={},
+                owner_hasn_id=owner,
+            ),
+            {'content': '主人常驻昆明五华区，注重健康与抗衰老。'},
+        )
+        assert result['accepted'] is True
+        assert result['merged'] is False
+        assert result['merge_deferred'] is True
+        assert isinstance(result['merge_error'], str) and result['merge_error']
+        assert result.get('contribution_id') is not None
+        # 贡献仍落库（pending），合并留待下次
+        rows = list(
+            (
+                await session.execute(
+                    select(HasnOwnerMemoryContribution).where(
+                        HasnOwnerMemoryContribution.owner_id == owner
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].status == 'pending'
+    finally:
+        await session.execute(
+            delete(HasnOwnerMemoryContribution).where(HasnOwnerMemoryContribution.owner_id == owner)
+        )
         await session.commit()
 
 

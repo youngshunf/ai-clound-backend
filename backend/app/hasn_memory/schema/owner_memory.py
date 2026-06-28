@@ -19,11 +19,20 @@ class MemoryContributeRequest(SchemaBase):
 
 
 class MemoryContributeResponse(SchemaBase):
-    """记忆贡献结果（含本轮是否触发合并）。"""
+    """记忆贡献结果（含本轮是否触发合并）。
+
+    诚实约束：观察已收录（accepted=True）但 LLM 合并失败时，``merged=False`` +
+    ``merge_deferred=True`` + ``merge_error`` 给出原因——调用方/分身据此如实告知主人
+    「已记录、合并稍后自动重试」，**禁止编造「后台异步合并完成」之类不存在的机制**。
+    """
 
     accepted: bool = Field(description='是否已接收为待合并贡献')
     merged: bool = Field(default=False, description='本次是否触发了合并')
     version: int | None = Field(None, description='合并后 owner 记忆版本（未合并则 None）')
+    merge_deferred: bool = Field(
+        default=False, description='本次合并失败、贡献留待下次重试（已收录但尚未合并进 owner_memory）'
+    )
+    merge_error: str | None = Field(None, description='合并失败原因摘要（merge_deferred 时给出，否则 None）')
 
 
 class OwnerMemoryResponse(SchemaBase):

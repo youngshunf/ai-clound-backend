@@ -25,6 +25,14 @@ from backend.database.db import async_db_session
 
 NAMESPACE = 'hasn.owner'
 
+_MERGE_ERROR_MAX = 200
+
+
+def _short_merge_error(exc: Exception) -> str:
+    """把合并异常收敛成给分身看的短摘要（截断，避免把整段 traceback/堆栈塞回工具返回）。"""
+    msg = str(exc).strip() or exc.__class__.__name__
+    return msg[:_MERGE_ERROR_MAX]
+
 
 class OwnerCoverageGetTool(BaseTool):
     """读主人 5 维画像完整度（缺什么采访什么）。"""
@@ -92,7 +100,12 @@ class OwnerMemoryContributeTool(BaseTool):
             '「主人近期目标是三个月内通过 PMP 认证」），落 contribution(pending) 并尽力触发一次 owner 级合并'
             '（合并进 owner_memory.content，version+1）。合并成功后再调 hasn.owner.coverage.get 即拿到重判后的'
             '最新缺口（写入→合并→重判闭环）。owner/agent 身份恒取自调用凭证，绝不入参；隐私克制：居住地址只写'
-            '粗粒度（城市/城区级，不写门牌），主人未明说的别替他臆造。返回 {accepted, merged, version}。'
+            '粗粒度（城市/城区级，不写门牌），主人未明说的别替他臆造。'
+            '返回 {accepted, merged, version, merge_deferred, merge_error}：'
+            'merged=true 表示已合并进 owner_memory（version 即新版本）；merged=false 且 merge_deferred=true 表示'
+            '观察已收录但本次合并未成（merge_error 给原因），会自动重试——此时对主人**如实**说「已记下来了，'
+            '正在合并」即可，**绝不能**编造「后台异步合并已完成/稍后翻 sufficient」之类系统里不存在的说法，'
+            '也别声称已合并完成。'
         )
 
     @property
@@ -133,6 +146,8 @@ class OwnerMemoryContributeTool(BaseTool):
             await db.commit()
             merged = False
             version: int | None = None
+            merge_deferred = False
+            merge_error: str | None = None
             try:
                 outcome = await owner_memory_service.merge_owner_memory(db, owner_id=owner_id)
                 merged = bool(outcome.get('merged'))
@@ -140,11 +155,15 @@ class OwnerMemoryContributeTool(BaseTool):
                 await db.commit()
             except Exception as exc:  # noqa: BLE001 — 合并失败不丢贡献，留待下次（零 fake，不产生假合并）
                 await db.rollback()
+                merge_deferred = True
+                merge_error = _short_merge_error(exc)
                 log.warning(f'owner memory merge deferred for {owner_id}: {exc}')
             return {
                 'accepted': True,
                 'merged': merged,
                 'version': version,
+                'merge_deferred': merge_deferred,
+                'merge_error': merge_error,
                 'contribution_id': accepted.get('contribution_id'),
             }
 
