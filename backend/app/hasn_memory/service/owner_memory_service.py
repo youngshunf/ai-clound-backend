@@ -191,6 +191,17 @@ class OwnerMemoryService:
         agents_updated = int(result.rowcount or 0)
         await db.flush()
 
+        # 画像下行 WSPUSH（KIND_AGENTS）：覆盖 user_md + bump profile_revision 后，主动推该 owner
+        # 在线节点「agents 维度变了」→ daemon 收到即全量重拉 agents 镜像（刷新本地 USER.md/SOUL.md）
+        # 并把新 USER.md 写进在线 hermes 工作区，不等下次派发即生效。best-effort：推送失败不拖垮合并
+        # （离线设备靠重连握手 + Runtime 轮询 profile_revision 兜底追平）。
+        try:
+            from backend.app.hasn.service.sync_invalidate_service import KIND_AGENTS, bump_owner
+
+            await bump_owner(KIND_AGENTS, db, owner_id)
+        except Exception as exc:  # 推送 best-effort，不拖垮合并下发
+            log.warning(f'owner memory merge: WSPUSH agents invalidate failed owner={owner_id}: {exc}')
+
         log.info(
             f'owner memory merged: owner={owner_id} version={new_version} '
             f'contributions={len(contribution_ids)} agents_updated={agents_updated}'

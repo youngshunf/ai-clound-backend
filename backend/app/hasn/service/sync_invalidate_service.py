@@ -51,13 +51,20 @@ KIND_PLAN = 'plan'
 # owner 定向：入站门控抑制箱（外部→Agent 被门控的消息记录变更）。daemon 收到即拉 owner 的
 # 抑制箱镜像（含云端门控产出的 social_disabled/permission_denied/agent_frozen/abuse_restricted/manual_only）。
 KIND_SUPPRESSED = 'suppressed'
-OWNER_KINDS = (KIND_TASKS, KIND_PLAN, KIND_SUPPRESSED)
+# owner 定向：该 owner 名下 Agent 画像下行（owner_memory 合并后覆盖各 Agent ``user_md`` + bump
+# ``profile_revision``；或单 Agent 资料编辑）。daemon 收到即全量重拉 agents 镜像（刷新本地
+# agent_memory 的 USER.md/SOUL.md），并主动把新 USER.md 写进在线 hermes 工作区——不等下次派发
+# 即生效（KNOWU 采访完画像秒级下发到运行时）。
+KIND_AGENTS = 'agents'
+OWNER_KINDS = (KIND_TASKS, KIND_PLAN, KIND_SUPPRESSED, KIND_AGENTS)
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
 # 某 owner 规划数据为空时的稳定指纹（同上约定）
 EMPTY_PLAN_REVISION = 'empty'
 # 某 owner 抑制箱为空时的稳定指纹（同上约定）
 EMPTY_SUPPRESSED_REVISION = 'empty'
+# 某 owner 名下无 Agent 时的稳定指纹（同上约定）
+EMPTY_AGENTS_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -169,6 +176,27 @@ async def compute_owner_suppressed_revision(db: AsyncSession, owner_id: str) -> 
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
+async def compute_owner_agents_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 名下 Agent 画像指纹：sha256(sorted "hasn_id@profile_revision" 行)[:16]。
+
+    聚合该 owner 名下全部 Agent，任一 Agent 的 ``profile_revision`` 变（owner_memory 合并下发
+    覆盖 ``user_md`` + bump ``profile_revision``；或单 Agent 资料编辑）或增删行 → 集合内某行指纹变
+    → 整体指纹变。仅作 invalidate 帧的 ``revision`` 字段：daemon 不据此去重、收到即全量重拉该
+    owner 的 agents 镜像并把新 USER.md 下发在线 runtime。
+    """
+    from backend.app.hasn.model.hasn_agents import HasnAgents
+
+    rows = (
+        await db.execute(
+            sa.select(HasnAgents.hasn_id, HasnAgents.profile_revision).where(HasnAgents.owner_id == owner_id)
+        )
+    ).all()
+    lines = sorted(f'{hasn_id}@{revision}' for hasn_id, revision in rows if hasn_id)
+    if not lines:
+        return EMPTY_AGENTS_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
 async def _compute_revision(kind: str, db: AsyncSession) -> str:
     """按 kind 重算权威 revision（直接读各自数据源，不读缓存）。"""
     if kind == KIND_BUILTIN_CATALOG:
@@ -266,6 +294,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_plan_revision(db, owner_id)
     elif kind == KIND_SUPPRESSED:
         rev = await compute_owner_suppressed_revision(db, owner_id)
+    elif kind == KIND_AGENTS:
+        rev = await compute_owner_agents_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 
