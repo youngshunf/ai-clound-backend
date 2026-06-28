@@ -121,7 +121,12 @@ async def set_credential(request: Request, db: CurrentSession, obj: SetCredentia
     return response_base.success(data=data)
 
 
-@router.delete('/servers/{mcp_id}/credential', summary='[Owner] 撤销 server 凭据（撤销后调用软挡）', dependencies=[DependsJwtAuth])
+@router.delete(
+    '/servers/{mcp_id}/credential',
+    summary='[Owner] 撤销 server 凭据（撤销后调用软挡）',
+    name='external_mcp_revoke_credential',
+    dependencies=[DependsJwtAuth],
+)
 async def revoke_credential(request: Request, db: CurrentSession, mcp_id: str = Path(...)) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await external_mcp_gateway.revoke_credential(mcp_id=mcp_id, owner_hasn_id=owner_hasn_id)
