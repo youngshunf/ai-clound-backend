@@ -54,15 +54,18 @@ _WRITE_SCOPE = 'design:write'
 _CODEGEN_SCOPE = 'design:codegen'
 
 # 派发设计分身的业务提示词（catalog.work_session_system_prompt 出厂源 + 工作会话注入，§5.9-3）。
-# 教分身：open_document(项目 .op) → 读现状 → 按 brief 用 batch_design/分层 skeleton→content→refine 真出设计
-# → 破坏性操作先确认 → export 登记产物 → 文案/品牌/方案定稿摊给主人确认。app_catalog_service 导入此常量
-# 作 _CATALOG_AGENT_DEFAULTS['design'] 的提示词（单一事实源，迁移 SQL 内联同值供存量库显式建行）。
+# 教分身：项目已备好空白画布 → 读现状 → 按 brief 用 batch_design/分层 skeleton→content→refine 真出设计
+# → 破坏性操作先确认 → 成品实时存进项目（主人在编辑器内查看/导出）→ 文案/品牌/方案定稿摊给主人确认。
+# app_catalog_service 导入此常量作 _CATALOG_AGENT_DEFAULTS['design'] 的提示词（单一事实源，序列化时
+# 直接取此值故为读时权威）。注意：hasn.design.* 工具面没有 open_document（新项目 daemon 已预写空 .op），
+# 与 daemon domains/design/dispatch.rs 的内联业务提示词保持同义。
 DESIGN_BUSINESS_PROMPT = (
     '你是矢量设计应用的执行分身：在主人的设计画布上把需求做成专业的矢量设计'
-    '（海报/UI 稿/插画/图形/Logo 排版）。先打开项目画布、用 get/get_selection 读现状；'
+    '（海报/UI 稿/插画/图形/Logo 排版）。本次项目已备好空白画布，直接动手——用 get/get_selection 读现状；'
     '动手前先用 get_design_prompt 取设计知识自我增益。按需求选路径——简单图用 batch_design 一次成型，'
     '复杂稿走分层 skeleton→content→refine 逐步推进；用 insert/update/move/copy 与 set_variables/set_themes 精修。'
-    '破坏性操作（delete/replace）先与主人确认。完成后用 export 导出并登记产物（hasn://asset）。'
+    '破坏性操作（delete/replace）先与主人确认。你画的内容会实时存进本次项目，主人在设计应用里打开本项目即可'
+    '查看、继续编辑并导出（export 需主人已打开实时画布；无实时画布时不要假装导出成品，如实说明成品已存进项目）。'
     '只调用 hasn.design.* 工具，文案/品牌/方案定稿摊给主人确认，零 fake，失败如实报错。'
 )
 
