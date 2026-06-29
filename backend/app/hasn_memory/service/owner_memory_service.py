@@ -14,6 +14,8 @@ ADR-15 收编：本 service 从 `app/hasn/service/owner_memory_service.py` 迁�
 
 from __future__ import annotations
 
+import re
+
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -22,7 +24,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
 from backend.common.log import log
 from backend.database.db import async_db_session
@@ -110,6 +112,19 @@ class OwnerMemoryService:
         ]
         return {'items': items, 'pending_count': int(pending_count or 0)}
 
+    async def _existing_user_md(self, db: AsyncSession, *, owner_id: str) -> str:
+        """取该 owner 现有 USER.md 作首次合并基线：选最完整（最长非空）的一份。
+
+        同一 owner 的各 Agent 在建档时 user_md 都是同一份 USER.md 模板（含 称呼/Owner HASN ID
+        身份行）；取最长一份即可拿到含身份与已积累事实的基线，喂给 LLM 防止初始化信息被抹掉。
+        """
+        rows = (
+            await db.execute(sa.select(HasnAgents.user_md).where(HasnAgents.owner_id == owner_id))
+        ).scalars().all()
+        candidates = [(r or '').strip() for r in rows]
+        candidates = [c for c in candidates if c]
+        return max(candidates, key=len) if candidates else ''
+
     async def merge_owner_memory(
         self, db: AsyncSession, *, owner_id: str, llm_complete: LlmComplete | None = None
     ) -> dict[str, Any]:
@@ -139,13 +154,26 @@ class OwnerMemoryService:
         existing = (
             await db.execute(sa.select(HasnOwnerMemory).where(HasnOwnerMemory.owner_id == owner_id).limit(1))
         ).scalar_one_or_none()
+        # 合并基线 = 现有 owner_memory；首次合并时它还是空的，此时回退到该 owner 现有 USER.md
+        # （主人档案，含建档身份行 称呼/Owner HASN ID 与已积累事实）作基线喂给 LLM。否则 LLM 仅凭
+        # 新观察重写 user_md，会把昵称/HASN_ID 等初始化信息整段抹掉（本次修复的数据丢失 bug）。
         current_content = existing.content if existing and existing.content else ''
+        if not current_content:
+            current_content = await self._existing_user_md(db, owner_id=owner_id)
         observations = [c.content.strip() for c in pending if c.content and c.content.strip()]
 
         complete = llm_complete or _default_llm_complete
         merged_content = (await complete(_merge_messages(current_content, observations))).strip()
         if not merged_content:
             raise ValueError('owner memory merge produced empty content')
+
+        # 身份兜底：LLM 合并仍可能漏掉建档身份事实（称呼/Owner HASN ID）。从权威来源
+        # （HasnHumans.nickname + owner_id）补回，确保主人昵称/HASN_ID 永不因合并丢失；
+        # 对已被旧逻辑抹掉身份的存量 owner，下一次合并即自动补回（自愈）。
+        nickname = (
+            await db.execute(sa.select(HasnHumans.nickname).where(HasnHumans.hasn_id == owner_id).limit(1))
+        ).scalar_one_or_none()
+        merged_content = _ensure_identity_lines(merged_content, nickname=nickname or '', owner_id=owner_id)
 
         now = timezone.now()
         new_version = (int(existing.version) if existing else 0) + 1
@@ -262,7 +290,7 @@ class OwnerMemoryService:
                 else:
                     # 候选时有 pending，到合并时已无（同步内联抢先处理）——非失败，正常竞态。
                     summary['no_pending'] += 1
-            except Exception as exc:  # noqa: BLE001 — 单 owner 合并失败不影响其余，留待下轮（零 fake）
+            except Exception as exc:  # noqa: PERF203 — 每个 owner 独立 try：单 owner 合并失败不得拖垮其余
                 summary['failed'] += 1
                 log.warning(f'owner memory sweep retry failed for {owner_id}: {exc}')
         return summary
@@ -277,23 +305,53 @@ def _merge_messages(current: str, observations: list[str]) -> list[dict[str, str
                 '你负责维护一个人（主人）的个人记忆档案 USER.md，供其多个 AI 分身共享；'
                 '该文件由 Hermes 记忆工具按 § 分隔读写，不是普通 Markdown。'
                 '把新观察合并进现有档案：去重、消解冲突（新观察更可信）、保持事实、简洁、可长期复用。'
+                '\n【最高优先·绝不丢失】现有档案是增量演进的，不是重写：'
+                '\n- 必须保留现有档案里已有的全部事实，尤其是主人身份与建档信息——'
+                '「称呼/昵称」「Owner HASN ID」等建档身份行无论如何都要原样保留，绝不能删除或改写；'
+                '\n- 新观察只用于「新增事实」或「更新已有事实」，不得作为「丢弃现有事实」的理由；'
+                '\n- 若现有档案里有占位提示（如「待补充」「待观察」），用真实观察替换它；没有真实观察时保留占位。'
                 '\n输出格式（必须严格遵守）：'
                 '\n- 每条事实独占一段，尽量用「要点: 内容」一行表达；'
                 '\n- 段与段之间用单独一行的 § 分隔（即换行、§、换行）；'
                 '\n- 不要用 Markdown 标题(#)/列表符号(- )、不要代码围栏、不要任何解释；'
-                '\n- 总长控制在 1300 字符以内。'
+                '\n- 总长控制在 1300 字符以内（身份行优先保留，超长时压缩描述类内容而非删身份）。'
                 '\n只输出合并后的 USER.md 正文。'
             ),
         },
         {
             'role': 'user',
             'content': (
-                f'现有 USER.md（§ 记录格式）：\n{current or "(空)"}\n\n'
-                f'各分身上传的新观察（合并进来）：\n{joined}\n\n'
-                '返回更新后的 USER.md（仍用 § 记录格式）：'
+                f'现有 USER.md（§ 记录格式，须整体保留其事实，尤其身份行）：\n{current or "(空)"}\n\n'
+                f'各分身上传的新观察（合并进来，只增不删）：\n{joined}\n\n'
+                '返回更新后的 USER.md（仍用 § 记录格式，且包含现有档案中的全部身份/事实）：'
             ),
         },
     ]
+
+
+# 匹配建档身份行：行首「称呼:/昵称:」（半/全角冒号）。用于判断 LLM 合并结果是否已含身份。
+_NICKNAME_LABEL_RE = re.compile(r'(?m)^\s*(?:称呼|昵称)\s*[:：]')
+
+
+def _ensure_identity_lines(content: str, *, nickname: str, owner_id: str) -> str:
+    """确保合并结果含主人身份行（称呼 / Owner HASN ID），缺则从权威来源补回。
+
+    LLM 合并可能漏掉建档身份事实（历史上甚至把它整段抹掉）。这里以 HasnHumans.nickname 与
+    owner_id 为权威，把缺失的身份行补到档案最前面，确保主人昵称/HASN_ID 永不因合并丢失——
+    对已被旧逻辑抹掉身份的存量 owner，下一次合并即自愈。纯函数（不碰 DB），便于单测。
+    """
+    text = (content or '').strip()
+    prepend: list[str] = []
+    nick = (nickname or '').strip()
+    if nick and not _NICKNAME_LABEL_RE.search(text):
+        prepend.append(f'称呼: {nick}')
+    oid = (owner_id or '').strip()
+    if oid and oid not in text:
+        prepend.append(f'Owner HASN ID: {oid}')
+    if not prepend:
+        return text
+    head = '\n§\n'.join(prepend)
+    return f'{head}\n§\n{text}' if text else head
 
 
 def _estimate_tokens(text: str) -> int:

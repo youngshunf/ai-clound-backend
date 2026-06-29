@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 import pytest_asyncio
@@ -32,6 +32,8 @@ from backend.utils.timezone import timezone
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -41,7 +43,7 @@ async def session() -> AsyncIterator:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -56,7 +58,7 @@ async def session() -> AsyncIterator:
         await async_engine.dispose()
 
 
-async def _seed_pending(session, owner_id: str, *, content: str, age_seconds: int) -> int:
+async def _seed_pending(session: AsyncSession, owner_id: str, *, content: str, age_seconds: int) -> int:
     """落一条 pending contribution 并把 created_time 老化 age_seconds 秒（created_time 为 init=False，
     不能构造时传，故插入后 UPDATE 老化）。返回 contribution id。"""
     row = HasnOwnerMemoryContribution(
@@ -75,7 +77,7 @@ async def _seed_pending(session, owner_id: str, *, content: str, age_seconds: in
     return cid
 
 
-async def _cleanup(session, owner_id: str) -> None:
+async def _cleanup(session: AsyncSession, owner_id: str) -> None:
     await session.execute(
         delete(HasnOwnerMemoryContribution).where(HasnOwnerMemoryContribution.owner_id == owner_id)
     )
@@ -83,12 +85,12 @@ async def _cleanup(session, owner_id: str) -> None:
     await session.commit()
 
 
-async def test_sweep_merges_stranded_pending(session):
+async def test_sweep_merges_stranded_pending(session: AsyncSession) -> None:
     """滞留 pending（已超 min_age）被 sweep 重跑合并：contribution 翻 merged + owner_memory version+1。"""
     owner = f'h_sweep_{uuid.uuid4().hex[:8]}'
     cid = await _seed_pending(session, owner, content='主人常驻昆明，注重健康抗衰老。', age_seconds=300)
 
-    async def _merge_ok(_messages):
+    async def _merge_ok(_messages: list[dict[str, str]]) -> str:  # noqa: RUF029 — 须 async 以匹配 llm_complete Awaitable 协议
         return '健康: 主人注重健康与抗衰老\n§\n居住: 主人常驻昆明'
 
     try:
@@ -111,16 +113,20 @@ async def test_sweep_merges_stranded_pending(session):
         ).scalar_one()
         assert mem.version == 1
         assert mem.content and '抗衰老' in mem.content
+        # 身份兜底：_merge_ok 故意没返回 HASN ID，合并下发前应自动补回 Owner HASN ID（owner_id）——
+        # 这是「合并抹掉主人 HASN_ID 等建档身份」数据丢失 bug 的回归守卫，走真实 PG 合并路径。
+        assert 'Owner HASN ID' in mem.content
+        assert owner in mem.content
     finally:
         await _cleanup(session, owner)
 
 
-async def test_sweep_skips_fresh_pending(session):
+async def test_sweep_skips_fresh_pending(session: AsyncSession) -> None:
     """刚 contribute 的新 pending（未超 min_age）不被 sweep 抢——避开同步内联热路径双合并。"""
     owner = f'h_sweep_{uuid.uuid4().hex[:8]}'
     cid = await _seed_pending(session, owner, content='主人喜欢登山。', age_seconds=5)
 
-    async def _merge_should_not_run(_messages):
+    async def _merge_should_not_run(_messages: list[dict[str, str]]) -> NoReturn:  # noqa: RUF029 — 须 async 以匹配 llm_complete Awaitable 协议
         raise AssertionError('新鲜 pending 不应被 sweep 触发合并')
 
     try:
@@ -142,12 +148,12 @@ async def test_sweep_skips_fresh_pending(session):
         await _cleanup(session, owner)
 
 
-async def test_sweep_merge_failure_keeps_pending(session):
+async def test_sweep_merge_failure_keeps_pending(session: AsyncSession) -> None:
     """合并失败（LLM 仍挂）：summary.failed 计入、contribution 留 pending、无假合并。"""
     owner = f'h_sweep_{uuid.uuid4().hex[:8]}'
     cid = await _seed_pending(session, owner, content='主人在深圳南山工作。', age_seconds=300)
 
-    async def _merge_boom(_messages):
+    async def _merge_boom(_messages: list[dict[str, str]]) -> NoReturn:  # noqa: RUF029 — 须 async 以匹配 llm_complete Awaitable 协议
         raise RuntimeError('simulated LLM gateway failure')
 
     try:
