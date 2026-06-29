@@ -12,18 +12,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from backend.app.hasn_knowledge.service import tool_handlers
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-
-if TYPE_CHECKING:
-    from backend.common.dataclasses import AgentTokenPayload
-    from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

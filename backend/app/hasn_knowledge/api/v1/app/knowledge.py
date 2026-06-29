@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, Query, Request, UploadFile
@@ -22,9 +22,7 @@ from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderE
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-
-if TYPE_CHECKING:
-    from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

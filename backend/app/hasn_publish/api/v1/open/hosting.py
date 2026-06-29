@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import html
 
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -28,10 +28,8 @@ from pydantic import BaseModel, Field
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.core.conf import settings
+from backend.database.db import CurrentSession
 from backend.database.redis import redis_client
-
-if TYPE_CHECKING:
-    from backend.database.db import CurrentSession
 
 router = APIRouter()
 

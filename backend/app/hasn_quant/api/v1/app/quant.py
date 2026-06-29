@@ -16,20 +16,16 @@ HTTP 仍 200（传输成功、业务态在 data.status/data.error 里），零 f
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from fastapi import APIRouter, Request
 
 from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
 from backend.app.hasn_quant.provider import quant_engine_provider
+from backend.app.hasn_quant.schema.owner import SaveStrategyParam, SubmitBacktestParam
 from backend.app.hasn_quant.service.quant_service import quant_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-
-if TYPE_CHECKING:
-    from backend.app.hasn_quant.schema.owner import SaveStrategyParam, SubmitBacktestParam
-    from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
