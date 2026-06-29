@@ -155,6 +155,36 @@ def test_skeleton_rejects_new_chart_and_anime() -> None:
     assert anime is not None and 'anime(...)' in anime
 
 
+def test_skeleton_rejects_chart_without_fixed_height() -> None:
+    """canvas + PPT.createChart 但无固定高度容器 → 大概率渲染空白，硬拒（与 daemon 同口径）。"""
+    bad = validate_page_skeleton(
+        '<div class="flex-1 w-full"><canvas id="c"></canvas></div>'
+        "<script>PPT.createChart(document.getElementById('c'), {});</script>"
+    )
+    assert bad is not None and '固定像素高度' in bad
+
+    # 各种固定高度写法均应放行。
+    for ok in (
+        '<div class="h-[300px]"><canvas id="c"></canvas></div><script>PPT.createChart(\'#c\', {});</script>',
+        '<div class="h-64"><canvas id="c"></canvas></div><script>PPT.createChart(\'#c\', {});</script>',
+        '<div class="md:h-80"><canvas id="c"></canvas></div><script>PPT.createChart(\'#c\', {});</script>',
+        '<div class="aspect-video"><canvas id="c"></canvas></div><script>PPT.createChart(\'#c\', {});</script>',
+        '<div style="height:300px"><canvas id="c"></canvas></div><script>PPT.createChart(\'#c\', {});</script>',
+        '<div><canvas id="c" height="300"></canvas></div><script>PPT.createChart(\'#c\', {});</script>',
+    ):
+        assert validate_page_skeleton(ok) is None, f'应放行固定高度图表：{ok}'
+
+    # min-h-[300px] 不撑高 Chart.js → 仍应被拒。
+    only_min = validate_page_skeleton(
+        '<div class="min-h-[300px]"><canvas id="c"></canvas></div>'
+        "<script>PPT.createChart('#c', {});</script>"
+    )
+    assert only_min is not None and '固定像素高度' in only_min
+
+    # 装饰性 canvas（无 PPT.createChart）不强制高度。
+    assert validate_page_skeleton('<div class="flex-1"><canvas id="deco"></canvas></div>') is None
+
+
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio(loop_scope='module')
 async def test_deck_lifecycle_roundtrip_real_db() -> None:

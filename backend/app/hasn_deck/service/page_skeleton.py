@@ -129,6 +129,75 @@ def _has_new_chart(lower: str) -> bool:
     return False
 
 
+def _has_fixed_chart_height(lower: str, compact: str) -> bool:  # noqa: C901 — 多分支固定高度扫描，刻意保持线性以逐条比对 daemon
+    """片段是否存在「固定高度」信号，供图表父容器使用（粗粒度，宁可漏报不可误报）。
+
+    Chart.js（PPT.createChart）responsive 模式按父容器高度初始化；父容器若为
+    flex-1 / h-full / 仅百分比 / 仅 min-height 会量到约 0 高 → 导出/截图渲染空白。
+    本 helper 判断片段里是否出现任一固定高度写法：aspect 比例类、Tailwind `h-[..px/rem/vh..]`
+    任意值、Tailwind `h-<数字>` 固定档、inline `height:<数字>`、或 `height=` 属性。
+    """
+    n = len(lower)
+    m = len(compact)
+
+    # 1) aspect 比例类（aspect-video / aspect-square / aspect-[16/9]）——由宽度推高度。
+    start = 0
+    while True:
+        pos = lower.find('aspect-', start)
+        if pos < 0:
+            break
+        if _is_name_boundary_char(lower[pos - 1] if pos > 0 else None):
+            return True
+        start = pos + len('aspect-')
+
+    # 2) Tailwind 任意值高度 h-[...]，括号内含长度单位（排除 min-h-[/max-h-[）。
+    start = 0
+    while True:
+        pos = lower.find('h-[', start)
+        if pos < 0:
+            break
+        before = lower[:pos]
+        if not (before.endswith(('min-', 'max-'))):
+            end = lower.find(']', pos)
+            if end >= 0 and any(u in lower[pos + 3:end] for u in ('px', 'rem', 'vh', 'vmin', 'vmax', 'em')):
+                return True
+        start = pos + 3
+
+    # 3) Tailwind 固定档高度 h-<数字>（h-64 等；排除 min-h-/max-h-：h 前须为名字边界，`-` 非边界）。
+    start = 0
+    while True:
+        pos = lower.find('h-', start)
+        if pos < 0:
+            break
+        after = pos + 2
+        if (
+            after < n
+            and lower[after].isascii()
+            and lower[after].isdigit()
+            and _is_name_boundary_char(lower[pos - 1] if pos > 0 else None)
+        ):
+            return True
+        start = after
+
+    # 4) inline height:<数字> 或 height=<数字> 属性（排除 min-/max-/line-height）。
+    for marker in ('height:', 'height='):
+        start = 0
+        while True:
+            pos = compact.find(marker, start)
+            if pos < 0:
+                break
+            before = compact[:pos]
+            if not (before.endswith(('min-', 'max-', 'line-'))):
+                after = pos + len(marker)
+                while after < m and compact[after] in '"\'':
+                    after += 1
+                if after < m and compact[after].isascii() and compact[after].isdigit():
+                    return True
+            start = pos + len(marker)
+
+    return False
+
+
 def _has_anime_member(lower: str) -> bool:
     """`anime.` 成员访问（前一个字符非标识符字符）。"""
     start = 0
@@ -278,6 +347,14 @@ def validate_page_skeleton(html: str) -> str | None:  # noqa: C901 — 忠实移
     # ⑤ 图表：必须 `PPT.createChart`，禁直接 `new Chart(`。
     if _has_new_chart(lower):
         errors.append('检测到 new Chart(...)，请改为 PPT.createChart(canvasOrSelector, config)')
+
+    # ⑤b 图表容器高度：有 <canvas> + PPT.createChart 却无任何固定高度信号 → 大概率渲染空白。
+    if _has_open_tag(lower, 'canvas') and 'ppt.createchart' in lower and not _has_fixed_chart_height(lower, compact):
+        errors.append(
+            '检测到 PPT.createChart 但未发现固定像素高度的图表容器：Chart.js 按父容器高度初始化，'
+            '父容器为 flex-1/h-full/仅百分比/仅 min-height 时量到约 0 高而渲染空白（导出/截图尤甚）；'
+            '请给图表父容器固定像素高（如 class="h-[300px]"）或用 aspect 比例类，简单图表也可改用纯 CSS'
+        )
 
     # ⑥ 动画：必须 `PPT.animate(targets, params)`。
     if _call_positions(lower, 'anime'):

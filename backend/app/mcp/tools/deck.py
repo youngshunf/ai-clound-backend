@@ -201,6 +201,17 @@ async def _h_style_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 # ── schema 片段 ────────────────────────────────────────────────────────────────────
 _DECK_ID = {'deck_id': {'type': 'string', 'minLength': 1}}
+# 单页 HTML 字段说明（带硬规则，避免「通过校验却渲染空白」的常见坑）。服务端做骨架硬校验。
+_HTML_DESC = (
+    '单页 16:9 创意 HTML 片段（只传主体；引擎自动包骨架并注入 Tailwind/Chart.js/anime.js/PPT 运行时——'
+    '勿传 <html>/<head>/<body>/<script src>/<link>/@font-face/完整文档）。'
+    '图表：用 PPT.createChart(canvasOrSelector, config)，禁直接 new Chart()；'
+    '且图表父容器必须有固定像素高（如 class="h-[300px]" 或 aspect 比例类）——'
+    'flex-1/h-full/仅百分比/仅 min-height 会被量到约 0 高而渲染空白（导出/截图尤甚）；'
+    '简单条形/占比图优先用纯 CSS（flex 高度比例）更稳。'
+    '动画用 PPT.animate(targets, params)；初始态必须可见'
+    '（入场用 opacity:[0,1] 等参数，勿用 opacity-0/visibility:hidden 作默认）。'
+)
 # outline item / page item 细校验留给服务端（与本地 hasn-mcp 一致，宽松对象）。
 _OUTLINE_ITEM = {'type': 'object', 'description': 'OutlineItem（title/layout_intent/... 由服务端宽松接收）'}
 _PAGE_ITEM = {
@@ -208,7 +219,7 @@ _PAGE_ITEM = {
     'properties': {
         'position': {'type': 'integer', 'minimum': 0},
         'title': {'type': ['string', 'null']},
-        'html': {'type': 'string', 'minLength': 1},
+        'html': {'type': 'string', 'minLength': 1, 'description': _HTML_DESC},
         'notes': {'type': ['string', 'null']},
     },
     'required': ['position', 'html'],
@@ -285,7 +296,7 @@ _SPECS: list[dict[str, Any]] = [
             'properties': {
                 **_DECK_ID,
                 'position': {'type': 'integer', 'minimum': 0},
-                'html': {'type': 'string', 'minLength': 1},
+                'html': {'type': 'string', 'minLength': 1, 'description': _HTML_DESC},
                 'title': {'type': ['string', 'null']},
                 'notes': {'type': ['string', 'null']},
             },
@@ -302,7 +313,7 @@ _SPECS: list[dict[str, Any]] = [
             'properties': {
                 **_DECK_ID,
                 'page_id': {'type': 'string', 'minLength': 1},
-                'html': {'type': ['string', 'null']},
+                'html': {'type': ['string', 'null'], 'description': _HTML_DESC},
                 'title': {'type': ['string', 'null']},
                 'notes': {'type': ['string', 'null']},
             },
