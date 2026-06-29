@@ -14,33 +14,31 @@ active_enterprise → 角色裁剪）。一律返回统一信封（ResponseModel
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
 
+from backend.app.hasn_creator.schema.owner import (
+    AddAccountParam,
+    CreateContentParam,
+    CreateProjectParam,
+    LogCompetitorParam,
+    LogInsightParam,
+    MarkPublishedParam,
+    ReassignProjectParam,
+    SaveStageParam,
+    SetProfileParam,
+    SubmitPublishParam,
+    SuggestTopicsParam,
+    UpdateContentParam,
+    UpdateMetricsParam,
+    UpdateProjectParam,
+)
 from backend.app.hasn_creator.service.creator_service import creator_service
 from backend.app.hasn_creator.service.scope_context import resolve_creator_scope
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-
-if TYPE_CHECKING:
-    from backend.app.hasn_creator.schema.owner import (
-        AddAccountParam,
-        CreateContentParam,
-        CreateProjectParam,
-        LogCompetitorParam,
-        LogInsightParam,
-        MarkPublishedParam,
-        ReassignProjectParam,
-        SaveStageParam,
-        SetProfileParam,
-        SubmitPublishParam,
-        SuggestTopicsParam,
-        UpdateContentParam,
-        UpdateMetricsParam,
-        UpdateProjectParam,
-    )
-    from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

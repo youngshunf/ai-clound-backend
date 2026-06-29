@@ -143,3 +143,34 @@ def test_no_stale_baseline() -> None:
         '以下基线条目已不再是非信封路由（可能已迁到信封或路由变更），请从 '
         'KNOWN_NON_ENVELOPE 删除：\n' + '\n'.join(f'  - {k}' for k in sorted(stale))
     )
+
+
+# DB 会话名永远是依赖（Depends）而非 query 参数。若某 handler 把
+# `CurrentSession`/`CurrentSessionTransaction` 这类携带 Depends 的类型别名
+# 仅放在 `if TYPE_CHECKING:` 块里，叠加文件头的 `from __future__ import annotations`，
+# FastAPI 运行期解析不到该前向引用 → 丢失内嵌的 Depends → `db` 参数退化成
+# **必填 query 参数** → 写入端点 422 {loc:[query,db]}（2026-06-29 知识库新建文档、
+# 创作 creator.py 28 路由皆此）。`db`/`session` 绝不可能是合法 query 名，故钉死该回归。
+_SESSION_PARAM_NAMES = {'db', 'session'}
+
+
+def test_db_session_never_leaks_as_query_param() -> None:
+    """DB 会话依赖必须解析为 Depends；若泄漏成 query 参数 = 丢了 Depends（见上注释）。"""
+    router = build_final_router()
+    leaks: list[str] = []
+    for route in router.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for param in route.dependant.query_params:
+            if param.name in _SESSION_PARAM_NAMES:
+                methods = ','.join(sorted(route.methods - {'HEAD', 'OPTIONS'}))
+                leaks.append(f'{methods} {route.path} -> query "{param.name}"')
+    assert not leaks, (
+        'DB 会话依赖泄漏成了必填 query 参数（FastAPI 运行期解析不到 Depends）。\n'
+        '根因：handler 用的 CurrentSession/CurrentSessionTransaction 仅在 '
+        '`if TYPE_CHECKING:` 下 import，叠加 `from __future__ import annotations`，\n'
+        '运行期前向引用解析失败 → 丢 Depends → db 退化为 query 参数 → 写入端点 422。\n'
+        '修法：把这些携带 Depends 的类型别名（及用于参数注解的 *Param/AgentTokenPayload 等）'
+        '改为运行期顶层 import。受影响路由：\n'
+        + '\n'.join(f'  - {k}' for k in sorted(leaks))
+    )
