@@ -143,6 +143,7 @@ _FULL = {
     'memory_enabled': False,
     'user_profile_enabled': True,
     'timezone': 'America/New_York',
+    'a2a_max_turns': 12,
 }
 
 
@@ -157,6 +158,7 @@ async def test_get_default_is_all_none(e2e):
     assert cfg['memory_enabled'] is None
     assert cfg['user_profile_enabled'] is None
     assert cfg['timezone'] is None
+    assert cfg['a2a_max_turns'] is None
 
 
 async def test_put_persists_bumps_revision_and_provisions(e2e):
@@ -171,6 +173,7 @@ async def test_put_persists_bumps_revision_and_provisions(e2e):
     assert cfg['memory_enabled'] is False
     assert cfg['user_profile_enabled'] is True
     assert cfg['timezone'] == 'America/New_York'
+    assert cfg['a2a_max_turns'] == 12
 
     # 2) GET 回读一致（持久化）
     r2 = await _get_config(e2e.client, e2e.agent1)
@@ -182,6 +185,7 @@ async def test_put_persists_bumps_revision_and_provisions(e2e):
     ).scalar_one()
     assert row.profile_revision == 6
     assert row.runtime_config_json['max_turns'] == 80
+    assert row.runtime_config_json['a2a_max_turns'] == 12
 
     prof = await e2e.client.get('/api/v1/hasn/agent/profile')
     assert prof.status_code == 200, prof.text

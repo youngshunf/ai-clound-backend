@@ -222,6 +222,12 @@ class AgentRuntimeConfig(SchemaBase):
     memory_enabled: bool | None = Field(None, description='长期记忆系统开关（空=默认开）')
     user_profile_enabled: bool | None = Field(None, description='主人画像注入开关（空=默认开）')
     timezone: str | None = Field(None, max_length=64, description='agent 执行时区（空=默认 Asia/Shanghai）')
+    a2a_max_turns: int | None = Field(
+        None,
+        ge=1,
+        le=100,
+        description='A2A 连续自动往返硬上限（分身↔分身互发到此轮数自动暂停并通知主人续聊；空=默认 10）',
+    )
 
 
 class GetAgentRuntimeConfigResponse(SchemaBase):
