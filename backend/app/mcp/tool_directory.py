@@ -191,8 +191,21 @@ class ToolDirectoryService:
         if query in {'platform', 'app', 'local', 'external'}:
             return [tool for tool in source_filtered if self._source_for_tool(tool) == query]
 
+        # 模糊搜索：整串子串命中给强权重，再按「命中了几个词」加分。
+        # 这样多词自然语言 query（如 "finance market quote"）不再因整串匹配不到而返回空，
+        # 而是返回命中任一词的工具、命中词更多的排更前。单词 query 行为不变（所有命中者
+        # 同分→稳定排序保持注册顺序，命中集与旧实现一致）。
         lowered = query.lower()
-        return [tool for tool in source_filtered if lowered in tool.name.lower() or lowered in tool.description.lower()]
+        terms = lowered.split()
+
+        def _relevance(tool: BaseTool) -> int:
+            haystack = f'{tool.name}\n{tool.description}'.lower()
+            score = 10 if lowered in haystack else 0
+            score += sum(1 for term in terms if term in haystack)
+            return score
+
+        scored = ((tool, _relevance(tool)) for tool in source_filtered)
+        return [tool for tool, score in sorted(scored, key=lambda pair: -pair[1]) if score > 0]
 
     def _source_index(self, tools: list[BaseTool]) -> list[dict[str, Any]]:
         source_counts: dict[tuple[str, str], int] = {}
