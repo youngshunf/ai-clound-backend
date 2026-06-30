@@ -10,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_sessions import hasn_sessions_dao
 from backend.app.hasn.model import HasnSessions
+from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.schema.hasn_sessions import (
     CreateHasnSessionsParam,
     DeleteHasnSessionsParam,
     UpdateHasnSessionsParam,
 )
-from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.service.hasn_conversations_service import hasn_conversations_service
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
@@ -561,7 +561,79 @@ def _projection_content_json(
     }
 
 
+_DECK_ORIGIN_PREFIX = 'resource:deck:'
+
+
+def _deck_id_from_origin_ref(origin_ref: str | None) -> str | None:
+    """从工作会话 origin_ref 解析 deck_id：`resource:deck:{id}` → id；其它/空 → None。
+
+    解析出的 id 即 webui `hasn://deck/{id}` 可解析的那个（daemon 本地 deck id 经 origin_ref
+    透传上来），据此拼的深链对端能点开。
+    """
+    if not origin_ref or not origin_ref.startswith(_DECK_ORIGIN_PREFIX):
+        return None
+    deck_id = origin_ref[len(_DECK_ORIGIN_PREFIX) :].strip()
+    return deck_id or None
+
+
+def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[str, Any]) -> dict[str, Any]:
+    """演示文稿工作会话完成 → 给主人发的「打开演示文稿」卡（云端权威组卡）。
+
+    分身不再自己发卡：完成投影据 origin_ref 认出 deck 会话并统一组装本卡，杜绝「发错/忘发」。
+    深链 `hasn://deck/{deck_id}`（deck_id 取自 origin_ref，webui 可解析）。
+    """
+    deep_link = f'hasn://deck/{deck_id}'
+    return {
+        'schema_version': 'hasn.card/0.1',
+        'title': '演示文稿做好了',
+        'description': content_json.get('summary') or '演示文稿已经做好了，点开看看吧。',
+        'source': {
+            'kind': 'app',
+            'id': 'deck',
+            'display_name': '演示文稿',
+            'verified': True,
+        },
+        'resource': {
+            'type': 'app.resource',
+            'id': deck_id,
+            'app_id': 'deck',
+            'uri': deep_link,
+            'access': {
+                'visibility': 'recipient',
+                'readable_by': ['human'],
+                'required_scopes': [],
+            },
+            'metadata': {
+                'agent_id': content_json.get('agent_id'),
+                'origin_type': content_json.get('origin_type'),
+                'origin_ref': content_json.get('origin_ref'),
+                'dedupe_key': content_json.get('dedupe_key'),
+                'session_id': session_id,
+            },
+        },
+        'primary_action': {
+            'label': '打开演示文稿',
+            'action_id': 'open_deck',
+            'kind': 'open_uri',
+            'uri': deep_link,
+            'event': {
+                'event_type': 'deck.opened',
+                'payload': {'deck_id': deck_id, 'session_id': session_id},
+            },
+            'style': 'primary',
+        },
+        'metadata': {
+            'projection_kind': 'work_session_result_summary',
+            'legacy_content_json': content_json,
+        },
+    }
+
+
 def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
+    # 演示文稿会话：云端据 origin_ref 权威组「打开演示文稿」卡（分身不自己发卡）。
+    deck_id = _deck_id_from_origin_ref(content_json.get('origin_ref'))
+    if deck_id:
+        return _projection_deck_card(session_id=session_id, deck_id=deck_id, content_json=content_json)
     task_id = content_json.get('task_id')
     task_run_id = content_json.get('task_run_id')
     event_payload = {

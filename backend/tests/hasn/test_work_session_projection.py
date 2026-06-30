@@ -574,6 +574,89 @@ async def test_projection_rejects_when_agent_id_missing_and_session_absent() -> 
         )
 
 
+def test_deck_id_from_origin_ref_parses_only_deck_sources() -> None:
+    """origin_ref 解析：仅 `resource:deck:{id}` 命中，其它/空诚实返回 None。"""
+    assert service_module._deck_id_from_origin_ref('resource:deck:deck_01ABC') == 'deck_01ABC'
+    assert service_module._deck_id_from_origin_ref('resource:deck:   ') is None
+    assert service_module._deck_id_from_origin_ref('task_run:123') is None
+    assert service_module._deck_id_from_origin_ref('resource:design:d_1') is None
+    assert service_module._deck_id_from_origin_ref(None) is None
+    assert service_module._deck_id_from_origin_ref('') is None
+
+
+@pytest.mark.asyncio
+async def test_projection_deck_session_emits_deck_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """演示文稿工作会话完成 → 云端权威组「打开演示文稿」卡（深链 hasn://deck/{id}）。
+
+    分身不再自己发卡：完成投影据 origin_ref(`resource:deck:{id}`) 认出 deck 会话，
+    组的卡 source=app/deck、resource=app.resource、深链与动作指向 deck（非工作会话）。
+    """
+    deck_id = 'deck_01ABCDEF'
+    conversation_id = UUID('00000000-0000-0000-0000-0000000007de')
+    db = FakeDb(
+        results=[
+            FakeScalarResult(None),  # 云端无该 session（local-first deck 会话）
+            FakeMappingResult(None),  # 无重复
+            FakeMappingResult({'id': 991}),  # INSERT ... RETURNING id
+        ]
+    )
+
+    async def fake_ensure_conversation(**kwargs: Any) -> SimpleNamespace:
+        await asyncio.sleep(0)
+        return SimpleNamespace(id=conversation_id)
+
+    monkeypatch.setattr(
+        service_module.hasn_conversations_service,
+        'ensure_conversation',
+        fake_ensure_conversation,
+    )
+
+    await service_module.hasn_sessions_service.project_work_session_result(
+        db=db,
+        owner_id=OWNER_ID,
+        session_id=SESSION_ID,
+        projection_data=_projection_payload(
+            agent_id=AGENT_ID,
+            origin_type='app',
+            origin_ref=f'resource:deck:{deck_id}',
+            title='唤星融资路演 · 生成',
+            task_id=None,
+            task_run_id=None,
+        ),
+    )
+
+    insert_params = [
+        params
+        for _stmt, params in db.executed
+        if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
+    ]
+    assert len(insert_params) == 1, 'projection 必须写出一条会话消息'
+    content = json.loads(insert_params[0]['content'])
+    assert content['schema_version'] == 'hasn.card/0.1'
+    assert content['title'] == '演示文稿做好了'
+    assert content['source'] == {
+        'kind': 'app',
+        'id': 'deck',
+        'display_name': '演示文稿',
+        'verified': True,
+    }
+    assert content['resource']['type'] == 'app.resource'
+    assert content['resource']['id'] == deck_id
+    assert content['resource']['app_id'] == 'deck'
+    assert content['resource']['uri'] == f'hasn://deck/{deck_id}'
+    assert content['primary_action']['action_id'] == 'open_deck'
+    assert content['primary_action']['kind'] == 'open_uri'
+    assert content['primary_action']['uri'] == f'hasn://deck/{deck_id}'
+    assert content['primary_action']['event']['event_type'] == 'deck.opened'
+    assert content['primary_action']['event']['payload']['deck_id'] == deck_id
+    # 不是任务卡：用户可见的标题/资源/动作都指向 deck，且不带任务卡的 状态/完成原因 fields 块
+    assert content['description'] == '已生成客户优先级和跟进建议。'
+    assert not content.get('fields'), 'deck 卡不应带任务卡的 状态/完成原因 字段块'
+    assert db.flushed is True
+
+
 def test_send_message_does_not_return_placeholder(task_sessions_app: FastAPI) -> None:
     with TestClient(task_sessions_app) as client:
         response = client.post(
