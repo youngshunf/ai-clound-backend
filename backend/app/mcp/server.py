@@ -21,6 +21,7 @@ from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, C
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
+from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
 from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
 from backend.app.mcp.tools.owner import OWNER_TOOLS
@@ -157,6 +158,12 @@ class HasnCloudMcpServer:
         # 工作台工具（13-工作台/04-doc §5）：主脑发布每日关注简报。
         for tool_cls in WORKBENCH_TOOLS:
             self.tool_registry.register(tool_cls())
+
+        # 记忆工具（doc16 Phase C1：记忆迁云端权威）：save/search/recall/list 四工具，
+        # 直调云端权威 semantic_fact_service 读写 hasn_memory.semantic_fact（单一云端记忆）。
+        # save=memory:write（出厂 Allow，owner 三态可覆盖）；读类（search/recall/list）无 scope。
+        for memory_tool in MEMORY_TOOLS:
+            self.tool_registry.register(memory_tool)
 
         logger.info(f'Registered {len(self.tool_registry.get_all_tools())} builtin tools')
 
