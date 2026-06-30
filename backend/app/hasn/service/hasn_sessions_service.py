@@ -132,6 +132,10 @@ class HasnSessionsService:
         :return:
         """
         _validate_cloud_session_payload(session_data, owner_id)
+        # origin_type 归一：仅在 payload 显式携带该字段时纠偏（不破坏部分更新语义），
+        # 防止 daemon 漂移值触发 chk_origin_type CheckViolationError 中断同步。
+        if 'origin_type' in session_data:
+            session_data = {**session_data, 'origin_type': _normalize_origin_type(session_data['origin_type'])}
         session_id = session_data.get('session_id')
 
         # 查询是否已存在
@@ -321,7 +325,9 @@ class HasnSessionsService:
             }
 
         title = (session.title if session and session.title else None) or projection_data.get('title') or session_id
-        origin_type = (session.origin_type if session else None) or projection_data.get('origin_type') or 'task_run'
+        origin_type = _normalize_origin_type(
+            (session.origin_type if session else None) or projection_data.get('origin_type') or 'task_run'
+        )
         origin_ref = (session.origin_ref if session else None) or projection_data.get('origin_ref') or ''
         content_json = _projection_content_json(
             session_id=session_id,
@@ -446,6 +452,23 @@ def _apply_csv_filter(stmt: Any, column: Any, value: str | None) -> Any:
     if len(values) == 1:
         return stmt.where(column == values[0])
     return stmt.where(column.in_(values))
+
+
+# 与 backend/sql/hasn/hasn_sessions.sql 的 chk_origin_type 约束保持一致。
+# 云端是自身约束的权威：daemon 端任何漂移值（如把完成模式 'manual' 误塞进
+# origin_type）都必须在入库前归一，绝不能让单个非法枚举触发 CheckViolationError
+# 把整批工作会话 summary 同步 500 掉、令 daemon 无限重试（doc16 B 阶段）。
+_ALLOWED_ORIGIN_TYPES: frozenset[str] = frozenset(
+    {'ui', 'scheduler', 'task_run', 'workflow_run', 'external_app', 'api', 'system', 'app'}
+)
+_DEFAULT_ORIGIN_TYPE = 'system'
+
+
+def _normalize_origin_type(value: str | None) -> str:
+    """将 origin_type 归一到 chk_origin_type 白名单；未知/空值回落到 'system'。"""
+    if value and value in _ALLOWED_ORIGIN_TYPES:
+        return value
+    return _DEFAULT_ORIGIN_TYPE
 
 
 def _validate_cloud_session_payload(session_data: dict[str, Any], owner_id: str | None) -> None:

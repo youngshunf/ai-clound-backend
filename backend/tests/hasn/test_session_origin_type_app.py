@@ -22,7 +22,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_sessions import HasnSessions
-from backend.app.hasn.service.hasn_sessions_service import _projection_content_json
+from backend.app.hasn.service.hasn_sessions_service import (
+    HasnSessionsService,
+    _normalize_origin_type,
+    _projection_content_json,
+)
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -123,3 +127,46 @@ async def test_projection_content_json_preserves_app_resource_ref() -> None:
     assert out['origin_type'] == 'app'
     assert out['origin_ref'] == 'resource:designsystem:ds_1'
     assert out['projection_kind'] == 'work_session_result_summary'
+
+
+async def test_normalize_origin_type_whitelist() -> None:
+    # 纯函数（无需 DB）：白名单值原样保留；漂移/空值归一为 'system'。
+    for valid in ('ui', 'scheduler', 'task_run', 'workflow_run', 'external_app', 'api', 'system', 'app'):
+        assert _normalize_origin_type(valid) == valid
+    # 'manual' 是完成模式、非合法 origin_type——必须归一，杜绝 chk_origin_type 打挂同步。
+    assert _normalize_origin_type('manual') == 'system'
+    assert _normalize_origin_type('bogus') == 'system'
+    assert _normalize_origin_type('') == 'system'
+    assert _normalize_origin_type(None) == 'system'
+
+
+async def test_upsert_normalizes_drifted_origin_type_against_check_constraint(db) -> None:
+    # 回归（真实 PG）：daemon B1 上推一个 origin_type='manual' 的工作会话——
+    # 旧逻辑直插 → CheckViolationError 把整批 summary 同步 500 掉、令上推无限重试。
+    # 修复后 upsert 归一为 'system'，落库成功，不再触发约束冲突。
+    owner_id = f'h_owner_{_uid()}'
+    session_id = f'sess_manual_{_uid()}'
+    session = await HasnSessionsService.upsert(
+        db=db,
+        session_data={
+            'session_id': session_id,
+            'owner_id': owner_id,
+            'hasn_id': f'a_{_uid()}',
+            'session_kind': 'task',
+            'session_scope': 'summary_only',
+            'session_status': 'active',
+            'origin_type': 'manual',  # 漂移值（完成模式误塞进 origin_type）
+            'active_binding_id': 'bind_d3_000000001c',
+            'title': '你现在来测试唤星AI 的消息发送工具',
+        },
+        owner_id=owner_id,
+    )
+    await db.flush()
+    # 归一为白名单合法值，约束放行。
+    assert session.origin_type == 'system'
+    # 回读确认真的落库（CheckViolationError 不再发生）。
+    persisted = (
+        await db.execute(select(HasnSessions).where(HasnSessions.session_id == session_id))
+    ).scalar_one()
+    assert persisted.origin_type == 'system'
+    assert persisted.session_scope == 'summary_only'
