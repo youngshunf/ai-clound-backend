@@ -3,12 +3,15 @@
 #   1. 自动 source venv（.venv，自适应 bin/activate 与 Scripts/activate）
 #   2. 杀掉占用目标端口（默认 8020）的旧进程（跨平台：lsof / netstat+taskkill）
 #   3. 用 fba run 启动（默认开启热重载——改代码/schema 自动生效，省去手动重启）
+#      默认 **单 worker**（--workers 1）：多 worker + 热重载会让 reload 时经常卡死
+#      （reloader 与多进程相互抢文件监听/端口）。要压测多进程再用 WORKERS=N 覆盖。
 #
 # 用法：
-#   ./dev.sh                      # 127.0.0.1:8020，热重载
+#   ./dev.sh                      # 127.0.0.1:8020，热重载，单 worker
 #   PORT=8030 ./dev.sh            # 改端口
 #   HOST=0.0.0.0 ./dev.sh         # 对局域网开放
-#   ./dev.sh --no-reload --workers 4   # 透传给 fba run 的额外参数
+#   WORKERS=4 ./dev.sh            # 改 worker 数（默认 1）
+#   ./dev.sh --no-reload --workers 4   # 透传给 fba run 的额外参数（显式 --workers 覆盖默认）
 #
 # Windows：用 Git Bash 直接跑本脚本；若用 PowerShell，请改用同目录的 dev.ps1。
 set -euo pipefail
@@ -20,6 +23,9 @@ cd "$ROOT_DIR"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8020}"
 VENV_DIR="${VENV_DIR:-.venv}"
+# 默认单 worker：多 worker + 热重载会让 reload 经常卡死。需要时用 WORKERS=N 覆盖，
+# 或在额外参数里显式传 --workers（此时尊重你给的值，不再注入默认，避免重复参数）。
+WORKERS="${WORKERS:-1}"
 
 # 1. source venv —— Unix 是 bin/activate，Windows(Git Bash) 是 Scripts/activate
 if [[ -f "$VENV_DIR/bin/activate" ]]; then
@@ -94,6 +100,12 @@ else
   echo "✓ 端口 $PORT 空闲，无需清理"
 fi
 
-# 3. 启动（fba run 默认开热重载；额外参数原样透传）
-echo "→ 启动后端：fba run --host $HOST --port $PORT $*"
-exec fba run --host "$HOST" --port "$PORT" "$@"
+# 3. 启动（fba run 默认开热重载；默认单 worker；额外参数原样透传）
+#    若调用方已在额外参数里显式传 --workers，则尊重其值、不再注入默认（避免重复参数报错）。
+case " $* " in
+  *" --workers "*) WORKERS_ARG="" ;;                 # 调用方已显式指定 worker 数
+  *)               WORKERS_ARG="--workers $WORKERS" ;;
+esac
+echo "→ 启动后端：fba run --host $HOST --port $PORT $WORKERS_ARG $*"
+# shellcheck disable=SC2086  # 故意让 $WORKERS_ARG 词分割成 `--workers N` 两个参数
+exec fba run --host "$HOST" --port "$PORT" $WORKERS_ARG "$@"
