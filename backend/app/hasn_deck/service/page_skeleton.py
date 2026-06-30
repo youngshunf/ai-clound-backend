@@ -254,6 +254,17 @@ def _has_class_token(lower: str, token: str) -> bool:
     return False
 
 
+def _has_cropping_object_fit(lower: str, compact: str) -> bool:
+    """图片裁切/拉伸信号：class `object-cover`/`object-fill` 或 inline `object-fit:cover`/`object-fit:fill`。
+
+    `object-cover` 填满容器并裁掉超出部分、`object-fill` 拉伸变形——都无法「整图适配容器」。
+    `object-contain`（等比缩放完整显示）才是适配；满铺背景应走 CSS background（`bg-cover`）而非 `<img>`。
+    """
+    if _has_class_token(lower, 'object-cover') or _has_class_token(lower, 'object-fill'):
+        return True
+    return 'object-fit:cover' in compact or 'object-fit:fill' in compact
+
+
 def _has_hidden_initial_state(lower: str, compact: str) -> bool:
     """默认隐藏态：opacity-0 / invisible class，或 visibility:hidden / display:none / opacity:0（非 0.x）。"""
     if _has_class_token(lower, 'opacity-0') or _has_class_token(lower, 'invisible'):
@@ -354,6 +365,14 @@ def validate_page_skeleton(html: str) -> str | None:  # noqa: C901 — 忠实移
             '检测到 PPT.createChart 但未发现固定像素高度的图表容器：Chart.js 按父容器高度初始化，'
             '父容器为 flex-1/h-full/仅百分比/仅 min-height 时量到约 0 高而渲染空白（导出/截图尤甚）；'
             '请给图表父容器固定像素高（如 class="h-[300px]"）或用 aspect 比例类，简单图表也可改用纯 CSS'
+        )
+
+    # ⑤c 图片适配容器：<img> 禁 object-cover(裁切)/object-fill(拉伸)，必须缩放适配容器。
+    if _has_open_tag(lower, 'img') and _has_cropping_object_fit(lower, compact):
+        errors.append(
+            '检测到图片使用 object-cover/object-fill：会裁切或拉伸图片、无法完整适配容器；'
+            '请改用 object-contain（整图等比缩放、完整显示、不裁切），'
+            '需要满铺背景请用 CSS background（bg-cover）而非 <img>'
         )
 
     # ⑥ 动画：必须 `PPT.animate(targets, params)`。

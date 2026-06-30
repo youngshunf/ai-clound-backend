@@ -185,6 +185,40 @@ def test_skeleton_rejects_chart_without_fixed_height() -> None:
     assert validate_page_skeleton('<div class="flex-1"><canvas id="deco"></canvas></div>') is None
 
 
+def test_skeleton_rejects_cropping_image_object_fit() -> None:
+    """<img object-cover/object-fill> 会裁切/拉伸图片 → 硬拒，必须 object-contain（与 daemon 同口径）。"""
+    # object-cover 裁切 → 拒。
+    cover = validate_page_skeleton(
+        '<div class="w-full h-[400px]"><img src="hasn://asset/x" class="w-full h-full object-cover"></div>'
+    )
+    assert cover is not None and 'object-contain' in cover
+
+    # object-fill 拉伸 → 拒。
+    assert validate_page_skeleton('<img src="hasn://asset/x" class="w-full object-fill">') is not None
+
+    # inline object-fit:cover → 拒。
+    assert validate_page_skeleton('<img src="hasn://asset/x" style="object-fit:cover">') is not None
+
+    # object-contain（等比缩放完整显示）应放行。
+    assert (
+        validate_page_skeleton(
+            '<div class="w-full h-[400px]"><img src="hasn://asset/x" class="w-full h-full object-contain"></div>'
+        )
+        is None
+    )
+
+    # 无 object-fit 的普通 <img> 放行。
+    assert validate_page_skeleton('<img src="hasn://asset/x" class="w-full">') is None
+
+    # 满铺背景用 CSS background（bg-cover）而非 <img> → 不触发本规则。
+    assert (
+        validate_page_skeleton(
+            '<div class="absolute inset-0 bg-cover" style="background-image:url(\'hasn://asset/x\')"></div>'
+        )
+        is None
+    )
+
+
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio(loop_scope='module')
 async def test_deck_lifecycle_roundtrip_real_db() -> None:
