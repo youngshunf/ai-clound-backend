@@ -105,6 +105,31 @@ async def cloud_profile_id_for(db: AsyncSession, *, owner_hasn_id: str, agent_na
     return f'{star_id}-{agent_name}'
 
 
+async def _ensure_cloud_agent_mcp_key(
+    db: AsyncSession,
+    *,
+    agent_hasn_id: str,
+    owner_hasn_id: str,
+    owner_user_id: int,
+) -> str:
+    """给云端 profile 铸一把 node-agnostic Agent MCP Key，返回明文（仅签发时返回一次）。
+
+    云端 hermes 用它作 cloud MCP server 的 Bearer。``node_id=None`` 让 streamable 跳过 node
+    绑定校验（云端 runtime 不是用户设备节点）。明文不回库（库内只存哈希），由 hermes 落进
+    per-profile secrets（chmod 600）。本地 import 规避潜在循环依赖，与本文件既有风格一致。
+    """
+    from backend.app.hasn.schema.hasn_agent_mcp_keys import IssueAgentMcpKeyParam
+    from backend.app.hasn.service.hasn_agent_mcp_keys_service import hasn_agent_mcp_keys_service
+
+    issued = await hasn_agent_mcp_keys_service.issue(
+        db,
+        obj=IssueAgentMcpKeyParam(agent_hasn_id=agent_hasn_id, scopes=['tool.call'], node_id=None),
+        owner_hasn_id=owner_hasn_id,
+        owner_user_id=owner_user_id,
+    )
+    return issued.key
+
+
 async def ensure_cloud_profile_provisioned(
     db: AsyncSession,
     *,
@@ -159,6 +184,15 @@ async def ensure_cloud_profile_provisioned(
         # owner_phone 作 hermes owner-scoped 目录 key（{runtime_root}/{phone}/{profile_id}）；
         # 空则 hermes 侧自动兜底 owner_user_id。
         owner_phone = await _owner_phone(db, user_id)
+        # 云端 hermes 注入的 MCP 工具**只能是云端 MCP**：本地 hasn-node MCP（127.0.0.1:56330）
+        # 在云端机器不可达，注入会让上游建连失败（见 hermes-runtime profile_config 的 cloud 形态
+        # 闸）。云端 server 用 Agent MCP Key（hasn_amk_）作 Bearer——provision 时给云端 profile
+        # 铸一把 **node-agnostic**（node_id=None）的 key：云端 runtime 不是用户设备节点，绑 node
+        # 会被 streamable 的 node 校验拒。scopes 仅审计快照（streamable 消费时按 agent_hasn_id
+        # 活取三态策略判权，见 streamable.py D3），给 tool.call 与 daemon 本地铸 key 对齐即可。
+        agent_mcp_key = await _ensure_cloud_agent_mcp_key(
+            db, agent_hasn_id=agent_hasn_id, owner_hasn_id=owner_hasn_id, owner_user_id=user_id
+        )
         await client.ensure_agent(
             {
                 'agent_id': profile_id,
@@ -168,6 +202,9 @@ async def ensure_cloud_profile_provisioned(
                 'avatar': getattr(agent_row, 'avatar', None),
                 'timezone': 'Asia/Shanghai',
                 'template': 'assistant',
+                # 云端 MCP 工具凭据 → hermes 物化进 config.yaml 的 mcp_servers.cloud header。
+                # 仅传云端 key，绝不传 local_mcp_key（云端注入本地 server 会断连）。
+                'agent_mcp_key': agent_mcp_key,
                 'llm': {
                     'mode': 'platform',
                     'provider': 'openai_compatible',
