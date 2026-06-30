@@ -5,8 +5,9 @@
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Path, Request, Body
+from fastapi import APIRouter, Body, Path, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.schema.hasn_conversations import (
     CreateHasnConversationsParam,
@@ -35,7 +36,78 @@ class EnsureConversationResponse(BaseModel):
     relation_type: str = Field(..., description='关系类型')
 
 
+class SyncOwnerMessageRequest(BaseModel):
+    """owner↔自有分身 loopback 消息上行（doc16 Phase A1）。"""
+    agent_hasn_id: str = Field(..., description='本主人名下分身的 HASN ID（a_*）')
+    direction: str = Field(..., description='方向：outbound=主人→分身 / inbound=分身→主人')
+    content: dict = Field(..., description='消息内容（JSONB，文本为 {"text": ...}）')
+    local_id: str = Field(..., description='客户端本地 ID（幂等去重键，daemon 生成的全局唯一 uuid）')
+    content_type: int = Field(default=1, description='内容类型 (1:文本/2:图片/3:文件/4:语音/5:卡片)')
+    msg_type: str = Field(default='message', description='消息类型')
+    created_at: int | None = Field(default=None, description='客户端发送时间（unix 秒，保留真实时序）')
+    process_blocks: list[dict] | None = Field(default=None, description='消息生成过程块')
+
+
+class SyncOwnerMessageResponse(BaseModel):
+    """消息上行结果：云端权威 id + 是否命中去重。"""
+    message_id: str = Field(..., description='云端权威 message id')
+    conversation_id: str = Field(..., description='云端权威 conversation id')
+    deduped: bool = Field(..., description='是否命中 local_id 去重（已上云过）')
+
+
 router = APIRouter()
+
+
+async def _resolve_owner_human_hasn_id(request: Request, db: AsyncSession) -> str:
+    """从登录态解析主人 human hasn_id（缓存缺失时回落库查），对齐 ensure_conversation。"""
+    caller_hasn_id = request.user.hasn_id
+    if caller_hasn_id:
+        return caller_hasn_id
+    from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+
+    hasn_human = await hasn_humans_dao.get_by_user_id(db, user_id=request.user.id)
+    if hasn_human:
+        return hasn_human.hasn_id
+    raise errors.AuthorizationError(msg='用户未绑定 HASN ID')
+
+
+@router.post(
+    '/messages:sync',
+    summary='owner↔自有分身消息上行（幂等，doc16 Phase A1）',
+    dependencies=[DependsJwtAuth],
+)
+async def sync_owner_conversation_message_endpoint(
+    request: Request,
+    db: CurrentSessionTransaction,
+    body: Annotated[SyncOwnerMessageRequest, Body()],
+) -> ResponseSchemaModel[SyncOwnerMessageResponse]:
+    """把主人与自己分身的一条 loopback 消息异步 upsert 进云端会话表。
+
+    纯持久化：以 ``local_id`` 去重、复用 CONV-C1 原子会话、不重投递（无 WS/dispatch/未读）。
+    返回云端权威 message/conversation id（铁律：跨设备/分享一律云端权威 id）。
+    """
+    from backend.app.hasn.service.owner_message_sync_service import sync_owner_conversation_message
+
+    owner_human_hasn_id = await _resolve_owner_human_hasn_id(request, db)
+    result = await sync_owner_conversation_message(
+        db,
+        owner_human_hasn_id=owner_human_hasn_id,
+        agent_hasn_id=body.agent_hasn_id,
+        direction=body.direction,
+        content=body.content,
+        content_type=body.content_type,
+        msg_type=body.msg_type,
+        local_id=body.local_id,
+        created_at_unix=body.created_at,
+        process_blocks=body.process_blocks,
+    )
+    return response_base.success(
+        data=SyncOwnerMessageResponse(
+            message_id=result.message_id,
+            conversation_id=result.conversation_id,
+            deduped=result.deduped,
+        )
+    )
 
 
 @router.post(
@@ -93,7 +165,6 @@ async def get_my_hasn_conversationss(
     request: Request,
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetHasnConversationsDetail]]:
-    user_id = request.user.id
     page_data = await hasn_conversations_service.get_list(db=db)
     return response_base.success(data=page_data)
 
@@ -108,7 +179,6 @@ async def create_my_hasn_conversations(
     db: CurrentSessionTransaction,
     obj: CreateHasnConversationsParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_conversations_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
