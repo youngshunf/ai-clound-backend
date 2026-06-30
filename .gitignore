@@ -20,11 +20,17 @@ venv/
 # Production env (contains secrets)
 backend/.env.prod
 backend/.env*.bak-*
+# 本地环境变量（含 secrets，禁入库；模板走 .env.example）
+.env
+backend/.env
 *.pyc
 __pycache__/
 backend/log
 .codegraph/
 backend.log
+
+# OpenClaw 运行时目录（日志/metrics/state，纯本地运行时产物，禁入库——曾误同步到生产、污染诊断）
+backend/app/.omx/
 
 # 知识库收编迁移：删表前 pg_dump 留底（含加密凭据 blob，仅本地回滚兜底，禁入库）
 test-results/ragflow-migration-backup/
