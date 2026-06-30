@@ -61,4 +61,11 @@ LOCAL_BEAT_SCHEDULE = {
         # coverage 永不更新。
         'schedule': TzAwareCrontab('*/10'),
     },
+    '云端记忆提取 worker': {
+        'task': 'memory_extraction_sweep',
+        # 每 10 分钟扫一次有未提取消息的 owner（doc16 Phase C2 单一云端提取管线）。增量水位
+        # memory_extraction_cursor 按 message id 单调推进，幂等；只取 owner 输入 + 任务结果/摘要，
+        # 跳过 agent verbose；平台廉价模型、平台吸收成本；candidate→PolicyGate→confidence→semantic_fact。
+        'schedule': TzAwareCrontab('*/10'),
+    },
 }
