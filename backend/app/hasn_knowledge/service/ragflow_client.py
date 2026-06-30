@@ -80,8 +80,11 @@ class RAGFlowClient:
         timeout: float | None = None,
     ) -> dict[str, Any]:
         try:
+            # trust_env=False：RAGFlow 是内网/loopback 服务，服务间调用绝不能走主机 HTTP_PROXY/
+            # 系统代理（否则开发机常见的 127.0.0.1:1082 类代理会拦截 loopback 请求并回 503，
+            # 既可能误路由，又把「引擎未启动」伪装成误导性的 5xx）。同时不读 .netrc。
             async with httpx.AsyncClient(
-                base_url=self.base_url, timeout=_build_timeout(timeout or self.timeout)
+                base_url=self.base_url, timeout=_build_timeout(timeout or self.timeout), trust_env=False
             ) as client:
                 response = await client.request(
                     method, path, json=json, params=params, files=files, headers=self._headers
@@ -109,7 +112,10 @@ class RAGFlowClient:
 
     async def _request_bytes(self, method: str, path: str) -> bytes:
         try:
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=_build_timeout(self.timeout)) as client:
+            # trust_env=False：同上，内网服务调用不走主机/系统代理（见 _request 注释）。
+            async with httpx.AsyncClient(
+                base_url=self.base_url, timeout=_build_timeout(self.timeout), trust_env=False
+            ) as client:
                 response = await client.request(method, path, headers=self._headers)
         except httpx.HTTPError as exc:
             raise _map_request_error(exc) from exc
