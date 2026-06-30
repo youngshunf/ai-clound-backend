@@ -10,11 +10,9 @@ import json
 import uuid
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import sqlalchemy as sa
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.schema.hasn_message_hub import ErrorObject
@@ -63,9 +61,14 @@ from backend.app.hasn.service._sync_codec import (
     _task_sync_payload,
     _task_sync_payload_from_row,
 )
-from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from backend.common.dataclasses import AgentTokenPayload
 
 _PRIVATE_METADATA_ERROR = ErrorObject(
     code=8034,
@@ -152,7 +155,7 @@ class SqlAlchemySyncGateway:
         summary_json = json.dumps(report['summary_json'], ensure_ascii=False, sort_keys=True, default=str)
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_agent_runtime_reports (
                     report_id,
                     owner_id,
@@ -196,7 +199,7 @@ class SqlAlchemySyncGateway:
                     last_seen_at = EXCLUDED.last_seen_at,
                     reported_at = EXCLUDED.reported_at,
                     updated_time = now()
-                '''
+                """
             ),
             {**report, 'summary_json': summary_json},
         )
@@ -222,7 +225,7 @@ class SqlAlchemySyncGateway:
     ) -> list[SyncEventRecord]:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT event_id, event_type, revision, occurred_at, payload
                 FROM public.hasn_sync_events
                 WHERE owner_id = :owner_id
@@ -231,7 +234,7 @@ class SqlAlchemySyncGateway:
                   AND revision > :after_revision
                 ORDER BY revision ASC
                 LIMIT :limit
-                '''
+                """
             ),
             {'owner_id': owner_id, 'after_revision': after_revision, 'limit': limit},
         )
@@ -251,7 +254,7 @@ class SqlAlchemySyncGateway:
     ) -> list[SyncEventRecord]:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT event_id, event_type, revision, occurred_at, payload
                 FROM public.hasn_sync_events e
                 WHERE e.owner_id = :owner_id
@@ -302,7 +305,7 @@ class SqlAlchemySyncGateway:
                   )
                 ORDER BY revision ASC
                 LIMIT :limit
-                '''
+                """
             ),
             {'owner_id': owner_id, 'node_id': node_id, 'after_revision': after_revision, 'limit': limit},
         )
@@ -338,7 +341,7 @@ class SqlAlchemySyncGateway:
         ]
         result = await db.execute(
             sa.text(
-                '''
+                """
                 WITH requested(sync_scope_kind, sync_scope_id, namespace, last_pulled_revision) AS (
                     SELECT *
                     FROM jsonb_to_recordset(CAST(:selections AS jsonb))
@@ -355,7 +358,7 @@ class SqlAlchemySyncGateway:
                   AND COALESCE((e.payload->>'namespace_revision')::bigint, 0) > r.last_pulled_revision
                 ORDER BY e.revision ASC
                 LIMIT :limit
-                '''
+                """
             ),
             {
                 'owner_id': owner_id,
@@ -428,9 +431,13 @@ class SqlAlchemySyncGateway:
             server_revision = await self._append_message_feed_event_idempotent(
                 db, owner_id=owner_id, event=event
             )
+            # doc16 Phase A「消息上云」：同一条 loopback 消息**额外**落入权威 hasn_messages
+            # （单一云端记忆提取的数据源）。feed 已写（上一行），此处只补会话/消息表、不重复
+            # 写 feed。best-effort + SAVEPOINT 隔离：落库失败绝不连累 feed/跨设备同步。
+            await self._persist_loopback_message_best_effort(db, owner_id=owner_id, event=event)
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_sync_inbox_events (
                     client_event_id,
                     owner_id,
@@ -459,7 +466,7 @@ class SqlAlchemySyncGateway:
                     now()
                 )
                 ON CONFLICT (owner_id, node_id, client_event_id) DO NOTHING
-                '''
+                """
             ),
             {
                 'client_event_id': event.client_event_id,
@@ -478,19 +485,19 @@ class SqlAlchemySyncGateway:
     async def _append_message_feed_event_idempotent(
         self, db: AsyncSession, *, owner_id: str, event: ClientEvent
     ) -> int | None:
-        '''将会话消息事件幂等地追加到权威 feed（hasn_sync_events）。
+        """将会话消息事件幂等地追加到权威 feed（hasn_sync_events）。
 
         幂等键 = (owner_id, aggregate_id, event_type)，其中 aggregate_id 取 payload.message_id
         （回退 dedupe_key）。同一条镜像消息重复 push 时返回既有 revision、不重复追加。
         h↔h / 跨 owner 消息由 route_message 用云端数字 message_id 写 feed，与本地 ULID
         天然不撞键；daemon 侧也不镜像它们，双重保证不双写。
-        '''
+        """
         message_id = event.payload.get('message_id') or event.dedupe_key
         if not message_id:
             raise errors.RequestError(msg='ERR_MESSAGE_ID_REQUIRED')
         existing = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT revision
                 FROM public.hasn_sync_events
                 WHERE owner_id = :owner_id
@@ -498,7 +505,7 @@ class SqlAlchemySyncGateway:
                   AND aggregate_id = :aggregate_id
                   AND event_type = :event_type
                 LIMIT 1
-                '''
+                """
             ),
             {
                 'owner_id': owner_id,
@@ -518,6 +525,32 @@ class SqlAlchemySyncGateway:
             aggregate_id=str(message_id),
             payload={**event.payload, 'client_event_id': event.client_event_id},
         )
+
+    async def _persist_loopback_message_best_effort(
+        self, db: AsyncSession, *, owner_id: str, event: ClientEvent
+    ) -> None:
+        """把一条 owner↔自有分身会话同步事件**额外**落入权威 ``hasn_messages``（doc16 Phase A）。
+
+        SAVEPOINT 隔离 + best-effort：本步是「记忆提取数据源」的补写，与跨设备 feed 解耦。
+        失败（如分身已删、并发撞键、瞬时 DB 错）只记日志并回滚本 SAVEPOINT，**绝不**连累
+        外层 feed 写入与跨设备同步——这正是 daemon 侧「镜像入队 best-effort」的云端对偶。
+        """
+        from backend.app.hasn.service.owner_message_sync_service import (
+            persist_loopback_message_from_sync_event,
+        )
+
+        try:
+            async with db.begin_nested():
+                await persist_loopback_message_from_sync_event(
+                    db, owner_id=owner_id, event_type=event.event_type, payload=event.payload
+                )
+        except Exception as exc:
+            log.warning(
+                'doc16 hasn_messages persist skipped (owner=%s, event=%s): %r',
+                owner_id,
+                event.event_type,
+                exc,
+            )
 
     async def save_task_event(self, db: AsyncSession, *, owner_id: str, node_id: str, event: ClientEvent) -> int | None:
         existing_revision = await self.existing_client_event_revision(
@@ -591,7 +624,7 @@ class SqlAlchemySyncGateway:
     ) -> list[dict[str, Any]]:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT
                     task_uuid,
                     owner_id,
@@ -622,7 +655,7 @@ class SqlAlchemySyncGateway:
                   AND agent_id = :agent_id
                   AND task_uuid IS NOT NULL
                   AND state <> 'deleted'
-                '''
+                """
             ),
             {'owner_id': owner_id, 'agent_id': agent_id},
         )
@@ -637,14 +670,14 @@ class SqlAlchemySyncGateway:
     ) -> dict[str, Any] | None:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT executor_kind, executor_node_id, binding_id, assignment_state
                 FROM hasn_task.assignment
                 WHERE owner_id = :owner_id
                   AND task_uuid = :task_uuid
                 ORDER BY updated_time DESC NULLS LAST, id DESC
                 LIMIT 1
-                '''
+                """
             ),
             {'owner_id': owner_id, 'task_uuid': task_uuid},
         )
@@ -662,17 +695,17 @@ class SqlAlchemySyncGateway:
     ) -> None:
         await db.execute(
             sa.text(
-                '''
+                """
                 DELETE FROM hasn_task.assignment
                 WHERE owner_id = :owner_id
                   AND task_uuid = :task_uuid
-                '''
+                """
             ),
             {'owner_id': owner_id, 'task_uuid': task_uuid},
         )
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO hasn_task.assignment (
                     task_uuid,
                     owner_id,
@@ -698,7 +731,7 @@ class SqlAlchemySyncGateway:
                     now(),
                     now()
                 )
-                '''
+                """
             ),
             {
                 'task_uuid': task_uuid,
@@ -770,13 +803,13 @@ class SqlAlchemySyncGateway:
     ) -> dict[str, Any] | None:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT task_revision, state
                 FROM hasn_task.task
                 WHERE owner_id = :owner_id
                   AND task_uuid = :task_uuid
                 LIMIT 1
-                '''
+                """
             ),
             {'owner_id': owner_id, 'task_uuid': task_uuid},
         )
@@ -810,7 +843,7 @@ class SqlAlchemySyncGateway:
         )
         task_upsert_result = await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO hasn_task.task (
                     owner_id,
                     agent_id,
@@ -940,7 +973,7 @@ class SqlAlchemySyncGateway:
                     ),
                     updated_time = EXCLUDED.updated_time
                 RETURNING id
-                '''
+                """
             ),
             {
                 **stored_task,
@@ -975,7 +1008,7 @@ class SqlAlchemySyncGateway:
                 'resolved_at': stored_task['updated_time'],
             },
         )
-        revision, event_id = await self._append_sync_event_with_id(
+        revision, _event_id = await self._append_sync_event_with_id(
             db,
             owner_id=owner_id,
             hasn_id=stored_task['agent_id'] or owner_id,
@@ -990,7 +1023,7 @@ class SqlAlchemySyncGateway:
         )
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_sync_inbox_events (
                     client_event_id,
                     owner_id,
@@ -1019,7 +1052,7 @@ class SqlAlchemySyncGateway:
                     now()
                 )
                 ON CONFLICT (owner_id, node_id, client_event_id) DO NOTHING
-                '''
+                """
             ),
             {
                 'client_event_id': event.client_event_id,
@@ -1045,12 +1078,12 @@ class SqlAlchemySyncGateway:
         task_uuid = _required_string(summary, 'task_uuid', 'ERR_TASK_ID_REQUIRED')
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT owner_id, agent_id
                 FROM hasn_task.task
                 WHERE task_uuid = :task_uuid
                 LIMIT 1
-                '''
+                """
             ),
             {'task_uuid': task_uuid},
         )
@@ -1068,7 +1101,7 @@ class SqlAlchemySyncGateway:
         }
         result = await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO hasn_task.run_summary (
                     run_uuid,
                     task_uuid,
@@ -1130,7 +1163,7 @@ class SqlAlchemySyncGateway:
                     duration_ms,
                     started_at,
                     finished_at
-                '''
+                """
             ),
             {
                 **summary,
@@ -1140,14 +1173,14 @@ class SqlAlchemySyncGateway:
         stored = dict(result.mappings().one())
         existing_event = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT event_id
                 FROM public.hasn_sync_events
                 WHERE owner_id = :owner_id
                   AND event_type = 'task_run.summary_reported'
                   AND payload->>'dedupe_key' = :dedupe_key
                 LIMIT 1
-                '''
+                """
             ),
             {'owner_id': owner_id, 'dedupe_key': stored['dedupe_key']},
         )
@@ -1168,14 +1201,14 @@ class SqlAlchemySyncGateway:
     ) -> int | None:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT server_revision
                 FROM public.hasn_sync_inbox_events
                 WHERE owner_id = :owner_id
                   AND node_id = :node_id
                   AND client_event_id = :client_event_id
                 LIMIT 1
-                '''
+                """
             ),
             {
                 'owner_id': owner_id,
@@ -1198,7 +1231,7 @@ class SqlAlchemySyncGateway:
     ) -> int:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO hasn_memory.namespace_revision (
                     sync_scope_kind,
                     sync_scope_id,
@@ -1222,7 +1255,7 @@ class SqlAlchemySyncGateway:
                     updated_at = now(),
                     updated_time = now()
                 RETURNING revision
-                '''
+                """
             ),
             {
                 'sync_scope_kind': sync_scope_kind,
@@ -1243,14 +1276,14 @@ class SqlAlchemySyncGateway:
     ) -> None:
         await db.execute(
             sa.text(
-                '''
+                """
                 UPDATE hasn_memory.namespace_revision
                 SET last_event_id = :event_id,
                     updated_time = now()
                 WHERE sync_scope_kind = :sync_scope_kind
                   AND sync_scope_id = :sync_scope_id
                   AND namespace = :namespace
-                '''
+                """
             ),
             {
                 'sync_scope_kind': sync_scope_kind,
@@ -1308,11 +1341,11 @@ class SqlAlchemySyncGateway:
         )
         revision_result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT COALESCE(MAX(revision), 0) + 1 AS revision
                 FROM public.hasn_sync_events
                 WHERE owner_id = :owner_id
-                '''
+                """
             ),
             {'owner_id': owner_id},
         )
@@ -1320,7 +1353,7 @@ class SqlAlchemySyncGateway:
         event_id = f'se_{uuid.uuid4().hex[:24]}'
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_sync_events (
                     event_id,
                     owner_id,
@@ -1346,7 +1379,7 @@ class SqlAlchemySyncGateway:
                     now(),
                     now()
                 )
-                '''
+                """
             ),
             {
                 'event_id': event_id,
@@ -1365,7 +1398,7 @@ class SqlAlchemySyncGateway:
         """保存或更新 session 到云端投影表"""
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_sessions (
                     id,
                     conversation_id,
@@ -1406,7 +1439,7 @@ class SqlAlchemySyncGateway:
                     last_message_at = EXCLUDED.last_message_at,
                     message_count = EXCLUDED.message_count,
                     updated_time = now()
-                '''
+                """
             ),
             session,
         )
@@ -1431,7 +1464,7 @@ class SqlAlchemySyncGateway:
         """保存 session event 到云端投影表（仅 summary_only 和 conversation_visible）"""
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_session_events (
                     session_id,
                     event_type,
@@ -1447,7 +1480,7 @@ class SqlAlchemySyncGateway:
                     :occurred_at,
                     now()
                 )
-                '''
+                """
             ),
             event,
         )
@@ -1456,7 +1489,7 @@ class SqlAlchemySyncGateway:
         """保存 session artifact 到云端投影表（按 sync_policy 决定）"""
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_session_artifacts (
                     session_id,
                     artifact_kind,
@@ -1474,7 +1507,7 @@ class SqlAlchemySyncGateway:
                     :sync_policy,
                     now()
                 )
-                '''
+                """
             ),
             artifact,
         )
@@ -1520,12 +1553,12 @@ class HasnSyncService:
                     session_data['owner_id'] = request.owner_id
                     await save_session(db, session_data)
                 continue
-            elif event.event_type == 'session_event.sync':
+            if event.event_type == 'session_event.sync':
                 save_session_event = getattr(self.gateway, 'save_session_event', None)
                 if save_session_event and event.payload:
                     await save_session_event(db, event.payload)
                 continue
-            elif event.event_type == 'session_artifact.sync':
+            if event.event_type == 'session_artifact.sync':
                 save_session_artifact = getattr(self.gateway, 'save_session_artifact', None)
                 if save_session_artifact and event.payload:
                     await save_session_artifact(db, event.payload)

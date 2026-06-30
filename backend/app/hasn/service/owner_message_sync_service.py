@@ -54,6 +54,10 @@ _DIRECTION_OUTBOUND = 'outbound'  # owner（human）→ agent
 _DIRECTION_INBOUND = 'inbound'  # agent → owner（human）
 _VALID_DIRECTIONS = (_DIRECTION_OUTBOUND, _DIRECTION_INBOUND)
 
+# sync/push 上来的会话事件 → 方向。主人提问 message.sent = outbound；分身回复
+# message.agent_reply / 主人在别设备收到 message.received = inbound。
+_OUTBOUND_EVENT_TYPES = frozenset({'message.sent'})
+
 
 @dataclass(frozen=True, slots=True)
 class SyncedMessageResult:
@@ -211,11 +215,17 @@ async def sync_owner_conversation_message(
     local_id: str,
     created_at_unix: int | None = None,
     process_blocks: list[dict] | None = None,
+    write_sync_event: bool = True,
 ) -> SyncedMessageResult:
     """幂等上行一条 owner↔自有分身 loopback 消息，返回云端权威 id。
 
     幂等键 = client ``local_id``（daemon 生成的全局唯一 uuid）。已存在 → 直接返回既有
     云端 id（deduped=True），不重复落库、不重复写事件。
+
+    ``write_sync_event``：是否追加 owner 同步事件（``hasn_sync_events`` feed）。**经
+    ``/sync/push`` 调用时传 ``False``**——该路径已由 ``_append_message_feed_event_idempotent``
+    写 feed（跨设备权威），本服务只补 ``hasn_messages``（提取数据源），避免 feed 双写。
+    独立 ``messages:sync`` HTTP 端点传 ``True``（直推时一并写 feed）。
     """
     if not local_id:
         raise errors.RequestError(msg='缺少 local_id（消息上云幂等键）')
@@ -273,20 +283,99 @@ async def sync_owner_conversation_message(
             )
         raise
 
-    await _append_owner_sync_event(
-        db,
-        owner_id=owner_human_hasn_id,
-        msg=msg,
-        from_id=from_id,
-        to_id=to_id,
-        direction=direction,
-        content=content,
-        content_type=content_type,
-        local_id=local_id,
-    )
+    if write_sync_event:
+        await _append_owner_sync_event(
+            db,
+            owner_id=owner_human_hasn_id,
+            msg=msg,
+            from_id=from_id,
+            to_id=to_id,
+            direction=direction,
+            content=content,
+            content_type=content_type,
+            local_id=local_id,
+        )
 
     return SyncedMessageResult(
         message_id=str(msg.id),
         conversation_id=str(msg.conversation_id),
         deduped=False,
+    )
+
+
+def _content_type_str_to_int(value: object) -> int:
+    """会话同步事件里的 ``content_type`` 字符串 → ``hasn_messages`` 的 int 编码（缺省 1=文本）。
+
+    daemon 出站镜像用 ContentEnvelope 判别词（``text``/``image``/``file``/``voice``/``card``/
+    ``json``）；分身回复镜像用 ``text/plain``。两套都归一到 int（1 文本/2 图片/3 文件/4 语音/
+    5 卡片）。未知/缺失 → 文本（不伪造类型）。
+    """
+    if not isinstance(value, str):
+        return 1
+    v = value.lower()
+    if v.startswith('image'):
+        return 2
+    if v == 'card' or 'card' in v:  # 'card' / 'application/x.card+json'
+        return 5
+    if v.startswith(('voice', 'audio')):
+        return 4
+    if v.startswith(('file', 'application')):
+        return 3
+    return 1  # text / text/plain / json / 未知 → 文本
+
+
+def _loopback_agent_hasn_id(payload: dict) -> str | None:
+    """从一条 owner↔自有分身会话同步事件 payload 取分身 hasn_id（``a_*``）。
+
+    loopback 两端一个是 owner(human) 一个是 ``a_*`` 分身。优先 ``peer_hasn_id``（会话对端），
+    回退 ``recipient_hasn_id``/``sender_hasn_id`` 中以 ``a_`` 开头者。两端都非分身 → ``None``
+    （不该进 ``FEED_MESSAGE_EVENT_TYPES``，诚实跳过）。
+    """
+    for key in ('peer_hasn_id', 'recipient_hasn_id', 'sender_hasn_id'):
+        candidate = payload.get(key)
+        if isinstance(candidate, str) and candidate.startswith('a_'):
+            return candidate
+    return None
+
+
+async def persist_loopback_message_from_sync_event(
+    db: AsyncSession, *, owner_id: str, event_type: str, payload: dict
+) -> SyncedMessageResult | None:
+    """把一条经 ``/sync/push`` 上来的 owner↔自有分身会话事件落入权威 ``hasn_messages``。
+
+    doc16 Phase A「消息上云」的 sink：daemon 的本地短路会话经既有 ``sync_outbox`` →
+    ``SyncPushWorker`` → ``/sync/push`` 把每条消息作为 feed 事件上推（跨设备）；本函数让
+    **同一条事件额外落入权威 ``hasn_messages``**（记忆提取的数据源），复用 A1 服务、以
+    ``local_id``（缺失回退 daemon 本地 ``message_id``）幂等。**不再重复写 feed**
+    （``/sync/push`` 已写）。
+
+    仅处理 owner↔自有分身 loopback（peer 为 ``a_*`` 且本主人名下）；其余诚实跳过返回
+    ``None``。**不抛非法输入异常**（缺字段直接 ``None``），保证 sink 端最坏只是跳过、绝不
+    连累 feed 写入与跨设备同步。
+    """
+    direction = _DIRECTION_OUTBOUND if event_type in _OUTBOUND_EVENT_TYPES else _DIRECTION_INBOUND
+    agent_hasn_id = _loopback_agent_hasn_id(payload)
+    if agent_hasn_id is None:
+        return None
+    content = payload.get('content_body')
+    if not isinstance(content, dict):
+        return None
+    # 幂等键：outbound 用 client local_id；inbound 回复 local_id 缺失 → 回退 daemon 本地
+    # message_id（设备内全局唯一、跨上推稳定，与 feed 去重键同源）。
+    local_id = payload.get('local_id') or payload.get('message_id')
+    if not local_id:
+        return None
+    created_at = payload.get('created_at')
+    return await sync_owner_conversation_message(
+        db,
+        owner_human_hasn_id=owner_id,
+        agent_hasn_id=agent_hasn_id,
+        direction=direction,
+        content=content,
+        content_type=_content_type_str_to_int(payload.get('content_type')),
+        msg_type='message',
+        local_id=str(local_id),
+        created_at_unix=created_at if isinstance(created_at, int) else None,
+        process_blocks=None,  # 设计 06：分身 verbose 不上云，feed 也只载最终文本
+        write_sync_event=False,  # feed 由 /sync/push 的 _append_message_feed_event_idempotent 写
     )
