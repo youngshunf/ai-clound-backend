@@ -53,6 +53,11 @@ _QCC_COMPANY_NS = 'qcc_company'
 _TOOL_REGISTRATION = f'hasn.ext.{_QCC_COMPANY_NS}.get_company_registration_info'
 _TOOL_SEARCH = f'hasn.ext.{_QCC_COMPANY_NS}.get_company_by_query'
 
+# qcc 全部工具的锚点入参名（企业名/信用代码查询锚点）——真实自省 schema 一律 `searchKey`
+# （company/risk/ipr/operation/executive 各 server 工具 required 都含 `searchKey`；executive 类工具
+# 另需 `personName` 等，本中台只供锚点，额外必填参数由该维度工具自身约束，超出锚点的不在此组装）。
+_QCC_ARG_SEARCH_KEY = 'searchKey'
+
 # enrich 维度 → qcc namespace（具体 qcc 工具由 namespace 自省缓存动态解析，不硬编码各维度 raw 名——
 # runbook 仅文档化 qcc_company 工具名；risk/ipr/operation/executive/history 各 server 工具名以真实自省为准）。
 _ENRICH_NAMESPACE = {
@@ -183,7 +188,7 @@ class EnterpriseLookupService:
         # 2) 未命中 → 调通用网关 qcc registration（平台 key 由网关持有，不下发分身）。
         result = await _call_qcc(
             tool_name=_TOOL_REGISTRATION,
-            arguments={'keyword': query},
+            arguments={_QCC_ARG_SEARCH_KEY: query},
             owner_hasn_id=owner_hasn_id,
             agent_hasn_id=agent_hasn_id,
             trace_id=trace_id,
@@ -234,7 +239,7 @@ class EnterpriseLookupService:
         if gap > 0 and search_term:
             result = await _call_qcc(
                 tool_name=_TOOL_SEARCH,
-                arguments={'keyword': search_term},
+                arguments={_QCC_ARG_SEARCH_KEY: search_term},
                 owner_hasn_id=owner_hasn_id,
                 agent_hasn_id=agent_hasn_id,
                 trace_id=trace_id,
@@ -310,7 +315,7 @@ class EnterpriseLookupService:
                 continue
             result = await _call_qcc(
                 tool_name=tool_name,
-                arguments={'keyword': anchor},
+                arguments={_QCC_ARG_SEARCH_KEY: anchor},
                 owner_hasn_id=owner_hasn_id,
                 agent_hasn_id=agent_hasn_id,
                 trace_id=trace_id,
