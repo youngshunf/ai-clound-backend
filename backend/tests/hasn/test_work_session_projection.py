@@ -584,16 +584,13 @@ def test_deck_id_from_origin_ref_parses_only_deck_sources() -> None:
     assert service_module._deck_id_from_origin_ref('') is None
 
 
-@pytest.mark.asyncio
-async def test_projection_deck_session_emits_deck_card(
+async def _deck_projection_card(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """演示文稿工作会话完成 → 云端权威组「打开演示文稿」卡（深链 hasn://deck/{id}）。
-
-    分身不再自己发卡：完成投影据 origin_ref(`resource:deck:{id}`) 认出 deck 会话，
-    组的卡 source=app/deck、resource=app.resource、深链与动作指向 deck（非工作会话）。
-    """
-    deck_id = 'deck_01ABCDEF'
+    *,
+    origin_ref: str,
+    deck_server_id: str | None,
+) -> dict[str, Any]:
+    """跑一次 deck 完成投影，返回组出的卡片 content_json（供 deck id 断言复用）。"""
     conversation_id = UUID('00000000-0000-0000-0000-0000000007de')
     db = FakeDb(
         results=[
@@ -613,18 +610,22 @@ async def test_projection_deck_session_emits_deck_card(
         fake_ensure_conversation,
     )
 
+    overrides: dict[str, Any] = {
+        'agent_id': AGENT_ID,
+        'origin_type': 'app',
+        'origin_ref': origin_ref,
+        'title': '唤星融资路演 · 生成',
+        'task_id': None,
+        'task_run_id': None,
+    }
+    if deck_server_id is not None:
+        overrides['deck_server_id'] = deck_server_id
+
     await service_module.hasn_sessions_service.project_work_session_result(
         db=db,
         owner_id=OWNER_ID,
         session_id=SESSION_ID,
-        projection_data=_projection_payload(
-            agent_id=AGENT_ID,
-            origin_type='app',
-            origin_ref=f'resource:deck:{deck_id}',
-            title='唤星融资路演 · 生成',
-            task_id=None,
-            task_run_id=None,
-        ),
+        projection_data=_projection_payload(**overrides),
     )
 
     insert_params = [
@@ -633,7 +634,28 @@ async def test_projection_deck_session_emits_deck_card(
         if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
     ]
     assert len(insert_params) == 1, 'projection 必须写出一条会话消息'
-    content = json.loads(insert_params[0]['content'])
+    assert db.flushed is True
+    return json.loads(insert_params[0]['content'])
+
+
+@pytest.mark.asyncio
+async def test_projection_deck_card_prefers_cloud_server_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """演示文稿完成卡的 `hasn://deck/{id}` 必须用**云端权威 deck id**（非设备本地 ULID）。
+
+    分身不再自己发卡：完成投影据 origin_ref(`resource:deck:{本地ULID}`) 认出 deck 会话，
+    判别后卡里的深链/资源/动作 id 一律优先取随投影上传的 `deck_server_id`（云端权威）——
+    这样「分享给别人」的链接对端才能据云端 id 读穿云端 ACL 打开（福仔铁律：本地 id 不上 URI）。
+    """
+    local_deck_id = 'deck_01ABCDEF'
+    cloud_deck_id = '556677'  # 云端权威 id：数字串，与本地 ULID 形态不撞
+    content = await _deck_projection_card(
+        monkeypatch,
+        origin_ref=f'resource:deck:{local_deck_id}',
+        deck_server_id=cloud_deck_id,
+    )
+
     assert content['schema_version'] == 'hasn.card/0.1'
     assert content['title'] == '演示文稿做好了'
     assert content['source'] == {
@@ -643,18 +665,53 @@ async def test_projection_deck_session_emits_deck_card(
         'verified': True,
     }
     assert content['resource']['type'] == 'app.resource'
-    assert content['resource']['id'] == deck_id
     assert content['resource']['app_id'] == 'deck'
-    assert content['resource']['uri'] == f'hasn://deck/{deck_id}'
+    # ⭐ 关键：深链/资源/动作的 deck id 全部用云端权威 id，绝不出现本地 ULID
+    assert content['resource']['id'] == cloud_deck_id
+    assert content['resource']['uri'] == f'hasn://deck/{cloud_deck_id}'
     assert content['primary_action']['action_id'] == 'open_deck'
     assert content['primary_action']['kind'] == 'open_uri'
-    assert content['primary_action']['uri'] == f'hasn://deck/{deck_id}'
+    assert content['primary_action']['uri'] == f'hasn://deck/{cloud_deck_id}'
     assert content['primary_action']['event']['event_type'] == 'deck.opened'
-    assert content['primary_action']['event']['payload']['deck_id'] == deck_id
+    assert content['primary_action']['event']['payload']['deck_id'] == cloud_deck_id
+    # ⭐ 所有「打开路径」字段（webui 真正据以打开 deck 的入口）绝不含本地 ULID。
+    # 注：resource.metadata.origin_ref / legacy_content_json 仍按原样保留本地 origin_ref —— 那是
+    # 溯源/去重记录（标识这条投影来自哪个本地 deck 会话），webui 从不用它打开，故不在此约束内。
+    open_path_fields = [
+        content['resource']['id'],
+        content['resource']['uri'],
+        content['primary_action']['uri'],
+        content['primary_action']['event']['payload']['deck_id'],
+    ]
+    for value in open_path_fields:
+        assert local_deck_id not in str(value), f'打开路径字段不得含本地 ULID：{value!r}'
     # 不是任务卡：用户可见的标题/资源/动作都指向 deck，且不带任务卡的 状态/完成原因 fields 块
     assert content['description'] == '已生成客户优先级和跟进建议。'
     assert not content.get('fields'), 'deck 卡不应带任务卡的 状态/完成原因 字段块'
-    assert db.flushed is True
+
+
+@pytest.mark.asyncio
+async def test_projection_deck_card_falls_back_to_local_id_when_unsynced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """deck 尚未上云（无 deck_server_id）→ 回退本地 id。
+
+    此时 deck 不在云端、根本无法分享，唯一消费者是 owner 本机，本地 id 恰好能解析；
+    这是诚实降级而非违背「URI 用云端 id」原则——没有云端 id 可用。
+    """
+    local_deck_id = 'deck_01ABCDEF'
+    content = await _deck_projection_card(
+        monkeypatch,
+        origin_ref=f'resource:deck:{local_deck_id}',
+        deck_server_id=None,
+    )
+
+    assert content['title'] == '演示文稿做好了'
+    assert content['resource']['id'] == local_deck_id
+    assert content['resource']['uri'] == f'hasn://deck/{local_deck_id}'
+    assert content['primary_action']['uri'] == f'hasn://deck/{local_deck_id}'
+    assert content['primary_action']['event']['payload']['deck_id'] == local_deck_id
+    assert not content.get('fields'), 'deck 卡不应带任务卡的 状态/完成原因 字段块'
 
 
 def test_send_message_does_not_return_placeholder(task_sessions_app: FastAPI) -> None:

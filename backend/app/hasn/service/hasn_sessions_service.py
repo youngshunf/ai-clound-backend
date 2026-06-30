@@ -549,6 +549,10 @@ def _projection_content_json(
         'agent_id': agent_id,
         'origin_type': origin_type,
         'origin_ref': origin_ref,
+        # 云端权威 deck id（daemon 据本地 deck 的 server_id 解析后随投影上传，见 hasn-node
+        # `domains/task/task_sessions.rs`）。deck 完成卡的 `hasn://deck/{id}` 一律优先用它，
+        # 绝不用 origin_ref 里的设备本地 ULID（本地 id 跨设备/分享后对端解析不开）。
+        'deck_server_id': projection_data.get('deck_server_id'),
         'task_id': projection_data.get('task_id'),
         'task_run_id': projection_data.get('task_run_id'),
         'workflow_run_id': projection_data.get('workflow_run_id'),
@@ -580,7 +584,9 @@ def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[s
     """演示文稿工作会话完成 → 给主人发的「打开演示文稿」卡（云端权威组卡）。
 
     分身不再自己发卡：完成投影据 origin_ref 认出 deck 会话并统一组装本卡，杜绝「发错/忘发」。
-    深链 `hasn://deck/{deck_id}`（deck_id 取自 origin_ref，webui 可解析）。
+    深链 `hasn://deck/{deck_id}`，`deck_id` = **云端权威 deck id**（调用方 `_projection_card_body`
+    已优先取 `deck_server_id`，未上云才回退本地 id）——跨设备/分享后对端据云端 id 读穿云端 ACL
+    打开（daemon `GET /decks/{id}` 折叠的三步解析），不依赖设备私有的本地 ULID。
     """
     deep_link = f'hasn://deck/{deck_id}'
     return {
@@ -631,9 +637,14 @@ def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[s
 
 def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
     # 演示文稿会话：云端据 origin_ref 权威组「打开演示文稿」卡（分身不自己发卡）。
-    deck_id = _deck_id_from_origin_ref(content_json.get('origin_ref'))
-    if deck_id:
-        return _projection_deck_card(session_id=session_id, deck_id=deck_id, content_json=content_json)
+    # 判别器仍用 origin_ref（带设备本地 deck id），但卡里 `hasn://deck/{id}` 的 id **一律优先
+    # 用云端权威 deck_server_id**——本地 ULID 跨设备/分享后对端解析不开（福仔「分享给别人根本
+    # 打不开」的根因）。仅当 deck 尚未上云（无 server_id）才回退本地 id：此时 deck 不在云端、
+    # 根本无法分享，唯一消费者是 owner 本机，本地 id 恰好能解析。
+    local_deck_id = _deck_id_from_origin_ref(content_json.get('origin_ref'))
+    if local_deck_id:
+        deck_uri_id = str(content_json.get('deck_server_id') or local_deck_id)
+        return _projection_deck_card(session_id=session_id, deck_id=deck_uri_id, content_json=content_json)
     task_id = content_json.get('task_id')
     task_run_id = content_json.get('task_run_id')
     event_payload = {
