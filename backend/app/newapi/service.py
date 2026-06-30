@@ -334,9 +334,10 @@ class LlmNewapiUserMappingService:
     ) -> NewApiMappingInfo:
         """确保唤星用户在 new-api 中有对应用户 + 默认 relay token。
 
-        已存在映射 → 直接返回；否则经管理 API：ensure_user（幂等，撞名复用）→ ensure_user_group
-        （设 default 分组，否则空组 relay 报 no available channel）→ set_user_quota
-        → bootstrap access_token（加密落库）→ provision_user_relay_token（取明文 key）→ 写映射。
+        已存在映射 → 直接返回；否则经管理 API：ensure_user（幂等，撞名复用）→ set_user_quota
+        → bootstrap access_token（加密落库）→ ensure_user_group（设 default 分组，否则空组 relay 报
+        no available channel；**须排在所有用户级 GET→PUT 之后**，否则被它们的整对象回写覆盖回空组）
+        → provision_user_relay_token（取明文 key）→ 写映射。
         """
         existing = await llm_newapi_user_mapping_dao.get_by_user(db, huanxing_user_id, app_code)
         if existing:
@@ -367,17 +368,20 @@ class LlmNewapiUserMappingService:
 
         # 1. 幂等确保 new-api 用户（撞 username → 复用，替代旧 DB ON CONFLICT 自愈）
         newapi_user_id = await newapi_admin_client.ensure_user(username=newapi_username, display_name=display)
-        # 2. 设默认分组：relay 渠道按「用户分组」匹配可用渠道（token 空组继承用户组）。new-api CreateUser
-        #    不收 group → 新建用户分组为空字符串 → 新用户首次对话即报「No available channel under group ''」。
-        #    必须建用户后立即设组（排在 set_user_quota 前，其 GET→PUT 整对象回写会保留此处设好的分组）。
-        await newapi_admin_client.ensure_user_group(
-            newapi_user_id=newapi_user_id, group=settings.NEWAPI_DEFAULT_USER_GROUP
-        )
-        # 3. 覆盖式设额度（token 无限额度，用户额度由 users.quota 统一控制）
+        # 2. 覆盖式设额度（token 无限额度，用户额度由 users.quota 统一控制）
         await newapi_admin_client.set_user_quota(newapi_user_id=newapi_user_id, quota=quota)
-        # 4. 铸用户 access_token（建 relay token 必须以用户身份）
+        # 3. 铸用户 access_token（建 relay token 必须以用户身份）
         access_token = await newapi_admin_client.bootstrap_user_access_token(
             newapi_user_id=newapi_user_id, username=newapi_username
+        )
+        # 4. 设默认分组：relay 渠道按「用户分组」匹配可用渠道（token 空组继承用户组）。new-api CreateUser
+        #    不收 group → 新建用户分组为空字符串 → 新用户首次对话即报「No available channel under group ''」。
+        #    ⚠️ 必须排在所有「用户级 GET→PUT 整对象回写」之后：set_user_quota 与 bootstrap 内的
+        #    set_user_password 都是 GET 用户整对象→改字段→PUT，若其 GET 读到设组前的旧快照，PUT 会把
+        #    分组覆盖回空（生产实测根因）。放最后一个用户 PUT 之后、建 relay token 之前——
+        #    provision_user_relay_token 只建 token 不 PUT 用户，故此处设好的分组不再被覆盖。
+        await newapi_admin_client.ensure_user_group(
+            newapi_user_id=newapi_user_id, group=settings.NEWAPI_DEFAULT_USER_GROUP
         )
         # 5. 建默认 relay token + 取明文 key（存裸 key，无 sk- 前缀）
         token_id, token_key = await newapi_admin_client.provision_user_relay_token(
