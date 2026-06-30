@@ -116,8 +116,9 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 获客 19 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
-# lead_request（2.1 请求线索·用户端默认入口）为第 1 条；customer_reassign（GE4）为第 19 条。
+# 获客 22 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
+# lead_request（2.1 请求线索·用户端默认入口）为第 1 条；其后 lookup/search/enrich_company
+# （GROWTH-QCC-4 企业数据读穿中台）；customer_reassign（GE4）为末条。
 _CAPABILITIES = [
     _cap(
         name='lead_request',
@@ -142,6 +143,72 @@ _CAPABILITIES = [
         tags=['growth', 'lead', 'request', 'collect'],
     ),
     _cap(
+        name='lookup_company',
+        mcp_suffix='lookup_company',
+        title='查企业全画像',
+        description=(
+            '按企业名/统一社会信用代码取企业全画像（工商登记/法定代表人/行业/地址…）。'
+            '平台**先查公共池**命中即返回（零成本秒回），未命中才经企查查取数并**自动结构化入池**；'
+            '返回带 `lead_contact_id`，可直接用于 lead.qualify/建跟进。PII 默认脱敏（需 growth:pii 才回明文）。'
+        ),
+        scope=_SCOPE_COLLECT,
+        risk_level='medium',
+        properties={
+            'query': {'type': 'string', 'minLength': 1, 'maxLength': 200, 'description': '企业名或统一社会信用代码'},
+            'force_refresh': {'type': 'boolean', 'default': False, 'description': '强制重取（跳过池命中）'},
+        },
+        required=['query'],
+        page_rank=6,
+        tags=['growth', 'company', 'lookup', 'enterprise'],
+    ),
+    _cap(
+        name='search_companies',
+        mcp_suffix='search_companies',
+        title='找企业（关键词/行业/地域）',
+        description=(
+            '按关键词/行业/地域批量找企业：先查公共池条件匹配，不足时经企查查补足并**自动结构化入池**；'
+            '返回带 `lead_contact_id` 的企业列表，供 ICP 匹配/批量建线索。PII 默认脱敏。'
+        ),
+        scope=_SCOPE_COLLECT,
+        risk_level='medium',
+        properties={
+            'query': {'type': ['string', 'null'], 'description': '关键词（公司/产品等自由文本）'},
+            'industry': {'type': ['string', 'null'], 'description': '行业（自动归一标准类目检索）'},
+            'region': {'type': ['string', 'null'], 'description': '地区/省'},
+            'city': {'type': ['string', 'null'], 'description': '城市'},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 20, 'default': 5, 'description': '返回企业数 N'},
+        },
+        required=[],
+        page_rank=7,
+        tags=['growth', 'company', 'search', 'enterprise'],
+    ),
+    _cap(
+        name='enrich_company',
+        mcp_suffix='enrich_company',
+        title='深度富化企业（风险/知识产权/经营/高管/变更）',
+        description=(
+            '按维度深度富化已有线索：风险(risk)/知识产权(ipr)/经营(operation)/高管(executive)/变更历史(history)。'
+            '维度缓存 TTL 内命中即返回（省成本），未命中才经企查查取数并**全量保真入库**。'
+            '须先用 lookup/search 获取该线索（按 `lead_contact_id` 富化）。'
+        ),
+        scope=_SCOPE_COLLECT,
+        risk_level='medium',
+        properties={
+            'lead_contact_id': {'type': 'integer', 'description': 'lookup/search 返回的线索 ID'},
+            'dimensions': {
+                'type': 'array',
+                'items': {'type': 'string', 'enum': ['risk', 'ipr', 'operation', 'executive', 'history']},
+                'minItems': 1,
+                'description': '要富化的维度子集',
+            },
+            'tool': {'type': ['string', 'null'], 'description': '可选：显式指定 qcc 工具 canonical 名（覆盖默认解析）'},
+            'force_refresh': {'type': 'boolean', 'default': False, 'description': '强制重取（跳过 TTL 缓存）'},
+        },
+        required=['lead_contact_id', 'dimensions'],
+        page_rank=8,
+        tags=['growth', 'company', 'enrich', 'enterprise'],
+    ),
+    _cap(
         name='collect_start',
         mcp_suffix='collect.start',
         title='发起线索采集（高级/补爬）',
@@ -153,7 +220,11 @@ _CAPABILITIES = [
         risk_level='medium',
         properties={
             'keyword': {'type': 'string', 'minLength': 1, 'maxLength': 200, 'description': '采集关键词或 URL'},
-            'source_types': {'type': 'array', 'items': {'type': 'string'}, 'description': '来源类型（默认 [public_web]）'},
+            'source_types': {
+                'type': 'array',
+                'items': {'type': 'string'},
+                'description': '来源类型（默认 [public_web]）',
+            },
             'max_pages': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 5},
             'max_results': {'type': 'integer', 'minimum': 1, 'maximum': 10000, 'default': 100},
             'request_config': {'type': 'object', 'description': '采集引擎扩展配置（可选）'},
@@ -241,7 +312,12 @@ _CAPABILITIES = [
         risk_level='low',
         properties={
             'lifecycle_status': {'type': ['string', 'null'], 'description': '按生命周期过滤'},
-            'view': {'type': 'string', 'enum': ['team', 'mine'], 'default': 'team', 'description': '企业视角：team 全部 / mine 仅自己负责'},
+            'view': {
+                'type': 'string',
+                'enum': ['team', 'mine'],
+                'default': 'team',
+                'description': '企业视角：team 全部 / mine 仅自己负责',
+            },
             'assignee': {'type': ['string', 'null'], 'description': '按负责人 hasn_id 过滤（企业经理用）'},
             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
         },
@@ -318,7 +394,12 @@ _CAPABILITIES = [
         risk_level='medium',
         properties={
             'customer_id': {'type': 'integer'},
-            'assignee': {'type': 'string', 'minLength': 1, 'maxLength': 64, 'description': '新负责人 hasn_id（人或分身）'},
+            'assignee': {
+                'type': 'string',
+                'minLength': 1,
+                'maxLength': 64,
+                'description': '新负责人 hasn_id（人或分身）',
+            },
         },
         required=['customer_id', 'assignee'],
         page_rank=21,
@@ -431,7 +512,12 @@ _CAPABILITIES = [
         scope=_SCOPE_READ,
         risk_level='low',
         properties={
-            'view': {'type': 'string', 'enum': ['team', 'mine'], 'default': 'team', 'description': '企业视角：team 全部 / mine 仅自己负责'},
+            'view': {
+                'type': 'string',
+                'enum': ['team', 'mine'],
+                'default': 'team',
+                'description': '企业视角：team 全部 / mine 仅自己负责',
+            },
         },
         required=[],
         page_rank=27,

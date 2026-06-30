@@ -121,6 +121,77 @@ async def handle_growth_lead_request(
     return result
 
 
+# ---------------- 企业数据读穿中台（hasn.growth.lookup/search/enrich_company） ----------------
+
+
+async def handle_growth_lookup_company(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """按企业名/信用代码取全画像：查公共池命中即返回（省 qcc 费），未命中调网关 qcc → 入池 → 返回带 lead_id。
+
+    身份取自 JWT；qcc 平台 key 由通用网关持有（绝不下发分身），配额按本 owner 归因（doc10 §7.2）。
+    """
+    from backend.app.hasn_growth.service.enterprise_lookup_service import enterprise_lookup_service
+
+    return await enterprise_lookup_service.lookup_company(
+        db,
+        user_id=agent.owner_user_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        query=str(input_payload.get('query') or input_payload.get('q') or '').strip(),
+        reveal_pii=_reveal(agent),
+        force_refresh=bool(input_payload.get('force_refresh')),
+        trace_id=input_payload.get('trace_id'),
+    )
+
+
+async def handle_growth_search_companies(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """按关键词/行业/地域找企业：先查池命中复用，不足时调网关 qcc 补 → 入池 → 返回带 lead_id 列表。"""
+    from backend.app.hasn_growth.service.enterprise_lookup_service import enterprise_lookup_service
+
+    return await enterprise_lookup_service.search_companies(
+        db,
+        user_id=agent.owner_user_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        query=input_payload.get('query') or input_payload.get('q'),
+        industry=input_payload.get('industry'),
+        region=input_payload.get('region'),
+        city=input_payload.get('city'),
+        limit=int(input_payload.get('limit', 5)),
+        reveal_pii=_reveal(agent),
+        trace_id=input_payload.get('trace_id'),
+    )
+
+
+async def handle_growth_enrich_company(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """按维度深度富化（风险/知识产权/经营/高管/变更历史）：查 meta 维度缓存 TTL 内命中即返回，
+    未命中/过期调对应 qcc namespace → 入 contact.meta_data['enrichment'] 保真 → 返回。
+
+    须 owner 已拥有该线索（先 lookup/search 获取）；维度全量入池对齐 doc09 §4.3。
+    """
+    from backend.app.hasn_growth.service.enterprise_lookup_service import enterprise_lookup_service
+
+    dims = input_payload.get('dimensions')
+    if isinstance(dims, str):
+        dims = [d.strip() for d in dims.split(',') if d.strip()]
+    return await enterprise_lookup_service.enrich_company(
+        db,
+        lead_contact_id=_int(input_payload, 'lead_contact_id'),
+        user_id=agent.owner_user_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        dimensions=list(dims or []),
+        tool=input_payload.get('tool'),
+        force_refresh=bool(input_payload.get('force_refresh')),
+        trace_id=input_payload.get('trace_id'),
+    )
+
+
 # ---------------- 线索 ----------------
 
 

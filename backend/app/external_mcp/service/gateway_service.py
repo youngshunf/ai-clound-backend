@@ -275,8 +275,7 @@ class ExternalMcpGateway:
             client = RemoteMcpClient(endpoint=server['endpoint'], headers=headers)
             raw_tools = await client.list_tools()
             tool_metas = [
-                self.normalize_tool(server_name=server['name'], raw_tool=t, origin=server['origin'])
-                for t in raw_tools
+                self.normalize_tool(server_name=server['name'], raw_tool=t, origin=server['origin']) for t in raw_tools
             ]
         except (ExternalMcpClientError, McpToolError) as exc:
             health = 'unhealthy'
@@ -338,7 +337,12 @@ class ExternalMcpGateway:
                         allowed_tools=allowed_tools,
                     )
                 )
-        return {'binding_id': binding_id, 'mcp_id': mcp_id, 'agent_hasn_id': agent_hasn_id, 'allowed_tools': allowed_tools}
+        return {
+            'binding_id': binding_id,
+            'mcp_id': mcp_id,
+            'agent_hasn_id': agent_hasn_id,
+            'allowed_tools': allowed_tools,
+        }
 
     async def set_binding_enabled(self, *, agent_hasn_id: str, mcp_id: str, enabled: bool) -> bool:
         async with async_db_session.begin() as db:
@@ -367,24 +371,32 @@ class ExternalMcpGateway:
         """
         async with async_db_session() as db:
             bindings = (
-                await db.execute(
-                    select(ExternalMcpBinding).where(
-                        ExternalMcpBinding.agent_hasn_id == agent_hasn_id,
-                        ExternalMcpBinding.enabled.is_(True),
+                (
+                    await db.execute(
+                        select(ExternalMcpBinding).where(
+                            ExternalMcpBinding.agent_hasn_id == agent_hasn_id,
+                            ExternalMcpBinding.enabled.is_(True),
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if not bindings:
                 return []
             mcp_ids = {b.mcp_id for b in bindings}
             servers = (
-                await db.execute(
-                    select(ExternalMcpServer).where(
-                        ExternalMcpServer.mcp_id.in_(mcp_ids),
-                        ExternalMcpServer.status == 'active',
+                (
+                    await db.execute(
+                        select(ExternalMcpServer).where(
+                            ExternalMcpServer.mcp_id.in_(mcp_ids),
+                            ExternalMcpServer.status == 'active',
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         server_by_id = {s.mcp_id: s for s in servers}
 
         tools: list[dict[str, Any]] = []
@@ -400,18 +412,16 @@ class ExternalMcpGateway:
                 meta = cache_by_raw.get(entry['raw_name'])
                 if meta is None:
                     continue
-                tools.append(
-                    {
-                        'name': meta['name'],
-                        'raw_name': meta['raw_name'],
-                        'mcp_id': server.mcp_id,
-                        'input_schema': meta.get('input_schema') or {'type': 'object'},
-                        'summary': meta.get('summary') or '',
-                        'required_scopes': meta.get('required_scopes') or [f"mcp:tool://{meta['name']}"],
-                        'risk_level': meta.get('risk_level', 'medium'),
-                        'origin': server.origin,
-                    }
-                )
+                tools.append({
+                    'name': meta['name'],
+                    'raw_name': meta['raw_name'],
+                    'mcp_id': server.mcp_id,
+                    'input_schema': meta.get('input_schema') or {'type': 'object'},
+                    'summary': meta.get('summary') or '',
+                    'required_scopes': meta.get('required_scopes') or [f'mcp:tool://{meta["name"]}'],
+                    'risk_level': meta.get('risk_level', 'medium'),
+                    'origin': server.origin,
+                })
         return tools
 
     # ---------- 代理调用 ----------
@@ -505,7 +515,7 @@ class ExternalMcpGateway:
         if server['origin'] != 'system':
             raise McpToolError(
                 McpErrorCode.DIRECT_CALL_DENIED,
-                f"call_system_tool 仅服务 system-origin 平台工具（{ns} origin={server['origin']}）",
+                f'call_system_tool 仅服务 system-origin 平台工具（{ns} origin={server["origin"]}）',
             )
         if server['status'] != 'active':
             raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, f"server '{ns}' 已停用")
@@ -533,6 +543,17 @@ class ExternalMcpGateway:
             caller_agent_hasn_id=agent_hasn_id or 'system',
             trace_id=trace_id,
         )
+
+    async def list_system_tools(self, namespace: str) -> list[dict[str, Any]]:
+        """返回某 system-origin namespace 已自省的工具元数据（canonical name / raw_name / summary …）。
+
+        供上层业务（如 hasn_growth 富化）**动态解析平台工具 canonical 名**——避免硬编码各第三方 server
+        的 raw 工具名。非 system-origin / 不存在 / 未自省 → 空列表（诚实，不造名）。
+        """
+        server = await self._get_server_by_name(namespace)
+        if server is None or server['origin'] != 'system':
+            return []
+        return list(server.get('advertised_tools_cache') or [])
 
     async def _ensure_canonical_cached(self, server: dict[str, Any], tool_name: str) -> dict[str, Any]:
         """确保 canonical tool_name 在 server 工具缓存中（缺则 re-probe 一次）；返回可能已刷新的 server。
@@ -596,9 +617,7 @@ class ExternalMcpGateway:
         # 抽纯文本便于上层消费（保留原始 content/structured）。
         text_parts: list[str] = []
         if isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict) and item.get('type') == 'text' and item.get('text'):
-                    text_parts.append(str(item['text']))
+            text_parts.extend(str(item['text']) for item in content if isinstance(item, dict) and item.get('type') == 'text' and item.get('text'))
         return {
             'ok': not is_error,
             'is_error': is_error,
@@ -656,18 +675,26 @@ class ExternalMcpGateway:
             else:
                 where = ExternalMcpServer.owner_hasn_id == owner_hasn_id
             rows = (
-                await db.execute(select(ExternalMcpServer).where(where).order_by(ExternalMcpServer.id.desc()))
-            ).scalars().all()
+                (await db.execute(select(ExternalMcpServer).where(where).order_by(ExternalMcpServer.id.desc())))
+                .scalars()
+                .all()
+            )
         return [self._server_to_public_dict(r) for r in rows]
 
     async def list_servers_admin(self, *, origin: str = 'system') -> list[dict[str, Any]]:
         """Admin 列出某 origin 的 server（默认 system 平台预置）。"""
         async with async_db_session() as db:
             rows = (
-                await db.execute(
-                    select(ExternalMcpServer).where(ExternalMcpServer.origin == origin).order_by(ExternalMcpServer.id.desc())
+                (
+                    await db.execute(
+                        select(ExternalMcpServer)
+                        .where(ExternalMcpServer.origin == origin)
+                        .order_by(ExternalMcpServer.id.desc())
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         return [self._server_to_public_dict(r) for r in rows]
 
     async def get_server_detail(
@@ -778,9 +805,7 @@ class ExternalMcpGateway:
             'rate_limit_per_min': max(0, int(rate_limit_per_min)),
         }
 
-    async def delete_server(
-        self, *, mcp_id: str, owner_hasn_id: str | None = None, is_admin: bool = False
-    ) -> bool:
+    async def delete_server(self, *, mcp_id: str, owner_hasn_id: str | None = None, is_admin: bool = False) -> bool:
         """删除 server：撤销凭据 + 删该 server 全部 binding + 删 server 行。"""
         server = await self._get_server(mcp_id)
         if server is None:
@@ -796,12 +821,16 @@ class ExternalMcpGateway:
         """列出该 owner 名下全部 Agent↔server 绑定（管理面展示）。"""
         async with async_db_session() as db:
             rows = (
-                await db.execute(
-                    select(ExternalMcpBinding)
-                    .where(ExternalMcpBinding.owner_hasn_id == owner_hasn_id)
-                    .order_by(ExternalMcpBinding.id.desc())
+                (
+                    await db.execute(
+                        select(ExternalMcpBinding)
+                        .where(ExternalMcpBinding.owner_hasn_id == owner_hasn_id)
+                        .order_by(ExternalMcpBinding.id.desc())
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         return [
             {
                 'binding_id': r.binding_id,

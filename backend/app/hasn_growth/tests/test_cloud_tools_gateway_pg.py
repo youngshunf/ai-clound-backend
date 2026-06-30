@@ -103,11 +103,13 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         await engine.dispose()
 
 
-async def test_all_19_growth_tools_resolve_in_gateway_registry() -> None:  # noqa: RUF029
+async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # noqa: RUF029
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
-    assert len(handlers) == 19  # 2.1 新增 lead_request（请求线索·用户端默认入口）
+    assert len(handlers) == 22  # +lead_request（2.1）+ lookup/search/enrich_company（GROWTH-QCC-4 读穿中台）
     assert 'growth.lead_request' in handlers
+    for h in ('growth.lookup_company', 'growth.search_companies', 'growth.enrich_company'):
+        assert h in handlers, h
     for h in handlers:
         assert h.startswith('growth.'), h
         assert h in _REG, f'manifest 声明的工具 handler {h} 未在网关注册表中'

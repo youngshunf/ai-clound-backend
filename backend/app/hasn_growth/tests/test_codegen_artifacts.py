@@ -75,9 +75,9 @@ def test_lead_automation_sql_contains_required_indexes_and_retention_default() -
 
 def test_absorb_migration_sets_schema_and_renames_de_prefixed() -> None:
     """收编迁移脚本：10 表 SET SCHEMA hasn_growth + 去前缀，幂等。"""
-    mig = (
-        ROOT / 'backend/sql/hasn_growth/migrations/2026-06-12-absorb-lead-automation.sql'
-    ).read_text(encoding='utf-8')
+    mig = (ROOT / 'backend/sql/hasn_growth/migrations/2026-06-12-absorb-lead-automation.sql').read_text(
+        encoding='utf-8'
+    )
     assert 'CREATE SCHEMA IF NOT EXISTS hasn_growth' in mig
     assert 'SET SCHEMA hasn_growth' in mig
     for old_name, new_name in (
@@ -168,16 +168,16 @@ def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
     from backend.app.hasn_growth.api.router import v1
 
     v1_paths = {getattr(r, 'path', '') for r in v1.routes}
-    assert any('/api/v1/growth/customers' == p for p in v1_paths)
-    assert any('/api/v1/growth/opportunitys' == p for p in v1_paths)
-    assert any('/api/v1/growth/optout-records' == p for p in v1_paths)
+    assert any(p == '/api/v1/growth/customers' for p in v1_paths)
+    assert any(p == '/api/v1/growth/opportunitys' for p in v1_paths)
+    assert any(p == '/api/v1/growth/optout-records' for p in v1_paths)
     # M8 退役：legacy_* 符号已删除，旧 /api/v1/lead-automation/* 转发面整体清零（双中心归一）
     assert not hasattr(growth_router_mod, 'legacy_v1')
     assert not any('lead-automation' in p for p in v1_paths)
 
 
 def test_m2_app_registration_manifest_scope_catalog() -> None:
-    """应用注册：manifest（app_id=growth，17 工具）+ 5 scope + App（manual）齐备。"""
+    """应用注册：manifest（app_id=growth，22 工具）+ 5 scope + App（manual）齐备。"""
     from backend.app.hasn_core.app_platform import AINativeAppRegistry, app_catalog_registry
     from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
     from backend.app.mcp.scopes import SCOPE_CATALOG
@@ -188,8 +188,8 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
     assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
     caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
-    # 19 = 17 漏斗工具 + customer_reassign（GE4 企业经理分配负责人）+ lead_request（2.1 用户端「请求线索」先查池入口）
-    assert len(caps) == 19
+    # 22 = 19（漏斗+customer_reassign+lead_request）+ lookup/search/enrich_company（GROWTH-QCC-4 企业数据读穿中台）
+    assert len(caps) == 22
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
     # 所有 required_scopes 冒号词表
     for c in caps:
@@ -282,10 +282,12 @@ def test_codegen_templates_keep_generated_output_importable() -> None:
     router_template = (ROOT / 'backend/plugin/code_generator/templates/python/router.jinja').read_text(encoding='utf-8')
     app_template = (ROOT / 'backend/plugin/code_generator/templates/python/api_app.jinja').read_text(encoding='utf-8')
     frontend_generator = (ROOT / 'backend/plugin/code_generator/frontend/generator.py').read_text(encoding='utf-8')
-    ts_api_template = (ROOT / 'backend/plugin/code_generator/templates/typescript/api.ts.jinja').read_text(encoding='utf-8')
+    ts_api_template = (ROOT / 'backend/plugin/code_generator/templates/typescript/api.ts.jinja').read_text(
+        encoding='utf-8'
+    )
 
     assert '{% endif %}' in model_template
-    assert "open_api.include_router(open_{{ table_name }}_router, prefix=" in router_template
+    assert 'open_api.include_router(open_{{ table_name }}_router, prefix=' in router_template
     assert 'get_list(db=db, user_id=user_id)' not in app_template
     assert 'app.replace("_", "-")' in frontend_generator
     assert 'module.replace("_", "-")' in frontend_generator
