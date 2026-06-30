@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.marketplace.model import MarketplaceSkillVersion
-from backend.app.marketplace.schema.marketplace_skill_version import CreateMarketplaceSkillVersionParam, UpdateMarketplaceSkillVersionParam
+from backend.app.marketplace.schema.marketplace_skill_version import (
+    CreateMarketplaceSkillVersionParam,
+    UpdateMarketplaceSkillVersionParam,
+)
 
 
 class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
@@ -62,6 +65,23 @@ class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
         :return:
         """
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)
+
+    async def set_package_meta(
+        self, db: AsyncSession, pk: int, file_hash: str, file_size: int
+    ) -> int:
+        """
+        回写打包产物指纹（file_hash/file_size）
+
+        打包成功后必须调用，否则 file_hash 永远为 NULL，导致 PackageService 缓存判定
+        始终未命中、每次下载都重新打包并阻塞事件循环。
+
+        :param db: 数据库会话
+        :param pk: 技能版本 ID
+        :param file_hash: 下载包 SHA256
+        :param file_size: 下载包字节数
+        :return: 受影响行数
+        """
+        return await self.update_model(db, pk, {'file_hash': file_hash, 'file_size': file_size})
 
     async def get_by_skill_and_version(
         self, db: AsyncSession, skill_id: str, version: str
