@@ -12,6 +12,9 @@
 #   HOST=0.0.0.0 ./dev.sh         # 对局域网开放
 #   WORKERS=4 ./dev.sh            # 改 worker 数（默认 1）
 #   ./dev.sh --no-reload --workers 4   # 透传给 fba run 的额外参数（显式 --workers 覆盖默认）
+#   FBA_DEV_APPS=hasn_growth ./dev.sh  # ⚡聚焦后端开发：只挂这些应用(逗号分隔)+核心(admin/auth)，
+#                                      #   冷启动 import 从 ~13s 压到 ~3s，热重载快得多。被裁应用端点 404，
+#                                      #   仅 dev 用；不设则全加载(生产/默认)。应用名见 backend/app/router.py::_APP_LOADERS。
 #
 # Windows：用 Git Bash 直接跑本脚本；若用 PowerShell，请改用同目录的 dev.ps1。
 set -euo pipefail
