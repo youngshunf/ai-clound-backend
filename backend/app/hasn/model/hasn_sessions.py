@@ -1,12 +1,10 @@
 from datetime import datetime
-from uuid import UUID
 
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, UniversalText, TimeZone
-from backend.utils.timezone import timezone
+from backend.common.model import Base, TimeZone
 
 
 class HasnSessions(Base):
@@ -23,7 +21,7 @@ class HasnSessions(Base):
     session_status: Mapped[str] = mapped_column(sa.String(20), default='active', comment='会话状态 (active/completed/error/cancelled)')
     parent_session_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='父会话 ID (用于分叉)')
     continuation_from_session_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='续接自哪个 Session')
-    origin_type: Mapped[str] = mapped_column(sa.String(20), default='', comment='来源类型 (ui/scheduler/external_app/api/system/task_run/workflow_run/app)；app=AI-Native 应用工作会话(AppCollab doc21 §D3)')
+    origin_type: Mapped[str] = mapped_column(sa.String(20), default='', comment='来源类型 (ui/scheduler/external_app/api/system/task_run/workflow_run/app/manual/copilot)；app=AI-Native 应用工作会话(AppCollab doc21 §D3)；manual=派发型工作会话；copilot=会议副驾会话')
     origin_ref: Mapped[str | None] = mapped_column(sa.String(200), default=None, comment='来源引用 (task_id/app_id/trace_id)；origin_type=app 时形如 resource:<app>:<id>(AppCollab doc21 §D3)')
     title: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='Session 标题')
     summary_checkpoint_json: Mapped[dict | None] = mapped_column(sa.JSON(), default=None, comment='会话摘要检查点 (JSON)')

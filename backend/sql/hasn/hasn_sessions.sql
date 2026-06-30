@@ -29,7 +29,7 @@ CREATE TABLE hasn_sessions (
         session_status IN ('active', 'completed', 'error', 'cancelled')
     ),
     CONSTRAINT chk_origin_type CHECK (
-        origin_type IN ('ui', 'scheduler', 'task_run', 'workflow_run', 'external_app', 'api', 'system', 'app')
+        origin_type IN ('ui', 'scheduler', 'task_run', 'workflow_run', 'external_app', 'api', 'system', 'app', 'manual', 'copilot')
     )
 );
 

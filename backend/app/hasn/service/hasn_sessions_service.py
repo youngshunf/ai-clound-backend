@@ -454,12 +454,24 @@ def _apply_csv_filter(stmt: Any, column: Any, value: str | None) -> Any:
     return stmt.where(column.in_(values))
 
 
-# 与 backend/sql/hasn/hasn_sessions.sql 的 chk_origin_type 约束保持一致。
-# 云端是自身约束的权威：daemon 端任何漂移值（如把完成模式 'manual' 误塞进
-# origin_type）都必须在入库前归一，绝不能让单个非法枚举触发 CheckViolationError
-# 把整批工作会话 summary 同步 500 掉、令 daemon 无限重试（doc16 B 阶段）。
+# 与 backend/sql/hasn/hasn_sessions.sql 的 chk_origin_type 约束保持一致（白名单必须同步两处）。
+# 云端是自身约束的权威：daemon 端任何**真正未知**的漂移值都在入库前归一回落，绝不能让单个
+# 非法枚举触发 CheckViolationError 把整批工作会话 summary 同步 500 掉、令 daemon 无限重试（doc16 B 阶段）。
+# manual（派发型工作会话）/copilot（会议副驾会话）是 daemon 合法产出的会话来源，已随
+# 2026-06-30 迁移加入 chk_origin_type 白名单，按云端权威**原样保留**（不再误当漂移值压成 'system'）。
 _ALLOWED_ORIGIN_TYPES: frozenset[str] = frozenset(
-    {'ui', 'scheduler', 'task_run', 'workflow_run', 'external_app', 'api', 'system', 'app'}
+    {
+        'ui',
+        'scheduler',
+        'task_run',
+        'workflow_run',
+        'external_app',
+        'api',
+        'system',
+        'app',
+        'manual',
+        'copilot',
+    }
 )
 _DEFAULT_ORIGIN_TYPE = 'system'
 
