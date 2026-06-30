@@ -22,7 +22,11 @@ from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderE
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+
+# CurrentSession/CurrentSessionTransaction 是 FastAPI 依赖注入的运行期注解（Annotated[..., Depends(...)]），
+# 必须运行期导入——即便有 from __future__ import annotations，FastAPI 仍用 get_type_hints 在运行期求值，
+# 放进 TYPE_CHECKING 会 NameError。ruff TC001 自动建议在此**不适用**。
+from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
 
 router = APIRouter()
 
@@ -84,6 +88,12 @@ class SetVisibilityRequest(BaseModel):
 
 class AddShareRequest(BaseModel):
     grantee_type: str = Field(description='human/agent/enterprise')
+    grantee_id: str = Field(description='被授权对象 ID')
+    permission: str = Field(description='viewer/editor/manager')
+
+
+class AddDocShareRequest(BaseModel):
+    grantee_type: str = Field(description='human/agent（文档级无企业/可见性档）')
     grantee_id: str = Field(description='被授权对象 ID')
     permission: str = Field(description='viewer/editor/manager')
 
@@ -190,6 +200,58 @@ async def revoke_share(
     owner_id = await _resolve_owner(db, request)
     ok = await knowledge_service.revoke_share(
         db, subject=Subject.human(owner_id), kb_id=kb_id, grantee_type=grantee_type, grantee_id=grantee_id
+    )
+    return response_base.success(data={'revoked': ok})
+
+
+# ---------- 单个文档级共享（仅 manager 权；文档协作者仅 human/agent）----------
+
+
+@router.get(
+    '/documents/{doc_id}/shares',
+    summary='查看文档共享名单',
+    name='knowledge_app_list_doc_shares',
+    dependencies=[DependsJwtAuth],
+)
+async def list_doc_shares(request: Request, db: CurrentSession, doc_id: int) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.list_doc_shares(db, subject=Subject.human(owner_id), doc_id=doc_id)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/documents/{doc_id}/shares',
+    summary='添加/更新文档协作者（人/分身）',
+    name='knowledge_app_add_doc_share',
+    dependencies=[DependsJwtAuth],
+)
+async def add_doc_share(
+    request: Request, db: CurrentSessionTransaction, doc_id: int, body: AddDocShareRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.add_doc_share(
+        db,
+        subject=Subject.human(owner_id),
+        doc_id=doc_id,
+        grantee_type=body.grantee_type,
+        grantee_id=body.grantee_id,
+        permission=body.permission,
+    )
+    return response_base.success(data=data)
+
+
+@router.delete(
+    '/documents/{doc_id}/shares',
+    summary='撤销文档协作者',
+    name='knowledge_app_revoke_doc_share',
+    dependencies=[DependsJwtAuth],
+)
+async def revoke_doc_share(
+    request: Request, db: CurrentSessionTransaction, doc_id: int, grantee_type: str, grantee_id: str
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    ok = await knowledge_service.revoke_doc_share(
+        db, subject=Subject.human(owner_id), doc_id=doc_id, grantee_type=grantee_type, grantee_id=grantee_id
     )
     return response_base.success(data={'revoked': ok})
 

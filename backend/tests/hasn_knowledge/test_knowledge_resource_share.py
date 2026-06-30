@@ -169,6 +169,103 @@ async def test_share_to_agent(session) -> None:
     assert any(it['id'] == kb.id and it['relation'] == 'shared' for it in items)
 
 
+async def _make_doc(session, kb: Kb, *, name: str = '文档') -> Document:
+    doc = Document(
+        kb_id=kb.id, owner_id=kb.owner_id, kind='native', name=name, content='# x', parse_status='parsed'
+    )
+    session.add(doc)
+    await session.flush()
+    return doc
+
+
+async def test_doc_level_share_grants_doc_only_access(session) -> None:
+    """文档级共享：B 无整库访问，但凭文档 grant 能开该文档；撤销后失效。整库列表不含该库。"""
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    b = Subject.human(f'h_b_{tag}')
+    kb = await _make_kb(session, a.hasn_id, name='私有库含敏感文档')
+    doc = await _make_doc(session, kb, name='单独分享的文档')
+
+    # B 既不可访问库，也不可访问文档
+    with pytest.raises(errors.NotFoundError):
+        await knowledge_service.authorize_kb(session, subject=b, kb_id=kb.id, need='viewer')
+    with pytest.raises(errors.NotFoundError):
+        await knowledge_service.authorize_doc(session, subject=b, doc_id=doc.id, need='viewer')
+
+    # A 把单个文档共享给 B(viewer)
+    out = await knowledge_service.add_doc_share(
+        session, subject=a, doc_id=doc.id, grantee_type='human', grantee_id=b.hasn_id, permission='viewer'
+    )
+    assert out['doc_id'] == doc.id and out['kb_id'] == kb.id and out['doc_name'] == '单独分享的文档'
+
+    # B 可开该文档（委托键 = 库主人 A），但仍不可访问整库
+    got = await knowledge_service.authorize_doc(session, subject=b, doc_id=doc.id, need='viewer')
+    assert got.owner_id == a.hasn_id
+    with pytest.raises(errors.NotFoundError):
+        await knowledge_service.authorize_kb(session, subject=b, kb_id=kb.id, need='viewer')
+    # viewer < editor → 不可写该文档
+    with pytest.raises(errors.ForbiddenError):
+        await knowledge_service.authorize_doc(session, subject=b, doc_id=doc.id, need='editor')
+    # 整库列表不含该库（文档级共享不提升到库级可见）
+    items = await knowledge_service.list_accessible_kbs(session, subject=b)
+    assert all(it['id'] != kb.id for it in items)
+
+    # 撤销 → B 不可见
+    assert await knowledge_service.revoke_doc_share(
+        session, subject=a, doc_id=doc.id, grantee_type='human', grantee_id=b.hasn_id
+    ) is True
+    with pytest.raises(errors.NotFoundError):
+        await knowledge_service.authorize_doc(session, subject=b, doc_id=doc.id, need='viewer')
+
+
+async def test_doc_share_overlays_max_with_kb(session) -> None:
+    """库级 viewer ∪ 文档级 editor → authorize_doc 取高者 editor 通过。"""
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    b = Subject.human(f'h_b_{tag}')
+    kb = await _make_kb(session, a.hasn_id, name='叠加测试库')
+    doc = await _make_doc(session, kb)
+    await knowledge_service.add_share(
+        session, subject=a, kb_id=kb.id, grantee_type='human', grantee_id=b.hasn_id, permission='viewer'
+    )
+    await knowledge_service.add_doc_share(
+        session, subject=a, doc_id=doc.id, grantee_type='human', grantee_id=b.hasn_id, permission='editor'
+    )
+    # 取高者 editor 通过；该文档可写，但整库其它文档仍只 viewer
+    assert (await knowledge_service.authorize_doc(session, subject=b, doc_id=doc.id, need='editor')).owner_id == a.hasn_id
+    other = await _make_doc(session, kb, name='同库另一文档')
+    with pytest.raises(errors.ForbiddenError):
+        await knowledge_service.authorize_doc(session, subject=b, doc_id=other.id, need='editor')
+
+
+async def test_doc_share_manager_and_rejects_enterprise(session) -> None:
+    """文档级 manager 可管理该文档共享名单；viewer 不可；grantee 仅 human/agent。"""
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    b = Subject.human(f'h_b_{tag}')
+    c = Subject.human(f'h_c_{tag}')
+    kb = await _make_kb(session, a.hasn_id, name='文档 manager 库')
+    doc = await _make_doc(session, kb)
+    await knowledge_service.add_doc_share(
+        session, subject=a, doc_id=doc.id, grantee_type='human', grantee_id=b.hasn_id, permission='manager'
+    )
+    # B(文档 manager) 可再加 C
+    await knowledge_service.add_doc_share(
+        session, subject=b, doc_id=doc.id, grantee_type='human', grantee_id=c.hasn_id, permission='viewer'
+    )
+    shares = await knowledge_service.list_doc_shares(session, subject=b, doc_id=doc.id)
+    grantees = {(s['grantee_type'], s['grantee_id']) for s in shares['shares']}
+    assert ('human', b.hasn_id) in grantees and ('human', c.hasn_id) in grantees
+    # C(viewer) 不可管理
+    with pytest.raises(errors.ForbiddenError):
+        await knowledge_service.list_doc_shares(session, subject=c, doc_id=doc.id)
+    # 文档级不收 enterprise grantee
+    with pytest.raises(errors.RequestError):
+        await knowledge_service.add_doc_share(
+            session, subject=a, doc_id=doc.id, grantee_type='enterprise', grantee_id='1', permission='viewer'
+        )
+
+
 async def test_manager_can_manage_shares(session) -> None:
     """被授 manager 的协作者可管理共享名单；viewer 不可。"""
     tag = uuid.uuid4().hex[:8]

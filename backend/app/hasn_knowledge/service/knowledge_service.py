@@ -48,6 +48,9 @@ _GRANT_MODES = ('inherit', 'restricted', 'denied')
 
 # 知识库接入平台产物级协作（应用平台 v3 §6）：resource_share 的 resource_type。
 _RESOURCE_TYPE = 'knowledge'
+# 单个文档级协作：与库级（knowledge）平行的 resource_type，resource_id = doc_id。
+# 文档级共享叠加在库级之上（取高者）；文档自身无 visibility/enterprise，故只认显式 grant。
+_RESOURCE_TYPE_DOC = 'knowledge_doc'
 
 
 @dataclass(frozen=True)
@@ -199,14 +202,41 @@ class KnowledgeService:
             raise errors.ForbiddenError(msg='没有该操作权限')
         return kb
 
+    async def _effective_doc_permission(self, db: AsyncSession, *, doc: Document, kb: Kb, subject: Subject) -> str:
+        """文档级显式协作授权（叠加在库级之上）。文档无可见性/企业归属，只认 hasn_resource_share 显式 grant。"""
+        return await resource_share_service.resolve_effective_permission(
+            db,
+            subject_hasn_id=subject.hasn_id,
+            subject_kind=subject.kind,
+            subject_owner_hasn_id=subject.owner_hasn_id,
+            resource_type=_RESOURCE_TYPE_DOC,
+            resource_id=str(doc.id),
+            resource_owner_hasn_id=kb.owner_id,
+            resource_owner_scope='personal',
+            resource_enterprise_id=None,
+            resource_visibility='private',
+        )
+
     async def authorize_doc(self, db: AsyncSession, *, subject: Subject, doc_id: int, need: str) -> Kb:
-        """按 doc_id 反查所属 kb 并校验权限；返回 kb（caller 用 kb.owner_id 委托旧方法）。"""
+        """按 doc_id 反查所属 kb，校验「库级权限 ∪ 文档级共享」取高者；返回 kb（caller 用 kb.owner_id 委托旧方法）。
+
+        被分享单个文档的协作者**没有**整库访问（不在 list_accessible_kbs 里），但凭文档级 grant 仍能据
+        云端 doc_id read-through 打开该文档（HASN URI 铁律：据云端权威 id 从云端读，ACL 云端判权）。
+        """
         doc = (
             await db.execute(select(Document).where(Document.id == doc_id, Document.deleted_time.is_(None)))
         ).scalar_one_or_none()
         if doc is None:
             raise errors.NotFoundError(msg='文档不存在')
-        return await self.authorize_kb(db, subject=subject, kb_id=doc.kb_id, need=need)
+        kb = await self._load_kb(db, doc.kb_id)
+        kb_eff = await self._effective_permission(db, kb=kb, subject=subject)
+        doc_eff = await self._effective_doc_permission(db, doc=doc, kb=kb, subject=subject)
+        eff = kb_eff if rank(kb_eff) >= rank(doc_eff) else doc_eff
+        if rank(eff) < rank(need):
+            if rank(eff) == 0:
+                raise errors.NotFoundError(msg='文档不存在')
+            raise errors.ForbiddenError(msg='没有该操作权限')
+        return kb
 
     async def authorize_folder(self, db: AsyncSession, *, subject: Subject, folder_id: int, need: str) -> Kb:
         """按 folder_id 反查所属 kb 并校验权限；返回 kb。"""
@@ -366,6 +396,54 @@ class KnowledgeService:
         await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='manager')
         return await resource_share_service.revoke_share(
             db, resource_type=_RESOURCE_TYPE, resource_id=str(kb_id), grantee_type=grantee_type, grantee_id=grantee_id
+        )
+
+    # ---------- 单个文档级共享（manager 权；文档协作者仅 human/agent，无可见性档）----------
+
+    async def list_doc_shares(self, db: AsyncSession, *, subject: Subject, doc_id: int) -> dict[str, Any]:
+        kb = await self.authorize_doc(db, subject=subject, doc_id=doc_id, need='manager')
+        shares = await resource_share_service.list_shares(
+            db, resource_type=_RESOURCE_TYPE_DOC, resource_id=str(doc_id)
+        )
+        return {'doc_id': doc_id, 'kb_id': kb.id, 'shares': shares}
+
+    async def add_doc_share(
+        self,
+        db: AsyncSession,
+        *,
+        subject: Subject,
+        doc_id: int,
+        grantee_type: str,
+        grantee_id: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        if grantee_type not in ('human', 'agent'):
+            raise errors.RequestError(msg='文档分享仅支持 human/agent 协作者')
+        if permission not in ('viewer', 'editor', 'manager'):
+            raise errors.RequestError(msg='非法权限档')
+        kb = await self.authorize_doc(db, subject=subject, doc_id=doc_id, need='manager')
+        doc = (
+            await db.execute(select(Document).where(Document.id == doc_id, Document.deleted_time.is_(None)))
+        ).scalar_one_or_none()
+        share = await resource_share_service.upsert_share(
+            db,
+            resource_type=_RESOURCE_TYPE_DOC,
+            resource_id=str(doc_id),
+            owner_hasn_id=kb.owner_id,
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+            granted_by=subject.hasn_id,
+        )
+        # 回带文档标题/库 id，供 daemon 直接组卡（无需另查），对齐「daemon 据云端权威 id 组卡」纪律
+        return {**share, 'doc_id': doc_id, 'kb_id': kb.id, 'doc_name': doc.name if doc else ''}
+
+    async def revoke_doc_share(
+        self, db: AsyncSession, *, subject: Subject, doc_id: int, grantee_type: str, grantee_id: str
+    ) -> bool:
+        await self.authorize_doc(db, subject=subject, doc_id=doc_id, need='manager')
+        return await resource_share_service.revoke_share(
+            db, resource_type=_RESOURCE_TYPE_DOC, resource_id=str(doc_id), grantee_type=grantee_type, grantee_id=grantee_id
         )
 
     async def list_kbs(self, db: AsyncSession, owner_id: str) -> list[dict[str, Any]]:
