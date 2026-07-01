@@ -58,6 +58,10 @@ _TODO_FIELDS = {
     'output_spec',
     'source',
     'completed_time',
+    # PLAN-TRIAGE 留痕三列（独立于 notes 用户备注）：owner_decision 决策留痕 / 完成结论 / 放弃原因。
+    'decision_note',
+    'completion_note',
+    'cancel_reason',
 }
 _EVENT_FIELDS = {
     'title',
