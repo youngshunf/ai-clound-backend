@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn_plan.service.plan_app_service import plan_service
+from backend.app.hasn_plan.service.plan_authz import active_enterprise_id
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -305,8 +306,25 @@ async def app_list_events(
     db: CurrentSession,
     start: Annotated[datetime | None, Query()] = None,
     end: Annotated[datetime | None, Query()] = None,
+    scope: Annotated[str, Query(description='personal（默认个人日历）| enterprise（活跃企业日历，WHO/WHAT 裁剪）')] = (
+        'personal'
+    ),
 ) -> ResponseModel:
+    """日历事件读（PLAN-ENT B2 空间分叉，[04] §5.1）。
+
+    `scope=personal`（默认）→ 个人事件（`enterprise_id IS NULL`，owner 隔离，个人零破坏）；
+    `scope=enterprise` → 主人活跃企业 E 的事件（恒前置 `enterprise_id==E` + 数据范围 WHO + 忙闲 WHAT 裁剪）；
+    无活跃企业 / 非成员 → 空列表（企业隔离硬底线）。两条各自 scope 读，webui 合并（不是一条混合查询）。
+    """
     owner = await _resolve_owner(db, request)
+    if (scope or 'personal').strip().lower() == 'enterprise':
+        eid = await active_enterprise_id(db, owner)
+        if not eid:
+            return response_base.success(data=[])
+        data = await plan_service.list_enterprise_events(
+            db, viewer_owner_hasn_id=owner, enterprise_id=eid, start=start, end=end
+        )
+        return response_base.success(data=data)
     return response_base.success(data=await plan_service.list_events(db, owner=owner, start=start, end=end))
 
 

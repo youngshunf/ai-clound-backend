@@ -237,6 +237,11 @@ class PlanWriteScope:
     error_code: str | None = None
 
 
+async def active_enterprise_id(db: AsyncSession, owner_hasn_id: str) -> int | None:
+    """主人当前活跃企业的公开别名（读类空间分叉复用；见 [`_active_enterprise_id`]）。"""
+    return await _active_enterprise_id(db, owner_hasn_id)
+
+
 async def _active_enterprise_id(db: AsyncSession, owner_hasn_id: str) -> int | None:
     """主人当前活跃企业（[01] hasn_owner_workbench_pref.active_enterprise_id；空/未开通 → None=个人空间）。"""
     eid = (

@@ -32,6 +32,7 @@ from backend.app.hasn_plan.model import (
 )
 from backend.app.hasn_plan.service.plan_authz import (
     PlanEnterpriseScope,
+    active_enterprise_id,
     enterprise_event_who_filter,
     resolve_plan_enterprise_scope,
 )
@@ -200,7 +201,8 @@ class PlanService:
 
     # ── goal ──────────────────────────────────────────────────────────────────
     async def list_goals(self, db: AsyncSession, *, owner: str, status: str | None = None) -> list[dict]:
-        stmt = sa.select(Goal).where(Goal.owner_hasn_id == owner)
+        # 个人空间读恒 enterprise_id IS NULL（[04] §5.1 空间分叉；企业目标经 list_enterprise_* 独立读，不混入）。
+        stmt = sa.select(Goal).where(Goal.owner_hasn_id == owner, Goal.enterprise_id.is_(None))
         if status:
             stmt = stmt.where(Goal.status == status)
         stmt = stmt.order_by(Goal.sort.asc(), Goal.id.desc())
@@ -304,7 +306,8 @@ class PlanService:
     async def list_plans(
         self, db: AsyncSession, *, owner: str, status: str | None = None, goal_id: int | None = None
     ) -> list[dict]:
-        stmt = sa.select(Plan).where(Plan.owner_hasn_id == owner)
+        # 个人空间读恒 enterprise_id IS NULL（[04] §5.1；企业计划/团队 OKR 首期不 surface，PE-D1）。
+        stmt = sa.select(Plan).where(Plan.owner_hasn_id == owner, Plan.enterprise_id.is_(None))
         if status:
             stmt = stmt.where(Plan.status == status)
         if goal_id is not None:
@@ -418,7 +421,8 @@ class PlanService:
         plan_id: int | None = None,
         goal_id: int | None = None,
     ) -> list[dict]:
-        stmt = sa.select(Todo).where(Todo.owner_hasn_id == owner)
+        # 个人空间读恒 enterprise_id IS NULL（[04] §5.1；企业待办经 list_enterprise_todos 独立 scope 读）。
+        stmt = sa.select(Todo).where(Todo.owner_hasn_id == owner, Todo.enterprise_id.is_(None))
         if status:
             stmt = stmt.where(Todo.status == status)
         if actor:
@@ -427,6 +431,38 @@ class PlanService:
             stmt = stmt.where(Todo.plan_id == plan_id)
         if goal_id is not None:
             stmt = stmt.where(Todo.goal_id == goal_id)
+        stmt = stmt.order_by(Todo.priority.desc(), Todo.due_at.asc().nullslast(), Todo.id.desc())
+        return [serialize(r) for r in (await db.execute(stmt)).scalars().all()]
+
+    async def list_enterprise_todos(
+        self,
+        db: AsyncSession,
+        *,
+        viewer_owner_hasn_id: str,
+        enterprise_id: int,
+        status: str | None = None,
+        scope: PlanEnterpriseScope | None = None,
+    ) -> list[dict]:
+        """企业空间待办读（[04] §5.1）：恒前置 enterprise_id==E + WHO 数据范围（可见成员的待办）。
+
+        - 非本企业成员 → 空（企业隔离硬底线，冻结不变量 #2）；
+        - 仅返回数据范围内可见成员（``visible_member_hasn_ids``，恒含自己）所属的企业待办——超数据范围者不返回。
+
+        与个人 ``list_todos`` 是两次独立 scope-read（[04] 不变量 #2），调用方（today_overview 企业分支）
+        合并，不混一条查询。待办无 event 的忙闲/可见性两轴，故只按 WHO 数据范围过滤、不做 WHAT 裁剪。
+        """
+        if scope is None:
+            scope = await resolve_plan_enterprise_scope(
+                db, viewer_owner_hasn_id=viewer_owner_hasn_id, enterprise_id=enterprise_id
+            )
+        if not scope.is_member or not scope.visible_member_hasn_ids:
+            return []
+        stmt = sa.select(Todo).where(
+            Todo.enterprise_id == enterprise_id,
+            Todo.owner_hasn_id.in_(scope.visible_member_hasn_ids),
+        )
+        if status:
+            stmt = stmt.where(Todo.status == status)
         stmt = stmt.order_by(Todo.priority.desc(), Todo.due_at.asc().nullslast(), Todo.id.desc())
         return [serialize(r) for r in (await db.execute(stmt)).scalars().all()]
 
@@ -463,7 +499,8 @@ class PlanService:
     async def list_events(
         self, db: AsyncSession, *, owner: str, start: datetime | None = None, end: datetime | None = None
     ) -> list[dict]:
-        stmt = sa.select(Event).where(Event.owner_hasn_id == owner)
+        # 个人空间读恒 enterprise_id IS NULL（[04] §5.1；企业日历经 list_enterprise_events 独立 scope 读裁剪）。
+        stmt = sa.select(Event).where(Event.owner_hasn_id == owner, Event.enterprise_id.is_(None))
         if start is not None:
             stmt = stmt.where(Event.end_at >= start)
         if end is not None:
@@ -729,7 +766,8 @@ class PlanService:
 
     # ── habit ───────────────────────────────────────────────────────────────────
     async def list_habits(self, db: AsyncSession, *, owner: str, status: str | None = None) -> list[dict]:
-        stmt = sa.select(Habit).where(Habit.owner_hasn_id == owner)
+        # 个人空间读恒 enterprise_id IS NULL（[04] §5.1；团队习惯首期不 surface，PE-D1）。
+        stmt = sa.select(Habit).where(Habit.owner_hasn_id == owner, Habit.enterprise_id.is_(None))
         if status:
             stmt = stmt.where(Habit.status == status)
         stmt = stmt.order_by(Habit.id.desc())
@@ -838,19 +876,59 @@ class PlanService:
 
     # ── 「今日」聚合（设计 §10.2 首屏）──────────────────────────────────────────
     async def today_overview(self, db: AsyncSession, *, owner: str, day_start: datetime, day_end: datetime) -> dict:
-        """今日首屏数据：当日时间块 + 需主人/分身分流的待办 + 目标进度环。"""
+        """今日首屏数据：当日时间块 + 需主人/分身分流的待办 + 目标进度环。
+
+        双模（PLAN-ENT B2，[04] §5.1 不变量 #2）：个人组恒返回（owner 隔离，个人零破坏）；主人有活跃企业 E 时
+        **另起一条独立 scope-read** 返回企业组（`enterprise_id=E` + 数据范围 WHO/WHAT），置于 ``enterprise`` 子对象
+        供 webui 合并显示——**两条各自 scope 读的并集，不是一条混合查询**。无活跃企业 → ``enterprise=None``（纯个人）。
+        """
         events = await self.list_events(db, owner=owner, start=day_start, end=day_end)
         scheduled_todos = await self.list_todos(db, owner=owner, status='scheduled')
         inbox = await self.list_todos(db, owner=owner, status='inbox')
         all_todos = await self.list_todos(db, owner=owner)
         agent_queue = [t for t in all_todos if t['actor'] == 'agent' and t['status'] in ('doing', 'waiting_review')]
         goals = await self.list_goals(db, owner=owner, status='active')
+        enterprise = await self._today_enterprise_group(db, owner=owner, day_start=day_start, day_end=day_end)
         return {
             'events': events,
             'scheduled_todos': scheduled_todos,
             'inbox': inbox,
             'agent_queue': agent_queue,
             'goals': goals,
+            # 企业组（活跃企业空间才有值；webui 合并显示，个人组永不受影响）。
+            'enterprise': enterprise,
+        }
+
+    async def _today_enterprise_group(
+        self, db: AsyncSession, *, owner: str, day_start: datetime, day_end: datetime
+    ) -> dict | None:
+        """企业「今日」组（B2 空间分叉的企业侧独立 scope-read）：主人无活跃企业 / 非成员 → None。
+
+        活跃企业从 [01] ``hasn_owner_workbench_pref.active_enterprise_id`` 取（分身以主人身份读，owner=主人 hasn_id）。
+        企业事件经 WHO/WHAT 裁剪（``list_enterprise_events``），企业待办经 WHO 数据范围（``list_enterprise_todos``）；
+        `scope` 一次解析、两读复用（省一次成员/数据范围解析）。团队目标/习惯首期不 surface（PE-D1，列在功能后做）。
+        """
+        eid = await active_enterprise_id(db, owner)
+        if not eid:
+            return None
+        scope = await resolve_plan_enterprise_scope(db, viewer_owner_hasn_id=owner, enterprise_id=eid)
+        if not scope.is_member:
+            return None
+        events = await self.list_enterprise_events(
+            db, viewer_owner_hasn_id=owner, enterprise_id=eid, start=day_start, end=day_end, scope=scope
+        )
+        ent_todos = await self.list_enterprise_todos(
+            db, viewer_owner_hasn_id=owner, enterprise_id=eid, scope=scope
+        )
+        scheduled_todos = [t for t in ent_todos if t['status'] == 'scheduled']
+        inbox = [t for t in ent_todos if t['status'] == 'inbox']
+        agent_queue = [t for t in ent_todos if t['actor'] == 'agent' and t['status'] in ('doing', 'waiting_review')]
+        return {
+            'enterprise_id': eid,
+            'events': events,
+            'scheduled_todos': scheduled_todos,
+            'inbox': inbox,
+            'agent_queue': agent_queue,
         }
 
 
