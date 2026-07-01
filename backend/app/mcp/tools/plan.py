@@ -28,6 +28,7 @@ from typing import Any
 
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.hasn_plan.service.plan_authz import ERR_NOT_IN_ENTERPRISE_SPACE, resolve_plan_write_scope
+from backend.app.hasn_plan.service.plan_notify import notify_invited
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -234,32 +235,11 @@ async def _h_create_event(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
     )
 
 
-async def _notify_invited(db: Any, *, event_id: int, added: list[str], organizer_name: str) -> None:
-    """给新加入的参会人发会议邀请卡片（深链会议详情，复用 notifications.emit）；best-effort，绝不阻断。"""
-    if not added:
-        return
-    from backend.app.notification.service.notification_service import notification_service
-
-    for hid in added:
-        try:
-            await notification_service.app_emit(
-                db,
-                app_id='plan',
-                owner_hasn_id=hid,  # recipient = 被邀参会人（可跨主人：同企业同事）
-                category='app',
-                type='plan.event.invited',
-                title='会议邀请',
-                body=f'{organizer_name} 邀请你参加一个会议',
-                payload={'kind': 'plan_event', 'event_id': event_id, 'uri': f'hasn://plan/event/{event_id}'},
-                priority='normal',
-                want_card=True,
-            )
-        except Exception as e:  # noqa: PERF203 — 逐人隔离：单个通知失败不阻断其余（db 会话非并发安全，故顺序发）
-            logger.warning('[plan] event.invite 通知被邀人 %s 失败 (非致命): %s', hid, e)
-
-
 async def _h_event_invite(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    """加/减参会人（组织者=事件 owner）：写 event_attendee + 给新增者发邀请卡（[04] §6.2/§6.3）。"""
+    """加/减参会人（组织者=事件 owner）：写 event_attendee + 给新增者发邀请卡（[04] §6.2/§6.3）。
+
+    邀请卡通知走共享 `notify_invited`（`plan_notify`）——与主人 WebUI 路径共用同一实现。
+    """
     result = await plan_service.invite_attendees(
         db,
         owner=ctx.owner_hasn_id,
@@ -267,7 +247,7 @@ async def _h_event_invite(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
         add=_as_list(args.get('add')),
         remove=_as_list(args.get('remove')),
     )
-    await _notify_invited(
+    await notify_invited(
         db, event_id=int(args['event_id']), added=result.get('added') or [], organizer_name=ctx.agent_name or '组织者'
     )
     return result
