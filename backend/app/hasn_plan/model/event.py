@@ -17,6 +17,10 @@ class Event(PlanBase):
 
     id: Mapped[id_key] = mapped_column(init=False)
     owner_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
+    enterprise_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='所属企业 id（NULL=个人事件；逻辑引用 public.hasn_enterprise，无硬 FK）'
+    )
+    dept_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='所属部门 id（NULL=不限部门）')
     title: Mapped[str] = mapped_column(sa.String(255), default='', comment=None)
     kind: Mapped[str] = mapped_column(
         sa.String(8), default='fixed', comment='块类型 (fixed:固定:gray/flex:弹性:violet/break:休息:slate)'
@@ -40,5 +44,10 @@ class Event(PlanBase):
     source: Mapped[str] = mapped_column(
         sa.String(16),
         default='manual',
-        comment='来源 (chat:对话:cyan/manual:手动:gray/capture:捕获:blue/decompose:分解:violet)',
+        comment='来源 (chat:对话:cyan/manual:手动:gray/capture:捕获:blue/decompose:分解:violet/oa_meeting:会议室预定:blue/oa_interview:面试:violet)',  # noqa: E501
+    )
+    visibility: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='private',
+        comment='企业事件可见性 (private:仅参与者+被授权:gray/public:企业公开:green)（个人事件恒 private，不生效）',
     )

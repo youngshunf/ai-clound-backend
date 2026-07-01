@@ -41,8 +41,8 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
-from backend.app.hasn.service.app_catalog_service import _catalog_row_from_app
 from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+from backend.app.hasn.service.app_catalog_service import _catalog_row_from_app
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST, build_plan_app
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
@@ -148,7 +148,8 @@ def test_plan_workbench_app_shape() -> None:
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'manual'
     assert app.collaboration_mode == 'none'
-    assert app.scope == ('personal',)
+    # PLAN-ENT PE-6：plan 升双模应用（个人 PIM + 企业日历），scope 含 enterprise。
+    assert app.scope == ('personal', 'enterprise')
     assert app.entry_route == '/apps/plan'
     assert app.ui_kind is None
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。

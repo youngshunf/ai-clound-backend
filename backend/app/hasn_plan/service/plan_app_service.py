@@ -71,6 +71,7 @@ _EVENT_FIELDS = {
     'recurrence',
     'schedule_reason',
     'source',
+    'visibility',
 }
 _HABIT_FIELDS = {
     'goal_id',
@@ -151,6 +152,22 @@ def _pick(fields: set[str], data: dict[str, Any]) -> dict[str, Any]:
     return {k: _coerce_field(k, v) for k, v in data.items() if k in fields and v is not None}
 
 
+def _ownership(enterprise_id: int | None, dept_id: int | None) -> dict[str, Any]:
+    """企业归属注入（PLAN-ENT，[04] §6.1）。
+
+    enterprise_id/dept_id 由**服务端**（工具层 PE-7 空间解析 / 到期派发从条目行读）解析后传入，
+    **绝不来自 client `data`**（不在白名单，冻结不变量 #5「owner+enterprise 双维」）。个人 = 两者 None
+    → 返回空 dict → 走 [01] 个人路径（`enterprise_id IS NULL`，不变量 #1「个人零破坏」）。
+    dept_id 仅在 enterprise_id 存在时有意义（部门属于企业）。
+    """
+    out: dict[str, Any] = {}
+    if enterprise_id is not None:
+        out['enterprise_id'] = enterprise_id
+        if dept_id is not None:
+            out['dept_id'] = dept_id
+    return out
+
+
 def serialize(row: Any) -> dict[str, Any]:
     """SQLAlchemy 行 → JSON 安全 dict（datetime→ISO、date→ISO、Decimal→float）。"""
     out: dict[str, Any] = {}
@@ -201,8 +218,10 @@ class PlanService:
         data['key_results'] = [serialize(k) for k in krs]
         return data
 
-    async def create_goal(self, db: AsyncSession, *, owner: str, data: dict) -> dict:
-        row = Goal(owner_hasn_id=owner, **_pick(_GOAL_FIELDS, data))
+    async def create_goal(
+        self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: int | None = None, dept_id: int | None = None
+    ) -> dict:
+        row = Goal(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **_pick(_GOAL_FIELDS, data))
         db.add(row)
         await db.flush()
         return serialize(row)
@@ -305,7 +324,14 @@ class PlanService:
         return data
 
     async def create_plan(
-        self, db: AsyncSession, *, owner: str, data: dict, default_bound_agent: str | None = None
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        data: dict,
+        default_bound_agent: str | None = None,
+        enterprise_id: int | None = None,
+        dept_id: int | None = None,
     ) -> dict:
         fields = _pick(_PLAN_FIELDS, data)
         if 'goal_id' in fields:
@@ -315,7 +341,7 @@ class PlanService:
         # owner 经 app(webui) 通道手动建计划不自动绑（default_bound_agent=None，由主人在 UI 显式选协作分身）。
         if default_bound_agent and not (fields.get('bound_agent_id') or '').strip():
             fields['bound_agent_id'] = default_bound_agent
-        row = Plan(owner_hasn_id=owner, **fields)
+        row = Plan(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **fields)
         db.add(row)
         await db.flush()
         return serialize(row)
@@ -400,8 +426,10 @@ class PlanService:
     async def get_todo(self, db: AsyncSession, *, owner: str, pk: int) -> dict:
         return serialize(await self._get_todo(db, owner=owner, pk=pk))
 
-    async def create_todo(self, db: AsyncSession, *, owner: str, data: dict) -> dict:
-        row = Todo(owner_hasn_id=owner, **_pick(_TODO_FIELDS, data))
+    async def create_todo(
+        self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: int | None = None, dept_id: int | None = None
+    ) -> dict:
+        row = Todo(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **_pick(_TODO_FIELDS, data))
         db.add(row)
         await db.flush()
         return serialize(row)
@@ -436,11 +464,13 @@ class PlanService:
             raise errors.NotFoundError(msg='日程不存在或无权访问')
         return row
 
-    async def create_event(self, db: AsyncSession, *, owner: str, data: dict) -> dict:
+    async def create_event(
+        self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: int | None = None, dept_id: int | None = None
+    ) -> dict:
         fields = _pick(_EVENT_FIELDS, data)
         if 'todo_id' in fields:
             await self._get_todo(db, owner=owner, pk=fields['todo_id'])  # flex 块只能挂自己的待办
-        row = Event(owner_hasn_id=owner, **fields)
+        row = Event(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **fields)
         db.add(row)
         await db.flush()
         return serialize(row)
@@ -485,8 +515,10 @@ class PlanService:
             raise errors.NotFoundError(msg='习惯不存在或无权访问')
         return row
 
-    async def create_habit(self, db: AsyncSession, *, owner: str, data: dict) -> dict:
-        row = Habit(owner_hasn_id=owner, **_pick(_HABIT_FIELDS, data))
+    async def create_habit(
+        self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: int | None = None, dept_id: int | None = None
+    ) -> dict:
+        row = Habit(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **_pick(_HABIT_FIELDS, data))
         db.add(row)
         await db.flush()
         return serialize(row)

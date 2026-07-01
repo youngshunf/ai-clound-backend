@@ -14,6 +14,12 @@ class Habit(PlanBase):
 
     id: Mapped[id_key] = mapped_column(init=False)
     owner_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
+    enterprise_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='所属企业 id（NULL=个人习惯）；首期不 surface（PE-D1）'
+    )
+    dept_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='所属部门 id（NULL=不限；首期不 surface PE-D1）'
+    )
     goal_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     title: Mapped[str] = mapped_column(sa.String(255), default='', comment=None)
     cadence: Mapped[str] = mapped_column(
