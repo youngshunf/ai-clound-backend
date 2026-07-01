@@ -32,7 +32,6 @@ from backend.app.hasn.service.app_seat_purchase_callback import settle_app_seat_
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
-from backend.utils.timezone import timezone
 
 pytestmark = pytest.mark.asyncio
 

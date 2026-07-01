@@ -14,7 +14,6 @@ from pypinyin import Style, lazy_pinyin
 
 from backend.app.admin.model.user import User
 from backend.app.hasn.model import (
-    HasnAppEntitlement,
     HasnAppInstance,
     HasnAppSeat,
     HasnEnterprise,
@@ -24,8 +23,7 @@ from backend.app.hasn.model import (
     HasnEnterpriseRole,
     HasnHumans,
 )
-from backend.app.hasn.service import app_catalog_service
-from backend.app.hasn.service import app_seat_service
+from backend.app.hasn.service import app_catalog_service, app_seat_service
 from backend.app.hasn.service import workspace_notification_subscriber as _workspace_notifications  # noqa: F401
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 
@@ -157,6 +155,10 @@ class WorkbenchDomainService:
         for member in members:
             member.status = 'removed'
             await self._fallback_to_personal_if_active(db, user_id=member.user_id, enterprise_id=enterprise_id)
+        # P4 企业解散（doc04 §6.5）：释放该企业全部席位 + 吊销全部应用权益（按 enterprise_id
+        # 整批，无需逐成员 sys_user.id→hasn_id 翻译）。
+        await app_seat_service.release_all_seats_for_enterprise(db, enterprise_id=enterprise_id)
+        await app_seat_service.revoke_enterprise_entitlements(db, enterprise_id=enterprise_id)
         await db.flush()
         await self.enterprise_bus.publish(
             'on_enterprise_disbanded',
@@ -338,6 +340,13 @@ class WorkbenchDomainService:
         if hasattr(membership, 'updated_at'):
             membership.updated_at = timezone.now()
         await self._fallback_to_personal_if_active(db, user_id=user_id, enterprise_id=enterprise_id)
+        # P4 席位释放（doc04 §6.5，M3 id 空间翻译）：钩子给 sys_user.id，seat 键是 hasn_id →
+        # 先 sys_user.id → owner_hasn_id（经 HasnHumans）再释放，否则匹配不到席位、静默不释放。
+        member_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
+        if member_hasn_id:
+            await app_seat_service.release_all_seats_for_member(
+                db, enterprise_id=enterprise_id, member_hasn_id=member_hasn_id
+            )
         await db.flush()
         await self.enterprise_bus.publish('on_member_left', {'enterprise_id': enterprise_id, 'user_id': user_id})
 
@@ -944,7 +953,7 @@ class WorkbenchDomainService:
                     sa.select(HasnHumans.hasn_id, HasnHumans.nickname).where(HasnHumans.hasn_id.in_(member_ids))
                 )
             ).all()
-            nick_map = {hasn_id: nickname for hasn_id, nickname in rows}
+            nick_map = dict(rows)
         return {
             'enterprise_id': enterprise_id,
             'app_id': app_id,

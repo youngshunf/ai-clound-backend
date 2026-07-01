@@ -67,18 +67,17 @@ def _build_client(channel, merchant_config: dict | None = None) -> PayClient:
     if code == 'wx_papay':
         from backend.app.billing.service.channel.wechat_papay import WechatPapayClient
         return WechatPapayClient(config, notify_url)
-    elif code.startswith('wx'):
+    if code.startswith('wx'):
         from backend.app.billing.service.channel.wechat_native import WechatNativeClient
         return WechatNativeClient(config, notify_url)
-    elif code == 'alipay_qr':
+    if code == 'alipay_qr':
         # 支付宝当面付（扫码）：出可扫二维码，应用内呈现（桌面端）
         from backend.app.billing.service.channel.alipay_qr import AlipayQrClient
         return AlipayQrClient(config, notify_url)
-    elif code.startswith('alipay'):
+    if code.startswith('alipay'):
         from backend.app.billing.service.channel.alipay_pc import AlipayPcClient
         return AlipayPcClient(config, notify_url)
-    else:
-        raise errors.ServerError(msg=f'不支持的渠道: {code}')
+    raise errors.ServerError(msg=f'不支持的渠道: {code}')
 
 
 def get_pay_client(channel, merchant_config: dict | None = None, force_new: bool = False) -> PayClient:
@@ -90,7 +89,7 @@ def get_pay_client(channel, merchant_config: dict | None = None, force_new: bool
     return client
 
 
-def clear_client_cache(channel_id: int | None = None):
+def clear_client_cache(channel_id: int | None = None) -> None:
     if channel_id:
         _client_cache.pop(channel_id, None)
     else:

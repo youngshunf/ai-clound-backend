@@ -12,9 +12,9 @@ entitlement「套餐」行 ``SELECT ... FOR UPDATE`` 加锁，再 count/校验/�
 
 from __future__ import annotations
 
-import sqlalchemy as sa
+from typing import TYPE_CHECKING
 
-from sqlalchemy.ext.asyncio import AsyncSession
+import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_app_seat import HasnAppSeat
@@ -23,6 +23,9 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import app_catalog_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # 满席指派的机器可识别标记（webui/E2E 用；msg 同时带人类可读文案）。
 SEATS_EXHAUSTED = 'seats_exhausted'
@@ -158,6 +161,36 @@ async def release_all_seats_for_member(
             HasnAppSeat.status == 'assigned',
         )
         .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
+    )
+    return int(result.rowcount or 0)
+
+
+async def release_all_seats_for_enterprise(db: AsyncSession, *, enterprise_id: int) -> int:
+    """释放该企业**所有应用所有成员**的 assigned 席位（P4 企业解散用）。返回释放条数。
+
+    企业解散无需逐成员 ``sys_user.id→hasn_id`` 翻译（M3），按 enterprise_id 整批释放更省。
+    """
+    result = await db.execute(
+        sa.update(HasnAppSeat)
+        .where(
+            HasnAppSeat.enterprise_id == enterprise_id,
+            HasnAppSeat.status == 'assigned',
+        )
+        .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
+    )
+    return int(result.rowcount or 0)
+
+
+async def revoke_enterprise_entitlements(db: AsyncSession, *, enterprise_id: int) -> int:
+    """吊销该企业**所有** active 应用权益「套餐」行（P4 企业解散用）。返回吊销条数。"""
+    result = await db.execute(
+        sa.update(HasnAppEntitlement)
+        .where(
+            HasnAppEntitlement.subject_type == 'enterprise',
+            HasnAppEntitlement.subject_id == str(enterprise_id),
+            HasnAppEntitlement.status == 'active',
+        )
+        .values(status='revoked', updated_time=timezone.now())
     )
     return int(result.rowcount or 0)
 
