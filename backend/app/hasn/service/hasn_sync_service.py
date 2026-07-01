@@ -1221,6 +1221,66 @@ class SqlAlchemySyncGateway:
             return None
         return int(row['server_revision'])
 
+    async def emit_memory_event(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        event_type: str,
+        namespace: str,
+        aggregate_id: str,
+        payload: dict[str, Any],
+        sync_scope_kind: str = 'owner',
+        sync_scope_id: str | None = None,
+        hasn_id: str | None = None,
+    ) -> tuple[int, str]:
+        """服务端源发一条 memory.* 下行同步事件（区别于 client-originated 的 save_client_event）。
+
+        供云端服务器**主动合成/写入**后向 daemon 下行的记忆事件使用（如 peer 画像合成）：
+        推进命名空间权威 revision → 追加 hasn_sync_events（payload 注入 sync_scope_* / namespace /
+        namespace_revision，供 daemon `pull_memory_events` 增量拉取与 `parse_*_payload` 校验）→
+        回填该命名空间 last_event_id。返回 (server_revision, event_id)。
+
+        payload 由调用方给记忆本体字段；本方法只补齐同步信封（sync_scope_kind/sync_scope_id/
+        namespace/record_id/namespace_revision）。namespace 必须在允许集合内（owner→portraits/
+        facts/… 等），否则 ValueError（防写坏下行游标）。
+        """
+        scope_id = sync_scope_id or owner_id
+        if not _memory_namespace_allowed(sync_scope_kind, namespace):
+            raise ValueError(f'memory namespace not allowed: {sync_scope_kind}/{namespace}')
+        namespace_revision = await self._advance_memory_namespace_revision(
+            db,
+            sync_scope_kind=sync_scope_kind,
+            sync_scope_id=scope_id,
+            namespace=namespace,
+        )
+        merged_payload = {
+            **payload,
+            'owner_id': owner_id,
+            'sync_scope_kind': sync_scope_kind,
+            'sync_scope_id': scope_id,
+            'namespace': namespace,
+            'record_id': aggregate_id,
+            'namespace_revision': namespace_revision,
+        }
+        server_revision, event_id = await self._append_sync_event_with_id(
+            db,
+            owner_id=owner_id,
+            hasn_id=hasn_id or owner_id,
+            event_type=event_type,
+            aggregate_type='memory',
+            aggregate_id=aggregate_id,
+            payload=merged_payload,
+        )
+        await self._set_memory_namespace_last_event(
+            db,
+            sync_scope_kind=sync_scope_kind,
+            sync_scope_id=scope_id,
+            namespace=namespace,
+            event_id=event_id,
+        )
+        return server_revision, event_id
+
     async def _advance_memory_namespace_revision(
         self,
         db: AsyncSession,

@@ -56,7 +56,12 @@ KIND_SUPPRESSED = 'suppressed'
 # agent_memory 的 USER.md/SOUL.md），并主动把新 USER.md 写进在线 hermes 工作区——不等下次派发
 # 即生效（KNOWU 采访完画像秒级下发到运行时）。
 KIND_AGENTS = 'agents'
-OWNER_KINDS = (KIND_TASKS, KIND_PLAN, KIND_SUPPRESSED, KIND_AGENTS)
+# owner 定向：该 owner 的记忆命名空间下行（doc17 peer 画像合成后即时失效）——云端合成/写入
+# 记忆权威后，主动 push 该 owner 在线节点「memory 维度变了」→ daemon 收到即触发 memory
+# sync_pull（拉 owner 各记忆命名空间：portraits/facts/…）落本地镜像。离线设备靠登录/重连
+# 的 pull_once 兜底追平。
+KIND_MEMORY = 'memory'
+OWNER_KINDS = (KIND_TASKS, KIND_PLAN, KIND_SUPPRESSED, KIND_AGENTS, KIND_MEMORY)
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
 # 某 owner 规划数据为空时的稳定指纹（同上约定）
@@ -197,6 +202,32 @@ async def compute_owner_agents_revision(db: AsyncSession, owner_id: str) -> str:
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
+async def compute_owner_memory_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 记忆命名空间指纹：sha256(sorted "namespace@revision" 行)[:16]。
+
+    聚合该 owner scope（sync_scope_kind='owner'、sync_scope_id=owner_id）下全部记忆命名空间的
+    权威 revision（``hasn_memory.namespace_revision``）：任一命名空间 revision 前进（如 peer 画像
+    合成 bump portraits）→ 集合指纹变 → invalidate 帧 revision 变。daemon 不据此去重、收到即
+    触发 memory sync_pull 拉取该 owner 全部记忆命名空间落本地镜像。空则返回稳定占位指纹。
+    """
+    rows = (
+        await db.execute(
+            sa.text(
+                """
+                SELECT namespace, revision
+                FROM hasn_memory.namespace_revision
+                WHERE sync_scope_kind = 'owner' AND sync_scope_id = :owner_id
+                """
+            ),
+            {'owner_id': owner_id},
+        )
+    ).all()
+    lines = sorted(f'{namespace}@{revision}' for namespace, revision in rows if namespace)
+    if not lines:
+        return '0' * 16
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
 async def _compute_revision(kind: str, db: AsyncSession) -> str:
     """按 kind 重算权威 revision（直接读各自数据源，不读缓存）。"""
     if kind == KIND_BUILTIN_CATALOG:
@@ -296,6 +327,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_suppressed_revision(db, owner_id)
     elif kind == KIND_AGENTS:
         rev = await compute_owner_agents_revision(db, owner_id)
+    elif kind == KIND_MEMORY:
+        rev = await compute_owner_memory_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 

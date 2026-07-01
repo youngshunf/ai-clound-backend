@@ -275,9 +275,44 @@ class PeerPortraitService:
         return summary
 
     async def _emit_peer_portrait_event(self, db: AsyncSession, *, owner_id: str, portrait: dict[str, Any]) -> None:
-        """P3 占位：合成后发 memory.peer_portrait.upserted 下行事件（下一切片实现）。"""
-        # 由 PEERSYN-P3 实现（此处留空，P2 只负责合成 + upsert，可独立测试）。
-        return
+        """合成后发 `memory.peer_portrait.upserted` 下行事件（doc17 P3 · G4）。
+
+        经 hasn_sync_service.emit_memory_event（namespace='portraits'）写 hasn_sync_events →
+        daemon `pull_memory_events` 增量拉取 → `parse_peer_portrait_payload` 校验落本地镜像。
+        payload 字段名严格对齐 daemon 解析器：正文键是 **portrait**（非 portrait_text），
+        created_at/updated_at 必填（epoch ms）。
+        """
+        from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
+
+        peer_hasn_id = portrait['peer_hasn_id']
+        body = {
+            'peer_hasn_id': peer_hasn_id,
+            'peer_kind': portrait.get('peer_kind') or 'human',
+            'portrait': portrait.get('portrait_text') or '',
+            'language': portrait.get('language') or 'zh',
+            'version': int(portrait.get('version') or 1),
+            'revised_by': portrait.get('revised_by') or 'system',
+            'last_interaction_at': portrait.get('last_interaction_at'),
+            'created_at': int(portrait['created_at']),
+            'updated_at': int(portrait['updated_at']),
+        }
+        await hasn_sync_service.gateway.emit_memory_event(
+            db,
+            owner_id=owner_id,
+            event_type='memory.peer_portrait.upserted',
+            namespace='portraits',
+            aggregate_id=peer_hasn_id,
+            payload=body,
+        )
+        # G6 即时下发：push 该 owner 在线节点「memory 维度变了」→ daemon 触发 memory sync_pull
+        # 拉取本 portraits 事件落本地镜像（离线设备靠登录/重连 pull_once 兜底）。best-effort：
+        # 推送失败不拖垮已发射的事件（事件已在 hasn_sync_events，下次 pull 仍能拉到）。
+        try:
+            from backend.app.hasn.service.sync_invalidate_service import KIND_MEMORY, bump_owner
+
+            await bump_owner(KIND_MEMORY, db, owner_id)
+        except Exception as exc:
+            log.warning(f'peer portrait WSPUSH memory invalidate failed owner={owner_id}: {exc}')
 
 
 def _synthesize_messages(peer_hasn_id: str, baseline: str, facts: list[dict[str, Any]]) -> list[dict[str, str]]:
