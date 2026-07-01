@@ -76,12 +76,13 @@ async def create_lead(request: Request, db: CurrentSessionTransaction, obj: Crea
     return response_base.success(data=data)
 
 
-@router.post('/leads/request', summary='[Owner] 请求线索（先查池→缺口补爬）', dependencies=[DependsJwtAuth])
+@router.post('/leads/request', summary='[Owner] 请求线索（只看池·doc10）', dependencies=[DependsJwtAuth])
 async def request_leads(request: Request, db: CurrentSessionTransaction, obj: RequestLeadsParam) -> ResponseModel:
-    """阶段二 2.3 用户端默认入口：平台**先查公共池**命中即交付（零采集成本），缺口才后台补爬回流。
+    """**只看池**轻量入口（doc10 起降级）：只查公共池命中即交付主人明文 PII，不再触发旧爬虫补缺。
 
-    向用户表达「请求线索」而非「发起采集」（采集是平台黑盒）。命中即交付主人明文 PII（自己领取的线索）；
-    有补爬 job 时挂 after_commit 钩子入队（提交后 worker 才读得到 job·与 collect.start 同时序保护）。
+    找**新**线索（池中没有的）的主路已改为**派获客分身**（daemon POST /api/v1/growth/dispatch → 分身用
+    hasn.growth.search_companies/lookup_company 读穿工具，未命中自动经 qcc 回流公共池，分身无需分辨来源）。
+    主人显式建采集任务仍走 collect.start。
     """
     result = await lead_pool_query_service.request_leads(
         db,
@@ -93,9 +94,6 @@ async def request_leads(request: Request, db: CurrentSessionTransaction, obj: Re
         city=obj.city,
         reveal_pii=True,
     )
-    backfill_job_id = result.get('backfill_job_id')
-    if backfill_job_id:
-        _enqueue_collection_job_after_commit(db, int(backfill_job_id))
     return response_base.success(data=result)
 
 

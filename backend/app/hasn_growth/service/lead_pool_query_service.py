@@ -19,8 +19,6 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from backend.app.hasn_growth.model import LeadContact, LeadQuota, LeadRef
-from backend.app.hasn_growth.schema.business import CreateLeadJobParam
-from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 
 # 复用 funnel 的线索序列化 + PII 脱敏（单一实现，避免脱敏逻辑漂移——安全敏感不重复造）。
 from backend.app.hasn_growth.service.funnel_service import _lead_to_dict
@@ -171,14 +169,6 @@ class LeadPoolQueryService:
         await db.flush()
         return row.purchased_balance
 
-    @staticmethod
-    def _backfill_keyword(
-        *, keyword: str | None, industry: str | None, region: str | None, city: str | None
-    ) -> str:
-        """补爬 job 的搜索词：拼请求的自由文本维度（行业用**原文**不用 code，便于搜索引擎命中）。"""
-        parts = [p.strip() for p in (keyword, industry, region, city) if p and p.strip()]
-        return ' '.join(parts)
-
     async def request_leads(
         self,
         db: AsyncSession,
@@ -191,11 +181,13 @@ class LeadPoolQueryService:
         city: str | None = None,
         reveal_pii: bool = False,
     ) -> dict[str, Any]:
-        """先查池 → 缺口补爬编排：M≥N 直接交付；M<N 交付 M + 后台补爬 N−M 回流公共池。
+        """**只看池**轻量入口（doc10 起降级）：只查线索池命中即交付，不再触发旧爬虫补缺。
 
-        返回 ``{delivered, from_pool, backfill_job_id, requested, leads}``；``backfill_job_id``
-        非空时，**调用方（handler）须挂 after_commit 钩子入队该 job**（提交前 worker 读不到未提交 job·
-        对齐 collect.start 时序，见 [[project_growth_collect_execution_chain_landed]]）。
+        找**新**线索（池中没有的）的主路已改为**派获客分身**（daemon POST /api/v1/growth/dispatch → 分身用
+        hasn.growth.search_companies/lookup_company 读穿工具，未命中自动经 qcc 回流公共池）。本端点保留为「快速
+        翻看已入池线索」的用途，返回 ``{delivered, from_pool, backfill_job_id, requested, leads}``；
+        ``backfill_job_id`` 恒为 None（保留出参形状以兼容既有 daemon/webui 契约）。主人显式建采集任务仍走
+        collect.start。
         """
         requested = max(1, int(limit))
         # 额度闸（doc93 §4.2）：放行量 = min(请求量, 免费剩余 + 购买余额)；超额引导支付购买。
@@ -228,24 +220,12 @@ class LeadPoolQueryService:
         # 交付后扣减额度（仅按**本次新获得**的线索扣·先免费后购买）；已拥有的复请求、缺口补爬回流的不在此扣。
         await self._consume_quota(db, user_id=user_id, count=newly_acquired)
 
+        # doc10：请求线索的「找新线索」主路已改为**派获客分身**（daemon POST /api/v1/growth/dispatch → 分身用
+        # hasn.growth.search_companies/lookup_company 读穿工具找线索，未命中自动经 qcc 回流公共池，分身无需分辨
+        # 来源）。本端点因此降级为**只看池**轻量入口：只查线索池命中即交付，**不再触发旧 lead_automation 爬虫补缺**。
+        # backfill_job_id 恒为 None（保留出参形状以兼容既有 daemon/webui 契约）。主人显式建采集任务仍走 collect.start
+        # （createCollectJob + runCollectJob），与本端点互补。
         backfill_job_id: int | None = None
-        gap = n - len(delivered)
-        if gap > 0:
-            # 缺口补爬：公共池采集 job（回流公共池），max_results=N−M 精确补足；记发起者 user_id，
-            # run_job 跑完为其建引用（补爬到的线索自动进发起者列表）。无可用搜索词则不补。
-            search = self._backfill_keyword(keyword=keyword, industry=industry, region=region, city=city)
-            if search:
-                job = await lead_automation_business_service.create_job(
-                    db,
-                    CreateLeadJobParam(
-                        keyword=search,
-                        user_id=user_id,
-                        max_results=gap,
-                        request_config={'region': region, 'city': city, 'industry': industry},
-                    ),
-                )
-                backfill_job_id = int(job['id'])
-                log.info(f'[LeadPool] 查池命中 {len(delivered)}/{n}，缺口 {gap} 触发补爬 job={backfill_job_id}')
 
         snap = await self._quota_snapshot(db, user_id=user_id)
         # shortfall：请求量中被额度闸拦下、需**支付购买**才能领取的条数（doc93 §4.2）。

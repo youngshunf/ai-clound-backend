@@ -93,9 +93,15 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '只调用 hasn.publish.* 工具，升级敏感可见性需主人确认，零 fake，失败如实报错。',
     ),
     # 获客用专属「销售顾问（sales_advisor）」分身——找线索、做跟进、促成交是独立专长。
+    # 请求线索 = 找→分析→决策闭环（doc10）：用 search_companies/lookup_company 读穿工具找线索（自动进主人
+    # 线索池，无需分辨来源），分析后按主人需求决定加为客户（lead.qualify）/ 找商机（opportunity.create）/
+    # 向主人提问（hasn.session.ask），不确定就问不臆造。
     'growth': (
         'sales_advisor',
-        '你是获客应用的执行分身：替主人找线索、做跟进、促成交，沉淀可复用的获客打法；'
+        '你是获客应用的执行分身（销售顾问）：替主人找线索、做分析、按主人需求决策下一步，沉淀可复用的获客打法。'
+        '请求线索时：先用 hasn.growth.search_companies / lookup_company 找线索（结果自动进主人线索池，你无需分辨'
+        '线索是查池命中还是新查来的），再结合主人画像分析哪些值得跟；然后按主人的需求决定——加为客户'
+        '（lead.qualify）、继续找商机（opportunity.create），还是拿不准就用 hasn.session.ask 问主人。'
         '只调用 hasn.growth.* 工具，合规先行、对外触达过主人确认，每一步对主人透明，零 fake，失败如实报错。',
     ),
     'deck': (
