@@ -795,13 +795,42 @@ class WorkbenchDomainService:
         reg_by_id = {a.id: a for a in app_catalog_registry.list()}
         # C4 闸门①：每行附 access（§5.2）。owner 维度准入用 owner hasn_id（tier/purchase 实时判定）。
         owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
+        # doc04 P1-3：双维度合并——取当前激活企业（L1：权威在 hasn_owner_workbench_pref.active_enterprise_id，
+        # 经 get_active_workspace 解析并自愈失效成员），企业空间下叠加企业维度（含命名席位）准入。
+        workspace = await self.get_active_workspace(db, user_id=user_id)
+        active_enterprise_id = workspace.get('enterprise_id')
         apps = []
         for cat in await app_catalog_service.list_published_catalog(db):
             manifest = app_catalog_service.catalog_to_manifest(cat, registry_app=reg_by_id.get(cat.app_id))
             manifest['status'] = 'available'
-            manifest['access'] = await app_catalog_service.resolve_app_access(
+            owner_access = await app_catalog_service.resolve_app_access(
                 db, catalog=cat, owner_hasn_id=owner_hasn_id or ''
             )
+            scope = set(cat.scope or [])
+            enterprise_access = None
+            if active_enterprise_id is not None and 'enterprise' in scope:
+                # 企业空间 + 应用支持企业形态 → 算企业维度（席位判定用当前 owner 作 member）。
+                enterprise_access = await app_catalog_service.resolve_app_access(
+                    db,
+                    catalog=cat,
+                    owner_hasn_id=owner_hasn_id or '',
+                    subject_type='enterprise',
+                    subject_id=str(active_enterprise_id),
+                    member_hasn_id=owner_hasn_id or '',
+                )
+            elif scope == {'enterprise'} and active_enterprise_id is None:
+                # S3：纯企业应用在个人空间 → 直接引导切换（个人买不了，别显示 need_purchase 付费墙，
+                # 否则 §8 layer3「提示切换」永远走不到）。
+                owner_access = {
+                    'allowed': False,
+                    'reason': 'need_enterprise_space',
+                    'requires': 'enterprise_space',
+                    'min_tier': cat.min_tier,
+                    'price': None,
+                    'trial_available': False,
+                    'entitlement_expires_at': None,
+                }
+            manifest['access'] = app_catalog_service.merge_access(owner_access, enterprise_access)
             apps.append(manifest)
         return apps
 
