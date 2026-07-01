@@ -22,7 +22,12 @@ from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.memory import MEMORY_TOOLS
-from backend.app.mcp.tools.message import MessageListTool, MessageSendTool
+from backend.app.mcp.tools.message import (
+    ConversationListTool,
+    MessageListTool,
+    MessageSearchTool,
+    MessageSendTool,
+)
 from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
 from backend.app.mcp.tools.owner import OWNER_TOOLS
 from backend.app.mcp.tools.plan import PLAN_TOOLS
@@ -91,9 +96,11 @@ class HasnCloudMcpServer:
         # 用户搜索工具（平台 user 域）
         self.tool_registry.register(UserSearchTool())
 
-        # 消息工具
+        # 消息工具：发送 + 读取（收件箱/会话详情，默认倒序 + keyset 翻页）+ 会话列表 + 关键词搜索。
         self.tool_registry.register(MessageSendTool())
         self.tool_registry.register(MessageListTool())
+        self.tool_registry.register(ConversationListTool())
+        self.tool_registry.register(MessageSearchTool())
 
         # 资产工具：把分身自己的内容（SVG/base64 图片/文本…）上传成 hasn://asset，供消息附件引用。
         self.tool_registry.register(AssetCreateTool())

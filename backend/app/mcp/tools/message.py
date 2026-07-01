@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.service import message_router
+from backend.app.hasn.service.agent_message_read_service import agent_message_read_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_core import HasnAgents
 from backend.app.mcp.auth import AgentContext
@@ -68,7 +69,7 @@ def _resolve_to_target(to_target: Any, owner_hasn_id: str | None) -> str:
 def _asset_id_from_uri(uri: Any) -> str | None:
     """hasn://asset/{asset_id} → asset_id。"""
     if isinstance(uri, str) and uri.startswith('hasn://asset/'):
-        candidate = uri[len('hasn://asset/'):].strip('/')
+        candidate = uri[len('hasn://asset/') :].strip('/')
         return candidate or None
     return None
 
@@ -79,9 +80,7 @@ def _derive_name(kind: str, mime: str) -> str:
     return f'{base}{_MIME_EXT.get(mime, "")}'
 
 
-async def _resolve_attachments(
-    db: Any, owner_hasn_id: str | None, uris: list[Any]
-) -> tuple[list[dict[str, Any]], int]:
+async def _resolve_attachments(db: Any, owner_hasn_id: str | None, uris: list[Any]) -> tuple[list[dict[str, Any]], int]:
     """资产 URI 列表 → 真实附件元数据 + 推断 content_type（按首个附件 kind）。
 
     零 Fake + 安全：
@@ -125,9 +124,7 @@ async def _resolve_attachments(
     return attachments, content_type
 
 
-def _build_agent_card_body(
-    agent_hasn_id: str, agent_display_name: str, card_input: dict[str, Any]
-) -> dict[str, Any]:
+def _build_agent_card_body(agent_hasn_id: str, agent_display_name: str, card_input: dict[str, Any]) -> dict[str, Any]:
     """分身的简化卡片输入 → 完整 CardMessageBody（信息卡）。
 
     安全：分身只提供 title/description/fields/link，构造时**只生成 open_uri 主操作**，
@@ -140,10 +137,11 @@ def _build_agent_card_body(
     if not title:
         raise RuntimeError('card.title 必填且非空')
 
-    fields: list[dict[str, str]] = []
-    for field in card_input.get('fields') or []:
-        if isinstance(field, dict):
-            fields.append({'label': str(field.get('label', '')), 'value': str(field.get('value', ''))})
+    fields: list[dict[str, str]] = [
+        {'label': str(field.get('label', '')), 'value': str(field.get('value', ''))}
+        for field in card_input.get('fields') or []
+        if isinstance(field, dict)
+    ]
 
     primary_action = None
     link = card_input.get('link')
@@ -353,30 +351,14 @@ class MessageSendTool(BaseTool):
         }
 
 
-def _extract_text(envelope: dict[str, Any]) -> str:
-    """从 HASN envelope 里尽力取出可读文本（content 可能是 dict 或 str）。"""
-    content = envelope.get('content')
-    if isinstance(content, dict):
-        return str(content.get('text') or content.get('content') or '')
-    if isinstance(content, str):
-        return content
-    return ''
-
-
-def _extract_sender(envelope: dict[str, Any]) -> str:
-    """从 envelope 取出发送方 hasn_id（兼容多种字段命名）。"""
-    routing = envelope.get('routing') if isinstance(envelope.get('routing'), dict) else {}
-    return str(
-        envelope.get('from')
-        or envelope.get('from_hasn_id')
-        or envelope.get('sender_hasn_id')
-        or routing.get('from')
-        or ''
-    )
-
-
 class MessageListTool(BaseTool):
-    """获取主人收件箱消息列表（含主人透明副本）。"""
+    """获取主人聊天记录（主人透明视图），默认倒序 + keyset 翻页 + 可按会话过滤。
+
+    走 agent_message_read_service（owner-scoped 只读查询），修掉旧版「最旧优先 + cursor 假翻页」的坑：
+    - 默认**最新在前**（按消息 id 倒序）；
+    - `cursor` 传上一页返回的 `next_cursor` 向更早翻页，稳定不漂移；
+    - 传 `conversation_id` 即只看该会话的消息（会话详情）。
+    """
 
     @property
     def source(self) -> str:
@@ -396,14 +378,31 @@ class MessageListTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return '获取收件箱消息列表（最近的会话消息，含发送方/文本/会话/时间）'
+        return (
+            '读取主人的聊天记录（主人透明视图），**默认按时间倒序=最新在前**，含发送方/内容/会话/时间。'
+            '传 conversation_id 只看某个会话的消息（会话详情）；用 cursor+limit 向更早翻页'
+            '（cursor 传上一次返回的 next_cursor）。'
+        )
 
     @property
     def input_schema(self) -> dict[str, Any]:
         return {
             'type': 'object',
             'properties': {
-                'limit': {'type': 'integer', 'description': '返回数量限制（默认 20）', 'minimum': 1, 'maximum': 100}
+                'conversation_id': {
+                    'type': 'string',
+                    'description': '只看该会话的消息（会话 ID，来自 hasn.conversation.list）；不传=看全部收件箱。',
+                },
+                'limit': {
+                    'type': 'integer',
+                    'description': '返回数量（默认 20，最大 100）',
+                    'minimum': 1,
+                    'maximum': 100,
+                },
+                'cursor': {
+                    'type': 'string',
+                    'description': '翻页游标：传上一次返回的 next_cursor 拉更早的一页；不传=从最新开始。',
+                },
             },
         }
 
@@ -413,25 +412,139 @@ class MessageListTool(BaseTool):
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         # 维度① 能力授权由 server.call_tool 三态 mode 统一判定（D3），工具内不二次校验。
-        from backend.app.hasn.schema.hasn_message_hub import InboxPullRequest
-        from backend.app.hasn.service.hasn_message_hub_service import HasnMessageHubService
-
-        limit = min(max(int(arguments.get('limit', 20)), 1), 100)
         async with async_db_session() as db:
-            message_service = HasnMessageHubService()
-            # 收件箱按 owner 维度拉取（主人透明：含 Agent 会话的 owner_copy）。
-            pull_request = InboxPullRequest(owner_id=agent_context.owner_hasn_id)
-            result = await message_service.pull_inbox(db, pull_request)
+            return await agent_message_read_service.list_messages(
+                db,
+                agent_context.owner_hasn_id,
+                limit=arguments.get('limit', 20),
+                cursor=arguments.get('cursor'),
+                conversation_id=arguments.get('conversation_id'),
+            )
 
-            messages = []
-            for item in result.items[:limit]:
-                envelope = item.envelope or {}
-                messages.append({
-                    'message_id': str(item.message_id),
-                    'conversation_id': str(item.conversation_id),
-                    'inbox_kind': getattr(item.inbox_kind, 'value', item.inbox_kind),
-                    'from': _extract_sender(envelope),
-                    'content': _extract_text(envelope),
-                    'created_at': str(item.created_at),
-                })
-            return {'messages': messages, 'has_more': result.has_more, 'next_cursor': result.next_cursor}
+
+class ConversationListTool(BaseTool):
+    """列出主人的会话（每会话一行 + 最后消息预览），按最近活动倒序。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.conversation.list'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.conversation'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '列出主人的会话列表（每个会话一行，含类型/标题/参与方/最后一条消息预览/发送方/时间），'
+            '按最近活动倒序。配合 hasn.message.list(conversation_id=...) 下钻某个会话看详细消息。'
+            '用 cursor+limit 向更早翻页（cursor 传上一次返回的 next_cursor）。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'limit': {
+                    'type': 'integer',
+                    'description': '返回数量（默认 20，最大 100）',
+                    'minimum': 1,
+                    'maximum': 100,
+                },
+                'cursor': {
+                    'type': 'string',
+                    'description': '翻页游标：传上一次返回的 next_cursor 拉更早的一页；不传=从最近开始。',
+                },
+            },
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return ['message:read']
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        async with async_db_session() as db:
+            return await agent_message_read_service.list_conversations(
+                db,
+                agent_context.owner_hasn_id,
+                limit=arguments.get('limit', 20),
+                cursor=arguments.get('cursor'),
+            )
+
+
+class MessageSearchTool(BaseTool):
+    """按关键词搜索主人的聊天记录（文本 + 卡片标题/描述），倒序返回。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.message.search'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.message'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '按关键词搜索主人的聊天记录（在消息文本与卡片标题/描述上大小写不敏感匹配），**按时间倒序**返回。'
+            '传 conversation_id 可限定只在某个会话内搜；用 cursor+limit 翻页（cursor 传上一次返回的 next_cursor）。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'query': {'type': 'string', 'description': '搜索关键词（必填，非空）'},
+                'conversation_id': {
+                    'type': 'string',
+                    'description': '只在该会话内搜（会话 ID）；不传=全部聊天记录里搜。',
+                },
+                'limit': {
+                    'type': 'integer',
+                    'description': '返回数量（默认 20，最大 100）',
+                    'minimum': 1,
+                    'maximum': 100,
+                },
+                'cursor': {
+                    'type': 'string',
+                    'description': '翻页游标：传上一次返回的 next_cursor 拉更早的一页。',
+                },
+            },
+            'required': ['query'],
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return ['message:read']
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        query = arguments.get('query')
+        if not query or not str(query).strip():
+            raise RuntimeError('Missing required arguments: query')
+        async with async_db_session() as db:
+            return await agent_message_read_service.search_messages(
+                db,
+                agent_context.owner_hasn_id,
+                str(query),
+                limit=arguments.get('limit', 20),
+                cursor=arguments.get('cursor'),
+                conversation_id=arguments.get('conversation_id'),
+            )
