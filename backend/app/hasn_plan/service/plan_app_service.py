@@ -29,6 +29,12 @@ from backend.app.hasn_plan.model import (
     Preference,
     Todo,
 )
+from backend.app.hasn_plan.service.plan_authz import (
+    PlanEnterpriseScope,
+    enterprise_event_who_filter,
+    resolve_plan_enterprise_scope,
+)
+from backend.app.hasn_plan.service.plan_visibility import apply_event_visibility
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -461,6 +467,48 @@ class PlanService:
             stmt = stmt.where(Event.start_at <= end)
         stmt = stmt.order_by(Event.start_at.asc())
         return [serialize(r) for r in (await db.execute(stmt)).scalars().all()]
+
+    async def list_enterprise_events(
+        self,
+        db: AsyncSession,
+        *,
+        viewer_owner_hasn_id: str,
+        enterprise_id: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        scope: PlanEnterpriseScope | None = None,
+    ) -> list[dict]:
+        """企业空间事件读（[04] §4/§5.1）：恒前置 enterprise_id==E + WHO 数据范围过滤 + WHAT 忙闲裁剪。
+
+        - 非本企业成员 → 返回空（企业隔离硬底线，冻结不变量 #2）；
+        - 仅返回数据范围内可见 / 企业公开 / 我被邀 / 显式共享给我的事件，超数据范围者连「忙」都不返回（PE-D2）；
+        - 每条按 WHAT 轴裁剪：自己 / 被邀 / 公开 / 被共享 → 全详情；数据范围内同事私有 → 仅忙闲块（隐藏标题）。
+
+        个人「今日」与企业「今日」是**两次独立 scope-read 的并集**（[04] 不变量 #2）——本方法只查企业侧，
+        个人侧仍走 ``list_events``，调用方（工具面 / today_overview 企业分支）合并，不混一条查询。
+        """
+        if scope is None:
+            scope = await resolve_plan_enterprise_scope(
+                db, viewer_owner_hasn_id=viewer_owner_hasn_id, enterprise_id=enterprise_id
+            )
+        if not scope.is_member:
+            return []
+        stmt = sa.select(Event).where(Event.enterprise_id == enterprise_id)
+        if start is not None:
+            stmt = stmt.where(Event.end_at >= start)
+        if end is not None:
+            stmt = stmt.where(Event.start_at <= end)
+        stmt = stmt.where(enterprise_event_who_filter(scope)).order_by(Event.start_at.asc())
+        rows = (await db.execute(stmt)).scalars().all()
+        return [
+            apply_event_visibility(
+                serialize(r),
+                viewer_hasn_id=viewer_owner_hasn_id,
+                is_attendee=r.id in scope.attendee_event_ids,
+                is_shared=r.id in scope.shared_event_ids,
+            )
+            for r in rows
+        ]
 
     async def _get_event(self, db: AsyncSession, *, owner: str, pk: int) -> Event:
         row = (await db.execute(sa.select(Event).where(Event.id == pk, Event.owner_hasn_id == owner))).scalars().first()
