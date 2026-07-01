@@ -338,8 +338,29 @@ async def app_list_events(
 async def app_create_event(
     request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
 ) -> ResponseModel:
+    """创建日程/时间块（PLAN-ENT 显式 scope，[04] §5.3）。
+
+    `scope=personal`（默认）→ 个人日程（`enterprise_id IS NULL`）；`scope=enterprise` → 主人活跃企业会议
+    （服务端解析 `active_enterprise_id`，展开组织者行 + 按 `attendees` 展开受邀参会人，被邀即上其日历）。
+    企业归属由**服务端**解析（不信任 body 里的 `enterprise_id`，CR 不变量 3）；无活跃企业 → 诚实拒绝，
+    不静默落个人（与 agent 工具 `_h_create_event` 的 PE-7 解析一致，[04] §7）。
+    """
     owner = await _resolve_owner(db, request)
-    data = await plan_service.create_event(db, owner=owner, data=body)
+    scope = str(body.get('scope') or 'personal').strip().lower()
+    enterprise_id: int | None = None
+    attendees: list[str] | None = None
+    if scope == 'enterprise':
+        enterprise_id = await active_enterprise_id(db, owner)
+        if not enterprise_id:
+            raise errors.RequestError(
+                msg='当前无活跃企业空间，无法创建企业会议；请先切换到企业空间，或用个人日程（scope=personal）'
+            )
+        raw = body.get('attendees')
+        attendees = [str(h).strip() for h in raw if str(h or '').strip()] if isinstance(raw, list) else []
+    payload = {k: v for k, v in body.items() if k not in ('scope', 'attendees')}
+    data = await plan_service.create_event(
+        db, owner=owner, data=payload, enterprise_id=enterprise_id, attendees=attendees
+    )
     await _bump_plan_sync(db, owner)
     return response_base.success(data=data)
 
