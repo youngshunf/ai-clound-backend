@@ -44,6 +44,9 @@ PLAN_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_zh': '管理企业会议协同',
         'domain': 'plan',
         'risk': 'medium',
-        'description': '以 Agent 身份管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）',
+        'description': (
+            '以 Agent 身份管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP'
+            '（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）'
+        ),
     },
 }
