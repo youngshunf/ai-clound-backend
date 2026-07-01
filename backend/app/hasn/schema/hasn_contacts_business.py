@@ -92,6 +92,7 @@ class HasnContactOut(BaseModel):
     province: str | None = None
     city: str | None = None
     district: str | None = None
+    birthday: str | None = None
     tags: list[str] | None = None
     subscription: bool = False
     channel_source: str | None = None

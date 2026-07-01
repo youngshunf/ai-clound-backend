@@ -417,6 +417,7 @@ async def list_contacts(
                 province=getattr(peer_user, 'province', None),
                 city=getattr(peer_user, 'city', None),
                 district=getattr(peer_user, 'district', None),
+                birthday=getattr(peer_user, 'birthday', None),
                 tags=c.tags,
                 subscription=c.subscription,
                 status=c.status,
