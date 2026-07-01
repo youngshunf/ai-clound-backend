@@ -12,7 +12,7 @@ owner 隔离铁律（设计 §5.5#2）：所有读写按 `owner_hasn_id` 过滤�
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +20,7 @@ import sqlalchemy as sa
 
 from backend.app.hasn_plan.model import (
     Event,
+    EventAttendee,
     Goal,
     GoalKeyResult,
     Habit,
@@ -34,7 +35,7 @@ from backend.app.hasn_plan.service.plan_authz import (
     enterprise_event_who_filter,
     resolve_plan_enterprise_scope,
 )
-from backend.app.hasn_plan.service.plan_visibility import apply_event_visibility
+from backend.app.hasn_plan.service.plan_visibility import apply_event_visibility, redact_event_to_busy
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -82,6 +83,8 @@ _EVENT_FIELDS = {
     'schedule_reason',
     'source',
     'visibility',
+    # OA→plan 反向锚（[04] §6.3）：oa:room_booking:{id} / oa:interview:{id}，服务端注入、非派生。
+    'origin_ref',
 }
 _HABIT_FIELDS = {
     'goal_id',
@@ -517,7 +520,14 @@ class PlanService:
         return row
 
     async def create_event(
-        self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: int | None = None, dept_id: int | None = None
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        data: dict,
+        enterprise_id: int | None = None,
+        dept_id: int | None = None,
+        attendees: list[str] | None = None,
     ) -> dict:
         fields = _pick(_EVENT_FIELDS, data)
         if 'todo_id' in fields:
@@ -525,7 +535,171 @@ class PlanService:
         row = Event(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **fields)
         db.add(row)
         await db.flush()
+        # 企业事件：服务端自动展开参会人（组织者行 + 受邀行）——不变量 #4「参会人仅企业事件」（[04] §6.3）。
+        # 个人事件（enterprise_id 为 None）不建参会行（EventAttendee 冗余 enterprise_id NOT NULL）。
+        if enterprise_id is not None:
+            await self._seed_event_attendees(
+                db, event_id=int(row.id), enterprise_id=enterprise_id, organizer=owner, attendees=attendees or []
+            )
         return serialize(row)
+
+    # ── event attendee（企业会议参会人 RSVP，[04] §6.2/§6.3）──────────────────────────
+    async def _seed_event_attendees(
+        self, db: AsyncSession, *, event_id: int, enterprise_id: int, organizer: str, attendees: list[str]
+    ) -> None:
+        """企业事件建成后展开参会行：发起人 organizer/accepted + 其余 required/none（去重、跳过组织者本人）。"""
+        db.add(
+            EventAttendee(
+                event_id=event_id,
+                enterprise_id=enterprise_id,
+                attendee_hasn_id=organizer,
+                role='organizer',
+                rsvp='accepted',
+                responded_at=datetime.now(timezone.utc),
+            )
+        )
+        seen = {organizer}
+        for raw in attendees:
+            h = str(raw or '').strip()
+            if not h or h in seen:
+                continue
+            seen.add(h)
+            db.add(
+                EventAttendee(
+                    event_id=event_id, enterprise_id=enterprise_id, attendee_hasn_id=h, role='required', rsvp='none'
+                )
+            )
+        await db.flush()
+
+    async def _get_enterprise_event(self, db: AsyncSession, *, owner: str, pk: int) -> Event:
+        """取「自己组织的企业事件」（invite/减人授权：仅组织者=事件 owner 可管理参会人）。"""
+        row = await self._get_event(db, owner=owner, pk=pk)
+        if row.enterprise_id is None:
+            raise errors.RequestError(msg='个人日程无参会人，无法管理参会名单')
+        return row
+
+    async def list_attendees(self, db: AsyncSession, *, event_id: int) -> list[dict]:
+        rows = (
+            (
+                await db.execute(
+                    sa.select(EventAttendee).where(EventAttendee.event_id == event_id).order_by(EventAttendee.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [serialize(r) for r in rows]
+
+    async def invite_attendees(
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        event_id: int,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        default_role: str = 'required',
+    ) -> dict:
+        """组织者加/减参会人（[04] §6.2）：仅事件 owner 可调；组织者行不可移除。返回 added/removed + 最新名单。"""
+        ev = await self._get_enterprise_event(db, owner=owner, pk=event_id)
+        existing = {
+            r.attendee_hasn_id: r
+            for r in (await db.execute(sa.select(EventAttendee).where(EventAttendee.event_id == event_id)))
+            .scalars()
+            .all()
+        }
+        added: list[str] = []
+        for raw in add or []:
+            h = str(raw or '').strip()
+            if not h or h in existing or h == ev.owner_hasn_id:
+                continue
+            db.add(
+                EventAttendee(
+                    event_id=event_id,
+                    enterprise_id=ev.enterprise_id,
+                    attendee_hasn_id=h,
+                    role=default_role,
+                    rsvp='none',
+                )
+            )
+            existing[h] = None  # 占位防同批重复
+            added.append(h)
+        removed: list[str] = []
+        for raw in remove or []:
+            h = str(raw or '').strip()
+            if not h or h == ev.owner_hasn_id:
+                continue  # 组织者本人不可移除
+            r = existing.get(h)
+            if r is not None and r.role != 'organizer':
+                await db.delete(r)
+                removed.append(h)
+        await db.flush()
+        return {
+            'event_id': event_id,
+            'enterprise_id': ev.enterprise_id,
+            'added': added,
+            'removed': removed,
+            'attendees': await self.list_attendees(db, event_id=event_id),
+        }
+
+    async def respond_rsvp(self, db: AsyncSession, *, owner: str, event_id: int, rsvp: str) -> dict:
+        """参会人回复 RSVP（[04] §6.2）：仅本人参会行可改；值限 accepted/declined/tentative。"""
+        val = str(rsvp or '').strip().lower()
+        if val not in ('accepted', 'declined', 'tentative'):
+            raise errors.RequestError(msg='RSVP 值非法（accepted/declined/tentative）')
+        row = (
+            (
+                await db.execute(
+                    sa.select(EventAttendee).where(
+                        EventAttendee.event_id == event_id, EventAttendee.attendee_hasn_id == owner
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            raise errors.NotFoundError(msg='你不是该会议的参会人，无法回复')
+        row.rsvp = val
+        row.responded_at = datetime.now(timezone.utc)
+        await db.flush()
+        return serialize(row)
+
+    async def member_availability(
+        self,
+        db: AsyncSession,
+        *,
+        viewer_owner_hasn_id: str,
+        enterprise_id: int,
+        member_hasn_ids: list[str],
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> dict[str, list[dict]]:
+        """查企业成员忙闲找空档（[04] §6.2）：受 A3 数据范围约束（只回可见成员），**只回忙闲块、不回标题**。
+
+        返回 ``{member_hasn_id: [忙闲块...]}``；非成员 / 无可见目标 → 空 dict。所有块经 ``redact_event_to_busy``
+        统一裁成匿名「忙碌」块（调度用途，最保守隐私）。
+        """
+        scope = await resolve_plan_enterprise_scope(
+            db, viewer_owner_hasn_id=viewer_owner_hasn_id, enterprise_id=enterprise_id
+        )
+        if not scope.is_member:
+            return {}
+        visible = scope.visible_member_hasn_ids
+        targets = [m for m in dict.fromkeys(member_hasn_ids) if m in visible]  # 去重保序 + A3 可见性约束
+        if not targets:
+            return {}
+        stmt = sa.select(Event).where(Event.enterprise_id == enterprise_id, Event.owner_hasn_id.in_(targets))
+        if start is not None:
+            stmt = stmt.where(Event.end_at >= start)
+        if end is not None:
+            stmt = stmt.where(Event.start_at <= end)
+        stmt = stmt.order_by(Event.start_at.asc())
+        rows = (await db.execute(stmt)).scalars().all()
+        out: dict[str, list[dict]] = {m: [] for m in targets}
+        for r in rows:
+            out.setdefault(r.owner_hasn_id, []).append(redact_event_to_busy(serialize(r)))
+        return out
 
     async def update_event(self, db: AsyncSession, *, owner: str, pk: int, data: dict) -> dict:
         row = await self._get_event(db, owner=owner, pk=pk)

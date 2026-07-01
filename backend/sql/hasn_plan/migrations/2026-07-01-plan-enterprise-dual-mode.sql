@@ -50,3 +50,10 @@ UPDATE public.hasn_app_catalog
    SET scope = '["personal", "enterprise"]'::jsonb,
        purchasable_by = 'both'
  WHERE app_id = 'plan';
+
+-- ── 6. event.origin_ref（OA→plan 反向锚，[04] §6.3；plan_event_id ↔ origin_ref 双向锚）──────
+-- OA 会议室 book / 面试 schedule → hasn.plan.event.create(source=oa_meeting|oa_interview, origin_ref=oa:...)
+-- → 返 plan_event_id → OA 回写 oa_room_booking.plan_event_id；日历事件权威在 plan、会议室资源权威在 OA。
+ALTER TABLE event ADD COLUMN IF NOT EXISTS origin_ref varchar(64);
+COMMENT ON COLUMN event.origin_ref IS '外部来源锚 (OA→plan：oa:room_booking:<id> / oa:interview:<id>)；日历事件权威在 plan、会议室资源权威在 OA（[04] §6.3）';
+CREATE INDEX IF NOT EXISTS idx_plan_event_origin_ref ON event (origin_ref) WHERE origin_ref IS NOT NULL;

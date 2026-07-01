@@ -28,16 +28,20 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.model.hasn_resource_share import HasnResourceShare
 from backend.app.hasn.service.resource_share_service import ResourceShareService
 from backend.app.hasn_plan.model import Event, EventAttendee
+from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 DataScope = Literal['self', 'dept', 'dept_and_below', 'all']
+WriteSpaceScope = Literal['personal', 'enterprise']
 
 # plan 事件在 resource_share 里的 resource_type（A4 event.invite / 共享用同一口径）
 PLAN_EVENT_RESOURCE_TYPE = 'plan_event'
 _ADMIN_ROLES = frozenset({'owner', 'admin'})
 _MEMBERSHIP_ACTIVE = ('approved',)
+# 诚实拒绝错误码（PE-7）：scope=enterprise 但当前不在企业空间（不自动切换、不误落归属）。
+ERR_NOT_IN_ENTERPRISE_SPACE = 'not_in_enterprise_space'
 
 
 @dataclass(frozen=True)
@@ -215,3 +219,89 @@ def enterprise_event_who_filter(scope: PlanEnterpriseScope) -> sa.ColumnElement[
     if scope.shared_event_ids:
         clauses.append(Event.id.in_(scope.shared_event_ids))
     return sa.or_(*clauses)
+
+
+# ── PE-7 写类空间入参解析（[04] §6.1）───────────────────────────────────────────
+@dataclass(frozen=True)
+class PlanWriteScope:
+    """写类工具的空间归属解析结果（`enterprise_id`/`dept_id` 由服务端按活跃空间/快照解析）。
+
+    - ``ok=True`` 且 ``enterprise_id is None`` → 个人条目（[01] 现状，个人零破坏）；
+    - ``ok=True`` 且 ``enterprise_id`` 有值 → 企业条目（自动填 owner 在 E 的部门 dept_id）；
+    - ``ok=False`` + ``error_code='not_in_enterprise_space'`` → 诚实拒绝（不写、不切换）。
+    """
+
+    enterprise_id: int | None
+    dept_id: int | None
+    ok: bool = True
+    error_code: str | None = None
+
+
+async def _active_enterprise_id(db: AsyncSession, owner_hasn_id: str) -> int | None:
+    """主人当前活跃企业（[01] hasn_owner_workbench_pref.active_enterprise_id；空/未开通 → None=个人空间）。"""
+    eid = (
+        (
+            await db.execute(
+                sa.select(HasnOwnerWorkbenchPref.active_enterprise_id).where(
+                    HasnOwnerWorkbenchPref.owner_hasn_id == owner_hasn_id
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    return int(eid) if eid else None
+
+
+async def _owner_department_id(db: AsyncSession, *, user_id: int | None, enterprise_id: int) -> int | None:
+    """主人在企业 E 的部门 id（`hasn_enterprise_member_role` × `kind='department'` 首个）；无部门 → None。"""
+    if user_id is None:
+        return None
+    rid = (
+        (
+            await db.execute(
+                sa.select(HasnEnterpriseMemberRole.role_id)
+                .join(HasnEnterpriseRole, HasnEnterpriseRole.id == HasnEnterpriseMemberRole.role_id)
+                .where(
+                    HasnEnterpriseMemberRole.enterprise_id == enterprise_id,
+                    HasnEnterpriseMemberRole.user_id == user_id,
+                    HasnEnterpriseRole.kind == 'department',
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    return int(rid) if rid else None
+
+
+async def resolve_plan_write_scope(
+    db: AsyncSession,
+    *,
+    owner_hasn_id: str,
+    owner_user_id: int | None,
+    scope: str | None,
+    snapshot_enterprise_id: int | None = None,
+) -> PlanWriteScope:
+    """PE-7 写类空间解析：`scope=personal`（默认）→ 个人；`scope=enterprise` → 按快照优先/活跃空间填企业归属。
+
+    - `scope` 非 `enterprise`（含 None）→ 个人（`enterprise_id=None`，始终允许，向后兼容）；
+    - `scope=enterprise`：企业 id 优先取 `snapshot_enterprise_id`（异步/后台派发时会话建立快照，[04] §6.1 CR），
+      读不到再回落实时 `active_enterprise_id`；**无论快照还是实时，都校验 owner 是该企业 approved 成员**
+      （fail-safe，防快照陈旧 / 已退企误落归属）；不在企业空间 / 非成员 → 诚实拒绝 `not_in_enterprise_space`；
+    - 命中企业 → 自动填 owner 在 E 的部门 `dept_id`（无部门 → None）。
+    """
+    if (scope or 'personal').strip().lower() != 'enterprise':
+        return PlanWriteScope(enterprise_id=None, dept_id=None)
+
+    eid = snapshot_enterprise_id or await _active_enterprise_id(db, owner_hasn_id)
+    if not eid:
+        return PlanWriteScope(enterprise_id=None, dept_id=None, ok=False, error_code=ERR_NOT_IN_ENTERPRISE_SPACE)
+
+    memberships = await ResourceShareService.acting_human_memberships(db, owner_hasn_id)
+    if eid not in {e for e, _ in memberships}:
+        # 快照陈旧 / 已退企 / 非成员 → fail-safe 诚实拒绝，绝不误落企业归属。
+        return PlanWriteScope(enterprise_id=None, dept_id=None, ok=False, error_code=ERR_NOT_IN_ENTERPRISE_SPACE)
+
+    dept_id = await _owner_department_id(db, user_id=owner_user_id, enterprise_id=eid)
+    return PlanWriteScope(enterprise_id=int(eid), dept_id=dept_id)

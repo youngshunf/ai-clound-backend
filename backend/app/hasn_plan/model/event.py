@@ -51,3 +51,8 @@ class Event(PlanBase):
         default='private',
         comment='企业事件可见性 (private:仅参与者+被授权:gray/public:企业公开:green)（个人事件恒 private，不生效）',
     )
+    origin_ref: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        default=None,
+        comment='外部来源锚 (OA→plan：oa:room_booking:<id>/oa:interview:<id>)；日历权威在 plan（[04] §6.3）',
+    )
