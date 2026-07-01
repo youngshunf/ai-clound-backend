@@ -24,6 +24,7 @@ from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
+from backend.app.hasn.model.hasn_app_seat import HasnAppSeat
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.app_catalog_registry import App, app_catalog_registry
 from backend.app.hasn_design.manifest import DESIGN_BUSINESS_PROMPT
@@ -657,14 +658,76 @@ def _price_payload(cat: HasnAppCatalog) -> dict | None:
     }
 
 
+async def _member_has_assigned_seat(
+    db: AsyncSession, *, enterprise_subject_id: str, app_id: str, member_hasn_id: str | None
+) -> bool:
+    """该成员是否在该企业该 app 有 assigned 席位（doc04 §6.3 情形 A 席位判定）。
+
+    ``enterprise_subject_id`` 是权益主体 ID（str(enterprise_id)）；``member_hasn_id`` 缺失即无席。
+    """
+    if not member_hasn_id:
+        return False
+    try:
+        enterprise_id = int(enterprise_subject_id)
+    except (TypeError, ValueError):
+        return False
+    stmt = sa.select(HasnAppSeat.id).where(
+        HasnAppSeat.enterprise_id == enterprise_id,
+        HasnAppSeat.app_id == app_id,
+        HasnAppSeat.member_hasn_id == member_hasn_id,
+        HasnAppSeat.status == 'assigned',
+    )
+    return (await db.execute(stmt)).scalars().first() is not None
+
+
+def merge_access(owner_access: dict, enterprise_access: dict | None) -> dict:
+    """合并 owner 维度与企业维度准入（doc04 §6.6，M1「顺序即优先级 + 自解优先」）。
+
+    - ``allowed = owner OR enterprise``。
+    - reason 选取顺序（allowed=False 时）：
+      ① 企业 allowed → 用企业结果；② owner allowed → 用 owner 结果；
+      ③ 双不通：**自解优先**——owner.reason ∈ {need_purchase, need_upgrade} 先取 owner
+        （用户能自购/升级，别推去「找管理员」死路）；否则 enterprise.reason == need_seat_assignment 取企业；
+        否则回落 owner.reason（含 need_enterprise_space / disabled）。
+    """
+    if enterprise_access is None:
+        return owner_access
+    if enterprise_access.get('allowed'):
+        return enterprise_access
+    if owner_access.get('allowed'):
+        return owner_access
+    # 双方都不通：M1 自解优先。
+    if owner_access.get('reason') in ('need_purchase', 'need_upgrade'):
+        return owner_access
+    if enterprise_access.get('reason') == 'need_seat_assignment':
+        return enterprise_access
+    return owner_access
+
+
+def check_purchasable_by(catalog: HasnAppCatalog, *, buyer: str) -> None:
+    """下单/试用前校验 ``purchasable_by``（doc04 §5/P1-4），拦无意义下单。违反抛 RequestError。
+
+    - buyer='owner'：``purchasable_by='enterprise'``（纯企业应用）→ 拒（个人买了也用不了）。
+    - buyer='enterprise'：``purchasable_by='owner'``（纯个人应用）→ 拒。
+    - ``both`` 两边都放行；缺省视为 ``owner``（保守默认，与迁移 DEFAULT 一致）。
+    """
+    mode = catalog.purchasable_by or 'owner'
+    if buyer == 'owner' and mode == 'enterprise':
+        raise errors.RequestError(msg='该应用仅限企业购买')
+    if buyer == 'enterprise' and mode == 'owner':
+        raise errors.RequestError(msg='该应用仅限个人购买')
+
+
 async def resolve_app_access(
     db: AsyncSession,
     *,
     catalog: HasnAppCatalog,
     owner_hasn_id: str,
     subject_type: str = 'owner',
+    subject_id: str | None = None,
+    member_hasn_id: str | None = None,
 ) -> dict:
-    """统一准入决策函数（设计 §5.2）。返回 AppAccess dict。
+    """统一准入决策函数（设计 §5.2 / doc04 §6.3）。返回 AppAccess dict。
 
     判定顺序（§5.2）：
       1. status != published → disabled（下架，任何人不可用）
@@ -672,9 +735,13 @@ async def resolve_app_access(
       3. tier → owner 有效档位 ≥ min_tier ? allowed/tier_ok : need_upgrade（附 trial_available）
       4. purchase → 有 active 权益 ? allowed/entitled（trial 来源则 trialing）: need_purchase（附 trial_available）
 
-    subject_id 取 owner_hasn_id（owner 维度）；企业维度由调用方传 subject_type='enterprise' + 对应 subject_id。
+    维度参数（M2，doc04 §4/§7 破「subject_id 硬编码」）：
+    - ``subject_id``：权益主体 ID。owner 维度不传（回落 owner_hasn_id，**行为不变**，向后兼容）；
+      企业维度传 ``str(enterprise_id)``。
+    - ``member_hasn_id``：**仅企业席位制权益**判定用——判「该成员是否有 assigned 席位」（S1，§6.3 情形 A）。
+      免费/订阅制（access_type=free/tier，无 seats_total）**不过席位**，approved 成员直接放行。
     """
-    subject_id = owner_hasn_id
+    subject_id = subject_id or owner_hasn_id
 
     def _access(
         *,
@@ -723,6 +790,15 @@ async def resolve_app_access(
     if access_type == 'purchase':
         ent = await get_active_entitlement(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id)
         if ent is not None:
+            # S1：席位闸**只在** purchase 分支且企业席位制权益（seats_total 有值）生效。
+            # 企业买了「套餐」但成员没被指派席位 → need_seat_assignment（用户自己解不了，需管理员指派）。
+            if subject_type == 'enterprise' and ent.seats_total is not None:
+                has_seat = await _member_has_assigned_seat(
+                    db, enterprise_subject_id=subject_id, app_id=catalog.app_id, member_hasn_id=member_hasn_id
+                )
+                if has_seat:
+                    return _access(allowed=True, reason='entitled', entitlement_expires_at=ent.expires_at)
+                return _access(allowed=False, reason='need_seat_assignment', requires='seat')
             reason = 'trialing' if ent.source == 'trial' else 'entitled'
             return _access(allowed=True, reason=reason, entitlement_expires_at=ent.expires_at)
         trial_available = bool(catalog.trial_days) and not await _has_used_trial(
@@ -758,6 +834,8 @@ async def open_trial(
         raise errors.ForbiddenError(msg='应用已下架')
     if (catalog.access_type or 'free') == 'free' or not catalog.trial_days:
         raise errors.RequestError(msg='该应用不支持试用')
+    # P1-4：purchasable_by 校验——个人不得试用/购买纯企业应用。
+    check_purchasable_by(catalog, buyer='enterprise' if subject_type == 'enterprise' else 'owner')
     subject_id = owner_hasn_id
     if await _has_used_trial(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id):
         raise errors.RequestError(msg='试用机会已用过')

@@ -24,6 +24,11 @@ class HasnAppCatalog(Base):
     status: Mapped[str] = mapped_column(sa.String(16), default='', comment='上架状态 (published:已上架:green/disabled:已下架:gray/draft:草稿:orange)')
     execution_mode: Mapped[str] = mapped_column(sa.String(24), default='', comment='执行形态 (cloud:云端:blue/embedded_desktop:桌面嵌入:green/local_tool:本地工具:gray)')
     scope: Mapped[list] = mapped_column(postgresql.JSONB(), default_factory=list, comment='可挂载空间类型 JSONB（personal/enterprise）')
+    purchasable_by: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='owner',
+        comment='谁能买单 (owner:仅个人/enterprise:仅企业/both:双模)；仅 access_type=purchase 有约束意义（doc04 §1）',
+    )
     collaboration_mode: Mapped[str] = mapped_column(sa.String(24), default='', comment='协作模式 (none:个人:gray/workspace_shared:空间共享:blue)')
     entry_route: Mapped[str] = mapped_column(sa.String(128), default='', comment='客户端原生路由')
     sort_order: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='工作台排序（小在前）')
