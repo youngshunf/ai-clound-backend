@@ -16,11 +16,13 @@ remove_member（P4 生命周期钩子释放席位）→ check_purchasable_by（P
 
 事实源: docs/hasn-node设计文档/12-企业与组织/04-应用与空间关系及企业席位购买设计.md §5-§6。
 """
+
 from __future__ import annotations
 
 import uuid
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
@@ -28,6 +30,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_enterprise import HasnEnterprise
@@ -46,7 +53,7 @@ def _uid() -> str:
 
 
 @pytest_asyncio.fixture
-async def db():
+async def db() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -65,7 +72,7 @@ async def db():
 
 
 async def _seed_catalog(
-    db, *, purchasable_by: str = 'both', scope: list[str] | None = None
+    db: AsyncSession, *, purchasable_by: str = 'both', scope: list[str] | None = None
 ) -> HasnAppCatalog:
     """造一条 published + purchase 计价的目录行（默认双模双买）。app_id 随机避污染。"""
     cat = HasnAppCatalog(
@@ -84,32 +91,39 @@ async def _seed_catalog(
     return cat
 
 
-async def _seed_human(db, *, user_id: int, nickname: str) -> str:
+async def _seed_human(db: AsyncSession, *, user_id: int, nickname: str) -> str:
     hasn_id = f'h_{_uid()}{_uid()}'[:38]
     db.add(HasnHumans(hasn_id=hasn_id, star_id=f's{user_id}', user_id=user_id, nickname=nickname))
     await db.flush()
     return hasn_id
 
 
-async def _seed_enterprise(db, *, owner_user_id: int) -> int:
+async def _seed_enterprise(db: AsyncSession, *, owner_user_id: int) -> int:
     ent = HasnEnterprise(name=f'席位E2E企业 {_uid()}', slug=f'seate2e-{_uid()}', owner_user_id=owner_user_id)
     db.add(ent)
     await db.flush()
     return ent.id
 
 
-async def _seed_member(db, *, enterprise_id: int, nickname: str, role: str = 'member') -> tuple[int, str]:
+async def _seed_member(db: AsyncSession, *, enterprise_id: int, nickname: str, role: str = 'member') -> tuple[int, str]:
     """造企业成员（HasnHumans + approved membership），返回 (user_id, owner hasn_id)。"""
     user_id = 950_000_000 + int(_uid(), 16) % 1_000_000
     hasn_id = await _seed_human(db, user_id=user_id, nickname=nickname)
-    db.add(HasnEnterpriseMembership(
-        enterprise_id=enterprise_id, user_id=user_id, role=role, status='approved',
-    ))
+    db.add(
+        HasnEnterpriseMembership(
+            enterprise_id=enterprise_id,
+            user_id=user_id,
+            role=role,
+            status='approved',
+        )
+    )
     await db.flush()
     return user_id, hasn_id
 
 
-async def _enterprise_access(db, *, catalog: HasnAppCatalog, enterprise_id: int, member_hasn_id: str) -> dict:
+async def _enterprise_access(
+    db: AsyncSession, *, catalog: HasnAppCatalog, enterprise_id: int, member_hasn_id: str
+) -> dict:
     """以企业维度（subject_type='enterprise'）判定某成员对该 app 的准入。"""
     return await app_catalog_service.resolve_app_access(
         db,
@@ -124,7 +138,7 @@ async def _enterprise_access(db, *, catalog: HasnAppCatalog, enterprise_id: int,
 # ============================ 核心 E2E 主流程（场景 1-5） ============================
 
 
-async def test_seat_purchase_assign_lifecycle_e2e(db) -> None:
+async def test_seat_purchase_assign_lifecycle_e2e(db: AsyncSession) -> None:
     """场景 1-5：购买 5 席 → 指派 3 人 entitled → 第 4 人 need_seat_assignment →
     张三退出席位释放回落 → 赵六复用空位。"""
     owner_uid = 951_000_000 + int(_uid(), 16) % 1_000_000
@@ -194,7 +208,7 @@ async def test_seat_purchase_assign_lifecycle_e2e(db) -> None:
 # ============================ 场景 6：个人 vs 企业购买隔离 ============================
 
 
-async def test_personal_and_enterprise_purchase_isolated(db) -> None:
+async def test_personal_and_enterprise_purchase_isolated(db: AsyncSession) -> None:
     """企业买席位只影响企业维度；同一成员的 owner 维度准入不受影响（仍 need_purchase）。
     反向：owner 个人买断后，owner 维度 entitled，但企业维度不因个人购买而放行。"""
     owner_uid = 952_000_000 + int(_uid(), 16) % 1_000_000
@@ -223,8 +237,13 @@ async def test_personal_and_enterprise_purchase_isolated(db) -> None:
 
     # 反向：owner 个人买断 → owner 维度 entitled，但不影响企业维度语义（企业仍走席位闸）
     await app_catalog_service.grant_entitlement(
-        db, app_id=app_id, subject_type='owner', subject_id=member, source='purchase',
-        order_ref=f'o-{_uid()}', expires_at=app_catalog_service.purchase_expiry('month'),
+        db,
+        app_id=app_id,
+        subject_type='owner',
+        subject_id=member,
+        source='purchase',
+        order_ref=f'o-{_uid()}',
+        expires_at=app_catalog_service.purchase_expiry('month'),
     )
     owner_acc2 = await app_catalog_service.resolve_app_access(
         db, catalog=catalog, owner_hasn_id=member, subject_type='owner'
@@ -238,7 +257,7 @@ async def test_personal_and_enterprise_purchase_isolated(db) -> None:
 # ============================ 场景 7：纯企业应用个人购买入口 4xx ============================
 
 
-async def test_enterprise_only_app_personal_purchase_rejected(db) -> None:
+async def test_enterprise_only_app_personal_purchase_rejected(db: AsyncSession) -> None:
     """purchasable_by=enterprise 的纯企业应用，个人（buyer='owner'）购买/试用入口 → RequestError。"""
     catalog = await _seed_catalog(db, purchasable_by='enterprise')
     with pytest.raises(errors.RequestError):

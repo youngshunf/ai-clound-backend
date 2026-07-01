@@ -11,11 +11,13 @@ M3 关键：钩子载荷是 sys_user.id，seat 键是 hasn_id——release 前�
 
 事实源: docs/hasn-node设计文档/12-企业与组织/04-应用与空间关系及企业席位购买设计.md §6.5。
 """
+
 from __future__ import annotations
 
 import uuid
 
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
@@ -23,6 +25,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_enterprise import HasnEnterprise
@@ -41,7 +48,7 @@ def _uid() -> str:
 
 
 @pytest_asyncio.fixture
-async def db():
+async def db() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -59,28 +66,39 @@ async def db():
         await engine.dispose()
 
 
-async def _seed_enterprise(db, *, owner_user_id: int = 0) -> int:
+async def _seed_enterprise(db: AsyncSession, *, owner_user_id: int = 0) -> int:
     ent = HasnEnterprise(name=f'席位P4企业 {_uid()}', slug=f'seatp4-{_uid()}', owner_user_id=owner_user_id)
     db.add(ent)
     await db.flush()
     return ent.id
 
 
-async def _seed_member(db, *, enterprise_id: int, role: str = 'member') -> tuple[int, str]:
+async def _seed_member(db: AsyncSession, *, enterprise_id: int, role: str = 'member') -> tuple[int, str]:
     user_id = 940_000_000 + int(_uid(), 16) % 1_000_000
     hasn_id = f'h_{_uid()}{_uid()}'[:38]
     db.add(HasnHumans(hasn_id=hasn_id, star_id=f's{user_id}', user_id=user_id, nickname=f'seat p4 {_uid()}'))
-    db.add(HasnEnterpriseMembership(
-        enterprise_id=enterprise_id, user_id=user_id, role=role, status='approved',
-    ))
+    db.add(
+        HasnEnterpriseMembership(
+            enterprise_id=enterprise_id,
+            user_id=user_id,
+            role=role,
+            status='approved',
+        )
+    )
     await db.flush()
     return user_id, hasn_id
 
 
-async def _seed_entitlement(db, *, app_id: str, enterprise_id: int, seats_total: int) -> HasnAppEntitlement:
+async def _seed_entitlement(
+    db: AsyncSession, *, app_id: str, enterprise_id: int, seats_total: int
+) -> HasnAppEntitlement:
     ent = HasnAppEntitlement(
-        app_id=app_id, subject_type='enterprise', subject_id=str(enterprise_id),
-        source='purchase', status='active', seats_total=seats_total,
+        app_id=app_id,
+        subject_type='enterprise',
+        subject_id=str(enterprise_id),
+        source='purchase',
+        status='active',
+        seats_total=seats_total,
         expires_at=timezone.now() + timedelta(days=30),
     )
     db.add(ent)
@@ -91,7 +109,7 @@ async def _seed_entitlement(db, *, app_id: str, enterprise_id: int, seats_total:
 # ============================ 成员退出释放席位（M3 翻译） ============================
 
 
-async def test_remove_member_releases_seats(db) -> None:
+async def test_remove_member_releases_seats(db: AsyncSession) -> None:
     """成员移除 → 其席位 released（经 M3 翻译匹配），其他成员不受影响。"""
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
@@ -108,18 +126,19 @@ async def test_remove_member_releases_seats(db) -> None:
 
     assert await app_seat_service.count_seats_used(db, entitlement_id=entitlement.id) == 1
     # h1 无 assigned 席位，h2 仍在
-    assert await app_seat_service._member_active_seat(
-        db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=h1
-    ) is None
-    assert await app_seat_service._member_active_seat(
-        db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=h2
-    ) is not None
+    assert (
+        await app_seat_service._member_active_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=h1) is None
+    )
+    assert (
+        await app_seat_service._member_active_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=h2)
+        is not None
+    )
 
 
 # ============================ 企业解散释放全部 + 吊销权益 ============================
 
 
-async def test_disband_releases_all_and_revokes(db) -> None:
+async def test_disband_releases_all_and_revokes(db: AsyncSession) -> None:
     app_a = f'seat_{_uid()}'
     app_b = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
@@ -142,7 +161,7 @@ async def test_disband_releases_all_and_revokes(db) -> None:
     assert ent_b.status == 'revoked'
 
 
-async def test_enterprise_bulk_helpers_idempotent(db) -> None:
+async def test_enterprise_bulk_helpers_idempotent(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=2)

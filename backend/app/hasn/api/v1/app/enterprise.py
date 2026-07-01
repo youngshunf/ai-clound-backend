@@ -231,9 +231,7 @@ async def revoke_invite_code(db: CurrentSessionTransaction, enterprise_id: int, 
 
 @router.get('/enterprises/{enterprise_id}/roles', dependencies=[DependsJwtAuth], summary='企业角色 / 部门列表')
 async def list_roles(request: Request, db: CurrentSession, enterprise_id: int) -> ResponseModel:
-    data = await workbench_domain_service.list_roles(
-        db, enterprise_id=enterprise_id, operator_user_id=request.user.id
-    )
+    data = await workbench_domain_service.list_roles(db, enterprise_id=enterprise_id, operator_user_id=request.user.id)
     return response_base.success(data=data)
 
 
@@ -289,9 +287,7 @@ async def delete_role(
 @router.get(
     '/enterprises/{enterprise_id}/roles/{role_id}/members', dependencies=[DependsJwtAuth], summary='角色成员列表'
 )
-async def list_role_members(
-    request: Request, db: CurrentSession, enterprise_id: int, role_id: int
-) -> ResponseModel:
+async def list_role_members(request: Request, db: CurrentSession, enterprise_id: int, role_id: int) -> ResponseModel:
     data = await workbench_domain_service.list_role_members(
         db, enterprise_id=enterprise_id, operator_user_id=request.user.id, role_id=role_id
     )
@@ -366,9 +362,7 @@ async def purchase_app_seats(
     summary='列企业应用席位占用',
     name='list_enterprise_app_seats',
 )
-async def list_app_seats(
-    request: Request, db: CurrentSession, enterprise_id: int, app_id: str
-) -> ResponseModel:
+async def list_app_seats(request: Request, db: CurrentSession, enterprise_id: int, app_id: str) -> ResponseModel:
     data = await workbench_domain_service.list_app_seats(
         db, enterprise_id=enterprise_id, app_id=app_id, operator_user_id=request.user.id
     )

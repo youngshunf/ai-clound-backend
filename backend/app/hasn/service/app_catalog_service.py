@@ -56,7 +56,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
     'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
-    'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 install_policy=manual 推导）
+    'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 manual 推导）
     'studio': 76,  # 统一视频引擎（cloud-brokered 视频工作台，模块 14 doc22；default_mount=FALSE 由 manual 推导）
     'design': 78,  # 矢量设计（local_tool 本地 sidecar，源自 OpenPencil，doc27；default_mount=FALSE 由 manual 推导）
 }
@@ -121,7 +121,8 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '只调用 hasn.creator.* 工具，产出对客可用的成品，零 fake，失败如实报错。',
     ),
     # 视频生成（源自 VideoClaw）也归「内容运营官（content_operator）」——视频是内容运营的一种产出形态，
-    # 不另起「视频分身」（AC-P6 福仔拍板复用 content_operator）。一个分身默认服务 deck/designsystem/creator/film 四应用。
+    # 不另起「视频分身」（AC-P6 福仔拍板复用 content_operator）。
+    # 一个分身默认服务 deck/designsystem/creator/film 四应用。
     'film': (
         'content_operator',
         '你是视频生成应用的执行分身：把主人的创意做成完整的短视频，按脚本→角色设定→分镜→参考图→'
@@ -165,7 +166,8 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
         '取不到就如实说，零 fake、失败如实报错。',
     ),
-    # 量化用专属「量化交易官（quant_trader）」分身（hub 模板 quant_trader，builtin_key=quant_trader，QUANT-P10/P11 落地）。
+    # 量化用专属「量化交易官（quant_trader）」分身
+    # （hub 模板 quant_trader，builtin_key=quant_trader，QUANT-P10/P11 落地）。
     # 本期 P0–P5 只做回测研究（零资金风险）：写策略 → 跑回测 → 读绩效 → 迭代优化；实盘线 P6+ 受硬闸不开。
     'quant': (
         'quant_trader',
@@ -718,7 +720,7 @@ def check_purchasable_by(catalog: HasnAppCatalog, *, buyer: str) -> None:
         raise errors.RequestError(msg='该应用仅限个人购买')
 
 
-async def resolve_app_access(
+async def resolve_app_access(  # noqa: C901 有意的分支式准入门（status/beta/free/tier/purchase+席位），E2E 覆盖，保持内聚不拆分
     db: AsyncSession,
     *,
     catalog: HasnAppCatalog,
@@ -816,7 +818,7 @@ async def resolve_app_access(
 _PURCHASE_CYCLE_DAYS: dict[str, int] = {'month': 30, 'monthly': 30, 'year': 365, 'yearly': 365}
 
 
-def purchase_expiry(billing_cycle: str | None):
+def purchase_expiry(billing_cycle: str | None) -> datetime | None:
     """按 billing_cycle 计算购买权益到期时间；``once``/未知周期 → None（永久买断）。"""
     days = _PURCHASE_CYCLE_DAYS.get(billing_cycle or 'once')
     return timezone.now() + timedelta(days=days) if days else None
@@ -864,7 +866,7 @@ async def grant_entitlement(
     subject_id: str,
     source: str,
     order_ref: str | None = None,
-    expires_at=None,
+    expires_at: datetime | None = None,
 ) -> HasnAppEntitlement:
     """写一条 active 权益（购买回调 / admin 授予共用）。已有 active 则幂等返回（不重复发）。
 

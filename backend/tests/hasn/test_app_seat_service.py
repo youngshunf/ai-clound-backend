@@ -9,11 +9,13 @@
 
 事实源: docs/hasn-node设计文档/12-企业与组织/04-应用与空间关系及企业席位购买设计.md §6。
 """
+
 from __future__ import annotations
 
 import uuid
 
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
@@ -22,8 +24,12 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
-from backend.app.hasn.model.hasn_app_seat import HasnAppSeat
 from backend.app.hasn.model.hasn_enterprise import HasnEnterprise
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
 from backend.app.hasn.model.hasn_humans import HasnHumans
@@ -40,7 +46,7 @@ def _uid() -> str:
 
 
 @pytest_asyncio.fixture
-async def db():
+async def db() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -58,30 +64,40 @@ async def db():
         await engine.dispose()
 
 
-async def _seed_member(db, *, enterprise_id: int, role: str = 'member', approved: bool = True) -> str:
+async def _seed_member(db: AsyncSession, *, enterprise_id: int, role: str = 'member', approved: bool = True) -> str:
     """造一个企业成员（HasnHumans + membership），返回其 owner hasn_id。"""
     user_id = 920_000_000 + int(_uid(), 16) % 1_000_000
     hasn_id = f'h_{_uid()}{_uid()}'[:38]
     db.add(HasnHumans(hasn_id=hasn_id, star_id=f's{user_id}', user_id=user_id, nickname=f'seat member {_uid()}'))
-    db.add(HasnEnterpriseMembership(
-        enterprise_id=enterprise_id, user_id=user_id, role=role,
-        status='approved' if approved else 'pending',
-    ))
+    db.add(
+        HasnEnterpriseMembership(
+            enterprise_id=enterprise_id,
+            user_id=user_id,
+            role=role,
+            status='approved' if approved else 'pending',
+        )
+    )
     await db.flush()
     return hasn_id
 
 
-async def _seed_enterprise(db) -> int:
+async def _seed_enterprise(db: AsyncSession) -> int:
     ent = HasnEnterprise(name=f'席位测试企业 {_uid()}', slug=f'seat-{_uid()}', owner_user_id=0)
     db.add(ent)
     await db.flush()
     return ent.id
 
 
-async def _seed_entitlement(db, *, app_id: str, enterprise_id: int, seats_total: int | None) -> HasnAppEntitlement:
+async def _seed_entitlement(
+    db: AsyncSession, *, app_id: str, enterprise_id: int, seats_total: int | None
+) -> HasnAppEntitlement:
     ent = HasnAppEntitlement(
-        app_id=app_id, subject_type='enterprise', subject_id=str(enterprise_id),
-        source='purchase', status='active', seats_total=seats_total,
+        app_id=app_id,
+        subject_type='enterprise',
+        subject_id=str(enterprise_id),
+        source='purchase',
+        status='active',
+        seats_total=seats_total,
         expires_at=timezone.now() + timedelta(days=30),
     )
     db.add(ent)
@@ -92,7 +108,7 @@ async def _seed_entitlement(db, *, app_id: str, enterprise_id: int, seats_total:
 # ============================ assign / count ============================
 
 
-async def test_assign_then_count(db) -> None:
+async def test_assign_then_count(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     entitlement = await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=2)
@@ -106,7 +122,7 @@ async def test_assign_then_count(db) -> None:
     assert await app_seat_service.count_seats_used(db, entitlement_id=entitlement.id) == 2
 
 
-async def test_assign_full_raises_seats_exhausted(db) -> None:
+async def test_assign_full_raises_seats_exhausted(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=1)
@@ -115,11 +131,13 @@ async def test_assign_full_raises_seats_exhausted(db) -> None:
 
     await app_seat_service.assign_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1, assigned_by='admin')
     with pytest.raises(errors.RequestError) as exc:
-        await app_seat_service.assign_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m2, assigned_by='admin')
+        await app_seat_service.assign_seat(
+            db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m2, assigned_by='admin'
+        )
     assert app_seat_service.SEATS_EXHAUSTED in exc.value.msg
 
 
-async def test_assign_duplicate_member_raises(db) -> None:
+async def test_assign_duplicate_member_raises(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=3)
@@ -127,32 +145,38 @@ async def test_assign_duplicate_member_raises(db) -> None:
 
     await app_seat_service.assign_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1, assigned_by='admin')
     with pytest.raises(errors.RequestError):
-        await app_seat_service.assign_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1, assigned_by='admin')
+        await app_seat_service.assign_seat(
+            db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1, assigned_by='admin'
+        )
 
 
-async def test_assign_non_member_raises(db) -> None:
+async def test_assign_non_member_raises(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=3)
     # 建了 HasnHumans 但没在本企业 approved（换一个企业 id）
     outsider = await _seed_member(db, enterprise_id=ent_id + 999_999)
     with pytest.raises(errors.RequestError) as exc:
-        await app_seat_service.assign_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=outsider, assigned_by='admin')
+        await app_seat_service.assign_seat(
+            db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=outsider, assigned_by='admin'
+        )
     assert '名册' in exc.value.msg
 
 
-async def test_assign_without_entitlement_raises(db) -> None:
+async def test_assign_without_entitlement_raises(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     m1 = await _seed_member(db, enterprise_id=ent_id)
     with pytest.raises(errors.RequestError):
-        await app_seat_service.assign_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1, assigned_by='admin')
+        await app_seat_service.assign_seat(
+            db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1, assigned_by='admin'
+        )
 
 
 # ============================ release ============================
 
 
-async def test_release_decrements_count(db) -> None:
+async def test_release_decrements_count(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     entitlement = await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=2)
@@ -166,7 +190,7 @@ async def test_release_decrements_count(db) -> None:
     assert await app_seat_service.count_seats_used(db, entitlement_id=entitlement.id) == 0
 
 
-async def test_release_idempotent(db) -> None:
+async def test_release_idempotent(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=2)
@@ -175,7 +199,7 @@ async def test_release_idempotent(db) -> None:
     assert await app_seat_service.release_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1) is False
 
 
-async def test_release_then_reassign_ok(db) -> None:
+async def test_release_then_reassign_ok(db: AsyncSession) -> None:
     """回收后可再次指派同一成员（uq_app_seat_active 只挡 assigned 状态）。"""
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
@@ -188,7 +212,7 @@ async def test_release_then_reassign_ok(db) -> None:
     await app_seat_service.assign_seat(db, enterprise_id=ent_id, app_id=app_id, member_hasn_id=m1, assigned_by='admin')
 
 
-async def test_release_all_seats_for_member(db) -> None:
+async def test_release_all_seats_for_member(db: AsyncSession) -> None:
     app_a = f'seat_{_uid()}'
     app_b = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
@@ -208,7 +232,7 @@ async def test_release_all_seats_for_member(db) -> None:
 # ============================ settle_seat_purchase (S2 accumulate) ============================
 
 
-async def test_settle_seat_purchase_accumulates(db) -> None:
+async def test_settle_seat_purchase_accumulates(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     # 首购：无 entitlement → grant + seats_total = 3
@@ -224,7 +248,7 @@ async def test_settle_seat_purchase_accumulates(db) -> None:
     assert ent2.seats_total == 5
 
 
-async def test_settle_rejects_non_positive_seats(db) -> None:
+async def test_settle_rejects_non_positive_seats(db: AsyncSession) -> None:
     ent_id = await _seed_enterprise(db)
     with pytest.raises(errors.RequestError):
         await app_seat_service.settle_seat_purchase(
@@ -235,7 +259,7 @@ async def test_settle_rejects_non_positive_seats(db) -> None:
 # ============================ shrink guard (M4) ============================
 
 
-async def test_shrink_below_used_raises(db) -> None:
+async def test_shrink_below_used_raises(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     ent_id = await _seed_enterprise(db)
     await _seed_entitlement(db, app_id=app_id, enterprise_id=ent_id, seats_total=3)

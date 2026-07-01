@@ -11,11 +11,13 @@ S2 幂等（每订单仅结算一次）由 ``PayOrderService.handle_pay_notify``
 
 事实源: docs/hasn-node设计文档/12-企业与组织/04-应用与空间关系及企业席位购买设计.md §6。
 """
+
 from __future__ import annotations
 
 import uuid
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
@@ -23,6 +25,11 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_enterprise import HasnEnterprise
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
@@ -41,7 +48,7 @@ def _uid() -> str:
 
 
 @pytest_asyncio.fixture
-async def db():
+async def db() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -59,28 +66,34 @@ async def db():
         await engine.dispose()
 
 
-async def _seed_human(db, *, user_id: int) -> str:
+async def _seed_human(db: AsyncSession, *, user_id: int) -> str:
     hasn_id = f'h_{_uid()}{_uid()}'[:38]
     db.add(HasnHumans(hasn_id=hasn_id, star_id=f's{user_id}', user_id=user_id, nickname=f'seat p2 {_uid()}'))
     await db.flush()
     return hasn_id
 
 
-async def _seed_enterprise(db, *, owner_user_id: int) -> int:
+async def _seed_enterprise(db: AsyncSession, *, owner_user_id: int) -> int:
     ent = HasnEnterprise(name=f'席位P2企业 {_uid()}', slug=f'seatp2-{_uid()}', owner_user_id=owner_user_id)
     db.add(ent)
     await db.flush()
     return ent.id
 
 
-async def _seed_member(db, *, enterprise_id: int, role: str = 'member', approved: bool = True) -> tuple[int, str]:
+async def _seed_member(
+    db: AsyncSession, *, enterprise_id: int, role: str = 'member', approved: bool = True
+) -> tuple[int, str]:
     """造一个企业成员（HasnHumans + membership），返回 (user_id, owner hasn_id)。"""
     user_id = 930_000_000 + int(_uid(), 16) % 1_000_000
     hasn_id = await _seed_human(db, user_id=user_id)
-    db.add(HasnEnterpriseMembership(
-        enterprise_id=enterprise_id, user_id=user_id, role=role,
-        status='approved' if approved else 'pending',
-    ))
+    db.add(
+        HasnEnterpriseMembership(
+            enterprise_id=enterprise_id,
+            user_id=user_id,
+            role=role,
+            status='approved' if approved else 'pending',
+        )
+    )
     await db.flush()
     return user_id, hasn_id
 
@@ -105,7 +118,7 @@ def _fake_order(*, app_id: str | None, enterprise_id: int | None, seats: int | N
 # ============================ 回调结算包装 ============================
 
 
-async def test_callback_settle_accumulates(db) -> None:
+async def test_callback_settle_accumulates(db: AsyncSession) -> None:
     """settle_app_seat_purchase：首购建权益 seats_total=4，扩容再 +3 → 7（同一权益行）。"""
     app_id = f'seat_{_uid()}'
     owner_uid = 931_000_000 + int(_uid(), 16) % 1_000_000
@@ -121,7 +134,7 @@ async def test_callback_settle_accumulates(db) -> None:
     assert ent2.seats_total == 7
 
 
-async def test_callback_missing_fields_returns_none(db) -> None:
+async def test_callback_missing_fields_returns_none(db: AsyncSession) -> None:
     """缺字段订单：诚实返回 None，不抛、不写库。"""
     assert await settle_app_seat_purchase(db, order=_fake_order(app_id=None, enterprise_id=1, seats=2)) is None
     assert await settle_app_seat_purchase(db, order=_fake_order(app_id='x', enterprise_id=None, seats=2)) is None
@@ -131,7 +144,7 @@ async def test_callback_missing_fields_returns_none(db) -> None:
 # ============================ RBAC：席位管理四法 ============================
 
 
-async def test_assign_seat_rbac_denies_non_admin(db) -> None:
+async def test_assign_seat_rbac_denies_non_admin(db: AsyncSession) -> None:
     app_id = f'seat_{_uid()}'
     owner_uid = 932_000_000 + int(_uid(), 16) % 1_000_000
     ent_id = await _seed_enterprise(db, owner_user_id=owner_uid)
@@ -158,12 +171,17 @@ async def test_assign_seat_rbac_denies_non_admin(db) -> None:
     # 局外人 purchase → 拒（RBAC 早于下单，不触碰支付渠道）
     with pytest.raises(errors.ForbiddenError):
         await workbench_domain_service.purchase_app_seats(
-            db, enterprise_id=ent_id, app_id=app_id, seats=2, billing_cycle='month',
-            channel_code='wx_native', operator_user_id=member_uid,
+            db,
+            enterprise_id=ent_id,
+            app_id=app_id,
+            seats=2,
+            billing_cycle='month',
+            channel_code='wx_native',
+            operator_user_id=member_uid,
         )
 
 
-async def test_owner_can_assign_and_list(db) -> None:
+async def test_owner_can_assign_and_list(db: AsyncSession) -> None:
     """owner 作 operator：指派成功 + list_app_seats 回显 seats_total/seats_used/成员。"""
     app_id = f'seat_{_uid()}'
     owner_uid = 933_000_000 + int(_uid(), 16) % 1_000_000
