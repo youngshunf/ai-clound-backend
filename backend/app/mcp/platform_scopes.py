@@ -34,6 +34,7 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     # 注：plan:schedule / plan:delegate 仍属本地 hasn-mcp 工具（schedule/reschedule/delegate 保留本地），
     # 其展示元数据在本地 scope 词表，不在此平台目录。
     'plan:write': {'label_zh': '编辑规划', 'domain': 'plan', 'risk': 'low', 'description': '代主人建/改/删目标、计划、待办、日程、习惯（读类无需授权）'},
+    'plan:read': {'label_zh': '读团队忙闲', 'domain': 'plan', 'risk': 'low', 'description': '读企业成员忙闲档（availability，受 A3 可见性约束：只回忙/闲块不回标题；个人读类无需授权）'},
     'plan:manage': {'label_zh': '管理企业会议协同', 'domain': 'plan', 'risk': 'medium', 'description': '管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）'},
     # —— platform · 记忆（hasn.memory.save：分身把长期语义事实写入云端权威记忆，doc16 Phase C）——
     # 读类（search/recall/list）无需授权；写类 memory:write 出厂 Allow，owner 三态可覆盖、事后可改可删。
