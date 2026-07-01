@@ -12,6 +12,7 @@ from celery import shared_task
 
 from backend.app.hasn_memory.service.memory_extraction_service import memory_extraction_service
 from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
+from backend.app.hasn_memory.service.peer_portrait_service import peer_portrait_service
 from backend.common.log import log
 
 
@@ -41,4 +42,22 @@ async def memory_extraction_sweep() -> str:
         f'处理 {summary["processed"]} / 写入事实 {summary["written"]} / 失败 {summary["failed"]}'
     )
     log.info(f'[MemoryExtractionSweep] {msg}')
+    return msg
+
+
+@shared_task(name='peer_portrait_sweep')
+async def peer_portrait_sweep() -> str:
+    """Peer 画像合成 worker（doc17 PEERSYN-P4）：扫「有新 peer 事实但画像未追上」的 (owner, peer) 对，
+    跨该 owner 全部分身聚合事实 → LLM 合成/基线演进一份画像 → 发 memory.peer_portrait.upserted 下行。
+
+    紧跟提取管线之后跑：记忆提取写入 peer 事实（subject_kind='peer'）→ 本 sweep 方案B 脏判定发现
+    「事实晚于上次合成」→（重）合成。逐对独立事务，单对 LLM 失败不拖垮其余、留下轮重试（零 fake）。
+    同主人分身、无事实的对由 synthesize 内部跳过。
+    """
+    summary = await peer_portrait_service.sweep_peer_portraits()
+    msg = (
+        f'peer 画像合成完成: 候选 {summary["candidates"]} 对, '
+        f'合成 {summary["synthesized"]} / 跳过 {summary["skipped"]} / 失败 {summary["failed"]}'
+    )
+    log.info(f'[PeerPortraitSweep] {msg}')
     return msg

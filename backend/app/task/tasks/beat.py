@@ -68,4 +68,12 @@ LOCAL_BEAT_SCHEDULE = {
         # 跳过 agent verbose；平台廉价模型、平台吸收成本；candidate→PolicyGate→confidence→semantic_fact。
         'schedule': TzAwareCrontab('*/10'),
     },
+    'Peer 画像合成 worker': {
+        'task': 'peer_portrait_sweep',
+        # 每 10 分钟扫一次「有新 peer 事实但画像未追上」的 (owner, peer) 对（doc17 PEERSYN-P4）。
+        # 错开提取 worker 5 分钟（提取先写 peer 事实、本 sweep 再据事实合成画像）。方案B 脏判定
+        # MAX(peer 事实.updated_at) > 画像.last_synthesized_at；逐对独立事务，跨全部分身聚合合成一份，
+        # 合成后发 memory.peer_portrait.upserted 下行 daemon。
+        'schedule': TzAwareCrontab('5-59/10'),
+    },
 }
