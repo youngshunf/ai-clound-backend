@@ -314,8 +314,10 @@ class HasnGroupService:
     ) -> dict[str, Any]:
         conv = await cls._get_group_or_404(db, group_id)
         roster = await cls._load_members(db, conv.id)
-        if cls._role_of(roster, actor_hasn_id) not in _ADMIN_ROLES:
-            raise errors.ForbiddenError(msg='仅群主/管理员可加人')
+        # 加人放开给任意群成员（对齐微信默认：群成员皆可拉人）——只拒非成员。
+        # 移除成员 / 改群设置 / 解散仍受 owner/admin 限制（见下）。
+        if cls._role_of(roster, actor_hasn_id) is None:
+            raise errors.ForbiddenError(msg='非群成员，无权加人')
         existing_ids = {m.member_id for m in roster}
         now = timezone.now()
         for m in members or []:
