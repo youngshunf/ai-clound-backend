@@ -4,6 +4,10 @@
 --   3) kind 枚举加 video
 -- 设计：docs/hasn-node设计文档/19-规划与目标管理/02-待办产物化与产物落地闭环设计.md §3.2/§5
 -- 纯加列幂等，随常规云端部署执行。
+-- 归位说明（2026-07-01）：原误放 backend/sql/hasn/ 根目录 → 生产迁移 runner
+-- （docs/生产部署/scripts/run_pending_migrations.sh 只扫 */migrations/*.sql）从未执行它，
+-- 导致生产 hasn_artifacts 缺 body/origin_ref 两列、产物页 ORM select 全列 500。
+-- 移进 migrations/ 后未来部署自动跑。ADD COLUMN IF NOT EXISTS 幂等，已应用生产可安全重跑。
 
 ALTER TABLE hasn_artifacts ADD COLUMN IF NOT EXISTS body text;
 ALTER TABLE hasn_artifacts ADD COLUMN IF NOT EXISTS origin_ref varchar(128);
