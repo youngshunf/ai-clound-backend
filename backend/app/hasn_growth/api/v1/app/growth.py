@@ -26,7 +26,6 @@ from backend.app.hasn_growth.schema.funnel import (
 )
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
-from backend.app.hasn_growth.service.growth_tool_handlers import _enqueue_collection_job_after_commit
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
