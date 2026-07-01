@@ -14,7 +14,9 @@ from pypinyin import Style, lazy_pinyin
 
 from backend.app.admin.model.user import User
 from backend.app.hasn.model import (
+    HasnAppEntitlement,
     HasnAppInstance,
+    HasnAppSeat,
     HasnEnterprise,
     HasnEnterpriseInviteCode,
     HasnEnterpriseMemberRole,
@@ -23,6 +25,7 @@ from backend.app.hasn.model import (
     HasnHumans,
 )
 from backend.app.hasn.service import app_catalog_service
+from backend.app.hasn.service import app_seat_service
 from backend.app.hasn.service import workspace_notification_subscriber as _workspace_notifications  # noqa: F401
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 
@@ -833,6 +836,130 @@ class WorkbenchDomainService:
             manifest['access'] = app_catalog_service.merge_access(owner_access, enterprise_access)
             apps.append(manifest)
         return apps
+
+    # ============================ 企业席位管理（doc04 §6.2/§6.4，仅 owner/admin） ============================
+
+    async def purchase_app_seats(
+        self,
+        db: AsyncSession,
+        *,
+        enterprise_id: int,
+        app_id: str,
+        seats: int,
+        billing_cycle: str | None,
+        channel_code: str,
+        operator_user_id: int,
+        user_ip: str | None = None,
+    ) -> dict[str, Any]:
+        """企业席位购买下单（P2-1，owner/admin RBAC）。走 billing ``app_seat`` 订单，
+        到账回调 ``handle_app_seat_paid`` 累加 ``seats_total``（S2 两步累加）。"""
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='为企业购买席位'
+        )
+        # 延迟导入避免 hasn → billing 顶层循环依赖（billing 反向消费 hasn_core.app_platform）。
+        from backend.app.billing.schema.pay_order import CreatePayOrderParam
+        from backend.app.billing.service.pay_order_service import pay_order_service
+
+        obj = CreatePayOrderParam(
+            order_type='app_seat',
+            channel_code=channel_code,
+            app_id=app_id,
+            enterprise_id=enterprise_id,
+            seats=seats,
+            billing_cycle=billing_cycle or 'monthly',
+        )
+        resp = await pay_order_service.create_order(
+            db=db, user_id=operator_user_id, obj=obj, user_ip=user_ip
+        )
+        return resp.model_dump()
+
+    async def assign_app_seat(
+        self,
+        db: AsyncSession,
+        *,
+        enterprise_id: int,
+        app_id: str,
+        member_hasn_id: str,
+        operator_user_id: int,
+    ) -> dict[str, Any]:
+        """给成员指派席位（P2-2，owner/admin RBAC）。满席由 assign_seat 抛 seats_exhausted。"""
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='分配应用席位'
+        )
+        assigned_by = await app_catalog_service.resolve_owner_hasn_id(db, user_id=operator_user_id) or ''
+        seat = await app_seat_service.assign_seat(
+            db, enterprise_id=enterprise_id, app_id=app_id, member_hasn_id=member_hasn_id, assigned_by=assigned_by
+        )
+        return {'id': seat.id, 'member_hasn_id': seat.member_hasn_id, 'status': seat.status}
+
+    async def release_app_seat(
+        self,
+        db: AsyncSession,
+        *,
+        enterprise_id: int,
+        app_id: str,
+        member_hasn_id: str,
+        operator_user_id: int,
+    ) -> dict[str, Any]:
+        """回收成员席位（P2-2，owner/admin RBAC）。幂等：无席位返回 released=False。"""
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='回收应用席位'
+        )
+        released = await app_seat_service.release_seat(
+            db, enterprise_id=enterprise_id, app_id=app_id, member_hasn_id=member_hasn_id
+        )
+        return {'released': released}
+
+    async def list_app_seats(
+        self, db: AsyncSession, *, enterprise_id: int, app_id: str, operator_user_id: int
+    ) -> dict[str, Any]:
+        """列企业该 app 的席位占用（P2-2，owner/admin RBAC）：seats_total/seats_used + 已指派成员。"""
+        await self._require_enterprise_admin(
+            db, enterprise_id=enterprise_id, user_id=operator_user_id, action='查看应用席位'
+        )
+        ent = await app_catalog_service.get_active_entitlement(
+            db, app_id=app_id, subject_type='enterprise', subject_id=str(enterprise_id)
+        )
+        seats_total = ent.seats_total if ent is not None else None
+        seats = (
+            (
+                await db.execute(
+                    sa.select(HasnAppSeat)
+                    .where(
+                        HasnAppSeat.enterprise_id == enterprise_id,
+                        HasnAppSeat.app_id == app_id,
+                        HasnAppSeat.status == 'assigned',
+                    )
+                    .order_by(HasnAppSeat.assigned_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        member_ids = [s.member_hasn_id for s in seats]
+        nick_map: dict[str, str] = {}
+        if member_ids:
+            rows = (
+                await db.execute(
+                    sa.select(HasnHumans.hasn_id, HasnHumans.nickname).where(HasnHumans.hasn_id.in_(member_ids))
+                )
+            ).all()
+            nick_map = {hasn_id: nickname for hasn_id, nickname in rows}
+        return {
+            'enterprise_id': enterprise_id,
+            'app_id': app_id,
+            'seats_total': seats_total,
+            'seats_used': len(seats),
+            'members': [
+                {
+                    'member_hasn_id': s.member_hasn_id,
+                    'nickname': nick_map.get(s.member_hasn_id),
+                    'assigned_by': s.assigned_by,
+                    'assigned_at': s.assigned_at.isoformat() if s.assigned_at else None,
+                }
+                for s in seats
+            ],
+        }
 
     async def resolve_app_entry(self, db: AsyncSession, *, user_id: int, app_id: str) -> dict[str, Any]:
         """解析应用入口句柄（设计 11 §3.1，doc 11「注册即用」）。

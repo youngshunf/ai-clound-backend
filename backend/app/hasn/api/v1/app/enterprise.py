@@ -54,6 +54,16 @@ class UpdateRoleRequest(BaseModel):
     kind: str | None = None
 
 
+class PurchaseSeatsRequest(BaseModel):
+    seats: int = Field(gt=0, description='购买席位数（>0）')
+    channel_code: str = Field(description='支付渠道编码 wx_native/alipay_qr/alipay_pc')
+    billing_cycle: str = Field(default='monthly', description='计费周期 monthly/yearly')
+
+
+class AssignSeatRequest(BaseModel):
+    member_hasn_id: str = Field(description='被指派成员的 HASN ID')
+
+
 @router.post('/enterprises', dependencies=[DependsJwtAuth], summary='创建企业')
 async def create_enterprise(
     request: Request, db: CurrentSessionTransaction, body: CreateEnterpriseRequest
@@ -321,3 +331,82 @@ async def revoke_member_role(
         user_id=user_id,
     )
     return response_base.success()
+
+
+# ── 企业应用席位（doc04 §6.4 购买 + §6.5 指派/回收）────────────────────────────
+# owner / admin 鉴权与跨企业隔离在 workbench_domain_service 内强制（operator_user_id=请求人）。
+
+
+@router.post(
+    '/enterprises/{enterprise_id}/apps/{app_id}/purchase',
+    dependencies=[DependsJwtAuth],
+    summary='企业购买应用席位',
+    name='purchase_enterprise_app_seats',
+)
+async def purchase_app_seats(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, app_id: str, body: PurchaseSeatsRequest
+) -> ResponseModel:
+    data = await workbench_domain_service.purchase_app_seats(
+        db,
+        enterprise_id=enterprise_id,
+        app_id=app_id,
+        seats=body.seats,
+        billing_cycle=body.billing_cycle,
+        channel_code=body.channel_code,
+        operator_user_id=request.user.id,
+        user_ip=request.client.host if request.client else None,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/enterprises/{enterprise_id}/apps/{app_id}/seats',
+    dependencies=[DependsJwtAuth],
+    summary='列企业应用席位占用',
+    name='list_enterprise_app_seats',
+)
+async def list_app_seats(
+    request: Request, db: CurrentSession, enterprise_id: int, app_id: str
+) -> ResponseModel:
+    data = await workbench_domain_service.list_app_seats(
+        db, enterprise_id=enterprise_id, app_id=app_id, operator_user_id=request.user.id
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/enterprises/{enterprise_id}/apps/{app_id}/seats',
+    dependencies=[DependsJwtAuth],
+    summary='给成员指派应用席位',
+    name='assign_enterprise_app_seat',
+)
+async def assign_app_seat(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, app_id: str, body: AssignSeatRequest
+) -> ResponseModel:
+    data = await workbench_domain_service.assign_app_seat(
+        db,
+        enterprise_id=enterprise_id,
+        app_id=app_id,
+        member_hasn_id=body.member_hasn_id,
+        operator_user_id=request.user.id,
+    )
+    return response_base.success(data=data)
+
+
+@router.delete(
+    '/enterprises/{enterprise_id}/apps/{app_id}/seats/{member_hasn_id}',
+    dependencies=[DependsJwtAuth],
+    summary='回收成员应用席位',
+    name='release_enterprise_app_seat',
+)
+async def release_app_seat(
+    request: Request, db: CurrentSessionTransaction, enterprise_id: int, app_id: str, member_hasn_id: str
+) -> ResponseModel:
+    data = await workbench_domain_service.release_app_seat(
+        db,
+        enterprise_id=enterprise_id,
+        app_id=app_id,
+        member_hasn_id=member_hasn_id,
+        operator_user_id=request.user.id,
+    )
+    return response_base.success(data=data)

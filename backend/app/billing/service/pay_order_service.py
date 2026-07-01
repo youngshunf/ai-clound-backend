@@ -192,6 +192,10 @@ class PayOrderService:
             return await PayOrderService._create_lead_pack_order(
                 db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
             )
+        if obj.order_type == 'app_seat':
+            return await PayOrderService._create_app_seat_order(
+                db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
+            )
         return await PayOrderService._create_subscribe_order(
             db=db, user_id=user_id, obj=obj, user_ip=user_ip, app_code=app_code
         )
@@ -401,6 +405,79 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code, 'app_id': catalog.app_id},
+        }
+        await pay_order_dao.create(db, order_dict)
+
+        qr_code_url, pay_url = PayOrderService._invoke_channel_create(
+            channel, merchant_config,
+            order_no=order_no, amount=pay_amount, subject=subject,
+            body=body, user_ip=user_ip,
+        )
+
+        return CreatePayOrderResponse(
+            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
+            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            expire_time=expire_time,
+        )
+
+    @staticmethod
+    async def _create_app_seat_order(
+        *,
+        db: AsyncSession,
+        user_id: int,
+        obj: CreatePayOrderParam,
+        user_ip: str | None,
+        app_code: str,
+    ) -> CreatePayOrderResponse:
+        """企业席位购买真实下单（doc04 §6.4）。
+
+        价 = ``catalog.price_amount × seats``；下单主体 enterprise，到账由 ``handle_app_seat_paid``
+        回调读 ``extra_data``（app_id/enterprise_id/seats）累加 ``seats_total``（S2 两步累加，非覆盖）。
+        RBAC（仅企业 owner/admin）由上游 app-scope 端点把守，本方法只做定价 + 下单。
+        """
+        from backend.app.hasn_core.app_platform import app_catalog_service
+
+        catalog = await app_catalog_service.get_published_catalog(db, app_id=obj.app_id)
+        if catalog is None:
+            raise errors.RequestError(msg=f'应用不存在或已下架: {obj.app_id}')
+        if (catalog.access_type or 'free') != 'purchase':
+            raise errors.RequestError(msg='该应用不是购买型，无需下单')
+        if catalog.price_amount is None or float(catalog.price_amount) <= 0:
+            raise errors.RequestError(msg='该应用未配置购买价格')
+        # P1-4：企业只能购买 purchasable_by ∈ {enterprise, both} 的应用。
+        app_catalog_service.check_purchasable_by(catalog, buyer='enterprise')
+
+        seats = int(obj.seats or 0)
+        pay_amount = int(float(catalog.price_amount) * 100) * seats
+        subject = f'唤星AI-企业席位-{catalog.name}×{seats}'
+        body = f'企业购买应用「{catalog.name}」{seats} 席'
+
+        channel, merchant_config = await PayOrderService._resolve_channel(db, obj.channel_code)
+
+        order_no = _generate_order_no()
+        now = timezone.now()
+        expire_time = now + timedelta(minutes=ORDER_EXPIRE_MINUTES)
+
+        order_dict = {
+            'order_no': order_no,
+            'user_id': user_id,
+            'channel_id': channel.id,
+            'channel_code': channel.code,
+            'order_type': 'app_seat',
+            'subject': subject,
+            'body': body,
+            'target_tier': None,
+            'billing_cycle': catalog.billing_cycle,
+            'amount': pay_amount,
+            'pay_amount': pay_amount,
+            'expire_time': expire_time,
+            'user_ip': user_ip,
+            'extra_data': {
+                'app_code': app_code,
+                'app_id': catalog.app_id,
+                'enterprise_id': int(obj.enterprise_id),
+                'seats': seats,
+            },
         }
         await pay_order_dao.create(db, order_dict)
 
