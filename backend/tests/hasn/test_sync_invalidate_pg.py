@@ -191,3 +191,119 @@ async def test_bump_owner_rejects_unknown_kind(session: AsyncSession) -> None:
         await svc.bump_owner('builtin_catalog', session, 'hasn:human:x')
     with pytest.raises(ValueError):
         await svc.bump_owner('nonexistent', session, 'hasn:human:x')
+
+
+async def test_owner_community_revision_real_schema_changes(session: AsyncSession) -> None:
+    """LFRT 刀4：compute_owner_community_revision 跑真实 schema——空 owner 返回稳定 EMPTY；
+
+    给某 owner 插入帖子 → 该 owner 指纹变；帖子 updated_time 变化 → 指纹再变；
+    再插入文章 → 指纹又变（帖子+文章都进指纹）。事务末尾回滚，不留脏数据。
+    """
+    from backend.app.hasn_community.model import HasnArticles, HasnPosts
+    from backend.utils.timezone import timezone
+
+    owner = f'h_lfrt_cm_{uuid.uuid4().hex[:8]}'
+    empty = await svc.compute_owner_community_revision(session, owner)
+    assert empty == svc.EMPTY_COMMUNITY_REVISION
+
+    post_id = f'p_{uuid.uuid4().hex[:12]}'
+    session.add(
+        HasnPosts(
+            post_id=post_id,
+            author_type='agent',
+            author_hasn_id='a_lfrt_probe',
+            owner_hasn_id=owner,
+            content='LFRT 探针帖子',
+            visibility='public',
+            comment_policy='all',
+            generation_type='agent',
+            status='published',
+        )
+    )
+    await session.flush()
+    after_post = await svc.compute_owner_community_revision(session, owner)
+    assert after_post != empty, '插入帖子后该 owner 社区指纹未变化'
+
+    # updated_time 变化（模拟帖子被编辑）→ 指纹必须再变
+    from sqlalchemy import update
+
+    await session.execute(update(HasnPosts).where(HasnPosts.post_id == post_id).values(updated_time=timezone.now()))
+    await session.flush()
+    after_touch = await svc.compute_owner_community_revision(session, owner)
+    assert after_touch != after_post, '帖子 updated_time 变化后该 owner 社区指纹未变化'
+
+    # 文章也进指纹（帖子+文章合并口径）
+    session.add(
+        HasnArticles(
+            article_id=f'ar_{uuid.uuid4().hex[:12]}',
+            author_type='agent',
+            author_hasn_id='a_lfrt_probe',
+            owner_hasn_id=owner,
+            title='LFRT 探针文章',
+            content='正文',
+            visibility='public',
+            comment_policy='all',
+            generation_type='agent',
+            status='published',
+        )
+    )
+    await session.flush()
+    after_article = await svc.compute_owner_community_revision(session, owner)
+    assert after_article != after_touch, '插入文章后该 owner 社区指纹未变化'
+
+
+async def test_owner_decks_revision_real_schema_changes_and_soft_delete_excluded(session: AsyncSession) -> None:
+    """LFRT 刀4：compute_owner_decks_revision 跑真实 schema——空 owner 返回稳定 EMPTY；
+
+    插入 deck → 指纹变；rev 自增 → 指纹再变；软删（deleted_time 置位）→ 排除出指纹（回到 EMPTY）。
+    事务末尾回滚，不留脏数据。
+    """
+    from backend.app.hasn_deck.model.deck import Deck
+    from backend.utils.timezone import timezone
+
+    owner = f'h_lfrt_dk_{uuid.uuid4().hex[:8]}'
+    empty = await svc.compute_owner_decks_revision(session, owner)
+    assert empty == svc.EMPTY_DECKS_REVISION
+
+    deck = Deck(owner_id=owner, title='LFRT 探针 deck', status='draft', language='zh', source='agent', rev=1)
+    session.add(deck)
+    await session.flush()
+    after_insert = await svc.compute_owner_decks_revision(session, owner)
+    assert after_insert != empty, '插入 deck 后该 owner 指纹未变化'
+
+    # rev 单调自增（deck 被分身改写）→ 指纹必须再变
+    from sqlalchemy import update
+
+    await session.execute(update(Deck).where(Deck.id == deck.id).values(rev=2))
+    await session.flush()
+    after_rev = await svc.compute_owner_decks_revision(session, owner)
+    assert after_rev != after_insert, 'deck rev 自增后该 owner 指纹未变化'
+
+    # 软删排除：deleted_time 非空的 deck 不进指纹
+    await session.execute(update(Deck).where(Deck.id == deck.id).values(deleted_time=timezone.now()))
+    await session.flush()
+    after_delete = await svc.compute_owner_decks_revision(session, owner)
+    assert after_delete == svc.EMPTY_DECKS_REVISION, '软删 deck 仍被计入 owner 指纹'
+
+
+async def test_bump_owner_community_and_decks_consistent_and_out_of_global_handshake(session: AsyncSession) -> None:
+    """LFRT 刀4：bump_owner('community'/'decks') 推送的 revision == 各自权威重算值；
+
+    两者都是 owner 定向 kind，**不进** KINDS / get_all_revisions 全局握手快照。
+    无在线节点时 push 返回 0，best-effort 不抛。
+    """
+    owner = f'h_lfrt_bp_{uuid.uuid4().hex[:8]}'
+
+    bumped_cm = await svc.bump_owner(svc.KIND_COMMUNITY, session, owner)
+    authoritative_cm = await svc.compute_owner_community_revision(session, owner)
+    assert bumped_cm == authoritative_cm, 'bump_owner 推送的 community revision 与权威重算值不一致'
+
+    bumped_dk = await svc.bump_owner(svc.KIND_DECKS, session, owner)
+    authoritative_dk = await svc.compute_owner_decks_revision(session, owner)
+    assert bumped_dk == authoritative_dk, 'bump_owner 推送的 decks revision 与权威重算值不一致'
+
+    assert svc.KIND_COMMUNITY not in svc.KINDS
+    assert svc.KIND_DECKS not in svc.KINDS
+    revisions = await svc.get_all_revisions(session)
+    assert svc.KIND_COMMUNITY not in revisions, 'owner 定向 community 不应出现在全局握手快照'
+    assert svc.KIND_DECKS not in revisions, 'owner 定向 decks 不应出现在全局握手快照'

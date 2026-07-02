@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_community.model import HasnArticles, HasnPosts
@@ -15,8 +17,29 @@ if TYPE_CHECKING:
 
     from backend.common.security.agent_jwt import AgentTokenPayload
 
+logger = logging.getLogger(__name__)
+
 # get_profile_content 支持的内容类型
 _PROFILE_CONTENT_KINDS = {'posts', 'articles', 'collections', 'agents'}
+
+
+async def _bump_community_sync(db: AsyncSession, owner_hasn_id: str | None) -> None:
+    """分身社区写点后 → WSPUSH ``hasn.sync.invalidate(community)`` 给主人在线节点（best-effort）。
+
+    LFRT 刀4（实施/90 §2.1）：本模块是分身社区写的唯一云端汇合点（平台 MCP 工具与
+    Agent REST 均经此），bump 让主人 daemon 秒级 nudge webui 重拉社区镜像——治「分身
+    发完帖，主人 feed/我的帖子迟迟不出现」。community 是 owner 定向 kind（对齐 plan/
+    tasks）：仅推该 owner 在线节点。push 失败不抛——离线设备靠下次读的 local_first
+    机会刷新兜底追平，写点绝不能因推送失败而失败。
+    """
+    if not owner_hasn_id:
+        return
+    try:
+        from backend.app.hasn.service import sync_invalidate_service as siv
+
+        await siv.bump_owner(siv.KIND_COMMUNITY, db, owner_hasn_id)
+    except Exception as e:
+        logger.warning('[community] agent 写点 sync invalidate 推送失败 (非致命): %s', e)
 
 
 async def handle_community_get_feed(
@@ -125,6 +148,7 @@ async def handle_community_create_post(
         status=post.status,
     )
 
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return {
         'post_id': post.post_id,
         'status': post.status,
@@ -228,6 +252,7 @@ async def handle_community_create_article(
         status=article.status,
     )
 
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return {
         'article_id': article.article_id,
         'status': article.status,
@@ -429,6 +454,7 @@ async def handle_community_create_comment(
             preview=content,
         )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return {
         'comment_id': result['comment_id'],
         'status': result['status'],
@@ -453,6 +479,7 @@ async def handle_community_like(
         target_id=str(input_payload['target_id']),
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return {'target_type': input_payload['target_type'], 'target_id': input_payload['target_id'], 'is_liked': True}
 
 
@@ -470,6 +497,7 @@ async def handle_community_unlike(
         target_id=str(input_payload['target_id']),
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return {'target_type': input_payload['target_type'], 'target_id': input_payload['target_id'], 'is_liked': False}
 
 
@@ -487,6 +515,7 @@ async def handle_community_follow(
         target_hasn_id=str(input_payload['target_id']),
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return {'target_type': input_payload['target_type'], 'target_id': input_payload['target_id'], 'is_following': True}
 
 
@@ -504,6 +533,7 @@ async def handle_community_unfollow(
         target_hasn_id=str(input_payload['target_id']),
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return {'target_type': input_payload['target_type'], 'target_id': input_payload['target_id'], 'is_following': False}
 
 
@@ -521,6 +551,7 @@ async def handle_community_collect(
         collection_id=input_payload.get('collection_id'),
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return result
 
 
@@ -537,6 +568,7 @@ async def handle_community_uncollect(
         target_id=str(input_payload['target_id']),
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return result
 
 
@@ -599,6 +631,7 @@ async def handle_community_join_circle(db: AsyncSession, agent: AgentTokenPayloa
         db, ident=str(input_payload['circle']), member_hasn_id=agent.agent_hasn_id, member_type='agent', owner_hasn_id=agent.owner_hasn_id,
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return result
 
 
@@ -608,6 +641,7 @@ async def handle_community_leave_circle(db: AsyncSession, agent: AgentTokenPaylo
 
     result = await circle_service.leave_circle(db, ident=str(input_payload['circle']), member_hasn_id=agent.agent_hasn_id)
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return result
 
 
@@ -634,6 +668,7 @@ async def handle_community_create_doc_space(db: AsyncSession, agent: AgentTokenP
         title=str(input_payload['title']), description=input_payload.get('description'), cover_url=input_payload.get('cover_url'), default_visibility='private',
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return result
 
 
@@ -646,4 +681,5 @@ async def handle_community_create_doc_node(db: AsyncSession, agent: AgentTokenPa
         title=str(input_payload['title']), parent_node_id=input_payload.get('parent_node_id'), allow_visibility=False,
     )
     await db.commit()
+    await _bump_community_sync(db, agent.owner_hasn_id)
     return result

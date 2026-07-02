@@ -139,13 +139,15 @@ async def test_get_all_revisions_cache_then_compute(monkeypatch: pytest.MonkeyPa
     redis = FakeRedis()
     monkeypatch.setattr(svc, 'redis_client', redis)
 
-    # 预置两类入缓存；builtin_catalog 缓存 miss → 从 db 重算并回填
+    # 预置三类入缓存；builtin_catalog 缓存 miss → 从 db 重算并回填
     redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_COMMON_SKILLS}'] = 'cs_cached'
     redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_PLATFORM_CONFIG}'] = 'pc_cached'
+    redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_DESIGNSYSTEM}'] = 'ds_cached'
 
     revs = await svc.get_all_revisions(FakeDb([RowsResult([('a', 1)])]))
     assert revs[svc.KIND_COMMON_SKILLS] == 'cs_cached'
     assert revs[svc.KIND_PLATFORM_CONFIG] == 'pc_cached'
+    assert revs[svc.KIND_DESIGNSYSTEM] == 'ds_cached'
     assert revs[svc.KIND_BUILTIN_CATALOG] != svc.EMPTY_BUILTIN_CATALOG_REVISION
     # 回填缓存
     assert redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_BUILTIN_CATALOG}'] == revs[svc.KIND_BUILTIN_CATALOG]
