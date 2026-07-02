@@ -133,6 +133,7 @@ class OnboardingGateway(Protocol):
     async def consume_pending_intent(
         self, db: AsyncSession, pending_intent_id: str, owner_id: str, agent_hasn_id: str
     ) -> bool: ...
+    async def get_sync_feed_head(self, db: AsyncSession, owner_id: str) -> int: ...
 
 
 class SqlAlchemyPlatformUserGateway:
@@ -385,6 +386,16 @@ class SqlAlchemyOnboardingGateway:
         )
         return result.first() is not None
 
+    async def get_sync_feed_head(self, db: AsyncSession, owner_id: str) -> int:
+        """该 owner 权威 sync feed（hasn_sync_events）当前 head revision；空 feed 为 0。"""
+        result = await db.execute(
+            sa.text(
+                'SELECT COALESCE(MAX(revision), 0) FROM public.hasn_sync_events WHERE owner_id = :owner_id'
+            ),
+            {'owner_id': owner_id},
+        )
+        return int(result.scalar_one())
+
 
 @dataclass(slots=True)
 class HasnPhoneAuthService:
@@ -541,6 +552,13 @@ class HasnOnboardingService:
             owner_user_id=user_id,
         )
 
+        # B2②（hasn-node 实施/90 §2）：bootstrap 游标返回该 owner 权威 feed 的真实 head，
+        # 不再硬编码 0。修前每次登录都回 `...:0`，旧版 daemon 无条件镜像 → 本地已推进的游标
+        # 被重置、feed 从头重放（且登录只拉一页，超一页的积压永远追不上）。daemon 侧已配套
+        # 改成 bootstrap-only（本地已有可解析游标一律不覆盖），此值仅全新设备首登生效——
+        # 从「现在」起步，历史恢复走镜像/read-through 权威路径而非 feed 重放。
+        sync_feed_head = await self.gateway.get_sync_feed_head(db, owner_id=human.hasn_id)
+
         return OnboardingEnsureResponse(
             human=HumanSummary(
                 human_id=human.hasn_id,
@@ -567,7 +585,7 @@ class HasnOnboardingService:
             ),
             # hasn_tenant_sandboxes 已退役（沙箱功能从未建设，恒 None）；响应字段保留兼容 daemon。
             sandbox=None,
-            sync_cursor=f'owner:{human.hasn_id}:0',
+            sync_cursor=f'owner:{human.hasn_id}:{sync_feed_head}',
         )
 
 

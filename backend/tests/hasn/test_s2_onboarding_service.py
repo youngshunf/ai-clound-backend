@@ -14,6 +14,7 @@ from backend.app.hasn.schema.hasn_onboarding import (
     PhoneVerifyRequest,
     SandboxSummary,
 )
+from backend.app.hasn.service import hasn_onboarding_service as onboarding_service_module
 from backend.app.hasn.service.hasn_onboarding_service import (
     DEFAULT_AGENT_DISPLAY_NAME,
     PRIVATE_NODE_INFO_KEYS,
@@ -21,7 +22,6 @@ from backend.app.hasn.service.hasn_onboarding_service import (
     HasnOnboardingService,
     HasnPhoneAuthService,
 )
-from backend.app.hasn.service import hasn_onboarding_service as onboarding_service_module
 
 
 class FakeRedis:
@@ -261,6 +261,11 @@ class FakeOnboardingGateway:
     async def get_sandbox_summary(self, db: Any, owner_id: str) -> SandboxSummary | None:
         return SandboxSummary(sandbox_id='sb_owner_1', status='sleeping', base_url=None)
 
+    async def get_sync_feed_head(self, db: Any, owner_id: str) -> int:
+        # B2②：模拟该 owner 权威 feed 已推进到 revision 42（非 0，锁死不再硬编码 0）。
+        assert owner_id == 'h_owner_1'
+        return 42
+
 
 @pytest.mark.asyncio
 async def test_onboarding_ensure_closes_old_user_default_agent_and_pending_intent_loop() -> None:
@@ -286,8 +291,10 @@ async def test_onboarding_ensure_closes_old_user_default_agent_and_pending_inten
     assert response.default_agent.display_name == DEFAULT_AGENT_DISPLAY_NAME
     assert response.default_agent.access_token == 'agent-token:a_default_1'
     assert response.default_agent.scopes == ['message.read', 'knowledge.read']
-    assert response.sandbox and response.sandbox.status == 'sleeping'
-    assert response.sync_cursor == 'owner:h_owner_1:0'
+    # 沙箱已退役（CLEAN-3·hasn_tenant_sandboxes 恒 None），字段仅兼容 daemon 保留。
+    assert response.sandbox is None
+    # B2②：bootstrap 游标必须是 gateway 给出的权威 feed 真实 head（42），不再硬编码 0。
+    assert response.sync_cursor == 'owner:h_owner_1:42'
     assert gateway.consumed == [('pi_resume_1', 'h_owner_1', 'a_default_1')]
     assert set(gateway.node_infos[0]).isdisjoint(PRIVATE_NODE_INFO_KEYS)
 
