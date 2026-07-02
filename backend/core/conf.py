@@ -130,6 +130,10 @@ class Settings(BaseSettings):
     HUANXING_HERMES_PLATFORM_LLM_API_KEY: str = ''
     HUANXING_HERMES_PLATFORM_LLM_MODEL: str = 'openai/gpt-5.5'
     HUANXING_HERMES_PLATFORM_LLM_PLAN_ID: str = 'pro_monthly'
+    # 云端 hermes 共享技能目录根（doc11 §5.3.5 B3）：与 hermes sidecar 同机部署时配置为
+    # {hermes_runtime_root}/_shared/skills；未配置（None）= 该机器无 hermes sidecar，
+    # marketplace_shared_skills_reconcile 任务 no-op。
+    HERMES_SHARED_SKILLS_ROOT: str | None = None
     HASN_TASK_CENTER_SCHEDULER_ENABLED: bool = False
 
     # RAGFlow 公共实例配置

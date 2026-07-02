@@ -54,6 +54,13 @@ LOCAL_BEAT_SCHEDULE = {
         # 磁盘硬闸 MARKETPLACE_CLAWHUB_MAX_DISK_GB（默认 50GB）——clawhub 目录占用达上限即暂停下载。
         'schedule': schedule(timedelta(days=3)),
     },
+    '技能市场-公共技能共享目录 reconcile': {
+        'task': 'marketplace_shared_skills_reconcile',
+        # 每 20 分钟兜底一次（doc11 §6 B3；common_skills revision bump 时另有即时 .delay() 触发）。
+        # 未配置 HERMES_SHARED_SKILLS_ROOT（本机无 hermes sidecar）→ 任务内 no-op；
+        # 内容寻址增量：无变更整轮零下载，兜底成本≈两条快照查询。
+        'schedule': TzAwareCrontab('*/20'),
+    },
     '获客-触达发送 worker': {
         'task': 'growth_dispatch_approved_outreach',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟扫 approved 触达分发（quiet hours 窗口内才实发）

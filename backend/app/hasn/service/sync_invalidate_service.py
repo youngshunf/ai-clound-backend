@@ -381,6 +381,17 @@ async def bump(kind: str, db: AsyncSession, *, owner_id: str | None = None) -> s
     if kind not in KINDS:
         raise ValueError(f'unknown sync kind: {kind}')
     rev = await _compute_revision(kind, db)
+
+    # 公共技能写点 → 即时触发共享目录 reconcile（doc11 §6 B3；beat 每 20 分钟另有兜底）。
+    # best-effort：celery broker 不可用绝不拖垮写点主流程（下轮 beat 自会追平）。
+    if kind == KIND_COMMON_SKILLS:
+        try:
+            from backend.app.marketplace.tasks import marketplace_shared_skills_reconcile
+
+            marketplace_shared_skills_reconcile.delay()
+        except Exception as exc:
+            logger.warning('[sync] enqueue shared skills reconcile failed (non-fatal): %s', exc)
+
     try:
         await redis_client.set(f'{REV_PREFIX}:{kind}', rev, ex=REV_TTL_SECS)
     except Exception as exc:
