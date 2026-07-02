@@ -24,7 +24,9 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'marketplace:install': {'label_zh': '安装/卸载技能', 'domain': 'marketplace', 'risk': 'medium', 'description': '把市场技能装到当前 Agent 或从中卸载（云端权威 + 重物化）'},
     'marketplace:publish': {'label_zh': '打包与发布资源', 'domain': 'marketplace', 'risk': 'high', 'description': '打包本地技能/模板并发布为当前用户资源（默认草稿；公开/送审过主人确认）'},
     # —— platform · 媒体（hasn-mcp 本地媒体工具，直连 new-api）——
-    'image:generate': {'label_zh': '生成图片', 'domain': 'image', 'risk': 'medium', 'description': '直连唤星 new-api 图像 API 生成图片（消耗 owner 配额）'},
+    # 键统一（实施102 S2）：旧 image:generate 死键已删，图片与语音生成统一到 media:generate；
+    # 视频单价远高、独立授权档 video:generate 保留。二者均本地工具（source=Local），出厂 Ask（花 owner 配额）。
+    'media:generate': {'label_zh': '图片与语音生成', 'domain': 'media', 'risk': 'medium', 'default_mode': 'ask', 'description': '直连唤星 new-api 生成图片（image）与语音（TTS），消耗 owner 配额，故默认每次询问'},
     'video:generate': {'label_zh': '生成视频', 'domain': 'video', 'risk': 'high', 'default_mode': 'ask', 'description': '直连唤星 new-api 视频 API（task 式异步：提交→轮询）生成视频，单价远高于图片、消耗 owner 配额，故独立授权档'},
     # —— platform · 资产（hasn.asset.create：分身把自己的内容上传成 hasn://asset）——
     'asset:create': {'label_zh': '上传媒体资产', 'domain': 'asset', 'risk': 'medium', 'description': '把分身的内容（SVG/图片/文件等）上传到私有桶并注册资产，供消息附件引用'},

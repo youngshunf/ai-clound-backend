@@ -16,6 +16,7 @@ from backend.app.hasn.schema.agent_scopes import (
     UpdateAgentScopesResponse,
 )
 from backend.common.exception import errors
+from backend.common.response.response_code import StandardResponseCode
 from backend.common.security.agent_jwt import (
     get_agent_scopes_cached,
     update_agent_modes,
@@ -72,6 +73,36 @@ class AgentScopesService:
             capability_modes=cfg.get('capability_modes', {}),
         )
 
+    def _assert_known_capability_keys(self, capability_modes: dict[str, str] | None) -> None:
+        """B7 键校验（实施102 S2）：capability_modes 的键必须是已知能力 scope。
+
+        白名单 = 全局 SCOPE_CATALOG（= platform 展示词表 ∪ 各应用目录 scopes.py ∪ 本地工具 scope，
+        已注册云端工具的 required_scopes 由零漂移守卫保证均有 catalog 条目）。未知键 422 报
+        unknown_capability_key，避免脏键静默落库污染三态判定（旧 image:generate 这类死键即此类）。
+        """
+        from backend.app.mcp.scopes import SCOPE_CATALOG
+
+        unknown = sorted(k for k in (capability_modes or {}) if k not in SCOPE_CATALOG)
+        if unknown:
+            raise errors.RequestError(
+                code=StandardResponseCode.HTTP_422,
+                msg=f'unknown_capability_key: {", ".join(unknown)}',
+            )
+
+    async def _bump_scopes(self, db: AsyncSession, owner_hasn_id: str) -> None:
+        """S4·U-L4：三态授权写库后 best-effort 发射 WSPUSH ``kind=scopes`` 给该 owner 在线节点。
+
+        push 失败不抛（离线节点靠重连握手 sync_pull 兜底追平）——绝不能因推送失败让权限写点失败。
+        """
+        import logging
+
+        from backend.app.hasn.service.sync_invalidate_service import KIND_SCOPES, bump_owner
+
+        try:
+            await bump_owner(KIND_SCOPES, db, owner_id=owner_hasn_id)
+        except Exception as exc:
+            logging.getLogger(__name__).warning('[scopes] bump WSPUSH failed owner=%s: %s', owner_hasn_id, exc)
+
     async def get_agent_scopes(self, db: AsyncSession, agent_hasn_id: str, owner_hasn_id: str) -> AgentScopesConfig:
         """查询 Agent 权限配置（含三态）。"""
         await self._assert_owns(db, agent_hasn_id, owner_hasn_id, write=False)
@@ -87,6 +118,7 @@ class AgentScopesService:
     ) -> UpdateAgentScopesResponse:
         """更新 Agent 三态授权（D3：写表 + 失效缓存，不重签 JWT，即时生效）。"""
         await self._assert_owns(db, agent_hasn_id, owner_hasn_id, write=True)
+        self._assert_known_capability_keys(request.capability_modes)
 
         await update_agent_modes(
             db=db,
@@ -94,6 +126,9 @@ class AgentScopesService:
             default_mode=request.default_mode,
             capability_modes=request.capability_modes,
         )
+        # S4·U-L4：三态改动后 push WSPUSH kind=scopes 给该 owner 在线节点 →
+        # daemon 秒级刷新 CapabilityModeMirror（治「设备 A 改了、设备 B 镜像不更新」）。
+        await self._bump_scopes(db, owner_hasn_id)
 
         cfg = await get_agent_scopes_cached(agent_hasn_id, db)
         return UpdateAgentScopesResponse(config=self._config_from_policy(cfg))
@@ -195,6 +230,10 @@ class AgentScopesService:
             {'status': 'approved', 'grant_scope': grant_scope, 'ticket_jti': jti, 'decided_time': timezone.now()},
         )
         await db.commit()
+        # always 写穿了 capability_modes → push WSPUSH kind=scopes（S4·U-L4），
+        # 让主人各在线设备的 CapabilityModeMirror 秒级对齐「以后不再 ask」。
+        if grant_scope == 'always' and row.capability_keys:
+            await self._bump_scopes(db, owner_hasn_id)
         return {
             'request_id': row.request_id,
             'grant_scope': grant_scope,

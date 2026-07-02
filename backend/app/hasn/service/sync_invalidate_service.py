@@ -70,6 +70,11 @@ KIND_COMMUNITY = 'community'
 # 建 deck/写页/改页后 bump，daemon 收到即 nudge webui 重拉 deck 列表/详情（读走
 # read-through 合并引擎，refetch 即拉到云端最新）。治「PPT 做完打开空白/不出现」。
 KIND_DECKS = 'decks'
+# owner 定向：该 owner 名下任一 Agent 的三态授权（hasn_agent_scopes.{default_mode,capability_modes}）
+# 变更（实施102 S4·U-L4）——主人权限页改三态 / 审批「总是允许」写穿后 bump，daemon 收到即刷新
+# 该 owner 名下 Agent 的 CapabilityModeMirror（本地镜像与云端权威对齐），治「设备 A 改了三态、
+# 设备 B 镜像不更新」。离线设备靠重连握手 sync_pull 兜底。
+KIND_SCOPES = 'scopes'
 OWNER_KINDS = (
     KIND_TASKS,
     KIND_PLAN,
@@ -78,6 +83,7 @@ OWNER_KINDS = (
     KIND_MEMORY,
     KIND_COMMUNITY,
     KIND_DECKS,
+    KIND_SCOPES,
 )
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
@@ -91,6 +97,8 @@ EMPTY_AGENTS_REVISION = 'empty'
 EMPTY_COMMUNITY_REVISION = 'empty'
 # 某 owner 名下无 deck 时的稳定指纹（同上约定）
 EMPTY_DECKS_REVISION = 'empty'
+# 某 owner 名下无 Agent 三态授权行时的稳定指纹（同上约定）
+EMPTY_SCOPES_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -220,6 +228,33 @@ async def compute_owner_agents_revision(db: AsyncSession, owner_id: str) -> str:
     lines = sorted(f'{hasn_id}@{revision}' for hasn_id, revision in rows if hasn_id)
     if not lines:
         return EMPTY_AGENTS_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_scopes_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 名下 Agent 三态授权指纹：sha256(sorted "agent_hasn_id@updated_time" 行)[:16]。
+
+    聚合该 owner 名下全部 Agent 的 ``hasn_agent_scopes`` 行。任一 Agent 的 ``default_mode`` /
+    ``capability_modes`` 被写（权限页改三态 / 审批「总是允许」写穿都会 ``UPDATE ... updated_time=NOW()``）
+    或增删行 → 集合内某行的 ``updated_time`` 变 → 整体指纹变。仅作 invalidate 帧的 ``revision``
+    字段：daemon 不据此去重、收到即刷新该 owner 名下 Agent 的 CapabilityModeMirror（本地镜像与
+    云端权威对齐）。owner 隔离按 ``owner_hasn_id`` 列。
+    """
+    rows = (
+        await db.execute(
+            sa.text(
+                """
+                SELECT agent_hasn_id, updated_time
+                FROM hasn_agent_scopes
+                WHERE owner_hasn_id = :owner_id
+                """
+            ),
+            {'owner_id': owner_id},
+        )
+    ).all()
+    lines = sorted(f'{agent_hasn_id}@{updated_time}' for agent_hasn_id, updated_time in rows if agent_hasn_id)
+    if not lines:
+        return EMPTY_SCOPES_REVISION
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
@@ -394,6 +429,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_community_revision(db, owner_id)
     elif kind == KIND_DECKS:
         rev = await compute_owner_decks_revision(db, owner_id)
+    elif kind == KIND_SCOPES:
+        rev = await compute_owner_scopes_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 
