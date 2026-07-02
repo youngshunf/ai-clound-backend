@@ -215,6 +215,10 @@ class FakeDb:
     async def flush(self) -> None:
         return None
 
+    async def commit(self) -> None:
+        # runtime_tool_call 末尾显式 commit（d1c33ab9 Bug7），fake 面等价 no-op
+        return None
+
     async def refresh(self, row: Any) -> None:
         if isinstance(row, HasnAiNativeAppAudit) and getattr(row, 'id', None) is None:
             row.id = len(self.audit_rows)
@@ -281,6 +285,9 @@ class TaskRecord:
     executor_node_id: str | None
     task_revision: int
     deleted_at: Any
+    # 内置任务列（M2 builtin 后 service 建行会带上）
+    builtin_key: str | None = None
+    builtin_synced_revision: int | None = None
     # M1（任务系统 AI-Native 化）schema 新列，CreateHasnTaskParam.model_dump() 会带出
     continuation_enabled: bool = False
     enable_subagents: bool = False
@@ -1762,7 +1769,8 @@ def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_an
     )
     assert invalid_input.status_code == 200, invalid_input.text
     assert invalid_input.json()['data']['decision'] == 'deny'
-    assert invalid_input.json()['data']['error'] == {'code': '15020', 'message': 'input_schema_invalid'}
+    # 入参绑定接缝（候选①）后缺必填的 deny 理由细化为 input_invalid:{field}:{reason}
+    assert invalid_input.json()['data']['error'] == {'code': '15020', 'message': 'input_invalid:post_id:required'}
 
     invalid_input_audit = client.get(
         '/api/v1/ai-native/audit',
