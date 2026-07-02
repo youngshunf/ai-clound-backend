@@ -13,11 +13,14 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from backend.app.hasn.service.app_catalog_service import resolve_owner_user_id
 from backend.app.hasn_community.service.notification_service import (
     notification_service as community_notification_service,
 )
+from backend.app.hasn_creator.service.creator_service import creator_service
 from backend.app.hasn_deck.service.deck_service import deck_service
 from backend.app.hasn_plan.service.plan_app_service import plan_service
+from backend.app.hasn_quant.service.quant_service import quant_service
 from backend.app.hasn_reel.service.reel_service import reel_service
 from backend.app.hasn_studio.service.studio_service import studio_service
 from backend.app.hasn_task.service.agent_task_service import agent_task_service
@@ -255,10 +258,61 @@ async def studio_pending_provider(db: AsyncSession, *, owner_hasn_id: str, limit
     return items[:limit]
 
 
+# ── creator：待审核内容（走遗留 user_id bigint → hasn_id 正向适配；无映射则空）────────
+# creator 用平台 user_id 隔离（非 owner_hasn_id），故先 resolve_owner_user_id 适配。
+# 「未处理」= review_status='pending'（等主人审核），list_content 已按 review_status 过滤，
+# 直接映射即可。无子内容详情路由 → 退回应用入口 /apps/creator。
+async def creator_pending_provider(db: AsyncSession, *, owner_hasn_id: str, limit: int) -> list[PendingItem]:
+    user_id = await resolve_owner_user_id(db, owner_hasn_id=owner_hasn_id)
+    if user_id is None:
+        return []
+    rows = await creator_service.list_content(db, user_id=user_id, scope=None, review_status='pending', limit=limit)
+    items: list[PendingItem] = []
+    for row in rows:
+        cid = row.get('id')
+        items.append(
+            PendingItem(
+                app_id='creator',
+                category='app',
+                urgency='medium',
+                title=row.get('title') or '未命名内容',
+                summary='内容待你审核',
+                ref=f'creator:{cid}' if cid is not None else 'creator',
+                deep_link='/apps/creator',
+                occurred_at=None,
+            )
+        )
+    return items[:limit]
+
+
+# ── quant：回测失败待处理（策略草稿低价值不扫；无回测详情路由 → 退回入口 /apps/quant）───────
+# 回测态见 hasn_quant/model/quant_backtest_run.py：failed 失败待处理。list_backtest_runs 按
+# status 过滤，直接映射。
+async def quant_pending_provider(db: AsyncSession, *, owner_hasn_id: str, limit: int) -> list[PendingItem]:
+    rows = await quant_service.list_backtest_runs(db, owner_hasn_id=owner_hasn_id, status='failed', limit=limit)
+    items: list[PendingItem] = []
+    for row in rows:
+        rid = row.get('id')
+        items.append(
+            PendingItem(
+                app_id='quant',
+                category='app',
+                urgency='medium',
+                title=f'回测失败 #{rid}' if rid is not None else '回测失败',
+                summary=row.get('error') or '回测任务失败待处理',
+                ref=f'quant:{rid}' if rid is not None else 'quant',
+                deep_link='/apps/quant',
+                occurred_at=None,
+            )
+        )
+    return items[:limit]
+
+
 # ── 注册表（新增应用在此加一行；聚合器按 key 顺序读取）──────────────────────────────
 # M1 起步 task + plan（owner 口径均为 owner_hasn_id，零适配）。M3 横向补齐：community（未读
-# 通知）+ workflow/deck/reel/studio（口径均 owner_id/owner_hasn_id，str，零适配）。
-# creator（走 owner_id bigint，需 hasn_id→user_id 适配层）+ quant（回测无 list 方法）留后续。
+# 通知）+ workflow/deck/reel/studio（口径均 owner_id/owner_hasn_id，str，零适配）+ creator
+# （走 user_id bigint，经 resolve_owner_user_id 正向适配）+ quant（回测失败）。
+# publish（已发布站点无 pending 态）/ 消息未读（语义待定）暂不接。
 PENDING_PROVIDERS: dict[str, PendingProviderFn] = {
     'task': task_pending_provider,
     'plan': plan_overdue_provider,
@@ -267,4 +321,6 @@ PENDING_PROVIDERS: dict[str, PendingProviderFn] = {
     'deck': deck_pending_provider,
     'reel': reel_pending_provider,
     'studio': studio_pending_provider,
+    'creator': creator_pending_provider,
+    'quant': quant_pending_provider,
 }

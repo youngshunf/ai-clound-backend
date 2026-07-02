@@ -122,6 +122,18 @@ class QuantService:
         row = await QuantService._load_strategy(db, owner_hasn_id=owner_hasn_id, strategy_id=strategy_id)
         return _serialize_strategy(row)
 
+    @staticmethod
+    async def list_backtest_runs(
+        db: AsyncSession, *, owner_hasn_id: str, status: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """列出某主人的回测任务（行级隔离，最近优先，可选 status 过滤）。"""
+        conds = [QuantBacktestRun.owner_hasn_id == owner_hasn_id]
+        if status:
+            conds.append(QuantBacktestRun.status == status)
+        stmt = select(QuantBacktestRun).where(*conds).order_by(QuantBacktestRun.id.desc()).limit(min(limit, 200))
+        rows = (await db.execute(stmt)).scalars().all()
+        return [_serialize_run(r) for r in rows]
+
     # ---------------------------------------------------------------- 回测线
 
     @staticmethod

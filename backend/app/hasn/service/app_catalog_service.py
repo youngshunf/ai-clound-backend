@@ -589,8 +589,12 @@ def _tier_rank(tier: str | None) -> int:
     return _TIER_RANK.get((tier or 'free'), 0)
 
 
-async def _resolve_owner_user_id(db: AsyncSession, owner_hasn_id: str) -> int | None:
-    """owner hasn_id（h_xxx）→ 唤星平台 user_id；无映射返回 None（按 free 兜底）。"""
+async def resolve_owner_user_id(db: AsyncSession, *, owner_hasn_id: str) -> int | None:
+    """owner hasn_id（h_xxx）→ 唤星平台 user_id；无映射返回 None。
+
+    与 ``resolve_owner_hasn_id`` 互为正/反向映射，供跨模块复用（如工作台未处理项聚合对
+    走遗留 ``user_id`` 的应用做 hasn_id→user_id 适配）。
+    """
     stmt = sa.select(HasnHumans.user_id).where(HasnHumans.hasn_id == owner_hasn_id)
     user_id = (await db.execute(stmt)).scalars().first()
     return int(user_id) if user_id else None
@@ -602,7 +606,7 @@ async def owner_effective_tier(db: AsyncSession, *, owner_hasn_id: str) -> str:
     存储的 ``tier`` 字段过期不降级（只 ``status`` 翻 expired，见 credit_service.get_user_credits_info）；
     准入须按日期重算：``status`` 已过期或订阅结束日已过 → 有效档位回落 ``free``。免费档无结束日永不过期。
     """
-    user_id = await _resolve_owner_user_id(db, owner_hasn_id)
+    user_id = await resolve_owner_user_id(db, owner_hasn_id=owner_hasn_id)
     if user_id is None:
         return 'free'
     stmt = sa.select(UserSubscription).where(

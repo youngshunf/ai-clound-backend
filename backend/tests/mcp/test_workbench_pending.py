@@ -75,7 +75,7 @@ def test_pending_scan_tool_registered_and_scoped() -> None:
 
 
 def test_pending_providers_registered() -> None:
-    # M1 起步 task + plan；M3 横向补齐 community + workflow/deck/reel/studio。
+    # M1 起步 task + plan；M3 横向补齐 community + workflow/deck/reel/studio + creator/quant。
     assert set(PENDING_PROVIDERS.keys()) >= {
         'task',
         'plan',
@@ -84,6 +84,8 @@ def test_pending_providers_registered() -> None:
         'deck',
         'reel',
         'studio',
+        'creator',
+        'quant',
     }
 
 
@@ -111,6 +113,8 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
 
     owner = f'h_pending_{uuid.uuid4().hex[:16]}'
     other = f'h_pending_other_{uuid.uuid4().hex[:12]}'
+    # creator 走平台 user_id（bigint）隔离：给 owner seed 一条 HasnHumans 映射（挑高位不撞真实行）。
+    creator_uid = 990_000_000 + int(uuid.uuid4().hex[:6], 16) % 9_000_000
     now = timezone.now()
     try:
         # 1) seed 待办：owner 2 逾期（pending+in_progress）+ 1 未来 + 1 无期限；other 1 逾期（隔离）
@@ -209,6 +213,74 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
                 )
             )
 
+        # 2e) seed creator（走 user_id）+ quant（走 owner_hasn_id）各一条未处理 + 各一条应排除项
+        from backend.app.hasn.model.hasn_humans import HasnHumans
+        from backend.app.hasn_creator.model.content import Content
+        from backend.app.hasn_creator.model.project import Project
+        from backend.app.hasn_quant.model.quant_backtest_run import QuantBacktestRun
+
+        async with async_db_session.begin() as db:
+            # creator 前置：owner hasn_id → creator_uid 映射行（resolve_owner_user_id 依赖）
+            db.add(
+                HasnHumans(
+                    hasn_id=owner,
+                    star_id=str(creator_uid),  # 唯一索引 idx_hasn_humans_star_id，不能用默认空串
+                    user_id=creator_uid,
+                    nickname='未处理项测试主人',
+                    status='active',
+                )
+            )
+            # content.project_id 有 FK 到 project 表 → 先建 project 拿 id
+            proj = Project(
+                project_no=f'pj_pending_{uuid.uuid4().hex[:16]}',
+                user_id=creator_uid,
+                owner_scope='personal',
+                name='未处理项测试项目',
+                status='active',
+            )
+            db.add(proj)
+            await db.flush()
+            # creator：待审核内容（review_status=pending）+ 一条已通过（应被过滤）
+            # content_no 有唯一约束（默认空串会撞），显式给唯一值。
+            db.add(
+                Content(
+                    content_no=f'ct_pending_{uuid.uuid4().hex[:16]}',
+                    project_id=proj.id,
+                    user_id=creator_uid,
+                    owner_scope='personal',
+                    title='待审核内容演示',
+                    status='reviewing',
+                    review_status='pending',
+                )
+            )
+            db.add(
+                Content(
+                    content_no=f'ct_approved_{uuid.uuid4().hex[:16]}',
+                    project_id=proj.id,
+                    user_id=creator_uid,
+                    owner_scope='personal',
+                    title='已通过内容（不应出现）',
+                    status='ready',
+                    review_status='approved',
+                )
+            )
+            # quant：回测失败（未处理）+ 回测成功（应被过滤）
+            db.add(
+                QuantBacktestRun(
+                    owner_hasn_id=owner,
+                    status='failed',
+                    dataset='synthetic-oscillator-eth',
+                    error='回测引擎报错（测试）',
+                )
+            )
+            db.add(
+                QuantBacktestRun(
+                    owner_hasn_id=owner,
+                    status='succeeded',
+                    dataset='synthetic-oscillator-eth',
+                )
+            )
+
         # 3) 扫描 owner
         async with async_db_session() as db:
             result = await workbench_pending_aggregator.scan(db, owner_hasn_id=owner)
@@ -256,8 +328,20 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
         assert result.by_app['studio'].items[0].title == '待审核成品'
         assert result.by_app['studio'].items[0].deep_link == '/apps/studio'
 
-        # 2 逾期待办 + 1 待审批任务 + 1 未读通知 + workflow/deck/reel/studio 各 1
-        assert result.total == 8, result.by_app
+        # creator：待审核内容一条（已通过被过滤），deep_link 应用入口 /apps/creator
+        assert result.by_app['creator'].count == 1
+        assert result.by_app['creator'].items[0].title == '待审核内容演示'
+        assert result.by_app['creator'].items[0].deep_link == '/apps/creator'
+        assert result.by_app['creator'].items[0].urgency == 'medium'
+
+        # quant：回测失败一条（成功被过滤），deep_link 应用入口 /apps/quant
+        assert result.by_app['quant'].count == 1
+        assert result.by_app['quant'].items[0].deep_link == '/apps/quant'
+        assert result.by_app['quant'].items[0].title.startswith('回测失败')
+        assert result.by_app['quant'].items[0].urgency == 'medium'
+
+        # 2 逾期待办 + 1 待审批任务 + 1 未读通知 + workflow/deck/reel/studio/creator/quant 各 1
+        assert result.total == 10, result.by_app
         assert result.degraded == []
 
         # 4) owner 隔离：other 只见自己的逾期 + 自己的未读通知，绝不见 owner 的任务/待办/通知
@@ -281,5 +365,8 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
             await db.execute(text('DELETE FROM hasn_deck.deck WHERE owner_id = :o'), {'o': owner})
             await db.execute(text('DELETE FROM hasn_reel.reel_creation WHERE owner_hasn_id = :o'), {'o': owner})
             await db.execute(text('DELETE FROM hasn_studio.studio_artifact WHERE owner_hasn_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_quant.quant_backtest_run WHERE owner_hasn_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_creator.content WHERE user_id = :uid'), {'uid': creator_uid})
+            await db.execute(text('DELETE FROM hasn_humans WHERE hasn_id = ANY(:os)'), {'os': [owner, other]})
             await db.execute(text('DELETE FROM hasn_sync_events WHERE owner_id = ANY(:os)'), {'os': [owner, other]})
             await db.execute(text('DELETE FROM hasn_notifications WHERE target_id = ANY(:os)'), {'os': [owner, other]})
