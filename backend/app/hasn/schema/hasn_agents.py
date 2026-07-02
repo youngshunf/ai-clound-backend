@@ -329,6 +329,10 @@ class AgentProfileResponse(SchemaBase):
     user_md: str | None = Field(None, description='USER.md 内容（owner 记忆下发）')
     memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）')
     skills: list[str] = Field(default_factory=list, description='技能 skill_id 清单（已叠加公共技能）')
+    common_skill_ids: list[str] = Field(
+        default_factory=list,
+        description='公共技能 skill_id 清单（skills 的子集，hermes 据此分流公共→共享目录；doc11 §5.2）',
+    )
     skill_content_hashes: dict[str, str] = Field(
         default_factory=dict,
         description='per-skill 内容指纹映射 {skill_id: 指纹}，指纹=COALESCE(content_hash,file_hash,version)；'

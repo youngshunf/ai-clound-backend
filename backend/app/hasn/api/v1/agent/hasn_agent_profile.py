@@ -164,6 +164,9 @@ async def get_agent_profile(
             user_md=row.user_md,
             memory_md=getattr(row, 'memory_md', None),
             skills=merged_skill_ids,
+            # 公共技能子集单列下发（doc11 §5.2）：hermes 据此分流「公共→共享目录 external_dirs /
+            # 私有→per-profile 物化」；旧 runtime 不认识该字段则忽略，向后兼容。
+            common_skill_ids=common_ids,
             skill_content_hashes=skill_fingerprints,
             skill_bundles=skill_bundles,
             template_id=row.template_id,
