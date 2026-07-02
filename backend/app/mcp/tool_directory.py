@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from backend.app.mcp.runtime_visibility import is_namespace_hidden_for_runtime
+from backend.app.mcp.tool_exposure import tool_exposure_policy
 
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
@@ -254,23 +254,10 @@ class ToolDirectoryService:
         }
 
     def _can_discover(self, agent_context: AgentContext, tool: BaseTool) -> bool:
-        # P7 第三方 MCP 网关：external 工具实例全局共享，发现资格按本 Agent binding
-        # （gate1 owner 启用 + gate2 allowed_tools，由 server 注入 external_allowed_tools）
-        # per-request 过滤——不在授权集合的一律不可见，杜绝跨 Agent 串号。
-        if self._source_for_tool(tool) == 'external':
-            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
-            if tool.name not in allowed:
-                return False
-        # 维度① 能力授权（D3 活取三态）：mode != deny 即可见（ask 也可见）；默认全开。
-        # 维度② 对象可达性不在这里，由工具运行时返回。
-        if agent_context.is_tool_denied(tool):
-            return False
-        # 运行位置收口（TOOLMIG2-P4）：本地分身在云端面隐藏 deck/task/workflow（其用本地面
-        # 那份本地优先引擎），避免同一分身在两个 MCP 面看到重名工具。见 runtime_visibility。
-        return not is_namespace_hidden_for_runtime(
-            self._namespace_for_tool(tool),
-            getattr(agent_context, 'runtime_location', 'cloud'),
-        )
+        # 统一暴露管线（doc18 §3·实施/103 U1）：发现面 = evaluate 非 HIDDEN 的投影。
+        # external 白名单 / runtime 隐藏 / 三态 deny 全部收编进 ToolExposurePolicy，
+        # ask 仍可见（调用时由 ask 闸门挂起）、VISIBLE_DENY（U3 付费墙）带引导列出。
+        return tool_exposure_policy.evaluate(agent_context, tool).is_visible
 
     def _source_for_tool(self, tool: BaseTool) -> ToolSource:
         return getattr(tool, 'source', 'platform')
