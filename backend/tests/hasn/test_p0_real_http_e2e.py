@@ -625,6 +625,10 @@ class FakeOnboardingGateway:
         assert owner_id == 'h_p0_owner'
         return SandboxSummary(sandbox_id='sb_p0_owner', status='active', base_url=None)
 
+    async def get_sync_feed_head(self, _db: Any, owner_id: str) -> int:
+        assert owner_id == 'h_p0_owner'
+        return 0
+
 
 @dataclass
 class InMemorySyncGateway:
