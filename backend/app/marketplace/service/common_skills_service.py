@@ -22,15 +22,46 @@ from __future__ import annotations
 
 import hashlib
 
-import sqlalchemy as sa
+from typing import TYPE_CHECKING
 
-from sqlalchemy.ext.asyncio import AsyncSession
+import sqlalchemy as sa
 
 from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.model.marketplace_skill_version import MarketplaceSkillVersion
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 # 无公共技能时的稳定修订号（零 fake：固定值，非随机/时间）。
 EMPTY_COMMON_SKILLS_REVISION = '0'
+
+
+def _latest_skill_version_subquery(skill_ids: list[str] | None = None) -> sa.Subquery:
+    """最新版本子查询：每个 skill_id **恰取一行**、且取哪行是确定的（doc11 §5.5-1）。
+
+    历史上同一 skill 可能存在多条 ``is_latest=true`` 行（github_sync 曾不重置旧行），
+    无 ORDER BY 时 PostgreSQL 返回顺序不定 → 每次挑到不同行的指纹 → revision 哈希横跳
+    → 每 20 分钟全量 re-provision 风暴。``DISTINCT ON (skill_id) … ORDER BY skill_id,
+    id DESC`` 保证恒取 id 最大那条（最后写入的版本行）。
+    ⚠️ 排序键必须 ``id DESC``（评审 O3），不要 ``version DESC``——version 是字符串列，
+    semver 字典序会把 0.10.0 排在 0.9.0 前。
+    """
+    stmt = (
+        sa.select(
+            MarketplaceSkillVersion.skill_id.label('skill_id'),
+            sa.func.coalesce(
+                MarketplaceSkillVersion.content_hash,
+                MarketplaceSkillVersion.file_hash,
+                MarketplaceSkillVersion.version,
+            ).label('fingerprint'),
+        )
+        .where(MarketplaceSkillVersion.is_latest.is_(True))
+        .distinct(MarketplaceSkillVersion.skill_id)
+        .order_by(MarketplaceSkillVersion.skill_id, MarketplaceSkillVersion.id.desc())
+    )
+    if skill_ids is not None:
+        stmt = stmt.where(MarketplaceSkillVersion.skill_id.in_(skill_ids))
+    return stmt.subquery()
 
 
 async def _common_bundle_fingerprints(db: AsyncSession) -> list[str]:
@@ -38,12 +69,16 @@ async def _common_bundle_fingerprints(db: AsyncSession) -> list[str]:
 
     指纹 = 最新版本 ``COALESCE(content_hash, file_hash, version)``；content_hash 由 hermes_yaml
     规范化算出，改 bundle.yaml/成员/instruction 即变。表已搬入 hasn_marketplace（裸 SQL 须全限定）。
+    ``DISTINCT ON (t.template_id) … ORDER BY t.template_id, v.id DESC``：bundle 侧与技能侧
+    对称（评审 D3）——若版本表出现多条 ``is_latest=true`` 行，恒取 id 最大那条，杜绝横跳。
+    LEFT JOIN 下无版本行的模板恰得一行（v.* 全 NULL），语义不变。
     """
     rows = (
         await db.execute(
             sa.text(
                 """
-                SELECT t.template_id AS template_id,
+                SELECT DISTINCT ON (t.template_id)
+                       t.template_id AS template_id,
                        COALESCE(v.content_hash, v.file_hash, v.version, '') AS fp
                 FROM hasn_marketplace.marketplace_template t
                 LEFT JOIN hasn_marketplace.marketplace_template_version v
@@ -51,6 +86,7 @@ async def _common_bundle_fingerprints(db: AsyncSession) -> list[str]:
                 WHERE t.template_type = 'skill_pack'
                   AND t.is_common = true
                   AND t.status = 'published'
+                ORDER BY t.template_id, v.id DESC
                 """
             )
         )
@@ -73,18 +109,7 @@ async def get_common_skill_snapshot(db: AsyncSession) -> tuple[list[str], str]:
     - revision = sha256(sorted 技能 "id@指纹" 行 + sorted 公共包 "bundle:id@指纹" 行)[:16]；
       指纹取最新版本 ``COALESCE(content_hash, file_hash, version)``（doc14 §B3，缺全部记 ''）。
     """
-    latest_version = (
-        sa.select(
-            MarketplaceSkillVersion.skill_id.label('skill_id'),
-            sa.func.coalesce(
-                MarketplaceSkillVersion.content_hash,
-                MarketplaceSkillVersion.file_hash,
-                MarketplaceSkillVersion.version,
-            ).label('fingerprint'),
-        )
-        .where(MarketplaceSkillVersion.is_latest.is_(True))
-        .subquery()
-    )
+    latest_version = _latest_skill_version_subquery()
     stmt = (
         sa.select(MarketplaceSkill.skill_id, latest_version.c.fingerprint)
         .select_from(MarketplaceSkill)
@@ -100,7 +125,7 @@ async def get_common_skill_snapshot(db: AsyncSession) -> tuple[list[str], str]:
     )
     rows = (await db.execute(stmt)).all()
 
-    # 去重（同一 skill_id 若误存多条 is_latest 行，保第一条），按 skill_id 排序。
+    # 去重防御（子查询已保证每 skill 恰一行且确定，这里保第一条只作兜底），按 skill_id 排序。
     by_id: dict[str, str] = {}
     for skill_id, fingerprint in rows:
         if not skill_id:
@@ -139,18 +164,7 @@ async def get_installed_skills_revision(db: AsyncSession, skill_ids: list[str]) 
     ids = sorted({sid for sid in (skill_ids or []) if sid})
     if not ids:
         return EMPTY_COMMON_SKILLS_REVISION
-    latest_version = (
-        sa.select(
-            MarketplaceSkillVersion.skill_id.label('skill_id'),
-            sa.func.coalesce(
-                MarketplaceSkillVersion.content_hash,
-                MarketplaceSkillVersion.file_hash,
-                MarketplaceSkillVersion.version,
-            ).label('fingerprint'),
-        )
-        .where(MarketplaceSkillVersion.is_latest.is_(True), MarketplaceSkillVersion.skill_id.in_(ids))
-        .subquery()
-    )
+    latest_version = _latest_skill_version_subquery(ids)
     rows = (await db.execute(sa.select(latest_version.c.skill_id, latest_version.c.fingerprint))).all()
     by_id: dict[str, str] = {}
     for skill_id, fingerprint in rows:
@@ -177,18 +191,7 @@ async def get_skills_content_fingerprints(
     ids = sorted({sid for sid in (skill_ids or []) if sid})
     if not ids:
         return {}
-    latest_version = (
-        sa.select(
-            MarketplaceSkillVersion.skill_id.label('skill_id'),
-            sa.func.coalesce(
-                MarketplaceSkillVersion.content_hash,
-                MarketplaceSkillVersion.file_hash,
-                MarketplaceSkillVersion.version,
-            ).label('fingerprint'),
-        )
-        .where(MarketplaceSkillVersion.is_latest.is_(True), MarketplaceSkillVersion.skill_id.in_(ids))
-        .subquery()
-    )
+    latest_version = _latest_skill_version_subquery(ids)
     rows = (await db.execute(sa.select(latest_version.c.skill_id, latest_version.c.fingerprint))).all()
     fingerprints: dict[str, str] = {}
     for skill_id, fingerprint in rows:

@@ -18,21 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.marketplace.crud.crud_marketplace_category import marketplace_category_dao
 from backend.app.marketplace.crud.crud_marketplace_skill import marketplace_skill_dao
-from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
 from backend.app.marketplace.crud.crud_marketplace_skill_version import marketplace_skill_version_dao
 from backend.app.marketplace.crud.crud_marketplace_sync_log import marketplace_sync_log_dao
-from backend.app.marketplace.storage.s3_storage import marketplace_storage_service
+from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
+from backend.app.marketplace.model.marketplace_skill_version import MarketplaceSkillVersion
 from backend.app.marketplace.schema.marketplace_skill import CreateMarketplaceSkillParam, UpdateMarketplaceSkillParam
 from backend.app.marketplace.schema.marketplace_skill_version import (
     CreateMarketplaceSkillVersionParam,
     UpdateMarketplaceSkillVersionParam,
-)
-from backend.app.marketplace.service.skill_content_extractor import (
-    compute_skill_content_hash,
-    extract_skill_body,
-    list_skill_files,
-    raw_bilingual_body,
-    resolve_bilingual_body,
 )
 from backend.app.marketplace.schema.marketplace_sync_log import (
     CreateMarketplaceSyncLogParam,
@@ -40,6 +33,13 @@ from backend.app.marketplace.schema.marketplace_sync_log import (
 )
 from backend.app.marketplace.service.category_taxonomy import normalize_category
 from backend.app.marketplace.service.package_validation import normalize_tags
+from backend.app.marketplace.service.skill_content_extractor import (
+    compute_skill_content_hash,
+    extract_skill_body,
+    list_skill_files,
+    raw_bilingual_body,
+    resolve_bilingual_body,
+)
 from backend.app.marketplace.service.translation_service import translation_service
 from backend.app.marketplace.storage.s3_storage import marketplace_storage_service
 from backend.common.log import log
@@ -155,7 +155,7 @@ class GitHubSyncService:
         self.local_path = getattr(settings, 'HUANXING_HUB_LOCAL_PATH', '/tmp/huanxing-hub')
         self.repo: Repo | None = None
 
-    async def sync_from_github(  # noqa: FBT001, FBT002
+    async def sync_from_github(
         self,
         db: AsyncSession,
         force: bool = False,
@@ -502,7 +502,7 @@ class GitHubSyncService:
             try:
                 await self._sync_bundle(db, record, is_common=record['bundle_slug'] in common_slugs)
                 synced += 1
-            except Exception as exc:  # noqa: PERF203, BLE001
+            except Exception as exc:  # noqa: PERF203
                 failed += 1
                 errors.append(f"bundle {record.get('bundle_slug', 'unknown')}: {exc!s}")
                 log.error(f"Failed to sync bundle {record.get('bundle_slug')}: {exc}")
@@ -586,10 +586,7 @@ class GitHubSyncService:
         # 但下游 CreateMarketplaceSkillVersionParam.changelog 只接受 str → 列表归一为换行拼接，
         # 否则带列表 changelog 的技能（如 creator-playbook/plan-playbook）会在版本落库时被 pydantic 拒掉。
         raw_changelog = metadata.get('changelog')
-        if isinstance(raw_changelog, list):
-            changelog = '\n'.join(str(item) for item in raw_changelog)
-        else:
-            changelog = raw_changelog
+        changelog = '\n'.join(str(item) for item in raw_changelog) if isinstance(raw_changelog, list) else raw_changelog
         changelog = changelog or f"Version {metadata.get('version') or '1.0.0'}"
         return {
             'skill_id': skill_id,
@@ -892,6 +889,18 @@ class GitHubSyncService:
             'is_latest': version_data.get('is_latest', True),
             'published_at': version_data.get('published_at') or timezone.now(),
         }
+
+        # 写入前把同 skill 的其他行 is_latest 重置为 False（doc11 §5.5-2，对齐
+        # marketplace_skill_service/skill_pack_service 的既有模式）：github_sync 历史上
+        # 从不重置旧行 → 同一 skill 多条 is_latest=true → 快照子查询挑行不定 →
+        # common_skills_revision 横跳 → 每 20 分钟全量 re-provision 风暴。
+        # partial unique index（2026-07-02 迁移）在数据层兜底拦重复，这里保证写入路径自洽。
+        if version_record['is_latest']:
+            await db.execute(
+                sa.update(MarketplaceSkillVersion)
+                .where(MarketplaceSkillVersion.skill_id == skill_id)
+                .values(is_latest=False)
+            )
 
         if existing_version:
             # Update existing version
