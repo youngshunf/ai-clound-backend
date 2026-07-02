@@ -13,6 +13,7 @@ async def hasn_check_agent_heartbeat_timeout(self) -> str:
     超时阈值：1 小时
     """
     import sqlalchemy as sa
+
     from backend.app.hasn.model import HasnAgents
     from backend.database.db import async_db_session
 
@@ -38,3 +39,20 @@ async def hasn_check_agent_heartbeat_timeout(self) -> str:
         if count > 0:
             return f'marked {count} agents as offline due to heartbeat timeout'
         return 'no agents timed out'
+
+
+@celery_app.task(name='app_entitlement_expire_sweep')
+async def app_entitlement_expire_sweep() -> str:
+    """把 ``expires_at`` 已过的 active 应用权益置 expired（设计 §5.4 定时兜底）。
+
+    定时执行：每天凌晨 2 点（订阅过期检查之后）。
+    读路径本就按 ``expires_at`` 过滤（``get_active_entitlement``），本任务只收敛存量 status，
+    让「active 但已过期」的行不长期占着 ``uq_app_entitlement_active`` partial unique
+    （到期复购的即时让位已由 ``grant_entitlement`` 内联处理，见其 docstring）。
+    """
+    from backend.app.hasn.service.app_catalog_service import sweep_expired_entitlements
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as session:
+        count = await sweep_expired_entitlements(session)
+    return f'expired {count} overdue app entitlements' if count else 'no overdue app entitlements'

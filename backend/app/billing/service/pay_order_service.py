@@ -371,6 +371,8 @@ class PayOrderService:
             raise errors.RequestError(msg='该应用不是购买型，无需下单')
         if catalog.price_amount is None or float(catalog.price_amount) <= 0:
             raise errors.RequestError(msg='该应用未配置购买价格')
+        # P1-4：个人只能购买 purchasable_by ∈ {owner, both} 的应用（纯企业应用个人买了也用不了）。
+        app_catalog_service.check_purchasable_by(catalog, buyer='owner')
 
         owner_hasn_id = await app_catalog_service.resolve_owner_hasn_id(db, user_id=user_id)
         if owner_hasn_id and await app_catalog_service.get_active_entitlement(

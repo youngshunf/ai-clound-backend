@@ -203,9 +203,14 @@ async def settle_seat_purchase(
 ) -> HasnAppEntitlement:
     """企业席位购买结算（§6.4③，支付回调调用）：两步落席位。
 
-    ① grant_entitlement 仅保证一条 active「套餐」权益行（其幂等分支**不写 seats_total**）；
-    ② 同一事务对 ent 行 FOR UPDATE 后 ``seats_total = COALESCE(seats_total,0) + seats``（**累加**，
-       首购从 NULL/0 起、扩容在原值上加，同一路径）。
+    ① grant_entitlement 仅保证一条 active「套餐」权益行（其幂等分支**不写 seats_total**；
+       到期复购时旧行翻 expired 让位、插新行开新周期，见其 docstring）；
+    ② 同一事务对 ent 行 FOR UPDATE 后：先把该企业该 app 存留的 assigned 席位 **re-parent**
+       到当前套餐行（doc04「续费与到期复购」——到期复购产生新权益行时老成员席位无缝续用且计入
+       ``count_seats_used``；同周期扩容时 no-op），再 ``seats_total = COALESCE(seats_total,0) + seats``
+       （**累加**，首购/新周期从 NULL/0 起、扩容在原值上加，同一路径）。
+       复购席位数 < 存留指派数会出现 ``used > total`` 过渡态：assign_seat 挡新指派、不自动踢人，
+       由管理员据 list_app_seats 回收超出席位。
 
     幂等去重（order_ref）由支付回调层保证（PayOrder 只结算一次），见 app_seat_purchase_callback。
     """
@@ -223,6 +228,17 @@ async def settle_seat_purchase(
     ent = await _lock_enterprise_entitlement(db, app_id=app_id, enterprise_id=enterprise_id)
     if ent is None:  # grant 后必存在，防御性
         raise errors.ServerError(msg='席位结算失败：权益行缺失')
+    await db.execute(
+        sa
+        .update(HasnAppSeat)
+        .where(
+            HasnAppSeat.enterprise_id == enterprise_id,
+            HasnAppSeat.app_id == app_id,
+            HasnAppSeat.status == 'assigned',
+            HasnAppSeat.entitlement_id != ent.id,
+        )
+        .values(entitlement_id=ent.id, updated_time=timezone.now())
+    )
     ent.seats_total = int(ent.seats_total or 0) + int(seats)
     await db.flush()
     return ent

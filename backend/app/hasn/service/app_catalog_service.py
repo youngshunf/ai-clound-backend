@@ -868,14 +868,35 @@ async def grant_entitlement(
     order_ref: str | None = None,
     expires_at: datetime | None = None,
 ) -> HasnAppEntitlement:
-    """写一条 active 权益（购买回调 / admin 授予共用）。已有 active 则幂等返回（不重复发）。
+    """写一条 active 权益（购买回调 / admin 授予共用）。已有**有效** active 则幂等返回（不重复发）。
 
-    唯一约束 ``uq_app_entitlement_active`` 保证每主体每 app 至多一条 active，故先查后写。
+    唯一约束 ``uq_app_entitlement_active`` 保证每主体每 app 至多一条 ``status='active'`` 行。
+    到期复购（doc04 §6.4「续费与到期复购」）：``status='active'`` 但 ``expires_at`` 已过的行
+    （``sweep_expired_entitlements`` 定时兜底可能尚未跑到）会撞该 partial unique——先把过期行
+    翻 ``'expired'`` 让位、再插新行开新周期。**不就地复写旧行**：owner 试用行保留 ``source=trial``
+    历史，``_has_used_trial`` 的「试用只能一次」判定才不会被复购冲掉。
+    企业席位制的旧 assigned 席位随后由 ``settle_seat_purchase`` re-parent 到新行（席位账目归一）。
     """
     existing = await get_active_entitlement(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
     if existing is not None:
         await _post_grant_seed(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
         return existing
+    stale = (
+        await db.execute(
+            sa.select(HasnAppEntitlement).where(
+                HasnAppEntitlement.app_id == app_id,
+                HasnAppEntitlement.subject_type == subject_type,
+                HasnAppEntitlement.subject_id == subject_id,
+                HasnAppEntitlement.status == 'active',
+            )
+        )
+    ).scalars().first()
+    if stale is not None:
+        # 走到这里必然「active 但已过期」（有效行已在上方幂等返回）。
+        stale.status = 'expired'
+        stale.updated_time = timezone.now()
+        # 先 flush 让位：同一 flush 里 INSERT 先于 UPDATE 执行，不先落让位会撞 partial unique。
+        await db.flush()
     ent = HasnAppEntitlement(
         app_id=app_id,
         subject_type=subject_type,

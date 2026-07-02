@@ -36,6 +36,10 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'expire_overdue_subscriptions',
         'schedule': TzAwareCrontab('30', '1'),  # 每天凌晨 1:30（年度发放后收敛存量 status）
     },
+    '应用权益过期检查': {
+        'task': 'app_entitlement_expire_sweep',
+        'schedule': TzAwareCrontab('0', '2'),  # 每天凌晨 2 点收敛「active 但已过期」的应用权益 status
+    },
     '积分账本每小时对账': {
         'task': 'newapi_hourly_credit_sync',
         'schedule': TzAwareCrontab('0'),  # 每小时整点：new-api 真实消费增量回扣账本 + 重设 quota（§5A.5）
