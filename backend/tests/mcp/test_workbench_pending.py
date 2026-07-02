@@ -75,8 +75,16 @@ def test_pending_scan_tool_registered_and_scoped() -> None:
 
 
 def test_pending_providers_registered() -> None:
-    # M1 起步 task + plan；M3 起横向补齐（首个 community 未读通知）。
-    assert set(PENDING_PROVIDERS.keys()) >= {'task', 'plan', 'community'}
+    # M1 起步 task + plan；M3 横向补齐 community + workflow/deck/reel/studio。
+    assert set(PENDING_PROVIDERS.keys()) >= {
+        'task',
+        'plan',
+        'community',
+        'workflow',
+        'deck',
+        'reel',
+        'studio',
+    }
 
 
 def test_pending_scope_in_catalog() -> None:
@@ -161,6 +169,46 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
                 title='别人的通知',
             )
 
+        # 2d) seed workflow/deck/reel/studio 各一条未处理项（真实写路径 / ORM 直插，零 fake）
+        from backend.app.hasn_deck.service.deck_service import deck_service
+        from backend.app.hasn_reel.model.reel_creation import ReelCreation
+        from backend.app.hasn_studio.model.studio_artifact import StudioArtifact
+        from backend.app.hasn_task.model.workflow import HasnWorkflow
+
+        async with async_db_session.begin() as db:
+            # deck：create_deck 出厂即 status='draft'（未处理项口径）
+            await deck_service.create_deck(db, owner_id=owner, title='待完善草稿演示')
+            # workflow：待审批（分身建定时图）；workflow_uuid unique，显式赋值
+            db.add(
+                HasnWorkflow(
+                    workflow_uuid=f'wf_pending_{uuid.uuid4().hex[:16]}',
+                    owner_id=owner,
+                    name='待审批巡检工作流',
+                    status='pending_approval',
+                    schedule_type='cron',
+                )
+            )
+            # reel：等你回答
+            db.add(
+                ReelCreation(
+                    project_id=0,
+                    owner_hasn_id=owner,
+                    kind='agent_tools',
+                    title='等你回答的短视频',
+                    status='waiting_user',
+                )
+            )
+            # studio：成品待审核
+            db.add(
+                StudioArtifact(
+                    project_id=0,
+                    owner_hasn_id=owner,
+                    title='待审核成品',
+                    status='reviewing',
+                    origin_type='app',
+                )
+            )
+
         # 3) 扫描 owner
         async with async_db_session() as db:
             result = await workbench_pending_aggregator.scan(db, owner_hasn_id=owner)
@@ -185,7 +233,31 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
         assert result.by_app['community'].items[0].deep_link == '/apps/community/notifications'
         assert result.by_app['community'].items[0].category == 'social'
 
-        assert result.total == 4  # 2 逾期待办 + 1 待审批任务 + 1 未读通知
+        # workflow：待审批一条，deep_link 顶层路由 /workflows/<workflow_uuid>
+        assert result.by_app['workflow'].count == 1
+        wf_item = result.by_app['workflow'].items[0]
+        assert wf_item.title == '待审批巡检工作流'
+        assert wf_item.deep_link.startswith('/workflows/wf_pending_')
+        assert wf_item.urgency == 'high'
+
+        # deck：草稿一条，deep_link /apps/deck/<id>（云端权威 id）
+        assert result.by_app['deck'].count == 1
+        assert result.by_app['deck'].items[0].title == '待完善草稿演示'
+        assert result.by_app['deck'].items[0].deep_link.startswith('/apps/deck/')
+
+        # reel：等你回答一条，deep_link 应用入口 /apps/reel（无 creation 详情路由）
+        assert result.by_app['reel'].count == 1
+        assert result.by_app['reel'].items[0].title == '等你回答的短视频'
+        assert result.by_app['reel'].items[0].deep_link == '/apps/reel'
+        assert result.by_app['reel'].items[0].urgency == 'high'
+
+        # studio：成品待审核一条，deep_link 应用入口 /apps/studio
+        assert result.by_app['studio'].count == 1
+        assert result.by_app['studio'].items[0].title == '待审核成品'
+        assert result.by_app['studio'].items[0].deep_link == '/apps/studio'
+
+        # 2 逾期待办 + 1 待审批任务 + 1 未读通知 + workflow/deck/reel/studio 各 1
+        assert result.total == 8, result.by_app
         assert result.degraded == []
 
         # 4) owner 隔离：other 只见自己的逾期 + 自己的未读通知，绝不见 owner 的任务/待办/通知
@@ -205,5 +277,9 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
         async with async_db_session.begin() as db:
             await db.execute(text('DELETE FROM hasn_plan.todo WHERE owner_hasn_id = ANY(:os)'), {'os': [owner, other]})
             await db.execute(text('DELETE FROM hasn_task.task WHERE owner_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_task.workflow WHERE owner_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_deck.deck WHERE owner_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_reel.reel_creation WHERE owner_hasn_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_studio.studio_artifact WHERE owner_hasn_id = :o'), {'o': owner})
             await db.execute(text('DELETE FROM hasn_sync_events WHERE owner_id = ANY(:os)'), {'os': [owner, other]})
             await db.execute(text('DELETE FROM hasn_notifications WHERE target_id = ANY(:os)'), {'os': [owner, other]})

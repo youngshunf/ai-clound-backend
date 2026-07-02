@@ -16,8 +16,12 @@ from typing import TYPE_CHECKING
 from backend.app.hasn_community.service.notification_service import (
     notification_service as community_notification_service,
 )
+from backend.app.hasn_deck.service.deck_service import deck_service
 from backend.app.hasn_plan.service.plan_app_service import plan_service
+from backend.app.hasn_reel.service.reel_service import reel_service
+from backend.app.hasn_studio.service.studio_service import studio_service
 from backend.app.hasn_task.service.agent_task_service import agent_task_service
+from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.home.schema.workbench_pending import PendingItem
 from backend.utils.timezone import timezone
 
@@ -44,6 +48,43 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _pick_by_status(
+    rows: list[dict],
+    *,
+    app_id: str,
+    category: str,
+    status_map: dict[str, tuple[str, str]],
+    deep_link: Callable[[object], str],
+    id_key: str = 'id',
+    title_key: str = 'title',
+    title_default: str = '未命名',
+) -> list[PendingItem]:
+    """行列表 → 命中 status_map（status→(urgency, hint)）的行映射为 PendingItem，其余状态跳过。
+
+    列表类应用共用：service 现成 list 方法返回全量行，本函数按业务态挑「未处理」并映射。
+    """
+    items: list[PendingItem] = []
+    for row in rows:
+        spec = status_map.get(row.get('status'))
+        if spec is None:
+            continue
+        urgency, hint = spec
+        rid = row.get(id_key)
+        items.append(
+            PendingItem(
+                app_id=app_id,
+                category=category,  # type: ignore[arg-type]
+                urgency=urgency,  # type: ignore[arg-type]
+                title=row.get(title_key) or title_default,
+                summary=hint,
+                ref=f'{app_id}:{rid}' if rid is not None else app_id,
+                deep_link=deep_link(rid),
+                occurred_at=None,
+            )
+        )
+    return items
 
 
 # ── task：待审批 / 待装技能的任务（周期任务的业务态，需主人处理）──────────────────
@@ -136,12 +177,94 @@ async def community_notification_provider(db: AsyncSession, *, owner_hasn_id: st
     return items[:limit]
 
 
+# ── workflow：待审批工作流（分身建的定时图，需主人审批；顶层路由 /workflows/{id}）──────
+# 业务态见 hasn_task/model/workflow.py：pending_approval 需主人审批（对齐 task）。
+# 深链用 workflow_id（=workflow_uuid，端云稳定权威 id，非本地 id）。
+_WORKFLOW_UNPROCESSED = {'pending_approval': ('high', '分身建的工作流待你审批')}
+
+
+async def workflow_pending_provider(db: AsyncSession, *, owner_hasn_id: str, limit: int) -> list[PendingItem]:
+    rows = await agent_workflow_service.list_workflows(db, owner_id=owner_hasn_id)
+    items = _pick_by_status(
+        rows,
+        app_id='workflow',
+        category='task',
+        status_map=_WORKFLOW_UNPROCESSED,
+        deep_link=lambda i: f'/workflows/{i}' if i else '/workflows',
+        id_key='workflow_id',
+        title_key='name',
+        title_default='未命名工作流',
+    )
+    return items[:limit]
+
+
+# ── deck：草稿演示待完善（低优先提醒；详情路由 /apps/deck/{id} 用云端权威 deck id）────────
+_DECK_UNPROCESSED = {'draft': ('low', '有演示草稿待完善')}
+
+
+async def deck_pending_provider(db: AsyncSession, *, owner_hasn_id: str, limit: int) -> list[PendingItem]:
+    result = await deck_service.list_decks(db, owner_id=owner_hasn_id, limit=50)
+    items = _pick_by_status(
+        result.get('items', []),
+        app_id='deck',
+        category='app',
+        status_map=_DECK_UNPROCESSED,
+        deep_link=lambda i: f'/apps/deck/{i}' if i else '/apps/deck',
+        title_default='未命名演示',
+    )
+    return items[:limit]
+
+
+# ── reel：短视频创作等你回答 / 失败待处理（无 creation 详情路由 → 退回应用入口 /apps/reel）──
+_REEL_UNPROCESSED = {
+    'waiting_user': ('high', '短视频创作等你回答'),
+    'failed': ('medium', '短视频创作失败待处理'),
+}
+
+
+async def reel_pending_provider(db: AsyncSession, *, owner_hasn_id: str, limit: int) -> list[PendingItem]:
+    rows = await reel_service.list_creations(db, owner_hasn_id=owner_hasn_id)
+    items = _pick_by_status(
+        rows,
+        app_id='reel',
+        category='app',
+        status_map=_REEL_UNPROCESSED,
+        deep_link=lambda _i: '/apps/reel',
+        title_default='未命名创作',
+    )
+    return items[:limit]
+
+
+# ── studio：视频成品待审核 / 渲染失败待处理（无 artifact 详情路由 → 退回应用入口 /apps/studio）─
+_STUDIO_UNPROCESSED = {
+    'reviewing': ('medium', '视频成品待审核'),
+    'failed': ('medium', '视频渲染失败待处理'),
+}
+
+
+async def studio_pending_provider(db: AsyncSession, *, owner_hasn_id: str, limit: int) -> list[PendingItem]:
+    rows = await studio_service.list_artifacts(db, owner_hasn_id=owner_hasn_id)
+    items = _pick_by_status(
+        rows,
+        app_id='studio',
+        category='app',
+        status_map=_STUDIO_UNPROCESSED,
+        deep_link=lambda _i: '/apps/studio',
+        title_default='未命名成品',
+    )
+    return items[:limit]
+
+
 # ── 注册表（新增应用在此加一行；聚合器按 key 顺序读取）──────────────────────────────
-# M1 起步 task + plan（owner 口径均为 owner_hasn_id，零适配）。M3 起横向补齐：先接
-# community（未读通知，同 owner_hasn_id 口径）；growth/creator/deck… 等走 owner_id(bigint)
-# 的遗留应用需 hasn_id→user_id 适配层，见 doc05 §5 M3 续做。
+# M1 起步 task + plan（owner 口径均为 owner_hasn_id，零适配）。M3 横向补齐：community（未读
+# 通知）+ workflow/deck/reel/studio（口径均 owner_id/owner_hasn_id，str，零适配）。
+# creator（走 owner_id bigint，需 hasn_id→user_id 适配层）+ quant（回测无 list 方法）留后续。
 PENDING_PROVIDERS: dict[str, PendingProviderFn] = {
     'task': task_pending_provider,
     'plan': plan_overdue_provider,
     'community': community_notification_provider,
+    'workflow': workflow_pending_provider,
+    'deck': deck_pending_provider,
+    'reel': reel_pending_provider,
+    'studio': studio_pending_provider,
 }
