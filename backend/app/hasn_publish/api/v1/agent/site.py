@@ -11,11 +11,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth, check_scopes
+from backend.common.security.agent_capability import require_capability_not_denied
+from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
@@ -24,9 +26,10 @@ _SCOPE_READ = 'publish:read'
 _SCOPE_WRITE = 'publish:write'
 
 
-def _agent(request: Request, *scopes: str) -> AgentTokenPayload:
+async def _agent(request: Request, db: AsyncSession, *scopes: str) -> AgentTokenPayload:
     agent: AgentTokenPayload = request.state.agent
-    check_scopes(agent, list(scopes))
+    for scope in scopes:
+        await require_capability_not_denied(db, agent.agent_hasn_id, scope)
     return agent
 
 
@@ -71,7 +74,7 @@ class AgentSetVisibilityRequest(BaseModel):
 async def agent_create_site(
     request: Request, db: CurrentSessionTransaction, body: AgentCreateSiteRequest
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_WRITE)
+    agent = await _agent(request, db, _SCOPE_WRITE)
     data = await publish_service.create_site(
         db,
         owner_id=agent.owner_hasn_id,
@@ -103,7 +106,7 @@ async def agent_list_sites(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     data = await publish_service.list_owned(
         db, owner_id=agent.owner_hasn_id, kind=kind, limit=size, offset=(page - 1) * size
     )
@@ -112,7 +115,7 @@ async def agent_list_sites(
 
 @router.get('/sites/{site_id}', summary='Agent 取发布详情', dependencies=[DependsAgentJwtAuth], name='publish_agent_get')
 async def agent_get_site(request: Request, db: CurrentSession, site_id: int) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     data = await publish_service.get_owned(db, owner_id=agent.owner_hasn_id, site_id=site_id)
     return response_base.success(data={'site': data})
 
@@ -121,7 +124,7 @@ async def agent_get_site(request: Request, db: CurrentSession, site_id: int) -> 
 async def agent_update_site(
     request: Request, db: CurrentSessionTransaction, site_id: int, body: AgentUpdateSiteRequest
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_WRITE)
+    agent = await _agent(request, db, _SCOPE_WRITE)
     data = await publish_service.update_site(
         db,
         owner_id=agent.owner_hasn_id,
@@ -144,7 +147,7 @@ async def agent_update_site(
 async def agent_set_visibility(
     request: Request, db: CurrentSessionTransaction, site_id: int, body: AgentSetVisibilityRequest
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_WRITE)
+    agent = await _agent(request, db, _SCOPE_WRITE)
     data = await publish_service.set_visibility(
         db,
         owner_id=agent.owner_hasn_id,
@@ -165,7 +168,7 @@ async def agent_set_visibility(
     '/sites/{site_id}/revoke', summary='Agent 撤销发布', dependencies=[DependsAgentJwtAuth], name='publish_agent_revoke'
 )
 async def agent_revoke_site(request: Request, db: CurrentSessionTransaction, site_id: int) -> ResponseModel:
-    agent = _agent(request, _SCOPE_WRITE)
+    agent = await _agent(request, db, _SCOPE_WRITE)
     data = await publish_service.revoke(db, owner_id=agent.owner_hasn_id, site_id=site_id)
     return response_base.success(data={'site': data})
 
@@ -174,6 +177,6 @@ async def agent_revoke_site(request: Request, db: CurrentSessionTransaction, sit
     '/sites/{site_id}', summary='Agent 删除发布', dependencies=[DependsAgentJwtAuth], name='publish_agent_delete'
 )
 async def agent_delete_site(request: Request, db: CurrentSessionTransaction, site_id: int) -> ResponseModel:
-    agent = _agent(request, _SCOPE_WRITE)
+    agent = await _agent(request, db, _SCOPE_WRITE)
     await publish_service.delete_site(db, owner_id=agent.owner_hasn_id, site_id=site_id)
     return response_base.success(data={'deleted': True})

@@ -188,7 +188,7 @@ class AuthService:
             agent_tokens_list = []
             try:
                 from backend.app.hasn_core import hasn_agents_dao, hasn_humans_dao
-                from backend.common.security.agent_jwt import create_agent_access_token, get_agent_scopes_cached
+                from backend.common.security.agent_jwt import create_agent_access_token
 
                 # 查询用户的 hasn_id
                 human = await hasn_humans_dao.get_by_user_id(db, user.id)
@@ -196,27 +196,20 @@ class AuthService:
                     # 查询该用户的所有活跃 Agent
                     agents = await hasn_agents_dao.get_active_agents_by_owner(db, human.hasn_id)
 
-                    # 为每个 Agent 签发 JWT
+                    # 为每个 Agent 签发 JWT（scopes 已退役·实施102 S0：JWT 不携带 scopes，授权只看三态）
                     for agent in agents:
                         try:
-                            # 获取 Agent 的权限配置
-                            scopes_config = await get_agent_scopes_cached(agent.hasn_id, db)
-                            scopes = scopes_config.get('scopes', [])
-
-                            # 签发 Agent JWT
                             agent_token = await create_agent_access_token(
                                 agent_hasn_id=agent.hasn_id,
                                 agent_name=agent.display_name or agent.agent_name,
                                 owner_hasn_id=human.hasn_id,
                                 owner_user_id=user.id,
-                                scopes=scopes,
                             )
 
                             agent_tokens_list.append(AgentTokenInfo(
                                 agent_hasn_id=agent.hasn_id,
                                 agent_name=agent.display_name or agent.agent_name,
                                 access_token=agent_token.access_token,
-                                scopes=agent_token.scopes,
                             ))
                         except Exception as e:
                             log.error(f'为 Agent {agent.hasn_id} 签发 JWT 失败: {e}')

@@ -1053,7 +1053,8 @@ class AiNativeRuntimeGateway:
             tool_id=tool.get('tool_id'),
             event_type='tool_call',
             required_scopes=list(tool.get('required_scopes') or []),
-            agent_scopes_snapshot=list(agent.scopes) if agent is not None else [],
+            # scopes 已退役（实施102 S0）：AgentTokenPayload 不再携带 scopes，审计快照恒空。
+            agent_scopes_snapshot=[],
             workspace_role=self._workspace_role(workspace),
             risk_level=tool.get('risk_level'),
             decision=decision,

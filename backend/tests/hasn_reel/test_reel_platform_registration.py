@@ -5,8 +5,8 @@
 - capabilities scope 与落地 hasn-mcp 工具一致（8 个；读类 3 → reel:read、写类 4 → reel:write、
   导出类 artifact.upload → reel:export；mcp_name 全 hasn.reel.*）。
 - scopes.py 登记 reel:read/:write/:export（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
-- **铸 scope**：reel:read/:write/:export 进 DEFAULT_AGENT_SCOPES（JWT scopes claim 唯一固定来源），
-  且 Agent JWT 编解码忠实携带三者——否则 Agent 调云端 reel 本地工具经 daemon 三态闸门缺 claim。
+- scope 授权走三态 capability_modes（JWT scopes claim 已退役，实施102 S0）：reel:read/:write/:export
+  由 ``hasn_agent_scopes.{default_mode, capability_modes}`` 消费时活取判定，凭证不再承载 scope。
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 == {reel:write, reel:export}
   （= hasn-node crates/hasn-mcp/src/reel.rs capability_scopes() 契约，见 test_local_tool_scope_alignment）。
 - App 形态（local_tool / 手动安装 / 瘦引擎页 /apps/reel；瘦引擎应用按需装，内容创作在创作运营）。
@@ -21,9 +21,6 @@
 
 from __future__ import annotations
 
-import uuid
-
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -50,13 +47,7 @@ from backend.app.hasn.service.app_catalog_service import (
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST, build_reel_app
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.common.security.agent_jwt import (
-    DEFAULT_AGENT_SCOPES,
-    jwt_decode_agent,
-    jwt_encode_agent,
-)
 from backend.database.db import SQLALCHEMY_DATABASE_URL
-from backend.utils.timezone import timezone
 
 # 落地真相（hasn-node crates/hasn-mcp/src/reel.rs，reel-P4 待落，本表是云端侧契约源）：读类 3 / 写类 4 / 导出类 1。
 _READ_TOOLS = {'task.list', 'task.get', 'material.search'}
@@ -141,28 +132,6 @@ def test_reel_scope_factory_defaults_match_local_enforcement() -> None:
     assert scope_meta(_READ_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_WRITE_SCOPE)['default_mode'] == 'ask'
     assert scope_meta(_EXPORT_SCOPE)['default_mode'] == 'ask'
-
-
-def test_reel_scopes_minted_into_agent_jwt() -> None:
-    """铸 scope：reel:read/:write/:export 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带三者。"""
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _EXPORT_SCOPE):
-        assert scope in DEFAULT_AGENT_SCOPES
-
-    expire = timezone.now() + timedelta(seconds=3600)
-    payload = {
-        'sub': 'a_reel_expert',
-        'token_type': 'agent',
-        'agent_hasn_id': 'a_reel_expert',
-        'agent_name': '短视频创作专家',
-        'owner_hasn_id': 'h_test_owner',
-        'owner_user_id': 1,
-        'scopes': list(DEFAULT_AGENT_SCOPES),
-        'session_uuid': str(uuid.uuid4()),
-        'exp': timezone.to_utc(expire).timestamp(),
-    }
-    decoded = jwt_decode_agent(jwt_encode_agent(payload))
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _EXPORT_SCOPE):
-        assert scope in decoded.scopes
 
 
 def test_reel_notifications_emit_declared() -> None:

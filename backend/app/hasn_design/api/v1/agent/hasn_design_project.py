@@ -30,7 +30,7 @@ async def agent_list_hasn_design_project(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
+    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await hasn_design_project_service.get_list(db=db)
     return response_base.success(data=data)
 

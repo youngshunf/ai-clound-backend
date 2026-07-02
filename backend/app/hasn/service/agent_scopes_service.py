@@ -114,7 +114,6 @@ class AgentScopesService:
         ctx = AgentContext(
             hasn_id=agent_hasn_id,
             owner_id=0,
-            scopes=cfg.get('scopes', []),
             agent_status='active',
             metadata={},
             owner_hasn_id=owner_hasn_id,

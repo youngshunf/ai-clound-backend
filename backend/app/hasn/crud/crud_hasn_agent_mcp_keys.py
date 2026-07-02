@@ -40,18 +40,20 @@ class CRUDHasnAgentMcpKeys(CRUDPlus[HasnAgentMcpKeys]):
         owner_user_id: int | None,
         key_prefix: str,
         key_hash: str,
-        scopes: list[str],
         node_id: str | None,
         expire_time: datetime | None,
     ) -> HasnAgentMcpKeys:
-        """落一条新凭证（只存哈希），返回带 id/created_time 的行"""
+        """落一条新凭证（只存哈希），返回带 id/created_time 的行。
+
+        scopes 已退役（实施102 S0）：MCP key 不再承载 scope 集，授权只看三态
+        capability_modes（消费时活取），故不再入参/落列。
+        """
         new_obj = HasnAgentMcpKeys(
             agent_hasn_id=agent_hasn_id,
             owner_hasn_id=owner_hasn_id,
             owner_user_id=owner_user_id,
             key_prefix=key_prefix,
             key_hash=key_hash,
-            scopes=scopes,
             node_id=node_id,
             status='active',
             expire_time=expire_time,

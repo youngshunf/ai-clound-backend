@@ -13,7 +13,6 @@ from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.security.agent_jwt import (
     get_agent_scopes_cached,
-    normalize_scope,
     verify_agent_token,
 )
 from backend.common.security.scope_policy import MODE_DENY
@@ -28,7 +27,6 @@ class AgentContext:
         self,
         hasn_id: str,
         owner_id: int,
-        scopes: list[str],
         agent_status: str,
         metadata: dict,
         agent_name: str = '',
@@ -41,7 +39,6 @@ class AgentContext:
     ) -> None:
         self.hasn_id = hasn_id
         self.owner_id = owner_id
-        self.scopes = scopes
         self.agent_status = agent_status
         self.metadata = metadata
         self.agent_name = agent_name
@@ -75,7 +72,6 @@ class AgentContext:
         return cls(
             hasn_id=payload.agent_hasn_id,
             owner_id=payload.owner_user_id,
-            scopes=payload.scopes,
             agent_status=agent_status,
             metadata=metadata or {},
             agent_name=payload.agent_name,
@@ -118,7 +114,6 @@ class AgentContext:
             agent_name=self.agent_name,
             owner_hasn_id=self.owner_hasn_id,
             owner_user_id=self.owner_id,
-            scopes=self.scopes,
             session_uuid=self.session_uuid,
             expire_time=timezone.now(),
         )
@@ -130,22 +125,6 @@ class AgentContext:
     @property
     def owner_user_id(self) -> int:
         return self.owner_id
-
-    def has_scope(self, scope: str) -> bool:
-        """检查是否有指定权限（过渡期归一兜底：点号/冒号等价）"""
-        # TODO(P5后): 迁移完成移除归一兜底
-        owned = {normalize_scope(s) for s in self.scopes}
-        return normalize_scope(scope) in owned
-
-    def require_scopes(self, *required_scopes: str) -> None:
-        """要求必须有指定权限（过渡期归一兜底：点号/冒号等价）"""
-        # TODO(P5后): 迁移完成移除归一兜底
-        owned = {normalize_scope(s) for s in self.scopes}
-        missing = [s for s in required_scopes if normalize_scope(s) not in owned]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=f'Missing required scopes: {", ".join(missing)}'
-            )
 
 
 async def get_agent_context(

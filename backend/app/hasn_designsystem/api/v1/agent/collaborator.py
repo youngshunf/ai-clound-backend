@@ -32,7 +32,7 @@ async def agent_list_collaborator(
     db: CurrentSession,
 ) -> ResponseModel:
     agent: AgentTokenPayload = request.state.agent
-    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
+    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await collaborator_service.get_list(db=db)
     return response_base.success(data=data)
 

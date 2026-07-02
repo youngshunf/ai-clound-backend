@@ -28,7 +28,6 @@ def _agent(owner_id: str, agent_id: str, scopes: list[str] | None = None) -> Age
         agent_name='测试分身',
         owner_hasn_id=owner_id,
         owner_user_id=1,
-        scopes=scopes or ['knowledge:read', 'knowledge:write', 'knowledge:upload'],
         session_uuid=f's-{agent_id}',
         expire_time=timezone.now(),
     )

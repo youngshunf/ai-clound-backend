@@ -177,7 +177,6 @@ class HasnMcpStreamableServer:
                 agent_name=agent.agent_name or '',
                 owner_hasn_id=record.owner_hasn_id,
                 owner_user_id=int(owner_user_id),
-                scopes=list(record.scopes or []),  # 审计快照，不作判定依据（D3）
                 session_uuid=f'amk_{record.id}',
                 expire_time=record.expire_time or timezone.now(),
             )

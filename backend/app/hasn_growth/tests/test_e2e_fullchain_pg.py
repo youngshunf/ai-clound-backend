@@ -105,7 +105,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
         payload = AgentTokenPayload(
             agent_hasn_id=agent_hasn, agent_name=f'agent_{tag}', owner_hasn_id=owner,
-            owner_user_id=owner_uid, scopes=state.scopes, session_uuid=f'sess_{tag}',
+            owner_user_id=owner_uid,  session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
         request.state.agent = payload

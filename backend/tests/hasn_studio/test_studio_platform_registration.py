@@ -6,8 +6,8 @@
   尚不存在的 gateway 内部 handler，零 fake）。
 - scopes.py 登记 5 个 studio scope（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）：
   read/write 出厂 default_mode=allow（risk=low）；render/export/share 出厂 default_mode=ask（花算力/外发）。
-- studio scope **不进** ``DEFAULT_AGENT_SCOPES``（cloud-brokered 工具由 capability_modes 三态判定，非 JWT scope
-  claim；同 finance/quant/creator）。
+- studio scope 由三态 ``capability_modes`` 判定（cloud-brokered 工具；JWT ``scopes`` claim 已随实施102 S0
+  全退役；同 finance/quant/creator）。
 - App 形态（cloud / install_policy=manual / 视频工作台 /apps/studio / 个人模式）。
 - catalog 出厂源：sort_order 76 / default_agent_type=content_operator（内容运营官）/ 无 per-app config_json。
 - 真实 PG：4 表落 ``hasn_studio`` schema（不在 public）；``ensure_builtin_published`` 落库且 hash 自愈幂等；
@@ -44,7 +44,6 @@ from backend.app.hasn.service.app_catalog_service import (
 from backend.app.hasn_studio.manifest import STUDIO_AI_NATIVE_MANIFEST, build_studio_app
 from backend.app.hasn_studio.model._base import APP_SCHEMA, HasnStudioAppBase
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.common.security.agent_jwt import DEFAULT_AGENT_SCOPES
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 _READ = 'studio:read'
@@ -198,12 +197,6 @@ def test_studio_scopes_registered_with_three_states() -> None:
     assert scope_meta(_RENDER)['risk'] == 'medium'
     assert scope_meta(_EXPORT)['risk'] == 'medium'
     assert scope_meta(_SHARE)['risk'] == 'low'
-
-
-def test_studio_scopes_not_minted_into_jwt() -> None:
-    """studio scope 不进 DEFAULT_AGENT_SCOPES（cloud-brokered 工具由 capability_modes 判定，非 JWT claim）。"""
-    for key in _ALL_SCOPES:
-        assert key not in DEFAULT_AGENT_SCOPES, f'cloud-brokered scope 不应铸入 JWT: {key}'
 
 
 def test_studio_catalog_factory_source() -> None:

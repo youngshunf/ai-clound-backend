@@ -154,7 +154,9 @@ class AgentTokenInfo(SchemaBase):
     """Agent JWT 信息"""
 
     access_token: str = Field(description='Agent JWT')
-    scopes: list[str] = Field(description='Agent 权限列表')
+    # 已退役：JWT 不再携带 scopes claim、授权只看三态（实施102 S0）。恒空列表，
+    # 仅为兼容旧 daemon 的必填反序列化字段保留（daemon Rust 侧已改 serde default）。
+    scopes: list[str] = Field(default_factory=list, description='已退役占位（恒空），授权走三态 capability_modes')
 
 
 class CloudCreateAgentResponse(SchemaBase):

@@ -429,28 +429,21 @@ class HasnAgentProfileService:
                 from backend.common.security.agent_jwt import (
                     create_agent_access_token,
                     create_default_agent_scopes,
-                    get_agent_scopes_cached,
                 )
 
-                # 插入默认权限配置
+                # 插入默认三态权限配置（hasn_agent_scopes：default_mode + capability_modes 授权权威）
                 await create_default_agent_scopes(db, agent.hasn_id, request.owner_id)
 
-                # 获取权限配置
-                scopes_config = await get_agent_scopes_cached(agent.hasn_id, db)
-                scopes = scopes_config.get('scopes', [])
-
-                # 签发 Agent JWT
+                # 签发 Agent JWT（scopes 已退役·实施102 S0：JWT 不再携带 scopes，授权只看三态）
                 agent_token = await create_agent_access_token(
                     agent_hasn_id=agent.hasn_id,
                     agent_name=agent.display_name or agent.agent_name,
                     owner_hasn_id=request.owner_id,
                     owner_user_id=user_id or 0,
-                    scopes=scopes,
                 )
 
                 agent_token_info = AgentTokenInfo(
                     access_token=agent_token.access_token,
-                    scopes=agent_token.scopes,
                 )
             except Exception as e:
                 from backend.common.log import log
@@ -1353,16 +1346,14 @@ class HasnAgentsService:
             )
         )
 
-        # 签发 Agent JWT
-        from backend.common.security.agent_jwt import create_agent_access_token, get_agent_scopes_cached
+        # 签发 Agent JWT（scopes 已退役·实施102 S0：JWT 不再携带 scopes，授权只看三态）
+        from backend.common.security.agent_jwt import create_agent_access_token
 
-        scopes_config = await get_agent_scopes_cached(obj.hasn_id, db)
         agent_token = await create_agent_access_token(
             agent_hasn_id=obj.hasn_id,
             agent_name=obj.name,
             owner_hasn_id=obj.owner_id,
             owner_user_id=user_id,
-            scopes=scopes_config['scopes'],
         )
 
         return {
@@ -1370,7 +1361,8 @@ class HasnAgentsService:
             'owner_id': obj.owner_id,
             'name': obj.name,
             'access_token': agent_token.access_token,
-            'scopes': agent_token.scopes,
+            # scopes 已退役（实施102 S0）：恒空占位，兼容旧 daemon 反序列化。
+            'scopes': [],
             'expire_time': agent_token.access_token_expire_time.isoformat(),
         }
 

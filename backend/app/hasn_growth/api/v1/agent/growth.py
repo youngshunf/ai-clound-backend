@@ -37,12 +37,14 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
-# growth:pii 升级 scope → 读类回明文（默认脱敏）。
-_PII_SCOPE = 'growth:pii'
+def _reveal(agent: AgentTokenPayload) -> bool:  # noqa: ARG001
+    """读类是否回明文 PII（默认脱敏）。
 
-
-def _reveal(agent: AgentTokenPayload) -> bool:
-    return _PII_SCOPE in (agent.scopes or [])
+    历史上凭 JWT ``growth:pii`` claim 判定，但该 claim 对所有分身恒等（从不携带 pii），
+    实际恒为脱敏；scopes claim 已随实施102 S0 退役 → 恒返回 False（脱敏），语义不变。
+    如需按分身放明文，改走三态 capability_modes 授权（doc17），而非凭证 claim。
+    """
+    return False
 
 
 async def _agent_scope(db: CurrentSession, agent: AgentTokenPayload, view: str = 'team') -> GrowthScope:

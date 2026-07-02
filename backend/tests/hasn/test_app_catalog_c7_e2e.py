@@ -79,7 +79,6 @@ def _agent(owner_hasn_id: str) -> AgentTokenPayload:
         agent_name='c7-agent',
         owner_hasn_id=owner_hasn_id,
         owner_user_id=0,
-        scopes=[],
         session_uuid=f's-{_uid()}',
         expire_time=timezone.now() + timedelta(days=1),
     )

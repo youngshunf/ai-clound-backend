@@ -16,7 +16,6 @@ from backend.app.hasn.service.ai_native_runtime_gateway import (
 )
 from backend.app.hasn_community.service import community_tool_handlers as handlers
 from backend.app.mcp.scopes import SCOPE_CATALOG
-from backend.common.security.agent_jwt import DEFAULT_AGENT_SCOPES
 
 # 帖子/文章详情走 community_service 专用资源取数（含可见性鉴权），不经 handler。
 _SERVICE_DIRECT = {'community.get_post', 'community.get_article'}
@@ -64,7 +63,6 @@ def test_new_scopes_registered() -> None:
     for scope in ('community:comment', 'community:interact', 'community:circle', 'community:doc'):
         assert scope in SCOPE_CATALOG
         assert SCOPE_CATALOG[scope]['domain'] == 'community'
-        assert scope in DEFAULT_AGENT_SCOPES
 
 
 def test_scope_grouping_matches_design() -> None:

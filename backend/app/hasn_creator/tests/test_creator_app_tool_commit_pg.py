@@ -42,7 +42,6 @@ def _agent() -> AgentTokenPayload:
         agent_name='提交边界回归分身',
         owner_hasn_id='hasn:owner:appcommit-a',
         owner_user_id=920077,
-        scopes=['creator:read', 'creator:manage', 'creator:publish'],
         session_uuid='sess-appcommit-test',
         expire_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1),
     )

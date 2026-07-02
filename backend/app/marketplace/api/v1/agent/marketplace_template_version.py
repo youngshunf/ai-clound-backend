@@ -32,7 +32,7 @@ async def agent_list_marketplace_template_version(
     db: CurrentSession,
 ) -> ResponseModel:
     agent: AgentTokenPayload = request.state.agent
-    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
+    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await marketplace_template_version_service.get_list(db=db)
     return response_base.success(data=data)
 

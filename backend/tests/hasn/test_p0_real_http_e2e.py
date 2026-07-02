@@ -1076,7 +1076,6 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
                 agent_name=DEFAULT_AGENT_DISPLAY_NAME,
                 owner_hasn_id=P0_OWNER_ID,
                 owner_user_id=P0_OWNER_USER_ID,
-                scopes=['task.run.report'],
                 session_uuid=P0_AGENT_SESSION_UUID,
                 expire_time=P0_AGENT_EXPIRE_TIME,
             )

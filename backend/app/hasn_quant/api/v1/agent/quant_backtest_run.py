@@ -29,7 +29,7 @@ async def agent_list_quant_backtest_run(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
+    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await quant_backtest_run_service.get_list(db=db)
     return response_base.success(data=data)
 

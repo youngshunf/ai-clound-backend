@@ -83,7 +83,6 @@ async def client():
             agent_name='测试分身',
             owner_hasn_id=state['owner_hasn_id'],
             owner_user_id=900000 + int(uuid.uuid4().int % 9000),
-            scopes=list(state['scopes']),
             session_uuid=uuid.uuid4().hex,
             expire_time=datetime.now(dt_timezone.utc) + timedelta(hours=1),
         )

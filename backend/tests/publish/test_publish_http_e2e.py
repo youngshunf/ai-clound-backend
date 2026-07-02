@@ -133,7 +133,6 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             agent_name=f'agent_{tag}',
             owner_hasn_id=state.agent_owner,
             owner_user_id=owner_uid,
-            scopes=list(state.agent_scopes),
             session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
