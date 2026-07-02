@@ -7,6 +7,8 @@ BriefingDocument schema（设计 doc 04 §4），不合即返回校验错误让�
 
 from __future__ import annotations
 
+import copy
+
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -17,6 +19,101 @@ from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
+
+# 统一挂在 /apps/<id> 前缀下的 AI-Native 应用 id（事实源：webui routes.tsx + 各 manifest entry_route）。
+# 与 webui `src/lib/legacyRoute.ts::APP_ROOT_IDS` 保持一致；新增 /apps 应用时两处同步。
+_APP_ROOT_IDS: frozenset[str] = frozenset(
+    {
+        'tasks',
+        'community',
+        'knowledge',
+        'deck',
+        'designsystem',
+        'film',
+        'design',
+        'reel',
+        'studio',
+        'quant',
+        'finance',
+        'plan',
+        'copilot',
+        'creator',
+        'growth',
+        'publish',
+    }
+)
+
+
+def _normalize_route(value: Any) -> Any:
+    """把 legacy 内部路由前缀归一到 canonical `/apps/<id>`（与 webui legacyRoute 同规则）。
+
+    APPS-* 统一路由后应用页都在 `/apps/<id>`，但主脑偶发照旧写 `/workbench/apps/deck`、裸 `/tasks/T-12`
+    会 404。这里在**写入云端权威前**归一，让存库文档本身干净（webui 渲染侧也有兜底，双保险）。
+    非字符串 / 非以 `/` 开头（`hasn://` / `http` / 相对路径）原样返回，保留 query/hash 后缀，幂等。
+    """
+    if not isinstance(value, str):
+        return value
+    trimmed = value.strip()
+    if not trimmed.startswith('/'):
+        return value
+    positions = [pos for pos in (trimmed.find('?'), trimmed.find('#')) if pos != -1]
+    cut = min(positions) if positions else -1
+    path = trimmed if cut == -1 else trimmed[:cut]
+    suffix = '' if cut == -1 else trimmed[cut:]
+    # 1) 去早期外壳前缀 /workbench。
+    if path == '/workbench':
+        path = '/home'
+    elif path.startswith('/workbench/'):
+        path = path[len('/workbench') :]
+    # 2) 裸应用根段（未带 /apps 前缀，首段是已知应用 id）补 /apps。
+    segments = [seg for seg in path.split('/') if seg]
+    if segments and segments[0] != 'apps' and segments[0] in _APP_ROOT_IDS:
+        path = '/apps/' + '/'.join(segments)
+    return path + suffix
+
+
+def _fix_action_routes(action: Any) -> None:
+    """就地归一单个 action 的 deep_link / route。"""
+    if not isinstance(action, dict):
+        return
+    if 'deep_link' in action:
+        action['deep_link'] = _normalize_route(action['deep_link'])
+    if 'route' in action:
+        action['route'] = _normalize_route(action['route'])
+
+
+def _fix_action_list(actions: Any) -> None:
+    if isinstance(actions, list):
+        for action in actions:
+            _fix_action_routes(action)
+
+
+def _fix_focus_item(item: Any) -> None:
+    """就地归一单个 focus_item 的 source.deep_link 与 actions。"""
+    if not isinstance(item, dict):
+        return
+    source = item.get('source')
+    if isinstance(source, dict) and 'deep_link' in source:
+        source['deep_link'] = _normalize_route(source['deep_link'])
+    _fix_action_list(item.get('actions'))
+
+
+def _canonicalize_document_routes(document: dict[str, Any]) -> dict[str, Any]:
+    """归一 BriefingDocument 里所有 deep_link / route（focus_items[].source/actions、plans[].actions）。
+
+    返回新文档（不改入参）；只碰路由字段，其余原样透传（schema extra='allow'）。
+    """
+    doc = copy.deepcopy(document)
+    focus_items = doc.get('focus_items')
+    if isinstance(focus_items, list):
+        for item in focus_items:
+            _fix_focus_item(item)
+    plans = doc.get('plans')
+    if isinstance(plans, list):
+        for plan in plans:
+            if isinstance(plan, dict):
+                _fix_action_list(plan.get('actions'))
+    return doc
 
 
 class PublishBriefingTool(BaseTool):
@@ -123,6 +220,10 @@ class PublishBriefingTool(BaseTool):
         document = arguments.get('document')
         if not isinstance(document, dict):
             return {'published': False, 'valid': False, 'reason': 'document 必填且须为对象'}
+
+        # 写权威前归一 legacy 路由前缀（/workbench/apps/deck、裸 /tasks/... → /apps/...），
+        # 让存库文档本身 canonical（避免旧简报按钮 404；webui 渲染侧另有兜底）。
+        document = _canonicalize_document_routes(document)
 
         async with async_db_session() as db:
             try:
