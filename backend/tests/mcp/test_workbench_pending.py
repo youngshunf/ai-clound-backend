@@ -32,7 +32,6 @@ def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str = 'a_pending_test') -> Age
     return AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=1,
-        scopes=['workbench:pending:read'],
         agent_status='active',
         metadata={},
         agent_name='未处理项测试分身',

@@ -193,7 +193,6 @@ class TestExecutionLocation:
         ctx = AgentContext(
             hasn_id="a_exec",
             owner_id=1,
-            scopes=[],
             agent_status="active",
             metadata={},
         )

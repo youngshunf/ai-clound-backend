@@ -64,7 +64,6 @@ def _mk_ctx(owner_hasn_id: str, owner_uid: int, *, agent_name: str = '规划分�
     return AgentContext(
         hasn_id=f'a_{uuid4().hex[:16]}',
         owner_id=owner_uid,
-        scopes=['plan:write', 'plan:manage', 'plan:read'],
         agent_status='active',
         metadata={},
         agent_name=agent_name,

@@ -59,7 +59,6 @@ def _ctx(*, default_mode: str = 'allow', capability_modes: dict | None = None) -
     return AgentContext(
         hasn_id='a_ask_test',
         owner_id=0,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id='h_ask_test',

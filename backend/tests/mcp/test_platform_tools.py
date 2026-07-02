@@ -20,7 +20,6 @@ def _agent_ctx() -> AgentContext:
     return AgentContext(
         hasn_id='a_platform_tool_test',
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id='h_platform_tool_test',

@@ -93,7 +93,6 @@ def _agent_context(owner_hasn_id: str | None):
     return AgentContext(
         hasn_id='a_asset_test_agent',
         owner_id=999001,
-        scopes=['asset:create'],
         agent_status='active',
         metadata={},
         agent_name='资产测试分身',
@@ -113,7 +112,9 @@ async def test_execute_missing_owner_rejected() -> None:
 @pytest.mark.asyncio
 async def test_execute_oversize_rejected_before_upload() -> None:
     """超出 kind 限额 → 在落桶前就拒绝（守卫先于 DB/S3，无需活体环境）。"""
-    oversize = base64.b64encode(b'\x00' * (10 * 1024 * 1024 + 1)).decode()  # 图片限额 10MB
+    from backend.app.mcp.tools.asset import _MAX_SIZE
+
+    oversize = base64.b64encode(b'\x00' * (_MAX_SIZE['image'] + 1)).decode()  # 动态读图片限额，防限额调整后测试漂移
     with pytest.raises(RuntimeError, match='超出大小上限'):
         await AssetCreateTool().execute(_agent_context('h_asset_owner'), {'content': oversize, 'mime': 'image/png'})
 

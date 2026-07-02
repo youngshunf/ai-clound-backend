@@ -18,7 +18,6 @@ def _ctx() -> AgentContext:
     return AgentContext(
         hasn_id='a_user_search_test',
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id='h_user_search_test',

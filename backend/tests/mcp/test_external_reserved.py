@@ -28,7 +28,6 @@ def _ctx(*, allowed: set[str] | None = None) -> AgentContext:
     ctx = AgentContext(
         hasn_id='a_external_reserved',
         owner_id=0,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id='h_external_reserved',

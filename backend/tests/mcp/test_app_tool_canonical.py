@@ -86,7 +86,8 @@ def auth_headers(token: str) -> dict[str, str]:
 
 class AsyncSessionContext:
     def __init__(self) -> None:
-        self.session = MagicMock()
+        # app_tools.execute 落审计后 await db.commit()（d1c33ab9 Bug7）——commit/rollback 须为可 await。
+        self.session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
 
     async def __aenter__(self) -> MagicMock:
         return self.session

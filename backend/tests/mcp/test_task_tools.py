@@ -32,7 +32,6 @@ def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str = 'a_task_tools_test') -> 
     return AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         agent_name='任务测试分身',
