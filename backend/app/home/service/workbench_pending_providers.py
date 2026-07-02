@@ -13,6 +13,9 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from backend.app.hasn_community.service.notification_service import (
+    notification_service as community_notification_service,
+)
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.hasn_task.service.agent_task_service import agent_task_service
 from backend.app.home.schema.workbench_pending import PendingItem
@@ -107,10 +110,38 @@ async def plan_overdue_provider(db: AsyncSession, *, owner_hasn_id: str, limit: 
     return items[:limit]
 
 
+# ── community：未读社区通知（社交类，主人可去通知页处理）─────────────────────────
+# 复用统一通知 service 的 recipient_hasn_id 口径（=owner_hasn_id，零适配）。deep_link 一律
+# canonical `/apps/community/notifications`（不用通知自带 link——它可能是 hasn:// URI）。
+async def community_notification_provider(db: AsyncSession, *, owner_hasn_id: str, limit: int) -> list[PendingItem]:
+    result = await community_notification_service.list_notifications(
+        db, recipient_hasn_id=owner_hasn_id, unread_only=True, limit=limit
+    )
+    items: list[PendingItem] = []
+    for n in result.get('items', []):
+        nid = n.get('id')
+        created = _parse_iso(n.get('created_time'))
+        items.append(
+            PendingItem(
+                app_id='community',
+                category='social',
+                urgency='low',  # 未读通知信息类，低优先；主脑分诊时可覆盖
+                title=n.get('title') or '社区通知',
+                summary=n.get('preview'),
+                ref=f'notification:{nid}' if nid is not None else 'notification',
+                deep_link='/apps/community/notifications',
+                occurred_at=_epoch_ms(created) if created else None,
+            )
+        )
+    return items[:limit]
+
+
 # ── 注册表（新增应用在此加一行；聚合器按 key 顺序读取）──────────────────────────────
-# M1 起步 task + plan（owner 口径均为 owner_hasn_id，零适配）；growth/creator/deck… 等
-# 走 owner_id(bigint) 的遗留应用需 hasn_id→user_id 适配层，见 doc05 §5 M3。
+# M1 起步 task + plan（owner 口径均为 owner_hasn_id，零适配）。M3 起横向补齐：先接
+# community（未读通知，同 owner_hasn_id 口径）；growth/creator/deck… 等走 owner_id(bigint)
+# 的遗留应用需 hasn_id→user_id 适配层，见 doc05 §5 M3 续做。
 PENDING_PROVIDERS: dict[str, PendingProviderFn] = {
     'task': task_pending_provider,
     'plan': plan_overdue_provider,
+    'community': community_notification_provider,
 }

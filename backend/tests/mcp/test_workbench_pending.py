@@ -3,8 +3,8 @@
 覆盖：
 - 契约（无需 DB）：PendingScanTool 注册 + 名/命名空间/execution_location/scope 正确；
   provider 注册表含 task/plan；scope 进 catalog。
-- 真实 PG 往返：seed 逾期/未来/无期限待办 + pending_approval 任务 → aggregator.scan 只聚
-  逾期待办 + 待处理任务，owner 隔离，deep_link canonical。事务真提交，测试后清理两个 owner。
+- 真实 PG 往返：seed 逾期/未来/无期限待办 + pending_approval 任务 + 未读社区通知 → aggregator.scan
+  只聚逾期待办 + 待处理任务 + 未读通知，owner 隔离，deep_link canonical。事务真提交，测试后清理两个 owner。
 
 需活体 DB（本地 15432）：
     DATABASE_PORT=15432 pytest backend/tests/mcp/test_workbench_pending.py
@@ -75,8 +75,8 @@ def test_pending_scan_tool_registered_and_scoped() -> None:
 
 
 def test_pending_providers_registered() -> None:
-    # M1 起步 task + plan（后续 M3 横向补齐其余应用）。
-    assert set(PENDING_PROVIDERS.keys()) >= {'task', 'plan'}
+    # M1 起步 task + plan；M3 起横向补齐（首个 community 未读通知）。
+    assert set(PENDING_PROVIDERS.keys()) >= {'task', 'plan', 'community'}
 
 
 def test_pending_scope_in_catalog() -> None:
@@ -97,6 +97,7 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
 
     from backend.app.hasn_plan.service.plan_app_service import plan_service
     from backend.app.home.service.workbench_pending_aggregator_service import workbench_pending_aggregator
+    from backend.app.notification.service.notification_service import notification_service
     from backend.database.db import async_db_session
     from backend.utils.timezone import timezone
 
@@ -139,6 +140,27 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
                 {'u': tid, 'o': owner},
             )
 
+        # 2c) seed 一条未读社区通知（owner）+ 一条给 other（隔离）
+        async with async_db_session.begin() as db:
+            await notification_service.emit(
+                db,
+                recipient_id=owner,
+                source={'kind': 'system', 'id': 'pending_test'},
+                category='social',
+                type='community_follow',
+                title='有人关注了你',
+                body='测试通知正文',
+                payload={'preview': '测试通知正文'},
+            )
+            await notification_service.emit(
+                db,
+                recipient_id=other,
+                source={'kind': 'system', 'id': 'pending_test'},
+                category='social',
+                type='community_follow',
+                title='别人的通知',
+            )
+
         # 3) 扫描 owner
         async with async_db_session() as db:
             result = await workbench_pending_aggregator.scan(db, owner_hasn_id=owner)
@@ -156,15 +178,24 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
         assert result.by_app['task'].count == 1
         assert result.by_app['task'].items[0].deep_link == f'/apps/tasks/{tid}'
 
-        assert result.total == 3
+        # community：聚未读通知一条，deep_link canonical /apps/community/notifications
+        assert 'community' in result.by_app, result.by_app
+        assert result.by_app['community'].count == 1
+        assert result.by_app['community'].items[0].title == '有人关注了你'
+        assert result.by_app['community'].items[0].deep_link == '/apps/community/notifications'
+        assert result.by_app['community'].items[0].category == 'social'
+
+        assert result.total == 4  # 2 逾期待办 + 1 待审批任务 + 1 未读通知
         assert result.degraded == []
 
-        # 4) owner 隔离：other 只见自己的逾期，绝不见 owner 的任务/待办
+        # 4) owner 隔离：other 只见自己的逾期 + 自己的未读通知，绝不见 owner 的任务/待办/通知
         async with async_db_session() as db:
             other_result = await workbench_pending_aggregator.scan(db, owner_hasn_id=other)
         assert other_result.by_app.get('task') is None
         assert other_result.by_app['plan'].count == 1
         assert other_result.by_app['plan'].items[0].title == '别人的逾期'
+        assert other_result.by_app['community'].count == 1
+        assert other_result.by_app['community'].items[0].title == '别人的通知'
 
         # 5) apps 过滤：只扫 plan 时不含 task
         async with async_db_session() as db:
@@ -174,4 +205,5 @@ async def test_scan_aggregates_overdue_and_tasks_real_db() -> None:
         async with async_db_session.begin() as db:
             await db.execute(text('DELETE FROM hasn_plan.todo WHERE owner_hasn_id = ANY(:os)'), {'os': [owner, other]})
             await db.execute(text('DELETE FROM hasn_task.task WHERE owner_id = :o'), {'o': owner})
-            await db.execute(text('DELETE FROM hasn_sync_events WHERE owner_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_sync_events WHERE owner_id = ANY(:os)'), {'os': [owner, other]})
+            await db.execute(text('DELETE FROM hasn_notifications WHERE target_id = ANY(:os)'), {'os': [owner, other]})
