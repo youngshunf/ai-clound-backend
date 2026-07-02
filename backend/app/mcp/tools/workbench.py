@@ -254,4 +254,82 @@ class PublishBriefingTool(BaseTool):
         return result
 
 
-WORKBENCH_TOOLS: list[type[BaseTool]] = [PublishBriefingTool]
+class PendingScanTool(BaseTool):
+    """扫描主人名下各 AI-Native 应用的**未处理项**，聚合成结构化清单供主脑分诊派发。
+
+    这是「主动去工作」的入口（设计 doc 05 §4）：主脑先 scan 拿到权威、不漏的未处理清单，
+    再逐项分诊——① 能独立做的**直接派发任务/发起工作会话**；② 需主人决策的**在工作会话
+    发提问卡**（hasn.session.ask）；③ 只能主人线下办的**才仅提醒**。绝不替主人拍板。
+    """
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.workbench'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.workbench.pending.scan'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return ['workbench:pending:read']
+
+    @property
+    def description(self) -> str:
+        return (
+            '扫描主人名下各应用的未处理项（后端权威聚合，一次拿全、不漏）。返回 by_app 分组 + total + '
+            'degraded（读取失败的应用，如实标注，绝不为其造项）。你据此分诊：能直接做的派任务/发起工作会话，'
+            '需主人决策的发提问卡，只能主人线下办的才提醒。plan 只回逾期待办（未逾期的已有自动派发逻辑，勿重复）。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'apps': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description': '限定扫描的应用 id（如 ["task","plan"]）；缺省=全部已接入应用',
+                },
+                'limit_per_app': {
+                    'type': 'integer',
+                    'minimum': 1,
+                    'maximum': 50,
+                    'description': '每应用返回明细条数上限（count 仍是真实总数），缺省 5',
+                },
+            },
+        }
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        from backend.app.home.service.workbench_pending_aggregator_service import workbench_pending_aggregator
+
+        owner = agent_context.owner_hasn_id
+        if not owner:
+            return {'error': 'owner 身份缺失，无法扫描未处理项'}
+
+        apps = arguments.get('apps')
+        apps = [str(a) for a in apps] if isinstance(apps, list) else None
+        raw_limit = arguments.get('limit_per_app')
+        limit = raw_limit if isinstance(raw_limit, int) and raw_limit > 0 else 5
+
+        async with async_db_session() as db:
+            result = await workbench_pending_aggregator.scan(
+                db, owner_hasn_id=owner, apps=apps, limit_per_app=limit
+            )
+        return result.model_dump(mode='json')
+
+
+WORKBENCH_TOOLS: list[type[BaseTool]] = [PublishBriefingTool, PendingScanTool]

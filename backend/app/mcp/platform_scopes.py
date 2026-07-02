@@ -36,6 +36,8 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'plan:write': {'label_zh': '编辑规划', 'domain': 'plan', 'risk': 'low', 'description': '代主人建/改/删目标、计划、待办、日程、习惯（读类无需授权）'},
     'plan:read': {'label_zh': '读团队忙闲', 'domain': 'plan', 'risk': 'low', 'description': '读企业成员忙闲档（availability，受 A3 可见性约束：只回忙/闲块不回标题；个人读类无需授权）'},
     'plan:manage': {'label_zh': '管理企业会议协同', 'domain': 'plan', 'risk': 'medium', 'description': '管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）'},
+    # —— platform · 工作台（hasn.workbench.pending.scan：主脑聚合各应用未处理项，主动分诊派发，doc05）——
+    'workbench:pending:read': {'label_zh': '扫描未处理项', 'domain': 'workbench', 'risk': 'low', 'description': '聚合主人名下各应用的未处理项（只读，供主脑分诊派发；简报发布 publish 无需 scope）'},
     # —— platform · 记忆（hasn.memory.save：分身把长期语义事实写入云端权威记忆，doc16 Phase C）——
     # 读类（search/recall/list）无需授权；写类 memory:write 出厂 Allow，owner 三态可覆盖、事后可改可删。
     'memory:write': {'label_zh': '记录记忆', 'domain': 'memory', 'risk': 'low', 'description': '把长期语义事实（偏好/事实/目标等）写入云端权威记忆（读类无需授权）'},
