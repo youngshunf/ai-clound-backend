@@ -177,3 +177,39 @@ def test_scope_catalog_response_schema_declares_every_emitted_field() -> None:
         for cap in src['capabilities']:
             extra_cap = set(cap) - cap_fields
             assert not extra_cap, f'ScopeCapability schema 未声明 build_scope_catalog 产出的键（会被剥离）: {extra_cap}'
+
+
+def test_app_display_domains_regroup_deck_designsystem_into_app_source() -> None:
+    """展示分组重分类（福仔 2026-07-03）：deck/designsystem 归「AI-Native 应用」组、不在平台组。
+
+    deck/designsystem 工具经 TOOLMIG 注册为 platform 工具，但语义是独立 AI-Native 应用 →
+    build_scope_catalog 按 APP_DISPLAY_DOMAINS 把它们的能力挪进 'app' 来源组。task/plan/
+    marketplace 等平台底座留在 'platform' 组。守住这个分类，避免再回归到「应用混进平台工具」。
+    """
+    from backend.app.mcp.auth import AgentContext
+    from backend.app.mcp.scopes import APP_DISPLAY_DOMAINS
+    from backend.app.mcp.server import mcp_server
+
+    assert {'deck', 'designsystem'} <= APP_DISPLAY_DOMAINS, 'deck/designsystem 应在 APP_DISPLAY_DOMAINS'
+
+    ctx = AgentContext(
+        hasn_id='a_regroup_probe',
+        owner_id=0,
+        agent_status='active',
+        metadata={},
+        default_mode='allow',
+        capability_modes={},
+    )
+    catalog = mcp_server.tool_directory.build_scope_catalog(ctx)
+    by_source = {s['source']: {c['domain'] for c in s['capabilities']} for s in catalog['sources']}
+    platform_domains = by_source.get('platform', set())
+    app_domains = by_source.get('app', set())
+
+    # deck/designsystem 已挪出平台组、进入应用组。
+    assert 'deck' in app_domains and 'deck' not in platform_domains, 'deck 应在 app 组、不在 platform'
+    assert 'designsystem' in app_domains and 'designsystem' not in platform_domains, (
+        'designsystem 应在 app 组、不在 platform'
+    )
+    # 平台底座域仍留在平台组（不被误挪）。
+    assert 'task' in platform_domains, 'task 应留在平台工具组'
+    assert 'plan' in platform_domains, 'plan 应留在平台工具组'

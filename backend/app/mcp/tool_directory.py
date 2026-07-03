@@ -109,7 +109,7 @@ class ToolDirectoryService:
         对象级关系门控（维度②）不进 catalog（工具运行时返回）。external 分组按本 Agent
         binding 派生（仅列其授权的第三方 MCP 工具，P7；未绑定则该分组为空）。
         """
-        from backend.app.mcp.scopes import SOURCE_LABELS, scope_meta
+        from backend.app.mcp.scopes import APP_DISPLAY_DOMAINS, SOURCE_LABELS, scope_meta
         from backend.app.mcp.tool_exposure import tool_exposure_policy
         from backend.common.security.scope_policy import resolve_capability_mode
 
@@ -127,8 +127,14 @@ class ToolDirectoryService:
             # G5 三态永不参与：deny 项须留在 catalog 供 owner 改回（不复刻 102-B3 单向门）。
             if tool_exposure_policy.is_catalog_hidden(agent_context, tool):
                 continue
-            bucket = grouped.setdefault(source, {})
             for scope in tool.required_scopes:
+                # 展示分组重分类（福仔 2026-07-03）：deck/designsystem 虽注册为 platform 工具，
+                # 但语义是独立 AI-Native 应用 → 归「AI-Native 应用」组，不混进平台底座。仅改
+                # 展示分组，不动工具 source（tool.search / 执行路由不受影响）。见 APP_DISPLAY_DOMAINS。
+                display_source = source
+                if source == 'platform' and scope_meta(scope).get('domain', '') in APP_DISPLAY_DOMAINS:
+                    display_source = 'app'
+                bucket = grouped.setdefault(display_source, {})
                 entry = bucket.setdefault(scope, {'tools': set(), 'risk': getattr(tool, 'risk_level', 'low')})
                 entry['tools'].add(tool.name)
 

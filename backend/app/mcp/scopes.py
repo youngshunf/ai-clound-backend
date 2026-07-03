@@ -102,6 +102,14 @@ DOMAIN_LABELS: dict[str, dict[str, str]] = {
     'design': {'zh': '矢量设计', 'en': 'Vector Design'},
 }
 
+# 权限页「展示分组」重分类白名单：以下 domain 虽注册为 platform 工具（TOOLMIG 把 deck/
+# designsystem 工具迁成云端 platform 工具），但语义是**独立 AI-Native 应用**（有独立 app
+# catalog + 工作台页）→ 权限页归「AI-Native 应用」来源组，不混进平台底座。此重分类**仅影响
+# catalog 展示分组**，不改工具 source（tool.search / 执行路由不受影响）。
+# task/workflow/plan/marketplace/memory/message/asset/contact 是每个分身通用的平台底座能力，
+# 故**不在**此集合（留「平台工具」组，福仔 2026-07-03 明确）。
+APP_DISPLAY_DOMAINS: frozenset[str] = frozenset({'deck', 'designsystem'})
+
 
 def domain_label(domain: str, lang: str = 'zh') -> str:
     """取 domain 的中文/英文分组名；未登记则回退 domain 键本身（不造假、暴露缺失）。"""
