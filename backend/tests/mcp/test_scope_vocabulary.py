@@ -142,3 +142,38 @@ def test_domain_and_source_labels_all_bilingual() -> None:
     for source, entry in SOURCE_LABELS.items():
         assert entry.get('zh'), f'source {source} 缺中文名'
         assert entry.get('en'), f'source {source} 缺英文名'
+
+
+def test_scope_catalog_response_schema_declares_every_emitted_field() -> None:
+    """build_scope_catalog 产出的每个键都必须在 Pydantic 响应 schema 里声明——否则被剥离。
+
+    ⭐根 bug 守卫（2026-07-03）：service 层 `ScopeCatalogResponse.model_validate(catalog)`
+    把 build_scope_catalog 的 dict 灌进 Pydantic 模型，Pydantic 默认 `extra='ignore'`
+    **静默丢弃未声明字段**。曾发生：给 build_scope_catalog + scope_meta 加了双语
+    `label_en`/`domain_label`/`domain_label_en`/`description_en`，却漏给 ScopeCapability /
+    ScopeSource schema 补字段 → HTTP 响应把双语全剥离 → 权限页露英文 domain 键、语言切换
+    无效（直调 service 有、经 HTTP 没有，极难排查）。此守卫断言 catalog 每层产出的键都被
+    schema 声明，从此漏声明即红（不必打真实 HTTP 也能抓到这类序列化边界漂移）。
+    """
+    from backend.app.hasn.schema.agent_scopes import ScopeCapability, ScopeSource
+    from backend.app.mcp.auth import AgentContext
+    from backend.app.mcp.server import mcp_server
+
+    ctx = AgentContext(
+        hasn_id='a_guard_probe',
+        owner_id=0,
+        agent_status='active',
+        metadata={},
+        default_mode='allow',
+        capability_modes={},
+    )
+    catalog = mcp_server.tool_directory.build_scope_catalog(ctx)
+
+    source_fields = set(ScopeSource.model_fields)
+    cap_fields = set(ScopeCapability.model_fields)
+    for src in catalog['sources']:
+        extra_src = set(src) - source_fields
+        assert not extra_src, f'ScopeSource schema 未声明 build_scope_catalog 产出的键（会被剥离）: {extra_src}'
+        for cap in src['capabilities']:
+            extra_cap = set(cap) - cap_fields
+            assert not extra_cap, f'ScopeCapability schema 未声明 build_scope_catalog 产出的键（会被剥离）: {extra_cap}'

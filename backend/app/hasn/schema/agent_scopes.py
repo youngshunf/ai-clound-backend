@@ -30,14 +30,22 @@ class UpdateAgentScopesResponse(SchemaBase):
 
 
 class ScopeCapability(SchemaBase):
-    """catalog 单条能力（= 一个 scope）"""
+    """catalog 单条能力（= 一个 scope）。
+
+    双语：`label`/`description`/`domain_label` 为中文，`*_en` 为英文（英文缺失时
+    诚实回退中文，绝不露 scope key）。前端据 webui 语言设置取，见 scopes.py 单一事实源。
+    """
 
     key: str = Field(description='能力 key（scope）')
     label: str = Field(description='中文显示名')
+    label_en: str = Field(default='', description='英文显示名（缺失回退中文）')
     domain: str = Field(default='', description='所属域')
+    domain_label: str = Field(default='', description='所属域中文分组名')
+    domain_label_en: str = Field(default='', description='所属域英文分组名（缺失回退中文）')
     risk: str = Field(default='low', description='风险等级 low|medium|high（仅 UI 提示）')
-    description: str = Field(default='', description='用途描述')
-    default_mode: str = Field(default='allow', description='出厂默认三态 allow|ask|deny（唯一真相：未覆盖时的静息态，花钱类如 film:write 为 ask）')
+    description: str = Field(default='', description='中文用途描述')
+    description_en: str = Field(default='', description='英文用途描述（缺失回退中文）')
+    default_mode: str = Field(default='allow', description='出厂默认三态（未覆盖时的静息态，花钱类默认 ask）')
     mode: str = Field(description='当前生效三态 allow|ask|deny（= override 优先，否则 default_mode）')
     tools: list[str] = Field(default_factory=list, description='覆盖的工具 canonical 名')
 
@@ -47,6 +55,7 @@ class ScopeSource(SchemaBase):
 
     source: str = Field(description='来源 platform|app|external')
     label: str = Field(description='来源中文名')
+    label_en: str = Field(default='', description='来源英文名（缺失回退中文）')
     capabilities: list[ScopeCapability] = Field(default_factory=list)
 
 
