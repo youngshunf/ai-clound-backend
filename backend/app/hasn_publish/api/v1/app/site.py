@@ -194,3 +194,22 @@ async def issue_view_ticket(request: Request, db: CurrentSession, site_id: int) 
     await publish_service.get_owned(db, owner_id=owner_id, site_id=site_id)
     data = publish_service.issue_view_ticket(site_id=site_id, owner_id=owner_id)
     return response_base.success(data=data)
+
+
+@router.post(
+    '/sites/by-slug/{slug}/view-ticket',
+    summary='按 slug 签发 private 访问票（website /s/{slug} 查看器登录后换票）',
+    dependencies=[DependsJwtAuth],
+)
+async def issue_view_ticket_by_slug(request: Request, db: CurrentSession, slug: str) -> ResponseModel:
+    """website 查看器：owner 本人登录后按 slug 换 private 访问票（浏览器无 site_id，只有 slug）。
+
+    owner 隔离——仅发布者本人可换自己 site 的票；非 owner / 已撤销一律按「不存在」拒绝，
+    不泄露他人 slug 的归属（防 owner 枚举）。private=仅发布者本人（要给别人看请改可见性）。
+    """
+    owner_id = await _resolve_owner(db, request)
+    site = await publish_service.get_site_by_slug(db, slug=slug)
+    if site is None or site.owner_id != owner_id or site.status == 'revoked':
+        raise errors.NotFoundError(msg='发布不存在')
+    data = publish_service.issue_view_ticket(site_id=site.id, owner_id=owner_id)
+    return response_base.success(data=data)

@@ -12,6 +12,7 @@ from fastapi import APIRouter
 from backend.app.hasn_publish.api.v1.agent.site import router as site_agent_router
 from backend.app.hasn_publish.api.v1.app.site import router as site_app_router
 from backend.app.hasn_publish.api.v1.open.hosting import router as hosting_router
+from backend.app.hasn_publish.api.v1.open.meta import router as meta_open_router
 from backend.core.conf import settings
 
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/app', tags=['网页发布-用户端'])
@@ -23,3 +24,7 @@ agent.include_router(site_agent_router)
 # 公开查看面 /s/{slug}（根路径，独立分享域名；无 /api/v1 前缀）
 hosting = APIRouter(tags=['网页发布-公开查看'])
 hosting.include_router(hosting_router)
+
+# 公开元数据面 /api/v1/publish/open/*（带前缀走 CORS，供 website /s/{slug} SPA 查看器 fetch 判定态）
+open_meta = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/publish/open', tags=['网页发布-公开元数据'])
+open_meta.include_router(meta_open_router)

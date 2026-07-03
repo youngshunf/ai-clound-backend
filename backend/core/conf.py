@@ -320,12 +320,14 @@ class Settings(BaseSettings):
 
     # CORS (allow_credentials=True 时不能用 '*'，必须列出具体域名)
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
+        'http://127.0.0.1:5173',
         'http://127.0.0.1:6310',
         'http://localhost:5173',
         'http://localhost:6310',
         'http://localhost:8020',
         'http://192.168.1.92:8020',
         'http://api.ai.dcfuture.cn',
+        'https://huanxing.dcfuture.cn',  # 官网/分享查看器前端域名（website /s/{slug} fetch publish/open meta+换票）
     ]
     CORS_EXPOSE_HEADERS: list[str] = [
         'X-Request-ID',
