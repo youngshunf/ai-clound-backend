@@ -12,8 +12,6 @@ from backend.app.hasn_designsystem.schema.consumer_link import (
     UpdateConsumerLinkParam,
 )
 from backend.app.hasn_designsystem.service.consumer_link_service import consumer_link_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_consumer_link(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await consumer_link_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_consumer_link(
     db: CurrentSessionTransaction,
     obj: CreateConsumerLinkParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await consumer_link_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_consumer_link(
     db: CurrentSession,
     pk: Annotated[int, Path(description='设计系统下游消费登记（换系统重渲染追踪） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     consumer_link = await consumer_link_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if consumer_link.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_consumer_link(
     pk: Annotated[int, Path(description='设计系统下游消费登记（换系统重渲染追踪） ID')],
     obj: UpdateConsumerLinkParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    consumer_link = await consumer_link_service.get(db=db, pk=pk)
+    await consumer_link_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if consumer_link.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该设计系统下游消费登记（换系统重渲染追踪）')
@@ -106,8 +100,7 @@ async def agent_delete_consumer_link(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='设计系统下游消费登记（换系统重渲染追踪） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    consumer_link = await consumer_link_service.get(db=db, pk=pk)
+    await consumer_link_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if consumer_link.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该设计系统下游消费登记（换系统重渲染追踪）')

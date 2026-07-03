@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

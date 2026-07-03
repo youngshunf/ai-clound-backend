@@ -67,7 +67,7 @@ async def _platform_main_model(db: AsyncSession) -> str:
         models = await platform_default_config_service.get_platform_runtime_models(db)
         if models and models.main:
             return models.main
-    except Exception as exc:  # noqa: BLE001 - PDC 读取失败不阻断 provision
+    except Exception as exc:
         log.warning(f'PDC 主模型读取失败，回落静态默认: {exc}')
     return _platform_llm_model()
 

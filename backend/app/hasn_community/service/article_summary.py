@@ -13,11 +13,11 @@ import re
 
 # 轻量去 Markdown：保留可读文本，去结构符号。顺序敏感（先块后内联）。
 _MD_SUBS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r'```.*?```', re.S), ' '),  # 围栏代码块
+    (re.compile(r'```.*?```', re.DOTALL), ' '),  # 围栏代码块
     (re.compile(r'`([^`]*)`'), r'\1'),  # 行内代码
     (re.compile(r'!\[[^\]]*\]\([^)]*\)'), ' '),  # 图片
     (re.compile(r'\[([^\]]*)\]\([^)]*\)'), r'\1'),  # 链接保留锚文本
-    (re.compile(r'^[ \t]*[#>\-\*\+]+[ \t]*', re.M), ''),  # 行首标题/引用/列表标记
+    (re.compile(r'^[ \t]*[#>\-\*\+]+[ \t]*', re.MULTILINE), ''),  # 行首标题/引用/列表标记
     (re.compile(r'[*_~`#>]'), ''),  # 残留强调/标记
 ]
 

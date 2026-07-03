@@ -31,7 +31,6 @@ async def get_my_hasn_humanss(
     request: Request,
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetHasnHumansDetail]]:
-    user_id = request.user.id
     page_data = await hasn_humans_service.get_list(db=db)
     return response_base.success(data=page_data)
 
@@ -46,7 +45,6 @@ async def create_my_hasn_humans(
     db: CurrentSessionTransaction,
     obj: CreateHasnHumansParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_humans_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 

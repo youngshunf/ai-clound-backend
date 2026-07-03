@@ -29,7 +29,7 @@ def _crawl_unit() -> Decimal:
     try:
         return Decimal(os.environ.get(_CRAWL_UNIT_ENV, '0'))
     except (InvalidOperation, TypeError):
-        return Decimal('0')
+        return Decimal(0)
 
 
 class GrowthMeteringService:
@@ -60,7 +60,7 @@ class GrowthMeteringService:
             # 纯按量无订阅门槛：积分不足只告警，不回滚已完成的采集。
             log.warning(f'[GrowthMetering] 积分不足，采集已完成不阻断: user_id={user_id}, job_id={job_id}, credits={credits}')
             return {'reported': False, 'credits': float(credits), 'count': success_count, 'error': 'insufficient_credits'}
-        except Exception as exc:  # noqa: BLE001 计量失败绝不阻断业务
+        except Exception as exc:
             log.warning(f'[GrowthMetering] 计量上报失败，忽略: user_id={user_id}, job_id={job_id}, error={exc!r}')
             return {'reported': False, 'credits': float(credits), 'count': success_count, 'error': 'report_failed'}
         return {'reported': True, 'credits': float(credits), 'count': success_count}

@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_group_members import hasn_group_members_dao
 from backend.app.hasn.model import HasnGroupMembers
-from backend.app.hasn.schema.hasn_group_members import CreateHasnGroupMembersParam, DeleteHasnGroupMembersParam, UpdateHasnGroupMembersParam
+from backend.app.hasn.schema.hasn_group_members import (
+    CreateHasnGroupMembersParam,
+    DeleteHasnGroupMembersParam,
+    UpdateHasnGroupMembersParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

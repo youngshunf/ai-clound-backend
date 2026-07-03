@@ -1,4 +1,3 @@
-from datetime import datetime
 
 import sqlalchemy as sa
 
@@ -25,7 +24,7 @@ class Revision(DesignSystemBase):
     )
     author_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='作者 HASN ID（人或分身）')
     bundle_asset_id: Mapped[str | None] = mapped_column(
-        sa.String(128), default=None, comment='完整 bundle zip 资产引用（hasn://asset/{id}，可空）'
+        sa.String(128), default=None, comment=f'完整 bundle zip 资产引用（hasn://asset/{id}，可空）'
     )
     tokens_css: Mapped[str | None] = mapped_column(sa.TEXT(), default=None, comment='真源 tokens.css（四层 token 契约）')
     design_tokens_json: Mapped[dict | None] = mapped_column(

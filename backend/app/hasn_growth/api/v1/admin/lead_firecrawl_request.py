@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path
 
 from backend.app.hasn_growth.schema.lead_firecrawl_request import (
     CreateLeadFirecrawlRequestParam,

@@ -7,6 +7,7 @@ owner 身份由 JWT -> hasn_humans.hasn_id 解析；签发明文仅返回一次�
 from typing import Annotated
 
 import sqlalchemy as sa
+
 from fastapi import APIRouter, Path, Request
 
 from backend.app.hasn.model import HasnHumans

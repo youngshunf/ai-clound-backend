@@ -81,5 +81,5 @@ async def extract_and_store_summary(article_id: str) -> None:
                 fresh.summary = summary
                 await session.commit()
                 logger.info('article summary: 已为 %s 写入 LLM 摘要（%d 字）', article_id, len(summary))
-    except Exception as exc:  # noqa: BLE001 — best-effort，任何失败都不应影响发布
+    except Exception as exc:
         logger.warning('article summary: LLM 提取失败 article_id=%s err=%r（保留正文兜底）', article_id, exc)

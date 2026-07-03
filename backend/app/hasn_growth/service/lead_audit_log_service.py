@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_lead_audit_log import lead_audit_log_dao
 from backend.app.hasn_growth.model import LeadAuditLog
-from backend.app.hasn_growth.schema.lead_audit_log import CreateLeadAuditLogParam, DeleteLeadAuditLogParam, UpdateLeadAuditLogParam
+from backend.app.hasn_growth.schema.lead_audit_log import (
+    CreateLeadAuditLogParam,
+    DeleteLeadAuditLogParam,
+    UpdateLeadAuditLogParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

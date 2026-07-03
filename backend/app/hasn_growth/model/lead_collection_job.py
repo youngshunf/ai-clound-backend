@@ -1,12 +1,12 @@
 from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key, UniversalText, TimeZone
 from backend.app.hasn_growth.model._base import HasnGrowthAppBase
-from backend.utils.timezone import timezone
+from backend.common.model import TimeZone, UniversalText, id_key
 
 
 class LeadCollectionJob(HasnGrowthAppBase):
@@ -34,4 +34,4 @@ class LeadCollectionJob(HasnGrowthAppBase):
     started_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
     finished_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
     error_message: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
-    meta_data: Mapped[dict] = mapped_column('metadata',postgresql.JSONB(), default_factory=dict, comment=None)
+    meta_data: Mapped[dict] = mapped_column('metadata', postgresql.JSONB(), default_factory=dict, comment=None)

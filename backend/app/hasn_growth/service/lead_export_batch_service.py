@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_lead_export_batch import lead_export_batch_dao
 from backend.app.hasn_growth.model import LeadExportBatch
-from backend.app.hasn_growth.schema.lead_export_batch import CreateLeadExportBatchParam, DeleteLeadExportBatchParam, UpdateLeadExportBatchParam
+from backend.app.hasn_growth.schema.lead_export_batch import (
+    CreateLeadExportBatchParam,
+    DeleteLeadExportBatchParam,
+    UpdateLeadExportBatchParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

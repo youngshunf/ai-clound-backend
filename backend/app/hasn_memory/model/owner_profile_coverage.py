@@ -37,7 +37,7 @@ class OwnerProfileCoverage(HasnMemoryBase):
         comment='覆盖状态 (missing:缺失:gray/partial:部分:orange/sufficient:充分:green)',
     )
     confidence: Mapped[Decimal] = mapped_column(
-        sa.Numeric(4, 3), default=Decimal('0'), comment='LLM 打分置信度 0–1'
+        sa.Numeric(4, 3), default=Decimal(0), comment='LLM 打分置信度 0–1'
     )
     summary: Mapped[str | None] = mapped_column(
         UniversalText, default=None, comment='该维度已知信息的一句话摘要（面向主人；驱动入口卡"已了解"）'

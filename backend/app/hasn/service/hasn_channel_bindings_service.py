@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_channel_bindings import hasn_channel_bindings_dao
 from backend.app.hasn.model import HasnChannelBindings
-from backend.app.hasn.schema.hasn_channel_bindings import CreateHasnChannelBindingsParam, DeleteHasnChannelBindingsParam, UpdateHasnChannelBindingsParam
+from backend.app.hasn.schema.hasn_channel_bindings import (
+    CreateHasnChannelBindingsParam,
+    DeleteHasnChannelBindingsParam,
+    UpdateHasnChannelBindingsParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 
@@ -13,7 +18,7 @@ class HasnChannelBindingsService:
     @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> HasnChannelBindings:
         """
-        获取HASN Channel Binding 
+        获取HASN Channel Binding
 
         :param db: 数据库会话
         :param pk: HASN Channel Binding  ID
@@ -38,7 +43,7 @@ class HasnChannelBindingsService:
     @staticmethod
     async def get_all(*, db: AsyncSession) -> Sequence[HasnChannelBindings]:
         """
-        获取所有HASN Channel Binding 
+        获取所有HASN Channel Binding
 
         :param db: 数据库会话
         :return:
@@ -49,7 +54,7 @@ class HasnChannelBindingsService:
     @staticmethod
     async def create(*, db: AsyncSession, obj: CreateHasnChannelBindingsParam) -> None:
         """
-        创建HASN Channel Binding 
+        创建HASN Channel Binding
 
         :param db: 数据库会话
         :param obj: 创建HASN Channel Binding 参数
@@ -60,7 +65,7 @@ class HasnChannelBindingsService:
     @staticmethod
     async def update(*, db: AsyncSession, pk: int, obj: UpdateHasnChannelBindingsParam) -> int:
         """
-        更新HASN Channel Binding 
+        更新HASN Channel Binding
 
         :param db: 数据库会话
         :param pk: HASN Channel Binding  ID
@@ -73,7 +78,7 @@ class HasnChannelBindingsService:
     @staticmethod
     async def delete(*, db: AsyncSession, obj: DeleteHasnChannelBindingsParam) -> int:
         """
-        删除HASN Channel Binding 
+        删除HASN Channel Binding
 
         :param db: 数据库会话
         :param obj: HASN Channel Binding  ID 列表

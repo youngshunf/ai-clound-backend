@@ -8,7 +8,7 @@ RAGFlow 凭据为平台 service key、只活云端，不再 per-user 下发任�
 """
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 from backend.common.response.response_schema import ResponseModel, response_base

@@ -8,7 +8,6 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 from backend.common.exception import errors
 from backend.common.schema import SchemaBase
 
-
 ALLOWED_CARD_URI_SCHEMES = {'hasn', 'http', 'https'}
 SENSITIVE_KEYS = {'jwt', 'token', 'secret', 'authorization'}
 
@@ -121,7 +120,7 @@ class CardAction(SchemaBase):
         return value
 
     @model_validator(mode='after')
-    def validate_action_contract(self) -> 'CardAction':
+    def validate_action_contract(self) -> CardAction:
         if self.kind == 'open_uri' and not self.uri:
             raise ValueError('kind=open_uri requires uri')
         if self.kind == 'emit_event' and self.event is None:
@@ -202,7 +201,7 @@ class CardMessageBody(SchemaBase):
         return value
 
     @model_validator(mode='after')
-    def validate_card_contract(self) -> 'CardMessageBody':
+    def validate_card_contract(self) -> CardMessageBody:
         action_ids: list[str] = []
         if self.primary_action is not None:
             action_ids.append(self.primary_action.action_id)

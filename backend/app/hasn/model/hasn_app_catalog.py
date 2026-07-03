@@ -1,4 +1,3 @@
-from datetime import datetime
 from decimal import Decimal
 
 import sqlalchemy as sa
@@ -18,7 +17,7 @@ class HasnAppCatalog(Base):
     app_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='应用唯一标识（与 manifest.app_id / App.id 一致）')
     name: Mapped[str] = mapped_column(sa.String(64), default='', comment='显示名称')
     icon: Mapped[str] = mapped_column(sa.String(64), default='', comment='图标 token（前端 ICON_REGISTRY 映射）')
-    icon_asset_uri: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment='自定义图标资产 URI（优先于 token），hasn://asset/{id} 或 https')
+    icon_asset_uri: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment=f'自定义图标资产 URI（优先于 token），hasn://asset/{id} 或 https')
     description: Mapped[str] = mapped_column(sa.String(255), default='', comment='应用描述')
     source: Mapped[str] = mapped_column(sa.String(16), default='', comment='来源 (builtin:内置:blue/first_party:官方:green/third_party:第三方:gray)')
     status: Mapped[str] = mapped_column(sa.String(16), default='', comment='上架状态 (published:已上架:green/disabled:已下架:gray/draft:草稿:orange)')

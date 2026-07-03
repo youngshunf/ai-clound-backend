@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 import sqlalchemy as sa
 
@@ -149,7 +149,7 @@ async def runtime_tool_call(
 
 @audit_router.get('', summary='AI-Native 审计', dependencies=[DependsJwtAuth])
 async def list_ai_native_audit(
-    request: Request, db: CurrentSession, query: AiNativeAuditQuery = Depends()
+    request: Request, db: CurrentSession, query: Annotated[AiNativeAuditQuery, Depends()]
 ) -> ResponseModel:
     """Owner 视角的 AI-Native 工具调用审计列表。
 

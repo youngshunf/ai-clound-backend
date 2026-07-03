@@ -32,7 +32,7 @@ from backend.common.response.response_schema import (
 )
 from backend.common.schema import SchemaBase
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSessionTransaction  # noqa: TC001 — FastAPI runtime Depends annotation
+from backend.database.db import CurrentSessionTransaction
 
 router = APIRouter()
 

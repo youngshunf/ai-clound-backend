@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Query, Request
 
 from backend.app.hasn_growth.schema.funnel import (
@@ -46,9 +48,9 @@ router = APIRouter()
 async def list_leads(
     request: Request,
     db: CurrentSession,
-    q: str | None = Query(default=None),
-    min_score: float | None = Query(default=None, ge=0, le=100),
-    limit: int = Query(default=20, ge=1, le=100),
+    q: Annotated[str | None, Query()] = None,
+    min_score: Annotated[float | None, Query(ge=0, le=100)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ResponseModel:
     data = await growth_funnel_service.search_leads(
         db, user_id=request.user.id, query=q, min_score=min_score, limit=limit, reveal_pii=True
@@ -137,10 +139,10 @@ async def dismiss_lead(
 async def list_customers(
     request: Request,
     db: CurrentSession,
-    lifecycle_status: str | None = Query(default=None),
-    view: str = Query(default='team', description='企业视图意图 team/mine（个人模式无效；销售恒只见自己）'),
-    assignee: str | None = Query(default=None, description='企业经理按负责人 hasn_id 过滤（个人/销售传入无害）'),
-    limit: int = Query(default=20, ge=1, le=100),
+    lifecycle_status: Annotated[str | None, Query()] = None,
+    view: Annotated[str, Query(description='企业视图意图 team/mine（个人模式无效；销售恒只见自己）')] = 'team',
+    assignee: Annotated[str | None, Query(description='企业经理按负责人 hasn_id 过滤（个人/销售传入无害）')] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ResponseModel:
     scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
     data = await growth_funnel_service.list_customers(
@@ -211,8 +213,8 @@ async def reassign_customer(
 async def list_pending(
     request: Request,
     db: CurrentSession,
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ResponseModel:
     # 审批恒按 assignee=自己（_approval_scope 强制 view=mine）：经理也只批自己名下，不代审。
     scope = await resolve_growth_scope(db, user_id=request.user.id)
@@ -319,11 +321,11 @@ async def create_opportunity(
 async def list_opportunities(
     request: Request,
     db: CurrentSession,
-    customer_id: int | None = Query(default=None),
-    open_only: bool = Query(default=False),
-    view: str = Query(default='team', description='企业视图意图 team/mine'),
-    assignee: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    customer_id: Annotated[int | None, Query()] = None,
+    open_only: Annotated[bool, Query()] = False,
+    view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
+    assignee: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ResponseModel:
     scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
     data = await growth_opportunity_service.list_opportunities(
@@ -405,7 +407,7 @@ async def list_playbooks(request: Request, db: CurrentSession) -> ResponseModel:
 
 @router.get('/report/funnel', summary='[Owner] 漏斗总览', dependencies=[DependsJwtAuth])
 async def report_funnel(
-    request: Request, db: CurrentSession, view: str = Query(default='team')
+    request: Request, db: CurrentSession, view: Annotated[str, Query()] = 'team'
 ) -> ResponseModel:
     scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
     data = await growth_report_service.funnel_overview(db, user_id=request.user.id, scope=scope)
@@ -414,7 +416,7 @@ async def report_funnel(
 
 @router.get('/report/stages', summary='[Owner] 商机阶段分布', dependencies=[DependsJwtAuth])
 async def report_stages(
-    request: Request, db: CurrentSession, view: str = Query(default='team')
+    request: Request, db: CurrentSession, view: Annotated[str, Query()] = 'team'
 ) -> ResponseModel:
     scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
     data = await growth_report_service.stage_distribution(db, user_id=request.user.id, scope=scope)
@@ -423,7 +425,7 @@ async def report_stages(
 
 @router.get('/report/lifecycle', summary='[Owner] 客户生命周期分布', dependencies=[DependsJwtAuth])
 async def report_lifecycle(
-    request: Request, db: CurrentSession, view: str = Query(default='team')
+    request: Request, db: CurrentSession, view: Annotated[str, Query()] = 'team'
 ) -> ResponseModel:
     scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
     data = await growth_report_service.lifecycle_distribution(db, user_id=request.user.id, scope=scope)

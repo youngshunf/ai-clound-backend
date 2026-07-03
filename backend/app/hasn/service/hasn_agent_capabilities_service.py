@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_agent_capabilities import hasn_agent_capabilities_dao
 from backend.app.hasn.model import HasnAgentCapabilities
-from backend.app.hasn.schema.hasn_agent_capabilities import CreateHasnAgentCapabilitiesParam, DeleteHasnAgentCapabilitiesParam, UpdateHasnAgentCapabilitiesParam
+from backend.app.hasn.schema.hasn_agent_capabilities import (
+    CreateHasnAgentCapabilitiesParam,
+    DeleteHasnAgentCapabilitiesParam,
+    UpdateHasnAgentCapabilitiesParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

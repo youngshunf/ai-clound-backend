@@ -1,11 +1,12 @@
 from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key, TimeZone
 from backend.app.hasn_growth.model._base import HasnGrowthAppBase
+from backend.common.model import TimeZone, id_key
 from backend.utils.timezone import timezone
 
 
@@ -22,4 +23,4 @@ class LeadContactSource(HasnGrowthAppBase):
     source_url: Mapped[str | None] = mapped_column(sa.String(2048), default=None, comment=None)
     match_dimension: Mapped[str] = mapped_column(sa.String(16), default='', comment=None)
     seen_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment=None)
-    meta_data: Mapped[dict] = mapped_column('metadata',postgresql.JSONB(), default_factory=dict, comment=None)
+    meta_data: Mapped[dict] = mapped_column('metadata', postgresql.JSONB(), default_factory=dict, comment=None)

@@ -26,7 +26,7 @@ from backend.common.security.jwt import DependsJwtAuth
 # CurrentSession/CurrentSessionTransaction 是 FastAPI 依赖注入的运行期注解（Annotated[..., Depends(...)]），
 # 必须运行期导入——即便有 from __future__ import annotations，FastAPI 仍用 get_type_hints 在运行期求值，
 # 放进 TYPE_CHECKING 会 NameError。ruff TC001 自动建议在此**不适用**。
-from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

@@ -1248,8 +1248,8 @@ class CommunityService:
         from datetime import datetime as _dt
         from datetime import timezone as _dt_timezone
 
-        _floor = _dt(1970, 1, 1, tzinfo=_dt_timezone.utc)
-        merged.sort(key=lambda pair: pair[0] or _floor, reverse=True)
+        floor = _dt(1970, 1, 1, tzinfo=_dt_timezone.utc)
+        merged.sort(key=lambda pair: pair[0] or floor, reverse=True)
         items = [item for _, item in merged[:limit]]
 
         await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])

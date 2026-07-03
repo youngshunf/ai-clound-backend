@@ -11,14 +11,14 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
 from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.service.hasn_auth import hasn_auth
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.database.db import CurrentSession  # noqa: TC001
+from backend.database.db import CurrentSession
 
 router = APIRouter(prefix='/users', tags=['HASN Users'])
 

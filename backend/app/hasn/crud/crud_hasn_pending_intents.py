@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from backend.app.hasn.schema.hasn_pending_intents import CreateHasnPendingIntent
 class CRUDHasnPendingIntents(CRUDPlus[HasnPendingIntents]):
     async def get(self, db: AsyncSession, pk: int) -> HasnPendingIntents | None:
         """
-        获取HASN 第三方渠道反向 onboarding pending intent 
+        获取HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param pk: HASN 第三方渠道反向 onboarding pending intent  ID
@@ -25,7 +25,7 @@ class CRUDHasnPendingIntents(CRUDPlus[HasnPendingIntents]):
 
     async def get_all(self, db: AsyncSession) -> Sequence[HasnPendingIntents]:
         """
-        获取所有HASN 第三方渠道反向 onboarding pending intent 
+        获取所有HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :return:
@@ -34,7 +34,7 @@ class CRUDHasnPendingIntents(CRUDPlus[HasnPendingIntents]):
 
     async def create(self, db: AsyncSession, obj: CreateHasnPendingIntentsParam) -> None:
         """
-        创建HASN 第三方渠道反向 onboarding pending intent 
+        创建HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param obj: 创建HASN 第三方渠道反向 onboarding pending intent 参数
@@ -44,7 +44,7 @@ class CRUDHasnPendingIntents(CRUDPlus[HasnPendingIntents]):
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateHasnPendingIntentsParam) -> int:
         """
-        更新HASN 第三方渠道反向 onboarding pending intent 
+        更新HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param pk: HASN 第三方渠道反向 onboarding pending intent  ID
@@ -55,7 +55,7 @@ class CRUDHasnPendingIntents(CRUDPlus[HasnPendingIntents]):
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         """
-        批量删除HASN 第三方渠道反向 onboarding pending intent 
+        批量删除HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param pks: HASN 第三方渠道反向 onboarding pending intent  ID 列表

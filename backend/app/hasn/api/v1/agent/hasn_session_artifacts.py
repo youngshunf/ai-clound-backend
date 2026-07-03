@@ -12,8 +12,6 @@ from backend.app.hasn.schema.hasn_session_artifacts import (
     UpdateHasnSessionArtifactsParam,
 )
 from backend.app.hasn.service.hasn_session_artifacts_service import hasn_session_artifacts_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_hasn_session_artifacts(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await hasn_session_artifacts_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_hasn_session_artifacts(
     db: CurrentSessionTransaction,
     obj: CreateHasnSessionArtifactsParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await hasn_session_artifacts_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_hasn_session_artifacts(
     db: CurrentSession,
     pk: Annotated[int, Path(description='HASN 会话产物 ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     hasn_session_artifacts = await hasn_session_artifacts_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if hasn_session_artifacts.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_hasn_session_artifacts(
     pk: Annotated[int, Path(description='HASN 会话产物 ID')],
     obj: UpdateHasnSessionArtifactsParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    hasn_session_artifacts = await hasn_session_artifacts_service.get(db=db, pk=pk)
+    await hasn_session_artifacts_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if hasn_session_artifacts.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该HASN 会话产物')
@@ -106,8 +100,7 @@ async def agent_delete_hasn_session_artifacts(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='HASN 会话产物 ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    hasn_session_artifacts = await hasn_session_artifacts_service.get(db=db, pk=pk)
+    await hasn_session_artifacts_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if hasn_session_artifacts.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该HASN 会话产物')

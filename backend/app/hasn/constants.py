@@ -7,7 +7,6 @@
 """
 from backend.common.log import log
 
-
 # ── 四态编码 ─────────────────────────────────────
 ALLOW = 'allow'
 DENY = 'deny'
@@ -44,7 +43,7 @@ SOCIAL_ACTIONS = [
 # ── 商业类行为 (7 种) ────────────────────────────
 COMMERCE_ACTIONS = [
     'product_inquiry',     # 商品咨询/询价
-    'trade_communication', # 交易沟通 (下单/物流/售后)
+    'trade_communication',  # 交易沟通 (下单/物流/售后)
     'view_shopping_pref',  # 查看购物偏好 (体型/风格)
     'send_push',           # 主动推送商品消息
     'free_chat',           # 自由闲聊
@@ -54,7 +53,7 @@ COMMERCE_ACTIONS = [
 
 # ── 服务类行为 (4 种) ────────────────────────────
 SERVICE_ACTIONS = [
-    'order_communication', # 订单内沟通
+    'order_communication',  # 订单内沟通
     'decrypt_address',     # 一次性解密配送地址
     'non_order_comm',      # 订单外沟通
     'view_personal_info',  # 查看个人信息
@@ -65,7 +64,7 @@ PROFESSIONAL_ACTIONS = [
     'professional_consult',      # 专业领域咨询
     'view_authorized_data',      # 查看授权的领域数据
     'view_unauthorized_data',    # 查看非授权领域数据
-    'make_professional_decision',# 代做专业决定
+    'make_professional_decision',  # 代做专业决定
     'free_chat',                 # 自由闲聊
 ]
 
@@ -87,7 +86,7 @@ RELATION_ACTIONS: dict[str, list[str]] = {
 
 DEFAULT_PERMISSION_MATRIX: dict[str, dict[int, dict[str, str] | None]] = {
     'social': {
-        0: {a: DENY for a in SOCIAL_ACTIONS},   # blocked: 全拒
+        0: dict.fromkeys(SOCIAL_ACTIONS, DENY),   # blocked: 全拒
         1: {
             'send_message': DENY, 'view_public_info': ALLOW,
             'view_schedule': DENY, 'view_preferences': DENY,
@@ -112,10 +111,10 @@ DEFAULT_PERMISSION_MATRIX: dict[str, dict[int, dict[str, str] | None]] = {
             'view_location': ALLOW, 'make_appointment': ALLOW,
             'make_commitment': CONFIRM, 'view_sensitive': DENY,
         },
-        5: {a: ALLOW for a in SOCIAL_ACTIONS},  # owner: 全允许
+        5: dict.fromkeys(SOCIAL_ACTIONS, ALLOW),  # owner: 全允许
     },
     'commerce': {
-        0: {a: DENY for a in COMMERCE_ACTIONS},
+        0: dict.fromkeys(COMMERCE_ACTIONS, DENY),
         1: {
             'product_inquiry': SCOPE_LTD, 'trade_communication': DENY,
             'view_shopping_pref': DENY, 'send_push': DENY,
@@ -135,8 +134,8 @@ DEFAULT_PERMISSION_MATRIX: dict[str, dict[int, dict[str, str] | None]] = {
         5: None,   # commerce 无 Owner 等级 (fallback → level=4)
     },
     'service': {
-        0: {a: DENY for a in SERVICE_ACTIONS},
-        1: {a: DENY for a in SERVICE_ACTIONS},   # 无陌生人状态
+        0: dict.fromkeys(SERVICE_ACTIONS, DENY),
+        1: dict.fromkeys(SERVICE_ACTIONS, DENY),   # 无陌生人状态
         2: {
             'order_communication': ALLOW, 'decrypt_address': ALLOW,
             'non_order_comm': DENY, 'view_personal_info': DENY,
@@ -146,7 +145,7 @@ DEFAULT_PERMISSION_MATRIX: dict[str, dict[int, dict[str, str] | None]] = {
         5: None,   # 无 Owner (fallback → level=2)
     },
     'professional': {
-        0: {a: DENY for a in PROFESSIONAL_ACTIONS},
+        0: dict.fromkeys(PROFESSIONAL_ACTIONS, DENY),
         1: {
             'professional_consult': SCOPE_LTD, 'view_authorized_data': DENY,
             'view_unauthorized_data': DENY, 'make_professional_decision': DENY,
@@ -310,7 +309,7 @@ def runtime_effective_trust_level(relation_type: str, trust_level: int) -> int:
 
 class IronLawViolation(Exception):
     """铁律冲突异常"""
-    def __init__(self, law: str, msg: str):
+    def __init__(self, law: str, msg: str) -> None:
         self.law = law
         super().__init__(f'[{law}] {msg}')
 

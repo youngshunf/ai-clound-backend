@@ -1,9 +1,8 @@
-from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, UniversalText
+from backend.common.model import Base, UniversalText, id_key
 
 
 class HasnAssets(Base):

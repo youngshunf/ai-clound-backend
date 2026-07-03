@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn_growth.model import LeadContactSource
-from backend.app.hasn_growth.schema.lead_contact_source import CreateLeadContactSourceParam, UpdateLeadContactSourceParam
+from backend.app.hasn_growth.schema.lead_contact_source import (
+    CreateLeadContactSourceParam,
+    UpdateLeadContactSourceParam,
+)
 
 
 class CRUDLeadContactSource(CRUDPlus[LeadContactSource]):

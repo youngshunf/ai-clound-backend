@@ -45,7 +45,6 @@ async def create_my_hasn_contacts(
     db: CurrentSessionTransaction,
     obj: CreateHasnContactsParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_contacts_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -63,8 +62,9 @@ async def get_my_hasn_contacts(
     hasn_contacts = await hasn_contacts_service.get(db=db, pk=pk)
 
     # 权限检查：通过 owner_id 查询对应的 user_id
-    from backend.app.hasn.model.hasn_humans import HasnHumans
     from sqlalchemy import select
+
+    from backend.app.hasn.model.hasn_humans import HasnHumans
 
     owner_id = hasn_contacts.get("owner_id")
     result = await db.execute(select(HasnHumans.user_id).where(HasnHumans.hasn_id == owner_id))

@@ -58,9 +58,7 @@ class GetMergedProfile(SchemaBase):
         if '****' in self.nickname or '***' in self.nickname:
             return False
         # 3. 纯数字（可能是手机号）
-        if self.nickname.isdigit() and len(self.nickname) >= 10:
-            return False
-        return True
+        return not (self.nickname.isdigit() and len(self.nickname) >= 10)
 
 
 class UpdateMergedProfileParam(SchemaBase):

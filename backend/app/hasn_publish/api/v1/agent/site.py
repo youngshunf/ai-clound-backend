@@ -8,6 +8,7 @@ scope 闸：publish:read / publish:write。
 """
 
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
@@ -102,9 +103,9 @@ async def agent_create_site(
 async def agent_list_sites(
     request: Request,
     db: CurrentSession,
-    kind: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    size: int = Query(default=50, ge=1, le=200),
+    kind: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ResponseModel:
     agent = await _agent(request, db, _SCOPE_READ)
     data = await publish_service.list_owned(

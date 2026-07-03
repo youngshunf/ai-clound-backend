@@ -1,12 +1,15 @@
-from typing import Any, Sequence
-import uuid
+from collections.abc import Sequence
+from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.model import HasnConversations
-from backend.app.hasn.schema.hasn_conversations import CreateHasnConversationsParam, DeleteHasnConversationsParam, UpdateHasnConversationsParam
+from backend.app.hasn.schema.hasn_conversations import (
+    CreateHasnConversationsParam,
+    DeleteHasnConversationsParam,
+    UpdateHasnConversationsParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 
@@ -113,10 +116,9 @@ class HasnConversationsService:
         def get_participant_type(hasn_id: str) -> str:
             if hasn_id.startswith('h_'):
                 return 'human'
-            elif hasn_id.startswith('a_'):
+            if hasn_id.startswith('a_'):
                 return 'agent'
-            else:
-                raise errors.BadRequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
+            raise errors.BadRequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
 
         # 校验两侧 HASN ID 格式（排序与去重在 get_or_create 内部完成）
         caller_type = get_participant_type(caller_hasn_id)

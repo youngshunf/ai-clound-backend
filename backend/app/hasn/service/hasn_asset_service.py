@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model import HasnAssets, HasnAssetGrants, HasnConversations, HasnGroupMembers
+from backend.app.hasn.model import HasnAssetGrants, HasnAssets, HasnConversations, HasnGroupMembers
 from backend.plugin.s3.service.storage_service import ObjectRef, StorageService
 from backend.utils.timezone import timezone
 

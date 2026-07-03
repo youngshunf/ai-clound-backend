@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -6,7 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn.model import HasnAgentChannelMirrors
-from backend.app.hasn.schema.hasn_agent_channel_mirrors import CreateHasnAgentChannelMirrorsParam, UpdateHasnAgentChannelMirrorsParam
+from backend.app.hasn.schema.hasn_agent_channel_mirrors import (
+    CreateHasnAgentChannelMirrorsParam,
+    UpdateHasnAgentChannelMirrorsParam,
+)
 from backend.utils.timezone import timezone
 
 

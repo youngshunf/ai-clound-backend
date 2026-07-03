@@ -4,6 +4,8 @@
 两张表的可编辑字段；hasn-node daemon 的 `/api/v1/owner/me/profile`
 代理直接转发到这里。
 """
+from typing import Annotated
+
 from fastapi import APIRouter, Query, Request
 from sqlalchemy import select
 
@@ -49,7 +51,7 @@ async def update_my_merged_profile(
 async def check_nickname_availability(
     request: Request,
     db: CurrentSession,
-    nickname: str = Query(..., min_length=1, max_length=40, description='要检查的昵称'),
+    nickname: Annotated[str, Query(min_length=1, max_length=40, description='要检查的昵称')],
 ) -> ResponseSchemaModel[dict]:
     """
     检查昵称是否可用（唯一性校验）
@@ -128,8 +130,8 @@ async def get_preset_avatars(db: CurrentSession) -> ResponseSchemaModel[list[dic
 @router.get('/assets/signed-url', summary='获取私有 OSS 资源临时签名 URL', dependencies=[DependsJwtAuth])
 async def sign_asset_url(
     db: CurrentSession,
-    url: str = Query(..., min_length=1, description='稳定存储 URL'),
-    expires_in: int = Query(3600, ge=60, le=3600, description='签名有效期（秒）'),
+    url: Annotated[str, Query(min_length=1, description='稳定存储 URL')],
+    expires_in: Annotated[int, Query(ge=60, le=3600, description='签名有效期（秒）')] = 3600,
 ) -> ResponseSchemaModel[dict]:
     """
     为已配置对象存储中的稳定 URL 生成临时读签名。

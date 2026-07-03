@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from backend.app.hasn.schema.hasn_channel_bindings import CreateHasnChannelBindi
 class CRUDHasnChannelBindings(CRUDPlus[HasnChannelBindings]):
     async def get(self, db: AsyncSession, pk: int) -> HasnChannelBindings | None:
         """
-        获取HASN Channel Binding 
+        获取HASN Channel Binding
 
         :param db: 数据库会话
         :param pk: HASN Channel Binding  ID
@@ -25,7 +25,7 @@ class CRUDHasnChannelBindings(CRUDPlus[HasnChannelBindings]):
 
     async def get_all(self, db: AsyncSession) -> Sequence[HasnChannelBindings]:
         """
-        获取所有HASN Channel Binding 
+        获取所有HASN Channel Binding
 
         :param db: 数据库会话
         :return:
@@ -34,7 +34,7 @@ class CRUDHasnChannelBindings(CRUDPlus[HasnChannelBindings]):
 
     async def create(self, db: AsyncSession, obj: CreateHasnChannelBindingsParam) -> None:
         """
-        创建HASN Channel Binding 
+        创建HASN Channel Binding
 
         :param db: 数据库会话
         :param obj: 创建HASN Channel Binding 参数
@@ -44,7 +44,7 @@ class CRUDHasnChannelBindings(CRUDPlus[HasnChannelBindings]):
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateHasnChannelBindingsParam) -> int:
         """
-        更新HASN Channel Binding 
+        更新HASN Channel Binding
 
         :param db: 数据库会话
         :param pk: HASN Channel Binding  ID
@@ -55,7 +55,7 @@ class CRUDHasnChannelBindings(CRUDPlus[HasnChannelBindings]):
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         """
-        批量删除HASN Channel Binding 
+        批量删除HASN Channel Binding
 
         :param db: 数据库会话
         :param pks: HASN Channel Binding  ID 列表

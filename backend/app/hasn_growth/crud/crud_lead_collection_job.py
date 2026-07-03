@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn_growth.model import LeadCollectionJob
-from backend.app.hasn_growth.schema.lead_collection_job import CreateLeadCollectionJobParam, UpdateLeadCollectionJobParam
+from backend.app.hasn_growth.schema.lead_collection_job import (
+    CreateLeadCollectionJobParam,
+    UpdateLeadCollectionJobParam,
+)
 
 
 class CRUDLeadCollectionJob(CRUDPlus[LeadCollectionJob]):

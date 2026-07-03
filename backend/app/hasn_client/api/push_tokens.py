@@ -20,7 +20,7 @@ test_owner_api_keys.py / test_logout.py 的解耦模式一致, 避免引入 aios
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime  # noqa: TC003 — Pydantic runtime field annotation
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Request
@@ -35,7 +35,7 @@ from backend.common.response.response_schema import (
 )
 from backend.common.schema import SchemaBase
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSessionTransaction  # noqa: TC001 — FastAPI runtime Depends annotation
+from backend.database.db import CurrentSessionTransaction
 
 router = APIRouter()
 

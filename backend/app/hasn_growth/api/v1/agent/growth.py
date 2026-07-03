@@ -37,7 +37,8 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
-def _reveal(agent: AgentTokenPayload) -> bool:  # noqa: ARG001
+
+def _reveal(agent: AgentTokenPayload) -> bool:
     """读类是否回明文 PII（默认脱敏）。
 
     历史上凭 JWT ``growth:pii`` claim 判定，但该 claim 对所有分身恒等（从不携带 pii），

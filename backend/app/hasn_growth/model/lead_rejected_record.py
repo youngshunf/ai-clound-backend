@@ -1,11 +1,10 @@
-from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key, UniversalText
 from backend.app.hasn_growth.model._base import HasnGrowthAppBase
+from backend.common.model import UniversalText, id_key
 
 
 class LeadRejectedRecord(HasnGrowthAppBase):
@@ -25,4 +24,4 @@ class LeadRejectedRecord(HasnGrowthAppBase):
     raw_excerpt: Mapped[str | None] = mapped_column(sa.String(4096), default=None, comment=None)
     duplicate_contact_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     error_message: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
-    meta_data: Mapped[dict] = mapped_column('metadata',postgresql.JSONB(), default_factory=dict, comment=None)
+    meta_data: Mapped[dict] = mapped_column('metadata', postgresql.JSONB(), default_factory=dict, comment=None)

@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_suppressed_messages import hasn_suppressed_messages_dao
 from backend.app.hasn.model import HasnSuppressedMessages
-from backend.app.hasn.schema.hasn_suppressed_messages import CreateHasnSuppressedMessagesParam, DeleteHasnSuppressedMessagesParam, UpdateHasnSuppressedMessagesParam
+from backend.app.hasn.schema.hasn_suppressed_messages import (
+    CreateHasnSuppressedMessagesParam,
+    DeleteHasnSuppressedMessagesParam,
+    UpdateHasnSuppressedMessagesParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

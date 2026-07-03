@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import enum
 
-from datetime import datetime  # noqa: TC003 — Mapped[datetime] resolved at runtime by SQLAlchemy
+from datetime import datetime
 
 import sqlalchemy as sa
 

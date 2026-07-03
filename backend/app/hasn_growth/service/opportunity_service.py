@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_opportunity import opportunity_dao
 from backend.app.hasn_growth.model import Opportunity
-from backend.app.hasn_growth.schema.opportunity import CreateOpportunityParam, DeleteOpportunityParam, UpdateOpportunityParam
+from backend.app.hasn_growth.schema.opportunity import (
+    CreateOpportunityParam,
+    DeleteOpportunityParam,
+    UpdateOpportunityParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

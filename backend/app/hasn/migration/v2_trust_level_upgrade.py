@@ -14,6 +14,7 @@ import asyncio
 import logging
 
 from sqlalchemy import text
+
 from backend.database.db import async_db_session
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ async def run_rollback() -> None:
 if __name__ == '__main__':
     import sys
     logging.basicConfig(level=logging.INFO)
-    
+
     mode = sys.argv[1] if len(sys.argv) > 1 else 'upgrade'
     if mode == 'rollback':
         asyncio.run(run_rollback())

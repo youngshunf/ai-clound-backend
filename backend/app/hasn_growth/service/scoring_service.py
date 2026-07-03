@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def score_cleaned_lead(cleaned: Any, *, existing_score: int | float = 0, source_count: int = 1) -> int:
+def score_cleaned_lead(cleaned: Any, *, existing_score: float = 0, source_count: int = 1) -> int:
     score = 0
     if getattr(cleaned, 'email_normalized', None):
         score += 20

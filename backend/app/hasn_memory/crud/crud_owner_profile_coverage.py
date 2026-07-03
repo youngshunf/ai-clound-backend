@@ -3,9 +3,9 @@
 owner × dimension 唯一，判定按 (owner_id, dimension) upsert。
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
-from typing import Sequence
 
 import sqlalchemy as sa
 

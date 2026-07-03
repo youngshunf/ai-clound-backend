@@ -36,7 +36,6 @@ from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_route
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
-from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.common.dataclasses import AgentTokenPayload
@@ -66,7 +65,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -100,12 +99,12 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     async def _yield_session() -> AsyncIterator:  # noqa: RUF029
         yield session
 
-    state = SimpleNamespace(scopes=['agent', 'growth:read', 'growth:manage', 'growth:outreach'])
+    SimpleNamespace(scopes=['agent', 'growth:read', 'growth:manage', 'growth:outreach'])
 
     async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
         payload = AgentTokenPayload(
             agent_hasn_id=agent_hasn, agent_name=f'agent_{tag}', owner_hasn_id=owner,
-            owner_user_id=owner_uid,  session_uuid=f'sess_{tag}',
+            owner_user_id=owner_uid, session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
         request.state.agent = payload

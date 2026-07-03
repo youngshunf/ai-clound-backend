@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_reel.crud.crud_reel_creation import reel_creation_dao
 from backend.app.hasn_reel.model import ReelCreation
-from backend.app.hasn_reel.schema.reel_creation import CreateReelCreationParam, DeleteReelCreationParam, UpdateReelCreationParam
+from backend.app.hasn_reel.schema.reel_creation import (
+    CreateReelCreationParam,
+    DeleteReelCreationParam,
+    UpdateReelCreationParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

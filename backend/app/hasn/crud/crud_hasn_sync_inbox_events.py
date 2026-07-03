@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn.model import HasnSyncInboxEvents
-from backend.app.hasn.schema.hasn_sync_inbox_events import CreateHasnSyncInboxEventsParam, UpdateHasnSyncInboxEventsParam
+from backend.app.hasn.schema.hasn_sync_inbox_events import (
+    CreateHasnSyncInboxEventsParam,
+    UpdateHasnSyncInboxEventsParam,
+)
 
 
 class CRUDHasnSyncInboxEvents(CRUDPlus[HasnSyncInboxEvents]):

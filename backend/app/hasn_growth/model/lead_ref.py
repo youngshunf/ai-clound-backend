@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.hasn_growth.model._base import HasnGrowthAppBase
-from backend.common.model import id_key, TimeZone
+from backend.common.model import TimeZone, id_key
 from backend.utils.timezone import timezone
 
 

@@ -17,8 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.app.billing.service.credit_service import credit_service
+from backend.app.hasn_growth.service.metering_service import growth_metering_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -60,20 +60,20 @@ async def test_metering_deducts_when_priced(session, monkeypatch) -> None:
     monkeypatch.setenv('GROWTH_CRAWL_CREDIT_UNIT', '2')  # 2 积分/条
     uid = 932000 + int(uuid.uuid4().int % 9000)
     # 平台侧充值 100 积分（接真实 CreditService，建订阅+余额）
-    await credit_service.add_credits(session, user_id=uid, credits=Decimal('100'), reference_type='test_seed')
+    await credit_service.add_credits(session, user_id=uid, credits=Decimal(100), reference_type='test_seed')
     before = await credit_service.get_total_available_credits(session, uid, 'huanxing')
 
     res = await growth_metering_service.report_crawl_usage(session, user_id=uid, job_id=3, success_count=4)
     assert res['reported'] is True and res['credits'] == 8.0  # 2 * 4
 
     after = await credit_service.get_total_available_credits(session, uid, 'huanxing')
-    assert after == before - Decimal('8')
+    assert after == before - Decimal(8)
 
 
 async def test_metering_insufficient_not_blocking(session, monkeypatch) -> None:
     monkeypatch.setenv('GROWTH_CRAWL_CREDIT_UNIT', '500')  # 单价极高，必然超出（含免费订阅额度）
     uid = 933000 + int(uuid.uuid4().int % 9000)
-    await credit_service.add_credits(session, user_id=uid, credits=Decimal('10'), reference_type='test_seed')
+    await credit_service.add_credits(session, user_id=uid, credits=Decimal(10), reference_type='test_seed')
     before = await credit_service.get_total_available_credits(session, uid, 'huanxing')
     res = await growth_metering_service.report_crawl_usage(session, user_id=uid, job_id=4, success_count=4)  # 需 2000
     assert res['reported'] is False and res['error'] == 'insufficient_credits'

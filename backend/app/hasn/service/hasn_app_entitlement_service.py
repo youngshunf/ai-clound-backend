@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_app_entitlement import hasn_app_entitlement_dao
 from backend.app.hasn.model import HasnAppEntitlement
-from backend.app.hasn.schema.hasn_app_entitlement import CreateHasnAppEntitlementParam, DeleteHasnAppEntitlementParam, UpdateHasnAppEntitlementParam
+from backend.app.hasn.schema.hasn_app_entitlement import (
+    CreateHasnAppEntitlementParam,
+    DeleteHasnAppEntitlementParam,
+    UpdateHasnAppEntitlementParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

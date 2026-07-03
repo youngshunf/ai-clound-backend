@@ -9,30 +9,29 @@
 - GET  /hasn/me/agents              我的 Agent 列表（含在线状态）
 """
 
-from typing import Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.common.exception import errors
-from backend.common.response.response_schema import ResponseModel, response_base
-from backend.common.security.jwt import DependsJwtAuth, jwt_authentication
-from backend.database.db import CurrentSession, async_db_session
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_nodes import HasnNodes
 from backend.app.hasn.service.hasn_auth import (
-    register_hasn_identity,
-    register_hasn_agent,
-    register_node,
-    issue_node_jwt,
     hasn_auth_from_jwt,
+    issue_node_jwt,
+    register_hasn_agent,
+    register_hasn_identity,
+    register_node,
     reissue_hasn_node_key,
 )
-from backend.app.hasn.service.ws_router import ws_router
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
+from backend.app.hasn.service.ws_router import ws_router
+from backend.common.exception import errors
+from backend.common.response.response_schema import ResponseModel, response_base
+from backend.common.security.jwt import DependsJwtAuth, jwt_authentication
+from backend.database.db import CurrentSession, async_db_session
 
 router = APIRouter()
 
@@ -116,7 +115,7 @@ class RegisterAgentReq(BaseModel):
 async def api_register_agent(
     obj_in: RegisterAgentReq,
     db: CurrentSession,
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     """为当前用户的 Agent 注册 HASN 身份，幂等（同一 owner + agent_name 不重复创建）"""
     result = await register_hasn_agent(
@@ -148,17 +147,13 @@ async def api_register_agent(
     return response_base.success(data=response_data)
 
 
-
-
-
-
 # ─── 注册节点 ───
 
 @router.post('/auth/register-node', summary='注册节点')
 async def api_register_node(
     obj_in: RegisterClientReq,
     db: CurrentSession,
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     """注册节点，返回 node_id"""
     node = await register_node(
@@ -187,7 +182,7 @@ class ClientTokenReq(BaseModel):
 @router.post('/auth/node-token', summary='签发 Node JWT')
 async def api_node_token(
     obj_in: ClientTokenReq,
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     """签发 Node JWT（仅保留为可选能力，主路径使用 NodeKey）"""
     node_id = obj_in.node_id
@@ -221,7 +216,7 @@ async def api_node_token(
 
 @router.get('/me', summary='获取当前用户 HASN 身份')
 async def api_get_me(
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     async with async_db_session() as db:
         result = await db.execute(
@@ -250,7 +245,7 @@ async def api_get_me(
 
 @router.get('/me/nodes', summary='我的节点列表')
 async def api_list_nodes(
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     async with async_db_session() as db:
         result = await db.execute(
@@ -284,7 +279,7 @@ async def api_list_nodes(
 async def api_reissue_node_key(
     node_id: str,
     db: CurrentSession,
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     node_key = await reissue_hasn_node_key(
         db=db,
@@ -303,7 +298,7 @@ async def api_reissue_node_key(
 @router.get('/me/devices', summary='我的登录设备列表')
 async def api_list_devices(
     request: Request,
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     """设备管理页数据源：每台登录设备的 名称/OS/版本/IP 归属地/实时在线/名下在线 Agent/当前设备标记。
 
@@ -365,7 +360,7 @@ async def api_list_devices(
 @router.post('/me/devices/{node_id}/logout', summary='远程登出设备')
 async def api_logout_device(
     node_id: str,
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     """远程登出某台设备：吊销其对本 Owner 的 node-binding（强制重认证）+ 清 presence +
     释放其名下 Agent 供他机接管 + 关闭其 WS（若连接在本进程内）。
@@ -406,7 +401,7 @@ async def api_logout_device(
 
 @router.get('/me/agents', summary='我的 Agent 列表')
 async def api_list_agents(
-    auth: dict = Depends(hasn_auth_from_jwt),
+    auth: Annotated[dict, Depends(hasn_auth_from_jwt)],
 ) -> ResponseModel:
     async with async_db_session() as db:
         result = await db.execute(

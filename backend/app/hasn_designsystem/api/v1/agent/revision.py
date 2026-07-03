@@ -12,8 +12,6 @@ from backend.app.hasn_designsystem.schema.revision import (
     UpdateRevisionParam,
 )
 from backend.app.hasn_designsystem.service.revision_service import revision_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,7 +29,6 @@ async def agent_list_revision(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await revision_service.get_list(db=db)
     return response_base.success(data=data)
@@ -48,7 +45,6 @@ async def agent_create_revision(
     db: CurrentSessionTransaction,
     obj: CreateRevisionParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await revision_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_revision(
     db: CurrentSession,
     pk: Annotated[int, Path(description='演示文稿版本快照（云端权威历史） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     revision = await revision_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if revision.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_revision(
     pk: Annotated[int, Path(description='演示文稿版本快照（云端权威历史） ID')],
     obj: UpdateRevisionParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    revision = await revision_service.get(db=db, pk=pk)
+    await revision_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if revision.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该演示文稿版本快照（云端权威历史）')
@@ -106,8 +100,7 @@ async def agent_delete_revision(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='演示文稿版本快照（云端权威历史） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    revision = await revision_service.get(db=db, pk=pk)
+    await revision_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if revision.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该演示文稿版本快照（云端权威历史）')

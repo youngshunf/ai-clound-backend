@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_pending_intents import hasn_pending_intents_dao
 from backend.app.hasn.model import HasnPendingIntents
-from backend.app.hasn.schema.hasn_pending_intents import CreateHasnPendingIntentsParam, DeleteHasnPendingIntentsParam, UpdateHasnPendingIntentsParam
+from backend.app.hasn.schema.hasn_pending_intents import (
+    CreateHasnPendingIntentsParam,
+    DeleteHasnPendingIntentsParam,
+    UpdateHasnPendingIntentsParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 
@@ -13,7 +18,7 @@ class HasnPendingIntentsService:
     @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> HasnPendingIntents:
         """
-        获取HASN 第三方渠道反向 onboarding pending intent 
+        获取HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param pk: HASN 第三方渠道反向 onboarding pending intent  ID
@@ -38,7 +43,7 @@ class HasnPendingIntentsService:
     @staticmethod
     async def get_all(*, db: AsyncSession) -> Sequence[HasnPendingIntents]:
         """
-        获取所有HASN 第三方渠道反向 onboarding pending intent 
+        获取所有HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :return:
@@ -49,7 +54,7 @@ class HasnPendingIntentsService:
     @staticmethod
     async def create(*, db: AsyncSession, obj: CreateHasnPendingIntentsParam) -> None:
         """
-        创建HASN 第三方渠道反向 onboarding pending intent 
+        创建HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param obj: 创建HASN 第三方渠道反向 onboarding pending intent 参数
@@ -60,7 +65,7 @@ class HasnPendingIntentsService:
     @staticmethod
     async def update(*, db: AsyncSession, pk: int, obj: UpdateHasnPendingIntentsParam) -> int:
         """
-        更新HASN 第三方渠道反向 onboarding pending intent 
+        更新HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param pk: HASN 第三方渠道反向 onboarding pending intent  ID
@@ -73,7 +78,7 @@ class HasnPendingIntentsService:
     @staticmethod
     async def delete(*, db: AsyncSession, obj: DeleteHasnPendingIntentsParam) -> int:
         """
-        删除HASN 第三方渠道反向 onboarding pending intent 
+        删除HASN 第三方渠道反向 onboarding pending intent
 
         :param db: 数据库会话
         :param obj: HASN 第三方渠道反向 onboarding pending intent  ID 列表

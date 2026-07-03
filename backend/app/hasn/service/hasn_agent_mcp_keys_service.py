@@ -6,9 +6,9 @@
 """
 
 import secrets
-from typing import Sequence
 
 import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_agent_mcp_keys import hasn_agent_mcp_keys_dao
@@ -18,9 +18,9 @@ from backend.app.hasn.schema.hasn_agent_mcp_keys import (
     IssueAgentMcpKeyParam,
     IssuedAgentMcpKey,
 )
-from backend.common.security.encryption import key_encryption
 from backend.common.exception import errors
 from backend.common.log import log
+from backend.common.security.encryption import key_encryption
 from backend.utils.timezone import timezone
 
 # 凭证前缀：云端 MCP 鉴权按此前缀分流（见 streamable.py / 设计 §6）

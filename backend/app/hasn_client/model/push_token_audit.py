@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003 — Mapped[datetime] runtime-resolved by SQLAlchemy
+from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa

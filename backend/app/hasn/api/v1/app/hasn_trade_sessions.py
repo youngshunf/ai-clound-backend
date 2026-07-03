@@ -31,7 +31,6 @@ async def get_my_hasn_trade_sessionss(
     request: Request,
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetHasnTradeSessionsDetail]]:
-    user_id = request.user.id
     page_data = await hasn_trade_sessions_service.get_list(db=db)
     return response_base.success(data=page_data)
 
@@ -46,7 +45,6 @@ async def create_my_hasn_trade_sessions(
     db: CurrentSessionTransaction,
     obj: CreateHasnTradeSessionsParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_trade_sessions_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 

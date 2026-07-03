@@ -15,7 +15,8 @@ worker 不感知节点本地运行态；运行重叠由节点侧机制兜底。�
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import sqlalchemy as sa
 

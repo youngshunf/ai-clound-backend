@@ -1,5 +1,6 @@
 import uuid
-from typing import Sequence
+
+from collections.abc import Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from backend.app.hasn.model.hasn_owner_api_keys import HasnOwnerApiKeys
 from backend.app.hasn.schema.hasn_api_keys import CreateApiKeyRes
 from backend.app.hasn.service.hasn_auth import _generate_owner_key
 from backend.utils.timezone import timezone
+
 
 class HasnApiKeyService:
     @staticmethod
@@ -88,5 +90,6 @@ class HasnApiKeyService:
         record.revoked_at = timezone.now()
         record.revoke_reason = 'manual_revoke'
         await db.flush()
+
 
 hasn_api_key_service = HasnApiKeyService()

@@ -13,7 +13,6 @@ from pydantic import Field
 from backend.app.hasn.schema.hasn_message_hub import ErrorObject
 from backend.common.schema import SchemaBase
 
-
 RuntimeStatus = Literal['missing', 'offline', 'online', 'degraded', 'failed']
 
 

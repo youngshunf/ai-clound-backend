@@ -1,6 +1,7 @@
 import uuid
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 
@@ -111,7 +112,6 @@ class HasnAgentChannelMirrorsService:
             'created_time': row.created_time.isoformat() if row.created_time else None,
             'updated_time': row.updated_time.isoformat() if row.updated_time else None,
         }
-
 
     @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> HasnAgentChannelMirrors:

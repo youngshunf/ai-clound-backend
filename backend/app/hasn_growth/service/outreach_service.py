@@ -291,7 +291,7 @@ class GrowthOutreachService:
         )
 
         # 幂等去重：同 owner+客户+渠道+正文 视为同一条（防分身重复发）。
-        dedupe_key = hashlib.sha256(f'{user_id}|{customer_id}|{channel}|{content}'.encode('utf-8')).hexdigest()[:64]
+        dedupe_key = hashlib.sha256(f'{user_id}|{customer_id}|{channel}|{content}'.encode()).hexdigest()[:64]
         existing = (
             await db.execute(
                 sa.select(OutreachMessage).where(

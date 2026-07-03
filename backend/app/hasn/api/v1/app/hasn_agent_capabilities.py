@@ -31,7 +31,6 @@ async def get_my_hasn_agent_capabilitiess(
     request: Request,
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetHasnAgentCapabilitiesDetail]]:
-    user_id = request.user.id
     page_data = await hasn_agent_capabilities_service.get_list(db=db)
     return response_base.success(data=page_data)
 
@@ -46,7 +45,6 @@ async def create_my_hasn_agent_capabilities(
     db: CurrentSessionTransaction,
     obj: CreateHasnAgentCapabilitiesParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_agent_capabilities_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 

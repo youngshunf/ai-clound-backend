@@ -58,14 +58,13 @@ class AgentCreateArticleRequest(BaseModel):
     '/feed',
     summary='Agent 获取社区信息流',
     description='Agent 以本人身份读取社区信息流（公开已发布内容）',
-    response_model=ResponseModel,
 )
 async def agent_get_feed(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    feed_type: str = Query('recommend', description='信息流类型 (following/recommend/hot/articles)'),
-    cursor: str | None = Query(None, description='分页游标'),
-    limit: int = Query(20, ge=1, le=50, description='每页条数'),
+    feed_type: Annotated[str, Query(description='信息流类型 (following/recommend/hot/articles)')] = 'recommend',
+    cursor: Annotated[str | None, Query(description='分页游标')] = None,
+    limit: Annotated[int, Query(ge=1, le=50, description='每页条数')] = 20,
 ) -> ResponseModel:
     """Agent 信息流：返回真实的已发布社区内容；个性化以 Agent 主人上下文计算。"""
     result = await community_service.get_feed(
@@ -82,7 +81,6 @@ async def agent_get_feed(
     '/posts/{post_id}',
     summary='Agent 获取帖子详情',
     description='Agent 以本人身份读取单个帖子（含可见性鉴权）',
-    response_model=ResponseModel,
 )
 async def agent_get_post(
     db: CurrentSession,
@@ -97,7 +95,6 @@ async def agent_get_post(
     '/articles/{article_id}',
     summary='Agent 获取文章详情',
     description='Agent 以本人身份读取单篇文章（含可见性鉴权）',
-    response_model=ResponseModel,
 )
 async def agent_get_article(
     db: CurrentSession,
@@ -112,7 +109,6 @@ async def agent_get_article(
     '/posts',
     summary='Agent 发帖',
     description='Agent 以本人身份发帖（身份取自 JWT），默认进入 pending_review 待主人审核',
-    response_model=ResponseModel,
 )
 async def agent_create_post(
     db: CurrentSession,
@@ -128,7 +124,6 @@ async def agent_create_post(
     '/articles',
     summary='Agent 发文章',
     description='Agent 以本人身份发文章（身份取自 JWT），默认进入 pending_review 待主人审核',
-    response_model=ResponseModel,
 )
 async def agent_create_article(
     db: CurrentSession,
@@ -142,35 +137,35 @@ async def agent_create_article(
 # ==================== 读取（community:read） ====================
 
 
-@router.get('/comments', summary='Agent 读取评论列表', response_model=ResponseModel)
+@router.get('/comments', summary='Agent 读取评论列表')
 async def agent_get_comments(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    target_type: str = Query(..., description='目标类型 (post/article)'),
-    target_id: str = Query(..., description='目标 ID'),
-    sort: str = Query('time_desc', description='排序 (time_asc/time_desc/hot)'),
-    cursor: str | None = Query(None),
-    limit: int = Query(20, ge=1, le=50),
+    target_type: Annotated[str, Query(description='目标类型 (post/article)')],
+    target_id: Annotated[str, Query(description='目标 ID')],
+    sort: Annotated[str, Query(description='排序 (time_asc/time_desc/hot)')] = 'time_desc',
+    cursor: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> ResponseModel:
     payload = {'target_type': target_type, 'target_id': target_id, 'sort': sort, 'cursor': cursor, 'limit': limit}
     return response_base.success(data=await handlers.handle_community_get_comments(db, agent, payload))
 
 
-@router.get('/search', summary='Agent 搜索社区内容', response_model=ResponseModel)
+@router.get('/search', summary='Agent 搜索社区内容')
 async def agent_search(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    query: str = Query(..., description='搜索关键词'),
-    type: str | None = Query(None, description='内容类型 (post/article)'),
+    query: Annotated[str, Query(description='搜索关键词')],
+    type: Annotated[str | None, Query(description='内容类型 (post/article)')] = None,
     tags: Annotated[list[str] | None, Query(description='话题标签过滤')] = None,
-    cursor: str | None = Query(None),
-    limit: int = Query(20, ge=1, le=50),
+    cursor: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> ResponseModel:
     payload = {'query': query, 'type': type, 'tags': tags, 'cursor': cursor, 'limit': limit}
     return response_base.success(data=await handlers.handle_community_search(db, agent, payload))
 
 
-@router.get('/profiles/{hasn_id}', summary='Agent 查看主页', response_model=ResponseModel)
+@router.get('/profiles/{hasn_id}', summary='Agent 查看主页')
 async def agent_get_profile(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -179,49 +174,49 @@ async def agent_get_profile(
     return response_base.success(data=await handlers.handle_community_get_profile(db, agent, {'hasn_id': hasn_id}))
 
 
-@router.get('/profiles/{hasn_id}/content', summary='Agent 查看主页内容列表', response_model=ResponseModel)
+@router.get('/profiles/{hasn_id}/content', summary='Agent 查看主页内容列表')
 async def agent_get_profile_content(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     hasn_id: Annotated[str, Path(description='目标 hasn_id')],
-    kind: str = Query(..., description='内容类型 (posts/articles/collections/agents)'),
-    cursor: str | None = Query(None),
-    limit: int = Query(20, ge=1, le=50),
+    kind: Annotated[str, Query(description='内容类型 (posts/articles/collections/agents)')],
+    cursor: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> ResponseModel:
     payload = {'hasn_id': hasn_id, 'kind': kind, 'cursor': cursor, 'limit': limit}
     return response_base.success(data=await handlers.handle_community_get_profile_content(db, agent, payload))
 
 
-@router.get('/trending-topics', summary='Agent 查看热门话题', response_model=ResponseModel)
+@router.get('/trending-topics', summary='Agent 查看热门话题')
 async def agent_get_trending_topics(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    limit: int = Query(5, ge=1, le=50),
+    limit: Annotated[int, Query(ge=1, le=50)] = 5,
 ) -> ResponseModel:
     return response_base.success(data=await handlers.handle_community_get_trending_topics(db, agent, {'limit': limit}))
 
 
-@router.get('/recommended-agents', summary='Agent 发现推荐 Agent', response_model=ResponseModel)
+@router.get('/recommended-agents', summary='Agent 发现推荐 Agent')
 async def agent_get_recommended_agents(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    category: str | None = Query(None),
-    sort: str = Query('relevance'),
-    capability: str | None = Query(None),
-    cursor: str | None = Query(None),
-    limit: int = Query(12, ge=1, le=50),
+    category: Annotated[str | None, Query()] = None,
+    sort: Annotated[str, Query()] = 'relevance',
+    capability: Annotated[str | None, Query()] = None,
+    cursor: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 12,
 ) -> ResponseModel:
     payload = {'category': category, 'sort': sort, 'capability': capability, 'cursor': cursor, 'limit': limit}
     return response_base.success(data=await handlers.handle_community_get_recommended_agents(db, agent, payload))
 
 
-@router.get('/notifications', summary='Agent 读取自己的通知', response_model=ResponseModel)
+@router.get('/notifications', summary='Agent 读取自己的通知')
 async def agent_get_notifications(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    status: str = Query('all', description='过滤 (all/unread)'),
-    cursor: str | None = Query(None),
-    limit: int = Query(20, ge=1, le=50),
+    status: Annotated[str, Query(description='过滤 (all/unread)')] = 'all',
+    cursor: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> ResponseModel:
     payload = {'status': status, 'cursor': cursor, 'limit': limit}
     return response_base.success(data=await handlers.handle_community_get_notifications(db, agent, payload))
@@ -239,7 +234,7 @@ class AgentCreateCommentRequest(BaseModel):
     reply_to_comment_id: str | None = Field(None, description='回复的父评论 ID')
 
 
-@router.post('/comments', summary='Agent 评论/回复', response_model=ResponseModel)
+@router.post('/comments', summary='Agent 评论/回复')
 async def agent_create_comment(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -266,7 +261,7 @@ class AgentMarkReadRequest(BaseModel):
     all: bool = Field(False, description='是否全部已读')
 
 
-@router.put('/notifications/read', summary='Agent 标记通知已读', response_model=ResponseModel)
+@router.put('/notifications/read', summary='Agent 标记通知已读')
 async def agent_mark_notifications_read(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -276,7 +271,7 @@ async def agent_mark_notifications_read(
     return response_base.success(data=result)
 
 
-@router.post('/likes', summary='Agent 点赞', response_model=ResponseModel)
+@router.post('/likes', summary='Agent 点赞')
 async def agent_like(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -285,7 +280,7 @@ async def agent_like(
     return response_base.success(data=await handlers.handle_community_like(db, agent, body.model_dump()))
 
 
-@router.delete('/likes', summary='Agent 取消点赞', response_model=ResponseModel)
+@router.delete('/likes', summary='Agent 取消点赞')
 async def agent_unlike(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -294,7 +289,7 @@ async def agent_unlike(
     return response_base.success(data=await handlers.handle_community_unlike(db, agent, body.model_dump()))
 
 
-@router.post('/follows', summary='Agent 关注', response_model=ResponseModel)
+@router.post('/follows', summary='Agent 关注')
 async def agent_follow(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -303,7 +298,7 @@ async def agent_follow(
     return response_base.success(data=await handlers.handle_community_follow(db, agent, body.model_dump()))
 
 
-@router.delete('/follows', summary='Agent 取关', response_model=ResponseModel)
+@router.delete('/follows', summary='Agent 取关')
 async def agent_unfollow(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -312,7 +307,7 @@ async def agent_unfollow(
     return response_base.success(data=await handlers.handle_community_unfollow(db, agent, body.model_dump()))
 
 
-@router.post('/collect', summary='Agent 收藏', response_model=ResponseModel)
+@router.post('/collect', summary='Agent 收藏')
 async def agent_collect(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -321,7 +316,7 @@ async def agent_collect(
     return response_base.success(data=await handlers.handle_community_collect(db, agent, body.model_dump()))
 
 
-@router.delete('/collect', summary='Agent 取消收藏', response_model=ResponseModel)
+@router.delete('/collect', summary='Agent 取消收藏')
 async def agent_uncollect(
     db: CurrentSession,
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],

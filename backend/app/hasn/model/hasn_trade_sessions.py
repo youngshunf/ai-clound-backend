@@ -1,11 +1,11 @@
 from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, TimeZone
-from backend.utils.timezone import timezone
+from backend.common.model import Base, TimeZone, id_key
 
 
 class HasnTradeSessions(Base):
@@ -27,4 +27,4 @@ class HasnTradeSessions(Base):
     )
     order_id: Mapped[str | None] = mapped_column(sa.String(100), default=None, comment='关联订单 ID')
     expires_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='过期时间')
-    meta_data: Mapped[dict] = mapped_column('metadata',postgresql.JSONB(), default_factory=dict, comment='附加元数据 (JSONB)')
+    meta_data: Mapped[dict] = mapped_column('metadata', postgresql.JSONB(), default_factory=dict, comment='附加元数据 (JSONB)')

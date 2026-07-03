@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, TimeZone
+from backend.common.model import Base, TimeZone, id_key
 from backend.utils.timezone import timezone
 
 

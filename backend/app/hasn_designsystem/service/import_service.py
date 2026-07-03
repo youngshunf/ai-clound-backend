@@ -19,6 +19,7 @@ import socket
 
 from collections import Counter
 from dataclasses import dataclass, field
+from itertools import starmap
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -188,7 +189,7 @@ def _render_root(pairs: list[tuple[str, object]], *, dark: list[tuple[str, objec
         raise errors.RequestError(msg='未能从来源提取到任何可用的设计 token（草稿失败，未造假）')
     css = ':root {\n' + '\n'.join(root_lines) + '\n}\n'
     if dark:
-        dark_lines = [d for d in (_declaration(k, v) for k, v in dark) if d]
+        dark_lines = [d for d in starmap(_declaration, dark) if d]
         if dark_lines:
             css += '\n.dark {\n' + '\n'.join(dark_lines) + '\n}\n'
     return css

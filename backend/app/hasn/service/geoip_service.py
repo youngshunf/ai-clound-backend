@@ -46,7 +46,7 @@ def _get_reader():
 
             _reader = geoip2.database.Reader(path)
             log.info(f'[geoip] GeoLite2 已加载: {path}')
-        except Exception as exc:  # noqa: BLE001 - 任何加载异常都降级为「未知」
+        except Exception as exc:
             log.warning(f'[geoip] GeoLite2 加载失败: {exc}，IP 归属地将显示「未知」')
             _reader = None
         return _reader
@@ -84,7 +84,7 @@ def lookup_location(ip: str | None) -> str | None:
         return None
     try:
         resp = reader.city(ip)
-    except Exception:  # noqa: BLE001 - AddressNotFoundError / 数据缺失等一律「未知」
+    except Exception:
         return None
 
     city = _localized(resp.city)
