@@ -9,7 +9,7 @@
 - idempotent 仅纯读工具（quant:read）为 True；写/提交回测为 False。
 - scopes.py 登记 quant:read/write/backtest（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）；出厂 default_mode=allow。
 - App 形态（cloud / install_policy=manual / 量化工作台 /apps/quant / 个人模式）。
-- catalog 出厂源：sort_order 75 / default_agent_type=quant_trader（量化交易官）/ 无 per-app config_json。
+- catalog 出厂源：sort_order 75 / default_agent_type=analyst（金融理财专家，quant_trader 折叠进 analyst）/ 无 per-app config_json。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落库且 hash 自愈幂等；``ensure_catalog_seeded`` 幂等播种。
 - **安全断言**：实盘线 scope（quant:trade/quant:deploy，出厂 ask）**不在 manifest 暴露**——本期 P0–P5 只回测，
   实盘 P6+ 受 P0-闸1 硬闸。
@@ -191,10 +191,10 @@ def test_quant_workbench_app_shape() -> None:
 
 
 def test_quant_catalog_factory_source() -> None:
-    """catalog 出厂源（app_catalog_service）：sort_order 75 / quant_trader 默认承接 / 无 per-app config_json。"""
+    """catalog 出厂源（app_catalog_service）：sort_order 75 / analyst 默认承接（quant_trader 折叠进 analyst）/ 无 per-app config_json。"""
     assert _CATALOG_SORT_ORDER['quant'] == 75
-    assert _CATALOG_AGENT_DEFAULTS['quant'][0] == 'quant_trader'
-    assert _CATALOG_AGENT_DEFAULTS['quant'][1]  # 业务提示词非空
+    assert _CATALOG_AGENT_DEFAULTS['quant'][0] == 'analyst'
+    assert _CATALOG_AGENT_DEFAULTS['quant'][1]  # 业务提示词非空（量化回测专属，与 finance 区分）
     # quant 无平台级模型配置（引擎地址/令牌走云端 env QUANT_ENGINE_*，不进 catalog config_json）。
     assert 'quant' not in _CATALOG_DEFAULT_CONFIG
 
@@ -243,7 +243,7 @@ async def test_quant_catalog_seeded_idempotent(db: AsyncSession) -> None:
     assert cat.name == '量化交易'
     assert cat.execution_mode == 'cloud'
     assert cat.entry_route == '/apps/quant'
-    assert cat.default_agent_type == 'quant_trader'
+    assert cat.default_agent_type == 'analyst'
     assert cat.default_mount is False  # install_policy=manual → 不自动挂载
     assert cat.access_type == 'free'
 

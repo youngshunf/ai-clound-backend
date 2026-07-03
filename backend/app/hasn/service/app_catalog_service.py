@@ -121,8 +121,10 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是演示文稿应用的执行分身：把主人的诉求做成结构清晰、视觉专业的演示文稿，'
         '只调用 hasn.deck.* 工具就地生成与精修；产出对客可用的成品，零 fake，失败如实报错。',
     ),
+    # 设计系统归口「设计专家（designer）」分身（2026-07-03 一类应用一模板：designsystem_expert 折叠进 designer）。
+    # 模板同 design 共用 designer（builtin_key=designer），但工作会话提示词按应用区分——本条保留设计系统专属提示词。
     'designsystem': (
-        'content_operator',
+        'designer',
         '你是设计系统应用的执行分身：产出渲染目标无关的 token 契约 + 组件库，下游一律 var(--token) 消费；'
         '只调用 hasn.designsystem.* 工具，零 fake，失败如实报错。',
     ),
@@ -192,11 +194,11 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
         '取不到就如实说，零 fake、失败如实报错。',
     ),
-    # 量化用专属「量化交易官（quant_trader）」分身
-    # （hub 模板 quant_trader，builtin_key=quant_trader，QUANT-P10/P11 落地）。
+    # 量化归口「金融理财专家（analyst）」分身（2026-07-03 一类应用一模板：quant_trader 折叠进 analyst）。
+    # 模板同 finance 共用 analyst（builtin_key=analyst），但工作会话提示词按应用区分——本条保留量化回测专属提示词。
     # 本期 P0–P5 只做回测研究（零资金风险）：写策略 → 跑回测 → 读绩效 → 迭代优化；实盘线 P6+ 受硬闸不开。
     'quant': (
-        'quant_trader',
+        'analyst',
         '你是主人的量化交易官：用 hasn.quant.* 工具写量化策略、提交历史回测、读绩效报告并迭代优化；'
         '回测只花算力、不动钱，可大胆假设小心求证。所有绩效来自引擎真实回测、绝不臆造数字（零 fake）；'
         '回测表现不代表实盘收益，不构成投资建议；实盘部署/下单等动真钱动作须经主人审批，'

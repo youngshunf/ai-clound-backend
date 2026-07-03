@@ -253,7 +253,7 @@ def build_quant_app() -> App:
     - ``install_policy='manual'``：量化是专业能力，按需装、不自动挂载到工作台（对齐 growth/creator）。
     - ``collaboration_mode='none'`` / ``scope=('personal',)``：个人模式（企业双模归属 §4.9 远期）。
     - ``entry_route='/apps/quant'``：自建量化工作台（策略库 + 回测；实盘线 P6+ 环境就绪才显，§7.1）。
-    - ``default_agent_type`` 由 catalog DB 行承载（quant_trader「量化交易官」），不在 App dataclass。
+    - ``default_agent_type`` 由 catalog DB 行承载（analyst「金融理财专家」，量化回测专属工作会话提示词），不在 App dataclass。
 
     延迟导入 App 避免循环依赖。
     """
