@@ -3,15 +3,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
 
+from backend.app.billing.schema.grant_credits import GrantCreditsParam, GrantCreditsResult
 from backend.app.billing.schema.user_credit_balance import (
     CreateUserCreditBalanceParam,
     DeleteUserCreditBalanceParam,
     GetUserCreditBalanceDetail,
     UpdateUserCreditBalanceParam,
 )
-from backend.app.billing.schema.grant_credits import GrantCreditsParam, GrantCreditsResult
-from backend.app.billing.service.user_credit_balance_service import user_credit_balance_service
 from backend.app.billing.service.credit_service import credit_service
+from backend.app.billing.service.user_credit_balance_service import user_credit_balance_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -125,7 +125,6 @@ async def delete_user_credit_balances(
     return response_base.fail()
 
 
-
 @router.post(
     '/grant',
     summary='管理员赠送积分',
@@ -142,8 +141,6 @@ async def grant_credits(db: CurrentSessionTransaction, obj: GrantCreditsParam) -
     - 积分类型自动标记为 official_grant（官方赠送）
     - 记录完整的积分交易日志
     """
-    from decimal import Decimal
-    from backend.utils.timezone import timezone
 
     success_count = 0
     failed_count = 0

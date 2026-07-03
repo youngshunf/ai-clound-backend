@@ -74,7 +74,7 @@ class QuotaService:
                 current = await redis_client.incr(key)
                 if current == 1:
                     await redis_client.expire(key, 70)
-            except Exception:  # noqa: BLE001 — Redis 不可用不该阻断调用，记日志放行
+            except Exception:
                 logger.warning('external_mcp 限流计数失败（Redis），放行', exc_info=True)
                 current = 0
             if current and current > rate_limit_per_min:

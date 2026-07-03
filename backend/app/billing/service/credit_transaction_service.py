@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.crud.crud_credit_transaction import credit_transaction_dao
 from backend.app.billing.model import CreditTransaction
-from backend.app.billing.schema.credit_transaction import CreateCreditTransactionParam, DeleteCreditTransactionParam, UpdateCreditTransactionParam
+from backend.app.billing.schema.credit_transaction import (
+    CreateCreditTransactionParam,
+    DeleteCreditTransactionParam,
+    UpdateCreditTransactionParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

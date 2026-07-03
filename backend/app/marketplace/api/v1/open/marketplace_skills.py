@@ -19,7 +19,7 @@ from backend.app.marketplace.service.marketplace_skill_service import marketplac
 from backend.app.marketplace.service.package_service import package_service
 from backend.app.marketplace.service.search_service import search_service
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
-from backend.database.db import CurrentSession  # noqa: TC001
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 

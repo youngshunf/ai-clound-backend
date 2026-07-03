@@ -9,6 +9,7 @@ GET /api/v1/hermes/app/templates
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from fastapi import APIRouter
 
 from backend.app.marketplace.model.marketplace_template import MarketplaceTemplate

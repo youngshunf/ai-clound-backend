@@ -23,7 +23,7 @@ from backend.app.hasn_task.service.builtin_task_service import workbench_builtin
 # FastAPI 据 PutWorkbenchPrefParam/WorkbenchPrefResponse 这些 Pydantic 模型解析请求体/响应；
 # 配合 `from __future__ import annotations` 必须保持运行时导入（移入 TYPE_CHECKING 会让 body
 # 参数被误判成 query，触发 422）。noqa 阻止 ruff TC001 再次把它挪进 TYPE_CHECKING。
-from backend.app.home.schema.hasn_owner_workbench_pref import (  # noqa: TC001
+from backend.app.home.schema.hasn_owner_workbench_pref import (
     PutWorkbenchPrefParam,
     WorkbenchPrefResponse,
 )
@@ -35,7 +35,7 @@ from backend.app.home.schema.workbench_briefing_document import (
 
 # FastAPI 据 ResponseSchemaModel[PendingScanResult] 返回注解解析 response_model，必须运行时可导入
 # （配合 `from __future__ import annotations`，移进 TYPE_CHECKING 会让 get_type_hints 解析不到 → 500）。
-from backend.app.home.schema.workbench_pending import PendingScanResult  # noqa: TC001
+from backend.app.home.schema.workbench_pending import PendingScanResult
 from backend.app.home.service.hasn_workbench_briefing_feedback_service import (
     hasn_workbench_briefing_feedback_service,
 )
@@ -45,7 +45,7 @@ from backend.app.home.service.workbench_pref_service import workbench_pref_servi
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

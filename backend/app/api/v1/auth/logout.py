@@ -12,7 +12,8 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime
+from datetime import timezone as dt_timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.status import HTTP_401_UNAUTHORIZED

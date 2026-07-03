@@ -172,7 +172,7 @@ async def refresh_active_token_gauge(
             .where(PushToken.channel == channel)
         )
         count = int(result.scalar() or 0)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning('[push] refresh_active_token_gauge failed: %s', exc)
         return 0
     PUSH_TOKEN_ACTIVE_TOTAL.labels(channel=channel).set(count)

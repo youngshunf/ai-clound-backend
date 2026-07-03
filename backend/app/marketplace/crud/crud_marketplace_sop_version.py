@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.marketplace.model.marketplace_sop_version import MarketplaceSopVersion
-from backend.app.marketplace.schema.marketplace_sop_version import CreateMarketplaceSopVersionParam, UpdateMarketplaceSopVersionParam
+from backend.app.marketplace.schema.marketplace_sop_version import (
+    CreateMarketplaceSopVersionParam,
+    UpdateMarketplaceSopVersionParam,
+)
 
 
 class CRUDMarketplaceSopVersion(CRUDPlus[MarketplaceSopVersion]):

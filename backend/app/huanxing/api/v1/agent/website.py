@@ -1,5 +1,6 @@
 import shutil
 import zipfile
+
 from pathlib import Path
 from typing import Annotated
 
@@ -26,7 +27,7 @@ async def agent_deploy_website(
     site_name: Annotated[str, Form(...)] = 'default',
 ) -> ResponseSchemaModel[UploadUrl]:
     """Agent 调用进行网站 ZIP 上传与部署"""
-    
+
     if not file.filename or not file.filename.endswith('.zip'):
         raise errors.BusinessError(msg='只支持上传 .zip 格式的压缩包')
 
@@ -47,11 +48,11 @@ async def agent_deploy_website(
     try:
         with open(temp_zip_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+
         # 解压 zip
         with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
             zip_ref.extractall(target_dir)
-            
+
     except zipfile.BadZipFile:
         raise errors.BusinessError(msg='解析 ZIP 文件失败，文件可能已损坏')
     finally:

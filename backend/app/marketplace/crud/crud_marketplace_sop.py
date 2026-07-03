@@ -1,6 +1,6 @@
-from typing import Sequence, Optional
+from collections.abc import Sequence
 
-from sqlalchemy import Select, update, select, func, or_
+from sqlalchemy import Select, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -40,12 +40,12 @@ class CRUDMarketplaceSop(CRUDPlus[MarketplaceSop]):
 
     async def get_select_public(
         self,
-        category: Optional[str] = None,
-        tags: Optional[str] = None,
-        pricing_type: Optional[str] = None,
-        is_official: Optional[bool] = None,
+        category: str | None = None,
+        tags: str | None = None,
+        pricing_type: str | None = None,
+        is_official: bool | None = None,
     ) -> Select:
-        stmt = select(MarketplaceSop).where(MarketplaceSop.is_private == False)
+        stmt = select(MarketplaceSop).where(not MarketplaceSop.is_private)
 
         if category:
             stmt = stmt.where(MarketplaceSop.category == category)
@@ -68,11 +68,11 @@ class CRUDMarketplaceSop(CRUDPlus[MarketplaceSop]):
         self,
         db: AsyncSession,
         keyword: str,
-        category: Optional[str] = None,
+        category: str | None = None,
         limit: int = 20,
     ) -> list[MarketplaceSop]:
         stmt = select(MarketplaceSop).where(
-            MarketplaceSop.is_private == False,
+            not MarketplaceSop.is_private,
             or_(
                 MarketplaceSop.name.ilike(f'%{keyword}%'),
                 MarketplaceSop.description.ilike(f'%{keyword}%'),

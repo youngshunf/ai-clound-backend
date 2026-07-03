@@ -8,19 +8,20 @@
 @author Ysf
 """
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from decimal import Decimal
 
 from backend.app.billing.service.credit_service import credit_service
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import CurrentSession
 
 router = APIRouter()
 
 # ==================== Response Schemas ====================
+
 
 class QuotaResponse(BaseModel):
     """配额查询响应"""
@@ -33,12 +34,14 @@ class QuotaResponse(BaseModel):
     used_credits: Decimal
     available: bool  # 是否还有可用额度
 
+
 class DeductRequest(BaseModel):
     """积分扣减请求"""
     user_id: int
     credits: Decimal
     model_name: str | None = None
     description: str | None = None
+
 
 class DeductResponse(BaseModel):
     """积分扣减响应"""
@@ -47,6 +50,7 @@ class DeductResponse(BaseModel):
     message: str
 
 # ==================== APIs ====================
+
 
 @router.get(
     '/{user_id}',
@@ -82,6 +86,7 @@ async def get_user_quota(
 
     return response_base.success(data=data)
 
+
 @router.post(
     '/deduct',
     summary='扣减用户积分',
@@ -115,6 +120,6 @@ async def deduct_credits(
     except Exception as e:
         return response_base.fail(data=DeductResponse(
             success=False,
-            remaining_credits=Decimal('0'),
+            remaining_credits=Decimal(0),
             message=str(e),
         ))

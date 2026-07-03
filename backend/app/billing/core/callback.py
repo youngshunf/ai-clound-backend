@@ -7,7 +7,8 @@
     register_pay_callback('credit_pack', handle_credit_pack_paid)
 """
 
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from backend.common.log import log
 
@@ -32,7 +33,7 @@ def register_refund_callback(order_type: str, handler: Callable[..., Coroutine[A
 
 async def dispatch_pay_success(order_type: str, order: Any) -> bool:
     """分发支付成功事件到业务模块
-    
+
     :return: True=有处理器且执行成功, False=无处理器
     """
     handler = _pay_callbacks.get(order_type)

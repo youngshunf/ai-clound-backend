@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path
 
 from backend.app.hermes.schema.hermes_agent_operation import (
     CreateHermesAgentOperationParam,

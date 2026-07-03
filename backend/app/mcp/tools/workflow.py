@@ -20,7 +20,8 @@ run/pause/cancel 只写云端权威状态信号，由持有 driver 的节点本�
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.mcp.auth import AgentContext

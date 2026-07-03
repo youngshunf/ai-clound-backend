@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hermes.model import HermesAgentRuntimeState
-from backend.app.hermes.schema.hermes_agent_runtime_state import CreateHermesAgentRuntimeStateParam, UpdateHermesAgentRuntimeStateParam
+from backend.app.hermes.schema.hermes_agent_runtime_state import (
+    CreateHermesAgentRuntimeStateParam,
+    UpdateHermesAgentRuntimeStateParam,
+)
 
 
 class CRUDHermesAgentRuntimeState(CRUDPlus[HermesAgentRuntimeState]):

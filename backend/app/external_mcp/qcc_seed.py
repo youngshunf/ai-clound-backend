@@ -158,7 +158,7 @@ def _main() -> None:
         seed_qcc_servers(bearer_token=token, per_owner_daily_quota=quota, rate_limit_per_min=rate)
     )
     for r in results:
-        print(  # noqa: T201 — CLI 运维可读输出
+        print(
             f"  {r['namespace']:16s} {r['action']:10s} "
             f"cred={'Y' if r['credential_written'] else 'N'} "
             f"tools={r['tools_count']} health={r['health']} mcp_id={r['mcp_id']}"

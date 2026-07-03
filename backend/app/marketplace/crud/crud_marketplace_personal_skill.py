@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.marketplace.model import MarketplacePersonalSkill
-from backend.app.marketplace.schema.marketplace_personal_skill import CreateMarketplacePersonalSkillParam, UpdateMarketplacePersonalSkillParam
+from backend.app.marketplace.schema.marketplace_personal_skill import (
+    CreateMarketplacePersonalSkillParam,
+    UpdateMarketplacePersonalSkillParam,
+)
 
 
 class CRUDMarketplacePersonalSkill(CRUDPlus[MarketplacePersonalSkill]):

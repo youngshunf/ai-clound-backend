@@ -65,7 +65,7 @@ def _validate_bundle_structure(payload: SkillPackCreateRequest) -> dict[str, Any
     """
     try:
         spec = yaml.safe_load(payload.hermes_yaml)
-    except yaml.YAMLError as exc:  # noqa: BLE001
+    except yaml.YAMLError as exc:
         raise errors.RequestError(msg=f'hermes_yaml 不是合法 YAML：{exc}')
     if not isinstance(spec, dict):
         raise errors.RequestError(msg='hermes_yaml 顶层必须是对象（dict）')
@@ -184,7 +184,7 @@ async def upsert_skill_pack(
         # user_id 与 author_id 同源：mine 列表 get_by_user 按 user_id 过滤，缺它则
         # webui 创建的技能包进不了「我的发布」。
         'user_id': author_id,
-        'price': Decimal('0'),
+        'price': Decimal(0),
         'is_private': payload.is_private,
         'is_official': payload.is_official,
     }
@@ -216,17 +216,17 @@ async def upsert_skill_pack(
 
     await db.execute(
         sa.text(
-            f'''
+            f"""
             INSERT INTO hasn_marketplace.marketplace_template (
                 template_id, namespace, slug, template_type, name, description,
                 author_id, user_id, pricing_type, price, is_private, is_official,
-                download_count, source_type, created_time, updated_time'''
-            f'''{is_common_insert_col}{category_insert_col}{status_insert_col}{icon_url_insert_col}
+                download_count, source_type, created_time, updated_time"""
+            f"""{is_common_insert_col}{category_insert_col}{status_insert_col}{icon_url_insert_col}
             ) VALUES (
                 :template_id, :namespace, :slug, 'skill_pack', :name, :description,
                 :author_id, :user_id, 'free', :price, :is_private, :is_official,
-                0, 'local', now(), now()'''
-            f'''{is_common_insert_val}{category_insert_val}{status_insert_val}{icon_url_insert_val}
+                0, 'local', now(), now()"""
+            f"""{is_common_insert_val}{category_insert_val}{status_insert_val}{icon_url_insert_val}
             )
             ON CONFLICT (template_id) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -235,23 +235,23 @@ async def upsert_skill_pack(
                 is_official = EXCLUDED.is_official,
                 {is_common_set}{category_set}{status_set}{icon_url_set}
                 updated_time = now()
-            '''
+            """
         ),
         template_params,
     )
     await db.execute(
         sa.text(
-            '''
+            """
             UPDATE hasn_marketplace.marketplace_template_version
             SET is_latest = false, updated_time = now()
             WHERE template_id = :template_id
-            '''
+            """
         ),
         {'template_id': template_id},
     )
     await db.execute(
         sa.text(
-            '''
+            """
             INSERT INTO hasn_marketplace.marketplace_template_version (
                 template_id, version, changelog, skill_dependencies_versioned,
                 bundle_slug, command_key, hermes_bundle_json, hermes_yaml,
@@ -272,7 +272,7 @@ async def upsert_skill_pack(
                 is_latest = true,
                 published_at = EXCLUDED.published_at,
                 updated_time = now()
-            '''
+            """
         ),
         {
             'template_id': template_id,

@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.marketplace.crud.crud_marketplace_sync_log import marketplace_sync_log_dao
 from backend.app.marketplace.model import MarketplaceSyncLog
-from backend.app.marketplace.schema.marketplace_sync_log import CreateMarketplaceSyncLogParam, DeleteMarketplaceSyncLogParam, UpdateMarketplaceSyncLogParam
+from backend.app.marketplace.schema.marketplace_sync_log import (
+    CreateMarketplaceSyncLogParam,
+    DeleteMarketplaceSyncLogParam,
+    UpdateMarketplaceSyncLogParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

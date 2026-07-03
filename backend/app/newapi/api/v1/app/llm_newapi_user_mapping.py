@@ -8,6 +8,7 @@
 """
 
 import time
+
 from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
@@ -18,7 +19,6 @@ from backend.app.newapi.schema.llm_newapi_user_mapping import (
     NewApiMappingInfo,
     NewApiQuotaInfo,
     NewApiUsageDetail,
-    NewApiUsageSummary,
 )
 from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.common.exception import errors

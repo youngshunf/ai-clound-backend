@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from backend.app.hermes.schema.hermes_agent import CreateHermesAgentParam, Updat
 class CRUDHermesAgent(CRUDPlus[HermesAgent]):
     async def get(self, db: AsyncSession, pk: int) -> HermesAgent | None:
         """
-        获取Hermes Agent 
+        获取Hermes Agent
 
         :param db: 数据库会话
         :param pk: Hermes Agent  ID
@@ -25,7 +25,7 @@ class CRUDHermesAgent(CRUDPlus[HermesAgent]):
 
     async def get_all(self, db: AsyncSession) -> Sequence[HermesAgent]:
         """
-        获取所有Hermes Agent 
+        获取所有Hermes Agent
 
         :param db: 数据库会话
         :return:
@@ -34,7 +34,7 @@ class CRUDHermesAgent(CRUDPlus[HermesAgent]):
 
     async def create(self, db: AsyncSession, obj: CreateHermesAgentParam) -> None:
         """
-        创建Hermes Agent 
+        创建Hermes Agent
 
         :param db: 数据库会话
         :param obj: 创建Hermes Agent 参数
@@ -44,7 +44,7 @@ class CRUDHermesAgent(CRUDPlus[HermesAgent]):
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateHermesAgentParam) -> int:
         """
-        更新Hermes Agent 
+        更新Hermes Agent
 
         :param db: 数据库会话
         :param pk: Hermes Agent  ID
@@ -55,7 +55,7 @@ class CRUDHermesAgent(CRUDPlus[HermesAgent]):
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         """
-        批量删除Hermes Agent 
+        批量删除Hermes Agent
 
         :param db: 数据库会话
         :param pks: Hermes Agent  ID 列表

@@ -283,7 +283,7 @@ class GitHubAppSyncService:
                     content=Path(icon_path).read_bytes(),  # noqa: ASYNC240
                     filename=Path(icon_path).name,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning('icon upload failed for template %s, keeping existing icon: %s', template_id, exc)
                 template_data['icon_url'] = existing_template.icon_url if existing_template else None
 

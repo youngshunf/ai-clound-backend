@@ -10,7 +10,7 @@ from backend.app.marketplace.crud.crud_marketplace_template import marketplace_t
 from backend.app.marketplace.crud.crud_marketplace_template_version import marketplace_template_version_dao
 from backend.app.marketplace.service.marketplace_template_service import marketplace_template_service
 from backend.app.marketplace.service.search_service import search_service
-from backend.database.db import CurrentSession  # noqa: TC001
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 

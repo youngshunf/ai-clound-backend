@@ -2,7 +2,7 @@
 
 提供给桌面应用使用的版本检测接口，不需要登录认证。
 """
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastapi import APIRouter, Path, Query
 from pydantic import BaseModel, Field
@@ -23,29 +23,29 @@ class BinaryInfo(BaseModel):
     url: str = Field(description='下载地址')
     sha256: str = Field(description='SHA256 校验值')
     size: int = Field(description='文件大小（字节）')
-    filename: Optional[str] = Field(None, description='文件名')
+    filename: str | None = Field(None, description='文件名')
 
 
 class VersionManifest(BaseModel):
     """版本清单（兼容桌面端现有格式）"""
     version: str = Field(description='版本号')
-    build_time: Optional[str] = Field(None, description='构建时间')
-    build_timestamp: Optional[int] = Field(None, description='构建时间戳')
-    changelog: Optional[str] = Field(None, description='更新日志')
+    build_time: str | None = Field(None, description='构建时间')
+    build_timestamp: int | None = Field(None, description='构建时间戳')
+    changelog: str | None = Field(None, description='更新日志')
     is_force_update: bool = Field(False, description='是否强制更新')
-    min_version: Optional[str] = Field(None, description='最小兼容版本')
+    min_version: str | None = Field(None, description='最小兼容版本')
     binaries: dict[str, BinaryInfo] = Field(default_factory=dict, description='各平台二进制文件信息')
 
 
 class VersionCheckResponse(BaseModel):
     """版本检测响应"""
-    latest_version: Optional[str] = Field(None, description='最新版本号')
+    latest_version: str | None = Field(None, description='最新版本号')
     has_update: bool = Field(False, description='是否有更新')
     is_force_update: bool = Field(False, description='是否强制更新')
-    changelog: Optional[str] = Field(None, description='更新日志')
-    download_url: Optional[str] = Field(None, description='下载地址')
-    file_hash: Optional[str] = Field(None, description='SHA256 校验值')
-    file_size: Optional[int] = Field(None, description='文件大小')
+    changelog: str | None = Field(None, description='更新日志')
+    download_url: str | None = Field(None, description='下载地址')
+    file_hash: str | None = Field(None, description='SHA256 校验值')
+    file_size: int | None = Field(None, description='文件大小')
 
 
 # ============================================================
@@ -55,13 +55,13 @@ class VersionCheckResponse(BaseModel):
 @router.get('/latest', summary='获取最新版本号')
 async def get_latest_version(
     db: CurrentSession,
-    app_code: str = Query('creator-flow', description='应用标识'),
+    app_code: Annotated[str, Query(description='应用标识')] = 'creator-flow',
     platform: str = Query(..., description='平台: darwin/win32/linux'),
     arch: str = Query(..., description='架构: x64/arm64'),
-) -> ResponseSchemaModel[Optional[str]]:
+) -> ResponseSchemaModel[str | None]:
     """
     获取指定应用、平台、架构的最新版本号
-    
+
     返回最新发布版本的版本号，如果没有发布版本则返回 null
     """
     latest = await app_version_dao.get_latest_published(
@@ -76,14 +76,14 @@ async def get_latest_version(
 @router.get('/check', summary='检测版本更新')
 async def check_version(
     db: CurrentSession,
-    current_version: str = Query(..., description='当前版本号'),
-    app_code: str = Query('creator-flow', description='应用标识'),
+    current_version: Annotated[str, Query(description='当前版本号')],
+    app_code: Annotated[str, Query(description='应用标识')] = 'creator-flow',
     platform: str = Query(..., description='平台: darwin/win32/linux'),
     arch: str = Query(..., description='架构: x64/arm64'),
 ) -> ResponseSchemaModel[VersionCheckResponse]:
     """
     检测是否有新版本可用
-    
+
     比较当前版本与最新发布版本，返回更新信息
     """
     latest = await app_version_dao.get_latest_published(
@@ -92,15 +92,15 @@ async def check_version(
         platform=platform,
         arch=arch,
     )
-    
+
     if not latest:
         return response_base.success(data=VersionCheckResponse(
             has_update=False,
         ))
-    
+
     # 简单的版本比较
     has_update = _is_newer_version(latest.version, current_version)
-    
+
     return response_base.success(data=VersionCheckResponse(
         latest_version=latest.version,
         has_update=has_update,
@@ -116,11 +116,11 @@ async def check_version(
 async def get_version_manifest(
     db: CurrentSession,
     version: Annotated[str, Path(description='版本号')],
-    app_code: str = Query('creator-flow', description='应用标识'),
-) -> ResponseSchemaModel[Optional[VersionManifest]]:
+    app_code: Annotated[str, Query(description='应用标识')] = 'creator-flow',
+) -> ResponseSchemaModel[VersionManifest | None]:
     """
     获取指定版本的完整清单（包含所有平台的二进制文件信息）
-    
+
     返回格式兼容桌面端现有的 VersionManifest 接口
     """
     versions = await app_version_dao.get_manifest(
@@ -128,10 +128,10 @@ async def get_version_manifest(
         app_code=app_code,
         version=version,
     )
-    
+
     if not versions:
         return response_base.success(data=None)
-    
+
     # 构建 binaries 字典
     binaries: dict[str, BinaryInfo] = {}
     changelog = None
@@ -139,7 +139,7 @@ async def get_version_manifest(
     min_version = None
     build_time = None
     build_timestamp = None
-    
+
     for v in versions:
         # 平台键格式：darwin-arm64, win32-x64 等
         platform_key = f'{v.platform}-{v.arch}'
@@ -157,7 +157,7 @@ async def get_version_manifest(
             if v.published_at:
                 build_time = v.published_at.isoformat()
                 build_timestamp = int(v.published_at.timestamp())
-    
+
     manifest = VersionManifest(
         version=version,
         build_time=build_time,
@@ -167,7 +167,7 @@ async def get_version_manifest(
         min_version=min_version,
         binaries=binaries,
     )
-    
+
     return response_base.success(data=manifest)
 
 
@@ -176,14 +176,15 @@ async def get_version_manifest(
 # electron-updater 会请求 latest-mac.yml / latest.yml / latest-linux.yml
 # ============================================================
 
-from fastapi.responses import PlainTextResponse
 import yaml
+
+from fastapi.responses import PlainTextResponse
 
 
 @router.get('/latest-mac.yml', summary='macOS 更新清单 (electron-updater)')
 async def get_latest_mac_yml(
     db: CurrentSession,
-    app_code: str = Query('creator-flow', description='应用标识'),
+    app_code: Annotated[str, Query(description='应用标识')] = 'creator-flow',
 ) -> PlainTextResponse:
     """
     返回 electron-updater 需要的 latest-mac.yml 格式
@@ -195,7 +196,7 @@ async def get_latest_mac_yml(
 @router.get('/latest.yml', summary='Windows 更新清单 (electron-updater)')
 async def get_latest_win_yml(
     db: CurrentSession,
-    app_code: str = Query('creator-flow', description='应用标识'),
+    app_code: Annotated[str, Query(description='应用标识')] = 'creator-flow',
 ) -> PlainTextResponse:
     """
     返回 electron-updater 需要的 latest.yml 格式 (Windows)
@@ -206,7 +207,7 @@ async def get_latest_win_yml(
 @router.get('/latest-linux.yml', summary='Linux 更新清单 (electron-updater)')
 async def get_latest_linux_yml(
     db: CurrentSession,
-    app_code: str = Query('creator-flow', description='应用标识'),
+    app_code: Annotated[str, Query(description='应用标识')] = 'creator-flow',
 ) -> PlainTextResponse:
     """
     返回 electron-updater 需要的 latest-linux.yml 格式
@@ -221,7 +222,7 @@ async def _build_electron_updater_yml(
 ) -> PlainTextResponse:
     """
     构建 electron-updater 需要的 YAML 格式
-    
+
     格式示例:
     version: 1.0.0
     files:
@@ -232,9 +233,10 @@ async def _build_electron_updater_yml(
     sha512: abc123...
     releaseDate: '2024-01-01T00:00:00.000Z'
     """
-    from sqlalchemy import select, desc
+    from sqlalchemy import desc, select
+
     from backend.app.admin.model import AppVersion
-    
+
     # 查找该平台的最新发布版本（所有架构）
     stmt = (
         select(AppVersion)
@@ -247,7 +249,7 @@ async def _build_electron_updater_yml(
     )
     result = await db.execute(stmt)
     versions = result.scalars().all()
-    
+
     if not versions:
         # 没有发布版本，返回 404
         return PlainTextResponse(
@@ -255,22 +257,22 @@ async def _build_electron_updater_yml(
             status_code=404,
             media_type='text/yaml',
         )
-    
+
     # 按版本号分组，取最新版本
     latest_version = versions[0].version
     latest_files = [v for v in versions if v.version == latest_version]
-    
+
     if not latest_files:
         return PlainTextResponse(
             content='# No files found for latest version',
             status_code=404,
             media_type='text/yaml',
         )
-    
+
     # 构建 files 列表
     files = []
     first_file = latest_files[0]
-    
+
     for v in latest_files:
         file_entry = {
             'url': v.download_url,
@@ -278,7 +280,7 @@ async def _build_electron_updater_yml(
             'size': v.file_size,
         }
         files.append(file_entry)
-    
+
     # 构建 YAML 内容
     yml_data = {
         'version': latest_version,
@@ -287,13 +289,13 @@ async def _build_electron_updater_yml(
         'sha512': first_file.file_hash,
         'releaseDate': first_file.published_at.isoformat() if first_file.published_at else None,
     }
-    
+
     # 添加可选字段
     if first_file.changelog:
         yml_data['releaseNotes'] = first_file.changelog
-    
+
     yml_content = yaml.dump(yml_data, allow_unicode=True, default_flow_style=False)
-    
+
     return PlainTextResponse(
         content=yml_content,
         media_type='text/yaml',
@@ -312,7 +314,7 @@ def _is_newer_version(latest: str, current: str) -> bool:
             # 移除预发布标识 (如 -beta.1)
             v = v.split('-')[0]
             return tuple(int(x) for x in v.split('.'))
-        
+
         latest_parts = parse_version(latest)
         current_parts = parse_version(current)
         return latest_parts > current_parts

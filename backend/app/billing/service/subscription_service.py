@@ -4,12 +4,12 @@
 
 from datetime import timedelta
 
-from sqlalchemy import select, and_, update
+from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.billing.model import UserSubscription
 from backend.app.newapi.apikey.enums import ApiKeyStatus
 from backend.app.newapi.apikey.model import UserApiKey
-from backend.app.billing.model import UserSubscription
 from backend.common.log import log
 from backend.utils.timezone import timezone
 

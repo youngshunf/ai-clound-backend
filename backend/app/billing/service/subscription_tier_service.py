@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model import SubscriptionTier
-from backend.app.billing.schema.subscription_tier import CreateSubscriptionTierParam, DeleteSubscriptionTierParam, UpdateSubscriptionTierParam
+from backend.app.billing.schema.subscription_tier import (
+    CreateSubscriptionTierParam,
+    DeleteSubscriptionTierParam,
+    UpdateSubscriptionTierParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

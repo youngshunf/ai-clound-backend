@@ -4,12 +4,11 @@ AgentContext 上下文传递
 使用 contextvars 在异步上下文中传递 AgentContext
 """
 from contextvars import ContextVar
-from typing import Optional
 
 from backend.app.mcp.auth import AgentContext
 
 # 使用 contextvars 在异步上下文中传递 AgentContext
-_agent_context_var: ContextVar[Optional[AgentContext]] = ContextVar(
+_agent_context_var: ContextVar[AgentContext | None] = ContextVar(
     'agent_context',
     default=None
 )
@@ -35,14 +34,14 @@ def clear_agent_context() -> None:
 
 # 一次性能力票据（X-Capability-Ticket，A-P2 验票跳闸）：由传输层从 header 提取后落入，
 # call_tool 的 ask 分支据此验票跳过审批闸门直接执行。
-_capability_ticket_var: ContextVar[Optional[str]] = ContextVar('capability_ticket', default=None)
+_capability_ticket_var: ContextVar[str | None] = ContextVar('capability_ticket', default=None)
 
 
-def set_capability_ticket(ticket: Optional[str]) -> None:
+def set_capability_ticket(ticket: str | None) -> None:
     """设置当前请求携带的一次性能力票据（无则传 None）。"""
     _capability_ticket_var.set(ticket or None)
 
 
-def get_capability_ticket() -> Optional[str]:
+def get_capability_ticket() -> str | None:
     """取当前请求的一次性能力票据（无则 None）。"""
     return _capability_ticket_var.get()

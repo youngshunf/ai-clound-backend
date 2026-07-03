@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.marketplace.model._base import MarketplaceBase
-from backend.common.model import id_key, UniversalText
+from backend.common.model import UniversalText, id_key
 
 
 class MarketplaceSop(MarketplaceBase):

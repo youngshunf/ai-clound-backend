@@ -9,6 +9,7 @@
 """
 
 import json
+
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
@@ -78,7 +79,7 @@ async def unified_pay_notify(
                 )
             return PlainTextResponse('{"code":"SUCCESS","message":"成功"}', status_code=200)
 
-        elif code.startswith('alipay'):
+        if code.startswith('alipay'):
             form_data = await request.form()
             data = dict(form_data)
             raw_data = json.dumps(data, ensure_ascii=False)
@@ -100,9 +101,8 @@ async def unified_pay_notify(
                 )
             return PlainTextResponse('success', status_code=200)
 
-        else:
-            log.error(f'不支持的渠道编码: {code}')
-            return PlainTextResponse('fail', status_code=200)
+        log.error(f'不支持的渠道编码: {code}')
+        return PlainTextResponse('fail', status_code=200)
 
     except Exception as e:
         log.error(f'支付回调异常: channel={channel_id}, error={e}')
@@ -175,7 +175,7 @@ async def unified_contract_notify(
                     await pay_contract_service.handle_unsign_notify(db=db, contract_no=contract_no)
             return PlainTextResponse('{"code":"SUCCESS","message":"成功"}', status_code=200)
 
-        elif code.startswith('alipay'):
+        if code.startswith('alipay'):
             form_data = await request.form()
             data = dict(form_data)
             client.verify_callback({}, data)

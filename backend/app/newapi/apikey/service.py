@@ -4,7 +4,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.common.security.encryption import key_encryption
 from backend.app.newapi.apikey.crud import user_api_key_dao
 from backend.app.newapi.apikey.enums import ApiKeyStatus
 from backend.app.newapi.apikey.model import UserApiKey
@@ -18,6 +17,7 @@ from backend.app.newapi.apikey.schema import (
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.pagination import paging_data
+from backend.common.security.encryption import key_encryption
 from backend.utils.timezone import timezone
 
 

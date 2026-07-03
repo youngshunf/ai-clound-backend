@@ -7,7 +7,7 @@ from typing import Any
 class PayClient(ABC):
     """支付渠道客户端抽象基类"""
 
-    def __init__(self, config: dict, notify_url: str):
+    def __init__(self, config: dict, notify_url: str) -> None:
         self.config = config
         self.notify_url = config.get('notify_url', notify_url)
 
@@ -22,7 +22,7 @@ class PayClient(ABC):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """创建支付订单
-        
+
         :param order_no: 商户订单号
         :param amount: 金额（分）
         :param subject: 标题
@@ -53,7 +53,7 @@ class PayClient(ABC):
     @abstractmethod
     def verify_callback(self, headers: dict, body: str | dict) -> dict[str, Any]:
         """验签并解析回调数据
-        
+
         :param headers: 请求头
         :param body: 请求体（微信为 str, 支付宝为 dict）
         :return: 解析后的回调数据

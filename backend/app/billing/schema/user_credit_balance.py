@@ -15,7 +15,7 @@ class UserCreditBalanceSchemaBase(SchemaBase):
         description='积分类型 (monthly:月度赠送:blue/purchased:购买积分:green/bonus:活动赠送:orange)'
     )
     original_amount: Decimal = Field(description='原始积分数量')
-    used_amount: Decimal = Field(default=Decimal('0'), description='已使用积分')
+    used_amount: Decimal = Field(default=Decimal(0), description='已使用积分')
     remaining_amount: Decimal = Field(description='剩余积分数量')
     expires_at: datetime | None = Field(None, description='过期时间')
     granted_at: datetime = Field(description='发放时间')

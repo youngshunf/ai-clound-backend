@@ -41,7 +41,7 @@ _SUMMARY_FIELDS = {
 }
 
 
-def test_to_available_model_shape_and_vision_inference():
+def test_to_available_model_shape_and_vision_inference() -> None:
     """映射器：字段齐全、视觉按名启发式、退化元数据为默认。"""
     m = _to_available_model({'model_name': 'gpt-4o', 'description': 'GPT-4o'})
     assert set(m.keys()) == _MODEL_FIELDS
@@ -60,7 +60,7 @@ def test_to_available_model_shape_and_vision_inference():
 
 @pytest_skip
 @pytest.mark.asyncio
-async def test_list_available_models_live():
+async def test_list_available_models_live() -> None:
     """真实 new-api：模型目录可拉取，每项可映射为完整 ModelInfo。"""
     from backend.app.newapi.client import newapi_admin_client
 
@@ -76,7 +76,7 @@ async def test_list_available_models_live():
 
 @pytest_skip
 @pytest.mark.asyncio
-async def test_summarize_usage_live_shape():
+async def test_summarize_usage_live_shape() -> None:
     """真实 new-api：用量汇总（全量口径）形状正确、字段非负、success==total。"""
     from backend.app.newapi.service import summarize_usage
 

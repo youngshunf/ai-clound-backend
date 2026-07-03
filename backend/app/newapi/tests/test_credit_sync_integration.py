@@ -17,10 +17,12 @@ new-api 不可达或 PG 连不上时整体 skip（infra-gated）；可达则全�
 from __future__ import annotations
 
 import secrets
+
 from decimal import Decimal
 
 import httpx
 import pytest
+
 from sqlalchemy import delete
 
 from backend.app.billing.model import CreditTransaction, UserCreditBalance, UserSubscription
@@ -55,7 +57,7 @@ pytest_skip = pytest.mark.skipif(
 
 
 @pytest_skip
-async def test_credit_ledger_closed_loop():
+async def test_credit_ledger_closed_loop() -> None:
     from backend.app.newapi.client import newapi_admin_client
 
     huanxing_user_id = 910_000_000 + secrets.randbelow(80_000_000)
@@ -70,7 +72,7 @@ async def test_credit_ledger_closed_loop():
             await credit_service.add_credits(
                 db,
                 user_id=huanxing_user_id,
-                credits=Decimal('100'),
+                credits=Decimal(100),
                 transaction_type='purchase',
                 description='测试充值 100 积分',
                 is_purchased=True,
@@ -81,7 +83,7 @@ async def test_credit_ledger_closed_loop():
 
         async with async_db_session() as db:
             start_remaining = await credit_service.get_total_available_credits(db, huanxing_user_id)
-        assert start_remaining >= Decimal('100'), '充值 100 后余额至少含购买的 100'
+        assert start_remaining >= Decimal(100), '充值 100 后余额至少含购买的 100'
         q = await newapi_admin_client.get_user_quota(newapi_user_id)
         assert q['used_quota'] == 0
         assert q['quota'] == int(start_remaining * RATE), 'D6：new-api 可用 = 账本剩余 × RATE（镜像）'
@@ -94,11 +96,11 @@ async def test_credit_ledger_closed_loop():
         async with async_db_session.begin() as db:
             res = await credit_sync_service.reconcile_user(db, huanxing_user_id)
             assert res['status'] == 'ok'
-            assert res['consumed_credits'] == Decimal('30')
+            assert res['consumed_credits'] == Decimal(30)
 
         async with async_db_session() as db:
             remaining = await credit_service.get_total_available_credits(db, huanxing_user_id)
-            assert remaining == start_remaining - Decimal('30'), '回扣 30 后账本应减 30'
+            assert remaining == start_remaining - Decimal(30), '回扣 30 后账本应减 30'
             m = await llm_newapi_user_mapping_dao.get_by_user(db, huanxing_user_id, 'huanxing')
             assert m.last_synced_used_quota == q['used_quota'], '游标应推进到当前 used_quota'
         q2 = await newapi_admin_client.get_user_quota(newapi_user_id)
@@ -110,10 +112,10 @@ async def test_credit_ledger_closed_loop():
             assert res['status'] == 'no_delta'
         async with async_db_session() as db:
             remaining = await credit_service.get_total_available_credits(db, huanxing_user_id)
-            assert remaining == start_remaining - Decimal('30'), '无新消费余额不变'
+            assert remaining == start_remaining - Decimal(30), '无新消费余额不变'
 
         # ── D. 消费量超过可用余额：回扣封顶在可用余额，quota 归 0（零 fake，不臆造负余额）──
-        over = start_remaining + Decimal('100')  # 模型化消费超过可用
+        over = start_remaining + Decimal(100)  # 模型化消费超过可用
         async with async_db_session.begin() as db:
             m = await llm_newapi_user_mapping_dao.get_by_user(db, huanxing_user_id, 'huanxing')
             m.last_synced_used_quota = q['used_quota'] - int(over) * RATE
@@ -124,7 +126,7 @@ async def test_credit_ledger_closed_loop():
             assert res['consumed_credits'] == over  # 报告真实增量（不封顶报告值）
         async with async_db_session() as db:
             remaining = await credit_service.get_total_available_credits(db, huanxing_user_id)
-            assert remaining == Decimal('0'), '回扣封顶在可用余额，余额清零（不臆造负数）'
+            assert remaining == Decimal(0), '回扣封顶在可用余额，余额清零（不臆造负数）'
         q3 = await newapi_admin_client.get_user_quota(newapi_user_id)
         assert q3['quota'] == 0, '余额清零后 new-api 可用 = 0'
     finally:

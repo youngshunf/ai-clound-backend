@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from backend.app.marketplace.service.marketplace_skill_service import marketplace_skill_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

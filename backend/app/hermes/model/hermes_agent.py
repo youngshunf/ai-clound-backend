@@ -1,10 +1,10 @@
 from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, id_key, TimeZone
-from backend.utils.timezone import timezone
+from backend.common.model import Base, TimeZone, id_key
 
 
 class HermesAgent(Base):

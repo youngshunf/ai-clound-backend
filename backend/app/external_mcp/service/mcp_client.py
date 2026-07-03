@@ -79,7 +79,7 @@ def _extract_rpc_result(response: httpx.Response) -> dict[str, Any]:
         raise ExternalMcpClientError(
             f'第三方 MCP 响应无法解析（status={response.status_code} ct={content_type}）'
         )
-    if 'error' in payload and payload['error']:
+    if payload.get('error'):
         err = payload['error']
         msg = err.get('message') if isinstance(err, dict) else str(err)
         raise ExternalMcpClientError(f'第三方 MCP 返回 error: {msg}')

@@ -12,10 +12,10 @@ from fastapi import APIRouter, Query, Request
 from backend.app.billing.service.credit_service import credit_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import CurrentSession
 
 router = APIRouter()
+
 
 @router.get(
     '',

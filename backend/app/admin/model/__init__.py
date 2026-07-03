@@ -1,3 +1,4 @@
+from backend.app.admin.model.app_version import AppVersion as AppVersion
 from backend.app.admin.model.data_rule import DataRule as DataRule
 from backend.app.admin.model.data_scope import DataScope as DataScope
 from backend.app.admin.model.dept import Dept as Dept
@@ -9,7 +10,6 @@ from backend.app.admin.model.m2m import user_role as user_role
 from backend.app.admin.model.menu import Menu as Menu
 from backend.app.admin.model.opera_log import OperaLog as OperaLog
 from backend.app.admin.model.role import Role as Role
+from backend.app.admin.model.test_user import TestUser as TestUser
 from backend.app.admin.model.user import User as User
 from backend.app.admin.model.user_password_history import UserPasswordHistory as UserPasswordHistory
-from backend.app.admin.model.test_user import TestUser as TestUser
-from backend.app.admin.model.app_version import AppVersion as AppVersion

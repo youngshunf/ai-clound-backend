@@ -37,7 +37,6 @@ class RefreshAgentTokenResponse(BaseModel):
     summary='刷新 Agent JWT',
     description='Owner 使用自己的 JWT 为名下的 Agent 刷新 token',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def refresh_agent_token(
     request: Request,
@@ -76,8 +75,8 @@ async def refresh_agent_token(
     agent_hasn_id = body.agent_hasn_id
 
     # 查询 Agent 是否存在且属于当前 Owner
-    from sqlalchemy import text
     from loguru import logger
+    from sqlalchemy import text
 
     logger.info(f"刷新 Agent token: agent_hasn_id={agent_hasn_id}, owner_user_id={owner_user_id}")
 

@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hermes.crud.crud_hermes_agent import hermes_agent_dao
 from backend.app.hermes.model import HermesAgent
-from backend.app.hermes.schema.hermes_agent import CreateHermesAgentParam, DeleteHermesAgentParam, UpdateHermesAgentParam
+from backend.app.hermes.schema.hermes_agent import (
+    CreateHermesAgentParam,
+    DeleteHermesAgentParam,
+    UpdateHermesAgentParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 
@@ -13,7 +18,7 @@ class HermesAgentService:
     @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> HermesAgent:
         """
-        获取Hermes Agent 
+        获取Hermes Agent
 
         :param db: 数据库会话
         :param pk: Hermes Agent  ID
@@ -38,7 +43,7 @@ class HermesAgentService:
     @staticmethod
     async def get_all(*, db: AsyncSession) -> Sequence[HermesAgent]:
         """
-        获取所有Hermes Agent 
+        获取所有Hermes Agent
 
         :param db: 数据库会话
         :return:
@@ -49,7 +54,7 @@ class HermesAgentService:
     @staticmethod
     async def create(*, db: AsyncSession, obj: CreateHermesAgentParam) -> None:
         """
-        创建Hermes Agent 
+        创建Hermes Agent
 
         :param db: 数据库会话
         :param obj: 创建Hermes Agent 参数
@@ -60,7 +65,7 @@ class HermesAgentService:
     @staticmethod
     async def update(*, db: AsyncSession, pk: int, obj: UpdateHermesAgentParam) -> int:
         """
-        更新Hermes Agent 
+        更新Hermes Agent
 
         :param db: 数据库会话
         :param pk: Hermes Agent  ID
@@ -73,7 +78,7 @@ class HermesAgentService:
     @staticmethod
     async def delete(*, db: AsyncSession, obj: DeleteHermesAgentParam) -> int:
         """
-        删除Hermes Agent 
+        删除Hermes Agent
 
         :param db: 数据库会话
         :param obj: Hermes Agent  ID 列表

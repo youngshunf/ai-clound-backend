@@ -86,7 +86,7 @@ class BillingUsageService:
 
         返回 {consumed_credits(Decimal), request_count, token_count}。
         """
-        zero = {'consumed_credits': Decimal('0'), 'request_count': 0, 'token_count': 0}
+        zero = {'consumed_credits': Decimal(0), 'request_count': 0, 'token_count': 0}
         mapping = await llm_newapi_user_mapping_dao.get_by_user(db, user_id, app_code)
         if not mapping:
             return zero

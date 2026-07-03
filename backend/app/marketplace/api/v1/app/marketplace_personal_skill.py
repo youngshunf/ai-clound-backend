@@ -15,7 +15,7 @@ from backend.app.hasn.service.hasn_agents_service import agent_profile_service
 from backend.app.marketplace.service.marketplace_personal_skill_service import personal_skill_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
