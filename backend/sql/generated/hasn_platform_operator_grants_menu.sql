@@ -1,5 +1,5 @@
 -- =====================================================
--- 平台运维授予源（Admin-only·G1管理 菜单初始化 SQL (PostgreSQL)
+-- 平台运维授予源（Admin-only·G1 特权门） 菜单初始化 SQL (PostgreSQL)
 -- 自动生成于: 2026-07-02 09:29:19.297787
 -- 支持幂等操作：已存在则更新，不存在则新增
 -- =====================================================
@@ -27,11 +27,11 @@ BEGIN
     
     IF v_menu_id IS NULL THEN
         INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-        VALUES ('平台运维授予源（Admin-only·G1管理', 'HasnPlatformOperatorGrants', '/hasn/hasn_platform_operator_grants', 1, 'lucide:list', 1, '/hasn/hasn_platform_operator_grants/index', NULL, 1, 1, 1, '', '平台运维授予源（Admin-only·G1 特权门）', v_parent_id, NOW(), NULL)
+        VALUES ('平台运维授予源（Admin-only·G1 特权门）', 'HasnPlatformOperatorGrants', '/hasn/hasn_platform_operator_grants', 1, 'lucide:list', 1, '/hasn/hasn_platform_operator_grants/index', NULL, 1, 1, 1, '', '平台运维授予源（Admin-only·G1 特权门）', v_parent_id, NOW(), NULL)
         RETURNING id INTO v_menu_id;
     ELSE
         UPDATE sys_menu SET
-            title = '平台运维授予源（Admin-only·G1管理',
+            title = '平台运维授予源（Admin-only·G1 特权门）',
             name = 'HasnPlatformOperatorGrants',
             component = '/hasn/hasn_platform_operator_grants/index',
             remark = '平台运维授予源（Admin-only·G1 特权门）',
