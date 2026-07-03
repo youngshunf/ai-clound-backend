@@ -28,6 +28,7 @@ NAMESPACE_TO_APP_ID: dict[str, str | None] = {
     'hasn.cloud': None,  # 工具发现 / 转发元工具（底座）
     'hasn.contact': None,  # 通讯录（社交底座）
     'hasn.conversation': None,  # 会话列表（消息底座）
+    'hasn.diag': None,  # 错误诊断（平台运维底座·G1 特权门管，非被购应用，跳过 G3）
     'hasn.marketplace': None,  # 能力市场本身（底座，非被购应用）
     'hasn.memory': None,  # 记忆（每个分身自带的底座能力）
     'hasn.message': None,  # 消息收发（底座）

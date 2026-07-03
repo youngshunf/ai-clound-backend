@@ -29,6 +29,7 @@ from backend.app.mcp.tool_exposure import (
     GATE_SOURCE,
     REASON_EXTERNAL_NOT_BOUND,
     REASON_OWNER_DENIED,
+    REASON_PRIVILEGED,
     REASON_RUNTIME_HIDDEN,
     ToolExposurePolicy,
     tool_exposure_policy,
@@ -187,7 +188,10 @@ async def test_local_agent_runtime_hidden_consistent_across_faces(monkeypatch: p
         decision = tool_exposure_policy.evaluate(ctx, tool)
         if not decision.is_hidden:
             continue
-        assert decision.reason == REASON_RUNTIME_HIDDEN, tool.name
+        # G1 平台特权门(privileged)隐藏的工具（hasn.diag.* 等）由 test_g1_privilege /
+        # test_diag_tools_p3b 覆盖其双面 TOOL_NOT_FOUND 一致性；此属性只锁 runtime_hidden 半侧。
+        if decision.reason != REASON_RUNTIME_HIDDEN:
+            continue
         hidden_names.add(tool.name)
         # 发现面不可见
         assert not server.tool_directory._can_discover(ctx, tool)
@@ -200,10 +204,14 @@ async def test_local_agent_runtime_hidden_consistent_across_faces(monkeypatch: p
     assert any(name.startswith('hasn.deck.') for name in hidden_names)
     assert any(name.startswith('hasn.task.') for name in hidden_names)
     assert any(name.startswith('hasn.workflow.') for name in hidden_names)
-    # 云端分身零隐藏
+    # 云端分身零 runtime 隐藏：非特权工具对无授予云端分身全可见；G1 特权门隐藏的
+    # hasn.diag.* 等（普通云端分身无 diag:* 授予故不可见）由 test_g1_privilege 覆盖，此处放行。
     cloud_ctx = _ctx()
     for tool in server.tool_registry.get_all_tools():
-        assert tool_exposure_policy.evaluate(cloud_ctx, tool).is_visible, tool.name
+        decision = tool_exposure_policy.evaluate(cloud_ctx, tool)
+        if decision.is_hidden and decision.reason == REASON_PRIVILEGED:
+            continue
+        assert decision.is_visible, tool.name
 
 
 @pytest.mark.asyncio

@@ -39,7 +39,8 @@ from backend.app.mcp.tool_exposure import (
 )
 from backend.app.mcp.tools.base import BaseTool
 
-DIAG_TOOL = 'hasn.diag.list_issues'
+# stub 工具名故意不撞真实注册的 hasn.diag.* 六工具（P3b 已上线），只需命中特权前缀驱动 G1。
+DIAG_TOOL = 'hasn.diag.__g1_probe'
 DIAG_SCOPE = 'diag:read:all'
 
 

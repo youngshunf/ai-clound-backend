@@ -28,6 +28,7 @@ from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
+from backend.app.mcp.tools.diag import DIAG_TOOLS
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import (
@@ -155,8 +156,12 @@ class HasnCloudMcpServer:
         # 工作流工具（12-多任务编排 DAG）：create/list_agents/get/get_node_result/run/pause/cancel/list。
         # 从 hasn-node 本地 hasn-mcp 迁来（不依赖本地操作 → 走云端 platform tool，TOOLMIG2）；
         # add_node/add_edge 不在 agent 工具面（经 create 一次声明整图）；整图 fire 仍由 Runtime Host tick。
-        for workflow_tool in WORKFLOW_TOOLS:
-            self.tool_registry.register(workflow_tool)
+        # 一并注册错误诊断工具（21-可观测性 §8）：读类 diag:read:all、写类 diag:manage，
+        # 两 scope 均命中特权前缀 diag: → G1 平台特权门（doc18 §4.1）统一判定：仅经 Admin 授予表
+        # ∪ ENV bootstrap 拿到 diag:* 的「平台运维分析师」分身可见/可调；普通分身发现面隐身、
+        # 执行面 TOOL_NOT_FOUND 泛化。跨 owner 全量读/处置（无隔离）。合并进同一 for 不拉高圈复杂度。
+        for workflow_or_diag_tool in (*WORKFLOW_TOOLS, *DIAG_TOOLS):
+            self.tool_registry.register(workflow_or_diag_tool)
 
         # 演示文稿工具（17-deck）：create/get/list/outline.set/page.write(_batch)/page.edit/page.delete/
         # page.reorder/delete/style.list/style.get（读 4 无 scope，写 8 = deck:manage）。
