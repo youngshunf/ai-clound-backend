@@ -1,4 +1,3 @@
-from backend.app.hasn_imagelab.api.router import app as hasn_imagelab_app
 """主路由聚合。
 
 ⚡ 冷启动加速（dev 专用，opt-in）：
@@ -363,5 +362,3 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
 for _name, _loader in _APP_LOADERS.items():
     if _want(_name):
         _loader()
-
-router.include_router(hasn_imagelab_app)
