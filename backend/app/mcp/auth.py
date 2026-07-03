@@ -13,6 +13,7 @@ from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.security.agent_jwt import (
     get_agent_scopes_cached,
+    get_privileged_grants_cached,
     verify_agent_token,
 )
 from backend.common.security.scope_policy import MODE_DENY
@@ -57,6 +58,10 @@ class AgentContext:
         # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。
         # external 工具全局共享注册表实例，但发现/调用资格按此集合 per-request 过滤，杜绝串号。
         self.external_allowed_tools: set[str] = set()
+        # G1 平台特权门（doc18 §4.1）：Admin 授予表 ∪ ENV bootstrap 的授予值集合
+        # （精确 scope 或段尾通配）。默认空 = 特权工具全不可见；两凭证入口鉴权后
+        # 用 get_privileged_grants_cached 现查灌入。与已废弃的凭证 scopes 无关。
+        self.granted_privileged_scopes: frozenset[str] = frozenset()
 
     @classmethod
     def from_token_payload(
@@ -182,6 +187,8 @@ async def get_agent_context(
         # D3 消费时活取：JWT scopes 仅审计快照，三态判定现查 DB（凭证与授权解耦）。
         policy = await get_agent_scopes_cached(x_hasn_agent_id, db)
         context.apply_policy(policy)
+        # G1 特权授予同处活取（Admin 授予表 ∪ ENV bootstrap，doc18 §4.1）
+        context.granted_privileged_scopes = await get_privileged_grants_cached(x_hasn_agent_id, db)
         return context
 
 

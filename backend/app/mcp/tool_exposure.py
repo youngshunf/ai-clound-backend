@@ -20,6 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from backend.app.mcp.platform_scopes import (
+    PRIVILEGED_SCOPES,
+    privileged_scopes_satisfied,
+)
 from backend.app.mcp.runtime_visibility import is_namespace_hidden_for_runtime
 from backend.common.security.scope_policy import MODE_ASK, MODE_DENY
 
@@ -41,6 +45,7 @@ GATE_ROLE = 'g4_role'
 GATE_OWNER = 'g5_owner'
 
 # ── HIDDEN reason（执行面据此映射错误码，保持与收编前逐位一致）──
+REASON_PRIVILEGED = 'privileged'  # G1：特权 scope 未持有（执行面 TOOL_NOT_FOUND 泛化文案，不确认存在性）
 REASON_EXTERNAL_NOT_BOUND = 'external_not_bound'  # G2：external 工具不在本 Agent binding 白名单
 REASON_RUNTIME_HIDDEN = 'runtime_hidden'  # G2：本地分身在云端面隐藏的命名空间（TOOLMIG2-P4）
 REASON_OWNER_DENIED = 'owner_denied'  # G5：owner 三态 deny（维持现状 deny 即隐身）
@@ -80,7 +85,16 @@ class ToolExposurePolicy:
     """
 
     def evaluate(self, agent_context: AgentContext, tool: BaseTool) -> ExposureDecision:
-        # G1 平台特权门（U2 加装）：required_scopes ∩ PRIVILEGED_SCOPES 未持有 → HIDDEN。
+        # G1 平台特权门（doc18 §4.1）：工具的 required_scopes 里凡命中特权名单
+        # （前缀 diag:/ops:/platform:）的都要被本 Agent 的 granted_privileged_scopes
+        # 覆盖，否则 HIDDEN（发现面不列出、执行面 TOOL_NOT_FOUND，不确认存在性）。
+        # 授予源仅 Admin 表 + ENV bootstrap，与已废弃的凭证 scopes 无关；持有者继续过 G5。
+        required = getattr(tool, 'required_scopes', None) or []
+        needed = frozenset(s for s in required if s in PRIVILEGED_SCOPES)
+        if needed:
+            granted = getattr(agent_context, 'granted_privileged_scopes', None) or frozenset()
+            if not privileged_scopes_satisfied(needed, granted):
+                return ExposureDecision(ACTION_HIDDEN, gate=GATE_PRIVILEGE, reason=REASON_PRIVILEGED)
 
         # G2 来源接入门（硬边界）。
         # a) P7 第三方 MCP 网关：external 工具实例全局共享，发现/调用资格按本 Agent
@@ -109,6 +123,17 @@ class ToolExposurePolicy:
         if mode == MODE_ASK:
             return DECISION_ASK
         return DECISION_ALLOW
+
+    def is_catalog_hidden(self, agent_context: AgentContext, tool: BaseTool) -> bool:
+        """owner 权限页 catalog 是否隐藏该工具（第四暴露面收编，doc18 §3.2）。
+
+        **只**消费 G1/G2 硬边界（存在性都不该暴露的门）：普通分身的权限页不列
+        `diag:*` 等特权工具、也不列未绑定的 external 工具。**G5 三态永不参与**——
+        deny 项必须留在权限页供 owner 改回（否则复刻 102-B3「单向门」）。
+        因 evaluate 短路（顺序即优先级），HIDDEN 且 gate∈{G1,G2} 即硬边界命中。
+        """
+        decision = self.evaluate(agent_context, tool)
+        return decision.is_hidden and decision.gate in (GATE_PRIVILEGE, GATE_SOURCE)
 
 
 def _fallback_namespace(tool_name: str) -> str:

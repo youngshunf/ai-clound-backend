@@ -106,11 +106,11 @@ class ToolDirectoryService:
         binding 派生（仅列其授权的第三方 MCP 工具，P7；未绑定则该分组为空）。
         """
         from backend.app.mcp.scopes import SOURCE_LABELS, scope_meta
+        from backend.app.mcp.tool_exposure import tool_exposure_policy
         from backend.common.security.scope_policy import resolve_capability_mode
 
         default_mode = getattr(agent_context, 'default_mode', 'allow')
         capability_modes = getattr(agent_context, 'capability_modes', {}) or {}
-        external_allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
 
         # source -> scope_key -> {tools: set, risk}
         grouped: dict[str, dict[str, dict[str, Any]]] = {'platform': {}, 'app': {}, 'external': {}}
@@ -118,8 +118,10 @@ class ToolDirectoryService:
             source = self._source_for_tool(tool)
             if source == 'local':
                 continue  # 本地工具不在云端 catalog
-            # external 工具实例全局共享 → 只列本 Agent binding 授权的，杜绝串号泄漏他人工具名。
-            if source == 'external' and tool.name not in external_allowed:
+            # 第四暴露面收编（doc18 §3.2）：按 G1/G2 硬边界剔除（per-agent 投影）——
+            # 普通分身不列 diag:* 特权工具、也不列未绑定的 external 工具（含串号防护）。
+            # G5 三态永不参与：deny 项须留在 catalog 供 owner 改回（不复刻 102-B3 单向门）。
+            if tool_exposure_policy.is_catalog_hidden(agent_context, tool):
                 continue
             bucket = grouped.setdefault(source, {})
             for scope in tool.required_scopes:

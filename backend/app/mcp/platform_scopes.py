@@ -47,3 +47,44 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
     'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},
 }
+
+# ── G1 平台特权门（doc18 §4.1 · 实施/103 U2）──────────────────────────────
+# 特权前缀整段排他：命中前缀的 scope 一律归特权，防漂移守卫据此强制
+# （PLATFORM_SCOPE_CATALOG 的 owner 级 scope 键不得命中这些前缀）。
+# owner 级自查类能力须走其他前缀（diag 文档已预留 selfdiag:read），不得开豁免洞。
+PRIVILEGED_SCOPE_PREFIXES: tuple[str, ...] = ('diag:', 'ops:', 'platform:')
+
+# 特权 scope 名单：已声明的特权 scope 全集。新增运维工具的 scope 必须先登记进来
+# （守卫测试：注册表里凡 required_scopes 命中特权前缀的，必须 ∈ 本名单，防漏名单）。
+# 一行一 scope，与 PLATFORM_SCOPE_CATALOG 同约定。
+PRIVILEGED_SCOPES: frozenset[str] = frozenset({
+    'diag:read:all',  # 运维分身读全平台错误聚合（hasn.diag.* 读类，21-可观测性 §8.2）
+    'diag:manage',  # 运维分身处置错误 issue（hasn.diag.* 写类：update/resolve）
+})
+
+
+def is_privileged_scope(scope: str) -> bool:
+    """scope 是否落在特权前缀（整段排他；通配授予值 `diag:*` 本身也命中）。"""
+    return scope.startswith(PRIVILEGED_SCOPE_PREFIXES)
+
+
+def is_valid_privileged_grant(grant: str) -> bool:
+    """授予值格式校验：特权前缀 + 精确值或段尾整段通配（`ops:*`，`*` 仅限末段）。"""
+    if not is_privileged_scope(grant):
+        return False
+    head, _, tail = grant.rpartition(':')
+    return bool(head) and bool(tail) and ('*' not in head) and (tail == '*' or '*' not in tail)
+
+
+def grant_matches_scope(grant: str, scope: str) -> bool:
+    """单条授予值是否命中 scope：精确命中 ∨ 通配前缀命中（`ops:*` 覆盖 `ops:` 整棵子树）。"""
+    if grant == scope:
+        return True
+    if grant.endswith(':*') and len(grant) > 2:
+        return scope.startswith(grant[:-1])
+    return False
+
+
+def privileged_scopes_satisfied(needed: frozenset[str] | set[str], granted: frozenset[str] | set[str]) -> bool:
+    """needed ⊆ granted，按「精确 ∨ 通配」展开（doc18 §4.1 判定）。"""
+    return all(any(grant_matches_scope(grant, scope) for grant in granted) for scope in needed)

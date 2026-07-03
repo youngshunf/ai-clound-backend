@@ -115,6 +115,9 @@ class Settings(BaseSettings):
 
     # Agent Key（OpenClaw 插件认证）
     AGENT_SECRET_KEY: str = ''  # 生产环境在 .env 中设置，支持逗号分隔多 key
+    # G1 平台特权门 bootstrap 兜底（doc18 §4.1）：`agent_hasn_id:scope[,agent_hasn_id:scope…]`，
+    # 与 hasn_platform_operator_grants 表行同构，读入合并进 granted 集；仅应急，常态走 Admin 授予表
+    PLATFORM_OPERATOR_AGENTS: str = ''
     HUANXING_SITE_URL: str = 'https://huanxing.dcfuture.cn'  # 前端站点域名，用于生成分享链接等
 
     # Hermes Runtime（仅后端持有；不得返回给浏览器）

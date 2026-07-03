@@ -58,3 +58,4 @@ from backend.app.hasn.model.hasn_platform_default_config import (
     HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,
 )
 from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess as HasnAppBetaAccess
+from backend.app.hasn.model.hasn_platform_operator_grants import HasnPlatformOperatorGrants as HasnPlatformOperatorGrants
