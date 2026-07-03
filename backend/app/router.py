@@ -1,3 +1,4 @@
+from backend.app.hasn_imagelab.api.router import app as hasn_imagelab_app
 """主路由聚合。
 
 ⚡ 冷启动加速（dev 专用，opt-in）：
@@ -302,6 +303,14 @@ def _load_hasn_reel() -> None:
     router.include_router(hasn_reel_app)
 
 
+def _load_hasn_imagelab() -> None:
+    # 图坊（hasn_imagelab，模块 14 doc30）：owner 业务面 = 项目云端权威 ID 登记（IMG-P3-cloud）。
+    # 图坊业务数据在 daemon 本地 SQLite（本地权威），云端只有轻登记表（server_id 源）。
+    from backend.app.hasn_imagelab.api.router import app as hasn_imagelab_app
+
+    router.include_router(hasn_imagelab_app)
+
+
 def _load_external_mcp() -> None:
     # 第三方 MCP 网关管理面（external_mcp，doc10/实施99 P7-D）：owner 面 + 平台 admin 面。
     # 刻意不挂 open/agent 裸 CRUD（越权大洞），Agent 经云端 MCP 代理而非 REST 触达 external 工具。
@@ -346,6 +355,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_quant': _load_hasn_quant,
     'hasn_studio': _load_hasn_studio,
     'hasn_reel': _load_hasn_reel,
+    'hasn_imagelab': _load_hasn_imagelab,
     'external_mcp': _load_external_mcp,
     'hasn_diag': _load_hasn_diag,
 }
@@ -353,3 +363,5 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
 for _name, _loader in _APP_LOADERS.items():
     if _want(_name):
         _loader()
+
+router.include_router(hasn_imagelab_app)
