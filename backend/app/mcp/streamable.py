@@ -24,13 +24,13 @@ from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
     hasn_agent_mcp_keys_service,
 )
 from backend.app.hasn_core import HasnHumans, hasn_agents_dao
-from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.auth import AgentContext, inject_app_access
 from backend.app.mcp.context import set_capability_ticket
 from backend.app.mcp.json_encoding import json_default
 from backend.app.mcp.server import mcp_server
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
-from backend.common.security.agent_jwt import get_agent_scopes_cached, verify_agent_token
+from backend.common.security.agent_jwt import get_agent_scopes_cached, get_privileged_grants_cached, verify_agent_token
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -188,6 +188,10 @@ class HasnMcpStreamableServer:
             # D3 消费时活取：不用 key 上冻结的 scopes 判定，用 agent_hasn_id 现查三态策略。
             policy = await get_agent_scopes_cached(record.agent_hasn_id, db)
             context.apply_policy(policy)
+            # G1 特权授予同处活取（Admin 授予表 ∪ ENV bootstrap，doc18 §4.1）
+            context.granted_privileged_scopes = await get_privileged_grants_cached(record.agent_hasn_id, db)
+            # G3 应用权益门 per-request 预取（doc18 §4.3·U3）
+            await inject_app_access(context, db)
             return context
 
     async def _authenticate_with_jwt(self, token: str, headers: dict[bytes, bytes]) -> AgentContext:
@@ -221,6 +225,10 @@ class HasnMcpStreamableServer:
             # D3 消费时活取：JWT scopes 仅审计快照，三态判定现查 DB。
             policy = await get_agent_scopes_cached(hasn_id, db)
             context.apply_policy(policy)
+            # G1 特权授予同处活取（Admin 授予表 ∪ ENV bootstrap，doc18 §4.1）
+            context.granted_privileged_scopes = await get_privileged_grants_cached(hasn_id, db)
+            # G3 应用权益门 per-request 预取（doc18 §4.3·U3）
+            await inject_app_access(context, db)
             return context
 
     async def handle_request_with_auth(

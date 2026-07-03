@@ -19,8 +19,7 @@ from backend.app.mcp.tools.contact import ContactListTool
 def _ctx(default_mode: str = 'allow', capability_modes: dict | None = None) -> AgentContext:
     return AgentContext(
         hasn_id='a_live',
-        owner_id=1,
-        scopes=[],  # 快照为空——证明判定不依赖凭证上的 scopes（D3）
+        owner_id=1,  # 快照为空——证明判定不依赖凭证上的 scopes（D3）
         agent_status='active',
         metadata={},
         owner_hasn_id='h_live',

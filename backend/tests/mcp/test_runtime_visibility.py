@@ -31,7 +31,6 @@ def _ctx(runtime_location: str) -> AgentContext:
     return AgentContext(
         hasn_id='a_runtime_vis_test',
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         agent_name='可见性测试分身',

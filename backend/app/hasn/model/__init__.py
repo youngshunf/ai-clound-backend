@@ -59,3 +59,6 @@ from backend.app.hasn.model.hasn_task_run import HasnTaskRun as HasnTaskRun
 from backend.app.hasn.model.hasn_task_run_summary import HasnTaskRunSummary as HasnTaskRunSummary
 from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
+from backend.app.hasn.model.hasn_platform_operator_grants import (
+    HasnPlatformOperatorGrants as HasnPlatformOperatorGrants,
+)

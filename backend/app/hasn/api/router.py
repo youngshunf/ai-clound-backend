@@ -26,6 +26,9 @@ from backend.app.hasn.api.v1.admin.hasn_pending_intents import router as admin_h
 from backend.app.hasn.api.v1.admin.hasn_platform_default_config import (
     router as admin_hasn_platform_default_config_router,
 )
+from backend.app.hasn.api.v1.admin.hasn_platform_operator_grants import (
+    router as admin_hasn_platform_operator_grants_router,
+)
 from backend.app.hasn.api.v1.admin.hasn_session_artifacts import router as admin_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.admin.hasn_session_events import router as admin_hasn_session_events_router
 from backend.app.hasn.api.v1.admin.hasn_sessions import router as admin_hasn_sessions_router
@@ -298,6 +301,9 @@ v1.include_router(admin_hasn_app_entitlement_router, prefix='/app-entitlements',
 v1.include_router(admin_hasn_app_beta_access_router, prefix='/app-beta-access', tags=['AI-Native 应用灰度内测'])
 v1.include_router(
     admin_hasn_platform_default_config_router, prefix='/platform-default-config', tags=['平台默认配置（节点下发）']
+)
+v1.include_router(
+    admin_hasn_platform_operator_grants_router, prefix='/platform-operator-grants', tags=['平台运维授予源（G1 特权门）']
 )
 
 # --- 分身产物（Artifacts，AF-2）：独立顶层路由组 /api/v1/artifacts/*（不挂 /hasn 下，平台 primitive）---

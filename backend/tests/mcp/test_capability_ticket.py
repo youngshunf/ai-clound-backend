@@ -50,7 +50,6 @@ def _ctx(agent_hasn_id: str, *, capability_modes: dict | None = None) -> AgentCo
     return AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=0,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id='h_ticket_test',
@@ -217,7 +216,7 @@ async def test_grant_always_issues_ticket_and_writes_back_allow() -> None:
     try:
         # 建 agent + 默认 scopes（真实 DB）
         async with async_db_session.begin() as db:
-            db.add(HasnAgents(hasn_id=agent_hasn_id, owner_id=owner_hasn_id, agent_name='grant_t', display_name='Grant T'))
+            db.add(HasnAgents(hasn_id=agent_hasn_id, owner_id=owner_hasn_id, agent_name='grant_t', display_name='Grant T', star_id='999900001'))  # 唯一测试 star_id：免撞 star_id 唯一约束的脏库残留
         async with async_db_session() as db:
             await create_default_agent_scopes(db, agent_hasn_id, owner_hasn_id)
 

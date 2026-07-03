@@ -23,7 +23,6 @@ def _agent_ctx(owner_hasn_id: str) -> AgentContext:
     return AgentContext(
         hasn_id='a_contact_search_test',
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id=owner_hasn_id,

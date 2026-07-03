@@ -109,7 +109,6 @@ class FakeAgentTokenIssuer:
             access_token=f'agent-token:{agent_hasn_id}',
             access_token_expire_time=SimpleNamespace(isoformat=lambda: '2026-05-18T00:00:00+00:00'),
             expires_at_unix=1779062400,
-            scopes=['message.read', 'knowledge.read'],
         )
 
 

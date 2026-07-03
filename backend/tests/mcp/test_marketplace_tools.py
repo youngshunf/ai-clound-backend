@@ -34,7 +34,6 @@ def _agent_ctx() -> AgentContext:
     return AgentContext(
         hasn_id='a_marketplace_tool_test',
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id='h_marketplace_tool_test',
@@ -60,7 +59,8 @@ async def _db_reachable() -> bool:
 
 
 def test_marketplace_tools_count_and_names() -> None:
-    """3 组 9 个云端工具，命名 hasn.marketplace.<verb>（package_* 在 hasn-mcp 本地，不在此）。"""
+    """3 组 10 个云端工具，命名 hasn.marketplace.<verb>（package_* 在 hasn-mcp 本地，不在此；
+    publish_skill_pack 为 B2 技能包载体收编新增）。"""
     names = {cls().name for cls in MARKETPLACE_TOOLS}
     assert names == {
         'hasn.marketplace.search_skills',
@@ -71,6 +71,7 @@ def test_marketplace_tools_count_and_names() -> None:
         'hasn.marketplace.install_skill',
         'hasn.marketplace.uninstall_skill',
         'hasn.marketplace.publish_skill',
+        'hasn.marketplace.publish_skill_pack',
         'hasn.marketplace.publish_template',
     }
 

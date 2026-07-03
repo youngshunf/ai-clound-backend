@@ -39,7 +39,6 @@ def _ctx(owner_hasn_id: str) -> AgentContext:
     return AgentContext(
         hasn_id='a_knowu_test',
         owner_id=0,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id=owner_hasn_id,
@@ -48,6 +47,9 @@ def _ctx(owner_hasn_id: str) -> AgentContext:
 
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator:
+    # 进场也先释放全局池：前序测试文件（TestClient 等）可能留下绑在别的事件循环上的池连接，
+    # 被测工具中途新开 async_db_session 会拿到它们 → 「different loop」。对称于 teardown 的 dispose。
+    await async_engine.dispose()
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -129,7 +131,6 @@ async def test_memory_contribute_tool_lands_contribution(session) -> None:
     ctx = AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=0,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id=owner,
@@ -188,7 +189,6 @@ async def test_memory_contribute_tool_merge_deferred_on_failure(session, monkeyp
             AgentContext(
                 hasn_id='a_knowu_interviewer',
                 owner_id=0,
-                scopes=[],
                 agent_status='active',
                 metadata={},
                 owner_hasn_id=owner,
@@ -229,7 +229,6 @@ async def test_memory_contribute_tool_rejects_empty_content(session) -> None:
         AgentContext(
             hasn_id='a_knowu_interviewer',
             owner_id=0,
-            scopes=[],
             agent_status='active',
             metadata={},
             owner_hasn_id=owner,

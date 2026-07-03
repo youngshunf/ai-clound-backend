@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.dataclasses import AgentAccessToken, AgentTokenPayload
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.core.conf import settings
 from backend.database.redis import redis_client
 from backend.utils.timezone import timezone
@@ -281,6 +282,69 @@ async def invalidate_agent_scopes_cache(agent_hasn_id: str) -> None:
     :return:
     """
     await redis_client.delete(f'agent_scopes:{agent_hasn_id}')
+
+
+def _env_privileged_grants(agent_hasn_id: str) -> set[str]:
+    """从 ENV PLATFORM_OPERATOR_AGENTS 解析该分身的 bootstrap 授予（仅应急兜底，doc18 §4.1）。
+
+    格式与表行同构：`agent_hasn_id:scope[,agent_hasn_id:scope…]`。scope 自身含 `:`
+    （如 diag:read:all），故按**第一个** `:` 切 agent 段、余下整体为 scope。
+    """
+    raw = (settings.PLATFORM_OPERATOR_AGENTS or '').strip()
+    if not raw:
+        return set()
+    grants: set[str] = set()
+    for entry in raw.split(','):
+        head, sep, scope = entry.strip().partition(':')
+        if sep and head == agent_hasn_id and scope:
+            grants.add(scope)
+    return grants
+
+
+async def get_privileged_grants_from_db(db: AsyncSession, agent_hasn_id: str) -> list[str]:
+    """查 hasn_platform_operator_grants（G1 特权门唯一授予源，owner 不可自授）。"""
+    from sqlalchemy import text
+
+    result = await db.execute(
+        text('SELECT scope FROM hasn_platform_operator_grants WHERE agent_hasn_id = :agent_hasn_id'),
+        {'agent_hasn_id': agent_hasn_id},
+    )
+    return [row[0] for row in result.fetchall()]
+
+
+async def get_privileged_grants_cached(agent_hasn_id: str, db: AsyncSession) -> frozenset[str]:
+    """
+    获取 Agent 的平台特权授予集（表 ∪ ENV bootstrap，带短 TTL 缓存）。
+
+    授予/撤销经 invalidate_privileged_grants_cache 即时生效（运维授予低频，暂不 WSPUSH）；
+    TTL 取 300s 短于三态缓存，兜底缓存失效路径的漏网。
+
+    :return: 授予值集合（精确 scope 或段尾通配，如 diag:read:all / ops:*）
+    """
+    cache_key = f'privileged_grants:{agent_hasn_id}'
+
+    grants: set[str] = set()
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached is not None:
+            grants = set(json.loads(cached))
+        else:
+            grants = set(await get_privileged_grants_from_db(db, agent_hasn_id))
+            await redis_client.setex(cache_key, 300, json.dumps(sorted(grants), ensure_ascii=False))
+    except Exception as exc:
+        # 特权授予只是鉴权链路的**附加富化**：查库/缓存瞬时异常绝不阻断整体鉴权，也绝不
+        # fail-open。退化为「无特权授予」（fail-closed：diag/运维等特权工具隐身），下次请求重试。
+        log.warning(f'privileged grants lookup failed for {agent_hasn_id}, defaulting to none: {exc!r}')
+        grants = set()
+
+    # ENV bootstrap 每次现算合并（纯 settings 解析、无 IO：不进缓存、不受上面异常影响；
+    # 改 ENV 重启即生效，不受 TTL 影响）
+    return frozenset(grants | _env_privileged_grants(agent_hasn_id))
+
+
+async def invalidate_privileged_grants_cache(agent_hasn_id: str) -> None:
+    """清除 Agent 特权授予缓存（Admin 授予/撤销后调用，即时生效）。"""
+    await redis_client.delete(f'privileged_grants:{agent_hasn_id}')
 
 
 async def create_default_agent_scopes(db: AsyncSession, agent_hasn_id: str, owner_hasn_id: str) -> None:

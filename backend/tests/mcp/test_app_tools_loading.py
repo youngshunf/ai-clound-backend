@@ -30,7 +30,6 @@ def _ctx(default_mode: str = 'allow', capability_modes: dict | None = None) -> A
     return AgentContext(
         hasn_id='a_app',
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         owner_hasn_id='h_app',

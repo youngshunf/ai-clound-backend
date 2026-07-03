@@ -48,6 +48,25 @@ class BaseTool(ABC):
         """所需权限范围"""
         return []
 
+    @property
+    def app_id(self) -> str | None:
+        """所属应用 catalog app_id（G3 应用权益门·doc18/实施103 U3）。
+
+        平台工具默认 None——其「所属应用」由 namespace 经 `tool_app_registry` 回填；
+        AI-Native app 工具应覆盖此属性返回 manifest 声明的 app_id。None = 平台底座，跳过 G3。
+        """
+        return None
+
+    @property
+    def enterprise_capability(self) -> str | None:
+        """企业能力族键（G4 企业角色门·doc18/实施103 U4）。
+
+        默认 None = 不挂 G4（企业空间也放行）。声明后（如 `oa:approve`/`plan:manage`），
+        企业空间下需主人在该企业的角色被授予此能力族才可见。⚠️ 依赖 doc12/02 角色→能力族
+        策略表落地——策略表未落地前无工具声明此值、门恒 inert（见 evaluate G4 段注释）。
+        """
+        return None
+
     def descriptor(self) -> dict[str, Any]:
         """结构化描述符投影（P0），与 Rust ToolDescriptor 对齐。
 
@@ -56,6 +75,7 @@ class BaseTool(ABC):
         为 P0 占位（local 来源→local，其余→cloud），P3 由工具显式声明覆盖。
         """
         from backend.app.mcp.canonical import schema_hash, validate_canonical_name
+        from backend.app.mcp.tool_app_registry import resolve_tool_app_id
 
         parsed = validate_canonical_name(self.name, self.source)
         output_schema = getattr(self, "output_schema", None)
@@ -68,6 +88,7 @@ class BaseTool(ABC):
             "input_schema_hash": schema_hash(self.input_schema),
             "output_schema_hash": schema_hash(output_schema) if output_schema else None,
             "required_scopes": self.required_scopes,
+            "app_id": resolve_tool_app_id(self),
             "risk_level": getattr(self, "risk_level", "low"),
             "schema_visibility": getattr(self, "schema_visibility", "public"),
             "execution_location": getattr(self, "execution_location", default_location),
