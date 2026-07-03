@@ -18,6 +18,7 @@ from backend.app.mcp.tool_exposure import (
     REASON_EXTERNAL_NOT_BOUND,
     REASON_OWNER_DENIED,
     REASON_PRIVILEGED,
+    REASON_ROLE_INSUFFICIENT,
     ExposureDecision,
     tool_exposure_policy,
 )
@@ -245,11 +246,12 @@ class HasnCloudMcpServer:
                 McpErrorCode.DIRECT_CALL_DENIED,
                 f'Agent 无权调用该外部 MCP 工具: {tool_name}',
             )
-        if decision.reason == REASON_PRIVILEGED:
-            # G1 特权门（doc18 §4.1）：与 _resolve_tool 的「真·未注册」路径**逐字节
-            # 同款**错误（同码 MCP_9209 + 同文案），令「存在但特权隐身」与「根本不存在」
-            # 对普通分身不可区分——否则攻击者比对措辞即可侧探 hasn.diag.* 运维工具存在性。
-            # 回显调用方自己传入的 tool_name 与真 404 一致、不构成额外泄漏；泄漏面是**措辞差异**。
+        if decision.reason in (REASON_PRIVILEGED, REASON_ROLE_INSUFFICIENT):
+            # G1 特权门 / G4 企业角色门（doc18 §4.1/§4.4）：两者都是**存在性隐藏**门——
+            # 与 _resolve_tool 的「真·未注册」路径**逐字节同款**错误（同码 MCP_9209 + 同文案），
+            # 令「存在但特权/角色隐身」与「根本不存在」对普通分身不可区分——否则攻击者比对措辞即可
+            # 侧探 hasn.diag.* 运维工具、或「主人有无某企业角色」。回显调用方自己传入的 tool_name
+            # 与真 404 一致、不构成额外泄漏；泄漏面是**措辞差异**。（G4 当前 inert，见 tool_exposure。）
             raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
         # 运行位置收口（TOOLMIG2-P4）：本地分身在云端面不得调 deck/task/workflow。
         raise McpToolError(
