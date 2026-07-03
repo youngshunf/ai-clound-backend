@@ -16,6 +16,7 @@ from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFE
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
@@ -56,6 +57,10 @@ class AINativeAppRegistry:
             'film': FILM_AI_NATIVE_MANIFEST,
             # 短视频合成应用（app_id=reel，源自 MoneyPrinterTurbo，模块 14 doc19；local_tool，reel-P4 铸 scope）。
             'reel': REEL_AI_NATIVE_MANIFEST,
+            # 图像处理应用（app_id=imagelab，图坊，自研本地引擎，模块 14 doc30；local_tool，P3 铸 scope。
+            # hasn.imagelab.* 工具在本地 hasn-mcp（imagelab.rs，P3 待落）经 ImageLabBroker → 自研引擎处理图片，
+            # 云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
+            'imagelab': IMAGELAB_AI_NATIVE_MANIFEST,
             # 规划与目标管理应用（app_id=plan，模块/schema hasn_plan，模块 19；local_tool，PLAN-P1 铸 scope）。
             'plan': PLAN_AI_NATIVE_MANIFEST,
             # 金融数据（app_id=finance，模块/schema hasn_finance，模块 24；纯云端只读数据应用，

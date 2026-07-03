@@ -53,6 +53,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
     'reel': 57,  # 短视频合成（源自 MoneyPrinterTurbo，瘦引擎应用；default_mount=FALSE 由 install_policy=manual 推导）
+    'imagelab': 58,  # 图像处理（图坊，自研本地引擎，doc30；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
     'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
@@ -141,6 +142,21 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         'hasn.session.ask 问清、绝不硬猜；再用 hasn.reel.script.draft 起草文案（定稿摊给主人确认）→ '
         '一把梭 hasn.reel.generate 或分步合成出片 → hasn.reel.artifact.upload 登记成片。'
         '真实引擎本地合成、本地优先不自动上云，零 fake，失败如实报错。',
+    ),
+    # 图像处理（图坊，自研本地引擎，doc30 §5.5/§5.7）也归「内容运营官（content_operator）」——无专有「修图师」
+    # 分身，任意分身皆可操作，hasn.imagelab.* 工具面与技能所有分身共享（福仔 2026-07-02 纠正）；默认承接
+    # content_operator。一个分身默认服务 deck/designsystem/creator/film/reel/imagelab 等多应用。
+    'imagelab': (
+        'content_operator',
+        '你是图坊（图像处理应用）的执行分身：把主人的图片处理需求做成对客可用的成品。'
+        '先用 hasn.imagelab.analyze 读现状（尺寸/格式/透明度/主体）再动手，别盲目开工；'
+        '复杂或批量需求用 hasn.imagelab.pipeline / batch 组「处理配方」一次编排（去背景→裁剪→水印→压缩→转格式…），'
+        '不要一步步单发；非破坏性处理（裁剪/缩放/调色/滤镜/格式/压缩/去背景/拼图/动画）可自由做（默认不覆盖原图、'
+        '产物只落本地、可回滚），破坏性操作（inpaint 去物体/去水印，hasn.imagelab.retouch）和生成式操作'
+        '（hasn.imagelab.generate 花积分）先与主人确认；批量前先明确输入范围与预期产出数、大批量提交后经 '
+        'hasn.imagelab.job.get 轮询进度；完成用 hasn.imagelab.export 把产物写到本地输出目录并登记，回禀主人，'
+        '需要分享才用 hasn.imagelab.share 上云发好友/群。文案/配色/水印文字等创意与审美判断摊给主人定、不擅自拍板。'
+        '真实引擎本地处理、产物本地优先不自动上云，零 fake，失败如实报错。',
     ),
     # 会议副驾用专属「会议副驾」分身（hub 模板 meeting-copilot，builtin_key=meeting_copilot），
     # 非 content_operator——会议实时副驾是独立专长。
@@ -274,6 +290,21 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
             'version': '',
             'packages': {},
             'bundled_deps': ['ffmpeg', 'imagemagick'],
+        },
+    },
+    # 图像处理（imagelab，图坊，自研本地引擎，doc30 §5.1/§5.5）：确定性像素处理走自研本地引擎（ffmpeg/rembg/
+    # Pillow/scipy/libwebp/opencv），生成类不自建模型（桥接平台 hasn.image.generate）→ 故 config_json 只承载
+    # engine 分发骨架 + 按需下载的 ML 模型清单，**无 image/video 生成模型**（不烧生成 token）。
+    #   - engine.bundled_deps=['ffmpeg','libwebp']（图坊本地处理特有依赖，含动画组装 cwebp/webpmux）；
+    #     ml_models 是**按需下载**的重模型（rembg 抠图 birefnet ~1GB / lama inpaint / esrgan 超分 / ocr），
+    #     不随引擎包强制下发，daemon engine.rs 首用某算子时按需下载（对齐星仔 U2NET_HOME + reel/film 引擎下载）。
+    #   - version + 按架构 packages 留空：dev 用自研引擎源码树即可跑，prod 由运营经管理端/FILMPUB 托管引擎包后填。
+    'imagelab': {
+        'engine': {
+            'version': '',
+            'packages': {},
+            'bundled_deps': ['ffmpeg', 'libwebp'],
+            'ml_models': ['birefnet-general', 'lama', 'realesrgan', 'paddleocr'],
         },
     },
     # 矢量设计（design，源自 OpenPencil，doc27 §4.3/§7/§9）：本地 sidecar = OpenPencil node-server web 编辑器 +

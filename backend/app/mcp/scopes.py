@@ -22,6 +22,7 @@ from backend.app.hasn_designsystem.scopes import DESIGNSYSTEM_SCOPE_CATALOG
 from backend.app.hasn_film.scopes import FILM_SCOPE_CATALOG
 from backend.app.hasn_finance.scopes import FINANCE_SCOPE_CATALOG
 from backend.app.hasn_growth.scopes import HASN_GROWTH_SCOPE_CATALOG
+from backend.app.hasn_imagelab.scopes import IMAGELAB_SCOPE_CATALOG
 from backend.app.hasn_plan.scopes import PLAN_SCOPE_CATALOG
 from backend.app.hasn_publish.scopes import PUBLISH_SCOPE_CATALOG
 from backend.app.hasn_quant.scopes import QUANT_SCOPE_CATALOG
@@ -44,6 +45,7 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     **PUBLISH_SCOPE_CATALOG,
     **FILM_SCOPE_CATALOG,
     **REEL_SCOPE_CATALOG,
+    **IMAGELAB_SCOPE_CATALOG,
     **PLAN_SCOPE_CATALOG,
     **FINANCE_SCOPE_CATALOG,
     **QUANT_SCOPE_CATALOG,

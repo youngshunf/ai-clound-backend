@@ -115,6 +115,12 @@ class AppCatalogRegistry:
         from backend.app.hasn_reel.manifest import build_reel_app
 
         registry.register(build_reel_app())
+        # 图像处理 imagelab（图坊，local_tool AI-Native 自研本地引擎，模块 14 doc30；
+        # install_policy=manual 非默认挂载——引擎按需装，任意分身可操作，默认承接
+        # 内容创作分身 content_operator）。延迟导入避免循环依赖。
+        from backend.app.hasn_imagelab.manifest import build_imagelab_app
+
+        registry.register(build_imagelab_app())
         # 会议副驾 copilot（local_tool AI-Native，无 Agent 工具——走工作会话派发；schema hasn_copilot；
         # install_policy=manual 非默认挂载，完整实时副驾依赖桌面端原生隐身/音频）。延迟导入避免循环依赖。
         from backend.app.hasn_copilot.manifest import build_copilot_app
