@@ -8,7 +8,7 @@ owner_hasn_id 一律从 JWT 解析、绝不信客户端；node_id 客户端自�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, status
 
@@ -23,10 +23,8 @@ from backend.app.hasn_diag.service.error_report_service import IngestEvent, inge
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 from backend.database.redis import redis_client
-
-if TYPE_CHECKING:
-    from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter(prefix='/errors', tags=['错误诊断-用户端'])
 
