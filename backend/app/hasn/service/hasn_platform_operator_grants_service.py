@@ -1,19 +1,26 @@
 from collections.abc import Sequence
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_platform_operator_grants import hasn_platform_operator_grants_dao
-from backend.app.hasn.model import HasnPlatformOperatorGrants
+from backend.app.hasn.model import HasnAgents, HasnHumans, HasnPlatformOperatorGrants
 from backend.app.hasn.schema.hasn_platform_operator_grants import (
     CreateHasnPlatformOperatorGrantsParam,
     DeleteHasnPlatformOperatorGrantsParam,
+    OperatorGrantAgentOption,
+    OperatorGrantOwnerOption,
+    OperatorGrantScopeOption,
     UpdateHasnPlatformOperatorGrantsParam,
 )
-from backend.app.mcp.platform_scopes import is_valid_privileged_grant
+from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG, PRIVILEGED_SCOPES, is_valid_privileged_grant
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.common.security.agent_jwt import invalidate_privileged_grants_cache
+
+# 用户下拉限量（keyword 搜索时收窄，避免全量用户涌入下拉）
+_OWNER_OPTIONS_LIMIT = 50
 
 
 class HasnPlatformOperatorGrantsService:
@@ -117,6 +124,61 @@ class HasnPlatformOperatorGrantsService:
             for agent_hasn_id in affected:
                 await invalidate_privileged_grants_cache(agent_hasn_id)
         return count
+
+    @staticmethod
+    async def list_owner_options(*, db: AsyncSession, keyword: str | None = None) -> list[OperatorGrantOwnerOption]:
+        """授予对象·用户下拉：列 HASN 用户（可按昵称/hasn_id 关键字收窄，限量）。"""
+        stmt = select(HasnHumans.hasn_id, HasnHumans.nickname)
+        kw = (keyword or '').strip()
+        if kw:
+            like = f'%{kw}%'
+            stmt = stmt.where(HasnHumans.nickname.ilike(like) | HasnHumans.hasn_id.ilike(like))
+        stmt = stmt.order_by(HasnHumans.nickname).limit(_OWNER_OPTIONS_LIMIT)
+        rows = (await db.execute(stmt)).all()
+        return [OperatorGrantOwnerOption(hasn_id=r.hasn_id, nickname=r.nickname or r.hasn_id) for r in rows]
+
+    @staticmethod
+    async def list_agent_options(*, db: AsyncSession, owner_hasn_id: str) -> list[OperatorGrantAgentOption]:
+        """授予对象·分身下拉：列某 owner 名下全部分身（按显示名排序）。"""
+        owner = (owner_hasn_id or '').strip()
+        if not owner:
+            return []
+        stmt = (
+            select(HasnAgents.hasn_id, HasnAgents.display_name, HasnAgents.agent_name, HasnAgents.profession)
+            .where(HasnAgents.owner_id == owner)
+            .order_by(HasnAgents.display_name)
+        )
+        rows = (await db.execute(stmt)).all()
+        return [
+            OperatorGrantAgentOption(
+                hasn_id=r.hasn_id,
+                display_name=r.display_name or r.agent_name or r.hasn_id,
+                agent_name=r.agent_name or '',
+                profession=r.profession,
+            )
+            for r in rows
+        ]
+
+    @staticmethod
+    def list_scope_options() -> list[OperatorGrantScopeOption]:
+        """特权 scope 目录（声明驱动·只读）：PRIVILEGED_SCOPES 权威全集 + 展示元数据。
+
+        特权与否是工具的固有安全属性，由工具声明 + PRIVILEGED_SCOPES 权威 + 前缀守卫决定
+        （doc18 §4.1 / 实施103 U2）。此处只读暴露给授予页做下拉——新工具声明的特权 scope
+        会自动出现（守卫保证工具不会声明名单外的特权 scope），Admin 不手工维护「哪些算特权」。
+        """
+        options: list[OperatorGrantScopeOption] = []
+        for scope in sorted(PRIVILEGED_SCOPES):
+            meta = PLATFORM_SCOPE_CATALOG.get(scope, {})
+            options.append(
+                OperatorGrantScopeOption(
+                    scope=scope,
+                    label_zh=meta.get('label_zh') or scope,
+                    risk=meta.get('risk') or 'medium',
+                    description=meta.get('description') or '平台运维特权',
+                )
+            )
+        return options
 
 
 hasn_platform_operator_grants_service: HasnPlatformOperatorGrantsService = HasnPlatformOperatorGrantsService()
