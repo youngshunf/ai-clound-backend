@@ -212,14 +212,17 @@ async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content
     clean_path = _clean_object_path(path)
     op = get_operator_for_storage(s3_storage)
     try:
-        signed = await op.presign_write(clean_path, 300)
-        headers = dict(getattr(signed, 'headers', {}) or {})
-        if content_type:
-            headers.setdefault('Content-Type', content_type)
         # 写超时按体量生成：大对象（如 400MB+ 引擎分发包，FILMPUB/reel）单次 PUT 远超 30s，
         # 固定 30s 必撞 httpx WriteTimeout。按 ≥500KB/s 折算 + 120s 下限 / 30min 上限，
         # 小文件仍在下限内秒级完成（上限是兜底天花板，不是固定延迟）。
         upload_timeout = min(1800.0, max(120.0, len(contents) / (500 * 1024)))
+        # 预签名 URL 有效期必须 ≥ 上传耗时，否则大包上传未完 URL 先过期 → 七牛 ExpiredToken
+        # （reel 458MB 走公网 ~9min，远超原固定 300s）。与 upload_timeout 同步按体量放大，300s 下限。
+        presign_ttl = int(min(1800.0, max(300.0, upload_timeout)))
+        signed = await op.presign_write(clean_path, presign_ttl)
+        headers = dict(getattr(signed, 'headers', {}) or {})
+        if content_type:
+            headers.setdefault('Content-Type', content_type)
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(upload_timeout, connect=20.0), trust_env=False
         ) as client:
