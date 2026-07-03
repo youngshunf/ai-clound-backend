@@ -57,6 +57,16 @@ class BaseTool(ABC):
         """
         return None
 
+    @property
+    def enterprise_capability(self) -> str | None:
+        """企业能力族键（G4 企业角色门·doc18/实施103 U4）。
+
+        默认 None = 不挂 G4（企业空间也放行）。声明后（如 `oa:approve`/`plan:manage`），
+        企业空间下需主人在该企业的角色被授予此能力族才可见。⚠️ 依赖 doc12/02 角色→能力族
+        策略表落地——策略表未落地前无工具声明此值、门恒 inert（见 evaluate G4 段注释）。
+        """
+        return None
+
     def descriptor(self) -> dict[str, Any]:
         """结构化描述符投影（P0），与 Rust ToolDescriptor 对齐。
 

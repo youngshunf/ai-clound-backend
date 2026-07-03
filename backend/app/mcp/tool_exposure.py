@@ -49,6 +49,7 @@ GATE_OWNER = 'g5_owner'
 REASON_PRIVILEGED = 'privileged'  # G1：特权 scope 未持有（执行面 TOOL_NOT_FOUND 泛化文案，不确认存在性）
 REASON_EXTERNAL_NOT_BOUND = 'external_not_bound'  # G2：external 工具不在本 Agent binding 白名单
 REASON_RUNTIME_HIDDEN = 'runtime_hidden'  # G2：本地分身在云端面隐藏的命名空间（TOOLMIG2-P4）
+REASON_ROLE_INSUFFICIENT = 'enterprise_role_insufficient'  # G4：主人企业角色未被授予该能力族（与网关审计口径同串）
 REASON_OWNER_DENIED = 'owner_denied'  # G5：owner 三态 deny（维持现状 deny 即隐身）
 # G3 应用权益门的 reason 不在此枚举——直接透传合并准入 dict 的 reason（need_purchase /
 # need_seat_assignment / need_enterprise_space / need_upgrade…），口径与 doc04 M1 一致。
@@ -121,18 +122,17 @@ class ToolExposurePolicy:
         if is_namespace_hidden_for_runtime(namespace, getattr(agent_context, 'runtime_location', 'cloud')):
             return ExposureDecision(ACTION_HIDDEN, gate=GATE_SOURCE, reason=REASON_RUNTIME_HIDDEN)
 
-        # G3 应用权益门（U3·doc18 §4.3）：工具所属 app 的合并准入（owner∪enterprise 权益 + 席位，
-        # doc04 M1）不通 → VISIBLE_DENY(need_*)。可见（带 access_hint 引导购买），执行面按 reason
-        # 回结构化错误。纯查 AgentContext 预取的 app_access_by_id（零 IO）；底座工具 app_id=None /
-        # 免费应用 / 未预取 → 该 app_id 缺席即跳过（never over-block）。
-        app_id = resolve_tool_app_id(tool)
-        if app_id:
-            access = (getattr(agent_context, 'app_access_by_id', None) or {}).get(app_id)
-            if access is not None and not access.get('allowed', True):
-                reason = access.get('reason') or 'need_purchase'
-                return ExposureDecision(ACTION_VISIBLE_DENY, gate=GATE_ENTITLEMENT, reason=reason, app_id=app_id)
+        # G3 应用权益门（U3·doc18 §4.3）：工具所属 app 合并准入不通 → VISIBLE_DENY(need_*)。
+        # 详见 _entitlement_denial（纯查预取 app_access_by_id，零 IO）。
+        entitlement_denial = self._entitlement_denial(agent_context, tool)
+        if entitlement_denial is not None:
+            return entitlement_denial
 
-        # G4 企业角色门（U4 加装）：企业空间角色未授予 → HIDDEN(role)。
+        # G4 企业角色门（U4·doc18 §4.4）：企业空间角色未授予该能力族 → HIDDEN(role)。
+        # 当前 inert（策略表未落地），详见 _role_gate_denial。
+        role_denial = self._role_gate_denial(agent_context, tool)
+        if role_denial is not None:
+            return role_denial
 
         # G5 主人三态门（维度①唯一权威·最后态度层）：deny→隐身；ask→挂审批；allow→放行。
         # 维度② 对象可达性不在管线里，由工具运行时返回。
@@ -142,6 +142,39 @@ class ToolExposurePolicy:
         if mode == MODE_ASK:
             return DECISION_ASK
         return DECISION_ALLOW
+
+    def _entitlement_denial(self, agent_context: AgentContext, tool: BaseTool) -> ExposureDecision | None:
+        """G3 应用权益门判定（doc18 §4.3）：工具所属 app 的合并准入（owner∪enterprise 权益 + 席位，
+        doc04 M1）不通 → VISIBLE_DENY(need_*)。可见（带 access_hint 引导购买），执行面按 reason 回
+        结构化错误。纯查 AgentContext 预取的 app_access_by_id（零 IO）；底座工具 app_id=None / 免费
+        应用 / 未预取 → 该 app_id 缺席即返回 None 跳过（never over-block）。
+        """
+        app_id = resolve_tool_app_id(tool)
+        if not app_id:
+            return None
+        access = (getattr(agent_context, 'app_access_by_id', None) or {}).get(app_id)
+        if access is not None and not access.get('allowed', True):
+            reason = access.get('reason') or 'need_purchase'
+            return ExposureDecision(ACTION_VISIBLE_DENY, gate=GATE_ENTITLEMENT, reason=reason, app_id=app_id)
+        return None
+
+    def _role_gate_denial(self, agent_context: AgentContext, tool: BaseTool) -> ExposureDecision | None:
+        """G4 企业角色门判定（doc18 §4.4）：企业空间下，工具若声明企业能力族键
+        `enterprise_capability`，需主人在当前激活企业的角色被授予该能力族，否则 HIDDEN(role)——
+        保证「分身能力 ≤ 主人角色能力」（doc12/02 两刀之一，与 G5 三态取交集）。个人空间跳过。
+
+        ⚠️ 外部硬依赖 doc12/02 角色→能力族策略表**尚未落地**（实施清单待实施），故本门当前 inert：
+        `enterprise_capability_grants` 恒 None（策略表未解析 → 返回 None 跳过，never over-block）、
+        且现无工具声明 `enterprise_capability`。策略表落地后，U5/doc12-02 P3 只需（a）给相关工具声明
+        enterprise_capability（b）在 inject 预取主人角色能力族 → 本门即生效，evaluate 结构不动。
+        """
+        cap = getattr(tool, 'enterprise_capability', None)
+        if not cap or agent_context.active_enterprise_id is None:
+            return None
+        grants = getattr(agent_context, 'enterprise_capability_grants', None)
+        if grants is not None and cap not in grants:
+            return ExposureDecision(ACTION_HIDDEN, gate=GATE_ROLE, reason=REASON_ROLE_INSUFFICIENT)
+        return None
 
     def is_catalog_hidden(self, agent_context: AgentContext, tool: BaseTool) -> bool:
         """owner 权限页 catalog 是否隐藏该工具（第四暴露面收编，doc18 §3.2）。

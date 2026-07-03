@@ -69,6 +69,12 @@ class AgentContext:
         # inject_app_access 灌入。免费应用 / 未预取 → 该 app_id 缺席即放行。
         self.active_enterprise_id: int | None = None
         self.app_access_by_id: dict[str, dict] = {}
+        # G4 企业角色门（doc18 §4.4·U4）：主人在当前激活企业的「已授予能力族键」集合，
+        # 随 active_enterprise_id 一并预取（owner 角色→能力族一次取回）。
+        # ⚠️ 外部硬依赖 doc12/02 企业功能权限策略表（角色→能力族）**尚未落地**，故当前恒为
+        # None——None = 未解析 → G4 门跳过（inert，never over-block）。策略表落地后由
+        # inject_app_access 同步灌入 frozenset，G4 门即生效（evaluate 结构不动）。
+        self.enterprise_capability_grants: frozenset[str] | None = None
 
     @classmethod
     def from_token_payload(
