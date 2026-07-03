@@ -406,7 +406,7 @@ def build_imagelab_app() -> App:
         name='图坊',
         icon='brand-imagelab',
         description='自研本地图像处理引擎——去背景/裁剪/调色/滤镜/水印/拼图/压缩/动画/超分/局部消除，'
-        '分身用「处理配方」编排批量处理，产物默认本地、点分享才上云。',
+        '分身用「处理配方」编排批量处理。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/apps/imagelab',
