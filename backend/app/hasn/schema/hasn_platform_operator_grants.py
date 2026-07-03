@@ -28,6 +28,20 @@ class UpdateHasnPlatformOperatorGrantsParam(HasnPlatformOperatorGrantsSchemaBase
     granted_by: str = Field('', description='操作的 Admin（后端从 JWT 覆盖，前端不用传）')
 
 
+class BatchCreateHasnPlatformOperatorGrantsParam(SchemaBase):
+    """批量授予平台运维特权参数（一次给同一分身勾选多个 scope）
+
+    数据层仍是「一行一 (agent, scope)」——本参数只是让 Admin 一次多选、后端展开成多行幂等落库
+    （已存在的 (agent, scope) 跳过）。granted_by 由后端从 JWT 覆盖，前端不用传。
+    """
+
+    agent_hasn_id: str = Field(description='被授予的分身 hasn_id')
+    scopes: list[str] = Field(
+        description='要授予的特权 scope 列表（一次可多选，如 [diag:read:all, diag:manage]）', min_length=1
+    )
+    note: str | None = Field(None, description='备注（授予理由，可空）')
+
+
 class OperatorGrantOwnerOption(SchemaBase):
     """授予对象·用户（owner）下拉选项"""
 

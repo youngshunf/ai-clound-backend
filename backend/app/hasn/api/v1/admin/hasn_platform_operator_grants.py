@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Request
 
 from backend.app.hasn.schema.hasn_platform_operator_grants import (
+    BatchCreateHasnPlatformOperatorGrantsParam,
     CreateHasnPlatformOperatorGrantsParam,
     DeleteHasnPlatformOperatorGrantsParam,
     GetHasnPlatformOperatorGrantsDetail,
@@ -92,6 +93,29 @@ async def create_hasn_platform_operator_grants(
     obj = obj.model_copy(update={'granted_by': _current_admin_id(request)})
     await hasn_platform_operator_grants_service.create(db=db, obj=obj)
     return response_base.success()
+
+
+@router.post(
+    '/batch',
+    summary='批量授予平台运维特权（一次给同一分身多选 scope·Admin-only·G1 特权门）',
+    dependencies=[
+        Depends(RequestPermission('hasn:platform:operator:grants:add')),
+        DependsRBAC,
+    ],
+    name='hasn_admin_batch_create_hasn_platform_operator_grants',
+)
+async def batch_create_hasn_platform_operator_grants(
+    request: Request, db: CurrentSessionTransaction, obj: BatchCreateHasnPlatformOperatorGrantsParam
+) -> ResponseModel:
+    # granted_by 由后端从当前登录 Admin 覆盖（审计不可伪造），前端不传
+    created = await hasn_platform_operator_grants_service.create_batch(
+        db=db,
+        agent_hasn_id=obj.agent_hasn_id,
+        scopes=obj.scopes,
+        granted_by=_current_admin_id(request),
+        note=obj.note,
+    )
+    return response_base.success(data={'created': created})
 
 
 @router.put(

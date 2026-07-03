@@ -84,6 +84,38 @@ class HasnPlatformOperatorGrantsService:
         # 授予即时生效（消费时活取 + 缓存失效，doc18 §4.1）
         await invalidate_privileged_grants_cache(obj.agent_hasn_id)
 
+    async def create_batch(
+        self, *, db: AsyncSession, agent_hasn_id: str, scopes: list[str], granted_by: str, note: str | None = None
+    ) -> int:
+        """批量授予：给同一分身一次授予多个特权 scope（幂等·授予即时生效）。
+
+        数据层仍「一行一 (agent, scope)」——本方法把多选展开成多行：
+        - 逐个校验特权合法性（非特权直接拒，防误灌）；
+        - 保序去重入参，跳过该分身已存在的 (agent, scope)（幂等，重复授予不报错）；
+        - 只有真正新建了行才清一次缓存（doc18 §4.1 授予即时生效）。
+
+        :return: 本次实际新建的授予行数（已存在的不计）
+        """
+        # 先整体校验，任一非法则全拒（不做半批落库）
+        for scope in scopes:
+            self._validate_grant(scope)
+        wanted = list(dict.fromkeys(scopes))  # 保序去重
+        existing_rows = await db.execute(
+            select(HasnPlatformOperatorGrants.scope).where(HasnPlatformOperatorGrants.agent_hasn_id == agent_hasn_id)
+        )
+        existing = set(existing_rows.scalars().all())
+        to_create = [s for s in wanted if s not in existing]
+        for scope in to_create:
+            await hasn_platform_operator_grants_dao.create(
+                db,
+                CreateHasnPlatformOperatorGrantsParam(
+                    agent_hasn_id=agent_hasn_id, scope=scope, granted_by=granted_by, note=note
+                ),
+            )
+        if to_create:
+            await invalidate_privileged_grants_cache(agent_hasn_id)
+        return len(to_create)
+
     async def update(self, *, db: AsyncSession, pk: int, obj: UpdateHasnPlatformOperatorGrantsParam) -> int:
         """
         更新平台运维授予源（Admin-only·G1 特权门）——改授予即时生效（清缓存）
