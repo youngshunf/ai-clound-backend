@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette_context.middleware import ContextMiddleware

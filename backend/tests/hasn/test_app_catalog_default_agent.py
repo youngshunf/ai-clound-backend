@@ -54,7 +54,7 @@ async def session():
             await conn.execute(
                 sa.text('ALTER TABLE hasn_app_catalog ADD COLUMN IF NOT EXISTS work_session_system_prompt TEXT')
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 

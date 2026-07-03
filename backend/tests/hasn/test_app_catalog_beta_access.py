@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
-from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import app_catalog_service
 from backend.common.exception import errors

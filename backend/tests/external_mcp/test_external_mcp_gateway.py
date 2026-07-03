@@ -34,13 +34,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from backend.app.external_mcp.external_tool import load_external_mcp_tools_for_agent
 from backend.app.external_mcp.model import (
     ExternalMcpBinding,
     ExternalMcpSecret,
     ExternalMcpServer,
     ExternalMcpUsage,
 )
-from backend.app.external_mcp.external_tool import load_external_mcp_tools_for_agent
 from backend.app.external_mcp.service.gateway_service import ExternalMcpGateway, external_mcp_gateway
 from backend.app.external_mcp.service.secret_store import is_secret_ref, secret_store
 from backend.app.external_mcp.service.validation import RegistrationError

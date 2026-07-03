@@ -35,7 +35,6 @@ def test_community_ext_routers_import_and_resolve_session_as_dependency() -> Non
         for route in routes:
             total += 1
             query_names = {p.name for p in route.dependant.query_params}
-            for leak in _LEAK_NAMES & query_names:
-                leaks.append((module_path, route.path, leak))
+            leaks.extend((module_path, route.path, leak) for leak in _LEAK_NAMES & query_names)
     assert total >= 50, f'community_ext 路由数异常偏少：{total}'
     assert not leaks, f'session 依赖被当成 query 参数（TYPE_CHECKING-only 导入回归）：{leaks}'

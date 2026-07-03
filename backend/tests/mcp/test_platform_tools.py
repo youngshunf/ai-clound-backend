@@ -8,8 +8,6 @@ message.send 绑 message_router.route_message（G1）：维度②对象可达性
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from backend.app.mcp.auth import AgentContext

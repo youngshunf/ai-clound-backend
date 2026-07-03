@@ -16,7 +16,7 @@ def _is_jwt_exempt(path: str) -> bool:
     return any(pattern.match(path) for pattern in settings.TOKEN_REQUEST_PATH_EXCLUDE_PATTERN)
 
 
-def test_mcp_streamable_bypasses_owner_jwt_middleware():
+def test_mcp_streamable_bypasses_owner_jwt_middleware() -> None:
     path = f'{settings.FASTAPI_API_V1_PATH}/mcp/streamable'
     assert _is_jwt_exempt(path), (
         'MCP Streamable 必须在 JWT 白名单内（handler 自鉴权 Agent MCP Key / JWT）；'

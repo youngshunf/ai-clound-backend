@@ -31,6 +31,7 @@ import socket
 import subprocess
 import sys
 import time
+
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,7 @@ def wait_healthz(base: str, timeout_s: float = 30.0) -> bool:
             r = httpx.get(f'{base}/v1/healthz', timeout=3)
             if r.status_code == 200 and r.json().get('ok') is True:
                 return True
-        except Exception:  # noqa: BLE001 — 起服务期间连接拒绝是预期，轮询即可
+        except Exception:
             pass
         time.sleep(0.4)
     return False
@@ -93,7 +94,7 @@ def set_setting(settings: Any, key: str, value: Any) -> None:
     """运行时改 settings（pydantic 实例）——兼容 validate_assignment 开/关。"""
     try:
         setattr(settings, key, value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         object.__setattr__(settings, key, value)
 
 
@@ -103,10 +104,10 @@ async def run_paths(base: str, token: str) -> None:
     os.environ['FINANCE_SERVICE_TOKEN'] = token
     os.environ['FINANCE_SERVICE_TIMEOUT'] = '30'
 
-    from backend.app.hasn_finance.provider import finance_provider  # noqa: PLC0415
-    from backend.app.hasn_finance.service import finance_tool_handlers as H  # noqa: PLC0415
-    from backend.app.hasn_finance.api.v1.app import finance as owner_api  # noqa: PLC0415
-    from backend.core.conf import settings  # noqa: PLC0415
+    from backend.app.hasn_finance.api.v1.app import finance as owner_api
+    from backend.app.hasn_finance.provider import finance_provider
+    from backend.app.hasn_finance.service import finance_tool_handlers as H
+    from backend.core.conf import settings
 
     set_setting(settings, 'FINANCE_SERVICE_URL', base)
     set_setting(settings, 'FINANCE_SERVICE_TOKEN', token)
@@ -193,7 +194,7 @@ async def run_paths(base: str, token: str) -> None:
 
 async def run_resilience_after_kill() -> None:
     """服务已被杀死后调用：provider 应诚实归一 upstream_error / upstream_timeout（非 fake）。"""
-    from backend.app.hasn_finance.provider import finance_provider  # noqa: PLC0415
+    from backend.app.hasn_finance.provider import finance_provider
 
     down = await finance_provider.query('macro.indicator', {'indicator': 'cpi'})
     record(
@@ -245,8 +246,7 @@ def _finish(boot_rc: int) -> int:
         '| 场景 | 结果 | 详情 |',
         '|---|---|---|',
     ]
-    for r in RESULTS:
-        lines.append(f'| {r["scenario"]} | {"✅" if r["pass"] else "❌"} | {r["detail"]} |')
+    lines.extend(f'| {r["scenario"]} | {"✅" if r["pass"] else "❌"} | {r["detail"]} |' for r in RESULTS)
     lines += [
         '',
         '## 说明',

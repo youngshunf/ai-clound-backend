@@ -11,57 +11,56 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 from types import SimpleNamespace
 
 from backend.app.marketplace.service import clawhub_sync_service as mod
 from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
 
-
 # ---------- 测试夹具 ----------
+
 
 def _existing(**kw) -> SimpleNamespace:
     """库内现有 clawhub 行替身。源语言 zh → 源侧（description_zh）存 summary 原文逐字。"""
-    base = dict(
-        id=1,
-        skill_id='clawhub/alice/translator',
-        slug='translator',
-        namespace='clawhub/alice',
-        name='翻译大师',          # 顶层 name = displayName（原文）
-        name_en='Translator Pro',
-        name_zh='翻译大师',
-        description_en='A pro translator',
-        description_zh='一个专业的翻译工具',  # 源侧 = summary 原文逐字
-        source_language='zh',
-        tags_en='["translate"]',
-        tags_zh='["翻译"]',
-        emoji='🌐',
-        category='productivity',
-        author_name='alice',
-        repo_path='clawhub/alice/translator',
-    )
+    base = {
+        'id': 1,
+        'skill_id': 'clawhub/alice/translator',
+        'slug': 'translator',
+        'namespace': 'clawhub/alice',
+        'name': '翻译大师',          # 顶层 name = displayName（原文）
+        'name_en': 'Translator Pro',
+        'name_zh': '翻译大师',
+        'description_en': 'A pro translator',
+        'description_zh': '一个专业的翻译工具',  # 源侧 = summary 原文逐字
+        'source_language': 'zh',
+        'tags_en': '["translate"]',
+        'tags_zh': '["翻译"]',
+        'emoji': '🌐',
+        'category': 'productivity',
+        'author_name': 'alice',
+        'repo_path': 'clawhub/alice/translator',
+    }
     base.update(kw)
     return SimpleNamespace(**base)
 
 
 def _skill(**kw) -> dict:
     """ClawHub 列表项替身（displayName/summary/slug/stats/latestVersion）。"""
-    base = dict(
-        slug='translator',
-        displayName='翻译大师',
-        summary='一个专业的翻译工具',
-        tags=['翻译'],
-        stats={'downloads': 500, 'stars': 9},
-        latestVersion={'version': '1.0.0'},
-    )
+    base = {
+        'slug': 'translator',
+        'displayName': '翻译大师',
+        'summary': '一个专业的翻译工具',
+        'tags': ['翻译'],
+        'stats': {'downloads': 500, 'stars': 9},
+        'latestVersion': {'version': '1.0.0'},
+    }
     base.update(kw)
     return base
 
 
 # ---------- _is_version_unchanged ----------
 
-def test_version_unchanged_true_when_version_matches_and_body_and_repo():
+def test_version_unchanged_true_when_version_matches_and_body_and_repo() -> None:
     existing = _existing()
     skill = _skill(latestVersion={'version': '1.0.0'})
     assert clawhub_sync_service._is_version_unchanged(
@@ -69,7 +68,7 @@ def test_version_unchanged_true_when_version_matches_and_body_and_repo():
     ) is True
 
 
-def test_version_unchanged_false_when_upstream_version_differs():
+def test_version_unchanged_false_when_upstream_version_differs() -> None:
     existing = _existing()
     skill = _skill(latestVersion={'version': '2.0.0'})  # 上游升版
     assert clawhub_sync_service._is_version_unchanged(
@@ -77,7 +76,7 @@ def test_version_unchanged_false_when_upstream_version_differs():
     ) is False
 
 
-def test_version_unchanged_false_when_no_body():
+def test_version_unchanged_false_when_no_body() -> None:
     existing = _existing()
     skill = _skill()
     # body_skill_ids 不含该 skill_id → 上次没下全正文，必须重新处理
@@ -86,7 +85,7 @@ def test_version_unchanged_false_when_no_body():
     ) is False
 
 
-def test_version_unchanged_false_when_no_repo_path():
+def test_version_unchanged_false_when_no_repo_path() -> None:
     existing = _existing(repo_path=None)
     skill = _skill()
     assert clawhub_sync_service._is_version_unchanged(
@@ -94,7 +93,7 @@ def test_version_unchanged_false_when_no_repo_path():
     ) is False
 
 
-def test_version_unchanged_false_when_no_upstream_version():
+def test_version_unchanged_false_when_no_upstream_version() -> None:
     existing = _existing()
     skill = _skill(latestVersion={})
     assert clawhub_sync_service._is_version_unchanged(
@@ -104,7 +103,7 @@ def test_version_unchanged_false_when_no_upstream_version():
 
 # ---------- _bilingual_metadata（源侧 verbatim）----------
 
-def test_bilingual_metadata_zh_source_keeps_verbatim_on_zh_side():
+def test_bilingual_metadata_zh_source_keeps_verbatim_on_zh_side() -> None:
     translated = {
         'name_en': 'Translator Pro', 'name_zh': 'LLM重排过的名字',
         'description_en': 'A pro translator', 'description_zh': 'LLM重排过的描述',
@@ -120,7 +119,7 @@ def test_bilingual_metadata_zh_source_keeps_verbatim_on_zh_side():
     assert desc_en == 'A pro translator'
 
 
-def test_bilingual_metadata_en_source_keeps_verbatim_on_en_side():
+def test_bilingual_metadata_en_source_keeps_verbatim_on_en_side() -> None:
     translated = {
         'name_en': 'rewritten', 'name_zh': '助手',
         'description_en': 'rewritten desc', 'description_zh': '助手描述',
@@ -140,7 +139,7 @@ def test_bilingual_metadata_en_source_keeps_verbatim_on_en_side():
 def _make_recorder():
     sent: list[list[dict]] = []
 
-    async def _recorder(items, *, batch_size=None, concurrency=3):  # noqa: ARG001
+    async def _recorder(items, *, batch_size=None, concurrency=3):
         sent.append(items)
         return [
             {
@@ -155,7 +154,7 @@ def _make_recorder():
     return _recorder, sent
 
 
-def test_batch_prepare_only_sends_changed_or_new_to_llm(monkeypatch):
+def test_batch_prepare_only_sends_changed_or_new_to_llm(monkeypatch) -> None:
     # 库内已有 translator（未变）；helper（描述变了）；新增 newbie（库内无）。
     existing_by_slug = {
         'translator': _existing(),
@@ -193,14 +192,14 @@ def test_batch_prepare_only_sends_changed_or_new_to_llm(monkeypatch):
     assert prepared['newbie']['name_en'] == 'New Skill'
 
 
-def test_batch_prepare_all_cached_zero_llm(monkeypatch):
+def test_batch_prepare_all_cached_zero_llm(monkeypatch) -> None:
     """全部未变 → 一次 LLM 都不调（核心省钱点）。"""
     existing_by_slug = {'translator': _existing()}
     skills = [_skill()]
 
     called = {'n': 0}
 
-    async def _recorder(items, *, batch_size=None, concurrency=3):  # noqa: ARG001
+    async def _recorder(items, *, batch_size=None, concurrency=3):
         called['n'] += 1
         return []
 
@@ -213,7 +212,7 @@ def test_batch_prepare_all_cached_zero_llm(monkeypatch):
     assert prepared['translator']['name_en'] == 'Translator Pro'
 
 
-def test_batch_prepare_force_sends_all_even_unchanged(monkeypatch):
+def test_batch_prepare_force_sends_all_even_unchanged(monkeypatch) -> None:
     """force=True 全量重建：未变技能也送 LLM（绕过门控）。"""
     existing_by_slug = {'translator': _existing()}
     skills = [_skill()]

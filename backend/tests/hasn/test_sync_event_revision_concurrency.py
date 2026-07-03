@@ -22,6 +22,7 @@ import uuid
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -71,7 +72,7 @@ async def _append_one(sessionmaker: async_sessionmaker, owner_id: str, idx: int)
         return revision
 
 
-async def test_concurrent_append_assigns_gapless_distinct_revisions(sessionmaker_pg):
+async def test_concurrent_append_assigns_gapless_distinct_revisions(sessionmaker_pg) -> None:
     owner_id = f'h_{uuid.uuid4()}'  # 全新 owner：revision 从 1 起，与现存数据天然隔离
     try:
         results = await asyncio.gather(

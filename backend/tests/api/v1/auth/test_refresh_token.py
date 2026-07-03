@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 from starlette.responses import Response
 
 from backend.app.admin.service import auth_service as auth_service_module

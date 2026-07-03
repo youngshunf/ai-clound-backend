@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone as dt_timezone
+
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -110,7 +113,7 @@ def _fresh_pair() -> tuple[str, str]:
     return a, b
 
 
-async def test_migration_dedups_repoints_and_is_idempotent(sessionmaker_pg):
+async def test_migration_dedups_repoints_and_is_idempotent(sessionmaker_pg) -> None:
     a_id, b_id = _fresh_pair()
     base = datetime(2026, 1, 1, tzinfo=dt_timezone.utc)
     try:
@@ -226,7 +229,7 @@ async def _get_or_create_one(sessionmaker, a_id, b_id, relation_type) -> str:
         return str(conv.id)
 
 
-async def test_concurrent_get_or_create_yields_single_row(sessionmaker_pg):
+async def test_concurrent_get_or_create_yields_single_row(sessionmaker_pg) -> None:
     a_id, b_id = _fresh_pair()
     try:
         # 确保 unique index 在位：并发若回归，会撞约束抛错而非静默产生两行
@@ -257,7 +260,7 @@ async def test_concurrent_get_or_create_yields_single_row(sessionmaker_pg):
         await _cleanup_pair(sessionmaker_pg, a_id, b_id)
 
 
-async def test_relation_type_drift_converges(sessionmaker_pg):
+async def test_relation_type_drift_converges(sessionmaker_pg) -> None:
     a_id, b_id = _fresh_pair()
     try:
         async with sessionmaker_pg() as session:

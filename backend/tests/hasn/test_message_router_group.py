@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 
-
 @dataclass
 class _Group:
     id: str = '00000000-0000-0000-0000-000000000001'
@@ -42,12 +41,12 @@ class _Msg:
 class _DB:
     commits = 0
 
-    async def commit(self):
+    async def commit(self) -> None:
         self.commits += 1
 
 
 @pytest.mark.asyncio
-async def test_group_message_fans_out_to_human_and_agent_owner(monkeypatch):
+async def test_group_message_fans_out_to_human_and_agent_owner(monkeypatch) -> None:
     from backend.app.hasn.service import message_router as mr
 
     group = _Group()
@@ -116,7 +115,7 @@ async def test_group_message_fans_out_to_human_and_agent_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_group_route_rejects_non_member(monkeypatch):
+async def test_group_route_rejects_non_member(monkeypatch) -> None:
     from backend.app.hasn.service import message_router as mr
 
     monkeypatch.setattr(mr, 'resolve_target', AsyncMock(return_value={'hasn_id': 'g:500001', 'entity_type': 'group'}))
@@ -128,14 +127,14 @@ async def test_group_route_rejects_non_member(monkeypatch):
     assert result == {'error': True, 'code': 2002, 'message': '不是该群成员'}
 
 
-def test_entity_type_int_supports_group():
+def test_entity_type_int_supports_group() -> None:
     from backend.app.hasn.service.message_router import _entity_type_int
 
     assert _entity_type_int('g:500001') == 4
 
 
 @pytest.mark.asyncio
-async def test_group_envelope_carries_policy_mentions_and_sender(monkeypatch):
+async def test_group_envelope_carries_policy_mentions_and_sender(monkeypatch) -> None:
     """G2：群 envelope 富化——agent_policy + mentions + mention_all + 发言人展示名/唤星号。
 
     这些是 daemon(G4) group_participation_gate 的权威数据（决定唤醒哪些分身）与接收侧

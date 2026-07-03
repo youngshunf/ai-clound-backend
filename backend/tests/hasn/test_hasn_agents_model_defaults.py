@@ -24,4 +24,3 @@ async def test_hasn_agents_tags_default_is_list_instance_not_type() -> None:
 
     assert isinstance(agent.tags, list)
     assert agent.tags == []
-

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import uuid
 
-from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -30,12 +29,12 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.admin.hasn_app_entitlement import router as admin_entitlement_router
-from backend.app.home.api.v1.app.home import router as workbench_router
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.app_purchase_callback import apply_app_purchase
+from backend.app.home.api.v1.app.home import router as workbench_router
 from backend.common.exception import errors
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
@@ -310,7 +309,7 @@ async def test_purchase_expiry_cycles() -> None:
 async def test_http_open_trial_and_list_entitlements(env) -> None:
     """POST /apps/{id}/trial → 写试用；GET /apps/entitlements → 我的权益含该行。"""
     db = env.session
-    owner, user_id = await _seed_owner(db)
+    _owner, user_id = await _seed_owner(db)
     env.state.user_id = user_id  # 让 _resolve_owner_id 命中这个 owner
     cat = _catalog(f'ht_{_uid()}', access_type='purchase', price_amount='12.00', billing_cycle='once', trial_days=5)
     db.add(cat)

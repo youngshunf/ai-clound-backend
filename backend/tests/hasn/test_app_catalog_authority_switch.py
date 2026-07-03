@@ -10,21 +10,23 @@
 from __future__ import annotations
 
 import uuid
+
 from types import SimpleNamespace
 
 import httpx
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+
 from fastapi import FastAPI, Request
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -111,7 +113,7 @@ async def test_list_apps_field_equivalence_from_catalog(env) -> None:
 
     # 字段等价：每个 app 至少含现状 manifest 的全部键（catalog 额外多带 icon_asset_uri/status，向后兼容）。
     for app in apps:
-        assert _MANIFEST_KEYS <= set(app), f'缺字段: {_MANIFEST_KEYS - set(app)}'
+        assert set(app) >= _MANIFEST_KEYS, f'缺字段: {_MANIFEST_KEYS - set(app)}'
         assert app.get('entry_route')
         assert 'status' in app
 

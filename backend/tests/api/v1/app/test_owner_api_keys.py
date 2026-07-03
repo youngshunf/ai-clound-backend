@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from starlette.status import HTTP_401_UNAUTHORIZED
@@ -20,7 +21,6 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 from backend.app.hasn_client.api import owner_api_keys as owner_module
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import get_db_transaction
-
 
 FAKE_USER_ID = 42
 FAKE_HASN_ID = 'h_100001'
@@ -69,7 +69,7 @@ def test_app(monkeypatch):
     return app
 
 
-def test_get_current_owner_api_key_returns_200_when_authenticated(test_app):
+def test_get_current_owner_api_key_returns_200_when_authenticated(test_app) -> None:
     """登录 (携带 Bearer) → GET → 200 + body 含 owner_api_key 字段."""
     with TestClient(test_app) as client:
         resp = client.get(
@@ -89,7 +89,7 @@ def test_get_current_owner_api_key_returns_200_when_authenticated(test_app):
     assert data['expires_at'] is not None
 
 
-def test_get_current_owner_api_key_returns_401_when_unauthenticated(test_app):
+def test_get_current_owner_api_key_returns_401_when_unauthenticated(test_app) -> None:
     """未登录 (缺失 Authorization) → 401."""
     with TestClient(test_app) as client:
         resp = client.get('/api/v1/app/owner_api_keys/current')

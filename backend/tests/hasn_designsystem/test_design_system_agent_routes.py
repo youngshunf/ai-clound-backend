@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import uuid
 
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 
 import pytest
 import pytest_asyncio
@@ -62,7 +63,7 @@ async def client():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 

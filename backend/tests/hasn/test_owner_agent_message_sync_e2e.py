@@ -18,6 +18,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -95,7 +96,7 @@ def _agent_reply_event(owner_id: str, agent_id: str, conv_id: str, message_id: s
     )
 
 
-async def test_owner_agent_messages_land_in_feed_and_pull_back(db_session):
+async def test_owner_agent_messages_land_in_feed_and_pull_back(db_session) -> None:
     gw = SqlAlchemySyncGateway()
     owner_id = _owner()
     agent_id = f'a_{uuid.uuid4()}'
@@ -127,7 +128,7 @@ async def test_owner_agent_messages_land_in_feed_and_pull_back(db_session):
     assert by_type['message.agent_reply'].payload['peer_hasn_id'] == agent_id
 
 
-async def test_cross_node_repush_is_idempotent_no_duplicate(db_session):
+async def test_cross_node_repush_is_idempotent_no_duplicate(db_session) -> None:
     gw = SqlAlchemySyncGateway()
     owner_id = _owner()
     agent_id = f'a_{uuid.uuid4()}'

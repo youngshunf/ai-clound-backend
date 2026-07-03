@@ -24,7 +24,7 @@ class FakeRedis:
         self.lists: dict[str, list[Any]] = {}
         self.strings: dict[str, Any] = {}
 
-    async def set(self, key: str, value: Any, ex: int | None = None) -> None:  # noqa: ARG002
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:
         self.strings[key] = value
 
     async def exists(self, key: str) -> int:
@@ -73,7 +73,7 @@ def _router(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_register_sets_alive_then_expiry_then_refresh(monkeypatch):
+async def test_register_sets_alive_then_expiry_then_refresh(monkeypatch) -> None:
     module, router, redis = _router(monkeypatch)
 
     await router.register_node('node_1', 'desktop', _DummyWs(), capacity=2)
@@ -91,7 +91,7 @@ async def test_register_sets_alive_then_expiry_then_refresh(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_zombie_node_route_makes_agent_offline(monkeypatch):
+async def test_zombie_node_route_makes_agent_offline(monkeypatch) -> None:
     """ENTITY_NODE_KEY 仍指向节点，但节点存活键过期 → agent 判离线（解除接管阻塞）。"""
     module, router, redis = _router(monkeypatch)
 
@@ -113,7 +113,7 @@ async def test_zombie_node_route_makes_agent_offline(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unregister_deletes_alive_key(monkeypatch):
+async def test_unregister_deletes_alive_key(monkeypatch) -> None:
     module, router, redis = _router(monkeypatch)
 
     await router.register_node('node_g', 'desktop', _DummyWs(), capacity=1)

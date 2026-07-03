@@ -16,7 +16,6 @@ doc25 M1-4 ④：用 stdlib ThreadingHTTPServer 起一个模拟 new-api 管理�
 from __future__ import annotations
 
 import json
-
 import threading
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -202,12 +201,12 @@ async def test_login_flow_isolated_cookie_jar(
     by_path = {(r['method'], r['path']): r for r in log}
 
     # set_user_password 走池（admin 鉴权，无 cookie）
-    put = by_path[('PUT', '/api/user/')]
+    put = by_path['PUT', '/api/user/']
     assert put['auth'] == 'admin-tok'
     assert put['cookie'] is None
 
     # login 用独立 client（首次无 cookie），随后 GET /user/token 在同一独立 client 上**带** cookie
-    login = by_path[('POST', '/api/user/login')]
+    login = by_path['POST', '/api/user/login']
     assert login['cookie'] is None
     token_req = next(r for r in log if r['method'] == 'GET' and r['path'].startswith('/api/user/token'))
     assert token_req['cookie'] is not None and 'sess-abc' in token_req['cookie']

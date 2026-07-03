@@ -42,7 +42,7 @@ class _EchoTool(BaseTool):
     def required_scopes(self) -> list[str]:
         return ['stub:act']
 
-    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:  # noqa: RUF029
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         return {'echo': arguments}
 
 
@@ -206,11 +206,11 @@ async def test_token_retry_executes_then_replay_blocked(monkeypatch: pytest.Monk
 
 @pytest.mark.asyncio
 async def test_grant_always_issues_ticket_and_writes_back_allow() -> None:
-    from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
+    from sqlalchemy import text
+
     from backend.app.hasn.model import HasnAgents
     from backend.app.hasn.service.agent_scopes_service import agent_scopes_service
     from backend.common.security.agent_jwt import create_default_agent_scopes, get_agent_scopes_from_db
-    from sqlalchemy import text
 
     owner_hasn_id = 'h_grant_owner_001'
     agent_hasn_id = 'a_grant_001'

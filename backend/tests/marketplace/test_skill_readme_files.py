@@ -19,6 +19,7 @@ import uuid
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 
 import pytest
 import pytest_asyncio
@@ -33,7 +34,6 @@ from backend.app.marketplace.service.search_service import search_service
 from backend.app.marketplace.service.skill_content_extractor import detect_body_source_lang
 from backend.app.marketplace.service.translation_service import translation_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
-
 
 # --------------------------------------------------------------------------- #
 # 1) 解析层：纯函数 + 真实文件，无 DB / 无 LLM
@@ -55,7 +55,7 @@ Use this when you need a demo.
 """
 
 
-def test_extract_skill_body_strips_frontmatter():
+def test_extract_skill_body_strips_frontmatter() -> None:
     body = GitHubSyncService._extract_skill_body(SKILL_MD)
     assert body.startswith('# Demo Skill'), body
     assert 'name: Demo Skill' not in body  # frontmatter 不在正文
@@ -63,12 +63,12 @@ def test_extract_skill_body_strips_frontmatter():
     assert '## Steps' in body
 
 
-def test_extract_skill_body_without_frontmatter_passthrough():
+def test_extract_skill_body_without_frontmatter_passthrough() -> None:
     raw = '# Just a heading\n\nNo frontmatter here.'
     assert GitHubSyncService._extract_skill_body(raw) == raw.strip()
 
 
-def test_list_skill_files_names_sizes_only_no_content(tmp_path: Path):
+def test_list_skill_files_names_sizes_only_no_content(tmp_path: Path) -> None:
     # 构造一个真实技能目录：根 SKILL.md + 子目录脚本/引用 + 应被过滤的项。
     (tmp_path / 'SKILL.md').write_text(SKILL_MD, encoding='utf-8')
     (tmp_path / 'scripts').mkdir()
@@ -106,7 +106,7 @@ async def db_session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     session = async_sessionmaker(engine, expire_on_commit=False)()
@@ -129,7 +129,7 @@ def _files_json() -> str:
     )
 
 
-async def _seed_skill(session, skill_id, namespace, slug, **cols):
+async def _seed_skill(session, skill_id, namespace, slug, **cols) -> None:
     await session.execute(delete(MarketplaceSkill).where(MarketplaceSkill.skill_id == skill_id))
     session.add(
         MarketplaceSkill(
@@ -141,7 +141,7 @@ async def _seed_skill(session, skill_id, namespace, slug, **cols):
 
 
 @pytest.mark.asyncio
-async def test_detail_emits_readme_per_lang_files_and_count(db_session):
+async def test_detail_emits_readme_per_lang_files_and_count(db_session) -> None:
     tag = uuid.uuid4().hex[:8]
     namespace, slug = 'huanxing/demo', f'readme-{tag}'
     skill_id = f'{namespace}/{slug}'
@@ -168,7 +168,7 @@ async def test_detail_emits_readme_per_lang_files_and_count(db_session):
 
 
 @pytest.mark.asyncio
-async def test_detail_readme_falls_back_to_other_language(db_session):
+async def test_detail_readme_falls_back_to_other_language(db_session) -> None:
     tag = uuid.uuid4().hex[:8]
     namespace, slug = 'huanxing/demo', f'fallback-{tag}'
     skill_id = f'{namespace}/{slug}'
@@ -183,7 +183,7 @@ async def test_detail_readme_falls_back_to_other_language(db_session):
 
 
 @pytest.mark.asyncio
-async def test_detail_resolves_bare_slug_not_only_namespaced_id(db_session):
+async def test_detail_resolves_bare_slug_not_only_namespaced_id(db_session) -> None:
     """技能包/模板成员按裸 slug 命名存储（hermes 成员命名），详情查询必须能用裸 slug 解析，
     否则真实在库的市场技能会被错判「未在市场找到」（university-applications 404 事故）。"""
     tag = uuid.uuid4().hex[:8]
@@ -214,10 +214,10 @@ async def test_detail_resolves_bare_slug_not_only_namespaced_id(db_session):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_resolve_bilingual_body_translates_new_skill(monkeypatch):
+async def test_resolve_bilingual_body_translates_new_skill(monkeypatch) -> None:
     translation_service._translation_cache.clear()
 
-    async def _fake_complete_chat(messages, **kwargs):
+    async def _fake_complete_chat(messages, **kwargs) -> str:
         # 断言确实走的是 markdown 翻译提示（保留结构），返回确定性译文
         assert any('Markdown' in m.get('content', '') for m in messages)
         return '# 演示\n\n已翻译正文。'
@@ -232,11 +232,11 @@ async def test_resolve_bilingual_body_translates_new_skill(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_bilingual_body_reuses_cached_translation(monkeypatch):
+async def test_resolve_bilingual_body_reuses_cached_translation(monkeypatch) -> None:
     translation_service._translation_cache.clear()
     body = '# Demo\n\nUnchanged body.'
 
-    async def _must_not_touch_network(*_a, **_k):
+    async def _must_not_touch_network(*_a, **_k) -> NoReturn:
         raise AssertionError('未变更正文不应再次翻译（触网）')
 
     monkeypatch.setattr(translation_service, '_complete_chat', _must_not_touch_network)
@@ -250,7 +250,7 @@ async def test_resolve_bilingual_body_reuses_cached_translation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_bilingual_body_detects_body_language_not_name_hint(monkeypatch):
+async def test_resolve_bilingual_body_detects_body_language_not_name_hint(monkeypatch) -> None:
     """正文语言按正文本身判定，而非沿用 name 推出的 source_language。
 
     活体回填发现：英文名/中文正文（source_language='en' 但正文是中文）若按名字判，
@@ -259,7 +259,7 @@ async def test_resolve_bilingual_body_detects_body_language_not_name_hint(monkey
     translation_service._translation_cache.clear()
     chinese_body = '# 代码审查清单\n\n系统、全面的代码审查方法。逐维度有序检查，而非随机扫描。'
 
-    async def _fake_complete_chat(messages, **kwargs):
+    async def _fake_complete_chat(messages, **kwargs) -> str:
         return '# Code Review Checklist\n\nA systematic, comprehensive approach.'
 
     monkeypatch.setattr(translation_service, '_complete_chat', _fake_complete_chat)
@@ -272,7 +272,7 @@ async def test_resolve_bilingual_body_detects_body_language_not_name_hint(monkey
 
 
 @pytest.mark.asyncio
-async def test_resolve_bilingual_body_empty_clears_both_sides():
+async def test_resolve_bilingual_body_empty_clears_both_sides() -> None:
     body_en, body_zh = await github_sync_service._resolve_bilingual_body(
         existing_skill=SimpleNamespace(body_en='old', body_zh='旧'),
         source_language='en', body='   ',
@@ -281,7 +281,7 @@ async def test_resolve_bilingual_body_empty_clears_both_sides():
 
 
 @pytest.mark.asyncio
-async def test_resolve_bilingual_body_echo_guard_drops_untranslated(monkeypatch):
+async def test_resolve_bilingual_body_echo_guard_drops_untranslated(monkeypatch) -> None:
     """零 fake 回声闸门：超长正文可能超模型预算被原样回吐（译文==原文），这不是翻译。
 
     活体回填发现：一篇 14k+ 中文正文翻译后 body_en 与 body_zh 等长——网关原样回吐。
@@ -308,7 +308,7 @@ async def test_resolve_bilingual_body_echo_guard_drops_untranslated(monkeypatch)
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypatch):
+async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypatch) -> None:
     """clawhub 同步从解压后的技能目录提取正文(双语)+文件清单，与 github 同源。"""
     from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
 
@@ -320,7 +320,7 @@ async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypa
 
     translation_service._translation_cache.clear()
 
-    async def _fake(messages, **kwargs):
+    async def _fake(messages, **kwargs) -> str:
         return '# 演示\n\n已翻译正文。'
 
     monkeypatch.setattr(translation_service, '_complete_chat', _fake)
@@ -336,7 +336,7 @@ async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypa
         assert set(f.keys()) == {'path', 'size'}, f   # 仅名称+大小，不含内容
 
 
-def test_split_markdown_for_translation_chunks_without_breaking_fences():
+def test_split_markdown_for_translation_chunks_without_breaking_fences() -> None:
     """长文档按段落分块（≤budget），且**绝不**切开代码围栏；拼回恢复原文。
 
     本地翻译网关对超长 Markdown 会原样回吐，分块后逐块翻译可避开。围栏内含空行（多段）
@@ -357,7 +357,7 @@ def test_split_markdown_for_translation_chunks_without_breaking_fences():
     assert '\n\n'.join(chunks) == doc            # 无损拼回
 
 
-def test_detect_body_source_lang_cjk_ratio_beats_langdetect():
+def test_detect_body_source_lang_cjk_ratio_beats_langdetect() -> None:
     """中英混排技术文档：CJK 占比为主信号，盖过 langdetect 的误判。
 
     活体回填发现：tencent-mps/university-applications 等中文 SKILL.md（含大量英文 API 名/
@@ -379,7 +379,7 @@ def test_detect_body_source_lang_cjk_ratio_beats_langdetect():
 
 
 @pytest.mark.asyncio
-async def test_clawhub_extract_missing_skill_md_is_honest_empty(tmp_path: Path):
+async def test_clawhub_extract_missing_skill_md_is_honest_empty(tmp_path: Path) -> None:
     """目录无 SKILL.md → 正文两侧空、文件清单为 []（零 fake，如实反映无正文）。"""
     from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
 

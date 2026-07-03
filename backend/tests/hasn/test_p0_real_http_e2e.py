@@ -13,20 +13,14 @@ from starlette_context.plugins import RequestIdPlugin
 from backend.app.hasn.api.v1 import ai_native_app as ai_native_api
 from backend.app.hasn.api.v1 import message_hub as message_hub_api
 from backend.app.hasn.api.v1 import onboarding as onboarding_api
-from backend.app.hasn.api.v1.app import knowledge as knowledge_api
-from backend.app.hasn_task.api.v1.app import skill_bundle as skill_bundle_api
-from backend.app.hasn_task.api.v1.app import run as task_run_api
-from backend.app.hasn_task.api.v1.app import sync as task_sync_api
-from backend.app.hasn_task.api.v1.app import task as task_api
-from backend.app.hasn.api.v1.app import hasn_task_sessions as task_sessions_api
-from backend.app.hasn_community.api.v1.app import community as community_api
-from backend.app.hasn.api.v1.app import workspace as workspace_api
 from backend.app.hasn.api.v1 import sync as sync_api
-from backend.app.mcp.routes import mcp_router
+from backend.app.hasn.api.v1.app import hasn_task_sessions as task_sessions_api
+from backend.app.hasn.api.v1.app import knowledge as knowledge_api
+from backend.app.hasn.api.v1.app import workspace as workspace_api
 from backend.app.hasn.model import HasnAiNativeAppAudit, HasnSessions
-from backend.common.dataclasses import AgentTokenPayload
 from backend.app.hasn.schema.hasn_message_hub import InboxItem, InboxPullRequest, InboxPullResponse
 from backend.app.hasn.schema.hasn_onboarding import SandboxSummary
+from backend.app.hasn.service import hasn_onboarding_service as onboarding_service_module
 from backend.app.hasn.service.hasn_message_hub_service import (
     HasnMessageHubService,
     MessageRecord,
@@ -43,13 +37,18 @@ from backend.app.hasn.service.hasn_onboarding_service import (
     HasnOnboardingService,
     HasnPhoneAuthService,
 )
-from backend.app.hasn.service import hasn_onboarding_service as onboarding_service_module
-from backend.app.hasn.model import HasnAiNativeAppAudit
 from backend.app.hasn.service.hasn_sync_service import HasnSyncService
 from backend.app.hasn.service.workspace_notification_subscriber import (
     RecordingWorkspaceNotificationActions,
     workspace_notification_subscriber,
 )
+from backend.app.hasn_community.api.v1.app import community as community_api
+from backend.app.hasn_task.api.v1.app import run as task_run_api
+from backend.app.hasn_task.api.v1.app import skill_bundle as skill_bundle_api
+from backend.app.hasn_task.api.v1.app import sync as task_sync_api
+from backend.app.hasn_task.api.v1.app import task as task_api
+from backend.app.mcp.routes import mcp_router
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.agent_jwt import jwt_decode_agent, jwt_encode_agent
@@ -210,7 +209,7 @@ class FakeDb:
                 row.created_at = datetime(2026, 5, 20, 8, 0, len(self.audit_rows), tzinfo=timezone.utc)
             self.audit_rows.append(row)
             return
-        return None
+        return
 
     async def flush(self) -> None:
         return None
@@ -542,7 +541,7 @@ class _ScalarResult:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = list(rows)
 
-    def scalars(self) -> '_ScalarResult':
+    def scalars(self) -> _ScalarResult:
         return self
 
     def first(self) -> Any:
@@ -1042,6 +1041,7 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     )
 
     fake_db_instance = FakeDb()
+
     async def fake_db():
         yield fake_db_instance
 
@@ -1106,8 +1106,8 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         return SimpleNamespace(refresh_token='refresh-p0-real-http')
 
     redis = FakeRedis()
-    from backend.common.security import agent_jwt as agent_jwt_module
     from backend.app.hasn.service import ai_native_runtime_gateway as ai_native_gateway_module
+    from backend.common.security import agent_jwt as agent_jwt_module
 
     monkeypatch.setattr(agent_jwt_module, 'redis_client', redis)
     monkeypatch.setattr(ai_native_gateway_module, 'redis_client', redis)
@@ -1299,7 +1299,7 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     )
 
     redis.values[f'{SMS_CODE_PREFIX}:13800138000'] = '123456'
-    fake_db_instance.enterprise_memberships[(42, 7)] = SimpleNamespace(
+    fake_db_instance.enterprise_memberships[42, 7] = SimpleNamespace(
         enterprise_id=42,
         user_id=7,
         role='admin',

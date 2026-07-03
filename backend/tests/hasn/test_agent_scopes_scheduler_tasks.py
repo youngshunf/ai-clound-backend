@@ -179,5 +179,3 @@ async def test_node_scheduler_selects_nodes_and_enqueues_provision(monkeypatch: 
         'data': {'agent_hasn_id': 'a_agent', 'owner_id': 'h_owner', 'config': {'x': 1}},
     }
     assert redis.expired[-1] == (f'{module.PUSH_PREFIX}:node-large', 3600)
-
-

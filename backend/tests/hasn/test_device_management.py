@@ -14,10 +14,12 @@
 from __future__ import annotations
 
 import uuid
+
 from typing import Any
 
 import pytest
 import pytest_asyncio
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -25,19 +27,19 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn.service import geoip_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
-
 # ─────────────────────────── geoip 降级（无外部依赖） ───────────────────────────
+
 
 @pytest.mark.parametrize(
     'ip',
     ['192.168.1.10', '10.0.0.1', '127.0.0.1', '::1', 'not-an-ip', '', None],
 )
-def test_geoip_returns_none_for_private_or_invalid(ip):
+def test_geoip_returns_none_for_private_or_invalid(ip) -> None:
     """私网/回环/非法/空 IP → None（永不伪造归属地）。"""
     assert geoip_service.lookup_location(ip) is None
 
 
-def test_geoip_public_ip_without_mmdb_is_none():
+def test_geoip_public_ip_without_mmdb_is_none() -> None:
     """公网 IP 但 mmdb 缺失（部署前提未满足）→ None，如实「未知归属地」。"""
     # 测试环境无 GeoLite2-City.mmdb；零 Mock 要求此处必须留空而非编造城市。
     assert geoip_service.lookup_location('8.8.8.8') is None
@@ -52,7 +54,7 @@ class FakeRedis:
         self.lists: dict[str, list[Any]] = {}
         self.strings: dict[str, Any] = {}
 
-    async def set(self, key: str, value: Any, ex: int | None = None) -> None:  # noqa: ARG002
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:
         self.strings[key] = value
 
     async def exists(self, key: str) -> int:
@@ -92,7 +94,7 @@ class FakeWebSocket:
 
 
 @pytest.mark.asyncio
-async def test_node_online_and_entity_node_lookup(monkeypatch):
+async def test_node_online_and_entity_node_lookup(monkeypatch) -> None:
     from backend.app.hasn.service import ws_router as module
 
     redis = FakeRedis()
@@ -111,7 +113,7 @@ async def test_node_online_and_entity_node_lookup(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch):
+async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch) -> None:
     """远程登出核心契约：断开节点 → 清节点 presence + 名下 Agent 在路由表离线（他机可接管）+ 关 WS。"""
     from backend.app.hasn.service import ws_router as module
 
@@ -152,7 +154,7 @@ async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_disconnect_node_not_in_process_still_clears_presence(monkeypatch):
+async def test_disconnect_node_not_in_process_still_clears_presence(monkeypatch) -> None:
     """连接落在其它 worker（本进程无 ws）→ 返回 False，但共享 presence 仍清干净。"""
     from backend.app.hasn.service import ws_router as module
 
@@ -191,7 +193,7 @@ async def db_session():
 
 
 @pytest.mark.asyncio
-async def test_update_runtime_metadata_writes_and_respects_zero_fake(db_session):
+async def test_update_runtime_metadata_writes_and_respects_zero_fake(db_session) -> None:
     from backend.app.hasn.model.hasn_nodes import HasnNodes
     from backend.app.hasn.service.hasn_nodes_service import hasn_nodes_service
 

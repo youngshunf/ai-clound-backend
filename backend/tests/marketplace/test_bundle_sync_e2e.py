@@ -67,7 +67,7 @@ async def e2e(tmp_path):
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -98,13 +98,13 @@ async def _fetch_pack(session, template_id: str) -> dict | None:
     row = (
         await session.execute(
             text(
-                '''
+                """
                 SELECT t.template_type, t.is_official, t.is_common, t.namespace,
                        v.bundle_slug, v.command_key, v.hermes_yaml, v.content_hash, v.file_hash, v.is_latest
                 FROM hasn_marketplace.marketplace_template t
                 JOIN hasn_marketplace.marketplace_template_version v ON v.template_id = t.template_id AND v.is_latest
                 WHERE t.template_id = :tid
-                '''
+                """
             ),
             {'tid': template_id},
         )
@@ -112,7 +112,7 @@ async def _fetch_pack(session, template_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def test_sync_bundles_persists_skill_pack_contract(e2e):
+async def test_sync_bundles_persists_skill_pack_contract(e2e) -> None:
     slug = f'backend-dev-{_tag()}'
     tid = f'huanxing/{slug}'
     _write_bundle(e2e.root, slug, skills=['huanxing/developer/code-review', 'huanxing/productivity/tdd'])
@@ -139,7 +139,7 @@ async def test_sync_bundles_persists_skill_pack_contract(e2e):
     assert 'is_common' not in spec and 'is_official' not in spec and 'version' not in spec
 
 
-async def test_sync_bundles_content_change_bumps_hash_and_common_toggle(e2e):
+async def test_sync_bundles_content_change_bumps_hash_and_common_toggle(e2e) -> None:
     slug = f'research-{_tag()}'
     tid = f'huanxing/{slug}'
     _write_bundle(e2e.root, slug, instruction='第一版指令')
@@ -165,7 +165,7 @@ async def test_sync_bundles_content_change_bumps_hash_and_common_toggle(e2e):
     assert second['is_common'] is False             # 移出公共集合 → 重扫落 false
 
 
-async def test_sync_bundle_display_name_maps_to_name(e2e):
+async def test_sync_bundle_display_name_maps_to_name(e2e) -> None:
     """bundle.yaml 的中文 display_name 落库 marketplace_template.name（卡片展示用）；
 
     slug 标识仍存 bundle_slug/command_key；hermes_yaml 保持纯净（display_name 属 marketplace
@@ -193,7 +193,7 @@ async def test_sync_bundle_display_name_maps_to_name(e2e):
     assert spec['name'] == slug  # hermes name 仍是 slug
 
 
-async def test_sync_bundles_skips_invalid(e2e):
+async def test_sync_bundles_skips_invalid(e2e) -> None:
     good = f'good-{_tag()}'
     empty_skills = f'emptyskills-{_tag()}'
     mismatch = f'mismatch-{_tag()}'
@@ -201,7 +201,7 @@ async def test_sync_bundles_skips_invalid(e2e):
     _write_bundle(e2e.root, empty_skills, skills=[])                  # skills 空 → 同步期跳过（不落库、不计 failed）
     _write_bundle(e2e.root, mismatch, name='完全不同的名字')          # name 归一化 != 目录名 → 跳过
 
-    synced, failed, _ = await e2e.service._sync_bundles(e2e.session)
+    synced, _failed, _ = await e2e.service._sync_bundles(e2e.session)
     # 非法 bundle 在 _parse_bundle_yaml 内 log.error 跳过、不进 records，故只有 1 个合法包被同步
     assert synced == 1
     assert await _fetch_pack(e2e.session, f'huanxing/{good}') is not None

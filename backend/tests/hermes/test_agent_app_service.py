@@ -49,7 +49,7 @@ class HermesAgentOperationStub(_StubBase):
 
 
 class FakeRuntimeClient:
-    def __init__(self, *, fail: bool = False):
+    def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls: list[tuple[str, str | None, Any]] = []
 
@@ -146,12 +146,12 @@ async def db_session(monkeypatch):
     monkeypatch.setattr(service_mod, 'HermesAgentOperation', HermesAgentOperationStub, raising=True)
 
     class _MarketplaceAppFixture:
-        def __init__(self, **kw):
+        def __init__(self, **kw) -> None:
             for k, v in kw.items():
                 setattr(self, k, v)
 
     class InMemorySession:
-        def __init__(self):
+        def __init__(self) -> None:
             self.hermes_agents = []
             self.runtime_states = []
             self.channel_bindings = []
@@ -183,7 +183,7 @@ async def db_session(monkeypatch):
             ]
             self._ids = {}
 
-        def add(self, obj):
+        def add(self, obj) -> None:
             table = {
                 HermesAgentStub: self.hermes_agents,
                 HermesAgentRuntimeStateStub: self.runtime_states,
@@ -197,7 +197,7 @@ async def db_session(monkeypatch):
             if obj not in table:
                 table.append(obj)
 
-        async def flush(self):
+        async def flush(self) -> None:
             return None
 
     return InMemorySession()
@@ -208,7 +208,7 @@ def _request(user_id: int, *, agent_name: str = '福仔'):
 
 
 @pytest.mark.asyncio
-async def test_create_multiple_agents_for_one_user_saves_runtime_profile_and_uses_it_after_ensure(db_session):
+async def test_create_multiple_agents_for_one_user_saves_runtime_profile_and_uses_it_after_ensure(db_session) -> None:
     from backend.app.hermes.service.hermes_agent_app_service import HermesAgentAppService
 
     runtime = FakeRuntimeClient()
@@ -234,7 +234,7 @@ async def test_create_multiple_agents_for_one_user_saves_runtime_profile_and_use
 
 
 @pytest.mark.asyncio
-async def test_create_duplicate_agent_name_fails_before_runtime_allocation(db_session):
+async def test_create_duplicate_agent_name_fails_before_runtime_allocation(db_session) -> None:
     from backend.app.hermes.service.hermes_agent_app_service import HermesAgentAppService
     from backend.common.exception import errors
 
@@ -252,7 +252,7 @@ async def test_create_duplicate_agent_name_fails_before_runtime_allocation(db_se
 
 
 @pytest.mark.asyncio
-async def test_update_duplicate_agent_name_fails_before_renaming(db_session):
+async def test_update_duplicate_agent_name_fails_before_renaming(db_session) -> None:
     from backend.app.hermes.service.hermes_agent_app_service import HermesAgentAppService
     from backend.common.exception import errors
 
@@ -268,7 +268,7 @@ async def test_update_duplicate_agent_name_fails_before_renaming(db_session):
 
 
 @pytest.mark.asyncio
-async def test_user_isolation_hides_other_users_agent(db_session):
+async def test_user_isolation_hides_other_users_agent(db_session) -> None:
     from backend.app.hermes.service.hermes_agent_app_service import HermesAgentAppService
     from backend.common.exception import errors
 
@@ -285,7 +285,7 @@ async def test_user_isolation_hides_other_users_agent(db_session):
 
 
 @pytest.mark.asyncio
-async def test_runtime_unavailable_returns_structured_error_and_records_operation(db_session):
+async def test_runtime_unavailable_returns_structured_error_and_records_operation(db_session) -> None:
     from backend.app.hermes.service.hermes_agent_app_service import HermesAgentAppService
     from backend.app.hermes.service.hermes_runtime_client import HermesRuntimeError
 
@@ -302,7 +302,7 @@ async def test_runtime_unavailable_returns_structured_error_and_records_operatio
 
 
 @pytest.mark.asyncio
-async def test_channels_shape_matches_website_contract_and_chat_syncs_workspace_state(db_session):
+async def test_channels_shape_matches_website_contract_and_chat_syncs_workspace_state(db_session) -> None:
     from backend.app.hermes.service.hermes_agent_app_service import HermesAgentAppService
 
     runtime = FakeRuntimeClient()
@@ -331,7 +331,7 @@ async def test_channels_shape_matches_website_contract_and_chat_syncs_workspace_
 
 
 @pytest.mark.asyncio
-async def test_channel_qr_start_parses_runtime_expiry_timestamp(db_session):
+async def test_channel_qr_start_parses_runtime_expiry_timestamp(db_session) -> None:
     from backend.app.hermes.service.hermes_agent_app_service import HermesAgentAppService
 
     runtime = FakeRuntimeClient()

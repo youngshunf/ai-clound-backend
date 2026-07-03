@@ -59,7 +59,7 @@ async def e2e():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -116,7 +116,7 @@ async def e2e():
         await engine.dispose()
 
 
-async def test_list_only_returns_own_owner_bundles(e2e):
+async def test_list_only_returns_own_owner_bundles(e2e) -> None:
     r = await e2e.client.get('/api/v1/hasn/agent/hasn/skill/bundles')
     assert r.status_code == 200, r.text
     body = r.json()
@@ -126,12 +126,12 @@ async def test_list_only_returns_own_owner_bundles(e2e):
     assert e2e.bundle_b_id not in ids, ids  # B 的私有包不暴露
 
 
-async def test_get_other_owner_bundle_forbidden(e2e):
+async def test_get_other_owner_bundle_forbidden(e2e) -> None:
     r = await e2e.client.get(f'/api/v1/hasn/agent/hasn/skill/bundles/{e2e.bundle_b_id}')
     assert r.status_code == 403, r.text
 
 
-async def test_update_other_owner_bundle_forbidden(e2e):
+async def test_update_other_owner_bundle_forbidden(e2e) -> None:
     r = await e2e.client.put(
         f'/api/v1/hasn/agent/hasn/skill/bundles/{e2e.bundle_b_id}',
         json={'owner_id': e2e.owner_b, 'name': 'hacked', 'skill_ids': []},
@@ -139,12 +139,12 @@ async def test_update_other_owner_bundle_forbidden(e2e):
     assert r.status_code == 403, r.text
 
 
-async def test_delete_other_owner_bundle_forbidden(e2e):
+async def test_delete_other_owner_bundle_forbidden(e2e) -> None:
     r = await e2e.client.delete(f'/api/v1/hasn/agent/hasn/skill/bundles/{e2e.bundle_b_id}')
     assert r.status_code == 403, r.text
 
 
-async def test_create_overrides_forged_owner_id(e2e):
+async def test_create_overrides_forged_owner_id(e2e) -> None:
     # 入参伪造 owner_id='B'，落库应被强制覆盖为令牌身份 owner A
     r = await e2e.client.post(
         '/api/v1/hasn/agent/hasn/skill/bundles',

@@ -29,7 +29,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     s = async_sessionmaker(engine, expire_on_commit=False)()
@@ -41,7 +41,7 @@ async def session():
         await engine.dispose()
 
 
-async def test_categories_return_name_icon_and_counts(session):
+async def test_categories_return_name_icon_and_counts(session) -> None:
     slug = f'cat{uuid.uuid4().hex[:10]}'
     cname = '测试分类显示名'
     await session.execute(
@@ -77,7 +77,7 @@ async def test_categories_return_name_icon_and_counts(session):
     assert 'template_count' in item
 
 
-async def test_defined_category_listed_even_without_content(session):
+async def test_defined_category_listed_even_without_content(session) -> None:
     """权威目录里的分类即便暂无已发布内容也应列出（使创建可任选分类）。"""
     slug = f'empty{uuid.uuid4().hex[:10]}'
     await session.execute(

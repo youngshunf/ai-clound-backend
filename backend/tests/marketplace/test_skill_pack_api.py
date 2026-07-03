@@ -98,7 +98,7 @@ async def client():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -161,7 +161,7 @@ def _payload(slug: str, **over) -> dict:
     return base
 
 
-async def test_create_valid_skill_pack_persists_normalized_contract(client):
+async def test_create_valid_skill_pack_persists_normalized_contract(client) -> None:
     await _seed_default_members(client.session)
     slug = f'backend-dev-{_tag()}'
     r = await client.http.post('/api/v1/marketplace/app/skill-packs', json=_payload(slug))
@@ -176,12 +176,12 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client):
     row = (
         await client.session.execute(
             text(
-                '''
+                """
                 SELECT t.template_type, v.bundle_slug, v.command_key, v.hermes_yaml, v.content_hash
                 FROM hasn_marketplace.marketplace_template t
                 JOIN hasn_marketplace.marketplace_template_version v ON v.template_id = t.template_id AND v.is_latest
                 WHERE t.template_id = :tid
-                '''
+                """
             ),
             {'tid': f'huanxing/{slug}'},
         )
@@ -192,7 +192,7 @@ async def test_create_valid_skill_pack_persists_normalized_contract(client):
     assert row['content_hash'].startswith('sha256:')
 
 
-async def test_create_rejects_invalid_hermes_yaml(client):
+async def test_create_rejects_invalid_hermes_yaml(client) -> None:
     slug = f'bad-{_tag()}'
     # 空 skills
     r = await client.http.post(
@@ -214,7 +214,7 @@ async def test_create_rejects_invalid_hermes_yaml(client):
     assert r3.status_code == 400, r3.text
 
 
-async def test_list_hides_other_owner_private_packs(client):
+async def test_list_hides_other_owner_private_packs(client) -> None:
     await _seed_default_members(client.session)
     slug = f'priv-{_tag()}'
     # 当前作者的私有包
@@ -223,22 +223,22 @@ async def test_list_hides_other_owner_private_packs(client):
     other_slug = f'other-{_tag()}'
     await client.session.execute(
         text(
-            '''
+            """
             INSERT INTO hasn_marketplace.marketplace_template (template_id, namespace, slug, template_type, name,
                 author_id, pricing_type, price, is_private, is_official, download_count, source_type,
                 created_time, updated_time)
             VALUES (:tid, 'huanxing', :slug, 'skill_pack', :slug, :other, 'free', 0, true, false, 0, 'local', now(), now())
-            '''
+            """
         ),
         {'tid': f'huanxing/{other_slug}', 'slug': other_slug, 'other': _AUTHOR_ID + 1},
     )
     await client.session.execute(
         text(
-            '''
+            """
             INSERT INTO hasn_marketplace.marketplace_template_version (template_id, version, bundle_slug, command_key,
                 hermes_yaml, content_hash, file_hash, is_latest, published_at, created_time, updated_time)
             VALUES (:tid, '1.0.0', :slug, :cmd, 'name: x\nskills:\n  - a\n', 'sha256:x', 'sha256:x', true, now(), now(), now())
-            '''
+            """
         ),
         {'tid': f'huanxing/{other_slug}', 'slug': other_slug, 'cmd': f'/{other_slug}'},
     )
@@ -251,7 +251,7 @@ async def test_list_hides_other_owner_private_packs(client):
     assert other_slug not in slugs  # 他人私有不可见
 
 
-async def test_create_resolves_bare_slug_member_to_full_id(client):
+async def test_create_resolves_bare_slug_member_to_full_id(client) -> None:
     """实施/92 D-NAMING：成员可用裸 slug 提交，落库时归一为完整 namespace/slug id。"""
     member_slug = f'paper-digest-{_tag()}'
     await _seed_skill(client.session, 'huanxing/research', member_slug)
@@ -272,7 +272,7 @@ async def test_create_resolves_bare_slug_member_to_full_id(client):
     assert spec['skills'] == [f'huanxing/research/{member_slug}']
 
 
-async def test_create_rejects_unpublished_member(client):
+async def test_create_rejects_unpublished_member(client) -> None:
     """成员不是已发布公开技能 → 400（堵 gap#5，禁止打包未发布技能）。"""
     slug = f'ghost-pack-{_tag()}'
     ghost = f'ghostns/ghost-{_tag()}'
@@ -287,7 +287,7 @@ async def test_create_rejects_unpublished_member(client):
     assert r.status_code == 400, r.text
 
 
-async def test_create_rejects_ambiguous_bare_slug(client):
+async def test_create_rejects_ambiguous_bare_slug(client) -> None:
     """裸 slug 命中多个命名空间 → 400，要求用完整 namespace/slug 消歧。"""
     dup_slug = f'dup-{_tag()}'
     await _seed_skill(client.session, 'huanxing/teamA', dup_slug)
@@ -307,7 +307,7 @@ async def test_create_rejects_ambiguous_bare_slug(client):
 # ───────────────────────── 实施/92-UI：分类 + 草稿态 + 我的发布 ─────────────────────────
 
 
-async def test_create_with_category_and_draft_status(client):
+async def test_create_with_category_and_draft_status(client) -> None:
     """webui 创建：带分类 + status='draft' → 落库 category + status='draft' + user_id（进我的发布）。"""
     await _seed_default_members(client.session)
     slug = f'cat-{_tag()}'
@@ -330,7 +330,7 @@ async def test_create_with_category_and_draft_status(client):
     assert row['author_id'] == _AUTHOR_ID
 
 
-async def test_draft_hidden_in_browse_but_shown_in_mine(client):
+async def test_draft_hidden_in_browse_but_shown_in_mine(client) -> None:
     """草稿包：市场浏览（默认）不可见，mine=true 可见（我的发布）。"""
     await _seed_default_members(client.session)
     slug = f'draft-{_tag()}'
@@ -349,7 +349,7 @@ async def test_draft_hidden_in_browse_but_shown_in_mine(client):
     assert mine_items[slug]['status'] == 'draft'
 
 
-async def test_browse_filters_by_category(client):
+async def test_browse_filters_by_category(client) -> None:
     """分类筛选：?category=X 只返回该分类的已发布包。"""
     await _seed_default_members(client.session)
     a = f'wa-{_tag()}'
@@ -367,7 +367,7 @@ async def test_browse_filters_by_category(client):
     assert card['namespace'] == 'huanxing'
 
 
-async def test_publish_action_transitions_draft(client):
+async def test_publish_action_transitions_draft(client) -> None:
     """我的发布：草稿包 POST /{id}/publish → 进入待审（与模板发布工作流同构）。"""
     await _seed_default_members(client.session)
     slug = f'pub-{_tag()}'

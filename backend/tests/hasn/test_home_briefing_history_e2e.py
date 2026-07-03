@@ -27,8 +27,8 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.app.home.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
@@ -87,7 +87,7 @@ async def env():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -103,7 +103,7 @@ async def env():
     async def _yield_session():
         yield session
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=auth_state['user_id'])
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'

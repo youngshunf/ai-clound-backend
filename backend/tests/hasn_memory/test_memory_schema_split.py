@@ -40,12 +40,13 @@ STALE_PUBLIC_NAMES = {
 def _metadata():
     # 导入全量 router 树，触发所有 model 注册进 MappedBase.metadata
     import backend.app.router  # noqa: F401
+
     from backend.common.model import MappedBase
 
     return MappedBase.metadata
 
 
-def test_all_memory_tables_in_hasn_memory_schema():
+def test_all_memory_tables_in_hasn_memory_schema() -> None:
     md = _metadata()
     by_name = {t.name: t for t in md.sorted_tables}
     for name in MEMORY_TABLES:
@@ -55,21 +56,21 @@ def test_all_memory_tables_in_hasn_memory_schema():
         )
 
 
-def test_no_stale_public_memory_tables_in_metadata():
+def test_no_stale_public_memory_tables_in_metadata() -> None:
     md = _metadata()
     names = {t.name for t in md.sorted_tables}
     leaked = names & STALE_PUBLIC_NAMES
     assert not leaked, f'metadata 仍含 public 旧记忆表名（应已去前缀迁入 hasn_memory）：{sorted(leaked)}'
 
 
-def test_owner_memory_routes_preserved():
+def test_owner_memory_routes_preserved() -> None:
     from backend.app.hasn_memory.api.v1.app.owner_memory import router
 
     paths = {r.path for r in router.routes}
     assert paths == {'/memory', '/memory/contributions'}, f'owner_memory 路由漂移：{sorted(paths)}'
 
 
-def test_legacy_shims_reexport():
+def test_legacy_shims_reexport() -> None:
     # model shim
     from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemory, HasnOwnerMemoryContribution
     from backend.app.hasn_memory.model import HasnOwnerMemory as NewOM
@@ -97,9 +98,9 @@ def test_legacy_shims_reexport():
     assert LegacyResp is NewResp
 
 
-def test_owner_memory_models_use_hasn_memory_base():
-    from backend.app.hasn_memory.model._base import APP_SCHEMA, HasnMemoryBase
+def test_owner_memory_models_use_hasn_memory_base() -> None:
     from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
+    from backend.app.hasn_memory.model._base import APP_SCHEMA, HasnMemoryBase
 
     assert APP_SCHEMA == 'hasn_memory'
     assert issubclass(HasnOwnerMemory, HasnMemoryBase)
@@ -109,13 +110,13 @@ def test_owner_memory_models_use_hasn_memory_base():
     assert HasnOwnerMemoryContribution.__tablename__ == 'owner_memory_contribution'
 
 
-def test_sync_service_raw_sql_fully_qualified():
+def test_sync_service_raw_sql_fully_qualified() -> None:
     src = (REPO_BACKEND / 'app' / 'hasn' / 'service' / 'hasn_sync_service.py').read_text(encoding='utf-8')
     assert 'public.memory_namespace_revisions' not in src, '裸 SQL 仍引用 public.memory_namespace_revisions（搬 schema 后失效）'
     assert 'hasn_memory.namespace_revision' in src, '裸 SQL 应全限定 hasn_memory.namespace_revision'
 
 
-def test_migration_sql_covers_all_seven_tables():
+def test_migration_sql_covers_all_seven_tables() -> None:
     mig = (
         REPO_BACKEND
         / 'sql'

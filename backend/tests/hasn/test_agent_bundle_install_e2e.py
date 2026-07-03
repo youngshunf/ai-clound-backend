@@ -62,7 +62,7 @@ async def e2e():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -108,23 +108,23 @@ async def e2e():
     # 直接落一个 skill_pack 模板 + 最新版本（含 bundle_slug/command_key/hermes_yaml）。
     await session.execute(
         text(
-            '''
+            """
             INSERT INTO hasn_marketplace.marketplace_template (template_id, namespace, slug, template_type, name,
                 author_id, pricing_type, price, is_private, is_official, status, download_count,
                 source_type, created_time, updated_time)
             VALUES (:tid, 'huanxing', :slug, 'skill_pack', :slug, :author, 'free', 0, false, true,
                 'published', 0, 'local', now(), now())
-            '''
+            """
         ),
         {'tid': package_id, 'slug': bundle_slug, 'author': owner_uid},
     )
     await session.execute(
         text(
-            '''
+            """
             INSERT INTO hasn_marketplace.marketplace_template_version (template_id, version, bundle_slug, command_key,
                 hermes_yaml, content_hash, file_hash, is_latest, published_at, created_time, updated_time)
             VALUES (:tid, '1.0.0', :slug, :cmd, :yaml, 'sha256:deadbeef', 'deadbeef', true, now(), now(), now())
-            '''
+            """
         ),
         {'tid': package_id, 'slug': bundle_slug, 'cmd': command_key, 'yaml': hermes_yaml},
     )
@@ -185,7 +185,7 @@ async def _get_profile(client) -> dict:
     return body['data']
 
 
-async def test_install_bundle_expands_members_and_profile_outputs_skill_bundles(e2e):
+async def test_install_bundle_expands_members_and_profile_outputs_skill_bundles(e2e) -> None:
     c = e2e.client
 
     # 1) 安装技能包：成员并入 skills、记录引用、bump revision、返回 bundle 快照
@@ -216,7 +216,7 @@ async def test_install_bundle_expands_members_and_profile_outputs_skill_bundles(
     assert 'productivity/tdd' in bundles[0]['hermes_yaml']
 
 
-async def test_install_bundle_is_idempotent(e2e):
+async def test_install_bundle_is_idempotent(e2e) -> None:
     c = e2e.client
 
     first = await _install(c, e2e.agent_hasn, e2e.package_id)

@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 from types import SimpleNamespace
 
@@ -34,7 +33,7 @@ def _commit(added=None, modified=None, removed=None) -> dict:
 
 # ---------- collect_changed_paths ----------
 
-def test_collect_changed_paths_unions_added_modified_removed():
+def test_collect_changed_paths_unions_added_modified_removed() -> None:
     commits = [
         _commit(added=['huanxing-skills/official/a/SKILL.md']),
         _commit(modified=['common-skills.yaml'], removed=['huanxing-skills/x/b/SKILL.md']),
@@ -46,14 +45,14 @@ def test_collect_changed_paths_unions_added_modified_removed():
     }
 
 
-def test_collect_changed_paths_empty_and_garbage():
+def test_collect_changed_paths_empty_and_garbage() -> None:
     assert collect_changed_paths([]) == set()
     assert collect_changed_paths([{'added': [None, '', 'ok']}]) == {'ok'}
 
 
 # ---------- skill_dir_touched ----------
 
-def test_skill_dir_touched_matches_file_inside_dir():
+def test_skill_dir_touched_matches_file_inside_dir() -> None:
     changed = {'huanxing-skills/official/hasn-community/SKILL.md'}
     assert skill_dir_touched('huanxing-skills/official/hasn-community', changed) is True
     # references / icon under the dir also count
@@ -63,19 +62,19 @@ def test_skill_dir_touched_matches_file_inside_dir():
     ) is True
 
 
-def test_skill_dir_touched_not_matched_by_sibling_prefix():
+def test_skill_dir_touched_not_matched_by_sibling_prefix() -> None:
     # foo vs foo-bar 不能被前缀误命中
     changed = {'huanxing-skills/official/hasn-community-extra/SKILL.md'}
     assert skill_dir_touched('huanxing-skills/official/hasn-community', changed) is False
 
 
-def test_skill_dir_touched_empty_repo_path():
+def test_skill_dir_touched_empty_repo_path() -> None:
     assert skill_dir_touched('', {'anything'}) is False
 
 
 # ---------- submodule / reconcile gates ----------
 
-def test_submodule_refresh_needed_only_on_gitmodules_or_gitlink():
+def test_submodule_refresh_needed_only_on_gitmodules_or_gitlink() -> None:
     assert submodule_refresh_needed({'.gitmodules'}) is True
     assert submodule_refresh_needed({'github/baoyu-skills'}) is True  # gitlink 指针
     # 普通主仓技能 push 不该触发子模块刷新（根治卡死的关键）
@@ -84,7 +83,7 @@ def test_submodule_refresh_needed_only_on_gitmodules_or_gitlink():
     assert submodule_refresh_needed({'github/baoyu-skills/skills/x/SKILL.md'}) is False
 
 
-def test_common_and_bundles_change_gates():
+def test_common_and_bundles_change_gates() -> None:
     assert common_skills_changed({'common-skills.yaml'}) is True
     assert common_skills_changed({'huanxing-skills/official/a/SKILL.md'}) is False
     assert bundles_changed({'common-bundles.yaml'}) is True
@@ -95,59 +94,59 @@ def test_common_and_bundles_change_gates():
 # ---------- metadata change-gate ----------
 
 def _row(**kw) -> SimpleNamespace:
-    base = dict(
-        skill_id='huanxing/official/a',
-        name='社区助手',
-        source_language='zh',
-        description_en='Community helper',
-        description_zh='社区助手描述',
-        name_en='Community Assistant',
-        name_zh='社区助手',
-        tags='["社区", "助手"]',
-        tags_en='["community", "helper"]',
-        tags_zh='["社区", "助手"]',
-        emoji='🤝',
-        category='communication',
-    )
+    base = {
+        'skill_id': 'huanxing/official/a',
+        'name': '社区助手',
+        'source_language': 'zh',
+        'description_en': 'Community helper',
+        'description_zh': '社区助手描述',
+        'name_en': 'Community Assistant',
+        'name_zh': '社区助手',
+        'tags': '["社区", "助手"]',
+        'tags_en': '["community", "helper"]',
+        'tags_zh': '["社区", "助手"]',
+        'emoji': '🤝',
+        'category': 'communication',
+    }
     base.update(kw)
     return SimpleNamespace(**base)
 
 
 def _scanned(**kw) -> dict:
-    base = dict(name='社区助手', description='社区助手描述', tag_hints=['社区', '助手'])
+    base = {'name': '社区助手', 'description': '社区助手描述', 'tag_hints': ['社区', '助手']}
     base.update(kw)
     return base
 
 
-def test_metadata_unchanged_true_when_source_matches_and_translations_present():
+def test_metadata_unchanged_true_when_source_matches_and_translations_present() -> None:
     assert metadata_unchanged(_scanned(), _row()) is True
 
 
-def test_metadata_unchanged_false_when_name_changed():
+def test_metadata_unchanged_false_when_name_changed() -> None:
     assert metadata_unchanged(_scanned(name='社区超级助手'), _row()) is False
 
 
-def test_metadata_unchanged_false_when_description_changed():
+def test_metadata_unchanged_false_when_description_changed() -> None:
     assert metadata_unchanged(_scanned(description='改过的描述'), _row()) is False
 
 
-def test_metadata_unchanged_ignores_tag_hints_diff():
+def test_metadata_unchanged_ignores_tag_hints_diff() -> None:
     # tags 不参与门控：库内 tags 是 LLM 生成（tags = tags_en or tags_zh or tag_hints，
     # LLM 优先），与扫描侧 frontmatter tag_hints 不同源；name+description 一致即命中。
     assert metadata_unchanged(_scanned(tag_hints=['社区']), _row()) is True
     assert metadata_unchanged(_scanned(tag_hints=[]), _row()) is True
 
 
-def test_metadata_unchanged_false_when_translation_missing():
+def test_metadata_unchanged_false_when_translation_missing() -> None:
     assert metadata_unchanged(_scanned(), _row(name_en=None)) is False
     assert metadata_unchanged(_scanned(), _row(description_zh=None)) is False
 
 
-def test_metadata_unchanged_false_when_no_existing():
+def test_metadata_unchanged_false_when_no_existing() -> None:
     assert metadata_unchanged(_scanned(), None) is False
 
 
-def test_translation_from_existing_shapes_like_llm_output():
+def test_translation_from_existing_shapes_like_llm_output() -> None:
     out = translation_from_existing(_row())
     assert out['name_en'] == 'Community Assistant'
     assert out['name_zh'] == '社区助手'
@@ -161,7 +160,7 @@ def test_translation_from_existing_shapes_like_llm_output():
 # ---------- _batch_translate 真实分流：只译改动的 ----------
 
 class _FakeScalars:
-    def __init__(self, rows):
+    def __init__(self, rows) -> None:
         self._rows = rows
 
     def all(self):
@@ -169,7 +168,7 @@ class _FakeScalars:
 
 
 class _FakeResult:
-    def __init__(self, rows):
+    def __init__(self, rows) -> None:
         self._rows = rows
 
     def scalars(self):
@@ -179,14 +178,14 @@ class _FakeResult:
 class _FakeDB:
     """最小 AsyncSession 替身：execute 返回预置的现有行（按 skill_id 过滤无关，全返）。"""
 
-    def __init__(self, rows):
+    def __init__(self, rows) -> None:
         self._rows = rows
 
     async def execute(self, *_args, **_kwargs):
         return _FakeResult(self._rows)
 
 
-def test_batch_translate_only_sends_changed_skills_to_llm(monkeypatch):
+def test_batch_translate_only_sends_changed_skills_to_llm(monkeypatch) -> None:
     # 库内已有 a（未变）、b（描述变了）；c 是新增（库内无）。
     existing = [
         _row(skill_id='huanxing/official/a'),
@@ -207,7 +206,7 @@ def test_batch_translate_only_sends_changed_skills_to_llm(monkeypatch):
 
     sent: list[list[dict]] = []
 
-    async def _recorder(items, *, concurrency=4, categories=None):  # noqa: ARG001
+    async def _recorder(items, *, concurrency=4, categories=None):
         sent.append(items)
         # 返回与输入对齐的「译文」占位，结构与真实输出一致即可。
         return [
@@ -238,7 +237,7 @@ def test_batch_translate_only_sends_changed_skills_to_llm(monkeypatch):
     assert results[2]['name_en'] == 'New Skill'
 
 
-def test_batch_translate_all_cached_zero_llm(monkeypatch):
+def test_batch_translate_all_cached_zero_llm(monkeypatch) -> None:
     """全部未变 → 一次 LLM 都不调（核心省钱点）。"""
     existing = [_row(skill_id='huanxing/official/a')]
     skills_data = [
@@ -248,7 +247,7 @@ def test_batch_translate_all_cached_zero_llm(monkeypatch):
 
     called = {'n': 0}
 
-    async def _recorder(items, *, concurrency=4, categories=None):  # noqa: ARG001
+    async def _recorder(items, *, concurrency=4, categories=None):
         called['n'] += 1
         return []
 

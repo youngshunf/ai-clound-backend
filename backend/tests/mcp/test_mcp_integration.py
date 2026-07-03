@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.mcp.routes import mcp_router
 from backend.common.exception.exception_handler import register_exception
 from backend.database.db import async_db_session
-from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
 
 
 def make_test_app() -> FastAPI:
@@ -41,6 +41,7 @@ async def active_agent_from_db():
     async with async_db_session() as db:
         # 查询一个活跃的 Agent
         from sqlalchemy import select
+
         from backend.app.hasn.model.hasn_agents import HasnAgents
 
         result = await db.execute(
@@ -59,8 +60,9 @@ async def active_agent_from_db():
 @pytest_asyncio.fixture
 def agent_token_for_db_agent(active_agent_from_db):
     """为数据库中的 Agent 生成 JWT token"""
-    from backend.common.security.agent_jwt import jwt_encode_agent
     from datetime import datetime, timedelta, timezone
+
+    from backend.common.security.agent_jwt import jwt_encode_agent
 
     agent = active_agent_from_db
 
@@ -82,7 +84,7 @@ def agent_token_for_db_agent(active_agent_from_db):
 class TestMcpIntegration:
     """MCP 集成测试"""
 
-    async def test_list_tools_with_real_db(self, agent_token_for_db_agent, active_agent_from_db):
+    async def test_list_tools_with_real_db(self, agent_token_for_db_agent, active_agent_from_db) -> None:
         """测试使用真实数据库获取工具列表"""
         app = make_test_app()
         client = TestClient(app)
@@ -114,7 +116,7 @@ class TestMcpIntegration:
         for tool in data["tools"]:
             print(f"  - {tool['name']}: {tool['description']}")
 
-    async def test_list_tools_with_namespace_filter(self, agent_token_for_db_agent, active_agent_from_db):
+    async def test_list_tools_with_namespace_filter(self, agent_token_for_db_agent, active_agent_from_db) -> None:
         """namespace 参数被忽略，tools/list 始终返回 bootstrap 元工具集（03 §9）"""
         app = make_test_app()
         client = TestClient(app)
@@ -142,7 +144,7 @@ class TestMcpIntegration:
 
         print(f"✅ Found {len(tools)} bootstrap tools")
 
-    async def test_call_contact_list_tool(self, agent_token_for_db_agent, active_agent_from_db):
+    async def test_call_contact_list_tool(self, agent_token_for_db_agent, active_agent_from_db) -> None:
         """测试调用联系人列表工具"""
         app = make_test_app()
         client = TestClient(app)
@@ -165,13 +167,13 @@ class TestMcpIntegration:
         if response.status_code == 200:
             data = response.json()
             assert "result" in data
-            print(f"✅ Contact list tool executed successfully")
+            print("✅ Contact list tool executed successfully")
             print(f"   Result: {data['result']}")
         else:
             # 记录错误但不失败测试（可能是服务依赖问题）
-            print(f"⚠️ Tool execution failed (may be expected in test env)")
+            print("⚠️ Tool execution failed (may be expected in test env)")
 
-    async def test_call_nonexistent_tool(self, agent_token_for_db_agent, active_agent_from_db):
+    async def test_call_nonexistent_tool(self, agent_token_for_db_agent, active_agent_from_db) -> None:
         """测试调用不存在的工具"""
         app = make_test_app()
         client = TestClient(app)
@@ -192,9 +194,9 @@ class TestMcpIntegration:
         print(f"Response: {response.json()}")
 
         assert response.status_code in [404, 500]  # 可能返回 404 或 500
-        print(f"✅ Correctly rejected nonexistent tool")
+        print("✅ Correctly rejected nonexistent tool")
 
-    async def test_missing_authorization(self):
+    async def test_missing_authorization(self) -> None:
         """测试缺少认证头"""
         app = make_test_app()
         client = TestClient(app)
@@ -206,4 +208,4 @@ class TestMcpIntegration:
 
         # 422 表示缺少必需参数（FastAPI 验证）
         assert response.status_code == 422
-        print(f"✅ Correctly rejected missing authorization")
+        print("✅ Correctly rejected missing authorization")

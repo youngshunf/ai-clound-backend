@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import uuid
+
 from types import SimpleNamespace
 
 import httpx
 import pytest
 import pytest_asyncio
+
 from fastapi import FastAPI, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -48,7 +50,7 @@ async def http():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -72,7 +74,7 @@ async def http():
     async def _yield_session():
         yield session
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=_USER_ID)
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'
@@ -168,7 +170,7 @@ async def test_non_member_cannot_view(http) -> None:
     """非成员查看群详情应被拒（ForbiddenError）。"""
     c = http.client
     created = _data(await c.post('/api/v1/hasn/app/groups', json={'title': f'私群{_uid()}', 'members': []}))
-    gid = created['group_id']
+    created['group_id']
 
     # 退群后再查（owner 退不了，这里建第二个群、用一个不存在的成员视角无法模拟；
     # 改为断言不存在群返回 404）
@@ -183,7 +185,7 @@ async def db_session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 

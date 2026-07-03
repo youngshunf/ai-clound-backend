@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.app_catalog_service import (
     _CATALOG_AGENT_DEFAULTS,
@@ -44,7 +45,6 @@ from backend.app.hasn.service.app_catalog_service import (
     get_all_app_configs,
     get_catalog,
 )
-from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST, build_reel_app
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.database.db import SQLALCHEMY_DATABASE_URL

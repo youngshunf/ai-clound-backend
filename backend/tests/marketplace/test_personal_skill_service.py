@@ -88,7 +88,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -111,7 +111,7 @@ async def _require_storage(session) -> None:
         await op.write(probe, b'1')
         assert await op.read(probe) == b'1'
         await op.delete(probe)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         pytest.skip(f'S3 存储不可达，跳过真实上传往返: {exc!r}')
 
 

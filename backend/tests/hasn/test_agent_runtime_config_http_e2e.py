@@ -60,7 +60,7 @@ async def e2e():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -146,7 +146,7 @@ _FULL = {
 }
 
 
-async def test_get_default_is_all_none(e2e):
+async def test_get_default_is_all_none(e2e) -> None:
     r = await _get_config(e2e.client, e2e.agent1)
     assert r.status_code == 200, r.text
     cfg = r.json()['data']['config']
@@ -160,7 +160,7 @@ async def test_get_default_is_all_none(e2e):
     assert cfg['a2a_max_turns'] is None
 
 
-async def test_put_persists_bumps_revision_and_provisions(e2e):
+async def test_put_persists_bumps_revision_and_provisions(e2e) -> None:
     # 1) PUT 全量写入
     r = await _put_config(e2e.client, e2e.agent1, _FULL)
     assert r.status_code == 200, r.text
@@ -194,7 +194,7 @@ async def test_put_persists_bumps_revision_and_provisions(e2e):
     assert pdata['runtime_config']['working_directory'] == _FULL['working_directory']
 
 
-async def test_partial_models_follow_main_when_omitted(e2e):
+async def test_partial_models_follow_main_when_omitted(e2e) -> None:
     # 只设主模型，其余槽留空 → 跟随主模型（None）
     r = await _put_config(e2e.client, e2e.agent1, {'models': {'main': 'gpt-5.5'}})
     assert r.status_code == 200, r.text
@@ -202,7 +202,7 @@ async def test_partial_models_follow_main_when_omitted(e2e):
     assert cfg['models'] == {'main': 'gpt-5.5', 'fast': None, 'vision': None, 'delegation': None}
 
 
-async def test_owner_isolation_other_owner_agent_404(e2e):
+async def test_owner_isolation_other_owner_agent_404(e2e) -> None:
     # authed 为 owner1，访问 owner2 的 agent → 404（不泄露/不可改他人配置）
     r_get = await _get_config(e2e.client, e2e.agent2)
     assert r_get.status_code == 404, r_get.text

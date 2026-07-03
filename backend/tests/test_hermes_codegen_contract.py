@@ -47,7 +47,7 @@ def _parse_hermes_table(table_name: str):
     return table, raw_sql
 
 
-def test_hermes_sql_contract_matches_codegen_and_secret_boundaries():
+def test_hermes_sql_contract_matches_codegen_and_secret_boundaries() -> None:
     for table_name in HERMES_TABLES:
         table, raw_sql = _parse_hermes_table(table_name)
         columns = {column.name for column in table.columns}
@@ -61,7 +61,7 @@ def test_hermes_sql_contract_matches_codegen_and_secret_boundaries():
             assert "(" in comment and ")" in comment and ":" in comment and "/" in comment
 
 
-def test_hermes_codegen_outputs_are_admin_only_and_under_hermes_app():
+def test_hermes_codegen_outputs_are_admin_only_and_under_hermes_app() -> None:
     for table_name in HERMES_TABLES:
         assert (HERMES_APP_DIR / "model" / f"{table_name}.py").exists()
         assert (HERMES_APP_DIR / "schema" / f"{table_name}.py").exists()

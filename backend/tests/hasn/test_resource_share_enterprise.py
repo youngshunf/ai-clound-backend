@@ -29,7 +29,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -51,7 +51,7 @@ async def _free_user_ids(session, n: int) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-async def test_enterprise_admin_and_visibility(session):
+async def test_enterprise_admin_and_visibility(session) -> None:
     tag = uuid.uuid4().hex[:8]
     uids = await _free_user_ids(session, 3)
     if len(uids) < 3:
@@ -110,7 +110,7 @@ async def test_enterprise_admin_and_visibility(session):
         await deck_service.get_deck(session, subject=outsider, deck_id=did)
 
 
-async def test_enterprise_grantee_share_bumps_members(session):
+async def test_enterprise_grantee_share_bumps_members(session) -> None:
     """enterprise grantee 显式授 editor → 该企业成员获 editor（高于 visibility 的 viewer）。"""
     tag = uuid.uuid4().hex[:8]
     uids = await _free_user_ids(session, 2)
