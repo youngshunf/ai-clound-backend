@@ -273,6 +273,12 @@ ignore = [
 "**/model/*.py" = ["TC003"]
 "backend/common/socketio/server.py" = ["ANN001"]
 "backend/common/exception/exception_handler.py" = ["ANN202", "RUF029"]
+# scope 声明文件采用「一行一 scope-dict」约定（清晰 diff + 反 reformat 规则，福仔明确）：
+# 每条 scope 的展示元数据（label_zh/label_en/description/description_en）单行成 dict，
+# i18n 双语后单行合法超长——E501 对该文件类别不适用（设计使然，非疏漏）。仅覆盖各应用
+# 域的 scope 声明与平台 scope 声明，不含聚合器 mcp/scopes.py（那是逻辑文件，仍受 E501）。
+"backend/app/hasn_*/scopes.py" = ["E501"]
+"backend/app/mcp/platform_scopes.py" = ["E501"]
 
 [tool.ruff.lint.flake8-pytest-style]
 parametrize-names-type = "list"

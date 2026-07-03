@@ -11,8 +11,10 @@ from __future__ import annotations
 FINANCE_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'finance:read': {
         'label_zh': '查询行情与投研数据',
+        'label_en': 'Query market and research data',
         'domain': 'finance',
         'risk': 'low',
         'description': '读 A股/港美股/基金/期货/债券/指数行情与 K 线、个股资金流/财务/基本面、龙虎榜、宏观指标（只读数据源，无下单、不构成投资建议）',
+        'description_en': 'Read quotes and candlesticks for A-shares, HK/US stocks, funds, futures, bonds, and indices, plus per-stock fund flows, financials, and fundamentals, top-trader lists, and macro indicators (read-only data source, no order placement, not investment advice)',
     },
 }

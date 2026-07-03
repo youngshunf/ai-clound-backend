@@ -145,16 +145,22 @@ class ToolDirectoryService:
                 capabilities.append({
                     'key': scope_key,
                     'label': meta['label'],
+                    'label_en': meta['label_en'],
                     'domain': meta['domain'],
+                    'domain_label': meta['domain_label'],
+                    'domain_label_en': meta['domain_label_en'],
                     'risk': meta.get('risk') or entry.get('risk', 'low'),
                     'description': meta['description'],
+                    'description_en': meta['description_en'],
                     'default_mode': factory_default,
                     'mode': resolve_capability_mode(factory_default, capability_modes, scope_key),
                     'tools': sorted(entry['tools']),
                 })
+            src_labels = SOURCE_LABELS.get(source, {'zh': source, 'en': source})
             sources.append({
                 'source': source,
-                'label': SOURCE_LABELS.get(source, source),
+                'label': src_labels.get('zh', source),
+                'label_en': src_labels.get('en', source),
                 'capabilities': capabilities,
             })
 

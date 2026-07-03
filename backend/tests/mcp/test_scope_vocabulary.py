@@ -91,3 +91,54 @@ def test_scopes_kind_registered_as_owner_directed_sync_kind() -> None:
     assert KIND_SCOPES == 'scopes'
     assert KIND_SCOPES in OWNER_KINDS, 'scopes 应为 owner 定向 kind'
     assert KIND_SCOPES not in KINDS, 'scopes 是 per-owner 指纹，不应进全局握手快照'
+
+
+# ------------------------------------------------------------------------------
+# i18n 双语守卫（福仔「一次到位·全双语」）：权限页分组名/能力名/描述在源头（cloud
+# scope catalog）就带中英，前端据语言设置取、英文缺失才诚实回退中文——绝不由前端
+# 手维护中文名（曾因前端漏映射而露英文 domain 键）。以下守卫钉死源头双语齐备。
+# ------------------------------------------------------------------------------
+
+
+def test_every_scope_has_bilingual_display_metadata() -> None:
+    """SCOPE_CATALOG 每条 scope 声明都自带非空 label_zh + label_en（源头产出英文）。
+
+    scope_meta 出参英文字段永不为空、永不露 scope key（英文缺失回退中文）；有中文描述
+    的 scope 其英文描述回退也必非空。
+    """
+    from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
+
+    for key, meta in SCOPE_CATALOG.items():
+        assert meta.get('label_zh'), f'{key} 缺 label_zh'
+        assert meta.get('label_en'), f'{key} 缺 label_en（全双语要求源头产出英文，不许留空露 key）'
+        display = scope_meta(key)
+        assert display['label_en'] and display['label_en'] != key, f'{key} label_en 露 key/为空'
+        assert display['label'] and display['label'] != key, f'{key} label 露 key/为空'
+        if meta.get('description'):
+            assert display['description_en'], f'{key} 有中文描述但英文回退为空'
+
+
+def test_domain_labels_cover_every_catalog_domain() -> None:
+    """DOMAIN_LABELS 覆盖 SCOPE_CATALOG 里出现的每个 domain（漏登记 → 权限页露英文键）。
+
+    这是「权限页分组名露英文」根 bug 的守卫：只要某 scope 的 domain 未在 DOMAIN_LABELS
+    登记，domain_label 就回退 domain 键（英文），前端渲染即露英文。新增 domain 必须登记。
+    """
+    from backend.app.mcp.scopes import DOMAIN_LABELS, SCOPE_CATALOG
+
+    domains = {meta.get('domain', '') for meta in SCOPE_CATALOG.values()}
+    domains.discard('')
+    missing = sorted(d for d in domains if d not in DOMAIN_LABELS)
+    assert not missing, f'DOMAIN_LABELS 未登记这些 domain（权限页会露英文键）: {missing}'
+
+
+def test_domain_and_source_labels_all_bilingual() -> None:
+    """DOMAIN_LABELS / SOURCE_LABELS 每条都齐备中英（zh + en 皆非空）。"""
+    from backend.app.mcp.scopes import DOMAIN_LABELS, SOURCE_LABELS
+
+    for domain, entry in DOMAIN_LABELS.items():
+        assert entry.get('zh'), f'domain {domain} 缺中文名'
+        assert entry.get('en'), f'domain {domain} 缺英文名'
+    for source, entry in SOURCE_LABELS.items():
+        assert entry.get('zh'), f'source {source} 缺中文名'
+        assert entry.get('en'), f'source {source} 缺英文名'

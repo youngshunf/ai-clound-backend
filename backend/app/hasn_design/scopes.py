@@ -23,24 +23,30 @@ from __future__ import annotations
 DESIGN_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'design:read': {
         'label_zh': '查看设计画布',
+        'label_en': 'View design canvas',
         'domain': 'design',
         'risk': 'low',
         'description': '以 Agent 身份读取设计画布、当前选中、设计知识 prompt，并导出渲染结果（截图/SVG，owner 隔离）',
+        'description_en': 'Read the design canvas, current selection, and design-knowledge prompt as the agent, and export rendered results (screenshot/SVG, owner-isolated)',
     },
     'design:write': {
         'label_zh': '在画布上出设计',
+        'label_en': 'Design on the canvas',
         'domain': 'design',
         # 创作类出厂 allow（画布迭代不花算力、不出片，分身可随便画）；破坏性 delete/replace 走
         # capability human_confirmation=True 出厂 ask（对齐 studio:write 哲学 + §5.3 note）。
         'default_mode': 'allow',
         'risk': 'low',
         'description': '在画布上出/改设计：一次成型或分层、节点增改、变量主题（创作类放行，删/替换需确认）',
+        'description_en': 'Create and edit designs on the canvas: one-shot or layered, node add/edit, variables and themes (authoring is allowed; delete/replace needs confirmation)',
     },
     'design:codegen': {
         'label_zh': '设计稿出代码',
+        'label_en': 'Generate code from design',
         'domain': 'design',
         'default_mode': 'allow',
         'risk': 'low',
         'description': '把设计稿生成多平台代码（plan→submit→assemble，确定性出码，owner 隔离）',
+        'description_en': 'Generate multi-platform code from a design (plan→submit→assemble, deterministic output, owner-isolated)',
     },
 }

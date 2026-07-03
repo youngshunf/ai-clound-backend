@@ -16,19 +16,23 @@ from __future__ import annotations
 DIAG_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'diag:read:all': {
         'label_zh': '读平台错误全量',
+        'label_en': 'Read all platform errors',
         'domain': 'diag',
         'risk': 'medium',
         'description': (
             '跨 owner 读取平台错误 issue 列表/详情/occurrence/统计（平台运维特权，非普通分身）'
         ),
+        'description_en': 'Read platform error issues, details, occurrences, and stats across owners (platform-ops privilege, not a regular agent)',
     },
     'diag:manage': {
         'label_zh': '管理平台错误 issue',
+        'label_en': 'Manage platform error issues',
         'domain': 'diag',
         'risk': 'high',
         'description': (
             '改 issue 状态（investigating/resolved/skipped/wontfix）、挂 issue/PR 链接'
             '（平台运维特权，写审计留痕）'
         ),
+        'description_en': 'Change issue status (investigating/resolved/skipped/wontfix) and attach issue/PR links (platform-ops privilege, audited writes)',
     },
 }
