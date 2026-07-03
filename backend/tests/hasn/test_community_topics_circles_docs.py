@@ -164,12 +164,12 @@ async def test_doc_effective_visibility_and_pruning(pg) -> None:
     s = await doc_service.create_space(pg, owner_hasn_id=owner, author_type='human', author_hasn_id=owner, owner_user_id=1, title=f'Doc{_uid()}', default_visibility='private')
     pub = await doc_service.create_node(pg, space_id=s['space_id'], actor_hasn_id=owner, node_type='directory', title='公开手册', visibility='public')
     await doc_service.create_node(pg, space_id=s['space_id'], actor_hasn_id=owner, node_type='directory', title='继承公开', parent_node_id=pub['node_id'])
-    priv = await doc_service.create_node(pg, space_id=s['space_id'], actor_hasn_id=owner, node_type='directory', title='私密内部', visibility='private', parent_node_id=pub['node_id'])
+    await doc_service.create_node(pg, space_id=s['space_id'], actor_hasn_id=owner, node_type='directory', title='私密内部', visibility='private', parent_node_id=pub['node_id'])
     # 非 owner 看到公开子树，但看不到私密标题
     tree = await doc_service.get_tree(pg, space_ident=s['space_id'], viewer_hasn_id=viewer, public_only=True)
     titles = []
 
-    def _collect(nodes):
+    def _collect(nodes) -> None:
         for n in nodes:
             titles.append(n.get('title'))
             _collect(n.get('children', []))

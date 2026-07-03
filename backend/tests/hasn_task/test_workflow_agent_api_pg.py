@@ -164,7 +164,6 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             agent_name=f'agent_{tag}',
             owner_hasn_id=owner,
             owner_user_id=owner_uid,
-            scopes=['agent', 'workflow:read', 'workflow:manage', 'workflow:run'],
             session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )

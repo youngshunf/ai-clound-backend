@@ -1,11 +1,10 @@
-from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key
 from backend.app.hasn_growth.model._base import HasnGrowthAppBase
+from backend.common.model import id_key
 
 
 class LeadSourceConfig(HasnGrowthAppBase):
@@ -25,4 +24,4 @@ class LeadSourceConfig(HasnGrowthAppBase):
     country_blacklist: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
     rate_limit_per_minute: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
     concurrency: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
-    meta_data: Mapped[dict] = mapped_column('metadata',postgresql.JSONB(), default_factory=dict, comment=None)
+    meta_data: Mapped[dict] = mapped_column('metadata', postgresql.JSONB(), default_factory=dict, comment=None)

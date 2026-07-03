@@ -21,24 +21,24 @@ def _client(handler, **kw) -> LLMChatClient:
 # ---- 配置解析 ----
 
 
-def test_base_url_appends_v1():
+def test_base_url_appends_v1() -> None:
     assert LLMChatClient(base_url='http://gw.local', api_key='k').base_url == 'http://gw.local/v1'
     assert LLMChatClient(base_url='http://gw.local/v1', api_key='k').base_url == 'http://gw.local/v1'
     assert LLMChatClient(base_url='http://gw.local/', api_key='k').base_url == 'http://gw.local/v1'
 
 
-def test_base_url_empty_raises():
+def test_base_url_empty_raises() -> None:
     with pytest.raises(LLMError):
         _ = LLMChatClient(base_url='', api_key='k').base_url
 
 
-def test_is_configured():
+def test_is_configured() -> None:
     assert LLMChatClient(base_url='http://x', api_key='k').is_configured is True
     assert LLMChatClient(base_url='', api_key='k').is_configured is False
     assert LLMChatClient(base_url='http://x', api_key='').is_configured is False
 
 
-def test_model_chain():
+def test_model_chain() -> None:
     c = LLMChatClient(base_url='http://x', api_key='k', model='m1', fallback_model='m2')
     assert c._model_chain(None, None) == ['m1', 'm2']
     assert c._model_chain('over', None) == ['over']  # per-call 覆盖丢掉 fallback
@@ -47,7 +47,7 @@ def test_model_chain():
     assert dedup._model_chain(None, None) == ['same']
 
 
-def test_default_model_chain_uses_settings_failover():
+def test_default_model_chain_uses_settings_failover() -> None:
     """无 per-instance/per-call 模型的客户端默认走 settings.LLM_DEFAULT_MODELS 整条 failover 链。"""
     from backend.core.conf import settings
 
@@ -57,13 +57,13 @@ def test_default_model_chain_uses_settings_failover():
     assert c._model_chain(None, None) == configured
 
 
-def test_instance_config_beats_settings_chain():
+def test_instance_config_beats_settings_chain() -> None:
     """实例显式 models / model 永远赢过全局默认链（不被全局链覆盖）。"""
     assert LLMChatClient(base_url='http://x', api_key='k', models=['only'])._model_chain(None, None) == ['only']
     assert LLMChatClient(base_url='http://x', api_key='k', model='solo')._model_chain(None, None) == ['solo']
 
 
-def test_module_singleton_carries_failover_chain():
+def test_module_singleton_carries_failover_chain() -> None:
     """模块单例 llm_client（owner 记忆合并 / 画像判定走它）默认带 failover 链。"""
     from backend.common.llm import llm_client
     from backend.core.conf import settings
@@ -74,14 +74,14 @@ def test_module_singleton_carries_failover_chain():
 # ---- 纯解析 ----
 
 
-def test_extract_content_message_and_delta():
+def test_extract_content_message_and_delta() -> None:
     result = {'choices': [{'message': {'content': 'a'}}, {'delta': {'content': 'b'}}]}
     assert LLMChatClient._extract_content(result) == 'ab'
     assert LLMChatClient._extract_content({'choices': []}) is None
     assert LLMChatClient._extract_content({}) is None
 
 
-def test_parse_sse():
+def test_parse_sse() -> None:
     text = (
         'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n'
         'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
@@ -90,7 +90,7 @@ def test_parse_sse():
     assert LLMChatClient._extract_content(LLMChatClient._parse_sse(text)) == 'hello'
 
 
-def test_parse_json_object():
+def test_parse_json_object() -> None:
     assert LLMChatClient._parse_json_object('```json\n{"a": 1}\n```') == {'a': 1}
     assert LLMChatClient._parse_json_object('prefix {"a": 2} suffix') == {'a': 2}
     with pytest.raises(LLMError):
@@ -101,17 +101,17 @@ def test_parse_json_object():
 
 
 @pytest.fixture
-def _no_backoff(monkeypatch):
+def _no_backoff(monkeypatch) -> None:
     import backend.common.llm.client as mod
 
-    async def _instant(_seconds):
+    async def _instant(_seconds) -> None:
         return None
 
     monkeypatch.setattr(mod.asyncio, 'sleep', _instant)
 
 
 @pytest.mark.asyncio
-async def test_complete_retries_then_succeeds(_no_backoff):
+async def test_complete_retries_then_succeeds(_no_backoff) -> None:
     calls = {'n': 0}
 
     def handler(_request):
@@ -126,7 +126,7 @@ async def test_complete_retries_then_succeeds(_no_backoff):
 
 
 @pytest.mark.asyncio
-async def test_complete_model_fallback(_no_backoff):
+async def test_complete_model_fallback(_no_backoff) -> None:
     seen: list[str] = []
 
     def handler(request):
@@ -144,7 +144,7 @@ async def test_complete_model_fallback(_no_backoff):
 
 
 @pytest.mark.asyncio
-async def test_complete_default_chain_failover(_no_backoff):
+async def test_complete_default_chain_failover(_no_backoff) -> None:
     """无 per-call 模型时走全局默认 failover 链：前两个模型 5xx 穷尽后自动切到第三个成功。
 
     这正是 owner 记忆合并的实际路径（merge 调 llm_client.complete 不带 model）——证明默认
@@ -171,7 +171,7 @@ async def test_complete_default_chain_failover(_no_backoff):
 
 
 @pytest.mark.asyncio
-async def test_complete_sse_response(_no_backoff):
+async def test_complete_sse_response(_no_backoff) -> None:
     def handler(_request):
         body = 'data: {"choices":[{"delta":{"content":"流式"}}]}\n\ndata: [DONE]\n'
         return httpx.Response(200, text=body, headers={'content-type': 'text/event-stream'})
@@ -181,7 +181,7 @@ async def test_complete_sse_response(_no_backoff):
 
 
 @pytest.mark.asyncio
-async def test_complete_failover_on_hard_error(_no_backoff):
+async def test_complete_failover_on_hard_error(_no_backoff) -> None:
     """硬错误（非瞬时 4xx，如 model_not_found / 余额不足）也触发模型 failover，不再直接抛。
 
     这正是「一个模型挂了，自动切换下一个」：链上某模型返回 4xx 硬错误时切下一个，整条链
@@ -204,7 +204,7 @@ async def test_complete_failover_on_hard_error(_no_backoff):
 
 
 @pytest.mark.asyncio
-async def test_complete_all_models_hard_error_raises(_no_backoff):
+async def test_complete_all_models_hard_error_raises(_no_backoff) -> None:
     def handler(_request):
         return httpx.Response(400, text='bad request')  # 全链非瞬时硬错误 → 穷尽后抛
 
@@ -213,7 +213,7 @@ async def test_complete_all_models_hard_error_raises(_no_backoff):
 
 
 @pytest.mark.asyncio
-async def test_complete_json(_no_backoff):
+async def test_complete_json(_no_backoff) -> None:
     def handler(_request):
         return httpx.Response(200, json={'choices': [{'message': {'content': '```json\n{"k": "v"}\n```'}}]})
 

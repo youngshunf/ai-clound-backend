@@ -1115,6 +1115,25 @@ async def route_message(
 
         await ws_router.push_to_owner_excluding_agent_node(target_info['owner_id'], to_id, payload)
 
+    # owner_copy 旁观出站补投（发起方主动发首条修复）：当发送方是某主人的自有分身、且
+    # 收件方 owner ≠ 发送方 owner（即分身发给「外部方」，而非 owner↔自有分身 loopback /
+    # 自有分身互发——内部场景已由上面的 recipient 投递到达主人设备），且这条消息**没有**
+    # local_id（= 分身经云端 `message.send` 工具主动直发、发送方 daemon 无本地 echo）时，
+    # 把消息也实时投给发送方 owner 的节点，让主人在 owner_copy 旁观线程里立刻看到自家
+    # 分身发出的这条。有 local_id 的（daemon 中转的回复，本地已 echo）**不推**，避免旁观
+    # 线程重复。daemon 侧 `handle_message_frame` 认「from_id 是本主人分身」框定为旁观出站，
+    # 用 cloud message_id 与 sync_pull 出站同键，两序都幂等不重复。
+    if (
+        from_id.startswith('a_')
+        and sender_owner_id
+        and recipient_owner_id
+        and recipient_owner_id != sender_owner_id
+        and local_id is None
+    ):
+        from backend.app.hasn.service.ws_router import ws_router
+
+        await ws_router.push_to_owner(sender_owner_id, payload)
+
     return {
         'error': False,
         'msg_id': msg.id,

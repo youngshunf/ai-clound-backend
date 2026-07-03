@@ -41,7 +41,6 @@ def _agent() -> AgentTokenPayload:
         agent_name='社区提交边界回归分身',
         owner_hasn_id='hasn:owner:commctx-a',
         owner_user_id=920078,
-        scopes=['community:post'],
         session_uuid='sess-commctx-test',
         expire_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1),
     )

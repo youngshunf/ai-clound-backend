@@ -19,7 +19,6 @@ from backend.app.hasn.service.hasn_message_hub_service import (
 )
 from backend.common.exception import errors
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTROL_PLANE_CODEGEN_TABLES = (
     'hasn_agent_runtime_reports',
@@ -191,6 +190,7 @@ async def test_runtime_dispatch_failure_after_accept_is_not_message_delivery_fai
         ('owner_copy', 'dispatch_failed'),
     ]
 
+
 @dataclass
 class CapturingSyncGateway:
     reports: list[dict[str, Any]] = field(default_factory=list)
@@ -265,7 +265,7 @@ class CapturingSyncGateway:
             )
             self.namespace_revisions[revision_key] = {'revision': namespace_revision, 'last_event_id': event_id}
             self.client_events.append((owner_id, node_id, event))
-            self.client_event_revisions[(owner_id, node_id, event.client_event_id)] = revision
+            self.client_event_revisions[owner_id, node_id, event.client_event_id] = revision
             return revision
         self.client_events.append((owner_id, node_id, event))
         return None

@@ -21,8 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
-from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn_copilot.manifest import build_copilot_app
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 

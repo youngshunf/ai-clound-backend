@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import importlib
+
+from pathlib import Path
 
 import yaml
 
@@ -82,7 +83,7 @@ def _parse_table(sql_file: str):
     return table
 
 
-def test_openapi_and_error_contracts_are_readable_and_runtime_safe():
+def test_openapi_and_error_contracts_are_readable_and_runtime_safe() -> None:
     data = yaml.safe_load(OPENAPI_FILE.read_text(encoding="utf-8"))
     assert data["openapi"] == "3.1.0"
     assert data["info"]["version"] == "1.0.0-p0"
@@ -103,7 +104,7 @@ def test_openapi_and_error_contracts_are_readable_and_runtime_safe():
     assert "RuntimeUnavailable != MessageDeliveryFailed" in errors
 
 
-def test_codegen_doc_freezes_hasn_sql_path_and_no_handwritten_crud():
+def test_codegen_doc_freezes_hasn_sql_path_and_no_handwritten_crud() -> None:
     doc = CODEGEN_DOC.read_text(encoding="utf-8")
     assert "backend/sql/hasn/xxx.sql" in doc
     assert "uv run fba codegen generate --sql-file backend/sql/hasn/xxx.sql --app hasn --execute" in doc
@@ -114,12 +115,12 @@ def test_codegen_doc_freezes_hasn_sql_path_and_no_handwritten_crud():
     assert "CODEGEN_GAP" in readme
 
 
-def test_hasn_sql_codegen_inputs_are_single_table_and_commented():
+def test_hasn_sql_codegen_inputs_are_single_table_and_commented() -> None:
     parsed = {_parse_table(sql_file).name for sql_file in CODEGEN_SQL_FILES}
     assert REQUIRED_S1_TABLES.issubset(parsed)
 
 
-def test_memory_namespace_revisions_schema_is_scope_namespace_authority():
+def test_memory_namespace_revisions_schema_is_scope_namespace_authority() -> None:
     table = _parse_table("memory_namespace_revisions.sql")
     columns = {column.name for column in table.columns}
 
@@ -133,7 +134,7 @@ def test_memory_namespace_revisions_schema_is_scope_namespace_authority():
     assert 'idx_memory_namespace_revisions_updated' in raw_sql
 
 
-def test_s1_message_and_suppressed_inbox_ownership_is_explicit():
+def test_s1_message_and_suppressed_inbox_ownership_is_explicit() -> None:
     messages = _parse_table("hasn_messages.sql")
     message_columns = {column.name for column in messages.columns}
     for field in (
@@ -153,7 +154,7 @@ def test_s1_message_and_suppressed_inbox_ownership_is_explicit():
         assert field in suppressed_columns
 
 
-def test_runtime_summary_tables_do_not_define_private_runtime_columns():
+def test_runtime_summary_tables_do_not_define_private_runtime_columns() -> None:
     for sql_file in (
         "hasn_agent_runtime_reports.sql",
         "hasn_suppressed_messages.sql",
@@ -166,7 +167,7 @@ def test_runtime_summary_tables_do_not_define_private_runtime_columns():
         assert columns.isdisjoint(PRIVATE_RUNTIME_COLUMNS), f"{sql_file} leaks private runtime columns"
 
 
-def test_migration_backfill_and_rollback_assets_exist_under_hasn_sql_dir():
+def test_migration_backfill_and_rollback_assets_exist_under_hasn_sql_dir() -> None:
     migration = HASN_SQL_DIR / "V001__hasn_s0_s1_existing_assets__migration.sql"
     rollback = HASN_SQL_DIR / "V001__hasn_s0_s1_existing_assets__rollback.sql"
     readme = HASN_SQL_DIR / "README.md"
@@ -182,7 +183,7 @@ def test_migration_backfill_and_rollback_assets_exist_under_hasn_sql_dir():
     assert "DROP COLUMN IF EXISTS \"hasn_id\"" in rollback_text
 
 
-def test_no_hasn_sql_added_outside_hasn_sql_dir():
+def test_no_hasn_sql_added_outside_hasn_sql_dir() -> None:
     forbidden_roots = (REPO_ROOT / "backend" / "sql" / "tables", REPO_ROOT / "sql" / "migrations")
     leaked = [
         path.relative_to(REPO_ROOT).as_posix()
@@ -194,7 +195,7 @@ def test_no_hasn_sql_added_outside_hasn_sql_dir():
     assert leaked == []
 
 
-def test_task_system_v21_migration_task_uuid_unique_matches_upsert_conflict_target():
+def test_task_system_v21_migration_task_uuid_unique_matches_upsert_conflict_target() -> None:
     migration = HASN_SQL_DIR / "migrations" / "2026-05-28-task-system-v21.sql"
     table_sql = HASN_SQL_DIR / "hasn_task.sql"
     for path in (migration, table_sql):
@@ -208,7 +209,7 @@ def test_task_system_v21_migration_task_uuid_unique_matches_upsert_conflict_targ
     assert 'ON "public"."hasn_task"("task_uuid")\n  WHERE "task_uuid" IS NOT NULL' not in migration_text
 
 
-def test_task_assignment_keeps_one_current_row_per_task():
+def test_task_assignment_keeps_one_current_row_per_task() -> None:
     migration = HASN_SQL_DIR / "migrations" / "2026-05-28-task-system-v21.sql"
     table_sql = HASN_SQL_DIR / "hasn_task_assignment.sql"
     model_file = REPO_ROOT / "backend" / "app" / "hasn" / "model" / "hasn_task_assignment.py"
@@ -228,7 +229,7 @@ def test_task_assignment_keeps_one_current_row_per_task():
     assert "name='uq_hasn_task_assignment_task_agent_node'" not in model_text
 
 
-def test_skill_pack_migration_backfills_legacy_hasn_skill_bundle():
+def test_skill_pack_migration_backfills_legacy_hasn_skill_bundle() -> None:
     migration = REPO_ROOT / "backend" / "sql" / "marketplace" / "migrations" / "2026-05-28-skill-pack-hermes-fields.sql"
     migration_text = migration.read_text(encoding="utf-8")
 
@@ -246,14 +247,14 @@ def test_skill_pack_migration_backfills_legacy_hasn_skill_bundle():
     assert "ON CONFLICT" in migration_text
 
 
-def test_hasn_h2_alembic_revision_chains_to_h1_contacts_revision():
+def test_hasn_h2_alembic_revision_chains_to_h1_contacts_revision() -> None:
     h1 = importlib.import_module("backend.alembic.versions.20260424_h1_hasn_contacts_peer_owner")
     h2 = importlib.import_module("backend.alembic.versions.20260425_h2_agent_runtime_binding_phase1")
 
     assert h2.down_revision == h1.revision
 
 
-def test_hasn_h3_memory_namespace_revision_chains_to_h2_revision():
+def test_hasn_h3_memory_namespace_revision_chains_to_h2_revision() -> None:
     h2 = importlib.import_module("backend.alembic.versions.20260425_h2_agent_runtime_binding_phase1")
     h3 = importlib.import_module("backend.alembic.versions.20260523_h3_memory_namespace_revisions")
 

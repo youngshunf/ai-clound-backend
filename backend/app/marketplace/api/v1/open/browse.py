@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query
 
 from backend.app.marketplace.service.search_service import search_service
-from backend.database.db import CurrentSession  # noqa: TC001
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 

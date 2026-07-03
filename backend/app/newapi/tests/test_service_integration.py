@@ -17,6 +17,7 @@ import string
 
 import httpx
 import pytest
+
 from sqlalchemy import delete, select
 
 from backend.app.hermes.model import HermesAgentLlmToken
@@ -24,6 +25,8 @@ from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMappin
 from backend.app.newapi.service import (
     DEFAULT_TIER_QUOTA,
     credits_to_quota,
+)
+from backend.app.newapi.service import (
     llm_newapi_user_mapping_service as svc,
 )
 from backend.common.security.encryption import key_encryption
@@ -55,12 +58,11 @@ pytest_skip = pytest.mark.skipif(
 
 
 @pytest_skip
-async def test_service_full_lifecycle():
+async def test_service_full_lifecycle() -> None:
     from backend.app.newapi.client import newapi_admin_client
 
     # 用极高随机 huanxing_user_id 避免与真实数据/并发冲突（该列无 FK）
     huanxing_user_id = 900_000_000 + secrets.randbelow(90_000_000)
-    username = f'hx_{huanxing_user_id}'
     agent_id = f'agent_ct_{_rnd()}'
     newapi_user_id: int | None = None
     try:

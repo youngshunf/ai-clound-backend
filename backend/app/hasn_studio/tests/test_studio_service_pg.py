@@ -139,7 +139,7 @@ def engine_service() -> Iterator[str]:
             proc.kill()
 
 
-@pytest_asyncio.fixture(autouse=True)  # noqa: RUF076  必须每用例无条件重置池（见 docstring）
+@pytest_asyncio.fixture(autouse=True)
 async def _reset_montage_pool() -> AsyncIterator[None]:
     """每个异步用例重置 montage 进程级连接池单例。
 

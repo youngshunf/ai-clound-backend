@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from backend.app.marketplace.service.marketplace_personal_skill_service import personal_skill_service
 from backend.common.security.agent_jwt import AgentTokenPayload
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.database.db import CurrentSession  # noqa: TC001
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 

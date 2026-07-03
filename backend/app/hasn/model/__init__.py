@@ -1,16 +1,35 @@
+from backend.app.hasn.model.hasn_agent_approval_requests import HasnAgentApprovalRequests as HasnAgentApprovalRequests
 from backend.app.hasn.model.hasn_agent_capabilities import HasnAgentCapabilities as HasnAgentCapabilities
-from backend.app.hasn.model.hasn_agent_scope import HasnAgentScope as HasnAgentScope
+from backend.app.hasn.model.hasn_agent_channel_mirrors import HasnAgentChannelMirrors as HasnAgentChannelMirrors
+from backend.app.hasn.model.hasn_agent_mcp_keys import HasnAgentMcpKeys as HasnAgentMcpKeys
 from backend.app.hasn.model.hasn_agent_runtime_reports import HasnAgentRuntimeReports as HasnAgentRuntimeReports
+from backend.app.hasn.model.hasn_agent_scope import HasnAgentScope as HasnAgentScope
 from backend.app.hasn.model.hasn_agent_templates import HasnAgentTemplates as HasnAgentTemplates
 from backend.app.hasn.model.hasn_agents import HasnAgents as HasnAgents
+from backend.app.hasn.model.hasn_ai_native_app_audit import HasnAiNativeAppAudit as HasnAiNativeAppAudit
+from backend.app.hasn.model.hasn_ai_native_app_manifest import HasnAiNativeAppManifest as HasnAiNativeAppManifest
+from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess as HasnAppBetaAccess
+from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog as HasnAppCatalog
+from backend.app.hasn.model.hasn_app_credential import HasnAppCredential as HasnAppCredential
+from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement as HasnAppEntitlement
+from backend.app.hasn.model.hasn_app_instance import HasnAppInstance as HasnAppInstance
+from backend.app.hasn.model.hasn_app_publisher import HasnAppPublisher as HasnAppPublisher
+from backend.app.hasn.model.hasn_app_seat import HasnAppSeat as HasnAppSeat
+from backend.app.hasn.model.hasn_artifacts import HasnArtifacts as HasnArtifacts
+from backend.app.hasn.model.hasn_asset_grants import HasnAssetGrants as HasnAssetGrants
+from backend.app.hasn.model.hasn_assets import HasnAssets as HasnAssets
 from backend.app.hasn.model.hasn_audit_log import HasnAuditLog as HasnAuditLog
+from backend.app.hasn.model.hasn_builtin_task_catalog import HasnBuiltinTaskCatalog as HasnBuiltinTaskCatalog
 from backend.app.hasn.model.hasn_channel_bindings import HasnChannelBindings as HasnChannelBindings
 from backend.app.hasn.model.hasn_clients import HasnClients as HasnClients
+from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests as HasnContactRequests
 from backend.app.hasn.model.hasn_contacts import HasnContacts as HasnContacts
 from backend.app.hasn.model.hasn_conversations import HasnConversations as HasnConversations
 from backend.app.hasn.model.hasn_enterprise import HasnEnterprise as HasnEnterprise
 from backend.app.hasn.model.hasn_enterprise_invite_code import HasnEnterpriseInviteCode as HasnEnterpriseInviteCode
+from backend.app.hasn.model.hasn_enterprise_member_role import HasnEnterpriseMemberRole as HasnEnterpriseMemberRole
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership as HasnEnterpriseMembership
+from backend.app.hasn.model.hasn_enterprise_role import HasnEnterpriseRole as HasnEnterpriseRole
 from backend.app.hasn.model.hasn_group_members import HasnGroupMembers as HasnGroupMembers
 from backend.app.hasn.model.hasn_humans import HasnHumans as HasnHumans
 from backend.app.hasn.model.hasn_messages import HasnMessages as HasnMessages
@@ -20,40 +39,23 @@ from backend.app.hasn.model.hasn_notifications import HasnNotifications as HasnN
 from backend.app.hasn.model.hasn_owner_api_keys import HasnOwnerApiKeys as HasnOwnerApiKeys
 from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemory as HasnOwnerMemory
 from backend.app.hasn.model.hasn_owner_memory import HasnOwnerMemoryContribution as HasnOwnerMemoryContribution
-from backend.app.hasn.model.hasn_ai_native_app_manifest import HasnAiNativeAppManifest as HasnAiNativeAppManifest
-from backend.app.hasn.model.hasn_ai_native_app_audit import HasnAiNativeAppAudit as HasnAiNativeAppAudit
 from backend.app.hasn.model.hasn_pending_intents import HasnPendingIntents as HasnPendingIntents
+from backend.app.hasn.model.hasn_platform_default_config import (
+    HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,
+)
+from backend.app.hasn.model.hasn_resource_share import HasnResourceShare as HasnResourceShare
+from backend.app.hasn.model.hasn_session_artifacts import HasnSessionArtifacts as HasnSessionArtifacts
+from backend.app.hasn.model.hasn_session_events import HasnSessionEvents as HasnSessionEvents
+from backend.app.hasn.model.hasn_sessions import HasnSessions as HasnSessions
 from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages as HasnSuppressedMessages
 from backend.app.hasn.model.hasn_sync_events import HasnSyncEvents as HasnSyncEvents
 from backend.app.hasn.model.hasn_sync_inbox_events import HasnSyncInboxEvents as HasnSyncInboxEvents
-from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
-from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
+
 # 应用平台 v3 P3（设计 17 决策①②）：hasn_user_active_workspace（被 active_enterprise_id 瘦指针取代）
 # 与 hasn_workspace_app（挂载概念废除）两模型已删除。
 from backend.app.hasn.model.hasn_task import HasnTask as HasnTask
 from backend.app.hasn.model.hasn_task_assignment import HasnTaskAssignment as HasnTaskAssignment
 from backend.app.hasn.model.hasn_task_run import HasnTaskRun as HasnTaskRun
 from backend.app.hasn.model.hasn_task_run_summary import HasnTaskRunSummary as HasnTaskRunSummary
-from backend.app.hasn.model.hasn_sessions import HasnSessions as HasnSessions
-from backend.app.hasn.model.hasn_session_events import HasnSessionEvents as HasnSessionEvents
-from backend.app.hasn.model.hasn_session_artifacts import HasnSessionArtifacts as HasnSessionArtifacts
-from backend.app.hasn.model.hasn_agent_mcp_keys import HasnAgentMcpKeys as HasnAgentMcpKeys
-from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests as HasnContactRequests
-from backend.app.hasn.model.hasn_app_instance import HasnAppInstance as HasnAppInstance
-from backend.app.hasn.model.hasn_app_publisher import HasnAppPublisher as HasnAppPublisher
-from backend.app.hasn.model.hasn_assets import HasnAssets as HasnAssets
-from backend.app.hasn.model.hasn_asset_grants import HasnAssetGrants as HasnAssetGrants
-from backend.app.hasn.model.hasn_agent_approval_requests import HasnAgentApprovalRequests as HasnAgentApprovalRequests
-from backend.app.hasn.model.hasn_builtin_task_catalog import HasnBuiltinTaskCatalog as HasnBuiltinTaskCatalog
-from backend.app.hasn.model.hasn_agent_channel_mirrors import HasnAgentChannelMirrors as HasnAgentChannelMirrors
-from backend.app.hasn.model.hasn_app_credential import HasnAppCredential as HasnAppCredential
-from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog as HasnAppCatalog
-from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement as HasnAppEntitlement
-from backend.app.hasn.model.hasn_resource_share import HasnResourceShare as HasnResourceShare
-from backend.app.hasn.model.hasn_enterprise_role import HasnEnterpriseRole as HasnEnterpriseRole
-from backend.app.hasn.model.hasn_enterprise_member_role import HasnEnterpriseMemberRole as HasnEnterpriseMemberRole
-from backend.app.hasn.model.hasn_artifacts import HasnArtifacts as HasnArtifacts
-from backend.app.hasn.model.hasn_platform_default_config import (
-    HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,
-)
-from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess as HasnAppBetaAccess
+from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
+from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts

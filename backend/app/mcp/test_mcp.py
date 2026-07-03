@@ -1,21 +1,20 @@
-# -*- coding: utf-8 -*-
 """
 云端 MCP Server 测试脚本
 
 测试 MCP Server 的基本功能
 """
 import asyncio
-import sys
 import os
+import sys
 
 # 添加项目路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-from backend.app.mcp.server import mcp_server
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.server import mcp_server
 
 
-async def test_mcp_server():
+async def test_mcp_server() -> None:
     """测试 MCP Server"""
     print("=" * 60)
     print("云端 MCP Server 测试")

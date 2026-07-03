@@ -1,11 +1,11 @@
 from datetime import datetime
+
 import sqlalchemy as sa
 
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from sqlalchemy.dialects import postgresql
-
-from backend.common.model import Base, id_key, UniversalText
+from backend.common.model import Base, UniversalText, id_key
 
 
 class HasnAgentTemplates(Base):

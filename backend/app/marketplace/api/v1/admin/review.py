@@ -8,7 +8,7 @@ from backend.app.marketplace.service.marketplace_skill_service import marketplac
 from backend.app.marketplace.service.marketplace_template_service import marketplace_template_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.rbac import DependsRBAC
-from backend.database.db import CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSessionTransaction
 
 router = APIRouter(dependencies=[DependsRBAC])
 

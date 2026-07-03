@@ -21,7 +21,7 @@ validate/extract 纯函数 + 导入/存取），**不内部调 LLM**（编排交
 写类 import/save 统一 `designsystem:write`（出厂 Allow，owner 三态可覆盖）；读类 + 确定性纯函数
 （compile_tokens/derive/validate/extract_components/list/get）无 required_scopes（不设假闸门）。
 `designsystem:publish`（分享/发布，P9/P10 云端端点）本期工具不注册（绝不注册只报错的工具），
-但 scope 已铸进 Agent JWT（DS-P7：DEFAULT_AGENT_SCOPES）为后续解锁。
+但 scope 已登记进 platform_scopes 展示词表（DS-P7）为后续解锁；授权走三态 capability_modes，JWT scopes 已退役（实施102 S0）。
 
 ⚠️ execution_mode：catalog 枚举（`cloud/embedded_desktop/local_tool`）取 **`local_tool`**
 （本地工具驱动 + 原生 webui UI，非 cloud 执行、非重 sidecar），同 deck。

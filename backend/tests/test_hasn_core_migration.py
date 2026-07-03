@@ -6,6 +6,7 @@
 
 import asyncio
 import os
+import pathlib
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -14,11 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 async def run_tests():
     results = []
 
-    def ok(name):
+    def ok(name) -> None:
         results.append(("✅", name))
         print(f"  ✅ {name}")
 
-    def fail(name, e):
+    def fail(name, e) -> None:
         results.append(("❌", name, str(e)))
         print(f"  ❌ {name}: {e}")
 
@@ -30,10 +31,10 @@ async def run_tests():
             _generate_agent_key,
             _generate_node_key,
             _generate_owner_key,
+            issue_node_jwt,
             verify_node_key,
             verify_owner_api_key,
             verify_owner_proof,
-            issue_node_jwt,
         )
         ok("认证服务导入成功")
     except Exception as e:
@@ -65,13 +66,13 @@ async def run_tests():
 
     try:
         from backend.app.hasn.service.ws_router import (
-            ws_router,
-            WsRouterService,
-            NODE_CONN_KEY,
             ENTITY_NODE_KEY,
-            USER_NODES_PREFIX,
+            NODE_CONN_KEY,
             OFFLINE_PREFIX,
             OFFLINE_TTL,
+            USER_NODES_PREFIX,
+            WsRouterService,
+            ws_router,
         )
         ok("ws_router 导入成功")
     except Exception as e:
@@ -111,7 +112,7 @@ async def run_tests():
     print("─" * 50)
 
     try:
-        from backend.app.hasn.model import HasnNodes, HasnNodeBindings, HasnOwnerApiKeys, HasnAgents
+        from backend.app.hasn.model import HasnAgents, HasnNodeBindings, HasnNodes, HasnOwnerApiKeys
         assert hasattr(HasnNodes, "node_id")
         assert hasattr(HasnNodes, "node_key_hash")
         assert hasattr(HasnNodeBindings, "binding_id")
@@ -168,8 +169,7 @@ async def run_tests():
             "app/hasn/migration/v6_nodes_bindings_owner_keys.sql",
         )
         assert os.path.exists(migration_path)
-        with open(migration_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = pathlib.Path(migration_path).read_text(encoding="utf-8")
         assert "hasn_nodes" in content
         assert "hasn_owner_api_keys" in content
         ok("v6 数据迁移脚本存在且包含新表回填")

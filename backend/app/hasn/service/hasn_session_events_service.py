@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_session_events import hasn_session_events_dao
 from backend.app.hasn.model import HasnSessionEvents
-from backend.app.hasn.schema.hasn_session_events import CreateHasnSessionEventsParam, DeleteHasnSessionEventsParam, UpdateHasnSessionEventsParam
+from backend.app.hasn.schema.hasn_session_events import (
+    CreateHasnSessionEventsParam,
+    DeleteHasnSessionEventsParam,
+    UpdateHasnSessionEventsParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

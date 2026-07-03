@@ -12,7 +12,6 @@ Alembic 迁移: backend/alembic/versions/20260421_b2_create_jwt_revocations.py
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 import sqlalchemy as sa
 
@@ -36,7 +35,7 @@ class JwtRevocation(Base):
     revoked_at: Mapped[datetime] = mapped_column(
         TimeZone, nullable=False, default_factory=timezone.now, comment='吊销时间'
     )
-    expires_at: Mapped[Optional[datetime]] = mapped_column(
+    expires_at: Mapped[datetime | None] = mapped_column(
         TimeZone, nullable=True, default=None, comment='原 JWT exp 时间 (便于清理)'
     )
 
@@ -46,7 +45,7 @@ async def revoke_jwt(
     *,
     jti: str,
     user_id: int,
-    expires_at: Optional[datetime] = None,
+    expires_at: datetime | None = None,
 ) -> None:
     """将 jti 写入 jwt_revocations.
 

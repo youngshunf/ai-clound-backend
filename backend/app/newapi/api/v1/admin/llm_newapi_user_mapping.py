@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path
 
 from backend.app.newapi.schema.llm_newapi_user_mapping import (
     CreateLlmNewapiUserMappingParam,

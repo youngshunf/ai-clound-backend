@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Path
 
 from backend.app.external_mcp.schema.management import (
@@ -34,7 +36,7 @@ async def list_system_servers() -> ResponseModel:
 
 
 @router.get('/servers/{mcp_id}', summary='[Admin] 平台 server 详情', dependencies=[DependsJwtAuth])
-async def get_system_server(mcp_id: str = Path(...)) -> ResponseModel:
+async def get_system_server(mcp_id: Annotated[str, Path()]) -> ResponseModel:
     data = await external_mcp_gateway.get_server_detail(mcp_id=mcp_id, is_admin=True)
     if data is None:
         raise errors.NotFoundError(msg='server 不存在')
@@ -76,7 +78,7 @@ async def register_system_server(obj: RegisterSystemServerParam) -> ResponseMode
     summary='[Admin] 自省平台 server',
     dependencies=[Depends(RequestPermission('external_mcp:server:edit')), DependsRBAC],
 )
-async def introspect_system_server(mcp_id: str = Path(...)) -> ResponseModel:
+async def introspect_system_server(mcp_id: Annotated[str, Path()]) -> ResponseModel:
     data = await external_mcp_gateway.introspect_server(mcp_id)
     return response_base.success(data=data)
 
@@ -86,7 +88,7 @@ async def introspect_system_server(mcp_id: str = Path(...)) -> ResponseModel:
     summary='[Admin] 写入/轮换平台 key（明文不回显）',
     dependencies=[Depends(RequestPermission('external_mcp:server:edit')), DependsRBAC],
 )
-async def set_platform_credential(obj: SetCredentialParam, mcp_id: str = Path(...)) -> ResponseModel:
+async def set_platform_credential(obj: SetCredentialParam, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     data = await external_mcp_gateway.set_credential(
         mcp_id=mcp_id,
         plaintext=obj.credential,
@@ -102,7 +104,7 @@ async def set_platform_credential(obj: SetCredentialParam, mcp_id: str = Path(..
     summary='[Admin] 撤销平台 key',
     dependencies=[Depends(RequestPermission('external_mcp:server:edit')), DependsRBAC],
 )
-async def revoke_platform_credential(mcp_id: str = Path(...)) -> ResponseModel:
+async def revoke_platform_credential(mcp_id: Annotated[str, Path()]) -> ResponseModel:
     data = await external_mcp_gateway.revoke_credential(mcp_id=mcp_id, is_admin=True)
     return response_base.success(data=data)
 
@@ -112,7 +114,7 @@ async def revoke_platform_credential(mcp_id: str = Path(...)) -> ResponseModel:
     summary='[Admin] 配 per-owner 配额/限流（防刷爆平台 key）',
     dependencies=[Depends(RequestPermission('external_mcp:server:edit')), DependsRBAC],
 )
-async def set_server_quota(obj: SetServerQuotaParam, mcp_id: str = Path(...)) -> ResponseModel:
+async def set_server_quota(obj: SetServerQuotaParam, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     data = await external_mcp_gateway.set_server_quota(
         mcp_id=mcp_id,
         per_owner_daily_quota=obj.per_owner_daily_quota,
@@ -126,7 +128,7 @@ async def set_server_quota(obj: SetServerQuotaParam, mcp_id: str = Path(...)) ->
     summary='[Admin] 启用/停用平台 server',
     dependencies=[Depends(RequestPermission('external_mcp:server:edit')), DependsRBAC],
 )
-async def set_system_server_status(obj: SetServerStatusParam, mcp_id: str = Path(...)) -> ResponseModel:
+async def set_system_server_status(obj: SetServerStatusParam, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     data = await external_mcp_gateway.set_server_status(mcp_id=mcp_id, status=obj.status, is_admin=True)
     return response_base.success(data=data)
 
@@ -136,6 +138,6 @@ async def set_system_server_status(obj: SetServerStatusParam, mcp_id: str = Path
     summary='[Admin] 删除平台 server（连带凭据/绑定）',
     dependencies=[Depends(RequestPermission('external_mcp:server:del')), DependsRBAC],
 )
-async def delete_system_server(mcp_id: str = Path(...)) -> ResponseModel:
+async def delete_system_server(mcp_id: Annotated[str, Path()]) -> ResponseModel:
     ok = await external_mcp_gateway.delete_server(mcp_id=mcp_id, is_admin=True)
     return response_base.success(data={'deleted': ok})

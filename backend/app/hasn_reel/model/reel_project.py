@@ -1,11 +1,10 @@
-from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.hasn_reel.model._base import HasnReelAppBase
-from backend.common.model import id_key, UniversalText
+from backend.common.model import UniversalText, id_key
 
 
 class ReelProject(HasnReelAppBase):

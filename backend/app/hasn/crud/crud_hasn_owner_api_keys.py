@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from backend.app.hasn.schema.hasn_owner_api_keys import CreateHasnOwnerApiKeysPa
 class CRUDHasnOwnerApiKeys(CRUDPlus[HasnOwnerApiKeys]):
     async def get(self, db: AsyncSession, pk: int) -> HasnOwnerApiKeys | None:
         """
-        获取HASN Owner API Key 
+        获取HASN Owner API Key
 
         :param db: 数据库会话
         :param pk: HASN Owner API Key  ID
@@ -25,7 +25,7 @@ class CRUDHasnOwnerApiKeys(CRUDPlus[HasnOwnerApiKeys]):
 
     async def get_all(self, db: AsyncSession) -> Sequence[HasnOwnerApiKeys]:
         """
-        获取所有HASN Owner API Key 
+        获取所有HASN Owner API Key
 
         :param db: 数据库会话
         :return:
@@ -34,7 +34,7 @@ class CRUDHasnOwnerApiKeys(CRUDPlus[HasnOwnerApiKeys]):
 
     async def create(self, db: AsyncSession, obj: CreateHasnOwnerApiKeysParam) -> None:
         """
-        创建HASN Owner API Key 
+        创建HASN Owner API Key
 
         :param db: 数据库会话
         :param obj: 创建HASN Owner API Key 参数
@@ -44,7 +44,7 @@ class CRUDHasnOwnerApiKeys(CRUDPlus[HasnOwnerApiKeys]):
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateHasnOwnerApiKeysParam) -> int:
         """
-        更新HASN Owner API Key 
+        更新HASN Owner API Key
 
         :param db: 数据库会话
         :param pk: HASN Owner API Key  ID
@@ -55,7 +55,7 @@ class CRUDHasnOwnerApiKeys(CRUDPlus[HasnOwnerApiKeys]):
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         """
-        批量删除HASN Owner API Key 
+        批量删除HASN Owner API Key
 
         :param db: 数据库会话
         :param pks: HASN Owner API Key  ID 列表

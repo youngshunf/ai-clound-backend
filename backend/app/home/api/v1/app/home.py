@@ -4,6 +4,12 @@ import sqlalchemy as sa
 
 from fastapi import APIRouter, Request
 
+# APPBETA-2：灰度内测申请入参/详情。with `from __future__ import annotations` 需运行时导入
+# （body 模型移进 TYPE_CHECKING 会被 FastAPI 误判成 query），noqa 阻止 ruff 再挪。
+from backend.app.hasn.schema.hasn_app_beta_access import (
+    ApplyHasnAppBetaParam,
+    GetHasnAppBetaAccessDetail,
+)
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_core.app_platform import (
     BuiltinTaskCatalogResponse,
@@ -14,17 +20,10 @@ from backend.app.hasn_core.app_platform import (
 )
 from backend.app.hasn_task.service.builtin_task_service import workbench_builtin_task_service
 
-# APPBETA-2：灰度内测申请入参/详情。with `from __future__ import annotations` 需运行时导入
-# （body 模型移进 TYPE_CHECKING 会被 FastAPI 误判成 query），noqa 阻止 ruff 再挪。
-from backend.app.hasn.schema.hasn_app_beta_access import (  # noqa: TC001
-    ApplyHasnAppBetaParam,
-    GetHasnAppBetaAccessDetail,
-)
-
 # FastAPI 据 PutWorkbenchPrefParam/WorkbenchPrefResponse 这些 Pydantic 模型解析请求体/响应；
 # 配合 `from __future__ import annotations` 必须保持运行时导入（移入 TYPE_CHECKING 会让 body
 # 参数被误判成 query，触发 422）。noqa 阻止 ruff TC001 再次把它挪进 TYPE_CHECKING。
-from backend.app.home.schema.hasn_owner_workbench_pref import (  # noqa: TC001
+from backend.app.home.schema.hasn_owner_workbench_pref import (
     PutWorkbenchPrefParam,
     WorkbenchPrefResponse,
 )
@@ -33,15 +32,20 @@ from backend.app.home.schema.workbench_briefing_document import (
     BriefingHistoryResponse,
     BriefingLatestResponse,
 )
+
+# FastAPI 据 ResponseSchemaModel[PendingScanResult] 返回注解解析 response_model，必须运行时可导入
+# （配合 `from __future__ import annotations`，移进 TYPE_CHECKING 会让 get_type_hints 解析不到 → 500）。
+from backend.app.home.schema.workbench_pending import PendingScanResult
 from backend.app.home.service.hasn_workbench_briefing_feedback_service import (
     hasn_workbench_briefing_feedback_service,
 )
 from backend.app.home.service.hasn_workbench_briefing_service import hasn_workbench_briefing_service
+from backend.app.home.service.workbench_pending_aggregator_service import workbench_pending_aggregator
 from backend.app.home.service.workbench_pref_service import workbench_pref_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
@@ -85,7 +89,11 @@ async def list_builtin_tasks(db: CurrentSession) -> ResponseSchemaModel[BuiltinT
     return response_base.success(data=data)
 
 
-@router.get('/home/briefing/latest', dependencies=[DependsJwtAuth], summary='读当日/指定日简报（owner 隔离，今日视图过滤已忽略项）')
+@router.get(
+    '/home/briefing/latest',
+    dependencies=[DependsJwtAuth],
+    summary='读当日/指定日简报（owner 隔离，今日视图过滤已忽略项）',
+)
 async def get_briefing_latest(
     request: Request, db: CurrentSession, period: str | None = None, include_dismissed: bool = False
 ) -> ResponseSchemaModel[BriefingLatestResponse]:
@@ -124,6 +132,23 @@ async def list_briefing_history(
         db=db, owner_hasn_id=owner_id, limit=max(1, min(limit, 180))
     )
     return response_base.success(data=BriefingHistoryResponse(items=items))
+
+
+@router.get(
+    '/home/pending',
+    dependencies=[DependsJwtAuth],
+    summary='工作台全应用未处理项聚合（owner 隔离，首页角标/简报空态兜底，不依赖 LLM）',
+)
+async def get_workbench_pending(
+    request: Request, db: CurrentSession, limit_per_app: int = 5
+) -> ResponseSchemaModel[PendingScanResult]:
+    # 与主脑 hasn.workbench.pending.scan 完全同源（同一 aggregator），保证首页角标口径与简报一致；
+    # 但走 Owner JWT + read-only，供 webui 首页「未处理总数」角标 / 简报未生成时兜底列表，无需跑 LLM。
+    owner_id = await _resolve_owner_id(request, db)
+    result = await workbench_pending_aggregator.scan(
+        db, owner_hasn_id=owner_id, limit_per_app=max(1, min(limit_per_app, 50))
+    )
+    return response_base.success(data=result)
 
 
 @router.post(
@@ -218,9 +243,7 @@ async def apply_app_beta(
     dependencies=[DependsJwtAuth],
     summary='我的应用权益（owner 维度，含试用/购买/管理员授予）',
 )
-async def list_my_entitlements(
-    request: Request, db: CurrentSession, active_only: bool = False
-) -> ResponseModel:
+async def list_my_entitlements(request: Request, db: CurrentSession, active_only: bool = False) -> ResponseModel:
     owner_id = await _resolve_owner_id(request, db)
     rows = await app_catalog_service.list_entitlements(
         db, subject_type='owner', subject_id=owner_id, active_only=active_only

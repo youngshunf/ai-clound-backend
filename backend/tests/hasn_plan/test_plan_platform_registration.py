@@ -6,7 +6,6 @@
 - manifest 通过 ``validate_manifest``（含 workbench_app 一致性闸门）；进 ``_builtin_manifests``。
 - 方案 A：``tools[]``/``capabilities[]`` 置空（本地工具随 P2 hasn-mcp 落地，本期不进 manifest）。
 - scopes.py 登记 plan:read/:write（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
-- **铸 scope**：plan:read/:write 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带二者。
 - catalog 默认绑定（AppCollab doc21）：plan → planner 内置分身类型 + work_session_system_prompt。
 - App 形态（local_tool / 手动安装 / 内联路由 / ui_kind=None）。
 
@@ -41,15 +40,13 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
-from backend.app.hasn.service.app_catalog_service import _catalog_row_from_app
 from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+from backend.app.hasn.service.app_catalog_service import _catalog_row_from_app
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST, build_plan_app
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.common.exception import errors
-from backend.common.security.agent_jwt import DEFAULT_AGENT_SCOPES, jwt_decode_agent, jwt_encode_agent
 from backend.database.db import SQLALCHEMY_DATABASE_URL
-from backend.utils.timezone import timezone
 
 _READ_SCOPE = 'plan:read'
 _WRITE_SCOPE = 'plan:write'
@@ -94,33 +91,6 @@ def test_plan_scopes_registered_in_catalog() -> None:
     assert scope_meta(_DELEGATE_SCOPE)['risk'] == 'high'
 
 
-def test_plan_scopes_minted_into_agent_jwt() -> None:
-    """铸 scope：plan:read/:write/:schedule 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带三者。
-
-    生产真相：JWT scopes claim 的唯一固定来源是 DEFAULT_AGENT_SCOPES。Agent 调云端 plan/agent/*
-    写类/排程时 check_scopes 据此放行——故三者必须在该常量内，并经真实 encode/decode 存活。
-    （schedule/reschedule 经 hasn-mcp 复合工具落 plan:schedule，PLAN-P4b 铸入。）
-    """
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _SCHEDULE_SCOPE):
-        assert scope in DEFAULT_AGENT_SCOPES
-
-    expire = timezone.now() + timedelta(seconds=3600)
-    payload = {
-        'sub': 'a_planner',
-        'token_type': 'agent',
-        'agent_hasn_id': 'a_planner',
-        'agent_name': '私人参谋长',
-        'owner_hasn_id': 'h_test_owner',
-        'owner_user_id': 1,
-        'scopes': list(DEFAULT_AGENT_SCOPES),
-        'session_uuid': str(uuid.uuid4()),
-        'exp': timezone.to_utc(expire).timestamp(),
-    }
-    decoded = jwt_decode_agent(jwt_encode_agent(payload))
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _SCHEDULE_SCOPE):
-        assert scope in decoded.scopes
-
-
 def test_plan_catalog_default_agent_binding() -> None:
     """AppCollab：plan catalog 行默认承接 planner 内置分身类型 + 非空 work_session_system_prompt（doc21 §4.3）。
 
@@ -148,7 +118,8 @@ def test_plan_workbench_app_shape() -> None:
     assert app.execution_mode == 'local_tool'
     assert app.install_policy == 'manual'
     assert app.collaboration_mode == 'none'
-    assert app.scope == ('personal',)
+    # PLAN-ENT PE-6：plan 升双模应用（个人 PIM + 企业日历），scope 含 enterprise。
+    assert app.scope == ('personal', 'enterprise')
     assert app.entry_route == '/apps/plan'
     assert app.ui_kind is None
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。

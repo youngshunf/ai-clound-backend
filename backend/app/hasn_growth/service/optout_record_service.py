@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_optout_record import optout_record_dao
 from backend.app.hasn_growth.model import OptoutRecord
-from backend.app.hasn_growth.schema.optout_record import CreateOptoutRecordParam, DeleteOptoutRecordParam, UpdateOptoutRecordParam
+from backend.app.hasn_growth.schema.optout_record import (
+    CreateOptoutRecordParam,
+    DeleteOptoutRecordParam,
+    UpdateOptoutRecordParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

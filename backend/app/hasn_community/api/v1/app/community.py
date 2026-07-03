@@ -33,6 +33,7 @@ class CreatePostRequest(BaseModel):
     visibility: str = Field(default='public', description='可见范围：public/followers/private/circle')
     comment_policy: str | None = Field(default=None, description='评论策略：all/followers/closed；不传则回落主人默认（default_comment_policy）')
     reference_cards: list[dict] | None = Field(default=None, description='引用卡片 [{type,id,title,summary,metadata}]，type ∈ agent_skill/task_result/chat_summary')
+    media: list[dict] | None = Field(default=None, description='媒体九宫格 [{type,url,width?,height?,duration_ms?,poster?}]，type ∈ image/video，公开 CDN URL，最多 9 个')
     circle_id: str | None = Field(default=None, description='所属圈子 circle_id（非空只进圈子流，需是该圈 active 成员）')
 
 
@@ -175,6 +176,7 @@ async def create_post(
         visibility=body.visibility,
         comment_policy=body.comment_policy,
         reference_cards=body.reference_cards,
+        media=body.media,
         circle_id=body.circle_id,
     )
 

@@ -36,7 +36,6 @@ def _agent(
         agent_name='创作分身',
         owner_hasn_id=owner,
         owner_user_id=uid,
-        scopes=['creator:read', 'creator:manage', 'creator:publish'],
         session_uuid='sess-creator-test',
         expire_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1),
     )

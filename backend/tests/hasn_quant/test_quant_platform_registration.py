@@ -14,8 +14,8 @@
 - **安全断言**：实盘线 scope（quant:trade/quant:deploy，出厂 ask）**不在 manifest 暴露**——本期 P0–P5 只回测，
   实盘 P6+ 受 P0-闸1 硬闸。
 
-形态对照（与 finance/creator 一致）：quant 是 **cloud-brokered** 业务应用，故 quant scope **不进**
-``DEFAULT_AGENT_SCOPES``（cloud gateway 工具由 capability_modes 三态判定，非 JWT scope claim）。
+形态对照（与 finance/creator 一致）：quant 是 **cloud-brokered** 业务应用，quant scope 由三态
+``capability_modes`` 判定（JWT ``scopes`` claim 已随实施102 S0 全退役）。
 
 事实源: docs/hasn-node设计文档/14-AI-Native应用平台/23-NautilusTrader量化交易引擎(云服务·工具即服务)接入设计.md §3/§6/§7。
 """
@@ -49,7 +49,6 @@ from backend.app.hasn.service.app_catalog_service import (
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST, build_quant_app
 from backend.app.mcp.apps.quant import quant_tool_handlers
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.common.security.agent_jwt import DEFAULT_AGENT_SCOPES
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 _READ = 'quant:read'
@@ -167,12 +166,6 @@ def test_quant_live_scopes_registered_but_ask() -> None:
         assert meta['domain'] == 'quant'
         assert meta['risk'] == 'high'
         assert meta['default_mode'] == 'ask'
-
-
-def test_quant_scopes_not_minted_into_jwt() -> None:
-    """quant scope 不进 DEFAULT_AGENT_SCOPES（cloud-brokered 工具由 capability_modes 判定，非 JWT claim；同 finance/creator）。"""
-    for key in (_READ, _WRITE, _BACKTEST, *_LIVE_SCOPES):
-        assert key not in DEFAULT_AGENT_SCOPES, f'cloud-brokered scope 不应铸入 JWT: {key}'
 
 
 def test_quant_notifications_emit_declared() -> None:

@@ -12,13 +12,14 @@ from backend.app.hasn.schema.hasn_agent_capabilities import (
     UpdateHasnAgentCapabilitiesParam,
 )
 from backend.app.hasn.service.hasn_agent_capabilities_service import hasn_agent_capabilities_service
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+
 
 @router.get(
     '',
@@ -34,6 +35,7 @@ async def agent_list_hasn_agent_capabilitiess(
     data = await hasn_agent_capabilities_service.get_list(db=db, user_id=user_id)
     return response_base.success(data=data)
 
+
 @router.post(
     '',
     summary='创建HASN Agent 能力声明',
@@ -48,6 +50,7 @@ async def agent_create_hasn_agent_capabilities(
     user_id = agent.owner_user_id
     result = await hasn_agent_capabilities_service.create(db=db, obj=obj, user_id=user_id)
     return response_base.success(data=result)
+
 
 @router.get(
     '/{pk}',
@@ -65,6 +68,7 @@ async def agent_get_hasn_agent_capabilities(
     if hasn_agent_capabilities.user_id != user_id:
         raise errors.ForbiddenError(msg='无权访问该HASN Agent 能力声明')
     return response_base.success(data=hasn_agent_capabilities)
+
 
 @router.put(
     '/{pk}',
@@ -86,6 +90,7 @@ async def agent_update_hasn_agent_capabilities(
     if count > 0:
         return response_base.success()
     return response_base.fail()
+
 
 @router.delete(
     '/{pk}',

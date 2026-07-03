@@ -1,7 +1,8 @@
 """平台工具 · plan 域 真实 service 测试（禁 mock）。
 
 验证从 hasn-node 本地 hasn-mcp 迁来的「纯云端代理」规划工具：
-- 注册齐全（29 个 PURE_RELAY），工具名/命名空间/execution_location/scope 与原工具 1:1；
+- 注册齐全（32 个 PURE_RELAY，含 PLAN-ENT 企业会议协同 invite/rsvp/availability），
+  工具名/命名空间/execution_location/scope 与原工具 1:1；
 - input_schema 关键约束（priority 仍 string、id integer、必填项）防回归；
 - 真实 PG 往返：goal/todo CRUD + capture/triage（事务真提交，测试后清理该 owner 行）。
 
@@ -79,6 +80,9 @@ _EXPECTED_NAMES = {
     'hasn.plan.event.create',
     'hasn.plan.event.update',
     'hasn.plan.event.delete',
+    'hasn.plan.event.invite',
+    'hasn.plan.event.rsvp',
+    'hasn.plan.availability',
     'hasn.plan.habit.list',
     'hasn.plan.habit.create',
     'hasn.plan.habit.checkin',
@@ -99,7 +103,8 @@ _LOCAL_ONLY = {
 
 
 def test_plan_tools_register_exactly_pure_relay() -> None:
-    """29 个纯代理工具全注册，且不含任何应留本地的复合/引擎/daemon 工具。"""
+    """32 个纯代理工具全注册（含 PLAN-ENT 企业会议协同 invite/rsvp/availability），
+    且不含任何应留本地的复合/引擎/daemon 工具。"""
     names = {t.name for t in PLAN_TOOLS}
     assert names == _EXPECTED_NAMES, f'差异: {names ^ _EXPECTED_NAMES}'
     assert not (names & _LOCAL_ONLY), '复合/引擎/daemon 工具不应迁到云端'
@@ -114,7 +119,12 @@ def test_plan_tools_are_cloud_platform() -> None:
 
 
 def test_plan_tools_scope_split_read_vs_write() -> None:
-    """读类无 scope；写类声明 plan:write（出厂 Allow）。"""
+    """四类 scope（PLAN-ENT [04] §6 企业会议协同）：
+    - 个人读类无 scope（出厂 Allow）；
+    - 团队忙闲读 availability → plan:read（A3 可见性约束）；
+    - 企业会议协同 invite/rsvp → plan:manage；
+    - 其余写类 → plan:write。
+    """
     reads = {
         'hasn.plan.today',
         'hasn.plan.goal.list',
@@ -127,9 +137,15 @@ def test_plan_tools_scope_split_read_vs_write() -> None:
         'hasn.plan.habit.list',
         'hasn.plan.preference.get',
     }
+    read_scoped = {'hasn.plan.availability'}  # 跨成员忙闲读，plan:read（受 A3 可见性约束）
+    manage = {'hasn.plan.event.invite', 'hasn.plan.event.rsvp'}  # 企业会议协同，plan:manage
     for t in PLAN_TOOLS:
         if t.name in reads:
-            assert t.required_scopes == [], f'{t.name} 读类不应有 scope'
+            assert t.required_scopes == [], f'{t.name} 个人读类不应有 scope'
+        elif t.name in read_scoped:
+            assert t.required_scopes == ['plan:read'], f'{t.name} 团队忙闲读应声明 plan:read'
+        elif t.name in manage:
+            assert t.required_scopes == ['plan:manage'], f'{t.name} 企业会议协同应声明 plan:manage'
         else:
             assert t.required_scopes == ['plan:write'], f'{t.name} 写类应声明 plan:write'
 
@@ -152,11 +168,18 @@ def test_required_fields_match_contract() -> None:
 
 
 def test_plan_scope_in_platform_catalog() -> None:
-    """plan:write 已登记平台 scope 展示目录（webui 能力管理可见可管控）。"""
+    """plan:write/plan:read/plan:manage 均登记平台 scope 展示目录（webui 能力管理可见可管控）。
+    工具声明的每个 scope 都必须在目录中，否则 webui 无法展示/管控（PLAN-ENT 会议协同 scope）。"""
     from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
 
-    assert 'plan:write' in PLATFORM_SCOPE_CATALOG
-    assert PLATFORM_SCOPE_CATALOG['plan:write']['domain'] == 'plan'
+    for scope in ('plan:write', 'plan:read', 'plan:manage'):
+        assert scope in PLATFORM_SCOPE_CATALOG, f'{scope} 未登记平台 scope 目录'
+        assert PLATFORM_SCOPE_CATALOG[scope]['domain'] == 'plan'
+    # 每个 plan 工具声明的 scope 都必须在目录中（防漂移）。
+    declared = {s for t in PLAN_TOOLS for s in t.required_scopes}
+    assert declared <= set(PLATFORM_SCOPE_CATALOG), (
+        f'工具声明了未登记的 scope: {declared - set(PLATFORM_SCOPE_CATALOG)}'
+    )
 
 
 @pytest.mark.asyncio(loop_scope='module')

@@ -15,10 +15,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
 from fastapi import HTTPException
 
 from backend.app.hasn.api.v1.app.contacts import list_contacts, list_pending_requests
-
 
 SELF = "h_aaaaaaaaaaaaaaaaaa"
 PEER = "h_bbbbbbbbbbbbbbbbbb"
@@ -88,7 +88,7 @@ def _connected_agent_contact(
 
 
 class _EmptyAgentResult:
-    def scalars(self) -> '_EmptyAgentResult':
+    def scalars(self) -> _EmptyAgentResult:
         return self
 
     def all(self) -> list:

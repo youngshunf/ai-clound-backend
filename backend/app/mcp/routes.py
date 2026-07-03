@@ -4,15 +4,17 @@ MCP 路由
 提供 SSE 和 HTTP 端点
 """
 import logging
+
 from typing import Any
-from fastapi import APIRouter, Request, HTTPException
+
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
-from starlette.responses import Response
 
 from backend.app.mcp.auth import AgentContextDep
-from backend.app.mcp.context import set_current_agent_context, clear_agent_context
+from backend.app.mcp.context import clear_agent_context, set_current_agent_context
 from backend.app.mcp.server import mcp_server
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/mcp", tags=["MCP"])
@@ -53,7 +55,7 @@ async def list_tools(
         )
         return ToolsListResponse(tools=tools)
     except Exception as e:
-        logger.error(f"Failed to list tools: {str(e)}", exc_info=True)
+        logger.error(f"Failed to list tools: {e!s}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -80,7 +82,7 @@ async def call_tool(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to call tool: {str(e)}", exc_info=True)
+        logger.error(f"Failed to call tool: {e!s}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         set_capability_ticket(None)
@@ -122,7 +124,7 @@ async def mcp_sse_endpoint(
         return EventSourceResponse(event_generator())
 
     except Exception as e:
-        logger.error(f"SSE connection error: {str(e)}", exc_info=True)
+        logger.error(f"SSE connection error: {e!s}", exc_info=True)
         raise
     finally:
         # 清理上下文
@@ -152,21 +154,20 @@ async def mcp_message_endpoint(
 
         return response
     except Exception as e:
-        logger.error(f"Message handling error: {str(e)}", exc_info=True)
+        logger.error(f"Message handling error: {e!s}", exc_info=True)
         raise
     finally:
         clear_agent_context()
 
 
-
-
-def register_mcp_routes(app):
+def register_mcp_routes(app) -> None:
     """将 MCP 路由注册到主应用"""
     app.include_router(router)
 
     # StreamableHTTP 端点作为原生 ASGI app 挂载，
     # 因为 session_manager.handle_request 直接操作 ASGI send/receive
     from starlette.routing import Route
+
     from backend.app.mcp.streamable import hasn_streamable_server
 
     class _StreamableASGI:

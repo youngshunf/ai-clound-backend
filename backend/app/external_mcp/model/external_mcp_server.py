@@ -1,12 +1,12 @@
 from datetime import datetime
+
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.external_mcp.model._base import ExternalMcpAppBase
-from backend.common.model import id_key, UniversalText, TimeZone
-from backend.utils.timezone import timezone
+from backend.common.model import TimeZone, UniversalText, id_key
 
 
 class ExternalMcpServer(ExternalMcpAppBase):

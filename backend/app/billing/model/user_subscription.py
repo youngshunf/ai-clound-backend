@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.billing.model._base import BillingBase
-from backend.common.model import id_key, TimeZone
+from backend.common.model import TimeZone, id_key
 from backend.utils.timezone import timezone
 
 

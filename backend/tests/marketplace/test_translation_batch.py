@@ -2,7 +2,7 @@
 from backend.app.marketplace.service.translation_service import TranslationService
 
 
-def test_clean_emoji_strips_label_and_caps_length():
+def test_clean_emoji_strips_label_and_caps_length() -> None:
     svc = TranslationService()
     assert svc._clean_emoji('🛃') == '🛃'
     assert svc._clean_emoji('  🗑️  ') == '🗑️'
@@ -12,7 +12,7 @@ def test_clean_emoji_strips_label_and_caps_length():
     assert svc._clean_emoji(None) is None
 
 
-def test_coerce_metadata_dict_includes_emoji_and_bilingual_fields():
+def test_coerce_metadata_dict_includes_emoji_and_bilingual_fields() -> None:
     svc = TranslationService()
     data = {
         'source_language': 'zh',
@@ -38,7 +38,7 @@ def test_coerce_metadata_dict_includes_emoji_and_bilingual_fields():
     assert out['tags_zh'] == ['海关数据', '贸易分析']
 
 
-def test_coerce_batch_response_maps_by_index_and_falls_back_for_missing():
+def test_coerce_batch_response_maps_by_index_and_falls_back_for_missing() -> None:
     svc = TranslationService()
     inputs = [
         {'name': 'A', 'description': 'desc a', 'tag_hints': [], 'source_lang': 'en'},
@@ -61,7 +61,7 @@ def test_coerce_batch_response_maps_by_index_and_falls_back_for_missing():
     assert results[1]['emoji'] is None
 
 
-def test_retryable_status_codes_documented_in_post_handler():
+def test_retryable_status_codes_documented_in_post_handler() -> None:
     # Guard against accidentally removing transient-error handling. Transport (retry on
     # transient gateway errors) now lives in the unified backend.common.llm client.
     from backend.common.llm.client import _TRANSIENT_STATUS

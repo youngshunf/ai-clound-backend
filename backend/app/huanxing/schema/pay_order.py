@@ -4,8 +4,8 @@ from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
 
-
 # ========== 创建订单（用户端） ==========
+
 
 class CreatePayOrderParam(SchemaBase):
     """创建支付订单参数（用户端）"""

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path
 
 from backend.app.marketplace.schema.marketplace_sync_log import (
     CreateMarketplaceSyncLogParam,

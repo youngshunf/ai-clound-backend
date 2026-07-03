@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn_community.model import HasnContentTopics
-from backend.app.hasn_community.schema.hasn_content_topics import CreateHasnContentTopicsParam, UpdateHasnContentTopicsParam
+from backend.app.hasn_community.schema.hasn_content_topics import (
+    CreateHasnContentTopicsParam,
+    UpdateHasnContentTopicsParam,
+)
 
 
 class CRUDHasnContentTopics(CRUDPlus[HasnContentTopics]):

@@ -2,9 +2,10 @@
 import asyncio
 import json
 import re
+
 from typing import Any, Literal
 
-from langdetect import detect, LangDetectException
+from langdetect import LangDetectException, detect
 
 from backend.common.llm import LLMChatClient
 from backend.common.log import log
@@ -17,7 +18,7 @@ VERSION_TAG_RE = re.compile(r'^v?\d+(?:\.\d+){1,4}(?:[-+][0-9A-Za-z.-]+)?$')
 class TranslationService:
     """Translation service for marketplace content"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._translation_cache = {}  # Simple in-memory cache
         # 统一 LLM 客户端：翻译走 TRANSLATION_MODEL/FALLBACK/TIMEOUT，默认 new-api 网关。
         self._llm = LLMChatClient(
@@ -44,15 +45,14 @@ class TranslationService:
             lang = detect(text)
 
             # Map to our supported languages
-            if lang in ['en']:
+            if lang == 'en':
                 return 'en'
-            elif lang in ['zh-cn', 'zh-tw', 'zh']:
+            if lang in ['zh-cn', 'zh-tw', 'zh']:
                 return 'zh'
-            else:
-                # Fallback: check for Chinese characters
-                if re.search(r'[一-鿿]', text):
-                    return 'zh'
-                return 'en'  # Default to English
+            # Fallback: check for Chinese characters
+            if re.search(r'[一-鿿]', text):
+                return 'zh'
+            return 'en'  # Default to English
 
         except LangDetectException:
             # Fallback: check for Chinese characters

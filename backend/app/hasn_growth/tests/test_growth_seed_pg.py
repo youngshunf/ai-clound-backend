@@ -57,7 +57,7 @@ async def session() -> AsyncIterator:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -93,7 +93,7 @@ async def test_builtin_seed_applies_and_is_idempotent(session) -> None:
     names = set(
         (await session.execute(text("SELECT name FROM hasn_growth.playbook WHERE is_builtin AND user_id IS NULL"))).scalars().all()
     )
-    assert _BUILTIN_PLAYBOOK_NAMES <= names, f'缺内置 playbook：{_BUILTIN_PLAYBOOK_NAMES - names}'
+    assert names >= _BUILTIN_PLAYBOOK_NAMES, f'缺内置 playbook：{_BUILTIN_PLAYBOOK_NAMES - names}'
 
 
 async def test_growth_tasks_are_all_disabled(session) -> None:

@@ -5,8 +5,6 @@
 - capabilities scope 与落地 hasn-mcp 工具一致（写类 import/save → designsystem:write；读类 + 确定性纯函数
   compile_tokens/derive/validate/extract_components/list/get 无 scope；8 个；mcp_name 全 hasn.designsystem.*）。
 - scopes.py 登记 designsystem:write/:publish（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
-- **铸 scope**：designsystem:write/:publish 进 DEFAULT_AGENT_SCOPES（JWT scopes claim 唯一固定来源），
-  且 Agent JWT 编解码忠实携带二者——否则 Agent 调云端 designsystem/agent/* 写类被 check_scopes 403。
 - App 形态（local_tool / 手动安装 / 内联路由；本期不自动挂载，入口随 P8 webui+catalog 落地）。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等。
 
@@ -16,9 +14,6 @@
 
 from __future__ import annotations
 
-import uuid
-
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -39,13 +34,7 @@ from backend.app.hasn_designsystem.manifest import (
     build_designsystem_app,
 )
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.common.security.agent_jwt import (
-    DEFAULT_AGENT_SCOPES,
-    jwt_decode_agent,
-    jwt_encode_agent,
-)
 from backend.database.db import SQLALCHEMY_DATABASE_URL
-from backend.utils.timezone import timezone
 
 # 落地真相（hasn-node crates/hasn-mcp/src/designsystem.rs）：写类 2 工具 / 读类（含纯函数）6 工具。
 _WRITE_TOOLS = {'import', 'save'}
@@ -102,34 +91,6 @@ def test_designsystem_scopes_registered_in_catalog() -> None:
     assert scope_meta(_WRITE_SCOPE)['domain'] == 'designsystem'
     assert scope_meta(_WRITE_SCOPE)['label'] == '管理设计系统'
     assert scope_meta(_PUBLISH_SCOPE)['label'] == '发布/分享设计系统'
-
-
-def test_designsystem_scopes_minted_into_agent_jwt() -> None:
-    """铸 scope：designsystem:write/:publish 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带二者。
-
-    生产真相：JWT scopes claim 的唯一固定来源是 DEFAULT_AGENT_SCOPES（agent_jwt.py）。Agent 调云端
-    designsystem/agent/* 写类时 check_scopes 据此放行——故二者必须在该常量内，并经真实 encode/decode 存活。
-    """
-    assert _WRITE_SCOPE in DEFAULT_AGENT_SCOPES
-    assert _PUBLISH_SCOPE in DEFAULT_AGENT_SCOPES
-
-    # 用 DEFAULT_AGENT_SCOPES 铸一个 Agent JWT（真实 jwt_encode_agent/jwt_decode_agent，离线无 Redis），
-    # 解出的 scopes 必携带二者（= check_scopes 放行的前置）。
-    expire = timezone.now() + timedelta(seconds=3600)
-    payload = {
-        'sub': 'a_designsystem_expert',
-        'token_type': 'agent',
-        'agent_hasn_id': 'a_designsystem_expert',
-        'agent_name': '设计系统专家',
-        'owner_hasn_id': 'h_test_owner',
-        'owner_user_id': 1,
-        'scopes': list(DEFAULT_AGENT_SCOPES),
-        'session_uuid': str(uuid.uuid4()),
-        'exp': timezone.to_utc(expire).timestamp(),
-    }
-    decoded = jwt_decode_agent(jwt_encode_agent(payload))
-    assert _WRITE_SCOPE in decoded.scopes
-    assert _PUBLISH_SCOPE in decoded.scopes
 
 
 def test_designsystem_notifications_emit_declared() -> None:

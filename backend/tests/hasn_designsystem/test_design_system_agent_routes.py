@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import uuid
 
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 
 import pytest
 import pytest_asyncio
@@ -62,7 +63,7 @@ async def client():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -83,7 +84,6 @@ async def client():
             agent_name='测试分身',
             owner_hasn_id=state['owner_hasn_id'],
             owner_user_id=900000 + int(uuid.uuid4().int % 9000),
-            scopes=list(state['scopes']),
             session_uuid=uuid.uuid4().hex,
             expire_time=datetime.now(dt_timezone.utc) + timedelta(hours=1),
         )

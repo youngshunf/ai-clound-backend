@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 HASN 记忆系统数据库迁移执行脚本
 """
 
 import os
 import sys
+
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
@@ -13,6 +13,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 import asyncio
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -23,12 +24,10 @@ DB_NAME = os.getenv("DB_NAME", "huanxing")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 
-DATABASE_URL = "postgresql+asyncpg://{}:{}@{}:{}/{}".format(
-    DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME
-)
+DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 
-async def run_migration():
+async def run_migration() -> None:
     """执行数据库迁移"""
     print("=" * 50)
     print("HASN 记忆系统数据库迁移")
@@ -88,7 +87,7 @@ async def run_migration():
                         # 提取表名
                         parts = statement.split('CREATE TABLE')[1].split('(')[0]
                         table_name = parts.replace('IF NOT EXISTS', '').replace('"', '').replace('public.', '').strip()
-                        print("  ✓ 创建表: {}".format(table_name))
+                        print(f"  ✓ 创建表: {table_name}")
                     elif 'CREATE INDEX' in statement and 'idx_memory' in statement:
                         # 只打印记忆相关的索引
                         pass  # 不打印索引创建，太多了
@@ -97,7 +96,7 @@ async def run_migration():
                     error_msg = str(e)
                     # 忽略 "already exists" 错误
                     if 'already exists' not in error_msg:
-                        print("  ⚠️  警告: {}".format(error_msg[:100]))
+                        print(f"  ⚠️  警告: {error_msg[:100]}")
 
             print()
             print("✅ 迁移执行成功！")

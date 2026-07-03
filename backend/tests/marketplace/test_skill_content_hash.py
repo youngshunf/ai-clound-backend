@@ -19,13 +19,13 @@ def _write(tmp_path: Path, text: str = _SKILL) -> Path:
     return tmp_path
 
 
-def test_deterministic_same_content_same_hash(tmp_path):
+def test_deterministic_same_content_same_hash(tmp_path) -> None:
     d = _write(tmp_path)
     text = (d / 'SKILL.md').read_text()
     assert compute_skill_content_hash(d, text) == compute_skill_content_hash(d, text)
 
 
-def test_whitespace_and_newline_insensitive(tmp_path):
+def test_whitespace_and_newline_insensitive(tmp_path) -> None:
     d = _write(tmp_path)
     base = compute_skill_content_hash(d, _SKILL)
     # 行尾空格 + CRLF → 规范化后等价 → 同 hash（否则平台差异误触发重拉）。
@@ -33,14 +33,14 @@ def test_whitespace_and_newline_insensitive(tmp_path):
     assert compute_skill_content_hash(d, crlf) == base
 
 
-def test_body_change_changes_hash(tmp_path):
+def test_body_change_changes_hash(tmp_path) -> None:
     d = _write(tmp_path)
     h1 = compute_skill_content_hash(d, _SKILL)
     h2 = compute_skill_content_hash(d, _SKILL.replace('正文 A', '正文 B'))
     assert h1 != h2
 
 
-def test_attached_file_change_changes_hash(tmp_path):
+def test_attached_file_change_changes_hash(tmp_path) -> None:
     d = _write(tmp_path)
     (d / 'ref.py').write_text('print(1)\n', encoding='utf-8')
     h1 = compute_skill_content_hash(d, _SKILL)
@@ -49,7 +49,7 @@ def test_attached_file_change_changes_hash(tmp_path):
     assert h1 != h2
 
 
-def test_hidden_and_pyc_files_ignored(tmp_path):
+def test_hidden_and_pyc_files_ignored(tmp_path) -> None:
     d = _write(tmp_path)
     h1 = compute_skill_content_hash(d, _SKILL)
     (d / '.DS_Store').write_text('junk', encoding='utf-8')
@@ -60,7 +60,7 @@ def test_hidden_and_pyc_files_ignored(tmp_path):
     assert compute_skill_content_hash(d, _SKILL) == h1  # 被忽略文件不影响指纹
 
 
-def test_hash_is_short_stable_hex(tmp_path):
+def test_hash_is_short_stable_hex(tmp_path) -> None:
     d = _write(tmp_path)
     h = compute_skill_content_hash(d, _SKILL)
     assert len(h) == 16

@@ -50,7 +50,7 @@ async def session() -> AsyncIterator:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -75,11 +75,11 @@ async def _seed_memory(session, owner_id: str, content: str | None, version: int
     await session.commit()
 
 
-def test_dimensions_are_exactly_five():
+def test_dimensions_are_exactly_five() -> None:
     assert PROFILE_DIMENSIONS == ('interests', 'work', 'residence', 'goals', 'life_plan')
 
 
-async def test_empty_memory_assesses_all_missing(session):
+async def test_empty_memory_assesses_all_missing(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     await _seed_memory(session, owner, content='', version=3)
     try:
@@ -100,7 +100,7 @@ async def test_empty_memory_assesses_all_missing(session):
         await _cleanup(session, owner)
 
 
-async def test_get_coverage_derivation_all_sufficient(session):
+async def test_get_coverage_derivation_all_sufficient(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     await _seed_memory(session, owner, content='主人画像', version=1)
     try:
@@ -130,7 +130,7 @@ async def test_get_coverage_derivation_all_sufficient(session):
         await _cleanup(session, owner)
 
 
-async def test_get_coverage_derivation_partial(session):
+async def test_get_coverage_derivation_partial(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     await _seed_memory(session, owner, content='主人画像', version=1)
     try:
@@ -156,14 +156,14 @@ async def test_get_coverage_derivation_partial(session):
         assert cov['sufficient_count'] == 2
         assert set(cov['next_dimensions']) == {'residence', 'goals', 'life_plan'}
         # 缺行维度补 missing 默认态 + missing_hint 非空
-        missing = [d for d in cov['dimensions'] if d['dimension'] == 'residence'][0]
+        missing = next(d for d in cov['dimensions'] if d['dimension'] == 'residence')
         assert missing['status'] == 'missing'
         assert missing['missing_hint']
     finally:
         await _cleanup(session, owner)
 
 
-async def test_assess_if_stale_skips_when_fresh(session):
+async def test_assess_if_stale_skips_when_fresh(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     await _seed_memory(session, owner, content='主人画像', version=2)
     try:
@@ -191,7 +191,7 @@ async def test_assess_if_stale_skips_when_fresh(session):
         await _cleanup(session, owner)
 
 
-async def test_assess_with_content_live_llm(session):
+async def test_assess_with_content_live_llm(session) -> None:
     """真打 new-api 网关给非空画像打分；网关未配置/不可达则 skip（不造假）。"""
     if not llm_client.is_configured:
         pytest.skip('LLM 网关未配置，跳过 live 判定')

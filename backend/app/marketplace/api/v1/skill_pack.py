@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 import sqlalchemy as sa
+
 from fastapi import APIRouter, Query, Request
 
 from backend.app.marketplace.schema.skill_pack import (
@@ -19,7 +20,7 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 router = APIRouter()
 
 # 浏览选取的列（卡片渲染 + 安装所需 version 字段）。
-_LIST_COLUMNS = '''
+_LIST_COLUMNS = """
     t.template_id,
     t.namespace,
     t.slug,
@@ -44,19 +45,19 @@ _LIST_COLUMNS = '''
     v.package_url,
     v.file_hash,
     v.published_at
-'''
+"""
 
 
 @router.get('', summary='List marketplace skill packs')
 async def list_skill_packs(
     request: Request,
     db: CurrentSession,
-    q: str | None = Query(default=None, description='关键词（名称/描述）'),
-    category: str | None = Query(default=None, description='分类筛选'),
-    sort: str = Query(default='popular', description='排序：popular/latest/downloads'),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=24, ge=1, le=100),
-    mine: bool = Query(default=False, description='true=只看自己的（含未发布草稿，用于「我的发布」）'),
+    q: Annotated[str | None, Query(description='关键词（名称/描述）')] = None,
+    category: Annotated[str | None, Query(description='分类筛选')] = None,
+    sort: Annotated[str, Query(description='排序：popular/latest/downloads')] = 'popular',
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 24,
+    mine: Annotated[bool, Query(description='true=只看自己的（含未发布草稿，用于「我的发布」）')] = False,
 ) -> ResponseSchemaModel[SkillPackPage]:
     user_id = getattr(request.scope.get('user'), 'id', None)
 
@@ -72,8 +73,7 @@ async def list_skill_packs(
         where.append('(t.author_id = :user_id OR t.user_id = :user_id)')
     else:
         # 市场浏览：已发布 + （公开 / 官方 / 自己）。
-        where.append("t.status = 'published'")
-        where.append('(t.is_private = false OR t.is_official = true OR t.author_id = :user_id)')
+        where.extend(("t.status = 'published'", '(t.is_private = false OR t.is_official = true OR t.author_id = :user_id)'))
     if category:
         where.append('t.category = :category')
         params['category'] = category
@@ -89,13 +89,13 @@ async def list_skill_packs(
 
     count_row = await db.execute(
         sa.text(
-            f'''
+            f"""
             SELECT count(*)
             FROM hasn_marketplace.marketplace_template t
             JOIN hasn_marketplace.marketplace_template_version v
               ON v.template_id = t.template_id AND v.is_latest = true
             WHERE {where_sql}
-            '''
+            """
         ),
         params,
     )
@@ -105,7 +105,7 @@ async def list_skill_packs(
     params['offset'] = (page - 1) * page_size
     result = await db.execute(
         sa.text(
-            f'''
+            f"""
             SELECT {_LIST_COLUMNS}
             FROM hasn_marketplace.marketplace_template t
             JOIN hasn_marketplace.marketplace_template_version v
@@ -113,7 +113,7 @@ async def list_skill_packs(
             WHERE {where_sql}
             ORDER BY {order_sql}
             LIMIT :limit OFFSET :offset
-            '''
+            """
         ),
         params,
     )

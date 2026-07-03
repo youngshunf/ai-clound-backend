@@ -6,22 +6,22 @@
 @author Ysf
 """
 
-from datetime import timedelta
-from typing import Annotated
 import uuid
+
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from decimal import Decimal
-from datetime import datetime
 
-from backend.app.billing.service.credit_service import credit_service
-from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_credit_transaction import credit_transaction_dao
+from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
+from backend.app.billing.service.credit_service import credit_service
+from backend.common.log import log
 from backend.common.pagination import DependsPagination, PageData, paging_data
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
-from backend.common.log import log
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 from backend.utils.timezone import timezone
@@ -90,7 +90,7 @@ class SubscriptionInfoResponse(BaseModel):
     monthly_credits: Decimal
     current_credits: Decimal
     used_credits: Decimal
-    cycle_consumed_credits: Decimal = Field(default=Decimal('0'), description='本计费周期真实消耗积分（new-api logs 权威）')
+    cycle_consumed_credits: Decimal = Field(default=Decimal(0), description='本计费周期真实消耗积分（new-api logs 权威）')
     purchased_credits: Decimal
     monthly_remaining: Decimal | None = None
     bonus_remaining: Decimal | None = None
@@ -301,7 +301,7 @@ async def get_credit_transactions_daily(
         key = row.day.strftime('%Y-%m-%d')
         merged[key] = {
             'granted': Decimal(str(row.granted or 0)),
-            'consumed': Decimal('0'),
+            'consumed': Decimal(0),
             'count': int(row.cnt or 0),
             'request_count': 0,
             'token_count': 0,
@@ -309,7 +309,7 @@ async def get_credit_transactions_daily(
     for day, consume in consumed_by_day.items():
         key = day.strftime('%Y-%m-%d')
         entry = merged.setdefault(
-            key, {'granted': Decimal('0'), 'consumed': Decimal('0'), 'count': 0, 'request_count': 0, 'token_count': 0}
+            key, {'granted': Decimal(0), 'consumed': Decimal(0), 'count': 0, 'request_count': 0, 'token_count': 0}
         )
         entry['consumed'] = consume['consumed_credits']  # 已为 ≤0
         entry['request_count'] = consume['request_count']
@@ -345,11 +345,11 @@ def _calculate_remaining_value(
 ) -> tuple[Decimal, int]:
     """计算当前订阅的剩余价值"""
     if not subscription_end_date or current_price <= 0:
-        return Decimal('0'), 0
+        return Decimal(0), 0
 
     now = timezone.now()
     if now >= subscription_end_date:
-        return Decimal('0'), 0
+        return Decimal(0), 0
 
     remaining_days = (subscription_end_date - now).days
     total_days = 365 if subscription_type == 'yearly' else 30
@@ -383,9 +383,9 @@ async def calculate_upgrade_price(
             target_tier=body.tier_name,
             target_tier_display=body.tier_name,
             subscription_type=body.subscription_type,
-            original_price=Decimal('0'),
-            remaining_value=Decimal('0'),
-            final_price=Decimal('0'),
+            original_price=Decimal(0),
+            remaining_value=Decimal(0),
+            final_price=Decimal(0),
             remaining_days=0,
             current_tier='',
             current_subscription_type='',
@@ -395,12 +395,12 @@ async def calculate_upgrade_price(
     current_subscription_type = getattr(subscription, 'subscription_type', 'monthly') or 'monthly'
 
     current_tier_config = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
-    current_price = Decimal('0')
+    current_price = Decimal(0)
     if current_tier_config:
         if current_subscription_type == 'yearly' and current_tier_config.yearly_price:
             current_price = current_tier_config.yearly_price
         else:
-            current_price = current_tier_config.monthly_price or Decimal('0')
+            current_price = current_tier_config.monthly_price or Decimal(0)
 
     if subscription.tier == body.tier_name and current_subscription_type == body.subscription_type:
         return response_base.success(data=UpgradePriceResult(
@@ -409,9 +409,9 @@ async def calculate_upgrade_price(
             target_tier=body.tier_name,
             target_tier_display=target_tier.display_name,
             subscription_type=body.subscription_type,
-            original_price=Decimal('0'),
-            remaining_value=Decimal('0'),
-            final_price=Decimal('0'),
+            original_price=Decimal(0),
+            remaining_value=Decimal(0),
+            final_price=Decimal(0),
             remaining_days=0,
             current_tier=subscription.tier,
             current_subscription_type=current_subscription_type,
@@ -424,16 +424,16 @@ async def calculate_upgrade_price(
             target_tier=body.tier_name,
             target_tier_display=target_tier.display_name,
             subscription_type=body.subscription_type,
-            original_price=Decimal('0'),
-            remaining_value=Decimal('0'),
-            final_price=Decimal('0'),
+            original_price=Decimal(0),
+            remaining_value=Decimal(0),
+            final_price=Decimal(0),
             remaining_days=0,
             current_tier=subscription.tier,
             current_subscription_type=current_subscription_type,
         ))
 
-    target_price_monthly = target_tier.monthly_price or Decimal('0')
-    current_price_monthly = current_tier_config.monthly_price if current_tier_config else Decimal('0')
+    target_price_monthly = target_tier.monthly_price or Decimal(0)
+    current_price_monthly = current_tier_config.monthly_price if current_tier_config else Decimal(0)
     if target_price_monthly < current_price_monthly:
         return response_base.success(data=UpgradePriceResult(
             can_upgrade=False,
@@ -441,9 +441,9 @@ async def calculate_upgrade_price(
             target_tier=body.tier_name,
             target_tier_display=target_tier.display_name,
             subscription_type=body.subscription_type,
-            original_price=Decimal('0'),
-            remaining_value=Decimal('0'),
-            final_price=Decimal('0'),
+            original_price=Decimal(0),
+            remaining_value=Decimal(0),
+            final_price=Decimal(0),
             remaining_days=0,
             current_tier=subscription.tier,
             current_subscription_type=current_subscription_type,
@@ -456,18 +456,15 @@ async def calculate_upgrade_price(
             target_tier=body.tier_name,
             target_tier_display=target_tier.display_name,
             subscription_type=body.subscription_type,
-            original_price=Decimal('0'),
-            remaining_value=Decimal('0'),
-            final_price=Decimal('0'),
+            original_price=Decimal(0),
+            remaining_value=Decimal(0),
+            final_price=Decimal(0),
             remaining_days=0,
             current_tier=subscription.tier,
             current_subscription_type=current_subscription_type,
         ))
 
-    if body.subscription_type == 'yearly':
-        original_price = target_tier.yearly_price
-    else:
-        original_price = target_tier.monthly_price
+    original_price = target_tier.yearly_price if body.subscription_type == 'yearly' else target_tier.monthly_price
 
     subscription_end = getattr(subscription, 'subscription_end_date', None)
     remaining_value, remaining_days = _calculate_remaining_value(
@@ -478,7 +475,7 @@ async def calculate_upgrade_price(
 
     final_price = original_price - remaining_value
     if final_price < 0:
-        final_price = Decimal('0')
+        final_price = Decimal(0)
 
     return response_base.success(data=UpgradePriceResult(
         can_upgrade=True,
@@ -522,12 +519,12 @@ async def upgrade_subscription(
     current_subscription_type = getattr(subscription, 'subscription_type', 'monthly') or 'monthly'
 
     current_tier_config = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
-    current_price = Decimal('0')
+    current_price = Decimal(0)
     if current_tier_config:
         if current_subscription_type == 'yearly' and current_tier_config.yearly_price:
             current_price = current_tier_config.yearly_price
         else:
-            current_price = current_tier_config.monthly_price or Decimal('0')
+            current_price = current_tier_config.monthly_price or Decimal(0)
 
     if subscription.tier == body.tier_name and current_subscription_type == body.subscription_type:
         return response_base.fail(data=PaymentResult(
@@ -550,8 +547,8 @@ async def upgrade_subscription(
             message='年度订阅用户不能切换为月度订阅',
         ))
 
-    target_price_monthly = target_tier.monthly_price or Decimal('0')
-    current_price_monthly = current_tier_config.monthly_price if current_tier_config else Decimal('0')
+    target_price_monthly = target_tier.monthly_price or Decimal(0)
+    current_price_monthly = current_tier_config.monthly_price if current_tier_config else Decimal(0)
     if target_price_monthly < current_price_monthly:
         return response_base.fail(data=PaymentResult(
             success=False,
@@ -566,13 +563,10 @@ async def upgrade_subscription(
             message=f'{target_tier.display_name} 暂不支持年度订阅',
         ))
 
-    if body.subscription_type == 'yearly':
-        original_price = target_tier.yearly_price
-    else:
-        original_price = target_tier.monthly_price
+    original_price = target_tier.yearly_price if body.subscription_type == 'yearly' else target_tier.monthly_price
 
     subscription_end = getattr(subscription, 'subscription_end_date', None)
-    remaining_value, remaining_days = _calculate_remaining_value(
+    remaining_value, _remaining_days = _calculate_remaining_value(
         current_price,
         subscription_end,
         current_subscription_type,
@@ -580,7 +574,7 @@ async def upgrade_subscription(
 
     final_price = original_price - remaining_value
     if final_price < 0:
-        final_price = Decimal('0')
+        final_price = Decimal(0)
 
     order_id = f'SUB-{uuid.uuid4().hex[:12].upper()}'
     subscription_type_display = '年度' if body.subscription_type == 'yearly' else '月度'
@@ -617,7 +611,7 @@ async def upgrade_subscription(
         user_id=user_id,
         credit_type='monthly',
         original_amount=target_tier.monthly_credits,
-        used_amount=Decimal('0'),
+        used_amount=Decimal(0),
         remaining_amount=target_tier.monthly_credits,
         expires_at=cycle_end,
         granted_at=now,

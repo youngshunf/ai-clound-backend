@@ -21,7 +21,6 @@ from backend.app.mcp.tools.message import (
     _resolve_to_target,
 )
 
-
 # ── 纯逻辑（无 DB）──────────────────────────────────────────
 
 
@@ -139,6 +138,7 @@ async def test_resolve_attachments_against_real_db() -> None:
     全部断言在单个 async session 内完成（零 mock）。无 DB（DATABASE_PORT=15432）时跳过。
     """
     import sqlalchemy
+
     from sqlalchemy import delete
 
     from backend.app.hasn.model.hasn_assets import HasnAssets

@@ -19,7 +19,6 @@ import secrets
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Request
 from pydantic import Field
@@ -40,14 +39,14 @@ class CurrentOwnerApiKeyDetail(SchemaBase):
         description='Owner API Key 明文; 仅在首次铸造或已缓存明文时返回, 已有 active 记录但无缓存明文时返回空串, UI 应走轮换流程',
     )
     hasn_id: str = Field(description="Owner 绑定的 hasn_id (格式: 'h_xxx')")
-    expires_at: Optional[datetime] = Field(None, description='到期时间 (null 表示长期有效)')
+    expires_at: datetime | None = Field(None, description='到期时间 (null 表示长期有效)')
 
 
 @dataclass(frozen=True)
 class _CurrentKeyResult:
     owner_api_key: str
     hasn_id: str
-    expires_at: Optional[datetime]
+    expires_at: datetime | None
 
 
 async def _generate_owner_api_key_plain() -> tuple[str, str]:

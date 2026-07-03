@@ -21,7 +21,8 @@ from backend.app.hasn_designsystem.service.design_system_service import Subject,
 from backend.app.hasn_designsystem.service.import_service import import_design_source
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth, check_scopes
+from backend.common.security.agent_capability import require_capability_not_denied
+from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
@@ -85,7 +86,7 @@ class ImportRequest(BaseModel):
 async def agent_save_design_system(
     db: CurrentSessionTransaction, body: SaveDesignSystemRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await design_system_service.save(
         db,
         subject=_subject(agent),
@@ -145,7 +146,7 @@ async def agent_delete_design_system(
     design_system_id: Annotated[int, Path(ge=1)],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     await design_system_service.delete(db, design_system_id=design_system_id, owner_hasn_id=agent.owner_hasn_id)
     await _bump_designsystem_sync(db, agent.owner_hasn_id)
     return response_base.success()
@@ -182,8 +183,10 @@ async def agent_owner_revision(db: CurrentSession, agent: AgentTokenPayload = De
 
 # ── 导入三入口（DS-P3）：产 tokens.css 草稿交分身 compile ──────────────────────
 @router.post('/import', summary='导入 shadcn/github/screenshot → tokens.css 草稿（草稿≠最终）')
-async def agent_import(body: ImportRequest, agent: AgentTokenPayload = DependsAgentJwtAuth) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+async def agent_import(
+    body: ImportRequest, db: CurrentSession, agent: AgentTokenPayload = DependsAgentJwtAuth
+) -> ResponseModel:
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await import_design_source(body.source, body.ref)
     return response_base.success(data=data)
 
@@ -208,7 +211,7 @@ async def agent_add_collaborator(
     body: AddCollaboratorRequest,
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_PUBLISH])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_PUBLISH)
     data = await design_system_service.add_collaborator(
         db, design_system_id=design_system_id, owner_hasn_id=agent.owner_hasn_id, agent_hasn_id=body.agent_hasn_id
     )

@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_designsystem.crud.crud_collaborator import collaborator_dao
 from backend.app.hasn_designsystem.model import Collaborator
-from backend.app.hasn_designsystem.schema.collaborator import CreateCollaboratorParam, DeleteCollaboratorParam, UpdateCollaboratorParam
+from backend.app.hasn_designsystem.schema.collaborator import (
+    CreateCollaboratorParam,
+    DeleteCollaboratorParam,
+    UpdateCollaboratorParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

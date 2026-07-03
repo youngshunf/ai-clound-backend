@@ -125,13 +125,13 @@ class GenerateAll:
                                 for stmt in sql_contents[table_name].split(';'):
                                     if stmt.strip():
                                         await db.execute(text(stmt))
-                            print(f'   ✓ 建表SQL执行成功', flush=True)
+                            print('   ✓ 建表SQL执行成功', flush=True)
                         except Exception as e:
-                            print(f'   ✗ 建表SQL执行失败: {str(e)}', flush=True)
+                            print(f'   ✗ 建表SQL执行失败: {e!s}', flush=True)
                             continue
                     else:
                         print(f'   ⚠ 表 {table_name} 不存在于数据库，跳过', flush=True)
-                        print(f'     提示: 使用 --sql-file 参数可自动建表', flush=True)
+                        print('     提示: 使用 --sql-file 参数可自动建表', flush=True)
                         continue
                 else:
                     print(f'   ✓ 表已存在: {table_info["table_comment"] or table_name}', flush=True)
@@ -166,10 +166,10 @@ class GenerateAll:
                         if business_id:
                             print(f'   ✓ 表元数据导入成功 (id={business_id})', flush=True)
                         else:
-                            print(f'   ⚠ 表元数据导入失败', flush=True)
+                            print('   ⚠ 表元数据导入失败', flush=True)
                             continue
                 except Exception as e:
-                    print(f'   ⚠ 导入失败: {str(e)}', flush=True)
+                    print(f'   ⚠ 导入失败: {e!s}', flush=True)
                     continue
 
                 # 步骤3: 生成前端代码
@@ -184,7 +184,7 @@ class GenerateAll:
                     )
                     print('   ✓ 前端代码生成成功', flush=True)
                 except Exception as e:
-                    print(f'   ⚠ 前端代码生成失败: {str(e)}', flush=True)
+                    print(f'   ⚠ 前端代码生成失败: {e!s}', flush=True)
 
                 # 步骤4: 生成后端代码
                 print('\n🔧 生成后端代码...', flush=True)
@@ -193,10 +193,10 @@ class GenerateAll:
                 else:
                     try:
                         async with async_db_session.begin() as db:
-                            gen_path = await gen_service.generate(db=db, pk=business_id)
-                        print(f'   ✓ 后端代码生成成功', flush=True)
+                            await gen_service.generate(db=db, pk=business_id)
+                        print('   ✓ 后端代码生成成功', flush=True)
                     except Exception as e:
-                        print(f'   ⚠ 后端代码生成失败: {str(e)}', flush=True)
+                        print(f'   ⚠ 后端代码生成失败: {e!s}', flush=True)
 
                 # 步骤5: 生成菜单SQL
                 print('\n📋 生成菜单SQL...', flush=True)
@@ -215,7 +215,7 @@ class GenerateAll:
                             await execute_menu_sql(menu_sql, db)
                         print('   ✓ 菜单SQL已执行', flush=True)
                 except Exception as e:
-                    print(f'   ⚠ 菜单SQL生成失败: {str(e)}', flush=True)
+                    print(f'   ⚠ 菜单SQL生成失败: {e!s}', flush=True)
 
                 # 步骤6: 生成字典SQL
                 print('\n📚 生成字典SQL...', flush=True)
@@ -239,7 +239,7 @@ class GenerateAll:
                     else:
                         print('   ⚠ 未找到需要生成字典的字段', flush=True)
                 except Exception as e:
-                    print(f'   ⚠ 字典SQL生成失败: {str(e)}', flush=True)
+                    print(f'   ⚠ 字典SQL生成失败: {e!s}', flush=True)
 
                 generated_tables.append(table_name)
 
@@ -249,10 +249,10 @@ class GenerateAll:
             print('=' * 60 + '\n', flush=True)
 
             if generated_tables:
-                print(f'📦 生成的表:', flush=True)
+                print('📦 生成的表:', flush=True)
                 for tbl in generated_tables:
                     print(f'   - {tbl}', flush=True)
-                print(f'\n📂 文件位置:', flush=True)
+                print('\n📂 文件位置:', flush=True)
                 print(f'   前端: apps/{codegen_config.frontend_app}/src/views/{self.app}/<table_name>/', flush=True)
                 print(f'   API:  apps/{codegen_config.frontend_app}/src/api/{self.app}/<table_name>.ts', flush=True)
                 print(f'   后端: backend/app/{self.app}/', flush=True)
@@ -260,10 +260,10 @@ class GenerateAll:
             print(flush=True)
 
         except KeyboardInterrupt:
-            print(f'\n⚠ 用户中断操作', flush=True)
+            print('\n⚠ 用户中断操作', flush=True)
             raise cappa.Exit('用户中断', code=130)
         except cappa.Exit:
             raise
         except Exception as e:
-            print(f'\n⚠ 错误: {str(e)}', flush=True)
+            print(f'\n⚠ 错误: {e!s}', flush=True)
             raise cappa.Exit(str(e), code=1)

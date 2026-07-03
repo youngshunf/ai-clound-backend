@@ -8,6 +8,7 @@
 """
 
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
@@ -100,9 +101,9 @@ async def create_site(request: Request, db: CurrentSessionTransaction, body: Cre
 async def list_sites(
     request: Request,
     db: CurrentSession,
-    kind: str | None = Query(default=None),
-    page: int = Query(default=1, ge=1),
-    size: int = Query(default=50, ge=1, le=200),
+    kind: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     data = await publish_service.list_owned(db, owner_id=owner_id, kind=kind, limit=size, offset=(page - 1) * size)
@@ -113,8 +114,8 @@ async def list_sites(
 async def get_by_source(
     request: Request,
     db: CurrentSession,
-    source_app: str = Query(min_length=1),
-    source_ref: str = Query(min_length=1),
+    source_app: Annotated[str, Query(min_length=1)],
+    source_ref: Annotated[str, Query(min_length=1)],
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     data = await publish_service.get_by_source(db, owner_id=owner_id, source_app=source_app, source_ref=source_ref)

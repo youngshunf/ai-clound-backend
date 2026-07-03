@@ -17,7 +17,7 @@ async def open_register_node(
 ) -> Any:
     """
     客户端（如 Desktop Sidecar）启动时主动注册节点。
-    
+
     请求体包含客户端生成的稳定的 device_fingerprint 派生出的 node_id。
     成功后返回节点标识与对应的 hasn_node_key。
     """
@@ -28,14 +28,14 @@ async def open_register_node(
         node_name=param.node_name,
         node_info=param.node_info,
     )
-    
+
     # 确保已有 node key，如果没有则会创建一个
     node_key = await ensure_hasn_node_key(
         db=db,
         node_id=node.node_id,
         device_fingerprint=node.device_fingerprint,
     )
-    
+
     return response_base.success(
         data={
             'node_id': node.node_id,

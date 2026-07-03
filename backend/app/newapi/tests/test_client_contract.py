@@ -43,7 +43,7 @@ pytest_skip = pytest.mark.skipif(
 
 
 @pytest_skip
-async def test_status_and_quota_per_unit():
+async def test_status_and_quota_per_unit() -> None:
     client = NewApiAdminClient()
     qpu = await client.get_quota_per_unit()
     assert qpu == settings.NEWAPI_QUOTA_PER_DOLLAR, (
@@ -52,7 +52,7 @@ async def test_status_and_quota_per_unit():
 
 
 @pytest_skip
-async def test_full_credential_lifecycle():
+async def test_full_credential_lifecycle() -> None:
     client = NewApiAdminClient()
     username = f'hx_ct_{_rnd()}'
     newapi_user_id: int | None = None
@@ -117,7 +117,7 @@ async def test_full_credential_lifecycle():
 
 
 @pytest_skip
-async def test_get_user_quota_missing_returns_none():
+async def test_get_user_quota_missing_returns_none() -> None:
     """不存在的 user → get_user_quota 返回 None（admin GET /user/:id 报错被吞为 None 降级）。"""
     client = NewApiAdminClient()
     # 用一个极大概率不存在的 id

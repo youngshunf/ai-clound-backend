@@ -11,7 +11,9 @@ wx_papay 渠道：先发起签约，用户扫码签约后自动扣款。
 """
 
 import json
+import pathlib
 import time
+
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -33,7 +35,7 @@ class WechatPapayClient(PayClient):
     }
     """
 
-    def __init__(self, config: dict, notify_url: str):
+    def __init__(self, config: dict, notify_url: str) -> None:
         super().__init__(config, notify_url)
         self._client = None
         self._mch_id = config.get('mchId') or config.get('mch_id', '')
@@ -54,8 +56,7 @@ class WechatPapayClient(PayClient):
             if private_key.startswith('-----BEGIN'):
                 private_key_string = private_key
             else:
-                with open(private_key, 'r') as f:
-                    private_key_string = f.read()
+                private_key_string = pathlib.Path(private_key).read_text()
             self._client = WeChatPay(
                 wechatpay_type=WeChatPayType.NATIVE,
                 mchid=self._mch_id,
@@ -98,7 +99,7 @@ class WechatPapayClient(PayClient):
         expire_time = (datetime.now() + timedelta(minutes=expire_minutes)).strftime('%Y-%m-%dT%H:%M:%S+08:00')
 
         # 构造 contract_info（随支付下单一起传）
-        contract_info = {
+        {
             'appid': self._appid,
             'mchid': self._mch_id,
             'plan_id': int(self._plan_id),
@@ -141,9 +142,8 @@ class WechatPapayClient(PayClient):
                     'pay_url': None,
                     'contract_no': contract_no,
                 }
-            else:
-                log.error(f'wx_papay 下单失败: code={code}, response={response}')
-                raise Exception(f'微信签约支付下单失败: {response}')
+            log.error(f'wx_papay 下单失败: code={code}, response={response}')
+            raise Exception(f'微信签约支付下单失败: {response}')
 
         except ImportError:
             log.warning('wechatpayv3 RequestType 导入失败，回退 Native 支付')
@@ -169,8 +169,7 @@ class WechatPapayClient(PayClient):
         if code == 200:
             data = json.loads(response) if isinstance(response, str) else response
             return {'qr_code_url': data.get('code_url'), 'pay_url': None}
-        else:
-            raise Exception(f'微信支付下单失败: {response}')
+        raise Exception(f'微信支付下单失败: {response}')
 
     def query_order(self, order_no: str) -> dict[str, Any]:
         code, response = self.client.query(out_trade_no=order_no)
@@ -241,6 +240,5 @@ class WechatPapayClient(PayClient):
             result = json.loads(response) if isinstance(response, str) else (response or {})
             log.info(f'wx_papay 代扣成功: order={order_no}, contract={contract_id}')
             return result
-        else:
-            log.error(f'wx_papay 代扣失败: code={code}, response={response}')
-            raise Exception(f'微信代扣失败: {response}')
+        log.error(f'wx_papay 代扣失败: code={code}, response={response}')
+        raise Exception(f'微信代扣失败: {response}')

@@ -1,6 +1,8 @@
 """微信 Native 支付 — PayClient 实现"""
 
 import json
+import pathlib
+
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -22,7 +24,7 @@ class WechatNativeClient(PayClient):
     }
     """
 
-    def __init__(self, config: dict, notify_url: str):
+    def __init__(self, config: dict, notify_url: str) -> None:
         super().__init__(config, notify_url)
         self._client = None
         # 兼容前端两种字段命名风格（camelCase 和 snake_case）
@@ -42,8 +44,7 @@ class WechatNativeClient(PayClient):
             if private_key.startswith('-----BEGIN'):
                 private_key_string = private_key
             else:
-                with open(private_key, 'r') as f:
-                    private_key_string = f.read()
+                private_key_string = pathlib.Path(private_key).read_text()
             self._client = WeChatPay(
                 wechatpay_type=WeChatPayType.NATIVE,
                 mchid=self._mch_id,
@@ -75,9 +76,8 @@ class WechatNativeClient(PayClient):
         if code == 200:
             data = json.loads(response) if isinstance(response, str) else response
             return {'qr_code_url': data.get('code_url'), 'pay_url': None}
-        else:
-            log.error(f'微信下单失败: code={code}, response={response}')
-            raise Exception(f'微信支付下单失败: {response}')
+        log.error(f'微信下单失败: code={code}, response={response}')
+        raise Exception(f'微信支付下单失败: {response}')
 
     def query_order(self, order_no: str) -> dict[str, Any]:
         code, response = self.client.query(out_trade_no=order_no)

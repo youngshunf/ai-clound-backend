@@ -27,7 +27,7 @@ class FakeRedis:
         bucket = self.hashes.get(key, {})
         return [bucket.get(field) for field in fields]
 
-    async def set(self, key: str, value: Any, ex: int | None = None) -> None:  # noqa: ARG002
+    async def set(self, key: str, value: Any, ex: int | None = None) -> None:
         self.strings[key] = value
 
     async def exists(self, key: str) -> int:

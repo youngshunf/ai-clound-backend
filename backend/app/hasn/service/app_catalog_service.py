@@ -24,6 +24,7 @@ from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_app_beta_access import HasnAppBetaAccess
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
+from backend.app.hasn.model.hasn_app_seat import HasnAppSeat
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.app_catalog_registry import App, app_catalog_registry
 from backend.app.hasn_design.manifest import DESIGN_BUSINESS_PROMPT
@@ -52,10 +53,11 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'creator': 50,  # 创作运营（置于 growth 之后；default_mount=FALSE 由 install_policy=manual 推导）
     'film': 55,  # 视频生成（源自 VideoClaw；default_mount=FALSE 由 install_policy=manual 推导）
     'reel': 57,  # 短视频合成（源自 MoneyPrinterTurbo，瘦引擎应用；default_mount=FALSE 由 install_policy=manual 推导）
+    'imagelab': 58,  # 图像处理（图坊，自研本地引擎，doc30；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
     'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
-    'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 install_policy=manual 推导）
+    'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 manual 推导）
     'studio': 76,  # 统一视频引擎（cloud-brokered 视频工作台，模块 14 doc22；default_mount=FALSE 由 manual 推导）
     'design': 78,  # 矢量设计（local_tool 本地 sidecar，源自 OpenPencil，doc27；default_mount=FALSE 由 manual 推导）
 }
@@ -120,7 +122,8 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '只调用 hasn.creator.* 工具，产出对客可用的成品，零 fake，失败如实报错。',
     ),
     # 视频生成（源自 VideoClaw）也归「内容运营官（content_operator）」——视频是内容运营的一种产出形态，
-    # 不另起「视频分身」（AC-P6 福仔拍板复用 content_operator）。一个分身默认服务 deck/designsystem/creator/film 四应用。
+    # 不另起「视频分身」（AC-P6 福仔拍板复用 content_operator）。
+    # 一个分身默认服务 deck/designsystem/creator/film 四应用。
     'film': (
         'content_operator',
         '你是视频生成应用的执行分身：把主人的创意做成完整的短视频，按脚本→角色设定→分镜→参考图→'
@@ -139,6 +142,21 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         'hasn.session.ask 问清、绝不硬猜；再用 hasn.reel.script.draft 起草文案（定稿摊给主人确认）→ '
         '一把梭 hasn.reel.generate 或分步合成出片 → hasn.reel.artifact.upload 登记成片。'
         '真实引擎本地合成、本地优先不自动上云，零 fake，失败如实报错。',
+    ),
+    # 图像处理（图坊，自研本地引擎，doc30 §5.5/§5.7）也归「内容运营官（content_operator）」——无专有「修图师」
+    # 分身，任意分身皆可操作，hasn.imagelab.* 工具面与技能所有分身共享（福仔 2026-07-02 纠正）；默认承接
+    # content_operator。一个分身默认服务 deck/designsystem/creator/film/reel/imagelab 等多应用。
+    'imagelab': (
+        'content_operator',
+        '你是图坊（图像处理应用）的执行分身：把主人的图片处理需求做成对客可用的成品。'
+        '先用 hasn.imagelab.analyze 读现状（尺寸/格式/透明度/主体）再动手，别盲目开工；'
+        '复杂或批量需求用 hasn.imagelab.pipeline / batch 组「处理配方」一次编排（去背景→裁剪→水印→压缩→转格式…），'
+        '不要一步步单发；非破坏性处理（裁剪/缩放/调色/滤镜/格式/压缩/去背景/拼图/动画）可自由做（默认不覆盖原图、'
+        '产物只落本地、可回滚），破坏性操作（inpaint 去物体/去水印，hasn.imagelab.retouch）和生成式操作'
+        '（hasn.imagelab.generate 花积分）先与主人确认；批量前先明确输入范围与预期产出数、大批量提交后经 '
+        'hasn.imagelab.job.get 轮询进度；完成用 hasn.imagelab.export 把产物写到本地输出目录并登记，回禀主人，'
+        '需要分享才用 hasn.imagelab.share 上云发好友/群。文案/配色/水印文字等创意与审美判断摊给主人定、不擅自拍板。'
+        '真实引擎本地处理、产物本地优先不自动上云，零 fake，失败如实报错。',
     ),
     # 会议副驾用专属「会议副驾」分身（hub 模板 meeting-copilot，builtin_key=meeting_copilot），
     # 非 content_operator——会议实时副驾是独立专长。
@@ -164,7 +182,8 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
         '取不到就如实说，零 fake、失败如实报错。',
     ),
-    # 量化用专属「量化交易官（quant_trader）」分身（hub 模板 quant_trader，builtin_key=quant_trader，QUANT-P10/P11 落地）。
+    # 量化用专属「量化交易官（quant_trader）」分身
+    # （hub 模板 quant_trader，builtin_key=quant_trader，QUANT-P10/P11 落地）。
     # 本期 P0–P5 只做回测研究（零资金风险）：写策略 → 跑回测 → 读绩效 → 迭代优化；实盘线 P6+ 受硬闸不开。
     'quant': (
         'quant_trader',
@@ -271,6 +290,21 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
             'version': '',
             'packages': {},
             'bundled_deps': ['ffmpeg', 'imagemagick'],
+        },
+    },
+    # 图像处理（imagelab，图坊，自研本地引擎，doc30 §5.1/§5.5）：确定性像素处理走自研本地引擎（ffmpeg/rembg/
+    # Pillow/scipy/libwebp/opencv），生成类不自建模型（桥接平台 hasn.image.generate）→ 故 config_json 只承载
+    # engine 分发骨架 + 按需下载的 ML 模型清单，**无 image/video 生成模型**（不烧生成 token）。
+    #   - engine.bundled_deps=['ffmpeg','libwebp']（图坊本地处理特有依赖，含动画组装 cwebp/webpmux）；
+    #     ml_models 是**按需下载**的重模型（rembg 抠图 birefnet ~1GB / lama inpaint / esrgan 超分 / ocr），
+    #     不随引擎包强制下发，daemon engine.rs 首用某算子时按需下载（对齐星仔 U2NET_HOME + reel/film 引擎下载）。
+    #   - version + 按架构 packages 留空：dev 用自研引擎源码树即可跑，prod 由运营经管理端/FILMPUB 托管引擎包后填。
+    'imagelab': {
+        'engine': {
+            'version': '',
+            'packages': {},
+            'bundled_deps': ['ffmpeg', 'libwebp'],
+            'ml_models': ['birefnet-general', 'lama', 'realesrgan', 'paddleocr'],
         },
     },
     # 矢量设计（design，源自 OpenPencil，doc27 §4.3/§7/§9）：本地 sidecar = OpenPencil node-server web 编辑器 +
@@ -586,8 +620,12 @@ def _tier_rank(tier: str | None) -> int:
     return _TIER_RANK.get((tier or 'free'), 0)
 
 
-async def _resolve_owner_user_id(db: AsyncSession, owner_hasn_id: str) -> int | None:
-    """owner hasn_id（h_xxx）→ 唤星平台 user_id；无映射返回 None（按 free 兜底）。"""
+async def resolve_owner_user_id(db: AsyncSession, *, owner_hasn_id: str) -> int | None:
+    """owner hasn_id（h_xxx）→ 唤星平台 user_id；无映射返回 None。
+
+    与 ``resolve_owner_hasn_id`` 互为正/反向映射，供跨模块复用（如工作台未处理项聚合对
+    走遗留 ``user_id`` 的应用做 hasn_id→user_id 适配）。
+    """
     stmt = sa.select(HasnHumans.user_id).where(HasnHumans.hasn_id == owner_hasn_id)
     user_id = (await db.execute(stmt)).scalars().first()
     return int(user_id) if user_id else None
@@ -599,7 +637,7 @@ async def owner_effective_tier(db: AsyncSession, *, owner_hasn_id: str) -> str:
     存储的 ``tier`` 字段过期不降级（只 ``status`` 翻 expired，见 credit_service.get_user_credits_info）；
     准入须按日期重算：``status`` 已过期或订阅结束日已过 → 有效档位回落 ``free``。免费档无结束日永不过期。
     """
-    user_id = await _resolve_owner_user_id(db, owner_hasn_id)
+    user_id = await resolve_owner_user_id(db, owner_hasn_id=owner_hasn_id)
     if user_id is None:
         return 'free'
     stmt = sa.select(UserSubscription).where(
@@ -657,14 +695,76 @@ def _price_payload(cat: HasnAppCatalog) -> dict | None:
     }
 
 
-async def resolve_app_access(
+async def _member_has_assigned_seat(
+    db: AsyncSession, *, enterprise_subject_id: str, app_id: str, member_hasn_id: str | None
+) -> bool:
+    """该成员是否在该企业该 app 有 assigned 席位（doc04 §6.3 情形 A 席位判定）。
+
+    ``enterprise_subject_id`` 是权益主体 ID（str(enterprise_id)）；``member_hasn_id`` 缺失即无席。
+    """
+    if not member_hasn_id:
+        return False
+    try:
+        enterprise_id = int(enterprise_subject_id)
+    except (TypeError, ValueError):
+        return False
+    stmt = sa.select(HasnAppSeat.id).where(
+        HasnAppSeat.enterprise_id == enterprise_id,
+        HasnAppSeat.app_id == app_id,
+        HasnAppSeat.member_hasn_id == member_hasn_id,
+        HasnAppSeat.status == 'assigned',
+    )
+    return (await db.execute(stmt)).scalars().first() is not None
+
+
+def merge_access(owner_access: dict, enterprise_access: dict | None) -> dict:
+    """合并 owner 维度与企业维度准入（doc04 §6.6，M1「顺序即优先级 + 自解优先」）。
+
+    - ``allowed = owner OR enterprise``。
+    - reason 选取顺序（allowed=False 时）：
+      ① 企业 allowed → 用企业结果；② owner allowed → 用 owner 结果；
+      ③ 双不通：**自解优先**——owner.reason ∈ {need_purchase, need_upgrade} 先取 owner
+        （用户能自购/升级，别推去「找管理员」死路）；否则 enterprise.reason == need_seat_assignment 取企业；
+        否则回落 owner.reason（含 need_enterprise_space / disabled）。
+    """
+    if enterprise_access is None:
+        return owner_access
+    if enterprise_access.get('allowed'):
+        return enterprise_access
+    if owner_access.get('allowed'):
+        return owner_access
+    # 双方都不通：M1 自解优先。
+    if owner_access.get('reason') in ('need_purchase', 'need_upgrade'):
+        return owner_access
+    if enterprise_access.get('reason') == 'need_seat_assignment':
+        return enterprise_access
+    return owner_access
+
+
+def check_purchasable_by(catalog: HasnAppCatalog, *, buyer: str) -> None:
+    """下单/试用前校验 ``purchasable_by``（doc04 §5/P1-4），拦无意义下单。违反抛 RequestError。
+
+    - buyer='owner'：``purchasable_by='enterprise'``（纯企业应用）→ 拒（个人买了也用不了）。
+    - buyer='enterprise'：``purchasable_by='owner'``（纯个人应用）→ 拒。
+    - ``both`` 两边都放行；缺省视为 ``owner``（保守默认，与迁移 DEFAULT 一致）。
+    """
+    mode = catalog.purchasable_by or 'owner'
+    if buyer == 'owner' and mode == 'enterprise':
+        raise errors.RequestError(msg='该应用仅限企业购买')
+    if buyer == 'enterprise' and mode == 'owner':
+        raise errors.RequestError(msg='该应用仅限个人购买')
+
+
+async def resolve_app_access(  # noqa: C901 有意的分支式准入门（status/beta/free/tier/purchase+席位），E2E 覆盖，保持内聚不拆分
     db: AsyncSession,
     *,
     catalog: HasnAppCatalog,
     owner_hasn_id: str,
     subject_type: str = 'owner',
+    subject_id: str | None = None,
+    member_hasn_id: str | None = None,
 ) -> dict:
-    """统一准入决策函数（设计 §5.2）。返回 AppAccess dict。
+    """统一准入决策函数（设计 §5.2 / doc04 §6.3）。返回 AppAccess dict。
 
     判定顺序（§5.2）：
       1. status != published → disabled（下架，任何人不可用）
@@ -672,9 +772,13 @@ async def resolve_app_access(
       3. tier → owner 有效档位 ≥ min_tier ? allowed/tier_ok : need_upgrade（附 trial_available）
       4. purchase → 有 active 权益 ? allowed/entitled（trial 来源则 trialing）: need_purchase（附 trial_available）
 
-    subject_id 取 owner_hasn_id（owner 维度）；企业维度由调用方传 subject_type='enterprise' + 对应 subject_id。
+    维度参数（M2，doc04 §4/§7 破「subject_id 硬编码」）：
+    - ``subject_id``：权益主体 ID。owner 维度不传（回落 owner_hasn_id，**行为不变**，向后兼容）；
+      企业维度传 ``str(enterprise_id)``。
+    - ``member_hasn_id``：**仅企业席位制权益**判定用——判「该成员是否有 assigned 席位」（S1，§6.3 情形 A）。
+      免费/订阅制（access_type=free/tier，无 seats_total）**不过席位**，approved 成员直接放行。
     """
-    subject_id = owner_hasn_id
+    subject_id = subject_id or owner_hasn_id
 
     def _access(
         *,
@@ -723,6 +827,15 @@ async def resolve_app_access(
     if access_type == 'purchase':
         ent = await get_active_entitlement(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id)
         if ent is not None:
+            # S1：席位闸**只在** purchase 分支且企业席位制权益（seats_total 有值）生效。
+            # 企业买了「套餐」但成员没被指派席位 → need_seat_assignment（用户自己解不了，需管理员指派）。
+            if subject_type == 'enterprise' and ent.seats_total is not None:
+                has_seat = await _member_has_assigned_seat(
+                    db, enterprise_subject_id=subject_id, app_id=catalog.app_id, member_hasn_id=member_hasn_id
+                )
+                if has_seat:
+                    return _access(allowed=True, reason='entitled', entitlement_expires_at=ent.expires_at)
+                return _access(allowed=False, reason='need_seat_assignment', requires='seat')
             reason = 'trialing' if ent.source == 'trial' else 'entitled'
             return _access(allowed=True, reason=reason, entitlement_expires_at=ent.expires_at)
         trial_available = bool(catalog.trial_days) and not await _has_used_trial(
@@ -740,7 +853,7 @@ async def resolve_app_access(
 _PURCHASE_CYCLE_DAYS: dict[str, int] = {'month': 30, 'monthly': 30, 'year': 365, 'yearly': 365}
 
 
-def purchase_expiry(billing_cycle: str | None):
+def purchase_expiry(billing_cycle: str | None) -> datetime | None:
     """按 billing_cycle 计算购买权益到期时间；``once``/未知周期 → None（永久买断）。"""
     days = _PURCHASE_CYCLE_DAYS.get(billing_cycle or 'once')
     return timezone.now() + timedelta(days=days) if days else None
@@ -758,6 +871,8 @@ async def open_trial(
         raise errors.ForbiddenError(msg='应用已下架')
     if (catalog.access_type or 'free') == 'free' or not catalog.trial_days:
         raise errors.RequestError(msg='该应用不支持试用')
+    # P1-4：purchasable_by 校验——个人不得试用/购买纯企业应用。
+    check_purchasable_by(catalog, buyer='enterprise' if subject_type == 'enterprise' else 'owner')
     subject_id = owner_hasn_id
     if await _has_used_trial(db, app_id=catalog.app_id, subject_type=subject_type, subject_id=subject_id):
         raise errors.RequestError(msg='试用机会已用过')
@@ -786,16 +901,37 @@ async def grant_entitlement(
     subject_id: str,
     source: str,
     order_ref: str | None = None,
-    expires_at=None,
+    expires_at: datetime | None = None,
 ) -> HasnAppEntitlement:
-    """写一条 active 权益（购买回调 / admin 授予共用）。已有 active 则幂等返回（不重复发）。
+    """写一条 active 权益（购买回调 / admin 授予共用）。已有**有效** active 则幂等返回（不重复发）。
 
-    唯一约束 ``uq_app_entitlement_active`` 保证每主体每 app 至多一条 active，故先查后写。
+    唯一约束 ``uq_app_entitlement_active`` 保证每主体每 app 至多一条 ``status='active'`` 行。
+    到期复购（doc04 §6.4「续费与到期复购」）：``status='active'`` 但 ``expires_at`` 已过的行
+    （``sweep_expired_entitlements`` 定时兜底可能尚未跑到）会撞该 partial unique——先把过期行
+    翻 ``'expired'`` 让位、再插新行开新周期。**不就地复写旧行**：owner 试用行保留 ``source=trial``
+    历史，``_has_used_trial`` 的「试用只能一次」判定才不会被复购冲掉。
+    企业席位制的旧 assigned 席位随后由 ``settle_seat_purchase`` re-parent 到新行（席位账目归一）。
     """
     existing = await get_active_entitlement(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
     if existing is not None:
         await _post_grant_seed(db, app_id=app_id, subject_type=subject_type, subject_id=subject_id)
         return existing
+    stale = (
+        await db.execute(
+            sa.select(HasnAppEntitlement).where(
+                HasnAppEntitlement.app_id == app_id,
+                HasnAppEntitlement.subject_type == subject_type,
+                HasnAppEntitlement.subject_id == subject_id,
+                HasnAppEntitlement.status == 'active',
+            )
+        )
+    ).scalars().first()
+    if stale is not None:
+        # 走到这里必然「active 但已过期」（有效行已在上方幂等返回）。
+        stale.status = 'expired'
+        stale.updated_time = timezone.now()
+        # 先 flush 让位：同一 flush 里 INSERT 先于 UPDATE 执行，不先落让位会撞 partial unique。
+        await db.flush()
     ent = HasnAppEntitlement(
         app_id=app_id,
         subject_type=subject_type,

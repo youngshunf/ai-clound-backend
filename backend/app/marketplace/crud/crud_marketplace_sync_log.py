@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.marketplace.model import MarketplaceSyncLog
-from backend.app.marketplace.schema.marketplace_sync_log import CreateMarketplaceSyncLogParam, UpdateMarketplaceSyncLogParam
+from backend.app.marketplace.schema.marketplace_sync_log import (
+    CreateMarketplaceSyncLogParam,
+    UpdateMarketplaceSyncLogParam,
+)
 
 
 class CRUDMarketplaceSyncLog(CRUDPlus[MarketplaceSyncLog]):

@@ -312,6 +312,14 @@ def _load_external_mcp() -> None:
     router.include_router(external_mcp_admin)
 
 
+def _load_hasn_diag() -> None:
+    # 错误诊断与可观测性（hasn_diag，模块 21，独立 PG schema=hasn_diag）：
+    # P1 仅 owner 端（错误上行 :sync + owner 只读 /errors）；issue 读/管理走云端 hasn.diag.* MCP 工具。
+    from backend.app.hasn_diag.api.router import app as hasn_diag_app
+
+    router.include_router(hasn_diag_app)
+
+
 # 应用名 → loader。改 FBA_DEV_APPS 时用这里的 key（左列）。
 _APP_LOADERS: dict[str, Callable[[], None]] = {
     'task': _load_task,
@@ -339,6 +347,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_studio': _load_hasn_studio,
     'hasn_reel': _load_hasn_reel,
     'external_mcp': _load_external_mcp,
+    'hasn_diag': _load_hasn_diag,
 }
 
 for _name, _loader in _APP_LOADERS.items():

@@ -70,7 +70,7 @@ class _FakeSessionCtx:
     async def __aenter__(self) -> object:
         return object()
 
-    async def __aexit__(self, *_a: Any) -> bool:
+    async def __aexit__(self, *_a: object) -> bool:
         return False
 
 

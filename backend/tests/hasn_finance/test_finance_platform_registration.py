@@ -10,9 +10,8 @@
 - catalog 出厂源：sort_order 70 / default_agent_type=analyst（投研分析师）/ 无 per-app config_json。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落库且 hash 自愈幂等；``ensure_catalog_seeded`` 幂等播种。
 
-形态对照（与 growth/creator 一致）：finance 是**纯云端只读数据应用**，故 finance:read **不进**
-``DEFAULT_AGENT_SCOPES``（cloud gateway 工具由 capability_modes 三态判定，非 JWT scope claim；只有
-local_tool 应用如 reel/film 才需铸入 JWT，因 daemon 三态闸门按 claim 校验）。
+形态对照（与 growth/creator 一致）：finance 是**纯云端只读数据应用**，finance:read 由三态
+``capability_modes`` 判定（JWT ``scopes`` claim 已随实施102 S0 全退役，不再有「铸入 JWT」一说）。
 
 事实源: docs/hasn-node设计文档/14-AI-Native应用平台/24-金融数据源(akshare)行情与投研应用接入设计.md §4/§5；
         docs/hasn-node设计文档/14-AI-Native应用平台/实施/24-金融数据源(akshare)行情与投研应用接入实施清单.md S2。
@@ -34,6 +33,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
 from backend.app.hasn.service.app_catalog_service import (
@@ -43,11 +43,9 @@ from backend.app.hasn.service.app_catalog_service import (
     ensure_catalog_seeded,
     get_catalog,
 )
-from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST, build_finance_app
 from backend.app.hasn_finance.service import finance_tool_handlers
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.common.security.agent_jwt import DEFAULT_AGENT_SCOPES
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 _READ_SCOPE = 'finance:read'
@@ -138,11 +136,6 @@ def test_finance_scope_registered_in_catalog() -> None:
     assert meta['risk'] == 'low'
     assert meta['default_mode'] == 'allow'
     assert meta['label'] == '查询行情与投研数据'
-
-
-def test_finance_scope_not_minted_into_jwt() -> None:
-    """finance:read 不进 DEFAULT_AGENT_SCOPES（cloud 工具由 capability_modes 判定，非 JWT claim；同 growth/creator）。"""
-    assert _READ_SCOPE not in DEFAULT_AGENT_SCOPES
 
 
 def test_finance_notifications_emit_declared() -> None:

@@ -153,9 +153,7 @@ class ResourceShareService:
             resource_visibility == 'enterprise'
             and resource_enterprise_id is not None
             and resource_enterprise_id in member_enterprise_ids
-        ):
-            effective = _max_perm(effective, 'viewer')
-        elif resource_visibility == 'link':
+        ) or resource_visibility == 'link':
             effective = _max_perm(effective, 'viewer')
 
         # 4. explicit_grant：hasn_resource_share 命中主体（直接/经主人/经企业/经 role）的最高 active 权限

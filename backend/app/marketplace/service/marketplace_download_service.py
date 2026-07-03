@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.marketplace.crud.crud_marketplace_download import marketplace_download_dao
 from backend.app.marketplace.model import MarketplaceDownload
-from backend.app.marketplace.schema.marketplace_download import CreateMarketplaceDownloadParam, DeleteMarketplaceDownloadParam, UpdateMarketplaceDownloadParam
+from backend.app.marketplace.schema.marketplace_download import (
+    CreateMarketplaceDownloadParam,
+    DeleteMarketplaceDownloadParam,
+    UpdateMarketplaceDownloadParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

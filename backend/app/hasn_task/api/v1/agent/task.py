@@ -10,11 +10,13 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_task.service.agent_task_service import agent_task_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth, check_scopes
+from backend.common.security.agent_capability import require_capability_not_denied
+from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
@@ -51,9 +53,10 @@ class AgentUpdateTaskRequest(BaseModel):
     enable_subagents: bool | None = None
 
 
-def _agent(request: Request, *scopes: str) -> AgentTokenPayload:
+async def _agent(request: Request, db: AsyncSession, *scopes: str) -> AgentTokenPayload:
     agent: AgentTokenPayload = request.state.agent
-    check_scopes(agent, list(scopes))
+    for scope in scopes:
+        await require_capability_not_denied(db, agent.agent_hasn_id, scope)
     return agent
 
 
@@ -63,7 +66,7 @@ async def agent_create_task(
     db: CurrentSessionTransaction,
     body: AgentCreateTaskRequest,
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     task, created = await agent_task_service.create_task(db, agent=agent, params=body.model_dump())
     return response_base.success(data={'task': task, 'created': created})
 
@@ -75,7 +78,7 @@ async def agent_list_tasks(
     state: Annotated[str | None, Query(description='按状态过滤')] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     tasks = await agent_task_service.list_tasks(db, owner_id=agent.owner_hasn_id, state=state, limit=limit)
     return response_base.success(data={'tasks': tasks})
 
@@ -88,7 +91,7 @@ async def agent_get_task(
     db: CurrentSession,
     task_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     row = await agent_task_service.get_task_row(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
     from backend.app.hasn_task.service.agent_task_service import task_to_public
 
@@ -105,7 +108,7 @@ async def agent_update_task(
     task_uuid: Annotated[str, Path()],
     body: AgentUpdateTaskRequest,
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     task = await agent_task_service.update_task(db, agent=agent, task_uuid=task_uuid, patch=body.model_dump())
     return response_base.success(data={'task': task})
 
@@ -119,7 +122,7 @@ async def agent_pause_task(
     db: CurrentSessionTransaction,
     task_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     task = await agent_task_service.pause_task(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
     return response_base.success(data={'task': task})
 
@@ -133,7 +136,7 @@ async def agent_resume_task(
     db: CurrentSessionTransaction,
     task_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     task = await agent_task_service.resume_task(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
     return response_base.success(data={'task': task})
 
@@ -147,7 +150,7 @@ async def agent_delete_task(
     db: CurrentSessionTransaction,
     task_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     await agent_task_service.delete_task(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
     return response_base.success(data={'deleted': True})
 
@@ -161,7 +164,7 @@ async def agent_run_now(
     db: CurrentSessionTransaction,
     task_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_RUN)
+    agent = await _agent(request, db, _SCOPE_RUN)
     task = await agent_task_service.run_now(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
     return response_base.success(data={'task': task})
 
@@ -176,7 +179,7 @@ async def agent_list_runs(
     task_uuid: Annotated[str, Path()],
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     await agent_task_service.get_task_row(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
     runs = await agent_task_service.list_run_summaries(
         db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid, limit=limit
@@ -193,7 +196,7 @@ async def agent_get_run(
     db: CurrentSession,
     run_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     run = await agent_task_service.get_run_summary(db, owner_id=agent.owner_hasn_id, run_uuid=run_uuid)
     return response_base.success(data={'run': run})
 
@@ -210,7 +213,7 @@ async def agent_query_results(
     status: Annotated[str | None, Query(description='success/error')] = None,
     include_artifacts: Annotated[bool, Query()] = True,  # noqa: FBT002 FastAPI query 参数惯用形态
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     await agent_task_service.get_task_row(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
     results: list[dict[str, Any]] = await agent_task_service.list_run_summaries(
         db,

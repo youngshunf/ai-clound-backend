@@ -163,7 +163,7 @@ async def reconcile_builtin_agents(
             )
             existing_keys.add(key)
             created.append(key)
-        except Exception as exc:  # noqa: BLE001  best-effort：单个失败不阻断 onboarding
+        except Exception as exc:
             log.warning('reconcile_builtin_agents: failed to create builtin agent {}: {!r}', key, exc)
     return created
 

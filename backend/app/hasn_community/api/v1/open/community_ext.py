@@ -15,7 +15,7 @@ from backend.app.hasn_community.service.circle_service import circle_service
 from backend.app.hasn_community.service.doc_service import doc_service
 from backend.app.hasn_community.service.topic_service import topic_service
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.database.db import CurrentSession  # noqa: TC001 — FastAPI 路由依赖注解须运行时可解析，禁放 TYPE_CHECKING
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 

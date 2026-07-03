@@ -1,6 +1,6 @@
-from typing import Sequence
+from collections.abc import Sequence
 
-from sqlalchemy import Select, select, desc
+from sqlalchemy import Select, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -20,8 +20,8 @@ class CRUDAppVersion(CRUDPlus[AppVersion]):
         return await self.select_model(db, pk)
 
     async def get_latest_published(
-        self, 
-        db: AsyncSession, 
+        self,
+        db: AsyncSession,
         app_code: str,
         platform: str,
         arch: str,
@@ -50,8 +50,8 @@ class CRUDAppVersion(CRUDPlus[AppVersion]):
         return result.scalar_one_or_none()
 
     async def get_manifest(
-        self, 
-        db: AsyncSession, 
+        self,
+        db: AsyncSession,
         app_code: str,
         version: str,
     ) -> Sequence[AppVersion]:

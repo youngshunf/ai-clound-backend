@@ -31,7 +31,6 @@ async def get_my_hasn_audit_logs(
     request: Request,
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetHasnAuditLogDetail]]:
-    user_id = request.user.id
     page_data = await hasn_audit_log_service.get_list(db=db)
     return response_base.success(data=page_data)
 
@@ -46,7 +45,6 @@ async def create_my_hasn_audit_log(
     db: CurrentSessionTransaction,
     obj: CreateHasnAuditLogParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_audit_log_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 

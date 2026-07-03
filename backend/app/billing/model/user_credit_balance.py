@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.billing.model._base import BillingBase
-from backend.common.model import id_key, TimeZone
+from backend.common.model import TimeZone, id_key
 from backend.utils.timezone import timezone
 
 
@@ -24,7 +24,7 @@ class UserCreditBalance(BillingBase):
         comment='积分类型 (monthly:月度赠送:blue/purchased:购买积分:green/bonus:活动赠送:orange)',
     )
     original_amount: Mapped[Decimal] = mapped_column(sa.NUMERIC(), default=None, comment='原始积分数量')
-    used_amount: Mapped[Decimal] = mapped_column(sa.NUMERIC(), default=Decimal('0'), comment='已使用积分')
+    used_amount: Mapped[Decimal] = mapped_column(sa.NUMERIC(), default=Decimal(0), comment='已使用积分')
     remaining_amount: Mapped[Decimal] = mapped_column(sa.NUMERIC(), default=None, comment='剩余积分数量')
     expires_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='过期时间')
     granted_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment='发放时间')

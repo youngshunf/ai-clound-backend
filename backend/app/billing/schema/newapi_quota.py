@@ -4,8 +4,8 @@ from pydantic import Field
 
 from backend.common.schema import SchemaBase
 
-
 # ========== 管理端概览 ==========
+
 
 class AdminNewApiUserOverview(SchemaBase):
     """管理端 new-api 用户概览（列表项）"""

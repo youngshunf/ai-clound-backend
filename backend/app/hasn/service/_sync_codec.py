@@ -179,8 +179,8 @@ def _task_storage_row(
         'binding_id': _optional_string(payload.get('binding_id')),
         'deleted_at': _coerce_datetime_or_none(payload.get('deleted_at')) if state == 'deleted' else None,
         'created_by': _optional_string(payload.get('created_by')),
-        'continuation_enabled': bool(payload.get('continuation_enabled', False)),
-        'enable_subagents': bool(payload.get('enable_subagents', False)),
+        'continuation_enabled': bool(payload.get('continuation_enabled')),
+        'enable_subagents': bool(payload.get('enable_subagents')),
         'created_by_kind': str(payload.get('created_by_kind') or 'owner'),
         'builtin_key': _optional_string(payload.get('builtin_key')),
         'builtin_synced_revision': _optional_int(payload.get('builtin_synced_revision')),
@@ -250,8 +250,8 @@ def _task_sync_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
         'risk_level': _normalize_risk_level(row.get('risk_level')),
         'enabled': bool(row.get('enabled', True)),
         'state': str(row.get('state') or 'scheduled'),
-        'continuation_enabled': bool(row.get('continuation_enabled', False)),
-        'enable_subagents': bool(row.get('enable_subagents', False)),
+        'continuation_enabled': bool(row.get('continuation_enabled')),
+        'enable_subagents': bool(row.get('enable_subagents')),
         'created_by_kind': str(row.get('created_by_kind') or 'owner'),
         'builtin_key': row.get('builtin_key'),
         'builtin_synced_revision': _optional_int(row.get('builtin_synced_revision')),
@@ -399,7 +399,7 @@ def _optional_string(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value)
-    return text if text else None
+    return text or None
 
 
 def _optional_int(value: Any) -> int | None:
@@ -475,26 +475,19 @@ def _memory_pull_selections(request: MemorySyncPullRequest) -> list[MemorySyncCu
         (cursor.sync_scope_kind, cursor.sync_scope_id, cursor.namespace): cursor.last_pulled_revision
         for cursor in request.cursors
     }
-    selections: list[MemorySyncCursor] = []
-    for namespace in namespace_map.get('owner', []):
-        selections.append(
-            MemorySyncCursor(
+    selections: list[MemorySyncCursor] = [MemorySyncCursor(
                 sync_scope_kind='owner',
                 sync_scope_id=request.owner_id,
                 namespace=namespace,
                 last_pulled_revision=cursor_map.get(('owner', request.owner_id, namespace), 0),
-            )
-        )
+            ) for namespace in namespace_map.get('owner', [])]
     for agent_id in request.agent_ids:
-        for namespace in namespace_map.get('agent', []):
-            selections.append(
-                MemorySyncCursor(
+        selections.extend(MemorySyncCursor(
                     sync_scope_kind='agent',
                     sync_scope_id=agent_id,
                     namespace=namespace,
                     last_pulled_revision=cursor_map.get(('agent', agent_id, namespace), 0),
-                )
-            )
+                ) for namespace in namespace_map.get('agent', []))
     return selections
 
 
@@ -519,7 +512,7 @@ def _advance_memory_cursors(
             sync_scope_kind=cursor.sync_scope_kind,
             sync_scope_id=cursor.sync_scope_id,
             namespace=cursor.namespace,
-            last_pulled_revision=revisions[(cursor.sync_scope_kind, cursor.sync_scope_id, cursor.namespace)],
+            last_pulled_revision=revisions[cursor.sync_scope_kind, cursor.sync_scope_id, cursor.namespace],
         )
         for cursor in selections
     ]

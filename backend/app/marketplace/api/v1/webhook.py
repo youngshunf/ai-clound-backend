@@ -8,7 +8,7 @@ import hmac
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Header, Request
 from pydantic import BaseModel
 
 from backend.app.marketplace.service.github_app_sync_service import github_app_sync_service
@@ -33,13 +33,7 @@ def has_skill_source_changes(commits: list[dict]) -> bool:
     for commit in commits:
         changed = commit.get('modified', []) + commit.get('added', []) + commit.get('removed', [])
         if any(
-            path == '.gitmodules'
-            or path == 'common-skills.yaml'
-            or path == 'common-bundles.yaml'
-            or path.startswith('huanxing-skills/')
-            or path.startswith('bundles/')
-            or path == 'github'
-            or path.startswith('github/')
+            path == '.gitmodules' or path == 'common-skills.yaml' or path == 'common-bundles.yaml' or path.startswith(('huanxing-skills/', 'bundles/', 'github/')) or path == 'github'
             for path in changed
         ):
             return True

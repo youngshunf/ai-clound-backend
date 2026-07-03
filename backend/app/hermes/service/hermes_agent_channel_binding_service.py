@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hermes.crud.crud_hermes_agent_channel_binding import hermes_agent_channel_binding_dao
 from backend.app.hermes.model import HermesAgentChannelBinding
-from backend.app.hermes.schema.hermes_agent_channel_binding import CreateHermesAgentChannelBindingParam, DeleteHermesAgentChannelBindingParam, UpdateHermesAgentChannelBindingParam
+from backend.app.hermes.schema.hermes_agent_channel_binding import (
+    CreateHermesAgentChannelBindingParam,
+    DeleteHermesAgentChannelBindingParam,
+    UpdateHermesAgentChannelBindingParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

@@ -1,5 +1,6 @@
+from collections.abc import Sequence
 from datetime import date
-from typing import Any, Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 

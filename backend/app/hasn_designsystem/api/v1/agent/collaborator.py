@@ -12,8 +12,6 @@ from backend.app.hasn_designsystem.schema.collaborator import (
     UpdateCollaboratorParam,
 )
 from backend.app.hasn_designsystem.service.collaborator_service import collaborator_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,8 +29,7 @@ async def agent_list_collaborator(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
+    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await collaborator_service.get_list(db=db)
     return response_base.success(data=data)
 
@@ -48,7 +45,6 @@ async def agent_create_collaborator(
     db: CurrentSessionTransaction,
     obj: CreateCollaboratorParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await collaborator_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_collaborator(
     db: CurrentSession,
     pk: Annotated[int, Path(description='设计系统协作分身绑定（对齐 DECKBIND） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     collaborator = await collaborator_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if collaborator.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_collaborator(
     pk: Annotated[int, Path(description='设计系统协作分身绑定（对齐 DECKBIND） ID')],
     obj: UpdateCollaboratorParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    collaborator = await collaborator_service.get(db=db, pk=pk)
+    await collaborator_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if collaborator.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该设计系统协作分身绑定（对齐 DECKBIND）')
@@ -106,8 +100,7 @@ async def agent_delete_collaborator(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='设计系统协作分身绑定（对齐 DECKBIND） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    collaborator = await collaborator_service.get(db=db, pk=pk)
+    await collaborator_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if collaborator.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该设计系统协作分身绑定（对齐 DECKBIND）')

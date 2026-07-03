@@ -50,7 +50,7 @@ class _StubTool(BaseTool):
     def risk_level(self) -> str:
         return self._risk
 
-    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:  # noqa: RUF029
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         self.executed = True
         return {'executed': True}
 

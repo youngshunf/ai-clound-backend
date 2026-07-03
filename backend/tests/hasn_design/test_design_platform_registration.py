@@ -5,8 +5,8 @@
 - capabilities scope 与落地 hasn-mcp 工具一致（19 个；读类 6 → design:read、写类 10 创作 + 2 破坏性 → design:write、
   codegen 1 → design:codegen；mcp_name 全 hasn.design.*）。
 - scopes.py 登记 design:read/:write/:codegen（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
-- **铸 scope**：design:read/:write/:codegen 进 DEFAULT_AGENT_SCOPES（JWT scopes claim 唯一固定来源，
-  本地 sidecar 工具经 daemon 三态闸门需 claim 在册，同 reel/film），且 Agent JWT 编解码忠实携带三者。
+- scope 授权走三态 capability_modes（JWT scopes claim 已退役，实施102 S0）：design:read/:write/:codegen
+  由 ``hasn_agent_scopes.{default_mode, capability_modes}`` 消费时活取判定，凭证不再承载 scope。
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 == {design:write, design:codegen}
   （= hasn-node crates/hasn-mcp/src/design.rs capability_scopes() 契约，OP-P3-A 待落，本测为云端侧契约源）。
 - App 形态（local_tool / 手动安装 / 项目管理+派发台 /apps/design）。
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import uuid
 
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -56,13 +55,7 @@ from backend.app.hasn_design.schema.hasn_design_project import (
     CreateHasnDesignProjectParam,
 )
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.common.security.agent_jwt import (
-    DEFAULT_AGENT_SCOPES,
-    jwt_decode_agent,
-    jwt_encode_agent,
-)
 from backend.database.db import SQLALCHEMY_DATABASE_URL
-from backend.utils.timezone import timezone
 
 # 落地真相（hasn-node crates/hasn-mcp/src/design.rs，OP-P3-A 待落，本表是云端侧契约源）：
 # 读类 6 / 写类 10 创作 + 2 破坏性 / codegen 1 = 19。
@@ -164,28 +157,6 @@ def test_design_scope_factory_defaults() -> None:
     assert scope_meta(_READ_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_WRITE_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_CODEGEN_SCOPE)['default_mode'] == 'allow'
-
-
-def test_design_scopes_minted_into_agent_jwt() -> None:
-    """铸 scope：design:read/:write/:codegen 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带三者。"""
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _CODEGEN_SCOPE):
-        assert scope in DEFAULT_AGENT_SCOPES
-
-    expire = timezone.now() + timedelta(seconds=3600)
-    payload = {
-        'sub': 'a_design_expert',
-        'token_type': 'agent',
-        'agent_hasn_id': 'a_design_expert',
-        'agent_name': '设计师',
-        'owner_hasn_id': 'h_test_owner',
-        'owner_user_id': 1,
-        'scopes': list(DEFAULT_AGENT_SCOPES),
-        'session_uuid': str(uuid.uuid4()),
-        'exp': timezone.to_utc(expire).timestamp(),
-    }
-    decoded = jwt_decode_agent(jwt_encode_agent(payload))
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _CODEGEN_SCOPE):
-        assert scope in decoded.scopes
 
 
 def test_design_notifications_emit_declared() -> None:

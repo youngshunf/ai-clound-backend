@@ -5,8 +5,6 @@
 - capabilities scope 与落地 hasn-mcp 工具一致（17 个；读类 → film:read、写类 13 → film:write、
   导出类 artifact.upload → film:export；mcp_name 全 hasn.film.*）。
 - scopes.py 登记 film:read/:write/:export（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
-- **铸 scope**：film:read/:write/:export 进 DEFAULT_AGENT_SCOPES（JWT scopes claim 唯一固定来源），
-  且 Agent JWT 编解码忠实携带三者——否则 Agent 调云端 film/agent/* 写类被 check_scopes 403。
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 == {film:write, film:export}
   （= hasn-node crates/hasn-mcp/src/film.rs capability_scopes() 契约，见 test_local_tool_scope_alignment）。
 - App 形态（local_tool / 手动安装 / 内联路由；本期不自动挂载，入口随 P8 webui+catalog 落地）。
@@ -18,9 +16,6 @@
 
 from __future__ import annotations
 
-import uuid
-
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -38,13 +33,7 @@ if TYPE_CHECKING:
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST, build_film_app
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
-from backend.common.security.agent_jwt import (
-    DEFAULT_AGENT_SCOPES,
-    jwt_decode_agent,
-    jwt_encode_agent,
-)
 from backend.database.db import SQLALCHEMY_DATABASE_URL
-from backend.utils.timezone import timezone
 
 # 落地真相（hasn-node crates/hasn-mcp/src/film.rs）：读类 3 / 写类 13 / 导出类 1。
 _READ_TOOLS = {'project.list', 'project.get', 'stage.artifact'}
@@ -144,32 +133,6 @@ def test_film_scope_factory_defaults_match_local_enforcement() -> None:
     assert scope_meta(_READ_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_WRITE_SCOPE)['default_mode'] == 'ask'
     assert scope_meta(_EXPORT_SCOPE)['default_mode'] == 'ask'
-
-
-def test_film_scopes_minted_into_agent_jwt() -> None:
-    """铸 scope：film:read/:write/:export 进 DEFAULT_AGENT_SCOPES，且 Agent JWT 编解码忠实携带三者。
-
-    生产真相：JWT scopes claim 的唯一固定来源是 DEFAULT_AGENT_SCOPES（agent_jwt.py）。Agent 调云端
-    film/agent/* 写类时 check_scopes 据此放行——故三者必须在该常量内，并经真实 encode/decode 存活。
-    """
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _EXPORT_SCOPE):
-        assert scope in DEFAULT_AGENT_SCOPES
-
-    expire = timezone.now() + timedelta(seconds=3600)
-    payload = {
-        'sub': 'a_film_expert',
-        'token_type': 'agent',
-        'agent_hasn_id': 'a_film_expert',
-        'agent_name': '视频创作专家',
-        'owner_hasn_id': 'h_test_owner',
-        'owner_user_id': 1,
-        'scopes': list(DEFAULT_AGENT_SCOPES),
-        'session_uuid': str(uuid.uuid4()),
-        'exp': timezone.to_utc(expire).timestamp(),
-    }
-    decoded = jwt_decode_agent(jwt_encode_agent(payload))
-    for scope in (_READ_SCOPE, _WRITE_SCOPE, _EXPORT_SCOPE):
-        assert scope in decoded.scopes
 
 
 def test_film_notifications_emit_declared() -> None:

@@ -887,6 +887,12 @@ class AiNativeRuntimeGateway:
 
         只有 catalog 中存在且 ``access_type != free`` 的 app 才判定（无 catalog 行 / free 零开销跳过）。
         owner 维度按 ``agent.owner_hasn_id`` 实时判 tier / active entitlement（零映射，安全路径直取）。
+
+        doc04 偏差2 修复：owner 维度不通时**叠加企业维度**——主人当前激活企业空间
+        （``hasn_owner_workbench_pref.active_enterprise_id``）且应用有企业形态时，按企业权益 +
+        命名席位（member=该主人）再判一次；任一维度通过即放行（与 ``list_apps`` 的
+        ``merge_access``「allowed = owner OR enterprise」口径一致）。否则企业买了席位的成员，
+        其分身调该应用工具会被误拒 entitlement_denied（人能打开应用、分身不能干活）。
         """
         cat = await app_catalog_service.get_catalog(db, app_id=app_id)
         if cat is None or (cat.access_type or 'free') == 'free':
@@ -894,7 +900,34 @@ class AiNativeRuntimeGateway:
         access = await app_catalog_service.resolve_app_access(
             db, catalog=cat, owner_hasn_id=agent.owner_hasn_id
         )
-        return None if access['allowed'] else 'entitlement_denied'
+        if access['allowed']:
+            return None
+        if 'enterprise' in (cat.scope or []):
+            from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
+
+            active_enterprise_id = (
+                (
+                    await db.execute(
+                        sa.select(HasnOwnerWorkbenchPref.active_enterprise_id).where(
+                            HasnOwnerWorkbenchPref.owner_hasn_id == agent.owner_hasn_id
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if active_enterprise_id is not None:
+                enterprise_access = await app_catalog_service.resolve_app_access(
+                    db,
+                    catalog=cat,
+                    owner_hasn_id=agent.owner_hasn_id,
+                    subject_type='enterprise',
+                    subject_id=str(active_enterprise_id),
+                    member_hasn_id=agent.owner_hasn_id,
+                )
+                if enterprise_access['allowed']:
+                    return None
+        return 'entitlement_denied'
 
     # 应用平台 v3 P3（设计 17 决策①）：挂载概念废除——_get_workspace_app（查 hasn_workspace_app
     # 挂载行）已删除，发现/调用准入只看 catalog published + entitlement（_entitlement_denial）。
@@ -1020,7 +1053,8 @@ class AiNativeRuntimeGateway:
             tool_id=tool.get('tool_id'),
             event_type='tool_call',
             required_scopes=list(tool.get('required_scopes') or []),
-            agent_scopes_snapshot=list(agent.scopes) if agent is not None else [],
+            # scopes 已退役（实施102 S0）：AgentTokenPayload 不再携带 scopes，审计快照恒空。
+            agent_scopes_snapshot=[],
             workspace_role=self._workspace_role(workspace),
             risk_level=tool.get('risk_level'),
             decision=decision,

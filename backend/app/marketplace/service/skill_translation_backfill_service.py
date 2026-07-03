@@ -7,6 +7,7 @@ batched translator over existing ``marketplace_skill`` rows and persists the
 canonical bilingual fields.
 """
 import json
+
 from typing import Any
 
 from sqlalchemy import or_, select

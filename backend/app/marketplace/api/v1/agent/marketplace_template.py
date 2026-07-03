@@ -12,8 +12,6 @@ from backend.app.marketplace.schema.marketplace_template import (
     UpdateMarketplaceTemplateParam,
 )
 from backend.app.marketplace.service.marketplace_template_service import marketplace_template_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,8 +29,7 @@ async def agent_list_marketplace_template(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
+    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await marketplace_template_service.get_list(db=db)
     return response_base.success(data=data)
 
@@ -48,7 +45,6 @@ async def agent_create_marketplace_template(
     db: CurrentSessionTransaction,
     obj: CreateMarketplaceTemplateParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await marketplace_template_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_marketplace_template(
     db: CurrentSession,
     pk: Annotated[int, Path(description='技能市场模板表（Agent模板/技能包/SOP包） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     marketplace_template = await marketplace_template_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if marketplace_template.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_marketplace_template(
     pk: Annotated[int, Path(description='技能市场模板表（Agent模板/技能包/SOP包） ID')],
     obj: UpdateMarketplaceTemplateParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    marketplace_template = await marketplace_template_service.get(db=db, pk=pk)
+    await marketplace_template_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if marketplace_template.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该技能市场模板表（Agent模板/技能包/SOP包）')
@@ -106,8 +100,7 @@ async def agent_delete_marketplace_template(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='技能市场模板表（Agent模板/技能包/SOP包） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    marketplace_template = await marketplace_template_service.get(db=db, pk=pk)
+    await marketplace_template_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if marketplace_template.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该技能市场模板表（Agent模板/技能包/SOP包）')

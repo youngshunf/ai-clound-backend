@@ -15,6 +15,14 @@ class Goal(PlanBase):
 
     id: Mapped[id_key] = mapped_column(init=False)
     owner_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='主人 HASN id（owner 隔离键）')
+    enterprise_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(),
+        default=None,
+        comment='所属企业 id（NULL=个人；逻辑引用 public.hasn_enterprise 无硬 FK；首期不 surface PE-D1）',
+    )
+    dept_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='所属部门 id（NULL=不限；首期不 surface PE-D1）'
+    )
     title: Mapped[str] = mapped_column(sa.String(255), default='', comment=None)
     why: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='动机')
     category: Mapped[str | None] = mapped_column(

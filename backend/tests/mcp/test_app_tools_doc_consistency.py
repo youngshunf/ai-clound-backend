@@ -6,19 +6,17 @@ risk) 必须与 manifest（运行时权威源）逐条一致。文档列的工�
 
 from __future__ import annotations
 
-import re
-
 from pathlib import Path
 
-from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
-from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
-from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.ai_native_builtin_manifests import (
     COMMUNITY_AI_NATIVE_MANIFEST,
     KNOWLEDGE_AI_NATIVE_MANIFEST,
 )
-from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
+from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
+from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 
 _APPS_DIR = Path(__file__).resolve().parents[2] / 'app' / 'mcp' / 'apps'
 

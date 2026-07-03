@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn_plan.service.plan_app_service import plan_service
+from backend.app.hasn_plan.service.plan_authz import active_enterprise_id
+from backend.app.hasn_plan.service.plan_notify import notify_invited
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -27,12 +29,17 @@ router = APIRouter()
 log = logging.getLogger(__name__)
 
 
-async def _resolve_owner(db: AsyncSession, request: Request) -> str:
-    """登录用户 → HASN 主人 hasn_id。"""
+async def _resolve_owner_human(db: AsyncSession, request: Request) -> Any:
+    """登录用户 → HASN 主人身份行（`HasnHumans`）。"""
     human = await hasn_humans_dao.get_by_user_id(db, request.user.id)
     if not human:
         raise errors.NotFoundError(msg='用户 HASN 身份不存在')
-    return human.hasn_id
+    return human
+
+
+async def _resolve_owner(db: AsyncSession, request: Request) -> str:
+    """登录用户 → HASN 主人 hasn_id。"""
+    return (await _resolve_owner_human(db, request)).hasn_id
 
 
 async def _bump_plan_sync(db: AsyncSession, owner_hasn_id: str) -> None:
@@ -305,8 +312,25 @@ async def app_list_events(
     db: CurrentSession,
     start: Annotated[datetime | None, Query()] = None,
     end: Annotated[datetime | None, Query()] = None,
+    scope: Annotated[str, Query(description='personal（默认个人日历）| enterprise（活跃企业日历，WHO/WHAT 裁剪）')] = (
+        'personal'
+    ),
 ) -> ResponseModel:
+    """日历事件读（PLAN-ENT B2 空间分叉，[04] §5.1）。
+
+    `scope=personal`（默认）→ 个人事件（`enterprise_id IS NULL`，owner 隔离，个人零破坏）；
+    `scope=enterprise` → 主人活跃企业 E 的事件（恒前置 `enterprise_id==E` + 数据范围 WHO + 忙闲 WHAT 裁剪）；
+    无活跃企业 / 非成员 → 空列表（企业隔离硬底线）。两条各自 scope 读，webui 合并（不是一条混合查询）。
+    """
     owner = await _resolve_owner(db, request)
+    if (scope or 'personal').strip().lower() == 'enterprise':
+        eid = await active_enterprise_id(db, owner)
+        if not eid:
+            return response_base.success(data=[])
+        data = await plan_service.list_enterprise_events(
+            db, viewer_owner_hasn_id=owner, enterprise_id=eid, start=start, end=end
+        )
+        return response_base.success(data=data)
     return response_base.success(data=await plan_service.list_events(db, owner=owner, start=start, end=end))
 
 
@@ -314,8 +338,29 @@ async def app_list_events(
 async def app_create_event(
     request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
 ) -> ResponseModel:
+    """创建日程/时间块（PLAN-ENT 显式 scope，[04] §5.3）。
+
+    `scope=personal`（默认）→ 个人日程（`enterprise_id IS NULL`）；`scope=enterprise` → 主人活跃企业会议
+    （服务端解析 `active_enterprise_id`，展开组织者行 + 按 `attendees` 展开受邀参会人，被邀即上其日历）。
+    企业归属由**服务端**解析（不信任 body 里的 `enterprise_id`，CR 不变量 3）；无活跃企业 → 诚实拒绝，
+    不静默落个人（与 agent 工具 `_h_create_event` 的 PE-7 解析一致，[04] §7）。
+    """
     owner = await _resolve_owner(db, request)
-    data = await plan_service.create_event(db, owner=owner, data=body)
+    scope = str(body.get('scope') or 'personal').strip().lower()
+    enterprise_id: int | None = None
+    attendees: list[str] | None = None
+    if scope == 'enterprise':
+        enterprise_id = await active_enterprise_id(db, owner)
+        if not enterprise_id:
+            raise errors.RequestError(
+                msg='当前无活跃企业空间，无法创建企业会议；请先切换到企业空间，或用个人日程（scope=personal）'
+            )
+        raw = body.get('attendees')
+        attendees = [str(h).strip() for h in raw if str(h or '').strip()] if isinstance(raw, list) else []
+    payload = {k: v for k, v in body.items() if k not in ('scope', 'attendees')}
+    data = await plan_service.create_event(
+        db, owner=owner, data=payload, enterprise_id=enterprise_id, attendees=attendees
+    )
     await _bump_plan_sync(db, owner)
     return response_base.success(data=data)
 
@@ -357,6 +402,83 @@ async def app_reschedule_event(
         db, owner=owner, pk=pk, start_at=start_at, end_at=end_at, lock=bool(body.get('lock', True))
     )
     await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+# ── 企业会议协同（PLAN-ENT [04] §6.2，owner/WebUI 端；与 agent 工具共用同一 service）──────────
+@router.get('/events/{pk}/attendees', summary='会议参会人名单（含 RSVP）', dependencies=[DependsJwtAuth])
+async def app_list_attendees(
+    request: Request, db: CurrentSession, pk: Annotated[int, Path(ge=1)]
+) -> ResponseModel:
+    """列出某企业会议的参会人（组织者 + 受邀人）及其 RSVP 状态（详情抽屉 RSVP 展示用）。"""
+    await _resolve_owner(db, request)  # 仅校验登录主人身份；名单读不额外裁剪（事件本身受 A3 约束）
+    return response_base.success(data=await plan_service.list_attendees(db, event_id=pk))
+
+
+@router.post('/events/{pk}/invite', summary='加/减参会人（组织者）', dependencies=[DependsJwtAuth])
+async def app_invite_attendees(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    """组织者（事件 owner）加/减参会人 + 给新增者发邀请卡（[04] §6.2/§6.3）。
+
+    `body`: `{add?: [hasn_id...], remove?: [hasn_id...], default_role?}`。仅事件 owner 可调，
+    组织者行不可移除。邀请卡通知走共享 `notify_invited`（与 agent 工具同一实现）。
+    """
+    human = await _resolve_owner_human(db, request)
+    owner = human.hasn_id
+    result = await plan_service.invite_attendees(
+        db,
+        owner=owner,
+        event_id=pk,
+        add=[str(h) for h in (body.get('add') or [])],
+        remove=[str(h) for h in (body.get('remove') or [])],
+        default_role=str(body.get('default_role') or 'required'),
+    )
+    await notify_invited(
+        db, event_id=pk, added=result.get('added') or [], organizer_name=getattr(human, 'nickname', '') or '组织者'
+    )
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=result)
+
+
+@router.post('/events/{pk}/rsvp', summary='回复会议 RSVP', dependencies=[DependsJwtAuth])
+async def app_respond_rsvp(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    """参会人（本人）回复 RSVP（accepted/declined/tentative）。仅本人参会行可改。"""
+    owner = await _resolve_owner(db, request)
+    data = await plan_service.respond_rsvp(db, owner=owner, event_id=pk, rsvp=str(body.get('rsvp') or ''))
+    await _bump_plan_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.get('/availability', summary='企业成员忙闲（找空档，只回忙闲不回标题）', dependencies=[DependsJwtAuth])
+async def app_member_availability(
+    request: Request,
+    db: CurrentSession,
+    members: Annotated[str, Query(description='逗号分隔的成员 hasn_id 列表（受 A3 可见性约束裁剪）')],
+    start: Annotated[datetime | None, Query()] = None,
+    end: Annotated[datetime | None, Query()] = None,
+) -> ResponseModel:
+    """查活跃企业成员忙闲找空档（[04] §6.2，团队日历视图）。
+
+    ⚠️ 性能约束（[05] §11 CR）：调用方**必须**带时间窗（`start`/`end`）+ 成员上限，禁无界全表扫。
+    只回匿名忙碌块、不回标题（受 A3 数据范围约束，非成员/无活跃企业 → 空 dict）。
+    """
+    owner = await _resolve_owner(db, request)
+    eid = await active_enterprise_id(db, owner)
+    if not eid:
+        return response_base.success(data={})
+    member_ids = [m.strip() for m in (members or '').split(',') if m.strip()]
+    data = await plan_service.member_availability(
+        db, viewer_owner_hasn_id=owner, enterprise_id=eid, member_hasn_ids=member_ids, start=start, end=end
+    )
     return response_base.success(data=data)
 
 

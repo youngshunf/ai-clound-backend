@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import operator
 import zipfile
 
 from io import BytesIO
@@ -71,7 +72,7 @@ def _extract_body_and_files(content: bytes) -> tuple[str | None, str]:
                     body = extract_skill_body(raw) or None
                 except (UnicodeDecodeError, KeyError):
                     body = None
-    files.sort(key=lambda f: f['path'])
+    files.sort(key=operator.itemgetter('path'))
     return body, json.dumps(files, ensure_ascii=False)
 
 

@@ -29,7 +29,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -42,7 +42,7 @@ async def session():
         await engine.dispose()
 
 
-async def test_list_style_profiles_unions_builtin_and_isolates_owner(session):
+async def test_list_style_profiles_unions_builtin_and_isolates_owner(session) -> None:
     tag = uuid.uuid4().hex[:8]
     owner_a = f'h_owner_a_{tag}'
     owner_b = f'h_owner_b_{tag}'
@@ -89,7 +89,7 @@ async def test_list_style_profiles_unions_builtin_and_isolates_owner(session):
     assert sample['design_contract'] == {'palette': ['#000000']}
 
 
-async def test_list_style_profiles_owner_b_does_not_see_owner_a_custom(session):
+async def test_list_style_profiles_owner_b_does_not_see_owner_a_custom(session) -> None:
     tag = uuid.uuid4().hex[:8]
     owner_a = f'h_owner_a_{tag}'
     owner_b = f'h_owner_b_{tag}'

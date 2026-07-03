@@ -24,7 +24,9 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'marketplace:install': {'label_zh': '安装/卸载技能', 'domain': 'marketplace', 'risk': 'medium', 'description': '把市场技能装到当前 Agent 或从中卸载（云端权威 + 重物化）'},
     'marketplace:publish': {'label_zh': '打包与发布资源', 'domain': 'marketplace', 'risk': 'high', 'description': '打包本地技能/模板并发布为当前用户资源（默认草稿；公开/送审过主人确认）'},
     # —— platform · 媒体（hasn-mcp 本地媒体工具，直连 new-api）——
-    'image:generate': {'label_zh': '生成图片', 'domain': 'image', 'risk': 'medium', 'description': '直连唤星 new-api 图像 API 生成图片（消耗 owner 配额）'},
+    # 键统一（实施102 S2）：旧 image:generate 死键已删，图片与语音生成统一到 media:generate；
+    # 视频单价远高、独立授权档 video:generate 保留。二者均本地工具（source=Local），出厂 Ask（花 owner 配额）。
+    'media:generate': {'label_zh': '图片与语音生成', 'domain': 'media', 'risk': 'medium', 'default_mode': 'ask', 'description': '直连唤星 new-api 生成图片（image）与语音（TTS），消耗 owner 配额，故默认每次询问'},
     'video:generate': {'label_zh': '生成视频', 'domain': 'video', 'risk': 'high', 'default_mode': 'ask', 'description': '直连唤星 new-api 视频 API（task 式异步：提交→轮询）生成视频，单价远高于图片、消耗 owner 配额，故独立授权档'},
     # —— platform · 资产（hasn.asset.create：分身把自己的内容上传成 hasn://asset）——
     'asset:create': {'label_zh': '上传媒体资产', 'domain': 'asset', 'risk': 'medium', 'description': '把分身的内容（SVG/图片/文件等）上传到私有桶并注册资产，供消息附件引用'},
@@ -34,9 +36,17 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     # 注：plan:schedule / plan:delegate 仍属本地 hasn-mcp 工具（schedule/reschedule/delegate 保留本地），
     # 其展示元数据在本地 scope 词表，不在此平台目录。
     'plan:write': {'label_zh': '编辑规划', 'domain': 'plan', 'risk': 'low', 'description': '代主人建/改/删目标、计划、待办、日程、习惯（读类无需授权）'},
+    'plan:read': {'label_zh': '读团队忙闲', 'domain': 'plan', 'risk': 'low', 'description': '读企业成员忙闲档（availability，受 A3 可见性约束：只回忙/闲块不回标题；个人读类无需授权）'},
+    'plan:manage': {'label_zh': '管理企业会议协同', 'domain': 'plan', 'risk': 'medium', 'description': '管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）'},
+    # —— platform · 工作台（hasn.workbench.pending.scan：主脑聚合各应用未处理项，主动分诊派发，doc05）——
+    'workbench:pending:read': {'label_zh': '扫描未处理项', 'domain': 'workbench', 'risk': 'low', 'description': '聚合主人名下各应用的未处理项（只读，供主脑分诊派发；简报发布 publish 无需 scope）'},
     # —— platform · 记忆（hasn.memory.save：分身把长期语义事实写入云端权威记忆，doc16 Phase C）——
     # 读类（search/recall/list）无需授权；写类 memory:write 出厂 Allow，owner 三态可覆盖、事后可改可删。
     'memory:write': {'label_zh': '记录记忆', 'domain': 'memory', 'risk': 'low', 'description': '把长期语义事实（偏好/事实/目标等）写入云端权威记忆（读类无需授权）'},
+    # —— platform · 错误诊断（hasn.diag.* 云端工具，doc21）：平台运维分身跨 owner 读全量 issue/report + 改状态 ——
+    # 特权口径（跨 owner），由 G1 平台特权门（doc18 U2）判定授予对象；出厂 Allow（无人值守运维，Ask 会死锁）。
+    'diag:read:all': {'label_zh': '读平台错误全量', 'domain': 'diag', 'risk': 'medium', 'description': '跨 owner 读取平台错误 issue 列表/详情/occurrence/统计（平台运维特权，非普通分身）'},
+    'diag:manage': {'label_zh': '管理平台错误 issue', 'domain': 'diag', 'risk': 'high', 'description': '改 issue 状态（investigating/resolved/skipped/wontfix）、挂 issue/PR 链接（平台运维特权，写审计留痕）'},
     # —— 历史默认词表（DEFAULT_AGENT_SCOPES）——展示兜底，无对应 cloud 工具亦不崩 ——
     'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
     'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},

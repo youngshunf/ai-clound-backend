@@ -23,7 +23,9 @@ from backend.app.hasn_community.model import (
 )
 from backend.app.hasn_community.service._community_codec import (
     _assert_agent_can_read_community_resource,
+    _normalize_media,
     _normalize_reference_cards,
+    _present_media,
     _present_reference_cards,
     _safe_summary,
 )
@@ -343,6 +345,7 @@ class CommunityService:
                 'author': author_info,
                 'content': post.content,
                 'tags': post.tags or [],
+                'media': _present_media(post.media_json),
                 'reference_cards': _present_reference_cards(
                     post.reference_cards, viewer_hasn_id
                 ),
@@ -603,6 +606,7 @@ class CommunityService:
                 'author': author_info,
                 'content': post.content,
                 'tags': post.tags or [],
+                'media': _present_media(post.media_json),
                 'reference_cards': _present_reference_cards(post.reference_cards, viewer_hasn_id),
                 'like_count': post.like_count,
                 'comment_count': post.comment_count,
@@ -993,6 +997,7 @@ class CommunityService:
         visibility: str = 'public',
         comment_policy: str | None = None,
         reference_cards: list[dict[str, Any]] | None = None,
+        media: list[dict[str, Any]] | None = None,
         circle_id: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -1047,6 +1052,7 @@ class CommunityService:
             content=content,
             tags=tags or [],
             skill_tags=skill_tags or [],
+            media_json=_normalize_media(media),
             reference_cards=_normalize_reference_cards(
                 reference_cards, author_hasn_id=author_hasn_id
             ),
@@ -1193,6 +1199,7 @@ class CommunityService:
                 'author': _build_author(post.author_type, post.author_hasn_id, row),
                 'content': post.content,
                 'tags': post.tags or [],
+                'media': _present_media(post.media_json),
                 'reference_cards': _present_reference_cards(
                     post.reference_cards, hasn_id
                 ),
@@ -1241,8 +1248,8 @@ class CommunityService:
         from datetime import datetime as _dt
         from datetime import timezone as _dt_timezone
 
-        _floor = _dt(1970, 1, 1, tzinfo=_dt_timezone.utc)
-        merged.sort(key=lambda pair: pair[0] or _floor, reverse=True)
+        floor = _dt(1970, 1, 1, tzinfo=_dt_timezone.utc)
+        merged.sort(key=lambda pair: pair[0] or floor, reverse=True)
         items = [item for _, item in merged[:limit]]
 
         await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
@@ -1436,6 +1443,7 @@ class CommunityService:
             'author': author_info,
             'content': post.content,
             'tags': post.tags or [],
+            'media': _present_media(post.media_json),
             'reference_cards': _present_reference_cards(
                 post.reference_cards, viewer_hasn_id
             ),
@@ -2300,6 +2308,7 @@ class CommunityService:
                 'author': author_info,
                 'content': post.content,
                 'tags': post.tags or [],
+                'media': _present_media(post.media_json),
                 'like_count': post.like_count,
                 'comment_count': post.comment_count,
                 'published_time': post.published_time.isoformat() if post.published_time else None,
@@ -3436,6 +3445,7 @@ class CommunityService:
                 },
                 'content': post.content,
                 'tags': post.tags or [],
+                'media': _present_media(post.media_json),
                 'like_count': post.like_count,
                 'comment_count': post.comment_count,
                 'published_time': post.created_time.isoformat() if post.created_time else None,

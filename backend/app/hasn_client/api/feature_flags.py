@@ -36,7 +36,7 @@ from backend.common.response.response_schema import (
     response_base,
 )
 from backend.common.schema import SchemaBase
-from backend.database.db import CurrentSession  # noqa: TC001 — FastAPI runtime Depends
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 

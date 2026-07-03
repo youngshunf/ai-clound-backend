@@ -81,7 +81,7 @@ async def env():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -106,7 +106,7 @@ async def env():
     # 当前注入哪个 user_id（测试用例切换以模拟 owner_a / owner_b 视角）。
     current = {'user_id': user_a}
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=current['user_id'])
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'

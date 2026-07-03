@@ -112,7 +112,6 @@ class GrowthNotificationService:
             dedupe_key=f'growth.deal.closed:{opportunity_id}',
         )
 
-
     # ---------- M6：系统/渠道事件驱动（无 agent 同步上下文） ----------
 
     @staticmethod

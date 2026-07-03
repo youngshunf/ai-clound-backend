@@ -122,7 +122,6 @@ async def e2e():
             agent_name='agent',
             owner_hasn_id=ident.owner_hasn_id,
             owner_user_id=owner1_uid,
-            scopes=['agent'],
             session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1),
         )

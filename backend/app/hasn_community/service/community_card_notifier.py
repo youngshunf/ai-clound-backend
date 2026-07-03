@@ -141,7 +141,7 @@ async def notify_owner_resource_card(
             )
         if result.get('error'):
             log.warning(f'社区发布知情卡投递失败（best-effort）：{result.get("message")}')
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(f'社区发布知情卡投递异常（best-effort，不影响发帖）：{exc!r}')
 
 

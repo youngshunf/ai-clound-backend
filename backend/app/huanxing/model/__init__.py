@@ -7,7 +7,7 @@
 # 2026-06-15 补迁入 billing（落 hasn_billing schema），此处一并改为从 billing 重导出。
 from backend.app.billing.model.pay_app import PayApp as PayApp
 from backend.app.billing.model.pay_channel import PayChannel as PayChannel
-from backend.app.billing.model.pay_order import PayOrder as PayOrder
-from backend.app.billing.model.pay_notify_log import PayNotifyLog as PayNotifyLog
-from backend.app.billing.model.pay_refund import PayRefund as PayRefund
 from backend.app.billing.model.pay_contract import PayContract as PayContract
+from backend.app.billing.model.pay_notify_log import PayNotifyLog as PayNotifyLog
+from backend.app.billing.model.pay_order import PayOrder as PayOrder
+from backend.app.billing.model.pay_refund import PayRefund as PayRefund

@@ -1,10 +1,12 @@
 """StreamableHTTP MCP authentication contract tests."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from types import TracebackType
 import sys
 import types
+
+from datetime import datetime, timedelta, timezone
+from types import TracebackType
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -97,7 +99,7 @@ async def test_streamable_rejects_revoked_agent_jwt_before_agent_lookup(
     install_mcp_sdk_stub(monkeypatch)
     from backend.app.mcp.streamable import HasnMcpStreamableServer
 
-    async def reject_revoked_token(_token: str):
+    async def reject_revoked_token(_token: str) -> NoReturn:
         raise errors.TokenError(msg="Agent Token 已过期或已被吊销")
 
     monkeypatch.setattr(

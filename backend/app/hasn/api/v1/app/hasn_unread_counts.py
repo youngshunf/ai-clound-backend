@@ -31,7 +31,6 @@ async def get_my_hasn_unread_countss(
     request: Request,
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetHasnUnreadCountsDetail]]:
-    user_id = request.user.id
     page_data = await hasn_unread_counts_service.get_list(db=db)
     return response_base.success(data=page_data)
 
@@ -46,7 +45,6 @@ async def create_my_hasn_unread_counts(
     db: CurrentSessionTransaction,
     obj: CreateHasnUnreadCountsParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_unread_counts_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 

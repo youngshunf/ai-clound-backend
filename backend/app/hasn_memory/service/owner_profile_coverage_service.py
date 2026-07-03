@@ -131,7 +131,7 @@ class OwnerProfileCoverageService:
                     owner_id=owner_id,
                     dimension=dim,
                     status='missing',
-                    confidence=Decimal('0'),
+                    confidence=Decimal(0),
                     summary=None,
                     missing_hint=self._empty_dimension(dim)['missing_hint'],
                     evidence_version=version,
@@ -189,15 +189,15 @@ class OwnerProfileCoverageService:
     def _coerce_item(dimension: str, item: Any) -> tuple[str, Decimal, str | None, str | None]:
         """把 LLM 单维度输出收敛为合法 (status, confidence, summary, missing_hint)。"""
         if not isinstance(item, dict):
-            return 'missing', Decimal('0'), None, None
+            return 'missing', Decimal(0), None, None
         status = str(item.get('status') or '').strip().lower()
         if status not in _VALID_STATUS:
             status = 'missing'
         try:
             conf = Decimal(str(item.get('confidence', 0)))
         except (ValueError, ArithmeticError):
-            conf = Decimal('0')
-        conf = max(Decimal('0'), min(Decimal('1'), conf))
+            conf = Decimal(0)
+        conf = max(Decimal(0), min(Decimal(1), conf))
         summary = (str(item.get('summary')).strip() or None) if item.get('summary') else None
         missing_hint = (str(item.get('missing_hint')).strip() or None) if item.get('missing_hint') else None
         return status, conf, summary, missing_hint

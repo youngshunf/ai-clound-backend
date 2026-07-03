@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path
 
 from backend.app.hasn.schema.hasn_unread_counts import (
     CreateHasnUnreadCountsParam,

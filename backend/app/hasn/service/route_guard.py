@@ -4,12 +4,12 @@ HASN 守门人核心服务 — 消息权限拦截
 """
 import json
 
-from sqlalchemy import select, or_, and_
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_contacts import HasnContacts
-from backend.database.redis import redis_client
 from backend.common.log import log
+from backend.database.redis import redis_client
 
 
 class RouteGuardService:

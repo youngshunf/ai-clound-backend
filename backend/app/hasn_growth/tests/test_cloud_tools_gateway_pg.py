@@ -88,7 +88,6 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
             agent_name=f'agent_{tag}',
             owner_hasn_id=owner,
             owner_user_id=owner_uid,
-            scopes=scopes,
             session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
@@ -258,7 +257,6 @@ async def test_collect_start_enqueues_run_job_on_commit(monkeypatch: pytest.Monk
             agent_name=f'agent_{tag}',
             owner_hasn_id=f'h_cs_{tag}',
             owner_user_id=owner_uid,
-            scopes=['agent', 'growth:collect'],
             session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )

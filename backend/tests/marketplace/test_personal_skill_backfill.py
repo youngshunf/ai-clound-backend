@@ -40,7 +40,7 @@ async def db_session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     session = async_sessionmaker(engine, expire_on_commit=False)()
@@ -52,7 +52,7 @@ async def db_session():
         await engine.dispose()
 
 
-async def _cleanup(session, skill_id, user_id, slug):
+async def _cleanup(session, skill_id, user_id, slug) -> None:
     await session.execute(delete(MarketplaceSkillVersion).where(MarketplaceSkillVersion.skill_id == skill_id))
     await session.execute(delete(MarketplaceSkill).where(MarketplaceSkill.skill_id == skill_id))
     await session.execute(
@@ -64,7 +64,7 @@ async def _cleanup(session, skill_id, user_id, slug):
 
 
 @pytest.mark.asyncio
-async def test_backfill_maps_user_skill_into_personal_skill(db_session):
+async def test_backfill_maps_user_skill_into_personal_skill(db_session) -> None:
     tag = uuid.uuid4().hex[:8]
     user_id = 990000 + (int(tag, 16) % 100000)
     slug = f'pskill-{tag}'
@@ -118,7 +118,7 @@ async def test_backfill_maps_user_skill_into_personal_skill(db_session):
 
 
 @pytest.mark.asyncio
-async def test_backfill_skips_non_user_skills(db_session):
+async def test_backfill_skips_non_user_skills(db_session) -> None:
     tag = uuid.uuid4().hex[:8]
     user_id = 880000 + (int(tag, 16) % 100000)
     slug = f'ghskill-{tag}'

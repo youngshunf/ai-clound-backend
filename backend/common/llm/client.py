@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+
 from typing import Any
 
 import httpx
@@ -277,9 +278,7 @@ class LLMChatClient:
                 continue
             if chunk.get('usage'):
                 usage = chunk['usage']
-            for choice in chunk.get('choices') or []:
-                if isinstance(choice, dict):
-                    choices.append(choice)
+            choices.extend(choice for choice in chunk.get('choices') or [] if isinstance(choice, dict))
         return {'choices': choices, 'usage': usage}
 
     @staticmethod

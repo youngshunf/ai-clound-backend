@@ -32,7 +32,9 @@ class AgentTokenInfo(SchemaBase):
     agent_hasn_id: str = Field(description='Agent HASN ID')
     agent_name: str = Field(description='Agent 显示名')
     access_token: str = Field(description='Agent JWT')
-    scopes: list[str] = Field(description='Agent 权限列表')
+    # 已退役：JWT 不再携带 scopes claim、授权只看三态（实施102 S0）。恒空列表，
+    # 仅为兼容旧 daemon 的必填反序列化字段保留（daemon Rust 侧已改 serde default）。
+    scopes: list[str] = Field(default_factory=list, description='已退役占位（恒空），授权走三态 capability_modes')
     expire_time: str | None = Field(default=None, description='Token 过期时间 ISO8601 格式')
     expires_at_unix: int | None = Field(default=None, description='Token 过期 Unix 时间戳')
 
@@ -109,7 +111,9 @@ class AgentSummary(SchemaBase):
     display_name: str | None = Field(default=None, description='默认 Agent 显示名称')
     # Agent JWT 认证信息
     access_token: str = Field(description='Agent JWT access token')
-    scopes: list[str] = Field(description='Agent 权限列表')
+    # 已退役：JWT 不再携带 scopes claim、授权只看三态（实施102 S0）。恒空列表，
+    # 仅为兼容旧 daemon 的必填反序列化字段保留（daemon Rust 侧已改 serde default）。
+    scopes: list[str] = Field(default_factory=list, description='已退役占位（恒空），授权走三态 capability_modes')
     expire_time: str = Field(description='Token 过期时间 ISO8601 格式')
 
 

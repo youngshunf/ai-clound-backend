@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from pydantic import ValidationError
 
 from backend.app.hasn.schema.hasn_card_message import CardMessageBody, validate_card_message_body

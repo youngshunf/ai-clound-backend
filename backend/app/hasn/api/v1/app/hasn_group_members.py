@@ -31,7 +31,6 @@ async def get_my_hasn_group_memberss(
     request: Request,
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetHasnGroupMembersDetail]]:
-    user_id = request.user.id
     page_data = await hasn_group_members_service.get_list(db=db)
     return response_base.success(data=page_data)
 
@@ -46,7 +45,6 @@ async def create_my_hasn_group_members(
     db: CurrentSessionTransaction,
     obj: CreateHasnGroupMembersParam,
 ) -> ResponseModel:
-    user_id = request.user.id
     result = await hasn_group_members_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 

@@ -6,8 +6,8 @@ from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
 
-
 # ========== 映射表基础 CRUD Schema ==========
+
 
 class LlmNewapiUserMappingSchemaBase(SchemaBase):
     """唤星用户与 new-api 用户映射基础模型"""

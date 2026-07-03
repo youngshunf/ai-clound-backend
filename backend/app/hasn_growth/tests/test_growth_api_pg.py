@@ -63,7 +63,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -98,7 +98,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
         payload = AgentTokenPayload(
             agent_hasn_id=agent_hasn, agent_name=f'agent_{tag}', owner_hasn_id=owner,
-            owner_user_id=state.owner_uid, scopes=state.scopes, session_uuid=f'sess_{tag}',
+            owner_user_id=state.owner_uid, session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
         request.state.agent = payload

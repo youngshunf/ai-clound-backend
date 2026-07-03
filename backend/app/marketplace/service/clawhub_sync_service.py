@@ -26,6 +26,7 @@ from backend.app.marketplace.schema.marketplace_sync_log import (
     UpdateMarketplaceSyncLogParam,
 )
 from backend.app.marketplace.service.category_taxonomy import normalize_category
+
 # 复用 github_sync 已验证的元数据变更门控（同构、零行为差异），避免每轮全量重译元数据。
 from backend.app.marketplace.service.github_sync_service import (
     metadata_unchanged,
@@ -537,9 +538,7 @@ class ClawHubSyncService:
             except Exception as e:
                 log.warning(f"[clawhub] 批量元数据翻译失败，回退逐条翻译：{e}")
                 results = [None] * len(pending_items)
-            for slug, result in zip(pending_slugs, results):
-                if slug and result:
-                    prepared[slug] = result
+            prepared.update({slug: result for slug, result in zip(pending_slugs, results) if slug and result})
 
         log.info(
             f"[clawhub] 元数据：{len(pending_items)} 需译 / "

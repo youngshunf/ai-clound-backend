@@ -31,7 +31,7 @@ async def session():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -44,7 +44,7 @@ async def session():
         await engine.dispose()
 
 
-async def test_resolve_prefers_public_storage(session):
+async def test_resolve_prefers_public_storage(session) -> None:
     """未指定 storage_id → 解析到 access='public' 的桶（而非默认私有桶）。"""
     tag = uuid.uuid4().hex[:8]
     session.add(S3Storage(name=f'priv-{tag}', access='private', bucket=f'b-priv-{tag}'))
@@ -58,7 +58,7 @@ async def test_resolve_prefers_public_storage(session):
     assert row.access == 'public'
 
 
-async def test_resolve_passthrough_explicit_id(session):
+async def test_resolve_passthrough_explicit_id(session) -> None:
     """显式给 storage_id → 原样返回（不覆盖调用方意图，如包文件仍可落私有桶）。"""
     resolved = await marketplace_storage_service._resolve_public_storage_id(session, 987654)
     assert resolved == 987654

@@ -15,7 +15,7 @@ design.rs `capability_scopes()` 须与之对齐——同 reel/film 的跨仓零�
 - 代码生成（codegen plan/submit/assemble）落 `design:codegen`（出厂 Allow，确定性出码）。
 
 注：design 是**本地 sidecar 工具**（execution_mode=local_tool，工具在本地 hasn-mcp 注册，云端 tools[] 置空），
-分身经 daemon 三态闸门调用——故 scope **进** DEFAULT_AGENT_SCOPES（同 reel/film，区别于 cloud-brokered 的 studio）。
+分身经 daemon 三态闸门调用——故 scope 登记进 platform_scopes 展示词表（同 reel/film，区别于 cloud-brokered 的 studio）。授权走三态 capability_modes，JWT scopes 已退役（实施102 S0）。
 """
 
 from __future__ import annotations

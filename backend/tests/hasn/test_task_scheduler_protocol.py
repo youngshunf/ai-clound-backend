@@ -5,19 +5,20 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.agent import hasn_task_run as agent_task_run_api
-from backend.app.hasn_task.schema.skill_bundle import CreateHasnSkillBundleParam
 from backend.app.hasn.schema.hasn_task import CreateHasnTaskParam
 from backend.app.hasn.service import task_scheduler as task_scheduler_module
 from backend.app.hasn.service.task_scheduler import TaskSchedulerService
-from backend.core.conf import settings
+from backend.app.hasn_task.schema.skill_bundle import CreateHasnSkillBundleParam
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
+from backend.core.conf import settings
 from backend.database.db import get_db, get_db_transaction
 
 
@@ -49,7 +50,7 @@ class FakeResult:
     def __init__(self, value: Any) -> None:
         self.value = value
 
-    def scalars(self) -> 'FakeResult':
+    def scalars(self) -> FakeResult:
         return self
 
     def first(self) -> Any:
@@ -63,7 +64,7 @@ class FakeScalarsResult:
     def __init__(self, values: list[Any]) -> None:
         self.values = values
 
-    def scalars(self) -> 'FakeScalarsResult':
+    def scalars(self) -> FakeScalarsResult:
         return self
 
     def all(self) -> list[Any]:
@@ -98,9 +99,9 @@ def agent_api_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     register_exception(app)
     app.include_router(agent_task_run_api.router, prefix='/api/v1/hasn/agent/hasn/task/runs')
 
-    async def fake_agent_auth(request: Request):
+    async def fake_agent_auth(request: Request) -> None:
         request.state.agent = SimpleNamespace(agent_hasn_id='a_agent')
-        return None
+        return
 
     async def fake_db() -> FakeDbSession:
         return FakeDbSession()
@@ -334,13 +335,13 @@ async def test_scheduler_dispatch_result_roundtrip_is_readable_from_app_task_run
         prefix='/api/v1/hasn-task/app',
     )
 
-    async def fake_agent_auth(request: Request):
+    async def fake_agent_auth(request: Request) -> None:
         request.state.agent = SimpleNamespace(agent_hasn_id='a_agent')
-        return None
+        return
 
-    async def fake_user_auth(request: Request):
+    async def fake_user_auth(request: Request) -> None:
         request.scope['user'] = SimpleNamespace(id=7, hasn_id='h_owner')
-        return None
+        return
 
     async def fake_db() -> FakeDbSession:
         return FakeDbSession()
@@ -497,9 +498,9 @@ def test_app_task_create_overrides_owner_from_authenticated_user(
 
     captured: dict[str, Any] = {}
 
-    async def fake_agent_auth(request: Request):
+    async def fake_agent_auth(request: Request) -> None:
         request.scope['user'] = SimpleNamespace(id=7)
-        return None
+        return
 
     async def fake_db() -> FakeDbSession:
         return FakeDbSession([FakeResult(SimpleNamespace(hasn_id='h_owner'))])
@@ -549,9 +550,9 @@ def test_app_task_detail_rejects_foreign_owner(
     register_exception(fastapi_app)
     fastapi_app.include_router(module.router, prefix='/api/v1/hasn-task/app')
 
-    async def fake_agent_auth(request: Request):
+    async def fake_agent_auth(request: Request) -> None:
         request.scope['user'] = SimpleNamespace(id=7)
-        return None
+        return
 
     async def fake_db() -> FakeDbSession:
         return FakeDbSession([FakeResult(SimpleNamespace(hasn_id='h_owner'))])
@@ -583,9 +584,9 @@ def test_app_task_run_detail_rejects_foreign_task_owner(
     register_exception(fastapi_app)
     fastapi_app.include_router(module.router, prefix='/api/v1/hasn-task/app')
 
-    async def fake_agent_auth(request: Request):
+    async def fake_agent_auth(request: Request) -> None:
         request.scope['user'] = SimpleNamespace(id=7)
-        return None
+        return
 
     async def fake_db() -> FakeDbSession:
         return FakeDbSession([FakeResult(SimpleNamespace(hasn_id='h_owner'))])

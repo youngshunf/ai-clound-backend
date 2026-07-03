@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from copy import deepcopy
 
 from jinja2 import Environment, FileSystemLoader, Template
 from pydantic.alias_generators import to_pascal

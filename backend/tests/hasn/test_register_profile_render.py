@@ -7,15 +7,15 @@ from __future__ import annotations
 
 from backend.app.hasn.service.hasn_auth import _format_created_at, _render_profile_vars
 
-_CTX = dict(
-    owner_nickname='福仔',
-    owner_id='h_owner_1',
-    display_name='星诺',
-    agent_name='assistant',
-    star_id='100001#assistant',
-    agent_id='a_abc',
-    created_at='2026-06-02',
-)
+_CTX = {
+    'owner_nickname': '福仔',
+    'owner_id': 'h_owner_1',
+    'display_name': '星诺',
+    'agent_name': 'assistant',
+    'star_id': '100001#assistant',
+    'agent_id': 'a_abc',
+    'created_at': '2026-06-02',
+}
 
 
 def test_render_replaces_all_known_placeholders() -> None:

@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-import httpx
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
@@ -170,8 +169,6 @@ class CapturingProvisioningService:
         return
 
 
-
-
 # RF-CLOUD：删除数据面单测后，RagFlow 数据面测试桩（CapturingRAGFlowClient /
 # ExpiringRAGFlowClient / RefreshingProvisioningService / _ragflow_service /
 # _seed_active_ragflow_workspace）已随之移除——云端不再直连 RagFlow 数据面。
@@ -201,7 +198,7 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     # 无 hasn_humans 表 → 桩为稳定映射 f'h_{user_id}'，使 get/switch/fallback 可在 SQLite 跑通。
     import backend.app.hasn.service.app_catalog_service as catalog_mod
 
-    async def _stub_resolve_owner_hasn_id(_db, *, user_id):  # noqa: RUF029
+    async def _stub_resolve_owner_hasn_id(_db, *, user_id) -> str:  # noqa: RUF029
         return f'h_{user_id}'
 
     monkeypatch.setattr(catalog_mod, 'resolve_owner_hasn_id', _stub_resolve_owner_hasn_id, raising=True)
@@ -210,6 +207,7 @@ async def db_session(monkeypatch) -> AsyncGenerator[AsyncSession, None]:
     # 编排单测（无 hasn_app_catalog 表），故把 catalog 存在性/准入桩为「注册 app 即免费可挂载」；
     # 准入闸门真实行为见 test_app_catalog_access.py（真实 PG）。
     import backend.app.hasn.service.app_catalog_service as catalog_mod
+
     from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 
     async def _stub_get_published_catalog(_db, *, app_id):  # noqa: RUF029
@@ -249,8 +247,6 @@ def _service(enterprise_bus: CapturingBus | None = None, app_bus: CapturingBus |
         enterprise_bus=enterprise_bus or CapturingBus(),
         app_bus=app_bus or CapturingBus(),
     )
-
-
 
 
 @pytest.mark.asyncio

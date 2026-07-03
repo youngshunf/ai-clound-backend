@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn.model import HasnSessionArtifacts
-from backend.app.hasn.schema.hasn_session_artifacts import CreateHasnSessionArtifactsParam, UpdateHasnSessionArtifactsParam
+from backend.app.hasn.schema.hasn_session_artifacts import (
+    CreateHasnSessionArtifactsParam,
+    UpdateHasnSessionArtifactsParam,
+)
 
 
 class CRUDHasnSessionArtifacts(CRUDPlus[HasnSessionArtifacts]):

@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_sync_inbox_events import hasn_sync_inbox_events_dao
 from backend.app.hasn.model import HasnSyncInboxEvents
-from backend.app.hasn.schema.hasn_sync_inbox_events import CreateHasnSyncInboxEventsParam, DeleteHasnSyncInboxEventsParam, UpdateHasnSyncInboxEventsParam
+from backend.app.hasn.schema.hasn_sync_inbox_events import (
+    CreateHasnSyncInboxEventsParam,
+    DeleteHasnSyncInboxEventsParam,
+    UpdateHasnSyncInboxEventsParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

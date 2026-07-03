@@ -20,15 +20,15 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
-from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_200_OK
+from starlette.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED
 
 from backend.app.api.v1.auth import jwt_revocation as jwt_revocation_module
 from backend.app.api.v1.auth import logout as logout_module
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import get_db_transaction
-
 
 FAKE_USER_ID = 42
 FAKE_SESSION_UUID = 'sess-b2-42-abcdef'
@@ -67,7 +67,7 @@ def test_env(monkeypatch):
             expire_time=datetime.now(tz=timezone.utc) + timedelta(hours=1),
         )
 
-    async def fake_revoke_jwt(db, *, jti, user_id, expires_at=None):
+    async def fake_revoke_jwt(db, *, jti, user_id, expires_at=None) -> None:
         # 幂等: 已在就直接返回 (与真实实现一致)
         if jti in revocations:
             return
@@ -100,7 +100,7 @@ def test_env(monkeypatch):
     return SimpleNamespace(app=app, revocations=revocations)
 
 
-def test_dummy_endpoint_passes_when_not_revoked(test_env):
+def test_dummy_endpoint_passes_when_not_revoked(test_env) -> None:
     """登录态 + 未吊销 → 受保护端点 200."""
     with TestClient(test_env.app) as client:
         resp = client.get(
@@ -111,7 +111,7 @@ def test_dummy_endpoint_passes_when_not_revoked(test_env):
     assert resp.json() == {'ok': True}
 
 
-def test_logout_writes_revocation_record(test_env):
+def test_logout_writes_revocation_record(test_env) -> None:
     """POST /api/v1/auth/logout → 200 + in-memory revocations 多一条."""
     with TestClient(test_env.app) as client:
         resp = client.post(
@@ -130,7 +130,7 @@ def test_logout_writes_revocation_record(test_env):
     assert row['revoked_at'] is not None
 
 
-def test_logout_then_same_jwt_returns_401(test_env):
+def test_logout_then_same_jwt_returns_401(test_env) -> None:
     """登录 → logout → 用同一 JWT 调任意受保护端点 → 401 (acceptance 核心断言)."""
     with TestClient(test_env.app) as client:
         logout_resp = client.post(
@@ -146,7 +146,7 @@ def test_logout_then_same_jwt_returns_401(test_env):
     assert probe_resp.status_code == HTTP_401_UNAUTHORIZED, probe_resp.text
 
 
-def test_logout_is_idempotent(test_env):
+def test_logout_is_idempotent(test_env) -> None:
     """重复 logout 不报错, 吊销表仅一条记录."""
     with TestClient(test_env.app) as client:
         r1 = client.post('/api/v1/auth/logout', headers={'Authorization': f'Bearer {FAKE_TOKEN}'})
@@ -156,7 +156,7 @@ def test_logout_is_idempotent(test_env):
     assert len(test_env.revocations) == 1
 
 
-def test_logout_without_bearer_returns_401(test_env):
+def test_logout_without_bearer_returns_401(test_env) -> None:
     """未携带 Authorization → 401 (JWT 中间件直接拒)."""
     with TestClient(test_env.app) as client:
         resp = client.post('/api/v1/auth/logout')

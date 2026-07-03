@@ -6,9 +6,9 @@
 2. 用户目录 ~/.fba/config.yaml
 """
 import os
+
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -24,7 +24,7 @@ class RemoteConfig:
 class CliConfig:
     """CLI 配置"""
     remote: RemoteConfig | None = None
-    
+
     @classmethod
     def load(cls) -> 'CliConfig':
         """加载配置文件"""
@@ -34,30 +34,30 @@ class CliConfig:
             Path.home() / '.fba' / 'config.yaml',
             Path.home() / '.fba' / 'config.yml',
         ]
-        
+
         for config_path in config_paths:
             if config_path.exists():
                 return cls._load_from_file(config_path)
-        
+
         return cls()
-    
+
     @classmethod
     def _load_from_file(cls, path: Path) -> 'CliConfig':
         """从文件加载配置"""
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
-            
+
             remote_data = data.get('remote', {})
             remote_config = RemoteConfig(
                 api_url=remote_data.get('api_url'),
                 api_key=remote_data.get('api_key'),
             ) if remote_data else None
-            
+
             return cls(remote=remote_config)
         except Exception:
             return cls()
-    
+
     def get_remote_url(self) -> str | None:
         """获取远程 API URL"""
         # 优先使用环境变量
@@ -65,7 +65,7 @@ class CliConfig:
         if env_url:
             return env_url
         return self.remote.api_url if self.remote else None
-    
+
     def get_remote_key(self) -> str | None:
         """获取远程 API Key"""
         # 优先使用环境变量

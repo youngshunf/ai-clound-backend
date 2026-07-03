@@ -90,7 +90,6 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
             agent_name=f'sales_advisor_{tag}',
             owner_hasn_id=owner,
             owner_user_id=owner_uid,
-            scopes=scopes,
             session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )

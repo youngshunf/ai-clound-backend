@@ -29,7 +29,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.hasn_publish.api.v1.open.hosting import _content_csp, _share_origin, router as hosting_router
+from backend.app.hasn_publish.api.v1.open.hosting import _content_csp, _share_origin
+from backend.app.hasn_publish.api.v1.open.hosting import router as hosting_router
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db
 
@@ -217,7 +218,7 @@ async def test_content_streams_real_artifact_with_csp(host: SimpleNamespace) -> 
         ref = await storage_service.upload(
             host.session, html, category='published_artifact', filename='page.html', content_type='text/html'
         )
-    except Exception as exc:  # noqa: BLE001 私有桶不可达（无网络/凭据）→ 零 fake skip
+    except Exception as exc:
         pytest.skip(f'私有桶不可达，跳过真实 content 流式: {exc!r}')
 
     asset = await hasn_asset_service.register_asset(

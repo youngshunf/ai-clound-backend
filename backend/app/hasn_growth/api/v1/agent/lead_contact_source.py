@@ -12,13 +12,14 @@ from backend.app.hasn_growth.schema.lead_contact_source import (
     UpdateLeadContactSourceParam,
 )
 from backend.app.hasn_growth.service.lead_contact_source_service import lead_contact_source_service
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+
 
 @router.get(
     '',
@@ -28,11 +29,10 @@ router = APIRouter()
 async def agent_list_lead_contact_sources(
     db: CurrentSession,
     request: Request) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
 
-    user_id = agent.owner_user_id
     data = await lead_contact_source_service.get_list(db=db)
     return response_base.success(data=data)
+
 
 @router.post(
     '',
@@ -43,11 +43,10 @@ async def agent_create_lead_contact_source(
     db: CurrentSessionTransaction,
     request: Request,
     obj: CreateLeadContactSourceParam) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
 
-    user_id = agent.owner_user_id
     result = await lead_contact_source_service.create(db=db, obj=obj)
     return response_base.success(data=result)
+
 
 @router.get(
     '/{pk}',
@@ -65,6 +64,7 @@ async def agent_get_lead_contact_source(
     if lead_contact_source.user_id != user_id:
         raise errors.ForbiddenError(msg='无权访问该Lead multi-source evidence')
     return response_base.success(data=lead_contact_source)
+
 
 @router.put(
     '/{pk}',
@@ -86,6 +86,7 @@ async def agent_update_lead_contact_source(
     if count > 0:
         return response_base.success()
     return response_base.fail()
+
 
 @router.delete(
     '/{pk}',

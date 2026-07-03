@@ -40,4 +40,13 @@ PLAN_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'default_mode': 'ask',
         'description': '以 Agent 身份把待办/计划委托给分身经工作会话真执行（出厂 Ask，主人确认后派）',
     },
+    'plan:manage': {
+        'label_zh': '管理企业会议协同',
+        'domain': 'plan',
+        'risk': 'medium',
+        'description': (
+            '以 Agent 身份管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP'
+            '（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）'
+        ),
+    },
 }

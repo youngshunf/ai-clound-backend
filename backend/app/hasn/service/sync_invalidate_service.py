@@ -61,7 +61,30 @@ KIND_AGENTS = 'agents'
 # sync_pull（拉 owner 各记忆命名空间：portraits/facts/…）落本地镜像。离线设备靠登录/重连
 # 的 pull_once 兜底追平。
 KIND_MEMORY = 'memory'
-OWNER_KINDS = (KIND_TASKS, KIND_PLAN, KIND_SUPPRESSED, KIND_AGENTS, KIND_MEMORY)
+# owner 定向：该 owner 名下社区内容变更（LFRT 刀4，实施/90 §2.1）——分身经云端面
+# （平台 MCP 工具 / Agent REST 共用的 community_tool_handlers）发帖/发文/评论/互动后 bump，
+# daemon 收到即 nudge webui 重拉社区视图（local_first 热路径回镜像 + 机会刷新拉云端，
+# 镜像变化再推第二次失效收敛）。治「分身发完帖，主人这边 feed/我的帖子迟迟不出现」。
+KIND_COMMUNITY = 'community'
+# owner 定向：该 owner 的演示文稿变更（LFRT 刀4，同上）——分身经云端 deck 平台工具
+# 建 deck/写页/改页后 bump，daemon 收到即 nudge webui 重拉 deck 列表/详情（读走
+# read-through 合并引擎，refetch 即拉到云端最新）。治「PPT 做完打开空白/不出现」。
+KIND_DECKS = 'decks'
+# owner 定向：该 owner 名下任一 Agent 的三态授权（hasn_agent_scopes.{default_mode,capability_modes}）
+# 变更（实施102 S4·U-L4）——主人权限页改三态 / 审批「总是允许」写穿后 bump，daemon 收到即刷新
+# 该 owner 名下 Agent 的 CapabilityModeMirror（本地镜像与云端权威对齐），治「设备 A 改了三态、
+# 设备 B 镜像不更新」。离线设备靠重连握手 sync_pull 兜底。
+KIND_SCOPES = 'scopes'
+OWNER_KINDS = (
+    KIND_TASKS,
+    KIND_PLAN,
+    KIND_SUPPRESSED,
+    KIND_AGENTS,
+    KIND_MEMORY,
+    KIND_COMMUNITY,
+    KIND_DECKS,
+    KIND_SCOPES,
+)
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
 # 某 owner 规划数据为空时的稳定指纹（同上约定）
@@ -70,6 +93,12 @@ EMPTY_PLAN_REVISION = 'empty'
 EMPTY_SUPPRESSED_REVISION = 'empty'
 # 某 owner 名下无 Agent 时的稳定指纹（同上约定）
 EMPTY_AGENTS_REVISION = 'empty'
+# 某 owner 名下无社区内容时的稳定指纹（同上约定）
+EMPTY_COMMUNITY_REVISION = 'empty'
+# 某 owner 名下无 deck 时的稳定指纹（同上约定）
+EMPTY_DECKS_REVISION = 'empty'
+# 某 owner 名下无 Agent 三态授权行时的稳定指纹（同上约定）
+EMPTY_SCOPES_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -202,6 +231,73 @@ async def compute_owner_agents_revision(db: AsyncSession, owner_id: str) -> str:
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
+async def compute_owner_scopes_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 名下 Agent 三态授权指纹：sha256(sorted "agent_hasn_id@updated_time" 行)[:16]。
+
+    聚合该 owner 名下全部 Agent 的 ``hasn_agent_scopes`` 行。任一 Agent 的 ``default_mode`` /
+    ``capability_modes`` 被写（权限页改三态 / 审批「总是允许」写穿都会 ``UPDATE ... updated_time=NOW()``）
+    或增删行 → 集合内某行的 ``updated_time`` 变 → 整体指纹变。仅作 invalidate 帧的 ``revision``
+    字段：daemon 不据此去重、收到即刷新该 owner 名下 Agent 的 CapabilityModeMirror（本地镜像与
+    云端权威对齐）。owner 隔离按 ``owner_hasn_id`` 列。
+    """
+    rows = (
+        await db.execute(
+            sa.text(
+                """
+                SELECT agent_hasn_id, updated_time
+                FROM hasn_agent_scopes
+                WHERE owner_hasn_id = :owner_id
+                """
+            ),
+            {'owner_id': owner_id},
+        )
+    ).all()
+    lines = sorted(f'{agent_hasn_id}@{updated_time}' for agent_hasn_id, updated_time in rows if agent_hasn_id)
+    if not lines:
+        return EMPTY_SCOPES_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_community_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的社区内容指纹：sha256(sorted "post:{id}@{updated}" ∪ "article:{id}@{updated}")[:16]。
+
+    聚合该 owner 责任主体（``owner_hasn_id``——本人发帖 = 本人，分身发帖 = 主人）名下的
+    帖子与文章行，任一被建/改（含审核状态迁移落 ``updated_time``）→ 集合内某行指纹变 →
+    整体指纹变。评论/点赞等互动不进指纹——仅作 invalidate 帧的 ``revision`` 字段，daemon
+    不据此去重、收到即 nudge webui 重拉，弱指纹不损正确性。
+    """
+    from backend.app.hasn_community.model import HasnArticles, HasnPosts
+
+    lines: list[str] = []
+    for label, model, id_col in (
+        ('post', HasnPosts, HasnPosts.post_id),
+        ('article', HasnArticles, HasnArticles.article_id),
+    ):
+        rows = (await db.execute(sa.select(id_col, model.updated_time).where(model.owner_hasn_id == owner_id))).all()
+        lines.extend(f'{label}:{row_id}@{updated.isoformat() if updated else ""}' for row_id, updated in rows)
+    if not lines:
+        return EMPTY_COMMUNITY_REVISION
+    return hashlib.sha256('\n'.join(sorted(lines)).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_decks_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的 deck 指纹：sha256(sorted "deck:{id}@{rev}" 行)[:16]。
+
+    ``rev`` 是 deck 的服务端单调版本（乐观并发 + 同步水位），任一 deck 被建/改（含写页/
+    改大纲——service 写点均 bump ``rev``）或软删落出集合 → 整体指纹变。仅作 invalidate 帧
+    的 ``revision`` 字段：daemon 不据此去重、收到即 nudge webui 重拉。
+    """
+    from backend.app.hasn_deck.model.deck import Deck
+
+    rows = (
+        await db.execute(sa.select(Deck.id, Deck.rev).where(Deck.owner_id == owner_id, Deck.deleted_time.is_(None)))
+    ).all()
+    lines = sorted(f'deck:{deck_id}@{rev}' for deck_id, rev in rows)
+    if not lines:
+        return EMPTY_DECKS_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
 async def compute_owner_memory_revision(db: AsyncSession, owner_id: str) -> str:
     """某 owner 记忆命名空间指纹：sha256(sorted "namespace@revision" 行)[:16]。
 
@@ -285,6 +381,17 @@ async def bump(kind: str, db: AsyncSession, *, owner_id: str | None = None) -> s
     if kind not in KINDS:
         raise ValueError(f'unknown sync kind: {kind}')
     rev = await _compute_revision(kind, db)
+
+    # 公共技能写点 → 即时触发共享目录 reconcile（doc11 §6 B3；beat 每 20 分钟另有兜底）。
+    # best-effort：celery broker 不可用绝不拖垮写点主流程（下轮 beat 自会追平）。
+    if kind == KIND_COMMON_SKILLS:
+        try:
+            from backend.app.marketplace.tasks import marketplace_shared_skills_reconcile
+
+            marketplace_shared_skills_reconcile.delay()
+        except Exception as exc:
+            logger.warning('[sync] enqueue shared skills reconcile failed (non-fatal): %s', exc)
+
     try:
         await redis_client.set(f'{REV_PREFIX}:{kind}', rev, ex=REV_TTL_SECS)
     except Exception as exc:
@@ -329,6 +436,12 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_agents_revision(db, owner_id)
     elif kind == KIND_MEMORY:
         rev = await compute_owner_memory_revision(db, owner_id)
+    elif kind == KIND_COMMUNITY:
+        rev = await compute_owner_community_revision(db, owner_id)
+    elif kind == KIND_DECKS:
+        rev = await compute_owner_decks_revision(db, owner_id)
+    elif kind == KIND_SCOPES:
+        rev = await compute_owner_scopes_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 

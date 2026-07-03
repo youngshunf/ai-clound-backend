@@ -1,7 +1,5 @@
 from fastapi import APIRouter
 
-from backend.core.conf import settings
-
 # --- admin/ 管理端（JWT + RBAC）---
 from backend.app.huanxing.api.v1.admin.analytics import router as admin_analytics_router
 
@@ -13,9 +11,7 @@ from backend.app.huanxing.api.v1.admin.analytics import router as admin_analytic
 # 文档/目录/分享子域已随知识库 AI-Native 重做整体退役（D9 吸收为知识库原生文档，
 # 设计《知识库AI-Native应用重设计（RAGFlow处理后端）》§7.1；存量经
 # scripts/migrate_huanxing_docs_to_knowledge.py 迁移）。
-
 # --- open/ 公开（无需认证）---
-
 # --- agent/ Agent端（X-Agent-Key）---
 from backend.app.huanxing.api.v1.agent.file import router as agent_file_router
 from backend.app.huanxing.api.v1.agent.website import router as agent_website_router
@@ -23,7 +19,7 @@ from backend.app.huanxing.api.v1.agent.website import router as agent_website_ro
 # --- user/ 用户级（Owner Key 认证）---
 from backend.app.huanxing.api.v1.user.file import router as user_file_router
 from backend.app.huanxing.api.v1.user.website import router as user_website_router
-
+from backend.core.conf import settings
 
 # ========================================
 # 管理端 API（JWT + RBAC）

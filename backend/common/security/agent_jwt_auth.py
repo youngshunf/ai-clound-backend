@@ -10,9 +10,8 @@ Agent 使用独立的 JWT 进行身份认证，通过 Authorization header 传�
 @author Ysf
 @date 2026-05-13
 """
-from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from backend.common.dataclasses import AgentTokenPayload
@@ -39,7 +38,7 @@ async def agent_jwt_auth(
         async def xxx(request: Request):
             agent = request.state.agent
             agent_hasn_id = agent.agent_hasn_id
-            scopes = agent.scopes
+            owner_hasn_id = agent.owner_hasn_id
 
     或作为参数注入::
 
@@ -66,7 +65,7 @@ async def agent_jwt_auth(
 
         log.info(
             f"Agent JWT 认证成功: {agent_payload.agent_hasn_id} "
-            f"(owner: {agent_payload.owner_hasn_id}, scopes: {agent_payload.scopes})"
+            f"(owner: {agent_payload.owner_hasn_id})"
         )
 
         return agent_payload
@@ -74,74 +73,20 @@ async def agent_jwt_auth(
     except errors.TokenError as e:
         raise HTTPException(
             status_code=401,
-            detail=f"Agent JWT 验证失败: {str(e)}",
+            detail=f"Agent JWT 验证失败: {e!s}",
         )
     except Exception as e:
-        log.error(f"Agent JWT 认证异常: {str(e)}")
+        log.error(f"Agent JWT 认证异常: {e!s}")
         raise HTTPException(
             status_code=401,
             detail="Agent JWT 认证失败",
         )
 
 
-def require_scopes(*required_scopes: str):
-    """
-    Scope 权限校验装饰器
-
-    用法::
-
-        @router.post("/posts", dependencies=[DependsAgentJwtAuth])
-        @require_scopes("community.post")
-        async def create_post(agent: AgentTokenPayload = DependsAgentJwtAuth):
-            ...
-
-    :param required_scopes: 需要的权限列表
-    :return: 装饰器函数
-    """
-    def decorator(func):
-        async def wrapper(*args, **kwargs):
-            # 从 kwargs 中获取 agent 参数
-            agent = kwargs.get('agent')
-            if not agent:
-                # 尝试从 request.state 获取
-                request = kwargs.get('request')
-                if request and hasattr(request.state, 'agent'):
-                    agent = request.state.agent
-
-            if not agent:
-                raise HTTPException(
-                    status_code=401,
-                    detail="未找到 Agent 认证信息",
-                )
-
-            # 检查权限
-            missing_scopes = [s for s in required_scopes if s not in agent.scopes]
-            if missing_scopes:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"权限不足，缺少 scopes: {', '.join(missing_scopes)}",
-                )
-
-            return await func(*args, **kwargs)
-
-        return wrapper
-    return decorator
-
-
-def check_scopes(agent: AgentTokenPayload, required_scopes: list[str]) -> None:
-    """
-    检查 Agent 是否拥有所需的权限
-
-    :param agent: Agent token payload
-    :param required_scopes: 需要的权限列表
-    :raises HTTPException: 如果权限不足
-    """
-    missing_scopes = [s for s in required_scopes if s not in agent.scopes]
-    if missing_scopes:
-        raise HTTPException(
-            status_code=403,
-            detail=f"权限不足，缺少 scopes: {', '.join(missing_scopes)}",
-        )
+# NOTE(实施102 S0): `require_scopes` 装饰器与 `check_scopes` 已退役——它们据
+# JWT `scopes`（一个对所有 Agent 恒定的死快照）做「静态注册闸」，从不是 per-agent
+# 授权。REST Agent 业务面改用 `agent_capability.require_capability_not_denied`
+# 的 deny-only 三态闸；工具面授权由三态 capability_modes 权威裁定。
 
 
 # FastAPI 依赖注入快捷方式

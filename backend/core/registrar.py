@@ -88,6 +88,10 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     from backend.app.hasn.service.app_purchase_callback import register_app_purchase_callback
     register_app_purchase_callback()
 
+    # 注册企业席位购买支付回调（doc04 §6.4③：购买成功 → 企业权益累加 seats_total）
+    from backend.app.hasn.service.app_seat_purchase_callback import register_app_seat_purchase_callback
+    register_app_seat_purchase_callback()
+
     # 注册获客线索购买支付回调（doc93 §4.2：购买成功 → 增加可领取线索额度·不走积分）
     from backend.app.hasn_growth.service.lead_pack_callback import register_lead_pack_callback
     register_lead_pack_callback()

@@ -10,12 +10,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_task.schema.workflow import WorkflowEdgeSpec, WorkflowNodeSpec
 from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth, check_scopes
+from backend.common.security.agent_capability import require_capability_not_denied
+from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
@@ -36,9 +38,10 @@ class AgentCreateWorkflowRequest(BaseModel):
     continuation_enabled: bool = Field(default=False, description='跨 fire 接续（二期）')
 
 
-def _agent(request: Request, *scopes: str) -> AgentTokenPayload:
+async def _agent(request: Request, db: AsyncSession, *scopes: str) -> AgentTokenPayload:
     agent: AgentTokenPayload = request.state.agent
-    check_scopes(agent, list(scopes))
+    for scope in scopes:
+        await require_capability_not_denied(db, agent.agent_hasn_id, scope)
     return agent
 
 
@@ -50,14 +53,14 @@ async def agent_create_workflow(
     db: CurrentSessionTransaction,
     body: AgentCreateWorkflowRequest,
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     workflow = await agent_workflow_service.create_workflow(db, agent=agent, params=body.model_dump())
     return response_base.success(data={'workflow': workflow})
 
 
 @router.get('/workflows', summary='Agent 列工作流', dependencies=[DependsAgentJwtAuth], name='hasn_workflow_agent_list')
 async def agent_list_workflows(request: Request, db: CurrentSession) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     workflows = await agent_workflow_service.list_workflows(db, owner_id=agent.owner_hasn_id)
     return response_base.success(data={'workflows': workflows})
 
@@ -67,7 +70,7 @@ async def agent_list_workflows(request: Request, db: CurrentSession) -> Response
     name='hasn_workflow_agent_list_agents',
 )
 async def agent_list_agents(request: Request, db: CurrentSession) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     agents = await agent_workflow_service.list_agents(db, owner_id=agent.owner_hasn_id)
     return response_base.success(data={'agents': agents})
 
@@ -81,7 +84,7 @@ async def agent_get_workflow(
     db: CurrentSession,
     workflow_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     detail = await agent_workflow_service.get_workflow(db, owner_id=agent.owner_hasn_id, workflow_uuid=workflow_uuid)
     return response_base.success(data=detail)
 
@@ -96,7 +99,7 @@ async def agent_get_node_result(
     workflow_uuid: Annotated[str, Path()],
     node_key: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_READ)
+    agent = await _agent(request, db, _SCOPE_READ)
     result = await agent_workflow_service.get_node_result(
         db, owner_id=agent.owner_hasn_id, workflow_uuid=workflow_uuid, node_key=node_key
     )
@@ -112,7 +115,7 @@ async def agent_run_workflow(
     db: CurrentSessionTransaction,
     workflow_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_RUN)
+    agent = await _agent(request, db, _SCOPE_RUN)
     workflow = await agent_workflow_service.run(db, owner_id=agent.owner_hasn_id, workflow_uuid=workflow_uuid)
     return response_base.success(data={'workflow': workflow})
 
@@ -126,7 +129,7 @@ async def agent_pause_workflow(
     db: CurrentSessionTransaction,
     workflow_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     workflow = await agent_workflow_service.pause(db, owner_id=agent.owner_hasn_id, workflow_uuid=workflow_uuid)
     return response_base.success(data={'workflow': workflow})
 
@@ -140,6 +143,6 @@ async def agent_cancel_workflow(
     db: CurrentSessionTransaction,
     workflow_uuid: Annotated[str, Path()],
 ) -> ResponseModel:
-    agent = _agent(request, _SCOPE_MANAGE)
+    agent = await _agent(request, db, _SCOPE_MANAGE)
     result = await agent_workflow_service.cancel(db, owner_id=agent.owner_hasn_id, workflow_uuid=workflow_uuid)
     return response_base.success(data=result)

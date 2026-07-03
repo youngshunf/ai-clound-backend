@@ -6,9 +6,9 @@
 """
 
 import secrets
-from typing import Sequence
 
 import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_agent_mcp_keys import hasn_agent_mcp_keys_dao
@@ -18,9 +18,9 @@ from backend.app.hasn.schema.hasn_agent_mcp_keys import (
     IssueAgentMcpKeyParam,
     IssuedAgentMcpKey,
 )
-from backend.common.security.encryption import key_encryption
 from backend.common.exception import errors
 from backend.common.log import log
+from backend.common.security.encryption import key_encryption
 from backend.utils.timezone import timezone
 
 # 凭证前缀：云端 MCP 鉴权按此前缀分流（见 streamable.py / 设计 §6）
@@ -72,7 +72,6 @@ class HasnAgentMcpKeysService:
             owner_user_id=owner_user_id,
             key_prefix=display_prefix,
             key_hash=key_hash,
-            scopes=obj.scopes,
             node_id=obj.node_id,
             expire_time=obj.expire_time,
         )
@@ -83,7 +82,7 @@ class HasnAgentMcpKeysService:
             owner_hasn_id=record.owner_hasn_id,
             key_prefix=record.key_prefix,
             key=full_key,  # 仅签发时返回一次
-            scopes=list(record.scopes or []),
+            # scopes 已退役（实施102 S0）：MCP key 不承载 scope，恒空占位。
             node_id=record.node_id,
             status=record.status,
             expire_time=record.expire_time,

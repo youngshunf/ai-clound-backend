@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.marketplace.crud.crud_marketplace_skill_version import marketplace_skill_version_dao
 from backend.app.marketplace.model import MarketplaceSkillVersion
-from backend.app.marketplace.schema.marketplace_skill_version import CreateMarketplaceSkillVersionParam, DeleteMarketplaceSkillVersionParam, UpdateMarketplaceSkillVersionParam
+from backend.app.marketplace.schema.marketplace_skill_version import (
+    CreateMarketplaceSkillVersionParam,
+    DeleteMarketplaceSkillVersionParam,
+    UpdateMarketplaceSkillVersionParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

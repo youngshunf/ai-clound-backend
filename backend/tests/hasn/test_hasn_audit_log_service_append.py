@@ -12,16 +12,16 @@ import hashlib
 import json
 
 import pytest
+
 from sqlalchemy import select
 
 from backend.app.hasn.service.hasn_audit_log_service import hasn_audit_log_service
 from backend.tests.hasn.conftest import AuditLogStub
 
-
 pytestmark = pytest.mark.asyncio
 
 
-async def test_append_creates_row_with_hash(db_session):
+async def test_append_creates_row_with_hash(db_session) -> None:
     """Test 1: 单条 append → 新行 hash_chain 长度 64 hex，prev_log_id 为 None。"""
     entry = await hasn_audit_log_service.append(
         db=db_session,
@@ -37,7 +37,7 @@ async def test_append_creates_row_with_hash(db_session):
     int(entry.hash_chain, 16)  # 验证全部为有效十六进制字符
 
 
-async def test_chain_is_continuous(db_session):
+async def test_chain_is_continuous(db_session) -> None:
     """Test 2: 同 actor_id 连续 3 条 → prev_log_id 链式指向，hash 含前驱。"""
     e1 = await hasn_audit_log_service.append(
         db=db_session, actor_id='test_chain_u1', action='a1',
@@ -64,7 +64,7 @@ async def test_chain_is_continuous(db_session):
     assert e2.hash_chain == expected_hash
 
 
-async def test_chain_scoped_per_actor(db_session):
+async def test_chain_scoped_per_actor(db_session) -> None:
     """Test 3: 不同 actor_id 链独立 (b 的第一条 prev_log_id is None)。"""
     a1 = await hasn_audit_log_service.append(
         db=db_session, actor_id='test_scope_a', action='x', details={'n': 1},
@@ -84,7 +84,7 @@ async def test_chain_scoped_per_actor(db_session):
     assert b2.prev_log_id == b1.id  # b 链内连续
 
 
-async def test_canonical_payload_deterministic(db_session):
+async def test_canonical_payload_deterministic(db_session) -> None:
     """Test 4: 字典 key 顺序不影响 canonical hash (sort_keys=True)。"""
     # 第一条 dict 用 {x, y}，第二条 dict 用 {y, x} 但语义相同
     e1 = await hasn_audit_log_service.append(
@@ -100,7 +100,7 @@ async def test_canonical_payload_deterministic(db_session):
     assert e1.hash_chain == e2.hash_chain
 
 
-async def test_findings_defaults_empty_list_severity_none(db_session):
+async def test_findings_defaults_empty_list_severity_none(db_session) -> None:
     """Test 5: append 默认 findings == [] 且 severity is None。"""
     entry = await hasn_audit_log_service.append(
         db=db_session, actor_id='test_defaults', action='ping', details={},
@@ -116,7 +116,7 @@ async def test_findings_defaults_empty_list_severity_none(db_session):
     assert entry2.severity == 'warning'
 
 
-async def test_persisted_row_matches_returned_object(db_session):
+async def test_persisted_row_matches_returned_object(db_session) -> None:
     """Bonus: 写入后 SELECT 验证持久化的字段一致 (hash_chain / actor_id 入库正确)。"""
     entry = await hasn_audit_log_service.append(
         db=db_session, actor_id='test_persist',

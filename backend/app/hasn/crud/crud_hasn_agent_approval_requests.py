@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn.model import HasnAgentApprovalRequests
-from backend.app.hasn.schema.hasn_agent_approval_requests import CreateHasnAgentApprovalRequestsParam, UpdateHasnAgentApprovalRequestsParam
+from backend.app.hasn.schema.hasn_agent_approval_requests import (
+    CreateHasnAgentApprovalRequestsParam,
+    UpdateHasnAgentApprovalRequestsParam,
+)
 
 
 class CRUDHasnAgentApprovalRequests(CRUDPlus[HasnAgentApprovalRequests]):

@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn_growth.model import LeadRejectedRecord
-from backend.app.hasn_growth.schema.lead_rejected_record import CreateLeadRejectedRecordParam, UpdateLeadRejectedRecordParam
+from backend.app.hasn_growth.schema.lead_rejected_record import (
+    CreateLeadRejectedRecordParam,
+    UpdateLeadRejectedRecordParam,
+)
 
 
 class CRUDLeadRejectedRecord(CRUDPlus[LeadRejectedRecord]):

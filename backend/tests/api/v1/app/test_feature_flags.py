@@ -189,7 +189,7 @@ class _StaticScalars:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
-    def scalars(self) -> '_StaticScalars':
+    def scalars(self) -> _StaticScalars:
         return self
 
     def all(self) -> list[Any]:
@@ -206,7 +206,7 @@ class _SequencedSession:
     def __init__(self, flags_rows: list[Any], assigns_rows: list[Any]) -> None:
         self._queue: list[list[Any]] = [flags_rows, assigns_rows]
 
-    async def execute(self, _stmt: Any) -> _StaticScalars:  # noqa: RUF029
+    async def execute(self, _stmt: Any) -> _StaticScalars:
         if not self._queue:
             raise AssertionError('execute called more times than expected')
         return _StaticScalars(self._queue.pop(0))

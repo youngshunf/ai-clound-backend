@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import uuid
+
 from types import SimpleNamespace
 
 import httpx
 import pytest
 import pytest_asyncio
+
 from fastapi import FastAPI, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -23,6 +25,7 @@ from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.app.hasn_groups import router as app_groups_router
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.common.exception import errors
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -47,7 +50,7 @@ async def http():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -71,7 +74,7 @@ async def http():
     async def _yield_session():
         yield session
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=_USER_ID)
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'
@@ -167,9 +170,72 @@ async def test_non_member_cannot_view(http) -> None:
     """非成员查看群详情应被拒（ForbiddenError）。"""
     c = http.client
     created = _data(await c.post('/api/v1/hasn/app/groups', json={'title': f'私群{_uid()}', 'members': []}))
-    gid = created['group_id']
+    created['group_id']
 
     # 退群后再查（owner 退不了，这里建第二个群、用一个不存在的成员视角无法模拟；
     # 改为断言不存在群返回 404）
     ghost = await c.get('/api/v1/hasn/app/groups/g:1')
     assert ghost.status_code != 200 or ghost.json().get('code') != 200, '不存在群应 404'
+
+
+@pytest_asyncio.fixture
+async def db_session():
+    """服务级测试用的裸 PG 会话（不经 HTTP，直接调 service 校验权限矩阵）。"""
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(select(1))
+    except Exception as exc:
+        await engine.dispose()
+        pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
+
+    session = async_sessionmaker(engine, expire_on_commit=False)()
+    try:
+        yield session
+    finally:
+        await session.rollback()
+        await session.close()
+        await engine.dispose()
+
+
+async def test_any_member_can_add_but_non_member_cannot(db_session) -> None:
+    """加人权限已放开给任意群成员（对齐微信默认），仅非成员被拒。
+
+    覆盖 hasn_group_service.add_members 的放开：普通成员（role=member）拉人应成功，
+    非成员（不在名册）应 ForbiddenError。移除/改设置/解散仍受 owner/admin 限制。
+    """
+    from backend.app.hasn.service.hasn_group_service import HasnGroupService
+
+    owner = f'h_grp_{_uid()}'
+    plain_member = f'h_mem_{_uid()}'
+    added_by_member = f'h_new_{_uid()}'
+    stranger = f'h_stranger_{_uid()}'
+
+    created = await HasnGroupService.create_group(
+        db_session,
+        owner_hasn_id=owner,
+        title=f'加人放开群{_uid()}',
+        members=[{'hasn_id': plain_member}],
+    )
+    gid = created['group_id']
+    roles = {m['hasn_id']: m['role'] for m in created['members']}
+    assert roles[owner] == 'owner' and roles[plain_member] == 'member', '创建者=owner，被加者=member'
+
+    # 普通成员（非 owner/admin）拉人：放开后应成功。
+    result = await HasnGroupService.add_members(
+        db_session,
+        actor_hasn_id=plain_member,
+        group_id=gid,
+        members=[{'hasn_id': added_by_member}],
+    )
+    added_ids = {m['hasn_id'] for m in result['members']}
+    assert added_by_member in added_ids, '普通成员应能把新人加进群'
+
+    # 非成员拉人：仍应被拒。
+    with pytest.raises(errors.ForbiddenError):
+        await HasnGroupService.add_members(
+            db_session,
+            actor_hasn_id=stranger,
+            group_id=gid,
+            members=[{'hasn_id': f'h_x_{_uid()}'}],
+        )

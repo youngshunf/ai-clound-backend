@@ -10,5 +10,7 @@
 
 from backend.app.hasn_memory.model.owner_memory import (
     HasnOwnerMemory as HasnOwnerMemory,
+)
+from backend.app.hasn_memory.model.owner_memory import (
     HasnOwnerMemoryContribution as HasnOwnerMemoryContribution,
 )

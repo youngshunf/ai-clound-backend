@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_outreach_message import outreach_message_dao
 from backend.app.hasn_growth.model import OutreachMessage
-from backend.app.hasn_growth.schema.outreach_message import CreateOutreachMessageParam, DeleteOutreachMessageParam, UpdateOutreachMessageParam
+from backend.app.hasn_growth.schema.outreach_message import (
+    CreateOutreachMessageParam,
+    DeleteOutreachMessageParam,
+    UpdateOutreachMessageParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

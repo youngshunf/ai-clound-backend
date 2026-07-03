@@ -153,7 +153,7 @@ class OwnerMemoryContributeTool(BaseTool):
                 merged = bool(outcome.get('merged'))
                 version = outcome.get('version')
                 await db.commit()
-            except Exception as exc:  # noqa: BLE001 — 合并失败不丢贡献，留待下次（零 fake，不产生假合并）
+            except Exception as exc:
                 await db.rollback()
                 merge_deferred = True
                 merge_error = _short_merge_error(exc)

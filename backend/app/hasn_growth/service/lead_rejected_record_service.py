@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_lead_rejected_record import lead_rejected_record_dao
 from backend.app.hasn_growth.model import LeadRejectedRecord
-from backend.app.hasn_growth.schema.lead_rejected_record import CreateLeadRejectedRecordParam, DeleteLeadRejectedRecordParam, UpdateLeadRejectedRecordParam
+from backend.app.hasn_growth.schema.lead_rejected_record import (
+    CreateLeadRejectedRecordParam,
+    DeleteLeadRejectedRecordParam,
+    UpdateLeadRejectedRecordParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

@@ -1,3 +1,5 @@
+import operator
+
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -99,12 +101,12 @@ class AnalyticsService:
         # 充值收入（purchase + subscription_upgrade）
         total_income_credits = (await db.execute(
             text("SELECT COALESCE(SUM(credits), 0) FROM hasn_billing.credit_transaction WHERE transaction_type IN ('purchase', 'subscription_upgrade')")
-        )).scalar() or Decimal('0')
+        )).scalar() or Decimal(0)
 
         period_income_credits = (await db.execute(
             text("SELECT COALESCE(SUM(credits), 0) FROM hasn_billing.credit_transaction WHERE transaction_type IN ('purchase', 'subscription_upgrade') AND created_time >= :d"),
             {'d': start_date}
-        )).scalar() or Decimal('0')
+        )).scalar() or Decimal(0)
 
         return {
             'total_users': total_users,
@@ -126,9 +128,9 @@ class AnalyticsService:
     ) -> dict:
         """按天趋势"""
         days_series = self._date_series(now, days)
-        api_by_day = {day: 0 for day in days_series}
-        token_by_day = {day: 0 for day in days_series}
-        credit_by_day = {day: 0 for day in days_series}
+        api_by_day = dict.fromkeys(days_series, 0)
+        token_by_day = dict.fromkeys(days_series, 0)
+        credit_by_day = dict.fromkeys(days_series, 0)
 
         for row in quota_rows:
             ts = int(row.get('created_at') or 0)
@@ -154,7 +156,7 @@ class AnalyticsService:
         for row in rows:
             model = row.get('model_name') or ''
             by_model[model] = by_model.get(model, 0) + int(row.get('count') or 0)
-        sorted_rows = sorted(by_model.items(), key=lambda item: item[1], reverse=True)
+        sorted_rows = sorted(by_model.items(), key=operator.itemgetter(1), reverse=True)
         return [{'name': model, 'value': count} for model, count in sorted_rows[:10]]
 
     async def _get_tier_distribution(self, db: AsyncSession) -> list[dict]:
@@ -184,7 +186,7 @@ class AnalyticsService:
             bucket = by_model.setdefault(model, {'model_name': model, 'token_used': 0, 'count': 0})
             bucket['token_used'] += int(row.get('token_used') or 0)
             bucket['count'] += int(row.get('count') or 0)
-        sorted_rows = sorted(by_model.values(), key=lambda row: row['token_used'], reverse=True)
+        sorted_rows = sorted(by_model.values(), key=operator.itemgetter('token_used'), reverse=True)
         return [{
             'model': row.get('model_name') or '',
             'input_tokens': 0,

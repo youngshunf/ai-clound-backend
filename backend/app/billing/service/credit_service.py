@@ -2,18 +2,17 @@
 @author Ysf
 """
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 
-from sqlalchemy import select, update, and_, or_, func
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.billing.crud.crud_credit_transaction import credit_transaction_dao
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.crud.crud_user_subscription import user_subscription_dao
-from backend.app.billing.model import CreditTransaction, SubscriptionTier, UserSubscription, UserCreditBalance
-from backend.app.billing.schema.credit_transaction import CreateCreditTransactionParam
+from backend.app.billing.model import CreditTransaction, UserCreditBalance, UserSubscription
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.utils.timezone import timezone
@@ -88,7 +87,7 @@ class CreditService:
         """创建免费订阅"""
         # 获取免费等级配置
         free_tier = await subscription_tier_dao.select_model_by_column(db, tier_name='free', app_code=app_code)
-        monthly_credits = free_tier.monthly_credits if free_tier else Decimal('100')  # 默认 100 积分
+        monthly_credits = free_tier.monthly_credits if free_tier else Decimal(100)  # 默认 100 积分
         max_agents = free_tier.max_agents if free_tier else 1
 
         now = timezone.now()
@@ -101,8 +100,8 @@ class CreditService:
             subscription_type='monthly',
             monthly_credits=monthly_credits,
             current_credits=monthly_credits,
-            used_credits=Decimal('0'),
-            purchased_credits=Decimal('0'),
+            used_credits=Decimal(0),
+            purchased_credits=Decimal(0),
             billing_cycle_start=now,
             billing_cycle_end=cycle_end,
             subscription_start_date=now,
@@ -135,7 +134,7 @@ class CreditService:
             user_id=user_id,
             transaction_type='monthly_grant',
             credits=monthly_credits,
-            balance_before=Decimal('0'),
+            balance_before=Decimal(0),
             balance_after=monthly_credits,
             description='免费版月度赠送积分',
             app_code=app_code,
@@ -239,12 +238,12 @@ class CreditService:
                 # 当前记录足够扣除
                 balance.remaining_amount -= remaining_to_deduct
                 balance.used_amount += remaining_to_deduct
-                remaining_to_deduct = Decimal('0')
+                remaining_to_deduct = Decimal(0)
             else:
                 # 当前记录不够，全部扣完
                 remaining_to_deduct -= balance.remaining_amount
                 balance.used_amount += balance.remaining_amount
-                balance.remaining_amount = Decimal('0')
+                balance.remaining_amount = Decimal(0)
 
         # 更新 subscription 的汇总字段（保持兼容性）
         subscription.current_credits = total_available - credits
@@ -377,7 +376,7 @@ class CreditService:
         # 以下是月度订阅的刷新逻辑
         # 获取等级配置
         tier = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
-        monthly_credits = tier.monthly_credits if tier else Decimal('500')  # 默认 500 积分
+        monthly_credits = tier.monthly_credits if tier else Decimal(500)  # 默认 500 积分
 
         # 获取当前总可用积分
         balance_before = await self.get_total_available_credits(db, subscription.user_id, app_code)
@@ -408,7 +407,7 @@ class CreditService:
         # 更新 subscription 汇总字段（保持兼容性）
         new_total = balance_before + monthly_credits
         subscription.current_credits = new_total
-        subscription.used_credits = Decimal('0')  # 重置已使用（仅月度周期内）
+        subscription.used_credits = Decimal(0)  # 重置已使用（仅月度周期内）
 
         # 记录月度赠送交易
         await self._record_transaction(
@@ -481,7 +480,7 @@ class CreditService:
         balances = await self.get_user_valid_balances(db, user_id, app_code)
         # 获取有剩余的记录用于计算可用积分
         active_balances = await self.get_user_active_balances(db, user_id, app_code)
-        
+
         total_credits = sum(b.remaining_amount for b in active_balances)
         total_used = sum(b.used_amount for b in balances)
 
@@ -567,7 +566,7 @@ class CreditService:
             user_id=user_id,
             credit_type=credit_type,
             original_amount=amount,
-            used_amount=Decimal('0'),
+            used_amount=Decimal(0),
             remaining_amount=amount,
             expires_at=expires_at,
             granted_at=timezone.now(),
@@ -609,7 +608,7 @@ class CreditService:
         )
         result = await db.execute(stmt)
         total = result.scalar()
-        return Decimal(str(total)) if total else Decimal('0')
+        return Decimal(str(total)) if total else Decimal(0)
 
     async def get_user_active_balances(
         self,

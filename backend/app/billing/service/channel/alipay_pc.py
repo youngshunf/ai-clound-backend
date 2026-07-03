@@ -23,10 +23,10 @@ config JSONB 字段说明:
 
 import json
 import textwrap
+
 from typing import Any
 
 from backend.app.billing.service.channel.base import PayClient
-from backend.common.log import log
 
 
 def _wrap_pem(key_string: str, key_type: str = 'PRIVATE') -> str:
@@ -61,14 +61,13 @@ def _wrap_pem(key_string: str, key_type: str = 'PRIVATE') -> str:
     if key_type == 'PRIVATE':
         # 支付宝开放平台私钥 = PKCS#8 格式
         return f'-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----'
-    else:
-        return f'-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----'
+    return f'-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----'
 
 
 class AlipayPcClient(PayClient):
     """支付宝 PC 网页支付客户端 — 公钥模式 + 证书模式"""
 
-    def __init__(self, config: dict, notify_url: str):
+    def __init__(self, config: dict, notify_url: str) -> None:
         super().__init__(config, notify_url)
         self.return_url = config.get('return_url') or config.get('returnUrl', '')
         self._client = None
@@ -98,7 +97,7 @@ class AlipayPcClient(PayClient):
         self._encrypt_key = config.get('encryptKey') or config.get('encrypt_key', '')
 
     @staticmethod
-    def _patch_ordered_data(alipay_client):
+    def _patch_ordered_data(alipay_client) -> None:
         """修复 python-alipay-sdk 的 _ordered_data 中 json.dumps 默认
         ensure_ascii=True 导致中文被转义为 \\uXXXX 的问题。
 
@@ -215,10 +214,7 @@ class AlipayPcClient(PayClient):
 
     def verify_callback(self, headers: dict, body: str | dict) -> dict[str, Any]:
         """验签支付宝回调"""
-        if isinstance(body, str):
-            data = json.loads(body)
-        else:
-            data = dict(body)
+        data = json.loads(body) if isinstance(body, str) else dict(body)
         verify_data = dict(data)
         signature = verify_data.pop('sign', '')
         verify_data.pop('sign_type', None)

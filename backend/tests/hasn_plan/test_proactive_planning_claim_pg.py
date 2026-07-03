@@ -44,7 +44,7 @@ async def session() -> AsyncIterator:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -68,7 +68,7 @@ async def _proactive_planned(session, owner_id: str) -> bool | None:
     return None if row is None else bool(row.proactive_planned)
 
 
-async def test_claim_first_time_inserts_and_succeeds(session):
+async def test_claim_first_time_inserts_and_succeeds(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     try:
         # 全新 owner：无 preference 行 → 走 INSERT 路径认领
@@ -80,7 +80,7 @@ async def test_claim_first_time_inserts_and_succeeds(session):
         await _cleanup(session, owner)
 
 
-async def test_claim_second_time_is_idempotent(session):
+async def test_claim_second_time_is_idempotent(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     try:
         first = await plan_service.claim_proactive_planning(session, owner=owner)
@@ -94,7 +94,7 @@ async def test_claim_second_time_is_idempotent(session):
         await _cleanup(session, owner)
 
 
-async def test_claim_with_preexisting_preference_row_updates(session):
+async def test_claim_with_preexisting_preference_row_updates(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     try:
         # 主人已有排程偏好行（proactive_planned 默认 false）→ 走 ON CONFLICT UPDATE 路径
@@ -114,7 +114,7 @@ async def test_claim_with_preexisting_preference_row_updates(session):
         await _cleanup(session, owner)
 
 
-async def test_concurrent_claims_only_one_wins(session):
+async def test_concurrent_claims_only_one_wins(session) -> None:
     """两路独立连接并发 claim → 原子 ON CONFLICT 保证恰好一方 True。"""
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     engine_a = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)

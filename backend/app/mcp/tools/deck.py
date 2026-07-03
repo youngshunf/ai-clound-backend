@@ -21,6 +21,8 @@ deck_id / page_id 工具入参是 string，service 收 int（统一 `int(...)`�
 
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -31,10 +33,31 @@ from backend.app.mcp.tools.base import BaseTool
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
+logger = logging.getLogger(__name__)
+
 NAMESPACE = 'hasn.deck'
 SCOPE_MANAGE = 'deck:manage'
 
 Handler = Callable[[Any, AgentContext, dict[str, Any]], Awaitable[Any]]
+
+
+async def _bump_decks_sync(owner_hasn_id: str | None) -> None:
+    """分身 deck 写点提交后 → WSPUSH ``hasn.sync.invalidate(decks)`` 给主人在线节点（best-effort）。
+
+    LFRT 刀4（实施/90 §2.1）：治「分身把 PPT 做完，主人打开列表/详情还是空白」——本模块
+    是分身 deck 写的唯一云端面（TOOLMIG2-P3 后本地 hasn-mcp deck 工具已摘除），bump 让主人
+    daemon 秒级 nudge webui 重拉 deck 视图。事务提交后另开只读会话算指纹（读到已提交数据）。
+    push 失败不抛——离线设备靠打开页面时 read-through 兜底追平，写点绝不因推送失败而失败。
+    """
+    if not owner_hasn_id:
+        return
+    try:
+        from backend.app.hasn.service import sync_invalidate_service as siv
+
+        async with async_db_session() as db:
+            await siv.bump_owner(siv.KIND_DECKS, db, owner_hasn_id)
+    except Exception as e:
+        logger.warning('[deck] agent 写点 sync invalidate 推送失败 (非致命): %s', e)
 
 
 def _subject(ctx: AgentContext) -> Subject:
@@ -416,7 +439,10 @@ class _DeckTool(BaseTool):
         # 维度① 三态由 server.call_tool 统一判定（D3），工具内不二次校验。
         if self._write:
             async with async_db_session.begin() as db:
-                return await self._handler(db, agent_context, arguments)
+                result = await self._handler(db, agent_context, arguments)
+            # LFRT 刀4：提交后 bump（best-effort），主人在线节点秒级重拉 deck 镜像。
+            await _bump_decks_sync(agent_context.owner_hasn_id)
+            return result
         async with async_db_session() as db:
             return await self._handler(db, agent_context, arguments)
 

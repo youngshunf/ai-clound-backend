@@ -21,7 +21,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from backend.app.hasn_task.service.agent_task_service import agent_task_service, task_to_public
 from backend.app.mcp.auth import AgentContext

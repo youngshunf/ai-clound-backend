@@ -2,7 +2,8 @@
 Agent JWT 认证模块
 
 Agent 使用独立的 JWT 进行身份认证，与 Owner JWT 平级但权限受限。
-每个 Agent JWT 包含 scopes 字段，用于细粒度权限控制。
+凭证只承载身份（agent_hasn_id / owner），**不再携带 scopes claim**：授权判定的唯一
+真相是 ``hasn_agent_scopes.{default_mode, capability_modes}``（消费时活取，doc17 / 实施102 S0）。
 
 认证方式: Header `Authorization: Bearer <agent_jwt>`
 Token Type: agent (通过 payload.token_type 区分)
@@ -25,80 +26,6 @@ from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.database.redis import redis_client
 from backend.utils.timezone import timezone
-
-# 默认 Agent Scopes（统一 domain:action 冒号词表，P1 词表迁移）
-# 注：三态授权落地后 default_mode='allow' 才是判定真相（消费时活取 D3）。
-# v3 起 hasn_agent_scopes.scopes 列已 drop（16-doc D-v3-2）；本常量是 JWT
-# scopes 审计 claim 的**唯一固定来源**（不再 per-agent 入库），不参与任何判定。
-DEFAULT_AGENT_SCOPES = [
-    'community:read',
-    'community:comment',
-    'community:interact',
-    'community:circle',
-    'community:doc',
-    'message:read',
-    'contact:read',
-    # 代主人发起好友请求（hasn.contact.request 平台工具）。三态默认 allow，本数组仅审计快照。
-    'contact:request',
-    'task:execute',
-    'knowledge:read',
-    'profile:read',
-    # marketplace 工具集（15-技能市场/11-doc 权威源）。三态默认 allow，本数组仅审计快照。
-    'marketplace:read',
-    'marketplace:install',
-    'marketplace:publish',
-    # designsystem 自研设计系统应用（14-doc/20 设计 §7；DS-P7 铸 scope）。写类 import/save 落 :write；
-    # 分享/发布（P9/P10）落 :publish。读类与确定性纯函数无 scope（不在此登记，避免假闸门）。
-    # check_scopes 仍按此 claim 校验，故 Agent 调云端 designsystem/agent/* 写类必须在此铸入。
-    'designsystem:write',
-    'designsystem:publish',
-    # film 视频生成应用（14-doc/18 设计；VC-P4 铸 scope）。读类 list/get/stage.artifact 落 :read；
-    # 写类（建项目/各阶段生成/sandbox/pipeline/stage.intervene/continue）落 :write（出厂 Ask）；
-    # 上传产物到云端 artifact.upload 落 :export。check_scopes 按此 claim 校验，Agent 调 film 本地工具
-    # 经 daemon 三态闸门需这些 claim 在册。
-    'film:read',
-    'film:write',
-    'film:export',
-    # reel 短视频合成应用（14-doc/19 设计 §7；reel-P4 铸 scope）。读类 task.list/get/material.search 落
-    # :read；写类（generate/script.draft/preview/compose）落 :write（出厂 Ask——合成花配额/本地资源）；
-    # 上传成片到云端 artifact.upload 落 :export（出厂 Ask）。check_scopes 按此 claim 校验，Agent 调 reel
-    # 本地工具经 daemon 三态闸门需这些 claim 在册（同 film）。
-    'reel:read',
-    'reel:write',
-    'reel:export',
-    # plan 规划与目标管理应用（19-doc 设计 §9.1；PLAN-P1 铸 scope）。分身经 hasn.plan.* 管理主人的
-    # 目标/计划/待办/日程/习惯：读类 list/get/today 无 scope（确定性读，不设假闸门）；写类（建/改/删/
-    # 排期/打卡/捕获/triage/decompose）落 :write（出厂 Allow）；排程（schedule/reschedule，Motion 自动
-    # 排程建/删 flex 块）落 :schedule（出厂 Allow，独立 scope 便于 owner 单独管控，PLAN-P4b 铸）。委托
-    # （delegate，把待办/计划经统一工作会话派给分身真执行）落 :delegate（出厂 **Ask**——主动起会话、耗
-    # 配额，主人确认后派；PLAN-P5 铸）。check_scopes 按此 claim 校验，Agent 调 /api/v1/plan/agent/* 写类必须在此铸入。
-    'plan:read',
-    'plan:write',
-    'plan:schedule',
-    'plan:delegate',
-    # design 矢量设计应用（14-doc/27 设计 §5.3/§5.4；OP-P3-B 铸 scope）。本地 sidecar 工具
-    # （源自 OpenPencil）：读类 get/get_selection/read_nodes/find_empty_space/get_design_prompt/export 落
-    # :read；写类（batch_design/分层 skeleton·content·refine/节点增改/set_variables·set_themes）落 :write
-    # （创作类出厂 Allow，破坏性 delete/replace 出厂 Ask）；出码 codegen 落 :codegen（出厂 Allow）。
-    # check_scopes 按此 claim 校验，Agent 调 design 本地工具经 daemon 三态闸门需这些 claim 在册（同 reel/film）。
-    'design:read',
-    'design:write',
-    'design:codegen',
-    # session 工作会话自我控制（doc12-09 / 实施93 SA-P3）。平台级、非应用——任意工作会话里
-    # 分身需要主人决策/补关键信息时调 hasn.session.ask（execution_location=Local）把会话挂起、
-    # 投提问卡到主会话，绝不替主人臆测。出厂 **Allow**（暂停问主人是低风险且鼓励的协作行为）。
-    # 工具在本地 daemon 执行，此 claim 仅供云端 check_scopes 校验在册。
-    'session:ask',
-]
-
-
-def normalize_scope(scope: str) -> str:
-    """归一 scope 词表（过渡期兜底）：把点号 / 冒号统一成冒号。
-
-    迁移窗口内防回归：``message.read`` 与 ``message:read`` 视为等价。
-    # TODO(P5后): 全栈迁移完成后移除归一兜底，统一只认冒号。
-    """
-    return scope.replace('.', ':')
 
 
 def jwt_encode_agent(payload: dict[str, Any]) -> str:
@@ -134,7 +61,6 @@ def jwt_decode_agent(token: str) -> AgentTokenPayload:
         agent_name = payload.get('agent_name')
         owner_hasn_id = payload.get('owner_hasn_id')
         owner_user_id = payload.get('owner_user_id')
-        scopes = payload.get('scopes', [])
         session_uuid = payload.get('session_uuid')
         expire = payload.get('exp')
 
@@ -146,7 +72,6 @@ def jwt_decode_agent(token: str) -> AgentTokenPayload:
             agent_name=agent_name or '',
             owner_hasn_id=owner_hasn_id,
             owner_user_id=int(owner_user_id),
-            scopes=scopes,
             session_uuid=session_uuid,
             expire_time=timezone.from_datetime(timezone.to_utc(expire)),
             token_type='agent',
@@ -181,7 +106,6 @@ async def create_agent_access_token(
     agent_name: str,
     owner_hasn_id: str,
     owner_user_id: int,
-    scopes: list[str],
 ) -> AgentAccessToken:
     """
     生成 Agent JWT token
@@ -190,7 +114,6 @@ async def create_agent_access_token(
     :param agent_name: Agent 显示名
     :param owner_hasn_id: Owner 的 HASN ID
     :param owner_user_id: Owner 的 user_id
-    :param scopes: 权限列表
     :return: AgentAccessToken
     """
     expire = timezone.now() + timedelta(seconds=settings.TOKEN_EXPIRE_SECONDS)
@@ -203,7 +126,6 @@ async def create_agent_access_token(
         'agent_name': agent_name,
         'owner_hasn_id': owner_hasn_id,
         'owner_user_id': owner_user_id,
-        'scopes': scopes,
         'session_uuid': session_uuid,
         'exp': timezone.to_utc(expire).timestamp(),
     }
@@ -221,7 +143,6 @@ async def create_agent_access_token(
         access_token=access_token,
         access_token_expire_time=expire,
         session_uuid=session_uuid,
-        scopes=scopes,
     )
 
 
@@ -270,11 +191,11 @@ async def verify_agent_token(token: str) -> AgentTokenPayload:
 def _ensure_policy_defaults(config: dict[str, Any]) -> dict[str, Any]:
     """补齐三态字段默认值（兼容 v3 前写入的旧缓存/旧行）。
 
-    三态判定真相是 default_mode + capability_modes。``scopes`` 仅作 JWT 审计 claim 的
-    固定占位（DEFAULT_AGENT_SCOPES，不再 per-agent 入库，16-doc D-v3-2）；
-    ``post_needs_review`` 死字段已随表列一并移除。default_mode 缺失/非法→'allow'（默认全开）。
+    三态判定真相是 default_mode + capability_modes（消费时活取，doc17 / 实施102 S0）。
+    ``scopes``/``post_needs_review`` 死字段已随 JWT claim 一并退役——旧缓存里若还留着，
+    这里顺手剔除，避免下游误读。default_mode 缺失/非法→'allow'（默认全开）。
     """
-    config.setdefault('scopes', DEFAULT_AGENT_SCOPES)
+    config.pop('scopes', None)
     config.pop('post_needs_review', None)
     default_mode = config.get('default_mode')
     if default_mode not in ('allow', 'ask', 'deny'):
@@ -294,13 +215,12 @@ async def get_agent_scopes_from_db(db: AsyncSession, agent_hasn_id: str) -> dict
     """
     从数据库查询 Agent 的三态授权配置（default_mode + capability_modes）。
 
-    v3（16-doc D-v3-2）起 ``scopes``/``post_needs_review`` 列已 drop：判定只看
-    default_mode + capability_modes；``scopes`` 仅作 JWT 审计 claim 的固定占位
-    （DEFAULT_AGENT_SCOPES，由 _ensure_policy_defaults 补齐）。
+    v3（16-doc D-v3-2）起 ``scopes``/``post_needs_review`` 列已 drop，JWT scopes claim
+    亦已退役（实施102 S0）：判定只看 default_mode + capability_modes。
 
     :param db: 数据库会话
     :param agent_hasn_id: Agent 的 HASN ID
-    :return: {"scopes": [...], "default_mode": str, "capability_modes": dict}
+    :return: {"default_mode": str, "capability_modes": dict}
     """
     from sqlalchemy import text
 
@@ -327,11 +247,11 @@ async def get_agent_scopes_from_db(db: AsyncSession, agent_hasn_id: str) -> dict
 
 async def get_agent_scopes_cached(agent_hasn_id: str, db: AsyncSession) -> dict[str, Any]:
     """
-    获取 Agent 权限配置（带缓存，含三态字段）
+    获取 Agent 权限配置（带缓存，三态判定真相）
 
     :param agent_hasn_id: Agent 的 HASN ID
     :param db: 数据库会话
-    :return: {"scopes": [...], "post_needs_review": bool, "default_mode": str, "capability_modes": dict}
+    :return: {"default_mode": str, "capability_modes": dict}
     """
     cache_key = f'agent_scopes:{agent_hasn_id}'
 

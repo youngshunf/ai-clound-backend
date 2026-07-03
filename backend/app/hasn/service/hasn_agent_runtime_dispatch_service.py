@@ -309,5 +309,55 @@ class HasnAgentRuntimeDispatchService:
                 cancelled = False
         return {'run_id': run_id, 'cancelled': cancelled}
 
+    async def list_skills(
+        self,
+        *,
+        runtime_profile_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """列出云端分身运行时技能（设计 04：技能读能力在 RuntimeAdapter 内按 location 分叉）。
+
+        纯读控制面：读 profile skills/ 目录，不启网关、不 provision。profile 未 provision 时
+        sidecar 抛 HermesRuntimeError → 由本面如实上抛，daemon 侧对不可达优雅降级为空列表
+        （对齐本地 runtime 未就绪时的读语义，不红 toast）。
+        """
+        data = await self.runtime_client.list_skills(runtime_profile_id, trace_id=trace_id)
+        skills = data.get('skills') if isinstance(data, dict) else None
+        return {'skills': skills if isinstance(skills, list) else []}
+
+    async def read_skill(
+        self,
+        *,
+        runtime_profile_id: str,
+        skill_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """读取云端分身某技能正文（SKILL.md）。返回 sidecar 原形态（含 content）。"""
+        return await self.runtime_client.read_skill(runtime_profile_id, skill_id, trace_id=trace_id)
+
+    async def enable_skill(
+        self,
+        *,
+        runtime_profile_id: str,
+        skill_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """启用云端分身某技能。sidecar 成功返回 `{enabled:True}` → success=enabled；失败抛错上抛。"""
+        data = await self.runtime_client.enable_skill(runtime_profile_id, skill_id, trace_id=trace_id)
+        enabled = bool(data.get('enabled')) if isinstance(data, dict) else False
+        return {'skill_id': skill_id, 'enabled': enabled, 'success': enabled}
+
+    async def disable_skill(
+        self,
+        *,
+        runtime_profile_id: str,
+        skill_id: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """停用云端分身某技能。sidecar 成功返回 `{enabled:False}` → success=(not enabled)；失败抛错上抛。"""
+        data = await self.runtime_client.disable_skill(runtime_profile_id, skill_id, trace_id=trace_id)
+        enabled = bool(data.get('enabled')) if isinstance(data, dict) else True
+        return {'skill_id': skill_id, 'enabled': enabled, 'success': not enabled}
+
 
 hasn_agent_runtime_dispatch_service = HasnAgentRuntimeDispatchService()

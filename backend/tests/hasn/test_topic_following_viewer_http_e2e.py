@@ -8,11 +8,13 @@
 from __future__ import annotations
 
 import uuid
+
 from types import SimpleNamespace
 
 import httpx
 import pytest
 import pytest_asyncio
+
 from fastapi import FastAPI, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -47,7 +49,7 @@ async def ctx():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 

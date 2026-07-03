@@ -11,13 +11,16 @@ from __future__ import annotations
 import copy
 import json
 import uuid
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
 import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.schema.hasn_message_hub import (
     ErrorObject,
     InboxItem,
@@ -26,7 +29,6 @@ from backend.app.hasn.schema.hasn_message_hub import (
     MessageHubSendRequest,
     MessageHubSendResponse,
 )
-from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -228,13 +230,13 @@ class SqlAlchemyMessageHubGateway:
         if target_hasn_id.startswith('h_'):
             result = await db.execute(
                 sa.text(
-                    '''
+                    """
                     SELECT hasn_id, name
                     FROM public.hasn_humans
                     WHERE hasn_id = :hasn_id
                       AND status = 'active'
                     LIMIT 1
-                    '''
+                    """
                 ),
                 {'hasn_id': target_hasn_id},
             )
@@ -251,13 +253,13 @@ class SqlAlchemyMessageHubGateway:
         if target_hasn_id.startswith('a_'):
             result = await db.execute(
                 sa.text(
-                    '''
+                    """
                     SELECT hasn_id, owner_id, name
                     FROM public.hasn_agents
                     WHERE hasn_id = :hasn_id
                       AND status = 'active'
                     LIMIT 1
-                    '''
+                    """
                 ),
                 {'hasn_id': target_hasn_id},
             )
@@ -281,7 +283,7 @@ class SqlAlchemyMessageHubGateway:
 
         result = await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_messages (
                     conversation_id,
                     owner_id,
@@ -340,7 +342,7 @@ class SqlAlchemyMessageHubGateway:
                     now()
                 )
                 RETURNING id, created_time
-                '''
+                """
             ),
             {
                 'conversation_id': record.conversation_id,
@@ -385,7 +387,7 @@ class SqlAlchemyMessageHubGateway:
     ) -> RuntimeSummary | None:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT agent_hasn_id,
                        runtime_status,
                        adapter_registered,
@@ -399,7 +401,7 @@ class SqlAlchemyMessageHubGateway:
                   AND agent_hasn_id = :agent_hasn_id
                 ORDER BY reported_at DESC, id DESC
                 LIMIT 1
-                '''
+                """
             ),
             {'owner_id': owner_id, 'agent_hasn_id': agent_hasn_id},
         )
@@ -434,7 +436,7 @@ class SqlAlchemyMessageHubGateway:
     ) -> None:
         await db.execute(
             sa.text(
-                '''
+                """
                 INSERT INTO public.hasn_suppressed_messages (
                     message_id,
                     owner_id,
@@ -464,7 +466,7 @@ class SqlAlchemyMessageHubGateway:
                     runtime_summary = EXCLUDED.runtime_summary,
                     visible_to_owner = true,
                     updated_time = now()
-                '''
+                """
             ),
             {
                 'message_id': source_message.message_id,
@@ -507,7 +509,7 @@ class SqlAlchemyMessageHubGateway:
     ) -> list[dict[str, Any]]:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT id,
                        owner_id,
                        hasn_id,
@@ -523,7 +525,7 @@ class SqlAlchemyMessageHubGateway:
                   AND (CAST(:cursor_id AS bigint) IS NULL OR id > CAST(:cursor_id AS bigint))
                 ORDER BY id ASC
                 LIMIT :limit
-                '''
+                """
             ),
             {'owner_id': owner_id, 'cursor_id': cursor_id, 'limit': limit},
         )
@@ -534,13 +536,13 @@ class SqlAlchemyMessageHubGateway:
     ) -> None:
         await db.execute(
             sa.text(
-                '''
+                """
                 UPDATE public.hasn_messages
                 SET dispatch_status = :dispatch_status,
                     updated_time = now()
                 WHERE id = CAST(:message_id AS bigint)
                    OR owner_copy_of_message_id = CAST(:message_id AS bigint)
-                '''
+                """
             ),
             {'message_id': message_id, 'dispatch_status': dispatch_status},
         )
@@ -550,7 +552,7 @@ class SqlAlchemyMessageHubGateway:
     ) -> list[dict[str, Any]]:
         result = await db.execute(
             sa.text(
-                '''
+                """
                 SELECT s.id,
                        s.message_id,
                        s.owner_id,
@@ -568,7 +570,7 @@ class SqlAlchemyMessageHubGateway:
                   AND (CAST(:cursor_id AS bigint) IS NULL OR s.message_id > CAST(:cursor_id AS bigint))
                 ORDER BY s.message_id ASC
                 LIMIT :limit
-                '''
+                """
             ),
             {'owner_id': owner_id, 'cursor_id': cursor_id, 'limit': limit},
         )
@@ -610,10 +612,7 @@ class HasnMessageHubService:
                 owner_id=recipient.owner_id,
                 agent_hasn_id=recipient.hasn_id,
             )
-            if runtime is None or not runtime.is_reachable:
-                dispatch_status = 'runtime_unavailable'
-            else:
-                dispatch_status = 'dispatched'
+            dispatch_status = 'runtime_unavailable' if runtime is None or not runtime.is_reachable else 'dispatched'
 
         primary_kind = 'agent_inbox' if recipient.entity_type == 'agent' else 'human_inbox'
         primary = await self.gateway.store_inbox_message(

@@ -513,7 +513,7 @@ class GrowthFunnelService:
                 sa.select(Customer.owner_scope, Customer.enterprise_id, Customer.assignee).where(Customer.id == customer_id)
             )
         ).first()
-        o_scope, ent_id, assignee = cust if cust else ('personal', None, None)
+        o_scope, ent_id, assignee = cust or ('personal', None, None)
         activity = Activity(
             customer_id=customer_id,
             opportunity_id=opportunity_id,

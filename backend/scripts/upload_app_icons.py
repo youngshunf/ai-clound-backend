@@ -93,7 +93,7 @@ def _report_guard(available: set[str], referenced: dict[str, str]) -> list[str]:
         print('⚠️  以下应用 catalog 引用了图标，但源目录缺对应 svg（CDN 上不存在 → 卡片图标 404）：')
         for app_id in missing_source:
             print(f'      - {app_id}: 缺 {DEFAULT_SOURCE_DIR / f"{app_id}.svg"}')
-        print('    修法：在源目录补 {app_id}.svg 后重跑本脚本。')
+        print(f'    修法：在源目录补 {app_id}.svg 后重跑本脚本。')
     else:
         print('✅  反查守卫：所有 catalog 引用的图标都在源目录有 svg（无 404 隐患）。')
 

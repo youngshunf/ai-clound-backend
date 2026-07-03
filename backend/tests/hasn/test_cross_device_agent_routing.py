@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+
 from typing import Any
 
 import pytest
@@ -55,7 +56,7 @@ class FakeRedis:
     async def rpush(self, key: str, value: Any) -> None:
         self.lists.setdefault(key, []).append(value)
 
-    async def expire(self, key: str, ttl: int) -> None:  # noqa: ARG002 - 契约占位
+    async def expire(self, key: str, ttl: int) -> None:
         return None
 
 

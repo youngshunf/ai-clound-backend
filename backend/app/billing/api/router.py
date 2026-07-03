@@ -11,35 +11,35 @@
 
 from fastapi import APIRouter
 
-from backend.core.conf import settings
+from backend.app.billing.api.v1.admin.channel import router as admin_channel_router
+from backend.app.billing.api.v1.admin.contract import router as admin_contract_router
+from backend.app.billing.api.v1.admin.credit_balance import router as admin_balance_router
 
 # ── 支付 admin（JWT + RBAC）──
 from backend.app.billing.api.v1.admin.merchant import router as admin_merchant_router
-from backend.app.billing.api.v1.admin.channel import router as admin_channel_router
-from backend.app.billing.api.v1.admin.order import router as admin_order_router
-from backend.app.billing.api.v1.admin.contract import router as admin_contract_router
-from backend.app.billing.api.v1.admin.notify_log import router as admin_notify_log_router
 
-# ── 支付 app / open ──
-from backend.app.billing.api.v1.app.pay import router as app_pay_router
-from backend.app.billing.api.v1.open.notify import router as open_notify_router
+# admin.rate（模型积分费率 model_credit_rate，D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦）。
+from backend.app.billing.api.v1.admin.newapi_quota import router as admin_newapi_quota_router
+from backend.app.billing.api.v1.admin.notify_log import router as admin_notify_log_router
+from backend.app.billing.api.v1.admin.order import router as admin_order_router
+from backend.app.billing.api.v1.admin.package import router as admin_package_router
 
 # ── 订阅积分 admin（JWT + RBAC）──
 from backend.app.billing.api.v1.admin.subscription import router as admin_subscription_router
-from backend.app.billing.api.v1.admin.credit_balance import router as admin_balance_router
-from backend.app.billing.api.v1.admin.transaction import router as admin_transaction_router
-from backend.app.billing.api.v1.admin.package import router as admin_package_router
 from backend.app.billing.api.v1.admin.tier import router as admin_tier_router
-# admin.rate（模型积分费率 model_credit_rate，D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦）。
-from backend.app.billing.api.v1.admin.newapi_quota import router as admin_newapi_quota_router
-
-# ── 订阅积分 app / open / agent ──
-from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
-from backend.app.billing.api.v1.open.pricing import router as open_pricing_router
+from backend.app.billing.api.v1.admin.transaction import router as admin_transaction_router
 from backend.app.billing.api.v1.agent.quota import router as agent_quota_router
 from backend.app.billing.api.v1.agent.subscription import router as agent_subscription_router
 from backend.app.billing.api.v1.agent.usage import router as agent_usage_router
 
+# ── 支付 app / open ──
+from backend.app.billing.api.v1.app.pay import router as app_pay_router
+
+# ── 订阅积分 app / open / agent ──
+from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
+from backend.app.billing.api.v1.open.notify import router as open_notify_router
+from backend.app.billing.api.v1.open.pricing import router as open_pricing_router
+from backend.core.conf import settings
 
 # ========================================
 # 支付 API（/api/v1/pay/*）

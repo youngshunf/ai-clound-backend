@@ -3,16 +3,17 @@
 对齐协议: Core/03-消息与通信.md §4 会话管理
 认证方式: hasn_auth (JWT / Owner API Key / Agent Key)
 """
-from fastapi import APIRouter, Depends, Query, Path, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional
-from sqlalchemy import select, or_, and_, func, desc
+from typing import Annotated
 
-from backend.database.db import CurrentSession
-from backend.common.response.response_schema import ResponseModel, response_base
-from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn.model import HasnConversations, HasnMessages, HasnUnreadCounts, HasnHumans
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import and_, desc, or_, select
+
+from backend.app.hasn.model import HasnConversations, HasnHumans, HasnMessages, HasnUnreadCounts
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.service.hasn_auth import hasn_auth
+from backend.common.response.response_schema import ResponseModel, response_base
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 
@@ -26,11 +27,11 @@ class ConversationOut(BaseModel):
     peer_id: str  # 对端 hasn_id
     peer_name: str
     peer_type: str  # human / agent
-    peer_avatar: Optional[str] = None
-    relation_type: Optional[str] = None
-    last_message_preview: Optional[str] = None
-    last_message_at: Optional[str] = None
-    last_message_from: Optional[str] = None
+    peer_avatar: str | None = None
+    relation_type: str | None = None
+    last_message_preview: str | None = None
+    last_message_at: str | None = None
+    last_message_from: str | None = None
     unread_count: int = 0
     message_count: int = 0
 
@@ -45,7 +46,7 @@ class HasnEnvelopeOut(BaseModel):
     content: dict   # {content_type, body}
     context: dict   # {conversation_id, relation_type, ...}
     metadata: dict  # {priority, created_at, server_received_at}
-    local_id: Optional[str] = None
+    local_id: str | None = None
 
 
 class MarkReadReq(BaseModel):
@@ -57,7 +58,7 @@ class MarkReadReq(BaseModel):
 @router.get('/conversations', summary='获取我的会话列表')
 async def list_my_conversations(
     db: CurrentSession,
-    auth: dict = Depends(hasn_auth),
+    auth: Annotated[dict, Depends(hasn_auth)],
 ) -> ResponseModel:
     """按当前用户 hasn_id 查询所参与的所有活跃会话"""
     hasn_id = auth.get('effective_id', auth['hasn_id'])
@@ -142,7 +143,7 @@ async def list_my_conversations(
 def _entity_type_str(hasn_id: str) -> str:
     if hasn_id.startswith('h_'):
         return 'human'
-    elif hasn_id.startswith('a_'):
+    if hasn_id.startswith('a_'):
         return 'agent'
     return 'system'
 
@@ -155,9 +156,9 @@ def _content_type_str(ct: int) -> str:
 @router.get('/conversations/{conversation_id}/messages', summary='获取会话消息（分页）')
 async def list_conversation_messages(
     db: CurrentSession,
-    conversation_id: str = Path(description='会话 ID 或对端的 hasn_id'),
-    limit: int = Query(50, ge=1, le=200),
-    before_id: Optional[int] = Query(None, description='游标: 返回 ID 小于此值的消息'),
+    conversation_id: Annotated[str, Path(description='会话 ID 或对端的 hasn_id')],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    before_id: Annotated[int | None, Query(description='游标: 返回 ID 小于此值的消息')] = None,
     auth: dict = Depends(hasn_auth),
 ) -> ResponseModel:
     """按 conversation_id 分页查消息，支持未建会话前使用 peer_id 作为临时 id 查询"""
@@ -247,8 +248,8 @@ async def list_conversation_messages(
 async def mark_conversation_read(
     db: CurrentSession,
     obj: MarkReadReq,
-    conversation_id: str = Path(description='会话 ID 或对端 hasn_id'),
-    auth: dict = Depends(hasn_auth),
+    conversation_id: Annotated[str, Path(description='会话 ID 或对端 hasn_id')],
+    auth: Annotated[dict, Depends(hasn_auth)],
 ) -> ResponseModel:
     """标记会话已读（清零未读计数）"""
     hasn_id = auth.get('effective_id', auth['hasn_id'])

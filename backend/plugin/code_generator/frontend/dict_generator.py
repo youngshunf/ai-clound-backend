@@ -1,6 +1,7 @@
 """Dictionary SQL generator for code generator."""
 
 import re
+
 from pathlib import Path
 
 from pydantic.alias_generators import to_pascal
@@ -11,9 +12,7 @@ from backend.database.db import async_db_session
 from backend.plugin.code_generator.config_loader import codegen_config
 from backend.plugin.code_generator.crud.crud_business import gen_business_dao
 from backend.plugin.code_generator.crud.crud_column import gen_column_dao
-from backend.plugin.code_generator.model import GenBusiness, GenColumn
 from backend.plugin.code_generator.parser.sql_parser import TableInfo
-
 
 # 默认颜色列表，用于循环分配
 DEFAULT_COLORS = ['blue', 'green', 'orange', 'red', 'purple', 'cyan', 'pink', 'yellow']
@@ -22,57 +21,57 @@ DEFAULT_COLORS = ['blue', 'green', 'orange', 'red', 'purple', 'cyan', 'pink', 'y
 def parse_dict_options_from_comment(comment: str) -> tuple[str, list[dict] | None]:
     """
     从字段注释中解析字典枚举值。
-    
+
     支持格式：
     - "状态 (active:激活/inactive:未激活/expired:过期)"
     - "状态 (active:激活:green/inactive:未激活:gray/expired:过期:red)"
     - "状态（active:激活/inactive:未激活）"  # 中文括号
-    
+
     :param comment: 字段注释
     :return: (简化标签, 枚举选项列表 或 None)
     """
     if not comment:
         return comment or '', None
-    
+
     # 匹配括号内容：支持中英文括号
     match = re.search(r'[\(\uff08]([^\)\uff09]+)[\)\uff09]', comment)
     if not match:
         return comment, None
-    
+
     # 提取简化标签（括号前的部分）
     simple_label = comment[:match.start()].strip()
     enum_str = match.group(1).strip()
-    
+
     # 检查是否包含字典枚举格式（value:label 或 value:label:color）
     if ':' not in enum_str:
         return simple_label or comment, None
-    
+
     # 解析枚举选项
     options = []
     items = enum_str.split('/')
-    
+
     for idx, item in enumerate(items):
         item = item.strip()
         if not item:
             continue
-        
+
         parts = item.split(':')
         if len(parts) < 2:
             continue
-        
+
         value = parts[0].strip()
         label = parts[1].strip()
         color = parts[2].strip() if len(parts) > 2 else DEFAULT_COLORS[idx % len(DEFAULT_COLORS)]
-        
+
         options.append({
             'value': value,
             'label': label,
             'color': color,
         })
-    
+
     if not options:
         return simple_label or comment, None
-    
+
     return simple_label or comment, options
 
 
@@ -125,10 +124,10 @@ async def generate_dict_sql(
     for column in dict_fields:
         dict_type_code = f'{app}_{column.name}'
         raw_comment = column.comment or column.name
-        
+
         # 从注释中解析字典枚举值
         dict_type_name, parsed_options = parse_dict_options_from_comment(raw_comment)
-        
+
         if parsed_options:
             # 使用注释中定义的枚举值
             options = parsed_options
@@ -187,7 +186,7 @@ async def generate_dict_sql(
                 color = option.get('color', 'blue')
                 sql_lines.extend([
                     f"    IF NOT EXISTS (SELECT 1 FROM sys_dict_data WHERE type_code = '{dict_type_code}' AND value = '{value}') THEN",
-                    f"        INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time)",
+                    "        INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time)",
                     f"        VALUES ('{dict_type_code}', '{label}', '{value}', '{color}', {idx + 1}, 1, v_dict_type_id, '', NOW(), NULL);",
                     '    END IF;',
                 ])
@@ -222,7 +221,7 @@ async def generate_dict_sql_from_db(
         business = await gen_business_dao.get(db, business_id)
         if not business:
             raise ValueError(f'GenBusiness not found: id={business_id}')
-        
+
         columns = await gen_column_dao.get_all_by_business(db, business_id)
 
     # 查找需要生成字典的字段
@@ -264,10 +263,10 @@ async def generate_dict_sql_from_db(
     for column in dict_fields:
         dict_type_code = f'{app}_{column.name}'
         raw_comment = column.comment or column.name
-        
+
         # 从注释中解析字典枚举值
         dict_type_name, parsed_options = parse_dict_options_from_comment(raw_comment)
-        
+
         if parsed_options:
             # 使用注释中定义的枚举值
             options = parsed_options
@@ -325,7 +324,7 @@ async def generate_dict_sql_from_db(
                 color = option.get('color', 'blue')
                 sql_lines.extend([
                     f"    IF NOT EXISTS (SELECT 1 FROM sys_dict_data WHERE type_code = '{dict_type_code}' AND value = '{value}') THEN",
-                    f"        INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time)",
+                    "        INSERT INTO sys_dict_data (type_code, label, value, color, sort, status, type_id, remark, created_time, updated_time)",
                     f"        VALUES ('{dict_type_code}', '{label}', '{value}', '{color}', {idx + 1}, 1, v_dict_type_id, '', NOW(), NULL);",
                     '    END IF;',
                 ])

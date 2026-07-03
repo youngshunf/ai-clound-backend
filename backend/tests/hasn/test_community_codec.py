@@ -16,10 +16,13 @@ import pytest
 
 from backend.app.hasn_community.service._community_codec import (
     ALLOWED_REFERENCE_TYPES,
+    MAX_MEDIA_ITEMS,
     MAX_REFERENCE_CARDS,
     _assert_agent_can_read_community_resource,
     _build_reference_uri,
+    _normalize_media,
     _normalize_reference_cards,
+    _present_media,
     _present_reference_cards,
     _safe_summary,
 )
@@ -158,3 +161,62 @@ class TestVisibilityGuard:
 
 def test_allowed_reference_types_frozen() -> None:
     assert frozenset({'agent_skill', 'task_result', 'chat_summary'}) == ALLOWED_REFERENCE_TYPES
+
+
+class TestNormalizeMedia:
+    """帖子媒体九宫格 codec：公开 CDN URL，type∈image/video，最多 9 个。"""
+
+    def test_empty_returns_empty_dict(self) -> None:
+        assert _normalize_media(None) == {}
+        assert _normalize_media([]) == {}
+
+    def test_non_list_raises(self) -> None:
+        with pytest.raises(errors.RequestError):
+            _normalize_media({'type': 'image', 'url': 'https://cdn/x.jpg'})
+
+    def test_stores_under_items_key(self) -> None:
+        # JSONB 需 dict，故媒体列表包一层 {"items": [...]}。
+        out = _normalize_media([{'type': 'image', 'url': 'https://cdn/x.jpg'}])
+        assert out == {'items': [{'type': 'image', 'url': 'https://cdn/x.jpg'}]}
+
+    def test_video_keeps_optional_fields(self) -> None:
+        out = _normalize_media([
+            {'type': 'video', 'url': 'https://cdn/v.mp4', 'width': 1080, 'height': 1920,
+             'duration_ms': 15000, 'poster': 'https://cdn/v.jpg'},
+        ])
+        item = out['items'][0]
+        assert item['type'] == 'video'
+        assert item['width'] == 1080 and item['height'] == 1920
+        assert item['duration_ms'] == 15000
+        assert item['poster'] == 'https://cdn/v.jpg'
+
+    def test_drops_illegal_type(self) -> None:
+        out = _normalize_media([{'type': 'audio', 'url': 'https://cdn/a.mp3'}])
+        assert out == {}
+
+    def test_drops_missing_or_non_http_url(self) -> None:
+        assert _normalize_media([{'type': 'image'}]) == {}
+        assert _normalize_media([{'type': 'image', 'url': 'javascript:alert(1)'}]) == {}
+        assert _normalize_media([{'type': 'image', 'url': 'ftp://x/y.jpg'}]) == {}
+
+    def test_truncates_to_max_items(self) -> None:
+        raw = [{'type': 'image', 'url': f'https://cdn/{i}.jpg'} for i in range(MAX_MEDIA_ITEMS + 5)]
+        assert len(_normalize_media(raw)['items']) == MAX_MEDIA_ITEMS
+
+    def test_rejects_negative_and_bool_ints(self) -> None:
+        out = _normalize_media([
+            {'type': 'video', 'url': 'https://cdn/v.mp4', 'width': -5, 'duration_ms': True},
+        ])
+        item = out['items'][0]
+        assert 'width' not in item  # 负数被丢
+        assert 'duration_ms' not in item  # bool 不算合法 int
+
+    def test_present_media_extracts_items(self) -> None:
+        stored = {'items': [{'type': 'image', 'url': 'https://cdn/x.jpg'}]}
+        assert _present_media(stored) == [{'type': 'image', 'url': 'https://cdn/x.jpg'}]
+
+    def test_present_media_tolerates_empty_or_bad(self) -> None:
+        assert _present_media({}) == []
+        assert _present_media(None) == []
+        assert _present_media({'items': 'nope'}) == []
+        assert _present_media({'items': [{'type': 'image'}]}) == []  # 无 url 的项被过滤

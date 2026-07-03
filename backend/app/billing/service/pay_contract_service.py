@@ -18,7 +18,7 @@ def _calc_next_deduct_date(current: date, billing_cycle: str) -> date:
     """计算下次扣款日期"""
     if billing_cycle == 'monthly':
         return current + relativedelta(months=1)
-    elif billing_cycle == 'yearly':
+    if billing_cycle == 'yearly':
         return current + relativedelta(years=1)
     raise ValueError(f'无效的计费周期: {billing_cycle}')
 

@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,7 @@ class CRUDPayChannel(CRUDPlus[PayChannel]):
 
     async def update_status(self, db: AsyncSession, pk: int, status: int) -> int:
         from sqlalchemy import update
+
         from backend.utils.timezone import timezone
         result = await db.execute(
             update(PayChannel).where(PayChannel.id == pk).values(status=status, updated_time=timezone.now())

@@ -12,7 +12,7 @@ class PayChannelSchemaBase(SchemaBase):
     code: str = Field(description='渠道编码 wx_native/wx_papay/alipay_pc/alipay_cycle 等')
     name: str = Field(description='渠道显示名称')
     status: int = Field(1, description='状态 1=启用 0=停用')
-    fee_rate: Decimal = Field(Decimal('0'), description='费率（如 0.006 = 0.6%）')
+    fee_rate: Decimal = Field(Decimal(0), description='费率（如 0.006 = 0.6%）')
     remark: str | None = Field(None, description='备注')
     config: dict = Field(default_factory=dict, description='渠道配置（密钥/证书/appId 等）')
 

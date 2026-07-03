@@ -1,8 +1,9 @@
 import urllib.parse
+
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, File, UploadFile
 
 from backend.common.dataclasses import UploadUrl
 from backend.common.exception import errors
@@ -11,7 +12,6 @@ from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import write_file
-from backend.utils.file_ops import upload_file_verify
 
 router = APIRouter()
 

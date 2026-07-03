@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Query
 from typing import Annotated
 
+from fastapi import APIRouter, Query
+
+from backend.app.huanxing.service.analytics_service import analytics_service
 from backend.common.log import log
 from backend.common.response.response_schema import response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
-from backend.app.huanxing.service.analytics_service import analytics_service
 
 router = APIRouter()
 

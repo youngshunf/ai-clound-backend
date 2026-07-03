@@ -5,14 +5,17 @@
 > + service.py）。本文件只保留唤星主库内的映射表 CRUD。
 """
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
-from backend.app.newapi.schema.llm_newapi_user_mapping import CreateLlmNewapiUserMappingParam, UpdateLlmNewapiUserMappingParam
+from backend.app.newapi.schema.llm_newapi_user_mapping import (
+    CreateLlmNewapiUserMappingParam,
+    UpdateLlmNewapiUserMappingParam,
+)
 
 
 class CRUDLlmNewapiUserMapping(CRUDPlus[LlmNewapiUserMapping]):

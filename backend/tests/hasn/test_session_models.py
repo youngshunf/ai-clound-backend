@@ -1,4 +1,4 @@
-def test_hasn_session_models_import_and_construct():
+def test_hasn_session_models_import_and_construct() -> None:
     from backend.app.hasn.model.hasn_sessions import (
         HasnSessionArtifacts,
         HasnSessionEvents,

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette_context.middleware import ContextMiddleware
@@ -64,7 +65,6 @@ def test_agent_heartbeat_route_reports_only_authenticated_agent(
             agent_name="Agent",
             owner_hasn_id="h_owner",
             owner_user_id=7,
-            scopes=["runtime.heartbeat"],
             session_uuid="session-001",
             expire_time=datetime(2099, 1, 1, tzinfo=timezone.utc),
         )

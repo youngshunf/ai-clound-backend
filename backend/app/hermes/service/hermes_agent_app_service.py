@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import secrets
+
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.admin.model.user import User
 from backend.app.hermes.model import (
     HermesAgent,
     HermesAgentChannelBinding,
@@ -16,10 +19,9 @@ from backend.app.hermes.model import (
     HermesAgentRuntimeState,
 )
 from backend.app.hermes.service.hermes_runtime_client import HermesRuntimeClient, HermesRuntimeError
-from backend.app.newapi.service import LlmNewapiUserMappingService
-from backend.app.admin.model.user import User
 from backend.app.marketplace.model.marketplace_template import MarketplaceTemplate
 from backend.app.marketplace.model.marketplace_template_version import MarketplaceTemplateVersion
+from backend.app.newapi.service import LlmNewapiUserMappingService
 from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.utils.timezone import timezone
@@ -78,7 +80,7 @@ def _safe_json(value: Any) -> Any:
     if isinstance(value, dict):
         safe: dict[str, Any] = {}
         for key, item in value.items():
-            if key in SECRET_KEYS or key.endswith('_secret') or key.endswith('_token'):
+            if key in SECRET_KEYS or key.endswith(('_secret', '_token')):
                 continue
             safe[key] = _safe_json(item)
         return safe

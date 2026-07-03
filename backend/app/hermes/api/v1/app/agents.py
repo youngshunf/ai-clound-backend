@@ -69,8 +69,8 @@ async def list_agents(
     db: CurrentSession,
     status: str | None = None,
     channel: str | None = None,
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ResponseModel:
     data = await hermes_agent_app_service.list_agents(
         db, user_id=request.user.id, status=status, channel=channel, page=page, size=size
@@ -233,7 +233,7 @@ async def gateway_action(request: Request, db: CurrentSessionTransaction, agent_
 
 
 @router.get('/{agent_id}/gateway/logs', summary='Gateway 日志', dependencies=[DependsJwtAuth])
-async def gateway_logs(request: Request, db: CurrentSession, agent_id: str, limit: int = Query(100, ge=1, le=1000)) -> ResponseModel:
+async def gateway_logs(request: Request, db: CurrentSession, agent_id: str, limit: Annotated[int, Query(ge=1, le=1000)] = 100) -> ResponseModel:
     try:
         return response_base.success(data=await hermes_agent_app_service.gateway(db, user_id=request.user.id, agent_id=agent_id, action='logs', trace_id=_trace_id(request), limit=limit))
     except HermesRuntimeError as exc:

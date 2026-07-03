@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth, check_scopes
+from backend.common.security.agent_capability import require_capability_not_denied
+from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
@@ -57,7 +58,7 @@ async def agent_create_goal(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.create_goal(db, owner=agent.owner_hasn_id, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -77,7 +78,7 @@ async def agent_update_goal(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.update_goal(db, owner=agent.owner_hasn_id, pk=pk, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -87,7 +88,7 @@ async def agent_update_goal(
 async def agent_delete_goal(
     db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)], agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     await plan_service.delete_goal(db, owner=agent.owner_hasn_id, pk=pk)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data={'deleted': True})
@@ -100,7 +101,7 @@ async def agent_create_kr(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.create_kr(db, owner=agent.owner_hasn_id, goal_id=pk, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -125,8 +126,9 @@ async def agent_create_plan(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
-    # 缺省把计划绑定到「调用方分身自己」（身份取自 Agent JWT，非请求体自报）；要绑别的分身才在 body 显式传 bound_agent_id。
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
+    # 缺省把计划绑定到「调用方分身自己」（身份取自 Agent JWT，非请求体自报）；
+    # 要绑别的分身才在 body 显式传 bound_agent_id。
     data = await plan_service.create_plan(
         db, owner=agent.owner_hasn_id, data=body, default_bound_agent=agent.agent_hasn_id
     )
@@ -148,7 +150,7 @@ async def agent_update_plan(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.update_plan(db, owner=agent.owner_hasn_id, pk=pk, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -158,7 +160,7 @@ async def agent_update_plan(
 async def agent_delete_plan(
     db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)], agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     await plan_service.delete_plan(db, owner=agent.owner_hasn_id, pk=pk)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data={'deleted': True})
@@ -171,7 +173,7 @@ async def agent_create_milestone(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.create_milestone(db, owner=agent.owner_hasn_id, plan_id=pk, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -200,7 +202,7 @@ async def agent_create_todo(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.create_todo(db, owner=agent.owner_hasn_id, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -220,7 +222,7 @@ async def agent_update_todo(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.update_todo(db, owner=agent.owner_hasn_id, pk=pk, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -230,7 +232,7 @@ async def agent_update_todo(
 async def agent_delete_todo(
     db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)], agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     await plan_service.delete_todo(db, owner=agent.owner_hasn_id, pk=pk)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data={'deleted': True})
@@ -255,7 +257,7 @@ async def agent_create_event(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.create_event(db, owner=agent.owner_hasn_id, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -268,7 +270,7 @@ async def agent_update_event(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.update_event(db, owner=agent.owner_hasn_id, pk=pk, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -278,7 +280,7 @@ async def agent_update_event(
 async def agent_delete_event(
     db: CurrentSessionTransaction, pk: Annotated[int, Path(ge=1)], agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     await plan_service.delete_event(db, owner=agent.owner_hasn_id, pk=pk)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data={'deleted': True})
@@ -298,7 +300,7 @@ async def agent_create_habit(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.create_habit(db, owner=agent.owner_hasn_id, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -311,7 +313,7 @@ async def agent_checkin_habit(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await plan_service.checkin_habit(db, owner=agent.owner_hasn_id, habit_id=pk, data=body)
     await _bump_plan_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)
@@ -329,7 +331,7 @@ async def agent_upsert_preference(
     body: Annotated[dict[str, Any], Body()],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
-    check_scopes(agent, [_SCOPE_WRITE])
+    await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     return response_base.success(data=await plan_service.upsert_preference(db, owner=agent.owner_hasn_id, data=body))
 
 

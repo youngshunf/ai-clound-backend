@@ -1,10 +1,9 @@
-from datetime import datetime
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import id_key
 from backend.app.hasn_growth.model._base import HasnGrowthAppBase
+from backend.common.model import id_key
 
 
 class OptoutRecord(HasnGrowthAppBase):

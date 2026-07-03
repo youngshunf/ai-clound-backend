@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn.model import HasnAgentRuntimeReports
-from backend.app.hasn.schema.hasn_agent_runtime_reports import CreateHasnAgentRuntimeReportsParam, UpdateHasnAgentRuntimeReportsParam
+from backend.app.hasn.schema.hasn_agent_runtime_reports import (
+    CreateHasnAgentRuntimeReportsParam,
+    UpdateHasnAgentRuntimeReportsParam,
+)
 
 
 class CRUDHasnAgentRuntimeReports(CRUDPlus[HasnAgentRuntimeReports]):

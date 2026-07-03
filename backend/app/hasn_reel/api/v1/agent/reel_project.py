@@ -12,8 +12,6 @@ from backend.app.hasn_reel.schema.reel_project import (
     UpdateReelProjectParam,
 )
 from backend.app.hasn_reel.service.reel_project_service import reel_project_service
-from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -31,8 +29,7 @@ async def agent_list_reel_project(
     request: Request,
     db: CurrentSession,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id, agent.scopes
+    # 可以使用 agent.agent_hasn_id, agent.owner_hasn_id
     data = await reel_project_service.get_list(db=db)
     return response_base.success(data=data)
 
@@ -48,7 +45,6 @@ async def agent_create_reel_project(
     db: CurrentSessionTransaction,
     obj: CreateReelProjectParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     result = await reel_project_service.create(db=db, obj=obj)
     return response_base.success(data=result)
 
@@ -64,7 +60,6 @@ async def agent_get_reel_project(
     db: CurrentSession,
     pk: Annotated[int, Path(description='短视频项目（reel：一组创作的容器 + 默认创作参数） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
     reel_project = await reel_project_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if reel_project.owner_id != agent.owner_hasn_id:
@@ -84,8 +79,7 @@ async def agent_update_reel_project(
     pk: Annotated[int, Path(description='短视频项目（reel：一组创作的容器 + 默认创作参数） ID')],
     obj: UpdateReelProjectParam,
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    reel_project = await reel_project_service.get(db=db, pk=pk)
+    await reel_project_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if reel_project.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权修改该短视频项目（reel：一组创作的容器 + 默认创作参数）')
@@ -106,8 +100,7 @@ async def agent_delete_reel_project(
     db: CurrentSessionTransaction,
     pk: Annotated[int, Path(description='短视频项目（reel：一组创作的容器 + 默认创作参数） ID')],
 ) -> ResponseModel:
-    agent: AgentTokenPayload = request.state.agent
-    reel_project = await reel_project_service.get(db=db, pk=pk)
+    await reel_project_service.get(db=db, pk=pk)
     # TODO: 根据实际业务需求添加权限检查
     # if reel_project.owner_id != agent.owner_hasn_id:
     #     raise errors.ForbiddenError(msg='无权删除该短视频项目（reel：一组创作的容器 + 默认创作参数）')

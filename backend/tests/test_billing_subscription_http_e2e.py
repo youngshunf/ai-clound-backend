@@ -16,13 +16,16 @@ dependency_overrides 把 DependsJwtAuth 换成注入 user_id、get_db 指向真�
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone as dt_tz
+
+from datetime import datetime, timedelta
+from datetime import timezone as dt_tz
 from decimal import Decimal
 from types import SimpleNamespace
 
 import httpx
 import pytest
 import pytest_asyncio
+
 from fastapi import FastAPI, Request
 from fastapi_pagination import add_pagination
 from sqlalchemy import select
@@ -31,11 +34,11 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.newapi.client import NewApiError, newapi_admin_client
-from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
 from backend.app.billing.model import CreditTransaction, UserSubscription
 from backend.app.billing.service.billing_usage_service import quota_to_credits
+from backend.app.newapi.client import NewApiError, newapi_admin_client
+from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.core.conf import settings
@@ -95,7 +98,7 @@ async def env():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -105,7 +108,7 @@ async def env():
     async def _yield_session():
         yield session
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=auth_state['user_id'], is_superuser=False)
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'
@@ -137,18 +140,18 @@ async def test_transactions_ordered_isolated_with_llm_usage(env) -> None:
     s, c, uid = env.session, env.client, env.auth_state['user_id']
     base = datetime(2026, 6, 1, 12, 0, 0)
     # 我的三条：购买(+) / 月度发放(+) / LLM 消耗(-)
-    s.add(_txn(uid, ttype='purchase', credits=Decimal('1100'), before=Decimal('0'), after=Decimal('1100'),
+    s.add(_txn(uid, ttype='purchase', credits=Decimal(1100), before=Decimal(0), after=Decimal(1100),
                ref_type='pay_order', desc='购买积分包', created=base))
-    s.add(_txn(uid, ttype='monthly_grant', credits=Decimal('1000'), before=Decimal('1100'), after=Decimal('2100'),
+    s.add(_txn(uid, ttype='monthly_grant', credits=Decimal(1000), before=Decimal(1100), after=Decimal(2100),
                ref_type='pay_order', desc='月度赠送', created=base + timedelta(minutes=1)))
-    s.add(_txn(uid, ttype='usage', credits=Decimal('-12.5'), before=Decimal('2100'), after=Decimal('2087.5'),
+    s.add(_txn(uid, ttype='usage', credits=Decimal('-12.5'), before=Decimal(2100), after=Decimal('2087.5'),
                ref_type='llm_usage', desc='LLM 调用消耗', created=base + timedelta(minutes=2)))
     # 别的用户一条（隔离）
     other = _new_user_id()
-    s.add(_txn(other, ttype='purchase', credits=Decimal('999'), before=Decimal('0'), after=Decimal('999'),
+    s.add(_txn(other, ttype='purchase', credits=Decimal(999), before=Decimal(0), after=Decimal(999),
                ref_type='pay_order', desc='别人的', created=base + timedelta(minutes=3)))
     # 另一 app_code 一条（隔离）
-    s.add(_txn(uid, ttype='purchase', credits=Decimal('777'), before=Decimal('0'), after=Decimal('777'),
+    s.add(_txn(uid, ttype='purchase', credits=Decimal(777), before=Decimal(0), after=Decimal(777),
                ref_type='pay_order', desc='知小鸦的', created=base + timedelta(minutes=4), app_code='zhixiaoya'))
     await s.flush()
 
@@ -170,9 +173,9 @@ async def test_transactions_filter_by_type(env) -> None:
     """按 transaction_type 筛选只返回该类。"""
     s, c, uid = env.session, env.client, env.auth_state['user_id']
     base = datetime(2026, 6, 2, 9, 0, 0)
-    s.add(_txn(uid, ttype='purchase', credits=Decimal('100'), before=Decimal('0'), after=Decimal('100'),
+    s.add(_txn(uid, ttype='purchase', credits=Decimal(100), before=Decimal(0), after=Decimal(100),
                ref_type='pay_order', desc='买', created=base))
-    s.add(_txn(uid, ttype='usage', credits=Decimal('-5'), before=Decimal('100'), after=Decimal('95'),
+    s.add(_txn(uid, ttype='usage', credits=Decimal(-5), before=Decimal(100), after=Decimal(95),
                ref_type='llm_usage', desc='耗', created=base + timedelta(minutes=1)))
     await s.flush()
 
@@ -197,15 +200,15 @@ async def test_transactions_daily_grants_internal_usage_not_counted(env) -> None
     s, c, uid = env.session, env.client, env.auth_state['user_id']
     utc = dt_tz.utc
     # 06-07 本地：入账 +1000（purchase）+ 一条内部 usage（旧账本遗留，应被忽略）
-    s.add(_txn(uid, ttype='purchase', credits=Decimal('1000'), before=Decimal('0'), after=Decimal('1000'),
+    s.add(_txn(uid, ttype='purchase', credits=Decimal(1000), before=Decimal(0), after=Decimal(1000),
                ref_type='pay_order', desc='充值', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
-    s.add(_txn(uid, ttype='usage', credits=Decimal('-30'), before=Decimal('1000'), after=Decimal('970'),
+    s.add(_txn(uid, ttype='usage', credits=Decimal(-30), before=Decimal(1000), after=Decimal(970),
                ref_type='llm_usage', desc='内部usage(应忽略)', created=datetime(2026, 6, 7, 13, 0, tzinfo=utc),
                extra={'input_tokens': 1200, 'output_tokens': 300}))
     # 隔离：别的用户 + 别 app 不计入
-    s.add(_txn(_new_user_id(), ttype='purchase', credits=Decimal('999'), before=Decimal('0'), after=Decimal('999'),
+    s.add(_txn(_new_user_id(), ttype='purchase', credits=Decimal(999), before=Decimal(0), after=Decimal(999),
                ref_type='pay_order', desc='别人', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
-    s.add(_txn(uid, ttype='purchase', credits=Decimal('888'), before=Decimal('0'), after=Decimal('888'),
+    s.add(_txn(uid, ttype='purchase', credits=Decimal(888), before=Decimal(0), after=Decimal(888),
                ref_type='pay_order', desc='别app', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc), app_code='zhixiaoya'))
     await s.flush()
 
@@ -214,10 +217,10 @@ async def test_transactions_daily_grants_internal_usage_not_counted(env) -> None
     assert data['total'] == 1 and len(items) == 1, f'仅 06-07 一天（含我的 huanxing 入账），实际 {items}'
     d7 = items[0]
     assert d7['date'] == '2026-06-07'
-    assert Decimal(str(d7['granted'])) == Decimal('1000')
+    assert Decimal(str(d7['granted'])) == Decimal(1000)
     # 内部 usage 不再计为消耗（消耗权威在 new-api，本用户无映射）
-    assert Decimal(str(d7['consumed'])) == Decimal('0'), '内部 usage 不应再计为消耗'
-    assert Decimal(str(d7['net'])) == Decimal('1000')
+    assert Decimal(str(d7['consumed'])) == Decimal(0), '内部 usage 不应再计为消耗'
+    assert Decimal(str(d7['net'])) == Decimal(1000)
     assert d7['request_count'] == 0 and d7['token_count'] == 0, '消耗/请求/token 权威在 new-api'
     # count 仍含当日全部内部流水（purchase + usage = 2 笔）
     assert d7['count'] == 2
@@ -232,8 +235,8 @@ async def test_info_status_expired_recomputed(env) -> None:
     now = datetime.now(dt_tz.utc)
     s.add(UserSubscription(
         app_code='huanxing', user_id=uid, tier='pro', subscription_type='monthly',
-        monthly_credits=Decimal('1000'), current_credits=Decimal('1000'),
-        used_credits=Decimal('0'), purchased_credits=Decimal('0'),
+        monthly_credits=Decimal(1000), current_credits=Decimal(1000),
+        used_credits=Decimal(0), purchased_credits=Decimal(0),
         billing_cycle_start=now - timedelta(days=95), billing_cycle_end=now - timedelta(days=65),
         subscription_start_date=now - timedelta(days=95), subscription_end_date=now - timedelta(days=65),
         next_grant_date=None, status='active', auto_renew=False, max_agents=3,
@@ -244,7 +247,7 @@ async def test_info_status_expired_recomputed(env) -> None:
     assert data['status'] == 'expired', f"已过期付费订阅应判 expired，实际 {data['status']}"
     assert data['tier'] == 'pro'
     # cycle_consumed_credits 字段存在（无 new-api 映射 → 0），不再用「额度−剩余」假象
-    assert Decimal(str(data['cycle_consumed_credits'])) == Decimal('0')
+    assert Decimal(str(data['cycle_consumed_credits'])) == Decimal(0)
 
 
 async def test_newapi_authoritative_info_and_daily(env) -> None:
@@ -263,7 +266,7 @@ async def test_newapi_authoritative_info_and_daily(env) -> None:
 
     try:
         status = await newapi_admin_client.get_status()  # 返回 /status 配置块（非 {success,data} 信封）
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         pytest.skip(f'new-api 管理 API 不可达，跳过真实联调: {exc!r}')
     if not status:
         pytest.skip('new-api 管理 API 未就绪（/status 空响应），跳过真实联调')
@@ -282,8 +285,8 @@ async def test_newapi_authoritative_info_and_daily(env) -> None:
         now = datetime.now(dt_tz.utc)
         s.add(UserSubscription(
             app_code='huanxing', user_id=uid, tier='flagship', subscription_type='monthly',
-            monthly_credits=Decimal('20000'), current_credits=Decimal('0'),
-            used_credits=Decimal('0'), purchased_credits=Decimal('0'),
+            monthly_credits=Decimal(20000), current_credits=Decimal(0),
+            used_credits=Decimal(0), purchased_credits=Decimal(0),
             billing_cycle_start=datetime(2026, 6, 1, tzinfo=dt_tz.utc), billing_cycle_end=now + timedelta(days=10),
             subscription_start_date=datetime(2026, 6, 1, tzinfo=dt_tz.utc), subscription_end_date=now + timedelta(days=10),
             next_grant_date=None, status='active', auto_renew=False, max_agents=10,
@@ -293,13 +296,13 @@ async def test_newapi_authoritative_info_and_daily(env) -> None:
         # /info：可用积分 = (20000 − 0) = 20000（new-api 权威，新建用户 used_quota=0）；本期消耗 = 0（无流量）
         info = _data(await c.get('/api/v1/user_tier/app/subscription/info'))
         assert Decimal(str(info['current_credits'])) == quota_to_credits(20_000 * rate)
-        assert Decimal(str(info['cycle_consumed_credits'])) == Decimal('0')
+        assert Decimal(str(info['cycle_consumed_credits'])) == Decimal(0)
         assert info['status'] == 'active'
 
         # /daily：无真实计费流量 → new-api 消耗 0；端点正常返回统一信封（不再 seed 假日志）
         daily = _data(await c.get(_DAILY, params={'page': 1, 'size': 20}))
         for it in daily['items']:
-            assert Decimal(str(it['consumed'])) == Decimal('0'), 'new-api 无真实流量，消耗应为 0'
+            assert Decimal(str(it['consumed'])) == Decimal(0), 'new-api 无真实流量，消耗应为 0'
     finally:
         # 清理：经 HTTP 删除 new-api 用户（避免污染共享实例）
         if newapi_user_id is not None:
@@ -325,7 +328,7 @@ async def test_transactions_daily_pagination(env) -> None:
     utc = dt_tz.utc
     for day in (5, 6, 7):
         # 03:00Z = 11:00+08，稳落当地同一天
-        s.add(_txn(uid, ttype='usage', credits=Decimal('-10'), before=Decimal('100'), after=Decimal('90'),
+        s.add(_txn(uid, ttype='usage', credits=Decimal(-10), before=Decimal(100), after=Decimal(90),
                    ref_type='llm_usage', desc=f'd{day}', created=datetime(2026, 6, day, 3, 0, tzinfo=utc)))
     await s.flush()
 

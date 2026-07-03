@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_owner_api_keys import hasn_owner_api_keys_dao
 from backend.app.hasn.model import HasnOwnerApiKeys
-from backend.app.hasn.schema.hasn_owner_api_keys import CreateHasnOwnerApiKeysParam, DeleteHasnOwnerApiKeysParam, UpdateHasnOwnerApiKeysParam
+from backend.app.hasn.schema.hasn_owner_api_keys import (
+    CreateHasnOwnerApiKeysParam,
+    DeleteHasnOwnerApiKeysParam,
+    UpdateHasnOwnerApiKeysParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 
@@ -13,7 +18,7 @@ class HasnOwnerApiKeysService:
     @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> HasnOwnerApiKeys:
         """
-        获取HASN Owner API Key 
+        获取HASN Owner API Key
 
         :param db: 数据库会话
         :param pk: HASN Owner API Key  ID
@@ -40,7 +45,7 @@ class HasnOwnerApiKeysService:
     @staticmethod
     async def get_all(*, db: AsyncSession) -> Sequence[HasnOwnerApiKeys]:
         """
-        获取所有HASN Owner API Key 
+        获取所有HASN Owner API Key
 
         :param db: 数据库会话
         :return:
@@ -51,7 +56,7 @@ class HasnOwnerApiKeysService:
     @staticmethod
     async def create(*, db: AsyncSession, obj: CreateHasnOwnerApiKeysParam, user_id: int | None = None) -> HasnOwnerApiKeys:
         """
-        创建HASN Owner API Key 
+        创建HASN Owner API Key
 
         :param db: 数据库会话
         :param obj: 创建HASN Owner API Key 参数
@@ -69,7 +74,7 @@ class HasnOwnerApiKeysService:
     @staticmethod
     async def update(*, db: AsyncSession, pk: int, obj: UpdateHasnOwnerApiKeysParam, user_id: int | None = None) -> int:
         """
-        更新HASN Owner API Key 
+        更新HASN Owner API Key
 
         :param db: 数据库会话
         :param pk: HASN Owner API Key  ID
@@ -82,7 +87,7 @@ class HasnOwnerApiKeysService:
     @staticmethod
     async def delete(*, db: AsyncSession, obj: DeleteHasnOwnerApiKeysParam) -> int:
         """
-        删除HASN Owner API Key 
+        删除HASN Owner API Key
 
         :param db: 数据库会话
         :param obj: HASN Owner API Key  ID 列表

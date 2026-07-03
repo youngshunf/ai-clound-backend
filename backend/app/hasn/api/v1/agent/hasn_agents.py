@@ -17,6 +17,7 @@ from backend.app.hasn.service.hasn_agents_service import (
     agent_profile_service,
     hasn_agents_service,
 )
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.response.response_schema import (
     ResponseModel,
@@ -24,7 +25,6 @@ from backend.common.response.response_schema import (
     response_base,
 )
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()

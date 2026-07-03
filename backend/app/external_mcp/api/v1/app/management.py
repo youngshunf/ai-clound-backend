@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Path, Request
 from sqlalchemy import select
 
@@ -64,7 +66,7 @@ async def list_servers(request: Request, db: CurrentSession, include_system: boo
 
 
 @router.get('/servers/{mcp_id}', summary='[Owner] server 详情（含已自省工具）', dependencies=[DependsJwtAuth])
-async def get_server(request: Request, db: CurrentSession, mcp_id: str = Path(...)) -> ResponseModel:
+async def get_server(request: Request, db: CurrentSession, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await external_mcp_gateway.get_server_detail(mcp_id=mcp_id, owner_hasn_id=owner_hasn_id)
     if data is None:
@@ -103,7 +105,7 @@ async def register_server(request: Request, db: CurrentSession, obj: RegisterOwn
 
 
 @router.post('/servers/{mcp_id}/introspect', summary='[Owner] 自省 server（拉工具列表）', dependencies=[DependsJwtAuth])
-async def introspect_server(request: Request, db: CurrentSession, mcp_id: str = Path(...)) -> ResponseModel:
+async def introspect_server(request: Request, db: CurrentSession, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     detail = await external_mcp_gateway.get_server_detail(mcp_id=mcp_id, owner_hasn_id=owner_hasn_id)
     if detail is None or detail.get('owner_hasn_id') != owner_hasn_id:
@@ -117,7 +119,7 @@ async def introspect_server(request: Request, db: CurrentSession, mcp_id: str = 
     summary='[Owner] 建连时解析 local_process server 的 env 凭据（实时下发本机 daemon）',
     dependencies=[DependsJwtAuth],
 )
-async def resolve_server_env(request: Request, db: CurrentSession, mcp_id: str = Path(...)) -> ResponseModel:
+async def resolve_server_env(request: Request, db: CurrentSession, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     """local_process 建连凭据实时解析（P7-G G3，doc101 §2.1.2）。
 
     daemon 在 spawn 本机子进程前调本端点，取该 server 的 env 把 `secret://` 引用解析为明文，注入子进程
@@ -131,7 +133,7 @@ async def resolve_server_env(request: Request, db: CurrentSession, mcp_id: str =
 
 
 @router.put('/servers/{mcp_id}/credential', summary='[Owner] 写入/轮换 server 凭据（明文不回显）', dependencies=[DependsJwtAuth])
-async def set_credential(request: Request, db: CurrentSession, obj: SetCredentialParam, mcp_id: str = Path(...)) -> ResponseModel:
+async def set_credential(request: Request, db: CurrentSession, obj: SetCredentialParam, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await external_mcp_gateway.set_credential(
         mcp_id=mcp_id,
@@ -149,21 +151,21 @@ async def set_credential(request: Request, db: CurrentSession, obj: SetCredentia
     name='external_mcp_revoke_credential',
     dependencies=[DependsJwtAuth],
 )
-async def revoke_credential(request: Request, db: CurrentSession, mcp_id: str = Path(...)) -> ResponseModel:
+async def revoke_credential(request: Request, db: CurrentSession, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await external_mcp_gateway.revoke_credential(mcp_id=mcp_id, owner_hasn_id=owner_hasn_id)
     return response_base.success(data=data)
 
 
 @router.put('/servers/{mcp_id}/status', summary='[Owner] 启用/停用 server', dependencies=[DependsJwtAuth])
-async def set_server_status(request: Request, db: CurrentSession, obj: SetServerStatusParam, mcp_id: str = Path(...)) -> ResponseModel:
+async def set_server_status(request: Request, db: CurrentSession, obj: SetServerStatusParam, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     data = await external_mcp_gateway.set_server_status(mcp_id=mcp_id, status=obj.status, owner_hasn_id=owner_hasn_id)
     return response_base.success(data=data)
 
 
 @router.delete('/servers/{mcp_id}', summary='[Owner] 删除 server（连带凭据/绑定）', dependencies=[DependsJwtAuth])
-async def delete_server(request: Request, db: CurrentSession, mcp_id: str = Path(...)) -> ResponseModel:
+async def delete_server(request: Request, db: CurrentSession, mcp_id: Annotated[str, Path()]) -> ResponseModel:
     owner_hasn_id = await _owner(db, request)
     ok = await external_mcp_gateway.delete_server(mcp_id=mcp_id, owner_hasn_id=owner_hasn_id)
     return response_base.success(data={'deleted': ok})

@@ -15,11 +15,13 @@
 from __future__ import annotations
 
 import uuid
+
 from types import SimpleNamespace
 
 import httpx
 import pytest
 import pytest_asyncio
+
 from fastapi import FastAPI, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -27,9 +29,9 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.home.api.v1.app.home import router as app_workbench_router
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -78,7 +80,7 @@ async def env():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -94,7 +96,7 @@ async def env():
     async def _yield_session():
         yield session
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=auth_state['user_id'])
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'

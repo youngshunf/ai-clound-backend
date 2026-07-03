@@ -109,7 +109,7 @@ class CreditSyncService:
         cursor = int(mapping.last_synced_used_quota or 0)
         delta = u_now - cursor
 
-        consumed = Decimal('0')
+        consumed = Decimal(0)
         if delta > 0:
             consumed = Decimal(delta) / Decimal(_rate())
             # 回扣账本，封顶在可用余额（deduct_credits 不足会抛 InsufficientCreditsError）；
@@ -166,19 +166,19 @@ class CreditSyncService:
         targets = [(m.huanxing_user_id, m.app_code) for m in mappings if m.status == 'active']
 
         ok = no_delta = skipped = failed = 0
-        consumed_total = Decimal('0')
+        consumed_total = Decimal(0)
         for user_id, app_code in targets:
             try:
                 async with async_db_session.begin() as db:
                     result = await CreditSyncService.reconcile_user(db, user_id, app_code=app_code)
-            except Exception as exc:  # noqa: BLE001 — 单用户异常隔离，不拖垮整批
+            except Exception as exc:
                 log.error(f'[CreditSync] reconcile_user 异常 user_id={user_id}: {exc!r}')
                 failed += 1
                 continue
             st = result['status']
             if st == 'ok':
                 ok += 1
-                consumed_total += result.get('consumed_credits') or Decimal('0')
+                consumed_total += result.get('consumed_credits') or Decimal(0)
             elif st == 'no_delta':
                 no_delta += 1
             elif st == 'newapi_unreachable':

@@ -36,6 +36,10 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'expire_overdue_subscriptions',
         'schedule': TzAwareCrontab('30', '1'),  # 每天凌晨 1:30（年度发放后收敛存量 status）
     },
+    '应用权益过期检查': {
+        'task': 'app_entitlement_expire_sweep',
+        'schedule': TzAwareCrontab('0', '2'),  # 每天凌晨 2 点收敛「active 但已过期」的应用权益 status
+    },
     '积分账本每小时对账': {
         'task': 'newapi_hourly_credit_sync',
         'schedule': TzAwareCrontab('0'),  # 每小时整点：new-api 真实消费增量回扣账本 + 重设 quota（§5A.5）
@@ -49,6 +53,13 @@ LOCAL_BEAT_SCHEDULE = {
         # 每 3 天增量同步一次（真 72h 间隔）。增量：上游版本未变只刷计数、零下载零翻译；
         # 磁盘硬闸 MARKETPLACE_CLAWHUB_MAX_DISK_GB（默认 50GB）——clawhub 目录占用达上限即暂停下载。
         'schedule': schedule(timedelta(days=3)),
+    },
+    '技能市场-公共技能共享目录 reconcile': {
+        'task': 'marketplace_shared_skills_reconcile',
+        # 每 20 分钟兜底一次（doc11 §6 B3；common_skills revision bump 时另有即时 .delay() 触发）。
+        # 未配置 HERMES_SHARED_SKILLS_ROOT（本机无 hermes sidecar）→ 任务内 no-op；
+        # 内容寻址增量：无变更整轮零下载，兜底成本≈两条快照查询。
+        'schedule': TzAwareCrontab('*/20'),
     },
     '获客-触达发送 worker': {
         'task': 'growth_dispatch_approved_outreach',

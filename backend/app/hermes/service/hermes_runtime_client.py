@@ -199,6 +199,32 @@ class HermesRuntimeClient:
     async def get_run_events(self, runtime_profile_id: str, run_id: str, trace_id: str | None = None) -> Any:
         return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/runs/{run_id}/events', trace_id=trace_id)
 
+    async def list_skills(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
+        """列出 profile 的运行时技能（控制面，读 profile skills/ 目录 + config.yaml disabled 列表）。
+
+        与 daemon 本地 `RuntimeAdapter.list_skills` 打的同一个 sidecar 路由对端同构；云端分身经
+        本服务 → 云端 sidecar 读，形态 `{profile_id, skills:[{skill_id,name,description,enabled}]}`。
+        """
+        return await self._request('GET', f'/runtime/v1/agents/{runtime_profile_id}/skills', trace_id=trace_id)
+
+    async def read_skill(self, runtime_profile_id: str, skill_id: str, trace_id: str | None = None) -> dict[str, Any]:
+        """读取 profile 某技能正文（SKILL.md），返回 `{skill_id,name,description,content,enabled}`。"""
+        return await self._request(
+            'GET', f'/runtime/v1/agents/{runtime_profile_id}/skills/{skill_id}', trace_id=trace_id
+        )
+
+    async def enable_skill(self, runtime_profile_id: str, skill_id: str, trace_id: str | None = None) -> dict[str, Any]:
+        """启用技能（从 config.yaml skills.disabled 移除），返回 `{skill_id,enabled:True}`。"""
+        return await self._request(
+            'POST', f'/runtime/v1/agents/{runtime_profile_id}/skills/{skill_id}/enable', json={}, trace_id=trace_id
+        )
+
+    async def disable_skill(self, runtime_profile_id: str, skill_id: str, trace_id: str | None = None) -> dict[str, Any]:
+        """停用技能（加入 config.yaml skills.disabled），返回 `{skill_id,enabled:False}`。"""
+        return await self._request(
+            'POST', f'/runtime/v1/agents/{runtime_profile_id}/skills/{skill_id}/disable', json={}, trace_id=trace_id
+        )
+
     async def start_gateway_by_profile(self, runtime_profile_id: str, trace_id: str | None = None) -> dict[str, Any]:
         """Idempotently start the upstream gateway for a profile (control-plane).
 

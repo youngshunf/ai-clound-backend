@@ -42,7 +42,7 @@ PLAN_AI_NATIVE_MANIFEST = {
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'plan': '规划（目标/计划/待办/简报/复盘）'},
     'version': '1.0.0',
-    'workspace_scope': ['personal'],
+    'workspace_scope': ['personal', 'enterprise'],  # PLAN-ENT PE-6：双模应用（个人 PIM + 企业日历）
     'collaboration_mode': 'none',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
@@ -72,7 +72,9 @@ def build_plan_app() -> App:
     - ``install_policy='manual'``：与 growth/creator/designsystem 先例一致——注册 manifest + 铸 scope，
       用户可见启动入口随 webui 工作台 + ``hasn_app_catalog`` 目录行落地。注册到 app_catalog_registry
       是 ``validate_manifest`` 的硬前置（否则 workbench_app_not_found）。
-    - ``collaboration_mode='none'`` / ``scope=('personal',)`` 必须与 manifest 对齐（validate 闸门）。
+    - ``collaboration_mode='none'`` / ``scope=('personal', 'enterprise')`` 必须与 manifest ``workspace_scope``
+      对齐（validate 闸门）。PLAN-ENT PE-6 起 plan 升双模应用（个人 PIM + 企业日历）；``purchasable_by='both'``
+      由迁移直改活跃 catalog 行（_catalog_row_from_app 不产此列，仅 INSERT-only seed 用 DB 默认 owner）。
     - ``execution_mode='local_tool'`` / ``ui_kind=None``：原生 webui（非 embedded sidecar）。
 
     延迟导入 App 避免循环依赖（app_catalog_registry 加载即 default() 反向引用本模块）。
@@ -84,7 +86,7 @@ def build_plan_app() -> App:
         name='规划',
         icon='brand-plan',
         description='你的目标、计划、待办、日程可视化大脑——分身当参谋长替你拆解目标，当执行秘书替你排期复盘。',
-        scope=('personal',),
+        scope=('personal', 'enterprise'),
         collaboration_mode='none',
         entry_route='/apps/plan',
         install_policy='manual',

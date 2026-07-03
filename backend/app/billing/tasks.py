@@ -6,12 +6,12 @@ from datetime import timedelta
 from decimal import Decimal
 
 from celery import shared_task
-from sqlalchemy import select, and_, update
+from sqlalchemy import and_, select, update
 
+from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
+from backend.app.billing.model import CreditTransaction, UserCreditBalance, UserSubscription
 from backend.app.newapi.apikey.enums import ApiKeyStatus
 from backend.app.newapi.apikey.model import UserApiKey
-from backend.app.billing.model import UserSubscription, UserCreditBalance, CreditTransaction
-from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.common.log import log
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
@@ -21,13 +21,13 @@ from backend.utils.timezone import timezone
 async def grant_yearly_subscription_credits() -> str:
     """
     年度订阅用户每月积分发放任务
-    
+
     每天凌晨执行，检查符合条件的年度订阅用户：
     - subscription_type = 'yearly'
     - status = 'active'
     - next_grant_date <= now
     - subscription_end_date > now (订阅未过期)
-    
+
     为符合条件的用户：
     1. 创建积分余额记录
     2. 更新 next_grant_date 为下个月
@@ -36,7 +36,7 @@ async def grant_yearly_subscription_credits() -> str:
     now = timezone.now()
     granted_count = 0
     error_count = 0
-    
+
     async with async_db_session.begin() as db:
         # 查询需要发放积分的年度订阅用户
         stmt = select(UserSubscription).where(
@@ -49,9 +49,9 @@ async def grant_yearly_subscription_credits() -> str:
         )
         result = await db.execute(stmt)
         subscriptions = result.scalars().all()
-        
+
         log.info(f'[YearlyGrant] 找到 {len(subscriptions)} 个需要发放积分的年度订阅用户')
-        
+
         for subscription in subscriptions:
             try:
                 # 获取等级配置
@@ -62,29 +62,29 @@ async def grant_yearly_subscription_credits() -> str:
                     log.warning(f'[YearlyGrant] 用户 {subscription.user_id} 的订阅等级 {subscription.tier} 不存在')
                     error_count += 1
                     continue
-                
+
                 monthly_credits = tier.monthly_credits
-                
+
                 # 计算下次发放时间和积分有效期
                 next_grant = subscription.next_grant_date + timedelta(days=30)
                 cycle_end = subscription.next_grant_date + timedelta(days=30)
-                
+
                 # 确保不超过订阅结束时间
                 if next_grant > subscription.subscription_end_date:
                     next_grant = None  # 最后一次发放，不再设置下次发放时间
-                
+
                 # 计算发放的月份数（从订阅开始算起）
                 if subscription.subscription_start_date:
                     months_elapsed = (subscription.next_grant_date - subscription.subscription_start_date).days // 30 + 1
                 else:
                     months_elapsed = 1
-                
+
                 # 创建积分余额记录
                 balance = UserCreditBalance(
                     user_id=subscription.user_id,
                     credit_type='monthly',
                     original_amount=monthly_credits,
-                    used_amount=Decimal('0'),
+                    used_amount=Decimal(0),
                     remaining_amount=monthly_credits,
                     expires_at=cycle_end,
                     granted_at=now,
@@ -92,9 +92,10 @@ async def grant_yearly_subscription_credits() -> str:
                     description=f'年度订阅: {subscription.tier} (第{months_elapsed}个月)',
                 )
                 db.add(balance)
-                
+
                 # 获取当前总积分（用于记录交易）
                 from sqlalchemy import func
+
                 from backend.app.billing.model import UserCreditBalance as UCB
                 balance_stmt = select(func.coalesce(func.sum(UCB.remaining_amount), 0)).where(
                     and_(
@@ -104,7 +105,7 @@ async def grant_yearly_subscription_credits() -> str:
                 )
                 balance_result = await db.execute(balance_stmt)
                 current_balance = Decimal(str(balance_result.scalar() or 0))
-                
+
                 # 记录交易
                 transaction = CreditTransaction(
                     user_id=subscription.user_id,
@@ -120,21 +121,21 @@ async def grant_yearly_subscription_credits() -> str:
                     },
                 )
                 db.add(transaction)
-                
+
                 # 更新订阅的下次发放时间和计费周期
                 subscription.next_grant_date = next_grant
                 subscription.billing_cycle_start = now
                 subscription.billing_cycle_end = cycle_end
                 subscription.current_credits = current_balance + monthly_credits
-                
+
                 granted_count += 1
                 log.info(f'[YearlyGrant] 用户 {subscription.user_id} 发放 {monthly_credits} 积分成功 (第{months_elapsed}个月)')
-                
+
             except Exception as e:
                 log.error(f'[YearlyGrant] 用户 {subscription.user_id} 发放积分失败: {e}')
                 error_count += 1
                 continue
-    
+
     result_msg = f'年度订阅积分发放完成: 成功 {granted_count} 个, 失败 {error_count} 个'
     log.info(f'[YearlyGrant] {result_msg}')
     return result_msg

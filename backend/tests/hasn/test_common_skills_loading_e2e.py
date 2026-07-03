@@ -52,7 +52,7 @@ async def e2e():
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
@@ -110,7 +110,6 @@ async def e2e():
             agent_name=f'agent_{tag}',
             owner_hasn_id=owner,
             owner_user_id=owner_uid,
-            scopes=['agent'],
             session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1),
         )
@@ -141,7 +140,7 @@ async def _get_profile(client) -> dict:
     return body['data']
 
 
-async def test_profile_overlays_common_skills_and_revision_tracks_changes(e2e):
+async def test_profile_overlays_common_skills_and_revision_tracks_changes(e2e) -> None:
     c = e2e.client
 
     # 1) profile 叠加公共技能：含公共 + 自装，不含非公共；revision != '0'
@@ -189,7 +188,7 @@ async def test_profile_overlays_common_skills_and_revision_tracks_changes(e2e):
     assert rbody['data']['profile_revision'] == 3
 
 
-async def test_revision_stable_when_nothing_changes(e2e):
+async def test_revision_stable_when_nothing_changes(e2e) -> None:
     """同状态多次读取 → revision 稳定（确定性，非随机/时间）。"""
     c = e2e.client
     a = await _get_profile(c)
@@ -197,7 +196,7 @@ async def test_revision_stable_when_nothing_changes(e2e):
     assert a['common_skills_revision'] == b['common_skills_revision']
 
 
-async def test_content_hash_change_bumps_revision_without_version_change(e2e):
+async def test_content_hash_change_bumps_revision_without_version_change(e2e) -> None:
     """doc14 §B3 核心修复：**版本不变（恒 1.0.0）、仅 content_hash 变** → revision 变。
 
     这正是 doc12 饿死的场景——官方技能 frontmatter 无 version、同步器恒赋 1.0.0，旧实现用
@@ -235,7 +234,7 @@ async def test_content_hash_change_bumps_revision_without_version_change(e2e):
     assert rev3 not in (rev1, rev2), (rev1, rev2, rev3)
 
 
-async def test_installed_skills_revision_tracks_self_installed_content(e2e):
+async def test_installed_skills_revision_tracks_self_installed_content(e2e) -> None:
     """doc14 §B4：Agent **自装技能内容**升级 → installed_skills_revision 变（独立于公共技能）。"""
     c = e2e.client
     data0 = await _get_profile(c)
@@ -267,7 +266,7 @@ async def test_installed_skills_revision_tracks_self_installed_content(e2e):
     assert r.json()['data']['installed_skills_revision'] == inst2
 
 
-async def test_profile_exposes_per_skill_content_fingerprints(e2e):
+async def test_profile_exposes_per_skill_content_fingerprints(e2e) -> None:
     """doc14 §C4：profile 出 skill_content_hashes 映射，供 hermes 只重下指纹变化的技能。
 
     指纹与 common/installed revision 同源（COALESCE content_hash→file_hash→version），

@@ -154,7 +154,9 @@ class AgentTokenInfo(SchemaBase):
     """Agent JWT 信息"""
 
     access_token: str = Field(description='Agent JWT')
-    scopes: list[str] = Field(description='Agent 权限列表')
+    # 已退役：JWT 不再携带 scopes claim、授权只看三态（实施102 S0）。恒空列表，
+    # 仅为兼容旧 daemon 的必填反序列化字段保留（daemon Rust 侧已改 serde default）。
+    scopes: list[str] = Field(default_factory=list, description='已退役占位（恒空），授权走三态 capability_modes')
 
 
 class CloudCreateAgentResponse(SchemaBase):
@@ -327,6 +329,10 @@ class AgentProfileResponse(SchemaBase):
     user_md: str | None = Field(None, description='USER.md 内容（owner 记忆下发）')
     memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）')
     skills: list[str] = Field(default_factory=list, description='技能 skill_id 清单（已叠加公共技能）')
+    common_skill_ids: list[str] = Field(
+        default_factory=list,
+        description='公共技能 skill_id 清单（skills 的子集，hermes 据此分流公共→共享目录；doc11 §5.2）',
+    )
     skill_content_hashes: dict[str, str] = Field(
         default_factory=dict,
         description='per-skill 内容指纹映射 {skill_id: 指纹}，指纹=COALESCE(content_hash,file_hash,version)；'
@@ -391,6 +397,46 @@ class RuntimeHealthResponse(SchemaBase):
     online: bool = Field(description='云端 runtime 控制面是否可达（可服务该分身）')
     health: str = Field(description="健康度：'ok'（可达）/'offline'（不可达）")
     detail: str | None = Field(None, description='细节（gateway_running/gateway_idle/不可达原因等，仅供观测）')
+
+
+class RuntimeSkillItem(SchemaBase):
+    """云端分身运行时的单个技能条目（列表用，与本地 hermes sidecar list_skills 同形态）。"""
+
+    skill_id: str = Field(description='技能 ID（profile skills/ 目录名）')
+    name: str = Field(description='技能名称')
+    description: str = Field(description='技能描述')
+    enabled: bool = Field(description='是否启用（未在 config.yaml skills.disabled 中）')
+
+
+class RuntimeSkillsListResponse(SchemaBase):
+    """列出云端分身运行时技能（双形态 Runtime，设计 04：云端 Runtime 收敛到 RuntimeAdapter）。"""
+
+    skills: list[RuntimeSkillItem] = Field(default_factory=list, description='技能列表（未 provision 则为空）')
+
+
+class RuntimeSkillReadResponse(SchemaBase):
+    """读取云端分身某个技能的正文（SKILL.md）。"""
+
+    skill_id: str = Field(description='技能 ID')
+    name: str = Field(description='技能名称')
+    description: str = Field(description='技能描述')
+    content: str = Field(description='SKILL.md 正文')
+    enabled: bool = Field(description='是否启用')
+
+
+class RuntimeSkillMutateRequest(SchemaBase):
+    """启用/停用云端分身某技能的请求（Agent JWT，仅 runtime_location=cloud 分身）。"""
+
+    runtime_profile_id: str = Field(description='hermes 上游 profile_id，由 daemon 携带')
+    trace_id: str | None = Field(None, description='链路追踪 ID')
+
+
+class RuntimeSkillMutateResponse(SchemaBase):
+    """启用/停用云端分身某技能的返回。"""
+
+    skill_id: str = Field(description='技能 ID')
+    enabled: bool = Field(description='操作后是否启用')
+    success: bool = Field(description='是否达成目标状态（enable→enabled / disable→disabled）')
 
 
 class AgentProfileRevisionResponse(SchemaBase):

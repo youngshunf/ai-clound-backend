@@ -18,7 +18,6 @@ from backend.common.security.internal_auth import require_runtime_internal_token
 from backend.database.db import CurrentSession
 from backend.utils.timezone import timezone as _tz
 
-
 router = APIRouter()
 
 

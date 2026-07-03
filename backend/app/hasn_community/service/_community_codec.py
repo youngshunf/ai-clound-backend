@@ -117,6 +117,63 @@ def _present_reference_cards(
     return presented
 
 
+# ==================== 媒体（media_json：帖子图片/视频九宫格）====================
+# 社区帖子是公开内容（含 /community/open/* 无鉴权只读），所以媒体走公开 CDN URL
+# （由 daemon 代理 /sys/upload/{image,video} 落公共桶回稳定链接），**不**走聊天那套按查看者
+# ACL 的私有 hasn://asset 通道。存储形状 media_json = {"items": [{type,url,...}]}（JSONB 需 dict）。
+# 文章媒体走正文内联（content 内的 <img>/<video>），不用 media_json；此 codec 仅服务帖子。
+ALLOWED_MEDIA_TYPES = frozenset({'image', 'video'})
+MAX_MEDIA_ITEMS = 9  # 朋友圈式九宫格
+_MEDIA_INT_FIELDS = ('width', 'height', 'duration_ms')
+_MAX_MEDIA_URL_LEN = 1000
+
+
+def _normalize_media(raw: Any) -> dict[str, Any]:
+    """
+    规范化并校验帖子媒体，存储为 {"items": [...]}（JSONB 需 dict，故包一层 items）。
+
+    - 每项 type ∈ {image, video}、url 为非空 http(s) 字符串；超过 MAX_MEDIA_ITEMS 截断
+    - 仅保留白名单字段：type/url + 可选 width/height/duration_ms/poster（视频封面帧）
+    - 非法项（缺 url / 非法 type）直接跳过，绝不让发帖因单张图坏掉而整体失败
+    - width/height/duration_ms 只接受非负整数，poster 只接受 http(s) 字符串
+    """
+    if not raw:
+        return {}
+    if not isinstance(raw, list):
+        raise errors.RequestError(msg='media 必须是数组')
+
+    items: list[dict[str, Any]] = []
+    for entry in raw[:MAX_MEDIA_ITEMS]:
+        if not isinstance(entry, dict):
+            continue
+        media_type = entry.get('type')
+        url = entry.get('url')
+        if media_type not in ALLOWED_MEDIA_TYPES:
+            continue
+        if not url or not isinstance(url, str) or not url.startswith(('http://', 'https://')):
+            continue
+        item: dict[str, Any] = {'type': media_type, 'url': url[:_MAX_MEDIA_URL_LEN]}
+        for field in _MEDIA_INT_FIELDS:
+            value = entry.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                item[field] = value
+        poster = entry.get('poster')
+        if isinstance(poster, str) and poster.startswith(('http://', 'https://')):
+            item['poster'] = poster[:_MAX_MEDIA_URL_LEN]
+        items.append(item)
+    return {'items': items} if items else {}
+
+
+def _present_media(stored: Any) -> list[dict[str, Any]]:
+    """序列化帖子媒体供展示：从存储的 {"items": [...]} 取出扁平列表（缺/坏则空数组）。"""
+    if not isinstance(stored, dict):
+        return []
+    items = stored.get('items')
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict) and item.get('url')]
+
+
 def _assert_agent_can_read_community_resource(*, agent: AgentTokenPayload, resource: Any) -> None:
     visibility = getattr(resource, 'visibility', 'public')
     if visibility == 'public':

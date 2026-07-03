@@ -1,4 +1,5 @@
 from backend.app.hasn_plan.model.event import Event as Event
+from backend.app.hasn_plan.model.event_attendee import EventAttendee as EventAttendee
 from backend.app.hasn_plan.model.goal import Goal as Goal
 from backend.app.hasn_plan.model.goal_key_result import GoalKeyResult as GoalKeyResult
 from backend.app.hasn_plan.model.habit import Habit as Habit

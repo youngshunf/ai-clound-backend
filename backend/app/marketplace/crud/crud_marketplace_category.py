@@ -1,11 +1,14 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.marketplace.model import MarketplaceCategory
-from backend.app.marketplace.schema.marketplace_category import CreateMarketplaceCategoryParam, UpdateMarketplaceCategoryParam
+from backend.app.marketplace.schema.marketplace_category import (
+    CreateMarketplaceCategoryParam,
+    UpdateMarketplaceCategoryParam,
+)
 
 
 class CRUDMarketplaceCategory(CRUDPlus[MarketplaceCategory]):

@@ -16,14 +16,20 @@ class Todo(PlanBase):
 
     id: Mapped[id_key] = mapped_column(init=False)
     owner_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
+    enterprise_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='所属企业 id（NULL=个人待办；逻辑引用 public.hasn_enterprise，无硬 FK）'
+    )
+    dept_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='所属部门 id（NULL=不限部门）')
     plan_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     goal_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     title: Mapped[str] = mapped_column(sa.String(255), default='', comment=None)
     notes: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     actor: Mapped[str] = mapped_column(
-        sa.String(8),
+        sa.String(16),
         default='owner',
-        comment='执行归属 (owner:需你亲为:violet/collab:待你确认:amber/agent:分身自主:cyan)',
+        # 到期分诊四态（PLAN-TRIAGE，不变量 #8 决策≠亲手做）：owner_decision 是「待你决策」可派发态，
+        # 分身先备选项/背景、再经提问卡问主人拍板，区别于 owner（线下亲为·不派发）。
+        comment='归属分诊 (owner:需你亲为·线下:red/owner_decision:待你决策:violet/collab:待你确认:amber/agent:分身自主:cyan)',  # noqa: E501
     )
     autonomy: Mapped[str] = mapped_column(
         sa.String(8), default='auto', comment='分身自主度 (auto:自动:green/review:待审:amber/ask:逐步确认:red)'
@@ -58,3 +64,13 @@ class Todo(PlanBase):
         comment='来源 (chat:对话:cyan/manual:手动:gray/capture:捕获:blue/decompose:分解:violet)',
     )
     completed_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
+    # 留痕三列（独立于 notes 用户备注；PLAN-TRIAGE / doc05 §6.6 两列一次加齐）。
+    decision_note: Mapped[str | None] = mapped_column(
+        UniversalText, default=None, comment='owner_decision 决策留痕（主人经提问卡拍板后的结论/理由）'
+    )
+    completion_note: Mapped[str | None] = mapped_column(
+        UniversalText, default=None, comment='完成结论（done 时的成果小结，区别于 notes 用户备注）'
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(
+        UniversalText, default=None, comment='放弃原因（cancelled 时的原因，区别于 notes 用户备注）'
+    )

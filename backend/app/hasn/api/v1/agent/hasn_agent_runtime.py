@@ -19,6 +19,10 @@ from backend.app.hasn.schema.hasn_agents import (
     RuntimeRunCancelRequest,
     RuntimeRunCancelResponse,
     RuntimeRunRequest,
+    RuntimeSkillMutateRequest,
+    RuntimeSkillMutateResponse,
+    RuntimeSkillReadResponse,
+    RuntimeSkillsListResponse,
 )
 from backend.app.hasn.service.hasn_agent_runtime_dispatch_service import (
     hasn_agent_runtime_dispatch_service,
@@ -132,3 +136,108 @@ async def cancel_runtime_run(
     return response_base.success(
         data=RuntimeRunCancelResponse(run_id=result['run_id'], cancelled=result['cancelled'])
     )
+
+
+# ---------------------------------------------------------------------------
+# 运行时技能读/管理（双形态 Runtime，设计 04：云端 Runtime 收敛到 RuntimeAdapter）
+#
+# daemon 侧 Hermes 适配器按 runtime_location 分叉：local→本地 sidecar，cloud→经
+# BackendGateway agent-scoped 通道（Agent JWT）打本组端点 → 云端 sidecar 控制面读。
+# 归属校验 + 云端形态闸门统一复用 resolve_cloud_profile（身份恒取自 Agent JWT）。
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    '/skills',
+    summary='列出云端分身运行时技能（双形态 Runtime，设计 04）',
+)
+async def list_runtime_skills(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    runtime_profile_id: str,
+) -> ResponseSchemaModel[RuntimeSkillsListResponse]:
+    profile_id = await hasn_agent_runtime_dispatch_service.resolve_cloud_profile(
+        db,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        runtime_profile_id=runtime_profile_id,
+    )
+    result = await hasn_agent_runtime_dispatch_service.list_skills(runtime_profile_id=profile_id)
+    return response_base.success(
+        data=RuntimeSkillsListResponse(skills=result.get('skills') or [])
+    )
+
+
+@router.get(
+    '/skills/{skill_id}',
+    summary='读取云端分身某技能正文（SKILL.md）',
+)
+async def read_runtime_skill(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    skill_id: str,
+    runtime_profile_id: str,
+) -> ResponseSchemaModel[RuntimeSkillReadResponse]:
+    profile_id = await hasn_agent_runtime_dispatch_service.resolve_cloud_profile(
+        db,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        runtime_profile_id=runtime_profile_id,
+    )
+    result = await hasn_agent_runtime_dispatch_service.read_skill(
+        runtime_profile_id=profile_id, skill_id=skill_id
+    )
+    # 显式取字段（sidecar 返回含 profile_id 等额外键，逐字段构造避免透传噪音）。
+    return response_base.success(
+        data=RuntimeSkillReadResponse(
+            skill_id=str(result.get('skill_id') or skill_id),
+            name=str(result.get('name') or ''),
+            description=str(result.get('description') or ''),
+            content=str(result.get('content') or ''),
+            enabled=bool(result.get('enabled', False)),
+        )
+    )
+
+
+@router.post(
+    '/skills/{skill_id}/enable',
+    summary='启用云端分身某技能',
+)
+async def enable_runtime_skill(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    skill_id: str,
+    body: RuntimeSkillMutateRequest,
+) -> ResponseSchemaModel[RuntimeSkillMutateResponse]:
+    profile_id = await hasn_agent_runtime_dispatch_service.resolve_cloud_profile(
+        db,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        runtime_profile_id=body.runtime_profile_id,
+    )
+    result = await hasn_agent_runtime_dispatch_service.enable_skill(
+        runtime_profile_id=profile_id, skill_id=skill_id, trace_id=body.trace_id
+    )
+    return response_base.success(data=RuntimeSkillMutateResponse(**result))
+
+
+@router.post(
+    '/skills/{skill_id}/disable',
+    summary='停用云端分身某技能',
+)
+async def disable_runtime_skill(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    skill_id: str,
+    body: RuntimeSkillMutateRequest,
+) -> ResponseSchemaModel[RuntimeSkillMutateResponse]:
+    profile_id = await hasn_agent_runtime_dispatch_service.resolve_cloud_profile(
+        db,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        runtime_profile_id=body.runtime_profile_id,
+    )
+    result = await hasn_agent_runtime_dispatch_service.disable_skill(
+        runtime_profile_id=profile_id, skill_id=skill_id, trace_id=body.trace_id
+    )
+    return response_base.success(data=RuntimeSkillMutateResponse(**result))

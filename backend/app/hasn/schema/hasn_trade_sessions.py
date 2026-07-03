@@ -5,7 +5,6 @@ from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
 
-
 ScopeLifecycleState = Literal["pending", "active", "closed", "expired"]
 
 

@@ -1,5 +1,5 @@
-from datetime import date, datetime
-from typing import Sequence
+from collections.abc import Sequence
+from datetime import date
 
 from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession

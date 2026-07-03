@@ -8,7 +8,6 @@ from typing import Any
 
 import httpx
 
-
 DEFAULT_FIRECRAWL_BASE_URL = 'https://firecrawl.dcfuture.com.cn'
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
 
@@ -18,7 +17,7 @@ class FirecrawlTransportError(Exception):
 
 
 class FirecrawlHTTPError(Exception):
-    def __init__(self, status_code: int, message: str):
+    def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)
         self.status_code = status_code
 
@@ -37,7 +36,7 @@ class FirecrawlClient:
         sender: Sender | None = None,
         sleep: Callable[[float], Any] | None = None,
         jitter: Callable[[], float] | None = None,
-    ):
+    ) -> None:
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds

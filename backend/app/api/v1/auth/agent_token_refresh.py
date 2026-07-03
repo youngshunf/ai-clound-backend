@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.common.security.agent_jwt import create_agent_access_token, get_agent_scopes_cached
+from backend.common.security.agent_jwt import create_agent_access_token
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
 
@@ -27,7 +27,8 @@ class RefreshAgentTokenRequest(BaseModel):
 class RefreshAgentTokenResponse(BaseModel):
     """刷新 Agent Token 响应"""
     access_token: str = Field(description='新的 Agent JWT')
-    scopes: list[str] = Field(description='权限列表')
+    # scopes 已退役（实施102 S0）：JWT 不再携带 scopes，授权只看三态。恒空占位，兼容旧 daemon。
+    scopes: list[str] = Field(default_factory=list, description='已退役占位（恒空），授权走三态 capability_modes')
     expire_time: str = Field(description='过期时间')
 
 
@@ -36,7 +37,6 @@ class RefreshAgentTokenResponse(BaseModel):
     summary='刷新 Agent JWT',
     description='Owner 使用自己的 JWT 为名下的 Agent 刷新 token',
     dependencies=[DependsJwtAuth],
-    response_model=ResponseModel,
 )
 async def refresh_agent_token(
     request: Request,
@@ -75,8 +75,8 @@ async def refresh_agent_token(
     agent_hasn_id = body.agent_hasn_id
 
     # 查询 Agent 是否存在且属于当前 Owner
-    from sqlalchemy import text
     from loguru import logger
+    from sqlalchemy import text
 
     logger.info(f"刷新 Agent token: agent_hasn_id={agent_hasn_id}, owner_user_id={owner_user_id}")
 
@@ -123,21 +123,17 @@ async def refresh_agent_token(
     agent_display_name = row[1]
     owner_hasn_id = row[2]
 
-    # 获取 Agent 的权限配置
-    scopes_config = await get_agent_scopes_cached(agent_hasn_id, db)
-    scopes = scopes_config['scopes']
-
-    # 签发新的 Agent JWT
+    # 签发新的 Agent JWT（scopes 已退役·实施102 S0：JWT 不携带 scopes，授权只看三态）
     agent_token = await create_agent_access_token(
         agent_hasn_id=agent_hasn_id,
         agent_name=agent_display_name,
         owner_hasn_id=owner_hasn_id,
         owner_user_id=owner_user_id,
-        scopes=scopes,
     )
 
     return response_base.success(data={
         'access_token': agent_token.access_token,
-        'scopes': agent_token.scopes,
+        # scopes 已退役（实施102 S0）：恒空占位，兼容旧 daemon 反序列化。
+        'scopes': [],
         'expire_time': agent_token.access_token_expire_time.isoformat(),
     })

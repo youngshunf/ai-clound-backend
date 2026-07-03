@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 import pytest_asyncio
@@ -52,7 +52,7 @@ async def session() -> AsyncIterator:
     try:
         async with engine.connect() as conn:
             await conn.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
     sess = async_sessionmaker(engine, expire_on_commit=False)()
@@ -68,7 +68,7 @@ async def session() -> AsyncIterator:
         await async_engine.dispose()
 
 
-async def test_coverage_get_tool_returns_five_dimensions(session):
+async def test_coverage_get_tool_returns_five_dimensions(session) -> None:
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     # 注：assess_if_stale 内部新开 async_db_session（工具体如此），故先用本 session 落数据并提交
     session.add(
@@ -92,7 +92,7 @@ async def test_coverage_get_tool_returns_five_dimensions(session):
             owner_id=owner,
             dimension=dim,
             status=status,
-            confidence=Decimal('0.8') if is_sufficient else Decimal('0'),
+            confidence=Decimal('0.8') if is_sufficient else Decimal(0),
             summary='ok' if is_sufficient else None,
             missing_hint=None if is_sufficient else 'todo',
             evidence_version=1,
@@ -118,7 +118,7 @@ async def test_coverage_get_tool_returns_five_dimensions(session):
         await session.commit()
 
 
-async def test_memory_contribute_tool_lands_contribution(session):
+async def test_memory_contribute_tool_lands_contribution(session) -> None:
     """采访分身经 hasn.owner.memory.contribute 写入观察：contribution 必落库（accepted）。
 
     合并依赖 LLM（dev 无余额时合并延后、contribution 留 pending），故只断言「贡献落库」这条
@@ -167,7 +167,7 @@ async def test_memory_contribute_tool_lands_contribution(session):
         await session.commit()
 
 
-async def test_memory_contribute_tool_merge_deferred_on_failure(session, monkeypatch):
+async def test_memory_contribute_tool_merge_deferred_on_failure(session, monkeypatch) -> None:
     """合并失败时如实透出 merge_deferred + merge_error；贡献仍落库（零 fake，不产生假合并）。
 
     用 monkeypatch 让 merge_owner_memory 抛错（模拟 LLM 网关挂/余额不足等 infra 失败，不伪造业务
@@ -178,7 +178,7 @@ async def test_memory_contribute_tool_merge_deferred_on_failure(session, monkeyp
 
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
 
-    async def _boom(*_args, **_kwargs):
+    async def _boom(*_args, **_kwargs) -> NoReturn:
         raise RuntimeError('simulated LLM gateway failure')
 
     monkeypatch.setattr(owner_tool_mod.owner_memory_service, 'merge_owner_memory', _boom)
@@ -221,7 +221,7 @@ async def test_memory_contribute_tool_merge_deferred_on_failure(session, monkeyp
         await session.commit()
 
 
-async def test_memory_contribute_tool_rejects_empty_content(session):
+async def test_memory_contribute_tool_rejects_empty_content(session) -> None:
     """空 content 直接拒绝、不落库（零 fake，不产生假贡献）。"""
     owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
     tool = OwnerMemoryContributeTool()

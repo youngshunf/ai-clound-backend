@@ -4,7 +4,10 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn_growth.service.business_service import LeadAutomationBusinessService, lead_automation_business_service
+from backend.app.hasn_growth.service.business_service import (
+    LeadAutomationBusinessService,
+    lead_automation_business_service,
+)
 
 
 class LeadAutomationPipelineService:

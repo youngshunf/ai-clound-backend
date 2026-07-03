@@ -24,12 +24,12 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.billing.model import UserSubscription
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
-from backend.app.billing.model import UserSubscription
 from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 from backend.utils.timezone import timezone
@@ -284,7 +284,6 @@ def _agent(owner_hasn_id: str) -> AgentTokenPayload:
         agent_name='c4-agent',
         owner_hasn_id=owner_hasn_id,
         owner_user_id=0,
-        scopes=[],
         session_uuid=f's-{_uid()}',
         expire_time=timezone.now() + timedelta(days=1),
     )

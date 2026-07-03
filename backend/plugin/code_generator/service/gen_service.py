@@ -23,7 +23,7 @@ from backend.plugin.code_generator.schema.column import CreateGenColumnParam
 from backend.plugin.code_generator.schema.gen import ImportParam
 from backend.plugin.code_generator.service.column_service import gen_column_service
 from backend.plugin.code_generator.utils.format_code import format_python_code
-from backend.plugin.code_generator.utils.gen_template import gen_template, SCOPE_ROUTER_VAR, SCOPE_LABELS
+from backend.plugin.code_generator.utils.gen_template import SCOPE_LABELS, SCOPE_ROUTER_VAR, gen_template
 from backend.plugin.code_generator.utils.type_conversion import sql_type_to_pydantic
 from backend.utils.locks import acquire_distributed_reload_lock
 
@@ -276,7 +276,7 @@ class GenService:
         modified = False
 
         for scope in scopes:
-            router_var = SCOPE_ROUTER_VAR[scope]
+            SCOPE_ROUTER_VAR[scope]
 
             # 构建 import 和 include 行
             if scope == 'admin':
@@ -403,21 +403,21 @@ class GenService:
     async def _write_init_file(self, filepath: str, new_content: str, gen_path: str) -> None:
         """
         写入 __init__.py 文件（追加模式）
-        
+
         :param filepath: 相对文件路径
         :param new_content: 要写入的新内容
         :param gen_path: 生成路径
         """
         full_path = anyio.Path(gen_path) / filepath
-        
+
         # 确保目录存在
         await full_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # 如果文件存在且有新内容，追加而不是覆盖
         if await full_path.exists() and new_content.strip():
             async with await open_file(full_path, 'r', encoding='utf-8') as f:
                 existing_content = await f.read()
-            
+
             # 检查新内容是否已存在
             if new_content.strip() not in existing_content:
                 # 追加新内容
@@ -452,19 +452,19 @@ class GenService:
             init_files = gen_template.get_init_files(business)
             for filepath, content in init_files.items():
                 await self._write_init_file(filepath, content, gen_path)
-            
+
             # 处理其他生成的代码文件（存在则跳过）
             rendered_codes = await self._render_tpl_code(db=db, business=business)
             for filepath, content in rendered_codes.items():
                 full_path = anyio.Path(gen_path) / filepath
-                
+
                 # 如果文件已存在，跳过
                 if await full_path.exists():
                     continue
-                
+
                 # 确保目录存在
                 await full_path.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 # 写入文件
                 async with await open_file(full_path, 'w', encoding='utf-8') as f:
                     await f.write(content)

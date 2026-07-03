@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.crud.crud_lead_collection_job import lead_collection_job_dao
 from backend.app.hasn_growth.model import LeadCollectionJob
-from backend.app.hasn_growth.schema.lead_collection_job import CreateLeadCollectionJobParam, DeleteLeadCollectionJobParam, UpdateLeadCollectionJobParam
+from backend.app.hasn_growth.schema.lead_collection_job import (
+    CreateLeadCollectionJobParam,
+    DeleteLeadCollectionJobParam,
+    UpdateLeadCollectionJobParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 

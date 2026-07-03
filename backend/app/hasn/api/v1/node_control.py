@@ -1,13 +1,15 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from backend.common.response.response_schema import ResponseModel, response_base
-from backend.database.db import CurrentSession
 from backend.app.hasn.service.hasn_auth import (
     hasn_auth_from_node_credential,
     verify_owner_proof,
 )
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
+from backend.common.response.response_schema import ResponseModel, response_base
+from backend.database.db import CurrentSession
 
 router = APIRouter(prefix='/node', tags=['HASN Node 控制平面'])
 
@@ -30,7 +32,7 @@ class RenewOwnerReq(BaseModel):
 async def add_owner_to_node(
     obj_in: AddOwnerReq,
     db: CurrentSession,
-    node_auth: dict = Depends(hasn_auth_from_node_credential),
+    node_auth: Annotated[dict, Depends(hasn_auth_from_node_credential)],
 ) -> ResponseModel:
     proof = await verify_owner_proof(
         owner_id=obj_in.owner_id,
@@ -59,7 +61,7 @@ async def add_owner_to_node(
 @router.get('/owners', summary='查询当前 Node 已绑定 Owner')
 async def list_node_owners(
     db: CurrentSession,
-    node_auth: dict = Depends(hasn_auth_from_node_credential),
+    node_auth: Annotated[dict, Depends(hasn_auth_from_node_credential)],
 ) -> ResponseModel:
     bindings = await hasn_node_bindings_service.list_active_bindings(
         db=db,
@@ -83,7 +85,7 @@ async def renew_node_owner(
     owner_id: str,
     obj_in: RenewOwnerReq,
     db: CurrentSession,
-    node_auth: dict = Depends(hasn_auth_from_node_credential),
+    node_auth: Annotated[dict, Depends(hasn_auth_from_node_credential)],
 ) -> ResponseModel:
     proof = await verify_owner_proof(
         owner_id=owner_id,
@@ -110,7 +112,7 @@ async def renew_node_owner(
 async def remove_node_owner(
     owner_id: str,
     db: CurrentSession,
-    node_auth: dict = Depends(hasn_auth_from_node_credential),
+    node_auth: Annotated[dict, Depends(hasn_auth_from_node_credential)],
 ) -> ResponseModel:
     removed = await hasn_node_bindings_service.remove_owner_binding(
         db=db,

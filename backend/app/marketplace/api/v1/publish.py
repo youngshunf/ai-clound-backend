@@ -21,7 +21,7 @@ from backend.app.marketplace.storage.s3_storage import marketplace_storage_servi
 from backend.app.newapi.apikey.service import api_key_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
-from backend.database.db import CurrentSession, CurrentSessionTransaction  # noqa: TC001
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 

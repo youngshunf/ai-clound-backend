@@ -1,4 +1,5 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,7 +9,11 @@ from backend.app.hasn.constants import (
 )
 from backend.app.hasn.crud.crud_hasn_trade_sessions import hasn_trade_sessions_dao
 from backend.app.hasn.model import HasnTradeSessions
-from backend.app.hasn.schema.hasn_trade_sessions import CreateHasnTradeSessionsParam, DeleteHasnTradeSessionsParam, UpdateHasnTradeSessionsParam
+from backend.app.hasn.schema.hasn_trade_sessions import (
+    CreateHasnTradeSessionsParam,
+    DeleteHasnTradeSessionsParam,
+    UpdateHasnTradeSessionsParam,
+)
 from backend.app.hasn.service.hasn_audit_log_service import hasn_audit_log_service
 from backend.common.exception import errors
 from backend.common.log import log

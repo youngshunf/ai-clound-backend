@@ -40,7 +40,7 @@ async def authed_client() -> AsyncIterator[httpx.AsyncClient]:
     """带 owner 鉴权（override DependsJwtAuth 注入身份）的 HTTP client。"""
     app = _build_app()
 
-    async def _auth_inject(request: Request):
+    async def _auth_inject(request: Request) -> str:
         request.scope['user'] = SimpleNamespace(id=1, is_superuser=False)
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'

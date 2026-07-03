@@ -381,6 +381,19 @@ class WsRouterService:
         payload_json = json.dumps(payload, ensure_ascii=False)
         return await self._push_to_human(owner_id, payload_json, exclude)
 
+    async def push_to_owner(self, owner_id: str, payload: dict) -> bool:
+        """把 payload 投给某 owner 的**全部**在线节点（不排除任何节点）。
+
+        用于 owner_copy 旁观**出站**补投：本主人自有分身经云端 `message.send` 主动发给
+        外部方的消息，发送方 daemon **没有本地 echo**（工具直发不落本地，回复才有本地
+        echo）。要让主人在旁观线程里看到自家分身发出的这条，须把消息也投给主人自己的
+        节点。本地分身通常就跑在主人 daemon 上——那个节点正是「缺这条」的节点，故与
+        `push_to_owner_excluding_agent_node` **相反**，**不排除** agent 所在节点。
+        离线时 `_push_to_human` 会入离线队列，主人重连后照常补投。
+        """
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        return await self._push_to_human(owner_id, payload_json, None)
+
     async def _send_or_publish(self, node_id: str, payload_json: str) -> None:
         """投给某 node：连接在本 worker 直发；否则经投递总线交给持有它的 worker。
 

@@ -12,13 +12,14 @@ from backend.app.hasn.schema.hasn_owner_api_keys import (
     UpdateHasnOwnerApiKeysParam,
 )
 from backend.app.hasn.service.hasn_owner_api_keys_service import hasn_owner_api_keys_service
+from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+
 
 @router.get(
     '',
@@ -34,6 +35,7 @@ async def agent_list_hasn_owner_api_keyss(
     data = await hasn_owner_api_keys_service.get_list(db=db, user_id=user_id)
     return response_base.success(data=data)
 
+
 @router.post(
     '',
     summary='创建HASN Owner API Key ',
@@ -48,6 +50,7 @@ async def agent_create_hasn_owner_api_keys(
     user_id = agent.owner_user_id
     result = await hasn_owner_api_keys_service.create(db=db, obj=obj, user_id=user_id)
     return response_base.success(data=result)
+
 
 @router.get(
     '/{pk}',
@@ -65,6 +68,7 @@ async def agent_get_hasn_owner_api_keys(
     if hasn_owner_api_keys.user_id != user_id:
         raise errors.ForbiddenError(msg='无权访问该HASN Owner API Key ')
     return response_base.success(data=hasn_owner_api_keys)
+
 
 @router.put(
     '/{pk}',
@@ -86,6 +90,7 @@ async def agent_update_hasn_owner_api_keys(
     if count > 0:
         return response_base.success()
     return response_base.fail()
+
 
 @router.delete(
     '/{pk}',

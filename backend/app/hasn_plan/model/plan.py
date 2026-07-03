@@ -13,6 +13,10 @@ class Plan(PlanBase):
 
     id: Mapped[id_key] = mapped_column(init=False)
     owner_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='', comment=None)
+    enterprise_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='所属企业 id（NULL=个人计划；逻辑引用 public.hasn_enterprise，无硬 FK）'
+    )
+    dept_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='所属部门 id（NULL=不限部门）')
     goal_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     title: Mapped[str] = mapped_column(sa.String(255), default='', comment=None)
     description: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)

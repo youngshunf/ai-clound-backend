@@ -53,7 +53,7 @@ class _FakeDB:
         def all() -> list:
             return []
 
-    async def execute(self, *_a: Any, **_k: Any) -> '_FakeDB._Result':
+    async def execute(self, *_a: Any, **_k: Any) -> _FakeDB._Result:
         return _FakeDB._Result()
 
 
