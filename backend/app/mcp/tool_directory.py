@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from backend.app.mcp.tool_app_registry import resolve_tool_app_id
 from backend.app.mcp.tool_exposure import tool_exposure_policy
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ class ToolDirectoryService:
 
     def list_bootstrap_tools(self, agent_context: AgentContext) -> list[dict[str, Any]]:
         return [
-            self._tool_schema(tool)
+            self._tool_schema(tool, agent_context)
             for tool in self._registry.list_bootstrap_tools()
             if self._can_discover(agent_context, tool)
         ]
@@ -48,7 +49,7 @@ class ToolDirectoryService:
         不出现（与 `_can_discover` 一致）；ask 仍可见（调用时由 ask 闸门挂起）。
         """
         return [
-            self._tool_schema(tool)
+            self._tool_schema(tool, agent_context)
             for tool in self._registry.get_all_tools()
             if self._can_discover(agent_context, tool)
         ]
@@ -87,13 +88,16 @@ class ToolDirectoryService:
         page_size = min(max(search_query.page_size, 1), 50)
         page = matched_tools[:page_size]
         has_next = len(matched_tools) > page_size
+        want_schema = search_query.detail == 'schema'
+        tools = [] if want_schema else [self._tool_summary(tool, agent_context) for tool in page]
+        schemas = [self._tool_schema(tool, agent_context) for tool in page] if want_schema else []
 
         return {
             'workspace_key': self._workspace_key(agent_context),
             'query': query,
             'sources': [],
-            'tools': [] if search_query.detail == 'schema' else [self._tool_summary(tool) for tool in page],
-            'schemas': [self._tool_schema(tool) for tool in page] if search_query.detail == 'schema' else [],
+            'tools': tools,
+            'schemas': schemas,
             'next_cursor': str(page_size) if has_next else None,
             'trace_id': self._trace_id(agent_context, query),
         }
@@ -227,33 +231,52 @@ class ToolDirectoryService:
             for (source, namespace), count in sorted(source_counts.items())
         ]
 
-    def _tool_summary(self, tool: BaseTool) -> dict[str, Any]:
+    def _tool_summary(self, tool: BaseTool, agent_context: AgentContext | None = None) -> dict[str, Any]:
         schema_hash = self._schema_hash(tool.input_schema)
-        return {
+        summary = {
             'source': self._source_for_tool(tool),
             'name': tool.name,
             'title': tool.name.rsplit('.', maxsplit=1)[-1],
             'summary': tool.description,
             'required_scopes': tool.required_scopes,
+            'app_id': resolve_tool_app_id(tool),
             'risk_level': getattr(tool, 'risk_level', 'low'),
             'execution_location': self._execution_location_for_tool(tool),
             'idempotent': True,
             'schema_hash': schema_hash,
             'schema_ref': f'hasn://tool-schema/{tool.name}@{schema_hash}',
         }
+        self._attach_access_hint(summary, tool, agent_context)
+        return summary
 
-    def _tool_schema(self, tool: BaseTool) -> dict[str, Any]:
-        return {
+    def _tool_schema(self, tool: BaseTool, agent_context: AgentContext | None = None) -> dict[str, Any]:
+        schema = {
             'source': self._source_for_tool(tool),
             'name': tool.name,
             'description': tool.description,
             'input_schema': tool.input_schema,
             'output_schema': getattr(tool, 'output_schema', {'type': 'object'}),
             'required_scopes': tool.required_scopes,
+            'app_id': resolve_tool_app_id(tool),
             'risk_level': getattr(tool, 'risk_level', 'low'),
             'execution_location': self._execution_location_for_tool(tool),
             'schema_hash': self._schema_hash(tool.input_schema),
         }
+        self._attach_access_hint(schema, tool, agent_context)
+        return schema
+
+    def _attach_access_hint(
+        self, descriptor: dict[str, Any], tool: BaseTool, agent_context: AgentContext | None
+    ) -> None:
+        """G3 应用权益门（doc18 §4.3·U3）：VISIBLE_DENY 工具附 access_hint 供端上引导购买/席位/切空间。
+
+        仅当有 agent_context 时求值（无 context 的静态投影不含 hint）；免费应用 / 已准入 → 无 hint。
+        """
+        if agent_context is None:
+            return
+        decision = tool_exposure_policy.evaluate(agent_context, tool)
+        if decision.is_visible_deny:
+            descriptor['access_hint'] = {'reason': decision.reason, 'app_id': decision.app_id}
 
     def _can_discover(self, agent_context: AgentContext, tool: BaseTool) -> bool:
         # 统一暴露管线（doc18 §3·实施/103 U1）：发现面 = evaluate 非 HIDDEN 的投影。

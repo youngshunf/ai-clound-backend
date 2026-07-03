@@ -7,6 +7,7 @@ MCP 认证中间件
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Header, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_core import hasn_agents_dao
 from backend.common.dataclasses import AgentTokenPayload
@@ -62,6 +63,12 @@ class AgentContext:
         # （精确 scope 或段尾通配）。默认空 = 特权工具全不可见；两凭证入口鉴权后
         # 用 get_privileged_grants_cached 现查灌入。与已废弃的凭证 scopes 无关。
         self.granted_privileged_scopes: frozenset[str] = frozenset()
+        # G3 应用权益门（doc18 §4.3·U3）：主人当前激活企业空间 id（None=个人空间）+
+        # per-request 预取的「app_id → 合并准入 dict」map（103 §4 性能条：evaluate 纯查此
+        # map、零 IO）。默认空 map = 不挂门（never over-block）；两凭证入口鉴权后由
+        # inject_app_access 灌入。免费应用 / 未预取 → 该 app_id 缺席即放行。
+        self.active_enterprise_id: int | None = None
+        self.app_access_by_id: dict[str, dict] = {}
 
     @classmethod
     def from_token_payload(
@@ -132,6 +139,35 @@ class AgentContext:
         return self.owner_id
 
 
+async def inject_app_access(context: AgentContext, db: AsyncSession) -> None:
+    """G3 应用权益门 per-request 预取（doc18 §4.3·U3）：解析主人激活企业空间 + 批量取 app 准入。
+
+    三个凭证入口（本文件 + streamable 的 amk/jwt 两路）鉴权后统一调用，令 evaluate 纯查
+    context.app_access_by_id、零 IO。查库瞬时异常绝不阻断鉴权、也绝不 fail-open：退化为空
+    map（= 不挂 G3 门，付费墙由网关 `_entitlement_denial` 在真调用时兜底，见 §4 网关收编）。
+    """
+    from backend.app.hasn.service import app_access_kernel
+    from backend.app.mcp.tool_app_registry import GATED_APP_IDS
+
+    owner_hasn_id = context.owner_hasn_id
+    if not owner_hasn_id:
+        return
+    try:
+        context.active_enterprise_id = await app_access_kernel.resolve_active_enterprise_id(db, owner_hasn_id)
+        context.app_access_by_id = await app_access_kernel.prefetch_app_access_map(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            active_enterprise_id=context.active_enterprise_id,
+            app_ids=GATED_APP_IDS,
+        )
+    except Exception as exc:
+        from backend.common.log import log
+
+        log.warning(f'app access prefetch failed for {owner_hasn_id}, G3 gate skipped: {exc!r}')
+        context.active_enterprise_id = None
+        context.app_access_by_id = {}
+
+
 async def get_agent_context(
     authorization: Annotated[str, Header()], x_hasn_agent_id: Annotated[str, Header(alias='X-HASN-Agent-ID')]
 ) -> AgentContext:
@@ -189,6 +225,8 @@ async def get_agent_context(
         context.apply_policy(policy)
         # G1 特权授予同处活取（Admin 授予表 ∪ ENV bootstrap，doc18 §4.1）
         context.granted_privileged_scopes = await get_privileged_grants_cached(x_hasn_agent_id, db)
+        # G3 应用权益门 per-request 预取（doc18 §4.3·U3）
+        await inject_app_access(context, db)
         return context
 
 

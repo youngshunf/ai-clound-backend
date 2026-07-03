@@ -29,7 +29,9 @@ class AppTool(BaseTool):
         execution_location: str = "cloud",
     ) -> None:
         self.installation_id = installation_id
-        self.app_id = app_id
+        # BaseTool 暴露只读 @property app_id（G3 权益门·实施103 U3）；AppTool 用私有字段承载
+        # manifest 声明的 catalog app_id，再经属性覆盖回显——正是 resolve_tool_app_id 优先取的显式值。
+        self._app_id = app_id
         self.app_namespace = app_namespace
         self.tool_id = tool_id
         self.tool_name = tool_name
@@ -51,6 +53,11 @@ class AppTool(BaseTool):
     @property
     def source(self) -> str:
         return "app"
+
+    @property
+    def app_id(self) -> str | None:
+        """manifest 声明的 catalog app_id（覆盖 BaseTool 默认 None）——G3 权益门优先取此显式值。"""
+        return self._app_id
 
     @property
     def namespace(self) -> str:

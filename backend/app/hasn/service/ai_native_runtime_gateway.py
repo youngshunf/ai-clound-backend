@@ -7,7 +7,7 @@ import sqlalchemy as sa
 from fastapi.security.utils import get_authorization_scheme_param
 
 from backend.app.hasn.model import HasnAiNativeAppAudit
-from backend.app.hasn.service import app_catalog_service
+from backend.app.hasn.service import app_access_kernel, app_catalog_service
 from backend.app.hasn.service.agent_capability_guard import capability_guard
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.instance_resolver import (
@@ -888,46 +888,25 @@ class AiNativeRuntimeGateway:
         只有 catalog 中存在且 ``access_type != free`` 的 app 才判定（无 catalog 行 / free 零开销跳过）。
         owner 维度按 ``agent.owner_hasn_id`` 实时判 tier / active entitlement（零映射，安全路径直取）。
 
-        doc04 偏差2 修复：owner 维度不通时**叠加企业维度**——主人当前激活企业空间
-        （``hasn_owner_workbench_pref.active_enterprise_id``）且应用有企业形态时，按企业权益 +
-        命名席位（member=该主人）再判一次；任一维度通过即放行（与 ``list_apps`` 的
-        ``merge_access``「allowed = owner OR enterprise」口径一致）。否则企业买了席位的成员，
-        其分身调该应用工具会被误拒 entitlement_denied（人能打开应用、分身不能干活）。
+        doc04 偏差2 修复 + doc18 U3 收编：owner 维度不通时**叠加企业维度**——主人当前激活企业空间
+        且应用有企业形态时，按企业权益 + 命名席位（member=该主人）再判一次；任一维度通过即放行
+        （与 ``list_apps`` 的 ``merge_access``「allowed = owner OR enterprise」口径一致）。**「app access
+        → 合并准入」的判定逻辑抽进 ``app_access_kernel`` 共享纯函数**（G3 应用权益门发现/执行两面 +
+        本网关付费墙同一 kernel，口径永不分叉，doc18 §4.3）。本处保留 free 快路短路（历史零开销优化），
+        非免费才走 kernel；kernel 返回具体 reason（need_purchase/need_seat_assignment…），网关按现状
+        统一折叠成审计口径 ``entitlement_denied``（SEAT-FIX-3 回归锁不变）。
         """
         cat = await app_catalog_service.get_catalog(db, app_id=app_id)
         if cat is None or (cat.access_type or 'free') == 'free':
             return None
-        access = await app_catalog_service.resolve_app_access(
-            db, catalog=cat, owner_hasn_id=agent.owner_hasn_id
+        active_enterprise_id = await app_access_kernel.resolve_active_enterprise_id(db, agent.owner_hasn_id)
+        access = await app_access_kernel.resolve_merged_app_access(
+            db,
+            app_id=app_id,
+            owner_hasn_id=agent.owner_hasn_id,
+            active_enterprise_id=active_enterprise_id,
         )
-        if access['allowed']:
-            return None
-        if 'enterprise' in (cat.scope or []):
-            from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
-
-            active_enterprise_id = (
-                (
-                    await db.execute(
-                        sa.select(HasnOwnerWorkbenchPref.active_enterprise_id).where(
-                            HasnOwnerWorkbenchPref.owner_hasn_id == agent.owner_hasn_id
-                        )
-                    )
-                )
-                .scalars()
-                .first()
-            )
-            if active_enterprise_id is not None:
-                enterprise_access = await app_catalog_service.resolve_app_access(
-                    db,
-                    catalog=cat,
-                    owner_hasn_id=agent.owner_hasn_id,
-                    subject_type='enterprise',
-                    subject_id=str(active_enterprise_id),
-                    member_hasn_id=agent.owner_hasn_id,
-                )
-                if enterprise_access['allowed']:
-                    return None
-        return 'entitlement_denied'
+        return None if access['allowed'] else 'entitlement_denied'
 
     # 应用平台 v3 P3（设计 17 决策①）：挂载概念废除——_get_workspace_app（查 hasn_workspace_app
     # 挂载行）已删除，发现/调用准入只看 catalog published + entitlement（_entitlement_denial）。

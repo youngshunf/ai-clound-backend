@@ -25,6 +25,7 @@ from backend.app.mcp.platform_scopes import (
     privileged_scopes_satisfied,
 )
 from backend.app.mcp.runtime_visibility import is_namespace_hidden_for_runtime
+from backend.app.mcp.tool_app_registry import resolve_tool_app_id
 from backend.common.security.scope_policy import MODE_ASK, MODE_DENY
 
 if TYPE_CHECKING:
@@ -49,6 +50,8 @@ REASON_PRIVILEGED = 'privileged'  # G1：特权 scope 未持有（执行面 TOOL
 REASON_EXTERNAL_NOT_BOUND = 'external_not_bound'  # G2：external 工具不在本 Agent binding 白名单
 REASON_RUNTIME_HIDDEN = 'runtime_hidden'  # G2：本地分身在云端面隐藏的命名空间（TOOLMIG2-P4）
 REASON_OWNER_DENIED = 'owner_denied'  # G5：owner 三态 deny（维持现状 deny 即隐身）
+# G3 应用权益门的 reason 不在此枚举——直接透传合并准入 dict 的 reason（need_purchase /
+# need_seat_assignment / need_enterprise_space / need_upgrade…），口径与 doc04 M1 一致。
 
 
 @dataclass(frozen=True)
@@ -56,12 +59,14 @@ class ExposureDecision:
     """单次 evaluate 的判定投影。
 
     发现面消费 `is_visible`（HIDDEN 过滤掉，VISIBLE_DENY/ASK 仍列出）；
-    执行面按 action+reason 映射错误码 / 挂审批 / 放行。
+    执行面按 action+reason 映射错误码 / 挂审批 / 放行。VISIBLE_DENY 带 `app_id`
+    供发现面渲染 access_hint（引导购买/指派席位/切换企业空间）。
     """
 
     action: str
     gate: str | None = None
     reason: str | None = None
+    app_id: str | None = None
 
     @property
     def is_hidden(self) -> bool:
@@ -70,6 +75,10 @@ class ExposureDecision:
     @property
     def is_visible(self) -> bool:
         return self.action != ACTION_HIDDEN
+
+    @property
+    def is_visible_deny(self) -> bool:
+        return self.action == ACTION_VISIBLE_DENY
 
 
 DECISION_ALLOW = ExposureDecision(ACTION_ALLOW)
@@ -112,7 +121,17 @@ class ToolExposurePolicy:
         if is_namespace_hidden_for_runtime(namespace, getattr(agent_context, 'runtime_location', 'cloud')):
             return ExposureDecision(ACTION_HIDDEN, gate=GATE_SOURCE, reason=REASON_RUNTIME_HIDDEN)
 
-        # G3 应用权益门（U3 加装）：tool.app_id 空间权益不通 → VISIBLE_DENY(need_*)。
+        # G3 应用权益门（U3·doc18 §4.3）：工具所属 app 的合并准入（owner∪enterprise 权益 + 席位，
+        # doc04 M1）不通 → VISIBLE_DENY(need_*)。可见（带 access_hint 引导购买），执行面按 reason
+        # 回结构化错误。纯查 AgentContext 预取的 app_access_by_id（零 IO）；底座工具 app_id=None /
+        # 免费应用 / 未预取 → 该 app_id 缺席即跳过（never over-block）。
+        app_id = resolve_tool_app_id(tool)
+        if app_id:
+            access = (getattr(agent_context, 'app_access_by_id', None) or {}).get(app_id)
+            if access is not None and not access.get('allowed', True):
+                reason = access.get('reason') or 'need_purchase'
+                return ExposureDecision(ACTION_VISIBLE_DENY, gate=GATE_ENTITLEMENT, reason=reason, app_id=app_id)
+
         # G4 企业角色门（U4 加装）：企业空间角色未授予 → HIDDEN(role)。
 
         # G5 主人三态门（维度①唯一权威·最后态度层）：deny→隐身；ask→挂审批；allow→放行。

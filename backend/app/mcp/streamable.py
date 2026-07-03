@@ -24,7 +24,7 @@ from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
     hasn_agent_mcp_keys_service,
 )
 from backend.app.hasn_core import HasnHumans, hasn_agents_dao
-from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.auth import AgentContext, inject_app_access
 from backend.app.mcp.context import set_capability_ticket
 from backend.app.mcp.json_encoding import json_default
 from backend.app.mcp.server import mcp_server
@@ -190,6 +190,8 @@ class HasnMcpStreamableServer:
             context.apply_policy(policy)
             # G1 特权授予同处活取（Admin 授予表 ∪ ENV bootstrap，doc18 §4.1）
             context.granted_privileged_scopes = await get_privileged_grants_cached(record.agent_hasn_id, db)
+            # G3 应用权益门 per-request 预取（doc18 §4.3·U3）
+            await inject_app_access(context, db)
             return context
 
     async def _authenticate_with_jwt(self, token: str, headers: dict[bytes, bytes]) -> AgentContext:
@@ -225,6 +227,8 @@ class HasnMcpStreamableServer:
             context.apply_policy(policy)
             # G1 特权授予同处活取（Admin 授予表 ∪ ENV bootstrap，doc18 §4.1）
             context.granted_privileged_scopes = await get_privileged_grants_cached(hasn_id, db)
+            # G3 应用权益门 per-request 预取（doc18 §4.3·U3）
+            await inject_app_access(context, db)
             return context
 
     async def handle_request_with_auth(
