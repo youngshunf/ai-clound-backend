@@ -53,9 +53,12 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
 }
 
 # ── G1 平台特权门（doc18 §4.1 · 实施/103 U2）──────────────────────────────
-# 特权前缀整段排他：命中前缀的 scope 一律归特权，防漂移守卫据此强制
-# （PLATFORM_SCOPE_CATALOG 的 owner 级 scope 键不得命中这些前缀）。
+# 特权前缀整段排他：命中前缀的 scope 一律归特权，防漂移守卫据此强制。
+# PLATFORM_SCOPE_CATALOG 是展示元数据注册表：可含**有意登记**的特权 scope 元数据（diag:* 等，
+# 供运维分身工具可见时查 label/risk）——但凡命中特权前缀的键必须 ∈ PRIVILEGED_SCOPES；
+# owner 级普通能力键**不得**误用特权前缀（未登记 = 漂移，会被 G1 错误隐身）。
 # owner 级自查类能力须走其他前缀（diag 文档已预留 selfdiag:read），不得开豁免洞。
+# 真正的「第四暴露面」隐藏在 build_scope_catalog 的 is_catalog_hidden（工具级 G1 过滤），与本词表内容无关。
 PRIVILEGED_SCOPE_PREFIXES: tuple[str, ...] = ('diag:', 'ops:', 'platform:')
 
 # 特权 scope 名单：已声明的特权 scope 全集。新增运维工具的 scope 必须先登记进来

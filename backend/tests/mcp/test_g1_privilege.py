@@ -252,9 +252,19 @@ def test_guard_registry_privileged_scopes_are_listed() -> None:
 
 
 def test_guard_platform_catalog_keys_not_privileged() -> None:
-    """前缀排他：owner 权限页词表（普通能力）键不得命中特权前缀（否则会被守卫强划特权）。"""
+    """前缀排他（防漂移）：PLATFORM_SCOPE_CATALOG 是展示元数据注册表（scope_meta 查表源），
+    可含**有意登记**的特权 scope 元数据（如 diag:read:all/diag:manage，供运维分身工具可见时
+    查 label/risk/描述）——凡命中特权前缀的键必须 ∈ PRIVILEGED_SCOPES（表明确为运维特权）。
+    反之，owner 级普通能力键若误用特权前缀却未登记 PRIVILEGED_SCOPES = 漂移（会被 G1 强划
+    特权而错误隐身），必须失败；owner 自查类须走 selfdiag: 等非特权前缀。
+    注：真正的「第四暴露面」隐藏在 build_scope_catalog 的 is_catalog_hidden（工具级 G1 过滤），
+    与本词表内容无关——本词表仅元数据查表，不是 owner 权限页的枚举源。"""
     for scope_key in PLATFORM_SCOPE_CATALOG:
-        assert not is_privileged_scope(scope_key), f'PLATFORM_SCOPE_CATALOG 键 {scope_key} 命中特权前缀'
+        if is_privileged_scope(scope_key):
+            assert scope_key in PRIVILEGED_SCOPES, (
+                f'PLATFORM_SCOPE_CATALOG 键 {scope_key} 命中特权前缀但未登记进 PRIVILEGED_SCOPES'
+                '（owner 级普通能力误用特权前缀 = 漂移；owner 自查类请用 selfdiag: 等非特权前缀）'
+            )
 
 
 def test_grant_matching_semantics() -> None:
