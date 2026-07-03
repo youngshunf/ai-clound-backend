@@ -43,6 +43,10 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     # —— platform · 记忆（hasn.memory.save：分身把长期语义事实写入云端权威记忆，doc16 Phase C）——
     # 读类（search/recall/list）无需授权；写类 memory:write 出厂 Allow，owner 三态可覆盖、事后可改可删。
     'memory:write': {'label_zh': '记录记忆', 'domain': 'memory', 'risk': 'low', 'description': '把长期语义事实（偏好/事实/目标等）写入云端权威记忆（读类无需授权）'},
+    # —— platform · 错误诊断（hasn.diag.* 云端工具，doc21）：平台运维分身跨 owner 读全量 issue/report + 改状态 ——
+    # 特权口径（跨 owner），由 G1 平台特权门（doc18 U2）判定授予对象；出厂 Allow（无人值守运维，Ask 会死锁）。
+    'diag:read:all': {'label_zh': '读平台错误全量', 'domain': 'diag', 'risk': 'medium', 'description': '跨 owner 读取平台错误 issue 列表/详情/occurrence/统计（平台运维特权，非普通分身）'},
+    'diag:manage': {'label_zh': '管理平台错误 issue', 'domain': 'diag', 'risk': 'high', 'description': '改 issue 状态（investigating/resolved/skipped/wontfix）、挂 issue/PR 链接（平台运维特权，写审计留痕）'},
     # —— 历史默认词表（DEFAULT_AGENT_SCOPES）——展示兜底，无对应 cloud 工具亦不崩 ——
     'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
     'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},
