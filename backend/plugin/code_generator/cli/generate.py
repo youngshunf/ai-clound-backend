@@ -6,29 +6,28 @@ from typing import Annotated
 
 import cappa
 
+from sqlalchemy import text
+
 from backend.common.exception.errors import BaseExceptionError
 from backend.database.db import async_db_session
 from backend.plugin.code_generator.config_loader import codegen_config
+from backend.plugin.code_generator.crud.crud_business import gen_business_dao
+from backend.plugin.code_generator.crud.crud_gen import gen_dao
 from backend.plugin.code_generator.frontend.dict_generator import (
     execute_dict_sql,
-    generate_dict_sql,
     generate_dict_sql_from_db,
     save_dict_sql_to_file,
 )
 from backend.plugin.code_generator.frontend.generator import frontend_generator
 from backend.plugin.code_generator.frontend.menu_generator import (
     execute_menu_sql,
-    generate_menu_sql,
     generate_menu_sql_from_db,
     save_menu_sql_to_file,
 )
 from backend.plugin.code_generator.parser.sql_parser import sql_parser
 from backend.plugin.code_generator.schema.gen import ImportParam
 from backend.plugin.code_generator.service.gen_service import gen_service
-from backend.plugin.code_generator.crud.crud_gen import gen_dao
-from backend.plugin.code_generator.crud.crud_business import gen_business_dao
 from backend.utils.console import console
-from sqlalchemy import text
 
 
 @cappa.command(help='一键生成完整的前后端代码、菜单SQL和字典SQL', default_long=True)
@@ -86,7 +85,7 @@ class Generate:
             console.print('\n[bold white]🔍 步骤 0/4: 检查并创建数据库表...[/]')
             async with async_db_session() as db:
                 db_table_info = await gen_dao.get_table(db, self.schema, table_info.name)
-            
+
             if not db_table_info:
                 console.print(f'   ⚠ 表 [yellow]{table_info.name}[/] 不存在，准备自动执行SQL建表...', flush=True)
                 async with async_db_session.begin() as db:
@@ -104,7 +103,7 @@ class Generate:
             try:
                 async with async_db_session() as db:
                     existing_business = await gen_business_dao.get_by_name(db, table_info.name)
-                
+
                 if existing_business:
                     business_id = existing_business.id
                     if existing_business.app_name != self.app:
@@ -121,11 +120,11 @@ class Generate:
                     )
                     async with async_db_session.begin() as db:
                         await gen_service.import_business_and_model(db=db, obj=import_param)
-                    
+
                     async with async_db_session() as db:
                         business = await gen_business_dao.get_by_name(db, table_info.name)
                         business_id = business.id if business else None
-                    
+
                     if business_id:
                         console.print(f'   [green]✓ 表元数据导入成功 (id={business_id})[/]')
                     else:
@@ -144,14 +143,14 @@ class Generate:
                 from backend.plugin.code_generator.path_conf import JINJA2_TEMPLATE_DIR
                 python_template_dir = JINJA2_TEMPLATE_DIR / 'python'
                 has_python_templates = python_template_dir.exists() and any(python_template_dir.glob('*.jinja'))
-                
+
                 if not has_python_templates:
                     console.print('   [yellow]⚠ 后端代码模板不存在，跳过[/]')
                 else:
                     try:
                         async with async_db_session.begin() as db:
-                            gen_path = await gen_service.generate(db=db, pk=business_id)
-                        console.print(f'   [green]✓ 后端代码生成成功[/]')
+                            await gen_service.generate(db=db, pk=business_id)
+                        console.print('   [green]✓ 后端代码生成成功[/]')
                     except Exception as e:
                         console.print(f'   [red]✗ 后端代码生成失败: {e}[/]')
                         raise

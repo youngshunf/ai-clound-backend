@@ -62,8 +62,7 @@ def get_form_component(column: ColumnInfo) -> dict:
     if column_type_upper in ('DATE', 'DATETIME', 'TIMESTAMP', 'TIMESTAMP WITHOUT TIME ZONE', 'TIMESTAMP WITH TIME ZONE'):
         if column_type_upper == 'DATE':
             return {'component': 'DatePicker', 'props': {'format': 'YYYY-MM-DD', 'valueFormat': 'YYYY-MM-DD'}}
-        else:
-            return {'component': 'DatePicker', 'props': {'showTime': True, 'format': 'YYYY-MM-DD HH:mm:ss', 'valueFormat': 'YYYY-MM-DD HH:mm:ss'}}
+        return {'component': 'DatePicker', 'props': {'showTime': True, 'format': 'YYYY-MM-DD HH:mm:ss', 'valueFormat': 'YYYY-MM-DD HH:mm:ss'}}
 
     # Time fields -> TimePicker
     if column_type_upper == 'TIME':

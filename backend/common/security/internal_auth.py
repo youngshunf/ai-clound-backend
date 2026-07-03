@@ -22,7 +22,6 @@ from fastapi import Request
 from backend.common.exception import errors
 from backend.core.conf import settings
 
-
 _HEADER_NAME = 'X-Internal-Token'
 
 

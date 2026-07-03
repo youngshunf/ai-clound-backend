@@ -1,9 +1,9 @@
 """SQL Parser for extracting table metadata from CREATE TABLE statements."""
 
 import re
+
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class DatabaseDialect(str, Enum):
@@ -19,10 +19,10 @@ class ColumnInfo:
 
     name: str
     type: str  # Raw SQL type (e.g., "VARCHAR", "INTEGER")
-    length: Optional[int] = None
+    length: int | None = None
     nullable: bool = True
-    default: Optional[str] = None
-    comment: Optional[str] = None
+    default: str | None = None
+    comment: str | None = None
     is_primary_key: bool = False
     is_auto_increment: bool = False
 
@@ -32,7 +32,7 @@ class TableInfo:
     """Table information extracted from SQL."""
 
     name: str
-    comment: Optional[str] = None
+    comment: str | None = None
     columns: list[ColumnInfo] = None
     dialect: DatabaseDialect = DatabaseDialect.POSTGRESQL
 
@@ -89,33 +89,33 @@ class SQLParser:
 
         # Find all CREATE TABLE statements
         create_statements = self._split_create_tables(sql)
-        
+
         tables = []
         for create_sql in create_statements:
             try:
                 # Extract table name
                 table_name = self._extract_table_name(create_sql)
-                
+
                 # Extract table comment (look in both CREATE statement and full SQL)
                 table_comment = self._extract_table_comment(sql, table_name, dialect)
-                
+
                 # Parse column definitions
                 columns = self._parse_columns(create_sql, table_name, dialect)
-                
+
                 # Extract PostgreSQL column comments from full SQL
                 if dialect == DatabaseDialect.POSTGRESQL:
                     self._extract_pg_column_comments(sql, table_name, columns)
-                
+
                 tables.append(TableInfo(
                     name=table_name,
                     comment=table_comment,
                     columns=columns,
                     dialect=dialect
                 ))
-            except ValueError as e:
+            except ValueError:
                 # Skip invalid CREATE TABLE statements
                 continue
-        
+
         return tables
 
     def _split_create_tables(self, sql: str) -> list[str]:
@@ -127,21 +127,21 @@ class SQLParser:
         """
         # Find all CREATE TABLE ... ) patterns
         statements = []
-        
+
         # Split by CREATE TABLE keyword while preserving the keyword
         parts = re.split(r'(?=CREATE\s+TABLE\s)', sql, flags=re.IGNORECASE)
-        
+
         for part in parts:
             part = part.strip()
             if not part or not re.match(r'CREATE\s+TABLE\s', part, re.IGNORECASE):
                 continue
-            
+
             # Find the end of the CREATE TABLE statement
             # Look for the closing parenthesis that matches the opening one
             paren_depth = 0
             in_create = False
             end_idx = 0
-            
+
             for i, char in enumerate(part):
                 if char == '(':
                     paren_depth += 1
@@ -163,13 +163,13 @@ class SQLParser:
                             if options_match:
                                 end_idx += options_match.end()
                         break
-            
+
             if end_idx > 0:
                 statements.append(part[:end_idx].strip())
             elif in_create:
                 # Fallback: use the whole part
                 statements.append(part.strip())
-        
+
         return statements
 
     def _extract_pg_column_comments(self, sql: str, table_name: str, columns: list[ColumnInfo]) -> None:
@@ -243,12 +243,12 @@ class SQLParser:
         match = pattern.search(sql)
         if not match:
             raise ValueError('Could not extract table name from SQL')
-        
+
         # Groups: (schema, table_from_schema_format, table_only)
-        schema, table_with_schema, table_only = match.groups()
+        _schema, table_with_schema, table_only = match.groups()
         return table_with_schema or table_only
 
-    def _extract_table_comment(self, sql: str, table_name: str, dialect: DatabaseDialect) -> Optional[str]:
+    def _extract_table_comment(self, sql: str, table_name: str, dialect: DatabaseDialect) -> str | None:
         """
         Extract table comment.
 
@@ -262,12 +262,11 @@ class SQLParser:
             pattern = re.compile(r"COMMENT\s*=\s*'([^']*)'", re.IGNORECASE)
             match = pattern.search(sql)
             return match.group(1) if match else None
-        else:
-            # PostgreSQL: COMMENT ON TABLE ... IS '...'
-            match = self.PG_COMMENT_ON_TABLE.search(sql)
-            if match and match.group(1).lower() == table_name.lower():
-                return match.group(2)
-            return None
+        # PostgreSQL: COMMENT ON TABLE ... IS '...'
+        match = self.PG_COMMENT_ON_TABLE.search(sql)
+        if match and match.group(1).lower() == table_name.lower():
+            return match.group(2)
+        return None
 
     def _parse_columns(self, sql: str, table_name: str, dialect: DatabaseDialect) -> list[ColumnInfo]:
         """
@@ -353,7 +352,7 @@ class SQLParser:
 
         return result
 
-    def _parse_column_definition(self, col_def: str, dialect: DatabaseDialect) -> Optional[ColumnInfo]:
+    def _parse_column_definition(self, col_def: str, dialect: DatabaseDialect) -> ColumnInfo | None:
         """
         Parse a single column definition.
 

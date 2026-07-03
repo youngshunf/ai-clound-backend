@@ -12,7 +12,6 @@ import anyio
 import cappa
 import granian
 
-from cappa.output import error_format
 from rich.panel import Panel
 from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
@@ -54,7 +53,7 @@ from backend.utils.timezone import timezone
 
 # Import frontend code generator CLI commands
 try:
-    from backend.plugin.code_generator.cli.codegen import CodegenFrontend, CodegenMenu, CodegenFull
+    from backend.plugin.code_generator.cli.codegen import CodegenFrontend, CodegenFull, CodegenMenu
     from backend.plugin.code_generator.cli.generate import Generate as CodegenGenerate
     from backend.plugin.code_generator.cli.generate_all import GenerateAll
 except ImportError:
@@ -66,9 +65,9 @@ except ImportError:
 
 # Import marketplace CLI commands
 try:
-    from backend.cli_tools.cli.skill import Skill as SkillCmd
     from backend.cli_tools.cli.app import App as AppCmd
     from backend.cli_tools.cli.category import Category as CategoryCmd
+    from backend.cli_tools.cli.skill import Skill as SkillCmd
 except ImportError:
     SkillCmd = None
     AppCmd = None

@@ -8,8 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database.db import async_db_session
 from backend.plugin.code_generator.crud.crud_business import gen_business_dao
-from backend.plugin.code_generator.crud.crud_column import gen_column_dao
-from backend.plugin.code_generator.model import GenBusiness, GenColumn
 from backend.plugin.code_generator.parser.sql_parser import TableInfo
 from backend.plugin.code_generator.utils.gen_template import gen_template
 
@@ -50,10 +48,7 @@ async def generate_menu_sql(
         vars_dict['parent_menu_id'] = parent_menu_id
 
     # Determine which template to use based on dialect
-    if table_info.dialect.value == 'mysql':
-        template_path = 'sql/mysql/init.jinja'
-    else:
-        template_path = 'sql/postgresql/init.jinja'
+    template_path = 'sql/mysql/init.jinja' if table_info.dialect.value == 'mysql' else 'sql/postgresql/init.jinja'
 
     # Render template
     template = gen_template.get_template(template_path)
@@ -95,8 +90,7 @@ async def generate_menu_sql_from_db(
     # 取注释的第一部分（以 - 或空格分隔）作为菜单标题
     menu_title = doc_comment.split(' - ')[0].split(' ')[0] if doc_comment else class_name
     # 去掉结尾的 "表" 字
-    if menu_title.endswith('表'):
-        menu_title = menu_title[:-1]
+    menu_title = menu_title.removesuffix('表')
     # 如果菜单标题不以 "管理" 结尾，自动添加
     if not menu_title.endswith('管理'):
         menu_title = f'{menu_title}管理'

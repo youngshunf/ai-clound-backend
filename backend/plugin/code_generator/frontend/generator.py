@@ -1,6 +1,7 @@
 """Frontend code generator - main orchestrator."""
 
 import re
+
 from pathlib import Path
 
 from pydantic.alias_generators import to_pascal
@@ -30,7 +31,7 @@ from backend.utils.console import console
 class FrontendGenerator:
     """Frontend code generator."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize generator."""
         self.template_env = gen_template.env
 
@@ -116,7 +117,7 @@ class FrontendGenerator:
             business = await gen_business_dao.get(db, business_id)
             if not business:
                 raise ValueError(f'GenBusiness not found: id={business_id}')
-            
+
             columns = await gen_column_dao.get_all_by_business(db, business_id)
 
         # Convert to TableInfo
@@ -320,21 +321,21 @@ class FrontendGenerator:
         class_name = to_pascal(table_info.name)
 
         # Filter columns for different purposes
-        display_columns = [col for col in table_info.columns if should_display_in_table(col)]
-        form_columns = [col for col in table_info.columns if should_include_in_form(col)]
-        search_columns = [col for col in table_info.columns if should_include_in_search(col)]
+        [col for col in table_info.columns if should_display_in_table(col)]
+        [col for col in table_info.columns if should_include_in_form(col)]
+        [col for col in table_info.columns if should_include_in_search(col)]
 
         # Prepare column metadata
         columns_meta = []
         dict_patterns = codegen_config.auto_dict_patterns
-        
+
         for col in table_info.columns:
             # 简化字段标签：去掉括号中的说明部分和冒号后的枚举值
             raw_comment = col.comment or col.name
             # 先去掉括号部分，再去掉冒号后的枚举值
             simple_label = re.split(r'[\(\uff08]', raw_comment)[0].strip()
             simple_label = re.split(r'[::：]', simple_label)[0].strip()
-            
+
             # 检查是否为字典字段
             dict_code = None
             if not col.is_primary_key and col.name.lower() not in (
@@ -344,7 +345,7 @@ class FrontendGenerator:
                     if re.search(pattern, col.name.lower()):
                         dict_code = f'{app}_{col.name}'
                         break
-            
+
             col_meta = {
                 'name': col.name,
                 'type': col.type,
@@ -365,7 +366,7 @@ class FrontendGenerator:
 
         # 检查是否有字典字段
         has_dict_fields = any(c['dict_code'] for c in columns_meta)
-        
+
         return {
             'app_name': app,
             'module_name': module,
@@ -387,7 +388,7 @@ class FrontendGenerator:
     async def _generate_or_update_api(self, api_file: Path, vars_dict: dict, force: bool = False) -> None:
         """
         Generate API file.
-        
+
         每个模块生成独立的 API 文件: api/app/module.ts
         """
         api_template = self.template_env.get_template('typescript/api.ts.jinja')
@@ -396,7 +397,7 @@ class FrontendGenerator:
         if api_file.exists() and not force:
             console.print(f'    [yellow]API file already exists, skipping: {api_file}[/yellow]')
             return
-        
+
         # Create directory and write file
         api_file.parent.mkdir(parents=True, exist_ok=True)
         api_file.write_text(new_api_content, encoding='utf-8')

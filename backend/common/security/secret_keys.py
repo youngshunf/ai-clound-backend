@@ -34,7 +34,7 @@ SECRET_KEYS = {
 def is_secret_key(key: str) -> bool:
     """判定某字段名是否为秘密字段（命中精确集，或以 `_secret` / `_token` 结尾）。"""
     k = key.lower()
-    return k in SECRET_KEYS or k.endswith('_secret') or k.endswith('_token')
+    return k in SECRET_KEYS or k.endswith(('_secret', '_token'))
 
 
 def safe_json(value: Any) -> Any:

@@ -1,8 +1,8 @@
 """
 通用 SocketIO 事件处理 + HASN 消息路由
 """
-from backend.common.socketio.server import sio
 from backend.common.log import log
+from backend.common.socketio.server import sio
 
 
 async def task_notification(msg: str) -> None:
@@ -15,18 +15,19 @@ async def task_notification(msg: str) -> None:
 # 字段已对齐 06-数据模型: hasn_messages 使用 from_id / conversation_id / SMALLINT 类型
 
 @sio.on('hasn_message')
-async def handle_hasn_message(sid, data: dict):
+async def handle_hasn_message(sid, data: dict) -> None:
     """
     处理 HASN 上行消息 (客户端 → 服务器)
     对应设计文档 cmd=SEND: {to, content, metadata}
     """
-    from backend.database.db import async_db_session
-    from backend.app.hasn_core.service.route_guard import route_guard
-    from backend.app.hasn_core.crud.crud_message import crud_hasn_message
-    from backend.app.hasn_core.crud.crud_conversation import crud_hasn_conversation
-    from backend.app.hasn_core.service.ws_router import ws_router
-    from backend.database.redis import redis_client
     import json
+
+    from backend.app.hasn_core.crud.crud_conversation import crud_hasn_conversation
+    from backend.app.hasn_core.crud.crud_message import crud_hasn_message
+    from backend.app.hasn_core.service.route_guard import route_guard
+    from backend.app.hasn_core.service.ws_router import ws_router
+    from backend.database.db import async_db_session
+    from backend.database.redis import redis_client
 
     from_id = data.get('from_id')       # 发送者 hasn_id (h_xxx / a_xxx)
     to_id = data.get('to_id')           # 接收者 hasn_id
@@ -138,12 +139,12 @@ async def handle_hasn_message(sid, data: dict):
 
 
 @sio.on('hasn_read')
-async def handle_hasn_read(sid, data: dict):
+async def handle_hasn_read(sid, data: dict) -> None:
     """
     已读回执 (对应设计文档 cmd=READ)
     """
-    from backend.database.db import async_db_session
     from backend.app.hasn_core.crud.crud_message import crud_hasn_message
+    from backend.database.db import async_db_session
 
     conversation_id = data.get('conversation_id')
     last_msg_id = data.get('last_msg_id')
@@ -157,6 +158,6 @@ async def handle_hasn_read(sid, data: dict):
 
 
 @sio.on('hasn_ping')
-async def handle_hasn_ping(sid, data: dict):
+async def handle_hasn_ping(sid, data: dict) -> None:
     """心跳 (对应设计文档 cmd=PING/PONG)"""
     await sio.emit('hasn_pong', {'ts': data.get('ts')}, to=sid)

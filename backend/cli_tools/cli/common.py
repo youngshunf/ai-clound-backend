@@ -1,6 +1,7 @@
 """CLI 共享工具函数"""
 
 import re
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -18,10 +19,10 @@ class VersionInfo:
     major: int
     minor: int
     patch: int
-    
+
     def __str__(self) -> str:
         return f'{self.major}.{self.minor}.{self.patch}'
-    
+
     @classmethod
     def parse(cls, version: str) -> 'VersionInfo':
         """解析版本号字符串"""
@@ -33,17 +34,16 @@ class VersionInfo:
             minor=int(match.group(2)),
             patch=int(match.group(3)),
         )
-    
+
     def bump(self, bump_type: Literal['patch', 'minor', 'major']) -> 'VersionInfo':
         """递增版本号"""
         if bump_type == 'patch':
             return VersionInfo(self.major, self.minor, self.patch + 1)
-        elif bump_type == 'minor':
+        if bump_type == 'minor':
             return VersionInfo(self.major, self.minor + 1, 0)
-        elif bump_type == 'major':
+        if bump_type == 'major':
             return VersionInfo(self.major + 1, 0, 0)
-        else:
-            raise ValueError(f'无效的版本递增类型: {bump_type}')
+        raise ValueError(f'无效的版本递增类型: {bump_type}')
 
 
 def validate_skill_id(skill_id: str) -> bool:
@@ -91,10 +91,9 @@ def format_size(size: int) -> str:
     """格式化文件大小"""
     if size < 1024:
         return f'{size} B'
-    elif size < 1024 * 1024:
+    if size < 1024 * 1024:
         return f'{size / 1024:.1f} KB'
-    else:
-        return f'{size / 1024 / 1024:.1f} MB'
+    return f'{size / 1024 / 1024:.1f} MB'
 
 
 def get_relative_path(path: Path, base: Path) -> str:

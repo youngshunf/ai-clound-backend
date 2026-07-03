@@ -17,7 +17,7 @@ class CodeGenConfig:
     # 暴露配置文件路径
     CONFIG_FILE = CONFIG_FILE
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Load configuration from TOML file."""
         if not CONFIG_FILE.exists():
             raise FileNotFoundError(f'Configuration file not found: {CONFIG_FILE}')
@@ -138,7 +138,7 @@ class CodeGenConfig:
     def parent_menu_id(self) -> int | None:
         """Get parent menu ID. Returns None if 0 or not set."""
         value = self.get('menu', 'parent_menu_id', 0)
-        return value if value else None
+        return value or None
 
     @property
     def menu_sort_start(self) -> int:

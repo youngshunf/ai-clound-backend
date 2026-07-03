@@ -6,6 +6,7 @@
 import hashlib
 import io
 import zipfile
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,45 +24,45 @@ class PackageResult:
 
 class AppPackager:
     """应用打包器"""
-    
+
     # 排除的文件和目录
     EXCLUDED_PATTERNS = {
         '.git', '.gitignore', '.DS_Store', '__pycache__',
         '.pyc', '.env', '.venv', 'node_modules', '.idea',
         '.vscode', '*.egg-info', 'dist', 'build',
     }
-    
-    def __init__(self, app_path: Path):
+
+    def __init__(self, app_path: Path) -> None:
         self.app_path = Path(app_path).resolve()
-    
+
     def package(self) -> PackageResult:
         """打包应用目录为 ZIP"""
         buffer = io.BytesIO()
         file_count = 0
-        
+
         with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for file_path in self._iter_files():
                 arcname = file_path.relative_to(self.app_path)
                 zf.write(file_path, arcname)
                 file_count += 1
-        
+
         content = buffer.getvalue()
         file_hash = hashlib.sha256(content).hexdigest()
         file_size = len(content)
-        
+
         return PackageResult(
             content=content,
             file_hash=file_hash,
             file_size=file_size,
             file_count=file_count,
         )
-    
+
     def _iter_files(self):
         """迭代所有需要打包的文件"""
         for path in self.app_path.rglob('*'):
             if path.is_file() and not self._should_exclude(path):
                 yield path
-    
+
     def _should_exclude(self, path: Path) -> bool:
         """判断是否应该排除该文件"""
         parts = path.relative_to(self.app_path).parts
@@ -74,7 +75,7 @@ class AppPackager:
                     if fnmatch.fnmatch(part, pattern):
                         return True
         return False
-    
+
     def preview(self) -> list[tuple[str, int]]:
         """预览将要打包的文件列表"""
         files = []
@@ -83,12 +84,12 @@ class AppPackager:
             size = path.stat().st_size
             files.append((str(rel_path), size))
         return sorted(files)
-    
+
     def print_preview(self) -> None:
         """打印打包预览"""
         files = self.preview()
         total_size = sum(size for _, size in files)
-        
+
         print_info(f'将要打包 {len(files)} 个文件:')
         for rel_path, size in files:
             print(f'  {rel_path} ({format_size(size)})')

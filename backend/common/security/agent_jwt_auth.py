@@ -10,9 +10,8 @@ Agent 使用独立的 JWT 进行身份认证，通过 Authorization header 传�
 @author Ysf
 @date 2026-05-13
 """
-from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from backend.common.dataclasses import AgentTokenPayload
@@ -74,10 +73,10 @@ async def agent_jwt_auth(
     except errors.TokenError as e:
         raise HTTPException(
             status_code=401,
-            detail=f"Agent JWT 验证失败: {str(e)}",
+            detail=f"Agent JWT 验证失败: {e!s}",
         )
     except Exception as e:
-        log.error(f"Agent JWT 认证异常: {str(e)}")
+        log.error(f"Agent JWT 认证异常: {e!s}")
         raise HTTPException(
             status_code=401,
             detail="Agent JWT 认证失败",
