@@ -14,7 +14,7 @@ from backend.app.hasn.schema.hasn_platform_operator_grants import (
     OperatorGrantScopeOption,
     UpdateHasnPlatformOperatorGrantsParam,
 )
-from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG, PRIVILEGED_SCOPES, is_valid_privileged_grant
+from backend.app.mcp.platform_scopes import PRIVILEGED_SCOPES, is_valid_privileged_grant
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.common.security.agent_jwt import invalidate_privileged_grants_cache
@@ -166,14 +166,19 @@ class HasnPlatformOperatorGrantsService:
         特权与否是工具的固有安全属性，由工具声明 + PRIVILEGED_SCOPES 权威 + 前缀守卫决定
         （doc18 §4.1 / 实施103 U2）。此处只读暴露给授予页做下拉——新工具声明的特权 scope
         会自动出现（守卫保证工具不会声明名单外的特权 scope），Admin 不手工维护「哪些算特权」。
+
+        展示元数据（label/risk/描述）从**聚合词表** `scope_meta` 取（各应用目录 scopes.py 落地、
+        由 app/mcp/scopes.py 聚合，diag 亦如此），此处只管「哪些 scope 算特权」不重复声明元数据。
         """
+        from backend.app.mcp.scopes import scope_meta
+
         options: list[OperatorGrantScopeOption] = []
         for scope in sorted(PRIVILEGED_SCOPES):
-            meta = PLATFORM_SCOPE_CATALOG.get(scope, {})
+            meta = scope_meta(scope)
             options.append(
                 OperatorGrantScopeOption(
                     scope=scope,
-                    label_zh=meta.get('label_zh') or scope,
+                    label_zh=meta.get('label') or scope,
                     risk=meta.get('risk') or 'medium',
                     description=meta.get('description') or '平台运维特权',
                 )

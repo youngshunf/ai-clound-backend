@@ -43,27 +43,28 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     # —— platform · 记忆（hasn.memory.save：分身把长期语义事实写入云端权威记忆，doc16 Phase C）——
     # 读类（search/recall/list）无需授权；写类 memory:write 出厂 Allow，owner 三态可覆盖、事后可改可删。
     'memory:write': {'label_zh': '记录记忆', 'domain': 'memory', 'risk': 'low', 'description': '把长期语义事实（偏好/事实/目标等）写入云端权威记忆（读类无需授权）'},
-    # —— platform · 错误诊断（hasn.diag.* 云端工具，doc21）：平台运维分身跨 owner 读全量 issue/report + 改状态 ——
-    # 特权口径（跨 owner），由 G1 平台特权门（doc18 U2）判定授予对象；出厂 Allow（无人值守运维，Ask 会死锁）。
-    'diag:read:all': {'label_zh': '读平台错误全量', 'domain': 'diag', 'risk': 'medium', 'description': '跨 owner 读取平台错误 issue 列表/详情/occurrence/统计（平台运维特权，非普通分身）'},
-    'diag:manage': {'label_zh': '管理平台错误 issue', 'domain': 'diag', 'risk': 'high', 'description': '改 issue 状态（investigating/resolved/skipped/wontfix）、挂 issue/PR 链接（平台运维特权，写审计留痕）'},
+    # 注：diag:*（错误诊断，模块 21）等特权 scope 的**展示元数据**随其应用目录 `app/hasn_diag/scopes.py`
+    # 落地（与 plan/deck/task 一致），由 `app/mcp/scopes.py` 聚合——本平台表只留真正的平台基线域。
+    # 本文件仅保留 diag/ops/platform 的**特权门机制**（PRIVILEGED_SCOPE_PREFIXES / PRIVILEGED_SCOPES 白名单）。
     # —— 历史默认词表（DEFAULT_AGENT_SCOPES）——展示兜底，无对应 cloud 工具亦不崩 ——
     'task:execute': {'label_zh': '执行任务', 'domain': 'task', 'risk': 'low', 'description': '历史默认任务执行权限'},
     'profile:read': {'label_zh': '读取资料', 'domain': 'profile', 'risk': 'low', 'description': '读取自身/主人公开资料'},
 }
 
 # ── G1 平台特权门（doc18 §4.1 · 实施/103 U2）──────────────────────────────
-# 特权前缀整段排他：命中前缀的 scope 一律归特权，防漂移守卫据此强制。
-# PLATFORM_SCOPE_CATALOG 是展示元数据注册表：可含**有意登记**的特权 scope 元数据（diag:* 等，
-# 供运维分身工具可见时查 label/risk）——但凡命中特权前缀的键必须 ∈ PRIVILEGED_SCOPES；
-# owner 级普通能力键**不得**误用特权前缀（未登记 = 漂移，会被 G1 错误隐身）。
+# 特权前缀整段排他：命中前缀的 scope 一律归特权，防漂移守卫据此强制。这是**跨切面**的特权门机制，
+# 与「哪个应用声明了哪些 scope 的展示元数据」正交——展示元数据随各应用目录 `scopes.py`（含 diag），
+# 本处只维护「哪些前缀/scope 算特权」。
+# 约束：聚合表 SCOPE_CATALOG 里凡命中特权前缀的键必须 ∈ PRIVILEGED_SCOPES；
+# owner 级普通能力键**不得**误用特权前缀（未登记 = 漂移，会被 G1 错误隐身）——
 # owner 级自查类能力须走其他前缀（diag 文档已预留 selfdiag:read），不得开豁免洞。
-# 真正的「第四暴露面」隐藏在 build_scope_catalog 的 is_catalog_hidden（工具级 G1 过滤），与本词表内容无关。
+# 真正的「第四暴露面」隐藏在 build_scope_catalog 的 is_catalog_hidden（工具级 G1 过滤）。
 PRIVILEGED_SCOPE_PREFIXES: tuple[str, ...] = ('diag:', 'ops:', 'platform:')
 
-# 特权 scope 名单：已声明的特权 scope 全集。新增运维工具的 scope 必须先登记进来
-# （守卫测试：注册表里凡 required_scopes 命中特权前缀的，必须 ∈ 本名单，防漏名单）。
-# 一行一 scope，与 PLATFORM_SCOPE_CATALOG 同约定。
+# 特权 scope 安全白名单：已声明的特权 scope 全集（跨切面安全注册表，非展示元数据）。
+# 新增运维工具的 scope 必须先登记进来（守卫测试：注册表里凡 required_scopes 命中特权前缀的，
+# 必须 ∈ 本名单，防漏名单）。展示元数据（label/risk/描述）在各应用 scopes.py，此处只管 possession 门。
+# 一行一 scope。
 PRIVILEGED_SCOPES: frozenset[str] = frozenset({
     'diag:read:all',  # 运维分身读全平台错误聚合（hasn.diag.* 读类，21-可观测性 §8.2）
     'diag:manage',  # 运维分身处置错误 issue（hasn.diag.* 写类：update/resolve）

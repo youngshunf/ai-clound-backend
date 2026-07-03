@@ -7,7 +7,8 @@
 4. owner 经 PUT /scopes（capability_modes allow）无法放行特权工具——三态非放行依据；
 5. 权限页 catalog 行：普通分身 catalog 无 diag:*、运维分身有且 deny 后仍在（供改回）；
 6. 守卫：注册表里命中特权前缀的 scope 必 ∈ PRIVILEGED_SCOPES（防漏名单）；
-   PLATFORM_SCOPE_CATALOG 键不得命中特权前缀（前缀排他，防误把普通能力划特权）。
+   聚合 SCOPE_CATALOG（platform ∪ 各应用目录 scopes.py）里命中特权前缀的键必 ∈ PRIVILEGED_SCOPES
+   （前缀排他，防误把普通能力划特权）。
 
 判定本体零 mock；工具加载/审计 no-op（与 test_tool_exposure 同款接缝）。
 真实 PG grants 活取 + ENV 合并另见 test_g1_privilege_pg.py。
@@ -22,13 +23,13 @@ import pytest
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.platform_scopes import (
-    PLATFORM_SCOPE_CATALOG,
     PRIVILEGED_SCOPES,
     grant_matches_scope,
     is_privileged_scope,
     is_valid_privileged_grant,
     privileged_scopes_satisfied,
 )
+from backend.app.mcp.scopes import SCOPE_CATALOG
 from backend.app.mcp.server import HasnCloudMcpServer
 from backend.app.mcp.tool_exposure import (
     ACTION_ALLOW,
@@ -252,18 +253,20 @@ def test_guard_registry_privileged_scopes_are_listed() -> None:
                 assert scope in PRIVILEGED_SCOPES, f'{tool.name} 声明特权 scope {scope} 未登记进 PRIVILEGED_SCOPES'
 
 
-def test_guard_platform_catalog_keys_not_privileged() -> None:
-    """前缀排他（防漂移）：PLATFORM_SCOPE_CATALOG 是展示元数据注册表（scope_meta 查表源），
-    可含**有意登记**的特权 scope 元数据（如 diag:read:all/diag:manage，供运维分身工具可见时
-    查 label/risk/描述）——凡命中特权前缀的键必须 ∈ PRIVILEGED_SCOPES（表明确为运维特权）。
+def test_guard_catalog_keys_not_privileged() -> None:
+    """前缀排他（防漂移）：SCOPE_CATALOG 是**聚合**展示元数据注册表（platform ∪ 各应用目录 scopes.py，
+    scope_meta 查表源），可含**有意登记**的特权 scope 元数据（如 diag:read:all/diag:manage 现落在
+    app/hasn_diag/scopes.py，供运维分身工具可见时查 label/risk/描述）——凡命中特权前缀的键必须
+    ∈ PRIVILEGED_SCOPES（表明确为运维特权）。
     反之，owner 级普通能力键若误用特权前缀却未登记 PRIVILEGED_SCOPES = 漂移（会被 G1 强划
     特权而错误隐身），必须失败；owner 自查类须走 selfdiag: 等非特权前缀。
+    遍历聚合表（非仅 platform）→ 任何应用目录 scopes.py 误引特权前缀也会被本守卫捕获。
     注：真正的「第四暴露面」隐藏在 build_scope_catalog 的 is_catalog_hidden（工具级 G1 过滤），
     与本词表内容无关——本词表仅元数据查表，不是 owner 权限页的枚举源。"""
-    for scope_key in PLATFORM_SCOPE_CATALOG:
+    for scope_key in SCOPE_CATALOG:
         if is_privileged_scope(scope_key):
             assert scope_key in PRIVILEGED_SCOPES, (
-                f'PLATFORM_SCOPE_CATALOG 键 {scope_key} 命中特权前缀但未登记进 PRIVILEGED_SCOPES'
+                f'SCOPE_CATALOG 键 {scope_key} 命中特权前缀但未登记进 PRIVILEGED_SCOPES'
                 '（owner 级普通能力误用特权前缀 = 漂移；owner 自查类请用 selfdiag: 等非特权前缀）'
             )
 
