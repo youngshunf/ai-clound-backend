@@ -25,7 +25,12 @@ from backend.app.hasn_memory.model import HasnOwnerMemory, OwnerProfileCoverage
 from backend.app.hasn_memory.model.owner_memory import HasnOwnerMemoryContribution
 from backend.app.hasn_memory.service.owner_profile_coverage_service import PROFILE_DIMENSIONS
 from backend.app.mcp.auth import AgentContext
-from backend.app.mcp.tools.owner import OwnerCoverageGetTool, OwnerMemoryContributeTool
+from backend.app.mcp.tools.owner import (
+    OwnerCoverageGetTool,
+    OwnerGrowthClaimTool,
+    OwnerMemoryContributeTool,
+    OwnerOnboardingClaimTool,
+)
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 from backend.utils.timezone import timezone
 
@@ -245,3 +250,30 @@ async def test_memory_contribute_tool_rejects_empty_content(session) -> None:
         )
     ).scalar_one()
     assert int(count or 0) == 0
+
+
+async def test_onboarding_and_growth_claim_tools(session) -> None:
+    """hasn.owner.onboarding.claim / hasn.owner.growth.claim：owner 取自凭证、周期节奏闸生效。
+
+    首次认领 True，冷却期内再认领 False；采访/成长两闸互相独立（各自时间戳列）。
+    """
+    from sqlalchemy import text as _text
+
+    owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
+    try:
+        onboarding = OwnerOnboardingClaimTool()
+        first = await onboarding.execute(_ctx(owner), {})
+        assert first['claimed'] is True
+        assert first['cooldown_days'] == 7
+        # 冷却期内（刚认领过）立即再认领 → 不认领，避免每天新起采访会话
+        second = await onboarding.execute(_ctx(owner), {})
+        assert second['claimed'] is False
+        # 成长 claim 与采访独立 → 同一 owner 首次认领仍 True，自定义冷却生效
+        growth = OwnerGrowthClaimTool()
+        g = await growth.execute(_ctx(owner), {'cooldown_days': 3})
+        assert g['claimed'] is True
+        assert g['cooldown_days'] == 3
+    finally:
+        # 工具经全局 async_db_session 落库；用本测试的独立 session 清理（同库）。
+        await session.execute(_text('DELETE FROM hasn_plan.preference WHERE owner_hasn_id = :o'), {'o': owner})
+        await session.commit()

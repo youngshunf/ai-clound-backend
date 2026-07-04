@@ -168,4 +168,110 @@ class OwnerMemoryContributeTool(BaseTool):
             }
 
 
-OWNER_TOOLS: list[BaseTool] = [OwnerCoverageGetTool(), OwnerMemoryContributeTool()]
+class _OwnerPeriodicClaimTool(BaseTool):
+    """「每日关注·了解主人」周期节奏闸基类：每日简报每天跑，采访/成长会话不能每天派。
+
+    分身先调 `hasn.owner.coverage.get` 看画像够不够，再据此调本组 claim 工具「认领本轮派发权」：
+    认领成功（claimed=true，首次或距上次超冷却期）才真调 `hasn.task.dispatch` 派对应会话；
+    认领失败（claimed=false，冷却期内已派过）就**别再派**，只在简报里留常驻卡片提醒。
+    跨设备并发只赢一方（云端原子认领）。owner 恒取自调用凭证，绝不入参。默认冷却 7 天。
+    """
+
+    _NAME = ''
+    _KIND = ''  # 「采访」/「成长复盘」，仅用于文案
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return self._NAME
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'cooldown_days': {
+                    'type': 'integer',
+                    'description': '冷却天数，距上次派发不足此天数则不认领（默认 7=每周一次）。',
+                    'minimum': 1,
+                    'maximum': 90,
+                }
+            },
+            'additionalProperties': False,
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return []
+
+    async def _do_claim(self, db, owner: str, cooldown_days: int) -> bool:  # noqa: ANN001
+        raise NotImplementedError
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> Any:
+        cooldown = arguments.get('cooldown_days')
+        cooldown_days = int(cooldown) if isinstance(cooldown, int) and cooldown > 0 else 7
+        async with async_db_session() as db:
+            claimed = await self._do_claim(db, agent_context.owner_hasn_id, cooldown_days)
+            await db.commit()
+            return {'claimed': bool(claimed), 'cooldown_days': cooldown_days}
+
+
+class OwnerOnboardingClaimTool(_OwnerPeriodicClaimTool):
+    """认领「派一次了解主人采访会话」的权（周期闸，画像不完整时用）。"""
+
+    _NAME = 'hasn.owner.onboarding.claim'
+    _KIND = '采访'
+
+    @property
+    def description(self) -> str:
+        return (
+            '「每日关注·了解主人」节奏闸：主人画像还不完整（hasn.owner.coverage.get 返回 all_sufficient=false）时，'
+            '调本工具认领「本轮是否该派一次了解主人的采访会话」。claimed=true 表示首次 / 距上次采访已超冷却期'
+            '（默认 7 天）→ 你应真调 hasn.task.dispatch 派一个采访会话（会话里读 coverage、对不 sufficient 的维度'
+            '用 hasn.session.ask 一次问一个、每得到答复调 hasn.owner.memory.contribute 写入、直到 5 维全 sufficient）；'
+            'claimed=false 表示冷却期内已派过 → **别再派**，简报里留常驻卡片提醒即可（避免每天打扰主人）。'
+            'owner 恒取自调用凭证。'
+        )
+
+    async def _do_claim(self, db, owner: str, cooldown_days: int) -> bool:  # noqa: ANN001
+        from backend.app.hasn_plan.service.plan_app_service import plan_service
+
+        return await plan_service.claim_profile_onboarding(db, owner=owner, cooldown_days=cooldown_days)
+
+
+class OwnerGrowthClaimTool(_OwnerPeriodicClaimTool):
+    """认领「派一次成长复盘/主动规划会话」的权（周期闸，画像完整后用）。"""
+
+    _NAME = 'hasn.owner.growth.claim'
+    _KIND = '成长复盘'
+
+    @property
+    def description(self) -> str:
+        return (
+            '「每日关注·了解主人」节奏闸：主人画像已完整（hasn.owner.coverage.get 返回 all_sufficient=true）时，'
+            '调本工具认领「本轮是否该派一次陪主人成长的会话」。claimed=true 表示首次 / 距上次已超冷却期'
+            '（默认 7 天）→ 你应真调 hasn.task.dispatch 派一个成长会话（会话里读主人记忆与现有目标现状、分析处境、'
+            '给「如何提升自己 / 达成目标」的具体建议、用 hasn.session.ask 与主人沟通确认，主人确认后调 hasn.plan.* '
+            '建/调目标·待办·排日程；已有目标就复盘调整，没有就先建初始规划）；claimed=false 表示本周期已派过 → **别再派**。'
+            'owner 恒取自调用凭证。'
+        )
+
+    async def _do_claim(self, db, owner: str, cooldown_days: int) -> bool:  # noqa: ANN001
+        from backend.app.hasn_plan.service.plan_app_service import plan_service
+
+        return await plan_service.claim_growth_review(db, owner=owner, cooldown_days=cooldown_days)
+
+
+OWNER_TOOLS: list[BaseTool] = [
+    OwnerCoverageGetTool(),
+    OwnerMemoryContributeTool(),
+    OwnerOnboardingClaimTool(),
+    OwnerGrowthClaimTool(),
+]

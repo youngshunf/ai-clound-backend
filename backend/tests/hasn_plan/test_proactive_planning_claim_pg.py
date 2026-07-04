@@ -142,3 +142,72 @@ async def test_concurrent_claims_only_one_wins(session) -> None:
         await engine_a.dispose()
         await engine_b.dispose()
         await _cleanup(session, owner)
+
+
+# ── 「每日关注·了解主人」每周再提醒节奏闸（claim_profile_onboarding / claim_growth_review）──
+# 不变量：首次认领 True 并记时间戳 → 冷却期内再认领 False → 回拨时间戳超冷却期后可重新认领 True；
+# 采访/成长两列相互独立。
+
+
+async def _set_last(session, owner_id: str, column: str, days_ago: int) -> None:
+    await session.execute(
+        text(
+            f'UPDATE hasn_plan.preference SET {column} = now() - make_interval(days => :d) '
+            'WHERE owner_hasn_id = :o'
+        ),
+        {'d': days_ago, 'o': owner_id},
+    )
+    await session.commit()
+
+
+async def _last_val(session, owner_id: str, column: str):
+    row = (
+        await session.execute(select(Preference).where(Preference.owner_hasn_id == owner_id))
+    ).scalars().first()
+    return None if row is None else getattr(row, column)
+
+
+async def test_onboarding_claim_first_time_then_within_cooldown(session) -> None:
+    owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
+    try:
+        first = await plan_service.claim_profile_onboarding(session, owner=owner)
+        await session.commit()
+        assert first is True
+        assert await _last_val(session, owner, 'last_onboarding_at') is not None
+        # 冷却期内（刚派过）立即再认领 → False，避免每天新起采访会话
+        second = await plan_service.claim_profile_onboarding(session, owner=owner)
+        await session.commit()
+        assert second is False
+    finally:
+        await _cleanup(session, owner)
+
+
+async def test_onboarding_claim_reclaims_after_cooldown(session) -> None:
+    owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
+    try:
+        assert await plan_service.claim_profile_onboarding(session, owner=owner) is True
+        await session.commit()
+        # 把上次派发时间回拨 10 天（超过默认 7 天冷却）→ 本周该再提醒了，可重新认领
+        await _set_last(session, owner, 'last_onboarding_at', 10)
+        again = await plan_service.claim_profile_onboarding(session, owner=owner, cooldown_days=7)
+        await session.commit()
+        assert again is True
+    finally:
+        await _cleanup(session, owner)
+
+
+async def test_onboarding_and_growth_claims_are_independent(session) -> None:
+    owner = f'h_knowu_{uuid.uuid4().hex[:8]}'
+    try:
+        # 采访 claim 用掉不影响成长 claim（各自独立时间戳列）
+        assert await plan_service.claim_profile_onboarding(session, owner=owner) is True
+        await session.commit()
+        assert await plan_service.claim_growth_review(session, owner=owner) is True
+        await session.commit()
+        # 各自冷却期内再认领都 False
+        assert await plan_service.claim_profile_onboarding(session, owner=owner) is False
+        await session.commit()
+        assert await plan_service.claim_growth_review(session, owner=owner) is False
+        await session.commit()
+    finally:
+        await _cleanup(session, owner)

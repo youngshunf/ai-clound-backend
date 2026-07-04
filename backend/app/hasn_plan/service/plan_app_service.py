@@ -874,6 +874,46 @@ class PlanService:
         await db.flush()
         return claimed_id is not None
 
+    async def _claim_periodic(
+        self, db: AsyncSession, *, owner: str, column: str, cooldown_days: int
+    ) -> bool:
+        """周期性「超冷却期才可重新认领」原子闸（KNOWU「每日关注·了解主人」§每周再提醒）。
+
+        每日简报每天都跑，采访 / 成长会话不能每天派。用 `preference.<column>`（时间戳）记「上次派发时间」，
+        原子 `INSERT ... ON CONFLICT DO UPDATE ... WHERE <上次派发为空 OR 已超 cooldown_days 天> RETURNING id`：
+        - 行不存在 → 插入并认领（首次）；
+        - 行存在且从未派过（NULL）或距上次 > cooldown_days 天 → 更新时间戳并认领；
+        - 行存在且冷却期内 → WHERE 不命中、无行更新、RETURNING 空 → 不认领。
+        多设备并发也只赢一方（依赖 `uq_plan_preference_owner` 唯一索引作 ON CONFLICT 目标）。
+        `column` 由调用方硬编码传入（非用户输入），无注入风险。返回 True=本次认领成功（调用方应派会话）。
+        """
+        stmt = sa.text(
+            f"""
+            INSERT INTO hasn_plan.preference (owner_hasn_id, {column}, created_time, updated_time)
+            VALUES (:owner, now(), now(), now())
+            ON CONFLICT (owner_hasn_id)
+            DO UPDATE SET {column} = now(), updated_time = now()
+            WHERE hasn_plan.preference.{column} IS NULL
+               OR hasn_plan.preference.{column} < now() - make_interval(days => :days)
+            RETURNING id
+            """
+        )
+        claimed_id = (await db.execute(stmt, {'owner': owner, 'days': int(cooldown_days)})).scalar()
+        await db.flush()
+        return claimed_id is not None
+
+    async def claim_profile_onboarding(self, db: AsyncSession, *, owner: str, cooldown_days: int = 7) -> bool:
+        """「了解主人」采访会话节奏闸：画像不完整时，距上次采访 > cooldown_days 天才再派一次。"""
+        return await self._claim_periodic(
+            db, owner=owner, column='last_onboarding_at', cooldown_days=cooldown_days
+        )
+
+    async def claim_growth_review(self, db: AsyncSession, *, owner: str, cooldown_days: int = 7) -> bool:
+        """「成长复盘 / 主动规划」会话节奏闸：画像完整后，每 cooldown_days 天派一次陪主人成长的会话。"""
+        return await self._claim_periodic(
+            db, owner=owner, column='last_growth_at', cooldown_days=cooldown_days
+        )
+
     # ── 「今日」聚合（设计 §10.2 首屏）──────────────────────────────────────────
     async def today_overview(self, db: AsyncSession, *, owner: str, day_start: datetime, day_end: datetime) -> dict:
         """今日首屏数据：当日时间块 + 需主人/分身分流的待办 + 目标进度环。
