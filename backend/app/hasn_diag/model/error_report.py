@@ -19,7 +19,7 @@ class ErrorReport(HasnDiagAppBase):
     node_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='上报设备 node_id（客户端自报）')
     owner_hasn_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='归属主人 hasn_id（可空）')
     agent_hasn_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='归属分身 hasn_id（可空）')
-    source: Mapped[str] = mapped_column(sa.String(16), default='', comment='来源 (daemon/hermes/runtime)')
+    source: Mapped[str] = mapped_column(sa.String(16), default='', comment='来源 (daemon/hermes/runtime/webui)')
     severity: Mapped[str] = mapped_column(sa.String(16), default='', comment='严重度 (critical/error/warn)')
     fingerprint: Mapped[str] = mapped_column(sa.String(64), default='', comment='归类键（模块级位置·无行号）')
     dedup_key: Mapped[str] = mapped_column(sa.String(96), default='', comment='单次物理发生幂等键（§3）')
