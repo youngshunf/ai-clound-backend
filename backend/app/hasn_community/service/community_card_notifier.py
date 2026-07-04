@@ -12,12 +12,18 @@ best-effort：投递失败只告警，绝不影响发帖/发文本身（发帖�
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
+
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.service import message_router
 from backend.common.log import log
 from backend.database.db import async_db_session
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # content_type 整数码：5 = 卡片（对齐 mcp/tools/message.py 的 _CT_CARD / ws_node 映射）。
 _CT_CARD = 5
@@ -35,6 +41,23 @@ _STATUS_LABELS = {
 
 def _status_label(status: str | None) -> str:
     return _STATUS_LABELS.get(status or '', status or '未知')
+
+
+async def _resolve_agent_display_name(db: AsyncSession, agent_hasn_id: str) -> str | None:
+    """取 Agent 权威对外展示名 `display_name`（卡片作者名一律用它，不用 JWT `agent_name`）。
+
+    JWT 里的 `agent_name` 在不同铸票路径可能是技术标识名/slug（如 `assistant`），不是对外
+    展示名（如「全能助理」）——故此处以 `hasn_agents.display_name` 为权威来源。查不到/异常则
+    返回 None，调用方回落到入参 author_name（best-effort，绝不因取名失败而不发卡）。
+    """
+    try:
+        value = (
+            await db.execute(select(HasnAgents.display_name).where(HasnAgents.hasn_id == agent_hasn_id))
+        ).scalar_one_or_none()
+        return (value or '').strip() or None
+    except Exception as exc:
+        log.debug(f'社区卡取 Agent display_name 失败（回落入参名）：{exc!r}')
+        return None
 
 
 def _preview(text: str | None, limit: int) -> str:
@@ -120,15 +143,17 @@ async def notify_owner_resource_card(
     if not agent_hasn_id or not owner_hasn_id or not resource_id:
         return
     try:
-        card = build_community_resource_card(
-            resource_type,
-            resource_id,
-            author_name=author_name,
-            status=status,
-            preview=preview,
-            resource_title=resource_title,
-        )
         async with async_db_session() as db:
+            # 作者名取 Agent 权威 display_name（对外展示名）；查不到才回落入参名（agent.agent_name）。
+            resolved_author = await _resolve_agent_display_name(db, agent_hasn_id) or author_name
+            card = build_community_resource_card(
+                resource_type,
+                resource_id,
+                author_name=resolved_author,
+                status=status,
+                preview=preview,
+                resource_title=resource_title,
+            )
             result = await message_router.route_message(
                 db=db,
                 from_id=agent_hasn_id,
