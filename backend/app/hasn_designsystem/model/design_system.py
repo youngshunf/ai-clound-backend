@@ -58,6 +58,12 @@ class DesignSystem(DesignSystemBase):
         default=None,
         comment='列表卡预览色板（denorm 自当前版 tokens.css 关键色，前端列表渲染迷你预览）',
     )
+    # DSFIX-1：分身首次写满必填字段（详情四区块全非空）→ 发一次「设计系统已完成·查看」卡的幂等水位。
+    # 非空 = 已发过完成卡（此后再 save 不重复发）；null = 尚未完整或尚未发。发卡时机由分身写完必填字段
+    # 触发（不是 runtime 自动完成），承载 hasn://designsystem/{云端id} 深链直达详情。
+    completed_notified_at: Mapped[datetime | None] = mapped_column(
+        TimeZone, default=None, comment='首次完整（必填字段齐全）发完成卡的时间（幂等水位，非空=已发过）'
+    )
     deleted_time: Mapped[datetime | None] = mapped_column(
         TimeZone, default=None, comment='软删时间（非空=已删，不物理删以便同步感知）'
     )
