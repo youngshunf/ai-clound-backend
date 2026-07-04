@@ -28,10 +28,11 @@ from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST, build_deck_a
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
-# 落地真相（hasn-node crates/hasn-mcp/src/deck.rs）：写类 8 工具 / 读类 4 工具。
+# 落地真相（云端 backend/app/mcp/tools/deck.py，TOOLMIG2-P3 后本地 hasn-mcp deck 工具已删）：写类 9 工具 / 读类 4 工具。
 _WRITE_TOOLS = {
     'create',
     'delete',
+    'finalize',
     'outline.set',
     'page.write_batch',
     'page.write',
@@ -66,11 +67,11 @@ def test_deck_in_builtin_registry() -> None:
 
 
 def test_deck_capabilities_match_landed_tools() -> None:
-    """12 个 capability，mcp_name 全 hasn.deck.*；写类 deck:manage、读类无 scope（与 deck.rs 一致）。"""
+    """13 个 capability，mcp_name 全 hasn.deck.*；写类 deck:manage、读类无 scope（与云端 deck.py 一致）。"""
     caps = DECK_AI_NATIVE_MANIFEST['capabilities']
     names = {c['tool_id'].split('.', 1)[1] for c in caps}
     assert names == _WRITE_TOOLS | _READ_TOOLS, f'工具集与落地不一致: {names}'
-    assert len(caps) == 12
+    assert len(caps) == 13
 
     for cap in caps:
         assert cap['mcp_name'].startswith('hasn.deck.'), cap['mcp_name']

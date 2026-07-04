@@ -326,6 +326,31 @@ class DeckService:
         return _deck_dict(deck)
 
     @staticmethod
+    async def finalize_deck(db: AsyncSession, *, subject: Subject, deck_id: int) -> dict[str, Any]:
+        """收尾演示文稿：把 draft/generating 一次性推进到 ready（幂等守卫，仅首次转换 changed=True）。
+
+        「分身做完就自动发一张卡」的服务端信号点：分身写完最后一页调本方法，云端置 ready；
+        仅 changed=True 时由工具层据此组「演示文稿做好了」卡并投递（见 mcp/tools/deck.py
+        `_h_finalize` → hasn_sessions_service.emit_deck_completion_card）。已是 ready/archived
+        再调 → changed=False、不重复发卡。需 editor 权限（分身继承主人权限）。
+        """
+        deck = await DeckService._get_deck(db, deck_id)
+        await DeckService._authorize_deck(db, deck=deck, subject=subject, need='editor')
+        changed = deck.status in ('draft', 'generating')
+        if changed:
+            deck.status = 'ready'
+            deck.rev += 1
+            await db.flush()
+        return {
+            'changed': changed,
+            'deck_id': str(deck.id),
+            'title': deck.title,
+            'topic': deck.topic,
+            'page_count': deck.page_count,
+            'status': deck.status,
+        }
+
+    @staticmethod
     async def delete_deck(db: AsyncSession, *, subject: Subject, deck_id: int) -> None:
         deck = await DeckService._get_deck(db, deck_id)
         await DeckService._authorize_deck(db, deck=deck, subject=subject, need='manager')

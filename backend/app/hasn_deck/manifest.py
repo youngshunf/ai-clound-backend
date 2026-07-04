@@ -292,12 +292,27 @@ DECK_AI_NATIVE_MANIFEST = {
             tags=['deck', 'page', 'reorder'],
         ),
         _write_cap(
+            name='finalize',
+            title='收尾演示文稿',
+            description=(
+                '写完最后一页后调一次，把演示文稿标记为「已完成」。首次收尾时系统自动给主人发一张'
+                '「演示文稿做好了」卡片（分身不用、也不该自己发卡）。可带 summary 一句话概述；幂等，重复调不重复发卡。'
+            ),
+            properties={
+                'deck_id': {'type': 'string', 'minLength': 1},
+                'summary': {'type': ['string', 'null'], 'description': '一句话概述这份演示文稿（作为卡片描述，可选）'},
+            },
+            required=['deck_id'],
+            page_rank=19,
+            tags=['deck', 'finalize', 'complete'],
+        ),
+        _write_cap(
             name='delete',
             title='删除演示文稿',
             description='删除演示文稿（软删，可同步撤销）。',
             properties={'deck_id': {'type': 'string', 'minLength': 1}},
             required=['deck_id'],
-            page_rank=19,
+            page_rank=20,
             tags=['deck', 'delete', 'manage'],
             risk_level='high',
         ),

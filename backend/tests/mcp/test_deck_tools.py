@@ -76,6 +76,7 @@ _EXPECTED_NAMES = {
     'hasn.deck.page.edit',
     'hasn.deck.page.delete',
     'hasn.deck.page.reorder',
+    'hasn.deck.finalize',
     'hasn.deck.delete',
     'hasn.deck.style.list',
     'hasn.deck.style.get',

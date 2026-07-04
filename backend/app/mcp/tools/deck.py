@@ -202,6 +202,27 @@ async def _h_page_reorder(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
     return {'pages': result['items']}
 
 
+async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """收尾：把演示文稿标记为「已完成」。**仅首次转换**由云端自动给主人发「演示文稿做好了」卡
+    （分身不用、也不该自己发卡）；已完成再调则幂等，不重复发卡。"""
+    deck_id = _deck_id(args)
+    result = await deck_service.finalize_deck(db, subject=_subject(ctx), deck_id=deck_id)
+    card_sent = False
+    if result['changed']:
+        from backend.app.hasn.service.hasn_sessions_service import emit_deck_completion_card
+
+        await emit_deck_completion_card(
+            db,
+            owner_id=ctx.owner_hasn_id,
+            agent_id=ctx.agent_hasn_id,
+            deck_id=str(deck_id),
+            title=str(result.get('title') or ''),
+            summary=str(args.get('summary') or ''),
+        )
+        card_sent = True
+    return {'deck_id': str(deck_id), 'status': result['status'], 'finalized': result['changed'], 'card_sent': card_sent}
+
+
 async def _h_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     deck_id = _deck_id(args)
     await deck_service.delete_deck(db, subject=_subject(ctx), deck_id=deck_id)
@@ -366,6 +387,24 @@ _SPECS: list[dict[str, Any]] = [
                 'page_ids': {'type': 'array', 'items': {'type': 'string'}, 'description': '按目标顺序排列的全部页 id'},
             },
             'required': ['deck_id', 'page_ids'],
+        },
+    },
+    {
+        'action': 'finalize',
+        'write': True,
+        'handler': _h_finalize,
+        'desc': (
+            '收尾：写完最后一页后**调一次**，把演示文稿标记为「已完成」。'
+            '首次收尾时系统会自动给主人发一张「演示文稿做好了」卡片——'
+            '**你不用、也不要自己发卡/发消息通知主人**。可带 summary 一句话概述。幂等：重复调不会重复发卡。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                **_DECK_ID,
+                'summary': {'type': ['string', 'null'], 'description': '一句话概述这份演示文稿（作为卡片描述，可选）'},
+            },
+            'required': ['deck_id'],
         },
     },
     {
