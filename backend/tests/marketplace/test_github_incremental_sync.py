@@ -17,9 +17,11 @@ from types import SimpleNamespace
 
 from backend.app.marketplace.service import github_sync_service as mod
 from backend.app.marketplace.service.github_sync_service import (
+    SKILLS_FULL_RESYNC_SENTINEL,
     bundles_changed,
     collect_changed_paths,
     common_skills_changed,
+    full_resync_requested,
     metadata_unchanged,
     skill_dir_touched,
     submodule_refresh_needed,
@@ -81,6 +83,21 @@ def test_submodule_refresh_needed_only_on_gitmodules_or_gitlink() -> None:
     assert submodule_refresh_needed({'huanxing-skills/official/a/SKILL.md'}) is False
     # 子模块内部文件路径（更深）不是 gitlink，不触发
     assert submodule_refresh_needed({'github/baoyu-skills/skills/x/SKILL.md'}) is False
+
+
+# ---------- full_resync_requested（手动全量哨兵）----------
+
+def test_full_resync_requested_only_on_sentinel() -> None:
+    # trigger_webhook.py 无真实改动时注入的哨兵 → 请求全量重扫
+    assert full_resync_requested({SKILLS_FULL_RESYNC_SENTINEL}) is True
+    assert full_resync_requested({'huanxing-skills/.trigger'}) is True  # 哨兵字面值
+    # 真实技能 push（无哨兵）→ 不请求全量，照常走增量
+    assert full_resync_requested({'huanxing-skills/official/a/SKILL.md'}) is False
+    assert full_resync_requested(set()) is False
+    # 哨兵与真实改动混在一起（手动触发脚本探测到本地改动时）→ 仍视为全量
+    assert full_resync_requested(
+        {SKILLS_FULL_RESYNC_SENTINEL, 'huanxing-skills/official/a/SKILL.md'}
+    ) is True
 
 
 def test_common_and_bundles_change_gates() -> None:
