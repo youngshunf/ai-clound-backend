@@ -35,9 +35,27 @@ def make_test_app() -> FastAPI:
     return app
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _isolate_db_engine_pool():
+    """每测处置全局引擎池（与 test_capability_ticket 同款隔离）。
+
+    async_db_session 引擎是模块级单例，池化连接绑定首个使用它的事件循环；
+    TestClient 每个请求起独立事件循环，跨循环复用池连接会
+    'got Future attached to a different loop'。前后各 dispose 一次，
+    让每段代码都在自己的循环上重建连接（真 PG）。
+    """
+    from backend.database.db import async_engine
+
+    await async_engine.dispose()
+    yield
+    await async_engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def active_agent_from_db():
     """从数据库获取一个活跃的 Agent"""
+    from backend.database.db import async_engine
+
     async with async_db_session() as db:
         # 查询一个活跃的 Agent
         from sqlalchemy import select
@@ -54,7 +72,10 @@ async def active_agent_from_db():
         if not agent:
             pytest.skip("数据库中没有活跃的 Agent，跳过测试")
 
-        return agent
+    # 本 fixture 在 pytest-asyncio 循环上用过池；TestClient 的请求循环随后接管，
+    # 先处置避免跨循环复用（连接在本循环创建，也只能在本循环安全关闭）。
+    await async_engine.dispose()
+    return agent
 
 
 @pytest_asyncio.fixture
@@ -91,6 +112,7 @@ class TestMcpIntegration:
 
         response = client.post(
             "/mcp/tools/list",
+            json={},  # 路由要求 JSON body（缺省即 422 missing body）
             headers={
                 "Authorization": f"Bearer {agent_token_for_db_agent}",
                 "X-HASN-Agent-ID": active_agent_from_db.hasn_id,

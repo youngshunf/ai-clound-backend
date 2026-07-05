@@ -10,20 +10,26 @@ from __future__ import annotations
 KNOWLEDGE_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'knowledge:read': {
         'label_zh': '检索知识库',
+        'label_en': 'Search knowledge base',
         'domain': 'knowledge',
         'risk': 'low',
         'description': '检索/读取主人的知识库资料（按库白名单裁剪）',
+        'description_en': "Search and read the owner's knowledge base (scoped to the whitelisted bases)",
     },
     'knowledge:upload': {
         'label_zh': '上传知识库文档',
+        'label_en': 'Upload knowledge documents',
         'domain': 'knowledge',
         'risk': 'medium',
         'description': '向主人的知识库上传文档（按主人授权与库白名单）',
+        'description_en': "Upload documents to the owner's knowledge base (per owner authorization and base whitelist)",
     },
     'knowledge:write': {
         'label_zh': '写知识库文档',
+        'label_en': 'Write knowledge documents',
         'domain': 'knowledge',
         'risk': 'medium',
         'description': '创建/更新知识库原生文档（保存即重建索引）',
+        'description_en': 'Create and update native knowledge-base documents (saving rebuilds the index)',
     },
 }

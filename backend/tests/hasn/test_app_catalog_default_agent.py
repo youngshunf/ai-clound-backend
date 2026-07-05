@@ -109,7 +109,8 @@ async def _make_owner(db) -> tuple[str, int]:
 async def test_catalog_seed_populates_default_agent_type(session) -> None:
     # 删相关行后重播种 → 走「新插入」路径，断言静态默认表生效（不依赖既有迁移 UPDATE）。
     # knowledge 一并删除：应用中心改版后它绑 assistant，需走重插入才能断言新默认（INSERT-only 不回写存量）。
-    seed_apps = (*_BOUND_APPS, 'knowledge')
+    # publish 一并删除：WEBDISP 起它绑「编程开发专家（developer）」（建站发布全流程），需走重插入断言新默认。
+    seed_apps = (*_BOUND_APPS, 'knowledge', 'publish')
     await session.execute(sa.delete(HasnAppCatalog).where(HasnAppCatalog.app_id.in_(seed_apps)))
     await session.flush()
 
@@ -129,6 +130,9 @@ async def test_catalog_seed_populates_default_agent_type(session) -> None:
     # 应用中心改版：knowledge 现绑「全能助理（assistant）」（此前未列出 → NULL 回退主脑）。
     assert rows['knowledge'].default_agent_type == 'assistant'
     assert rows['knowledge'].work_session_system_prompt
+    # WEBDISP：网页发布现绑「编程开发专家（developer，知行）」——建站是开发专长（此前为 content_operator）。
+    assert rows['publish'].default_agent_type == 'developer'
+    assert rows['publish'].work_session_system_prompt
 
 
 async def test_resolve_returns_matching_builtin_agent(session) -> None:

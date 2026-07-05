@@ -17,36 +17,46 @@ from __future__ import annotations
 PLAN_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'plan:read': {
         'label_zh': '查看规划数据',
+        'label_en': 'View planning data',
         'domain': 'plan',
         'risk': 'low',
         'description': '以 Agent 身份读取主人的目标/计划/待办/日程/习惯（owner 隔离，只读）',
+        'description_en': "Read the owner's goals, plans, to-dos, schedules, and habits as the agent (owner-isolated, read-only)",
     },
     'plan:write': {
         'label_zh': '管理规划数据',
+        'label_en': 'Manage planning data',
         'domain': 'plan',
         'risk': 'medium',
         'description': '以 Agent 身份建/改/删主人的目标/计划/待办/日程/习惯与排期（owner 隔离）',
+        'description_en': "Create, edit, and delete the owner's goals, plans, to-dos, schedules, habits, and scheduling as the agent (owner-isolated)",
     },
     'plan:schedule': {
         'label_zh': '自动排程日历',
+        'label_en': 'Auto-schedule calendar',
         'domain': 'plan',
         'risk': 'medium',
         'description': '以 Agent 身份按 Motion 风格把待办自动排进/重排主人的日历空档（建/删弹性时间块，owner 隔离）',
+        'description_en': "Motion-style auto-scheduling that fits and reshuffles to-dos into the owner's open calendar slots as the agent (create/delete flexible time blocks, owner-isolated)",
     },
     'plan:delegate': {
         'label_zh': '委托分身执行',
+        'label_en': 'Delegate to the agent',
         'domain': 'plan',
         'risk': 'high',
         'default_mode': 'ask',
         'description': '以 Agent 身份把待办/计划委托给分身经工作会话真执行（出厂 Ask，主人确认后派）',
+        'description_en': 'Delegate a to-do or plan to the agent for real execution via a work session (Ask by default; dispatched after owner confirmation)',
     },
     'plan:manage': {
         'label_zh': '管理企业会议协同',
+        'label_en': 'Manage enterprise meetings',
         'domain': 'plan',
         'risk': 'medium',
         'description': (
             '以 Agent 身份管理企业会议协同：加/减参会人（invite）、代主人回复 RSVP'
             '（PLAN-ENT 企业双模，owner 隔离 + 企业角色两刀交集）'
         ),
+        'description_en': "Coordinate enterprise meetings as the agent: add or remove attendees (invite) and reply to RSVPs on the owner's behalf (PLAN-ENT enterprise mode, owner isolation plus enterprise-role intersection)",
     },
 }

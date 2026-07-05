@@ -625,7 +625,6 @@ def _agent_ctx(*, agent: str, owner: str, trace_id: str = 'p7e') -> AgentContext
     return AgentContext(
         hasn_id=agent,
         owner_id=100001,
-        scopes=[],
         agent_status='active',
         metadata={'trace_id': trace_id},
         owner_hasn_id=owner,

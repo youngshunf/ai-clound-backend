@@ -20,35 +20,45 @@ from __future__ import annotations
 QUANT_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'quant:read': {
         'label_zh': '查看量化策略与回测',
+        'label_en': 'View quant strategies and backtests',
         'domain': 'quant',
         'risk': 'low',
         'description': '以 Agent 身份读取量化策略、回测任务/绩效、（实盘）部署/持仓/盈亏（只读，owner 隔离）',
+        'description_en': 'Read quant strategies, backtest jobs and performance, and live deployments, positions, and PnL as the agent (read-only, owner-isolated)',
     },
     'quant:backtest': {
         'label_zh': '发起回测',
+        'label_en': 'Run backtests',
         'domain': 'quant',
         'risk': 'low',
         'description': '提交策略回测（job 式，沙箱内跑历史数据出绩效）：只花算力、不动钱，分身可随便迭代',
+        'description_en': 'Submit strategy backtests (job-based, sandboxed over historical data for performance): compute-only, no money moved, the agent can iterate freely',
     },
     'quant:write': {
         'label_zh': '保存/更新策略',
+        'label_en': 'Save/update strategies',
         'domain': 'quant',
         'risk': 'low',
         'description': '保存/更新量化策略代码 + 参数 + 标的（不动钱，AI 生成策略走沙箱执行）',
+        'description_en': 'Save and update quant strategy code, parameters, and instruments (no money moved; AI-generated strategies run in a sandbox)',
     },
     # —— 以下为实盘线（P6+，真钱强闸）——
     'quant:trade': {
         'label_zh': '实盘交易控制',
+        'label_en': 'Live trading control',
         'domain': 'quant',
         'risk': 'high',
         'default_mode': 'ask',
         'description': '实盘交易动作（手动下单/恢复运行=动真钱需主人确认；暂停/停止/撤所有单=降风险可放行，工具级裁定）',
+        'description_en': 'Live trading actions (manual order and resume move real money and need owner confirmation; pause, stop, and cancel-all reduce risk and may pass — decided per tool)',
     },
     'quant:deploy': {
         'label_zh': '部署实盘',
+        'label_en': 'Deploy live',
         'domain': 'quant',
         'risk': 'high',
         'default_mode': 'ask',
         'description': '把策略部署到实盘/模拟盘（live=动真钱，强制审批卡 + 二次确认 + 资金敞口提示）',
+        'description_en': 'Deploy a strategy to live or paper trading (live moves real money — mandatory approval card, second confirmation, and exposure warning)',
     },
 }

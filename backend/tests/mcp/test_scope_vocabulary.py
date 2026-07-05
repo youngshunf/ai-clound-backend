@@ -91,3 +91,125 @@ def test_scopes_kind_registered_as_owner_directed_sync_kind() -> None:
     assert KIND_SCOPES == 'scopes'
     assert KIND_SCOPES in OWNER_KINDS, 'scopes 应为 owner 定向 kind'
     assert KIND_SCOPES not in KINDS, 'scopes 是 per-owner 指纹，不应进全局握手快照'
+
+
+# ------------------------------------------------------------------------------
+# i18n 双语守卫（福仔「一次到位·全双语」）：权限页分组名/能力名/描述在源头（cloud
+# scope catalog）就带中英，前端据语言设置取、英文缺失才诚实回退中文——绝不由前端
+# 手维护中文名（曾因前端漏映射而露英文 domain 键）。以下守卫钉死源头双语齐备。
+# ------------------------------------------------------------------------------
+
+
+def test_every_scope_has_bilingual_display_metadata() -> None:
+    """SCOPE_CATALOG 每条 scope 声明都自带非空 label_zh + label_en（源头产出英文）。
+
+    scope_meta 出参英文字段永不为空、永不露 scope key（英文缺失回退中文）；有中文描述
+    的 scope 其英文描述回退也必非空。
+    """
+    from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
+
+    for key, meta in SCOPE_CATALOG.items():
+        assert meta.get('label_zh'), f'{key} 缺 label_zh'
+        assert meta.get('label_en'), f'{key} 缺 label_en（全双语要求源头产出英文，不许留空露 key）'
+        display = scope_meta(key)
+        assert display['label_en'] and display['label_en'] != key, f'{key} label_en 露 key/为空'
+        assert display['label'] and display['label'] != key, f'{key} label 露 key/为空'
+        if meta.get('description'):
+            assert display['description_en'], f'{key} 有中文描述但英文回退为空'
+
+
+def test_domain_labels_cover_every_catalog_domain() -> None:
+    """DOMAIN_LABELS 覆盖 SCOPE_CATALOG 里出现的每个 domain（漏登记 → 权限页露英文键）。
+
+    这是「权限页分组名露英文」根 bug 的守卫：只要某 scope 的 domain 未在 DOMAIN_LABELS
+    登记，domain_label 就回退 domain 键（英文），前端渲染即露英文。新增 domain 必须登记。
+    """
+    from backend.app.mcp.scopes import DOMAIN_LABELS, SCOPE_CATALOG
+
+    domains = {meta.get('domain', '') for meta in SCOPE_CATALOG.values()}
+    domains.discard('')
+    missing = sorted(d for d in domains if d not in DOMAIN_LABELS)
+    assert not missing, f'DOMAIN_LABELS 未登记这些 domain（权限页会露英文键）: {missing}'
+
+
+def test_domain_and_source_labels_all_bilingual() -> None:
+    """DOMAIN_LABELS / SOURCE_LABELS 每条都齐备中英（zh + en 皆非空）。"""
+    from backend.app.mcp.scopes import DOMAIN_LABELS, SOURCE_LABELS
+
+    for domain, entry in DOMAIN_LABELS.items():
+        assert entry.get('zh'), f'domain {domain} 缺中文名'
+        assert entry.get('en'), f'domain {domain} 缺英文名'
+    for source, entry in SOURCE_LABELS.items():
+        assert entry.get('zh'), f'source {source} 缺中文名'
+        assert entry.get('en'), f'source {source} 缺英文名'
+
+
+def test_scope_catalog_response_schema_declares_every_emitted_field() -> None:
+    """build_scope_catalog 产出的每个键都必须在 Pydantic 响应 schema 里声明——否则被剥离。
+
+    ⭐根 bug 守卫（2026-07-03）：service 层 `ScopeCatalogResponse.model_validate(catalog)`
+    把 build_scope_catalog 的 dict 灌进 Pydantic 模型，Pydantic 默认 `extra='ignore'`
+    **静默丢弃未声明字段**。曾发生：给 build_scope_catalog + scope_meta 加了双语
+    `label_en`/`domain_label`/`domain_label_en`/`description_en`，却漏给 ScopeCapability /
+    ScopeSource schema 补字段 → HTTP 响应把双语全剥离 → 权限页露英文 domain 键、语言切换
+    无效（直调 service 有、经 HTTP 没有，极难排查）。此守卫断言 catalog 每层产出的键都被
+    schema 声明，从此漏声明即红（不必打真实 HTTP 也能抓到这类序列化边界漂移）。
+    """
+    from backend.app.hasn.schema.agent_scopes import ScopeCapability, ScopeSource
+    from backend.app.mcp.auth import AgentContext
+    from backend.app.mcp.server import mcp_server
+
+    ctx = AgentContext(
+        hasn_id='a_guard_probe',
+        owner_id=0,
+        agent_status='active',
+        metadata={},
+        default_mode='allow',
+        capability_modes={},
+    )
+    catalog = mcp_server.tool_directory.build_scope_catalog(ctx)
+
+    source_fields = set(ScopeSource.model_fields)
+    cap_fields = set(ScopeCapability.model_fields)
+    for src in catalog['sources']:
+        extra_src = set(src) - source_fields
+        assert not extra_src, f'ScopeSource schema 未声明 build_scope_catalog 产出的键（会被剥离）: {extra_src}'
+        for cap in src['capabilities']:
+            extra_cap = set(cap) - cap_fields
+            assert not extra_cap, f'ScopeCapability schema 未声明 build_scope_catalog 产出的键（会被剥离）: {extra_cap}'
+
+
+def test_app_display_domains_regroup_deck_designsystem_into_app_source() -> None:
+    """展示分组重分类（福仔 2026-07-03）：deck/designsystem 归「AI-Native 应用」组、不在平台组。
+
+    deck/designsystem 工具经 TOOLMIG 注册为 platform 工具，但语义是独立 AI-Native 应用 →
+    build_scope_catalog 按 APP_DISPLAY_DOMAINS 把它们的能力挪进 'app' 来源组。task/plan/
+    marketplace 等平台底座留在 'platform' 组。守住这个分类，避免再回归到「应用混进平台工具」。
+    """
+    from backend.app.mcp.auth import AgentContext
+    from backend.app.mcp.scopes import APP_DISPLAY_DOMAINS
+    from backend.app.mcp.server import mcp_server
+
+    assert {'deck', 'designsystem'} <= APP_DISPLAY_DOMAINS, 'deck/designsystem 应在 APP_DISPLAY_DOMAINS'
+
+    ctx = AgentContext(
+        hasn_id='a_regroup_probe',
+        owner_id=0,
+        agent_status='active',
+        metadata={},
+        default_mode='allow',
+        capability_modes={},
+    )
+    catalog = mcp_server.tool_directory.build_scope_catalog(ctx)
+    by_source = {s['source']: {c['domain'] for c in s['capabilities']} for s in catalog['sources']}
+    platform_domains = by_source.get('platform', set())
+    app_domains = by_source.get('app', set())
+
+    # deck/designsystem 已挪出平台组、进入应用组。
+    assert 'deck' in app_domains and 'deck' not in platform_domains, 'deck 应在 app 组、不在 platform'
+    assert 'designsystem' in app_domains and 'designsystem' not in platform_domains, (
+        'designsystem 应在 app 组、不在 platform'
+    )
+    # 平台底座域仍留在平台组（不被误挪）。
+    assert 'task' in platform_domains, 'task 应留在平台工具组'
+    assert 'plan' in platform_domains, 'plan 应留在平台工具组'

@@ -115,7 +115,10 @@ class Settings(BaseSettings):
 
     # Agent Key（OpenClaw 插件认证）
     AGENT_SECRET_KEY: str = ''  # 生产环境在 .env 中设置，支持逗号分隔多 key
-    HUANXING_SITE_URL: str = 'https://huanxing.dcfuture.cn'  # 前端站点域名，用于生成分享链接等
+    # G1 平台特权门 bootstrap 兜底（doc18 §4.1）：`agent_hasn_id:scope[,agent_hasn_id:scope…]`，
+    # 与 hasn_platform_operator_grants 表行同构，读入合并进 granted 集；仅应急，常态走 Admin 授予表
+    PLATFORM_OPERATOR_AGENTS: str = ''
+    HUANXING_SITE_URL: str = 'https://astra.dcfuture.cn'  # 前端站点域名，用于生成分享链接等（2026-07-03 起 huanxing→astra）
 
     # Hermes Runtime（仅后端持有；不得返回给浏览器）
     HUANXING_HERMES_RUNTIME_BASE_URL: str = ''
@@ -317,12 +320,14 @@ class Settings(BaseSettings):
 
     # CORS (allow_credentials=True 时不能用 '*'，必须列出具体域名)
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
+        'http://127.0.0.1:5173',
         'http://127.0.0.1:6310',
         'http://localhost:5173',
         'http://localhost:6310',
         'http://localhost:8020',
         'http://192.168.1.92:8020',
         'http://api.ai.dcfuture.cn',
+        'https://astra.dcfuture.cn',  # 官网/分享查看器前端域名（website /s/{slug} fetch publish/open meta+换票；2026-07-03 起 huanxing→astra）
     ]
     CORS_EXPOSE_HEADERS: list[str] = [
         'X-Request-ID',
@@ -537,7 +542,7 @@ class Settings(BaseSettings):
     # [ Agent ] Website Deployment
     ##################################################
     WEBSITE_DEPLOY_DIR: str | None = '/var/www/html/agents_sites'
-    WEBSITE_BASE_URL: str | None = 'https://huanxing.dcfuture.cn/agents_sites'
+    WEBSITE_BASE_URL: str | None = 'https://astra.dcfuture.cn/agents_sites'
 
     ##################################################
     # [ Mobile M1 ] Umeng U-Push (B5)

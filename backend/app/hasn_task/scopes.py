@@ -10,10 +10,10 @@ task:create 已废弃（R5 收口）：建/改并入 task:manage、触发并入 
 from __future__ import annotations
 
 HASN_TASK_SCOPE_CATALOG: dict[str, dict[str, str]] = {
-    'task:read': {'label_zh': '查看任务进度与结果', 'domain': 'task', 'risk': 'low', 'description': '查任务定义/run/结果/历史（hasn.task.list/get/list_runs/get_run/query_results）'},
-    'task:manage': {'label_zh': '管理任务', 'domain': 'task', 'risk': 'medium', 'description': '建/改/暂停/恢复/删任务（hasn.task.create/update/pause/resume/delete）'},
-    'task:run': {'label_zh': '触发任务执行', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次任务执行（hasn.task.run_now）'},
-    'workflow:read': {'label_zh': '查看工作流', 'domain': 'task', 'risk': 'low', 'description': '查工作流图/节点结果/执行历史、发现可用分身（hasn.workflow.get/get_node_result/list/list_agents）'},
-    'workflow:manage': {'label_zh': '管理工作流', 'domain': 'task', 'risk': 'medium', 'description': '建/增删节点与边/暂停/取消工作流（hasn.workflow.create/add_node/add_edge/pause/cancel）'},
-    'workflow:run': {'label_zh': '触发工作流执行', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次整图执行（hasn.workflow.run）'},
+    'task:read': {'label_zh': '查看任务进度与结果', 'label_en': 'View task progress and results', 'domain': 'task', 'risk': 'low', 'description': '查任务定义/run/结果/历史（hasn.task.list/get/list_runs/get_run/query_results）', 'description_en': 'View task definitions, runs, results, and history (hasn.task.list/get/list_runs/get_run/query_results)'},
+    'task:manage': {'label_zh': '管理任务', 'label_en': 'Manage tasks', 'domain': 'task', 'risk': 'medium', 'description': '建/改/暂停/恢复/删任务（hasn.task.create/update/pause/resume/delete）', 'description_en': 'Create, edit, pause, resume, and delete tasks (hasn.task.create/update/pause/resume/delete)'},
+    'task:run': {'label_zh': '触发任务执行', 'label_en': 'Trigger task run', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次任务执行（hasn.task.run_now）', 'description_en': 'Trigger a task run immediately (hasn.task.run_now)'},
+    'workflow:read': {'label_zh': '查看工作流', 'label_en': 'View workflows', 'domain': 'task', 'risk': 'low', 'description': '查工作流图/节点结果/执行历史、发现可用分身（hasn.workflow.get/get_node_result/list/list_agents）', 'description_en': 'View workflow graphs, node results, and run history, and discover available agents (hasn.workflow.get/get_node_result/list/list_agents)'},
+    'workflow:manage': {'label_zh': '管理工作流', 'label_en': 'Manage workflows', 'domain': 'task', 'risk': 'medium', 'description': '建/增删节点与边/暂停/取消工作流（hasn.workflow.create/add_node/add_edge/pause/cancel）', 'description_en': 'Create workflows, add or remove nodes and edges, and pause or cancel them (hasn.workflow.create/add_node/add_edge/pause/cancel)'},
+    'workflow:run': {'label_zh': '触发工作流执行', 'label_en': 'Trigger workflow run', 'domain': 'task', 'risk': 'medium', 'description': '立即触发一次整图执行（hasn.workflow.run）', 'description_en': 'Trigger a full-graph run immediately (hasn.workflow.run)'},
 }

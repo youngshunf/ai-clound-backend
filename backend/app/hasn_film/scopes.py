@@ -16,22 +16,28 @@ from __future__ import annotations
 FILM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'film:read': {
         'label_zh': '查看视频项目',
+        'label_en': 'View video projects',
         'domain': 'film',
         'risk': 'low',
         'description': '以 Agent 身份读取主人的视频项目、阶段产物与生成状态（只读，owner 隔离）',
+        'description_en': "Read the owner's video projects, stage artifacts, and generation status as the agent (read-only, owner-isolated)",
     },
     'film:write': {
         'label_zh': '生成与编辑视频',
+        'label_en': 'Generate and edit video',
         'domain': 'film',
         'risk': 'medium',
         'default_mode': 'ask',
         'description': '建项目、跑各阶段生成（剧本/角色/分镜/参考图/片段/后期）与短流程（消耗主人配额，默认需确认）',
+        'description_en': 'Create projects and run stage generation (script/characters/storyboard/reference images/clips/post) and short pipelines (consumes owner quota; confirmation required by default)',
     },
     'film:export': {
         'label_zh': '上传/分享视频产物',
+        'label_en': 'Upload/share video artifacts',
         'domain': 'film',
         'risk': 'medium',
         'default_mode': 'ask',
         'description': '把本地视频产物显式上传到云端私有桶以分享/跨设备查看（本地权威，默认需主人确认）',
+        'description_en': 'Explicitly upload local video artifacts to a cloud private bucket for sharing or cross-device viewing (local-authoritative; owner confirmation required by default)',
     },
 }

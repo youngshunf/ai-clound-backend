@@ -9,6 +9,6 @@
 from __future__ import annotations
 
 PUBLISH_SCOPE_CATALOG: dict[str, dict[str, str]] = {
-    'publish:read': {'label_zh': '查看发布内容', 'domain': 'publish', 'risk': 'low', 'description': '列出/查看主人的网页发布与分享链接（hasn.publish.get/list）'},
-    'publish:write': {'label_zh': '发布与管理网页', 'domain': 'publish', 'risk': 'medium', 'description': '创建/更新/删除网页发布、改可见性、生成分享链接（hasn.publish.create/update/set_visibility/revoke/delete）'},
+    'publish:read': {'label_zh': '查看发布内容', 'label_en': 'View published pages', 'domain': 'publish', 'risk': 'low', 'description': '列出/查看主人的网页发布与分享链接（hasn.publish.get/list）', 'description_en': "List and view the owner's web publications and share links (hasn.publish.get/list)"},
+    'publish:write': {'label_zh': '发布与管理网页', 'label_en': 'Publish and manage pages', 'domain': 'publish', 'risk': 'medium', 'description': '创建/更新/删除网页发布、改可见性、生成分享链接（hasn.publish.create/update/set_visibility/revoke/delete）', 'description_en': 'Create, update, and delete web publications, change visibility, and generate share links (hasn.publish.create/update/set_visibility/revoke/delete)'},
 }

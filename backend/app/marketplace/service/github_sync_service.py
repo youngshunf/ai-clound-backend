@@ -59,6 +59,12 @@ from backend.utils.timezone import timezone
 # 这步慢操作（生产机连 github.com 极慢，曾首次克隆卡死数十分钟）。
 _SUBMODULE_GITLINK_RE = re.compile(r'^github/[^/]+$')
 
+# 手动全量重扫哨兵：trigger_webhook.py 无真实改动时注入此虚构路径，请求「全量重扫」——
+# 补半落 / 缺失的技能版本行，修「库里有技能目录但缺 version 行 → download 404」这类残缺。
+# 真实 GitHub push 绝不会含此路径（仓库里根本没有这个文件），故可据它区分「手动全量」与
+# 「push 增量」：命中哨兵 → force 全量重扫；否则按 changed_paths 走增量。
+SKILLS_FULL_RESYNC_SENTINEL = 'huanxing-skills/.trigger'
+
 
 def collect_changed_paths(commits: list[dict]) -> set[str]:
     """从 webhook push payload 的 commits 收集本次改动的全部文件路径（增删改并集）。"""
@@ -99,6 +105,17 @@ def bundles_changed(changed_paths: set[str]) -> bool:
     return 'common-bundles.yaml' in changed_paths or any(
         path.startswith('bundles/') for path in changed_paths
     )
+
+
+def full_resync_requested(changed_paths: set[str]) -> bool:
+    """本次 webhook 是否请求「手动全量重扫」（changed_paths 含全量哨兵路径）。
+
+    trigger_webhook.py 无真实改动时注入 SKILLS_FULL_RESYNC_SENTINEL 触发全量。因增量同步
+    只处理命中变更目录的技能，而哨兵路径不落在任何技能目录下——若仍走增量会「命中 0 技能」
+    空转（历史 bug：手动触发看似成功实则什么都没同步）。据此哨兵改走 force 全量，才能真正
+    重扫补齐残缺技能（如缺 version 行导致 download 404 的技能）。
+    """
+    return SKILLS_FULL_RESYNC_SENTINEL in changed_paths
 
 
 def metadata_unchanged(scanned: dict[str, Any], existing: MarketplaceSkill | None) -> bool:

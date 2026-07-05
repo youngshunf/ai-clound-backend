@@ -43,7 +43,6 @@ def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str = 'a_deck_tools_test') -> 
     return AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=1,
-        scopes=[],
         agent_status='active',
         metadata={},
         agent_name='演示测试分身',
@@ -77,6 +76,7 @@ _EXPECTED_NAMES = {
     'hasn.deck.page.edit',
     'hasn.deck.page.delete',
     'hasn.deck.page.reorder',
+    'hasn.deck.finalize',
     'hasn.deck.delete',
     'hasn.deck.style.list',
     'hasn.deck.style.get',

@@ -670,6 +670,57 @@ def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[s
     }
 
 
+async def emit_deck_completion_card(
+    db: AsyncSession,
+    *,
+    owner_id: str,
+    agent_id: str,
+    deck_id: str,
+    title: str = '',
+    summary: str = '',
+) -> dict[str, Any]:
+    """演示文稿收尾 → 云端组「打开演示文稿」卡，经 ``route_message`` 从**分身→主人**投递。
+
+    「分身做完就自动发一张卡」的落地点（不管在哪里发起——主会话直做 / 派发工作会话皆然）：
+    分身写完最后一页调 ``hasn.deck.finalize``，云端**首次** draft/generating→ready 转换时调本函数。
+    **分身不自己发卡**——由云端据 deck 完成事件统一组卡，杜绝「发错/忘发」。
+
+    - 复用 ``route_message``（分身→自己主人始终放行）：自带会话解析 + 落库 + push_to_owner +
+      daemon 镜像，与分身平时回复主人完全同一条可靠通道（在线即推、离线重连 sync_pull 补达）。
+    - 深链 ``hasn://deck/{deck_id}``，``deck_id`` = **云端权威 deck id**（主会话路径 deck 本就
+      建在云端，入参即云端 id，无需本地↔云端映射；跨设备/分享后对端据云端 id 读穿 ACL 打开）。
+    - 幂等：``local_id=deck_complete:{deck_id}`` 命中 ``hasn_messages`` 唯一索引则不二次投递，
+      叠加 finalize 的状态守卫 → 双保只发一次。
+    """
+    summary_text = summary.strip() if summary else ''
+    if not summary_text:
+        summary_text = f'《{title}》已经做好了，点开看看吧。' if title else ''
+    content_json = {
+        'projection_kind': 'deck_completion',
+        'agent_id': agent_id,
+        'origin_type': 'app',
+        'origin_ref': f'{_DECK_ORIGIN_PREFIX}{deck_id}',
+        'deck_server_id': deck_id,
+        'summary': summary_text,
+        'deep_link': f'hasn://deck/{deck_id}',
+    }
+    card = _projection_deck_card(session_id=f'deck-{deck_id}', deck_id=str(deck_id), content_json=content_json)
+    validate_card_message_body(card)
+
+    from backend.app.hasn.service import message_router
+
+    return await message_router.route_message(
+        db,
+        from_id=agent_id,
+        to_target=owner_id,
+        content=card,
+        content_type=5,
+        msg_type='card',
+        local_id=f'deck_complete:{deck_id}',
+        context={'projection_kind': 'deck_completion', 'deck_id': str(deck_id)},
+    )
+
+
 def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
     # 演示文稿会话：云端据 origin_ref 权威组「打开演示文稿」卡（分身不自己发卡）。
     # 判别器仍用 origin_ref（带设备本地 deck id），但卡里 `hasn://deck/{id}` 的 id **一律优先

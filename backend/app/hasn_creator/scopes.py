@@ -14,20 +14,26 @@ from __future__ import annotations
 CREATOR_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'creator:read': {
         'label_zh': '查看创作数据',
+        'label_en': 'View creation data',
         'domain': 'creator',
         'risk': 'low',
         'description': '读项目/画像/账号/选题/内容/阶段产出/发布数据/爆款库/复盘总览（list/get/search/overview 类）',
+        'description_en': 'Read projects, personas, accounts, topics, content, stage outputs, publishing metrics, the hit library, and review overviews (list/get/search/overview)',
     },
     'creator:manage': {
         'label_zh': '管理创作流程',
+        'label_en': 'Manage creation workflow',
         'domain': 'creator',
         'risk': 'medium',
         'description': '写创作对象：建项目、设/辅助定位画像、加账号、记竞品、生成选题、建/改内容（状态机）、保存阶段产出、回填数据、沉淀洞察',
+        'description_en': 'Write creation objects: create projects, define or assist personas, add accounts, log competitors, generate topics, create and edit content (state machine), save stage outputs, backfill metrics, and capture insights',
     },
     'creator:publish': {
         'label_zh': '请求发布内容',
+        'label_en': 'Request content publishing',
         'domain': 'creator',
         'risk': 'high',
         'description': '请求把内容发布到平台账号（进审核队列，默认 pending_review 等主人审；hasn.creator.publish.submit）',
+        'description_en': 'Request publishing content to platform accounts (enters the review queue, pending_review by default awaiting owner approval; hasn.creator.publish.submit)',
     },
 }

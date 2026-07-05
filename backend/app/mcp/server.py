@@ -7,19 +7,28 @@ HASN 云端 MCP Server
 import hashlib
 import logging
 
-from typing import Any
+from typing import Any, NoReturn
 
 from backend.app.external_mcp.external_tool import load_external_mcp_tools_for_agent
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.errors import McpErrorCode, McpToolError
-from backend.app.mcp.runtime_visibility import is_tool_hidden_for_runtime
 from backend.app.mcp.tool_directory import ToolDirectoryService
+from backend.app.mcp.tool_exposure import (
+    ACTION_ASK,
+    REASON_EXTERNAL_NOT_BOUND,
+    REASON_OWNER_DENIED,
+    REASON_PRIVILEGED,
+    REASON_ROLE_INSUFFICIENT,
+    ExposureDecision,
+    tool_exposure_policy,
+)
 from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
+from backend.app.mcp.tools.diag import DIAG_TOOLS
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import (
@@ -38,7 +47,6 @@ from backend.app.mcp.tools.tool_search import ToolSearchTool
 from backend.app.mcp.tools.user import UserSearchTool
 from backend.app.mcp.tools.workbench import WORKBENCH_TOOLS
 from backend.app.mcp.tools.workflow import WORKFLOW_TOOLS
-from backend.common.security.scope_policy import MODE_ASK, MODE_DENY
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +156,12 @@ class HasnCloudMcpServer:
         # 工作流工具（12-多任务编排 DAG）：create/list_agents/get/get_node_result/run/pause/cancel/list。
         # 从 hasn-node 本地 hasn-mcp 迁来（不依赖本地操作 → 走云端 platform tool，TOOLMIG2）；
         # add_node/add_edge 不在 agent 工具面（经 create 一次声明整图）；整图 fire 仍由 Runtime Host tick。
-        for workflow_tool in WORKFLOW_TOOLS:
-            self.tool_registry.register(workflow_tool)
+        # 一并注册错误诊断工具（21-可观测性 §8）：读类 diag:read:all、写类 diag:manage，
+        # 两 scope 均命中特权前缀 diag: → G1 平台特权门（doc18 §4.1）统一判定：仅经 Admin 授予表
+        # ∪ ENV bootstrap 拿到 diag:* 的「平台运维分析师」分身可见/可调；普通分身发现面隐身、
+        # 执行面 TOOL_NOT_FOUND 泛化。跨 owner 全量读/处置（无隔离）。合并进同一 for 不拉高圈复杂度。
+        for workflow_or_diag_tool in (*WORKFLOW_TOOLS, *DIAG_TOOLS):
+            self.tool_registry.register(workflow_or_diag_tool)
 
         # 演示文稿工具（17-deck）：create/get/list/outline.set/page.write(_batch)/page.edit/page.delete/
         # page.reorder/delete/style.list/style.get（读 4 无 scope，写 8 = deck:manage）。
@@ -203,6 +215,55 @@ class HasnCloudMcpServer:
             logger.debug(f'Agent {agent_context.hasn_id} listed {len(available_tools)} tools')
             return available_tools
 
+    def _raise_for_blocked_decision(
+        self, decision: ExposureDecision, tool_name: str, agent_context: AgentContext
+    ) -> NoReturn:
+        """暴露管线非放行决策 → 执行面错误映射（doc18 §3·U3 抽出，收敛 call_tool 分支）。
+
+        VISIBLE_DENY（G3 应用权益门）与 HIDDEN（G1 特权 / 来源 / owner 三态 / 运行位置）分派到各自
+        错误码，与发现面 _can_discover 同源、与网关付费墙 / 转发面兜底同码同文案。
+        """
+        if decision.is_visible_deny:
+            # G3 应用权益门（doc18 §4.3·U3）：工具可见（发现面带 access_hint 引导购买/席位/切空间），
+            # 但执行面按合并准入 reason 回结构化错误——对齐 AI-Native 网关 `_entitlement_denial`
+            # 的付费墙形状（那里以 code=15030 reason=entitlement_denied 拒；此处 MCP 面用 TOOL_NOT_ALLOWED
+            # + 具体 reason，令 daemon/分身能据 reason 引导主人完成购买/席位指派/切换企业空间）。
+            logger.info(
+                f'Tool call blocked by entitlement gate {decision.reason} '
+                f'(app={decision.app_id}): {tool_name} (agent={agent_context.hasn_id})'
+            )
+            raise McpToolError(
+                McpErrorCode.TOOL_NOT_ALLOWED,
+                f'应用「{decision.app_id}」尚未准入（{decision.reason}）：'
+                f'请在应用中心完成购买 / 席位指派 / 切换企业空间后再调用该工具',
+            )
+        logger.info(
+            f'Tool call blocked by exposure gate {decision.gate}/{decision.reason}: '
+            f'{tool_name} (agent={agent_context.hasn_id})'
+        )
+        if decision.reason == REASON_OWNER_DENIED:
+            # 现状保持（103 §2）：三态 deny 在执行面是 PermissionError（403）。
+            # 「deny 执行面也归 TOOL_NOT_FOUND」是行为变化，留 U5 与福仔拍板后统一。
+            raise PermissionError(f'Capability denied by owner for tool: {tool_name}')
+        if decision.reason == REASON_EXTERNAL_NOT_BOUND:
+            # 与 _dispatch_by_source 兜底同码同文案（该兜底保留作防御纵深）。
+            raise McpToolError(
+                McpErrorCode.DIRECT_CALL_DENIED,
+                f'Agent 无权调用该外部 MCP 工具: {tool_name}',
+            )
+        if decision.reason in (REASON_PRIVILEGED, REASON_ROLE_INSUFFICIENT):
+            # G1 特权门 / G4 企业角色门（doc18 §4.1/§4.4）：两者都是**存在性隐藏**门——
+            # 与 _resolve_tool 的「真·未注册」路径**逐字节同款**错误（同码 MCP_9209 + 同文案），
+            # 令「存在但特权/角色隐身」与「根本不存在」对普通分身不可区分——否则攻击者比对措辞即可
+            # 侧探 hasn.diag.* 运维工具、或「主人有无某企业角色」。回显调用方自己传入的 tool_name
+            # 与真 404 一致、不构成额外泄漏；泄漏面是**措辞差异**。（G4 当前 inert，见 tool_exposure。）
+            raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
+        # 运行位置收口（TOOLMIG2-P4）：本地分身在云端面不得调 deck/task/workflow。
+        raise McpToolError(
+            McpErrorCode.TOOL_NOT_FOUND,
+            f'{tool_name} 在云端面对本地分身不可用：本地分身请使用本地工具面（hasn-local）的同名工具',
+        )
+
     async def call_tool(self, agent_context: AgentContext, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """
         调用工具
@@ -224,21 +285,14 @@ class HasnCloudMcpServer:
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
 
-            # 运行位置守卫（TOOLMIG2-P4）：本地分身在云端面不得调 deck/task/workflow（其用
-            # 本地面那份本地优先引擎）。发现面已隐藏；此为执行面兜底，连 hasn.cloud.tool.call
-            # 透传（委托回本方法重入）也一并拦住。见 runtime_visibility。
-            if is_tool_hidden_for_runtime(tool_name, getattr(agent_context, 'runtime_location', 'cloud')):
-                raise McpToolError(
-                    McpErrorCode.TOOL_NOT_FOUND,
-                    f'{tool_name} 在云端面对本地分身不可用：本地分身请使用本地工具面（hasn-local）的同名工具',
-                )
-
-            # 维度① 能力授权（D3 活取三态）：deny→拒；ask→挂起主人批准（P6）；allow→执行。
-            # 维度② 对象可达性由社交工具 execute 内部 check_relation_permission 返回，与此正交。
-            mode = agent_context.tool_mode(tool)
-            if mode == MODE_DENY:
-                raise PermissionError(f'Capability denied by owner for tool: {tool_name}')
-            if mode == MODE_ASK:
+            # 统一暴露管线（doc18 §3·实施/103 U1）：resolve 后一次 evaluate，执行面按决策映射。
+            # 与发现面 _can_discover 同源（HIDDEN 即不可见），转发面 hasn.cloud.tool.call 重入
+            # 本方法自动覆盖。维度② 对象可达性由工具 execute 内部返回，与管线正交。
+            decision = tool_exposure_policy.evaluate(agent_context, tool)
+            if decision.is_hidden or decision.is_visible_deny:
+                # 非放行决策（HIDDEN / VISIBLE_DENY）统一映射为执行面错误（doc18 §3·U3）。
+                self._raise_for_blocked_decision(decision, tool_name, agent_context)
+            if decision.action == ACTION_ASK:
                 # 令牌重试（doc15 §3）：先验一次性票据——带有效票（agent/tool/args_hash 匹配且
                 # jti 未用）→ 原子消费后**跳过闸门直接执行**；无票/票无效 → 云端不长挂，开一条审批
                 # 请求并把 approval_required 信封作为工具结果返回，由 daemon 发卡片 + 换票 + 带票重试。

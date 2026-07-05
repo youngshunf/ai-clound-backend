@@ -12,8 +12,10 @@ from __future__ import annotations
 DECK_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'deck:manage': {
         'label_zh': '管理演示文稿',
+        'label_en': 'Manage slide decks',
         'domain': 'deck',
         'risk': 'medium',
         'description': '以 Agent 身份建/改/删主人的演示文稿、页与大纲（owner 隔离；读类无需授权）',
+        'description_en': "Create, edit, and delete the owner's slide decks, pages, and outlines as the agent (owner-isolated; reads need no authorization)",
     },
 }

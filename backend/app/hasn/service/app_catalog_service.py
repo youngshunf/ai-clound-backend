@@ -67,7 +67,8 @@ _DEFAULT_SORT_ORDER = 100
 # 类型键 = hub 内置模板的 ``builtin_key``（``builtin: true``）；daemon ``resolve_default_agent_for_app`` 按
 # ``hasn_agents.builtin_agent_key == default_agent_type`` 取 owner 名下分身、命中即返回否则回退主脑。
 # 同型键 = 一个分身默认服务多应用：
-#   - ``content_operator``（内容运营官）：deck/designsystem/creator/film/community/publish 六应用；
+#   - ``content_operator``（内容运营官）：deck/designsystem/creator/film/community 五应用；
+#   - ``developer``（编程开发专家「知行」）：publish（网页发布=建站发布全流程）；
 #   - ``assistant``（全能助理）：knowledge/hasn_task 两应用；
 #   - ``sales_advisor``（销售顾问）：growth；``meeting_copilot``：copilot；``planner``：plan。
 # 未列出的应用 default_agent_type=NULL（回退主脑）、work_session_system_prompt=NULL（仅用本次指令）。
@@ -83,16 +84,25 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是任务应用的执行分身：把主人交办的事按计划执行、把结果带回并可追溯；'
         '只调用 hasn.task.* 工具，零 fake，失败如实报错。',
     ),
-    # 社区 / 网页发布归「内容运营官（content_operator）」——与 deck/creator/film/designsystem 同一分身。
+    # 社区归「内容运营官（content_operator）」——与 deck/creator/film/designsystem 同一分身。
     'community': (
         'content_operator',
         '你是社区应用的执行分身：替主人在社区发现内容、发帖与互动、经营关注关系；'
         '只调用社区相关工具，对客可见内容须得体专业，零 fake，失败如实报错。',
     ),
+    # 网页发布用专属「编程开发专家（developer，知行）」分身（hub 模板 developer，builtin_key=developer）——
+    # 建站是开发专长，不归内容运营。分身把主人的想法一条龙做成网页并真正发布上线（设计→开发→本地预览→
+    # 打包成单文件→hasn.publish.* 发布）。业务提示词与 daemon publish/dispatch.rs::PUBLISH_BUSINESS_PROMPT 同义。
     'publish': (
-        'content_operator',
-        '你是网页发布应用的执行分身：把主人或分身产出的网页/海报/演示发布成稳定分享链接并管理可见性；'
-        '只调用 hasn.publish.* 工具，升级敏感可见性需主人确认，零 fake，失败如实报错。',
+        'developer',
+        '你是网页发布应用的编程开发专家分身：把主人的想法一条龙做成可访问的线上网页。先澄清网站类型/受众/'
+        '核心目标/风格（关键信息缺失且有歧义才用 hasn.session.ask 问，能自主定的别问）；再做视觉设计 → '
+        '前端开发（简单页手写单文件 index.html / 复杂页用 React+Tailwind+shadcn 脚手架）→ 本地预览自检'
+        '（Playwright，无控制台报错）→ 打包成单文件自包含 HTML → 调 hasn.publish.create（path 指向 '
+        'bundle.html/index.html）发布成稳定分享链接（/s/{slug}）并按需管理可见性。能做静态站与客户端动态 SPA'
+        '（浏览器本地存储 / 调外部公开 API）；自有服务端+数据库超出当前发布托管能力，须如实告知主人并给替代'
+        '方案（改客户端动态 / 只交付代码由主人自部署），绝不假装把带数据库的动态站发布成功。真写代码、真打包、'
+        '真调工具拿真 URL，零 fake，失败如实报错。',
     ),
     # 获客用专属「销售顾问（sales_advisor）」分身——找线索、做跟进、促成交是独立专长。
     # 请求线索 = 找→分析→决策闭环（doc10）：用 search_companies/lookup_company 读穿工具找线索（自动进主人
@@ -111,8 +121,10 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是演示文稿应用的执行分身：把主人的诉求做成结构清晰、视觉专业的演示文稿，'
         '只调用 hasn.deck.* 工具就地生成与精修；产出对客可用的成品，零 fake，失败如实报错。',
     ),
+    # 设计系统归口「设计专家（designer）」分身（2026-07-03 一类应用一模板：designsystem_expert 折叠进 designer）。
+    # 模板同 design 共用 designer（builtin_key=designer），但工作会话提示词按应用区分——本条保留设计系统专属提示词。
     'designsystem': (
-        'content_operator',
+        'designer',
         '你是设计系统应用的执行分身：产出渲染目标无关的 token 契约 + 组件库，下游一律 var(--token) 消费；'
         '只调用 hasn.designsystem.* 工具，零 fake，失败如实报错。',
     ),
@@ -182,11 +194,11 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
         '取不到就如实说，零 fake、失败如实报错。',
     ),
-    # 量化用专属「量化交易官（quant_trader）」分身
-    # （hub 模板 quant_trader，builtin_key=quant_trader，QUANT-P10/P11 落地）。
+    # 量化归口「金融理财专家（analyst）」分身（2026-07-03 一类应用一模板：quant_trader 折叠进 analyst）。
+    # 模板同 finance 共用 analyst（builtin_key=analyst），但工作会话提示词按应用区分——本条保留量化回测专属提示词。
     # 本期 P0–P5 只做回测研究（零资金风险）：写策略 → 跑回测 → 读绩效 → 迭代优化；实盘线 P6+ 受硬闸不开。
     'quant': (
-        'quant_trader',
+        'analyst',
         '你是主人的量化交易官：用 hasn.quant.* 工具写量化策略、提交历史回测、读绩效报告并迭代优化；'
         '回测只花算力、不动钱，可大胆假设小心求证。所有绩效来自引擎真实回测、绝不臆造数字（零 fake）；'
         '回测表现不代表实盘收益，不构成投资建议；实盘部署/下单等动真钱动作须经主人审批，'

@@ -205,10 +205,12 @@ def _load_hasn_publish() -> None:
     from backend.app.hasn_publish.api.router import agent as publish_agent
     from backend.app.hasn_publish.api.router import app as publish_app
     from backend.app.hasn_publish.api.router import hosting as publish_hosting
+    from backend.app.hasn_publish.api.router import open_meta as publish_open_meta
 
     router.include_router(publish_app)            # 发布 用户端 API（Owner JWT）
     router.include_router(publish_agent)          # 发布 Agent API（Agent JWT，publish:read/write）
     router.include_router(publish_hosting)        # 发布 公开查看面 /s/{slug}（无鉴权外壳 + CSP sandbox）
+    router.include_router(publish_open_meta)      # 发布 公开元数据面（website /s/{slug} 查看器判定态）
 
 
 def _load_notification() -> None:
@@ -302,6 +304,14 @@ def _load_hasn_reel() -> None:
     router.include_router(hasn_reel_app)
 
 
+def _load_hasn_imagelab() -> None:
+    # 图坊（hasn_imagelab，模块 14 doc30）：owner 业务面 = 项目云端权威 ID 登记（IMG-P3-cloud）。
+    # 图坊业务数据在 daemon 本地 SQLite（本地权威），云端只有轻登记表（server_id 源）。
+    from backend.app.hasn_imagelab.api.router import app as hasn_imagelab_app
+
+    router.include_router(hasn_imagelab_app)
+
+
 def _load_external_mcp() -> None:
     # 第三方 MCP 网关管理面（external_mcp，doc10/实施99 P7-D）：owner 面 + 平台 admin 面。
     # 刻意不挂 open/agent 裸 CRUD（越权大洞），Agent 经云端 MCP 代理而非 REST 触达 external 工具。
@@ -346,6 +356,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_quant': _load_hasn_quant,
     'hasn_studio': _load_hasn_studio,
     'hasn_reel': _load_hasn_reel,
+    'hasn_imagelab': _load_hasn_imagelab,
     'external_mcp': _load_external_mcp,
     'hasn_diag': _load_hasn_diag,
 }

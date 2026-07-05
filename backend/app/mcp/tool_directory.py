@@ -8,7 +8,8 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from backend.app.mcp.runtime_visibility import is_namespace_hidden_for_runtime
+from backend.app.mcp.tool_app_registry import resolve_tool_app_id
+from backend.app.mcp.tool_exposure import tool_exposure_policy
 
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
@@ -35,7 +36,7 @@ class ToolDirectoryService:
 
     def list_bootstrap_tools(self, agent_context: AgentContext) -> list[dict[str, Any]]:
         return [
-            self._tool_schema(tool)
+            self._tool_schema(tool, agent_context)
             for tool in self._registry.list_bootstrap_tools()
             if self._can_discover(agent_context, tool)
         ]
@@ -48,7 +49,7 @@ class ToolDirectoryService:
         不出现（与 `_can_discover` 一致）；ask 仍可见（调用时由 ask 闸门挂起）。
         """
         return [
-            self._tool_schema(tool)
+            self._tool_schema(tool, agent_context)
             for tool in self._registry.get_all_tools()
             if self._can_discover(agent_context, tool)
         ]
@@ -87,13 +88,16 @@ class ToolDirectoryService:
         page_size = min(max(search_query.page_size, 1), 50)
         page = matched_tools[:page_size]
         has_next = len(matched_tools) > page_size
+        want_schema = search_query.detail == 'schema'
+        tools = [] if want_schema else [self._tool_summary(tool, agent_context) for tool in page]
+        schemas = [self._tool_schema(tool, agent_context) for tool in page] if want_schema else []
 
         return {
             'workspace_key': self._workspace_key(agent_context),
             'query': query,
             'sources': [],
-            'tools': [] if search_query.detail == 'schema' else [self._tool_summary(tool) for tool in page],
-            'schemas': [self._tool_schema(tool) for tool in page] if search_query.detail == 'schema' else [],
+            'tools': tools,
+            'schemas': schemas,
             'next_cursor': str(page_size) if has_next else None,
             'trace_id': self._trace_id(agent_context, query),
         }
@@ -105,12 +109,12 @@ class ToolDirectoryService:
         对象级关系门控（维度②）不进 catalog（工具运行时返回）。external 分组按本 Agent
         binding 派生（仅列其授权的第三方 MCP 工具，P7；未绑定则该分组为空）。
         """
-        from backend.app.mcp.scopes import SOURCE_LABELS, scope_meta
+        from backend.app.mcp.scopes import APP_DISPLAY_DOMAINS, SOURCE_LABELS, scope_meta
+        from backend.app.mcp.tool_exposure import tool_exposure_policy
         from backend.common.security.scope_policy import resolve_capability_mode
 
         default_mode = getattr(agent_context, 'default_mode', 'allow')
         capability_modes = getattr(agent_context, 'capability_modes', {}) or {}
-        external_allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
 
         # source -> scope_key -> {tools: set, risk}
         grouped: dict[str, dict[str, dict[str, Any]]] = {'platform': {}, 'app': {}, 'external': {}}
@@ -118,11 +122,19 @@ class ToolDirectoryService:
             source = self._source_for_tool(tool)
             if source == 'local':
                 continue  # 本地工具不在云端 catalog
-            # external 工具实例全局共享 → 只列本 Agent binding 授权的，杜绝串号泄漏他人工具名。
-            if source == 'external' and tool.name not in external_allowed:
+            # 第四暴露面收编（doc18 §3.2）：按 G1/G2 硬边界剔除（per-agent 投影）——
+            # 普通分身不列 diag:* 特权工具、也不列未绑定的 external 工具（含串号防护）。
+            # G5 三态永不参与：deny 项须留在 catalog 供 owner 改回（不复刻 102-B3 单向门）。
+            if tool_exposure_policy.is_catalog_hidden(agent_context, tool):
                 continue
-            bucket = grouped.setdefault(source, {})
             for scope in tool.required_scopes:
+                # 展示分组重分类（福仔 2026-07-03）：deck/designsystem 虽注册为 platform 工具，
+                # 但语义是独立 AI-Native 应用 → 归「AI-Native 应用」组，不混进平台底座。仅改
+                # 展示分组，不动工具 source（tool.search / 执行路由不受影响）。见 APP_DISPLAY_DOMAINS。
+                display_source = source
+                if source == 'platform' and scope_meta(scope).get('domain', '') in APP_DISPLAY_DOMAINS:
+                    display_source = 'app'
+                bucket = grouped.setdefault(display_source, {})
                 entry = bucket.setdefault(scope, {'tools': set(), 'risk': getattr(tool, 'risk_level', 'low')})
                 entry['tools'].add(tool.name)
 
@@ -139,16 +151,22 @@ class ToolDirectoryService:
                 capabilities.append({
                     'key': scope_key,
                     'label': meta['label'],
+                    'label_en': meta['label_en'],
                     'domain': meta['domain'],
+                    'domain_label': meta['domain_label'],
+                    'domain_label_en': meta['domain_label_en'],
                     'risk': meta.get('risk') or entry.get('risk', 'low'),
                     'description': meta['description'],
+                    'description_en': meta['description_en'],
                     'default_mode': factory_default,
                     'mode': resolve_capability_mode(factory_default, capability_modes, scope_key),
                     'tools': sorted(entry['tools']),
                 })
+            src_labels = SOURCE_LABELS.get(source, {'zh': source, 'en': source})
             sources.append({
                 'source': source,
-                'label': SOURCE_LABELS.get(source, source),
+                'label': src_labels.get('zh', source),
+                'label_en': src_labels.get('en', source),
                 'capabilities': capabilities,
             })
 
@@ -225,52 +243,58 @@ class ToolDirectoryService:
             for (source, namespace), count in sorted(source_counts.items())
         ]
 
-    def _tool_summary(self, tool: BaseTool) -> dict[str, Any]:
+    def _tool_summary(self, tool: BaseTool, agent_context: AgentContext | None = None) -> dict[str, Any]:
         schema_hash = self._schema_hash(tool.input_schema)
-        return {
+        summary = {
             'source': self._source_for_tool(tool),
             'name': tool.name,
             'title': tool.name.rsplit('.', maxsplit=1)[-1],
             'summary': tool.description,
             'required_scopes': tool.required_scopes,
+            'app_id': resolve_tool_app_id(tool),
             'risk_level': getattr(tool, 'risk_level', 'low'),
             'execution_location': self._execution_location_for_tool(tool),
             'idempotent': True,
             'schema_hash': schema_hash,
             'schema_ref': f'hasn://tool-schema/{tool.name}@{schema_hash}',
         }
+        self._attach_access_hint(summary, tool, agent_context)
+        return summary
 
-    def _tool_schema(self, tool: BaseTool) -> dict[str, Any]:
-        return {
+    def _tool_schema(self, tool: BaseTool, agent_context: AgentContext | None = None) -> dict[str, Any]:
+        schema = {
             'source': self._source_for_tool(tool),
             'name': tool.name,
             'description': tool.description,
             'input_schema': tool.input_schema,
             'output_schema': getattr(tool, 'output_schema', {'type': 'object'}),
             'required_scopes': tool.required_scopes,
+            'app_id': resolve_tool_app_id(tool),
             'risk_level': getattr(tool, 'risk_level', 'low'),
             'execution_location': self._execution_location_for_tool(tool),
             'schema_hash': self._schema_hash(tool.input_schema),
         }
+        self._attach_access_hint(schema, tool, agent_context)
+        return schema
+
+    def _attach_access_hint(
+        self, descriptor: dict[str, Any], tool: BaseTool, agent_context: AgentContext | None
+    ) -> None:
+        """G3 应用权益门（doc18 §4.3·U3）：VISIBLE_DENY 工具附 access_hint 供端上引导购买/席位/切空间。
+
+        仅当有 agent_context 时求值（无 context 的静态投影不含 hint）；免费应用 / 已准入 → 无 hint。
+        """
+        if agent_context is None:
+            return
+        decision = tool_exposure_policy.evaluate(agent_context, tool)
+        if decision.is_visible_deny:
+            descriptor['access_hint'] = {'reason': decision.reason, 'app_id': decision.app_id}
 
     def _can_discover(self, agent_context: AgentContext, tool: BaseTool) -> bool:
-        # P7 第三方 MCP 网关：external 工具实例全局共享，发现资格按本 Agent binding
-        # （gate1 owner 启用 + gate2 allowed_tools，由 server 注入 external_allowed_tools）
-        # per-request 过滤——不在授权集合的一律不可见，杜绝跨 Agent 串号。
-        if self._source_for_tool(tool) == 'external':
-            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
-            if tool.name not in allowed:
-                return False
-        # 维度① 能力授权（D3 活取三态）：mode != deny 即可见（ask 也可见）；默认全开。
-        # 维度② 对象可达性不在这里，由工具运行时返回。
-        if agent_context.is_tool_denied(tool):
-            return False
-        # 运行位置收口（TOOLMIG2-P4）：本地分身在云端面隐藏 deck/task/workflow（其用本地面
-        # 那份本地优先引擎），避免同一分身在两个 MCP 面看到重名工具。见 runtime_visibility。
-        return not is_namespace_hidden_for_runtime(
-            self._namespace_for_tool(tool),
-            getattr(agent_context, 'runtime_location', 'cloud'),
-        )
+        # 统一暴露管线（doc18 §3·实施/103 U1）：发现面 = evaluate 非 HIDDEN 的投影。
+        # external 白名单 / runtime 隐藏 / 三态 deny 全部收编进 ToolExposurePolicy，
+        # ask 仍可见（调用时由 ask 闸门挂起）、VISIBLE_DENY（U3 付费墙）带引导列出。
+        return tool_exposure_policy.evaluate(agent_context, tool).is_visible
 
     def _source_for_tool(self, tool: BaseTool) -> ToolSource:
         return getattr(tool, 'source', 'platform')

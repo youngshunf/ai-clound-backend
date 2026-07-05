@@ -74,6 +74,35 @@ def _content_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()
 
 
+# DSFIX-1：设计系统「完成」判定的必填内容字段 = 详情页四区块渲染所需（缺任一详情就空）。
+# tokens.css（真源/色板）+ 契约评分报告（ScoreRing/色板分层）+ 设计说明（design.md）
+# + 组件画廊 HTML + 组件清单 JSON。分身写满这五项 = 完整 → 首次完整发完成卡（非 runtime 自动完成）。
+_REQUIRED_CONTENT_FIELDS = (
+    'tokens_css',
+    'token_contract_report_json',
+    'design_md',
+    'components_html',
+    'components_manifest_json',
+)
+
+
+def _content_complete(content: dict[str, Any]) -> bool:
+    """一版内容是否「完整」= 必填字段全部非空（决定分身完成发卡时机）。
+
+    零造假：只认真实非空内容——None / 空串（strip 后空）/ 空 list/dict 都算缺；任一缺失即未完整
+    （不发完成卡，详情仍会空，符合「必填齐了才发卡」）。
+    """
+    for key in _REQUIRED_CONTENT_FIELDS:
+        val = content.get(key)
+        if val is None:
+            return False
+        if isinstance(val, str) and not val.strip():
+            return False
+        if isinstance(val, (list, dict)) and not val:
+            return False
+    return True
+
+
 # 预览色板：从 tokens.css 抽这几个 token 作列表卡迷你 mockup 的色（key → tokens.css 变量名）。
 _PREVIEW_TOKENS = {
     'bg': '--bg',
@@ -118,6 +147,7 @@ def _ds_dict(d: DesignSystem) -> dict[str, Any]:
         'content_hash': d.content_hash,
         'bound_agent_id': d.bound_agent_id,
         'preview_swatches': d.preview_swatches,
+        'completed_notified_at': d.completed_notified_at.isoformat() if d.completed_notified_at else None,
         'created_time': d.created_time.isoformat() if d.created_time else None,
         'updated_time': d.updated_time.isoformat() if d.updated_time else None,
     }
@@ -309,10 +339,69 @@ class DesignSystemService:
             d.current_revision_id = rev.id
         await db.commit()
         await db.refresh(d)
+
+        # DSFIX-1：分身写满必填字段 → 首次完整 → 发一次「设计系统已完成·查看」卡给主人（幂等 + best-effort）。
+        # 时机不是 runtime 自动完成，而是「必填字段齐了」（福仔铁律）。仅落当前版（advance_current）且作者是
+        # 分身、且从未发过（completed_notified_at 为空）、且本版内容完整才发。发卡失败不阻断保存。
+        should_notify = (
+            advance_current
+            and subject.kind == 'agent'
+            and d.completed_notified_at is None
+            and _content_complete(content)
+        )
+        if should_notify:
+            try:
+                await self._notify_designsystem_ready(db, d=d, agent_hasn_id=subject.hasn_id)
+                d.completed_notified_at = timezone.now()
+                await db.commit()
+                await db.refresh(d)
+            except Exception:  # noqa: BLE001 — 完成卡是次要副作用，绝不因它回滚已保存的设计系统
+                await db.rollback()
+                await db.refresh(d)
+                log.exception('设计系统完成卡发送失败（不阻断保存）design_system_id=%s', d.id)
+
         out = _ds_dict(d)
         out['revision'] = _revision_dict(rev, with_content=False)
         out['pending'] = not advance_current  # True=协作待确认版（未落当前态）
         return out
+
+    async def _notify_designsystem_ready(
+        self, db: AsyncSession, *, d: DesignSystem, agent_hasn_id: str
+    ) -> None:
+        """分身写满必填字段 → 发「设计系统已完成·查看」卡给主人（DSFIX-1）。
+
+        source.kind=agent（category=agent 默认开 card_message → 卡片落「主人 ⇄ 该分身」既有会话）；
+        深链走 `hasn://designsystem/{云端权威 id}`（相对 `/designsystem/{id}` 由 carrier 提升为 canonical，
+        `{id}` 用云端权威 `d.id`——分享/换设备均可解析，符合「本地 ID 永不上 URI」铁律）。
+        惰性 import notification_service，避免模块加载期循环（与 _fanout_card 同策略）。
+        """
+        from backend.app.hasn.model.hasn_agents import HasnAgents
+        from backend.app.notification.service.notification_service import notification_service
+
+        # 分身展示名（缺失回落 hasn_id，不造假）
+        display_name = (
+            await db.execute(select(HasnAgents.display_name).where(HasnAgents.hasn_id == agent_hasn_id))
+        ).scalar_one_or_none()
+        preview = f'{d.name} · 评分 {d.score}' if d.score is not None else d.name
+        await notification_service.emit(
+            db,
+            recipient_id=d.owner_hasn_id,
+            source={
+                'kind': 'agent',
+                'id': agent_hasn_id,
+                'display_name': display_name or agent_hasn_id,
+                'on_behalf_of': d.owner_hasn_id,
+            },
+            category='agent',
+            type='designsystem.ready',
+            title=f'设计系统「{d.name}」已完成，点开查看',
+            payload={
+                'target': {'kind': 'designsystem', 'id': str(d.id)},
+                'link': f'/designsystem/{d.id}',
+                'preview': preview,
+            },
+            dedupe_key=f'designsystem.ready:{d.id}',
+        )
 
     async def set_bound_agent(
         self,

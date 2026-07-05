@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import datetime, time
 
 import sqlalchemy as sa
 
@@ -27,4 +27,13 @@ class Preference(PlanBase):
     # KNOWU §7：主动规划闭环幂等标记（首次 all_sufficient 原子认领一次，跨设备持久）
     proactive_planned: Mapped[bool] = mapped_column(
         sa.Boolean(), default=False, comment='主动规划闭环是否已触发（首次 all_sufficient 认领一次）'
+    )
+    # KNOWU「每日关注·了解主人」节奏闸（简报每天跑，采访/成长会话不能每天派）：
+    # 记「上次派采访/成长会话的时间」，配「超冷却期才可重新认领」的周期性 claim（默认 7 天），
+    # 避免每天打扰主人；NULL=从未派过。
+    last_onboarding_at: Mapped[datetime | None] = mapped_column(
+        sa.TIMESTAMP(timezone=True), default=None, comment='上次派「了解主人」采访会话时间（周期闸，NULL=从未）'
+    )
+    last_growth_at: Mapped[datetime | None] = mapped_column(
+        sa.TIMESTAMP(timezone=True), default=None, comment='上次派「成长复盘/主动规划」会话时间（周期闸，NULL=从未）'
     )
