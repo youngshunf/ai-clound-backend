@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model import HasnAssetGrants, HasnAssets, HasnConversations, HasnGroupMembers
+from backend.app.hasn.model import HasnAgents, HasnAssetGrants, HasnAssets, HasnConversations, HasnGroupMembers
 from backend.plugin.s3.service.storage_service import ObjectRef, StorageService
 from backend.utils.timezone import timezone
 
@@ -109,21 +109,38 @@ class HasnAssetService:
 
     @staticmethod
     async def is_participant(db: AsyncSession, *, conversation_id: str | UUID, hasn_id: str) -> bool:
-        """requester 是否该会话参与者（单聊 a/b 或群成员）。"""
+        """requester 是否该会话参与者（单聊 a/b、群成员，或**参与 agent 的主人**）。
+
+        主人扩展（owner 透明原则，2026-07-05）：A2A 会话的参与者是两个 agent，但接收方
+        daemon 一律以主人 owner JWT 解析附件（入站派发物化 / IM 下载）。主人天然旁观自己
+        分身的会话，故「requester 是某参与 agent 的 owner」同样判参与者。资产面不放宽：
+        resolve 仍要求资产已 grant 给该会话，本判定只解决"分身会话中主人代分身取附件"。
+        """
         conv = await db.get(HasnConversations, conversation_id)
         if conv is None:
             return False
-        if hasn_id in (conv.participant_a_id, conv.participant_b_id):
+        participants = [p for p in (conv.participant_a_id, conv.participant_b_id) if p]
+        if hasn_id in participants:
             return True
         if conv.type == 'group':
             result = await db.execute(
-                select(HasnGroupMembers.id).where(
+                select(HasnGroupMembers.member_id).where(
                     HasnGroupMembers.conversation_id == conversation_id,
-                    HasnGroupMembers.member_id == hasn_id,
                 )
             )
-            return result.first() is not None
-        return False
+            members = list(result.scalars().all())
+            if hasn_id in members:
+                return True
+            participants = members
+        agent_ids = [p for p in participants if p.startswith('a_')]
+        if not agent_ids:
+            return False
+        owned = await db.execute(
+            select(HasnAgents.id)
+            .where(HasnAgents.hasn_id.in_(agent_ids), HasnAgents.owner_id == hasn_id)
+            .limit(1)
+        )
+        return owned.first() is not None
 
     @classmethod
     async def resolve(
