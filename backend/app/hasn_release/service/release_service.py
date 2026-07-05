@@ -16,7 +16,10 @@ Tauri 客户端持公钥自行验签才是安全执行点。云端只**存储 + 
 
 from __future__ import annotations
 
+import hashlib
 import re
+
+from pathlib import PurePosixPath
 
 import httpx
 
@@ -28,6 +31,7 @@ from backend.app.hasn_release.model import AppRelease, ReleaseAsset, ReleaseBuil
 from backend.app.hasn_release.schema.release import (
     BuildDetail,
     CiCallbackRequest,
+    CiUploadResponse,
     GithubBuildRequest,
     LatestReleaseResponse,
     PublishReleaseRequest,
@@ -39,6 +43,7 @@ from backend.app.hasn_release.schema.release import (
 )
 from backend.common.exception import errors
 from backend.core.conf import settings
+from backend.plugin.s3.service.storage_service import StorageService
 from backend.utils.timezone import timezone
 
 _SEMVER_CORE = re.compile(r'^(\d+)\.(\d+)\.(\d+)')
@@ -163,6 +168,48 @@ class ReleaseService:
             )
             await db.commit()
         return detail
+
+    async def ci_upload_asset(
+        self,
+        db: AsyncSession,
+        *,
+        data: bytes,
+        filename: str,
+        version: str,
+        channel: str = 'stable',
+        content_type: str | None = None,
+    ) -> CiUploadResponse:
+        """CI 把桌面端产物交云端入**公共桶**（复用云端既有七牛存储，CI 零额外凭据）。
+
+        - 键：desktop/{channel}/{version}/{basename}，落 public 桶回长效 CDN 直链。
+        - 强制 https：桌面端/官网走 ATS，http 直链会被拒（铁律：七牛 CDN 必须 https）。
+        - sha256 由服务端据落桶字节现算，回给 CI 与其本地摘要对拍（零 fake，杜绝传输损坏静默）。
+        """
+        if not data:
+            raise errors.RequestError(msg='上传产物不能为空')
+        name = PurePosixPath((filename or '').strip()).name or 'asset.bin'  # 取 basename，杜绝路径穿越
+        channel = (channel or 'stable').strip() or 'stable'
+        version = (version or '').strip()
+        if not version:
+            raise errors.RequestError(msg='version 不能为空')
+        object_key = f'desktop/{channel}/{version}/{name}'
+        ref = await StorageService.upload(
+            db,
+            data,
+            category='release_asset',
+            filename=name,
+            content_type=content_type or 'application/octet-stream',
+            key=object_key,
+        )
+        if not ref.stable_url.startswith('https://'):
+            raise errors.ServerError(msg=f'公共桶 CDN 非 https，桌面端 ATS 会拒下: {ref.stable_url}')
+        return CiUploadResponse(
+            download_url=ref.stable_url,
+            file_name=name,
+            file_size=ref.size,
+            sha256=hashlib.sha256(data).hexdigest(),
+            object_key=ref.object_key,
+        )
 
     # --------- 官网 / 桌面端消费 ---------
 

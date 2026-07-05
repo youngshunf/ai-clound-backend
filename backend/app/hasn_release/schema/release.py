@@ -66,6 +66,19 @@ class CiCallbackRequest(PublishReleaseRequest):
     build_id: int | None = Field(default=None, description='关联 release_build.id（回填状态用）')
 
 
+class CiUploadResponse(SchemaBase):
+    """CI 上传产物到公共桶的返回（供 CI 组装 ReleaseAssetInput）。
+
+    复用云端既有七牛公共桶：CI 出包后把二进制交云端此处入桶，不再需要任何七牛凭据。
+    """
+
+    download_url: str = Field(description='公共桶 CDN https 直链（长效不签名）')
+    file_name: str = Field(description='文件名（已取 basename 防穿越）')
+    file_size: int = Field(description='字节数')
+    sha256: str = Field(description='服务端据落桶字节算得的 sha256（供 CI 与本地校验对拍）')
+    object_key: str = Field(description='对象存储 key（溯源用）')
+
+
 class SetLatestRequest(SchemaBase):
     """置为最新 / 回滚入参"""
 
