@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     # 管理端「从 GitHub 自动构建」触发 workflow_dispatch 所需（三者齐才真触发，缺则仅排队记录）
     RELEASE_GITHUB_TOKEN: str = ''  # GitHub PAT（repo + actions:write）
     RELEASE_GITHUB_REPO: str = 'youngshunf/hasn-node'  # owner/repo
-    RELEASE_GITHUB_WORKFLOW: str = 'desktop-release.yml'  # workflow 文件名或 id
+    RELEASE_GITHUB_WORKFLOW: str = 'release-desktop.yml'  # workflow 文件名或 id（对齐 .github/workflows/release-desktop.yml）
     HUANXING_HERMES_PLATFORM_LLM_BASE_URL: str = 'https://api.huanxing.ai/api/v1/llm/proxy/v1'
     HUANXING_HERMES_PLATFORM_LLM_API_KEY: str = ''
     HUANXING_HERMES_PLATFORM_LLM_MODEL: str = 'openai/gpt-5.5'
