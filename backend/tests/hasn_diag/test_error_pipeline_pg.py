@@ -90,6 +90,43 @@ async def test_idempotent_dedup_no_double_count() -> None:
             await db.rollback()
 
 
+async def test_webui_source_accepted_end_to_end() -> None:
+    """①b webui 源（doc21 源③前端错误）：schema Literal 与表 CHECK 都必须放行。
+
+    回归锁（2026-07-05）：曾因 schema/CHECK 只收 daemon/hermes/runtime，含 webui 事件的
+    整批被 422 拒收 → 同批 daemon/hermes 事件一并卡死（毒丸批），节点遥测全线停摆。
+    """
+    # schema 层：Literal 必须接受 'webui'（当时 422 的直接来源）。
+    from backend.app.hasn_diag.schema.error_sync import DiagErrorEvent
+
+    wire = DiagErrorEvent(
+        local_event_id='w-1',
+        source='webui',
+        severity='error',
+        fingerprint=_fp(),
+        dedup_key=uuid4().hex,
+        message='TypeError: x is undefined',
+        occurred_at=1_780_000_000,
+    )
+    assert wire.source == 'webui'
+
+    # 落库层：CHECK 约束必须放行 webui（真实 PG）。
+    async with async_db_session() as db:
+        try:
+            fp = _fp()
+            r = await _ingest(
+                db,
+                owner='h_o1',
+                node='n_webui',
+                events=[_ev(fingerprint=fp, source='webui', message='前端渲染崩溃')],
+            )
+            assert r[0]['accepted'], 'webui 源事件应正常落库'
+            issue = await error_issue_service.get_issue(db, fingerprint=fp)
+            assert issue['source'] == 'webui'
+        finally:
+            await db.rollback()
+
+
 async def test_aggregate_suppressed_severity_and_seen_window() -> None:
     """② 聚合：occurrence_count 含 suppressed_count；severity 升级；first/last_seen 单调外扩。"""
     async with async_db_session() as db:

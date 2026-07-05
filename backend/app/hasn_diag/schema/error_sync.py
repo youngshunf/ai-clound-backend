@@ -19,7 +19,7 @@ class DiagErrorEvent(BaseModel):
     """单条上行错误事件。"""
 
     local_event_id: str = Field(..., max_length=96, description='daemon 本地事件 id（对账用，非落库键）')
-    source: Literal['daemon', 'hermes', 'runtime'] = Field(..., description='来源')
+    source: Literal['daemon', 'hermes', 'runtime', 'webui'] = Field(..., description='来源')
     severity: Literal['critical', 'error', 'warn'] = Field(..., description='严重度')
     fingerprint: str = Field(..., min_length=1, max_length=64, description='归类键（模块级位置·无行号）')
     dedup_key: str = Field(..., min_length=1, max_length=96, description='单次物理发生幂等键')

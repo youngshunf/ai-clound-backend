@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS error_report (
     node_id varchar(64) NOT NULL,
     owner_hasn_id varchar(64),
     agent_hasn_id varchar(64),
-    source varchar(16) NOT NULL CHECK (source IN ('daemon', 'hermes', 'runtime')),
+    source varchar(16) NOT NULL CHECK (source IN ('daemon', 'hermes', 'runtime', 'webui')),
     severity varchar(16) NOT NULL CHECK (severity IN ('critical', 'error', 'warn')),
     fingerprint varchar(64) NOT NULL,
     dedup_key varchar(96) NOT NULL,
@@ -38,7 +38,7 @@ COMMENT ON TABLE error_report IS '错误事件 occurrence（原始证据流·(no
 COMMENT ON COLUMN error_report.node_id IS '上报设备 node_id（客户端自报，尽力校验归属）';
 COMMENT ON COLUMN error_report.owner_hasn_id IS '归属主人 hasn_id（可空：早期启动/无归属事件）';
 COMMENT ON COLUMN error_report.agent_hasn_id IS '归属分身 hasn_id（尽力回填·可空）';
-COMMENT ON COLUMN error_report.source IS '来源 (daemon:daemon:blue/hermes:本地hermes:cyan/runtime:云端runtime:purple)';
+COMMENT ON COLUMN error_report.source IS '来源 (daemon:daemon:blue/hermes:本地hermes:cyan/runtime:云端runtime:purple/webui:前端webui:orange)';
 COMMENT ON COLUMN error_report.severity IS '严重度 (critical:致命:red/error:错误:orange/warn:警告:yellow)';
 COMMENT ON COLUMN error_report.fingerprint IS '归类键 sha256(source|error_class/归一化消息|模块级位置)，不含行号';
 COMMENT ON COLUMN error_report.dedup_key IS '单次物理发生幂等键（客户端稳定哈希，语义见 doc21 §3）';
