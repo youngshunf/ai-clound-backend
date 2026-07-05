@@ -204,6 +204,28 @@ async def test_group_preview_public_meta(http) -> None:
     assert ghost.status_code != 200 or ghost.json().get('code') != 200, '不存在群预览应 404'
 
 
+async def test_join_group_http_route(http) -> None:
+    """doc22 群名片：POST /{gid}/join 走 HTTP 路径（人类从群预览页点「加入群聊」）。
+
+    创建者本人对自有群 join → 幂等返回 already_member（验证 HTTP 路由正确接到 join_group
+    service，不需第二用户；跨用户/策略分支由 service 级 test_join_group_open_and_invite_only 覆盖）。
+    """
+    c = http.client
+    created = _data(
+        await c.post(
+            '/api/v1/hasn/app/groups',
+            json={'title': f'加群HTTP{_uid()}', 'members': [], 'join_policy': 'open'},
+        )
+    )
+    gid = created['group_id']
+
+    joined = _data(await c.post(f'/api/v1/hasn/app/groups/{gid}/join'))
+    assert joined['status'] == 'already_member' and joined['joined'] is True, '本人已是群主 → 幂等入群'
+
+    ghost = await c.post('/api/v1/hasn/app/groups/g:1/join')
+    assert ghost.status_code != 200 or ghost.json().get('code') != 200, '不存在群加入应 404'
+
+
 async def test_join_group_open_and_invite_only(db_session) -> None:
     """doc22 hasn.group.join 底层：open 直接入群、invite_only 需审批、幂等 already_member。"""
     from backend.app.hasn.service.hasn_group_service import HasnGroupService

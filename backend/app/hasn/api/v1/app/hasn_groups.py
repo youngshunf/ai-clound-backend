@@ -94,6 +94,20 @@ async def preview_group(
     return response_base.success(data=data)
 
 
+@router.post('/{group_id}/join', summary='申请加入群聊（尊重群加入策略）', dependencies=[DependsJwtAuth])
+async def join_group(
+    request: Request,
+    db: CurrentSessionTransaction,
+    group_id: Annotated[str, Path(description='群组公开 ID g:NNNNNN')],
+) -> ResponseSchemaModel[dict]:
+    # doc22 群名片：非成员从群预览页点「加入群聊」。尊重群加入策略——
+    # open（自由加入）直接入群返回 joined=True；invite_only/approval 落待审返回 joined=False。
+    # 与分身工具 hasn.group.join 共用 HasnGroupService.join_group 单一实现，零 fake。
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.join_group(db, applicant_hasn_id=caller, group_id=group_id)
+    return response_base.success(data=data)
+
+
 @router.get('/{group_id}', summary='群详情 + 名册', dependencies=[DependsJwtAuth])
 async def get_group(
     request: Request,
