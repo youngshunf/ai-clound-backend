@@ -141,9 +141,10 @@ class HasnCloudMcpServer:
         for artifact_tool in ARTIFACT_TOOLS:
             self.tool_registry.register(artifact_tool)
 
-        # 设计系统工具（14-DS-P4 云端权威 4 工具）：import/save/list/get。
-        # 从 hasn-node 本地 hasn-mcp 迁来（纯云端权威 → 走云端 platform tool；
-        # 本地仅留确定性纯函数 compile_tokens/derive/validate/extract_components）。
+        # 设计系统工具（14-DS-P4）：8 个云端工具全注册。
+        # - 云端权威 4（操作云端数据）：import/save/list/get（TOOLMIG-4 从本地迁来）。
+        # - 确定性纯函数 4（TOOLMIG：Python 移植 hasn_designsystem_core，云端分身可用）：
+        #   compile_tokens/derive/validate/extract_components——本地 Rust 同名工具暂留待退役。
         for designsystem_tool in DESIGNSYSTEM_TOOLS:
             self.tool_registry.register(designsystem_tool)
 

@@ -1,17 +1,18 @@
-"""平台工具 · designsystem 域 真实 service 测试（禁 mock，TOOLMIG-4）。
+"""平台工具 · designsystem 域 真实 service 测试（禁 mock，TOOLMIG-4 + TOOLMIG 纯函数上云）。
 
-验证从 hasn-node 本地 hasn-mcp 迁来的 4 个云端权威工具：
-- `hasn.designsystem.import` / `.save`（写类，designsystem:write）
-- `hasn.designsystem.list` / `.get`（读类，无 scope）
+验证 8 个云端 designsystem 工具：
+- **云端权威（操作云端数据）**：`import` / `save`（写类，designsystem:write）、`list` / `get`（读类，无 scope）。
+- **确定性纯函数（TOOLMIG：Python 移植 hasn_designsystem_core，云端分身可用）**：
+  `compile_tokens` / `derive` / `validate` / `extract_components`（读类，无 scope，无 DB/无网络）。
 
-契约（无需 DB）：工具名/命名空间/execution_location/scope 与原 hasn-mcp 工具 1:1；
-input_schema 必填项 + 入参校验防回归。
+契约（无需 DB）：工具名/命名空间/execution_location/scope 与本地 hasn-mcp（Rust）工具 1:1；
+input_schema 必填项 + 入参校验防回归。纯函数工具直接执行核对返回形状（离线可跑）。
 真实 PG 往返：save 真落 hasn_designsystem 表 + 落一版 revision + 携 bundle 时自动登记产物；
 list 可见该套；get 取回当前版本内容。测试后清理该 owner 行（含 revision/artifact）。
 
 需活体 DB（本地 15432）：
     DATABASE_PORT=15432 pytest backend/tests/mcp/test_designsystem_tools.py
-无 DB 时跳过真实往返（不伪造）。
+无 DB 时跳过真实往返（不伪造）。纯函数工具与契约测试无需 DB。
 """
 
 from __future__ import annotations
@@ -23,9 +24,13 @@ import pytest
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.designsystem import (
     DESIGNSYSTEM_TOOLS,
+    DesignSystemCompileTokensTool,
+    DesignSystemDeriveTool,
+    DesignSystemExtractComponentsTool,
     DesignSystemGetTool,
     DesignSystemListTool,
     DesignSystemSaveTool,
+    DesignSystemValidateTool,
 )
 
 
@@ -55,49 +60,156 @@ async def _db_reachable() -> bool:
 
 
 # ── 契约（无需 DB）────────────────────────────────────────────────────────────
-def test_tools_register_four_with_stable_names() -> None:
-    """恰好 4 个云端工具，名稳定（与本地保留的 4 个纯函数工具分离）。"""
+def test_tools_register_eight_with_stable_names() -> None:
+    """恰好 8 个 designsystem 工具（4 云端权威 + 4 确定性纯函数），名稳定、顺序固定。"""
     assert [t.name for t in DESIGNSYSTEM_TOOLS] == [
         'hasn.designsystem.import',
         'hasn.designsystem.save',
         'hasn.designsystem.list',
         'hasn.designsystem.get',
+        'hasn.designsystem.compile_tokens',
+        'hasn.designsystem.derive',
+        'hasn.designsystem.validate',
+        'hasn.designsystem.extract_components',
     ]
 
 
 def test_tools_are_cloud_platform() -> None:
-    """4 工具 source=platform、execution_location=cloud、命名空间统一 hasn.designsystem。"""
+    """8 工具 source=platform、execution_location=cloud、命名空间统一 hasn.designsystem。"""
     for tool in DESIGNSYSTEM_TOOLS:
         assert tool.source == 'platform'
         assert tool.namespace == 'hasn.designsystem'
         assert tool.execution_location == 'cloud'
 
 
-def test_write_tools_declare_scope_read_tools_do_not() -> None:
-    """写类 import/save → designsystem:write；读类 list/get 无 scope（与本地 1:1）。"""
+def test_write_tools_declare_scope_read_and_pure_tools_do_not() -> None:
+    """写类 import/save → designsystem:write；读类 list/get + 4 纯函数无 scope（与本地 1:1）。"""
     by_name = {t.name: t for t in DESIGNSYSTEM_TOOLS}
     assert by_name['hasn.designsystem.import'].required_scopes == ['designsystem:write']
     assert by_name['hasn.designsystem.save'].required_scopes == ['designsystem:write']
-    assert by_name['hasn.designsystem.list'].required_scopes == []
-    assert by_name['hasn.designsystem.get'].required_scopes == []
+    for read_only in (
+        'hasn.designsystem.list',
+        'hasn.designsystem.get',
+        'hasn.designsystem.compile_tokens',
+        'hasn.designsystem.derive',
+        'hasn.designsystem.validate',
+        'hasn.designsystem.extract_components',
+    ):
+        assert by_name[read_only].required_scopes == [], read_only
 
 
 def test_required_fields_match_contract() -> None:
-    """必填项与原 hasn-mcp 工具逐字段一致。"""
+    """必填项与本地 hasn-mcp（Rust）工具逐字段一致。"""
     by_name = {t.name: t for t in DESIGNSYSTEM_TOOLS}
     assert by_name['hasn.designsystem.import'].input_schema['required'] == ['source', 'ref']
     assert by_name['hasn.designsystem.save'].input_schema['required'] == ['slug', 'name', 'content']
     assert by_name['hasn.designsystem.get'].input_schema['required'] == ['design_system_id']
     assert 'required' not in by_name['hasn.designsystem.list'].input_schema
+    # 纯函数工具必填项 1:1（compile_tokens 无必填，两入参二选一在 execute 里校验）。
+    assert 'required' not in by_name['hasn.designsystem.compile_tokens'].input_schema
+    assert by_name['hasn.designsystem.derive'].input_schema['required'] == ['tokens_css']
+    assert by_name['hasn.designsystem.validate'].input_schema['required'] == ['tokens_css']
+    assert by_name['hasn.designsystem.extract_components'].input_schema['required'] == [
+        'brand_id',
+        'components_html',
+    ]
+
+
+# ── 确定性纯函数工具执行（无需 DB，离线可跑）──────────────────────────────────────
+@pytest.mark.asyncio(loop_scope='module')
+async def test_compile_tokens_from_tokens_css() -> None:
+    """compile_tokens：由 tokens_css 编译 → {tokens_css, report}，report 带 56 token 摘要。"""
+    result = await DesignSystemCompileTokensTool().execute(
+        _agent_ctx('h_x'), {'tokens_css': ':root { --accent: #2563eb; }'}
+    )
+    assert result['tokens_css'].startswith(':root')
+    assert result['report']['summary']['totalTokens'] == 56
+    # --accent 精确命中 → high。
+    accent = next(t for t in result['report']['tokens'] if t['name'] == '--accent')
+    assert accent['confidence'] == 'high'
+    assert accent['value'] == '#2563eb'
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_compile_tokens_from_source_tokens_array() -> None:
+    """compile_tokens：显式 source_tokens 数组亦可（优先于 tokens_css）。"""
+    result = await DesignSystemCompileTokensTool().execute(
+        _agent_ctx('h_x'),
+        {'source_tokens': [{'name': '--accent', 'value': '#111111', 'source': 'seed', 'line': 3}]},
+    )
+    accent = next(t for t in result['report']['tokens'] if t['name'] == '--accent')
+    assert accent['confidence'] == 'high'
+    assert accent['value'] == '#111111'
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_compile_tokens_rejects_empty_input() -> None:
+    """compile_tokens：既无 tokens_css 又无非空 source_tokens → RuntimeError（对齐本地措辞）。"""
+    with pytest.raises(RuntimeError, match='tokens_css'):
+        await DesignSystemCompileTokensTool().execute(_agent_ctx('h_x'), {})
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_derive_returns_two_artifacts() -> None:
+    """derive：tokens.css → {design_tokens_json, tailwind_v4_css}。"""
+    contract = await DesignSystemCompileTokensTool().execute(
+        _agent_ctx('h_x'), {'tokens_css': ':root { --accent: #2563eb; }'}
+    )
+    result = await DesignSystemDeriveTool().execute(_agent_ctx('h_x'), {'tokens_css': contract['tokens_css']})
+    assert result['design_tokens_json'].endswith('}\n')  # pretty + 尾换行
+    assert '@theme {' in result['tailwind_v4_css']
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_derive_rejects_missing_tokens_css() -> None:
+    """derive：缺 tokens_css → RuntimeError。"""
+    with pytest.raises(RuntimeError, match='tokens_css'):
+        await DesignSystemDeriveTool().execute(_agent_ctx('h_x'), {})
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_validate_returns_score_report() -> None:
+    """validate：完整契约 → score=100/excellent；含 selfCheck。"""
+    contract = await DesignSystemCompileTokensTool().execute(
+        _agent_ctx('h_x'),
+        {'source_tokens': [{'name': n, 'value': '#abcdef'} for n in _all_schema_names()]},
+    )
+    report = await DesignSystemValidateTool().execute(_agent_ctx('h_x'), {'tokens_css': contract['tokens_css']})
+    assert report['summary']['score'] == 100
+    assert report['summary']['grade'] == 'excellent'
+    assert report['selfCheck']['ok'] is True
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_extract_components_returns_manifest() -> None:
+    """extract_components：components.html → manifest（brandId + selectors + fixture）。"""
+    html = '<html><head><title>Demo</title></head><body><button class="btn">Go</button></body></html>'
+    manifest = await DesignSystemExtractComponentsTool().execute(
+        _agent_ctx('h_x'), {'brand_id': 'demo', 'components_html': html}
+    )
+    assert manifest['brandId'] == 'demo'
+    assert manifest['fixture']['title'] == 'Demo'
+    assert isinstance(manifest['groups'], list)
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_extract_components_rejects_missing_html() -> None:
+    """extract_components：缺 components_html → RuntimeError。"""
+    with pytest.raises(RuntimeError, match='components_html'):
+        await DesignSystemExtractComponentsTool().execute(_agent_ctx('h_x'), {'brand_id': 'demo'})
+
+
+def _all_schema_names() -> list[str]:
+    from backend.app.hasn_designsystem.core import all_schema_names
+
+    return all_schema_names()
 
 
 @pytest.mark.asyncio(loop_scope='module')
 async def test_save_rejects_missing_content() -> None:
     """save 缺 content（或非对象）→ RuntimeError（校验在打 DB 前，无需活体库）。"""
     with pytest.raises(RuntimeError, match='content'):
-        await DesignSystemSaveTool().execute(
-            _agent_ctx('h_x'), {'slug': 's', 'name': 'n', 'content': 'not-a-dict'}
-        )
+        await DesignSystemSaveTool().execute(_agent_ctx('h_x'), {'slug': 's', 'name': 'n', 'content': 'not-a-dict'})
 
 
 @pytest.mark.asyncio(loop_scope='module')
@@ -155,9 +267,7 @@ async def test_save_list_get_roundtrip_real_db() -> None:
 
         # 落库核实：DesignSystem 行 + 一版 revision。
         async with async_db_session() as db:
-            row = (
-                await db.execute(select(DesignSystem).where(DesignSystem.id == design_system_id))
-            ).scalar_one()
+            row = (await db.execute(select(DesignSystem).where(DesignSystem.id == design_system_id))).scalar_one()
             assert row.owner_hasn_id == owner
             assert row.slug == slug
             assert row.score == 88
@@ -166,11 +276,7 @@ async def test_save_list_get_roundtrip_real_db() -> None:
 
         # 携 bundle → 自动登记一条 document 产物指向 bundle 资产（best-effort，应已落库）。
         async with async_db_session() as db:
-            art = (
-                await db.execute(
-                    select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner)
-                )
-            ).scalar_one()
+            art = (await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))).scalar_one()
             assert art.kind == 'document'
             assert art.asset_id == bundle_asset_id
             assert art.source_tool == 'hasn.designsystem.save'
