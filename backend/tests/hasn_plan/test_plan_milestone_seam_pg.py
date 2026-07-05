@@ -16,6 +16,8 @@ from uuid import uuid4
 import pytest
 
 from backend.app.hasn_plan.service.plan_app_service import PlanService
+from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.tools.plan import _SPECS, _h_delete_milestone, _h_update_milestone
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
@@ -224,5 +226,56 @@ async def test_get_plan_empty_milestone_zero_progress() -> None:
             assert m['todo_total'] == 0
             assert m['todo_done'] == 0
             assert m['progress_pct'] == 0
+        finally:
+            await db.rollback()
+
+
+# ── L5 工具契约：milestone.update / milestone.delete 已暴露 + handler 映射 id→milestone_id ──
+def _ctx(owner: str) -> AgentContext:
+    """构造分身执行上下文（身份取自凭证；owner_id 于里程碑工具不参与校验）。"""
+    return AgentContext(
+        hasn_id=f'a_{uuid4().hex[:16]}',
+        owner_id=1,
+        agent_status='active',
+        metadata={},
+        agent_name='规划分身',
+        owner_hasn_id=owner,
+    )
+
+
+def test_milestone_update_delete_tools_registered() -> None:
+    """里程碑更新/删除工具已注册——分身推进阶段后才有工具改里程碑状态/清理。"""
+    actions = {s['action'] for s in _SPECS}
+    assert 'milestone.update' in actions
+    assert 'milestone.delete' in actions
+
+
+async def test_tool_milestone_update_advances_status() -> None:
+    """工具层 milestone.update：把入参 id 映射到 service milestone_id，置 status=done → done=true 派生。"""
+    owner = _owner()
+    svc = PlanService()
+    async with async_db_session() as db:
+        try:
+            plan = await svc.create_plan(db, owner=owner, data={'title': 'P'})
+            ms = await svc.create_milestone(db, owner=owner, plan_id=int(plan['id']), data={'title': 'M'})
+            upd = await _h_update_milestone(db, _ctx(owner), {'id': int(ms['id']), 'status': 'done'})
+            assert upd['status'] == 'done'
+            assert upd['done'] is True
+        finally:
+            await db.rollback()
+
+
+async def test_tool_milestone_delete_removes_it() -> None:
+    """工具层 milestone.delete：删后 get_plan 里不再含该里程碑。"""
+    owner = _owner()
+    svc = PlanService()
+    async with async_db_session() as db:
+        try:
+            plan = await svc.create_plan(db, owner=owner, data={'title': 'P'})
+            ms = await svc.create_milestone(db, owner=owner, plan_id=int(plan['id']), data={'title': 'M'})
+            res = await _h_delete_milestone(db, _ctx(owner), {'id': int(ms['id'])})
+            assert res == {'deleted': True}
+            detail = await svc.get_plan(db, owner=owner, pk=int(plan['id']))
+            assert all(int(x['id']) != int(ms['id']) for x in detail['milestones'])
         finally:
             await db.rollback()

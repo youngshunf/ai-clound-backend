@@ -280,6 +280,19 @@ async def _h_checkin(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await plan_service.checkin_habit(db, owner=ctx.owner_hasn_id, habit_id=int(args['id']), data=data)
 
 
+async def _h_update_milestone(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """改里程碑（含改状态 planned→doing→done）：service 签名用 milestone_id（异构于 pk 类），故走特例 handler。"""
+    return await plan_service.update_milestone(
+        db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']), data=_without(args, 'id')
+    )
+
+
+async def _h_delete_milestone(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """删里程碑（其下待办 SET NULL 回落）：service 签名用 milestone_id，走特例 handler。"""
+    await plan_service.delete_milestone(db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']))
+    return {'deleted': True}
+
+
 # ── schema 构造小工具 ──────────────────────────────────────────────────────────
 def _s(desc: str) -> dict[str, Any]:
     return {'type': 'string', 'description': desc}
@@ -506,6 +519,31 @@ _SPECS: list[dict[str, Any]] = [
             },
             ['plan_id', 'title'],
         ),
+    },
+    {
+        'action': 'milestone.update',
+        'write': True,
+        'handler': _h_update_milestone,
+        'desc': (
+            '改里程碑（传 id + 要改的字段）——**推进这个阶段时用它推动里程碑前进/收尾**：'
+            '开工把 `status` 置 `doing`、本阶段待办全做完/交付了就置 `done`（done↔完成双向派生）；也可改 title/due_date。'
+        ),
+        'schema': _schema(
+            {
+                'id': _i('里程碑 id（必填）'),
+                'title': _s('可选：标题'),
+                'status': _s('可选：状态 planned(未开始)|doing(进行中)|done(已完成)'),
+                'due_date': _s('可选：到期日'),
+            },
+            ['id'],
+        ),
+    },
+    {
+        'action': 'milestone.delete',
+        'write': True,
+        'handler': _h_delete_milestone,
+        'desc': '删里程碑（其下待办 SET NULL 回落，不级联丢失）。传 id。',
+        'schema': _schema({'id': _i('里程碑 id（必填）')}, ['id']),
     },
     # —— todo ——
     {
