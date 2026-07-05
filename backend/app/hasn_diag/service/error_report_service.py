@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.hasn_diag.service.version_compare import is_newer
+from backend.common.log import log
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -82,13 +83,36 @@ async def ingest_errors(
                 )
             else:
                 deduped = True
-        except IntegrityError:
-            # 并发上行抢先落了同一 (node_id, dedup_key)：savepoint 已回滚，回 deduped。
-            deduped = True
+        except IntegrityError as exc:
+            if _is_unique_violation(exc):
+                # 并发上行抢先落了同一 (node_id, dedup_key)：savepoint 已回滚，回 deduped。
+                deduped = True
+            else:
+                # 非唯一键的完整性冲突（如 CHECK 约束拒收）绝不能伪装成 deduped——
+                # daemon 收到 200 即标 pushed，事件会被静默永久丢失（2026-07-05 曾因
+                # source CHECK 未放行 webui，把前端错误证据整批无声吞掉）。响亮记日志、
+                # 回 accepted=False，让丢失可见可查。
+                log.error(f'diag 错误事件落库被完整性约束拒收（event={ev.local_event_id} source={ev.source}）: {exc}')
+
         results.append(
             {'local_event_id': ev.local_event_id, 'accepted': accepted, 'deduped': deduped}
         )
     return results
+
+
+def _is_unique_violation(exc: IntegrityError) -> bool:
+    """是否唯一键冲突（PG SQLSTATE 23505）——只有它才允许当 deduped。
+
+    asyncpg 经 SQLAlchemy 包装后原始异常在 `exc.orig`（sqlstate/pgcode 属性名随驱动
+    适配层不同），取不到码时退化匹配异常文本，宁可放行 dedup 误判也不 500 整批。
+    """
+    orig = getattr(exc, 'orig', None)
+    for attr in ('sqlstate', 'pgcode'):
+        code = getattr(orig, attr, None)
+        if code:
+            return str(code) == '23505'
+    text_repr = f'{exc} {orig}'
+    return 'UniqueViolation' in text_repr or 'duplicate key' in text_repr
 
 
 async def _persist_report(

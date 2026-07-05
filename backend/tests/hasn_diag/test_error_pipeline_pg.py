@@ -127,6 +127,30 @@ async def test_webui_source_accepted_end_to_end() -> None:
             await db.rollback()
 
 
+async def test_check_violation_not_masked_as_deduped() -> None:
+    """①c 非唯一键完整性冲突（CHECK 拒收）→ accepted=False 且 deduped=False，同批其余事件不受累。
+
+    回归锁：曾把一切 IntegrityError 当 deduped——CHECK 拒收的事件被伪装成"已去重"，
+    daemon 收 200 标 pushed，证据静默永久丢失。
+    """
+    async with async_db_session() as db:
+        try:
+            fp_bad, fp_good = _fp(), _fp()
+            r = await _ingest(
+                db,
+                owner='h_o1',
+                node='n_ck',
+                events=[
+                    _ev(fingerprint=fp_bad, source='bogus-source'),
+                    _ev(fingerprint=fp_good),
+                ],
+            )
+            assert not r[0]['accepted'] and not r[0]['deduped'], 'CHECK 拒收不得伪装成 deduped'
+            assert r[1]['accepted'], '同批后续事件不受累'
+        finally:
+            await db.rollback()
+
+
 async def test_aggregate_suppressed_severity_and_seen_window() -> None:
     """② 聚合：occurrence_count 含 suppressed_count；severity 升级；first/last_seen 单调外扩。"""
     async with async_db_session() as db:
