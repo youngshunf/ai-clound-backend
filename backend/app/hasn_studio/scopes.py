@@ -41,8 +41,8 @@ STUDIO_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_en': 'Submit render / produce',
         'domain': 'studio',
         'risk': 'medium',
-        'default_mode': 'ask',
-        'description': '提交渲染 / run_pipeline（脚本→分镜→配音→合成出片，花算力，须主人审批）',
+        'default_mode': 'allow',
+        'description': '提交渲染 / run_pipeline（脚本→分镜→配音→合成出片，生成类，2026-07-05 放开出厂 Allow，主人可改 Ask 把关算力）',
         'description_en': 'Submit a render / run_pipeline (script→storyboard→voiceover→composition, compute-heavy, requires owner approval)',
     },
     'studio:export': {

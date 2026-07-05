@@ -124,13 +124,15 @@ def test_reel_scopes_registered_in_catalog() -> None:
 
 
 def test_reel_scope_factory_defaults_match_local_enforcement() -> None:
-    """出厂默认成为唯一真相：reel:read 出厂 Allow，reel:write/:export 出厂 Ask（= reel.rs 本地出厂态）。
+    """出厂默认成为唯一真相：reel:read/:write 出厂 Allow，reel:export 出厂 Ask（= reel.rs 本地出厂态）。
 
     scope_meta(default_mode) 必须等于 hasn-mcp reel.rs 的 default_capability_mode()，否则云端 catalog
     静息态会与本地 CapabilityModeMirror 实际执行分裂（权限页显示「允许」但每次调用仍审批）。
+    2026-07-05 策略「只拦外发/动钱，放开生成/委托」：reel:write（生成短视频）放开 Allow；
+    reel:export（上传云端分享=外发）保留 Ask。
     """
     assert scope_meta(_READ_SCOPE)['default_mode'] == 'allow'
-    assert scope_meta(_WRITE_SCOPE)['default_mode'] == 'ask'
+    assert scope_meta(_WRITE_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_EXPORT_SCOPE)['default_mode'] == 'ask'
 
 

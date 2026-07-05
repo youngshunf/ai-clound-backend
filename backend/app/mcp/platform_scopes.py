@@ -25,9 +25,11 @@ PLATFORM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'marketplace:publish': {'label_zh': '打包与发布资源', 'label_en': 'Package and publish resources', 'domain': 'marketplace', 'risk': 'high', 'description': '打包本地技能/模板并发布为当前用户资源（默认草稿；公开/送审过主人确认）', 'description_en': 'Package a local skill or template and publish it as an owner resource (draft by default; going public or for review needs owner confirmation)'},
     # —— platform · 媒体（hasn-mcp 本地媒体工具，直连 new-api）——
     # 键统一（实施102 S2）：旧 image:generate 死键已删，图片与语音生成统一到 media:generate；
-    # 视频单价远高、独立授权档 video:generate 保留。二者均本地工具（source=Local），出厂 Ask（花 owner 配额）。
-    'media:generate': {'label_zh': '图片与语音生成', 'label_en': 'Generate images and speech', 'domain': 'media', 'risk': 'medium', 'default_mode': 'ask', 'description': '直连唤星 new-api 生成图片（image）与语音（TTS），消耗 owner 配额，故默认每次询问', 'description_en': 'Generate images and speech (TTS) directly via Astra new-api; consumes owner quota, so it asks each time by default'},
-    'video:generate': {'label_zh': '生成视频', 'label_en': 'Generate video', 'domain': 'video', 'risk': 'high', 'default_mode': 'ask', 'description': '直连唤星 new-api 视频 API（task 式异步：提交→轮询）生成视频，单价远高于图片、消耗 owner 配额，故独立授权档', 'description_en': 'Generate video via the Astra new-api video API (async task: submit then poll); far pricier than images and consumes owner quota, so it has its own permission tier'},
+    # 视频单价远高、独立授权档 video:generate 保留。二者均本地工具（source=Local）。
+    # 2026-07-05 策略「只拦外发/动钱，放开生成/委托」：生成内容（消耗配额≠动钱，非显式金融交易）出厂 Allow，
+    # 产物留本地可追踪可接管；主人要把关可在权限页单独改 Ask（video 单价高，主人尤其可自行收紧）。
+    'media:generate': {'label_zh': '图片与语音生成', 'label_en': 'Generate images and speech', 'domain': 'media', 'risk': 'medium', 'default_mode': 'allow', 'description': '直连唤星 new-api 生成图片（image）与语音（TTS）；消耗 owner 配额但属生成类，出厂 Allow，主人可在权限页改 Ask', 'description_en': 'Generate images and speech (TTS) directly via Astra new-api; consumes owner quota but is a generation action, Allow by default — the owner may switch it to Ask'},
+    'video:generate': {'label_zh': '生成视频', 'label_en': 'Generate video', 'domain': 'video', 'risk': 'high', 'default_mode': 'allow', 'description': '直连唤星 new-api 视频 API（task 式异步：提交→轮询）生成视频；单价远高于图片，属生成类出厂 Allow，但 risk 仍 high，主人可在权限页单独改 Ask 把关成本', 'description_en': 'Generate video via the Astra new-api video API (async task: submit then poll); far pricier than images but still a generation action, Allow by default with risk kept high — the owner may switch it to Ask to gate cost'},
     # —— platform · 资产（hasn.asset.create：分身把自己的内容上传成 hasn://asset）——
     'asset:create': {'label_zh': '上传媒体资产', 'label_en': 'Upload media assets', 'domain': 'asset', 'risk': 'medium', 'description': '把分身的内容（SVG/图片/文件等）上传到私有桶并注册资产，供消息附件引用', 'description_en': "Upload the agent's content (SVG, images, files, etc.) to a private bucket and register it as an asset for message attachments"},
     # —— platform · 工作会话（hasn.session.ask：分身在工作会话里主动向主人提问、挂起会话等答复）——

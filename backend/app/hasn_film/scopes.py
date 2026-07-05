@@ -27,8 +27,8 @@ FILM_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_en': 'Generate and edit video',
         'domain': 'film',
         'risk': 'medium',
-        'default_mode': 'ask',
-        'description': '建项目、跑各阶段生成（剧本/角色/分镜/参考图/片段/后期）与短流程（消耗主人配额，默认需确认）',
+        'default_mode': 'allow',
+        'description': '建项目、跑各阶段生成（剧本/角色/分镜/参考图/片段/后期）与短流程（生成类，2026-07-05 放开出厂 Allow，主人可改 Ask）',
         'description_en': 'Create projects and run stage generation (script/characters/storyboard/reference images/clips/post) and short pipelines (consumes owner quota; confirmation required by default)',
     },
     'film:export': {
