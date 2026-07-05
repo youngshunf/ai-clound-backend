@@ -32,6 +32,11 @@ _GENUINE = {
     'GET /api/v1/client/version/latest-linux.yml',
     'GET /api/v1/client/version/latest-mac.yml',
     'GET /api/v1/client/version/latest.yml',
+    # 桌面端发布 hasn_release（Tauri 自动更新 + 下载）：
+    #   - updater 返回 Tauri v2 原生 manifest JSON 形状（客户端按原生解析），且无更新时 204 无体；
+    #   - download 302 重定向到七牛 CDN 直链（含下载计数副作用）。二者信封套不了。
+    'GET /api/v1/release/open/updater/{target}/{arch}/{current_version}',
+    'GET /api/v1/release/open/download/{asset_id}',
     'GET /api/v1/code-generation/generations/{pk}',
     'GET /api/v1/marketplace/open/skills/{resource_id:path}/download',
     'GET /api/v1/marketplace/open/templates/{resource_id:path}/download',
