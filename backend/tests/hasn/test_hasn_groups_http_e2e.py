@@ -178,6 +178,101 @@ async def test_non_member_cannot_view(http) -> None:
     assert ghost.status_code != 200 or ghost.json().get('code') != 200, '不存在群应 404'
 
 
+async def test_group_preview_public_meta(http) -> None:
+    """doc22 群名片：GET /{gid}/preview 返回公开元信息（is_member/my_role/join_policy）。
+
+    创建者是成员 → is_member=True、my_role=owner；不含完整名册（只公开字段）。
+    """
+    c = http.client
+    created = _data(
+        await c.post(
+            '/api/v1/hasn/app/groups',
+            json={'title': f'名片群{_uid()}', 'members': [], 'join_policy': 'open'},
+        )
+    )
+    gid = created['group_id']
+    assert created['join_policy'] == 'open', '建群应落 join_policy=open'
+
+    meta = _data(await c.get(f'/api/v1/hasn/app/groups/{gid}/preview'))
+    assert meta['group_id'] == gid
+    assert meta['join_policy'] == 'open'
+    assert meta['is_member'] is True and meta['my_role'] == 'owner', '创建者应识别为群主成员'
+    assert meta['member_count'] == 1
+    assert 'members' not in meta, '预览只回公开元信息，不含完整名册'
+
+    ghost = await c.get('/api/v1/hasn/app/groups/g:1/preview')
+    assert ghost.status_code != 200 or ghost.json().get('code') != 200, '不存在群预览应 404'
+
+
+async def test_join_group_http_route(http) -> None:
+    """doc22 群名片：POST /{gid}/join 走 HTTP 路径（人类从群预览页点「加入群聊」）。
+
+    创建者本人对自有群 join → 幂等返回 already_member（验证 HTTP 路由正确接到 join_group
+    service，不需第二用户；跨用户/策略分支由 service 级 test_join_group_open_and_invite_only 覆盖）。
+    """
+    c = http.client
+    created = _data(
+        await c.post(
+            '/api/v1/hasn/app/groups',
+            json={'title': f'加群HTTP{_uid()}', 'members': [], 'join_policy': 'open'},
+        )
+    )
+    gid = created['group_id']
+
+    joined = _data(await c.post(f'/api/v1/hasn/app/groups/{gid}/join'))
+    assert joined['status'] == 'already_member' and joined['joined'] is True, '本人已是群主 → 幂等入群'
+
+    ghost = await c.post('/api/v1/hasn/app/groups/g:1/join')
+    assert ghost.status_code != 200 or ghost.json().get('code') != 200, '不存在群加入应 404'
+
+
+async def test_join_group_open_and_invite_only(db_session) -> None:
+    """doc22 hasn.group.join 底层：open 直接入群、invite_only 需审批、幂等 already_member。"""
+    from backend.app.hasn.service.hasn_group_service import HasnGroupService
+
+    owner = f'h_grp_{_uid()}'
+    joiner_agent = f'a_join_{_uid()}'
+
+    # open 群：非成员自助入群应成功。
+    open_group = await HasnGroupService.create_group(
+        db_session, owner_hasn_id=owner, title=f'开放群{_uid()}', members=[], join_policy='open'
+    )
+    ogid = open_group['group_id']
+    joined = await HasnGroupService.join_group(db_session, applicant_hasn_id=joiner_agent, group_id=ogid)
+    assert joined['status'] == 'joined' and joined['joined'] is True, 'open 群应直接入群'
+    assert joined['member_count'] == 2, '入群后成员数 +1'
+    assert joined['role'] == 'member'
+
+    # 幂等：已是成员再 join → already_member。
+    again = await HasnGroupService.join_group(db_session, applicant_hasn_id=joiner_agent, group_id=ogid)
+    assert again['status'] == 'already_member' and again['joined'] is True, '重复入群应幂等'
+
+    # invite_only 群：非成员自助入群应如实回 needs_approval（零 fake，未入群）。
+    inv_group = await HasnGroupService.create_group(
+        db_session, owner_hasn_id=owner, title=f'邀请制群{_uid()}', members=[], join_policy='invite_only'
+    )
+    igid = inv_group['group_id']
+    pending = await HasnGroupService.join_group(db_session, applicant_hasn_id=joiner_agent, group_id=igid)
+    assert pending['status'] == 'needs_approval' and pending['joined'] is False, 'invite_only 应需审批'
+
+
+async def test_get_group_public_meta_non_member(db_session) -> None:
+    """get_group_public_meta 对非成员 viewer 返回 is_member=False、my_role=None。"""
+    from backend.app.hasn.service.hasn_group_service import HasnGroupService
+
+    owner = f'h_grp_{_uid()}'
+    stranger = f'h_stranger_{_uid()}'
+    grp = await HasnGroupService.create_group(
+        db_session, owner_hasn_id=owner, title=f'公开元信息群{_uid()}', members=[], join_policy='open'
+    )
+    gid = grp['group_id']
+
+    meta = await HasnGroupService.get_group_public_meta(db_session, viewer_hasn_id=stranger, group_id=gid)
+    assert meta['group_id'] == gid
+    assert meta['is_member'] is False and meta['my_role'] is None, '非成员 viewer 应识别为非成员'
+    assert meta['member_count'] == 1 and meta['join_policy'] == 'open'
+
+
 @pytest_asyncio.fixture
 async def db_session():
     """服务级测试用的裸 PG 会话（不经 HTTP，直接调 service 校验权限矩阵）。"""

@@ -29,6 +29,7 @@ class CreateGroupBody(BaseModel):
     members: list[GroupMemberInput] = Field(default_factory=list, description='初始成员（不含创建者）')
     agent_policy: str = Field('free', description='分身发言策略 free/mention_only/silent/no_agent')
     avatar_url: str | None = Field(None, description='群头像 URL')
+    join_policy: str = Field('invite_only', description='加入策略 invite_only/open/approval')
 
 
 class AddMembersBody(BaseModel):
@@ -39,6 +40,7 @@ class UpdateGroupBody(BaseModel):
     title: str | None = Field(None, description='新群名称')
     avatar_url: str | None = Field(None, description='新群头像')
     agent_policy: str | None = Field(None, description='新分身发言策略')
+    join_policy: str | None = Field(None, description='新加入策略 invite_only/open/approval')
 
 
 async def _caller_hasn_id(request: Request, db: CurrentSession) -> str:
@@ -67,6 +69,7 @@ async def create_group(
         members=[m.model_dump() for m in body.members],
         agent_policy=body.agent_policy,
         avatar_url=body.avatar_url,
+        join_policy=body.join_policy,
     )
     return response_base.success(data=data)
 
@@ -76,6 +79,33 @@ async def list_my_groups(request: Request, db: CurrentSession) -> ResponseSchema
     caller = await _caller_hasn_id(request, db)
     items = await hasn_group_service.list_my_groups(db=db, hasn_id=caller)
     return response_base.success(data={'items': items})
+
+
+@router.get('/{group_id}/preview', summary='群公开元信息（非成员可读·群名片预览）', dependencies=[DependsJwtAuth])
+async def preview_group(
+    request: Request,
+    db: CurrentSession,
+    group_id: Annotated[str, Path(description='群组公开 ID g:NNNNNN')],
+) -> ResponseSchemaModel[dict]:
+    # doc22 群名片：非成员也可读到群名/头像/人数/加入策略等公开字段（不含完整名册）。
+    # 额外返回 is_member/my_role，供预览页对 viewer 分叉「加入群聊 / 进入群聊」按钮。
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.get_group_public_meta(db=db, viewer_hasn_id=caller, group_id=group_id)
+    return response_base.success(data=data)
+
+
+@router.post('/{group_id}/join', summary='申请加入群聊（尊重群加入策略）', dependencies=[DependsJwtAuth])
+async def join_group(
+    request: Request,
+    db: CurrentSessionTransaction,
+    group_id: Annotated[str, Path(description='群组公开 ID g:NNNNNN')],
+) -> ResponseSchemaModel[dict]:
+    # doc22 群名片：非成员从群预览页点「加入群聊」。尊重群加入策略——
+    # open（自由加入）直接入群返回 joined=True；invite_only/approval 落待审返回 joined=False。
+    # 与分身工具 hasn.group.join 共用 HasnGroupService.join_group 单一实现，零 fake。
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.join_group(db, applicant_hasn_id=caller, group_id=group_id)
+    return response_base.success(data=data)
 
 
 @router.get('/{group_id}', summary='群详情 + 名册', dependencies=[DependsJwtAuth])
@@ -132,6 +162,7 @@ async def update_group(
         title=body.title,
         avatar_url=body.avatar_url,
         agent_policy=body.agent_policy,
+        join_policy=body.join_policy,
     )
     return response_base.success(data=data)
 

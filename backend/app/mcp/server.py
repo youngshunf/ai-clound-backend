@@ -26,6 +26,7 @@ from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
+from backend.app.mcp.tools.group import GroupJoinTool
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.diag import DIAG_TOOLS
@@ -118,6 +119,9 @@ class HasnCloudMcpServer:
         self.tool_registry.register(ContactListTool())
         self.tool_registry.register(ContactSearchTool())
         self.tool_registry.register(ContactRequestTool())
+
+        # 群工具：分身代主人加入某群（尊重群加入策略）。打通「群名片→加入群聊」闭环（doc22）。
+        self.tool_registry.register(GroupJoinTool())
 
         # 规划工具（19-规划与目标管理）：goal/project/todo/event/habit CRUD + capture/triage/today/preference。
         # 这些「纯云端代理」工具从 hasn-node 本地 hasn-mcp 迁来（不操作本地文件/数据 → 走云端 platform tool）；

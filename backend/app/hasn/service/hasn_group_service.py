@@ -22,6 +22,11 @@ from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
 VALID_AGENT_POLICY = {'free', 'mention_only', 'silent', 'no_agent'}
+# 群加入策略：invite_only=邀请制（默认，须群主/管理员拉人）；open=自由加入（任何人可自助入群）；
+# approval=审批制（自助申请、待通过——完整审批产品化不在 doc22 范围，暂等同 invite_only 的「需审批」回执）。
+VALID_JOIN_POLICY = {'invite_only', 'open', 'approval'}
+# 允许 hasn.group.join 工具直接自助入群的策略集合（其余策略回「需邀请/审批」，零 fake）。
+_OPEN_JOIN_POLICIES = {'open'}
 _GROUP_ID_BASE = 500000
 _MAX_MEMBERS_DEFAULT = 200
 _ADMIN_ROLES = ('owner', 'admin')
@@ -179,6 +184,7 @@ class HasnGroupService:
         members: list[dict[str, Any]] | None = None,
         agent_policy: str = 'free',
         avatar_url: str | None = None,
+        join_policy: str = 'invite_only',
     ) -> dict[str, Any]:
         """建群：分配 g:NNNNNN + 写 type=group 会话 + seed 成员（创建者 role=owner）。"""
         title = (title or '').strip()
@@ -186,6 +192,8 @@ class HasnGroupService:
             raise errors.RequestError(msg='群名称需 1..80 字')
         if agent_policy not in VALID_AGENT_POLICY:
             raise errors.RequestError(msg=f'agent_policy 非法: {agent_policy}')
+        if join_policy not in VALID_JOIN_POLICY:
+            raise errors.RequestError(msg=f'join_policy 非法: {join_policy}')
 
         member_ids: list[str] = []
         seen: set[str] = {owner_hasn_id}
@@ -206,7 +214,7 @@ class HasnGroupService:
             group_owner_id=owner_hasn_id,
             group_avatar_url=avatar_url,
             agent_policy=agent_policy,
-            join_policy='invite_only',
+            join_policy=join_policy,
             max_members=_MAX_MEMBERS_DEFAULT,
             allow_invite=True,
             mute_all=False,
@@ -363,6 +371,7 @@ class HasnGroupService:
         title: str | None = None,
         avatar_url: str | None = None,
         agent_policy: str | None = None,
+        join_policy: str | None = None,
     ) -> dict[str, Any]:
         conv = await cls._get_group_or_404(db, group_id)
         roster = await cls._load_members(db, conv.id)
@@ -379,8 +388,81 @@ class HasnGroupService:
             if agent_policy not in VALID_AGENT_POLICY:
                 raise errors.RequestError(msg=f'agent_policy 非法: {agent_policy}')
             conv.agent_policy = agent_policy
+        if join_policy is not None:
+            if join_policy not in VALID_JOIN_POLICY:
+                raise errors.RequestError(msg=f'join_policy 非法: {join_policy}')
+            conv.join_policy = join_policy
         await db.flush()
         return cls._group_to_dict(conv, roster)
+
+    # ─── doc22 群名片：公开元信息 + 自助入群 ───
+    @classmethod
+    async def get_group_public_meta(
+        cls, db: AsyncSession, *, viewer_hasn_id: str, group_id: str
+    ) -> dict[str, Any]:
+        """群公开元信息（**非成员亦可读**，供群名片预览页 doc22 §6.2）。
+
+        只返回群名 / 头像 / 人数 / 加入策略等公开字段，**不含完整名册**（名册须成员方可见）。
+        额外附 `is_member`/`my_role`：供预览页对 viewer 分叉「加入群聊 / 进入群聊」按钮。
+        """
+        conv = await cls._get_group_or_404(db, group_id)
+        members = await cls._load_members(db, conv.id)
+        my_role = cls._role_of(members, viewer_hasn_id)
+        return {
+            'group_id': conv.group_id,
+            'title': conv.group_name,
+            'avatar_url': conv.group_avatar_url,
+            'member_count': conv.member_count,
+            'join_policy': conv.join_policy,
+            'agent_policy': conv.agent_policy,
+            'status': conv.status,
+            'is_member': my_role is not None,
+            'my_role': my_role,
+        }
+
+    @classmethod
+    async def join_group(
+        cls, db: AsyncSession, *, applicant_hasn_id: str, group_id: str
+    ) -> dict[str, Any]:
+        """自助入群（doc22 §6.5 · hasn.group.join 底层）——**尊重群加入策略**。
+
+        - 已是成员 → `already_member`（幂等）；
+        - `open` 策略 → 直接加为成员（`joined`）；
+        - 其余（`invite_only`/`approval`）→ 如实回 `needs_approval`（当前无自助审批链路，
+          零 fake：不伪造「已提交申请」，明确告知需邀请/审批）。
+        """
+        conv = await cls._get_group_or_404(db, group_id)
+        roster = await cls._load_members(db, conv.id)
+        existing_role = cls._role_of(roster, applicant_hasn_id)
+        if existing_role is not None:
+            return {
+                'group_id': group_id,
+                'status': 'already_member',
+                'joined': True,
+                'member_count': conv.member_count,
+                'role': existing_role,
+            }
+        if conv.join_policy in _OPEN_JOIN_POLICIES:
+            now = timezone.now()
+            await cls._add_member_row(
+                db, conv.id, applicant_hasn_id, role='member', invited_by=None, now=now, roster=roster
+            )
+            conv.member_count = len(roster)
+            await db.flush()
+            return {
+                'group_id': group_id,
+                'status': 'joined',
+                'joined': True,
+                'member_count': conv.member_count,
+                'role': 'member',
+            }
+        return {
+            'group_id': group_id,
+            'status': 'needs_approval',
+            'joined': False,
+            'join_policy': conv.join_policy,
+            'message': '该群为邀请制，需群主/管理员邀请或审批后加入',
+        }
 
     @classmethod
     async def disband_group(
