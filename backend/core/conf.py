@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # 内部 service token（runtime ↔ backend 单向调用，仅 .env 配置，不暴露浏览器）
     # 用于 X-Internal-Token header 校验（§09 §5）
     RUNTIME_INTERNAL_TOKEN: str = ''
+
+    # 桌面端发布与自动更新（hasn_release，模块「桌面端发布与自动更新」）
+    # CI 构建完成回调密钥（Bearer；GitHub Actions 出包后回调 /hasn_release/ci/callback 落库）
+    RELEASE_CI_CALLBACK_SECRET: str = ''
+    # 管理端「从 GitHub 自动构建」触发 workflow_dispatch 所需（三者齐才真触发，缺则仅排队记录）
+    RELEASE_GITHUB_TOKEN: str = ''  # GitHub PAT（repo + actions:write）
+    RELEASE_GITHUB_REPO: str = 'youngshunf/hasn-node'  # owner/repo
+    RELEASE_GITHUB_WORKFLOW: str = 'desktop-release.yml'  # workflow 文件名或 id
     HUANXING_HERMES_PLATFORM_LLM_BASE_URL: str = 'https://api.huanxing.ai/api/v1/llm/proxy/v1'
     HUANXING_HERMES_PLATFORM_LLM_API_KEY: str = ''
     HUANXING_HERMES_PLATFORM_LLM_MODEL: str = 'openai/gpt-5.5'

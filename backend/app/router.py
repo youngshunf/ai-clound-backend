@@ -330,6 +330,19 @@ def _load_hasn_diag() -> None:
     router.include_router(hasn_diag_app)
 
 
+def _load_hasn_release() -> None:
+    # 桌面端发布与自动更新（hasn_release，独立 PG schema=hasn_release）：
+    # admin（JWT+RBAC 手动上传/GitHub 构建/版本管理）+ open（官网/下载页/Tauri updater）+ ci（Bearer 回调）。
+    # 不挂 agent/app 裸 CRUD——发布是运维动作，分身不经此写库。
+    from backend.app.hasn_release.api.router import admin as hasn_release_admin
+    from backend.app.hasn_release.api.router import ci as hasn_release_ci
+    from backend.app.hasn_release.api.router import open_api as hasn_release_open
+
+    router.include_router(hasn_release_admin)
+    router.include_router(hasn_release_open)
+    router.include_router(hasn_release_ci)
+
+
 # 应用名 → loader。改 FBA_DEV_APPS 时用这里的 key（左列）。
 _APP_LOADERS: dict[str, Callable[[], None]] = {
     'task': _load_task,
@@ -359,6 +372,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_imagelab': _load_hasn_imagelab,
     'external_mcp': _load_external_mcp,
     'hasn_diag': _load_hasn_diag,
+    'hasn_release': _load_hasn_release,
 }
 
 for _name, _loader in _APP_LOADERS.items():
