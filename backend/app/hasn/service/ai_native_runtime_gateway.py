@@ -142,9 +142,7 @@ class AiNativeRuntimeGateway:
                     'output_schema': capability['output_schema'],
                     'required_scopes': list(capability.get('required_scopes') or []),
                     'risk_level': capability['risk_level'],
-                    'requires_confirmation': bool(
-                        (capability.get('human_confirmation') or {}).get('required', False)
-                    ),
+                    'requires_confirmation': bool((capability.get('human_confirmation') or {}).get('required', False)),
                     'idempotent': bool(capability.get('idempotent', True)),
                 }
             ],
@@ -224,8 +222,14 @@ class AiNativeRuntimeGateway:
             input_payload = bind_tool_input(capability.get('input_schema'), input_payload)
         except ToolInputError as exc:
             return await self._deny(
-                db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                capability=capability, tool=tool, code='15020',
+                db,
+                body=body,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                code='15020',
                 reason=f'input_invalid:{exc.field}:{exc.reason}',
             )
 
@@ -265,8 +269,15 @@ class AiNativeRuntimeGateway:
         except InstanceResolutionError as exc:
             # 实例未配置 / 凭据无效 / transport 不允许此调用面（15050/15051/15052）→ 写 deny 审计 + 返回错误。
             return await self._deny(
-                db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                capability=capability, tool=tool, code=exc.code, reason=exc.message,
+                db,
+                body=body,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                code=exc.code,
+                reason=exc.message,
             )
         audit = await self._write_audit(
             db,
@@ -322,23 +333,52 @@ class AiNativeRuntimeGateway:
         # 否则分身经 MCP 直连面即可绕过付费墙白嫖（见 [[feedback_ai_native_gateway_two_call_faces]]）。
         # 仅付费 app（catalog 存在且 access_type != free）才判定；无 catalog 行 / free → 跳过零开销。
         if (denial := await self._entitlement_denial(db, app_id=manifest['app_id'], agent=agent)) is not None:
-            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15030', reason=denial)
+            return await self._deny(
+                db,
+                body=body,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                code='15030',
+                reason=denial,
+            )
 
         collaboration_denial = self._collaboration_denial(workspace=workspace, manifest=manifest)
         if collaboration_denial is not None:
-            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15005', reason=collaboration_denial)
+            return await self._deny(
+                db,
+                body=body,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                code='15005',
+                reason=collaboration_denial,
+            )
 
         # MCP 直连面：维度① 三态 + 验票已在 server.call_tool 完成，跳过此处避免二次消费一次性票。
         if not skip_mode_gate:
             mode = await capability_guard.decide(
-                db, agent_hasn_id=agent.agent_hasn_id, tool_name=tool_name,
+                db,
+                agent_hasn_id=agent.agent_hasn_id,
+                tool_name=tool_name,
                 required_scopes=list(tool.get('required_scopes') or []),
             )
             if mode == MODE_DENY:
-                return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                        capability=capability, tool=tool, code='15012', reason='agent_scope_missing')
+                return await self._deny(
+                    db,
+                    body=body,
+                    workspace=workspace,
+                    agent=agent,
+                    manifest=manifest,
+                    capability=capability,
+                    tool=tool,
+                    code='15012',
+                    reason='agent_scope_missing',
+                )
             if mode == MODE_ASK:
                 # 令牌重试模型（doc15 §3.1）：云端**不长挂**。AI-Native 同步面即「中继路径」
                 # （Hermes→hasn-mcp→BackendGateway→本网关）。批准后 hasn-mcp 带有效
@@ -351,26 +391,52 @@ class AiNativeRuntimeGateway:
 
                     policy = await get_agent_scopes_cached(agent.agent_hasn_id, db)
                     envelope = await ask_approval_gate.open_request(
-                        agent_hasn_id=agent.agent_hasn_id, owner_hasn_id=agent.owner_hasn_id,
-                        tool_name=tool_name, required_scopes=list(tool.get('required_scopes') or []),
+                        agent_hasn_id=agent.agent_hasn_id,
+                        owner_hasn_id=agent.owner_hasn_id,
+                        tool_name=tool_name,
+                        required_scopes=list(tool.get('required_scopes') or []),
                         default_mode=policy.get('default_mode', 'allow'),
                         capability_modes=policy.get('capability_modes'),
                         arguments=input_payload,
                     )
                     return await self._approval_required(
-                        db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                        capability=capability, tool=tool, envelope=envelope,
+                        db,
+                        body=body,
+                        workspace=workspace,
+                        agent=agent,
+                        manifest=manifest,
+                        capability=capability,
+                        tool=tool,
+                        envelope=envelope,
                     )
                 # 验票通过 → 落到下面其余闸门 + 执行（工具体只在带票这次运行）。
 
         role_denial = self._enterprise_role_denial(workspace=workspace, capability=capability)
         if role_denial is not None:
-            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15004', reason=role_denial)
+            return await self._deny(
+                db,
+                body=body,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                code='15004',
+                reason=role_denial,
+            )
 
         if not self._valid_tool_input(tool['tool_id'], input_payload):
-            return await self._deny(db, body=body, workspace=workspace, agent=agent, manifest=manifest,
-                                    capability=capability, tool=tool, code='15020', reason='input_schema_invalid')
+            return await self._deny(
+                db,
+                body=body,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                code='15020',
+                reason='input_schema_invalid',
+            )
         return None
 
     async def _dispatch_tool(
@@ -480,6 +546,7 @@ class AiNativeRuntimeGateway:
             'knowledge.list_documents': knowledge_handlers.handle_knowledge_list_documents,
             'knowledge.upload_document': knowledge_handlers.handle_knowledge_upload_document,
             'knowledge.delete_document': knowledge_handlers.handle_knowledge_delete_document,
+            'knowledge.move_document': knowledge_handlers.handle_knowledge_move_document,
             'knowledge.write_doc': knowledge_handlers.handle_knowledge_write_doc,
             'knowledge.list_folders': knowledge_handlers.handle_knowledge_list_folders,
             'knowledge.create_folder': knowledge_handlers.handle_knowledge_create_folder,
@@ -578,9 +645,7 @@ class AiNativeRuntimeGateway:
     async def _handle_community_get_post(
         self, db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
     ) -> dict[str, Any]:
-        return await community_service.get_agent_post_resource(
-            db, agent=agent, post_id=str(input_payload['post_id'])
-        )
+        return await community_service.get_agent_post_resource(db, agent=agent, post_id=str(input_payload['post_id']))
 
     async def _handle_community_get_article(
         self, db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
@@ -638,7 +703,9 @@ class AiNativeRuntimeGateway:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(handle.endpoint, content=body.encode('utf-8'), headers=headers)
         except httpx.HTTPError as exc:
-            raise InstanceResolutionError(code='15050', message=f'instance_unreachable:{exc.__class__.__name__}') from exc
+            raise InstanceResolutionError(
+                code='15050', message=f'instance_unreachable:{exc.__class__.__name__}'
+            ) from exc
         if resp.status_code != 200:
             raise InstanceResolutionError(code='15050', message=f'instance_http_{resp.status_code}')
         try:
@@ -771,9 +838,7 @@ class AiNativeRuntimeGateway:
         if query.created_at_to:
             stmt = stmt.where(HasnAiNativeAppAudit.created_at <= query.created_at_to)
         capped = max(1, min(limit, 500))
-        rows = (
-            await db.execute(stmt.order_by(HasnAiNativeAppAudit.id.desc()).limit(capped))
-        ).scalars().all()
+        rows = (await db.execute(stmt.order_by(HasnAiNativeAppAudit.id.desc()).limit(capped))).scalars().all()
         return {'items': [self._audit_payload(row) for row in rows], 'total': len(rows)}
 
     def _require_agent(self, request: Request) -> AgentTokenPayload:
@@ -833,8 +898,7 @@ class AiNativeRuntimeGateway:
         requested_workspace: dict[str, Any] | None,
     ) -> dict[str, Any]:
         workspace = dict(
-            requested_workspace
-            or await workbench_domain_service.get_active_workspace(db, user_id=agent.owner_user_id)
+            requested_workspace or await workbench_domain_service.get_active_workspace(db, user_id=agent.owner_user_id)
         )
         kind = workspace.get('kind') or 'personal'
         if kind not in {'personal', 'enterprise'}:
@@ -880,9 +944,7 @@ class AiNativeRuntimeGateway:
             'workspace_key': f'enterprise:{enterprise_id}' if enterprise_id is not None else 'enterprise:unknown',
         }
 
-    async def _entitlement_denial(
-        self, db: AsyncSession, *, app_id: str, agent: AgentTokenPayload
-    ) -> str | None:
+    async def _entitlement_denial(self, db: AsyncSession, *, app_id: str, agent: AgentTokenPayload) -> str | None:
         """付费 app 准入维度（设计 §5.3③）：未准入返回审计 reason，准入/免费返回 None。
 
         只有 catalog 中存在且 ``access_type != free`` 的 app 才判定（无 catalog 行 / free 零开销跳过）。
