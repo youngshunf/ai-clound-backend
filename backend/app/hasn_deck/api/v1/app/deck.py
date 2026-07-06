@@ -32,7 +32,11 @@ class UpdateDeckRequest(BaseModel):
     topic: str | None = None
     status: str | None = Field(default=None, description='状态 draft/generating/ready/archived')
     language: str | None = None
-    outline: dict | None = None
+    # outline 是自由 JSON 列（无 schema 强制），两形态并存：canonical 数组 OutlineItem[]
+    # （设计 01 契约 / webui / daemon 本地镜像 normalize_outline 归一后的形状，daemon→云端 sync 推的就是它）
+    # 与历史对象 {items:[...]}（云端 MCP 工具 outline.set 写路径）。故这里必须同时接受 list/dict，
+    # 只收 dict 会让 daemon 推数组时报 422「输入应为有效的字典」→ deck 永久同步失败。
+    outline: list | dict | None = None
     design_contract: dict | None = None
     style_profile_id: str | None = None
     cover_asset_id: str | None = None

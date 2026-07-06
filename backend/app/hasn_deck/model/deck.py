@@ -20,7 +20,7 @@ class Deck(DeckBase):
     topic: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='原始主题/brief（可空）')
     status: Mapped[str] = mapped_column(sa.String(20), default='', comment='状态 draft/generating/ready/archived')
     language: Mapped[str] = mapped_column(sa.String(16), default='', comment='主语言（zh/en…）')
-    outline: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='大纲 OutlineItem[]（JSON）')
+    outline: Mapped[list | dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='大纲 OutlineItem[]（JSON，canonical 数组，兼容历史对象 {items:[...]}）')
     design_contract: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='视觉契约（JSON）')
     style_profile_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='StyleProfile slug')
     page_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='页数冗余计数')
