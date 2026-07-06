@@ -200,6 +200,38 @@ async def handle_knowledge_delete_document(
     return {'deleted': True, 'doc_id': doc_id}
 
 
+async def handle_knowledge_move_document(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.move_document：把一篇已存在文档移进目录 / 移回库根（native 与 file 均可）。
+
+    只改文档所属目录，不改标题/正文、不重建索引；`folder_id`（移进该目录）与 `move_to_root`（移回库根）
+    二选一必须给其一。按 doc_id 反查所属 kb 做可达性闸门（维度②越权如实拒）。
+    """
+    doc_id = int(input_payload['doc_id'])
+    doc = await knowledge_service.get_document(db, agent.owner_hasn_id, doc_id)
+    await _assert_kb_reachable(db, agent, int(doc['kb_id']))
+    folder_id = input_payload.get('folder_id')
+    move_to_root = bool(input_payload.get('move_to_root'))
+    if folder_id is None and not move_to_root:
+        raise errors.RequestError(msg='folder_id 与 move_to_root 必须提供其一（移进目录或移回库根）')
+    try:
+        result = await knowledge_service.update_native_document(
+            db,
+            agent.owner_hasn_id,
+            doc_id,
+            folder_id=int(folder_id) if folder_id is not None else None,
+            move_to_root=move_to_root,
+            source='agent',
+            agent_hasn_id=agent.agent_hasn_id,
+        )
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    # 移动是纯归属变更，不回传正文（native 文档 _document_dict 会带 content，剔除避免噪声）。
+    result.pop('content', None)
+    return {'moved': True, **result}
+
+
 # ---------- 目录（folder）：分身帮主人维护知识库目录树（全套 CRUD）----------
 
 

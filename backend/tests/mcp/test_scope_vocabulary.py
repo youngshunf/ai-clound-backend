@@ -39,8 +39,10 @@ def test_builtin_manifests_required_scopes_all_colon() -> None:
 def test_media_generate_key_unified_and_image_generate_dead_key_removed() -> None:
     """实施102 S2·U-L3：本地媒体工具 scope 统一到 media:generate，死键 image:generate 已删。
 
-    图片与语音生成统一档 media:generate（分组 media、默认 ask、花 owner 配额）；视频独立档
+    图片与语音生成统一档 media:generate（分组 media、出厂 allow、花 owner 配额）；视频独立档
     video:generate 仍在。旧 image:generate 是无对应 cloud 工具的展示死键，删除后不得再出现。
+    2026-07-05 策略「只拦外发/动钱，放开生成/委托」：图片/语音/视频生成消耗配额≠动钱 → 出厂 allow；
+    owner 可经 capability_modes 改 ask 把关配额。
     """
     from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
     from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
@@ -51,7 +53,7 @@ def test_media_generate_key_unified_and_image_generate_dead_key_removed() -> Non
     assert 'media:generate' in PLATFORM_SCOPE_CATALOG, 'media:generate 未登记'
     meta = scope_meta('media:generate')
     assert meta['domain'] == 'media'
-    assert meta['default_mode'] == 'ask'  # 花配额 → 默认每次询问
+    assert meta['default_mode'] == 'allow'  # 生成类放开，owner 可改 ask 把关配额
     assert meta['label'] == '图片与语音生成'
     # 视频独立授权档仍在（单价远高）。
     assert 'video:generate' in SCOPE_CATALOG

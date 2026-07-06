@@ -70,7 +70,7 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
     'app_id': 'knowledge',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'knowledge': '知识库（库/文档/检索/问答）'},
-    'version': '2.1.0',
+    'version': '2.2.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
     # 通知发布能力声明保留：索引完成/失败可经服务号通知 owner（P2 接线）。
@@ -205,6 +205,21 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             tags=['knowledge', 'doc', 'write'],
         ),
         _cap(
+            name='move_document',
+            title='移动文档到目录',
+            description='把一篇已存在的文档移进指定目录(folder_id)或移回库根(move_to_root，二选一)；只改归属、不改内容、不重建索引',
+            scopes=['knowledge:write'],
+            properties={
+                'doc_id': {'type': 'integer'},
+                'folder_id': {'type': ['integer', 'null']},
+                'move_to_root': {'type': 'boolean'},
+            },
+            required=['doc_id'],
+            risk_level='low',
+            page_rank=25,
+            tags=['knowledge', 'doc', 'folder', 'write'],
+        ),
+        _cap(
             name='list_folders',
             title='列出目录',
             description='列出某知识库的目录树（平铺，按 parent_id 组树；含每个目录的 id/name/parent_id）',
@@ -268,6 +283,7 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _tool(name='upload_document', scopes=['knowledge:upload'], risk_level='medium', idempotent=False),
         _tool(name='delete_document', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
         _tool(name='write_doc', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
+        _tool(name='move_document', scopes=['knowledge:write'], risk_level='low', idempotent=True),
         _tool(name='list_folders', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='create_folder', scopes=['knowledge:write'], risk_level='low', idempotent=False),
         _tool(name='update_folder', scopes=['knowledge:write'], risk_level='low', idempotent=False),

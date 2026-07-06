@@ -44,8 +44,8 @@ IMAGELAB_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_en': 'Batch-process images',
         'domain': 'imagelab',
         'risk': 'medium',
-        'default_mode': 'ask',
-        'description': '把一条配方批量应用到 N 张图/目录/asset 列表（耗算力、可能计费，默认需确认）',
+        'default_mode': 'allow',
+        'description': '把一条配方批量应用到 N 张图/目录/asset 列表（处理自己图片，2026-07-05 放开出厂 Allow，主人可改 Ask）',
         'description_en': 'Apply one recipe in batch to N images, a directory, or an asset list (compute-heavy, may incur charges; confirmation required by default)',
     },
     'imagelab:destructive': {
@@ -53,8 +53,8 @@ IMAGELAB_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_en': 'Inpaint / remove watermark',
         'domain': 'imagelab',
         'risk': 'medium',
-        'default_mode': 'ask',
-        'description': '破坏性局部编辑：物体消除/路人消除/水印去除（inpaint，伪造/抹除像素，默认需主人确认）',
+        'default_mode': 'allow',
+        'description': '破坏性局部编辑：物体消除/路人消除/水印去除（inpaint，编辑自己图片非外发/动钱，2026-07-05 放开出厂 Allow，主人可改 Ask）',
         'description_en': 'Destructive local edits: object removal, bystander removal, watermark removal (inpaint fabricates or erases pixels; owner confirmation required by default)',
     },
     'imagelab:generate': {
@@ -62,8 +62,8 @@ IMAGELAB_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_en': 'Generative image editing',
         'domain': 'imagelab',
         'risk': 'medium',
-        'default_mode': 'ask',
-        'description': '生成式填充/扩图/图生图/云增强，桥接平台 hasn.image.generate（消耗 owner 积分，默认需确认）',
+        'default_mode': 'allow',
+        'description': '生成式填充/扩图/图生图/云增强，桥接平台 hasn.image.generate（生成类，2026-07-05 放开出厂 Allow，主人可改 Ask 把关积分）',
         'description_en': 'Generative fill, outpainting, image-to-image, and cloud enhancement via the platform hasn.image.generate (consumes owner credits; confirmation required by default)',
     },
     'imagelab:export': {

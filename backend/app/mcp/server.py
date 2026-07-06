@@ -26,6 +26,7 @@ from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
+from backend.app.mcp.tools.group import GroupJoinTool
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.diag import DIAG_TOOLS
@@ -119,6 +120,9 @@ class HasnCloudMcpServer:
         self.tool_registry.register(ContactSearchTool())
         self.tool_registry.register(ContactRequestTool())
 
+        # 群工具：分身代主人加入某群（尊重群加入策略）。打通「群名片→加入群聊」闭环（doc22）。
+        self.tool_registry.register(GroupJoinTool())
+
         # 规划工具（19-规划与目标管理）：goal/project/todo/event/habit CRUD + capture/triage/today/preference。
         # 这些「纯云端代理」工具从 hasn-node 本地 hasn-mcp 迁来（不操作本地文件/数据 → 走云端 platform tool）；
         # 仍留本地的是有真本地编排/计算的 decompose/briefing/review/schedule/reschedule/delegate/validate。
@@ -141,9 +145,10 @@ class HasnCloudMcpServer:
         for artifact_tool in ARTIFACT_TOOLS:
             self.tool_registry.register(artifact_tool)
 
-        # 设计系统工具（14-DS-P4 云端权威 4 工具）：import/save/list/get。
-        # 从 hasn-node 本地 hasn-mcp 迁来（纯云端权威 → 走云端 platform tool；
-        # 本地仅留确定性纯函数 compile_tokens/derive/validate/extract_components）。
+        # 设计系统工具（14-DS-P4）：8 个云端工具全注册。
+        # - 云端权威 4（操作云端数据）：import/save/list/get（TOOLMIG-4 从本地迁来）。
+        # - 确定性纯函数 4（TOOLMIG：Python 移植 hasn_designsystem_core，云端分身可用）：
+        #   compile_tokens/derive/validate/extract_components——本地 Rust 同名工具暂留待退役。
         for designsystem_tool in DESIGNSYSTEM_TOOLS:
             self.tool_registry.register(designsystem_tool)
 

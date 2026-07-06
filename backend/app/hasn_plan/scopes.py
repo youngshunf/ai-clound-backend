@@ -8,8 +8,9 @@
 - 写类（capture/triage/CRUD/decompose/event 等改 owner 数据的）统一 `plan:write`（出厂 Allow，owner 三态可覆盖）；
 - 排程（schedule/reschedule，PLAN-P4b）统一 `plan:schedule`（出厂 Allow，独立 scope 便于 owner 单独管控自动排程）；
 - 读类（list/get）无 required_scopes（不在此登记，避免假闸门）；
-- 委托（delegate，PLAN-P5）统一 `plan:delegate`（出厂 **Ask**——委托派发起工作会话、消耗模型配额、是主动行为，
-  主人确认后再派；落地真相在 `plan.rs::Delegate` `default_capability_mode=Ask`）。
+- 委托（delegate，PLAN-P5）统一 `plan:delegate`（出厂 **Allow**——2026-07-05 定策略「只拦外发/动钱，放开
+  生成/委托」，委托自己/子分身干活是分身核心自主能力、产物留本地、可追踪可接管，不再每次拦；主人要把关可在
+  权限页单独改 Ask。落地真相在 `plan.rs::Delegate`，用 HasnTool trait 默认 `default_capability_mode=Allow`）。
 """
 
 from __future__ import annotations
@@ -44,9 +45,9 @@ PLAN_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_en': 'Delegate to the agent',
         'domain': 'plan',
         'risk': 'high',
-        'default_mode': 'ask',
-        'description': '以 Agent 身份把待办/计划委托给分身经工作会话真执行（出厂 Ask，主人确认后派）',
-        'description_en': 'Delegate a to-do or plan to the agent for real execution via a work session (Ask by default; dispatched after owner confirmation)',
+        'default_mode': 'allow',
+        'description': '以 Agent 身份把待办/计划委托给分身经工作会话真执行（出厂 Allow，分身核心自主能力，主人要把关可在权限页单独改）',
+        'description_en': 'Delegate a to-do or plan to the agent for real execution via a work session (Allow by default; a core agent autonomy — the owner may switch it to Ask in the permissions page)',
     },
     'plan:manage': {
         'label_zh': '管理企业会议协同',

@@ -30,6 +30,7 @@ from backend.app.hasn_plan.model import (
     Preference,
     Todo,
 )
+from backend.app.hasn_plan.service import origin_ref as plan_origin_ref
 from backend.app.hasn_plan.service.plan_authz import (
     PlanEnterpriseScope,
     active_enterprise_id,
@@ -46,10 +47,11 @@ if TYPE_CHECKING:
 _GOAL_FIELDS = {'title', 'why', 'category', 'target_date', 'status', 'sort'}  # progress_pct 派生，不可直填
 _KR_FIELDS = {'metric', 'unit', 'current_value', 'target_value', 'direction', 'sort'}
 _PLAN_FIELDS = {'goal_id', 'title', 'description', 'status', 'bound_agent_id', 'active_work_session_id', 'sort'}
-_MILESTONE_FIELDS = {'title', 'due_date', 'done', 'sort'}
+_MILESTONE_FIELDS = {'title', 'due_date', 'done', 'status', 'sort'}
 _TODO_FIELDS = {
     'plan_id',
     'goal_id',
+    'milestone_id',  # 挂里程碑（L3；须与 plan_id 同计划，update_todo/create_todo 服务端校验）
     'title',
     'notes',
     'actor',
@@ -196,6 +198,40 @@ def serialize(row: Any) -> dict[str, Any]:
     return out
 
 
+# ── 待办状态机（服务端权威白名单）─────────────────────────────────────────────
+# 行=from，值=允许的 to 集合。源自 [05] §6.2 转移矩阵 + [06] §5.3「放宽一格」：
+# inbox/todo/scheduled → done 合法（语义=「开始并完成」的合法压缩，去勾选后不逼用户先点开始才能完成小事）；
+# 闸才是完成的把关人（第 2 层 P6-C 完成闸），不靠中间态官僚。非法跳转回 invalid_status_transition。
+_TODO_TRANSITIONS: dict[str, set[str]] = {
+    'inbox': {'todo', 'scheduled', 'doing', 'done', 'cancelled'},
+    'todo': {'scheduled', 'doing', 'done', 'cancelled'},
+    'scheduled': {'todo', 'doing', 'done', 'cancelled'},  # todo=撤排期
+    'doing': {'scheduled', 'waiting_review', 'done', 'cancelled'},  # scheduled=改排期
+    'waiting_review': {'doing', 'done', 'cancelled'},  # doing=打回
+    'done': {'todo'},  # 重开（撤销完成）
+    'cancelled': {'todo'},  # 恢复
+}
+_TODO_STATUSES = frozenset(_TODO_TRANSITIONS.keys())
+
+
+def _err(code: str, msg: str) -> errors.RequestError:
+    """业务 400 + 机器可读 error_code（经信封 data 透出，msg 给人话，[06] §3.3）。"""
+    return errors.RequestError(msg=msg, data={'error_code': code})
+
+
+def _milestone_status_done_sync(fields: dict[str, Any]) -> dict[str, Any]:
+    """里程碑 status ↔ done 双向派生（[06] §3.2：写侧以 status 为主，done bool 兼容读）。
+
+    传 status → 派生 done（status=='done' ↔ done=true）；只传旧 done → 补 status。避免两列打架。
+    """
+    out = dict(fields)
+    if 'status' in out:
+        out['done'] = out['status'] == 'done'
+    elif 'done' in out:
+        out['status'] = 'done' if out['done'] else 'planned'
+    return out
+
+
 class PlanService:
     """plan 应用 owner 隔离 CRUD + 「今日」聚合。所有方法的 owner 由调用方解析后传入。"""
 
@@ -336,7 +372,27 @@ class PlanService:
             .scalars()
             .all()
         )
-        data['milestones'] = [serialize(m) for m in ms]
+        # 里程碑派生进度（[06] §3.2）= 其下待办完成率（服务端实时算，不加缓存列——量小）。
+        # 一次 grouped 聚合避免 N+1：{milestone_id: (总数, 已完成数)}。
+        prog: dict[int, tuple[int, int]] = {}
+        if ms:
+            done_expr = sa.func.count().filter(Todo.status == 'done')
+            rows = await db.execute(
+                sa
+                .select(Todo.milestone_id, sa.func.count(), done_expr)
+                .where(Todo.owner_hasn_id == owner, Todo.milestone_id.in_([m.id for m in ms]))
+                .group_by(Todo.milestone_id)
+            )
+            prog = {mid: (int(total), int(done)) for mid, total, done in rows.all()}
+        ms_out = []
+        for m in ms:
+            md = serialize(m)
+            total, done = prog.get(m.id, (0, 0))
+            md['todo_total'] = total
+            md['todo_done'] = done
+            md['progress_pct'] = round(done / total * 100) if total else 0
+            ms_out.append(md)
+        data['milestones'] = ms_out
         return data
 
     async def create_plan(
@@ -387,7 +443,7 @@ class PlanService:
     # ── plan_milestone（经 plan 归属）─────────────────────────────────────────
     async def create_milestone(self, db: AsyncSession, *, owner: str, plan_id: int, data: dict) -> dict:
         await self._get_plan(db, owner=owner, pk=plan_id)
-        row = PlanMilestone(plan_id=plan_id, **_pick(_MILESTONE_FIELDS, data))
+        row = PlanMilestone(plan_id=plan_id, **_milestone_status_done_sync(_pick(_MILESTONE_FIELDS, data)))
         db.add(row)
         await db.flush()
         return serialize(row)
@@ -397,7 +453,7 @@ class PlanService:
         if not row:
             raise errors.NotFoundError(msg='里程碑不存在')
         await self._get_plan(db, owner=owner, pk=row.plan_id)
-        for k, v in _pick(_MILESTONE_FIELDS, data).items():
+        for k, v in _milestone_status_done_sync(_pick(_MILESTONE_FIELDS, data)).items():
             setattr(row, k, v)
         await db.flush()
         return serialize(row)
@@ -475,17 +531,105 @@ class PlanService:
     async def get_todo(self, db: AsyncSession, *, owner: str, pk: int) -> dict:
         return serialize(await self._get_todo(db, owner=owner, pk=pk))
 
+    async def _get_owned_milestone(self, db: AsyncSession, *, owner: str, milestone_id: int) -> PlanMilestone:
+        """取里程碑并经其 plan 校验属本 owner（非本人计划 → NotFound）。L3 挂靠归属校验用。"""
+        ms = (await db.execute(sa.select(PlanMilestone).where(PlanMilestone.id == milestone_id))).scalars().first()
+        if not ms:
+            raise _err('milestone_not_found', '里程碑不存在')
+        await self._get_plan(db, owner=owner, pk=ms.plan_id)  # 归属校验
+        return ms
+
+    async def _apply_milestone_link(
+        self, db: AsyncSession, *, owner: str, fields: dict, current_plan_id: int | None
+    ) -> None:
+        """挂里程碑校验（L3）：里程碑须属本人计划，且与待办 plan_id 同计划；未定 plan_id 则自动关联。
+
+        原地修改 ``fields``（可能补 plan_id）。``milestone_id`` 显式置 None（解绑）跳过校验。
+        """
+        if 'milestone_id' not in fields or fields['milestone_id'] is None:
+            return
+        ms = await self._get_owned_milestone(db, owner=owner, milestone_id=int(fields['milestone_id']))
+        eff_plan = fields.get('plan_id', current_plan_id)
+        if eff_plan is None:
+            fields['plan_id'] = ms.plan_id  # 待办未定计划 → 随里程碑落到其计划
+        elif int(eff_plan) != int(ms.plan_id):
+            raise _err('milestone_plan_mismatch', '里程碑与待办不属于同一计划')
+
     async def create_todo(
         self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: int | None = None, dept_id: int | None = None
     ) -> dict:
-        row = Todo(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **_pick(_TODO_FIELDS, data))
+        fields = _pick(_TODO_FIELDS, data)
+        await self._apply_milestone_link(db, owner=owner, fields=fields, current_plan_id=None)
+        row = Todo(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **fields)
         db.add(row)
         await db.flush()
         return serialize(row)
 
-    async def update_todo(self, db: AsyncSession, *, owner: str, pk: int, data: dict) -> dict:
+    async def _apply_completion_gate(self, db: AsyncSession, *, row: Todo, override: bool) -> None:
+        """P6-C 完成判定闸（[06] §3.3 / [05] §6.6，修 G3）：置 done 前校验产物是否满足 output_spec。
+
+        ``output_spec.required=true`` 且无匹配 kind 的 active 产物（按权威 origin_ref=resource:plan:todo:{id}
+        反查——L0 修键后冒号形）→ 拒绝置 done、回 ``output_not_satisfied``，杜绝「没结果没产物点一下就完成」
+        与分身假完成（零 fake 红线）。``override=true`` 是主人裁量强制放行（仅人类端点可传，分身工具面无此参数）。
+        无 output_spec 或非 required → 直过。
+        """
+        if override:
+            return
+        spec = row.output_spec if isinstance(row.output_spec, dict) else {}
+        if not spec.get('required'):
+            return
+        expects = spec.get('expects') if isinstance(spec.get('expects'), list) else []
+        expected_kinds = {str(e['kind']) for e in expects if isinstance(e, dict) and e.get('kind')}
+        # 惰性导入避免与 hasn service 的循环依赖（对齐 plan_notify 惯例）。
+        from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+
+        items, _total = await hasn_artifacts_service.list_by_origin(
+            db, owner_hasn_id=row.owner_hasn_id, origin_ref=plan_origin_ref.todo_ref(int(row.id)), size=200
+        )
+        if expected_kinds:
+            satisfied = any(getattr(it, 'kind', None) in expected_kinds for it in items)
+        else:
+            satisfied = len(items) > 0  # required 但未指定 kind → 需任意产物
+        if not satisfied:
+            need = '、'.join(sorted(expected_kinds)) if expected_kinds else '要求的产物'
+            raise _err(
+                'output_not_satisfied',
+                f'分身尚未交付要求的产物（{need}），暂不能标记完成——请补交产物，或停在「待过目」诚实回报缺口。',
+            )
+
+    async def update_todo(
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        pk: int,
+        data: dict,
+        override_output_gate: bool = False,
+    ) -> dict:
+        """更新待办：字段白名单 + **服务端权威状态机白名单** + **P6-C 完成闸**（[06] §3.3，修 G3）。
+
+        app 端点与 agent 工具**共用此单点**（同一后端缝，[05] §6.6）——分身与人类被同一台状态机、
+        同一完成闸约束。``override_output_gate`` 仅人类端点透传（主人裁量强制完成）；分身工具**不传**。
+        """
         row = await self._get_todo(db, owner=owner, pk=pk)
-        for k, v in _pick(_TODO_FIELDS, data).items():
+        fields = _pick(_TODO_FIELDS, data)
+        await self._apply_milestone_link(db, owner=owner, fields=fields, current_plan_id=row.plan_id)
+        # 显式解绑里程碑：_pick 按全局约定把 None 当「不设置」剔除了，这里从原始 data 兜回——
+        # payload 显式给 milestone_id=null 即「从里程碑摘出」（无需校验，落 None）。
+        if 'milestone_id' in data and data.get('milestone_id') is None:
+            fields['milestone_id'] = None
+        # 状态机 + 完成闸：仅当入参含 status 且相对现值真变更时校验（不变更/未传 → 放过，兼容纯字段改）。
+        target = fields.get('status')
+        if target is not None and target != row.status:
+            if target not in _TODO_STATUSES:
+                raise _err('invalid_status_transition', f'未知的待办状态：{target}')
+            if target not in _TODO_TRANSITIONS.get(row.status, set()):
+                raise _err('invalid_status_transition', f'非法状态流转：{row.status} → {target}')
+            if target == 'done':
+                await self._apply_completion_gate(db, row=row, override=override_output_gate)
+                if row.completed_time is None and 'completed_time' not in fields:
+                    fields['completed_time'] = datetime.now(timezone.utc)  # 完成落库自动补 completed_time
+        for k, v in fields.items():
             setattr(row, k, v)
         await db.flush()
         return serialize(row)
@@ -874,9 +1018,7 @@ class PlanService:
         await db.flush()
         return claimed_id is not None
 
-    async def _claim_periodic(
-        self, db: AsyncSession, *, owner: str, column: str, cooldown_days: int
-    ) -> bool:
+    async def _claim_periodic(self, db: AsyncSession, *, owner: str, column: str, cooldown_days: int) -> bool:
         """周期性「超冷却期才可重新认领」原子闸（KNOWU「每日关注·了解主人」§每周再提醒）。
 
         每日简报每天都跑，采访 / 成长会话不能每天派。用 `preference.<column>`（时间戳）记「上次派发时间」，
@@ -904,15 +1046,11 @@ class PlanService:
 
     async def claim_profile_onboarding(self, db: AsyncSession, *, owner: str, cooldown_days: int = 7) -> bool:
         """「了解主人」采访会话节奏闸：画像不完整时，距上次采访 > cooldown_days 天才再派一次。"""
-        return await self._claim_periodic(
-            db, owner=owner, column='last_onboarding_at', cooldown_days=cooldown_days
-        )
+        return await self._claim_periodic(db, owner=owner, column='last_onboarding_at', cooldown_days=cooldown_days)
 
     async def claim_growth_review(self, db: AsyncSession, *, owner: str, cooldown_days: int = 7) -> bool:
         """「成长复盘 / 主动规划」会话节奏闸：画像完整后，每 cooldown_days 天派一次陪主人成长的会话。"""
-        return await self._claim_periodic(
-            db, owner=owner, column='last_growth_at', cooldown_days=cooldown_days
-        )
+        return await self._claim_periodic(db, owner=owner, column='last_growth_at', cooldown_days=cooldown_days)
 
     # ── 「今日」聚合（设计 §10.2 首屏）──────────────────────────────────────────
     async def today_overview(self, db: AsyncSession, *, owner: str, day_start: datetime, day_end: datetime) -> dict:
@@ -957,9 +1095,7 @@ class PlanService:
         events = await self.list_enterprise_events(
             db, viewer_owner_hasn_id=owner, enterprise_id=eid, start=day_start, end=day_end, scope=scope
         )
-        ent_todos = await self.list_enterprise_todos(
-            db, viewer_owner_hasn_id=owner, enterprise_id=eid, scope=scope
-        )
+        ent_todos = await self.list_enterprise_todos(db, viewer_owner_hasn_id=owner, enterprise_id=eid, scope=scope)
         scheduled_todos = [t for t in ent_todos if t['status'] == 'scheduled']
         inbox = [t for t in ent_todos if t['status'] == 'inbox']
         agent_queue = [t for t in ent_todos if t['actor'] == 'agent' and t['status'] in ('doing', 'waiting_review')]

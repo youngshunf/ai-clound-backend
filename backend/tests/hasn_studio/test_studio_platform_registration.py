@@ -5,7 +5,7 @@
   **本期 manifest 不暴露 tools/capabilities**（工具面随 P3 接 service + 云端 handler 后再补，避免声明指向
   尚不存在的 gateway 内部 handler，零 fake）。
 - scopes.py 登记 5 个 studio scope（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）：
-  read/write 出厂 default_mode=allow（risk=low）；render/export/share 出厂 default_mode=ask（花算力/外发）。
+  read/write/render 出厂 default_mode=allow（生成类，2026-07-05 放开）；export/share 出厂 default_mode=ask（外发）。
 - studio scope 由三态 ``capability_modes`` 判定（cloud-brokered 工具；JWT ``scopes`` claim 已随实施102 S0
   全退役；同 finance/quant/creator）。
 - App 形态（cloud / install_policy=manual / 视频工作台 /apps/studio / 个人模式）。
@@ -54,9 +54,10 @@ _SHARE = 'studio:share'
 
 # 5 个 studio scope（= scopes.py / 全局 SCOPE_CATALOG 必须一致）。
 _ALL_SCOPES = {_READ, _WRITE, _RENDER, _EXPORT, _SHARE}
-# 出厂 allow（read/write）vs ask（render/export/share，花算力/外发）。
-_ALLOW_SCOPES = {_READ, _WRITE}
-_ASK_SCOPES = {_RENDER, _EXPORT, _SHARE}
+# 2026-07-05 策略「只拦外发/动钱，放开生成/委托」：render（提交渲染出片=生成，消耗算力≠动钱）放开 Allow；
+# 只有 export/share（导出/对外发布=外发）保留 Ask。
+_ALLOW_SCOPES = {_READ, _WRITE, _RENDER}
+_ASK_SCOPES = {_EXPORT, _SHARE}
 
 # 4 张 hasn_studio 表（= SQL / model / codegen 三处一致）。
 _STUDIO_TABLES = ('studio_project', 'studio_asset', 'studio_render_job', 'studio_artifact')
@@ -177,8 +178,9 @@ def test_studio_workbench_app_shape() -> None:
 def test_studio_scopes_registered_with_three_states() -> None:
     """scopes.py 登记 5 个 studio scope（聚合进全局 SCOPE_CATALOG），三态出厂默认正确。
 
-    - read/write 出厂 default_mode=allow（只读/不出片，risk=low）；
-    - render/export/share 出厂 default_mode=ask（花算力/外发，主人裁决）。
+    - read/write/render 出厂 default_mode=allow（只读/迭代/提交渲染出片=生成，消耗算力≠动钱）；
+    - export/share 出厂 default_mode=ask（导出/对外发布=外发，主人裁决）。
+    2026-07-05 策略「只拦外发/动钱，放开生成/委托」。
     """
     for key in _ALL_SCOPES:
         assert key in SCOPE_CATALOG, f'scope 未登记: {key}'

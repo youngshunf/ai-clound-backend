@@ -280,6 +280,19 @@ async def _h_checkin(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await plan_service.checkin_habit(db, owner=ctx.owner_hasn_id, habit_id=int(args['id']), data=data)
 
 
+async def _h_update_milestone(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """改里程碑（含改状态 planned→doing→done）：service 签名用 milestone_id（异构于 pk 类），故走特例 handler。"""
+    return await plan_service.update_milestone(
+        db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']), data=_without(args, 'id')
+    )
+
+
+async def _h_delete_milestone(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """删里程碑（其下待办 SET NULL 回落）：service 签名用 milestone_id，走特例 handler。"""
+    await plan_service.delete_milestone(db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']))
+    return {'deleted': True}
+
+
 # ── schema 构造小工具 ──────────────────────────────────────────────────────────
 def _s(desc: str) -> dict[str, Any]:
     return {'type': 'string', 'description': desc}
@@ -502,9 +515,35 @@ _SPECS: list[dict[str, Any]] = [
                 'plan_id': _i('计划 id（必填）'),
                 'title': _s('里程碑标题（必填）'),
                 'due_date': _s('可选：到期日'),
+                'status': _s('可选：状态 planned(未开始)|doing(进行中)|done(已完成)，默认 planned'),
             },
             ['plan_id', 'title'],
         ),
+    },
+    {
+        'action': 'milestone.update',
+        'write': True,
+        'handler': _h_update_milestone,
+        'desc': (
+            '改里程碑（传 id + 要改的字段）——**推进这个阶段时用它推动里程碑前进/收尾**：'
+            '开工把 `status` 置 `doing`、本阶段待办全做完/交付了就置 `done`（done↔完成双向派生）；也可改 title/due_date。'
+        ),
+        'schema': _schema(
+            {
+                'id': _i('里程碑 id（必填）'),
+                'title': _s('可选：标题'),
+                'status': _s('可选：状态 planned(未开始)|doing(进行中)|done(已完成)'),
+                'due_date': _s('可选：到期日'),
+            },
+            ['id'],
+        ),
+    },
+    {
+        'action': 'milestone.delete',
+        'write': True,
+        'handler': _h_delete_milestone,
+        'desc': '删里程碑（其下待办 SET NULL 回落，不级联丢失）。传 id。',
+        'schema': _schema({'id': _i('里程碑 id（必填）')}, ['id']),
     },
     # —— todo ——
     {
@@ -547,6 +586,7 @@ _SPECS: list[dict[str, Any]] = [
                 'energy': _s('可选：精力档'),
                 'plan_id': _i('可选：所属计划'),
                 'goal_id': _i('可选：所属目标'),
+                'milestone_id': _i('可选：所属里程碑（须与 plan_id 同计划；未定 plan_id 则随里程碑落其计划）'),
                 'context_tags': _arr('可选：情境标签'),
                 'scope': _scope_prop(),
             },
@@ -557,18 +597,26 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'todo.update',
         'write': True,
         'handler': _h_update('update_todo'),
-        'desc': '改待办（含改归属/状态/排期字段）：传 id + 要改的字段。',
+        'desc': (
+            '改待办（含改归属/状态/排期字段）：传 id + 要改的字段。'
+            '状态按八态机流转（服务端白名单校验，非法跳转拒 invalid_status_transition）；'
+            '置 done 走 P6-C 完成闸：output_spec.required 且无匹配产物 → 拒 output_not_satisfied，'
+            '需先经生产型工具产出产物（自动落 hasn_artifacts，origin_ref 会话已透传），'
+            '或停 waiting_review 诚实回报缺口。'
+            '完成必带 completion_note 说明交付；放弃写 cancel_reason。'
+        ),
         'schema': _schema(
             {
                 'id': _i('待办 id（必填）'),
                 'title': _s('可选：标题'),
                 'actor': _s('可选：归属 owner(亲为)|owner_decision(待你决策)|collab(协作)|agent(分身自主)'),
-                'status': _s('可选：状态'),
+                'status': _s('可选：状态 inbox|todo|scheduled|doing|waiting_review|done|cancelled（八态机流转）'),
                 'priority': _s('可选：优先级'),
                 'due_at': _s('可选：截止时间（RFC3339）'),
+                'milestone_id': _i('可选：所属里程碑（须与 plan_id 同计划）'),
                 'decision_note': _s('可选：owner_decision 决策留痕（备好的背景/选项）'),
-                'completion_note': _s('可选：完成结论'),
-                'cancel_reason': _s('可选：放弃原因'),
+                'completion_note': _s('可选：完成结论（置 done 建议必带）'),
+                'cancel_reason': _s('可选：放弃原因（置 cancelled 时写）'),
             },
             ['id'],
         ),

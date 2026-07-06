@@ -6,9 +6,15 @@ platform MCP 工具**（不操作本地文件/数据 → 走云端，与 contact
 / `import_design_source`（in-process，**不再**经 daemon → `/api/v1/designsystem/agent/*` HTTP relay，
 list/get 亦不再经 daemon `DesignSystemGateway` 本地镜像）。
 
-保留在本地 hasn-mcp 的是 4 个**确定性纯函数**工具（`compile_tokens`/`derive`/`validate`/
-`extract_components`，直调 `hasn_designsystem_core`、真离线可跑、无云端/无 daemon）——它们才真正
-「操作本地数据/无需云端」，符合留本地的判据。
+另 4 个**确定性纯函数**工具（`compile_tokens`/`derive`/`validate`/`extract_components`）此前只在
+hasn-node 本地 hasn-mcp（Rust `hasn_designsystem_core`，`execution_location=Local`），**云端分身
+（Hermes cloud runtime）经 `/api/v1/mcp/streamable` 够不着**（本地工具对云端 runtime 不可见）。
+TOOLMIG（2026-07-04·福仔「直接用云端 python 重写一遍，rust 侧逐渐退役」）：这 4 个纯函数已 Python
+移植到 `backend.app.hasn_designsystem.core`，在此作**云端 platform MCP 工具**补齐云端分身能力——工具名 +
+input_schema 与本地 hasn-mcp **逐字段 1:1**（分身引用不变）。它们是确定性纯计算（无 DB/无网络/无副作用），
+故 `execution_location=cloud`、`source=platform`、**读类无 scope**；`generated_at` 由工具体注入
+（仅产物溯源，不参与契约判定）。本地 Rust 4 工具暂留不动（设备分身保留离线能力），后续对拍等价后逐步退役，
+收敛到 Python 单一实现源。
 
 身份恒由 `agent_context`（取自 Agent JWT/MCP Key）注入：
 - save → `Subject.agent(agent_hasn_id, owner_hasn_id)`（owner 隔离 + 协作权限由 service 强制）；
@@ -25,10 +31,25 @@ from __future__ import annotations
 
 import logging
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+from backend.app.hasn_designsystem.core import SourceToken as CoreSourceToken
+from backend.app.hasn_designsystem.core import (
+    compile_tokens as core_compile_tokens,
+)
+from backend.app.hasn_designsystem.core import css as core_css
+from backend.app.hasn_designsystem.core import (
+    derive as core_derive,
+)
+from backend.app.hasn_designsystem.core import (
+    extract_components as core_extract_components,
+)
+from backend.app.hasn_designsystem.core import (
+    validate as core_validate,
+)
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.app.hasn_designsystem.service.import_service import import_design_source
 from backend.app.mcp.tools.base import BaseTool
@@ -74,6 +95,63 @@ def _req_str(arguments: dict[str, Any], key: str) -> str:
 def _opt_int(arguments: dict[str, Any], key: str) -> int | None:
     value = arguments.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _now_iso() -> str:
+    """确定性纯工具的 ``generated_at`` provenance（ISO8601/RFC3339）。
+
+    纯函数核心的时间由调用方提供以保确定性；此值仅作产物溯源，**不参与契约判定逻辑**
+    （对齐本地 hasn-mcp `now_iso`：`chrono::Utc::now().to_rfc3339()`）。
+    """
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _str_list(arguments: dict[str, Any], key: str) -> list[str]:
+    """取一个字符串数组入参（非字符串项跳过、去空白、丢空），缺省 []。"""
+    raw = arguments.get(key)
+    if not isinstance(raw, list):
+        return []
+    return [v.strip() for v in raw if isinstance(v, str) and v.strip()]
+
+
+def _parse_source_tokens(arguments: dict[str, Any]) -> list[CoreSourceToken]:
+    """把入参 ``tokens_css`` / ``source_tokens`` 整形成 :class:`CoreSourceToken` 列表。
+
+    对齐本地 hasn-mcp `parse_source_tokens`：优先用**非空**显式 ``source_tokens``（含血缘），
+    否则从 ``tokens_css`` 的 ``:root`` 声明扫出。两者都空则报错（与本地同措辞）。
+    """
+    items = arguments.get('source_tokens')
+    if isinstance(items, list):
+        tokens: list[CoreSourceToken] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = item.get('name')
+            value = item.get('value')
+            if not isinstance(name, str) or not isinstance(value, str):
+                continue
+            name = name.strip()
+            value = value.strip()
+            if not name or not value:
+                continue
+            source = item.get('source')
+            source = source.strip() if isinstance(source, str) and source.strip() else 'source_tokens'
+            line = item.get('line')
+            line = line if isinstance(line, int) and not isinstance(line, bool) and line >= 0 else None
+            tokens.append(CoreSourceToken(name=name, value=value, source=source, line=line))
+        if tokens:
+            return tokens
+
+    tokens_css = _str(arguments, 'tokens_css')
+    if not tokens_css:
+        raise RuntimeError(
+            "designsystem.compile_tokens: 需提供 'tokens_css'（原始 :root 变量）或非空 'source_tokens' 数组"
+        )
+    declarations = core_css.parse_token_declarations(tokens_css)
+    parsed = [CoreSourceToken(name=name, value=value, source='tokens.css', line=None) for name, value in declarations]
+    if not parsed:
+        raise RuntimeError("designsystem.compile_tokens: 'tokens_css' 未解析出任何 :root 自定义属性声明")
+    return parsed
 
 
 class DesignSystemImportTool(BaseTool):
@@ -369,9 +447,228 @@ class DesignSystemGetTool(BaseTool):
             )
 
 
+# ── 确定性纯函数工具（TOOLMIG：Python 移植 hasn_designsystem_core，云端分身可用）──────────
+# 这 4 个不碰 DB / 不发网络 / 无副作用——直调 `backend.app.hasn_designsystem.core` 纯函数。
+# `execution_location='cloud'`、`source` 默认 'platform'、读类无 scope；`generated_at` 工具体注入。
+# 工具名 + input_schema 与本地 hasn-mcp（Rust）**逐字段 1:1**（分身引用不变）。
+
+
+class DesignSystemCompileTokensTool(BaseTool):
+    """`hasn.designsystem.compile_tokens`：原始变量 / DESIGN.md 描述 → 四层 token 契约 tokens.css（纯函数）。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.compile_tokens'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.designsystem'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '把原始变量 / DESIGN.md 描述标准化为四层 token 契约 tokens.css（标准命名 + 分层 + '
+            '缺槽别名回填）。返回 {tokens_css, report}。确定性纯函数。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'tokens_css': {
+                    'type': 'string',
+                    'description': '原始 :root 变量块（从 DESIGN.md 描述或导入草稿来），将被标准化',
+                },
+                'source_tokens': {
+                    'type': 'array',
+                    'description': '可选：显式源 token 数组 [{name, value, source?, line?}]（优先于 tokens_css）',
+                },
+            },
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        # 确定性纯计算无特权动作 → 无 scope（避免假闸门）。
+        return []
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        source_tokens = _parse_source_tokens(arguments)
+        contract = core_compile_tokens(source_tokens, _now_iso())
+        return {'tokens_css': contract.tokens_css, 'report': contract.report}
+
+
+class DesignSystemDeriveTool(BaseTool):
+    """`hasn.designsystem.derive`：tokens.css → design-tokens.json + tailwind-v4.css（纯函数）。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.derive'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.designsystem'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '从 tokens.css 派生 design-tokens.json（含分层/血缘骨架）与 tailwind-v4.css（@theme 映射，'
+            '不另定义值）。返回 {design_tokens_json, tailwind_v4_css}。确定性纯函数。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'tokens_css': {'type': 'string', 'description': '标准化后的 tokens.css（compile_tokens 的产物）'},
+            },
+            'required': ['tokens_css'],
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return []
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        tokens_css = _req_str(arguments, 'tokens_css')
+        return core_derive(tokens_css, _now_iso())
+
+
+class DesignSystemValidateTool(BaseTool):
+    """`hasn.designsystem.validate`：四层契约校验 + 评分（质量门，纯函数）。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.validate'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.designsystem'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '四层契约校验 + A2/B-slot 完整性 + 标准命名漂移检查 + 0–100 评分 / grade / '
+            'recommendRebuild + 问题清单（质量门）。确定性纯函数。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'tokens_css': {'type': 'string', 'description': '待校验的 tokens.css'},
+                'components_html': {
+                    'type': 'string',
+                    'description': '可选：components.html（用于 token 引用 + 反模式校验）',
+                },
+                'allowed_extensions': {
+                    'type': 'array',
+                    'description': '可选：per-brand C-extension 白名单（空表则严格只认 schema）',
+                },
+            },
+            'required': ['tokens_css'],
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return []
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        tokens_css = _req_str(arguments, 'tokens_css')
+        return core_validate(
+            tokens_css,
+            _now_iso(),
+            components_html=_str(arguments, 'components_html'),
+            allowed_extensions=_str_list(arguments, 'allowed_extensions'),
+        )
+
+
+class DesignSystemExtractComponentsTool(BaseTool):
+    """`hasn.designsystem.extract_components`：components.html → components.manifest.json（纯函数）。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.extract_components'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.designsystem'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '从 components.html 抽取 components.manifest.json（selector/class/element 统计 + '
+            '用到的 token 列表 + 反模式字面量盘点）。确定性纯函数。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'brand_id': {'type': 'string', 'description': '品牌 / 设计系统 id'},
+                'components_html': {'type': 'string', 'description': 'components.html 内容（分身创作的组件 fixture）'},
+                'tokens_css': {
+                    'type': 'string',
+                    'description': '可选：tokens.css（缺省时退回从 HTML 首个 :root 提取声明名）',
+                },
+            },
+            'required': ['brand_id', 'components_html'],
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return []
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        brand_id = _req_str(arguments, 'brand_id')
+        fixture_html = _req_str(arguments, 'components_html')
+        return core_extract_components(brand_id, fixture_html, tokens_css=_str(arguments, 'tokens_css'))
+
+
 DESIGNSYSTEM_TOOLS: list[BaseTool] = [
+    # 云端权威（操作云端数据）
     DesignSystemImportTool(),
     DesignSystemSaveTool(),
     DesignSystemListTool(),
     DesignSystemGetTool(),
+    # 确定性纯函数（TOOLMIG：Python 移植，云端分身可用；本地 Rust 同名工具暂留待退役）
+    DesignSystemCompileTokensTool(),
+    DesignSystemDeriveTool(),
+    DesignSystemValidateTool(),
+    DesignSystemExtractComponentsTool(),
 ]

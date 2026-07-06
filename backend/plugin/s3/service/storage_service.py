@@ -58,6 +58,10 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     # daemon 是无鉴权纯 GET 下载（install.rs::http_get_bytes）+ sha256 校验，URL 必须长效公开，
     # 不能是会过期的签名 URL——故归 public，与 user_avatar 等同策略。
     'film_engine': ('public', None),
+    # 桌面端发布产物（REL/hasn_release）：**公共桶、不签名、无 TTL**。
+    # 官网下载页/Tauri updater 直接读 CDN 长效直链，桌面端 ATS 要求 https（见 build_object_url）；
+    # CI 出包后把二进制交云端此处入桶，复用云端既有七牛，CI 不再需要任何七牛凭据。
+    'release_asset': ('public', None),
 }
 
 # category → 对象前缀目录（key 的第一段，content-addressed 之上）。

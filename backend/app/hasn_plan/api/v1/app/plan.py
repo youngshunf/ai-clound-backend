@@ -290,7 +290,9 @@ async def app_update_todo(
     body: Annotated[dict[str, Any], Body()],
 ) -> ResponseModel:
     owner = await _resolve_owner(db, request)
-    data = await plan_service.update_todo(db, owner=owner, pk=pk, data=body)
+    # override_output_gate=主人裁量强制完成（[06] §5.3「仍要完成」），仅人类端点透传；分身工具面无此参数。
+    override = bool(body.get('override_output_gate'))
+    data = await plan_service.update_todo(db, owner=owner, pk=pk, data=body, override_output_gate=override)
     await _bump_plan_sync(db, owner)
     return response_base.success(data=data)
 
@@ -407,9 +409,7 @@ async def app_reschedule_event(
 
 # ── 企业会议协同（PLAN-ENT [04] §6.2，owner/WebUI 端；与 agent 工具共用同一 service）──────────
 @router.get('/events/{pk}/attendees', summary='会议参会人名单（含 RSVP）', dependencies=[DependsJwtAuth])
-async def app_list_attendees(
-    request: Request, db: CurrentSession, pk: Annotated[int, Path(ge=1)]
-) -> ResponseModel:
+async def app_list_attendees(request: Request, db: CurrentSession, pk: Annotated[int, Path(ge=1)]) -> ResponseModel:
     """列出某企业会议的参会人（组织者 + 受邀人）及其 RSVP 状态（详情抽屉 RSVP 展示用）。"""
     await _resolve_owner(db, request)  # 仅校验登录主人身份；名单读不额外裁剪（事件本身受 A3 约束）
     return response_base.success(data=await plan_service.list_attendees(db, event_id=pk))

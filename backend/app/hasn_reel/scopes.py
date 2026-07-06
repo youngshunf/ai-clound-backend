@@ -20,22 +20,28 @@ from __future__ import annotations
 REEL_SCOPE_CATALOG: dict[str, dict[str, str]] = {
     'reel:read': {
         'label_zh': '查看短视频任务',
+        'label_en': 'View short-video tasks',
         'domain': 'reel',
         'risk': 'low',
         'description': '以 Agent 身份读取短视频合成任务、产物与状态，按词搜库存素材（只读/不下载，owner 隔离）',
+        'description_en': 'Read short-video composition tasks, artifacts, and status, and search stock material by keyword as the agent (read-only, no download, owner-isolated)',
     },
     'reel:write': {
         'label_zh': '生成短视频',
+        'label_en': 'Generate short videos',
         'domain': 'reel',
         'risk': 'medium',
-        'default_mode': 'ask',
-        'description': '生成短视频（文案/配音/字幕/素材合成）：一把梭出片、文案审稿、半成品预览、确认合成（消耗配额/本地合成资源，默认需确认）',
+        'default_mode': 'allow',
+        'description': '生成短视频（文案/配音/字幕/素材合成）：一把梭出片、文案审稿、半成品预览、确认合成（生成类，2026-07-05 放开出厂 Allow，主人可改 Ask 把关配额）',
+        'description_en': 'Generate short videos (script/voiceover/subtitles/material composition): one-shot rendering, script review, draft preview, and confirmed composition (consumes quota or local compositing resources; confirmation required by default)',
     },
     'reel:export': {
         'label_zh': '上传/分享短视频成片',
+        'label_en': 'Upload/share finished reels',
         'domain': 'reel',
         'risk': 'medium',
         'default_mode': 'ask',
         'description': '把本地短视频成片显式上传到云端私有桶以分享/跨设备查看（本地权威，重资产默认需主人确认）',
+        'description_en': 'Explicitly upload finished local reels to a cloud private bucket for sharing or cross-device viewing (local-authoritative; heavy assets need owner confirmation by default)',
     },
 }

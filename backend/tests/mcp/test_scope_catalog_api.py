@@ -126,5 +126,7 @@ def test_app_scope_labels_come_from_per_app_modules() -> None:
     video = scope_meta('video:generate')  # backend/app/mcp/platform_scopes.py
     assert video['domain'] == 'video'
     assert video['label'] == '生成视频'
-    # 出厂 Ask（花钱、= hasn.video.generate 本地工具出厂态），与本地执行同构。
-    assert video['default_mode'] == 'ask'
+    # 出厂 Allow（生成类，= hasn.video.generate 本地工具出厂态），与本地执行同构。
+    # 2026-07-05 策略「只拦外发/动钱，放开生成/委托」：视频生成消耗配额≠动钱，与图片生成同档放开；
+    # owner 可经 capability_modes 改 Ask 把关配额。
+    assert video['default_mode'] == 'allow'

@@ -22,6 +22,9 @@ class Todo(PlanBase):
     dept_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='所属部门 id（NULL=不限部门）')
     plan_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
     goal_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment=None)
+    milestone_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='所属里程碑 (可空；须与 plan_id 同计划，服务端校验)'
+    )
     title: Mapped[str] = mapped_column(sa.String(255), default='', comment=None)
     notes: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     actor: Mapped[str] = mapped_column(

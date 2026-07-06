@@ -51,7 +51,7 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL
 _READ_SCOPE = 'plan:read'
 _WRITE_SCOPE = 'plan:write'
 _SCHEDULE_SCOPE = 'plan:schedule'  # PLAN-P4b：Motion 自动排程（schedule/reschedule）独立 scope
-_DELEGATE_SCOPE = 'plan:delegate'  # PLAN-P5：委托派发起工作会话（出厂 Ask，主人确认后派）
+_DELEGATE_SCOPE = 'plan:delegate'  # PLAN-P5：委托派发起工作会话（出厂 Allow，2026-07-05 放开委托；risk 仍 high）
 
 
 # ============================ 纯 Python（无 DB）============================
