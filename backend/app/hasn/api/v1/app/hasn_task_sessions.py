@@ -287,6 +287,46 @@ async def session_send_message(
     raise errors.RequestError(msg='Session 输入必须路由到 hasn-node，本云端接口不返回占位 message_id')
 
 
+@router.get(
+    '/work-session-summaries',
+    summary='列 owner 名下所有设备的工作会话摘要（主会话跨会话感知）',
+    dependencies=[DependsJwtAuth],
+    name='hasn_work_session_summaries_list',
+)
+async def work_session_summaries_list(
+    request: Request,
+    db: CurrentSession,
+    limit: Annotated[int, Query(description='数量上限', ge=1, le=100)] = 20,
+) -> ResponseModel:
+    """owner-scoped 只读：列 owner 名下（含**跑在别的设备**）的工作会话摘要。
+
+    doc13 决策 D 跨设备读端点——daemon 归并进主会话「最近会话」digest 时，用它补齐
+    「活儿跑在另一台设备」的工作会话摘要（本地无该 session 行）。owner 隔离。
+    """
+    owner_id = await _current_owner_id(request, db)
+    items = await hasn_sessions_service.list_work_session_summaries(db=db, owner_id=owner_id, limit=limit)
+    return response_base.success(data={'items': items})
+
+
+@router.get(
+    '/work-session-summaries/{session_id}',
+    summary='取单个工作会话云端摘要（跨设备下钻）',
+    dependencies=[DependsJwtAuth],
+    name='hasn_work_session_summary_get',
+)
+async def work_session_summary_get(
+    request: Request,
+    db: CurrentSession,
+    session_id: Annotated[str, Path(description='Session ID')],
+) -> ResponseModel:
+    """owner-scoped 只读：取单个工作会话的云端摘要（跨设备下钻，无逐条 events）。"""
+    owner_id = await _current_owner_id(request, db)
+    data = await hasn_sessions_service.get_work_session_summary(db=db, owner_id=owner_id, session_id=session_id)
+    if data is None:
+        raise errors.NotFoundError(msg='工作会话摘要不存在')
+    return response_base.success(data=data)
+
+
 @work_sessions_router.post(
     '/work-sessions',
     summary='外部 APP 发起工作会话',

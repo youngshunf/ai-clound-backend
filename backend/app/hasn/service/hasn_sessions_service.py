@@ -1,6 +1,7 @@
 import json
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 import sqlalchemy as sa
@@ -435,8 +436,121 @@ class HasnSessionsService:
             'created': True,
         }
 
+    @staticmethod
+    async def list_work_session_summaries(
+        *,
+        db: AsyncSession,
+        owner_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """列 owner 名下（**所有设备**）工作会话摘要——主会话跨会话感知用（doc13 决策 D）。
+
+        只取 ``summary_only``（工作会话云端同步范围）的 session，按末次活跃倒序。
+        返回精简摘要供 daemon 归并进「最近会话」digest（跨设备那一路），正文/逐条 events
+        不在此——分身要看细节走 ``hasn.worksession.get`` 下钻。owner 隔离（``WHERE owner_id``）。
+        """
+        capped = max(1, min(int(limit or 20), 100))
+        stmt = (
+            select(HasnSessions)
+            .where(
+                HasnSessions.owner_id == owner_id,
+                HasnSessions.session_scope == 'summary_only',
+            )
+            .order_by(
+                sa.func.coalesce(HasnSessions.last_message_at, HasnSessions.updated_time).desc().nullslast(),
+            )
+            .limit(capped)
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        return [_work_session_summary_row(session) for session in rows]
+
+    @staticmethod
+    async def get_work_session_summary(
+        *,
+        db: AsyncSession,
+        owner_id: str,
+        session_id: str,
+    ) -> dict[str, Any] | None:
+        """取单个工作会话的云端摘要（跨设备下钻用，doc13 §6.5）。
+
+        云端不保证有此 session（work-session 是 hasn-node 本地实体）——缺失返回 None（daemon
+        会据此走本地或诚实标注跨设备无逐条 events）。owner 归属不符时仍抛 403（try_get 语义）。
+        返回精简摘要 + 完整 summary 文本（无逐条 events，跨设备只摘要）。
+        """
+        session = await HasnSessionsService.try_get_by_session_id(db=db, session_id=session_id, owner_id=owner_id)
+        if session is None:
+            return None
+        checkpoint = dict(session.summary_checkpoint_json or {})
+        row = _work_session_summary_row(session)
+        row['summary'] = str(checkpoint.get('summary') or '')
+        row['deep_link'] = checkpoint.get('deep_link')
+        return row
+
 
 hasn_sessions_service: HasnSessionsService = HasnSessionsService()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 工作会话摘要投影（doc13 主会话跨会话感知·决策 D 跨设备读端点）
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 云端源头预览上限（防御纵深，doc13 决策 G）——真正的硬截断在 daemon 侧做（≈60 全角），
+# 这里只避免把整条几千 token 的摘要原样返给 daemon（list 预览本就不该是全文）。
+_SUMMARY_PREVIEW_CAP = 200
+
+# origin_ref 形如 ``resource:<app>:<id>``（AppCollab doc21 §D3）——取中间的 <app> 段作应用标识。
+_RESOURCE_ORIGIN_PREFIX = 'resource:'
+
+# 云端 session_status（active/completed/error/cancelled）→ digest 状态词表
+# （running/waiting_for_user/completed/failed）。云端只有粗粒度，daemon 有本地则用本地细状态。
+_CLOUD_STATUS_MAP = {
+    'active': 'running',
+    'completed': 'completed',
+    'error': 'failed',
+    'cancelled': 'cancelled',
+}
+
+
+def _epoch_ms(value: datetime | None) -> int:
+    """datetime → epoch 毫秒；None → 0（daemon 排序键容忍 0）。"""
+    if value is None:
+        return 0
+    return int(value.timestamp() * 1000)
+
+
+def _app_from_origin(origin_type: str | None, origin_ref: str | None) -> str:
+    """从 origin_ref/origin_type 推 app 标识：``resource:<app>:<id>`` → <app>；否则回落 origin_type。"""
+    if origin_ref and origin_ref.startswith(_RESOURCE_ORIGIN_PREFIX):
+        parts = origin_ref[len(_RESOURCE_ORIGIN_PREFIX) :].split(':', 1)
+        if parts and parts[0].strip():
+            return parts[0].strip()
+    return origin_type or ''
+
+
+def _map_cloud_status(session_status: str | None) -> str:
+    """云端粗粒度状态归一到 digest 词表；未知原样透出。"""
+    if not session_status:
+        return 'running'
+    return _CLOUD_STATUS_MAP.get(session_status, session_status)
+
+
+def _work_session_summary_row(session: HasnSessions) -> dict[str, Any]:
+    """把一行 HasnSessions 投影成 digest 用的精简工作会话摘要。"""
+    checkpoint = session.summary_checkpoint_json or {}
+    preview = str(checkpoint.get('summary') or '')
+    if len(preview) > _SUMMARY_PREVIEW_CAP:
+        preview = preview[:_SUMMARY_PREVIEW_CAP] + '…'
+    return {
+        'session_id': session.session_id,
+        'agent_id': session.hasn_id,
+        'topic': session.title or '',
+        'app': _app_from_origin(session.origin_type, session.origin_ref),
+        'origin_type': session.origin_type,
+        'origin_ref': session.origin_ref,
+        'status': _map_cloud_status(session.session_status),
+        'summary_preview': preview,
+        'last_active': _epoch_ms(session.last_message_at or session.updated_time),
+    }
 
 
 def _split_csv(value: str | None) -> list[str]:
