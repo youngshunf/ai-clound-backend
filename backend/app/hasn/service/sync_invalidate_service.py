@@ -75,6 +75,12 @@ KIND_DECKS = 'decks'
 # 该 owner 名下 Agent 的 CapabilityModeMirror（本地镜像与云端权威对齐），治「设备 A 改了三态、
 # 设备 B 镜像不更新」。离线设备靠重连握手 sync_pull 兜底。
 KIND_SCOPES = 'scopes'
+# owner 定向：该 owner 的统一通知中心「通知面」有新通知（NOTIFUX-3）——外部用户/agent 触发的
+# 点赞/关注/分享等经 notification_service.emit() 落权威行后 bump，daemon 收到即拉 owner 未读通知、
+# diff 出新增未读项发原生系统通知（点击深链到通知覆盖层），并 nudge webui 刷新通知列表+未读徽标。
+# 与 suppressed 同形态（per-owner 指纹，不进全局握手，靠 bump_owner push + 周期 sync_pull 兜底）；
+# 「自分身→主人」的汇报面走会话汇报卡（emit 内 OwnerLoopback 早返），绝不进此 kind。
+KIND_NOTIFICATION = 'notification'
 OWNER_KINDS = (
     KIND_TASKS,
     KIND_PLAN,
@@ -84,6 +90,7 @@ OWNER_KINDS = (
     KIND_COMMUNITY,
     KIND_DECKS,
     KIND_SCOPES,
+    KIND_NOTIFICATION,
 )
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
@@ -99,6 +106,8 @@ EMPTY_COMMUNITY_REVISION = 'empty'
 EMPTY_DECKS_REVISION = 'empty'
 # 某 owner 名下无 Agent 三态授权行时的稳定指纹（同上约定）
 EMPTY_SCOPES_REVISION = 'empty'
+# 某 owner 名下无通知时的稳定指纹（同上约定）
+EMPTY_NOTIFICATION_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -207,6 +216,32 @@ async def compute_owner_suppressed_revision(db: AsyncSession, owner_id: str) -> 
     lines = sorted(f'{mid}@{resolved.isoformat() if resolved else ""}' for mid, resolved in rows)
     if not lines:
         return EMPTY_SUPPRESSED_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_notification_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的通知中心指纹：sha256(sorted "id@state@updated_time" 行)[:16]（NOTIFUX-3）。
+
+    聚合该 owner（``target_id``）名下全部通知，任一被建 / 已读 / 更新（``updated_time`` 变）
+    → 集合内某行指纹变 → 整体指纹变。仅作 invalidate 帧的 ``revision`` 字段：daemon 不据此
+    去重、收到即拉该 owner 的未读通知做增量 diff（见 daemon ``reconcile_new_notifications``）。
+    """
+    from backend.app.hasn.model.hasn_notifications import HasnNotifications
+
+    rows = (
+        await db.execute(
+            sa.select(
+                HasnNotifications.id,
+                HasnNotifications.state,
+                HasnNotifications.updated_time,
+            ).where(HasnNotifications.target_id == owner_id)
+        )
+    ).all()
+    lines = sorted(
+        f'{nid}@{state}@{updated.isoformat() if updated else ""}' for nid, state, updated in rows
+    )
+    if not lines:
+        return EMPTY_NOTIFICATION_REVISION
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
@@ -442,6 +477,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_decks_revision(db, owner_id)
     elif kind == KIND_SCOPES:
         rev = await compute_owner_scopes_revision(db, owner_id)
+    elif kind == KIND_NOTIFICATION:
+        rev = await compute_owner_notification_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 

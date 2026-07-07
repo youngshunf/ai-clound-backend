@@ -17,6 +17,7 @@ from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.model.hasn_notification_preferences import HasnNotificationPreferences
 from backend.app.notification.service.delivery_policy import default_priority, resolve_policy
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.utils.timezone import timezone as _tz
 
 if TYPE_CHECKING:
@@ -117,6 +118,9 @@ class NotificationService:
                     existing.body = body
                 existing.updated_time = _tz.now()
                 await db.flush()
+                # NOTIFUX-3：聚合更新（aggregated_count 变）也 bump owner，让 daemon 刷新 webui
+                # 通知列表/未读徽标；OS 系统通知按通知 id 增量 diff、同 id 不重发，故不会重复打扰。
+                await cls._bump_notification_revision(db, recipient_id)
                 return existing.id
 
         # 3b) 限频（§9 防通知轰炸）：同一 (recipient, source) 近窗超阈值 → 压制"吵"的承载
@@ -154,7 +158,30 @@ class NotificationService:
         if policy.get('channels', {}).get('toast'):
             await cls._emit_sync_event(db, row=row)
 
+        # 4d) NOTIFUX-3：新通知落权威行 → bump 该 owner 的通知 revision（WSPUSH KIND_NOTIFICATION）。
+        #     在线节点 daemon 收到即拉未读通知、diff 出新增未读项发原生系统通知（点击深链到通知
+        #     覆盖层），并 nudge webui 刷新通知列表+未读徽标。离线节点靠周期 sync_pull 兜底追平。
+        await cls._bump_notification_revision(db, recipient_id)
+
         return row.id
+
+    @staticmethod
+    async def _bump_notification_revision(db: AsyncSession, recipient_id: str) -> None:
+        """bump 该 owner 的通知 revision → push 在线节点（NOTIFUX-3·通知面系统通知的触发源）。
+
+        best-effort：失效推送本就不该拖垮通知落库（bump_owner 内部对 push 已 best-effort，此处
+        再兜一层保险，连 revision 计算异常也不外抛）。离线/推送失败时 daemon 周期 sync_pull 兜底。
+        延迟 import 避免与 sync_invalidate_service 潜在的模块级循环依赖。
+        """
+        try:
+            from backend.app.hasn.service.sync_invalidate_service import (
+                KIND_NOTIFICATION,
+                bump_owner,
+            )
+
+            await bump_owner(KIND_NOTIFICATION, db, recipient_id)
+        except Exception:  # noqa: BLE001 - 推送 best-effort，绝不因失效推送失败而丢通知
+            log.warning('[notification] bump 通知 revision 失败 owner=%s', recipient_id, exc_info=True)
 
     @classmethod
     async def app_emit(
