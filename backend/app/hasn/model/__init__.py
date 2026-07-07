@@ -62,3 +62,4 @@ from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUn
 from backend.app.hasn.model.hasn_platform_operator_grants import (
     HasnPlatformOperatorGrants as HasnPlatformOperatorGrants,
 )
+from backend.app.hasn.model.hasn_judge_verdict import HasnJudgeVerdict as HasnJudgeVerdict
