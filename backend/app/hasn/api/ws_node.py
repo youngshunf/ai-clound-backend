@@ -400,6 +400,19 @@ async def _handle_add_agent(
                 log.warning(
                     'fold-heartbeat persist failed for agent %s: %s', agent_id, exc
                 )
+            # 在线语义收紧：按心跳携带的 online_status+health_status 写/删 agent 就绪键
+            # （online+ok 才写；degraded/offline 删）。就绪键是对外「在线」判定的第三维，
+            # 不影响路由；失败不拖垮路由注册，单独 try/except。
+            try:
+                await ws_router.set_agent_readiness(
+                    agent_id,
+                    str(params.get('online_status')),
+                    params.get('health_status'),
+                )
+            except Exception as exc:
+                log.warning(
+                    'set agent readiness failed for agent %s: %s', agent_id, exc
+                )
     if result.get('accepted') and agent_id:
         active_entities.add(agent_id)
         offline_msgs = await ws_router.get_offline_messages([agent_id])

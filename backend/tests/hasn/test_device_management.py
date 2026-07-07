@@ -136,6 +136,8 @@ async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch) 
     await redis.hset(module.ENTITY_NODE_KEY, owner_id, node_id)
     await redis.hset(module.ENTITY_NODE_KEY, agent_id, node_id)
     await redis.sadd(f'{module.USER_NODES_PREFIX}:{owner_id}', node_id)
+    # 在线语义收紧：agent 还需 runtime 就绪键（心跳 online+ok 才写）才算真在线。
+    await redis.set(f'{module.AGENT_READY_PREFIX}:{agent_id}', '1', ex=90)
 
     # 断开前：节点在线、名下 agent 在线（其节点心跳在）
     assert await router.is_node_online(node_id) is True

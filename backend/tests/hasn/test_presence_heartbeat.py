@@ -30,6 +30,10 @@ class FakeRedis:
     async def exists(self, key: str) -> int:
         return 1 if key in self.strings else 0
 
+    async def mget(self, keys: list[str]) -> list[Any]:
+        # 就绪键批量取（get_online_map 用），缺失返回 None。
+        return [self.strings.get(k) for k in keys]
+
     async def hset(self, key: str, field: str, value: Any) -> None:
         self.hashes.setdefault(key, {})[field] = value
 
@@ -99,8 +103,10 @@ async def test_zombie_node_route_makes_agent_offline(monkeypatch) -> None:
     node_id = 'node_zombie'
     await redis.hset(module.ENTITY_NODE_KEY, agent_id, node_id)
     await redis.set(f'{module.NODE_ALIVE_PREFIX}:{node_id}', '1', ex=90)
+    # 在线语义收紧：还需 runtime 就绪键（心跳 online+ok 才写），否则判「连接中/离线」。
+    await redis.set(f'{module.AGENT_READY_PREFIX}:{agent_id}', '1', ex=90)
 
-    # 心跳在 → 在线
+    # 心跳在 + runtime 就绪 → 在线
     assert await router.is_agent_online(agent_id) is True
     assert await router.get_online_map([agent_id]) == {agent_id: True}
 

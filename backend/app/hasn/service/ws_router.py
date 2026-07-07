@@ -49,6 +49,16 @@ OFFLINE_TTL = 7 * 86400  # 7 天
 NODE_ALIVE_PREFIX = 'hasn:node_alive'
 NODE_PRESENCE_TTL_SECS = 90
 
+# Agent 运行时就绪键（在线语义收紧）：每个 agent 一个带 TTL 的 string 键，
+# **仅当** daemon 心跳报 online_status=online ∧ health_status=ok（= 协议权威「在线」：
+# owner 在线 + runtime 已启动连接、可收消息）才写；report degraded/offline 立即删。
+# 「在线」判定 = 路由表命中(ENTITY_NODE_KEY) ∧ 节点存活(NODE_ALIVE) ∧ **本键在**。
+# 修「启动后显示在线但 runtime 未就绪、发消息报错」——路由注册 ≠ 网关就绪，
+# 旧 is_agent_online 只看路由+节点存活、漏了网关就绪这维，会谎报在线。
+# TTL 同节点存活键（90s，daemon 心跳 30s 留 3 次丢包余量）：心跳停 → 自然过期判未就绪。
+# 注意：**不**参与消息路由（_push_to_entity 仍直读 ENTITY_NODE_KEY），只收紧对外显示的在线态。
+AGENT_READY_PREFIX = 'hasn:agent_ready'
+
 # 兼容别名（旧代码过渡期引用）
 AGENT_NODE_KEY = ENTITY_NODE_KEY
 CLIENT_CONN_KEY = NODE_CONN_KEY
@@ -261,7 +271,32 @@ class WsRouterService:
 
     async def remove_agent_presence(self, node_id: str, agent_id: str) -> dict[str, Any]:
         await self.unregister_entity_route(node_id, agent_id)
+        # 优雅下线：连路由带就绪键一并清，避免残留就绪键把刚离线的 agent 误判在线
+        # （虽然就绪键有 TTL 会自然过期，但主动清更即时）。
+        await self._clear_agent_readiness(agent_id)
         return {'agent_id': agent_id, 'accepted': True}
+
+    async def set_agent_readiness(
+        self, agent_id: str, online_status: str, health_status: str | None
+    ) -> None:
+        """按 daemon 心跳携带的运行时健康写/删 agent 就绪键（在线语义收紧）。
+
+        仅当 ``online_status == 'online' and health_status == 'ok'``（协议权威「在线」：
+        owner 在线 + runtime 已启动连接、可收消息）才写带 TTL 的就绪键；
+        report ``degraded``/``offline``（runtime 未就绪 / 连接中）立即删键 → 对外显示为
+        离线/连接中，而不再谎报在线。写就绪键**绝不**影响消息路由（见键注释）。
+        """
+        if not agent_id:
+            return
+        key = f'{AGENT_READY_PREFIX}:{agent_id}'
+        if online_status == 'online' and health_status == 'ok':
+            await redis_client.set(key, '1', ex=NODE_PRESENCE_TTL_SECS)
+        else:
+            await redis_client.delete(key)
+
+    async def _clear_agent_readiness(self, agent_id: str) -> None:
+        if agent_id:
+            await redis_client.delete(f'{AGENT_READY_PREFIX}:{agent_id}')
 
     async def _validate_agent(
         self, node_id: str, hasn_id: str, entity: dict, db: AsyncSession,
@@ -500,11 +535,20 @@ class WsRouterService:
         if node is None:
             return False
         # P3：路由表指向的节点必须仍有存活心跳，否则是僵尸路由（节点已非优雅退出）→ 判离线。
-        return await self._node_alive(node)
+        if not await self._node_alive(node):
+            return False
+        # 在线语义收紧：路由命中 + 节点存活 还不够，runtime 网关须**已就绪**
+        # （心跳报 online+ok 才写就绪键）。否则是「连接中/未就绪」→ 判离线，
+        # 杜绝「启动后显示在线、发消息却报 runtime 未就绪」。
+        return await self._agent_ready(hasn_id)
 
     async def _node_alive(self, node_id: str) -> bool:
         """节点存活键（心跳 TTL）是否仍在。"""
         return bool(await redis_client.exists(f'{NODE_ALIVE_PREFIX}:{node_id}'))
+
+    async def _agent_ready(self, hasn_id: str) -> bool:
+        """agent 运行时就绪键（心跳 online+ok 才写、TTL 续期）是否仍在。"""
+        return bool(await redis_client.exists(f'{AGENT_READY_PREFIX}:{hasn_id}'))
 
     async def get_entity_node(self, hasn_id: str) -> str | None:
         """返回实体（Agent/Human）当前所在节点 id；不在线返回 None。
@@ -554,9 +598,13 @@ class WsRouterService:
             return {}
         nodes = await redis_client.hmget(ENTITY_NODE_KEY, entity_ids)
         # P3：路由表命中后还需该节点存活心跳未过期，否则是僵尸路由 → 判离线。
+        # 在线语义收紧：再叠加 agent 就绪键（心跳 online+ok 才写），批量 MGET 取。
+        ready_flags = await redis_client.mget(
+            [f'{AGENT_READY_PREFIX}:{eid}' for eid in entity_ids]
+        )
         result: dict[str, bool] = {}
-        for eid, node in zip(entity_ids, nodes):
-            result[eid] = bool(node) and await self._node_alive(node)
+        for eid, node, ready in zip(entity_ids, nodes, ready_flags):
+            result[eid] = bool(node) and bool(ready) and await self._node_alive(node)
         return result
 
 

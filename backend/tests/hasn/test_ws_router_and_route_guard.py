@@ -187,6 +187,9 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
     )
     assert add_agent == {'agent_id': 'a_agent', 'accepted': True}
     assert agent.node_id == 'node-1'
+    # 在线语义收紧：路由注册后还需 daemon 心跳报 online+ok 才写就绪键 → 才算真在线。
+    # 这一步等价于折叠心跳 `_handle_add_agent` 里的 set_agent_readiness 调用。
+    await router.set_agent_readiness('a_agent', 'online', 'ok')
 
     pushed = await router.push_message_to('h_owner', {'created_time': '2', 'body': 'hi'})
     assert pushed is True
