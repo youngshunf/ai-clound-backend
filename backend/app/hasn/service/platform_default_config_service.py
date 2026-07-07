@@ -60,6 +60,11 @@ DEFAULT_PLATFORM_CONFIG: dict = {
         # 分身的已解析主模型生成兜底链（剔除主模型自身、去重、保序）下发 runtime（LLMFAIL）。
         'model_fallback_pool': [],
     },
+    'security': {
+        # L1 敏感信息扫描器总开关（doc07 三层漏斗）。缺省开——关闭时 daemon 出站闸跳过
+        # scan_sensitive（L2 LLM 裁判照常），仅关正则层。J-S2 仅落字段，接线在 J-S3。
+        'sensitive_scanner_enabled': True,
+    },
 }
 
 

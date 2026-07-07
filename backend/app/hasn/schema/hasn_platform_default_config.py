@@ -48,6 +48,19 @@ class PlatformAgentRuntimeDefaults(SchemaBase):
     )
 
 
+class PlatformSecurityDefaults(SchemaBase):
+    """节点级安全默认（三层漏斗裁判开关等，doc07）。"""
+
+    sensitive_scanner_enabled: bool = Field(
+        default=True,
+        description=(
+            'L1 敏感信息扫描器（hasn-core SensitiveScanner）总开关，缺省开。关闭时 daemon 出站闸 '
+            'guard_outbound_disclosure 直接跳过 scan_sensitive（L2 LLM 裁判照常）——仅关正则层，'
+            '不影响硬权限 L0 与云端 LLM 裁判 L2'
+        ),
+    )
+
+
 class PlatformDefaultConfig(SchemaBase):
     """平台默认配置（覆盖式整体）。
 
@@ -61,6 +74,9 @@ class PlatformDefaultConfig(SchemaBase):
     node: PlatformNodeDefaults = Field(default_factory=PlatformNodeDefaults, description='节点级默认')
     agent_runtime: PlatformAgentRuntimeDefaults = Field(
         default_factory=PlatformAgentRuntimeDefaults, description='agent 运行时默认'
+    )
+    security: PlatformSecurityDefaults = Field(
+        default_factory=PlatformSecurityDefaults, description='节点级安全默认（裁判漏斗开关等）'
     )
     app_configs: dict = Field(
         default_factory=dict,
