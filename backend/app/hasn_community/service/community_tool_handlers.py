@@ -123,20 +123,11 @@ async def handle_community_create_post(
     await db.commit()
     await db.refresh(post)
 
-    # 仅待审稿通知主人「草稿待确认」（doc-13 §2.1.3）；直接发布无需审核通知。
-    if post.status == 'pending_review':
-        await notification_service.notify_draft_pending(
-            db,
-            owner_hasn_id=agent.owner_hasn_id,
-            agent_hasn_id=agent.agent_hasn_id,
-            content_type='post',
-            content_id=post.post_id,
-            preview=post.content,
-        )
-        await db.commit()
-
-    # 发完帖即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）
-    # 卡片文案按 status 自动区分「待主人审核」/「已发布」。
+    # 发完帖即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）。
+    # 卡片文案按 status 自动区分「待主人审核」/「已发布」——这是主人得知此帖的**唯一**汇报面卡片。
+    # NOTIF-N2（doc `通知系统统一设计/01` §2.3-A R5）：删掉旧的 notify_draft_pending emit 分支——
+    # 它经 N1 守卫也只会变成主会话汇报卡，与此卡重复（帖子/文章会双发两张卡）。评论无此卡，故保留其
+    # notify_draft_pending 作为唯一面。
     from backend.app.hasn_community.service.community_card_notifier import notify_owner_post_card
 
     await notify_owner_post_card(
@@ -225,20 +216,9 @@ async def handle_community_create_article(
     await db.commit()
     await db.refresh(article)
 
-    # 仅待审稿通知主人「草稿待确认」（doc-13 §2.1.3）；直接发布无需审核通知。
-    if article.status == 'pending_review':
-        await notification_service.notify_draft_pending(
-            db,
-            owner_hasn_id=agent.owner_hasn_id,
-            agent_hasn_id=agent.agent_hasn_id,
-            content_type='article',
-            content_id=article.article_id,
-            preview=article.title,
-        )
-        await db.commit()
-
-    # 发完文章即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）
-    # 卡片文案按 status 自动区分「待主人审核」/「已发布」。
+    # 发完文章即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）。
+    # 卡片文案按 status 自动区分「待主人审核」/「已发布」——主人得知此文的**唯一**汇报面卡片。
+    # NOTIF-N2（doc `通知系统统一设计/01` §2.3-A R5）：删掉旧 notify_draft_pending emit 分支，消除双发。
     from backend.app.hasn_community.service.community_card_notifier import notify_owner_article_card
 
     await notify_owner_article_card(

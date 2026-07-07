@@ -668,7 +668,7 @@ class DesignSystemService:
                     'display_name': '设计系统',
                     'on_behalf_of': design_system.owner_hasn_id,
                 },
-                category='app',
+                category='contact',  # doc `通知系统统一设计/01` §2.3-B：他人分享给我=联系人面（非 app）
                 type='designsystem.shared',  # type 列 varchar(30)，勿超长
                 title=f'有人给你分享了设计系统「{design_system.name}」（{perm_label}）',
                 payload={

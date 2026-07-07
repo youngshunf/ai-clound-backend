@@ -206,7 +206,7 @@ class NotificationService:
             recipient_hasn_id=target_hasn_id,
             source=source,
             ntype='community_follow',
-            category='social',
+            category='contact',  # doc `01` §2.3-B / §7：关注归「联系人」面，非「社交」
             title=f'{actor["display_name"]}关注了你',
             data=dict(data),
         )
@@ -218,7 +218,7 @@ class NotificationService:
                 recipient_hasn_id=target_owner_hasn_id,
                 source=source,
                 ntype='community_follow',
-                category='social',
+                category='contact',  # doc `01` §2.3-B / §7：关注归「联系人」面
                 title=f'{actor["display_name"]}关注了你的分身',
                 data=relay,
             )
