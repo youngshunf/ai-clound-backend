@@ -416,6 +416,10 @@ class NotificationService:
         has_more = len(rows) > limit
         rows = rows[:limit]
 
+        # 通知行 → 卡片投影（doc `通知系统统一设计/01` §3.4：cloud 权威投影，前端零拼装）。
+        # 延迟导入：carrier 依赖 message_router（重图），避免模块加载期循环。
+        from backend.app.notification.service.notification_carrier import project_notification_card
+
         # 读时聚合：同 group_key 折叠（缺省 group_key 等价 (type,target.id)）
         seen: dict[str, dict[str, Any]] = {}
         items: list[dict[str, Any]] = []
@@ -443,6 +447,8 @@ class NotificationService:
                 'read': n.read,
                 'aggregated_count': agg_seed,
                 'created_time': n.created_time.isoformat() if n.created_time else None,
+                # §3.4 卡片投影：前端折叠进消息列表后直接 CardMessage 渲染；None 则回退扁平字段。
+                'card': project_notification_card(n),
             }
             items.append(entry)
             if target.get('id') is not None:

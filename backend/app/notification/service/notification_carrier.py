@@ -104,6 +104,43 @@ def build_card_body(
     return body
 
 
+# CardSourceKind 合法值（与 hasn_card_message.py 对齐）——非此集合的来源无法投影为卡片。
+_CARD_SOURCE_KINDS = ('app', 'task', 'agent', 'system', 'user', 'external')
+
+
+def project_notification_card(notif: HasnNotifications) -> dict[str, Any] | None:
+    """把一条权威通知行投影成 hasn.card/0.1 卡片体（doc `通知系统统一设计/01` §3.4）。
+
+    通知面折叠进消息列表后，每条通知直接用 `CardMessage` 渲染——本函数产出的即那份 card
+    payload，由 cloud 权威投影（前端零业务拼装、URI 白名单校验、来源图标权威取值都在云端做最稳）。
+
+    - `source` 取权威行 `notif.source`（emit 时已落 kind/id/display_name/avatar，见社区
+      `_actor_source` / AI-Native emit）；
+    - `primary_action` 经 `build_card_body` 指向**目标资源**深链（`hasn://<域>/{云端id}`），
+      **不指向通知自身**（`hasn://notification/{id}` 仅作 resource 体标识，非打开入口）；
+    - 任一字段不合法（source 缺失/link scheme 非法）→ 返回 None，前端回退扁平字段渲染
+      （韧性：单条坏行不拖垮整列，也不在 GET 读路径抛异常）。
+
+    纯读、无副作用（不建服务号、不写库）——安全用于 `GET /notifications` 序列化。
+    """
+    src = notif.source or {}
+    kind = src.get('kind')
+    if kind not in _CARD_SOURCE_KINDS:
+        return None
+    try:
+        return build_card_body(
+            notif,
+            source_kind=kind,
+            source_id=str(src.get('id') or kind),
+            source_name=src.get('display_name') or str(src.get('id') or kind),
+            source_icon=src.get('avatar') or None,
+            source_verified=bool(src.get('verified', kind == 'system')),
+        )
+    except Exception:
+        # 投影失败（畸形来源/链接）不阻断列表——诚实降级为无 card，前端走扁平字段兜底。
+        return None
+
+
 async def _persist_card(
     db: AsyncSession,
     *,
