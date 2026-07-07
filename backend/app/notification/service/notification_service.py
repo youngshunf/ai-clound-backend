@@ -60,6 +60,24 @@ class NotificationService:
         payload = dict(payload or {})
         priority = priority or default_priority(category)
 
+        # 0) 分面归属守卫（doc `通知系统统一设计/01` R1/R2·纵深防御）：
+        #    主人自己的分身向主人「汇报/请示」= 汇报面，不进通知中心（不落 hasn_notifications）。
+        #    判据：source.kind==agent 且该分身的主人==recipient（OwnerLoopback 方向）。
+        #    落点：分身主会话一条汇报卡（agent 本身即会话身份，未读挂在与该分身的会话上）。
+        #    即使某 producer 漏改仍走 emit()，此守卫也保证「自分身→主人」绝不污染通知中心。
+        if await cls._is_owner_loopback(db, source=source, recipient_id=recipient_id):
+            from backend.app.notification.service.notification_carrier import deliver_report_card_to_owner
+
+            return await deliver_report_card_to_owner(
+                db,
+                recipient_id=recipient_id,
+                source=dict(source or {}),
+                title=title,
+                body=body,
+                payload=payload,
+                priority=priority,
+            )
+
         # 1) 解析投递策略 = category 默认 ⊕ 主人偏好 ⊕ delivery_hint
         pref = await cls._get_effective_preference(db, owner_id=recipient_id, category=category)
         policy = resolve_policy(
@@ -198,6 +216,33 @@ class NotificationService:
             group_key=group_key,
             delivery_hint=delivery_hint,
         )
+
+    @staticmethod
+    async def _is_owner_loopback(
+        db: AsyncSession, *, source: dict[str, Any], recipient_id: str
+    ) -> bool:
+        """判定「自分身→主人」（OwnerLoopback）：source 是 agent 且该分身的主人==recipient。
+
+        优先信任 `source.on_behalf_of`（内部 producer / Agent-JWT 端点设置的可信信号，即该
+        分身代表的主人）；缺失才回退 DB 查 HasnAgents.owner_id。非 agent 源、agent→他人、
+        agent→agent 均返回 False（不属汇报面）。
+        """
+        src = source or {}
+        if src.get('kind') != 'agent':
+            return False
+        agent_id = src.get('id')
+        if not agent_id:
+            return False
+        on_behalf = src.get('on_behalf_of')
+        if on_behalf:
+            return str(on_behalf) == str(recipient_id)
+        # 回退：DB 查该分身的主人（延迟导入避免模块加载期循环）
+        from backend.app.hasn_core import HasnAgents
+
+        owner = (
+            await db.execute(select(HasnAgents.owner_id).where(HasnAgents.hasn_id == str(agent_id)))
+        ).scalar_one_or_none()
+        return owner is not None and str(owner) == str(recipient_id)
 
     @classmethod
     async def _apply_rate_limit(

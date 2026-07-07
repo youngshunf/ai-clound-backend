@@ -113,9 +113,14 @@ async def _persist_card(
     relation_type: str,
     conversation_type: str,
     card_body: dict[str, Any],
-    notif: HasnNotifications,
+    priority: str,
+    notif_id: int | None = None,
+    msg_type: str = 'notification',
 ) -> int:
-    """落卡片消息到「from ⇄ 接收方」会话，返回消息 id（绕开 social 权限矩阵：主人自见）。"""
+    """落卡片消息到「from ⇄ 接收方」会话，返回消息 id（绕开 social 权限矩阵：主人自见）。
+
+    notif_id 为 None 时是「汇报面」卡片（分身→主人主会话，非通知投影，无权威通知行）。
+    """
     conv = await message_router.get_or_create_conversation(
         db,
         recipient_id,
@@ -131,9 +136,9 @@ async def _persist_card(
         to_id=recipient_id,
         content=card_body,
         content_type=_CONTENT_TYPE_CARD,
-        msg_type='notification',
-        priority=notif.priority if notif.priority in ('critical', 'high', 'normal', 'low') else 'normal',
-        context={'notification_id': notif.id, 'conversation_type': conversation_type},
+        msg_type=msg_type,
+        priority=priority if priority in ('critical', 'high', 'normal', 'low') else 'normal',
+        context={'notification_id': notif_id, 'conversation_type': conversation_type},
     )
 
     # 写 message.received sync_event：让接收方（主人）节点经 sync/pull 镜像这条卡片消息。
@@ -190,7 +195,8 @@ async def deliver_card_to_owner(
         relation_type='service',
         conversation_type='service',
         card_body=card_body,
-        notif=notif,
+        priority=notif.priority,
+        notif_id=notif.id,
     )
 
 
@@ -223,7 +229,8 @@ async def deliver_agent_card_to_owner(
         relation_type='social',
         conversation_type='agent',
         card_body=card_body,
-        notif=notif,
+        priority=notif.priority,
+        notif_id=notif.id,
     )
 
 
@@ -267,3 +274,103 @@ async def deliver_card_to_agent(
     if result.get('error'):
         raise errors.ServerError(msg=f"通知卡片投递 Agent 失败: {result.get('message')}")
     return int(result['msg_id'])
+
+
+# ==================== 汇报面（分身 → 主人主会话，非通知投影） ====================
+
+
+def build_report_card_body(
+    *,
+    source: dict[str, Any],
+    title: str,
+    body: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """构造「分身汇报卡」hasn.card/0.1 卡片体（doc `01` R2 汇报面）。
+
+    与 `build_card_body`（通知投影卡）的区别：这是分身**主动汇报**给主人的普通会话消息，
+    不是通知的承载——所以 `primary_action` 直指**真实资源**（deck/designsystem/task…），
+    `resource` 也指真实资源，且**无 dismiss 动作**（普通消息，不是可关闭的通知条）、
+    `metadata` 无 notification_id。深链 `{id}` 恒云端权威 id（由 payload.link/deep_link 承载）。
+    """
+    data = payload or {}
+    target = data.get('target') or {}
+
+    fields: list[dict[str, str]] = []
+    if data.get('preview'):
+        fields.append({'label': '摘要', 'value': str(data['preview'])[:200]})
+
+    # 深链：payload.link 优先，回退 deep_link；相对 `/<域>/...` 提升为 canonical `hasn://<域>/...`
+    link = data.get('link') or data.get('deep_link')
+    primary_action = None
+    resource_uri = None
+    if link:
+        uri = link if link.startswith(('hasn:', 'http:', 'https:')) else f'hasn:/{link}'
+        resource_uri = uri
+        primary_action = {
+            'label': '查看',
+            'action_id': f'open_report_{target.get("kind", "resource")}',
+            'kind': 'open_uri',
+            'uri': uri,
+            'style': 'primary',
+        }
+
+    agent_id = str(source.get('id') or '')
+    card_body = {
+        'schema_version': 'hasn.card/0.1',
+        'title': title or '完成',
+        'description': body or None,
+        'source': {
+            'kind': 'agent',
+            'id': agent_id,
+            'display_name': source.get('display_name') or agent_id,
+            'icon_url': source.get('avatar') or None,
+            'verified': False,
+        },
+        # resource 必填（CardMessageBody）——汇报卡指向真实资源本身
+        'resource': {
+            'type': 'custom',
+            'id': str(target.get('id') or agent_id),
+            'uri': resource_uri or f'hasn://agent/{agent_id}',
+            'title': title or None,
+            'metadata': {'report': True, 'target_kind': target.get('kind')},
+        },
+        'fields': fields,
+        'primary_action': primary_action,
+        # 汇报卡是普通会话消息，无「知道了/dismiss」——不是可关闭的通知条
+        'actions': [],
+        'metadata': {'report': True},
+    }
+    validate_card_message_body(card_body)
+    return card_body
+
+
+async def deliver_report_card_to_owner(
+    db: AsyncSession,
+    *,
+    recipient_id: str,
+    source: dict[str, Any],
+    title: str,
+    body: str | None,
+    payload: dict[str, Any],
+    priority: str = 'normal',
+) -> int:
+    """汇报面：把分身「操作完成/汇报」卡片投进「主人 ⇄ 该分身」既有主会话，返回消息 id。
+
+    R2：分身自己发起的操作（完成/汇报）**不落 hasn_notifications 权威行**——它是分身向主人的
+    普通会话消息（agent 本身即会话身份），未读自然挂在「与该分身的会话」上。relation_type='social'
+    使卡片落进主人与该分身既有的 1:1 主会话（agent_copy），而非新建服务号会话。
+    """
+    agent_id = str(source.get('id') or '')
+    card_body = build_report_card_body(source=source, title=title, body=body, payload=payload)
+    return await _persist_card(
+        db,
+        recipient_id=recipient_id,
+        from_id=agent_id,
+        peer_type='agent',
+        relation_type='social',
+        conversation_type='agent',
+        card_body=card_body,
+        priority=priority,
+        notif_id=None,
+    )
