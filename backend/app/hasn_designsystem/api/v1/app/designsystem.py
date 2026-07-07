@@ -28,7 +28,7 @@ from backend.app.hasn_designsystem.service.import_service import import_design_s
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -158,7 +158,7 @@ async def app_import(request: Request, db: CurrentSession, body: ImportRequest) 
 )
 async def app_delete_design_system(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
 ) -> ResponseModel:
     owner = await _resolve_owner(db, request)
@@ -195,7 +195,7 @@ async def app_list_shares(
 @router.post('/design-systems/{design_system_id}/shares', summary='共享给他人（viewer/editor）', dependencies=[DependsJwtAuth])
 async def app_share(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     body: ShareRequest,
 ) -> ResponseModel:
@@ -215,7 +215,7 @@ async def app_share(
 @router.post('/design-systems/{design_system_id}/shares/revoke', summary='撤销共享（owner）', dependencies=[DependsJwtAuth])
 async def app_revoke_share(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     body: GranteeRef,
 ) -> ResponseModel:
@@ -234,7 +234,7 @@ async def app_revoke_share(
 @router.post('/design-systems/{design_system_id}/collaborators', summary='绑定协作分身（owner）', dependencies=[DependsJwtAuth])
 async def app_add_collaborator(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     body: CollaboratorRef,
 ) -> ResponseModel:
@@ -251,7 +251,7 @@ async def app_add_collaborator(
 )
 async def app_remove_collaborator(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     body: CollaboratorRef,
 ) -> ResponseModel:
@@ -270,7 +270,7 @@ async def app_remove_collaborator(
 )
 async def app_set_current_revision(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     revision_id: Annotated[int, Path(ge=1)],
 ) -> ResponseModel:
@@ -296,7 +296,7 @@ class BoundAgentRequest(BaseModel):
 )
 async def app_set_bound_agent(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     body: BoundAgentRequest,
 ) -> ResponseModel:
