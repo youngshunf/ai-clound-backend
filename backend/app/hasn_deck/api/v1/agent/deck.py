@@ -38,7 +38,9 @@ class UpdateDeckRequest(BaseModel):
     topic: str | None = None
     status: str | None = None
     language: str | None = None
-    outline: dict | None = None
+    # outline 自由 JSON 列，canonical 数组 OutlineItem[] 与历史对象 {items:[...]} 两形并存，
+    # 必须同时接受（只收 dict 会让 daemon 推数组时 422，详见 app/deck.py 同字段注释）。
+    outline: list | dict | None = None
     design_contract: dict | None = None
     style_profile_id: str | None = None
     cover_asset_id: str | None = None

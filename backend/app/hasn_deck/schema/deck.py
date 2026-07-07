@@ -12,7 +12,7 @@ class DeckSchemaBase(SchemaBase):
     topic: str | None = Field(None, description='原始主题/brief（生成来源，可空）')
     status: str = Field(description='状态 draft/generating/ready/archived')
     language: str = Field(description='主语言（zh/en…，影响生成）')
-    outline: dict | None = Field(None, description='大纲 OutlineItem[]（JSON）')
+    outline: list | dict | None = Field(None, description='大纲 OutlineItem[]（JSON，canonical 数组，兼容历史对象 {items:[...]}）')
     design_contract: dict | None = Field(None, description='统一视觉契约 DesignContract（JSON）')
     style_profile_id: str | None = Field(None, description='引用的 StyleProfile slug（可空=自定义）')
     page_count: int = Field(description='页数冗余计数（= page 行数，便于列表）')
