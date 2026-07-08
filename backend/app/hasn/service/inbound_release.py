@@ -77,11 +77,91 @@ def _original_body_from_content(content: Any) -> str:
     return json.dumps({'text': text}, ensure_ascii=False)
 
 
+async def _resolve_sender_owners(
+    db: AsyncSession, agent_sender_ids: list[str],
+) -> dict[str, tuple[str, str | None]]:
+    """批量解析一组发送分身（`a_` 前缀的 `from_id`）的主人 hasn_id + 昵称（RT1.5·§4.1「来源主人」）。
+
+    两趟批量查（避免 N+1）：① 发送分身 → 主人 hasn_id（`HasnAgents.owner_id`）；② 主人 hasn_id →
+    昵称（`HasnHumans.nickname`）。返回 `{from_id: (owner_hasn_id, owner_name)}`；远端分身 / 无从解析
+    的发送方**不入表**（调用方回落 null，诚实不造假，零 fake）。
+    """
+    if not agent_sender_ids:
+        return {}
+    from backend.app.hasn.model.hasn_agents import HasnAgents
+    from backend.app.hasn.model.hasn_humans import HasnHumans
+
+    # ① 发送分身 → 主人 hasn_id
+    agent_rows = (
+        await db.execute(
+            select(HasnAgents.hasn_id, HasnAgents.owner_id).where(
+                HasnAgents.hasn_id.in_(agent_sender_ids)
+            )
+        )
+    ).all()
+    sender_to_owner = {r.hasn_id: r.owner_id for r in agent_rows if r.owner_id}
+    if not sender_to_owner:
+        return {}
+
+    # ② 主人 hasn_id → 昵称（一次批量取，缺昵称留 None）
+    owner_ids = list(set(sender_to_owner.values()))
+    human_rows = (
+        await db.execute(
+            select(HasnHumans.hasn_id, HasnHumans.nickname).where(
+                HasnHumans.hasn_id.in_(owner_ids)
+            )
+        )
+    ).all()
+    name_by_owner = {r.hasn_id: (r.nickname or None) for r in human_rows}
+
+    return {
+        sender_id: (owner_hasn_id, name_by_owner.get(owner_hasn_id))
+        for sender_id, owner_hasn_id in sender_to_owner.items()
+    }
+
+
+def _build_suppressed_item(
+    row: Any, sender_owners: dict[str, tuple[str, str | None]],
+) -> dict[str, Any]:
+    """把一行抑制记录 + 预解析的发送方主人映射，拼成对 daemon 的 item（RT1.5 拦截箱列表）。
+
+    纯函数（不碰 DB），便于单测断言 RT1.5 新增字段：
+      - `sender_hasn_id`：发送方（`m.from_id`）hasn_id，供拦截卡展示「来源分身」；
+      - `sender_owner_hasn_id` / `sender_owner_name`：来源分身的主人（远端 / 无从解析 → null）；
+      - `pending_request_id`：拦截行 `policy_snapshot` 里关联的好友请求 id（无则 null）。
+    其余既有字段（suppressed_id/message_id/... /message_preview/original_body）维持不变。
+    """
+    content = row['content']
+    from_id = row.get('from_id')
+    policy_snapshot = row.get('policy_snapshot') or {}
+    pending_request_id = policy_snapshot.get('pending_request_id')
+    owner_hasn_id, owner_name = sender_owners.get(from_id, (None, None)) if from_id else (None, None)
+    return {
+        'suppressed_id': str(row['suppressed_id']),
+        'message_id': str(row['message_id']),
+        'conversation_id': str(row['conversation_id']),
+        'agent_hasn_id': row['hasn_id'],
+        'reason': row['suppress_reason'] or 'permission_denied',
+        'created_at': int(row['created_time'].timestamp()) if row['created_time'] else 0,
+        'message_preview': _preview_from_content(content),
+        'original_body': _original_body_from_content(content),
+        # RT1.5·§4.1：拦截卡展示「关联好友请求 + 来源主人」——无值一律 null（零 fake）
+        'sender_hasn_id': from_id,
+        'sender_owner_hasn_id': owner_hasn_id,
+        'sender_owner_name': owner_name,
+        'pending_request_id': str(pending_request_id) if pending_request_id is not None else None,
+    }
+
+
 async def list_suppressed_for_owner(db: AsyncSession, *, owner_id: str) -> list[dict[str, Any]]:
     """列出主人名下、对主人可见的全部被抑制消息（门控 + 运行时入站类），供 daemon 镜像桥拉取。
 
     owner 隔离：只返回 `owner_id` 名下 `visible_to_owner=true` 的行。每行携带 `suppress_reason`
     （daemon 据此分诊放行三分）、`message_preview`、`original_body`，按 message_id 升序。
+
+    RT1.5·§4.1：额外携带「关联好友请求 + 来源主人」——`pending_request_id`（取自
+    `policy_snapshot`）、`sender_hasn_id`（`m.from_id`）、`sender_owner_hasn_id` /
+    `sender_owner_name`（批量解析发送分身的主人；远端 / 无从解析留 null）。
     """
     rows = (
         await db.execute(
@@ -93,7 +173,9 @@ async def list_suppressed_for_owner(db: AsyncSession, *, owner_id: str) -> list[
                        s.hasn_id         AS hasn_id,
                        s.conversation_id::text AS conversation_id,
                        s.suppress_reason AS suppress_reason,
+                       s.policy_snapshot AS policy_snapshot,
                        s.created_time    AS created_time,
+                       m.from_id         AS from_id,
                        m.content         AS content
                 FROM public.hasn_suppressed_messages s
                 LEFT JOIN public.hasn_messages m ON m.id = s.message_id
@@ -106,22 +188,14 @@ async def list_suppressed_for_owner(db: AsyncSession, *, owner_id: str) -> list[
         )
     ).mappings().all()
 
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        content = row['content']
-        items.append(
-            {
-                'suppressed_id': str(row['suppressed_id']),
-                'message_id': str(row['message_id']),
-                'conversation_id': str(row['conversation_id']),
-                'agent_hasn_id': row['hasn_id'],
-                'reason': row['suppress_reason'] or 'permission_denied',
-                'created_at': int(row['created_time'].timestamp()) if row['created_time'] else 0,
-                'message_preview': _preview_from_content(content),
-                'original_body': _original_body_from_content(content),
-            }
-        )
-    return items
+    # 先批量解析「来源主人」：只对分身发送方（`a_` 前缀）解析，避免逐行 N+1 查询
+    agent_sender_ids = list({
+        row['from_id'] for row in rows
+        if row['from_id'] and str(row['from_id']).startswith('a_')
+    })
+    sender_owners = await _resolve_sender_owners(db, agent_sender_ids)
+
+    return [_build_suppressed_item(row, sender_owners) for row in rows]
 
 
 async def _load_suppressed(db: AsyncSession, *, owner_id: str, message_id: int) -> HasnSuppressedMessages | None:
