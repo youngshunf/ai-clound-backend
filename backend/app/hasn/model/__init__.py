@@ -63,3 +63,4 @@ from backend.app.hasn.model.hasn_platform_operator_grants import (
     HasnPlatformOperatorGrants as HasnPlatformOperatorGrants,
 )
 from backend.app.hasn.model.hasn_judge_verdict import HasnJudgeVerdict as HasnJudgeVerdict
+from backend.app.hasn.model.hasn_group_agent_invites import HasnGroupAgentInvites as HasnGroupAgentInvites

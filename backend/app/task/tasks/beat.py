@@ -40,6 +40,11 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'app_entitlement_expire_sweep',
         'schedule': TzAwareCrontab('0', '2'),  # 每天凌晨 2 点收敛「active 但已过期」的应用权益 status
     },
+    '群拉分身邀请过期检查': {
+        'task': 'hasn_group_agent_invite_expire_sweep',
+        # 每天凌晨 2:10 收敛超 7 天未处理的 pending 拉分身邀请（doc10 §3.2；读路径已惰性过期，本任务兜底）
+        'schedule': TzAwareCrontab('10', '2'),
+    },
     '积分账本每小时对账': {
         'task': 'newapi_hourly_credit_sync',
         'schedule': TzAwareCrontab('0'),  # 每小时整点：new-api 真实消费增量回扣账本 + 重设 quota（§5A.5）

@@ -5,7 +5,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.common.model import Base, TimeZone, id_key
+from backend.common.model import Base, TimeZone, UniversalText, id_key
 
 
 class HasnGroupMembers(Base):
@@ -23,3 +23,6 @@ class HasnGroupMembers(Base):
     muted: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='是否免打扰')
     joined_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='加入时间')
     invited_by: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='邀请者 hasn_id')
+    # doc10 需求 4：分身群内发言准则（仅 member_type=agent 行有意义，由分身主人设置，仅本群生效）
+    agent_charter: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='分身群内发言准则（仅分身主人可读写，随派发注入 runtime system_prompt）')
+    charter_updated_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='发言准则最后更新时间')

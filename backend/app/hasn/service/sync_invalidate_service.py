@@ -81,6 +81,11 @@ KIND_SCOPES = 'scopes'
 # 与 suppressed 同形态（per-owner 指纹，不进全局握手，靠 bump_owner push + 周期 sync_pull 兜底）；
 # 「自分身→主人」的汇报面走会话汇报卡（emit 内 OwnerLoopback 早返），绝不进此 kind。
 KIND_NOTIFICATION = 'notification'
+# owner 定向：该 owner 参与的群设置/成员/生效发言策略变更（doc10 群聊发言规则）——加/减分身触发
+# effective_agent_policy 翻转、改「允许成员拉分身」开关、拉分身邀请 accept/decline 等，bump 该群
+# 全体成员 owner。daemon 收到即 nudge webui 重拉群详情（读走 local_first），刷新常驻「生效发言规则」
+# 徽标。charter 变更**不进**此 kind（隐私：准则仅主人可见，不向全群广播；走 session 水位重建，见 daemon D4）。
+KIND_GROUPS = 'groups'
 OWNER_KINDS = (
     KIND_TASKS,
     KIND_PLAN,
@@ -91,6 +96,7 @@ OWNER_KINDS = (
     KIND_DECKS,
     KIND_SCOPES,
     KIND_NOTIFICATION,
+    KIND_GROUPS,
 )
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
@@ -108,6 +114,8 @@ EMPTY_DECKS_REVISION = 'empty'
 EMPTY_SCOPES_REVISION = 'empty'
 # 某 owner 名下无通知时的稳定指纹（同上约定）
 EMPTY_NOTIFICATION_REVISION = 'empty'
+# 某 owner 未参与任何群时的稳定指纹（同上约定）
+EMPTY_GROUPS_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -333,6 +341,52 @@ async def compute_owner_decks_revision(db: AsyncSession, owner_id: str) -> str:
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
 
 
+async def compute_owner_groups_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 参与的群指纹：sha256(sorted "g:{gid}@{policy}@{count}@{allow}" 行)[:16]。
+
+    「参与」= owner 本人（human hasn_id）或其名下任一 agent 是群成员。指纹字段覆盖
+    ``agent_policy``（群主设置）+ ``member_count``（加/减成员即变，含加/减分身翻转 effective）+
+    ``allow_member_invite_agent``（拉分身开关）。任一变 → 帧 revision 变 → daemon nudge webui 重拉
+    群详情、刷新「生效发言规则」徽标。**不含** charter（隐私：准则仅主人可见，不进群级广播）。
+    """
+    from backend.app.hasn.model.hasn_agents import HasnAgents
+    from backend.app.hasn.model.hasn_conversations import HasnConversations
+    from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
+
+    # owner 本人 hasn_id + 名下 agent 的 hasn_ids
+    agent_ids = (
+        await db.execute(sa.select(HasnAgents.hasn_id).where(HasnAgents.owner_id == owner_id))
+    ).scalars().all()
+    member_ids = [owner_id, *[a for a in agent_ids if a]]
+    conv_ids = (
+        await db.execute(
+            sa.select(HasnGroupMembers.conversation_id.distinct()).where(
+                HasnGroupMembers.member_id.in_(member_ids)
+            )
+        )
+    ).scalars().all()
+    if not conv_ids:
+        return EMPTY_GROUPS_REVISION
+    rows = (
+        await db.execute(
+            sa.select(
+                HasnConversations.group_id,
+                HasnConversations.agent_policy,
+                HasnConversations.member_count,
+                HasnConversations.allow_member_invite_agent,
+            ).where(
+                HasnConversations.id.in_(list(conv_ids)),
+                HasnConversations.type == 'group',
+                HasnConversations.status == 'active',
+            )
+        )
+    ).all()
+    lines = sorted(f'{gid}@{pol}@{cnt}@{int(bool(allow))}' for gid, pol, cnt, allow in rows)
+    if not lines:
+        return EMPTY_GROUPS_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
 async def compute_owner_memory_revision(db: AsyncSession, owner_id: str) -> str:
     """某 owner 记忆命名空间指纹：sha256(sorted "namespace@revision" 行)[:16]。
 
@@ -479,6 +533,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_scopes_revision(db, owner_id)
     elif kind == KIND_NOTIFICATION:
         rev = await compute_owner_notification_revision(db, owner_id)
+    elif kind == KIND_GROUPS:
+        rev = await compute_owner_groups_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 

@@ -815,6 +815,13 @@ async def route_message(
         sender_member = next((m for m in members if m.member_id == from_id), None)
         from_display_name = getattr(sender_member, 'member_name', None) if sender_member else None
         from_star_id = getattr(sender_member, 'member_star_id', None) if sender_member else None
+        # doc10：随 envelope 下发「生效发言策略」+ 分身成员数——daemon 群派发闸据 effective 判定
+        # （多分身群 free 已被降级为 mention_only），不必自己再数分身、再派生（云端权威一处算）。
+        from backend.app.hasn.service.hasn_group_service import effective_agent_policy
+
+        grp_agent_member_count = sum(1 for m in members if getattr(m, 'member_type', None) == 'agent')
+        grp_stored_policy = getattr(group, 'agent_policy', None) or 'free'
+        grp_effective_policy = effective_agent_policy(grp_stored_policy, grp_agent_member_count)
         hasn_envelope = {
             'id': msg.id,
             'conversation_id': group_conv_id,
@@ -836,14 +843,18 @@ async def route_message(
             'created_time': msg.created_time.isoformat() if msg.created_time else None,
             # 群级 agent 发言策略 + @提及：daemon(G4) group_participation_gate 的权威数据，
             # 决定 no_agent/silent 不唤醒、mention_only 仅命中才唤醒、free 唤醒(受配额退避)。
-            'agent_policy': getattr(group, 'agent_policy', None) or 'free',
+            'agent_policy': grp_stored_policy,
+            'agent_policy_effective': grp_effective_policy,
+            'agent_member_count': grp_agent_member_count,
             'mentions': grp_mentions,
             'mention_all': grp_mention_all,
             'group': {
                 'group_id': to_id,
                 'name': group.group_name,
                 'owner_id': group.group_owner_id,
-                'agent_policy': getattr(group, 'agent_policy', None) or 'free',
+                'agent_policy': grp_stored_policy,
+                'agent_policy_effective': grp_effective_policy,
+                'agent_member_count': grp_agent_member_count,
             },
         }
         payload = {

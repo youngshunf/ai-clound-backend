@@ -41,6 +41,11 @@ class UpdateGroupBody(BaseModel):
     avatar_url: str | None = Field(None, description='新群头像')
     agent_policy: str | None = Field(None, description='新分身发言策略')
     join_policy: str | None = Field(None, description='新加入策略 invite_only/open/approval')
+    allow_member_invite_agent: bool | None = Field(None, description='是否允许普通成员拉分身进群（doc10）')
+
+
+class SetCharterBody(BaseModel):
+    charter: str | None = Field(None, description='分身群内发言准则（≤4000 字，null/空串=清除）')
 
 
 async def _caller_hasn_id(request: Request, db: CurrentSession) -> str:
@@ -163,6 +168,82 @@ async def update_group(
         avatar_url=body.avatar_url,
         agent_policy=body.agent_policy,
         join_policy=body.join_policy,
+        allow_member_invite_agent=body.allow_member_invite_agent,
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/{group_id}/members/{agent_hasn_id}/charter',
+    summary='设置分身群内发言准则（仅分身主人）',
+    dependencies=[DependsJwtAuth],
+)
+async def set_agent_charter(
+    request: Request,
+    db: CurrentSessionTransaction,
+    group_id: Annotated[str, Path(description='群组公开 ID')],
+    agent_hasn_id: Annotated[str, Path(description='分身 HASN ID a_...')],
+    body: Annotated[SetCharterBody, Body()],
+) -> ResponseSchemaModel[dict]:
+    # doc10 §4：分身群内发言准则——仅分身主人可读写；随派发注入 runtime system_prompt。
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.set_agent_charter(
+        db=db, actor_hasn_id=caller, group_id=group_id, agent_hasn_id=agent_hasn_id, charter=body.charter
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{group_id}/agent-invites/{invite_id}/accept',
+    summary='同意拉分身邀请（仅分身主人）',
+    dependencies=[DependsJwtAuth],
+)
+async def accept_agent_invite(
+    request: Request,
+    db: CurrentSessionTransaction,
+    group_id: Annotated[str, Path(description='群组公开 ID')],
+    invite_id: Annotated[int, Path(description='邀请 ID')],
+) -> ResponseSchemaModel[dict]:
+    # doc10 §3.2：非主人拉分身进群需主人同意——主人点卡片「同意」→ 分身即时入群。
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.accept_agent_invite(
+        db=db, actor_hasn_id=caller, group_id=group_id, invite_id=invite_id
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{group_id}/agent-invites/{invite_id}/decline',
+    summary='拒绝拉分身邀请（仅分身主人）',
+    dependencies=[DependsJwtAuth],
+)
+async def decline_agent_invite(
+    request: Request,
+    db: CurrentSessionTransaction,
+    group_id: Annotated[str, Path(description='群组公开 ID')],
+    invite_id: Annotated[int, Path(description='邀请 ID')],
+) -> ResponseSchemaModel[dict]:
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.decline_agent_invite(
+        db=db, actor_hasn_id=caller, group_id=group_id, invite_id=invite_id
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{group_id}/agent-invites/{invite_id}/cancel',
+    summary='撤回拉分身邀请（仅发起人）',
+    dependencies=[DependsJwtAuth],
+)
+async def cancel_agent_invite(
+    request: Request,
+    db: CurrentSessionTransaction,
+    group_id: Annotated[str, Path(description='群组公开 ID')],
+    invite_id: Annotated[int, Path(description='邀请 ID')],
+) -> ResponseSchemaModel[dict]:
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.cancel_agent_invite(
+        db=db, actor_hasn_id=caller, group_id=group_id, invite_id=invite_id
     )
     return response_base.success(data=data)
 
