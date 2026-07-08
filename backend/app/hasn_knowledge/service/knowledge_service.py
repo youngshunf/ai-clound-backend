@@ -149,6 +149,17 @@ def _native_filename(title: str) -> str:
     return f'{safe[:80]}.md'
 
 
+def _extract_unowned_dataset_id(message: str, candidate_ids: list[str]) -> str | None:
+    """从 RagFlow「you don't own the dataset {id}」类错误信息里识别出具体的孤儿 dataset id。
+
+    仅在错误信息里确实包含某个候选 id 时才返回（避免把无关业务错误误判成孤儿 dataset）。
+    """
+    for candidate in candidate_ids:
+        if candidate in message:
+            return candidate
+    return None
+
+
 class KnowledgeService:
     # ---------- kb ----------
 
@@ -1191,16 +1202,31 @@ class KnowledgeService:
             return {'chunks': [], 'total': 0, 'kb_count': 0}
         client, _ = await resolve_knowledge_instance(db)
         dataset_by_id = {kb.ragflow_dataset_id: kb for kb in visible}
-        data = await client.retrieval(
-            question=question,
-            dataset_ids=list(dataset_by_id.keys()),
-            top_k=top_k,
-            similarity_threshold=similarity_threshold,
-        )
+        # 韧性：白名单里若混入不再属于当前 RagFlow 账号的孤儿 dataset（如切换实例后遗留的旧库、
+        # 或引擎侧被手动删除），RagFlow 对批量 dataset_ids 整批拒绝（code=102 you don't own the
+        # dataset X）——逐个识别剔除后重试，避免一个孤儿库拖垮同一 owner 名下其它正常库的检索。
+        remaining_ids = list(dataset_by_id.keys())
+        data: dict[str, Any] | None = None
+        while remaining_ids:
+            try:
+                data = await client.retrieval(
+                    question=question,
+                    dataset_ids=remaining_ids,
+                    top_k=top_k,
+                    similarity_threshold=similarity_threshold,
+                )
+                break
+            except KnowledgeProviderError as exc:
+                orphan_id = _extract_unowned_dataset_id(exc.message, remaining_ids)
+                if orphan_id is None:
+                    raise
+                remaining_ids.remove(orphan_id)
+        if data is None:
+            return {'chunks': [], 'total': 0, 'kb_count': 0}
         raw_chunks = data.get('chunks') or []
         # 纵深防御：即便上游只应返回请求 dataset 内的分块，仍按「本次允许的 dataset 白名单」再过滤一遍，
         # 杜绝引擎越权把其它 dataset 的分块泄漏给调用者——隔离不单靠上游遵约（应用层兜底）。
-        allowed_dataset_ids = set(dataset_by_id.keys())
+        allowed_dataset_ids = set(remaining_ids)
         raw_chunks = [c for c in raw_chunks if str(c.get('dataset_id')) in allowed_dataset_ids]
         rf_doc_ids = {str(c.get('document_id')) for c in raw_chunks if c.get('document_id')}
         doc_rows: dict[str, Document] = {}
