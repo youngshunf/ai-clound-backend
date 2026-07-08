@@ -645,7 +645,10 @@ async def register_hasn_agent(
     db.add(agent)
     await db.flush()
 
-    # 同事务写入 hasn_contacts（owner→agent 的 service 关系，trust_level=5/connected）
+    # 同事务写入 hasn_contacts（owner→agent 的控制边，social + trust_level=5/connected）
+    # D3：协议 Core/02 §7.4.2 规定控制边 MUST social+5 / MUST NOT service；此前误写
+    # service+5 违反协议与 validate_relation_constraints，已对齐为 social。自有分身的判定
+    # 全链靠 peer_owner_id == owner_id（+ trust_level=5），不依赖 relation_type='service'。
     # 保证注册 agent 后 contacts 表立即可被 list_contacts 检索到；重复调用通过
     # ON CONFLICT (owner_id, peer_id, relation_type) DO NOTHING 幂等。
     await db.execute(
@@ -655,7 +658,7 @@ async def register_hasn_agent(
             peer_id=agent_hasn_id,
             peer_owner_id=owner_hasn_id,
             peer_type='agent',
-            relation_type='service',
+            relation_type='social',
             trust_level=5,
             status='connected',
             channel_source='system',

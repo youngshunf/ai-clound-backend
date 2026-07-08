@@ -441,6 +441,21 @@ async def list_contacts(
 # ─── 阶段二: 权限矩阵 API ───────────────────────────────
 
 
+def _resolve_status_on_trust_change(previous_status: str, new_trust_level: int) -> str:
+    """信任等级变更时联动解析 contact.status（B1/B6/D1 纯判定·无副作用·可单测）。
+
+    - new_trust_level == 0（拉入黑名单）→ 'blocked'：Discovery/搜索静默过滤、消息静默丢弃；
+    - new_trust_level ≥ 1 且当前为 'blocked'（移出黑名单）→ 'connected'：D1 恢复普通朋友，
+      关系行保留、被拉黑期间的消息不补投（想彻底断走「删除联系人」RT5）；
+    - 其余情况（普通调档，如 2↔3↔4）→ 保持原 status 不变，不误改状态。
+    """
+    if new_trust_level == 0:
+        return 'blocked'
+    if previous_status == 'blocked':
+        return 'connected'
+    return previous_status
+
+
 @router.put('/{contact_id}/trust-level', summary='修改信任等级')
 async def update_trust_level(
     contact_id: int,
@@ -479,7 +494,12 @@ async def update_trust_level(
         if not agent or agent.owner_id != hasn_id:
             raise HTTPException(status_code=403, detail='只能将自己名下的 Agent 设为所有者等级')
 
+    # B1/B6/D1：trust_level 与 status 联动（纯判定抽到 _resolve_status_on_trust_change 便于单测）。
+    # - trust=0（拉入黑名单）→ status=blocked（Discovery/搜索静默过滤，消息静默丢弃）；
+    # - trust≥1 且当前为 blocked（移出黑名单）→ status=connected（D1：关系行保留，
+    #   前端「移出黑名单」传 trust=2 即恢复普通朋友，被拉黑期间的消息不补投）。
     contact.trust_level = obj_in.trust_level
+    contact.status = _resolve_status_on_trust_change(contact.status, obj_in.trust_level)
     await db.commit()
 
     return response_base.success(
@@ -487,6 +507,7 @@ async def update_trust_level(
             'contact_id': contact_id,
             'trust_level': obj_in.trust_level,
             'trust_level_label': TRUST_LEVEL_LABELS.get(obj_in.trust_level, ''),
+            'status': contact.status,
         }
     )
 
