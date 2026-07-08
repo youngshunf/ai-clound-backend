@@ -72,3 +72,23 @@ async def hasn_group_agent_invite_expire_sweep() -> str:
     async with async_db_session.begin() as session:
         count = await hasn_group_service.sweep_expired_invites(session)
     return f'expired {count} overdue group agent invites' if count else 'no overdue group agent invites'
+
+
+@celery_app.task(name='hasn_contact_lifecycle_expire_sweep')
+async def hasn_contact_lifecycle_expire_sweep() -> str:
+    """关系生命周期过期兜底（doc08 RT5·B7）：好友请求 30 天未响应过期 + 联系人 auto_expire 到期。
+
+    定时执行：每天凌晨 2:20。
+    ① hasn_contact_requests：pending 且创建超 30 天 → expired（幂等，只收敛存量 pending）；
+    ② hasn_contacts：auto_expire 已过且仍 connected → archived（service 到期自动断，铁律5b）。
+    """
+    from backend.app.hasn.service.hasn_contacts_service import HasnContactsService
+    from backend.database.db import async_db_session
+
+    async with async_db_session() as session:
+        result = await HasnContactsService.sweep_expired_relation_lifecycle(session)
+    req_n = result['requests_expired']
+    ct_n = result['contacts_expired']
+    if req_n or ct_n:
+        return f'expired {req_n} contact requests, archived {ct_n} auto-expire contacts'
+    return 'no overdue contact requests or auto-expire contacts'

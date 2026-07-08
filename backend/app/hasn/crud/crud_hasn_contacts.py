@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
@@ -193,6 +193,28 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
             update(HasnContacts).where(HasnContacts.id == contact_id)
             .values(status='blocked', trust_level=0)
         )
+
+    @staticmethod
+    async def delete_relation_bidirectional(
+        db: AsyncSession, id_a: str, id_b: str, relation_type: str = 'social',
+    ) -> int:
+        """双向删边（D4·删除联系人·修 B5）：删 A→B 与 B→A 两条同 relation_type 的关系行。
+
+        协议 `hasn.relation.remove` 的云端权威实现基石：单方发起即彻底解除双向关系边
+        （人-人好友两条对称行、人-分身单向行都按字面 (owner,peer) 精确命中，
+        不会误伤底层的「主人↔主人」好友关系——那两行 peer_id 是主人非分身）。
+        返回删除的行数。
+        """
+        result = await db.execute(
+            delete(HasnContacts).where(
+                HasnContacts.relation_type == relation_type,
+                or_(
+                    and_(HasnContacts.owner_id == id_a, HasnContacts.peer_id == id_b),
+                    and_(HasnContacts.owner_id == id_b, HasnContacts.peer_id == id_a),
+                ),
+            )
+        )
+        return result.rowcount or 0
 
 
 hasn_contacts_dao: CRUDHasnContacts = CRUDHasnContacts(HasnContacts)

@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from sqlalchemy import Select
+from sqlalchemy import Select, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -62,6 +62,35 @@ class CRUDHasnConversations(CRUDPlus[HasnConversations]):
         :return:
         """
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)
+
+    @staticmethod
+    async def mark_direct_unreachable(db: AsyncSession, id_a: str, id_b: str) -> int:
+        """把 A↔B 的 direct 会话置 unreachable（D4·会话不删但标不可达·修 B5）。
+
+        删除联系人后关系边已断：会话历史**不删**（保留双方消息记录），仅把仍 active 的
+        单聊会话状态标为 `unreachable`——语义「关系已解除、需重新加好友才能继续通信」，
+        对端后续发消息按无关系门控/暂存。只改 active 行（幂等，已 archived/disbanded 不动）。
+        返回标记条数。
+        """
+        result = await db.execute(
+            update(HasnConversations)
+            .where(HasnConversations.type == 'direct')
+            .where(HasnConversations.status == 'active')
+            .where(
+                or_(
+                    and_(
+                        HasnConversations.participant_a_id == id_a,
+                        HasnConversations.participant_b_id == id_b,
+                    ),
+                    and_(
+                        HasnConversations.participant_a_id == id_b,
+                        HasnConversations.participant_b_id == id_a,
+                    ),
+                )
+            )
+            .values(status='unreachable')
+        )
+        return result.rowcount or 0
 
 
 hasn_conversations_dao: CRUDHasnConversations = CRUDHasnConversations(HasnConversations)
