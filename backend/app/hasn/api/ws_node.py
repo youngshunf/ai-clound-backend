@@ -539,7 +539,12 @@ async def _handle_send(
     content = params.get('content', {})
     local_id = params.get('local_id')
     msg_type = params.get('type', 'message')
-    reply_to_id = params.get('context', {}).get('reply_to')
+    # daemon 把群 @提及（mentions/mention_all）等随帧元数据放在 context 里，必须整体透传给
+    # route_message——群分支据此持久化 mentions 并随 envelope 扇出，是 mention_only 派发闸
+    # 的权威数据载体。此前这里只摘了 reply_to、context 本体被丢弃，导致跨节点分身在
+    # mention_only 群里永远收不到 @（发送侧 daemon 本地唤醒路径掩盖了此断点，doc10 GS0 修复）。
+    context = params.get('context') if isinstance(params.get('context'), dict) else None
+    reply_to_id = (context or {}).get('reply_to')
 
     # 校验 from_id 合法性：必须是已上报的实体
     if from_id not in active_entities:
@@ -585,6 +590,7 @@ async def _handle_send(
             msg_type=msg_type,
             local_id=local_id,
             reply_to_id=reply_to_id,
+            context=context,
         )
 
     if result.get('error'):
