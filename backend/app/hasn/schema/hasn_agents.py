@@ -230,6 +230,14 @@ class AgentRuntimeConfig(SchemaBase):
         le=100,
         description='A2A 连续自动往返硬上限（分身↔分身互发到此轮数自动暂停并通知主人续聊；空=默认 10）',
     )
+    restrict_file_access_to_workspace: bool | None = Field(
+        None,
+        description=(
+            '是否把分身本地文件操作限定在工作目录内。空/False=默认放开（分身可读取工作区外文件、'
+            '便于整理外部目录）；True=收紧到仅工作区内。daemon 组装本地 MCP key 时按此下发给 '
+            'path_guard，管住 asset.upload/film/publish/marketplace 等收文件的本地工具。'
+        ),
+    )
 
 
 class GetAgentRuntimeConfigResponse(SchemaBase):
