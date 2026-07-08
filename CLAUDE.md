@@ -12,6 +12,17 @@
 - **守卫**：`backend/tests/test_response_envelope_contract.py` 内省全部路由，断言不许新增非信封业务接口（白名单 `KNOWN_NON_ENVELOPE` 分"真例外"和"已知欠债"两段）。新接口若不走信封又非真例外 → 测试红。
 - **加端点要跑真实 HTTP**（打运行中 8020），不能只跑 service 层 E2E——后者绕过 HTTP，抓不到这类外壳漂移。
 
+## 云端 MCP 平台工具入参禁止二进制 base64（铁律）
+
+> 权威在父仓 `CLAUDE.md` →「Agent 工具入参禁止二进制 base64／字节块」。
+
+**`backend/app/mcp/tools/*` 下任何 Agent 平台工具，input_schema 禁止出现 `content=<base64>` / `*_base64` / 字节块入参。** base64 逼分身把整段字节灌进上下文，上传几张图标就撑爆上下文、烧天量 token。二进制走「本地工具传 path（daemon 读盘上云）」或「`hasn://asset/{id}` 引用」。
+
+- **正解范式**：`knowledge.upload_document`（`content_text` 或 `asset_uri`，非 base64）· `voice.transcribe`（`audio=hasn://asset/{id}`）。
+- **反例（已删）**：`hasn.asset.create`（`content` base64/text）已整体删除，改由本地 `hasn.asset.upload(path)` 承接（daemon 侧 `AssetGateway` 落桶）。
+- **文本创作类豁免**：分身自撰的文本产物（deck 的 `html`、artifact 的 `body`、`message.send` 的 `content`、designsystem 的 `content`）内容本身即交付物，可内联，不受此限。
+- **CR 闸门**：新增/改动平台工具若要收文件/二进制，一律回「path 或 hasn://asset 引用」，评审见 `*_base64` 入参即拦。
+
 ## 多会话分支纪律（主仓恒在主分支，新建分支必走 worktree）
 
 多会话 / 多 agent 会同时在同一个主 clone 上工作，**绝不**为了开发把主仓库 `git checkout` 到 feature 分支（会互相 reset/覆盖——曾发生 A 会话 merge、B 会话 `git reset` 撤销并清掉对方工作区改动，来回数轮差点丢工作）。
