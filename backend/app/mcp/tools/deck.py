@@ -125,7 +125,13 @@ async def _upsert_pages(db: Any, ctx: AgentContext, deck_id: int, pages_input: l
 
 # ── handlers ─────────────────────────────────────────────────────────────────────
 async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    """新建空演示文稿（owner-scoped；create_deck 收 owner_id 而非 subject）。返回 deck_id。"""
+    """新建空演示文稿（owner-scoped；create_deck 收 owner_id 而非 subject）。返回 deck_id。
+
+    分身用工具建 deck 时**自动绑定调用它的分身为协作分身**（bound_agent_id=当前 agent）：
+    首页「让分身生成」改为纯派发工作会话、不再预建带绑定的空 deck，绑定关系就落在这里——
+    分身 `hasn.deck.create` 建好即是它自己名下的协作 deck，后续 generate/instruct 续接同一分身、
+    webui 也能正确展示协作分身。身份取自 Agent JWT 解析的 ctx，绝不入请求体。
+    """
     title = str(args.get('title') or '').strip() or '未命名演示文稿'
     deck = await deck_service.create_deck(
         db,
@@ -135,6 +141,7 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         language=str(args.get('language') or 'zh'),
         source='agent',
         style_profile_id=(str(args['style_profile_id']).strip() if args.get('style_profile_id') else None),
+        bound_agent_id=ctx.agent_hasn_id,
     )
     return {'deck_id': str(deck['id']), 'status': deck['status'], 'deck': deck}
 
