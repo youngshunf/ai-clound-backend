@@ -31,6 +31,11 @@ class McpErrorCode(Enum):
     # 注：事实源 10 §7.2 以 "如 MCP_9214 QUOTA_EXCEEDED" 举例，但 9214 已被
     # LOCAL_EXECUTION_UNAVAILABLE 占用，故配额码取下一个空位 9216。
     QUOTA_EXCEEDED = "MCP_9216"
+    # L3 工具门（doc08 §4·RT3·云端半场）：对外会话里对方信任档不足以调用该能力工具。
+    # ⚠️ 云端**不复用** 9215（云端 9215 已是 APPROVAL_REQUIRED——若复用会被 hasn-node
+    # ai_native `is_approval_required` 误判成待审批、错误触发换票流程）。故取下一个空位 9217，
+    # 符号名与本地 hasn-mcp `TrustLevelInsufficient`（本地占 9215）对齐，结构化拒绝 shape 一致。
+    TRUST_LEVEL_INSUFFICIENT = "MCP_9217"
 
     def __str__(self) -> str:
         return f"{self.value} {self.name}"

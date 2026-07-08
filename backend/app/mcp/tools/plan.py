@@ -799,6 +799,31 @@ _SPECS: list[dict[str, Any]] = [
 ]
 
 
+# ── L3 工具门档位（doc08 §4·RT3·云端半场）────────────────────────────────────────
+# 对外会话里按对端信任档硬门控（主会话/主人自环不受限，见 server.call_tool + trust_gate）。
+# 只给「披露主人日程/计划/偏好」的读工具 + 「代主人预约」的写工具点名挂门，其余（建自己的
+# 目标/待办、分诊、习惯打卡等主人自身操作）**不挂门**（对外会话本就不涉及披露/代主人对外承诺）。
+#   看日程/看计划/看待办/看项目/看习惯/忙闲/偏好读 = 好友(3)
+#   代预约（event.create=在主人日历上落一场约会 ≈ make_appointment）= 密友(4)
+_MIN_TRUST_BY_ACTION: dict[str, int] = {
+    # —— 看日程/看计划（读，档=好友3）——
+    'today': 3,
+    'goal.list': 3,
+    'goal.get': 3,
+    'project.list': 3,
+    'project.get': 3,
+    'todo.list': 3,
+    'todo.get': 3,
+    'event.list': 3,
+    'availability': 3,
+    'habit.list': 3,
+    # —— 偏好详情（读，档=好友3）——
+    'preference.get': 3,
+    # —— 代预约（写，档=密友4；make_appointment 语义）——
+    'event.create': 4,
+}
+
+
 class _PlanTool(BaseTool):
     """plan 域单 struct + spec 派发（避免 29 个同形态类样板，对齐 Rust PlanOp 枚举派发）。"""
 
@@ -827,6 +852,12 @@ class _PlanTool(BaseTool):
     @property
     def execution_location(self) -> str:
         return 'cloud'
+
+    @property
+    def min_trust_level(self) -> int | None:
+        # L3 工具门（doc08 §4·RT3·云端半场）：披露主人日程/计划/偏好读 = 好友(3)、代预约写 = 密友(4)；
+        # 未点名的 action（建目标/分诊/习惯打卡等主人自身操作）无对外门（None）。
+        return _MIN_TRUST_BY_ACTION.get(self._action)
 
     @property
     def description(self) -> str:
