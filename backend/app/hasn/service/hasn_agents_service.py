@@ -1313,9 +1313,10 @@ class HasnAgentsService:
         """
         创建HASN Agent
 
-        附带写入 hasn_contacts（owner→agent 的 service 关系，trust_level=5/connected），
+        附带写入 hasn_contacts（owner→agent 的控制边，social + trust_level=5/connected），
         与 hasn_auth.register_hasn_agent 行为对齐：所有 agent 创建路径
         （app create_my_hasn_agents / admin create_hasn_agents）一律自动落 contacts。
+        D3：控制边 MUST social+5（Core/02 §7.4.2），此前误写 service+5 已对齐 social。
         ON CONFLICT (owner_id, peer_id, relation_type) DO NOTHING 幂等。
 
         :param db: 数据库会话
@@ -1331,7 +1332,7 @@ class HasnAgentsService:
                 peer_id=obj.hasn_id,
                 peer_owner_id=obj.owner_id,
                 peer_type='agent',
-                relation_type='service',
+                relation_type='social',
                 trust_level=5,
                 status='connected',
                 channel_source='system',
