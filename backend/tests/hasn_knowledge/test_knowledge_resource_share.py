@@ -102,6 +102,63 @@ async def test_list_accessible_includes_shared(session) -> None:
     assert 'visibility' in by_id[own.id]  # 列表出参带可见性
 
 
+async def test_retrieval_visible_includes_shared_for_human_and_agent(session) -> None:
+    """检索可见集（resolve_retrieval_visible_kbs）：好友 B 及 B 的分身都能**检索**到 A 分享给 B 的库。
+
+    这是「知识库可分享」与「用户级隔离」不冲突的关键——单账号模型下把分享库的 ragflow_dataset_id
+    并进检索白名单即可（同一平台 service key 能读任意 dataset）。浏览侧由
+    `test_list_accessible_includes_shared` 覆盖；本测试锁死**检索**侧同源含分享库。
+    """
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    b = Subject.human(f'h_b_{tag}')
+    b_agent = Subject.agent(f'a_b_{tag}', b.hasn_id)
+
+    own_b = await _make_kb(session, b.hasn_id, name='B 自己的库')
+    shared = await _make_kb(session, a.hasn_id, name='A 分享给 B 的库')
+    await knowledge_service.add_share(
+        session, subject=a, kb_id=shared.id, grantee_type='human', grantee_id=b.hasn_id, permission='viewer'
+    )
+
+    # B 本人检索可见集 = 自己的 ∪ 分享来的
+    human_visible = await knowledge_service.resolve_retrieval_visible_kbs(session, subject=b)
+    assert {kb.id for kb in human_visible} == {own_b.id, shared.id}
+
+    # B 的分身检索可见集（inherit）= B 自己的 ∪ 分享给 B 的（好友的分身也能检索主人收到的分享）
+    agent_visible = await knowledge_service.resolve_agent_visible_kbs(session, b.hasn_id, b_agent.hasn_id)
+    assert {kb.id for kb in agent_visible} == {own_b.id, shared.id}
+
+    # 维度② restricted 只裁剪「B 自有库」，分享来的库不受白名单裁剪，仍可检索
+    await knowledge_service.put_agent_grant(session, b.hasn_id, b_agent.hasn_id, mode='restricted', kb_ids=[own_b.id])
+    restricted_visible = await knowledge_service.resolve_agent_visible_kbs(session, b.hasn_id, b_agent.hasn_id)
+    assert {kb.id for kb in restricted_visible} == {own_b.id, shared.id}
+
+    # A 撤销分享后，B 不再能检索该库
+    await knowledge_service.revoke_share(
+        session, subject=a, kb_id=shared.id, grantee_type='human', grantee_id=b.hasn_id
+    )
+    after = await knowledge_service.resolve_retrieval_visible_kbs(session, subject=b)
+    assert {kb.id for kb in after} == {own_b.id}
+
+
+async def test_retrieval_visible_share_direct_to_agent(session) -> None:
+    """A 把库**直接分享给 B 的分身**（grantee_type='agent'）→ 该分身可检索，但 B 本人不因此可见。"""
+    tag = uuid.uuid4().hex[:8]
+    a = Subject.human(f'h_a_{tag}')
+    b = Subject.human(f'h_b_{tag}')
+    b_agent = Subject.agent(f'a_b_{tag}', b.hasn_id)
+    shared = await _make_kb(session, a.hasn_id, name='A 分享给 B 分身的库')
+    await knowledge_service.add_share(
+        session, subject=a, kb_id=shared.id, grantee_type='agent', grantee_id=b_agent.hasn_id, permission='viewer'
+    )
+
+    agent_visible = await knowledge_service.resolve_agent_visible_kbs(session, b.hasn_id, b_agent.hasn_id)
+    assert shared.id in {kb.id for kb in agent_visible}
+    # 只分享给分身、未分享给 B 本人 → B 的人视角检索不含该库
+    human_visible = await knowledge_service.resolve_retrieval_visible_kbs(session, subject=b)
+    assert shared.id not in {kb.id for kb in human_visible}
+
+
 async def test_visibility_link_grants_viewer(session) -> None:
     """可见性 link → 任意人（陌生人）拿到 viewer；private 则不可见。"""
     tag = uuid.uuid4().hex[:8]
