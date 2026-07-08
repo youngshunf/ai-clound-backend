@@ -245,6 +245,36 @@ async def respond_to_request(
         if req.to_owner_id != hasn_id:
             raise HTTPException(status_code=403, detail='只有被请求方可以接受该请求')
 
+        # 首联自动请求（RT1.5·入站派生 =2 普通朋友代发）：from=发送分身、审批人=接收方主人。
+        # 通用 respond 会把边建反方向（分身→A），故改走放行三合一对称路径：建 A→发送分身 边 +
+        # accept + 重投该 peer 全部暂存拦截消息（联系人页与拦截箱双入口任一同意都生效·D6）。
+        if req.add_source == 'auto_first_contact':
+            from backend.app.hasn.service.inbound_release import accept_first_contact_request
+
+            res = await accept_first_contact_request(db, request=req, approver_id=hasn_id)
+            peer_agent = await hasn_agents_dao.get_by_hasn_id(db, hasn_id=req.from_id)
+            peer = (
+                _agent_peer_out(peer_agent)
+                if peer_agent
+                else HasnContactPeerOut(hasn_id=req.from_id, star_id='', name='', type='agent')
+            )
+            await _push_contact_event(
+                req.to_owner_id,
+                {
+                    'method': 'hasn.contact.connected',
+                    'params': {
+                        'owner_id': req.to_owner_id,
+                        'request_id': request_id,
+                        'peer': peer.model_dump(),
+                        'trust_level': res.get('trust_level', trust),
+                    },
+                },
+            )
+            return response_base.success(
+                data={'status': 'connected', 'trust_level': res.get('trust_level', trust),
+                      'redelivered': res.get('redelivered', 0)},
+            )
+
         # agent 目标：只建『请求方 → 分身』单向 agent 边（分身回复依赖主人↔主人 trust，已≥2，
         # 无需反向 agent 边）。信任等级沿用请求时落库的『与主人一致』值。
         if req.to_type == 'agent':
