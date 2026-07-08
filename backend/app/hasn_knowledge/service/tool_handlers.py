@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_knowledge.service.error_adapter import to_http_error
-from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
+from backend.app.hasn_knowledge.service.knowledge_service import MAX_NATIVE_CONTENT_BYTES, knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
 from backend.common.exception import errors
 
@@ -93,10 +93,12 @@ async def handle_knowledge_fetch_doc(
 async def handle_knowledge_upload_document(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.upload_document：content_text(文本) 或 asset_uri(已在私有桶的真实文件) 二选一上传并索引。
+    """knowledge.upload_document：content_text(纯文本) 或 asset_uri(已在私有桶的真实文件) 二选一上传并索引。
 
-    - content_text → service 侧转 .txt（Agent 不构造 multipart）；
-    - asset_uri(hasn://asset/...) → 取桶字节建文档副本（资产须属同一主人，越权如实拒）。
+    - content_text（纯文本内容）→ **优先落原生文档**（可编辑/有版本/Markdown 渲染/在线预览最好/正文逐字保留，
+      且同样推进引擎索引可检索——对文本是纯升级）；仅当正文超原生 1MB 上限时，才诚实回落 file 文档
+      （引擎切块是唯一能承载超大文本的方式）。
+    - asset_uri(hasn://asset/...) → 取桶字节建 file 文档副本（真实二进制文件；资产须属同一主人，越权如实拒）。
     """
     kb_id = int(input_payload['kb_id'])
     await _assert_kb_reachable(db, agent, kb_id)
@@ -119,13 +121,29 @@ async def handle_knowledge_upload_document(
                 source='agent',
                 agent_hasn_id=agent.agent_hasn_id,
             )
+        # 纯文本内容优先落原生文档；仅超原生 1MB 上限才回落 file（引擎切块承载超大文本）。
+        text = str(content_text)
+        if len(text.encode('utf-8')) <= MAX_NATIVE_CONTENT_BYTES:
+            result = await knowledge_service.create_native_document(
+                db,
+                agent.owner_hasn_id,
+                kb_id,
+                title=title,
+                content=text,
+                folder_id=folder_id_int,
+                source='agent',
+                agent_hasn_id=agent.agent_hasn_id,
+            )
+            # 不回显整段正文（避免灌爆分身上下文），与 write_doc 出参对齐。
+            result.pop('content', None)
+            return result
         filename = title if '.' in title.rsplit('/', 1)[-1] else f'{title}.txt'
         return await knowledge_service.upload_file_document(
             db,
             agent.owner_hasn_id,
             kb_id,
             filename=filename,
-            data=str(content_text).encode('utf-8'),
+            data=text.encode('utf-8'),
             mime='text/plain',
             folder_id=folder_id_int,
             source='agent',
