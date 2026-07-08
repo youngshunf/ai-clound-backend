@@ -50,6 +50,13 @@ class OwnerCoverageGetTool(BaseTool):
         return 'cloud'
 
     @property
+    def min_trust_level(self) -> int | None:
+        # L3 工具门（doc08 §4·RT3·云端半场）：本工具披露主人 5 维画像——含**居住地址 residence
+        # （位置）**+ 兴趣/工作/目标/规划（偏好详情）。位置口径 = 密友(4)，取最严档；对外会话里
+        # 对端不足 4 不得读主人画像（主会话/主人自环不受限，见 server.call_tool）。
+        return 4
+
+    @property
     def description(self) -> str:
         return (
             '读取主人 5 个画像维度（兴趣爱好 interests / 工作情况 work / 居住地址 residence / '

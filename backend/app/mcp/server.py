@@ -289,6 +289,12 @@ class HasnCloudMcpServer:
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
 
+            # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
+            # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游
+            # 暴露判定 / ask 验票 / dispatch / 审计都只见剥离后的干净入参；同时据其判档（对外
+            # 会话按对端真实 trust 硬门控，不足即抛 MCP_9217 结构化拒绝）。
+            arguments = await self._enforce_conversation_trust_gate(agent_context, tool, arguments)
+
             # 统一暴露管线（doc18 §3·实施/103 U1）：resolve 后一次 evaluate，执行面按决策映射。
             # 与发现面 _can_discover 同源（HIDDEN 即不可见），转发面 hasn.cloud.tool.call 重入
             # 本方法自动覆盖。维度② 对象可达性由工具 execute 内部返回，与管线正交。
@@ -346,6 +352,49 @@ class HasnCloudMcpServer:
             raise
         else:
             return result
+
+    async def _enforce_conversation_trust_gate(
+        self, agent_context: AgentContext, tool: BaseTool, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """L3 工具门（doc08 §4·RT3·云端半场）：剥离会话信任语境保留参数 + 对外会话按档硬门控。
+
+        1. 剥离系统注入的 ``_hasn_is_external`` / ``_hasn_peer_id`` / ``_hasn_peer_trust``
+           （分身不可伪造），返回干净入参供下游 dispatch/审计（工具体永不见这些键）。
+        2. 仅当**对外会话**（``is_external``）且工具声明了 ``min_trust_level`` 才判档：
+           - 1:1 优先据 ``peer_id`` 从云端权威 ``hasn_contacts`` 解析对端**真实** trust
+             （复用 RT1.5 ``effective_relation``）；解析不到再回落 daemon 预解析的 ``peer_trust``。
+           - 群会话（无 ``peer_id``、daemon 填 roster 最低档）直接用 ``peer_trust``。
+           - ``peer_trust`` 仍缺失 → 门内 fail-closed 当陌生人(1)。
+        3. 主会话 / 主人自环（``is_external=False``）不受限；无对外门工具（``min_trust_level=None``）
+           恒放行。判档不足抛 ``McpToolError`` TRUST_LEVEL_INSUFFICIENT（含当前档+所需档，
+           分身据此礼貌回绝）。
+
+        Raises:
+            McpToolError: 对外会话里对端档低于工具 ``min_trust_level``（code=TRUST_LEVEL_INSUFFICIENT）。
+        """
+        from backend.app.mcp import trust_gate
+
+        cleaned, is_external, peer_id, peer_trust = trust_gate.pop_trust_context(arguments)
+        min_trust = getattr(tool, 'min_trust_level', None)
+        # 主会话 / 无对外门 → 无需解析对端，直接放行（never over-block：缺语境即主会话）。
+        if not is_external or min_trust is None:
+            return cleaned
+        # 对外 1:1：据 peer_id 解析云端权威真实档（解析不到才回落 daemon 预解析档）。
+        if peer_id:
+            try:
+                from backend.database.db import async_db_session
+
+                async with async_db_session() as db:
+                    resolved = await trust_gate.resolve_conversation_peer_trust(
+                        db, agent_context.owner_hasn_id, peer_id
+                    )
+            except Exception as exc:  # noqa: BLE001 - 解析瞬时异常不放宽门，回落 daemon 预解析档
+                logger.warning('L3 trust gate peer resolve failed for %s: %r', peer_id, exc)
+                resolved = None
+            if resolved is not None:
+                peer_trust = resolved
+        trust_gate.evaluate_min_trust_level(min_trust, peer_trust, is_external=is_external)
+        return cleaned
 
     def _should_audit_call(
         self,
