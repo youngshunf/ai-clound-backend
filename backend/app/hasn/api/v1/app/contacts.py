@@ -542,6 +542,30 @@ async def update_trust_level(
     )
 
 
+@router.delete('/{contact_id}', summary='删除联系人')
+async def delete_contact(
+    contact_id: int,
+    db: CurrentSession,
+    auth: Annotated[dict, Depends(hasn_auth)],
+) -> ResponseModel:
+    """删除联系人（D4·hasn.relation.remove 云端权威实现·修 B5）。
+
+    单方发起即彻底解除双向关系边：① 双向删边（owner→peer 与 peer→owner）；
+    ② 会话不删但标不可达（保留历史消息）；③ 中性通知对方「关系已解除」。
+    授权：只能删自己名下（owner_id==本人）的联系人行。
+    彻底断联后想再联系须重新申请好友（与「移出黑名单恢复普通朋友」D1 不同路径）。
+    """
+    hasn_id = auth.get('effective_id', auth['hasn_id'])
+    contact = await hasn_contacts_dao.get(db, contact_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail='联系人不存在')
+    if contact.owner_id != hasn_id:
+        raise HTTPException(status_code=403, detail='无权删除此联系人')
+
+    result = await HasnContactsService.remove_contact(db, owner_id=hasn_id, contact=contact)
+    return response_base.success(data=result)
+
+
 @router.put('/{contact_id}/permissions', summary='自定义权限覆盖')
 async def update_permissions(
     contact_id: int,

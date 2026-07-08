@@ -45,6 +45,11 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天凌晨 2:10 收敛超 7 天未处理的 pending 拉分身邀请（doc10 §3.2；读路径已惰性过期，本任务兜底）
         'schedule': TzAwareCrontab('10', '2'),
     },
+    '关系生命周期过期检查': {
+        'task': 'hasn_contact_lifecycle_expire_sweep',
+        # 每天凌晨 2:20 收敛好友请求 30 天未响应过期 + 联系人 auto_expire 到期（doc08 RT5·B7）
+        'schedule': TzAwareCrontab('20', '2'),
+    },
     '积分账本每小时对账': {
         'task': 'newapi_hourly_credit_sync',
         'schedule': TzAwareCrontab('0'),  # 每小时整点：new-api 真实消费增量回扣账本 + 重设 quota（§5A.5）
