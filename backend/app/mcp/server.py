@@ -374,7 +374,13 @@ class HasnCloudMcpServer:
         """
         from backend.app.mcp import trust_gate
 
+        # 恒先剥离入参保留参数（工具体永不见 _hasn_*），得干净入参 + reserved-arg 兜底语境。
         cleaned, is_external, peer_id, peer_trust = trust_gate.pop_trust_context(arguments)
+        # header 优先（CLI runtime 走 daemon 组装的 X-Hasn-* header；本半场闭合的主通道）；
+        # 无 header 才回落上面的 reserved-arg（Hermes / 其它注入路径）。二者皆缺 = 主会话（放行）。
+        header_ctx = trust_gate.read_header_trust_context()
+        if header_ctx is not None:
+            is_external, peer_id, peer_trust = header_ctx
         min_trust = getattr(tool, 'min_trust_level', None)
         # 主会话 / 无对外门 → 无需解析对端，直接放行（never over-block：缺语境即主会话）。
         if not is_external or min_trust is None:
