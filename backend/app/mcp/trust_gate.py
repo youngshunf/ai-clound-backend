@@ -107,6 +107,33 @@ def pop_trust_context(
     return cleaned, is_external, peer_id, peer_trust
 
 
+def _coerce_bool(value: str | None) -> bool:
+    """把 header 里的 is_external 原始字符串归一成 bool（``true``/``1``/``yes`` = True，余 False）。"""
+    return (value or '').strip().lower() in ('true', '1', 'yes')
+
+
+def read_header_trust_context() -> tuple[bool, str | None, int | None] | None:
+    """读本次请求携带的会话信任语境 **header**（L3 门 header 优先来源）。
+
+    CLI runtime（claude_code/codex）直连云端 ``streamable``、daemon 不在工具调用路径上，无法像
+    reserved-arg 那样注入入参，故会话信任语境走 daemon 组装的 per-dispatch HTTP header
+    （``X-Hasn-*``）下发——传输层已把原始三元组落进 ContextVar。
+
+    返回 ``(is_external, peer_id, peer_trust)``；**无** header（非 CLI runtime / 未注入）→ ``None``，
+    由 ``_enforce_conversation_trust_gate`` 回落工具入参保留参数（inert-safe：两者皆缺 = 主会话放行）。
+    """
+    from backend.app.mcp.context import get_trust_context_header
+
+    raw = get_trust_context_header()
+    if raw is None:
+        return None
+    is_external_raw, peer_id_raw, peer_trust_raw = raw
+    is_external = _coerce_bool(is_external_raw)
+    peer_id = peer_id_raw if peer_id_raw else None
+    peer_trust = _coerce_trust(peer_trust_raw)
+    return is_external, peer_id, peer_trust
+
+
 def _coerce_trust(value: Any) -> int | None:
     """把保留参数里的 peer_trust 归一成 int（非法/缺失 → None，交门 fail-closed）。"""
     if isinstance(value, bool):  # bool 是 int 子类，先排除避免 True→1 误当档位

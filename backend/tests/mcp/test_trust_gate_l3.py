@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from backend.app.mcp.context import set_trust_context_header
 from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.app.mcp.tools.owner import OwnerCoverageGetTool
 from backend.app.mcp.tools.plan import PLAN_TOOLS
@@ -22,8 +23,17 @@ from backend.app.mcp.trust_gate import (
     RESERVED_PEER_TRUST,
     evaluate_min_trust_level,
     pop_trust_context,
+    read_header_trust_context,
     trust_level_label,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_trust_header():
+    """每个用例前后清空会话信任语境 header ContextVar，防跨用例串味（header 用例设了值不回落）。"""
+    set_trust_context_header(None)
+    yield
+    set_trust_context_header(None)
 
 
 def _plan_tool(name: str):
@@ -245,3 +255,62 @@ async def test_server_gate_main_session_unrestricted_no_db() -> None:
     args = {'title': 'x', 'start': 'a', 'end': 'b'}
     cleaned = await mcp_server._enforce_conversation_trust_gate(_ctx(), tool, args)
     assert cleaned == args
+
+
+# ── 七、header 优先（CLI runtime 云端半场闭合的主通道）──────────────────────────
+def test_read_header_absent_returns_none() -> None:
+    """无 header（ContextVar=None）→ read 返回 None（回落工具入参保留参数）。"""
+    set_trust_context_header(None)
+    assert read_header_trust_context() is None
+
+
+def test_read_header_parses_raw_triplet() -> None:
+    """header 原始字符串三元组解析：is_external 真值化 + peer_trust 归一 int + 空 peer_id → None。"""
+    set_trust_context_header(('true', 'a_peer', '2'))
+    assert read_header_trust_context() == (True, 'a_peer', 2)
+    set_trust_context_header(('false', None, None))
+    assert read_header_trust_context() == (False, None, None)
+    set_trust_context_header(('1', '', 'bad'))  # peer_id 空 → None；trust 非数字 → None
+    assert read_header_trust_context() == (True, None, None)
+
+
+@pytest.mark.asyncio
+async def test_server_gate_header_only_denies_at_2_allows_at_3() -> None:
+    """仅 header（无 reserved-arg，模拟 CLI runtime）：external+trust=2 拒 today(min3)、=3 放行。"""
+    from backend.app.mcp.server import mcp_server
+
+    tool = _plan_tool('hasn.plan.today')
+    # 群/快路：header 带档不带 peer_id → 不触 DB。
+    set_trust_context_header(('true', None, '2'))
+    with pytest.raises(McpToolError) as ei:
+        await mcp_server._enforce_conversation_trust_gate(_ctx(), tool, {'start': 'x'})
+    assert ei.value.code is McpErrorCode.TRUST_LEVEL_INSUFFICIENT
+
+    set_trust_context_header(('true', None, '3'))
+    cleaned = await mcp_server._enforce_conversation_trust_gate(_ctx(), tool, {'start': 'x'})
+    assert cleaned == {'start': 'x'}
+
+
+@pytest.mark.asyncio
+async def test_server_gate_header_wins_over_reserved_arg() -> None:
+    """header 优先：header 说 external+trust=3（放行）压过 reserved-arg 的 external+trust=2（本会拒）。"""
+    from backend.app.mcp.server import mcp_server
+
+    tool = _plan_tool('hasn.plan.today')  # min=3
+    set_trust_context_header(('true', None, '3'))
+    args = {'start': 'x', RESERVED_IS_EXTERNAL: True, RESERVED_PEER_TRUST: 2}
+    cleaned = await mcp_server._enforce_conversation_trust_gate(_ctx(), tool, args)
+    # header(3)≥min(3) 放行；且入参保留参数仍被剥离干净（工具体永不见 _hasn_*）。
+    assert cleaned == {'start': 'x'}
+
+
+@pytest.mark.asyncio
+async def test_server_gate_header_main_session_overrides_reserved_external() -> None:
+    """header 说主会话（is_external=false）压过 reserved-arg 的 external → min=4 工具也放行（never over-block）。"""
+    from backend.app.mcp.server import mcp_server
+
+    tool = _plan_tool('hasn.plan.event.create')  # min=4
+    set_trust_context_header(('false', None, None))
+    args = {'title': 'x', RESERVED_IS_EXTERNAL: True, RESERVED_PEER_TRUST: 1}
+    cleaned = await mcp_server._enforce_conversation_trust_gate(_ctx(), tool, args)
+    assert cleaned == {'title': 'x'}
