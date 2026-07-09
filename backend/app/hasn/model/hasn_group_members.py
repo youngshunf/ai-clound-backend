@@ -26,3 +26,5 @@ class HasnGroupMembers(Base):
     # doc10 需求 4：分身群内发言准则（仅 member_type=agent 行有意义，由分身主人设置，仅本群生效）
     agent_charter: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='分身群内发言准则（仅分身主人可读写，随派发注入 runtime system_prompt）')
     charter_updated_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='发言准则最后更新时间')
+    # doc08 §3.4 RT2.5·D9：分身群内披露档（仅 member_type=agent 行有意义，由分身主人按群设定；语义复用 social 2/3/4，默认 2）
+    agent_group_trust_level: Mapped[int] = mapped_column(sa.SmallInteger(), default=2, comment='分身群内披露档 (2:普通朋友/3:好友/4:密友)·仅分身主人可读写·doc08 §3.4')

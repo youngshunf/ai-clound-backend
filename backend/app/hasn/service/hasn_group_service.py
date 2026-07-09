@@ -42,6 +42,8 @@ _ADMIN_ROLES = ('owner', 'admin')
 _AVATAR_PREVIEW_LIMIT = 9
 # 分身群内发言准则长度上限（服务层校验，fail fast；前端 textarea 带计数）。
 CHARTER_MAX_LEN = 4000
+# 群披露档合法档位（doc08 §3.4 RT2.5·D9）：2 普通朋友 / 3 好友 / 4 密友，默认 2。
+GROUP_TRUST_LEVELS = (2, 3, 4)
 # 拉分身邀请状态集合
 INVITE_PENDING = 'pending'
 INVITE_ACCEPTED = 'accepted'
@@ -158,12 +160,14 @@ class HasnGroupService:
             'muted': m.muted,
             'joined_at': m.joined_at.isoformat() if m.joined_at else None,
         }
-        # charter 白名单（隐私边界，doc10 §4.2）：仅当该行是 actor 名下分身才回填准则，其余一律剥离。
+        # owner 私有字段白名单（隐私边界，doc10 §4.2 + doc08 §3.4）：仅当该行是 actor 名下分身才回填
+        # 准则（charter）与群披露档（agent_group_trust_level），其余一律剥离——档位设置本身属主人隐私。
         if charter_visible:
             data['agent_charter'] = m.agent_charter
             data['charter_updated_time'] = (
                 m.charter_updated_time.isoformat() if m.charter_updated_time else None
             )
+            data['agent_group_trust_level'] = m.agent_group_trust_level
         return data
 
     @classmethod
@@ -795,6 +799,47 @@ class HasnGroupService:
             'charter_updated_time': (
                 member.charter_updated_time.isoformat() if member.charter_updated_time else None
             ),
+        }
+
+    # ─── doc08 §3.4 RT2.5：分身群内披露档（group trust level）───
+    @classmethod
+    async def set_agent_group_trust_level(
+        cls,
+        db: AsyncSession,
+        *,
+        actor_hasn_id: str,
+        group_id: str,
+        agent_hasn_id: str,
+        trust_level: int,
+    ) -> dict[str, Any]:
+        """设分身本群披露档（doc08 §3.4·D9）。
+
+        校验：actor 是该分身主人 + 分身是本群成员 + 档位 ∈ {2,3,4}。
+        权限与拦截策略与 social 同档一致（语义复用 Core/04 信任等级 2/3/4）。
+        """
+        conv = await cls._get_group_or_404(db, group_id)
+        owner = await cls._agent_owner_id(db, agent_hasn_id)
+        if owner != actor_hasn_id:
+            raise errors.ForbiddenError(msg='只有分身的主人才能设置其群内披露档')
+        member = (
+            await db.execute(
+                select(HasnGroupMembers).where(
+                    HasnGroupMembers.conversation_id == conv.id,
+                    HasnGroupMembers.member_id == agent_hasn_id,
+                    HasnGroupMembers.member_type == 'agent',
+                )
+            )
+        ).scalar_one_or_none()
+        if member is None:
+            raise errors.NotFoundError(msg='该分身不在本群')
+        if trust_level not in GROUP_TRUST_LEVELS:
+            raise errors.RequestError(msg=f'披露档位非法，仅支持 {GROUP_TRUST_LEVELS}（普通朋友/好友/密友）')
+        member.agent_group_trust_level = trust_level
+        await db.flush()
+        return {
+            'group_id': group_id,
+            'agent_hasn_id': agent_hasn_id,
+            'agent_group_trust_level': member.agent_group_trust_level,
         }
 
     # ─── doc10：拉分身邀请裁决 ───

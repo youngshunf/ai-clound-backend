@@ -48,6 +48,10 @@ class SetCharterBody(BaseModel):
     charter: str | None = Field(None, description='分身群内发言准则（≤4000 字，null/空串=清除）')
 
 
+class SetTrustLevelBody(BaseModel):
+    trust_level: int = Field(description='分身群内披露档：2 普通朋友 / 3 好友 / 4 密友（doc08 §3.4）')
+
+
 async def _caller_hasn_id(request: Request, db: CurrentSession) -> str:
     caller = getattr(request.user, 'hasn_id', None)
     if caller:
@@ -189,6 +193,26 @@ async def set_agent_charter(
     caller = await _caller_hasn_id(request, db)
     data = await hasn_group_service.set_agent_charter(
         db=db, actor_hasn_id=caller, group_id=group_id, agent_hasn_id=agent_hasn_id, charter=body.charter
+    )
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/{group_id}/members/{agent_hasn_id}/trust-level',
+    summary='设置分身群内披露档（仅分身主人）',
+    dependencies=[DependsJwtAuth],
+)
+async def set_agent_group_trust_level(
+    request: Request,
+    db: CurrentSessionTransaction,
+    group_id: Annotated[str, Path(description='群组公开 ID')],
+    agent_hasn_id: Annotated[str, Path(description='分身 HASN ID a_...')],
+    body: Annotated[SetTrustLevelBody, Body()],
+) -> ResponseSchemaModel[dict]:
+    # doc08 §3.4 RT2.5：分身群内披露档——仅分身主人可读写；决定分身能透露多少主人信息（与 social 同档）。
+    caller = await _caller_hasn_id(request, db)
+    data = await hasn_group_service.set_agent_group_trust_level(
+        db=db, actor_hasn_id=caller, group_id=group_id, agent_hasn_id=agent_hasn_id, trust_level=body.trust_level
     )
     return response_base.success(data=data)
 
