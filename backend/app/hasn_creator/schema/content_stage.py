@@ -13,7 +13,7 @@ class ContentStageSchemaBase(SchemaBase):
     owner_scope: str = Field(description='None')
     enterprise_id: int | None = Field(None, description='None')
     assignee: str | None = Field(None, description='None')
-    stage: str = Field(description='阶段 (research:调研:blue/outline:大纲:cyan/first_draft:初稿:orange/final_draft:终稿:purple/cover:封面:green/storyboard:分镜:teal/voiceover:口播:violet)')
+    stage: str = Field(description='阶段 (research:调研:blue/outline:大纲:cyan/first_draft:初稿:orange/final_draft:终稿:purple/cover:封面:green/storyboard:分镜:teal/voiceover:口播:violet/final_video:成片:red)')
     content_text: str | None = Field(None, description='None')
     asset_refs: dict = Field(description='文件产出（封面/配图 hasn://asset/ 引用，落私有桶）')
     status: str = Field(description='状态 (draft:草稿:gray/approved:已采用:green/archived:已归档:gray)')

@@ -647,12 +647,16 @@ _CAPABILITIES = [
         name='content_stage_save',
         mcp_suffix='content.stage.save',
         title='保存阶段产出',
-        description='保存阶段产出（research/outline/draft/final_draft/cover/storyboard/voiceover）。同阶段再存 bump version 留迭代痕迹。',
+        description='保存阶段产出（research/outline/draft/final_draft/cover/storyboard/voiceover/final_video）。同阶段再存 bump version 留迭代痕迹。视频轨成片用 stage=final_video + 本地引用 asset_refs 回流（成片本地优先不上云）。',
         scope=_SCOPE_MANAGE,
         risk_level='low',
         properties={
             'content_id': {'type': 'integer'},
-            'stage': {'type': 'string', 'minLength': 1, 'description': '阶段标识'},
+            'stage': {
+                'type': 'string',
+                'minLength': 1,
+                'description': '阶段标识（research/outline/first_draft/final_draft/cover/storyboard/voiceover/final_video；视频轨成片用 final_video）',
+            },
             'content_text': {'type': ['string', 'null']},
             'asset_refs': {
                 'type': ['array', 'null'],
