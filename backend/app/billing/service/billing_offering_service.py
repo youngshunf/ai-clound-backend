@@ -1,10 +1,15 @@
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.crud.crud_billing_offering import billing_offering_dao
 from backend.app.billing.model import BillingOffering
-from backend.app.billing.schema.billing_offering import CreateBillingOfferingParam, DeleteBillingOfferingParam, UpdateBillingOfferingParam
+from backend.app.billing.schema.billing_offering import (
+    CreateBillingOfferingParam,
+    DeleteBillingOfferingParam,
+    UpdateBillingOfferingParam,
+)
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 
@@ -25,14 +30,16 @@ class BillingOfferingService:
         return billing_offering
 
     @staticmethod
-    async def get_list(db: AsyncSession) -> dict[str, Any]:
+    async def get_list(db: AsyncSession, *, kind: str | None = None, key: str | None = None) -> dict[str, Any]:
         """
         获取商品目录（一切可售卖物：LLM档/积分包/应用/席位/应用内档位）列表
 
         :param db: 数据库会话
+        :param kind: 按商品种类过滤（管理面检索）
+        :param key: 按业务键模糊过滤（管理面检索）
         :return:
         """
-        billing_offering_select = await billing_offering_dao.get_select()
+        billing_offering_select = await billing_offering_dao.get_select(kind=kind, key=key)
         return await paging_data(db, billing_offering_select)
 
     @staticmethod

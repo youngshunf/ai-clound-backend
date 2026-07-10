@@ -11,6 +11,8 @@
 
 from fastapi import APIRouter
 
+from backend.app.billing.api.v1.admin.billing_offering import router as admin_offering_router
+from backend.app.billing.api.v1.admin.billing_plan import router as admin_plan_router
 from backend.app.billing.api.v1.admin.channel import router as admin_channel_router
 from backend.app.billing.api.v1.admin.contract import router as admin_contract_router
 from backend.app.billing.api.v1.admin.credit_balance import router as admin_balance_router
@@ -71,6 +73,9 @@ user_tier_v1.include_router(admin_package_router, prefix='/packages', tags=['管
 user_tier_v1.include_router(admin_tier_router, prefix='/tiers', tags=['管理-订阅等级'])
 # /rates（模型积分费率 model_credit_rate，D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦）。
 user_tier_v1.include_router(admin_newapi_quota_router, prefix='/newapi-quota', tags=['管理-Token额度用量'])
+# 统一商业化内核（MK-6）：商品目录 offering + 价格档位 plan 管理面（商业化中心）
+user_tier_v1.include_router(admin_offering_router, prefix='/offerings', tags=['管理-商品目录（商业化内核）'])
+user_tier_v1.include_router(admin_plan_router, prefix='/plans', tags=['管理-价格档位（商业化内核）'])
 
 user_tier_app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/user_tier/app', tags=['订阅积分-用户端'])
 user_tier_app.include_router(app_subscription_router, prefix='/subscription', tags=['用户-订阅管理'])

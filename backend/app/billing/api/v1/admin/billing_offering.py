@@ -36,8 +36,12 @@ async def get_billing_offering(
     ],
     name='billing_admin_get_billing_offering_paginated',
 )
-async def get_billing_offering_paginated(db: CurrentSession) -> ResponseSchemaModel[PageData[GetBillingOfferingDetail]]:
-    page_data = await billing_offering_service.get_list(db=db)
+async def get_billing_offering_paginated(
+    db: CurrentSession,
+    kind: Annotated[str | None, Query(description='按商品种类过滤')] = None,
+    key: Annotated[str | None, Query(description='按业务键模糊过滤')] = None,
+) -> ResponseSchemaModel[PageData[GetBillingOfferingDetail]]:
+    page_data = await billing_offering_service.get_list(db=db, kind=kind, key=key)
     return response_base.success(data=page_data)
 
 
