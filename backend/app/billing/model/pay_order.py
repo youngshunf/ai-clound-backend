@@ -38,3 +38,9 @@ class PayOrder(BillingBase):
     channel_user_id: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='第三方用户标识')
     success_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='支付成功时间')
     extra_data: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='扩展数据')
+    # 统一商业化内核（MK-1）：商品目录引用快照，下单入口按 kind 分发 fulfillment（收编散落 order_type）
+    offering_ref: Mapped[dict | None] = mapped_column(
+        postgresql.JSONB(),
+        default=None,
+        comment='商品目录引用快照（{offering_key,plan_key,kind}；支付成功回调按 kind 分发履约）',
+    )
