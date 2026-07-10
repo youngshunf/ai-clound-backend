@@ -48,9 +48,19 @@ class AddAccountParam(SchemaBase):
     fields: dict[str, Any] | None = Field(default=None, description='账号字段（nickname/home_url/...）')
 
 
+class UpdateAccountParam(SchemaBase):
+    # 人手动改账号资料 + 手填指标（昵称/uid/主账号/粉丝/获赞/作品数…），走 account.update（§6.3）。
+    fields: dict[str, Any] = Field(description='账号可改字段（nickname/uid/is_primary/home_url/followers/total_likes/total_posts…）')
+
+
 class LogCompetitorParam(SchemaBase):
     name: str = Field(min_length=1, max_length=120, description='竞品账号名')
     fields: dict[str, Any] | None = Field(default=None, description='竞品字段（platform/home_url/note/...）')
+
+
+class UpdateCompetitorParam(SchemaBase):
+    # 人手动回填竞品调研结果（粉丝/作品数/风格/优势…），走 competitor.update（§6.4）。
+    fields: dict[str, Any] = Field(description='竞品可改字段（follower_count/works_count/avg_likes/content_style/strengths…）')
 
 
 class SuggestTopicsParam(SchemaBase):

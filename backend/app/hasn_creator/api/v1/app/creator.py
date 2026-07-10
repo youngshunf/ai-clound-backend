@@ -30,6 +30,8 @@ from backend.app.hasn_creator.schema.owner import (
     SetProfileParam,
     SubmitPublishParam,
     SuggestTopicsParam,
+    UpdateAccountParam,
+    UpdateCompetitorParam,
     UpdateContentParam,
     UpdateMetricsParam,
     UpdateProjectParam,
@@ -174,6 +176,26 @@ async def add_account(
     return response_base.success(data=data)
 
 
+@router.patch('/accounts/{account_id}', summary='[Owner] 更新账号（改资料/手填指标）', dependencies=[DependsJwtAuth])
+async def update_account(
+    request: Request, db: CurrentSessionTransaction, account_id: int, obj: UpdateAccountParam
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.update_account(
+        db, user_id=request.user.id, scope=scope, account_id=account_id, fields=obj.fields
+    )
+    return response_base.success(data=data)
+
+
+@router.get('/accounts/{account_id}/works', summary='[Owner] 账号作品列表', dependencies=[DependsJwtAuth])
+async def list_account_works(request: Request, db: CurrentSession, account_id: int) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    items = await creator_service.list_works(
+        db, user_id=request.user.id, scope=scope, source_type='own', owner_ref_id=account_id
+    )
+    return response_base.success(data={'items': items})
+
+
 @router.get('/projects/{project_id}/competitors', summary='[Owner] 竞品列表', dependencies=[DependsJwtAuth])
 async def list_competitors(request: Request, db: CurrentSession, project_id: int) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id)
@@ -190,6 +212,26 @@ async def log_competitor(
         db, user_id=request.user.id, scope=scope, project_id=project_id, name=obj.name, fields=obj.fields
     )
     return response_base.success(data=data)
+
+
+@router.patch('/competitors/{competitor_id}', summary='[Owner] 更新竞品（回填调研结果）', dependencies=[DependsJwtAuth])
+async def update_competitor(
+    request: Request, db: CurrentSessionTransaction, competitor_id: int, obj: UpdateCompetitorParam
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.update_competitor(
+        db, user_id=request.user.id, scope=scope, competitor_id=competitor_id, fields=obj.fields
+    )
+    return response_base.success(data=data)
+
+
+@router.get('/competitors/{competitor_id}/works', summary='[Owner] 竞品作品样本列表', dependencies=[DependsJwtAuth])
+async def list_competitor_works(request: Request, db: CurrentSession, competitor_id: int) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    items = await creator_service.list_works(
+        db, user_id=request.user.id, scope=scope, source_type='competitor', owner_ref_id=competitor_id
+    )
+    return response_base.success(data={'items': items})
 
 
 @router.get('/projects/{project_id}/topics', summary='[Owner] 选题池', dependencies=[DependsJwtAuth])
