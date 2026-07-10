@@ -19,21 +19,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 固定 feature_key：全局唯一，无实例后缀
-FIXED_FEATURE_KEYS: frozenset[str] = frozenset(
-    {
-        'llm:tier',  # LLM 订阅档（订阅制唯一特征；档位差异走 plan_key）
-        'credits:topup',  # 积分充值（消耗型 top-up，非门控；不同包为不同 plan_key）
-        'webapp:hosting',  # 网页应用全栈托管（doc06；MK-1 预定义键，暂不 seed offering 行）
-    }
-)
+FIXED_FEATURE_KEYS: frozenset[str] = frozenset({
+    'llm:tier',  # LLM 订阅档（订阅制唯一特征；档位差异走 plan_key）
+    'credits:topup',  # 积分充值（消耗型 top-up，非门控；不同包为不同 plan_key）
+    'webapp:hosting',  # 网页应用全栈托管（doc06；MK-1 预定义键，暂不 seed offering 行）
+})
 
 # 前缀族：<prefix><instance_id>，instance_id 必须非空
-PREFIX_FEATURE_KEYS: frozenset[str] = frozenset(
-    {
-        'app:',  # AI-Native 应用权益（app:<app_id>，如 app:quant）
-        'seat:',  # 企业席位（seat:<app_id>，席位制应用的席位特征）
-    }
-)
+PREFIX_FEATURE_KEYS: frozenset[str] = frozenset({
+    'app:',  # AI-Native 应用权益（app:<app_id>，如 app:quant）
+    'seat:',  # 企业席位（seat:<app_id>，席位制应用的席位特征）
+})
 
 
 def is_registered(feature_key: str) -> bool:
@@ -42,11 +38,7 @@ def is_registered(feature_key: str) -> bool:
         return False
     if feature_key in FIXED_FEATURE_KEYS:
         return True
-    for prefix in PREFIX_FEATURE_KEYS:
-        # 前缀命中且实例段非空（app: 后必须跟 app_id）
-        if feature_key.startswith(prefix) and len(feature_key) > len(prefix):
-            return True
-    return False
+    return any(feature_key.startswith(prefix) and len(feature_key) > len(prefix) for prefix in PREFIX_FEATURE_KEYS)
 
 
 def validate_feature_keys(feature_keys: list[str]) -> list[str]:
@@ -67,4 +59,29 @@ async def validate_offering_consistency(db: AsyncSession) -> list[str]:
     for offering_key, feature_key in rows:
         if not is_registered(feature_key):
             violations.append(f'offering={offering_key!r} feature_key={feature_key!r} 未在 feature_registry 注册')
+    return violations
+
+
+async def validate_catalog_sku_refs(db: AsyncSession) -> list[str]:
+    """一致性守卫：扫描 hasn_app_catalog.sku_ref，返回「指向不存在 billing_offering 的悬挂引用」列表（MK-9）。
+
+    ``sku_ref`` 是应用目录挂到商业化商品（offering.key）的对接指针（预留列，可为空）。凡填了值就必须
+    命中一条真实 offering，否则前端付费墙据它取价会取空 → 静默付费墙断裂。此守卫进 CI，改价/退役 offering
+    时若漏改 catalog 指针即刻报红（对齐 ``validate_offering_consistency`` 的「零漂移」思路）。
+
+    返回空列表 = 全部合法（含全表 sku_ref 皆空的常态）。不在此处 raise，由调用方（启动钩子 / pytest）定严格度。
+    """
+    from backend.app.billing.model.billing_offering import BillingOffering
+    from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
+
+    # 全库已注册的 offering.key 集合（一次取全，避免逐行 N 次查库）。
+    offering_keys = {k for (k,) in (await db.execute(select(BillingOffering.key))).all() if k}
+    rows = (await db.execute(select(HasnAppCatalog.app_id, HasnAppCatalog.sku_ref))).all()
+    violations: list[str] = []
+    for app_id, sku_ref in rows:
+        # 空 / 未填 sku_ref 是合法常态（预留列），跳过；仅校验填了值的行。
+        if not sku_ref:
+            continue
+        if sku_ref not in offering_keys:
+            violations.append(f'catalog app_id={app_id!r} sku_ref={sku_ref!r} 悬挂——无对应 billing_offering')
     return violations
