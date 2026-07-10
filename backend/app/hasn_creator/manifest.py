@@ -117,8 +117,22 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 创作运营 21 工具能力声明（设计 §6.1，云端 gateway_internal）。顺序即 tools[] 顺序。
+# 创作运营工具能力声明（设计 §6.1，云端 gateway_internal）。顺序即 tools[] 顺序。
 _CAPABILITIES = [
+    # ---------------- 平台目录（S1，重构 §4）----------------
+    _cap(
+        name='platform_list',
+        mcp_suffix='platform.list',
+        title='列平台目录',
+        description='列平台目录（选择制，含主页根 URL/主页模板/指标口径）：选平台、据平台+uid 拼主页链接、'
+        '知道该平台粉丝/作品叫法时调。账号/竞品/项目的 platform 一律选自此目录。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={},
+        required=[],
+        page_rank=9,
+        tags=['creator', 'platform', 'list', 'read'],
+    ),
     # ---------------- 项目 ----------------
     _cap(
         name='project_list',
@@ -214,15 +228,17 @@ _CAPABILITIES = [
         name='account_add',
         mcp_suffix='account.add',
         title='加平台账号',
-        description='给项目加一个平台账号（小红书/抖音/视频号等；可标主账号）。',
+        description='给项目加一个平台账号（小红书/抖音/视频号等；可标主账号）。platform 必选自平台目录；'
+        '有公开主页的平台（小红书/抖音/B站…）home_url 必填（供分身据此抓取粉丝/作品数据），'
+        '公众号/视频号等无公开主页的平台豁免。',
         scope=_SCOPE_MANAGE,
         risk_level='low',
         properties={
             'project_id': {'type': 'integer'},
-            'platform': {'type': 'string', 'minLength': 1, 'description': '平台标识'},
+            'platform': {'type': 'string', 'minLength': 1, 'description': '平台标识（选自 platform.list）'},
             'fields': {
                 'type': ['object', 'null'],
-                'description': 'platform_uid/nickname/home_url/bio/is_primary/notes',
+                'description': 'home_url（有公开主页的平台必填）/platform_uid/nickname/avatar_url/bio/is_primary/notes',
             },
         },
         required=['project_id', 'platform'],
@@ -233,7 +249,7 @@ _CAPABILITIES = [
         name='account_list',
         mcp_suffix='account.list',
         title='列平台账号',
-        description='列项目下的平台账号。',
+        description='列项目下的平台账号（含粉丝/获赞/作品数指标 + metrics_updated_at 数据新鲜度）。',
         scope=_SCOPE_READ,
         risk_level='low',
         properties={'project_id': {'type': 'integer'}},
@@ -242,10 +258,85 @@ _CAPABILITIES = [
         tags=['creator', 'account', 'list', 'read'],
     ),
     _cap(
+        name='account_update',
+        mcp_suffix='account.update',
+        title='更新平台账号',
+        description='更新账号资料（昵称/uid/主页/简介/设主账号）或手填指标（知道就填；抓取走 account.update_metrics）。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'account_id': {'type': 'integer'},
+            'fields': {
+                'type': 'object',
+                'description': 'nickname/platform_uid/avatar_url/home_url/bio/is_primary/notes + 手填指标 '
+                'followers/following/total_likes/total_favorites/total_comments/total_posts',
+            },
+        },
+        required=['account_id', 'fields'],
+        page_rank=171,
+        tags=['creator', 'account', 'update', 'manage'],
+    ),
+    _cap(
+        name='account_update_metrics',
+        mcp_suffix='account.update_metrics',
+        title='回填账号指标',
+        description='分身按 web-reach 抓取该账号公开主页后回填指标：粉丝/关注/获赞/收藏/评论/作品数（已知列落列，'
+        '平台特有指标并入 metrics_json）。抓不到诚实报错、不编数（零 fake）。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'account_id': {'type': 'integer'},
+            'metrics': {
+                'type': 'object',
+                'description': 'followers/following/total_likes/total_favorites/total_comments/total_posts + 平台特有键',
+            },
+        },
+        required=['account_id', 'metrics'],
+        page_rank=172,
+        tags=['creator', 'account', 'metrics', 'manage'],
+    ),
+    _cap(
+        name='account_works_upsert',
+        mcp_suffix='account.works.upsert',
+        title='回填账号作品',
+        description='逐条 upsert 该账号的作品明细（标题/链接/封面/播放·赞·评·藏/发布时间）。归并键 external_id/url——'
+        '同一作品重复抓取按此归并，与发布记录 published_url 对齐避免两套数字。封面走 hasn://asset 或平台原链接，禁 base64。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'account_id': {'type': 'integer'},
+            'works': {
+                'type': 'array',
+                'items': {'type': 'object'},
+                'description': '[{external_id?,url?,title,cover_uri?,published_at?,views,likes,comments,shares,favorites}]',
+            },
+        },
+        required=['account_id', 'works'],
+        page_rank=173,
+        tags=['creator', 'account', 'works', 'manage'],
+    ),
+    _cap(
+        name='account_works_list',
+        mcp_suffix='account.works.list',
+        title='列账号作品',
+        description='列某账号的作品明细（按发布时间倒序），账号卡下钻作品用。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'account_id': {'type': 'integer'},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 300, 'default': 100},
+        },
+        required=['account_id'],
+        page_rank=174,
+        tags=['creator', 'account', 'works', 'read'],
+    ),
+    _cap(
         name='competitor_log',
         mcp_suffix='competitor.log',
         title='记竞品调研',
-        description='记一条竞品调研结论（粉丝/互动/风格/优势/标签），供 profile.analyze 与选题参考。',
+        description='记一条竞品（工具层强制录真）：platform+url+name 必填；researched=true（分身调研完带真数据）时 '
+        'follower_count+works_count 必填。兼容「先挂 URL 待分身调研」——researched=false 时指标待补。'
+        '不允许空录一个名字（零 fake 的录真）。',
         scope=_SCOPE_MANAGE,
         risk_level='low',
         properties={
@@ -253,12 +344,193 @@ _CAPABILITIES = [
             'name': {'type': 'string', 'minLength': 1},
             'fields': {
                 'type': ['object', 'null'],
-                'description': 'platform/url/follower_count/avg_likes/content_style/strengths/notes/tags',
+                'description': 'platform（必填）/url（必填）/researched/follower_count/works_count/avg_likes/'
+                'content_style/strengths/notes/tags',
             },
         },
         required=['project_id', 'name'],
         page_rank=18,
         tags=['creator', 'competitor', 'log', 'manage'],
+    ),
+    _cap(
+        name='competitor_update',
+        mcp_suffix='competitor.update',
+        title='回填竞品调研',
+        description='分身按 web-reach 调研竞品后回填：粉丝数/作品数/风格/优势标签（带完整真数据）。刷新「上次调研 T」。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'competitor_id': {'type': 'integer'},
+            'fields': {
+                'type': 'object',
+                'description': 'name/platform/url/follower_count/works_count/avg_likes/content_style/strengths/notes/tags',
+            },
+        },
+        required=['competitor_id', 'fields'],
+        page_rank=181,
+        tags=['creator', 'competitor', 'update', 'manage'],
+    ),
+    _cap(
+        name='competitor_works_upsert',
+        mcp_suffix='competitor.works.upsert',
+        title='回填竞品作品样本',
+        description='逐条 upsert 竞品的作品样本（供差异化分析）。归并键 external_id/url；封面走 hasn://asset 或平台原链接，禁 base64。'
+        '作品数随抓取结果自动刷新到 competitor.works_count。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'competitor_id': {'type': 'integer'},
+            'works': {
+                'type': 'array',
+                'items': {'type': 'object'},
+                'description': '[{external_id?,url?,title,cover_uri?,published_at?,views,likes,comments,shares,favorites}]',
+            },
+        },
+        required=['competitor_id', 'works'],
+        page_rank=182,
+        tags=['creator', 'competitor', 'works', 'manage'],
+    ),
+    # ---------------- 素材库 / 草稿箱（S6，§6.7/§6.8）----------------
+    _cap(
+        name='media_add',
+        mcp_suffix='media.add',
+        title='登记素材',
+        description='把配图/封面/视频/模板登记进素材库。二进制走 hasn://asset/ 引用（禁 base64 字节块，铁律）——'
+        '字节由本地工具先上私有桶再登记；type ∈ image/video/audio/template。'
+        'reel/film/studio 出的成片、imagelab 处理后的图，落桶后即可登记回素材库供复用。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'project_id': {'type': 'integer'},
+            'type': {'type': 'string', 'description': 'image/video/audio/template'},
+            'asset_uri': {'type': 'string', 'description': 'hasn://asset/{id} 私有桶引用（禁 base64）'},
+            'fields': {
+                'type': ['object', 'null'],
+                'description': 'filename/file_size/width/height/duration/thumbnail_uri/tags/description',
+            },
+        },
+        required=['project_id', 'type', 'asset_uri'],
+        page_rank=183,
+        tags=['creator', 'media', 'add', 'manage'],
+    ),
+    _cap(
+        name='media_list',
+        mcp_suffix='media.list',
+        title='列素材',
+        description='列项目素材库（可按 type 过滤 image/video/audio/template，按创建时间倒序）。'
+        '找素材复用、配图选材时调。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'project_id': {'type': 'integer'},
+            'type': {'type': ['string', 'null'], 'description': 'image/video/audio/template（可选过滤）'},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 300, 'default': 100},
+        },
+        required=['project_id'],
+        page_rank=184,
+        tags=['creator', 'media', 'list', 'read'],
+    ),
+    _cap(
+        name='media_update',
+        mcp_suffix='media.update',
+        title='改素材信息',
+        description='改素材元信息（标签/描述/文件名/缩略图），整理素材库用。不改底层资产字节。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'media_id': {'type': 'integer'},
+            'fields': {'type': 'object', 'description': 'filename/tags/description/thumbnail_uri'},
+        },
+        required=['media_id', 'fields'],
+        page_rank=185,
+        tags=['creator', 'media', 'update', 'manage'],
+    ),
+    _cap(
+        name='media_delete',
+        mcp_suffix='media.delete',
+        title='删素材',
+        description='从素材库删掉一条素材引用行（仅删库内引用，私有桶资产另行回收）。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={'media_id': {'type': 'integer'}},
+        required=['media_id'],
+        page_rank=186,
+        tags=['creator', 'media', 'delete', 'manage'],
+    ),
+    _cap(
+        name='draft_create',
+        mcp_suffix='draft.create',
+        title='建草稿',
+        description='建一条草稿（快速记灵感/半成品，不进正式内容流水线）。title 必填；content=正文；'
+        'media=引用素材 asset 列表（hasn://asset/）；target_platforms=目标平台 key 列表。草稿养熟后经 draft.promote 转正。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'project_id': {'type': 'integer'},
+            'title': {'type': 'string', 'minLength': 1},
+            'fields': {
+                'type': ['object', 'null'],
+                'description': 'content/media[]（hasn://asset）/tags[]/target_platforms[]',
+            },
+        },
+        required=['project_id', 'title'],
+        page_rank=187,
+        tags=['creator', 'draft', 'create', 'manage'],
+    ),
+    _cap(
+        name='draft_update',
+        mcp_suffix='draft.update',
+        title='改草稿',
+        description='改草稿（标题/正文/素材/标签/目标平台）。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'draft_id': {'type': 'integer'},
+            'fields': {'type': 'object', 'description': 'title/content/media[]/tags[]/target_platforms[]'},
+        },
+        required=['draft_id', 'fields'],
+        page_rank=188,
+        tags=['creator', 'draft', 'update', 'manage'],
+    ),
+    _cap(
+        name='draft_list',
+        mcp_suffix='draft.list',
+        title='列草稿',
+        description='列项目草稿箱（按创建时间倒序）。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'project_id': {'type': 'integer'},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 300, 'default': 100},
+        },
+        required=['project_id'],
+        page_rank=189,
+        tags=['creator', 'draft', 'list', 'read'],
+    ),
+    _cap(
+        name='draft_delete',
+        mcp_suffix='draft.delete',
+        title='删草稿',
+        description='删掉一条草稿。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={'draft_id': {'type': 'integer'}},
+        required=['draft_id'],
+        page_rank=190,
+        tags=['creator', 'draft', 'delete', 'manage'],
+    ),
+    _cap(
+        name='draft_promote',
+        mcp_suffix='draft.promote',
+        title='草稿转正',
+        description='把草稿转正为正式内容（draft → Content 进创作流水线），沿用草稿 title/target_platforms；'
+        '转正后原草稿删除，避免草稿箱与内容流水线两处并存同一条。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={'draft_id': {'type': 'integer'}},
+        required=['draft_id'],
+        page_rank=191,
+        tags=['creator', 'draft', 'promote', 'manage'],
     ),
     # ---------------- 选题 ----------------
     _cap(
@@ -280,6 +552,23 @@ _CAPABILITIES = [
         required=['project_id', 'topics'],
         page_rank=19,
         tags=['creator', 'topic', 'suggest', 'manage'],
+    ),
+    _cap(
+        name='topic_add',
+        mcp_suffix='topic.add',
+        title='加一条选题',
+        description='往选题池单条加一个选题（§6.6「手动加选题」；人和分身共用）。分身提供 title，可选 reason/angle，service 落库；零 fake，不编造热度/潜力。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'project_id': {'type': 'integer'},
+            'title': {'type': 'string', 'description': '选题标题'},
+            'reason': {'type': ['string', 'null'], 'description': '选题理由（可选）'},
+            'angle': {'type': ['string', 'null'], 'description': '创意角度（可选，存入 creative_angles）'},
+        },
+        required=['project_id', 'title'],
+        page_rank=195,
+        tags=['creator', 'topic', 'add', 'manage'],
     ),
     # ---------------- 内容 / 阶段产出 ----------------
     _cap(
@@ -358,12 +647,16 @@ _CAPABILITIES = [
         name='content_stage_save',
         mcp_suffix='content.stage.save',
         title='保存阶段产出',
-        description='保存阶段产出（research/outline/draft/final_draft/cover/storyboard/voiceover）。同阶段再存 bump version 留迭代痕迹。',
+        description='保存阶段产出（research/outline/draft/final_draft/cover/storyboard/voiceover/final_video）。同阶段再存 bump version 留迭代痕迹。视频轨成片用 stage=final_video + 本地引用 asset_refs 回流（成片本地优先不上云）。',
         scope=_SCOPE_MANAGE,
         risk_level='low',
         properties={
             'content_id': {'type': 'integer'},
-            'stage': {'type': 'string', 'minLength': 1, 'description': '阶段标识'},
+            'stage': {
+                'type': 'string',
+                'minLength': 1,
+                'description': '阶段标识（research/outline/first_draft/final_draft/cover/storyboard/voiceover/final_video；视频轨成片用 final_video）',
+            },
             'content_text': {'type': ['string', 'null']},
             'asset_refs': {
                 'type': ['array', 'null'],

@@ -48,9 +48,50 @@ class AddAccountParam(SchemaBase):
     fields: dict[str, Any] | None = Field(default=None, description='账号字段（nickname/home_url/...）')
 
 
+class UpdateAccountParam(SchemaBase):
+    # 人手动改账号资料 + 手填指标（昵称/uid/主账号/粉丝/获赞/作品数…），走 account.update（§6.3）。
+    fields: dict[str, Any] = Field(
+        description='账号可改字段（nickname/uid/is_primary/home_url/followers/total_likes/total_posts…）'
+    )
+
+
 class LogCompetitorParam(SchemaBase):
     name: str = Field(min_length=1, max_length=120, description='竞品账号名')
     fields: dict[str, Any] | None = Field(default=None, description='竞品字段（platform/home_url/note/...）')
+
+
+class UpdateCompetitorParam(SchemaBase):
+    # 人手动回填竞品调研结果（粉丝/作品数/风格/优势…），走 competitor.update（§6.4）。
+    fields: dict[str, Any] = Field(
+        description='竞品可改字段（follower_count/works_count/avg_likes/content_style/strengths…）'
+    )
+
+
+class AddMediaParam(SchemaBase):
+    # 登记素材（§6.7）：二进制走 hasn://asset/ 引用（禁 base64）；type ∈ image/video/audio/template。
+    type: str = Field(min_length=1, max_length=20, description='素材类型 image/video/audio/template')
+    asset_uri: str = Field(min_length=1, max_length=500, description='hasn://asset/{id} 私有桶引用（禁 base64）')
+    fields: dict[str, Any] | None = Field(
+        default=None, description='filename/file_size/width/height/duration/thumbnail_uri/tags/description'
+    )
+
+
+class UpdateMediaParam(SchemaBase):
+    # 改素材元信息（标签/描述/文件名/缩略图，§6.7）。
+    fields: dict[str, Any] = Field(description='素材可改字段（filename/tags/description/thumbnail_uri）')
+
+
+class CreateDraftParam(SchemaBase):
+    # 建草稿（§6.8）：快速记灵感/半成品，不进正式内容流水线；title 必填。
+    title: str = Field(min_length=1, max_length=200, description='草稿标题')
+    fields: dict[str, Any] | None = Field(
+        default=None, description='content/media[]（hasn://asset）/tags[]/target_platforms[]'
+    )
+
+
+class UpdateDraftParam(SchemaBase):
+    # 改草稿（标题/正文/素材/标签/目标平台，§6.8）。
+    fields: dict[str, Any] = Field(description='草稿可改字段（title/content/media[]/tags[]/target_platforms[]）')
 
 
 class SuggestTopicsParam(SchemaBase):
@@ -58,6 +99,14 @@ class SuggestTopicsParam(SchemaBase):
 
     topics: list[dict[str, Any]] = Field(description='选题列表（title/angle/reason/...）')
     batch_date: str | None = Field(default=None, description='批次日期 YYYY-MM-DD')
+
+
+class AddTopicParam(SchemaBase):
+    """主人手动加一条选题（§6.6「手动加选题」；与分身单条加共用 add_topic）。"""
+
+    title: str = Field(min_length=1, max_length=200, description='选题标题')
+    reason: str | None = Field(default=None, description='选题理由/背景')
+    angle: str | None = Field(default=None, description='一条创意角度（存入 creative_angles）')
 
 
 class CreateContentParam(SchemaBase):

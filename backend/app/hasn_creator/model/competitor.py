@@ -24,6 +24,7 @@ class Competitor(HasnCreatorAppBase):
     platform: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment='平台 (xiaohongshu:小红书:red/douyin:抖音:gray/wechat_mp:公众号:green/weibo:微博:orange/bilibili:B站:cyan/zhihu:知乎:blue)')
     url: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     follower_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
+    works_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='作品数（分身调研回填；工具层 researched=true 时必填）')
     avg_likes: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
     content_style: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     strengths: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)

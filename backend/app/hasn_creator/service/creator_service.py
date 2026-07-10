@@ -26,12 +26,14 @@ from backend.app.hasn_creator.model.content_insight import ContentInsight
 from backend.app.hasn_creator.model.content_stage import ContentStage
 from backend.app.hasn_creator.model.draft import Draft
 from backend.app.hasn_creator.model.media import Media
+from backend.app.hasn_creator.model.platform import Platform
 from backend.app.hasn_creator.model.playbook import Playbook
 from backend.app.hasn_creator.model.profile import Profile
 from backend.app.hasn_creator.model.project import Project
 from backend.app.hasn_creator.model.publish import Publish
 from backend.app.hasn_creator.model.topic import Topic
 from backend.app.hasn_creator.model.viral_pattern import ViralPattern
+from backend.app.hasn_creator.model.work import Work
 from backend.app.hasn_creator.service.scope_context import (
     CreatorScope,
     apply_scope,
@@ -150,6 +152,47 @@ def _normalize_asset_refs(asset_refs: list | None) -> list[Any]:
 
 class CreatorService:
     """创作运营领域服务（归属隔离 + 状态机）。"""
+
+    # ============================ platform 目录（S1）============================
+
+    @staticmethod
+    async def list_platforms(db: AsyncSession) -> list[dict[str, Any]]:
+        """列平台目录（选择制，含主页根 URL/主页模板/指标口径），按 sort 升序。
+
+        平台目录是全局内置 seed（无归属裁剪）；前端 PlatformSelect、Agent 选平台/取主页模板均读此。
+        """
+        rows = (await db.execute(sa.select(Platform).order_by(Platform.sort.asc(), Platform.id.asc()))).scalars().all()
+        return [_to_dict(p) for p in rows]
+
+    @staticmethod
+    async def _platform_index(db: AsyncSession) -> dict[str, Platform]:
+        """平台 key → Platform 行的索引（供校验/主页必填判定复用）。"""
+        rows = (await db.execute(sa.select(Platform))).scalars().all()
+        return {p.key: p for p in rows}
+
+    @staticmethod
+    async def validate_platform(db: AsyncSession, *, platform: str | None) -> None:
+        """校验 platform ∈ 目录（§4.3，零 fake）。
+
+        目录未配置（seed 未落）时 fail-open 放行，避免破坏未 seed 的环境；目录非空则严格校验。
+        """
+        if not platform:
+            return
+        index = await CreatorService._platform_index(db)
+        if index and platform not in index:
+            raise errors.RequestError(msg=f'平台「{platform}」不在平台目录中，请从目录中选择')
+
+    @staticmethod
+    async def platform_requires_home_url(db: AsyncSession, *, platform: str | None) -> bool:
+        """该平台是否要求 home_url 必填（has_public_home=true 的平台必填；公众号/视频号等豁免）。"""
+        if not platform:
+            return False
+        index = await CreatorService._platform_index(db)
+        row = index.get(platform)
+        if row is None:
+            # 目录未配置或平台未知：不强制（校验在 validate_platform 处兜；此处只管必填口径）
+            return False
+        return bool(row.has_public_home)
 
     # ============================ project / profile ============================
 
@@ -284,7 +327,19 @@ class CreatorService:
         return _to_dict(proj)
 
     # 项目下所有子对象表（双模归属冗余 assignee）—— reassign 时整体级联迁负责人。
-    _CHILD_MODELS = (Profile, Account, Competitor, Topic, Content, ContentStage, ContentInsight, Publish, Draft, Media)
+    _CHILD_MODELS = (
+        Profile,
+        Account,
+        Competitor,
+        Topic,
+        Content,
+        ContentStage,
+        ContentInsight,
+        Publish,
+        Draft,
+        Media,
+        Work,
+    )
 
     @staticmethod
     async def reassign_project(
@@ -311,9 +366,7 @@ class CreatorService:
             raise errors.RequestError(msg='目标负责人不是本企业成员')
         proj.assignee = new_assignee
         for model in CreatorService._CHILD_MODELS:
-            await db.execute(
-                sa.update(model).where(model.project_id == project_id).values(assignee=new_assignee)
-            )
+            await db.execute(sa.update(model).where(model.project_id == project_id).values(assignee=new_assignee))
         await db.flush()
         return _to_dict(proj)
 
@@ -397,14 +450,22 @@ class CreatorService:
         platform: str,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """加平台账号（S4 §6.3）：platform 校验 ∈ 目录；home_url 按平台条件必填（有公开主页的平台必填）。"""
         proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
         fields = fields or {}
+        # platform 必选自目录（§4.3 选择制，零 fake）。
+        await CreatorService.validate_platform(db, platform=platform)
+        # home_url 条件必填：有公开网页主页的平台（小红书/抖音/B站…）必填，公众号/视频号等豁免（§8）。
+        home_url = (fields.get('home_url') or '').strip() or None
+        if home_url is None and await CreatorService.platform_requires_home_url(db, platform=platform):
+            raise errors.RequestError(msg='该平台有公开主页，请填写主页 URL（用于分身抓取粉丝/作品数据）')
         acc = Account(
             project_id=project_id,
             platform=platform,
             platform_uid=fields.get('platform_uid'),
             nickname=fields.get('nickname'),
-            home_url=fields.get('home_url'),
+            avatar_url=fields.get('avatar_url'),
+            home_url=home_url,
             bio=fields.get('bio'),
             is_primary=bool(fields.get('is_primary', False)),
             notes=fields.get('notes'),
@@ -423,6 +484,222 @@ class CreatorService:
         return [_to_dict(a) for a in rows]
 
     @staticmethod
+    async def _load_account(db: AsyncSession, *, account_id: int, user_id: int, scope: CreatorScope | None) -> Account:
+        stmt = apply_scope(sa.select(Account).where(Account.id == account_id), Account, user_id=user_id, scope=scope)
+        acc = (await db.execute(stmt)).scalars().first()
+        if acc is None:
+            raise errors.NotFoundError(msg='平台账号不存在或无权访问')
+        return acc
+
+    @staticmethod
+    async def update_account(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        account_id: int,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """更新账号资料（人/分身改昵称/uid/主账号/主页/简介 + 手填指标，§6.3 ①人操作回填）。"""
+        acc = await CreatorService._load_account(db, account_id=account_id, user_id=user_id, scope=scope)
+        allowed = {
+            'nickname',
+            'platform_uid',
+            'avatar_url',
+            'home_url',
+            'bio',
+            'is_primary',
+            'notes',
+            # 人手填指标（知道就填；分身抓取走 update_account_metrics）。
+            'followers',
+            'following',
+            'total_likes',
+            'total_favorites',
+            'total_comments',
+            'total_posts',
+        }
+        metric_keys = {'followers', 'following', 'total_likes', 'total_favorites', 'total_comments', 'total_posts'}
+        touched_metric = False
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            if k == 'is_primary':
+                setattr(acc, k, bool(v))
+            elif k in metric_keys:
+                setattr(acc, k, int(v))
+                touched_metric = True
+            else:
+                setattr(acc, k, v)
+        # 人手填指标也刷新「更新于 T」，与分身抓取口径一致（数据新鲜度诚实标注）。
+        if touched_metric:
+            acc.metrics_updated_at = datetime.datetime.now(datetime.UTC)
+        await db.flush()
+        return _to_dict(acc)
+
+    @staticmethod
+    async def update_account_metrics(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        account_id: int,
+        metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """回填账号指标（分身抓取后调；§6.3 ②分身派发 web-reach → 解析粉丝/获赞/作品数）。
+
+        已知列（followers/following/total_likes/total_favorites/total_comments/total_posts）直接落列；
+        其余平台特有指标并入 `metrics_json`（保留原始口径，避免丢失）。刷新 `metrics_updated_at`。
+        """
+        acc = await CreatorService._load_account(db, account_id=account_id, user_id=user_id, scope=scope)
+        known = {'followers', 'following', 'total_likes', 'total_favorites', 'total_comments', 'total_posts'}
+        extra = dict(acc.metrics_json or {})
+        for k, v in metrics.items():
+            if v is None:
+                continue
+            if k in known:
+                setattr(acc, k, int(v))
+            else:
+                extra[k] = v
+        acc.metrics_json = extra
+        acc.metrics_updated_at = datetime.datetime.now(datetime.UTC)
+        await db.flush()
+        return _to_dict(acc)
+
+    # ============================ work（作品明细）============================
+
+    # 逐条 upsert 允许透传的作品字段（归并键 external_id/url 除外，另行处理）。
+    _WORK_FIELDS = ('title', 'cover_uri', 'published_at', 'views', 'likes', 'comments', 'shares', 'favorites')
+    _WORK_INT_FIELDS = {'views', 'likes', 'comments', 'shares', 'favorites'}
+
+    @staticmethod
+    def _apply_work_fields(work: Work, item: dict[str, Any]) -> None:
+        """把一条作品数据落到 Work 行（归并更新与新建共用）。"""
+        for key in CreatorService._WORK_FIELDS:
+            if key not in item or item[key] is None:
+                continue
+            value = int(item[key]) if key in CreatorService._WORK_INT_FIELDS else item[key]
+            setattr(work, key, value)
+
+    @staticmethod
+    async def upsert_works(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        source_type: str,
+        owner_ref_id: int,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """逐条 upsert 作品（§6.3/§6.4 分身抓取回填）。source_type=own→account_id，competitor→competitor_id。
+
+        归并键（§7）：同一 (project_id, source_type, owner_ref_id) 下，按 external_id 优先、否则 url 匹配既有行→更新指标；
+        无匹配→插入。归并让「发布记录回填」与「账号抓取」两路指标对得上，避免同一作品两条。
+        collected_at 刷新为当前时刻（数据新鲜度）。
+        """
+        if source_type not in ('own', 'competitor'):
+            raise errors.RequestError(msg='source_type 只能是 own 或 competitor')
+        # 校验归属主体存在且属本 owner（own→account / competitor→competitor），拿到 project + 平台冗余。
+        if source_type == 'own':
+            parent = await CreatorService._load_account(db, account_id=owner_ref_id, user_id=user_id, scope=scope)
+        else:
+            stmt = apply_scope(
+                sa.select(Competitor).where(Competitor.id == owner_ref_id), Competitor, user_id=user_id, scope=scope
+            )
+            parent = (await db.execute(stmt)).scalars().first()
+            if parent is None:
+                raise errors.NotFoundError(msg='竞品不存在或无权访问')
+        project_id = parent.project_id
+        platform = parent.platform or ''
+        own = {
+            'owner_scope': parent.owner_scope,
+            'user_id': parent.user_id,
+            'enterprise_id': parent.enterprise_id,
+            'assignee': parent.assignee,
+        }
+        # 该主体下现有作品（用于归并匹配）。
+        base = sa.select(Work).where(Work.project_id == project_id, Work.source_type == source_type)
+        base = (
+            base.where(Work.account_id == owner_ref_id)
+            if source_type == 'own'
+            else base.where(Work.competitor_id == owner_ref_id)
+        )
+        existing = (await db.execute(base)).scalars().all()
+        by_ext = {w.external_id: w for w in existing if w.external_id}
+        by_url = {w.url: w for w in existing if w.url}
+
+        now = datetime.datetime.now(datetime.UTC)
+        upserted = 0
+        for item in items or []:
+            ext = (item.get('external_id') or '').strip() or None
+            url = (item.get('url') or '').strip() or None
+            match = (by_ext.get(ext) if ext else None) or (by_url.get(url) if url else None)
+            if match is None:
+                match = Work(
+                    project_id=project_id,
+                    source_type=source_type,
+                    account_id=owner_ref_id if source_type == 'own' else None,
+                    competitor_id=owner_ref_id if source_type == 'competitor' else None,
+                    platform=item.get('platform') or platform,
+                    external_id=ext,
+                    url=url,
+                    **own,
+                )
+                db.add(match)
+                if ext:
+                    by_ext[ext] = match
+                if url:
+                    by_url[url] = match
+            else:
+                if ext and not match.external_id:
+                    match.external_id = ext
+                if url and not match.url:
+                    match.url = url
+            CreatorService._apply_work_fields(match, item)
+            match.collected_at = now
+            upserted += 1
+        # 竞品作品数随抓取结果刷新（§6.4 works_count 由调研回填）。
+        if source_type == 'competitor':
+            total = (
+                await db.execute(
+                    sa
+                    .select(sa.func.count())
+                    .select_from(Work)
+                    .where(Work.source_type == 'competitor', Work.competitor_id == owner_ref_id)
+                )
+            ).scalar() or 0
+            parent.works_count = int(total)
+        await db.flush()
+        return {'upserted': upserted, 'source_type': source_type, 'owner_ref_id': owner_ref_id}
+
+    @staticmethod
+    async def list_works(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        source_type: str,
+        owner_ref_id: int,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """列某账号/竞品的作品（按发布时间倒序；点开账号卡下钻作品用）。"""
+        if source_type not in ('own', 'competitor'):
+            raise errors.RequestError(msg='source_type 只能是 own 或 competitor')
+        # 归属校验（复用父主体加载，确保 owner 隔离）。
+        if source_type == 'own':
+            await CreatorService._load_account(db, account_id=owner_ref_id, user_id=user_id, scope=scope)
+            stmt = sa.select(Work).where(Work.source_type == 'own', Work.account_id == owner_ref_id)
+        else:
+            comp = apply_scope(
+                sa.select(Competitor).where(Competitor.id == owner_ref_id), Competitor, user_id=user_id, scope=scope
+            )
+            if (await db.execute(comp)).scalars().first() is None:
+                raise errors.NotFoundError(msg='竞品不存在或无权访问')
+            stmt = sa.select(Work).where(Work.source_type == 'competitor', Work.competitor_id == owner_ref_id)
+        stmt = stmt.order_by(Work.published_at.desc().nullslast(), Work.id.desc()).limit(min(limit, 300))
+        rows = (await db.execute(stmt)).scalars().all()
+        return [_to_dict(w) for w in rows]
+
+    @staticmethod
     async def log_competitor(
         db: AsyncSession,
         *,
@@ -432,22 +709,71 @@ class CreatorService:
         name: str,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """记竞品（§6.4 工具层强制录真）：platform+url 必填；researched=true 时 follower_count+works_count 必填。
+
+        兼容「先挂 URL 待分身调研」：researched=false（默认）时只强制 platform+url+name，指标待补；
+        researched=true（分身调研完带真数据）时强制 follower_count+works_count（零 fake 的录真）。
+        """
         proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
         fields = fields or {}
+        platform = (fields.get('platform') or '').strip() or None
+        url = (fields.get('url') or '').strip() or None
+        researched = bool(fields.get('researched', False))
+        if not platform:
+            raise errors.RequestError(msg='竞品必须选平台（从平台目录中选）')
+        await CreatorService.validate_platform(db, platform=platform)
+        if not url:
+            raise errors.RequestError(msg='竞品必须填主页 URL（先挂 URL 待分身调研也需要）')
+        if researched:
+            if fields.get('follower_count') is None:
+                raise errors.RequestError(msg='已调研的竞品必须填粉丝数（follower_count）')
+            if fields.get('works_count') is None:
+                raise errors.RequestError(msg='已调研的竞品必须填作品数（works_count）')
         comp = Competitor(
             project_id=project_id,
             name=name,
-            platform=fields.get('platform'),
-            url=fields.get('url'),
+            platform=platform,
+            url=url,
             follower_count=int(fields.get('follower_count') or 0),
+            works_count=int(fields.get('works_count') or 0),
             avg_likes=int(fields.get('avg_likes') or 0),
             content_style=fields.get('content_style'),
             strengths=fields.get('strengths') or [],
             notes=fields.get('notes'),
             tags=fields.get('tags') or [],
+            last_analyzed=datetime.datetime.now(datetime.UTC) if researched else None,
             **_child_ownership(proj),
         )
         db.add(comp)
+        await db.flush()
+        return _to_dict(comp)
+
+    @staticmethod
+    async def update_competitor(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        competitor_id: int,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """回填竞品调研结果（§6.4 分身调研后带完整数据：粉丝/作品数/风格/优势）。"""
+        stmt = apply_scope(
+            sa.select(Competitor).where(Competitor.id == competitor_id), Competitor, user_id=user_id, scope=scope
+        )
+        comp = (await db.execute(stmt)).scalars().first()
+        if comp is None:
+            raise errors.NotFoundError(msg='竞品不存在或无权访问')
+        if fields.get('platform') is not None:
+            await CreatorService.validate_platform(db, platform=fields.get('platform'))
+        int_keys = {'follower_count', 'works_count', 'avg_likes'}
+        allowed = {'name', 'platform', 'url', 'content_style', 'strengths', 'notes', 'tags'} | int_keys
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            setattr(comp, k, int(v) if k in int_keys else v)
+        # 有调研数据回填即刷新调研时间（§6.4「上次调研 T」）。
+        comp.last_analyzed = datetime.datetime.now(datetime.UTC)
         await db.flush()
         return _to_dict(comp)
 
@@ -458,6 +784,227 @@ class CreatorService:
         await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
         rows = (await db.execute(sa.select(Competitor).where(Competitor.project_id == project_id))).scalars().all()
         return [_to_dict(c) for c in rows]
+
+    # ============================ media / draft（素材库 / 草稿箱·S6）============================
+
+    # 素材类型白名单（§6.7；与 Media.type 字典一致）。
+    _MEDIA_TYPES = ('image', 'video', 'audio', 'template')
+
+    @staticmethod
+    async def _load_media(db: AsyncSession, *, media_id: int, user_id: int, scope: CreatorScope | None) -> Media:
+        stmt = apply_scope(sa.select(Media).where(Media.id == media_id), Media, user_id=user_id, scope=scope)
+        m = (await db.execute(stmt)).scalars().first()
+        if m is None:
+            raise errors.NotFoundError(msg='素材不存在或无权访问')
+        return m
+
+    @staticmethod
+    async def add_media(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        project_id: int,
+        media_type: str,
+        asset_uri: str,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """登记素材（§6.7）：二进制走 `hasn://asset/` 引用（禁 base64，铁律）；type ∈ 白名单。
+
+        分身抓取/生成的配图、封面、reel 成片等落私有桶后，把 `asset_uri` 登记进素材库；
+        原始字节由 daemon/工具侧上桶，服务层只存引用。
+        """
+        proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        fields = fields or {}
+        if media_type not in CreatorService._MEDIA_TYPES:
+            raise errors.RequestError(msg=f'素材类型只能是 {"/".join(CreatorService._MEDIA_TYPES)}')
+        uri = (asset_uri or '').strip()
+        if not uri.startswith('hasn://asset/'):
+            # 铁律：入参禁 base64/字节块，二进制必须是私有桶引用。
+            raise errors.RequestError(msg='asset_uri 必须是 hasn://asset/ 引用（禁 base64 字节块）')
+        media = Media(
+            project_id=project_id,
+            type=media_type,
+            asset_uri=uri,
+            filename=fields.get('filename'),
+            file_size=fields.get('file_size'),
+            width=fields.get('width'),
+            height=fields.get('height'),
+            duration=fields.get('duration'),
+            thumbnail_uri=fields.get('thumbnail_uri'),
+            tags=fields.get('tags') or {},
+            description=fields.get('description'),
+            **_child_ownership(proj),
+        )
+        db.add(media)
+        await db.flush()
+        return _to_dict(media)
+
+    @staticmethod
+    async def list_media(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        project_id: int,
+        media_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """列项目素材（§6.7；可按 type 过滤，按创建时间倒序）。"""
+        await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        stmt = sa.select(Media).where(Media.project_id == project_id)
+        if media_type:
+            if media_type not in CreatorService._MEDIA_TYPES:
+                raise errors.RequestError(msg=f'素材类型只能是 {"/".join(CreatorService._MEDIA_TYPES)}')
+            stmt = stmt.where(Media.type == media_type)
+        stmt = stmt.order_by(Media.created_time.desc(), Media.id.desc()).limit(min(limit, 300))
+        rows = (await db.execute(stmt)).scalars().all()
+        return [_to_dict(m) for m in rows]
+
+    @staticmethod
+    async def update_media(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        media_id: int,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """改素材元信息（§6.7；标签/描述/文件名，人手动整理素材库用）。"""
+        media = await CreatorService._load_media(db, media_id=media_id, user_id=user_id, scope=scope)
+        allowed = {'filename', 'tags', 'description', 'thumbnail_uri'}
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            setattr(media, k, v)
+        await db.flush()
+        return _to_dict(media)
+
+    @staticmethod
+    async def delete_media(
+        db: AsyncSession, *, user_id: int, scope: CreatorScope | None, media_id: int
+    ) -> dict[str, Any]:
+        """删素材（§6.7；仅删库内引用行，私有桶资产另行回收）。"""
+        media = await CreatorService._load_media(db, media_id=media_id, user_id=user_id, scope=scope)
+        await db.delete(media)
+        await db.flush()
+        return {'deleted': True, 'id': media_id}
+
+    @staticmethod
+    async def _load_draft(db: AsyncSession, *, draft_id: int, user_id: int, scope: CreatorScope | None) -> Draft:
+        stmt = apply_scope(sa.select(Draft).where(Draft.id == draft_id), Draft, user_id=user_id, scope=scope)
+        d = (await db.execute(stmt)).scalars().first()
+        if d is None:
+            raise errors.NotFoundError(msg='草稿不存在或无权访问')
+        return d
+
+    @staticmethod
+    async def create_draft(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        project_id: int,
+        title: str,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """建草稿（§6.8）：快速记灵感/半成品，不进正式内容流水线；title 必填。
+
+        content=正文；media=引用素材 asset 列表（`hasn://asset/`）；target_platforms=目标平台 key 列表。
+        草稿养熟后经 `promote_draft` 转正为正式 Content。
+        """
+        proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        fields = fields or {}
+        title = (title or '').strip()
+        if not title:
+            raise errors.RequestError(msg='草稿标题必填')
+        draft = Draft(
+            project_id=project_id,
+            title=title,
+            content=fields.get('content'),
+            media=fields.get('media') or [],
+            tags=fields.get('tags') or [],
+            target_platforms=fields.get('target_platforms') or [],
+            **_child_ownership(proj),
+        )
+        db.add(draft)
+        await db.flush()
+        return _to_dict(draft)
+
+    @staticmethod
+    async def update_draft(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        draft_id: int,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """改草稿（§6.8；标题/正文/素材/标签/目标平台）。"""
+        draft = await CreatorService._load_draft(db, draft_id=draft_id, user_id=user_id, scope=scope)
+        allowed = {'title', 'content', 'media', 'tags', 'target_platforms'}
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            setattr(draft, k, v)
+        await db.flush()
+        return _to_dict(draft)
+
+    @staticmethod
+    async def list_drafts(
+        db: AsyncSession, *, user_id: int, scope: CreatorScope | None, project_id: int, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """列项目草稿（§6.8；按创建时间倒序）。"""
+        await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        stmt = (
+            sa
+            .select(Draft)
+            .where(Draft.project_id == project_id)
+            .order_by(Draft.created_time.desc(), Draft.id.desc())
+            .limit(min(limit, 300))
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        return [_to_dict(d) for d in rows]
+
+    @staticmethod
+    async def delete_draft(
+        db: AsyncSession, *, user_id: int, scope: CreatorScope | None, draft_id: int
+    ) -> dict[str, Any]:
+        """删草稿（§6.8）。"""
+        draft = await CreatorService._load_draft(db, draft_id=draft_id, user_id=user_id, scope=scope)
+        await db.delete(draft)
+        await db.flush()
+        return {'deleted': True, 'id': draft_id}
+
+    @staticmethod
+    async def promote_draft(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        draft_id: int,
+        created_by_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """草稿转正为正式内容（§6.8）：draft → Content（进创作流水线），并删掉原草稿行。
+
+        沿用草稿的 title/target_platforms 建 Content（图文轨默认 article）；转正后返回新内容，
+        草稿使命完成即删除，避免草稿箱与内容流水线两处并存同一条。
+        """
+        draft = await CreatorService._load_draft(db, draft_id=draft_id, user_id=user_id, scope=scope)
+        content = await CreatorService.create_content(
+            db,
+            user_id=user_id,
+            scope=scope,
+            project_id=draft.project_id,
+            title=draft.title,
+            content_tracks='article',
+            target_platforms=list(draft.target_platforms or []),
+            created_by_agent_id=created_by_agent_id,
+        )
+        # 草稿转正后使命完成，删原草稿行（避免草稿箱与内容流水线两处并存同一条）。
+        await db.delete(draft)
+        await db.flush()
+        return content
 
     # ============================ topic ============================
 
@@ -491,6 +1038,37 @@ class CreatorService:
             out.append(row)
         await db.flush()
         return [_to_dict(r) for r in out]
+
+    @staticmethod
+    async def add_topic(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        project_id: int,
+        title: str,
+        reason: str | None = None,
+        angle: str | None = None,
+    ) -> dict[str, Any]:
+        """人或分身单条加选题（§6.6「手动加选题」）——① owner 通道与 ② 分身通道共用此方法。
+
+        与 suggest_topics（批量、分身生成）区别：单条、可来自主人手动录入；angle 作为一条创意角度
+        存入 creative_angles。零 fake：分数缺省 0，不编造热度/潜力（Topic 表无创作者审计列，与 suggest_topics 一致）。
+        """
+        proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        row = Topic(
+            project_id=project_id,
+            title=str(title or '').strip()[:200] or '未命名选题',
+            reason=reason,
+            creative_angles=[angle] if angle else [],
+            potential_score=0,
+            heat_index=0,
+            status=0,
+            **_child_ownership(proj),
+        )
+        db.add(row)
+        await db.flush()
+        return _to_dict(row)
 
     @staticmethod
     async def list_topics(
