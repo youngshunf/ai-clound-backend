@@ -246,6 +246,122 @@ async def handle_competitor_works_upsert(
     )
 
 
+# ---------------- 素材库 / 草稿箱（S6）----------------
+
+
+async def handle_media_add(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.add_media(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        project_id=_int(input_payload, 'project_id'),
+        media_type=str(input_payload['type']),
+        asset_uri=str(input_payload['asset_uri']),
+        fields=input_payload.get('fields'),
+    )
+
+
+async def handle_media_list(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    items = await creator_service.list_media(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        project_id=_int(input_payload, 'project_id'),
+        media_type=input_payload.get('type'),
+        limit=int(input_payload.get('limit', 100)),
+    )
+    return {'items': items}
+
+
+async def handle_media_update(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.update_media(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        media_id=_int(input_payload, 'media_id'),
+        fields=dict(input_payload.get('fields') or {}),
+    )
+
+
+async def handle_media_delete(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.delete_media(
+        db, user_id=agent.owner_user_id, scope=scope, media_id=_int(input_payload, 'media_id')
+    )
+
+
+async def handle_draft_create(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.create_draft(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        project_id=_int(input_payload, 'project_id'),
+        title=str(input_payload['title']),
+        fields=input_payload.get('fields'),
+    )
+
+
+async def handle_draft_update(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.update_draft(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        draft_id=_int(input_payload, 'draft_id'),
+        fields=dict(input_payload.get('fields') or {}),
+    )
+
+
+async def handle_draft_list(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    items = await creator_service.list_drafts(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        project_id=_int(input_payload, 'project_id'),
+        limit=int(input_payload.get('limit', 100)),
+    )
+    return {'items': items}
+
+
+async def handle_draft_delete(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.delete_draft(
+        db, user_id=agent.owner_user_id, scope=scope, draft_id=_int(input_payload, 'draft_id')
+    )
+
+
+async def handle_draft_promote(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.promote_draft(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        draft_id=_int(input_payload, 'draft_id'),
+        created_by_agent_id=agent.agent_hasn_id,
+    )
+
+
 # ---------------- 选题 ----------------
 
 

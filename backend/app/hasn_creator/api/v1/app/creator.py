@@ -20,7 +20,9 @@ from fastapi import APIRouter, Query, Request
 
 from backend.app.hasn_creator.schema.owner import (
     AddAccountParam,
+    AddMediaParam,
     CreateContentParam,
+    CreateDraftParam,
     CreateProjectParam,
     LogCompetitorParam,
     LogInsightParam,
@@ -33,6 +35,8 @@ from backend.app.hasn_creator.schema.owner import (
     UpdateAccountParam,
     UpdateCompetitorParam,
     UpdateContentParam,
+    UpdateDraftParam,
+    UpdateMediaParam,
     UpdateMetricsParam,
     UpdateProjectParam,
 )
@@ -234,6 +238,107 @@ async def list_competitor_works(request: Request, db: CurrentSession, competitor
     return response_base.success(data={'items': items})
 
 
+# ============================ 素材库 / 草稿箱（S6·§6.7/§6.8）============================
+
+
+@router.get(
+    '/projects/{project_id}/media', summary='[Owner] 项目素材库（可按 type 过滤）', dependencies=[DependsJwtAuth]
+)
+async def list_media(
+    request: Request,
+    db: CurrentSession,
+    project_id: int,
+    media_type: Annotated[str | None, Query(alias='type', description='image/video/audio/template')] = None,
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    items = await creator_service.list_media(
+        db, user_id=request.user.id, scope=scope, project_id=project_id, media_type=media_type
+    )
+    return response_base.success(data={'items': items})
+
+
+@router.post(
+    '/projects/{project_id}/media',
+    summary='[Owner] 登记素材（hasn://asset 引用，禁 base64）',
+    dependencies=[DependsJwtAuth],
+)
+async def add_media(
+    request: Request, db: CurrentSessionTransaction, project_id: int, obj: AddMediaParam
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.add_media(
+        db,
+        user_id=request.user.id,
+        scope=scope,
+        project_id=project_id,
+        media_type=obj.type,
+        asset_uri=obj.asset_uri,
+        fields=obj.fields,
+    )
+    return response_base.success(data=data)
+
+
+@router.patch('/media/{media_id}', summary='[Owner] 改素材信息（标签/描述/文件名）', dependencies=[DependsJwtAuth])
+async def update_media(
+    request: Request, db: CurrentSessionTransaction, media_id: int, obj: UpdateMediaParam
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.update_media(
+        db, user_id=request.user.id, scope=scope, media_id=media_id, fields=obj.fields
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/media/{media_id}', summary='[Owner] 删素材', dependencies=[DependsJwtAuth])
+async def delete_media(request: Request, db: CurrentSessionTransaction, media_id: int) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.delete_media(db, user_id=request.user.id, scope=scope, media_id=media_id)
+    return response_base.success(data=data)
+
+
+@router.get('/projects/{project_id}/drafts', summary='[Owner] 项目草稿箱', dependencies=[DependsJwtAuth])
+async def list_drafts(request: Request, db: CurrentSession, project_id: int) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    items = await creator_service.list_drafts(db, user_id=request.user.id, scope=scope, project_id=project_id)
+    return response_base.success(data={'items': items})
+
+
+@router.post('/projects/{project_id}/drafts', summary='[Owner] 建草稿（灵感快记）', dependencies=[DependsJwtAuth])
+async def create_draft(
+    request: Request, db: CurrentSessionTransaction, project_id: int, obj: CreateDraftParam
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.create_draft(
+        db, user_id=request.user.id, scope=scope, project_id=project_id, title=obj.title, fields=obj.fields
+    )
+    return response_base.success(data=data)
+
+
+@router.patch('/drafts/{draft_id}', summary='[Owner] 改草稿', dependencies=[DependsJwtAuth])
+async def update_draft(
+    request: Request, db: CurrentSessionTransaction, draft_id: int, obj: UpdateDraftParam
+) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.update_draft(
+        db, user_id=request.user.id, scope=scope, draft_id=draft_id, fields=obj.fields
+    )
+    return response_base.success(data=data)
+
+
+@router.delete('/drafts/{draft_id}', summary='[Owner] 删草稿', dependencies=[DependsJwtAuth])
+async def delete_draft(request: Request, db: CurrentSessionTransaction, draft_id: int) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.delete_draft(db, user_id=request.user.id, scope=scope, draft_id=draft_id)
+    return response_base.success(data=data)
+
+
+@router.post('/drafts/{draft_id}/promote', summary='[Owner] 草稿转正为正式内容', dependencies=[DependsJwtAuth])
+async def promote_draft(request: Request, db: CurrentSessionTransaction, draft_id: int) -> ResponseModel:
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    data = await creator_service.promote_draft(db, user_id=request.user.id, scope=scope, draft_id=draft_id)
+    return response_base.success(data=data)
+
+
 @router.get('/projects/{project_id}/topics', summary='[Owner] 选题池', dependencies=[DependsJwtAuth])
 async def list_topics(
     request: Request,
@@ -392,7 +497,9 @@ async def submit_publish(request: Request, db: CurrentSessionTransaction, obj: S
     return response_base.success(data=data)
 
 
-@router.get('/publishes/{publish_id}/package', summary='[Owner] 取成品包（文案+封面+话题+建议）', dependencies=[DependsJwtAuth])
+@router.get(
+    '/publishes/{publish_id}/package', summary='[Owner] 取成品包（文案+封面+话题+建议）', dependencies=[DependsJwtAuth]
+)
 async def get_publish_package(request: Request, db: CurrentSession, publish_id: int) -> ResponseModel:
     scope = await resolve_creator_scope(db, user_id=request.user.id)
     data = await creator_service.assemble_publish_package(
@@ -410,7 +517,11 @@ async def approve_publish(request: Request, db: CurrentSessionTransaction, publi
     return response_base.success(data=data)
 
 
-@router.post('/publishes/{publish_id}/mark-published', summary='[Owner] 标记已发布并回填链接（人专属）', dependencies=[DependsJwtAuth])
+@router.post(
+    '/publishes/{publish_id}/mark-published',
+    summary='[Owner] 标记已发布并回填链接（人专属）',
+    dependencies=[DependsJwtAuth],
+)
 async def mark_published(
     request: Request, db: CurrentSessionTransaction, publish_id: int, obj: MarkPublishedParam
 ) -> ResponseModel:
