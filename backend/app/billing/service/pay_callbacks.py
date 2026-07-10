@@ -140,7 +140,16 @@ async def handle_credit_pack_paid(order: PayOrder) -> None:
 def register_callbacks() -> None:
     """注册支付成功回调 — 在应用启动时调用"""
     from backend.app.billing.core.callback import register_pay_callback
+    from backend.app.billing.core.fulfillment import (
+        KIND_CREDIT_PACK,
+        KIND_LLM_TIER,
+        register_fulfillment,
+    )
 
+    # 旧 order_type 分发（存量兼容，无 offering_ref 的订单回落这里）
     register_pay_callback('subscribe', handle_subscribe_paid)
     register_pay_callback('credit_pack', handle_credit_pack_paid)
-    log.info('[PayCallback] 已注册订阅支付回调 (subscribe, credit_pack)')
+    # MK-3：内核发货轴——按商品目录 offering.kind 分发（新订单走这里）
+    register_fulfillment(KIND_LLM_TIER, handle_subscribe_paid)
+    register_fulfillment(KIND_CREDIT_PACK, handle_credit_pack_paid)
+    log.info('[PayCallback] 已注册订阅支付回调 (subscribe/llm_tier, credit_pack)')

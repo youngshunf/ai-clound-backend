@@ -68,6 +68,8 @@ async def handle_app_seat_paid(order: Any) -> None:
 def register_app_seat_purchase_callback() -> None:
     """注册企业席位购买支付回调 — 在应用启动时调用（registrar）。"""
     from backend.app.billing.core.callback import register_pay_callback
+    from backend.app.billing.core.fulfillment import KIND_SEAT, register_fulfillment
 
-    register_pay_callback('app_seat', handle_app_seat_paid)
-    log.info('[AppSeat] 已注册企业席位购买支付回调 (app_seat)')
+    register_pay_callback('app_seat', handle_app_seat_paid)  # 存量兼容
+    register_fulfillment(KIND_SEAT, handle_app_seat_paid)  # MK-3：offering.kind=seat 发货轴
+    log.info('[AppSeat] 已注册企业席位购买支付回调 (app_seat/seat)')

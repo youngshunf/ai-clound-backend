@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.core.callback import dispatch_pay_success
+from backend.app.billing.core.fulfillment import build_offering_ref, dispatch_fulfillment
 from backend.app.billing.core.config import (
     ORDER_EXPIRE_MINUTES,
     PAY_ORDER_NOTIFY_URL,
@@ -253,6 +254,12 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code},
+            # MK-3：商品目录引用快照（发货按 kind 分发）；plan_key 对齐 seed（年付档为 <tier>_yearly）。
+            'offering_ref': build_offering_ref(
+                'subscribe',
+                offering_key='llm:tier',
+                plan_key=obj.tier if obj.billing_cycle == 'monthly' else f'{obj.tier}_yearly',
+            ),
         }
         await pay_order_dao.create(db, order_dict)
 
@@ -331,6 +338,10 @@ class PayOrderService:
                 'package_id': package.id,
                 'credit_amount': float(total_credits),
             },
+            # MK-3：商品目录引用快照；plan_key=积分包名（对齐 seed cp.package_name）。
+            'offering_ref': build_offering_ref(
+                'credit_pack', offering_key='credits:topup', plan_key=package.package_name
+            ),
         }
         await pay_order_dao.create(db, order_dict)
 
@@ -406,6 +417,10 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code, 'app_id': catalog.app_id},
+            # MK-3：商品目录引用快照；offering_key=app:<id>（对齐 seed catalog 收编）。
+            'offering_ref': build_offering_ref(
+                'app_purchase', offering_key=f'app:{catalog.app_id}', plan_key='standard'
+            ),
         }
         await pay_order_dao.create(db, order_dict)
 
@@ -479,6 +494,10 @@ class PayOrderService:
                 'enterprise_id': int(obj.enterprise_id),
                 'seats': seats,
             },
+            # MK-3：商品目录引用快照；offering_key=seat:<id>（席位 feature 前缀族）。
+            'offering_ref': build_offering_ref(
+                'app_seat', offering_key=f'seat:{catalog.app_id}', plan_key='standard'
+            ),
         }
         await pay_order_dao.create(db, order_dict)
 
@@ -542,6 +561,8 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code, 'lead_count': count, 'unit_price_fen': unit_fen},
+            # MK-3：商品目录引用快照；线索包无 offering 行（发货只认 kind=lead_pack）。
+            'offering_ref': build_offering_ref('lead_pack'),
         }
         await pay_order_dao.create(db, order_dict)
 
@@ -604,7 +625,10 @@ class PayOrderService:
             channel_user_id=channel_user_id, success_time=now,
         )
 
-        await dispatch_pay_success(order.order_type, order)
+        # MK-3：优先按商品目录 offering_ref.kind 分发履约（内核唯一发货入口）；
+        #        无 offering_ref 的存量订单回落 order_type 旧分发（向后兼容，逐步收敛）。
+        if not await dispatch_fulfillment(order):
+            await dispatch_pay_success(order.order_type, order)
         return True
 
     @staticmethod

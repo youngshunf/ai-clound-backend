@@ -39,6 +39,8 @@ async def handle_lead_pack_paid(order: Any) -> None:
 def register_lead_pack_callback() -> None:
     """注册线索购买支付回调 — 在应用启动时调用（registrar）。"""
     from backend.app.billing.core.callback import register_pay_callback
+    from backend.app.billing.core.fulfillment import KIND_LEAD_PACK, register_fulfillment
 
-    register_pay_callback('lead_pack', handle_lead_pack_paid)
+    register_pay_callback('lead_pack', handle_lead_pack_paid)  # 存量兼容
+    register_fulfillment(KIND_LEAD_PACK, handle_lead_pack_paid)  # MK-3：offering.kind=lead_pack 发货轴
     log.info('[LeadPack] 已注册线索购买支付回调 (lead_pack)')
