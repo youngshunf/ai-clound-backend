@@ -235,6 +235,17 @@ QUANT_AI_NATIVE_MANIFEST = {
             'display_name': '量化交易',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：量化策略回测 → hasn://quant/strategies/{server_id}，应用内详情路由打开
+    # （RC-P6 补 webui /apps/quant/strategies/:id 详情页）。
+    'resources': [
+        {
+            'resource_kind': 'quant.strategy',
+            'uri_domain': 'quant/strategies',  # → hasn://quant/strategies/{server_id}（doc08 §3 登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/quant/strategies/:id'},
+            'card': {'verb': '策略回测', 'action_label': '打开回测'},
+            'artifact_kind': 'other',
+        }
+    ],
     'capabilities': _CAPABILITIES,
     'tools': [_tool_from_cap(cap) for cap in _CAPABILITIES],
     'events': [],

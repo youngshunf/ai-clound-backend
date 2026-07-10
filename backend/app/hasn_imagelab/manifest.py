@@ -171,6 +171,17 @@ IMAGELAB_AI_NATIVE_MANIFEST = {
             'display_name': '图坊',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：图坊修图项目 → hasn://imagelab/projects/{server_id}，单入口 + ?project= 透传
+    # （模式 sidebar 全页应用，非独立窗口）。entry_query·id 经 ?project 透传，图库据此定位项目。
+    'resources': [
+        {
+            'resource_kind': 'imagelab.project',
+            'uri_domain': 'imagelab/projects',  # → hasn://imagelab/projects/{server_id}（doc08 §3 已登记域）
+            'open': {'mode': 'entry_query', 'entry_route': '/apps/imagelab', 'query_key': 'project'},
+            'card': {'verb': '图像项目', 'action_label': '打开图坊'},
+            'artifact_kind': 'image',
+        }
+    ],
     'capabilities': [
         # —— 读类（imagelab:read，出厂 Allow）——
         _allow_cap(
