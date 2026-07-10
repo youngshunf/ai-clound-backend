@@ -23,6 +23,7 @@ from backend.app.hasn_growth.model import LeadContact, LeadQuota, LeadRef
 # 复用 funnel 的线索序列化 + PII 脱敏（单一实现，避免脱敏逻辑漂移——安全敏感不重复造）。
 from backend.app.hasn_growth.service.funnel_service import _lead_to_dict
 from backend.app.hasn_growth.service.industry_tagging_service import IndustryTaggingService
+from backend.common.log import log
 from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
@@ -167,6 +168,27 @@ class LeadPoolQueryService:
         row.updated_time = timezone.now()
         await db.flush()
         return row.purchased_balance
+
+    async def revoke_purchased_leads(self, db: AsyncSession, *, user_id: int, count: int) -> int:
+        """退款回收（``grant_purchased_leads`` 的逆操作·MK-9 退款编排）：扣减可领取线索余额。返回实际回收数。
+
+        余额可能已部分消费——按 ``min(count, purchased_balance)`` **只回收仍在余额里的部分**
+        （已发放消费的线索是已交付价值，无法追回，如实 log 缺口）。行级锁防并发；仅 flush，事务由退款编排掌握。
+        """
+        if count <= 0:
+            return 0
+        row = await self._get_or_init_quota_row(db, user_id=user_id, lock=True)
+        revoked = min(int(count), row.purchased_balance)
+        row.purchased_balance -= revoked
+        row.purchased_total = max(0, row.purchased_total - int(count))
+        row.updated_time = timezone.now()
+        await db.flush()
+        if revoked < count:
+            log.warning(
+                f'[LeadPack] 退款回收线索余额不足: user_id={user_id} 应回收 {count} 实回收 {revoked}'
+                f'（{count - revoked} 条已消费无法追回）'
+            )
+        return revoked
 
     async def request_leads(
         self,

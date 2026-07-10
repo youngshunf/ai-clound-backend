@@ -9,11 +9,16 @@
 锁，保证回调每订单仅触发一次（与 credit_pack/app_purchase 一致），不会重复发放额度。
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.common.log import log
 from backend.database.db import async_db_session
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def handle_lead_pack_paid(order: Any) -> None:
@@ -36,11 +41,31 @@ async def handle_lead_pack_paid(order: Any) -> None:
     log.info(f'[LeadPack] 线索额度发放完成: user_id={user_id}, +{lead_count} → 余额 {balance}')
 
 
+async def revoke_lead_pack(db: AsyncSession, *, order: Any) -> None:
+    """线索购买退款回收（``handle_lead_pack_paid`` 的逆操作·MK-9 退款编排）：扣回本单发放的线索余额。
+
+    据 ``extra_data.lead_count`` 从余额里回收（``revoke_purchased_leads`` 只回收未消费部分、如实 log 缺口）。
+    **收 ``db`` 参与 refund_order 单一事务**。
+    """
+    user_id = order.user_id
+    lead_count = int((order.extra_data or {}).get('lead_count') or 0)
+    if lead_count <= 0:
+        log.error(f'[LeadPack] 退款回收缺少 lead_count: order_no={order.order_no}')
+        return
+    revoked = await lead_pool_query_service.revoke_purchased_leads(db, user_id=user_id, count=lead_count)
+    log.info(f'[LeadPack] 退款回收线索: user_id={user_id}, 应回收 {lead_count} 实回收 {revoked}, order_no={order.order_no}')
+
+
 def register_lead_pack_callback() -> None:
     """注册线索购买支付回调 — 在应用启动时调用（registrar）。"""
     from backend.app.billing.core.callback import register_pay_callback
-    from backend.app.billing.core.fulfillment import KIND_LEAD_PACK, register_fulfillment
+    from backend.app.billing.core.fulfillment import (
+        KIND_LEAD_PACK,
+        register_fulfillment,
+        register_refund_handler,
+    )
 
     register_pay_callback('lead_pack', handle_lead_pack_paid)  # 存量兼容
     register_fulfillment(KIND_LEAD_PACK, handle_lead_pack_paid)  # MK-3：offering.kind=lead_pack 发货轴
-    log.info('[LeadPack] 已注册线索购买支付回调 (lead_pack)')
+    register_refund_handler(KIND_LEAD_PACK, revoke_lead_pack)  # MK-9：退款回收轴（扣回线索余额）
+    log.info('[LeadPack] 已注册线索购买支付回调 (lead_pack) + 退款回收处理器')

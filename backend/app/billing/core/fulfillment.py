@@ -37,6 +37,11 @@ ORDER_TYPE_TO_KIND: dict[str, str] = {
 
 # 履约处理器：offering.kind -> async handler(order)
 _fulfillment_handlers: dict[str, Callable[..., Coroutine[Any, Any, None]]] = {}
+# 退款回收处理器：offering.kind -> async handler(db, *, order)
+# 与发货处理器对称：发货「授予权益/入账额度」，退款则「回收权益/扣减额度」。
+# 注意签名差异——退款回收**须与订单状态翻转同事务**（避免退钱不回收/回收不退钱），
+# 故收 session 参数 ``db`` 参与 refund_order 的单一事务；发货沿用各自独立 session 的存量范式。
+_refund_handlers: dict[str, Callable[..., Coroutine[Any, Any, None]]] = {}
 
 
 def register_fulfillment(kind: str, handler: Callable[..., Coroutine[Any, Any, None]]) -> None:
@@ -45,9 +50,24 @@ def register_fulfillment(kind: str, handler: Callable[..., Coroutine[Any, Any, N
     log.info(f'[fulfillment] 注册发货处理器: kind={kind}, handler={handler.__name__}')
 
 
+def register_refund_handler(kind: str, handler: Callable[..., Coroutine[Any, Any, None]]) -> None:
+    """注册某 kind 的退款回收处理器（各业务模块启动时与发货处理器成对注册）。
+
+    handler 签名：``async handler(db, *, order) -> None``——在 refund_order 的事务内回收
+    该 kind 发出的权益/额度（应用撤权益、席位减 seats_total、积分/线索扣减）。
+    """
+    _refund_handlers[kind] = handler
+    log.info(f'[fulfillment] 注册退款回收处理器: kind={kind}, handler={handler.__name__}')
+
+
 def get_registered_kinds() -> set[str]:
     """已注册发货处理器的 kind 集合（一致性守卫 / 自省用）。"""
     return set(_fulfillment_handlers)
+
+
+def get_registered_refund_kinds() -> set[str]:
+    """已注册退款回收处理器的 kind 集合（一致性守卫 / 自省用）。"""
+    return set(_refund_handlers)
 
 
 def build_offering_ref(
@@ -88,4 +108,39 @@ async def dispatch_fulfillment(order: Any) -> bool:
         return True
     except Exception as e:
         log.error(f'[fulfillment] 发货处理器异常: kind={kind}, error={e}')
+        raise
+
+
+def _resolve_order_kind(order: Any) -> str | None:
+    """解析订单的 offering.kind：优先 ``offering_ref.kind``，回落 ``order_type`` 映射（存量订单无 offering_ref）。"""
+    offering_ref = getattr(order, 'offering_ref', None) or {}
+    kind = offering_ref.get('kind')
+    if kind:
+        return kind
+    return ORDER_TYPE_TO_KIND.get(getattr(order, 'order_type', None))
+
+
+async def reverse_fulfillment(db: Any, order: Any) -> None:
+    """退款时按 ``offering.kind`` 反向回收已发出的权益/额度（发货的逆操作）。
+
+    **fail-closed（铁律）**：无法确定 kind、或该 kind 未注册退款回收处理器 → 直接抛错拒绝退款——
+    绝不「退了钱却不回收权益」。回收在 refund_order 的**同一事务**内执行（收 ``db``），与订单状态翻转原子提交。
+
+    :raises RequestError: 订单缺商品类型 / kind 未注册回收处理器（拒绝退款）。
+    """
+    # 延迟导入避免与 common.exception 顶层耦合（本模块仅依赖 log）。
+    from backend.common.exception import errors
+
+    kind = _resolve_order_kind(order)
+    if not kind:
+        raise errors.RequestError(msg=f'订单 {getattr(order, "order_no", "?")} 无商品类型，无法安全退款回收')
+    handler = _refund_handlers.get(kind)
+    if not handler:
+        raise errors.RequestError(
+            msg=f'商品类型 {kind} 未注册退款回收处理器，拒绝退款（避免退钱不回收权益）'
+        )
+    try:
+        await handler(db, order=order)
+    except Exception as e:
+        log.error(f'[fulfillment] 退款回收处理器异常: kind={kind}, error={e}')
         raise

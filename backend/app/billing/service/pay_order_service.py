@@ -9,23 +9,25 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.core.callback import dispatch_pay_success
-from backend.app.billing.core.fulfillment import build_offering_ref, dispatch_fulfillment
 from backend.app.billing.core.config import (
     ORDER_EXPIRE_MINUTES,
     PAY_ORDER_NOTIFY_URL,
 )
+from backend.app.billing.core.fulfillment import build_offering_ref, dispatch_fulfillment, reverse_fulfillment
 from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_pay_channel import pay_channel_dao
 from backend.app.billing.crud.crud_pay_contract import pay_contract_dao
 from backend.app.billing.crud.crud_pay_merchant import pay_merchant_dao
 from backend.app.billing.crud.crud_pay_notify_log import pay_notify_log_dao
 from backend.app.billing.crud.crud_pay_order import pay_order_dao
+from backend.app.billing.crud.crud_pay_refund import pay_refund_dao
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model.pay_order import PayOrder
 from backend.app.billing.schema.pay_order import (
     CreatePayOrderParam,
     CreatePayOrderResponse,
     PayOrderStatusResponse,
+    RefundOrderResponse,
 )
 from backend.app.billing.service.channel.base import PayClient
 from backend.common.exception import errors
@@ -637,6 +639,191 @@ class PayOrderService:
             contract_no=None,
             expire_time=expire_time,
         )
+
+    @staticmethod
+    def _invoke_channel_refund(
+        channel,
+        merchant_config: dict | None,
+        *,
+        order_no: str,
+        refund_no: str,
+        refund_amount: int,
+        total_amount: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        """调渠道 SDK 退款（外部边界）。SDK 失败 → ServerError（refund_order 事务回滚，不落退款记录）。"""
+        try:
+            client = get_pay_client(channel, merchant_config=merchant_config)
+            return client.refund(
+                order_no=order_no,
+                refund_no=refund_no,
+                refund_amount=refund_amount,
+                total_amount=total_amount,
+                reason=reason,
+            )
+        except Exception as e:
+            log.error(f'SDK 退款失败: channel={channel.code}, error={e}', exc_info=True)
+            raise errors.ServerError(msg=f'支付渠道退款失败: {e}')
+
+    @staticmethod
+    async def refund_order(
+        *,
+        db: AsyncSession,
+        order_no: str,
+        reason: str = '',
+        refund_amount: int | None = None,
+        operator_id: int | None = None,
+    ) -> RefundOrderResponse:
+        """管理端发起退款（MK-9 退款编排层·统一商业化内核唯一退款入口）。
+
+        编排步骤（全程在调用方的**单一事务** ``db`` 内，与订单状态翻转原子提交）：
+          ① 行锁取订单 → 幂等短路（已 status=2 直接返回既有退款记录）+ 校验「已支付」；
+          ② **先按 offering.kind 回收权益/额度**（``reverse_fulfillment`` fail-closed——回收失败即抛，
+             绝不进入退款：不退钱不回收 > 退钱不回收）；
+          ③ 调渠道 SDK 退款（外部边界，退款单号确定性 ``RF{order_no}`` → 渠道/DB 双层幂等，
+             重试复用同一 out_refund_no 由渠道去重，规避重复退款）；
+          ④ 落 ``pay_refund``（status=1 成功）+ 订单 ``status=2 已退款`` + ``refund_amount``。
+
+        :raises NotFoundError: 订单不存在。
+        :raises RequestError: 订单非「已支付」态 / 金额非法 / kind 未注册回收处理器（拒绝退款）。
+        :raises ServerError: 渠道退款 SDK 失败。
+        """
+        order = await pay_order_dao.get_by_order_no_for_update(db, order_no)
+        if not order:
+            raise errors.NotFoundError(msg=f'订单 {order_no} 不存在')
+
+        # 退款单号确定性派生（一订单一全额退款）——渠道与 DB 双层幂等的锚。
+        refund_no = f'RF{order.order_no}'
+
+        # 幂等：已退款直接返回既有退款记录（行锁串行化并发退款请求）。
+        if order.status == 2:
+            existing = await pay_refund_dao.get_by_refund_no(db, refund_no)
+            return RefundOrderResponse(
+                order_no=order.order_no,
+                refund_no=refund_no,
+                refund_amount=int(order.refund_amount or (existing.refund_amount if existing else order.pay_amount)),
+                status=int(existing.status if existing else 1),
+                already_refunded=True,
+            )
+
+        if order.status != 1:
+            raise errors.RequestError(msg='只有已支付订单可退款（当前订单状态不允许退款）')
+
+        amount = int(refund_amount) if refund_amount is not None else int(order.pay_amount)
+        if amount <= 0 or amount > int(order.pay_amount):
+            raise errors.RequestError(msg=f'退款金额非法: {amount} 分（订单实付 {order.pay_amount} 分）')
+
+        # ② 先回收权益/额度（fail-closed·同事务）——回收失败即抛，绝不退钱不回收。
+        await reverse_fulfillment(db, order)
+
+        # ③ 渠道退款（外部边界）。
+        channel, merchant_config = await PayOrderService._resolve_channel(db, order.channel_code)
+        refund_reason = reason or '管理端退款'
+        result = PayOrderService._invoke_channel_refund(
+            channel,
+            merchant_config,
+            order_no=order.order_no,
+            refund_no=refund_no,
+            refund_amount=amount,
+            total_amount=int(order.pay_amount),
+            reason=refund_reason,
+        )
+        channel_refund_no = (result or {}).get('channel_refund_no') or (result or {}).get('refund_id')
+
+        # ④ 落退款记录 + 订单状态→已退款（同事务原子提交）。
+        now = timezone.now()
+        await pay_refund_dao.create(
+            db,
+            {
+                'refund_no': refund_no,
+                'order_no': order.order_no,
+                'user_id': order.user_id,
+                'refund_amount': amount,
+                'channel_code': order.channel_code,
+                'reason': refund_reason,
+                'channel_refund_no': channel_refund_no,
+                'status': 1,
+                'success_time': now,
+            },
+        )
+        await pay_order_dao.mark_refunded(db, order_no=order.order_no, refund_amount=amount)
+        log.info(
+            f'[Refund] 退款完成: order_no={order.order_no}, refund_no={refund_no}, '
+            f'amount={amount}分, kind={(order.offering_ref or {}).get("kind")}, operator={operator_id}'
+        )
+        return RefundOrderResponse(
+            order_no=order.order_no,
+            refund_no=refund_no,
+            refund_amount=amount,
+            status=1,
+            already_refunded=False,
+        )
+
+    @staticmethod
+    async def get_refund_list(*, db: AsyncSession, order_no: str | None = None) -> dict[str, Any]:
+        """分页查询退款记录（管理端）。"""
+        select_stmt = await pay_refund_dao.get_select(order_no=order_no)
+        return await paging_data(db, select_stmt)
+
+    @staticmethod
+    async def confirm_refund_notify(
+        *,
+        db: AsyncSession,
+        refund_no: str,
+        refund_status: str,
+        channel_refund_no: str | None = None,
+    ) -> bool:
+        """渠道退款异步回调确认（幂等·仅确认，不重复回收权益）。
+
+        退款编排在 ``refund_order`` 发起时已同步：回收权益 → 调渠道 → 落 ``pay_refund``(status=1) →
+        订单 status=2。本回调用于渠道**异步**退款（如微信退款先返 PROCESSING 后推 REFUND.SUCCESS）
+        的**最终态确认**，只更新退款记录/订单状态，**绝不再跑 ``reverse_fulfillment``**（避免重复回收）。
+
+        :param refund_status: 渠道退款态——``SUCCESS`` 成功 / ``PROCESSING`` 处理中 / 其它（``CLOSED`` /
+                              ``ABNORMAL``）视为失败。
+        :return: 是否有状态变更（幂等重放返回 False）。
+        """
+        refund = await pay_refund_dao.get_by_refund_no(db, refund_no)
+        if not refund:
+            # 收到未知退款单号的回调——不是本内核发起的退款（正常不该发生），记日志忽略。
+            log.warning(f'[Refund] 退款回调未匹配到退款记录: refund_no={refund_no}, status={refund_status}')
+            return False
+
+        status_upper = (refund_status or '').upper()
+        if status_upper == 'SUCCESS':
+            target_status = 1
+        elif status_upper == 'PROCESSING':
+            # 处理中——保持现状，等待终态回调。
+            return False
+        else:
+            target_status = 2  # CLOSED / ABNORMAL 等 → 退款失败
+
+        # 幂等：状态未变化直接返回（渠道回调可能重复投递）。
+        if int(refund.status) == target_status:
+            return False
+
+        now = timezone.now()
+        await pay_refund_dao.update_status(
+            db,
+            refund_no,
+            status=target_status,
+            channel_refund_no=channel_refund_no or refund.channel_refund_no,
+            success_time=now if target_status == 1 else None,
+        )
+
+        if target_status == 1:
+            # 成功终态——补确保订单已置退款态（发起时通常已置，兜底幂等）。
+            order = await pay_order_dao.get_by_order_no_for_update(db, refund.order_no)
+            if order and order.status != 2:
+                await pay_order_dao.mark_refunded(db, order_no=refund.order_no, refund_amount=int(refund.refund_amount))
+            log.info(f'[Refund] 退款回调确认成功: refund_no={refund_no}, order_no={refund.order_no}')
+        else:
+            # 失败终态——发起时已乐观回收权益+置退款态，此处渠道最终判失败 → 需人工对账（钱未退但权益已收回）。
+            log.critical(
+                f'[Refund] 渠道退款最终失败，需人工对账: refund_no={refund_no}, '
+                f'order_no={refund.order_no}, channel_status={refund_status}（权益已在发起时回收）'
+            )
+        return True
 
     @staticmethod
     async def cancel_order(*, db: AsyncSession, order_no: str, user_id: int) -> None:

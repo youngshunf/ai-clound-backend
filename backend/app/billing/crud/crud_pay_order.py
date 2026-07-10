@@ -74,6 +74,15 @@ class CRUDPayOrder(CRUDPlus[PayOrder]):
         )
         return result.rowcount
 
+    async def mark_refunded(self, db: AsyncSession, order_no: str, refund_amount: int) -> int:
+        """标记订单为已退款（status=2）并记录退款金额（退款编排层调用）。"""
+        result = await db.execute(
+            update(PayOrder)
+            .where(PayOrder.order_no == order_no)
+            .values(status=2, refund_amount=refund_amount, updated_time=timezone.now())
+        )
+        return result.rowcount
+
     async def expire_timeout_orders(self, db: AsyncSession) -> int:
         """将超时未支付的订单标记为过期"""
         now = timezone.now()

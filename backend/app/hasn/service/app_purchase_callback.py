@@ -71,11 +71,42 @@ async def handle_app_purchase_paid(order: Any) -> None:
         await apply_app_purchase(db, order=order)
 
 
+async def revoke_app_purchase(db: AsyncSession, *, order: Any) -> None:
+    """应用购买退款回收（发货 ``apply_app_purchase`` 的逆操作·MK-9 退款编排）：撤销本订单授予的 owner 权益。
+
+    据 ``order_ref==order.order_no`` 精确定位本次购买写入的 active 权益行并置 ``revoked``（幂等：
+    已撤销/无匹配 → no-op）。**收 ``db`` 参与 refund_order 单一事务**，与订单状态翻转原子提交。
+    """
+    import sqlalchemy as sa
+
+    from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
+
+    rows = (
+        await db.execute(
+            sa.select(HasnAppEntitlement).where(
+                HasnAppEntitlement.order_ref == order.order_no,
+                HasnAppEntitlement.subject_type == 'owner',
+                HasnAppEntitlement.status == 'active',
+            )
+        )
+    ).scalars().all()
+    revoked = 0
+    for ent in rows:
+        if await app_catalog_service.revoke_entitlement(db, entitlement_id=ent.id):
+            revoked += 1
+    log.info(f'[AppPurchase] 退款回收权益: order_no={order.order_no}, 撤销 {revoked} 条 active 权益')
+
+
 def register_app_purchase_callback() -> None:
     """注册应用购买支付回调 — 在应用启动时调用（registrar）。"""
     from backend.app.billing.core.callback import register_pay_callback
-    from backend.app.billing.core.fulfillment import KIND_APP, register_fulfillment
+    from backend.app.billing.core.fulfillment import (
+        KIND_APP,
+        register_fulfillment,
+        register_refund_handler,
+    )
 
     register_pay_callback('app_purchase', handle_app_purchase_paid)  # 存量兼容
     register_fulfillment(KIND_APP, handle_app_purchase_paid)  # MK-3：offering.kind=app 发货轴
-    log.info('[AppPurchase] 已注册应用购买支付回调 (app_purchase/app)')
+    register_refund_handler(KIND_APP, revoke_app_purchase)  # MK-9：退款回收轴（撤权益）
+    log.info('[AppPurchase] 已注册应用购买支付回调 (app_purchase/app) + 退款回收处理器')
