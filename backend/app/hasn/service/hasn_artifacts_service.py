@@ -30,6 +30,8 @@ from backend.common.exception import errors
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
+
 # 允许的产物类型（白名单，越界归一为 other）。
 _ALLOWED_KINDS = {'image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other'}
 _ALLOWED_SOURCE_KINDS = {'tool_output', 'task_result', 'upload', 'external'}
@@ -141,6 +143,93 @@ class HasnArtifactsService:
             source_kind=source_kind,
             dispatch_id=(params.dispatch_id or None),
             meta_data=params.metadata or {},
+            status='active',
+        )
+        db.add(row)
+        await db.flush()
+        return artifact_id
+
+    @staticmethod
+    def _app_id_from_descriptor(descriptor: ResourceDescriptor) -> str:
+        """从 `descriptor.resource_kind`（约定 `{app}.{kind}`，如 deck.presentation）取 app_id。"""
+        resource_kind = (descriptor.resource_kind or '').strip()
+        return resource_kind.split('.', 1)[0] if resource_kind else 'app'
+
+    @classmethod
+    def _resolve_artifact_kind(cls, descriptor: ResourceDescriptor) -> str:
+        """产物 kind：优先 `descriptor.artifact_kind`，缺省按 `resource_kind` 尾段归一，越界 → other。"""
+        declared = (descriptor.artifact_kind or '').strip()
+        if declared:
+            return declared if declared in _ALLOWED_KINDS else 'other'
+        tail = (descriptor.resource_kind or '').rsplit('.', 1)[-1].strip()
+        return tail if tail in _ALLOWED_KINDS else 'other'
+
+    @classmethod
+    async def record_app_resource_artifact(
+        cls,
+        db: AsyncSession,
+        *,
+        descriptor: ResourceDescriptor,
+        server_id: str,
+        session_id: str | None,
+        agent_hasn_id: str,
+        owner_hasn_id: str,
+        title: str,
+        summary: str | None = None,
+        source_tool: str | None = None,
+        dispatch_id: str | None = None,
+    ) -> str:
+        """据 descriptor 登记一条**应用资源产物**（deck/webpage 等，走 `resource_uri` 指针，无 asset 本体）。
+
+        RC-P8：完成卡投影（`_projection_card_body`）的**同处**调用，让分身产出的 deck/网站/短视频等
+        应用资源自动登记进 `hasn_artifacts`，从而出现在「工作会话资源栏 / 分身产物 tab」。返回 artifact_id。
+
+        - `resource_uri = hasn://{descriptor.uri_domain}/{server_id}`——`server_id` 必须是**云端权威 id**
+          （调用方已优先取 `{app}_server_id`，未上云才回退 local_ref）；跨设备/分享后对端据云端 id 打开
+          （Core-08 URI 第二原则：本地 id 永不上 URI）。
+        - `kind = descriptor.artifact_kind`（缺省按 `resource_kind` 尾段归一，越界 → other）；
+          `source_kind='tool_output'`。
+        - `dispatch_id` 幂等（缺省 `f"{app_id}:{server_id}"`）：应用资源无 asset_id，
+          按 `(agent, dispatch_id, resource_uri)` 查既有 active 行，重复投影同一资源不重复登记。
+        """
+        app_id = cls._app_id_from_descriptor(descriptor)
+        resource_uri = f'hasn://{descriptor.uri_domain}/{server_id}'
+        kind = cls._resolve_artifact_kind(descriptor)
+        effective_dispatch_id = dispatch_id or f'{app_id}:{server_id}'
+
+        # 幂等：应用资源无 asset_id（record 的 dispatch_id+asset_id 去重键不适用），按
+        # (agent, dispatch_id, resource_uri) 查既有 active 行，命中即复用（重复投影不重复登记）。
+        existing = (
+            await db.execute(
+                select(HasnArtifacts.artifact_id)
+                .where(
+                    HasnArtifacts.agent_hasn_id == agent_hasn_id,
+                    HasnArtifacts.dispatch_id == effective_dispatch_id,
+                    HasnArtifacts.resource_uri == resource_uri,
+                    HasnArtifacts.status == 'active',
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing:
+            return existing
+
+        artifact_id = cls.gen_artifact_id()
+        row = HasnArtifacts(
+            artifact_id=artifact_id,
+            agent_hasn_id=agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            kind=kind,
+            title=(title or None),
+            summary=(summary or None),
+            resource_uri=resource_uri,
+            # origin_ref 存**云端权威** resource:{app}:{server_id}（不存本地 id），按业务对象可反查产物。
+            origin_ref=f'resource:{app_id}:{server_id}',
+            session_id=(session_id or None),
+            source_tool=(source_tool or None),
+            source_kind='tool_output',
+            dispatch_id=effective_dispatch_id,
+            meta_data={},
             status='active',
         )
         db.add(row)
@@ -281,6 +370,49 @@ class HasnArtifactsService:
         conds = [
             HasnArtifacts.owner_hasn_id == owner_hasn_id,
             HasnArtifacts.origin_ref == origin_ref,
+            HasnArtifacts.status == 'active',
+        ]
+        total = (
+            await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
+        ).scalar_one()
+        rows = (
+            (
+                await db.execute(
+                    select(HasnArtifacts)
+                    .where(*conds)
+                    .order_by(HasnArtifacts.created_time.desc(), HasnArtifacts.id.desc())
+                    .offset(max(0, (page - 1) * size))
+                    .limit(size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        url_map = await cls._resolve_urls(
+            db, owner_hasn_id=owner_hasn_id, asset_ids=[r.asset_id for r in rows if r.asset_id]
+        )
+        return [cls._to_item(r, url_map) for r in rows], total
+
+    @classmethod
+    async def list_by_session(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        session_id: str,
+        page: int = 1,
+        size: int = 50,
+    ) -> tuple[list[ArtifactItem], int]:
+        """列某工作会话（session_id）产出的产物（时间线倒序）。
+
+        RC-P4「工作会话页资源栏」：分身在某工作会话产出的 deck/网站/短视频等应用资源（经 RC-P8
+        `record_app_resource_artifact` 登记时带上会话 session_id）+ 工具产出产物，据 session_id 反查。
+        `session_id` 语义 = hasn-node 本地工作会话 id（daemon 投影完成卡与工具捕获时同一 id·V1 已核），
+        与 webui 工作会话页 `/apps/tasks/sessions/:id` 的 id 一致。owner 隔离：仅返回本 owner 名下产物。
+        """
+        conds = [
+            HasnArtifacts.owner_hasn_id == owner_hasn_id,
+            HasnArtifacts.session_id == session_id,
             HasnArtifacts.status == 'active',
         ]
         total = (

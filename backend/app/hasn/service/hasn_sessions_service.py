@@ -428,6 +428,24 @@ class HasnSessionsService:
                 conversation_id=str(conversation_id),
                 content_json=content_json,
             )
+        # RC-P8：应用资源会话（deck/reel/…）完成投影的**同处**登记 hasn_artifacts——让分身产出的
+        # 应用资源自动出现在「工作会话资源栏 / 分身产物 tab」。与完成卡同链路（同 descriptor、同
+        # 云端权威 uri_id），幂等（重复投影不重复登记）。非应用资源（普通任务会话）→ resolved 为 None，跳过。
+        resolved = _resolve_app_resource_projection(content_json)
+        if resolved is not None:
+            from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+
+            descriptor, _app_id, uri_id = resolved
+            await HasnArtifactsService.record_app_resource_artifact(
+                db,
+                descriptor=descriptor,
+                server_id=uri_id,
+                session_id=session_id,
+                agent_hasn_id=agent_id,
+                owner_hasn_id=owner_id,
+                title=title,
+                summary=content_json.get('summary') or None,
+            )
         await db.flush()
         return {
             'result_message_id': result_message_id,
@@ -715,43 +733,88 @@ def _projection_content_json(
 
 
 _DECK_ORIGIN_PREFIX = 'resource:deck:'
+# RC-P3：应用资源工作会话统一以 `resource:{app}:{local}` 声明 origin_ref。`resource:` 前缀本身即
+# 「这是某 AI-Native 应用产出的资源」信号（等价 origin_type=='app'），完成卡据此泛化组卡。
+_APP_RESOURCE_ORIGIN_PREFIX = 'resource:'
 
 
-def _deck_id_from_origin_ref(origin_ref: str | None) -> str | None:
-    """从工作会话 origin_ref 解析 deck_id：`resource:deck:{id}` → id；其它/空 → None。
+def _parse_app_origin_ref(origin_ref: str | None) -> tuple[str, str] | None:
+    """拆 `origin_ref = resource:{app_id}:{local_ref}` → `(app_id, local_ref)`；其它/空 → None。
 
-    解析出的 id 即 webui `hasn://deck/{id}` 可解析的那个（daemon 本地 deck id 经 origin_ref
-    透传上来），据此拼的深链对端能点开。
+    与 daemon 侧 `domains/app_resource.rs::parse_resource_origin_ref` 对称：只认 `resource:` 前缀，
+    按**首个**冒号切 app_id 与其余（local_ref 允许含冒号，覆盖将来带命名空间的本地 id）。
+    local_ref 即 webui `hasn://{域}/{id}` 需要的那个 id——调用方优先用云端权威 `{app}_server_id`，
+    未上云才回退本地 local_ref（本地 id 跨设备/分享后对端解析不开，见 Core-08 URI 第二原则）。
     """
-    if not origin_ref or not origin_ref.startswith(_DECK_ORIGIN_PREFIX):
+    if not origin_ref or not origin_ref.startswith(_APP_RESOURCE_ORIGIN_PREFIX):
         return None
-    deck_id = origin_ref[len(_DECK_ORIGIN_PREFIX) :].strip()
-    return deck_id or None
+    rest = origin_ref[len(_APP_RESOURCE_ORIGIN_PREFIX) :]
+    app_id, sep, local_ref = rest.partition(':')
+    if not sep:
+        return None
+    app_id = app_id.strip()
+    local_ref = local_ref.strip()
+    if not app_id or not local_ref:
+        return None
+    return app_id, local_ref
 
 
-def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[str, Any]) -> dict[str, Any]:
-    """演示文稿工作会话完成 → 给主人发的「打开演示文稿」卡（云端权威组卡）。
+def _resolve_app_resource_projection(content_json: dict[str, Any]) -> tuple[Any, str, str] | None:
+    """据投影 content_json 判定是否应用资源会话，命中则返回 `(descriptor, app_id, uri_id)`（RC-P3/RC-P8 共用）。
 
-    分身不再自己发卡：完成投影据 origin_ref 认出 deck 会话并统一组装本卡，杜绝「发错/忘发」。
-    深链 `hasn://deck/{deck_id}`，`deck_id` = **云端权威 deck id**（调用方 `_projection_card_body`
-    已优先取 `deck_server_id`，未上云才回退本地 id）——跨设备/分享后对端据云端 id 读穿云端 ACL
-    打开（daemon `GET /decks/{id}` 折叠的三步解析），不依赖设备私有的本地 ULID。
+    仅当 `origin_ref=resource:{app}:{local}` 且该 app 在 manifest.resources[] 声明了 descriptor 才算应用资源；
+    未声明 → None（完成卡回落通用工作会话卡、且不登记应用资源产物）。`uri_id` 一律**优先云端权威
+    `{app}_server_id`**，未上云才回退本地 local_ref（Core-08 URI 第二原则：本地 id 换设备/分享后对端解析不开）。
     """
-    deep_link = f'hasn://deck/{deck_id}'
+    app_resource = _parse_app_origin_ref(content_json.get('origin_ref'))
+    if app_resource is None:
+        return None
+    app_id, local_ref = app_resource
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+    descriptor = ai_native_app_registry.resource_descriptor(app_id)
+    if descriptor is None:
+        return None
+    uri_id = str(content_json.get(f'{app_id}_server_id') or local_ref)
+    return descriptor, app_id, uri_id
+
+
+def build_generic_resource_card(
+    *,
+    descriptor: Any,
+    app_id: str,
+    session_id: str,
+    uri_id: str,
+    content_json: dict[str, Any],
+) -> dict[str, Any]:
+    """据资源描述符（RC-P0 `ResourceDescriptor`）泛化组「{verb}做好了」完成卡（doc31 §2，RC-P3）。
+
+    终结 deck 专属硬编码：任何声明了 `manifest.resources[]` 的 AI-Native 应用，其工作会话完成后
+    云端据 descriptor 统一组卡（标题「{card.verb}做好了」、主按钮 `card.action_label`、深链
+    `hasn://{uri_domain}/{uri_id}`），新应用零改代码即出卡。分身不自己发卡，杜绝「发错/忘发」。
+
+    - `uri_id` = **云端权威 server_id**（调用方 `_projection_card_body` 优先取 `{app}_server_id`，
+      未上云才回退本地 local_ref）——跨设备/分享后对端据云端 id 读穿云端 ACL 打开，不依赖设备私有本地 id。
+    - deck 喂其 descriptor 时逐字节等价旧 `_projection_deck_card`（RC-P3 回归断言）。
+    """
+    verb = descriptor.card.verb
+    action_label = descriptor.card.action_label
+    uri_domain = descriptor.uri_domain
+    deep_link = f'hasn://{uri_domain}/{uri_id}'
     return {
         'schema_version': 'hasn.card/0.1',
-        'title': '演示文稿做好了',
-        'description': content_json.get('summary') or '演示文稿已经做好了，点开看看吧。',
+        'title': f'{verb}做好了',
+        'description': content_json.get('summary') or f'{verb}已经做好了，点开看看吧。',
         'source': {
             'kind': 'app',
-            'id': 'deck',
-            'display_name': '演示文稿',
+            'id': app_id,
+            'display_name': verb,
             'verified': True,
         },
         'resource': {
             'type': 'app.resource',
-            'id': deck_id,
-            'app_id': 'deck',
+            'id': uri_id,
+            'app_id': app_id,
             'uri': deep_link,
             'access': {
                 'visibility': 'recipient',
@@ -767,13 +830,13 @@ def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[s
             },
         },
         'primary_action': {
-            'label': '打开演示文稿',
-            'action_id': 'open_deck',
+            'label': action_label,
+            'action_id': f'open_{app_id}',
             'kind': 'open_uri',
             'uri': deep_link,
             'event': {
-                'event_type': 'deck.opened',
-                'payload': {'deck_id': deck_id, 'session_id': session_id},
+                'event_type': f'{app_id}.opened',
+                'payload': {f'{app_id}_id': uri_id, 'session_id': session_id},
             },
             'style': 'primary',
         },
@@ -782,6 +845,45 @@ def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[s
             'legacy_content_json': content_json,
         },
     }
+
+
+def _deck_resource_descriptor() -> Any:
+    """取 deck 的资源描述符（RC-P0 声明在 deck manifest.resources[]）。
+
+    正常路径必然命中（registry 同步读 builtin manifest）；极端兜底构造一份等价 descriptor，
+    保证 `emit_deck_completion_card` 在任何环境都能出卡（deck 完成卡是关键链路，不容因缺声明而断）。
+    """
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+    descriptor = ai_native_app_registry.resource_descriptor('deck', 'deck.presentation')
+    if descriptor is not None:
+        return descriptor
+    from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
+
+    return ResourceDescriptor.model_validate(
+        {
+            'resource_kind': 'deck.presentation',
+            'uri_domain': 'deck',
+            'open': {'mode': 'native_window', 'window': 'deck'},
+            'card': {'verb': '演示文稿', 'action_label': '打开演示文稿'},
+            'artifact_kind': 'deck',
+        }
+    )
+
+
+def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[str, Any]) -> dict[str, Any]:
+    """演示文稿工作会话完成 → 给主人发的「打开演示文稿」卡（云端权威组卡）。
+
+    RC-P3 起走 `build_generic_resource_card`（deck 只是首个试点），逐字节等价旧硬编码卡。
+    保留本薄封装供 `emit_deck_completion_card`（主会话 finalize 路径）复用。
+    """
+    return build_generic_resource_card(
+        descriptor=_deck_resource_descriptor(),
+        app_id='deck',
+        session_id=session_id,
+        uri_id=deck_id,
+        content_json=content_json,
+    )
 
 
 async def emit_deck_completion_card(
@@ -822,6 +924,21 @@ async def emit_deck_completion_card(
     validate_card_message_body(card)
 
     from backend.app.hasn.service import message_router
+    from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+
+    # RC-P8：主会话直建 deck（无工作会话）的产出登记 —— 让主会话做的 deck 也进「分身产物 tab」。
+    # session_id=None（非工作会话，产物凭 resource_uri 归位）；与工作会话投影同一幂等键
+    # (agent, deck:{deck_id}, hasn://deck/{deck_id})，两条路径重复触发不重复登记。
+    await HasnArtifactsService.record_app_resource_artifact(
+        db,
+        descriptor=_deck_resource_descriptor(),
+        server_id=str(deck_id),
+        session_id=None,
+        agent_hasn_id=agent_id,
+        owner_hasn_id=owner_id,
+        title=title or '演示文稿',
+        summary=summary_text or None,
+    )
 
     return await message_router.route_message(
         db,
@@ -836,15 +953,21 @@ async def emit_deck_completion_card(
 
 
 def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
-    # 演示文稿会话：云端据 origin_ref 权威组「打开演示文稿」卡（分身不自己发卡）。
-    # 判别器仍用 origin_ref（带设备本地 deck id），但卡里 `hasn://deck/{id}` 的 id **一律优先
-    # 用云端权威 deck_server_id**——本地 ULID 跨设备/分享后对端解析不开（福仔「分享给别人根本
-    # 打不开」的根因）。仅当 deck 尚未上云（无 server_id）才回退本地 id：此时 deck 不在云端、
-    # 根本无法分享，唯一消费者是 owner 本机，本地 id 恰好能解析。
-    local_deck_id = _deck_id_from_origin_ref(content_json.get('origin_ref'))
-    if local_deck_id:
-        deck_uri_id = str(content_json.get('deck_server_id') or local_deck_id)
-        return _projection_deck_card(session_id=session_id, deck_id=deck_uri_id, content_json=content_json)
+    # RC-P3：应用资源会话（origin_ref=resource:{app}:{local}）→ 据 descriptor 泛化组「{verb}做好了」卡
+    # （分身不自己发卡，去 deck 特例）。判别器用 origin_ref 拆 app_id/local_ref，卡里 `hasn://{域}/{id}`
+    # 的 id **一律优先用云端权威 `{app}_server_id`**——本地 id 跨设备/分享后对端解析不开（福仔「分享给
+    # 别人根本打不开」的根因）。仅当资源尚未上云（无 server_id）才回退本地 local_ref：此时资源不在云端、
+    # 根本无法分享，唯一消费者是 owner 本机，本地 id 恰好能解析。未声明 descriptor 的应用 → 回落通用卡。
+    resolved = _resolve_app_resource_projection(content_json)
+    if resolved is not None:
+        descriptor, app_id, uri_id = resolved
+        return build_generic_resource_card(
+            descriptor=descriptor,
+            app_id=app_id,
+            session_id=session_id,
+            uri_id=uri_id,
+            content_json=content_json,
+        )
     task_id = content_json.get('task_id')
     task_run_id = content_json.get('task_run_id')
     event_payload = {
