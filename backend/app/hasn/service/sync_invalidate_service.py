@@ -86,6 +86,14 @@ KIND_NOTIFICATION = 'notification'
 # 全体成员 owner。daemon 收到即 nudge webui 重拉群详情（读走 local_first），刷新常驻「生效发言规则」
 # 徽标。charter 变更**不进**此 kind（隐私：准则仅主人可见，不向全群广播；走 session 水位重建，见 daemon D4）。
 KIND_GROUPS = 'groups'
+# owner 定向：该 owner 的商业化状态变更（统一商业化内核·实施/92 MK-5）——订阅升降级
+# （UserSubscription.tier/status/subscription_end_date 变）、权益授予/到期/撤销
+# （HasnAppEntitlement.status/expires_at 变）、统一 sweeper 的提醒/宽限/终态迁移后 bump。
+# daemon 收到即拉该 owner 的费用账单中心镜像（订阅档 + 权益总账 + 到期提醒），刷新 webui
+# BillingCenterPage 与付费墙判定缓存。与 notification 同形态（per-owner 指纹，不进全局握手，
+# 靠 bump_owner push + 周期 sync_pull 兜底）。「到期提醒」的原生系统通知走 notification kind，
+# 此 kind 只负责账单中心数据镜像失效。
+KIND_BILLING = 'billing'
 OWNER_KINDS = (
     KIND_TASKS,
     KIND_PLAN,
@@ -97,6 +105,7 @@ OWNER_KINDS = (
     KIND_SCOPES,
     KIND_NOTIFICATION,
     KIND_GROUPS,
+    KIND_BILLING,
 )
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
@@ -116,6 +125,8 @@ EMPTY_SCOPES_REVISION = 'empty'
 EMPTY_NOTIFICATION_REVISION = 'empty'
 # 某 owner 未参与任何群时的稳定指纹（同上约定）
 EMPTY_GROUPS_REVISION = 'empty'
+# 某 owner 无订阅/权益时的稳定指纹（同上约定）
+EMPTY_BILLING_REVISION = 'empty'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -245,9 +256,7 @@ async def compute_owner_notification_revision(db: AsyncSession, owner_id: str) -
             ).where(HasnNotifications.target_id == owner_id)
         )
     ).all()
-    lines = sorted(
-        f'{nid}@{state}@{updated.isoformat() if updated else ""}' for nid, state, updated in rows
-    )
+    lines = sorted(f'{nid}@{state}@{updated.isoformat() if updated else ""}' for nid, state, updated in rows)
     if not lines:
         return EMPTY_NOTIFICATION_REVISION
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
@@ -354,17 +363,17 @@ async def compute_owner_groups_revision(db: AsyncSession, owner_id: str) -> str:
     from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
 
     # owner 本人 hasn_id + 名下 agent 的 hasn_ids
-    agent_ids = (
-        await db.execute(sa.select(HasnAgents.hasn_id).where(HasnAgents.owner_id == owner_id))
-    ).scalars().all()
+    agent_ids = (await db.execute(sa.select(HasnAgents.hasn_id).where(HasnAgents.owner_id == owner_id))).scalars().all()
     member_ids = [owner_id, *[a for a in agent_ids if a]]
     conv_ids = (
-        await db.execute(
-            sa.select(HasnGroupMembers.conversation_id.distinct()).where(
-                HasnGroupMembers.member_id.in_(member_ids)
+        (
+            await db.execute(
+                sa.select(HasnGroupMembers.conversation_id.distinct()).where(HasnGroupMembers.member_id.in_(member_ids))
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not conv_ids:
         return EMPTY_GROUPS_REVISION
     rows = (
@@ -385,6 +394,58 @@ async def compute_owner_groups_revision(db: AsyncSession, owner_id: str) -> str:
     if not lines:
         return EMPTY_GROUPS_REVISION
     return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_billing_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的商业化状态指纹：sha256(sorted 订阅行 ∪ 权益行)[:16]（实施/92 MK-5）。
+
+    聚合两个权威源，任一变即整体指纹变：
+    - 订阅（``user_subscription``，经 ``hasn_humans`` 把 owner hasn_id 映射到 ``user_id``）：
+      指纹字段 ``tier@status@subscription_end_date``——升降级、过期、续费（end_date 前移）均变。
+    - 权益（``hasn_app_entitlement``，``subject_type='owner'`` 且 ``subject_id=owner_id``）：
+      指纹字段 ``app_id@status@expires_at``——授予/到期/撤销（status 迁移）、新购（增行）均变。
+
+    仅作 invalidate 帧的 ``revision`` 字段：daemon 不据此去重、收到即拉该 owner 的费用账单中心
+    镜像。空（无订阅无权益）返回稳定占位指纹。owner 隔离靠 ``user_id`` / ``subject_id`` 两列。
+    """
+    from backend.app.billing.model.user_subscription import UserSubscription
+    from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
+    from backend.app.hasn.model.hasn_humans import HasnHumans
+
+    lines: list[str] = []
+
+    # owner hasn_id → user_id（订阅表按 user_id 归属）
+    user_id = (await db.execute(sa.select(HasnHumans.user_id).where(HasnHumans.hasn_id == owner_id))).scalars().first()
+    if user_id:
+        sub_rows = (
+            await db.execute(
+                sa.select(
+                    UserSubscription.tier,
+                    UserSubscription.status,
+                    UserSubscription.subscription_end_date,
+                ).where(UserSubscription.user_id == user_id)
+            )
+        ).all()
+        lines.extend(f'sub:{tier}@{status}@{end.isoformat() if end else ""}' for tier, status, end in sub_rows)
+
+    # owner 名下权益（个人主体）
+    ent_rows = (
+        await db.execute(
+            sa.select(
+                HasnAppEntitlement.app_id,
+                HasnAppEntitlement.status,
+                HasnAppEntitlement.expires_at,
+            ).where(
+                HasnAppEntitlement.subject_type == 'owner',
+                HasnAppEntitlement.subject_id == owner_id,
+            )
+        )
+    ).all()
+    lines.extend(f'ent:{app_id}@{status}@{exp.isoformat() if exp else ""}' for app_id, status, exp in ent_rows)
+
+    if not lines:
+        return EMPTY_BILLING_REVISION
+    return hashlib.sha256('\n'.join(sorted(lines)).encode('utf-8')).hexdigest()[:16]
 
 
 async def compute_owner_memory_revision(db: AsyncSession, owner_id: str) -> str:
@@ -535,6 +596,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_notification_revision(db, owner_id)
     elif kind == KIND_GROUPS:
         rev = await compute_owner_groups_revision(db, owner_id)
+    elif kind == KIND_BILLING:
+        rev = await compute_owner_billing_revision(db, owner_id)
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 

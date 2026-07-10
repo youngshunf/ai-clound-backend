@@ -67,16 +67,20 @@ def _build_client(channel, merchant_config: dict | None = None) -> PayClient:
 
     if code == 'wx_papay':
         from backend.app.billing.service.channel.wechat_papay import WechatPapayClient
+
         return WechatPapayClient(config, notify_url)
     if code.startswith('wx'):
         from backend.app.billing.service.channel.wechat_native import WechatNativeClient
+
         return WechatNativeClient(config, notify_url)
     if code == 'alipay_qr':
         # 支付宝当面付（扫码）：出可扫二维码，应用内呈现（桌面端）
         from backend.app.billing.service.channel.alipay_qr import AlipayQrClient
+
         return AlipayQrClient(config, notify_url)
     if code.startswith('alipay'):
         from backend.app.billing.service.channel.alipay_pc import AlipayPcClient
+
         return AlipayPcClient(config, notify_url)
     raise errors.ServerError(msg=f'不支持的渠道: {code}')
 
@@ -162,8 +166,12 @@ class PayOrderService:
         try:
             client = get_pay_client(channel, merchant_config=merchant_config)
             pay_result = client.create_order(
-                order_no=order_no, amount=amount, subject=subject,
-                body=body, user_ip=user_ip, contract_no=contract_no,
+                order_no=order_no,
+                amount=amount,
+                subject=subject,
+                body=body,
+                user_ip=user_ip,
+                contract_no=contract_no,
             )
             return pay_result.get('qr_code_url'), pay_result.get('pay_url')
         except Exception as e:
@@ -219,8 +227,15 @@ class PayOrderService:
         if not tier_config:
             raise errors.RequestError(msg=f'无效的套餐: {obj.tier}（app={app_code}）')
 
-        # 从数据库获取价格（单位：元 → 分）
-        if obj.billing_cycle == 'yearly' and tier_config.yearly_price:
+        # MK-5：价格以商品目录 plan 为权威（admin 改价即时生效于新单）；plan 缺档回落 legacy 价。
+        from backend.app.billing.service import offering_pricing
+
+        monthly_key, yearly_key = offering_pricing.tier_plan_keys(obj.tier)
+        plan_key = yearly_key if obj.billing_cycle == 'yearly' else monthly_key
+        plan_amount = await offering_pricing.plan_price(db, offering_pricing.OFFERING_LLM_TIER, plan_key)
+        if plan_amount is not None:
+            pay_amount = int(float(plan_amount) * 100)
+        elif obj.billing_cycle == 'yearly' and tier_config.yearly_price:
             pay_amount = int(float(tier_config.yearly_price) * 100)
         else:
             pay_amount = int(float(tier_config.monthly_price) * 100)
@@ -278,14 +293,23 @@ class PayOrderService:
             await pay_contract_dao.create(db, contract_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip, contract_no=contract_no or '',
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
+            contract_no=contract_no or '',
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=contract_no,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=contract_no,
             expire_time=expire_time,
         )
 
@@ -305,7 +329,13 @@ class PayOrderService:
         if not package or not package.enabled or package.app_code != app_code:
             raise errors.RequestError(msg=f'无效的积分包: {obj.package_id}（app={app_code}）')
 
-        pay_amount = int(float(package.price) * 100)
+        # MK-5：价格以商品目录 plan 为权威（plan_key = 积分包名）；plan 缺档回落 legacy 价。
+        from backend.app.billing.service import offering_pricing
+
+        plan_amount = await offering_pricing.plan_price(
+            db, offering_pricing.OFFERING_CREDITS_TOPUP, package.package_name
+        )
+        pay_amount = int(float(plan_amount if plan_amount is not None else package.price) * 100)
         if pay_amount <= 0:
             raise errors.RequestError(msg='免费积分包无需支付')
 
@@ -346,14 +376,22 @@ class PayOrderService:
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
 
@@ -425,14 +463,22 @@ class PayOrderService:
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
 
@@ -495,21 +541,27 @@ class PayOrderService:
                 'seats': seats,
             },
             # MK-3：商品目录引用快照；offering_key=seat:<id>（席位 feature 前缀族）。
-            'offering_ref': build_offering_ref(
-                'app_seat', offering_key=f'seat:{catalog.app_id}', plan_key='standard'
-            ),
+            'offering_ref': build_offering_ref('app_seat', offering_key=f'seat:{catalog.app_id}', plan_key='standard'),
         }
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
 
@@ -567,14 +619,22 @@ class PayOrderService:
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
 
@@ -600,13 +660,16 @@ class PayOrderService:
         channel_user_id: str | None = None,
         raw_data: str | None = None,
     ) -> bool:
-        await pay_notify_log_dao.create(db, {
-            'notify_type': 'pay',
-            'order_no': order_no,
-            'channel_code': channel_code,
-            'notify_data': raw_data,
-            'status': 0,
-        })
+        await pay_notify_log_dao.create(
+            db,
+            {
+                'notify_type': 'pay',
+                'order_no': order_no,
+                'channel_code': channel_code,
+                'notify_data': raw_data,
+                'status': 0,
+            },
+        )
 
         order = await pay_order_dao.get_by_order_no_for_update(db, order_no)
         if not order:
@@ -620,9 +683,12 @@ class PayOrderService:
 
         now = timezone.now()
         await pay_order_dao.update_status(
-            db, order_no=order_no, status=1,
+            db,
+            order_no=order_no,
+            status=1,
             channel_order_no=channel_order_no,
-            channel_user_id=channel_user_id, success_time=now,
+            channel_user_id=channel_user_id,
+            success_time=now,
         )
 
         # MK-3：优先按商品目录 offering_ref.kind 分发履约（内核唯一发货入口）；
