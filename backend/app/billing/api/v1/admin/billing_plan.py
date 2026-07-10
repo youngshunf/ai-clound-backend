@@ -36,8 +36,12 @@ async def get_billing_plan(
     ],
     name='billing_admin_get_billing_plan_paginated',
 )
-async def get_billing_plan_paginated(db: CurrentSession) -> ResponseSchemaModel[PageData[GetBillingPlanDetail]]:
-    page_data = await billing_plan_service.get_list(db=db)
+async def get_billing_plan_paginated(
+    db: CurrentSession,
+    offering_key: Annotated[str | None, Query(description='按所属 offering 业务键过滤（查某商品的全部档位）')] = None,
+    status: Annotated[str | None, Query(description='按上/下架状态过滤（active/inactive）')] = None,
+) -> ResponseSchemaModel[PageData[GetBillingPlanDetail]]:
+    page_data = await billing_plan_service.get_list(db=db, offering_key=offering_key, status=status)
     return response_base.success(data=page_data)
 
 

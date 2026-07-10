@@ -113,6 +113,8 @@ class GetPayOrderDetail(SchemaBase):
     expire_time: datetime
     success_time: datetime | None = None
     extra_data: dict | None = None
+    # 统一商业化内核（MK-1）：商品目录引用快照，商业化中心订单页据此串出所属 offering
+    offering_ref: dict | None = None
     created_time: datetime
     updated_time: datetime | None = None
 

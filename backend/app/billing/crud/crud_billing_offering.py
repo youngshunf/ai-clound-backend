@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,9 +19,19 @@ class CRUDBillingOffering(CRUDPlus[BillingOffering]):
         """
         return await self.select_model(db, pk)
 
-    async def get_select(self) -> Select:
-        """获取商品目录（一切可售卖物：LLM档/积分包/应用/席位/应用内档位）列表查询表达式"""
-        return await self.select_order('id', 'desc')
+    async def get_select(self, *, kind: str | None = None, key: str | None = None) -> Select:
+        """获取商品目录（一切可售卖物：LLM档/积分包/应用/席位/应用内档位）列表查询表达式
+
+        :param kind: 按商品种类精确过滤（llm_tier/credit_pack/app/seat/feature_plan），None 不过滤
+        :param key: 按业务键模糊过滤（子串），None 不过滤
+        """
+        # 商业化中心管理面：按种类/业务键做条件检索（CRUDPlus kwargs：精确用列名、模糊用 __like）
+        filters: dict[str, str] = {}
+        if kind:
+            filters['kind'] = kind
+        if key:
+            filters['key__like'] = f'%{key}%'
+        return await self.select_order('id', 'desc', **filters)
 
     async def get_all(self, db: AsyncSession) -> Sequence[BillingOffering]:
         """
