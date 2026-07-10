@@ -169,6 +169,17 @@ DESIGN_AI_NATIVE_MANIFEST = {
             'display_name': '矢量设计',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：矢量设计项目 → hasn://design/projects/{server_id}，**独立原生窗口**打开
+    # （openDesignWindow，与 deck 同类）。native_window·window=design——与 hasnUri 硬编码特例同结果（行为不变）。
+    'resources': [
+        {
+            'resource_kind': 'design.project',
+            'uri_domain': 'design/projects',  # → hasn://design/projects/{server_id}（doc08 §3 已登记 native_window 域）
+            'open': {'mode': 'native_window', 'window': 'design'},
+            'card': {'verb': '矢量设计', 'action_label': '打开设计'},
+            'artifact_kind': 'image',
+        }
+    ],
     'capabilities': [
         # —— 读类（design:read，出厂 Allow）——
         _read_cap(

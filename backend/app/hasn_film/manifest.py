@@ -139,6 +139,16 @@ FILM_AI_NATIVE_MANIFEST = {
             'display_name': '视频生成',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：影片项目 → hasn://film/projects/{server_id}，应用内详情路由打开。
+    'resources': [
+        {
+            'resource_kind': 'film.project',
+            'uri_domain': 'film/projects',  # → hasn://film/projects/{server_id}（doc08 §3 登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/film/:id'},
+            'card': {'verb': '影片', 'action_label': '打开影片'},
+            'artifact_kind': 'video',
+        }
+    ],
     'capabilities': [
         # —— 读类（film:read）——
         _read_cap(

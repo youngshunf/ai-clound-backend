@@ -807,6 +807,17 @@ CREATOR_AI_NATIVE_MANIFEST = {
             'display_name': '创作运营',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：创作项目（号即上下文）→ hasn://creator/projects/{server_id}，应用内详情路由打开。
+    # 内容产物（contents）在项目上下文内打开（/projects/:id/contents/:cid，双 id 非单 id），不单列资源域。
+    'resources': [
+        {
+            'resource_kind': 'creator.project',
+            'uri_domain': 'creator/projects',  # → hasn://creator/projects/{server_id}（doc08 §3 登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/creator/projects/:id'},
+            'card': {'verb': '创作项目', 'action_label': '打开创作项目'},
+            'artifact_kind': 'document',
+        }
+    ],
     'capabilities': _CAPABILITIES,
     # tools[] 由 capabilities 派生：每条 gateway_internal + handler 指向云端 handler 注册表键。
     'tools': [_tool_from_cap(cap) for cap in _CAPABILITIES],

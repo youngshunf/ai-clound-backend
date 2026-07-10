@@ -162,6 +162,17 @@ REEL_AI_NATIVE_MANIFEST = {
             'display_name': '短视频合成',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：短视频项目 → hasn://reel/projects/{server_id}，应用内详情路由打开。
+    # 完成卡 / 工作会话资源栏 / URI 解析 / 详情跳转全从这份声明派生（webui 零改代码）。
+    'resources': [
+        {
+            'resource_kind': 'reel.project',
+            'uri_domain': 'reel/projects',  # → hasn://reel/projects/{server_id}（doc08 §3 登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/reel/projects/:id'},
+            'card': {'verb': '短视频', 'action_label': '打开短视频'},
+            'artifact_kind': 'video',
+        }
+    ],
     'capabilities': [
         # —— 读类（reel:read，出厂 Allow）——
         _read_cap(

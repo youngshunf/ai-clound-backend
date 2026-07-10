@@ -134,6 +134,17 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
             'display_name': '设计系统',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：设计系统规范 → hasn://designsystem/{server_id}，应用内详情路由打开。
+    # internal_route·与 hasnUri 硬编码特例同结果（行为不变）。
+    'resources': [
+        {
+            'resource_kind': 'designsystem.spec',
+            'uri_domain': 'designsystem',  # → hasn://designsystem/{server_id}（doc08 §3 已登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/designsystem/:id'},
+            'card': {'verb': '设计系统', 'action_label': '打开设计系统'},
+            'artifact_kind': 'other',
+        }
+    ],
     'capabilities': [
         # —— 确定性纯函数（本地直调 P1 crate，无 scope）——
         _read_cap(
