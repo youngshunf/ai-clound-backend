@@ -47,9 +47,10 @@ class AgentContext:
         self.owner_hasn_id = owner_hasn_id
         self.session_uuid = session_uuid
         self._token_payload = token_payload
-        # 运行位置（local/cloud/remote）：决定云端 MCP 面是否对本地分身隐藏 deck/task/
-        # workflow（TOOLMIG2-P4，见 runtime_visibility）。默认 'cloud'=可见，绝不误伤——
-        # 仅鉴权时从 HasnAgents.runtime_location 显式灌入 'local' 才隐藏。
+        # 运行位置（local/cloud/remote）快照，鉴权时从 HasnAgents.runtime_location 灌入。
+        # ⚠️ 不参与工具暴露判定——工具暴露只受权限 + 付费墙限制，与分身在本地/云端无关
+        # （福仔 2026-07-10 拍板退役原 TOOLMIG2-P4「运行位置收口」）。此字段仅供其它用途
+        # （如 runtime 派发分叉：cloud 走云端 runtime、local 走本地 sidecar）。
         self.runtime_location = runtime_location
         # 维度① 三态能力授权（D3：消费时活取，凭证不再承载授权权威）。
         # 默认全开（allow）；streamable 鉴权后用 get_agent_scopes_cached 现查覆盖。

@@ -262,11 +262,10 @@ class HasnCloudMcpServer:
             # 侧探 hasn.diag.* 运维工具、或「主人有无某企业角色」。回显调用方自己传入的 tool_name
             # 与真 404 一致、不构成额外泄漏；泄漏面是**措辞差异**。（G4 当前 inert，见 tool_exposure。）
             raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
-        # 运行位置收口（TOOLMIG2-P4）：本地分身在云端面不得调 deck/task/workflow。
-        raise McpToolError(
-            McpErrorCode.TOOL_NOT_FOUND,
-            f'{tool_name} 在云端面对本地分身不可用：本地分身请使用本地工具面（hasn-local）的同名工具',
-        )
+        # 兜底：其余任何 HIDDEN reason（理论不可达——上面已穷尽 G1/G2/G4/G5 的隐藏 reason；
+        # 原「运行位置收口」按分身在本地/云端隐藏工具的门已于 2026-07-10 整体退役，见 tool_exposure）
+        # 一律按存在性隐藏处理，绝不静默穿透返回 None。
+        raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
 
     async def call_tool(self, agent_context: AgentContext, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """

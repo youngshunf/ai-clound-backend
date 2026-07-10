@@ -1,17 +1,21 @@
 """统一工具暴露管线 `ToolExposurePolicy`（doc18 §3 · 实施/103）。
 
 云端 MCP 面「某分身此刻能不能看见/调用某工具」此前散在三处各写判定：
-发现面 `tool_directory._can_discover`（external 白名单 + 三态 deny + runtime 隐藏）、
-执行面 `server.call_tool`（runtime 兜底 + tool_mode 三态）、转发面
+发现面 `tool_directory._can_discover`（external 白名单 + 三态 deny）、
+执行面 `server.call_tool`（tool_mode 三态）、转发面
 `hasn.cloud.tool.call`（重入 call_tool）。本模块把判定收敛为单一纯函数
 `evaluate`，各面消费同一投影（D6 四面同源铁律）。
+
+⚠️ 暴露只受「权限 + 付费墙」限制，与工具在本地还是云端无关（福仔 2026-07-10 原则）：
+能搜就能用；本地分身两面（hasn-local + hasn-cloud）都能调、云端分身只连云端面。故本管线
+**不含**任何按 `runtime_location` 隐藏云端工具的门（原 TOOLMIG2-P4「运行位置收口」已整体退役）。
 
 分期（实施/103）：U1 零行为变化收编，只装 G2 来源门 + G5 主人三态门（现状
 收编，不新建语义）；G1 平台特权门（U2 = diag P3a）、G3 应用权益门（U3）、
 G4 企业角色门（U4）在此管线上按 doc18 §3.2 顺序逐门加装。
 
 纯函数约束（103 §8 性能条）：`evaluate` 零 IO——所有 per-agent 输入
-（external 白名单、三态策略、runtime_location）已在 AgentContext
+（external 白名单、三态策略）已在 AgentContext
 per-request 预取，tool.search 逐工具求值不放大查库。
 """
 
@@ -24,7 +28,6 @@ from backend.app.mcp.platform_scopes import (
     PRIVILEGED_SCOPES,
     privileged_scopes_satisfied,
 )
-from backend.app.mcp.runtime_visibility import is_namespace_hidden_for_runtime
 from backend.app.mcp.tool_app_registry import resolve_tool_app_id
 from backend.common.security.scope_policy import MODE_ASK, MODE_DENY
 
@@ -48,7 +51,6 @@ GATE_OWNER = 'g5_owner'
 # ── HIDDEN reason（执行面据此映射错误码，保持与收编前逐位一致）──
 REASON_PRIVILEGED = 'privileged'  # G1：特权 scope 未持有（执行面 TOOL_NOT_FOUND 泛化文案，不确认存在性）
 REASON_EXTERNAL_NOT_BOUND = 'external_not_bound'  # G2：external 工具不在本 Agent binding 白名单
-REASON_RUNTIME_HIDDEN = 'runtime_hidden'  # G2：本地分身在云端面隐藏的命名空间（TOOLMIG2-P4）
 REASON_ROLE_INSUFFICIENT = 'enterprise_role_insufficient'  # G4：主人企业角色未被授予该能力族（与网关审计口径同串）
 REASON_OWNER_DENIED = 'owner_denied'  # G5：owner 三态 deny（维持现状 deny 即隐身）
 # G3 应用权益门的 reason 不在此枚举——直接透传合并准入 dict 的 reason（need_purchase /
@@ -106,21 +108,18 @@ class ToolExposurePolicy:
             if not privileged_scopes_satisfied(needed, granted):
                 return ExposureDecision(ACTION_HIDDEN, gate=GATE_PRIVILEGE, reason=REASON_PRIVILEGED)
 
-        # G2 来源接入门（硬边界）。
-        # a) P7 第三方 MCP 网关：external 工具实例全局共享，发现/调用资格按本 Agent
-        #    binding（gate1 owner 启用 + gate2 allowed_tools，由 server 每次调用前注入）
-        #    per-request 过滤——不在授权集合的一律不可见，杜绝跨 Agent 串号。
+        # G2 来源接入门（硬边界）· P7 第三方 MCP 网关：external 工具实例全局共享，发现/调用
+        # 资格按本 Agent binding（gate1 owner 启用 + gate2 allowed_tools，由 server 每次调用前
+        # 注入）per-request 过滤——不在授权集合的一律不可见，杜绝跨 Agent 串号。
+        #
+        # 注：曾在此按 runtime_location 隐藏 deck/task/workflow（TOOLMIG2-P4「运行位置收口」），
+        # 2026-07-10 福仔拍板整体退役——工具暴露只受权限 + 付费墙限制，与工具在本地/云端无关；
+        # 能搜就能用，本地分身两面都能调、云端分身只连云端面。故此处不再有按位置的隐藏门。
         tool_name = getattr(tool, 'name', '')
         if getattr(tool, 'source', 'platform') == 'external':
             allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
             if tool_name not in allowed:
                 return ExposureDecision(ACTION_HIDDEN, gate=GATE_SOURCE, reason=REASON_EXTERNAL_NOT_BOUND)
-        # b) 运行位置收口（TOOLMIG2-P4）：本地分身在云端面隐藏 deck/task/workflow（其用
-        #    本地面那份本地优先引擎），发现/执行两面一体（hasn.cloud.tool.call 透传经
-        #    call_tool 重入一并拦住）。见 runtime_visibility。
-        namespace = getattr(tool, 'namespace', None) or _fallback_namespace(tool_name)
-        if is_namespace_hidden_for_runtime(namespace, getattr(agent_context, 'runtime_location', 'cloud')):
-            return ExposureDecision(ACTION_HIDDEN, gate=GATE_SOURCE, reason=REASON_RUNTIME_HIDDEN)
 
         # G3 应用权益门（U3·doc18 §4.3）：工具所属 app 合并准入不通 → VISIBLE_DENY(need_*)。
         # 详见 _entitlement_denial（纯查预取 app_access_by_id，零 IO）。
@@ -186,16 +185,6 @@ class ToolExposurePolicy:
         """
         decision = self.evaluate(agent_context, tool)
         return decision.is_hidden and decision.gate in (GATE_PRIVILEGE, GATE_SOURCE)
-
-
-def _fallback_namespace(tool_name: str) -> str:
-    """无 namespace 属性的鸭子对象兜底，口径与 BaseTool.namespace 默认一致。"""
-    parts = tool_name.split('.')
-    if len(parts) < 2:
-        return tool_name
-    if tool_name.startswith('hasn.ext.') and len(parts) >= 3:
-        return '.'.join(parts[:3])
-    return '.'.join(parts[:2])
 
 
 tool_exposure_policy = ToolExposurePolicy()
