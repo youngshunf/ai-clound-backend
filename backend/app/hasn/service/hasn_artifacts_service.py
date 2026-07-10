@@ -394,6 +394,49 @@ class HasnArtifactsService:
         return [cls._to_item(r, url_map) for r in rows], total
 
     @classmethod
+    async def list_by_session(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        session_id: str,
+        page: int = 1,
+        size: int = 50,
+    ) -> tuple[list[ArtifactItem], int]:
+        """列某工作会话（session_id）产出的产物（时间线倒序）。
+
+        RC-P4「工作会话页资源栏」：分身在某工作会话产出的 deck/网站/短视频等应用资源（经 RC-P8
+        `record_app_resource_artifact` 登记时带上会话 session_id）+ 工具产出产物，据 session_id 反查。
+        `session_id` 语义 = hasn-node 本地工作会话 id（daemon 投影完成卡与工具捕获时同一 id·V1 已核），
+        与 webui 工作会话页 `/apps/tasks/sessions/:id` 的 id 一致。owner 隔离：仅返回本 owner 名下产物。
+        """
+        conds = [
+            HasnArtifacts.owner_hasn_id == owner_hasn_id,
+            HasnArtifacts.session_id == session_id,
+            HasnArtifacts.status == 'active',
+        ]
+        total = (
+            await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
+        ).scalar_one()
+        rows = (
+            (
+                await db.execute(
+                    select(HasnArtifacts)
+                    .where(*conds)
+                    .order_by(HasnArtifacts.created_time.desc(), HasnArtifacts.id.desc())
+                    .offset(max(0, (page - 1) * size))
+                    .limit(size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        url_map = await cls._resolve_urls(
+            db, owner_hasn_id=owner_hasn_id, asset_ids=[r.asset_id for r in rows if r.asset_id]
+        )
+        return [cls._to_item(r, url_map) for r in rows], total
+
+    @classmethod
     async def get_detail(
         cls, db: AsyncSession, *, owner_hasn_id: str, artifact_id: str
     ) -> ArtifactDetail:
