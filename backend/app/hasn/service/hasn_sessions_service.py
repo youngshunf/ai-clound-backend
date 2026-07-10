@@ -428,6 +428,24 @@ class HasnSessionsService:
                 conversation_id=str(conversation_id),
                 content_json=content_json,
             )
+        # RC-P8：应用资源会话（deck/reel/…）完成投影的**同处**登记 hasn_artifacts——让分身产出的
+        # 应用资源自动出现在「工作会话资源栏 / 分身产物 tab」。与完成卡同链路（同 descriptor、同
+        # 云端权威 uri_id），幂等（重复投影不重复登记）。非应用资源（普通任务会话）→ resolved 为 None，跳过。
+        resolved = _resolve_app_resource_projection(content_json)
+        if resolved is not None:
+            from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+
+            descriptor, _app_id, uri_id = resolved
+            await HasnArtifactsService.record_app_resource_artifact(
+                db,
+                descriptor=descriptor,
+                server_id=uri_id,
+                session_id=session_id,
+                agent_hasn_id=agent_id,
+                owner_hasn_id=owner_id,
+                title=title,
+                summary=content_json.get('summary') or None,
+            )
         await db.flush()
         return {
             'result_message_id': result_message_id,
@@ -741,6 +759,26 @@ def _parse_app_origin_ref(origin_ref: str | None) -> tuple[str, str] | None:
     return app_id, local_ref
 
 
+def _resolve_app_resource_projection(content_json: dict[str, Any]) -> tuple[Any, str, str] | None:
+    """据投影 content_json 判定是否应用资源会话，命中则返回 `(descriptor, app_id, uri_id)`（RC-P3/RC-P8 共用）。
+
+    仅当 `origin_ref=resource:{app}:{local}` 且该 app 在 manifest.resources[] 声明了 descriptor 才算应用资源；
+    未声明 → None（完成卡回落通用工作会话卡、且不登记应用资源产物）。`uri_id` 一律**优先云端权威
+    `{app}_server_id`**，未上云才回退本地 local_ref（Core-08 URI 第二原则：本地 id 换设备/分享后对端解析不开）。
+    """
+    app_resource = _parse_app_origin_ref(content_json.get('origin_ref'))
+    if app_resource is None:
+        return None
+    app_id, local_ref = app_resource
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+    descriptor = ai_native_app_registry.resource_descriptor(app_id)
+    if descriptor is None:
+        return None
+    uri_id = str(content_json.get(f'{app_id}_server_id') or local_ref)
+    return descriptor, app_id, uri_id
+
+
 def build_generic_resource_card(
     *,
     descriptor: Any,
@@ -886,6 +924,21 @@ async def emit_deck_completion_card(
     validate_card_message_body(card)
 
     from backend.app.hasn.service import message_router
+    from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+
+    # RC-P8：主会话直建 deck（无工作会话）的产出登记 —— 让主会话做的 deck 也进「分身产物 tab」。
+    # session_id=None（非工作会话，产物凭 resource_uri 归位）；与工作会话投影同一幂等键
+    # (agent, deck:{deck_id}, hasn://deck/{deck_id})，两条路径重复触发不重复登记。
+    await HasnArtifactsService.record_app_resource_artifact(
+        db,
+        descriptor=_deck_resource_descriptor(),
+        server_id=str(deck_id),
+        session_id=None,
+        agent_hasn_id=agent_id,
+        owner_hasn_id=owner_id,
+        title=title or '演示文稿',
+        summary=summary_text or None,
+    )
 
     return await message_router.route_message(
         db,
@@ -905,21 +958,16 @@ def _projection_card_body(*, session_id: str, title: str, content_json: dict[str
     # 的 id **一律优先用云端权威 `{app}_server_id`**——本地 id 跨设备/分享后对端解析不开（福仔「分享给
     # 别人根本打不开」的根因）。仅当资源尚未上云（无 server_id）才回退本地 local_ref：此时资源不在云端、
     # 根本无法分享，唯一消费者是 owner 本机，本地 id 恰好能解析。未声明 descriptor 的应用 → 回落通用卡。
-    app_resource = _parse_app_origin_ref(content_json.get('origin_ref'))
-    if app_resource is not None:
-        app_id, local_ref = app_resource
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-
-        descriptor = ai_native_app_registry.resource_descriptor(app_id)
-        if descriptor is not None:
-            uri_id = str(content_json.get(f'{app_id}_server_id') or local_ref)
-            return build_generic_resource_card(
-                descriptor=descriptor,
-                app_id=app_id,
-                session_id=session_id,
-                uri_id=uri_id,
-                content_json=content_json,
-            )
+    resolved = _resolve_app_resource_projection(content_json)
+    if resolved is not None:
+        descriptor, app_id, uri_id = resolved
+        return build_generic_resource_card(
+            descriptor=descriptor,
+            app_id=app_id,
+            session_id=session_id,
+            uri_id=uri_id,
+            content_json=content_json,
+        )
     task_id = content_json.get('task_id')
     task_run_id = content_json.get('task_run_id')
     event_payload = {
