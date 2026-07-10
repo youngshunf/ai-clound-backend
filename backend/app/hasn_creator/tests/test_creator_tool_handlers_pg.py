@@ -2,7 +2,7 @@
 
 直接走 `creator_tool_handlers` 的 handler 层——即云端 gateway_internal 的真实执行路径
 （去掉 HTTP/MCP-key 外壳）：handler 从 Agent JWT claims 取身份 → resolve_creator_scope →
-直调 creator service。证明设计 §6.1 的 21 工具经 manifest→注册表→handler 全链可调，且
+直调 creator service。证明设计 §6.1 的 28 工具（含 S4 账号/竞品扩充）经 manifest→注册表→handler 全链可调，且
 身份恒取自 JWT（不读入参身份）、个人模式 scope 隔离生效。
 
 需要本地 PostgreSQL :15432（DATABASE_PORT）。
@@ -60,10 +60,10 @@ async def session():
 
 
 async def test_manifest_handlers_all_registered() -> None:
-    """每个 manifest tool.handler 必在 gateway 内部 handler 注册表中（21 工具全可调）。"""
+    """每个 manifest tool.handler 必在 gateway 内部 handler 注册表中（28 工具全可调）。"""
     reg = gateway._internal_handlers()
     tools = CREATOR_AI_NATIVE_MANIFEST['tools']
-    assert len(tools) == 21
+    assert len(tools) == 28
     missing = [t['handler'] for t in tools if t['handler'] not in reg]
     assert missing == [], f'未注册 handler: {missing}'
     # 每个 handler 是 async callable
@@ -97,13 +97,29 @@ async def test_full_pipeline_via_handlers(session) -> None:
     acc = await H.handle_account_add(
         session,
         agent,
-        {'project_id': pid, 'platform': 'xiaohongshu', 'fields': {'nickname': '小厨', 'is_primary': True}},
+        {
+            'project_id': pid,
+            'platform': 'xiaohongshu',
+            'fields': {
+                'nickname': '小厨',
+                'is_primary': True,
+                'home_url': 'https://www.xiaohongshu.com/user/profile/h1',
+            },
+        },
     )
     aid = acc['id']
     await H.handle_competitor_log(
         session,
         agent,
-        {'project_id': pid, 'name': '隔壁老王', 'fields': {'platform': 'xiaohongshu', 'follower_count': 50000}},
+        {
+            'project_id': pid,
+            'name': '隔壁老王',
+            'fields': {
+                'platform': 'xiaohongshu',
+                'url': 'https://www.xiaohongshu.com/user/profile/w1',
+                'follower_count': 50000,
+            },
+        },
     )
     analyzed = await H.handle_profile_analyze(session, agent, {'project_id': pid})
     assert len(analyzed['competitors']) == 1

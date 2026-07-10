@@ -13,3 +13,4 @@ from backend.app.hasn_creator.model.project import Project as Project
 from backend.app.hasn_creator.model.publish import Publish as Publish
 from backend.app.hasn_creator.model.topic import Topic as Topic
 from backend.app.hasn_creator.model.viral_pattern import ViralPattern as ViralPattern
+from backend.app.hasn_creator.model.work import Work as Work

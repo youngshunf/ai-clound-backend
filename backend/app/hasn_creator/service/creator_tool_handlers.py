@@ -150,6 +150,61 @@ async def handle_account_list(
     return {'items': items}
 
 
+async def handle_account_update(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.update_account(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        account_id=_int(input_payload, 'account_id'),
+        fields=dict(input_payload.get('fields') or {}),
+    )
+
+
+async def handle_account_update_metrics(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.update_account_metrics(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        account_id=_int(input_payload, 'account_id'),
+        metrics=dict(input_payload.get('metrics') or {}),
+    )
+
+
+async def handle_account_works_upsert(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.upsert_works(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        source_type='own',
+        owner_ref_id=_int(input_payload, 'account_id'),
+        items=list(input_payload.get('works') or []),
+    )
+
+
+async def handle_account_works_list(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    items = await creator_service.list_works(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        source_type='own',
+        owner_ref_id=_int(input_payload, 'account_id'),
+        limit=int(input_payload.get('limit', 100)),
+    )
+    return {'items': items}
+
+
 async def handle_competitor_log(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -161,6 +216,33 @@ async def handle_competitor_log(
         project_id=_int(input_payload, 'project_id'),
         name=str(input_payload['name']),
         fields=input_payload.get('fields'),
+    )
+
+
+async def handle_competitor_update(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.update_competitor(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        competitor_id=_int(input_payload, 'competitor_id'),
+        fields=dict(input_payload.get('fields') or {}),
+    )
+
+
+async def handle_competitor_works_upsert(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await creator_service.upsert_works(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        source_type='competitor',
+        owner_ref_id=_int(input_payload, 'competitor_id'),
+        items=list(input_payload.get('works') or []),
     )
 
 

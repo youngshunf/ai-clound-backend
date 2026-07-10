@@ -33,6 +33,7 @@ from backend.app.hasn_creator.model.project import Project
 from backend.app.hasn_creator.model.publish import Publish
 from backend.app.hasn_creator.model.topic import Topic
 from backend.app.hasn_creator.model.viral_pattern import ViralPattern
+from backend.app.hasn_creator.model.work import Work
 from backend.app.hasn_creator.service.scope_context import (
     CreatorScope,
     apply_scope,
@@ -328,7 +329,7 @@ class CreatorService:
         return _to_dict(proj)
 
     # 项目下所有子对象表（双模归属冗余 assignee）—— reassign 时整体级联迁负责人。
-    _CHILD_MODELS = (Profile, Account, Competitor, Topic, Content, ContentStage, ContentInsight, Publish, Draft, Media)
+    _CHILD_MODELS = (Profile, Account, Competitor, Topic, Content, ContentStage, ContentInsight, Publish, Draft, Media, Work)
 
     @staticmethod
     async def reassign_project(
@@ -441,14 +442,22 @@ class CreatorService:
         platform: str,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """加平台账号（S4 §6.3）：platform 校验 ∈ 目录；home_url 按平台条件必填（有公开主页的平台必填）。"""
         proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
         fields = fields or {}
+        # platform 必选自目录（§4.3 选择制，零 fake）。
+        await CreatorService.validate_platform(db, platform=platform)
+        # home_url 条件必填：有公开网页主页的平台（小红书/抖音/B站…）必填，公众号/视频号等豁免（§8）。
+        home_url = (fields.get('home_url') or '').strip() or None
+        if home_url is None and await CreatorService.platform_requires_home_url(db, platform=platform):
+            raise errors.RequestError(msg='该平台有公开主页，请填写主页 URL（用于分身抓取粉丝/作品数据）')
         acc = Account(
             project_id=project_id,
             platform=platform,
             platform_uid=fields.get('platform_uid'),
             nickname=fields.get('nickname'),
-            home_url=fields.get('home_url'),
+            avatar_url=fields.get('avatar_url'),
+            home_url=home_url,
             bio=fields.get('bio'),
             is_primary=bool(fields.get('is_primary', False)),
             notes=fields.get('notes'),
@@ -467,6 +476,217 @@ class CreatorService:
         return [_to_dict(a) for a in rows]
 
     @staticmethod
+    async def _load_account(db: AsyncSession, *, account_id: int, user_id: int, scope: CreatorScope | None) -> Account:
+        stmt = apply_scope(sa.select(Account).where(Account.id == account_id), Account, user_id=user_id, scope=scope)
+        acc = (await db.execute(stmt)).scalars().first()
+        if acc is None:
+            raise errors.NotFoundError(msg='平台账号不存在或无权访问')
+        return acc
+
+    @staticmethod
+    async def update_account(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        account_id: int,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """更新账号资料（人/分身改昵称/uid/主账号/主页/简介 + 手填指标，§6.3 ①人操作回填）。"""
+        acc = await CreatorService._load_account(db, account_id=account_id, user_id=user_id, scope=scope)
+        allowed = {
+            'nickname',
+            'platform_uid',
+            'avatar_url',
+            'home_url',
+            'bio',
+            'is_primary',
+            'notes',
+            # 人手填指标（知道就填；分身抓取走 update_account_metrics）。
+            'followers',
+            'following',
+            'total_likes',
+            'total_favorites',
+            'total_comments',
+            'total_posts',
+        }
+        _metric_keys = {'followers', 'following', 'total_likes', 'total_favorites', 'total_comments', 'total_posts'}
+        touched_metric = False
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            if k == 'is_primary':
+                setattr(acc, k, bool(v))
+            elif k in _metric_keys:
+                setattr(acc, k, int(v))
+                touched_metric = True
+            else:
+                setattr(acc, k, v)
+        # 人手填指标也刷新「更新于 T」，与分身抓取口径一致（数据新鲜度诚实标注）。
+        if touched_metric:
+            acc.metrics_updated_at = datetime.datetime.now(datetime.UTC)
+        await db.flush()
+        return _to_dict(acc)
+
+    @staticmethod
+    async def update_account_metrics(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        account_id: int,
+        metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """回填账号指标（分身抓取后调；§6.3 ②分身派发 web-reach → 解析粉丝/获赞/作品数）。
+
+        已知列（followers/following/total_likes/total_favorites/total_comments/total_posts）直接落列；
+        其余平台特有指标并入 `metrics_json`（保留原始口径，避免丢失）。刷新 `metrics_updated_at`。
+        """
+        acc = await CreatorService._load_account(db, account_id=account_id, user_id=user_id, scope=scope)
+        _known = {'followers', 'following', 'total_likes', 'total_favorites', 'total_comments', 'total_posts'}
+        extra = dict(acc.metrics_json or {})
+        for k, v in metrics.items():
+            if v is None:
+                continue
+            if k in _known:
+                setattr(acc, k, int(v))
+            else:
+                extra[k] = v
+        acc.metrics_json = extra
+        acc.metrics_updated_at = datetime.datetime.now(datetime.UTC)
+        await db.flush()
+        return _to_dict(acc)
+
+    # ============================ work（作品明细）============================
+
+    # 逐条 upsert 允许透传的作品字段（归并键 external_id/url 除外，另行处理）。
+    _WORK_FIELDS = ('title', 'cover_uri', 'published_at', 'views', 'likes', 'comments', 'shares', 'favorites')
+    _WORK_INT_FIELDS = {'views', 'likes', 'comments', 'shares', 'favorites'}
+
+    @staticmethod
+    def _apply_work_fields(work: Work, item: dict[str, Any]) -> None:
+        """把一条作品数据落到 Work 行（归并更新与新建共用）。"""
+        for key in CreatorService._WORK_FIELDS:
+            if key not in item or item[key] is None:
+                continue
+            value = int(item[key]) if key in CreatorService._WORK_INT_FIELDS else item[key]
+            setattr(work, key, value)
+
+    @staticmethod
+    async def upsert_works(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        source_type: str,
+        owner_ref_id: int,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """逐条 upsert 作品（§6.3/§6.4 分身抓取回填）。source_type=own→account_id，competitor→competitor_id。
+
+        归并键（§7）：同一 (project_id, source_type, owner_ref_id) 下，按 external_id 优先、否则 url 匹配既有行→更新指标；
+        无匹配→插入。归并让「发布记录回填」与「账号抓取」两路指标对得上，避免同一作品两条。
+        collected_at 刷新为当前时刻（数据新鲜度）。
+        """
+        if source_type not in ('own', 'competitor'):
+            raise errors.RequestError(msg='source_type 只能是 own 或 competitor')
+        # 校验归属主体存在且属本 owner（own→account / competitor→competitor），拿到 project + 平台冗余。
+        if source_type == 'own':
+            parent = await CreatorService._load_account(db, account_id=owner_ref_id, user_id=user_id, scope=scope)
+        else:
+            stmt = apply_scope(
+                sa.select(Competitor).where(Competitor.id == owner_ref_id), Competitor, user_id=user_id, scope=scope
+            )
+            parent = (await db.execute(stmt)).scalars().first()
+            if parent is None:
+                raise errors.NotFoundError(msg='竞品不存在或无权访问')
+        project_id = parent.project_id
+        platform = parent.platform or ''
+        own = {
+            'owner_scope': parent.owner_scope,
+            'user_id': parent.user_id,
+            'enterprise_id': parent.enterprise_id,
+            'assignee': parent.assignee,
+        }
+        # 该主体下现有作品（用于归并匹配）。
+        base = sa.select(Work).where(Work.project_id == project_id, Work.source_type == source_type)
+        base = base.where(Work.account_id == owner_ref_id) if source_type == 'own' else base.where(Work.competitor_id == owner_ref_id)
+        existing = (await db.execute(base)).scalars().all()
+        by_ext = {w.external_id: w for w in existing if w.external_id}
+        by_url = {w.url: w for w in existing if w.url}
+
+        now = datetime.datetime.now(datetime.UTC)
+        upserted = 0
+        for item in items or []:
+            ext = (item.get('external_id') or '').strip() or None
+            url = (item.get('url') or '').strip() or None
+            match = (by_ext.get(ext) if ext else None) or (by_url.get(url) if url else None)
+            if match is None:
+                match = Work(
+                    project_id=project_id,
+                    source_type=source_type,
+                    account_id=owner_ref_id if source_type == 'own' else None,
+                    competitor_id=owner_ref_id if source_type == 'competitor' else None,
+                    platform=item.get('platform') or platform,
+                    external_id=ext,
+                    url=url,
+                    **own,
+                )
+                db.add(match)
+                if ext:
+                    by_ext[ext] = match
+                if url:
+                    by_url[url] = match
+            else:
+                if ext and not match.external_id:
+                    match.external_id = ext
+                if url and not match.url:
+                    match.url = url
+            CreatorService._apply_work_fields(match, item)
+            match.collected_at = now
+            upserted += 1
+        # 竞品作品数随抓取结果刷新（§6.4 works_count 由调研回填）。
+        if source_type == 'competitor':
+            total = (
+                await db.execute(
+                    sa.select(sa.func.count()).select_from(Work).where(
+                        Work.source_type == 'competitor', Work.competitor_id == owner_ref_id
+                    )
+                )
+            ).scalar() or 0
+            parent.works_count = int(total)
+        await db.flush()
+        return {'upserted': upserted, 'source_type': source_type, 'owner_ref_id': owner_ref_id}
+
+    @staticmethod
+    async def list_works(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        source_type: str,
+        owner_ref_id: int,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """列某账号/竞品的作品（按发布时间倒序；点开账号卡下钻作品用）。"""
+        if source_type not in ('own', 'competitor'):
+            raise errors.RequestError(msg='source_type 只能是 own 或 competitor')
+        # 归属校验（复用父主体加载，确保 owner 隔离）。
+        if source_type == 'own':
+            await CreatorService._load_account(db, account_id=owner_ref_id, user_id=user_id, scope=scope)
+            stmt = sa.select(Work).where(Work.source_type == 'own', Work.account_id == owner_ref_id)
+        else:
+            comp = apply_scope(
+                sa.select(Competitor).where(Competitor.id == owner_ref_id), Competitor, user_id=user_id, scope=scope
+            )
+            if (await db.execute(comp)).scalars().first() is None:
+                raise errors.NotFoundError(msg='竞品不存在或无权访问')
+            stmt = sa.select(Work).where(Work.source_type == 'competitor', Work.competitor_id == owner_ref_id)
+        stmt = stmt.order_by(Work.published_at.desc().nullslast(), Work.id.desc()).limit(min(limit, 300))
+        rows = (await db.execute(stmt)).scalars().all()
+        return [_to_dict(w) for w in rows]
+
+    @staticmethod
     async def log_competitor(
         db: AsyncSession,
         *,
@@ -476,22 +696,71 @@ class CreatorService:
         name: str,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """记竞品（§6.4 工具层强制录真）：platform+url 必填；researched=true 时 follower_count+works_count 必填。
+
+        兼容「先挂 URL 待分身调研」：researched=false（默认）时只强制 platform+url+name，指标待补；
+        researched=true（分身调研完带真数据）时强制 follower_count+works_count（零 fake 的录真）。
+        """
         proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
         fields = fields or {}
+        platform = (fields.get('platform') or '').strip() or None
+        url = (fields.get('url') or '').strip() or None
+        researched = bool(fields.get('researched', False))
+        if not platform:
+            raise errors.RequestError(msg='竞品必须选平台（从平台目录中选）')
+        await CreatorService.validate_platform(db, platform=platform)
+        if not url:
+            raise errors.RequestError(msg='竞品必须填主页 URL（先挂 URL 待分身调研也需要）')
+        if researched:
+            if fields.get('follower_count') is None:
+                raise errors.RequestError(msg='已调研的竞品必须填粉丝数（follower_count）')
+            if fields.get('works_count') is None:
+                raise errors.RequestError(msg='已调研的竞品必须填作品数（works_count）')
         comp = Competitor(
             project_id=project_id,
             name=name,
-            platform=fields.get('platform'),
-            url=fields.get('url'),
+            platform=platform,
+            url=url,
             follower_count=int(fields.get('follower_count') or 0),
+            works_count=int(fields.get('works_count') or 0),
             avg_likes=int(fields.get('avg_likes') or 0),
             content_style=fields.get('content_style'),
             strengths=fields.get('strengths') or [],
             notes=fields.get('notes'),
             tags=fields.get('tags') or [],
+            last_analyzed=datetime.datetime.now(datetime.UTC) if researched else None,
             **_child_ownership(proj),
         )
         db.add(comp)
+        await db.flush()
+        return _to_dict(comp)
+
+    @staticmethod
+    async def update_competitor(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        competitor_id: int,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """回填竞品调研结果（§6.4 分身调研后带完整数据：粉丝/作品数/风格/优势）。"""
+        stmt = apply_scope(
+            sa.select(Competitor).where(Competitor.id == competitor_id), Competitor, user_id=user_id, scope=scope
+        )
+        comp = (await db.execute(stmt)).scalars().first()
+        if comp is None:
+            raise errors.NotFoundError(msg='竞品不存在或无权访问')
+        if fields.get('platform') is not None:
+            await CreatorService.validate_platform(db, platform=fields.get('platform'))
+        _int_keys = {'follower_count', 'works_count', 'avg_likes'}
+        allowed = {'name', 'platform', 'url', 'content_style', 'strengths', 'notes', 'tags'} | _int_keys
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            setattr(comp, k, int(v) if k in _int_keys else v)
+        # 有调研数据回填即刷新调研时间（§6.4「上次调研 T」）。
+        comp.last_analyzed = datetime.datetime.now(datetime.UTC)
         await db.flush()
         return _to_dict(comp)
 
