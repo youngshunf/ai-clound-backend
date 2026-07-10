@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
+from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor, ResourceRoute
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, app_catalog_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
@@ -112,6 +113,17 @@ class AINativeAppRegistry:
                 errors_list.append('workspace_scope_exceeds_workbench_scope')
             if collaboration_mode != registered_app.collaboration_mode:
                 errors_list.append('collaboration_mode_mismatch')
+
+        # 资源描述符校验（doc31 §2.1，RC-P0）：manifest.resources[] 若声明，逐项按 ResourceDescriptor
+        # 校验（uri_domain 非空/无 scheme、open.mode 三枚举、route_template 含 :id、card.verb/action_label…）。
+        resources = manifest.get('resources')
+        if resources is not None:
+            if not isinstance(resources, list):
+                errors_list.append('resources_must_be_list')
+            else:
+                errors_list.extend(
+                    err for idx, resource in enumerate(resources) if (err := _resource_descriptor_error(idx, resource))
+                )
 
         manifest_hash = _manifest_hash(manifest)
         return ManifestValidationResult(valid=not errors_list, errors=errors_list, manifest_hash=manifest_hash)
@@ -225,6 +237,48 @@ class AINativeAppRegistry:
         emit = ((manifest.get('manifest_json') or {}).get('notifications') or {}).get('emit')
         return emit if isinstance(emit, dict) else None
 
+    def resource_descriptor(self, app_id: str, resource_kind: str | None = None) -> ResourceDescriptor | None:
+        """查某应用某类资源的 descriptor（doc31 §2，RC-P0）。
+
+        当前全部 AI-Native 应用均为 builtin，descriptor 权威在代码 manifest 的 `resources[]`，
+        故同步读 `_builtin_manifests`（无 db）。`resource_kind` 缺省取该 app 首个资源
+        （多数应用一类主资源；deck 唯一 deck.presentation）。声明缺失/非法 → None。
+        """
+        manifest = self._builtin_manifests.get(app_id)
+        if not manifest:
+            return None
+        resources = manifest.get('resources')
+        if not isinstance(resources, list) or not resources:
+            return None
+        chosen: dict[str, Any] | None = None
+        if resource_kind:
+            chosen = next((r for r in resources if r.get('resource_kind') == resource_kind), None)
+        if chosen is None:
+            chosen = resources[0]
+        try:
+            return ResourceDescriptor.model_validate(chosen)
+        except Exception:
+            return None
+
+    def resource_routes(self) -> list[ResourceRoute]:
+        """投影全部 builtin 应用 `resources[]` 为扁平资源路由读模型（doc31 §2.4，RC-P0）。
+
+        随 catalog 同步下发 daemon/webui；webui `registerResourceRoutes` 据此把
+        `hasn://{uri_domain}/{id}` 解析到内部路由/独立窗口/单入口。非法声明跳过（不阻塞下发）。
+        """
+        routes: list[ResourceRoute] = []
+        for app_id, manifest in self._builtin_manifests.items():
+            resources = manifest.get('resources')
+            if not isinstance(resources, list):
+                continue
+            for resource in resources:
+                try:
+                    descriptor = ResourceDescriptor.model_validate(resource)
+                except Exception:
+                    continue
+                routes.append(ResourceRoute.from_descriptor(app_id, descriptor))
+        return routes
+
 
 def _manifest_payload(row: HasnAiNativeAppManifest | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
@@ -259,6 +313,15 @@ def _builtin_manifest_payload(manifest: dict[str, Any], *, manifest_hash: str | 
 def _manifest_hash(manifest: dict[str, Any]) -> str:
     payload = repr(manifest).encode('utf-8')
     return f'sha256:{hashlib.sha256(payload).hexdigest()}'
+
+
+def _resource_descriptor_error(idx: int, resource: Any) -> str | None:
+    """校验单条资源描述符，越界返回错误码字符串，合法返回 None（PERF203：try 移出循环体）。"""
+    try:
+        ResourceDescriptor.model_validate(resource)
+    except Exception as exc:
+        return f'resource_descriptor_invalid[{idx}]:{exc.__class__.__name__}'
+    return None
 
 
 ai_native_app_registry: AINativeAppRegistry = AINativeAppRegistry()

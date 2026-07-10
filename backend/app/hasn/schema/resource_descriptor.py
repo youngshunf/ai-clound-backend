@@ -1,0 +1,120 @@
+"""AI-Native 应用资源描述符（Resource Descriptor）契约（doc31 §2.1，云端权威）。
+
+每个 AI-Native 应用在其 App manifest 的 `resources[]` 声明它产出的资源长什么样、URI 怎么拼、
+详情页怎么开、完成卡怎么显示。完成卡 / 工作会话资源栏 / 分享卡 / URI 解析 / 详情跳转全部从这份
+声明派生——新应用只声明 descriptor，webui 零改代码（终结 deck 专属硬编码链路）。
+
+事实源：docs/hasn-node设计文档/14-AI-Native应用平台/31-…设计.md §2；实施/32 RC-P0。
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import Field, model_validator
+
+from backend.common.schema import SchemaBase
+
+# open.mode 三枚举覆盖全部现实打开形态（doc31 §2.2）：
+#   internal_route  有 /:id 详情路由的应用（reel/knowledge/creator…）
+#   native_window   独立原生窗口应用（deck/design）
+#   entry_query     单入口 / tab、无 /:id 段的应用（imagelab ?item= 等）
+ResourceOpenMode = Literal['internal_route', 'native_window', 'entry_query']
+# native_window 目前仅两类独立窗口应用
+ResourceWindow = Literal['deck', 'design']
+
+
+class ResourceOpen(SchemaBase):
+    """资源打开语义（descriptor.open）。按 mode 决定 webui `resolveHasnUri` 如何分发。"""
+
+    mode: ResourceOpenMode = Field(description='打开模式：internal_route | native_window | entry_query')
+    # internal_route 必填：含 :id 或 {id} 占位（如 /apps/reel/projects/:id）
+    route_template: str | None = Field(None, description='internal_route 内部路由模板（含 :id/{id} 占位）')
+    # native_window 必填：deck | design
+    window: ResourceWindow | None = Field(None, description='native_window 独立窗口类型')
+    # entry_query 必填：单入口路由 + query key（id 经 ?query_key=id 透传）
+    entry_route: str | None = Field(None, description='entry_query 单入口路由（如 /apps/imagelab）')
+    query_key: str | None = Field(None, description='entry_query 透传 id 的 query 键（如 item）')
+
+    @model_validator(mode='after')
+    def _check_by_mode(self) -> ResourceOpen:
+        if self.mode == 'internal_route':
+            if not self.route_template:
+                raise ValueError('internal_route 必须声明 route_template')
+            if ':id' not in self.route_template and '{id}' not in self.route_template:
+                raise ValueError('internal_route 的 route_template 必须含 :id 或 {id} 占位')
+        elif self.mode == 'native_window':
+            if self.window not in ('deck', 'design'):
+                raise ValueError('native_window 必须声明 window ∈ {deck, design}')
+        elif self.mode == 'entry_query':
+            if not self.entry_route or not self.query_key:
+                raise ValueError('entry_query 必须声明 entry_route 与 query_key')
+        return self
+
+
+class ResourceCard(SchemaBase):
+    """资源完成卡显示声明（descriptor.card）。标题 = "{verb}做好了"，主按钮 = action_label。"""
+
+    verb: str = Field(description='资源名词（完成卡标题 = "{verb}做好了"，如 演示文稿/短视频）')
+    action_label: str = Field(description='primary_action 主按钮文案（如 打开演示文稿）')
+    # 可选：从产物 metadata 取哪些字段进卡摘要
+    summary_fields: list[str] = Field(default_factory=list, description='摘要取用的产物 metadata 字段名')
+
+    @model_validator(mode='after')
+    def _non_empty(self) -> ResourceCard:
+        if not (self.verb or '').strip():
+            raise ValueError('card.verb 不能为空')
+        if not (self.action_label or '').strip():
+            raise ValueError('card.action_label 不能为空')
+        return self
+
+
+class ResourceDescriptor(SchemaBase):
+    """一个应用产出的一类资源的描述符（manifest.resources[] 内一项）。"""
+
+    resource_kind: str = Field(description='app 内唯一稳定键（如 deck.presentation / reel.project）')
+    uri_domain: str = Field(description='hasn:// host+path 前缀，不含 /{id}（如 deck / reel/projects）')
+    open: ResourceOpen = Field(description='打开语义')
+    card: ResourceCard = Field(description='完成卡显示声明')
+    # 可选：登记 hasn_artifacts 时的 kind；缺省按 resource_kind 归一（越界→other）
+    artifact_kind: str | None = Field(None, description='登记 hasn_artifacts 的 kind（缺省归一）')
+
+    @model_validator(mode='after')
+    def _check_uri_domain(self) -> ResourceDescriptor:
+        domain = (self.uri_domain or '').strip()
+        if not domain:
+            raise ValueError('uri_domain 不能为空')
+        if 'hasn://' in domain:
+            raise ValueError('uri_domain 不含 scheme（不要写 hasn://）')
+        if domain.startswith('/'):
+            raise ValueError('uri_domain 不含前导斜杠')
+        if not (self.resource_kind or '').strip():
+            raise ValueError('resource_kind 不能为空')
+        return self
+
+
+class ResourceRoute(SchemaBase):
+    """资源路由读模型（从 descriptor 投影出的扁平表，随 catalog 下发 daemon/webui）。
+
+    webui `registerResourceRoutes` 据此把 `hasn://{uri_domain}/{id}` 解析到内部路由/独立窗口/单入口。
+    """
+
+    app_id: str = Field(description='应用 id')
+    uri_domain: str = Field(description='hasn:// host+path 前缀（如 reel/projects）')
+    open_mode: ResourceOpenMode = Field(description='打开模式')
+    route_template: str | None = Field(None, description='internal_route 内部路由模板')
+    window: ResourceWindow | None = Field(None, description='native_window 独立窗口类型')
+    entry_route: str | None = Field(None, description='entry_query 单入口路由')
+    query_key: str | None = Field(None, description='entry_query 透传 id 的 query 键')
+
+    @classmethod
+    def from_descriptor(cls, app_id: str, descriptor: ResourceDescriptor) -> ResourceRoute:
+        return cls(
+            app_id=app_id,
+            uri_domain=descriptor.uri_domain,
+            open_mode=descriptor.open.mode,
+            route_template=descriptor.open.route_template,
+            window=descriptor.open.window,
+            entry_route=descriptor.open.entry_route,
+            query_key=descriptor.open.query_key,
+        )
