@@ -953,6 +953,9 @@ async def grant_entitlement(
         order_ref=order_ref,
         granted_at=timezone.now(),
         expires_at=expires_at,
+        # MK-4：应用/席位权益也带付费墙通用语言 feature_key（app:<id>，与商品目录 offering 对齐）。
+        # 席位用 source=seat/purchase + seats_total 区分，feature_key 统一走 app 前缀族（doc02 §3）。
+        feature_key=f'app:{app_id}',
     )
     db.add(ent)
     await db.flush()
