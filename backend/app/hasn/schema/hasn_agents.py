@@ -92,6 +92,14 @@ class AgentSnapshot(SchemaBase):
     template_id: str | None = Field(None, description='模板 ID')
     template_version: str | None = Field(None, description='模板版本（创建时快照）')
     skills: dict[str, Any] | list[Any] | None = Field(None, description='技能配置')
+    skill_display: dict[str, Any] | None = Field(
+        None,
+        description=(
+            '技能显示层元数据：{skill_id: {name, description}} 映射，从 marketplace/个人技能目录'
+            '批量解析下发（skills 本身只是 skill_id slug 清单，无友好名/描述）。'
+            'daemon 据此把命令浮层技能项显示为真友好名+描述，而非裸 slug。附加字段，可空。'
+        ),
+    )
     soul_md: str | None = Field(None, description='SOUL.md 内容')
     agents_md: str | None = Field(None, description='AGENTS.md 内容')
     user_md: str | None = Field(None, description='USER.md 内容')
