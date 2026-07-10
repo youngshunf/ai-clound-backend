@@ -75,7 +75,9 @@ class HasnMcpStreamableServer:
                             inputSchema=tool_data['input_schema'],
                         ) for tool_data in tools_data]
 
-                logger.info(f'Listed {len(tools)} tools for agent {agent_context.hasn_id}')
+                # 无状态 MCP 下每个请求都会走一遍 list_tools（stateless=True 每请求新建 transport），
+                # 用 INFO 会把单进程 dev 后端日志刷屏（冷启动批量拉起分身时尤甚），降到 DEBUG。
+                logger.debug(f'Listed {len(tools)} tools for agent {agent_context.hasn_id}')
                 return tools
 
             except Exception as e:
@@ -304,9 +306,13 @@ class HasnMcpStreamableServer:
     def create_session_manager(self) -> StreamableHTTPSessionManager:
         """创建 StreamableHTTP 会话管理器"""
         if self.session_manager is None:
+            # stateless=True 是刻意选择，勿改成有状态：生产多 worker（gunicorn/uvicorn workers）
+            # 下，有状态会话会绑定到首次命中的那个 worker 进程，后续请求被负载均衡打到别的
+            # worker 就找不到会话而失败。无状态模式每请求自建临时 transport、用完即 terminate
+            #（日志里的 "Terminating session: None" 是无状态的正常行为，非错误）。
             self.session_manager = StreamableHTTPSessionManager(
                 self.server,
-                stateless=True,  # 使用无状态模式，每次请求创建新 transport
+                stateless=True,  # 无状态：每请求新建 transport（多 worker 安全，勿改成有状态）
             )
         return self.session_manager
 
