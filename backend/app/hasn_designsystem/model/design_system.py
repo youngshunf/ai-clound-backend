@@ -58,6 +58,15 @@ class DesignSystem(DesignSystemBase):
         default=None,
         comment='列表卡预览色板（denorm 自当前版 tokens.css 关键色，前端列表渲染迷你预览）',
     )
+    # DSGAL：组件画廊要求覆盖的「交付物场景」id 列表（owner 派发时设定，默认 [brand_website]）。
+    # 与当前版 components.manifest 的 scenes[] 交叉出「品牌网站 3/5 · 缺 CTA/页脚」软提示——
+    # 福仔拍板：软提示不阻断发卡（完成判定仍只看五项必填字段，见 service _content_complete）。
+    required_scenes: Mapped[list] = mapped_column(
+        postgresql.JSONB(),
+        default_factory=lambda: ['brand_website'],
+        server_default=sa.text('\'["brand_website"]\'::jsonb'),
+        comment='组件画廊要求覆盖的交付物场景 id 列表（brand_website/deck/poster/mobile；默认 [brand_website]，软提示不阻断）',
+    )
     # DSFIX-1：分身首次写满必填字段（详情四区块全非空）→ 发一次「设计系统已完成·查看」卡的幂等水位。
     # 非空 = 已发过完成卡（此后再 save 不重复发）；null = 尚未完整或尚未发。发卡时机由分身写完必填字段
     # 触发（不是 runtime 自动完成），承载 hasn://designsystem/{云端id} 深链直达详情。

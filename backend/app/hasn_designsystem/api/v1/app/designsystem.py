@@ -306,3 +306,30 @@ async def app_set_bound_agent(
     )
     await _bump_designsystem_sync(db, owner)
     return response_base.success(data=data)
+
+
+# ── 组件画廊场景要求（DSGAL：owner 在详情页勾选要求覆盖的交付物场景）──────────────────
+class RequiredScenesRequest(BaseModel):
+    required_scenes: list[str] = Field(
+        default_factory=lambda: ['brand_website'],
+        description='要求覆盖的交付物场景 id 列表（brand_website/deck/poster/mobile；未知项忽略，空回落 [brand_website]）',
+    )
+
+
+@router.post(
+    '/design-systems/{design_system_id}/required-scenes',
+    summary='设置组件画廊要求覆盖的场景（owner；软提示口径，不动版本内容）',
+    dependencies=[DependsJwtAuth],
+)
+async def app_set_required_scenes(
+    request: Request,
+    db: CurrentSession,
+    design_system_id: Annotated[int, Path(ge=1)],
+    body: RequiredScenesRequest,
+) -> ResponseModel:
+    owner = await _resolve_owner(db, request)
+    data = await design_system_service.set_required_scenes(
+        db, owner_hasn_id=owner, design_system_id=design_system_id, required_scenes=body.required_scenes
+    )
+    await _bump_designsystem_sync(db, owner)
+    return response_base.success(data=data)

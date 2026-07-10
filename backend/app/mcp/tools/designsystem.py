@@ -250,6 +250,14 @@ class DesignSystemSaveTool(BaseTool):
                 },
                 'score': {'type': 'integer', 'description': '可选：0–100 评分'},
                 'grade': {'type': 'string', 'description': '可选：等级'},
+                'required_scenes': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description': (
+                        '可选：组件画廊要求覆盖的交付物场景 id 列表'
+                        '（brand_website/deck/poster/mobile；缺省=不改，owner 派发时设定）'
+                    ),
+                },
             },
             'required': ['slug', 'name', 'content'],
         }
@@ -266,6 +274,8 @@ class DesignSystemSaveTool(BaseTool):
             raise RuntimeError("designsystem.save: 'content' 必填（四层契约产物对象）")
 
         recommend = arguments.get('recommend_rebuild')
+        # required_scenes：仅当入参显式带 key 才透传（缺省=不改，避免每次 save 抹掉 owner 已设的场景要求）。
+        required_scenes = _str_list(arguments, 'required_scenes') if 'required_scenes' in arguments else None
         subject = Subject.agent(agent_context.agent_hasn_id, agent_context.owner_hasn_id)
 
         # design_system_service.save 内部 self-commit（区别于 plan/artifact 的「只 flush」约定），
@@ -287,6 +297,7 @@ class DesignSystemSaveTool(BaseTool):
                 bundle_asset_id=_str(arguments, 'bundle_asset_id'),
                 note=_str(arguments, 'note'),
                 enterprise_id=_opt_int(arguments, 'enterprise_id'),
+                required_scenes=required_scenes,
             )
             await _bump_designsystem_sync(db, agent_context.owner_hasn_id)
             await db.commit()

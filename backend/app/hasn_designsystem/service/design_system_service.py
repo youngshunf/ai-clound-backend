@@ -23,6 +23,11 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, or_, select
 
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
+from backend.app.hasn_designsystem.core.scenes import (
+    DEFAULT_REQUIRED_SCENES,
+    SCENE_STANDARDS,
+    is_known_scene,
+)
 from backend.app.hasn_designsystem.model import Collaborator, DesignSystem, Revision
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
@@ -130,6 +135,87 @@ def _extract_preview_swatches(tokens_css: str | None) -> dict[str, str] | None:
     return swatches or None
 
 
+# DSGAL：场景标准（中文名 + 每个场景的必须组件带中文名），供完成卡软提示交叉用。
+# 单一事实源在 core/scenes.py（与 Rust 逐字节对齐）；这里只 denorm 出 label 映射，不重复定义标准。
+_SCENE_LABELS: dict[str, str] = {s.id: s.label for s in SCENE_STANDARDS}
+_SCENE_REQUIRED: dict[str, list[tuple[str, str]]] = {
+    s.id: [(c.key, c.label) for c in s.required] for s in SCENE_STANDARDS
+}
+
+
+def _normalize_required_scenes(raw: Any) -> list[str]:
+    """规整 required_scenes 入参：只保留已知场景 id、去重保序；空/非法 → 默认 [brand_website]。
+
+    零 fake：未知场景 id 直接丢弃（不臆造），空列表回落默认（画廊至少要求品牌网站）。
+    """
+    if not isinstance(raw, (list, tuple)):
+        return list(DEFAULT_REQUIRED_SCENES)
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and is_known_scene(item) and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out or list(DEFAULT_REQUIRED_SCENES)
+
+
+def _scene_coverage_annotation(required_scenes: list[str], manifest_scenes: Any) -> list[dict[str, Any]]:
+    """交叉 owner 要求的 required_scenes 与 manifest 检测到的 scenes[] → 每个必须场景的覆盖标注。
+
+    软提示（不阻断）：为每个 required 场景算「必须 N 件 / 已配齐 M 件 / 缺哪几件（带中文名）」。
+    manifest 未检测到某场景（分身一件没标）→ 视为该场景全部缺失（诚实反映实际产出）。
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    if isinstance(manifest_scenes, list):
+        for s in manifest_scenes:
+            if isinstance(s, dict) and isinstance(s.get('id'), str):
+                by_id[s['id']] = s
+    out: list[dict[str, Any]] = []
+    for scene_id in required_scenes:
+        required_pairs = _SCENE_REQUIRED.get(scene_id)
+        if required_pairs is None:  # 理论上 required_scenes 已规整过，防御性跳过未知
+            continue
+        detected = by_id.get(scene_id) or {}
+        present_keys = set(detected.get('presentComponents') or [])
+        required_keys = [k for k, _ in required_pairs]
+        present = [k for k in required_keys if k in present_keys]
+        missing = [(k, label) for k, label in required_pairs if k not in present_keys]
+        out.append({
+            'id': scene_id,
+            'label': _SCENE_LABELS.get(scene_id, scene_id),
+            'requiredTotal': len(required_keys),
+            'presentCount': len(present),
+            'missing': [{'key': k, 'label': label} for k, label in missing],
+            'complete': not missing,
+        })
+    return out
+
+
+def _scene_coverage_hint(annotation: list[dict[str, Any]]) -> str | None:
+    """把覆盖标注压成一行软提示文案：「品牌网站 3/5 · 缺 CTA/页脚；移动端 0/5 · 缺 …」。
+
+    全部场景配齐 → None（不提示，卡片不带累赘）。
+    """
+    parts: list[str] = []
+    for a in annotation:
+        if a.get('complete'):
+            continue
+        miss = '/'.join(m['label'] for m in a.get('missing', []))
+        parts.append(f'{a["label"]} {a["presentCount"]}/{a["requiredTotal"]} · 缺 {miss}')
+    return '；'.join(parts) or None
+
+
+def _manifest_scenes_of(content: dict[str, Any]) -> Any:
+    """从 save 入参 content 里取 components.manifest 的 scenes[]（daemon/Python core 抽取器已填）。
+
+    manifest 存为 JSONB → 取到即 dict；非 dict（缺失/畸形）→ 返回 None（annotation 侧当全缺处理）。
+    """
+    manifest = content.get('components_manifest_json')
+    if isinstance(manifest, dict):
+        return manifest.get('scenes')
+    return None
+
+
 def _ds_dict(d: DesignSystem) -> dict[str, Any]:
     return {
         'id': d.id,
@@ -147,6 +233,8 @@ def _ds_dict(d: DesignSystem) -> dict[str, Any]:
         'content_hash': d.content_hash,
         'bound_agent_id': d.bound_agent_id,
         'preview_swatches': d.preview_swatches,
+        # DSGAL：owner 要求覆盖的场景（详情页与之交叉 manifest.scenes 渲染覆盖分区）。存量 null → 规整默认。
+        'required_scenes': _normalize_required_scenes(d.required_scenes),
         'completed_notified_at': d.completed_notified_at.isoformat() if d.completed_notified_at else None,
         'created_time': d.created_time.isoformat() if d.created_time else None,
         'updated_time': d.updated_time.isoformat() if d.updated_time else None,
@@ -235,10 +323,12 @@ class DesignSystemService:
         bundle_asset_id: str | None = None,
         note: str | None = None,
         enterprise_id: int | None = None,
+        required_scenes: list[str] | None = None,
     ) -> dict[str, Any]:
         """创建或更新一套设计系统：落一版 revision + 回填 current/content_hash/评分。
 
         `content` 含 tokens.css + 派生 + 创意（见 _REVISION_CONTENT）。每次 save 都出一版（可回滚）。
+        `required_scenes`：owner 派发时要求覆盖的组件画廊场景（None=不改，新建时回落默认 [brand_website]）。
         """
         owner = subject.owner_hasn_id
         hashed = _content_hash(content)
@@ -310,6 +400,10 @@ class DesignSystemService:
             d.content_hash = hashed
             # 列表卡预览色板：denorm 当前版 tokens.css 关键色，前端列表渲染迷你预览（无 tokens → None）。
             d.preview_swatches = _extract_preview_swatches(content.get('tokens_css'))
+            # DSGAL：required_scenes 显式传了才改（owner 派发时设定的场景要求；None=沿用存量/默认，
+            # 避免分身每次 save 无意抹掉 owner 的场景勾选）。
+            if required_scenes is not None:
+                d.required_scenes = _normalize_required_scenes(required_scenes)
         d.updated_time = now
 
         # 落新版 revision（rev_no = 当前 max + 1）
@@ -350,8 +444,15 @@ class DesignSystemService:
             and _content_complete(content)
         )
         if should_notify:
+            # DSGAL：软提示——交叉 owner 要求的 required_scenes 与本版 manifest.scenes[]，算「品牌网站 3/5 ·
+            # 缺 CTA/页脚」。不阻断发卡（完成判定见上 should_notify，只看五项必填字段）。
+            scene_coverage = _scene_coverage_annotation(
+                _normalize_required_scenes(d.required_scenes), _manifest_scenes_of(content)
+            )
             try:
-                await self._notify_designsystem_ready(db, d=d, agent_hasn_id=subject.hasn_id)
+                await self._notify_designsystem_ready(
+                    db, d=d, agent_hasn_id=subject.hasn_id, scene_coverage=scene_coverage
+                )
                 d.completed_notified_at = timezone.now()
                 await db.commit()
                 await db.refresh(d)
@@ -366,13 +467,20 @@ class DesignSystemService:
         return out
 
     async def _notify_designsystem_ready(
-        self, db: AsyncSession, *, d: DesignSystem, agent_hasn_id: str
+        self,
+        db: AsyncSession,
+        *,
+        d: DesignSystem,
+        agent_hasn_id: str,
+        scene_coverage: list[dict[str, Any]] | None = None,
     ) -> None:
         """分身写满必填字段 → 发「设计系统已完成·查看」卡给主人（DSFIX-1）。
 
         source.kind=agent（category=agent 默认开 card_message → 卡片落「主人 ⇄ 该分身」既有会话）；
         深链走 `hasn://designsystem/{云端权威 id}`（相对 `/designsystem/{id}` 由 carrier 提升为 canonical，
         `{id}` 用云端权威 `d.id`——分享/换设备均可解析，符合「本地 ID 永不上 URI」铁律）。
+        `scene_coverage`（DSGAL）：每个 required 场景的组件画廊覆盖标注，压成一行软提示挂进 preview，
+        卡片诚实透出「品牌网站 3/5 · 缺 CTA/页脚」——软提示，不阻断（发卡时机仍只看五项必填字段）。
         惰性 import notification_service，避免模块加载期循环（与 _fanout_card 同策略）。
         """
         from backend.app.hasn.model.hasn_agents import HasnAgents
@@ -383,6 +491,10 @@ class DesignSystemService:
             await db.execute(select(HasnAgents.display_name).where(HasnAgents.hasn_id == agent_hasn_id))
         ).scalar_one_or_none()
         preview = f'{d.name} · 评分 {d.score}' if d.score is not None else d.name
+        # DSGAL：有缺件的场景 → 追加软提示到 preview（缺件为空则不追加，卡片保持简洁）。
+        hint = _scene_coverage_hint(scene_coverage) if scene_coverage else None
+        if hint:
+            preview = f'{preview} · 画廊 {hint}'
         await notification_service.emit(
             db,
             recipient_id=d.owner_hasn_id,
@@ -399,6 +511,8 @@ class DesignSystemService:
                 'target': {'kind': 'designsystem', 'id': str(d.id)},
                 'link': f'/designsystem/{d.id}',
                 'preview': preview,
+                # DSGAL：结构化覆盖标注也随卡片带出，供 webui 卡片细节渲染（软提示，不阻断）。
+                'scene_coverage': scene_coverage or [],
             },
             dedupe_key=f'designsystem.ready:{d.id}',
         )
@@ -422,6 +536,30 @@ class DesignSystemService:
         if d.owner_hasn_id != owner_hasn_id:
             raise errors.ForbiddenError(msg='只有 owner 可改绑协作分身')
         d.bound_agent_id = bound_agent_id
+        d.updated_time = timezone.now()
+        await db.commit()
+        await db.refresh(d)
+        return _ds_dict(d)
+
+    async def set_required_scenes(
+        self,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        design_system_id: int,
+        required_scenes: list[str],
+    ) -> dict[str, Any]:
+        """owner 改「组件画廊要求覆盖的场景」（DSGAL，详情页勾选）。owner-only、非 builtin。
+
+        入参经 _normalize_required_scenes 规整（只留已知场景、去重保序、空回落默认）——
+        软提示口径改变，不动任何版本内容（不出新 revision、不改 content_hash）。
+        """
+        d = await self._get_alive(db, design_system_id)
+        if d.is_builtin:
+            raise errors.ForbiddenError(msg='内置设计系统不可修改场景要求')
+        if d.owner_hasn_id != owner_hasn_id:
+            raise errors.ForbiddenError(msg='只有 owner 可修改设计系统的场景要求')
+        d.required_scenes = _normalize_required_scenes(required_scenes)
         d.updated_time = timezone.now()
         await db.commit()
         await db.refresh(d)

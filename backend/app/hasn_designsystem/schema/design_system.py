@@ -19,6 +19,10 @@ class DesignSystemSchemaBase(SchemaBase):
     enterprise_id: int | None = Field(None, description='归属企业 ID（null=个人；非空=企业私有，引用 public.hasn_enterprise）')
     current_revision_id: int | None = Field(None, description='当前版 revision.id（指向最新 revision）')
     content_hash: str = Field(description='当前版内容 hash（供同步 revision diff）')
+    required_scenes: list[str] = Field(
+        default_factory=lambda: ['brand_website'],
+        description='组件画廊要求覆盖的交付物场景 id 列表（brand_website/deck/poster/mobile；默认 [brand_website]）',
+    )
     deleted_time: datetime | None = Field(None, description='软删时间（非空=已删，不物理删以便同步感知）')
 
 
