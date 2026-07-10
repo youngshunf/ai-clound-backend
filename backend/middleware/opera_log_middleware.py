@@ -92,7 +92,13 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
                         code = exception.get('code')
                         msg = exception.get('msg')
                         status = StatusType.disable
-                        log.error(f'请求异常: {msg}')
+                        # 4xx 客户端错误（429 限频 / 404 / 409 / 422 校验等）是预期的客户端侧
+                        # 状况，不是服务端故障——记 WARNING，避免刷爆后端 error 日志（曾出现
+                        # diag 上报限频 429 被当 ERROR「请求异常」海量刷屏）。仅 5xx / 未知记 ERROR。
+                        if isinstance(code, int) and 400 <= code < 500:
+                            log.warning(f'请求异常: {msg}')
+                        else:
+                            log.error(f'请求异常: {msg}')
                         break
 
             if path.startswith(settings.FASTAPI_API_V1_PATH):
