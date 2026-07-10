@@ -1040,6 +1040,37 @@ class CreatorService:
         return [_to_dict(r) for r in out]
 
     @staticmethod
+    async def add_topic(
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        project_id: int,
+        title: str,
+        reason: str | None = None,
+        angle: str | None = None,
+    ) -> dict[str, Any]:
+        """人或分身单条加选题（§6.6「手动加选题」）——① owner 通道与 ② 分身通道共用此方法。
+
+        与 suggest_topics（批量、分身生成）区别：单条、可来自主人手动录入；angle 作为一条创意角度
+        存入 creative_angles。零 fake：分数缺省 0，不编造热度/潜力（Topic 表无创作者审计列，与 suggest_topics 一致）。
+        """
+        proj = await CreatorService._load_project(db, project_id=project_id, user_id=user_id, scope=scope)
+        row = Topic(
+            project_id=project_id,
+            title=str(title or '').strip()[:200] or '未命名选题',
+            reason=reason,
+            creative_angles=[angle] if angle else [],
+            potential_score=0,
+            heat_index=0,
+            status=0,
+            **_child_ownership(proj),
+        )
+        db.add(row)
+        await db.flush()
+        return _to_dict(row)
+
+    @staticmethod
     async def list_topics(
         db: AsyncSession,
         *,

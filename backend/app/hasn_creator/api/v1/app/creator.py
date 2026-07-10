@@ -21,6 +21,7 @@ from fastapi import APIRouter, Query, Request
 from backend.app.hasn_creator.schema.owner import (
     AddAccountParam,
     AddMediaParam,
+    AddTopicParam,
     CreateContentParam,
     CreateDraftParam,
     CreateProjectParam,
@@ -363,6 +364,19 @@ async def suggest_topics(
         db, user_id=request.user.id, scope=scope, project_id=project_id, topics=obj.topics, batch_date=obj.batch_date
     )
     return response_base.success(data={'items': items})
+
+
+@router.post('/projects/{project_id}/topic', summary='[Owner] 手动加一条选题', dependencies=[DependsJwtAuth])
+async def add_topic(
+    request: Request, db: CurrentSessionTransaction, project_id: int, obj: AddTopicParam
+) -> ResponseModel:
+    # ① 主人手动加选题（§6.6）——单条，与分身单条加共用 add_topic
+    scope = await resolve_creator_scope(db, user_id=request.user.id)
+    item = await creator_service.add_topic(
+        db, user_id=request.user.id, scope=scope, project_id=project_id,
+        title=obj.title, reason=obj.reason, angle=obj.angle,
+    )
+    return response_base.success(data=item)
 
 
 # ============================ 内容 / 阶段产出 ============================

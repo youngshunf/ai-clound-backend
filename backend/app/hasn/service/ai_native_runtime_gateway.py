@@ -516,6 +516,7 @@ class AiNativeRuntimeGateway:
             'creator.draft_delete': creator_handlers.handle_draft_delete,
             'creator.draft_promote': creator_handlers.handle_draft_promote,
             'creator.topic_suggest': creator_handlers.handle_topic_suggest,
+            'creator.topic_add': creator_handlers.handle_topic_add,
             'creator.content_create': creator_handlers.handle_content_create,
             'creator.content_list': creator_handlers.handle_content_list,
             'creator.content_get': creator_handlers.handle_content_get,

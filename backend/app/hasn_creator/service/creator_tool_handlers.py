@@ -380,6 +380,23 @@ async def handle_topic_suggest(
     return {'items': items}
 
 
+async def handle_topic_add(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """分身单条加选题（§6.6）——与主人手动加选题共用 add_topic，单条落库。"""
+    scope = await _scope(db, agent)
+    item = await creator_service.add_topic(
+        db,
+        user_id=agent.owner_user_id,
+        scope=scope,
+        project_id=_int(input_payload, 'project_id'),
+        title=str(input_payload.get('title') or ''),
+        reason=input_payload.get('reason'),
+        angle=input_payload.get('angle'),
+    )
+    return item
+
+
 # ---------------- 内容 / 阶段产出 ----------------
 
 

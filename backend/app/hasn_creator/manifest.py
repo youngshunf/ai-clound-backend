@@ -553,6 +553,23 @@ _CAPABILITIES = [
         page_rank=19,
         tags=['creator', 'topic', 'suggest', 'manage'],
     ),
+    _cap(
+        name='topic_add',
+        mcp_suffix='topic.add',
+        title='加一条选题',
+        description='往选题池单条加一个选题（§6.6「手动加选题」；人和分身共用）。分身提供 title，可选 reason/angle，service 落库；零 fake，不编造热度/潜力。',
+        scope=_SCOPE_MANAGE,
+        risk_level='low',
+        properties={
+            'project_id': {'type': 'integer'},
+            'title': {'type': 'string', 'description': '选题标题'},
+            'reason': {'type': ['string', 'null'], 'description': '选题理由（可选）'},
+            'angle': {'type': ['string', 'null'], 'description': '创意角度（可选，存入 creative_angles）'},
+        },
+        required=['project_id', 'title'],
+        page_rank=195,
+        tags=['creator', 'topic', 'add', 'manage'],
+    ),
     # ---------------- 内容 / 阶段产出 ----------------
     _cap(
         name='content_create',

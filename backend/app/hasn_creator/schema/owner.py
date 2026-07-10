@@ -101,6 +101,14 @@ class SuggestTopicsParam(SchemaBase):
     batch_date: str | None = Field(default=None, description='批次日期 YYYY-MM-DD')
 
 
+class AddTopicParam(SchemaBase):
+    """主人手动加一条选题（§6.6「手动加选题」；与分身单条加共用 add_topic）。"""
+
+    title: str = Field(min_length=1, max_length=200, description='选题标题')
+    reason: str | None = Field(default=None, description='选题理由/背景')
+    angle: str | None = Field(default=None, description='一条创意角度（存入 creative_angles）')
+
+
 class CreateContentParam(SchemaBase):
     project_id: int = Field(description='归属项目')
     title: str = Field(min_length=1, max_length=200)
