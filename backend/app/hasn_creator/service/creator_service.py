@@ -26,6 +26,7 @@ from backend.app.hasn_creator.model.content_insight import ContentInsight
 from backend.app.hasn_creator.model.content_stage import ContentStage
 from backend.app.hasn_creator.model.draft import Draft
 from backend.app.hasn_creator.model.media import Media
+from backend.app.hasn_creator.model.platform import Platform
 from backend.app.hasn_creator.model.playbook import Playbook
 from backend.app.hasn_creator.model.profile import Profile
 from backend.app.hasn_creator.model.project import Project
@@ -150,6 +151,49 @@ def _normalize_asset_refs(asset_refs: list | None) -> list[Any]:
 
 class CreatorService:
     """创作运营领域服务（归属隔离 + 状态机）。"""
+
+    # ============================ platform 目录（S1）============================
+
+    @staticmethod
+    async def list_platforms(db: AsyncSession) -> list[dict[str, Any]]:
+        """列平台目录（选择制，含主页根 URL/主页模板/指标口径），按 sort 升序。
+
+        平台目录是全局内置 seed（无归属裁剪）；前端 PlatformSelect、Agent 选平台/取主页模板均读此。
+        """
+        rows = (
+            await db.execute(sa.select(Platform).order_by(Platform.sort.asc(), Platform.id.asc()))
+        ).scalars().all()
+        return [_to_dict(p) for p in rows]
+
+    @staticmethod
+    async def _platform_index(db: AsyncSession) -> dict[str, Platform]:
+        """平台 key → Platform 行的索引（供校验/主页必填判定复用）。"""
+        rows = (await db.execute(sa.select(Platform))).scalars().all()
+        return {p.key: p for p in rows}
+
+    @staticmethod
+    async def validate_platform(db: AsyncSession, *, platform: str | None) -> None:
+        """校验 platform ∈ 目录（§4.3，零 fake）。
+
+        目录未配置（seed 未落）时 fail-open 放行，避免破坏未 seed 的环境；目录非空则严格校验。
+        """
+        if not platform:
+            return
+        index = await CreatorService._platform_index(db)
+        if index and platform not in index:
+            raise errors.RequestError(msg=f'平台「{platform}」不在平台目录中，请从目录中选择')
+
+    @staticmethod
+    async def platform_requires_home_url(db: AsyncSession, *, platform: str | None) -> bool:
+        """该平台是否要求 home_url 必填（has_public_home=true 的平台必填；公众号/视频号等豁免）。"""
+        if not platform:
+            return False
+        index = await CreatorService._platform_index(db)
+        row = index.get(platform)
+        if row is None:
+            # 目录未配置或平台未知：不强制（校验在 validate_platform 处兜；此处只管必填口径）
+            return False
+        return bool(row.has_public_home)
 
     # ============================ project / profile ============================
 

@@ -117,8 +117,22 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 创作运营 21 工具能力声明（设计 §6.1，云端 gateway_internal）。顺序即 tools[] 顺序。
+# 创作运营工具能力声明（设计 §6.1，云端 gateway_internal）。顺序即 tools[] 顺序。
 _CAPABILITIES = [
+    # ---------------- 平台目录（S1，重构 §4）----------------
+    _cap(
+        name='platform_list',
+        mcp_suffix='platform.list',
+        title='列平台目录',
+        description='列平台目录（选择制，含主页根 URL/主页模板/指标口径）：选平台、据平台+uid 拼主页链接、'
+        '知道该平台粉丝/作品叫法时调。账号/竞品/项目的 platform 一律选自此目录。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={},
+        required=[],
+        page_rank=9,
+        tags=['creator', 'platform', 'list', 'read'],
+    ),
     # ---------------- 项目 ----------------
     _cap(
         name='project_list',

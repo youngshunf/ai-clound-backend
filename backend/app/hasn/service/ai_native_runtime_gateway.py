@@ -490,6 +490,7 @@ class AiNativeRuntimeGateway:
         registry: dict[str, Any] = {
             # 创作运营（纯云端业务应用：定位/创作/审核/发布/复盘/进化，零本地操作 → 工具全走云端
             # gateway_internal，不经 hasn-node 本地 hasn-mcp / daemon Agent 代理；handler 落 hasn_creator service）
+            'creator.platform_list': creator_handlers.handle_platform_list,
             'creator.project_list': creator_handlers.handle_project_list,
             'creator.project_get': creator_handlers.handle_project_get,
             'creator.project_create': creator_handlers.handle_project_create,

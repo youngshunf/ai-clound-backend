@@ -43,6 +43,16 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 router = APIRouter()
 
 
+# ============================ 平台目录（S1）============================
+
+
+@router.get('/platforms', summary='[Owner] 平台目录（选择制，含 URL/指标口径）', dependencies=[DependsJwtAuth])
+async def list_platforms(db: CurrentSession) -> ResponseModel:
+    """平台目录（全局内置 seed，无归属裁剪）：前端 PlatformSelect 读此，替代所有手输平台名。"""
+    items = await creator_service.list_platforms(db)
+    return response_base.success(data={'items': items})
+
+
 # ============================ 项目 / 画像 ============================
 
 

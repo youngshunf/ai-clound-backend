@@ -6,6 +6,7 @@ from backend.app.hasn_creator.model.content_stage import ContentStage as Content
 from backend.app.hasn_creator.model.draft import Draft as Draft
 from backend.app.hasn_creator.model.hot_topic import HotTopic as HotTopic
 from backend.app.hasn_creator.model.media import Media as Media
+from backend.app.hasn_creator.model.platform import Platform as Platform
 from backend.app.hasn_creator.model.playbook import Playbook as Playbook
 from backend.app.hasn_creator.model.profile import Profile as Profile
 from backend.app.hasn_creator.model.project import Project as Project

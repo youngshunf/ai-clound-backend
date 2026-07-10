@@ -36,6 +36,17 @@ def _int(payload: dict[str, Any], key: str) -> int:
     return int(payload[key])
 
 
+# ---------------- 平台目录（S1）----------------
+
+
+async def handle_platform_list(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """列平台目录（选择制，含主页根 URL/主页模板/指标口径）；分身选平台/取主页模板时调。"""
+    items = await creator_service.list_platforms(db)
+    return {'items': items}
+
+
 # ---------------- 项目 ----------------
 
 
