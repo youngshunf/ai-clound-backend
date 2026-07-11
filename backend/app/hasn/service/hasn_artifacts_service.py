@@ -197,11 +197,16 @@ class HasnArtifactsService:
         kind = cls._resolve_artifact_kind(descriptor)
         effective_dispatch_id = dispatch_id or f'{app_id}:{server_id}'
 
-        # 幂等：应用资源无 asset_id（record 的 dispatch_id+asset_id 去重键不适用），按
-        # (agent, dispatch_id, resource_uri) 查既有 active 行，命中即复用（重复投影不重复登记）。
-        existing = (
+        # UPSERT：应用资源无 asset_id（record 的 dispatch_id+asset_id 去重键不适用），按
+        # (agent, dispatch_id, resource_uri) 查既有 active 行。命中即**就地推进**（register-on-write
+        # 语义）——同一 deck/app 资源被分身反复写（create→逐页写→finalize，或主人手建后分身改），
+        # 每次都调本函数，第一次插入、后续推进，绝不重复登记也绝不丢失会话归属：
+        #   · session_id 只进不退：新 session 非空则采纳，为空则保留原值（工作会话写点先带上 id，
+        #     完成卡投影后补的 session_id=None 不得把它降级为 None）；
+        #   · title/summary 有更佳值（非空且不同）则刷新；updated_time 由 onupdate 自动刷新。
+        existing_row = (
             await db.execute(
-                select(HasnArtifacts.artifact_id)
+                select(HasnArtifacts)
                 .where(
                     HasnArtifacts.agent_hasn_id == agent_hasn_id,
                     HasnArtifacts.dispatch_id == effective_dispatch_id,
@@ -211,8 +216,22 @@ class HasnArtifactsService:
                 .limit(1)
             )
         ).scalar_one_or_none()
-        if existing:
-            return existing
+        if existing_row is not None:
+            changed = False
+            if session_id and existing_row.session_id != session_id:
+                existing_row.session_id = session_id
+                changed = True
+            new_title = title or None
+            if new_title and existing_row.title != new_title:
+                existing_row.title = new_title
+                changed = True
+            new_summary = summary or None
+            if new_summary and existing_row.summary != new_summary:
+                existing_row.summary = new_summary
+                changed = True
+            if changed:
+                await db.flush()
+            return existing_row.artifact_id
 
         artifact_id = cls.gen_artifact_id()
         row = HasnArtifacts(

@@ -25,10 +25,10 @@ from backend.app.mcp.tool_exposure import (
 from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
-from backend.app.mcp.tools.group import GroupJoinTool
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.diag import DIAG_TOOLS
+from backend.app.mcp.tools.group import GroupJoinTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import (
@@ -288,6 +288,16 @@ class HasnCloudMcpServer:
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
 
+            # register-on-write（doc31/32 RC-P8 泛化）：剥离系统注入的工作会话 id（`_hasn_session_id`，
+            # 分身不可伪造）→ agent_context.work_session_id，供 deck/app 写点把产物登记进「工作会话
+            # 资源栏」。须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站
+            # 打在入参）与 daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=主会话直调。
+            from backend.app.mcp import trust_gate as _tg
+
+            arguments, work_session_id = _tg.pop_session_id(arguments)
+            if work_session_id:
+                agent_context.work_session_id = work_session_id
+
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游
             # 暴露判定 / ask 验票 / dispatch / 审计都只见剥离后的干净入参；同时据其判档（对外
@@ -393,7 +403,7 @@ class HasnCloudMcpServer:
                     resolved = await trust_gate.resolve_conversation_peer_trust(
                         db, agent_context.owner_hasn_id, peer_id
                     )
-            except Exception as exc:  # noqa: BLE001 - 解析瞬时异常不放宽门，回落 daemon 预解析档
+            except Exception as exc:
                 logger.warning('L3 trust gate peer resolve failed for %s: %r', peer_id, exc)
                 resolved = None
             if resolved is not None:

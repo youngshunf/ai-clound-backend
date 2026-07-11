@@ -37,6 +37,13 @@ RESERVED_PEER_ID = '_hasn_peer_id'
 RESERVED_PEER_TRUST = '_hasn_peer_trust'
 _RESERVED_KEYS = (RESERVED_IS_EXTERNAL, RESERVED_PEER_ID, RESERVED_PEER_TRUST)
 
+# ── 系统注入的工作会话 id 保留参数（register-on-write，doc31/32 RC-P8 泛化）──────────
+# 分身经工作会话派发时，Hermes/daemon 在每次出站 MCP 调用后无条件戳进此保留参数（分身不可伪造、
+# 工具体不该见）。云端 dispatch 前剥离 → 落 ``AgentContext.work_session_id``，供 deck/app 写点把
+# 产出登记进「工作会话资源栏 / 分身产物 tab」。缺省（主会话直调 / 非工作会话）→ None，产物仍凭
+# resource_uri 归位、进产物 tab，只是不额外挂到某工作会话资源栏。
+RESERVED_SESSION_ID = '_hasn_session_id'
+
 # fail-closed 兜底档：对外会话里 peer_trust 缺失时按**陌生人(1)** 判定（宁拒不漏）。
 # 不用 0（黑名单——那是「显式拉黑」语义）；缺失只是「未知」，按陌生人已足够严。
 FAIL_CLOSED_TRUST_LEVEL = 1
@@ -100,11 +107,25 @@ def pop_trust_context(
     if not any(k in arguments for k in _RESERVED_KEYS):
         return arguments, False, None, None
     cleaned = {k: v for k, v in arguments.items() if k not in _RESERVED_KEYS}
-    is_external = bool(arguments.get(RESERVED_IS_EXTERNAL, False))
+    is_external = bool(arguments.get(RESERVED_IS_EXTERNAL))
     raw_peer = arguments.get(RESERVED_PEER_ID)
     peer_id = str(raw_peer) if raw_peer else None
     peer_trust = _coerce_trust(arguments.get(RESERVED_PEER_TRUST))
     return cleaned, is_external, peer_id, peer_trust
+
+
+def pop_session_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """从工具入参剥离系统注入的工作会话 id 保留参数（``_hasn_session_id``）。
+
+    返回 ``(cleaned_args, session_id)``。无该参数 → 原样返回 + ``None``（never over-block：
+    缺会话 id 只是不把产物额外挂进某会话资源栏，绝不影响工具执行、也不影响产物按 resource_uri 归位）。
+    """
+    if not isinstance(arguments, dict) or RESERVED_SESSION_ID not in arguments:
+        return arguments, None
+    cleaned = {k: v for k, v in arguments.items() if k != RESERVED_SESSION_ID}
+    raw = arguments.get(RESERVED_SESSION_ID)
+    sid = str(raw).strip() if raw is not None else ''
+    return cleaned, (sid or None)
 
 
 def _coerce_bool(value: str | None) -> bool:
@@ -129,7 +150,7 @@ def read_header_trust_context() -> tuple[bool, str | None, int | None] | None:
         return None
     is_external_raw, peer_id_raw, peer_trust_raw = raw
     is_external = _coerce_bool(is_external_raw)
-    peer_id = peer_id_raw if peer_id_raw else None
+    peer_id = peer_id_raw or None
     peer_trust = _coerce_trust(peer_trust_raw)
     return is_external, peer_id, peer_trust
 
@@ -159,13 +180,14 @@ async def resolve_conversation_peer_trust(
 
     只读、不落库（判档快路，不做入站门控的物化/代发副作用）。
     """
+    from sqlalchemy import select
+
     from backend.app.hasn.model.hasn_agents import HasnAgents
     from backend.app.hasn.model.hasn_contacts import HasnContacts
     from backend.app.hasn.service.effective_relation import (
         DELIVER,
         resolve_effective_relation,
     )
-    from sqlalchemy import select
 
     if not owner_hasn_id:
         return None

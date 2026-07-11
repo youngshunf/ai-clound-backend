@@ -336,6 +336,10 @@ class DesignSystemSaveTool(BaseTool):
             source_kind='tool_output',
             source_tool='hasn.designsystem.save',
             metadata=metadata,
+            # register-on-write 泛化（ARTREG）：分身在工作会话里 save 设计系统 → 带上会话 id，
+            # 让 bundle 产物出现在「工作会话资源栏」（对齐 deck）。设计系统非 hasn:// 资源域，
+            # 完成卡投影（RC-P8）不覆盖它，故此处是它进资源栏的唯一入口。主会话直调 → None。
+            session_id=agent_context.work_session_id,
         )
         try:
             async with async_db_session.begin() as db:
