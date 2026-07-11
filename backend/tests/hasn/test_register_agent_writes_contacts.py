@@ -80,7 +80,8 @@ async def test_register_hasn_agent_inserts_contact_row() -> None:
     assert values['owner_id'] == owner.hasn_id
     assert values['peer_owner_id'] == owner.hasn_id
     assert values['peer_type'] == 'agent'
-    assert values['relation_type'] == 'service'
+    # D3：控制边 MUST social+5（Core/02 §7.4.2），此前误写 service+5 已对齐 social。
+    assert values['relation_type'] == 'social'
     assert values['trust_level'] == 5
     assert values['status'] == 'connected'
     # peer_id 应该是新创建 agent 的 hasn_id，形如 'a_<uuid>'。

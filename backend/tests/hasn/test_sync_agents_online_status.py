@@ -33,6 +33,10 @@ class FakeRedis:
     async def exists(self, key: str) -> int:
         return 1 if key in self.strings else 0
 
+    async def mget(self, keys: list[str]) -> list[Any]:
+        # 就绪键批量取（get_online_map 用），缺失返回 None。
+        return [self.strings.get(k) for k in keys]
+
 
 class FakeGateway:
     """注入到 HasnAgentProfileService 的 gateway 替身。"""
@@ -70,6 +74,8 @@ async def test_get_online_map_reflects_redis_presence(monkeypatch: pytest.Monkey
     await redis.hset(ws_module.ENTITY_NODE_KEY, 'a_online', 'node-A')
     # P3：node-A 有存活心跳（未过期）→ a_online 才算真在线。
     await redis.set(f'{ws_module.NODE_ALIVE_PREFIX}:node-A', '1', ex=90)
+    # 在线语义收紧：还需 agent 就绪键（心跳 online+ok 才写）才算真在线。
+    await redis.set(f'{ws_module.AGENT_READY_PREFIX}:a_online', '1', ex=90)
 
     router = ws_module.WsRouterService()
     result = await router.get_online_map(['a_online', 'a_offline'])
@@ -90,11 +96,24 @@ async def test_sync_agents_backfills_online_status_from_presence(monkeypatch: py
     await redis.hset(ws_module.ENTITY_NODE_KEY, 'a_online', 'node-A')
     # P3：node-A 心跳存活，a_online 才回填 online；a_offline 无路由+无心跳 → offline。
     await redis.set(f'{ws_module.NODE_ALIVE_PREFIX}:node-A', '1', ex=90)
+    # 在线语义收紧：还需 agent 就绪键（心跳 online+ok 才写）才算真在线。
+    await redis.set(f'{ws_module.AGENT_READY_PREFIX}:a_online', '1', ex=90)
 
     async def _fake_common_skill_snapshot(db: Any) -> tuple[Any, str]:
         return ([], 'rev-1')
 
     monkeypatch.setattr(svc_module, 'get_common_skill_snapshot', _fake_common_skill_snapshot)
+
+    # sync_agents 末尾读平台默认配置修订号（PDC，需真实 db）；本测只验在线态回填，
+    # 用假 db（object()），故 stub 掉 PDC 查询，避免它 db.execute 报错。
+    from backend.app.hasn.service import platform_default_config_service as pdc_module
+
+    async def _fake_effective_config(db: Any) -> tuple[Any, str]:
+        return (None, 'pdc-rev-1')
+
+    monkeypatch.setattr(
+        pdc_module.platform_default_config_service, 'get_effective_config', _fake_effective_config
+    )
 
     service = svc_module.HasnAgentProfileService(
         gateway=FakeGateway([_fake_agent('a_online'), _fake_agent('a_offline')])

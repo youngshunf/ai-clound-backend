@@ -17,6 +17,7 @@ from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.model.hasn_notification_preferences import HasnNotificationPreferences
 from backend.app.notification.service.delivery_policy import default_priority, resolve_policy
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.utils.timezone import timezone as _tz
 
 if TYPE_CHECKING:
@@ -60,6 +61,24 @@ class NotificationService:
         payload = dict(payload or {})
         priority = priority or default_priority(category)
 
+        # 0) 分面归属守卫（doc `通知系统统一设计/01` R1/R2·纵深防御）：
+        #    主人自己的分身向主人「汇报/请示」= 汇报面，不进通知中心（不落 hasn_notifications）。
+        #    判据：source.kind==agent 且该分身的主人==recipient（OwnerLoopback 方向）。
+        #    落点：分身主会话一条汇报卡（agent 本身即会话身份，未读挂在与该分身的会话上）。
+        #    即使某 producer 漏改仍走 emit()，此守卫也保证「自分身→主人」绝不污染通知中心。
+        if await cls._is_owner_loopback(db, source=source, recipient_id=recipient_id):
+            from backend.app.notification.service.notification_carrier import deliver_report_card_to_owner
+
+            return await deliver_report_card_to_owner(
+                db,
+                recipient_id=recipient_id,
+                source=dict(source or {}),
+                title=title,
+                body=body,
+                payload=payload,
+                priority=priority,
+            )
+
         # 1) 解析投递策略 = category 默认 ⊕ 主人偏好 ⊕ delivery_hint
         pref = await cls._get_effective_preference(db, owner_id=recipient_id, category=category)
         policy = resolve_policy(
@@ -99,6 +118,9 @@ class NotificationService:
                     existing.body = body
                 existing.updated_time = _tz.now()
                 await db.flush()
+                # NOTIFUX-3：聚合更新（aggregated_count 变）也 bump owner，让 daemon 刷新 webui
+                # 通知列表/未读徽标；OS 系统通知按通知 id 增量 diff、同 id 不重发，故不会重复打扰。
+                await cls._bump_notification_revision(db, recipient_id)
                 return existing.id
 
         # 3b) 限频（§9 防通知轰炸）：同一 (recipient, source) 近窗超阈值 → 压制"吵"的承载
@@ -136,7 +158,30 @@ class NotificationService:
         if policy.get('channels', {}).get('toast'):
             await cls._emit_sync_event(db, row=row)
 
+        # 4d) NOTIFUX-3：新通知落权威行 → bump 该 owner 的通知 revision（WSPUSH KIND_NOTIFICATION）。
+        #     在线节点 daemon 收到即拉未读通知、diff 出新增未读项发原生系统通知（点击深链到通知
+        #     覆盖层），并 nudge webui 刷新通知列表+未读徽标。离线节点靠周期 sync_pull 兜底追平。
+        await cls._bump_notification_revision(db, recipient_id)
+
         return row.id
+
+    @staticmethod
+    async def _bump_notification_revision(db: AsyncSession, recipient_id: str) -> None:
+        """bump 该 owner 的通知 revision → push 在线节点（NOTIFUX-3·通知面系统通知的触发源）。
+
+        best-effort：失效推送本就不该拖垮通知落库（bump_owner 内部对 push 已 best-effort，此处
+        再兜一层保险，连 revision 计算异常也不外抛）。离线/推送失败时 daemon 周期 sync_pull 兜底。
+        延迟 import 避免与 sync_invalidate_service 潜在的模块级循环依赖。
+        """
+        try:
+            from backend.app.hasn.service.sync_invalidate_service import (
+                KIND_NOTIFICATION,
+                bump_owner,
+            )
+
+            await bump_owner(KIND_NOTIFICATION, db, recipient_id)
+        except Exception:  # noqa: BLE001 - 推送 best-effort，绝不因失效推送失败而丢通知
+            log.warning('[notification] bump 通知 revision 失败 owner=%s', recipient_id, exc_info=True)
 
     @classmethod
     async def app_emit(
@@ -198,6 +243,33 @@ class NotificationService:
             group_key=group_key,
             delivery_hint=delivery_hint,
         )
+
+    @staticmethod
+    async def _is_owner_loopback(
+        db: AsyncSession, *, source: dict[str, Any], recipient_id: str
+    ) -> bool:
+        """判定「自分身→主人」（OwnerLoopback）：source 是 agent 且该分身的主人==recipient。
+
+        优先信任 `source.on_behalf_of`（内部 producer / Agent-JWT 端点设置的可信信号，即该
+        分身代表的主人）；缺失才回退 DB 查 HasnAgents.owner_id。非 agent 源、agent→他人、
+        agent→agent 均返回 False（不属汇报面）。
+        """
+        src = source or {}
+        if src.get('kind') != 'agent':
+            return False
+        agent_id = src.get('id')
+        if not agent_id:
+            return False
+        on_behalf = src.get('on_behalf_of')
+        if on_behalf:
+            return str(on_behalf) == str(recipient_id)
+        # 回退：DB 查该分身的主人（延迟导入避免模块加载期循环）
+        from backend.app.hasn_core import HasnAgents
+
+        owner = (
+            await db.execute(select(HasnAgents.owner_id).where(HasnAgents.hasn_id == str(agent_id)))
+        ).scalar_one_or_none()
+        return owner is not None and str(owner) == str(recipient_id)
 
     @classmethod
     async def _apply_rate_limit(
@@ -371,6 +443,10 @@ class NotificationService:
         has_more = len(rows) > limit
         rows = rows[:limit]
 
+        # 通知行 → 卡片投影（doc `通知系统统一设计/01` §3.4：cloud 权威投影，前端零拼装）。
+        # 延迟导入：carrier 依赖 message_router（重图），避免模块加载期循环。
+        from backend.app.notification.service.notification_carrier import project_notification_card
+
         # 读时聚合：同 group_key 折叠（缺省 group_key 等价 (type,target.id)）
         seen: dict[str, dict[str, Any]] = {}
         items: list[dict[str, Any]] = []
@@ -398,6 +474,8 @@ class NotificationService:
                 'read': n.read,
                 'aggregated_count': agg_seed,
                 'created_time': n.created_time.isoformat() if n.created_time else None,
+                # §3.4 卡片投影：前端折叠进消息列表后直接 CardMessage 渲染；None 则回退扁平字段。
+                'card': project_notification_card(n),
             }
             items.append(entry)
             if target.get('id') is not None:

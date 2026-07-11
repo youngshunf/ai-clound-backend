@@ -40,6 +40,23 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'app_entitlement_expire_sweep',
         'schedule': TzAwareCrontab('0', '2'),  # 每天凌晨 2 点收敛「active 但已过期」的应用权益 status
     },
+    '商业化生命周期 sweep（MK-5 统一）': {
+        'task': 'billing_lifecycle_sweep',
+        # 每天凌晨 2:05 统一执行：到期前 7/3/1 天提醒 + 权益/订阅到期收敛 + 变更 WSPUSH billing kind。
+        # 收编「订阅过期检查」「应用权益过期检查」两支旧任务的动作——旧任务保留双跑一期（幂等），
+        # MK-9 摘除。排在两支旧任务（1:30/2:00）之后，作到期后的权威提醒/变更事件单入口。
+        'schedule': TzAwareCrontab('5', '2'),
+    },
+    '群拉分身邀请过期检查': {
+        'task': 'hasn_group_agent_invite_expire_sweep',
+        # 每天凌晨 2:10 收敛超 7 天未处理的 pending 拉分身邀请（doc10 §3.2；读路径已惰性过期，本任务兜底）
+        'schedule': TzAwareCrontab('10', '2'),
+    },
+    '关系生命周期过期检查': {
+        'task': 'hasn_contact_lifecycle_expire_sweep',
+        # 每天凌晨 2:20 收敛好友请求 30 天未响应过期 + 联系人 auto_expire 到期（doc08 RT5·B7）
+        'schedule': TzAwareCrontab('20', '2'),
+    },
     '积分账本每小时对账': {
         'task': 'newapi_hourly_credit_sync',
         'schedule': TzAwareCrontab('0'),  # 每小时整点：new-api 真实消费增量回扣账本 + 重设 quota（§5A.5）

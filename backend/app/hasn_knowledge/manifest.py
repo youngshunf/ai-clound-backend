@@ -162,7 +162,7 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _cap(
             name='upload_document',
             title='上传文档',
-            description='向主人的知识库上传文档并自动建立索引：以文本内容(content_text)或已在私有桶的资产引用(asset_uri，二选一)',
+            description='向主人的知识库上传文档并自动建立索引：content_text(纯文本内容→落可编辑的原生文档，超1MB回落文件)或 asset_uri(已在私有桶的真实二进制文件引用)，二选一',
             scopes=['knowledge:upload'],
             properties={
                 'kb_id': {'type': 'integer'},

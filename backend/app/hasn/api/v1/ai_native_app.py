@@ -46,6 +46,18 @@ async def list_ai_native_apps(db: CurrentSession) -> ResponseModel:
     return response_base.success(data=await ai_native_app_registry.list_published_manifests(db))
 
 
+@apps_router.get('/resource-routes', summary='AI-Native 应用资源路由读模型（doc31 §2.4）')
+async def list_resource_routes() -> ResponseModel:
+    """投影全部应用 manifest.resources[] 为扁平资源路由表，随 catalog 下发 daemon/webui。
+
+    webui `registerResourceRoutes` 据此把 `hasn://{uri_domain}/{id}` 解析到内部路由/独立窗口/单入口
+    （新增应用只声明 descriptor，webui 零改代码）。无鉴权：资源路由是纯静态寻址配置，非用户数据。
+    注意：本路由必须声明在 `/{app_id}` **之前**，否则 `resource-routes` 会被 `{app_id}` 参数吞掉。
+    """
+    routes = [r.model_dump() for r in ai_native_app_registry.resource_routes()]
+    return response_base.success(data=routes)
+
+
 @apps_router.get('/{app_id}', summary='AI-Native 应用详情')
 async def get_ai_native_app(db: CurrentSession, app_id: str) -> ResponseModel:
     return response_base.success(data=await ai_native_app_registry.get(db, app_id))

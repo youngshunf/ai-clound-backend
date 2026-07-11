@@ -1042,6 +1042,22 @@ class HasnAgentProfileService:
         online_map = await ws_router.get_online_map([snapshot.hasn_id for snapshot in snapshots])
         for snapshot in snapshots:
             snapshot.online_status = 'online' if online_map.get(snapshot.hasn_id) else 'offline'
+        # 技能显示层元数据（SKILLNAME）：skills 只是 skill_id slug 清单，命令浮层要显示真友好名+
+        # 描述需从 marketplace/个人技能目录反查。跨全部 snapshot 求 skill_id 并集一次批量解析，
+        # 再按各 snapshot 自身 skill_id 回填 skill_display。best-effort，查不到留空由 daemon humanize。
+        skill_ids_by_snapshot = {snapshot.hasn_id: _normalize_skill_ids(snapshot.skills) for snapshot in snapshots}
+        all_skill_ids = {sid for ids in skill_ids_by_snapshot.values() for sid in ids}
+        if all_skill_ids:
+            skill_display_map = await _resolve_skill_display(db, request.owner_id, list(all_skill_ids))
+            if skill_display_map:
+                for snapshot in snapshots:
+                    scoped = {
+                        sid: skill_display_map[sid]
+                        for sid in skill_ids_by_snapshot.get(snapshot.hasn_id, [])
+                        if sid in skill_display_map
+                    }
+                    if scoped:
+                        snapshot.skill_display = scoped
         server_revision = max(
             (snapshot.profile_revision for snapshot in snapshots), default=request.after_revision or 0
         )
@@ -1167,6 +1183,72 @@ def _normalize_skill_ids(skills: Any) -> list[str]:
             if key and str(key) not in out:
                 out.append(str(key))
     return out
+
+
+async def _resolve_skill_display(
+    db: AsyncSession, owner_id: str, skill_ids: Sequence[str]
+) -> dict[str, dict[str, str | None]]:
+    """据 skill_id 集合从 marketplace/个人技能目录批量解析显示名+描述。
+
+    `skills` 本身只是 skill_id slug 清单（无友好名/描述），命令浮层要显示真名+描述需从
+    目录反查。best-effort：查不到的 skill_id 不进 map（daemon 侧 humanize slug 兜底）。
+    返回 `{skill_id: {name, description}}`，供 daemon 覆盖本地技能镜像的显示层字段。
+    """
+    ids = [sid for sid in dict.fromkeys(skill_ids) if sid]
+    if not ids:
+        return {}
+    import sqlalchemy as sa
+
+    from backend.app.marketplace.model.marketplace_personal_skill import MarketplacePersonalSkill
+    from backend.app.marketplace.model.marketplace_skill import MarketplaceSkill
+
+    display: dict[str, dict[str, str | None]] = {}
+    # 市场技能：按 skill_id 命中，中文名/描述优先（对齐 marketplace_skill_service 口径）
+    mk_result = await db.execute(
+        sa.select(
+            MarketplaceSkill.skill_id,
+            MarketplaceSkill.name,
+            MarketplaceSkill.name_zh,
+            MarketplaceSkill.name_en,
+            MarketplaceSkill.description_zh,
+            MarketplaceSkill.description_en,
+        ).where(MarketplaceSkill.skill_id.in_(ids))
+    )
+    for row in mk_result.all():
+        name = (row.name_zh or row.name_en or row.name or '').strip()
+        if not name:
+            continue
+        desc = row.description_zh or row.description_en
+        display[row.skill_id] = {'name': name, 'description': desc.strip() if desc else None}
+    # 个人技能：owner 内 scope（hasn_id），按 slug 或 personal_skill_id 命中；不覆盖市场命中项
+    ps_result = await db.execute(
+        sa.select(
+            MarketplacePersonalSkill.personal_skill_id,
+            MarketplacePersonalSkill.slug,
+            MarketplacePersonalSkill.name,
+            MarketplacePersonalSkill.description,
+        ).where(
+            MarketplacePersonalSkill.hasn_id == owner_id,
+            sa.or_(
+                MarketplacePersonalSkill.slug.in_(ids),
+                MarketplacePersonalSkill.personal_skill_id.in_(ids),
+            ),
+        )
+    )
+    id_set = set(ids)
+    for row in ps_result.all():
+        name = (row.name or '').strip()
+        if not name:
+            continue
+        entry: dict[str, str | None] = {
+            'name': name,
+            'description': row.description.strip() if row.description else None,
+        }
+        # skills 里可能用 slug 或 personal_skill_id 引用，命中哪个补哪个键
+        for candidate in (row.slug, row.personal_skill_id):
+            if candidate and candidate in id_set and candidate not in display:
+                display[candidate] = entry
+    return display
 
 
 def _merge_agent_create_payload(request: CloudCreateAgentRequest, template: Any | None) -> dict[str, Any]:
@@ -1313,9 +1395,10 @@ class HasnAgentsService:
         """
         创建HASN Agent
 
-        附带写入 hasn_contacts（owner→agent 的 service 关系，trust_level=5/connected），
+        附带写入 hasn_contacts（owner→agent 的控制边，social + trust_level=5/connected），
         与 hasn_auth.register_hasn_agent 行为对齐：所有 agent 创建路径
         （app create_my_hasn_agents / admin create_hasn_agents）一律自动落 contacts。
+        D3：控制边 MUST social+5（Core/02 §7.4.2），此前误写 service+5 已对齐 social。
         ON CONFLICT (owner_id, peer_id, relation_type) DO NOTHING 幂等。
 
         :param db: 数据库会话
@@ -1331,7 +1414,7 @@ class HasnAgentsService:
                 peer_id=obj.hasn_id,
                 peer_owner_id=obj.owner_id,
                 peer_type='agent',
-                relation_type='service',
+                relation_type='social',
                 trust_level=5,
                 status='connected',
                 channel_source='system',

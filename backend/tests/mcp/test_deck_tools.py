@@ -239,6 +239,9 @@ async def test_deck_lifecycle_roundtrip_real_db() -> None:
         deck_id = created['deck_id']
         assert isinstance(deck_id, str) and deck_id
         assert created['deck']['title'] == '调研演示'
+        # 分身用工具建 deck 自动绑定它自己为协作分身（首页纯派发流程依赖：绑定落在 create 这一刻，
+        # 不再靠预建带 bound_agent_id 的空 deck）。
+        assert created['deck']['bound_agent_id'] == ctx.agent_hasn_id
 
         # 2) 写大纲（存储为 {'items': pages}）
         await _tool('hasn.deck.outline.set').execute(

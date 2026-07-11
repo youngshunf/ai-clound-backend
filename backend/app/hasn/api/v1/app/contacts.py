@@ -245,6 +245,36 @@ async def respond_to_request(
         if req.to_owner_id != hasn_id:
             raise HTTPException(status_code=403, detail='只有被请求方可以接受该请求')
 
+        # 首联自动请求（RT1.5·入站派生 =2 普通朋友代发）：from=发送分身、审批人=接收方主人。
+        # 通用 respond 会把边建反方向（分身→A），故改走放行三合一对称路径：建 A→发送分身 边 +
+        # accept + 重投该 peer 全部暂存拦截消息（联系人页与拦截箱双入口任一同意都生效·D6）。
+        if req.add_source == 'auto_first_contact':
+            from backend.app.hasn.service.inbound_release import accept_first_contact_request
+
+            res = await accept_first_contact_request(db, request=req, approver_id=hasn_id)
+            peer_agent = await hasn_agents_dao.get_by_hasn_id(db, hasn_id=req.from_id)
+            peer = (
+                _agent_peer_out(peer_agent)
+                if peer_agent
+                else HasnContactPeerOut(hasn_id=req.from_id, star_id='', name='', type='agent')
+            )
+            await _push_contact_event(
+                req.to_owner_id,
+                {
+                    'method': 'hasn.contact.connected',
+                    'params': {
+                        'owner_id': req.to_owner_id,
+                        'request_id': request_id,
+                        'peer': peer.model_dump(),
+                        'trust_level': res.get('trust_level', trust),
+                    },
+                },
+            )
+            return response_base.success(
+                data={'status': 'connected', 'trust_level': res.get('trust_level', trust),
+                      'redelivered': res.get('redelivered', 0)},
+            )
+
         # agent 目标：只建『请求方 → 分身』单向 agent 边（分身回复依赖主人↔主人 trust，已≥2，
         # 无需反向 agent 边）。信任等级沿用请求时落库的『与主人一致』值。
         if req.to_type == 'agent':
@@ -441,6 +471,21 @@ async def list_contacts(
 # ─── 阶段二: 权限矩阵 API ───────────────────────────────
 
 
+def _resolve_status_on_trust_change(previous_status: str, new_trust_level: int) -> str:
+    """信任等级变更时联动解析 contact.status（B1/B6/D1 纯判定·无副作用·可单测）。
+
+    - new_trust_level == 0（拉入黑名单）→ 'blocked'：Discovery/搜索静默过滤、消息静默丢弃；
+    - new_trust_level ≥ 1 且当前为 'blocked'（移出黑名单）→ 'connected'：D1 恢复普通朋友，
+      关系行保留、被拉黑期间的消息不补投（想彻底断走「删除联系人」RT5）；
+    - 其余情况（普通调档，如 2↔3↔4）→ 保持原 status 不变，不误改状态。
+    """
+    if new_trust_level == 0:
+        return 'blocked'
+    if previous_status == 'blocked':
+        return 'connected'
+    return previous_status
+
+
 @router.put('/{contact_id}/trust-level', summary='修改信任等级')
 async def update_trust_level(
     contact_id: int,
@@ -479,7 +524,12 @@ async def update_trust_level(
         if not agent or agent.owner_id != hasn_id:
             raise HTTPException(status_code=403, detail='只能将自己名下的 Agent 设为所有者等级')
 
+    # B1/B6/D1：trust_level 与 status 联动（纯判定抽到 _resolve_status_on_trust_change 便于单测）。
+    # - trust=0（拉入黑名单）→ status=blocked（Discovery/搜索静默过滤，消息静默丢弃）；
+    # - trust≥1 且当前为 blocked（移出黑名单）→ status=connected（D1：关系行保留，
+    #   前端「移出黑名单」传 trust=2 即恢复普通朋友，被拉黑期间的消息不补投）。
     contact.trust_level = obj_in.trust_level
+    contact.status = _resolve_status_on_trust_change(contact.status, obj_in.trust_level)
     await db.commit()
 
     return response_base.success(
@@ -487,8 +537,33 @@ async def update_trust_level(
             'contact_id': contact_id,
             'trust_level': obj_in.trust_level,
             'trust_level_label': TRUST_LEVEL_LABELS.get(obj_in.trust_level, ''),
+            'status': contact.status,
         }
     )
+
+
+@router.delete('/{contact_id}', summary='删除联系人')
+async def delete_contact(
+    contact_id: int,
+    db: CurrentSession,
+    auth: Annotated[dict, Depends(hasn_auth)],
+) -> ResponseModel:
+    """删除联系人（D4·hasn.relation.remove 云端权威实现·修 B5）。
+
+    单方发起即彻底解除双向关系边：① 双向删边（owner→peer 与 peer→owner）；
+    ② 会话不删但标不可达（保留历史消息）；③ 中性通知对方「关系已解除」。
+    授权：只能删自己名下（owner_id==本人）的联系人行。
+    彻底断联后想再联系须重新申请好友（与「移出黑名单恢复普通朋友」D1 不同路径）。
+    """
+    hasn_id = auth.get('effective_id', auth['hasn_id'])
+    contact = await hasn_contacts_dao.get(db, contact_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail='联系人不存在')
+    if contact.owner_id != hasn_id:
+        raise HTTPException(status_code=403, detail='无权删除此联系人')
+
+    result = await HasnContactsService.remove_contact(db, owner_id=hasn_id, contact=contact)
+    return response_base.success(data=result)
 
 
 @router.put('/{contact_id}/permissions', summary='自定义权限覆盖')

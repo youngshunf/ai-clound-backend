@@ -13,9 +13,10 @@ import re
 from typing import Any
 
 from . import css
+from .scenes import detect_scenes
 
-# components.manifest schema 版本。
-COMPONENTS_MANIFEST_SCHEMA_VERSION = 1
+# components.manifest schema 版本（v2：新增 scenes[] 场景覆盖报告，DSGAL）。
+COMPONENTS_MANIFEST_SCHEMA_VERSION = 2
 
 # Rust `u8::is_ascii_whitespace`：空格 / \t / \n / \x0c / \r（不含 vertical tab）。
 _ASCII_WS = ' \t\n\x0c\r'
@@ -524,6 +525,8 @@ def extract_components(
         'classes': classes,
         'elements': elements,
         'groups': groups,
+        # DSGAL：场景覆盖报告（品牌网站/演示文稿/海报/移动端标准组件到位情况），纯函数只看 HTML 标记。
+        'scenes': detect_scenes(fixture_html),
         'literals': {
             'colorExpressions': _count_color_expressions(literals_css),
             'pixelValues': _count_pixel_values(literals_css),

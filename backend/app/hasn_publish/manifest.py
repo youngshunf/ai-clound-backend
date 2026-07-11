@@ -116,6 +116,17 @@ PUBLISH_AI_NATIVE_MANIFEST = {
     'execution_mode': 'local_tool',
     # 本地工具数据面（hasn-mcp source=Platform/Local → daemon PublishGateway），不经云端 Runtime Gateway。
     'transport_mode': 'local',
+    # 资源描述符（doc31 §2，RC-P6）：发布的网站 → hasn://publish/sites/{server_id}，应用内详情路由打开
+    # （RC-P6 补 webui /apps/publish/sites/:id 详情页）。
+    'resources': [
+        {
+            'resource_kind': 'publish.site',
+            'uri_domain': 'publish/sites',  # → hasn://publish/sites/{server_id}（doc08 §3 登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/publish/sites/:id'},
+            'card': {'verb': '网站', 'action_label': '打开网站'},
+            'artifact_kind': 'webpage',
+        }
+    ],
     'capabilities': [
         _cap(
             name='create',

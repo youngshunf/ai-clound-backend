@@ -47,14 +47,20 @@ class AgentContext:
         self.owner_hasn_id = owner_hasn_id
         self.session_uuid = session_uuid
         self._token_payload = token_payload
-        # 运行位置（local/cloud/remote）：决定云端 MCP 面是否对本地分身隐藏 deck/task/
-        # workflow（TOOLMIG2-P4，见 runtime_visibility）。默认 'cloud'=可见，绝不误伤——
-        # 仅鉴权时从 HasnAgents.runtime_location 显式灌入 'local' 才隐藏。
+        # 运行位置（local/cloud/remote）快照，鉴权时从 HasnAgents.runtime_location 灌入。
+        # ⚠️ 不参与工具暴露判定——工具暴露只受权限 + 付费墙限制，与分身在本地/云端无关
+        # （福仔 2026-07-10 拍板退役原 TOOLMIG2-P4「运行位置收口」）。此字段仅供其它用途
+        # （如 runtime 派发分叉：cloud 走云端 runtime、local 走本地 sidecar）。
         self.runtime_location = runtime_location
         # 维度① 三态能力授权（D3：消费时活取，凭证不再承载授权权威）。
         # 默认全开（allow）；streamable 鉴权后用 get_agent_scopes_cached 现查覆盖。
         self.default_mode = default_mode
         self.capability_modes = capability_modes or {}
+        # register-on-write（doc31/32 RC-P8 泛化）：本次工具调用所属的**工作会话 id**——分身经工作
+        # 会话派发时 Hermes/daemon 在出站 MCP 调用戳进 `_hasn_session_id`，server.call_tool dispatch
+        # 前剥离并落此字段（工具体不见），供 deck/app 写点把产出登记进「工作会话资源栏」。
+        # 主会话直调 / 非工作会话 → None（产物仍凭 resource_uri 进产物 tab）。
+        self.work_session_id: str | None = None
         # P7 第三方 MCP 网关：本请求该 Agent 可发现/可调的 external 工具 canonical 名集合
         # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。
         # external 工具全局共享注册表实例，但发现/调用资格按此集合 per-request 过滤，杜绝串号。

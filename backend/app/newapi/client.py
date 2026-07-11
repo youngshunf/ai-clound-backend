@@ -288,13 +288,22 @@ class NewApiAdminClient:
         )
 
     async def set_user_password(self, *, newapi_user_id: int, username: str, password: str) -> None:
-        """重设用户密码（admin，UpdateUser）。用于 bootstrap access_token / 孤儿恢复。"""
-        await self._request(
-            'PUT',
-            '/user/',
-            headers=self._admin_headers(),
-            json={'id': newapi_user_id, 'username': username, 'password': password},
-        )
+        """重设用户密码（admin，UpdateUser）。用于 bootstrap access_token / 孤儿恢复。
+
+        ⚠️ 必须 GET 整个用户对象 → 只改 password → 整对象 PUT（对齐 ensure_user_group/set_user_quota）。
+        早期实现用「只带 id/username/password」的部分字段 PUT：new-api 的 UpdateUser 把请求 body
+        反序列化成完整 User struct、缺失字段取 Go 零值 → 会**确定性地把 group 清成空字符串**。这正是
+        生产实测「菌子 primary 全天 403『分组已删除』」的根因——铸/重签 agent relay token 时 bootstrap
+        走到这里，清空了父 user 的分组，导致该 user 名下所有 relay token（owner 的 + 分身的）空组、
+        匹配不到任何渠道。改为整对象回写后，group/quota 等字段原样保留，不再被清空。
+        """
+        user = await self.get_user(newapi_user_id)
+        if not user:
+            raise NewApiError(f'设密码前取用户失败 id={newapi_user_id}', endpoint=f'/user/{newapi_user_id}')
+        payload = dict(user)
+        payload['username'] = username  # 保持调用方指定的 username
+        payload['password'] = password  # 非空 → UpdateUser 改密码（空则视为保留，故此处显式给新临时密码）
+        await self._request('PUT', '/user/', headers=self._admin_headers(), json=payload)
 
     async def delete_user(self, newapi_user_id: int) -> bool:
         """DELETE /user/:id（admin）。返回是否成功（失败降级 False，不抛）。"""

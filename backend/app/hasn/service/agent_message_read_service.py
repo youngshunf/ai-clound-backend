@@ -45,20 +45,36 @@ def _clamp_limit(limit: Any) -> int:
     return min(max(value, 1), _MAX_LIMIT)
 
 
-def _preview(content: Any) -> str:
-    """从 content（dict/str/None）尽力取可读文本：文本 body.text；卡片 title[ - description]。"""
+# conversation.list 的 `last_message` 预览上限（doc13 决策 G 防御纵深）——列表预览本就不该是全文，
+# 末条若是分身自发长回复可达几千 token，源头就设个宽上限，别把整条灌回 daemon。
+# ⚠️ 只用于 conversation.list 预览；message.list 的 content 是分身下钻要读的正文，**不截**。
+_CONVERSATION_PREVIEW_CAP = 120
+
+
+def _preview(content: Any, *, cap: int | None = None) -> str:
+    """从 content（dict/str/None）尽力取可读文本：文本 body.text；卡片 title[ - description]。
+
+    `cap` 非空时把结果硬截断到该长度（+省略号）——仅列表预览（conversation.list）传，
+    message.list 正文下钻不传（要全文）。
+    """
     if isinstance(content, dict):
         text = content.get('text') or content.get('content')
         if text:
-            return str(text)
-        title = content.get('title')
-        if title:
-            desc = content.get('description')
-            return f'{title} - {desc}' if desc else str(title)
-        return ''
-    if isinstance(content, str):
-        return content
-    return ''
+            result = str(text)
+        else:
+            title = content.get('title')
+            if title:
+                desc = content.get('description')
+                result = f'{title} - {desc}' if desc else str(title)
+            else:
+                result = ''
+    elif isinstance(content, str):
+        result = content
+    else:
+        result = ''
+    if cap is not None and len(result) > cap:
+        return result[:cap] + '…'
+    return result
 
 
 def _sender_of(row: Any) -> str:
@@ -203,7 +219,7 @@ class AgentMessageReadService:
                 'member_count': r['member_count'],
                 'last_message_id': str(r['last_id']),
                 'last_message_from': _sender_of(r),
-                'last_message': _preview(r['content']),
+                'last_message': _preview(r['content'], cap=_CONVERSATION_PREVIEW_CAP),
                 'last_message_at': str(r['created_time']),
             }
             for r in page

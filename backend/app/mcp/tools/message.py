@@ -183,6 +183,33 @@ async def _resolve_agent_display_name(db: Any, agent_hasn_id: str, fallback: str
     return result.scalar() or fallback
 
 
+async def _ensure_first_contact_request(owner_hasn_id: str, to_target: Any) -> int | None:
+    """消息被暂存且无关系时，代主人自动发一条好友请求（§4.1.4，幂等复用）。
+
+    复用 request_contact 单一实现（已有 pending 幂等返回其 id，不重复建）；业务校验失败/已是好友
+    等异常一律吞掉返回 None（自动代发是「顺手帮忙」，绝不因此把 message.send 打成错误）。
+    """
+    from backend.app.hasn.service.hasn_contacts_service import (
+        ContactRequestError,
+        HasnContactsService,
+    )
+
+    async with async_db_session() as db:
+        try:
+            res = await HasnContactsService.request_contact(
+                db,
+                requester_hasn_id=owner_hasn_id,
+                target=str(to_target),
+                message=None,
+                add_source='agent_message_autorequest',
+            )
+            return res.get('request_id')
+        except ContactRequestError:
+            return None
+        except Exception:  # noqa: BLE001 - 自动代发失败不影响主流程
+            return None
+
+
 class MessageSendTool(BaseTool):
     """发送私信工具——文本 + 富媒体（图片/语音/文件/卡片），走真实路由 + 关系门控 + 主人透明（G1/MEDIA-P3）。"""
 
@@ -203,8 +230,11 @@ class MessageSendTool(BaseTool):
         return (
             '给某用户/Agent/会话发消息（走真实路由：解析目标→关系权限→会话→投递→主人透明）。'
             '可发：纯文本（content）、图片/语音/文件（attachments 传 hasn://asset/ 资产引用，'
-            '来自 hasn.asset.create 上传你自己的内容、或 hasn.image.generate / hasn.voice.synthesize '
-            '生成）、信息卡片（card：title 必填，可含 description/fields/link）。'
+            '来自 hasn.image.generate / hasn.voice.synthesize 生成，或本地 hasn.asset.upload(path) 上传）、'
+            '信息卡片（card：title 必填，可含 description/fields/link）。'
+            '若返回 status="pending_contact_approval"，表示尚未与对方建立联系人关系、消息已暂存并已'
+            '**自动代发好友请求**（见返回 pending_request_id）；此时 reachable=false，不要改用其它方式'
+            '重试或重复发送，等对方（或其主人）通过后再发即可。主动加好友用 hasn.contact.request。'
         )
 
     @property
@@ -342,6 +372,29 @@ class MessageSendTool(BaseTool):
                 'status': status,
                 'reason': result.get('reason', ''),
             }
+
+        # 被暂存拦截箱（未建立联系人关系/低信任）→ 结构化关系反馈（修 B12：不再误报 reachable=true）。
+        # 无关系时自动代发好友请求（幂等复用入站门控已代发的那条，不重复建）。
+        if status == 'suppressed' or result.get('suppressed'):
+            pending_request_id = result.get('pending_request_id')
+            if not pending_request_id:
+                pending_request_id = await _ensure_first_contact_request(
+                    agent_context.owner_hasn_id, to_target,
+                )
+            return {
+                'message_id': result.get('msg_id'),
+                'conversation_id': result.get('conversation_id'),
+                'delivered': False,
+                'reachable': False,
+                'status': 'pending_contact_approval',
+                'relation': result.get('relation'),
+                'pending_request_id': pending_request_id,
+                'hint': (
+                    '尚未与对方建立联系人关系，已自动代发好友请求；须对方（或其主人）同意后消息才能'
+                    '送达。请勿改用其它方式重试，也不要重复发送——耐心等待对方通过即可。'
+                ),
+            }
+
         return {
             'message_id': result.get('msg_id'),
             'conversation_id': result.get('conversation_id'),

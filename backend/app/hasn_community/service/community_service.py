@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +43,8 @@ if TYPE_CHECKING:
 
     from backend.common.dataclasses import AgentTokenPayload
 
+logger = logging.getLogger(__name__)
+
 # ==================== 引用卡片（reference_cards）====================
 # 社区文章/帖子可引用 Agent 技能 / 任务结果 / 聊天摘要，沿用 IM 卡片消息 HasnCardResource 形状。
 # 被引用资源是「本地 daemon 资源」（本地 ULID id），云端不持有也无法对该 id 做归属查表，
@@ -64,6 +68,52 @@ class CommunityService:
         return (
             await db.execute(select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))
         ).scalar_one_or_none()
+
+    @staticmethod
+    async def _fanout_to_followers(db: AsyncSession, *, author_hasn_id: str) -> None:
+        """关注的人发帖/评论/点赞成功后 → 实时通知关注者所在的在线设备刷新社区镜像。
+
+        本地优先架构下 daemon 侧读走 local_first_or_cloud，云端写点必须主动
+        bump_owner(KIND_COMMUNITY) 才会推 WSPUSH 给对应 owner 的在线节点；否则
+        关注者只能等下次冷刷新才看到新内容，达不到「后端可达即实时看到最新数据」。
+
+        hasn_follows 不存 follower_type，故按 follower_hasn_id 命中 hasn_agents 判为
+        agent（其通知落到主人 owner_id 头上），否则 follower_hasn_id 本身就是 human
+        owner_hasn_id；按 owner 去重后逐个 bump，单次失败不拖垮主写操作（best-effort）。
+        """
+        follower_ids = (
+            await db.execute(
+                select(HasnFollows.follower_hasn_id).where(HasnFollows.target_hasn_id == author_hasn_id)
+            )
+        ).scalars().all()
+        if not follower_ids:
+            return
+
+        agent_owner_rows = (
+            await db.execute(
+                select(HasnAgents.hasn_id, HasnAgents.owner_id).where(HasnAgents.hasn_id.in_(follower_ids))
+            )
+        ).all()
+        agent_owner_map = {r.hasn_id: r.owner_id for r in agent_owner_rows}
+
+        owner_hasn_ids = {agent_owner_map.get(fid) or fid for fid in follower_ids}
+        owner_hasn_ids.discard('')
+
+        if not owner_hasn_ids:
+            return
+
+        for owner_hasn_id in owner_hasn_ids:
+            await CommunityService._bump_owner_community_sync(db, owner_hasn_id)
+
+    @staticmethod
+    async def _bump_owner_community_sync(db: AsyncSession, owner_hasn_id: str) -> None:
+        """单个 owner 的 sync invalidate 推送，单次失败不拖垮批量 fan-out（best-effort）。"""
+        try:
+            from backend.app.hasn.service import sync_invalidate_service as siv
+
+            await siv.bump_owner(siv.KIND_COMMUNITY, db, owner_hasn_id)
+        except Exception as e:
+            logger.warning('[community] 关注者 fan-out sync invalidate 推送失败 (非致命): %s', e)
 
     @staticmethod
     async def _batch_reactions(
@@ -1072,6 +1122,10 @@ class CommunityService:
         if circle_id and status == 'published':
             await circle_service.bump_content_count(db, circle_id=circle_id)
 
+        # 已发布（非待审）才对关注者可见，实时通知其在线设备刷新社区镜像
+        if status == 'published':
+            await CommunityService._fanout_to_followers(db, author_hasn_id=author_hasn_id)
+
         return {
             'post_id': post_id,
             'status': status,
@@ -1768,6 +1822,10 @@ class CommunityService:
                 extra_recipient_hasn_id=parent_author_hasn_id,
             )
 
+        # 已可见评论才对外，实时通知评论者（动作发起人）的关注者刷新社区镜像
+        if is_visible:
+            await CommunityService._fanout_to_followers(db, author_hasn_id=hasn_id)
+
         return {
             'comment_id': comment_id,
             'status': status,
@@ -1898,6 +1956,9 @@ class CommunityService:
                 owner_hasn_id=target_owner_hasn_id,
                 preview=preview,
             )
+
+        # 实时通知点赞者（动作发起人）的关注者刷新社区镜像
+        await CommunityService._fanout_to_followers(db, author_hasn_id=hasn_id)
 
     @staticmethod
     async def delete_like(
@@ -3560,6 +3621,10 @@ class CommunityService:
                 db, article_id=article_id, article_title=title, actor_hasn_id=owner_hasn_id, owner_user_id=user_id,
                 author_type='human', author_hasn_id=author_hasn_id, placement=doc_placement, allow_visibility=True,
             )
+
+        # 已发布（非待审）才对关注者可见，实时通知其在线设备刷新社区镜像
+        if status == 'published':
+            await CommunityService._fanout_to_followers(db, author_hasn_id=author_hasn_id)
 
         return {
             'article_id': article_id,

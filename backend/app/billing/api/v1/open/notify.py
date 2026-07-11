@@ -121,10 +121,76 @@ async def unified_refund_notify(
     db: CurrentSessionTransaction,
     channel_id: Annotated[int, Path(description='支付渠道 ID')],
 ) -> PlainTextResponse:
-    """统一退款回调 — 预留接口"""
-    log.info(f'退款回调: channel={channel_id}')
-    # TODO: 实现退款回调处理
-    return PlainTextResponse('success', status_code=200)
+    """统一退款回调（MK-9）——渠道异步退款终态确认，幂等，只确认不重复回收权益。
+
+    退款在 ``refund_order`` 发起时已同步落库（权益回收 + 订单置退款态）；本回调仅在渠道**异步**
+    退款（微信退款可能先 PROCESSING 后推 ``REFUND.SUCCESS``）时把退款记录/订单推到终态。
+    支付宝退款为同步返回，一般不发异步退款回调，收到时按防御式解析。
+    """
+    channel = None
+    try:
+        channel = await pay_channel_dao.get(db, channel_id)
+        if not channel:
+            log.error(f'退款回调: 渠道 {channel_id} 不存在')
+            return PlainTextResponse('fail', status_code=200)
+
+        merchant_config = None
+        if channel.merchant_id:
+            merchant = await pay_merchant_dao.get(db, channel.merchant_id)
+            if merchant:
+                merchant_config = merchant.config
+
+        code = channel.code
+        client = get_pay_client(channel, merchant_config=merchant_config)
+
+        if code.startswith('wx'):
+            body = await request.body()
+            raw_data = body.decode('utf-8')
+            log.info(f'微信退款回调 channel={channel_id}: {raw_data[:500]}')
+            headers = {
+                'Wechatpay-Timestamp': request.headers.get('Wechatpay-Timestamp', ''),
+                'Wechatpay-Nonce': request.headers.get('Wechatpay-Nonce', ''),
+                'Wechatpay-Signature': request.headers.get('Wechatpay-Signature', ''),
+                'Wechatpay-Serial': request.headers.get('Wechatpay-Serial', ''),
+            }
+            notify_data = client.verify_callback(headers, raw_data)
+            # 微信 V3 退款回调：event_type=REFUND.SUCCESS/ABNORMAL/CLOSED，resource 内含 out_refund_no/refund_status。
+            resource = notify_data.get('resource') if isinstance(notify_data.get('resource'), dict) else notify_data
+            out_refund_no = resource.get('out_refund_no')
+            refund_status = resource.get('refund_status') or (
+                'SUCCESS' if notify_data.get('event_type') == 'REFUND.SUCCESS' else notify_data.get('event_type', '')
+            )
+            channel_refund_no = resource.get('refund_id')
+            if out_refund_no:
+                await pay_order_service.confirm_refund_notify(
+                    db=db, refund_no=out_refund_no, refund_status=refund_status, channel_refund_no=channel_refund_no,
+                )
+            return PlainTextResponse('{"code":"SUCCESS","message":"成功"}', status_code=200)
+
+        if code.startswith('alipay'):
+            form_data = await request.form()
+            data = dict(form_data)
+            raw_data = json.dumps(data, ensure_ascii=False)
+            log.info(f'支付宝退款回调 channel={channel_id}: {raw_data[:500]}')
+            client.verify_callback({}, data)
+            out_refund_no = data.get('out_request_no') or data.get('out_biz_no')
+            trade_ok = data.get('trade_status') == 'TRADE_SUCCESS'
+            refund_status = data.get('refund_status') or ('SUCCESS' if trade_ok else '')
+            channel_refund_no = data.get('trade_no')
+            if out_refund_no and refund_status:
+                await pay_order_service.confirm_refund_notify(
+                    db=db, refund_no=out_refund_no, refund_status=refund_status, channel_refund_no=channel_refund_no,
+                )
+            return PlainTextResponse('success', status_code=200)
+
+        log.error(f'退款回调: 不支持的渠道编码 {code}')
+        return PlainTextResponse('fail', status_code=200)
+
+    except Exception as e:
+        log.error(f'退款回调异常: channel={channel_id}, error={e}')
+        if channel and channel.code.startswith('wx'):
+            return PlainTextResponse(f'{{"code":"FAIL","message":"{str(e)[:100]}"}}', status_code=500)
+        return PlainTextResponse('fail', status_code=200)
 
 
 @router.post(

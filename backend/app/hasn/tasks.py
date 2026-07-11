@@ -56,3 +56,39 @@ async def app_entitlement_expire_sweep() -> str:
     async with async_db_session.begin() as session:
         count = await sweep_expired_entitlements(session)
     return f'expired {count} overdue app entitlements' if count else 'no overdue app entitlements'
+
+
+@celery_app.task(name='hasn_group_agent_invite_expire_sweep')
+async def hasn_group_agent_invite_expire_sweep() -> str:
+    """把超 7 天未处理的拉分身邀请（doc10 §3.2）置 expired（定时兜底）。
+
+    读路径已惰性判定过期（群详情/accept 时），本任务只收敛存量 pending 状态，
+    让「pending 但已过期」的行不长期占着 ``uq_hasn_group_agent_invites_pending``
+    partial unique（其主人下次可被重新邀请）。建议每天凌晨执行一次。
+    """
+    from backend.app.hasn.service.hasn_group_service import hasn_group_service
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as session:
+        count = await hasn_group_service.sweep_expired_invites(session)
+    return f'expired {count} overdue group agent invites' if count else 'no overdue group agent invites'
+
+
+@celery_app.task(name='hasn_contact_lifecycle_expire_sweep')
+async def hasn_contact_lifecycle_expire_sweep() -> str:
+    """关系生命周期过期兜底（doc08 RT5·B7）：好友请求 30 天未响应过期 + 联系人 auto_expire 到期。
+
+    定时执行：每天凌晨 2:20。
+    ① hasn_contact_requests：pending 且创建超 30 天 → expired（幂等，只收敛存量 pending）；
+    ② hasn_contacts：auto_expire 已过且仍 connected → archived（service 到期自动断，铁律5b）。
+    """
+    from backend.app.hasn.service.hasn_contacts_service import HasnContactsService
+    from backend.database.db import async_db_session
+
+    async with async_db_session() as session:
+        result = await HasnContactsService.sweep_expired_relation_lifecycle(session)
+    req_n = result['requests_expired']
+    ct_n = result['contacts_expired']
+    if req_n or ct_n:
+        return f'expired {req_n} contact requests, archived {ct_n} auto-expire contacts'
+    return 'no overdue contact requests or auto-expire contacts'

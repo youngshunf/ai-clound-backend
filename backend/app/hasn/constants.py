@@ -261,17 +261,6 @@ def is_lifecycle_transition_valid(from_state: str, to_state: str) -> bool:
     return to_state in SCOPE_LIFECYCLE_TRANSITIONS.get(from_state, frozenset())
 
 
-def apply_lifecycle_to_decision(decision: str, lifecycle_state: str | None) -> str:
-    """权限引擎 scope_limited 检查（Core/02 §7.5.2）。
-
-    当矩阵返回 SCOPE_LTD 且 session.lifecycle_state ∈ {closed, expired} 时直接降级为 DENY。
-    其他情况原样返回 decision。
-    """
-    if decision == SCOPE_LTD and lifecycle_state in ('closed', 'expired'):
-        return DENY
-    return decision
-
-
 # ── 协议级约束校验 (Core/04 §1.4) ──────────────
 def validate_relation_constraints(relation_type: str, trust_level: int) -> None:
     """校验 relation_type + trust_level 协议级约束。
@@ -291,17 +280,6 @@ def validate_relation_constraints(relation_type: str, trust_level: int) -> None:
             'service 关系不存在 Stranger 状态（trust_level=1），'
             '此关系随订单创建自动建立'
         )
-
-
-def runtime_effective_trust_level(relation_type: str, trust_level: int) -> int:
-    """运行时有效 trust_level（Core/02 §7.4.1 降级规则）。
-
-    非 social + trust_level=5 时降级为 4 处理（防御措施，正常写入路径已被
-    validate_relation_constraints 拦截）。
-    """
-    if relation_type != 'social' and trust_level == 5:
-        return 4
-    return trust_level
 
 
 # ── 7 条铁律常量 (协议 04 §2) ─────────────────────

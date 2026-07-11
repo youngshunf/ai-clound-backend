@@ -221,14 +221,15 @@ def _matrix() -> list[tuple[str, _Stub, AgentContext, str, bool, str]]:
             True,
             CALL_EXEC,
         ),
-        # 现状回归：runtime 面隐藏（本地分身云端面看不到 deck/task/workflow）
+        # 回归锁（2026-07-10 福仔拍板）：工具暴露与分身在本地/云端无关——本地分身在云端面
+        # 照常可见可调 deck/task/workflow（原 TOOLMIG2-P4「运行位置收口」已整体退役）。
         (
-            'runtime 本地隐藏·不可见',
-            _Stub('hasn.deck.mrt', scopes=['deck:write']),
+            'runtime 本地·云端工具照常可见可调',
+            _Stub('hasn.task.mrt', scopes=['task:manage']),
             _ctx(runtime_location='local'),
-            ACTION_HIDDEN,
-            False,
-            CALL_NOT_FOUND,
+            ACTION_ALLOW,
+            True,
+            CALL_EXEC,
         ),
         # 现状回归：三态 deny / ask / allow
         (
@@ -307,7 +308,7 @@ async def test_property_visible_iff_not_tool_not_found_full_gate_scan(monkeypatc
     """§7 第九行属性（全五门扫）：可见 ⟹ call 非 TOOL_NOT_FOUND；call TOOL_NOT_FOUND ⟹ 不可见。
 
     对矩阵每行断言两个严证向；ASK 行结构上必可见且不落 TOOL_NOT_FOUND（不真调）。
-    覆盖 G1/G2(external+runtime)/G3/G4/G5 全部门的 HIDDEN、VISIBLE_DENY、ASK、ALLOW 出口。
+    覆盖 G1/G2(external)/G3/G4/G5 全部门的 HIDDEN、VISIBLE_DENY、ASK、ALLOW 出口。
     """
     server = _server_with_noop_io(monkeypatch)
     rows = _matrix()
@@ -335,7 +336,7 @@ async def test_property_visible_iff_not_tool_not_found_full_gate_scan(monkeypatc
         seen_allow += int(expected_action == ACTION_ALLOW)
 
     # 覆盖度：四类出口都被扫到（属性扫非空转）
-    assert seen_hidden >= 4  # G1/G2runtime/G4/G5deny/external 多门 HIDDEN
+    assert seen_hidden >= 4  # G1/G4/G5deny/external 多门 HIDDEN（runtime 位置门已退役）
     assert seen_visible_deny >= 1
     assert seen_ask >= 1
     assert seen_allow >= 3

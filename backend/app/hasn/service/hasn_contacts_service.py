@@ -8,9 +8,11 @@ from backend.app.hasn.constants import TRUST_LEVEL_LABELS
 from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
 from backend.app.hasn.crud.crud_hasn_contact_requests import hasn_contact_requests_dao
 from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
+from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.model import HasnContacts
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.schema.hasn_contacts import (
     CreateHasnContactsParam,
@@ -18,7 +20,12 @@ from backend.app.hasn.schema.hasn_contacts import (
     UpdateHasnContactsParam,
 )
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.common.pagination import paging_data
+from backend.utils.timezone import timezone
+
+# 好友请求未响应过期阈值（天）：pending 超此天数由 celery beat 兜底置 expired（B7）。
+CONTACT_REQUEST_EXPIRE_DAYS = 30
 
 
 class ContactRequestError(Exception):
@@ -454,6 +461,140 @@ class HasnContactsService:
         await db.commit()
         await HasnContactsService._push_request_received(db, requester_hasn_id, owner_id, req, target_peer, message)
         return HasnContactsService._request_out(req, to_type='agent', target=target_peer, message=message)
+
+    # ─── 删除联系人（D4·hasn.relation.remove 云端权威实现·修 B5）───
+
+    @staticmethod
+    async def _push_relation_removed(target_hasn_id: str, actor_hasn_id: str) -> None:
+        """给对方推一条**中性**「关系已解除」事件（best-effort，失败不阻塞）。
+
+        D4 铁律：不暴露「被删除/被拉黑」等贬损细节——只告知关系已解除、需重新建立。
+        对端 daemon/webui 据此清本地策展行 + 会话标不可达（daemon/webui 侧留后续切片）。
+        """
+        from backend.app.hasn.service.ws_router import ws_router
+
+        try:
+            await ws_router.push_message_to(
+                target_hasn_id,
+                {
+                    'method': 'hasn.contact.removed',
+                    'params': {
+                        'owner_id': target_hasn_id,
+                        'peer_id': actor_hasn_id,
+                        # 中性文案：只说关系已解除，不暴露是被删还是被拉黑
+                        'reason': 'relation_dissolved',
+                        'message': '你们的联系人关系已解除',
+                    },
+                },
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    async def remove_contact(
+        db: AsyncSession, *, owner_id: str, contact: HasnContacts,
+    ) -> dict[str, Any]:
+        """删除联系人：单方发起的双向解除（D4·hasn.relation.remove 云端权威实现·修 B5）。
+
+        三步语义（云端权威边彻底解除，纠正历史「daemon 只删本地策展行、云端边残留」）：
+        ① 双向删边：删 owner→peer 与 peer→owner 两条同 relation_type 关系行；
+        ② 会话不删但标不可达：把两人 direct 会话标 unreachable（保留历史消息）；
+        ③ 中性通知对方「关系已解除」（不暴露贬损细节）。
+        返回 {deleted_edges, conversations_marked, peer_id, notified}。
+        """
+        peer_id = contact.peer_id
+        relation_type = contact.relation_type or 'social'
+        # 对方归属人：分身 peer 通知其主人，human peer 通知本人（peer_owner_id 为空则回落 peer_id）
+        notify_target = contact.peer_owner_id or peer_id
+
+        deleted = await hasn_contacts_dao.delete_relation_bidirectional(
+            db, owner_id, peer_id, relation_type,
+        )
+        marked = await hasn_conversations_dao.mark_direct_unreachable(db, owner_id, peer_id)
+        await db.commit()
+
+        # ③ 中性通知对方（放在提交后，通知失败不回滚已解除的关系）
+        notified = False
+        if notify_target and notify_target != owner_id:
+            await HasnContactsService._push_relation_removed(notify_target, owner_id)
+            notified = True
+
+        return {
+            'deleted_edges': deleted,
+            'conversations_marked': marked,
+            'peer_id': peer_id,
+            'notified': notified,
+        }
+
+    # ─── 关系生命周期过期兜底（B7·celery beat 每日调）───
+
+    @staticmethod
+    async def sweep_expired_contact_requests(db: AsyncSession) -> int:
+        """把创建超 30 天仍 pending 的好友请求置 expired（B7·celery beat 每日兜底）。
+
+        幂等、批量：只收敛存量 pending（已 accepted/rejected/withdrawn/expired 的行被 status
+        过滤跳过），重复执行安全。created_time 早于 cutoff 才过期（在 Python 侧判定，便于单测）。
+        置 expired 同时回填 decided_at=now（审计：何时兜底过期；无 decided_by，系统兜底无决策人）。
+        返回置 expired 的条数。
+        """
+        now = timezone.now()
+        cutoff_ts = now.timestamp() - CONTACT_REQUEST_EXPIRE_DAYS * 86400
+        rows = (
+            await db.execute(
+                select(HasnContactRequests).where(HasnContactRequests.status == 'pending')
+            )
+        ).scalars().all()
+        count = 0
+        for req in rows:
+            if req.created_time and req.created_time.timestamp() < cutoff_ts:
+                req.status = 'expired'
+                req.decided_at = now
+                count += 1
+        if count:
+            await db.flush()
+        return count
+
+    @staticmethod
+    async def sweep_expired_auto_expire_contacts(db: AsyncSession) -> int:
+        """把 auto_expire 已过且仍 connected 的联系人置 archived（B7·到期自动断·铁律5b）。
+
+        service 类关系「到期自动断」的兜底清理（当前 auto_expire 多为协议预留、少有落值）。
+        幂等、批量：只收敛 connected 且 auto_expire<now 的行（已 archived/blocked 跳过）；
+        auto_expire<now 在 Python 侧判定，便于单测。返回置 archived 的条数。
+        """
+        now = timezone.now()
+        rows = (
+            await db.execute(
+                select(HasnContacts).where(
+                    HasnContacts.status == 'connected',
+                    HasnContacts.auto_expire.isnot(None),
+                )
+            )
+        ).scalars().all()
+        count = 0
+        for c in rows:
+            if c.auto_expire and c.auto_expire < now:
+                c.status = 'archived'
+                count += 1
+        if count:
+            await db.flush()
+        return count
+
+    @staticmethod
+    async def sweep_expired_relation_lifecycle(db: AsyncSession) -> dict[str, int]:
+        """关系生命周期过期总兜底（B7）：好友请求过期 + 联系人 auto_expire 到期，一次提交。
+
+        返回 {'requests_expired': n, 'contacts_expired': m}。
+        """
+        requests_expired = await HasnContactsService.sweep_expired_contact_requests(db)
+        contacts_expired = await HasnContactsService.sweep_expired_auto_expire_contacts(db)
+        if requests_expired or contacts_expired:
+            await db.commit()
+        log.info(
+            f'[contact_lifecycle_sweep] requests_expired={requests_expired} '
+            f'contacts_expired={contacts_expired}'
+        )
+        return {'requests_expired': requests_expired, 'contacts_expired': contacts_expired}
 
 
 hasn_contacts_service: HasnContactsService = HasnContactsService()

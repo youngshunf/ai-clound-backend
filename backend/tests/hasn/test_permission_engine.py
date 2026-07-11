@@ -11,6 +11,7 @@ hasn_audit_log_service.append 均通过 monkeypatch 替换为 AsyncMock。
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -166,6 +167,98 @@ async def test_decision_literals_byte_aligned_with_rust() -> None:
         d = DecisionResult(decision=lit, reason='t', matched_rule='t')
         assert d.decision == lit
         assert d.decision in {'allow', 'deny', 'confirm_required', 'scope_limited'}
+
+
+# ── J-L0：A2H 出站关系门（doc07 §8-1）──
+class _FakeResult:
+    """模拟 db.execute(...) 返回值，仅实现 scalar_one_or_none。"""
+
+    def __init__(self, obj) -> None:
+        self._obj = obj
+
+    def scalar_one_or_none(self):
+        return self._obj
+
+
+class _FakeDb:
+    """按调用顺序依次返回预置结果（先 HasnAgents，再 HasnContacts）。"""
+
+    def __init__(self, results) -> None:
+        self._results = list(results)
+
+    async def execute(self, *_a, **_k):
+        return _FakeResult(self._results.pop(0) if self._results else None)
+
+
+def _a2h_entities(receiver_id='h_stranger'):
+    sender = {'hasn_id': 'a_agent', 'entity_type': 'agent'}
+    receiver = {'hasn_id': receiver_id, 'entity_type': 'human'}
+    envelope = {
+        'msg_type': 'message', 'content': {'body': 'x'},
+        'relation_type': 'social', 'metadata': {}, 'from_entity_type': 'agent',
+    }
+    return sender, receiver, envelope
+
+
+async def test_a2h_outbound_stranger_denied(monkeypatch) -> None:
+    """分身 → 无关系陌生人类 → DENY（关系矩阵 send_message=DENY）。"""
+    _patch_engine_deps(monkeypatch, iron_result=None)
+    from backend.app.hasn.service.permission_engine import permission_engine
+
+    sender, receiver, envelope = _a2h_entities()
+    # 第一次 execute 返回分身（owner=h_owner），第二次返回 None（无联系人=陌生人）
+    db = _FakeDb([SimpleNamespace(owner_id='h_owner'), None])
+    result = await permission_engine.evaluate(
+        db, sender=sender, receiver=receiver, envelope=envelope,
+    )
+    assert result.decision == DENY
+    assert result.matched_rule == 'matrix_a2h_relation'
+    assert result.error_code == 2002
+
+
+async def test_a2h_outbound_friend_allowed(monkeypatch) -> None:
+    """分身 → 主人的好友（social trust=3，send_message=ALLOW）→ 放行到矩阵 ALLOW。"""
+    _patch_engine_deps(monkeypatch, iron_result=None)
+    from backend.app.hasn.service.permission_engine import permission_engine
+
+    sender, receiver, envelope = _a2h_entities(receiver_id='h_friend')
+    contact = SimpleNamespace(relation_type='social', trust_level=3, status='connected')
+    db = _FakeDb([SimpleNamespace(owner_id='h_owner'), contact])
+    result = await permission_engine.evaluate(
+        db, sender=sender, receiver=receiver, envelope=envelope,
+    )
+    assert result.decision == ALLOW
+    assert result.matched_rule == 'matrix'
+
+
+async def test_a2h_outbound_to_own_owner_allowed(monkeypatch) -> None:
+    """分身 → 自己主人 → 豁免（owner loopback 双保险），矩阵 ALLOW。"""
+    _patch_engine_deps(monkeypatch, iron_result=None)
+    from backend.app.hasn.service.permission_engine import permission_engine
+
+    sender, receiver, envelope = _a2h_entities(receiver_id='h_owner')
+    # 只需返回分身（owner=h_owner）；receiver==owner 命中豁免后不再查联系人
+    db = _FakeDb([SimpleNamespace(owner_id='h_owner')])
+    result = await permission_engine.evaluate(
+        db, sender=sender, receiver=receiver, envelope=envelope,
+    )
+    assert result.decision == ALLOW
+    assert result.matched_rule == 'matrix'
+
+
+async def test_a2h_outbound_blocked_contact_denied(monkeypatch) -> None:
+    """分身 → 主人已拉黑的人类（status=blocked）→ DENY。"""
+    _patch_engine_deps(monkeypatch, iron_result=None)
+    from backend.app.hasn.service.permission_engine import permission_engine
+
+    sender, receiver, envelope = _a2h_entities(receiver_id='h_blocked')
+    contact = SimpleNamespace(relation_type='social', trust_level=2, status='blocked')
+    db = _FakeDb([SimpleNamespace(owner_id='h_owner'), contact])
+    result = await permission_engine.evaluate(
+        db, sender=sender, receiver=receiver, envelope=envelope,
+    )
+    assert result.decision == DENY
+    assert result.matched_rule == 'matrix_a2h_relation'
 
 
 # ── Test 6: audit 失败不阻断主流程 (Rule 2 / D-03 partial) ──

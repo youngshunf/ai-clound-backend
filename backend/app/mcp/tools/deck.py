@@ -60,6 +60,68 @@ async def _bump_decks_sync(owner_hasn_id: str | None) -> None:
         logger.warning('[deck] agent 写点 sync invalidate 推送失败 (非致命): %s', e)
 
 
+async def _register_deck_artifact(db: Any, ctx: AgentContext, deck_id: int, title: str | None = None) -> None:
+    """register-on-write（doc31/32 RC-P8 泛化）：分身**每个 deck 写点**都把该 deck 登记进
+    `hasn_artifacts`——不再等 finalize，create→逐页写→改稿全程可见。
+
+    这治「分身建/改了 deck，会话资源栏 / 分身产物 tab 却看不到」：
+    - `session_id = ctx.work_session_id`（工作会话派发时由 Hermes/daemon 戳 `_hasn_session_id`、
+      server.call_tool 剥离落 ctx；主会话直调则为 None，产物仍凭 resource_uri 进产物 tab）；
+    - `server_id = str(deck_id)`（云端权威 deck id，Core-08 第二原则：本地 id 永不上 URI）；
+    - 幂等 upsert（键 `(agent, deck:{deck_id}, hasn://deck/{deck_id})`）——反复写不重复登记、
+      会话归属只进不退，与 finalize 完成卡投影同键，两路径重复触发也只一条 active 行。
+
+    best-effort：登记失败**绝不**拖垮 deck 写本身（写已在同一事务，抛出会连累 deck 落库）。
+    """
+    try:
+        from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+        from backend.app.hasn.service.hasn_sessions_service import _deck_resource_descriptor
+
+        resolved_title = (title or '').strip() or None
+        if resolved_title is None:
+            # 页写点常不带标题——补取 deck 权威标题（同事务只读，无额外提交）。
+            try:
+                deck = await deck_service.get_deck(db, subject=_subject(ctx), deck_id=deck_id)
+                resolved_title = str(deck.get('title') or '').strip() or None
+            except Exception:
+                resolved_title = None
+        await HasnArtifactsService.record_app_resource_artifact(
+            db,
+            descriptor=_deck_resource_descriptor(),
+            server_id=str(deck_id),
+            session_id=ctx.work_session_id,
+            agent_hasn_id=ctx.agent_hasn_id,
+            owner_hasn_id=ctx.owner_hasn_id,
+            title=resolved_title or '演示文稿',
+            source_tool=f'{NAMESPACE}.write',
+        )
+    except Exception as e:
+        logger.warning('[deck] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', e)
+
+
+async def _run_deck_post_commit(post: dict[str, Any]) -> None:
+    """写事务**提交后**的 deck 副作用（当前仅 finalize 完成卡）。独立会话——`route_message`
+    自管 `db.commit()`，绝不能塞进 `execute` 的 `begin()` 事务里（否则 route_message 的提交会提前
+    结束该事务，收尾时触发「Can't operate on closed transaction inside context manager」）。best-effort。
+    """
+    if post.get('kind') != 'deck_completion_card':
+        return
+    try:
+        from backend.app.hasn.service.hasn_sessions_service import emit_deck_completion_card
+
+        async with async_db_session() as db:
+            await emit_deck_completion_card(
+                db,
+                owner_id=post['owner_id'],
+                agent_id=post['agent_id'],
+                deck_id=post['deck_id'],
+                title=post.get('title') or '',
+                summary=post.get('summary') or '',
+            )
+    except Exception as e:
+        logger.warning('[deck] finalize 完成卡投递失败（非致命）: %s', e)
+
+
 def _subject(ctx: AgentContext) -> Subject:
     return Subject.agent(ctx.agent_hasn_id, ctx.owner_hasn_id)
 
@@ -120,12 +182,20 @@ async def _upsert_pages(db: Any, ctx: AgentContext, deck_id: int, pages_input: l
         written += 1
 
     pages_after = (await deck_service.list_pages(db, subject=subject, deck_id=deck_id))['items']
+    # register-on-write：写页即登记（覆盖 page.write / page.write_batch 两个 handler）。
+    await _register_deck_artifact(db, ctx, deck_id)
     return {'written': written, 'rejected': rejected, 'pages': pages_after}
 
 
 # ── handlers ─────────────────────────────────────────────────────────────────────
 async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    """新建空演示文稿（owner-scoped；create_deck 收 owner_id 而非 subject）。返回 deck_id。"""
+    """新建空演示文稿（owner-scoped；create_deck 收 owner_id 而非 subject）。返回 deck_id。
+
+    分身用工具建 deck 时**自动绑定调用它的分身为协作分身**（bound_agent_id=当前 agent）：
+    首页「让分身生成」改为纯派发工作会话、不再预建带绑定的空 deck，绑定关系就落在这里——
+    分身 `hasn.deck.create` 建好即是它自己名下的协作 deck，后续 generate/instruct 续接同一分身、
+    webui 也能正确展示协作分身。身份取自 Agent JWT 解析的 ctx，绝不入请求体。
+    """
     title = str(args.get('title') or '').strip() or '未命名演示文稿'
     deck = await deck_service.create_deck(
         db,
@@ -135,7 +205,10 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         language=str(args.get('language') or 'zh'),
         source='agent',
         style_profile_id=(str(args['style_profile_id']).strip() if args.get('style_profile_id') else None),
+        bound_agent_id=ctx.agent_hasn_id,
     )
+    # register-on-write：建 deck 即登记进工作会话资源栏 / 分身产物 tab（不等 finalize）。
+    await _register_deck_artifact(db, ctx, int(deck['id']), title=title)
     return {'deck_id': str(deck['id']), 'status': deck['status'], 'deck': deck}
 
 
@@ -158,6 +231,8 @@ async def _h_outline_set(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
     if args.get('design_contract') is not None:
         fields['design_contract'] = args['design_contract']
     deck = await deck_service.update_deck(db, subject=_subject(ctx), deck_id=_deck_id(args), fields=fields)
+    # register-on-write：写大纲即登记（标题取 deck 权威标题）。
+    await _register_deck_artifact(db, ctx, _deck_id(args), title=str(deck.get('title') or '') or None)
     return {'deck': deck}
 
 
@@ -185,6 +260,11 @@ async def _h_page_edit(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     if args.get('notes') is not None:
         fields['notes'] = args['notes']
     page = await deck_service.update_page(db, subject=_subject(ctx), page_id=_page_id(args), fields=fields)
+    # register-on-write：改某页即登记（deck_id 从被改页反查，title 由 helper 补取）。
+    try:
+        await _register_deck_artifact(db, ctx, int(page['deck_id']))
+    except (KeyError, TypeError, ValueError):
+        pass
     return {'page': page}
 
 
@@ -204,23 +284,33 @@ async def _h_page_reorder(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
 
 async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """收尾：把演示文稿标记为「已完成」。**仅首次转换**由云端自动给主人发「演示文稿做好了」卡
-    （分身不用、也不该自己发卡）；已完成再调则幂等，不重复发卡。"""
+    （分身不用、也不该自己发卡）；已完成再调则幂等，不重复发卡。
+
+    ⚠️ 完成卡**不在此处直接发**——`emit_deck_completion_card` 内部经 `route_message` 会
+    `db.commit()`，若在 `execute` 的 `begin()` 事务里调用，会提前结束该事务，收尾提交时触发
+    「Can't operate on closed transaction inside context manager」。这里只 finalize + register-on-write，
+    完成卡打包成 `_post_commit` 标记，由 `execute` 在写事务**提交后**的独立会话里投递。
+    """
     deck_id = _deck_id(args)
     result = await deck_service.finalize_deck(db, subject=_subject(ctx), deck_id=deck_id)
-    card_sent = False
+    # register-on-write：收尾也登记（标题用 finalize 返回的权威标题）。
+    await _register_deck_artifact(db, ctx, deck_id, title=str(result.get('title') or '') or None)
+    out: dict[str, Any] = {
+        'deck_id': str(deck_id),
+        'status': result['status'],
+        'finalized': result['changed'],
+        'card_sent': result['changed'],
+    }
     if result['changed']:
-        from backend.app.hasn.service.hasn_sessions_service import emit_deck_completion_card
-
-        await emit_deck_completion_card(
-            db,
-            owner_id=ctx.owner_hasn_id,
-            agent_id=ctx.agent_hasn_id,
-            deck_id=str(deck_id),
-            title=str(result.get('title') or ''),
-            summary=str(args.get('summary') or ''),
-        )
-        card_sent = True
-    return {'deck_id': str(deck_id), 'status': result['status'], 'finalized': result['changed'], 'card_sent': card_sent}
+        out['_post_commit'] = {
+            'kind': 'deck_completion_card',
+            'deck_id': str(deck_id),
+            'title': str(result.get('title') or ''),
+            'summary': str(args.get('summary') or ''),
+            'owner_id': ctx.owner_hasn_id,
+            'agent_id': ctx.agent_hasn_id,
+        }
+    return out
 
 
 async def _h_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -481,6 +571,12 @@ class _DeckTool(BaseTool):
                 result = await self._handler(db, agent_context, arguments)
             # LFRT 刀4：提交后 bump（best-effort），主人在线节点秒级重拉 deck 镜像。
             await _bump_decks_sync(agent_context.owner_hasn_id)
+            # 写事务提交后的副作用（如 finalize 完成卡）在独立会话里做——route_message 自管 commit，
+            # 不能嵌进上面的 begin() 事务（否则收尾提交撞「closed transaction」）。
+            if isinstance(result, dict):
+                post = result.pop('_post_commit', None)
+                if post is not None:
+                    await _run_deck_post_commit(post)
             return result
         async with async_db_session() as db:
             return await self._handler(db, agent_context, arguments)

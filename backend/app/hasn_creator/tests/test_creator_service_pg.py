@@ -89,7 +89,11 @@ async def test_full_pipeline_personal(session) -> None:
         scope=scope,
         project_id=pid,
         platform='xiaohongshu',
-        fields={'nickname': '家常菜小厨', 'is_primary': True},
+        fields={
+            'nickname': '家常菜小厨',
+            'is_primary': True,
+            'home_url': 'https://www.xiaohongshu.com/user/profile/a1',
+        },
     )
     aid = acc['id']
     assert acc['platform'] == 'xiaohongshu'
@@ -101,7 +105,11 @@ async def test_full_pipeline_personal(session) -> None:
         scope=scope,
         project_id=pid,
         name='隔壁老王做饭',
-        fields={'platform': 'xiaohongshu', 'follower_count': 50000},
+        fields={
+            'platform': 'xiaohongshu',
+            'url': 'https://www.xiaohongshu.com/user/profile/w1',
+            'follower_count': 50000,
+        },
     )
     analyzed = await creator_service.analyze_profile(session, user_id=_UID_A, scope=scope, project_id=pid)
     assert len(analyzed['competitors']) == 1

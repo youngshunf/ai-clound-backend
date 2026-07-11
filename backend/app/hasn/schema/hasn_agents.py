@@ -92,6 +92,14 @@ class AgentSnapshot(SchemaBase):
     template_id: str | None = Field(None, description='模板 ID')
     template_version: str | None = Field(None, description='模板版本（创建时快照）')
     skills: dict[str, Any] | list[Any] | None = Field(None, description='技能配置')
+    skill_display: dict[str, Any] | None = Field(
+        None,
+        description=(
+            '技能显示层元数据：{skill_id: {name, description}} 映射，从 marketplace/个人技能目录'
+            '批量解析下发（skills 本身只是 skill_id slug 清单，无友好名/描述）。'
+            'daemon 据此把命令浮层技能项显示为真友好名+描述，而非裸 slug。附加字段，可空。'
+        ),
+    )
     soul_md: str | None = Field(None, description='SOUL.md 内容')
     agents_md: str | None = Field(None, description='AGENTS.md 内容')
     user_md: str | None = Field(None, description='USER.md 内容')
@@ -229,6 +237,14 @@ class AgentRuntimeConfig(SchemaBase):
         ge=1,
         le=100,
         description='A2A 连续自动往返硬上限（分身↔分身互发到此轮数自动暂停并通知主人续聊；空=默认 10）',
+    )
+    restrict_file_access_to_workspace: bool | None = Field(
+        None,
+        description=(
+            '是否把分身本地文件操作限定在工作目录内。空/False=默认放开（分身可读取工作区外文件、'
+            '便于整理外部目录）；True=收紧到仅工作区内。daemon 组装本地 MCP key 时按此下发给 '
+            'path_guard，管住 asset.upload/film/publish/marketplace 等收文件的本地工具。'
+        ),
     )
 
 

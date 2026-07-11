@@ -113,6 +113,8 @@ class GetPayOrderDetail(SchemaBase):
     expire_time: datetime
     success_time: datetime | None = None
     extra_data: dict | None = None
+    # 统一商业化内核（MK-1）：商品目录引用快照，商业化中心订单页据此串出所属 offering
+    offering_ref: dict | None = None
     created_time: datetime
     updated_time: datetime | None = None
 
@@ -123,3 +125,30 @@ class RefundOrderParam(SchemaBase):
     """退款参数"""
     reason: str | None = Field(None, description='退款原因')
     refund_amount: int | None = Field(None, description='退款金额（分），不传则全额退款')
+
+
+class RefundOrderResponse(SchemaBase):
+    """退款响应"""
+    order_no: str = Field(description='商户订单号')
+    refund_no: str = Field(description='退款单号')
+    refund_amount: int = Field(description='退款金额（分）')
+    status: int = Field(description='退款状态 0=待处理 1=成功 2=失败')
+    already_refunded: bool = Field(False, description='是否为幂等命中（订单此前已退款）')
+
+
+class GetPayRefundDetail(SchemaBase):
+    """退款记录详情"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    refund_no: str
+    order_no: str
+    user_id: int
+    refund_amount: int
+    channel_code: str | None = None
+    reason: str | None = None
+    channel_refund_no: str | None = None
+    status: int = Field(description='0=待处理 1=成功 2=失败')
+    success_time: datetime | None = None
+    created_time: datetime
+    updated_time: datetime | None = None

@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.hasn.constants import ALLOW, DENY
+from sqlalchemy import select
+
+from backend.app.hasn.constants import ALLOW, DENY, get_default_permissions
+from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.app.hasn.service.hasn_audit_log_service import hasn_audit_log_service
 from backend.app.hasn.service.iron_laws import DecisionResult, check_iron_laws
 from backend.app.hasn.service.route_guard import route_guard
@@ -72,6 +76,23 @@ class PermissionEngine:
                     await self._audit_safe(db, sender, receiver, deny, severity='warning')
                     return deny
 
+            # 2.5 A2H 出站关系门（doc07 §8-1 补洞）：分身主动发人类时，历史上跳过关系门、
+            #     过完铁律即 ALLOW —— 分身能主动够到任意陌生人类，出站侧无任何关系/信任差异化拦截
+            #     （差异化本在对端收方入站闸，但对端是人类时没有入站闸）。这里对「sender=agent 且
+            #     receiver=human 且 receiver ≠ 该分身所属 owner」查发送方 owner 与 receiver 的关系矩阵。
+            #     A→自己主人（owner loopback，本不经云端）豁免；群消息另有群成员校验，不在此拦截。
+            if (
+                sender.get('entity_type') == 'agent'
+                and receiver.get('entity_type') == 'human'
+                and receiver_id
+            ):
+                a2h_deny = await self._a2h_outbound_gate(
+                    db, sender_id=sender_id, receiver_id=receiver_id, envelope=envelope,
+                )
+                if a2h_deny is not None:
+                    await self._audit_safe(db, sender, receiver, a2h_deny, severity='warning')
+                    return a2h_deny
+
             # 3. 矩阵放行（H2H 已过关系门控；细粒度 action 矩阵留工具层 phase）
             result = DecisionResult(
                 decision=ALLOW,
@@ -93,6 +114,91 @@ class PermissionEngine:
             )
             await self._audit_safe(db, sender, receiver, fail, severity='warning')
             return fail
+
+    async def _a2h_outbound_gate(
+        self,
+        db: Any,
+        *,
+        sender_id: str,
+        receiver_id: str,
+        envelope: dict[str, Any],
+    ) -> DecisionResult | None:
+        """分身 → 人类出站关系门（doc07 §8-1）。
+
+        返回 DecisionResult(DENY) 表示拦截；返回 None 表示放行（豁免或矩阵允许）。
+        - 发送方分身所属 owner 即接收方本人（A→自己主人）→ 豁免（None）。
+        - 复用 owner↔receiver 联系人镜像 + `get_default_permissions` 判 `send_message`：
+          Blocked（status=blocked 或 trust_level=0）直接 DENY；无联系人按陌生人（trust=1）走矩阵默认。
+        - fail-closed：解析异常按 DENY 处置（与 H2H 关系门一致，宁可误拦不误发）。
+        """
+        try:
+            agent = await db.execute(
+                select(HasnAgents).where(HasnAgents.hasn_id == sender_id)
+            )
+            agent = agent.scalar_one_or_none()
+            # 分身不存在（并发删除等）→ 交后续兜底，不在此拦（None）
+            if agent is None:
+                return None
+            owner_id = agent.owner_id or ''
+            # 纵深豁免：发给自己主人（owner loopback 本不经云端，双保险）
+            if owner_id and receiver_id == owner_id:
+                return None
+            # owner 未知 → 无法判关系，fail-closed
+            if not owner_id:
+                return DecisionResult(
+                    decision=DENY,
+                    reason='a2h outbound: agent owner unknown, fail-closed',
+                    matched_rule='matrix_a2h_relation',
+                    error_code=2002,
+                )
+
+            # owner 视角下对 receiver 的联系人镜像（决定信任等级/黑名单）
+            contact = (await db.execute(
+                select(HasnContacts).where(
+                    HasnContacts.owner_id == owner_id,
+                    HasnContacts.peer_id == receiver_id,
+                )
+            )).scalar_one_or_none()
+            eff_relation = (
+                (contact.relation_type if contact else None)
+                or envelope.get('relation_type')
+                or 'social'
+            )
+            # 无联系人 = 陌生人（trust_level=1）；有则取其信任等级
+            trust_level = (
+                contact.trust_level
+                if contact and contact.trust_level is not None
+                else 1
+            )
+            # Blocked → 直接 DENY
+            if contact is not None and (contact.status == 'blocked' or trust_level == 0):
+                return DecisionResult(
+                    decision=DENY,
+                    reason='a2h outbound blocked: agent owner blocked this human',
+                    matched_rule='matrix_a2h_relation',
+                    error_code=2002,
+                )
+            # 矩阵 send_message 决策（陌生人/低信任 social 默认 DENY）
+            perms = get_default_permissions(eff_relation, trust_level)
+            if perms.get('send_message', DENY) == DENY:
+                return DecisionResult(
+                    decision=DENY,
+                    reason=(
+                        'a2h outbound: no relationship / trust too low '
+                        f'(relation={eff_relation}, trust={trust_level})'
+                    ),
+                    matched_rule='matrix_a2h_relation',
+                    error_code=2002,
+                )
+            return None
+        except Exception as exc:  # fail-closed：解析异常宁可误拦不误发
+            log.warning(f'[perm_engine] A2H 出站关系门异常, fail-closed DENY: {exc}')
+            return DecisionResult(
+                decision=DENY,
+                reason='a2h outbound gate error, fail-closed',
+                matched_rule='matrix_a2h_relation',
+                error_code=2002,
+            )
 
     async def _audit_safe(
         self,

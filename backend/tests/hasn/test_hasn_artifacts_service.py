@@ -158,6 +158,68 @@ async def test_body_artifact_origin_ref_and_video_kind() -> None:
             await db.rollback()
 
 
+async def test_list_by_session_filter_and_isolation() -> None:
+    """RC-P4 工作会话页资源栏：按 session_id 反查本会话产物（应用资源 + 工具产出），
+    时间倒序、只本 owner、只本会话；软删/异会话不返回。"""
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    session = _short_id('sess')
+    other_session = _short_id('sess')
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+
+            # 本会话产出两条：deck 应用资源（resource_uri）+ webpage 应用资源，同一 session_id。
+            aid_deck = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='deck', title='季度汇报', resource_uri='hasn://deck/d_srv_1', session_id=session
+                ),
+            )
+            aid_web = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='webpage', title='产品官网', resource_uri='hasn://webpage/w_srv_1', session_id=session
+                ),
+            )
+            # 另一会话产出一条 → 反查本会话时不应出现。
+            await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='deck', title='别的会话', resource_uri='hasn://deck/d_srv_2', session_id=other_session
+                ),
+            )
+
+            items, total = await hasn_artifacts_service.list_by_session(
+                db, owner_hasn_id=owner, session_id=session
+            )
+            assert total == 2
+            ids = {it.artifact_id for it in items}
+            assert ids == {aid_deck, aid_web}
+
+            # 不同 owner 反查同一 session_id → 隔离为空。
+            other_items, other_total = await hasn_artifacts_service.list_by_session(
+                db, owner_hasn_id=_short_id('hasnOther'), session_id=session
+            )
+            assert other_total == 0 and other_items == []
+
+            # 软删一条后 → 只剩 1 条（status='active' 过滤生效）。
+            await hasn_artifacts_service.soft_delete(db, owner_hasn_id=owner, artifact_id=aid_web)
+            after_items, after_total = await hasn_artifacts_service.list_by_session(
+                db, owner_hasn_id=owner, session_id=session
+            )
+            assert after_total == 1 and after_items[0].artifact_id == aid_deck
+        finally:
+            await db.rollback()
+
+
 async def test_list_ownership_isolation_and_source_link(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         asset_mod.StorageService,

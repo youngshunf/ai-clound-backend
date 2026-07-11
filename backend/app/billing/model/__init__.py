@@ -14,3 +14,5 @@ from backend.app.billing.model.pay_refund import PayRefund as PayRefund
 from backend.app.billing.model.subscription_tier import SubscriptionTier as SubscriptionTier
 from backend.app.billing.model.user_credit_balance import UserCreditBalance as UserCreditBalance
 from backend.app.billing.model.user_subscription import UserSubscription as UserSubscription
+from backend.app.billing.model.billing_offering import BillingOffering as BillingOffering
+from backend.app.billing.model.billing_plan import BillingPlan as BillingPlan

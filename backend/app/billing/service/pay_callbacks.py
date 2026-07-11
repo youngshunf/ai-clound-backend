@@ -14,6 +14,9 @@
 
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model.pay_order import PayOrder
@@ -137,10 +140,83 @@ async def handle_credit_pack_paid(order: PayOrder) -> None:
     log.info(f'[PayCallback] 积分包发放完成: user_id={user_id}, credits={credit_amount}')
 
 
+async def revoke_subscribe(db: AsyncSession, *, order: Any) -> None:
+    """订阅退款回收（``handle_subscribe_paid`` 的逆操作·MK-9 退款编排）：扣回赠送积分 + 降级免费档。
+
+    收 ``db`` 参与 refund_order 单一事务：
+      ① 按订单 ``target_tier`` 查套餐月度积分，从账本**扣回**本单赠送积分（``deduct_credits``——
+         余额不足会抛 ``InsufficientCreditsError``，refund_order 事务回滚、拒绝退款：不允许「退钱但积分已花光无法收回」）；
+      ② 订阅降级到免费档（``downgrade_to_free``）；③ 重推 new-api 可用额度对齐账本。
+
+    **保守语义**：单订单模型下退款即回落免费档（不追溯上一档订阅）；真机退款为福仔专项、场景稀少，
+    该保守逆操作足够诚实、可审计。
+    """
+    user_id = order.user_id
+    target_tier = order.target_tier
+    app_code = (order.extra_data or {}).get('app_code', 'huanxing')
+
+    tier_config = await subscription_tier_dao.select_model_by_column(
+        db, tier_name=target_tier, app_code=app_code, enabled=True
+    )
+    grant_credits = tier_config.monthly_credits if tier_config else Decimal(0)
+    if grant_credits and grant_credits > 0:
+        await credit_service.deduct_credits(
+            db,
+            user_id=user_id,
+            credits=Decimal(str(grant_credits)),
+            reference_id=order.order_no,
+            reference_type='refund',
+            description=f'退款回收订阅赠送积分（{target_tier}）',
+            app_code=app_code,
+        )
+    await subscription_service.downgrade_to_free(db, user_id, app_code=app_code)
+    await credit_sync_service.sync_quota_to_balance(db, user_id, app_code=app_code)
+    log.info(f'[PayCallback] 订阅退款回收完成: user_id={user_id}, 扣回积分={grant_credits}, 降级免费档')
+
+
+async def revoke_credit_pack(db: AsyncSession, *, order: Any) -> None:
+    """积分包退款回收（``handle_credit_pack_paid`` 的逆操作·MK-9 退款编排）：从账本扣回本单发放积分。
+
+    收 ``db`` 参与 refund_order 单一事务：扣回 ``extra_data.credit_amount``（``deduct_credits`` 余额不足
+    抛 ``InsufficientCreditsError`` → 事务回滚、拒绝退款：不允许「退钱但积分已消费无法收回」），再重推 new-api。
+    """
+    user_id = order.user_id
+    app_code = (order.extra_data or {}).get('app_code', 'huanxing')
+    credit_amount = (order.extra_data or {}).get('credit_amount')
+    if not credit_amount:
+        log.error(f'[PayCallback] 积分包退款回收缺少 credit_amount: order_no={order.order_no}')
+        return
+
+    await credit_service.deduct_credits(
+        db,
+        user_id=user_id,
+        credits=Decimal(str(credit_amount)),
+        reference_id=order.order_no,
+        reference_type='refund',
+        description=f'退款回收积分包 ({credit_amount} 积分)',
+        app_code=app_code,
+    )
+    await credit_sync_service.sync_quota_to_balance(db, user_id, app_code=app_code)
+    log.info(f'[PayCallback] 积分包退款回收完成: user_id={user_id}, 扣回积分={credit_amount}')
+
+
 def register_callbacks() -> None:
     """注册支付成功回调 — 在应用启动时调用"""
     from backend.app.billing.core.callback import register_pay_callback
+    from backend.app.billing.core.fulfillment import (
+        KIND_CREDIT_PACK,
+        KIND_LLM_TIER,
+        register_fulfillment,
+        register_refund_handler,
+    )
 
+    # 旧 order_type 分发（存量兼容，无 offering_ref 的订单回落这里）
     register_pay_callback('subscribe', handle_subscribe_paid)
     register_pay_callback('credit_pack', handle_credit_pack_paid)
-    log.info('[PayCallback] 已注册订阅支付回调 (subscribe, credit_pack)')
+    # MK-3：内核发货轴——按商品目录 offering.kind 分发（新订单走这里）
+    register_fulfillment(KIND_LLM_TIER, handle_subscribe_paid)
+    register_fulfillment(KIND_CREDIT_PACK, handle_credit_pack_paid)
+    # MK-9：退款回收轴——按 offering.kind 反向回收（扣回积分/降级）
+    register_refund_handler(KIND_LLM_TIER, revoke_subscribe)
+    register_refund_handler(KIND_CREDIT_PACK, revoke_credit_pack)
+    log.info('[PayCallback] 已注册订阅支付回调 (subscribe/llm_tier, credit_pack) + 退款回收处理器')

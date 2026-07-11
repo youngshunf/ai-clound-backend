@@ -95,7 +95,13 @@ async def test_owner_full_chain(session) -> None:
     # 加平台账号
     acc = _ok(
         await owner_api.add_account(
-            req, session, pid, AddAccountParam(platform='xiaohongshu', fields={'nickname': '家常菜小厨'})
+            req,
+            session,
+            pid,
+            AddAccountParam(
+                platform='xiaohongshu',
+                fields={'nickname': '家常菜小厨', 'home_url': 'https://www.xiaohongshu.com/user/profile/o1'},
+            ),
         )
     )
     aid = acc['id']

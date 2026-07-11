@@ -42,6 +42,10 @@ class FakeRedis:
     async def exists(self, key: str) -> int:
         return 1 if key in self.strings else 0
 
+    async def mget(self, keys: list[str]) -> list[Any]:
+        # 就绪键批量取（get_online_map 用），缺失返回 None。
+        return [self.strings.get(k) for k in keys]
+
 
 def _fake_agent(suffix: str, online_status: str | None, heartbeat: datetime | None) -> SimpleNamespace:
     return SimpleNamespace(
@@ -101,9 +105,11 @@ async def test_online_status_comes_from_presence_not_stale_column(monkeypatch) -
 
     redis = FakeRedis()
     monkeypatch.setattr(ws_module, 'redis_client', redis)
-    # a_on 路由在 node_X 且 node_X 心跳存活 → 在线（即便持久列写着 offline）。
+    # a_on 路由在 node_X 且 node_X 心跳存活 + runtime 就绪键在 → 在线（即便持久列写着 offline）。
     redis.hashes[ws_module.ENTITY_NODE_KEY] = {'a_on': 'node_X'}
     redis.strings[f'{ws_module.NODE_ALIVE_PREFIX}:node_X'] = '1'
+    # 在线语义收紧：还需 agent 就绪键（心跳 online+ok 才写）才算真在线。
+    redis.strings[f'{ws_module.AGENT_READY_PREFIX}:a_on'] = '1'
     # a_zombie 路由仍指向 node_dead，但该节点心跳已过期（无存活键）→ 离线（僵尸回收）。
     redis.hashes[ws_module.ENTITY_NODE_KEY]['a_zombie'] = 'node_dead'
 

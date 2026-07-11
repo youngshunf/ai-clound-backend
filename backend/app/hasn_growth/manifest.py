@@ -545,6 +545,16 @@ GROWTH_AI_NATIVE_MANIFEST = {
             'display_name': '获客',
         }
     },
+    # 资源描述符（doc31 §2，RC-P6）：客户资料 → hasn://growth/customers/{server_id}，应用内详情路由打开。
+    'resources': [
+        {
+            'resource_kind': 'growth.customer',
+            'uri_domain': 'growth/customers',  # → hasn://growth/customers/{server_id}（doc08 §3 登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/growth/customers/:id'},
+            'card': {'verb': '客户资料', 'action_label': '查看客户'},
+            'artifact_kind': 'other',
+        }
+    ],
     'capabilities': _CAPABILITIES,
     # tools[] 由 capabilities 派生：每条 gateway_internal + handler 指向云端 handler 注册表键。
     'tools': [_tool_from_cap(cap) for cap in _CAPABILITIES],

@@ -13,12 +13,15 @@ from collections import Counter
 
 from backend.app.hasn_designsystem.core import (
     COMPONENTS_MANIFEST_SCHEMA_VERSION,
+    DEFAULT_REQUIRED_SCENES,
+    SCENE_STANDARDS,
     TOKEN_SCHEMA,
     DesignSystemContract,
     SourceToken,
     compile_tokens,
     css,
     derive,
+    detect_scenes,
     extract_components,
     infer_design_token_type,
     is_allowed_extension,
@@ -376,3 +379,72 @@ def test_literals_faithful_non_backtracking_pixel_count() -> None:
     m = extract_components('demo', _FIXTURE_HTML)
     assert m['literals']['colorExpressions'] == 1
     assert m['literals']['pixelValues'] == 0
+
+
+# ─────────────────────────── 场景覆盖（DSGAL）───────────────────────────
+
+# 品牌网站场景：section 声明场景 + 内部组件继承场景（缺 cta/footer 演示未配齐）。
+_BRAND_SCENE_HTML = (
+    '<section data-ds-scene="brand_website">'
+    '<nav data-ds-component="nav">N</nav>'
+    '<div data-ds-component="hero">H</div>'
+    '<div data-ds-component="features">F</div>'
+    '<div data-ds-component="pricing">P</div>'  # 可选组件到位
+    '</section>'
+)
+
+
+def test_scene_standards_default_required_is_brand_website() -> None:
+    assert DEFAULT_REQUIRED_SCENES == ('brand_website',)
+    ids = [s.id for s in SCENE_STANDARDS]
+    assert ids == ['brand_website', 'deck', 'poster', 'mobile']
+
+
+def test_detect_scenes_brand_website_partial_coverage() -> None:
+    scenes = detect_scenes(_BRAND_SCENE_HTML)
+    assert len(scenes) == 1
+    bw = scenes[0]
+    assert bw['id'] == 'brand_website'
+    assert bw['label'] == '品牌网站'
+    assert bw['requiredComponents'] == ['nav', 'hero', 'features', 'cta', 'footer']
+    assert bw['presentComponents'] == ['nav', 'hero', 'features']  # 按标准序
+    assert bw['missingComponents'] == ['cta', 'footer']
+    assert bw['optionalPresent'] == ['pricing']
+    assert bw['complete'] is False
+
+
+def test_detect_scenes_complete_when_all_required_present() -> None:
+    html = (
+        '<section data-ds-scene="brand_website">'
+        '<div data-ds-component="nav"></div><div data-ds-component="hero"></div>'
+        '<div data-ds-component="features"></div><div data-ds-component="cta"></div>'
+        '<div data-ds-component="footer"></div></section>'
+    )
+    bw = detect_scenes(html)[0]
+    assert bw['missingComponents'] == []
+    assert bw['complete'] is True
+
+
+def test_detect_scenes_qualified_component_key_overrides_current_scene() -> None:
+    # 场景限定写法 scene.component：不依赖外层 section，直接归属指定场景。
+    html = '<div data-ds-component="mobile.tab_bar"></div><div data-ds-component="mobile.mobile_nav"></div>'
+    scenes = detect_scenes(html)
+    assert len(scenes) == 1
+    assert scenes[0]['id'] == 'mobile'
+    assert set(scenes[0]['presentComponents']) == {'tab_bar', 'mobile_nav'}
+
+
+def test_detect_scenes_ignores_unknown_scene_and_component() -> None:
+    html = (
+        '<section data-ds-scene="unknown_scene"><div data-ds-component="hero"></div></section>'
+        '<section data-ds-scene="brand_website"><div data-ds-component="bogus"></div></section>'
+    )
+    # unknown_scene 未知 → 丢弃；brand_website 里 bogus 非标准组件 → 无到位组件 → 不出条目。
+    assert detect_scenes(html) == []
+
+
+def test_manifest_includes_scenes() -> None:
+    m = extract_components('demo', _BRAND_SCENE_HTML)
+    assert m['schemaVersion'] == COMPONENTS_MANIFEST_SCHEMA_VERSION == 2
+    assert isinstance(m['scenes'], list)
+    assert m['scenes'][0]['id'] == 'brand_website'

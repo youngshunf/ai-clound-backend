@@ -13,18 +13,21 @@ from backend.app.billing.core.config import (
     ORDER_EXPIRE_MINUTES,
     PAY_ORDER_NOTIFY_URL,
 )
+from backend.app.billing.core.fulfillment import build_offering_ref, dispatch_fulfillment, reverse_fulfillment
 from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_pay_channel import pay_channel_dao
 from backend.app.billing.crud.crud_pay_contract import pay_contract_dao
 from backend.app.billing.crud.crud_pay_merchant import pay_merchant_dao
 from backend.app.billing.crud.crud_pay_notify_log import pay_notify_log_dao
 from backend.app.billing.crud.crud_pay_order import pay_order_dao
+from backend.app.billing.crud.crud_pay_refund import pay_refund_dao
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model.pay_order import PayOrder
 from backend.app.billing.schema.pay_order import (
     CreatePayOrderParam,
     CreatePayOrderResponse,
     PayOrderStatusResponse,
+    RefundOrderResponse,
 )
 from backend.app.billing.service.channel.base import PayClient
 from backend.common.exception import errors
@@ -66,16 +69,20 @@ def _build_client(channel, merchant_config: dict | None = None) -> PayClient:
 
     if code == 'wx_papay':
         from backend.app.billing.service.channel.wechat_papay import WechatPapayClient
+
         return WechatPapayClient(config, notify_url)
     if code.startswith('wx'):
         from backend.app.billing.service.channel.wechat_native import WechatNativeClient
+
         return WechatNativeClient(config, notify_url)
     if code == 'alipay_qr':
         # 支付宝当面付（扫码）：出可扫二维码，应用内呈现（桌面端）
         from backend.app.billing.service.channel.alipay_qr import AlipayQrClient
+
         return AlipayQrClient(config, notify_url)
     if code.startswith('alipay'):
         from backend.app.billing.service.channel.alipay_pc import AlipayPcClient
+
         return AlipayPcClient(config, notify_url)
     raise errors.ServerError(msg=f'不支持的渠道: {code}')
 
@@ -161,8 +168,12 @@ class PayOrderService:
         try:
             client = get_pay_client(channel, merchant_config=merchant_config)
             pay_result = client.create_order(
-                order_no=order_no, amount=amount, subject=subject,
-                body=body, user_ip=user_ip, contract_no=contract_no,
+                order_no=order_no,
+                amount=amount,
+                subject=subject,
+                body=body,
+                user_ip=user_ip,
+                contract_no=contract_no,
             )
             return pay_result.get('qr_code_url'), pay_result.get('pay_url')
         except Exception as e:
@@ -218,8 +229,15 @@ class PayOrderService:
         if not tier_config:
             raise errors.RequestError(msg=f'无效的套餐: {obj.tier}（app={app_code}）')
 
-        # 从数据库获取价格（单位：元 → 分）
-        if obj.billing_cycle == 'yearly' and tier_config.yearly_price:
+        # MK-5：价格以商品目录 plan 为权威（admin 改价即时生效于新单）；plan 缺档回落 legacy 价。
+        from backend.app.billing.service import offering_pricing
+
+        monthly_key, yearly_key = offering_pricing.tier_plan_keys(obj.tier)
+        plan_key = yearly_key if obj.billing_cycle == 'yearly' else monthly_key
+        plan_amount = await offering_pricing.plan_price(db, offering_pricing.OFFERING_LLM_TIER, plan_key)
+        if plan_amount is not None:
+            pay_amount = int(float(plan_amount) * 100)
+        elif obj.billing_cycle == 'yearly' and tier_config.yearly_price:
             pay_amount = int(float(tier_config.yearly_price) * 100)
         else:
             pay_amount = int(float(tier_config.monthly_price) * 100)
@@ -253,6 +271,12 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code},
+            # MK-3：商品目录引用快照（发货按 kind 分发）；plan_key 对齐 seed（年付档为 <tier>_yearly）。
+            'offering_ref': build_offering_ref(
+                'subscribe',
+                offering_key='llm:tier',
+                plan_key=obj.tier if obj.billing_cycle == 'monthly' else f'{obj.tier}_yearly',
+            ),
         }
         await pay_order_dao.create(db, order_dict)
 
@@ -271,14 +295,23 @@ class PayOrderService:
             await pay_contract_dao.create(db, contract_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip, contract_no=contract_no or '',
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
+            contract_no=contract_no or '',
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=contract_no,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=contract_no,
             expire_time=expire_time,
         )
 
@@ -298,7 +331,13 @@ class PayOrderService:
         if not package or not package.enabled or package.app_code != app_code:
             raise errors.RequestError(msg=f'无效的积分包: {obj.package_id}（app={app_code}）')
 
-        pay_amount = int(float(package.price) * 100)
+        # MK-5：价格以商品目录 plan 为权威（plan_key = 积分包名）；plan 缺档回落 legacy 价。
+        from backend.app.billing.service import offering_pricing
+
+        plan_amount = await offering_pricing.plan_price(
+            db, offering_pricing.OFFERING_CREDITS_TOPUP, package.package_name
+        )
+        pay_amount = int(float(plan_amount if plan_amount is not None else package.price) * 100)
         if pay_amount <= 0:
             raise errors.RequestError(msg='免费积分包无需支付')
 
@@ -331,18 +370,30 @@ class PayOrderService:
                 'package_id': package.id,
                 'credit_amount': float(total_credits),
             },
+            # MK-3：商品目录引用快照；plan_key=积分包名（对齐 seed cp.package_name）。
+            'offering_ref': build_offering_ref(
+                'credit_pack', offering_key='credits:topup', plan_key=package.package_name
+            ),
         }
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
 
@@ -406,18 +457,30 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code, 'app_id': catalog.app_id},
+            # MK-3：商品目录引用快照；offering_key=app:<id>（对齐 seed catalog 收编）。
+            'offering_ref': build_offering_ref(
+                'app_purchase', offering_key=f'app:{catalog.app_id}', plan_key='standard'
+            ),
         }
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
 
@@ -479,18 +542,28 @@ class PayOrderService:
                 'enterprise_id': int(obj.enterprise_id),
                 'seats': seats,
             },
+            # MK-3：商品目录引用快照；offering_key=seat:<id>（席位 feature 前缀族）。
+            'offering_ref': build_offering_ref('app_seat', offering_key=f'seat:{catalog.app_id}', plan_key='standard'),
         }
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
 
@@ -542,20 +615,215 @@ class PayOrderService:
             'expire_time': expire_time,
             'user_ip': user_ip,
             'extra_data': {'app_code': app_code, 'lead_count': count, 'unit_price_fen': unit_fen},
+            # MK-3：商品目录引用快照；线索包无 offering 行（发货只认 kind=lead_pack）。
+            'offering_ref': build_offering_ref('lead_pack'),
         }
         await pay_order_dao.create(db, order_dict)
 
         qr_code_url, pay_url = PayOrderService._invoke_channel_create(
-            channel, merchant_config,
-            order_no=order_no, amount=pay_amount, subject=subject,
-            body=body, user_ip=user_ip,
+            channel,
+            merchant_config,
+            order_no=order_no,
+            amount=pay_amount,
+            subject=subject,
+            body=body,
+            user_ip=user_ip,
         )
 
         return CreatePayOrderResponse(
-            order_no=order_no, pay_amount=pay_amount, channel_code=channel.code,
-            qr_code_url=qr_code_url, pay_url=pay_url, contract_no=None,
+            order_no=order_no,
+            pay_amount=pay_amount,
+            channel_code=channel.code,
+            qr_code_url=qr_code_url,
+            pay_url=pay_url,
+            contract_no=None,
             expire_time=expire_time,
         )
+
+    @staticmethod
+    def _invoke_channel_refund(
+        channel,
+        merchant_config: dict | None,
+        *,
+        order_no: str,
+        refund_no: str,
+        refund_amount: int,
+        total_amount: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        """调渠道 SDK 退款（外部边界）。SDK 失败 → ServerError（refund_order 事务回滚，不落退款记录）。"""
+        try:
+            client = get_pay_client(channel, merchant_config=merchant_config)
+            return client.refund(
+                order_no=order_no,
+                refund_no=refund_no,
+                refund_amount=refund_amount,
+                total_amount=total_amount,
+                reason=reason,
+            )
+        except Exception as e:
+            log.error(f'SDK 退款失败: channel={channel.code}, error={e}', exc_info=True)
+            raise errors.ServerError(msg=f'支付渠道退款失败: {e}')
+
+    @staticmethod
+    async def refund_order(
+        *,
+        db: AsyncSession,
+        order_no: str,
+        reason: str = '',
+        refund_amount: int | None = None,
+        operator_id: int | None = None,
+    ) -> RefundOrderResponse:
+        """管理端发起退款（MK-9 退款编排层·统一商业化内核唯一退款入口）。
+
+        编排步骤（全程在调用方的**单一事务** ``db`` 内，与订单状态翻转原子提交）：
+          ① 行锁取订单 → 幂等短路（已 status=2 直接返回既有退款记录）+ 校验「已支付」；
+          ② **先按 offering.kind 回收权益/额度**（``reverse_fulfillment`` fail-closed——回收失败即抛，
+             绝不进入退款：不退钱不回收 > 退钱不回收）；
+          ③ 调渠道 SDK 退款（外部边界，退款单号确定性 ``RF{order_no}`` → 渠道/DB 双层幂等，
+             重试复用同一 out_refund_no 由渠道去重，规避重复退款）；
+          ④ 落 ``pay_refund``（status=1 成功）+ 订单 ``status=2 已退款`` + ``refund_amount``。
+
+        :raises NotFoundError: 订单不存在。
+        :raises RequestError: 订单非「已支付」态 / 金额非法 / kind 未注册回收处理器（拒绝退款）。
+        :raises ServerError: 渠道退款 SDK 失败。
+        """
+        order = await pay_order_dao.get_by_order_no_for_update(db, order_no)
+        if not order:
+            raise errors.NotFoundError(msg=f'订单 {order_no} 不存在')
+
+        # 退款单号确定性派生（一订单一全额退款）——渠道与 DB 双层幂等的锚。
+        refund_no = f'RF{order.order_no}'
+
+        # 幂等：已退款直接返回既有退款记录（行锁串行化并发退款请求）。
+        if order.status == 2:
+            existing = await pay_refund_dao.get_by_refund_no(db, refund_no)
+            return RefundOrderResponse(
+                order_no=order.order_no,
+                refund_no=refund_no,
+                refund_amount=int(order.refund_amount or (existing.refund_amount if existing else order.pay_amount)),
+                status=int(existing.status if existing else 1),
+                already_refunded=True,
+            )
+
+        if order.status != 1:
+            raise errors.RequestError(msg='只有已支付订单可退款（当前订单状态不允许退款）')
+
+        amount = int(refund_amount) if refund_amount is not None else int(order.pay_amount)
+        if amount <= 0 or amount > int(order.pay_amount):
+            raise errors.RequestError(msg=f'退款金额非法: {amount} 分（订单实付 {order.pay_amount} 分）')
+
+        # ② 先回收权益/额度（fail-closed·同事务）——回收失败即抛，绝不退钱不回收。
+        await reverse_fulfillment(db, order)
+
+        # ③ 渠道退款（外部边界）。
+        channel, merchant_config = await PayOrderService._resolve_channel(db, order.channel_code)
+        refund_reason = reason or '管理端退款'
+        result = PayOrderService._invoke_channel_refund(
+            channel,
+            merchant_config,
+            order_no=order.order_no,
+            refund_no=refund_no,
+            refund_amount=amount,
+            total_amount=int(order.pay_amount),
+            reason=refund_reason,
+        )
+        channel_refund_no = (result or {}).get('channel_refund_no') or (result or {}).get('refund_id')
+
+        # ④ 落退款记录 + 订单状态→已退款（同事务原子提交）。
+        now = timezone.now()
+        await pay_refund_dao.create(
+            db,
+            {
+                'refund_no': refund_no,
+                'order_no': order.order_no,
+                'user_id': order.user_id,
+                'refund_amount': amount,
+                'channel_code': order.channel_code,
+                'reason': refund_reason,
+                'channel_refund_no': channel_refund_no,
+                'status': 1,
+                'success_time': now,
+            },
+        )
+        await pay_order_dao.mark_refunded(db, order_no=order.order_no, refund_amount=amount)
+        log.info(
+            f'[Refund] 退款完成: order_no={order.order_no}, refund_no={refund_no}, '
+            f'amount={amount}分, kind={(order.offering_ref or {}).get("kind")}, operator={operator_id}'
+        )
+        return RefundOrderResponse(
+            order_no=order.order_no,
+            refund_no=refund_no,
+            refund_amount=amount,
+            status=1,
+            already_refunded=False,
+        )
+
+    @staticmethod
+    async def get_refund_list(*, db: AsyncSession, order_no: str | None = None) -> dict[str, Any]:
+        """分页查询退款记录（管理端）。"""
+        select_stmt = await pay_refund_dao.get_select(order_no=order_no)
+        return await paging_data(db, select_stmt)
+
+    @staticmethod
+    async def confirm_refund_notify(
+        *,
+        db: AsyncSession,
+        refund_no: str,
+        refund_status: str,
+        channel_refund_no: str | None = None,
+    ) -> bool:
+        """渠道退款异步回调确认（幂等·仅确认，不重复回收权益）。
+
+        退款编排在 ``refund_order`` 发起时已同步：回收权益 → 调渠道 → 落 ``pay_refund``(status=1) →
+        订单 status=2。本回调用于渠道**异步**退款（如微信退款先返 PROCESSING 后推 REFUND.SUCCESS）
+        的**最终态确认**，只更新退款记录/订单状态，**绝不再跑 ``reverse_fulfillment``**（避免重复回收）。
+
+        :param refund_status: 渠道退款态——``SUCCESS`` 成功 / ``PROCESSING`` 处理中 / 其它（``CLOSED`` /
+                              ``ABNORMAL``）视为失败。
+        :return: 是否有状态变更（幂等重放返回 False）。
+        """
+        refund = await pay_refund_dao.get_by_refund_no(db, refund_no)
+        if not refund:
+            # 收到未知退款单号的回调——不是本内核发起的退款（正常不该发生），记日志忽略。
+            log.warning(f'[Refund] 退款回调未匹配到退款记录: refund_no={refund_no}, status={refund_status}')
+            return False
+
+        status_upper = (refund_status or '').upper()
+        if status_upper == 'SUCCESS':
+            target_status = 1
+        elif status_upper == 'PROCESSING':
+            # 处理中——保持现状，等待终态回调。
+            return False
+        else:
+            target_status = 2  # CLOSED / ABNORMAL 等 → 退款失败
+
+        # 幂等：状态未变化直接返回（渠道回调可能重复投递）。
+        if int(refund.status) == target_status:
+            return False
+
+        now = timezone.now()
+        await pay_refund_dao.update_status(
+            db,
+            refund_no,
+            status=target_status,
+            channel_refund_no=channel_refund_no or refund.channel_refund_no,
+            success_time=now if target_status == 1 else None,
+        )
+
+        if target_status == 1:
+            # 成功终态——补确保订单已置退款态（发起时通常已置，兜底幂等）。
+            order = await pay_order_dao.get_by_order_no_for_update(db, refund.order_no)
+            if order and order.status != 2:
+                await pay_order_dao.mark_refunded(db, order_no=refund.order_no, refund_amount=int(refund.refund_amount))
+            log.info(f'[Refund] 退款回调确认成功: refund_no={refund_no}, order_no={refund.order_no}')
+        else:
+            # 失败终态——发起时已乐观回收权益+置退款态，此处渠道最终判失败 → 需人工对账（钱未退但权益已收回）。
+            log.critical(
+                f'[Refund] 渠道退款最终失败，需人工对账: refund_no={refund_no}, '
+                f'order_no={refund.order_no}, channel_status={refund_status}（权益已在发起时回收）'
+            )
+        return True
 
     @staticmethod
     async def cancel_order(*, db: AsyncSession, order_no: str, user_id: int) -> None:
@@ -579,13 +847,16 @@ class PayOrderService:
         channel_user_id: str | None = None,
         raw_data: str | None = None,
     ) -> bool:
-        await pay_notify_log_dao.create(db, {
-            'notify_type': 'pay',
-            'order_no': order_no,
-            'channel_code': channel_code,
-            'notify_data': raw_data,
-            'status': 0,
-        })
+        await pay_notify_log_dao.create(
+            db,
+            {
+                'notify_type': 'pay',
+                'order_no': order_no,
+                'channel_code': channel_code,
+                'notify_data': raw_data,
+                'status': 0,
+            },
+        )
 
         order = await pay_order_dao.get_by_order_no_for_update(db, order_no)
         if not order:
@@ -599,12 +870,18 @@ class PayOrderService:
 
         now = timezone.now()
         await pay_order_dao.update_status(
-            db, order_no=order_no, status=1,
+            db,
+            order_no=order_no,
+            status=1,
             channel_order_no=channel_order_no,
-            channel_user_id=channel_user_id, success_time=now,
+            channel_user_id=channel_user_id,
+            success_time=now,
         )
 
-        await dispatch_pay_success(order.order_type, order)
+        # MK-3：优先按商品目录 offering_ref.kind 分发履约（内核唯一发货入口）；
+        #        无 offering_ref 的存量订单回落 order_type 旧分发（向后兼容，逐步收敛）。
+        if not await dispatch_fulfillment(order):
+            await dispatch_pay_success(order.order_type, order)
         return True
 
     @staticmethod

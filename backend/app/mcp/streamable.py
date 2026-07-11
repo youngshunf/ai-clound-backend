@@ -25,7 +25,7 @@ from backend.app.hasn.service.hasn_agent_mcp_keys_service import (
 )
 from backend.app.hasn_core import HasnHumans, hasn_agents_dao
 from backend.app.mcp.auth import AgentContext, inject_app_access
-from backend.app.mcp.context import set_capability_ticket
+from backend.app.mcp.context import set_capability_ticket, set_trust_context_header
 from backend.app.mcp.json_encoding import json_default
 from backend.app.mcp.server import mcp_server
 from backend.common.dataclasses import AgentTokenPayload
@@ -75,7 +75,9 @@ class HasnMcpStreamableServer:
                             inputSchema=tool_data['input_schema'],
                         ) for tool_data in tools_data]
 
-                logger.info(f'Listed {len(tools)} tools for agent {agent_context.hasn_id}')
+                # 无状态 MCP 下每个请求都会走一遍 list_tools（stateless=True 每请求新建 transport），
+                # 用 INFO 会把单进程 dev 后端日志刷屏（冷启动批量拉起分身时尤甚），降到 DEBUG。
+                logger.debug(f'Listed {len(tools)} tools for agent {agent_context.hasn_id}')
                 return tools
 
             except Exception as e:
@@ -259,6 +261,22 @@ class HasnMcpStreamableServer:
             ticket_header = headers.get(b'x-capability-ticket')
             set_capability_ticket(ticket_header.decode('utf-8') if ticket_header else None)
 
+            # 会话信任语境 header（L3 工具门云端半场·doc08 §4·RT3）：daemon 为本次派发的 CLI runtime
+            # 组装云端 MCP server 时戳进 X-Hasn-*（分身不可伪造），call_tool 的 L3 门据此判档（header
+            # 优先、工具入参保留参数兜底）。以 X-Hasn-Is-External 的存在与否作「本次是否带信任语境」信号
+            # ——缺失 → 传 None → 回落工具入参保留参数（never over-block：无语境即主会话放行）。
+            is_external_header = headers.get(b'x-hasn-is-external')
+            if is_external_header is not None:
+                peer_id_header = headers.get(b'x-hasn-peer-id')
+                peer_trust_header = headers.get(b'x-hasn-peer-trust')
+                set_trust_context_header((
+                    is_external_header.decode('utf-8'),
+                    peer_id_header.decode('utf-8') if peer_id_header else None,
+                    peer_trust_header.decode('utf-8') if peer_trust_header else None,
+                ))
+            else:
+                set_trust_context_header(None)
+
             logger.debug(f'Authenticated agent {agent_context.hasn_id} for MCP request')
 
             # 委托给 session_manager 处理实际的 MCP 请求
@@ -283,13 +301,18 @@ class HasnMcpStreamableServer:
             # 清理 ContextVar
             _streamable_agent_context.set(None)
             set_capability_ticket(None)
+            set_trust_context_header(None)
 
     def create_session_manager(self) -> StreamableHTTPSessionManager:
         """创建 StreamableHTTP 会话管理器"""
         if self.session_manager is None:
+            # stateless=True 是刻意选择，勿改成有状态：生产多 worker（gunicorn/uvicorn workers）
+            # 下，有状态会话会绑定到首次命中的那个 worker 进程，后续请求被负载均衡打到别的
+            # worker 就找不到会话而失败。无状态模式每请求自建临时 transport、用完即 terminate
+            #（日志里的 "Terminating session: None" 是无状态的正常行为，非错误）。
             self.session_manager = StreamableHTTPSessionManager(
                 self.server,
-                stateless=True,  # 使用无状态模式，每次请求创建新 transport
+                stateless=True,  # 无状态：每请求新建 transport（多 worker 安全，勿改成有状态）
             )
         return self.session_manager
 

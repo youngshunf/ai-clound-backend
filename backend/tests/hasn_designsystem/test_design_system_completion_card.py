@@ -4,9 +4,12 @@
 所需内容）后，云端 save 判定首次完整且作者是分身 → 发一次「设计系统已完成·查看」卡给主人，
 深链 hasn://designsystem/{云端权威 id}。发卡时机 = 必填字段齐了，不是 runtime 自动完成。
 
+NOTIF-N1 分面归属更新：designsystem.ready 是「自分身→主人」汇报面事件，emit() 的 OwnerLoopback 守卫
+拦下它——**不再落 hasn_notifications 权威行**，改投「主人 ⇄ 该分身」主会话一条汇报卡（content_type=5、
+source.kind=agent、primary_action→hasn://designsystem/{云端权威 id}、无 dismiss 动作）。
+
 覆盖：
-- 分身完整 save → 发完成卡（type=designsystem.ready，source.kind=agent，link=/designsystem/{云端id}）
-  + completed_notified_at 落幂等水位 + 卡片真 fanout（delivery.card_message_id）；
+- 分身完整 save → 发完成汇报卡（主会话卡片，非通知中心行）+ completed_notified_at 落幂等水位；
 - 分身内容不完整（缺一必填）→ 不发卡、completed_notified_at 保持 None；
 - 幂等：再 save 一次完整内容 → 不发第二张卡（仍只一张 designsystem.ready）；
 - owner 本人（human）完整 save → 不发完成卡（仅分身作者触发）；
@@ -26,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model.hasn_messages import HasnMessages
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.hasn_designsystem.service.design_system_service import (
     Subject,
@@ -80,6 +84,24 @@ async def _ready_notifs(session, owner: str, ds_id: int) -> list[HasnNotificatio
     return [n for n in rows if (n.data or {}).get('target', {}).get('id') == str(ds_id)]
 
 
+async def _ready_cards(session, owner: str, ds_id: int) -> list[HasnMessages]:
+    """主人 ⇄ 分身 主会话里、指向该设计系统的「汇报卡」（NOTIF-N1 汇报面：卡片而非中心行）。"""
+    rows = (
+        await session.execute(
+            select(HasnMessages).where(
+                HasnMessages.to_id == owner,
+                HasnMessages.content_type == 5,
+            )
+        )
+    ).scalars().all()
+    out = []
+    for m in rows:
+        body = m.content or {}
+        if (body.get('resource') or {}).get('id') == str(ds_id) and (body.get('metadata') or {}).get('report'):
+            out.append(m)
+    return out
+
+
 def test_content_complete_pure() -> None:
     """_content_complete：全必填非空 → True；任一空/缺 → False（零造假，只认真实非空）。"""
     assert _content_complete(_complete_content()) is True
@@ -114,17 +136,21 @@ async def test_agent_complete_save_emits_ready_card(session) -> None:
     # 幂等水位已落（首次完整）
     assert saved['completed_notified_at'] is not None
 
-    notifs = await _ready_notifs(session, owner, ds_id)
-    assert len(notifs) == 1
-    n = notifs[0]
-    assert n.category == 'agent'
-    assert (n.source or {}).get('kind') == 'agent'
-    assert (n.source or {}).get('id') == agent
-    # 深链 = 相对 /designsystem/{云端权威 id}（carrier 提升为 hasn://designsystem/{id}）
-    assert (n.data or {}).get('link') == f'/designsystem/{ds_id}'
-    assert (n.data or {}).get('target', {}).get('id') == str(ds_id)
-    # 卡片真 fanout 落「主人 ⇄ 分身」会话（delivery 回指 card_message_id）
-    assert (n.delivery or {}).get('card_message_id') is not None
+    # NOTIF-N1 分面归属：designsystem.ready 是「自分身→主人」汇报面事件 → 不落通知中心权威行
+    assert await _ready_notifs(session, owner, ds_id) == []
+    # 改投「主人 ⇄ 分身」主会话一条汇报卡（content_type=5）
+    cards = await _ready_cards(session, owner, ds_id)
+    assert len(cards) == 1
+    card = cards[0]
+    assert card.from_id == agent
+    assert card.msg_type == 'notification'
+    body = card.content
+    assert body['source']['kind'] == 'agent'
+    assert body['source']['id'] == agent
+    # 汇报卡是普通会话消息，无 dismiss/知道了 动作
+    assert body['actions'] == []
+    # primary_action 直指真实资源，深链用云端权威 id（相对 /designsystem/{id} 提升为 hasn://designsystem/{id}）
+    assert body['primary_action']['uri'] == f'hasn://designsystem/{ds_id}'
 
 
 async def test_agent_incomplete_save_no_card(session) -> None:
@@ -173,7 +199,9 @@ async def test_ready_card_idempotent(session) -> None:
     )
     # 水位不变（仍是首次那次的时间）
     assert again['completed_notified_at'] == first['completed_notified_at']
-    assert len(await _ready_notifs(session, owner, ds_id)) == 1
+    # 汇报卡只一张（幂等水位挡住第二次）；通知中心恒无权威行（汇报面）
+    assert len(await _ready_cards(session, owner, ds_id)) == 1
+    assert await _ready_notifs(session, owner, ds_id) == []
 
 
 async def test_owner_complete_save_no_card(session) -> None:

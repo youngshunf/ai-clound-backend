@@ -70,6 +70,10 @@ class SaveDesignSystemRequest(BaseModel):
     bundle_asset_id: str | None = Field(default=None, max_length=128)
     note: str | None = Field(default=None, max_length=512)
     enterprise_id: int | None = None
+    required_scenes: list[str] | None = Field(
+        default=None,
+        description='组件画廊要求覆盖的场景 id 列表（None=不改；owner 派发时设定，分身透传）',
+    )
 
 
 class AddCollaboratorRequest(BaseModel):
@@ -102,6 +106,7 @@ async def agent_save_design_system(
         bundle_asset_id=body.bundle_asset_id,
         note=body.note,
         enterprise_id=body.enterprise_id,
+        required_scenes=body.required_scenes,
     )
     await _bump_designsystem_sync(db, agent.owner_hasn_id)
     return response_base.success(data=data)

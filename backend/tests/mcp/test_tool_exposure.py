@@ -1,13 +1,17 @@
 """统一工具暴露管线 ToolExposurePolicy（doc18 §3 · 实施/103 U1）。
 
-U1 = 零行为变化收编：G2（external 白名单 + runtime 命名空间隐藏）与 G5（owner
-三态）从三处散落判定收敛为单一 evaluate，三面消费同一投影。本文件锁两层：
+U1 = 零行为变化收编：G2（external 白名单）与 G5（owner 三态）从三处散落判定
+收敛为单一 evaluate，三面消费同一投影。本文件锁两层：
 
 1. evaluate 纯函数语义（gate/reason/action 逐门断言，零 IO 零 DB）；
 2. 面一致性属性（doc18 §7 一致性行）：同一 ctx 下遍历真实注册表，
    `search 可见 ⟺ evaluate 非 HIDDEN`，且执行面对 HIDDEN 的错误映射与收编前
-   逐位一致（runtime 隐藏→TOOL_NOT_FOUND；三态 deny→PermissionError——
+   逐位一致（G1 特权 / G4 角色→TOOL_NOT_FOUND；三态 deny→PermissionError——
    「deny 执行面也归 TOOL_NOT_FOUND」属行为变化，留 U5 拍板，此处锁现状）。
+
+⚠️ 原 TOOLMIG2-P4「运行位置收口」（按 runtime_location 对本地分身隐藏
+deck/task/workflow）已于 2026-07-10 整体退役——工具暴露只受权限 + 付费墙限制，
+与工具在本地/云端无关。本文件锁「无按位置隐藏」这一现状。
 
 工具加载/审计落库被 no-op（与 test_capability_ticket 同款接缝），判定本体零 mock。
 """
@@ -29,8 +33,6 @@ from backend.app.mcp.tool_exposure import (
     GATE_SOURCE,
     REASON_EXTERNAL_NOT_BOUND,
     REASON_OWNER_DENIED,
-    REASON_PRIVILEGED,
-    REASON_RUNTIME_HIDDEN,
     ToolExposurePolicy,
     tool_exposure_policy,
 )
@@ -119,18 +121,20 @@ def test_g2_external_not_bound_hidden_and_bound_allowed() -> None:
     assert bound.action == ACTION_ALLOW
 
 
-def test_g2_runtime_namespace_hidden_only_for_local_agent() -> None:
+def test_no_runtime_location_hiding_for_any_agent() -> None:
+    """回归锁（2026-07-10 福仔拍板）：工具暴露与分身在本地/云端无关——deck/task/workflow
+    等云端工具对任意 runtime_location 的分身都放行（原 TOOLMIG2-P4「运行位置收口」已整体
+    退役）。能搜就能用：暴露只受权限 + 付费墙限制。"""
     policy = ToolExposurePolicy()
-    deck = _StubTool(name='hasn.deck.create', scopes=['deck:write'])
-
-    local = policy.evaluate(_ctx(runtime_location='local'), deck)
-    assert local.action == ACTION_HIDDEN
-    assert local.gate == GATE_SOURCE
-    assert local.reason == REASON_RUNTIME_HIDDEN
-
-    # 空 / 未知 / cloud / remote 一律可见（绝不误伤云端分身）
-    for loc in ('cloud', 'remote', '', 'unknown'):
-        assert policy.evaluate(_ctx(runtime_location=loc), deck).action == ACTION_ALLOW
+    for name, scope in (
+        ('hasn.deck.create', 'deck:write'),
+        ('hasn.task.create', 'task:manage'),
+        ('hasn.workflow.create', 'workflow:manage'),
+    ):
+        tool = _StubTool(name=name, scopes=[scope])
+        for loc in ('local', 'cloud', 'remote', '', 'unknown'):
+            decision = policy.evaluate(_ctx(runtime_location=loc), tool)
+            assert decision.action == ACTION_ALLOW, f'{name}@{loc} 应放行，不得按位置隐藏'
 
 
 def test_g5_tristate_deny_ask_allow() -> None:
@@ -173,45 +177,32 @@ def test_discovery_face_equals_evaluate_projection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_agent_runtime_hidden_consistent_across_faces(monkeypatch: pytest.MonkeyPatch) -> None:
-    """属性：本地分身 ctx 下 `search 可见 ⟺ call 非 TOOL_NOT_FOUND`（可判定半侧）。
+async def test_runtime_location_does_not_affect_exposure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归锁（2026-07-10 福仔拍板）：runtime_location 不再参与暴露判定。
 
-    对 evaluate=HIDDEN(runtime_hidden) 的每个真实注册工具，断言发现面不可见且
-    执行面抛 TOOL_NOT_FOUND（错误码与收编前逐位一致）；可见侧不真调用（会执行
-    工具体），由 test_discovery_face_equals_evaluate_projection 锁投影等式。
+    ① 逐工具锁：本地分身与云端分身对每个真实注册工具的可见性**完全一致**（位置不影响暴露，
+       原按位置隐藏 deck/task/workflow 的门已退役）。
+    ② 正向锁：本地分身能在云端面**发现** deck/task/workflow（其云端唯一/孪生工具），
+       曾被运行位置收口隐藏，现已放行——不管分身在哪都能调云端工具。
     """
     server = _server_with_noop_io(monkeypatch)
-    ctx = _ctx(runtime_location='local')
+    local_ctx = _ctx(runtime_location='local')
+    cloud_ctx = _ctx(runtime_location='cloud')
 
-    hidden_names: set[str] = set()
+    # ① 本地与云端可见性逐工具一致
     for tool in server.tool_registry.get_all_tools():
-        decision = tool_exposure_policy.evaluate(ctx, tool)
-        if not decision.is_hidden:
-            continue
-        # G1 平台特权门(privileged)隐藏的工具（hasn.diag.* 等）由 test_g1_privilege /
-        # test_diag_tools_p3b 覆盖其双面 TOOL_NOT_FOUND 一致性；此属性只锁 runtime_hidden 半侧。
-        if decision.reason != REASON_RUNTIME_HIDDEN:
-            continue
-        hidden_names.add(tool.name)
-        # 发现面不可见
-        assert not server.tool_directory._can_discover(ctx, tool)
-        # 执行面 TOOL_NOT_FOUND（不确认存在性）
-        with pytest.raises(McpToolError) as exc_info:
-            await server.call_tool(ctx, tool.name, {})
-        assert exc_info.value.code == McpErrorCode.TOOL_NOT_FOUND
+        assert server.tool_directory._can_discover(local_ctx, tool) == server.tool_directory._can_discover(
+            cloud_ctx, tool
+        ), tool.name
 
-    # deck/task/workflow 三域确实被隐藏（TOOLMIG2-P4 现状锁定）
-    assert any(name.startswith('hasn.deck.') for name in hidden_names)
-    assert any(name.startswith('hasn.task.') for name in hidden_names)
-    assert any(name.startswith('hasn.workflow.') for name in hidden_names)
-    # 云端分身零 runtime 隐藏：非特权工具对无授予云端分身全可见；G1 特权门隐藏的
-    # hasn.diag.* 等（普通云端分身无 diag:* 授予故不可见）由 test_g1_privilege 覆盖，此处放行。
-    cloud_ctx = _ctx()
-    for tool in server.tool_registry.get_all_tools():
-        decision = tool_exposure_policy.evaluate(cloud_ctx, tool)
-        if decision.is_hidden and decision.reason == REASON_PRIVILEGED:
-            continue
-        assert decision.is_visible, tool.name
+    # ② 本地分身能发现 deck/task/workflow（默认 ctx 无付费墙/特权限制）
+    discoverable = {
+        tool.name
+        for tool in server.tool_registry.get_all_tools()
+        if server.tool_directory._can_discover(local_ctx, tool)
+    }
+    for prefix in ('hasn.deck.', 'hasn.task.', 'hasn.workflow.'):
+        assert any(n.startswith(prefix) for n in discoverable), f'本地分身应能发现 {prefix}*（云端工具与位置无关）'
 
 
 @pytest.mark.asyncio

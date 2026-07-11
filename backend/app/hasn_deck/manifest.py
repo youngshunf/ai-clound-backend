@@ -173,6 +173,17 @@ DECK_AI_NATIVE_MANIFEST = {
             'display_name': '演示文稿',
         }
     },
+    # 资源描述符（doc31 §2，RC-P0）：声明 deck 产出的资源如何寻址/打开/组卡。完成卡、工作会话资源栏、
+    # URI 解析、详情跳转全从这份声明派生（deck 是首个试点，验证契约通用性）。演示文稿走独立原生窗口。
+    'resources': [
+        {
+            'resource_kind': 'deck.presentation',
+            'uri_domain': 'deck',  # → hasn://deck/{server_id}（doc08 §3 已登记 native_window 域）
+            'open': {'mode': 'native_window', 'window': 'deck'},
+            'card': {'verb': '演示文稿', 'action_label': '打开演示文稿'},
+            'artifact_kind': 'deck',
+        }
+    ],
     'capabilities': [
         _write_cap(
             name='create',

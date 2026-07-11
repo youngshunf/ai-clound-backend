@@ -244,6 +244,32 @@ async def settle_seat_purchase(
     return ent
 
 
+async def reduce_seats_for_refund(
+    db: AsyncSession, *, enterprise_id: int, app_id: str, seats: int
+) -> HasnAppEntitlement:
+    """退款回收席位（``settle_seat_purchase`` 累加的逆操作·MK-9 退款编排）：``seats_total`` 减去退款席位数。
+
+    **fail-closed**：减后 ``seats_total`` 若 < 已指派席位数 ``seats_used`` 则拒退款
+    （须先由管理员回收超出的已指派席位，再退款）——避免「退了钱但成员仍占用席位」。
+    减到 0 封底（防越减为负）。收 ``db`` 参与 refund_order 单一事务。
+    """
+    if seats <= 0:
+        raise errors.RequestError(msg='退款席位数必须大于 0')
+    ent = await _lock_enterprise_entitlement(db, app_id=app_id, enterprise_id=enterprise_id)
+    if ent is None:
+        raise errors.RequestError(msg='企业未购买该应用，无法退款回收席位')
+    new_total = max(0, int(ent.seats_total or 0) - int(seats))
+    used = await count_seats_used(db, entitlement_id=ent.id)
+    if new_total < used:
+        raise errors.RequestError(
+            msg=f'退款需回收 {seats} 席，但企业已指派 {used} 席（回收后仅剩 {new_total} 席）；'
+            f'请先回收超出的已指派席位再退款（{MUST_RELEASE_FIRST}）'
+        )
+    ent.seats_total = new_total
+    await db.flush()
+    return ent
+
+
 async def shrink_seats(
     db: AsyncSession, *, enterprise_id: int, app_id: str, new_seats_total: int
 ) -> HasnAppEntitlement:

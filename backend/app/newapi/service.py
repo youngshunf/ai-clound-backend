@@ -610,6 +610,17 @@ class LlmNewapiUserMappingService:
             raise errors.ServerError(msg='new-api 映射缺失，无法签发 Agent token')
         username = await resolve_newapi_username(mapping)
         access_token = await LlmNewapiUserMappingService._ensure_user_access_token(db, mapping, username)
+        # 防御纵深：_ensure_user_access_token 在 access_token 缓存缺失/解密失败时会走 bootstrap（内含
+        # set_user_password）。set_user_password 已根治为「整对象回写」不再清空分组，但此处再兜一次
+        # ensure_user_group（幂等：分组已是 default 则 no-op、连 PUT 都不发），把「铸 Agent token 后父 user
+        # 分组必为 default」变成不变量——即便将来别处再引入清组路径，也不会让 Agent 的 relay token 空组、
+        # primary 模型报「分组已删除」。不阻断签发（自愈失败仅告警）。
+        try:
+            await newapi_admin_client.ensure_user_group(
+                newapi_user_id=newapi_user_id, group=settings.NEWAPI_DEFAULT_USER_GROUP
+            )
+        except NewApiError as e:
+            log.warning(f'[NewApi] Agent {agent_id} token 铸发后分组自愈失败（不阻断签发）: {e}')
 
         token_name = f'{name}:{agent_id}'
         newapi_token_id, raw_token_key = await newapi_admin_client.provision_user_relay_token(

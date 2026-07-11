@@ -32,6 +32,7 @@ class HasnConversations(Base):
     join_policy: Mapped[str] = mapped_column(sa.String(20), default='', comment='加入策略 (open:开放:green/invite_only:仅邀请:blue/approval:需审核:orange)')
     max_members: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='最大成员数')
     allow_invite: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='成员是否可邀请')
+    allow_member_invite_agent: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='是否允许普通成员拉分身进群 (true:允许/false:仅群主管理员)')
     mute_all: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='全员禁言')
     member_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='当前成员数')
     last_message_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='最后一条消息 ID')
@@ -39,4 +40,4 @@ class HasnConversations(Base):
     last_message_preview: Mapped[str | None] = mapped_column(sa.String(200), default=None, comment='最后消息预览')
     last_message_from: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='最后消息发送方 hasn_id')
     message_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='消息总数')
-    status: Mapped[str] = mapped_column(sa.String(20), default='', comment='状态 (active:活跃:green/archived:已归档:gray/disbanded:已解散:red)')
+    status: Mapped[str] = mapped_column(sa.String(20), default='', comment='状态 (active:活跃:green/archived:已归档:gray/disbanded:已解散:red/unreachable:不可达:orange)')

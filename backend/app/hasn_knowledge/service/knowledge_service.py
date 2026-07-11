@@ -149,6 +149,17 @@ def _native_filename(title: str) -> str:
     return f'{safe[:80]}.md'
 
 
+def _extract_unowned_dataset_id(message: str, candidate_ids: list[str]) -> str | None:
+    """从 RagFlow「you don't own the dataset {id}」类错误信息里识别出具体的孤儿 dataset id。
+
+    仅在错误信息里确实包含某个候选 id 时才返回（避免把无关业务错误误判成孤儿 dataset）。
+    """
+    for candidate in candidate_ids:
+        if candidate in message:
+            return candidate
+    return None
+
+
 class KnowledgeService:
     # ---------- kb ----------
 
@@ -247,8 +258,15 @@ class KnowledgeService:
             raise errors.NotFoundError(msg='目录不存在')
         return await self.authorize_kb(db, subject=subject, kb_id=folder.kb_id, need=need)
 
-    async def list_accessible_kbs(self, db: AsyncSession, *, subject: Subject) -> list[dict[str, Any]]:
-        """可访问知识库 = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。"""
+    async def _accessible_kb_rows(self, db: AsyncSession, *, subject: Subject) -> list[tuple[Kb, str, str]]:
+        """可访问知识库的**单一事实源**：返回 (kb, my_permission, relation) 三元组。
+
+        = 我拥有的（relation=owner，manager 权）∪ 共享给我的（relation=shared）∪ 我企业可见的
+        （relation=enterprise）；非 owner 项经 `_effective_permission` 过滤掉 rank 0（无权）。
+
+        `list_accessible_kbs`（浏览）与 `resolve_retrieval_visible_kbs`（检索）都建立在此之上，
+        确保「浏览可见集」与「检索可见集」永不漂移——分享/隔离在此单点收口。
+        """
         human = subject.owner_hasn_id
         memberships = await resource_share_service.acting_human_memberships(db, human)
         member_enterprise_ids = {eid for eid, _ in memberships}
@@ -300,16 +318,21 @@ class KnowledgeService:
                 (await db.execute(select(Kb).where(Kb.id.in_(extra_ids), Kb.deleted_time.is_(None)))).scalars().all()
             )
 
-        items: list[dict[str, Any]] = [
-            _kb_dict(kb, my_permission='manager', relation='owner') for kb in owned
-        ]
+        rows: list[tuple[Kb, str, str]] = [(kb, 'manager', 'owner') for kb in owned]
         for kb in extra_kbs:
             eff = await self._effective_permission(db, kb=kb, subject=subject)
             if rank(eff) == 0:
                 continue
             relation = 'enterprise' if (kb.id in ent_ids and str(kb.id) not in shared_ids) else 'shared'
-            items.append(_kb_dict(kb, my_permission=eff, relation=relation))
-        return items
+            rows.append((kb, eff, relation))
+        return rows
+
+    async def list_accessible_kbs(self, db: AsyncSession, *, subject: Subject) -> list[dict[str, Any]]:
+        """可访问知识库 = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。"""
+        return [
+            _kb_dict(kb, my_permission=perm, relation=relation)
+            for kb, perm, relation in await self._accessible_kb_rows(db, subject=subject)
+        ]
 
     @staticmethod
     async def _shared_kb_ids_for_agent(db: AsyncSession, *, agent_hasn_id: str) -> set[str]:
@@ -1114,28 +1137,40 @@ class KnowledgeService:
         await db.flush()
         return {'agent_hasn_id': agent_hasn_id, 'mode': mode, 'kb_ids': normalized_ids}
 
+    async def resolve_retrieval_visible_kbs(self, db: AsyncSession, *, subject: Subject) -> list[Kb]:
+        """检索可见集（单点收口 dataset 白名单）：与 `list_accessible_kbs` **同源**
+        （拥有 ∪ 共享给我 ∪ 企业可见），再施加两道检索专属闸：
+
+        1. **分身维度② grant** —— 仅裁剪「主人自己的库」(relation=owner)：`denied` 整体拒；
+           `restricted` 只保留白名单内的自有库。分享/企业来的库各有其独立 ACL grant（在
+           `_accessible_kb_rows` 已按 `_effective_permission` 过滤），**不受**维度② 白名单裁剪
+           —— 维度② 白名单（`put_agent_grant` 校验）本就只针对主人自有库。
+        2. 只保留 `status='active'` 且已回填 `ragflow_dataset_id` 的库（无 dataset 无法检索）。
+
+        这样「好友把库/文档分享给我 → 我和我的分身都能**检索**到」与浏览走同一份可见集，
+        而单账号模型下同一个平台 service key 能读任意 dataset，检索只需把这些库的
+        `ragflow_dataset_id` 并进白名单即可（隔离与分享都在应用层单点收口）。
+        """
+        rows = await self._accessible_kb_rows(db, subject=subject)
+        if subject.kind == 'agent':
+            grant = await self.get_agent_grant(db, subject.owner_hasn_id, subject.hasn_id)
+            if grant['mode'] == 'denied':
+                raise KnowledgeProviderError('knowledge_grant_denied', '主人已禁止该分身访问知识库')
+            if grant['mode'] == 'restricted':
+                allowed = set(grant['kb_ids'])
+                # 维度② 白名单只约束自有库（relation=owner）；分享/企业来的库不受此白名单裁剪
+                rows = [(kb, perm, rel) for (kb, perm, rel) in rows if rel != 'owner' or kb.id in allowed]
+                # 交集空即拒（显式告知分身被拒，而非静默返回空检索）——分享/企业库能救回则不触发
+                if not rows:
+                    raise KnowledgeProviderError('knowledge_grant_denied', '分身知识库白名单为空（交集为空即拒）')
+        return [kb for (kb, _perm, _rel) in rows if kb.status == 'active' and kb.ragflow_dataset_id]
+
     async def resolve_agent_visible_kbs(
         self, db: AsyncSession, owner_id: str, agent_hasn_id: str
     ) -> list[Kb]:
-        """维度② 强制：denied 拒；restricted 裁剪白名单；无行/inherit 继承 owner 全部库。"""
-        grant = await self.get_agent_grant(db, owner_id, agent_hasn_id)
-        if grant['mode'] == 'denied':
-            raise KnowledgeProviderError('knowledge_grant_denied', '主人已禁止该分身访问知识库')
-        rows = (
-            (
-                await db.execute(
-                    select(Kb).where(Kb.owner_id == owner_id, Kb.deleted_time.is_(None), Kb.status == 'active')
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if grant['mode'] == 'restricted':
-            allowed = set(grant['kb_ids'])
-            rows = [kb for kb in rows if kb.id in allowed]
-            if not rows:
-                raise KnowledgeProviderError('knowledge_grant_denied', '分身知识库白名单为空（交集为空即拒）')
-        return list(rows)
+        """分身可达知识库（维度② grant 裁剪后）。委托统一检索可见集解析——含共享/企业库，
+        使 list_datasets / fetch_doc 可达范围与 search 检索可见集完全一致（不漂移）。"""
+        return await self.resolve_retrieval_visible_kbs(db, subject=Subject.agent(agent_hasn_id, owner_id))
 
     # ---------- 检索 ----------
 
@@ -1154,18 +1189,10 @@ class KnowledgeService:
 
         agent_hasn_id 非空 = Agent 视角（先过维度② grant）；None = owner 本人。
         """
-        if agent_hasn_id:
-            visible = await self.resolve_agent_visible_kbs(db, owner_id, agent_hasn_id)
-        else:
-            visible = (
-                (
-                    await db.execute(
-                        select(Kb).where(Kb.owner_id == owner_id, Kb.deleted_time.is_(None), Kb.status == 'active')
-                    )
-                )
-                .scalars()
-                .all()
-            )
+        subject = Subject.agent(agent_hasn_id, owner_id) if agent_hasn_id else Subject.human(owner_id)
+        # 可见集 = 拥有 ∪ 共享给我 ∪ 企业可见（agent 再过维度② grant）；与浏览同源，故好友分享的库/文档
+        # 也进入检索范围（单账号模型下同一 service key 能读任意 dataset，只需把这些库的 dataset 并进白名单）。
+        visible = await self.resolve_retrieval_visible_kbs(db, subject=subject)
         if kb_ids:
             requested = set(kb_ids)
             visible = [kb for kb in visible if kb.id in requested]
@@ -1175,22 +1202,44 @@ class KnowledgeService:
             return {'chunks': [], 'total': 0, 'kb_count': 0}
         client, _ = await resolve_knowledge_instance(db)
         dataset_by_id = {kb.ragflow_dataset_id: kb for kb in visible}
-        data = await client.retrieval(
-            question=question,
-            dataset_ids=list(dataset_by_id.keys()),
-            top_k=top_k,
-            similarity_threshold=similarity_threshold,
-        )
+        # 韧性：白名单里若混入不再属于当前 RagFlow 账号的孤儿 dataset（如切换实例后遗留的旧库、
+        # 或引擎侧被手动删除），RagFlow 对批量 dataset_ids 整批拒绝（code=102 you don't own the
+        # dataset X）——逐个识别剔除后重试，避免一个孤儿库拖垮同一 owner 名下其它正常库的检索。
+        remaining_ids = list(dataset_by_id.keys())
+        data: dict[str, Any] | None = None
+        while remaining_ids:
+            try:
+                data = await client.retrieval(
+                    question=question,
+                    dataset_ids=remaining_ids,
+                    top_k=top_k,
+                    similarity_threshold=similarity_threshold,
+                )
+                break
+            except KnowledgeProviderError as exc:
+                orphan_id = _extract_unowned_dataset_id(exc.message, remaining_ids)
+                if orphan_id is None:
+                    raise
+                remaining_ids.remove(orphan_id)
+        if data is None:
+            return {'chunks': [], 'total': 0, 'kb_count': 0}
         raw_chunks = data.get('chunks') or []
+        # 纵深防御：即便上游只应返回请求 dataset 内的分块，仍按「本次允许的 dataset 白名单」再过滤一遍，
+        # 杜绝引擎越权把其它 dataset 的分块泄漏给调用者——隔离不单靠上游遵约（应用层兜底）。
+        allowed_dataset_ids = set(remaining_ids)
+        raw_chunks = [c for c in raw_chunks if str(c.get('dataset_id')) in allowed_dataset_ids]
         rf_doc_ids = {str(c.get('document_id')) for c in raw_chunks if c.get('document_id')}
         doc_rows: dict[str, Document] = {}
         if rf_doc_ids:
+            # 文档元数据按「可见库」定界（不用 owner_id）：共享库里的文档归好友所有，用 owner_id 会漏掉其元数据；
+            # visible 已在上面经 ACL 收窄，据其 kb_id 取文档既正确又安全。
+            visible_kb_ids = [kb.id for kb in visible]
             for row in (
                 (
                     await db.execute(
                         select(Document).where(
                             Document.ragflow_document_id.in_(rf_doc_ids),
-                            Document.owner_id == owner_id,
+                            Document.kb_id.in_(visible_kb_ids),
                             Document.deleted_time.is_(None),
                         )
                     )

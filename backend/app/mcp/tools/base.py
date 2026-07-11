@@ -58,6 +58,16 @@ class BaseTool(ABC):
         return None
 
     @property
+    def min_trust_level(self) -> int | None:
+        """L3 工具门（doc08 §4·RT3·云端半场）：本工具在**对外会话**里要求的最低信任档。
+
+        ``None``（默认）= 无对外门，任何会话都放行。声明后（看日程/看计划=好友3、位置/代预约=
+        密友4），对外会话（peer 1:1 / A2A / 群）里由 ``server.call_tool`` 按对端**真实** trust
+        判档，不足即结构化拒绝（``trust_gate.evaluate_min_trust_level``）。主会话/主人自环不受限。
+        """
+        return None
+
+    @property
     def enterprise_capability(self) -> str | None:
         """企业能力族键（G4 企业角色门·doc18/实施103 U4）。
 

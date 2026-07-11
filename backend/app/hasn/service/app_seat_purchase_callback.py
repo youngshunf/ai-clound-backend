@@ -65,9 +65,42 @@ async def handle_app_seat_paid(order: Any) -> None:
         await settle_app_seat_purchase(db, order=order)
 
 
+async def revoke_app_seat_purchase(db: AsyncSession, *, order: Any) -> None:
+    """企业席位退款回收（发货 ``settle_app_seat_purchase`` 的逆操作·MK-9 退款编排）：``seats_total`` 减回本单席位数。
+
+    据 ``extra_data``（app_id/enterprise_id/seats）定位企业权益行并减席位（fail-closed：减后 < 已指派
+    则拒退款，见 ``reduce_seats_for_refund``）。**收 ``db`` 参与 refund_order 单一事务**。
+    """
+    extra = order.extra_data or {}
+    app_id = extra.get('app_id')
+    enterprise_id = extra.get('enterprise_id')
+    seats = int(extra.get('seats') or 0)
+    if not app_id or enterprise_id is None or seats <= 0:
+        log.error(
+            f'[AppSeat] 退款回收字段缺失: order_no={order.order_no}, '
+            f'app_id={app_id}, enterprise_id={enterprise_id}, seats={seats}'
+        )
+        return
+
+    ent = await app_seat_service.reduce_seats_for_refund(
+        db, enterprise_id=int(enterprise_id), app_id=app_id, seats=seats
+    )
+    log.info(
+        f'[AppSeat] 退款回收席位: app_id={app_id}, enterprise_id={enterprise_id}, '
+        f'-{seats} → seats_total={ent.seats_total}, order_no={order.order_no}'
+    )
+
+
 def register_app_seat_purchase_callback() -> None:
     """注册企业席位购买支付回调 — 在应用启动时调用（registrar）。"""
     from backend.app.billing.core.callback import register_pay_callback
+    from backend.app.billing.core.fulfillment import (
+        KIND_SEAT,
+        register_fulfillment,
+        register_refund_handler,
+    )
 
-    register_pay_callback('app_seat', handle_app_seat_paid)
-    log.info('[AppSeat] 已注册企业席位购买支付回调 (app_seat)')
+    register_pay_callback('app_seat', handle_app_seat_paid)  # 存量兼容
+    register_fulfillment(KIND_SEAT, handle_app_seat_paid)  # MK-3：offering.kind=seat 发货轴
+    register_refund_handler(KIND_SEAT, revoke_app_seat_purchase)  # MK-9：退款回收轴（减席位）
+    log.info('[AppSeat] 已注册企业席位购买支付回调 (app_seat/seat) + 退款回收处理器')

@@ -11,6 +11,8 @@
 
 from fastapi import APIRouter
 
+from backend.app.billing.api.v1.admin.billing_offering import router as admin_offering_router
+from backend.app.billing.api.v1.admin.billing_plan import router as admin_plan_router
 from backend.app.billing.api.v1.admin.channel import router as admin_channel_router
 from backend.app.billing.api.v1.admin.contract import router as admin_contract_router
 from backend.app.billing.api.v1.admin.credit_balance import router as admin_balance_router
@@ -36,6 +38,8 @@ from backend.app.billing.api.v1.agent.usage import router as agent_usage_router
 from backend.app.billing.api.v1.app.pay import router as app_pay_router
 
 # ── 订阅积分 app / open / agent ──
+# 统一商业化内核（MK-7）：费用与账单中心聚合读 + 试用发放
+from backend.app.billing.api.v1.app.center import router as app_center_router
 from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
 from backend.app.billing.api.v1.open.notify import router as open_notify_router
 from backend.app.billing.api.v1.open.pricing import router as open_pricing_router
@@ -71,9 +75,14 @@ user_tier_v1.include_router(admin_package_router, prefix='/packages', tags=['管
 user_tier_v1.include_router(admin_tier_router, prefix='/tiers', tags=['管理-订阅等级'])
 # /rates（模型积分费率 model_credit_rate，D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦）。
 user_tier_v1.include_router(admin_newapi_quota_router, prefix='/newapi-quota', tags=['管理-Token额度用量'])
+# 统一商业化内核（MK-6）：商品目录 offering + 价格档位 plan 管理面（商业化中心）
+user_tier_v1.include_router(admin_offering_router, prefix='/offerings', tags=['管理-商品目录（商业化内核）'])
+user_tier_v1.include_router(admin_plan_router, prefix='/plans', tags=['管理-价格档位（商业化内核）'])
 
 user_tier_app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/user_tier/app', tags=['订阅积分-用户端'])
 user_tier_app.include_router(app_subscription_router, prefix='/subscription', tags=['用户-订阅管理'])
+# 统一商业化内核（MK-7）：费用与账单中心（/api/v1/user_tier/app/center）
+user_tier_app.include_router(app_center_router, prefix='/center', tags=['用户-费用与账单中心'])
 
 user_tier_open = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/user_tier/open', tags=['订阅积分-公开'])
 user_tier_open.include_router(open_pricing_router, tags=['公开-定价信息'])

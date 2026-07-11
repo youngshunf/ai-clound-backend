@@ -23,13 +23,12 @@ from backend.app.mcp.tool_exposure import (
     tool_exposure_policy,
 )
 from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
-from backend.app.mcp.tools.asset import AssetCreateTool
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
-from backend.app.mcp.tools.group import GroupJoinTool
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.diag import DIAG_TOOLS
+from backend.app.mcp.tools.group import GroupJoinTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import (
@@ -111,8 +110,8 @@ class HasnCloudMcpServer:
         self.tool_registry.register(ConversationListTool())
         self.tool_registry.register(MessageSearchTool())
 
-        # 资产工具：把分身自己的内容（SVG/base64 图片/文本…）上传成 hasn://asset，供消息附件引用。
-        self.tool_registry.register(AssetCreateTool())
+        # 资产上传已收归本地工具 hasn.asset.upload(path)：分身只传路径，daemon 侧读盘上桶返
+        # hasn://asset/{id}（铁律·禁二进制 base64 入参）。旧云端 hasn.asset.create(base64) 已删除。
 
         # 联系人工具：列出 + 按昵称/唤星号搜索（含好友名下 agent）+ 代主人发起好友请求。
         # 打通"搜联系人→发消息"与"搜陌生人(user.search)→发起加好友"两条闭环。
@@ -263,11 +262,10 @@ class HasnCloudMcpServer:
             # 侧探 hasn.diag.* 运维工具、或「主人有无某企业角色」。回显调用方自己传入的 tool_name
             # 与真 404 一致、不构成额外泄漏；泄漏面是**措辞差异**。（G4 当前 inert，见 tool_exposure。）
             raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
-        # 运行位置收口（TOOLMIG2-P4）：本地分身在云端面不得调 deck/task/workflow。
-        raise McpToolError(
-            McpErrorCode.TOOL_NOT_FOUND,
-            f'{tool_name} 在云端面对本地分身不可用：本地分身请使用本地工具面（hasn-local）的同名工具',
-        )
+        # 兜底：其余任何 HIDDEN reason（理论不可达——上面已穷尽 G1/G2/G4/G5 的隐藏 reason；
+        # 原「运行位置收口」按分身在本地/云端隐藏工具的门已于 2026-07-10 整体退役，见 tool_exposure）
+        # 一律按存在性隐藏处理，绝不静默穿透返回 None。
+        raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, f'Tool not found: {tool_name}')
 
     async def call_tool(self, agent_context: AgentContext, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """
@@ -289,6 +287,22 @@ class HasnCloudMcpServer:
 
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
+
+            # register-on-write（doc31/32 RC-P8 泛化）：剥离系统注入的工作会话 id（`_hasn_session_id`，
+            # 分身不可伪造）→ agent_context.work_session_id，供 deck/app 写点把产物登记进「工作会话
+            # 资源栏」。须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站
+            # 打在入参）与 daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=主会话直调。
+            from backend.app.mcp import trust_gate as _tg
+
+            arguments, work_session_id = _tg.pop_session_id(arguments)
+            if work_session_id:
+                agent_context.work_session_id = work_session_id
+
+            # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
+            # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游
+            # 暴露判定 / ask 验票 / dispatch / 审计都只见剥离后的干净入参；同时据其判档（对外
+            # 会话按对端真实 trust 硬门控，不足即抛 MCP_9217 结构化拒绝）。
+            arguments = await self._enforce_conversation_trust_gate(agent_context, tool, arguments)
 
             # 统一暴露管线（doc18 §3·实施/103 U1）：resolve 后一次 evaluate，执行面按决策映射。
             # 与发现面 _can_discover 同源（HIDDEN 即不可见），转发面 hasn.cloud.tool.call 重入
@@ -347,6 +361,55 @@ class HasnCloudMcpServer:
             raise
         else:
             return result
+
+    async def _enforce_conversation_trust_gate(
+        self, agent_context: AgentContext, tool: BaseTool, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """L3 工具门（doc08 §4·RT3·云端半场）：剥离会话信任语境保留参数 + 对外会话按档硬门控。
+
+        1. 剥离系统注入的 ``_hasn_is_external`` / ``_hasn_peer_id`` / ``_hasn_peer_trust``
+           （分身不可伪造），返回干净入参供下游 dispatch/审计（工具体永不见这些键）。
+        2. 仅当**对外会话**（``is_external``）且工具声明了 ``min_trust_level`` 才判档：
+           - 1:1 优先据 ``peer_id`` 从云端权威 ``hasn_contacts`` 解析对端**真实** trust
+             （复用 RT1.5 ``effective_relation``）；解析不到再回落 daemon 预解析的 ``peer_trust``。
+           - 群会话（无 ``peer_id``、daemon 填 roster 最低档）直接用 ``peer_trust``。
+           - ``peer_trust`` 仍缺失 → 门内 fail-closed 当陌生人(1)。
+        3. 主会话 / 主人自环（``is_external=False``）不受限；无对外门工具（``min_trust_level=None``）
+           恒放行。判档不足抛 ``McpToolError`` TRUST_LEVEL_INSUFFICIENT（含当前档+所需档，
+           分身据此礼貌回绝）。
+
+        Raises:
+            McpToolError: 对外会话里对端档低于工具 ``min_trust_level``（code=TRUST_LEVEL_INSUFFICIENT）。
+        """
+        from backend.app.mcp import trust_gate
+
+        # 恒先剥离入参保留参数（工具体永不见 _hasn_*），得干净入参 + reserved-arg 兜底语境。
+        cleaned, is_external, peer_id, peer_trust = trust_gate.pop_trust_context(arguments)
+        # header 优先（CLI runtime 走 daemon 组装的 X-Hasn-* header；本半场闭合的主通道）；
+        # 无 header 才回落上面的 reserved-arg（Hermes / 其它注入路径）。二者皆缺 = 主会话（放行）。
+        header_ctx = trust_gate.read_header_trust_context()
+        if header_ctx is not None:
+            is_external, peer_id, peer_trust = header_ctx
+        min_trust = getattr(tool, 'min_trust_level', None)
+        # 主会话 / 无对外门 → 无需解析对端，直接放行（never over-block：缺语境即主会话）。
+        if not is_external or min_trust is None:
+            return cleaned
+        # 对外 1:1：据 peer_id 解析云端权威真实档（解析不到才回落 daemon 预解析档）。
+        if peer_id:
+            try:
+                from backend.database.db import async_db_session
+
+                async with async_db_session() as db:
+                    resolved = await trust_gate.resolve_conversation_peer_trust(
+                        db, agent_context.owner_hasn_id, peer_id
+                    )
+            except Exception as exc:
+                logger.warning('L3 trust gate peer resolve failed for %s: %r', peer_id, exc)
+                resolved = None
+            if resolved is not None:
+                peer_trust = resolved
+        trust_gate.evaluate_min_trust_level(min_trust, peer_trust, is_external=is_external)
+        return cleaned
 
     def _should_audit_call(
         self,

@@ -28,6 +28,7 @@ from backend.app.hasn.service import sync_invalidate_service
 from backend.app.hasn.service.inbound_gatekeeper import (
     REJECT_SILENT,
     SUPPRESS,
+    evaluate_a2h_inbound,
     evaluate_inbound,
     record_suppression,
 )
@@ -616,17 +617,23 @@ async def _suppress_inbound(
     context: dict | None,
     reason: str,
     snapshot: dict[str, Any],
+    to_entity_type: str = 'agent',
 ) -> dict[str, Any]:
     """入站门控未过：落库消息为受抑制态 + 写抑制箱 + WSPUSH，不投递不唤醒 runtime。
 
     被门控的外部→Agent 消息保留 message_id 与正文、visible_to_owner=true，主人在抑制箱可见、
     放行后才真正投递+唤醒（设计 06：记录不丢弃）。不写 message.received sync_event，故不污染
     主人正常会话列表，仅经抑制箱镜像（WSPUSH suppressed kind）呈现。
+
+    to_entity_type='human' 支持 A2H（分身→人类）接收侧暂存（§4.1.3）：此时收件主体即主人本人
+    （hasn_id == owner_id），会话 to_type 记 'human'。返回结构化关系反馈（供消息工具诚实回传，
+    修 B12：暂存时 reachable=false + 带 pending_request_id/relation）。
     """
     to_id = agent_info['hasn_id']
-    owner_id = agent_info.get('owner_id') or ''
+    # A2H 收件主体即主人本人；A2A 取分身 owner
+    owner_id = agent_info.get('owner_id') or (to_id if to_entity_type == 'human' else '')
     from_type = _entity_type_str(from_id)
-    conv = await get_or_create_conversation(db, from_id, from_type, to_id, 'agent', 'social')
+    conv = await get_or_create_conversation(db, from_id, from_type, to_id, to_entity_type, 'social')
     msg = await persist_message(
         db=db,
         conversation_id=str(conv.id),
@@ -656,6 +663,18 @@ async def _suppress_inbound(
             await sync_invalidate_service.bump_owner('suppressed', db, owner_id)
         except Exception as exc:
             log.warning(f'[inbound_gate] bump suppressed failed: {exc}')
+    # 结构化关系反馈（§4.1.4 修 B12）：把派生解析得到的关系档 + 代发请求 id 透传给消息工具，
+    # 供其诚实回传 reachable=false + relation + pending_request_id + hint（不再误报 reachable=true）。
+    from backend.app.hasn.constants import TRUST_LEVEL_LABELS
+
+    rel_trust = snapshot.get('trust_level')
+    relation = None
+    if rel_trust is not None:
+        relation = {
+            'relation_type': snapshot.get('relation_type', 'social'),
+            'trust_level': rel_trust,
+            'label': TRUST_LEVEL_LABELS.get(rel_trust, ''),
+        }
     return {
         'error': False,
         'status': 'suppressed',
@@ -664,6 +683,8 @@ async def _suppress_inbound(
         'conversation_id': str(conv.id),
         'local_id': local_id,
         'suppressed': True,
+        'pending_request_id': snapshot.get('pending_request_id'),
+        'relation': relation,
     }
 
 
@@ -815,6 +836,13 @@ async def route_message(
         sender_member = next((m for m in members if m.member_id == from_id), None)
         from_display_name = getattr(sender_member, 'member_name', None) if sender_member else None
         from_star_id = getattr(sender_member, 'member_star_id', None) if sender_member else None
+        # doc10：随 envelope 下发「生效发言策略」+ 分身成员数——daemon 群派发闸据 effective 判定
+        # （多分身群 free 已被降级为 mention_only），不必自己再数分身、再派生（云端权威一处算）。
+        from backend.app.hasn.service.hasn_group_service import effective_agent_policy
+
+        grp_agent_member_count = sum(1 for m in members if getattr(m, 'member_type', None) == 'agent')
+        grp_stored_policy = getattr(group, 'agent_policy', None) or 'free'
+        grp_effective_policy = effective_agent_policy(grp_stored_policy, grp_agent_member_count)
         hasn_envelope = {
             'id': msg.id,
             'conversation_id': group_conv_id,
@@ -836,14 +864,18 @@ async def route_message(
             'created_time': msg.created_time.isoformat() if msg.created_time else None,
             # 群级 agent 发言策略 + @提及：daemon(G4) group_participation_gate 的权威数据，
             # 决定 no_agent/silent 不唤醒、mention_only 仅命中才唤醒、free 唤醒(受配额退避)。
-            'agent_policy': getattr(group, 'agent_policy', None) or 'free',
+            'agent_policy': grp_stored_policy,
+            'agent_policy_effective': grp_effective_policy,
+            'agent_member_count': grp_agent_member_count,
             'mentions': grp_mentions,
             'mention_all': grp_mention_all,
             'group': {
                 'group_id': to_id,
                 'name': group.group_name,
                 'owner_id': group.group_owner_id,
-                'agent_policy': getattr(group, 'agent_policy', None) or 'free',
+                'agent_policy': grp_stored_policy,
+                'agent_policy_effective': grp_effective_policy,
+                'agent_member_count': grp_agent_member_count,
             },
         }
         payload = {
@@ -927,9 +959,49 @@ async def route_message(
     )
 
     if perm_result.decision == DENY:
+        # §4.1.3（修 B12 后半）：A2H 出站关系门 DENY（发送方=分身、接收方=人类、无/低关系）→ 不再
+        #   裸 2002 让主人看不到；接收侧（人类主人）跑与「发给我的分身」一致的解析——好友直达 / 普通
+        #   朋友转请求进箱 / 陌生人门控进箱。出站闸(_a2h_outbound_gate)作为发送方授权面保留（本 DENY
+        #   即其判决），这里仅在其判「关系门」时把不可达的裸报错升级为可见的暂存/请求路径。
+        if (
+            ctx_from_entity_type == 'agent'
+            and ctx_to_entity_type == 'human'
+            and perm_result.matched_rule == 'matrix_a2h_relation'
+            and from_id != to_id
+            and msg_type not in ('notification', 'system')
+        ):
+            a2h_gate = await evaluate_a2h_inbound(
+                db, from_agent=from_id, human_id=to_id, relation_type=ctx_relation_type,
+            )
+            if a2h_gate.action == REJECT_SILENT:
+                return {'error': True, 'code': 2002, 'message': '对方已将你屏蔽'}
+            if a2h_gate.action == SUPPRESS:
+                return await _suppress_inbound(
+                    db,
+                    from_id=from_id,
+                    agent_info=target_info,
+                    content=content,
+                    content_type=content_type,
+                    msg_type=msg_type,
+                    priority=priority,
+                    reply_to_id=reply_to_id,
+                    local_id=local_id,
+                    context=context,
+                    reason=a2h_gate.reason or 'permission_denied',
+                    snapshot=a2h_gate.snapshot,
+                    to_entity_type='human',
+                )
+            # ALLOW（接收侧视好友/直连≥2）→ 覆盖出站关系门 DENY，放行走正常投递
+            from backend.app.hasn.service.iron_laws import DecisionResult
+
+            perm_result = DecisionResult(
+                decision=ALLOW,
+                reason='a2h receiver approved (friend/direct edge)',
+                matched_rule='a2h_receiver_override',
+            )
         # 限流（iron_law_6）DENY 对外部→Agent → 入抑制箱(abuse_restricted) 让主人可放行；
         # 其它硬违规（身份未声明/commerce free_chat 等）保持静默拒绝（协议级，不进抑制箱）。
-        if (
+        elif (
             ctx_to_entity_type == 'agent'
             and from_id != target_info.get('owner_id')
             and perm_result.matched_rule == 'iron_law_6'
@@ -948,11 +1020,13 @@ async def route_message(
                 reason='abuse_restricted',
                 snapshot={'limit_kind': 'rate', 'error_code': perm_result.error_code},
             )
-        return {
-            'error': True,
-            'code': perm_result.error_code or 2002,
-            'message': perm_result.reason,
-        }
+        else:
+            # 未被 A2H 覆盖、也非限流 → 硬拒（协议级），保持静默 2002
+            return {
+                'error': True,
+                'code': perm_result.error_code or 2002,
+                'message': perm_result.reason,
+            }
     if perm_result.decision == CONFIRM:
         await _stash_pending_commitment(
             db,

@@ -21,7 +21,9 @@ class HasnContacts(Base):
     )
     peer_type: Mapped[str] = mapped_column(sa.String(10), default='', comment='对方类型 (human:人类:blue/agent:代理:green)')
     relation_type: Mapped[str] = mapped_column(sa.String(20), default='', comment='关系类型 (social:社交:blue/commerce:商业:orange/service:履约:green/professional:专业:purple/platform:平台:cyan)')
-    trust_level: Mapped[int] = mapped_column(sa.SMALLINT(), default=0, comment='信任等级 (0:已拉黑:red/1:陌生人:gray/2:普通联系人:blue/3:朋友:green/4:高信任:orange/5:所有者:purple)')
+    # 默认值统一为 1（陌生人 fail-closed 兜底档），与 SQL DDL DEFAULT 1 对齐（B4）。
+    # 历史默认 0 会把「任何绕过 service 层的 ORM 插入」写成黑名单，属缺陷。
+    trust_level: Mapped[int] = mapped_column(sa.SMALLINT(), default=1, comment='信任等级 (0:已拉黑:red/1:陌生人:gray/2:普通联系人:blue/3:朋友:green/4:高信任:orange/5:所有者:purple)')
     scope: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='关系作用域 (JSONB)')
     custom_permissions: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='自定义权限覆盖 (JSONB)')
     nickname: Mapped[str | None] = mapped_column(sa.String(100), default=None, comment='备注名')
