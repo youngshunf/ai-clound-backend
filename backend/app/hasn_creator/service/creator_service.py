@@ -536,6 +536,66 @@ class CreatorService:
         await db.flush()
         return _to_dict(acc)
 
+    # 账号指标规范列（分身抓取 / 人手填能落列的白名单）。
+    _CANONICAL_METRIC_COLUMNS = frozenset(
+        {'followers', 'following', 'total_likes', 'total_favorites', 'total_comments', 'total_posts'}
+    )
+
+    # 分身抓取常把平台特有口径写成自然 key（如小红书主页「获赞与收藏」的合并数字、各种 likes/posts 变体）。
+    # 这张别名表把它们归一到规范列——否则真实指标会被静默塞进 metrics_json，而页面读的是专用列（恒 0），
+    # 造成「工具报成功、页面却全 0」的假成功（粉丝能显示、获赞/作品数为 0 的根因即此）。
+    # 归一不了的键（如 scraped_posts_count / scraped_posts_has_more 这类抓取元数据）继续保留进 metrics_json，不丢。
+    _METRIC_KEY_ALIASES = {
+        # —— 粉丝 / 关注 ——
+        'fans': 'followers',
+        'fans_count': 'followers',
+        'follower_count': 'followers',
+        'followers_count': 'followers',
+        'follows': 'following',
+        'follow_count': 'following',
+        'following_count': 'following',
+        # —— 获赞（小红书主页「获赞与收藏」是合并数字，落 total_likes；标签由 metrics_labels 显示为「获赞与收藏」）
+        'likes': 'total_likes',
+        'like_count': 'total_likes',
+        'total_like': 'total_likes',
+        'liked': 'total_likes',
+        'likes_and_favorites': 'total_likes',
+        'total_likes_and_favorites': 'total_likes',
+        'xiaohongshu_total_likes_and_favorites': 'total_likes',
+        'likes_favorites': 'total_likes',
+        # —— 收藏 ——
+        'favorites': 'total_favorites',
+        'favorite_count': 'total_favorites',
+        'collects': 'total_favorites',
+        'collect_count': 'total_favorites',
+        'collections': 'total_favorites',
+        'collection_count': 'total_favorites',
+        'saves': 'total_favorites',
+        'saved': 'total_favorites',
+        # —— 评论 ——
+        'comments': 'total_comments',
+        'comment_count': 'total_comments',
+        # —— 作品 / 笔记 / 视频总数 ——
+        'posts': 'total_posts',
+        'post_count': 'total_posts',
+        'posts_count': 'total_posts',
+        'works': 'total_posts',
+        'works_count': 'total_posts',
+        'notes': 'total_posts',
+        'note_count': 'total_posts',
+        'notes_count': 'total_posts',
+        'total_notes': 'total_posts',
+        'videos_count': 'total_posts',
+        'video_count': 'total_posts',
+    }
+
+    @staticmethod
+    def _normalize_metric_key(key: str) -> str | None:
+        """把分身传的指标 key 归一到规范列名；返回 None 表示不是可落列的指标（保留进 metrics_json）。"""
+        if key in CreatorService._CANONICAL_METRIC_COLUMNS:
+            return key
+        return CreatorService._METRIC_KEY_ALIASES.get(key)
+
     @staticmethod
     async def update_account_metrics(
         db: AsyncSession,
@@ -547,18 +607,27 @@ class CreatorService:
     ) -> dict[str, Any]:
         """回填账号指标（分身抓取后调；§6.3 ②分身派发 web-reach → 解析粉丝/获赞/作品数）。
 
-        已知列（followers/following/total_likes/total_favorites/total_comments/total_posts）直接落列；
-        其余平台特有指标并入 `metrics_json`（保留原始口径，避免丢失）。刷新 `metrics_updated_at`。
+        入参 key 先经 `_normalize_metric_key` 归一：命中规范列（含常见平台别名，如小红书「获赞与收藏」）
+        直接落专用列；归一不了的平台特有 / 抓取元数据键并入 `metrics_json`（保留原始口径，避免丢失）。
+        刷新 `metrics_updated_at`。
         """
         acc = await CreatorService._load_account(db, account_id=account_id, user_id=user_id, scope=scope)
-        known = {'followers', 'following', 'total_likes', 'total_favorites', 'total_comments', 'total_posts'}
         extra = dict(acc.metrics_json or {})
         for k, v in metrics.items():
             if v is None:
                 continue
-            if k in known:
-                setattr(acc, k, int(v))
+            column = CreatorService._normalize_metric_key(k)
+            if column is not None:
+                try:
+                    setattr(acc, column, int(v))
+                except (TypeError, ValueError):
+                    # 值不是数字（异常抓取）→ 不落列，原样留 metrics_json 备查，不静默吞。
+                    extra[k] = v
+                    continue
+                # 已归一到规范列 → 清掉 metrics_json 里可能残留的同名历史键，避免陈旧值继续遮挡。
+                extra.pop(k, None)
             else:
+                # 平台特有 / 抓取元数据（scraped_posts_count 等）→ 保留原始口径进 metrics_json，不丢。
                 extra[k] = v
         acc.metrics_json = extra
         acc.metrics_updated_at = datetime.datetime.now(datetime.UTC)

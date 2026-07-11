@@ -116,6 +116,44 @@ async def test_account_update_and_metrics(session) -> None:
     assert m['metrics_json'].get('获赞率') == '3.2%'
 
 
+async def test_update_metrics_alias_normalization(session) -> None:
+    """分身传的自然/平台特有 key（如小红书「获赞与收藏」合并数、posts_count）归一到规范列；抓取元数据留 metrics_json。"""
+    scope = _scope()
+    pid = await _new_project(session)
+    acc = await creator_service.add_account(
+        session, user_id=_UID, scope=scope, project_id=pid, platform='xiaohongshu',
+        fields={'home_url': 'https://www.xiaohongshu.com/user/x'},
+    )
+    aid = acc['id']
+
+    m = await creator_service.update_account_metrics(
+        session, user_id=_UID, scope=scope, account_id=aid,
+        metrics={
+            # 小红书主页「获赞与收藏」是合并数字 → 归一到 total_likes（否则会被静默塞进 metrics_json、页面读列显示 0）
+            'xiaohongshu_total_likes_and_favorites': 1352,
+            'fans': 106,                 # 别名 → followers
+            'posts_count': 40,           # 别名 → total_posts
+            'scraped_posts_count': 31,   # 抓取元数据（非规范、无别名）→ 保留 metrics_json
+            'scraped_posts_has_more': True,
+        },
+    )
+    # 别名归一到规范列
+    assert m['total_likes'] == 1352
+    assert m['followers'] == 106
+    assert m['total_posts'] == 40
+    # 抓取元数据保留原始口径，不丢
+    assert m['metrics_json'].get('scraped_posts_count') == 31
+    assert m['metrics_json'].get('scraped_posts_has_more') is True
+    # 已归一到规范列的键不再残留 metrics_json（避免陈旧值遮挡）
+    assert 'xiaohongshu_total_likes_and_favorites' not in m['metrics_json']
+
+    # 纯函数归一自身校验（快、无 DB）
+    assert creator_service._normalize_metric_key('likes') == 'total_likes'
+    assert creator_service._normalize_metric_key('collections') == 'total_favorites'
+    assert creator_service._normalize_metric_key('total_posts') == 'total_posts'
+    assert creator_service._normalize_metric_key('scraped_posts_count') is None
+
+
 async def test_work_upsert_merge_and_list(session) -> None:
     """work.upsert 归并键 external_id/url 去重 + 指标刷新；list 倒序。"""
     scope = _scope()
