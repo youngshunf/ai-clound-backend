@@ -475,6 +475,8 @@ async def handle_content_stage_save(
         content_text=input_payload.get('content_text'),
         asset_refs=input_payload.get('asset_refs'),
         source_type=input_payload.get('source_type') or 'ai_generated',
+        # 分身写阶段即认领内容作者身份——若内容还没记录创作分身，save_stage 会回填 created_by_agent_id。
+        created_by_agent_id=agent.agent_hasn_id,
     )
 
 

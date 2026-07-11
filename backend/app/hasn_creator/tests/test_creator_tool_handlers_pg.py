@@ -63,7 +63,8 @@ async def test_manifest_handlers_all_registered() -> None:
     """每个 manifest tool.handler 必在 gateway 内部 handler 注册表中（28 工具全可调）。"""
     reg = gateway._internal_handlers()
     tools = CREATOR_AI_NATIVE_MANIFEST['tools']
-    assert len(tools) == 28
+    # manifest 已扩到 38 工具（S4 账号/竞品 + 后续平台/素材/草稿等扩充），全部须在注册表可调。
+    assert len(tools) == 38
     missing = [t['handler'] for t in tools if t['handler'] not in reg]
     assert missing == [], f'未注册 handler: {missing}'
     # 每个 handler 是 async callable
@@ -201,6 +202,43 @@ async def test_full_pipeline_via_handlers(session) -> None:
     ov = await H.handle_report_overview(session, agent, {'project_id': pid})
     assert ov['published_count'] == 1
     assert ov['metrics']['views'] == 12000
+
+
+async def test_stage_save_backfills_created_by_agent_id(session) -> None:
+    """主人建内容壳（无创作分身）→ 分身写阶段 → 回填 created_by_agent_id；已有作者不被覆盖。
+
+    还原真实场景：主人经 owner 路径建内容壳（不带 agent 身份，created_by_agent_id=NULL），
+    分身随后经工具面写阶段正文，此时应把创作分身 hasn_id 回填到内容上（诚实标注作者分身）。
+    """
+    from backend.app.hasn_creator.service.creator_service import creator_service
+    from backend.app.hasn_creator.service.scope_context import CreatorScope
+
+    agent = _agent()
+    proj = await H.handle_project_create(session, agent, {'name': '回填号', 'primary_platform': 'xiaohongshu'})
+    pid = proj['id']
+    scope = CreatorScope(user_id=agent.owner_user_id, owner_hasn_id=agent.owner_hasn_id)
+
+    # 主人路径建内容壳：不传 created_by_agent_id → 应为 NULL
+    shell = await creator_service.create_content(
+        session, user_id=agent.owner_user_id, scope=scope, project_id=pid, title='主人建的壳'
+    )
+    cid = shell['id']
+    assert shell['created_by_agent_id'] is None
+
+    # 分身写阶段 → 回填创作分身身份
+    await H.handle_content_stage_save(
+        session, agent, {'content_id': cid, 'stage': 'final_draft', 'content_text': '分身写的正文'}
+    )
+    got = await H.handle_content_get(session, agent, {'content_id': cid})
+    assert got['created_by_agent_id'] == agent.agent_hasn_id
+
+    # 同主人另一个分身再写阶段 → 不覆盖已有作者（回填只在 NULL 时发生）
+    other = _agent(hasn='hasn:agent:creator-y')
+    await H.handle_content_stage_save(
+        session, other, {'content_id': cid, 'stage': 'final_draft', 'content_text': '别的分身改'}
+    )
+    got2 = await H.handle_content_get(session, agent, {'content_id': cid})
+    assert got2['created_by_agent_id'] == agent.agent_hasn_id  # 仍是首个作者分身
 
 
 async def test_cross_owner_isolation_via_handlers(session) -> None:

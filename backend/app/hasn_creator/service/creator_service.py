@@ -1302,14 +1302,22 @@ class CreatorService:
         content_text: str | None = None,
         asset_refs: list | None = None,
         source_type: str = 'ai_generated',
+        created_by_agent_id: str | None = None,
     ) -> dict[str, Any]:
         """保存阶段产出（同 content+stage 已存在则 bump version 新建一版，留迭代痕迹）。
 
         asset_refs 支持云端引用（``{kind:'cloud', asset_uri}``）+ 本地引用（``{kind:'local', path,
         node_id, uploaded}``，doc19 §5.5：reel 成片重资产本地优先不自动上云）。shape 经 _normalize_asset_refs
         校验，非法 shape fail-fast 抛 RequestError（不写脏数据）。
+
+        created_by_agent_id：由分身写阶段（MCP 工具面）时透传其 hasn_id——若内容尚未记录创作分身
+        （主人建了内容壳、分身来写正文的常见流），在此**回填** ``Content.created_by_agent_id``，
+        让「分身创作的内容」诚实带上作者分身；主人手动写阶段不传此参 → 不认领分身作者身份。
         """
         c = await CreatorService._load_content(db, content_id=content_id, user_id=user_id, scope=scope)
+        # 回填创作分身：仅当内容还没作者分身、且本次是分身在写，才认领（不覆盖既有作者、不被主人手写误标）。
+        if created_by_agent_id and not c.created_by_agent_id:
+            c.created_by_agent_id = created_by_agent_id
         normalized_refs = _normalize_asset_refs(asset_refs)
         prev = (
             await db.execute(
