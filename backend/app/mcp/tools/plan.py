@@ -183,12 +183,60 @@ async def _h_list_events(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
     )
 
 
+async def _register_plan_artifact(db: Any, ctx: AgentContext, *, ref_type: str, result: Any) -> None:
+    """register-on-write（doc31/32 RC-P8「直建」半场）：分身**直建**目标/计划（多在主会话对话里
+    捕获、无工作会话）时，在 create 处即把该资源登记进 `hasn_artifacts`——不必等工作会话完成投影
+    （直建根本没有会话可投影），资源当场进「分身产物 tab / 会话资源栏」可点开。
+
+    治「分身在主会话替我建了目标/计划，产物 tab / 资源栏却看不到、点不开」：plan 是**多资源**应用，
+    据 `ref_type`（goal/plan）解析对应 descriptor + `hasn://plan/{goals|plans}/{id}` 深链。id 即
+    云端权威 plan id（Core-08 第二原则：plan 的 goal/plan id 本就是云端权威 id，直接用、不反查本地）。
+
+    - `session_id = ctx.work_session_id`：主会话直建为 None（产物仍凭 resource_uri 进产物 tab）；
+      恰在工作会话内直建则戳会话、与完成投影同键幂等（两路径重复触发也只一条 active 行）。
+    - best-effort：登记失败**绝不**拖垮 plan 写本身（同一事务，抛出会连累 goal/plan 落库）。
+    """
+    try:
+        server_id = str((result or {}).get('id') or '').strip()
+        if not server_id:
+            return
+        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+        from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+
+        descriptor, _uri_id = ai_native_app_registry.resolve_resource_descriptor('plan', f'{ref_type}:{server_id}')
+        if descriptor is None:
+            return
+        title = str((result or {}).get('title') or '').strip() or descriptor.card.verb
+        await HasnArtifactsService.record_app_resource_artifact(
+            db,
+            descriptor=descriptor,
+            server_id=server_id,
+            session_id=ctx.work_session_id,
+            agent_hasn_id=ctx.agent_hasn_id,
+            owner_hasn_id=ctx.owner_hasn_id,
+            title=title,
+            source_tool=f'{NAMESPACE}.write',
+        )
+    except Exception as e:
+        logger.warning('[plan] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', e)
+
+
+async def _h_create_goal(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """建目标：service 建行后 register-on-write 直登记 hasn_artifacts（doc31 RC-P8 直建半场）。"""
+    result = await plan_service.create_goal(db, owner=ctx.owner_hasn_id, data=args)
+    await _register_plan_artifact(db, ctx, ref_type='goal', result=result)
+    return result
+
+
 async def _h_create_plan(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    """建计划：缺省把计划绑定「调用方分身自己」（身份取自凭证）；PE-7 空间归属由 scope 解析。"""
+    """建计划：缺省把计划绑定「调用方分身自己」（身份取自凭证）；PE-7 空间归属由 scope 解析。
+
+    建行后 register-on-write 直登记 hasn_artifacts（doc31 RC-P8 直建半场，见 [`_register_plan_artifact`]）。
+    """
     ws = await _resolve_write_scope(db, ctx, args)
     if not ws.ok:
         return _reject_not_in_enterprise()
-    return await plan_service.create_plan(
+    result = await plan_service.create_plan(
         db,
         owner=ctx.owner_hasn_id,
         data=_without(args, 'scope', '_active_enterprise_id'),
@@ -196,6 +244,8 @@ async def _h_create_plan(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
         enterprise_id=ws.enterprise_id,
         dept_id=ws.dept_id,
     )
+    await _register_plan_artifact(db, ctx, ref_type='plan', result=result)
+    return result
 
 
 async def _h_create_todo(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -396,7 +446,7 @@ _SPECS: list[dict[str, Any]] = [
     {
         'action': 'goal.create',
         'write': True,
-        'handler': _h_create('create_goal'),
+        'handler': _h_create_goal,
         'desc': '建目标：title 必填；可选 description/category/target_date/status/priority。',
         'schema': _schema(
             {
@@ -526,7 +576,8 @@ _SPECS: list[dict[str, Any]] = [
         'handler': _h_update_milestone,
         'desc': (
             '改里程碑（传 id + 要改的字段）——**推进这个阶段时用它推动里程碑前进/收尾**：'
-            '开工把 `status` 置 `doing`、本阶段待办全做完/交付了就置 `done`（done↔完成双向派生）；也可改 title/due_date。'
+            '开工把 `status` 置 `doing`、本阶段待办全做完/交付了就置 `done`（done↔完成双向派生）；'
+            '也可改 title/due_date。'
         ),
         'schema': _schema(
             {
