@@ -260,6 +260,46 @@ class AINativeAppRegistry:
         except Exception:
             return None
 
+    def resolve_resource_descriptor(
+        self, app_id: str, local_ref: str
+    ) -> tuple[ResourceDescriptor | None, str | None]:
+        """据 origin_ref 的 local_ref 段选中 descriptor 并算出 uri_id（doc31-A·多资源 opt-in）。
+
+        - **单资源模式**（app 的 resources[] 均未声明 `ref_type`，如 deck/reel/design/knowledge）：
+          用首个 descriptor，整段 `local_ref` 即云端资源 id（历史行为，design 的 `proj:v2` 不受影响）。
+        - **多资源模式**（app 声明了带 `ref_type` 的 descriptor，如 plan：goal/plan）：`local_ref`
+          形如 `{ref_type}:{id}`，据 ref_type 段选中对应 descriptor、剥前缀取 id；子类无匹配（如 plan
+          的 `onboarding` 采访会话，无资源 id）→ 返回 `(None, None)`，调用方回落通用工作会话卡、不登记应用资源。
+
+        返回 `(descriptor, uri_id)`；无法解析 → `(None, None)`。
+        """
+        manifest = self._builtin_manifests.get(app_id)
+        if not manifest:
+            return None, None
+        resources = manifest.get('resources')
+        if not isinstance(resources, list) or not resources:
+            return None, None
+        has_ref_typed = any(isinstance(r, dict) and r.get('ref_type') for r in resources)
+        if has_ref_typed:
+            # 多资源模式：必须据 local_ref 的子类段精确匹配，无匹配即不出资源卡（不猜、零 fake）。
+            ref_type, sep, sub_id = local_ref.partition(':')
+            if not sep or not sub_id:
+                return None, None
+            chosen = next(
+                (r for r in resources if isinstance(r, dict) and r.get('ref_type') == ref_type), None
+            )
+            if chosen is None:
+                return None, None
+            try:
+                return ResourceDescriptor.model_validate(chosen), sub_id
+            except Exception:
+                return None, None
+        # 单资源模式：首个 descriptor，整段 local_ref 作 id（deck/reel/design/knowledge 现状）。
+        try:
+            return ResourceDescriptor.model_validate(resources[0]), local_ref
+        except Exception:
+            return None, None
+
     def resource_routes(self) -> list[ResourceRoute]:
         """投影全部 builtin 应用 `resources[]` 为扁平资源路由读模型（doc31 §2.4，RC-P0）。
 

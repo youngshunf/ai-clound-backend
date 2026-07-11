@@ -772,10 +772,12 @@ def _resolve_app_resource_projection(content_json: dict[str, Any]) -> tuple[Any,
     app_id, local_ref = app_resource
     from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 
-    descriptor = ai_native_app_registry.resource_descriptor(app_id)
-    if descriptor is None:
+    # doc31-A：多资源应用（plan：目标/计划）据 local_ref 子类段选 descriptor 并剥前缀取 id；
+    # 单资源应用（deck/reel/design/knowledge）整段 local_ref 作 id。无匹配 descriptor → None（回落通用卡）。
+    descriptor, resolved_ref = ai_native_app_registry.resolve_resource_descriptor(app_id, local_ref)
+    if descriptor is None or resolved_ref is None:
         return None
-    uri_id = str(content_json.get(f'{app_id}_server_id') or local_ref)
+    uri_id = str(content_json.get(f'{app_id}_server_id') or resolved_ref)
     return descriptor, app_id, uri_id
 
 

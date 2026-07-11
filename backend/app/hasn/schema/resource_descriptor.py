@@ -78,6 +78,13 @@ class ResourceDescriptor(SchemaBase):
     card: ResourceCard = Field(description='完成卡显示声明')
     # 可选：登记 hasn_artifacts 时的 kind；缺省按 resource_kind 归一（越界→other）
     artifact_kind: str | None = Field(None, description='登记 hasn_artifacts 的 kind（缺省归一）')
+    # 可选·多资源应用的子类选择键（doc31 §2.1 扩展，RC-P6/doc31-A）：
+    # 单类资源应用（deck/reel/design/knowledge…）不声明 ref_type——origin_ref=resource:{app}:{id}，
+    # 整段 {id} 即云端资源 id。多类资源应用（如 plan：目标/计划分居 hasn://plan/goals 与 plan/plans）
+    # 的 origin_ref=resource:{app}:{ref_type}:{id}（如 resource:plan:goal:5），据 ref_type 段选中本
+    # descriptor 并剥前缀取 id。**opt-in**：只有声明了 ref_type 的应用进入「多资源模式」，其余保持整段作 id
+    # 的历史行为（design 的 local_ref='proj:v2' 因未声明 ref_type 不受影响）。
+    ref_type: str | None = Field(None, description='多资源应用 origin_ref 的子类选择键（如 plan 的 goal/plan）')
 
     @model_validator(mode='after')
     def _check_uri_domain(self) -> ResourceDescriptor:

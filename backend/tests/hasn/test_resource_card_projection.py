@@ -146,11 +146,15 @@ def test_generic_builder_produces_verb_card_for_arbitrary_app() -> None:
 
 
 def test_second_app_projection_zero_code_via_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """第二应用（reel）声明 descriptor 后，`_projection_card_body` 同链路零改代码出卡（server_id 优先）。"""
+    """第二应用（reel）声明 descriptor 后，`_projection_card_body` 同链路零改代码出卡（server_id 优先）。
+
+    patch 打在 `resolve_resource_descriptor`（doc31-A 起 `_resolve_app_resource_projection` 依赖的解析
+    接缝）：单资源应用整段 local_ref 作 id，故 lambda 返回 `(_REEL_DESCRIPTOR, local_ref)`。
+    """
     monkeypatch.setattr(
         ai_native_app_registry,
-        'resource_descriptor',
-        lambda app_id, resource_kind=None: _REEL_DESCRIPTOR if app_id == 'reel' else None,
+        'resolve_resource_descriptor',
+        lambda app_id, local_ref: (_REEL_DESCRIPTOR, local_ref) if app_id == 'reel' else (None, None),
     )
     content_json = {
         'agent_id': 'a_reeler',
@@ -173,8 +177,8 @@ def test_undeclared_app_falls_back_to_generic_task_card(monkeypatch: pytest.Monk
     """未声明 descriptor 的应用 → 回落通用工作会话完成卡（诚实，不假装能开专属资源）。"""
     monkeypatch.setattr(
         ai_native_app_registry,
-        'resource_descriptor',
-        lambda app_id, resource_kind=None: None,
+        'resolve_resource_descriptor',
+        lambda app_id, local_ref: (None, None),
     )
     content_json = {
         'agent_id': 'a_x',
@@ -217,3 +221,91 @@ def test_parse_app_origin_ref_edges() -> None:
     assert _parse_app_origin_ref('resource:app:') is None
     assert _parse_app_origin_ref(None) is None
     assert _parse_app_origin_ref('') is None
+
+
+# ── doc31-A：knowledge（单资源）+ plan（多资源 ref_type）经真实 manifest 端到端出卡 ──────────────
+# 不 monkeypatch，直接打真实 builtin manifest（knowledge/plan 已声明 resources[]），验证
+# `_projection_card_body` → `_resolve_app_resource_projection` → `resolve_resource_descriptor` 全链路。
+
+
+def test_knowledge_card_via_real_manifest_single_resource() -> None:
+    """knowledge（单资源·不声明 ref_type）→「知识库做好了」卡，深链 hasn://knowledge/kbs/{server_id}。
+
+    KBDISP 派发整理会话完成投影：origin_ref=resource:knowledge:{local}，云端权威 kb id 走
+    knowledge_server_id 优先（整段 local_ref 作回退）。
+    """
+    content_json = {
+        'agent_id': 'a_kb',
+        'origin_type': 'app',
+        'origin_ref': 'resource:knowledge:kb_local_1',
+        'knowledge_server_id': 'kb_server_9',
+        'summary': '季度知识库整理完成',
+        'dedupe_key': 'work_session_result:sess_kb:final',
+    }
+    card = _projection_card_body(session_id='sess_kb', title='整理知识库', content_json=content_json)
+    assert card['title'] == '知识库做好了'
+    assert card['source'] == {'kind': 'app', 'id': 'knowledge', 'display_name': '知识库', 'verified': True}
+    assert card['resource']['id'] == 'kb_server_9'
+    assert card['resource']['app_id'] == 'knowledge'
+    assert card['resource']['uri'] == 'hasn://knowledge/kbs/kb_server_9'
+    assert card['primary_action']['label'] == '打开知识库'
+    assert card['primary_action']['action_id'] == 'open_knowledge'
+    assert card['primary_action']['uri'] == 'hasn://knowledge/kbs/kb_server_9'
+
+
+def test_plan_goal_card_via_real_manifest_multi_resource() -> None:
+    """plan（多资源·ref_type=goal）→「目标做好了」卡，深链 hasn://plan/goals/{id}（剥 goal: 前缀取 id）。
+
+    plan 的 goal/plan id 即云端权威 id（hasn_plan 云端表），故无 plan_server_id 时直接用剥前缀后的 id。
+    """
+    content_json = {
+        'agent_id': 'a_plan',
+        'origin_type': 'app',
+        'origin_ref': 'resource:plan:goal:5',
+        'summary': '',
+        'dedupe_key': 'work_session_result:sess_g:final',
+    }
+    card = _projection_card_body(session_id='sess_g', title='拆解目标', content_json=content_json)
+    assert card['title'] == '目标做好了'
+    assert card['source']['display_name'] == '目标'
+    assert card['resource']['id'] == '5'
+    assert card['resource']['app_id'] == 'plan'
+    assert card['resource']['uri'] == 'hasn://plan/goals/5'
+    assert card['primary_action']['label'] == '打开目标'
+    assert card['primary_action']['uri'] == 'hasn://plan/goals/5'
+    # 无 summary → 回落「目标已经做好了，点开看看吧。」
+    assert card['description'] == '目标已经做好了，点开看看吧。'
+
+
+def test_plan_plan_card_via_real_manifest_multi_resource() -> None:
+    """plan（ref_type=plan）→「计划做好了」卡，深链 hasn://plan/plans/{id}。"""
+    content_json = {
+        'agent_id': 'a_plan',
+        'origin_type': 'app',
+        'origin_ref': 'resource:plan:plan:9',
+        'summary': '双月推进计划',
+        'dedupe_key': 'work_session_result:sess_p:final',
+    }
+    card = _projection_card_body(session_id='sess_p', title='推进计划', content_json=content_json)
+    assert card['title'] == '计划做好了'
+    assert card['resource']['id'] == '9'
+    assert card['resource']['uri'] == 'hasn://plan/plans/9'
+    assert card['primary_action']['label'] == '打开计划'
+
+
+def test_plan_unmatched_ref_type_falls_back_to_generic() -> None:
+    """plan 无匹配 ref_type 的会话（采访 onboarding / 里程碑 milestone）→ 回落通用工作会话卡。
+
+    这些子类不是「独立资源详情页」（在 plan 页内下钻/抽屉查看），不假装能开专属资源——诚实回落。
+    """
+    for origin_ref in ('resource:plan:onboarding:profile', 'resource:plan:milestone:3'):
+        content_json = {
+            'agent_id': 'a_plan',
+            'origin_type': 'app',
+            'origin_ref': origin_ref,
+            'summary': '',
+            'dedupe_key': f'work_session_result:{origin_ref}:final',
+        }
+        card = _projection_card_body(session_id='sess_o', title='了解你', content_json=content_json)
+        assert card['title'] == '工作会话「了解你」已完成', origin_ref
+        assert card['resource']['type'] == 'task_session', origin_ref

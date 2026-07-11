@@ -73,6 +73,18 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
     'version': '2.2.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    # 资源描述符（doc31 §2，RC-P6/doc31-A）：知识库 → hasn://knowledge/kbs/{kb_id}，应用内路由打开。
+    # KBDISP 派发的整理会话 origin_ref=resource:knowledge:{kb_id}（kb_id 即云端权威 id），完成即出
+    # 「知识库整理好了」卡 + 登记应用资源产物到会话资源栏。单类资源（不声明 ref_type）。
+    'resources': [
+        {
+            'resource_kind': 'knowledge.base',
+            'uri_domain': 'knowledge/kbs',  # → hasn://knowledge/kbs/{kb_id}（doc08 §3 已登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/knowledge/kbs/:id'},
+            'card': {'verb': '知识库', 'action_label': '打开知识库'},
+            'artifact_kind': 'dataset',
+        }
+    ],
     # 通知发布能力声明保留：索引完成/失败可经服务号通知 owner（P2 接线）。
     'notifications': {
         'emit': {

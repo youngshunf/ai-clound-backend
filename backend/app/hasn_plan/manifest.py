@@ -44,6 +44,29 @@ PLAN_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],  # PLAN-ENT PE-6：双模应用（个人 PIM + 企业日历）
     'collaboration_mode': 'none',
+    # 资源描述符（doc31 §2，RC-P6/doc31-A）：plan 是**多资源**应用——派发工作会话的 origin_ref 子类化
+    # （resource:plan:goal:{id} / resource:plan:plan:{id}），据 ref_type 段分别映射到目标/计划详情页。
+    # 目标 decompose / 计划推进会话完成即出「目标做好了 / 计划做好了」卡 + 登记应用资源产物到会话资源栏。
+    # 里程碑（milestone）/待办（todo）/采访（onboarding）等其余 origin_ref 无匹配 ref_type → 回落通用工作
+    # 会话卡（它们在 plan 页内下钻/抽屉查看，非独立资源详情页）。plan 的 goal/plan id 即云端权威 id。
+    'resources': [
+        {
+            'resource_kind': 'plan.goal',
+            'ref_type': 'goal',  # origin_ref=resource:plan:goal:{id}
+            'uri_domain': 'plan/goals',  # → hasn://plan/goals/{id}（doc08 §3 已登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/plan/goals/:id'},
+            'card': {'verb': '目标', 'action_label': '打开目标'},
+            'artifact_kind': 'other',
+        },
+        {
+            'resource_kind': 'plan.plan',
+            'ref_type': 'plan',  # origin_ref=resource:plan:plan:{id}
+            'uri_domain': 'plan/plans',  # → hasn://plan/plans/{id}
+            'open': {'mode': 'internal_route', 'route_template': '/apps/plan/plans/:id'},
+            'card': {'verb': '计划', 'action_label': '打开计划'},
+            'artifact_kind': 'other',
+        },
+    ],
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     # 通知发布能力声明（统一通知设计）：提醒/简报/复盘/确认卡经 Agent JWT 通道发卡给主人（P4/P5 接 emit）。
