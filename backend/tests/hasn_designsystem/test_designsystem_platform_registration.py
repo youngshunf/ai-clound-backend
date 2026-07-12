@@ -36,9 +36,11 @@ from backend.app.hasn_designsystem.manifest import (
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
-# 落地真相（hasn-node crates/hasn-mcp/src/designsystem.rs）：写类 2 工具 / 读类（含纯函数）6 工具。
+# 落地真相：写类 2 工具（import/save）/ 读类（含纯函数 + 场景自查）7 工具。
+# check_scenes 是云端专属自查工具（DSGAL；读设计系统 required_scenes × 当前 HTML 实检覆盖 → 缺什么/怎么补），
+# 无本地 Rust 孪生（读云端 DB，非纯函数），读类无 scope。
 _WRITE_TOOLS = {'import', 'save'}
-_READ_TOOLS = {'compile_tokens', 'derive', 'validate', 'extract_components', 'list', 'get'}
+_READ_TOOLS = {'compile_tokens', 'derive', 'validate', 'extract_components', 'list', 'get', 'check_scenes'}
 _WRITE_SCOPE = 'designsystem:write'
 _PUBLISH_SCOPE = 'designsystem:publish'
 
@@ -66,11 +68,11 @@ def test_designsystem_in_builtin_registry() -> None:
 
 
 def test_designsystem_capabilities_match_landed_tools() -> None:
-    """8 个 capability，mcp_name 全 hasn.designsystem.*；写类 designsystem:write、读类无 scope（与 .rs 一致）。"""
+    """9 个 capability，mcp_name 全 hasn.designsystem.*；写类 designsystem:write、读类无 scope（与落地一致）。"""
     caps = DESIGNSYSTEM_AI_NATIVE_MANIFEST['capabilities']
     names = {c['tool_id'].split('.', 1)[1] for c in caps}
     assert names == _WRITE_TOOLS | _READ_TOOLS, f'工具集与落地不一致: {names}'
-    assert len(caps) == 8
+    assert len(caps) == 9
 
     for cap in caps:
         assert cap['mcp_name'].startswith('hasn.designsystem.'), cap['mcp_name']

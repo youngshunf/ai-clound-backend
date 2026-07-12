@@ -29,6 +29,7 @@ from backend.app.hasn_designsystem.core.scenes import (
     is_known_scene,
 )
 from backend.app.hasn_designsystem.model import Collaborator, DesignSystem, Revision
+from backend.app.hasn_designsystem.service.scene_guidance import build_scene_report
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -236,17 +237,15 @@ def _revision_dict(r: Revision, *, with_content: bool = True) -> dict[str, Any]:
         'created_time': r.created_time.isoformat() if r.created_time else None,
     }
     if with_content:
-        out.update(
-            {
-                'tokens_css': r.tokens_css,
-                'design_tokens_json': r.design_tokens_json,
-                'tailwind_css': r.tailwind_css,
-                'design_md': r.design_md,
-                'components_html': r.components_html,
-                'components_manifest_json': r.components_manifest_json,
-                'token_contract_report_json': r.token_contract_report_json,
-            }
-        )
+        out.update({
+            'tokens_css': r.tokens_css,
+            'design_tokens_json': r.design_tokens_json,
+            'tailwind_css': r.tailwind_css,
+            'design_md': r.design_md,
+            'components_html': r.components_html,
+            'components_manifest_json': r.components_manifest_json,
+            'token_contract_report_json': r.token_contract_report_json,
+        })
     return out
 
 
@@ -582,7 +581,9 @@ class DesignSystemService:
                         # owner 自己/共享给我的（非 builtin）排在官方内置库之前：内置库 150 套不该把
                         # 「我的设计」挤出首页（默认 limit=50 时尤甚）。webui 两 Tab 各自客户端按
                         # is_builtin 过滤同一份列表（daemon 取 200 全返），此序保证两 Tab 都不丢数据。
-                        DesignSystem.is_builtin.asc(), DesignSystem.updated_time.desc(), DesignSystem.id.desc()
+                        DesignSystem.is_builtin.asc(),
+                        DesignSystem.updated_time.desc(),
+                        DesignSystem.id.desc(),
                     )
                     .limit(limit)
                     .offset(offset)
@@ -609,6 +610,36 @@ class DesignSystemService:
             rev = await db.get(Revision, d.current_revision_id)
             out['current_revision'] = _revision_dict(rev) if rev is not None else None
         return out
+
+    async def scene_coverage_report(
+        self,
+        db: AsyncSession,
+        *,
+        design_system_id: int,
+        viewer_owner_hasn_id: str,
+        enterprise_id: int | None = None,
+        components_html_override: str | None = None,
+        required_scenes_override: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """DSGAL 自查（`hasn.designsystem.check_scenes` 的 service 入口）：交叉 required_scenes × 当前
+        components.html 实检覆盖 → 逐场景「已配齐 X/Y · 缺哪几件 + 怎么补」的可执行报告。
+
+        - 读设计系统 + 判权（与 get 同 ACL），取**当前版本 components.html** 现读现检测（不依赖可能陈旧的
+          manifest.scenes[]，故 owner 编辑了 HTML 但没重抽取 manifest 也能诚实反映）。
+        - ``components_html_override``：非空则改用它检测（分身**存前 dry-run** 自己的草稿）。
+        - ``required_scenes_override``：非空则改用它作为要求（否则用库里存的 required_scenes）。
+        - 返回 :func:`scene_guidance.build_scene_report` 的报告（附 design_system_id/name）。
+        """
+        d = await self._get_alive(db, design_system_id)
+        await self._assert_can_read(db, d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
+
+        html = components_html_override
+        if not html and d.current_revision_id is not None:
+            rev = await db.get(Revision, d.current_revision_id)
+            html = rev.components_html if rev is not None else None
+        required = required_scenes_override if required_scenes_override is not None else d.required_scenes
+
+        return build_scene_report(required, html, design_system_id=d.id, name=d.name)
 
     async def delete(self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str) -> None:
         d = await self._get_alive(db, design_system_id)
@@ -802,9 +833,7 @@ class DesignSystemService:
         except Exception as e:  # 通知 best-effort
             log.warning('[designsystem] 分享通知发送失败 (非致命): %s', e)
 
-    async def list_shares(
-        self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str
-    ) -> dict[str, Any]:
+    async def list_shares(self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str) -> dict[str, Any]:
         d = await self._assert_owner(db, design_system_id, owner_hasn_id)
         rows = await resource_share_service.list_shares(db, resource_type=RESOURCE_TYPE, resource_id=str(d.id))
         return {
@@ -850,7 +879,11 @@ class DesignSystemService:
         d.content_hash = _content_hash(content)
         # 采用/回滚版本同步刷新列表卡预览色板（denorm 自该版 tokens.css）。
         d.preview_swatches = _extract_preview_swatches(rev.tokens_css)
-        summary = (rev.token_contract_report_json or {}).get('summary') if isinstance(rev.token_contract_report_json, dict) else None
+        summary = (
+            (rev.token_contract_report_json or {}).get('summary')
+            if isinstance(rev.token_contract_report_json, dict)
+            else None
+        )
         if isinstance(summary, dict):
             d.score = summary.get('score')
             d.grade = summary.get('grade')

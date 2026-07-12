@@ -56,6 +56,7 @@ from backend.app.hasn_designsystem.core import (
 from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.app.hasn_designsystem.service.import_service import import_design_source
+from backend.app.hasn_designsystem.service.scene_guidance import build_scene_report
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 
@@ -75,6 +76,7 @@ _SCOPE_WRITE = 'designsystem:write'
 # - get：design_system_id 必填 → 声明 viewer。
 # - save：design_system_id 可空（null=新建，无实例可判）→ 声明 editor + required=False，缺省即跳过判权。
 _RA_DS_VIEWER = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'viewer'}]
+_RA_DS_VIEWER_OPT = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'viewer', 'required': False}]
 _RA_DS_EDITOR = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'editor', 'required': False}]
 
 
@@ -487,6 +489,97 @@ class DesignSystemGetTool(BaseTool):
             )
 
 
+class DesignSystemCheckScenesTool(BaseTool):
+    """`hasn.designsystem.check_scenes`：自查组件画廊场景是否配齐 + 缺什么、怎么补（cloud-hosted）。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.check_scenes'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.designsystem'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '自查一套设计系统的组件画廊「场景是否配齐」：交叉 owner 要求覆盖的 required_scenes 与当前 '
+            'components.html 里 data-ds-scene/data-ds-component 标记**实际检测到**的标准组件，逐场景返回'
+            '「已配齐 X/Y · 缺哪几件」+ 每件缺失组件「应包含什么、怎么用标记补」的可执行指引。'
+            '⚠️ required_scenes 只是「要求覆盖哪些场景」的声明，不等于「已配齐」——本工具给的才是真实覆盖度，'
+            '完成前务必调它确认 complete=true，别只看 required_scenes 就说「全套齐全」。确定性读。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'design_system_id': {
+                    'type': 'integer',
+                    'description': '要自查的设计系统 id（读它存的 components.html 与 required_scenes）；'
+                    '缺省时改用下面内联的 components_html 做存前 dry-run',
+                },
+                'components_html': {
+                    'type': 'string',
+                    'description': '可选：直接对这段 components.html 检测（存前 dry-run 自己的草稿）；'
+                    '与 design_system_id 同时给则用它覆盖库里的 HTML',
+                },
+                'required_scenes': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                    'description': '可选：要求覆盖的场景 id（brand_website/deck/poster/mobile）；'
+                    '缺省时用库里存的（或默认 [brand_website]）',
+                },
+                'enterprise_id': {'type': 'integer', 'description': '可选：企业域'},
+            },
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return []
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        # 给了 design_system_id → viewer 判权（读它的 HTML/场景要求）；纯内联 dry-run（缺省）→ required=False 跳过。
+        return _RA_DS_VIEWER_OPT
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        design_system_id = _opt_int(arguments, 'design_system_id')
+        components_html = _str(arguments, 'components_html')
+        required_scenes = _str_list(arguments, 'required_scenes') if 'required_scenes' in arguments else None
+
+        # 内联 dry-run（无 id）：不读库，直接对入参 HTML 检测；此时 components_html 必填。
+        if design_system_id is None:
+            if not components_html:
+                raise RuntimeError(
+                    "designsystem.check_scenes: 需提供 'design_system_id'（自查已存设计系统），"
+                    "或提供 'components_html'（对草稿 dry-run）"
+                )
+            return build_scene_report(required_scenes, components_html)
+
+        # by-id：读库 + 判权（与 get 同 ACL），现读现检测当前 components.html。
+        if design_system_id < 1:
+            raise RuntimeError("designsystem.check_scenes: 'design_system_id' 需 ≥ 1")
+        async with async_db_session() as db:
+            return await design_system_service.scene_coverage_report(
+                db,
+                design_system_id=design_system_id,
+                viewer_owner_hasn_id=agent_context.owner_hasn_id,
+                enterprise_id=_opt_int(arguments, 'enterprise_id'),
+                components_html_override=components_html,
+                required_scenes_override=required_scenes,
+            )
+
+
 # ── 确定性纯函数工具（TOOLMIG：Python 移植 hasn_designsystem_core，云端分身可用）──────────
 # 这 4 个不碰 DB / 不发网络 / 无副作用——直调 `backend.app.hasn_designsystem.core` 纯函数。
 # `execution_location='cloud'`、`source` 默认 'platform'、读类无 scope；`generated_at` 工具体注入。
@@ -706,6 +799,8 @@ DESIGNSYSTEM_TOOLS: list[BaseTool] = [
     DesignSystemSaveTool(),
     DesignSystemListTool(),
     DesignSystemGetTool(),
+    # 组件画廊场景自查（DSGAL；读设计系统 required_scenes × 当前 HTML 实检覆盖 → 缺什么/怎么补）
+    DesignSystemCheckScenesTool(),
     # 确定性纯函数（TOOLMIG：Python 移植，云端分身可用；本地 Rust 同名工具暂留待退役）
     DesignSystemCompileTokensTool(),
     DesignSystemDeriveTool(),

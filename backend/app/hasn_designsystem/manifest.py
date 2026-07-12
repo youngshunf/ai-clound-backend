@@ -247,6 +247,26 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
             page_rank=17,
             tags=['designsystem', 'get', 'read'],
         ),
+        _read_cap(
+            name='check_scenes',
+            description='自查组件画廊场景覆盖：required_scenes × 当前 components.html 实检标记 → 逐场景'
+            '「已配齐 X/Y · 缺哪几件 + 怎么补」。required_scenes 只是要求、不等于已配齐，完成前调它核实。',
+            properties={
+                'design_system_id': {
+                    'type': ['integer', 'null'],
+                    'description': '自查已存设计系统（缺省=对内联 HTML dry-run）',
+                },
+                'components_html': {'type': ['string', 'null'], 'description': '可选：直接检测这段草稿 HTML'},
+                'required_scenes': {
+                    'type': ['array', 'null'],
+                    'items': {'type': 'string'},
+                    'description': '可选：覆盖要求',
+                },
+            },
+            required=[],
+            page_rank=18,
+            tags=['designsystem', 'scenes', 'check', 'read'],
+        ),
     ],
     # 方案 A：本地工具不进 tools[]（走 hasn-mcp source=Local / for_agent，bootstrap 发现）。
     'tools': [],
