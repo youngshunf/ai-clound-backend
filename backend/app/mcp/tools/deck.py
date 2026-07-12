@@ -283,25 +283,32 @@ async def _h_page_reorder(db: Any, ctx: AgentContext, args: dict[str, Any]) -> A
 
 
 async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    """收尾：把演示文稿标记为「已完成」。**仅首次转换**由云端自动给主人发「演示文稿做好了」卡
-    （分身不用、也不该自己发卡）；已完成再调则幂等，不重复发卡。
+    """收尾：把演示文稿标记为「已完成」，由云端自动给主人发「演示文稿做好了」卡
+    （分身不用、也不该自己发卡）；重复调不会重复发卡。
 
     ⚠️ 完成卡**不在此处直接发**——`emit_deck_completion_card` 内部经 `route_message` 会
     `db.commit()`，若在 `execute` 的 `begin()` 事务里调用，会提前结束该事务，收尾提交时触发
     「Can't operate on closed transaction inside context manager」。这里只 finalize + register-on-write，
     完成卡打包成 `_post_commit` 标记，由 `execute` 在写事务**提交后**的独立会话里投递。
+
+    发卡条件是 **status=ready 即排投递**（不只 changed 首次转换）：投递自带
+    `local_id=deck_complete:{deck_id}` 幂等（hasn_messages 唯一索引，`route_message` 命中即返回
+    原消息、绝不二次发卡），故 ready 重调是**自愈补发**——治「首次收尾时完成卡投递失败
+    （旧版事务 bug / route 瞬时失败）后被 changed=False 守卫卡死、卡永久丢失」
+    （2026-07-11/12 生产 deck 完成卡丢失事故）。archived 不发。
     """
     deck_id = _deck_id(args)
     result = await deck_service.finalize_deck(db, subject=_subject(ctx), deck_id=deck_id)
     # register-on-write：收尾也登记（标题用 finalize 返回的权威标题）。
     await _register_deck_artifact(db, ctx, deck_id, title=str(result.get('title') or '') or None)
+    will_emit = result['status'] == 'ready'
     out: dict[str, Any] = {
         'deck_id': str(deck_id),
         'status': result['status'],
         'finalized': result['changed'],
-        'card_sent': result['changed'],
+        'card_sent': will_emit,
     }
-    if result['changed']:
+    if will_emit:
         out['_post_commit'] = {
             'kind': 'deck_completion_card',
             'deck_id': str(deck_id),
