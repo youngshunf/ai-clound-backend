@@ -9,6 +9,7 @@ from backend.app.hasn.model import HasnAiNativeAppManifest
 from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor, ResourceRoute
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, app_catalog_registry
+from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
@@ -124,6 +125,11 @@ class AINativeAppRegistry:
                 errors_list.extend(
                     err for idx, resource in enumerate(resources) if (err := _resource_descriptor_error(idx, resource))
                 )
+
+        # G6 资源权限门声明校验（doc33 S2-5·doc32 §12.2 随门即校验）：逐工具校验 resource_access 形状，
+        # 声明写错（type 未注册 / need 非法 / param 不在 input_schema）在注册期炸，不静默直通致运行时漏判权。
+        # 循环挪进 helper，避免撑高 validate_manifest 圈复杂度（C901）。
+        errors_list.extend(_manifest_resource_access_errors(manifest))
 
         manifest_hash = _manifest_hash(manifest)
         return ManifestValidationResult(valid=not errors_list, errors=errors_list, manifest_hash=manifest_hash)
@@ -362,6 +368,56 @@ def _resource_descriptor_error(idx: int, resource: Any) -> str | None:
     except Exception as exc:
         return f'resource_descriptor_invalid[{idx}]:{exc.__class__.__name__}'
     return None
+
+
+# G6 声明合法档位（doc32 §5·doc33 S2-5）
+_RESOURCE_ACCESS_NEEDS = ('viewer', 'editor', 'manager')
+
+
+def _resource_access_errors(tool_idx: int, tool: Any) -> list[str]:
+    """校验单个工具的 `resource_access` 声明（doc33 S2-5·doc32 §12.2）——声明写错在注册期炸，不静默直通。
+
+    元素形状 `{param, type, need, required?}`：`type` 须已注册 G6 adapter、`need ∈ {viewer,editor,manager}`、
+    `param` 非空字符串**且须存在于该工具 input_schema 的 properties**（防拼错参数名静默直通致漏判权）。
+    未声明 `resource_access` 的工具零校验（返回空列表）。
+    """
+    if not isinstance(tool, dict):
+        return []
+    declarations = tool.get('resource_access')
+    if declarations is None:
+        return []
+    tool_id = str(tool.get('tool_id') or f'#{tool_idx}')
+    if not isinstance(declarations, list):
+        return [f'resource_access_must_be_list[{tool_id}]']
+    props = ((tool.get('input_schema') or {}).get('properties')) or {}
+    registered = resource_kind_registry.registered_types()
+    errs: list[str] = []
+    for i, decl in enumerate(declarations):
+        if not isinstance(decl, dict):
+            errs.append(f'resource_access_element_must_be_object[{tool_id}][{i}]')
+            continue
+        param = decl.get('param')
+        if not param or not isinstance(param, str):
+            errs.append(f'resource_access_param_required[{tool_id}][{i}]')
+        elif param not in props:
+            # 声明的参数名不在工具入参 schema 里 → 运行时永远取不到、静默漏判权，注册期即拦
+            errs.append(f'resource_access_param_not_in_input_schema[{tool_id}][{i}]:{param}')
+        if decl.get('type') not in registered:
+            errs.append(f"resource_access_type_not_registered[{tool_id}][{i}]:{decl.get('type')}")
+        if decl.get('need') not in _RESOURCE_ACCESS_NEEDS:
+            errs.append(f"resource_access_need_invalid[{tool_id}][{i}]:{decl.get('need')}")
+    return errs
+
+
+def _manifest_resource_access_errors(manifest: dict[str, Any]) -> list[str]:
+    """逐工具汇总 manifest 的 `resource_access` 声明错误（把校验循环挪出 `validate_manifest` 以控圈复杂度）。"""
+    tools = manifest.get('tools')
+    if not isinstance(tools, list):
+        return []
+    errs: list[str] = []
+    for idx, tool in enumerate(tools):
+        errs.extend(_resource_access_errors(idx, tool))
+    return errs
 
 
 ai_native_app_registry: AINativeAppRegistry = AINativeAppRegistry()

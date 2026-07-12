@@ -280,7 +280,13 @@ class ResourceShareService:
         permission: str,
         granted_by: str,
     ) -> dict:
-        """加 / 改一条授权：同 grantee 已有 active 行则改权限，否则新建。"""
+        """加 / 改一条授权：同 grantee 已有 active 行则改权限，否则新建。
+
+        TODO(doc33 S2-5·doc32 §9 守卫 2 运行时半)：建行前 fail-closed 校验 `resource_type` 已注册 G6
+        adapter（「能分享、必能判」在源头闭环，分享一个 G6 判不了的资源类型即拒）。此闸**必须等所有可分享
+        资源类型的 adapter 全注册齐（S2-6 deck/knowledge + S3 其余应用）后**再开启，否则会把所有现存分享
+        误拒（registered_types 尚空）。故收口到 S3 铺开完成后随门收尾一起启用，届时全量 share 用例应绿。
+        """
         existing = (
             await db.execute(
                 select(HasnResourceShare).where(
