@@ -13,12 +13,18 @@ from backend.app.hasn.service.authz.resource_registry import resource_kind_regis
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
+
+# G6 资源类型适配器注册（doc33 S2-6）：import 即把各应用 adapter 注册进平台注册表。必须在
+# manifest 校验（validate_manifest 查 registered_types）之前完成，否则新增 resource_access 声明会
+# 被误判「type 未注册」。各应用自注册模块见 `<app>/service/resource_adapter.py`。
+from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401
 from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
+from backend.app.hasn_knowledge.service import resource_adapter as _knowledge_resource_adapter  # noqa: F401
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
@@ -266,9 +272,7 @@ class AINativeAppRegistry:
         except Exception:
             return None
 
-    def resolve_resource_descriptor(
-        self, app_id: str, local_ref: str
-    ) -> tuple[ResourceDescriptor | None, str | None]:
+    def resolve_resource_descriptor(self, app_id: str, local_ref: str) -> tuple[ResourceDescriptor | None, str | None]:
         """据 origin_ref 的 local_ref 段选中 descriptor 并算出 uri_id（doc31-A·多资源 opt-in）。
 
         - **单资源模式**（app 的 resources[] 均未声明 `ref_type`，如 deck/reel/design/knowledge）：
@@ -291,9 +295,7 @@ class AINativeAppRegistry:
             ref_type, sep, sub_id = local_ref.partition(':')
             if not sep or not sub_id:
                 return None, None
-            chosen = next(
-                (r for r in resources if isinstance(r, dict) and r.get('ref_type') == ref_type), None
-            )
+            chosen = next((r for r in resources if isinstance(r, dict) and r.get('ref_type') == ref_type), None)
             if chosen is None:
                 return None, None
             try:
@@ -374,11 +376,13 @@ def _resource_descriptor_error(idx: int, resource: Any) -> str | None:
 _RESOURCE_ACCESS_NEEDS = ('viewer', 'editor', 'manager')
 
 
-def _resource_access_errors(tool_idx: int, tool: Any) -> list[str]:
+def _resource_access_errors(tool_idx: int, tool: Any, props: dict[str, Any]) -> list[str]:
     """校验单个工具的 `resource_access` 声明（doc33 S2-5·doc32 §12.2）——声明写错在注册期炸，不静默直通。
 
     元素形状 `{param, type, need, required?}`：`type` 须已注册 G6 adapter、`need ∈ {viewer,editor,manager}`、
-    `param` 非空字符串**且须存在于该工具 input_schema 的 properties**（防拼错参数名静默直通致漏判权）。
+    `param` 非空字符串**且须存在于该工具 capability 的 input_schema.properties**（防拼错参数名静默直通致漏判权）。
+    `props` 由调用方从**关联 capability** 的 input_schema 解出——gateway_internal 工具的入参 schema 只挂在
+    capability 上、tool 条目本身没有（doc33 S2-5「param 存在于 capability input_schema」）。
     未声明 `resource_access` 的工具零校验（返回空列表）。
     """
     if not isinstance(tool, dict):
@@ -389,7 +393,6 @@ def _resource_access_errors(tool_idx: int, tool: Any) -> list[str]:
     tool_id = str(tool.get('tool_id') or f'#{tool_idx}')
     if not isinstance(declarations, list):
         return [f'resource_access_must_be_list[{tool_id}]']
-    props = ((tool.get('input_schema') or {}).get('properties')) or {}
     registered = resource_kind_registry.registered_types()
     errs: list[str] = []
     for i, decl in enumerate(declarations):
@@ -403,20 +406,46 @@ def _resource_access_errors(tool_idx: int, tool: Any) -> list[str]:
             # 声明的参数名不在工具入参 schema 里 → 运行时永远取不到、静默漏判权，注册期即拦
             errs.append(f'resource_access_param_not_in_input_schema[{tool_id}][{i}]:{param}')
         if decl.get('type') not in registered:
-            errs.append(f"resource_access_type_not_registered[{tool_id}][{i}]:{decl.get('type')}")
+            errs.append(f'resource_access_type_not_registered[{tool_id}][{i}]:{decl.get("type")}')
         if decl.get('need') not in _RESOURCE_ACCESS_NEEDS:
-            errs.append(f"resource_access_need_invalid[{tool_id}][{i}]:{decl.get('need')}")
+            errs.append(f'resource_access_need_invalid[{tool_id}][{i}]:{decl.get("need")}')
     return errs
 
 
+def _capability_props_by_tool_id(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """建 `tool_id → capability.input_schema.properties` 映射（gateway_internal 工具的入参 schema 只在
+    capability 上，tool 条目没有；resource_access 声明的 param 须据此校验）。"""
+    result: dict[str, dict[str, Any]] = {}
+    caps = manifest.get('capabilities')
+    if not isinstance(caps, list):
+        return result
+    for cap in caps:
+        if not isinstance(cap, dict):
+            continue
+        tool_id = cap.get('tool_id')
+        if not isinstance(tool_id, str):
+            continue
+        result[tool_id] = ((cap.get('input_schema') or {}).get('properties')) or {}
+    return result
+
+
 def _manifest_resource_access_errors(manifest: dict[str, Any]) -> list[str]:
-    """逐工具汇总 manifest 的 `resource_access` 声明错误（把校验循环挪出 `validate_manifest` 以控圈复杂度）。"""
+    """逐工具汇总 manifest 的 `resource_access` 声明错误（把校验循环挪出 `validate_manifest` 以控圈复杂度）。
+
+    每个工具的入参 properties 优先取**关联 capability**（按 tool_id 匹配）的 input_schema；capability 缺失时
+    回落到 tool 条目自带的 input_schema（兼容将来可能内联 schema 的工具）。
+    """
     tools = manifest.get('tools')
     if not isinstance(tools, list):
         return []
+    cap_props = _capability_props_by_tool_id(manifest)
     errs: list[str] = []
     for idx, tool in enumerate(tools):
-        errs.extend(_resource_access_errors(idx, tool))
+        tool_id = tool.get('tool_id') if isinstance(tool, dict) else None
+        props = cap_props.get(tool_id) if isinstance(tool_id, str) else None
+        if props is None:
+            props = ((tool.get('input_schema') or {}).get('properties')) or {} if isinstance(tool, dict) else {}
+        errs.extend(_resource_access_errors(idx, tool, props))
     return errs
 
 

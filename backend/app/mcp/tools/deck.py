@@ -26,6 +26,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401  # G6 使用点注册兜底
 from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.app.hasn_deck.service.page_skeleton import validate_page_skeleton
 from backend.app.mcp.auth import AgentContext
@@ -367,6 +368,18 @@ _PAGE_ITEM = {
 }
 
 
+# ── G6 资源权限门声明（doc32 §4·doc33 S1-3/S2-6）─────────────────────────────────────
+# deck 工具经 MCP 直连面（server.py::call_tool 读 tool.resource_access）判权——deck manifest tools=[]，
+# 这些声明不进 manifest 注册期校验，由下方 `_DeckTool.resource_access` 暴露给门。deck service 层原有
+# subject+authorize 保留（防御纵深），门在 ask 审批前先按同一 `resolve_effective_permission` 内核多判一次。
+# 页级操作按 `page_id`=deck_page 判（门据 page_id 反查**真实所属 deck** 再判，防「传我有权的 deck_id +
+# 别人的 page_id」混淆代理）；deck_page 无自身 share、档位纯继承所属 deck。
+_RA_DECK_VIEWER = [{'param': 'deck_id', 'type': 'deck', 'need': 'viewer'}]
+_RA_DECK_EDITOR = [{'param': 'deck_id', 'type': 'deck', 'need': 'editor'}]
+_RA_DECK_MANAGER = [{'param': 'deck_id', 'type': 'deck', 'need': 'manager'}]
+_RA_PAGE_EDITOR = [{'param': 'page_id', 'type': 'deck_page', 'need': 'editor'}]
+
+
 # ── 工具规格（action → name=hasn.deck.<action>）─────────────────────────────────────
 _SPECS: list[dict[str, Any]] = [
     {
@@ -390,6 +403,7 @@ _SPECS: list[dict[str, Any]] = [
         'handler': _h_get,
         'desc': '取 deck 详情（含全部页摘要 / outline / design_contract）。确定性读。',
         'schema': {'type': 'object', 'properties': dict(_DECK_ID), 'required': ['deck_id']},
+        'resource_access': _RA_DECK_VIEWER,
     },
     {
         'action': 'list',
@@ -412,6 +426,7 @@ _SPECS: list[dict[str, Any]] = [
             },
             'required': ['deck_id', 'pages'],
         },
+        'resource_access': _RA_DECK_EDITOR,
     },
     {
         'action': 'page.write_batch',
@@ -426,6 +441,7 @@ _SPECS: list[dict[str, Any]] = [
             },
             'required': ['deck_id', 'pages'],
         },
+        'resource_access': _RA_DECK_EDITOR,
     },
     {
         'action': 'page.write',
@@ -443,6 +459,7 @@ _SPECS: list[dict[str, Any]] = [
             },
             'required': ['deck_id', 'position', 'html'],
         },
+        'resource_access': _RA_DECK_EDITOR,
     },
     {
         'action': 'page.edit',
@@ -460,6 +477,7 @@ _SPECS: list[dict[str, Any]] = [
             },
             'required': ['deck_id', 'page_id'],
         },
+        'resource_access': _RA_PAGE_EDITOR,
     },
     {
         'action': 'page.delete',
@@ -471,6 +489,7 @@ _SPECS: list[dict[str, Any]] = [
             'properties': {**_DECK_ID, 'page_id': {'type': 'string', 'minLength': 1}},
             'required': ['deck_id', 'page_id'],
         },
+        'resource_access': _RA_PAGE_EDITOR,
     },
     {
         'action': 'page.reorder',
@@ -485,6 +504,7 @@ _SPECS: list[dict[str, Any]] = [
             },
             'required': ['deck_id', 'page_ids'],
         },
+        'resource_access': _RA_DECK_EDITOR,
     },
     {
         'action': 'finalize',
@@ -503,6 +523,7 @@ _SPECS: list[dict[str, Any]] = [
             },
             'required': ['deck_id'],
         },
+        'resource_access': _RA_DECK_EDITOR,
     },
     {
         'action': 'delete',
@@ -510,6 +531,7 @@ _SPECS: list[dict[str, Any]] = [
         'handler': _h_delete,
         'desc': '删除演示文稿（软删，可同步撤销）。破坏性。',
         'schema': {'type': 'object', 'properties': dict(_DECK_ID), 'required': ['deck_id']},
+        'resource_access': _RA_DECK_MANAGER,
     },
     {
         'action': 'style.list',
@@ -541,6 +563,8 @@ class _DeckTool(BaseTool):
         self._input_schema = spec['schema']
         self._write = bool(spec['write'])
         self._handler: Handler = spec['handler']
+        # G6 资源权限门声明（无则 None，门跳过；server.call_tool 经 getattr 读取）。
+        self._resource_access: list[dict[str, Any]] | None = spec.get('resource_access')
 
     @property
     def source(self) -> str:
@@ -570,6 +594,12 @@ class _DeckTool(BaseTool):
     def required_scopes(self) -> list[str]:
         # 读类无 scope；写类统一 deck:manage（跨仓与本地 hasn-mcp deck.rs 对齐）。
         return [SCOPE_MANAGE] if self._write else []
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        """G6 资源权限门声明（doc32 §5·doc33 S2-6）。server.call_tool 的门经此判「分身能不能动该 deck/页」。
+        deck 走 MCP 直连面（deck manifest tools=[]），故声明只在此暴露、不进 manifest 注册期校验。"""
+        return self._resource_access
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> Any:
         # 维度① 三态由 server.call_tool 统一判定（D3），工具内不二次校验。

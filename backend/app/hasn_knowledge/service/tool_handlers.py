@@ -12,15 +12,33 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from backend.app.hasn_knowledge.service import resource_adapter as _resource_adapter  # noqa: F401  # G6 使用点注册兜底
 from backend.app.hasn_knowledge.service.error_adapter import to_http_error
 from backend.app.hasn_knowledge.service.knowledge_service import MAX_NATIVE_CONTENT_BYTES, knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
+from backend.app.mcp.context import get_authorized_resource
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from backend.common.dataclasses import AgentTokenPayload
+
+
+def _resource_owner(param: str, agent: AgentTokenPayload) -> tuple[str, bool]:
+    """取「该资源实例的权威 owner」+「G6 门是否已判过」。
+
+    G6 门（MCP 直连面 / daemon 代理面）判过 → 经 ContextVar 拿到已判权资源，其 `owner_hasn_id` 是资源
+    **真实 owner**（分享场景下即库主人 A，非调用分身的主人 B）；handler 用它委托 `owner_id` keyed 旧方法
+    （文档/目录行 owner_id 恒等所属库 owner，被分享者新建行也随库主人归属，见 knowledge_service §复用纪律）。
+
+    门没跑（knowledge agent REST 面 S5 待接，门只在两个 MCP 分发入口生效）→ 回落分身主人 + 由调用方
+    补跑 `_assert_kb_reachable` 兜底可达性（= G6 前既有行为，零回归）。返回 (owner_hasn_id, gate_ran)。
+    """
+    authorized = get_authorized_resource(param)
+    if authorized is not None:
+        return authorized.owner_hasn_id, True
+    return agent.owner_hasn_id, False
 
 
 async def handle_knowledge_search(
@@ -79,12 +97,14 @@ async def handle_knowledge_fetch_doc(
 ) -> dict[str, Any]:
     """knowledge.fetch_doc：返回解析后文本（native=PG 正文；file=引擎分块文本），非二进制。"""
     doc_id = int(input_payload['doc_id'])
-    doc = await knowledge_service.get_document(db, agent.owner_hasn_id, doc_id)
-    await _assert_kb_reachable(db, agent, int(doc['kb_id']))
+    owner, gate_ran = _resource_owner('doc_id', agent)
+    doc = await knowledge_service.get_document(db, owner, doc_id)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, int(doc['kb_id']))
     if doc['kind'] == 'native':
         return doc
     try:
-        full = await knowledge_service.fetch_file_doc_text(db, agent.owner_hasn_id, doc_id)
+        full = await knowledge_service.fetch_file_doc_text(db, owner, doc_id)
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
     return full
@@ -101,7 +121,9 @@ async def handle_knowledge_upload_document(
     - asset_uri(hasn://asset/...) → 取桶字节建 file 文档副本（真实二进制文件；资产须属同一主人，越权如实拒）。
     """
     kb_id = int(input_payload['kb_id'])
-    await _assert_kb_reachable(db, agent, kb_id)
+    owner, gate_ran = _resource_owner('kb_id', agent)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, kb_id)
     title = str(input_payload['title']).strip() or 'untitled'
     folder_id = input_payload.get('folder_id')
     folder_id_int = int(folder_id) if folder_id is not None else None
@@ -113,7 +135,7 @@ async def handle_knowledge_upload_document(
         if asset_uri:
             return await knowledge_service.upload_asset_document(
                 db,
-                agent.owner_hasn_id,
+                owner,
                 kb_id,
                 asset_uri=str(asset_uri),
                 title=title,
@@ -126,7 +148,7 @@ async def handle_knowledge_upload_document(
         if len(text.encode('utf-8')) <= MAX_NATIVE_CONTENT_BYTES:
             result = await knowledge_service.create_native_document(
                 db,
-                agent.owner_hasn_id,
+                owner,
                 kb_id,
                 title=title,
                 content=text,
@@ -140,7 +162,7 @@ async def handle_knowledge_upload_document(
         filename = title if '.' in title.rsplit('/', 1)[-1] else f'{title}.txt'
         return await knowledge_service.upload_file_document(
             db,
-            agent.owner_hasn_id,
+            owner,
             kb_id,
             filename=filename,
             data=text.encode('utf-8'),
@@ -178,11 +200,13 @@ async def handle_knowledge_create_kb(
 async def handle_knowledge_delete_kb(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.delete_kb：删主人的整库（级联删文档/目录）；可达性闸门后删。"""
+    """knowledge.delete_kb：删主人的整库（级联删文档/目录）；G6 门 manager 档判权后删。"""
     kb_id = int(input_payload['kb_id'])
-    await _assert_kb_reachable(db, agent, kb_id)
+    owner, gate_ran = _resource_owner('kb_id', agent)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, kb_id)
     try:
-        await knowledge_service.delete_kb(db, agent.owner_hasn_id, kb_id)
+        await knowledge_service.delete_kb(db, owner, kb_id)
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
     return {'deleted': True, 'kb_id': kb_id}
@@ -193,11 +217,13 @@ async def handle_knowledge_list_documents(
 ) -> dict[str, Any]:
     """knowledge.list_documents：列某可达知识库的文档（folder_id 省略=全库 / 0=库根 / >0=指定目录）。"""
     kb_id = int(input_payload['kb_id'])
-    await _assert_kb_reachable(db, agent, kb_id)
+    owner, gate_ran = _resource_owner('kb_id', agent)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, kb_id)
     folder_id = input_payload.get('folder_id')
     docs = await knowledge_service.list_documents(
         db,
-        agent.owner_hasn_id,
+        owner,
         kb_id,
         folder_id=int(folder_id) if folder_id is not None else None,
     )
@@ -207,12 +233,14 @@ async def handle_knowledge_list_documents(
 async def handle_knowledge_delete_document(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.delete_document：删主人知识库中的一篇文档（按 doc_id 反查所属 kb 做可达性闸门）。"""
+    """knowledge.delete_document：删主人知识库中的一篇文档（G6 门 knowledge_doc/editor 档判权）。"""
     doc_id = int(input_payload['doc_id'])
-    doc = await knowledge_service.get_document(db, agent.owner_hasn_id, doc_id)
-    await _assert_kb_reachable(db, agent, int(doc['kb_id']))
+    owner, gate_ran = _resource_owner('doc_id', agent)
+    doc = await knowledge_service.get_document(db, owner, doc_id)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, int(doc['kb_id']))
     try:
-        await knowledge_service.delete_document(db, agent.owner_hasn_id, doc_id)
+        await knowledge_service.delete_document(db, owner, doc_id)
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
     return {'deleted': True, 'doc_id': doc_id}
@@ -227,8 +255,10 @@ async def handle_knowledge_move_document(
     二选一必须给其一。按 doc_id 反查所属 kb 做可达性闸门（维度②越权如实拒）。
     """
     doc_id = int(input_payload['doc_id'])
-    doc = await knowledge_service.get_document(db, agent.owner_hasn_id, doc_id)
-    await _assert_kb_reachable(db, agent, int(doc['kb_id']))
+    owner, gate_ran = _resource_owner('doc_id', agent)
+    doc = await knowledge_service.get_document(db, owner, doc_id)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, int(doc['kb_id']))
     folder_id = input_payload.get('folder_id')
     move_to_root = bool(input_payload.get('move_to_root'))
     if folder_id is None and not move_to_root:
@@ -236,7 +266,7 @@ async def handle_knowledge_move_document(
     try:
         result = await knowledge_service.update_native_document(
             db,
-            agent.owner_hasn_id,
+            owner,
             doc_id,
             folder_id=int(folder_id) if folder_id is not None else None,
             move_to_root=move_to_root,
@@ -258,8 +288,10 @@ async def handle_knowledge_list_folders(
 ) -> dict[str, Any]:
     """knowledge.list_folders：列某可达知识库的目录树（平铺，按 parent_id 组树）。"""
     kb_id = int(input_payload['kb_id'])
-    await _assert_kb_reachable(db, agent, kb_id)
-    folders = await knowledge_service.list_folders(db, agent.owner_hasn_id, kb_id)
+    owner, gate_ran = _resource_owner('kb_id', agent)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, kb_id)
+    folders = await knowledge_service.list_folders(db, owner, kb_id)
     return {'folders': folders}
 
 
@@ -268,11 +300,13 @@ async def handle_knowledge_create_folder(
 ) -> dict[str, Any]:
     """knowledge.create_folder：在可达知识库里新建目录。"""
     kb_id = int(input_payload['kb_id'])
-    await _assert_kb_reachable(db, agent, kb_id)
+    owner, gate_ran = _resource_owner('kb_id', agent)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, kb_id)
     parent_id = input_payload.get('parent_id')
     return await knowledge_service.create_folder(
         db,
-        agent.owner_hasn_id,
+        owner,
         kb_id,
         name=str(input_payload['name']),
         parent_id=int(parent_id) if parent_id is not None else None,
@@ -282,14 +316,16 @@ async def handle_knowledge_create_folder(
 async def handle_knowledge_update_folder(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.update_folder：重命名/移动目录（按 folder_id 反查所属 kb 做可达性闸门）。"""
+    """knowledge.update_folder：重命名/移动目录（G6 门 knowledge_folder/editor 档判权）。"""
     folder_id = int(input_payload['folder_id'])
-    folder = await knowledge_service.get_folder(db, agent.owner_hasn_id, folder_id)
-    await _assert_kb_reachable(db, agent, int(folder['kb_id']))
+    owner, gate_ran = _resource_owner('folder_id', agent)
+    folder = await knowledge_service.get_folder(db, owner, folder_id)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, int(folder['kb_id']))
     parent_id = input_payload.get('parent_id')
     return await knowledge_service.update_folder(
         db,
-        agent.owner_hasn_id,
+        owner,
         folder_id,
         name=input_payload.get('name'),
         parent_id=int(parent_id) if parent_id is not None else None,
@@ -300,26 +336,34 @@ async def handle_knowledge_update_folder(
 async def handle_knowledge_delete_folder(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.delete_folder：删空目录（非空如实拒）。"""
+    """knowledge.delete_folder：删空目录（非空如实拒）；G6 门 knowledge_folder/editor 档判权。"""
     folder_id = int(input_payload['folder_id'])
-    folder = await knowledge_service.get_folder(db, agent.owner_hasn_id, folder_id)
-    await _assert_kb_reachable(db, agent, int(folder['kb_id']))
-    await knowledge_service.delete_folder(db, agent.owner_hasn_id, folder_id)
+    owner, gate_ran = _resource_owner('folder_id', agent)
+    folder = await knowledge_service.get_folder(db, owner, folder_id)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, int(folder['kb_id']))
+    await knowledge_service.delete_folder(db, owner, folder_id)
     return {'deleted': True, 'folder_id': folder_id}
 
 
 async def handle_knowledge_write_doc(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.write_doc：创建/更新原生文档（D9）；返回 doc_id。"""
+    """knowledge.write_doc：创建/更新原生文档（D9）；返回 doc_id。
+
+    传 doc_id → 更新既有文档（G6 门按 `doc_id`=knowledge_doc/editor 判权）；否则传 kb_id →
+    在库内新建（门按 `kb_id`=knowledge/editor 判权）。两参在声明里均 required=False，门只判实际传入的那个。
+    """
     doc_id = input_payload.get('doc_id')
     try:
         if doc_id is not None:
-            doc = await knowledge_service.get_document(db, agent.owner_hasn_id, int(doc_id))
-            await _assert_kb_reachable(db, agent, int(doc['kb_id']))
+            owner, gate_ran = _resource_owner('doc_id', agent)
+            doc = await knowledge_service.get_document(db, owner, int(doc_id))
+            if not gate_ran:
+                await _assert_kb_reachable(db, agent, int(doc['kb_id']))
             result = await knowledge_service.update_native_document(
                 db,
-                agent.owner_hasn_id,
+                owner,
                 int(doc_id),
                 title=input_payload.get('title'),
                 content=input_payload.get('content'),
@@ -328,11 +372,13 @@ async def handle_knowledge_write_doc(
             )
         else:
             kb_id = int(input_payload['kb_id'])
-            await _assert_kb_reachable(db, agent, kb_id)
+            owner, gate_ran = _resource_owner('kb_id', agent)
+            if not gate_ran:
+                await _assert_kb_reachable(db, agent, kb_id)
             folder_id = input_payload.get('folder_id')
             result = await knowledge_service.create_native_document(
                 db,
-                agent.owner_hasn_id,
+                owner,
                 kb_id,
                 title=str(input_payload['title']),
                 content=str(input_payload['content']),

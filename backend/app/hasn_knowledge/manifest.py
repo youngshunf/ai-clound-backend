@@ -54,8 +54,15 @@ def _cap(
     }
 
 
-def _tool(*, name: str, scopes: list[str], risk_level: str, idempotent: bool) -> dict:
-    return {
+def _tool(
+    *,
+    name: str,
+    scopes: list[str],
+    risk_level: str,
+    idempotent: bool,
+    resource_access: list[dict] | None = None,
+) -> dict:
+    tool = {
         'tool_id': f'knowledge.{name}',
         'mcp_name': f'hasn.knowledge.{name}',
         'transport': 'gateway_internal',
@@ -64,6 +71,12 @@ def _tool(*, name: str, scopes: list[str], risk_level: str, idempotent: bool) ->
         'risk_level': risk_level,
         'idempotent': idempotent,
     }
+    # G6 资源权限门声明（doc33 S1-3/S2-6）：门在统一派发管线里按 `resolve_effective_permission` 内核
+    # 判「这个 agent 能不能动这个资源实例」；param 须存在于对应 capability 的 input_schema.properties。
+    # 未声明的工具（search/list_datasets/create_kb——无资源实例入参）门零介入。
+    if resource_access is not None:
+        tool['resource_access'] = resource_access
+    return tool
 
 
 KNOWLEDGE_AI_NATIVE_MANIFEST = {
@@ -174,7 +187,10 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _cap(
             name='upload_document',
             title='上传文档',
-            description='向主人的知识库上传文档并自动建立索引：content_text(纯文本内容→落可编辑的原生文档，超1MB回落文件)或 asset_uri(已在私有桶的真实二进制文件引用)，二选一',
+            description=(
+                '向主人的知识库上传文档并自动建立索引：content_text(纯文本内容→落可编辑的原生文档，超1MB回落文件)'
+                '或 asset_uri(已在私有桶的真实二进制文件引用)，二选一'
+            ),
             scopes=['knowledge:upload'],
             properties={
                 'kb_id': {'type': 'integer'},
@@ -286,20 +302,92 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         ),
     ],
     'tools': [
+        # search/list_datasets/create_kb 无资源实例入参（跨库检索 / 列全部 / 新建），门零介入，不声明。
         _tool(name='search', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='list_datasets', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='create_kb', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
-        _tool(name='delete_kb', scopes=['knowledge:write'], risk_level='high', idempotent=False),
-        _tool(name='fetch_doc', scopes=['knowledge:read'], risk_level='low', idempotent=True),
-        _tool(name='list_documents', scopes=['knowledge:read'], risk_level='low', idempotent=True),
-        _tool(name='upload_document', scopes=['knowledge:upload'], risk_level='medium', idempotent=False),
-        _tool(name='delete_document', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
-        _tool(name='write_doc', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
-        _tool(name='move_document', scopes=['knowledge:write'], risk_level='low', idempotent=True),
-        _tool(name='list_folders', scopes=['knowledge:read'], risk_level='low', idempotent=True),
-        _tool(name='create_folder', scopes=['knowledge:write'], risk_level='low', idempotent=False),
-        _tool(name='update_folder', scopes=['knowledge:write'], risk_level='low', idempotent=False),
-        _tool(name='delete_folder', scopes=['knowledge:write'], risk_level='low', idempotent=False),
+        _tool(
+            name='delete_kb',
+            scopes=['knowledge:write'],
+            risk_level='high',
+            idempotent=False,
+            resource_access=[{'param': 'kb_id', 'type': 'knowledge', 'need': 'manager'}],
+        ),
+        _tool(
+            name='fetch_doc',
+            scopes=['knowledge:read'],
+            risk_level='low',
+            idempotent=True,
+            resource_access=[{'param': 'doc_id', 'type': 'knowledge_doc', 'need': 'viewer'}],
+        ),
+        _tool(
+            name='list_documents',
+            scopes=['knowledge:read'],
+            risk_level='low',
+            idempotent=True,
+            resource_access=[{'param': 'kb_id', 'type': 'knowledge', 'need': 'viewer'}],
+        ),
+        _tool(
+            name='upload_document',
+            scopes=['knowledge:upload'],
+            risk_level='medium',
+            idempotent=False,
+            resource_access=[{'param': 'kb_id', 'type': 'knowledge', 'need': 'editor'}],
+        ),
+        _tool(
+            name='delete_document',
+            scopes=['knowledge:write'],
+            risk_level='medium',
+            idempotent=False,
+            resource_access=[{'param': 'doc_id', 'type': 'knowledge_doc', 'need': 'editor'}],
+        ),
+        # write_doc 可传 doc_id（更新既有文档）或 kb_id（在库内新建）；两者皆 optional（required:false），
+        # 门只对**实际传入**的那个判权（缺省参跳过），editor 档。
+        _tool(
+            name='write_doc',
+            scopes=['knowledge:write'],
+            risk_level='medium',
+            idempotent=False,
+            resource_access=[
+                {'param': 'doc_id', 'type': 'knowledge_doc', 'need': 'editor', 'required': False},
+                {'param': 'kb_id', 'type': 'knowledge', 'need': 'editor', 'required': False},
+            ],
+        ),
+        _tool(
+            name='move_document',
+            scopes=['knowledge:write'],
+            risk_level='low',
+            idempotent=True,
+            resource_access=[{'param': 'doc_id', 'type': 'knowledge_doc', 'need': 'editor'}],
+        ),
+        _tool(
+            name='list_folders',
+            scopes=['knowledge:read'],
+            risk_level='low',
+            idempotent=True,
+            resource_access=[{'param': 'kb_id', 'type': 'knowledge', 'need': 'viewer'}],
+        ),
+        _tool(
+            name='create_folder',
+            scopes=['knowledge:write'],
+            risk_level='low',
+            idempotent=False,
+            resource_access=[{'param': 'kb_id', 'type': 'knowledge', 'need': 'editor'}],
+        ),
+        _tool(
+            name='update_folder',
+            scopes=['knowledge:write'],
+            risk_level='low',
+            idempotent=False,
+            resource_access=[{'param': 'folder_id', 'type': 'knowledge_folder', 'need': 'editor'}],
+        ),
+        _tool(
+            name='delete_folder',
+            scopes=['knowledge:write'],
+            risk_level='low',
+            idempotent=False,
+            resource_access=[{'param': 'folder_id', 'type': 'knowledge_folder', 'need': 'editor'}],
+        ),
     ],
     'events': [],
     'reverse_invoke': {'supported': False},
