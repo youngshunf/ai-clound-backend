@@ -88,6 +88,8 @@ class GenTemplate:
             'python/model.jinja': f'{app_name}/model/{filename}.py',
             'python/schema.jinja': f'{app_name}/schema/{filename}.py',
             'python/service.jinja': f'{app_name}/service/{filename}_service.py',
+            # G6 统一资源权限门·资源适配器骨架（doc33 S3-5）；生成器「文件已存在则跳过」，绝不覆盖既有 adapter。
+            'python/resource_adapter.jinja': f'{app_name}/service/resource_adapter.py',
             f'sql/mysql/init{pk_suffix}.jinja': f'{app_name}/sql/mysql/init{pk_suffix}.sql',
             f'sql/postgresql/init{pk_suffix}.jinja': f'{app_name}/sql/postgresql/init{pk_suffix}.sql',
         }
