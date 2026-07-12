@@ -19,8 +19,11 @@ from typing import Any
 
 # import 即注册：保证 registered_types() 在守卫求值时已含各 S2-6/S3-1 已接入应用的资源类型。
 import backend.app.hasn_deck.service.resource_adapter  # noqa: F401
+import backend.app.hasn_design.service.resource_adapter  # noqa: F401
 import backend.app.hasn_designsystem.service.resource_adapter  # noqa: F401
 import backend.app.hasn_knowledge.service.resource_adapter  # noqa: F401
+import backend.app.hasn_plan.service.resource_adapter  # noqa: F401
+import backend.app.hasn_studio.service.resource_adapter  # noqa: F401
 
 from backend.app.hasn.service.ai_native_app_registry import (
     AINativeAppRegistry,
@@ -181,6 +184,10 @@ _SEED_JUDGEABLE_TYPES: frozenset[str] = frozenset({
     'deck',
     'deck_page',
     'designsystem',
+    'studio_project',
+    'studio_artifact',
+    'design',
+    'plan_event',
 })
 
 

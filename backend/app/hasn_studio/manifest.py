@@ -41,6 +41,15 @@ _SCOPE_RENDER = 'studio:render'
 _SCOPE_EXPORT = 'studio:export'
 _SCOPE_SHARE = 'studio:share'
 
+# G6 资源权限门声明（doc33 S3-1）：type 逐字对齐 resource_share 存的 resource_type（studio_service
+# `_RESOURCE_TYPE_PROJECT`/`_RESOURCE_TYPE_ARTIFACT`）与 `resource_adapter` 注册类型；param = 对应工具真实入参名。
+# 读类判 viewer、写/渲染类判 editor；project_id 可选的工具（save_project 新建 / list_artifacts 全列）带 required=False。
+_RA_PROJECT_VIEWER = [{'param': 'project_id', 'type': 'studio_project', 'need': 'viewer'}]
+_RA_PROJECT_VIEWER_OPT = [{'param': 'project_id', 'type': 'studio_project', 'need': 'viewer', 'required': False}]
+_RA_PROJECT_EDITOR = [{'param': 'project_id', 'type': 'studio_project', 'need': 'editor'}]
+_RA_PROJECT_EDITOR_OPT = [{'param': 'project_id', 'type': 'studio_project', 'need': 'editor', 'required': False}]
+_RA_ARTIFACT_VIEWER = [{'param': 'artifact_id', 'type': 'studio_artifact', 'need': 'viewer'}]
+
 
 def _cap(
     *,
@@ -54,14 +63,21 @@ def _cap(
     tags: list[str],
     ask: bool,
     risk_level: str = 'low',
+    resource_access: list[dict] | None = None,
 ) -> dict:
     """hasn.studio.* 能力声明。
 
     ``name`` 既是 capability/tool_id 扁平标识，也是 ``hasn.studio.<name>`` 后缀（本期工具名无层级）。
     出厂三态贴 scopes.py：read/write 出厂 allow（``ask=False``，human_confirmation.required=False）；
     render/run_pipeline/run_tool/export 出厂 ask（``ask=True``，花算力/外发，主人裁决）。
+
+    ``resource_access``（G6 资源权限门声明，doc33 S3-1）：声明「本工具碰哪个入参资源、要什么档位」，门在
+    统一派发管线里按 `resolve_effective_permission` 内核判「这个 agent 能不能动这个资源实例」。声明随 cap
+    透传到 `tools[]` 条目（门与守卫均从 tool 条目读，见 `_tool_from_cap`）；``param`` 须存在于本 cap 的
+    input_schema.properties（注册期 `_manifest_resource_access_errors` 校验，拼错即炸）。无资源实例入参的
+    工具（list_pipelines/list_projects/get_render_job/run_tool 等）不声明，门零介入。
     """
-    return {
+    cap = {
         'capability_id': f'hasn_studio.{name}.capability',
         'name': title,
         'description': description,
@@ -87,6 +103,10 @@ def _cap(
             'default_page_rank': page_rank,
         },
     }
+    # G6 声明只在有资源门约束的工具上带；`_tool_from_cap` 据此把它写进 `tools[]` 条目（门/守卫读 tool 条目）。
+    if resource_access is not None:
+        cap['resource_access'] = resource_access
+    return cap
 
 
 def _tool_from_cap(cap: dict) -> dict:
@@ -97,7 +117,7 @@ def _tool_from_cap(cap: dict) -> dict:
     幂等性按 scope 推导：纯读（studio:read）可安全重试 → idempotent=True；写/渲染/导出 → False。
     """
     scopes = list(cap.get('required_scopes') or [])
-    return {
+    tool = {
         'tool_id': cap['tool_id'],
         'mcp_name': cap['mcp_name'],
         'transport': 'gateway_internal',
@@ -106,6 +126,11 @@ def _tool_from_cap(cap: dict) -> dict:
         'risk_level': cap['risk_level'],
         'idempotent': scopes == [_SCOPE_READ],
     }
+    # G6 资源权限门声明（doc33 S3-1）：从 cap 透传到 tool 条目——运行时门（`ai_native_runtime_gateway.
+    # _enforce_resource_gate`）与守卫（`test_resource_access_declaration_contract`）均从 tool 条目读。
+    if cap.get('resource_access') is not None:
+        tool['resource_access'] = cap['resource_access']
+    return tool
 
 
 # 14 个工具（设计 §3 / §3.5 / §3.6）。顺序即 tools[] 顺序：读(6) → 写(2) → 渲染(3) → 导出(1) → 分享/发布(2)。
@@ -143,6 +168,7 @@ _CAPABILITIES = [
         page_rank=12,
         tags=['studio', 'project', 'read'],
         ask=False,
+        resource_access=_RA_PROJECT_VIEWER,
     ),
     _cap(
         name='list_assets',
@@ -154,6 +180,7 @@ _CAPABILITIES = [
         page_rank=13,
         tags=['studio', 'asset', 'read'],
         ask=False,
+        resource_access=_RA_PROJECT_VIEWER,
     ),
     _cap(
         name='list_artifacts',
@@ -167,6 +194,8 @@ _CAPABILITIES = [
         page_rank=14,
         tags=['studio', 'artifact', 'read'],
         ask=False,
+        # project_id 可选（不传=全列自有成品，无资源实例）→ required=False，缺省跳过判权；传了则判该项目 viewer。
+        resource_access=_RA_PROJECT_VIEWER_OPT,
     ),
     _cap(
         name='get_render_job',
@@ -203,6 +232,8 @@ _CAPABILITIES = [
         page_rank=20,
         tags=['studio', 'project', 'write'],
         ask=False,
+        # project_id 可选（不传=新建，无既存资源）→ required=False，缺省跳过判权；传了（更新）则判该项目 editor。
+        resource_access=_RA_PROJECT_EDITOR_OPT,
     ),
     _cap(
         name='save_storyboard',
@@ -220,6 +251,7 @@ _CAPABILITIES = [
         page_rank=21,
         tags=['studio', 'storyboard', 'write'],
         ask=False,
+        resource_access=_RA_PROJECT_EDITOR,
     ),
     # ---------------- 渲染（studio:render，出厂 ask；run_tool 同 ask=可能花钱） ----------------
     _cap(
@@ -242,6 +274,8 @@ _CAPABILITIES = [
         tags=['studio', 'render', 'pipeline'],
         ask=True,
         risk_level='medium',
+        # 派渲染 = 对项目的写操作（花算力出片）→ editor（被分享 viewer 不可派渲染）。
+        resource_access=_RA_PROJECT_EDITOR,
     ),
     _cap(
         name='render',
@@ -262,6 +296,7 @@ _CAPABILITIES = [
         tags=['studio', 'render'],
         ask=True,
         risk_level='medium',
+        resource_access=_RA_PROJECT_EDITOR,
     ),
     _cap(
         name='run_tool',
@@ -293,6 +328,8 @@ _CAPABILITIES = [
         tags=['studio', 'export'],
         ask=True,
         risk_level='medium',
+        # 导出 = 读取该成品换签名下载 URL → viewer（artifact_id 必填，不带 required=False）。
+        resource_access=_RA_ARTIFACT_VIEWER,
     ),
     # ---------------- 分享 / 发布（studio:share，出厂 ask=外发；§3.6 全复用 resource_share + M18） ----------------
     _cap(

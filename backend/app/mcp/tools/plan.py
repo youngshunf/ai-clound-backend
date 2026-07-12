@@ -26,6 +26,9 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
+from backend.app.hasn_plan.service import (
+    resource_adapter as _plan_resource_adapter,  # noqa: F401  # G6 使用点注册兜底：注册 plan_event adapter（ai_native_app_registry 未 import 本模块，靠此在启动装配工具时注册）
+)
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.hasn_plan.service.plan_authz import ERR_NOT_IN_ENTERPRISE_SPACE, resolve_plan_write_scope
 from backend.app.hasn_plan.service.plan_notify import notify_invited

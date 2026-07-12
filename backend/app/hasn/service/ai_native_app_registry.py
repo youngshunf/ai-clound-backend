@@ -19,6 +19,7 @@ from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 # 被误判「type 未注册」。各应用自注册模块见 `<app>/service/resource_adapter.py`。
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401
 from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
+from backend.app.hasn_design.service import resource_adapter as _design_resource_adapter  # noqa: F401
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
 from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
@@ -27,10 +28,12 @@ from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
 from backend.app.hasn_knowledge.service import resource_adapter as _knowledge_resource_adapter  # noqa: F401
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
+from backend.app.hasn_plan.service import resource_adapter as _plan_resource_adapter  # noqa: F401
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
 from backend.app.hasn_reel.manifest import REEL_AI_NATIVE_MANIFEST
 from backend.app.hasn_studio.manifest import STUDIO_AI_NATIVE_MANIFEST
+from backend.app.hasn_studio.service import resource_adapter as _studio_resource_adapter  # noqa: F401
 from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
 from backend.common.exception import errors
 from backend.common.pagination import paging_data

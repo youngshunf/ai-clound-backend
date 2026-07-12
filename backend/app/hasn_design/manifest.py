@@ -53,6 +53,24 @@ _READ_SCOPE = 'design:read'
 _WRITE_SCOPE = 'design:write'
 _CODEGEN_SCOPE = 'design:codegen'
 
+# G6 统一资源权限门（doc33 S3-1）：design 项目资源类型串（与 design_share.py RESOURCE_TYPE_DESIGN 及
+# resource_adapter._RESOURCE_TYPE_DESIGN 逐字一致）。凡工具入参含具体 project_id 的能力，声明本类型判权。
+_RESOURCE_TYPE_DESIGN = 'design'
+
+
+def _project_resource_access(properties: dict, need: str) -> list[dict] | None:
+    """据 capability 入参 schema 生成 G6 `resource_access` 声明（doc33 S3-1）。
+
+    仅当能力入参含 `project_id`（操作某个具体项目）才声明：读类 need='viewer'、写/破坏类 need='editor'、
+    codegen（读设计出码、不改画布）need='viewer'。`project_id` 在 design 工具面里恒必填（新项目 daemon
+    已预写空 .op，无「可空 project_id 新建」路径），故 required 取默认 True（缺省即 422，不跳过）。
+    不含 project_id 的能力（如 get_design_prompt 只取设计知识）→ 无资源、返回 None（不声明）。
+    """
+    if 'project_id' not in properties:
+        return None
+    return [{'param': 'project_id', 'type': _RESOURCE_TYPE_DESIGN, 'need': need}]
+
+
 # 派发设计分身的业务提示词（catalog.work_session_system_prompt 出厂源 + 工作会话注入，§5.9-3）。
 # 教分身：项目已备好空白画布 → 读现状 → 按 brief 用 batch_design/分层 skeleton→content→refine 真出设计
 # → 破坏性操作先确认 → 成品实时存进项目（主人在编辑器内查看/导出）→ 文案/品牌/方案定稿摊给主人确认。
@@ -73,7 +91,7 @@ DESIGN_BUSINESS_PROMPT = (
 def _read_cap(*, name: str, description: str, properties: dict, required: list[str], page_rank: int) -> dict:
     """读类能力（design:read；读画布/取设计知识/导出渲染结果，出厂 Allow）——对齐 design.rs 读类工具。"""
     short = name.split('.', 1)[-1]
-    return {
+    cap = {
         'capability_id': f'design.{name}.capability',
         'name': short,
         'description': description,
@@ -99,6 +117,11 @@ def _read_cap(*, name: str, description: str, properties: dict, required: list[s
             'default_page_rank': page_rank,
         },
     }
+    # G6：读类操作具体项目 → viewer 判权（get_design_prompt 无 project_id → 不声明）。
+    resource_access = _project_resource_access(properties, 'viewer')
+    if resource_access is not None:
+        cap['resource_access'] = resource_access
+    return cap
 
 
 def _write_cap(
@@ -111,6 +134,7 @@ def _write_cap(
     page_rank: int,
     scope: str = _WRITE_SCOPE,
     ask: bool = False,
+    resource_need: str = 'editor',
 ) -> dict:
     """写/出码类能力（required_scopes=design:write 或 design:codegen）。
 
@@ -118,8 +142,11 @@ def _write_cap(
     分身可随便画，对齐 studio:write 哲学 + §5.3 note）；破坏性（delete_node/replace_node）``ask=True`` →
     human_confirmation.required=True（**Ask**——破坏性默认询问）。human_confirmation 仅 UI 提示，
     owner 可经 capability_modes 三态覆盖。
+
+    ``resource_need``：G6 判权档位——改画布的写类默认 'editor'；codegen（读设计出码、不改画布，同 export 读类）
+    传 'viewer'。
     """
-    return {
+    cap = {
         'capability_id': f'design.{name}.capability',
         'name': title,
         'description': description,
@@ -145,6 +172,11 @@ def _write_cap(
             'default_page_rank': page_rank,
         },
     }
+    # G6：写/出码类操作具体项目 → 按 resource_need 判权（改画布=editor；codegen=viewer）。
+    resource_access = _project_resource_access(properties, resource_need)
+    if resource_access is not None:
+        cap['resource_access'] = resource_access
+    return cap
 
 
 # 项目上下文：design 工具都在某个设计项目（= 一个 OpenPencil 文档 = 一个 .op）上操作。
@@ -405,6 +437,7 @@ DESIGN_AI_NATIVE_MANIFEST = {
             required=['project_id'],
             page_rank=40,
             scope=_CODEGEN_SCOPE,
+            resource_need='viewer',  # 出码=读设计生成代码、不改画布 → viewer（同 export 读类）
         ),
     ],
     # 方案 A：本地工具不进 tools[]（走 hasn-mcp source=Local，bootstrap 发现）。
