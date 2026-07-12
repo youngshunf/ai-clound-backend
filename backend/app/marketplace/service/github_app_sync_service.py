@@ -173,7 +173,11 @@ class GitHubAppSyncService:
             Path(self.local_path) / 'templates' / '_platform' / 'HASN.md'
         )
         soul_md = self._compose_soul_md(hasn_block, soul_md)
-        agents_md = self._read_optional_text(template_dir / 'AGENTS.md')
+        # AGENTS.md 已退役（2026-07-12）：它本是「工作目录/项目规范」文件，被误当 persona 用；
+        # 上游 hermes 从 profile 根读不到 agent cwd 下的 AGENTS.md（落点错位 + 仅顶层不递归），
+        # runtime 自始至终从不消费它。故不再从模板读取，源头即恒 None（下游 str|None 自然承接）；
+        # 人格统一收进 SOUL.md。hasn_agents.agents_md / marketplace_template.agents_md 列保留为惰性死列。
+        agents_md = None
         # USER.md 是 owner 维度（描述主人，与 agent persona 无关），全模板共用一份权威源
         # templates/USER.md；若某模板自带 USER.md 则按模板覆盖（当前约定无 per-template）。
         user_md = self._read_optional_text(template_dir / 'USER.md') or self._read_optional_text(

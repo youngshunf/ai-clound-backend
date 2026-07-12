@@ -161,7 +161,8 @@ def parse_template_package(content: bytes) -> TemplatePackage:
         if not isinstance(template_yaml, dict):
             raise errors.RequestError(msg='template.yaml 格式错误')
         _read_required_text(zf, 'SOUL.md')
-        _read_required_text(zf, 'AGENTS.md')
+        # AGENTS.md 已退役（2026-07-12）：它本是「工作目录/项目规范」文件被误当 persona 用，
+        # runtime 从不消费它，模板也不再随包分发；故不再强制模板包携带 AGENTS.md（人格收进 SOUL.md）。
         if not template_yaml.get('name') and not template_yaml.get('display_name'):
             raise errors.RequestError(msg='template.yaml 缺少 name')
         if not template_yaml.get('description'):
