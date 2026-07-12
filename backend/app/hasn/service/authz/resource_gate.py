@@ -161,6 +161,42 @@ async def _effective_with_parent(
     return _max_perm(eff, parent_eff)
 
 
+async def effective_permission(
+    db: AsyncSession,
+    subject: Subject,
+    resource_type: str,
+    resource_id: str,
+    *,
+    perm_cache: PermissionResolutionCache | None = None,
+) -> str:
+    """求 (subject, 资源) 的有效档位——判权流程的**纯查询复用入口**（doc32 §14.4 注）。
+
+    与 `require` 共用同一套判权函数（`_effective_with_parent` 父链取并 §5.3 + `_apply_domain_restriction`
+    维度②域限制 §7.4），保证判权逻辑一份、语义与 `require` 逐字一致。区别仅在：本函数**不做**
+    「按 need 比较 + 抛 403/404 + 注入 AuthorizedResource」的后半段，恒返回档位字符串，由调用方
+    自行决定放行/隐身。
+
+    - adapter 未注册 / `load_meta` 返回 None（行不存在/已删/id 畸形）→ 返回 `'none'`：纯查询入口不抛
+      500/404（那是 `require` 的配置错误 / 存在性隐藏语义），一律无权，存在性隐藏交调用方处理；
+    - 恒返回 `'none'|'viewer'|'editor'|'manager'`。
+
+    调用方：资产投影门 `asset_projection.readable_asset_ids`（need 固定 viewer）；后续 G6 门的
+    `enforce_declaration` 亦可收编至此（当前 `require` 内联判权流程，暂不动以避免 G6 回归）。
+    """
+    adapter = resource_kind_registry.get(resource_type)
+    if adapter is None:
+        return 'none'
+    meta = await adapter.load_meta(db, resource_id)
+    if meta is None:
+        return 'none'
+    cache = perm_cache if perm_cache is not None else PermissionResolutionCache()
+    eff = await _effective_with_parent(
+        db, adapter, subject, resource_type=resource_type, resource_id=resource_id, meta=meta, perm_cache=cache
+    )
+    # 维度②域限制叠加（仅 agent + owner 自有资源），与 require 同序
+    return await _apply_domain_restriction(db, adapter, subject, meta, eff)
+
+
 async def require(
     db: AsyncSession,
     subject: Subject,

@@ -46,6 +46,11 @@ class ResourceKindAdapter(Protocol):
       父 id 从**子行**读出（子行不存在时门已 404，不上溯，doc32 §5.3 评审修订）。
     - `async agent_domain_grant(db, owner_id, agent_hasn_id) -> tuple[mode, 白名单id列表]`——
       维度②域限制钩子（doc32 §7.4 一期承载点），未实现视为 ('inherit', [])。
+    - `async collect_asset_ids(db, resource_id) -> set[str]`——本资源实例引用的全部内嵌私有资产
+      id（`hasn://asset/{id}`）；资产投影门（doc32 §14）据此 ∩ 请求集放行分享资源内嵌私有资产。
+      未实现 / 返回空集 = 该类型无内嵌私有资产（如纯文本待办），门对它自然 no-op。契约：① 穷尽所有
+      资产承载点（封面 / 缩略图 / 正文内嵌 …）；② 只收「确属该资源」的 id（门据此求交，防越权签发的
+      命门）；③ 与 load_meta 一样按 id 取未删行，id 畸形 / 资源不存在 → 空集，绝不冒异常。
     """
 
     resource_type: str  # 与 hasn_resource_share.resource_type、manifest resources[] 同名同串
