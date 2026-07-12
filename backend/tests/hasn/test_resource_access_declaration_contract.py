@@ -71,6 +71,32 @@ def _declared_params(resource_access: Any) -> set[str]:
     return {d['param'] for d in resource_access if isinstance(d, dict) and 'param' in d}
 
 
+def _declared_types(resource_access: Any) -> set[str]:
+    """从工具的 resource_access 声明里取引用的 resource_type 集合（形状非法则视作空）。"""
+    if not isinstance(resource_access, list):
+        return set()
+    return {d['type'] for d in resource_access if isinstance(d, dict) and 'type' in d}
+
+
+def _all_declared_types() -> set[str]:
+    """两面工具全部 resource_access 声明引用到的 resource_type 并集。"""
+    types: set[str] = set()
+    server = HasnCloudMcpServer()
+    for tool in server.tool_registry.get_all_tools():
+        if getattr(tool, 'source', 'platform') == 'external':
+            continue
+        types |= _declared_types(getattr(tool, 'resource_access', None))
+    registry = AINativeAppRegistry()
+    for app in registry.list_builtin_apps():
+        app_id = app.get('app_id') or app.get('id')
+        if not app_id:
+            continue
+        manifest = registry.get_builtin_manifest(app_id)
+        for tool in manifest.get('tools', []) or []:
+            types |= _declared_types(tool.get('resource_access'))
+    return types
+
+
 def _platform_violations(alias: set[str]) -> set[tuple[str, str]]:
     """平台 BaseTool 面：input_schema 里命中别名却未声明的 `(工具名, 入参)`。"""
     server = HasnCloudMcpServer()
@@ -132,4 +158,46 @@ def test_whitelist_has_no_stale_entries() -> None:
     stale = _WHITELIST - _all_violations()
     assert not stale, (
         f'这些白名单条目已不再是违规（已声明或工具已删），请从 _TRUE_EXCEPTIONS / _KNOWN_DEBT 删除：{sorted(stale)}'
+    )
+
+
+# ── S3-3 守卫二：registry 完整性（doc33 §S3-3）──────────────────────────────────────
+#
+# 说明：doc33 §S3-3① 原文「manifest resources[] 声明的 resource_type 在 registry 有 adapter」。落地时
+# manifest 的 `resources[]`（doc31 RC）用 `resource_kind`（如 knowledge.base / deck.presentation）+ uri_domain
+# 做**寻址/卡片/产物**描述，并非 ACL 的 resource_type（knowledge / deck / knowledge_folder…），二者无可靠 1:1
+# 映射、且并非每个 resource_kind 都可分享。故此处把 ① 落成**语义等价且更紧**的不变量：
+#   **任何工具 `resource_access` 声明引用到的 `type`，registry 必有对应 adapter**——否则门解析该声明时
+#   查无 adapter、判权直接崩（是 S3-2「声明齐」的对偶闭环：S3-2 保证该判的都声明了，S3-3 保证声明的都能判）。
+# ② 「能分享必能判」的**权威闭环是 S2-5 建 share 行的运行时 fail-closed 校验**（doc33 §S3-3② 明确 CI 查
+#    seed 全集只是弱断言）；本处仅对 seed 已知可分享全集补一层回归断言，防 adapter 被误删。
+
+# seed 已知可分享/可判 resource_type 全集（随 S3-1 逐应用注册 adapter 增补；弱断言，真闭环在 S2-5 运行时）。
+_SEED_JUDGEABLE_TYPES: frozenset[str] = frozenset({
+    'knowledge',
+    'knowledge_doc',
+    'knowledge_folder',
+    'deck',
+    'deck_page',
+})
+
+
+def test_all_declared_resource_access_types_have_adapters() -> None:
+    """任何工具 resource_access 引用的 resource_type，registry 必有 adapter（否则门判权崩）。"""
+    declared = _all_declared_types()
+    registered = set(resource_kind_registry.registered_types())
+    orphan = declared - registered
+    assert not orphan, (
+        '这些 resource_access 声明引用了 registry 里没有 adapter 的 resource_type（门解析该声明会崩）——'
+        f'补注册对应 adapter，或修正声明的 type：{sorted(orphan)}'
+    )
+
+
+def test_seed_judgeable_types_have_adapters() -> None:
+    """弱回归（doc33 §S3-3②）：seed 已知可判 resource_type 全集在 registry 都有 adapter，防误删 adapter。"""
+    registered = set(resource_kind_registry.registered_types())
+    missing = _SEED_JUDGEABLE_TYPES - registered
+    assert not missing, (
+        'seed 已知可判的 resource_type 丢了 adapter（疑 adapter import/register 被误删）——'
+        f'恢复注册：{sorted(missing)}（真闭环在 S2-5 建 share 行运行时 fail-closed 校验）'
     )
