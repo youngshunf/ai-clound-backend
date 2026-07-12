@@ -15,6 +15,8 @@ deck 无维度②（没有「分身可动我哪些 deck」的白名单表），�
 
 from __future__ import annotations
 
+import re
+
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
@@ -24,6 +26,10 @@ from backend.app.hasn_deck.model import Deck, Page
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+# deck 页 HTML / 封面里内嵌的 canonical 资产引用 `hasn://asset/{id}`（渲染边界才换签名 URL）。
+# collect_asset_ids 据此只收「确属该 deck」的资产 id，供资产投影门（doc32 §14）× 请求集求交放行。
+_ASSET_URI_RE = re.compile(r'hasn://asset/([A-Za-z0-9_-]+)')
 
 
 def _to_int(resource_id: str) -> int | None:
@@ -57,6 +63,37 @@ class DeckResourceAdapter:
             visibility=deck.visibility or 'private',
             row=deck,
         )
+
+    async def collect_asset_ids(self, db: AsyncSession, resource_id: str) -> set[str]:
+        """收集本 deck 引用的全部内嵌私有资产 id（doc32 §14.3 契约·由 authorized_asset_ids 收集部分平移）。
+
+        承载点穷尽：封面 `cover_asset_id` + 每页 `thumb_asset_id` + 每页 html 内嵌 `hasn://asset/{id}`。
+        只收「确属该 deck」的 id——资产投影门据此 ∩ 请求集，防越权借一个 deck 签任意 asset。
+        id 畸形 / deck 不存在(已删) → 空集，绝不冒异常（判权由门负责，本方法纯收集）。
+        """
+        deck_id = _to_int(resource_id)
+        if deck_id is None:
+            return set()
+        # 轻量确认存在并取封面（只查一列，不整行 ORM load）；行不存在→空集。
+        cover_row = (
+            await db.execute(sa.select(Deck.cover_asset_id).where(Deck.id == deck_id, Deck.deleted_time.is_(None)))
+        ).one_or_none()
+        if cover_row is None:
+            return set()
+        ids: set[str] = set()
+        if cover_row.cover_asset_id:
+            ids.add(cover_row.cover_asset_id)
+        rows = (
+            await db.execute(
+                sa.select(Page.html, Page.thumb_asset_id).where(Page.deck_id == deck_id, Page.deleted_time.is_(None))
+            )
+        ).all()
+        for html, thumb_asset_id in rows:
+            if thumb_asset_id:
+                ids.add(thumb_asset_id)
+            if html:
+                ids.update(_ASSET_URI_RE.findall(html))
+        return ids
 
 
 class DeckPageResourceAdapter:
