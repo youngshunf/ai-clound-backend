@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Path, Query, Request
 
 from backend.app.hasn.model import HasnHumans
-from backend.app.hasn.schema.hasn_artifacts import ArtifactDetail, ArtifactListData
+from backend.app.hasn.schema.hasn_artifacts import ArtifactDetail, ArtifactListData, UpdateArtifactContentParam
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
