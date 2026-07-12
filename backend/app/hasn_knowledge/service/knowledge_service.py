@@ -146,10 +146,10 @@ def _extract_unowned_dataset_id(message: str, candidate_ids: list[str]) -> str |
 class KnowledgeService:
     # ---------- kb ----------
 
-    async def _get_kb(self, db: AsyncSession, owner_id: str, kb_id: int) -> Kb:
+    async def _get_kb(self, db: AsyncSession, resource_owner_id: str, kb_id: int) -> Kb:
         kb = (
             await db.execute(
-                select(Kb).where(Kb.id == kb_id, Kb.owner_id == owner_id, Kb.deleted_time.is_(None))
+                select(Kb).where(Kb.id == kb_id, Kb.owner_id == resource_owner_id, Kb.deleted_time.is_(None))
             )
         ).scalar_one_or_none()
         if kb is None:
@@ -481,9 +481,9 @@ class KnowledgeService:
         await db.flush()
         return _kb_dict(kb)
 
-    async def delete_kb(self, db: AsyncSession, owner_id: str, kb_id: int) -> None:
+    async def delete_kb(self, db: AsyncSession, resource_owner_id: str, kb_id: int) -> None:
         """删库：级联删 RAGFlow dataset + 文档/目录行。引擎不可达如实报错（避免残留孤儿向量可检索）。"""
-        kb = await self._get_kb(db, owner_id, kb_id)
+        kb = await self._get_kb(db, resource_owner_id, kb_id)
         client, _ = await resolve_knowledge_instance(db)
         try:
             await client.delete_datasets(ids=[kb.ragflow_dataset_id])
@@ -504,11 +504,11 @@ class KnowledgeService:
 
     # ---------- folders（D9 目录树）----------
 
-    async def _get_folder(self, db: AsyncSession, owner_id: str, folder_id: int) -> Folder:
+    async def _get_folder(self, db: AsyncSession, resource_owner_id: str, folder_id: int) -> Folder:
         folder = (
             await db.execute(
                 select(Folder).where(
-                    Folder.id == folder_id, Folder.owner_id == owner_id, Folder.deleted_time.is_(None)
+                    Folder.id == folder_id, Folder.owner_id == resource_owner_id, Folder.deleted_time.is_(None)
                 )
             )
         ).scalar_one_or_none()
@@ -516,12 +516,12 @@ class KnowledgeService:
             raise errors.NotFoundError(msg='目录不存在')
         return folder
 
-    async def get_folder(self, db: AsyncSession, owner_id: str, folder_id: int) -> dict[str, Any]:
+    async def get_folder(self, db: AsyncSession, resource_owner_id: str, folder_id: int) -> dict[str, Any]:
         """读单个目录（owner 隔离）；供 agent 面按 folder_id 反查所属 kb 做可达性闸门。"""
-        return _folder_dict(await self._get_folder(db, owner_id, folder_id))
+        return _folder_dict(await self._get_folder(db, resource_owner_id, folder_id))
 
-    async def list_folders(self, db: AsyncSession, owner_id: str, kb_id: int) -> list[dict[str, Any]]:
-        await self._get_kb(db, owner_id, kb_id)
+    async def list_folders(self, db: AsyncSession, resource_owner_id: str, kb_id: int) -> list[dict[str, Any]]:
+        await self._get_kb(db, resource_owner_id, kb_id)
         rows = (
             await db.execute(
                 select(Folder)
@@ -546,15 +546,15 @@ class KnowledgeService:
             raise errors.ConflictError(msg='同层已存在同名目录')
 
     async def create_folder(
-        self, db: AsyncSession, owner_id: str, kb_id: int, *, name: str, parent_id: int | None = None
+        self, db: AsyncSession, resource_owner_id: str, kb_id: int, *, name: str, parent_id: int | None = None
     ) -> dict[str, Any]:
-        await self._get_kb(db, owner_id, kb_id)
+        await self._get_kb(db, resource_owner_id, kb_id)
         if parent_id is not None:
-            parent = await self._get_folder(db, owner_id, parent_id)
+            parent = await self._get_folder(db, resource_owner_id, parent_id)
             if parent.kb_id != kb_id:
                 raise errors.RequestError(msg='父目录不属于该知识库')
         await self._assert_sibling_name_free(db, kb_id, parent_id, name)
-        folder = Folder(kb_id=kb_id, owner_id=owner_id, parent_id=parent_id, name=name, sort_order=0)
+        folder = Folder(kb_id=kb_id, owner_id=resource_owner_id, parent_id=parent_id, name=name, sort_order=0)
         db.add(folder)
         await db.flush()
         return _folder_dict(folder)
@@ -577,21 +577,21 @@ class KnowledgeService:
     async def update_folder(
         self,
         db: AsyncSession,
-        owner_id: str,
+        resource_owner_id: str,
         folder_id: int,
         *,
         name: str | None = None,
         parent_id: int | None = None,
         move_to_root: bool = False,
     ) -> dict[str, Any]:
-        folder = await self._get_folder(db, owner_id, folder_id)
+        folder = await self._get_folder(db, resource_owner_id, folder_id)
         new_parent_id = folder.parent_id
         if move_to_root:
             new_parent_id = None
         elif parent_id is not None:
             if parent_id == folder.id:
                 raise errors.RequestError(msg='不能移动到自身')
-            parent = await self._get_folder(db, owner_id, parent_id)
+            parent = await self._get_folder(db, resource_owner_id, parent_id)
             if parent.kb_id != folder.kb_id:
                 raise errors.RequestError(msg='目标目录不属于同一知识库')
             if await self._is_descendant(db, folder.kb_id, parent_id, folder.id):
@@ -605,8 +605,8 @@ class KnowledgeService:
         await db.flush()
         return _folder_dict(folder)
 
-    async def delete_folder(self, db: AsyncSession, owner_id: str, folder_id: int) -> None:
-        folder = await self._get_folder(db, owner_id, folder_id)
+    async def delete_folder(self, db: AsyncSession, resource_owner_id: str, folder_id: int) -> None:
+        folder = await self._get_folder(db, resource_owner_id, folder_id)
         has_child = (
             await db.execute(
                 select(Folder.id)
@@ -627,11 +627,11 @@ class KnowledgeService:
 
     # ---------- documents ----------
 
-    async def _get_document(self, db: AsyncSession, owner_id: str, doc_id: int) -> Document:
+    async def _get_document(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> Document:
         doc = (
             await db.execute(
                 select(Document).where(
-                    Document.id == doc_id, Document.owner_id == owner_id, Document.deleted_time.is_(None)
+                    Document.id == doc_id, Document.owner_id == resource_owner_id, Document.deleted_time.is_(None)
                 )
             )
         ).scalar_one_or_none()
@@ -640,20 +640,20 @@ class KnowledgeService:
         return doc
 
     async def _validate_folder_for_kb(
-        self, db: AsyncSession, owner_id: str, kb_id: int, folder_id: int | None
+        self, db: AsyncSession, resource_owner_id: str, kb_id: int, folder_id: int | None
     ) -> int | None:
         if folder_id is None:
             return None
-        folder = await self._get_folder(db, owner_id, folder_id)
+        folder = await self._get_folder(db, resource_owner_id, folder_id)
         if folder.kb_id != kb_id:
             raise errors.RequestError(msg='目录不属于该知识库')
         return folder_id
 
     async def list_documents(
-        self, db: AsyncSession, owner_id: str, kb_id: int, *, folder_id: int | None = None
+        self, db: AsyncSession, resource_owner_id: str, kb_id: int, *, folder_id: int | None = None
     ) -> list[dict[str, Any]]:
         """列文档；folder_id=None 全库、=0 库根、>0 指定目录。触发 parse_status 读时对账（best-effort）。"""
-        kb = await self._get_kb(db, owner_id, kb_id)
+        kb = await self._get_kb(db, resource_owner_id, kb_id)
         await self._reconcile_parse_status(db, kb)
         stmt = select(Document).where(Document.kb_id == kb_id, Document.deleted_time.is_(None))
         if folder_id == ROOT_FOLDER_SENTINEL:
@@ -717,7 +717,7 @@ class KnowledgeService:
     async def upload_file_document(
         self,
         db: AsyncSession,
-        owner_id: str,
+        resource_owner_id: str,
         kb_id: int,
         *,
         filename: str,
@@ -732,16 +732,16 @@ class KnowledgeService:
             raise errors.RequestError(msg='文件为空')
         if len(data) > MAX_FILE_SIZE:
             raise errors.RequestError(msg=f'文件超出大小上限 {MAX_FILE_SIZE // (1024 * 1024)}MB')
-        kb = await self._get_kb(db, owner_id, kb_id)
-        folder_id = await self._validate_folder_for_kb(db, owner_id, kb_id, folder_id)
+        kb = await self._get_kb(db, resource_owner_id, kb_id)
+        folder_id = await self._validate_folder_for_kb(db, resource_owner_id, kb_id, folder_id)
         ref = await storage_service.upload(db, data, category='private_doc', filename=filename, content_type=mime)
         asset = await hasn_asset_service.register_asset(
-            db, owner_hasn_id=owner_id, ref=ref, kind='file', extract_status='done'
+            db, owner_hasn_id=resource_owner_id, ref=ref, kind='file', extract_status='done'
         )
         doc = Document(
             kb_id=kb_id,
             folder_id=folder_id,
-            owner_id=owner_id,
+            owner_id=resource_owner_id,
             kind='file',
             name=filename,
             size_bytes=len(data),
@@ -774,7 +774,7 @@ class KnowledgeService:
     async def upload_asset_document(
         self,
         db: AsyncSession,
-        owner_id: str,
+        resource_owner_id: str,
         kb_id: int,
         *,
         asset_uri: str,
@@ -785,20 +785,20 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         """asset_uri 入库：引用已在私有桶的真实文件（agent 生成的图/收到的文件等）→ 取桶字节→建文档副本。
 
-        越权防护：资产必须属于同一主人（asset.owner_hasn_id == owner_id），否则如实拒。
+        越权防护：资产必须属于同一主人（asset.owner_hasn_id == resource_owner_id），否则如实拒。
         语义对齐 D10：知识库文档自持其原件副本，源资产不动。
         """
         asset_id = asset_uri.rsplit('/', 1)[-1]
         asset = await hasn_asset_service.get_by_asset_id(db, asset_id)
         if asset is None:
             raise errors.NotFoundError(msg='资产不存在')
-        if asset.owner_hasn_id != owner_id:
+        if asset.owner_hasn_id != resource_owner_id:
             raise errors.ForbiddenError(msg='该资产不属于你的主人，无法入库')
         data = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=asset.object_key)
         filename = self._asset_filename(title, asset.mime)
         return await self.upload_file_document(
             db,
-            owner_id,
+            resource_owner_id,
             kb_id,
             filename=filename,
             data=data,
@@ -852,10 +852,10 @@ class KnowledgeService:
         doc.updated_time = timezone.now()
         await db.flush()
 
-    async def delete_document(self, db: AsyncSession, owner_id: str, doc_id: int) -> None:
+    async def delete_document(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> None:
         """删文档：引擎副本必须删净（避免孤儿向量仍可检索），不可达如实报错。"""
-        doc = await self._get_document(db, owner_id, doc_id)
-        kb = await self._get_kb(db, owner_id, doc.kb_id)
+        doc = await self._get_document(db, resource_owner_id, doc_id)
+        kb = await self._get_kb(db, resource_owner_id, doc.kb_id)
         if doc.ragflow_document_id:
             client, _ = await resolve_knowledge_instance(db)
             try:
@@ -866,15 +866,15 @@ class KnowledgeService:
         doc.deleted_time = timezone.now()
         await self._refresh_kb_counts(db, kb)
 
-    async def get_document(self, db: AsyncSession, owner_id: str, doc_id: int) -> dict[str, Any]:
-        doc = await self._get_document(db, owner_id, doc_id)
+    async def get_document(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> dict[str, Any]:
+        doc = await self._get_document(db, resource_owner_id, doc_id)
         return _document_dict(doc, with_content=doc.kind == 'native')
 
     async def download_document(
-        self, db: AsyncSession, owner_id: str, doc_id: int
+        self, db: AsyncSession, resource_owner_id: str, doc_id: int
     ) -> tuple[str, str, AsyncIterator[bytes]]:
         """下载原文件：私有桶流式（不经 RAGFlow，引擎宕机不影响，D10）。仅 file。"""
-        doc = await self._get_document(db, owner_id, doc_id)
+        doc = await self._get_document(db, resource_owner_id, doc_id)
         if doc.kind != 'file' or not doc.asset_uri:
             raise errors.RequestError(msg='原生文档无原始文件，请使用正文接口')
         asset_id = doc.asset_uri.rsplit('/', 1)[-1]
@@ -893,7 +893,7 @@ class KnowledgeService:
     async def create_native_document(
         self,
         db: AsyncSession,
-        owner_id: str,
+        resource_owner_id: str,
         kb_id: int,
         *,
         title: str,
@@ -904,12 +904,12 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         """§4.3-B：正文落 PG（权威）+ 版本 1 → 渲染 .md 推引擎 → 触发解析。"""
         self._validate_native_content(content)
-        kb = await self._get_kb(db, owner_id, kb_id)
-        folder_id = await self._validate_folder_for_kb(db, owner_id, kb_id, folder_id)
+        kb = await self._get_kb(db, resource_owner_id, kb_id)
+        folder_id = await self._validate_folder_for_kb(db, resource_owner_id, kb_id, folder_id)
         doc = Document(
             kb_id=kb_id,
             folder_id=folder_id,
-            owner_id=owner_id,
+            owner_id=resource_owner_id,
             kind='native',
             name=title,
             size_bytes=len(content.encode('utf-8')),
@@ -945,7 +945,7 @@ class KnowledgeService:
     async def update_native_document(
         self,
         db: AsyncSession,
-        owner_id: str,
+        resource_owner_id: str,
         doc_id: int,
         *,
         title: str | None = None,
@@ -956,12 +956,12 @@ class KnowledgeService:
         agent_hasn_id: str | None = None,
     ) -> dict[str, Any]:
         """更新原生文档：title/content 变更=落新版本+保存即重向量化（删旧副本重传）；仅移动目录不重索引。"""
-        doc = await self._get_document(db, owner_id, doc_id)
-        kb = await self._get_kb(db, owner_id, doc.kb_id)
+        doc = await self._get_document(db, resource_owner_id, doc_id)
+        kb = await self._get_kb(db, resource_owner_id, doc.kb_id)
         if move_to_root:
             doc.folder_id = None
         elif folder_id is not None:
-            doc.folder_id = await self._validate_folder_for_kb(db, owner_id, doc.kb_id, folder_id)
+            doc.folder_id = await self._validate_folder_for_kb(db, resource_owner_id, doc.kb_id, folder_id)
         content_changed = False
         if doc.kind == 'native' and (title is not None or content is not None):
             new_title = title if title is not None else doc.name
@@ -994,15 +994,15 @@ class KnowledgeService:
             )
         return _document_dict(doc, with_content=doc.kind == 'native')
 
-    async def get_native_content(self, db: AsyncSession, owner_id: str, doc_id: int) -> dict[str, Any]:
+    async def get_native_content(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> dict[str, Any]:
         """原生文档正文（PG 权威，不经 RAGFlow）。"""
-        doc = await self._get_document(db, owner_id, doc_id)
+        doc = await self._get_document(db, resource_owner_id, doc_id)
         if doc.kind != 'native':
             raise errors.RequestError(msg='非原生文档，请使用下载接口')
         return _document_dict(doc, with_content=True)
 
-    async def list_versions(self, db: AsyncSession, owner_id: str, doc_id: int) -> list[dict[str, Any]]:
-        doc = await self._get_document(db, owner_id, doc_id)
+    async def list_versions(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> list[dict[str, Any]]:
+        doc = await self._get_document(db, resource_owner_id, doc_id)
         rows = (
             await db.execute(
                 select(DocumentVersion)
@@ -1012,8 +1012,10 @@ class KnowledgeService:
         ).scalars()
         return [_version_dict(v) for v in rows]
 
-    async def get_version(self, db: AsyncSession, owner_id: str, doc_id: int, version_no: int) -> dict[str, Any]:
-        doc = await self._get_document(db, owner_id, doc_id)
+    async def get_version(
+        self, db: AsyncSession, resource_owner_id: str, doc_id: int, version_no: int
+    ) -> dict[str, Any]:
+        doc = await self._get_document(db, resource_owner_id, doc_id)
         row = (
             await db.execute(
                 select(DocumentVersion).where(
@@ -1026,14 +1028,14 @@ class KnowledgeService:
         return _version_dict(row, with_content=True)
 
     async def restore_version(
-        self, db: AsyncSession, owner_id: str, doc_id: int, version_no: int, *, source: str = 'ui',
+        self, db: AsyncSession, resource_owner_id: str, doc_id: int, version_no: int, *, source: str = 'ui',
         agent_hasn_id: str | None = None,
     ) -> dict[str, Any]:
         """恢复版本 = 以快照落新版本 + 重向量化（版本只增不改）。"""
-        snapshot = await self.get_version(db, owner_id, doc_id, version_no)
+        snapshot = await self.get_version(db, resource_owner_id, doc_id, version_no)
         return await self.update_native_document(
             db,
-            owner_id,
+            resource_owner_id,
             doc_id,
             title=snapshot['title'],
             content=snapshot['content'],
@@ -1041,10 +1043,10 @@ class KnowledgeService:
             agent_hasn_id=agent_hasn_id,
         )
 
-    async def fetch_file_doc_text(self, db: AsyncSession, owner_id: str, doc_id: int) -> dict[str, Any]:
+    async def fetch_file_doc_text(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> dict[str, Any]:
         """file 文档解析后文本（引擎分块拼接；fetch_doc 工具用，非二进制）。"""
-        doc = await self._get_document(db, owner_id, doc_id)
-        kb = await self._get_kb(db, owner_id, doc.kb_id)
+        doc = await self._get_document(db, resource_owner_id, doc_id)
+        kb = await self._get_kb(db, resource_owner_id, doc.kb_id)
         if not doc.ragflow_document_id or doc.parse_status != 'parsed':
             raise KnowledgeProviderError(
                 'knowledge_document_parse_failed', f'文档尚未完成索引（状态：{doc.parse_status}），无解析文本'
@@ -1055,10 +1057,10 @@ class KnowledgeService:
         data['chunks'] = [c.get('content') for c in chunks]
         return data
 
-    async def reindex_document(self, db: AsyncSession, owner_id: str, doc_id: int) -> dict[str, Any]:
+    async def reindex_document(self, db: AsyncSession, resource_owner_id: str, doc_id: int) -> dict[str, Any]:
         """重新索引（D10）：file 从私有桶取原件重放；native 以 PG 正文重放——删旧引擎副本重传重解析。"""
-        doc = await self._get_document(db, owner_id, doc_id)
-        kb = await self._get_kb(db, owner_id, doc.kb_id)
+        doc = await self._get_document(db, resource_owner_id, doc_id)
+        kb = await self._get_kb(db, resource_owner_id, doc.kb_id)
         if doc.kind == 'native':
             data = (doc.content or '').encode('utf-8')
             filename = _native_filename(doc.name)
