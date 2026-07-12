@@ -76,8 +76,57 @@ def test_refresh_skips_when_new_nickname_blank_or_masked() -> None:
 
 
 def test_refresh_noop_when_already_target() -> None:
-    """已是目标名 → 返回 None（避免无谓 churn）。"""
+    """已是目标名（旧 `·` 格式，无 profession 回退路径）→ 返回 None（避免无谓 churn）。"""
     assert compute_seeded_name_refresh('星创·杨大宝', new_nickname='杨大宝', previous_nickname='杨大宝') is None
+
+
+# ── 专家名感知（新格式 `{昵称}的{专家名}`）+ 遗留 `·` 存量迁移（issue②③） ──
+
+
+def test_refresh_new_format_from_placeholder() -> None:
+    """纯专家名占位（主人未设昵称时）+ 主人设昵称 → 刷成 `{昵称}的{专家名}`（issue③核心）。"""
+    assert (
+        compute_seeded_name_refresh('全能助理', profession='全能助理', new_nickname='小智', previous_nickname=None)
+        == '小智的全能助理'
+    )
+
+
+def test_refresh_new_format_from_uniquified_placeholder() -> None:
+    """带唯一化数字尾的占位（全能助理2，并发新用户）→ 同样识别并刷成新格式。"""
+    assert (
+        compute_seeded_name_refresh('全能助理2', profession='全能助理', new_nickname='小智', previous_nickname=None)
+        == '小智的全能助理'
+    )
+
+
+def test_refresh_new_format_rewrites_previous_nickname() -> None:
+    """新格式 `{旧昵称}的{专家名}` + 主人改名 → 刷成 `{新昵称}的{专家名}`。"""
+    assert (
+        compute_seeded_name_refresh('小福的全能助理', profession='全能助理', new_nickname='福仔', previous_nickname='小福')
+        == '福仔的全能助理'
+    )
+
+
+def test_refresh_migrates_legacy_dot_form_to_new_format() -> None:
+    """遗留 `{基名}·{手机号掩码}` 存量分身 + 有 profession → 迁移到新格式 `{昵称}的{专家名}`（issue②统一）。"""
+    assert (
+        compute_seeded_name_refresh('星创·186****2019', profession='内容运营官', new_nickname='杨大宝', previous_nickname=None)
+        == '杨大宝的内容运营官'
+    )
+
+
+def test_refresh_new_format_skips_user_named() -> None:
+    """含专家名但主人标识片段是用户手取（我的全能助理）→ 不动，绝不 clobber。"""
+    assert (
+        compute_seeded_name_refresh('我的全能助理', profession='全能助理', new_nickname='小智', previous_nickname=None) is None
+    )
+
+
+def test_refresh_new_format_noop_when_already_target() -> None:
+    """已是目标名 `{昵称}的{专家名}` → 返回 None（避免无谓 churn）。"""
+    assert (
+        compute_seeded_name_refresh('小智的全能助理', profession='全能助理', new_nickname='小智', previous_nickname=None) is None
+    )
 
 
 # ─────────── USER.md 称呼刷新纯逻辑（分身把主人叫成手机号掩码的 bug） ───────────
@@ -174,7 +223,9 @@ async def _make_owner(session, nickname: str) -> str:
     return owner
 
 
-async def _register_builtin_agent(session, owner: str, *, key: str, display_name: str, role: str) -> HasnAgents:
+async def _register_builtin_agent(
+    session, owner: str, *, key: str, display_name: str, role: str, profession: str | None = None
+) -> HasnAgents:
     result = await register_hasn_agent(
         db=session,
         owner_hasn_id=owner,
@@ -182,6 +233,7 @@ async def _register_builtin_agent(session, owner: str, *, key: str, display_name
         display_name=display_name,
         role=role,
         builtin_agent_key=key,
+        profession=profession,
         agent_type='cloud',
         created_via='onboarding',
     )
@@ -254,6 +306,37 @@ async def test_refresh_is_idempotent(session) -> None:
     assert second == []
     assert (await _reload(session, owner))['content_operator'].profile_revision == rev_after_first
     _ = agent
+
+
+@pytest.mark.asyncio
+async def test_refresh_new_format_and_legacy_migration_in_db(session) -> None:
+    """有 profession 的默认分身：占位/遗留 `·` 形态 → 刷成新格式 `{昵称}的{专家名}`（issue②③）。"""
+    # 昵称唯一化（hasn_humans.nickname 有唯一约束，避开存量真实账号如「小智」）；专家名也带 tag 避免
+    # display_name 撞存量库。断言据此动态推导，逻辑等价于「小智的全能助理」。
+    tag = _uid()
+    nick = f'测试用户{tag}'
+    prof_a, prof_b = f'全能助理{tag}', f'内容运营官{tag}'
+    owner = await _make_owner(session, nickname=nick)
+    # 占位形态（主人未设昵称时建的分身，专家名占位）
+    placeholder = await _register_builtin_agent(
+        session, owner, key='assistant', display_name=prof_a, role='primary', profession=prof_a
+    )
+    # 遗留 `·` 形态（存量分身，手机号后缀）
+    legacy = await _register_builtin_agent(
+        session, owner, key='content_operator', display_name='星创·186****2019', role='specialist', profession=prof_b
+    )
+    rev_before = legacy.profile_revision or 1
+
+    renamed = await agent_profile_service.refresh_seeded_agent_display_names(
+        session, owner_id=owner, current_nickname=nick
+    )
+
+    assert set(renamed) == {f'{nick}的{prof_a}', f'{nick}的{prof_b}'}
+    by_key = await _reload(session, owner)
+    assert by_key['assistant'].display_name == f'{nick}的{prof_a}'  # 占位 → 新格式
+    assert by_key['content_operator'].display_name == f'{nick}的{prof_b}'  # 遗留 `·` → 迁移到新格式
+    assert (by_key['content_operator'].profile_revision or 1) == rev_before + 1
+    _ = placeholder
 
 
 @pytest.mark.asyncio

@@ -29,43 +29,102 @@ from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
 
-# 默认分身/内置分身名形如 `{基名}·{主人昵称}`，分隔符为 U+00B7 间隔号。
+# 默认/内置分身名的当前格式：`{主人昵称}的{专家名称}`（如「小智的全能助理」），连接词为「的」。
+DEFAULT_AGENT_NAME_CONNECTOR = '的'
+# 历史遗留格式：`{基名}·{主人昵称}`，分隔符为 U+00B7 间隔号——仅用于识别存量分身以迁移到新格式。
 DEFAULT_AGENT_NAME_SEPARATOR = '·'
 # 主人尚未设昵称时的手机号掩码兜底（见 get_or_create_phone_user: f'{phone[:3]}****{phone[-4:]}'）。
 # onboarding 在登录路径建分身时若主人未设昵称，后缀会被烙进这个掩码 → 需在设昵称/登录时刷新。
 PHONE_MASK_NICKNAME_RE = re.compile(r'^\d{3}\*{4}\d{4}$')
 
 
+def compute_default_agent_display_name(*, owner_nickname: str | None, profession: str | None) -> str:
+    """纯逻辑：按当前格式 `{主人昵称}的{专家名称}` 组默认/内置分身名（如「小智的全能助理」）。
+
+    主人昵称有效（非空、非手机号掩码）→ `{昵称}的{专家名称}`；昵称仍是手机号掩码 / 空 → 退化为
+    纯专家名占位（「全能助理」），设昵称后由 refresh_seeded_agent_display_names 自愈刷新，
+    绝不把手机号掩码烙进名字（issue③）。专家名也缺失（模板未 sync 等异常）时兜底「AI 分身」。
+    不做全局唯一化（由调用方在落库前补数字后缀）。抽成纯函数便于确定性单测。
+    """
+    prof = (profession or '').strip() or 'AI 分身'
+    nick = (owner_nickname or '').strip()
+    if not nick or PHONE_MASK_NICKNAME_RE.match(nick):
+        return prof  # 昵称未就绪 → 纯专家名占位
+    return f'{nick}{DEFAULT_AGENT_NAME_CONNECTOR}{prof}'
+
+
+def _owner_token_is_seeded(token: str, *, previous_nickname: str) -> bool:
+    """名字里的「主人标识片段」是否系统烙进的旧值（空占位 / 手机号掩码 / 旧昵称）→ 可安全刷新。"""
+    token = token.strip()
+    if not token:
+        return True  # 纯占位（主人未设昵称时的专家名占位）
+    if PHONE_MASK_NICKNAME_RE.match(token):
+        return True  # 手机号掩码——绝不可能是用户手取
+    prev = previous_nickname.strip()
+    # 旧昵称可能带撞名数字尾（小福 / 小福2 同名两用户）→ 去尾后比对。
+    return bool(prev) and (token == prev or token.rstrip(string.digits) == prev)
+
+
+def _is_seeded_default_display(current: str, *, profession: str, previous_nickname: str) -> bool:
+    """判 display_name 是否「系统派生的默认分身形态」（可安全刷新，非主人手取名）。
+
+    覆盖三类（以专家名 profession 为锚）：
+      - 历史遗留形态 `{基名}·{X}`（旧格式，基名任意，`·` 分隔；新格式用「的」不冲突）；
+      - 新占位形态 `{专家名}` / `{专家名}{N}`（主人未设昵称时的纯专家名占位，含唯一化数字尾）；
+      - 新旧值形态 `{X}的{专家名}`（可带唯一化数字尾），
+    其中 X（主人标识片段）∈ {空, 手机号掩码, previous_nickname}。绝不命中主人手动取的名字。
+    """
+    # 历史遗留 `·` 形态：基名任意，后缀 ∈ {掩码, 旧昵称} → 供存量分身迁移到新格式。
+    sep = current.rfind(DEFAULT_AGENT_NAME_SEPARATOR)
+    if sep > 0:
+        return _owner_token_is_seeded(current[sep + len(DEFAULT_AGENT_NAME_SEPARATOR) :], previous_nickname=previous_nickname)
+    if not profession:
+        return False  # 无专家名锚 → 仅能靠 `·` 形态识别，否则不动（避免误伤手取名）
+    # 新占位形态：纯专家名（主人标识片段为空），可带唯一化数字尾（全能助理 / 全能助理2）。
+    if current == profession or (current.startswith(profession) and current[len(profession) :].isdigit()):
+        return True
+    # 新旧值形态：`{X}的{专家名}`，尾部允许唯一化数字。
+    marker = f'{DEFAULT_AGENT_NAME_CONNECTOR}{profession}'
+    idx = current.rfind(marker)
+    if idx > 0:
+        tail = current[idx + len(marker) :]
+        if tail == '' or tail.isdigit():
+            return _owner_token_is_seeded(current[:idx], previous_nickname=previous_nickname)
+    return False
+
+
 def compute_seeded_name_refresh(
-    current_display: str | None, *, new_nickname: str | None, previous_nickname: str | None
+    current_display: str | None,
+    *,
+    profession: str | None = None,
+    new_nickname: str | None,
+    previous_nickname: str | None,
 ) -> str | None:
-    """纯逻辑：给定内置/默认分身当前 display_name 与新/旧主人昵称，算出应刷新成的新名。
+    """纯逻辑：把系统播种的默认/内置分身名刷新为当前格式 `{新昵称}的{专家名称}`。
 
-    仅当 display_name 形如 `{base}·{suffix}` 且 suffix 的昵称部分（去掉撞名数字尾）∈
-    {手机号掩码, previous_nickname} 时视为「系统自动派生、需刷新」，返回 `{base}·{new_nickname}`；
-    否则返回 None（用户手动取的名 / 无后缀 / 新昵称不可用 / 已是目标名 → 不动）。
-
-    不查 DB、不做全局唯一化（唯一化由调用方在落库前补上）。抽成纯函数便于确定性单测。
+    仅当 current_display 属「系统派生形态」（见 _is_seeded_default_display）时改写，否则返回 None
+    （用户手取名 / 新昵称不可用 / 已是目标名 → 不动）。传入 profession（该分身的专家头衔）时产出
+    新格式 `{新昵称}的{专家名称}`，顺带把历史遗留 `{基名}·{旧后缀}` 存量分身迁移到新格式（issue②
+    「统一」）；未传 profession（异常/存量无专家名）时退回旧行为——遗留 `·` 形态只换后缀保留基名，
+    避免产出裸昵称。不查 DB、不做全局唯一化（由调用方在落库前补数字后缀）。抽成纯函数便于单测。
     """
     nick = (new_nickname or '').strip()
     # 新昵称为空 / 仍是手机号掩码 → 无可改进
     if not nick or PHONE_MASK_NICKNAME_RE.match(nick):
         return None
     current = (current_display or '').strip()
-    sep = current.rfind(DEFAULT_AGENT_NAME_SEPARATOR)
-    if sep <= 0:
-        return None  # 无后缀（基名全局唯一、未烙昵称）
-    base = current[:sep]
-    suffix = current[sep + len(DEFAULT_AGENT_NAME_SEPARATOR) :]
+    if not current:
+        return None
+    prof = (profession or '').strip()
     prev = (previous_nickname or '').strip()
-    # 手机号掩码整段匹配——手机号全局唯一，后缀不会再带撞名数字尾，故不可对它做 rstrip
-    # （否则会把 186****2019 的尾部 2019 当成撞名尾剥掉而漏判）。
-    is_phone = bool(PHONE_MASK_NICKNAME_RE.match(suffix))
-    # 旧昵称可能带撞名数字尾（小福 / 小福2 同名两用户）→ 去尾后比对。
-    is_prev = bool(prev) and (suffix == prev or suffix.rstrip(string.digits) == prev)
-    if not (is_phone or is_prev):
-        return None  # 后缀是用户主动取的名字 → 不碰
-    candidate = f'{base}{DEFAULT_AGENT_NAME_SEPARATOR}{nick}'
+    if not _is_seeded_default_display(current, profession=prof, previous_nickname=prev):
+        return None
+    if prof:
+        candidate = f'{nick}{DEFAULT_AGENT_NAME_CONNECTOR}{prof}'  # 当前格式
+    else:
+        # 无专家名（异常/存量）：仅遗留 `·` 形态可安全改——保留基名只换后缀，避免裸昵称。
+        sep = current.rfind(DEFAULT_AGENT_NAME_SEPARATOR)
+        candidate = f'{current[:sep]}{DEFAULT_AGENT_NAME_SEPARATOR}{nick}' if sep > 0 else nick
     return candidate if candidate != current else None
 
 
@@ -119,7 +178,7 @@ class AgentProfileGateway(Protocol):
         self, db: AsyncSession, *, desired: str, candidates: list[str] | None = None
     ) -> str: ...
     async def resolve_default_agent_display_name(
-        self, db: AsyncSession, *, base: str, owner_nickname: str | None, owner_id: str
+        self, db: AsyncSession, *, profession: str | None, owner_nickname: str | None
     ) -> str: ...
     async def list_owner_agents(
         self, db: AsyncSession, *, owner_id: str, after_revision: int | None = None
@@ -278,35 +337,25 @@ class SqlAlchemyAgentProfileGateway:
         return f'{root}-{uuid.uuid4().hex[:4]}'
 
     async def resolve_default_agent_display_name(
-        self, db: AsyncSession, *, base: str, owner_nickname: str | None, owner_id: str
+        self, db: AsyncSession, *, profession: str | None, owner_nickname: str | None
     ) -> str:
-        """默认分身昵称全局唯一化：基名 → 基名·主人昵称 → 基名·主人昵称N → 基名·<owner 片段>。
+        """默认/内置分身首次命名并全局唯一化：`{主人昵称}的{专家名称}` → +数字后缀。
 
-        昵称仍全局唯一（is_display_name_taken），但默认分身基名（如「星诺」）会被多用户共享，
-        撞名时用「主人昵称」做可读区分符（如「星诺·福仔」），而非数字尾巴（福仔 2026-06-15 选定）。
-        仅用于 onboarding 默认分身的**首次**命名；不对已存在分身重算——否则 is_display_name_taken
-        会把分身自己那行算成已占而每次登录误改名。
+        昵称有效则 `小智的全能助理`；昵称尚是手机号掩码 / 空 → 退化为纯专家名占位（全能助理），
+        绝不烙手机号掩码（issue③），主人设昵称后由 refresh_seeded_agent_display_names 自愈刷新为
+        `{昵称}的{专家名称}`（issue②）。仅用于 onboarding / 内置播种默认分身的**首次**命名；
+        不对已存在分身重算——否则 is_display_name_taken 会把分身自己那行算成已占而每次登录误改名。
         """
-        base = (base or '').strip() or 'AI 分身'
-        if not await self.is_display_name_taken(db, base):
-            return base
-        nick = (owner_nickname or '').strip()
-        if nick:
-            derived = f'{base}·{nick}'
-            if not await self.is_display_name_taken(db, derived):
-                return derived
-            for suffix in range(2, 1000):
-                candidate = f'{base}·{nick}{suffix}'
-                if not await self.is_display_name_taken(db, candidate):
-                    return candidate
-        fragment = ''.join(ch for ch in (owner_id or '') if ch.isalnum())[-6:]
-        if fragment:
-            candidate = f'{base}·{fragment}'
+        desired = compute_default_agent_display_name(owner_nickname=owner_nickname, profession=profession)
+        if not await self.is_display_name_taken(db, desired):
+            return desired
+        for suffix in range(2, 1000):
+            candidate = f'{desired}{suffix}'
             if not await self.is_display_name_taken(db, candidate):
                 return candidate
         import uuid
 
-        return f'{base}·{uuid.uuid4().hex[:4]}'
+        return f'{desired}-{uuid.uuid4().hex[:4]}'
 
     async def create_agent(self, db: AsyncSession, payload: dict[str, Any]) -> tuple[Any, str | None, bool]:
         from backend.app.hasn.service.hasn_auth import register_hasn_agent
@@ -725,7 +774,12 @@ class HasnAgentProfileService:
             # 维度①：分身自己的 display_name 后缀（仅系统播种的内置/默认分身）。
             if agent.builtin_agent_key:
                 current = (agent.display_name or '').strip()
-                candidate = compute_seeded_name_refresh(current, new_nickname=nick, previous_nickname=prev)
+                candidate = compute_seeded_name_refresh(
+                    current,
+                    profession=getattr(agent, 'profession', None),
+                    new_nickname=nick,
+                    previous_nickname=prev,
+                )
                 if candidate is not None:
                     new_name = await self._resolve_unique_display_name_excluding(
                         db, desired=candidate, exclude_id=agent.id

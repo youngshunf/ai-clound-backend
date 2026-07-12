@@ -2,8 +2,11 @@
 专家头衔(profession) + 头像 物化进 hasn_agents（与 WebUI 手动建 assistant 等价）。
 
 2026-06-15 修正：原先把 `tpl.name`(全能助理) 错当 display_name、漏了 profession/avatar、
-skills 写成 `{'enabled': [...]}` 会被 profile 下发端点误读丢弃。正确映射：
-  - display_name ← name_pool 首位（星诺），全局唯一化（撞名走「主人昵称」派生）
+skills 写成 `{'enabled': [...]}` 会被 profile 下发端点误读丢弃。
+2026-07-12 命名重构（issue②③）：display_name 改为 `{主人昵称}的{专家名称}`（如「福仔的全能助理」），
+主人未设昵称（手机号掩码/空）时先以纯专家名占位（全能助理），设昵称后自愈刷新；name_pool 不再参与命名。
+正确映射：
+  - display_name ← `{主人昵称}的{专家名称}`，全局唯一化（撞名顺延数字后缀）
   - profession   ← tpl.name（全能助理）
   - avatar       ← tpl.icon_url
   - skills       ← list[str]
@@ -24,7 +27,6 @@ import pytest
 from backend.app.hasn.service import hasn_onboarding_service as svc
 from backend.app.hasn.service.hasn_agents_service import SqlAlchemyAgentProfileGateway
 from backend.app.hasn.service.hasn_onboarding_service import (
-    DEFAULT_AGENT_DISPLAY_NAME,
     DEFAULT_AGENT_NAME,
     DEFAULT_AGENT_TEMPLATE_ID,
     SqlAlchemyOnboardingGateway,
@@ -92,7 +94,7 @@ def _capture_register(monkeypatch) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_ensure_default_agent_materializes_assistant_template(monkeypatch) -> None:
-    """模板存在 + 新建 → name_pool 首位作昵称、tpl.name 作 profession、icon_url 作头像、skills 列表。"""
+    """模板存在 + 新建 → display_name=`{昵称}的{专家名}`、tpl.name 作 profession、icon_url 作头像、skills 列表。"""
     tpl = _template_stub()
 
     async def _get_by_id(_db: Any, template_id: str) -> Any:
@@ -115,8 +117,8 @@ async def test_ensure_default_agent_materializes_assistant_template(monkeypatch)
     assert created is True
     assert agent.hasn_id == 'a_default_test'
     assert captured['agent_name'] == DEFAULT_AGENT_NAME == 'assistant'
-    # display_name = name_pool 首位（星诺），而不是 tpl.name（全能助理）。
-    assert captured['display_name'] == '星诺'
+    # display_name = `{主人昵称}的{专家名}` = 福仔的全能助理（昵称查询返回「福仔」+ profession 全能助理）。
+    assert captured['display_name'] == '福仔的全能助理'
     # 专家头衔来自 tpl.name。
     assert captured['profession'] == '全能助理'
     # 头像来自 tpl.icon_url。
@@ -136,7 +138,7 @@ async def test_ensure_default_agent_materializes_assistant_template(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_ensure_default_agent_derives_name_on_global_collision(monkeypatch) -> None:
-    """基名（星诺）已被全局占用 → 用「主人昵称」派生（星诺·福仔），不再每个用户都同名。"""
+    """`{昵称}的{专家名}`（福仔的全能助理）已被全局占用（同名两用户）→ 顺延数字后缀，仍每人唯一。"""
     tpl = _template_stub()
 
     async def _get_by_id(_db: Any, _tid: str) -> Any:
@@ -147,14 +149,14 @@ async def test_ensure_default_agent_derives_name_on_global_collision(monkeypatch
 
     monkeypatch.setattr(svc.marketplace_template_dao, 'get_by_id', _get_by_id, raising=True)
     monkeypatch.setattr(svc.marketplace_template_version_dao, 'get_latest_by_template', _get_latest, raising=True)
-    _patch_uniqueness(monkeypatch, taken={'星诺'})  # 星诺 已被别的 owner 占用
+    _patch_uniqueness(monkeypatch, taken={'福仔的全能助理'})  # 已被别的同名 owner 占用
     captured = _capture_register(monkeypatch)
 
     db = _FakeDB([_Result(None), _Result('福仔')])
     gateway = SqlAlchemyOnboardingGateway()
     await gateway.ensure_default_agent(db=db, owner_id='h_owner_2', node_id=None)
 
-    assert captured['display_name'] == '星诺·福仔'
+    assert captured['display_name'] == '福仔的全能助理2'
     assert captured['profession'] == '全能助理'
 
 
@@ -219,8 +221,9 @@ async def test_ensure_default_agent_falls_back_when_template_missing(monkeypatch
     assert created is True
     assert agent.hasn_id == 'a_default_test'
     assert captured['agent_name'] == DEFAULT_AGENT_NAME
-    # 模板缺失 → 用兜底 display_name（仍走唯一化），且不带 persona / profession / avatar。
-    assert captured['display_name'] == DEFAULT_AGENT_DISPLAY_NAME
+    # 模板缺失 → profession=None、昵称查询=None → compute 退化为兜底「AI 分身」占位（仍走唯一化），
+    # 不带 persona / profession / avatar；主人设昵称后由自愈刷新（此时无 profession，走 legacy 兜底）。
+    assert captured['display_name'] == 'AI 分身'
     assert captured['profession'] is None
     assert captured['avatar'] is None
     assert captured['template_id'] is None

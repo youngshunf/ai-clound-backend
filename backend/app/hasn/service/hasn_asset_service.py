@@ -151,8 +151,15 @@ class HasnAssetService:
         asset_ids: list[str],
         conversation_id: str | UUID | None = None,
         expires_in: int = 3600,
+        extra_readable_asset_ids: set[str] | None = None,
     ) -> list[ResolvedAsset]:
-        """批量解析为可展示 URL。无权/不存在的 asset 不出现在结果（调用方据此 403/隐藏）。"""
+        """批量解析为可展示 URL。无权/不存在的 asset 不出现在结果（调用方据此 403/隐藏）。
+
+        extra_readable_asset_ids：资源上下文（如 deck ACL）已在**上游**判定 requester 有权看到的
+        asset_id 集合，本方法据此额外放行——用于「被分享者打开共享 deck，其页内图片既非 owner
+        也无会话授权」的场景。上游必须只塞入「requester 确有 viewer+ 权限的那个资源所引用的资产」，
+        绝不能塞任意 asset（否则越权签发）。
+        """
         assets = await cls.get_many(db, asset_ids)
         if not assets:
             return []
@@ -164,6 +171,7 @@ class HasnAssetService:
             granted = await cls._granted_asset_ids(db, asset_ids=list(assets), conversation_id=conversation_id)
             participant = await cls.is_participant(db, conversation_id=conversation_id, hasn_id=requester_hasn_id)
 
+        extra_readable = extra_readable_asset_ids or set()
         readable: list[HasnAssets] = []
         for asset in assets.values():
             if asset.access == 'public':
@@ -172,6 +180,8 @@ class HasnAssetService:
                 readable.append(asset)  # owner 恒可读
             elif participant and asset.asset_id in granted:
                 readable.append(asset)  # 会话参与者 + 已授予
+            elif asset.asset_id in extra_readable:
+                readable.append(asset)  # 上游资源 ACL 已判定可读（如 deck viewer 打开共享 deck）
             # 否则（私有且无权）跳过（零 fake：不返回 URL）
 
         # public 直读、private 批量签名（缓存）

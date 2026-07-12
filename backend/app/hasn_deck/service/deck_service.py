@@ -12,6 +12,8 @@ owner_id 仍是产物归属键，但访问控制不再是「owner==当前用户�
 
 from __future__ import annotations
 
+import re
+
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, or_, select
@@ -25,6 +27,10 @@ from backend.utils.timezone import timezone
 # builtin（系统内置）风格的归属 owner 哨兵：对所有 owner 可见、不属于任何真实 owner。
 BUILTIN_OWNER = 'system'
 _RESOURCE_TYPE = 'deck'
+
+# deck 页 HTML / 封面里内嵌的 canonical 资产引用 `hasn://asset/{id}`（渲染边界才换签名 URL）。
+# 用于 authorized_asset_ids：只放行「确属该 deck」的资产，避免越权签发任意 asset。
+_ASSET_URI_RE = re.compile(r'hasn://asset/([A-Za-z0-9_-]+)')
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -146,6 +152,38 @@ class DeckService:
             raise errors.ForbiddenError(msg='没有该操作权限')
         return eff
 
+    @staticmethod
+    async def authorized_asset_ids(db: AsyncSession, *, subject: Subject, deck_id: int) -> set[str]:
+        """收集 subject 有 viewer+ 权限打开的 deck 内所引用的全部 asset_id（跨 owner 资产解析授权用）。
+
+        非抛错版：deck 不存在 / 权限不足 → 返回空集（调用方据此不额外放行任何资产，仍走
+        owner / 会话通道判定）。收集范围严格限定为「确属该 deck 的资产」——deck.cover_asset_id
+        + 每页 thumb_asset_id + 每页 html 内嵌的 `hasn://asset/{id}` 引用；避免据一个 deck 越权
+        签发任意 asset。被分享者（viewer）打开共享 deck 时，其页内图片经此授权解析而不再破图。
+        """
+        try:
+            deck = await DeckService._get_deck(db, deck_id)
+        except errors.NotFoundError:
+            return set()
+        eff = await DeckService._effective_permission(db, deck=deck, subject=subject)
+        if rank(eff) < rank('viewer'):
+            return set()
+
+        ids: set[str] = set()
+        if deck.cover_asset_id:
+            ids.add(deck.cover_asset_id)
+        rows = (
+            await db.execute(
+                select(Page.html, Page.thumb_asset_id).where(Page.deck_id == deck.id, Page.deleted_time.is_(None))
+            )
+        ).all()
+        for html, thumb_asset_id in rows:
+            if thumb_asset_id:
+                ids.add(thumb_asset_id)
+            if html:
+                ids.update(_ASSET_URI_RE.findall(html))
+        return ids
+
     # ---------- deck ----------
 
     @staticmethod
@@ -207,19 +245,15 @@ class DeckService:
 
         # 1. 我拥有的
         owned = (
-            (
-                await db.execute(
-                    select(Deck).where(Deck.owner_id == human, Deck.deleted_time.is_(None))
-                )
-            )
-            .scalars()
-            .all()
+            (await db.execute(select(Deck).where(Deck.owner_id == human, Deck.deleted_time.is_(None)))).scalars().all()
         )
         owned_ids = {d.id for d in owned}
 
         # 2. 共享给我的（直接给人 / 给我这个分身 / 给我企业）的 deck id
         shared_ids: set[str] = set(
-            await resource_share_service.shared_resource_ids_for_human(db, resource_type=_RESOURCE_TYPE, human_hasn_id=human)
+            await resource_share_service.shared_resource_ids_for_human(
+                db, resource_type=_RESOURCE_TYPE, human_hasn_id=human
+            )
         )
         if subject.kind == 'agent':
             agent_share_ids = await DeckService._shared_ids_for_agent(db, agent_hasn_id=subject.hasn_id)
@@ -249,16 +283,12 @@ class DeckService:
         extra_decks: list[Deck] = []
         if extra_ids:
             extra_decks = list(
-                (
-                    await db.execute(select(Deck).where(Deck.id.in_(extra_ids), Deck.deleted_time.is_(None)))
-                )
+                (await db.execute(select(Deck).where(Deck.id.in_(extra_ids), Deck.deleted_time.is_(None))))
                 .scalars()
                 .all()
             )
 
-        items: list[dict[str, Any]] = [
-            _deck_dict(d, my_permission='manager', relation='owner') for d in owned
-        ]
+        items: list[dict[str, Any]] = [_deck_dict(d, my_permission='manager', relation='owner') for d in owned]
         for d in extra_decks:
             eff = await DeckService._effective_permission(db, deck=d, subject=subject)
             if rank(eff) == 0:
@@ -298,7 +328,9 @@ class DeckService:
         return _deck_dict(deck, my_permission=eff, relation=relation)
 
     @staticmethod
-    async def update_deck(db: AsyncSession, *, subject: Subject, deck_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+    async def update_deck(
+        db: AsyncSession, *, subject: Subject, deck_id: int, fields: dict[str, Any]
+    ) -> dict[str, Any]:
         deck = await DeckService._get_deck(db, deck_id)
         await DeckService._authorize_deck(db, deck=deck, subject=subject, need='editor')
         for key, value in fields.items():
@@ -545,13 +577,7 @@ class DeckService:
         deck = await DeckService._get_deck(db, deck_id)
         await DeckService._authorize_deck(db, deck=deck, subject=subject, need='editor')
         pages = (
-            (
-                await db.execute(
-                    select(Page).where(Page.deck_id == deck_id, Page.deleted_time.is_(None))
-                )
-            )
-            .scalars()
-            .all()
+            (await db.execute(select(Page).where(Page.deck_id == deck_id, Page.deleted_time.is_(None)))).scalars().all()
         )
         by_id = {p.id: p for p in pages}
         given = [int(pid) for pid in ordered_page_ids]

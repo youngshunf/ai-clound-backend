@@ -16,6 +16,7 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.schema.asset_api import ResolveAssetsParam, ResolvedAssetItem, UploadedAsset
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn_deck.service.deck_service import DeckService, Subject as DeckSubject
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -57,6 +58,23 @@ def _kind_of(mime: str) -> str:
     if mime.startswith('audio/'):
         return 'voice'
     return 'file'
+
+
+async def _resource_readable_asset_ids(db: CurrentSession, *, owner_hasn_id: str, resource_ref: str | None) -> set[str]:
+    """据资源上下文 `resource_ref` 解出 owner 有权看到的额外资产集合（跨 owner 打开共享资源用）。
+
+    当前支持 `deck:{cloud_id}`：被分享者打开共享 deck 时，其页内私有图片既非 owner、也无会话授权，
+    但只要对该 deck 有 viewer+ ACL，就该看到它引用的图片。这里据 deck ACL 收集其引用的资产 id，
+    交给 hasn_asset_service.resolve 作 extra_readable。格式非法 / 无权 / deck 不存在 → 空集（安全默认）。
+    """
+    if not resource_ref:
+        return set()
+    kind, _, raw_id = resource_ref.partition(':')
+    if kind == 'deck' and raw_id.isdigit():
+        return await DeckService.authorized_asset_ids(
+            db, subject=DeckSubject.human(owner_hasn_id), deck_id=int(raw_id)
+        )
+    return set()
 
 
 @router.post('/upload', summary='上传消息附件（私有桶，注册资产）', dependencies=[DependsJwtAuth])
@@ -119,12 +137,16 @@ async def resolve_assets(
     obj: ResolveAssetsParam,
 ) -> ResponseSchemaModel[list[ResolvedAssetItem]]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
+    extra_readable = await _resource_readable_asset_ids(
+        db, owner_hasn_id=owner_hasn_id, resource_ref=obj.resource_ref
+    )
     resolved = await hasn_asset_service.resolve(
         db,
         requester_hasn_id=owner_hasn_id,
         asset_ids=obj.asset_ids,
         conversation_id=obj.conversation_id,
         expires_in=obj.expires_in,
+        extra_readable_asset_ids=extra_readable,
     )
     items = [ResolvedAssetItem(asset_id=r.asset_id, display_url=r.display_url, expires_at=r.expires_at) for r in resolved]
     return response_base.success(data=items)
