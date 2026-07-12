@@ -21,6 +21,8 @@ from sqlalchemy import and_, or_, select
 
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.model import HasnEnterpriseMemberRole, HasnEnterpriseMembership, HasnResourceShare
+from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
+from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -282,11 +284,17 @@ class ResourceShareService:
     ) -> dict:
         """加 / 改一条授权：同 grantee 已有 active 行则改权限，否则新建。
 
-        TODO(doc33 S2-5·doc32 §9 守卫 2 运行时半)：建行前 fail-closed 校验 `resource_type` 已注册 G6
-        adapter（「能分享、必能判」在源头闭环，分享一个 G6 判不了的资源类型即拒）。此闸**必须等所有可分享
-        资源类型的 adapter 全注册齐（S2-6 deck/knowledge + S3 其余应用）后**再开启，否则会把所有现存分享
-        误拒（registered_types 尚空）。故收口到 S3 铺开完成后随门收尾一起启用，届时全量 share 用例应绿。
+        doc33 S2-5·doc32 §9 守卫 2 运行时半：建行前 fail-closed 校验 `resource_type` 已注册 G6 adapter
+        （「能分享、必能判」在源头闭环——分享一个 G6 判不了的资源类型即拒，杜绝「建了 share 却判不出档位」）。
+        S3 铺开完成后启用：全部可分享类型（knowledge/knowledge_doc/deck/designsystem/studio_project/
+        studio_artifact/design）的 adapter 均由 app 启动 import 路由链（→ ai_native_app_registry）注册；
+        测试经 tests/conftest.py 会话级注册，故任何运行模式下合法分享都不会误伤。
         """
+        # fail-closed：注册表无此 resource_type 的 adapter → 拒绝建行（能分享必能判·doc33 S2-5）。
+        if resource_type not in resource_kind_registry.registered_types():
+            raise errors.ServerError(
+                msg=f'资源类型 {resource_type!r} 未注册 G6 权限适配器，拒绝建立分享（能分享必能判·doc33 S2-5）'
+            )
         existing = (
             await db.execute(
                 select(HasnResourceShare).where(
