@@ -110,12 +110,43 @@ class StockDownloadService:
         title: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        """执行五步下载落桶双登记。身份由调用方（AgentContext）注入。"""
+        """执行五步下载落桶双登记。身份由调用方（AgentContext）注入。
+
+        分两段：`_stream_download`（外站取字节，唯一需真实出网的一步）→ `_store_and_register`
+        （落桶+双登记+组装出参）。拆开是为让「落桶→双登记→检索」后半程能被真实基础设施
+        E2E 独立覆盖（不依赖外站出网），前半程的纯网络取字节留给真实出网环境验证。
+        """
         whitelist = await stock_provider_store.enabled_download_domains()
         if not whitelist:
             raise StockDownloadError('stock.download: 未配置任何素材站下载域名，无法下载')
 
         data, content_type = await self._stream_download(url, whitelist)
+        return await self._store_and_register(
+            owner_hasn_id=owner_hasn_id,
+            agent_hasn_id=agent_hasn_id,
+            data=data,
+            content_type=content_type,
+            url=url,
+            title=title,
+            session_id=session_id,
+        )
+
+    async def _store_and_register(
+        self,
+        *,
+        owner_hasn_id: str,
+        agent_hasn_id: str,
+        data: bytes,
+        content_type: str,
+        url: str,
+        title: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """下载后半程：已取到的字节 → 落 owner 私有桶 → 双登记 → 组装出参。
+
+        与 `_stream_download`（外站取字节）解耦，便于用真实桶 + 真实 PG 覆盖
+        「落桶→register_asset→hasn_artifacts.record」这一环，无需真实外站出网。
+        """
         kind_media, _cap = _kind_and_cap(content_type)  # image / video
         provider_view = await stock_provider_store.provider_for_domain(host=(urlparse(url).hostname or ''))
 
