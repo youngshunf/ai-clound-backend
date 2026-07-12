@@ -1,0 +1,1 @@
+from backend.app.hasn_stock.model.hasn_stock_providers import HasnStockProviders as HasnStockProviders

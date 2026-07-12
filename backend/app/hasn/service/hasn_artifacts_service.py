@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from backend.app.hasn.model import HasnAgents, HasnArtifacts
 from backend.app.hasn.schema.hasn_artifacts import (
@@ -293,6 +293,15 @@ class HasnArtifactsService:
             created_time=row.created_time,
         )
 
+    @staticmethod
+    def _ilike_pattern(word: str) -> str:
+        """把关键词转义成安全的 ILIKE 子串模式：`\\` `%` `_` 逐个转义，两侧补 `%`。
+
+        防通配符意外全量匹配（分身传 `%` 不该匹配全部产物）。配 `escape='\\'` 使用。
+        """
+        escaped = word.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        return f'%{escaped}%'
+
     @classmethod
     async def list_by_agent(
         cls,
@@ -303,8 +312,16 @@ class HasnArtifactsService:
         page: int = 1,
         size: int = 20,
         kind: str | None = None,
+        keyword: str | None = None,
+        session_id: str | None = None,
     ) -> tuple[list[ArtifactItem], int]:
-        """列某分身的产物（时间线倒序）。先校验归属，再批量解析图片缩略图。"""
+        """列某分身的产物（时间线倒序）。先校验归属，再批量解析图片缩略图。
+
+        可选过滤（向后兼容，缺省不生效）：
+        - `keyword`：按空白切词，每词做 ILIKE 转义后 OR 命中 title/summary，**词间 AND**
+          （「星空 城市」= 两词都命中）——图文取材子串检索（`hasn.artifact.search`）。
+        - `session_id`：只看某个工作会话产出的（「找我这个任务里产的东西」）。
+        """
         if not await cls._owns_agent(db, owner_hasn_id=owner_hasn_id, agent_hasn_id=agent_hasn_id):
             raise errors.ForbiddenError(msg='无权查看该分身的产物')
 
@@ -315,10 +332,20 @@ class HasnArtifactsService:
         ]
         if kind:
             conds.append(HasnArtifacts.kind == kind)
+        if session_id:
+            conds.append(HasnArtifacts.session_id == session_id)
+        if keyword:
+            # 切词：每词 OR 命中 title/summary，词间 AND（全部命中才算匹配）。空词跳过。
+            for word in keyword.split():
+                pattern = cls._ilike_pattern(word)
+                conds.append(
+                    or_(
+                        HasnArtifacts.title.ilike(pattern, escape='\\'),
+                        HasnArtifacts.summary.ilike(pattern, escape='\\'),
+                    )
+                )
 
-        total = (
-            await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
-        ).scalar_one()
+        total = (await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))).scalar_one()
         rows = (
             (
                 await db.execute(
@@ -351,9 +378,7 @@ class HasnArtifactsService:
         conds = [HasnArtifacts.owner_hasn_id == owner_hasn_id, HasnArtifacts.status == 'active']
         if kind:
             conds.append(HasnArtifacts.kind == kind)
-        total = (
-            await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
-        ).scalar_one()
+        total = (await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))).scalar_one()
         rows = (
             (
                 await db.execute(
@@ -391,9 +416,7 @@ class HasnArtifactsService:
             HasnArtifacts.origin_ref == origin_ref,
             HasnArtifacts.status == 'active',
         ]
-        total = (
-            await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
-        ).scalar_one()
+        total = (await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))).scalar_one()
         rows = (
             (
                 await db.execute(
@@ -434,9 +457,7 @@ class HasnArtifactsService:
             HasnArtifacts.session_id == session_id,
             HasnArtifacts.status == 'active',
         ]
-        total = (
-            await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))
-        ).scalar_one()
+        total = (await db.execute(select(func.count()).select_from(HasnArtifacts).where(*conds))).scalar_one()
         rows = (
             (
                 await db.execute(
@@ -456,9 +477,7 @@ class HasnArtifactsService:
         return [cls._to_item(r, url_map) for r in rows], total
 
     @classmethod
-    async def get_detail(
-        cls, db: AsyncSession, *, owner_hasn_id: str, artifact_id: str
-    ) -> ArtifactDetail:
+    async def get_detail(cls, db: AsyncSession, *, owner_hasn_id: str, artifact_id: str) -> ArtifactDetail:
         """单条产物详情（含 display_url + download_url）。仅本 owner 可读。"""
         row = (
             await db.execute(
@@ -475,9 +494,7 @@ class HasnArtifactsService:
             raise errors.NotFoundError(msg='产物不存在或无权访问')
 
         url_map = (
-            await cls._resolve_urls(db, owner_hasn_id=owner_hasn_id, asset_ids=[row.asset_id])
-            if row.asset_id
-            else {}
+            await cls._resolve_urls(db, owner_hasn_id=owner_hasn_id, asset_ids=[row.asset_id]) if row.asset_id else {}
         )
         signed = url_map.get(row.asset_id) if row.asset_id else None
         item = cls._to_item(row, url_map)
