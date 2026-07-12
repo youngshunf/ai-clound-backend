@@ -804,6 +804,7 @@ async def route_message(
                     'sender_hasn_id': from_id,
                     'recipient_hasn_id': to_id,
                     'group_id': to_id,
+                    'group_name': group.group_name,
                     'conversation_type': 'group',
                     'direction': direction,
                     'content_type': grp_ct_str,
