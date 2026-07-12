@@ -5,6 +5,7 @@ AgentContext 上下文传递
 """
 from contextvars import ContextVar
 
+from backend.app.hasn.service.authz import AuthorizedResource
 from backend.app.mcp.auth import AgentContext
 
 # 使用 contextvars 在异步上下文中传递 AgentContext
@@ -65,3 +66,30 @@ def set_trust_context_header(raw: tuple[str | None, str | None, str | None] | No
 def get_trust_context_header() -> tuple[str | None, str | None, str | None] | None:
     """取当前请求的会话信任语境 header 原始三元组（无则 None → 回落工具入参保留参数）。"""
     return _trust_context_header_var.get()
+
+
+# G6 已判权资源注入通道（doc32 §5.5 / doc33 S2-3，照抄上方能力票据先例）：两个分发入口
+# （MCP 直连面 server.py::call_tool、daemon 代理面 gateway.call_tool）在 enforce_declaration
+# 判过后 set、调用工具体前生效、finally 清；handler 侧经 `get_authorized_resource(param)` 取
+# 已判权资源的 owner key，**不再拿调用者身份当资源 owner key**。key = 声明的 `param`（工具入参名）。
+_authorized_resources_var: ContextVar[dict[str, AuthorizedResource] | None] = ContextVar(
+    'authorized_resources', default=None
+)
+
+
+def set_authorized_resources(authorized: dict[str, AuthorizedResource]) -> None:
+    """落入本次调用 G6 判过的 `{param → AuthorizedResource}`（无声明工具不必调用）。"""
+    _authorized_resources_var.set(authorized)
+
+
+def get_authorized_resource(param: str) -> AuthorizedResource | None:
+    """取本次调用中某入参对应的已判权资源；无（未判 / 该参未声明）则 None。"""
+    authorized = _authorized_resources_var.get()
+    if authorized is None:
+        return None
+    return authorized.get(param)
+
+
+def clear_authorized_resources() -> None:
+    """清本次调用的已判权资源（分发入口 finally 调，防跨请求串味）。"""
+    _authorized_resources_var.set(None)
