@@ -23,6 +23,7 @@ from backend.app.mcp.tool_exposure import (
     tool_exposure_policy,
 )
 from backend.app.mcp.tools.artifact import ARTIFACT_TOOLS
+from backend.app.mcp.tools.asset import ASSET_TOOLS
 from backend.app.mcp.tools.base import BaseTool
 from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, ContactSearchTool
 from backend.app.mcp.tools.deck import DECK_TOOLS
@@ -138,11 +139,13 @@ class HasnCloudMcpServer:
         for notification_tool in NOTIFICATION_TOOLS:
             self.tool_registry.register(notification_tool)
 
-        # 产物工具（产物化 P6）：分身显式登记一条产物（文本/markdown 直接入库等）。
-        # 从 hasn-node 本地 hasn-mcp 迁来（纯云端代理 → 走云端 platform tool；
-        # audited 自动捕获机制仍留本地，因其拦截本地工具执行的副作用）。
-        for artifact_tool in ARTIFACT_TOOLS:
-            self.tool_registry.register(artifact_tool)
+        # 产物 + 资产工具（产物化 P6 + 分身资源检索与素材站工具设计 A-P0/A-P1）：
+        # - artifact 域：显式登记产物（record）+ 检索本分身产物（list/search/get，出参剥 body/防呆描述）。
+        #   从 hasn-node 本地 hasn-mcp 迁来（纯云端代理；audited 自动捕获仍留本地拦本地工具副作用）。
+        # - asset 域：hasn.asset.get 按 asset_id 取技术元数据，供分身校验手里的 hasn://asset/{id} 引用
+        #   （owner 校验，无权/不存在同响应）。纯云端只读。
+        for retrieval_tool in (*ARTIFACT_TOOLS, *ASSET_TOOLS):
+            self.tool_registry.register(retrieval_tool)
 
         # 设计系统工具（14-DS-P4）：8 个云端工具全注册。
         # - 云端权威 4（操作云端数据）：import/save/list/get（TOOLMIG-4 从本地迁来）。
