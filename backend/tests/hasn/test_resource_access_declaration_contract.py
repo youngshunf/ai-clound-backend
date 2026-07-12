@@ -17,8 +17,9 @@ from __future__ import annotations
 
 from typing import Any
 
-# import 即注册：保证 registered_types() 在守卫求值时已含 knowledge/deck 三类资源（S2-6 已接入的）。
+# import 即注册：保证 registered_types() 在守卫求值时已含各 S2-6/S3-1 已接入应用的资源类型。
 import backend.app.hasn_deck.service.resource_adapter  # noqa: F401
+import backend.app.hasn_designsystem.service.resource_adapter  # noqa: F401
 import backend.app.hasn_knowledge.service.resource_adapter  # noqa: F401
 
 from backend.app.hasn.service.ai_native_app_registry import (
@@ -179,6 +180,7 @@ _SEED_JUDGEABLE_TYPES: frozenset[str] = frozenset({
     'knowledge_folder',
     'deck',
     'deck_page',
+    'designsystem',
 })
 
 

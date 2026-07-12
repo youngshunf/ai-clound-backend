@@ -20,6 +20,7 @@ from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401
 from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
+from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST

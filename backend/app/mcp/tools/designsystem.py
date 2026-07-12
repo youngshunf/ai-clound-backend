@@ -50,6 +50,10 @@ from backend.app.hasn_designsystem.core import (
 from backend.app.hasn_designsystem.core import (
     validate as core_validate,
 )
+
+# G6 使用点注册兜底（doc33 S3-1）：import 即注册 designsystem 资源适配器，保证 MCP 直连面判权时
+# adapter 已在注册表（与 ai_native_app_registry 启动注册互为兜底，模块缓存保证进程内只注册一次）。
+from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.app.hasn_designsystem.service.import_service import import_design_source
 from backend.app.mcp.tools.base import BaseTool
@@ -61,6 +65,17 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _SCOPE_WRITE = 'designsystem:write'
+
+# ── G6 资源权限门声明（doc33 S3-1）──────────────────────────────────────────────────
+# designsystem 工具经 MCP 直连面（server.py::call_tool 读 tool.resource_access）判权。designsystem
+# manifest tools=[]（工具走平台 BaseTool，非 manifest tools[]），故这些声明**不进** manifest 注册期校验，
+# 由下方 get/save 工具的 `resource_access` 属性直接暴露给门（与 deck 同范式）。service 层原有
+# `_assert_can_read` / save 权限判定保留（防御纵深），门在 ask 审批前先按同一 `resolve_effective_permission`
+# 内核多判一次，确定性无权先拒、不打扰主人审批。
+# - get：design_system_id 必填 → 声明 viewer。
+# - save：design_system_id 可空（null=新建，无实例可判）→ 声明 editor + required=False，缺省即跳过判权。
+_RA_DS_VIEWER = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'viewer'}]
+_RA_DS_EDITOR = [{'param': 'design_system_id', 'type': 'designsystem', 'need': 'editor', 'required': False}]
 
 
 async def _bump_designsystem_sync(db: Any, owner_hasn_id: str) -> None:
@@ -266,6 +281,11 @@ class DesignSystemSaveTool(BaseTool):
     def required_scopes(self) -> list[str]:
         return [_SCOPE_WRITE]
 
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        # 更新存量（design_system_id 非空）→ editor 判权；新建（缺省）→ required=False 跳过。
+        return _RA_DS_EDITOR
+
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         slug = _req_str(arguments, 'slug')
         name = _req_str(arguments, 'name')
@@ -448,6 +468,11 @@ class DesignSystemGetTool(BaseTool):
     @property
     def required_scopes(self) -> list[str]:
         return []
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        # get 的 design_system_id 必填 → viewer 判权。
+        return _RA_DS_VIEWER
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         design_system_id = _opt_int(arguments, 'design_system_id')
