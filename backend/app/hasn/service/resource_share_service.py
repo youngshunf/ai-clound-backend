@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sqlalchemy import and_, or_, select
@@ -38,6 +39,21 @@ def rank(permission: str | None) -> int:
     return _PERM_RANK.get(permission or 'none', 0)
 
 
+@dataclass
+class PermissionResolutionCache:
+    """G6 门（doc32 §5.3）用的 per-request 判权记忆化缓存——**纯附加、纯性能**，不改判权语义。
+
+    一次工具调用内 subject 恒定（多资源声明 + 父链复判共享同一主体）：memberships 与 role grantee
+    在同一 subject 下每次查得**完全一致**，故按 key 记忆化省重复 SELECT。**不传（None）时行为逐字不变**，
+    存量调用点全部走无缓存路径。缓存生命周期 = 一次 `resource_gate.enforce_declaration`，用完即弃。
+    """
+
+    # owner_hasn_id → [(enterprise_id, role)] 成员关系
+    memberships: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
+    # (owner_hasn_id, resource_enterprise_id) → role grantee_id 集合
+    role_grantees: dict[tuple[str, int | None], set[str]] = field(default_factory=dict)
+
+
 def _max_perm(a: str, b: str) -> str:
     return a if rank(a) >= rank(b) else b
 
@@ -48,26 +64,31 @@ class ResourceShareService:
     # ---------- 企业成员解析 ----------
 
     @staticmethod
-    async def acting_human_memberships(db: AsyncSession, human_hasn_id: str) -> list[tuple[int, str]]:
+    async def acting_human_memberships(
+        db: AsyncSession, human_hasn_id: str, *, cache: PermissionResolutionCache | None = None
+    ) -> list[tuple[int, str]]:
         """主人 hasn_id → 其 approved 企业成员关系列表 [(enterprise_id, role)]。
 
-        分身无独立企业身份，按其主人解析（分身代主人行动）。
+        分身无独立企业身份，按其主人解析（分身代主人行动）。`cache` 非空时按 hasn_id 记忆化（G6 门用）。
         """
+        if cache is not None and human_hasn_id in cache.memberships:
+            return cache.memberships[human_hasn_id]
         human = await hasn_humans_dao.get_by_hasn_id(db, human_hasn_id)
         if human is None:
-            return []
-        rows = (
-            (
+            result: list[tuple[int, str]] = []
+        else:
+            rows = (
                 await db.execute(
                     select(HasnEnterpriseMembership.enterprise_id, HasnEnterpriseMembership.role).where(
                         HasnEnterpriseMembership.user_id == human.user_id,
                         HasnEnterpriseMembership.status.in_(_MEMBERSHIP_ACTIVE),
                     )
                 )
-            )
-            .all()
-        )
-        return [(int(eid), role) for eid, role in rows]
+            ).all()
+            result = [(int(eid), role) for eid, role in rows]
+        if cache is not None:
+            cache.memberships[human_hasn_id] = result
+        return result
 
     @staticmethod
     async def _role_grantee_ids(
@@ -76,6 +97,7 @@ class ResourceShareService:
         subject_owner_hasn_id: str,
         resource_enterprise_id: int | None,
         memberships: list[tuple[int, str]],
+        cache: PermissionResolutionCache | None = None,
     ) -> set[str]:
         """主体 S 命中的 role grantee_id 集合（仅当产物属某企业时有意义，§6.5/§4.2(4)）。
 
@@ -83,9 +105,14 @@ class ResourceShareService:
           owner ⊇ admin ⊇ member（grantee_id = `builtin:owner|admin|member`）。
         - 自定义角色 / 部门：查 `hasn_enterprise_member_role`（user_id × enterprise_id），
           grantee_id = str(role_id)。
+
+        `cache` 非空时按 (owner, enterprise_id) 记忆化（G6 门用，纯性能不改语义）。
         """
         if resource_enterprise_id is None:
             return set()
+        cache_key = (subject_owner_hasn_id, resource_enterprise_id)
+        if cache is not None and cache_key in cache.role_grantees:
+            return cache.role_grantees[cache_key]
         ids: set[str] = set()
         # 内置成员角色（含包含关系）
         role_in_ent = next((role for eid, role in memberships if eid == resource_enterprise_id), None)
@@ -111,6 +138,8 @@ class ResourceShareService:
                 .all()
             )
             ids.update(str(int(rid)) for rid in rows)
+        if cache is not None:
+            cache.role_grantees[cache_key] = ids
         return ids
 
     # ---------- 有效权限判定（§6.5） ----------
@@ -128,6 +157,8 @@ class ResourceShareService:
         resource_owner_scope: str = 'personal',  # personal | enterprise
         resource_enterprise_id: int | None = None,
         resource_visibility: str = 'private',  # private | enterprise | link
+        perm_cache: PermissionResolutionCache
+        | None = None,  # G6：同请求内多资源判权的记忆化缓存（默认 None＝行为不变）
     ) -> str:
         """返回 'none'|'viewer'|'editor'|'manager'。"""
         effective = 'none'
@@ -136,7 +167,7 @@ class ResourceShareService:
         if subject_owner_hasn_id and subject_owner_hasn_id == resource_owner_hasn_id:
             return 'manager'
 
-        memberships = await ResourceShareService.acting_human_memberships(db, subject_owner_hasn_id)
+        memberships = await ResourceShareService.acting_human_memberships(db, subject_owner_hasn_id, cache=perm_cache)
         member_enterprise_ids = {eid for eid, _ in memberships}
         admin_enterprise_ids = {eid for eid, role in memberships if role in _ENTERPRISE_ADMIN_ROLES}
 
@@ -164,6 +195,7 @@ class ResourceShareService:
             subject_owner_hasn_id=subject_owner_hasn_id,
             resource_enterprise_id=resource_enterprise_id,
             memberships=memberships,
+            cache=perm_cache,
         )
         conds = []
         if human_ids:
@@ -212,7 +244,8 @@ class ResourceShareService:
         rows = (
             (
                 await db.execute(
-                    select(HasnResourceShare).where(
+                    select(HasnResourceShare)
+                    .where(
                         HasnResourceShare.resource_type == resource_type,
                         HasnResourceShare.resource_id == resource_id,
                         HasnResourceShare.status == 'active',
@@ -311,9 +344,7 @@ class ResourceShareService:
     # ---------- 「共享给我的」反查（列表用） ----------
 
     @staticmethod
-    async def shared_resource_ids_for_human(
-        db: AsyncSession, *, resource_type: str, human_hasn_id: str
-    ) -> set[str]:
+    async def shared_resource_ids_for_human(db: AsyncSession, *, resource_type: str, human_hasn_id: str) -> set[str]:
         """某主人能经「显式共享」看到的产物 id 集合（直接共享给人 + 经其企业共享）。
 
         不含 owner 自有 / 企业可见（visibility）部分——那些由 deck service 各自查。

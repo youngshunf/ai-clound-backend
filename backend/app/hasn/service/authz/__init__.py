@@ -11,6 +11,18 @@
 
 from __future__ import annotations
 
+from backend.app.hasn.service.authz.resource_gate import AuthorizedResource
+from backend.app.hasn.service.authz.resource_registry import (
+    ResourceKindAdapter,
+    ResourceMeta,
+    resource_kind_registry,
+)
 from backend.app.hasn.service.authz.subject import Subject
 
-__all__ = ['Subject']
+__all__ = [
+    'AuthorizedResource',
+    'ResourceKindAdapter',
+    'ResourceMeta',
+    'Subject',
+    'resource_kind_registry',
+]
