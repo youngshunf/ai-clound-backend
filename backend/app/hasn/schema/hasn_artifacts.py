@@ -85,6 +85,17 @@ class RecordArtifactResult(SchemaBase):
     artifact_id: str = Field(description='产物 ID')
 
 
+class UpdateArtifactContentParam(SchemaBase):
+    """Owner 更新产物正文的入参（markdown 编辑保存用）。
+
+    只允许改 body/title——asset_id/resource_uri 等指针不可改（产物溯源语义不变）。
+    对 asset 型 .md 文件产物：编辑保存写 body（body 成为权威正文，原 asset 保留为「原文件」可下载）。
+    """
+
+    body: str = Field(description='文本/markdown 正文（编辑后全文覆盖）')
+    title: str | None = Field(None, description='展示标题（可选，一并更新）')
+
+
 class ArtifactItem(SchemaBase):
     """产物列表项（已派生跳转链接；图片含签名 display_url）。"""
 

@@ -488,6 +488,30 @@ class HasnArtifactsService:
         )
 
     @classmethod
+    async def update_content(
+        cls, db: AsyncSession, *, owner_hasn_id: str, artifact_id: str, body: str, title: str | None = None
+    ) -> None:
+        """Owner 更新产物正文（markdown 编辑保存）。仅本 owner 的 active 行可改。
+
+        只写 body（+可选 title），不动 asset_id/resource_uri 指针——asset 型 .md 产物编辑后
+        body 成为权威正文（前端渲染 body 优先），原文件仍可下载。
+        """
+        values: dict = {'body': body}
+        if title is not None and title.strip():
+            values['title'] = title.strip()
+        result = await db.execute(
+            update(HasnArtifacts)
+            .where(
+                HasnArtifacts.artifact_id == artifact_id,
+                HasnArtifacts.owner_hasn_id == owner_hasn_id,
+                HasnArtifacts.status == 'active',
+            )
+            .values(**values)
+        )
+        if result.rowcount == 0:
+            raise errors.NotFoundError(msg='产物不存在或无权修改')
+
+    @classmethod
     async def soft_delete(cls, db: AsyncSession, *, owner_hasn_id: str, artifact_id: str) -> None:
         """软删指针（不删 asset 本体——asset 可能仍被消息引用）。"""
         result = await db.execute(

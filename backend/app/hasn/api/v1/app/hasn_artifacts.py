@@ -116,6 +116,24 @@ async def get_artifact_detail(
     return response_base.success(data=detail)
 
 
+@router.put(
+    '/artifacts/{artifact_id}',
+    summary='更新产物正文（markdown 编辑保存，只改 body/title）',
+    dependencies=[DependsJwtAuth],
+)
+async def update_artifact_content(
+    request: Request,
+    db: CurrentSessionTransaction,
+    artifact_id: Annotated[str, Path(description='产物 ID')],
+    obj: UpdateArtifactContentParam,
+) -> ResponseModel:
+    owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
+    await hasn_artifacts_service.update_content(
+        db, owner_hasn_id=owner_hasn_id, artifact_id=artifact_id, body=obj.body, title=obj.title
+    )
+    return response_base.success()
+
+
 @router.delete('/artifacts/{artifact_id}', summary='软删产物指针（不删 asset 本体）', dependencies=[DependsJwtAuth])
 async def delete_artifact(
     request: Request,

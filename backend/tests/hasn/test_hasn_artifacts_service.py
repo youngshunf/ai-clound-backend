@@ -220,6 +220,55 @@ async def test_list_by_session_filter_and_isolation() -> None:
             await db.rollback()
 
 
+async def test_update_content_owner_only() -> None:
+    """MDDOC：Owner 更新产物正文（markdown 编辑保存）——只改 body/title，越权/软删后拒绝。"""
+    owner = _short_id('hasnOwner')
+    stranger = _short_id('hasnStranger')
+    agent = _short_id('aAgent')
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            aid = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document', title='原标题', body='# 原正文', source_kind='task_result'
+                ),
+            )
+
+            # 只改 body（title=None 不动标题）
+            await hasn_artifacts_service.update_content(
+                db, owner_hasn_id=owner, artifact_id=aid, body='# 编辑后的正文\n\n新增段落'
+            )
+            detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=aid)
+            assert detail.body == '# 编辑后的正文\n\n新增段落'
+            assert detail.title == '原标题'
+
+            # body+title 一起改（title 会 strip）
+            await hasn_artifacts_service.update_content(
+                db, owner_hasn_id=owner, artifact_id=aid, body='v3', title='  新标题  '
+            )
+            detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=aid)
+            assert detail.body == 'v3' and detail.title == '新标题'
+
+            # 越权：陌生 owner 改 → NotFound（不泄露存在性）
+            with pytest.raises(errors.NotFoundError):
+                await hasn_artifacts_service.update_content(
+                    db, owner_hasn_id=stranger, artifact_id=aid, body='hack'
+                )
+
+            # 软删后再改 → NotFound
+            await hasn_artifacts_service.soft_delete(db, owner_hasn_id=owner, artifact_id=aid)
+            with pytest.raises(errors.NotFoundError):
+                await hasn_artifacts_service.update_content(
+                    db, owner_hasn_id=owner, artifact_id=aid, body='dead'
+                )
+        finally:
+            await db.rollback()
+
+
 async def test_list_ownership_isolation_and_source_link(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         asset_mod.StorageService,
