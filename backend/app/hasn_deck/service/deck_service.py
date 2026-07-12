@@ -12,8 +12,6 @@ owner_id 仍是产物归属键，但访问控制不再是「owner==当前用户�
 
 from __future__ import annotations
 
-import re
-
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, or_, select
@@ -27,10 +25,6 @@ from backend.utils.timezone import timezone
 # builtin（系统内置）风格的归属 owner 哨兵：对所有 owner 可见、不属于任何真实 owner。
 BUILTIN_OWNER = 'system'
 _RESOURCE_TYPE = 'deck'
-
-# deck 页 HTML / 封面里内嵌的 canonical 资产引用 `hasn://asset/{id}`（渲染边界才换签名 URL）。
-# 用于 authorized_asset_ids：只放行「确属该 deck」的资产，避免越权签发任意 asset。
-_ASSET_URI_RE = re.compile(r'hasn://asset/([A-Za-z0-9_-]+)')
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -152,37 +146,9 @@ class DeckService:
             raise errors.ForbiddenError(msg='没有该操作权限')
         return eff
 
-    @staticmethod
-    async def authorized_asset_ids(db: AsyncSession, *, subject: Subject, deck_id: int) -> set[str]:
-        """收集 subject 有 viewer+ 权限打开的 deck 内所引用的全部 asset_id（跨 owner 资产解析授权用）。
-
-        非抛错版：deck 不存在 / 权限不足 → 返回空集（调用方据此不额外放行任何资产，仍走
-        owner / 会话通道判定）。收集范围严格限定为「确属该 deck 的资产」——deck.cover_asset_id
-        + 每页 thumb_asset_id + 每页 html 内嵌的 `hasn://asset/{id}` 引用；避免据一个 deck 越权
-        签发任意 asset。被分享者（viewer）打开共享 deck 时，其页内图片经此授权解析而不再破图。
-        """
-        try:
-            deck = await DeckService._get_deck(db, deck_id)
-        except errors.NotFoundError:
-            return set()
-        eff = await DeckService._effective_permission(db, deck=deck, subject=subject)
-        if rank(eff) < rank('viewer'):
-            return set()
-
-        ids: set[str] = set()
-        if deck.cover_asset_id:
-            ids.add(deck.cover_asset_id)
-        rows = (
-            await db.execute(
-                select(Page.html, Page.thumb_asset_id).where(Page.deck_id == deck.id, Page.deleted_time.is_(None))
-            )
-        ).all()
-        for html, thumb_asset_id in rows:
-            if thumb_asset_id:
-                ids.add(thumb_asset_id)
-            if html:
-                ids.update(_ASSET_URI_RE.findall(html))
-        return ids
+    # 注：分享 deck 内嵌私有资产的随行授权已收编进 G6 资产投影门（doc32 §14）：
+    # 判权走 authz.asset_projection.readable_asset_ids，资产收集下沉 DeckResourceAdapter.collect_asset_ids
+    # （resource_adapter.py）。原 authorized_asset_ids（判权+收集合体）已删。
 
     # ---------- deck ----------
 
