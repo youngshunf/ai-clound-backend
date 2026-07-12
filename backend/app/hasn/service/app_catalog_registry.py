@@ -154,6 +154,12 @@ class AppCatalogRegistry:
         from backend.app.hasn_design.manifest import build_design_app
 
         registry.register(build_design_app())
+        # 桌面控制 computer_use（local_tool 能力型 AI-Native，模块 23 V2；install_policy=manual 非默认挂载——
+        # cua-driver 引擎随桌面端下发 + macOS TCC 授权后按需装，hasn.computer.* 工具在本地 hasn-mcp
+        # （computer/tools.rs，CU-P2a 已落）经 daemon 托管 cua-driver 落真实桌面，方案 A 工具不进 tools[]）。延迟导入。
+        from backend.app.hasn_computer_use.manifest import build_computer_use_app
+
+        registry.register(build_computer_use_app())
         return registry
 
     def register(self, app: App) -> None:

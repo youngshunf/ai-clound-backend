@@ -11,6 +11,7 @@ from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_N
 from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, app_catalog_registry
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
+from backend.app.hasn_computer_use.manifest import COMPUTER_USE_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 
@@ -90,6 +91,10 @@ class AINativeAppRegistry:
             # hasn.design.* 工具在本地 hasn-mcp（design.rs，OP-P3-A 待落）经 DesignBroker → pen-mcp 出图，
             # 云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
             'design': DESIGN_AI_NATIVE_MANIFEST,
+            # 桌面控制（app_id=computer_use，模块 23 V2；local_tool 能力型应用，CU-P4 铸三 scope。
+            # hasn.computer.* 工具在本地 hasn-mcp（computer/tools.rs，CU-P2a 已落）经 daemon 托管 cua-driver 落
+            # 真实桌面，云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
+            'computer_use': COMPUTER_USE_AI_NATIVE_MANIFEST,
         }
 
     def list_builtin_apps(self) -> list[dict[str, Any]]:

@@ -60,6 +60,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 manual 推导）
     'studio': 76,  # 统一视频引擎（cloud-brokered 视频工作台，模块 14 doc22；default_mount=FALSE 由 manual 推导）
     'design': 78,  # 矢量设计（local_tool 本地 sidecar，源自 OpenPencil，doc27；default_mount=FALSE 由 manual 推导）
+    'computer_use': 80,  # 桌面控制（local_tool 能力型应用，模块 23 V2；default_mount=FALSE 由 manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
 
@@ -220,6 +221,15 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
     'design': (
         'content_operator',
         DESIGN_BUSINESS_PROMPT,
+    ),
+    # 桌面控制归口「全能助理（assistant）」——通用执行型分身代主人操作电脑（看屏→定位→点击/输入）。
+    'computer_use': (
+        'assistant',
+        '你是桌面控制应用的执行分身：替主人在真实桌面上完成 GUI 操作。先用 hasn.computer.list_apps / '
+        'capture 看清目标 App 与界面（据 SOM 元素编号精准定位），再一步步 click / type / set_value / drag / '
+        'key / scroll 操作；每一步动作前先观察、动作后再截图核实效果（据 source_capture_id 校验界面未漂移），'
+        '不据陈旧截图盲操作。全屏截图（capture_screen）与控制动作默认需主人确认；高危 App（终端/系统设置/'
+        '支付密码类）一律逐次审批，绝不自动放行。真看屏、真操作、真核实，零 fake，失败或被拒如实报错。',
     ),
 }
 

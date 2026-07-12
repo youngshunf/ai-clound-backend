@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.app.hasn_community.scopes import COMMUNITY_SCOPE_CATALOG
+from backend.app.hasn_computer_use.scopes import COMPUTER_USE_SCOPE_CATALOG
 from backend.app.hasn_core.app_platform import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn_creator.scopes import CREATOR_SCOPE_CATALOG
 from backend.app.hasn_deck.scopes import DECK_SCOPE_CATALOG
@@ -39,6 +40,7 @@ SCOPE_CATALOG: dict[str, dict[str, str]] = {
     **DECK_SCOPE_CATALOG,
     **DESIGNSYSTEM_SCOPE_CATALOG,
     **COMMUNITY_SCOPE_CATALOG,
+    **COMPUTER_USE_SCOPE_CATALOG,
     **KNOWLEDGE_SCOPE_CATALOG,
     **HASN_TASK_SCOPE_CATALOG,
     **HASN_GROWTH_SCOPE_CATALOG,
@@ -96,6 +98,7 @@ DOMAIN_LABELS: dict[str, dict[str, str]] = {
     'quant': {'zh': '量化策略', 'en': 'Quant'},
     'studio': {'zh': '视频工坊', 'en': 'Video Studio'},
     'imagelab': {'zh': '图坊', 'en': 'Image Lab'},
+    'computer_use': {'zh': '桌面控制', 'en': 'Computer Use'},
     # —— 本地引擎工具域 ——
     'film': {'zh': '影视创作', 'en': 'Film'},
     'reel': {'zh': '短视频', 'en': 'Short Video'},
