@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi import APIRouter, Depends, File, Form, Path, Query, Request, UploadFile
 
 from backend.app.hasn_release.schema.release import (
     BuildDetail,
+    CiUploadResponse,
     GithubBuildRequest,
     PublishReleaseRequest,
     ReleaseDetail,
@@ -44,6 +45,30 @@ async def publish_release(
     request: Request, db: CurrentSessionTransaction, obj: PublishReleaseRequest
 ) -> ResponseSchemaModel[ReleaseDetail]:
     data = await release_service.publish(db, obj, source='manual')
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/upload',
+    summary='管理端上传单个平台产物到七牛（返回 CDN 直链 + sha256，供发布页回填资产元数据）',
+    dependencies=[Depends(RequestPermission('release:publish')), DependsRBAC],
+)
+async def upload_release_asset(
+    db: CurrentSessionTransaction,
+    file: Annotated[UploadFile, File(description='平台产物（dmg/msi/exe/app.tar.gz/nsis.zip/.sig 等）')],
+    version: Annotated[str, Form(description='版本号（决定七牛对象键 desktop/{channel}/{version}/）')],
+    channel: Annotated[str, Form(description='stable / beta')] = 'stable',
+) -> ResponseSchemaModel[CiUploadResponse]:
+    # 复用 CI 的落桶核心：读字节 → 上公共桶 → 服务端现算 sha256 → 回长效 https CDN 直链。
+    # 与 CI 面唯一区别是鉴权走 JWT + RBAC（管理端登录态），而非 X-CI-Secret。
+    data = await release_service.ci_upload_asset(
+        db,
+        data=await file.read(),
+        filename=file.filename or 'asset.bin',
+        version=version,
+        channel=channel,
+        content_type=file.content_type,
+    )
     return response_base.success(data=data)
 
 
