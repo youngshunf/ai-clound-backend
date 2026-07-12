@@ -66,11 +66,13 @@ _DEFAULT_SORT_ORDER = 100
 # AppCollab（doc21 §4.3/§5.4）：应用默认承接的内置 agent 类型键 + 唤起分身注入的业务提示词模板。
 # 类型键 = hub 内置模板的 ``builtin_key``（``builtin: true``）；daemon ``resolve_default_agent_for_app`` 按
 # ``hasn_agents.builtin_agent_key == default_agent_type`` 取 owner 名下分身、命中即返回否则回退主脑。
-# 同型键 = 一个分身默认服务多应用：
-#   - ``content_operator``（内容运营官）：deck/designsystem/creator/film/community 五应用；
-#   - ``developer``（编程开发专家「知行」）：publish（网页发布=建站发布全流程）；
-#   - ``assistant``（全能助理）：knowledge/hasn_task 两应用；
-#   - ``sales_advisor``（销售顾问）：growth；``meeting_copilot``：copilot；``planner``：plan。
+# 2026-07-12 内置分身收敛为 3 个（全能助理 assistant / 创作专家 content_operator / 分析专家 analyst），
+# 全部应用的默认承接分身一律归口这 3 个；planner/meeting_copilot/designer/developer/sales_advisor 已退为
+# 可选市场模板（不再 builtin），其对应应用改由 3 个内置承接：
+#   - ``assistant``（全能助理·主脑）：knowledge/hasn_task/plan/copilot/growth；
+#   - ``content_operator``（创作专家）：community/deck/creator/film/reel/imagelab/studio/designsystem/design/publish；
+#   - ``analyst``（分析专家）：finance/quant。
+# work_session_system_prompt（业务提示词）按应用区分、保留不动——只换承接分身，不改每应用的执行提示词。
 # 未列出的应用 default_agent_type=NULL（回退主脑）、work_session_system_prompt=NULL（仅用本次指令）。
 _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
     # 知识库 / 任务都交给「全能助理（assistant）」——通用执行型分身。
@@ -90,11 +92,11 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是社区应用的执行分身：替主人在社区发现内容、发帖与互动、经营关注关系；'
         '只调用社区相关工具，对客可见内容须得体专业，零 fake，失败如实报错。',
     ),
-    # 网页发布用专属「编程开发专家（developer，知行）」分身（hub 模板 developer，builtin_key=developer）——
-    # 建站是开发专长，不归内容运营。分身把主人的想法一条龙做成网页并真正发布上线（设计→开发→本地预览→
-    # 打包成单文件→hasn.publish.* 发布）。业务提示词与 daemon publish/dispatch.rs::PUBLISH_BUSINESS_PROMPT 同义。
+    # 网页发布归口「创作专家（content_operator）」分身（2026-07-12 内置收敛为 3：developer 退为可选模板，
+    # publish 改由 content_operator 承接）。业务提示词不变——分身仍按建站全流程（设计→开发→本地预览→
+    # 打包成单文件→hasn.publish.* 发布），与 daemon publish/dispatch.rs::PUBLISH_BUSINESS_PROMPT 同义。
     'publish': (
-        'developer',
+        'content_operator',
         '你是网页发布应用的编程开发专家分身：把主人的想法一条龙做成可访问的线上网页。先澄清网站类型/受众/'
         '核心目标/风格（关键信息缺失且有歧义才用 hasn.session.ask 问，能自主定的别问）；再做视觉设计 → '
         '前端开发（简单页手写单文件 index.html / 复杂页用 React+Tailwind+shadcn 脚手架）→ 本地预览自检'
@@ -104,12 +106,12 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '方案（改客户端动态 / 只交付代码由主人自部署），绝不假装把带数据库的动态站发布成功。真写代码、真打包、'
         '真调工具拿真 URL，零 fake，失败如实报错。',
     ),
-    # 获客用专属「销售顾问（sales_advisor）」分身——找线索、做跟进、促成交是独立专长。
-    # 请求线索 = 找→分析→决策闭环（doc10）：用 search_companies/lookup_company 读穿工具找线索（自动进主人
-    # 线索池，无需分辨来源），分析后按主人需求决定加为客户（lead.qualify）/ 找商机（opportunity.create）/
-    # 向主人提问（hasn.session.ask），不确定就问不臆造。
+    # 获客归口「全能助理（assistant）」分身当商务助理（2026-07-12 内置收敛为 3：sales_advisor 退为可选模板，
+    # growth 改由 assistant 承接）。业务提示词不变——请求线索 = 找→分析→决策闭环（doc10）：用
+    # search_companies/lookup_company 读穿工具找线索（自动进主人线索池，无需分辨来源），分析后按主人需求
+    # 决定加为客户（lead.qualify）/ 找商机（opportunity.create）/ 向主人提问（hasn.session.ask）。
     'growth': (
-        'sales_advisor',
+        'assistant',
         '你是获客应用的执行分身（销售顾问）：替主人找线索、做分析、按主人需求决策下一步，沉淀可复用的获客打法。'
         '请求线索时：先用 hasn.growth.search_companies / lookup_company 找线索（结果自动进主人线索池，你无需分辨'
         '线索是查池命中还是新查来的），再结合主人画像分析哪些值得跟；然后按主人的需求决定——加为客户'
@@ -121,10 +123,10 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '你是演示文稿应用的执行分身：把主人的诉求做成结构清晰、视觉专业的演示文稿，'
         '只调用 hasn.deck.* 工具就地生成与精修；产出对客可用的成品，零 fake，失败如实报错。',
     ),
-    # 设计系统归口「设计专家（designer）」分身（2026-07-03 一类应用一模板：designsystem_expert 折叠进 designer）。
-    # 模板同 design 共用 designer（builtin_key=designer），但工作会话提示词按应用区分——本条保留设计系统专属提示词。
+    # 设计系统归口「创作专家（content_operator）」分身（2026-07-12 内置收敛为 3：designer 退为可选模板，
+    # designsystem/design 均改由 content_operator 承接）。工作会话提示词按应用区分——本条保留设计系统专属提示词。
     'designsystem': (
-        'designer',
+        'content_operator',
         '你是设计系统应用的执行分身：产出渲染目标无关的 token 契约 + 组件库，下游一律 var(--token) 消费；'
         '只调用 hasn.designsystem.* 工具，零 fake，失败如实报错。',
     ),
@@ -170,18 +172,18 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '需要分享才用 hasn.imagelab.share 上云发好友/群。文案/配色/水印文字等创意与审美判断摊给主人定、不擅自拍板。'
         '真实引擎本地处理、产物本地优先不自动上云，零 fake，失败如实报错。',
     ),
-    # 会议副驾用专属「会议副驾」分身（hub 模板 meeting-copilot，builtin_key=meeting_copilot），
-    # 非 content_operator——会议实时副驾是独立专长。
+    # 会议副驾归口「全能助理（assistant）」分身（2026-07-12 内置收敛为 3：meeting_copilot 退为可选模板，
+    # copilot 改由 assistant 承接）。业务提示词不变——分身仍按会议实时副驾方式工作。
     'copilot': (
-        'meeting_copilot',
+        'assistant',
         '你是会议副驾的执行分身：边听会议/通话的双方对话，边给关键要点、可追问的问题、待办与易错点；'
         '克制不刷屏、宁缺毋滥。会后按结构化纪要方法产出纪要落产物。只在本工作会话内工作，'
         '听不清就如实标注，零 fake、失败如实报错。',
     ),
-    # 规划与目标管理用专属「私人参谋长」分身（hub 模板 planner，builtin_key=planner，PLAN-P4 落地）。
-    # 一个分身既当参谋长（拆目标/排计划/简报复盘）又当执行秘书（捕获/排期/委托）。
+    # 规划与目标管理归口「全能助理（assistant）」分身（2026-07-12 内置收敛为 3：planner 退为可选模板，
+    # plan 改由 assistant 承接）。业务提示词不变——分身既当参谋长（拆目标/排计划/简报复盘）又当执行秘书（捕获/排期/委托）。
     'plan': (
-        'planner',
+        'assistant',
         '你是主人的私人参谋长 + 执行秘书：帮主人把模糊想法收敛成目标/关键结果，拆成可执行的计划与待办，'
         '合理排期到日历，每日给简报、定期做复盘；只调用 hasn.plan.* 工具就地管理主人的规划数据，'
         '尊重主人的最终决定权，零 fake、失败如实报错。',
@@ -212,11 +214,11 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '流水线推进、迭代精修；提交渲染/出片、导出成片、分享发布等花算力或外发的动作须经主人审批。'
         '所有成片来自引擎真实渲染、绝不伪造产物（零 fake），取不到/跑不通就如实报错，尊重主人最终决定权。',
     ),
-    # 矢量设计（source OpenPencil，模块 14 doc27）用专属「设计师（designer）」分身（hub 模板 designer，
-    # builtin_key=designer，OP-P5 落地）——矢量/UI 设计是独立专长（区别于 content_operator 的内容运营）。
+    # 矢量设计（source OpenPencil，模块 14 doc27）归口「创作专家（content_operator）」分身（2026-07-12
+    # 内置收敛为 3：designer 退为可选模板，design/designsystem 均改由 content_operator 承接）。
     # 业务提示词单一事实源在 manifest.DESIGN_BUSINESS_PROMPT（教 open_document→分层出图→export 登记产物→定稿摊主人）。
     'design': (
-        'designer',
+        'content_operator',
         DESIGN_BUSINESS_PROMPT,
     ),
 }
