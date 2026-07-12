@@ -155,8 +155,9 @@ class ReleaseService:
             )
             release.is_latest = True
 
+        # 写路由走 CurrentSessionTransaction（外层 begin() 自动提交），这里只 flush，
+        # 绝不 db.commit()——显式提交会关闭外层事务，后续 get_detail 读会炸「closed transaction」。
         await db.flush()
-        await db.commit()
         return await self.get_detail(db, release.id)
 
     async def ci_callback(self, db: AsyncSession, req: CiCallbackRequest) -> ReleaseDetail:
@@ -166,7 +167,7 @@ class ReleaseService:
             await self._set_build_status(
                 db, req.build_id, status='success', version=req.version, run_id=req.github_run_id
             )
-            await db.commit()
+            await db.flush()  # 同上：外层事务自动提交，这里只 flush
         return detail
 
     async def ci_upload_asset(
@@ -346,7 +347,7 @@ class ReleaseService:
             release.status = req.status
             if req.status == 'deprecated' and release.is_latest:
                 release.is_latest = False  # 下线即让出最新指针
-        await db.commit()
+        await db.flush()  # 外层事务自动提交，这里只 flush
         return await self.get_detail(db, pk)
 
     async def set_latest(self, db: AsyncSession, pk: int, channel: str = 'stable') -> ReleaseDetail:
@@ -360,7 +361,7 @@ class ReleaseService:
         release.is_latest = True
         release.status = 'published'
         release.published_time = release.published_time or timezone.now()
-        await db.commit()
+        await db.flush()  # 外层事务自动提交，这里只 flush
         return await self.get_detail(db, pk)
 
     async def delete(self, db: AsyncSession, pk: int) -> None:
@@ -369,7 +370,7 @@ class ReleaseService:
             raise errors.NotFoundError(msg='版本不存在')
         # release_asset 经 FK ON DELETE CASCADE 随之清理
         await db.execute(delete(AppRelease).where(AppRelease.id == pk))
-        await db.commit()
+        await db.flush()  # 外层事务自动提交，这里只 flush
 
     # --------- CI 构建任务 ---------
 
@@ -398,7 +399,7 @@ class ReleaseService:
         workflow = (settings.RELEASE_GITHUB_WORKFLOW or '').strip()
         if not (token and repo and workflow):
             build.error_message = '未配置 RELEASE_GITHUB_TOKEN/REPO/WORKFLOW，已排队但未触发 GitHub 构建'
-            await db.commit()
+            await db.flush()  # 外层事务自动提交，这里只 flush
             return BuildDetail.model_validate(build)
 
         url = f'https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches'
@@ -422,7 +423,7 @@ class ReleaseService:
         except Exception as exc:  # noqa: BLE001
             build.status = 'failed'
             build.error_message = f'GitHub dispatch 异常: {exc}'
-        await db.commit()
+        await db.flush()  # 外层事务自动提交，这里只 flush
         return BuildDetail.model_validate(build)
 
     async def list_builds(self, db: AsyncSession, *, limit: int = 50) -> list[BuildDetail]:
