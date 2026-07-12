@@ -130,15 +130,15 @@ async def reconcile_builtin_agents(
         if key in existing_keys:
             continue  # 已建，跳过（不 clobber 用户改名/人设）
 
-        name_pool = _split_csv(tpl.name_pool)
-        base_name = name_pool[0] if name_pool else (tpl.name or key)
         try:
             from backend.app.hasn.service.hasn_agents_service import agent_profile_service
             from backend.app.hasn.service.hasn_auth import register_hasn_agent
 
             version = await _latest_template_version(db, tpl.template_id)
+            # display_name 现为 `{主人昵称}的{专家名称}`（如「小智的内容运营官」），专家名取 tpl.name；
+            # 主人未设昵称时先以纯专家名占位，设昵称后由 refresh_seeded_agent_display_names 刷新。
             display_name = await agent_profile_service.gateway.resolve_default_agent_display_name(
-                db, base=base_name, owner_nickname=owner_nickname, owner_id=owner_id
+                db, profession=tpl.name or None, owner_nickname=owner_nickname
             )
             await register_hasn_agent(
                 db=db,

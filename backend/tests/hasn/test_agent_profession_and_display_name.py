@@ -117,45 +117,58 @@ async def test_resolve_unique_display_name_returns_desired_when_free(monkeypatch
     assert resolved == '明远'
 
 
+def test_compute_default_agent_display_name_pure() -> None:
+    """纯函数：昵称有效 → `{昵称}的{专家名}`；昵称为掩码/空 → 纯专家名占位；专家名缺 → 兜底。"""
+    from backend.app.hasn.service.hasn_agents_service import compute_default_agent_display_name
+
+    assert compute_default_agent_display_name(owner_nickname='小智', profession='全能助理') == '小智的全能助理'
+    # 昵称仍是手机号掩码 → 退化为纯专家名占位，绝不烙掩码（issue③）
+    assert compute_default_agent_display_name(owner_nickname='186****2019', profession='全能助理') == '全能助理'
+    # 昵称为空 → 纯专家名占位
+    assert compute_default_agent_display_name(owner_nickname='', profession='全能助理') == '全能助理'
+    # 专家名缺失 → 兜底「AI 分身」
+    assert compute_default_agent_display_name(owner_nickname='小智', profession=None) == '小智的AI 分身'
+
+
 @pytest.mark.asyncio
-async def test_default_agent_name_returns_base_when_free(monkeypatch) -> None:
-    """默认分身基名（星诺）全局未占用 → 原样返回，不加主人后缀。"""
+async def test_default_agent_name_uses_nickname_and_profession_when_free(monkeypatch) -> None:
+    """昵称有效且未撞名 → `{主人昵称}的{专家名称}`（小智的全能助理）（issue②）。"""
     _patch_uniqueness(monkeypatch, taken=set())
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, base='星诺', owner_nickname='福仔', owner_id='h_owner_1'
+        db=None, profession='全能助理', owner_nickname='小智'
     )
-    assert resolved == '星诺'
+    assert resolved == '小智的全能助理'
 
 
 @pytest.mark.asyncio
-async def test_default_agent_name_derives_from_owner_nickname_on_collision(monkeypatch) -> None:
-    """基名被占用 → 用主人昵称派生（星诺·福仔），而非数字尾巴。"""
-    _patch_uniqueness(monkeypatch, taken={'星诺'})
+async def test_default_agent_name_numbers_on_collision(monkeypatch) -> None:
+    """`{昵称}的{专家名}` 已被占（同名两用户）→ 顺延数字后缀。"""
+    _patch_uniqueness(monkeypatch, taken={'小智的全能助理'})
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, base='星诺', owner_nickname='福仔', owner_id='h_owner_1'
+        db=None, profession='全能助理', owner_nickname='小智'
     )
-    assert resolved == '星诺·福仔'
+    assert resolved == '小智的全能助理2'
 
 
 @pytest.mark.asyncio
-async def test_default_agent_name_numbers_when_owner_nickname_also_taken(monkeypatch) -> None:
-    """基名 + 主人昵称派生都被占 → 在派生名后顺延数字（同主人昵称的两个用户）。"""
-    _patch_uniqueness(monkeypatch, taken={'星诺', '星诺·福仔'})
+async def test_default_agent_name_placeholder_without_nickname(monkeypatch) -> None:
+    """主人未设昵称（手机号掩码/空）→ 纯专家名占位，绝不烙手机号掩码（issue③）。"""
+    _patch_uniqueness(monkeypatch, taken=set())
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, base='星诺', owner_nickname='福仔', owner_id='h_owner_1'
+        db=None, profession='全能助理', owner_nickname='186****2019'
     )
-    assert resolved == '星诺·福仔2'
+    assert resolved == '全能助理'
 
 
 @pytest.mark.asyncio
-async def test_default_agent_name_falls_back_to_owner_fragment_without_nickname(monkeypatch) -> None:
-    """基名被占且主人无昵称 → 用 owner_id 片段兜底（星诺·xyz789）。"""
-    _patch_uniqueness(monkeypatch, taken={'星诺'})
+async def test_default_agent_name_placeholder_numbers_on_collision(monkeypatch) -> None:
+    """并发新用户占位撞名（专家名占位被占）→ 顺延数字后缀，设昵称后再自愈刷新。"""
+    _patch_uniqueness(monkeypatch, taken={'全能助理'})
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, base='星诺', owner_nickname='', owner_id='h_owner_xyz789'
+        db=None, profession='全能助理', owner_nickname=''
     )
-    assert resolved == '星诺·xyz789'
+    assert resolved == '全能助理2'

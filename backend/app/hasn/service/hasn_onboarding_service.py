@@ -256,7 +256,8 @@ class SqlAlchemyOnboardingGateway:
         #
         # 字段映射（2026-06-15 修正，原先把 tpl.name 错当 display_name、漏了 profession/avatar、
         # skills 形态错误）：
-        #   - display_name ← name_pool 首位（如「星诺」）；全局唯一化见下
+        #   - display_name ← `{主人昵称}的{专家名称}`（如「小智的全能助理」）；主人未设昵称时退化为
+        #                     纯专家名占位（全能助理），设昵称后自愈刷新；全局唯一化见下（issue②③）
         #   - profession   ← tpl.name（专家头衔，如「全能助理」）
         #   - avatar       ← tpl.icon_url
         #   - skills       ← list[str]（_normalize_skill_ids 兼容形态；原 {'enabled': [...]} 会被
@@ -265,7 +266,6 @@ class SqlAlchemyOnboardingGateway:
         from backend.app.hasn.service.hasn_agents_service import agent_profile_service
 
         tpl = await marketplace_template_dao.get_by_id(db, DEFAULT_AGENT_TEMPLATE_ID)
-        base_name = DEFAULT_AGENT_DISPLAY_NAME
         description: str | None = DEFAULT_AGENT_DESCRIPTION
         profession: str | None = None
         avatar: str | None = None
@@ -278,9 +278,8 @@ class SqlAlchemyOnboardingGateway:
         skills: list[str] | None = None
         if tpl is not None:
             template_id = DEFAULT_AGENT_TEMPLATE_ID
-            # name_pool 首位是昵称基名（星诺）；tpl.name（全能助理）是专家头衔 → profession。
-            name_pool = [s.strip() for s in (tpl.name_pool or '').split(',') if s.strip()]
-            base_name = name_pool[0] if name_pool else (tpl.name or DEFAULT_AGENT_DISPLAY_NAME)
+            # tpl.name（全能助理）是专家头衔 → profession；display_name 现由 `{昵称}的{专家名}` 组成，
+            # 不再取 name_pool 基名（星诺），故 name_pool 在此不参与命名。
             profession = tpl.name or None
             avatar = tpl.icon_url or None
             description = tpl.description or DEFAULT_AGENT_DESCRIPTION
@@ -320,12 +319,13 @@ class SqlAlchemyOnboardingGateway:
             skills = None
             soul_md = agents_md = user_md = memory_md = None
         else:
-            # 新建：昵称基名（星诺）全局撞名时用「主人昵称」派生（星诺·福仔），不再每个用户都同名。
+            # 新建：按 `{主人昵称}的{专家名称}` 组名并全局唯一化；主人未设昵称（掩码/空）时先以纯专家名
+            # 占位，绝不烙手机号掩码（issue③），设昵称后由 refresh_seeded_agent_display_names 刷新。
             owner_nickname = (
                 await db.execute(sa.select(HasnHumans.nickname).where(HasnHumans.hasn_id == owner_id))
             ).scalar_one_or_none()
             display_name = await agent_profile_service.gateway.resolve_default_agent_display_name(
-                db, base=base_name, owner_nickname=owner_nickname, owner_id=owner_id
+                db, profession=profession, owner_nickname=owner_nickname
             )
 
         result = await hasn_auth_service.register_hasn_agent(
