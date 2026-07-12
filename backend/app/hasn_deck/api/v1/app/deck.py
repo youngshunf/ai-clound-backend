@@ -8,12 +8,18 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from backend.app.hasn.service.authz.deps import DependsResourceAccess
 from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
+
+# G6 §15 共享治理门（S7）：四个共享治理动作统一走 need=manager 的资源门（收进门·防漂移）。
+# 路由级门是主守卫面（S7 CI 守卫按此声明核对）；service 内 `_authorize_deck` 保留为纵深防御，
+# 二者同判 manager、语义一致（[[feedback_hasn_uri_must_use_cloud_authoritative_id]] 同源缺陷的收口）。
+_deck_manage_gate = DependsResourceAccess('deck', 'manager', 'deck_id')
 
 router = APIRouter()
 
@@ -125,7 +131,9 @@ async def update_deck(
     request: Request, db: CurrentSessionTransaction, deck_id: int, body: UpdateDeckRequest
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
-    data = await deck_service.update_deck(db, subject=Subject.human(owner_id), deck_id=deck_id, fields=body.model_dump())
+    data = await deck_service.update_deck(
+        db, subject=Subject.human(owner_id), deck_id=deck_id, fields=body.model_dump()
+    )
     return response_base.success(data=data)
 
 
@@ -139,7 +147,7 @@ async def delete_deck(request: Request, db: CurrentSessionTransaction, deck_id: 
 # ---------- 共享管理（仅 manager 权） ----------
 
 
-@router.get('/decks/{deck_id}/shares', summary='查看产物共享名单', dependencies=[DependsJwtAuth])
+@router.get('/decks/{deck_id}/shares', summary='查看产物共享名单', dependencies=[DependsJwtAuth, _deck_manage_gate])
 async def list_shares(request: Request, db: CurrentSession, deck_id: int) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     data = await deck_service.list_shares(db, subject=Subject.human(owner_id), deck_id=deck_id)
@@ -149,7 +157,7 @@ async def list_shares(request: Request, db: CurrentSession, deck_id: int) -> Res
 @router.put(
     '/decks/{deck_id}/visibility',
     summary='设置可见性（私有/企业可见/链接）',
-    dependencies=[DependsJwtAuth],
+    dependencies=[DependsJwtAuth, _deck_manage_gate],
     name='deck_app_set_visibility',
 )
 async def set_visibility(
@@ -157,12 +165,20 @@ async def set_visibility(
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     data = await deck_service.set_visibility(
-        db, subject=Subject.human(owner_id), deck_id=deck_id, visibility=body.visibility, enterprise_id=body.enterprise_id
+        db,
+        subject=Subject.human(owner_id),
+        deck_id=deck_id,
+        visibility=body.visibility,
+        enterprise_id=body.enterprise_id,
     )
     return response_base.success(data=data)
 
 
-@router.post('/decks/{deck_id}/shares', summary='添加/更新协作者（人/分身/企业）', dependencies=[DependsJwtAuth])
+@router.post(
+    '/decks/{deck_id}/shares',
+    summary='添加/更新协作者（人/分身/企业）',
+    dependencies=[DependsJwtAuth, _deck_manage_gate],
+)
 async def add_share(
     request: Request, db: CurrentSessionTransaction, deck_id: int, body: AddShareRequest
 ) -> ResponseModel:
@@ -178,7 +194,7 @@ async def add_share(
     return response_base.success(data=data)
 
 
-@router.delete('/decks/{deck_id}/shares', summary='撤销协作者', dependencies=[DependsJwtAuth])
+@router.delete('/decks/{deck_id}/shares', summary='撤销协作者', dependencies=[DependsJwtAuth, _deck_manage_gate])
 async def revoke_share(
     request: Request, db: CurrentSessionTransaction, deck_id: int, grantee_type: str, grantee_id: str
 ) -> ResponseModel:

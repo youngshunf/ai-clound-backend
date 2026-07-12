@@ -424,7 +424,8 @@ class DeckService:
         if permission not in ('viewer', 'editor', 'manager'):
             raise errors.RequestError(msg='非法权限档')
         deck = await DeckService._get_deck(db, deck_id)
-        await DeckService._authorize_deck(db, deck=deck, subject=subject, need='manager')
+        # 授权同时拿到 granter 自身有效档位，喂给授予上限不变量（doc32 §15.9 规则二·防越权提档兜底）。
+        granter_perm = await DeckService._authorize_deck(db, deck=deck, subject=subject, need='manager')
         return await resource_share_service.upsert_share(
             db,
             resource_type=_RESOURCE_TYPE,
@@ -434,6 +435,7 @@ class DeckService:
             grantee_id=grantee_id,
             permission=permission,
             granted_by=subject.hasn_id,
+            granter_permission=granter_perm,
         )
 
     @staticmethod

@@ -281,6 +281,7 @@ class ResourceShareService:
         grantee_id: str,
         permission: str,
         granted_by: str,
+        granter_permission: str | None = None,
     ) -> dict:
         """加 / 改一条授权：同 grantee 已有 active 行则改权限，否则新建。
 
@@ -289,11 +290,20 @@ class ResourceShareService:
         S3 铺开完成后启用：全部可分享类型（knowledge/knowledge_doc/deck/designsystem/studio_project/
         studio_artifact/design）的 adapter 均由 app 启动 import 路由链（→ ai_native_app_registry）注册；
         测试经 tests/conftest.py 会话级注册，故任何运行模式下合法分享都不会误伤。
+
+        doc32 §15.9 规则二·授予上限（S7）：`granter_permission` 传入时，本次授出档位不得高于授予人自身档位
+        （`rank(permission) ≤ rank(granter_permission)`，防越权提权——如被分享的 editor 不得把别人设成 manager）。
+        不传（None）= 沿旧行为不校验（owner 直授路径已由 owner=manager 自然满足，无需显式上限）。
         """
         # fail-closed：注册表无此 resource_type 的 adapter → 拒绝建行（能分享必能判·doc33 S2-5）。
         if resource_type not in resource_kind_registry.registered_types():
             raise errors.ServerError(
                 msg=f'资源类型 {resource_type!r} 未注册 G6 权限适配器，拒绝建立分享（能分享必能判·doc33 S2-5）'
+            )
+        # 授予上限（doc32 §15.9 规则二）：不得授出高于自身的档位。
+        if granter_permission is not None and rank(permission) > rank(granter_permission):
+            raise errors.ForbiddenError(
+                msg=f'不能授予高于自身的权限档位（自身 {granter_permission!r}，欲授 {permission!r}）'
             )
         existing = (
             await db.execute(
