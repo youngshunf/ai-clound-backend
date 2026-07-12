@@ -311,6 +311,11 @@ class HasnCloudMcpServer:
             if decision.is_hidden or decision.is_visible_deny:
                 # 非放行决策（HIDDEN / VISIBLE_DENY）统一映射为执行面错误（doc18 §3·U3）。
                 self._raise_for_blocked_decision(decision, tool_name, agent_context)
+
+            # G6 统一资源权限门（doc32 §5·doc33 S2-4）：确定性无权先拒，不进 ask 打扰主人审批。
+            # 工具声明 resource_access 即判权，判过把已判权资源经 ContextVar 送达 handler。
+            await self._enforce_resource_gate(agent_context, tool, arguments)
+
             if decision.action == ACTION_ASK:
                 # 令牌重试（doc15 §3）：先验一次性票据——带有效票（agent/tool/args_hash 匹配且
                 # jti 未用）→ 原子消费后**跳过闸门直接执行**；无票/票无效 → 云端不长挂，开一条审批
@@ -338,6 +343,9 @@ class HasnCloudMcpServer:
                             'error': 'approval_denied' if denied else 'approval_timeout',
                             'message': '主人已拒绝该操作' if denied else '审批超时：主人未在时限内确认',
                         }
+                    # cloud-pend 复判（doc32 §5.2 TOCTOU 收口）：审批可等分钟级，等待期共享可能被撤销
+                    # → 批准落回执行前重跑一次 G6（票据重试路径重进 call_tool 天然复判，不在此重跑）。
+                    await self._enforce_resource_gate(agent_context, tool, arguments)
                 # 验票通过 / 主人已批准 → 落到下面 _dispatch_by_source 真正执行（工具体只在放行这次运行）。
 
             # 按 source 分发执行
@@ -361,6 +369,42 @@ class HasnCloudMcpServer:
             raise
         else:
             return result
+        finally:
+            # G6 已判权资源随请求结束即清（doc33 S2-3/S2-4），防跨调用串味。
+            from backend.app.mcp.context import clear_authorized_resources
+
+            clear_authorized_resources()
+
+    async def _enforce_resource_gate(
+        self, agent_context: AgentContext, tool: BaseTool, arguments: dict[str, Any]
+    ) -> None:
+        """G6 统一资源权限门（doc32 §5·doc33 S2-4·MCP 直连面）：工具声明 `resource_access` 即判权。
+
+        无声明工具零开销直返。判过把 `{param → AuthorizedResource}` 经 ContextVar 送达 handler。
+        本面无现成 DB session，enforce 自开短 session（`ResourceMeta.row` 因此对 handler 是 detached
+        只读快照，doc32 §4.1）。拒绝路径（doc33 S2-4）：
+        - `NotFoundError`（不存在 / 无任何权限，存在性隐藏）→ `McpToolError(TOOL_NOT_FOUND)`；
+        - `ForbiddenError`（有权但档位不足）→ `McpToolError(RESOURCE_PERMISSION_INSUFFICIENT)`（携当前/所需档）。
+        """
+        declarations = getattr(tool, 'resource_access', None)
+        if not declarations:
+            return
+        from backend.app.hasn.service.authz import Subject, resource_gate
+        from backend.app.mcp.context import set_authorized_resources
+        from backend.common.exception import errors
+        from backend.database.db import async_db_session
+
+        subject = Subject.agent(agent_context.agent_hasn_id, agent_context.owner_hasn_id)
+        try:
+            async with async_db_session() as db:
+                authorized = await resource_gate.enforce_declaration(db, subject, declarations, arguments)
+        except errors.ForbiddenError as exc:
+            # 档位不足：msg 已含当前档 + 所需档（gate 侧构造），分身据此礼貌说明权限不足。
+            raise McpToolError(McpErrorCode.RESOURCE_PERMISSION_INSUFFICIENT, exc.msg or '对该资源权限不足') from exc
+        except errors.NotFoundError as exc:
+            # 存在性隐藏：不存在 / 无任何权限一律按「工具不存在」，不泄露资源是否存在。
+            raise McpToolError(McpErrorCode.TOOL_NOT_FOUND, exc.msg or '资源不存在') from exc
+        set_authorized_resources(authorized)
 
     async def _enforce_conversation_trust_gate(
         self, agent_context: AgentContext, tool: BaseTool, arguments: dict[str, Any]

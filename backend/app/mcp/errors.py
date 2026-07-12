@@ -36,6 +36,10 @@ class McpErrorCode(Enum):
     # ai_native `is_approval_required` 误判成待审批、错误触发换票流程）。故取下一个空位 9217，
     # 符号名与本地 hasn-mcp `TrustLevelInsufficient`（本地占 9215）对齐，结构化拒绝 shape 一致。
     TRUST_LEVEL_INSUFFICIENT = "MCP_9217"
+    # G6 统一资源权限门（doc32 §5.3 评审拍板新增）：分身对某资源实例的有效档位低于工具所需档。
+    # 载荷 shape 照抄 TRUST_LEVEL_INSUFFICIENT（文案含当前档 + 所需档 + 回绝引导，分身据此礼貌
+    # 说明权限不足）。取下一个空位 9218；与 9217 一样**不复用** 9215，避免被误判成待审批。
+    RESOURCE_PERMISSION_INSUFFICIENT = "MCP_9218"
 
     def __str__(self) -> str:
         return f"{self.value} {self.name}"

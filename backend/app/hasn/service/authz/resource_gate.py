@@ -187,7 +187,10 @@ async def require(
     meta = await adapter.load_meta(db, resource_id)
     if meta is None:
         # 行不存在/已删/id 畸形 → 直接 404，**不上溯**：父 id 只能从子行读出（doc32 §5.3 评审修订）
-        raise errors.NotFoundError(msg='资源不存在')
+        raise errors.NotFoundError(
+            msg='资源不存在',
+            data={'resource_type': resource_type, 'resource_id': resource_id, 'need': need, 'current': 'none'},
+        )
 
     cache = perm_cache if perm_cache is not None else PermissionResolutionCache()
     eff = await _effective_with_parent(
@@ -196,11 +199,13 @@ async def require(
     # 维度②域限制叠加（仅 agent + owner 自有资源）
     eff = await _apply_domain_restriction(db, adapter, subject, meta, eff)
 
+    detail = {'resource_type': resource_type, 'resource_id': resource_id, 'need': need, 'current': eff}
     if rank(eff) == 0:
         # 存在性隐藏：无权一律按不存在，不泄露资源存在（与 authorize_kb 现行、G1/G4 隐身门一致）
-        raise errors.NotFoundError(msg='资源不存在')
+        raise errors.NotFoundError(msg='资源不存在', data=detail)
     if rank(eff) < rank(need):
-        raise errors.ForbiddenError(msg='没有该操作权限')
+        # 有权但档位不足 → 403（携当前档 + 所需档，两面据 data 出 9218 文案 / deny 审计上下文）
+        raise errors.ForbiddenError(msg=f'对该资源权限不足（当前 {eff}，需要 {need}）', data=detail)
     return AuthorizedResource(meta=meta, permission=eff)
 
 

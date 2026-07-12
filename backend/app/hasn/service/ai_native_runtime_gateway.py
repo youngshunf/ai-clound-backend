@@ -241,6 +241,24 @@ class AiNativeRuntimeGateway:
         #   已批准的 ask 调用反被网关重新挂起审批。其余 app 专属闸门（启用/协作/角色/输入）照常跑。
         mcp_face = bool(getattr(request.state, 'mcp_face', False))
         capability_ticket = request.headers.get('X-Capability-Ticket') if not mcp_face else None
+
+        # G6 统一资源权限门（doc32 §5·doc33 S2-4·daemon 代理面）：拿规范化 typed 入参判，在 ask 之前
+        # （`_authorize_tool_call` 内含 mode/ask 闸）。MCP 直连面（mcp_face）已在 server.call_tool 判过、
+        # ContextVar 里 authorized 随同 task 调用链已在，跳过防双判（doc32 §5.2 嵌套拓扑）。
+        if not mcp_face:
+            resource_denied = await self._enforce_resource_gate(
+                db,
+                body=body,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                input_payload=input_payload,
+            )
+            if resource_denied is not None:
+                return resource_denied
+
         denied = await self._authorize_tool_call(
             db,
             body=body,
@@ -279,6 +297,11 @@ class AiNativeRuntimeGateway:
                 code=exc.code,
                 reason=exc.message,
             )
+        finally:
+            # G6 已判权资源在 handler（_dispatch_tool 内）消费后即清（doc33 S2-3，与 mcp/server 对称）。
+            from backend.app.mcp.context import clear_authorized_resources
+
+            clear_authorized_resources()
         audit = await self._write_audit(
             db,
             trace_id=body.trace_id,
@@ -299,6 +322,64 @@ class AiNativeRuntimeGateway:
             'result': result,
             'audit_id': audit['id'],
         }
+
+    async def _enforce_resource_gate(
+        self,
+        db: AsyncSession,
+        *,
+        body: AiNativeToolCallRequest,
+        workspace: dict[str, Any],
+        agent: AgentTokenPayload,
+        manifest: dict[str, Any],
+        capability: dict[str, Any],
+        tool: dict[str, Any],
+        input_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """G6 统一资源权限门（doc32 §5·doc33 S2-4，daemon 代理面）。
+
+        从 manifest tool 条目读 `resource_access` 声明，据 typed 入参逐条判权：
+        - 未声明 → 直接 None（无资源门约束的工具照常放行）；
+        - 判过 → `set_authorized_resources`（handler 经 ContextVar 取已判权资源的 owner key），返回 None；
+        - 403/404（有权档不足 / 不存在或无权）→ 写 deny 审计（`error_code='resource_acl_denied'`，
+          context 携 resource_type/resource_id/need/current）+ 返回 `_deny_payload`。
+        422（缺必填资源参数）/ 500（声明档非法 / adapter 未注册）等配置类异常**不吞**，如实上抛
+        （doc32 §10「运行时如实报不降级放行」），与 MCP 直连面 server.call_tool 一致。
+        """
+        declarations = tool.get('resource_access')
+        if not declarations:
+            return None
+
+        from backend.app.hasn.service.authz import Subject, resource_gate
+        from backend.app.mcp.context import set_authorized_resources
+
+        subject = Subject.agent(agent.agent_hasn_id, agent.owner_hasn_id)
+        try:
+            authorized = await resource_gate.enforce_declaration(db, subject, declarations, input_payload)
+        except (errors.ForbiddenError, errors.NotFoundError) as exc:
+            detail = exc.data if isinstance(exc.data, dict) else {}
+            audit = await self._write_audit(
+                db,
+                trace_id=body.trace_id,
+                workspace=workspace,
+                agent=agent,
+                manifest=manifest,
+                capability=capability,
+                tool=tool,
+                decision='deny',
+                error_code='resource_acl_denied',
+                context={
+                    'reason': 'resource_acl_denied',
+                    'resource_type': detail.get('resource_type'),
+                    'resource_id': detail.get('resource_id'),
+                    'need': detail.get('need'),
+                    'current': detail.get('current'),
+                },
+            )
+            return self._deny_payload(
+                body.trace_id, 'resource_acl_denied', exc.msg or '对该资源权限不足', audit_id=audit['id']
+            )
+        set_authorized_resources(authorized)
+        return None
 
     async def _authorize_tool_call(
         self,
