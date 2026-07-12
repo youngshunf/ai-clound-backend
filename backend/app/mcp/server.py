@@ -42,6 +42,7 @@ from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
 from backend.app.mcp.tools.owner import OWNER_TOOLS
 from backend.app.mcp.tools.plan import PLAN_TOOLS
 from backend.app.mcp.tools.registry import ToolRegistry
+from backend.app.mcp.tools.stock import STOCK_TOOLS
 from backend.app.mcp.tools.task import TASK_TOOLS
 from backend.app.mcp.tools.tool_call import ToolCallTool
 from backend.app.mcp.tools.tool_search import ToolSearchTool
@@ -146,6 +147,14 @@ class HasnCloudMcpServer:
         #   （owner 校验，无权/不存在同响应）。纯云端只读。
         for retrieval_tool in (*ARTIFACT_TOOLS, *ASSET_TOOLS):
             self.tool_registry.register(retrieval_tool)
+
+        # 素材站工具（分身资源检索与素材站工具设计 A-P2）：hasn.stock.search / hasn.stock.download。
+        # - search：按 hasn_stock_providers 目录聚合 failover 检索外部素材站（pexels/pixabay/coverr…），
+        #   source 可选参 enum 动态渲染 = enabled providers（TTL60s 缓存），不传 source 走默认 failover 链。
+        # - download：目录聚合白名单（enabled 行 download_domains 并集）驱动 SSRF 白名单 → 流式落私有桶
+        #   → 双登记（register_asset + hasn_artifacts.record）。不外发/不动钱 → required_scopes=[]（出厂 Allow）。
+        for stock_tool in STOCK_TOOLS:
+            self.tool_registry.register(stock_tool)
 
         # 设计系统工具（14-DS-P4）：8 个云端工具全注册。
         # - 云端权威 4（操作云端数据）：import/save/list/get（TOOLMIG-4 从本地迁来）。

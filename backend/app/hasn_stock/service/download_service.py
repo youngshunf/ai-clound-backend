@@ -1,0 +1,208 @@
+"""素材站下载落桶服务（A-P2-2）。
+
+「服务端替分身请求外站 URL」形状 → 必须白名单化（绝不做通用下载器）。五步（§4.6）：
+1. **SSRF 闸**：https + host 命中 provider 目录 `download_domains` 并集 + 解析后禁内网/环回/链路本地 IP；
+   跟随重定向**逐跳复检**。
+2. **流式下载**：大小封顶（图片 20MB / 视频 200MB）+ Content-Type 校验（image/* 或 video/*）+ 超时。
+3. `StorageService.upload` 落 owner 私有桶（access=private）。
+4. **双登记**：`register_asset`（image→kind=image，video→kind=file）→ `hasn_artifacts_service.record`
+   （kind=image|video、source_kind=external、source_tool=hasn.stock.download、meta 带 provider/license/source_url）。
+5. 出参 `{asset_uri, artifact_id, kind, width, height, size_bytes}`。
+
+范式先例：`hasn_studio/service/studio_service.py::_ensure_artifact`（上传→register_asset→登记 artifact）。
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import socket
+
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+
+from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
+from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn_stock.service.provider_store import stock_provider_store
+from backend.database.db import async_db_session
+from backend.plugin.s3.service.storage_service import StorageService
+
+# 大小封顶（字节）：图片 20MB / 视频 200MB（§4.6 步骤 2）
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_VIDEO_BYTES = 200 * 1024 * 1024
+# 重定向最多跳数（逐跳复检）
+_MAX_REDIRECTS = 5
+# 落私有桶的 category（access=private）
+_UPLOAD_CATEGORY = 'published_artifact'
+_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+_UA = 'Mozilla/5.0 (compatible; AstraStockBot/1.0)'
+
+
+class StockDownloadError(RuntimeError):
+    """下载失败（SSRF 拒绝 / 超限 / 类型不符 / 传输错误）。"""
+
+
+def _host_in_whitelist(host: str, whitelist: set[str]) -> bool:
+    """host 命中白名单：精确或子域后缀匹配（如 videos.pexels.com 命中 pexels.com）。"""
+    host = host.lower()
+    return any(host == d or host.endswith('.' + d) for d in whitelist)
+
+
+def _reject_private_ip(host: str) -> None:
+    """解析 host → IP，任一为内网/环回/链路本地/保留 → 拒绝（SSRF 防线之二）。"""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise StockDownloadError(f'stock.download: 域名解析失败 {host}') from exc
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise StockDownloadError(f'stock.download: 目标解析到非法 IP（{ip_str}），拒绝')
+
+
+def _ssrf_check(url: str, whitelist: set[str]) -> None:
+    """单个 URL 的 SSRF 复检：https + host 白名单 + 非内网 IP。"""
+    parsed = urlparse(url)
+    if parsed.scheme != 'https':
+        raise StockDownloadError('stock.download: 仅允许 https 直链')
+    host = (parsed.hostname or '').lower()
+    if not host:
+        raise StockDownloadError('stock.download: URL 无 host')
+    if not _host_in_whitelist(host, whitelist):
+        raise StockDownloadError(
+            f'stock.download: host {host} 不在素材站下载白名单内（工具只下载素材站候选，非通用下载器）'
+        )
+    _reject_private_ip(host)
+
+
+def _kind_and_cap(content_type: str) -> tuple[str, int]:
+    """按 Content-Type 判媒体类型与大小上限。非 image/video → 拒绝。"""
+    ct = (content_type or '').split(';')[0].strip().lower()
+    if ct.startswith('image/'):
+        return 'image', _MAX_IMAGE_BYTES
+    if ct.startswith('video/'):
+        return 'video', _MAX_VIDEO_BYTES
+    raise StockDownloadError(f'stock.download: 不支持的 Content-Type「{ct or "空"}」（仅 image/* 或 video/*）')
+
+
+class StockDownloadService:
+    """下载素材站资源 → owner 私有桶 → 双登记。"""
+
+    async def download(
+        self,
+        *,
+        owner_hasn_id: str,
+        agent_hasn_id: str,
+        url: str,
+        title: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """执行五步下载落桶双登记。身份由调用方（AgentContext）注入。"""
+        whitelist = await stock_provider_store.enabled_download_domains()
+        if not whitelist:
+            raise StockDownloadError('stock.download: 未配置任何素材站下载域名，无法下载')
+
+        data, content_type = await self._stream_download(url, whitelist)
+        kind_media, _cap = _kind_and_cap(content_type)  # image / video
+        provider_view = await stock_provider_store.provider_for_domain(host=(urlparse(url).hostname or ''))
+
+        filename = self._filename(url, kind_media)
+        async with async_db_session.begin() as db:
+            ref = await StorageService.upload(
+                db, data, category=_UPLOAD_CATEGORY, filename=filename, content_type=content_type
+            )
+            # register_asset：image→kind=image，video→kind=file（hasn_assets.kind 仅 image/voice/file）。
+            asset = await hasn_asset_service.register_asset(
+                db,
+                owner_hasn_id=owner_hasn_id,
+                ref=ref,
+                kind='image' if kind_media == 'image' else 'file',
+                extract_status='done',  # 外部素材不进抽取流水线
+            )
+            asset_uri = f'hasn://asset/{asset.asset_id}'
+            artifact_id = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent_hasn_id,
+                owner_hasn_id=owner_hasn_id,
+                params=RecordArtifactParam(
+                    kind=kind_media,  # artifact 层 kind=image|video（都在白名单内）
+                    title=(title or filename),
+                    asset_id=asset.asset_id,
+                    resource_uri=asset_uri,
+                    session_id=session_id,
+                    source_tool='hasn.stock.download',
+                    source_kind='external',
+                    metadata={
+                        'provider': provider_view.provider if provider_view else None,
+                        'license': provider_view.license_terms_url if provider_view else None,
+                        'source_url': url,
+                        'mime': content_type,
+                        'size_bytes': ref.size,
+                    },
+                ),
+            )
+        return {
+            'asset_uri': asset_uri,
+            'artifact_id': artifact_id,
+            'kind': kind_media,
+            'width': asset.width,
+            'height': asset.height,
+            'size_bytes': ref.size,
+        }
+
+    async def _stream_download(self, url: str, whitelist: set[str]) -> tuple[bytes, str]:
+        """手动跟随重定向（逐跳 SSRF 复检）+ 流式下载 + 大小封顶 + 类型校验。返回 (字节, content_type)。"""
+        current = url
+        async with httpx.AsyncClient(timeout=_TIMEOUT, trust_env=True, follow_redirects=False) as client:
+            for _ in range(_MAX_REDIRECTS + 1):
+                _ssrf_check(current, whitelist)  # 逐跳复检
+                async with client.stream('GET', current, headers={'User-Agent': _UA}) as resp:
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        location = resp.headers.get('location')
+                        if not location:
+                            raise StockDownloadError('stock.download: 重定向缺 Location')
+                        current = httpx.URL(current).join(location).human_repr()
+                        continue
+                    if resp.status_code >= 400:
+                        raise StockDownloadError(f'stock.download: 源站 HTTP {resp.status_code}')
+                    content_type = resp.headers.get('content-type', '')
+                    _kind, cap = _kind_and_cap(content_type)  # 先按类型定 cap（也拒非 image/video）
+                    # Content-Length 预检（有则先挡）
+                    clen = resp.headers.get('content-length')
+                    if clen and clen.isdigit() and int(clen) > cap:
+                        raise StockDownloadError(f'stock.download: 文件超限（声明 {clen} 字节 > 上限 {cap}）')
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in resp.aiter_bytes():
+                        total += len(chunk)
+                        if total > cap:
+                            raise StockDownloadError(f'stock.download: 文件超限（> {cap} 字节），已中止')
+                        chunks.append(chunk)
+                    if total == 0:
+                        raise StockDownloadError('stock.download: 下载到空文件')
+                    return b''.join(chunks), content_type
+        raise StockDownloadError(f'stock.download: 重定向超过 {_MAX_REDIRECTS} 跳')
+
+    def _filename(self, url: str, kind_media: str) -> str:
+        """从 URL 末段取文件名，缺省按媒体类型给默认后缀。"""
+        path = urlparse(url).path
+        name = path.rsplit('/', 1)[-1] if path else ''
+        if name and '.' in name:
+            return name[:120]
+        return f'stock.{"jpg" if kind_media == "image" else "mp4"}'
+
+
+stock_download_service = StockDownloadService()

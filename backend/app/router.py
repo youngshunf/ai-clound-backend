@@ -330,6 +330,14 @@ def _load_hasn_diag() -> None:
     router.include_router(hasn_diag_app)
 
 
+def _load_hasn_stock() -> None:
+    # 素材站目录（hasn_stock，A-P2，独立 PG schema=hasn_stock）：平台 admin 面 /api/v1/hasn_stock/*。
+    # 不挂 open/agent 裸 CRUD（api_key 泄密大洞）；分身经云端 MCP hasn.stock.search/download 触达。
+    from backend.app.hasn_stock.api.router import admin as hasn_stock_admin
+
+    router.include_router(hasn_stock_admin)
+
+
 def _load_hasn_release() -> None:
     # 桌面端发布与自动更新（hasn_release，独立 PG schema=hasn_release）：
     # admin（JWT+RBAC 手动上传/GitHub 构建/版本管理）+ open（官网/下载页/Tauri updater）+ ci（Bearer 回调）。
@@ -372,6 +380,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_imagelab': _load_hasn_imagelab,
     'external_mcp': _load_external_mcp,
     'hasn_diag': _load_hasn_diag,
+    'hasn_stock': _load_hasn_stock,
     'hasn_release': _load_hasn_release,
 }
 
