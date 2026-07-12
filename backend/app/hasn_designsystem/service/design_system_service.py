@@ -17,11 +17,11 @@ import json
 import logging
 import re
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, or_, select
 
+from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_designsystem.core.scenes import (
     DEFAULT_REQUIRED_SCENES,
@@ -53,23 +53,6 @@ _REVISION_CONTENT = (
     'components_manifest_json',
     'token_contract_report_json',
 )
-
-
-@dataclass(frozen=True)
-class Subject:
-    """操作主体：人或分身（分身背后总有主人）。"""
-
-    hasn_id: str
-    kind: str  # 'human' | 'agent'
-    owner_hasn_id: str  # 背后主人（human 时 == hasn_id）
-
-    @staticmethod
-    def human(hasn_id: str) -> Subject:
-        return Subject(hasn_id=hasn_id, kind='human', owner_hasn_id=hasn_id)
-
-    @staticmethod
-    def agent(agent_hasn_id: str, owner_hasn_id: str) -> Subject:
-        return Subject(hasn_id=agent_hasn_id, kind='agent', owner_hasn_id=owner_hasn_id)
 
 
 def _content_hash(payload: dict[str, Any]) -> str:

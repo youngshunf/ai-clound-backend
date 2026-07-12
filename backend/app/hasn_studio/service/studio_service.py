@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
@@ -32,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
+from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
@@ -66,23 +66,6 @@ _DEFAULT_VISIBILITY = 'private'
 _PERMISSIONS = ('viewer', 'editor', 'manager')
 # 协作者类型（与知识库一致；分享给 agent = 能力授权，该分身 hasn.studio.* 可操作此产物）。
 _GRANTEE_TYPES = ('human', 'agent', 'enterprise')
-
-
-@dataclass(frozen=True)
-class Subject:
-    """操作主体：人或分身（分身背后总有主人）。与 knowledge/deck 同构。"""
-
-    hasn_id: str
-    kind: str  # 'human' | 'agent'
-    owner_hasn_id: str  # 背后主人（human 时 == hasn_id）
-
-    @staticmethod
-    def human(hasn_id: str) -> Subject:
-        return Subject(hasn_id=hasn_id, kind='human', owner_hasn_id=hasn_id)
-
-    @staticmethod
-    def agent(agent_hasn_id: str, owner_hasn_id: str) -> Subject:
-        return Subject(hasn_id=agent_hasn_id, kind='agent', owner_hasn_id=owner_hasn_id)
 
 
 def _now() -> datetime:

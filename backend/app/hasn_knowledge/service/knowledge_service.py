@@ -15,7 +15,6 @@ from __future__ import annotations
 import mimetypes
 import uuid
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
@@ -23,6 +22,7 @@ import sqlalchemy as sa
 from sqlalchemy import func, select
 
 from backend.app.hasn.model.hasn_ai_native_app_audit import HasnAiNativeAppAudit
+from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_knowledge.model import AgentKbGrant, Document, DocumentVersion, Folder, Kb
@@ -51,23 +51,6 @@ _RESOURCE_TYPE = 'knowledge'
 # 单个文档级协作：与库级（knowledge）平行的 resource_type，resource_id = doc_id。
 # 文档级共享叠加在库级之上（取高者）；文档自身无 visibility/enterprise，故只认显式 grant。
 _RESOURCE_TYPE_DOC = 'knowledge_doc'
-
-
-@dataclass(frozen=True)
-class Subject:
-    """操作主体：人或分身（分身背后总有主人）。与 deck 同构。"""
-
-    hasn_id: str
-    kind: str  # 'human' | 'agent'
-    owner_hasn_id: str  # 背后主人（human 时 == hasn_id）
-
-    @staticmethod
-    def human(hasn_id: str) -> Subject:
-        return Subject(hasn_id=hasn_id, kind='human', owner_hasn_id=hasn_id)
-
-    @staticmethod
-    def agent(agent_hasn_id: str, owner_hasn_id: str) -> Subject:
-        return Subject(hasn_id=agent_hasn_id, kind='agent', owner_hasn_id=owner_hasn_id)
 
 
 def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None = None) -> dict[str, Any]:
