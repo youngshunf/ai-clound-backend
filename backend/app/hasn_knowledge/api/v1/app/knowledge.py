@@ -42,11 +42,17 @@ async def _resolve_owner(db: CurrentSession, request: Request) -> str:
 class CreateKbRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128, description='库名')
     description: str | None = Field(default=None, max_length=512, description='描述')
+    cover_asset_uri: str | None = Field(
+        default=None, max_length=512, description='封面资产 hasn://asset/（主人上传得到，可选）'
+    )
 
 
 class UpdateKbRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128, description='库名（空=不改）')
     description: str | None = Field(default=None, max_length=512, description='描述（空串=清空）')
+    cover_asset_uri: str | None = Field(
+        default=None, max_length=512, description='封面资产 hasn://asset/（空串=清空封面；不传=不改）'
+    )
 
 
 class CreateFolderRequest(BaseModel):
@@ -117,7 +123,9 @@ async def list_kbs(request: Request, db: CurrentSession) -> ResponseModel:
 async def create_kb(request: Request, db: CurrentSessionTransaction, body: CreateKbRequest) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     try:
-        data = await knowledge_service.create_kb(db, owner_id, name=body.name, description=body.description)
+        data = await knowledge_service.create_kb(
+            db, owner_id, name=body.name, description=body.description, cover_asset_uri=body.cover_asset_uri
+        )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
     await knowledge_service.write_ui_audit(
@@ -133,7 +141,7 @@ async def update_kb(
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_kb(db, subject=Subject.human(owner_id), kb_id=kb_id, need='manager')
     data = await knowledge_service.update_kb(
-        db, kb.owner_id, kb_id, name=body.name, description=body.description
+        db, kb.owner_id, kb_id, name=body.name, description=body.description, cover_asset_uri=body.cover_asset_uri
     )
     await knowledge_service.write_ui_audit(
         db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.update_kb',

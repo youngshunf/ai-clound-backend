@@ -15,6 +15,7 @@ CREATE TABLE "hasn_knowledge"."kb" (
   "enterprise_id"      bigint,
   "name"               varchar(128)   NOT NULL,
   "description"        varchar(512),
+  "cover_asset_uri"    varchar(512),
   "ragflow_dataset_id" varchar(64)    NOT NULL,
   "embedding_model"    varchar(128)   NOT NULL,
   "document_count"     int            NOT NULL DEFAULT 0,
@@ -35,6 +36,7 @@ COMMENT ON COLUMN "hasn_knowledge"."kb"."scope" IS '工作区语义 (personal:�
 COMMENT ON COLUMN "hasn_knowledge"."kb"."enterprise_id" IS '企业 ID（scope=enterprise 必填）';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."name" IS '库名';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."description" IS '描述';
+COMMENT ON COLUMN "hasn_knowledge"."kb"."cover_asset_uri" IS '封面资产 hasn://asset/（序列化边界换 CDN 签名 URL，不存直链）';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."ragflow_dataset_id" IS 'RAGFlow dataset 映射（唯一，派生物）';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."embedding_model" IS '向量模型（建库时固化，来自实例 config.default_embd_id）';
 COMMENT ON COLUMN "hasn_knowledge"."kb"."document_count" IS '文档数（反规范化计数，状态对账时回写）';

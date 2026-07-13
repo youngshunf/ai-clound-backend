@@ -59,6 +59,8 @@ def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None =
         'owner_id': kb.owner_id,
         'name': kb.name,
         'description': kb.description,
+        # 封面存 hasn://asset/{id}（不存 CDN 直链）；webui 渲染边界经 /api/v1/assets/signed-url 换签名 URL。
+        'cover_asset_uri': kb.cover_asset_uri,
         'scope': kb.scope,
         'enterprise_id': kb.enterprise_id,
         'visibility': kb.visibility,
@@ -460,8 +462,20 @@ class KnowledgeService:
         ).scalars()
         return [_kb_dict(kb) for kb in rows]
 
-    async def create_kb(self, db: AsyncSession, owner_id: str, *, name: str, description: str | None) -> dict[str, Any]:
-        """建库：先建 RAGFlow dataset（失败则不落 kb 行，如实报错），成功后落域行。"""
+    async def create_kb(
+        self,
+        db: AsyncSession,
+        owner_id: str,
+        *,
+        name: str,
+        description: str | None,
+        cover_asset_uri: str | None = None,
+    ) -> dict[str, Any]:
+        """建库：先建 RAGFlow dataset（失败则不落 kb 行，如实报错），成功后落域行。
+
+        cover_asset_uri：封面资产引用（hasn://asset/{id}），主人建库上传或分身建库配图得到；
+        存原始引用、不存 CDN 直链，渲染边界再换签名 URL。
+        """
         client, config = await resolve_knowledge_instance(db)
         # dataset 内部名取唯一随机串（单平台租户下避免撞名；展示名只活在域行）
         dataset = await client.create_dataset(name=f'hxkb_{uuid.uuid4().hex[:16]}', embedding_model=config.default_embd_id)
@@ -471,6 +485,7 @@ class KnowledgeService:
             enterprise_id=None,
             name=name,
             description=description,
+            cover_asset_uri=cover_asset_uri or None,
             ragflow_dataset_id=str(dataset['id']),
             embedding_model=config.default_embd_id,
             document_count=0,
@@ -489,17 +504,21 @@ class KnowledgeService:
         *,
         name: str | None,
         description: str | None,
+        cover_asset_uri: str | None = None,
     ) -> dict[str, Any]:
-        """改库名 / 描述：只动域行的展示元数据，不碰 RAGFlow dataset（内部名与索引不变）。
+        """改库名 / 描述 / 封面：只动域行的展示元数据，不碰 RAGFlow dataset（内部名与索引不变）。
 
         权限已在 caller（app 端点）用 authorize_kb(need='manager') 兜过；这里按 kb.owner_id
-        取行后原地改字段。name 传空/仅空白则不动库名（避免误清空）；description 显式传入即覆盖。
+        取行后原地改字段。name 传空/仅空白则不动库名（避免误清空）；description 显式传入即覆盖；
+        cover_asset_uri 显式传入即覆盖（空串=清空封面）。
         """
         kb = await self._get_kb(db, resource_owner_id, kb_id)
         if name is not None and name.strip():
             kb.name = name.strip()
         if description is not None:
             kb.description = description.strip() or None
+        if cover_asset_uri is not None:
+            kb.cover_asset_uri = cover_asset_uri.strip() or None
         await db.flush()
         return _kb_dict(kb)
 

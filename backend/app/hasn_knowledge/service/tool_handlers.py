@@ -181,10 +181,20 @@ async def handle_knowledge_upload_document(
 async def handle_knowledge_create_kb(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.create_kb：替主人新建知识库（库归主人 owner_hasn_id 所有；inherit 默认即可达）。"""
+    """knowledge.create_kb：替主人新建知识库（库归主人 owner_hasn_id 所有；inherit 默认即可达）。
+
+    封面为必填（manifest required）：分身建库须先配好一张封面资产（优先素材搜索 → 其次生图 → 兜底自画 SVG，
+    都落私有桶得 hasn://asset），再随建库入参 `cover_asset_uri` 一并落库；列表卡据此展示封面。
+    """
     name = str(input_payload['name']).strip()
     if not name:
         raise errors.RequestError(msg='知识库名称不能为空')
+    cover_asset_uri = str(input_payload.get('cover_asset_uri') or '').strip()
+    if not cover_asset_uri.startswith('hasn://asset/'):
+        raise errors.RequestError(
+            msg='封面为必填：请先用素材搜索/生图工具配一张图（或据主题自画 SVG）落桶，'
+            '再以 hasn://asset/{id} 作为 cover_asset_uri 传入'
+        )
     description = input_payload.get('description')
     try:
         return await knowledge_service.create_kb(
@@ -192,6 +202,37 @@ async def handle_knowledge_create_kb(
             agent.owner_hasn_id,
             name=name,
             description=str(description).strip() if description else None,
+            cover_asset_uri=cover_asset_uri,
+        )
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+
+
+async def handle_knowledge_update_kb(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.update_kb：改主人既有库的库名/描述/封面（典型：建库后补一张封面）；G6 门 manager 档判权后改。
+
+    派发建库时 daemon 会先建好一个无封面的空库交给分身，分身配好封面后经此工具 `cover_asset_uri` 回填。
+    只改传入的字段（None=不动），至少要给其一，否则空更新如实拒。
+    """
+    kb_id = int(input_payload['kb_id'])
+    owner, gate_ran = _resource_owner('kb_id', agent)
+    if not gate_ran:
+        await _assert_kb_reachable(db, agent, kb_id)
+    name = input_payload.get('name')
+    description = input_payload.get('description')
+    cover_asset_uri = input_payload.get('cover_asset_uri')
+    if name is None and description is None and cover_asset_uri is None:
+        raise errors.RequestError(msg='name / description / cover_asset_uri 至少提供其一')
+    try:
+        return await knowledge_service.update_kb(
+            db,
+            owner,
+            kb_id,
+            name=str(name).strip() if name is not None else None,
+            description=str(description) if description is not None else None,
+            cover_asset_uri=str(cover_asset_uri) if cover_asset_uri is not None else None,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc

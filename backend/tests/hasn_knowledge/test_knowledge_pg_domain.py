@@ -174,9 +174,39 @@ async def test_update_kb_name_and_description(session) -> None:
     assert out2['name'] == '新库名'
     assert out2['description'] is None
 
+    # 封面：显式传入即覆盖（存 hasn://asset/ 引用）；不传（None）则不动；空串清空
+    out3 = await knowledge_service.update_kb(
+        session, owner, kb.id, name=None, description=None, cover_asset_uri='hasn://asset/cover_abc'
+    )
+    assert out3['cover_asset_uri'] == 'hasn://asset/cover_abc'
+    out4 = await knowledge_service.update_kb(session, owner, kb.id, name=None, description=None)
+    assert out4['cover_asset_uri'] == 'hasn://asset/cover_abc'  # None=不动，封面保持
+    out5 = await knowledge_service.update_kb(session, owner, kb.id, name=None, description=None, cover_asset_uri='')
+    assert out5['cover_asset_uri'] is None  # 空串=清空封面
+
     # 别的 owner 改不到（按不存在处理）
     with pytest.raises(errors.NotFoundError):
         await knowledge_service.update_kb(session, f'h_other_{tag}', kb.id, name='越权', description=None)
+
+
+async def test_agent_update_kb_covers_and_empty_rejected(session) -> None:
+    """分身 update_kb handler：可达库可补封面（建库后补图典型场景）；空更新如实拒。"""
+    tag = uuid.uuid4().hex[:8]
+    owner = f'h_test_{tag}'
+    kb = _kb_row(owner, tag)
+    session.add(kb)
+    await session.flush()
+
+    # 无 grant 行 = inherit（分身默认可达主人全部库）
+    a = _agent(owner, f'agent_{tag}')
+    out = await tool_handlers.handle_knowledge_update_kb(
+        session, a, {'kb_id': kb.id, 'cover_asset_uri': 'hasn://asset/kb_cover_1'}
+    )
+    assert out['cover_asset_uri'] == 'hasn://asset/kb_cover_1'
+
+    # 空更新（三字段都不给）如实拒
+    with pytest.raises(errors.RequestError):
+        await tool_handlers.handle_knowledge_update_kb(session, a, {'kb_id': kb.id})
 
 
 async def test_native_version_bookkeeping_without_engine(session) -> None:

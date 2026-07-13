@@ -20,6 +20,9 @@ class Kb(KnowledgeBase):
     visibility: Mapped[str] = mapped_column(sa.String(16), default='private', comment='可见面 (private:私有:gray/enterprise:企业可见:blue/link:链接:cyan)')
     name: Mapped[str] = mapped_column(sa.String(128), default='', comment='库名')
     description: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='描述')
+    cover_asset_uri: Mapped[str | None] = mapped_column(
+        sa.String(512), default=None, comment='封面资产 hasn://asset/（序列化边界换 CDN 签名 URL，不存直链）'
+    )
     ragflow_dataset_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='RAGFlow dataset 映射（唯一，派生物）')
     embedding_model: Mapped[str] = mapped_column(sa.String(128), default='', comment='向量模型（建库时固化，来自实例 config.default_embd_id）')
     document_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='文档数（反规范化计数，状态对账时回写）')

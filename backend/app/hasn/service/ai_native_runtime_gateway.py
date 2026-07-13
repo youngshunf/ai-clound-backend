@@ -639,6 +639,7 @@ class AiNativeRuntimeGateway:
             'knowledge.search': knowledge_handlers.handle_knowledge_search,
             'knowledge.list_datasets': knowledge_handlers.handle_knowledge_list_datasets,
             'knowledge.create_kb': knowledge_handlers.handle_knowledge_create_kb,
+            'knowledge.update_kb': knowledge_handlers.handle_knowledge_update_kb,
             'knowledge.delete_kb': knowledge_handlers.handle_knowledge_delete_kb,
             'knowledge.fetch_doc': knowledge_handlers.handle_knowledge_fetch_doc,
             'knowledge.list_documents': knowledge_handlers.handle_knowledge_list_documents,

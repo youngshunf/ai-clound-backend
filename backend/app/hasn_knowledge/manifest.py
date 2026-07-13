@@ -137,15 +137,46 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _cap(
             name='create_kb',
             title='新建知识库',
-            description='替主人新建一个知识库（库归主人所有；返回 kb_id，可随即向其上传/写文档）',
+            description=(
+                '替主人新建一个知识库（库归主人所有；返回 kb_id，可随即向其上传/写文档）。'
+                'cover_asset_uri 为必填封面：优先用素材搜索工具(hasn.stock.search/download)配图，'
+                '其次生图工具(hasn.image.generate)，或据库主题自画一张 SVG，上传得 hasn://asset/ 后传入'
+            ),
             scopes=['knowledge:write'],
             properties={
                 'name': {'type': 'string', 'minLength': 1, 'maxLength': 100},
                 'description': {'type': ['string', 'null'], 'maxLength': 500},
+                'cover_asset_uri': {
+                    'type': 'string',
+                    'pattern': '^hasn://asset/',
+                    'description': '封面资产 hasn://asset/（必填；优先素材搜索配图→生图→自画SVG）',
+                },
             },
-            required=['name'],
+            required=['name', 'cover_asset_uri'],
             risk_level='medium',
             page_rank=9,
+            tags=['knowledge', 'kb', 'write'],
+        ),
+        _cap(
+            name='update_kb',
+            title='修改知识库',
+            description=(
+                '改主人某个知识库的库名 / 描述 / 封面（不动库内文档与索引）。'
+                '常用于建库后补一张封面：先用素材搜索/生图/自画 SVG 得 hasn://asset/，再传 cover_asset_uri'
+            ),
+            scopes=['knowledge:write'],
+            properties={
+                'kb_id': {'type': 'integer'},
+                'name': {'type': ['string', 'null'], 'minLength': 1, 'maxLength': 100},
+                'description': {'type': ['string', 'null'], 'maxLength': 500},
+                'cover_asset_uri': {
+                    'type': ['string', 'null'],
+                    'description': '封面资产 hasn://asset/（空串=清空封面；省略=不改）',
+                },
+            },
+            required=['kb_id'],
+            risk_level='medium',
+            page_rank=10,
             tags=['knowledge', 'kb', 'write'],
         ),
         _cap(
@@ -306,6 +337,14 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _tool(name='search', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='list_datasets', scopes=['knowledge:read'], risk_level='low', idempotent=True),
         _tool(name='create_kb', scopes=['knowledge:write'], risk_level='medium', idempotent=False),
+        # update_kb 改既有库的库名/描述/封面（如建库后补封面）；门按 kb_id manager 档判权（与 delete_kb/owner 更新一致）。
+        _tool(
+            name='update_kb',
+            scopes=['knowledge:write'],
+            risk_level='medium',
+            idempotent=False,
+            resource_access=[{'param': 'kb_id', 'type': 'knowledge', 'need': 'manager'}],
+        ),
         _tool(
             name='delete_kb',
             scopes=['knowledge:write'],
