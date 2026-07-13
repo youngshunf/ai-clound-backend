@@ -111,7 +111,11 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _cap(
             name='search',
             title='检索知识库',
-            description='检索主人可见知识库的资料（返回命中片段与来源）',
+            description=(
+                '检索主人可见知识库的资料，返回命中片段与来源。每个片段自带 document_id + document_uri'
+                '（hasn://knowledge/documents/{id}）：片段只是索引摘要、常被截断，若不足以准确作答，'
+                '据此调 fetch_doc 拉全文，别靠反复检索凑答案。'
+            ),
             scopes=['knowledge:read'],
             properties={
                 'query': {'type': 'string', 'minLength': 1},
@@ -194,7 +198,11 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _cap(
             name='fetch_doc',
             title='读取文档',
-            description='读取知识库文档解析后的文本内容（原生文档返回正文，文件返回分块文本）',
+            description=(
+                '读取知识库文档解析后的完整文本（原生文档返回正文，文件返回分块文本）。'
+                'doc_id 来自 search 片段的 document_id / 深链 hasn://knowledge/documents/{id}。'
+                '需要完整、准确的上下文时用它取全文——这不费额外检索，别为省 token 只用片段猜答案。'
+            ),
             scopes=['knowledge:read'],
             properties={'doc_id': {'type': 'integer'}},
             required=['doc_id'],
