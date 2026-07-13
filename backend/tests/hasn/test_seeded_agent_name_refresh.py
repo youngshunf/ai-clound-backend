@@ -30,6 +30,7 @@ from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.hasn_agents_service import (
     agent_profile_service,
+    compute_memory_md_identity_refresh,
     compute_seeded_name_refresh,
     compute_user_md_owner_refresh,
 )
@@ -102,7 +103,9 @@ def test_refresh_new_format_from_uniquified_placeholder() -> None:
 def test_refresh_new_format_rewrites_previous_nickname() -> None:
     """新格式 `{旧昵称}的{专家名}` + 主人改名 → 刷成 `{新昵称}的{专家名}`。"""
     assert (
-        compute_seeded_name_refresh('小福的全能助理', profession='全能助理', new_nickname='福仔', previous_nickname='小福')
+        compute_seeded_name_refresh(
+            '小福的全能助理', profession='全能助理', new_nickname='福仔', previous_nickname='小福'
+        )
         == '福仔的全能助理'
     )
 
@@ -110,7 +113,9 @@ def test_refresh_new_format_rewrites_previous_nickname() -> None:
 def test_refresh_migrates_legacy_dot_form_to_new_format() -> None:
     """遗留 `{基名}·{手机号掩码}` 存量分身 + 有 profession → 迁移到新格式 `{昵称}的{专家名}`（issue②统一）。"""
     assert (
-        compute_seeded_name_refresh('星创·186****2019', profession='内容运营官', new_nickname='杨大宝', previous_nickname=None)
+        compute_seeded_name_refresh(
+            '星创·186****2019', profession='内容运营官', new_nickname='杨大宝', previous_nickname=None
+        )
         == '杨大宝的内容运营官'
     )
 
@@ -118,14 +123,18 @@ def test_refresh_migrates_legacy_dot_form_to_new_format() -> None:
 def test_refresh_new_format_skips_user_named() -> None:
     """含专家名但主人标识片段是用户手取（我的全能助理）→ 不动，绝不 clobber。"""
     assert (
-        compute_seeded_name_refresh('我的全能助理', profession='全能助理', new_nickname='小智', previous_nickname=None) is None
+        compute_seeded_name_refresh('我的全能助理', profession='全能助理', new_nickname='小智', previous_nickname=None)
+        is None
     )
 
 
 def test_refresh_new_format_noop_when_already_target() -> None:
     """已是目标名 `{昵称}的{专家名}` → 返回 None（避免无谓 churn）。"""
     assert (
-        compute_seeded_name_refresh('小智的全能助理', profession='全能助理', new_nickname='小智', previous_nickname=None) is None
+        compute_seeded_name_refresh(
+            '小智的全能助理', profession='全能助理', new_nickname='小智', previous_nickname=None
+        )
+        is None
     )
 
 
@@ -187,6 +196,138 @@ def test_user_md_refresh_noop_on_empty_or_already_target() -> None:
     """空 user_md / 称呼行已是新昵称 → 返回 None（避免无谓 churn）。"""
     assert compute_user_md_owner_refresh(None, new_nickname='杨大宝', previous_nickname=None) is None
     assert compute_user_md_owner_refresh('称呼: 杨大宝', new_nickname='杨大宝', previous_nickname=None) is None
+
+
+# ─────────── MEMORY.md（分身笔记）首行身份行刷新（主人档案已刷新但分身笔记没刷的 bug） ───────────
+
+# 模拟建档渲染后的 MEMORY.md（hub templates/MEMORY.md 把 {{display_name}}/{{owner_nickname}} 渲染成当时值）。
+# 首行是身份行，§ 之后是不含身份信息的原则/协作方式条目（应原样保留）。
+_MEMORY_MD_SEEDED = (
+    '我是 用户8368的全能助理，用户8368 在唤星（Astra）的 AI 分身，通过记忆工具读写这份长期记忆。\n'
+    '§\n记录原则: 只记可长期复用的事实、约定与偏好。\n§\n协作方式: 重要结论及时留档。'
+)
+
+
+def test_memory_md_refresh_rewrites_both_segments() -> None:
+    """身份行同时烙进旧分身名 + 旧主人昵称 → 两段都刷成当前值（本次 bug 核心）。"""
+    out = compute_memory_md_identity_refresh(
+        _MEMORY_MD_SEEDED,
+        profession='全能助理',
+        current_display_name='杨大宝宝的全能助理',
+        new_nickname='杨大宝宝',
+        previous_nickname='用户8368',
+    )
+    assert out is not None
+    assert out.startswith('我是 杨大宝宝的全能助理，杨大宝宝 在唤星（Astra）的 AI 分身')
+    assert '用户8368' not in out
+    # § 之后的原则/协作方式条目原样保留（绝不动身份行以外的记忆正文）。
+    assert '记录原则: 只记可长期复用的事实、约定与偏好。' in out
+    assert '协作方式: 重要结论及时留档。' in out
+
+
+def test_memory_md_refresh_when_display_already_migrated() -> None:
+    """分身名列已被维度①刷新过（杨大宝宝的全能助理），但 MEMORY.md 首行仍是旧值 →
+    分身名段按「系统派生形态」识别仍能刷成当前权威名（不依赖 == 旧列值）。"""
+    out = compute_memory_md_identity_refresh(
+        _MEMORY_MD_SEEDED,
+        profession='全能助理',
+        current_display_name='杨大宝宝的全能助理',
+        new_nickname='杨大宝宝',
+        previous_nickname='用户8368',
+    )
+    assert out is not None
+    assert '我是 杨大宝宝的全能助理，杨大宝宝 在唤星' in out
+
+
+def test_memory_md_refresh_rewrites_phone_mask_owner() -> None:
+    """主人称呼段是手机号掩码（未设昵称时烙进）→ 刷成真实昵称（即使无 previous_nickname）。"""
+    memory_md = '我是 全能助理，186****2019 在唤星（Astra）的 AI 分身，通过记忆工具读写这份长期记忆。'
+    out = compute_memory_md_identity_refresh(
+        memory_md,
+        profession='全能助理',
+        current_display_name='杨大宝的全能助理',
+        new_nickname='杨大宝',
+        previous_nickname=None,
+    )
+    assert out is not None
+    assert '186****2019' not in out
+    assert '杨大宝 在唤星' in out
+    # 分身名段占位「全能助理」是系统派生形态 → 也刷成当前权威名。
+    assert '我是 杨大宝的全能助理，' in out
+
+
+def test_memory_md_refresh_only_owner_when_display_user_named() -> None:
+    """分身名段是主人手取名（非系统派生形态）→ 只刷主人称呼段、绝不 clobber 手取分身名。"""
+    memory_md = '我是 小福的贴心管家，用户8368 在唤星（Astra）的 AI 分身，通过记忆工具读写这份长期记忆。'
+    out = compute_memory_md_identity_refresh(
+        memory_md,
+        profession='全能助理',  # 专家名与手取名不符 → 分身名段不属系统派生形态
+        current_display_name='小福的贴心管家',
+        new_nickname='杨大宝宝',
+        previous_nickname='用户8368',
+    )
+    assert out is not None
+    assert out.startswith('我是 小福的贴心管家，杨大宝宝 在唤星')  # 分身名保留、称呼刷新
+
+
+def test_memory_md_refresh_full_width_and_half_width_comma() -> None:
+    """身份行用半角逗号 `,` 也能识别（模板是全角，但兜半角更稳）。"""
+    memory_md = '我是 用户8368的全能助理,用户8368 在唤星（Astra）的 AI 分身。'
+    out = compute_memory_md_identity_refresh(
+        memory_md,
+        profession='全能助理',
+        current_display_name='杨大宝宝的全能助理',
+        new_nickname='杨大宝宝',
+        previous_nickname='用户8368',
+    )
+    assert out is not None
+    assert '用户8368' not in out
+    assert '杨大宝宝的全能助理' in out
+
+
+def test_memory_md_refresh_noop_on_empty_or_already_current() -> None:
+    """空 memory_md / 身份行已是当前值 → 返回 None（避免无谓 churn）。"""
+    assert (
+        compute_memory_md_identity_refresh(
+            None,
+            profession='全能助理',
+            current_display_name='杨大宝宝的全能助理',
+            new_nickname='杨大宝宝',
+            previous_nickname='用户8368',
+        )
+        is None
+    )
+    fresh = '我是 杨大宝宝的全能助理，杨大宝宝 在唤星（Astra）的 AI 分身，通过记忆工具读写这份长期记忆。'
+    assert (
+        compute_memory_md_identity_refresh(
+            fresh,
+            profession='全能助理',
+            current_display_name='杨大宝宝的全能助理',
+            new_nickname='杨大宝宝',
+            previous_nickname='用户8368',
+        )
+        is None
+    )
+
+
+def test_memory_md_refresh_does_not_touch_body_identity_lookalike() -> None:
+    """身份行以外若正文出现相似句式，只动首个（真身份行），不误伤后续自演化正文。"""
+    memory_md = (
+        '我是 用户8368的全能助理，用户8368 在唤星（Astra）的 AI 分身。\n'
+        '§\n备注: 主人说过「我是 用户8368，用户8368 在唤星（Astra）的 AI 分身」这句是随口举例。'
+    )
+    out = compute_memory_md_identity_refresh(
+        memory_md,
+        profession='全能助理',
+        current_display_name='杨大宝宝的全能助理',
+        new_nickname='杨大宝宝',
+        previous_nickname='用户8368',
+    )
+    assert out is not None
+    # 首行身份行被刷新
+    assert out.startswith('我是 杨大宝宝的全能助理，杨大宝宝 在唤星')
+    # 正文里随口举例那句原样保留（count=1 只替换首个匹配）
+    assert '主人说过「我是 用户8368，用户8368 在唤星（Astra）的 AI 分身」这句是随口举例。' in out
 
 
 # ─────────────────────────── 真实 PG 集成测试 ───────────────────────────

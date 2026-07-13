@@ -77,7 +77,9 @@ def _is_seeded_default_display(current: str, *, profession: str, previous_nickna
     # 历史遗留 `·` 形态：基名任意，后缀 ∈ {掩码, 旧昵称} → 供存量分身迁移到新格式。
     sep = current.rfind(DEFAULT_AGENT_NAME_SEPARATOR)
     if sep > 0:
-        return _owner_token_is_seeded(current[sep + len(DEFAULT_AGENT_NAME_SEPARATOR) :], previous_nickname=previous_nickname)
+        return _owner_token_is_seeded(
+            current[sep + len(DEFAULT_AGENT_NAME_SEPARATOR) :], previous_nickname=previous_nickname
+        )
     if not profession:
         return False  # 无专家名锚 → 仅能靠 `·` 形态识别，否则不动（避免误伤手取名）
     # 新占位形态：纯专家名（主人标识片段为空），可带唯一化数字尾（全能助理 / 全能助理2）。
@@ -166,6 +168,70 @@ def compute_user_md_owner_refresh(
         return match.group(0)
 
     updated = _USER_MD_OWNER_LABEL_RE.sub(_sub, user_md)
+    return updated if changed else None
+
+
+# MEMORY.md（分身笔记）模板首行是身份行
+# `我是 {{display_name}}，{{owner_nickname}} 在唤星（Astra）的 AI 分身，通过记忆工具读写这份长期记忆。`
+# （见 huanxing-hub/templates/MEMORY.md）——同 USER.md `称呼:` 一样在建档时把 {{display_name}}/
+# {{owner_nickname}} 渲染成当时值、之后不再替换。主人改昵称 / 分身改名后这行不会自动刷新 → 分身笔记
+# 里一直是旧分身名与旧主人昵称（本次 bug：主人档案已刷成新昵称，分身笔记仍是旧的）。
+# 只匹配这一「身份行」，绝不碰身份行以外分身自演化追加的记忆正文；半/全角逗号都兜。
+_MEMORY_MD_IDENTITY_RE = re.compile(
+    r'^([ \t]*我是[ \t]+)(.+?)([，,][ \t]*)(.+?)([ \t]*在唤星（Astra）的[ \t]*AI[ \t]*分身)',
+    re.MULTILINE,
+)
+
+
+def compute_memory_md_identity_refresh(
+    memory_md: str | None,
+    *,
+    profession: str | None,
+    current_display_name: str | None,
+    new_nickname: str | None,
+    previous_nickname: str | None,
+) -> str | None:
+    """纯逻辑：把 MEMORY.md 首行身份行里被烙进的旧分身名 / 旧主人昵称刷成当前值。
+
+    身份行形如 `我是 {display_name}，{owner_nickname} 在唤星（Astra）的 AI 分身，…`，两段各自独立 gate：
+      - 分身名段：仅当属「系统派生形态」（_is_seeded_default_display，非主人手取名）时 → 刷成分身当前
+        权威 display_name（current_display_name，已由维度①刷新过），保证与分身名列一致（含唯一化尾）；
+      - 主人称呼段：仅当值 ∈ {手机号掩码, previous_nickname}（系统建档烙进）时 → 刷成 new_nickname。
+    两段都绝不 clobber 用户手改的内容，也绝不动身份行以外自演化追加的记忆正文（只替换首个匹配行）。
+    无可改进返回 None。不查 DB，抽成纯函数便于确定性单测。
+    """
+    if not memory_md:
+        return None
+    nick = (new_nickname or '').strip()
+    prev = (previous_nickname or '').strip()
+    prof = (profession or '').strip()
+    cur_disp = (current_display_name or '').strip()
+
+    changed = False
+
+    def _sub(match: 're.Match[str]') -> str:
+        nonlocal changed
+        head, disp, mid, owner, tail = (
+            match.group(1),
+            match.group(2).strip(),
+            match.group(3),
+            match.group(4).strip(),
+            match.group(5),
+        )
+        # 分身名段：系统派生形态（含烙进旧昵称/掩码/占位）→ 刷成分身当前权威 display_name。
+        if cur_disp and disp != cur_disp and _is_seeded_default_display(disp, profession=prof, previous_nickname=prev):
+            disp = cur_disp
+            changed = True
+        # 主人称呼段：系统烙进的旧值（手机号掩码 / previous_nickname）→ 刷成新昵称。
+        if nick and not PHONE_MASK_NICKNAME_RE.match(nick):
+            is_phone = bool(PHONE_MASK_NICKNAME_RE.match(owner))
+            is_prev = bool(prev) and owner == prev
+            if owner and owner != nick and (is_phone or is_prev):
+                owner = nick
+                changed = True
+        return f'{head}{disp}{mid}{owner}{tail}'
+
+    updated = _MEMORY_MD_IDENTITY_RE.sub(_sub, memory_md, count=1)
     return updated if changed else None
 
 
@@ -721,14 +787,18 @@ class HasnAgentProfileService:
         current_nickname: str | None,
         previous_nickname: str | None = None,
     ) -> list[str]:
-        """把 owner 名下分身里被烙进的旧主人昵称/手机号掩码刷新为当前真实昵称（两个维度）。
+        """把 owner 名下分身里被烙进的旧主人昵称/手机号掩码刷新为当前真实昵称（三个维度）。
 
         背景：onboarding 在登录路径建分身时主人尚未设昵称、HasnHumans.nickname 仍是手机号掩码
-        （186****2019）；主人之后改昵称没有回写分身 → 两处一直显示/称呼手机号掩码（本次 bug）：
-          1. 分身自己的 display_name：内置/默认分身名 = `{基名}·{主人昵称}`（基名如「星诺/星创」
-             全局共享必撞名 → 追加主人昵称后缀），后缀被烙进手机号。
-          2. 分身记忆里的 USER.md（user_md 列）：模板首行 `称呼: {{owner_nickname}}` 建档即渲染成
-             当时昵称（手机号掩码），之后不再替换 → 分身读 USER.md 一直按手机号掩码称呼主人。
+        （186****2019）或系统默认（用户8368）；主人之后改昵称没有回写分身 → 三处一直显示/称呼旧值
+        （本次 bug）：
+          1. 分身自己的 display_name：内置/默认分身名 = `{主人昵称}的{专家名}`（旧格式 `{基名}·{主人昵称}`），
+             主人标识片段被烙进旧昵称/掩码。
+          2. 分身记忆里的 USER.md（主人档案·user_md 列）：模板首行 `称呼: {{owner_nickname}}` 建档即渲染成
+             当时昵称，之后不再替换 → 分身读 USER.md 一直按旧昵称称呼主人。
+          3. 分身记忆里的 MEMORY.md（分身笔记·memory_md 列）：模板首行身份行
+             `我是 {{display_name}}，{{owner_nickname}} 在唤星（Astra）的 AI 分身…` 同样建档即渲染、不再刷新
+             → 分身笔记里一直是旧分身名 + 旧主人昵称（主人档案已刷新但分身笔记没刷 = 本次 bug）。
 
         本方法在两处调用以收口：
           - profile 更新（主人设/改昵称）：previous_nickname=旧昵称、current_nickname=新昵称。
@@ -736,11 +806,12 @@ class HasnAgentProfileService:
             仅修值为手机号掩码的存量坏分身。
 
         维度① display_name 只动「确属系统派生」的分身（builtin_agent_key 非空，含主脑 assistant）
-        且名字形如 `{base}·{suffix}`、suffix ∈ {手机号掩码, previous_nickname}，base 原样保留只换
-        后缀并全局唯一化（排除自身行）。维度② USER.md `称呼:` 行是 owner 维度（所有分身共享语义），
-        故对 owner 名下全部分身生效，但同样只在该行值 ∈ {手机号掩码, previous_nickname} 时替换。
-        两个维度都绝不 clobber 用户手动改的名字/称呼。任一维度改动即 bump profile_revision 并下发
-        同步事件（Runtime 据 profile_revision 变化重拉 USER.md，分身随即按新昵称称呼主人）。
+        且名字属系统派生形态、主人标识片段 ∈ {手机号掩码, previous_nickname}，全局唯一化（排除自身行）。
+        维度② USER.md `称呼:` 行、维度③ MEMORY.md 首行身份行都是 owner 维度（所有分身共享语义），故对
+        owner 名下全部分身生效，但同样只在被烙进的旧值处替换（维度③分身名段按系统派生形态识别、刷成
+        分身当前权威 display_name，主人称呼段刷成新昵称）。三个维度都绝不 clobber 用户手动改的名字/称呼，
+        也不动记忆正文。任一维度改动即 bump profile_revision 并下发同步事件（Runtime 据 profile_revision
+        变化重拉记忆文件，分身随即按新昵称称呼主人、分身笔记显示新身份）。
 
         返回被改名后的新 display_name 列表（供日志/测试断言）。
         """
@@ -795,6 +866,19 @@ class HasnAgentProfileService:
             )
             if new_user_md is not None:
                 agent.user_md = new_user_md
+                touched = True
+
+            # 维度③：MEMORY.md（分身笔记）首行身份行——把烙进的旧分身名 / 旧主人昵称刷成当前值。
+            # 用 agent.display_name（已经过维度①刷新）作分身名段权威值，保证分身笔记与分身名一致。
+            new_memory_md = compute_memory_md_identity_refresh(
+                getattr(agent, 'memory_md', None),
+                profession=getattr(agent, 'profession', None),
+                current_display_name=agent.display_name,
+                new_nickname=nick,
+                previous_nickname=prev,
+            )
+            if new_memory_md is not None:
+                agent.memory_md = new_memory_md
                 touched = True
 
             if touched:
