@@ -6,10 +6,10 @@
   computer_use:capture_screen、控制 9 → computer_use:control、启动 1 → computer_use:launch_app、
   强退 1 → computer_use:kill_app、浏览器 1 → computer_use:browser；mcp_name 全 hasn.computer.*）。
 - 出厂默认三态（= crates/hasn-mcp/src/computer/tools.rs 本地出厂态）：
-  capture/list_apps/wait/scroll 出厂 Allow（human_confirmation.required=False）；
-  capture_screen + 其余 8 个控制动作 + launch_app/kill_app/page 出厂 Ask（human_confirmation.required=True）。
-- scope 出厂 default_mode：capture=allow、capture_screen=ask、control=ask、launch_app=ask、kill_app=ask、browser=ask
-  （scroll 的工具粒度 Allow 是 scope 内例外——scope 默认仍 ask，落在工具 human_confirmation 上）。
+  capture/list_apps/wait/scroll/launch_app 出厂 Allow（human_confirmation.required=False）；
+  capture_screen + 其余 8 个控制动作 + kill_app/page 出厂 Ask（human_confirmation.required=True）。
+- scope 出厂 default_mode：capture=allow、launch_app=allow、capture_screen=ask、control=ask、kill_app=ask、browser=ask
+  （scroll 的工具粒度 Allow 是 control scope 内例外——control scope 默认仍 ask，落在工具 human_confirmation 上）。
 - scopes.py 登记六 scope（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）+ 域标签 computer_use。
 - App 形态（local_tool / 手动安装 / 内联路由 /apps/computer-use；能力型应用按需装）。
 - catalog 出厂源：sort_order=80 / default_agent_type=assistant（全能助理·非专有分身）/ 无 config_json
@@ -96,9 +96,9 @@ _ALL_SCOPES = {
 }
 
 # 出厂 Allow（human_confirmation.required=False）vs 出厂 Ask（True）：
-# scroll 仅改视口→工具粒度 Allow（scope 内例外）；capture/list_apps/wait 只读→Allow；
-# capture_screen + 其余 8 个控制动作 + launch_app/kill_app/page 均→Ask。
-_ALLOW_TOOLS = _CAPTURE_TOOLS | {'scroll'}
+# scroll 仅改视口→工具粒度 Allow（control scope 内例外）；capture/list_apps/wait 只读→Allow；
+# launch_app 后台拉起不抢焦点、非破坏（低风险）→Allow；capture_screen + 其余 8 个控制动作 + kill_app/page 均→Ask。
+_ALLOW_TOOLS = _CAPTURE_TOOLS | {'scroll', 'launch_app'}
 _ASK_TOOLS = (set(_TOOL_SCOPE) - _ALLOW_TOOLS)
 
 
@@ -176,16 +176,16 @@ def test_computer_use_scope_factory_defaults_match_local_enforcement() -> None:
     assert scope_meta(_CAPTURE_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_CAPTURE_SCREEN_SCOPE)['default_mode'] == 'ask'
     assert scope_meta(_CONTROL_SCOPE)['default_mode'] == 'ask'
-    # launch_app/kill_app/browser 均出厂 Ask（启动/强退/浏览器自动化都有副作用或破坏性）。
-    assert scope_meta(_LAUNCH_APP_SCOPE)['default_mode'] == 'ask'
+    # launch_app 低风险出厂 Allow（后台拉起、不抢焦点、非破坏）；kill_app/browser 出厂 Ask（强退破坏性/浏览器自动化）。
+    assert scope_meta(_LAUNCH_APP_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_KILL_APP_SCOPE)['default_mode'] == 'ask'
     assert scope_meta(_BROWSER_SCOPE)['default_mode'] == 'ask'
     # risk 展示：capture=low / capture_screen=medium / control=high。
     assert scope_meta(_CAPTURE_SCOPE)['risk'] == 'low'
     assert scope_meta(_CAPTURE_SCREEN_SCOPE)['risk'] == 'medium'
     assert scope_meta(_CONTROL_SCOPE)['risk'] == 'high'
-    # launch_app=medium（起进程/开窗，非破坏）/ kill_app=high（破坏性）/ browser=high。
-    assert scope_meta(_LAUNCH_APP_SCOPE)['risk'] == 'medium'
+    # launch_app=low（不抢焦点、非破坏）/ kill_app=high（破坏性）/ browser=high。
+    assert scope_meta(_LAUNCH_APP_SCOPE)['risk'] == 'low'
     assert scope_meta(_KILL_APP_SCOPE)['risk'] == 'high'
     assert scope_meta(_BROWSER_SCOPE)['risk'] == 'high'
 

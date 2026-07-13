@@ -13,8 +13,9 @@
 - `computer_use:control`（出厂 **Ask**，risk high）：一切控制动作——`click`/`double_click`/`right_click`/`type`/
   `key`/`scroll`/`drag`/`set_value`/`focus_app`。真实点击/键入到桌面、有副作用，默认审批（`scroll` 仅改视口
   不改数据，在工具粒度出厂放行，属 scope 内例外——scope 默认仍 Ask）。
-- `computer_use:launch_app`（出厂 **Ask**，risk medium）：`launch_app` 启动/打开桌面 App（可带打开目标文件/URL、
-  可开浏览器调试端口供后续自动化）。后台启动不抢焦点、非破坏，但有副作用（起进程/开窗），默认逐次审批。
+- `computer_use:launch_app`（出厂 **Allow**，risk low）：`launch_app` 启动/打开桌面 App（可带打开目标文件/URL、
+  可开浏览器调试端口供后续自动化）。后台启动不抢焦点、非破坏（低风险），出厂放行降审批疲劳；
+  黑名单 App 在 daemon 侧仍强制 Ask 兜底。
 - `computer_use:kill_app`（出厂 **Ask**，risk high）：`kill_app` 强制退出桌面 App——**破坏性**（未保存内容可能丢失），
   默认逐次审批。
 - `computer_use:browser`（出厂 **Ask**，risk high）：`page` 浏览器页面自动化——在已开浏览器里跳转/取文本/查元素/
@@ -61,11 +62,12 @@ COMPUTER_USE_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'label_zh': '启动/打开桌面 App',
         'label_en': 'Launch/open a desktop app',
         'domain': 'computer_use',
-        'risk': 'medium',
-        'default_mode': 'ask',
+        'risk': 'low',
+        # 出厂 Allow（省略 default_mode，与 capture 一致）：后台启动不抢焦点、非破坏（低风险），
+        # 黑名单 App 在 daemon 侧仍强制 Ask 兜底。
         'description': '以 Agent 身份启动/打开桌面 App（可带打开目标文件或 URL，可为浏览器开调试端口供后续页面自动化）；'
-        '后台启动不抢焦点、非破坏，但会起进程/开窗口，默认需主人确认',
-        'description_en': 'Launch/open a desktop app as the agent (optionally opening a target file or URL, or a debugging port for later browser automation); backgrounded launch does not steal focus and is non-destructive, but it starts processes and opens windows, so owner confirmation is required by default',
+        '后台启动不抢焦点、非破坏，出厂放行（黑名单 App 仍强制逐次确认）',
+        'description_en': 'Launch/open a desktop app as the agent (optionally opening a target file or URL, or a debugging port for later browser automation); backgrounded launch does not steal focus and is non-destructive, so it is allowed by default (blacklisted apps are still forced to ask on the daemon side)',
     },
     'computer_use:kill_app': {
         'label_zh': '关闭/强退桌面 App',

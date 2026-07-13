@@ -22,7 +22,7 @@ hasn-mcp（`crates/hasn-mcp/src/computer/tools.rs`，`source=Platform`/`executio
 - 控制动作（click/double_click/right_click/type/key/scroll/drag/set_value/focus_app）→ `computer_use:control`
   （出厂 Ask；`scroll` 仅改视口，工具粒度出厂 Allow，属 scope 内例外——manifest 里 scroll 的
   `human_confirmation.required=False`，其余控制动作 True）；
-- 启动/打开 App（launch_app）→ `computer_use:launch_app`（出厂 Ask，risk medium）；
+- 启动/打开 App（launch_app）→ `computer_use:launch_app`（出厂 Allow，risk low——不抢焦点、非破坏）；
 - 强退 App（kill_app）→ `computer_use:kill_app`（出厂 Ask，risk high——破坏性）；
 - 浏览器页面自动化（page）→ `computer_use:browser`（出厂 Ask，risk high）。
 
@@ -250,15 +250,15 @@ COMPUTER_USE_AI_NATIVE_MANIFEST = {
             page_rank=22,
             tags=['computer_use', 'control', 'focus_app'],
         ),
-        # —— 启动/关闭 App 与浏览器自动化（各自独立 scope，出厂 Ask）——
+        # —— 启动/关闭 App 与浏览器自动化（各自独立 scope；launch_app 低风险出厂 Allow，kill/page 出厂 Ask）——
         _cap(
             name='launch_app',
             title='启动/打开 App',
             description='启动或打开桌面 App（可带打开目标文件/URL、可为浏览器开调试端口供后续页面自动化）；'
-            '后台启动不抢焦点。',
+            '后台启动不抢焦点、非破坏，出厂放行。',
             scope=_LAUNCH_APP_SCOPE,
-            ask=True,
-            risk='medium',
+            ask=False,
+            risk='low',
             page_rank=23,
             tags=['computer_use', 'launch_app'],
         ),
