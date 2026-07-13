@@ -37,6 +37,7 @@ from .derive import (
     render_design_tokens_json,
     render_tailwind_v4_css,
 )
+from .gallery_projection import slice_gallery_scene, summarize_gallery
 from .schema import (
     TOKEN_SCHEMA,
     TokenSpec,
@@ -79,7 +80,9 @@ __all__ = [
     'render_contract_css',
     'render_design_tokens_json',
     'render_tailwind_v4_css',
+    'slice_gallery_scene',
     'spec_for',
+    'summarize_gallery',
     'validate',
     'validate_token_outputs',
 ]

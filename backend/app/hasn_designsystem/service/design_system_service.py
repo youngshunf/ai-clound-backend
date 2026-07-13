@@ -24,6 +24,10 @@ from sqlalchemy import func, or_, select
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_designsystem.core.gallery_health import assess_gallery_health
+from backend.app.hasn_designsystem.core.gallery_projection import (
+    slice_gallery_scene,
+    summarize_gallery,
+)
 from backend.app.hasn_designsystem.core.scenes import (
     DEFAULT_REQUIRED_SCENES,
     SCENE_STANDARDS,
@@ -649,6 +653,56 @@ class DesignSystemService:
         required = required_scenes_override if required_scenes_override is not None else d.required_scenes
 
         return build_scene_report(required, html, design_system_id=d.id, name=d.name)
+
+    async def get_gallery(
+        self,
+        db: AsyncSession,
+        *,
+        design_system_id: int,
+        viewer_owner_hasn_id: str,
+        enterprise_id: int | None = None,
+        scene: str | None = None,
+    ) -> dict[str, Any]:
+        """取一套设计系统的**组件画廊 HTML**（DSGET·分身按需取数入口，与 get/check_scenes 同 ACL）。
+
+        默认 ``get`` 已不回灌整包画廊（省 token）；分身要参考/编辑组件时经本入口按需取：
+        - ``scene`` 缺省 → 返回当前版本**整包** ``components_html``（+ manifest）；
+        - ``scene`` 给定且该场景有 ``<section data-ds-scene>`` 容器 → **只切该场景**（带全量 ``<style>``
+          保证自包含可渲染），``slice_applied=True``；切不动（无容器/未知场景）→ 诚实回退整包。
+
+        ``available_scenes`` 恒据**原始整包**折出（切片不影响它），让分身知道还有哪些场景可再取。
+        """
+        d = await self._get_alive(db, design_system_id)
+        await self._assert_can_read(db, d, viewer_owner_hasn_id, enterprise_id=enterprise_id)
+
+        original_html: str | None = None
+        manifest: Any = None
+        if d.current_revision_id is not None:
+            rev = await db.get(Revision, d.current_revision_id)
+            if rev is not None:
+                original_html = rev.components_html
+                manifest = rev.components_manifest_json
+
+        summary = summarize_gallery(original_html)
+        scene_id = scene.strip().lower() if isinstance(scene, str) and scene.strip() else None
+
+        out_html = original_html
+        slice_applied = False
+        if scene_id and original_html:
+            out_html, slice_applied = slice_gallery_scene(original_html, scene_id)
+
+        result: dict[str, Any] = {
+            'design_system_id': d.id,
+            'name': d.name,
+            'scene': scene_id,
+            'slice_applied': slice_applied,
+            'components_html': out_html,
+            'available_scenes': [s['id'] for s in summary['scenes']],
+        }
+        # manifest 是整包统计，只在**整包取**（未切片）时带上；按场景切片时省略（分身只要那一场景的 markup）。
+        if not slice_applied:
+            result['components_manifest_json'] = manifest
+        return result
 
     async def delete(self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str) -> None:
         d = await self._get_alive(db, design_system_id)

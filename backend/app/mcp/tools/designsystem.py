@@ -48,6 +48,9 @@ from backend.app.hasn_designsystem.core import (
     extract_components as core_extract_components,
 )
 from backend.app.hasn_designsystem.core import (
+    summarize_gallery as core_summarize_gallery,
+)
+from backend.app.hasn_designsystem.core import (
     validate as core_validate,
 )
 
@@ -169,6 +172,45 @@ def _parse_source_tokens(arguments: dict[str, Any]) -> list[CoreSourceToken]:
     if not parsed:
         raise RuntimeError("designsystem.compile_tokens: 'tokens_css' 未解析出任何 :root 自定义属性声明")
     return parsed
+
+
+# ── DSGET·get 瘦身投影（分身取数省 token）──────────────────────────────────────────
+# 默认 get 只保留「非画廊」内容字段：tokens.css（真源）+ design.md（设计说明）+ 契约报告（评分/问题）。
+# 整包画廊大头 components_html / manifest / tailwind / design_tokens_json 一律砍出默认，改按需
+# hasn.designsystem.get_gallery（可按场景取）——场景一多整包回灌会烧 token、污染上下文。
+_GET_SUMMARY_KEEP_CONTENT = ('tokens_css', 'design_md', 'token_contract_report_json')
+# current_revision 保留的非内容元字段（版本号/作者/bundle 指针等，体积小）。
+_REVISION_META_FIELDS = (
+    'id',
+    'design_system_id',
+    'rev_no',
+    'author_kind',
+    'author_id',
+    'bundle_asset_id',
+    'note',
+    'created_time',
+)
+
+
+def _project_get_to_summary(full: dict[str, Any]) -> dict[str, Any]:
+    """把 ``design_system_service.get`` 的整包结果投影成分身默认 ``get`` 的**瘦身视图**（DSGET）。
+
+    顶层设计系统 meta 全留（含 score/grade/required_scenes/preview_swatches）；``current_revision`` 只留
+    tokens.css + design.md + 契约报告 + 轻量 ``gallery_summary``（有哪些场景/各几件，**不含 HTML**），
+    砍掉整包 ``components_html`` / ``components_manifest_json`` / ``tailwind_css`` / ``design_tokens_json``。
+    分身要画廊 markup → 调 ``hasn.designsystem.get_gallery``（可按场景切片）。
+    """
+    out = {k: v for k, v in full.items() if k != 'current_revision'}
+    rev = full.get('current_revision')
+    if isinstance(rev, dict):
+        slim: dict[str, Any] = {k: rev[k] for k in _REVISION_META_FIELDS if k in rev}
+        for k in _GET_SUMMARY_KEEP_CONTENT:
+            slim[k] = rev.get(k)
+        slim['gallery_summary'] = core_summarize_gallery(rev.get('components_html'))
+        out['current_revision'] = slim
+    else:
+        out['current_revision'] = rev
+    return out
 
 
 class DesignSystemImportTool(BaseTool):
@@ -396,7 +438,11 @@ class DesignSystemListTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return '列出分身可见的设计系统（builtin∪owner∪企业∪共享）。返回 {items, total}。确定性读。'
+        return (
+            '列出分身可见的设计系统（builtin∪owner∪企业∪共享）。**只返回轻量 meta**'
+            '（id/name/slug/品类/评分/等级/预览色板/required_scenes，无正文/无画廊），省 token。'
+            '返回 {items, total}。要某套详情调 get，要组件画廊调 get_gallery。确定性读。'
+        )
 
     @property
     def input_schema(self) -> dict[str, Any]:
@@ -452,8 +498,11 @@ class DesignSystemGetTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            '取一套设计系统详情（含当前版本 tokens.css / design-tokens.json / tailwind / design.md / '
-            'components / 契约报告）。确定性读。'
+            '取一套设计系统详情（**瘦身版·省 token**）：当前版本 tokens.css（真源色板）+ design.md（设计说明）'
+            '+ 契约报告（评分/问题）+ gallery_summary（有哪些场景、各几件组件，**不含画廊 HTML**）。'
+            '⚠️ 默认**不返回组件画廊 HTML**（场景一多整包会撑爆上下文）——要参考/编辑组件画廊请调 '
+            'hasn.designsystem.get_gallery（可按场景取）。tailwind/design-tokens.json 可由 tokens.css '
+            'derive 现推。确定性读。'
         )
 
     @property
@@ -481,11 +530,80 @@ class DesignSystemGetTool(BaseTool):
         if design_system_id is None or design_system_id < 1:
             raise RuntimeError("designsystem.get: 'design_system_id' 必填且 ≥ 1")
         async with async_db_session() as db:
-            return await design_system_service.get(
+            full = await design_system_service.get(
                 db,
                 design_system_id=design_system_id,
                 viewer_owner_hasn_id=agent_context.owner_hasn_id,
                 enterprise_id=_opt_int(arguments, 'enterprise_id'),
+            )
+        # 瘦身投影：砍整包画廊，只回 tokens.css + design.md + 契约报告 + 场景摘要（DSGET·省 token）。
+        return _project_get_to_summary(full)
+
+
+class DesignSystemGetGalleryTool(BaseTool):
+    """`hasn.designsystem.get_gallery`：按需取组件画廊 HTML（可按场景切片，cloud-hosted）。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.designsystem.get_gallery'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.designsystem'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '**按需**取一套设计系统的组件画廊 HTML（get 默认已不带画廊以省 token，要参考/编辑组件才调这个）。'
+            '给 scene 只取该场景那一段画廊（带全量 <style> 保证自包含可渲染）——场景多时**优先按场景取**，别整包拉。'
+            '要**编辑整套画廊**再存（save 是整包替换）时才不带 scene 取整包 components_html。'
+            '可取场景 = brand_website/deck/poster/mobile；返回 {components_html, available_scenes, scene, slice_applied, ...}。确定性读。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            'type': 'object',
+            'properties': {
+                'design_system_id': {'type': 'integer', 'description': '设计系统 id'},
+                'scene': {
+                    'type': 'string',
+                    'description': '可选：只取该场景的画廊（brand_website/deck/poster/mobile）；'
+                    '缺省=整包（编辑整套时用）。该场景无 <section> 容器/未知场景 → 诚实回退整包',
+                },
+                'enterprise_id': {'type': 'integer', 'description': '可选：企业域'},
+            },
+            'required': ['design_system_id'],
+        }
+
+    @property
+    def required_scopes(self) -> list[str]:
+        return []
+
+    @property
+    def resource_access(self) -> list[dict[str, Any]] | None:
+        # get_gallery 的 design_system_id 必填 → viewer 判权（与 get/check_scenes 同 ACL）。
+        return _RA_DS_VIEWER
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        design_system_id = _opt_int(arguments, 'design_system_id')
+        if design_system_id is None or design_system_id < 1:
+            raise RuntimeError("designsystem.get_gallery: 'design_system_id' 必填且 ≥ 1")
+        async with async_db_session() as db:
+            return await design_system_service.get_gallery(
+                db,
+                design_system_id=design_system_id,
+                viewer_owner_hasn_id=agent_context.owner_hasn_id,
+                enterprise_id=_opt_int(arguments, 'enterprise_id'),
+                scene=_str(arguments, 'scene'),
             )
 
 
@@ -799,6 +917,8 @@ DESIGNSYSTEM_TOOLS: list[BaseTool] = [
     DesignSystemSaveTool(),
     DesignSystemListTool(),
     DesignSystemGetTool(),
+    # 组件画廊按需取（DSGET；get 默认瘦身不带画廊，分身参考/编辑组件时按需取，可按场景切片省 token）
+    DesignSystemGetGalleryTool(),
     # 组件画廊场景自查（DSGAL；读设计系统 required_scenes × 当前 HTML 实检覆盖 → 缺什么/怎么补）
     DesignSystemCheckScenesTool(),
     # 确定性纯函数（TOOLMIG：Python 移植，云端分身可用；本地 Rust 同名工具暂留待退役）
