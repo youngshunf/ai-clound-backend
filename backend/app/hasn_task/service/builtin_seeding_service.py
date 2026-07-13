@@ -56,22 +56,19 @@ def _split_csv(value: str | None) -> list[str]:
 
 async def _active_agents(db: AsyncSession, owner_id: str) -> list[HasnAgents]:
     rows = await db.execute(
-        sa.select(HasnAgents)
+        sa
+        .select(HasnAgents)
         .where(HasnAgents.owner_id == owner_id, HasnAgents.status == 'active')
         .order_by(HasnAgents.id.asc())
     )
     return list(rows.scalars().all())
 
 
-async def _resolve_primary_agent(
-    db: AsyncSession, owner_id: str, agents: list[HasnAgents]
-) -> HasnAgents | None:
+async def _resolve_primary_agent(db: AsyncSession, owner_id: str, agents: list[HasnAgents]) -> HasnAgents | None:
     """主脑：优先 workbench_pref.primary_agent_id；空则回落 role='primary' 最早活跃分身；再回落首个活跃分身。"""
     pref_pid = (
         await db.execute(
-            sa.select(HasnOwnerWorkbenchPref.primary_agent_id).where(
-                HasnOwnerWorkbenchPref.owner_hasn_id == owner_id
-            )
+            sa.select(HasnOwnerWorkbenchPref.primary_agent_id).where(HasnOwnerWorkbenchPref.owner_hasn_id == owner_id)
         )
     ).scalar_one_or_none()
     by_id = {a.hasn_id: a for a in agents}
@@ -83,9 +80,7 @@ async def _resolve_primary_agent(
     return agents[0] if agents else None
 
 
-async def reconcile_builtin_agents(
-    db: AsyncSession, owner_id: str, node_id: str | None = None
-) -> list[str]:
+async def reconcile_builtin_agents(db: AsyncSession, owner_id: str, node_id: str | None = None) -> list[str]:
     """建齐所有 builtin=true 模板的分身（幂等按 builtin_agent_key；best-effort，单个失败不阻断）。
 
     主脑（assistant）由 onboarding.ensure_default_agent 创建并已 stamp builtin_agent_key='assistant'，
@@ -94,14 +89,18 @@ async def reconcile_builtin_agents(
     from backend.app.marketplace.model.marketplace_template import MarketplaceTemplate
 
     templates = (
-        await db.execute(
-            sa.select(MarketplaceTemplate).where(
-                MarketplaceTemplate.builtin.is_(True),
-                MarketplaceTemplate.template_type == 'agent_template',
-                MarketplaceTemplate.builtin_key.isnot(None),
+        (
+            await db.execute(
+                sa.select(MarketplaceTemplate).where(
+                    MarketplaceTemplate.builtin.is_(True),
+                    MarketplaceTemplate.template_type == 'agent_template',
+                    MarketplaceTemplate.builtin_key.isnot(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if not templates:
         return []
 
@@ -131,6 +130,7 @@ async def reconcile_builtin_agents(
             continue  # 已建，跳过（不 clobber 用户改名/人设）
 
         try:
+            from backend.app.hasn.service import agent_avatar_service
             from backend.app.hasn.service.hasn_agents_service import agent_profile_service
             from backend.app.hasn.service.hasn_auth import register_hasn_agent
 
@@ -140,6 +140,11 @@ async def reconcile_builtin_agents(
             display_name = await agent_profile_service.gateway.resolve_default_agent_display_name(
                 db, profession=tpl.name or None, owner_nickname=owner_nickname
             )
+            # 头像：每个内置分身一张确定性几何头像（seed=owner:key，每人+每内置分身各不同、无限不重复），
+            # 生成/落桶失败回退模板 icon（best-effort，绝不阻断播种）。
+            avatar = await agent_avatar_service.resolve_generated_avatar_url(db, f'{owner_id}:{key}') or (
+                tpl.icon_url or None
+            )
             await register_hasn_agent(
                 db=db,
                 owner_hasn_id=owner_id,
@@ -148,7 +153,7 @@ async def reconcile_builtin_agents(
                 role='specialist',
                 builtin_agent_key=key,  # ★ 匹配纽带
                 profession=tpl.name or None,
-                avatar=tpl.icon_url or None,
+                avatar=avatar,
                 agent_type='cloud',
                 node_id=node_id,
                 description=tpl.description or None,
@@ -174,7 +179,8 @@ async def _latest_template_version(db: AsyncSession, template_id: str) -> str | 
 
     return (
         await db.execute(
-            sa.select(MarketplaceTemplateVersion.version)
+            sa
+            .select(MarketplaceTemplateVersion.version)
             .where(MarketplaceTemplateVersion.template_id == template_id)
             .order_by(
                 MarketplaceTemplateVersion.is_latest.desc(),
@@ -219,9 +225,7 @@ async def seed_builtin_tasks(db: AsyncSession, owner_id: str) -> list[str]:
 
     # daily_briefing 特例：沿用 owner 简报时刻/开关作初始值（§6.2）。
     pref = (
-        await db.execute(
-            sa.select(HasnOwnerWorkbenchPref).where(HasnOwnerWorkbenchPref.owner_hasn_id == owner_id)
-        )
+        await db.execute(sa.select(HasnOwnerWorkbenchPref).where(HasnOwnerWorkbenchPref.owner_hasn_id == owner_id))
     ).scalar_one_or_none()
 
     seeded: list[str] = []
@@ -332,9 +336,7 @@ async def update_builtin_task_from_catalog(db: AsyncSession, owner_id: str, task
 
     item = (
         await db.execute(
-            sa.select(HasnBuiltinTaskCatalog).where(
-                HasnBuiltinTaskCatalog.builtin_key == task.builtin_key
-            )
+            sa.select(HasnBuiltinTaskCatalog).where(HasnBuiltinTaskCatalog.builtin_key == task.builtin_key)
         )
     ).scalar_one_or_none()
     if item is None or not item.enabled:
@@ -373,8 +375,6 @@ async def update_builtin_task_from_catalog(db: AsyncSession, owner_id: str, task
         payload={'task': payload},
         hasn_id=task.agent_id,
     )
-    await hasn_sync_service.gateway.save_task_event(
-        db, owner_id=owner_id, node_id=CLOUD_BUILTIN_NODE_ID, event=event
-    )
+    await hasn_sync_service.gateway.save_task_event(db, owner_id=owner_id, node_id=CLOUD_BUILTIN_NODE_ID, event=event)
     await db.refresh(task)
     return task

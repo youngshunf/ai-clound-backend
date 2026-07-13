@@ -35,6 +35,7 @@ from backend.app.hasn.schema.hasn_onboarding import (
     PhoneVerifyRequest,
     PhoneVerifyResponse,
 )
+from backend.app.hasn.service import agent_avatar_service
 from backend.app.hasn.service import hasn_auth as hasn_auth_service
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.app.marketplace.crud.crud_marketplace_template import marketplace_template_dao
@@ -309,10 +310,18 @@ class SqlAlchemyOnboardingGateway:
                 )
             )
         ).scalar_one_or_none()
+        # 头像种子：每个默认分身一张确定性几何头像（每人不同、无限不重复），落公共桶存桶 URL；
+        # 生成失败回退模板 icon（best-effort，绝不阻断注册）。历史上一律取 tpl.icon_url 导致
+        # 「每个人的默认分身头像都一样」，故新建/空 avatar 回填一律优先生成头像。
+        avatar_seed = f'{owner_id}:{DEFAULT_AGENT_NAME}'
         if existing is not None:
             display_name = existing.display_name
             profession = profession if not getattr(existing, 'profession', None) else None
-            avatar = avatar if not getattr(existing, 'avatar', None) else None
+            # avatar 为空才回填：优先确定性几何头像，失败回退模板 icon（资产只填空缺不替换）
+            if getattr(existing, 'avatar', None):
+                avatar = None
+            else:
+                avatar = await agent_avatar_service.resolve_generated_avatar_url(db, avatar_seed) or avatar
             template_id = template_id if not getattr(existing, 'template_id', None) else None
             template_version = template_version if template_id else None
             description = None
@@ -327,6 +336,8 @@ class SqlAlchemyOnboardingGateway:
             display_name = await agent_profile_service.gateway.resolve_default_agent_display_name(
                 db, profession=profession, owner_nickname=owner_nickname
             )
+            # 确定性几何头像（seed=owner:agent_name，每人不同），失败回退模板 icon
+            avatar = await agent_avatar_service.resolve_generated_avatar_url(db, avatar_seed) or avatar
 
         result = await hasn_auth_service.register_hasn_agent(
             db=db,
@@ -388,9 +399,7 @@ class SqlAlchemyOnboardingGateway:
     async def get_sync_feed_head(self, db: AsyncSession, owner_id: str) -> int:
         """该 owner 权威 sync feed（hasn_sync_events）当前 head revision；空 feed 为 0。"""
         result = await db.execute(
-            sa.text(
-                'SELECT COALESCE(MAX(revision), 0) FROM public.hasn_sync_events WHERE owner_id = :owner_id'
-            ),
+            sa.text('SELECT COALESCE(MAX(revision), 0) FROM public.hasn_sync_events WHERE owner_id = :owner_id'),
             {'owner_id': owner_id},
         )
         return int(result.scalar_one())

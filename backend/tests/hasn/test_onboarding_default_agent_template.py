@@ -77,6 +77,18 @@ def _patch_uniqueness(monkeypatch, taken: set[str]) -> None:
     monkeypatch.setattr(SqlAlchemyAgentProfileGateway, 'is_display_name_taken', staticmethod(_fake_taken))
 
 
+def _patch_avatar(monkeypatch, url: str | None) -> None:
+    """monkeypatch 头像生成落桶——返回 url（生成成功）或 None（无 S3/失败→回退模板 icon）。
+
+    本地测试无 S3；直接替换 resolve_generated_avatar_url，使头像断言 hermetic、不误碰 _FakeDB。
+    """
+
+    async def _fake_avatar(_db: Any, _seed: str) -> str | None:
+        return url
+
+    monkeypatch.setattr(svc.agent_avatar_service, 'resolve_generated_avatar_url', _fake_avatar, raising=True)
+
+
 def _capture_register(monkeypatch) -> dict[str, Any]:
     captured: dict[str, Any] = {}
 
@@ -94,7 +106,7 @@ def _capture_register(monkeypatch) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_ensure_default_agent_materializes_assistant_template(monkeypatch) -> None:
-    """模板存在 + 新建 → display_name=`{昵称}的{专家名}`、tpl.name 作 profession、icon_url 作头像、skills 列表。"""
+    """模板存在 + 新建 → display_name=`{昵称}的{专家名}`、tpl.name 作 profession、确定性生成头像、skills 列表。"""
     tpl = _template_stub()
 
     async def _get_by_id(_db: Any, template_id: str) -> Any:
@@ -107,6 +119,8 @@ async def test_ensure_default_agent_materializes_assistant_template(monkeypatch)
     monkeypatch.setattr(svc.marketplace_template_dao, 'get_by_id', _get_by_id, raising=True)
     monkeypatch.setattr(svc.marketplace_template_version_dao, 'get_latest_by_template', _get_latest, raising=True)
     _patch_uniqueness(monkeypatch, taken=set())  # 星诺 全局未占用
+    # 头像生成落桶成功 → avatar 用生成的桶 URL（每人不同、无限不重复），不再取 tpl.icon_url。
+    _patch_avatar(monkeypatch, url='https://cdn.example.com/avatars/generated/agent-abc.svg')
     captured = _capture_register(monkeypatch)
 
     # 新建分支：存在性查询→None，昵称查询→'福仔'
@@ -121,8 +135,8 @@ async def test_ensure_default_agent_materializes_assistant_template(monkeypatch)
     assert captured['display_name'] == '福仔的全能助理'
     # 专家头衔来自 tpl.name。
     assert captured['profession'] == '全能助理'
-    # 头像来自 tpl.icon_url。
-    assert captured['avatar'] == 'https://cdn.example.com/assistant.png'
+    # 头像 ← 确定性生成头像（落桶），生成失败才回退 tpl.icon_url（见另一 fallback 测试）。
+    assert captured['avatar'] == 'https://cdn.example.com/avatars/generated/agent-abc.svg'
     assert captured['template_id'] == DEFAULT_AGENT_TEMPLATE_ID
     assert captured['template_version'] == '2.0.1'
     assert captured['soul_md'] == tpl.soul_md
@@ -134,6 +148,31 @@ async def test_ensure_default_agent_materializes_assistant_template(monkeypatch)
     assert captured['capabilities'] == [svc.DEFAULT_AGENT_TEMPLATE]
     assert captured['role'] == 'primary'
     assert captured['created_via'] == 'onboarding'
+
+
+@pytest.mark.asyncio
+async def test_ensure_default_agent_avatar_falls_back_to_template_icon(monkeypatch) -> None:
+    """头像生成/落桶失败（无 S3 等）→ best-effort 回退 tpl.icon_url，绝不阻断注册。"""
+    tpl = _template_stub()
+
+    async def _get_by_id(_db: Any, _tid: str) -> Any:
+        return tpl
+
+    async def _get_latest(_db: Any, _tid: str) -> Any:
+        return SimpleNamespace(version='2.0.1')
+
+    monkeypatch.setattr(svc.marketplace_template_dao, 'get_by_id', _get_by_id, raising=True)
+    monkeypatch.setattr(svc.marketplace_template_version_dao, 'get_latest_by_template', _get_latest, raising=True)
+    _patch_uniqueness(monkeypatch, taken=set())
+    _patch_avatar(monkeypatch, url=None)  # 生成失败
+    captured = _capture_register(monkeypatch)
+
+    db = _FakeDB([_Result(None), _Result('福仔')])
+    gateway = SqlAlchemyOnboardingGateway()
+    await gateway.ensure_default_agent(db=db, owner_id='h_owner_5', node_id='n_5')
+
+    # 生成失败 → 回退模板 icon（模板存在时不至于让默认分身没头像）。
+    assert captured['avatar'] == 'https://cdn.example.com/assistant.png'
 
 
 @pytest.mark.asyncio
@@ -150,6 +189,7 @@ async def test_ensure_default_agent_derives_name_on_global_collision(monkeypatch
     monkeypatch.setattr(svc.marketplace_template_dao, 'get_by_id', _get_by_id, raising=True)
     monkeypatch.setattr(svc.marketplace_template_version_dao, 'get_latest_by_template', _get_latest, raising=True)
     _patch_uniqueness(monkeypatch, taken={'福仔的全能助理'})  # 已被别的同名 owner 占用
+    _patch_avatar(monkeypatch, url=None)  # 头像与本用例无关，仅防误碰 _FakeDB
     captured = _capture_register(monkeypatch)
 
     db = _FakeDB([_Result(None), _Result('福仔')])
@@ -174,6 +214,7 @@ async def test_ensure_default_agent_existing_only_backfills_empty(monkeypatch) -
     monkeypatch.setattr(svc.marketplace_template_dao, 'get_by_id', _get_by_id, raising=True)
     monkeypatch.setattr(svc.marketplace_template_version_dao, 'get_latest_by_template', _get_latest, raising=True)
     _patch_uniqueness(monkeypatch, taken=set())
+    _patch_avatar(monkeypatch, url='https://cdn.example.com/avatars/generated/agent-xyz.svg')
     captured = _capture_register(monkeypatch)
 
     # 已存在分身：自定义昵称、profession 已有值、avatar 为空、template_id 已有。
@@ -191,8 +232,8 @@ async def test_ensure_default_agent_existing_only_backfills_empty(monkeypatch) -
     assert captured['display_name'] == '我的小助手'
     # profession 已有值 → 不覆盖（传 None，register 跳过）。
     assert captured['profession'] is None
-    # avatar 为空 → 一次性回填模板头像。
-    assert captured['avatar'] == 'https://cdn.example.com/assistant.png'
+    # avatar 为空 → 回填确定性生成头像（资产只填空缺不替换）。
+    assert captured['avatar'] == 'https://cdn.example.com/avatars/generated/agent-xyz.svg'
     # skills / persona / description 一律不动（避免 clobber 用户自定义）。
     assert captured['skills'] is None
     assert captured['soul_md'] is None
@@ -212,6 +253,7 @@ async def test_ensure_default_agent_falls_back_when_template_missing(monkeypatch
 
     monkeypatch.setattr(svc.marketplace_template_dao, 'get_by_id', _get_by_id, raising=True)
     _patch_uniqueness(monkeypatch, taken=set())
+    _patch_avatar(monkeypatch, url=None)  # 无 S3/生成失败 → 无模板 icon 兜底 → avatar 仍 None
     captured = _capture_register(monkeypatch)
 
     db = _FakeDB([_Result(None), _Result(None)])  # 存在性→None，昵称→None
