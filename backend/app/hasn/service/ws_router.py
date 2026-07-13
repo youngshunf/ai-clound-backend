@@ -317,20 +317,29 @@ class WsRouterService:
         if agent.status != 'active':
             return {'hasn_id': hasn_id, 'reason': 'Agent 已停用'}
 
-        # 检查是否已被其他节点上报
+        # 检查是否已被其他节点上报——接管权威改由 Redis 就绪判据裁定（不再看 per-worker WS 连接）。
         existing_node = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
         if existing_node and existing_node != node_id:
-            # 检查旧节点是否还在线（WS 连接是否存活）
-            old_ws = _ws_connections.get(existing_node)
-            if old_ws is None:
-                # 旧节点已断开（非优雅关闭导致 Redis 残留），自动接管
-                logger.warning(
-                    f'Agent {hasn_id} 的旧节点 {existing_node} 已离线，'
-                    f'允许新节点 {node_id} 接管'
-                )
-                await self.unregister_entity_route(existing_node, hasn_id)
-            else:
+            # 旧持有者必须「节点心跳存活(_node_alive) 且 该 agent runtime 已就绪(_agent_ready)」
+            # 才算真正在服务、值得保护，才拒绝新节点接管；否则（节点已死 / runtime 降级未就绪）
+            # 一律放行新节点接管，并释放其残留路由。
+            #
+            # Why 换判据：旧实现用 `_ws_connections`（仅当前 worker 进程内可见的连接）——多 worker
+            # 部署下看不全，且**降级持有者的 WS 仍连着** → 误判「在服务」→ 挡住健康设备接管 →
+            # 消息路由卡死在降级设备上黑洞（换设备接不了管、旧机又收不动）。就绪键(agent_ready)
+            # 才是「runtime 真能收消息」的权威信号，与 `is_agent_online` 的三闸门同源。
+            holder_serving = (
+                await self._node_alive(existing_node)
+                and await self._agent_ready(hasn_id)
+            )
+            if holder_serving:
                 return {'hasn_id': hasn_id, 'reason': f'已在节点 {existing_node} 上运行'}
+            # 旧持有者非就绪（死节点 / 降级 runtime / 残留路由）→ 释放路由，允许新节点接管
+            logger.warning(
+                f'Agent {hasn_id} 的旧节点 {existing_node} 未在就绪服务'
+                f'（node_alive/agent_ready 缺失），允许新节点 {node_id} 接管'
+            )
+            await self.unregister_entity_route(existing_node, hasn_id)
 
         return None
 

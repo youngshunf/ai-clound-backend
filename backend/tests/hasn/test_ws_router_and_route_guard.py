@@ -262,13 +262,38 @@ async def test_ws_router_rejects_invalid_or_moved_agents(monkeypatch: pytest.Mon
         'reason': 'Agent 已停用',
     }
 
-    await redis.hset(module.ENTITY_NODE_KEY, 'a_agent', 'old-node')
-    module._ws_connections['old-node'] = FakeWebSocket()
+    # 接管权威改由 Redis 就绪判据裁定（node_alive ∧ agent_ready），不再看 per-worker WS 连接。
     active = SimpleNamespace(hasn_id='a_agent', owner_id='h_owner', status='active')
+
+    # 场景①：旧持有者「就绪服务中」（node_alive + agent_ready 都在）→ 拒绝新节点接管。
+    await redis.hset(module.ENTITY_NODE_KEY, 'a_agent', 'old-node')
+    await redis.set(f'{module.NODE_ALIVE_PREFIX}:old-node', '1')
+    await redis.set(f'{module.AGENT_READY_PREFIX}:a_agent', '1')
+    # WS 连接存在与否已不影响判定——即便连接挂了，只要就绪键在就仍受保护。
+    module._ws_connections['old-node'] = FakeWebSocket()
     err = await router._validate_agent(
         'node-1', 'a_agent', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=active)])
     )
     assert err and '已在节点 old-node 上运行' in err['reason']
+
+    # 场景②：旧持有者「降级未就绪」（node_alive 在、但 agent_ready 缺失）→ 允许新节点接管，
+    # 并释放其残留路由。这正是「降级设备霸占路由致换设备接不了管」的夹缝，C1 修复点。
+    await redis.hset(module.ENTITY_NODE_KEY, 'a_agent', 'old-node')
+    await redis.set(f'{module.NODE_ALIVE_PREFIX}:old-node', '1')
+    await redis.delete(f'{module.AGENT_READY_PREFIX}:a_agent')
+    module._ws_connections['old-node'] = FakeWebSocket()  # WS 仍连着也不再保护降级持有者
+    assert await router._validate_agent(
+        'node-1', 'a_agent', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=active)])
+    ) is None
+    assert await redis.hget(module.ENTITY_NODE_KEY, 'a_agent') is None  # 残留路由已被释放
+
+    # 场景③：旧节点「已死」（node_alive 缺失）→ 允许新节点接管（僵尸路由回收）。
+    await redis.hset(module.ENTITY_NODE_KEY, 'a_agent', 'dead-node')
+    await redis.set(f'{module.AGENT_READY_PREFIX}:a_agent', '1')  # 就绪键残留但节点心跳已过期
+    assert await router._validate_agent(
+        'node-1', 'a_agent', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=active)])
+    ) is None
+    assert await redis.hget(module.ENTITY_NODE_KEY, 'a_agent') is None
 
 
 def _async_value(value: Any):
