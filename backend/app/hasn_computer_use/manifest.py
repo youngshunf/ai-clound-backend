@@ -15,12 +15,16 @@ hasn-mcp（`crates/hasn-mcp/src/computer/tools.rs`，`source=Platform`/`executio
 经 daemon 托管的 cua-driver 落桌面，**不经云端 Runtime Gateway `_dispatch_tool`**。故不进 `tools[]`
 （自造 transport 会静默过 validate_manifest 变潜伏炸弹）；`capabilities[]` 只承载发现/权限元数据控制面记录。
 
-⚠️ scope 与落地工具对齐（`crates/hasn-mcp/src/computer/tools.rs` `capability_scopes()` + `scopes.py`，CU-P2a 已落）：
+⚠️ scope 与落地工具对齐（`crates/hasn-mcp/src/computer/tools.rs` `capability_scopes()` + `scopes.py`；
+16 工具 / 6 scope）：
 - 窗口级截图/观察（capture/list_apps/wait）→ `computer_use:capture`（出厂 Allow）；
 - 全屏截图（capture_screen）→ `computer_use:capture_screen`（出厂 Ask——可能框进其它 App 隐私内容）；
 - 控制动作（click/double_click/right_click/type/key/scroll/drag/set_value/focus_app）→ `computer_use:control`
   （出厂 Ask；`scroll` 仅改视口，工具粒度出厂 Allow，属 scope 内例外——manifest 里 scroll 的
-  `human_confirmation.required=False`，其余控制动作 True）。
+  `human_confirmation.required=False`，其余控制动作 True）；
+- 启动/打开 App（launch_app）→ `computer_use:launch_app`（出厂 Ask，risk medium）；
+- 强退 App（kill_app）→ `computer_use:kill_app`（出厂 Ask，risk high——破坏性）；
+- 浏览器页面自动化（page）→ `computer_use:browser`（出厂 Ask，risk high）。
 
 ⚠️ execution_mode：catalog 枚举（`cloud/embedded_desktop/local_tool`）取 **`local_tool`**（本地工具驱动 +
 原生 webui UI，非 cloud 执行、非重 sidecar），同 designsystem/imagelab。
@@ -46,10 +50,13 @@ _AUDIT_FIELDS = [
     'decision',
 ]
 
-# scope 常量（与 hasn-node crates/hasn-mcp/src/computer/tools.rs 三档一字不差）。
+# scope 常量（与 hasn-node crates/hasn-mcp/src/computer/tools.rs 六档一字不差）。
 _CAPTURE_SCOPE = 'computer_use:capture'
 _CAPTURE_SCREEN_SCOPE = 'computer_use:capture_screen'
 _CONTROL_SCOPE = 'computer_use:control'
+_LAUNCH_APP_SCOPE = 'computer_use:launch_app'
+_KILL_APP_SCOPE = 'computer_use:kill_app'
+_BROWSER_SCOPE = 'computer_use:browser'
 
 
 def _cap(
@@ -242,6 +249,38 @@ COMPUTER_USE_AI_NATIVE_MANIFEST = {
             risk='high',
             page_rank=22,
             tags=['computer_use', 'control', 'focus_app'],
+        ),
+        # —— 启动/关闭 App 与浏览器自动化（各自独立 scope，出厂 Ask）——
+        _cap(
+            name='launch_app',
+            title='启动/打开 App',
+            description='启动或打开桌面 App（可带打开目标文件/URL、可为浏览器开调试端口供后续页面自动化）；'
+            '后台启动不抢焦点。',
+            scope=_LAUNCH_APP_SCOPE,
+            ask=True,
+            risk='medium',
+            page_rank=23,
+            tags=['computer_use', 'launch_app'],
+        ),
+        _cap(
+            name='kill_app',
+            title='关闭/强退 App',
+            description='强制退出桌面 App（破坏性——未保存内容可能丢失），默认逐次审批。',
+            scope=_KILL_APP_SCOPE,
+            ask=True,
+            risk='high',
+            page_rank=24,
+            tags=['computer_use', 'kill_app'],
+        ),
+        _cap(
+            name='page',
+            title='浏览器页面自动化',
+            description='驱动浏览器页面——跳转/取文本/查元素/执行 JS（在已开浏览器里操作网页），默认逐次审批。',
+            scope=_BROWSER_SCOPE,
+            ask=True,
+            risk='high',
+            page_rank=25,
+            tags=['computer_use', 'browser', 'page'],
         ),
     ],
     # 方案 A：本地工具不进 tools[]（走 hasn-mcp source=Platform/Local，经 daemon 托管 cua-driver 落桌面）。

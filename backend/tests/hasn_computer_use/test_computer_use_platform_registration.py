@@ -1,15 +1,16 @@
 """CU-P4 — computer_use（分身 GUI 桌面控制 · Computer Use，模块 23 V2）AI-Native 平台接入 真实测试（零 mock）。
 
-覆盖云端注册（catalog/manifest 注册 + 铸三 scope，设计 §3.1）：
+覆盖云端注册（catalog/manifest 注册 + 铸六 scope，设计 §3.1/§3.3）：
 - manifest 通过 ``validate_manifest``（含 workbench_app 一致性闸门）；进 ``_builtin_manifests``。
-- capabilities scope 与落地 hasn-mcp 工具一致（13 个；截屏观察 3 → computer_use:capture、全屏 1 →
-  computer_use:capture_screen、控制 9 → computer_use:control；mcp_name 全 hasn.computer.*）。
+- capabilities scope 与落地 hasn-mcp 工具一致（16 个；截屏观察 3 → computer_use:capture、全屏 1 →
+  computer_use:capture_screen、控制 9 → computer_use:control、启动 1 → computer_use:launch_app、
+  强退 1 → computer_use:kill_app、浏览器 1 → computer_use:browser；mcp_name 全 hasn.computer.*）。
 - 出厂默认三态（= crates/hasn-mcp/src/computer/tools.rs 本地出厂态）：
   capture/list_apps/wait/scroll 出厂 Allow（human_confirmation.required=False）；
-  capture_screen + 其余 8 个控制动作出厂 Ask（human_confirmation.required=True）。
-- scope 出厂 default_mode：computer_use:capture=allow、capture_screen=ask、control=ask
+  capture_screen + 其余 8 个控制动作 + launch_app/kill_app/page 出厂 Ask（human_confirmation.required=True）。
+- scope 出厂 default_mode：capture=allow、capture_screen=ask、control=ask、launch_app=ask、kill_app=ask、browser=ask
   （scroll 的工具粒度 Allow 是 scope 内例外——scope 默认仍 ask，落在工具 human_confirmation 上）。
-- scopes.py 登记三 scope（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）+ 域标签 computer_use。
+- scopes.py 登记六 scope（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）+ 域标签 computer_use。
 - App 形态（local_tool / 手动安装 / 内联路由 /apps/computer-use；能力型应用按需装）。
 - catalog 出厂源：sort_order=80 / default_agent_type=assistant（全能助理·非专有分身）/ 无 config_json
   （driver 引擎随桌面端下发 + TCC 授权，属 CU-P2b 驱动桥，不在 catalog config）。
@@ -48,8 +49,8 @@ from backend.app.hasn_computer_use.manifest import COMPUTER_USE_AI_NATIVE_MANIFE
 from backend.app.mcp.scopes import SCOPE_CATALOG, domain_label, scope_meta
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
-# 落地真相（hasn-node crates/hasn-mcp/src/computer/tools.rs，CU-P2a 已落，本表是云端侧契约源）：
-# 截屏观察 3 / 全屏 1 / 控制 9 = 13 个。
+# 落地真相（hasn-node crates/hasn-mcp/src/computer/tools.rs，本表是云端侧契约源）：
+# 截屏观察 3 / 全屏 1 / 控制 9 / 启动 1 / 强退 1 / 浏览器 1 = 16 个。
 _CAPTURE_TOOLS = {'capture', 'list_apps', 'wait'}
 _CAPTURE_SCREEN_TOOLS = {'capture_screen'}
 _CONTROL_TOOLS = {
@@ -63,21 +64,40 @@ _CONTROL_TOOLS = {
     'set_value',
     'focus_app',
 }
+_LAUNCH_APP_TOOLS = {'launch_app'}
+_KILL_APP_TOOLS = {'kill_app'}
+_BROWSER_TOOLS = {'page'}
 
 _CAPTURE_SCOPE = 'computer_use:capture'
 _CAPTURE_SCREEN_SCOPE = 'computer_use:capture_screen'
 _CONTROL_SCOPE = 'computer_use:control'
+_LAUNCH_APP_SCOPE = 'computer_use:launch_app'
+_KILL_APP_SCOPE = 'computer_use:kill_app'
+_BROWSER_SCOPE = 'computer_use:browser'
 
 # 每工具 → 期望 scope。
 _TOOL_SCOPE = {
     **dict.fromkeys(_CAPTURE_TOOLS, _CAPTURE_SCOPE),
     **dict.fromkeys(_CAPTURE_SCREEN_TOOLS, _CAPTURE_SCREEN_SCOPE),
     **dict.fromkeys(_CONTROL_TOOLS, _CONTROL_SCOPE),
+    **dict.fromkeys(_LAUNCH_APP_TOOLS, _LAUNCH_APP_SCOPE),
+    **dict.fromkeys(_KILL_APP_TOOLS, _KILL_APP_SCOPE),
+    **dict.fromkeys(_BROWSER_TOOLS, _BROWSER_SCOPE),
+}
+
+# 六个 computer_use 域 scope 全集。
+_ALL_SCOPES = {
+    _CAPTURE_SCOPE,
+    _CAPTURE_SCREEN_SCOPE,
+    _CONTROL_SCOPE,
+    _LAUNCH_APP_SCOPE,
+    _KILL_APP_SCOPE,
+    _BROWSER_SCOPE,
 }
 
 # 出厂 Allow（human_confirmation.required=False）vs 出厂 Ask（True）：
 # scroll 仅改视口→工具粒度 Allow（scope 内例外）；capture/list_apps/wait 只读→Allow；
-# capture_screen + 其余 8 个控制动作→Ask。
+# capture_screen + 其余 8 个控制动作 + launch_app/kill_app/page 均→Ask。
 _ALLOW_TOOLS = _CAPTURE_TOOLS | {'scroll'}
 _ASK_TOOLS = (set(_TOOL_SCOPE) - _ALLOW_TOOLS)
 
@@ -105,11 +125,11 @@ def test_computer_use_in_builtin_registry() -> None:
 
 
 def test_computer_use_capabilities_match_landed_tools() -> None:
-    """13 个 capability，mcp_name 全 hasn.computer.*；每工具 scope + 出厂确认态与本地工具逐一对齐。"""
+    """16 个 capability，mcp_name 全 hasn.computer.*；每工具 scope + 出厂确认态与本地工具逐一对齐。"""
     caps = COMPUTER_USE_AI_NATIVE_MANIFEST['capabilities']
     names = {c['tool_id'].split('.', 1)[1] for c in caps}
     assert names == set(_TOOL_SCOPE), f'工具集与落地不一致: {names}'
-    assert len(caps) == 13
+    assert len(caps) == 16
 
     for cap in caps:
         assert cap['mcp_name'].startswith('hasn.computer.'), cap['mcp_name']
@@ -120,25 +140,28 @@ def test_computer_use_capabilities_match_landed_tools() -> None:
         assert cap['human_confirmation'].get('required') is expected_confirm, f'{short} 确认态不符'
 
 
-def test_computer_use_management_scopes_are_three_domain_scopes() -> None:
-    """非 :read required_scopes 集合 = 三个 computer_use 域 scope（capture 不以 :read 结尾亦计入）。"""
+def test_computer_use_management_scopes_are_six_domain_scopes() -> None:
+    """非 :read required_scopes 集合 = 六个 computer_use 域 scope（capture 不以 :read 结尾亦计入）。"""
     management = {
         scope
         for cap in COMPUTER_USE_AI_NATIVE_MANIFEST['capabilities']
         for scope in (cap.get('required_scopes') or [])
         if not scope.endswith(':read')
     }
-    assert management == {_CAPTURE_SCOPE, _CAPTURE_SCREEN_SCOPE, _CONTROL_SCOPE}
+    assert management == _ALL_SCOPES
 
 
 def test_computer_use_scopes_registered_in_catalog() -> None:
-    """scopes.py 登记三 scope（聚合进全局 SCOPE_CATALOG，供三态权限 UI 中文化）+ 域标签。"""
-    for scope in {_CAPTURE_SCOPE, _CAPTURE_SCREEN_SCOPE, _CONTROL_SCOPE}:
+    """scopes.py 登记六 scope（聚合进全局 SCOPE_CATALOG，供三态权限 UI 中文化）+ 域标签。"""
+    for scope in _ALL_SCOPES:
         assert scope in SCOPE_CATALOG, f'{scope} 未聚合进 SCOPE_CATALOG'
         assert scope_meta(scope)['domain'] == 'computer_use'
     assert scope_meta(_CAPTURE_SCOPE)['label'] == '截取窗口与观察屏幕'
     assert scope_meta(_CAPTURE_SCREEN_SCOPE)['label'] == '全屏截图'
     assert scope_meta(_CONTROL_SCOPE)['label'] == '控制桌面（点击/输入/拖拽）'
+    assert scope_meta(_LAUNCH_APP_SCOPE)['label'] == '启动/打开桌面 App'
+    assert scope_meta(_KILL_APP_SCOPE)['label'] == '关闭/强退桌面 App'
+    assert scope_meta(_BROWSER_SCOPE)['label'] == '浏览器页面自动化'
     # 域标签（DOMAIN_LABELS 单一事实源，零漂移守卫覆盖）。
     assert domain_label('computer_use', 'zh') == '桌面控制'
     assert domain_label('computer_use', 'en') == 'Computer Use'
@@ -153,10 +176,18 @@ def test_computer_use_scope_factory_defaults_match_local_enforcement() -> None:
     assert scope_meta(_CAPTURE_SCOPE)['default_mode'] == 'allow'
     assert scope_meta(_CAPTURE_SCREEN_SCOPE)['default_mode'] == 'ask'
     assert scope_meta(_CONTROL_SCOPE)['default_mode'] == 'ask'
+    # launch_app/kill_app/browser 均出厂 Ask（启动/强退/浏览器自动化都有副作用或破坏性）。
+    assert scope_meta(_LAUNCH_APP_SCOPE)['default_mode'] == 'ask'
+    assert scope_meta(_KILL_APP_SCOPE)['default_mode'] == 'ask'
+    assert scope_meta(_BROWSER_SCOPE)['default_mode'] == 'ask'
     # risk 展示：capture=low / capture_screen=medium / control=high。
     assert scope_meta(_CAPTURE_SCOPE)['risk'] == 'low'
     assert scope_meta(_CAPTURE_SCREEN_SCOPE)['risk'] == 'medium'
     assert scope_meta(_CONTROL_SCOPE)['risk'] == 'high'
+    # launch_app=medium（起进程/开窗，非破坏）/ kill_app=high（破坏性）/ browser=high。
+    assert scope_meta(_LAUNCH_APP_SCOPE)['risk'] == 'medium'
+    assert scope_meta(_KILL_APP_SCOPE)['risk'] == 'high'
+    assert scope_meta(_BROWSER_SCOPE)['risk'] == 'high'
 
 
 def test_computer_use_notifications_emit_declared() -> None:

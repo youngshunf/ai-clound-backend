@@ -13,6 +13,12 @@
 - `computer_use:control`（出厂 **Ask**，risk high）：一切控制动作——`click`/`double_click`/`right_click`/`type`/
   `key`/`scroll`/`drag`/`set_value`/`focus_app`。真实点击/键入到桌面、有副作用，默认审批（`scroll` 仅改视口
   不改数据，在工具粒度出厂放行，属 scope 内例外——scope 默认仍 Ask）。
+- `computer_use:launch_app`（出厂 **Ask**，risk medium）：`launch_app` 启动/打开桌面 App（可带打开目标文件/URL、
+  可开浏览器调试端口供后续自动化）。后台启动不抢焦点、非破坏，但有副作用（起进程/开窗），默认逐次审批。
+- `computer_use:kill_app`（出厂 **Ask**，risk high）：`kill_app` 强制退出桌面 App——**破坏性**（未保存内容可能丢失），
+  默认逐次审批。
+- `computer_use:browser`（出厂 **Ask**，risk high）：`page` 浏览器页面自动化——在已开浏览器里跳转/取文本/查元素/
+  执行 JS 驱动网页（可能触及已登录会话内的操作），默认逐次审批。
 
 注：黑名单 App（终端/系统设置/支付密码类）上一切动作在 daemon 侧凌驾放行档强制 Ask（设计 §3.4），
 本表只承载**出厂默认**三态；会话×App 白名单与黑名单凌驾属 daemon 执行面（CU-P3），不在 scope 元数据内。
@@ -50,5 +56,34 @@ COMPUTER_USE_SCOPE_CATALOG: dict[str, dict[str, str]] = {
         'description': '在真实桌面上执行控制动作——单击/双击/右键/键入文本/发送快捷键/滚动/拖拽/设值/前台化 App'
         '（有真实副作用；危险 shell 与破坏性快捷键被工具层硬拦；高危 App 上强制逐次审批），默认需主人确认',
         'description_en': 'Perform control actions on the real desktop — click, double-click, right-click, type text, send hotkeys, scroll, drag, set values, and focus apps (real side effects; dangerous shell patterns and destructive key combos are hard-blocked at the tool layer; high-risk apps always require per-action approval); owner confirmation required by default',
+    },
+    'computer_use:launch_app': {
+        'label_zh': '启动/打开桌面 App',
+        'label_en': 'Launch/open a desktop app',
+        'domain': 'computer_use',
+        'risk': 'medium',
+        'default_mode': 'ask',
+        'description': '以 Agent 身份启动/打开桌面 App（可带打开目标文件或 URL，可为浏览器开调试端口供后续页面自动化）；'
+        '后台启动不抢焦点、非破坏，但会起进程/开窗口，默认需主人确认',
+        'description_en': 'Launch/open a desktop app as the agent (optionally opening a target file or URL, or a debugging port for later browser automation); backgrounded launch does not steal focus and is non-destructive, but it starts processes and opens windows, so owner confirmation is required by default',
+    },
+    'computer_use:kill_app': {
+        'label_zh': '关闭/强退桌面 App',
+        'label_en': 'Force-quit a desktop app',
+        'domain': 'computer_use',
+        'risk': 'high',
+        'default_mode': 'ask',
+        'description': '以 Agent 身份强制退出桌面 App（破坏性——未保存内容可能丢失），默认需主人逐次确认',
+        'description_en': 'Force-quit a desktop app as the agent (destructive — unsaved content may be lost); per-action owner confirmation is required by default',
+    },
+    'computer_use:browser': {
+        'label_zh': '浏览器页面自动化',
+        'label_en': 'Browser page automation',
+        'domain': 'computer_use',
+        'risk': 'high',
+        'default_mode': 'ask',
+        'description': '以 Agent 身份驱动浏览器页面——跳转/取文本/查元素/执行 JS（可能触及已登录会话内的操作），'
+        '默认需主人逐次确认',
+        'description_en': 'Drive browser pages as the agent — navigate, read text, query elements, and execute JS (may reach into actions inside a logged-in session); per-action owner confirmation is required by default',
     },
 }
