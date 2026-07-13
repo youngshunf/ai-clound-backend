@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_knowledge.service import resource_adapter as _resource_adapter  # noqa: F401  # G6 使用点注册兜底
 from backend.app.hasn_knowledge.service.error_adapter import to_http_error
-from backend.app.hasn_knowledge.service.knowledge_service import MAX_NATIVE_CONTENT_BYTES, knowledge_service
+from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
 from backend.app.mcp.context import get_authorized_resource
 from backend.common.exception import errors
@@ -115,10 +115,12 @@ async def handle_knowledge_upload_document(
 ) -> dict[str, Any]:
     """knowledge.upload_document：content_text(纯文本) 或 asset_uri(已在私有桶的真实文件) 二选一上传并索引。
 
-    - content_text（纯文本内容）→ **优先落原生文档**（可编辑/有版本/Markdown 渲染/在线预览最好/正文逐字保留，
-      且同样推进引擎索引可检索——对文本是纯升级）；仅当正文超原生 1MB 上限时，才诚实回落 file 文档
-      （引擎切块是唯一能承载超大文本的方式）。
-    - asset_uri(hasn://asset/...) → 取桶字节建 file 文档副本（真实二进制文件；资产须属同一主人，越权如实拒）。
+    - content_text（纯文本内容）→ **一律落原生文档**（可编辑/有版本/Markdown 渲染/在线预览最好/正文逐字保留，
+      且同样推进引擎索引可检索）。知识库铁律「原生优先，能不落 file 就不落」：正文超 5000 字**不再自动回落 file**，
+      而是如实拒绝，逼分身拆成多篇更聚焦的原生文档 + 深链 hasn://knowledge/documents/{doc_id} 互连
+      （file 编辑成本高，原生才可编辑）。
+    - asset_uri(hasn://asset/...) → 取桶字节建 file 文档副本（真实二进制文件，如 PDF/docx/图片——
+      这类才是 file 文档的正当来源；资产须属同一主人，越权如实拒）。
     """
     kb_id = int(input_payload['kb_id'])
     owner, gate_ran = _resource_owner('kb_id', agent)
@@ -143,34 +145,23 @@ async def handle_knowledge_upload_document(
                 source='agent',
                 agent_hasn_id=agent.agent_hasn_id,
             )
-        # 纯文本内容优先落原生文档；仅超原生 1MB 上限才回落 file（引擎切块承载超大文本）。
+        # 原生优先（知识库铁律）：纯文本内容一律落原生文档，与 write_doc 语义一致。
+        # 超 5000 字**不再自动回落 file**——create_native_document 内的 _validate_native_content
+        # 会如实拒绝并引导拆成多篇 + 深链互连（file 编辑成本高，原生才可编辑）。
         text = str(content_text)
-        if len(text.encode('utf-8')) <= MAX_NATIVE_CONTENT_BYTES:
-            result = await knowledge_service.create_native_document(
-                db,
-                owner,
-                kb_id,
-                title=title,
-                content=text,
-                folder_id=folder_id_int,
-                source='agent',
-                agent_hasn_id=agent.agent_hasn_id,
-            )
-            # 不回显整段正文（避免灌爆分身上下文），与 write_doc 出参对齐。
-            result.pop('content', None)
-            return result
-        filename = title if '.' in title.rsplit('/', 1)[-1] else f'{title}.txt'
-        return await knowledge_service.upload_file_document(
+        result = await knowledge_service.create_native_document(
             db,
             owner,
             kb_id,
-            filename=filename,
-            data=text.encode('utf-8'),
-            mime='text/plain',
+            title=title,
+            content=text,
             folder_id=folder_id_int,
             source='agent',
             agent_hasn_id=agent.agent_hasn_id,
         )
+        # 不回显整段正文（避免灌爆分身上下文），与 write_doc 出参对齐。
+        result.pop('content', None)
+        return result
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
 
@@ -431,3 +422,31 @@ async def handle_knowledge_write_doc(
         raise to_http_error(exc) from exc
     result.pop('content', None)
     return {'doc_id': result['id'], **result}
+
+
+async def handle_knowledge_check_links(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    """knowledge.check_links：写前预检正文里的文档深链是否合法（只校验、不落库）。
+
+    传 kb_id → 按该库校验（新建文档前用）；传 doc_id → 按目标文档所属库校验（更新既有文档前用）。
+    返回每条深链判定（ok / not_found 不存在或已删 / cross_kb 属其它库）+ 汇总 valid，
+    与 write_doc/upload_document 保存时的强校验同一套判据——预检通过即保存不会被拒。
+    """
+    content = str(input_payload.get('content') or '')
+    doc_id = input_payload.get('doc_id')
+    try:
+        if doc_id is not None:
+            owner, gate_ran = _resource_owner('doc_id', agent)
+            doc = await knowledge_service.get_document(db, owner, int(doc_id))
+            kb_id = int(doc['kb_id'])
+            if not gate_ran:
+                await _assert_kb_reachable(db, agent, kb_id)
+        else:
+            kb_id = int(input_payload['kb_id'])
+            owner, gate_ran = _resource_owner('kb_id', agent)
+            if not gate_ran:
+                await _assert_kb_reachable(db, agent, kb_id)
+        return await knowledge_service.check_document_links(db, owner, kb_id, content)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc

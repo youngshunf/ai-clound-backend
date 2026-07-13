@@ -647,6 +647,7 @@ class AiNativeRuntimeGateway:
             'knowledge.delete_document': knowledge_handlers.handle_knowledge_delete_document,
             'knowledge.move_document': knowledge_handlers.handle_knowledge_move_document,
             'knowledge.write_doc': knowledge_handlers.handle_knowledge_write_doc,
+            'knowledge.check_links': knowledge_handlers.handle_knowledge_check_links,
             'knowledge.list_folders': knowledge_handlers.handle_knowledge_list_folders,
             'knowledge.create_folder': knowledge_handlers.handle_knowledge_create_folder,
             'knowledge.update_folder': knowledge_handlers.handle_knowledge_update_folder,

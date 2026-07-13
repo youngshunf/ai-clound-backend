@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import uuid
 
 from typing import TYPE_CHECKING, Any
@@ -39,8 +40,17 @@ if TYPE_CHECKING:
 
 # 文件上传上限（对齐 hasn_assets file 限额）
 MAX_FILE_SIZE = 50 * 1024 * 1024
-# 原生文档正文上限（1MB Markdown，防滥用）
-MAX_NATIVE_CONTENT_BYTES = 1 * 1024 * 1024
+# 原生文档正文上限（5000 字符，按 Unicode 码点计——中文 1 字 = 1）。
+# 知识库铁律「原生优先，能不落 file 就不落」：原生文档可编辑、有版本、Markdown 渲染最好，
+# 定位为「小而互连的 wiki 式笔记」。内容超限即应拆成多篇更聚焦的原生文档，
+# 用深链 hasn://knowledge/documents/{doc_id} 互相关联，而非堆成一篇长文，
+# 也**不**自动回落 file（file 编辑成本高）——create/update/upload 三条写入路径超限均如实拒绝、引导拆分。
+# 只有真实二进制文件（PDF/docx/图片，经 asset_uri 上传）才落 file 文档，由引擎切块承载。
+MAX_NATIVE_CONTENT_CHARS = 5000
+# 文档深链 URI：hasn://knowledge/documents/{doc_id}，{doc_id} 为云端权威文档 id（纯数字）。
+# 正文里无论裸写还是包在 Markdown 链接 [标题](hasn://knowledge/documents/123) 中都能被捕获。
+# 客户端无关 + 云端权威 id（见父仓 CLAUDE.md「hasn:// 资源地址客户端无关」「本地 ID 永不上 URI」两铁律）。
+_DOC_LINK_RE = re.compile(r'hasn://knowledge/documents/(\d+)')
 # folder_id 查询参数的「库根」哨兵（真实 id 从 1 起）
 ROOT_FOLDER_SENTINEL = 0
 
@@ -93,6 +103,9 @@ def _folder_dict(f: Folder) -> dict[str, Any]:
 def _document_dict(d: Document, *, with_content: bool = False) -> dict[str, Any]:
     data: dict[str, Any] = {
         'id': d.id,
+        # 文档深链（客户端无关 + 云端权威 id）：卡片/正文互连、webui 点击跳转都用它，
+        # 分身撰写深链时也照这个格式引用同库其它文档。
+        'uri': f'hasn://knowledge/documents/{d.id}',
         'kb_id': d.kb_id,
         'folder_id': d.folder_id,
         'kind': d.kind,
@@ -928,8 +941,82 @@ class KnowledgeService:
     # ---------- native documents（D9）----------
 
     def _validate_native_content(self, content: str) -> None:
-        if len(content.encode('utf-8')) > MAX_NATIVE_CONTENT_BYTES:
-            raise errors.RequestError(msg='正文超出大小上限 1MB')
+        # 按字符数（Unicode 码点）卡 5000 字上限；超限直接拒绝并引导拆分 + 深链互连，
+        # 不静默截断（截断会丢内容），也不自动降级为 file——原生优先原则：native 可编辑、
+        # 编辑成本低，长内容应拆成多篇聚焦的 native 文档 + 深链互连，而非落成难改的 file。
+        length = len(content)
+        if length > MAX_NATIVE_CONTENT_CHARS:
+            raise errors.RequestError(
+                msg=f'原生文档正文超出 {MAX_NATIVE_CONTENT_CHARS} 字上限（当前 {length} 字）：'
+                '请拆成多篇更聚焦的文档，并用深链 hasn://knowledge/documents/{doc_id} 互相关联'
+            )
+
+    async def check_document_links(
+        self, db: AsyncSession, resource_owner_id: str, kb_id: int, content: str
+    ) -> dict[str, Any]:
+        """校验正文里的文档深链是否合法（供分身写前预检 / 保存时强校验共用）。
+
+        逐个解析 hasn://knowledge/documents/{doc_id}，判定每条：
+        - not_found：目标文档不存在或已删除；
+        - cross_kb：目标文档存在但属于**别的**知识库（深链只能指向同一库内文档）；
+        - ok：存在、未删、且同库。
+        返回 {'valid': 全部 ok, 'total': 去重后链接数, 'invalid_count': 非法数, 'links': [...]}。
+        """
+        # 先确认 kb 归当前主人（越权/不存在如实抛）——避免拿别人的库当校验上下文。
+        await self._get_kb(db, resource_owner_id, kb_id)
+        # 去重保序：同一文档被引用多次只校验一次，但按首次出现顺序回报。
+        ref_ids: list[int] = []
+        seen: set[int] = set()
+        for m in _DOC_LINK_RE.finditer(content or ''):
+            doc_id = int(m.group(1))
+            if doc_id not in seen:
+                seen.add(doc_id)
+                ref_ids.append(doc_id)
+        if not ref_ids:
+            return {'valid': True, 'total': 0, 'invalid_count': 0, 'links': []}
+        # 一次批量取回被引用文档的 (id, kb_id, name)（只取未删除的）。
+        rows = (
+            await db.execute(
+                select(Document.id, Document.kb_id, Document.name).where(
+                    Document.id.in_(ref_ids), Document.deleted_time.is_(None)
+                )
+            )
+        ).all()
+        found: dict[int, tuple[int, str]] = {r[0]: (r[1], r[2]) for r in rows}
+        links: list[dict[str, Any]] = []
+        invalid = 0
+        for doc_id in ref_ids:
+            uri = f'hasn://knowledge/documents/{doc_id}'
+            hit = found.get(doc_id)
+            if hit is None:
+                invalid += 1
+                links.append({'doc_id': doc_id, 'uri': uri, 'ok': False, 'reason': 'not_found', 'title': None})
+            elif hit[0] != kb_id:
+                invalid += 1
+                links.append({'doc_id': doc_id, 'uri': uri, 'ok': False, 'reason': 'cross_kb', 'title': hit[1]})
+            else:
+                links.append({'doc_id': doc_id, 'uri': uri, 'ok': True, 'reason': None, 'title': hit[1]})
+        return {'valid': invalid == 0, 'total': len(ref_ids), 'invalid_count': invalid, 'links': links}
+
+    async def _assert_doc_links_valid(
+        self, db: AsyncSession, resource_owner_id: str, kb_id: int, content: str | None
+    ) -> None:
+        """保存原生文档时强校验深链合法性：有非法链接即整条拒绝，不落库。
+
+        「不能链接到不存在的文档或其它知识库的文档」——福仔明确要求保存时也要校验。
+        """
+        if not content:
+            return
+        result = await self.check_document_links(db, resource_owner_id, kb_id, content)
+        if result['valid']:
+            return
+        bad = [lk for lk in result['links'] if not lk['ok']]
+        _reason_zh = {'not_found': '不存在/已删除', 'cross_kb': '属于其它知识库'}
+        detail = '；'.join(f'{lk["uri"]}（{_reason_zh.get(lk["reason"], lk["reason"])}）' for lk in bad)
+        raise errors.RequestError(
+            msg=f'正文含 {len(bad)} 条无效深链，无法保存：{detail}。'
+            '深链只能指向同一知识库内已存在的文档，请先建好目标文档或修正链接'
+        )
 
     async def create_native_document(
         self,
@@ -945,6 +1032,8 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         """§4.3-B：正文落 PG（权威）+ 版本 1 → 渲染 .md 推引擎 → 触发解析。"""
         self._validate_native_content(content)
+        # 保存时强校验深链：不能指向不存在/已删除或其它库的文档，有非法即整条拒绝、不落库。
+        await self._assert_doc_links_valid(db, resource_owner_id, kb_id, content)
         kb = await self._get_kb(db, resource_owner_id, kb_id)
         folder_id = await self._validate_folder_for_kb(db, resource_owner_id, kb_id, folder_id)
         doc = Document(
@@ -1009,6 +1098,8 @@ class KnowledgeService:
             new_content = content if content is not None else (doc.content or '')
             if new_title != doc.name or new_content != (doc.content or ''):
                 self._validate_native_content(new_content)
+                # 保存时强校验深链（同库/存在/未删），有非法即整条拒绝、不落新版本。
+                await self._assert_doc_links_valid(db, resource_owner_id, doc.kb_id, new_content)
                 doc.name = new_title
                 doc.content = new_content
                 doc.size_bytes = len(new_content.encode('utf-8'))
@@ -1285,6 +1376,9 @@ class KnowledgeService:
                     'kb_id': kb.id if kb else None,
                     'kb_name': kb.name if kb else None,
                     'document_id': doc.id if doc else None,
+                    # 片段所属文档的深链（云端权威 id）：分身检索到片段不全时，凭它调 fetch_doc 取整篇，
+                    # 或在产出里引用为可点跳转链接。检索命中引擎切块 → 这里回填 PG 权威文档。
+                    'document_uri': (f'hasn://knowledge/documents/{doc.id}' if doc else None),
                     'document_name': doc.name if doc else c.get('document_keyword'),
                     'document_kind': doc.kind if doc else None,
                     'folder_id': doc.folder_id if doc else None,

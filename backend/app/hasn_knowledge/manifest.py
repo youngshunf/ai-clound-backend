@@ -83,7 +83,8 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
     'app_id': 'knowledge',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'knowledge': '知识库（库/文档/检索/问答）'},
-    'version': '2.2.0',
+    # 2.3.0：原生文档 5000 字上限 + 文档深链 hasn://knowledge/documents/{id} 保存时强校验 + 新增 check_links 预检工具。
+    'version': '2.3.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
     # 资源描述符（doc31 §2，RC-P6/doc31-A）：知识库 → hasn://knowledge/kbs/{kb_id}，应用内路由打开。
@@ -219,8 +220,9 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             name='upload_document',
             title='上传文档',
             description=(
-                '向主人的知识库上传文档并自动建立索引：content_text(纯文本内容→落可编辑的原生文档，超1MB回落文件)'
-                '或 asset_uri(已在私有桶的真实二进制文件引用)，二选一'
+                '向主人的知识库上传文档并自动建立索引。二选一：content_text(纯文本内容→一律落可编辑的原生文档，'
+                '知识库原生优先、能不落 file 就不落；超5000字不再回落 file 而是拒绝，请拆成多篇原生文档 + 深链 '
+                'hasn://knowledge/documents/{doc_id} 互连) 或 asset_uri(已在私有桶的真实二进制文件如 PDF/docx/图片 → 落 file 文档由引擎切块承载)'
             ),
             scopes=['knowledge:upload'],
             properties={
@@ -249,7 +251,13 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
         _cap(
             name='write_doc',
             title='写原生文档',
-            description='创建或更新知识库原生文档（Markdown，保存即重建索引，返回 doc_id）',
+            description=(
+                '创建或更新知识库原生文档（Markdown，保存即重建索引，返回 doc_id）。'
+                '正文上限 5000 字：超出请拆成多篇更聚焦的文档，并在正文里用深链 '
+                '[标题](hasn://knowledge/documents/{目标doc_id}) 互相关联（点击可跳转到同库文档）。'
+                '深链只能指向同一知识库内已存在的文档，保存时会强制校验，链接到不存在/其它库的文档会被拒绝；'
+                '写前可用 hasn.knowledge.check_links 预检'
+            ),
             scopes=['knowledge:write'],
             properties={
                 'kb_id': {'type': ['integer', 'null']},
@@ -262,6 +270,25 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             risk_level='medium',
             page_rank=21,
             tags=['knowledge', 'doc', 'write'],
+        ),
+        _cap(
+            name='check_links',
+            title='校验文档深链',
+            description=(
+                '写前预检正文里的文档深链 hasn://knowledge/documents/{doc_id} 是否合法（只校验、不落库）。'
+                '传 kb_id（新建文档前）或 doc_id（更新既有文档前）定位目标库，逐条判定 ok / not_found(不存在或已删) / '
+                'cross_kb(属其它库)。与 write_doc/upload_document 保存时的强校验同一套判据——预检 valid 即保存不会被拒。'
+            ),
+            scopes=['knowledge:read'],
+            properties={
+                'kb_id': {'type': ['integer', 'null']},
+                'doc_id': {'type': ['integer', 'null']},
+                'content': {'type': 'string'},
+            },
+            required=['content'],
+            risk_level='low',
+            page_rank=14,
+            tags=['knowledge', 'doc', 'read'],
         ),
         _cap(
             name='move_document',
@@ -390,6 +417,18 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             resource_access=[
                 {'param': 'doc_id', 'type': 'knowledge_doc', 'need': 'editor', 'required': False},
                 {'param': 'kb_id', 'type': 'knowledge', 'need': 'editor', 'required': False},
+            ],
+        ),
+        # check_links 只读预检深链：传 kb_id（新建前）或 doc_id（更新前）定位库；两者皆 optional，
+        # 门只对**实际传入**的那个判权，viewer 档（只校验、不落库）。
+        _tool(
+            name='check_links',
+            scopes=['knowledge:read'],
+            risk_level='low',
+            idempotent=True,
+            resource_access=[
+                {'param': 'doc_id', 'type': 'knowledge_doc', 'need': 'viewer', 'required': False},
+                {'param': 'kb_id', 'type': 'knowledge', 'need': 'viewer', 'required': False},
             ],
         ),
         _tool(
