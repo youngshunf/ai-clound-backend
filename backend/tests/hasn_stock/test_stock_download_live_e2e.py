@@ -111,24 +111,34 @@ def _ctx() -> AgentContext:
 
 
 def _host_resolves_reserved(host: str) -> bool:
-    """host 是否被本机解析进保留/私网/环回网段（fake-ip 透明代理特征）。
+    """host 是否被本机解析进保留网段**且真实出网不可达**（不具备活体条件）。
 
-    是 → 真实出网不可达，活体下载会被 SSRF 闸正确拦截，此环境不具备活体条件。
+    透明代理（Clash/Mihomo）dev 环境会把域名解析进 fake-ip 段（198.18.0.0/15，含其
+    IPv6 内嵌形式）——此时字节层经代理仍能真实出网，且 SSRF 闸在 dev 已放行 fake-ip
+    （见 download_service._is_dev_fake_ip），故**不算不可达**、活体段可真跑。仅当解析到
+    fake-ip 之外的真 reserved（无代理直连、目标不可达）或解析失败时才判不可达 → skip。
     """
     import ipaddress
+
+    from backend.app.hasn_stock.service.download_service import _is_dev_fake_ip
 
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        return True  # 解析不了也视作不具备出网条件
+        return True  # 解析不了 → 不具备出网条件
+    saw_dev_fake_ip = False
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
+        if _is_dev_fake_ip(ip):
+            saw_dev_fake_ip = True  # dev 透明代理 fake-ip：字节层能真实出网，不算不可达
+            continue
         if not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
-            return False  # 有一个真公网 IP → 具备出网条件
-    return True
+            return False  # 有真公网 IP → 具备出网条件
+    # 全是 dev fake-ip（透明代理可出网）→ 具备条件；否则全真 reserved/解析失败 → 不可达
+    return not saw_dev_fake_ip
 
 
 # --------------------------------------------------------------------------- #

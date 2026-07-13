@@ -26,6 +26,7 @@ from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_stock.service.provider_store import stock_provider_store
+from backend.core.conf import settings
 from backend.database.db import async_db_session
 from backend.plugin.s3.service.storage_service import StorageService
 
@@ -50,6 +51,31 @@ def _host_in_whitelist(host: str, whitelist: set[str]) -> bool:
     return any(host == d or host.endswith('.' + d) for d in whitelist)
 
 
+# 透明代理（Clash/Surge/Mihomo TUN 模式）默认把公网域名劫持解析到 fake-ip 占位段
+# 198.18.0.0/15（RFC 2544 benchmarking 保留段，正常内网/生产环境绝不会使用）。
+# 仅开发环境（ENVIRONMENT='dev'）放行该段，让本机能真实测通 stock.download；
+# 生产 ENVIRONMENT='prod' 永不放行，且生产真实 DNS 永不解析到此段 → 行为/安全零变化。
+# 真内网段（10/172.16/192.168/127/169.254）无论 dev/prod 一律拒，不放宽任何真实安全。
+_FAKE_IP_RANGE = ipaddress.ip_network('198.18.0.0/15')
+
+
+def _is_dev_fake_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """开发环境下，透明代理 fake-ip 占位段视为可放行（仅本机测试用，生产永不触发）。
+
+    透明代理（Clash/Mihomo）对同一域名常同时返回 IPv4 fake-ip（198.18.0.x）和内嵌
+    该 IPv4 的 IPv6 形式（如 ::ffff:0:c612:d4，低 32 位 c612:00d4 = 198.18.0.212）。
+    两种都要识别放行，否则遍历到 IPv6 fake-ip 仍会误伤。仅 dev 生效、且必须落在
+    fake-ip 段（198.18.0.0/15，正常内网/公网绝不使用），生产 prod 直接短路返回。
+    """
+    if settings.ENVIRONMENT != 'dev':
+        return False
+    candidate: ipaddress.IPv4Address | ipaddress.IPv6Address = ip
+    if isinstance(ip, ipaddress.IPv6Address):
+        # IPv4-mapped 优先，否则取低 32 位当内嵌 IPv4，比对 fake-ip 段
+        candidate = ip.ipv4_mapped or ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return isinstance(candidate, ipaddress.IPv4Address) and candidate in _FAKE_IP_RANGE
+
+
 def _reject_private_ip(host: str) -> None:
     """解析 host → IP，任一为内网/环回/链路本地/保留 → 拒绝（SSRF 防线之二）。"""
     try:
@@ -61,6 +87,9 @@ def _reject_private_ip(host: str) -> None:
         try:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
+            continue
+        # 开发环境放行透明代理 fake-ip 占位段（198.18.0.0/15）——本机测通用，生产永不触发
+        if _is_dev_fake_ip(ip):
             continue
         if (
             ip.is_private

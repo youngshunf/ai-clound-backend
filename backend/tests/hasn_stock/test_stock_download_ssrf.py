@@ -69,6 +69,35 @@ def test_reject_private_ip_allows_public_numeric() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 方案A：dev 放行透明代理 fake-ip 段（198.18.0.0/15），prod 严格拒、真内网永远拒
+# 固化安全不变量——「本机放行仅限 fake-ip 占位段，生产/真内网零放宽」。
+# --------------------------------------------------------------------------- #
+
+
+def test_reject_private_ip_dev_allows_fake_ip_but_not_real_internal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dev 环境放行透明代理 fake-ip 段（198.18.0.0/15），但真内网段仍一律拒（安全不放宽）。"""
+    from backend.app.hasn_stock.service import download_service
+
+    monkeypatch.setattr(download_service.settings, 'ENVIRONMENT', 'dev')
+    # fake-ip 段（RFC2544 benchmarking 保留，透明代理占位）→ dev 放行（不抛）
+    _reject_private_ip('198.18.0.212')
+    _reject_private_ip('198.19.255.1')  # /15 段内上界
+    # 真内网段无论 dev/prod 一律拒——尤其云元数据端点必须永远拒
+    for internal in ('10.0.0.1', '192.168.1.1', '127.0.0.1', '169.254.169.254'):
+        with pytest.raises(StockDownloadError):
+            _reject_private_ip(internal)
+
+
+def test_reject_private_ip_prod_rejects_fake_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """生产 prod 环境：fake-ip 段也不放行——生产不受开发放行影响（安全零降级）。"""
+    from backend.app.hasn_stock.service import download_service
+
+    monkeypatch.setattr(download_service.settings, 'ENVIRONMENT', 'prod')
+    with pytest.raises(StockDownloadError):
+        _reject_private_ip('198.18.0.212')
+
+
+# --------------------------------------------------------------------------- #
 # _ssrf_check：https + host 白名单 + 非内网 IP 三重
 # --------------------------------------------------------------------------- #
 
