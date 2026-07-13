@@ -54,6 +54,9 @@ class StockSearchTool(BaseTool):
         return (
             '搜外部素材站（图片 + 视频），返回候选直链供挑选。'
             f'当前可选素材站：{sources}（不传 source 走默认 failover 链，按优先级逐站尝试）。'
+            '每条候选带一个 description（素材语义描述，来自 pexels alt / pixabay tags / coverr 简介）——'
+            '选中后下载时把它原样回传给 hasn.stock.download 的 description 参数，能让这张素材日后被 '
+            'hasn.artifact.search 按语义关键词搜回。'
             '⚠️ 出参的 source_url 是外站直链，**禁止**直接写进正文或对外发布（会被防盗链/随时失效）；'
             '选中素材务必先用 hasn.stock.download 收进私有桶，正文只用它返回的 hasn://asset/{id}。'
         )
@@ -134,6 +137,9 @@ class StockDownloadTool(BaseTool):
             '把 hasn.stock.search 选中的素材（source_url）下载进你主人的私有桶，返回可安全引用的 '
             'hasn://asset/{id}，并自动登记进产物库（此后可被 hasn.artifact.search 搜回、可在正文用 '
             '![](hasn://asset/{id}) 嵌图）。只接受素材站白名单内的 https 直链，不是通用下载器。'
+            '⭐ 强烈建议把该素材在 search 出参里的 description 原样回传给 description 参数——它会作为'
+            '产物的语义摘要落库，让这张素材日后能被「日落/城市/花卉」等关键词搜回（否则只能靠文件名搜，'
+            '而素材文件名往往是 pexels-photo-123.jpg 这种无意义串）。'
         )
 
     @property
@@ -143,6 +149,13 @@ class StockDownloadTool(BaseTool):
             'properties': {
                 'url': {'type': 'string', 'description': '素材直链（取自 hasn.stock.search 出参的 source_url）'},
                 'title': {'type': 'string', 'description': '展示标题（可选）'},
+                'description': {
+                    'type': 'string',
+                    'description': (
+                        '素材语义描述（可选但强烈建议）：把该素材在 hasn.stock.search 出参里的 '
+                        'description 字段原样传入，会落进产物 summary，显著提升日后 hasn.artifact.search 的召回。'
+                    ),
+                },
             },
             'required': ['url'],
         }
@@ -162,6 +175,7 @@ class StockDownloadTool(BaseTool):
             agent_hasn_id=agent_context.agent_hasn_id,
             url=raw.strip(),
             title=(arguments.get('title') or None),
+            description=(arguments.get('description') or None),
             session_id=agent_context.work_session_id,
         )
 

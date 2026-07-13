@@ -230,6 +230,9 @@ async def test_store_and_register_with_real_bytes_roundtrip() -> None:
     await _seed_provider(_LIVE_HOST)  # 让 provider_for_domain 能解析出 provider 元数据
     data = _real_png_bytes()
     title = f'stock-store-live-{uuid4().hex[:8]}'
+    # 语义描述里放一个**只在 description、绝不在 title 出现**的独特词，用来证明 summary 驱动检索召回。
+    desc_token = f'sunsetbeach{uuid4().hex[:8]}'
+    description = f'a woman walking on the {desc_token} at golden hour'
     # url 仅用于 provider_for_domain(host) + 文件名推导；字节来自上面的真实 PNG。
     fake_source_url = f'https://{_LIVE_HOST}/{title}.png'
 
@@ -241,6 +244,7 @@ async def test_store_and_register_with_real_bytes_roundtrip() -> None:
         content_type='image/png',
         url=fake_source_url,
         title=title,
+        description=description,
     )
 
     asset_uri = result.get('asset_uri', '')
@@ -254,6 +258,14 @@ async def test_store_and_register_with_real_bytes_roundtrip() -> None:
     found = await ArtifactSearchTool().execute(_ctx(), {'query': title})
     ids = [it.get('artifact_id') or it.get('id') for it in found.get('items', [])]
     assert artifact_id in ids, f'落桶产物 {artifact_id} 未被 artifact.search 搜回：{ids}'
+
+    # ⭐ summary 驱动召回：按**只出现在 description（→ summary）里、不在 title 里**的独特词搜，
+    # 也能搜回。证明「补 summary 提升检索召回」真生效——素材文件名无意义时靠语义描述也能找回。
+    by_desc = await ArtifactSearchTool().execute(_ctx(), {'query': desc_token})
+    desc_ids = [it.get('artifact_id') or it.get('id') for it in by_desc.get('items', [])]
+    assert artifact_id in desc_ids, (
+        f'落桶产物 {artifact_id} 未能按 description 语义词 {desc_token} 搜回（summary 未生效）：{desc_ids}'
+    )
 
     # 清理本次创建的 artifact/asset 行（真实删除，不留残行）。
     aid = asset_uri.rsplit('/', 1)[-1]

@@ -49,6 +49,22 @@ def _clamp_per_page(per_page: int | None) -> int:
     return min(per_page, _PER_PAGE_MAX)
 
 
+# 素材站语义描述最大长度（供分身回传 stock.download → 落 artifact summary）
+_DESC_MAX = 240
+
+
+def _norm_description(*parts: str | None) -> str | None:
+    """把 provider 的语义描述字段（pexels alt / pixabay tags / coverr 标题+简介）归一：
+    拼接非空片段 → 折叠空白 → 截断 240 字，空则 None。
+
+    这段文本会由分身回传给 `hasn.stock.download` 落进 artifact `summary`，让下载的素材能被
+    `hasn.artifact.search` 按「日落/城市/花卉」等语义关键词搜回（素材文件名/标题常无意义）。
+    """
+    joined = ' '.join(str(p).strip() for p in parts if p and str(p).strip())
+    cleaned = ' '.join(joined.split())
+    return cleaned[:_DESC_MAX] or None
+
+
 def _pexels_orientation(orientation: str | None) -> str | None:
     # pexels 接受 landscape/portrait/square，直传。
     return orientation if orientation in ('landscape', 'portrait', 'square') else None
@@ -112,6 +128,8 @@ async def _search_pexels(
                 'width': best.get('width') or v.get('width'),
                 'height': best.get('height') or v.get('height'),
                 'duration_ms': int((v.get('duration') or 0) * 1000) or None,
+                # pexels 视频无 alt/tags；退而取上传者名（弱语义，聊胜于无）
+                'description': _norm_description((v.get('user') or {}).get('name')),
                 'license': pv.license_terms_url,
             })
         return out
@@ -129,6 +147,8 @@ async def _search_pexels(
             'preview_url': src.get('medium') or src.get('tiny'),
             'width': p.get('width'),
             'height': p.get('height'),
+            # pexels 图片 alt 是人工描述（如 "Woman walking on beach at sunset"），语义强
+            'description': _norm_description(p.get('alt')),
             'license': pv.license_terms_url,
         })
     return out
@@ -156,6 +176,8 @@ async def _search_pixabay(
                 'width': picked.get('width'),
                 'height': picked.get('height'),
                 'duration_ms': int((h.get('duration') or 0) * 1000) or None,
+                # pixabay tags 是逗号分隔关键词（如 "flower, nature, macro"），检索价值高
+                'description': _norm_description(h.get('tags')),
                 'license': pv.license_terms_url,
             })
         return out
@@ -179,6 +201,8 @@ async def _search_pixabay(
             'preview_url': h.get('webformatURL') or h.get('previewURL'),
             'width': h.get('imageWidth'),
             'height': h.get('imageHeight'),
+            # pixabay tags 逗号分隔关键词（如 "flower, nature, macro"），检索价值高
+            'description': _norm_description(h.get('tags')),
             'license': pv.license_terms_url,
         })
     return out
@@ -214,6 +238,8 @@ async def _search_coverr(
             'width': (v.get('info') or {}).get('width'),
             'height': (v.get('info') or {}).get('height'),
             'duration_ms': duration_ms,
+            # coverr 有标题 + 简介，拼起来作语义描述
+            'description': _norm_description(v.get('title'), v.get('description')),
             'license': pv.license_terms_url,
         })
     return out

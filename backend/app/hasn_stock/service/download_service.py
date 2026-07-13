@@ -108,6 +108,7 @@ class StockDownloadService:
         agent_hasn_id: str,
         url: str,
         title: str | None = None,
+        description: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         """执行五步下载落桶双登记。身份由调用方（AgentContext）注入。
@@ -115,6 +116,11 @@ class StockDownloadService:
         分两段：`_stream_download`（外站取字节，唯一需真实出网的一步）→ `_store_and_register`
         （落桶+双登记+组装出参）。拆开是为让「落桶→双登记→检索」后半程能被真实基础设施
         E2E 独立覆盖（不依赖外站出网），前半程的纯网络取字节留给真实出网环境验证。
+
+        `description`：素材站的语义描述（pexels alt / pixabay tags / coverr title+简介），
+        取自 `hasn.stock.search` 出参的 `description`，落进 artifact `summary` 提升检索召回——
+        下载的素材文件名/标题往往无意义（`pexels-photo-123.jpg`），有了语义 summary 才能被
+        `hasn.artifact.search` 按「日落/城市/花卉」等关键词搜回。
         """
         whitelist = await stock_provider_store.enabled_download_domains()
         if not whitelist:
@@ -128,6 +134,7 @@ class StockDownloadService:
             content_type=content_type,
             url=url,
             title=title,
+            description=description,
             session_id=session_id,
         )
 
@@ -140,12 +147,16 @@ class StockDownloadService:
         content_type: str,
         url: str,
         title: str | None = None,
+        description: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         """下载后半程：已取到的字节 → 落 owner 私有桶 → 双登记 → 组装出参。
 
         与 `_stream_download`（外站取字节）解耦，便于用真实桶 + 真实 PG 覆盖
         「落桶→register_asset→hasn_artifacts.record」这一环，无需真实外站出网。
+
+        `description`（素材站语义描述）落进 artifact `summary`，提升素材被 `hasn.artifact.search`
+        搜回的召回（文件名/标题常无意义，summary 才承载「日落/城市/花卉」等可检索语义）。
         """
         kind_media, _cap = _kind_and_cap(content_type)  # image / video
         provider_view = await stock_provider_store.provider_for_domain(host=(urlparse(url).hostname or ''))
@@ -171,6 +182,9 @@ class StockDownloadService:
                 params=RecordArtifactParam(
                     kind=kind_media,  # artifact 层 kind=image|video（都在白名单内）
                     title=(title or filename),
+                    # 素材站语义描述落 summary → hasn.artifact.search 按语义关键词可搜回
+                    # （search 命中 title OR summary；素材文件名/标题常无意义，summary 才承载可检索语义）。
+                    summary=(description or None),
                     asset_id=asset.asset_id,
                     resource_uri=asset_uri,
                     session_id=session_id,

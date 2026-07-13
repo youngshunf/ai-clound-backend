@@ -57,10 +57,11 @@ def test_download_tool_static_declaration() -> None:
     assert t.required_scopes == []
 
 
-def test_download_input_schema_only_url_and_title() -> None:
+def test_download_input_schema_props() -> None:
+    # url 必填；title/description 可选（description 落 artifact summary 提升检索召回）。
     schema = StockDownloadTool().input_schema
     props = schema['properties']
-    assert set(props) == {'url', 'title'}
+    assert set(props) == {'url', 'title', 'description'}
     assert schema['required'] == ['url']
 
 
