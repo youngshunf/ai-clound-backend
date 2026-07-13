@@ -481,6 +481,28 @@ class KnowledgeService:
         await db.flush()
         return _kb_dict(kb)
 
+    async def update_kb(
+        self,
+        db: AsyncSession,
+        resource_owner_id: str,
+        kb_id: int,
+        *,
+        name: str | None,
+        description: str | None,
+    ) -> dict[str, Any]:
+        """改库名 / 描述：只动域行的展示元数据，不碰 RAGFlow dataset（内部名与索引不变）。
+
+        权限已在 caller（app 端点）用 authorize_kb(need='manager') 兜过；这里按 kb.owner_id
+        取行后原地改字段。name 传空/仅空白则不动库名（避免误清空）；description 显式传入即覆盖。
+        """
+        kb = await self._get_kb(db, resource_owner_id, kb_id)
+        if name is not None and name.strip():
+            kb.name = name.strip()
+        if description is not None:
+            kb.description = description.strip() or None
+        await db.flush()
+        return _kb_dict(kb)
+
     async def delete_kb(self, db: AsyncSession, resource_owner_id: str, kb_id: int) -> None:
         """删库：级联删 RAGFlow dataset + 文档/目录行。引擎不可达如实报错（避免残留孤儿向量可检索）。"""
         kb = await self._get_kb(db, resource_owner_id, kb_id)

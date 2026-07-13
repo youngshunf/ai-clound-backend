@@ -44,6 +44,11 @@ class CreateKbRequest(BaseModel):
     description: str | None = Field(default=None, max_length=512, description='描述')
 
 
+class UpdateKbRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128, description='库名（空=不改）')
+    description: str | None = Field(default=None, max_length=512, description='描述（空串=清空）')
+
+
 class CreateFolderRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128, description='目录名')
     parent_id: int | None = Field(default=None, description='父目录 ID（空=库根）')
@@ -117,6 +122,22 @@ async def create_kb(request: Request, db: CurrentSessionTransaction, body: Creat
         raise to_http_error(exc) from exc
     await knowledge_service.write_ui_audit(
         db, owner_id=owner_id, user_id=request.user.id, method='ui.create_kb', context={'kb_id': data['id']}
+    )
+    return response_base.success(data=data)
+
+
+@router.put('/kbs/{kb_id}', summary='改知识库名称 / 描述（需 manager 权）', dependencies=[DependsJwtAuth])
+async def update_kb(
+    request: Request, db: CurrentSessionTransaction, kb_id: int, body: UpdateKbRequest
+) -> ResponseModel:
+    owner_id = await _resolve_owner(db, request)
+    kb = await knowledge_service.authorize_kb(db, subject=Subject.human(owner_id), kb_id=kb_id, need='manager')
+    data = await knowledge_service.update_kb(
+        db, kb.owner_id, kb_id, name=body.name, description=body.description
+    )
+    await knowledge_service.write_ui_audit(
+        db, owner_id=kb.owner_id, user_id=request.user.id, method='ui.update_kb',
+        context={'kb_id': kb_id, 'actor': owner_id},
     )
     return response_base.success(data=data)
 

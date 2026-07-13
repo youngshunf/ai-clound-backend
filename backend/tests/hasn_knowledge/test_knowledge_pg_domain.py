@@ -156,6 +156,29 @@ async def test_owner_row_isolation(session) -> None:
     assert [k['id'] for k in kbs] == [kb.id]
 
 
+async def test_update_kb_name_and_description(session) -> None:
+    """改库名 / 描述：只动域行元数据，name 空白不清库名，description 空串清空。"""
+    tag = uuid.uuid4().hex[:8]
+    owner = f'h_test_{tag}'
+    kb = _kb_row(owner, tag)
+    session.add(kb)
+    await session.flush()
+
+    # 正常改名 + 改描述
+    out = await knowledge_service.update_kb(session, owner, kb.id, name='新库名', description='新描述')
+    assert out['name'] == '新库名'
+    assert out['description'] == '新描述'
+
+    # name 传纯空白 → 不改库名；description 显式空串 → 清空为 None
+    out2 = await knowledge_service.update_kb(session, owner, kb.id, name='   ', description='')
+    assert out2['name'] == '新库名'
+    assert out2['description'] is None
+
+    # 别的 owner 改不到（按不存在处理）
+    with pytest.raises(errors.NotFoundError):
+        await knowledge_service.update_kb(session, f'h_other_{tag}', kb.id, name='越权', description=None)
+
+
 async def test_native_version_bookkeeping_without_engine(session) -> None:
     """版本记账（纯 PG 断言；引擎同步状态由真实 E2E 验证，这里只看 PG 权威侧不丢正文）。"""
     tag = uuid.uuid4().hex[:8]
