@@ -30,6 +30,8 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_designsystem.service.design_system_service import (
     Subject,
+    _authoritative_scenes,
+    _manifest_with_scenes,
     _normalize_required_scenes,
     _scene_coverage_annotation,
     _scene_coverage_hint,
@@ -117,6 +119,49 @@ def test_scene_coverage_annotation_and_hint_pure() -> None:
     ann_none = _scene_coverage_annotation(['brand_website'], None)
     assert ann_none[0]['presentCount'] == 0
     assert len(ann_none[0]['missing']) == 5
+
+
+# 品牌网站全 5 件标准组件都打了标记的组件画廊 HTML（check_scenes 会判 complete）。
+_BRAND_WEBSITE_FULL_HTML = (
+    '<section data-ds-scene="brand_website">'
+    '<nav data-ds-component="nav">导航</nav>'
+    '<div data-ds-component="hero">首屏</div>'
+    '<div data-ds-component="features">特性</div>'
+    '<div data-ds-component="cta">立即体验</div>'
+    '<footer data-ds-component="footer">页脚</footer>'
+    '</section>'
+)
+
+
+# ── 纯函数：零信任——场景覆盖据实际 HTML 重算，绝不信自带 manifest.scenes ─────────
+def test_authoritative_scenes_overrides_manifest_pure() -> None:
+    """根因守卫：分身把画廊标记补齐了却没重跑抽取器（manifest.scenes 空/漂移），详情页也须显示配齐。
+
+    ``_authoritative_scenes`` 只看 ``components_html``（与 check_scenes 同源 detect_scenes）；
+    ``_manifest_with_scenes`` 恒用它覆盖 manifest 里的 ``scenes``，不信分身自带的那份。
+    """
+    # 1) HTML 有全部品牌网站标记 → 检出 brand_website 且 complete
+    scenes = _authoritative_scenes(_BRAND_WEBSITE_FULL_HTML)
+    bw = next(s for s in scenes if s['id'] == 'brand_website')
+    assert bw['complete'] is True
+    assert set(bw['presentComponents']) == {'nav', 'hero', 'features', 'cta', 'footer'}
+
+    # 2) manifest 自带**空/漂移** scenes → 被 HTML 实测覆盖（其余字段保留、不原地改入参）
+    stale = {'groups': [{'name': 'x'}], 'scenes': []}  # 分身漏填 → 之前详情页 0/5 的根因
+    merged = _manifest_with_scenes(stale, _BRAND_WEBSITE_FULL_HTML)
+    assert merged is not stale and stale['scenes'] == []  # 入参不被原地改
+    assert merged['groups'] == [{'name': 'x'}]
+    merged_bw = next(s for s in merged['scenes'] if s['id'] == 'brand_website')
+    assert merged_bw['complete'] is True
+
+    # 3) manifest 缺失但 HTML 检出场景 → 合成最小 {'scenes': [...]}
+    synth = _manifest_with_scenes(None, _BRAND_WEBSITE_FULL_HTML)
+    assert isinstance(synth, dict) and any(s['id'] == 'brand_website' for s in synth['scenes'])
+
+    # 4) HTML 空/无标记 → 空覆盖；manifest 为 None 且无场景 → 原样返回 None（不臆造）
+    assert _authoritative_scenes('') == []
+    assert _authoritative_scenes('<div>无标记</div>') == []
+    assert _manifest_with_scenes(None, '') is None
 
 
 # ── 真实 PG：默认值 ────────────────────────────────────────────────────────────
@@ -218,3 +263,46 @@ async def test_soft_hint_is_nonblocking(session) -> None:
     # 五必填齐 → 完成水位落地（软提示不阻断）
     assert saved['completed_notified_at'] is not None
     assert saved['required_scenes'] == ['brand_website']
+
+
+# ── 真实 PG：get 序列化据 HTML 重算 scenes（修「画廊已配齐但详情页 0/N 缺」）─────────
+async def test_get_derives_manifest_scenes_from_html_not_stored_manifest(session) -> None:
+    """根因回归：存的 manifest 没有 scenes[]（分身漏填），但画廊 HTML 标记齐全 →
+
+    ``get`` 返回的 ``components_manifest_json.scenes`` 必须据实际 HTML 重算出 brand_website 配齐，
+    与 check_scenes 逐场景一致。这样存量行无需重存、详情页覆盖分区即修好。
+    """
+    tag = uuid.uuid4().hex[:8]
+    owner = f'h_{tag}'
+    agent = f'a_{tag}'
+    # 关键构造：manifest **不含** scenes[]（模拟分身补齐画廊标记却没重跑抽取器），但 HTML 标记齐全
+    content = {
+        'tokens_css': ':root { --accent: #2563EB; }',
+        'design_tokens_json': {'schemaVersion': 1, 'tokens': []},
+        'tailwind_css': '@theme {}',
+        'design_md': '# 设计说明',
+        'components_html': _BRAND_WEBSITE_FULL_HTML,
+        'components_manifest_json': {'groups': [{'name': 'buttons'}]},  # 无 scenes 键
+        'token_contract_report_json': {'summary': {'score': 90, 'grade': 'good', 'recommendRebuild': False}},
+    }
+    saved = await design_system_service.save(
+        session,
+        subject=Subject.agent(agent, owner),
+        design_system_id=None,
+        slug=f'sc-{tag}',
+        name='画廊齐但manifest漏scenes',
+        content=content,
+        required_scenes=['brand_website'],
+    )
+    ds_id = saved['id']
+
+    got = await design_system_service.get(session, design_system_id=ds_id, viewer_owner_hasn_id=owner)
+    manifest = got['current_revision']['components_manifest_json']
+    assert isinstance(manifest, dict)
+    scenes = manifest.get('scenes')
+    assert isinstance(scenes, list) and scenes, 'get 必须据 HTML 重算注入 scenes[]，即便存的 manifest 没有'
+    bw = next(s for s in scenes if s['id'] == 'brand_website')
+    assert bw['complete'] is True  # 详情页「品牌网站 5/5 已配齐」，不再假显 0/5
+    # 覆盖标注交叉 required_scenes 也应判齐（与详情页 SceneCoveragePanel 同口径）
+    ann = _scene_coverage_annotation(saved['required_scenes'], scenes)
+    assert ann[0]['complete'] is True

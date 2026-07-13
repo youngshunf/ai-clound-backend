@@ -31,6 +31,7 @@ from backend.app.hasn_designsystem.core.gallery_projection import (
 from backend.app.hasn_designsystem.core.scenes import (
     DEFAULT_REQUIRED_SCENES,
     SCENE_STANDARDS,
+    detect_scenes,
     is_known_scene,
 )
 from backend.app.hasn_designsystem.model import Collaborator, DesignSystem, Revision
@@ -194,15 +195,32 @@ def _scene_coverage_hint(annotation: list[dict[str, Any]]) -> str | None:
     return '；'.join(parts) or None
 
 
-def _manifest_scenes_of(content: dict[str, Any]) -> Any:
-    """从 save 入参 content 里取 components.manifest 的 scenes[]（daemon/Python core 抽取器已填）。
+def _authoritative_scenes(components_html: Any) -> list[dict[str, Any]]:
+    """零信任：场景覆盖一律据实际 ``components_html`` 重算（与 ``check_scenes`` 同源 ``detect_scenes``）。
 
-    manifest 存为 JSONB → 取到即 dict；非 dict（缺失/畸形）→ 返回 None（annotation 侧当全缺处理）。
+    绝不信分身自带 manifest 里的 ``scenes[]``——它是分身产出时的一次快照，可能与最终画廊 HTML 漂移
+    （分身把画廊标记补齐了却没重跑抽取器、或手写了 manifest），于是详情页「明明配齐却显示 0/N 缺」、
+    而 ``check_scenes`` 却通过（后者一直读实时 HTML）。对齐 ``gallery_health``「不信自带 manifest，
+    零信任重算」。HTML 缺失/非法 → 空列表。
     """
-    manifest = content.get('components_manifest_json')
+    if not isinstance(components_html, str) or not components_html:
+        return []
+    return detect_scenes(components_html)
+
+
+def _manifest_with_scenes(manifest: Any, components_html: Any) -> Any:
+    """序列化边界：把 manifest 的 ``scenes[]`` 换成据 ``components_html`` 实测的权威覆盖报告。
+
+    manifest 是 dict → 浅拷贝后覆盖 ``scenes``（绝不原地改 ORM 的 JSONB）；manifest 缺失/畸形但 HTML
+    检出场景 → 合成最小 ``{'scenes': [...]}`` 让详情页覆盖分区能算；两者皆空 → 原样返回（None/原值）。
+    这样存量行无需重存即修好、且详情页覆盖分区与 ``check_scenes`` 逐场景恒一致（同一 detect_scenes）。
+    """
+    scenes = _authoritative_scenes(components_html)
     if isinstance(manifest, dict):
-        return manifest.get('scenes')
-    return None
+        return {**manifest, 'scenes': scenes}
+    if scenes:
+        return {'scenes': scenes}
+    return manifest
 
 
 def _ds_dict(d: DesignSystem) -> dict[str, Any]:
@@ -248,7 +266,9 @@ def _revision_dict(r: Revision, *, with_content: bool = True) -> dict[str, Any]:
             'tailwind_css': r.tailwind_css,
             'design_md': r.design_md,
             'components_html': r.components_html,
-            'components_manifest_json': r.components_manifest_json,
+            # DSGAL 修：场景覆盖据实际 components_html 重算后注入 manifest（零信任），根治「组件画廊已配齐
+            # 但详情页场景覆盖显示 0/N 缺」——存量行无需重存即修好，且与 check_scenes 逐场景恒一致。
+            'components_manifest_json': _manifest_with_scenes(r.components_manifest_json, r.components_html),
             'token_contract_report_json': r.token_contract_report_json,
         })
     return out
@@ -442,7 +462,8 @@ class DesignSystemService:
             # DSGAL：软提示——交叉 owner 要求的 required_scenes 与本版 manifest.scenes[]，算「品牌网站 3/5 ·
             # 缺 CTA/页脚」。不阻断发卡（完成判定见上 should_notify，只看五项必填字段）。
             scene_coverage = _scene_coverage_annotation(
-                _normalize_required_scenes(d.required_scenes), _manifest_scenes_of(content)
+                _normalize_required_scenes(d.required_scenes),
+                _authoritative_scenes(content.get('components_html')),
             )
             try:
                 await self._notify_designsystem_ready(
@@ -700,8 +721,9 @@ class DesignSystemService:
             'available_scenes': [s['id'] for s in summary['scenes']],
         }
         # manifest 是整包统计，只在**整包取**（未切片）时带上；按场景切片时省略（分身只要那一场景的 markup）。
+        # 同 get 详情：manifest.scenes[] 据实际整包 HTML 重算（零信任），保证分身取回的覆盖报告与实况一致。
         if not slice_applied:
-            result['components_manifest_json'] = manifest
+            result['components_manifest_json'] = _manifest_with_scenes(manifest, original_html)
         return result
 
     async def delete(self, db: AsyncSession, *, design_system_id: int, owner_hasn_id: str) -> None:
