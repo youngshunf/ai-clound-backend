@@ -23,6 +23,7 @@ from sqlalchemy import func, or_, select
 
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
+from backend.app.hasn_designsystem.core.gallery_health import assess_gallery_health
 from backend.app.hasn_designsystem.core.scenes import (
     DEFAULT_REQUIRED_SCENES,
     SCENE_STANDARDS,
@@ -313,6 +314,14 @@ class DesignSystemService:
         `required_scenes`：owner 派发时要求覆盖的组件画廊场景（None=不改，新建时回落默认 [brand_website]）。
         """
         owner = subject.owner_hasn_id
+
+        # 组件画廊可渲染性硬闸（山茶茶间事故根治·零 fake 不把坏画廊静默入库）：正文用了 CSS 类名
+        # 却零组件样式规则、又没内联样式兜底 → 画廊会退化成裸语义 HTML。此时拒绝落库，把可照做的
+        # 整改说明诚实回给分身（二选一：全内联 var(--token) / 或 <style> 写全类规则），让它自行修好再存。
+        health = assess_gallery_health(content.get('components_html') if isinstance(content, dict) else None)
+        if not health.healthy:
+            raise errors.RequestError(msg=health.reason)
+
         hashed = _content_hash(content)
         now = timezone.now()
 
