@@ -23,9 +23,10 @@ import sqlalchemy as sa
 from backend.app.hasn_task.crud.crud_workflow import (
     hasn_workflow_dao,
     hasn_workflow_edge_dao,
+    hasn_workflow_node_dao,
     hasn_workflow_run_dao,
 )
-from backend.app.hasn_task.model import HasnWorkflow, HasnWorkflowEdge
+from backend.app.hasn_task.model import HasnWorkflow, HasnWorkflowEdge, HasnWorkflowNode
 from backend.app.hasn_task.service.task_service import calc_next_run_at
 from backend.common.exception import errors
 
@@ -245,6 +246,27 @@ class WorkflowService:
                     'nk': node.node_key,
                 },
             )
+            # 双写节点专属表 workflow_node（P1 expand-only：读侧优先本表，task 节点行保留兼容）
+            db.add(
+                HasnWorkflowNode(
+                    node_uuid=f'nd_{uuid.uuid4().hex}',
+                    workflow_uuid=workflow_uuid,
+                    owner_id=owner_id,
+                    node_key=node.node_key,
+                    name=node.name or node.node_key,
+                    description=node.description,
+                    agent_id=node.agent_id,
+                    prompt=node.prompt,
+                    system_prompt=node.system_prompt,
+                    apps=[],
+                    skills=[],
+                    enabled_toolsets=node.enabled_toolsets,
+                    is_origin=False,
+                    display={},
+                    max_retries=4,
+                    enable_subagents=node.enable_subagents,
+                )
+            )
 
         # 边
         for edge in obj.edges:
@@ -260,19 +282,37 @@ class WorkflowService:
 
     @staticmethod
     async def get_workflow(db: AsyncSession, *, owner_id: str, workflow_uuid: str) -> dict[str, Any]:
-        """查图：workflow 定义 + 节点（从 task 投影）+ 边。跨户 NotFound。"""
+        """查图：workflow 定义 + 节点（优先专属表 workflow_node，旧数据回退 task 投影）+ 边。跨户 NotFound。"""
         workflow = await hasn_workflow_dao.get_by_uuid(db, workflow_uuid)
         if workflow is None or workflow.owner_id != owner_id or workflow.deleted_at is not None:
             raise errors.NotFoundError(msg='工作流不存在')
 
-        nodes_result = await db.execute(
-            sa.text(
-                'SELECT node_key, agent_id, name, prompt, system_prompt, enable_subagents, task_uuid '
-                "FROM hasn_task.task WHERE workflow_uuid = :wu AND state <> 'deleted' ORDER BY node_key"
-            ),
-            {'wu': workflow_uuid},
-        )
-        nodes = [dict(r) for r in nodes_result.mappings().all()]
+        # P1 expand-only：读侧优先节点专属表；未回填（旧数据）时回退 task 投影
+        node_rows = await hasn_workflow_node_dao.list_by_workflow(db, workflow_uuid)
+        if node_rows:
+            nodes = [
+                {
+                    'node_key': n.node_key,
+                    'agent_id': n.agent_id,
+                    'name': n.name,
+                    'prompt': n.prompt,
+                    'system_prompt': n.system_prompt,
+                    'enable_subagents': n.enable_subagents,
+                    'description': n.description,
+                    'is_origin': n.is_origin,
+                    'display': n.display,
+                }
+                for n in node_rows
+            ]
+        else:
+            nodes_result = await db.execute(
+                sa.text(
+                    'SELECT node_key, agent_id, name, prompt, system_prompt, enable_subagents, task_uuid '
+                    "FROM hasn_task.task WHERE workflow_uuid = :wu AND state <> 'deleted' ORDER BY node_key"
+                ),
+                {'wu': workflow_uuid},
+            )
+            nodes = [dict(r) for r in nodes_result.mappings().all()]
         edges_rows = await hasn_workflow_edge_dao.list_by_workflow(db, workflow_uuid)
         edges = [{'parent': e.parent_node_key, 'child': e.child_node_key} for e in edges_rows]
         return {'workflow': workflow, 'nodes': nodes, 'edges': edges}

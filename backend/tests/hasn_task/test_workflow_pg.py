@@ -41,6 +41,7 @@ pytestmark = pytest.mark.asyncio
 _SQL_DIR = Path(__file__).resolve().parents[2] / 'sql' / 'hasn_task' / 'migrations'
 AINATIVE_SQL = (_SQL_DIR / '2026-06-10-ainative-refactor.sql').read_text(encoding='utf-8')
 WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8')
+NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
 
 _OWNER_A = 'hasn_owner_a_wf'
 _OWNER_B = 'hasn_owner_b_wf'
@@ -73,6 +74,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
 
     await _run_sql(AINATIVE_SQL)
     await _run_sql(WORKFLOW_SQL)
+    await _run_sql(NODE_TABLES_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     try:
@@ -140,15 +142,23 @@ def test_validate_graph_rejects_dangling_and_self() -> None:
 
 async def test_workflow_migration_idempotent_and_columns(env: SimpleNamespace) -> None:
     await _run_sql(WORKFLOW_SQL)  # 第二次执行：幂等
+    await _run_sql(NODE_TABLES_SQL)  # 节点专属表迁移二次执行：幂等
 
     rows = await env.session.execute(
         sa.text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'hasn_task'")
     )
     in_schema = {r[0] for r in rows}
-    assert {'workflow', 'workflow_edge', 'workflow_run'} <= in_schema
+    assert {'workflow', 'workflow_edge', 'workflow_run', 'workflow_node', 'workflow_node_run'} <= in_schema
 
     assert {'workflow_uuid', 'node_key'} <= await _column_names(env.session, 'task')
     assert {'workflow_run_uuid', 'node_key'} <= await _column_names(env.session, 'run')
+    # 节点专属表关键列
+    assert {'node_uuid', 'node_key', 'agent_id', 'is_origin', 'output_spec', 'review_policy'} <= (
+        await _column_names(env.session, 'workflow_node')
+    )
+    assert {'node_run_uuid', 'workflow_run_uuid', 'node_key', 'status'} <= (
+        await _column_names(env.session, 'workflow_node_run')
+    )
 
 
 # ============================ 建图 ============================
@@ -201,6 +211,19 @@ async def test_create_diamond_workflow_and_get(env: SimpleNamespace) -> None:
             assert n['agent_id'] in {research, writer}
         assert len(detail['edges']) == 4
         assert {'parent': 'plan', 'child': 'research-cost'} in detail['edges']
+
+        # P1 双写：workflow_node 专属表落对应节点行（行数 = 节点数，node_key 匹配）
+        wn_rows = await env.session.execute(
+            sa.text('SELECT node_key, agent_id FROM hasn_task.workflow_node WHERE workflow_uuid = :wu'),
+            {'wu': wf.workflow_uuid},
+        )
+        wn = wn_rows.mappings().all()
+        assert len(wn) == 4
+        assert {r['node_key'] for r in wn} == {'plan', 'research-cost', 'research-perf', 'synthesize'}
+        assert all(r['agent_id'] in {research, writer} for r in wn)
+
+        # get_workflow 的 nodes 来自 workflow_node（含专属表特有字段 is_origin/display，task 投影没有）
+        assert all('is_origin' in n and 'display' in n for n in detail['nodes'])
 
         # 跨户 get → NotFound
         with pytest.raises(errors.NotFoundError):

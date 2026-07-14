@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
-from backend.app.hasn_task.crud.crud_workflow import hasn_workflow_dao, hasn_workflow_run_dao
+from backend.app.hasn_task.crud.crud_workflow import (
+    hasn_workflow_dao,
+    hasn_workflow_node_dao,
+    hasn_workflow_node_run_dao,
+    hasn_workflow_run_dao,
+)
 from backend.app.hasn_task.schema.workflow import CreateWorkflowParam, WorkflowEdgeSpec, WorkflowNodeSpec
 from backend.app.hasn_task.service.task_service import calc_next_run_at
 from backend.app.hasn_task.service.workflow_service import workflow_service
@@ -135,6 +140,23 @@ class AgentWorkflowService:
         wf = await hasn_workflow_dao.get_by_uuid(db, workflow_uuid)
         if wf is None or wf.owner_id != owner_id:
             raise errors.NotFoundError(msg='工作流不存在')
+
+        # P1 expand-only：优先读节点执行专属表 workflow_node_run；旧数据未回填时回退 run_summary
+        node_run = await hasn_workflow_node_run_dao.latest_by_workflow_node(db, workflow_uuid, node_key)
+        if node_run is not None:
+            node_def = await hasn_workflow_node_dao.get_by_key(db, workflow_uuid, node_key)
+            return {
+                'node_key': node_key,
+                'name': (node_def.name if node_def is not None else None) or node_key,
+                'run_id': node_run.node_run_uuid,
+                'status': node_run.status,
+                'output_summary': node_run.output_summary,
+                'error': node_run.attention_reason,
+                'finished_at': _iso(node_run.completed_time),
+                'artifacts': node_run.artifacts if isinstance(node_run.artifacts, list) else [],
+            }
+
+        # 回退：借道的 task + run_summary（旧数据/尚无节点执行态）
         node = await db.execute(
             sa.text(
                 'SELECT task_uuid, name FROM hasn_task.task '
