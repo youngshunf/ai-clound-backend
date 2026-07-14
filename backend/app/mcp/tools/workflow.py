@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
+from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -242,3 +243,185 @@ class _WorkflowTool(BaseTool):
 
 
 WORKFLOW_TOOLS: list[_WorkflowTool] = [_WorkflowTool(spec) for spec in _SPECS]
+
+
+# ══════════════════════ 工作流模板子域（hasn.workflow.template.*，P5-cloud doc94 §10-P5）══════════════════════
+# 「场景即模板」：分身采访主人 → draft 蓝图（过 §6.3 校验）→ 主人画廊可见草稿 → publish 上架 → instantiate
+# 据模板建 cloud 权威 workflow。工具名 4 段（namespace=hasn.workflow，action=template.*），复用 _WorkflowTool
+# 派发；wrap workflow_template_service（instantiate 内部再 wrap agent_workflow_service.create_workflow）。
+# scope 与 workflow 执行工具同键（读无 scope / 建管 workflow:manage / 实例化 workflow:run）——不引入新 scope 键，
+# 故不破坏跨仓 scope 对齐守卫（test_local_tool_scope_alignment 比的是 scope 键集合）。
+
+# graph_spec 蓝图 schema 片段（canonical 键形见 doc11 §4.3；分身自撰产物，允许内联）
+_GRAPH_SPEC_SCHEMA = {
+    'type': 'object',
+    'description': (
+        '图蓝图 {nodes:[...], edges:[...]}。node：node_key(唯一)/name/node_kind(origin|agent)/'
+        'is_origin(bool)/description/default_agent_type/apps[]/skills[]/prompt/system_prompt/'
+        'output_spec{kind,label}/review_policy{mode,criteria,reviewer_agent_type,max_rejects}/'
+        'display{order,step_label}；edge：{parent, child}（DAG 无环，至少一个 is_origin 起点）。'
+    ),
+    'properties': {
+        'nodes': {'type': 'array', 'description': '节点列表（见上）'},
+        'edges': {'type': 'array', 'description': '依赖边列表 [{parent, child}]'},
+    },
+}
+
+
+async def _h_tpl_draft(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    return await workflow_template_service.draft_template(db, owner_id=ctx.owner_hasn_id, params=args)
+
+
+async def _h_tpl_update(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    return await workflow_template_service.update_template(
+        db, owner_id=ctx.owner_hasn_id, template_key=str(args['template_key']), params=args
+    )
+
+
+async def _h_tpl_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    return await workflow_template_service.get_template(
+        db, owner_id=ctx.owner_hasn_id, template_key=str(args['template_key'])
+    )
+
+
+async def _h_tpl_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    return await workflow_template_service.list_templates(
+        db, owner_id=ctx.owner_hasn_id, domain=args.get('domain'), status=args.get('status')
+    )
+
+
+async def _h_tpl_instantiate(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    # 需完整凭据（agent_hasn_id/owner/session）建 cloud workflow，身份绝不入请求体。
+    return await workflow_template_service.instantiate_template(
+        db, agent=ctx.to_token_payload(), template_key=str(args['template_key']), params=args
+    )
+
+
+async def _h_tpl_publish(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    return await workflow_template_service.publish_template(
+        db, owner_id=ctx.owner_hasn_id, template_key=str(args['template_key'])
+    )
+
+
+_TEMPLATE_SPECS: list[dict[str, Any]] = [
+    {
+        'action': 'template.draft',
+        'write': True,
+        'scopes': [SCOPE_MANAGE],
+        'handler': _h_tpl_draft,
+        'desc': (
+            '提交工作流模板草案（graph_spec 全量蓝图）。服务端过 §6.3 校验（图合法/引用合法/节点上限）后存为草稿，'
+            '主人可在画廊看到。校验失败会指名到具体 node_key/edge/app/kind，据 message 修正后重试。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'name': {'type': 'string', 'minLength': 1, 'description': '模板展示名'},
+                'graph_spec': _GRAPH_SPEC_SCHEMA,
+                'domain': {'type': ['string', 'null'], 'description': '领域分组 code（startup/finance/...；非空=场景模板）'},
+                'tagline': {'type': ['string', 'null'], 'description': '一句话卖点（画廊卡短语）'},
+                'description': {'type': ['string', 'null'], 'description': '链路详述'},
+                'icon': {'type': ['string', 'null'], 'description': '图标 key（lucide kebab 名）'},
+                'accent': {'type': ['string', 'null'], 'description': '主题强调色（brand/teal/indigo/rose）'},
+                'sort_order': {'type': 'integer', 'description': '展示排序（默认 0）'},
+            },
+            'required': ['name', 'graph_spec'],
+        },
+    },
+    {
+        'action': 'template.update',
+        'write': True,
+        'scopes': [SCOPE_MANAGE],
+        'handler': _h_tpl_update,
+        'desc': (
+            '更新自己名下 draft/active 模板（version+1），过同套 §6.3 校验。'
+            '只能改自己创建的模板；内置模板 / 别人的模板拒绝。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'template_key': {'type': 'string', 'minLength': 1, 'description': '要更新的模板键'},
+                'graph_spec': _GRAPH_SPEC_SCHEMA,
+                'name': {'type': ['string', 'null']},
+                'domain': {'type': ['string', 'null']},
+                'tagline': {'type': ['string', 'null']},
+                'description': {'type': ['string', 'null']},
+                'icon': {'type': ['string', 'null']},
+                'accent': {'type': ['string', 'null']},
+                'sort_order': {'type': ['integer', 'null']},
+            },
+            'required': ['template_key'],
+        },
+    },
+    {
+        'action': 'template.get',
+        'write': False,
+        'scopes': [],
+        'handler': _h_tpl_get,
+        'desc': '读模板详情（含 graph_spec 全量蓝图）。可见范围：自己名下 + 内置。确定性读。',
+        'schema': {
+            'type': 'object',
+            'properties': {'template_key': {'type': 'string', 'minLength': 1}},
+            'required': ['template_key'],
+        },
+    },
+    {
+        'action': 'template.list',
+        'write': False,
+        'scopes': [],
+        'handler': _h_tpl_list,
+        'desc': '列可见模板（自己名下 + 内置），可按 domain/status 过滤。列表不含 graph_spec（详情才带）。确定性读。',
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'domain': {'type': ['string', 'null'], 'description': '按领域过滤（可选）'},
+                'status': {'type': ['string', 'null'], 'description': '按状态过滤 draft/active/...（可选）'},
+            },
+        },
+    },
+    {
+        'action': 'template.instantiate',
+        'write': True,
+        'scopes': [SCOPE_RUN],
+        'handler': _h_tpl_instantiate,
+        'desc': (
+            '据模板实例化一条 cloud 权威工作流：读模板蓝图 → 建 workflow（节点缺省=发起分身）→ 返 workflow 引用。'
+            '起点输入 origin_input 作为锚点，node_overrides 可逐节点定制 prompt/agent_id。付费模板本期免判直接放行。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'template_key': {'type': 'string', 'minLength': 1, 'description': '要实例化的模板键'},
+                'title': {'type': ['string', 'null'], 'description': '实例工作流名称（缺省取模板名）'},
+                'goal': {'type': ['string', 'null'], 'description': '实例总目标（缺省取模板描述）'},
+                'origin_input': {'type': ['string', 'null'], 'description': '起点输入（主人锚点，如想法/研究命题）'},
+                'node_overrides': {
+                    'type': 'object',
+                    'description': '逐节点定制覆盖 {node_key: {prompt?, agent_id?, system_prompt?}}',
+                },
+            },
+            'required': ['template_key'],
+        },
+    },
+    {
+        'action': 'template.publish',
+        'write': True,
+        'scopes': [SCOPE_MANAGE],
+        'handler': _h_tpl_publish,
+        'desc': (
+            '上架自己名下模板到市场：过 §6.3 校验 → status 转 active + version 快照 + market_ref 占位。'
+            '外发+动钱语义，需主人确认（ask 闸）。完整 listing/定价归后续。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {'template_key': {'type': 'string', 'minLength': 1}},
+            'required': ['template_key'],
+        },
+    },
+]
+
+
+# 模板工具复用 _WorkflowTool 派发（namespace=hasn.workflow，name=hasn.workflow.template.<action>）。
+# 独立成 list（不并入 WORKFLOW_TOOLS）——WORKFLOW_TOOLS 有精确名集守卫（test_workflow_tools.py），
+# 模板子域自带守卫，二者互不干扰；server.py 两 list 一并注册。
+WORKFLOW_TEMPLATE_TOOLS: list[_WorkflowTool] = [_WorkflowTool(spec) for spec in _TEMPLATE_SPECS]

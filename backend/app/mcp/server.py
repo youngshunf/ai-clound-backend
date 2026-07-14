@@ -48,7 +48,7 @@ from backend.app.mcp.tools.tool_call import ToolCallTool
 from backend.app.mcp.tools.tool_search import ToolSearchTool
 from backend.app.mcp.tools.user import UserSearchTool
 from backend.app.mcp.tools.workbench import WORKBENCH_TOOLS
-from backend.app.mcp.tools.workflow import WORKFLOW_TOOLS
+from backend.app.mcp.tools.workflow import WORKFLOW_TEMPLATE_TOOLS, WORKFLOW_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,9 @@ class HasnCloudMcpServer:
         # 两 scope 均命中特权前缀 diag: → G1 平台特权门（doc18 §4.1）统一判定：仅经 Admin 授予表
         # ∪ ENV bootstrap 拿到 diag:* 的「平台运维分析师」分身可见/可调；普通分身发现面隐身、
         # 执行面 TOOL_NOT_FOUND 泛化。跨 owner 全量读/处置（无隔离）。合并进同一 for 不拉高圈复杂度。
-        for workflow_or_diag_tool in (*WORKFLOW_TOOLS, *DIAG_TOOLS):
+        # 工作流模板工具（12-P5·doc94 §10-P5）：hasn.workflow.template.draft/update/get/list/instantiate/publish
+        # ——「场景即模板」子域，分身采访→draft→画廊可见→publish→instantiate 建 cloud workflow。与执行工具同 scope 键。
+        for workflow_or_diag_tool in (*WORKFLOW_TOOLS, *WORKFLOW_TEMPLATE_TOOLS, *DIAG_TOOLS):
             self.tool_registry.register(workflow_or_diag_tool)
 
         # 演示文稿工具（17-deck）：create/get/list/outline.set/page.write(_batch)/page.edit/page.delete/
