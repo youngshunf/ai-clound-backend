@@ -60,6 +60,33 @@ class FakeRedis:
         self.lists.pop(key, None)
         self.strings.pop(key, None)
 
+    async def eval(self, _script: str, numkeys: int, *args: Any) -> int:
+        keys = list(args[:numkeys])
+        argv = list(args[numkeys:])
+        if numkeys == 2:
+            generation_key, alive_key = keys
+            node_id, connection_id, _ttl = argv
+            if self.hashes.get(generation_key, {}).get(node_id) != connection_id:
+                return 0
+            self.strings[alive_key] = '1'
+            return 1
+        if numkeys == 5:
+            generation_key, node_conn_key, entities_key, entity_node_key, alive_key = keys
+            node_id, connection_id, user_nodes_prefix = argv
+            if self.hashes.get(generation_key, {}).get(node_id) != connection_id:
+                return 0
+            for hasn_id in list(self.sets.get(entities_key, set())):
+                if self.hashes.get(entity_node_key, {}).get(hasn_id) == node_id:
+                    self.hashes.get(entity_node_key, {}).pop(hasn_id, None)
+                if str(hasn_id).startswith('h_'):
+                    self.sets.get(f'{user_nodes_prefix}:{hasn_id}', set()).discard(node_id)
+            await self.delete(entities_key)
+            self.hashes.get(node_conn_key, {}).pop(node_id, None)
+            await self.delete(alive_key)
+            self.hashes.get(generation_key, {}).pop(node_id, None)
+            return 1
+        raise AssertionError(f'unexpected eval numkeys={numkeys}')
+
 
 class FakeWebSocket:
     def __init__(self, *, fail: bool = False) -> None:
@@ -151,8 +178,9 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
 
     router = module.WsRouterService()
     node_ws = FakeWebSocket()
-    await router.register_node('node-1', 'desktop', node_ws, capacity=2)
-    assert 'node-1' in module._ws_connections
+    connection_id = await router.register_node('node-1', 'desktop', node_ws, capacity=2)
+    module._ws_ready_connection_ids['node-1'] = connection_id
+    assert module._ws_connections['node-1'] is node_ws
     assert json.loads(redis.hashes[module.NODE_CONN_KEY]['node-1'])['capacity'] == 2
 
     binding = SimpleNamespace(
@@ -202,8 +230,9 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
     # 本地连接发送失败 → 退回投递总线（跨 worker），不再写已废弃的 PUSH_PREFIX 死队列
     bus_published: list[tuple[str, str]] = []
 
-    async def _spy_bus(node_id: str, payload_json: str) -> None:
+    async def _spy_bus(node_id: str, payload_json: str) -> bool:  # noqa: RUF029
         bus_published.append((node_id, payload_json))
+        return True
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy_bus)
     queued = await router.push_message_to('a_agent', {'created_time': '3', 'body': 'queue'})
@@ -227,9 +256,125 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
     await router.remove_agent_presence('node-1', 'a_agent')
     assert 'a_agent' not in redis.hashes.get(module.ENTITY_NODE_KEY, {})
 
-    await router.unregister_node('node-1')
+    await router.unregister_node('node-1', module._ws_connection_ids['node-1'])
     assert 'node-1' not in module._ws_connections
     assert f'{module.NODE_ENTITIES_PREFIX}:node-1' in redis.deleted
+
+
+@pytest.mark.asyncio
+async def test_stale_connection_cleanup_cannot_remove_replacement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一 node 重连后，旧 handler 的 finally 只能清理自己的连接代际。"""
+    from backend.app.hasn.service import ws_router as module
+
+    redis = FakeRedis()
+    monkeypatch.setattr(module, 'redis_client', redis)
+    module._ws_connections.clear()
+    router = module.WsRouterService()
+
+    old_ws = FakeWebSocket()
+    new_ws = FakeWebSocket()
+    old_connection_id = await router.register_node('node-overlap', 'desktop', old_ws)
+    await router._register_entity('node-overlap', 'h_owner', is_human=True)
+    new_connection_id = await router.register_node('node-overlap', 'desktop', new_ws)
+    await router._register_entity('node-overlap', 'h_owner', is_human=True)
+
+    assert old_connection_id != new_connection_id
+    await router.unregister_node('node-overlap', old_connection_id)
+
+    assert module._ws_connections['node-overlap'] is new_ws
+    assert redis.hashes[module.NODE_GENERATION_KEY]['node-overlap'] == new_connection_id
+    assert redis.hashes[module.ENTITY_NODE_KEY]['h_owner'] == 'node-overlap'
+    assert 'node-overlap' in redis.sets[f'{module.USER_NODES_PREFIX}:h_owner']
+    assert f'{module.NODE_ALIVE_PREFIX}:node-overlap' in redis.strings
+
+
+@pytest.mark.asyncio
+async def test_stale_connection_heartbeat_cannot_refresh_presence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """被新连接取代的旧 socket 不得继续用 ping 维持在线假象。"""
+    from backend.app.hasn.service import ws_router as module
+
+    redis = FakeRedis()
+    monkeypatch.setattr(module, 'redis_client', redis)
+    module._ws_connections.clear()
+    router = module.WsRouterService()
+
+    old_connection_id = await router.register_node('node-overlap', 'desktop', FakeWebSocket())
+    new_connection_id = await router.register_node('node-overlap', 'desktop', FakeWebSocket())
+    redis.strings.pop(f'{module.NODE_ALIVE_PREFIX}:node-overlap')
+
+    assert await router.refresh_node_presence('node-overlap', old_connection_id) is False
+    assert f'{module.NODE_ALIVE_PREFIX}:node-overlap' not in redis.strings
+    assert await router.refresh_node_presence('node-overlap', new_connection_id) is True
+    assert f'{module.NODE_ALIVE_PREFIX}:node-overlap' in redis.strings
+
+
+@pytest.mark.asyncio
+async def test_business_frames_wait_until_current_connection_handshake_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hasn.connected 前只入持久队列，握手 ready 后当前代际才允许直发。"""
+    from backend.app.hasn.service import ws_router as module
+
+    redis = FakeRedis()
+    monkeypatch.setattr(module, 'redis_client', redis)
+    module._ws_connections.clear()
+    module._ws_connection_ids.clear()
+    module._ws_ready_connection_ids.clear()
+    router = module.WsRouterService()
+    ws = FakeWebSocket()
+    connection_id = await router.register_node('node-ready', 'desktop', ws)
+    published: list[tuple[str, str]] = []
+    drained: list[str] = []
+
+    async def _publish(node_id: str, payload_json: str) -> bool:  # noqa: RUF029
+        published.append((node_id, payload_json))
+        return True
+
+    async def _drain(node_id: str) -> int:  # noqa: RUF029
+        drained.append(node_id)
+        return 0
+
+    monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _publish)
+    monkeypatch.setattr(module.ws_delivery_bus, 'drain_node', _drain)
+
+    assert await router._send_or_publish('node-ready', 'BEFORE') is True
+    assert ws.sent == []
+    assert published == [('node-ready', 'BEFORE')]
+
+    assert await router.mark_node_ready('node-ready', connection_id) is True
+    assert drained == ['node-ready']
+    assert await router._send_or_publish('node-ready', 'AFTER') is True
+    assert ws.sent == ['AFTER']
+
+
+@pytest.mark.asyncio
+async def test_stale_worker_local_socket_is_not_used_for_direct_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """跨 worker 重叠连接时，Redis 中非当前代际的本地 socket 只能绕到持久总线。"""
+    from backend.app.hasn.service import ws_router as module
+
+    redis = FakeRedis()
+    monkeypatch.setattr(module, 'redis_client', redis)
+    stale_ws = FakeWebSocket()
+    module._ws_connections.clear()
+    module._ws_connection_ids.clear()
+    module._ws_ready_connection_ids.clear()
+    module._ws_connections['node-stale'] = stale_ws
+    module._ws_connection_ids['node-stale'] = 'conn-old'
+    module._ws_ready_connection_ids['node-stale'] = 'conn-old'
+    redis.hashes[module.NODE_GENERATION_KEY] = {'node-stale': 'conn-new'}
+    published: list[tuple[str, str]] = []
+
+    async def _publish(node_id: str, payload_json: str) -> bool:  # noqa: RUF029
+        published.append((node_id, payload_json))
+        return True
+
+    monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _publish)
+
+    assert await module.WsRouterService()._send_or_publish('node-stale', 'MSG') is True
+    assert stale_ws.sent == []
+    assert published == [('node-stale', 'MSG')]
 
 
 @pytest.mark.asyncio
@@ -282,22 +427,24 @@ async def test_ws_router_rejects_invalid_or_moved_agents(monkeypatch: pytest.Mon
     await redis.set(f'{module.NODE_ALIVE_PREFIX}:old-node', '1')
     await redis.delete(f'{module.AGENT_READY_PREFIX}:a_agent')
     module._ws_connections['old-node'] = FakeWebSocket()  # WS 仍连着也不再保护降级持有者
-    assert await router._validate_agent(
-        'node-1', 'a_agent', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=active)])
-    ) is None
+    assert (
+        await router._validate_agent('node-1', 'a_agent', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=active)]))
+        is None
+    )
     assert await redis.hget(module.ENTITY_NODE_KEY, 'a_agent') is None  # 残留路由已被释放
 
     # 场景③：旧节点「已死」（node_alive 缺失）→ 允许新节点接管（僵尸路由回收）。
     await redis.hset(module.ENTITY_NODE_KEY, 'a_agent', 'dead-node')
     await redis.set(f'{module.AGENT_READY_PREFIX}:a_agent', '1')  # 就绪键残留但节点心跳已过期
-    assert await router._validate_agent(
-        'node-1', 'a_agent', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=active)])
-    ) is None
+    assert (
+        await router._validate_agent('node-1', 'a_agent', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=active)]))
+        is None
+    )
     assert await redis.hget(module.ENTITY_NODE_KEY, 'a_agent') is None
 
 
-def _async_value(value: Any):
-    async def inner(**kwargs: Any) -> Any:
+def _async_value(value: Any) -> Any:
+    async def inner(**kwargs: Any) -> Any:  # noqa: RUF029
         return value
 
     return inner()
