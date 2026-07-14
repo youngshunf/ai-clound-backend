@@ -81,6 +81,7 @@ dependencies = [
   "httpx[http2]>=0.28.1",
   "dicebear-core>=10.3.0",
   "dicebear-styles>=10.2.0",
+  "py-ip2region>=3.0.4",
 ]
 dynamic = ["version"]
 

@@ -108,7 +108,7 @@ class HasnNodesService:
         约定：
         - device_platform / app_version 为 None/空 时跳过，不覆盖既有值；
         - ip_location **跟随** ip_address：仅当本次拿到 ip_address 才一并写 ip_location，
-          且 ip_location 为 None（私网/无 mmdb/库内查不到）时如实落空，**绝不伪造城市**。
+          且 ip_location 为 None（私网/无 xdb/库内查不到）时如实落空，**绝不伪造城市**。
         """
         if not node_id:
             return

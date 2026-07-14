@@ -1,7 +1,8 @@
-"""P2 设备管理：GeoLite2 归属地降级 + ws_router 设备 presence/远程登出 + 节点元数据回填。
+"""P2 设备管理：ip2region 归属地解析/降级 + ws_router 设备 presence/远程登出 + 节点元数据回填。
 
 覆盖（零 Mock 业务逻辑；Redis/WS 用基础设施 fake，PG 用真实库末尾回滚）：
-- geoip_service：私网/回环/非法 IP、以及无 mmdb 的公网 IP → 一律 None（绝不伪造城市）。
+- geoip_service：私网/回环/非法 IP → None（绝不伪造城市）；公网 IP → ip2region 离线库真实解析
+  （xdb 数据文件已进仓库 backend/data/，测试环境即可真解析）。
 - ws_router：is_node_online / get_entity_node / disconnect_node（清 presence + 释放名下 Agent，
   使其在 ENTITY_NODE_KEY 上离线 → 他机可接管）。
 - hasn_nodes_service.update_runtime_metadata：回填 IP/归属地/平台/版本；ip_location 跟随 IP，
@@ -39,10 +40,16 @@ def test_geoip_returns_none_for_private_or_invalid(ip) -> None:
     assert geoip_service.lookup_location(ip) is None
 
 
-def test_geoip_public_ip_without_mmdb_is_none() -> None:
-    """公网 IP 但 mmdb 缺失（部署前提未满足）→ None，如实「未知归属地」。"""
-    # 测试环境无 GeoLite2-City.mmdb；零 Mock 要求此处必须留空而非编造城市。
-    assert geoip_service.lookup_location('8.8.8.8') is None
+def test_geoip_public_ip_resolves_via_ip2region() -> None:
+    """公网 IP → ip2region 离线库真实解析（xdb 已进仓库，零 Mock 真查询）。"""
+    # 国内 IP：省+市+ISP 粒度（福仔发现 ip_location 全 NULL 时的两枚生产 IP 作固定样本）
+    loc = geoip_service.lookup_location('222.172.135.0')
+    assert loc is not None and '昆明' in loc
+    loc = geoip_service.lookup_location('119.62.81.55')
+    assert loc is not None and '昆明' in loc
+    # 海外 IP：国家（+区域）
+    loc = geoip_service.lookup_location('8.8.8.8')
+    assert loc is not None and 'United States' in loc
 
 
 # ─────────────────────────── ws_router 设备 presence / 远程登出 ───────────────────────────

@@ -46,7 +46,7 @@ def _client_ip(websocket: WebSocket) -> str | None:
 
 
 async def _backfill_node_metadata(websocket: WebSocket, node_id: str) -> None:
-    """握手后回填设备元数据：客户端 IP + GeoLite2 归属地 + OS/app 版本。
+    """握手后回填设备元数据：客户端 IP + ip2region 归属地 + OS/app 版本。
 
     全程非致命：任何异常只 warn，不影响连接与消息收发（零 Mock，归属地缺失留空）。
     """
