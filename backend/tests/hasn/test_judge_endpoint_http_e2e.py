@@ -128,6 +128,16 @@ def _valid_disclosure_payload() -> dict:
     }
 
 
+def _valid_node_review_payload() -> dict:
+    return {
+        'criteria': '大纲需覆盖背景、目标、方案、风险四部分，且每部分有实质内容。',
+        'output_summary': '已产出包含背景/目标/方案/风险四段的大纲，每段 3-5 条要点。',
+        'artifact_summary': '一、背景：市场缺口……；二、目标：季度 GMV……；三、方案：……；四、风险：……',
+        'node_name': '撰写方案大纲',
+        'output_label': '结构化大纲文档',
+    }
+
+
 # ── 422：未知 kind（spec 查表即拒，不触 LLM）──
 async def test_unknown_kind_returns_422(e2e) -> None:
     r = await e2e.client.post(_term_url('mystery'), json={
@@ -167,6 +177,27 @@ async def test_disclosure_text_too_long_422(e2e) -> None:
         'conversation_ref': 'conv_x', 'payload': bad,
     })
     assert r.status_code == 422, r.text
+
+
+# ── 422：node_review criteria 超 2000 字（纵深防御，经真实 HTTP 栈路由到该 kind）──
+async def test_node_review_over_limit_422(e2e) -> None:
+    bad = _valid_node_review_payload()
+    bad['criteria'] = 'x' * 2001
+    r = await e2e.client.post(_term_url('node_review'), json={
+        'agent_hasn_id': e2e.my_agent, 'peer_hasn_id': e2e.peer,
+        'conversation_ref': 'conv_x', 'payload': bad,
+    })
+    assert r.status_code == 422, r.text
+
+
+# ── 503：node_review 合法入参过校验后 owner 缺 new-api 凭据（证明该 kind 已接入分发）──
+async def test_node_review_missing_creds_503(e2e) -> None:
+    r = await e2e.client.post(_term_url('node_review'), json={
+        'agent_hasn_id': e2e.my_agent, 'peer_hasn_id': e2e.peer,
+        'conversation_ref': 'conv_x', 'payload': _valid_node_review_payload(),
+    })
+    # seed 的随机 user_id 无 new-api 映射 → 过入参校验后取 owner key 失败 → 503
+    assert r.status_code == 503, r.text
 
 
 # ── 401：无 JWT（真实 auth 依赖运行，无 override）──
