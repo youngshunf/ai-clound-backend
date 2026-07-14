@@ -11,3 +11,4 @@ from backend.app.hasn_task.model.workflow_edge import HasnWorkflowEdge as HasnWo
 from backend.app.hasn_task.model.workflow_node import HasnWorkflowNode as HasnWorkflowNode
 from backend.app.hasn_task.model.workflow_node_run import HasnWorkflowNodeRun as HasnWorkflowNodeRun
 from backend.app.hasn_task.model.workflow_run import HasnWorkflowRun as HasnWorkflowRun
+from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate as HasnWorkflowTemplate

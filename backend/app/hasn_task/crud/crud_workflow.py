@@ -5,6 +5,7 @@
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
@@ -15,6 +16,7 @@ from backend.app.hasn_task.model import (
     HasnWorkflowNode,
     HasnWorkflowNodeRun,
     HasnWorkflowRun,
+    HasnWorkflowTemplate,
 )
 
 
@@ -115,8 +117,52 @@ class CRUDHasnWorkflowNodeRun(CRUDPlus[HasnWorkflowNodeRun]):
         return result.scalars().first()
 
 
+class CRUDHasnWorkflowTemplate(CRUDPlus[HasnWorkflowTemplate]):
+    async def get_by_key(self, db: AsyncSession, template_key: str) -> HasnWorkflowTemplate | None:
+        """按全局唯一 template_key 取模板"""
+        return await self.select_model_by_column(db, template_key=template_key)
+
+    async def get_by_uuid(self, db: AsyncSession, template_uuid: str) -> HasnWorkflowTemplate | None:
+        """按端云稳定 template_uuid 取模板"""
+        return await self.select_model_by_column(db, template_uuid=template_uuid)
+
+    async def list_visible(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        domain_only: bool = False,
+        domain: str | None = None,
+        status: str | None = None,
+    ) -> Sequence[HasnWorkflowTemplate]:
+        """列可见模板：内置（is_builtin 或 owner_id 空）+ 自己名下；按 sort_order、id 稳定升序。
+
+        - domain_only=True：只取场景模板（domain 非空非空串）；
+        - domain 指定：精确匹配领域；
+        - status 指定：精确匹配状态（缺省不过滤，webui 侧一般传 active）。
+        """
+        visible = sa.or_(
+            HasnWorkflowTemplate.is_builtin.is_(True),
+            HasnWorkflowTemplate.owner_id.is_(None),
+            HasnWorkflowTemplate.owner_id == owner_id,
+        )
+        stmt = select(HasnWorkflowTemplate).where(visible)
+        if domain_only:
+            stmt = stmt.where(
+                HasnWorkflowTemplate.domain.is_not(None), HasnWorkflowTemplate.domain != ''
+            )
+        if domain:
+            stmt = stmt.where(HasnWorkflowTemplate.domain == domain)
+        if status:
+            stmt = stmt.where(HasnWorkflowTemplate.status == status)
+        stmt = stmt.order_by(HasnWorkflowTemplate.sort_order.asc(), HasnWorkflowTemplate.id.asc())
+        result = await db.execute(stmt)
+        return result.scalars().all()
+
+
 hasn_workflow_dao: CRUDHasnWorkflow = CRUDHasnWorkflow(HasnWorkflow)
 hasn_workflow_edge_dao: CRUDHasnWorkflowEdge = CRUDHasnWorkflowEdge(HasnWorkflowEdge)
 hasn_workflow_run_dao: CRUDHasnWorkflowRun = CRUDHasnWorkflowRun(HasnWorkflowRun)
 hasn_workflow_node_dao: CRUDHasnWorkflowNode = CRUDHasnWorkflowNode(HasnWorkflowNode)
 hasn_workflow_node_run_dao: CRUDHasnWorkflowNodeRun = CRUDHasnWorkflowNodeRun(HasnWorkflowNodeRun)
+hasn_workflow_template_dao: CRUDHasnWorkflowTemplate = CRUDHasnWorkflowTemplate(HasnWorkflowTemplate)
