@@ -6,6 +6,7 @@ preserve a stable ``MCP_92xx`` code. Fact source: ``05-数据缓存与错误码.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 
 class McpErrorCode(Enum):
@@ -40,6 +41,10 @@ class McpErrorCode(Enum):
     # 载荷 shape 照抄 TRUST_LEVEL_INSUFFICIENT（文案含当前档 + 所需档 + 回绝引导，分身据此礼貌
     # 说明权限不足）。取下一个空位 9218；与 9217 一样**不复用** 9215，避免被误判成待审批。
     RESOURCE_PERMISSION_INSUFFICIENT = "MCP_9218"
+    # P7 工作流场景模板付费墙（doc94 §10-P7 / doc11 §8.3）：付费模板（sku_ref 非空）无有效权益。
+    # `data` 携完整 AccessDecision（reason/offer/feature_key），供 daemon→webui PaywallDialog 渲染。
+    # 取下一个空位 9219；与 9217/9218 一样**不复用** 9215，避免被误判成待审批换票流程。
+    WORKFLOW_TEMPLATE_ENTITLEMENT_REQUIRED = "MCP_9219"
 
     def __str__(self) -> str:
         return f"{self.value} {self.name}"
@@ -50,9 +55,13 @@ class McpToolError(ValueError):
 
     Subclasses ``ValueError`` so the MCP routes keep mapping "not found"-class
     failures to HTTP 404 while the detail preserves the code + symbolic name.
+
+    可选 ``data``：结构化拒绝载荷（如付费墙 AccessDecision），随异常携带，供上层网关/
+    daemon 解析成客户端能渲染的形状（webui PaywallDialog 等）。不传即为纯文本错误（存量语义不变）。
     """
 
-    def __init__(self, code: McpErrorCode, message: str) -> None:
+    def __init__(self, code: McpErrorCode, message: str, data: dict[str, Any] | None = None) -> None:
         self.code = code
         self.message = message
+        self.data = data
         super().__init__(f"{code}: {message}")

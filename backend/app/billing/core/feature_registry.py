@@ -29,6 +29,7 @@ FIXED_FEATURE_KEYS: frozenset[str] = frozenset({
 PREFIX_FEATURE_KEYS: frozenset[str] = frozenset({
     'app:',  # AI-Native 应用权益（app:<app_id>，如 app:quant）
     'seat:',  # 企业席位（seat:<app_id>，席位制应用的席位特征）
+    'workflow_template:',  # 工作流场景模板付费挂钩（workflow_template:<template_key>，doc94 §10-P7）
 })
 
 
@@ -84,4 +85,32 @@ async def validate_catalog_sku_refs(db: AsyncSession) -> list[str]:
             continue
         if sku_ref not in offering_keys:
             violations.append(f'catalog app_id={app_id!r} sku_ref={sku_ref!r} 悬挂——无对应 billing_offering')
+    return violations
+
+
+async def validate_workflow_template_sku_refs(db: AsyncSession) -> list[str]:
+    """一致性守卫：扫描 workflow_template.sku_ref，返回「指向不存在 billing_offering 的悬挂引用」列表（MK-9b）。
+
+    工作流场景模板的 ``sku_ref`` 是「官方付费模板挂到商业化商品（offering.key）」的对接指针（预留列，
+    可为空）——语义与 ``hasn_app_catalog.sku_ref`` 完全对齐（指向 offering.key，非 feature_key）。凡填了
+    值就必须命中一条真实 offering，否则 P7 付费墙据它取价 / 判权会取空 → 静默付费墙断裂。此守卫进 CI，
+    改价 / 退役 offering 时若漏改模板指针即刻报红（镜像 ``validate_catalog_sku_refs``）。
+
+    返回空列表 = 全部合法（含全表 sku_ref 皆空的常态）。不在此处 raise，由调用方（启动钩子 / pytest）定严格度。
+    """
+    from backend.app.billing.model.billing_offering import BillingOffering
+    from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate
+
+    # 全库已注册的 offering.key 集合（一次取全，避免逐行 N 次查库）。
+    offering_keys = {k for (k,) in (await db.execute(select(BillingOffering.key))).all() if k}
+    rows = (await db.execute(select(HasnWorkflowTemplate.template_key, HasnWorkflowTemplate.sku_ref))).all()
+    violations: list[str] = []
+    for template_key, sku_ref in rows:
+        # 空 / 未填 sku_ref 是合法常态（免费模板），跳过；仅校验填了值的付费模板行。
+        if not sku_ref:
+            continue
+        if sku_ref not in offering_keys:
+            violations.append(
+                f'workflow_template template_key={template_key!r} sku_ref={sku_ref!r} 悬挂——无对应 billing_offering'
+            )
     return violations

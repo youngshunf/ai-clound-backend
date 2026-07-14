@@ -463,7 +463,7 @@ class WorkflowTemplateService:
 
         读 template.graph_spec → 映射为 workflow create 参数（title/goal/起点输入/节点定制覆盖）→ 复用
         `agent_workflow_service.create_workflow`（带 template_key 溯源）→ 返 workflow 引用（workflow_id）。
-        付费模板权益判定本期恒 pass 短路（见下 P7 挂点）。
+        付费模板（sku_ref 非空）先过 MK 商业化内核统一判权，免费模板（sku_ref 空）直接放行（见下 P7 挂点）。
         """
         owner_id = agent.owner_hasn_id
         tpl = await hasn_workflow_template_dao.get_by_key(db, template_key)
@@ -473,10 +473,27 @@ class WorkflowTemplateService:
         if not visible:
             raise errors.NotFoundError(msg='模板不存在')
 
-        # 付费模板权益判定（doc11 §8.3）：本期恒 pass 短路。
-        # P7 挂点：sku_ref 非空才真判 → resolve_access(feature_key=f'workflow_template:{template_key}')，
-        # 不通即抛 need_purchase；免费模板（sku_ref 空）直接放行。
-        _ = tpl.sku_ref  # noqa: F841  （P7 接权益判定后消费）
+        # 付费模板权益判定（doc94 §10-P7 / doc11 §8.3）：sku_ref 非空才真判，免费模板（sku_ref 空）直接放行。
+        # 判权走 MK 统一入口 resolve_access(feature_key=workflow_template:<template_key>)；该 feature_key
+        # 未配 offering 时 _resolve_generic 天然恒 pass（reason=free），故一期未上架付费即等价短路放行。
+        if tpl.sku_ref:
+            from backend.app.billing.service.access_service import resolve_access
+            from backend.app.mcp.errors import McpErrorCode, McpToolError
+
+            decision = await resolve_access(
+                db,
+                feature_key=f'workflow_template:{template_key}',
+                subject_type='owner',
+                subject_id=owner_id,
+            )
+            if not decision.allowed:
+                # 结构化拒绝：McpToolError.data 携完整 AccessDecision（reason/offer/feature_key），
+                # 经 MCP 工具层向上传播，供 daemon→webui PaywallDialog 渲染付费墙（doc94 §10-P7）。
+                raise McpToolError(
+                    McpErrorCode.WORKFLOW_TEMPLATE_ENTITLEMENT_REQUIRED,
+                    f'工作流模板「{tpl.name}」需先获得权益才能开启（{decision.reason}）',
+                    data={'decision': decision.model_dump(mode='json')},
+                )
 
         wf_params = cls._template_to_workflow_params(tpl, params)
         result = await agent_workflow_service.create_workflow(db, agent=agent, params=wf_params)

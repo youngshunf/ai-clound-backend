@@ -6,7 +6,8 @@
 - draft：合法图 → 存 draft/source=agent/owner=本人/version=1 且画廊（list_templates owner）可见；非法图拒绝。
 - update：version+1，只能改自己名下；改内置 / 改别人的 → 拒绝。
 - get/list：owner 隔离 + 含 builtin。
-- instantiate：据模板建出 cloud workflow（返 workflow_id），workflow.template_key 溯源落列，权益恒 pass。
+- instantiate：据模板建出 cloud workflow（返 workflow_id），workflow.template_key 溯源落列；付费墙（P7·doc94
+  §10-P7）：免费模板（sku_ref 空）放行，付费模板无权益抛 MCP_9219（data 携 AccessDecision）、有权益放行。
 - publish：过校验 → status 转 active + version 快照 + market_ref 占位。
 - 工具注册：6 工具 name/scope/schema + publish 出厂 ask（manifest human_confirmation.required=True）。
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 import uuid
 
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -29,13 +31,17 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.billing.model.billing_offering import BillingOffering
+from backend.app.billing.model.billing_plan import BillingPlan
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn_task.schema.workflow_template import CreateWorkflowTemplateParam
 from backend.app.hasn_task.service.workflow_template_service import (
     _MAX_NODES,
     validate_graph_spec,
     workflow_template_service,
 )
+from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -421,6 +427,172 @@ async def test_instantiate_cross_owner_template_not_found(env: SimpleNamespace) 
             env.session, agent=agent, template_key=a['template_key'], params={}
         )
     await env.session.rollback()
+
+
+# ============================ instantiate 付费墙（P7-cloud） ============================
+
+
+async def _seed_paid_offering(session: AsyncSession, *, offering_key: str, feature_key: str) -> None:
+    """种一条 active offering + active plan（无试用 → 无权益即 need_purchase）挂到 feature_key。"""
+    session.add(
+        BillingOffering(
+            key=offering_key,
+            kind='feature_plan',
+            feature_key=feature_key,
+            display_name='付费场景模板',
+            status='active',
+            source='platform',
+        )
+    )
+    session.add(
+        BillingPlan(
+            offering_key=offering_key,
+            plan_key='standard',
+            price_amount=Decimal(29),
+            price_unit='cny',
+            cycle='month',
+            quota_json={},
+            trial_json={},  # 不开试用 → 无权益判 need_purchase（非 trial_available）
+            grace_json={},
+            status='active',
+        )
+    )
+    await session.flush()
+
+
+async def _mk_paid_builtin_template(session: AsyncSession, *, key: str, sku_ref: str) -> None:
+    """建一条 builtin 付费模板（owner_id=None 全员可见，sku_ref 非空触发真判权）。"""
+    await workflow_template_service.create_template(
+        session,
+        owner_id=None,
+        obj=CreateWorkflowTemplateParam(
+            template_key=key,
+            name='付费一人公司',
+            graph_spec=_valid_graph(),
+            is_builtin=True,
+            status='active',
+            source='builtin',
+            sku_ref=sku_ref,
+        ),
+    )
+
+
+async def test_instantiate_paid_template_denied_without_entitlement(env: SimpleNamespace) -> None:
+    """付费模板（sku_ref 非空）+ 主人无权益 → 结构化拒绝 MCP_9219，data 携 AccessDecision(need_purchase)。"""
+    tag = _uid()
+    owner = f'paidO_{tag}'
+    agent_id = f'paidAg_{tag}'
+    key = f'paidTpl_{tag}'
+    okey = f'off_wft_{tag}'
+    feature_key = f'workflow_template:{key}'
+    await _seed_agent(env.session, owner_id=owner, agent_id=agent_id, name='发起分身')
+    await _seed_paid_offering(env.session, offering_key=okey, feature_key=feature_key)
+    await _mk_paid_builtin_template(env.session, key=key, sku_ref=okey)
+
+    agent = AgentTokenPayload(
+        agent_hasn_id=agent_id,
+        agent_name='发起分身',
+        owner_hasn_id=owner,
+        owner_user_id=1,
+        session_uuid=f'sess_{tag}',
+        expire_time=datetime.now(),
+    )
+    with pytest.raises(McpToolError) as ei:
+        await workflow_template_service.instantiate_template(
+            env.session, agent=agent, template_key=key, params={'origin_input': '想法'}
+        )
+    err = ei.value
+    assert err.code is McpErrorCode.WORKFLOW_TEMPLATE_ENTITLEMENT_REQUIRED
+    # data 携完整 AccessDecision（供 daemon→webui PaywallDialog 渲染）
+    decision = err.data['decision']
+    assert decision['allowed'] is False
+    assert decision['reason'] == 'need_purchase'
+    assert decision['feature_key'] == feature_key
+    assert decision['offer']['offering_key'] == okey  # offer 指向可购商品
+    await env.session.rollback()
+
+
+async def test_instantiate_paid_template_allowed_with_entitlement(env: SimpleNamespace) -> None:
+    """付费模板 + 主人已 grant 有效权益 → 放行，正常建出 cloud workflow（返 workflow_id）。"""
+    tag = _uid()
+    owner = f'entO_{tag}'
+    agent_id = f'entAg_{tag}'
+    key = f'entTpl_{tag}'
+    okey = f'off_wft_{tag}'
+    feature_key = f'workflow_template:{key}'
+    await _seed_agent(env.session, owner_id=owner, agent_id=agent_id, name='发起分身')
+    await _seed_paid_offering(env.session, offering_key=okey, feature_key=feature_key)
+    await _mk_paid_builtin_template(env.session, key=key, sku_ref=okey)
+
+    # grant 主人有效权益（active、expires_at 空=永久买断）
+    env.session.add(
+        HasnAppEntitlement(
+            app_id=feature_key,  # 通用特征无 catalog app_id，用 feature_key 占位保唯一
+            feature_key=feature_key,
+            subject_type='owner',
+            subject_id=owner,
+            source='purchase',
+            status='active',
+            quota_json={},
+        )
+    )
+    await env.session.flush()
+
+    agent = AgentTokenPayload(
+        agent_hasn_id=agent_id,
+        agent_name='发起分身',
+        owner_hasn_id=owner,
+        owner_user_id=1,
+        session_uuid=f'sess_{tag}',
+        expire_time=datetime.now(),
+    )
+    result = await workflow_template_service.instantiate_template(
+        env.session, agent=agent, template_key=key, params={'title': '已购一人公司'}
+    )
+    try:
+        assert result['template_key'] == key
+        assert result['workflow_id']
+        assert result['name'] == '已购一人公司'
+    finally:
+        await env.session.rollback()
+
+
+async def test_instantiate_free_template_bypasses_paywall(env: SimpleNamespace) -> None:
+    """免费模板（sku_ref=None）直接放行，不进判权（即便 owner 无任何权益）。"""
+    tag = _uid()
+    owner = f'freeO_{tag}'
+    agent_id = f'freeAg_{tag}'
+    key = f'freeTpl_{tag}'
+    await _seed_agent(env.session, owner_id=owner, agent_id=agent_id, name='发起分身')
+    # sku_ref 缺省=None（免费）
+    await workflow_template_service.create_template(
+        env.session,
+        owner_id=None,
+        obj=CreateWorkflowTemplateParam(
+            template_key=key,
+            name='免费一人公司',
+            graph_spec=_valid_graph(),
+            is_builtin=True,
+            status='active',
+            source='builtin',
+        ),
+    )
+    agent = AgentTokenPayload(
+        agent_hasn_id=agent_id,
+        agent_name='发起分身',
+        owner_hasn_id=owner,
+        owner_user_id=1,
+        session_uuid=f'sess_{tag}',
+        expire_time=datetime.now(),
+    )
+    result = await workflow_template_service.instantiate_template(
+        env.session, agent=agent, template_key=key, params={}
+    )
+    try:
+        assert result['workflow_id']
+        assert result['template_key'] == key
+    finally:
+        await env.session.rollback()
 
 
 # ============================ publish ============================
