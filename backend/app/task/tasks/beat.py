@@ -95,17 +95,10 @@ LOCAL_BEAT_SCHEDULE = {
         # coverage 永不更新。
         'schedule': TzAwareCrontab('*/10'),
     },
-    '云端记忆提取 worker': {
-        'task': 'memory_extraction_sweep',
-        # 每 10 分钟扫一次有未提取消息的 owner（doc16 Phase C2 单一云端提取管线）。增量水位
-        # memory_extraction_cursor 按 message id 单调推进，幂等；只取 owner 输入 + 任务结果/摘要，
-        # 跳过 agent verbose；平台廉价模型、平台吸收成本；candidate→PolicyGate→confidence→semantic_fact。
-        'schedule': TzAwareCrontab('*/10'),
-    },
     'Peer 画像合成 worker': {
         'task': 'peer_portrait_sweep',
         # 每 10 分钟扫一次「有新 peer 事实但画像未追上」的 (owner, peer) 对（doc17 PEERSYN-P4）。
-        # 错开提取 worker 5 分钟（提取先写 peer 事实、本 sweep 再据事实合成画像）。方案B 脏判定
+        # peer 事实上游来源为分身主动 hasn.memory.save（doc18 退役自动提取后单一来源）。方案B 脏判定
         # MAX(peer 事实.updated_at) > 画像.last_synthesized_at；逐对独立事务，跨全部分身聚合合成一份，
         # 合成后发 memory.peer_portrait.upserted 下行 daemon。
         'schedule': TzAwareCrontab('5-59/10'),
