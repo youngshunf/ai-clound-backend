@@ -37,3 +37,6 @@ class HasnMessages(Base):
     edited_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最后编辑时间')
     edit_version: Mapped[int] = mapped_column(sa.SMALLINT(), default=0, comment='编辑版本号')
     server_received_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment='服务端接收时间')
+    # doc02 §3.8：消息级设备 meta——产生该消息的节点 ID，Server 侧从认证上下文自动填、不可伪造，
+    # cloud runtime 产生的填 'cloud' 哨兵；渲染边界 join hasn_nodes.node_name 解析设备名（存 node_id 不存设备名）
+    origin_node_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='产生该消息的节点 ID（Server 侧自动填·不可伪造·cloud runtime=cloud）')

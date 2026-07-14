@@ -41,3 +41,5 @@ class HasnConversations(Base):
     last_message_from: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='最后消息发送方 hasn_id')
     message_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='消息总数')
     status: Mapped[str] = mapped_column(sa.String(20), default='', comment='状态 (active:活跃:green/archived:已归档:gray/disbanded:已解散:red/unreachable:不可达:orange)')
+    # doc02 §3.2：会话元数据版本号——成员/群名/策略变更时 +1，供 daemon 按 revision 判断本地镜像是否过期
+    revision: Mapped[int] = mapped_column(sa.BIGINT(), default=1, comment='会话元数据版本号（成员/群名/策略变更 +1，供 daemon 判镜像是否过期）')
