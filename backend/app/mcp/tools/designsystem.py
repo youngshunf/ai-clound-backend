@@ -23,8 +23,11 @@ input_schema 与本地 hasn-mcp **逐字段 1:1**（分身引用不变）。它�
 - 工具名 + input_schema 与原 hasn-mcp `designsystem` 云端工具 **逐字段 1:1**（分身引用不变）。
 - scope 与本地 1:1：写类 import/save 声明 `designsystem:write`（出厂 Allow）；读类 list/get 无 scope。
   三态闸门由 `server.call_tool` 统一判定，工具体不二次校验。
-- save 成功落版后 best-effort 登记一条指向 bundle 资产的可下载产物（AF/D2，对齐原 daemon
-  `capture_best_effort`）——独立事务、失败只 warn，绝不影响 save 结果；无 bundle 资产则不臆造。
+- save 成功落版后（写事务已提交）做两个 best-effort post-commit 副作用（独立事务、失败只 warn，
+  绝不影响 save 结果），完整对齐 deck 的 register-on-write + finalize 完成卡（DSCARD·福仔「像 deck
+  那样」）：① register-on-write——每次 save 都把该设计系统登记进 `hasn_artifacts`
+  （`hasn://designsystem/{云端权威 id}`，带 work_session_id）→ 出现在「工作会话资源栏 / 分身产物
+  tab」可点开查看；② 完成卡——内容写全时经 `route_message` 从分身发一张「打开设计系统」卡进主人主会话。
 """
 
 from __future__ import annotations
@@ -34,8 +37,6 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
-from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.hasn_designsystem.core import SourceToken as CoreSourceToken
 from backend.app.hasn_designsystem.core import (
     compile_tokens as core_compile_tokens,
@@ -366,55 +367,82 @@ class DesignSystemSaveTool(BaseTool):
             await _bump_designsystem_sync(db, agent_context.owner_hasn_id)
             await db.commit()
 
-        # save 已落库后：best-effort 登记 bundle 产物（独立事务，失败只 warn，不影响 save 结果）。
-        await self._record_bundle_artifact_best_effort(agent_context, data)
+        # save 已落库后（写事务已提交）的两个 post-commit 副作用（best-effort、独立事务、失败只 warn，
+        # 绝不影响已落库的 save 结果）——完整对齐 deck 的 register-on-write + finalize 完成卡：
+        # ① register-on-write：把该设计系统登记进 hasn_artifacts（hasn://designsystem/{id}），带上
+        #    work_session_id → 出现在「工作会话资源栏 / 分身产物 tab」，可点开设计系统详情查看。
+        # ② 完成卡：内容写全时，经 route_message 从分身发一张「打开设计系统」卡进主人主会话。
+        await self._register_designsystem_artifact_best_effort(agent_context, data)
+        await self._deliver_completion_card_best_effort(agent_context, data)
+        data.pop('completion_card', None)  # 内部完成信号，不外露给调用分身
         return data
 
     @staticmethod
-    async def _record_bundle_artifact_best_effort(agent_context: AgentContext, data: dict[str, Any]) -> None:
-        """save 携 revision.bundle_asset_id → 登记一条 asset 类（document）可下载产物 + 语义元数据。
-
-        对齐原 hasn-mcp daemon `capture_best_effort`：无 bundle 资产则不登记（零 fake，不臆造资源指针）；
-        设计系统**不是**已注册的 hasn:// 资源域，故以 asset 为本体（不产 resource 指针）。
+    async def _register_designsystem_artifact_best_effort(
+        agent_context: AgentContext, data: dict[str, Any]
+    ) -> None:
+        """register-on-write（对齐 deck `_register_deck_artifact`）：**每次 save** 都把该设计系统登记进
+        `hasn_artifacts`（resource_uri=`hasn://designsystem/{云端权威 id}`），带 work_session_id →
+        出现在「工作会话资源栏 / 分身产物 tab」，且可点开设计系统详情查看（治「分身建/改了设计系统，
+        工作会话产物列表却看不到」）。幂等 upsert（键 `(agent, designsystem:{id}, hasn://designsystem/{id})`）
+        ——反复 save 只一条 active 行、会话归属只进不退。独立事务、失败只 warn，绝不影响 save 结果。
         """
-        revision = data.get('revision') if isinstance(data.get('revision'), dict) else {}
-        bundle_asset_id = revision.get('bundle_asset_id')
-        if not isinstance(bundle_asset_id, str) or not bundle_asset_id.strip():
+        ds_id = data.get('id')
+        if not isinstance(ds_id, int):
             return
-
-        metadata: dict[str, Any] = {}
-        for key in ('slug', 'grade'):
-            if isinstance(data.get(key), str):
-                metadata[key] = data[key]
-        if isinstance(data.get('id'), int):
-            metadata['design_system_id'] = data['id']
-        if isinstance(data.get('score'), int):
-            metadata['score'] = data['score']
-        if isinstance(revision.get('rev_no'), int):
-            metadata['rev_no'] = revision['rev_no']
-
-        params = RecordArtifactParam(
-            kind='document',
-            title=data.get('name') if isinstance(data.get('name'), str) else None,
-            asset_id=bundle_asset_id.strip(),
-            source_kind='tool_output',
-            source_tool='hasn.designsystem.save',
-            metadata=metadata,
-            # register-on-write 泛化（ARTREG）：分身在工作会话里 save 设计系统 → 带上会话 id，
-            # 让 bundle 产物出现在「工作会话资源栏」（对齐 deck）。设计系统非 hasn:// 资源域，
-            # 完成卡投影（RC-P8）不覆盖它，故此处是它进资源栏的唯一入口。主会话直调 → None。
-            session_id=agent_context.work_session_id,
-        )
         try:
+            from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+            from backend.app.hasn.service.hasn_sessions_service import _designsystem_resource_descriptor
+
+            title = data.get('name') if isinstance(data.get('name'), str) else None
             async with async_db_session.begin() as db:
-                await hasn_artifacts_service.record(
+                await HasnArtifactsService.record_app_resource_artifact(
                     db,
+                    descriptor=_designsystem_resource_descriptor(),
+                    server_id=str(ds_id),
+                    session_id=agent_context.work_session_id,
                     agent_hasn_id=agent_context.agent_hasn_id,
                     owner_hasn_id=agent_context.owner_hasn_id,
-                    params=params,
+                    title=(title or '').strip() or '设计系统',
+                    source_tool='hasn.designsystem.save',
                 )
         except Exception as e:  # 产物登记 best-effort
-            log.warning('[designsystem] bundle 产物登记失败 (非致命): %s', e)
+            log.warning('[designsystem] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', e)
+
+    @staticmethod
+    async def _deliver_completion_card_best_effort(
+        agent_context: AgentContext, data: dict[str, Any]
+    ) -> None:
+        """完成卡（对齐 deck `_run_deck_post_commit`）：save 判定「必填字段齐了」时透出的完成信号
+        （`data['completion_card']`）→ 写事务**提交后**在独立会话里经 route_message 从分身发卡进主人主会话。
+
+        route_message 自管 `db.commit()`，故必须独立会话（绝不能塞进 save 的事务，否则提前结束事务）。
+        投递成功后回填 completed_notified_at（与 save 的门配套；首投失败则留空、下次完整 save 自愈补发，
+        叠加 route_message 的 local_id 幂等 → 双保只发一张、不丢卡）。best-effort：失败只 warn。
+        """
+        card = data.get('completion_card')
+        if not isinstance(card, dict):
+            return
+        ds_id = card.get('design_system_id')
+        if not isinstance(ds_id, str) or not ds_id:
+            return
+        try:
+            from backend.app.hasn.service.hasn_sessions_service import emit_designsystem_completion_card
+
+            async with async_db_session() as db:
+                await emit_designsystem_completion_card(
+                    db,
+                    owner_id=agent_context.owner_hasn_id,
+                    agent_id=agent_context.agent_hasn_id,
+                    design_system_id=ds_id,
+                    title=str(card.get('title') or ''),
+                    summary=str(card.get('summary') or ''),
+                )
+            # 投递成功 → 回填 completed_notified_at（独立事务，幂等）。
+            async with async_db_session() as db:
+                await design_system_service.mark_completion_notified(db, int(ds_id))
+        except Exception as e:  # 完成卡 best-effort，绝不影响 save 结果
+            log.warning('[designsystem] 完成卡投递失败（非致命）: %s', e)
 
 
 class DesignSystemListTool(BaseTool):

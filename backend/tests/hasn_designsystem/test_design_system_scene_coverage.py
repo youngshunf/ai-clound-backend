@@ -260,8 +260,9 @@ async def test_soft_hint_is_nonblocking(session) -> None:
         content=_complete_content(scenes=partial_scenes),
         required_scenes=['brand_website'],
     )
-    # 五必填齐 → 完成水位落地（软提示不阻断）
-    assert saved['completed_notified_at'] is not None
+    # 五必填齐 → 仍透出完成卡信号（软提示不阻断发卡；DSCARD 后发卡/落水位由工具 post-commit）
+    assert saved['completion_card'] is not None
+    assert saved['completed_notified_at'] is None
     assert saved['required_scenes'] == ['brand_website']
 
 

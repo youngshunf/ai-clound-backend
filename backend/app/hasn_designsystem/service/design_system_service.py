@@ -449,89 +449,52 @@ class DesignSystemService:
         await db.commit()
         await db.refresh(d)
 
-        # DSFIX-1：分身写满必填字段 → 首次完整 → 发一次「设计系统已完成·查看」卡给主人（幂等 + best-effort）。
-        # 时机不是 runtime 自动完成，而是「必填字段齐了」（福仔铁律）。仅落当前版（advance_current）且作者是
-        # 分身、且从未发过（completed_notified_at 为空）、且本版内容完整才发。发卡失败不阻断保存。
+        # DSFIX-1 / DSCARD：分身写满必填字段 → 发一次「设计系统做好了·打开」完成卡给主人。时机不是
+        # runtime 自动完成，而是「必填字段齐了」（福仔铁律）：仅落当前版（advance_current）、作者是分身、
+        # 从未发过（completed_notified_at 为空）、本版内容完整才发。此处只**判定并打包完成信号**，真正
+        # 发卡改由 `hasn.designsystem.save` 工具在写事务**提交后**的独立会话里走 route_message（对齐
+        # deck 的 emit_deck_completion_card——route_message 自管 commit，绝不能塞进本 save 的事务里，
+        # 否则会提前结束事务）。completed_notified_at 由工具**投递成功后**才回填（首投失败则留空、下次
+        # 完整 save 自愈补发），叠加 route_message 的 local_id 幂等，双保只发一张、且不丢卡。
         should_notify = (
             advance_current
             and subject.kind == 'agent'
             and d.completed_notified_at is None
             and _content_complete(content)
         )
+        completion_card: dict[str, Any] | None = None
         if should_notify:
             # DSGAL：软提示——交叉 owner 要求的 required_scenes 与本版 manifest.scenes[]，算「品牌网站 3/5 ·
-            # 缺 CTA/页脚」。不阻断发卡（完成判定见上 should_notify，只看五项必填字段）。
-            scene_coverage = _scene_coverage_annotation(
-                _normalize_required_scenes(d.required_scenes),
-                _authoritative_scenes(content.get('components_html')),
-            )
-            try:
-                await self._notify_designsystem_ready(
-                    db, d=d, agent_hasn_id=subject.hasn_id, scene_coverage=scene_coverage
+            # 缺 CTA/页脚」，压成一行挂进完成卡 summary（软提示，不阻断；完成判定只看五项必填字段）。
+            preview = f'{d.name} · 评分 {d.score}' if d.score is not None else d.name
+            hint = _scene_coverage_hint(
+                _scene_coverage_annotation(
+                    _normalize_required_scenes(d.required_scenes),
+                    _authoritative_scenes(content.get('components_html')),
                 )
-                d.completed_notified_at = timezone.now()
-                await db.commit()
-                await db.refresh(d)
-            except Exception:  # noqa: BLE001 — 完成卡是次要副作用，绝不因它回滚已保存的设计系统
-                await db.rollback()
-                await db.refresh(d)
-                log.exception('设计系统完成卡发送失败（不阻断保存）design_system_id=%s', d.id)
+            )
+            if hint:
+                preview = f'{preview} · 画廊 {hint}'
+            completion_card = {'design_system_id': str(d.id), 'title': d.name, 'summary': preview}
 
         out = _ds_dict(d)
         out['revision'] = _revision_dict(rev, with_content=False)
         out['pending'] = not advance_current  # True=协作待确认版（未落当前态）
+        # 完成信号透传给工具 post-commit 投递（None=未完整/协作待确认版/owner 本人 save，不发卡）。
+        out['completion_card'] = completion_card
         return out
 
-    async def _notify_designsystem_ready(
-        self,
-        db: AsyncSession,
-        *,
-        d: DesignSystem,
-        agent_hasn_id: str,
-        scene_coverage: list[dict[str, Any]] | None = None,
-    ) -> None:
-        """分身写满必填字段 → 发「设计系统已完成·查看」卡给主人（DSFIX-1）。
+    async def mark_completion_notified(self, db: AsyncSession, design_system_id: int) -> None:
+        """完成卡投递成功后回填 completed_notified_at（工具 post-commit 调，独立事务，自提交）。
 
-        source.kind=agent（category=agent 默认开 card_message → 卡片落「主人 ⇄ 该分身」既有会话）；
-        深链走 `hasn://designsystem/{云端权威 id}`（相对 `/designsystem/{id}` 由 carrier 提升为 canonical，
-        `{id}` 用云端权威 `d.id`——分享/换设备均可解析，符合「本地 ID 永不上 URI」铁律）。
-        `scene_coverage`（DSGAL）：每个 required 场景的组件画廊覆盖标注，压成一行软提示挂进 preview，
-        卡片诚实透出「品牌网站 3/5 · 缺 CTA/页脚」——软提示，不阻断（发卡时机仍只看五项必填字段）。
-        惰性 import notification_service，避免模块加载期循环（与 _fanout_card 同策略）。
+        与 save() 的 `completed_notified_at is None` 门配套：只有投递成功才标已发，故首投失败会留空、
+        下次完整 save 自愈补发。已标过再调是幂等 no-op（不覆盖既有时间戳）。行不存在则静默跳过。
         """
-        from backend.app.hasn.model.hasn_agents import HasnAgents
-        from backend.app.notification.service.notification_service import notification_service
-
-        # 分身展示名（缺失回落 hasn_id，不造假）
-        display_name = (
-            await db.execute(select(HasnAgents.display_name).where(HasnAgents.hasn_id == agent_hasn_id))
-        ).scalar_one_or_none()
-        preview = f'{d.name} · 评分 {d.score}' if d.score is not None else d.name
-        # DSGAL：有缺件的场景 → 追加软提示到 preview（缺件为空则不追加，卡片保持简洁）。
-        hint = _scene_coverage_hint(scene_coverage) if scene_coverage else None
-        if hint:
-            preview = f'{preview} · 画廊 {hint}'
-        await notification_service.emit(
-            db,
-            recipient_id=d.owner_hasn_id,
-            source={
-                'kind': 'agent',
-                'id': agent_hasn_id,
-                'display_name': display_name or agent_hasn_id,
-                'on_behalf_of': d.owner_hasn_id,
-            },
-            category='agent',
-            type='designsystem.ready',
-            title=f'设计系统「{d.name}」已完成，点开查看',
-            payload={
-                'target': {'kind': 'designsystem', 'id': str(d.id)},
-                'link': f'/designsystem/{d.id}',
-                'preview': preview,
-                # DSGAL：结构化覆盖标注也随卡片带出，供 webui 卡片细节渲染（软提示，不阻断）。
-                'scene_coverage': scene_coverage or [],
-            },
-            dedupe_key=f'designsystem.ready:{d.id}',
-        )
+        d = await db.get(DesignSystem, design_system_id)
+        if d is None or d.completed_notified_at is not None:
+            return
+        d.completed_notified_at = timezone.now()
+        await db.commit()
 
     async def set_bound_agent(
         self,

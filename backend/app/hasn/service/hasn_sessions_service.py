@@ -954,6 +954,91 @@ async def emit_deck_completion_card(
     )
 
 
+def _designsystem_resource_descriptor() -> Any:
+    """取 designsystem 的资源描述符（RC-P0 声明在 designsystem manifest.resources[]）。
+
+    正常路径必然命中（registry 同步读 builtin manifest）；极端兜底构造一份等价 descriptor，
+    保证 `emit_designsystem_completion_card` 在任何环境都能出卡（对齐 `_deck_resource_descriptor`）。
+    """
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+    descriptor = ai_native_app_registry.resource_descriptor('designsystem', 'designsystem.spec')
+    if descriptor is not None:
+        return descriptor
+    from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
+
+    return ResourceDescriptor.model_validate(
+        {
+            'resource_kind': 'designsystem.spec',
+            'uri_domain': 'designsystem',
+            'open': {'mode': 'native_window', 'window': 'designsystem'},
+            'card': {'verb': '设计系统', 'action_label': '打开设计系统'},
+            'artifact_kind': 'other',
+        }
+    )
+
+
+async def emit_designsystem_completion_card(
+    db: AsyncSession,
+    *,
+    owner_id: str,
+    agent_id: str,
+    design_system_id: str,
+    title: str = '',
+    summary: str = '',
+) -> dict[str, Any]:
+    """设计系统写满必填字段 → 云端组「打开设计系统」卡，经 ``route_message`` 从**分身→主人**投递。
+
+    完全对齐 ``emit_deck_completion_card``（福仔「像 deck 那样」）——不再走 notification_service.emit
+    的汇报面通道（依赖 OwnerLoopback 守卫 + 部署状态，脆弱），改用 deck 同一条可靠会话通道：
+
+    - 复用 ``route_message``（分身→自己主人始终放行）：自带会话解析 + 落库 + push_to_owner +
+      daemon 镜像，与分身平时回复主人完全同一条通道（在线即推、离线重连 sync_pull 补达）。
+    - 深链 ``hasn://designsystem/{design_system_id}``，``design_system_id`` = **云端权威 id**
+      （设计系统本就建在云端，入参即云端 id；跨设备/分享后对端据云端 id 读穿 ACL 打开，
+      符合「本地 ID 永不上 URI」铁律）。
+    - 幂等：``local_id=designsystem_complete:{id}`` 命中 ``hasn_messages`` 唯一索引则不二次投递
+      —— 完成信号可被多次 save 触发（自愈补发首次投递失败的卡），local_id 保证只发一次。
+    - **产物登记不在此处**：由 ``hasn.designsystem.save`` 工具每次 save 都 register-on-write
+      （带 work_session_id），故完成卡只管发卡、不重复登记（与 deck 略异：designsystem 的 save
+      恒经工具，无「主会话直建、无工具」路径，故此处省登记）。
+    """
+    descriptor = _designsystem_resource_descriptor()
+    summary_text = summary.strip() if summary else ''
+    if not summary_text:
+        summary_text = f'《{title}》已经做好了，点开看看吧。' if title else ''
+    content_json = {
+        'projection_kind': 'designsystem_completion',
+        'agent_id': agent_id,
+        'origin_type': 'app',
+        'origin_ref': f'resource:designsystem:{design_system_id}',
+        'designsystem_server_id': design_system_id,
+        'summary': summary_text,
+        'deep_link': f'hasn://designsystem/{design_system_id}',
+    }
+    card = build_generic_resource_card(
+        descriptor=descriptor,
+        app_id='designsystem',
+        session_id=f'designsystem-{design_system_id}',
+        uri_id=str(design_system_id),
+        content_json=content_json,
+    )
+    validate_card_message_body(card)
+
+    from backend.app.hasn.service import message_router
+
+    return await message_router.route_message(
+        db,
+        from_id=agent_id,
+        to_target=owner_id,
+        content=card,
+        content_type=5,
+        msg_type='card',
+        local_id=f'designsystem_complete:{design_system_id}',
+        context={'projection_kind': 'designsystem_completion', 'designsystem_id': str(design_system_id)},
+    )
+
+
 def _projection_card_body(*, session_id: str, title: str, content_json: dict[str, Any]) -> dict[str, Any]:
     # RC-P3：应用资源会话（origin_ref=resource:{app}:{local}）→ 据 descriptor 泛化组「{verb}做好了」卡
     # （分身不自己发卡，去 deck 特例）。判别器用 origin_ref 拆 app_id/local_ref，卡里 `hasn://{域}/{id}`
