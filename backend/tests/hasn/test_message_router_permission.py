@@ -1,14 +1,18 @@
-"""Phase 7: message_router.route_message 的 A 路线四态判决出口测试 (RESEARCH §B3)。
+"""Phase 7 → 会话一等实体（doc02 §3.3）：route_message 的 A 路线四态判决 × 统一受众扇出。
 
 被测目标：
-- mock permission_engine.evaluate → ALLOW/DENY/CONFIRM/SCOPE_LTD
-- 验证 envelope JSON 顶层含 permission 子对象 {decision, reason, allowed_fields}
-- 验证 DENY 直接返回 error，CONFIRM 调 _stash_pending_commitment 不 push，
-  SCOPE_LTD 应用 mask 后 push，ALLOW 正常 push
-- 验证 check_relation_permission 已不被 route_message 调用 (legacy 仅保留 def)
+- mock permission_engine.evaluate → ALLOW/DENY/CONFIRM/SCOPE_LTD，验证判决出口。
+- ALLOW → 落库 + `_fanout_message_new` 扇出：每受众 owner 一条 `hasn.message.new` 瘦事件推送。
+- DENY → 不投递，返回 error；CONFIRM → 调 _stash_pending_commitment 不投递；
+  SCOPE_LTD → mask content 后扇出（content_body 只留 allowed_fields）。
+- check_relation_permission 已不被 route_message 调用（legacy 仅保留 def）。
 
-依赖隔离：resolve_target / get_or_create_conversation / persist_message /
-_push_message_to / permission_engine.evaluate / _stash_pending_commitment 全部 mock。
+会话一等实体后：投递不再有 envelope/permission 子对象/entity 直推/owner exclude-fanout——
+统一走 `push_to_owner(owner, message.new)`（8 字段瘦事件）。permission 决定的是**投递什么**
+（masked content_body）与**是否投递**，不再作为 envelope 的 rider 字段。
+
+依赖隔离：resolve_target / get_or_create_conversation / persist_message / permission_engine.evaluate
+/ compute_audience_owner_ids / _stash_pending_commitment / ws_router.push_to_owner 全部 mock。
 """
 from __future__ import annotations
 
@@ -43,9 +47,12 @@ def _patch_router_pipeline(
     perm_reason: str = 'test',
     allowed_fields=None,
     error_code=None,
+    audience=('h_receiver', 'h_sender'),
 ):
-    """统一 mock route_message 的下游依赖。"""
+    """统一 mock route_message 的下游依赖（含统一受众扇出）。"""
+    from backend.app.hasn.service import conversation_projection as cp
     from backend.app.hasn.service import message_router as mr
+    from backend.app.hasn.service.ws_router import ws_router
 
     # 目标解析：人类收件人
     monkeypatch.setattr(
@@ -68,8 +75,12 @@ def _patch_router_pipeline(
     eval_mock = AsyncMock(return_value=perm_result)
     monkeypatch.setattr(mr.permission_engine, 'evaluate', eval_mock, raising=False)
 
-    # 会话 + 持久化（轻量 stub）
-    fake_conv = SimpleNamespace(id=42)
+    # 会话 + 持久化（轻量 stub；conv 带 type/participants 供受众计算读，虽然下面直接 mock 掉受众）
+    fake_conv = SimpleNamespace(
+        id=42, type='direct',
+        participant_a_id='h_sender', participant_a_type='human',
+        participant_b_id='h_receiver', participant_b_type='human',
+    )
     monkeypatch.setattr(
         mr, 'get_or_create_conversation',
         AsyncMock(return_value=fake_conv),
@@ -79,31 +90,30 @@ def _patch_router_pipeline(
     )
     monkeypatch.setattr(mr, 'persist_message', AsyncMock(return_value=fake_msg))
 
-    # 这些用例只验证 permission 分支，避免被同步事件落库路径干扰。
+    # 受众计算隔离：固定返回，聚焦 permission 出口（受众计算本体在 C1 单测覆盖）。
+    monkeypatch.setattr(cp, 'compute_audience_owner_ids', AsyncMock(return_value=list(audience)))
+
+    # 捕获瘦事件 sync feed 落库。
     from backend.app.hasn.service import hasn_sync_service as sync_service_module
 
+    sync_calls: list[dict] = []
     monkeypatch.setattr(
         sync_service_module.SqlAlchemySyncGateway,
         '_append_sync_event',
-        AsyncMock(return_value=None),
+        AsyncMock(side_effect=lambda _self_db, **kw: (sync_calls.append(kw), 1)[1]),
         raising=False,
     )
 
-    # _stash_pending_commitment / _push_message_to / db.commit
+    # _stash_pending_commitment（CONFIRM 分支）。
     stash_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(mr, '_stash_pending_commitment', stash_mock, raising=False)
 
-    push_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr(mr, '_push_message_to', push_mock, raising=False)
-
-    # Owner 透明 fanout：fc401e7 起改走 ws_router.push_to_owner_excluding_agent_node
-    # （排除 Agent 实体节点，避免 Agent 跑在主人 daemon 上时同一节点收两遍），
-    # 不再用 _push_message_to 二次投递。单测需 mock 该单例方法。
-    from backend.app.hasn.service.ws_router import ws_router as _ws_router
-
-    owner_fanout_mock = AsyncMock(return_value=None)
+    # 统一受众扇出实时推送出口：push_to_owner(owner_id, message.new payload)。
+    pushed: list[tuple[str, dict]] = []
     monkeypatch.setattr(
-        _ws_router, 'push_to_owner_excluding_agent_node', owner_fanout_mock, raising=False,
+        ws_router, 'push_to_owner',
+        AsyncMock(side_effect=lambda owner_id, payload: pushed.append((owner_id, payload))),
+        raising=False,
     )
 
     legacy_mock = AsyncMock(return_value={'allowed': False})  # 应不被调用
@@ -112,8 +122,8 @@ def _patch_router_pipeline(
     return {
         'evaluate': eval_mock,
         'stash': stash_mock,
-        'push': push_mock,
-        'owner_fanout': owner_fanout_mock,
+        'pushed': pushed,
+        'sync_calls': sync_calls,
         'legacy': legacy_mock,
     }
 
@@ -124,15 +134,16 @@ def _fake_db():
     return db
 
 
-def _extract_pushed_envelope(push_mock) -> dict:
-    """从 _push_message_to(to_id, payload) mock 调用中取出 envelope。"""
-    args, kwargs = push_mock.call_args
-    payload = args[1] if len(args) > 1 else (kwargs.get('payload') or kwargs.get('message'))
-    return payload['params']['message']
+def _first_message_new_params(mocks) -> dict:
+    """从 push_to_owner(owner_id, payload) 捕获里取第一条 message.new 的 params。"""
+    assert mocks['pushed'], '预期至少一条 message.new 推送'
+    owner_id, payload = mocks['pushed'][0]
+    assert payload['method'] == 'hasn.message.new'
+    return payload['params']
 
 
-# ── Test 1: ALLOW → push + envelope 含 permission ──
-async def test_allow_pushes_with_permission(monkeypatch) -> None:
+# ── Test 1: ALLOW → 扇出 message.new 到受众 owner ──
+async def test_allow_fans_out_message_new(monkeypatch) -> None:
     mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
     from backend.app.hasn.service.message_router import route_message
 
@@ -142,16 +153,27 @@ async def test_allow_pushes_with_permission(monkeypatch) -> None:
     )
     assert result.get('error') is False
     assert result['status'] == 'sent'
+    # 受众两个 owner 都收到 message.new。
+    assert {owner for owner, _ in mocks['pushed']} == {'h_receiver', 'h_sender'}
+    params = _first_message_new_params(mocks)
+    assert params['sender_hasn_id'] == 'h_sender'
+    assert params['content_body'] == {'body': 'hi'}
+    # 瘦事件严格 8 字段，无 permission/envelope rider。
+    assert set(params.keys()) == {
+        'conversation_id', 'message_id', 'sender_hasn_id', 'origin_node_id',
+        'content_type', 'content_body', 'local_id', 'created_at',
+    }
+    assert result['delivered_to'] == ['h_receiver', 'h_sender']
 
-    mocks['push'].assert_called_once()
-    envelope = _extract_pushed_envelope(mocks['push'])
-    assert 'permission' in envelope
-    assert envelope['permission']['decision'] == 'allow'
 
+async def test_agent_target_fans_out_to_agent_owner(monkeypatch) -> None:
+    """发给 Agent 的消息不依赖 Runtime 在线——Agent 的主人 owner 在受众里，其在线设备收 message.new。
 
-async def test_agent_target_also_pushes_to_owner_without_runtime(monkeypatch) -> None:
-    """发给 Agent 的消息不依赖 Runtime 在线；Owner 在线节点也收到同一 IM 消息。"""
-    mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
+    会话一等实体后无「entity 节点直推 + owner exclude-fanout」：统一受众扇出让 Agent 主人本就在
+    受众集合，其设备收到后由 dispatch_here（§3.8）在绑定节点唤醒 Runtime。
+    """
+    mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW, audience=('h_owner', 'h_sender'))
+    from backend.app.hasn.service import conversation_projection as cp
     from backend.app.hasn.service import message_router as mr
     from backend.app.hasn.service.message_router import route_message
 
@@ -166,8 +188,9 @@ async def test_agent_target_also_pushes_to_owner_without_runtime(monkeypatch) ->
             'owner_id': 'h_owner',
         }),
     )
-    # to=Agent 走 INGATE 入站门控；本用例只验证 permission 出口，放行入站门控
-    # （否则 _fake_db() MagicMock 喂给 evaluate_inbound 的真实查询会 fail-closed suppress）。
+    # 受众 = {发送方 h_sender, 分身主人 h_owner}。
+    monkeypatch.setattr(cp, 'compute_audience_owner_ids', AsyncMock(return_value=['h_owner', 'h_sender']))
+    # to=Agent 走 INGATE 入站门控；本用例只验证 permission 出口，放行入站门控。
     monkeypatch.setattr(
         mr, 'evaluate_inbound',
         AsyncMock(return_value=SimpleNamespace(action='allow')),
@@ -179,20 +202,16 @@ async def test_agent_target_also_pushes_to_owner_without_runtime(monkeypatch) ->
     )
 
     assert result.get('error') is False
-    # Agent 实体节点经 _push_message_to 收到一次（Runtime 缺失/离线也照投，本地 IM 透明）。
-    assert [call.args[0] for call in mocks['push'].call_args_list] == ['a_receiver']
-    envelope = _extract_pushed_envelope(mocks['push'])
-    assert envelope['to_owner_id'] == 'h_owner'
-    # Owner 透明 fanout 经 ws_router 排除 Agent 实体节点投递一次：(owner_id, agent_id, payload)。
-    mocks['owner_fanout'].assert_called_once()
-    fanout_args = mocks['owner_fanout'].call_args.args
-    assert fanout_args[0] == 'h_owner'
-    assert fanout_args[1] == 'a_receiver'
-    assert fanout_args[2]['params']['message']['to_owner_id'] == 'h_owner'
+    # Agent 主人 h_owner 在受众里，收到 message.new（Runtime 缺失/离线也照收）。
+    pushed_owners = {owner for owner, _ in mocks['pushed']}
+    assert 'h_owner' in pushed_owners
+    assert pushed_owners == {'h_owner', 'h_sender'}
+    params = _first_message_new_params(mocks)
+    assert params['content_body'] == {'body': 'hi agent'}
 
 
-# ── Test 2: DENY → 不 push，返回 error ──
-async def test_deny_returns_error_no_push(monkeypatch) -> None:
+# ── Test 2: DENY → 不投递，返回 error ──
+async def test_deny_returns_error_no_delivery(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=DENY, perm_reason='blocked', error_code=2002,
     )
@@ -205,11 +224,11 @@ async def test_deny_returns_error_no_push(monkeypatch) -> None:
     assert result.get('error') is True
     assert result['code'] == 2002
     assert result['message'] == 'blocked'
-    mocks['push'].assert_not_called()
+    assert not mocks['pushed']
 
 
-# ── Test 3: CONFIRM → 调 _stash_pending_commitment，不 push ──
-async def test_confirm_stashes_no_push(monkeypatch) -> None:
+# ── Test 3: CONFIRM → 调 _stash_pending_commitment，不投递 ──
+async def test_confirm_stashes_no_delivery(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=CONFIRM, perm_reason='need confirm',
     )
@@ -223,11 +242,11 @@ async def test_confirm_stashes_no_push(monkeypatch) -> None:
     assert result.get('error') is False
     assert result['status'] == 'pending_confirmation'
     mocks['stash'].assert_called_once()
-    mocks['push'].assert_not_called()
+    assert not mocks['pushed']
 
 
-# ── Test 4: SCOPE_LTD → mask content 仅保留 allowed_fields ──
-async def test_scope_limited_applies_mask(monkeypatch) -> None:
+# ── Test 4: SCOPE_LTD → mask content_body 仅保留 allowed_fields ──
+async def test_scope_limited_masks_content_body(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=SCOPE_LTD, allowed_fields=['body'],
     )
@@ -238,15 +257,17 @@ async def test_scope_limited_applies_mask(monkeypatch) -> None:
         content={'body': 'visible', 'payment_amount': 100},
         msg_type='message',
     )
-    mocks['push'].assert_called_once()
-    envelope = _extract_pushed_envelope(mocks['push'])
-    assert envelope['content'] == {'body': 'visible'}
-    assert envelope['permission']['decision'] == 'scope_limited'
+    params = _first_message_new_params(mocks)
+    # 只保留 allowed_fields，payment_amount 被 mask 掉，不进 content_body。
+    assert params['content_body'] == {'body': 'visible'}
 
 
-# ── Test 5: ALLOW & SCOPE_LTD 都带 permission 子对象 ──
-async def test_envelope_contains_permission_always(monkeypatch) -> None:
-    for decision, fields in [(ALLOW, None), (SCOPE_LTD, ['body'])]:
+# ── Test 5: ALLOW & SCOPE_LTD 都扇出 message.new（permission 已不作 rider）──
+async def test_allow_and_scope_limited_both_deliver(monkeypatch) -> None:
+    for decision, fields, expect_body in [
+        (ALLOW, None, {'body': 'x'}),
+        (SCOPE_LTD, ['body'], {'body': 'x'}),
+    ]:
         mocks = _patch_router_pipeline(
             monkeypatch, perm_decision=decision, allowed_fields=fields,
         )
@@ -256,9 +277,8 @@ async def test_envelope_contains_permission_always(monkeypatch) -> None:
             db=_fake_db(), from_id='h_sender', to_target='h_receiver',
             content={'body': 'x'}, msg_type='message',
         )
-        envelope = _extract_pushed_envelope(mocks['push'])
-        assert 'permission' in envelope
-        assert envelope['permission']['decision'] == decision
+        params = _first_message_new_params(mocks)
+        assert params['content_body'] == expect_body
 
 
 # ── Test 6: legacy check_relation_permission 已不被 route_message 调用 ──

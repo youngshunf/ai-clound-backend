@@ -591,6 +591,9 @@ async def _handle_send(
             local_id=local_id,
             reply_to_id=reply_to_id,
             context=context,
+            # doc02 §3.8：消息级设备 meta 由 Server 从认证上下文自动填——即本 WS 连接
+            # 已认证的节点 ID（不可伪造，发送方不能自报设备）。
+            origin_node_id=node_id,
         )
 
     if result.get('error'):
