@@ -1485,6 +1485,12 @@ class CommunityService:
                     'display_name': row.owner_nickname or row.owner_hasn_id,
                 }
 
+        # 评论权限预判（doc-12 B-3 姊妹刀）：详情接口直接把 comment_policy 真实生效的判定结果
+        # 带给 webui，驱动「关闭评论时不显示输入框、改提示原因」，而不是让用户点提交才被拒。
+        can_comment, comment_disabled_reason = await CommunityService._check_can_comment(
+            db, policy=post.comment_policy, author_hasn_id=post.author_hasn_id, commenter_hasn_id=viewer_hasn_id
+        )
+
         await CommunityService._enrich_authors(db, [author_info])
         return {
             'content_type': 'post',
@@ -1504,6 +1510,9 @@ class CommunityService:
             'like_count': post.like_count,
             'comment_count': post.comment_count,
             'collect_count': post.collect_count,
+            'comment_policy': post.comment_policy,
+            'can_comment': can_comment,
+            'comment_disabled_reason': comment_disabled_reason,
             'published_time': post.published_time.isoformat() if post.published_time else None,
             'is_liked': post.post_id in liked_ids,
             'is_collected': post.post_id in collected_ids,
@@ -1649,25 +1658,31 @@ class CommunityService:
         }
 
     @staticmethod
-    async def _assert_can_comment(
+    async def _check_can_comment(
         db: AsyncSession,
         *,
         policy: str | None,
         author_hasn_id: str | None,
-        commenter_hasn_id: str,
-    ) -> None:
-        """按内容的 comment_policy 把关评论权限（comment_policy 设置真生效）。
+        commenter_hasn_id: str | None,
+    ) -> tuple[bool, str | None]:
+        """按内容的 comment_policy 判定评论权限，返回 (是否允许, 不允许时的原因)。
 
         - 作者本人评论自己内容：恒允许（不被自己的策略锁死）；
         - closed：拒绝（仅作者可评论）；
         - followers：要求评论者已关注作者（HasnFollows）；
         - all / 缺省：放行。
+
+        供 `_assert_can_comment`（发评论时的写路径硬闸）与详情接口（`get_post`/
+        `get_article`，读路径预判断 `can_comment`，驱动 webui 隐藏输入框+提示原因）
+        复用同一套判定，避免两处逻辑各写一份漂移。
         """
-        if not author_hasn_id or commenter_hasn_id == author_hasn_id:
-            return
+        if not author_hasn_id or (commenter_hasn_id and commenter_hasn_id == author_hasn_id):
+            return True, None
         if policy == 'closed':
-            raise errors.RequestError(msg='作者已关闭该内容的评论')
+            return False, '作者已关闭该内容的评论'
         if policy == 'followers':
+            if not commenter_hasn_id:
+                return False, '该内容仅允许作者的关注者评论'
             follows = (
                 await db.execute(
                     select(HasnFollows.follower_hasn_id)
@@ -1679,7 +1694,23 @@ class CommunityService:
                 )
             ).first()
             if follows is None:
-                raise errors.RequestError(msg='该内容仅允许作者的关注者评论')
+                return False, '该内容仅允许作者的关注者评论'
+        return True, None
+
+    @staticmethod
+    async def _assert_can_comment(
+        db: AsyncSession,
+        *,
+        policy: str | None,
+        author_hasn_id: str | None,
+        commenter_hasn_id: str,
+    ) -> None:
+        """按内容的 comment_policy 把关评论权限（comment_policy 设置真生效），不允许则抛错。"""
+        allowed, reason = await CommunityService._check_can_comment(
+            db, policy=policy, author_hasn_id=author_hasn_id, commenter_hasn_id=commenter_hasn_id
+        )
+        if not allowed:
+            raise errors.RequestError(msg=reason)
 
     @staticmethod
     async def create_comment(
@@ -3699,6 +3730,14 @@ class CommunityService:
         is_liked = article.article_id in liked_ids
         is_collected = article.article_id in collected_ids
 
+        # 评论权限预判（与 get_post 同一套 _check_can_comment，见其注释）。
+        can_comment, comment_disabled_reason = await CommunityService._check_can_comment(
+            db,
+            policy=article.comment_policy,
+            author_hasn_id=article.author_hasn_id,
+            commenter_hasn_id=hasn_id,
+        )
+
         await CommunityService._enrich_authors(db, [author_info])
         return {
             'article_id': article.article_id,
@@ -3713,6 +3752,8 @@ class CommunityService:
             ),
             'visibility': article.visibility,
             'comment_policy': article.comment_policy,
+            'can_comment': can_comment,
+            'comment_disabled_reason': comment_disabled_reason,
             'generation_type': article.generation_type,
             'like_count': article.like_count,
             'comment_count': article.comment_count,
