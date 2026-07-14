@@ -346,6 +346,23 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
 }
 
 
+# 应用图标 CDN 约定（与 backend/scripts/upload_app_icons.py 同源）：公共桶固定路径
+# ``app-icons/{app_id}.svg``——这些 URL 即部署端 webui ``AppCard`` 的彩色品牌图标源
+# （``icon_asset_uri`` 优先于单色 token；打包端 token 回落单色，故新应用必须落 CDN 图）。
+_APP_ICON_CDN_BASE = 'http://hasn-pub-cdn.dcfuture.cn/huanxing/app-icons'
+
+# seed 阶段即带图标的应用（app_id → CDN URL）。
+# 背景（血泪）：``ensure_catalog_seeded`` 是 INSERT-only，新应用首次播种若 icon_asset_uri=None，
+# 部署端 webui 就落单色兜底；而「补图迁移」在部署流程里可能**先于**本次 seed 跑（→UPDATE 0 空转、
+# 且被 runner 标记已应用）→ 新应用图标永久为空。故对新增/易漏的应用在 seed 阶段直接带上确定性
+# CDN 图标 URL，一劳永逸。存量行由 INSERT-only 保留、不受影响；未列出的应用仍 seed 成 None
+# （既有应用的图标来自已在各环境应用过的补图迁移，行为不变；deck 用自定义图故不在此列）。
+_CATALOG_SEED_ICON_ASSET_URI = {
+    'computer_use': f'{_APP_ICON_CDN_BASE}/computer_use.svg',
+    'finance': f'{_APP_ICON_CDN_BASE}/finance.svg',
+}
+
+
 def _catalog_row_from_app(app: App) -> dict:
     """把 App 映射为 catalog 行的默认值（迁移期单一来源）。
 
@@ -355,7 +372,7 @@ def _catalog_row_from_app(app: App) -> dict:
         'app_id': app.id,
         'name': app.name,
         'icon': app.icon,
-        'icon_asset_uri': None,
+        'icon_asset_uri': _CATALOG_SEED_ICON_ASSET_URI.get(app.id),
         'description': app.description,
         'source': 'builtin',
         'status': 'published',

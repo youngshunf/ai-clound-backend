@@ -293,7 +293,7 @@ def build_reel_app() -> App:
         id='reel',
         name='短视频合成',
         icon='brand-reel',
-        description='合成式短视频引擎——文案→配音→字幕→库存素材自动拼接出片（口播/带货/资讯量产），分身在创作运营内调用出片，成片本地优先。',
+        description='一个主题就能出短视频——分身替你写文案、配音、加字幕、配素材、自动拼成片，口播、带货、资讯批量产出。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/apps/reel',

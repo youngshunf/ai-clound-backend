@@ -472,8 +472,7 @@ def build_design_app() -> App:
         name='矢量设计',
         icon='brand-design',
         description=(
-            'AI-native 矢量设计画布（Figma/Pencil 替代，源自 OpenPencil）——分身经 hasn.design.* '
-            '在主人画布上实时出设计（海报/UI 稿/插画/图形/Logo），本地 sidecar 出图、产物回流，源文件本地优先。'
+            '和分身一起在画布上做设计——海报、UI 稿、插画、图形、Logo，你说想法它实时出图，源文件随时可改。'
         ),
         scope=('personal',),
         collaboration_mode='none',

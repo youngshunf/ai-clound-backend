@@ -106,7 +106,7 @@ def build_plan_app() -> App:
 
     return App(
         id='plan',
-        name='规划',
+        name='日程与规划',
         icon='brand-plan',
         description='你的目标、计划、待办、日程可视化大脑——分身当参谋长替你拆解目标，当执行秘书替你排期复盘。',
         scope=('personal', 'enterprise'),

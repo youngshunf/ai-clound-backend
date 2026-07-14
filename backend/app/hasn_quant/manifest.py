@@ -274,7 +274,7 @@ def build_quant_app() -> App:
         id='quant',
         name='量化交易',
         icon='brand-quant',
-        description='AI 量化研究工作台——分身写策略、云端跑回测、出绩效报告、迭代优化（回测零资金风险；实盘真钱强闸）。',
+        description='把你的交易想法交给分身写成策略、跑历史回测、出绩效报告、反复打磨——回测阶段不碰真钱，验证成熟再上实盘。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/apps/quant',

@@ -433,8 +433,7 @@ def build_studio_app() -> App:
         id='studio',
         name='视频引擎',
         icon='brand-studio',
-        description='统一视频引擎工作台——主人挑流水线、派分身出片（脚本→分镜→配音→合成），成品库一键管理'
-        '（cloud-brokered，算力按量计费）。',
+        description='一句创意交给分身出成片——脚本、分镜、配音、合成一条龙走完，出片、改片、管素材都在一处。',
         scope=('personal',),
         collaboration_mode='none',
         entry_route='/apps/studio',
