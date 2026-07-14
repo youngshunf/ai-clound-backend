@@ -188,6 +188,109 @@ async def test_agent_to_other_owner_not_loopback(session):
     assert len(rows) == 1
 
 
+# ==================== 读侧纵深防御：list/count 排除漏进的汇报面行 ====================
+#
+# 写侧 emit() 的 OwnerLoopback 守卫是 2026-07-07 才上线；此前「自分身→主人」的完成通知
+# 已经落进了 hasn_notifications 权威行（福仔截图里的「设计系统已完成」卡就是这类历史遗留）。
+# 直接插一条这样的行（绕过 emit 守卫）模拟遗留 / 旁路 producer，验证读侧 list/count 把它剔除。
+
+
+def _leaked_report_row(target_id: str, agent_id: str, *, on_behalf_of: str | None) -> HasnNotifications:
+    """构造一条「本该走汇报面却漏进通知中心」的未读权威行（绕过 emit 守卫直插 DB）。"""
+    source: dict[str, str] = {'kind': 'agent', 'id': agent_id, 'display_name': '小星'}
+    if on_behalf_of is not None:
+        source['on_behalf_of'] = on_behalf_of
+    return HasnNotifications(
+        target_id=target_id,
+        type='designsystem.ready',
+        title='设计系统「唤星 Astra 投资路演产品版设计规范」已完成',
+        body='评分 100',
+        category='system',
+        source=source,
+        read=False,
+        state='unread',
+    )
+
+
+def _external_row(target_id: str, actor_id: str) -> HasnNotifications:
+    """构造一条正常的外部未读通知行（应被读侧保留）。"""
+    return HasnNotifications(
+        target_id=target_id,
+        type='post_liked',
+        title='路人甲 赞了你的帖子',
+        category='social',
+        source={'kind': 'user', 'id': actor_id, 'display_name': '路人甲'},
+        read=False,
+        state='unread',
+    )
+
+
+async def test_read_side_excludes_leaked_loopback_via_on_behalf_of(session):
+    """漏进的自分身汇报行（on_behalf_of==主人）：list 不返、unread_count 不计；外部行照常。"""
+    owner, agent = _ids()
+    actor, _ = _ids()
+    session.add(_leaked_report_row(owner, agent, on_behalf_of=owner))
+    session.add(_external_row(owner, actor))
+    await session.flush()
+
+    listed = await NotificationService.list_notifications(session, recipient_hasn_id=owner, limit=50)
+    types = {it['type'] for it in listed['items']}
+    assert types == {'post_liked'}  # 汇报行被剔除，只剩外部行
+
+    counts = await NotificationService.unread_count(session, recipient_hasn_id=owner)
+    assert counts['total'] == 1
+    assert counts['by_type'] == {'post_liked': 1}
+
+
+async def test_read_side_excludes_leaked_loopback_via_db_owner(session):
+    """漏进的自分身汇报行（无 on_behalf_of，靠 owned_agent_ids 子查询命中）：一样被剔除。"""
+    owner, agent = _ids()
+    session.add(HasnAgents(hasn_id=agent, owner_id=owner, display_name='小星', agent_name='xiaoxing'))
+    session.add(_leaked_report_row(owner, agent, on_behalf_of=None))  # 故意不带 on_behalf_of
+    await session.flush()
+
+    listed = await NotificationService.list_notifications(session, recipient_hasn_id=owner, limit=50)
+    assert listed['items'] == []
+    counts = await NotificationService.unread_count(session, recipient_hasn_id=owner)
+    assert counts['total'] == 0
+
+
+async def test_read_side_keeps_other_owner_agent_row(session):
+    """他人分身发来的通知（agent→他人，owner≠主人）不是汇报面，读侧必须保留。"""
+    owner_b, _ = _ids()
+    owner_a, agent_a = _ids()
+    # A 的分身给 B 发的通知漏成 B 通知中心一行：on_behalf_of=A≠B，且 B 不拥有 agent_a
+    session.add(_leaked_report_row(owner_b, agent_a, on_behalf_of=owner_a))
+    await session.flush()
+
+    listed = await NotificationService.list_notifications(session, recipient_hasn_id=owner_b, limit=50)
+    assert len(listed['items']) == 1
+    counts = await NotificationService.unread_count(session, recipient_hasn_id=owner_b)
+    assert counts['total'] == 1
+
+
+async def test_read_side_keeps_external_empty_source_row(session):
+    """空/无 source 的历史行（JSONB `{}` → kind 为 NULL）不得被 NULL 逻辑误杀。"""
+    owner, _ = _ids()
+    session.add(
+        HasnNotifications(
+            target_id=owner,
+            type='system',
+            title='系统公告',
+            category='system',
+            source={},  # 空 source：coalesce 兜底后应保留
+            read=False,
+            state='unread',
+        )
+    )
+    await session.flush()
+
+    listed = await NotificationService.list_notifications(session, recipient_hasn_id=owner, limit=50)
+    assert len(listed['items']) == 1
+    counts = await NotificationService.unread_count(session, recipient_hasn_id=owner)
+    assert counts['total'] == 1
+
+
 # ==================== 判据纯逻辑单测（on_behalf_of 快路，db 不被触碰）====================
 
 

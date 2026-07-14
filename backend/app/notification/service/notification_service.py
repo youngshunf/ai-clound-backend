@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, false, func, or_, select
 
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.model.hasn_notification_preferences import HasnNotificationPreferences
@@ -271,6 +271,36 @@ class NotificationService:
         ).scalar_one_or_none()
         return owner is not None and str(owner) == str(recipient_id)
 
+    @staticmethod
+    def _exclude_report_plane(recipient_hasn_id: str):
+        """读侧「排除自分身→主人汇报面行」的 WHERE 条件（doc `通知系统统一设计/01` R2·读侧纵深防御）。
+
+        汇报面（自分身向主人的完成/汇报）**永不进通知中心**——emit() 的 OwnerLoopback 守卫在
+        **写侧**拦截。此处是**读侧兜底**：把任何漏进权威行的 agent-owner-loopback 通知从通知中心
+        列表/未读数里剔除（守卫上线前的历史遗留行、或任何旁路 producer 造的行），让通知页「只显
+        外部通知、不显自分身汇报」，与 `_is_owner_loopback` 同判据：source.kind==agent 且
+        （source.on_behalf_of==主人 或 该分身的主人==主人）。他人分身发来的通知（agent→他人，
+        owner≠主人）不受影响、照常展示。
+
+        纯 SQL 表达式（无副作用），可直接拼进 list/count 的 `.where(...)`，list 与 count 同口径。
+        """
+        from backend.app.hasn_core import HasnAgents
+
+        owned_agent_ids = select(HasnAgents.hasn_id).where(
+            HasnAgents.owner_id == recipient_hasn_id
+        )
+        is_report_plane = and_(
+            HasnNotifications.source['kind'].astext == 'agent',
+            or_(
+                HasnNotifications.source['on_behalf_of'].astext == recipient_hasn_id,
+                HasnNotifications.source['id'].astext.in_(owned_agent_ids),
+            ),
+        )
+        # NULL 安全：外部/空 source（JSONB `{}` → `->>'kind'` 为 NULL）会让 is_report_plane 求值成
+        # NULL，直接 `~NULL` 在 WHERE 里等同 FALSE 会误杀外部通知。coalesce 兜底成 FALSE，确保
+        # 只有「确定是汇报面」的行才被排除，其余（含外部通知）一律保留。
+        return ~func.coalesce(is_report_plane, false())
+
     @classmethod
     async def _apply_rate_limit(
         cls,
@@ -428,7 +458,12 @@ class NotificationService:
         limit: int = 20,
     ) -> dict[str, Any]:
         """通知列表（type/category/unread 过滤 + 游标分页 + 读时聚合）。"""
-        stmt = select(HasnNotifications).where(HasnNotifications.target_id == recipient_hasn_id)
+        stmt = (
+            select(HasnNotifications)
+            .where(HasnNotifications.target_id == recipient_hasn_id)
+            # 读侧纵深防御：自分身汇报面行绝不进通知中心（清历史遗留 + 兜底旁路 producer）。
+            .where(NotificationService._exclude_report_plane(recipient_hasn_id))
+        )
         if types:
             stmt = stmt.where(HasnNotifications.type.in_(types))
         if categories:
@@ -497,6 +532,8 @@ class NotificationService:
         base = (
             HasnNotifications.target_id == recipient_hasn_id,
             HasnNotifications.read.is_(False),
+            # 读侧纵深防御：未读徽标须与列表口径一致，排除自分身汇报面行（见 _exclude_report_plane）。
+            NotificationService._exclude_report_plane(recipient_hasn_id),
         )
         total = (
             await db.execute(select(func.count()).select_from(HasnNotifications).where(*base))
@@ -553,6 +590,8 @@ class NotificationService:
         stmt = select(HasnNotifications).where(
             HasnNotifications.target_id == recipient_hasn_id,
             HasnNotifications.read.is_(False),
+            # 与列表/未读口径一致：汇报面行不在通知中心，「全部已读」也不该把它们计入。
+            NotificationService._exclude_report_plane(recipient_hasn_id),
         )
         if types:
             stmt = stmt.where(HasnNotifications.type.in_(types))
