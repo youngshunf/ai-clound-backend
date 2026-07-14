@@ -136,6 +136,28 @@ class HasnGroupService:
         return {hid: oid for hid, oid in rows if hid and oid}
 
     @staticmethod
+    async def _build_profession_map(
+        db: AsyncSession, members: list[HasnGroupMembers]
+    ) -> dict[str, str]:
+        """名册中 agent 成员 → 专家名称（profession）映射（单次批量查）。
+
+        专家名称是**公开**职业头衔（社区主页/联系人卡处处可见），非主人私有档位，故对**全部**
+        分身成员回填（含他人名下分身）——支撑 @提及下拉/成员名册按 AID 铁律统一展示专家名称。
+        空 profession 不入表（诚实留空，不造假）。
+        """
+        agent_ids = [m.member_id for m in members if m.member_type == 'agent']
+        if not agent_ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(HasnAgents.hasn_id, HasnAgents.profession).where(
+                    HasnAgents.hasn_id.in_(agent_ids)
+                )
+            )
+        ).all()
+        return {hid: prof for hid, prof in rows if hid and prof}
+
+    @staticmethod
     async def _build_owner_name_map(db: AsyncSession, owner_ids: set[str]) -> dict[str, str]:
         """主人 hasn_id → 昵称（doc18 S1：群名册分身行标注「主人:昵称·h_id」用）。单次批量查 HasnHumans。"""
         ids = [oid for oid in owner_ids if oid]
@@ -169,6 +191,7 @@ class HasnGroupService:
         charter_visible: bool = False,
         owner_hasn_id: str | None = None,
         owner_name: str | None = None,
+        profession: str | None = None,
     ) -> dict[str, Any]:
         data: dict[str, Any] = {
             'hasn_id': m.member_id,
@@ -187,6 +210,10 @@ class HasnGroupService:
                 data['owner_hasn_id'] = owner_hasn_id
             if owner_name:
                 data['owner_name'] = owner_name
+            # 专家名称（公开职业头衔）：对全部分身成员回填，供 @提及下拉/成员名册按 AID 铁律统一
+            # 展示专家名称——含他人名下分身（此前仅自己分身有，导致群里 @别人的分身没有专家名）。
+            if profession:
+                data['profession'] = profession
         # owner 私有字段白名单（隐私边界，doc10 §4.2 + doc08 §3.4）：仅当该行是 actor 名下分身才回填
         # 准则（charter）与群披露档（agent_group_trust_level），其余一律剥离——档位设置本身属主人隐私。
         if charter_visible:
@@ -206,6 +233,7 @@ class HasnGroupService:
         actor_hasn_id: str | None = None,
         owner_map: dict[str, str] | None = None,
         owner_name_map: dict[str, str] | None = None,
+        profession_map: dict[str, str] | None = None,
         agent_member_count: int | None = None,
         pending_invites: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -232,6 +260,7 @@ class HasnGroupService:
         if members is not None:
             om = owner_map or {}
             onm = owner_name_map or {}
+            pm = profession_map or {}
             data['members'] = [
                 cls._member_to_dict(
                     m,
@@ -242,6 +271,7 @@ class HasnGroupService:
                     ),
                     owner_hasn_id=om.get(m.member_id),
                     owner_name=onm.get(om.get(m.member_id, '')),
+                    profession=pm.get(m.member_id),
                 )
                 for m in members
             ]
@@ -614,6 +644,7 @@ class HasnGroupService:
             raise errors.ForbiddenError(msg='非群成员，无权查看')
         owner_map = await cls._build_owner_map(db, members)
         owner_name_map = await cls._build_owner_name_map(db, set(owner_map.values()))
+        profession_map = await cls._build_profession_map(db, members)
         await cls._expire_stale_invites(db, conv.id)
         pending = await cls._pending_invites(db, conv.id)
         return cls._group_to_dict(
@@ -622,6 +653,7 @@ class HasnGroupService:
             actor_hasn_id=hasn_id,
             owner_map=owner_map,
             owner_name_map=owner_name_map,
+            profession_map=profession_map,
             pending_invites=pending,
         )
 

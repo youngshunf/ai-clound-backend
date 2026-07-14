@@ -293,6 +293,50 @@ async def db_session():
         await engine.dispose()
 
 
+async def test_get_group_detail_surfaces_agent_profession(db_session) -> None:
+    """群名册对分身成员透出 profession（专家名称·公开职业头衔），供 @提及下拉/名册按 AID 铁律展示。
+
+    专家名称是公开头衔（非主人私有），故对**全部**分身成员回填，含他人名下分身——此前群里
+    @别人的分身没有专家名，就是名册序列化从未带 profession 所致（本测试锁死回填）。
+    """
+    from backend.app.hasn.model.hasn_agents import HasnAgents
+    from backend.app.hasn.service.hasn_group_service import HasnGroupService
+
+    owner = f'h_grp_{_uid()}'
+    other_owner = f'h_owner_{_uid()}'  # 分身归属他人 → 验证「他人名下分身」也回填专家名
+    agent_uid = _uid()
+    agent_member = f'a_prof_{agent_uid}'
+    profession = '数据分析专家'
+
+    # 分身档案：带 profession，归属 other_owner（模拟群里别人名下的分身成员）。
+    db_session.add(
+        HasnAgents(
+            hasn_id=agent_member,
+            star_id=f'sa{agent_uid}',
+            owner_id=other_owner,
+            display_name='小析',
+            profession=profession,
+            status='active',
+        )
+    )
+    await db_session.flush()
+
+    created = await HasnGroupService.create_group(
+        db_session,
+        owner_hasn_id=owner,
+        title=f'专家名群{_uid()}',
+        members=[{'hasn_id': agent_member}],
+    )
+    gid = created['group_id']
+
+    detail = await HasnGroupService.get_group_detail(db_session, hasn_id=owner, group_id=gid)
+    members = {m['hasn_id']: m for m in detail['members']}
+    assert agent_member in members, '分身成员应在名册'
+    assert members[agent_member].get('profession') == profession, '分身成员名册应带 profession 专家名称'
+    # 人类成员（群主本人）不应有 profession 字段（profession 仅对分身有意义）。
+    assert 'profession' not in members[owner], '人类成员不应带 profession'
+
+
 async def test_any_member_can_add_but_non_member_cannot(db_session) -> None:
     """加人权限已放开给任意群成员（对齐微信默认），仅非成员被拒。
 
