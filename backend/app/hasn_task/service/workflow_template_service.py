@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import uuid
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
+import yaml
 
 from backend.app.hasn_task.crud.crud_workflow import hasn_workflow_template_dao
 from backend.app.hasn_task.model import HasnWorkflowTemplate
@@ -26,11 +28,70 @@ from backend.app.hasn_task.schema.workflow_template import (
     WorkflowTemplatePublic,
 )
 from backend.common.exception import errors
+from backend.common.log import log
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 _DOMAIN_DICT_CODE = 'workflow_template_domain'
+
+# 内置模板可被 hub 重新下发覆盖的派生字段（对齐 hub 官方内置不变量：INSERT-only + builtin_key 可更新）。
+# 这些字段随 hub 重扫覆盖；template_uuid（端云同步主键）与 owner_id（归属）恒不动。
+_BUILTIN_UPDATABLE_FIELDS = (
+    'domain',
+    'name',
+    'tagline',
+    'description',
+    'sort_order',
+    'icon',
+    'accent',
+    'graph_spec',
+    'status',
+    'version',
+    'source',
+    'builtin_key',
+)
+
+
+def build_builtin_template_data(raw: dict[str, Any]) -> dict[str, Any]:
+    """把 hub `workflow-template.yaml` 解析结果映射为 workflow_template 行入参（顶层标量 + graph_spec 整块）。
+
+    校验（在系统边界失败即抛，上层记 warning 跳过该模板）：template_key / name 必填、graph_spec 必须是 mapping。
+    graph_spec 内部结构云端不解析，原样落 JSONB；只有顶层标量映射到表列。domain 须已在字典内（不新建）。
+    """
+    if not isinstance(raw, dict):
+        raise TypeError('workflow-template.yaml 顶层必须是 mapping')
+    template_key = str(raw.get('template_key') or '').strip()
+    if not template_key:
+        raise ValueError('缺少 template_key')
+    name = str(raw.get('name') or '').strip()
+    if not name:
+        raise ValueError('缺少 name')
+    graph_spec = raw.get('graph_spec')
+    if not isinstance(graph_spec, dict):
+        raise ValueError('graph_spec 缺失或不是 mapping')
+    # template_uuid：hub 显式声明的端云稳定 id 原样沿用（daemon 镜像/实例化据此对齐）；缺省才本地生成 wft_ 前缀
+    template_uuid = str(raw.get('template_uuid') or '').strip() or f'wft_{uuid.uuid4().hex}'
+    return {
+        'template_key': template_key,
+        'template_uuid': template_uuid,
+        'domain': raw.get('domain') or None,
+        'name': name,
+        'tagline': raw.get('tagline') or None,
+        'description': raw.get('description') or None,
+        'sort_order': int(raw.get('sort_order') or 0),
+        'icon': raw.get('icon') or None,
+        'accent': raw.get('accent') or None,
+        'graph_spec': graph_spec,
+        'is_builtin': bool(raw.get('is_builtin', True)),
+        'builtin_key': (str(raw.get('builtin_key')).strip() if raw.get('builtin_key') else template_key),
+        'status': raw.get('status') or 'draft',
+        'owner_id': raw.get('owner_id') or None,  # 内置恒空
+        'source': raw.get('source') or 'builtin',
+        'market_ref': raw.get('market_ref') or None,
+        'sku_ref': raw.get('sku_ref') or None,
+        'version': int(raw.get('version') or 1),
+    }
 
 
 # ============================ 纯函数：graph_spec 派生（可单测） ============================
@@ -185,6 +246,94 @@ class WorkflowTemplateService:
         db.add(tpl)
         await db.flush()
         return tpl
+
+    # ---------- 内置工作流模板下发（hub workflow-templates/ → 本表·幂等 seed loader） ----------
+
+    @staticmethod
+    async def upsert_builtin_template(db: AsyncSession, *, data: dict[str, Any]) -> str:
+        """幂等下发一个内置工作流模板（hub 官方内置不变量：INSERT-only + builtin_key 可更新，不覆盖用户/市场行）。
+
+        识别按全局唯一 template_key（内置 template_key ≡ builtin_key）：
+        - 不存在 → INSERT 新内置行。
+        - 已存在且为内置行（is_builtin 且 owner_id 空）→ 只更新派生字段（domain/name/tagline/description/
+          sort_order/icon/accent/graph_spec/status/version/source/builtin_key）；**绝不**改 template_uuid
+          （端云同步主键）与 owner_id（归属）。
+        - 已存在但 owner_id 非空或非内置（用户自建 / 市场物化 / 分身生成）→ 拒绝覆盖，记 warning 跳过（守 owner 归属边界）。
+
+        返回 'inserted' / 'updated' / 'skipped'（供扫描编排汇总统计）。
+        """
+        template_key = data['template_key']
+        existing = await hasn_workflow_template_dao.get_by_key(db, template_key)
+        if existing is None:
+            tpl = HasnWorkflowTemplate(
+                template_uuid=data['template_uuid'],
+                template_key=template_key,
+                domain=data['domain'],
+                name=data['name'],
+                tagline=data['tagline'],
+                description=data['description'],
+                sort_order=data['sort_order'],
+                icon=data['icon'],
+                accent=data['accent'],
+                graph_spec=data['graph_spec'],
+                is_builtin=data['is_builtin'],
+                builtin_key=data['builtin_key'],
+                status=data['status'],
+                owner_id=data['owner_id'],
+                source=data['source'],
+                market_ref=data['market_ref'],
+                sku_ref=data['sku_ref'],
+                version=data['version'],
+            )
+            db.add(tpl)
+            await db.flush()
+            return 'inserted'
+
+        # 只认「内置行」可被 hub 重新下发覆盖；用户/市场/分身行一律不动
+        if existing.owner_id is not None or not existing.is_builtin:
+            log.warning(
+                f'拒绝以内置 seed 覆盖非内置工作流模板行 template_key={template_key} '
+                f'owner_id={existing.owner_id} is_builtin={existing.is_builtin}'
+            )
+            return 'skipped'
+
+        # 内置行：原地更新派生字段（SQLAlchemy Unit of Work；template_uuid/owner_id 恒不动）
+        for field in _BUILTIN_UPDATABLE_FIELDS:
+            setattr(existing, field, data[field])
+        existing.is_builtin = True  # 再确认内置标记
+        await db.flush()
+        return 'updated'
+
+    @classmethod
+    async def sync_builtin_workflow_templates(
+        cls, db: AsyncSession, *, repo_root: str | Path
+    ) -> dict[str, int]:
+        """扫描 hub `workflow-templates/*/workflow-template.yaml` 并幂等 upsert 进 workflow_template 表。
+
+        由 marketplace 的 github sync 传入已 checkout 的 hub 仓根（repo_root）+ 已开事务触发；解析/字段映射/
+        upsert 归本模块（workflow_template 域）自持——marketplace 只负责给出 repo_root 与触发，不耦合工作流模板 schema。
+        glob 为 1 级目录（`workflow-templates/*/workflow-template.yaml`）。单个模板解析失败 / 字段缺失 → 记 warning
+        跳过该模板不中断整体（可恢复→warning）。返回各结果计数（total/inserted/updated/skipped/failed）。
+        """
+        root = Path(repo_root) / 'workflow-templates'
+        results = {'total': 0, 'inserted': 0, 'updated': 0, 'skipped': 0, 'failed': 0}
+        if not root.exists():
+            log.warning(f'hub workflow-templates 目录不存在，跳过内置工作流模板下发: {root}')
+            return results
+
+        for yaml_path in sorted(root.glob('*/workflow-template.yaml')):
+            results['total'] += 1
+            try:
+                raw = yaml.safe_load(yaml_path.read_text(encoding='utf-8')) or {}
+                data = build_builtin_template_data(raw)
+                outcome = await cls.upsert_builtin_template(db, data=data)
+                results[outcome] += 1
+            except Exception as exc:  # noqa: PERF203
+                # 单模板可恢复失败：记 warning 跳过，绝不拖垮整体 sync
+                results['failed'] += 1
+                log.warning(f'内置工作流模板 seed 跳过 {yaml_path}：{exc}')
+        log.info(f'内置工作流模板下发汇总: {results}')
+        return results
 
 
 workflow_template_service = WorkflowTemplateService()

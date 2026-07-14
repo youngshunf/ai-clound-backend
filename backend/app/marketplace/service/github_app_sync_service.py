@@ -11,6 +11,7 @@ import yaml
 
 from git import Repo
 
+from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
 from backend.app.marketplace.crud.crud_marketplace_sync_log import marketplace_sync_log_dao
 from backend.app.marketplace.crud.crud_marketplace_template import marketplace_template_dao
 from backend.app.marketplace.crud.crud_marketplace_template_version import marketplace_template_version_dao
@@ -74,6 +75,18 @@ class GitHubAppSyncService:
                     failed_count += 1
                     errors.append(f'{template_data.get("template_id", "unknown")}: {exc}')
                     log.error(f'Failed to sync template {template_data.get("template_id")}: {exc}')
+
+            # 顺带下发 hub 内置工作流模板（workflow-templates/ → hasn_task.workflow_template）。
+            # 复用本 service 已 checkout 的同一个 hub 仓根（workflow-templates/ 与 templates/ 同仓）+ 已开事务；
+            # 扫描/解析/upsert 归 hasn_task 域自持（本处只提供 repo_root 与触发，不耦合工作流模板 schema）。
+            # 该下发失败不应拖垮 marketplace 模板同步 → 记 error 不抛（单模板可恢复失败已在下发内部记 warning 跳过）。
+            try:
+                wf_seed = await workflow_template_service.sync_builtin_workflow_templates(
+                    db, repo_root=self.local_path
+                )
+                log.info(f'内置工作流模板下发完成: {wf_seed}')
+            except Exception as wf_exc:
+                log.error(f'内置工作流模板下发失败（不影响 marketplace 模板同步）: {wf_exc}')
 
             await marketplace_sync_log_dao.update(
                 db,
