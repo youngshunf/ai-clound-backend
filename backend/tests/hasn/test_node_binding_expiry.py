@@ -79,3 +79,24 @@ async def test_expire_stale_bindings_sweeps_to_expired() -> None:
         assert swept >= 1
         await db.refresh(stale)
         assert stale.status == 'expired'
+
+
+async def test_add_owner_binding_slides_existing_lease() -> None:
+    """滑动续期：握手命中 existing 必须刷新 expires_at（2026-07-14 福仔裁决1配套）。
+
+    旧实现命中直接短路返回不续期 → 设备持续在线也会撞 7 天悬崖后新建行、旧行堆积 active。
+    """
+    async with async_db_session() as db:
+        # 快到期（还剩 1 天）的有效租约
+        existing = _binding(suffix='slide', status='active', expires_delta_days=1)
+        db.add(existing)
+        await db.flush()
+        got = await svc.add_owner_binding(
+            db=db,
+            node_id=_NODE,
+            owner_id=f'{_OWNER}_slide',
+            auth_profile='bearer_token',
+        )
+        # 复用同一行（不新建），且 expires_at 已滑动到 ~+7 天
+        assert got.binding_id == existing.binding_id
+        assert got.expires_at > timezone.now() + timedelta(days=6)

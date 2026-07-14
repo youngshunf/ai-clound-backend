@@ -120,6 +120,12 @@ class HasnNodeBindingsService:
     ) -> HasnNodeBindings:
         existing = await HasnNodeBindingsService.get_active_binding(db=db, node_id=node_id, owner_id=owner_id)
         if existing:
+            # 滑动续期：每次握手命中即刷新租约（2026-07-14 福仔裁决1配套）。
+            # 此前命中直接短路返回不刷新 expires_at → 设备持续在线也会在 7 天悬崖后
+            # 新建一行、旧行长期堆积 active（sweeper 接线前表里 71/74 行是这种僵尸）。
+            existing.expires_at = expires_at or (timezone.now() + timedelta(days=7))
+            existing.last_used_at = timezone.now()
+            await db.flush()
             return existing
 
         if expires_at is None:
