@@ -333,6 +333,7 @@ class WorkflowService:
             {
                 'workflow_run_id': r.workflow_run_uuid,
                 'status': r.status,
+                'advance_mode': r.advance_mode,
                 'scheduled_fire_at': r.scheduled_fire_at.isoformat() if r.scheduled_fire_at else None,
                 'started_at': r.started_at.isoformat() if r.started_at else None,
                 'finished_at': r.finished_at.isoformat() if r.finished_at else None,

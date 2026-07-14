@@ -37,6 +37,11 @@ class HasnWorkflowRun(HasnTaskAppBase):
         sa.String(160), default='', unique=True, comment='幂等键 workflow_uuid:fire_at'
     )
     status: Mapped[str] = mapped_column(sa.String(20), default='running', comment=WORKFLOW_RUN_STATUS_COMMENT)
+    advance_mode: Mapped[str] = mapped_column(
+        sa.String(10),
+        default='manual',
+        comment='推进档位 (manual:逐环派发:blue/auto:自动接力:green)，默认 manual；可运行中翻转（W-S1 §5.1）',
+    )
     driver_node_id: Mapped[str | None] = mapped_column(
         sa.String(64), default=None, comment='W5 驱动权租约：唯一推进者节点 ID'
     )

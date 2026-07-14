@@ -42,6 +42,8 @@ _SQL_DIR = Path(__file__).resolve().parents[2] / 'sql' / 'hasn_task' / 'migratio
 AINATIVE_SQL = (_SQL_DIR / '2026-06-10-ainative-refactor.sql').read_text(encoding='utf-8')
 WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8')
 NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
+# P2 · W-S1 推进档位：workflow_run.advance_mode 列
+ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
 
 _OWNER_A = 'hasn_owner_a_wf'
 _OWNER_B = 'hasn_owner_b_wf'
@@ -75,6 +77,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
     await _run_sql(AINATIVE_SQL)
     await _run_sql(WORKFLOW_SQL)
     await _run_sql(NODE_TABLES_SQL)
+    await _run_sql(ADVANCE_MODE_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     try:
@@ -143,6 +146,7 @@ def test_validate_graph_rejects_dangling_and_self() -> None:
 async def test_workflow_migration_idempotent_and_columns(env: SimpleNamespace) -> None:
     await _run_sql(WORKFLOW_SQL)  # 第二次执行：幂等
     await _run_sql(NODE_TABLES_SQL)  # 节点专属表迁移二次执行：幂等
+    await _run_sql(ADVANCE_MODE_SQL)  # advance_mode 迁移二次执行：幂等（可重复跑不报错）
 
     rows = await env.session.execute(
         sa.text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'hasn_task'")
@@ -159,6 +163,53 @@ async def test_workflow_migration_idempotent_and_columns(env: SimpleNamespace) -
     assert {'node_run_uuid', 'workflow_run_uuid', 'node_key', 'status'} <= (
         await _column_names(env.session, 'workflow_node_run')
     )
+    # P2 · W-S1：workflow_run 增 advance_mode 列
+    assert 'advance_mode' in await _column_names(env.session, 'workflow_run')
+
+
+async def test_workflow_run_advance_mode_default_manual(env: SimpleNamespace) -> None:
+    """新建 workflow_run 未显式指定 advance_mode 时默认 'manual'（DB 默认 + list_runs 序列化带出）。"""
+    agent_id = f'a_{_uid()}'
+    await _seed_agent(env.session, owner_id=_OWNER_A, agent_id=agent_id, name='分身')
+    obj = CreateWorkflowParam(
+        name=f'档位-{_uid()}',
+        nodes=[_node('a', agent_id)],
+        edges=[],
+    )
+    wf = await workflow_service.create_workflow(env.session, owner_id=_OWNER_A, obj=obj)
+    try:
+        # 直接插入一条执行实例，故意不带 advance_mode → 落 DB 默认值
+        run_uuid = f'wr_{_uid()}'
+        await env.session.execute(
+            sa.text(
+                'INSERT INTO hasn_task.workflow_run '
+                '(workflow_run_uuid, workflow_uuid, owner_id, dedupe_key, status) '
+                'VALUES (:wru, :wu, :o, :dk, :st)'
+            ),
+            {
+                'wru': run_uuid,
+                'wu': wf.workflow_uuid,
+                'o': _OWNER_A,
+                'dk': f'{wf.workflow_uuid}:{_uid()}',
+                'st': 'running',
+            },
+        )
+        await env.session.flush()
+
+        # DB 默认值 = 'manual'
+        db_val = await env.session.execute(
+            sa.text('SELECT advance_mode FROM hasn_task.workflow_run WHERE workflow_run_uuid = :wru'),
+            {'wru': run_uuid},
+        )
+        assert db_val.scalar() == 'manual'
+
+        # list_runs 序列化把 advance_mode 带出（owner/agent 面共用此序列化）
+        runs = await workflow_service.list_runs(env.session, owner_id=_OWNER_A, workflow_uuid=wf.workflow_uuid)
+        assert len(runs) == 1
+        assert runs[0]['workflow_run_id'] == run_uuid
+        assert runs[0]['advance_mode'] == 'manual'
+    finally:
+        await env.session.rollback()
 
 
 # ============================ 建图 ============================
