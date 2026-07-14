@@ -52,6 +52,12 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天凌晨 2:10 收敛超 7 天未处理的 pending 拉分身邀请（doc10 §3.2；读路径已惰性过期，本任务兜底）
         'schedule': TzAwareCrontab('10', '2'),
     },
+    '设备绑定租约过期检查': {
+        'task': 'hasn_node_binding_expire_sweep',
+        # 每天凌晨 2:15 把 expires_at 已过仍标 active 的 Owner Binding 租约收敛为 expired
+        # （热路径已按 expires_at 过滤兜住安全，本任务让设备管理页/审计反映真实租约状态）
+        'schedule': TzAwareCrontab('15', '2'),
+    },
     '关系生命周期过期检查': {
         'task': 'hasn_contact_lifecycle_expire_sweep',
         # 每天凌晨 2:20 收敛好友请求 30 天未响应过期 + 联系人 auto_expire 到期（doc08 RT5·B7）

@@ -74,6 +74,24 @@ async def hasn_group_agent_invite_expire_sweep() -> str:
     return f'expired {count} overdue group agent invites' if count else 'no overdue group agent invites'
 
 
+@celery_app.task(name='hasn_node_binding_expire_sweep')
+async def hasn_node_binding_expire_sweep() -> str:
+    """把已过期（expires_at <= now）仍标 active 的 Owner Binding 租约置 expired（定时兜底）。
+
+    定时执行：每天凌晨 2:15。
+    鉴权/路由热路径本就按 ``expires_at > now`` 过滤（``get_active_binding`` /
+    ``list_active_bindings``），过期租约不参与路由，安全无虞；本任务只收敛存量 status，
+    让设备管理页 / 审计反映真实租约状态——否则 ``hasn_node_bindings.status`` 长年
+    全是 active（sweeper 从未接线的历史问题，2026-07-14 福仔发现）。
+    """
+    from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as session:
+        count = await hasn_node_bindings_service.expire_stale_bindings(db=session)
+    return f'expired {count} stale node owner bindings' if count else 'no stale node owner bindings'
+
+
 @celery_app.task(name='hasn_contact_lifecycle_expire_sweep')
 async def hasn_contact_lifecycle_expire_sweep() -> str:
     """关系生命周期过期兜底（doc08 RT5·B7）：好友请求 30 天未响应过期 + 联系人 auto_expire 到期。
