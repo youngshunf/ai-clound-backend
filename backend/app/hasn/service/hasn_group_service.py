@@ -136,6 +136,19 @@ class HasnGroupService:
         return {hid: oid for hid, oid in rows if hid and oid}
 
     @staticmethod
+    async def _build_owner_name_map(db: AsyncSession, owner_ids: set[str]) -> dict[str, str]:
+        """主人 hasn_id → 昵称（doc18 S1：群名册分身行标注「主人:昵称·h_id」用）。单次批量查 HasnHumans。"""
+        ids = [oid for oid in owner_ids if oid]
+        if not ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(HasnHumans.hasn_id, HasnHumans.nickname).where(HasnHumans.hasn_id.in_(ids))
+            )
+        ).all()
+        return {hid: name for hid, name in rows if hid and name}
+
+    @staticmethod
     async def _resolve_display_name(db: AsyncSession, hasn_id: str) -> str:
         """人类昵称 / 分身显示名（卡片文案用），查不到降级 hasn_id。"""
         if hasn_id.startswith('a_'):
@@ -150,7 +163,13 @@ class HasnGroupService:
 
     # ─── 序列化 ───
     @staticmethod
-    def _member_to_dict(m: HasnGroupMembers, *, charter_visible: bool = False) -> dict[str, Any]:
+    def _member_to_dict(
+        m: HasnGroupMembers,
+        *,
+        charter_visible: bool = False,
+        owner_hasn_id: str | None = None,
+        owner_name: str | None = None,
+    ) -> dict[str, Any]:
         data: dict[str, Any] = {
             'hasn_id': m.member_id,
             'member_type': m.member_type,
@@ -160,6 +179,14 @@ class HasnGroupService:
             'muted': m.muted,
             'joined_at': m.joined_at.isoformat() if m.joined_at else None,
         }
+        # doc18 S1：分身成员回填主人 hasn_id + 主人昵称，供 daemon 群名册标注「分身·id·主人:昵称·h_id」，
+        # 打通「群里发言的分身 = 之前 A2A 对端分身的主人」身份链（记忆 subject_id 锚点取名册主人 h_id）。
+        # 主人 h_id 与分身 hasn_id 一样只作内部身份标识，daemon 侧群内须知已扩为禁止发主人 id 进群。
+        if m.member_type == 'agent':
+            if owner_hasn_id:
+                data['owner_hasn_id'] = owner_hasn_id
+            if owner_name:
+                data['owner_name'] = owner_name
         # owner 私有字段白名单（隐私边界，doc10 §4.2 + doc08 §3.4）：仅当该行是 actor 名下分身才回填
         # 准则（charter）与群披露档（agent_group_trust_level），其余一律剥离——档位设置本身属主人隐私。
         if charter_visible:
@@ -178,6 +205,7 @@ class HasnGroupService:
         *,
         actor_hasn_id: str | None = None,
         owner_map: dict[str, str] | None = None,
+        owner_name_map: dict[str, str] | None = None,
         agent_member_count: int | None = None,
         pending_invites: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -203,6 +231,7 @@ class HasnGroupService:
         }
         if members is not None:
             om = owner_map or {}
+            onm = owner_name_map or {}
             data['members'] = [
                 cls._member_to_dict(
                     m,
@@ -211,6 +240,8 @@ class HasnGroupService:
                         and actor_hasn_id is not None
                         and om.get(m.member_id) == actor_hasn_id
                     ),
+                    owner_hasn_id=om.get(m.member_id),
+                    owner_name=onm.get(om.get(m.member_id, '')),
                 )
                 for m in members
             ]
@@ -582,6 +613,7 @@ class HasnGroupService:
         if cls._role_of(members, hasn_id) is None:
             raise errors.ForbiddenError(msg='非群成员，无权查看')
         owner_map = await cls._build_owner_map(db, members)
+        owner_name_map = await cls._build_owner_name_map(db, set(owner_map.values()))
         await cls._expire_stale_invites(db, conv.id)
         pending = await cls._pending_invites(db, conv.id)
         return cls._group_to_dict(
@@ -589,6 +621,7 @@ class HasnGroupService:
             members,
             actor_hasn_id=hasn_id,
             owner_map=owner_map,
+            owner_name_map=owner_name_map,
             pending_invites=pending,
         )
 
