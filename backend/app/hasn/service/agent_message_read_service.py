@@ -86,6 +86,23 @@ def _sender_of(row: Any) -> str:
     return ''
 
 
+def _attachments_of(content: Any) -> list[Any]:
+    """从 content(jsonb) best-effort 取附件列表——兼容顶层 `attachments` 与 `body.attachments` 两种内联形状；无则空列表。
+
+    群历史工具要把图片/语音/文件等附件随行返回给分身（别丢 attachments），而附件在 content jsonb 里内联，
+    没有独立 attachments 列，故这里就地取值。
+    """
+    if not isinstance(content, dict):
+        return []
+    direct = content.get('attachments')
+    if isinstance(direct, list):
+        return direct
+    body = content.get('body')
+    if isinstance(body, dict) and isinstance(body.get('attachments'), list):
+        return body['attachments']
+    return []
+
+
 class AgentMessageReadService:
     """云端平台工具专用的只读消息/会话查询（owner-scoped, 倒序, keyset 翻页）。"""
 
@@ -140,6 +157,71 @@ class AgentMessageReadService:
                 'from': _sender_of(r),
                 'content_type': r['content_type'],
                 'content': _preview(r['content']),
+                'created_at': str(r['created_time']),
+            }
+            for r in page
+        ]
+        next_cursor = str(page[-1]['id']) if page and has_more else None
+        return {'messages': messages, 'has_more': has_more, 'next_cursor': next_cursor}
+
+    async def list_group_messages(
+        self,
+        db: AsyncSession,
+        conversation_id: str,
+        *,
+        limit: int = _DEFAULT_LIMIT,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """群聊历史：按 conversation_id 拉全群消息，默认倒序 + keyset 翻页。
+
+        与 list_messages 几乎同构，**唯一差别是不按 owner_id 过滤、改按 conversation_id**：群消息在云端
+        hasn_messages 里只单条存储、不为成员落 owner_copy 副本行，故 owner 作用域查询看不到群历史；这里按
+        conversation_id 直接拉即得全群历史（含入群前，决策⑥全量可读）。鉴权在工具侧按群成员资格前置，
+        非成员根本走不到这里。附件在 content jsonb 内随行返回（别丢 attachments）。
+        """
+        lim = _clamp_limit(limit)
+        cursor_id = _parse_cursor(cursor)
+        conv = (conversation_id or '').strip() or None
+        if conv is None:
+            return {'messages': [], 'has_more': False, 'next_cursor': None}
+
+        rows = (
+            (
+                await db.execute(
+                    sa.text(
+                        """
+                    SELECT id,
+                           conversation_id::text AS conversation_id,
+                           from_id,
+                           hasn_id,
+                           sender_hasn_id,
+                           content_type,
+                           content,
+                           created_time
+                    FROM public.hasn_messages
+                    WHERE conversation_id = CAST(:conv AS uuid)
+                      AND (CAST(:cursor_id AS bigint) IS NULL OR id < CAST(:cursor_id AS bigint))
+                    ORDER BY id DESC
+                    LIMIT :limit
+                    """
+                    ),
+                    {'conv': conv, 'cursor_id': cursor_id, 'limit': lim + 1},
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+        has_more = len(rows) > lim
+        page = rows[:lim]
+        messages = [
+            {
+                'message_id': str(r['id']),
+                'conversation_id': r['conversation_id'],
+                'from': _sender_of(r),
+                'content_type': r['content_type'],
+                'content': _preview(r['content']),
+                'attachments': _attachments_of(r['content']),
                 'created_at': str(r['created_time']),
             }
             for r in page

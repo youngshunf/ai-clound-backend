@@ -29,7 +29,7 @@ from backend.app.mcp.tools.contact import ContactListTool, ContactRequestTool, C
 from backend.app.mcp.tools.deck import DECK_TOOLS
 from backend.app.mcp.tools.designsystem import DESIGNSYSTEM_TOOLS
 from backend.app.mcp.tools.diag import DIAG_TOOLS
-from backend.app.mcp.tools.group import GroupJoinTool
+from backend.app.mcp.tools.group import GroupJoinTool, GroupMessageListTool
 from backend.app.mcp.tools.marketplace import MARKETPLACE_TOOLS
 from backend.app.mcp.tools.memory import MEMORY_TOOLS
 from backend.app.mcp.tools.message import (
@@ -123,6 +123,9 @@ class HasnCloudMcpServer:
 
         # 群工具：分身代主人加入某群（尊重群加入策略）。打通「群名片→加入群聊」闭环（doc22）。
         self.tool_registry.register(GroupJoinTool())
+        # 群历史工具（doc12 切片1）：分身按本群 ID 拉群聊历史——鉴权按群成员资格、查询按 conversation_id，
+        # 补上 owner 作用域读工具看不到群历史的缺口（群消息不落 owner_copy 副本行）。
+        self.tool_registry.register(GroupMessageListTool())
 
         # 规划工具（19-规划与目标管理）：goal/project/todo/event/habit CRUD + capture/triage/today/preference。
         # 这些「纯云端代理」工具从 hasn-node 本地 hasn-mcp 迁来（不操作本地文件/数据 → 走云端 platform tool）；
