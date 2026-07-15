@@ -215,6 +215,69 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
             await db.rollback()
 
 
+async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
+    """doc34 §3/§4：出参守卫——列表/详情必须回 local_path/node_id/source_app_id/action。
+
+    单测 DB row 不够：这四列是刀1 新加的，只要 schema 或 `_to_item` 漏带，行在库里对、UI 却读不到，
+    来源图标与「本机可直接打开 / 在其他设备上」全部失效。这条钉死序列化边界。
+    """
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    node = _short_id('node')
+    path = '/Users/fz/work/周报.md'
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            artifact_id = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    title='周报.md',
+                    local_path=path,
+                    node_id=node,
+                    source_tool='write_file',
+                    action='update',
+                    source_app_id='knowledge',
+                ),
+            )
+
+            items, total = await hasn_artifacts_service.list_by_agent(
+                db, owner_hasn_id=owner, agent_hasn_id=agent
+            )
+            assert total == 1
+            item = items[0]
+            assert item.artifact_id == artifact_id
+            assert item.local_path == path
+            assert item.node_id == node
+            assert item.source_app_id == 'knowledge'
+            assert item.action == 'update'
+
+            # 详情走同一 `_to_item`，一并锁住（漏一处两处口径就会分叉）
+            detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=artifact_id)
+            assert detail.local_path == path
+            assert detail.node_id == node
+            assert detail.source_app_id == 'knowledge'
+            assert detail.action == 'update'
+
+            # 非本地产物：指针列留空（不许瞎填），action 缺省 create
+            aid_remote = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(kind='deck', resource_uri='hasn://deck/d_serial'),
+            )
+            remote = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=aid_remote)
+            assert remote.local_path is None
+            assert remote.node_id is None
+            assert remote.source_app_id is None
+            assert remote.action == 'create'
+        finally:
+            await db.rollback()
+
+
 async def test_body_artifact_origin_ref_and_video_kind() -> None:
     """P6：文本产物只带 body 直接入库（不上传文件）+ video kind 放行 + 按 origin_ref 反查。"""
     owner = _short_id('hasnOwner')

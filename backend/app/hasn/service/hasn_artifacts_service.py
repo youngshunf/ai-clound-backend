@@ -273,6 +273,11 @@ class HasnArtifactsService:
             if new_summary and existing_row.summary != new_summary:
                 existing_row.summary = new_summary
                 changed = True
+            # doc34 §3：来源应用回填——存量行（source_app_id 列上线前登记的）在下一次写点自愈，
+            # 免得老产物永远显示不出应用图标。descriptor 派生的 app_id 是权威，直接覆盖。
+            if existing_row.source_app_id != app_id:
+                existing_row.source_app_id = app_id
+                changed = True
             if changed:
                 await db.flush()
             return existing_row.artifact_id
@@ -290,6 +295,8 @@ class HasnArtifactsService:
             origin_ref=f'resource:{app_id}:{server_id}',
             session_id=(session_id or None),
             source_tool=(source_tool or None),
+            # doc34 §3：应用资源产物的来源应用由 descriptor 派生，UI 据此显示应用图标（权威列，不靠反推）。
+            source_app_id=app_id,
             source_kind='tool_output',
             dispatch_id=effective_dispatch_id,
             meta_data={},
@@ -326,12 +333,18 @@ class HasnArtifactsService:
             body=row.body,
             asset_id=row.asset_id,
             resource_uri=row.resource_uri,
+            # doc34 §4：本地产物只回指针 + 产出设备，UI 据此分叉「本机可直接打开」/「在其他设备上」。
+            local_path=row.local_path,
+            node_id=row.node_id,
             origin_ref=row.origin_ref,
             conversation_id=str(row.conversation_id) if row.conversation_id else None,
             message_id=row.message_id,
             session_id=row.session_id,
             source_tool=row.source_tool,
+            # doc34 §3：来源应用是权威列，UI 据此显示应用图标（不再靠 resource_uri/source_tool 反推）。
+            source_app_id=row.source_app_id,
             source_kind=row.source_kind,
+            action=row.action,
             source_link=cls.derive_source_link(row.conversation_id, row.message_id, row.session_id),
             display_url=url_map.get(row.asset_id) if row.asset_id else None,
             created_time=row.created_time,

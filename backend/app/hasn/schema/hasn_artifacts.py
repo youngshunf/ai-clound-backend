@@ -113,12 +113,16 @@ class ArtifactItem(SchemaBase):
     body: str | None = Field(None, description='文本/markdown 正文（kind=document 文本产物，前端内联渲染）')
     asset_id: str | None = None
     resource_uri: str | None = None
+    local_path: str | None = Field(None, description='本地文件绝对路径（本地产物；正文留在产出设备磁盘，云端只存指针）')
+    node_id: str | None = Field(None, description='产出设备 node_id（local_path 在场必带；UI 据此判本机可开还是在其他设备）')
     origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等）')
     conversation_id: str | None = None
     message_id: int | None = None
     session_id: str | None = None
     source_tool: str | None = None
+    source_app_id: str | None = Field(None, description='来源应用 id（UI 据此显示应用图标；非应用产出留空）')
     source_kind: str = 'tool_output'
+    action: str = Field('create', description='产出动作 (create:新增/update:修改)')
     source_link: str | None = Field(None, description='点击跳转来源的 hasn:// URI')
     display_url: str | None = Field(None, description='可展示签名 URL（图片缩略图/预览，有时效）')
     created_time: datetime
