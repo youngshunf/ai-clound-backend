@@ -35,6 +35,34 @@ _CT_CARD = 5
 # doc14 §6.5：mission_note 长度上限（字素簇计）。一句话框定，不是简报。
 _MISSION_NOTE_MAX_CHARS = 500
 
+# doc14 §6.1（A 刀）：返回体 hint——把 conversation_id 语义化成分身看得懂的行动指引。
+# 三态（sent / suppressed / pending_confirmation）各配一句，弱模型也知道这个 id 拿来干什么。
+# 纯文案增强，零行为变化：不改判决、不改任何既有字段。
+_SEND_HINT_SENT = (
+    '已发出。此会话 id 是你追踪后续往来的句柄；对方回复后系统会提示你，'
+    '也可随时用 hasn.message.list(conversation_id="{conversation_id}") 查看完整往来。'
+    '不必轮询干等——去接着做你自己的事。'
+)
+_SEND_HINT_SUPPRESSED = (
+    '尚未与对方建立联系人关系，已自动代发好友请求；须对方（或其主人）同意后消息才能'
+    '送达。请勿改用其它方式重试，也不要重复发送——耐心等待对方通过即可。'
+    '对方放行后你会收到提示；此会话 id 是你追踪后续往来的句柄，'
+    '可用 hasn.message.list(conversation_id="{conversation_id}") 查看往来。'
+)
+_SEND_HINT_PENDING_CONFIRMATION = (
+    '已提交你主人确认，主人放行后才会送达。此会话 id 是你追踪后续往来的句柄；'
+    '放行且对方回复后系统会提示你，也可用 '
+    'hasn.message.list(conversation_id="{conversation_id}") 查看完整往来。'
+    '不必轮询干等。'
+)
+
+
+def _send_hint(template: str, conversation_id: Any) -> str:
+    """按会话 id 渲染 hint；会话 id 缺失（理论上不该发生）时降级为不带 id 的通用句，绝不吐 None。"""
+    if not conversation_id:
+        return template.replace('(conversation_id="{conversation_id}")', '(conversation_id=…)')
+    return template.format(conversation_id=conversation_id)
+
 # 寻址主人的保留哨兵：分身的每轮身份注入只给主人画像自由文本，**不含**主人 hasn_id/唤星号
 # （identity-owner 模板只注入 owner_portrait.text），分身无法可靠拿到主人的 `to`。云端 AgentContext
 # 已带 owner_hasn_id，故在工具层把这两个保留值解析成主人本人——让「通知主人」对任何技能都可靠
@@ -237,6 +265,9 @@ class MessageSendTool(BaseTool):
             '信息卡片（card：title 必填，可含 description/fields/link）。'
             '首次联系某人、新建会话时建议带 mission_note 写清这趟差事的背景（只有你主人看得到），'
             '方便主人一眼看懂你为何发起这个会话。'
+            '返回的 conversation_id 是**追踪这趟对话后续往来的句柄**：记住它，'
+            '要看完整往来就用 hasn.message.list(conversation_id=…)、要按关键词找就用 hasn.message.search。'
+            '对方回复后系统会主动提示你，不用轮询干等——发完就去接着做你自己的事。'
             '若返回 status="pending_contact_approval"，表示尚未与对方建立联系人关系、消息已暂存并已'
             '**自动代发好友请求**（见返回 pending_request_id）；此时 reachable=false，不要改用其它方式'
             '重试或重复发送，等对方（或其主人）通过后再发即可。主动加好友用 hasn.contact.request。'
@@ -398,6 +429,7 @@ class MessageSendTool(BaseTool):
                 'reachable': True,
                 'status': status,
                 'reason': result.get('reason', ''),
+                'hint': _send_hint(_SEND_HINT_PENDING_CONFIRMATION, result.get('conversation_id')),
             }
 
         # 被暂存拦截箱（未建立联系人关系/低信任）→ 结构化关系反馈（修 B12：不再误报 reachable=true）。
@@ -416,10 +448,7 @@ class MessageSendTool(BaseTool):
                 'status': 'pending_contact_approval',
                 'relation': result.get('relation'),
                 'pending_request_id': pending_request_id,
-                'hint': (
-                    '尚未与对方建立联系人关系，已自动代发好友请求；须对方（或其主人）同意后消息才能'
-                    '送达。请勿改用其它方式重试，也不要重复发送——耐心等待对方通过即可。'
-                ),
+                'hint': _send_hint(_SEND_HINT_SUPPRESSED, result.get('conversation_id')),
             }
 
         return {
@@ -428,6 +457,7 @@ class MessageSendTool(BaseTool):
             'delivered': status == 'sent',
             'reachable': True,
             'status': status,
+            'hint': _send_hint(_SEND_HINT_SENT, result.get('conversation_id')),
         }
 
 
