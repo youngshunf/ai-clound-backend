@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 # 允许的产物类型（白名单，越界归一为 other）。
 _ALLOWED_KINDS = {'image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other'}
 _ALLOWED_SOURCE_KINDS = {'tool_output', 'task_result', 'upload', 'external'}
+# 产出动作（doc34）：新增 / 修改。越界归一为 create。
+_ALLOWED_ACTIONS = {'create', 'update'}
 
 
 class HasnArtifactsService:
@@ -99,14 +101,52 @@ class HasnArtifactsService:
 
         身份由调用方注入（取自 Agent JWT），绝不信任 body 里的 agent/owner。
         """
-        # 产物本体三选一：body（文本/markdown 直接入库）/ asset_id（二进制）/ resource_uri（hasn:// 资源）。
-        # 文本产物走 body 不上传文件（P6）。
-        if not params.asset_id and not params.resource_uri and not params.body:
-            raise errors.RequestError(msg='产物必须带 body、asset_id 或 resource_uri 其一')
+        # 产物本体四选一：body（文本/markdown 直接入库）/ asset_id（二进制）/
+        # resource_uri（hasn:// 资源）/ local_path（本地文件，云端只存指针，doc34）。
+        if not params.asset_id and not params.resource_uri and not params.body and not params.local_path:
+            raise errors.RequestError(msg='产物必须带 body、asset_id、resource_uri 或 local_path 其一')
+
+        # 本地路径必须带设备归属：没有 node_id 的绝对路径换台设备就是死路径，
+        # UI 也无从判断「本机可打开」还是「在其他设备上」（doc34 §2.1）。
+        if params.local_path and not params.node_id:
+            raise errors.RequestError(msg='本地路径产物必须同时提供 node_id（产出设备）')
 
         kind = params.kind if params.kind in _ALLOWED_KINDS else 'other'
         source_kind = params.source_kind if params.source_kind in _ALLOWED_SOURCE_KINDS else 'tool_output'
+        action = params.action if params.action in _ALLOWED_ACTIONS else 'create'
         conv = cls._coerce_uuid(params.conversation_id)
+
+        # 本地文件产物幂等：同一文件在一次会话里反复写只留一行。这是 runtime 文件捕获
+        # （write_file/patch 每次都上报）不把产物列表刷成流水账的关键——分身改 10 次
+        # report.md 是 1 个产物，不是 10 个（doc34 §2.3）。
+        if params.local_path and params.node_id and params.session_id:
+            local_row = (
+                await db.execute(
+                    select(HasnArtifacts)
+                    .where(
+                        HasnArtifacts.agent_hasn_id == agent_hasn_id,
+                        HasnArtifacts.session_id == params.session_id,
+                        HasnArtifacts.node_id == params.node_id,
+                        HasnArtifacts.local_path == params.local_path,
+                        HasnArtifacts.status == 'active',
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if local_row:
+                # action 只进不退：首次登记为 create 的行不被后续 update 覆盖——
+                # 「这个文件是这个分身新建的」是稳定事实，不该被改稿抹掉（doc34 §2.2）。
+                if local_row.action != 'create':
+                    local_row.action = action
+                if params.title:
+                    local_row.title = params.title
+                if params.summary:
+                    local_row.summary = params.summary
+                local_row.kind = kind
+                if params.metadata:
+                    local_row.meta_data = params.metadata
+                await db.flush()
+                return local_row.artifact_id
 
         # 去重（重试幂等）：仅当 dispatch_id + asset_id 都在时按去重键查既有 active 记录。
         if params.dispatch_id and params.asset_id:
@@ -135,12 +175,16 @@ class HasnArtifactsService:
             body=(params.body or None),
             asset_id=(params.asset_id or None),
             resource_uri=(params.resource_uri or None),
+            local_path=(params.local_path or None),
+            node_id=(params.node_id or None),
             origin_ref=(params.origin_ref or None),
             conversation_id=conv,
             message_id=params.message_id,
             session_id=(params.session_id or None),
             source_tool=(params.source_tool or None),
+            source_app_id=(params.source_app_id or None),
             source_kind=source_kind,
+            action=action,
             dispatch_id=(params.dispatch_id or None),
             meta_data=params.metadata or {},
             status='active',

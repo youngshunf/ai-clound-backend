@@ -69,12 +69,19 @@ class RecordArtifactParam(SchemaBase):
     body: str | None = Field(None, description='文本/markdown 正文直接入库（kind=document 文本产物用，不上传文件）')
     asset_id: str | None = Field(None, description='关联资产 ID（image/voice/file 主路径）')
     resource_uri: str | None = Field(None, description='hasn:// 资源 URI（deck/webpage 等无 asset 本体时用）')
+    local_path: str | None = Field(
+        None,
+        description='本地绝对路径（本地权威产物，云端只存指针不存正文；必须同时给 node_id）',
+    )
+    node_id: str | None = Field(None, description='产出设备节点 ID（给 local_path 时必填）')
     origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等，按业务反查）')
     conversation_id: str | None = Field(None, description='来源会话 ID（UUID 字符串）')
     message_id: int | None = Field(None, description='来源消息 ID')
     session_id: str | None = Field(None, description='来源本地 runtime session（ULID）')
     source_tool: str | None = Field(None, description='产出工具全名（hasn.image.generate）')
+    source_app_id: str | None = Field(None, description='来源应用 ID（deck/imagelab/knowledge…；UI 据此显示应用图标）')
     source_kind: str = Field('tool_output', description='产出来源 (tool_output/task_result/upload/external)')
+    action: str = Field('create', description='产出动作 (create:新增 / update:修改)')
     dispatch_id: str | None = Field(None, description='派发关联（审计/去重）')
     metadata: dict = Field(default_factory=dict, description='元数据快照（mime/size/width/height 等）')
 
