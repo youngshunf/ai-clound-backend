@@ -34,6 +34,8 @@ pytestmark = pytest.mark.asyncio
 ROLLOUT = [
     ('knowledge', 'knowledge.base', 'hasn://knowledge/kbs/'),
     ('knowledge', 'knowledge.document', 'hasn://knowledge/documents/'),
+    ('community', 'community.post', 'hasn://community/posts/'),
+    ('community', 'community.article', 'hasn://community/articles/'),
     ('creator', 'creator.project', 'hasn://creator/projects/'),
     ('growth', 'growth.customer', 'hasn://growth/customers/'),
     ('quant', 'quant.strategy', 'hasn://quant/strategies/'),

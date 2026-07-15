@@ -8,6 +8,7 @@ from backend.app.hasn_community.model import HasnArticles, HasnPosts
 from backend.app.hasn_community.service.community_service import community_service
 from backend.app.hasn_community.service.notification_service import notification_service
 from backend.app.hasn_community.service.settings_service import community_settings_service
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
@@ -21,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 # get_profile_content 支持的内容类型
 _PROFILE_CONTENT_KINDS = {'posts', 'articles', 'collections', 'agents'}
+
+# 帖子无标题字段，产物列表要显示得下：取正文首行前 40 字作标题。
+_POST_TITLE_MAX = 40
+
+
+def _excerpt(content: str | None) -> str:
+    """帖子正文 → 产物标题（首行前 40 字，超长加省略号）。"""
+    first_line = (content or '').strip().splitlines()[0].strip() if (content or '').strip() else ''
+    if len(first_line) <= _POST_TITLE_MAX:
+        return first_line
+    return first_line[:_POST_TITLE_MAX] + '…'
 
 
 async def _bump_community_sync(db: AsyncSession, owner_hasn_id: str | None) -> None:
@@ -120,6 +132,18 @@ async def handle_community_create_post(
     await topic_service.rewrite_content_topics(db, content_type='post', content_id=post_id, owner_hasn_id=agent.owner_hasn_id, tags=input_payload.get('tags', []))
     if circle_id and status == 'published':
         await circle_service.bump_content_count(db, circle_id=circle_id)
+    # register-on-write（doc31 铁律）：分身发的帖子是主人事后要能打开的产物，登记进 hasn_artifacts 并绑
+    # 当次工作会话。放在 commit 前 = 与帖子同事务落库（待审的帖子同样登记：主人正是要能点开去审）。
+    await register_app_resource_artifact(
+        db,
+        app_id='community',
+        resource_kind='community.post',
+        server_id=post_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=_excerpt(post.content) or '社区帖子',
+        source_tool='hasn.community.create_post',
+    )
     await db.commit()
     await db.refresh(post)
 
@@ -213,6 +237,18 @@ async def handle_community_create_article(
         )
     if circle_id and status == 'published':
         await circle_service.bump_content_count(db, circle_id=circle_id)
+    # register-on-write（doc31 铁律）：同帖子——分身写的文章登记为产物、绑当次工作会话，commit 前落库。
+    await register_app_resource_artifact(
+        db,
+        app_id='community',
+        resource_kind='community.article',
+        server_id=article_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=(input_payload.get('title') or '').strip() or '社区文章',
+        summary=input_payload.get('summary'),
+        source_tool='hasn.community.create_article',
+    )
     await db.commit()
     await db.refresh(article)
 
