@@ -18,7 +18,8 @@ from backend.app.hasn_knowledge.service import resource_adapter as _resource_ada
 from backend.app.hasn_knowledge.service.error_adapter import to_http_error
 from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
-from backend.app.mcp.context import get_authorized_resource, get_current_work_session_id
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.app.mcp.context import get_authorized_resource
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -43,34 +44,19 @@ async def _register_knowledge_artifact(
     治「分身建了库、写了文档，工作会话资源栏 / 分身产物 tab 却什么都看不到」——主人只知道分身"动过"，
     不知道产出了什么。库与文档各是独立产物（`resource_kind` 二选一），文档逐篇可见、可单独打开。
 
-    - `session_id` 经 `get_current_work_session_id()` 取：本 handler 走 **AI-Native 应用工具面**
-      （`ai_native_runtime_gateway` 分发，只收 `AgentTokenPayload`、拿不到 `AgentContext`），故只能经
-      ContextVar 通道拿系统注入的 `_hasn_session_id`。None = 主会话直调，产物仍凭 resource_uri 进产物 tab；
-    - `server_id` = 云端权威 int id（知识库无本地 ULID，Core-08：本地 id 永不上 URI）；
-    - 幂等 UPSERT（键 `(agent, dispatch_id, resource_uri)`）——反复写不重复登记、会话归属只进不退。
-
-    best-effort：登记失败**绝不**拖垮知识库写本身（写已在同一事务，抛出会连累落库）。
+    薄封装：登记语义（descriptor 解析 / 幂等 UPSERT / 会话绑定 / best-effort）统一在公共接缝
+    `mcp/artifact_registration.py`，此处只固定 `app_id='knowledge'` 并保留本域调用点的既有签名。
     """
-    try:
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-        from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
-
-        descriptor = ai_native_app_registry.resource_descriptor('knowledge', resource_kind)
-        if descriptor is None:
-            logger.warning('[knowledge] 缺 %s 资源描述符，跳过产物登记', resource_kind)
-            return
-        await HasnArtifactsService.record_app_resource_artifact(
-            db,
-            descriptor=descriptor,
-            server_id=str(server_id),
-            session_id=get_current_work_session_id(),
-            agent_hasn_id=agent.agent_hasn_id,
-            owner_hasn_id=agent.owner_hasn_id,
-            title=title,
-            source_tool=source_tool,
-        )
-    except Exception as e:
-        logger.warning('[knowledge] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', e)
+    await register_app_resource_artifact(
+        db,
+        app_id='knowledge',
+        resource_kind=resource_kind,
+        server_id=server_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=title,
+        source_tool=source_tool,
+    )
 
 
 def _resource_owner(param: str, agent: AgentTokenPayload) -> tuple[str, bool]:

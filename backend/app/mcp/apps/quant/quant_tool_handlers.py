@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_quant.service.quant_service import quant_service
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +46,7 @@ async def handle_save_strategy(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     """保存/更新策略（不动钱）。新建必带 name + (code/strategy_class | builtin_strategy)；传 strategy_id 则更新。"""
-    return await quant_service.save_strategy(
+    result = await quant_service.save_strategy(
         db,
         owner_hasn_id=agent.owner_hasn_id,
         agent_hasn_id=agent.agent_hasn_id,
@@ -59,6 +60,20 @@ async def handle_save_strategy(
         instrument_ids=input_payload.get('instrument_ids'),
         venue=input_payload.get('venue'),
     )
+    # register-on-write：新建与更新都登记（分身改过的策略同样要在会话资源栏可见）。
+    strategy_id = result.get('id')
+    if isinstance(strategy_id, int):
+        await register_app_resource_artifact(
+            db,
+            app_id='quant',
+            resource_kind='quant.strategy',
+            server_id=strategy_id,
+            agent_hasn_id=agent.agent_hasn_id,
+            owner_hasn_id=agent.owner_hasn_id,
+            title=str(result.get('name') or input_payload.get('name') or '').strip() or '量化策略',
+            source_tool='hasn.quant.save_strategy',
+        )
+    return result
 
 
 async def handle_list_strategies(
