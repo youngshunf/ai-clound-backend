@@ -148,6 +148,7 @@ def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummar
     nodes = spec.get('nodes') if isinstance(spec.get('nodes'), list) else []
 
     app_union: set[str] = set()
+    apps_ordered: list[str] = []  # 去重后应用键·首见序（供卡片按链路顺序渲染应用图标堆）
     agent_types: list[str] = []
     seen_agent: set[str] = set()
     steps: list[dict[str, Any]] = []
@@ -157,7 +158,10 @@ def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummar
             continue
         apps = node.get('apps')
         if isinstance(apps, list):
-            app_union.update(a for a in apps if a)
+            for a in apps:
+                if a and a not in app_union:
+                    app_union.add(a)
+                    apps_ordered.append(a)
 
         agent_type = node.get('default_agent_type')
         if agent_type and agent_type not in seen_agent:
@@ -173,6 +177,7 @@ def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummar
     return WorkflowTemplateGraphSummary(
         node_count=len(nodes),
         app_count=len(app_union),
+        apps=apps_ordered,
         steps=steps,
         agent_types=agent_types,
     )

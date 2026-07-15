@@ -114,12 +114,21 @@ class HasnContactsService:
             )
             agent = agent_result.scalar_one_or_none()
             if agent:
+                # 联系人本身就是「他人的分身」（直接加分身为联系人）时，peer 也必须带
+                # **实时在线态**——与 owned_agents 同源（Redis presence + 节点存活 + 就绪键，
+                # 走 get_online_map）。此前 peer 分支从不回填 online_status，导致跨主人/跨设备
+                # 看好友的分身永远显示离线、输入框被禁发（webui useSenderLabels 对无 presence
+                # 的 agent peer 一律按 offline 灰点）。
+                from backend.app.hasn.service.ws_router import ws_router
+
+                online_map = await ws_router.get_online_map([agent.hasn_id])
                 peer_info = {
                     "hasn_id": agent.hasn_id,
                     "star_id": agent.star_id,
                     "name": agent.display_name,
                     "type": "agent",
                     "avatar": agent.avatar,
+                    "online_status": "online" if online_map.get(agent.hasn_id) else "offline",
                 }
 
         result["peer"] = peer_info

@@ -1075,6 +1075,25 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
         {'tool_id': 'community.create_doc_space', 'mcp_name': 'hasn.community.create_doc_space', 'transport': 'gateway_internal', 'handler': 'community.create_doc_space', 'required_scopes': ['community:doc'], 'risk_level': 'medium', 'idempotent': False},
         {'tool_id': 'community.create_doc_node', 'mcp_name': 'hasn.community.create_doc_node', 'transport': 'gateway_internal', 'handler': 'community.create_doc_node', 'required_scopes': ['community:doc'], 'risk_level': 'medium', 'idempotent': False},
     ],
+    # 分身发的帖子/文章是主人事后要能打开的产物（doc31 §2）：完成卡 / 工作会话资源栏 / 分身产物 tab /
+    # hasn:// 解析全从这份声明派生。两类都不声明 ref_type——register-on-write 显式传 descriptor，
+    # 不走 local_ref 解析；声明了反而会把整个 app 拖进多资源模式（`{ref_type}:{id}` 形状）。
+    'resources': [
+        {
+            'resource_kind': 'community.post',
+            'uri_domain': 'community/posts',  # → hasn://community/posts/{post_id}
+            'open': {'mode': 'internal_route', 'route_template': '/apps/community/posts/:id'},
+            'card': {'verb': '帖子', 'action_label': '打开帖子'},
+            'artifact_kind': 'other',
+        },
+        {
+            'resource_kind': 'community.article',
+            'uri_domain': 'community/articles',  # → hasn://community/articles/{article_id}
+            'open': {'mode': 'internal_route', 'route_template': '/apps/community/articles/:id'},
+            'card': {'verb': '文章', 'action_label': '打开文章'},
+            'artifact_kind': 'document',
+        },
+    ],
     'events': [],
     'reverse_invoke': {'supported': False},
     'audit': {

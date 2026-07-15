@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_creator.service.creator_service import creator_service
 from backend.app.hasn_creator.service.scope_context import CreatorScope, resolve_creator_scope
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,7 +78,7 @@ async def handle_project_create(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
-    return await creator_service.create_project(
+    result = await creator_service.create_project(
         db,
         user_id=agent.owner_user_id,
         scope=scope,
@@ -87,6 +88,21 @@ async def handle_project_create(
         pipeline_mode=input_payload.get('pipeline_mode') or 'semi-auto',
         playbook_id=input_payload.get('playbook_id'),
     )
+    # register-on-write：创作项目是本应用对外的产物载体（画像/选题/内容都挂在它下面），
+    # 分身建完主人须能从会话资源栏直接点进去。
+    project_id = result.get('id')
+    if isinstance(project_id, int):
+        await register_app_resource_artifact(
+            db,
+            app_id='creator',
+            resource_kind='creator.project',
+            server_id=project_id,
+            agent_hasn_id=agent.agent_hasn_id,
+            owner_hasn_id=agent.owner_hasn_id,
+            title=str(result.get('name') or input_payload.get('name') or '').strip() or '创作项目',
+            source_tool='hasn.creator.project.create',
+        )
+    return result
 
 
 # ---------------- 画像 ----------------

@@ -17,6 +17,10 @@ class WorkflowTemplateGraphSummary(SchemaBase):
 
     node_count: int = Field(0, description='节点数')
     app_count: int = Field(0, description='去重后应用数（各节点 apps 并集）')
+    apps: list[str] = Field(
+        default_factory=list,
+        description='去重后应用键（各节点 apps 并集·首见序）——供卡片渲染应用图标堆',
+    )
     steps: list[dict] = Field(default_factory=list, description='阶段面包屑 [{label,order}]（按 order 排序）')
     agent_types: list[str] = Field(default_factory=list, description='涉及的默认人设类型（去重，非空）')
 

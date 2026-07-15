@@ -32,6 +32,28 @@ HASN_PROTOCOL = 'hasn/0.2'
 WS_SEND_TIMEOUT_SECS = 10.0
 
 
+def _is_connection_closed(exc: Exception) -> bool:
+    """判断异常是否为「连接已被关闭后又尝试发送」的良性竞态。
+
+    登出场景：daemon 调 logout_device → 云端 disconnect_node 主动 `ws.close(4002)`
+    关闭连接；但 `_recv_loop` 可能恰好还在处理该连接上最后一帧（如 hasn.ping），
+    随后的 `_send_json` 会抛 Starlette 的
+    `RuntimeError('Cannot call "send" once a close message has been sent.')`。
+    这是**预期的关闭竞态**、连接本就要断，属良性断开——不应记 ERROR，更不该在
+    except 里再 `_send_error` 二次往已关连接写、造成第二条 ERROR。
+    """
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    if isinstance(exc, RuntimeError):
+        text = str(exc)
+        return (
+            'once a close message has been sent' in text
+            or 'WebSocket is not connected' in text
+            or 'unexpected ASGI message' in text
+        )
+    return False
+
+
 def _client_ip(websocket: WebSocket) -> str | None:
     """从 WS 取真实客户端 IP：优先反代头，回退 socket peer。"""
     xff = websocket.headers.get('x-forwarded-for')
@@ -237,7 +259,12 @@ async def hasn_node_websocket(  # noqa: C901
     except WebSocketDisconnect:
         log.info(f'节点断开: {node_id} (type={node_type})')
     except Exception as e:
-        log.error(f'WebSocket 异常: {node_id} - {e}')
+        # 连接关闭竞态（如登出时服务端主动 close 后仍有一帧在途）属良性断开，
+        # 记 info 即可——真正的服务端故障才记 ERROR（warn/error 分级铁律）。
+        if _is_connection_closed(e):
+            log.info(f'节点连接关闭竞态（良性）: {node_id} (type={node_type})')
+        else:
+            log.error(f'WebSocket 异常: {node_id} - {e}')
     finally:
         # 7. 清理：注销节点 + 清理所有实体（best-effort，绝不让清理异常冒泡出 ASGI handler）
         try:
@@ -338,8 +365,19 @@ async def _recv_loop(  # noqa: C901
                 await _send_error(websocket, 9001, f'未知方法: {method}')
 
         except Exception as e:
+            # 连接已被关闭（登出竞态等）→ 良性断开：直接结束收发循环，
+            # 不记 ERROR，也不再 `_send_error`（会往已关连接二次写、产生第二条 ERROR）。
+            if _is_connection_closed(e):
+                log.info(f'节点连接已关闭，结束收发循环: {node_id} (method={method})')
+                return
             log.error(f'处理命令 {method} 异常: {e}', exc_info=True)
-            await _send_error(websocket, 9001, '服务器内部错误')
+            # 回送错误帧本身也可能因连接已关而抛——用 close-race 判据吞掉，避免二次 fault。
+            try:
+                await _send_error(websocket, 9001, '服务器内部错误')
+            except Exception as send_err:
+                if _is_connection_closed(send_err):
+                    return
+                raise
 
 
 # ─── 命令处理器 ───
@@ -403,6 +441,68 @@ async def _handle_list_owners(websocket: WebSocket, node_id: str) -> None:
     await _send_json(websocket, _frame('hasn.node.list_owners_ack', result))
 
 
+async def _push_contacts_presence_invalidation(
+    agent_id: str, agent_owner_id: str, transition: str
+) -> None:
+    """分身在线态翻转（上线/下线）→ 向「能在通讯录里看到该分身」的 owner 们 push 联系人失效。
+
+    受众 = 直接把该分身加为好友的 owner（``peer_id=agent_id`` 且 ``peer_type='agent'``）
+    ∪ 加了该分身主人为好友、在 owned_agents 里看到它的 owner（``peer_id=agent_owner_id`` 且
+    ``peer_type='human'``），限 ``status='connected'``。逐 owner ``bump_owner(KIND_CONTACTS)``——
+    daemon 收到即回源刷新联系人镜像（云端重算实时 presence）+ nudge webui 重拉，好友分身的在线
+    圆点即时翻绿/变灰。治「跨主人/跨设备看好友分身在线态长时间不刷新」。
+
+    best-effort：整体吞错只 warn；presence 是「显示口径」不是「投递口径」，push 失败靠联系人
+    列表下次重刷 / local_first 后台刷新兜底，绝不影响消息路由。
+    """
+    if not agent_id:
+        return
+    try:
+        from sqlalchemy import text
+
+        from backend.app.hasn.service import sync_invalidate_service
+
+        async with async_db_session() as db:
+            rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT DISTINCT owner_id
+                        FROM hasn_contacts
+                        WHERE status = 'connected'
+                          AND (
+                            (peer_id = :agent_id AND peer_type = 'agent')
+                            OR (peer_id = :agent_owner_id AND peer_type = 'human')
+                          )
+                        """
+                    ),
+                    {'agent_id': agent_id, 'agent_owner_id': agent_owner_id or ''},
+                )
+            ).all()
+            audience = {row[0] for row in rows if row[0]}
+            for owner_id in audience:
+                try:
+                    await sync_invalidate_service.bump_owner(
+                        sync_invalidate_service.KIND_CONTACTS, db, owner_id
+                    )
+                except Exception as exc:  # 单个 owner push 失败不影响其它
+                    log.warning(
+                        'contacts presence invalidate failed owner=%s agent=%s: %s',
+                        owner_id,
+                        agent_id,
+                        exc,
+                    )
+        if audience:
+            log.info(
+                'contacts presence invalidate agent=%s transition=%s owners=%d',
+                agent_id,
+                transition,
+                len(audience),
+            )
+    except Exception as exc:  # 拉受众失败——best-effort，绝不影响节点心跳路径
+        log.warning('contacts presence invalidation task failed agent=%s: %s', agent_id, exc)
+
+
 async def _handle_add_agent(
     websocket: WebSocket,
     node_id: str,
@@ -446,11 +546,20 @@ async def _handle_add_agent(
             # （online+ok 才写；degraded/offline 删）。就绪键是对外「在线」判定的第三维，
             # 不影响路由；失败不拖垮路由注册，单独 try/except。
             try:
-                await ws_router.set_agent_readiness(
+                transition = await ws_router.set_agent_readiness(
                     agent_id,
                     str(params.get('online_status')),
                     params.get('health_status'),
                 )
+                # 就绪键在线态**真翻转**（上线/下线）时，异步向「能在通讯录里看到该分身」的
+                # owner 们 push 联系人失效——好友分身的在线圆点即时翻绿/变灰（presence→contacts
+                # WSPUSH）。fire-and-forget：绝不阻塞节点心跳这条热路径；失败不拖垮路由注册。
+                if transition is not None:
+                    asyncio.create_task(
+                        _push_contacts_presence_invalidation(
+                            agent_id, params.get('owner_id', ''), transition
+                        )
+                    )
             except Exception as exc:
                 log.warning('set agent readiness failed for agent %s: %s', agent_id, exc)
     if result.get('accepted') and agent_id:
