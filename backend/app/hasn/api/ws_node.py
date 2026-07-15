@@ -32,6 +32,28 @@ HASN_PROTOCOL = 'hasn/0.2'
 WS_SEND_TIMEOUT_SECS = 10.0
 
 
+def _is_connection_closed(exc: Exception) -> bool:
+    """判断异常是否为「连接已被关闭后又尝试发送」的良性竞态。
+
+    登出场景：daemon 调 logout_device → 云端 disconnect_node 主动 `ws.close(4002)`
+    关闭连接；但 `_recv_loop` 可能恰好还在处理该连接上最后一帧（如 hasn.ping），
+    随后的 `_send_json` 会抛 Starlette 的
+    `RuntimeError('Cannot call "send" once a close message has been sent.')`。
+    这是**预期的关闭竞态**、连接本就要断，属良性断开——不应记 ERROR，更不该在
+    except 里再 `_send_error` 二次往已关连接写、造成第二条 ERROR。
+    """
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    if isinstance(exc, RuntimeError):
+        text = str(exc)
+        return (
+            'once a close message has been sent' in text
+            or 'WebSocket is not connected' in text
+            or 'unexpected ASGI message' in text
+        )
+    return False
+
+
 def _client_ip(websocket: WebSocket) -> str | None:
     """从 WS 取真实客户端 IP：优先反代头，回退 socket peer。"""
     xff = websocket.headers.get('x-forwarded-for')
@@ -237,7 +259,12 @@ async def hasn_node_websocket(  # noqa: C901
     except WebSocketDisconnect:
         log.info(f'节点断开: {node_id} (type={node_type})')
     except Exception as e:
-        log.error(f'WebSocket 异常: {node_id} - {e}')
+        # 连接关闭竞态（如登出时服务端主动 close 后仍有一帧在途）属良性断开，
+        # 记 info 即可——真正的服务端故障才记 ERROR（warn/error 分级铁律）。
+        if _is_connection_closed(e):
+            log.info(f'节点连接关闭竞态（良性）: {node_id} (type={node_type})')
+        else:
+            log.error(f'WebSocket 异常: {node_id} - {e}')
     finally:
         # 7. 清理：注销节点 + 清理所有实体（best-effort，绝不让清理异常冒泡出 ASGI handler）
         try:
@@ -338,8 +365,19 @@ async def _recv_loop(  # noqa: C901
                 await _send_error(websocket, 9001, f'未知方法: {method}')
 
         except Exception as e:
+            # 连接已被关闭（登出竞态等）→ 良性断开：直接结束收发循环，
+            # 不记 ERROR，也不再 `_send_error`（会往已关连接二次写、产生第二条 ERROR）。
+            if _is_connection_closed(e):
+                log.info(f'节点连接已关闭，结束收发循环: {node_id} (method={method})')
+                return
             log.error(f'处理命令 {method} 异常: {e}', exc_info=True)
-            await _send_error(websocket, 9001, '服务器内部错误')
+            # 回送错误帧本身也可能因连接已关而抛——用 close-race 判据吞掉，避免二次 fault。
+            try:
+                await _send_error(websocket, 9001, '服务器内部错误')
+            except Exception as send_err:
+                if _is_connection_closed(send_err):
+                    return
+                raise
 
 
 # ─── 命令处理器 ───
