@@ -32,6 +32,8 @@ pytestmark = pytest.mark.asyncio(loop_scope='module')
 # 合成 owner，绝不与真实数据撞（h_ 前缀但明显是测试串）。
 _OWNER = 'h_msgtool_test_owner_x'
 _OTHER = 'h_msgtool_test_owner_y'
+# doc12 切片1：群历史读取成员——不是任何一条群消息的 owner，用来验证 owner 作用域读对群隐形（根因 A）。
+_READER = 'h_msgtool_test_group_reader'
 
 
 async def _seed(db, owner_id: str, conversation_id: str, content: dict, content_type: int = 1) -> None:
@@ -154,3 +156,55 @@ async def test_owner_isolation_and_empty_query() -> None:
 
         empty = await svc.search_messages(db, _OWNER, '   ', limit=20)
         assert empty['messages'] == [] and empty['has_more'] is False, '空/纯空白 query 直返空'
+
+
+async def test_list_group_messages_by_conversation_ignores_owner() -> None:
+    """doc12 切片1核心：群历史按 conversation_id 拉全群、**不按 owner_id 过滤**。
+
+    群消息在云端 hasn_messages 里只单条存储、不为成员落 owner_copy 副本行（决定性根因 A），故 owner
+    作用域读（list_messages）对群历史隐形；本用例给同一群 conversation 插入归属不同 owner 的消息，断言：
+    ①读取成员（_READER，非任何群消息的 owner）用 owner 作用域读一条都看不到（复现根因 A）；
+    ②list_group_messages 按 conversation_id 无视 owner_id，全群倒序全可见（决策⑥全量可读）。
+    """
+    async with async_db_session() as db:
+        group_conv = _uuid()
+        # 同一群会话里，消息行 owner_id 各不相同（模拟群单条存储：既非读取成员、也无成员副本）。
+        await _seed(db, _OWNER, group_conv, {'text': 'g1 最早'})
+        await _seed(db, _OTHER, group_conv, {'text': 'g2'})
+        await _seed(db, 'h_msgtool_third_owner', group_conv, {'text': 'g3 最新'})
+
+        # 读取成员不是任何一条群消息的 owner → owner 作用域读该群会话为空（= 根因 A：群对分身隐形）。
+        reader_scoped = await svc.list_messages(db, _READER, conversation_id=group_conv, limit=20)
+        assert reader_scoped['messages'] == [], 'owner 作用域读群会话为空（群无 owner_copy → 对成员隐形）'
+
+        # 群维度读：按 conversation_id 直接拉、无视 owner_id → 全群历史倒序、跨 owner 全可见。
+        res = await svc.list_group_messages(db, group_conv, limit=20)
+        assert [m['content'] for m in res['messages']] == ['g3 最新', 'g2', 'g1 最早'], '全群倒序、跨 owner 全可见'
+        assert res['has_more'] is False
+
+
+async def test_list_group_messages_keyset_pagination_and_attachments() -> None:
+    """doc12 切片1：群历史 keyset 翻页（游标真生效）+ 附件随行返回（别丢 attachments）。"""
+    async with async_db_session() as db:
+        group_conv = _uuid()
+        await _seed(db, _OWNER, group_conv, {'text': 'p1 最早'})
+        await _seed(db, _OTHER, group_conv, {'text': 'p2'})
+        await _seed(
+            db,
+            _OWNER,
+            group_conv,
+            {'text': 'p3 带图 最新', 'attachments': [{'type': 'image', 'asset_uri': 'hasn://asset/xyz'}]},
+        )
+
+        page1 = await svc.list_group_messages(db, group_conv, limit=2)
+        assert [m['content'] for m in page1['messages']] == ['p3 带图 最新', 'p2'], '倒序=最新在前'
+        assert page1['has_more'] is True and page1['next_cursor'] is not None
+        # 带图那条附件随行返回、不丢（图片经工具→分身可读）。
+        assert page1['messages'][0]['attachments'] == [{'type': 'image', 'asset_uri': 'hasn://asset/xyz'}]
+
+        page2 = await svc.list_group_messages(db, group_conv, limit=2, cursor=page1['next_cursor'])
+        assert [m['content'] for m in page2['messages']] == ['p1 最早'], 'keyset 翻页拿到更早的'
+        assert page2['has_more'] is False
+        ids1 = {m['message_id'] for m in page1['messages']}
+        ids2 = {m['message_id'] for m in page2['messages']}
+        assert ids1.isdisjoint(ids2), '两页无重叠（游标真生效，非每次从头）'
