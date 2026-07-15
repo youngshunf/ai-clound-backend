@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
+from backend.app.hasn.model.hasn_platform_default_config import HasnPlatformDefaultConfig
 from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefaultConfig
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn.service.platform_default_config_service import (
@@ -46,8 +48,8 @@ def _config(
         'node': {
             'media': {
                 'image_models': image or ['gpt-image-2'],
-                'tts_models': ['tts-1'],
-                'stt_models': ['whisper-1'],
+                'tts_models': ['qwen3-tts-flash'],
+                'stt_models': ['qwen3-asr-flash'],
                 'video_models': video or [],
             }
         },
@@ -58,8 +60,24 @@ def _config(
     })
 
 
+async def _remove_platform_override(db: AsyncSession) -> None:
+    """在当前未提交事务内构造“无 PDC 行”场景，退出会话后自动回滚。"""
+    await db.execute(
+        sa.delete(HasnPlatformDefaultConfig).where(HasnPlatformDefaultConfig.config_key == 'global')
+    )
+    await db.flush()
+
+
+async def test_factory_speech_models_match_node_fallback_contract() -> None:
+    """云端出厂值必须与节点 Rust 兜底同源，避免 PDC 首次下发造成模型漂移。"""
+    media = DEFAULT_PLATFORM_CONFIG['node']['media']
+    assert media['tts_models'] == ['qwen3-tts-flash', 'qwen3-tts-instruct-flash']
+    assert media['stt_models'] == ['qwen3-asr-flash']
+
+
 async def test_factory_default_when_no_row() -> None:
     async with async_db_session() as db:
+        await _remove_platform_override(db)
         cfg, rev = await svc.get_effective_config(db)
         # 无行 → 出厂默认（与 config/default.toml [media] 对齐），revision 稳定可比较。
         assert cfg.node.media.image_models == DEFAULT_PLATFORM_CONFIG['node']['media']['image_models']
@@ -151,6 +169,7 @@ async def test_update_changes_revision_and_persists_in_txn() -> None:
 async def test_factory_default_fallback_pool_empty() -> None:
     """出厂默认主模型兜底池为空（LLMFAIL）——无兜底，单模型行为不回归。"""
     async with async_db_session() as db:
+        await _remove_platform_override(db)
         cfg, _rev = await svc.get_effective_config(db)
         assert cfg.agent_runtime.model_fallback_pool == []
         assert DEFAULT_PLATFORM_CONFIG['agent_runtime']['model_fallback_pool'] == []

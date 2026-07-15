@@ -38,8 +38,8 @@ DEFAULT_PLATFORM_CONFIG: dict = {
     'node': {
         'media': {
             'image_models': ['gpt-image-2', 'dall-e-3'],
-            'tts_models': ['tts-1', 'tts-1-hd'],
-            'stt_models': ['whisper-1'],
+            'tts_models': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
+            'stt_models': ['qwen3-asr-flash'],
             # 视频默认空：视频渠道尚需运营在 new-api 开通后，经 Admin 平台默认配置下发，
             # 否则填非空模型名会让分身 hasn.video.generate 直接撞 503 无渠道。
             'video_models': [],
