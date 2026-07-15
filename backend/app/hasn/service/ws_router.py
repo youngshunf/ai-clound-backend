@@ -349,21 +349,36 @@ class WsRouterService:
         await self._clear_agent_readiness(agent_id)
         return {'agent_id': agent_id, 'accepted': True}
 
-    async def set_agent_readiness(self, agent_id: str, online_status: str, health_status: str | None) -> None:
+    async def set_agent_readiness(
+        self, agent_id: str, online_status: str, health_status: str | None
+    ) -> str | None:
         """按 daemon 心跳携带的运行时健康写/删 agent 就绪键（在线语义收紧）。
 
         仅当 ``online_status == 'online' and health_status == 'ok'``（协议权威「在线」：
         owner 在线 + runtime 已启动连接、可收消息）才写带 TTL 的就绪键；
         report ``degraded``/``offline``（runtime 未就绪 / 连接中）立即删键 → 对外显示为
         离线/连接中，而不再谎报在线。写就绪键**绝不**影响消息路由（见键注释）。
+
+        返回**在线态翻转标记**，供调用方按需触发「联系人在线圆点实时刷新」（presence→contacts
+        WSPUSH）：就绪键从无到有返回 ``'online'``、从有到无返回 ``'offline'``、无翻转（普通心跳
+        keepalive / 一直离线）返回 ``None``。只在**真翻转**时返回非 None——避免每拍心跳都扇出失效。
+        TTL 自然过期导致的下线不经此函数（无翻转事件可挂），靠联系人列表下次重刷 / local_first
+        后台刷新兜底。
         """
         if not agent_id:
-            return
+            return None
         key = f'{AGENT_READY_PREFIX}:{agent_id}'
-        if online_status == 'online' and health_status == 'ok':
+        now_ready = online_status == 'online' and health_status == 'ok'
+        was_ready = bool(await redis_client.exists(key))
+        if now_ready:
+            # 一直在线的普通心跳只刷新 TTL（keepalive），不算翻转；从离线转在线才算。
             await redis_client.set(key, '1', ex=NODE_PRESENCE_TTL_SECS)
-        else:
+            return None if was_ready else 'online'
+        # runtime 未就绪：删键。仅当此前在线（was_ready）才算「转离线」翻转。
+        if was_ready:
             await redis_client.delete(key)
+            return 'offline'
+        return None
 
     async def _clear_agent_readiness(self, agent_id: str) -> None:
         if agent_id:
