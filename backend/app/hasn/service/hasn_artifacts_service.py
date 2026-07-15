@@ -32,10 +32,14 @@ if TYPE_CHECKING:
 
     from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
 
-# 允许的产物类型（白名单，越界归一为 other）。
-_ALLOWED_KINDS = {'image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other'}
-_ALLOWED_SOURCE_KINDS = {'tool_output', 'task_result', 'upload', 'external'}
-# 产出动作（doc34）：新增 / 修改。越界归一为 create。
+# artifact_kind / source_kind 的**校验已上移到 schema 的 Literal**（doc35 §7）——越界 422，不再静默归一。
+#
+# 旧的 `_ALLOWED_KINDS` 白名单语义是「归一」而非「拒绝」：越界不报错、**静默**改写成 other。
+# 与 daemon 产出闸的精确字符串相等组合起来就是死锁：模板声明 kind → 分身**真的产出了** →
+# 登记时白名单不认、降级成 other → 闸门比对 `kind != other` → 判定「未产出」→ 节点空转 refill。
+# 这里不再留白名单，就是为了让「越界」在**写入时**炸出来，而不是变成一条说谎的行（§1.5）。
+#
+# 产出动作（doc34）：新增 / 修改。越界归一为 create（action 不参与闸门判定，归一无死锁风险）。
 _ALLOWED_ACTIONS = {'create', 'update'}
 
 
@@ -76,6 +80,61 @@ class HasnArtifactsService:
             return f'hasn://tasks/sessions/{session_id}'
         return None
 
+    @staticmethod
+    def _assert_invariants(
+        *,
+        kind: str,
+        resource_kind: str | None,
+        source_kind: str,
+        resource_uri: str | None,
+        body: str | None,
+        asset_id: str | None,
+        local_path: str | None,
+        source_app_id: str | None,
+    ) -> None:
+        """I1–I4/I6 一致性不变量（doc35 §6）：kind 与「本体存在哪」必须自洽。
+
+        保留显式 `artifact_kind`（而非从字段推导）的代价，就是它可能与实际通道打架。
+        不变量是那个代价的对价：矛盾数据在**写入时**就被拒，而不是等 UI 渲染时才发现
+        「一个 hasn://studio/projects/{id} 挂着视频播放器，播什么？」（§1.2）。
+        """
+        if kind == 'resource':
+            # I1：应用资源必须真的有 hasn:// 应用资源 URI（域 ≠ asset——asset 是二进制本体，不是应用资源）。
+            if not resource_uri or not resource_uri.startswith('hasn://'):
+                raise errors.RequestError(msg='artifact_kind=resource 必须带 hasn:// 应用资源 URI')
+            if resource_uri.startswith('hasn://asset/'):
+                raise errors.RequestError(msg='hasn://asset/ 是资产本体引用，不是应用资源；请用 image/video/voice/file')
+            if not source_app_id:
+                raise errors.RequestError(msg='artifact_kind=resource 必须带 source_app_id（哪个应用产的）')
+            if not resource_kind:
+                raise errors.RequestError(msg='artifact_kind=resource 必须带 resource_kind（是什么资源）')
+        elif kind == 'document':
+            # I2：document 的语义就是「body 直接存 markdown」，没有 body 就是空壳。
+            if not body:
+                raise errors.RequestError(msg='artifact_kind=document 必须带 body（markdown 正文入库）')
+        elif kind in ('image', 'video', 'voice', 'file'):
+            # I3：二进制族必须有本体——asset_id（云端桶）或 local_path（本地权威）。
+            if not asset_id and not local_path:
+                raise errors.RequestError(msg=f'artifact_kind={kind} 必须带 asset_id 或 local_path')
+
+        # I4：source_kind='app' ⟺ artifact_kind='resource'（双向充要，两条都钉）。
+        # 这条挡住的正是 doc35 §1.2 那个病灶标本：studio 产的**视频**想标 source_kind='app'
+        # （「它确实是 studio 应用产的」），但它是 asset 型产物，不是应用资源——真标上去，
+        # UI 就会拿 AppIcon 去渲染一个该播放的视频。应用资源那条（studio.project）另有登记。
+        if source_kind == 'app' and kind != 'resource':
+            raise errors.RequestError(msg="source_kind=app 仅用于应用资源产物（artifact_kind 须为 resource）")
+        if kind == 'resource' and source_kind != 'app':
+            raise errors.RequestError(msg="artifact_kind=resource 的来源必须是 app")
+        # ⚠️ doc35 §6 的 I4 原文把 `source_app_id 非空` 也串进了这条充要链（即非应用资源不得带
+        # source_app_id）。**此处只强制上面两条，第三条刻意不强制**：§2 的维度表把 source_app_id
+        # 定义为「是哪个应用的」，而 imagelab / reel / film 用工具产出的图片视频，诚实答案就是
+        # 那个应用（doc34 已在这么存、已有测试钉）。强制第三条＝逼这些行把真话抹成 NULL，
+        # 且要跨仓摘掉 3 处 with_source_app_id，收益只有「少一列冗余」。留待福仔定夺。
+
+        # I6：resource_kind 非空 → 必是应用资源（非应用产物没有「应用内资源类型」可言）。
+        if resource_kind and kind != 'resource':
+            raise errors.RequestError(msg='resource_kind 仅在 artifact_kind=resource 时有意义')
+
     @classmethod
     async def _owns_agent(cls, db: AsyncSession, *, owner_hasn_id: str, agent_hasn_id: str) -> bool:
         """校验该分身归属本 owner（远端/他人分身不可查，与 AgentIdentity 诚实留空一致）。"""
@@ -111,10 +170,24 @@ class HasnArtifactsService:
         if params.local_path and not params.node_id:
             raise errors.RequestError(msg='本地路径产物必须同时提供 node_id（产出设备）')
 
-        kind = params.kind if params.kind in _ALLOWED_KINDS else 'other'
-        source_kind = params.source_kind if params.source_kind in _ALLOWED_SOURCE_KINDS else 'tool_output'
+        # kind / source_kind 到这里已由 Literal 保证合法（越界在 schema 层就 422 了）。
+        kind = params.kind
+        source_kind = params.source_kind
         action = params.action if params.action in _ALLOWED_ACTIONS else 'create'
         conv = cls._coerce_uuid(params.conversation_id)
+
+        # I1–I4/I6 不变量：kind 与「本体存在哪」必须自洽（doc35 §6）。
+        # 保留显式 kind 的代价就是它可能与通道打架——不在写入时拦住，读时才发现就晚了（§11）。
+        cls._assert_invariants(
+            kind=kind,
+            resource_kind=params.resource_kind,
+            source_kind=source_kind,
+            resource_uri=params.resource_uri,
+            body=params.body,
+            asset_id=params.asset_id,
+            local_path=params.local_path,
+            source_app_id=params.source_app_id,
+        )
 
         # 本地文件产物幂等：同一文件在一次会话里反复写只留一行。这是 runtime 文件捕获
         # （write_file/patch 每次都上报）不把产物列表刷成流水账的关键——分身改 10 次
@@ -170,6 +243,7 @@ class HasnArtifactsService:
             agent_hasn_id=agent_hasn_id,
             owner_hasn_id=owner_hasn_id,
             kind=kind,
+            resource_kind=(params.resource_kind or None),
             title=(params.title or None),
             summary=(params.summary or None),
             body=(params.body or None),
@@ -201,12 +275,19 @@ class HasnArtifactsService:
 
     @classmethod
     def _resolve_artifact_kind(cls, descriptor: ResourceDescriptor) -> str:
-        """产物 kind：优先 `descriptor.artifact_kind`，缺省按 `resource_kind` 尾段归一，越界 → other。"""
-        declared = (descriptor.artifact_kind or '').strip()
-        if declared:
-            return declared if declared in _ALLOWED_KINDS else 'other'
-        tail = (descriptor.resource_kind or '').rsplit('.', 1)[-1].strip()
-        return tail if tail in _ALLOWED_KINDS else 'other'
+        """应用资源产物的 kind 恒为 `resource`（doc35 §3）。
+
+        17 条 descriptor 全是 AI-Native 应用资源——都有 `uri_domain`、都产 `hasn://` URI、
+        UI 打开行为完全一致（据 URI 域跳应用）。它们本就同族，「是什么」由 `resource_kind`
+        回答、「哪个应用」由 `source_app_id` 回答，`artifact_kind` 不该再掺和进来。
+
+        旧实现「按 resource_kind 尾段归一 + 越界→other」正是把 `studio.project` 谎报成
+        `video`、`design.project` 谎报成 `image` 的地方——一个**项目**不是媒体文件，
+        若 UI 真按 kind 渲染就会给 `hasn://studio/projects/{id}` 挂个视频播放器（§1.2）。
+        descriptor 的 `artifact_kind` 现已是 `Literal['resource'] | None`，这里保留声明优先
+        只为兼容显式写 'resource' 的 manifest；缺省同样是 'resource'。
+        """
+        return (descriptor.artifact_kind or 'resource').strip() or 'resource'
 
     @classmethod
     async def record_app_resource_artifact(
@@ -231,8 +312,9 @@ class HasnArtifactsService:
         - `resource_uri = hasn://{descriptor.uri_domain}/{server_id}`——`server_id` 必须是**云端权威 id**
           （调用方已优先取 `{app}_server_id`，未上云才回退 local_ref）；跨设备/分享后对端据云端 id 打开
           （Core-08 URI 第二原则：本地 id 永不上 URI）。
-        - `kind = descriptor.artifact_kind`（缺省按 `resource_kind` 尾段归一，越界 → other）；
-          `source_kind='tool_output'`。
+        - `kind='resource'` 恒定 + `resource_kind=descriptor.resource_kind` 原值 + `source_kind='app'`
+          （doc35）。`resource_kind` 以前**被丢掉了**——知识库塌成 dataset、知识文档塌成 document，
+          两者在 UI 上再也分不开，这就是信息丢失的根源（§4.2）。
         - `dispatch_id` 幂等（缺省 `f"{app_id}:{server_id}"`）：应用资源无 asset_id，
           按 `(agent, dispatch_id, resource_uri)` 查既有 active 行，重复投影同一资源不重复登记。
         """
@@ -262,6 +344,10 @@ class HasnArtifactsService:
         ).scalar_one_or_none()
         if existing_row is not None:
             changed = False
+            # descriptor 是权威：resource_kind 随 descriptor 自愈（存量行在下次写点补上）。
+            if existing_row.resource_kind != descriptor.resource_kind:
+                existing_row.resource_kind = descriptor.resource_kind
+                changed = True
             if session_id and existing_row.session_id != session_id:
                 existing_row.session_id = session_id
                 changed = True
@@ -288,6 +374,9 @@ class HasnArtifactsService:
             agent_hasn_id=agent_hasn_id,
             owner_hasn_id=owner_hasn_id,
             kind=kind,
+            # doc35 §4：这份数据 descriptor 里早就有且精确（能区分 knowledge.base 知识库 与
+            # knowledge.document 知识文档），以前登记时被丢掉。存原值，UI 查 registry 取展示名。
+            resource_kind=descriptor.resource_kind,
             title=(title or None),
             summary=(summary or None),
             resource_uri=resource_uri,
@@ -297,7 +386,9 @@ class HasnArtifactsService:
             source_tool=(source_tool or None),
             # doc34 §3：应用资源产物的来源应用由 descriptor 派生，UI 据此显示应用图标（权威列，不靠反推）。
             source_app_id=app_id,
-            source_kind='tool_output',
+            # doc35 §5：去硬编码 'tool_output'。旧值让 source_kind 对应用资源零信息量
+            # （95/141 行全是同一个值）；'app' 才是实话，UI 据它直接取 AppIcon(source_app_id)。
+            source_kind='app',
             dispatch_id=effective_dispatch_id,
             meta_data={},
             status='active',
@@ -328,6 +419,9 @@ class HasnArtifactsService:
         return ArtifactItem(
             artifact_id=row.artifact_id,
             kind=row.kind,
+            # doc35 §4.3：UI 要显示「知识库」还是「设计系统规范」→ 据它查 registry 拿 descriptor
+            # 的展示名/图标（与应用图标同源）。零硬编码、新应用零改前端。
+            resource_kind=row.resource_kind,
             title=row.title,
             summary=row.summary,
             body=row.body,

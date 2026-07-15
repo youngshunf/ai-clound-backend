@@ -94,13 +94,18 @@ def test_notification_category_and_priority_enums() -> None:
     assert props['priority']['enum'] == ['critical', 'high', 'normal', 'low']
 
 
-def test_artifact_kind_and_source_kind_enums() -> None:
-    """kind / source_kind 枚举与原工具一致（含 video，P6）。"""
+def test_artifact_kind_enum_is_six_and_source_kind_not_agent_settable() -> None:
+    """暴露给分身的 kind 枚举 = doc35 六枚举；source_kind 不再是入参。
+
+    旧断言钉的是 9 枚举（含 deck/webpage/dataset/other）+ 可传 source_kind。doc35 两处都推翻：
+    - kind 只答「怎么打开」，deck/webpage 是应用名（source_app_id 已表达）、dataset 与 file 同渲染
+      分支、other 只是白名单拒绝的降级产物；
+    - `hasn.artifact.record` 本身就是「分身自撰」通道，来源恒 agent_note，让分身自报等于给它
+      一个说谎的旋钮。
+    """
     props = ARTIFACT_TOOLS[0].input_schema['properties']
-    assert props['kind']['enum'] == [
-        'image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other'
-    ]
-    assert props['source_kind']['enum'] == ['task_result', 'tool_output', 'upload', 'external']
+    assert props['kind']['enum'] == ['resource', 'document', 'image', 'video', 'voice', 'file']
+    assert 'source_kind' not in props, 'source_kind 应由工具钉死为 agent_note，不接受分身传入'
 
 
 @pytest.mark.asyncio(loop_scope='module')
@@ -168,8 +173,8 @@ async def test_artifact_record_text_roundtrip_real_db() -> None:
             # 绑当次工作会话：漏了这条，产物只进分身产物 tab、挂不进工作会话资源栏
             # （2026-07-15 实测过的真 bug：record 成功、artifact.get 取得到，会话资源栏却空）。
             assert row.session_id == work_session_id
-            # 显式登记默认归 task_result，并自带 source_tool。
-            assert row.source_kind == 'task_result'
+            # 本工具就是「分身自撰」通道，来源恒 agent_note（doc35 §5，不由分身自报）。
+            assert row.source_kind == 'agent_note'
             assert row.source_tool == 'hasn.artifact.record'
             assert row.status == 'active'
     finally:

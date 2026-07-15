@@ -12,6 +12,8 @@ from uuid import uuid4
 
 import pytest
 
+from pydantic import ValidationError
+
 from backend.app.hasn.model import HasnAgents, HasnConversations
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service import hasn_asset_service as asset_mod
@@ -72,7 +74,10 @@ async def test_record_dedup_and_validation() -> None:
             # 缺 asset_id 与 resource_uri → 拒绝
             with pytest.raises(errors.RequestError):
                 await hasn_artifacts_service.record(
-                    db, agent_hasn_id=agent, owner_hasn_id=owner, params=RecordArtifactParam(kind='image')
+                    db,
+                    agent_hasn_id=agent,
+                    owner_hasn_id=owner,
+                    params=RecordArtifactParam(kind='image', source_kind='platform_tool'),
                 )
 
             # 首次登记
@@ -81,7 +86,8 @@ async def test_record_dedup_and_validation() -> None:
                 title='星空海报',
                 asset_id=asset_id,
                 source_tool='hasn.image.generate',
-                source_kind='tool_output',
+                # 平台工具产出的媒体资产（doc35 §5）。旧值 'tool_output' 是垃圾桶，已按实际产出者拆开。
+                source_kind='platform_tool',
                 dispatch_id='disp_1',
             )
             aid1 = await hasn_artifacts_service.record(db, agent_hasn_id=agent, owner_hasn_id=owner, params=params)
@@ -91,14 +97,10 @@ async def test_record_dedup_and_validation() -> None:
             aid2 = await hasn_artifacts_service.record(db, agent_hasn_id=agent, owner_hasn_id=owner, params=params)
             assert aid2 == aid1
 
-            # 非法 kind 归一为 other
-            aid3 = await hasn_artifacts_service.record(
-                db,
-                agent_hasn_id=agent,
-                owner_hasn_id=owner,
-                params=RecordArtifactParam(kind='banana', resource_uri='hasn://deck/d_1'),
-            )
-            assert aid3 != aid1
+            # 非法 kind → **拒绝**（doc35 §7）。旧行为是静默归一成 'other'：写错了照样落库、
+            # 还落成另一类，等到 UI 打不开才发现。现在 Literal 在构造期就炸。
+            with pytest.raises(ValidationError):
+                RecordArtifactParam(kind='banana', resource_uri='hasn://deck/d_1')
         finally:
             await db.rollback()
 
@@ -129,21 +131,25 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                     db,
                     agent_hasn_id=agent,
                     owner_hasn_id=owner,
-                    params=RecordArtifactParam(kind='document', local_path=path),
+                    params=RecordArtifactParam(kind='file', local_path=path, source_kind='runtime_file'),
                 )
 
-            # 四选一第四种：只给 local_path（无 body/asset_id/resource_uri）也能登记
+            # 四选一第四种：只给 local_path（无 body/asset_id/resource_uri）也能登记。
+            # doc35 §3：本体在 local_path 的 .md 归 `file` 而非 `document`——`document` 的语义
+            # 严格是「body 存 markdown 正文入库」，云端对本地文件只存指针、没有正文可内联渲染。
             aid1 = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='document',
+                    kind='file',
                     title='report.md',
                     local_path=path,
                     node_id=node,
                     session_id=session_id,
                     source_tool='write_file',
+                    # runtime 原生 write/edit 写的文件（doc35 §5）。
+                    source_kind='runtime_file',
                     action='create',
                 ),
             )
@@ -156,12 +162,13 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                     agent_hasn_id=agent,
                     owner_hasn_id=owner,
                     params=RecordArtifactParam(
-                        kind='document',
+                        kind='file',
                         title='report.md',
                         local_path=path,
                         node_id=node,
                         session_id=session_id,
                         source_tool='patch',
+                        source_kind='runtime_file',
                         action='update',
                     ),
                 )
@@ -186,6 +193,7 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                     node_id=node,
                     session_id=session_id,
                     source_tool='patch',
+                    source_kind='runtime_file',
                     action='update',
                     source_app_id='imagelab',
                 ),
@@ -203,10 +211,11 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='document',
+                    kind='file',
                     local_path=path,
                     node_id=_short_id('node2'),
                     session_id=session_id,
+                    source_kind='runtime_file',
                     action='create',
                 ),
             )
@@ -234,11 +243,12 @@ async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='document',
+                    kind='file',
                     title='周报.md',
                     local_path=path,
                     node_id=node,
                     source_tool='write_file',
+                    source_kind='runtime_file',
                     action='update',
                     source_app_id='knowledge',
                 ),
@@ -262,12 +272,16 @@ async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
             assert detail.source_app_id == 'knowledge'
             assert detail.action == 'update'
 
-            # 非本地产物：指针列留空（不许瞎填），action 缺省 create
+            # 非本地产物：指针列留空（不许瞎填），action 缺省 create。
+            # 用平台工具产的云端图片当样本——旧样本是 `kind='deck'`，doc35 已把它拆成
+            # `resource` + source_app_id=deck，那样就带上了 source_app_id、反而验不出「留空」。
             aid_remote = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
-                params=RecordArtifactParam(kind='deck', resource_uri='hasn://deck/d_serial'),
+                params=RecordArtifactParam(
+                    kind='image', asset_id=_short_id('ast'), source_kind='platform_tool'
+                ),
             )
             remote = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=aid_remote)
             assert remote.local_path is None
@@ -298,19 +312,26 @@ async def test_body_artifact_origin_ref_and_video_kind() -> None:
                     title='竞品调研报告',
                     body='# 竞品调研\n\n## 市场概览\n...结论可执行',
                     origin_ref=origin,
-                    source_kind='task_result',
+                    # 分身自撰登记（doc35 §5）。旧值 'task_result' 是产出**场景**不是来源，已砍。
+                    source_kind='agent_note',
                     source_tool='hasn.artifact.record',
                 ),
             )
             assert aid_doc.startswith('art_')
 
-            # video kind 放行（非归一为 other），同一 origin_ref
+            # video kind 放行（非归一为 other），同一 origin_ref。
+            # 本体走 asset_id：doc35 I3 要求 image/video/voice/file 必须有 asset_id 或 local_path
+            # ——旧样本只给 `resource_uri='hasn://asset/…'`，是把「资产本体引用」塞进了应用资源位。
             aid_video = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='video', title='成片', resource_uri='hasn://asset/ast_demo', origin_ref=origin
+                    kind='video',
+                    title='成片',
+                    asset_id='ast_demo',
+                    origin_ref=origin,
+                    source_kind='platform_tool',
                 ),
             )
 
@@ -345,13 +366,22 @@ async def test_list_by_session_filter_and_isolation() -> None:
         try:
             await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
 
-            # 本会话产出两条：deck 应用资源（resource_uri）+ webpage 应用资源，同一 session_id。
+            # 本会话产出两条：deck 应用资源 + publish 站点应用资源，同一 session_id。
+            # doc35：两者的 artifact_kind 都是 `resource`（怎么打开都是「据 URI 域跳应用」），
+            # 「是什么」交给 resource_kind、「哪个应用」交给 source_app_id——旧的 kind='deck'/'webpage'
+            # 是拿应用名当类型，恰是本次要根除的冗余。
             aid_deck = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='deck', title='季度汇报', resource_uri='hasn://deck/d_srv_1', session_id=session
+                    kind='resource',
+                    resource_kind='deck.presentation',
+                    source_app_id='deck',
+                    source_kind='app',
+                    title='季度汇报',
+                    resource_uri='hasn://deck/d_srv_1',
+                    session_id=session,
                 ),
             )
             aid_web = await hasn_artifacts_service.record(
@@ -359,7 +389,13 @@ async def test_list_by_session_filter_and_isolation() -> None:
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='webpage', title='产品官网', resource_uri='hasn://webpage/w_srv_1', session_id=session
+                    kind='resource',
+                    resource_kind='publish.site',
+                    source_app_id='publish',
+                    source_kind='app',
+                    title='产品官网',
+                    resource_uri='hasn://publish/w_srv_1',
+                    session_id=session,
                 ),
             )
             # 另一会话产出一条 → 反查本会话时不应出现。
@@ -368,7 +404,13 @@ async def test_list_by_session_filter_and_isolation() -> None:
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='deck', title='别的会话', resource_uri='hasn://deck/d_srv_2', session_id=other_session
+                    kind='resource',
+                    resource_kind='deck.presentation',
+                    source_app_id='deck',
+                    source_kind='app',
+                    title='别的会话',
+                    resource_uri='hasn://deck/d_srv_2',
+                    session_id=other_session,
                 ),
             )
 
@@ -409,7 +451,7 @@ async def test_update_content_owner_only() -> None:
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
-                    kind='document', title='原标题', body='# 原正文', source_kind='task_result'
+                    kind='document', title='原标题', body='# 原正文', source_kind='agent_note'
                 ),
             )
 
@@ -488,6 +530,7 @@ async def test_list_ownership_isolation_and_source_link(monkeypatch: pytest.Monk
                     conversation_id=str(conv.id),
                     message_id=99,
                     source_tool='hasn.image.generate',
+                    source_kind='platform_tool',
                     dispatch_id='d1',
                 ),
             )
@@ -537,6 +580,7 @@ async def test_detail_and_soft_delete(monkeypatch: pytest.MonkeyPatch) -> None:
                 owner_hasn_id=owner,
                 params=RecordArtifactParam(
                     kind='image', asset_id=img.asset_id, source_tool='hasn.image.generate',
+                    source_kind='platform_tool',
                     dispatch_id='d1', metadata={'mime': 'image/png', 'width': 800},
                 ),
             )

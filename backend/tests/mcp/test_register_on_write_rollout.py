@@ -29,17 +29,22 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
 
-# 已接 register-on-write 的应用 → (resource_kind, 期望 URI 前缀)。
+# 已接 register-on-write 的应用 → (app_id, resource_kind, 期望 URI 前缀, 期望 artifact_kind)。
 # 新接应用请在此补一行——漏了就没有守卫，等于回到「声明了 resources[] 却没人登记」的老账。
+#
+# 第四列 `artifact_kind` 是 doc35 A4 补的：此前三元组**一个 kind 都没钉**，于是 kind 长年随便漂
+# （deck/dataset/webpage/other 混着来），谁也没红。应用资源恒 'resource'，明写出来是为了「某天有人
+# 把它改回 'dataset' 就当场红」。
 ROLLOUT = [
-    ('knowledge', 'knowledge.base', 'hasn://knowledge/kbs/'),
-    ('knowledge', 'knowledge.document', 'hasn://knowledge/documents/'),
-    ('community', 'community.post', 'hasn://community/posts/'),
-    ('community', 'community.article', 'hasn://community/articles/'),
-    ('creator', 'creator.project', 'hasn://creator/projects/'),
-    ('growth', 'growth.customer', 'hasn://growth/customers/'),
-    ('quant', 'quant.strategy', 'hasn://quant/strategies/'),
-    ('studio', 'studio.project', 'hasn://studio/projects/'),
+    ('knowledge', 'knowledge.base', 'hasn://knowledge/kbs/', 'resource'),
+    ('knowledge', 'knowledge.document', 'hasn://knowledge/documents/', 'resource'),
+    ('community', 'community.post', 'hasn://community/posts/', 'resource'),
+    ('community', 'community.article', 'hasn://community/articles/', 'resource'),
+    ('creator', 'creator.project', 'hasn://creator/projects/', 'resource'),
+    ('growth', 'growth.customer', 'hasn://growth/customers/', 'resource'),
+    ('quant', 'quant.strategy', 'hasn://quant/strategies/', 'resource'),
+    ('quant', 'quant.backtest', 'hasn://quant/backtests/', 'resource'),
+    ('studio', 'studio.project', 'hasn://studio/projects/', 'resource'),
 ]
 
 
@@ -73,8 +78,10 @@ async def _active_rows(session, agent_hasn_id: str) -> list[HasnArtifacts]:
     return list(result.scalars().all())
 
 
-@pytest.mark.parametrize(('app_id', 'resource_kind', 'uri_prefix'), ROLLOUT)
-async def test_register_lands_artifact_bound_to_session(pg_session, app_id, resource_kind, uri_prefix) -> None:
+@pytest.mark.parametrize(('app_id', 'resource_kind', 'uri_prefix', 'artifact_kind'), ROLLOUT)
+async def test_register_lands_artifact_bound_to_session(
+    pg_session, app_id, resource_kind, uri_prefix, artifact_kind
+) -> None:
     tag = uuid.uuid4().hex[:8]
     agent_hasn_id, owner_hasn_id = f'a_row_{tag}', f'h_row_{tag}'
     server_id = 90001
@@ -97,6 +104,12 @@ async def test_register_lands_artifact_bound_to_session(pg_session, app_id, reso
         assert rows[0].resource_uri == f'{uri_prefix}{server_id}', '资源 URI 必须由 manifest 的 uri_domain 派生'
         assert rows[0].session_id == work_session_id, '产物必须绑上工作会话，否则挂不进会话资源栏'
         assert rows[0].owner_hasn_id == owner_hasn_id
+        # doc35 三维度：kind 只答「怎么打开」、resource_kind 答「是什么」、
+        # source_app_id 答「哪个应用」、source_kind 答「怎么来的」。四者各就各位才算登记对。
+        assert rows[0].kind == artifact_kind, 'artifact_kind 只答「怎么打开」——应用资源恒 resource'
+        assert rows[0].resource_kind == resource_kind, 'resource_kind 必须存 descriptor 原值，UI 据它查 registry 取展示名'
+        assert rows[0].source_app_id == app_id
+        assert rows[0].source_kind == 'app', '应用产出的资源，来源恒为 app（旧硬编码 tool_output 是垃圾桶）'
     finally:
         clear_current_work_session_id()
 

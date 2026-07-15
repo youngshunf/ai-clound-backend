@@ -1,8 +1,10 @@
-"""RC-P8 应用资源登记 hasn_artifacts 测试（doc31 §2，实施/32 RC-P8）。
+"""RC-P8 应用资源登记 hasn_artifacts 测试（doc31 §2，实施/32 RC-P8；doc35 三维度重构后更新）。
 
 覆盖 `HasnArtifactsService.record_app_resource_artifact`：
-- descriptor 驱动拼 `resource_uri=hasn://{uri_domain}/{server_id}`、`kind=artifact_kind`（缺省归一）、
-  `dispatch_id` 缺省 `f"{app_id}:{server_id}"`、`source_kind='tool_output'`、origin_ref 存云端权威 id；
+- descriptor 驱动拼 `resource_uri=hasn://{uri_domain}/{server_id}`、`kind='resource'`（应用资源恒为
+  resource——「哪个应用」由 source_app_id 答、「是什么」由 resource_kind 答，doc35 §3）、
+  `resource_kind` 存 descriptor 原值、`dispatch_id` 缺省 `f"{app_id}:{server_id}"`、
+  `source_kind='app'`、origin_ref 存云端权威 id；
 - 幂等：应用资源无 asset_id，按 (agent, dispatch_id, resource_uri) 去重，重复调不重复登记；
 - 纯 helper（`_app_id_from_descriptor`/`_resolve_artifact_kind`）的边界。
 
@@ -40,6 +42,8 @@ class ArtifactStub(_ArtifactBase):
     agent_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='')
     owner_hasn_id: Mapped[str] = mapped_column(sa.String(40), default='')
     kind: Mapped[str] = mapped_column(sa.String(16), default='')
+    resource_kind: Mapped[str | None] = mapped_column(sa.String(64), default=None, nullable=True)
+    source_app_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, nullable=True)
     title: Mapped[str | None] = mapped_column(sa.String(256), default=None, nullable=True)
     summary: Mapped[str | None] = mapped_column(sa.Text, default=None, nullable=True)
     body: Mapped[str | None] = mapped_column(sa.Text, default=None, nullable=True)
@@ -85,7 +89,7 @@ _DECK_DESCRIPTOR = ResourceDescriptor.model_validate({
     'uri_domain': 'deck',
     'open': {'mode': 'native_window', 'window': 'deck'},
     'card': {'verb': '演示文稿', 'action_label': '打开演示文稿'},
-    'artifact_kind': 'deck',
+    'artifact_kind': 'resource',
 })
 
 _REEL_DESCRIPTOR = ResourceDescriptor.model_validate({
@@ -93,7 +97,10 @@ _REEL_DESCRIPTOR = ResourceDescriptor.model_validate({
     'uri_domain': 'reel/projects',
     'open': {'mode': 'internal_route', 'route_template': '/apps/reel/projects/:id'},
     'card': {'verb': '短视频', 'action_label': '打开短视频'},
-    'artifact_kind': 'video',
+    # reel 项目本体是**应用里的一个项目**（打开 = 进 /apps/reel/projects/:id），不是一个视频文件。
+    # 旧值 'video' 正是「一个字段扛三个维度」的典型：它想说「产的是视频」，却把「怎么打开」答错了
+    # ——UI 据 kind=video 去找 asset 播放，而这行根本没有 asset（doc35 §3.1）。
+    'artifact_kind': 'resource',
 })
 
 
@@ -103,7 +110,7 @@ async def _count_rows(db: AsyncSession) -> int:
 
 @pytest.mark.asyncio
 async def test_record_app_resource_artifact_resource_uri_and_kind(db_session: AsyncSession) -> None:
-    """deck 产出 → resource_uri=hasn://deck/{server_id}、kind=deck、dispatch_id 缺省、origin_ref 存云端 id。"""
+    """deck 产出 → resource_uri=hasn://deck/{id}、三维度各就各位、dispatch_id 缺省、origin_ref 存云端 id。"""
     artifact_id = await HasnArtifactsService.record_app_resource_artifact(
         db_session,
         descriptor=_DECK_DESCRIPTOR,
@@ -119,8 +126,11 @@ async def test_record_app_resource_artifact_resource_uri_and_kind(db_session: As
         await db_session.execute(sa.select(ArtifactStub).where(ArtifactStub.artifact_id == artifact_id))
     ).scalar_one()
     assert row.resource_uri == 'hasn://deck/deck_server_9'
-    assert row.kind == 'deck'
-    assert row.source_kind == 'tool_output'
+    # 三维度各答各的：怎么打开=resource / 是什么=deck.presentation / 哪个应用=deck / 怎么来的=app。
+    assert row.kind == 'resource'
+    assert row.resource_kind == 'deck.presentation'
+    assert row.source_app_id == 'deck'
+    assert row.source_kind == 'app'
     assert row.dispatch_id == 'deck:deck_server_9'
     assert row.origin_ref == 'resource:deck:deck_server_9'
     assert row.session_id == 'sess_1'
@@ -156,7 +166,7 @@ async def test_record_app_resource_artifact_idempotent(db_session: AsyncSession)
 
 @pytest.mark.asyncio
 async def test_record_second_app_zero_code_reel(db_session: AsyncSession) -> None:
-    """第二应用（reel）声明 descriptor 后零改代码登记：resource_uri 用 uri_domain 多段前缀 + kind=video。"""
+    """第二应用（reel）声明 descriptor 后零改代码登记：resource_uri 用 uri_domain 多段前缀 + 三维度归位。"""
     artifact_id = await HasnArtifactsService.record_app_resource_artifact(
         db_session,
         descriptor=_REEL_DESCRIPTOR,
@@ -170,7 +180,10 @@ async def test_record_second_app_zero_code_reel(db_session: AsyncSession) -> Non
         await db_session.execute(sa.select(ArtifactStub).where(ArtifactStub.artifact_id == artifact_id))
     ).scalar_one()
     assert row.resource_uri == 'hasn://reel/projects/reel_server_42'
-    assert row.kind == 'video'
+    assert row.kind == 'resource'
+    assert row.resource_kind == 'reel.project'
+    assert row.source_app_id == 'reel'
+    assert row.source_kind == 'app'
     assert row.dispatch_id == 'reel:reel_server_42'
     assert row.origin_ref == 'resource:reel:reel_server_42'
 
@@ -205,24 +218,34 @@ def test_app_id_from_descriptor() -> None:
     assert HasnArtifactsService._app_id_from_descriptor(_REEL_DESCRIPTOR) == 'reel'
 
 
-def test_resolve_artifact_kind_declared_and_fallback() -> None:
-    """artifact_kind 优先；缺省按 resource_kind 尾段归一；越界 → other。"""
-    # 显式 artifact_kind
-    assert HasnArtifactsService._resolve_artifact_kind(_DECK_DESCRIPTOR) == 'deck'
-    assert HasnArtifactsService._resolve_artifact_kind(_REEL_DESCRIPTOR) == 'video'
-    # 缺省：resource_kind 尾段命中白名单
-    doc_desc = ResourceDescriptor.model_validate({
-        'resource_kind': 'note.document',
+def test_resolve_artifact_kind_always_resource() -> None:
+    """应用资源恒 resource——声明与缺省同结果（doc35 §3.2）。
+
+    旧实现按 `resource_kind` **尾段**猜 kind（`note.document`→document、`foo.bar`→other）。那是拿
+    「是什么」去答「怎么打开」，猜错了 UI 就按错的方式开：知识库 `knowledge.base` 尾段 base 不在白
+    名单 → 塌成 other，而 other 在 UI 里是「不知道怎么开」的坟场。现在 resource_kind 存原值、单独
+    答「是什么」，kind 不再需要猜。
+    """
+    assert HasnArtifactsService._resolve_artifact_kind(_DECK_DESCRIPTOR) == 'resource'
+    assert HasnArtifactsService._resolve_artifact_kind(_REEL_DESCRIPTOR) == 'resource'
+    # 未声明 artifact_kind → 缺省同样是 resource，不再按尾段猜。
+    undeclared = ResourceDescriptor.model_validate({
+        'resource_kind': 'note.whatever',
         'uri_domain': 'note',
         'open': {'mode': 'entry_query', 'entry_route': '/apps/note', 'query_key': 'id'},
         'card': {'verb': '笔记', 'action_label': '打开笔记'},
     })
-    assert HasnArtifactsService._resolve_artifact_kind(doc_desc) == 'document'
-    # 缺省：尾段越界 → other
-    weird = ResourceDescriptor.model_validate({
-        'resource_kind': 'foo.bar',
-        'uri_domain': 'foo',
-        'open': {'mode': 'entry_query', 'entry_route': '/apps/foo', 'query_key': 'id'},
-        'card': {'verb': '啥', 'action_label': '打开啥'},
-    })
-    assert HasnArtifactsService._resolve_artifact_kind(weird) == 'other'
+    assert HasnArtifactsService._resolve_artifact_kind(undeclared) == 'resource'
+
+
+def test_descriptor_rejects_non_enum_artifact_kind() -> None:
+    """manifest 写越界/拼错的 artifact_kind → **注册期**炸，不再静默落成 other（doc35 §1.5）。"""
+    for bad in ('deck', 'dataset', 'webpage', 'other', 'vidoe'):
+        with pytest.raises(ValueError):
+            ResourceDescriptor.model_validate({
+                'resource_kind': 'x.y',
+                'uri_domain': 'x',
+                'open': {'mode': 'entry_query', 'entry_route': '/apps/x', 'query_key': 'id'},
+                'card': {'verb': 'X', 'action_label': '打开 X'},
+                'artifact_kind': bad,
+            })

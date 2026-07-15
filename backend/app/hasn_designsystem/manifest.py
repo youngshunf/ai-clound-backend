@@ -142,7 +142,7 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
             'uri_domain': 'designsystem',  # → hasn://designsystem/{server_id}（doc08 §3 已登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/designsystem/:id'},
             'card': {'verb': '设计系统', 'action_label': '打开设计系统'},
-            'artifact_kind': 'other',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': [

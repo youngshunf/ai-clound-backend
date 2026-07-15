@@ -179,7 +179,7 @@ IMAGELAB_AI_NATIVE_MANIFEST = {
             'uri_domain': 'imagelab/projects',  # → hasn://imagelab/projects/{server_id}（doc08 §3 已登记域）
             'open': {'mode': 'entry_query', 'entry_route': '/apps/imagelab', 'query_key': 'project'},
             'card': {'verb': '图像项目', 'action_label': '打开图坊'},
-            'artifact_kind': 'image',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': [

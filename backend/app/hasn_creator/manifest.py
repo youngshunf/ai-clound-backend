@@ -815,7 +815,7 @@ CREATOR_AI_NATIVE_MANIFEST = {
             'uri_domain': 'creator/projects',  # → hasn://creator/projects/{server_id}（doc08 §3 登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/creator/projects/:id'},
             'card': {'verb': '创作项目', 'action_label': '打开创作项目'},
-            'artifact_kind': 'document',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': _CAPABILITIES,

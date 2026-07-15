@@ -868,7 +868,7 @@ def _deck_resource_descriptor() -> Any:
             'uri_domain': 'deck',
             'open': {'mode': 'native_window', 'window': 'deck'},
             'card': {'verb': '演示文稿', 'action_label': '打开演示文稿'},
-            'artifact_kind': 'deck',
+            'artifact_kind': 'resource',
         }
     )
 
@@ -971,9 +971,13 @@ def _designsystem_resource_descriptor() -> Any:
         {
             'resource_kind': 'designsystem.spec',
             'uri_domain': 'designsystem',
-            'open': {'mode': 'native_window', 'window': 'designsystem'},
+            # 与 designsystem manifest.resources[0] 逐字段一致。这里曾写
+            # {'mode':'native_window','window':'designsystem'}——但 ResourceWindow 只收
+            # {deck, design}，兜底一走即 ValidationError（本该救场的分支反而是炸点），
+            # 且与真 manifest 的 internal_route 自相矛盾（doc35 刀 A2 顺带修）。
+            'open': {'mode': 'internal_route', 'route_template': '/apps/designsystem/:id'},
             'card': {'verb': '设计系统', 'action_label': '打开设计系统'},
-            'artifact_kind': 'other',
+            'artifact_kind': 'resource',
         }
     )
 

@@ -124,7 +124,7 @@ PUBLISH_AI_NATIVE_MANIFEST = {
             'uri_domain': 'publish/sites',  # → hasn://publish/sites/{server_id}（doc08 §3 登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/publish/sites/:id'},
             'card': {'verb': '网站', 'action_label': '打开网站'},
-            'artifact_kind': 'webpage',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': [

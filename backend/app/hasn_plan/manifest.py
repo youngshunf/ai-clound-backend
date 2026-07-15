@@ -56,7 +56,7 @@ PLAN_AI_NATIVE_MANIFEST = {
             'uri_domain': 'plan/goals',  # → hasn://plan/goals/{id}（doc08 §3 已登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/plan/goals/:id'},
             'card': {'verb': '目标', 'action_label': '打开目标'},
-            'artifact_kind': 'other',
+            'artifact_kind': 'resource',
         },
         {
             'resource_kind': 'plan.plan',
@@ -64,7 +64,7 @@ PLAN_AI_NATIVE_MANIFEST = {
             'uri_domain': 'plan/plans',  # → hasn://plan/plans/{id}
             'open': {'mode': 'internal_route', 'route_template': '/apps/plan/plans/:id'},
             'card': {'verb': '计划', 'action_label': '打开计划'},
-            'artifact_kind': 'other',
+            'artifact_kind': 'resource',
         },
     ],
     'execution_mode': 'local_tool',

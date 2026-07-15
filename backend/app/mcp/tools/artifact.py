@@ -10,8 +10,9 @@
 不转文件上传）。本体三选一（互斥）：`body` / `asset_id` / `resource_uri`。带 `origin_ref`
 （如 `resource:plan:todo:{id}`）则可被该业务对象详情页的产物轨按 origin 反查（P6 §6.5）。
 
-身份恒由 `agent_context`（取自 Agent JWT/MCP Key）注入，body 绝不含 agent/owner；云端按白名单
-归一 kind、按 `(agent, dispatch_id, asset_id)` 去重幂等。
+身份恒由 `agent_context`（取自 Agent JWT/MCP Key）注入，body 绝不含 agent/owner；kind 越界由
+schema Literal **拒绝**（doc35：旧实现按白名单静默归一成 `other`，分身写错了也不知道），
+按 `(agent, dispatch_id, asset_id)` 去重幂等。
 
 - 工具名 + input_schema 与原 hasn-mcp `ArtifactRecordTool` **逐字段 1:1**。
 - 与本地工具一致：**不声明 capability scope**（低风险账本写、身份钉死本主人）；三态闸门由
@@ -20,9 +21,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
-from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
+from backend.app.hasn.schema.hasn_artifacts import ArtifactKind, RecordArtifactParam
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -31,8 +32,9 @@ if TYPE_CHECKING:
     from backend.app.hasn.schema.hasn_artifacts import ArtifactDetail, ArtifactItem
     from backend.app.mcp.auth import AgentContext
 
-_ARTIFACT_KINDS = ['image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other']
-_SOURCE_KINDS = ['task_result', 'tool_output', 'upload', 'external']
+# 从 Literal 派生，不手抄一份（doc35）。旧代码手写了 9 个值的清单，schema 收敛到 6 枚举后
+# 这里若不跟着改，分身看到的 enum 会继续教它写 deck/dataset/other——填了就 422。
+_ARTIFACT_KINDS = list(get_args(ArtifactKind))
 
 # Agent 面出参裁剪常量（有别于 owner 端点：省分身上下文，见设计 §3.1.5）。
 _LIST_SIZE_DEFAULT = 10  # agent 列表默认页大小（比 owner 面收紧）
@@ -123,7 +125,7 @@ class ArtifactRecordTool(BaseTool):
                 'kind': {
                     'type': 'string',
                     'enum': _ARTIFACT_KINDS,
-                    'description': '产物类型（见 enum）；文本/markdown 用 document',
+                    'description': '产物类型 = 这东西怎么打开；文本/markdown 用 document，应用内资源用 resource',
                 },
                 'title': {'type': 'string', 'description': '展示标题（可选，<=200 字）'},
                 'summary': {'type': 'string', 'description': '简要描述（可选）'},
@@ -133,16 +135,14 @@ class ArtifactRecordTool(BaseTool):
                         '文本/markdown 正文（document 文本产物用，直接入库不上传文件；与 asset_id/resource_uri 三选一）'
                     ),
                 },
-                'asset_id': {'type': 'string', 'description': '已上传资产 ID（image/voice/file 二进制产物用）'},
-                'resource_uri': {'type': 'string', 'description': 'hasn:// 资源 URI（deck/webpage 等本体即资源时用）'},
+                'asset_id': {'type': 'string', 'description': '已上传资产 ID（image/voice/video/file 二进制产物用）'},
+                'resource_uri': {
+                    'type': 'string',
+                    'description': 'hasn:// 应用资源 URI（kind=resource 时用，如 hasn://deck/{id}）',
+                },
                 'origin_ref': {
                     'type': 'string',
                     'description': '产出所属业务资源（如 resource:plan:todo:{id}），供该对象详情产物轨反查',
-                },
-                'source_kind': {
-                    'type': 'string',
-                    'enum': _SOURCE_KINDS,
-                    'description': '产出来源（默认 task_result）',
                 },
             },
             'required': ['kind'],
@@ -188,8 +188,10 @@ class ArtifactRecordTool(BaseTool):
             # 分身不可伪造）。漏传会让产物只进分身产物 tab、挂不进工作会话资源栏——主人在会话里
             # 看不到分身刚干的活（2026-07-15 实测：record 成功、artifact.get 取得到，资源栏却空）。
             session_id=agent_context.session_id,
-            # 显式登记默认归「任务成果」（区别于工具副作用 tool_output）。
-            source_kind=_str('source_kind') or 'task_result',
+            # 本工具**就是**「分身自撰登记」这条通道，来源恒为 agent_note——不由分身自报（doc35 §5）。
+            # 旧实现收 source_kind 入参、缺省 'task_result'：前者给了分身一个说谎的旋钮（它可以把
+            # 自撰成果标成 upload/external），后者本就不是来源而是产出**场景**（那由 session_id 表达）。
+            source_kind='agent_note',
             source_tool='hasn.artifact.record',
         )
 
@@ -245,7 +247,7 @@ class ArtifactListTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            '列我（本分身）产过的资源时间线（图/语音/视频/文件/文档/deck/网页等），倒序，'
+            '列我（本分身）产过的资源时间线（图/语音/视频/文件/文档/应用内资源），倒序，'
             '可按 kind、session_id（某工作会话）过滤、分页。找回自己造过的东西用它。'
             '出参给 asset_uri（有本体时，正文嵌图用它）+ preview_url（临时预览）+ has_body'
             '（文本产物标记，取正文用 hasn.artifact.get）。' + _PREVIEW_URL_WARNING

@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from backend.app.hasn.schema.hasn_artifacts import ArtifactKind
 from backend.common.schema import SchemaBase
 
 # open.mode 三枚举覆盖全部现实打开形态（doc31 §2.2）：
@@ -76,8 +77,13 @@ class ResourceDescriptor(SchemaBase):
     uri_domain: str = Field(description='hasn:// host+path 前缀，不含 /{id}（如 deck / reel/projects）')
     open: ResourceOpen = Field(description='打开语义')
     card: ResourceCard = Field(description='完成卡显示声明')
-    # 可选：登记 hasn_artifacts 时的 kind；缺省按 resource_kind 归一（越界→other）
-    artifact_kind: str | None = Field(None, description='登记 hasn_artifacts 的 kind（缺省归一）')
+    # 可选：登记 hasn_artifacts 时的 artifact_kind。应用资源恒为 'resource'，缺省即 'resource'。
+    #
+    # 收 Literal 而非裸 str：以前 manifest 里写 'vidoe' 拼错不会在校验时红，一路静默落成
+    # 'other'（doc35 §1.5 的隐患之一）。现在拼错在**注册期**就炸。
+    artifact_kind: ArtifactKind | None = Field(
+        None, description="登记 hasn_artifacts 的 artifact_kind（应用资源恒为 resource，缺省即 resource）"
+    )
     # 可选·多资源应用的子类选择键（doc31 §2.1 扩展，RC-P6/doc31-A）：
     # 单类资源应用（deck/reel/design/knowledge…）不声明 ref_type——origin_ref=resource:{app}:{id}，
     # 整段 {id} 即云端资源 id。多类资源应用（如 plan：目标/计划分居 hasn://plan/goals 与 plan/plans）

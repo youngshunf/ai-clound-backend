@@ -96,20 +96,15 @@ def test_read_tools_required_fields() -> None:
 
 
 def test_list_schema_filters() -> None:
-    """list 支持 kind（enum）/session_id/page/size 过滤，kind enum 与产物类型一致。"""
+    """list 支持 kind（enum）/session_id/page/size 过滤，kind enum = doc35 六枚举。
+
+    读侧的 enum 必须与写侧同源（都取自 `ArtifactKind` Literal）：这里若还留着
+    deck/webpage/dataset/other，分身就会按那些值去筛，永远筛不到任何行——库里已经
+    没有这些值了，而分身得不到任何报错，只会以为「没有产物」。
+    """
     props = ArtifactListTool().input_schema['properties']
     assert set(props) >= {'kind', 'session_id', 'page', 'size'}
-    assert props['kind']['enum'] == [
-        'image',
-        'voice',
-        'video',
-        'file',
-        'document',
-        'deck',
-        'webpage',
-        'dataset',
-        'other',
-    ]
+    assert props['kind']['enum'] == ['resource', 'document', 'image', 'video', 'voice', 'file']
 
 
 def test_projection_constants_are_trim_bounds() -> None:
@@ -187,13 +182,19 @@ async def _record(
     body: str | None = None,
     asset_id: str | None = None,
     session_id: str | None = None,
-    source_kind: str = 'tool_output',
+    source_kind: str | None = None,
 ) -> str:
-    """经 service 真登记一条产物，返回 artifact_id。"""
+    """经 service 真登记一条产物，返回 artifact_id。
+
+    `source_kind` 不传则按产出者推导，与 `source_tool` 保持同一口径（doc35 §5）：
+    图片走平台工具 `hasn.image.generate`→`platform_tool`，其余是分身自撰
+    `hasn.artifact.record`→`agent_note`。旧的统一缺省 `tool_output` 是垃圾桶值，已砍。
+    """
     from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
     from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
     from backend.database.db import async_db_session
 
+    is_platform_media = kind in ('image', 'video', 'voice')
     params = RecordArtifactParam(
         kind=kind,
         title=title,
@@ -201,7 +202,7 @@ async def _record(
         body=body,
         asset_id=asset_id,
         session_id=session_id,
-        source_kind=source_kind,
+        source_kind=source_kind or ('platform_tool' if is_platform_media else 'agent_note'),
         source_tool='hasn.image.generate' if kind == 'image' else 'hasn.artifact.record',
     )
     async with async_db_session.begin() as db:

@@ -102,7 +102,8 @@ async def handle_backtest(
     策略来源：`strategy_id`（载已存策略）或内联 `builtin_strategy` / `strategy_code`+`strategy_class`。
     只花算力、不动钱——分身可随便迭代。
     """
-    return await quant_service.submit_backtest(
+    dataset = str(input_payload.get('dataset') or 'synthetic-oscillator-eth')
+    result = await quant_service.submit_backtest(
         db,
         owner_hasn_id=agent.owner_hasn_id,
         agent_hasn_id=agent.agent_hasn_id,
@@ -110,13 +111,30 @@ async def handle_backtest(
         builtin_strategy=input_payload.get('builtin_strategy'),
         strategy_code=input_payload.get('strategy_code'),
         strategy_class=input_payload.get('strategy_class'),
-        dataset=str(input_payload.get('dataset') or 'synthetic-oscillator-eth'),
+        dataset=dataset,
         params=input_payload.get('params'),
         starting_balance=float(input_payload.get('starting_balance', 1_000_000.0)),
         trade_size=input_payload.get('trade_size'),
         fast_ema_period=_opt_int(input_payload, 'fast_ema_period'),
         slow_ema_period=_opt_int(input_payload, 'slow_ema_period'),
     )
+    # register-on-write（doc35 A3 补）：**提交即登记**，不等回测跑完。
+    # 回测是 job 式的（提交返回 queued/running，绩效靠 get_backtest 轮询落库），若等终态再登记，
+    # 就没有「终态时刻」这个写点可挂——分身提交完就没下文了，主人在会话资源栏什么都看不到。
+    # 提交时 run 行已落库、id 已有，登记的是这份**报告本身**（内容随轮询充实，URI 不变）。
+    backtest_id = result.get('id')
+    if isinstance(backtest_id, int):
+        await register_app_resource_artifact(
+            db,
+            app_id='quant',
+            resource_kind='quant.backtest',
+            server_id=backtest_id,
+            agent_hasn_id=agent.agent_hasn_id,
+            owner_hasn_id=agent.owner_hasn_id,
+            title=f'回测报告 · {dataset}',
+            source_tool='hasn.quant.backtest',
+        )
+    return result
 
 
 async def handle_get_backtest(

@@ -181,7 +181,7 @@ DECK_AI_NATIVE_MANIFEST = {
             'uri_domain': 'deck',  # → hasn://deck/{server_id}（doc08 §3 已登记 native_window 域）
             'open': {'mode': 'native_window', 'window': 'deck'},
             'card': {'verb': '演示文稿', 'action_label': '打开演示文稿'},
-            'artifact_kind': 'deck',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': [

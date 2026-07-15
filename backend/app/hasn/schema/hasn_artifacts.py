@@ -1,9 +1,24 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
+
+# ============================================================================
+# 产物分类三维度（doc35）：一个字段一个维度，不互相僭越。
+#
+# - artifact_kind：只回答「怎么打开」——与「本体存在哪」严格 1:1（doc35 §3/§6 I1–I3）。
+# - resource_kind：只回答「是什么」——descriptor.resource_kind 原值，仅应用资源有值（§4）。
+# - source_app_id：只回答「哪个应用」（doc34 已有列）。
+# - source_kind：只回答「怎么来的 / 谁产的」（§5）。
+#
+# 这两个 Literal 是**拒绝**而非归一：越界 → 422。旧白名单静默改写成 other 才是
+# 「模板声明 kind → 分身真产出了 → 登记被降级 → 闸门比对不上 → 判定未产出」死锁的根因（§1.5）。
+# ============================================================================
+ArtifactKind = Literal['resource', 'document', 'image', 'video', 'voice', 'file']
+ArtifactSourceKind = Literal['app', 'platform_tool', 'external_tool', 'runtime_file', 'agent_note', 'upload']
 
 
 class HasnArtifactsSchemaBase(SchemaBase):
@@ -11,7 +26,8 @@ class HasnArtifactsSchemaBase(SchemaBase):
     artifact_id: str = Field(description='产物 ID (art_<ulid> 公开标识)')
     agent_hasn_id: str = Field(description='产出分身 hasn_id')
     owner_hasn_id: str = Field(description='分身主人 hasn_id (归属 + 隔离键)')
-    kind: str = Field(description='产物类型 (image:图片:blue/voice:语音:purple/file:文件:gray/document:文档:cyan/deck:演示文稿:violet/webpage:网页:green/dataset:数据集:orange/other:其它:default)')
+    kind: ArtifactKind = Field(description='产物类型·怎么打开 (resource:应用资源/document:文档/image:图片/video:视频/voice:语音/file:文件)')
+    resource_kind: str | None = Field(None, description='应用资源类型 (descriptor.resource_kind 原值，如 knowledge.base；仅 kind=resource 有值)')
     title: str | None = Field(None, description='展示标题 (工具给/文件名/截断的 prompt)')
     summary: str | None = Field(None, description='简要描述')
     body: str | None = Field(None, description='文本/markdown 正文直接入库 (kind=document 文本产物用，不上传文件)')
@@ -22,7 +38,7 @@ class HasnArtifactsSchemaBase(SchemaBase):
     message_id: int | None = Field(None, description='来源消息 ID (public.hasn_messages.id)')
     session_id: str | None = Field(None, description='来源本地 runtime session (ULID)')
     source_tool: str | None = Field(None, description='产出工具全名 (hasn.image.generate)')
-    source_kind: str = Field(description='产出来源 (tool_output:工具产出:blue/task_result:任务成果:violet/upload:上传:gray/external:外部结果:orange)')
+    source_kind: ArtifactSourceKind = Field(description='产出来源·怎么来的 (app/platform_tool/external_tool/runtime_file/agent_note/upload)')
     dispatch_id: str | None = Field(None, description='派发关联 (审计/去重)')
     meta_data: dict = Field(description='元数据 (mime/size/width/height 冗余 + 工具上下文快照)')
     status: str = Field(description='状态 (active:正常:green/deleted:已删:red)')
@@ -60,9 +76,14 @@ class GetHasnArtifactsDetail(HasnArtifactsSchemaBase):
 class RecordArtifactParam(SchemaBase):
     """Agent 登记一条产物的入参（不含 agent/owner 身份字段——身份取自 Agent JWT）。"""
 
-    kind: str = Field(
-        'other',
-        description='产物类型 (image/voice/file/document/deck/webpage/dataset/other)',
+    # 无缺省：kind 必须显式声明。旧的 default='other' 让「没想清楚产的是什么」也能过——
+    # 而 other 正是本次要根除的那个坟场（doc35 §3.1）。
+    kind: ArtifactKind = Field(
+        description='产物类型·怎么打开 (resource:应用资源 / document:body 存 markdown / image / video / voice / file)',
+    )
+    resource_kind: str | None = Field(
+        None,
+        description='应用资源类型（descriptor.resource_kind 原值，如 knowledge.base；仅 kind=resource 时给）',
     )
     title: str | None = Field(None, description='展示标题')
     summary: str | None = Field(None, description='简要描述')
@@ -80,7 +101,9 @@ class RecordArtifactParam(SchemaBase):
     session_id: str | None = Field(None, description='来源本地 runtime session（ULID）')
     source_tool: str | None = Field(None, description='产出工具全名（hasn.image.generate）')
     source_app_id: str | None = Field(None, description='来源应用 ID（deck/imagelab/knowledge…；UI 据此显示应用图标）')
-    source_kind: str = Field('tool_output', description='产出来源 (tool_output/task_result/upload/external)')
+    source_kind: ArtifactSourceKind = Field(
+        description='产出来源·谁产的 (app:应用 / platform_tool:平台工具 / external_tool:外部取材 / runtime_file:运行时文件 / agent_note:分身自撰 / upload:主人上传)',
+    )
     action: str = Field('create', description='产出动作 (create:新增 / update:修改)')
     dispatch_id: str | None = Field(None, description='派发关联（审计/去重）')
     metadata: dict = Field(default_factory=dict, description='元数据快照（mime/size/width/height 等）')
@@ -107,7 +130,11 @@ class ArtifactItem(SchemaBase):
     """产物列表项（已派生跳转链接；图片含签名 display_url）。"""
 
     artifact_id: str
-    kind: str
+    kind: ArtifactKind
+    resource_kind: str | None = Field(
+        None,
+        description='应用资源类型（如 knowledge.base；仅 kind=resource 有值。UI 据它查 registry 取展示名/图标，零硬编码）',
+    )
     title: str | None = None
     summary: str | None = None
     body: str | None = Field(None, description='文本/markdown 正文（kind=document 文本产物，前端内联渲染）')
@@ -121,7 +148,7 @@ class ArtifactItem(SchemaBase):
     session_id: str | None = None
     source_tool: str | None = None
     source_app_id: str | None = Field(None, description='来源应用 id（UI 据此显示应用图标；非应用产出留空）')
-    source_kind: str = 'tool_output'
+    source_kind: ArtifactSourceKind
     action: str = Field('create', description='产出动作 (create:新增/update:修改)')
     source_link: str | None = Field(None, description='点击跳转来源的 hasn:// URI')
     display_url: str | None = Field(None, description='可展示签名 URL（图片缩略图/预览，有时效）')
