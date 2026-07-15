@@ -29,11 +29,13 @@ NAMESPACE_TO_APP_ID: dict[str, str | None] = {
     'hasn.contact': None,  # 通讯录（社交底座）
     'hasn.conversation': None,  # 会话列表（消息底座）
     'hasn.diag': None,  # 错误诊断（平台运维底座·G1 特权门管，非被购应用，跳过 G3）
+    'hasn.group': None,  # 群聊（入群/拉群聊历史，与 message/contact 同属社交底座）
     'hasn.marketplace': None,  # 能力市场本身（底座，非被购应用）
     'hasn.memory': None,  # 记忆（每个分身自带的底座能力）
     'hasn.message': None,  # 消息收发（底座）
     'hasn.notifications': None,  # 通知（底座）
     'hasn.owner': None,  # 主人画像/记忆采访（KNOWU 底座）
+    'hasn.stock': None,  # 通用素材站搜索/下载（取材底座，无对应 catalog 应用，不挂门）
     'hasn.user': None,  # 用户搜索（底座）
     'hasn.workbench': None,  # 工作台简报（home 底座，非被购应用）
     # ── 商业化应用（app_id 对照 hasn_app_catalog）──
