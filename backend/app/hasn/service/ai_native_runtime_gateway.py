@@ -214,6 +214,19 @@ class AiNativeRuntimeGateway:
         capability = self._find_capability(manifest, tool_id)
         input_payload = dict(body.input or {})
 
+        # register-on-write 会话通道（doc31·产物自动登记铁律）：剥离系统注入的工作会话 id
+        # （`_hasn_session_id`，分身不可伪造）→ ContextVar，供 handler 登记产物时挂进工作会话资源栏。
+        # 须在 bind_tool_input 前剥离（保留参未在 input_schema 声明，留着会原样透传给 handler）。
+        # 两条到达面：
+        # - daemon 代理面（FastAPI 路由）：daemon `ai_native.rs` 把 session_id 重注入进 input → 本处剥离；
+        # - MCP 直连面（AppTool shim）：`server.call_tool` 已剥离并落 ContextVar，input 里没有 → 不覆盖。
+        from backend.app.mcp import trust_gate as _tg
+        from backend.app.mcp.context import set_current_work_session_id
+
+        input_payload, _relay_session_id = _tg.pop_session_id(input_payload)
+        if _relay_session_id:
+            set_current_work_session_id(_relay_session_id)
+
         # 入参绑定接缝（候选①）：按 capability.input_schema 校验 + 强转 + 回填默认，使 manifest
         # 成为工具入参的唯一事实源——下游授权闸门与 handler 都拿到规范化 typed 入参（也让
         # ask_gate 的 args_hash 规范化）。声明字段从严（缺必填/转不动/越枚举/越界 → 15020 deny），

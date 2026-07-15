@@ -10,12 +10,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_knowledge.service import resource_adapter as _resource_adapter  # noqa: F401  # G6 使用点注册兜底
 from backend.app.hasn_knowledge.service.error_adapter import to_http_error
 from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.mcp.context import get_authorized_resource
 from backend.common.exception import errors
 
@@ -23,6 +26,37 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from backend.common.dataclasses import AgentTokenPayload
+
+logger = logging.getLogger(__name__)
+
+
+async def _register_knowledge_artifact(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    *,
+    resource_kind: str,
+    server_id: int,
+    title: str,
+    source_tool: str,
+) -> None:
+    """register-on-write（doc31 产物自动登记铁律）：分身**每个知识库写点**都登记进 `hasn_artifacts`。
+
+    治「分身建了库、写了文档，工作会话资源栏 / 分身产物 tab 却什么都看不到」——主人只知道分身"动过"，
+    不知道产出了什么。库与文档各是独立产物（`resource_kind` 二选一），文档逐篇可见、可单独打开。
+
+    薄封装：登记语义（descriptor 解析 / 幂等 UPSERT / 会话绑定 / best-effort）统一在公共接缝
+    `mcp/artifact_registration.py`，此处只固定 `app_id='knowledge'` 并保留本域调用点的既有签名。
+    """
+    await register_app_resource_artifact(
+        db,
+        app_id='knowledge',
+        resource_kind=resource_kind,
+        server_id=server_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=title,
+        source_tool=source_tool,
+    )
 
 
 def _resource_owner(param: str, agent: AgentTokenPayload) -> tuple[str, bool]:
@@ -135,7 +169,7 @@ async def handle_knowledge_upload_document(
         raise errors.RequestError(msg='content_text 与 asset_uri 必须二选一')
     try:
         if asset_uri:
-            return await knowledge_service.upload_asset_document(
+            result = await knowledge_service.upload_asset_document(
                 db,
                 owner,
                 kb_id,
@@ -145,25 +179,33 @@ async def handle_knowledge_upload_document(
                 source='agent',
                 agent_hasn_id=agent.agent_hasn_id,
             )
-        # 原生优先（知识库铁律）：纯文本内容一律落原生文档，与 write_doc 语义一致。
-        # 超 5000 字**不再自动回落 file**——create_native_document 内的 _validate_native_content
-        # 会如实拒绝并引导拆成多篇 + 深链互连（file 编辑成本高，原生才可编辑）。
-        text = str(content_text)
-        result = await knowledge_service.create_native_document(
-            db,
-            owner,
-            kb_id,
-            title=title,
-            content=text,
-            folder_id=folder_id_int,
-            source='agent',
-            agent_hasn_id=agent.agent_hasn_id,
-        )
-        # 不回显整段正文（避免灌爆分身上下文），与 write_doc 出参对齐。
-        result.pop('content', None)
-        return result
+        else:
+            # 原生优先（知识库铁律）：纯文本内容一律落原生文档，与 write_doc 语义一致。
+            # 超 5000 字**不再自动回落 file**——create_native_document 内的 _validate_native_content
+            # 会如实拒绝并引导拆成多篇 + 深链互连（file 编辑成本高，原生才可编辑）。
+            result = await knowledge_service.create_native_document(
+                db,
+                owner,
+                kb_id,
+                title=title,
+                content=str(content_text),
+                folder_id=folder_id_int,
+                source='agent',
+                agent_hasn_id=agent.agent_hasn_id,
+            )
+            # 不回显整段正文（避免灌爆分身上下文），与 write_doc 出参对齐。
+            result.pop('content', None)
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
+    await _register_knowledge_artifact(
+        db,
+        agent,
+        resource_kind='knowledge.document',
+        server_id=int(result['id']),
+        title=title,
+        source_tool='hasn.knowledge.upload_document',
+    )
+    return result
 
 
 # ---------- 知识库（kb）+ 文档：分身替主人维护库与文档（建库/删库/列文档/删文档）----------
@@ -188,7 +230,7 @@ async def handle_knowledge_create_kb(
         )
     description = input_payload.get('description')
     try:
-        return await knowledge_service.create_kb(
+        kb = await knowledge_service.create_kb(
             db,
             agent.owner_hasn_id,
             name=name,
@@ -197,6 +239,15 @@ async def handle_knowledge_create_kb(
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
+    await _register_knowledge_artifact(
+        db,
+        agent,
+        resource_kind='knowledge.base',
+        server_id=int(kb['id']),
+        title=name,
+        source_tool='hasn.knowledge.create_kb',
+    )
+    return kb
 
 
 async def handle_knowledge_update_kb(
@@ -217,7 +268,7 @@ async def handle_knowledge_update_kb(
     if name is None and description is None and cover_asset_uri is None:
         raise errors.RequestError(msg='name / description / cover_asset_uri 至少提供其一')
     try:
-        return await knowledge_service.update_kb(
+        kb = await knowledge_service.update_kb(
             db,
             owner,
             kb_id,
@@ -227,6 +278,15 @@ async def handle_knowledge_update_kb(
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
+    await _register_knowledge_artifact(
+        db,
+        agent,
+        resource_kind='knowledge.base',
+        server_id=kb_id,
+        title=str(kb.get('name') or '').strip() or '知识库',
+        source_tool='hasn.knowledge.update_kb',
+    )
+    return kb
 
 
 async def handle_knowledge_delete_kb(
@@ -309,6 +369,16 @@ async def handle_knowledge_move_document(
         raise to_http_error(exc) from exc
     # 移动是纯归属变更，不回传正文（native 文档 _document_dict 会带 content，剔除避免噪声）。
     result.pop('content', None)
+    # 移动也登记：KBDISP 整理会话的主要动作就是把文档归位，不登记则整理会话资源栏空空如也
+    # （幂等 UPSERT，同一文档反复动只一条 active 行）。
+    await _register_knowledge_artifact(
+        db,
+        agent,
+        resource_kind='knowledge.document',
+        server_id=doc_id,
+        title=str(result.get('name') or doc.get('name') or '').strip() or '文档',
+        source_tool='hasn.knowledge.move_document',
+    )
     return {'moved': True, **result}
 
 
@@ -421,6 +491,14 @@ async def handle_knowledge_write_doc(
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
     result.pop('content', None)
+    await _register_knowledge_artifact(
+        db,
+        agent,
+        resource_kind='knowledge.document',
+        server_id=int(result['id']),
+        title=str(result.get('name') or '').strip() or '文档',
+        source_tool='hasn.knowledge.write_doc',
+    )
     return {'doc_id': result['id'], **result}
 
 

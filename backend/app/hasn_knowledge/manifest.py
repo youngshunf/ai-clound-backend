@@ -97,7 +97,22 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             'open': {'mode': 'internal_route', 'route_template': '/apps/knowledge/kbs/:id'},
             'card': {'verb': '知识库', 'action_label': '打开知识库'},
             'artifact_kind': 'dataset',
-        }
+        },
+        {
+            # 文档（doc31 register-on-write）：分身建/改的**每篇文档**都是独立产物，须能在工作会话资源栏
+            # 单独看见并打开——只登记库、不登记文档，主人就只知道「动过某个库」、不知道产出了什么。
+            'resource_kind': 'knowledge.document',
+            # 注意：URI 域名是 `documents`、webui 内部路由段却是 `docs`（既定，勿"对齐"改坏深链）。
+            'uri_domain': 'knowledge/documents',  # → hasn://knowledge/documents/{doc_id}
+            'open': {'mode': 'internal_route', 'route_template': '/apps/knowledge/docs/:id'},
+            'card': {'verb': '文档', 'action_label': '打开文档'},
+            'artifact_kind': 'document',
+        },
+        # ⚠️ 两条 descriptor 都**不**声明 `ref_type`——knowledge 保持「单资源模式」：
+        # KBDISP 派发的整理会话 origin_ref=`resource:knowledge:{kb_id}` 是整段作 id 的历史形状，
+        # 一旦任一条声明 ref_type，整个 app 进多资源模式、该 origin_ref 会解析失败（完成卡丢资源入口）。
+        # register-on-write 显式传 descriptor（不走 ref_type 解析），故无需声明；`resources[0]`=库，
+        # 单资源模式回落到它，与 KBDISP 现状一致。**顺序不可调换**。
     ],
     # 通知发布能力声明保留：索引完成/失败可经服务号通知 owner（P2 接线）。
     'notifications': {

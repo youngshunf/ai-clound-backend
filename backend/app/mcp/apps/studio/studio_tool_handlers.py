@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_studio.service.studio_service import Subject, studio_service
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -107,7 +108,7 @@ async def handle_save_project(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     """新建/更新视频项目（不出片、不花算力）。新建必带 title；传 project_id 则更新。"""
-    return await studio_service.save_project(
+    result = await studio_service.save_project(
         db,
         owner_hasn_id=agent.owner_hasn_id,
         agent_hasn_id=agent.agent_hasn_id,
@@ -120,17 +121,43 @@ async def handle_save_project(
         bound_agent_id=input_payload.get('bound_agent_id'),
         status=input_payload.get('status'),
     )
+    await _register_studio_project(db, agent, result, source_tool='hasn.studio.save_project')
+    return result
 
 
 async def handle_save_storyboard(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     """承载分镜脚本（更新 project.settings['storyboard']，避免假 asset_uri）。"""
-    return await studio_service.save_storyboard(
+    result = await studio_service.save_storyboard(
         db,
         owner_hasn_id=agent.owner_hasn_id,
         project_id=_int(input_payload, 'project_id'),
         storyboard=input_payload.get('storyboard'),
+    )
+    # 分镜也是项目写点：分身写完脚本，主人当场就该在会话资源栏看到这个项目。
+    await _register_studio_project(db, agent, result, source_tool='hasn.studio.save_storyboard')
+    return result
+
+
+async def _register_studio_project(
+    db: AsyncSession, agent: AgentTokenPayload, result: Any, *, source_tool: str
+) -> None:
+    """register-on-write：把刚写过的视频项目登记为产物（doc31 铁律）。"""
+    if not isinstance(result, dict):
+        return
+    project_id = result.get('id')
+    if not isinstance(project_id, int):
+        return
+    await register_app_resource_artifact(
+        db,
+        app_id='studio',
+        resource_kind='studio.project',
+        server_id=project_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=str(result.get('title') or '').strip() or '视频项目',
+        source_tool=source_tool,
     )
 
 

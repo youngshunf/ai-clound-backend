@@ -184,6 +184,10 @@ class ArtifactRecordTool(BaseTool):
             asset_id=asset_id,
             resource_uri=resource_uri,
             origin_ref=_str('origin_ref'),
+            # 绑当次工作会话：取系统注入的 `_hasn_session_id`（server.call_tool 已剥进 agent_context，
+            # 分身不可伪造）。漏传会让产物只进分身产物 tab、挂不进工作会话资源栏——主人在会话里
+            # 看不到分身刚干的活（2026-07-15 实测：record 成功、artifact.get 取得到，资源栏却空）。
+            session_id=agent_context.session_id,
             # 显式登记默认归「任务成果」（区别于工具副作用 tool_output）。
             source_kind=_str('source_kind') or 'task_result',
             source_tool='hasn.artifact.record',

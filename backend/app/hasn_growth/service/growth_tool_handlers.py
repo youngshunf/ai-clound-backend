@@ -26,6 +26,7 @@ from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_qu
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.common.log import log
 
@@ -226,7 +227,7 @@ async def handle_growth_lead_qualify(
 ) -> dict[str, Any]:
     # 企业模式下晋级的客户落企业池、assignee=主人 hasn_id（个人模式落个人池）。
     scope = await _scope(db, agent)
-    return await growth_funnel_service.qualify_lead(
+    result = await growth_funnel_service.qualify_lead(
         db,
         user_id=agent.owner_user_id,
         lead_contact_id=_int(input_payload, 'lead_contact_id'),
@@ -235,6 +236,8 @@ async def handle_growth_lead_qualify(
         owner_agent_id=agent.agent_hasn_id,
         scope=scope,
     )
+    await _register_growth_customer(db, agent, result, source_tool='hasn.growth.lead.qualify')
+    return result
 
 
 async def handle_growth_lead_dismiss(
@@ -293,7 +296,7 @@ async def handle_growth_customer_update_profile(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
-    return await growth_funnel_service.update_customer_profile(
+    result = await growth_funnel_service.update_customer_profile(
         db,
         user_id=agent.owner_user_id,
         customer_id=_int(input_payload, 'customer_id'),
@@ -304,22 +307,60 @@ async def handle_growth_customer_update_profile(
         followup_task_id=input_payload.get('followup_task_id'),
         scope=scope,
     )
+    await _register_growth_customer(db, agent, result, source_tool='hasn.growth.customer.update_profile')
+    return result
 
 
 async def handle_growth_activity_log(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
-    return await growth_funnel_service.log_activity(
+    customer_id = _int(input_payload, 'customer_id')
+    result = await growth_funnel_service.log_activity(
         db,
         user_id=agent.owner_user_id,
-        customer_id=_int(input_payload, 'customer_id'),
+        customer_id=customer_id,
         kind=input_payload.get('kind'),
         content=input_payload.get('content'),
         opportunity_id=input_payload.get('opportunity_id'),
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
         scope=scope,
+    )
+    # 活动记在客户名下——产物仍是那位客户（活动本身没有独立可打开的资源域）。
+    # 返回体是 activity，故 id 取自入参 customer_id；标题留空由登记侧沿用既有值。
+    await register_app_resource_artifact(
+        db,
+        app_id='growth',
+        resource_kind='growth.customer',
+        server_id=customer_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title='客户资料',
+        source_tool='hasn.growth.activity.log',
+    )
+    return result
+
+
+async def _register_growth_customer(
+    db: AsyncSession, agent: AgentTokenPayload, result: Any, *, source_tool: str
+) -> None:
+    """register-on-write：分身晋级/维护的客户登记为产物（doc31 铁律）。"""
+    if not isinstance(result, dict):
+        return
+    customer_id = result.get('id')
+    if not isinstance(customer_id, int):
+        return
+    title = str(result.get('company_name') or result.get('contact_name') or '').strip() or '客户资料'
+    await register_app_resource_artifact(
+        db,
+        app_id='growth',
+        resource_kind='growth.customer',
+        server_id=customer_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=title,
+        source_tool=source_tool,
     )
 
 

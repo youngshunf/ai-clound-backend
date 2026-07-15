@@ -94,6 +94,14 @@ KIND_GROUPS = 'groups'
 # 靠 bump_owner push + 周期 sync_pull 兜底）。「到期提醒」的原生系统通知走 notification kind，
 # 此 kind 只负责账单中心数据镜像失效。
 KIND_BILLING = 'billing'
+# owner 定向：联系人在线态实时刷新。某分身在线态翻转 online↔offline 时，向「能在通讯录里看到
+# 该分身」的 owner 们 bump（直接加该分身为好友的 owner + 加了该分身主人为好友、在 owned_agents
+# 里看到它的 owner）。daemon 收到即强制回源刷新本地联系人镜像（云端 `_build_contact_detail`
+# 会重算 peer/owned_agents 的实时 presence）+ nudge webui 重拉联系人列表，让好友分身的在线圆点
+# 实时翻绿/变灰——此前只在联系人列表下次重刷（窗口聚焦/导航）时才更新，跨主人/跨设备看好友分身
+# 在线态长时间不刷新。revision 仅作 invalidate 帧字段（presence 在 Redis、不进表指纹，daemon 也
+# 不据 revision 去重、收到即拉）——push 本身即触发刷新。
+KIND_CONTACTS = 'contacts'
 OWNER_KINDS = (
     KIND_TASKS,
     KIND_PLAN,
@@ -106,6 +114,7 @@ OWNER_KINDS = (
     KIND_NOTIFICATION,
     KIND_GROUPS,
     KIND_BILLING,
+    KIND_CONTACTS,
 )
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
@@ -127,6 +136,10 @@ EMPTY_NOTIFICATION_REVISION = 'empty'
 EMPTY_GROUPS_REVISION = 'empty'
 # 某 owner 无订阅/权益时的稳定指纹（同上约定）
 EMPTY_BILLING_REVISION = 'empty'
+# 联系人在线态失效的固定 revision。presence 在 Redis、不进表指纹，且 daemon 收到即拉不据
+# revision 去重、owner 定向 kind 又是零 jitter——故 revision 值无实际作用，用固定串即可，
+# 避免每次翻转都对 hasn_contacts 做一次纯为算指纹的查询。
+CONTACTS_PRESENCE_REVISION = 'presence'
 
 # 内置任务目录为空时的稳定指纹（对齐 common_skills 的 EMPTY 约定）
 EMPTY_BUILTIN_CATALOG_REVISION = 'empty'
@@ -598,6 +611,9 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_groups_revision(db, owner_id)
     elif kind == KIND_BILLING:
         rev = await compute_owner_billing_revision(db, owner_id)
+    elif kind == KIND_CONTACTS:
+        # presence 不进表指纹，固定 revision（见 CONTACTS_PRESENCE_REVISION 注释）。
+        rev = CONTACTS_PRESENCE_REVISION
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 

@@ -120,6 +120,8 @@ def test_derive_graph_summary_pure() -> None:
     summary = derive_graph_summary(_graph_spec())
     assert summary.node_count == 3
     assert summary.app_count == 2  # knowledge ∪ growth 去重
+    # apps 首见序去重：research 先带 knowledge、growth，design 再带 knowledge（不重复）
+    assert summary.apps == ['knowledge', 'growth']
     assert [s['label'] for s in summary.steps] == ['立项', '调研', '方案']  # 按 order 排序
     assert summary.agent_types == ['market_researcher', 'product_strategist']  # 去重非空
 
@@ -127,6 +129,7 @@ def test_derive_graph_summary_pure() -> None:
 def test_derive_graph_summary_empty() -> None:
     empty = derive_graph_summary(None)
     assert empty.node_count == 0 and empty.app_count == 0
+    assert empty.apps == []
     assert empty.steps == [] and empty.agent_types == []
 
 

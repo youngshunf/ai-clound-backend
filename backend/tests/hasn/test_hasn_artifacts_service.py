@@ -103,6 +103,181 @@ async def test_record_dedup_and_validation() -> None:
             await db.rollback()
 
 
+async def test_local_path_artifact_node_binding_and_idempotency() -> None:
+    """doc34：本地文件产物——node_id 必填 + 同文件同会话只留一行 + action 只进不退 + 来源应用落库。
+
+    这条钉死 runtime 文件捕获的两个核心不变量：分身改 10 次 report.md 是 1 个产物不是 10 个；
+    首次登记为 create 的行不会被后续 update 覆盖（「谁新建的」是稳定事实）。
+    """
+    from sqlalchemy import select
+
+    from backend.app.hasn.model import HasnArtifacts
+
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    session_id = _short_id('ws')
+    node = _short_id('node')
+    path = '/Users/fz/work/report.md'
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+
+            # 本地路径没有设备归属 → 拒绝（换台设备就是死路径，UI 也无从判断本机可否打开）
+            with pytest.raises(errors.RequestError):
+                await hasn_artifacts_service.record(
+                    db,
+                    agent_hasn_id=agent,
+                    owner_hasn_id=owner,
+                    params=RecordArtifactParam(kind='document', local_path=path),
+                )
+
+            # 四选一第四种：只给 local_path（无 body/asset_id/resource_uri）也能登记
+            aid1 = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    title='report.md',
+                    local_path=path,
+                    node_id=node,
+                    session_id=session_id,
+                    source_tool='write_file',
+                    action='create',
+                ),
+            )
+            assert aid1.startswith('art_')
+
+            # 同一文件在同一会话里被 patch 改了两次 → 仍是同一行（不刷流水账）
+            for _ in range(2):
+                aid_again = await hasn_artifacts_service.record(
+                    db,
+                    agent_hasn_id=agent,
+                    owner_hasn_id=owner,
+                    params=RecordArtifactParam(
+                        kind='document',
+                        title='report.md',
+                        local_path=path,
+                        node_id=node,
+                        session_id=session_id,
+                        source_tool='patch',
+                        action='update',
+                    ),
+                )
+                assert aid_again == aid1
+
+            row = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid1))
+            ).scalar_one()
+            assert row.local_path == path
+            assert row.node_id == node
+            # action 只进不退：被 update 写了两次，仍是 create（这个文件确实是分身新建的）
+            assert row.action == 'create'
+
+            # 改的是既有文件 → 首次登记即 update，保持 update
+            aid_edit = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='file',
+                    local_path='/Users/fz/work/existing.py',
+                    node_id=node,
+                    session_id=session_id,
+                    source_tool='patch',
+                    action='update',
+                    source_app_id='imagelab',
+                ),
+            )
+            edit_row = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid_edit))
+            ).scalar_one()
+            assert edit_row.action == 'update'
+            # 来源应用落权威列（UI 据此显示应用图标，不再从 source_tool 反推）
+            assert edit_row.source_app_id == 'imagelab'
+
+            # 换设备 = 另一条产物（同路径在另一台机器上是另一个文件）
+            aid_other_node = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    local_path=path,
+                    node_id=_short_id('node2'),
+                    session_id=session_id,
+                    action='create',
+                ),
+            )
+            assert aid_other_node != aid1
+        finally:
+            await db.rollback()
+
+
+async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
+    """doc34 §3/§4：出参守卫——列表/详情必须回 local_path/node_id/source_app_id/action。
+
+    单测 DB row 不够：这四列是刀1 新加的，只要 schema 或 `_to_item` 漏带，行在库里对、UI 却读不到，
+    来源图标与「本机可直接打开 / 在其他设备上」全部失效。这条钉死序列化边界。
+    """
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    node = _short_id('node')
+    path = '/Users/fz/work/周报.md'
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            artifact_id = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    title='周报.md',
+                    local_path=path,
+                    node_id=node,
+                    source_tool='write_file',
+                    action='update',
+                    source_app_id='knowledge',
+                ),
+            )
+
+            items, total = await hasn_artifacts_service.list_by_agent(
+                db, owner_hasn_id=owner, agent_hasn_id=agent
+            )
+            assert total == 1
+            item = items[0]
+            assert item.artifact_id == artifact_id
+            assert item.local_path == path
+            assert item.node_id == node
+            assert item.source_app_id == 'knowledge'
+            assert item.action == 'update'
+
+            # 详情走同一 `_to_item`，一并锁住（漏一处两处口径就会分叉）
+            detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=artifact_id)
+            assert detail.local_path == path
+            assert detail.node_id == node
+            assert detail.source_app_id == 'knowledge'
+            assert detail.action == 'update'
+
+            # 非本地产物：指针列留空（不许瞎填），action 缺省 create
+            aid_remote = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(kind='deck', resource_uri='hasn://deck/d_serial'),
+            )
+            remote = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=aid_remote)
+            assert remote.local_path is None
+            assert remote.node_id is None
+            assert remote.source_app_id is None
+            assert remote.action == 'create'
+        finally:
+            await db.rollback()
+
+
 async def test_body_artifact_origin_ref_and_video_kind() -> None:
     """P6：文本产物只带 body 直接入库（不上传文件）+ video kind 放行 + 按 origin_ref 反查。"""
     owner = _short_id('hasnOwner')
