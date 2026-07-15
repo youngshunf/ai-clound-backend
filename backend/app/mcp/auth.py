@@ -56,11 +56,15 @@ class AgentContext:
         # 默认全开（allow）；streamable 鉴权后用 get_agent_scopes_cached 现查覆盖。
         self.default_mode = default_mode
         self.capability_modes = capability_modes or {}
-        # register-on-write（doc31/32 RC-P8 泛化）：本次工具调用所属的**工作会话 id**——分身经工作
-        # 会话派发时 Hermes/daemon 在出站 MCP 调用戳进 `_hasn_session_id`，server.call_tool dispatch
-        # 前剥离并落此字段（工具体不见），供 deck/app 写点把产出登记进「工作会话资源栏」。
-        # 主会话直调 / 非工作会话 → None（产物仍凭 resource_uri 进产物 tab）。
-        self.work_session_id: str | None = None
+        # register-on-write（doc31/32 RC-P8 泛化）+ 发起溯源（doc14 §6.2）：本次工具调用所属的
+        # **发起方 runtime 会话 id**——分身经工作会话/主会话派发时 Hermes/daemon 在出站 MCP 调用戳进
+        # `_hasn_session_id`，server.call_tool dispatch 前剥离并落此字段（工具体不见）。两处消费：
+        # ① deck/app 写点把产出登记进「工作会话资源栏」；② message.send 落 origin_session_id，
+        # 供 daemon 在对端出结果时把结果回灌回发起方会话。
+        # ⚠️ 命名：doc14 决策 E 后同一通道也承载**主会话** runtime session id，故由原
+        # `work_session_id` 更名为中性 `session_id`——它不再只是工作会话。
+        # 无会话上下文（非派发路径直调）→ None（产物仍凭 resource_uri 进产物 tab；溯源留 NULL 自然跳过回灌）。
+        self.session_id: str | None = None
         # P7 第三方 MCP 网关：本请求该 Agent 可发现/可调的 external 工具 canonical 名集合
         # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。
         # external 工具全局共享注册表实例，但发现/调用资格按此集合 per-request 过滤，杜绝串号。

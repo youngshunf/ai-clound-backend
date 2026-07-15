@@ -32,6 +32,9 @@ _CT_FILE = 3
 _CT_VOICE = 4
 _CT_CARD = 5
 
+# doc14 §6.5：mission_note 长度上限（字素簇计）。一句话框定，不是简报。
+_MISSION_NOTE_MAX_CHARS = 500
+
 # 寻址主人的保留哨兵：分身的每轮身份注入只给主人画像自由文本，**不含**主人 hasn_id/唤星号
 # （identity-owner 模板只注入 owner_portrait.text），分身无法可靠拿到主人的 `to`。云端 AgentContext
 # 已带 owner_hasn_id，故在工具层把这两个保留值解析成主人本人——让「通知主人」对任何技能都可靠
@@ -232,6 +235,8 @@ class MessageSendTool(BaseTool):
             '可发：纯文本（content）、图片/语音/文件（attachments 传 hasn://asset/ 资产引用，'
             '来自 hasn.image.generate / hasn.voice.synthesize 生成，或本地 hasn.asset.upload(path) 上传）、'
             '信息卡片（card：title 必填，可含 description/fields/link）。'
+            '首次联系某人、新建会话时建议带 mission_note 写清这趟差事的背景（只有你主人看得到），'
+            '方便主人一眼看懂你为何发起这个会话。'
             '若返回 status="pending_contact_approval"，表示尚未与对方建立联系人关系、消息已暂存并已'
             '**自动代发好友请求**（见返回 pending_request_id）；此时 reachable=false，不要改用其它方式'
             '重试或重复发送，等对方（或其主人）通过后再发即可。主动加好友用 hasn.contact.request。'
@@ -296,6 +301,16 @@ class MessageSendTool(BaseTool):
                         },
                     },
                 },
+                # doc14 §6.5（E 刀）：差事背景。只在**新建**会话时生效，既有会话不覆盖。
+                # 这是你自己写给自己主人看的框定，对端看不到（投影只对你主人序列化）。
+                'mission_note': {
+                    'type': 'string',
+                    'description': (
+                        '差事背景：一句话说明「这个对外会话是来干什么的」（如「替主人约王工聊周五联调时间」）。'
+                        '首次给某个联系人发消息、新建会话时填；会话已存在则忽略。'
+                        '仅你主人可见（对方看不到），便于主人一眼看懂你为何发起这个会话。上限 500 字。'
+                    ),
+                },
             },
             'required': ['to'],
         }
@@ -324,6 +339,13 @@ class MessageSendTool(BaseTool):
         if not card_input and not attachments_uris and not (text and str(text).strip()):
             raise RuntimeError('需提供 content（文本）或 attachments（附件）或 card（卡片）之一')
 
+        # doc14 §6.5：差事背景长度上限——按**字素簇**（用户感知字符）计，不用 UTF-8 字节，
+        # 免得中文一句话就超限。超限直接报错，不静默截断（宁可让分身重写也不歪曲它的框定）。
+        mission_note = arguments.get('mission_note')
+        mission_note = str(mission_note).strip() if mission_note else None
+        if mission_note and len(mission_note) > _MISSION_NOTE_MAX_CHARS:
+            raise RuntimeError(f'mission_note 超长（{len(mission_note)} 字，上限 {_MISSION_NOTE_MAX_CHARS} 字），请精简为一句话')
+
         async with async_db_session() as db:
             if card_input:
                 display_name = await _resolve_agent_display_name(
@@ -341,6 +363,9 @@ class MessageSendTool(BaseTool):
                 content_type = _CT_TEXT
 
             # 身份取自 Agent 凭证（agent_hasn_id），不用 owner_user_id 冒名（G2）。
+            # origin_session_id（doc14 §6.2）取自 AgentContext——server.call_tool 从
+            # `_hasn_session_id` 剥离而来，**不收分身自报**（入参 schema 里没有这个字段，
+            # 恶意塞入也已被 trust_gate 剥走），故不可伪造。
             result = await message_router.route_message(
                 db=db,
                 from_id=agent_context.agent_hasn_id,
@@ -348,6 +373,8 @@ class MessageSendTool(BaseTool):
                 content=content,
                 content_type=content_type,
                 msg_type='message',
+                origin_session_id=agent_context.session_id,
+                mission_note=mission_note,
             )
 
         # 维度②：路由内 permission_engine（关系/信任）判决，不可达不静默成功。

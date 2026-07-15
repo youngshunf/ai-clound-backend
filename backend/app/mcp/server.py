@@ -305,15 +305,16 @@ class HasnCloudMcpServer:
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
 
-            # register-on-write（doc31/32 RC-P8 泛化）：剥离系统注入的工作会话 id（`_hasn_session_id`，
-            # 分身不可伪造）→ agent_context.work_session_id，供 deck/app 写点把产物登记进「工作会话
-            # 资源栏」。须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站
-            # 打在入参）与 daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=主会话直调。
+            # register-on-write（doc31/32 RC-P8）+ 发起溯源（doc14 §6.2）：剥离系统注入的发起方会话 id
+            # （`_hasn_session_id`，分身不可伪造）→ agent_context.session_id。两处消费：deck/app 写点
+            # 把产物登记进「工作会话资源栏」；message.send 落 origin_session_id 供结果回灌定位发起方会话。
+            # 须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站打在入参）与
+            # daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=非派发路径直调。
             from backend.app.mcp import trust_gate as _tg
 
-            arguments, work_session_id = _tg.pop_session_id(arguments)
-            if work_session_id:
-                agent_context.work_session_id = work_session_id
+            arguments, origin_session_id = _tg.pop_session_id(arguments)
+            if origin_session_id:
+                agent_context.session_id = origin_session_id
 
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游

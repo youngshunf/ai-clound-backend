@@ -400,7 +400,7 @@ class DesignSystemSaveTool(BaseTool):
                     db,
                     descriptor=_designsystem_resource_descriptor(),
                     server_id=str(ds_id),
-                    session_id=agent_context.work_session_id,
+                    session_id=agent_context.session_id,
                     agent_hasn_id=agent_context.agent_hasn_id,
                     owner_hasn_id=agent_context.owner_hasn_id,
                     title=(title or '').strip() or '设计系统',

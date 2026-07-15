@@ -39,7 +39,7 @@ _RESERVED_KEYS = (RESERVED_IS_EXTERNAL, RESERVED_PEER_ID, RESERVED_PEER_TRUST)
 
 # ── 系统注入的工作会话 id 保留参数（register-on-write，doc31/32 RC-P8 泛化）──────────
 # 分身经工作会话派发时，Hermes/daemon 在每次出站 MCP 调用后无条件戳进此保留参数（分身不可伪造、
-# 工具体不该见）。云端 dispatch 前剥离 → 落 ``AgentContext.work_session_id``，供 deck/app 写点把
+# 工具体不该见）。云端 dispatch 前剥离 → 落 ``AgentContext.session_id``，供 deck/app 写点把
 # 产出登记进「工作会话资源栏 / 分身产物 tab」。缺省（主会话直调 / 非工作会话）→ None，产物仍凭
 # resource_uri 归位、进产物 tab，只是不额外挂到某工作会话资源栏。
 RESERVED_SESSION_ID = '_hasn_session_id'

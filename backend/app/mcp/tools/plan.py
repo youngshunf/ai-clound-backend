@@ -195,7 +195,7 @@ async def _register_plan_artifact(db: Any, ctx: AgentContext, *, ref_type: str, 
     据 `ref_type`（goal/plan）解析对应 descriptor + `hasn://plan/{goals|plans}/{id}` 深链。id 即
     云端权威 plan id（Core-08 第二原则：plan 的 goal/plan id 本就是云端权威 id，直接用、不反查本地）。
 
-    - `session_id = ctx.work_session_id`：主会话直建为 None（产物仍凭 resource_uri 进产物 tab）；
+    - `session_id = ctx.session_id`：主会话直建为 None（产物仍凭 resource_uri 进产物 tab）；
       恰在工作会话内直建则戳会话、与完成投影同键幂等（两路径重复触发也只一条 active 行）。
     - best-effort：登记失败**绝不**拖垮 plan 写本身（同一事务，抛出会连累 goal/plan 落库）。
     """
@@ -214,7 +214,7 @@ async def _register_plan_artifact(db: Any, ctx: AgentContext, *, ref_type: str, 
             db,
             descriptor=descriptor,
             server_id=server_id,
-            session_id=ctx.work_session_id,
+            session_id=ctx.session_id,
             agent_hasn_id=ctx.agent_hasn_id,
             owner_hasn_id=ctx.owner_hasn_id,
             title=title,

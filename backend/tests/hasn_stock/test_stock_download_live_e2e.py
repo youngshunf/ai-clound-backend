@@ -106,7 +106,7 @@ def _ctx() -> AgentContext:
         agent_name='一号',
         owner_hasn_id=_OWNER,
     )
-    ctx.work_session_id = None
+    ctx.session_id = None
     return ctx
 
 

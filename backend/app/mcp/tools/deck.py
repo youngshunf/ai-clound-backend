@@ -66,7 +66,7 @@ async def _register_deck_artifact(db: Any, ctx: AgentContext, deck_id: int, titl
     `hasn_artifacts`——不再等 finalize，create→逐页写→改稿全程可见。
 
     这治「分身建/改了 deck，会话资源栏 / 分身产物 tab 却看不到」：
-    - `session_id = ctx.work_session_id`（工作会话派发时由 Hermes/daemon 戳 `_hasn_session_id`、
+    - `session_id = ctx.session_id`（工作会话派发时由 Hermes/daemon 戳 `_hasn_session_id`、
       server.call_tool 剥离落 ctx；主会话直调则为 None，产物仍凭 resource_uri 进产物 tab）；
     - `server_id = str(deck_id)`（云端权威 deck id，Core-08 第二原则：本地 id 永不上 URI）；
     - 幂等 upsert（键 `(agent, deck:{deck_id}, hasn://deck/{deck_id})`）——反复写不重复登记、
@@ -90,7 +90,7 @@ async def _register_deck_artifact(db: Any, ctx: AgentContext, deck_id: int, titl
             db,
             descriptor=_deck_resource_descriptor(),
             server_id=str(deck_id),
-            session_id=ctx.work_session_id,
+            session_id=ctx.session_id,
             agent_hasn_id=ctx.agent_hasn_id,
             owner_hasn_id=ctx.owner_hasn_id,
             title=resolved_title or '演示文稿',
