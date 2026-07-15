@@ -205,7 +205,11 @@ def validate_graph_spec(graph_spec: Any) -> None:
             raise errors.RequestError(msg=f'node_key 重复: {node_key}')
         key_set.add(node_key)
         node_keys.append(node_key)
-        if node.get('is_origin') is True:
+        # origin 判定必须与 daemon 取同一口径（`workflow_instantiate.rs` 认 `is_origin || node_kind=='origin'`）。
+        # 云端只认 is_origin 的话，只写 `node_kind: origin` 的模板会被云端当普通节点——下面「起点不得声明
+        # output_spec」的校验就漏了，而 daemon 照样预完成它，模板作者永远等不到那个闸。
+        is_origin = node.get('is_origin') is True or node.get('node_kind') == 'origin'
+        if is_origin:
             origin_count += 1
 
         # 引用合法：apps[] 每个 app 必须在应用目录存在
@@ -220,6 +224,10 @@ def validate_graph_spec(graph_spec: Any) -> None:
         # 旧形状 `{kind: dataset}` 会被 extra='forbid' 硬拒——这正是目的：静默接受不认得的 kind，
         # 等于把「闸永远比不中」推迟到运行期，主人只看到分身干完了却过不了闸，根因埋在模板里。
         output_spec = node.get('output_spec')
+        # 起点节点声明产出要求 = 误导：它是主人输入的内联锚点，daemon 建图即预完成为 done，
+        # **永不到达产出闸**。声明了却永不生效，模板作者会以为闸在守着。宁可发布期就拒。
+        if is_origin and output_spec:
+            raise errors.RequestError(msg=f'起点节点 {node_key} 不得声明 output_spec：它预完成、不过产出闸')
         if isinstance(output_spec, dict):
             try:
                 spec = OutputSpec.model_validate(output_spec)
@@ -523,7 +531,8 @@ class WorkflowTemplateService:
                 continue
             node_key = tn.get('node_key')
             ov = overrides.get(node_key) or {}
-            is_origin = tn.get('is_origin') is True
+            # 与 validate_graph_spec / daemon 同口径取或（详见上方 origin 判定注释）
+            is_origin = tn.get('is_origin') is True or tn.get('node_kind') == 'origin'
             # prompt 非空兜底链：override → (起点用 origin_input / 其余用模板 prompt) → 描述 → 名称 → node_key
             if is_origin:
                 prompt = ov.get('prompt') or origin_input or tn.get('description') or tn.get('name') or node_key

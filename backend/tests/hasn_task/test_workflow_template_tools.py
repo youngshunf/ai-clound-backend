@@ -179,6 +179,8 @@ def test_validate_graph_spec_rejects_no_origin() -> None:
     graph = _valid_graph()
     for node in graph['nodes']:
         node['is_origin'] = False
+        # 起点判定与 daemon 同口径取或（is_origin || node_kind=='origin'），两个都得摘掉才是真「无起点」
+        node['node_kind'] = 'agent'
     with pytest.raises(errors.RequestError, match='起点'):
         validate_graph_spec(graph)
 
@@ -217,6 +219,29 @@ def test_validate_graph_spec_rejects_expect_with_both_kinds() -> None:
         'expects': [{'artifact_kind': 'document', 'resource_kind': 'knowledge.base'}],
     }
     with pytest.raises(errors.RequestError, match='不合法'):
+        validate_graph_spec(graph)
+
+
+def test_validate_graph_spec_rejects_output_spec_on_origin() -> None:
+    """起点声明产出要求 = 误导：daemon 建图即把它预完成为 done，那个闸永远不会跑。"""
+    graph = _valid_graph()
+    graph['nodes'][0]['output_spec'] = {'required': True, 'expects': [{'artifact_kind': 'document'}]}
+    with pytest.raises(errors.RequestError, match='起点节点'):
+        validate_graph_spec(graph)
+
+
+def test_validate_graph_spec_origin_detected_by_node_kind_alone() -> None:
+    """只写 `node_kind: origin`（不写 is_origin）也算起点——必须与 daemon 同口径。
+
+    云端若只认 is_origin，这种节点会被当普通节点：既漏掉「起点不得声明 output_spec」的拦截，
+    daemon 那边还是照样预完成它 → 模板作者永远等不到那个闸。
+    """
+    graph = _valid_graph()
+    del graph['nodes'][0]['is_origin']
+    validate_graph_spec(graph)  # 仍认得起点，不报「至少需要一个起点」
+
+    graph['nodes'][0]['output_spec'] = {'required': True, 'expects': [{'artifact_kind': 'document'}]}
+    with pytest.raises(errors.RequestError, match='起点节点'):
         validate_graph_spec(graph)
 
 
