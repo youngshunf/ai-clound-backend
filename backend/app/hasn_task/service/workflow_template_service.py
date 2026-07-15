@@ -21,15 +21,21 @@ from typing import TYPE_CHECKING, Any
 import sqlalchemy as sa
 import yaml
 
+from pydantic import ValidationError
+
+# 产出要求契约单源（doc35 §0.2）：待办与工作流节点共用同一 schema，判定共用同一纯函数。
+from backend.app.hasn.schema.output_spec import OutputSpec
 from backend.app.hasn_task.crud.crud_workflow import hasn_workflow_template_dao
 from backend.app.hasn_task.model import HasnWorkflowTemplate
-# 实例化复用 agent 建图权威路径（cloud workflow，daemon 经 sync mirror tick/fire）。
-from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.hasn_task.schema.workflow_template import (
     CreateWorkflowTemplateParam,
     WorkflowTemplateGraphSummary,
     WorkflowTemplatePublic,
 )
+
+# 实例化复用 agent 建图权威路径（cloud workflow，daemon 经 sync mirror tick/fire）。
+from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
+
 # 复用工作流建图的无环检测（07 §9.3 · Kahn 拓扑），避免重写；模板校验与执行建图同一语义。
 from backend.app.hasn_task.service.workflow_service import detect_cycle
 from backend.common.exception import errors
@@ -45,44 +51,6 @@ _DOMAIN_DICT_CODE = 'workflow_template_domain'
 # ── §6.3 服务端校验护栏常量（doc94 §10-P5 / doc11 §6.3）─────────────────────────────
 # 模板节点数上限（模板是「场景蓝图」，节点远少于自由工作流；取保守常量，与 webui 画廊卡负载相称）。
 _MAX_NODES = 20
-
-# 产物 kind 权威注册表（doc11 §4.3 node.output_spec.kind）——**必须与产物系统 `hasn_artifacts.kind`
-# 的 9 枚举严格对齐**（`hasn_artifacts_service._ALLOWED_KINDS`），外加起点锚点 `workflow_anchor`。
-#
-# 【为什么必须对齐产物系统】W-S2 产出闸（daemon `evaluate_output_gate`）按**精确匹配**判定：节点
-# 声明的 `output_spec.kind` 必须等于分身实际登记进 `hasn_artifacts` 的某条产物的 `kind`，否则闸永远
-# 报「未产出」。register-on-write 把分身写的应用资源自动登记进 `hasn_artifacts`，其 `kind` 一律归一到
-# 下面 9 个之一（越界→`other`）。故模板 output_spec.kind 只能取产物系统认得的 kind，语义别名
-# （knowledge_base/strategy_card/website/…）会导致闸永不通过（历史 bug 根因）。
-#
-# 各 kind 由哪个应用/工具产出（register-on-write 事实映射，详见 hub `workflow-templates/README.md`）：
-#   dataset  ← 知识库容器（hasn.knowledge.create_kb）
-#   document ← 知识库文档 / 社区文章 / 创作项目 / 任意 .md（knowledge.upload_document、community.create_article、creator.project.create）
-#   deck     ← 演示文稿（hasn.deck.*）
-#   webpage  ← 建站发布（hasn.publish.create）
-#   image    ← 图像产出（hasn.image.generate、hasn.imagelab.*）
-#   voice    ← 语音合成（hasn.voice.synthesize）
-#   video    ← 视频产出（hasn.video.generate、hasn.studio.*）
-#   file     ← runtime 文件读写工具写的文件（doc34 运行时文件捕获，按扩展名归一）
-#   other    ← 应用资源无自然文件类型时的兜底（设计系统 designsystem.save、获客线索 growth.*、社区帖 community.create_post）
-#
-# 新增 kind 前先确认产物系统真能登记出该 kind（否则闸判不过）；起点节点用 `workflow_anchor`——它是
-# daemon 为 origin 节点合成的内联锚点，origin 预完成为 `done` 不过产出闸，故此 kind 永不参与匹配。
-_OUTPUT_KINDS: frozenset[str] = frozenset(
-    {
-        'workflow_anchor',  # 起点锚点产物（主人输入·origin 节点预完成·不过产出闸）
-        # 产物系统 9 枚举（= hasn_artifacts_service._ALLOWED_KINDS）
-        'image',
-        'voice',
-        'video',
-        'file',
-        'document',
-        'deck',
-        'webpage',
-        'dataset',
-        'other',
-    }
-)
 
 # 内置人设 builtin_key（2026-07-12 收敛为 3：全能助理 assistant / 创作专家 content_operator /
 # 分析专家 analyst，见 app_catalog_service._CATALOG_AGENT_DEFAULTS）。default_agent_type 命中即
@@ -200,7 +168,8 @@ def validate_graph_spec(graph_spec: Any) -> None:
     便于分身读 message 自修（scenario-designer 技能据此教分身修蓝图）。校验项：
     1. **图合法**：结构对、node_key 全局唯一、边引用存在、无自环、DAG 无环（复用 detect_cycle）、
        至少一个 is_origin=true 起点、节点数 ≤ _MAX_NODES；
-    2. **引用合法**：apps[] 每个 app 在应用目录存在、output_spec.kind 在产物 kind 注册表内；
+    2. **引用合法**：apps[] 每个 app 在应用目录存在、output_spec 符合 doc35 §0.2 归一契约
+       （expects 里的 resource_kind 必须是某个 app manifest 真声明过的）；
        default_agent_type 非内置人设 → 软识别为「需主人自备」（不拒绝）。
     """
     if not isinstance(graph_spec, dict):
@@ -216,9 +185,12 @@ def validate_graph_spec(graph_spec: Any) -> None:
 
     # 应用目录权威来源：in-process app_catalog_registry（catalog DB 的 seed 源，同步权威）。
     # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
     from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 
     valid_app_ids = {app.id for app in app_catalog_registry.list()}
+    # resource_kind 权威 = 各 app manifest 的 resources[] 声明（单源，不另立手写白名单）。
+    valid_resource_kinds = ai_native_app_registry.known_resource_kinds()
 
     node_keys: list[str] = []
     key_set: set[str] = set()
@@ -244,12 +216,21 @@ def validate_graph_spec(graph_spec: Any) -> None:
             if app_id not in valid_app_ids:
                 raise errors.RequestError(msg=f'节点 {node_key} 引用了不存在的应用: {app_id}')
 
-        # 引用合法：output_spec.kind 必须在产物 kind 注册表内（缺省/空放行——起点等可无产物）
+        # 引用合法：output_spec 必须符合 doc35 §0.2 归一契约（缺省/空放行——起点等可无产出要求）。
+        # 旧形状 `{kind: dataset}` 会被 extra='forbid' 硬拒——这正是目的：静默接受不认得的 kind，
+        # 等于把「闸永远比不中」推迟到运行期，主人只看到分身干完了却过不了闸，根因埋在模板里。
         output_spec = node.get('output_spec')
         if isinstance(output_spec, dict):
-            kind = output_spec.get('kind')
-            if kind and kind not in _OUTPUT_KINDS:
-                raise errors.RequestError(msg=f'节点 {node_key} 的 output_spec.kind 未注册: {kind}')
+            try:
+                spec = OutputSpec.model_validate(output_spec)
+            except ValidationError as e:
+                raise errors.RequestError(msg=f'节点 {node_key} 的 output_spec 不合法: {e.errors()[0]["msg"]}') from e
+            # resource_kind 存在性：拼错（knowledge.bass）在发布期就拒，别等运行期闸永不通过。
+            for expect in spec.expects:
+                if expect.resource_kind and expect.resource_kind not in valid_resource_kinds:
+                    raise errors.RequestError(
+                        msg=f'节点 {node_key} 的 output_spec 引用了未声明的 resource_kind: {expect.resource_kind}'
+                    )
 
         # default_agent_type：软识别（内置人设 vs 需主人自备），**不拒绝**（doc94 §10-P5）。
         # 非内置也允许——daemon resolve_default_agent_for_app 命中不到则回退主脑。
@@ -556,6 +537,13 @@ class WorkflowTemplateService:
                     'prompt': prompt,
                     'system_prompt': ov.get('system_prompt') or tn.get('system_prompt') or None,
                     'description': tn.get('description'),
+                    # doc35 B1「修死列」：模板早就声明了这些，此前全被丢在这一步，
+                    # 于是节点行上产出闸恒 NULL、应用绑定恒空——模板配了等于没配。
+                    'output_spec': tn.get('output_spec'),
+                    'review_policy': tn.get('review_policy'),
+                    'apps': tn.get('apps') or [],
+                    'skills': tn.get('skills') or [],
+                    'is_origin': is_origin,
                 }
             )
         edges = [

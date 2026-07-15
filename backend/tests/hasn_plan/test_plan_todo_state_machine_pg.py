@@ -58,7 +58,7 @@ async def _seed_artifact(db: AsyncSession, *, owner: str, todo_id: int, kind: st
             kind=kind,
             title='交付产物',
             origin_ref=oref.todo_ref(todo_id),
-            source_kind='tool_output',
+            source_kind='app',  # doc35 §5：`tool_output` 已砍
             status=status,
         )
     )
@@ -130,7 +130,8 @@ async def test_self_transition_is_noop() -> None:
 
 
 # ── L1-b：P6-C 完成闸两态 ─────────────────────────────────────────────────────
-_SPEC_DOC = {'required': True, 'expects': [{'kind': 'document', 'format': 'markdown'}]}
+# doc35 §0.2 新契约：非应用资源按载体判 → `artifact_kind`（`kind` 是已退役的旧键）。
+_SPEC_DOC = {'required': True, 'expects': [{'artifact_kind': 'document', 'format': 'markdown'}]}
 
 
 async def test_gate_required_no_artifact_rejects_done() -> None:

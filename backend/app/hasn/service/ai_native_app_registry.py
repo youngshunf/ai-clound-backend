@@ -317,6 +317,43 @@ class AINativeAppRegistry:
         except Exception:
             return None, None
 
+    def known_resource_kinds(self) -> frozenset[str]:
+        """全部 builtin 应用声明过的 `resource_kind` 集合（doc35 B1，`output_spec` 校验用）。
+
+        产出要求里写 `resource_kind: knowledge.bass`（拼错）必须在**发布期**就被拒——否则闸在
+        运行期永远比不中，表现成「分身干完了却过不了闸」，查起来极难。权威只有一处：各 app
+        manifest 的 `resources[]` 声明，这里如实投影，不另立一张会漂移的手写白名单。
+        """
+        kinds: set[str] = set()
+        for manifest in self._builtin_manifests.values():
+            resources = manifest.get('resources')
+            if not isinstance(resources, list):
+                continue
+            for resource in resources:
+                if isinstance(resource, dict) and resource.get('resource_kind'):
+                    kinds.add(str(resource['resource_kind']))
+        return frozenset(kinds)
+
+    def resource_kind_labels(self) -> dict[str, str]:
+        """`resource_kind` → 人话展示名（取 `descriptor.card.verb`，如 deck.presentation → 演示文稿）。
+
+        产出闸拒绝主人置完成时，得说「尚未交付演示文稿」而不是把 `deck.presentation` 甩到脸上——
+        主人不认识内部键。展示名的权威也在 manifest（完成卡标题同源），此处如实投影。
+        """
+        labels: dict[str, str] = {}
+        for manifest in self._builtin_manifests.values():
+            resources = manifest.get('resources')
+            if not isinstance(resources, list):
+                continue
+            for resource in resources:
+                if not isinstance(resource, dict):
+                    continue
+                kind = resource.get('resource_kind')
+                verb = (resource.get('card') or {}).get('verb') if isinstance(resource.get('card'), dict) else None
+                if kind and verb:
+                    labels[str(kind)] = str(verb)
+        return labels
+
     def resource_routes(self) -> list[ResourceRoute]:
         """投影全部 builtin 应用 `resources[]` 为扁平资源路由读模型（doc31 §2.4，RC-P0）。
 

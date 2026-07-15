@@ -258,7 +258,10 @@ _GRAPH_SPEC_SCHEMA = {
     'description': (
         '图蓝图 {nodes:[...], edges:[...]}。node：node_key(唯一)/name/node_kind(origin|agent)/'
         'is_origin(bool)/description/default_agent_type/apps[]/skills[]/prompt/system_prompt/'
-        'output_spec{kind,label}/review_policy{mode,criteria,reviewer_agent_type,max_rejects}/'
+        'output_spec{required,label?,expects:[...]}（expects 每条二选一：应用资源写 resource_kind '
+        '如 knowledge.base/deck.presentation，非应用资源写 artifact_kind∈document|image|video|voice|file；'
+        '多条之间是「或」。写错即报错，不静默放行）/'
+        'review_policy{mode,criteria,reviewer_agent_type,max_rejects}/'
         'display{order,step_label}；edge：{parent, child}（DAG 无环，至少一个 is_origin 起点）。'
     ),
     'properties': {

@@ -258,10 +258,14 @@ class WorkflowService:
                     agent_id=node.agent_id,
                     prompt=node.prompt,
                     system_prompt=node.system_prompt,
-                    apps=[],
-                    skills=[],
+                    apps=node.apps,
+                    skills=node.skills,
                     enabled_toolsets=node.enabled_toolsets,
-                    is_origin=False,
+                    # doc35 B1：这三个曾被硬编码成空值，把模板声明的应用绑定/起点标记/产出闸
+                    # 在实例化时整段丢掉；节点表列一直在，只是从没被写进去过。
+                    is_origin=node.is_origin,
+                    output_spec=node.output_spec,
+                    review_policy=node.review_policy,
                     display={},
                     max_retries=4,
                     enable_subagents=node.enable_subagents,

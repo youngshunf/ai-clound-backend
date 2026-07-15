@@ -22,7 +22,7 @@ async def test_create_todo_persists_output_spec() -> None:
     spec = {
         'required': True,
         'expects': [
-            {'kind': 'document', 'format': 'markdown', 'note': '含 概览/方案/风险 三段，≥800 字'}
+            {'artifact_kind': 'document', 'format': 'markdown', 'note': '含 概览/方案/风险 三段，≥800 字'}
         ],
     }
     async with async_db_session() as db:
@@ -44,7 +44,7 @@ async def test_create_todo_persists_output_spec() -> None:
             # 读回一致
             got = await svc.get_todo(db, owner=owner, pk=created['id'])
             assert got['output_spec']['required'] is True
-            assert got['output_spec']['expects'][0]['kind'] == 'document'
+            assert got['output_spec']['expects'][0]['artifact_kind'] == 'document'
             assert got['output_spec']['expects'][0]['format'] == 'markdown'
 
             # 不传 output_spec → None（owner 亲为待办可空）

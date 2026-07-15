@@ -629,8 +629,10 @@ _SPECS: list[dict[str, Any]] = [
                 'title': _s('待办标题（必填）'),
                 'notes': _s('详细任务描述（怎么做）。actor=agent/collab 的委托待办必填'),
                 'output_spec': _o(
-                    '输出要求（编排时定「做出什么」）：{required:bool, expects:[{kind, format?, note?}]}；'
-                    'kind∈image|voice|video|file|document|deck|webpage|dataset|other'
+                    '输出要求（编排时定「做出什么」）：{required:bool, label?, expects:[{...}]}。'
+                    'expects 每条二选一：应用资源写 resource_kind（如 knowledge.base / deck.presentation），'
+                    '非应用资源写 artifact_kind∈document|image|video|voice|file。'
+                    '多条之间是「或」（满足任一即过）；写错或两个都填会直接报错，不会静默放行。'
                 ),
                 'actor': _s('可选：归属 owner(亲为)|owner_decision(待你决策)|collab(协作)|agent(分身自主)'),
                 'status': _s('可选：状态（默认 todo）'),

@@ -30,6 +30,14 @@ class WorkflowNodeSpec(SchemaBase):
     enabled_toolsets: list[str] | None = Field(None, description='节点限制工具集（NULL=全部；派发时取授权交集）')
     enable_subagents: bool = Field(False, description='允许节点会话内使用子分身 delegate_task')
     is_sink: bool = Field(False, description='标记为 sink 节点（整图 output_summary 取 sink 拼接）')
+    # ↓ doc35 B1「修死列」：以下五个字段模板层早已声明、节点表也早有列，但建图入参一直没有它们，
+    # 于是模板声明的产出闸/应用绑定在实例化时被整段丢弃，`workflow_node.output_spec` 永远是 NULL
+    # ——闸「配了等于没配」。补进入参，让模板声明真正落到节点行上。
+    output_spec: dict | None = Field(None, description='产出要求（doc35 §0.2 归一契约，见 OutputSpec）')
+    review_policy: dict | None = Field(None, description='质量门策略')
+    apps: list[str] = Field(default_factory=list, description='默认应用绑定 [app_id...]')
+    skills: list[str] = Field(default_factory=list, description='默认技能绑定 [skill...]')
+    is_origin: bool = Field(False, description='是否起点节点（主人输入锚点，预完成为 done、不过产出闸）')
 
 
 class WorkflowEdgeSpec(SchemaBase):

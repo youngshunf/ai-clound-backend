@@ -18,6 +18,11 @@ from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 
+from pydantic import ValidationError
+
+# 产出要求契约单源（doc35 §0.2）：与工作流节点共用同一 schema、同一判定纯函数。
+from backend.app.hasn.schema.output_spec import OutputSpec
+from backend.app.hasn.service import output_gate
 from backend.app.hasn_plan.model import (
     Event,
     EventAttendee,
@@ -555,10 +560,29 @@ class PlanService:
         elif int(eff_plan) != int(ms.plan_id):
             raise _err('milestone_plan_mismatch', '里程碑与待办不属于同一计划')
 
+    @staticmethod
+    def _validate_output_spec(fields: dict) -> None:
+        """校验 `output_spec` 合乎 doc35 §0.2 归一契约——**这是本次新补的，此前压根不校验**。
+
+        不校验的代价（doc35 §0.1 死锁根因）：分身写 `expects:[{kind:'knowledge_base'}]`，静默收下，
+        然后真去建了知识库、产物也登记了，闸却因为词表对不上永远判「未产出」——待办**永远完不成**，
+        而错误早在收下入参的那一刻就该报出来。宁可在这里 422，也不要让它烂到运行期。
+        """
+        spec = fields.get('output_spec')
+        if spec is None:
+            return
+        if not isinstance(spec, dict):
+            raise _err('invalid_output_spec', 'output_spec 必须是对象')
+        try:
+            OutputSpec.model_validate(spec)
+        except ValidationError as e:
+            raise _err('invalid_output_spec', f'output_spec 不合法：{e.errors()[0]["msg"]}') from e
+
     async def create_todo(
         self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: int | None = None, dept_id: int | None = None
     ) -> dict:
         fields = _pick(_TODO_FIELDS, data)
+        self._validate_output_spec(fields)
         await self._apply_milestone_link(db, owner=owner, fields=fields, current_plan_id=None)
         row = Todo(owner_hasn_id=owner, **_ownership(enterprise_id, dept_id), **fields)
         db.add(row)
@@ -575,26 +599,31 @@ class PlanService:
         """
         if override:
             return
-        spec = row.output_spec if isinstance(row.output_spec, dict) else {}
-        if not spec.get('required'):
+        if not isinstance(row.output_spec, dict):
             return
-        expects = spec.get('expects') if isinstance(spec.get('expects'), list) else []
-        expected_kinds = {str(e['kind']) for e in expects if isinstance(e, dict) and e.get('kind')}
+        try:
+            spec = OutputSpec.model_validate(row.output_spec)
+        except ValidationError:
+            # 存量行可能是 doc35 之前的旧形状（`{kind: ...}`）。此处**不**静默放行——那正是 §0.1
+            # 死锁的镜像错误（判不了就当过）。但也不能拿存量数据的历史债去炸主人的完成动作：
+            # 诚实报出来，让主人知道这条待办的产出要求需要重写。
+            raise _err(
+                'invalid_output_spec',
+                '这条待办的产出要求是旧格式，闸无法判定。请让分身用 plan.update 重写 output_spec 后再标记完成。',
+            ) from None
+        if not spec.required:
+            return
         # 惰性导入避免与 hasn service 的循环依赖（对齐 plan_notify 惯例）。
         from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 
         items, _total = await hasn_artifacts_service.list_by_origin(
             db, owner_hasn_id=row.owner_hasn_id, origin_ref=plan_origin_ref.todo_ref(int(row.id)), size=200
         )
-        if expected_kinds:
-            satisfied = any(getattr(it, 'kind', None) in expected_kinds for it in items)
-        else:
-            satisfied = len(items) > 0  # required 但未指定 kind → 需任意产物
-        if not satisfied:
-            need = '、'.join(sorted(expected_kinds)) if expected_kinds else '要求的产物'
+        if not output_gate.satisfies(spec, list(items)):
             raise _err(
                 'output_not_satisfied',
-                f'分身尚未交付要求的产物（{need}），暂不能标记完成——请补交产物，或停在「待过目」诚实回报缺口。',
+                f'分身尚未交付要求的产物（{output_gate.describe_expects(spec)}），'
+                '暂不能标记完成——请补交产物，或停在「待过目」诚实回报缺口。',
             )
 
     async def update_todo(
@@ -613,6 +642,7 @@ class PlanService:
         """
         row = await self._get_todo(db, owner=owner, pk=pk)
         fields = _pick(_TODO_FIELDS, data)
+        self._validate_output_spec(fields)
         await self._apply_milestone_link(db, owner=owner, fields=fields, current_plan_id=row.plan_id)
         # 显式解绑里程碑：_pick 按全局约定把 None 当「不设置」剔除了，这里从原始 data 兜回——
         # payload 显式给 milestone_id=null 即「从里程碑摘出」（无需校验，落 None）。
