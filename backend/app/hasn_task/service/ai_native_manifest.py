@@ -95,8 +95,13 @@ def _wcap(
     required: list[str],
     page_rank: int,
     tags: list[str],
+    ask: bool = False,
 ) -> dict:
-    """hasn.workflow.* 能力声明（多任务编排 DAG，节点复用 task；读/写类一律出厂 Allow，16-doc D-v3-1）。"""
+    """hasn.workflow.* 能力声明（多任务编排 DAG，节点复用 task；读/写类一律出厂 Allow，16-doc D-v3-1）。
+
+    `ask=True` → human_confirmation.required=True（出厂 Ask）：仅破坏性/外发+动钱类（如模板上架 publish）用；
+    三态由 server.call_tool 据本字段统一判定，owner 可经 capability_modes 覆盖。
+    """
     return {
         'capability_id': f'hasn_task.workflow_{name}.capability',
         'name': title,
@@ -113,7 +118,7 @@ def _wcap(
         },
         'output_schema': {'type': 'object'},
         'risk_level': risk_level,
-        'human_confirmation': {'required': False},
+        'human_confirmation': {'required': ask},
         'result_writeback': ['audit', 'agent_message'],
         'discovery': {
             'exposure': 'on_demand',
@@ -264,6 +269,129 @@ _WORKFLOW_CAPABILITIES = [
         required=[],
         page_rank=39,
         tags=['workflow', 'list', 'read'],
+    ),
+]
+
+# 工作流模板子域（hasn.workflow.template.*，P5-cloud doc94 §10-P5）：「场景即模板」——分身采访主人 →
+# draft 蓝图（过 §6.3 校验）→ 画廊可见草稿 → publish 上架 → instantiate 建 cloud workflow。
+# scope 复用 workflow 三键（不引入新键，保跨仓 scope 对齐守卫绿）；publish 出厂 Ask（外发+动钱）。
+_TPL_GRAPH_SPEC = {
+    'type': 'object',
+    'description': (
+        '图蓝图 {nodes:[...], edges:[...]}（canonical 键形 doc11 §4.3）：node 含 node_key/name/'
+        'node_kind/is_origin/default_agent_type/apps[]/output_spec{kind,label}/review_policy/display；'
+        'edge 为 {parent, child}（DAG 无环，至少一个 is_origin 起点）。'
+    ),
+    'properties': {'nodes': {'type': 'array'}, 'edges': {'type': 'array'}},
+}
+
+_WORKFLOW_TEMPLATE_CAPABILITIES = [
+    _wcap(
+        name='template.draft',
+        title='起草工作流模板',
+        description=(
+            '提交工作流模板草案（graph_spec 全量蓝图）。服务端过 §6.3 校验（图合法/引用合法/节点上限）后存草稿，'
+            '主人可在画廊看到；校验失败会指名到具体 node_key/edge/app/kind 便于自修。'
+        ),
+        scope=_WSCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'name': {'type': 'string', 'minLength': 1, 'description': '模板展示名'},
+            'graph_spec': _TPL_GRAPH_SPEC,
+            'domain': {'type': ['string', 'null'], 'description': '领域分组 code（非空=场景模板）'},
+            'tagline': {'type': ['string', 'null'], 'description': '一句话卖点'},
+            'description': {'type': ['string', 'null'], 'description': '链路详述'},
+            'icon': {'type': ['string', 'null'], 'description': '图标 key'},
+            'accent': {'type': ['string', 'null'], 'description': '主题强调色'},
+            'sort_order': {'type': 'integer', 'description': '展示排序'},
+        },
+        required=['name', 'graph_spec'],
+        page_rank=40,
+        tags=['workflow', 'template', 'draft', 'manage'],
+    ),
+    _wcap(
+        name='template.update',
+        title='改工作流模板',
+        description='更新自己名下 draft/active 模板（version+1），过同套 §6.3 校验；内置/别人的模板拒绝。',
+        scope=_WSCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'template_key': {'type': 'string', 'minLength': 1, 'description': '要更新的模板键'},
+            'graph_spec': _TPL_GRAPH_SPEC,
+            'name': {'type': ['string', 'null']},
+            'domain': {'type': ['string', 'null']},
+            'tagline': {'type': ['string', 'null']},
+            'description': {'type': ['string', 'null']},
+            'icon': {'type': ['string', 'null']},
+            'accent': {'type': ['string', 'null']},
+            'sort_order': {'type': ['integer', 'null']},
+        },
+        required=['template_key'],
+        page_rank=41,
+        tags=['workflow', 'template', 'update', 'manage'],
+    ),
+    _wcap(
+        name='template.get',
+        title='取工作流模板',
+        description='读模板详情（含 graph_spec 全量蓝图）。可见范围：自己名下 + 内置。',
+        scope=_WSCOPE_READ,
+        risk_level='low',
+        properties={'template_key': {'type': 'string', 'minLength': 1}},
+        required=['template_key'],
+        page_rank=42,
+        tags=['workflow', 'template', 'get', 'read'],
+    ),
+    _wcap(
+        name='template.list',
+        title='列工作流模板',
+        description='列可见模板（自己名下 + 内置），可按 domain/status 过滤。列表不含 graph_spec。',
+        scope=_WSCOPE_READ,
+        risk_level='low',
+        properties={
+            'domain': {'type': ['string', 'null'], 'description': '按领域过滤（可选）'},
+            'status': {'type': ['string', 'null'], 'description': '按状态过滤（可选）'},
+        },
+        required=[],
+        page_rank=43,
+        tags=['workflow', 'template', 'list', 'read'],
+    ),
+    _wcap(
+        name='template.instantiate',
+        title='据模板实例化工作流',
+        description=(
+            '据模板实例化一条 cloud 权威工作流：读模板蓝图 → 建 workflow（节点缺省=发起分身）→ 返 workflow 引用。'
+            '起点输入 origin_input 作锚点，node_overrides 逐节点定制。付费模板本期免判直接放行。'
+        ),
+        scope=_WSCOPE_RUN,
+        risk_level='medium',
+        properties={
+            'template_key': {'type': 'string', 'minLength': 1, 'description': '要实例化的模板键'},
+            'title': {'type': ['string', 'null'], 'description': '实例工作流名称（缺省取模板名）'},
+            'goal': {'type': ['string', 'null'], 'description': '实例总目标（缺省取模板描述）'},
+            'origin_input': {'type': ['string', 'null'], 'description': '起点输入（主人锚点）'},
+            'node_overrides': {
+                'type': 'object',
+                'description': '逐节点定制 {node_key: {prompt?, agent_id?, system_prompt?}}',
+            },
+        },
+        required=['template_key'],
+        page_rank=44,
+        tags=['workflow', 'template', 'instantiate', 'run'],
+    ),
+    _wcap(
+        name='template.publish',
+        title='上架工作流模板',
+        description=(
+            '上架自己名下模板到市场：过 §6.3 校验 → status 转 active + version 快照 + market_ref 占位。'
+            '外发+动钱语义，需主人确认（ask 闸）。'
+        ),
+        scope=_WSCOPE_MANAGE,
+        risk_level='high',
+        properties={'template_key': {'type': 'string', 'minLength': 1}},
+        required=['template_key'],
+        page_rank=45,
+        tags=['workflow', 'template', 'publish', 'manage'],
+        ask=True,  # publish = 破坏性外发+动钱 → 出厂 Ask（human_confirmation.required=True）
     ),
 ]
 
@@ -474,6 +602,8 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
 
 # 多任务编排（工作流）能力随 hasn_task 应用同一 manifest 暴露（节点复用 task；scope workflow:*）。
 HASN_TASK_AI_NATIVE_MANIFEST['capabilities'].extend(_WORKFLOW_CAPABILITIES)
+# 工作流模板子域（P5-cloud）随同一 manifest 暴露（hasn.workflow.template.*；scope 复用 workflow:*）。
+HASN_TASK_AI_NATIVE_MANIFEST['capabilities'].extend(_WORKFLOW_TEMPLATE_CAPABILITIES)
 
 
 def build_hasn_task_app() -> App:

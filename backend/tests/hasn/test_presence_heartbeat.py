@@ -62,12 +62,39 @@ class FakeRedis:
         self.lists.pop(key, None)
         self.strings.pop(key, None)
 
+    async def eval(self, _script: str, numkeys: int, *args: Any) -> int:
+        keys = list(args[:numkeys])
+        argv = list(args[numkeys:])
+        if numkeys == 2:
+            generation_key, alive_key = keys
+            node_id, connection_id, _ttl = argv
+            if self.hashes.get(generation_key, {}).get(node_id) != connection_id:
+                return 0
+            self.strings[alive_key] = '1'
+            return 1
+        if numkeys == 5:
+            generation_key, node_conn_key, entities_key, entity_node_key, alive_key = keys
+            node_id, connection_id, user_nodes_prefix = argv
+            if self.hashes.get(generation_key, {}).get(node_id) != connection_id:
+                return 0
+            for hasn_id in list(self.sets.get(entities_key, set())):
+                if self.hashes.get(entity_node_key, {}).get(hasn_id) == node_id:
+                    self.hashes.get(entity_node_key, {}).pop(hasn_id, None)
+                if str(hasn_id).startswith('h_'):
+                    self.sets.get(f'{user_nodes_prefix}:{hasn_id}', set()).discard(node_id)
+            await self.delete(entities_key)
+            self.hashes.get(node_conn_key, {}).pop(node_id, None)
+            await self.delete(alive_key)
+            self.hashes.get(generation_key, {}).pop(node_id, None)
+            return 1
+        raise AssertionError(f'unexpected eval numkeys={numkeys}')
+
 
 class _DummyWs:
     pass
 
 
-def _router(monkeypatch):
+def _router(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, FakeRedis]:
     from backend.app.hasn.service import ws_router as module
 
     redis = FakeRedis()
@@ -77,10 +104,12 @@ def _router(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_register_sets_alive_then_expiry_then_refresh(monkeypatch) -> None:
+async def test_register_sets_alive_then_expiry_then_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module, router, redis = _router(monkeypatch)
 
-    await router.register_node('node_1', 'desktop', _DummyWs(), capacity=2)
+    connection_id = await router.register_node('node_1', 'desktop', _DummyWs(), capacity=2)
     assert await router.is_node_online('node_1') is True
     # 存活键确由 register 写入（带 TTL，这里只验存在）
     assert f'{module.NODE_ALIVE_PREFIX}:node_1' in redis.strings
@@ -90,12 +119,14 @@ async def test_register_sets_alive_then_expiry_then_refresh(monkeypatch) -> None
     assert await router.is_node_online('node_1') is False
 
     # hasn.ping 续期 → 恢复在线
-    await router.refresh_node_presence('node_1')
+    await router.refresh_node_presence('node_1', connection_id)
     assert await router.is_node_online('node_1') is True
 
 
 @pytest.mark.asyncio
-async def test_zombie_node_route_makes_agent_offline(monkeypatch) -> None:
+async def test_zombie_node_route_makes_agent_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """ENTITY_NODE_KEY 仍指向节点，但节点存活键过期 → agent 判离线（解除接管阻塞）。"""
     module, router, redis = _router(monkeypatch)
 
@@ -119,12 +150,12 @@ async def test_zombie_node_route_makes_agent_offline(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unregister_deletes_alive_key(monkeypatch) -> None:
+async def test_unregister_deletes_alive_key(monkeypatch: pytest.MonkeyPatch) -> None:
     module, router, redis = _router(monkeypatch)
 
-    await router.register_node('node_g', 'desktop', _DummyWs(), capacity=1)
+    connection_id = await router.register_node('node_g', 'desktop', _DummyWs(), capacity=1)
     assert await router.is_node_online('node_g') is True
 
-    await router.unregister_node('node_g')
+    await router.unregister_node('node_g', connection_id)
     assert await router.is_node_online('node_g') is False
     assert f'{module.NODE_ALIVE_PREFIX}:node_g' not in redis.strings

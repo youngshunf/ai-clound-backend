@@ -97,16 +97,42 @@ async def get_db_transaction() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-async def create_tables() -> None:
-    """创建数据库表"""
+def metadata_schemas() -> list[str]:
+    """汇总 metadata 里声明的全部自定义 schema（去重升序；public/None 不算）。
+
+    抽成纯函数便于单测：只依赖已 import 的模型 metadata，不碰数据库。
+    """
     from backend.common.model import MappedBase
+
+    return sorted({table.schema for table in MappedBase.metadata.tables.values() if table.schema})
+
+
+async def create_tables() -> None:
+    """创建数据库表
+
+    ⚠️ 建表前先建齐 metadata 里声明的全部自定义 schema——`create_all` 只建表、不建 schema。
+    新应用模块若声明独立 PG schema（ADR-15 一应用一 schema）而生产库从没建过，启动时
+    `create_all` 一撞缺失 schema 就抛 `InvalidSchemaNameError` → ASGI lifespan startup
+    failed → worker 崩溃重启死循环（「部署后一重启即崩」老坑，已多次复发：external_mcp /
+    hasn_design / hasn_reel / hasn_stock…）。这里先幂等 `CREATE SCHEMA IF NOT EXISTS` 一遍，
+    从根上消灭这一整类事故，让「部署新 schema 后无需人工先建 schema」。
+    """
+    from sqlalchemy.schema import CreateSchema
+
+    from backend.common.model import MappedBase
+
     async with async_engine.begin() as coon:
+        # 仅 PostgreSQL 需要显式建 schema；MySQL 无独立 schema 概念，跳过
+        if DataBaseType.mysql != settings.DATABASE_TYPE:
+            for schema in metadata_schemas():
+                await coon.execute(CreateSchema(schema, if_not_exists=True))
         await coon.run_sync(MappedBase.metadata.create_all)
 
 
 async def drop_tables() -> None:
     """丢弃数据库表"""
     from backend.common.model import MappedBase
+
     async with async_engine.begin() as conn:
         await conn.run_sync(MappedBase.metadata.drop_all)
 

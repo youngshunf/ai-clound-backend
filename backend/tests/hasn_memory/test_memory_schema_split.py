@@ -1,11 +1,14 @@
 """记忆独立模块与 schema 拆分（ADR-15，记忆实施 95）静态契约测试。
 
 不连库、不起 HTTP——纯导入 + metadata/源码内省，验收 doc 95 §6：
-- 7 张记忆表在 metadata 中 schema 全为 `hasn_memory`，无 public 旧表名残留；
+- 6 张记忆表在 metadata 中 schema 全为 `hasn_memory`，无 public 旧表名残留；
 - owner_memory 用户端 URL（`/memory`、`/memory/contributions`）不变；
 - `app/hasn` 旧位置 re-export shim 兼容（model/service/api/schema）；
 - 裸 SQL 已全限定 `hasn_memory.namespace_revision`（无 `public.memory_namespace_revisions`）；
-- 迁移 SQL 覆盖 7 张表（SET SCHEMA + 去前缀 RENAME）。
+- 历史迁移 SQL 覆盖当年的记忆表（SET SCHEMA + 去前缀 RENAME）。
+
+> **doc18 退役**：extraction_job 表随自动提取管线一并删除（原 7 张 → 现 6 张），
+> 详见 2026-07-14-drop-memory-extraction-pipeline.sql。
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from pathlib import Path
 
 REPO_BACKEND = Path(__file__).resolve().parents[2]
 
-# hasn_memory schema 内的 7 张表（去前缀）
+# hasn_memory schema 内的 6 张表（去前缀；extraction_job 已随 doc18 退役删除）
 MEMORY_TABLES = {
     'owner_memory',
     'owner_memory_contribution',
@@ -22,7 +25,6 @@ MEMORY_TABLES = {
     'episodic_turn',
     'semantic_fact',
     'memory_event',
-    'extraction_job',
 }
 
 # 原 public 旧表名——迁移后不应再出现在 metadata
@@ -33,7 +35,6 @@ STALE_PUBLIC_NAMES = {
     'episodic_turns',
     'semantic_facts',
     'memory_events',
-    'memory_extraction_jobs',
 }
 
 
@@ -116,7 +117,9 @@ def test_sync_service_raw_sql_fully_qualified() -> None:
     assert 'hasn_memory.namespace_revision' in src, '裸 SQL 应全限定 hasn_memory.namespace_revision'
 
 
-def test_migration_sql_covers_all_seven_tables() -> None:
+def test_migration_sql_covers_all_memory_tables() -> None:
+    # 历史迁移文件保持原样（含已退役的 extraction_job/memory_extraction_jobs，是当前 6 张的超集），
+    # 只断言当前存活的 6 张表在其中被搬迁过——退役表不再校验，也不改历史文件。
     mig = (
         REPO_BACKEND
         / 'sql'

@@ -17,6 +17,11 @@ class HasnMessages(Base):
 
     id: Mapped[id_key] = mapped_column(init=False)
     conversation_id: Mapped[str | UUID] = mapped_column(sa.UUID(), default=None, comment='所属会话 ID')
+    owner_id: Mapped[str | None] = mapped_column(
+        sa.String(40),
+        default=None,
+        comment='所属 owner（透明视图/hasn.message.search 归属键；1:1 消息=收件方 owner，群消息留空按 conversation_id 归属）',
+    )
     from_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='发送方 hasn_id')
     from_type: Mapped[int] = mapped_column(sa.SMALLINT(), default=0, comment='发送方类型 (1:人类:blue/2:代理:green/3:系统:gray)')
     to_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='接收方标识（单聊=hasn_id，群聊=group_id 如 g:500001）')

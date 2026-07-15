@@ -268,6 +268,94 @@ def _parse_disclosure(raw: dict[str, Any]) -> dict[str, Any]:
     return {'allow': allow, 'categories': categories, 'reason': str(reason) if reason else ''}
 
 
+# ── node_review kind（doc94 §5.3 W-S5 质量门·llm_judge 档）────────────────
+# 入参上限（纵深防御，daemon 侧本应已截断；此为云端二次兜底）
+_NR_MAX_CRITERIA = 2000
+_NR_MAX_OUTPUT_SUMMARY = 4000
+_NR_MAX_ARTIFACT_SUMMARY = 8000
+_NR_MAX_NODE_NAME = 100
+_NR_MAX_OUTPUT_LABEL = 200
+
+_NODE_REVIEW_SYSTEM_PROMPT = """你是 HASN 工作流的「节点产物质量评审裁判」。一个 AI 分身刚完成工作流某一环的产物，
+你不参与工作、只做一件事：**依据给定的评审标准，客观判断这份产物「够不够好、能不能过」**。
+
+判据：
+1. 紧扣评审标准逐条核对——标准里要求什么，就核对产物是否满足什么。
+2. 判「实质」不判「形态」：只看这份产物是否完成了本环该交付的实质内容；形态是否齐全（字段/结构完整性）
+   是产出闸的事，不归你管——你只管「好不好」。
+3. 有硬伤 / 明显不达标 / 空泛敷衍 → 不通过，并**具体**指出问题出在哪、该往哪个方向改。
+4. 达到标准即通过。
+
+关键哲学——拿不准且无明显硬伤时**倾向通过**：reject 会打回重做、烧积分并骚扰主人，误杀代价大。
+只有真存在硬伤或明显不达标才 reject。
+
+opinion 必须是**可执行的一句话中文意见**：通过则简述亮点 / 放行理由；打回则明确指出缺什么、该怎么改。
+
+只输出严格 JSON，不要任何多余文字：{"pass": true/false, "opinion": "一句话中文意见"}"""
+
+
+def _validate_node_review(payload: dict[str, Any]) -> dict[str, Any]:
+    """node_review 入参校验（criteria ≤2000 / output_summary ≤4000 必填；
+    artifact_summary ≤8000、node_name ≤100、output_label ≤200 均选填，缺省空串）。"""
+    if not isinstance(payload, dict):
+        _raise_422('node_review payload 必须是对象')
+
+    criteria = payload.get('criteria')
+    if not isinstance(criteria, str) or not criteria.strip():
+        _raise_422('node_review.criteria 必须是非空字符串')
+    if len(criteria) > _NR_MAX_CRITERIA:
+        _raise_422(f'node_review.criteria 超过 {_NR_MAX_CRITERIA} 字上限')
+
+    output_summary = payload.get('output_summary')
+    if not isinstance(output_summary, str) or not output_summary.strip():
+        _raise_422('node_review.output_summary 必须是非空字符串')
+    if len(output_summary) > _NR_MAX_OUTPUT_SUMMARY:
+        _raise_422(f'node_review.output_summary 超过 {_NR_MAX_OUTPUT_SUMMARY} 字上限')
+
+    def _opt(key: str, max_len: int) -> str:
+        # 选填字符串字段：缺省 / None → 空串；非字符串 → 422；超长 → 422
+        v = payload.get(key)
+        if v is None:
+            return ''
+        if not isinstance(v, str):
+            _raise_422(f'node_review.{key} 必须是字符串')
+        if len(v) > max_len:
+            _raise_422(f'node_review.{key} 超过 {max_len} 字上限')
+        return v
+
+    return {
+        'criteria': criteria,
+        'output_summary': output_summary,
+        'artifact_summary': _opt('artifact_summary', _NR_MAX_ARTIFACT_SUMMARY),
+        'node_name': _opt('node_name', _NR_MAX_NODE_NAME),
+        'output_label': _opt('output_label', _NR_MAX_OUTPUT_LABEL),
+    }
+
+
+def _build_node_review_messages(normalized: dict[str, Any]) -> list[dict[str, str]]:
+    """把评审标准 + 节点信息 + 分身自报产物摘要 + 产物内容摘要组装成裁判提问。"""
+    parts = [f'评审标准：{normalized["criteria"]}']
+    if normalized['node_name']:
+        parts.append(f'节点：{normalized["node_name"]}（要求产出：{normalized["output_label"]}）')
+    parts.append(f'分身自报的产物摘要：{normalized["output_summary"]}')
+    if normalized['artifact_summary']:
+        parts.append(f'产物内容摘要：{normalized["artifact_summary"]}')
+    return [
+        {'role': 'system', 'content': _NODE_REVIEW_SYSTEM_PROMPT},
+        {'role': 'user', 'content': '\n\n'.join(parts)},
+    ]
+
+
+def _parse_node_review(raw: dict[str, Any]) -> dict[str, Any]:
+    """node_review 出参校验：{pass, opinion} → 归一为 {passed: bool, opinion: str}。
+
+    出参键名归一为 `passed`（daemon W-S5 质量门读 verdict.passed / verdict.opinion）。
+    """
+    if not isinstance(raw, dict) or 'pass' not in raw:
+        raise LLMError('node_review 出参缺少 pass')
+    return {'passed': bool(raw.get('pass')), 'opinion': str(raw.get('opinion') or '')}
+
+
 # ── kind 注册分发表（三件套：入参校验 / 提示词组装 / 出参 schema）──────────
 JudgeKindSpec = tuple[
     Callable[[dict[str, Any]], dict[str, Any]],  # validate
@@ -278,6 +366,7 @@ JudgeKindSpec = tuple[
 JUDGE_KINDS: dict[str, JudgeKindSpec] = {
     'termination': (_validate_termination, _build_termination_messages, _parse_termination),
     'disclosure': (_validate_disclosure, _build_disclosure_messages, _parse_disclosure),
+    'node_review': (_validate_node_review, _build_node_review_messages, _parse_node_review),
 }
 
 

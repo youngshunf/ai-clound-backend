@@ -531,17 +531,25 @@ async def persist_message(
     mentions: list[dict[str, Any]] | None = None,
     mention_all: bool = False,
     origin_node_id: str | None = None,
+    owner_id: str | None = None,
 ) -> HasnMessages:
     """持久化消息并更新会话。
 
     ``origin_node_id``（doc02 §3.8）：产生该消息的节点 ID，由 Server 从认证上下文
     自动填入（不可伪造）——node WS/HTTP 带的节点 ID / 云端 runtime 填 'cloud' 哨兵；
     存 node_id 不存设备名，渲染边界 join hasn_nodes.node_name 解析显示名。
+
+    ``owner_id``（doc18 P0）：1:1 消息落库时回填「收件方 owner」，令该 owner 的透明视图与
+    `hasn.message.search`（硬过滤 `WHERE owner_id`）能读到 route 落库的消息——此前 route 路径
+    从不填 owner_id，收件方分身检索不到「对方告诉过我的事」，doc18 L3「聊天记录兜底」失效。
+    群消息传空（None）：群读走 `list_group_messages` 按 conversation_id 归属，不看 owner_id。
+    发送方的可见性另由会话受众扇出（doc02 §3.3 audience）覆盖，不靠本列。
     """
     now = timezone.now()
 
     msg = HasnMessages(
         conversation_id=conversation_id,
+        owner_id=owner_id or None,
         from_id=from_id,
         from_type=_entity_type_int(from_id),
         to_id=to_id,
@@ -718,6 +726,9 @@ async def _suppress_inbound(
         reply_to_id=reply_to_id,
         local_id=local_id,
         context=context,
+        # doc18 P0：被抑制的入站消息也回填收件方 owner（=上面已算的 owner_id），
+        # 令主人在抑制箱/透明视图可检索（放行后正常投递）。
+        owner_id=owner_id or None,
     )
     await record_suppression(
         db,
@@ -825,6 +836,8 @@ async def route_message(
         grp_mentions = grp_ctx.get('mentions') if isinstance(grp_ctx.get('mentions'), list) else None
         grp_mention_all = bool(grp_ctx.get('mention_all'))
 
+        # doc18 P0：群消息不填 owner_id——群读走 list_group_messages 按 conversation_id +
+        # 成员资格归属（一条群消息属于全体成员，非单一 owner），单一 owner_id 列表达不了群语义。
         msg = await persist_message(
             db=db,
             conversation_id=group_conv_id,
@@ -1038,6 +1051,9 @@ async def route_message(
     conv = await get_or_create_conversation(db, from_id, from_type, to_id, to_type, relation_type)
 
     # 5. 持久化
+    # doc18 P0：1:1 消息回填 owner_id=收件方 owner（发给分身=该分身 owner，发给人=其本人），
+    # 与下方 message.received 事件的 recipient_owner_id 同源，令收件方透明视图/hasn.message.search 可读。
+    recipient_owner_for_row = target_info.get('owner_id') if to_id.startswith('a_') else to_id
     msg = await persist_message(
         db=db,
         conversation_id=str(conv.id),
@@ -1051,6 +1067,7 @@ async def route_message(
         local_id=local_id,
         context=context,
         origin_node_id=origin_node_id,
+        owner_id=recipient_owner_for_row or None,
     )
 
     await db.commit()

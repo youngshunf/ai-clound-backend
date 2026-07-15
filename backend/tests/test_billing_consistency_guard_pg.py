@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -22,6 +23,7 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.billing.core import feature_registry
 from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
+from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 
 if TYPE_CHECKING:
@@ -31,6 +33,33 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.asyncio
+
+# workflow_template 建表迁移链（幂等）：守卫需 hasn_task.workflow_template 表在位才能扫。
+# 与 tests/hasn_task/test_workflow_template_tools.py 的 env 迁移链一致（TEMPLATE 依赖 workflow 表）。
+_WF_SQL_DIR = Path(__file__).resolve().parent / 'hasn_task'
+_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / 'sql' / 'hasn_task' / 'migrations'
+_WF_MIGRATION_CHAIN = (
+    '2026-06-10-ainative-refactor.sql',
+    '2026-06-11-workflow.sql',
+    '2026-07-14-workflow-node-tables.sql',
+    '2026-07-14-workflow-run-advance-mode.sql',
+    '2026-07-14-workflow-template.sql',
+)
+
+
+async def _ensure_workflow_template_table() -> None:
+    """幂等 bootstrap：确保 hasn_task.workflow_template 表在位（独立 asyncpg 连接执行 DDL，自动提交）。"""
+    import asyncpg
+
+    dsn = SQLALCHEMY_DATABASE_URL.render_as_string(hide_password=False).replace(
+        'postgresql+asyncpg://', 'postgresql://'
+    )
+    conn = await asyncpg.connect(dsn)
+    try:
+        for name in _WF_MIGRATION_CHAIN:
+            await conn.execute((_MIGRATIONS_DIR / name).read_text(encoding='utf-8'))
+    finally:
+        await conn.close()
 
 
 @pytest_asyncio.fixture
@@ -89,3 +118,39 @@ async def test_catalog_sku_ref_dangling_is_detected(sess: AsyncSession) -> None:
     await sess.flush()
     violations2 = await feature_registry.validate_catalog_sku_refs(sess)
     assert not any('mk9_dangling_guard_probe' in v for v in violations2), f'空 sku_ref 被误报为悬挂: {violations2}'
+
+
+# ── 守卫 3（MK-9b·doc94 §10-P7）：workflow_template sku_ref 悬挂检测 ──
+async def test_workflow_template_sku_refs_no_dangling(sess: AsyncSession) -> None:
+    """全库 workflow_template.sku_ref 无悬挂（空值常态 + 已填值命中真实 offering）。"""
+    await _ensure_workflow_template_table()
+    violations = await feature_registry.validate_workflow_template_sku_refs(sess)
+    assert violations == [], f'存在悬挂 sku_ref 的 workflow_template 行: {violations}'
+
+
+async def test_workflow_template_sku_ref_dangling_is_detected(sess: AsyncSession) -> None:
+    """守卫真能抓到：造一条 sku_ref 指向不存在 offering 的模板行 → 被列为违规；清空后不误报。"""
+    await _ensure_workflow_template_table()
+    key = 'mk9b_wf_dangling_probe'
+    bogus = HasnWorkflowTemplate(
+        template_uuid=f'wft_{key}',
+        template_key=key,
+        name='MK9b 工作流模板悬挂探针',
+        status='draft',
+        graph_spec={},
+        is_builtin=False,
+        source='owner',
+        version=1,
+        sku_ref='wf_offering_that_does_not_exist_mk9b',
+    )
+    sess.add(bogus)
+    await sess.flush()  # flush 后同 session 查询可见；不 commit，teardown rollback 清掉
+
+    violations = await feature_registry.validate_workflow_template_sku_refs(sess)
+    assert any(key in v for v in violations), f'守卫未抓到悬挂 sku_ref: {violations}'
+
+    # 空 sku_ref 不误报：付费模板转免费（sku_ref 清空）后应从违规列表消失。
+    bogus.sku_ref = None
+    await sess.flush()
+    violations2 = await feature_registry.validate_workflow_template_sku_refs(sess)
+    assert not any(key in v for v in violations2), f'空 sku_ref 被误报为悬挂: {violations2}'

@@ -11,6 +11,9 @@ redis 操作；当 redis 连接 transport 已关闭（断连与 event-loop 拆�
 
 from __future__ import annotations
 
+from collections.abc import Callable, Coroutine
+from typing import Any, NoReturn
+
 import pytest
 
 from backend.app.hasn.service import ws_router as ws_router_module
@@ -20,32 +23,38 @@ from backend.app.hasn.service.ws_router import ws_router
 class _BoomRedis:
     """每个被用到的 async redis 方法都抛 RuntimeError（模拟 transport closed）。"""
 
-    def __getattr__(self, _name: str):
-        async def _boom(*_args, **_kwargs):
+    def __getattr__(self, _name: str) -> Callable[..., Coroutine[Any, Any, NoReturn]]:
+        async def _boom(*_args: Any, **_kwargs: Any) -> NoReturn:  # noqa: RUF029
             raise RuntimeError('unable to perform operation on <TCPTransport closed=True>; the handler is closed')
 
         return _boom
 
 
 @pytest.mark.asyncio
-async def test_unregister_node_swallows_redis_failure_and_clears_ws_ref(monkeypatch) -> None:
+async def test_unregister_node_swallows_redis_failure_and_clears_ws_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Arrange：进程内挂一个该节点的 WS 引用；redis 全线故障
     node_id = 'node_test_boom'
-    ws_router_module._ws_connections[node_id] = object()  # 占位 WS 引用
+    connection_id = 'conn_test_boom'
+    ws_router_module._ws_connections[node_id] = object()  # type: ignore[assignment]
+    ws_router_module._ws_connection_ids[node_id] = connection_id
     monkeypatch.setattr(ws_router_module, 'redis_client', _BoomRedis())
 
     # Act：断连清理——绝不抛出（旧代码会冒泡 RuntimeError）
-    await ws_router.unregister_node(node_id)
+    await ws_router.unregister_node(node_id, connection_id)
 
     # Assert：进程内 WS 引用已移除（redis 失败不影响本地清理）
     assert node_id not in ws_router_module._ws_connections
 
 
 @pytest.mark.asyncio
-async def test_unregister_node_unknown_node_is_noop(monkeypatch) -> None:
+async def test_unregister_node_unknown_node_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Arrange：未知节点 + redis 故障
     monkeypatch.setattr(ws_router_module, 'redis_client', _BoomRedis())
 
     # Act / Assert：不抛、不残留
-    await ws_router.unregister_node('node_never_seen')
+    await ws_router.unregister_node('node_never_seen', 'conn_never_seen')
     assert 'node_never_seen' not in ws_router_module._ws_connections

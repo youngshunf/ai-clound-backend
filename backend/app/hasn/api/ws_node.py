@@ -9,6 +9,7 @@ v2.1 简化认证：Bearer Token / OwnerKey + X-Node-Id
 - add_agent / remove_agent
 """
 
+import asyncio
 import json
 import logging
 
@@ -28,6 +29,7 @@ router = APIRouter()
 
 # 协议版本
 HASN_PROTOCOL = 'hasn/0.2'
+WS_SEND_TIMEOUT_SECS = 10.0
 
 
 def _client_ip(websocket: WebSocket) -> str | None:
@@ -90,8 +92,25 @@ def _response(req_id: str, result: dict | None = None, error: dict | None = None
     return resp
 
 
+async def _send_json(websocket: WebSocket, payload: dict) -> None:
+    """限时发送控制帧，超时按连接失败处理并进入外层清理。"""
+    await asyncio.wait_for(websocket.send_json(payload), timeout=WS_SEND_TIMEOUT_SECS)
+
+
+async def _send_offline_messages(websocket: WebSocket, entity_ids: list[str]) -> None:
+    """成功交给 WebSocket transport 后才确认离线队列前缀。"""
+    messages, claims = await ws_router.claim_offline_messages(entity_ids)
+    if messages:
+        await _send_json(
+            websocket,
+            _frame('hasn.node.offline_messages', {'messages': messages}),
+        )
+    if claims:
+        await ws_router.ack_offline_messages(claims)
+
+
 @router.websocket('/ws/node')
-async def hasn_node_websocket(
+async def hasn_node_websocket(  # noqa: C901
     websocket: WebSocket,
 ) -> None:
     """HASN 统一节点 WebSocket 端点（所有节点类型共用）
@@ -141,9 +160,7 @@ async def hasn_node_websocket(
     await websocket.accept()
 
     # 2. 注册节点在线
-    await ws_router.register_node(
-        node_id, node_type, websocket, capacity
-    )
+    connection_id = await ws_router.register_node(node_id, node_type, websocket, capacity)
 
     # 2.5 回填设备元数据（IP/归属地/OS/版本），用于设备管理页（非致命）
     await _backfill_node_metadata(websocket, node_id)
@@ -174,11 +191,17 @@ async def hasn_node_websocket(
             'node_id': node_id,
             'node_type': node_type,
             'capacity': capacity,
+            'connection_id': connection_id,
             'server_time': timezone.now().isoformat(),
             'supported_versions': ['hasn/0.2'],
             'extensions': [
-                'capability', 'discovery', 'trade',
-                'screening', 'health', 'constellation', 'bridge',
+                'capability',
+                'discovery',
+                'trade',
+                'screening',
+                'health',
+                'constellation',
+                'bridge',
             ],
         }
         if owner_hasn_id and auto_bound_owner:
@@ -196,17 +219,20 @@ async def hasn_node_websocket(
         except Exception as e:  # revision 握手非致命
             log.warning(f'[HASN] 计算 sync revisions 失败 (非致命): {e}')
 
-        await websocket.send_json(_frame('hasn.connected', connected_params))
+        await _send_json(websocket, _frame('hasn.connected', connected_params))
 
         # 5. 自动推送离线消息（Owner 已绑定）
         if owner_hasn_id and auto_bound_owner:
-            offline_msgs = await ws_router.get_offline_messages([owner_hasn_id])
-            if offline_msgs:
-                await websocket.send_json(_frame('hasn.node.offline_messages', {'messages': offline_msgs}))
+            await _send_offline_messages(websocket, [owner_hasn_id])
+
+        # hasn.connected 必须是 daemon 收到的首帧；到这里才开放业务投递并排空持久队列。
+        if not await ws_router.mark_node_ready(node_id, connection_id):
+            await websocket.close(code=1000, reason='superseded connection')
+            return
 
         # 6. 双向收发循环（传入已绑定的 owner）
         initial_entities = {owner_hasn_id} if (owner_hasn_id and auto_bound_owner) else set()
-        await _recv_loop(websocket, node_id, initial_entities)
+        await _recv_loop(websocket, node_id, connection_id, initial_entities)
 
     except WebSocketDisconnect:
         log.info(f'节点断开: {node_id} (type={node_type})')
@@ -215,14 +241,15 @@ async def hasn_node_websocket(
     finally:
         # 7. 清理：注销节点 + 清理所有实体（best-effort，绝不让清理异常冒泡出 ASGI handler）
         try:
-            await ws_router.unregister_node(node_id)
+            await ws_router.unregister_node(node_id, connection_id)
         except Exception as e:
             log.warning(f'[HASN] 节点清理失败 (非致命): {node_id} - {e}')
 
 
-async def _recv_loop(
+async def _recv_loop(  # noqa: C901
     websocket: WebSocket,
     node_id: str,
+    connection_id: str,
     initial_entities: set[str] | None = None,
 ) -> None:
     """处理节点上行消息"""
@@ -262,17 +289,28 @@ async def _recv_loop(
 
             elif method == 'hasn.agent.register':
                 await _handle_agent_register(
-                    websocket, node_id, params, active_entities, req_id,
+                    websocket,
+                    node_id,
+                    params,
+                    active_entities,
+                    req_id,
                 )
 
             elif method == 'hasn.agent.deregister':
                 await _handle_agent_deregister(
-                    websocket, node_id, params, active_entities, req_id,
+                    websocket,
+                    node_id,
+                    params,
+                    active_entities,
+                    req_id,
                 )
 
             elif method == 'hasn.message.send':
                 await _handle_send(
-                    websocket, node_id, params, active_entities,
+                    websocket,
+                    node_id,
+                    params,
+                    active_entities,
                 )
 
             elif method == 'hasn.message.read':
@@ -283,10 +321,18 @@ async def _recv_loop(
 
             elif method == 'hasn.ping':
                 # P3：应用层心跳续期节点存活 TTL（根治僵尸 presence）。
-                await ws_router.refresh_node_presence(node_id)
-                await websocket.send_json(_frame('hasn.pong', {
-                    'ts': params.get('ts'),
-                }))
+                if not await ws_router.refresh_node_presence(node_id, connection_id):
+                    await websocket.close(code=1000, reason='superseded connection')
+                    return
+                await _send_json(
+                    websocket,
+                    _frame(
+                        'hasn.pong',
+                        {
+                            'ts': params.get('ts'),
+                        },
+                    ),
+                )
 
             else:
                 await _send_error(websocket, 9001, f'未知方法: {method}')
@@ -316,10 +362,8 @@ async def _handle_add_owner(
     owner_id = result.get('owner_id', '')
     if result.get('accepted') and owner_id:
         active_entities.add(owner_id)
-        offline_msgs = await ws_router.get_offline_messages([owner_id])
-        if offline_msgs:
-            await websocket.send_json(_frame('hasn.node.offline_messages', {'messages': offline_msgs}))
-    await websocket.send_json(_frame('hasn.node.add_owner_ack', result))
+        await _send_offline_messages(websocket, [owner_id])
+    await _send_json(websocket, _frame('hasn.node.add_owner_ack', result))
 
 
 async def _handle_remove_owner(
@@ -333,7 +377,7 @@ async def _handle_remove_owner(
         result = await ws_router.remove_owner(node_id=node_id, owner_id=owner_id, db=db)
         await db.commit()
     active_entities.discard(owner_id)
-    await websocket.send_json(_frame('hasn.node.remove_owner_ack', result))
+    await _send_json(websocket, _frame('hasn.node.remove_owner_ack', result))
 
 
 async def _handle_renew_owner(
@@ -350,13 +394,13 @@ async def _handle_renew_owner(
             db=db,
         )
         await db.commit()
-    await websocket.send_json(_frame('hasn.node.renew_owner_ack', result))
+    await _send_json(websocket, _frame('hasn.node.renew_owner_ack', result))
 
 
 async def _handle_list_owners(websocket: WebSocket, node_id: str) -> None:
     async with async_db_session() as db:
         result = await ws_router.list_owners(node_id=node_id, db=db)
-    await websocket.send_json(_frame('hasn.node.list_owners_ack', result))
+    await _send_json(websocket, _frame('hasn.node.list_owners_ack', result))
 
 
 async def _handle_add_agent(
@@ -397,9 +441,7 @@ async def _handle_add_agent(
                     user_id=None,
                 )
             except Exception as exc:
-                log.warning(
-                    'fold-heartbeat persist failed for agent %s: %s', agent_id, exc
-                )
+                log.warning('fold-heartbeat persist failed for agent %s: %s', agent_id, exc)
             # 在线语义收紧：按心跳携带的 online_status+health_status 写/删 agent 就绪键
             # （online+ok 才写；degraded/offline 删）。就绪键是对外「在线」判定的第三维，
             # 不影响路由；失败不拖垮路由注册，单独 try/except。
@@ -410,15 +452,11 @@ async def _handle_add_agent(
                     params.get('health_status'),
                 )
             except Exception as exc:
-                log.warning(
-                    'set agent readiness failed for agent %s: %s', agent_id, exc
-                )
+                log.warning('set agent readiness failed for agent %s: %s', agent_id, exc)
     if result.get('accepted') and agent_id:
         active_entities.add(agent_id)
-        offline_msgs = await ws_router.get_offline_messages([agent_id])
-        if offline_msgs:
-            await websocket.send_json(_frame('hasn.node.offline_messages', {'messages': offline_msgs}))
-    await websocket.send_json(_frame('hasn.node.add_agent_ack', result))
+        await _send_offline_messages(websocket, [agent_id])
+    await _send_json(websocket, _frame('hasn.node.add_agent_ack', result))
 
 
 async def _handle_remove_agent(
@@ -430,7 +468,7 @@ async def _handle_remove_agent(
     agent_id = params.get('agent_id', '')
     result = await ws_router.remove_agent_presence(node_id=node_id, agent_id=agent_id)
     active_entities.discard(agent_id)
-    await websocket.send_json(_frame('hasn.node.remove_agent_ack', result))
+    await _send_json(websocket, _frame('hasn.node.remove_agent_ack', result))
 
 
 async def _handle_agent_register(
@@ -488,7 +526,7 @@ async def _handle_agent_register(
     if result.get('agent_key'):
         ack_params['agent_key'] = result['agent_key']
 
-    await websocket.send_json(_frame('hasn.agent.register_ack', ack_params))
+    await _send_json(websocket, _frame('hasn.agent.register_ack', ack_params))
 
 
 async def _handle_agent_deregister(
@@ -514,20 +552,22 @@ async def _handle_agent_deregister(
     from backend.app.hasn.model.hasn_agents import HasnAgents
 
     async with async_db_session() as db:
-        await db.execute(
-            update(HasnAgents)
-            .where(HasnAgents.hasn_id == hasn_id)
-            .values(status='deleted')
-        )
+        await db.execute(update(HasnAgents).where(HasnAgents.hasn_id == hasn_id).values(status='deleted'))
         await db.commit()
 
-    await websocket.send_json(_frame('hasn.agent.deregister_ack', {
-        'hasn_id': hasn_id,
-        'success': True,
-    }))
+    await _send_json(
+        websocket,
+        _frame(
+            'hasn.agent.deregister_ack',
+            {
+                'hasn_id': hasn_id,
+                'success': True,
+            },
+        ),
+    )
 
 
-async def _handle_send(
+async def _handle_send(  # noqa: C901
     websocket: WebSocket,
     node_id: str,
     params: dict,
@@ -601,13 +641,19 @@ async def _handle_send(
         return
 
     # 发送 ACK
-    await websocket.send_json(_frame('hasn.message.ack', {
-        'msg_id': result['msg_id'],
-        'conversation_id': result['conversation_id'],
-        'local_id': local_id,
-        'status': 'sent',
-        'timestamp': timezone.now().isoformat(),
-    }))
+    await _send_json(
+        websocket,
+        _frame(
+            'hasn.message.ack',
+            {
+                'msg_id': result['msg_id'],
+                'conversation_id': result['conversation_id'],
+                'local_id': local_id,
+                'status': 'sent',
+                'timestamp': timezone.now().isoformat(),
+            },
+        ),
+    )
 
     # 出站重发命中幂等去重：该消息首发时已落库并投递、且已给发送方其它端做过多端同步。
     # 这里只需补回 ACK（让发送端把出站队列里这条标记已达、停止重发），**不可**再次多端同步，
@@ -626,24 +672,27 @@ async def _handle_send(
                 break
 
     if sync_target:
-        sender_payload = _frame('hasn.message.received', {
-            'to_id': sync_target,
-            'message': {
-                'id': result['msg_id'],
-                'conversation_id': result['conversation_id'],
-                'from_id': from_id,
-                'from_type': 1 if from_id.startswith('h_') else 2,
-                'to_id': to_target,
-                'to_type': 1 if to_target.startswith('h_') else 2,
-                'content_type': content_type,
-                'content': content,
-                'msg_type': msg_type,
-                'status': 1,
-                'local_id': local_id,
-                'self_sent': True,
-                'created_time': timezone.now().isoformat(),
+        sender_payload = _frame(
+            'hasn.message.received',
+            {
+                'to_id': sync_target,
+                'message': {
+                    'id': result['msg_id'],
+                    'conversation_id': result['conversation_id'],
+                    'from_id': from_id,
+                    'from_type': 1 if from_id.startswith('h_') else 2,
+                    'to_id': to_target,
+                    'to_type': 1 if to_target.startswith('h_') else 2,
+                    'content_type': content_type,
+                    'content': content,
+                    'msg_type': msg_type,
+                    'status': 1,
+                    'local_id': local_id,
+                    'self_sent': True,
+                    'created_time': timezone.now().isoformat(),
+                },
             },
-        })
+        )
         await ws_router.push_self_sync(sync_target, sender_payload, node_id)
 
 
@@ -677,16 +726,25 @@ async def _handle_typing(params: dict, active_entities: set[str]) -> None:
     if not from_id:
         from_id = next((eid for eid in active_entities if eid.startswith('h_')), '')
 
-    typing_payload = _frame('hasn.typing', {
-        'from_id': from_id,
-        'conversation_id': conversation_id,
-    })
+    typing_payload = _frame(
+        'hasn.typing',
+        {
+            'from_id': from_id,
+            'conversation_id': conversation_id,
+        },
+    )
     await ws_router.push_message_to(to_id, typing_payload)
 
 
 async def _send_error(websocket: WebSocket, code: int, message: str) -> None:
     """发送错误帧"""
-    await websocket.send_json(_frame('hasn.error', {
-        'code': code,
-        'message': message,
-    }))
+    await _send_json(
+        websocket,
+        _frame(
+            'hasn.error',
+            {
+                'code': code,
+                'message': message,
+            },
+        ),
+    )

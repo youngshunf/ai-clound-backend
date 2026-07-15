@@ -1,4 +1,4 @@
-"""跨 worker 的 WebSocket 投递总线（Redis pub/sub fan-out）。
+"""跨 worker 的 WebSocket 持久投递总线。
 
 **为什么需要它**：云端以 ``fba run --workers N`` 多进程部署时，每个 worker 进程
 只持有自己 ``/ws/node`` accept 到的 WS 连接（``ws_router._ws_connections`` 是**进程内**
@@ -8,12 +8,11 @@
 消息永久丢失（且因为返回 pushed=True 连离线队列都不进），表现为「多 worker 下完全
 收不到消息」。单 worker 部署看不到此问题（所有连接都在唯一进程里）。
 
-**机制**：每个 worker 启动期订阅共享频道 ``hasn:ws:deliver``；发送方把
-``{node_id, payload}``（或广播 ``{broadcast, payload}``）publish 上去；每个 worker 的
-订阅者收到后检查自己是否持有该 node 的连接，持有就 ``send_text`` 下发，否则忽略。
-由于一个 node 的 socket 只会落在唯一一个 worker，不会重复下发；单 worker 时同样成立
-（自己 publish 自己消费）。presence（在线/离线判定）仍以 Redis 为权威，本总线只负责
-「在线 node 的实时跨进程投递」，离线兜底仍走离线队列 + 重连握手补推。
+**机制**：定向帧先进入 Redis 待投队列，再通过共享频道 ``hasn:ws:deliver`` 唤醒持有
+当前 node 连接的 worker；发送成功后才从 processing 队列确认删除。Pub/Sub 只负责降低
+延迟，即使订阅短暂中断，周期 drain 和重连握手仍会继续消费。真正发送前同时校验 Redis
+连接代际与本 worker 的 ready 代际，确保 ``hasn.connected`` 永远是首帧，旧 socket 也不能
+消费新连接的消息。广播帧用于可由 revision 对账恢复的失效通知，仍是 best-effort。
 """
 
 import asyncio
@@ -26,24 +25,51 @@ from backend.database.redis import RedisCli, redis_client
 
 # 共享投递频道：所有 worker 订阅，发送方 publish
 WS_DELIVERY_CHANNEL = 'hasn:ws:deliver'
+PENDING_PREFIX = 'hasn:ws:pending'
+PROCESSING_PREFIX = 'hasn:ws:processing'
+DELIVERY_QUEUE_TTL_SECS = 7 * 86400
+DELIVERY_BATCH_SIZE = 100
+DELIVERY_SEND_TIMEOUT_SECS = 10.0
 
 # 投递是核心链路，订阅循环永不主动放弃（仅随进程关闭被 cancel）；Redis 抖动时退避重连
 _RECONNECT_DELAY_SECS = 2.0
+_RETRY_PENDING_INTERVAL_SECS = 2.0
+
+
+def _decode_payload(raw: str | bytes | None) -> dict | None:
+    """解析队列帧；畸形或非对象 JSON 由调用方安全跳过。"""
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 class WsDeliveryBus:
     """WS 跨 worker 投递总线（单例）。"""
 
     _task: asyncio.Task | None = None
+    _retry_task: asyncio.Task | None = None
+    _drain_locks: dict[str, asyncio.Lock] = {}
 
     @staticmethod
-    async def publish_to_node(node_id: str, payload_json: str) -> None:
-        """把一帧投给某个 node：经 Redis 广播，持有该连接的 worker 会下发。"""
+    async def publish_to_node(node_id: str, payload_json: str) -> bool:
+        """先持久化目标帧，再用 Pub/Sub 唤醒持有该节点连接的 worker。"""
         try:
-            message = json.dumps({'node_id': node_id, 'payload': payload_json}, ensure_ascii=False)
+            pending_key = f'{PENDING_PREFIX}:{node_id}'
+            await redis_client.rpush(pending_key, payload_json)
+            await redis_client.expire(pending_key, DELIVERY_QUEUE_TTL_SECS)
+        except Exception as exc:
+            log.error(f'[WsDeliveryBus] 持久化待投帧失败 node={node_id}: {exc!r}')
+            return False
+
+        try:
+            message = json.dumps({'node_id': node_id}, ensure_ascii=False)
             await redis_client.publish(WS_DELIVERY_CHANNEL, message)
         except Exception as exc:
-            log.warning(f'[WsDeliveryBus] publish_to_node 失败 node={node_id}: {exc!r}')
+            # 唤醒失败不等于消息丢失：周期 drain 和节点重连都会继续消费待投队列。
+            log.warning(f'[WsDeliveryBus] 投递唤醒失败，等待周期重试 node={node_id}: {exc!r}')
+        return True
 
     @staticmethod
     async def publish_broadcast(payload_json: str) -> None:
@@ -58,36 +84,120 @@ class WsDeliveryBus:
             log.warning(f'[WsDeliveryBus] publish_broadcast 失败: {exc!r}')
 
     @staticmethod
-    async def _safe_send(ws: WebSocket, payload_json: str) -> None:
-        """向单个连接下发，吞掉异常：单连接坏掉不影响其它（离线/同步兜底）。"""
+    async def _safe_send(ws: WebSocket, payload_json: str) -> bool:
+        """限时下发单帧，返回是否已交给 WebSocket transport。"""
         try:
-            await ws.send_text(payload_json)
+            await asyncio.wait_for(ws.send_text(payload_json), timeout=DELIVERY_SEND_TIMEOUT_SECS)
         except Exception as exc:
-            log.debug(f'[WsDeliveryBus] 单连接下发失败（忽略）: {exc!r}')
+            log.debug(f'[WsDeliveryBus] 单连接下发失败（保留待重试）: {exc!r}')
+            return False
+        else:
+            return True
+
+    @classmethod
+    async def drain_node(cls, node_id: str) -> int:
+        """当前连接代际消费 node 的持久待投队列，成功发送后才确认删除。"""
+        from backend.app.hasn.service import ws_router as router_module
+
+        ws = router_module._ws_connections.get(node_id)
+        connection_id = router_module._ws_connection_ids.get(node_id)
+        ready_id = router_module._ws_ready_connection_ids.get(node_id)
+        if ws is None or not connection_id or ready_id != connection_id:
+            return 0
+
+        lock = cls._drain_locks.setdefault(node_id, asyncio.Lock())
+        async with lock:
+            if (
+                router_module._ws_connections.get(node_id) is not ws
+                or router_module._ws_connection_ids.get(node_id) != connection_id
+                or router_module._ws_ready_connection_ids.get(node_id) != connection_id
+                or await redis_client.hget(router_module.NODE_GENERATION_KEY, node_id) != connection_id
+            ):
+                return 0
+
+            pending_key = f'{PENDING_PREFIX}:{node_id}'
+            processing_key = f'{PROCESSING_PREFIX}:{node_id}'
+
+            # 上一次发送在 ACK 前中断时，processing 中的帧重新入队；重复投递由消息 id 幂等。
+            for _ in range(DELIVERY_BATCH_SIZE):
+                recovered = await redis_client.rpoplpush(processing_key, pending_key)
+                if recovered is None:
+                    break
+
+            delivered = 0
+            for _ in range(DELIVERY_BATCH_SIZE):
+                payload_json = await redis_client.lmove(pending_key, processing_key, 'LEFT', 'RIGHT')
+                if payload_json is None:
+                    break
+                # drain 期间可能已有同 node 的新连接在其它 worker 抢占代际；旧 socket
+                # 不得继续消费。条目已在 processing，下一代 drain 会先恢复它。
+                if (
+                    router_module._ws_connections.get(node_id) is not ws
+                    or router_module._ws_connection_ids.get(node_id) != connection_id
+                    or router_module._ws_ready_connection_ids.get(node_id) != connection_id
+                    or await redis_client.hget(router_module.NODE_GENERATION_KEY, node_id) != connection_id
+                ):
+                    break
+                if not await cls._safe_send(ws, payload_json):
+                    break
+                await redis_client.lrem(processing_key, 1, payload_json)
+                delivered += 1
+
+            await redis_client.expire(pending_key, DELIVERY_QUEUE_TTL_SECS)
+            await redis_client.expire(processing_key, DELIVERY_QUEUE_TTL_SECS)
+            return delivered
 
     @staticmethod
     async def _deliver_local(data: dict) -> None:
         """订阅者回调：仅下发本 worker 持有的连接。"""
         # 延迟 import 打破与 ws_router 的循环依赖（ws_router 在模块顶层 import 本总线）
-        from backend.app.hasn.service.ws_router import _ws_connections
-
-        payload_json = data.get('payload')
-        if not payload_json:
-            return
+        from backend.app.hasn.service import ws_router as router_module
 
         if data.get('broadcast'):
-            for ws in list(_ws_connections.values()):
+            payload_json = data.get('payload')
+            if not payload_json:
+                return
+            for node_id, ws in list(router_module._ws_connections.items()):
+                connection_id = router_module._ws_connection_ids.get(node_id)
+                if (
+                    not connection_id
+                    or router_module._ws_ready_connection_ids.get(node_id) != connection_id
+                    or await redis_client.hget(router_module.NODE_GENERATION_KEY, node_id) != connection_id
+                ):
+                    continue
                 await WsDeliveryBus._safe_send(ws, payload_json)
             return
 
         node_id = data.get('node_id')
         if not node_id:
             return
-        ws = _ws_connections.get(node_id)
-        if ws is None:
+        if router_module._ws_connections.get(node_id) is None:
             # 连接不在本 worker，交给真正持有它的 worker 处理
             return
-        await WsDeliveryBus._safe_send(ws, payload_json)
+        # 兼容滚动发布期间仍携带 payload 的旧 publisher：先落本 worker 的持久队列。
+        legacy_payload = data.get('payload')
+        if legacy_payload:
+            pending_key = f'{PENDING_PREFIX}:{node_id}'
+            await redis_client.rpush(pending_key, legacy_payload)
+            await redis_client.expire(pending_key, DELIVERY_QUEUE_TTL_SECS)
+        await WsDeliveryBus.drain_node(node_id)
+
+    @classmethod
+    async def _drain_node_safely(cls, node_id: str) -> None:
+        try:
+            await cls.drain_node(node_id)
+        except Exception as exc:
+            log.warning(f'[WsDeliveryBus] 周期重试失败 node={node_id}: {exc!r}')
+
+    @classmethod
+    async def retry_pending_forever(cls) -> None:
+        """周期扫描本 worker 连接，弥补 Pub/Sub 唤醒窗口中的漏通知。"""
+        while True:
+            await asyncio.sleep(_RETRY_PENDING_INTERVAL_SECS)
+            from backend.app.hasn.service.ws_router import _ws_connections
+
+            for node_id in list(_ws_connections):
+                await cls._drain_node_safely(node_id)
 
     @classmethod
     async def subscribe_and_listen(cls) -> None:  # noqa: C901
@@ -104,10 +214,9 @@ class WsDeliveryBus:
                 async for message in pubsub.listen():
                     if message.get('type') != 'message':
                         continue
-                    try:
-                        data = json.loads(message['data'])
-                    except (json.JSONDecodeError, TypeError) as exc:
-                        log.warning(f'[WsDeliveryBus] 消息格式错误: {exc!r}')
+                    data = _decode_payload(message.get('data'))
+                    if data is None:
+                        log.warning('[WsDeliveryBus] 消息格式错误')
                         continue
                     await cls._deliver_local(data)
 
@@ -133,19 +242,20 @@ class WsDeliveryBus:
         """启动订阅任务（每个 worker 进程一份）。"""
         if cls._task is None or cls._task.done():
             cls._task = asyncio.create_task(cls.subscribe_and_listen())
+        if cls._retry_task is None or cls._retry_task.done():
+            cls._retry_task = asyncio.create_task(cls.retry_pending_forever())
 
     @classmethod
     async def stop_listener(cls) -> None:
         """停止订阅任务。"""
-        if cls._task is None:
-            return
-        if not cls._task.done():
-            cls._task.cancel()
-            try:
-                await cls._task
-            except asyncio.CancelledError:
-                pass
+        tasks = [task for task in (cls._task, cls._retry_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         cls._task = None
+        cls._retry_task = None
 
 
 ws_delivery_bus = WsDeliveryBus()

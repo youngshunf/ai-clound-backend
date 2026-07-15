@@ -77,7 +77,6 @@ dependencies = [
   "langdetect>=1.0.9",
   # Git 操作
   "gitpython>=3.1.43",
-  "geoip2>=5.2.0",
   "httpx[http2]>=0.28.1",
   "dicebear-core>=10.3.0",
   "dicebear-styles>=10.2.0",

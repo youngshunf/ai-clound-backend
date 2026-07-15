@@ -16,6 +16,7 @@ runtime 统一）经 `/api/v1/mcp/streamable` 直达云端，工具体 in-proces
   `object`。时间 epoch ms（与本地 BigInteger 一致）。
 - 只读方法默认只取 `status='active'`，被替代/撤回的事实不喂召回。
 """
+
 from __future__ import annotations
 
 import json
@@ -161,9 +162,13 @@ class SemanticFactService:
         owner_id: str,
         query: str,
         subject_kind: str | None = None,
+        subject_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """按文本在 predicate/object_json 上模糊搜索 owner 名下 active 事实。"""
+        """按文本在 predicate/object_json 上模糊搜索 owner 名下 active 事实。
+
+        doc18 S2：可选 `subject_id` 限定主体——「按人 + 关键词」组合检索（如查某 peer 关于某话题的事实）。
+        """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         stmt = sa.select(SemanticFact).where(
             SemanticFact.owner_id == owner_id,
@@ -171,6 +176,8 @@ class SemanticFactService:
         )
         if subject_kind in _VALID_SUBJECT_KINDS:
             stmt = stmt.where(SemanticFact.subject_kind == subject_kind)
+        if subject_id:
+            stmt = stmt.where(SemanticFact.subject_id == subject_id)
         q = (query or '').strip()
         if q:
             like = f'%{q}%'
@@ -186,12 +193,16 @@ class SemanticFactService:
         owner_id: str,
         subject_kind: str | None = None,
         subject_id: str | None = None,
+        query: str | None = None,
         scope_kind: str | None = None,
         scope_id: str | None = None,
         min_confidence: float = 0.0,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """召回某主体/作用域下的 active 事实（供注入），按 updated_at 倒序。"""
+        """召回某主体/作用域下的 active 事实（供注入），按 updated_at 倒序。
+
+        doc18 S2：可选 `query` 词项过滤（predicate/object ILIKE，与 search 同实现）——补上「按人 + 关键词」召回。
+        """
         limit = max(1, min(_MAX_LIMIT, int(limit)))
         stmt = sa.select(SemanticFact).where(
             SemanticFact.owner_id == owner_id,
@@ -202,6 +213,10 @@ class SemanticFactService:
             stmt = stmt.where(SemanticFact.subject_kind == subject_kind)
         if subject_id:
             stmt = stmt.where(SemanticFact.subject_id == subject_id)
+        q = (query or '').strip()
+        if q:
+            like = f'%{q}%'
+            stmt = stmt.where(sa.or_(SemanticFact.predicate.ilike(like), SemanticFact.object_json.ilike(like)))
         if scope_kind in _VALID_SCOPE_KINDS:
             stmt = stmt.where(SemanticFact.scope_kind == scope_kind)
         if scope_id:
@@ -233,8 +248,10 @@ class SemanticFactService:
             base = base.where(SemanticFact.agent_id == agent_id)
         total = (await db.execute(sa.select(sa.func.count()).select_from(base.subquery()))).scalar_one()
         rows = (
-            await db.execute(base.order_by(SemanticFact.updated_at.desc()).limit(limit).offset(offset))
-        ).scalars().all()
+            (await db.execute(base.order_by(SemanticFact.updated_at.desc()).limit(limit).offset(offset)))
+            .scalars()
+            .all()
+        )
         return {'total': total, 'items': [_serialize(r) for r in rows], 'limit': limit, 'offset': offset}
 
 

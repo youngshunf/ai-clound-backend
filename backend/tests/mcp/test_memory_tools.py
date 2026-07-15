@@ -100,6 +100,18 @@ def test_save_required_fields_and_reads_have_no_required() -> None:
     assert _tool('hasn.memory.search').input_schema['required'] == ['query']
 
 
+def test_s2_combined_filter_params_present() -> None:
+    """doc18 S2：search 加可选 subject_id、recall 加可选 query（「按人 + 关键词」组合检索），
+    且均为可选（不进 required）。"""
+    search_props = _tool('hasn.memory.search').input_schema['properties']
+    assert 'subject_id' in search_props, 'search 应新增可选 subject_id'
+    assert _tool('hasn.memory.search').input_schema['required'] == ['query']  # subject_id 仍可选
+
+    recall_props = _tool('hasn.memory.recall').input_schema['properties']
+    assert 'query' in recall_props, 'recall 应新增可选 query'
+    assert 'required' not in _tool('hasn.memory.recall').input_schema  # query 可选
+
+
 def test_memory_scope_in_platform_catalog() -> None:
     """memory:write 已登记平台 scope 展示目录（webui 能力管理可见可管控）。"""
     from backend.app.mcp.platform_scopes import PLATFORM_SCOPE_CATALOG
@@ -190,6 +202,23 @@ async def test_memory_save_and_read_roundtrip_real_db() -> None:
         hi_conf = await recall.execute(ctx, {'min_confidence': 0.9})
         assert all(r['confidence'] >= 0.9 for r in hi_conf)
         assert not any(r['fact_id'] == f1['fact_id'] for r in hi_conf)
+
+        # 7.5) doc18 S2「按人 + 关键词」组合检索：
+        #   - search 加 subject_id 限定某 peer + 关键词
+        f5 = await save.execute(
+            ctx,
+            {'predicate': '爱好', 'object': '爬山', 'subject_kind': 'peer', 'subject_id': peer_id},
+        )
+        combo = await search.execute(ctx, {'query': '爬山', 'subject_id': peer_id})
+        assert any(h['fact_id'] == f5['fact_id'] for h in combo)
+        assert all(h['subject_id'] == peer_id for h in combo)
+        # 关键词命中但主体不符（peer_id 之外）→ 组合检索排除
+        combo_other = await search.execute(ctx, {'query': '爬山', 'subject_id': 'h_not_this_peer'})
+        assert not any(h['fact_id'] == f5['fact_id'] for h in combo_other)
+        #   - recall 加 query 词项过滤（同一 peer 下按关键词收敛）
+        recall_q = await recall.execute(ctx, {'subject_kind': 'peer', 'subject_id': peer_id, 'query': '爬山'})
+        assert any(r['fact_id'] == f5['fact_id'] for r in recall_q)
+        assert not any(r['fact_id'] == f3['fact_id'] for r in recall_q)  # 职业事实不含「爬山」被过滤
 
         # 8) list：分页 + total；本 owner 至少 4 条
         page = await listt.execute(ctx, {'limit': 100})

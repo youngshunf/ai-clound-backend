@@ -19,8 +19,7 @@ import logging
 
 from datetime import timedelta
 from typing import Any
-
-logger = logging.getLogger(__name__)
+from uuid import uuid4
 
 from fastapi import WebSocket
 from sqlalchemy import select
@@ -33,8 +32,11 @@ from backend.app.hasn.service.ws_delivery_bus import ws_delivery_bus
 from backend.database.redis import redis_client
 from backend.utils.timezone import timezone
 
+logger = logging.getLogger(__name__)
+
 # Redis 键
 NODE_CONN_KEY = 'hasn:node_conn'
+NODE_GENERATION_KEY = 'hasn:node_generation'
 ENTITY_NODE_KEY = 'hasn:entity_node'
 NODE_ENTITIES_PREFIX = 'hasn:node_entities'
 USER_NODES_PREFIX = 'hasn:user_nodes'
@@ -65,6 +67,55 @@ CLIENT_CONN_KEY = NODE_CONN_KEY
 USER_CLIENTS_PREFIX = USER_NODES_PREFIX
 AGENT_CLIENT_KEY = ENTITY_NODE_KEY
 
+_REFRESH_PRESENCE_IF_CURRENT_SCRIPT = """
+if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then
+    return 0
+end
+redis.call('SET', KEYS[2], '1', 'EX', ARGV[3])
+return 1
+"""
+
+_UNREGISTER_NODE_IF_CURRENT_SCRIPT = """
+if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then
+    return 0
+end
+
+local entity_ids = redis.call('SMEMBERS', KEYS[3])
+for _, hasn_id in ipairs(entity_ids) do
+    if redis.call('HGET', KEYS[4], hasn_id) == ARGV[1] then
+        redis.call('HDEL', KEYS[4], hasn_id)
+    end
+    if string.sub(hasn_id, 1, 2) == 'h_' then
+        redis.call('SREM', ARGV[3] .. ':' .. hasn_id, ARGV[1])
+    end
+end
+
+redis.call('DEL', KEYS[3])
+redis.call('HDEL', KEYS[2], ARGV[1])
+redis.call('DEL', KEYS[5])
+redis.call('HDEL', KEYS[1], ARGV[1])
+return 1
+"""
+
+_ACK_OFFLINE_PREFIX_SCRIPT = """
+for index = 1, #ARGV do
+    if redis.call('LINDEX', KEYS[1], index - 1) ~= ARGV[index] then
+        return 0
+    end
+end
+redis.call('LTRIM', KEYS[1], #ARGV, -1)
+return #ARGV
+"""
+
+
+def _decode_offline_message(raw: str | bytes) -> dict | None:
+    """解析离线队列帧；畸形或非对象 JSON 不参与补推。"""
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
 
 class WsRouterService:
     """WebSocket 连接路由管理（统一实体模型）"""
@@ -77,32 +128,55 @@ class WsRouterService:
         node_type: str,
         ws: WebSocket,
         capacity: int = 1,
-    ) -> None:
+    ) -> str:
         """注册节点在线（不绑定任何用户身份）"""
+        connection_id = uuid4().hex
         conn_info = json.dumps({
             'node_type': node_type,
             'capacity': capacity,
             'connected_at': timezone.now().isoformat(),
+            'connection_id': connection_id,
         })
+        # 代际先写：旧连接的原子清理要么发生在此之前并完整结束，要么看到新代际后 no-op。
+        await redis_client.hset(NODE_GENERATION_KEY, node_id, connection_id)
         await redis_client.hset(NODE_CONN_KEY, node_id, conn_info)
         # P3：写节点存活键（带 TTL），由 hasn.ping 心跳续期；过期即视为离线。
-        await redis_client.set(
-            f'{NODE_ALIVE_PREFIX}:{node_id}', '1', ex=NODE_PRESENCE_TTL_SECS
-        )
+        await redis_client.set(f'{NODE_ALIVE_PREFIX}:{node_id}', '1', ex=NODE_PRESENCE_TTL_SECS)
 
         # 存储 WebSocket 引用（进程内，用于直接推送）
         _ws_connections[node_id] = ws
+        _ws_connection_ids[node_id] = connection_id
+        _ws_ready_connection_ids.pop(node_id, None)
+        return connection_id
 
-    async def refresh_node_presence(self, node_id: str) -> None:
+    async def mark_node_ready(self, node_id: str, connection_id: str) -> bool:
+        """握手首帧发出后开放业务投递，并立即排空断线窗口的持久队列。"""
+        if _ws_connection_ids.get(node_id) != connection_id:
+            return False
+        current = await redis_client.hget(NODE_GENERATION_KEY, node_id)
+        if current != connection_id:
+            return False
+        _ws_ready_connection_ids[node_id] = connection_id
+        await ws_delivery_bus.drain_node(node_id)
+        return True
+
+    async def refresh_node_presence(self, node_id: str, connection_id: str) -> bool:
         """应用层心跳续期节点存活 TTL（hasn.ping 触发）。
 
-        无条件续期：能发 ping 即说明该连接活着。死设备不会发 ping，其键自然过期。
+        仅当前连接代际可续期。旧 socket 即使迟到发 ping，也不能制造在线假象。
         """
-        await redis_client.set(
-            f'{NODE_ALIVE_PREFIX}:{node_id}', '1', ex=NODE_PRESENCE_TTL_SECS
+        refreshed = await redis_client.eval(
+            _REFRESH_PRESENCE_IF_CURRENT_SCRIPT,
+            2,
+            NODE_GENERATION_KEY,
+            f'{NODE_ALIVE_PREFIX}:{node_id}',
+            node_id,
+            connection_id,
+            NODE_PRESENCE_TTL_SECS,
         )
+        return bool(refreshed)
 
-    async def unregister_node(self, node_id: str) -> None:
+    async def unregister_node(self, node_id: str, connection_id: str) -> bool:
         """注销节点，清理所有实体绑定。
 
         断连清理是 best-effort：redis 不可用 / 连接 transport 已关闭（断连与 event-loop
@@ -110,31 +184,31 @@ class WsRouterService:
         handler 的 finally，触发 "Application callable raised an exception"。漏清的
         presence 键带 TTL（NODE_ALIVE_PREFIX）会自然过期自愈；进程内 WS 引用无论如何都移除。
         """
+        removed = False
         try:
-            # 拿到该 Node 上的所有实体
-            entity_ids = await redis_client.smembers(f'{NODE_ENTITIES_PREFIX}:{node_id}')
-
-            for hasn_id in entity_ids:
-                # 从统一路由表移除
-                existing = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
-                if existing == node_id:
-                    await redis_client.hdel(ENTITY_NODE_KEY, hasn_id)
-
-                # 如果是 Human，从 user_nodes 移除
-                if hasn_id.startswith('h_'):
-                    await redis_client.srem(f'{USER_NODES_PREFIX}:{hasn_id}', node_id)
-
-            # 清理 Node 实体集合
-            await redis_client.delete(f'{NODE_ENTITIES_PREFIX}:{node_id}')
-            # 清理 Node 连接记录
-            await redis_client.hdel(NODE_CONN_KEY, node_id)
-            # 清理节点存活键（P3）
-            await redis_client.delete(f'{NODE_ALIVE_PREFIX}:{node_id}')
+            removed = bool(
+                await redis_client.eval(
+                    _UNREGISTER_NODE_IF_CURRENT_SCRIPT,
+                    5,
+                    NODE_GENERATION_KEY,
+                    NODE_CONN_KEY,
+                    f'{NODE_ENTITIES_PREFIX}:{node_id}',
+                    ENTITY_NODE_KEY,
+                    f'{NODE_ALIVE_PREFIX}:{node_id}',
+                    node_id,
+                    connection_id,
+                    USER_NODES_PREFIX,
+                )
+            )
         except Exception as e:
             logger.warning(f'[HASN] 注销节点 redis 清理失败 (非致命，TTL 自愈): {node_id} - {e}')
         finally:
-            # 移除 WebSocket 引用（进程内，无论 redis 是否可用都要做）
-            _ws_connections.pop(node_id, None)
+            # 本地引用同样按代际清理，旧 handler 不得弹掉已覆盖的新 socket。
+            if _ws_connection_ids.get(node_id) == connection_id:
+                _ws_connections.pop(node_id, None)
+                _ws_connection_ids.pop(node_id, None)
+                _ws_ready_connection_ids.pop(node_id, None)
+        return removed
 
     # ─── 现行控制平面：Owner Binding / Agent Presence ───
 
@@ -144,6 +218,7 @@ class WsRouterService:
         owner_id: str,
         owner_proof: dict,
         db: AsyncSession,
+        *,
         skip_proof_verify: bool = False,
     ) -> dict[str, Any]:
         if skip_proof_verify:
@@ -260,9 +335,7 @@ class WsRouterService:
         await self._register_entity(node_id, agent_id, is_human=False)
 
         # 更新 hasn_agents 表的 node_id 字段
-        result = await db.execute(
-            select(HasnAgents).where(HasnAgents.hasn_id == agent_id)
-        )
+        result = await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == agent_id))
         agent = result.scalar_one_or_none()
         if agent:
             agent.node_id = node_id
@@ -276,9 +349,7 @@ class WsRouterService:
         await self._clear_agent_readiness(agent_id)
         return {'agent_id': agent_id, 'accepted': True}
 
-    async def set_agent_readiness(
-        self, agent_id: str, online_status: str, health_status: str | None
-    ) -> None:
+    async def set_agent_readiness(self, agent_id: str, online_status: str, health_status: str | None) -> None:
         """按 daemon 心跳携带的运行时健康写/删 agent 就绪键（在线语义收紧）。
 
         仅当 ``online_status == 'online' and health_status == 'ok'``（协议权威「在线」：
@@ -299,15 +370,17 @@ class WsRouterService:
             await redis_client.delete(f'{AGENT_READY_PREFIX}:{agent_id}')
 
     async def _validate_agent(
-        self, node_id: str, hasn_id: str, entity: dict, db: AsyncSession,
+        self,
+        node_id: str,
+        hasn_id: str,
+        entity: dict,
+        db: AsyncSession,
     ) -> dict | None:
         """校验 Agent 实体。返回 None 表示通过。"""
         owner_id = entity.get('owner_id', '')
 
         # 查询 Agent 记录
-        result = await db.execute(
-            select(HasnAgents).where(HasnAgents.hasn_id == hasn_id)
-        )
+        result = await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == hasn_id))
         agent = result.scalar_one_or_none()
 
         if not agent:
@@ -328,10 +401,7 @@ class WsRouterService:
             # 部署下看不全，且**降级持有者的 WS 仍连着** → 误判「在服务」→ 挡住健康设备接管 →
             # 消息路由卡死在降级设备上黑洞（换设备接不了管、旧机又收不动）。就绪键(agent_ready)
             # 才是「runtime 真能收消息」的权威信号，与 `is_agent_online` 的三闸门同源。
-            holder_serving = (
-                await self._node_alive(existing_node)
-                and await self._agent_ready(hasn_id)
-            )
+            holder_serving = await self._node_alive(existing_node) and await self._agent_ready(hasn_id)
             if holder_serving:
                 return {'hasn_id': hasn_id, 'reason': f'已在节点 {existing_node} 上运行'}
             # 旧持有者非就绪（死节点 / 降级 runtime / 残留路由）→ 释放路由，允许新节点接管
@@ -343,7 +413,7 @@ class WsRouterService:
 
         return None
 
-    async def _register_entity(self, node_id: str, hasn_id: str, is_human: bool) -> None:
+    async def _register_entity(self, node_id: str, hasn_id: str, *, is_human: bool) -> None:
         """将实体注册到路由表"""
         # 统一路由表
         await redis_client.hset(ENTITY_NODE_KEY, hasn_id, node_id)
@@ -377,9 +447,7 @@ class WsRouterService:
             return await self._push_to_human(target_hasn_id, payload_json)
         return await self._push_to_entity(target_hasn_id, payload_json)
 
-    async def broadcast_sync_invalidate(
-        self, kind: str, revision: str, owner_id: str | None = None
-    ) -> int:
+    async def broadcast_sync_invalidate(self, kind: str, revision: str, owner_id: str | None = None) -> int:
         """向在线节点推送 ``hasn.sync.invalidate``（配置/目录变更信号，doc02-07）。
 
         - ``owner_id=None`` → 全部在线节点（全局 kind：builtin_catalog/common_skills/
@@ -409,9 +477,7 @@ class WsRouterService:
         await ws_delivery_bus.publish_broadcast(payload_json)
         return await redis_client.hlen(NODE_CONN_KEY)
 
-    async def push_to_owner_excluding_agent_node(
-        self, owner_id: str, agent_id: str, payload: dict
-    ) -> bool:
+    async def push_to_owner_excluding_agent_node(self, owner_id: str, agent_id: str, payload: dict) -> bool:
         """Owner 透明 fanout：把「发给 Agent 的消息」也投给 Agent 主人的在线节点，
         但**跳过 Agent 实体当前所在的节点**。
 
@@ -438,7 +504,7 @@ class WsRouterService:
         payload_json = json.dumps(payload, ensure_ascii=False)
         return await self._push_to_human(owner_id, payload_json, None)
 
-    async def _send_or_publish(self, node_id: str, payload_json: str) -> None:
+    async def _send_or_publish(self, node_id: str, payload_json: str) -> bool:
         """投给某 node：连接在本 worker 直发；否则经投递总线交给持有它的 worker。
 
         多 worker（``--workers N``）部署下 ``_ws_connections`` 只含**本进程** accept 的
@@ -447,17 +513,22 @@ class WsRouterService:
         是「多 worker 完全收不到消息」的根因）。
         """
         ws = _ws_connections.get(node_id)
-        if ws is not None:
-            try:
-                await ws.send_text(payload_json)
-                return
-            except Exception:
-                pass
-        await ws_delivery_bus.publish_to_node(node_id, payload_json)
+        connection_id = _ws_connection_ids.get(node_id)
+        ready_id = _ws_ready_connection_ids.get(node_id)
+        current_id = (
+            await redis_client.hget(NODE_GENERATION_KEY, node_id)
+            if ws is not None and connection_id and ready_id == connection_id
+            else None
+        )
+        if (
+            ws is not None
+            and connection_id == ready_id == current_id
+            and await ws_delivery_bus._safe_send(ws, payload_json)
+        ):
+            return True
+        return await ws_delivery_bus.publish_to_node(node_id, payload_json)
 
-    async def _push_to_human(
-        self, hasn_id: str, payload_json: str, exclude_nodes: set[str] | None = None
-    ) -> bool:
+    async def _push_to_human(self, hasn_id: str, payload_json: str, exclude_nodes: set[str] | None = None) -> bool:
         """Human 消息 → 投所有在线节点（exclude_nodes 跳过已由其它路由收到本消息的节点）。
 
         在线判定以 Redis presence（``user_nodes``）为权威：有在线节点即逐个
@@ -471,9 +542,12 @@ class WsRouterService:
             await self._enqueue_offline(hasn_id, payload_json)
             return False
 
+        delivered = False
         for nid in node_ids:
-            await self._send_or_publish(nid, payload_json)
-        return True
+            delivered = await self._send_or_publish(nid, payload_json) or delivered
+        if not delivered:
+            await self._enqueue_offline(hasn_id, payload_json)
+        return delivered
 
     async def push_self_sync(self, owner_id: str, payload: dict, exclude_node: str) -> None:
         """多端自同步：把发送方自己的消息回显给该 owner 的**其它**在线节点
@@ -491,8 +565,7 @@ class WsRouterService:
     async def _push_to_entity(self, hasn_id: str, payload_json: str) -> bool:
         """Agent/通用实体消息 → 查统一路由表（跨 worker 经投递总线）"""
         node_id = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
-        if node_id:
-            await self._send_or_publish(node_id, payload_json)
+        if node_id and await self._send_or_publish(node_id, payload_json):
             return True
 
         # 离线
@@ -507,6 +580,35 @@ class WsRouterService:
 
     # ─── 离线消息补推 ───
 
+    async def claim_offline_messages(
+        self,
+        entity_ids: list[str],
+    ) -> tuple[list[dict], dict[str, list[str]]]:
+        """读取待补推消息但暂不删除，返回帧内容和用于成功确认的原始队列前缀。"""
+        all_msgs: list[dict] = []
+        claims: dict[str, list[str]] = {}
+        for entity_id in entity_ids:
+            key = f'{OFFLINE_PREFIX}:{entity_id}'
+            raw_messages = list(await redis_client.lrange(key, 0, -1))
+            if not raw_messages:
+                continue
+            claims[key] = raw_messages
+            all_msgs.extend(message for raw in raw_messages if (message := _decode_offline_message(raw)))
+        all_msgs.sort(key=lambda message: message.get('created_time', ''))
+        return all_msgs, claims
+
+    async def ack_offline_messages(self, claims: dict[str, list[str]]) -> None:
+        """发送成功后仅删除领取时看到的相同前缀，保留并发新入队消息。"""
+        for key, raw_messages in claims.items():
+            if not raw_messages:
+                continue
+            await redis_client.eval(
+                _ACK_OFFLINE_PREFIX_SCRIPT,
+                1,
+                key,
+                *raw_messages,
+            )
+
     async def get_offline_messages(
         self,
         entity_ids: list[str],
@@ -517,11 +619,7 @@ class WsRouterService:
         for eid in entity_ids:
             key = f'{OFFLINE_PREFIX}:{eid}'
             msgs = await redis_client.lrange(key, 0, -1)
-            for raw in msgs:
-                try:
-                    all_msgs.append(json.loads(raw))
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            all_msgs.extend(message for raw in msgs if (message := _decode_offline_message(raw)))
             if msgs:
                 await redis_client.delete(key)
 
@@ -582,7 +680,11 @@ class WsRouterService:
         在下一次 IO 失败 / 重认证时完成。
         """
         ws = _ws_connections.get(node_id)
-        await self.unregister_node(node_id)
+        connection_id = (
+            _ws_connection_ids.get(node_id) if ws is not None else await redis_client.hget(NODE_GENERATION_KEY, node_id)
+        )
+        if connection_id:
+            await self.unregister_node(node_id, connection_id)
         if ws is not None:
             try:
                 await ws.close(code=4002, reason='remote logout')
@@ -608,17 +710,17 @@ class WsRouterService:
         nodes = await redis_client.hmget(ENTITY_NODE_KEY, entity_ids)
         # P3：路由表命中后还需该节点存活心跳未过期，否则是僵尸路由 → 判离线。
         # 在线语义收紧：再叠加 agent 就绪键（心跳 online+ok 才写），批量 MGET 取。
-        ready_flags = await redis_client.mget(
-            [f'{AGENT_READY_PREFIX}:{eid}' for eid in entity_ids]
-        )
+        ready_flags = await redis_client.mget([f'{AGENT_READY_PREFIX}:{eid}' for eid in entity_ids])
         result: dict[str, bool] = {}
         for eid, node, ready in zip(entity_ids, nodes, ready_flags):
             result[eid] = bool(node) and bool(ready) and await self._node_alive(node)
         return result
 
 
-# 进程内 WebSocket 连接引用（node_id → WebSocket）
+# 进程内 WebSocket 连接引用与代际。拆成两个表以保持既有投递代码的 WebSocket 值契约。
 _ws_connections: dict[str, WebSocket] = {}
+_ws_connection_ids: dict[str, str] = {}
+_ws_ready_connection_ids: dict[str, str] = {}
 
 # 全局单例
 ws_router: WsRouterService = WsRouterService()
