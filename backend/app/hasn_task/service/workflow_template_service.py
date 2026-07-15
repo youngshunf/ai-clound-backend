@@ -46,31 +46,41 @@ _DOMAIN_DICT_CODE = 'workflow_template_domain'
 # 模板节点数上限（模板是「场景蓝图」，节点远少于自由工作流；取保守常量，与 webui 画廊卡负载相称）。
 _MAX_NODES = 20
 
-# 产物 kind 权威注册表（doc11 §4.3 node.output_spec.kind）：两内置模板（一人公司 / 金融投研）
-# 的 canonical 取值并集 + 通用产物 kind。新增 kind 须先在此登记（与 hub 模板 canonical 对齐），
-# 否则 draft/update/publish 校验拒绝——分身读 message 里的具体 kind 名即可自修。
+# 产物 kind 权威注册表（doc11 §4.3 node.output_spec.kind）——**必须与产物系统 `hasn_artifacts.kind`
+# 的 9 枚举严格对齐**（`hasn_artifacts_service._ALLOWED_KINDS`），外加起点锚点 `workflow_anchor`。
+#
+# 【为什么必须对齐产物系统】W-S2 产出闸（daemon `evaluate_output_gate`）按**精确匹配**判定：节点
+# 声明的 `output_spec.kind` 必须等于分身实际登记进 `hasn_artifacts` 的某条产物的 `kind`，否则闸永远
+# 报「未产出」。register-on-write 把分身写的应用资源自动登记进 `hasn_artifacts`，其 `kind` 一律归一到
+# 下面 9 个之一（越界→`other`）。故模板 output_spec.kind 只能取产物系统认得的 kind，语义别名
+# （knowledge_base/strategy_card/website/…）会导致闸永不通过（历史 bug 根因）。
+#
+# 各 kind 由哪个应用/工具产出（register-on-write 事实映射，详见 hub `workflow-templates/README.md`）：
+#   dataset  ← 知识库容器（hasn.knowledge.create_kb）
+#   document ← 知识库文档 / 社区文章 / 创作项目 / 任意 .md（knowledge.upload_document、community.create_article、creator.project.create）
+#   deck     ← 演示文稿（hasn.deck.*）
+#   webpage  ← 建站发布（hasn.publish.create）
+#   image    ← 图像产出（hasn.image.generate、hasn.imagelab.*）
+#   voice    ← 语音合成（hasn.voice.synthesize）
+#   video    ← 视频产出（hasn.video.generate、hasn.studio.*）
+#   file     ← runtime 文件读写工具写的文件（doc34 运行时文件捕获，按扩展名归一）
+#   other    ← 应用资源无自然文件类型时的兜底（设计系统 designsystem.save、获客线索 growth.*、社区帖 community.create_post）
+#
+# 新增 kind 前先确认产物系统真能登记出该 kind（否则闸判不过）；起点节点用 `workflow_anchor`——它是
+# daemon 为 origin 节点合成的内联锚点，origin 预完成为 `done` 不过产出闸，故此 kind 永不参与匹配。
 _OUTPUT_KINDS: frozenset[str] = frozenset(
     {
-        'workflow_anchor',  # 起点锚点产物（主人输入）
-        'knowledge_base',
-        'dataset',
-        'strategy_card',
-        'backtest_report',
-        'design_system',
-        'design_asset',
-        'website',
-        'content_collection',
-        'lead_list',
-        'deck',
-        'article',
-        # 通用产物 kind（跨场景复用）
-        'document',
-        'report',
+        'workflow_anchor',  # 起点锚点产物（主人输入·origin 节点预完成·不过产出闸）
+        # 产物系统 9 枚举（= hasn_artifacts_service._ALLOWED_KINDS）
         'image',
+        'voice',
         'video',
-        'presentation',
-        'code',
-        'data',
+        'file',
+        'document',
+        'deck',
+        'webpage',
+        'dataset',
+        'other',
     }
 )
 

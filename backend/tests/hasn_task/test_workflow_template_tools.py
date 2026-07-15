@@ -132,7 +132,7 @@ def _valid_graph() -> dict:
                 'is_origin': False,
                 'default_agent_type': 'assistant',
                 'apps': ['knowledge', 'growth'],
-                'output_spec': {'kind': 'knowledge_base', 'label': '调研'},
+                'output_spec': {'kind': 'dataset', 'label': '调研'},
                 'display': {'order': 2, 'step_label': '调研'},
             },
         ],

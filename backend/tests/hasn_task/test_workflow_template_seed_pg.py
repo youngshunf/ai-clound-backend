@@ -118,7 +118,7 @@ def _graph_spec() -> dict[str, Any]:
                 'skills': [],
                 'prompt': '围绕想法做市场研究',
                 'system_prompt': '你是主人的市场研究专家',
-                'output_spec': {'kind': 'knowledge_base', 'label': '市场分析知识库'},
+                'output_spec': {'kind': 'dataset', 'label': '市场分析知识库'},
                 'review_policy': {'mode': 'none', 'max_rejects': 0},
                 'display': {'order': 2, 'step_label': '调研'},
             },
@@ -200,7 +200,7 @@ async def test_sync_inserts_builtin_row_with_graph_spec(env: SimpleNamespace, tm
     assert row.graph_spec['edges'] == [{'parent': 'idea', 'child': 'research'}]
     assert row.graph_spec['nodes'][1]['node_key'] == 'research'
     assert row.graph_spec['nodes'][1]['apps'] == ['knowledge', 'growth']
-    assert row.graph_spec['nodes'][1]['output_spec']['kind'] == 'knowledge_base'
+    assert row.graph_spec['nodes'][1]['output_spec']['kind'] == 'dataset'
     assert row.graph_spec['nodes'][0]['review_policy']['mode'] == 'none'
 
 
