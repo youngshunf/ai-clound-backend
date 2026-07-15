@@ -48,12 +48,25 @@ _MIGRATION = (
 )
 
 
+# 历史迁移写于 2026-06-09，当时 task 运行表在 public.hasn_task_run；此后 task 模块做了
+# schema 拆分重构（批次迁移 domains/task），把该表搬到了 hasn_task.run。迁移文件本身**不能
+# 改**——它按时间序正确（全新库重放到 06-09 时表还叫 public.hasn_task_run，那时若指向
+# hasn_task.run 反而炸）。但本测试是把这支历史迁移**重放到今天已演进的 schema** 上验证其
+# 去重/重指逻辑与幂等性，故仅在测试侧把已搬家的这一张表引用重映射到现名。其余 7 张
+# （hasn_messages/hasn_sync_events/hasn_asset_grants/hasn_suppressed_messages/
+# hasn_unread_counts/hasn_sessions/hasn_conversations）仍在 public，无需重映射。
+_MOVED_TABLE_REMAP = {'"public"."hasn_task_run"': '"hasn_task"."run"'}
+
+
 def _migration_statements() -> list[str]:
     """把迁移 SQL 拆成可逐条执行的语句：去掉整行 `--` 注释后按 `;` 切分。
 
     迁移内每条语句仅在末尾有 `;`（inline CTE，内部无分号），故按 `;` 切分安全。
+    重放前把「迁移写就后被后续 schema 拆分搬家的表」引用重映射到现名（见上方说明）。
     """
     raw = _MIGRATION.read_text(encoding='utf-8')
+    for old_ref, new_ref in _MOVED_TABLE_REMAP.items():
+        raw = raw.replace(old_ref, new_ref)
     no_comments = '\n'.join(
         line for line in raw.splitlines() if not line.lstrip().startswith('--')
     )
