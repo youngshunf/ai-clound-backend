@@ -314,6 +314,11 @@ class HasnCloudMcpServer:
             arguments, work_session_id = _tg.pop_session_id(arguments)
             if work_session_id:
                 agent_context.work_session_id = work_session_id
+            # 同时落 ContextVar：AI-Native 应用 handler（knowledge 等，经 ai_native gateway 分发、
+            # 只收 AgentTokenPayload 拿不到 AgentContext）只能经本通道取会话 id 做 register-on-write。
+            from backend.app.mcp.context import set_current_work_session_id
+
+            set_current_work_session_id(work_session_id)
 
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游
@@ -388,9 +393,11 @@ class HasnCloudMcpServer:
             return result
         finally:
             # G6 已判权资源随请求结束即清（doc33 S2-3/S2-4），防跨调用串味。
-            from backend.app.mcp.context import clear_authorized_resources
+            from backend.app.mcp.context import clear_authorized_resources, clear_current_work_session_id
 
             clear_authorized_resources()
+            # 工作会话 id 同理随调用结束即清，防跨调用串味（下次主会话直调误挂上次会话）。
+            clear_current_work_session_id()
 
     async def _enforce_resource_gate(
         self, agent_context: AgentContext, tool: BaseTool, arguments: dict[str, Any]
