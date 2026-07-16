@@ -160,6 +160,12 @@ class AppCatalogRegistry:
         from backend.app.hasn_computer_use.manifest import build_computer_use_app
 
         registry.register(build_computer_use_app())
+        # 项目管理 project（cloud AI-Native，schema hasn_project，模块 14 doc38；install_policy=auto
+        # 一级容器门面默认挂载——第三条轴「为了哪件事」，各应用容器/产物/工作会话经可空 project_id
+        # 联邦挂靠聚合。hasn.project.* 云端平台工具随 U3 注册 + 铸 scope）。延迟导入避免循环依赖。
+        from backend.app.hasn_project.manifest import build_project_app
+
+        registry.register(build_project_app())
         return registry
 
     def register(self, app: App) -> None:

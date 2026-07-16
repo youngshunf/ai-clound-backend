@@ -45,6 +45,7 @@ _TIER_RANK: dict[str, int] = {'free': 0, 'pro': 1, 'advanced': 2, 'flagship': 3}
 
 # 工作台排序（小在前）。未列出的 app 落到默认值之后。
 _CATALOG_SORT_ORDER: dict[str, int] = {
+    'project': 5,  # 项目管理（第三条轴「为了哪件事」聚合门面，doc38；一级容器置顶，install_policy=auto 默认挂载）
     'knowledge': 10,
     'community': 20,
     'deck': 35,
@@ -86,6 +87,16 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         'assistant',
         '你是任务应用的执行分身：把主人交办的事按计划执行、把结果带回并可追溯；'
         '只调用 hasn.task.* 工具，零 fake，失败如实报错。',
+    ),
+    # 项目管理归「全能助理（assistant）」——项目是「为了哪件事」的业务容器门面（doc38），
+    # 分身建项目/在项目内推进，不接管各应用容器（三条铁律）。
+    'project': (
+        'assistant',
+        '你是项目管理应用的执行分身：帮主人把「为了哪件事」的活儿收进项目——建项目（一句话目标'
+        '→ hasn.project.create）、把已有资源挂靠进来（hasn.project.link 知识库/获客项目/图坊项目/'
+        '站点/deck…）、按里程碑推进（hasn.project.milestone.*）、在项目内派发分身干活。项目只回答'
+        '「为了哪件事」——不替代各应用（知识库/获客/图坊仍在各自应用里操作），只做聚合与推进。'
+        '只调用 hasn.project.* 工具，挂靠/摘出统一经工具（不擅自跨应用改数据），零 fake，失败如实报错。',
     ),
     # 社区归「内容运营官（content_operator）」——与 deck/creator/film/designsystem 同一分身。
     'community': (
