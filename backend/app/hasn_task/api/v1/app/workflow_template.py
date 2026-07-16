@@ -4,9 +4,10 @@
 路径前缀: /api/v1/hasn-task/app
 - 列模板（首页模板条 / 画廊；可按 domain 过滤、按 sort_order 排序）+ 领域分组元数据
 - 取单模板详情（含 graph_spec 图蓝图，供实例化向导预览）
+- 自定义场景搭建器：建模板（POST）/ 改模板（PUT）/ 搭建器选项集（GET builder-options）
 
 WebUI 只调 daemon 铁律：webui 实际走 daemon 的 /api/v1/workflow-templates，由 daemon local_first
-镜像后 read-through 到本组云端接口；本切片只交付云端读 API，实例化物化归 daemon（§9-D）。
+镜像后 read-through 到本组云端接口；本切片交付云端读 API + 搭建器写 API，实例化物化归 daemon（§9-D）。
 """
 
 from typing import Annotated
@@ -14,6 +15,10 @@ from typing import Annotated
 from fastapi import APIRouter, Path, Query, Request
 
 from backend.app.hasn_task.api.v1.app.task import current_owner_id
+from backend.app.hasn_task.schema.workflow_template import (
+    OwnerCreateTemplateParam,
+    OwnerUpdateTemplateParam,
+)
 from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -38,6 +43,49 @@ async def list_templates(
         db, owner_id=owner_id, domain_only=domain_only, domain=domain, status=status
     )
     return response_base.success(data=data)
+
+
+# ⚠️ 静态路径必须在 /{template_key} 之前注册，否则会被动态段吞掉（builder-options 会当成 template_key）。
+@router.get(
+    '/workflow-templates/builder-options', summary='自定义场景搭建器选项集（应用/人设/产出/领域）',
+    dependencies=[DependsJwtAuth], name='hasn_workflow_template_app_builder_options',
+)
+async def builder_options(request: Request, db: CurrentSession) -> ResponseModel:
+    # 选项来自云端权威源（app_catalog_registry + ai_native_app_registry + sys_dict），与服务端校验同源。
+    await current_owner_id(request, db)  # 仅确认登录态（选项集本身不含用户私有数据）
+    data = await workflow_template_service.builder_options(db)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/workflow-templates', summary='建自定义场景模板（主人搭建器）',
+    dependencies=[DependsJwtAuth], name='hasn_workflow_template_app_create',
+)
+async def create_template(
+    request: Request, db: CurrentSession, obj: OwnerCreateTemplateParam
+) -> ResponseModel:
+    owner_id = await current_owner_id(request, db)
+    template = await workflow_template_service.create_owner_template(
+        db, owner_id=owner_id, params=obj.model_dump(exclude_none=True)
+    )
+    return response_base.success(data={'template': template})
+
+
+@router.put(
+    '/workflow-templates/{template_key}', summary='改自定义场景模板（主人搭建器）',
+    dependencies=[DependsJwtAuth], name='hasn_workflow_template_app_update',
+)
+async def update_template(
+    request: Request,
+    db: CurrentSession,
+    template_key: Annotated[str, Path()],
+    obj: OwnerUpdateTemplateParam,
+) -> ResponseModel:
+    owner_id = await current_owner_id(request, db)
+    template = await workflow_template_service.update_template(
+        db, owner_id=owner_id, template_key=template_key, params=obj.model_dump(exclude_none=True)
+    )
+    return response_base.success(data={'template': template})
 
 
 @router.get(

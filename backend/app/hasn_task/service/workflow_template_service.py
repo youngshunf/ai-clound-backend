@@ -58,6 +58,27 @@ _MAX_NODES = 20
 # 只是软识别、不拒绝（doc94 §10-P5：允许缺失但要能识别）。
 _BUILTIN_PERSONA_KEYS: frozenset[str] = frozenset({'assistant', 'content_operator', 'analyst'})
 
+# 内置人设展示名（与 _BUILTIN_PERSONA_KEYS 对齐·2026-07-12 收敛为 3，见 app_catalog_service._CATALOG_AGENT_DEFAULTS
+# 的注释口径：全能助理 assistant / 创作专家 content_operator / 分析专家 analyst）。搭建器人设下拉用。
+# 三条固定小集，就地列出即可（不另立会漂移的表）；tuple 顺序 = 下拉稳定展示序。
+_BUILTIN_PERSONA_ORDER: tuple[str, ...] = ('assistant', 'content_operator', 'analyst')
+_BUILTIN_PERSONA_LABELS: dict[str, str] = {
+    'assistant': '全能助理',
+    'content_operator': '创作专家',
+    'analyst': '分析专家',
+}
+
+# artifact_kind 载体维度可选值（doc35 6 闭集去掉 `resource`）——搭建器 output_spec picker 用。
+# 刻意不放 `resource`：expect 里基本不该出现 artifact_kind:resource（只答「是个应用资源」却不说是哪种，
+# 闸会被任意应用资源满足）——要判应用资源就选 resource_kind（见 hub workflow-templates/README §output_spec）。
+_ARTIFACT_KIND_LABELS: dict[str, str] = {
+    'document': '文档',
+    'image': '图片',
+    'video': '视频',
+    'voice': '语音',
+    'file': '文件',
+}
+
 # 内置模板可被 hub 重新下发覆盖的派生字段（对齐 hub 官方内置不变量：INSERT-only + builtin_key 可更新）。
 # 这些字段随 hub 重扫覆盖；template_uuid（端云同步主键）与 owner_id（归属）恒不动。
 _BUILTIN_UPDATABLE_FIELDS = (
@@ -427,6 +448,88 @@ class WorkflowTemplateService:
         return _to_public(tpl, include_graph_spec=True)
 
     @classmethod
+    async def create_owner_template(
+        cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """主人手动搭建器建模板（source=owner，过 §6.3 校验；status draft/active 二选一）。
+
+        「自定义场景」全页搭建器的云端落点：主人自己选应用 / 选人设 / 设提示词 → 拼出 graph_spec
+        → 本方法落库。与 `draft_template`（分身草案 source=agent、status 恒 draft）同一套校验 / 同一套
+        key 生成 / 同一套 create_template，区别仅在 source=owner 与可指定 status（草稿保存 vs 直接上架）。
+        """
+        graph_spec = params.get('graph_spec') or {}
+        validate_graph_spec(graph_spec)  # 不合法即抛，message 具体便于 webui 逐条提示修
+
+        status = params.get('status') or 'draft'
+        if status not in ('draft', 'active'):
+            raise errors.RequestError(msg=f'status 只能是 draft（草稿）或 active（上架），收到: {status}')
+
+        template_key = await cls._gen_unique_template_key(db, str(params.get('name') or 'scenario'))
+        obj = CreateWorkflowTemplateParam(
+            template_key=template_key,
+            name=str(params.get('name') or '未命名场景'),
+            domain=params.get('domain') or None,
+            tagline=params.get('tagline') or None,
+            description=params.get('description') or None,
+            sort_order=int(params.get('sort_order') or 0),
+            icon=params.get('icon') or None,
+            accent=params.get('accent') or None,
+            graph_spec=graph_spec,
+            is_builtin=False,
+            status=status,
+            source='owner',
+            version=1,
+        )
+        tpl = await cls.create_template(db, owner_id=owner_id, obj=obj)
+        return _to_public(tpl, include_graph_spec=True)
+
+    @classmethod
+    async def builder_options(cls, db: AsyncSession) -> dict[str, Any]:
+        """自定义场景搭建器所需的权威选项集（apps+resource_kinds / personas / artifact_kinds / domains）。
+
+        webui 全页搭建器据此渲染「选应用 / 选人设 / 设产出」下拉——取值全部来自云端权威源
+        （app_catalog_registry + ai_native_app_registry + sys_dict），避免 webui 手抄一张会漂移的表。
+        校验（validate_graph_spec）用的 valid_app_ids / valid_resource_kinds 与此同源，故搭建器给出的
+        选项一定能过服务端校验。
+        """
+        # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
+        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+        from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+
+        resource_labels = ai_native_app_registry.resource_kind_labels()
+        known_kinds = ai_native_app_registry.known_resource_kinds()
+
+        # 应用 → 该应用声明的 resource_kind 列表（按 {app_id}.{kind} 前缀归组，doc35）。
+        # 只投影会登记资源的应用的 kind；行情查询这类只读应用 resource_kinds 为空（搭建器提示改落知识库）。
+        apps: list[dict[str, Any]] = []
+        for app in app_catalog_registry.list():
+            app_kinds = [
+                {'resource_kind': k, 'label': resource_labels.get(k, k)}
+                for k in sorted(known_kinds)
+                if k.split('.', 1)[0] == app.id
+            ]
+            apps.append(
+                {
+                    'app_id': app.id,
+                    'name': app.name,
+                    'icon': app.icon,
+                    'resource_kinds': app_kinds,
+                }
+            )
+
+        personas = [
+            {'key': k, 'label': _BUILTIN_PERSONA_LABELS.get(k, k)} for k in _BUILTIN_PERSONA_ORDER
+        ]
+        artifact_kinds = [{'artifact_kind': k, 'label': v} for k, v in _ARTIFACT_KIND_LABELS.items()]
+        domains = await cls._domain_meta(db)
+        return {
+            'apps': apps,
+            'personas': personas,
+            'artifact_kinds': artifact_kinds,
+            'domains': domains,
+        }
+
+    @classmethod
     async def update_template(
         cls, db: AsyncSession, *, owner_id: str, template_key: str, params: dict[str, Any]
     ) -> dict[str, Any]:
@@ -454,6 +557,14 @@ class WorkflowTemplateService:
                 setattr(tpl, field, params[field])
         if params.get('sort_order') is not None:
             tpl.sort_order = int(params['sort_order'])
+
+        # 状态切换（草稿 ↔ 上架）：搭建器「保存草稿」→ draft，「保存并上架」→ active。
+        # 只接受 draft/active，其余非法值拒绝（archived/coming_soon 属内置/运营态，不由主人编辑切换）。
+        new_status = params.get('status')
+        if new_status is not None:
+            if new_status not in ('draft', 'active'):
+                raise errors.RequestError(msg=f'status 只能是 draft（草稿）或 active（上架），收到: {new_status}')
+            tpl.status = new_status
 
         tpl.version = (tpl.version or 1) + 1
         await db.flush()
