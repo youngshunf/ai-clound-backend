@@ -27,8 +27,10 @@ _APP_ROOT = _BACKEND_ROOT / 'app'
 # —— import guard 白名单（R0-02 存量 + 授权包装）——
 # 每项：相对 backend/ 的路径 → (owner, 删除期限/去向)。切到 ImGateway 后删除对应行。
 _MESSAGE_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
-    # 授权包装：收编期允许直接调现网 route（R2 后 route 逻辑内联进 application，最终删依赖）
+    # 授权收编点：通信域 application 自身允许直连现网 message_router 作收编封装（非业务模块，
+    # 与「R0-02 业务存量」段区分；R2 消费者化后逐一退役，非「往白名单加业务行」）。
     'app/hasn_im/application/local_gateway.py': ('im-refactor', 'R2-04 后内联 route 逻辑，删本依赖'),
+    'app/hasn_im/application/system_card_deliverer.py': ('im-refactor', 'R1-06 系统卡片投递收编点：R1-08 事务收口 / R2 消费者化后退役'),
     # R0-02 存量调用方（R1-05 各切片切 port 后逐个移除）
     'app/hasn_community/service/community_card_notifier.py': ('im-refactor', 'R1-05 slice③ 应用完成卡'),
     'app/hasn/api/v1/app/hasn_agents.py': ('im-refactor', 'R1-05 slice① MCP/agent'),
@@ -41,7 +43,7 @@ _MESSAGE_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     'app/mcp/ask_gate.py': ('im-refactor', 'R1-05 slice① MCP ask gate'),
     'app/mcp/tools/group.py': ('im-refactor', 'R1-05 slice⑤ groups'),
     'app/mcp/tools/message.py': ('im-refactor', 'R1-05 slice① MCP message'),
-    'app/notification/service/notification_carrier.py': ('im-refactor', 'R1-06 收编：删 persist_message 旁路'),
+    'app/notification/service/notification_carrier.py': ('im-refactor', 'R1-06 已删 persist_message 旁路；剩 deliver_card_to_agent(route) 待 R1-05 slice② 切'),
 }
 
 # ws_node 协议入口只允许被路由注册处 import
