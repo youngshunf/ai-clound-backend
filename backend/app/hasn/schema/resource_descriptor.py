@@ -35,7 +35,7 @@ class ArtifactRegistration:
 # open.mode 三枚举覆盖全部现实打开形态（doc31 §2.2）：
 #   internal_route  有 /:id 详情路由的应用（reel/knowledge/creator…）
 #   native_window   独立原生窗口应用（deck/design）
-#   entry_query     单入口 / tab、无 /:id 段的应用（imagelab ?item= 等）
+#   entry_query     单入口 / tab、无 /:id 段的应用（imagelab ?project= / quant ?backtest= 等）
 ResourceOpenMode = Literal['internal_route', 'native_window', 'entry_query']
 # native_window 目前仅两类独立窗口应用
 ResourceWindow = Literal['deck', 'design']

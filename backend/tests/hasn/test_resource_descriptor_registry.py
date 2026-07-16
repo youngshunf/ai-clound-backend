@@ -102,11 +102,11 @@ def test_descriptor_schema_validation_rules() -> None:
     ok = ResourceDescriptor.model_validate({
         'resource_kind': 'imagelab.project',
         'uri_domain': 'imagelab/projects',
-        'open': {'mode': 'entry_query', 'entry_route': '/apps/imagelab', 'query_key': 'item'},
+        'open': {'mode': 'entry_query', 'entry_route': '/apps/imagelab', 'query_key': 'project'},
         'card': {'verb': '图像', 'action_label': '打开图坊'},
     })
     assert ok.open.entry_route == '/apps/imagelab'
-    assert ok.open.query_key == 'item'
+    assert ok.open.query_key == 'project'
 
 
 # ── RC-P5 守卫①：descriptor↔doc08 域一致性（全应用，防漂移） ──────────────────────
