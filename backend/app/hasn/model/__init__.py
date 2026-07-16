@@ -44,6 +44,7 @@ from backend.app.hasn.model.hasn_platform_default_config import (
     HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,
 )
 from backend.app.hasn.model.hasn_resource_share import HasnResourceShare as HasnResourceShare
+from backend.app.hasn.model.hasn_speech_catalog import HasnSpeechCatalog as HasnSpeechCatalog
 from backend.app.hasn.model.hasn_session_artifacts import HasnSessionArtifacts as HasnSessionArtifacts
 from backend.app.hasn.model.hasn_session_events import HasnSessionEvents as HasnSessionEvents
 from backend.app.hasn.model.hasn_sessions import HasnSessions as HasnSessions

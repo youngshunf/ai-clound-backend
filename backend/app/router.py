@@ -139,6 +139,7 @@ def _load_hasn() -> None:
     from backend.app.hasn.api.router import app as hasn_app
     from backend.app.hasn.api.router import artifacts_agent as hasn_artifacts_agent
     from backend.app.hasn.api.router import artifacts_app as hasn_artifacts_app
+    from backend.app.hasn.api.router import ci as hasn_ci
     from backend.app.hasn.api.router import open_api as hasn_open
     from backend.app.hasn.api.router import v1 as hasn_v1
     from backend.app.hasn.api.router import ws as hasn_ws
@@ -151,6 +152,7 @@ def _load_hasn() -> None:
     router.include_router(hasn_ai_native)        # AI-Native 应用平台 API
     router.include_router(hasn_artifacts_agent)  # 分身产物 Agent API（/api/v1/artifacts/agent）
     router.include_router(hasn_artifacts_app)    # 分身产物 用户端 API（/api/v1/artifacts/app）
+    router.include_router(hasn_ci)               # HASN CI 发布面（Bearer 发布密钥·语音目录）
 
 
 def _load_hasn_community() -> None:

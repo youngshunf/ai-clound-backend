@@ -38,8 +38,16 @@ KIND_BUILTIN_CATALOG = 'builtin_catalog'
 KIND_COMMON_SKILLS = 'common_skills'
 KIND_PLATFORM_CONFIG = 'platform_config'
 KIND_DESIGNSYSTEM = 'designsystem'
+# 通用语音模型签名目录（SPCAT-4）：全局单行 catalog，发布即 bump，daemon 比对重拉验签写盘。
+KIND_SPEECH_CATALOG = 'speech_catalog'
 # 全局 kind：单一全局 revision，进 get_all_revisions 握手快照，bump(owner_id=None) 全局广播。
-KINDS = (KIND_BUILTIN_CATALOG, KIND_COMMON_SKILLS, KIND_PLATFORM_CONFIG, KIND_DESIGNSYSTEM)
+KINDS = (
+    KIND_BUILTIN_CATALOG,
+    KIND_COMMON_SKILLS,
+    KIND_PLATFORM_CONFIG,
+    KIND_DESIGNSYSTEM,
+    KIND_SPEECH_CATALOG,
+)
 
 # owner 定向 kind（doc02-07 LF-P3）：revision 是「某 owner 维度」的指纹，对全局握手无意义，
 # 故**不进 KINDS / get_all_revisions 握手快照**——离线追平靠该 owner 任务镜像的周期 sync_pull，
@@ -507,6 +515,10 @@ async def _compute_revision(kind: str, db: AsyncSession) -> str:
         return rev
     if kind == KIND_DESIGNSYSTEM:
         return await compute_designsystem_revision(db)
+    if kind == KIND_SPEECH_CATALOG:
+        from backend.app.hasn.service.speech_catalog_service import speech_catalog_service
+
+        return await speech_catalog_service.get_revision(db)
     raise ValueError(f'unknown sync kind: {kind}')
 
 

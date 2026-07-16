@@ -137,6 +137,10 @@ class Settings(BaseSettings):
     RELEASE_GITHUB_TOKEN: str = ''  # GitHub PAT（repo + actions:write）
     RELEASE_GITHUB_REPO: str = 'youngshunf/hasn-node'  # owner/repo
     RELEASE_GITHUB_WORKFLOW: str = 'release-desktop.yml'  # workflow 文件名或 id（对齐 .github/workflows/release-desktop.yml）
+    # 通用语音模型签名目录发布密钥（SPCAT-4·Bearer）：离线发布方 package-speech-model.sh --publish
+    # 携此密钥调 /api/v1/hasn/ci/speech-catalog/publish 上传 zip + 签名 catalog（constant-time 比较）。
+    # 未配置则拒绝所有发布（生产必须显式配置，避免误开放写库）。
+    SPEECH_CATALOG_PUBLISH_SECRET: str = ''
     HUANXING_HERMES_PLATFORM_LLM_BASE_URL: str = 'https://api.huanxing.ai/api/v1/llm/proxy/v1'
     HUANXING_HERMES_PLATFORM_LLM_API_KEY: str = ''
     HUANXING_HERMES_PLATFORM_LLM_MODEL: str = 'openai/gpt-5.5'

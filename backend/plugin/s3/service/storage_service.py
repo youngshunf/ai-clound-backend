@@ -62,6 +62,10 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     # 官网下载页/Tauri updater 直接读 CDN 长效直链，桌面端 ATS 要求 https（见 build_object_url）；
     # CI 出包后把二进制交云端此处入桶，复用云端既有七牛，CI 不再需要任何七牛凭据。
     'release_asset': ('public', None),
+    # 通用语音模型分发包（SPCAT-4）：**公共桶、不签名、无 TTL**。
+    # daemon 无鉴权纯 GET 下载 + sha256 + 包级 Ed25519 双重校验，URL 内嵌在签名 catalog 里、
+    # 必须长效 https（桌面端 ATS），不能是会过期的签名 URL——故归 public，同 release_asset 策略。
+    'speech_model': ('public', None),
 }
 
 # category → 对象前缀目录（key 的第一段，content-addressed 之上）。
@@ -73,6 +77,7 @@ CATEGORY_DIR: dict[str, str] = {
     'private_doc': 'docs',
     'published_artifact': 'published',
     'film_engine': 'film-engine',
+    'speech_model': 'speech-models',
 }
 
 # 缓存 margin：缓存 TTL = 签名有效期 - margin，保证缓存命中时签名仍有效（1c）。
