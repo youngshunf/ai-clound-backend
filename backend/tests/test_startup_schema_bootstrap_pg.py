@@ -25,10 +25,14 @@ from sqlalchemy.schema import CreateSchema, DropSchema
 
 from backend.common.model import MappedBase
 from backend.database.db import (
+    _resolve_role_engine,
     _should_auto_create_tables,
     async_engine,
     create_tables,
+    im_service_db_session,
     metadata_schemas,
+    python_backend_db_session,
+    sync_service_db_session,
 )
 
 # 注意：不用模块级 pytestmark——本文件混有同步纯函数测试；async 测试各自显式标注。
@@ -64,6 +68,28 @@ def test_metadata_schemas_shape() -> None:
 def test_should_auto_create_tables(environment: str, auto_flag: bool, expected: bool) -> None:
     """R1-11 纯判定：生产恒关启动期 create_all，非生产随 auto_flag。"""
     assert _should_auto_create_tables(environment, auto_flag) is expected
+
+
+@pytest.mark.parametrize('empty', ['', '   ', '\t\n'])
+def test_resolve_role_engine_empty_falls_back(empty: str) -> None:
+    """R1-13：覆盖 DSN 留空/纯空白 → 回落主 engine（dev/演练三角色共享连接池）。"""
+    assert _resolve_role_engine(empty, async_engine) is async_engine
+
+
+def test_resolve_role_engine_override_builds_separate() -> None:
+    """R1-13：填了独立 DSN → 建独立 engine（不复用主 engine）。engine 构造惰性、不连库。"""
+    override = 'postgresql+asyncpg://astra_im_service:pw@127.0.0.1:15432/huanxing'
+    engine = _resolve_role_engine(override, async_engine)
+    # engine 构造惰性、从不连库，连接池为空、无连接可泄漏——无需 dispose。
+    assert engine is not async_engine, '填了覆盖 DSN 应建独立 engine'
+    # 独立 engine 的 URL 应反映覆盖的 role 用户名（仅校验构造参数）
+    assert engine.url.username == 'astra_im_service'
+
+
+def test_three_role_session_makers_default_to_main_engine() -> None:
+    """R1-13：三角色 session maker 默认（无覆盖 DSN）均绑主 engine——dev 行为不变、全量测试照跑。"""
+    for maker in (im_service_db_session, sync_service_db_session, python_backend_db_session):
+        assert maker.kw['bind'] is async_engine
 
 
 @pytest.mark.asyncio

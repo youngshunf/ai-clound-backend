@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     # 即便此值被误设 True 也不生效，见 database/db.py::create_tables）。
     DATABASE_AUTO_CREATE_TABLES: bool = True
 
+    # 云端 IM 服务化 R1-13：三 DB 角色专属连接串覆盖（§3.2「同进程也必须分 session maker」）。
+    # 留空（默认）→ 该角色回落主连接（dev/演练：三角色共享主 engine、行为不变、全量测试照跑）。
+    # 生产在 R3 窗口先建 astra_im_service / astra_sync_service / astra_python_backend 三 role 并
+    # 授权后，再把对应 DSN 填入这三项，使 IM 域写 / sync 域写 / 通用后端各自经受限 role 落库
+    # （role 的库级 grant 才是硬边界，本接缝只负责把 session maker 分置、随时可指向 role）。
+    # 形如 postgresql+asyncpg://astra_im_service:***@host:5432/huanxing。
+    IM_SERVICE_DATABASE_URL: str = ''
+    SYNC_SERVICE_DATABASE_URL: str = ''
+    PYTHON_BACKEND_DATABASE_URL: str = ''
+
     # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）。
     # NEWAPI_QUOTA_PER_DOLLAR = new-api QuotaPerUnit（协议精度，非业务费率）。
     # （NEWAPI_DATABASE_SCHEMA + 旧别名 NEWAPI_CREDITS_TO_QUOTA_RATE 已随第二数据库引擎删除，2026-06-15。）

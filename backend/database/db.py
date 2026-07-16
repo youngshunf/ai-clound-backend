@@ -107,6 +107,19 @@ def metadata_schemas() -> list[str]:
     return sorted({table.schema for table in MappedBase.metadata.tables.values() if table.schema})
 
 
+def _resolve_role_engine(override_url: str, default_engine: AsyncEngine) -> AsyncEngine:
+    """解析某 DB 角色的 engine（云端 IM 服务化 R1-13 §3.2 纯判定）。
+
+    override_url 非空（生产 R3 授权 role 后填入）→ 为该 role 建独立 engine（受限 grant 才是硬边界）；
+    留空（dev/演练当前形态）→ 回落主 engine（复用同一连接池，避免三份空转池），三角色行为不变、
+    全量测试照跑。抽为纯函数便于零 mock 单测覆盖「填了建独立 / 留空回落」两支。
+    """
+    stripped = (override_url or '').strip()
+    if stripped:
+        return create_database_async_engine(stripped)
+    return default_engine
+
+
 def _should_auto_create_tables(environment: str, auto_flag: bool) -> bool:
     """启动期是否 metadata.create_all（R1-11 纯判定）。
 
@@ -167,6 +180,17 @@ SQLALCHEMY_DATABASE_URL = create_database_url()
 # SALA 异步引擎和会话
 async_engine = create_database_async_engine(SQLALCHEMY_DATABASE_URL)
 async_db_session = create_database_async_session(async_engine)
+
+# 云端 IM 服务化 R1-13：三 DB 角色专属 engine/session maker 分置（§3.2 同进程也必须分 session maker）。
+# 覆盖 DSN 留空时三者回落主 engine（dev/演练：共享同一连接池、行为不变）；生产 R3 授权 role 并填入
+# 对应 DSN 后，各自经受限 role 落库。IM 域写走 im_service_db_session、sync 域写走 sync_service_db_session、
+# 通用后端走 python_backend_db_session；R2 的 consumer/appender 逐步改用对应 session maker。
+im_service_engine = _resolve_role_engine(settings.IM_SERVICE_DATABASE_URL, async_engine)
+sync_service_engine = _resolve_role_engine(settings.SYNC_SERVICE_DATABASE_URL, async_engine)
+python_backend_engine = _resolve_role_engine(settings.PYTHON_BACKEND_DATABASE_URL, async_engine)
+im_service_db_session = create_database_async_session(im_service_engine)
+sync_service_db_session = create_database_async_session(sync_service_engine)
+python_backend_db_session = create_database_async_session(python_backend_engine)
 
 # Session Annotated
 CurrentSession = Annotated[AsyncSession, Depends(get_db)]
