@@ -26,12 +26,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_studio.service.studio_service import Subject, studio_service
-from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
     from backend.common.dataclasses import AgentTokenPayload
 
 
@@ -121,8 +122,9 @@ async def handle_save_project(
         bound_agent_id=input_payload.get('bound_agent_id'),
         status=input_payload.get('status'),
     )
-    await _register_studio_project(db, agent, result, source_tool='hasn.studio.save_project')
-    return result
+    registration = await _register_studio_project(db, agent, result, source_tool='hasn.studio.save_project')
+    # doc36 §3.2：返回体带 `uri`——分身建完项目当场知道怎么打开，不必二次查询。
+    return merge_resource_uri(result, registration)
 
 
 async def handle_save_storyboard(
@@ -136,20 +138,24 @@ async def handle_save_storyboard(
         storyboard=input_payload.get('storyboard'),
     )
     # 分镜也是项目写点：分身写完脚本，主人当场就该在会话资源栏看到这个项目。
-    await _register_studio_project(db, agent, result, source_tool='hasn.studio.save_storyboard')
-    return result
+    registration = await _register_studio_project(db, agent, result, source_tool='hasn.studio.save_storyboard')
+    # doc36 §3.2：`uri` 指向这个**项目**（分镜没有独立资源域，它是项目的一部分）——与登记的产物同一个东西。
+    return merge_resource_uri(result, registration)
 
 
 async def _register_studio_project(
     db: AsyncSession, agent: AgentTokenPayload, result: Any, *, source_tool: str
-) -> None:
-    """register-on-write：把刚写过的视频项目登记为产物（doc31 铁律）。"""
+) -> ArtifactRegistration | None:
+    """register-on-write：把刚写过的视频项目登记为产物（doc31 铁律）。
+
+    doc36 U2：返回 `ArtifactRegistration` 供写工具把 `uri` 放进返回体（§3.2 契约）。
+    """
     if not isinstance(result, dict):
-        return
+        return None
     project_id = result.get('id')
     if not isinstance(project_id, int):
-        return
-    await register_app_resource_artifact(
+        return None
+    return await register_app_resource_artifact(
         db,
         app_id='studio',
         resource_kind='studio.project',

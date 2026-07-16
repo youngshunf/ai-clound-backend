@@ -273,6 +273,8 @@ async def test_save_list_get_roundtrip_real_db() -> None:
         design_system_id = saved['id']
         assert design_system_id
         assert saved['revision']['bundle_asset_id'] == bundle_asset_id
+        # doc36 §3.2：写工具返回体必须带 `uri`，与下面登记落库的 resource_uri 同一个地址。
+        assert saved['uri'] == f'hasn://designsystem/{design_system_id}'
 
         # 落库核实：DesignSystem 行 + 一版 revision。
         async with async_db_session() as db:

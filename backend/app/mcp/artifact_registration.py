@@ -104,3 +104,22 @@ async def register_app_resource_artifact(
         logger.warning('[%s] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', app_id, e)
         # 登记没成，但资源建成了、地址算得出来——照常把 URI 交给分身（见 docstring）。
         return ArtifactRegistration(artifact_id=None, resource_uri=descriptor.build_uri(server_id))
+
+
+def merge_resource_uri(payload: dict[str, Any], registration: ArtifactRegistration | None) -> dict[str, Any]:
+    """把登记算出的 `hasn://` 地址并进写工具返回体（doc36 §3.2 契约，全仓统一走这里）。
+
+    契约：**凡是 register-on-write 的写工具，返回体必须含 `uri` 字段**，值 = 登记返回的
+    `resource_uri`。以前 URI 在登记那一刻算出来就地扔掉，分身写完只拿到一个裸 id、不知道
+    怎么打开自己刚做的东西——这正是 doc36 要修的根因。
+
+    登记返 `None`（descriptor 解析不出、URI 无从算起）→ 原样返回、**省略** `uri` 字段；不许
+    返空串或假 URI——分身拿到打不开的地址，只会以为是自己用错了。
+
+    字段名固定 `uri`（写工具面统一名，与 knowledge `_document_dict` 既有形状一致）；
+    `artifact.list/get` 查询面的同一个东西叫 `resource_uri`（历史形状保留），两边工具描述里
+    互相指认，不许出现第三个名字。
+    """
+    if registration is None:
+        return payload
+    return {**payload, 'uri': registration.resource_uri}

@@ -33,7 +33,7 @@ from backend.app.hasn_plan.service import (
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.hasn_plan.service.plan_authz import ERR_NOT_IN_ENTERPRISE_SPACE, resolve_plan_write_scope
 from backend.app.hasn_plan.service.plan_notify import notify_invited
-from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -231,8 +231,8 @@ async def _register_plan_artifact(
 async def _h_create_goal(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """建目标：service 建行后 register-on-write 直登记 hasn_artifacts（doc31 RC-P8 直建半场）。"""
     result = await plan_service.create_goal(db, owner=ctx.owner_hasn_id, data=args)
-    await _register_plan_artifact(db, ctx, ref_type='goal', result=result)
-    return result
+    registration = await _register_plan_artifact(db, ctx, ref_type='goal', result=result)
+    return merge_resource_uri(result, registration)
 
 
 async def _h_create_plan(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -251,8 +251,8 @@ async def _h_create_plan(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
         enterprise_id=ws.enterprise_id,
         dept_id=ws.dept_id,
     )
-    await _register_plan_artifact(db, ctx, ref_type='plan', result=result)
-    return result
+    registration = await _register_plan_artifact(db, ctx, ref_type='plan', result=result)
+    return merge_resource_uri(result, registration)
 
 
 async def _h_create_todo(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:

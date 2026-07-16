@@ -61,7 +61,7 @@ from backend.app.hasn_designsystem.service import resource_adapter as _designsys
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.app.hasn_designsystem.service.import_service import import_design_source
 from backend.app.hasn_designsystem.service.scene_guidance import build_scene_report
-from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 
@@ -373,10 +373,11 @@ class DesignSystemSaveTool(BaseTool):
         # ① register-on-write：把该设计系统登记进 hasn_artifacts（hasn://designsystem/{id}），带上
         #    work_session_id → 出现在「工作会话资源栏 / 分身产物 tab」，可点开设计系统详情查看。
         # ② 完成卡：内容写全时，经 route_message 从分身发一张「打开设计系统」卡进主人主会话。
-        await self._register_designsystem_artifact_best_effort(agent_context, data)
+        registration = await self._register_designsystem_artifact_best_effort(agent_context, data)
         await self._deliver_completion_card_best_effort(agent_context, data)
         data.pop('completion_card', None)  # 内部完成信号，不外露给调用分身
-        return data
+        # doc36 §3.2：返回体带 `uri`——分身存完规范当场知道怎么打开它，不必二次查询。
+        return merge_resource_uri(data, registration)
 
     @staticmethod
     async def _register_designsystem_artifact_best_effort(

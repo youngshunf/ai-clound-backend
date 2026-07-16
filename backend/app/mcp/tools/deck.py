@@ -30,7 +30,7 @@ from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401  # G6 使用点注册兜底
 from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.app.hasn_deck.service.page_skeleton import validate_page_skeleton
-from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.common.exception import errors
@@ -185,8 +185,8 @@ async def _upsert_pages(db: Any, ctx: AgentContext, deck_id: int, pages_input: l
 
     pages_after = (await deck_service.list_pages(db, subject=subject, deck_id=deck_id))['items']
     # register-on-write：写页即登记（覆盖 page.write / page.write_batch 两个 handler）。
-    await _register_deck_artifact(db, ctx, deck_id)
-    return {'written': written, 'rejected': rejected, 'pages': pages_after}
+    registration = await _register_deck_artifact(db, ctx, deck_id)
+    return merge_resource_uri({'written': written, 'rejected': rejected, 'pages': pages_after}, registration)
 
 
 # ── handlers ─────────────────────────────────────────────────────────────────────
@@ -210,8 +210,8 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         bound_agent_id=ctx.agent_hasn_id,
     )
     # register-on-write：建 deck 即登记进工作会话资源栏 / 分身产物 tab（不等 finalize）。
-    await _register_deck_artifact(db, ctx, int(deck['id']), title=title)
-    return {'deck_id': str(deck['id']), 'status': deck['status'], 'deck': deck}
+    registration = await _register_deck_artifact(db, ctx, int(deck['id']), title=title)
+    return merge_resource_uri({'deck_id': str(deck['id']), 'status': deck['status'], 'deck': deck}, registration)
 
 
 async def _h_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -234,8 +234,8 @@ async def _h_outline_set(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
         fields['design_contract'] = args['design_contract']
     deck = await deck_service.update_deck(db, subject=_subject(ctx), deck_id=_deck_id(args), fields=fields)
     # register-on-write：写大纲即登记（标题取 deck 权威标题）。
-    await _register_deck_artifact(db, ctx, _deck_id(args), title=str(deck.get('title') or '') or None)
-    return {'deck': deck}
+    registration = await _register_deck_artifact(db, ctx, _deck_id(args), title=str(deck.get('title') or '') or None)
+    return merge_resource_uri({'deck': deck}, registration)
 
 
 async def _h_page_write_batch(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -263,11 +263,13 @@ async def _h_page_edit(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         fields['notes'] = args['notes']
     page = await deck_service.update_page(db, subject=_subject(ctx), page_id=_page_id(args), fields=fields)
     # register-on-write：改某页即登记（deck_id 从被改页反查，title 由 helper 补取）。
+    registration: ArtifactRegistration | None = None
     try:
-        await _register_deck_artifact(db, ctx, int(page['deck_id']))
+        registration = await _register_deck_artifact(db, ctx, int(page['deck_id']))
     except (KeyError, TypeError, ValueError):
+        # 返回体里没有可用的 deck_id——登记不了、URI 也算不出来，照 §3.2 省略 uri 字段。
         pass
-    return {'page': page}
+    return merge_resource_uri({'page': page}, registration)
 
 
 async def _h_page_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -302,14 +304,17 @@ async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     deck_id = _deck_id(args)
     result = await deck_service.finalize_deck(db, subject=_subject(ctx), deck_id=deck_id)
     # register-on-write：收尾也登记（标题用 finalize 返回的权威标题）。
-    await _register_deck_artifact(db, ctx, deck_id, title=str(result.get('title') or '') or None)
+    registration = await _register_deck_artifact(db, ctx, deck_id, title=str(result.get('title') or '') or None)
     will_emit = result['status'] == 'ready'
-    out: dict[str, Any] = {
-        'deck_id': str(deck_id),
-        'status': result['status'],
-        'finalized': result['changed'],
-        'card_sent': will_emit,
-    }
+    out: dict[str, Any] = merge_resource_uri(
+        {
+            'deck_id': str(deck_id),
+            'status': result['status'],
+            'finalized': result['changed'],
+            'card_sent': will_emit,
+        },
+        registration,
+    )
     if will_emit:
         out['_post_commit'] = {
             'kind': 'deck_completion_card',

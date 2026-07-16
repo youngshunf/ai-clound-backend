@@ -202,3 +202,26 @@ async def test_uri_is_built_by_descriptor_single_point() -> None:  # noqa: RUF02
     assert descriptor is not None
     assert descriptor.build_uri(42) == 'hasn://knowledge/kbs/42'
     assert descriptor.build_uri('42') == 'hasn://knowledge/kbs/42', 'str/int 两种 server_id 结果一致'
+
+
+async def test_merge_resource_uri_puts_uri_into_write_payload() -> None:  # noqa: RUF029  # 同上：模块级 pytestmark 统一 asyncio
+    """doc36 §3.2 契约：写工具返回体带 `uri`，登记失败则**省略**该字段。
+
+    这条是 doc36 的核心根因——URI 在登记那一刻就算出来了，然后被原地扔掉，分身写完只拿到一个裸 id。
+    所有写工具统一经 `merge_resource_uri` 并进返回体，这里钉死它的两种分支。
+    """
+    from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
+    from backend.app.mcp.artifact_registration import merge_resource_uri
+
+    registration = ArtifactRegistration(artifact_id='art_1', resource_uri='hasn://knowledge/kbs/7')
+    merged = merge_resource_uri({'id': 7, 'name': '库'}, registration)
+    assert merged == {'id': 7, 'name': '库', 'uri': 'hasn://knowledge/kbs/7'}
+
+    # 登记返 None（descriptor 解析不出、URI 无从算起）→ 原样返回、省略 uri。
+    # 绝不能返空串或假 URI：分身拿到打不开的地址，只会以为是自己用错了。
+    payload = {'id': 7, 'name': '库'}
+    assert merge_resource_uri(payload, None) == payload
+    assert 'uri' not in merge_resource_uri(payload, None)
+
+    # 不就地改入参（写工具的 result 常还要被调用方复用）。
+    assert 'uri' not in payload
