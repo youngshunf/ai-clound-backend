@@ -116,6 +116,21 @@ class CRUDHasnWorkflowNodeRun(CRUDPlus[HasnWorkflowNodeRun]):
         result = await db.execute(stmt)
         return result.scalars().first()
 
+    async def get_run_uuid_by_session(self, db: AsyncSession, work_session_id: str) -> str | None:
+        """据「最新工作会话」反查所属 workflow_run（doc36 §6.2 零入参）。
+
+        汇总节点跑 run_artifacts 时，自己的节点行 work_session_id 即当前会话，
+        反查恒成立。多行共享同一会话时取最近一条（id 倒序）。
+        """
+        stmt = (
+            select(HasnWorkflowNodeRun.workflow_run_uuid)
+            .where(HasnWorkflowNodeRun.work_session_id == work_session_id)
+            .order_by(HasnWorkflowNodeRun.id.desc())
+            .limit(1)
+        )
+        result = await db.execute(stmt)
+        return result.scalars().first()
+
 
 class CRUDHasnWorkflowTemplate(CRUDPlus[HasnWorkflowTemplate]):
     async def get_by_key(self, db: AsyncSession, template_key: str) -> HasnWorkflowTemplate | None:

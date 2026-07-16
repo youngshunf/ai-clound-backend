@@ -227,6 +227,25 @@ _WORKFLOW_CAPABILITIES = [
         tags=['workflow', 'node', 'result', 'read'],
     ),
     _wcap(
+        name='run_artifacts',
+        title='取本次 run 全节点产物',
+        description=(
+            '拿本次工作流执行全部节点的产物清单（含 uri），用于场景末尾出「成果总览」文档。'
+            '零入参：不传 workflow_run_uuid 时据当前工作会话反查本次 run。'
+        ),
+        scope=_WSCOPE_READ,
+        risk_level='low',
+        properties={
+            'workflow_run_uuid': {
+                'type': ['string', 'null'],
+                'description': '可选：显式指定执行实例；缺省由当前会话反查',
+            },
+        },
+        required=[],
+        page_rank=36,
+        tags=['workflow', 'run', 'artifacts', 'read'],
+    ),
+    _wcap(
         name='run',
         title='立即触发整图',
         description='立即触发一次整图执行（一个 workflow_run）。',
