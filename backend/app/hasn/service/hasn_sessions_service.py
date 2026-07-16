@@ -19,6 +19,7 @@ from backend.app.hasn.schema.hasn_sessions import (
 )
 from backend.app.hasn.service.hasn_conversations_service import hasn_conversations_service
 from backend.common.exception import errors
+from backend.common.log import log
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
 
@@ -850,37 +851,29 @@ def build_generic_resource_card(
 
 
 def _deck_resource_descriptor() -> Any:
-    """取 deck 的资源描述符（RC-P0 声明在 deck manifest.resources[]）。
+    """取 deck 的资源描述符（RC-P0 声明在 deck manifest.resources[]），查不到返 None。
 
-    正常路径必然命中（registry 同步读 builtin manifest）；极端兜底构造一份等价 descriptor，
-    保证 `emit_deck_completion_card` 在任何环境都能出卡（deck 完成卡是关键链路，不容因缺声明而断）。
+    正常路径必然命中（registry 同步读 builtin manifest）。**不再兜底手写一份等价 descriptor**
+    （doc36 §8.3）：registry 查不到 = deck manifest 的 `resources[]` 坏了，此时该 fail loud——调用方
+    warn + 不发卡，而不是拿一份手写副本假装正常。那份硬编码副本正是「漂移被掩盖」的机制：manifest
+    改了、手写副本没跟着改，卡片仍照旧出，问题被藏起来直到某天两者矛盾才炸。
     """
     from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 
-    descriptor = ai_native_app_registry.resource_descriptor('deck', 'deck.presentation')
-    if descriptor is not None:
-        return descriptor
-    from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
-
-    return ResourceDescriptor.model_validate(
-        {
-            'resource_kind': 'deck.presentation',
-            'uri_domain': 'deck',
-            'open': {'mode': 'native_window', 'window': 'deck'},
-            'card': {'verb': '演示文稿', 'action_label': '打开演示文稿'},
-            'artifact_kind': 'resource',
-        }
-    )
+    return ai_native_app_registry.resource_descriptor('deck', 'deck.presentation')
 
 
-def _projection_deck_card(*, session_id: str, deck_id: str, content_json: dict[str, Any]) -> dict[str, Any]:
+def _projection_deck_card(
+    *, descriptor: Any, session_id: str, deck_id: str, content_json: dict[str, Any]
+) -> dict[str, Any]:
     """演示文稿工作会话完成 → 给主人发的「打开演示文稿」卡（云端权威组卡）。
 
     RC-P3 起走 `build_generic_resource_card`（deck 只是首个试点），逐字节等价旧硬编码卡。
-    保留本薄封装供 `emit_deck_completion_card`（主会话 finalize 路径）复用。
+    保留本薄封装供 `emit_deck_completion_card`（主会话 finalize 路径）复用；descriptor 由调用方
+    解析并保证非空后传入（doc36 §8.3：无硬编码兜底，缺声明时由调用方 fail loud）。
     """
     return build_generic_resource_card(
-        descriptor=_deck_resource_descriptor(),
+        descriptor=descriptor,
         app_id='deck',
         session_id=session_id,
         uri_id=deck_id,
@@ -910,6 +903,16 @@ async def emit_deck_completion_card(
     - 幂等：``local_id=deck_complete:{deck_id}`` 命中 ``hasn_messages`` 唯一索引则不二次投递，
       叠加 finalize 的状态守卫 → 双保只发一次。
     """
+    # doc36 §8.3：先解析 descriptor，查不到即 fail loud（warn + 不发卡）——registry 无 deck
+    # descriptor = manifest.resources[] 坏了，绝不拿硬编码副本假装正常（那会掩盖漂移）。
+    descriptor = _deck_resource_descriptor()
+    if descriptor is None:
+        log.warning(
+            'deck manifest 缺 resources[] 声明（registry 查不到 deck.presentation descriptor），'
+            '跳过演示文稿完成卡投递（doc36 §8.3 fail loud）；deck_id=%s',
+            deck_id,
+        )
+        return {}
     summary_text = summary.strip() if summary else ''
     if not summary_text:
         summary_text = f'《{title}》已经做好了，点开看看吧。' if title else ''
@@ -922,7 +925,9 @@ async def emit_deck_completion_card(
         'summary': summary_text,
         'deep_link': f'hasn://deck/{deck_id}',
     }
-    card = _projection_deck_card(session_id=f'deck-{deck_id}', deck_id=str(deck_id), content_json=content_json)
+    card = _projection_deck_card(
+        descriptor=descriptor, session_id=f'deck-{deck_id}', deck_id=str(deck_id), content_json=content_json
+    )
     validate_card_message_body(card)
 
     from backend.app.hasn.service import message_router
@@ -933,7 +938,7 @@ async def emit_deck_completion_card(
     # (agent, deck:{deck_id}, hasn://deck/{deck_id})，两条路径重复触发不重复登记。
     await HasnArtifactsService.record_app_resource_artifact(
         db,
-        descriptor=_deck_resource_descriptor(),
+        descriptor=descriptor,
         server_id=str(deck_id),
         session_id=None,
         agent_hasn_id=agent_id,
@@ -955,31 +960,16 @@ async def emit_deck_completion_card(
 
 
 def _designsystem_resource_descriptor() -> Any:
-    """取 designsystem 的资源描述符（RC-P0 声明在 designsystem manifest.resources[]）。
+    """取 designsystem 的资源描述符（RC-P0 声明在 designsystem manifest.resources[]），查不到返 None。
 
-    正常路径必然命中（registry 同步读 builtin manifest）；极端兜底构造一份等价 descriptor，
-    保证 `emit_designsystem_completion_card` 在任何环境都能出卡（对齐 `_deck_resource_descriptor`）。
+    正常路径必然命中（registry 同步读 builtin manifest）。**不再兜底手写一份等价 descriptor**
+    （doc36 §8.3，对齐 `_deck_resource_descriptor`）：registry 查不到 = designsystem manifest 坏了，
+    调用方 warn + 不发卡。旧兜底还踩过 `{'window':'designsystem'}` 与 ResourceWindow∈{deck,design}
+    矛盾即 ValidationError 的坑——正是「手写副本与真 manifest 漂移」的活教训，一并删除。
     """
     from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 
-    descriptor = ai_native_app_registry.resource_descriptor('designsystem', 'designsystem.spec')
-    if descriptor is not None:
-        return descriptor
-    from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor
-
-    return ResourceDescriptor.model_validate(
-        {
-            'resource_kind': 'designsystem.spec',
-            'uri_domain': 'designsystem',
-            # 与 designsystem manifest.resources[0] 逐字段一致。这里曾写
-            # {'mode':'native_window','window':'designsystem'}——但 ResourceWindow 只收
-            # {deck, design}，兜底一走即 ValidationError（本该救场的分支反而是炸点），
-            # 且与真 manifest 的 internal_route 自相矛盾（doc35 刀 A2 顺带修）。
-            'open': {'mode': 'internal_route', 'route_template': '/apps/designsystem/:id'},
-            'card': {'verb': '设计系统', 'action_label': '打开设计系统'},
-            'artifact_kind': 'resource',
-        }
-    )
+    return ai_native_app_registry.resource_descriptor('designsystem', 'designsystem.spec')
 
 
 async def emit_designsystem_completion_card(
@@ -1007,7 +997,15 @@ async def emit_designsystem_completion_card(
       （带 work_session_id），故完成卡只管发卡、不重复登记（与 deck 略异：designsystem 的 save
       恒经工具，无「主会话直建、无工具」路径，故此处省登记）。
     """
+    # doc36 §8.3：查不到 descriptor 即 fail loud（warn + 不发卡），不硬编码兜底。
     descriptor = _designsystem_resource_descriptor()
+    if descriptor is None:
+        log.warning(
+            'designsystem manifest 缺 resources[] 声明（registry 查不到 designsystem.spec descriptor），'
+            '跳过设计系统完成卡投递（doc36 §8.3 fail loud）；design_system_id=%s',
+            design_system_id,
+        )
+        return {}
     summary_text = summary.strip() if summary else ''
     if not summary_text:
         summary_text = f'《{title}》已经做好了，点开看看吧。' if title else ''
