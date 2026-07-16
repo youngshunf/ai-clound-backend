@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     DATABASE_SCHEMA: str = 'huanxing'
     DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'
+    # 启动期是否用 metadata.create_all 自动建表（云端 IM 服务化 R1-11）。
+    # dev/演练默认 True（免手动建表）；生产**恒关**——建表与变更一律走 migration，
+    # 禁止启动期 create_all 误建旧表 / 与迁移漂移（生产由下方 ENVIRONMENT=='prod' 硬闸兜底，
+    # 即便此值被误设 True 也不生效，见 database/db.py::create_tables）。
+    DATABASE_AUTO_CREATE_TABLES: bool = True
 
     # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）。
     # NEWAPI_QUOTA_PER_DOLLAR = new-api QuotaPerUnit（协议精度，非业务费率）。

@@ -24,7 +24,12 @@ from sqlalchemy import BigInteger, Column, Table, text
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from backend.common.model import MappedBase
-from backend.database.db import async_engine, create_tables, metadata_schemas
+from backend.database.db import (
+    _should_auto_create_tables,
+    async_engine,
+    create_tables,
+    metadata_schemas,
+)
 
 # 注意：不用模块级 pytestmark——本文件混有同步纯函数测试；async 测试各自显式标注。
 # 每个 async 测试收尾 dispose 共享 async_engine：pytest-asyncio 默认 function-scoped 事件循环，
@@ -42,6 +47,23 @@ def test_metadata_schemas_shape() -> None:
     assert 'public' not in schemas, 'public 不应作为自定义 schema 返回'
     assert None not in schemas
     assert all(isinstance(s, str) and s for s in schemas), '每个 schema 都应是非空字符串'
+
+
+@pytest.mark.parametrize(
+    ('environment', 'auto_flag', 'expected'),
+    [
+        # 生产恒 False——硬闸凌驾 auto_flag（即便被误设 True 也不生效），杜绝启动期误建旧表
+        ('prod', True, False),
+        ('prod', False, False),
+        # 非生产按 auto_flag 决定：默认 True 自动建表，显式关则不建
+        ('dev', True, True),
+        ('dev', False, False),
+        ('test', True, True),
+    ],
+)
+def test_should_auto_create_tables(environment: str, auto_flag: bool, expected: bool) -> None:
+    """R1-11 纯判定：生产恒关启动期 create_all，非生产随 auto_flag。"""
+    assert _should_auto_create_tables(environment, auto_flag) is expected
 
 
 @pytest.mark.asyncio

@@ -107,6 +107,15 @@ def metadata_schemas() -> list[str]:
     return sorted({table.schema for table in MappedBase.metadata.tables.values() if table.schema})
 
 
+def _should_auto_create_tables(environment: str, auto_flag: bool) -> bool:
+    """启动期是否 metadata.create_all（R1-11 纯判定）。
+
+    生产（environment=='prod'）恒 False——硬闸凌驾 auto_flag，杜绝启动期误建旧表 / 与迁移漂移。
+    非生产按 auto_flag（默认 True）决定。抽为纯函数便于零 mock 单测。
+    """
+    return environment != 'prod' and auto_flag
+
+
 async def create_tables() -> None:
     """创建数据库表
 
@@ -121,12 +130,22 @@ async def create_tables() -> None:
 
     from backend.common.model import MappedBase
 
+    # R1-11：生产恒关启动期 create_all——建表/变更一律走 migration。ENVIRONMENT=='prod' 是
+    # 硬闸（即便 DATABASE_AUTO_CREATE_TABLES 被误设 True 也不生效），杜绝启动期误建旧表 /
+    # 与迁移漂移的整类事故。dev/演练环境默认自动建表（可经 DATABASE_AUTO_CREATE_TABLES 关）。
+    auto_create = _should_auto_create_tables(settings.ENVIRONMENT, settings.DATABASE_AUTO_CREATE_TABLES)
+
     async with async_engine.begin() as coon:
-        # 仅 PostgreSQL 需要显式建 schema；MySQL 无独立 schema 概念，跳过
+        # 仅 PostgreSQL 需要显式建 schema；MySQL 无独立 schema 概念，跳过。
+        # 建 schema 的幂等安全网**任何环境都保留**（防「部署新 schema 后一重启即崩」老坑），
+        # 与是否 create_all 无关——schema 是命名空间容器，表由 migration 在其内创建。
         if DataBaseType.mysql != settings.DATABASE_TYPE:
             for schema in metadata_schemas():
                 await coon.execute(CreateSchema(schema, if_not_exists=True))
-        await coon.run_sync(MappedBase.metadata.create_all)
+        if auto_create:
+            await coon.run_sync(MappedBase.metadata.create_all)
+        else:
+            log.info('生产环境跳过启动期 metadata.create_all（R1-11：建表走 migration）')
 
 
 async def drop_tables() -> None:
