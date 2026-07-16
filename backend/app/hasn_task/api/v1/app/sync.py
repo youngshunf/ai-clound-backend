@@ -2,6 +2,7 @@
 
 - /sync/pull · /sync/push：v2.1 任务定义双向同步（Owner JWT，daemon 通道）
 - /runs/summary：run 摘要上报（Agent JWT，runtime 执行侧）
+- /workflow-node-runs:sync：工作流执行态上行（Owner JWT，daemon 调度器侧，doc36 U5a）
 - /builtin-catalog：内置任务目录拉取（Owner JWT，daemon 播种）
 
 服务实现沿用 app/hasn 的 hasn_sync_service（v2.1 同步引擎，跨模块复用），
@@ -20,7 +21,11 @@ from backend.app.hasn.schema.hasn_sync import (
     TaskRunSummaryRequest,
 )
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
+from backend.app.hasn_task.api.v1.app.task import current_owner_id
+from backend.app.hasn_task.schema.workflow_sync import WorkflowNodeRunsSyncRequest
 from backend.app.hasn_task.service.builtin_task_service import workbench_builtin_task_service
+from backend.app.hasn_task.service.workflow_sync_service import workflow_sync_service
+from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.common.security.jwt import DependsJwtAuth
@@ -74,6 +79,30 @@ async def report_task_run_summary(
 ) -> ResponseModel:
     summary = await hasn_sync_service.report_task_run_summary(db, request_body, agent=request.state.agent)
     return response_base.success(data=summary)
+
+
+@router.post(
+    '/workflow-node-runs:sync',
+    summary='上行工作流执行态（daemon 调度器 → 云端权威表）',
+    dependencies=[DependsJwtAuth],
+    name='hasn_task_app_sync_workflow_node_runs',
+)
+async def sync_workflow_node_runs(
+    request: Request,
+    db: CurrentSessionTransaction,
+    request_body: WorkflowNodeRunsSyncRequest,
+) -> ResponseModel:
+    """daemon 把本地权威的 `workflow_run` / `workflow_node_run` 推上云（doc36 §6.3 · U5a）。
+
+    **Owner JWT 而非 Agent JWT**：写者是 daemon 的工作流调度器，一次整图 fire 横跨多个分身的节点
+    ——Agent JWT 的「不许替别的分身上报」校验会把同批直接顶掉。工作流实例本就 owner 所有，owner
+    一律取 JWT 权威身份，入参里的 `owner_id` 只做一致性校验（不一致 → 403，不静默改写）。
+    """
+    owner_id = await current_owner_id(request, db)
+    if request_body.owner_id and request_body.owner_id != owner_id:
+        raise errors.ForbiddenError(msg='不能替其它主人上报工作流执行态')
+    data = await workflow_sync_service.sync_node_runs(db, request_body, owner_id=owner_id)
+    return response_base.success(data=data)
 
 
 @router.get(
