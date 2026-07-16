@@ -63,6 +63,9 @@ class EnsureDirectConversationCommand:
     relation_type: str = 'social'
     # 差事背景（§6.5 mission_note）：仅新建会话时写入，发送方 owner 私有
     mission_note: str | None = None
+    # 差事背景归属 owner（= 发起方 owner）：投影裁剪据此判定（§6.5）。调用方从认证上下文
+    # 显式解析发送方主人后传入，**不从「首条消息发送方」反推**（零推断）；无 mission_note 时无意义。
+    mission_note_owner_id: str | None = None
 
 
 @dataclass(frozen=True)

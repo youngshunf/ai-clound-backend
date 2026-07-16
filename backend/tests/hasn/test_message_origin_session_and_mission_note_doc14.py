@@ -232,42 +232,80 @@ def test_trust_gate_strips_reserved_session_arg() -> None:
     assert sid == _SESSION
 
 
+# R1-05 切片①后：direct（人/分身）发送经 ImGateway port（ensure→send）。溯源经 principal、
+# 差事背景经 ensure 命令流入——本组「入参不可伪造 / 溯源留 NULL / mission_note 透传」用例
+# 改断言 port 收到的强类型入参（等价语义、更贴新契约），不再窥探 route_message kwargs。
+
+
+class _SpyGateway:
+    """桩 ImGateway：记录 ensure/send 收到的命令 + principal，send 返回已送达态。"""
+
+    def __init__(self) -> None:
+        self.ensure_cmd: object | None = None
+        self.ensure_principal: object | None = None
+        self.send_principal: object | None = None
+
+    async def ensure_direct_conversation(self, command, principal):
+        from backend.app.hasn_im.ports.dto import ConversationRef
+
+        self.ensure_cmd = command
+        self.ensure_principal = principal
+        return ConversationRef(conversation_id='c1')
+
+    async def send_message(self, command, principal):
+        from backend.app.hasn_im.ports.dto import DeliveryState, SendMessageResult
+
+        self.send_principal = principal
+        return SendMessageResult(
+            delivery_state=DeliveryState.ACCEPTED, conversation_id='c1', message_id=1
+        )
+
+
+async def _drive_send_via_port(monkeypatch, ctx, arguments) -> _SpyGateway:
+    """用桩网关驱动一次 direct message.send，返回记录了入参的桩网关。"""
+    gw = _SpyGateway()
+
+    async def _fake_resolve(_db, target):
+        return {'hasn_id': target, 'entity_type': 'human', 'name': target, 'owner_id': 'h_peer'}
+
+    async def _fake_owner_ids(_db, hasn_ids):
+        # 带 mission_note 时工具先解析发送方主人（走 conversation_projection），本组不碰库故替身接管。
+        return {hid: 'h_master' for hid in hasn_ids}
+
+    import backend.app.mcp.tools.message as message_mod
+
+    monkeypatch.setattr(mr, 'resolve_target', _fake_resolve)
+    monkeypatch.setattr(cp, '_resolve_owner_ids', _fake_owner_ids)
+    monkeypatch.setattr(message_mod, 'get_im_gateway', lambda: gw)
+    _patch_db_session(monkeypatch)
+    await MessageSendTool().execute(ctx, arguments)
+    return gw
+
+
 @pytest.mark.asyncio
 async def test_forged_origin_session_id_in_arguments_is_ignored(monkeypatch) -> None:
     """分身在入参里硬塞 origin_session_id → 工具只认 AgentContext，伪造值原样丢弃。"""
-    captured: dict = {}
-
-    async def _fake_route(**kwargs):
-        captured.update(kwargs)
-        return {'message_id': '1', 'conversation_id': 'c1', 'delivered': True}
-
-    monkeypatch.setattr(mr, 'route_message', _fake_route)
-    _patch_db_session(monkeypatch)
-
     ctx = _AgentCtx()
     ctx.session_id = _SESSION
-    await MessageSendTool().execute(
-        ctx, {'to': 'h_peer', 'content': 'hi', 'origin_session_id': 'sess_受害者会话'}
+    gw = await _drive_send_via_port(
+        monkeypatch, ctx, {'to': 'h_peer', 'content': 'hi', 'origin_session_id': 'sess_受害者会话'}
     )
-    assert captured['origin_session_id'] == _SESSION, '只认 AgentContext 的真值'
+    # 溯源经 principal 流入 port（ensure/send 同一 principal），只认 AgentContext 真值。
+    assert gw.send_principal.origin_session_id == _SESSION, '只认 AgentContext 的真值'
 
 
 @pytest.mark.asyncio
 async def test_mission_note_passed_through_and_length_capped(monkeypatch) -> None:
-    captured: dict = {}
-
-    async def _fake_route(**kwargs):
-        captured.update(kwargs)
-        return {'message_id': '1', 'conversation_id': 'c1', 'delivered': True}
-
-    monkeypatch.setattr(mr, 'route_message', _fake_route)
-    _patch_db_session(monkeypatch)
-
     tool = MessageSendTool()
-    await tool.execute(_AgentCtx(), {'to': 'h_peer', 'content': 'hi', 'mission_note': '  替主人约时间  '})
-    assert captured['mission_note'] == '替主人约时间', '两侧空白裁掉'
+
+    gw = await _drive_send_via_port(
+        monkeypatch, _AgentCtx(), {'to': 'h_peer', 'content': 'hi', 'mission_note': '  替主人约时间  '}
+    )
+    # 差事背景经 ensure 命令流入 port（仅新建会话时落列），两侧空白裁掉。
+    assert gw.ensure_cmd.mission_note == '替主人约时间', '两侧空白裁掉'
 
     # 全角中文按字素簇计数：501 字超限 → 报错，不静默截断（宁可让分身重写也不歪曲它的框定）
+    _patch_db_session(monkeypatch)
     with pytest.raises(RuntimeError, match='mission_note 超长'):
         await tool.execute(_AgentCtx(), {'to': 'h_peer', 'content': 'hi', 'mission_note': '差' * 501})
 
@@ -275,18 +313,9 @@ async def test_mission_note_passed_through_and_length_capped(monkeypatch) -> Non
 @pytest.mark.asyncio
 async def test_no_session_context_sends_null_origin(monkeypatch) -> None:
     """非派发路径直调（无会话上下文）→ 溯源留 NULL，发送照常（never over-block）。"""
-    captured: dict = {}
-
-    async def _fake_route(**kwargs):
-        captured.update(kwargs)
-        return {'message_id': '1', 'conversation_id': 'c1', 'delivered': True}
-
-    monkeypatch.setattr(mr, 'route_message', _fake_route)
-    _patch_db_session(monkeypatch)
-
-    await MessageSendTool().execute(_AgentCtx(), {'to': 'h_peer', 'content': 'hi'})
-    assert captured['origin_session_id'] is None
-    assert captured['mission_note'] is None
+    gw = await _drive_send_via_port(monkeypatch, _AgentCtx(), {'to': 'h_peer', 'content': 'hi'})
+    assert gw.send_principal.origin_session_id is None
+    assert gw.ensure_cmd.mission_note is None
 
 
 # ─── 测试替身 ───
@@ -304,7 +333,7 @@ class _AgentCtx:
 
 
 def _patch_db_session(monkeypatch) -> None:
-    """把工具内的 async_db_session 换成空壳（本组用例不碰库，路由已被替身接管）。"""
+    """把工具内的 async_db_session 换成空壳（本组用例不碰库，路由/网关已被替身接管）。"""
 
     class _NullSession:
         async def __aenter__(self):

@@ -21,6 +21,16 @@ from backend.app.hasn.service import message_router
 from backend.app.hasn.service.agent_message_read_service import agent_message_read_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_im.application.errors import ImSendRejected
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports.dto import (
+    ActorKind,
+    DeliveryState,
+    EnsureDirectConversationCommand,
+    SendMessageCommand,
+    SendMessageResult,
+    ServicePrincipal,
+)
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -241,6 +251,58 @@ async def _ensure_first_contact_request(owner_hasn_id: str, to_target: Any) -> i
             return None
 
 
+async def _map_direct_send_result(
+    result: SendMessageResult,
+    owner_hasn_id: str | None,
+    to_target: Any,
+) -> dict[str, Any]:
+    """把 ImGateway 的 SendMessageResult（三态）映射为 message.send 工具返回体。
+
+    与切换前 route_message 直返的字段形状**逐字一致**（reachable/delivered/status/hint），
+    仅数据来源从 route dict 换成 port 的强类型结果——分身看到的返回不变。
+    """
+    conversation_id = result.conversation_id
+
+    if result.delivery_state == DeliveryState.PENDING_POLICY:
+        # 需主人确认 → 已挂起、未送达但目标可达。
+        return {
+            'message_id': None,
+            'conversation_id': conversation_id,
+            'delivered': False,
+            'reachable': True,
+            'status': 'pending_confirmation',
+            'reason': result.suppress_reason or '',
+            'hint': _send_hint(_SEND_HINT_PENDING_CONFIRMATION, conversation_id),
+        }
+
+    if result.delivery_state == DeliveryState.SUPPRESSED:
+        # 未建立联系人关系/低信任 → 结构化关系反馈（修 B12：不误报 reachable=true）；
+        # 无 pending_request_id 时自动代发好友请求（幂等复用入站门控已代发的那条）。
+        pending_request_id = result.pending_request_id
+        if not pending_request_id:
+            pending_request_id = await _ensure_first_contact_request(owner_hasn_id, to_target)
+        return {
+            'message_id': result.message_id,
+            'conversation_id': conversation_id,
+            'delivered': False,
+            'reachable': False,
+            'status': 'pending_contact_approval',
+            'relation': result.relation,
+            'pending_request_id': pending_request_id,
+            'hint': _send_hint(_SEND_HINT_SUPPRESSED, conversation_id),
+        }
+
+    # ACCEPTED（含幂等 deduped 命中）→ 已送达。
+    return {
+        'message_id': result.message_id,
+        'conversation_id': conversation_id,
+        'delivered': True,
+        'reachable': True,
+        'status': 'sent',
+        'hint': _send_hint(_SEND_HINT_SENT, conversation_id),
+    }
+
+
 class MessageSendTool(BaseTool):
     """发送私信工具——文本 + 富媒体（图片/语音/文件/卡片），走真实路由 + 关系门控 + 主人透明（G1/MEDIA-P3）。"""
 
@@ -393,10 +455,66 @@ class MessageSendTool(BaseTool):
                 content = {'text': str(text)}
                 content_type = _CT_TEXT
 
-            # 身份取自 Agent 凭证（agent_hasn_id），不用 owner_user_id 冒名（G2）。
-            # origin_session_id（doc14 §6.2）取自 AgentContext——server.call_tool 从
-            # `_hasn_session_id` 剥离而来，**不收分身自报**（入参 schema 里没有这个字段，
-            # 恶意塞入也已被 trust_gate 剥走），故不可伪造。
+            # 目标解析（唤星号/HASN ID/群 g:）——复用 message_router.resolve_target 单一实现，
+            # 不在工具层重造解析逻辑（零漂移）。direct（人/分身）走 ImGateway port（R1-05 切片①），
+            # 群 / 不可达目标仍走现网 route_message（本切片不承接，错误码/群补强原样保持）。
+            target = await message_router.resolve_target(db, str(to_target))
+            is_direct = target is not None and target.get('entity_type') in ('human', 'agent')
+
+            if is_direct:
+                # ── 直聊经 ImGateway port 收敛为通信域单一写入口 ──
+                # ensure 幂等取会话 → send 投递。port 内部第一版仍复用现网 route_message，
+                # 故落库/权限/受众扇出/sync 发射逐字不变、daemon 镜像不受影响；R2 起 port 换
+                # 独立事务/事件写点，本调用点零改动。身份取自 Agent 凭证（G2），origin_session_id
+                # 取自 AgentContext（doc14 §6.2，server.call_tool 从 `_hasn_session_id` 剥离而来，
+                # 不收分身自报，故不可伪造）。
+                # mission_note 归属 owner：与现网 route 主链同口径显式解析发送方主人（仅有 note 时）。
+                mission_note_owner_id: str | None = None
+                if mission_note:
+                    from backend.app.hasn.service import conversation_projection as _cp
+
+                    resolved_owner = await _cp._resolve_owner_ids(db, [agent_context.agent_hasn_id])
+                    mission_note_owner_id = resolved_owner.get(agent_context.agent_hasn_id)
+
+                gateway = get_im_gateway()
+                principal = ServicePrincipal(
+                    canonical_sender=agent_context.agent_hasn_id,
+                    actor_kind=ActorKind.AGENT,
+                    origin_session_id=agent_context.session_id,
+                )
+                conv_ref = await gateway.ensure_direct_conversation(
+                    EnsureDirectConversationCommand(
+                        peer_hasn_id=str(target['hasn_id']),
+                        mission_note=mission_note,
+                        mission_note_owner_id=mission_note_owner_id,
+                    ),
+                    principal,
+                )
+                try:
+                    send_result = await gateway.send_message(
+                        SendMessageCommand(
+                            conversation_id=conv_ref.conversation_id,
+                            content=content,
+                            content_type=content_type,
+                            msg_type='message',
+                        ),
+                        principal,
+                    )
+                except ImSendRejected as rejected:
+                    # 协议级硬拒（对方屏蔽/自发/身份未声明）——不可达，不静默成功（维度②）。
+                    return {
+                        'message_id': None,
+                        'conversation_id': None,
+                        'delivered': False,
+                        'reachable': False,
+                        'reason': rejected.message,
+                        'code': rejected.code,
+                    }
+                return await _map_direct_send_result(
+                    send_result, agent_context.owner_hasn_id, to_target
+                )
+
+            # ── 群 / 不可达目标：过渡期仍走现网 route_message（与切换前逐字一致）──
             result = await message_router.route_message(
                 db=db,
                 from_id=agent_context.agent_hasn_id,

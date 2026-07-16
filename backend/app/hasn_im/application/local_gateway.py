@@ -84,9 +84,10 @@ class PythonLocalImGateway:
                 _participant_type(peer),
                 relation_type=command.relation_type,
                 mission_note=command.mission_note,
-                # mission_note 归属 owner 由发送方主人解析——第一版包装保守只在有 note 时透传，
-                # owner 解析沿用现网 route 主链的口径（R2 起统一到 application 层）。
-                mission_note_owner_id=None,
+                # mission_note 归属 owner 由**调用方**从认证上下文解析发送方主人后经命令传入
+                # （与现网 route 主链 `_resolve_owner_ids(from_id)` 同口径，忠实不漂移）；
+                # 无 mission_note 时该值无意义、get_or_create 内亦不落列。
+                mission_note_owner_id=command.mission_note_owner_id,
             )
             await db.commit()
             return ConversationRef(
