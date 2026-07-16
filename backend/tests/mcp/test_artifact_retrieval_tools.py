@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import uuid
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from backend.app.mcp.auth import AgentContext
@@ -34,6 +36,9 @@ from backend.app.mcp.tools.artifact import (
     ArtifactSearchTool,
 )
 from backend.app.mcp.tools.asset import ASSET_TOOLS, AssetGetTool, _normalize_asset_id
+
+if TYPE_CHECKING:
+    from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 
 
 def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str) -> AgentContext:
@@ -286,6 +291,90 @@ async def test_list_filters_by_kind_and_session_real_db() -> None:
 
         by_session = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'session_id': sess})
         assert {it['title'] for it in by_session['items']} == {'图A', '文B'}
+    finally:
+        await _cleanup(owner)
+
+
+async def _record_app_resource(
+    owner: str, agent: str, *, app_id: str, resource_kind: str, server_id: int, title: str
+) -> ArtifactRegistration | None:
+    """经公共接缝真登记一条**应用资源**产物（与 register-on-write 写点同一条路）。
+
+    不用 `_record`：那是分身自撰通道（`hasn.artifact.record`），登记不出 `source_app_id`/`resource_kind`，
+    而应用维度过滤要的正是这两列。
+    """
+    from backend.app.mcp.artifact_registration import register_app_resource_artifact
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as db:
+        return await register_app_resource_artifact(
+            db,
+            app_id=app_id,
+            resource_kind=resource_kind,
+            server_id=server_id,
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            title=title,
+            source_tool=f'hasn.{app_id}.test',
+        )
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_list_filters_by_app_dimension_real_db() -> None:
+    """doc36 U3 真实 PG：list 按 app / resource_kind 过滤 + 出参给应用归属两列。
+
+    这是 doc36 §1.4 的正题：应用资源的 `kind` 恒为 `resource`（doc35 四维分类），
+    18 个应用的资源全挤在这一个桶里——「我在知识库里建过哪些库」按 kind 根本筛不出来。
+    """
+    if not await _db_reachable():
+        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+
+    tag = uuid.uuid4().hex[:12]
+    owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
+    try:
+        await _seed_owner_and_agent(owner, agent)
+        kb_reg = await _record_app_resource(
+            owner, agent, app_id='knowledge', resource_kind='knowledge.base', server_id=1, title='我的库'
+        )
+        await _record_app_resource(
+            owner, agent, app_id='knowledge', resource_kind='knowledge.document', server_id=2, title='库里的文档'
+        )
+        await _record_app_resource(
+            owner, agent, app_id='deck', resource_kind='deck.presentation', server_id=3, title='季度汇报'
+        )
+
+        # 三条产物的 kind 全是 resource——只按 kind 筛等于没筛（这正是要修的）。
+        by_kind = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'kind': 'resource'})
+        assert len(by_kind['items']) == 3
+
+        # 按应用筛：只剩知识库的两条。
+        by_app = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'app': 'knowledge'})
+        assert {it['title'] for it in by_app['items']} == {'我的库', '库里的文档'}
+
+        # 按应用内资源类型筛：精确到「库」，不含文档。
+        by_kb = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'resource_kind': 'knowledge.base'})
+        assert [it['title'] for it in by_kb['items']] == ['我的库']
+        row = by_kb['items'][0]
+        assert row['source_app_id'] == 'knowledge', '出参必须答「哪个应用」'
+        assert row['resource_kind'] == 'knowledge.base', '出参必须答「是什么」'
+        assert row['resource_uri'] == 'hasn://knowledge/kbs/1', '深链即打开依据'
+
+        # 两维度叠加 = AND。
+        both = await ArtifactListTool().execute(
+            _agent_ctx(owner, agent), {'app': 'deck', 'resource_kind': 'knowledge.base'}
+        )
+        assert both['items'] == [], 'app 与 resource_kind 是 AND，互相矛盾时应为空'
+
+        # search 同样吃应用维度（写图文找素材时按应用收窄）。
+        searched = await ArtifactSearchTool().execute(_agent_ctx(owner, agent), {'query': '库', 'app': 'knowledge'})
+        assert {it['title'] for it in searched['items']} == {'我的库', '库里的文档'}
+
+        # 详情面与列表面对称：get 也要答「哪个应用的什么东西」。
+        assert kb_reg is not None
+        detail = await ArtifactGetTool().execute(_agent_ctx(owner, agent), {'artifact_id': kb_reg.artifact_id})
+        assert detail['source_app_id'] == 'knowledge'
+        assert detail['resource_kind'] == 'knowledge.base'
+        assert detail['resource_uri'] == 'hasn://knowledge/kbs/1'
     finally:
         await _cleanup(owner)
 

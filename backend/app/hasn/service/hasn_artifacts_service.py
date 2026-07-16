@@ -471,6 +471,8 @@ class HasnArtifactsService:
         kind: str | None = None,
         keyword: str | None = None,
         session_id: str | None = None,
+        source_app_id: str | None = None,
+        resource_kind: str | None = None,
     ) -> tuple[list[ArtifactItem], int]:
         """列某分身的产物（时间线倒序）。先校验归属，再批量解析图片缩略图。
 
@@ -478,6 +480,11 @@ class HasnArtifactsService:
         - `keyword`：按空白切词，每词做 ILIKE 转义后 OR 命中 title/summary，**词间 AND**
           （「星空 城市」= 两词都命中）——图文取材子串检索（`hasn.artifact.search`）。
         - `session_id`：只看某个工作会话产出的（「找我这个任务里产的东西」）。
+        - `source_app_id` / `resource_kind`（doc36 U3）：**应用维度**过滤——「我在知识库里
+          建过哪些库」。此前只能按 `kind` 筛，而应用资源的 `kind` 恒为 `resource`（doc35 四维
+          分类），于是 18 个应用的资源全挤在同一个桶里、按 kind 筛等于没筛。应用维度的答案
+          在 `source_app_id`（哪个应用）+ `resource_kind`（是什么）这两列上，本就已落库，
+          只是查询面一直没开出去。
         """
         if not await cls._owns_agent(db, owner_hasn_id=owner_hasn_id, agent_hasn_id=agent_hasn_id):
             raise errors.ForbiddenError(msg='无权查看该分身的产物')
@@ -491,6 +498,10 @@ class HasnArtifactsService:
             conds.append(HasnArtifacts.kind == kind)
         if session_id:
             conds.append(HasnArtifacts.session_id == session_id)
+        if source_app_id:
+            conds.append(HasnArtifacts.source_app_id == source_app_id)
+        if resource_kind:
+            conds.append(HasnArtifacts.resource_kind == resource_kind)
         if keyword:
             # 切词：每词 OR 命中 title/summary，词间 AND（全部命中才算匹配）。空词跳过。
             for word in keyword.split():
