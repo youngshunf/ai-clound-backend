@@ -75,14 +75,20 @@ def serialize(row: Any) -> dict[str, Any]:
     daemon 代理）在序列化边界另经 resolve_assets 换 CDN 签名 URL，不在此处解析（守「不存直链」铁律）。
     """
     out: dict[str, Any] = {}
-    for col in row.__table__.columns:
-        v = getattr(row, col.name)
+    # 以 DB 列名作输出键（契约稳定），但用 ORM 属性 key 取值——关键修正：当 DB 列名与 ORM 属性 key
+    # 不一致时（如 public.hasn_artifacts 的 `metadata` 列被 declarative 重命名为 `meta_data`，避免撞
+    # SQLAlchemy 保留的类级 `metadata`），直接 getattr(row, 列名) 会取到类级 MetaData 对象而非列值，
+    # 序列化即炸（产物流并集读命中 HasnArtifacts 时踩到）。故必须经 attr.key 读值。
+    mapper = sa.inspect(row).mapper
+    for attr in mapper.column_attrs:
+        col_name = attr.columns[0].name
+        v = getattr(row, attr.key)
         if isinstance(v, UUID):
-            out[col.name] = str(v)
+            out[col_name] = str(v)
         elif isinstance(v, datetime):
-            out[col.name] = v.isoformat()
+            out[col_name] = v.isoformat()
         else:
-            out[col.name] = v
+            out[col_name] = v
     return out
 
 

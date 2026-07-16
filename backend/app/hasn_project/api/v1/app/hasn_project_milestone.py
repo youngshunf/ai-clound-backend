@@ -1,111 +1,55 @@
-"""平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3） - 用户端 API
+"""平台项目里程碑（doc38 §12.3）用户端 API —— owner 隔离（经父项目归属校验）。
 
-认证方式: DependsJwtAuth（仅当前登录用户）
-数据隔离: 通过 request.user.id 限制为用户自己的数据
+路由前缀: /api/v1/project/app/milestones（router.py 把本 router include 到 /milestones）。
+认证: Owner JWT；owner 由 ``request.user.id`` 解析。里程碑经 ``ProjectService`` 落库，跨 owner
+由父项目归属校验兜死（跨 owner → 404）。
+
+注意（路径归属）：里程碑的 **create** 是 ``POST /projects/{pk}/milestones``（路径以 /projects 开头，
+放在 hasn_project.py 那个 include 到 /projects 的 router 里）；本文件仅承载以 /milestones 开头的
+**update**（``PUT /milestones/{id}``）与 **complete**（``POST /milestones/{id}/complete``）。
+
+注意（codegen 修正）：本文件原是 codegen 样板（int pk / user_id / 泛型 service），已整体改写为
+ProjectService 支撑；codegen 生成的 admin/agent/open 面继续用泛型 service，互不影响。
 """
-from typing import Annotated
 
-from fastapi import APIRouter, Path, Request
+from typing import Annotated, Any
 
-from backend.app.hasn_project.schema.hasn_project_milestone import (
-    CreateHasnProjectMilestoneParam,
-    GetHasnProjectMilestoneDetail,
-    UpdateHasnProjectMilestoneParam,
-)
-from backend.app.hasn_project.service.hasn_project_milestone_service import hasn_project_milestone_service
-from backend.common.exception import errors
-from backend.common.pagination import DependsPagination, PageData
-from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
+from fastapi import APIRouter, Body, Path, Request
+
+from backend.app.hasn_project.api.v1.app._common import bump_project_sync, resolve_owner
+from backend.app.hasn_project.service.project_app_service import project_service
+from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSessionTransaction
 
 router = APIRouter()
 
 
-@router.get(
-    '',
-    summary='获取我的平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）列表',
-    dependencies=[DependsJwtAuth, DependsPagination],
-    name='hasn_project_app_get_my_hasn_project_milestone',
-)
-async def get_my_hasn_project_milestone(
+@router.put('/{milestone_id}', summary='更新里程碑', dependencies=[DependsJwtAuth], name='project_app_update_milestone')
+async def app_update_milestone(
     request: Request,
-    db: CurrentSession,
-) -> ResponseSchemaModel[PageData[GetHasnProjectMilestoneDetail]]:
-    page_data = await hasn_project_milestone_service.get_list(db=db)
-    return response_base.success(data=page_data)
+    db: CurrentSessionTransaction,
+    milestone_id: Annotated[int, Path(ge=1)],
+    body: Annotated[dict[str, Any], Body()],
+) -> ResponseModel:
+    """改里程碑（name/due_time/status/artifact_ref/sort 局部更新；经父项目校验 owner）。"""
+    owner = await resolve_owner(db, request)
+    data = await project_service.update_milestone(db, owner=owner, milestone_id=milestone_id, data=body)
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
 
 
 @router.post(
-    '',
-    summary='创建平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）',
+    '/{milestone_id}/complete',
+    summary='完成里程碑',
     dependencies=[DependsJwtAuth],
-    name='hasn_project_app_create_my_hasn_project_milestone',
+    name='project_app_complete_milestone',
 )
-async def create_my_hasn_project_milestone(
-    request: Request,
-    db: CurrentSessionTransaction,
-    obj: CreateHasnProjectMilestoneParam,
+async def app_complete_milestone(
+    request: Request, db: CurrentSessionTransaction, milestone_id: Annotated[int, Path(ge=1)]
 ) -> ResponseModel:
-    result = await hasn_project_milestone_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
-
-
-@router.get(
-    '/{pk}',
-    summary='获取平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）详情',
-    dependencies=[DependsJwtAuth],
-    name='hasn_project_app_get_my_hasn_project_milestone_detail',
-)
-async def get_my_hasn_project_milestone_detail(
-    request: Request,
-    db: CurrentSession,
-    pk: Annotated[int, Path(description='平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3） ID')],
-) -> ResponseSchemaModel[GetHasnProjectMilestoneDetail]:
-    hasn_project_milestone = await hasn_project_milestone_service.get(db=db, pk=pk)
-    if hasn_project_milestone.user_id != request.user.id:
-        raise errors.ForbiddenError(msg='无权访问该平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）')
-    return response_base.success(data=hasn_project_milestone)
-
-
-@router.put(
-    '/{pk}',
-    summary='更新平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）',
-    dependencies=[DependsJwtAuth],
-    name='hasn_project_app_update_my_hasn_project_milestone',
-)
-async def update_my_hasn_project_milestone(
-    request: Request,
-    db: CurrentSessionTransaction,
-    pk: Annotated[int, Path(description='平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3） ID')],
-    obj: UpdateHasnProjectMilestoneParam,
-) -> ResponseModel:
-    hasn_project_milestone = await hasn_project_milestone_service.get(db=db, pk=pk)
-    if getattr(hasn_project_milestone, 'user_id', request.user.id) != request.user.id:
-        raise errors.ForbiddenError(msg='无权修改该平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）')
-    count = await hasn_project_milestone_service.update(db=db, pk=pk, obj=obj)
-    if count > 0:
-        return response_base.success()
-    return response_base.fail()
-
-
-@router.delete(
-    '/{pk}',
-    summary='删除平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）',
-    dependencies=[DependsJwtAuth],
-    name='hasn_project_app_delete_my_hasn_project_milestone',
-)
-async def delete_my_hasn_project_milestone(
-    request: Request,
-    db: CurrentSessionTransaction,
-    pk: Annotated[int, Path(description='平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3） ID')],
-) -> ResponseModel:
-    user_id = request.user.id
-    hasn_project_milestone = await hasn_project_milestone_service.get(db=db, pk=pk)
-    if hasn_project_milestone.user_id != user_id:
-        raise errors.ForbiddenError(msg='无权删除该平台项目里程碑（v2·业务状态标记·无依赖无门控，doc38 §12.3）')
-    from backend.app.hasn_project.schema.hasn_project_milestone import DeleteHasnProjectMilestoneParam
-    count = await hasn_project_milestone_service.delete(db=db, obj=DeleteHasnProjectMilestoneParam(pks=[pk]))
-    if count > 0:
-        return response_base.success()
-    return response_base.fail()
+    """完成里程碑（status→done）。纯业务态标记，不触发任何门控/依赖检查。"""
+    owner = await resolve_owner(db, request)
+    data = await project_service.complete_milestone(db, owner=owner, milestone_id=milestone_id)
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
