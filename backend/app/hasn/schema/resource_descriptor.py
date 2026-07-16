@@ -9,12 +9,28 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import Field, model_validator
 
 from backend.app.hasn.schema.hasn_artifacts import ArtifactKind
 from backend.common.schema import SchemaBase
+
+
+@dataclass(frozen=True)
+class ArtifactRegistration:
+    """register-on-write 的登记结果（doc36 §3.1）：`artifact_id` 给审计用，`resource_uri` 给分身打开用。
+
+    `artifact_id` 可以为 `None`——descriptor 已解析、URI 已算出，但落库失败（登记是 best-effort，
+    只 warn 不抛）。此时**仍然要把 URI 交给分身**：URI 是 `(uri_domain, server_id)` 的纯函数，业务写
+    已经成功、资源真实存在且能打开（打开走资源自身的云端权威，不依赖 `hasn_artifacts` 行），登记失败
+    只是「可见性的账」没记上。这时候不返 URI，分身既拿不到地址、又查不到产物（没登记），凭空双输。
+    """
+
+    artifact_id: str | None
+    resource_uri: str
+
 
 # open.mode 三枚举覆盖全部现实打开形态（doc31 §2.2）：
 #   internal_route  有 /:id 详情路由的应用（reel/knowledge/creator…）
@@ -82,7 +98,7 @@ class ResourceDescriptor(SchemaBase):
     # 收 Literal 而非裸 str：以前 manifest 里写 'vidoe' 拼错不会在校验时红，一路静默落成
     # 'other'（doc35 §1.5 的隐患之一）。现在拼错在**注册期**就炸。
     artifact_kind: ArtifactKind | None = Field(
-        None, description="登记 hasn_artifacts 的 artifact_kind（应用资源恒为 resource，缺省即 resource）"
+        None, description='登记 hasn_artifacts 的 artifact_kind（应用资源恒为 resource，缺省即 resource）'
     )
     # 可选·多资源应用的子类选择键（doc31 §2.1 扩展，RC-P6/doc31-A）：
     # 单类资源应用（deck/reel/design/knowledge…）不声明 ref_type——origin_ref=resource:{app}:{id}，
@@ -91,6 +107,18 @@ class ResourceDescriptor(SchemaBase):
     # descriptor 并剥前缀取 id。**opt-in**：只有声明了 ref_type 的应用进入「多资源模式」，其余保持整段作 id
     # 的历史行为（design 的 local_ref='proj:v2' 因未声明 ref_type 不受影响）。
     ref_type: str | None = Field(None, description='多资源应用 origin_ref 的子类选择键（如 plan 的 goal/plan）')
+
+    def build_uri(self, server_id: str | int) -> str:
+        """拼这条资源的 `hasn://` 地址 —— **全仓唯一的 URI 拼接点**（doc36 §3.1）。
+
+        写路径（`record_app_resource_artifact` 登记）与读路径（`_kb_dict` 等投影）都必须调它。
+        别处再拼一次 `f'hasn://{...}/{...}'` 就是第 N 处字面量——doc36 §1.3 盘出的五处 deck 域
+        字面量、以及「manifest 声明了却和 doc08 对不上」的漂移，全是这么来的。
+
+        `server_id` 必须是**云端权威 id**（Core-08 铁律：本地 id 永不上 URI，否则换设备 / 分享
+        给别人就解析不开）。
+        """
+        return f'hasn://{self.uri_domain}/{server_id}'
 
     @model_validator(mode='after')
     def _check_uri_domain(self) -> ResourceDescriptor:

@@ -26,12 +26,14 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
+from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn_plan.service import (
     resource_adapter as _plan_resource_adapter,  # noqa: F401  # G6 使用点注册兜底：注册 plan_event adapter（ai_native_app_registry 未 import 本模块，靠此在启动装配工具时注册）
 )
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.hasn_plan.service.plan_authz import ERR_NOT_IN_ENTERPRISE_SPACE, resolve_plan_write_scope
 from backend.app.hasn_plan.service.plan_notify import notify_invited
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -42,6 +44,9 @@ NAMESPACE = 'hasn.plan'
 SCOPE_WRITE = 'plan:write'
 SCOPE_MANAGE = 'plan:manage'  # 企业会议协同（invite/rsvp，PLAN-ENT [04] §6.2）
 SCOPE_READ = 'plan:read'  # 跨成员忙闲读（availability，受 A3 可见性约束）
+
+# 产物标题兜底：result 没带 title 时用的资源名词（与 manifest resources[].card.verb 同义）。
+_PLAN_REF_TYPE_LABELS = {'goal': '目标', 'plan': '计划'}
 
 Handler = Callable[[Any, AgentContext, dict[str, Any]], Awaitable[Any]]
 
@@ -186,7 +191,9 @@ async def _h_list_events(db: Any, ctx: AgentContext, args: dict[str, Any]) -> An
     )
 
 
-async def _register_plan_artifact(db: Any, ctx: AgentContext, *, ref_type: str, result: Any) -> None:
+async def _register_plan_artifact(
+    db: Any, ctx: AgentContext, *, ref_type: str, result: Any
+) -> ArtifactRegistration | None:
     """register-on-write（doc31/32 RC-P8「直建」半场）：分身**直建**目标/计划（多在主会话对话里
     捕获、无工作会话）时，在 create 处即把该资源登记进 `hasn_artifacts`——不必等工作会话完成投影
     （直建根本没有会话可投影），资源当场进「分身产物 tab / 会话资源栏」可点开。
@@ -198,30 +205,27 @@ async def _register_plan_artifact(db: Any, ctx: AgentContext, *, ref_type: str, 
     - `session_id = ctx.session_id`：主会话直建为 None（产物仍凭 resource_uri 进产物 tab）；
       恰在工作会话内直建则戳会话、与完成投影同键幂等（两路径重复触发也只一条 active 行）。
     - best-effort：登记失败**绝不**拖垮 plan 写本身（同一事务，抛出会连累 goal/plan 落库）。
-    """
-    try:
-        server_id = str((result or {}).get('id') or '').strip()
-        if not server_id:
-            return
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-        from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
 
-        descriptor, _uri_id = ai_native_app_registry.resolve_resource_descriptor('plan', f'{ref_type}:{server_id}')
-        if descriptor is None:
-            return
-        title = str((result or {}).get('title') or '').strip() or descriptor.card.verb
-        await HasnArtifactsService.record_app_resource_artifact(
-            db,
-            descriptor=descriptor,
-            server_id=server_id,
-            session_id=ctx.session_id,
-            agent_hasn_id=ctx.agent_hasn_id,
-            owner_hasn_id=ctx.owner_hasn_id,
-            title=title,
-            source_tool=f'{NAMESPACE}.write',
-        )
-    except Exception as e:
-        logger.warning('[plan] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', e)
+    doc36 U1：改走**公共接缝** `register_app_resource_artifact`（此前绕过接缝自己 resolve descriptor +
+    直调 service，故 `ROLLOUT` 守卫覆盖不到 plan）。plan 的 `ref_type`（goal/plan）与 `resource_kind`
+    （`plan.goal`/`plan.plan`）一一对应，直接拼 `plan.{ref_type}` 即可，不必再走 resolve。
+    返回 `ArtifactRegistration` 供写工具把 `uri` 放进返回体。
+    """
+    server_id = str((result or {}).get('id') or '').strip()
+    if not server_id:
+        return None
+    title = str((result or {}).get('title') or '').strip() or _PLAN_REF_TYPE_LABELS.get(ref_type, '计划')
+    return await register_app_resource_artifact(
+        db,
+        app_id='plan',
+        resource_kind=f'plan.{ref_type}',
+        server_id=server_id,
+        session_id=ctx.session_id,
+        agent_hasn_id=ctx.agent_hasn_id,
+        owner_hasn_id=ctx.owner_hasn_id,
+        title=title,
+        source_tool=f'{NAMESPACE}.write',
+    )
 
 
 async def _h_create_goal(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:

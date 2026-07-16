@@ -24,6 +24,7 @@ from backend.app.hasn.schema.hasn_artifacts import (
     ArtifactItem,
     RecordArtifactParam,
 )
+from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.common.exception import errors
 
@@ -122,9 +123,9 @@ class HasnArtifactsService:
         # （「它确实是 studio 应用产的」），但它是 asset 型产物，不是应用资源——真标上去，
         # UI 就会拿 AppIcon 去渲染一个该播放的视频。应用资源那条（studio.project）另有登记。
         if source_kind == 'app' and kind != 'resource':
-            raise errors.RequestError(msg="source_kind=app 仅用于应用资源产物（artifact_kind 须为 resource）")
+            raise errors.RequestError(msg='source_kind=app 仅用于应用资源产物（artifact_kind 须为 resource）')
         if kind == 'resource' and source_kind != 'app':
-            raise errors.RequestError(msg="artifact_kind=resource 的来源必须是 app")
+            raise errors.RequestError(msg='artifact_kind=resource 的来源必须是 app')
         # ⚠️ doc35 §6 的 I4 原文把 `source_app_id 非空` 也串进了这条充要链（即非应用资源不得带
         # source_app_id）。**此处只强制上面两条，第三条刻意不强制**：§2 的维度表把 source_app_id
         # 定义为「是哪个应用的」，而 imagelab / reel / film 用工具产出的图片视频，诚实答案就是
@@ -303,11 +304,15 @@ class HasnArtifactsService:
         summary: str | None = None,
         source_tool: str | None = None,
         dispatch_id: str | None = None,
-    ) -> str:
+    ) -> ArtifactRegistration:
         """据 descriptor 登记一条**应用资源产物**（deck/webpage 等，走 `resource_uri` 指针，无 asset 本体）。
 
         RC-P8：完成卡投影（`_projection_card_body`）的**同处**调用，让分身产出的 deck/网站/短视频等
-        应用资源自动登记进 `hasn_artifacts`，从而出现在「工作会话资源栏 / 分身产物 tab」。返回 artifact_id。
+        应用资源自动登记进 `hasn_artifacts`，从而出现在「工作会话资源栏 / 分身产物 tab」。
+
+        返回 `ArtifactRegistration(artifact_id, resource_uri)`（doc36 §3.1 D1）——以前只返 artifact_id，
+        算好的 `resource_uri` 当场丢弃，于是**分身写完拿不到能打开的地址**（doc36 §1.4 的根因单点）。
+        写工具把 `resource_uri` 放进返回体，分身就不必二次查询。
 
         - `resource_uri = hasn://{descriptor.uri_domain}/{server_id}`——`server_id` 必须是**云端权威 id**
           （调用方已优先取 `{app}_server_id`，未上云才回退 local_ref）；跨设备/分享后对端据云端 id 打开
@@ -319,7 +324,8 @@ class HasnArtifactsService:
           按 `(agent, dispatch_id, resource_uri)` 查既有 active 行，重复投影同一资源不重复登记。
         """
         app_id = cls._app_id_from_descriptor(descriptor)
-        resource_uri = f'hasn://{descriptor.uri_domain}/{server_id}'
+        # URI 一律经 descriptor.build_uri（全仓唯一拼接点，doc36 §3.1）——别在这里手拼字面量。
+        resource_uri = descriptor.build_uri(server_id)
         kind = cls._resolve_artifact_kind(descriptor)
         effective_dispatch_id = dispatch_id or f'{app_id}:{server_id}'
 
@@ -366,7 +372,7 @@ class HasnArtifactsService:
                 changed = True
             if changed:
                 await db.flush()
-            return existing_row.artifact_id
+            return ArtifactRegistration(artifact_id=existing_row.artifact_id, resource_uri=resource_uri)
 
         artifact_id = cls.gen_artifact_id()
         row = HasnArtifacts(
@@ -395,7 +401,7 @@ class HasnArtifactsService:
         )
         db.add(row)
         await db.flush()
-        return artifact_id
+        return ArtifactRegistration(artifact_id=artifact_id, resource_uri=resource_uri)
 
     @classmethod
     async def _resolve_urls(

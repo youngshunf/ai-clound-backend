@@ -26,9 +26,11 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401  # G6 使用点注册兜底
 from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.app.hasn_deck.service.page_skeleton import validate_page_skeleton
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.common.exception import errors
@@ -61,7 +63,9 @@ async def _bump_decks_sync(owner_hasn_id: str | None) -> None:
         logger.warning('[deck] agent 写点 sync invalidate 推送失败 (非致命): %s', e)
 
 
-async def _register_deck_artifact(db: Any, ctx: AgentContext, deck_id: int, title: str | None = None) -> None:
+async def _register_deck_artifact(
+    db: Any, ctx: AgentContext, deck_id: int, title: str | None = None
+) -> ArtifactRegistration | None:
     """register-on-write（doc31/32 RC-P8 泛化）：分身**每个 deck 写点**都把该 deck 登记进
     `hasn_artifacts`——不再等 finalize，create→逐页写→改稿全程可见。
 
@@ -72,32 +76,29 @@ async def _register_deck_artifact(db: Any, ctx: AgentContext, deck_id: int, titl
     - 幂等 upsert（键 `(agent, deck:{deck_id}, hasn://deck/{deck_id})`）——反复写不重复登记、
       会话归属只进不退，与 finalize 完成卡投影同键，两路径重复触发也只一条 active 行。
 
-    best-effort：登记失败**绝不**拖垮 deck 写本身（写已在同一事务，抛出会连累 deck 落库）。
+    doc36 U1：改走**公共接缝** `register_app_resource_artifact`（此前绕过接缝直调 service +
+    自己取 descriptor，正是 `ROLLOUT` 守卫覆盖不到 deck 的原因）。返回 `ArtifactRegistration`
+    供写工具把 `uri` 放进返回体。best-effort 语义由接缝保证：登记失败**绝不**拖垮 deck 写本身。
     """
-    try:
-        from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
-        from backend.app.hasn.service.hasn_sessions_service import _deck_resource_descriptor
-
-        resolved_title = (title or '').strip() or None
-        if resolved_title is None:
-            # 页写点常不带标题——补取 deck 权威标题（同事务只读，无额外提交）。
-            try:
-                deck = await deck_service.get_deck(db, subject=_subject(ctx), deck_id=deck_id)
-                resolved_title = str(deck.get('title') or '').strip() or None
-            except Exception:
-                resolved_title = None
-        await HasnArtifactsService.record_app_resource_artifact(
-            db,
-            descriptor=_deck_resource_descriptor(),
-            server_id=str(deck_id),
-            session_id=ctx.session_id,
-            agent_hasn_id=ctx.agent_hasn_id,
-            owner_hasn_id=ctx.owner_hasn_id,
-            title=resolved_title or '演示文稿',
-            source_tool=f'{NAMESPACE}.write',
-        )
-    except Exception as e:
-        logger.warning('[deck] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', e)
+    resolved_title = (title or '').strip() or None
+    if resolved_title is None:
+        # 页写点常不带标题——补取 deck 权威标题（同事务只读，无额外提交）。
+        try:
+            deck = await deck_service.get_deck(db, subject=_subject(ctx), deck_id=deck_id)
+            resolved_title = str(deck.get('title') or '').strip() or None
+        except Exception:
+            resolved_title = None
+    return await register_app_resource_artifact(
+        db,
+        app_id='deck',
+        resource_kind='deck.presentation',
+        server_id=str(deck_id),
+        session_id=ctx.session_id,
+        agent_hasn_id=ctx.agent_hasn_id,
+        owner_hasn_id=ctx.owner_hasn_id,
+        title=resolved_title or '演示文稿',
+        source_tool=f'{NAMESPACE}.write',
+    )
 
 
 async def _run_deck_post_commit(post: dict[str, Any]) -> None:

@@ -37,6 +37,9 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+# G6 使用点注册兜底（doc33 S3-1）：import 即注册 designsystem 资源适配器，保证 MCP 直连面判权时
+# adapter 已在注册表（与 ai_native_app_registry 启动注册互为兜底，模块缓存保证进程内只注册一次）。
+from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn_designsystem.core import SourceToken as CoreSourceToken
 from backend.app.hasn_designsystem.core import (
     compile_tokens as core_compile_tokens,
@@ -54,13 +57,11 @@ from backend.app.hasn_designsystem.core import (
 from backend.app.hasn_designsystem.core import (
     validate as core_validate,
 )
-
-# G6 使用点注册兜底（doc33 S3-1）：import 即注册 designsystem 资源适配器，保证 MCP 直连面判权时
-# adapter 已在注册表（与 ai_native_app_registry 启动注册互为兜底，模块缓存保证进程内只注册一次）。
 from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.app.hasn_designsystem.service.import_service import import_design_source
 from backend.app.hasn_designsystem.service.scene_guidance import build_scene_report
+from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 
@@ -380,25 +381,26 @@ class DesignSystemSaveTool(BaseTool):
     @staticmethod
     async def _register_designsystem_artifact_best_effort(
         agent_context: AgentContext, data: dict[str, Any]
-    ) -> None:
+    ) -> ArtifactRegistration | None:
         """register-on-write（对齐 deck `_register_deck_artifact`）：**每次 save** 都把该设计系统登记进
         `hasn_artifacts`（resource_uri=`hasn://designsystem/{云端权威 id}`），带 work_session_id →
         出现在「工作会话资源栏 / 分身产物 tab」，且可点开设计系统详情查看（治「分身建/改了设计系统，
         工作会话产物列表却看不到」）。幂等 upsert（键 `(agent, designsystem:{id}, hasn://designsystem/{id})`）
         ——反复 save 只一条 active 行、会话归属只进不退。独立事务、失败只 warn，绝不影响 save 结果。
+
+        doc36 U1：改走**公共接缝** `register_app_resource_artifact`（此前绕过接缝直调 service，
+        故 `ROLLOUT` 守卫覆盖不到 designsystem）。返回 `ArtifactRegistration` 供 save 把 `uri` 放进返回体。
         """
         ds_id = data.get('id')
         if not isinstance(ds_id, int):
-            return
+            return None
+        title = data.get('name') if isinstance(data.get('name'), str) else None
         try:
-            from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
-            from backend.app.hasn.service.hasn_sessions_service import _designsystem_resource_descriptor
-
-            title = data.get('name') if isinstance(data.get('name'), str) else None
             async with async_db_session.begin() as db:
-                await HasnArtifactsService.record_app_resource_artifact(
+                return await register_app_resource_artifact(
                     db,
-                    descriptor=_designsystem_resource_descriptor(),
+                    app_id='designsystem',
+                    resource_kind='designsystem.spec',
                     server_id=str(ds_id),
                     session_id=agent_context.session_id,
                     agent_hasn_id=agent_context.agent_hasn_id,
@@ -406,13 +408,12 @@ class DesignSystemSaveTool(BaseTool):
                     title=(title or '').strip() or '设计系统',
                     source_tool='hasn.designsystem.save',
                 )
-        except Exception as e:  # 产物登记 best-effort
-            log.warning('[designsystem] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', e)
+        except Exception as e:  # 独立事务本身开/提交失败（接缝内部已吞登记错），仍 best-effort
+            log.warning('[designsystem] register-on-write 事务失败（非致命）: %s', e)
+            return None
 
     @staticmethod
-    async def _deliver_completion_card_best_effort(
-        agent_context: AgentContext, data: dict[str, Any]
-    ) -> None:
+    async def _deliver_completion_card_best_effort(agent_context: AgentContext, data: dict[str, Any]) -> None:
         """完成卡（对齐 deck `_run_deck_post_commit`）：save 判定「必填字段齐了」时透出的完成信号
         （`data['completion_card']`）→ 写事务**提交后**在独立会话里经 route_message 从分身发卡进主人主会话。
 

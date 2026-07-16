@@ -283,11 +283,16 @@ async def test_save_list_get_roundtrip_real_db() -> None:
             # save 创建即绑定生成它的分身（AppCollab bind-only-if-unbound）。
             assert row.bound_agent_id == ctx.agent_hasn_id
 
-        # 携 bundle → 自动登记一条 document 产物指向 bundle 资产（best-effort，应已落库）。
+        # save 即 register-on-write：自动登记一条**设计系统资源**产物（best-effort，应已落库）。
+        # 曾断言 `kind == 'document'` + 指向 bundle 资产——那是 doc35 四维度重排前的旧形状，
+        # 重排后 kind 只答「怎么打开」（应用资源恒 resource）、「是什么」交给 resource_kind，
+        # 断言却没跟着改，于是本用例长期红着（doc36 U1 顺带修正到 manifest 权威值）。
         async with async_db_session() as db:
             art = (await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))).scalar_one()
-            assert art.kind == 'document'
-            assert art.asset_id == bundle_asset_id
+            assert art.kind == 'resource', 'artifact_kind 只答「怎么打开」——应用资源恒 resource（doc35 §3.1）'
+            assert art.resource_kind == 'designsystem.spec', 'resource_kind 答「是什么」，取 manifest descriptor 原值'
+            assert art.source_app_id == 'designsystem'
+            assert art.resource_uri == f'hasn://designsystem/{design_system_id}'
             assert art.source_tool == 'hasn.designsystem.save'
 
         # list 可见该套（owner 维度）。

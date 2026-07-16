@@ -21,6 +21,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.mcp.context import get_current_work_session_id
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ async def register_app_resource_artifact(
     source_tool: str,
     summary: str | None = None,
     session_id: Any = _UNSET,
-) -> None:
+) -> ArtifactRegistration | None:
     """把分身刚写过的应用资源登记为产物（每个写点都调，不要只在 finalize 调）。
 
     - `resource_kind`：应用 manifest `resources[]` 里声明的 kind（如 `knowledge.base`）。**新应用先
@@ -54,15 +55,23 @@ async def register_app_resource_artifact(
 
     **best-effort**：登记失败只 warn，绝不抛。业务写常与登记同事务，抛出会连累正事落库——
     「产物没登记上」是可修的账，「知识库没建成」不是。
+
+    **返回 `ArtifactRegistration(artifact_id, resource_uri)`**（doc36 §3.1）——写工具把 `resource_uri`
+    放进返回体，分身写完就知道怎么打开，不必二次查询。两条失败路径**语义不同，别搞混**：
+
+    - **descriptor 解析不出**（kind 不认识 / manifest 没声明）→ 返 `None`。URI 算不出来（不知道
+      uri_domain），写工具省略 `uri` 字段——**不许**返回空串或假 URI。
+    - **descriptor 已解析、只是落库失败** → 仍返回带 `resource_uri` 的结果（`artifact_id=None`）。
+      URI 是 `(uri_domain, server_id)` 的纯函数，业务写已成功、资源真实存在且能打开；此时不返 URI
+      会让分身既拿不到地址、又查不到产物（没登记），凭空双输。
     """
     try:
         from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-        from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
 
         descriptor = ai_native_app_registry.resource_descriptor(app_id, resource_kind)
         if descriptor is None:
             logger.warning('[%s] 缺 %s 资源描述符，跳过产物登记', app_id, resource_kind)
-            return
+            return None
         # registry 对认不出的 kind 会回落 `resources[0]`（那是给 kind=None 缺省用的语义）。
         # 登记这里必须严格：回落会把产物登记成**另一类资源**、URI 也跟着错，比不登记更难查。
         if descriptor.resource_kind != resource_kind:
@@ -72,8 +81,15 @@ async def register_app_resource_artifact(
                 resource_kind,
                 descriptor.resource_kind,
             )
-            return
-        await HasnArtifactsService.record_app_resource_artifact(
+            return None
+    except Exception as e:
+        logger.warning('[%s] 解析 %s 资源描述符失败，跳过产物登记（非致命）: %s', app_id, resource_kind, e)
+        return None
+
+    try:
+        from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
+
+        return await HasnArtifactsService.record_app_resource_artifact(
             db,
             descriptor=descriptor,
             server_id=str(server_id),
@@ -86,3 +102,5 @@ async def register_app_resource_artifact(
         )
     except Exception as e:
         logger.warning('[%s] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', app_id, e)
+        # 登记没成，但资源建成了、地址算得出来——照常把 URI 交给分身（见 docstring）。
+        return ArtifactRegistration(artifact_id=None, resource_uri=descriptor.build_uri(server_id))
