@@ -10,7 +10,6 @@ v2.1 简化认证：Bearer Token / OwnerKey + X-Node-Id
 """
 
 import asyncio
-import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -20,6 +19,12 @@ from backend.app.hasn.service import geoip_service, message_router
 from backend.app.hasn.service.hasn_auth import authenticate_ws_connection
 from backend.app.hasn.service.hasn_nodes_service import hasn_nodes_service
 from backend.app.hasn.service.ws_router import ws_router
+from backend.app.hasn_im.protocol.frame import (
+    FrameDecodeError,
+    build_error_frame,
+    parse_inbound,
+)
+from backend.app.hasn_im.protocol.frame import build_frame as _frame
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -27,8 +32,8 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# 协议版本
-HASN_PROTOCOL = 'hasn/0.2'
+# 协议帧编解码/校验已提为无 DB 纯模块 `hasn_im.protocol.frame`（R1-09 协议层纯化）；
+# 本文件经 import 消费（`_frame`/`_response` 为其 build_frame/build_response 的别名）。
 WS_SEND_TIMEOUT_SECS = 10.0
 
 
@@ -93,25 +98,6 @@ async def _backfill_node_metadata(websocket: WebSocket, node_id: str) -> None:
             await db.commit()
     except Exception as e:
         log.warning(f'[HASN] 节点元数据回填失败 (非致命): {e}')
-
-
-def _frame(method: str, params: dict) -> dict:
-    """构造标准 HASN 事件帧"""
-    return {
-        'hasn': HASN_PROTOCOL,
-        'method': method,
-        'params': params,
-    }
-
-
-def _response(req_id: str, result: dict | None = None, error: dict | None = None) -> dict:
-    """构造标准 HASN 响应帧"""
-    resp = {'hasn': HASN_PROTOCOL, 'id': req_id}
-    if error:
-        resp['error'] = error
-    else:
-        resp['result'] = result or {}
-    return resp
 
 
 async def _send_json(websocket: WebSocket, payload: dict) -> None:
@@ -286,14 +272,10 @@ async def _recv_loop(  # noqa: C901
     while True:
         raw = await websocket.receive_text()
         try:
-            msg = json.loads(raw)
-        except json.JSONDecodeError:
-            await _send_error(websocket, 2004, 'JSON 格式错误')
+            method, params, req_id = parse_inbound(raw)
+        except FrameDecodeError as exc:
+            await _send_error(websocket, exc.code, exc.message)
             continue
-
-        method = msg.get('method', '')
-        params = msg.get('params', {})
-        req_id = msg.get('id')
 
         try:
             if method == 'hasn.node.add_owner':
@@ -847,13 +829,4 @@ async def _handle_typing(params: dict, active_entities: set[str]) -> None:
 
 async def _send_error(websocket: WebSocket, code: int, message: str) -> None:
     """发送错误帧"""
-    await _send_json(
-        websocket,
-        _frame(
-            'hasn.error',
-            {
-                'code': code,
-                'message': message,
-            },
-        ),
-    )
+    await _send_json(websocket, build_error_frame(code, message))
