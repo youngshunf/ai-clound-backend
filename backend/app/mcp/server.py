@@ -41,6 +41,7 @@ from backend.app.mcp.tools.message import (
 from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
 from backend.app.mcp.tools.owner import OWNER_TOOLS
 from backend.app.mcp.tools.plan import PLAN_TOOLS
+from backend.app.mcp.tools.project import PROJECT_TOOLS
 from backend.app.mcp.tools.registry import ToolRegistry
 from backend.app.mcp.tools.stock import STOCK_TOOLS
 from backend.app.mcp.tools.task import TASK_TOOLS
@@ -132,6 +133,12 @@ class HasnCloudMcpServer:
         # 仍留本地的是有真本地编排/计算的 decompose/briefing/review/schedule/reschedule/delegate/validate。
         for plan_tool in PLAN_TOOLS:
             self.tool_registry.register(plan_tool)
+
+        # 项目管理工具（14-平台项目·联邦挂靠，doc38）：hasn.project.create/get/list/update/link/unlink +
+        # milestone.create/update/complete。纯云端平台工具，直调 project_service / 挂靠点注册表；
+        # scope project:read/project:write 均 Allow 出厂。link/unlink 一律经挂靠点注册表，不散写跨 schema。
+        for project_tool in PROJECT_TOOLS:
+            self.tool_registry.register(project_tool)
 
         # 主人画像工具（19-了解主人）：hasn.owner.coverage.get — 采访分身读「主人 5 维画像还缺哪几维」，
         # 定向采访（缺什么采访什么）。纯云端只读，直调 OwnerProfileCoverageService.assess_if_stale。

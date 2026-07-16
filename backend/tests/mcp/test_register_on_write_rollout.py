@@ -56,6 +56,9 @@ ROLLOUT = [
     ('designsystem', 'designsystem.spec', 'hasn://designsystem/', 'resource'),
     ('plan', 'plan.goal', 'hasn://plan/goals/', 'resource'),
     ('plan', 'plan.plan', 'hasn://plan/plans/', 'resource'),
+    # doc38 PJ U3：平台项目自身也是一等资源（`hasn.project.create` register-on-write）。
+    # 单资源 manifest（resource_kind=project / uri_domain=project）→ URI 前缀 hasn://project/。
+    ('project', 'project', 'hasn://project/', 'resource'),
 ]
 
 

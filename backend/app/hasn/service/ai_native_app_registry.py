@@ -29,6 +29,7 @@ from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
 from backend.app.hasn_knowledge.service import resource_adapter as _knowledge_resource_adapter  # noqa: F401
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
+from backend.app.hasn_project.manifest import PROJECT_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.service import resource_adapter as _plan_resource_adapter  # noqa: F401
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
@@ -76,6 +77,10 @@ class AINativeAppRegistry:
             'imagelab': IMAGELAB_AI_NATIVE_MANIFEST,
             # 规划与目标管理应用（app_id=plan，模块/schema hasn_plan，模块 19；local_tool，PLAN-P1 铸 scope）。
             'plan': PLAN_AI_NATIVE_MANIFEST,
+            # 项目管理应用（app_id=project，模块/schema hasn_project，模块 14 doc38；cloud 承载，PJ U3 铸 scope。
+            # 「平台项目·联邦挂靠」——第三条轴「为了哪件事」：跨应用产物流并集读 + 里程碑 + hasn_artifacts.project_id
+            # 挂靠列。工具面 hasn.project.* 走云端 MCP platform tool（mcp/tools/project.py），非 local_tool）。
+            'project': PROJECT_AI_NATIVE_MANIFEST,
             # 金融数据（app_id=finance，模块/schema hasn_finance，模块 24；纯云端只读数据应用，
             # 工具全走 gateway_internal → finance_provider → finance-data-service，唯一接触 akshare 处隔离独立服务）。
             'finance': FINANCE_AI_NATIVE_MANIFEST,

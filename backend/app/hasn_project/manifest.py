@@ -29,6 +29,62 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
 
+# 与既有 AI-Native 审计共表的字段集（同 plan/deck/designsystem）。
+_AUDIT_FIELDS = [
+    'trace_id',
+    'workspace',
+    'app_id',
+    'agent_hasn_id',
+    'owner_hasn_id',
+    'session_uuid',
+    'tool_id',
+    'required_scopes',
+    'decision',
+]
+
+
+# 平台项目 AI-Native manifest（供 register-on-write 解析 resources[] 描述符 + tool.search 域目录）。
+# ⚠️ **单资源**应用（doc38 §3 U3 item 7）：只声明一条 `resource_kind='project'` 描述符，**不声明
+# `ref_type`**——避免「任一 descriptor 声明 ref_type → 整 app 进多资源模式」的 opt-in 陷阱
+# （register-on-write 显式传 descriptor，不依赖 ref_type 解析，无需多资源解析就不声明）。
+# 分身建/改项目即经公共接缝 `register_app_resource_artifact(app_id='project', resource_kind='project', ...)`
+# 把项目登记进 `hasn_artifacts`（project_id 自挂靠自身），完成即出「项目」卡 + 绑工作会话资源栏。
+# uri_domain='project' → hasn://project/{server_id}（U4 进 doc08 §3 registry）；server_id=hasn_project.id（UUID 权威）。
+PROJECT_AI_NATIVE_MANIFEST = {
+    'app_id': 'project',
+    'domain_summary': {'project': '项目（为了哪件事·跨应用产物流聚合·里程碑·联邦挂靠）'},
+    'version': '1.0.0',
+    'workspace_scope': ['personal', 'enterprise'],  # 双模应用（个人 / 企业，enterprise_id 列，对齐 GE）
+    'collaboration_mode': 'none',
+    'resources': [
+        {
+            'resource_kind': 'project',
+            'uri_domain': 'project',  # → hasn://project/{server_id}（U4 登记 internal_route 域）
+            'open': {'mode': 'internal_route', 'route_template': '/apps/project/:id'},
+            'card': {'verb': '项目', 'action_label': '打开项目'},
+            'artifact_kind': 'resource',
+        },
+    ],
+    'execution_mode': 'cloud',
+    'transport_mode': 'cloud',  # hasn.project.* 是云端平台工具（mcp/tools/project.py），经云端 Runtime Gateway
+    # 通知发布能力声明：项目巡检 / 周报 / 完成卡经 emit 发卡给主人（后续切片接 emit）。
+    'notifications': {
+        'emit': {
+            'categories': ['app'],
+            'card_message': True,
+            'display_name': '项目',
+        }
+    },
+    'capabilities': [],
+    'tools': [],
+    'events': [],
+    'reverse_invoke': {'supported': False},
+    'ui_interfaces': [{'face': 'ui', 'transport': 'daemon_direct'}],
+    'publisher': {'developer_id': 'huanxing-first-party', 'publisher_type': 'first_party', 'name': '唤星'},
+    'endpoints': {'tool_endpoint': None, 'event_endpoint': None, 'component_origin': 'loopback'},
+    'audit': {'fields': list(_AUDIT_FIELDS)},
+}
+
 
 def build_project_app() -> App:
     """平台项目 App（cloud / 原生 webui 路由 / 默认挂载）。
