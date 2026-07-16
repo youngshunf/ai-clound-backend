@@ -44,7 +44,14 @@ _RESERVED_KEYS = (RESERVED_IS_EXTERNAL, RESERVED_PEER_ID, RESERVED_PEER_TRUST)
 # resource_uri 归位、进产物 tab，只是不额外挂到某工作会话资源栏。
 RESERVED_SESSION_ID = '_hasn_session_id'
 
-# 系统注入保留字段的公共前缀：上面两族（`_hasn_session_id` 与 `_hasn_is_external` /
+# ── 系统注入的平台项目 id 保留参数（doc38 §3.3·第三条轴「为了哪件事」联邦挂靠）───────────
+# 与 `_hasn_session_id` 完全同管道：分身经项目上下文派发时，daemon 在每次出站 MCP 调用后无条件
+# 戳进此保留参数（分身不可伪造、工具体不该见）。云端 dispatch 前剥离 → 落 ContextVar，供 register-on-write
+# 公共接缝把产物自动打标进 ``hasn_artifacts.project_id``（只进不退）。缺省（不在项目中工作）→ None，
+# 产物仍凭 resource_uri 归位、进产物 tab，只是不额外挂到某项目。
+RESERVED_PROJECT_ID = '_hasn_project_id'
+
+# 系统注入保留字段的公共前缀：三族（`_hasn_session_id` / `_hasn_project_id` 与 `_hasn_is_external` /
 # `_hasn_peer_id` / `_hasn_peer_trust`）都在此命名空间下，wire 上按前缀整族放行。
 _RESERVED_FIELD_PATTERN = '^_hasn_'
 
@@ -162,6 +169,21 @@ def pop_session_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | Non
     raw = arguments.get(RESERVED_SESSION_ID)
     sid = str(raw).strip() if raw is not None else ''
     return cleaned, (sid or None)
+
+
+def pop_project_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """从工具入参剥离系统注入的平台项目 id 保留参数（``_hasn_project_id``）。
+
+    返回 ``(cleaned_args, project_id)``。无该参数 → 原样返回 + ``None``（never over-block：
+    缺项目 id 只是不把产物额外打标进某项目，绝不影响工具执行、也不影响产物按 resource_uri 归位）。
+    与 ``pop_session_id`` 同形状——同一分发入口先后各剥离一次。
+    """
+    if not isinstance(arguments, dict) or RESERVED_PROJECT_ID not in arguments:
+        return arguments, None
+    cleaned = {k: v for k, v in arguments.items() if k != RESERVED_PROJECT_ID}
+    raw = arguments.get(RESERVED_PROJECT_ID)
+    pid = str(raw).strip() if raw is not None else ''
+    return cleaned, (pid or None)
 
 
 def _coerce_bool(value: str | None) -> bool:

@@ -304,6 +304,7 @@ class HasnArtifactsService:
         summary: str | None = None,
         source_tool: str | None = None,
         dispatch_id: str | None = None,
+        project_id: str | None = None,
     ) -> ArtifactRegistration:
         """据 descriptor 登记一条**应用资源产物**（deck/webpage 等，走 `resource_uri` 指针，无 asset 本体）。
 
@@ -357,6 +358,11 @@ class HasnArtifactsService:
             if session_id and existing_row.session_id != session_id:
                 existing_row.session_id = session_id
                 changed = True
+            # project_id 同样只进不退（doc38 §5.1 自动打标·只进不退）：分身在项目中反复写同一资源，
+            # 首次带上 project_id 后即锁定；后续非项目直调（project_id=None）不得把它抹成 None。
+            if project_id and str(existing_row.project_id or '') != project_id:
+                existing_row.project_id = project_id
+                changed = True
             new_title = title or None
             if new_title and existing_row.title != new_title:
                 existing_row.title = new_title
@@ -389,6 +395,8 @@ class HasnArtifactsService:
             # origin_ref 存**云端权威** resource:{app}:{server_id}（不存本地 id），按业务对象可反查产物。
             origin_ref=f'resource:{app_id}:{server_id}',
             session_id=(session_id or None),
+            # doc38 §5.1：产物挂靠平台项目（可空；仅聚合过滤键，非权限边界）。
+            project_id=(project_id or None),
             source_tool=(source_tool or None),
             # doc34 §3：应用资源产物的来源应用由 descriptor 派生，UI 据此显示应用图标（权威列，不靠反推）。
             source_app_id=app_id,

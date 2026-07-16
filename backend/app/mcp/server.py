@@ -325,6 +325,15 @@ class HasnCloudMcpServer:
 
             set_current_work_session_id(agent_context.session_id)
 
+            # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
+            # （`_hasn_project_id`，分身不可伪造）→ ContextVar，供 register-on-write 公共接缝把产物
+            # 自动打标进 hasn_artifacts.project_id（只进不退）。缺省=不在项目中工作，产物不挂项目。
+            from backend.app.mcp.context import set_current_project_id
+
+            arguments, _origin_project_id = _tg.pop_project_id(arguments)
+            if _origin_project_id:
+                set_current_project_id(_origin_project_id)
+
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游
             # 暴露判定 / ask 验票 / dispatch / 审计都只见剥离后的干净入参；同时据其判档（对外
@@ -398,11 +407,17 @@ class HasnCloudMcpServer:
             return result
         finally:
             # G6 已判权资源随请求结束即清（doc33 S2-3/S2-4），防跨调用串味。
-            from backend.app.mcp.context import clear_authorized_resources, clear_current_work_session_id
+            from backend.app.mcp.context import (
+                clear_authorized_resources,
+                clear_current_project_id,
+                clear_current_work_session_id,
+            )
 
             clear_authorized_resources()
             # 工作会话 id 同理随调用结束即清，防跨调用串味（下次主会话直调误挂上次会话）。
             clear_current_work_session_id()
+            # 平台项目 id 同理随调用结束即清（doc38 §3.3），防跨调用把上次项目串给下次主会话直调。
+            clear_current_project_id()
 
     async def _enforce_resource_gate(
         self, agent_context: AgentContext, tool: BaseTool, arguments: dict[str, Any]

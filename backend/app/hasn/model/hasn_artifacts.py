@@ -30,6 +30,7 @@ class HasnArtifacts(Base):
     conversation_id: Mapped[str | UUID | None] = mapped_column(sa.UUID(), default=None, comment='来源会话 ID (public.hasn_conversations.id)')
     message_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='来源消息 ID (public.hasn_messages.id)')
     session_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='来源本地 runtime session (ULID)')
+    project_id: Mapped[str | UUID | None] = mapped_column(sa.UUID(), default=None, comment='平台项目挂靠 id (hasn_project.hasn_project.id，可空；register-on-write 经 ContextVar 自动打标，doc38 §5.1；不是权限边界，仅聚合过滤键)')
     source_tool: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='产出工具全名 (hasn.image.generate)')
     source_app_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='来源应用 ID (hasn_app_catalog.app_id，如 deck/imagelab/knowledge；UI 据此显示应用图标，非应用产出为空)')
     source_kind: Mapped[str] = mapped_column(sa.String(16), default='', comment='产出来源·怎么来的 (app:应用产出:violet/platform_tool:平台工具:blue/external_tool:外部取材:orange/runtime_file:运行时文件:gray/agent_note:分身自撰:cyan/upload:主人上传:default)')

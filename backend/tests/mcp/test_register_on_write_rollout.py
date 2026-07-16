@@ -24,7 +24,12 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.mcp.artifact_registration import register_app_resource_artifact
-from backend.app.mcp.context import clear_current_work_session_id, set_current_work_session_id
+from backend.app.mcp.context import (
+    clear_current_project_id,
+    clear_current_work_session_id,
+    set_current_project_id,
+    set_current_work_session_id,
+)
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -120,6 +125,81 @@ async def test_register_lands_artifact_bound_to_session(
         assert rows[0].source_kind == 'app', '应用产出的资源，来源恒为 app（旧硬编码 tool_output 是垃圾桶）'
     finally:
         clear_current_work_session_id()
+
+
+async def test_project_id_from_contextvar_lands_on_artifact(pg_session) -> None:
+    """doc38 §3.4：分发入口把系统注入的 `_hasn_project_id` 落进 ContextVar 后，接缝**缺省自动取用**
+    落 `hasn_artifacts.project_id`——已接应用零改造即自动打标。
+
+    与 `_hasn_session_id` 完全同管道（同一 register-on-write 接缝一次取两个 ContextVar）。这里用
+    已接 register-on-write 的 knowledge 应用验证接缝行为，不依赖平台项目应用自身的 resources[] 声明。
+    """
+    tag = uuid.uuid4().hex[:8]
+    agent_hasn_id, owner_hasn_id = f'a_proj_{tag}', f'h_proj_{tag}'
+    work_session_id = f'ws_proj_{tag}'
+    project_id = str(uuid.uuid4())
+
+    set_current_work_session_id(work_session_id)
+    set_current_project_id(project_id)
+    try:
+        await register_app_resource_artifact(
+            pg_session,
+            app_id='knowledge',
+            resource_kind='knowledge.base',
+            server_id=90003,
+            agent_hasn_id=agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            title=f'项目内产物 {tag}',
+            source_tool='hasn.knowledge.create',
+        )
+        rows = await _active_rows(pg_session, agent_hasn_id)
+        assert len(rows) == 1
+        assert str(rows[0].project_id) == project_id, '接缝必须把 ContextVar project_id 自动落到产物行'
+        assert rows[0].session_id == work_session_id, 'project_id 打标不得影响既有 session_id 绑定'
+    finally:
+        clear_current_project_id()
+        clear_current_work_session_id()
+
+
+async def test_project_id_only_advances_never_downgrades(pg_session) -> None:
+    """doc38 §5.1「只进不退」：分身在项目中首次写点锁定 project_id 后，后续非项目直调
+    （ContextVar 已清、project_id=None）**不得**把已锁定的项目归属抹成 None。
+    """
+    tag = uuid.uuid4().hex[:8]
+    agent_hasn_id, owner_hasn_id = f'a_padv_{tag}', f'h_padv_{tag}'
+    project_id = str(uuid.uuid4())
+
+    # 第一次：在项目中写（ContextVar 有 project_id）→ 锁定。
+    set_current_project_id(project_id)
+    try:
+        await register_app_resource_artifact(
+            pg_session,
+            app_id='knowledge',
+            resource_kind='knowledge.base',
+            server_id=90004,
+            agent_hasn_id=agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            title='第一版（项目内）',
+            source_tool='hasn.knowledge.create',
+        )
+    finally:
+        clear_current_project_id()
+
+    # 第二次：非项目直调（ContextVar 已清）改同一资源 → 幂等推进，但 project_id 不退。
+    await register_app_resource_artifact(
+        pg_session,
+        app_id='knowledge',
+        resource_kind='knowledge.base',
+        server_id=90004,
+        agent_hasn_id=agent_hasn_id,
+        owner_hasn_id=owner_hasn_id,
+        title='第二版（项目外改稿）',
+        source_tool='hasn.knowledge.create',
+    )
+    rows = await _active_rows(pg_session, agent_hasn_id)
+    assert len(rows) == 1, '同一资源反复写只留一条 active 行'
+    assert str(rows[0].project_id) == project_id, 'project_id 只进不退：project_id=None 不得抹掉已锁定归属'
+    assert rows[0].title == '第二版（项目外改稿）', 'title 照常刷新（只进不退只约束 project_id/session_id）'
 
 
 async def test_repeated_writes_stay_single_active_row(pg_session) -> None:

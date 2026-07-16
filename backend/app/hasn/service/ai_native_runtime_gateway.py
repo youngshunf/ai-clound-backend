@@ -221,11 +221,18 @@ class AiNativeRuntimeGateway:
         # - daemon 代理面（FastAPI 路由）：daemon `ai_native.rs` 把 session_id 重注入进 input → 本处剥离；
         # - MCP 直连面（AppTool shim）：`server.call_tool` 已剥离并落 ContextVar，input 里没有 → 不覆盖。
         from backend.app.mcp import trust_gate as _tg
-        from backend.app.mcp.context import set_current_work_session_id
+        from backend.app.mcp.context import set_current_project_id, set_current_work_session_id
 
         input_payload, _relay_session_id = _tg.pop_session_id(input_payload)
         if _relay_session_id:
             set_current_work_session_id(_relay_session_id)
+
+        # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
+        # （`_hasn_project_id`）→ ContextVar，供 handler 登记产物时自动打标进 hasn_artifacts.project_id。
+        # mcp_face 面 server.call_tool 已剥离并落 ContextVar、input 里没有 → guard 不覆盖。
+        input_payload, _relay_project_id = _tg.pop_project_id(input_payload)
+        if _relay_project_id:
+            set_current_project_id(_relay_project_id)
 
         # 入参绑定接缝（候选①）：按 capability.input_schema 校验 + 强转 + 回填默认，使 manifest
         # 成为工具入参的唯一事实源——下游授权闸门与 handler 都拿到规范化 typed 入参（也让

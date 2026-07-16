@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
-from backend.app.mcp.context import get_current_work_session_id
+from backend.app.mcp.context import get_current_project_id, get_current_work_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ async def register_app_resource_artifact(
     source_tool: str,
     summary: str | None = None,
     session_id: Any = _UNSET,
+    project_id: Any = _UNSET,
 ) -> ArtifactRegistration | None:
     """把分身刚写过的应用资源登记为产物（每个写点都调，不要只在 finalize 调）。
 
@@ -50,6 +51,9 @@ async def register_app_resource_artifact(
       否则换设备 / 分享给别人就解析不开（Core-08 铁律）。
     - `session_id`：缺省自动取 ContextVar（主会话直调则为 None，产物仍进分身产物 tab）。仅在调用方
       已持有权威会话 id（如平台工具面的 `ctx.session_id`）时才显式传。
+    - `project_id`（doc38 §3.4）：缺省自动取 ContextVar（不在项目中工作则为 None，产物不挂项目）。
+      分发入口剥离系统注入的 `_hasn_project_id` 后落进 ContextVar，故与 `session_id` 同管道——已接
+      应用**零改造**即自动打标；落底层「只进不退」（None 不会把已锁定的项目归属抹掉）。
     - 幂等：底层按 `(agent, dispatch_id, resource_uri)` UPSERT，反复写只一条 active 行；会话归属
       只进不退（None 不会把已有归属抹掉）。
 
@@ -99,6 +103,8 @@ async def register_app_resource_artifact(
             title=title,
             summary=summary,
             source_tool=source_tool,
+            # doc38 §3.4：缺省自动取 ContextVar project_id（不在项目中则 None），已接应用零改造。
+            project_id=get_current_project_id() if project_id is _UNSET else project_id,
         )
     except Exception as e:
         logger.warning('[%s] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', app_id, e)
