@@ -111,7 +111,7 @@ async def _count_rows(db: AsyncSession) -> int:
 @pytest.mark.asyncio
 async def test_record_app_resource_artifact_resource_uri_and_kind(db_session: AsyncSession) -> None:
     """deck 产出 → resource_uri=hasn://deck/{id}、三维度各就各位、dispatch_id 缺省、origin_ref 存云端 id。"""
-    artifact_id = await HasnArtifactsService.record_app_resource_artifact(
+    registration = await HasnArtifactsService.record_app_resource_artifact(
         db_session,
         descriptor=_DECK_DESCRIPTOR,
         server_id='deck_server_9',
@@ -121,9 +121,13 @@ async def test_record_app_resource_artifact_resource_uri_and_kind(db_session: As
         title='第一季度业绩回顾',
         summary='年度总结',
     )
-    assert artifact_id.startswith('art_')
+    assert registration.artifact_id.startswith('art_')
+    # doc36 §3.1：URI 不再只落库、还要当场交还给写工具（分身写完即知怎么打开）。
+    assert registration.resource_uri == 'hasn://deck/deck_server_9'
     row = (
-        await db_session.execute(sa.select(ArtifactStub).where(ArtifactStub.artifact_id == artifact_id))
+        await db_session.execute(
+            sa.select(ArtifactStub).where(ArtifactStub.artifact_id == registration.artifact_id)
+        )
     ).scalar_one()
     assert row.resource_uri == 'hasn://deck/deck_server_9'
     # 三维度各答各的：怎么打开=resource / 是什么=deck.presentation / 哪个应用=deck / 怎么来的=app。
@@ -167,7 +171,7 @@ async def test_record_app_resource_artifact_idempotent(db_session: AsyncSession)
 @pytest.mark.asyncio
 async def test_record_second_app_zero_code_reel(db_session: AsyncSession) -> None:
     """第二应用（reel）声明 descriptor 后零改代码登记：resource_uri 用 uri_domain 多段前缀 + 三维度归位。"""
-    artifact_id = await HasnArtifactsService.record_app_resource_artifact(
+    registration = await HasnArtifactsService.record_app_resource_artifact(
         db_session,
         descriptor=_REEL_DESCRIPTOR,
         server_id='reel_server_42',
@@ -176,8 +180,11 @@ async def test_record_second_app_zero_code_reel(db_session: AsyncSession) -> Non
         owner_hasn_id='h_owner',
         title='新品发布短视频',
     )
+    assert registration.resource_uri == 'hasn://reel/projects/reel_server_42'
     row = (
-        await db_session.execute(sa.select(ArtifactStub).where(ArtifactStub.artifact_id == artifact_id))
+        await db_session.execute(
+            sa.select(ArtifactStub).where(ArtifactStub.artifact_id == registration.artifact_id)
+        )
     ).scalar_one()
     assert row.resource_uri == 'hasn://reel/projects/reel_server_42'
     assert row.kind == 'resource'

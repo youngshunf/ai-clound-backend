@@ -1,7 +1,7 @@
 """平台工具 · workflow 域 真实 service 测试（禁 mock，TOOLMIG2-P2）。
 
 验证从 hasn-node 本地 hasn-mcp 迁来的「纯云端代理」工作流工具：
-- 注册齐全（8 个），工具名/命名空间/execution_location/scope 与 manifest 1:1；
+- 注册齐全（9 个），工具名/命名空间/execution_location/scope 与 manifest 1:1；
 - 不暴露 add_node/add_edge（agent 经 create 一次声明整图）、不暴露 approve/reject（主人侧 D4）；
 - scope split：读类无 scope；建/暂停/取消 workflow:manage；触发 workflow:run；
 - 真实 PG 往返：create(once,1节点)→get→list→run→pause→cancel（事务真提交，测试后清理该 owner 行）。
@@ -60,6 +60,7 @@ _EXPECTED_NAMES = {
     'hasn.workflow.list_agents',
     'hasn.workflow.get',
     'hasn.workflow.get_node_result',
+    'hasn.workflow.run_artifacts',
     'hasn.workflow.run',
     'hasn.workflow.pause',
     'hasn.workflow.cancel',
@@ -76,7 +77,7 @@ _NOT_EXPOSED = {
 
 
 def test_workflow_tools_register_exactly() -> None:
-    """8 个纯代理工具全注册，且不含 add_node/add_edge/approve/reject。"""
+    """9 个纯代理工具全注册，且不含 add_node/add_edge/approve/reject。"""
     names = {t.name for t in WORKFLOW_TOOLS}
     assert names == _EXPECTED_NAMES, f'差异: {names ^ _EXPECTED_NAMES}'
     assert not (names & _NOT_EXPOSED), 'add_node/add_edge/approve/reject 不应作为 agent 工具暴露'
@@ -92,7 +93,13 @@ def test_workflow_tools_are_cloud_platform() -> None:
 
 def test_workflow_tools_scope_split() -> None:
     """读类无 scope；建/暂停/取消=workflow:manage；触发=workflow:run（跨仓与本地 hasn-mcp 对齐）。"""
-    reads = {'hasn.workflow.list_agents', 'hasn.workflow.get', 'hasn.workflow.get_node_result', 'hasn.workflow.list'}
+    reads = {
+        'hasn.workflow.list_agents',
+        'hasn.workflow.get',
+        'hasn.workflow.get_node_result',
+        'hasn.workflow.run_artifacts',
+        'hasn.workflow.list',
+    }
     manage = {'hasn.workflow.create', 'hasn.workflow.pause', 'hasn.workflow.cancel'}
     for t in WORKFLOW_TOOLS:
         if t.name in reads:

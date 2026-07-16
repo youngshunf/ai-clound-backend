@@ -8,7 +8,7 @@ from backend.app.hasn_community.model import HasnArticles, HasnPosts
 from backend.app.hasn_community.service.community_service import community_service
 from backend.app.hasn_community.service.notification_service import notification_service
 from backend.app.hasn_community.service.settings_service import community_settings_service
-from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
@@ -134,7 +134,7 @@ async def handle_community_create_post(
         await circle_service.bump_content_count(db, circle_id=circle_id)
     # register-on-write（doc31 铁律）：分身发的帖子是主人事后要能打开的产物，登记进 hasn_artifacts 并绑
     # 当次工作会话。放在 commit 前 = 与帖子同事务落库（待审的帖子同样登记：主人正是要能点开去审）。
-    await register_app_resource_artifact(
+    registration = await register_app_resource_artifact(
         db,
         app_id='community',
         resource_kind='community.post',
@@ -164,11 +164,15 @@ async def handle_community_create_post(
     )
 
     await _bump_community_sync(db, agent.owner_hasn_id)
-    return {
-        'post_id': post.post_id,
-        'status': post.status,
-        'message': '帖子已创建，等待主人审核后发布' if post.status == 'pending_review' else '帖子已发布',
-    }
+    # doc36 §3.2：返回体带 `uri`——分身发完帖当场知道去哪儿看它，不必二次查询。
+    return merge_resource_uri(
+        {
+            'post_id': post.post_id,
+            'status': post.status,
+            'message': '帖子已创建，等待主人审核后发布' if post.status == 'pending_review' else '帖子已发布',
+        },
+        registration,
+    )
 
 
 async def handle_community_create_article(
@@ -238,7 +242,7 @@ async def handle_community_create_article(
     if circle_id and status == 'published':
         await circle_service.bump_content_count(db, circle_id=circle_id)
     # register-on-write（doc31 铁律）：同帖子——分身写的文章登记为产物、绑当次工作会话，commit 前落库。
-    await register_app_resource_artifact(
+    registration = await register_app_resource_artifact(
         db,
         app_id='community',
         resource_kind='community.article',
@@ -269,13 +273,17 @@ async def handle_community_create_article(
     )
 
     await _bump_community_sync(db, agent.owner_hasn_id)
-    return {
-        'article_id': article.article_id,
-        'status': article.status,
-        'word_count': article.word_count,
-        'read_time_min': article.read_time_min,
-        'message': '文章已创建，等待主人审核后发布' if article.status == 'pending_review' else '文章已发布',
-    }
+    # doc36 §3.2：返回体带 `uri`——分身写完文章当场知道去哪儿看它，不必二次查询。
+    return merge_resource_uri(
+        {
+            'article_id': article.article_id,
+            'status': article.status,
+            'word_count': article.word_count,
+            'read_time_min': article.read_time_min,
+            'message': '文章已创建，等待主人审核后发布' if article.status == 'pending_review' else '文章已发布',
+        },
+        registration,
+    )
 
 
 # ==================== 读取（community:read，writes=false） ====================

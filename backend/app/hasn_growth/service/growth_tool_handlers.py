@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
@@ -26,8 +27,8 @@ from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_qu
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
-from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
+from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.common.log import log
 
 if TYPE_CHECKING:
@@ -236,8 +237,8 @@ async def handle_growth_lead_qualify(
         owner_agent_id=agent.agent_hasn_id,
         scope=scope,
     )
-    await _register_growth_customer(db, agent, result, source_tool='hasn.growth.lead.qualify')
-    return result
+    registration = await _register_growth_customer(db, agent, result, source_tool='hasn.growth.lead.qualify')
+    return merge_resource_uri(result, registration)
 
 
 async def handle_growth_lead_dismiss(
@@ -307,8 +308,8 @@ async def handle_growth_customer_update_profile(
         followup_task_id=input_payload.get('followup_task_id'),
         scope=scope,
     )
-    await _register_growth_customer(db, agent, result, source_tool='hasn.growth.customer.update_profile')
-    return result
+    registration = await _register_growth_customer(db, agent, result, source_tool='hasn.growth.customer.update_profile')
+    return merge_resource_uri(result, registration)
 
 
 async def handle_growth_activity_log(
@@ -329,7 +330,7 @@ async def handle_growth_activity_log(
     )
     # 活动记在客户名下——产物仍是那位客户（活动本身没有独立可打开的资源域）。
     # 返回体是 activity，故 id 取自入参 customer_id；标题留空由登记侧沿用既有值。
-    await register_app_resource_artifact(
+    registration = await register_app_resource_artifact(
         db,
         app_id='growth',
         resource_kind='growth.customer',
@@ -339,20 +340,25 @@ async def handle_growth_activity_log(
         title='客户资料',
         source_tool='hasn.growth.activity.log',
     )
-    return result
+    # doc36 §3.2：`uri` 指向那位**客户**（活动本身无独立资源域）——与登记的产物同一个东西，
+    # 分身记完活动即知去哪儿看这位客户。
+    return merge_resource_uri(result, registration)
 
 
 async def _register_growth_customer(
     db: AsyncSession, agent: AgentTokenPayload, result: Any, *, source_tool: str
-) -> None:
-    """register-on-write：分身晋级/维护的客户登记为产物（doc31 铁律）。"""
+) -> ArtifactRegistration | None:
+    """register-on-write：分身晋级/维护的客户登记为产物（doc31 铁律）。
+
+    doc36 U2：返回 `ArtifactRegistration` 供写工具把 `uri` 放进返回体（§3.2 契约）。
+    """
     if not isinstance(result, dict):
-        return
+        return None
     customer_id = result.get('id')
     if not isinstance(customer_id, int):
-        return
+        return None
     title = str(result.get('company_name') or result.get('contact_name') or '').strip() or '客户资料'
-    await register_app_resource_artifact(
+    return await register_app_resource_artifact(
         db,
         app_id='growth',
         resource_kind='growth.customer',

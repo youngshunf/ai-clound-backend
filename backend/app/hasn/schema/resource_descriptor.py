@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -16,10 +17,25 @@ from pydantic import Field, model_validator
 from backend.app.hasn.schema.hasn_artifacts import ArtifactKind
 from backend.common.schema import SchemaBase
 
+
+@dataclass(frozen=True)
+class ArtifactRegistration:
+    """register-on-write 的登记结果（doc36 §3.1）：`artifact_id` 给审计用，`resource_uri` 给分身打开用。
+
+    `artifact_id` 可以为 `None`——descriptor 已解析、URI 已算出，但落库失败（登记是 best-effort，
+    只 warn 不抛）。此时**仍然要把 URI 交给分身**：URI 是 `(uri_domain, server_id)` 的纯函数，业务写
+    已经成功、资源真实存在且能打开（打开走资源自身的云端权威，不依赖 `hasn_artifacts` 行），登记失败
+    只是「可见性的账」没记上。这时候不返 URI，分身既拿不到地址、又查不到产物（没登记），凭空双输。
+    """
+
+    artifact_id: str | None
+    resource_uri: str
+
+
 # open.mode 三枚举覆盖全部现实打开形态（doc31 §2.2）：
 #   internal_route  有 /:id 详情路由的应用（reel/knowledge/creator…）
 #   native_window   独立原生窗口应用（deck/design）
-#   entry_query     单入口 / tab、无 /:id 段的应用（imagelab ?item= 等）
+#   entry_query     单入口 / tab、无 /:id 段的应用（imagelab ?project= / quant ?backtest= 等）
 ResourceOpenMode = Literal['internal_route', 'native_window', 'entry_query']
 # native_window 目前仅两类独立窗口应用
 ResourceWindow = Literal['deck', 'design']
@@ -82,7 +98,7 @@ class ResourceDescriptor(SchemaBase):
     # 收 Literal 而非裸 str：以前 manifest 里写 'vidoe' 拼错不会在校验时红，一路静默落成
     # 'other'（doc35 §1.5 的隐患之一）。现在拼错在**注册期**就炸。
     artifact_kind: ArtifactKind | None = Field(
-        None, description="登记 hasn_artifacts 的 artifact_kind（应用资源恒为 resource，缺省即 resource）"
+        None, description='登记 hasn_artifacts 的 artifact_kind（应用资源恒为 resource，缺省即 resource）'
     )
     # 可选·多资源应用的子类选择键（doc31 §2.1 扩展，RC-P6/doc31-A）：
     # 单类资源应用（deck/reel/design/knowledge…）不声明 ref_type——origin_ref=resource:{app}:{id}，
@@ -91,6 +107,18 @@ class ResourceDescriptor(SchemaBase):
     # descriptor 并剥前缀取 id。**opt-in**：只有声明了 ref_type 的应用进入「多资源模式」，其余保持整段作 id
     # 的历史行为（design 的 local_ref='proj:v2' 因未声明 ref_type 不受影响）。
     ref_type: str | None = Field(None, description='多资源应用 origin_ref 的子类选择键（如 plan 的 goal/plan）')
+
+    def build_uri(self, server_id: str | int) -> str:
+        """拼这条资源的 `hasn://` 地址 —— **全仓唯一的 URI 拼接点**（doc36 §3.1）。
+
+        写路径（`record_app_resource_artifact` 登记）与读路径（`_kb_dict` 等投影）都必须调它。
+        别处再拼一次 `f'hasn://{...}/{...}'` 就是第 N 处字面量——doc36 §1.3 盘出的五处 deck 域
+        字面量、以及「manifest 声明了却和 doc08 对不上」的漂移，全是这么来的。
+
+        `server_id` 必须是**云端权威 id**（Core-08 铁律：本地 id 永不上 URI，否则换设备 / 分享
+        给别人就解析不开）。
+        """
+        return f'hasn://{self.uri_domain}/{server_id}'
 
     @model_validator(mode='after')
     def _check_uri_domain(self) -> ResourceDescriptor:
@@ -104,6 +132,36 @@ class ResourceDescriptor(SchemaBase):
         if not (self.resource_kind or '').strip():
             raise ValueError('resource_kind 不能为空')
         return self
+
+
+class ResourceDomainInfo(SchemaBase):
+    """资源域目录（**给分身看**的投影，与 `ResourceRoute` 同源不同投影，doc36 §5.2）。
+
+    分身不需要知道「用哪个路由模板打开」——那是 webui 的事（`ResourceRoute` 干的）；分身要知道的是
+    「系统里有哪些资源类型、URI 长什么样、归哪个应用」。故本投影只给身份与地址形状，不给路由细节。
+    """
+
+    app_id: str = Field(description='应用 id（如 knowledge）')
+    resource_kind: str = Field(description='应用内资源类型（如 knowledge.base）')
+    uri_domain: str = Field(description='hasn:// host+path 前缀，不含 /{id}（如 knowledge/kbs）')
+    uri_example: str = Field(description='URI 形状示例（如 hasn://knowledge/kbs/{id}）——直接给形状，别让分身猜')
+    label: str | None = Field(None, description='人话资源名（如 知识库）')
+
+    @classmethod
+    def from_descriptor(cls, app_id: str, descriptor: ResourceDescriptor) -> ResourceDomainInfo:
+        # label 取 `card.verb`：字段名叫 verb，值却是**名词性资源名**（16 个 builtin 声明全是
+        # 「知识库」「演示文稿」「短视频」这类，无一动词）——完成卡标题 "{verb}做好了" 正需名词。
+        # 既有 `resource_kind_labels()`（同取 card.verb，docstring 直呼「人话展示名」）已是先例，
+        # 此处同源，不另立第二份展示名。
+        return cls(
+            app_id=app_id,
+            resource_kind=descriptor.resource_kind,
+            uri_domain=descriptor.uri_domain,
+            # 用 build_uri 生成示例，形状与真实登记出的地址同源——手写 f'hasn://{domain}/{{id}}'
+            # 就是又一处会漂移的字面量（doc36 §3.1 唯一拼接点铁律）。
+            uri_example=descriptor.build_uri('{id}'),
+            label=descriptor.card.verb,
+        )
 
 
 class ResourceRoute(SchemaBase):

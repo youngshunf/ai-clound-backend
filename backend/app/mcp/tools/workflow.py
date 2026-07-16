@@ -56,6 +56,17 @@ async def _h_get_node_result(db: Any, ctx: AgentContext, args: dict[str, Any]) -
     )
 
 
+async def _h_run_artifacts(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    # doc36 §6.2 零入参：缺 workflow_run_uuid 时经当前会话（_hasn_session_id → ctx.session_id）反查所属 run。
+    run_uuid = args.get('workflow_run_uuid')
+    return await agent_workflow_service.run_artifacts(
+        db,
+        owner_id=ctx.owner_hasn_id,
+        session_id=ctx.session_id,
+        workflow_run_uuid=str(run_uuid) if run_uuid else None,
+    )
+
+
 async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await agent_workflow_service.list_workflows(db, owner_id=ctx.owner_hasn_id)
 
@@ -140,6 +151,28 @@ _SPECS: list[dict[str, Any]] = [
                 'node_key': {'type': 'string', 'minLength': 1},
             },
             'required': ['workflow_id', 'node_key'],
+        },
+    },
+    {
+        'action': 'run_artifacts',
+        'write': False,
+        'scopes': [],
+        'handler': _h_run_artifacts,
+        'desc': (
+            '拿本次工作流执行（run）全部节点的产物清单——用于场景末尾出「成果总览」文档。零入参：'
+            '不传 workflow_run_uuid 时，服务端据当前工作会话反查本次 run。返回按拓扑序（第几步）排列的节点，'
+            '每个节点带其产物 [{artifact_id, title, uri, resource_kind, source_app_id, created_time}]（uri 即 '
+            'artifact.list 里的 resource_uri；写总览时链接用 uri 原值，勿自行拼 URI）。产物只含最新版本，'
+            '每节点上限 50，超限置 artifacts_truncated=true。确定性读。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'workflow_run_uuid': {
+                    'type': ['string', 'null'],
+                    'description': '可选：显式指定要查的执行实例（主人 UI / 非节点会话用）；缺省由当前会话反查',
+                },
+            },
         },
     },
     {
