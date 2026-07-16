@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, get_args
 
 from backend.app.hasn.schema.hasn_artifacts import ArtifactKind, RecordArtifactParam
+from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -520,9 +521,60 @@ class ArtifactGetTool(BaseTool):
         return _project_detail(detail)
 
 
+class ArtifactDomainsTool(BaseTool):
+    """`hasn.artifact.domains`：枚举系统里全部资源域（哪些应用产哪些资源、URI 什么形状）。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.artifact.domains'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.artifact'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '列系统里全部资源域：哪个应用（app_id）产哪类资源（resource_kind）、'
+            'hasn:// 地址长什么样（uri_example）、人话叫什么（label）。'
+            '日常不用查——写工具返回体自带 uri、artifact.list 出参自带 resource_uri；'
+            '只在需要**枚举全域**时用它：给 artifact.list/search 的 app/resource_kind 取合法值，'
+            '或汇总产物时认清每条 URI 是什么。零入参，返回全量。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        # 零入参：全量就 18 条上下，分页/过滤纯属给分身添乱。
+        return {'type': 'object', 'properties': {}}
+
+    @property
+    def required_scopes(self) -> list[str]:
+        # 只读自省（读的是代码里的 manifest 声明，连库都不碰），按「默认权限只拦外发/动钱」
+        # 铁律出厂 Allow——与 artifact.list/search/get 一致。
+        return []
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        """投影 manifest `resources[]` → 资源域目录。权威在声明，故无需 db、与主人无关。"""
+        domains = ai_native_app_registry.resource_domains()
+        return {'items': [d.model_dump() for d in domains], 'total': len(domains)}
+
+
 ARTIFACT_TOOLS: list[BaseTool] = [
     ArtifactRecordTool(),
     ArtifactListTool(),
     ArtifactSearchTool(),
     ArtifactGetTool(),
+    ArtifactDomainsTool(),
 ]

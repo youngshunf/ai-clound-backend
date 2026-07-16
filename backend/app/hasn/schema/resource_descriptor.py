@@ -134,6 +134,36 @@ class ResourceDescriptor(SchemaBase):
         return self
 
 
+class ResourceDomainInfo(SchemaBase):
+    """资源域目录（**给分身看**的投影，与 `ResourceRoute` 同源不同投影，doc36 §5.2）。
+
+    分身不需要知道「用哪个路由模板打开」——那是 webui 的事（`ResourceRoute` 干的）；分身要知道的是
+    「系统里有哪些资源类型、URI 长什么样、归哪个应用」。故本投影只给身份与地址形状，不给路由细节。
+    """
+
+    app_id: str = Field(description='应用 id（如 knowledge）')
+    resource_kind: str = Field(description='应用内资源类型（如 knowledge.base）')
+    uri_domain: str = Field(description='hasn:// host+path 前缀，不含 /{id}（如 knowledge/kbs）')
+    uri_example: str = Field(description='URI 形状示例（如 hasn://knowledge/kbs/{id}）——直接给形状，别让分身猜')
+    label: str | None = Field(None, description='人话资源名（如 知识库）')
+
+    @classmethod
+    def from_descriptor(cls, app_id: str, descriptor: ResourceDescriptor) -> ResourceDomainInfo:
+        # label 取 `card.verb`：字段名叫 verb，值却是**名词性资源名**（16 个 builtin 声明全是
+        # 「知识库」「演示文稿」「短视频」这类，无一动词）——完成卡标题 "{verb}做好了" 正需名词。
+        # 既有 `resource_kind_labels()`（同取 card.verb，docstring 直呼「人话展示名」）已是先例，
+        # 此处同源，不另立第二份展示名。
+        return cls(
+            app_id=app_id,
+            resource_kind=descriptor.resource_kind,
+            uri_domain=descriptor.uri_domain,
+            # 用 build_uri 生成示例，形状与真实登记出的地址同源——手写 f'hasn://{domain}/{{id}}'
+            # 就是又一处会漂移的字面量（doc36 §3.1 唯一拼接点铁律）。
+            uri_example=descriptor.build_uri('{id}'),
+            label=descriptor.card.verb,
+        )
+
+
 class ResourceRoute(SchemaBase):
     """资源路由读模型（从 descriptor 投影出的扁平表，随 catalog 下发 daemon/webui）。
 

@@ -52,13 +52,14 @@ async def _db_reachable() -> bool:
 
 # ── 契约（无需 DB）────────────────────────────────────────────────────────────
 def test_tools_register_expected_names() -> None:
-    """两域注册的工具名单钉死（artifact 域后续补了 A-P0-1 的三个读工具）。"""
+    """两域注册的工具名单钉死（artifact 域后续补了 A-P0-1 的三个读工具 + doc36 U4 的域目录）。"""
     assert [t.name for t in NOTIFICATION_TOOLS] == ['hasn.notifications.emit']
     assert [t.name for t in ARTIFACT_TOOLS] == [
         'hasn.artifact.record',
         'hasn.artifact.list',
         'hasn.artifact.search',
         'hasn.artifact.get',
+        'hasn.artifact.domains',
     ]
 
 

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
-from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor, ResourceRoute
+from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor, ResourceDomainInfo, ResourceRoute
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, app_catalog_registry
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
@@ -353,6 +353,26 @@ class AINativeAppRegistry:
                 if kind and verb:
                     labels[str(kind)] = str(verb)
         return labels
+
+    def resource_domains(self) -> list[ResourceDomainInfo]:
+        """投影全部 builtin 应用 `resources[]` 为**给分身看**的资源域目录（doc36 §5.2）。
+
+        与 `resource_routes()` **同源不同投影**：那份给 webui 寻址（路由模板/窗口/单入口），
+        这份给分身认知（有哪些资源类型、URI 什么形状、归哪个应用）。同源保证 manifest 仍是
+        唯一权威——绝不为分身另手写一份会漂移的域清单。非法声明跳过（与 routes 一致）。
+        """
+        domains: list[ResourceDomainInfo] = []
+        for app_id, manifest in self._builtin_manifests.items():
+            resources = manifest.get('resources')
+            if not isinstance(resources, list):
+                continue
+            for resource in resources:
+                try:
+                    descriptor = ResourceDescriptor.model_validate(resource)
+                except Exception:
+                    continue
+                domains.append(ResourceDomainInfo.from_descriptor(app_id, descriptor))
+        return domains
 
     def resource_routes(self) -> list[ResourceRoute]:
         """投影全部 builtin 应用 `resources[]` 为扁平资源路由读模型（doc31 §2.4，RC-P0）。
