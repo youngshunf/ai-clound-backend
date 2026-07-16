@@ -2,6 +2,17 @@
 
 联系人 REST、MCP、名片建联、自动好友请求和后台管理**只能**调用该 port（§9.2）。
 通用 contacts CRUD 必须关闭（R2-08）。关系、信任、拉黑、联系人请求只能经此 port 修改（§0.1）。
+
+**实现分期（务必先读，勿据此建 R1 假 wrapper）**：本 port 是 **R2-08「关系域收编」的目标态契约**，
+**不是** R1 可薄封装的接缝。与 `ImGateway`/`SyncAppender` 不同——那两者现网各有**单一已收敛实现**
+可原样封装；关系写路径当前**散落在 API 层**（`api/v1/app/contacts.py` 的 respond_to_request /
+update_trust_level 把 DAO 调用、互建边、推送事件混在一起），且现网 `HasnContactsService.request_contact`
+语义更窄（`requester_hasn_id`/`target` 唤星号解析、social-only、trust 派生），与本 port 的
+`from_hasn_id`/`to_hasn_id` + `relation_type`/`requested_trust_level` **语义**不一致（非仅命名差异）。
+强行在 R1 造 wrapper 去桥接会做成行为不忠实的假实现（违反零 fake）。故：
+- **R1-03 的真实产出 = 关系写调用点清单（R0-02）+ 本契约冻结**，供 R2-08「逐个可切」，**不含** wrapper。
+- **真实现在 R2-08**：`permission_engine`/`inbound_gatekeeper` 内化进 `hasn_im/domain`，散落的 API 编排
+  忠实迁进本 port 的实现体，通用 contacts 写 CRUD 关闭。届时本 port 形状不变、只落实现。
 """
 
 from __future__ import annotations
