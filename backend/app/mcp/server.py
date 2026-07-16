@@ -317,9 +317,13 @@ class HasnCloudMcpServer:
                 agent_context.session_id = origin_session_id
             # 同时落 ContextVar：AI-Native 应用 handler（knowledge 等，经 ai_native gateway 分发、
             # 只收 AgentTokenPayload 拿不到 AgentContext）只能经本通道取会话 id 做 register-on-write。
+            # 必须落 agent_context.session_id（已沉淀值）而非 origin_session_id：渐进暴露下 app 工具
+            # 经 hasn.cloud.tool.call 重入本方法，内层入参没有系统注入的 stamp（只打在最外层调用上），
+            # origin_session_id=None 会把外层已落的会话 id 覆写掉 → knowledge 等 handler 面登记的产物
+            # 全部丢会话归属（挂不进工作会话资源栏）。字段与 ContextVar 同源，重入自然继承。
             from backend.app.mcp.context import set_current_work_session_id
 
-            set_current_work_session_id(origin_session_id)
+            set_current_work_session_id(agent_context.session_id)
 
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游

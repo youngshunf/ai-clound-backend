@@ -245,3 +245,74 @@ def test_tool_call_schema_advertises_open_params(monkeypatch: pytest.MonkeyPatch
     assert 'string' in params_schema['type']
     # 顶层放开 → 平铺参数能通过 MCP SDK 的 jsonschema 校验抵达桥
     assert schema.get('additionalProperties') is True
+
+
+# ── 会话绑定守卫（register-on-write 铁律·经 tool.call 转发不许丢会话）─────────────
+
+
+class _SessionEchoTool(_StubTool):
+    """回读 ContextVar 里的工作会话 id——模拟 knowledge 等 handler 面 register-on-write 的取法。"""
+
+    @property
+    def name(self) -> str:
+        return 'hasn.stub.session_echo'
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {'type': 'object', 'properties': {}, 'additionalProperties': True}
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        from backend.app.mcp.context import get_current_work_session_id
+
+        return {
+            'ctxvar_session': get_current_work_session_id(),
+            'field_session': agent_context.session_id,
+        }
+
+
+def _session_server(monkeypatch: pytest.MonkeyPatch) -> HasnCloudMcpServer:
+    server = _server(monkeypatch)
+    server.tool_registry.register(_SessionEchoTool())
+
+    async def _noop(*args: object, **kwargs: object) -> None:  # noqa: RUF029
+        return None
+
+    # 完整 call_tool 链路会加载外部 MCP 工具（连 DB），本测试与之无关，noop 掉保持零 DB。
+    monkeypatch.setattr(server, '_load_external_mcp_tools', _noop)
+    return server
+
+
+@pytest.mark.asyncio
+async def test_call_tool_direct_stamp_binds_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """直调面：系统注入的 _hasn_session_id 剥离后同时落 AgentContext 字段与 ContextVar。"""
+    server = _session_server(monkeypatch)
+    result = await server.call_tool(
+        _ctx(), 'hasn.stub.session_echo', {'_hasn_session_id': 'sess_guard_direct'}
+    )
+    assert result == {'ctxvar_session': 'sess_guard_direct', 'field_session': 'sess_guard_direct'}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_via_meta_forward_keeps_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """经 hasn.cloud.tool.call 转发仍绑会话（知识库产物丢会话归属的回归钉子）。
+
+    渐进暴露下 app 工具只能经元工具触达：stamp 只打在最外层调用入参上，元工具重入
+    call_tool 时内层 params 没有 stamp。ContextVar 若按 origin_session_id（=None）无条件
+    覆写，就会把外层已落的会话 id 抹掉——handler 面（knowledge 等）登记的产物全部丢
+    工作会话归属。修法：ContextVar 落已沉淀的 agent_context.session_id。
+    """
+    server = _session_server(monkeypatch)
+    result = await server.call_tool(
+        _ctx(),
+        'hasn.cloud.tool.call',
+        {'name': 'hasn.stub.session_echo', 'params': {}, '_hasn_session_id': 'sess_guard_meta'},
+    )
+    assert result == {'ctxvar_session': 'sess_guard_meta', 'field_session': 'sess_guard_meta'}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_no_stamp_leaves_session_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """主会话直调（无 stamp）：会话 id 两处都为空，产物只进分身产物 tab、不挂工作会话。"""
+    server = _session_server(monkeypatch)
+    result = await server.call_tool(_ctx(), 'hasn.stub.session_echo', {})
+    assert result == {'ctxvar_session': None, 'field_session': None}
