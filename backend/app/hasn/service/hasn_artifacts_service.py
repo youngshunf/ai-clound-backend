@@ -217,6 +217,10 @@ class HasnArtifactsService:
                 if params.summary:
                     local_row.summary = params.summary
                 local_row.kind = kind
+                # project_id 只进不退（doc38 §5.1 自动打标·只进不退）：本地文件在一次会话里反复写，
+                # 首次带上 project_id 后即锁定；后续非项目直调（project_id=None）不得把它抹成 None。
+                if params.project_id and str(local_row.project_id or '') != params.project_id:
+                    local_row.project_id = params.project_id
                 if params.metadata:
                     local_row.meta_data = params.metadata
                 await db.flush()
@@ -256,6 +260,7 @@ class HasnArtifactsService:
             conversation_id=conv,
             message_id=params.message_id,
             session_id=(params.session_id or None),
+            project_id=(params.project_id or None),
             source_tool=(params.source_tool or None),
             source_app_id=(params.source_app_id or None),
             source_kind=source_kind,

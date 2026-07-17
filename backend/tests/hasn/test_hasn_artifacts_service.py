@@ -224,6 +224,99 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
             await db.rollback()
 
 
+async def test_record_carries_project_id_and_never_downgrades() -> None:
+    """P9-C 透传轨：本地 transport 应用（reel/film/design/imagelab/publish）走 agent record 通道、
+    不经云端 ContextVar 打标，project_id 只能随入参上报——这里钉死它真落库。
+
+    并钉「只进不退」：同一本地文件反复写，首次带上 project_id 后即锁定；后续非项目直调
+    （project_id=None）不得把它抹成 None，否则项目产物流会漏掉这条（doc38 §5.1）。
+    """
+    from sqlalchemy import select
+
+    from backend.app.hasn.model import HasnArtifacts
+
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    session_id = _short_id('ws')
+    node = _short_id('node')
+    project_id = str(uuid4())
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+
+            # INSERT 路径：project_id 随入参落库
+            aid = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='image',
+                    title='项目海报',
+                    asset_id=_short_id('ast'),
+                    source_tool='hasn.image.generate',
+                    source_kind='platform_tool',
+                    project_id=project_id,
+                ),
+            )
+            row = (await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid))).scalar_one()
+            assert str(row.project_id) == project_id
+
+            # 本地文件幂等分支：首次带 project_id 登记
+            path = '/Users/fz/work/design.op'
+            aid_local = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='file',
+                    local_path=path,
+                    node_id=node,
+                    session_id=session_id,
+                    source_kind='runtime_file',
+                    action='create',
+                    project_id=project_id,
+                ),
+            )
+            # 同文件再写、但这次没带 project_id（非项目直调）→ 不得抹成 None
+            aid_again = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='file',
+                    local_path=path,
+                    node_id=node,
+                    session_id=session_id,
+                    source_kind='runtime_file',
+                    action='update',
+                ),
+            )
+            assert aid_again == aid_local
+            local_row = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid_local))
+            ).scalar_one()
+            assert str(local_row.project_id) == project_id
+
+            # 非项目产出：不带 project_id → 留空（天然不打标，不误入任一项目产物流）
+            aid_plain = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='image',
+                    asset_id=_short_id('ast'),
+                    source_kind='platform_tool',
+                ),
+            )
+            plain_row = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid_plain))
+            ).scalar_one()
+            assert plain_row.project_id is None
+        finally:
+            await db.rollback()
+
+
 async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
     """doc34 §3/§4：出参守卫——列表/详情必须回 local_path/node_id/source_app_id/action。
 
