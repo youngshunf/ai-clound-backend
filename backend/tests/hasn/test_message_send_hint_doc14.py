@@ -7,13 +7,21 @@ A 刀是**纯语义化**：把早就返回的 `conversation_id` 配上一句分�
 2. **内容**：hint 里含真实 conversation_id + `hasn.message.list` 用法，
    且明确「别轮询干等」（这正是 C 刀事件驱动回灌的前提，见设计 §4-5）。
 
-沿用 S1 同组的 monkeypatch + 替身风格（不碰库，路由被替身接管）。
+R1-05 切片①后 direct 发送经 ImGateway port（ensure→send），故本组把三态桩重新指向新接缝——
+patch `resolve_target`（认作 direct 人类目标）+ `get_im_gateway`（桩网关 send 产出指定
+SendMessageResult 三态 / 抛 ImSendRejected），驱动工具映射逻辑 `_map_direct_send_result`
+（与旧 route dict 直返逐字段一致，hint 语义不变）。零真实 DB 依赖。
 """
 from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 import pytest
 
 from backend.app.hasn.service import message_router as mr
+from backend.app.hasn_im.application.errors import ImSendRejected
+from backend.app.hasn_im.ports.dto import ConversationRef, DeliveryState, SendMessageResult
 from backend.app.mcp.tools.message import MessageSendTool
 
 _CONV = 'conv_01J8ABCDEF'
@@ -35,31 +43,50 @@ class _AgentCtx:
         self.session_id: str | None = 'sess_work_01J8'
 
 
-def _patch(monkeypatch, route_result: dict) -> None:
-    """替身接管 route_message + 掐掉 db 会话（本组不碰库）。"""
+@asynccontextmanager
+async def _fake_session():
+    yield AsyncMock()
 
-    async def _fake_route(**kwargs):
-        return route_result
 
-    class _NullSession:
-        async def __aenter__(self):
-            return object()
+async def _drive(
+    monkeypatch,
+    *,
+    send_result: SendMessageResult | None = None,
+    rejected: ImSendRejected | None = None,
+    to: str = 'h_peer',
+) -> dict:
+    """桩网关（send 产出指定三态/抛硬拒）驱动一次 direct message.send，返回工具响应。"""
+    gw = AsyncMock()
+    gw.ensure_direct_conversation = AsyncMock(return_value=ConversationRef(conversation_id=_CONV))
+    if rejected is not None:
+        gw.send_message = AsyncMock(side_effect=rejected)
+    else:
+        gw.send_message = AsyncMock(return_value=send_result)
 
-        async def __aexit__(self, *exc):
-            return False
+    async def _fake_resolve(_db, target):
+        return {'hasn_id': target, 'entity_type': 'human', 'name': target, 'owner_id': 'h_peer'}
+
+    async def _fake_ensure_req(*_a, **_k):
+        return 'req_1'
 
     import backend.app.mcp.tools.message as message_mod
 
-    monkeypatch.setattr(mr, 'route_message', _fake_route)
-    monkeypatch.setattr(message_mod, 'async_db_session', lambda: _NullSession())
+    monkeypatch.setattr(mr, 'resolve_target', _fake_resolve)
+    monkeypatch.setattr(message_mod, 'get_im_gateway', lambda: gw)
+    monkeypatch.setattr(message_mod, '_ensure_first_contact_request', _fake_ensure_req)
+    monkeypatch.setattr(message_mod, 'async_db_session', _fake_session)
+    return await MessageSendTool().execute(_AgentCtx(), {'to': to, 'content': 'hi'})
 
 
 @pytest.mark.asyncio
 async def test_sent_returns_hint_with_handle(monkeypatch) -> None:
     """已送达态：hint 带真实会话 id + list 用法 + 「别轮询」。"""
-    _patch(monkeypatch, {'status': 'sent', 'msg_id': 1001, 'conversation_id': _CONV})
-
-    out = await MessageSendTool().execute(_AgentCtx(), {'to': 'h_peer', 'content': '你好，想约个时间'})
+    out = await _drive(
+        monkeypatch,
+        send_result=SendMessageResult(
+            delivery_state=DeliveryState.ACCEPTED, conversation_id=_CONV, message_id=1001
+        ),
+    )
 
     assert set(out.keys()) == _BASE_KEYS_SENT | {'hint'}, '只多一个 hint，既有字段不增不减'
     assert out['delivered'] is True
@@ -73,12 +100,12 @@ async def test_sent_returns_hint_with_handle(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_pending_confirmation_returns_hint(monkeypatch) -> None:
     """待主人确认态（出站拦截）：hint 说清「等主人放行」，句柄照给。"""
-    _patch(
+    out = await _drive(
         monkeypatch,
-        {'status': 'pending_confirmation', 'conversation_id': _CONV, 'reason': '需主人确认'},
+        send_result=SendMessageResult(
+            delivery_state=DeliveryState.PENDING_POLICY, conversation_id=_CONV, suppress_reason='需主人确认'
+        ),
     )
-
-    out = await MessageSendTool().execute(_AgentCtx(), {'to': 'h_peer', 'content': 'hi'})
 
     assert set(out.keys()) == _BASE_KEYS_PENDING | {'hint'}
     assert out['delivered'] is False
@@ -90,18 +117,16 @@ async def test_pending_confirmation_returns_hint(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_suppressed_hint_mentions_release_and_handle(monkeypatch) -> None:
     """暂存态：既有关系反馈文案保留，追加「对方放行后你会收到提示」+ 句柄（清单 S2）。"""
-    _patch(
+    out = await _drive(
         monkeypatch,
-        {
-            'status': 'suppressed',
-            'msg_id': 1002,
-            'conversation_id': _CONV,
-            'relation': {'level': 'stranger'},
-            'pending_request_id': 'req_1',
-        },
+        send_result=SendMessageResult(
+            delivery_state=DeliveryState.SUPPRESSED,
+            conversation_id=_CONV,
+            message_id=1002,
+            relation={'level': 'stranger'},
+            pending_request_id='req_1',
+        ),
     )
-
-    out = await MessageSendTool().execute(_AgentCtx(), {'to': 'h_peer', 'content': 'hi'})
 
     assert set(out.keys()) == _BASE_KEYS_SUPPRESSED
     assert out['delivered'] is False
@@ -116,9 +141,7 @@ async def test_suppressed_hint_mentions_release_and_handle(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_error_branch_has_no_hint(monkeypatch) -> None:
     """不可达（无会话可追踪）→ 不编造句柄、不给 hint：诚实反馈原因即可。"""
-    _patch(monkeypatch, {'error': True, 'message': '对方不存在', 'code': 404})
-
-    out = await MessageSendTool().execute(_AgentCtx(), {'to': 'h_nobody', 'content': 'hi'})
+    out = await _drive(monkeypatch, rejected=ImSendRejected(404, '对方不存在'), to='h_nobody')
 
     assert out['conversation_id'] is None
     assert 'hint' not in out
@@ -128,9 +151,12 @@ async def test_error_branch_has_no_hint(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_hint_degrades_without_conversation_id(monkeypatch) -> None:
     """会话 id 缺失（理论上不该发生）→ hint 降级为不带 id 的通用句，绝不吐 None 进正文。"""
-    _patch(monkeypatch, {'status': 'sent', 'msg_id': 1003, 'conversation_id': None})
-
-    out = await MessageSendTool().execute(_AgentCtx(), {'to': 'h_peer', 'content': 'hi'})
+    out = await _drive(
+        monkeypatch,
+        send_result=SendMessageResult(
+            delivery_state=DeliveryState.ACCEPTED, conversation_id=None, message_id=1003
+        ),
+    )
 
     assert 'None' not in out['hint']
     assert '{conversation_id}' not in out['hint'], '占位符必须被渲染掉'

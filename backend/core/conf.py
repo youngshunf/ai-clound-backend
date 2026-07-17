@@ -58,6 +58,21 @@ class Settings(BaseSettings):
     DATABASE_SCHEMA: str = 'huanxing'
     DATABASE_CHARSET: str = 'utf8mb4'
     DATABASE_PK_MODE: Literal['autoincrement', 'snowflake'] = 'autoincrement'
+    # 启动期是否用 metadata.create_all 自动建表（云端 IM 服务化 R1-11）。
+    # dev/演练默认 True（免手动建表）；生产**恒关**——建表与变更一律走 migration，
+    # 禁止启动期 create_all 误建旧表 / 与迁移漂移（生产由下方 ENVIRONMENT=='prod' 硬闸兜底，
+    # 即便此值被误设 True 也不生效，见 database/db.py::create_tables）。
+    DATABASE_AUTO_CREATE_TABLES: bool = True
+
+    # 云端 IM 服务化 R1-13：三 DB 角色专属连接串覆盖（§3.2「同进程也必须分 session maker」）。
+    # 留空（默认）→ 该角色回落主连接（dev/演练：三角色共享主 engine、行为不变、全量测试照跑）。
+    # 生产在 R3 窗口先建 astra_im_service / astra_sync_service / astra_python_backend 三 role 并
+    # 授权后，再把对应 DSN 填入这三项，使 IM 域写 / sync 域写 / 通用后端各自经受限 role 落库
+    # （role 的库级 grant 才是硬边界，本接缝只负责把 session maker 分置、随时可指向 role）。
+    # 形如 postgresql+asyncpg://astra_im_service:***@host:5432/huanxing。
+    IM_SERVICE_DATABASE_URL: str = ''
+    SYNC_SERVICE_DATABASE_URL: str = ''
+    PYTHON_BACKEND_DATABASE_URL: str = ''
 
     # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）。
     # NEWAPI_QUOTA_PER_DOLLAR = new-api QuotaPerUnit（协议精度，非业务费率）。
@@ -256,6 +271,7 @@ class Settings(BaseSettings):
         rf'^{FASTAPI_API_V1_PATH}/mcp/.*$',  # MCP Streamable 接入面（Agent MCP Key / Agent JWT 由 handler 自鉴权，不走 Owner JWT 中间件）
         rf'^{FASTAPI_API_V1_PATH}/hasn/open/.*$',  # HASN 公开 API
         rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$',  # 桌面端发布：下载页/updater 公开面 + CI 回调（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
+        rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$',  # 通用语音签名目录 CI 发布面（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
         rf'^{FASTAPI_API_V1_PATH}/hasn/ws/.*$',  # HASN WebSocket
         rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$',  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
         rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
@@ -330,6 +346,14 @@ class Settings(BaseSettings):
 
     # Socket.IO
     WS_NO_AUTH_MARKER: str = 'internal'
+
+    # HASN IM 节点 WebSocket 协议层运行参数（R1-09 协议层纯化：把原 ws_node 硬编码常量抽为配置）。
+    # HASN_WS_SEND_TIMEOUT_SECS：单条控制帧下发的有界刷新窗口——超时即按连接失败进入清理，
+    #   本质是 backpressure 上界（慢/满的 transport 不会无限阻塞收发循环，原 ws_node 硬编码 10.0）。
+    HASN_WS_SEND_TIMEOUT_SECS: float = 10.0
+    # HASN_WS_MAX_INBOUND_FRAME_BYTES：单条入站帧的 UTF-8 字节上限（frame size 硬闸）。0=不限
+    #   （默认，保持现网行为、正常路径零额外开销）；>0 时超限帧显式回 2005 错误帧并 continue（不断连）。
+    HASN_WS_MAX_INBOUND_FRAME_BYTES: int = 0
 
     # CORS (allow_credentials=True 时不能用 '*'，必须列出具体域名)
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠

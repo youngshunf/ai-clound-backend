@@ -157,55 +157,28 @@ async def _persist_card(
     """落卡片消息到「from ⇄ 接收方」会话，返回消息 id（绕开 social 权限矩阵：主人自见）。
 
     notif_id 为 None 时是「汇报面」卡片（分身→主人主会话，非通知投影，无权威通知行）。
+
+    R1-06 收编：投递机制（get_or_create + persist_message + message.received sync_event）
+    下沉到通信域 `hasn_im.application.system_card_deliverer`——notification 域只负责构造
+    卡片体（`build_card_body` / `build_report_card_body`），落库交给通信域，`persist_message`
+    业务层零直连（§1.1/§1.2-3 消灭第二套落库旁路）。复用调用方 db、不 commit：`emit()`
+    的「权威通知行 + 卡片 + sync event」单事务原子不变量保持不变。
     """
-    conv = await message_router.get_or_create_conversation(
+    from backend.app.hasn_im.application.system_card_deliverer import deliver_system_card
+
+    return await deliver_system_card(
         db,
-        recipient_id,
-        _recipient_entity_type(recipient_id),
-        from_id,
-        peer_type,
-        relation_type=relation_type,
-    )
-    msg = await message_router.persist_message(
-        db,
-        conversation_id=str(conv.id),
+        recipient_id=recipient_id,
+        recipient_type=_recipient_entity_type(recipient_id),
         from_id=from_id,
-        to_id=recipient_id,
-        content=card_body,
-        content_type=_CONTENT_TYPE_CARD,
+        peer_type=peer_type,
+        relation_type=relation_type,
+        conversation_type=conversation_type,
+        card_body=card_body,
+        priority=priority,
         msg_type=msg_type,
-        priority=priority if priority in ('critical', 'high', 'normal', 'low') else 'normal',
-        context={'notification_id': notif_id, 'conversation_type': conversation_type},
+        notif_id=notif_id,
     )
-
-    # 写 message.received sync_event：让接收方（主人）节点经 sync/pull 镜像这条卡片消息。
-    # persist_message 直写（绕开 route_message）不产生同步事件，缺这步则云端落库但 daemon
-    # 永不镜像 —— 卡片不会出现在本地消息列表。owner 即接收方（recipient_id 恒为 h_ 主人）。
-    from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
-
-    sync_gw = SqlAlchemySyncGateway()
-    await sync_gw._append_sync_event(
-        db,
-        owner_id=recipient_id,
-        hasn_id=recipient_id,
-        event_type='message.received',
-        aggregate_type='message',
-        aggregate_id=str(msg.id),
-        payload={
-            'message_id': str(msg.id),
-            'conversation_id': str(conv.id),
-            'owner_id': recipient_id,
-            'hasn_id': recipient_id,
-            'sender_hasn_id': from_id,
-            'recipient_hasn_id': recipient_id,
-            'direction': 'inbound',
-            'content_type': 'application/x.card+json',
-            'content_body': card_body,
-            'local_id': None,
-            'created_at': int(msg.created_time.timestamp()) if msg.created_time else 0,
-        },
-    )
-    return msg.id
 
 
 async def deliver_card_to_owner(

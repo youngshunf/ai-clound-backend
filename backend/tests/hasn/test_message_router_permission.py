@@ -291,3 +291,22 @@ async def test_legacy_check_relation_permission_not_called(monkeypatch) -> None:
         content={'body': 'x'}, msg_type='message',
     )
     mocks['legacy'].assert_not_called()
+
+
+# ── Test 7: R1-08 事务收口守卫——直连（1:1）路径主链单 commit ──
+async def test_direct_route_commits_exactly_once(monkeypatch) -> None:
+    """persist_message + 扇出 sync feed 事件同一事务、只 commit 一次。
+
+    删了原扇出前的中间 commit（它把消息落库但 feed 尚未写、crash 即半状态）；实时 push 移到
+    commit 之后的 _flush_pushes，不再夹在事务里。await_count > 1 即回归。
+    """
+    _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
+    from backend.app.hasn.service.message_router import route_message
+
+    db = _fake_db()
+    result = await route_message(
+        db=db, from_id='h_sender', to_target='h_receiver',
+        content={'body': 'once'}, msg_type='message',
+    )
+    assert result.get('error') is False
+    assert db.commit.await_count == 1, f'直连路径主链应恰好 commit 一次，实际 {db.commit.await_count} 次（半状态回归）'
