@@ -7,7 +7,6 @@ methods instead of generic table CRUD.
 from __future__ import annotations
 
 import json
-import uuid
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -403,7 +402,7 @@ class SqlAlchemySyncGateway:
                 sync_scope_id=sync_scope_id,
                 namespace=namespace,
             )
-            server_revision, event_id = await self._append_sync_event_with_id(
+            server_revision, event_id, _deduped = await self._append_sync_event_with_id(
                 db,
                 owner_id=owner_id,
                 hasn_id=event.hasn_id or owner_id,
@@ -1008,7 +1007,7 @@ class SqlAlchemySyncGateway:
                 'resolved_at': stored_task['updated_time'],
             },
         )
-        revision, _event_id = await self._append_sync_event_with_id(
+        revision, _event_id, _deduped = await self._append_sync_event_with_id(
             db,
             owner_id=owner_id,
             hasn_id=stored_task['agent_id'] or owner_id,
@@ -1263,7 +1262,7 @@ class SqlAlchemySyncGateway:
             'record_id': aggregate_id,
             'namespace_revision': namespace_revision,
         }
-        server_revision, event_id = await self._append_sync_event_with_id(
+        server_revision, event_id, _deduped = await self._append_sync_event_with_id(
             db,
             owner_id=owner_id,
             hasn_id=hasn_id or owner_id,
@@ -1363,8 +1362,11 @@ class SqlAlchemySyncGateway:
         aggregate_type: str,
         aggregate_id: str,
         payload: dict[str, Any],
+        producer: str | None = None,
+        source_event_id: str | None = None,
+        occurred_at: Any = None,
     ) -> int:
-        revision, _event_id = await self._append_sync_event_with_id(
+        revision, _event_id, _deduped = await self._append_sync_event_with_id(
             db,
             owner_id=owner_id,
             hasn_id=hasn_id,
@@ -1372,6 +1374,9 @@ class SqlAlchemySyncGateway:
             aggregate_type=aggregate_type,
             aggregate_id=aggregate_id,
             payload=payload,
+            producer=producer,
+            source_event_id=source_event_id,
+            occurred_at=occurred_at,
         )
         return revision
 
@@ -1385,74 +1390,48 @@ class SqlAlchemySyncGateway:
         aggregate_type: str,
         aggregate_id: str,
         payload: dict[str, Any],
-    ) -> tuple[int, str]:
-        # 串行化同一 owner 的 revision 分配。hasn_sync_events 的
-        # uq_hasn_sync_events_owner_revision (owner_id, revision) 唯一约束要求每个 owner 的
-        # revision 连续无冲突，但 "SELECT MAX(revision)+1" 看不到其它事务尚未提交的行：两个
-        # 并发写（如同一 owner 的两个 memory 抽取任务 push）会都读到 N、都算出 N+1、都
-        # INSERT，触发 UniqueViolationError。用事务级 advisory lock 按 owner 分桶把 revision
-        # 分配串起来——后到的事务阻塞到前一个提交后再读 MAX，拿到正确的下一个值；锁在事务
-        # 结束（commit/rollback）时自动释放。这是 Postgres 生成 gapless 序列的标准做法，无需
-        # 新表 / 迁移播种，MAX 推导与现存数据天然一致。hashtext 哈希分桶极少量跨 owner 串行
-        # 亦无害。所有写入方都经 _append_sync_event(_with_id)，此处加锁即覆盖全部 callsite。
-        await db.execute(
-            sa.text('SELECT pg_advisory_xact_lock(hashtext(CAST(:owner_id AS text)))'),
-            {'owner_id': owner_id},
-        )
-        revision_result = await db.execute(
+        producer: str | None = None,
+        source_event_id: str | None = None,
+        occurred_at: Any = None,
+    ) -> tuple[int, str, bool]:
+        # sync 事件唯一写入口（R2-07 · doc16 §3.2）。原「advisory lock + SELECT MAX+1 + INSERT」
+        # 逻辑已下沉为 PG 函数 hasn_sync.append_event：函数内 per-owner advisory xact lock 串行化
+        # gapless revision 分配（uq_hasn_sync_events_owner_revision 要求每 owner 连续无冲突，并发
+        # 写不会都读到同一 MAX），并叠加 (owner_id, producer, source_event_id) 幂等去重
+        # （带 producer 时跨重启重放返回原 revision·deduped=true，不新增行）。函数在 db 当前事务内
+        # 执行，与业务写同事务提交/回滚。所有写入方都经此方法 → 这里就是唯一 append 实现，
+        # 严禁「函数 + ORM 直写」双路径（§8.1）。
+        result = await db.execute(
             sa.text(
                 """
-                SELECT COALESCE(MAX(revision), 0) + 1 AS revision
-                FROM public.hasn_sync_events
-                WHERE owner_id = :owner_id
-                """
-            ),
-            {'owner_id': owner_id},
-        )
-        revision = int(revision_result.mappings().one()['revision'])
-        event_id = f'se_{uuid.uuid4().hex[:24]}'
-        await db.execute(
-            sa.text(
-                """
-                INSERT INTO public.hasn_sync_events (
-                    event_id,
-                    owner_id,
-                    hasn_id,
-                    event_type,
-                    aggregate_type,
-                    aggregate_id,
-                    payload,
-                    revision,
-                    occurred_at,
-                    created_time,
-                    updated_time
-                ) VALUES (
-                    :event_id,
+                SELECT revision, event_id, deduped
+                FROM hasn_sync.append_event(
                     :owner_id,
                     :hasn_id,
                     :event_type,
                     :aggregate_type,
                     :aggregate_id,
                     CAST(:payload AS jsonb),
-                    :revision,
-                    now(),
-                    now(),
-                    now()
+                    :producer,
+                    :source_event_id,
+                    :occurred_at
                 )
                 """
             ),
             {
-                'event_id': event_id,
                 'owner_id': owner_id,
                 'hasn_id': hasn_id,
                 'event_type': event_type,
                 'aggregate_type': aggregate_type,
                 'aggregate_id': aggregate_id,
                 'payload': json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
-                'revision': revision,
+                'producer': producer,
+                'source_event_id': source_event_id,
+                'occurred_at': occurred_at,
             },
         )
-        return revision, event_id
+        row = result.mappings().one()
+        return int(row['revision']), row['event_id'], bool(row['deduped'])
 
     async def save_session(self, db: AsyncSession, session: dict[str, Any]) -> None:
         """保存或更新 session 到云端投影表"""

@@ -28,6 +28,8 @@ from backend.app.hasn_sync.ports.dto import SyncEnvelope
 from backend.app.hasn_sync.ports.sync_appender import SyncAppender
 
 _MESSAGE_NEW = 'message.new'
+# 幂等去重键的 producer 段（§7.3）——本消费者产的 sync 事件统一标 'hasn_im'。
+_PRODUCER = 'hasn_im'
 
 
 @dataclass(slots=True)
@@ -78,6 +80,10 @@ class SyncProjector:
                 aggregate_type='message',
                 aggregate_id=facts.message_id,
                 payload=_message_new_payload(facts, owner_origin_session_id),
+                # 跨重启第二层去重键（§7.3）：durable cursor 之外再叠 (owner, producer, source_event_id)。
+                # 同一集成事件扇出到各 owner，去重键含 owner_id（在 append_event 函数内），各 owner 各落一行。
+                producer=_PRODUCER,
+                source_event_id=event.event_id,
             )
             await self.appender.append(db, envelope)
 
