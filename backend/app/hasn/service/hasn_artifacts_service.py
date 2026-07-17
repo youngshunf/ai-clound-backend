@@ -747,5 +747,29 @@ class HasnArtifactsService:
         if result.rowcount == 0:
             raise errors.NotFoundError(msg='产物不存在或无权删除')
 
+    @classmethod
+    async def soft_delete_by_resource_uri(cls, db: AsyncSession, *, owner_hasn_id: str, resource_uri: str) -> int:
+        """按 (owner, resource_uri) strict 软删该资源的**全部** active 指针，返回软删条数。
+
+        finance 等本地优先应用删除资源时用（05 §5.3a delete 分支）：业务行标 deleted 的同一
+        云端事务里，把 hasn_artifacts 里指向这条 hasn://... 的所有 active 产物指针一并软删——
+        否则留下「业务已删、产物栏仍是活链接」的分叉。与 soft_delete(artifact_id) 的区别是这里
+        按资源 URI 批量（登记 UPSERT 去重后通常一行，但按 URI 删才是删除语义的正确表达）。
+
+        strict 语义：调用方在 :sync 同事务内调它，DB 异常必须外抛触发整体回滚（不吞错）。
+        软删 0 行是**允许**的——资源从未被登记（如主人手建未参与分身、或登记曾失败）不是错误，
+        删除照常推进；不像 soft_delete(artifact_id) 那样把 0 行当 404。
+        """
+        result = await db.execute(
+            update(HasnArtifacts)
+            .where(
+                HasnArtifacts.owner_hasn_id == owner_hasn_id,
+                HasnArtifacts.resource_uri == resource_uri,
+                HasnArtifacts.status == 'active',
+            )
+            .values(status='deleted')
+        )
+        return result.rowcount or 0
+
 
 hasn_artifacts_service: HasnArtifactsService = HasnArtifactsService()
