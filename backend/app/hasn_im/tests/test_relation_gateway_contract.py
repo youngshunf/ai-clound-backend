@@ -261,6 +261,27 @@ async def test_reject_request_no_edge(sessionmaker_pg):
         await _cleanup(sessionmaker_pg, a, b)
 
 
+async def test_reject_request_authz_rejected(sessionmaker_pg):
+    """权限负测（R2 authz 面）：非被请求方拒绝该请求必被拒（对齐 accept 的审批人硬门）。
+
+    reject_request 的审批人门（to_owner_id != decided_by → RelationGatewayError）与 accept 对称：
+    第三方既不能替被请求方接受、也不能替其拒绝；被拒后请求仍停 pending、不落 rejected。"""
+    a, b, intruder = _hid('h'), _hid('h'), _hid('h')
+    gw = SqlAlchemyRelationGateway(session_factory=sessionmaker_pg)
+    try:
+        rid = await _seed_request(sessionmaker_pg, from_id=a, to_id=b, to_owner_id=b, to_type='human')
+        # 非被请求方拒绝 → 抛错
+        with pytest.raises(RelationGatewayError):
+            await gw.reject_request(request_id=rid, decided_by=intruder)
+        # 请求仍停 pending（未被越权改状态），也不建边
+        async with sessionmaker_pg() as db:
+            req = await hasn_contact_requests_dao.get(db, rid)
+        assert req.status == 'pending'
+        assert await _get_contact(sessionmaker_pg, a, b) is None
+    finally:
+        await _cleanup(sessionmaker_pg, a, b, intruder)
+
+
 async def test_remove_relation_deletes_both_edges(sessionmaker_pg):
     a, b = _hid('h'), _hid('h')
     gw = SqlAlchemyRelationGateway(session_factory=sessionmaker_pg)

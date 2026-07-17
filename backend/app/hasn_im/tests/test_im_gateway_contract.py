@@ -30,7 +30,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model import HasnConversations, HasnMessages
-from backend.app.hasn_im.application.errors import ImConversationNotFound, ImSendRejected
+from backend.app.hasn_im.application.errors import (
+    ImConversationNotFound,
+    ImSenderNotParticipant,
+    ImSendRejected,
+)
 from backend.app.hasn_im.application.local_gateway import PythonLocalImGateway
 from backend.app.hasn_im.ports.dto import (
     ActorKind,
@@ -189,6 +193,42 @@ async def test_send_dedup_maps_to_accepted_no_double_persist(sessionmaker_pg):
         assert count == 1
     finally:
         await _cleanup(sessionmaker_pg, a, b)
+
+
+async def test_send_by_non_participant_rejected(sessionmaker_pg):
+    """权限负测（R2 authz 面）：非会话参与者向该 direct 会话发送必被拒。
+
+    发送方既非 participant_a 也非 participant_b → `_counterpart` 反解时抛
+    `ImSenderNotParticipant`（在 route_message 之前拦截），绝不静默落库到别人的会话。"""
+    a, b = _fresh_pair()
+    intruder = f'h_ct{uuid.uuid4().hex[:18]}'  # 第三方——非本会话参与者
+    gw = PythonLocalImGateway(session_factory=sessionmaker_pg)
+    try:
+        ref = await gw.ensure_direct_conversation(
+            EnsureDirectConversationCommand(peer_hasn_id=b), _principal(a)
+        )
+        with pytest.raises(ImSenderNotParticipant):
+            await gw.send_message(
+                SendMessageCommand(
+                    conversation_id=ref.conversation_id,
+                    content={'text': '越权插话'},
+                    idempotency_key=f'ct-intruder-{uuid.uuid4().hex[:12]}',
+                ),
+                _principal(intruder),
+            )
+        # 副作用断言：该会话不因越权发送而多出任何消息行
+        async with sessionmaker_pg() as session:
+            count = (
+                await session.execute(
+                    sa.text(
+                        'SELECT count(*) FROM public.hasn_messages WHERE conversation_id = :cid'
+                    ),
+                    {'cid': str(ref.conversation_id)},
+                )
+            ).scalar()
+        assert count == 0
+    finally:
+        await _cleanup(sessionmaker_pg, a, b, intruder)
 
 
 async def test_send_returns_wellformed_result_or_rejects(sessionmaker_pg):
