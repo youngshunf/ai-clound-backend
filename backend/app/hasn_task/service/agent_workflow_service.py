@@ -121,6 +121,8 @@ def workflow_to_public(wf: HasnWorkflow) -> dict[str, Any]:
         'status': wf.status,
         'enabled': wf.enabled,
         'source': wf.source,
+        # 平台项目挂靠（doc38·实施95 P9-A）：云端权威 id 序列化为字符串（None=裸工程图未挂项目）。
+        'project_id': str(wf.project_id) if wf.project_id else None,
         'created_by_kind': wf.created_by_kind,
         'continuation_enabled': wf.continuation_enabled,
         'next_run_at': _iso(wf.next_run_at),

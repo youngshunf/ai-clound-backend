@@ -7,6 +7,7 @@ hasn_task.task（加 workflow_uuid + node_key）。整图可定时周期跑（W4
 """
 
 from datetime import datetime
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -61,4 +62,9 @@ class HasnWorkflow(HasnTaskAppBase):
     next_run_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='整图下次触发时间')
     last_run_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='整图上次触发时间')
     workflow_revision: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='工作流定义服务端修订号')
+    # 平台项目联邦挂靠（doc38·实施95 P9-A）：可空——裸工程图允许为空；场景实例化路径业务层硬闸必填。
+    # 项目不是权限边界/不拥有执行语义，仅「为了哪件事」的业务归属标签，删项目=产物散落回各应用不中断执行。
+    project_id: Mapped[UUID | None] = mapped_column(
+        sa.UUID(), default=None, comment='所属平台项目 id（hasn_project.id，可空；场景实例化必填、裸工程图为空）'
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='删除时间')
