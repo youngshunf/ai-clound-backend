@@ -12,12 +12,13 @@ from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, ap
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_computer_use.manifest import COMPUTER_USE_AI_NATIVE_MANIFEST
-from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
-from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 
 # G6 资源类型适配器注册（doc33 S2-6）：import 即把各应用 adapter 注册进平台注册表。必须在
 # manifest 校验（validate_manifest 查 registered_types）之前完成，否则新增 resource_access 声明会
 # 被误判「type 未注册」。各应用自注册模块见 `<app>/service/resource_adapter.py`。
+from backend.app.hasn_copilot.service import resource_adapter as _copilot_resource_adapter  # noqa: F401
+from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401
 from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
 from backend.app.hasn_design.service import resource_adapter as _design_resource_adapter  # noqa: F401
