@@ -1,0 +1,92 @@
+{
+  "rehearsal": "r2_snapshot_cutover",
+  "design": "docs/hasn-node设计文档/01-核心架构/实施/92-云端IM-Python底层服务化重构实施方案.md (§4 R2-11/R2-12 + §9)",
+  "started_at": "2026-07-17T08:47:23Z",
+  "src_db": "huanxing",
+  "snapshot_db": "huanxing_r2_rehearsal",
+  "safety": "全程只操作临时快照库；dev 主库仅只读 pg_dump 一次；完事 DROP 快照库；零生产依赖。",
+  "steps": [
+    {
+      "name": "预检-超级用户可达",
+      "ok": true,
+      "detail": "current_user=mac|true",
+      "seconds": 0.06
+    },
+    {
+      "name": "克隆快照副本(pg_dump 主库→恢复)",
+      "ok": true,
+      "detail": "messages 主库=987 快照=987",
+      "seconds": 19.74
+    },
+    {
+      "name": "正向: 2026-07-16-r2-02-conversation-seq.sql",
+      "ok": true,
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-02-conversation-seq.sql:13: NOTICE:  column \"current_seq\" of relation \"hasn_conversations\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-02-conversation-seq.sql:17: NOTI",
+      "seconds": 0.04
+    },
+    {
+      "name": "正向: 2026-07-16-r2-03-conversation-memberships.sql",
+      "ok": true,
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-03-conversation-memberships.sql:25: NOTICE:  relation \"hasn_conversation_memberships\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-03-conversation-memberships.sql:42: N",
+      "seconds": 0.03
+    },
+    {
+      "name": "正向: 2026-07-16-r2-04-integration-events.sql",
+      "ok": true,
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-04-integration-events.sql:25: NOTICE:  relation \"hasn_im_integration_events\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-04-integration-events.sql:30: NOTICE:  relatio",
+      "seconds": 0.03
+    },
+    {
+      "name": "正向: 2026-07-16-r2-05-event-consumers.sql",
+      "ok": true,
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-05-event-consumers.sql:16: NOTICE:  relation \"hasn_im_event_consumer_offsets\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-05-event-consumers.sql:30: NOTICE:  relation ",
+      "seconds": 0.03
+    },
+    {
+      "name": "正向: 2026-07-16-r2-07-hasn-sync-append-event.sql",
+      "ok": true,
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-07-hasn-sync-append-event.sql:19: NOTICE:  schema \"hasn_sync\" already exists, skipping\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-07-hasn-sync-append-event.sql:25: NOTICE:  column \"producer\" ",
+      "seconds": 0.03
+    },
+    {
+      "name": "正向: 2026-07-16-r2-11-schema-cutover.sql",
+      "ok": true,
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11-schema-cutover.sql:30: NOTICE:  schema \"hasn_sync\" already exists, skipping",
+      "seconds": 0.09
+    },
+    {
+      "name": "cutover 后结构断言",
+      "ok": true,
+      "detail": "hasn_im schema 存在=1; hasn_im.hasn_messages 存在=1; hasn_im.integration_events 存在(去前缀)=1; hasn_im.event_consumer_offsets 存在=1; hasn_sync.hasn_sync_events 存在=1; 三角色齐备=3; public.hasn_messages 已移走=0",
+      "seconds": 0.23
+    },
+    {
+      "name": "权限负测(三角色·旧role写hasn_im/hasn_sync必拒)",
+      "ok": true,
+      "detail": "psql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11-permission-negative-test.sql:78: NOTICE:  PASS(denied): astra_python_backend 被拒 [INSERT INTO hasn_im.agent_communication_settings(agent_hasn_]\npsql:/Users/mac/openclaw-workspace/huanxing/huanxing-project/huanxing-cloud-backend/backend/sql/hasn/migrations/2026-07-16-r2-11",
+      "seconds": 0.04
+    },
+    {
+      "name": "反向: 2026-07-16-r2-11-schema-cutover.reverse.sql",
+      "ok": true,
+      "detail": "",
+      "seconds": 0.05
+    },
+    {
+      "name": "反向后结构断言(表回public/schema+role已drop)",
+      "ok": true,
+      "detail": "public.hasn_messages 已移回=1; public.hasn_im_integration_events 前缀已恢复=1; hasn_im schema 已 drop=0; 三角色已 drop=0",
+      "seconds": 0.13
+    },
+    {
+      "name": "清理-DROP 快照库",
+      "ok": true,
+      "detail": "huanxing_r2_rehearsal dropped",
+      "seconds": 0.37
+    }
+  ],
+  "status": "passed",
+  "failures": [],
+  "total_seconds": 20.88,
+  "completed_at": "2026-07-17T08:47:44Z"
+}
