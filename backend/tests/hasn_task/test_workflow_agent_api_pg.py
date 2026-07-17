@@ -134,7 +134,12 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     tag = _uid()
     owner = f'h_wf_{tag}'
     other_owner = f'h_wf2_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    # id 空间必须够宽：本项目「测试数据不删」是铁律，历次跑残留的 owner 行会持续累积。
+    # 旧的 9000 槽位（970000~978999）撞唯一索引 idx_hasn_humans_star_id 的概率随跑的
+    # 次数单调恶化 → fixture setup 抛 UniqueViolation → 该 loop 未清理 → 后续测试全部
+    # 「got Future attached to a different loop / Event loop is closed」级联假红。
+    # 放宽到千亿级槽位，碰撞概率可忽略（+1 给 other_owner 留位，仍在 bigint 内）。
+    owner_uid = 900_000_000_000 + int(uuid.uuid4().int % 90_000_000_000)
     research = f'a_wf_r_{tag}'
     writer = f'a_wf_w_{tag}'
 
