@@ -194,3 +194,25 @@ async def test_group_mentions_folded_into_content_body(monkeypatch) -> None:
     assert body['text'] == '@分身 在吗'
     assert body['mentions'] == mentions
     assert body['mention_all'] is False
+
+
+@pytest.mark.asyncio
+async def test_group_route_commits_exactly_once(monkeypatch) -> None:
+    """R1-08 事务收口守卫：群路径主链**单 commit**。
+
+    persist_message + 未读自增 + 扇出 sync feed 事件同一事务、只 commit 一次——删了原扇出前
+    的中间 commit（它会把消息落库但 feed 尚未写、crash 即半状态）。实时 push 移到 commit 之后
+    的 _flush_pushes，不再夹在事务里。commit 计数 > 1 即回归。
+    """
+    from backend.app.hasn.service import message_router as mr
+
+    group = _Group()
+    members = [_Member('h_sender'), _Member('h_peer')]
+    owner_map = {'h_sender': 'h_sender', 'h_peer': 'h_peer'}
+    _patch_group_common(monkeypatch, mr, group, members, owner_map)
+
+    db = _DB()
+    result = await mr.route_message(db, from_id='h_sender', to_target='g:500001', content={'text': 'once'})
+
+    assert result['error'] is False
+    assert db.commits == 1, f'群路径主链应恰好 commit 一次，实际 {db.commits} 次（半状态回归）'

@@ -635,7 +635,7 @@ async def _fanout_message_new(
     origin_node_id: str | None,
     origin_session_id: str | None = None,
     members: list[HasnGroupMembers] | None = None,
-) -> list[str]:
+) -> tuple[list[str], list[tuple[str, dict[str, Any]]]]:
     """会话一等实体·统一受众扇出（doc02 §3.3）——投递链路唯一的形态无关出口。
 
     受众 = ``⋃ resolve_owner(participant)``（direct 两方 / group 名册），去重稳定排序。
@@ -657,7 +657,6 @@ async def _fanout_message_new(
     的那份事件/推送携带该字段，其余受众（对端 owner、群里其他成员）一律**剥除**。
     """
     from backend.app.hasn.service import conversation_projection as cp
-    from backend.app.hasn.service.ws_router import ws_router
 
     audience = await cp.compute_audience_owner_ids(db, conv, members=members)
     created_at = int(msg.created_time.timestamp()) if msg.created_time else 0
@@ -685,6 +684,11 @@ async def _fanout_message_new(
             params['origin_session_id'] = origin_session_id
         return params
 
+    # R1-08 事务收口：扇出循环内**只写 sync feed 事件**（与 route_message 主链同事务、
+    # 单 commit 落库）；实时 push 是外部 IO，一律收集进 deferred_pushes 延后到 commit **之后**
+    # 由 _flush_pushes 发出，绝不夹在事务里。任一受众 append 失败即整条主链回滚——杜绝
+    # 「消息已落库但 feed 事件丢失」的半状态（doc92 §7.1）。
+    deferred_pushes: list[tuple[str, dict[str, Any]]] = []
     for owner_id in audience:
         owner_origin_session_id = (
             origin_session_id if (origin_session_id and owner_id == sender_owner_id) else None
@@ -703,11 +707,26 @@ async def _fanout_message_new(
             local_id=local_id,
             created_at=created_at,
         )
-        await ws_router.push_to_owner(
-            owner_id,
-            {'hasn': 'hasn/0.2', 'method': 'hasn.message.new', 'params': _params_for(owner_id)},
+        deferred_pushes.append(
+            (owner_id, {'hasn': 'hasn/0.2', 'method': 'hasn.message.new', 'params': _params_for(owner_id)})
         )
-    return audience
+    return audience, deferred_pushes
+
+
+async def _flush_pushes(pushes: list[tuple[str, dict[str, Any]]]) -> None:
+    """route_message 主链 commit **之后**发出 _fanout_message_new 收集的实时推送（R1-08 外部 IO 出事务）。
+
+    消息 + sync feed 事件已单 commit 落库、durable；本步是纯实时投递优化，**best-effort**：
+    任一 owner 推送失败（Redis 抖动 / 目标节点瞬断）只记 warn 并继续下一个——权威 feed 已在库，
+    对端重连自会 sync/pull 补回。绝不因推送失败连累已落库的消息（记 warn 而非 error：可恢复、会自愈）。
+    """
+    from backend.app.hasn.service.ws_router import ws_router
+
+    for owner_id, payload in pushes:
+        try:
+            await ws_router.push_to_owner(owner_id, payload)
+        except Exception as exc:
+            log.warning('message.new 实时推送失败（owner=%s），已落 feed，靠重连补拉：%r', owner_id, exc)
 
 
 # ─── 消息路由主入口 ───
@@ -911,8 +930,6 @@ async def route_message(
                 continue
             await increment_unread_for(db, group_conv_id, member.member_id)
 
-        await db.commit()
-
         # 会话一等实体·统一受众扇出（doc02 §3.3）：群受众 = 名册每个成员解析出的 owner 集合，
         # emit message.new 瘦事件 + 按 owner push。退役旧 _grp_sync_event 双写（message.sent/
         # received）+ hasn.message.received envelope 直推。daemon 群派发闸（G4）改从**会话对象
@@ -924,7 +941,7 @@ async def route_message(
         grp_event_content = content
         if grp_mentions or grp_mention_all:
             grp_event_content = {**content, 'mentions': grp_mentions, 'mention_all': grp_mention_all}
-        audience = await _fanout_message_new(
+        audience, deferred_pushes = await _fanout_message_new(
             db,
             grp_sync,
             group,
@@ -937,7 +954,11 @@ async def route_message(
             members=members,
         )
 
+        # R1-08 事务收口：persist_message + 未读自增 + 扇出 sync feed 事件同一事务**单 commit**落库
+        # （删原扇出前的中间 commit——它会把消息落库但 feed 尚未写，crash 即半状态）。
         await db.commit()
+        # 外部 IO 出事务：commit 之后再发实时推送（best-effort，失败靠对端重连 sync 补回）。
+        await _flush_pushes(deferred_pushes)
 
         return {
             'error': False,
@@ -1140,8 +1161,6 @@ async def route_message(
         owner_id=recipient_owner_for_row or None,
     )
 
-    await db.commit()
-
     # 6. 会话一等实体·统一受众扇出（doc02 §3.3）：direct 受众 = 两参与者各自解析出的 owner 集合。
     # - A2A：两分身各解析主人 → 两主人都在受众 → **A2AFIRST/Fix#5「补推发送方」补丁天然消失**；
     # - owner↔自有分身 loopback：两参与者同解析到一个 owner → 单条 message.new 推该 owner 全设备，
@@ -1152,7 +1171,7 @@ async def route_message(
     from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
 
     sync_gw = SqlAlchemySyncGateway()
-    audience = await _fanout_message_new(
+    audience, deferred_pushes = await _fanout_message_new(
         db,
         sync_gw,
         conv,
@@ -1165,7 +1184,11 @@ async def route_message(
         origin_session_id=origin_session_id,
     )
 
+    # R1-08 事务收口：persist_message + 扇出 sync feed 事件同一事务**单 commit**落库
+    # （删原扇出前的中间 commit——它会把消息落库但 feed 尚未写，crash 即半状态）。
     await db.commit()
+    # 外部 IO 出事务：commit 之后再发实时推送（best-effort，失败靠对端重连 sync 补回）。
+    await _flush_pushes(deferred_pushes)
 
     return {
         'error': False,

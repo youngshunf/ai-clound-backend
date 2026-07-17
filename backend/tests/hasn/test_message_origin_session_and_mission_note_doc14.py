@@ -118,24 +118,19 @@ async def test_event_shape_unchanged_without_origin_session_id() -> None:
 async def test_fanout_forks_origin_session_id_by_audience(monkeypatch) -> None:
     """发起溯源是发送方的执行细节：只有发送方 owner 的事件+推送带它，对端一律剥除。"""
     events: list[dict] = []
-    pushes: list[tuple[str, dict]] = []
 
     async def _fake_append(gw, db, *, owner_id, origin_session_id=None, **kwargs):
         events.append({'owner_id': owner_id, 'origin_session_id': origin_session_id})
         return 1
 
-    async def _fake_push(owner_id, message):
-        pushes.append((owner_id, message))
-
     # a_bot 的主人是 h_master（发送方 owner）；h_peer 是对端 owner。
     monkeypatch.setattr(cp, 'compute_audience_owner_ids', AsyncMock(return_value=['h_master', 'h_peer']))
     monkeypatch.setattr(cp, '_resolve_owner_ids', AsyncMock(return_value={'a_bot': 'h_master'}))
     monkeypatch.setattr(cp, 'append_message_new_event', _fake_append)
-    from backend.app.hasn.service.ws_router import ws_router
 
-    monkeypatch.setattr(ws_router, 'push_to_owner', _fake_push)
-
-    audience = await mr._fanout_message_new(
+    # R1-08 后：扇出不再内联 push，而是把待发推送收集进 deferred_pushes 返回（由 route_message
+    # 在主链 commit 之后 _flush_pushes 发出）。§7-1 隐私红线在收集的推送载荷上同样成立。
+    audience, deferred_pushes = await mr._fanout_message_new(
         object(),
         _FakeGw(),
         _Conv(),
@@ -153,7 +148,7 @@ async def test_fanout_forks_origin_session_id_by_audience(monkeypatch) -> None:
     assert by_owner['h_master'] == _SESSION, '发送方 owner 应看到自己的发起溯源'
     assert by_owner['h_peer'] is None, '§7-1 红线：对端 owner 的事件绝不带 origin_session_id'
 
-    push_by_owner = {owner: msg['params'] for owner, msg in pushes}
+    push_by_owner = {owner: msg['params'] for owner, msg in deferred_pushes}
     assert push_by_owner['h_master']['origin_session_id'] == _SESSION
     assert 'origin_session_id' not in push_by_owner['h_peer'], '§7-1 红线：对端推送同样剥除'
 
