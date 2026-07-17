@@ -322,9 +322,11 @@ class WorkflowService:
         return {'workflow': workflow, 'nodes': nodes, 'edges': edges}
 
     @staticmethod
-    async def list_workflows(db: AsyncSession, *, owner_id: str) -> list[HasnWorkflow]:
-        """列某 owner 的工作流（未删除）。"""
-        return list(await hasn_workflow_dao.list_by_owner(db, owner_id))
+    async def list_workflows(
+        db: AsyncSession, *, owner_id: str, project_id: str | None = None
+    ) -> list[HasnWorkflow]:
+        """列某 owner 的工作流（未删除）；`project_id` 给值则只返挂在该项目下的（P9-D 项目侧聚合读）。"""
+        return list(await hasn_workflow_dao.list_by_owner(db, owner_id, project_id=project_id))
 
     @staticmethod
     async def list_runs(db: AsyncSession, *, owner_id: str, workflow_uuid: str, limit: int = 50) -> list[dict]:

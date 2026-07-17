@@ -201,8 +201,11 @@ class AgentWorkflowService:
         return {r['node_key']: r['status'] for r in rows.mappings().all()}
 
     @classmethod
-    async def list_workflows(cls, db: AsyncSession, *, owner_id: str) -> list[dict[str, Any]]:
-        workflows = await workflow_service.list_workflows(db, owner_id=owner_id)
+    async def list_workflows(
+        cls, db: AsyncSession, *, owner_id: str, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列主人的工作流；`project_id` 给值则只返该项目下的（分身问「这个项目里有哪些工作流」时用）。"""
+        workflows = await workflow_service.list_workflows(db, owner_id=owner_id, project_id=project_id)
         return [workflow_to_public(wf) for wf in workflows]
 
     @staticmethod
