@@ -354,6 +354,12 @@ class Settings(BaseSettings):
     # HASN_WS_MAX_INBOUND_FRAME_BYTES：单条入站帧的 UTF-8 字节上限（frame size 硬闸）。0=不限
     #   （默认，保持现网行为、正常路径零额外开销）；>0 时超限帧显式回 2005 错误帧并 continue（不断连）。
     HASN_WS_MAX_INBOUND_FRAME_BYTES: int = 0
+    # HASN_WS_MIN_CLIENT_VERSION：WS 握手最低客户端版本闸（R2-10·§8.3-2「掉队客户端闸」）。
+    #   空串（默认）= 闸关，不闸任何 daemon 版本（本地重构/测试阶段——对齐「本地测试通过最后才生产
+    #   部署」）；非空 = 最低放行版本（点分，如 '1.4.0'），低于此的 daemon 握手即以 4003
+    #   (UPGRADE_REQUIRED) 拒连，供 D3 出「需要升级」引导并停重连风暴。R3 窗口设为配套 daemon 版本、
+    #   切换即生效。fail-closed：阈值非空时无可解析版本头的客户端一律判为过低拒连（§8.3-2）。
+    HASN_WS_MIN_CLIENT_VERSION: str = ''
 
     # CORS (allow_credentials=True 时不能用 '*'，必须列出具体域名)
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠

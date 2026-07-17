@@ -64,6 +64,25 @@ class CRUDHasnConversations(CRUDPlus[HasnConversations]):
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)
 
     @staticmethod
+    async def allocate_seq(db: AsyncSession, conversation_id: str) -> int | None:
+        """原子分配会话内下一序号（R2-02·doc16 §4.1）。
+
+        同事务内 `UPDATE hasn_conversations SET current_seq = current_seq + 1
+        WHERE id = :conversation_id RETURNING current_seq`——PG 行锁串行化同会话
+        并发发送，返回值即本条消息应写入的 `conversation_seq`（权威顺序事实）。
+
+        禁时间戳 / `MAX(seq)+1` / 客户端序号——唯一取号入口。会话不存在返回
+        None（调用方须已在同事务内 get_or_create 会话，故正常不会 None）。
+        """
+        result = await db.execute(
+            update(HasnConversations)
+            .where(HasnConversations.id == conversation_id)
+            .values(current_seq=HasnConversations.current_seq + 1)
+            .returning(HasnConversations.current_seq)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
     async def mark_direct_unreachable(db: AsyncSession, id_a: str, id_b: str) -> int:
         """把 A↔B 的 direct 会话置 unreachable（D4·会话不删但标不可达·修 B5）。
 

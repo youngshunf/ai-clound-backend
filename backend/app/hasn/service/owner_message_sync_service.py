@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.model import HasnConversations, HasnMessages
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.service.message_router import (
@@ -114,8 +115,15 @@ async def _persist_in_savepoint(
     """
     now = timezone.now()
     async with db.begin_nested():
+        # R2-02（doc16 §4.1）：在 SAVEPOINT 内取号——若并发 drain 撞 local_id 唯一索引
+        # 回滚 savepoint，本次分配的 seq 一并回滚、不被 deduped 消息白白消耗。
+        conversation_seq = await hasn_conversations_dao.allocate_seq(db, conversation_id)
+        if conversation_seq is None:
+            raise ValueError(f'allocate_seq 失败：会话 {conversation_id} 不存在，无法分配 conversation_seq')
+
         msg = HasnMessages(
             conversation_id=conversation_id,
+            conversation_seq=conversation_seq,
             from_id=from_id,
             from_type=_entity_type_int(from_id),
             to_id=to_id,

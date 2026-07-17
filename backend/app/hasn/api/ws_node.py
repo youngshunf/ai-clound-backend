@@ -25,6 +25,7 @@ from backend.app.hasn_im.protocol.frame import (
     build_error_frame,
     parse_inbound,
 )
+from backend.app.hasn_im.protocol import version_gate
 from backend.app.hasn_im.protocol.frame import build_frame as _frame
 from backend.app.hasn_im.protocol.handler_registry import (
     HANDLER_SPECS,
@@ -164,6 +165,26 @@ async def hasn_node_websocket(  # noqa: C901
             )
             return
         node_name = websocket.headers.get('X-Node-Name')
+
+        # R2-10 掉队客户端闸（§8.3-2）：旧事件切换后，低于阈值的 daemon 必须被闸住、不能继续收发
+        # 旧事件。在 accept 之前据 X-App-Version 头判定；低于 settings.HASN_WS_MIN_CLIENT_VERSION
+        # 即以 4003(UPGRADE_REQUIRED) 拒连——错误码/reason 供 D3 识别并出「需要升级」引导、停重连风暴。
+        # 阈值空（默认）= 闸关，不影响本地测试（对齐「本地测试通过最后才生产部署」）。
+        client_app_version = websocket.headers.get('X-App-Version')
+        if version_gate.is_below_minimum(client_app_version, settings.HASN_WS_MIN_CLIENT_VERSION):
+            log.info(
+                '[HASN] WS 版本闸拒连: node=%s client=%s min=%s',
+                node_id,
+                client_app_version,
+                settings.HASN_WS_MIN_CLIENT_VERSION,
+            )
+            await websocket.close(
+                code=version_gate.UPGRADE_REQUIRED_CLOSE_CODE,
+                reason=version_gate.build_upgrade_required_reason(
+                    settings.HASN_WS_MIN_CLIENT_VERSION, client_app_version
+                ),
+            )
+            return
 
         auth = await authenticate_ws_connection(scheme, credentials, node_id, node_name)
     except Exception as e:

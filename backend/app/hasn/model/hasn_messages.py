@@ -17,6 +17,7 @@ class HasnMessages(Base):
 
     id: Mapped[id_key] = mapped_column(init=False)
     conversation_id: Mapped[str | UUID] = mapped_column(sa.UUID(), default=None, comment='所属会话 ID')
+    conversation_seq: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='本消息在所属会话内的单调序号（权威顺序事实·唯一·§4.1）')
     owner_id: Mapped[str | None] = mapped_column(
         sa.String(40),
         default=None,

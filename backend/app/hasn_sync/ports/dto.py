@@ -3,11 +3,11 @@
 **边界铁律（§0.1/D2）**：envelope 的 payload 由业务方构造为**完整载荷**，sync 不反查
 业务表补齐。这里只声明「事件信封」与「已落事件引用」两个值对象，不携带任何业务 schema 类型。
 
-**契约演进（R1→R2-07）**：R1 版 envelope 对齐**现网** `_append_sync_event_with_id` 的真实
-字段（`hasn_id/aggregate_type/aggregate_id`）——如实包装，不声明现网还不支持的能力（避免
-fake）。R2-07 建成 `hasn_sync.append_event(...)` PG 函数后，去重键 `(producer, source_event_id)`
-才**真正**落地：届时给 envelope 追加 `producer`/`source_event_id`、给 ref 追加 `deduped`，
-并把封装目标从当前 chokepoint 原地换成 PG 函数（port 形状稳定，仅实现替换）。
+**契约演进（R1→R2-07·已落地）**：R1 版 envelope 对齐现网 `_append_sync_event_with_id` 的真实
+字段（`hasn_id/aggregate_type/aggregate_id`）。R2-07 建成 `hasn_sync.append_event(...)` PG 函数后，
+去重键 `(producer, source_event_id)` 真正落地：envelope 追加 `producer`/`source_event_id`
+（同在同缺——两者共同构成幂等键），ref 追加 `deduped`（命中已落行时为 True，未新增行）。
+封装目标从旧 chokepoint 原地换成 PG 函数，port 形状稳定，仅实现替换。
 """
 
 from __future__ import annotations
@@ -35,6 +35,11 @@ class SyncEnvelope:
     payload: dict[str, Any]
     # 事件发生时刻；None 由 append 落库时取 now()
     occurred_at: datetime | None = None
+    # 幂等去重键（R2-07）：上游子系统标识（如 'hasn_im'）+ 上游源事件 id（如集成事件 event_id）。
+    # 二者同在同缺——都给才启用去重、都省则退化为普通 append。sync_projector 扇出各 owner 用同一
+    # source_event_id，去重键含 owner_id（在 append_event 函数内），故各 owner 各落一行不误去重。
+    producer: str | None = None
+    source_event_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,3 +50,5 @@ class SyncEventRef:
     revision: int
     event_id: str
     event_type: str
+    # R2-07：命中 (owner_id, producer, source_event_id) 已落行→True（返回原 revision，未新增行）。
+    deduped: bool = False

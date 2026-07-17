@@ -24,6 +24,9 @@ from backend.app.hasn.model.hasn_channel_bindings import HasnChannelBindings as 
 from backend.app.hasn.model.hasn_clients import HasnClients as HasnClients
 from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests as HasnContactRequests
 from backend.app.hasn.model.hasn_contacts import HasnContacts as HasnContacts
+from backend.app.hasn.model.hasn_conversation_memberships import (
+    HasnConversationMemberships as HasnConversationMemberships,
+)
 from backend.app.hasn.model.hasn_conversations import HasnConversations as HasnConversations
 from backend.app.hasn.model.hasn_enterprise import HasnEnterprise as HasnEnterprise
 from backend.app.hasn.model.hasn_enterprise_invite_code import HasnEnterpriseInviteCode as HasnEnterpriseInviteCode
@@ -60,6 +63,7 @@ from backend.app.hasn.model.hasn_task_run import HasnTaskRun as HasnTaskRun
 from backend.app.hasn.model.hasn_task_run_summary import HasnTaskRunSummary as HasnTaskRunSummary
 from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
+from backend.app.hasn.model.hasn_unread_projection import HasnUnreadProjection as HasnUnreadProjection
 from backend.app.hasn.model.hasn_platform_operator_grants import (
     HasnPlatformOperatorGrants as HasnPlatformOperatorGrants,
 )

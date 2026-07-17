@@ -18,6 +18,7 @@ from backend.app.hasn.constants import (
     SCOPE_LTD,
     check_action_permission,
 )
+from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.model import HasnConversations, HasnHumans, HasnMessages, HasnUnreadCounts
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_contacts import HasnContacts
@@ -563,8 +564,16 @@ async def persist_message(
     """
     now = timezone.now()
 
+    # R2-02（doc16 §4.1）：落库前原子分配会话内序号——同事务 UPDATE ... RETURNING，
+    # PG 行锁串行化同会话并发发送，权威顺序事实。会话必已存在（调用链先 get_or_create），
+    # None 说明会话行缺失，属不变量破坏，直接抛（终局故障，见「日志分级」铁律）。
+    conversation_seq = await hasn_conversations_dao.allocate_seq(db, conversation_id)
+    if conversation_seq is None:
+        raise ValueError(f'allocate_seq 失败：会话 {conversation_id} 不存在，无法分配 conversation_seq')
+
     msg = HasnMessages(
         conversation_id=conversation_id,
+        conversation_seq=conversation_seq,
         owner_id=owner_id or None,
         from_id=from_id,
         from_type=_entity_type_int(from_id),
