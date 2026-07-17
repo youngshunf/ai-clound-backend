@@ -226,6 +226,10 @@ CREATE OR REPLACE FUNCTION hasn_sync.append_event(
 )
 RETURNS TABLE(revision bigint, event_id text, deduped boolean)
 LANGUAGE plpgsql
+-- SECURITY DEFINER：这是 §3.2「允许的跨域写 = 仅 EXECUTE append_event」的关键——astra_python_backend
+-- 只被授予 EXECUTE、无 hasn_sync 表 DML，须以函数属主权限完成内部 INSERT，才不被自身权限挡下。
+-- 固定 search_path（下）是 SECURITY DEFINER 的必备加固，杜绝 search_path 注入。
+SECURITY DEFINER
 SET search_path = pg_catalog, hasn_sync
 AS $$
 DECLARE
