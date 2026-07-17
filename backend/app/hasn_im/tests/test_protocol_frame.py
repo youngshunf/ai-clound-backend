@@ -109,6 +109,45 @@ def test_parse_inbound_toplevel_non_object_raises() -> None:
         frame.parse_inbound('"just a string"')
 
 
+def test_parse_inbound_frame_size_disabled_by_default() -> None:
+    # max_bytes 缺省=0（不限）：无论多大都不因尺寸抛错（与现网行为逐字节一致）。
+    big = '{"method": "hasn.ping", "params": {"pad": "' + 'x' * 100_000 + '"}}'
+    method, _params, _req = frame.parse_inbound(big)
+    assert method == 'hasn.ping'
+    # 显式 max_bytes=0 同样不限
+    assert frame.parse_inbound(big, max_bytes=0)[0] == 'hasn.ping'
+
+
+def test_parse_inbound_frame_too_large_raises_2005() -> None:
+    # max_bytes>0 且帧字节超限 → FrameDecodeError(code=2005)，先于 JSON 解析触发。
+    raw = '{"method": "hasn.ping", "params": {}}'
+    with pytest.raises(frame.FrameDecodeError) as ei:
+        frame.parse_inbound(raw, max_bytes=8)
+    assert ei.value.code == frame.FRAME_TOO_LARGE_CODE == 2005
+
+
+def test_parse_inbound_frame_within_limit_ok() -> None:
+    # 帧字节 <= 上限 → 正常解析（边界内不误伤）。
+    raw = '{"method": "hasn.typing", "params": {}}'
+    assert len(raw.encode('utf-8')) <= 64
+    method, params, req_id = frame.parse_inbound(raw, max_bytes=64)
+    assert method == 'hasn.typing'
+    assert params == {}
+    assert req_id is None
+
+
+def test_parse_inbound_frame_size_measures_utf8_bytes() -> None:
+    # 尺寸按 UTF-8 字节算（非字符数）：单个中文 3 字节，帧含中文时字节 > 字符数。
+    raw = '{"method": "hasn.ping", "params": {"note": "中文"}}'
+    char_len = len(raw)
+    byte_len = len(raw.encode('utf-8'))
+    assert byte_len > char_len  # 中文使字节数大于字符数
+    # 上限设在「字符数」与「字节数」之间 → 按字节算必超限
+    with pytest.raises(frame.FrameDecodeError) as ei:
+        frame.parse_inbound(raw, max_bytes=(char_len + byte_len) // 2)
+    assert ei.value.code == 2005
+
+
 def test_is_known_method() -> None:
     assert frame.is_known_method('hasn.message.send')
     assert not frame.is_known_method('hasn.unknown.method')

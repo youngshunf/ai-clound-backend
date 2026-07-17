@@ -31,6 +31,7 @@ from backend.app.hasn_im.protocol.handler_registry import (
     build_handler_args,
     resolve_handler_spec,
 )
+from backend.core.conf import settings
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -40,7 +41,8 @@ router = APIRouter()
 
 # 协议帧编解码/校验已提为无 DB 纯模块 `hasn_im.protocol.frame`（R1-09 协议层纯化）；
 # 本文件经 import 消费（`_frame`/`_response` 为其 build_frame/build_response 的别名）。
-WS_SEND_TIMEOUT_SECS = 10.0
+# 发送超时（backpressure 有界刷新窗口）与入站 frame size 上限已抽为配置项（R1-09），
+# 在调用点读 `settings.*`（模块 import 期不固化，便于测试/演练覆盖）。
 
 
 def _is_connection_closed(exc: Exception) -> bool:
@@ -107,8 +109,11 @@ async def _backfill_node_metadata(websocket: WebSocket, node_id: str) -> None:
 
 
 async def _send_json(websocket: WebSocket, payload: dict) -> None:
-    """限时发送控制帧，超时按连接失败处理并进入外层清理。"""
-    await asyncio.wait_for(websocket.send_json(payload), timeout=WS_SEND_TIMEOUT_SECS)
+    """限时发送控制帧，超时按连接失败处理并进入外层清理。
+
+    超时窗口 = `settings.HASN_WS_SEND_TIMEOUT_SECS`（backpressure 上界，R1-09 配置化）。
+    """
+    await asyncio.wait_for(websocket.send_json(payload), timeout=settings.HASN_WS_SEND_TIMEOUT_SECS)
 
 
 async def _send_offline_messages(websocket: WebSocket, entity_ids: list[str]) -> None:
@@ -278,7 +283,8 @@ async def _recv_loop(  # noqa: C901
     while True:
         raw = await websocket.receive_text()
         try:
-            method, params, req_id = parse_inbound(raw)
+            # frame size 硬闸随配置生效（默认 0=不限）：超限帧显式回 2005、continue 不断连。
+            method, params, req_id = parse_inbound(raw, max_bytes=settings.HASN_WS_MAX_INBOUND_FRAME_BYTES)
         except FrameDecodeError as exc:
             await _send_error(websocket, exc.code, exc.message)
             continue
