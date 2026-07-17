@@ -281,10 +281,16 @@ _WORKFLOW_CAPABILITIES = [
     _wcap(
         name='list',
         title='列工作流',
-        description='列主人的工作流（含状态/调度/最近执行）。',
+        description='列主人的工作流（含状态/调度/最近执行）。给 project_id 则只列该项目下的。',
         scope=_WSCOPE_READ,
         risk_level='low',
-        properties={'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20}},
+        properties={
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
+            'project_id': {
+                'type': 'string',
+                'description': '按所属平台项目筛选（hasn_project.id 云端权威 id）；不给则列全部',
+            },
+        },
         required=[],
         page_rank=39,
         tags=['workflow', 'list', 'read'],

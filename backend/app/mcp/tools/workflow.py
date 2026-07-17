@@ -68,7 +68,13 @@ async def _h_run_artifacts(db: Any, ctx: AgentContext, args: dict[str, Any]) -> 
 
 
 async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_workflow_service.list_workflows(db, owner_id=ctx.owner_hasn_id)
+    # project_id 只认显式入参，**不从 ContextVar 继承**：doc11 §4.0 的继承链管的是「新东西挂到哪个项目」
+    # （写语义），不该拿来悄悄裁剪「能看见什么」（读语义）——同一句 list 因为看不见的上下文返回不同
+    # 结果，分身无从判断列表是否完整。要按项目筛就显式给 project_id。
+    project_id = args.get('project_id')
+    return await agent_workflow_service.list_workflows(
+        db, owner_id=ctx.owner_hasn_id, project_id=str(project_id) if project_id else None
+    )
 
 
 async def _h_run(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -216,10 +222,16 @@ _SPECS: list[dict[str, Any]] = [
         'write': False,
         'scopes': [],
         'handler': _h_list,
-        'desc': '列主人的工作流（含状态/调度/最近执行）。确定性读。',
+        'desc': '列主人的工作流（含状态/调度/最近执行）。确定性读。给 project_id 则只列该项目下的。',
         'schema': {
             'type': 'object',
-            'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'description': '默认 20'}},
+            'properties': {
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'description': '默认 20'},
+                'project_id': {
+                    'type': 'string',
+                    'description': '按所属平台项目筛选（hasn_project.id 云端权威 id）；不给则列全部',
+                },
+            },
         },
     },
 ]
