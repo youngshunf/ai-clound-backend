@@ -31,10 +31,14 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_project.model import HasnProject
 from backend.app.hasn_task.api.v1.agent.workflow import router as agent_workflow_router
 from backend.app.hasn_task.api.v1.app.workflow import router as app_workflow_router
+from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate
+from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
+from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception.errors import BaseExceptionError
+from backend.common.exception.errors import BaseExceptionError, ForbiddenError, RequestError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -296,3 +300,99 @@ async def test_create_rejects_cross_owner_node_agent(e2e: SimpleNamespace) -> No
     }
     resp = await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=body)
     assert resp.json()['code'] == 404, resp.text
+
+
+# ---------- P9-B 场景工作流项目轴实例化硬闸（doc95 §2.3） ----------
+
+
+def _payload(e2e: SimpleNamespace) -> AgentTokenPayload:
+    return AgentTokenPayload(
+        agent_hasn_id=e2e.research,
+        agent_name='wf-agent',
+        owner_hasn_id=e2e.owner,
+        owner_user_id=970001,
+        session_uuid=f'sess_{_uid()}',
+        expire_time=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+
+
+async def _seed_template(session, key: str) -> HasnWorkflowTemplate:  # noqa: RUF029, ANN001
+    """种一条内置免费场景模板（is_builtin=True → 对任何 owner 可见，sku_ref=None → 免判权）。"""
+    tpl = HasnWorkflowTemplate(
+        template_key=key,
+        template_uuid=f'wft_{key}',
+        name='测试场景',
+        is_builtin=True,
+        status='active',
+        graph_spec={
+            'nodes': [
+                {'node_key': 'origin', 'name': '起点', 'is_origin': True, 'prompt': '开始'},
+                {'node_key': 'work', 'name': '干活', 'prompt': '产出'},
+            ],
+            'edges': [{'parent': 'origin', 'child': 'work'}],
+        },
+    )
+    session.add(tpl)
+    await session.flush()
+    return tpl
+
+
+async def _seed_project(session, owner: str, status: str = 'active') -> HasnProject:  # noqa: RUF029, ANN001
+    proj = HasnProject(owner_id=owner, name='测试项目', status=status)
+    session.add(proj)
+    await session.flush()
+    return proj
+
+
+async def test_instantiate_requires_project(e2e: SimpleNamespace) -> None:
+    """无 project_id（显式无 + ContextVar 无）→ 结构化 PROJECT_REQUIRED。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    with pytest.raises(McpToolError) as ei:
+        await workflow_template_service.instantiate_template(
+            e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={}
+        )
+    assert ei.value.code == McpErrorCode.PROJECT_REQUIRED
+
+
+async def test_instantiate_with_project_lands_on_workflow(e2e: SimpleNamespace) -> None:
+    """合法 project_id → 建图成功且 project_id 落到 workflow 行。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    proj = await _seed_project(e2e.session, e2e.owner)
+    result = await workflow_template_service.instantiate_template(
+        e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj.id)}
+    )
+    assert result['project_id'] == str(proj.id)
+    row = await e2e.session.execute(
+        text('SELECT project_id FROM hasn_task.workflow WHERE workflow_uuid = :wu'),
+        {'wu': result['workflow_id']},
+    )
+    assert str(row.scalar_one()) == str(proj.id)
+
+
+async def test_instantiate_cross_owner_project_403(e2e: SimpleNamespace) -> None:
+    """跨 owner 的 project_id → 403（不是 404，不做存在性隐藏）。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    foreign = await _seed_project(e2e.session, e2e.other_owner)
+    with pytest.raises(ForbiddenError):
+        await workflow_template_service.instantiate_template(
+            e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(foreign.id)}
+        )
+
+
+async def test_instantiate_archived_project_rejected(e2e: SimpleNamespace) -> None:
+    """归档项目 → 结构化拒绝（error_code=project_archived）。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    proj = await _seed_project(e2e.session, e2e.owner, status='archived')
+    with pytest.raises(RequestError) as ei:
+        await workflow_template_service.instantiate_template(
+            e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj.id)}
+        )
+    assert (ei.value.data or {}).get('error_code') == 'project_archived'
+
+
+async def test_bare_workflow_create_unaffected(e2e: SimpleNamespace) -> None:
+    """裸工程图创建路径（template_key IS NULL）不受硬闸影响，仍可建，project_id 为空。"""
+    created = _data(
+        await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=_diamond_body(e2e, f'wf-{_uid()}'))
+    )
+    assert created['workflow']['project_id'] is None

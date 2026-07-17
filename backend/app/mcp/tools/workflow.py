@@ -423,11 +423,17 @@ _TEMPLATE_SPECS: list[dict[str, Any]] = [
         'desc': (
             '据模板实例化一条 cloud 权威工作流：读模板蓝图 → 建 workflow（节点缺省=发起分身）→ 返 workflow 引用。'
             '起点输入 origin_input 作为锚点，node_overrides 可逐节点定制 prompt/agent_id。付费模板本期免判直接放行。'
+            '⚠️ 场景必须挂到一个平台项目下：显式传 project_id，或经工作会话上下文继承；两者都无会返 PROJECT_REQUIRED，'
+            '此时回头问主人「这个场景挂到哪个项目下」。'
         ),
         'schema': {
             'type': 'object',
             'properties': {
                 'template_key': {'type': 'string', 'minLength': 1, 'description': '要实例化的模板键'},
+                'project_id': {
+                    'type': ['string', 'null'],
+                    'description': '所属平台项目 id（云端权威 id）。场景必填；缺省则从工作会话上下文继承，都无则 PROJECT_REQUIRED。',
+                },
                 'title': {'type': ['string', 'null'], 'description': '实例工作流名称（缺省取模板名）'},
                 'goal': {'type': ['string', 'null'], 'description': '实例总目标（缺省取模板描述）'},
                 'origin_input': {'type': ['string', 'null'], 'description': '起点输入（主人锚点，如想法/研究命题）'},

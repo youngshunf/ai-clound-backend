@@ -10,6 +10,7 @@ Agent JWT 通道的工作流读写（owner = agent.owner_hasn_id，跨户恒 Not
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -409,6 +410,13 @@ class AgentWorkflowService:
             edges=edges,
         )
         wf = await workflow_service.create_workflow(db, owner_id=agent.owner_hasn_id, obj=obj)
+        # P9-B 场景工作流项目轴：实例化路径经硬闸解析出所属平台项目后，把 project_id 透传到这里落到
+        # workflow.project_id（场景实例必填、裸工程图为空）。CreateWorkflowParam 不带此列，故建图后
+        # 直接写 ORM 列（同一事务内 flush）。非实例化（裸 hasn.workflow.create）无 project_id → 保持 NULL。
+        raw_project_id = params.get('project_id')
+        if raw_project_id:
+            wf.project_id = raw_project_id if isinstance(raw_project_id, UUID) else UUID(str(raw_project_id))
+            await db.flush()
         if wf.status == 'pending_approval':
             await cls._notify_pending_approval(db, agent=agent, workflow_uuid=wf.workflow_uuid, name=wf.name)
         return workflow_to_public(wf)
