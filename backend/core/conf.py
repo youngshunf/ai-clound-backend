@@ -347,6 +347,14 @@ class Settings(BaseSettings):
     # Socket.IO
     WS_NO_AUTH_MARKER: str = 'internal'
 
+    # HASN IM 节点 WebSocket 协议层运行参数（R1-09 协议层纯化：把原 ws_node 硬编码常量抽为配置）。
+    # HASN_WS_SEND_TIMEOUT_SECS：单条控制帧下发的有界刷新窗口——超时即按连接失败进入清理，
+    #   本质是 backpressure 上界（慢/满的 transport 不会无限阻塞收发循环，原 ws_node 硬编码 10.0）。
+    HASN_WS_SEND_TIMEOUT_SECS: float = 10.0
+    # HASN_WS_MAX_INBOUND_FRAME_BYTES：单条入站帧的 UTF-8 字节上限（frame size 硬闸）。0=不限
+    #   （默认，保持现网行为、正常路径零额外开销）；>0 时超限帧显式回 2005 错误帧并 continue（不断连）。
+    HASN_WS_MAX_INBOUND_FRAME_BYTES: int = 0
+
     # CORS (allow_credentials=True 时不能用 '*'，必须列出具体域名)
     CORS_ALLOWED_ORIGINS: list[str] = [  # 末尾不带斜杠
         'http://127.0.0.1:5173',
