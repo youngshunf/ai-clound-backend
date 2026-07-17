@@ -79,6 +79,36 @@ class _RecordingConsumer:
         self.handled.append(event.event_seq)
 
 
+async def _init_cursor_at_head(sm, *consumer_names: str, shard_key: int = 0) -> None:
+    """把消费者 cursor 初始化到当前分片 event head，再让本用例 seed 新事件。
+
+    **isolation-robust（关键）**：消费者按**分片全局**顺序拉取（`fetch_after(cursor)`·非按 aggregate），
+    故 dev 库里的**存量事件行**会被 fresh 消费者（cursor=0）连带拉取——在存量 > batch_limit 时，本用例
+    seed 的新事件落到首批之外、根本消费不到，断言即崩。此处以「当前 head」为消费者起点，忠实复刻 R2-11
+    §10.2「消费者 cursor 初始化为切换时刻 event head、存量不重投影」，使本用例只消费自己随后 seed 的事件，
+    不依赖表被清空、也不删共享 dev 数据。（后续 `try_acquire_lease` 的 ON CONFLICT 只改 lease 字段、
+    不动 last_acked_seq，故预置 cursor 在首次 tick 后仍存活。）
+    """
+    async with sm() as db:
+        head = (
+            await db.execute(
+                sa.text(f'SELECT COALESCE(MAX(event_seq), 0) FROM {_EVENTS} WHERE shard_key = :sk'),  # noqa: S608
+                {'sk': shard_key},
+            )
+        ).scalar_one()
+        for cn in consumer_names:
+            await db.execute(
+                sa.text(
+                    f'INSERT INTO {_OFFSETS} '  # noqa: S608 常量表名
+                    '(consumer_name, last_acked_seq, lease_owner, lease_until, updated_at) '
+                    'VALUES (:name, :seq, NULL, NULL, now()) '
+                    'ON CONFLICT (consumer_name) DO NOTHING'
+                ),
+                {'name': cn, 'seq': int(head)},
+            )
+        await db.commit()
+
+
 async def _seed_events(sm, aggregate_id: str, n: int) -> None:
     async with sm() as db:
         for i in range(n):
@@ -128,6 +158,7 @@ async def _cleanup(sm, aggregate_id: str, *consumer_names: str) -> None:
 async def test_durable_processes_batch_in_order(sessionmaker_pg) -> None:
     aid = f'conv_{uuid.uuid4().hex[:12]}'
     cn = f'sync_projector_{uuid.uuid4().hex[:8]}'
+    await _init_cursor_at_head(sessionmaker_pg, cn)  # 存量不重投影：只消费本用例 seed 的事件
     await _seed_events(sessionmaker_pg, aid, 3)
     base = await _min_seq_for(sessionmaker_pg, aid)
 
@@ -150,6 +181,7 @@ async def test_durable_processes_batch_in_order(sessionmaker_pg) -> None:
 async def test_durable_resumes_from_cursor_after_restart(sessionmaker_pg) -> None:
     aid = f'conv_{uuid.uuid4().hex[:12]}'
     cn = f'sync_projector_{uuid.uuid4().hex[:8]}'
+    await _init_cursor_at_head(sessionmaker_pg, cn)  # 存量不重投影
     await _seed_events(sessionmaker_pg, aid, 2)
     base = await _min_seq_for(sessionmaker_pg, aid)
 
@@ -176,6 +208,7 @@ async def test_durable_resumes_from_cursor_after_restart(sessionmaker_pg) -> Non
 async def test_durable_parks_on_failure_then_recovers(sessionmaker_pg) -> None:
     aid = f'conv_{uuid.uuid4().hex[:12]}'
     cn = f'sync_projector_{uuid.uuid4().hex[:8]}'
+    await _init_cursor_at_head(sessionmaker_pg, cn)  # 存量不重投影
     await _seed_events(sessionmaker_pg, aid, 3)
     base = await _min_seq_for(sessionmaker_pg, aid)
 
@@ -206,6 +239,7 @@ async def test_durable_parks_on_failure_then_recovers(sessionmaker_pg) -> None:
 async def test_durable_dead_letter_parks_and_skip_releases(sessionmaker_pg) -> None:
     aid = f'conv_{uuid.uuid4().hex[:12]}'
     cn = f'sync_projector_{uuid.uuid4().hex[:8]}'
+    await _init_cursor_at_head(sessionmaker_pg, cn)  # 存量不重投影
     await _seed_events(sessionmaker_pg, aid, 3)
     base = await _min_seq_for(sessionmaker_pg, aid)
 
@@ -249,6 +283,7 @@ async def test_durable_dead_letter_parks_and_skip_releases(sessionmaker_pg) -> N
 async def test_best_effort_advances_on_failure_no_dlq(sessionmaker_pg) -> None:
     aid = f'conv_{uuid.uuid4().hex[:12]}'
     cn = f'realtime_notifier_{uuid.uuid4().hex[:8]}'
+    await _init_cursor_at_head(sessionmaker_pg, cn)  # 存量不重投影
     await _seed_events(sessionmaker_pg, aid, 3)
     base = await _min_seq_for(sessionmaker_pg, aid)
 
