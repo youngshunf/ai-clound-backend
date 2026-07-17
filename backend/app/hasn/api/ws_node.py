@@ -11,6 +11,7 @@ v2.1 简化认证：Bearer Token / OwnerKey + X-Node-Id
 
 import asyncio
 import logging
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.security.utils import get_authorization_scheme_param
@@ -25,6 +26,11 @@ from backend.app.hasn_im.protocol.frame import (
     parse_inbound,
 )
 from backend.app.hasn_im.protocol.frame import build_frame as _frame
+from backend.app.hasn_im.protocol.handler_registry import (
+    HANDLER_SPECS,
+    build_handler_args,
+    resolve_handler_spec,
+)
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -278,73 +284,26 @@ async def _recv_loop(  # noqa: C901
             continue
 
         try:
-            if method == 'hasn.node.add_owner':
-                await _handle_add_owner(websocket, node_id, params, active_entities)
-
-            elif method == 'hasn.node.remove_owner':
-                await _handle_remove_owner(websocket, node_id, params, active_entities)
-
-            elif method == 'hasn.node.renew_owner':
-                await _handle_renew_owner(websocket, node_id, params, active_entities)
-
-            elif method == 'hasn.node.list_owners':
-                await _handle_list_owners(websocket, node_id)
-
-            elif method == 'hasn.node.add_agent':
-                await _handle_add_agent(websocket, node_id, params, active_entities)
-
-            elif method == 'hasn.node.remove_agent':
-                await _handle_remove_agent(websocket, node_id, params, active_entities)
-
-            elif method == 'hasn.agent.register':
-                await _handle_agent_register(
-                    websocket,
-                    node_id,
-                    params,
-                    active_entities,
-                    req_id,
-                )
-
-            elif method == 'hasn.agent.deregister':
-                await _handle_agent_deregister(
-                    websocket,
-                    node_id,
-                    params,
-                    active_entities,
-                    req_id,
-                )
-
-            elif method == 'hasn.message.send':
-                await _handle_send(
-                    websocket,
-                    node_id,
-                    params,
-                    active_entities,
-                )
-
-            elif method == 'hasn.message.read':
-                await _handle_read(params, active_entities)
-
-            elif method == 'hasn.typing':
-                await _handle_typing(params, active_entities)
-
-            elif method == 'hasn.ping':
-                # P3：应用层心跳续期节点存活 TTL（根治僵尸 presence）。
-                if not await ws_router.refresh_node_presence(node_id, connection_id):
-                    await websocket.close(code=1000, reason='superseded connection')
-                    return
-                await _send_json(
-                    websocket,
-                    _frame(
-                        'hasn.pong',
-                        {
-                            'ts': params.get('ts'),
-                        },
-                    ),
-                )
-
-            else:
+            # table-driven 分派（R1-09 协议层纯化）：方法 → handler 的参数形状由纯模块
+            # handler_registry.HANDLER_SPECS 声明，本地 _HANDLERS 绑定实现。未登记方法显式
+            # 回 9001（不静默丢弃）；仅 may_close_loop 方法（hasn.ping superseded）返回真值
+            # 时关闭收发循环。
+            spec = resolve_handler_spec(method)
+            if spec is None:
                 await _send_error(websocket, 9001, f'未知方法: {method}')
+                continue
+            args = build_handler_args(
+                spec,
+                websocket=websocket,
+                node_id=node_id,
+                connection_id=connection_id,
+                params=params,
+                active_entities=active_entities,
+                req_id=req_id,
+            )
+            result = await _HANDLERS[method](*args)
+            if spec.may_close_loop and result is True:
+                return
 
         except Exception as e:
             # 连接已被关闭（登出竞态等）→ 良性断开：直接结束收发循环，
@@ -827,6 +786,50 @@ async def _handle_typing(params: dict, active_entities: set[str]) -> None:
     await ws_router.push_message_to(to_id, typing_payload)
 
 
+async def _handle_ping(
+    websocket: WebSocket,
+    node_id: str,
+    connection_id: str,
+    params: dict,
+) -> bool:
+    """处理 hasn.ping（P3 应用层心跳续期节点存活 TTL，根治僵尸 presence）。
+
+    返回 True 表示本连接已被更新连接顶替（superseded）、已 `ws.close`，收发循环应结束；
+    正常续期回 hasn.pong 后返回 False（继续收发）。返回值仅对 may_close_loop 方法有意义。
+    """
+    if not await ws_router.refresh_node_presence(node_id, connection_id):
+        await websocket.close(code=1000, reason='superseded connection')
+        return True
+    await _send_json(websocket, _frame('hasn.pong', {'ts': params.get('ts')}))
+    return False
+
+
 async def _send_error(websocket: WebSocket, code: int, message: str) -> None:
     """发送错误帧"""
     await _send_json(websocket, build_error_frame(code, message))
+
+
+# 方法 → 本地 handler 实现绑定表（table-driven 分派消费；参数形状由 handler_registry 的
+# HANDLER_SPECS 声明，本表只绑定「method → _handle_* 实现」）。启动期不变量：绑定表键集必须
+# 与 registry 完全一致——漏接 / 错接方法即在 import 期炸，与 handler_registry 内
+# `HANDLER_SPECS == KNOWN_METHODS` 断言形成双向守卫。
+_HANDLERS: dict[str, Any] = {
+    'hasn.node.add_owner': _handle_add_owner,
+    'hasn.node.remove_owner': _handle_remove_owner,
+    'hasn.node.renew_owner': _handle_renew_owner,
+    'hasn.node.list_owners': _handle_list_owners,
+    'hasn.node.add_agent': _handle_add_agent,
+    'hasn.node.remove_agent': _handle_remove_agent,
+    'hasn.agent.register': _handle_agent_register,
+    'hasn.agent.deregister': _handle_agent_deregister,
+    'hasn.message.send': _handle_send,
+    'hasn.message.read': _handle_read,
+    'hasn.typing': _handle_typing,
+    'hasn.ping': _handle_ping,
+}
+
+assert set(_HANDLERS) == set(HANDLER_SPECS), (
+    '_HANDLERS 与 HANDLER_SPECS 键集不一致：'
+    f'仅在绑定表={set(_HANDLERS) - set(HANDLER_SPECS)}，'
+    f'仅在 registry={set(HANDLER_SPECS) - set(_HANDLERS)}'
+)

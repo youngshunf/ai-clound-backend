@@ -20,28 +20,29 @@ _WS_NODE_PY = Path(__file__).resolve().parents[2] / 'hasn' / 'api' / 'ws_node.py
 
 
 def _ws_node_dispatch_methods() -> set[str]:
-    """AST 解析 ws_node._recv_loop，收集其 `method == '<字面量>'` 分派集。
+    """AST 解析 ws_node，收集其 table-driven 分派绑定表 `_HANDLERS` 的字面量键集。
 
-    真读源码（非硬编码复制），使 frame.KNOWN_METHODS 成为分派的**强制**权威来源：
-    ws_node 若新增/删除一条 method 分派而未同步 KNOWN_METHODS，本组即红（补上旧硬编码
-    版漏检的漂移缺口）。仅收 `_recv_loop` 内 `method == '...'` 形态，避开其它函数里同名比较。
+    R1-09 分派已由 if/elif 长链改为表驱动（`_HANDLERS: method → _handle_*`）；本守卫真读
+    源码里 `_HANDLERS` 的键（非硬编码复制），使 frame.KNOWN_METHODS 成为分派的**强制**权威
+    来源：ws_node 若新增/删除一条绑定而未同步 KNOWN_METHODS，本组即红。仅取模块级 `_HANDLERS`
+    赋值（含类型注解形态 `_HANDLERS: dict[...] = {...}`），避开同名局部变量。
     """
     tree = ast.parse(_WS_NODE_PY.read_text(encoding='utf-8'), filename=str(_WS_NODE_PY))
-    recv_loop = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == '_recv_loop'
-    )
+
+    def _is_handlers_target(node: ast.AST) -> bool:
+        # 同时认 `_HANDLERS = {...}`（Assign）与 `_HANDLERS: dict = {...}`（AnnAssign）
+        if isinstance(node, ast.AnnAssign):
+            return isinstance(node.target, ast.Name) and node.target.id == '_HANDLERS'
+        if isinstance(node, ast.Assign):
+            return any(isinstance(t, ast.Name) and t.id == '_HANDLERS' for t in node.targets)
+        return False
+
+    handlers_node = next(node for node in ast.walk(tree) if _is_handlers_target(node))
+    assert isinstance(handlers_node.value, ast.Dict), '_HANDLERS 必须是字面量 dict'
     methods: set[str] = set()
-    for node in ast.walk(recv_loop):
-        if (
-            isinstance(node, ast.Compare)
-            and isinstance(node.left, ast.Name)
-            and node.left.id == 'method'
-            and len(node.ops) == 1
-            and isinstance(node.ops[0], ast.Eq)
-            and isinstance(node.comparators[0], ast.Constant)
-            and isinstance(node.comparators[0].value, str)
-        ):
-            methods.add(node.comparators[0].value)
+    for key in handlers_node.value.keys:
+        assert isinstance(key, ast.Constant) and isinstance(key.value, str), '_HANDLERS 键必须是字符串字面量'
+        methods.add(key.value)
     return methods
 
 
@@ -115,6 +116,6 @@ def test_is_known_method() -> None:
 
 
 def test_known_methods_matches_ws_node_dispatch_set() -> None:
-    # 权威锚点（AST 强制）：KNOWN_METHODS 必须与 ws_node._recv_loop 实际 if/elif 分派集**完全一致**。
+    # 权威锚点（AST 强制）：KNOWN_METHODS 必须与 ws_node 表驱动分派绑定表 `_HANDLERS` 的键集**完全一致**。
     # 真读源码，任一端新增/删除 method 而未同步另一端即红——KNOWN_METHODS 是 typed registry 的权威来源。
     assert set(frame.KNOWN_METHODS) == _ws_node_dispatch_methods()
