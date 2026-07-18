@@ -1,6 +1,7 @@
 """任务定义模型（hasn_task.task，原 public.hasn_task）。"""
 
 from datetime import datetime
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -17,6 +18,7 @@ TASK_STATE_COMMENT = (
 )
 CREATED_BY_KIND_COMMENT = '创建者类别 (owner:主人:blue/agent:分身:violet/builtin:内置:gray)'
 RISK_LEVEL_COMMENT = '风险等级 (low:低风险:green/high:高风险:orange)'
+EXECUTION_KIND_COMMENT = '执行方式 (app_workflow:应用工作流:blue/freeform:自由指令:gray)'
 
 
 class HasnTask(HasnTaskAppBase):
@@ -127,4 +129,20 @@ class HasnTask(HasnTaskAppBase):
     )
     node_key: Mapped[str | None] = mapped_column(
         sa.String(64), default=None, comment='图内稳定节点标识（如 research-cost），同图唯一'
+    )
+    # 任务中心三轴四列（doc12 §6.1）：项目轴 / 应用轴 / 执行方式，支撑「定时任务的项目·应用视角统一管理」。
+    # project_id：归属平台项目（云端权威 id，可空；freeform/裸任务为空），与 hasn_task.workflow.project_id 同构。
+    project_id: Mapped[UUID | None] = mapped_column(
+        sa.UUID(), default=None, comment='归属平台项目 id（hasn_project.hasn_project.id，可空；freeform/裸任务为空，doc12 §6.1）'
+    )
+    app_id: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='驱动的应用 app_id（freeform 为 NULL，doc12 §6.1）'
+    )
+    execution_kind: Mapped[str] = mapped_column(
+        sa.String(32), default='freeform', comment=EXECUTION_KIND_COMMENT
+    )
+    execution_spec: Mapped[dict] = mapped_column(
+        postgresql.JSONB(),
+        default_factory=dict,
+        comment='执行规格：app_workflow 存 {app_id, workflow_ref, params}；freeform 存 {prompt}',
     )

@@ -47,6 +47,7 @@ _TASK_COLUMNS = (
     'schedule_type, schedule_config, schedule_display, risk_level, timezone, misfire_policy, '
     'enabled, state, next_run_at, last_run_at, last_status, run_count, repeat_times, repeat_completed, '
     'task_revision, created_by, created_by_kind, continuation_enabled, enable_subagents, '
+    'project_id, app_id, execution_kind, execution_spec, '
     'created_time, updated_time, deleted_at'
 )
 
@@ -78,6 +79,12 @@ def task_to_public(row: dict[str, Any]) -> dict[str, Any]:
         'continuation_enabled': bool(row.get('continuation_enabled')),
         'enable_subagents': bool(row.get('enable_subagents')),
         'created_by_kind': row.get('created_by_kind') or 'owner',
+        # 任务中心三轴四列（doc12 §6.1）：project_id 是 uuid 列（asyncpg 回 uuid.UUID）→ 投影转字符串；
+        # execution_spec 与 schedule_config 同法（asyncpg 可能回 dict 或 json 字符串，_as_dict 兼容两者）。
+        'project_id': str(row['project_id']) if row.get('project_id') else None,
+        'app_id': row.get('app_id'),
+        'execution_kind': row.get('execution_kind') or 'freeform',
+        'execution_spec': _as_dict(row.get('execution_spec')),
         'created_at': _iso(row.get('created_time')),
         'updated_at': _iso(row.get('updated_time')),
     }
@@ -128,13 +135,27 @@ class AgentTaskService:
 
     @staticmethod
     async def list_tasks(
-        db: AsyncSession, *, owner_id: str, state: str | None = None, limit: int = 20
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        state: str | None = None,
+        project_id: str | None = None,
+        app_id: str | None = None,
+        limit: int = 20,
     ) -> list[dict[str, Any]]:
         clause = "owner_id = :o AND state <> 'deleted'"
         params: dict[str, Any] = {'o': owner_id, 'limit': max(1, min(limit, 100))}
         if state:
             clause += ' AND state = :s'
             params['s'] = state
+        # 任务中心三轴过滤（doc12 §6.1 项目/应用视角分组）：传了才加条件，走部分索引。
+        # project_id 是 uuid 列，绑定字符串经 CAST 显式转型，避免 asyncpg 参数类型歧义。
+        if project_id:
+            clause += ' AND project_id = CAST(:project_id AS uuid)'
+            params['project_id'] = str(project_id)
+        if app_id:
+            clause += ' AND app_id = :app_id'
+            params['app_id'] = str(app_id)
         result = await db.execute(
             sa.text(
                 f'SELECT {_TASK_COLUMNS} FROM hasn_task.task WHERE {clause} '
@@ -273,6 +294,12 @@ class AgentTaskService:
             'created_by_kind': row.get('created_by_kind') or 'owner',
             'continuation_enabled': bool(row.get('continuation_enabled')),
             'enable_subagents': bool(row.get('enable_subagents')),
+            # 任务中心三轴（doc12 §6.1）：以当前行为底带上——否则 task.updated 事件 upsert 时
+            # EXCLUDED.project_id 等为空会把已存三轴清空（暂停/恢复/立即执行/审批等每次转换都会误清）。
+            'project_id': row.get('project_id'),
+            'app_id': row.get('app_id'),
+            'execution_kind': row.get('execution_kind') or 'freeform',
+            'execution_spec': _as_dict(row.get('execution_spec')),
             'created_at': _iso(row.get('created_time')),
             'updated_at': timezone.now().isoformat(),
         }
@@ -298,6 +325,15 @@ class AgentTaskService:
         risk_level = str(risk_raw).strip().lower() if risk_raw not in (None, '') else None
         if risk_level is not None and risk_level not in ('low', 'high'):
             raise errors.RequestError(msg=f'未知风险等级: {risk_level}')
+
+        # 任务中心三轴（doc12 §6.1）：项目/应用/执行方式。execution_kind 缺省 freeform（自由指令）；
+        # app_workflow 由应用驱动，execution_spec 存 {app_id, workflow_ref, params}，freeform 存 {prompt}。
+        execution_kind = str(params.get('execution_kind') or 'freeform').strip().lower()
+        if execution_kind not in ('app_workflow', 'freeform'):
+            raise errors.RequestError(msg=f'未知执行方式: {execution_kind}')
+        execution_spec = dict(params.get('execution_spec') or {})
+        project_id = params.get('project_id')
+        app_id = params.get('app_id')
 
         now = timezone.now()
         # R4 幂等键：短窗口同参 → 返回已建任务而非新建
@@ -365,6 +401,11 @@ class AgentTaskService:
             'created_by_kind': 'agent',
             'continuation_enabled': bool(params.get('continuation_enabled')),
             'enable_subagents': bool(params.get('enable_subagents')),
+            # 任务中心三轴（doc12 §6.1）：随事件溯源 payload 贯通到存储行 + 下行镜像
+            'project_id': project_id,
+            'app_id': app_id,
+            'execution_kind': execution_kind,
+            'execution_spec': execution_spec,
             'created_at': now.isoformat(),
             'updated_at': now.isoformat(),
         }
@@ -407,6 +448,12 @@ class AgentTaskService:
         for field in ('continuation_enabled', 'enable_subagents'):
             if patch.get(field) is not None:
                 overrides[field] = bool(patch[field])
+        # 任务中心三轴（doc12 §6.1）：允许改归属项目/应用/执行方式（非 None 才覆盖，沿用本函数补丁语义）
+        for field in ('project_id', 'app_id', 'execution_kind'):
+            if patch.get(field) is not None:
+                overrides[field] = patch[field]
+        if patch.get('execution_spec') is not None:
+            overrides['execution_spec'] = dict(patch['execution_spec'])
 
         schedule_changed = False
         new_schedule_type = row['schedule_type']
