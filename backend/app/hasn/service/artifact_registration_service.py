@@ -156,6 +156,9 @@ class ArtifactRegistrationService:
                 body=mutation.body,
                 asset_id=mutation.asset_id,
                 resource_uri=mutation.resource_uri,
+                source_asset_uri=mutation.source_asset_uri,
+                source_hash=mutation.source_hash,
+                source_synced_at=mutation.source_synced_at,
                 local_locator_key=mutation.local_locator_key,
                 local_entry_kind=mutation.local_entry_kind,
                 node_id=mutation.node_id,
@@ -183,6 +186,19 @@ class ArtifactRegistrationService:
                     'body': mutation.body,
                     'asset_id': mutation.asset_id,
                     'resource_uri': mutation.resource_uri,
+                    # 快照只进不退：未上传状态的后续登记不得抹去已经完成的私有快照。
+                    'source_asset_uri': func.coalesce(
+                        mutation.source_asset_uri,
+                        HasnArtifacts.source_asset_uri,
+                    ),
+                    'source_hash': func.coalesce(
+                        mutation.source_hash,
+                        HasnArtifacts.source_hash,
+                    ),
+                    'source_synced_at': func.coalesce(
+                        mutation.source_synced_at,
+                        HasnArtifacts.source_synced_at,
+                    ),
                     'local_locator_key': mutation.local_locator_key,
                     'local_entry_kind': mutation.local_entry_kind,
                     'node_id': mutation.node_id,

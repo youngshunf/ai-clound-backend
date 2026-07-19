@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -106,6 +107,114 @@ async def test_record_dedup_and_validation() -> None:
                     resource_uri='hasn://deck/d_1',
                     source_kind='platform_tool',
                 )
+        finally:
+            await db.rollback()
+
+
+async def test_record_source_snapshot_requires_atomic_triple() -> None:
+    """本地优先原件快照必须全空或全非空，禁止产生半上传状态。"""
+    base = {
+        'kind': 'resource',
+        'resource_kind': 'imagelab.project',
+        'resource_uri': f'hasn://imagelab/projects/{uuid4()}',
+        'source_app_id': 'imagelab',
+        'source_kind': 'app_write',
+    }
+
+    with pytest.raises(ValidationError):
+        RecordArtifactParam(
+            **base,
+            source_asset_uri=f'hasn://asset/{_short_id("ast")}',
+        )
+
+    synced_at = datetime.now(UTC)
+    complete = RecordArtifactParam(
+        **base,
+        source_asset_uri=f'hasn://asset/{_short_id("ast")}',
+        source_hash='a' * 64,
+        source_synced_at=synced_at,
+    )
+    assert complete.source_hash == 'a' * 64
+    assert complete.source_synced_at == synced_at
+
+
+async def test_record_resource_retry_advances_source_snapshot() -> None:
+    """同一图坊输出重试登记时原子推进已上传快照，不新建第二条产物。"""
+    from sqlalchemy import select, update
+    from sqlalchemy.exc import IntegrityError
+
+    from backend.app.hasn.model import HasnArtifacts
+
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    project_id = str(uuid4())
+    resource_uri = f'hasn://imagelab/projects/{project_id}'
+    dispatch_id = 'disp:output-snapshot'
+    asset_uri = f'hasn://asset/{_short_id("ast")}'
+    synced_at = datetime.now(UTC)
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            base = RecordArtifactParam(
+                kind='resource',
+                resource_kind='imagelab.project',
+                title='图坊输出',
+                resource_uri=resource_uri,
+                node_id=_short_id('node'),
+                project_id=project_id,
+                source_tool='imagelab.process',
+                source_app_id='imagelab',
+                source_kind='app_write',
+                dispatch_id=dispatch_id,
+            )
+            artifact_id = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=base,
+            )
+
+            retry_id = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=base.model_copy(
+                    update={
+                        'source_asset_uri': asset_uri,
+                        'source_hash': 'b' * 64,
+                        'source_synced_at': synced_at,
+                    }
+                ),
+            )
+            assert retry_id == artifact_id
+
+            row = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == artifact_id))
+            ).scalar_one()
+            assert row.source_asset_uri == asset_uri
+            assert row.source_hash == 'b' * 64
+            assert row.source_synced_at == synced_at
+
+            items, total = await hasn_artifacts_service.list_by_agent(
+                db,
+                owner_hasn_id=owner,
+                agent_hasn_id=agent,
+            )
+            item = next(candidate for candidate in items if candidate.artifact_id == artifact_id)
+            assert total >= 1
+            assert item.source_asset_uri == asset_uri
+            assert item.source_hash == 'b' * 64
+            assert item.source_synced_at == synced_at
+
+            # 绕过请求模型直接写库也必须被 CHECK 拒绝，避免其他写点制造半状态。
+            with pytest.raises(IntegrityError):
+                async with db.begin_nested():
+                    await db.execute(
+                        update(HasnArtifacts)
+                        .where(HasnArtifacts.artifact_id == artifact_id)
+                        .values(source_hash=None)
+                    )
         finally:
             await db.rollback()
 

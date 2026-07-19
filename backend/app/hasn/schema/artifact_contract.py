@@ -37,6 +37,9 @@ class ArtifactMutation(ArtifactContractModel):
     body: str | None = None
     asset_id: str | None = None
     resource_uri: str | None = None
+    source_asset_uri: str | None = Field(None, pattern=r'^hasn://asset/[^/]+$')
+    source_hash: str | None = Field(None, pattern=r'^[0-9a-f]{64}$')
+    source_synced_at: datetime | None = None
     local_locator_key: str | None = None
     resource_kind: str | None = None
     resource_app_id: str | None = None
@@ -103,6 +106,18 @@ class ArtifactMutation(ArtifactContractModel):
         self.artifact_kind = expected_kind
         return self
 
+    @model_validator(mode='after')
+    def validate_source_snapshot(self) -> ArtifactMutation:
+        """私有快照三元组必须全空或全非空，空值不得抹除既有快照。"""
+        present = (
+            self.source_asset_uri is not None,
+            self.source_hash is not None,
+            self.source_synced_at is not None,
+        )
+        if any(present) and not all(present):
+            raise ValueError('source_asset_uri/source_hash/source_synced_at 必须全空或全非空')
+        return self
+
 
 class LocalArtifactEntry(ArtifactContractModel):
     """本地产物在读模型中的最小设备定位信息。"""
@@ -158,6 +173,9 @@ class ArtifactListItem(ArtifactContractModel):
     preview_url: str | None
     download_url: str | None
     resource_uri: str | None
+    source_asset_uri: str | None
+    source_hash: str | None
+    source_synced_at: datetime | None
     local_entry: LocalArtifactEntry | None
     availability: ArtifactAvailability
     allowed_actions: list[Literal['open', 'preview', 'download', 'locate']]

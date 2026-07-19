@@ -49,6 +49,8 @@ class ArtifactQueryService:
         """仅据权威当前态返回可验证的可用性和动作，不猜测本地文件是否存在。"""
         if artifact.status == 'missing':
             return 'missing', []
+        if artifact.source_asset_uri:
+            return 'cloud', ['preview', 'download']
         if artifact.local_locator_key:
             # P06 只持久化不可逆 locator，尚无经路径守卫校验的本机反查端点。
             # 因此即便 node_id 匹配，也不能伪称可定位或返回不可执行的 locate 动作。
@@ -58,6 +60,15 @@ class ArtifactQueryService:
         if artifact.asset_id:
             return 'cloud', ['preview', 'download']
         return 'cloud', ['open']
+
+    @staticmethod
+    def _source_asset_id(source_asset_uri: str | None) -> str | None:
+        """从已校验的私有快照 URI 提取 asset_id；异常存量保持不可预览。"""
+        prefix = 'hasn://asset/'
+        if not source_asset_uri or not source_asset_uri.startswith(prefix):
+            return None
+        asset_id = source_asset_uri.removeprefix(prefix)
+        return asset_id if asset_id and '/' not in asset_id else None
 
     async def _signed_urls(
         self, db: AsyncSession, *, owner_hasn_id: str, asset_ids: Sequence[str]
@@ -215,10 +226,18 @@ class ArtifactQueryService:
             )
         ).all()
 
+        snapshot_asset_ids = [
+            asset_id
+            for artifact, _contribution in rows
+            if (asset_id := self._source_asset_id(artifact.source_asset_uri))
+        ]
         urls = await self._signed_urls(
             db,
             owner_hasn_id=owner_hasn_id,
-            asset_ids=[artifact.asset_id for artifact, _contribution in rows if artifact.asset_id],
+            asset_ids=[
+                *[artifact.asset_id for artifact, _contribution in rows if artifact.asset_id],
+                *snapshot_asset_ids,
+            ],
         )
         agent_ids = list({contribution.agent_hasn_id for _artifact, contribution in rows})
         agents = {
@@ -270,7 +289,12 @@ class ArtifactQueryService:
                     entry_kind=artifact.local_entry_kind,
                     device_name=None,
                 )
-            signed_url = urls.get(artifact.asset_id) if artifact.asset_id else None
+            source_asset_id = self._source_asset_id(artifact.source_asset_uri)
+            signed_url = (
+                urls.get(artifact.asset_id)
+                if artifact.asset_id
+                else urls.get(source_asset_id) if source_asset_id else None
+            )
             items.append(
                 ArtifactListItem(
                     artifact_id=artifact.artifact_id,
@@ -284,6 +308,9 @@ class ArtifactQueryService:
                     preview_url=signed_url,
                     download_url=signed_url,
                     resource_uri=artifact.resource_uri,
+                    source_asset_uri=artifact.source_asset_uri,
+                    source_hash=artifact.source_hash,
+                    source_synced_at=artifact.source_synced_at,
                     local_entry=local_entry,
                     availability=availability,
                     allowed_actions=allowed_actions,
