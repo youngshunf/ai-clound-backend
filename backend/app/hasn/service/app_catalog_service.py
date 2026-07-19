@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -38,7 +39,6 @@ from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
 # 默认应用标识（订阅档与 billing 同源，见 [[project_billing_newapi_authoritative_source]]）。
@@ -494,6 +494,188 @@ async def get_all_app_configs(db: AsyncSession) -> dict[str, dict]:
     """
     rows = (await db.execute(sa.select(HasnAppCatalog.app_id, HasnAppCatalog.config_json))).all()
     return {app_id: cfg for app_id, cfg in rows if cfg}
+
+
+_SIGNED_ENGINE_DOCUMENT_FIELDS = {'payload', 'signature'}
+_SIGNED_ENGINE_PAYLOAD_FIELDS = {
+    'schema_version',
+    'artifact_id',
+    'version',
+    'release_sequence',
+    'channel',
+    'issued_at',
+    'expires_at',
+    'minimum_daemon_version',
+    'revoked',
+    'key_id',
+    'packages',
+}
+_SIGNED_ENGINE_PACKAGE_FIELDS = {
+    'key',
+    'url',
+    'sha256',
+    'compressed_size',
+    'installed_size',
+    'file_manifest_sha256',
+}
+_SIGNED_ENGINE_SHA256_RE = re.compile(r'^[0-9a-fA-F]{64}$')
+_SIGNED_ENGINE_SIGNATURE_RE = re.compile(r'^[0-9a-fA-F]{128}$')
+_SIGNED_ENGINE_PLATFORM_RE = re.compile(r'^(macos|windows|linux)-[A-Za-z0-9._-]{1,128}$')
+_SIGNED_ENGINE_TOKEN_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
+_SIGNED_ENGINE_VERSION_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
+_SIGNED_ENGINE_SEMVER_RE = re.compile(r'^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')
+
+
+def _require_exact_fields(value: object, fields: set[str], label: str) -> dict:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise errors.RequestError(msg=f'图坊签名 manifest {label}字段不符合 schema v2')
+    return value
+
+
+def _parse_signed_engine_time(value: object, field: str) -> datetime:
+    if not isinstance(value, str):
+        raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是 RFC3339 时间')
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError as exc:
+        raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是 RFC3339 时间') from exc
+    if parsed.tzinfo is None:
+        raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须带时区')
+    return parsed
+
+
+def _validate_signed_engine_package(
+    *,
+    app_id: str,
+    version: str,
+    platform_key: object,
+    package_value: object,
+) -> dict:
+    if not isinstance(platform_key, str) or not _SIGNED_ENGINE_PLATFORM_RE.fullmatch(platform_key):
+        raise errors.RequestError(msg=f'图坊签名 manifest 平台键无效：{platform_key}')
+    package = _require_exact_fields(
+        package_value, _SIGNED_ENGINE_PACKAGE_FIELDS, f'packages.{platform_key} ',
+    )
+    object_key = package['key']
+    expected_prefix = f'runtime-engine/{app_id}/{version}/'
+    if (
+        not isinstance(object_key, str)
+        or not object_key.startswith(expected_prefix)
+        or '..' in object_key
+        or any(character.isspace() for character in object_key)
+    ):
+        raise errors.RequestError(msg=f'图坊签名 manifest 对象 key 必须位于 {expected_prefix}')
+    url = package['url']
+    if not isinstance(url, str):
+        raise errors.RequestError(msg='图坊签名 manifest 包 URL 无效')
+    parsed_url = urlparse(url)
+    loopback = parsed_url.scheme == 'http' and parsed_url.hostname in {'localhost', '127.0.0.1', '::1'}
+    if parsed_url.scheme != 'https' and not loopback:
+        raise errors.RequestError(msg='图坊签名 manifest 包 URL 必须是 HTTPS 或 loopback HTTP')
+    for field in ('sha256', 'file_manifest_sha256'):
+        digest = package[field]
+        if not isinstance(digest, str) or not _SIGNED_ENGINE_SHA256_RE.fullmatch(digest):
+            raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是 64 位 sha256')
+    for field in ('compressed_size', 'installed_size'):
+        size = package[field]
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            raise errors.RequestError(msg=f'图坊签名 manifest {field} 必须是正整数')
+    return package
+
+
+def _validate_signed_engine_manifest(*, app_id: str, document: object) -> dict:
+    signed = _require_exact_fields(document, _SIGNED_ENGINE_DOCUMENT_FIELDS, '顶层')
+    signature = signed['signature']
+    if not isinstance(signature, str) or not _SIGNED_ENGINE_SIGNATURE_RE.fullmatch(signature):
+        raise errors.RequestError(msg='图坊签名 manifest signature 必须是 128 位 Ed25519 hex')
+    payload = _require_exact_fields(signed['payload'], _SIGNED_ENGINE_PAYLOAD_FIELDS, 'payload ')
+    if payload['schema_version'] != 2:
+        raise errors.RequestError(msg='图坊签名 manifest schema_version 必须为 2')
+    expected_artifact_id = f'app.engine.{app_id}'
+    if payload['artifact_id'] != expected_artifact_id:
+        raise errors.RequestError(msg=f'图坊签名 manifest artifact_id 必须为 {expected_artifact_id}')
+    version = payload['version']
+    if (
+        not isinstance(version, str)
+        or version in {'.', '..'}
+        or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version)
+    ):
+        raise errors.RequestError(msg='图坊签名 manifest version 无效')
+    sequence = payload['release_sequence']
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= 0:
+        raise errors.RequestError(msg='图坊签名 manifest release_sequence 必须是正整数')
+    for field in ('channel', 'key_id'):
+        value = payload[field]
+        if not isinstance(value, str) or not _SIGNED_ENGINE_TOKEN_RE.fullmatch(value):
+            raise errors.RequestError(msg=f'图坊签名 manifest {field} 无效')
+    minimum_daemon_version = payload['minimum_daemon_version']
+    if (
+        not isinstance(minimum_daemon_version, str)
+        or not _SIGNED_ENGINE_SEMVER_RE.fullmatch(minimum_daemon_version)
+    ):
+        raise errors.RequestError(msg='图坊签名 manifest minimum_daemon_version 无效')
+    if not isinstance(payload['revoked'], bool):
+        raise errors.RequestError(msg='图坊签名 manifest revoked 必须是布尔值')
+    issued_at = _parse_signed_engine_time(payload['issued_at'], 'issued_at')
+    expires_at = _parse_signed_engine_time(payload['expires_at'], 'expires_at')
+    if expires_at <= issued_at:
+        raise errors.RequestError(msg='图坊签名 manifest expires_at 必须晚于 issued_at')
+    packages = payload['packages']
+    if not isinstance(packages, dict) or not packages:
+        raise errors.RequestError(msg='图坊签名 manifest packages 不能为空')
+    for platform_key, package in packages.items():
+        _validate_signed_engine_package(
+            app_id=app_id,
+            version=version,
+            platform_key=platform_key,
+            package_value=package,
+        )
+    return signed
+
+
+def merge_signed_engine_manifest(
+    config_json: dict | None,
+    *,
+    app_id: str,
+    document: dict,
+) -> dict:
+    """严格校验并保存 schema v2 签名引擎清单；云端不持有发布私钥，只做哑存储。
+
+    发布序列在云端也保持单调：低序列拒绝重放，相同序列只允许字节语义完全幂等；同一版本的
+    同平台摘要不得改变。daemon 仍会用内置信任根验签，云端结构校验不能替代客户端信任门。
+    """
+    signed = copy.deepcopy(_validate_signed_engine_manifest(app_id=app_id, document=document))
+    existing = copy.deepcopy(config_json or {})
+    current = existing.get('engine')
+    if (
+        isinstance(current, dict)
+        and isinstance(current.get('payload'), dict)
+        and current['payload'].get('schema_version') == 2
+    ):
+        previous_payload = current['payload']
+        incoming_payload = signed['payload']
+        previous_sequence = previous_payload.get('release_sequence')
+        incoming_sequence = incoming_payload['release_sequence']
+        if isinstance(previous_sequence, int):
+            if incoming_sequence < previous_sequence:
+                raise errors.RequestError(msg='图坊签名 manifest 发布序列重放')
+            if incoming_sequence == previous_sequence:
+                if current != signed:
+                    raise errors.RequestError(msg='图坊签名 manifest 相同发布序列内容不一致')
+                return existing
+        if previous_payload.get('version') == incoming_payload['version']:
+            previous_packages = previous_payload.get('packages') or {}
+            for platform_key, incoming_package in incoming_payload['packages'].items():
+                previous_package = previous_packages.get(platform_key)
+                if (
+                    isinstance(previous_package, dict)
+                    and previous_package.get('sha256') != incoming_package['sha256']
+                ):
+                    raise errors.RequestError(
+                        msg=f'图坊签名 manifest 同版本异摘要：{platform_key}',
+                    )
+    existing['engine'] = signed
+    return existing
 
 
 def merge_engine_package(
