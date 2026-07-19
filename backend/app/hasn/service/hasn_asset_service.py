@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from dataclasses import dataclass
 from datetime import timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +25,7 @@ from backend.app.hasn.model import HasnAgents, HasnAssetGrants, HasnAssets, Hasn
 from backend.app.hasn.model.hasn_conversation_memberships import (
     HasnConversationMemberships as HasnGroupMembers,
 )
+from backend.common.exception import errors
 from backend.plugin.s3.model import S3Storage
 from backend.plugin.s3.service.storage_service import ObjectRef, StorageService
 from backend.utils.timezone import timezone
@@ -36,6 +39,12 @@ class ResolvedAsset:
 
 
 class HasnAssetService:
+    _LOCAL_SNAPSHOT_MAX_SIZE = {
+        'image': 50 * 1024 * 1024,
+        'voice': 25 * 1024 * 1024,
+        'file': 1024 * 1024 * 1024,
+    }
+
     @staticmethod
     def gen_asset_id() -> str:
         """asset_id：'ast_' + uuid4 hex（36 字符，落 varchar(40)）。"""
@@ -55,6 +64,7 @@ class HasnAssetService:
         transcript: str | None = None,
         thumbnail_asset_id: str | None = None,
         extract_status: str = 'pending',
+        content_sha256: str | None = None,
     ) -> HasnAssets:
         """从 ObjectRef 落 hasn_assets，返回已 flush 的记录（含 asset_id）。"""
         asset = HasnAssets(
@@ -66,6 +76,7 @@ class HasnAssetService:
             kind=kind,
             mime=ref.mime,
             size_bytes=ref.size,
+            content_sha256=content_sha256,
             width=width,
             height=height,
             duration_ms=duration_ms,
@@ -76,6 +87,81 @@ class HasnAssetService:
         db.add(asset)
         await db.flush()
         return asset
+
+    @staticmethod
+    def _kind_of_mime(mime: str) -> str:
+        """从服务端收到的 MIME 归类资产类型。"""
+        if mime.startswith('image/'):
+            return 'image'
+        if mime.startswith('audio/'):
+            return 'voice'
+        return 'file'
+
+    @classmethod
+    async def upload_local_source_snapshot(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        data: bytes,
+        filename: str | None,
+        content_type: str | None,
+        width: int | None = None,
+        height: int | None = None,
+        duration_ms: int | None = None,
+    ) -> HasnAssets:
+        """上传一次本地原件快照；同主人、类型与 sha256 的重试返回同一资产。
+
+        同一幂等键先取得 PostgreSQL 事务级 advisory lock，再查重并上传，避免并发重试
+        同时越过查询。对象 key 仅由 sha256 派生，数据库提交失败后的重试也只会覆盖同一对象。
+        """
+        if not data:
+            raise errors.RequestError(msg='文件为空')
+
+        mime = (content_type or 'application/octet-stream').strip().lower()
+        kind = cls._kind_of_mime(mime)
+        limit = cls._LOCAL_SNAPSHOT_MAX_SIZE[kind]
+        if len(data) > limit:
+            raise errors.RequestError(msg=f'本地原件快照不能超过 {limit // (1024 * 1024)}MB')
+
+        content_sha256 = hashlib.sha256(data).hexdigest()
+        lock_key = f'hasn_asset:{owner_hasn_id}:{kind}:{content_sha256}'
+        await db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0))))
+
+        existing = (
+            await db.execute(
+                select(HasnAssets)
+                .where(
+                    HasnAssets.owner_hasn_id == owner_hasn_id,
+                    HasnAssets.kind == kind,
+                    HasnAssets.content_sha256 == content_sha256,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+
+        object_key = f'local-source-snapshots/{content_sha256[:2]}/{content_sha256}'
+        ref = await StorageService.upload(
+            db,
+            data,
+            category='local_source_snapshot',
+            filename=filename,
+            content_type=mime,
+            key=object_key,
+        )
+        return await cls.register_asset(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            ref=ref,
+            kind=kind,
+            width=width,
+            height=height,
+            duration_ms=duration_ms,
+            extract_status='done',
+            content_sha256=content_sha256,
+        )
 
     @staticmethod
     async def get_by_asset_id(db: AsyncSession, asset_id: str) -> HasnAssets | None:

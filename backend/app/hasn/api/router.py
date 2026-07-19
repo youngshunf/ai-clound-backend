@@ -133,6 +133,7 @@ app.include_router(agent_scopes_router, tags=['Agent权限管理'])
 from backend.app.hasn.api.v1.agent.hasn_agent_profile import router as agent_hasn_agent_profile_router
 from backend.app.hasn.api.v1.agent.hasn_agent_runtime import router as agent_hasn_agent_runtime_router
 from backend.app.hasn.api.v1.agent.hasn_agents import router as agent_hasn_agents_router
+from backend.app.hasn.api.v1.agent.hasn_assets import router as agent_hasn_assets_router
 from backend.app.hasn.api.v1.agent.hasn_groups import router as agent_hasn_groups_router
 from backend.app.hasn.api.v1.agent.hasn_nodes import router as agent_hasn_nodes_router
 from backend.app.hasn.api.v1.agent.hasn_session_artifacts import router as agent_hasn_session_artifacts_router
@@ -144,6 +145,7 @@ from backend.app.hasn_task.api.v1.agent.skill_bundle import router as agent_hasn
 agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/agent', tags=['HASN Agent端'])
 
 agent.include_router(agent_hasn_agents_router, prefix='/agents', tags=['Agent管理'])
+agent.include_router(agent_hasn_assets_router, prefix='/assets', tags=['HASN 资产（本地原件快照上传）'])
 agent.include_router(agent_hasn_agent_profile_router, tags=['Agent Profile（云端权威）'])
 agent.include_router(agent_hasn_agent_runtime_router, prefix='/runtime', tags=['云端 Runtime 派发代理（双形态）'])
 agent.include_router(agent_hasn_groups_router, prefix='/groups', tags=['群组（分身只读）'])

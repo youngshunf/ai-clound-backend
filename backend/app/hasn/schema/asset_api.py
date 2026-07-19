@@ -20,6 +20,13 @@ class UploadedAsset(BaseModel):
     duration_ms: int | None = Field(default=None, description='语音时长毫秒')
 
 
+class UploadedSourceSnapshot(UploadedAsset):
+    """本地原件快照上传结果。"""
+
+    asset_uri: str = Field(pattern=r'^hasn://asset/[^/]+$', description='跨端稳定资产引用')
+    content_sha256: str = Field(pattern=r'^[0-9a-f]{64}$', description='服务端校验后的内容 sha256')
+
+
 class ResolveAssetsParam(BaseModel):
     """批量解析入参：asset_ids + 会话上下文。"""
 

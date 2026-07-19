@@ -19,6 +19,9 @@ class HasnAssets(Base):
     kind: Mapped[str] = mapped_column(sa.String(16), default='', comment='资产类型 (image:图片:blue/voice:语音:purple/file:文件:gray)')
     mime: Mapped[str] = mapped_column(sa.String(128), default='', comment='MIME 类型')
     size_bytes: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='字节大小')
+    content_sha256: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='资产内容 sha256；本地原件快照据此幂等上传'
+    )
     width: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='图片宽 (px)')
     height: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='图片高 (px)')
     duration_ms: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='语音时长 (毫秒)')

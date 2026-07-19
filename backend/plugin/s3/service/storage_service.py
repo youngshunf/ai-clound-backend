@@ -57,6 +57,8 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     'general_file': ('public', None),
     'dm_attachment': ('private', 3600),
     'private_doc': ('private', 3600),
+    # 本地优先应用仅在主人显式分享时上传的原件快照；始终进私有桶。
+    'local_source_snapshot': ('private', 3600),
     # 网页发布制品（模块 18）：私有桶；语义独立于 dm_attachment，**不触发 extract 抽取流水线**
     # （extract 由 register_asset(extract_status='pending') 这层显式触发，本类别不进那条路径）。
     'published_artifact': ('private', 3600),
@@ -81,6 +83,7 @@ CATEGORY_DIR: dict[str, str] = {
     'general_file': 'files',
     'dm_attachment': 'dm',
     'private_doc': 'docs',
+    'local_source_snapshot': 'local-source-snapshots',
     'published_artifact': 'published',
     'film_engine': 'film-engine',
     'speech_model': 'speech-models',
