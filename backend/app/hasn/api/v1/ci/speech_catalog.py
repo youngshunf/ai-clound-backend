@@ -24,7 +24,7 @@ from backend.common.exception import errors
 from backend.common.response.response_code import CustomResponseCode
 from backend.common.response.response_schema import ResponseSchemaModel
 from backend.core.conf import settings
-from backend.database.db import CurrentSessionTransaction
+from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
@@ -53,11 +53,9 @@ async def stage_speech_package(
 ) -> ResponseSchemaModel[SpeechPackageStageResponse]:
     """暂存一个真实 ZIP；同摘要重复上传返回同一不可变登记。"""
     _verify_publish_bearer(authorization)
-    package_bytes = await file.read()
-    data = await speech_catalog_service.stage_package(
+    data = await speech_catalog_service.stage_package_upload(
         db,
-        package_bytes=package_bytes,
-        content_type=file.content_type,
+        upload=file,
     )
     success = CustomResponseCode.HTTP_200
     return ResponseSchemaModel[SpeechPackageStageResponse](
@@ -73,7 +71,7 @@ async def stage_speech_package(
     name='hasn_speech_catalog_ci_publish_release',
 )
 async def publish_speech_catalog_release(
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     catalog: Annotated[str, Form(description='完整 v2 签名 catalog 逐字节原文')],
     authorization: Annotated[str | None, Header()] = None,
 ) -> ResponseSchemaModel[SpeechCatalogPublishResponse]:
@@ -84,11 +82,14 @@ async def publish_speech_catalog_release(
     - 同序列同原文幂等；回退序列或同序列不同原文显式拒绝。
     """
     _verify_publish_bearer(authorization)
-    data = await speech_catalog_service.publish_release(
-        db,
-        catalog_json=catalog,
-        published_by='ci',
-    )
+    # 必须先提交权威 release/head，再向 Redis/WS 暴露新 revision；不能依赖 yield dependency
+    # 在路由返回后才提交，否则在线 daemon 收到失效信号时仍只能读到旧 catalog。
+    async with db.begin():
+        data = await speech_catalog_service.publish_release(
+            db,
+            catalog_json=catalog,
+            published_by='ci',
+        )
     # 语音目录发布 → 主动 push hasn.sync.invalidate(speech_catalog) 给在线节点：
     # 在线 daemon 秒级重拉 /speech-catalog/catalog 验签并落盘，离线节点靠重连握手对账。
     # best-effort，推送失败绝不影响已发布（同 platform_config 范式）。

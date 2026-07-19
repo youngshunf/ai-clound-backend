@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 
 import pytest
 
-from backend.app.hasn.api.v1.ci.speech_catalog import router as speech_catalog_ci_router
+from backend.app.hasn.api.v1.ci.speech_catalog import (
+    publish_speech_catalog_release,
+    stage_speech_package,
+)
+from backend.app.hasn.api.v1.ci.speech_catalog import (
+    router as speech_catalog_ci_router,
+)
 from backend.app.hasn.service.speech_catalog_service import (
     StagedSpeechPackageEvidence,
     build_speech_package_object_key,
@@ -247,3 +254,15 @@ def test_ci_router_exposes_only_two_phase_atomic_publish_contract() -> None:
     assert '/packages' in paths
     assert '/releases' in paths
     assert '/publish' not in paths
+
+
+def test_release_route_commits_before_global_invalidate_and_stage_is_streamed() -> None:
+    release_source = inspect.getsource(publish_speech_catalog_release)
+    transaction_position = release_source.index('async with db.begin():')
+    publish_position = release_source.index('speech_catalog_service.publish_release')
+    invalidate_position = release_source.index("sync_bump('speech_catalog', db)")
+    assert transaction_position < publish_position < invalidate_position
+
+    stage_source = inspect.getsource(stage_speech_package)
+    assert 'await file.read()' not in stage_source
+    assert 'speech_catalog_service.stage_package_upload' in stage_source

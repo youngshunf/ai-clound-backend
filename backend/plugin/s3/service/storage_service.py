@@ -31,15 +31,18 @@ from backend.database.redis import redis_client
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import (
     build_object_url,
+    delete_object,
     presign_read_key,
     read_bytes,
+    sha256_object,
     stat_object,
     write_bytes,
+    write_stream,
 )
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterable, AsyncIterator, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -202,6 +205,41 @@ class StorageService:
             size=len(data),
         )
 
+    @classmethod
+    async def upload_stream(
+        cls,
+        db: AsyncSession,
+        data: AsyncIterable[bytes],
+        *,
+        size: int,
+        category: str,
+        filename: str | None = None,
+        content_type: str | None = None,
+        key: str | None = None,
+    ) -> ObjectRef:
+        """按 category 选择存储，并以有界内存上传已知长度对象。"""
+        if size <= 0:
+            raise errors.RequestError(msg='流式上传对象大小必须大于 0')
+        if key is None:
+            raise errors.RequestError(msg='流式上传必须显式提供服务端派生对象 key')
+        access, _ = _category_policy(category)
+        storage = _pick_storage(await cls._storages(db), access)
+        await write_stream(
+            storage,
+            key,
+            data,
+            size=size,
+            content_type=content_type,
+        )
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=key,
+            access=access,
+            stable_url=build_object_url(storage, key),
+            mime=content_type or 'application/octet-stream',
+            size=size,
+        )
+
     @staticmethod
     def public_url(storage: S3Storage, object_key: str) -> str:
         """公开资产的 CDN 直读 URL（不签名）。"""
@@ -300,6 +338,18 @@ class StorageService:
         storage = await cls.get_storage(db, storage_id)
         size, etag = await stat_object(storage, object_key)
         return ObjectStat(size=size, etag=etag)
+
+    @classmethod
+    async def sha256(cls, db: AsyncSession, *, storage_id: int, object_key: str) -> tuple[str, int]:
+        """流式复算真实对象 SHA-256 和读取字节数。"""
+        storage = await cls.get_storage(db, storage_id)
+        return await sha256_object(storage, object_key)
+
+    @classmethod
+    async def delete_object(cls, db: AsyncSession, *, storage_id: int, object_key: str) -> None:
+        """删除受控对象；调用方必须先证明对象属于自身清理范围。"""
+        storage = await cls.get_storage(db, storage_id)
+        await delete_object(storage, object_key)
 
     @classmethod
     async def read_stream(

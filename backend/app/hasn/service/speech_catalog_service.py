@@ -2,20 +2,20 @@
 
 职责：
   - get_node_response：节点拉取签名 catalog + revision（无行时返回空，daemon 保持未装配）。
-  - publish：CI 发布——校验签名 catalog 与 zip 一致后，zip 落公开桶 + catalog 原文入库 + bump revision。
+  - stage_package_upload：流式暂存服务端内容寻址 ZIP，并复核真实对象。
+  - publish_release：全部引用通过后，在单一 PostgreSQL 事务切换不可变 release head。
 
 安全模型（同 hasn_release minisign 哲学）：发布方离线 Ed25519 私钥签名，云端**只哑存储 + 下发**，
 不验签、不改写。daemon 持内置公钥自行验签才是安全执行点。故：
   - catalog_json 存**逐字节原文**（不解析后重序列化）；daemon verify 会 serde 反序列化 payload
     重算签名，任何字段增删/JSON 归一都会破坏验签。
-  - 云端仅做「一致性预检」（zip sha256 与 catalog 声明相符、URL 与落桶直链相符、https），
+  - 云端仅做「一致性预检」（真实对象 sha256/大小与 catalog 声明相符、URL 与落桶直链相符、https），
     早暴露发布方失误，**不代替** daemon 验签。
 """
 
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import re
 import zipfile
@@ -43,9 +43,12 @@ from backend.app.hasn.schema.hasn_speech_catalog import (
     SpeechPackageStageResponse,
 )
 from backend.common.exception import errors
-from backend.plugin.s3.service.storage_service import StorageService
+from backend.plugin.s3.service.storage_service import ObjectRef, StorageService
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from fastapi import UploadFile
     from sqlalchemy.ext.asyncio import AsyncSession
 
 # 单行权威键
@@ -58,6 +61,9 @@ _IDENTIFIER_PATTERN = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
 _V2_ENVELOPE_FIELDS = {'payload', 'key_id', 'release_sequence', 'expires_at', 'signature'}
 # PostgreSQL 事务级 advisory lock，串行化全局唯一语音目录 head 的发布判定。
 _RELEASE_LOCK_KEY = 0x535045454348
+# FastAPI UploadFile 会落临时文件；这里再设业务上限，防止无限大对象占满磁盘和上传连接。
+MAX_SPEECH_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +417,17 @@ class SpeechCatalogService:
             raise errors.ServerError(
                 msg=f'语音包登记大小与真实对象不一致: {package.sha256}，登记 {package.size}，实际 {stat.size}'
             )
+        actual_sha256, hashed_size = await StorageService.sha256(
+            db,
+            storage_id=package.storage_id,
+            object_key=package.object_key,
+        )
+        if hashed_size != stat.size:
+            raise errors.ServerError(
+                msg=f'语音包流式读取大小与对象元数据不一致: {package.sha256}，元数据 {stat.size}，读取 {hashed_size}'
+            )
+        if actual_sha256 != package.sha256:
+            raise errors.ServerError(msg=f'语音包真实对象 SHA-256 与登记不一致: {package.sha256}，实际 {actual_sha256}')
         response = SpeechPackageStageResponse(
             package_id=package.id,
             sha256=package.sha256,
@@ -426,37 +443,17 @@ class SpeechCatalogService:
             size=stat.size,
         )
 
-    async def stage_package(
+    async def _register_uploaded_package(
         self,
         db: AsyncSession,
         *,
-        package_bytes: bytes,
-        content_type: str | None,
+        digest: str,
+        size: int,
+        uploaded: ObjectRef,
     ) -> SpeechPackageStageResponse:
-        """把真实 ZIP 暂存为服务端派生 key 的不可变公开对象，同摘要上传幂等。"""
-        if not package_bytes:
-            raise errors.RequestError(msg='模型 zip 不能为空')
-        if not zipfile.is_zipfile(io.BytesIO(package_bytes)):
-            raise errors.RequestError(msg='模型包必须是可读取的 ZIP 文件')
-        if content_type not in {None, '', 'application/zip', 'application/x-zip-compressed'}:
-            raise errors.RequestError(msg='模型包 content_type 必须是 application/zip')
-
-        digest = hashlib.sha256(package_bytes).hexdigest()
-        existing = await db.scalar(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1))
-        if existing is not None:
-            response, _ = await self._package_response(db, existing, already_exists=True)
-            return response
-
+        """登记已经上传的内容寻址对象，并处理并发同摘要写入。"""
         object_key = build_speech_package_object_key(digest)
-        uploaded = await StorageService.upload(
-            db,
-            package_bytes,
-            category=_STORAGE_CATEGORY,
-            filename=f'{digest}.zip',
-            content_type='application/zip',
-            key=object_key,
-        )
-        if uploaded.object_key != object_key or uploaded.size != len(package_bytes):
+        if uploaded.object_key != object_key or uploaded.size != size:
             raise errors.ServerError(msg='对象存储上传结果与语音包内容寻址元数据不一致')
         if not uploaded.stable_url.startswith('https://'):
             raise errors.ServerError(msg=f'公开桶 CDN 非 https，桌面端 ATS 会拒下: {uploaded.stable_url}')
@@ -467,7 +464,7 @@ class SpeechCatalogService:
                 sha256=digest,
                 storage_id=uploaded.storage_id,
                 object_key=object_key,
-                size=len(package_bytes),
+                size=size,
                 content_type='application/zip',
             )
             .on_conflict_do_nothing(index_elements=[HasnSpeechPackage.sha256])
@@ -483,6 +480,65 @@ class SpeechCatalogService:
             already_exists=inserted_id is None,
         )
         return response
+
+    async def stage_package_upload(
+        self,
+        db: AsyncSession,
+        *,
+        upload: UploadFile,
+    ) -> SpeechPackageStageResponse:
+        """两遍流式处理 UploadFile：先哈希/校验 ZIP，再按摘要 key 有界上传。"""
+        if upload.content_type not in {
+            None,
+            '',
+            'application/zip',
+            'application/x-zip-compressed',
+        }:
+            raise errors.RequestError(msg='模型包 content_type 必须是 application/zip')
+
+        digest = hashlib.sha256()
+        size = 0
+        await upload.seek(0)
+        while chunk := await upload.read(_UPLOAD_CHUNK_BYTES):
+            size += len(chunk)
+            if size > MAX_SPEECH_PACKAGE_BYTES:
+                raise errors.RequestError(msg=f'模型包超过大小上限 {MAX_SPEECH_PACKAGE_BYTES} 字节')
+            digest.update(chunk)
+        if size == 0:
+            raise errors.RequestError(msg='模型 zip 不能为空')
+
+        await upload.seek(0)
+        if not zipfile.is_zipfile(upload.file):
+            raise errors.RequestError(msg='模型包必须是可读取的 ZIP 文件')
+        package_sha256 = digest.hexdigest()
+        existing = await db.scalar(
+            sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == package_sha256).limit(1)
+        )
+        if existing is not None:
+            response, _ = await self._package_response(db, existing, already_exists=True)
+            return response
+
+        async def upload_chunks() -> AsyncIterator[bytes]:
+            await upload.seek(0)
+            while chunk := await upload.read(_UPLOAD_CHUNK_BYTES):
+                yield chunk
+
+        object_key = build_speech_package_object_key(package_sha256)
+        uploaded = await StorageService.upload_stream(
+            db,
+            upload_chunks(),
+            size=size,
+            category=_STORAGE_CATEGORY,
+            filename=f'{package_sha256}.zip',
+            content_type='application/zip',
+            key=object_key,
+        )
+        return await self._register_uploaded_package(
+            db,
+            digest=package_sha256,
+            size=size,
+            uploaded=uploaded,
+        )
 
     async def get_node_response(self, db: AsyncSession) -> SpeechCatalogNodeResponse:
         """节点拉取签名 catalog + revision（无行时返回空——daemon 保持未装配态，零 fake）。"""
