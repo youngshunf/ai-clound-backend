@@ -13,6 +13,8 @@ public-schema 配置表，故沿用其 ``Base`` 手写约定（id + created_time
 表结构以 ``backend/sql/hasn/hasn_speech_catalog.sql`` 为准。
 """
 
+from decimal import Decimal
+
 import sqlalchemy as sa
 
 from sqlalchemy.dialects import postgresql
@@ -39,6 +41,13 @@ class HasnSpeechCatalog(Base):
     catalog_version: Mapped[str] = mapped_column(
         sa.String(64), default='', comment='catalog 内声明的版本号（展示/回滚判定用，非权威）'
     )
+    current_release_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='当前权威不可变 release ID'
+    )
+    release_sequence: Mapped[Decimal | None] = mapped_column(
+        sa.NUMERIC(20, 0), default=None, comment='当前权威全目录单调 u64 发布序列'
+    )
+    key_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='当前 release 的签名公钥稳定标识')
     model_summary: Mapped[list] = mapped_column(
         postgresql.JSONB(), default_factory=list, comment='模型摘要（仅管理端展示，非权威）'
     )

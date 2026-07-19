@@ -15,21 +15,32 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
+import zipfile
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 import sqlalchemy as sa
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from backend.app.hasn.model.hasn_speech_catalog import HasnSpeechCatalog
+from backend.app.hasn.model.hasn_speech_catalog_release import HasnSpeechCatalogRelease
+from backend.app.hasn.model.hasn_speech_catalog_release_package import (
+    HasnSpeechCatalogReleasePackage,
+)
+from backend.app.hasn.model.hasn_speech_package import HasnSpeechPackage
 from backend.app.hasn.schema.hasn_speech_catalog import (
     SpeechCatalogModelSummary,
     SpeechCatalogNodeResponse,
     SpeechCatalogPublishResponse,
+    SpeechPackageStageResponse,
 )
 from backend.common.exception import errors
 from backend.plugin.s3.service.storage_service import StorageService
@@ -45,6 +56,8 @@ _SHA256_PATTERN = re.compile(r'^[0-9a-f]{64}$')
 _SIGNATURE_PATTERN = re.compile(r'^[0-9a-f]{128}$')
 _IDENTIFIER_PATTERN = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
 _V2_ENVELOPE_FIELDS = {'payload', 'key_id', 'release_sequence', 'expires_at', 'signature'}
+# PostgreSQL 事务级 advisory lock，串行化全局唯一语音目录 head 的发布判定。
+_RELEASE_LOCK_KEY = 0x535045454348
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,20 +349,6 @@ def compute_revision(catalog_json: str) -> str:
     return hashlib.sha256(catalog_json.encode('utf-8')).hexdigest()[:16]
 
 
-def _parse_catalog(catalog_json: str) -> dict[str, Any]:
-    """把签名 catalog 原文解析成 dict（仅供一致性预检 + 摘要，非权威）。"""
-    try:
-        parsed = json.loads(catalog_json)
-    except (ValueError, TypeError) as exc:
-        raise errors.RequestError(msg=f'catalog 不是合法 JSON: {exc}') from exc
-    if not isinstance(parsed, dict) or 'payload' not in parsed or 'signature' not in parsed:
-        raise errors.RequestError(msg='catalog 结构非法：应为 {payload, signature}')
-    payload = parsed.get('payload')
-    if not isinstance(payload, dict) or not isinstance(payload.get('models'), list):
-        raise errors.RequestError(msg='catalog.payload.models 缺失或非法')
-    return parsed
-
-
 def _build_summary(payload: dict[str, Any]) -> list[SpeechCatalogModelSummary]:
     """从 catalog.payload 抽模型摘要（管理端展示，非权威）。"""
     summaries: list[SpeechCatalogModelSummary] = []
@@ -376,31 +375,114 @@ def _build_summary(payload: dict[str, Any]) -> list[SpeechCatalogModelSummary]:
     return summaries
 
 
-def _packages_referencing(payload: dict[str, Any], object_key: str) -> list[dict[str, Any]]:
-    """找出 catalog 内 URL 指向本次上传 object_key 的所有平台包（url path 以 object_key 结尾）。"""
-    key = object_key.lstrip('/')
-    hits: list[dict[str, Any]] = []
-    for model in payload.get('models', []):
-        if not isinstance(model, dict):
-            continue
-        for pkg in model.get('packages', []) or []:
-            if not isinstance(pkg, dict):
-                continue
-            url = str(pkg.get('url', ''))
-            # 只按 path 结尾判断，容忍 CDN 域名/查询串差异（URL 权威在签名 catalog 内）
-            if url.split('?', 1)[0].rstrip('/').endswith(key):
-                hits.append(pkg)
-    return hits
-
-
 class SpeechCatalogService:
     """通用语音模型签名目录读写（云端权威单行）。"""
 
     @staticmethod
-    async def _get_row(db: AsyncSession) -> HasnSpeechCatalog | None:
-        return (
-            await db.execute(sa.select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == _CONFIG_KEY).limit(1))
-        ).scalar_one_or_none()
+    async def _get_row(db: AsyncSession, *, for_update: bool = False) -> HasnSpeechCatalog | None:
+        statement = sa.select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == _CONFIG_KEY).limit(1)
+        if for_update:
+            statement = statement.with_for_update()
+        return (await db.execute(statement)).scalar_one_or_none()
+
+    @staticmethod
+    async def _package_response(
+        db: AsyncSession,
+        package: HasnSpeechPackage,
+        *,
+        already_exists: bool,
+    ) -> tuple[SpeechPackageStageResponse, StagedSpeechPackageEvidence]:
+        """复核登记行、公开直链和真实对象元数据，并构造稳定出参。"""
+        expected_key = build_speech_package_object_key(package.sha256)
+        if package.object_key != expected_key:
+            raise errors.ServerError(msg=f'语音包登记对象 key 与摘要不一致: {package.sha256}')
+        storage = await StorageService.get_storage(db, package.storage_id)
+        if getattr(storage, 'access', 'private') != 'public':
+            raise errors.ServerError(msg=f'语音包 {package.sha256} 未存入公共存储')
+        stable_url = StorageService.public_url(storage, package.object_key)
+        if not stable_url.startswith('https://'):
+            raise errors.ServerError(msg=f'公开桶 CDN 非 https，桌面端 ATS 会拒下: {stable_url}')
+        stat = await StorageService.stat(
+            db,
+            storage_id=package.storage_id,
+            object_key=package.object_key,
+        )
+        if stat.size != package.size:
+            raise errors.ServerError(
+                msg=f'语音包登记大小与真实对象不一致: {package.sha256}，登记 {package.size}，实际 {stat.size}'
+            )
+        response = SpeechPackageStageResponse(
+            package_id=package.id,
+            sha256=package.sha256,
+            object_key=package.object_key,
+            download_url=stable_url,
+            size=stat.size,
+            already_exists=already_exists,
+        )
+        return response, StagedSpeechPackageEvidence(
+            sha256=package.sha256,
+            object_key=package.object_key,
+            stable_url=stable_url,
+            size=stat.size,
+        )
+
+    async def stage_package(
+        self,
+        db: AsyncSession,
+        *,
+        package_bytes: bytes,
+        content_type: str | None,
+    ) -> SpeechPackageStageResponse:
+        """把真实 ZIP 暂存为服务端派生 key 的不可变公开对象，同摘要上传幂等。"""
+        if not package_bytes:
+            raise errors.RequestError(msg='模型 zip 不能为空')
+        if not zipfile.is_zipfile(io.BytesIO(package_bytes)):
+            raise errors.RequestError(msg='模型包必须是可读取的 ZIP 文件')
+        if content_type not in {None, '', 'application/zip', 'application/x-zip-compressed'}:
+            raise errors.RequestError(msg='模型包 content_type 必须是 application/zip')
+
+        digest = hashlib.sha256(package_bytes).hexdigest()
+        existing = await db.scalar(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1))
+        if existing is not None:
+            response, _ = await self._package_response(db, existing, already_exists=True)
+            return response
+
+        object_key = build_speech_package_object_key(digest)
+        uploaded = await StorageService.upload(
+            db,
+            package_bytes,
+            category=_STORAGE_CATEGORY,
+            filename=f'{digest}.zip',
+            content_type='application/zip',
+            key=object_key,
+        )
+        if uploaded.object_key != object_key or uploaded.size != len(package_bytes):
+            raise errors.ServerError(msg='对象存储上传结果与语音包内容寻址元数据不一致')
+        if not uploaded.stable_url.startswith('https://'):
+            raise errors.ServerError(msg=f'公开桶 CDN 非 https，桌面端 ATS 会拒下: {uploaded.stable_url}')
+
+        insert_statement = (
+            pg_insert(HasnSpeechPackage)
+            .values(
+                sha256=digest,
+                storage_id=uploaded.storage_id,
+                object_key=object_key,
+                size=len(package_bytes),
+                content_type='application/zip',
+            )
+            .on_conflict_do_nothing(index_elements=[HasnSpeechPackage.sha256])
+            .returning(HasnSpeechPackage.id)
+        )
+        inserted_id = (await db.execute(insert_statement)).scalar_one_or_none()
+        package = await db.scalar(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1))
+        if package is None:
+            raise errors.ServerError(msg=f'语音包上传后未能完成内容寻址登记: {digest}')
+        response, _ = await self._package_response(
+            db,
+            package,
+            already_exists=inserted_id is None,
+        )
+        return response
 
     async def get_node_response(self, db: AsyncSession) -> SpeechCatalogNodeResponse:
         """节点拉取签名 catalog + revision（无行时返回空——daemon 保持未装配态，零 fake）。"""
@@ -419,107 +501,133 @@ class SpeechCatalogService:
         row = await self._get_row(db)
         return row.revision if (row and row.catalog_json) else ''
 
-    async def publish(
+    async def publish_release(
         self,
         db: AsyncSession,
         *,
         catalog_json: str,
-        zip_bytes: bytes,
-        object_key: str,
         published_by: str | None,
     ) -> SpeechCatalogPublishResponse:
-        """CI 发布签名 catalog + 模型 zip（哑存储：只做一致性预检，不代替 daemon 验签）。
-
-        顺序铁律（同 film_engine）：**先把 zip 传公开桶可达、再落 catalog**，绝不让 daemon 去下 404。
-        不在此 commit（API 经 CurrentSessionTransaction 自动提交），仅 flush。
-        """
-        catalog_json = (catalog_json or '').strip()
-        object_key = (object_key or '').strip().lstrip('/')
+        """复核全部暂存对象，并在一个事务内写不可变 release、映射和当前 head。"""
+        catalog_json = catalog_json or ''
         if not catalog_json:
             raise errors.RequestError(msg='catalog 不能为空')
-        if not zip_bytes:
-            raise errors.RequestError(msg='模型 zip 不能为空')
-        if not object_key:
-            raise errors.RequestError(msg='object_key 不能为空')
-
-        parsed = _parse_catalog(catalog_json)
-        payload = parsed['payload']
-
-        # 一致性预检 1：catalog 必须有一个平台包 URL 指向本次上传的 object_key。
-        referencing = _packages_referencing(payload, object_key)
-        if not referencing:
-            raise errors.RequestError(
-                msg=(
-                    f'catalog 无任何平台包 URL 指向 object_key={object_key}'
-                    '（发布方 --package-url 与 object_key 不一致）'
-                )
-            )
-
-        # 一致性预检 2：本次 zip 的 sha256 必须与指向它的包声明一致（发布方 sha256 与实际文件对拍）。
-        actual_sha256 = hashlib.sha256(zip_bytes).hexdigest()
-        for pkg in referencing:
-            declared = str(pkg.get('sha256', '')).lower()
-            if declared and declared != actual_sha256.lower():
-                raise errors.RequestError(msg=f'zip sha256 不匹配 catalog 声明：实际 {actual_sha256}，声明 {declared}')
-
-        # 落公开桶（category=speech_model → public·不签名·长效直链）。
-        ref = await StorageService.upload(
-            db,
-            zip_bytes,
-            category=_STORAGE_CATEGORY,
-            filename=object_key.rsplit('/', 1)[-1] or 'model.zip',
-            content_type='application/zip',
-            key=object_key,
-        )
-        # 一致性预检 3：桌面端走 ATS，公开桶必须 https（http 直链会被拒下）。
-        if not ref.stable_url.startswith('https://'):
-            raise errors.ServerError(msg=f'公开桶 CDN 非 https，桌面端 ATS 会拒下: {ref.stable_url}')
-
-        # 一致性预检 4：落桶直链须与 catalog 内嵌 URL 一致（否则 daemon 会去下错地址）。
-        matched_url = any(
-            str(pkg.get('url', '')).split('?', 1)[0].rstrip('/') == ref.stable_url.split('?', 1)[0].rstrip('/')
-            for pkg in referencing
-        )
-        if not matched_url:
-            declared_urls = sorted({str(pkg.get('url', '')) for pkg in referencing})
-            raise errors.RequestError(
-                msg=(
-                    f'落桶直链 {ref.stable_url} 与 catalog 声明 URL 不一致：{declared_urls}。'
-                    '发布方须用公开桶权威直链作 --package-url 再签名'
-                )
-            )
-
-        # 落 catalog 原文 + revision（覆盖式单行；首次即建行）。
+        release = parse_release_manifest(catalog_json)
         revision = compute_revision(catalog_json)
-        catalog_version = str(payload.get('catalog_version', ''))[:64]
-        summary = _build_summary(payload)
+        summary = _build_summary(release.payload)
         summary_json = [s.model_dump(mode='json') for s in summary]
-        row = await self._get_row(db)
-        if row is None:
-            row = HasnSpeechCatalog(
+
+        # 全局单 head 必须先串行化；随后 FOR UPDATE 锁定既有 head。
+        await db.execute(
+            sa.text('SELECT pg_advisory_xact_lock(:lock_key)'),
+            {'lock_key': _RELEASE_LOCK_KEY},
+        )
+        head = await self._get_row(db, for_update=True)
+
+        digests = {item.sha256 for item in release.packages}
+        package_rows = (
+            (await db.execute(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256.in_(digests))))
+            .scalars()
+            .all()
+        )
+        packages_by_sha256 = {item.sha256: item for item in package_rows}
+        responses_by_sha256: dict[str, SpeechPackageStageResponse] = {}
+        evidence_by_sha256: dict[str, StagedSpeechPackageEvidence] = {}
+        for digest, package in packages_by_sha256.items():
+            response, evidence = await self._package_response(db, package, already_exists=True)
+            responses_by_sha256[digest] = response
+            evidence_by_sha256[digest] = evidence
+        validated = validate_staged_release_packages(release, evidence_by_sha256)
+
+        current_sequence = (
+            int(head.release_sequence) if head is not None and head.release_sequence is not None else None
+        )
+        transition = validate_release_transition(
+            current_sequence=current_sequence,
+            current_revision=head.revision if head is not None else None,
+            candidate_sequence=release.release_sequence,
+            candidate_revision=revision,
+        )
+        if transition == 'idempotent':
+            if head is None or head.current_release_id is None:
+                raise errors.ServerError(msg='语音目录 head 命中幂等判定但缺少不可变 release 指针')
+            existing_release = await db.get(HasnSpeechCatalogRelease, head.current_release_id)
+            if existing_release is None or existing_release.revision != revision:
+                raise errors.ServerError(msg='语音目录 head 与不可变 release 账本不一致')
+            return SpeechCatalogPublishResponse(
+                release_id=existing_release.id,
+                revision=revision,
+                release_sequence=release.release_sequence,
+                key_id=release.key_id,
+                catalog_version=release.catalog_version,
+                idempotent=True,
+                packages=[responses_by_sha256[item.sha256] for item in validated],
+                models=summary,
+            )
+
+        release_row = HasnSpeechCatalogRelease(
+            revision=revision,
+            release_sequence=Decimal(release.release_sequence),
+            key_id=release.key_id,
+            catalog_version=release.catalog_version,
+            expires_at=release.expires_at,
+            catalog_json=catalog_json,
+            model_summary=summary_json,
+            published_by=published_by,
+        )
+        db.add(release_row)
+        await db.flush()
+
+        for reference in release.packages:
+            package = packages_by_sha256[reference.sha256]
+            db.add(
+                HasnSpeechCatalogReleasePackage(
+                    release_id=release_row.id,
+                    package_id=package.id,
+                    model_id=reference.model_id,
+                    model_version=reference.model_version,
+                    os=reference.os,
+                    arch=reference.arch,
+                    acceleration=reference.acceleration,
+                    installed_size=reference.installed_size,
+                    license_name=reference.license_name,
+                    license_url=reference.license_url,
+                    source_url=reference.source_url,
+                )
+            )
+
+        if head is None:
+            head = HasnSpeechCatalog(
                 config_key=_CONFIG_KEY,
                 catalog_json=catalog_json,
                 revision=revision,
-                catalog_version=catalog_version,
+                catalog_version=release.catalog_version,
+                current_release_id=release_row.id,
+                release_sequence=Decimal(release.release_sequence),
+                key_id=release.key_id,
                 model_summary=summary_json,
                 published_by=published_by,
             )
-            db.add(row)
+            db.add(head)
         else:
-            row.catalog_json = catalog_json
-            row.revision = revision
-            row.catalog_version = catalog_version
-            row.model_summary = summary_json
-            row.published_by = published_by
+            head.catalog_json = catalog_json
+            head.revision = revision
+            head.catalog_version = release.catalog_version
+            head.current_release_id = release_row.id
+            head.release_sequence = Decimal(release.release_sequence)
+            head.key_id = release.key_id
+            head.model_summary = summary_json
+            head.published_by = published_by
         await db.flush()
 
         return SpeechCatalogPublishResponse(
+            release_id=release_row.id,
             revision=revision,
-            catalog_version=catalog_version,
-            object_key=ref.object_key,
-            download_url=ref.stable_url,
-            size=ref.size,
-            sha256=actual_sha256,
+            release_sequence=release.release_sequence,
+            key_id=release.key_id,
+            catalog_version=release.catalog_version,
+            idempotent=False,
+            packages=[responses_by_sha256[item.sha256] for item in validated],
             models=summary,
         )
 

@@ -34,7 +34,7 @@ def _clean_object_path(path: str) -> str:
 def _join_url(base_url: str, *parts: str) -> str:
     clean_parts = [part.strip('/') for part in parts if part and part.strip('/')]
     if clean_parts:
-        return f"{base_url.rstrip('/')}/{'/'.join(clean_parts)}"
+        return f'{base_url.rstrip("/")}/{"/".join(clean_parts)}'
     return base_url.rstrip('/')
 
 
@@ -114,7 +114,7 @@ def _relative_path_after_base(url: str, base_url: str) -> str | None:
         return ''
     prefix = f'{base_path}/'
     if url_path.startswith(prefix):
-        return url_path[len(prefix):]
+        return url_path[len(prefix) :]
     return None
 
 
@@ -128,7 +128,7 @@ def _strip_prefix(path: str, prefix: str | None) -> str:
     expected = f'{clean_prefix}/'
     if not clean_path.startswith(expected):
         raise errors.RequestError(msg='URL 不属于当前 S3 存储前缀')
-    return _clean_object_path(clean_path[len(expected):])
+    return _clean_object_path(clean_path[len(expected) :])
 
 
 def object_key_from_url(s3_storage: S3Storage, url: str) -> str:
@@ -154,7 +154,7 @@ def object_key_from_url(s3_storage: S3Storage, url: str) -> str:
     if not relative.startswith(expected):
         raise errors.RequestError(msg='URL 不属于已配置的 S3 存储桶')
 
-    return _strip_prefix(relative[len(expected):], s3_storage.prefix)
+    return _strip_prefix(relative[len(expected) :], s3_storage.prefix)
 
 
 async def presign_read_key(s3_storage: S3Storage, object_key: str, expires_in: int = 3600) -> str:
@@ -202,6 +202,19 @@ async def read_bytes(s3_storage: S3Storage, object_key: str) -> bytes:
         raise errors.ServerError(msg=f'读取 S3 对象失败: {type(e).__name__}: {e!s}')
 
 
+async def stat_object(s3_storage: S3Storage, object_key: str) -> tuple[int, str | None]:
+    """直接读取对象元数据，用于发布前证明对象真实存在且大小一致。"""
+    clean_path = _clean_object_path(object_key)
+    operator = get_operator_for_storage(s3_storage)
+    try:
+        metadata = await operator.stat(clean_path)
+    except Exception as exc:
+        raise errors.ServerError(msg=f'S3 对象元数据读取失败: {type(exc).__name__}: {exc!s}') from exc
+    if not metadata.is_file:
+        raise errors.ServerError(msg=f'S3 对象不是普通文件: {clean_path}')
+    return int(metadata.content_length), metadata.etag
+
+
 async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content_type: str | None = None) -> None:
     """Write bytes via a short-lived signed PUT URL.
 
@@ -223,9 +236,7 @@ async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content
         headers = dict(getattr(signed, 'headers', {}) or {})
         if content_type:
             headers.setdefault('Content-Type', content_type)
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(upload_timeout, connect=20.0), trust_env=False
-        ) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(upload_timeout, connect=20.0), trust_env=False) as client:
             response = await client.request(
                 getattr(signed, 'method', 'PUT') or 'PUT',
                 signed.url,
@@ -251,5 +262,8 @@ async def write_file(s3_storage: S3Storage, file: UploadFile) -> None:
     :param file: 上传文件
     :return:
     """
+    filename = file.filename
+    if not filename:
+        raise errors.RequestError(msg='上传文件名不能为空')
     contents = await file.read()
-    await write_bytes(s3_storage, file.filename, contents, file.content_type)
+    await write_bytes(s3_storage, filename, contents, file.content_type)

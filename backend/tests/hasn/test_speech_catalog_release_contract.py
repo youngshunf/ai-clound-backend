@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from backend.app.hasn.api.v1.ci.speech_catalog import router as speech_catalog_ci_router
 from backend.app.hasn.service.speech_catalog_service import (
     StagedSpeechPackageEvidence,
     build_speech_package_object_key,
@@ -239,3 +240,10 @@ def test_release_transition_is_idempotent_only_for_identical_revision() -> None:
             candidate_sequence=10,
             candidate_revision='new-revision',
         )
+
+
+def test_ci_router_exposes_only_two_phase_atomic_publish_contract() -> None:
+    paths = {route.path for route in speech_catalog_ci_router.routes}
+    assert '/packages' in paths
+    assert '/releases' in paths
+    assert '/publish' not in paths

@@ -2,7 +2,8 @@
 
 - 节点下发出参 ``SpeechCatalogNodeResponse``：daemon 拉取，据 revision 比对决定重拉；
   ``catalog_json`` 是签名 catalog 逐字节原文（可空——未发布时为 None，daemon 保持「未装配」）。
-- 发布出参 ``SpeechCatalogPublishResponse``：CI 发布后回显（含摘要 + 上传的公开 https 直链）。
+- 暂存出参 ``SpeechPackageStageResponse``：内容寻址包的不可变登记与真实公开 HTTPS 直链。
+- 发布出参 ``SpeechCatalogPublishResponse``：原子切换后的 release head、全部引用包和模型摘要。
 """
 
 from datetime import datetime
@@ -35,13 +36,28 @@ class SpeechCatalogNodeResponse(SchemaBase):
     published_time: datetime | None = Field(default=None, description='最后发布时间')
 
 
-class SpeechCatalogPublishResponse(SchemaBase):
-    """CI 发布签名 catalog + 模型 zip 出参。"""
+class SpeechPackageStageResponse(SchemaBase):
+    """CI 暂存一个内容寻址模型包的出参。"""
 
-    revision: str = Field(description='新 catalog 原文指纹 sha256[:16]')
+    package_id: int = Field(description='内容寻址包登记 ID')
+    sha256: str = Field(description='服务端据上传原始字节计算的规范小写 SHA-256')
+    object_key: str = Field(description='由 SHA-256 确定派生的不可变对象 key')
+    download_url: str = Field(description='公共桶长效 HTTPS 直链')
+    size: int = Field(description='对象真实字节数')
+    already_exists: bool = Field(description='同摘要包是否已经登记并通过对象存在性复核')
+
+
+class SpeechCatalogPublishResponse(SchemaBase):
+    """CI 原子发布签名 catalog release 的出参。"""
+
+    release_id: int = Field(description='不可变 release 记录 ID')
+    revision: str = Field(description='catalog 原文指纹 sha256[:16]')
+    release_sequence: int = Field(description='全目录单调 u64 发布序列')
+    key_id: str = Field(description='签名信任环中的稳定公钥标识')
     catalog_version: str = Field(description='catalog 内声明版本号')
-    object_key: str = Field(description='模型 zip 落公开桶的对象 key')
-    download_url: str = Field(description='模型 zip 公开 https 直链（须与 catalog 内嵌 URL 一致）')
-    size: int = Field(description='上传 zip 字节数')
-    sha256: str = Field(description='服务端据落桶字节现算的 sha256')
+    idempotent: bool = Field(description='是否命中同序列同 revision 的幂等发布')
+    packages: list[SpeechPackageStageResponse] = Field(
+        default_factory=list,
+        description='本 release 引用且已完成真实对象复核的唯一内容寻址包',
+    )
     models: list[SpeechCatalogModelSummary] = Field(default_factory=list, description='catalog 内模型摘要')

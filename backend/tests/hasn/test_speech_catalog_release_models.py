@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from backend.app.hasn.model.hasn_speech_catalog import HasnSpeechCatalog
 from backend.app.hasn.model.hasn_speech_catalog_release import HasnSpeechCatalogRelease
 from backend.app.hasn.model.hasn_speech_catalog_release_package import (
     HasnSpeechCatalogReleasePackage,
@@ -65,3 +66,12 @@ def test_release_package_mapping_freezes_signed_platform_and_license_metadata() 
     assert 'CONSTRAINT "uq_speech_release_package_platform"' in sql
     assert 'REFERENCES "public"."hasn_speech_catalog_release" ("id") ON DELETE CASCADE' in sql
     assert 'REFERENCES "public"."hasn_speech_package" ("id") ON DELETE RESTRICT' in sql
+
+
+def test_current_catalog_head_points_to_authoritative_release_sequence() -> None:
+    columns = HasnSpeechCatalog.__table__.columns
+    assert {'current_release_id', 'release_sequence', 'key_id'} <= set(columns.keys())
+    migration = _sql('migrations/2026-07-19-speech-catalog-atomic-release.sql')
+    assert 'ADD COLUMN IF NOT EXISTS "current_release_id"' in migration
+    assert 'ADD COLUMN IF NOT EXISTS "release_sequence"' in migration
+    assert 'ADD COLUMN IF NOT EXISTS "key_id"' in migration

@@ -22,7 +22,6 @@ import os
 import posixpath
 
 from dataclasses import dataclass
-from datetime import datetime
 from itertools import starmap
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -34,11 +33,13 @@ from backend.plugin.s3.utils.file_ops import (
     build_object_url,
     presign_read_key,
     read_bytes,
+    stat_object,
     write_bytes,
 )
+from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,6 +97,14 @@ class ObjectRef:
     size: int
 
 
+@dataclass(frozen=True)
+class ObjectStat:
+    """对象存储返回的真实文件元数据。"""
+
+    size: int
+    etag: str | None
+
+
 def _category_policy(category: str) -> tuple[str, int | None]:
     policy = CATEGORY_POLICY.get(category)
     if policy is None:
@@ -122,7 +131,7 @@ def _build_key(category: str, *, filename: str | None, data: bytes) -> str:
     """content-addressed key（07 D7）：{dir}/{YYYY}/{MM}/{DD}/{md5[:12]}{ext}。"""
     directory = CATEGORY_DIR.get(category, 'files')
     digest = hashlib.md5(data).hexdigest()[:12]
-    now = datetime.now()
+    now = timezone.now()
     return f'{directory}/{now:%Y/%m/%d}/{digest}{_ext_of(filename)}'
 
 
@@ -227,7 +236,7 @@ class StorageService:
         prefix = (storage.prefix or '').strip('/')
         path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
         base = storage.cdn_domain.rstrip('/') + quote(path, safe='/')
-        deadline = int(datetime.now().timestamp()) + expires_in
+        deadline = int(timezone.now().timestamp()) + expires_in
         to_sign = f'{base}?e={deadline}'
         digest = hmac.new(storage.secret_key.encode(), to_sign.encode(), hashlib.sha1).digest()
         token = f'{storage.access_key}:{base64.urlsafe_b64encode(digest).decode()}'
@@ -242,7 +251,7 @@ class StorageService:
         prefix = (storage.prefix or '').strip('/')
         path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
         encoded_path = quote(path, safe='/')
-        expire_ts = int(datetime.now().timestamp()) + expires_in
+        expire_ts = int(timezone.now().timestamp()) + expires_in
         t_hex = format(expire_ts, 'x')
         sign = hashlib.md5(f'{sign_key}{encoded_path}{t_hex}'.encode()).hexdigest()
         base = storage.cdn_domain.rstrip('/')
@@ -256,7 +265,7 @@ class StorageService:
             raise errors.ServerError(msg='sign_strategy=nginx_secure_link 但该存储未配置 cdn_domain')
         prefix = (storage.prefix or '').strip('/')
         path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
-        expire_ts = int(datetime.now().timestamp()) + expires_in
+        expire_ts = int(timezone.now().timestamp()) + expires_in
         raw = f'{sign_key}{path}{expire_ts}'.encode()
         digest = hashlib.md5(raw).digest()
         md5b64 = base64.urlsafe_b64encode(digest).decode().rstrip('=')
@@ -286,9 +295,21 @@ class StorageService:
         return await read_bytes(storage, object_key)
 
     @classmethod
+    async def stat(cls, db: AsyncSession, *, storage_id: int, object_key: str) -> ObjectStat:
+        """读取真实对象元数据；对象缺失或 provider 失败时显式报错。"""
+        storage = await cls.get_storage(db, storage_id)
+        size, etag = await stat_object(storage, object_key)
+        return ObjectStat(size=size, etag=etag)
+
+    @classmethod
     async def read_stream(
-        cls, db: AsyncSession, *, storage_id: int, object_key: str, chunk_size: int = 65536
-    ):
+        cls,
+        db: AsyncSession,
+        *,
+        storage_id: int,
+        object_key: str,
+        chunk_size: int = 65536,
+    ) -> AsyncIterator[bytes]:
         """服务端流式读私有桶对象（异步生成器，逐 chunk yield）。
 
         single-html 制品代吐用；制品 ≤25MB（[01] §7 不变量 5），整读后分块下发。

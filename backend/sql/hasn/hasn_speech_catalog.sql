@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS "public"."hasn_speech_catalog" (
   "catalog_json"    text           NOT NULL DEFAULT '',
   "revision"        varchar(16)    NOT NULL DEFAULT '',
   "catalog_version" varchar(64)    NOT NULL DEFAULT '',
+  "current_release_id" bigint,
+  "release_sequence" numeric(20, 0),
+  "key_id"          varchar(64),
   "model_summary"   jsonb          NOT NULL DEFAULT '[]'::jsonb,
   "published_by"    varchar(64),
   "created_time"    timestamptz(6) NOT NULL DEFAULT now(),
@@ -33,6 +36,9 @@ COMMENT ON COLUMN "public"."hasn_speech_catalog"."config_key" IS '配置键（�
 COMMENT ON COLUMN "public"."hasn_speech_catalog"."catalog_json" IS '离线签名的 catalog 逐字节原文（TEXT，daemon 验签用，绝不解析后重序列化）';
 COMMENT ON COLUMN "public"."hasn_speech_catalog"."revision" IS 'catalog 原文指纹 sha256(catalog_json)[:16]，daemon 比对重拉';
 COMMENT ON COLUMN "public"."hasn_speech_catalog"."catalog_version" IS 'catalog 内声明的版本号（展示/回滚判定用，非权威）';
+COMMENT ON COLUMN "public"."hasn_speech_catalog"."current_release_id" IS '当前权威不可变 release ID';
+COMMENT ON COLUMN "public"."hasn_speech_catalog"."release_sequence" IS '当前权威全目录单调 u64 发布序列';
+COMMENT ON COLUMN "public"."hasn_speech_catalog"."key_id" IS '当前 release 的签名公钥稳定标识';
 COMMENT ON COLUMN "public"."hasn_speech_catalog"."model_summary" IS '模型摘要（model_id/version/包平台，仅管理端展示，非权威）';
 COMMENT ON COLUMN "public"."hasn_speech_catalog"."published_by" IS '最后发布方标识（CI/发布者标签）';
 COMMENT ON COLUMN "public"."hasn_speech_catalog"."created_time" IS '创建时间';

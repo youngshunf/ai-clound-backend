@@ -1,7 +1,6 @@
-"""通用语音模型签名目录 - CI 发布 API（Bearer 发布密钥）SPCAT-4。
+"""通用语音模型签名目录 - CI 原子发布 API（Bearer 发布密钥）SPCAT-4。
 
-离线发布方（`scripts/package-speech-model.sh --publish`）签好 Ed25519 catalog + 打好 zip 后，
-携发布密钥调此端点：zip 落公开桶 + catalog 原文入库 + bump revision（全网 daemon 据 revision 重拉）。
+离线发布方先逐包暂存内容寻址 ZIP，再提交引用全部已暂存对象的签名 release。
 鉴权：Authorization: Bearer <SPEECH_CATALOG_PUBLISH_SECRET>（constant-time 比较，同 hasn_release CI）。
 密钥未配置则拒绝所有发布（生产必须显式配置，避免误开放写库）。
 
@@ -16,10 +15,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, Form, Header, UploadFile
 
-from backend.app.hasn.schema.hasn_speech_catalog import SpeechCatalogPublishResponse
+from backend.app.hasn.schema.hasn_speech_catalog import (
+    SpeechCatalogPublishResponse,
+    SpeechPackageStageResponse,
+)
 from backend.app.hasn.service.speech_catalog_service import speech_catalog_service
 from backend.common.exception import errors
-from backend.common.response.response_schema import ResponseSchemaModel, response_base
+from backend.common.response.response_code import CustomResponseCode
+from backend.common.response.response_schema import ResponseSchemaModel
 from backend.core.conf import settings
 from backend.database.db import CurrentSessionTransaction
 
@@ -39,30 +42,51 @@ def _verify_publish_bearer(authorization: str | None) -> None:
 
 
 @router.post(
-    '/publish',
-    summary='CI 发布签名语音 catalog + 模型 zip（Bearer 发布密钥）',
-    name='hasn_speech_catalog_ci_publish',
+    '/packages',
+    summary='CI 暂存内容寻址语音模型包（Bearer 发布密钥）',
+    name='hasn_speech_catalog_ci_stage_package',
 )
-async def publish_speech_catalog(
+async def stage_speech_package(
     db: CurrentSessionTransaction,
-    file: Annotated[UploadFile, File(description='模型分发包 zip（与 catalog 内声明 sha256/URL 一致）')],
-    catalog: Annotated[str, Form(description='签名 catalog 逐字节原文 {payload, signature}')],
-    object_key: Annotated[str, Form(description='zip 落公开桶的对象 key，如 speech/sensevoice-small-int8/2024-07-17/xxx.zip')],
-    authorization: str | None = Header(default=None),
+    file: Annotated[UploadFile, File(description='模型分发包 ZIP，服务端据原始字节派生 SHA-256 与对象 key')],
+    authorization: Annotated[str | None, Header()] = None,
+) -> ResponseSchemaModel[SpeechPackageStageResponse]:
+    """暂存一个真实 ZIP；同摘要重复上传返回同一不可变登记。"""
+    _verify_publish_bearer(authorization)
+    package_bytes = await file.read()
+    data = await speech_catalog_service.stage_package(
+        db,
+        package_bytes=package_bytes,
+        content_type=file.content_type,
+    )
+    success = CustomResponseCode.HTTP_200
+    return ResponseSchemaModel[SpeechPackageStageResponse](
+        code=success.code,
+        msg=success.msg,
+        data=data,
+    )
+
+
+@router.post(
+    '/releases',
+    summary='CI 原子发布签名语音 catalog release（Bearer 发布密钥）',
+    name='hasn_speech_catalog_ci_publish_release',
+)
+async def publish_speech_catalog_release(
+    db: CurrentSessionTransaction,
+    catalog: Annotated[str, Form(description='完整 v2 签名 catalog 逐字节原文')],
+    authorization: Annotated[str | None, Header()] = None,
 ) -> ResponseSchemaModel[SpeechCatalogPublishResponse]:
-    """离线发布方一键发布：先把 zip 传公开桶可达、再落 catalog 原文（顺序铁律，绝不让 daemon 下 404）。
+    """证明全部引用对象可达后，在同一事务内写 release、映射并切换权威 head。
 
     - 鉴权：`Authorization: Bearer <SPEECH_CATALOG_PUBLISH_SECRET>`。
-    - 请求体 = multipart：`file`（zip 二进制）+ `catalog`（签名原文文本）+ `object_key`（表单）。
-    - 服务端做四项一致性预检（URL 指向 object_key、zip sha256 对拍、https、落桶直链与声明一致）后落库。
+    - 请求体 = multipart：`catalog`（完整 v2 签名原文文本）。
+    - 同序列同原文幂等；回退序列或同序列不同原文显式拒绝。
     """
     _verify_publish_bearer(authorization)
-    zip_bytes = await file.read()
-    data = await speech_catalog_service.publish(
+    data = await speech_catalog_service.publish_release(
         db,
         catalog_json=catalog,
-        zip_bytes=zip_bytes,
-        object_key=object_key,
         published_by='ci',
     )
     # 语音目录发布 → 主动 push hasn.sync.invalidate(speech_catalog) 给在线节点：
@@ -71,9 +95,15 @@ async def publish_speech_catalog(
     try:
         from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
 
-        await sync_bump('speech_catalog', db)
+        if not data.idempotent:
+            await sync_bump('speech_catalog', db)
     except Exception as exc:
         import logging
 
         logging.getLogger(__name__).warning('[speech_catalog] invalidate 推送失败 (非致命): %s', exc)
-    return response_base.success(data=data)
+    success = CustomResponseCode.HTTP_200
+    return ResponseSchemaModel[SpeechCatalogPublishResponse](
+        code=success.code,
+        msg=success.msg,
+        data=data,
+    )

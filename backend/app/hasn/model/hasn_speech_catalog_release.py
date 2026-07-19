@@ -22,7 +22,7 @@ class HasnSpeechCatalogRelease(Base):
     catalog_version: Mapped[str] = mapped_column(sa.String(64), default='', comment='签名正文中的目录版本')
     expires_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment='发布信封失效时间')
     catalog_json: Mapped[str] = mapped_column(UniversalText, default='', comment='离线签名 catalog 逐字节原文')
-    model_summary: Mapped[dict] = mapped_column(
-        postgresql.JSONB(), default_factory=dict, comment='管理展示用模型摘要，非验签权威'
+    model_summary: Mapped[list] = mapped_column(
+        postgresql.JSONB(), default_factory=list, comment='管理展示用模型摘要，非验签权威'
     )
     published_by: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='发布方审计标识')
