@@ -21,6 +21,7 @@ from backend.app.hasn_finance.model.watchlist import Watchlist
 from backend.app.hasn_finance.schema.sync import SyncEnvelope, SyncResult
 from backend.app.hasn_finance.service.finance_sync_service import finance_sync_service
 from backend.app.hasn_project.api.v1.app._common import resolve_owner
+from backend.common.log import log
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
@@ -90,6 +91,17 @@ def _summary_of(fields: dict) -> str | None:
     return str(val) if val else None
 
 
+async def _bump_finance_sync(db: CurrentSession, owner_id: str) -> None:
+    """业务事务提交后 best-effort 推送 owner 定向 finance 失效信号。"""
+    try:
+        from backend.app.hasn.service import sync_invalidate_service as siv
+
+        await siv.bump_owner(siv.KIND_FINANCE, db, owner_id)
+    except Exception as exc:
+        # 推送/指纹计算失败不回滚已提交的权威业务写；下次读时机会刷新仍能自愈。
+        log.warning('[finance] sync invalidate 推送失败（非致命）: %s', exc)
+
+
 async def _sync_product_endpoint(
     db: CurrentSession, request: Request, resource_kind: str, payload: SyncEnvelope
 ) -> ResponseSchemaModel[SyncResult]:
@@ -116,6 +128,7 @@ async def _sync_product_endpoint(
         source_tool=f'{resource_kind}:sync',
     )
     await db.commit()
+    await _bump_finance_sync(db, owner_id)
     return response_base.success(data=SyncResult(**result))
 
 
@@ -165,4 +178,5 @@ async def sync_watchlist(db: CurrentSession, request: Request, payload: SyncEnve
         fields=fields,
     )
     await db.commit()
+    await _bump_finance_sync(db, owner_id)
     return response_base.success(data=SyncResult(**result))
