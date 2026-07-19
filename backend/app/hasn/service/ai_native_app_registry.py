@@ -119,11 +119,19 @@ class AINativeAppRegistry:
         version = str(manifest.get('version') or '')
         workspace_scope = list(manifest.get('workspace_scope') or [])
         collaboration_mode = str(manifest.get('collaboration_mode') or 'none')
+        project_aware = manifest.get('project_aware', False)
+        project_required = manifest.get('project_required', False)
 
         if not app_id:
             errors_list.append('app_id_required')
         if not version:
             errors_list.append('version_required')
+        if not isinstance(project_aware, bool):
+            errors_list.append('project_aware_must_be_boolean')
+        if not isinstance(project_required, bool):
+            errors_list.append('project_required_must_be_boolean')
+        if project_required is True and project_aware is not True:
+            errors_list.append('project_required_requires_project_aware')
 
         try:
             registered_app = self.catalog_registry.get(app_id)
@@ -136,6 +144,10 @@ class AINativeAppRegistry:
                 errors_list.append('workspace_scope_exceeds_workbench_scope')
             if collaboration_mode != registered_app.collaboration_mode:
                 errors_list.append('collaboration_mode_mismatch')
+            if isinstance(project_aware, bool) and project_aware != registered_app.project_aware:
+                errors_list.append('project_aware_mismatch')
+            if isinstance(project_required, bool) and project_required != registered_app.project_required:
+                errors_list.append('project_required_mismatch')
 
         # 资源描述符校验（doc31 §2.1，RC-P0）：manifest.resources[] 若声明，逐项按 ResourceDescriptor
         # 校验（uri_domain 非空/无 scheme、open.mode 三枚举、route_template 含 :id、card.verb/action_label…）。

@@ -57,7 +57,7 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'imagelab': 58,  # 图像处理（图坊，自研本地引擎，doc30；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
-    'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
+    'finance': 70,  # 金融投研（local_tool 本地应用；default_mount=FALSE 由 install_policy=manual 推导）
     'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 manual 推导）
     'studio': 76,  # 统一视频引擎（cloud-brokered 视频工作台，模块 14 doc22；default_mount=FALSE 由 manual 推导）
     'design': 78,  # 矢量设计（local_tool 本地 sidecar，源自 OpenPencil，doc27；default_mount=FALSE 由 manual 推导）
@@ -200,13 +200,13 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '合理排期到日历，每日给简报、定期做复盘；只调用 hasn.plan.* 工具就地管理主人的规划数据，'
         '尊重主人的最终决定权，零 fake、失败如实报错。',
     ),
-    # 金融数据用专属「投研分析师（analyst）」分身（hub 模板 analyst，builtin_key=analyst，FIN-S8 落地）。
-    # 行情/基本面/宏观全只读取数 → 分析师只查不动，给出有数据支撑的研判。
+    # 金融投研使用专属「投研分析师（analyst）」分身；工具由 hasn-node 本地引擎执行。
     'finance': (
         'analyst',
-        '你是主人的投研分析师：用 hasn.finance.* 工具查 A股/港美股/基金/期货/债券/指数行情与宏观数据，'
-        '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
-        '取不到就如实说，零 fake、失败如实报错。',
+        '你是主人的投研分析师：使用 hasn.finance.* 本地工具完成数据研究、专家团队、策略回测、'
+        '交易复盘、自选盯盘与简报。异步任务启动后立即结束当前轮，不自行轮询，由后台回灌结果；'
+        '不执行真实下单。所有数据仅供参考、不构成投资建议，引用须标注口径与日期；'
+        '取不到就如实说明，零 fake、失败如实报错。',
     ),
     # 量化归口「金融理财专家（analyst）」分身（2026-07-03 一类应用一模板：quant_trader 折叠进 analyst）。
     # 模板同 finance 共用 analyst（builtin_key=analyst），但工作会话提示词按应用区分——本条保留量化回测专属提示词。
@@ -603,8 +603,9 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
 def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: App | None = None) -> dict:
     """把 catalog 行映射为工作台 manifest（与 ``App.to_manifest`` 同形 + ``icon_asset_uri``）。
 
-    launch 字段（ui_kind/window_url/window_origin）catalog 不存——迁移期从本地 ``registry_app``
-    overlay；registry 在 C6 退役后由 daemon 本地提供（对齐设计 §3 边界「本地 builtin 只保留 launch 字段」）。
+    执行契约字段（execution_mode/ui_kind/window_url/window_origin/project_aware/project_required）
+    不允许被陈旧 catalog 行改写——迁移期从本地 ``registry_app`` overlay；registry 在 C6 退役后由
+    daemon 本地提供（对齐设计 §3 边界「本地 builtin 只保留 launch/执行契约字段」）。
     """
     return {
         'id': cat.app_id,
@@ -617,10 +618,12 @@ def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: App | None = None)
         'entry_route': cat.entry_route,
         'install_policy': 'auto' if cat.default_mount else 'manual',
         'requires_role': cat.requires_role,
-        'execution_mode': cat.execution_mode,
+        'execution_mode': registry_app.execution_mode if registry_app else cat.execution_mode,
         'ui_kind': registry_app.ui_kind if registry_app else None,
         'window_url': registry_app.window_url if registry_app else None,
         'window_origin': registry_app.window_origin if registry_app else None,
+        'project_aware': registry_app.project_aware if registry_app else False,
+        'project_required': registry_app.project_required if registry_app else False,
         # APPBETA-2：发布阶段（ga/beta_full/beta_gray）+ 自定义角标（文字+颜色）。
         # 客户端据 release_phase 渲染「内测」标识、据 badge 渲染右上角自定义角标；
         # 灰度门控（beta_gray 未授权 → 锁定卡 + 申请）由 access 字段承载（resolve_app_access）。

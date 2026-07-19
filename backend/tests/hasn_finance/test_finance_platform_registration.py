@@ -1,24 +1,20 @@
-"""FIN-S2 — finance（金融数据源 akshare，模块 24）AI-Native 平台接入 真实测试（零 mock）。
+"""finance AI-Native 平台接入真实测试（零 mock）。
 
-覆盖云端 Agent 工具面（设计 §4/§5）：
-- manifest 通过 ``validate_manifest``；进 ``_builtin_manifests``；cloud 形态 14 tools[] 非空。
-- 14 capabilities 全只读 finance:read、risk=low、human_confirmation.required=False、mcp_name 全 hasn.finance.*。
-- **每个 manifest tool.handler 都能在 gateway ``_internal_handlers()`` 注册表解析**（gateway_internal 进程内直调
-  finance_tool_handlers → finance_provider → finance-data-service，handler 缺失会 15050）。
+覆盖金融投研最终本地契约：
+- manifest 通过 ``validate_manifest`` 并进入内置注册表，执行形态为 ``local_tool/local``。
+- 云端 ``tools[]`` 与 ``capabilities[]`` 为空；最终 44 个 ``hasn.finance.*`` 工具由 hasn-node 与 Hub 维护。
+- 旧 14 个云端只读 handler 在 F8 退役前仍可解析，但不再进入新工具发现面。
 - scopes.py 登记 finance:read（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）；出厂 default_mode=allow。
-- App 形态（cloud / install_policy=manual / 行情看板 /apps/finance）。
+- App 形态（local_tool / install_policy=manual / 金融投研 /apps/finance）。
 - catalog 出厂源：sort_order 70 / default_agent_type=analyst（投研分析师）/ 无 per-app config_json。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落库且 hash 自愈幂等；``ensure_catalog_seeded`` 幂等播种。
 
-形态对照（与 growth/creator 一致）：finance 是**纯云端只读数据应用**，finance:read 由三态
-``capability_modes`` 判定（JWT ``scopes`` claim 已随实施102 S0 全退役，不再有「铸入 JWT」一说）。
-
-事实源: docs/hasn-node设计文档/14-AI-Native应用平台/24-金融数据源(akshare)行情与投研应用接入设计.md §4/§5；
-        docs/hasn-node设计文档/14-AI-Native应用平台/实施/24-金融数据源(akshare)行情与投研应用接入实施清单.md S2。
+事实源：docs/hasn-node设计文档/金融投研与量化交易/实施/03-全功能收口施工总纲(基于2026-07-19实现审计).md。
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -40,6 +36,7 @@ from backend.app.hasn.service.app_catalog_service import (
     _CATALOG_AGENT_DEFAULTS,
     _CATALOG_DEFAULT_CONFIG,
     _CATALOG_SORT_ORDER,
+    catalog_to_manifest,
     ensure_catalog_seeded,
     get_catalog,
 )
@@ -49,7 +46,14 @@ from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 _READ_SCOPE = 'finance:read'
-# 14 工具落地表（= manifest tools[] / handler 注册表 / 工具说明.md 三处必须一致）。
+_CATALOG_MIGRATION = (
+    Path(__file__).resolve().parents[2]
+    / 'sql'
+    / 'hasn'
+    / 'migrations'
+    / '2026-07-19-finance-local-project-contract.sql'
+)
+# F8 退役前保留的旧云端 handler 集合；它们不得重新进入 manifest 或工具说明。
 _TOOL_SHORT_NAMES = {
     'stock_quote_history',
     'stock_realtime',
@@ -77,55 +81,43 @@ def test_finance_manifest_validates() -> None:
     assert result.valid, f'manifest 校验失败: {result.errors}'
     assert result.manifest_hash.startswith('sha256:')
 
+    invalid = dict(FINANCE_AI_NATIVE_MANIFEST)
+    invalid['project_aware'] = False
+    invalid['project_required'] = True
+    invalid_result = ai_native_app_registry.validate_manifest(invalid)
+    assert not invalid_result.valid
+    assert 'project_required_requires_project_aware' in invalid_result.errors
+
 
 def test_finance_in_builtin_registry() -> None:
-    """finance 进 _builtin_manifests；cloud 形态 14 tools[] 非空。"""
+    """finance 进内置注册表；本地工具形态不在云端重复暴露旧工具。"""
     builtin_ids = {m['app_id'] for m in ai_native_app_registry.list_builtin_apps()}
     assert 'finance' in builtin_ids
     manifest = ai_native_app_registry.get_builtin_manifest('finance')
     assert manifest['app_id'] == 'finance'
-    assert manifest['version'] == '1.0.0'
-    assert manifest['execution_mode'] == 'cloud'
-    assert manifest['transport_mode'] == 'cloud'
-    # 云端工具走 gateway_internal，进 tools[]（不同于 local_tool 的空 tools[]）。
-    assert len(manifest['tools']) == 14
-    assert len(manifest['capabilities']) == 14
+    assert manifest['version'] == '2.0.0'
+    assert manifest['execution_mode'] == 'local_tool'
+    assert manifest['transport_mode'] == 'local'
+    assert manifest['tools'] == []
+    assert manifest['capabilities'] == []
 
 
-def test_finance_capabilities_all_readonly() -> None:
-    """14 个 capability，mcp_name 全 hasn.finance.*；全 finance:read、low、免确认（只读数据源）。"""
-    caps = FINANCE_AI_NATIVE_MANIFEST['capabilities']
-    names = {c['tool_id'].split('.', 1)[1] for c in caps}
-    assert names == _TOOL_SHORT_NAMES, f'工具集与落地不一致: {names ^ _TOOL_SHORT_NAMES}'
-    for cap in caps:
-        assert cap['mcp_name'].startswith('hasn.finance.'), cap['mcp_name']
-        assert cap['required_scopes'] == [_READ_SCOPE], f"{cap['tool_id']} 应只读 finance:read"
-        assert cap['risk_level'] == 'low'
-        assert cap['human_confirmation'].get('required') is False
-
-
-def test_finance_tools_transport_gateway_internal() -> None:
-    """14 个 tool 全 transport=gateway_internal、idempotent=True、handler=finance.<flat_name>。"""
-    for tool in FINANCE_AI_NATIVE_MANIFEST['tools']:
-        assert tool['transport'] == 'gateway_internal'
-        assert tool['idempotent'] is True
-        assert tool['handler'].startswith('finance.'), tool['handler']
-        assert tool['required_scopes'] == [_READ_SCOPE]
-
-
-def test_finance_every_tool_handler_resolves_in_gateway() -> None:
-    """**关键跨切**：每个 manifest tool.handler 都能在 gateway _internal_handlers() 注册表解析。
-
-    handler 缺失会让运行时抛 15050 internal_handler_missing。这是 manifest（声明）↔ gateway 注册表
-    （执行）↔ finance_tool_handlers（实现）三处零漂移的硬保证。
-    """
+def test_legacy_finance_handlers_remain_reachable_until_retirement() -> None:
+    """F8 前旧云端只读 handler 仍可服务旧客户端，但不再进入新 manifest 工具面。"""
     handlers = ai_native_runtime_gateway._internal_handlers()
-    for tool in FINANCE_AI_NATIVE_MANIFEST['tools']:
-        key = tool['handler']
+    for name in _TOOL_SHORT_NAMES:
+        key = f'finance.{name}'
         assert key in handlers, f'gateway 注册表缺 handler: {key}'
-        # 注册表值即 finance_tool_handlers 模块里对应的 handle_<flat_name>。
-        flat = key.split('.', 1)[1]
-        assert handlers[key] is getattr(finance_tool_handlers, f'handle_{flat}')
+        assert handlers[key] is getattr(finance_tool_handlers, f'handle_{name}')
+
+
+def test_finance_project_participation_contract() -> None:
+    """finance 可选参与项目：支持归集，但不选项目也能完整使用。"""
+    assert FINANCE_AI_NATIVE_MANIFEST['project_aware'] is True
+    assert FINANCE_AI_NATIVE_MANIFEST['project_required'] is False
+    app_manifest = build_finance_app().to_manifest()
+    assert app_manifest['project_aware'] is True
+    assert app_manifest['project_required'] is False
 
 
 def test_finance_scope_registered_in_catalog() -> None:
@@ -139,17 +131,19 @@ def test_finance_scope_registered_in_catalog() -> None:
 
 
 def test_finance_notifications_emit_declared() -> None:
-    """finance 声明 notifications.emit（display_name=金融数据）。"""
+    """finance 声明 notifications.emit（display_name=金融投研）。"""
     emit = FINANCE_AI_NATIVE_MANIFEST['notifications']['emit']
     assert emit['card_message'] is True
-    assert emit['display_name'] == '金融数据'
+    assert emit['display_name'] == '金融投研'
 
 
 def test_finance_workbench_app_shape() -> None:
-    """App：cloud + 手动安装 + 行情看板 /apps/finance（非新窗口）。"""
+    """App：local_tool + 手动安装 + 金融投研 /apps/finance（非新窗口）。"""
     app = build_finance_app()
     assert app.id == 'finance'
-    assert app.execution_mode == 'cloud'
+    assert app.execution_mode == 'local_tool'
+    assert app.project_aware is True
+    assert app.project_required is False
     assert app.install_policy == 'manual'
     assert app.collaboration_mode == 'workspace_shared'
     assert app.scope == ('personal', 'enterprise')
@@ -165,7 +159,7 @@ def test_finance_catalog_factory_source() -> None:
     assert _CATALOG_SORT_ORDER['finance'] == 70
     assert _CATALOG_AGENT_DEFAULTS['finance'][0] == 'analyst'
     assert _CATALOG_AGENT_DEFAULTS['finance'][1]  # 业务提示词非空
-    # finance 无平台级模型配置（数据服务地址/令牌走云端 env，不进 catalog config_json）。
+    # finance 的本地引擎配置由 daemon 管理，不在云端 catalog 重复保存。
     assert 'finance' not in _CATALOG_DEFAULT_CONFIG
 
 
@@ -210,12 +204,14 @@ async def test_finance_catalog_seeded_idempotent(db: AsyncSession) -> None:
     cat = await get_catalog(db, app_id='finance')
     assert cat is not None, 'finance catalog 行未播种'
     assert cat.app_id == 'finance'
-    assert cat.name == '金融数据'
-    assert cat.execution_mode == 'cloud'
     assert cat.entry_route == '/apps/finance'
     assert cat.default_agent_type == 'analyst'
     assert cat.default_mount is False  # install_policy=manual → 不自动挂载
     assert cat.access_type == 'free'
+    projected = catalog_to_manifest(cat, registry_app=build_finance_app())
+    assert projected['execution_mode'] == 'local_tool'
+    assert projected['project_aware'] is True
+    assert projected['project_required'] is False
 
     # 二次播种：不重复插（finance 行仍唯一）。
     await ensure_catalog_seeded(db)
@@ -225,3 +221,19 @@ async def test_finance_catalog_seeded_idempotent(db: AsyncSession) -> None:
         )
     ).scalar()
     assert cats == 1, f'finance catalog 行应唯一，实际 {cats}'
+
+
+@pytest.mark.asyncio
+async def test_finance_catalog_migration_updates_existing_row(db: AsyncSession) -> None:
+    """目录迁移把存量 finance 行切换为金融投研本地执行形态。"""
+    await ensure_catalog_seeded(db)
+    sql = _CATALOG_MIGRATION.read_text(encoding='utf-8')
+    connection = await db.connection()
+    await connection.exec_driver_sql(sql)
+    db.expire_all()
+
+    cat = await get_catalog(db, app_id='finance')
+    assert cat is not None
+    assert cat.name == '金融投研'
+    assert cat.description == build_finance_app().description
+    assert cat.execution_mode == 'local_tool'
