@@ -26,6 +26,11 @@ from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+from backend.app.hasn.service.sync_invalidate_service import (
+    KIND_FINANCE,
+    OWNER_KINDS,
+    compute_owner_finance_revision,
+)
 from backend.app.hasn.service.resource_share_service import ResourceShareService, _NON_SHAREABLE_RESOURCE_TYPES
 from backend.app.hasn_finance.model.research_report import ResearchReport
 from backend.app.hasn_finance.service.finance_sync_service import finance_sync_service
@@ -82,6 +87,12 @@ def test_finance_two_container_linkage_adapters_registered() -> None:
 def test_finance_strategy_declared_non_shareable() -> None:
     """契约5：finance.strategy 进永不可分享清单（策略含可执行代码）。"""
     assert 'finance.strategy' in _NON_SHAREABLE_RESOURCE_TYPES
+
+
+def test_finance_is_owner_targeted_sync_invalidation_kind() -> None:
+    """finance 变更只通知同一主人在线节点，不得全局广播。"""
+    assert KIND_FINANCE == 'finance'
+    assert KIND_FINANCE in OWNER_KINDS
 
 
 # ============================ 真实 PostgreSQL ============================
@@ -217,6 +228,64 @@ async def test_sync_update_bumps_revision_then_conflict_on_stale_base() -> None:
             assert snapshot['status'] == 'active'
             assert 'local_ref' not in snapshot
             assert 'last_client_op_id' not in snapshot
+        finally:
+            await db.rollback()
+
+
+async def test_finance_invalidation_revision_tracks_update_and_tombstone() -> None:
+    """七表 owner 指纹会随有效更新及 tombstone 改变，跨设备失效信号不会漏删。"""
+    async with async_db_session() as db:
+        try:
+            owner = await _seed_owner(db)
+            assert await compute_owner_finance_revision(db, owner) == 'empty'
+            created = await finance_sync_service.sync_product(
+                db,
+                model_cls=ResearchReport,
+                resource_kind='finance.research_report',
+                owner_id=owner,
+                op='create',
+                op_id='op-revision-create',
+                base_revision=None,
+                local_ref='lr-revision',
+                server_id=None,
+                fields=_report_fields(),
+                agent_hasn_id=None,
+                title='指纹测试',
+            )
+            after_create = await compute_owner_finance_revision(db, owner)
+            assert after_create != 'empty'
+
+            updated = await finance_sync_service.sync_product(
+                db,
+                model_cls=ResearchReport,
+                resource_kind='finance.research_report',
+                owner_id=owner,
+                op='update',
+                op_id='op-revision-update',
+                base_revision=created['revision'],
+                local_ref=None,
+                server_id=created['id'],
+                fields={'title': '指纹更新版'},
+                agent_hasn_id=None,
+            )
+            after_update = await compute_owner_finance_revision(db, owner)
+            assert after_update != after_create
+
+            await finance_sync_service.sync_product(
+                db,
+                model_cls=ResearchReport,
+                resource_kind='finance.research_report',
+                owner_id=owner,
+                op='delete',
+                op_id='op-revision-delete',
+                base_revision=updated['revision'],
+                local_ref=None,
+                server_id=created['id'],
+                fields={},
+                agent_hasn_id=None,
+            )
+            after_delete = await compute_owner_finance_revision(db, owner)
+            assert after_delete not in {'empty', after_update}
         finally:
             await db.rollback()
 
