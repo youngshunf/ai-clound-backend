@@ -8,8 +8,8 @@
 - **里程碑**：建/改/完成（纯业务态 pending↔done，无门控），经父项目校验 owner；
 - **挂靠点注册表**：`link`/`unlink` 经 artifact adapter 落 `hasn_artifacts.project_id`（唯一收口，不散写），
   跨 owner 资源挂不进（404）、非法域拒；
-- **产物流并集读**：`project_id` 直接命中（register-on-write 自动打标 / 显式 link）汇入 `project_artifact_flow`，
-  U3 无容器 adapter → 并集退化为仅直接命中（机制就位）。
+- **产物流并集读**：`project_id` 直接命中（register-on-write 自动打标 / 显式 link）汇入
+  `project_artifact_flow`；容器分支由各应用 adapter 的独立契约覆盖。
 """
 
 from __future__ import annotations
@@ -235,7 +235,7 @@ async def test_link_unsupported_domain_rejected() -> None:
 
 # ── 产物流并集读 ─────────────────────────────────────────────────────────────
 async def test_project_artifact_flow_direct_hits() -> None:
-    """`project_id` 直接命中的产物汇入并集读；U3 无容器 adapter → 仅直接命中。"""
+    """`project_id` 直接命中的产物汇入并集读，未挂靠产物不混入。"""
     owner = _owner()
     agent = f'a_{uuid4().hex[:12]}'
     art_in, art_out = f'art_{uuid4().hex[:16]}', f'art_{uuid4().hex[:16]}'
@@ -253,7 +253,6 @@ async def test_project_artifact_flow_direct_hits() -> None:
             ids = {r['artifact_id'] for r in flow}
             assert art_in in ids
             assert art_out not in ids  # 未挂靠的不进流
-            # U3 无容器 adapter：并集读退化为仅直接命中，机制就位待 U11。
-            assert project_linkage_registry.container_adapters() == []
+            assert next(r for r in flow if r['artifact_id'] == art_in)['via'] == 'linked'
         finally:
             await db.rollback()

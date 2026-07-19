@@ -118,10 +118,16 @@ class ProjectService:
         return row
 
     async def get_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> dict:
-        """取单个项目详情（含里程碑轨）。"""
+        """取单个项目详情（含里程碑轨与注册表派生的挂靠资源）。"""
         row = await self._get_project(db, owner=owner, pk=pk)
         data = serialize(row)
         data['milestones'] = await self.list_milestones(db, owner=owner, project_id=row.id)
+        data['linked_resources'] = await project_linkage_registry.list_linked_resources(
+            db,
+            owner=owner,
+            project_id=row.id,
+        )
+        data['link_count'] = len(data['linked_resources'])
         return data
 
     async def assert_owned(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> None:
@@ -259,19 +265,12 @@ class ProjectService:
 
     # ── 产物流并集读（doc38 §5 item 6）────────────────────────────────────────────
     async def _attached_container_uris(self, db: AsyncSession, *, owner: str, project_id: UUID) -> list[str]:
-        """列挂进本项目的容器的 `hasn://` URI（并集读反查用）。
-
-        遍历注册表里的**容器级** adapter（`platform_project_id`）：查 `owner + platform_project_id==pid`
-        的容器行，按 `hasn://{domain}/{server_id}` 拼 URI。U3 无容器 adapter → 返 []（机制就位待 U11）。
-        """
-        uris: list[str] = []
-        for adapter in project_linkage_registry.container_adapters():
-            id_col = getattr(adapter.model, adapter.id_column)
-            owner_col = getattr(adapter.model, adapter.owner_column)
-            attach_col = getattr(adapter.model, adapter.attach_column)
-            ids = (await db.execute(sa.select(id_col).where(owner_col == owner, attach_col == project_id))).scalars().all()
-            uris.extend(f'hasn://{adapter.domain}/{i}' for i in ids)
-        return uris
+        """列挂靠容器本体及其名下历史产物 URI；业务关系由 adapter 钩子派生。"""
+        return await project_linkage_registry.artifact_resource_uris(
+            db,
+            owner=owner,
+            project_id=project_id,
+        )
 
     async def project_artifact_flow(
         self, db: AsyncSession, *, owner: str, project_id: str | UUID, limit: int = 50
@@ -300,7 +299,13 @@ class ProjectService:
             .limit(limit)
         )
         rows = (await db.execute(stmt)).scalars().all()
-        return [serialize(r) for r in rows]
+        output: list[dict[str, Any]] = []
+        container_uri_set = set(container_uris)
+        for row in rows:
+            item = serialize(row)
+            item['via'] = 'container' if row.resource_uri in container_uri_set and row.project_id != pid else 'linked'
+            output.append(item)
+        return output
 
 
 project_service = ProjectService()
