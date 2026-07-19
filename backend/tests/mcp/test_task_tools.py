@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import uuid
 
+from typing import Any
+
 import pytest
 
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.task import TASK_TOOLS
 
 
-def _tool(name: str):
+def _tool(name: str) -> Any:
     for t in TASK_TOOLS:
         if t.name == name:
             return t
@@ -112,21 +114,51 @@ def test_required_fields_match_contract() -> None:
 
 
 def test_three_axis_in_schema_optional() -> None:
-    """任务中心三轴（doc12 §6.1）：create 暴露 project_id/app_id/execution_kind/execution_spec，均可选（不进 required）；
-    list 暴露 project_id/app_id 过滤参。三轴天然非二进制，input_schema 不含任何 *_base64 入参。"""
+    """任务中心三轴均为可选，并禁止二进制入参。"""
     create_props = _tool('hasn.task.create').input_schema['properties']
     for k in ('project_id', 'app_id', 'execution_kind', 'execution_spec'):
         assert k in create_props, f'create 缺三轴入参 {k}'
     assert create_props['execution_kind']['enum'] == ['app_workflow', 'freeform']
     # 三轴均可选：不出现在 required 里
-    assert not (
-        {'project_id', 'app_id', 'execution_kind', 'execution_spec'} & set(_tool('hasn.task.create').input_schema['required'])
-    )
+    required = set(_tool('hasn.task.create').input_schema['required'])
+    assert not ({'project_id', 'app_id', 'execution_kind', 'execution_spec'} & required)
     list_props = _tool('hasn.task.list').input_schema['properties']
-    assert 'project_id' in list_props and 'app_id' in list_props, 'list 缺三轴过滤参'
+    assert set(list_props) == {'filter', 'limit'}
+    filter_schema = list_props['filter']
+    assert filter_schema['type'] == ['object', 'null']
+    assert set(filter_schema['properties']) == {'project_id', 'app_id', 'agent', 'status'}
+    update_props = _tool('hasn.task.update').input_schema['properties']
+    assert {'project_id', 'app_id', 'execution_kind', 'execution_spec'} <= set(update_props)
     # 铁律：任务工具入参禁止二进制 base64
     for t in TASK_TOOLS:
-        assert not any(k.endswith('_base64') for k in t.input_schema.get('properties', {})), f'{t.name} 出现 base64 入参'
+        has_base64 = any(k.endswith('_base64') for k in t.input_schema.get('properties', {}))
+        assert not has_base64, f'{t.name} 出现 base64 入参'
+
+
+def test_task_tool_schema_matches_ai_native_manifest() -> None:
+    """云端工具与 AI-Native manifest 的入参契约必须逐字段一致。"""
+    from backend.app.hasn_task.service.ai_native_manifest import HASN_TASK_AI_NATIVE_MANIFEST
+
+    def contract_shape(value: object) -> object:
+        if isinstance(value, dict):
+            return {
+                key: contract_shape(item)
+                for key, item in value.items()
+                if key not in {'description', 'default', 'additionalProperties'}
+            }
+        if isinstance(value, list):
+            return [contract_shape(item) for item in value]
+        return value
+
+    capabilities = {item['mcp_name']: item for item in HASN_TASK_AI_NATIVE_MANIFEST['capabilities']}
+    for tool in TASK_TOOLS:
+        manifest_schema = capabilities[tool.name]['input_schema']
+        assert contract_shape(manifest_schema['properties']) == contract_shape(tool.input_schema['properties']), (
+            f'{tool.name} properties 漂移'
+        )
+        assert manifest_schema.get('required', []) == tool.input_schema.get('required', []), (
+            f'{tool.name} required 漂移'
+        )
 
 
 def test_task_scopes_in_aggregated_catalog() -> None:
@@ -212,11 +244,14 @@ async def test_three_axis_roundtrip_and_filter_real_db() -> None:
 
     from sqlalchemy import text
 
+    from backend.app.hasn_project.service.project_app_service import project_service
     from backend.database.db import async_db_session
 
     owner = f'h_task_axis_{uuid.uuid4().hex[:18]}'
     ctx = _agent_ctx(owner, agent_hasn_id=f'a_axis_{uuid.uuid4().hex[:12]}')
-    project_id = str(uuid.uuid4())
+    async with async_db_session.begin() as db:
+        project = await project_service.create_project(db, owner=owner, data={'name': '任务三轴测试项目'})
+    project_id = project['id']
     other_project_id = str(uuid.uuid4())
     app_id = 'hasn_growth'
     exec_spec = {'app_id': app_id, 'workflow_ref': 'wf_lead_nurture', 'params': {'batch': 3, 'tags': ['a', 'b']}}
@@ -255,21 +290,27 @@ async def test_three_axis_roundtrip_and_filter_real_db() -> None:
         assert mine['execution_spec'] == exec_spec
 
         # 4) list 按 project_id 过滤：命中 / 落空
-        by_proj = await _tool('hasn.task.list').execute(ctx, {'project_id': project_id})
+        by_proj = await _tool('hasn.task.list').execute(ctx, {'filter': {'project_id': project_id}})
         assert any(t['task_id'] == tid for t in by_proj), 'project_id 过滤应命中'
-        by_other = await _tool('hasn.task.list').execute(ctx, {'project_id': other_project_id})
+        by_other = await _tool('hasn.task.list').execute(ctx, {'filter': {'project_id': other_project_id}})
         assert not any(t['task_id'] == tid for t in by_other), '不同 project_id 应落空'
 
         # 5) list 按 app_id 过滤命中
-        by_app = await _tool('hasn.task.list').execute(ctx, {'app_id': app_id})
+        by_app = await _tool('hasn.task.list').execute(ctx, {'filter': {'app_id': app_id}})
         assert any(t['task_id'] == tid for t in by_app), 'app_id 过滤应命中'
-        by_app_miss = await _tool('hasn.task.list').execute(ctx, {'app_id': 'hasn_nonexistent'})
+        by_app_miss = await _tool('hasn.task.list').execute(ctx, {'filter': {'app_id': 'hasn_nonexistent'}})
         assert not any(t['task_id'] == tid for t in by_app_miss)
+        by_agent_and_status = await _tool('hasn.task.list').execute(
+            ctx, {'filter': {'agent': ctx.agent_hasn_id, 'status': 'scheduled'}}
+        )
+        assert any(t['task_id'] == tid for t in by_agent_and_status), 'agent/status 组合过滤应命中'
 
         # 6) 暂停（发 task.updated 事件，走 upsert ON CONFLICT）→ 三轴必须仍在（防 EXCLUDED 空值误清）
         paused = await _tool('hasn.task.pause').execute(ctx, {'task_id': tid})
         assert paused['state'] == 'paused'
-        assert paused['project_id'] == project_id, 'task.updated 后 project_id 被误清 = _event_payload_from_row 未带三轴'
+        assert paused['project_id'] == project_id, (
+            'task.updated 后 project_id 被误清 = _event_payload_from_row 未带三轴'
+        )
         assert paused['app_id'] == app_id
         assert paused['execution_kind'] == 'app_workflow'
         assert paused['execution_spec'] == exec_spec
@@ -293,3 +334,4 @@ async def test_three_axis_roundtrip_and_filter_real_db() -> None:
             await db.execute(text('DELETE FROM hasn_task.run_summary WHERE owner_id = :o'), {'o': owner})
             await db.execute(text('DELETE FROM hasn_task.task WHERE owner_id = :o'), {'o': owner})
             await db.execute(text('DELETE FROM hasn_sync_events WHERE owner_id = :o'), {'o': owner})
+            await db.execute(text('DELETE FROM hasn_project.hasn_project WHERE owner_id = :o'), {'o': owner})
