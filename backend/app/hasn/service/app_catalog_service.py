@@ -930,6 +930,101 @@ async def publish_finance_engine_release(
     return catalog.config_json['engine_release']
 
 
+async def stage_signed_engine_package(
+    db: AsyncSession,
+    *,
+    pk: int,
+    os_arch: str,
+    version: str,
+    data: bytes,
+    filename: str,
+    expected_sha256: str,
+) -> dict:
+    """上传 schema v2 待签平台包，返回进入签名正文的云端权威字段。
+
+    本步骤只让对象先在公共桶可达，不修改 ``config_json.engine``，因此在线 daemon 不会看到半套
+    发布。对象 key 绑定内容摘要，上传重试幂等；全部平台上传完后由离线发布工具共同签名，再调用
+    :func:`publish_signed_engine_manifest` 一次切换权威清单。
+    """
+    import hashlib
+
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.plugin.s3.service.storage_service import StorageService
+
+    if not _SIGNED_ENGINE_PLATFORM_RE.fullmatch(os_arch):
+        raise errors.RequestError(msg=f'引擎包平台键无效：{os_arch}')
+    if (
+        version in {'.', '..'}
+        or not _SIGNED_ENGINE_VERSION_RE.fullmatch(version)
+    ):
+        raise errors.RequestError(msg='引擎包 version 无效')
+    if not _SIGNED_ENGINE_SHA256_RE.fullmatch(expected_sha256):
+        raise errors.RequestError(msg='引擎包 sha256 必须是 64 位十六进制')
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if expected_sha256.lower() != actual_sha256:
+        raise errors.RequestError(
+            msg=f'引擎包 sha256 不匹配：客户端 {expected_sha256}，服务端 {actual_sha256}（上传损坏）',
+        )
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    safe_filename = filename
+    if (
+        not safe_filename
+        or '/' in safe_filename
+        or '\\' in safe_filename
+        or not safe_filename.endswith('.zip')
+    ):
+        raise errors.RequestError(msg='引擎包 filename 必须是无路径的 .zip 文件名')
+    object_key = (
+        f'runtime-engine/{catalog.app_id}/{version}/{actual_sha256[:16]}-{safe_filename}'
+    )
+    ref = await StorageService.upload(
+        db,
+        data,
+        category='film_engine',
+        filename=safe_filename,
+        content_type='application/zip',
+        key=object_key,
+    )
+    return {
+        'key': object_key,
+        'url': ref.stable_url,
+        'sha256': actual_sha256,
+        'compressed_size': len(data),
+    }
+
+
+async def publish_signed_engine_manifest(
+    db: AsyncSession,
+    *,
+    pk: int,
+    document: dict,
+) -> dict:
+    """原子保存已签 schema v2 清单并推送 ``platform_config`` 失效。
+
+    云端不持有也不加载发布公钥；这里只做严格结构/序列/对象归属校验。daemon 收到后仍须用内置
+    Ed25519 信任根验签，不能把云端管理员权限当作引擎执行信任。
+    """
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    merged = merge_signed_engine_manifest(
+        catalog.config_json,
+        app_id=catalog.app_id,
+        document=document,
+    )
+    if merged == (catalog.config_json or {}):
+        return copy.deepcopy(merged['engine'])
+    catalog.config_json = merged
+    await db.flush()
+    await sync_bump('platform_config', db)
+    return copy.deepcopy(merged['engine'])
+
+
 async def resolve_default_agent_for_app(db: AsyncSession, *, owner_id: str, app_id: str) -> str | None:
     """AppCollab（doc21 §7.2）：打开应用时默认承接的分身 hasn_id。
 

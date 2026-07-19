@@ -155,3 +155,41 @@ def test_validation_does_not_mutate_caller_document() -> None:
         document=document,
     )
     assert document == original
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_invalid_platform_and_digest_before_storage() -> None:
+    with pytest.raises(errors.RequestError, match='平台'):
+        await app_catalog_service.stage_signed_engine_package(
+            None,
+            pk=1,
+            os_arch='darwin-aarch64',
+            version='0.2.0',
+            data=b'zip',
+            filename='package.zip',
+            expected_sha256='a' * 64,
+        )
+    with pytest.raises(errors.RequestError, match='64 位'):
+        await app_catalog_service.stage_signed_engine_package(
+            None,
+            pk=1,
+            os_arch='macos-aarch64',
+            version='0.2.0',
+            data=b'zip',
+            filename='package.zip',
+            expected_sha256='deadbeef',
+        )
+
+
+def test_admin_router_exposes_two_phase_signed_publish_endpoints() -> None:
+    from backend.app.hasn.api.v1.admin.hasn_app_catalog import router
+
+    routes = {(route.path, route.name) for route in router.routes}
+    assert (
+        '/{pk}/engine-package-stage',
+        'admin_stage_signed_engine_package',
+    ) in routes
+    assert (
+        '/{pk}/engine-manifest',
+        'admin_publish_signed_engine_manifest',
+    ) in routes

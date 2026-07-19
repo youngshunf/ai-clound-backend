@@ -1,3 +1,4 @@
+import json
 import logging
 
 from typing import Annotated
@@ -13,6 +14,7 @@ from backend.app.hasn.schema.hasn_app_catalog import (
 )
 from backend.app.hasn.service import app_catalog_service
 from backend.app.hasn.service.hasn_app_catalog_service import hasn_app_catalog_service
+from backend.common.exception import errors
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -173,6 +175,64 @@ async def publish_finance_engine_release(
         document=document,
     )
     return response_base.success(data=release)
+
+
+@router.post(
+    '/{pk}/engine-package-stage',
+    summary='上传 schema v2 待签引擎包，不切换在线清单',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:catalog:edit')),
+        DependsRBAC,
+    ],
+    name='admin_stage_signed_engine_package',
+)
+async def stage_signed_engine_package(
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='AI-Native 应用目录（云端权威） ID')],
+    file: Annotated[UploadFile, File(description='待签引擎 zip（包内含逐文件清单）')],
+    os_arch: Annotated[str, Form(description='规范平台键，如 macos-aarch64 / linux-x86_64')],
+    version: Annotated[str, Form(description='引擎版本')],
+    sha256: Annotated[str, Form(description='客户端 sha256；服务端权威复算并交叉校验')],
+) -> ResponseSchemaModel[dict]:
+    package = await app_catalog_service.stage_signed_engine_package(
+        db,
+        pk=pk,
+        os_arch=os_arch,
+        version=version,
+        data=await file.read(),
+        filename=file.filename or f'imagelab-{os_arch}-{version}.zip',
+        expected_sha256=sha256,
+    )
+    return response_base.success(data=package)
+
+
+@router.post(
+    '/{pk}/engine-manifest',
+    summary='发布 schema v2 Ed25519 签名引擎清单并原子切换在线配置',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:catalog:edit')),
+        DependsRBAC,
+    ],
+    name='admin_publish_signed_engine_manifest',
+)
+async def publish_signed_engine_manifest(
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='AI-Native 应用目录（云端权威） ID')],
+    manifest: Annotated[UploadFile, File(description='schema v2 签名 manifest.json')],
+) -> ResponseSchemaModel[dict]:
+    raw = await manifest.read()
+    if len(raw) > 8 * 1024 * 1024:
+        raise errors.RequestError(msg='图坊签名 manifest 超过 8 MiB 上限')
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise errors.RequestError(msg='图坊签名 manifest 不是合法 UTF-8 JSON') from exc
+    engine = await app_catalog_service.publish_signed_engine_manifest(
+        db,
+        pk=pk,
+        document=document,
+    )
+    return response_base.success(data=engine)
 
 
 @router.delete(
