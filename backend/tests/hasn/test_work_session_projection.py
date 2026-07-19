@@ -409,6 +409,7 @@ async def test_projection_is_idempotent_and_writes_summary_message(
         results=[
             FakeScalarResult(session),
             FakeMappingResult(None),
+            FakeScalarResult(1),
             FakeMappingResult({'id': 987}),
             FakeScalarResult(session),
             FakeMappingResult({'id': 987, 'conversation_id': str(conversation_id)}),
@@ -459,6 +460,7 @@ async def test_projection_is_idempotent_and_writes_summary_message(
         if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
     ]
     assert len(insert_params) == 1
+    assert insert_params[0]['conversation_seq'] == 1
     content = json.loads(insert_params[0]['content'])
     assert content['schema_version'] == 'hasn.card/0.1'
     assert content['title'] == '工作会话「生成日报」已完成'
@@ -509,6 +511,7 @@ async def test_projection_writes_summary_when_cloud_session_absent(
         results=[
             FakeScalarResult(None),  # try_get_by_session_id -> 云端无该 session
             FakeMappingResult(None),  # _find_projection_message -> 无重复
+            FakeScalarResult(1),  # allocate_seq -> 会话内首条消息序号
             FakeMappingResult({'id': 988}),  # INSERT ... RETURNING id
         ]
     )
@@ -550,6 +553,7 @@ async def test_projection_writes_summary_when_cloud_session_absent(
         if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
     ]
     assert len(insert_params) == 1, 'projection 必须写出一条会话消息'
+    assert insert_params[0]['conversation_seq'] == 1
     content = json.loads(insert_params[0]['content'])
     assert content['title'] == '工作会话「生成日报」已完成'
     assert content['description'] == '已生成客户优先级和跟进建议。'
@@ -596,6 +600,7 @@ async def _deck_projection_card(
         results=[
             FakeScalarResult(None),  # 云端无该 session（local-first deck 会话）
             FakeMappingResult(None),  # 无重复
+            FakeScalarResult(1),  # allocate_seq -> 会话内首条消息序号
             FakeMappingResult({'id': 991}),  # INSERT ... RETURNING id
         ]
     )
@@ -634,6 +639,7 @@ async def _deck_projection_card(
         if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
     ]
     assert len(insert_params) == 1, 'projection 必须写出一条会话消息'
+    assert insert_params[0]['conversation_seq'] == 1
     assert db.flushed is True
     return json.loads(insert_params[0]['content'])
 

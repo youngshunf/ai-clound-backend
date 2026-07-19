@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.crud.crud_hasn_sessions import hasn_sessions_dao
 from backend.app.hasn.model import HasnSessions
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
@@ -340,11 +341,19 @@ class HasnSessionsService:
         )
         content_card = _projection_card_body(session_id=session_id, title=title, content_json=content_json)
         validate_card_message_body(content_card)
+
+        # R2-02：完成卡也是会话消息，必须与普通消息共用同一权威取号入口。
+        # 取号和 INSERT 处于同一事务，后续写入失败时序号增量随事务一起回滚。
+        conversation_seq = await hasn_conversations_dao.allocate_seq(db, conversation_id)
+        if conversation_seq is None:
+            raise ValueError(f'allocate_seq 失败：会话 {conversation_id} 不存在，无法分配 conversation_seq')
+
         result = await db.execute(
             sa.text(
                 """
                 INSERT INTO public.hasn_messages (
                     conversation_id,
+                    conversation_seq,
                     owner_id,
                     hasn_id,
                     from_id,
@@ -370,6 +379,7 @@ class HasnSessionsService:
                     created_time
                 ) VALUES (
                     CAST(:conversation_id AS uuid),
+                    :conversation_seq,
                     :owner_id,
                     :hasn_id,
                     :from_id,
@@ -399,6 +409,7 @@ class HasnSessionsService:
             ),
             {
                 'conversation_id': str(conversation_id),
+                'conversation_seq': conversation_seq,
                 'owner_id': owner_id,
                 'hasn_id': owner_id,
                 'from_id': agent_id,
