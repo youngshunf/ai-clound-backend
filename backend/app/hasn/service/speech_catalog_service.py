@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import sqlalchemy as sa
 
@@ -37,6 +41,236 @@ if TYPE_CHECKING:
 _CONFIG_KEY = 'global'
 # 模型 zip 落公开桶的类别（storage_service CATEGORY_POLICY：public·不签名·长效 https）
 _STORAGE_CATEGORY = 'speech_model'
+_SHA256_PATTERN = re.compile(r'^[0-9a-f]{64}$')
+_SIGNATURE_PATTERN = re.compile(r'^[0-9a-f]{128}$')
+_IDENTIFIER_PATTERN = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+_V2_ENVELOPE_FIELDS = {'payload', 'key_id', 'release_sequence', 'expires_at', 'signature'}
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechCatalogReleasePackageReference:
+    """签名 catalog 中的一条平台包引用。"""
+
+    model_id: str
+    model_version: str
+    os: str
+    arch: str
+    acceleration: str
+    url: str
+    sha256: str
+    compressed_size: int
+    installed_size: int
+    license_name: str
+    license_url: str
+    source_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechCatalogReleaseManifest:
+    """通过云端结构预检的 v2 发布信封。"""
+
+    key_id: str
+    release_sequence: int
+    expires_at: datetime
+    catalog_version: str
+    issued_at: datetime
+    payload: dict[str, Any]
+    packages: tuple[SpeechCatalogReleasePackageReference, ...]
+
+
+def _require_sha256(value: object) -> str:
+    """校验并返回规范小写 SHA-256。"""
+    if not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None:
+        raise errors.RequestError(msg='模型包 sha256 必须是 64 位规范小写十六进制')
+    return value
+
+
+def build_speech_package_object_key(sha256: str) -> str:
+    """从规范小写 SHA-256 派生不可变对象 key。"""
+    sha256 = _require_sha256(sha256)
+    return f'speech/sha256/{sha256[:2]}/{sha256}.zip'
+
+
+def _parse_rfc3339(value: object, *, field: str) -> datetime:
+    """解析必须携带时区的 RFC3339 时间。"""
+    if not isinstance(value, str) or not value:
+        raise errors.RequestError(msg=f'{field} 必须是 RFC3339 时间')
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError as exc:
+        raise errors.RequestError(msg=f'{field} 必须是 RFC3339 时间') from exc
+    if parsed.tzinfo is None:
+        raise errors.RequestError(msg=f'{field} 必须携带时区')
+    return parsed
+
+
+def _require_identifier(value: object, *, field: str) -> str:
+    """校验与 daemon 相同范围的稳定 ASCII 标识符。"""
+    if not isinstance(value, str) or _IDENTIFIER_PATTERN.fullmatch(value) is None:
+        raise errors.RequestError(msg=f'{field} 必须是 1～64 位稳定 ASCII 标识符')
+    return value
+
+
+def _require_https_url(value: object, *, field: str) -> str:
+    """校验生产目录中的不可过期 HTTPS 直链。"""
+    if not isinstance(value, str):
+        raise errors.RequestError(msg=f'{field} 必须是 HTTPS URL')
+    parsed = urlsplit(value)
+    if parsed.scheme != 'https' or not parsed.netloc or parsed.fragment:
+        raise errors.RequestError(msg=f'{field} 必须是无片段的 HTTPS URL')
+    return value
+
+
+def _require_positive_int(value: object, *, field: str, maximum: int = 2**64 - 1) -> int:
+    """校验 Rust u64 范围内的正整数。"""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= maximum:
+        raise errors.RequestError(msg=f'{field} 必须是大于 0 的 u64')
+    return value
+
+
+def _parse_release_package(
+    package: object,
+    *,
+    model_id: str,
+    model_version: str,
+    license_name: str,
+    license_url: str,
+    source_url: str,
+) -> SpeechCatalogReleasePackageReference:
+    """解析并预检一条平台包引用。"""
+    if not isinstance(package, dict):
+        raise errors.RequestError(msg=f'{model_id} 的 package 必须是对象')
+    platform = package.get('platform')
+    if not isinstance(platform, dict):
+        raise errors.RequestError(msg=f'{model_id} 的 package.platform 必须是对象')
+    os_name = _require_identifier(platform.get('os'), field=f'{model_id}.platform.os')
+    arch = _require_identifier(platform.get('arch'), field=f'{model_id}.platform.arch')
+    acceleration = _require_identifier(platform.get('acceleration'), field=f'{model_id}.platform.acceleration')
+
+    sha256 = _require_sha256(package.get('sha256'))
+    object_key = build_speech_package_object_key(sha256)
+    url = _require_https_url(package.get('url'), field=f'{model_id}.package.url')
+    if not urlsplit(url).path.rstrip('/').endswith(f'/{object_key}'):
+        raise errors.RequestError(msg=f'{model_id} 的包 URL 不是 sha256 内容寻址地址')
+    package_signature = package.get('signature')
+    if not isinstance(package_signature, str) or _SIGNATURE_PATTERN.fullmatch(package_signature) is None:
+        raise errors.RequestError(msg=f'{model_id} 的 package.signature 非法')
+
+    return SpeechCatalogReleasePackageReference(
+        model_id=model_id,
+        model_version=model_version,
+        os=os_name,
+        arch=arch,
+        acceleration=acceleration,
+        url=url,
+        sha256=sha256,
+        compressed_size=_require_positive_int(package.get('compressed_size'), field=f'{model_id}.compressed_size'),
+        installed_size=_require_positive_int(package.get('installed_size'), field=f'{model_id}.installed_size'),
+        license_name=license_name,
+        license_url=license_url,
+        source_url=source_url,
+    )
+
+
+def _parse_release_model(
+    model: object,
+    *,
+    release_sequence: int,
+    release_expires_at: object,
+) -> tuple[tuple[str, str], list[SpeechCatalogReleasePackageReference]]:
+    """解析一个模型及其全部平台包引用。"""
+    if not isinstance(model, dict):
+        raise errors.RequestError(msg='catalog model 必须是对象')
+    model_id = _require_identifier(model.get('model_id'), field='model_id')
+    model_version = _require_identifier(model.get('model_version'), field='model_version')
+    if model.get('release_sequence') != release_sequence:
+        raise errors.RequestError(msg=f'{model_id} 的 release_sequence 与 v2 信封不一致')
+    _require_identifier(model.get('channel'), field=f'{model_id}.channel')
+    if model.get('expires_at') != release_expires_at:
+        raise errors.RequestError(msg=f'{model_id} 的 expires_at 与 v2 信封不一致')
+
+    license_metadata = model.get('license')
+    if not isinstance(license_metadata, dict):
+        raise errors.RequestError(msg=f'{model_id} 缺少许可证元数据')
+    license_name = license_metadata.get('name')
+    if not isinstance(license_name, str) or not license_name.strip():
+        raise errors.RequestError(msg=f'{model_id} 缺少许可证名称')
+    license_url = _require_https_url(license_metadata.get('url'), field=f'{model_id} 许可证 URL')
+    source_url = _require_https_url(license_metadata.get('source'), field=f'{model_id} 许可证来源')
+
+    packages = model.get('packages')
+    if not isinstance(packages, list) or not packages:
+        raise errors.RequestError(msg=f'{model_id}.packages 必须是非空数组')
+    references = [
+        _parse_release_package(
+            package,
+            model_id=model_id,
+            model_version=model_version,
+            license_name=license_name.strip(),
+            license_url=license_url,
+            source_url=source_url,
+        )
+        for package in packages
+    ]
+    platform_keys = {(item.os, item.arch, item.acceleration) for item in references}
+    if len(platform_keys) != len(references):
+        raise errors.RequestError(msg=f'{model_id} 含重复平台包')
+    return (model_id, model_version), references
+
+
+def parse_release_manifest(catalog_json: str) -> SpeechCatalogReleaseManifest:
+    """严格解析 v2 发布信封并收集所有签名包引用。
+
+    云端仍不持有 Ed25519 公钥、也不替代 daemon 验签；这里仅做原子发布所需的结构、
+    内容寻址、许可证和全引用一致性预检。
+    """
+    try:
+        document = json.loads(catalog_json)
+    except (TypeError, ValueError) as exc:
+        raise errors.RequestError(msg=f'catalog 不是合法 JSON: {exc}') from exc
+    if not isinstance(document, dict) or set(document) != _V2_ENVELOPE_FIELDS:
+        raise errors.RequestError(msg='catalog 必须使用完整 v2 发布信封')
+
+    key_id = _require_identifier(document['key_id'], field='key_id')
+    release_sequence = _require_positive_int(document['release_sequence'], field='release_sequence')
+    expires_at = _parse_rfc3339(document['expires_at'], field='expires_at')
+    signature = document['signature']
+    if not isinstance(signature, str) or _SIGNATURE_PATTERN.fullmatch(signature) is None:
+        raise errors.RequestError(msg='catalog signature 必须是 128 位规范小写十六进制')
+
+    payload = document['payload']
+    if not isinstance(payload, dict):
+        raise errors.RequestError(msg='catalog.payload 必须是对象')
+    catalog_version = _require_identifier(payload.get('catalog_version'), field='catalog_version')
+    issued_at = _parse_rfc3339(payload.get('issued_at'), field='issued_at')
+    if expires_at <= issued_at:
+        raise errors.RequestError(msg='expires_at 必须晚于 issued_at')
+    models = payload.get('models')
+    if not isinstance(models, list) or not models:
+        raise errors.RequestError(msg='catalog.payload.models 必须是非空数组')
+
+    references: list[SpeechCatalogReleasePackageReference] = []
+    model_keys: set[tuple[str, str]] = set()
+    for model in models:
+        model_key, model_references = _parse_release_model(
+            model,
+            release_sequence=release_sequence,
+            release_expires_at=document['expires_at'],
+        )
+        if model_key in model_keys:
+            raise errors.RequestError(msg=f'catalog model 重复: {model_key[0]}/{model_key[1]}')
+        model_keys.add(model_key)
+        references.extend(model_references)
+
+    return SpeechCatalogReleaseManifest(
+        key_id=key_id,
+        release_sequence=release_sequence,
+        expires_at=expires_at,
+        catalog_version=catalog_version,
+        issued_at=issued_at,
+        payload=payload,
+        packages=tuple(references),
+    )
 
 
 def compute_revision(catalog_json: str) -> str:
@@ -73,9 +307,7 @@ def _build_summary(payload: dict[str, Any]) -> list[SpeechCatalogModelSummary]:
                 continue
             plat = pkg.get('platform') or {}
             if isinstance(plat, dict):
-                platforms.append(
-                    f'{plat.get("os", "")}-{plat.get("arch", "")}-{plat.get("acceleration", "")}'
-                )
+                platforms.append(f'{plat.get("os", "")}-{plat.get("arch", "")}-{plat.get("acceleration", "")}')
         summaries.append(
             SpeechCatalogModelSummary(
                 model_id=str(model.get('model_id', '')),
@@ -112,9 +344,7 @@ class SpeechCatalogService:
     @staticmethod
     async def _get_row(db: AsyncSession) -> HasnSpeechCatalog | None:
         return (
-            await db.execute(
-                sa.select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == _CONFIG_KEY).limit(1)
-            )
+            await db.execute(sa.select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == _CONFIG_KEY).limit(1))
         ).scalar_one_or_none()
 
     async def get_node_response(self, db: AsyncSession) -> SpeechCatalogNodeResponse:
@@ -164,7 +394,10 @@ class SpeechCatalogService:
         referencing = _packages_referencing(payload, object_key)
         if not referencing:
             raise errors.RequestError(
-                msg=f'catalog 无任何平台包 URL 指向 object_key={object_key}（发布方 --package-url 与 object_key 不一致）'
+                msg=(
+                    f'catalog 无任何平台包 URL 指向 object_key={object_key}'
+                    '（发布方 --package-url 与 object_key 不一致）'
+                )
             )
 
         # 一致性预检 2：本次 zip 的 sha256 必须与指向它的包声明一致（发布方 sha256 与实际文件对拍）。
@@ -172,9 +405,7 @@ class SpeechCatalogService:
         for pkg in referencing:
             declared = str(pkg.get('sha256', '')).lower()
             if declared and declared != actual_sha256.lower():
-                raise errors.RequestError(
-                    msg=f'zip sha256 不匹配 catalog 声明：实际 {actual_sha256}，声明 {declared}'
-                )
+                raise errors.RequestError(msg=f'zip sha256 不匹配 catalog 声明：实际 {actual_sha256}，声明 {declared}')
 
         # 落公开桶（category=speech_model → public·不签名·长效直链）。
         ref = await StorageService.upload(
