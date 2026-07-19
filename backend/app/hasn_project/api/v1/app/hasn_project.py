@@ -53,7 +53,7 @@ async def app_create_project(
     name='project_app_get_project',
 )
 async def app_get_project(request: Request, db: CurrentSession, pk: Annotated[str, Path()]) -> ResponseModel:
-    """取项目详情：基本信息 + 里程碑轨(milestones) + 产物流并集读(artifact_flow)。owner 隔离由 service 兜。"""
+    """取项目详情：基本信息 + 里程碑轨 + 挂靠资源 + 产物流并集读。owner 隔离由 service 兜。"""
     owner = await resolve_owner(db, request)
     detail = await project_service.get_project(db, owner=owner, pk=pk)
     detail['artifact_flow'] = await project_service.project_artifact_flow(db, owner=owner, project_id=pk)
@@ -162,8 +162,14 @@ async def app_unlink_resource(
     pk: Annotated[str, Path()],
     body: Annotated[dict[str, Any], Body()],
 ) -> ResponseModel:
-    """把 ``resource_uri`` 指向的资源从项目摘出（挂靠列置 NULL）。资源 owner 隔离由注册表 adapter 兜。"""
+    """把资源从指定项目摘出；校验项目 owner，并由注册表拒绝误摘其它项目。"""
     owner = await resolve_owner(db, request)
-    result = await project_linkage_registry.unlink(db, owner=owner, resource_uri=str(body.get('resource_uri') or ''))
+    await project_service.assert_owned(db, owner=owner, pk=pk)
+    result = await project_linkage_registry.unlink(
+        db,
+        owner=owner,
+        resource_uri=str(body.get('resource_uri') or ''),
+        project_id=pk,
+    )
     await bump_project_sync(db, owner)
     return response_base.success(data=result)
