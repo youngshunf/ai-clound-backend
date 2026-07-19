@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+from backend.app.hasn_finance.service.finance_read_service import serialize_resource_detail
 from backend.common.exception import errors
 from backend.common.log import log
 
@@ -184,7 +185,12 @@ class FinanceSyncService:
         if base_revision is not None and int(row.revision) != int(base_revision):
             raise errors.ConflictError(
                 msg='版本冲突：云端已被其他设备更新，请据服务端快照重放',
-                data={'server_id': str(row.id), 'revision': int(row.revision), 'conflict': True},
+                data={
+                    'server_id': str(row.id),
+                    'revision': int(row.revision),
+                    'conflict': True,
+                    'snapshot': serialize_resource_detail(row),
+                },
             )
 
         if op == 'delete':

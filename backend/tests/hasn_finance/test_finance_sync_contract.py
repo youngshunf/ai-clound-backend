@@ -198,12 +198,25 @@ async def test_sync_update_bumps_revision_then_conflict_on_stale_base() -> None:
             row = (await db.execute(sa.select(ResearchReport).where(ResearchReport.id == int(sid)))).scalar_one()
             assert row.title == '新标题' and row.last_client_op_id == 'op-2'
 
-            with pytest.raises(errors.ConflictError):  # base_revision=1 落后于当前 2
+            with pytest.raises(errors.ConflictError) as conflict:  # base_revision=1 落后于当前 2
                 await finance_sync_service.sync_product(
                     db, model_cls=ResearchReport, resource_kind='finance.research_report', owner_id=owner,
                     op='update', op_id='op-3', base_revision=1, local_ref=None, server_id=sid,
                     fields={'title': '再改'}, agent_hasn_id=agent,
                 )
+            evidence = conflict.value.data
+            assert evidence['conflict'] is True
+            assert evidence['server_id'] == sid
+            assert evidence['revision'] == 2
+            snapshot = evidence['snapshot']
+            assert snapshot['id'] == int(sid)
+            assert snapshot['revision'] == 2
+            assert snapshot['title'] == '新标题'
+            assert snapshot['body_md'] == ''
+            assert snapshot['findings_json'] == [{'point': '毛利率提升'}]
+            assert snapshot['status'] == 'active'
+            assert 'local_ref' not in snapshot
+            assert 'last_client_op_id' not in snapshot
         finally:
             await db.rollback()
 
