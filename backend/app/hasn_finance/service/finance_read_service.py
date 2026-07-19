@@ -94,6 +94,15 @@ def _serialize(row: Any, *, exclude: frozenset[str]) -> dict[str, Any]:
     return {col.name: getattr(row, col.name) for col in row.__table__.columns if col.name not in exclude}
 
 
+def serialize_resource_detail(row: Any) -> dict[str, Any]:
+    """序列化完整可比较资源快照，统一供详情 GET 与 409 冲突证据使用。
+
+    两条路径必须同源，否则冲突弹窗展示的远端内容可能与主人随后刷新到的详情不一致。服务端内部
+    幂等字段始终剔除；业务重字段保留，确保主人能比较并恢复任一版本。
+    """
+    return _serialize(row, exclude=_INTERNAL_FIELDS)
+
+
 def _apply_filters(stmt: Any, model_cls: Any, resource_kind: str, filters: dict[str, Any] | None) -> Any:
     """按白名单 apply 过滤条件；非白名单键/空值一律忽略。"""
     allowed = _FILTERABLE.get(resource_kind, frozenset())
@@ -153,7 +162,7 @@ class FinanceReadService:
         row = (await db.execute(stmt)).scalars().first()
         if row is None:
             raise errors.NotFoundError(msg='资源不存在')
-        return _serialize(row, exclude=_INTERNAL_FIELDS)
+        return serialize_resource_detail(row)
 
 
 finance_read_service: FinanceReadService = FinanceReadService()
