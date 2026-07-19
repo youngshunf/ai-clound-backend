@@ -60,6 +60,11 @@ def _max_perm(a: str, b: str) -> str:
     return a if rank(a) >= rank(b) else b
 
 
+# 永不可分享的资源类型（doc38 finance §6 / 05 §6 · C5 隐私红线）：策略源码含可执行代码，
+# 服务端硬拒分享——不能只藏 UI（分身/主人误分享即泄漏可执行策略）。
+_NON_SHAREABLE_RESOURCE_TYPES = frozenset({'finance.strategy'})
+
+
 class ResourceShareService:
     """通用产物共享 + 有效权限判定。所有方法第一参数 db。"""
 
@@ -295,6 +300,9 @@ class ResourceShareService:
         （`rank(permission) ≤ rank(granter_permission)`，防越权提权——如被分享的 editor 不得把别人设成 manager）。
         不传（None）= 沿旧行为不校验（owner 直授路径已由 owner=manager 自然满足，无需显式上限）。
         """
+        # finance 策略含可执行代码，服务端永不允许分享（doc38 §6 / 05 §6 · C5）——先于 fail-closed 判。
+        if resource_type in _NON_SHAREABLE_RESOURCE_TYPES:
+            raise errors.ForbiddenError(msg='策略含可执行代码，不支持分享')
         # fail-closed：注册表无此 resource_type 的 adapter → 拒绝建行（能分享必能判·doc33 S2-5）。
         if resource_type not in resource_kind_registry.registered_types():
             raise errors.ServerError(

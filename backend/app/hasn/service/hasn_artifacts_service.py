@@ -295,6 +295,26 @@ class HasnArtifactsService:
         """
         return (descriptor.artifact_kind or 'resource').strip() or 'resource'
 
+    @staticmethod
+    def _build_origin_ref(descriptor: ResourceDescriptor, *, app_id: str, server_id: str) -> str:
+        """据 descriptor 派生 origin_ref——**全仓唯一拼接点**，调用方不得手拼补丁（05 §1.2 第 4 条）。
+
+        `ref_type` 是 **opt-in** 的（`resolve_resource_descriptor` 的两种模式）：
+
+        - **单资源应用**（deck/reel/design/knowledge，均未声明 `ref_type`）→ `resource:{app}:{id}`，
+          解析时整段作 id。保持历史行为不动。
+        - **多资源应用**（plan 的 goal/plan、finance 的 6 类）→ `resource:{app}:{ref_type}:{id}`。
+          少了 `ref_type` 段，`resolve_resource_descriptor` 拿 `42` 去 partition 会返 `(None, None)`，
+          完成卡就丢掉资源入口——这正是本函数以前硬编码单资源形状留下的坑。
+
+        判据是「要不要按业务对象反查」：finance 要支持从策略/影子账户详情页派分身协作，
+        那条链路靠 `work_session.origin_ref` 的 `ref_type` 段反查是哪类资源。
+        """
+        ref_type = (descriptor.ref_type or '').strip()
+        if ref_type:
+            return f'resource:{app_id}:{ref_type}:{server_id}'
+        return f'resource:{app_id}:{server_id}'
+
     @classmethod
     async def record_app_resource_artifact(
         cls,
@@ -334,6 +354,7 @@ class HasnArtifactsService:
         resource_uri = descriptor.build_uri(server_id)
         kind = cls._resolve_artifact_kind(descriptor)
         effective_dispatch_id = dispatch_id or f'{app_id}:{server_id}'
+        origin_ref = cls._build_origin_ref(descriptor, app_id=app_id, server_id=server_id)
 
         # UPSERT：应用资源无 asset_id（record 的 dispatch_id+asset_id 去重键不适用），按
         # (agent, dispatch_id, resource_uri) 查既有 active 行。命中即**就地推进**（register-on-write
@@ -359,6 +380,12 @@ class HasnArtifactsService:
             # descriptor 是权威：resource_kind 随 descriptor 自愈（存量行在下次写点补上）。
             if existing_row.resource_kind != descriptor.resource_kind:
                 existing_row.resource_kind = descriptor.resource_kind
+                changed = True
+            # origin_ref 同样随 descriptor 自愈（05 §1.2 第 4 条）：应用后来声明 ref_type 进入多资源模式后，
+            # 存量行仍是旧的 resource:{app}:{id} 单资源形状 —— 那形状喂给 resolve_resource_descriptor
+            # 会返 (None, None)，从此按业务对象反查不到、完成卡丢资源入口。下次写点即修正。
+            if existing_row.origin_ref != origin_ref:
+                existing_row.origin_ref = origin_ref
                 changed = True
             if session_id and existing_row.session_id != session_id:
                 existing_row.session_id = session_id
@@ -397,8 +424,9 @@ class HasnArtifactsService:
             title=(title or None),
             summary=(summary or None),
             resource_uri=resource_uri,
-            # origin_ref 存**云端权威** resource:{app}:{server_id}（不存本地 id），按业务对象可反查产物。
-            origin_ref=f'resource:{app_id}:{server_id}',
+            # origin_ref 存**云端权威** id（不存本地 id），按业务对象可反查产物；
+            # 多资源应用带 ref_type 段，形状由 _build_origin_ref 唯一决定。
+            origin_ref=origin_ref,
             session_id=(session_id or None),
             # doc38 §5.1：产物挂靠平台项目（可空；仅聚合过滤键，非权限边界）。
             project_id=(project_id or None),
@@ -729,6 +757,30 @@ class HasnArtifactsService:
         )
         if result.rowcount == 0:
             raise errors.NotFoundError(msg='产物不存在或无权删除')
+
+    @classmethod
+    async def soft_delete_by_resource_uri(cls, db: AsyncSession, *, owner_hasn_id: str, resource_uri: str) -> int:
+        """按 (owner, resource_uri) strict 软删该资源的**全部** active 指针，返回软删条数。
+
+        finance 等本地优先应用删除资源时用（05 §5.3a delete 分支）：业务行标 deleted 的同一
+        云端事务里，把 hasn_artifacts 里指向这条 hasn://... 的所有 active 产物指针一并软删——
+        否则留下「业务已删、产物栏仍是活链接」的分叉。与 soft_delete(artifact_id) 的区别是这里
+        按资源 URI 批量（登记 UPSERT 去重后通常一行，但按 URI 删才是删除语义的正确表达）。
+
+        strict 语义：调用方在 :sync 同事务内调它，DB 异常必须外抛触发整体回滚（不吞错）。
+        软删 0 行是**允许**的——资源从未被登记（如主人手建未参与分身、或登记曾失败）不是错误，
+        删除照常推进；不像 soft_delete(artifact_id) 那样把 0 行当 404。
+        """
+        result = await db.execute(
+            update(HasnArtifacts)
+            .where(
+                HasnArtifacts.owner_hasn_id == owner_hasn_id,
+                HasnArtifacts.resource_uri == resource_uri,
+                HasnArtifacts.status == 'active',
+            )
+            .values(status='deleted')
+        )
+        return result.rowcount or 0
 
 
 hasn_artifacts_service: HasnArtifactsService = HasnArtifactsService()

@@ -53,6 +53,8 @@ class ArtifactStub(_ArtifactBase):
     conversation_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, nullable=True)
     message_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, nullable=True)
     session_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, nullable=True)
+    # doc38 §5.1 平台项目挂靠（可空；仅聚合过滤键，非权限边界）。生产是 UUID，SQLite 用 String 承接。
+    project_id: Mapped[str | None] = mapped_column(sa.String(36), default=None, nullable=True)
     source_tool: Mapped[str | None] = mapped_column(sa.String(128), default=None, nullable=True)
     source_kind: Mapped[str] = mapped_column(sa.String(16), default='')
     dispatch_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, nullable=True)
@@ -256,3 +258,86 @@ def test_descriptor_rejects_non_enum_artifact_kind() -> None:
                 'card': {'verb': 'X', 'action_label': '打开 X'},
                 'artifact_kind': bad,
             })
+
+
+# ── 多资源模式（05 §1.2 第 4 条）──────────────────────────────────────────
+# finance 是首个声明 ref_type 的应用（6 类产物），plan 早就声明了 goal/plan。
+_FINANCE_STRATEGY_DESCRIPTOR = ResourceDescriptor.model_validate({
+    'resource_kind': 'finance.strategy',
+    'ref_type': 'strategy',
+    'uri_domain': 'finance/strategies',
+    'open': {'mode': 'internal_route', 'route_template': '/apps/finance/strategies/:id'},
+    'card': {'verb': '策略', 'action_label': '打开策略'},
+    'artifact_kind': 'resource',
+})
+
+
+@pytest.mark.asyncio
+async def test_origin_ref_carries_ref_type_for_multi_resource_app(db_session: AsyncSession) -> None:
+    """声明 ref_type 的应用 → origin_ref=resource:{app}:{ref_type}:{id}，能被 resolve 反查回来。
+
+    少了 ref_type 段，resolve_resource_descriptor 拿 '42' 去 partition(':') 分不出子类，
+    返 (None, None) → 完成卡丢资源入口、按业务对象反查不到。
+    """
+    registration = await HasnArtifactsService.record_app_resource_artifact(
+        db_session,
+        descriptor=_FINANCE_STRATEGY_DESCRIPTOR,
+        server_id='42',
+        session_id='sess_fin',
+        agent_hasn_id='a_quant',
+        owner_hasn_id='h_owner',
+        title='双均线择时',
+    )
+    row = (
+        await db_session.execute(
+            sa.select(ArtifactStub).where(ArtifactStub.artifact_id == registration.artifact_id)
+        )
+    ).scalar_one()
+    assert row.origin_ref == 'resource:finance:strategy:42'
+    # URI 仍只由 descriptor.build_uri 拼，用云端权威 id。
+    assert row.resource_uri == 'hasn://finance/strategies/42'
+
+
+@pytest.mark.asyncio
+async def test_origin_ref_heals_legacy_single_resource_shape(db_session: AsyncSession) -> None:
+    """存量行是旧的单资源形状 → 下次写点即自愈成带 ref_type 的形状（05 §1.2 第 4 条）。
+
+    应用后来才声明 ref_type（plan 就是这个处境）时，历史行仍是 resource:{app}:{id}，
+    反查永远失败。descriptor 是权威，命中既有行就修正。
+    """
+    first = await HasnArtifactsService.record_app_resource_artifact(
+        db_session,
+        descriptor=_FINANCE_STRATEGY_DESCRIPTOR,
+        server_id='42',
+        session_id='sess_fin',
+        agent_hasn_id='a_quant',
+        owner_hasn_id='h_owner',
+        title='双均线择时',
+    )
+    # 造一条「声明 ref_type 之前登记的」存量行形状。
+    row = (
+        await db_session.execute(
+            sa.select(ArtifactStub).where(ArtifactStub.artifact_id == first.artifact_id)
+        )
+    ).scalar_one()
+    row.origin_ref = 'resource:finance:42'
+    await db_session.flush()
+
+    # 同一资源再写一次（register-on-write：策略改稿）。
+    again = await HasnArtifactsService.record_app_resource_artifact(
+        db_session,
+        descriptor=_FINANCE_STRATEGY_DESCRIPTOR,
+        server_id='42',
+        session_id='sess_fin',
+        agent_hasn_id='a_quant',
+        owner_hasn_id='h_owner',
+        title='双均线择时 v2',
+    )
+    assert again.artifact_id == first.artifact_id  # UPSERT 就地推进，不重复登记
+    healed = (
+        await db_session.execute(
+            sa.select(ArtifactStub).where(ArtifactStub.artifact_id == first.artifact_id)
+        )
+    ).scalar_one()
+    assert healed.origin_ref == 'resource:finance:strategy:42'
+    assert await _count_rows(db_session) == 1

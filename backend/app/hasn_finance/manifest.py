@@ -32,6 +32,64 @@ _AUDIT_FIELDS = [
 
 _SCOPE_READ = 'finance:read'
 
+# 资源描述符（doc31 §2 / 05 §1.1 权威表）：finance 是**多资源**应用——六类产物各占一个
+# `hasn://finance/<域>/{id}` 域。**本模块必须声明 `ref_type`**（有意识的决策，05 §1.2 第 4 条）：
+# `ref_type` 是 opt-in 的——任一 descriptor 声明它，整个 app 进多资源模式，此后 register-on-write 的
+# `origin_ref` 恒为 `resource:finance:{ref_type}:{server_id}`（如 resource:finance:strategy:42），
+# 派发工作会话据 `origin_ref` 的 `ref_type` 段反查是哪类资源。判据是**要不要按业务对象反查**：流程 B/C
+# 要支持「从策略详情页 / 影子账户详情页直接派分身协作」，那条链路正靠 ref_type 段选中本 descriptor。
+# URI 只准由 `ResourceDescriptor.build_uri()` 拼（全仓唯一拼接点），别处不得再写 f'hasn://finance/...'。
+_FINANCE_RESOURCES = [
+    {
+        'resource_kind': 'finance.research_report',
+        'ref_type': 'research',  # origin_ref=resource:finance:research:{id}
+        'uri_domain': 'finance/reports',  # → hasn://finance/reports/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/reports/:id'},
+        'card': {'verb': '投研报告', 'action_label': '打开报告'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.strategy',
+        'ref_type': 'strategy',  # origin_ref=resource:finance:strategy:{id}
+        'uri_domain': 'finance/strategies',  # → hasn://finance/strategies/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/strategies/:id'},
+        'card': {'verb': '策略', 'action_label': '打开策略'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.backtest_report',
+        'ref_type': 'backtest',  # origin_ref=resource:finance:backtest:{id}
+        'uri_domain': 'finance/backtests',  # → hasn://finance/backtests/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/backtests/:id'},
+        'card': {'verb': '回测报告', 'action_label': '打开回测'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.trade_review',
+        'ref_type': 'review',  # origin_ref=resource:finance:review:{id}
+        'uri_domain': 'finance/reviews',  # → hasn://finance/reviews/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/reviews/:id'},
+        'card': {'verb': '复盘报告', 'action_label': '打开复盘'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.shadow_account',
+        'ref_type': 'shadow',  # origin_ref=resource:finance:shadow:{id}
+        'uri_domain': 'finance/shadow',  # → hasn://finance/shadow/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/shadow/:id'},
+        'card': {'verb': '影子账户', 'action_label': '打开账户'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.watch_briefing',
+        'ref_type': 'briefing',  # origin_ref=resource:finance:briefing:{id}
+        'uri_domain': 'finance/briefings',  # → hasn://finance/briefings/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/briefings/:id'},
+        'card': {'verb': '盯盘简报', 'action_label': '打开简报'},
+        'artifact_kind': 'resource',
+    },
+]
+
 # 通用历史 K 线入参（A股/港股/美股/指数共用骨架）。
 _KLINE_PROPS = {
     'symbol': {'type': 'string', 'minLength': 1, 'description': '标的代码（A股 6 位如 600519 / 港股 5 位如 00700 / 美股如 105.AAPL / 指数如 000001）'},
@@ -295,6 +353,8 @@ FINANCE_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    # 六类产物资源描述符（05 §1.1）：完成卡 / 工作会话资源栏 / URI 解析 / 详情跳转全从这份声明派生。
+    'resources': _FINANCE_RESOURCES,
     'execution_mode': 'cloud',
     # 云端工具模型（对齐 growth/creator）：工具数据面经 gateway_internal 进程内直调云端 handler → provider →
     # finance-data-service，不经本地 hasn-mcp / daemon Agent 代理（金融数据无本地文件/电脑操作的理由）。

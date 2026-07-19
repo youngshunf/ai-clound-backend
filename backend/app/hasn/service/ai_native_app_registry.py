@@ -26,6 +26,7 @@ from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFE
 from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
+from backend.app.hasn_finance.service import project_linkage as _finance_project_linkage  # noqa: F401
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
 from backend.app.hasn_knowledge.service import resource_adapter as _knowledge_resource_adapter  # noqa: F401
