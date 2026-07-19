@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, get_args
 from backend.app.hasn.schema.hasn_artifacts import ArtifactKind, RecordArtifactParam
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+from backend.app.mcp.context import get_current_project_id
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 
@@ -70,6 +71,15 @@ _RESOURCE_KIND_PROP = {
     'description': (
         '按应用内资源类型过滤（可选，如 knowledge.base/deck.presentation）。'
         '应用资源的 kind 恒为 resource，要分「是什么」得用这个；取值用 hasn.artifact.domains 查'
+    ),
+}
+# doc95 §6.4 项目轴过滤（list/search 共用）。缺省不用分身自己填——分身在项目工作会话内工作时，
+# 系统注入的 `_hasn_project_id` 已进 ContextVar，缺省即收窄到本项目；显式传则覆盖（跨项目查用）。
+_PROJECT_ID_PROP = {
+    'type': 'string',
+    'description': (
+        '按平台项目过滤（可选）。只看某项目下产出的产物——通常不用自己填，'
+        '在项目里干活时缺省即收窄到本项目；跨项目查才显式传云端权威 project_id'
     ),
 }
 
@@ -255,6 +265,17 @@ def _app_filters(arguments: dict[str, Any]) -> tuple[str | None, str | None]:
     return source_app_id, resource_kind
 
 
+def _project_id_filter(arguments: dict[str, Any]) -> str | None:
+    """归一 doc95 §6.4 项目轴过滤键：显式 `project_id` 优先，缺省回落当前工作会话的项目 ContextVar。
+
+    分身在项目工作会话内调 list/search 时，系统注入的 `_hasn_project_id` 已进 ContextVar
+    （与 register-on-write 打标同一管道），缺省即收窄到本项目——分身不必显式传；显式传（空串
+    除外）则覆盖 ContextVar，用于跨项目查。
+    """
+    explicit = (arguments.get('project_id') or '').strip()
+    return explicit or get_current_project_id()
+
+
 class ArtifactListTool(BaseTool):
     """`hasn.artifact.list`：列**本分身**的产物时间线（按 app/resource_kind/kind/session 过滤、分页）。"""
 
@@ -303,6 +324,7 @@ class ArtifactListTool(BaseTool):
                 },
                 'app': _APP_PROP,
                 'resource_kind': _RESOURCE_KIND_PROP,
+                'project_id': _PROJECT_ID_PROP,
                 'session_id': {
                     'type': 'string',
                     'description': '只看某工作会话产出的（可选，找我这个任务里产的东西）',
@@ -323,6 +345,7 @@ class ArtifactListTool(BaseTool):
         kind = (arguments.get('kind') or '').strip() or None
         session_id = (arguments.get('session_id') or '').strip() or None
         source_app_id, resource_kind = _app_filters(arguments)
+        project_id = _project_id_filter(arguments)
         async with async_db_session() as db:
             items, total = await hasn_artifacts_service.list_by_agent(
                 db,
@@ -334,6 +357,7 @@ class ArtifactListTool(BaseTool):
                 session_id=session_id,
                 source_app_id=source_app_id,
                 resource_kind=resource_kind,
+                project_id=project_id,
             )
         return {
             'items': [_project_list_item(it) for it in items],
@@ -389,6 +413,7 @@ class ArtifactSearchTool(BaseTool):
                 },
                 'app': _APP_PROP,
                 'resource_kind': _RESOURCE_KIND_PROP,
+                'project_id': _PROJECT_ID_PROP,
                 'session_id': {'type': 'string', 'description': '只看某工作会话产出的（可选）'},
                 'page': {'type': 'integer', 'description': '页码（默认 1）'},
                 'size': {
@@ -412,6 +437,7 @@ class ArtifactSearchTool(BaseTool):
         kind = (arguments.get('kind') or '').strip() or None
         session_id = (arguments.get('session_id') or '').strip() or None
         source_app_id, resource_kind = _app_filters(arguments)
+        project_id = _project_id_filter(arguments)
         async with async_db_session() as db:
             items, total = await hasn_artifacts_service.list_by_agent(
                 db,
@@ -424,6 +450,7 @@ class ArtifactSearchTool(BaseTool):
                 session_id=session_id,
                 source_app_id=source_app_id,
                 resource_kind=resource_kind,
+                project_id=project_id,
             )
         return {
             'items': [_project_list_item(it) for it in items],

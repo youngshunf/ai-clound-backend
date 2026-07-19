@@ -45,6 +45,10 @@ class McpErrorCode(Enum):
     # `data` 携完整 AccessDecision（reason/offer/feature_key），供 daemon→webui PaywallDialog 渲染。
     # 取下一个空位 9219；与 9217/9218 一样**不复用** 9215，避免被误判成待审批换票流程。
     WORKFLOW_TEMPLATE_ENTITLEMENT_REQUIRED = "MCP_9219"
+    # P9-B 场景工作流项目轴实例化硬闸（doc11 §6.1 / doc95 §2.1）：场景实例化未解析出所属平台项目。
+    # 三级取值优先级（显式入参 ＞ ContextVar 继承 ＞ 全局兜底）全落空后结构化拒绝——分身据此回头
+    # 问主人「这个场景挂到哪个项目下」，而不是随便挑一个项目。取下一个空位 9220。
+    PROJECT_REQUIRED = "MCP_9220"
 
     def __str__(self) -> str:
         return f"{self.value} {self.name}"

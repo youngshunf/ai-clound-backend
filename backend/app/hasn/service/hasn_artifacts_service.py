@@ -217,6 +217,10 @@ class HasnArtifactsService:
                 if params.summary:
                     local_row.summary = params.summary
                 local_row.kind = kind
+                # project_id 只进不退（doc38 §5.1 自动打标·只进不退）：本地文件在一次会话里反复写，
+                # 首次带上 project_id 后即锁定；后续非项目直调（project_id=None）不得把它抹成 None。
+                if params.project_id and str(local_row.project_id or '') != params.project_id:
+                    local_row.project_id = params.project_id
                 if params.metadata:
                     local_row.meta_data = params.metadata
                 await db.flush()
@@ -256,6 +260,7 @@ class HasnArtifactsService:
             conversation_id=conv,
             message_id=params.message_id,
             session_id=(params.session_id or None),
+            project_id=(params.project_id or None),
             source_tool=(params.source_tool or None),
             source_app_id=(params.source_app_id or None),
             source_kind=source_kind,
@@ -509,6 +514,7 @@ class HasnArtifactsService:
         session_id: str | None = None,
         source_app_id: str | None = None,
         resource_kind: str | None = None,
+        project_id: str | None = None,
     ) -> tuple[list[ArtifactItem], int]:
         """列某分身的产物（时间线倒序）。先校验归属，再批量解析图片缩略图。
 
@@ -521,6 +527,9 @@ class HasnArtifactsService:
           分类），于是 18 个应用的资源全挤在同一个桶里、按 kind 筛等于没筛。应用维度的答案
           在 `source_app_id`（哪个应用）+ `resource_kind`（是什么）这两列上，本就已落库，
           只是查询面一直没开出去。
+        - `project_id`（doc95 §6.4 项目轴）：只看某平台项目下产出的产物——分身在项目工作会话内
+          收到「本项目全链路产物索引」后，用它把 list/search 收窄到本项目。`project_id` 是聚合
+          过滤键、**不是权限边界**（归属仍由 owner+agent 隔离兜底）。
         """
         if not await cls._owns_agent(db, owner_hasn_id=owner_hasn_id, agent_hasn_id=agent_hasn_id):
             raise errors.ForbiddenError(msg='无权查看该分身的产物')
@@ -538,6 +547,8 @@ class HasnArtifactsService:
             conds.append(HasnArtifacts.source_app_id == source_app_id)
         if resource_kind:
             conds.append(HasnArtifacts.resource_kind == resource_kind)
+        if project_id:
+            conds.append(HasnArtifacts.project_id == project_id)
         if keyword:
             # 切词：每词 OR 命中 title/summary，词间 AND（全部命中才算匹配）。空词跳过。
             for word in keyword.split():

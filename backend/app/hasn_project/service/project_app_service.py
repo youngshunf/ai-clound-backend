@@ -128,6 +128,31 @@ class ProjectService:
         """校验项目归属（不存在/非本人 → 404）。link/unlink 前置校验用（挂靠不写他人项目）。"""
         await self._get_project(db, owner=owner, pk=pk)
 
+    async def resolve_open_for_new_workflow(
+        self, db: AsyncSession, *, owner: str, project_id: str | UUID
+    ) -> HasnProject:
+        """场景工作流实例化硬闸的项目校验（doc95 §2.1）：解析平台项目并确认可在其中新开场景。
+
+        刻意**不按 owner 过滤查询**——要区分「项目不存在」与「项目存在但属他人」两种情况：
+        1. 不存在 → 404；
+        2. 跨 owner → **403**（不是 404，不做存在性隐藏——项目不是权限边界，越权就是越权）；
+        3. 归档项目 → 结构化拒绝（archived 可读不可新开，与 doc38 §6 一致）。
+        """
+        pk = _as_uuid(project_id)
+        row = (
+            await db.execute(sa.select(HasnProject).where(HasnProject.id == pk))
+        ).scalar_one_or_none()
+        if row is None:
+            raise errors.NotFoundError(msg='平台项目不存在')
+        if row.owner_id != owner:
+            # 跨 owner：项目不是权限边界，越权即越权 → 403（非 404，不做存在性隐藏假装不存在）
+            raise errors.ForbiddenError(
+                msg='无权在他人的项目中开启场景', data={'error_code': 'project_cross_owner'}
+            )
+        if row.status == 'archived':
+            raise _err('project_archived', '项目已归档，不能在其中开启新场景')
+        return row
+
     async def create_project(
         self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: str | UUID | None = None
     ) -> dict:

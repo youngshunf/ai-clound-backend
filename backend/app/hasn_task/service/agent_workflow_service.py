@@ -10,6 +10,7 @@ Agent JWT 通道的工作流读写（owner = agent.owner_hasn_id，跨户恒 Not
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -121,6 +122,8 @@ def workflow_to_public(wf: HasnWorkflow) -> dict[str, Any]:
         'status': wf.status,
         'enabled': wf.enabled,
         'source': wf.source,
+        # 平台项目挂靠（doc38·实施95 P9-A）：云端权威 id 序列化为字符串（None=裸工程图未挂项目）。
+        'project_id': str(wf.project_id) if wf.project_id else None,
         'created_by_kind': wf.created_by_kind,
         'continuation_enabled': wf.continuation_enabled,
         'next_run_at': _iso(wf.next_run_at),
@@ -198,8 +201,11 @@ class AgentWorkflowService:
         return {r['node_key']: r['status'] for r in rows.mappings().all()}
 
     @classmethod
-    async def list_workflows(cls, db: AsyncSession, *, owner_id: str) -> list[dict[str, Any]]:
-        workflows = await workflow_service.list_workflows(db, owner_id=owner_id)
+    async def list_workflows(
+        cls, db: AsyncSession, *, owner_id: str, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列主人的工作流；`project_id` 给值则只返该项目下的（分身问「这个项目里有哪些工作流」时用）。"""
+        workflows = await workflow_service.list_workflows(db, owner_id=owner_id, project_id=project_id)
         return [workflow_to_public(wf) for wf in workflows]
 
     @staticmethod
@@ -407,6 +413,13 @@ class AgentWorkflowService:
             edges=edges,
         )
         wf = await workflow_service.create_workflow(db, owner_id=agent.owner_hasn_id, obj=obj)
+        # P9-B 场景工作流项目轴：实例化路径经硬闸解析出所属平台项目后，把 project_id 透传到这里落到
+        # workflow.project_id（场景实例必填、裸工程图为空）。CreateWorkflowParam 不带此列，故建图后
+        # 直接写 ORM 列（同一事务内 flush）。非实例化（裸 hasn.workflow.create）无 project_id → 保持 NULL。
+        raw_project_id = params.get('project_id')
+        if raw_project_id:
+            wf.project_id = raw_project_id if isinstance(raw_project_id, UUID) else UUID(str(raw_project_id))
+            await db.flush()
         if wf.status == 'pending_approval':
             await cls._notify_pending_approval(db, agent=agent, workflow_uuid=wf.workflow_uuid, name=wf.name)
         return workflow_to_public(wf)

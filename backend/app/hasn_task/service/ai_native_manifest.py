@@ -281,10 +281,16 @@ _WORKFLOW_CAPABILITIES = [
     _wcap(
         name='list',
         title='列工作流',
-        description='列主人的工作流（含状态/调度/最近执行）。',
+        description='列主人的工作流（含状态/调度/最近执行）。给 project_id 则只列该项目下的。',
         scope=_WSCOPE_READ,
         risk_level='low',
-        properties={'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20}},
+        properties={
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
+            'project_id': {
+                'type': 'string',
+                'description': '按所属平台项目筛选（hasn_project.id 云端权威 id）；不给则列全部',
+            },
+        },
         required=[],
         page_rank=39,
         tags=['workflow', 'list', 'read'],
@@ -466,6 +472,19 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
                 'skill_bundle_refs': {'type': 'array', 'description': '市场技能包引用（可选）'},
                 'continuation_enabled': {'type': 'boolean', 'default': False, 'description': '任务接续（D2）'},
                 'enable_subagents': {'type': 'boolean', 'default': False, 'description': '允许子分身（D5）'},
+                'project_id': {
+                    'type': ['string', 'null'],
+                    'description': '归属平台项目 id（云端权威 id，可选）',
+                },
+                'app_id': {'type': ['string', 'null'], 'description': '驱动应用 app_id（可选）'},
+                'execution_kind': {
+                    'enum': ['app_workflow', 'freeform'],
+                    'description': '执行方式：应用工作流或自由指令',
+                },
+                'execution_spec': {
+                    'type': 'object',
+                    'description': '执行规格：app_workflow 存 {app_id, workflow_ref, params}',
+                },
             },
             required=['name', 'prompt', 'schedule_type', 'schedule_config'],
             page_rank=10,
@@ -474,11 +493,21 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
         _cap(
             name='list',
             title='列任务',
-            description='列主人的任务（含状态/调度/下次执行）。',
+            description='列主人的任务（含状态/调度/下次执行/项目与应用归属）。',
             scope=_SCOPE_READ,
             risk_level='low',
             properties={
-                'state': {'type': ['string', 'null'], 'description': '按状态过滤（可选）'},
+                'filter': {
+                    'type': ['object', 'null'],
+                    'description': '任务过滤条件（可选）',
+                    'properties': {
+                        'project_id': {'type': ['string', 'null'], 'description': '按归属项目过滤'},
+                        'app_id': {'type': ['string', 'null'], 'description': '按驱动应用过滤'},
+                        'agent': {'type': ['string', 'null'], 'description': '按执行分身过滤'},
+                        'status': {'type': ['string', 'null'], 'description': '按任务状态过滤'},
+                    },
+                    'additionalProperties': False,
+                },
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
             },
             required=[],
@@ -515,6 +544,10 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
                 'timezone': {'type': ['string', 'null']},
                 'continuation_enabled': {'type': ['boolean', 'null']},
                 'enable_subagents': {'type': ['boolean', 'null']},
+                'project_id': {'type': ['string', 'null'], 'description': '归属平台项目 id'},
+                'app_id': {'type': ['string', 'null'], 'description': '驱动应用 app_id'},
+                'execution_kind': {'enum': ['app_workflow', 'freeform', None], 'description': '执行方式'},
+                'execution_spec': {'type': ['object', 'null'], 'description': '执行规格'},
             },
             required=['task_id'],
             page_rank=13,

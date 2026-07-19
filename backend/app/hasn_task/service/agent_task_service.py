@@ -23,6 +23,7 @@ import sqlalchemy as sa
 
 from backend.app.hasn.schema.hasn_sync import ClientEvent
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
+from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_task.service.task_service import calc_next_run_at
 from backend.app.notification.service.notification_service import notification_service
 from backend.common.exception import errors
@@ -47,6 +48,7 @@ _TASK_COLUMNS = (
     'schedule_type, schedule_config, schedule_display, risk_level, timezone, misfire_policy, '
     'enabled, state, next_run_at, last_run_at, last_status, run_count, repeat_times, repeat_completed, '
     'task_revision, created_by, created_by_kind, continuation_enabled, enable_subagents, '
+    'project_id, app_id, execution_kind, execution_spec, '
     'created_time, updated_time, deleted_at'
 )
 
@@ -78,6 +80,12 @@ def task_to_public(row: dict[str, Any]) -> dict[str, Any]:
         'continuation_enabled': bool(row.get('continuation_enabled')),
         'enable_subagents': bool(row.get('enable_subagents')),
         'created_by_kind': row.get('created_by_kind') or 'owner',
+        # 任务中心三轴四列（doc12 §6.1）：project_id 是 uuid 列（asyncpg 回 uuid.UUID）→ 投影转字符串；
+        # execution_spec 与 schedule_config 同法（asyncpg 可能回 dict 或 json 字符串，_as_dict 兼容两者）。
+        'project_id': str(row['project_id']) if row.get('project_id') else None,
+        'app_id': row.get('app_id'),
+        'execution_kind': row.get('execution_kind') or 'freeform',
+        'execution_spec': _as_dict(row.get('execution_spec')),
         'created_at': _iso(row.get('created_time')),
         'updated_at': _iso(row.get('updated_time')),
     }
@@ -128,17 +136,34 @@ class AgentTaskService:
 
     @staticmethod
     async def list_tasks(
-        db: AsyncSession, *, owner_id: str, state: str | None = None, limit: int = 20
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        state: str | None = None,
+        project_id: str | None = None,
+        app_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 20,
     ) -> list[dict[str, Any]]:
         clause = "owner_id = :o AND state <> 'deleted'"
         params: dict[str, Any] = {'o': owner_id, 'limit': max(1, min(limit, 100))}
         if state:
             clause += ' AND state = :s'
             params['s'] = state
+        # 任务中心三轴过滤（doc12 §6.1 项目/应用视角分组）：传了才加条件，走部分索引。
+        # project_id 是 uuid 列，绑定字符串经 CAST 显式转型，避免 asyncpg 参数类型歧义。
+        if project_id:
+            clause += ' AND project_id = CAST(:project_id AS uuid)'
+            params['project_id'] = str(project_id)
+        if app_id:
+            clause += ' AND app_id = :app_id'
+            params['app_id'] = str(app_id)
+        if agent_id:
+            clause += ' AND agent_id = :agent_id'
+            params['agent_id'] = str(agent_id)
         result = await db.execute(
             sa.text(
-                f'SELECT {_TASK_COLUMNS} FROM hasn_task.task WHERE {clause} '
-                'ORDER BY updated_time DESC LIMIT :limit'
+                f'SELECT {_TASK_COLUMNS} FROM hasn_task.task WHERE {clause} ORDER BY updated_time DESC LIMIT :limit'
             ),
             params,
         )
@@ -234,9 +259,7 @@ class AgentTaskService:
             payload={'task': payload},
             hasn_id=agent_hasn_id,
         )
-        await hasn_sync_service.gateway.save_task_event(
-            db, owner_id=owner_id, node_id=CLOUD_AGENT_NODE_ID, event=event
-        )
+        await hasn_sync_service.gateway.save_task_event(db, owner_id=owner_id, node_id=CLOUD_AGENT_NODE_ID, event=event)
         # LF-P3：任务变更后向该 owner 在线节点 push hasn.sync.invalidate{kind:tasks}，
         # 在线 daemon 秒级对账任务镜像 → daemon→webui 失效桥 → 任务页即时刷新（不再绑死轮询）。
         from backend.app.hasn.service.sync_invalidate_service import KIND_TASKS, bump_owner
@@ -273,11 +296,50 @@ class AgentTaskService:
             'created_by_kind': row.get('created_by_kind') or 'owner',
             'continuation_enabled': bool(row.get('continuation_enabled')),
             'enable_subagents': bool(row.get('enable_subagents')),
+            # 任务中心三轴（doc12 §6.1）：以当前行为底带上——否则 task.updated 事件 upsert 时
+            # EXCLUDED.project_id 等为空会把已存三轴清空（暂停/恢复/立即执行/审批等每次转换都会误清）。
+            'project_id': row.get('project_id'),
+            'app_id': row.get('app_id'),
+            'execution_kind': row.get('execution_kind') or 'freeform',
+            'execution_spec': _as_dict(row.get('execution_spec')),
             'created_at': _iso(row.get('created_time')),
             'updated_at': timezone.now().isoformat(),
         }
         payload.update(overrides)
         return payload
+
+    @staticmethod
+    async def _validate_task_axes(
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        project_id: Any,
+        app_id: Any,
+        execution_kind: Any,
+        execution_spec: dict[str, Any],
+    ) -> tuple[str, str | None, dict[str, Any]]:
+        """归一并校验任务中心项目、应用和执行方式契约。"""
+        kind = str(execution_kind or 'freeform').strip().lower()
+        if kind not in ('app_workflow', 'freeform'):
+            raise errors.RequestError(msg=f'未知执行方式: {kind}')
+        normalized_app_id = str(app_id).strip() if app_id not in (None, '') else None
+        spec = dict(execution_spec or {})
+        if project_id not in (None, ''):
+            await project_service.assert_owned(db, owner=owner_id, pk=str(project_id))
+        if kind == 'app_workflow':
+            if not normalized_app_id:
+                raise errors.RequestError(msg='应用工作流任务必须指定 app_id')
+            workflow_ref = str(spec.get('workflow_ref') or '').strip()
+            if not workflow_ref:
+                raise errors.RequestError(msg='应用工作流任务必须指定 execution_spec.workflow_ref')
+            spec_app_id = str(spec.get('app_id') or normalized_app_id).strip()
+            if spec_app_id != normalized_app_id:
+                raise errors.RequestError(msg='execution_spec.app_id 必须与任务 app_id 一致')
+            spec['app_id'] = normalized_app_id
+            spec['workflow_ref'] = workflow_ref
+            if spec.get('params') is not None and not isinstance(spec['params'], dict):
+                raise errors.RequestError(msg='execution_spec.params 必须是对象')
+        return kind, normalized_app_id, spec
 
     @classmethod
     async def create_task(
@@ -298,6 +360,18 @@ class AgentTaskService:
         risk_level = str(risk_raw).strip().lower() if risk_raw not in (None, '') else None
         if risk_level is not None and risk_level not in ('low', 'high'):
             raise errors.RequestError(msg=f'未知风险等级: {risk_level}')
+
+        # 任务中心三轴（doc12 §6.1）：项目/应用/执行方式。execution_kind 缺省 freeform（自由指令）；
+        # app_workflow 由应用驱动，execution_spec 存 {app_id, workflow_ref, params}，freeform 存 {prompt}。
+        project_id = params.get('project_id')
+        execution_kind, app_id, execution_spec = await cls._validate_task_axes(
+            db,
+            owner_id=owner_id,
+            project_id=project_id,
+            app_id=params.get('app_id'),
+            execution_kind=params.get('execution_kind'),
+            execution_spec=dict(params.get('execution_spec') or {}),
+        )
 
         now = timezone.now()
         # R4 幂等键：短窗口同参 → 返回已建任务而非新建
@@ -365,6 +439,11 @@ class AgentTaskService:
             'created_by_kind': 'agent',
             'continuation_enabled': bool(params.get('continuation_enabled')),
             'enable_subagents': bool(params.get('enable_subagents')),
+            # 任务中心三轴（doc12 §6.1）：随事件溯源 payload 贯通到存储行 + 下行镜像
+            'project_id': project_id,
+            'app_id': app_id,
+            'execution_kind': execution_kind,
+            'execution_spec': execution_spec,
             'created_at': now.isoformat(),
             'updated_at': now.isoformat(),
         }
@@ -398,7 +477,7 @@ class AgentTaskService:
         )
 
     @staticmethod
-    def _patch_overrides(row: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    def _patch_overrides(row: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:  # noqa: C901
         """patch → 事件 overrides（含 R2：调度变更且结果为周期 → 回 pending_approval）。"""
         overrides: dict[str, Any] = {}
         for field in ('name', 'description', 'prompt', 'system_prompt', 'timezone'):
@@ -407,6 +486,12 @@ class AgentTaskService:
         for field in ('continuation_enabled', 'enable_subagents'):
             if patch.get(field) is not None:
                 overrides[field] = bool(patch[field])
+        # 任务中心三轴（doc12 §6.1）：允许改归属项目/应用/执行方式（非 None 才覆盖，沿用本函数补丁语义）
+        for field in ('project_id', 'app_id', 'execution_kind'):
+            if patch.get(field) is not None:
+                overrides[field] = patch[field]
+        if patch.get('execution_spec') is not None:
+            overrides['execution_spec'] = dict(patch['execution_spec'])
 
         schedule_changed = False
         new_schedule_type = row['schedule_type']
@@ -436,6 +521,29 @@ class AgentTaskService:
         row = await cls.get_task_row(db, owner_id=agent.owner_hasn_id, task_uuid=task_uuid)
         if row['state'] == 'rejected':
             raise errors.RequestError(msg='任务已被主人拒绝，不可修改')
+
+        merged_kind = patch.get('execution_kind') or row.get('execution_kind') or 'freeform'
+        merged_project_id = patch.get('project_id') if patch.get('project_id') is not None else row.get('project_id')
+        merged_app_id = patch.get('app_id') if patch.get('app_id') is not None else row.get('app_id')
+        merged_spec = (
+            dict(patch['execution_spec'])
+            if patch.get('execution_spec') is not None
+            else _as_dict(row.get('execution_spec'))
+        )
+        normalized_kind, normalized_app_id, normalized_spec = await cls._validate_task_axes(
+            db,
+            owner_id=agent.owner_hasn_id,
+            project_id=merged_project_id,
+            app_id=merged_app_id,
+            execution_kind=merged_kind,
+            execution_spec=merged_spec,
+        )
+        if patch.get('execution_kind') is not None:
+            patch['execution_kind'] = normalized_kind
+        if patch.get('app_id') is not None:
+            patch['app_id'] = normalized_app_id
+        if patch.get('execution_spec') is not None:
+            patch['execution_spec'] = normalized_spec
 
         overrides = cls._patch_overrides(row, patch)
         payload = cls._event_payload_from_row(row, **overrides)

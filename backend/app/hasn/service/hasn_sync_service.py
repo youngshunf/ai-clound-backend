@@ -7,6 +7,7 @@ methods instead of generic table CRUD.
 from __future__ import annotations
 
 import json
+import uuid
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -840,6 +841,21 @@ class SqlAlchemySyncGateway:
             sort_keys=True,
             default=str,
         )
+        # 任务中心三轴四列（doc12 §6.1）：execution_spec 是 jsonb，照 schedule_config 先 json.dumps 再 CAST；
+        # project_id 是 uuid 列——绑「规范化字符串 + VALUES 处 CAST(:project_id AS uuid)」（asyncpg+SQLAlchemy 下
+        # 绑 uuid.UUID 对象到无类型上下文会 DataError，绑字符串经 CAST 才稳）；非法 uuid 降级为 NULL 保任务写入韧性
+        # （doc38：project_id 只是「为了哪件事」的业务归属标签，非权限边界，摘/删项目不中断执行）。
+        execution_spec = json.dumps(
+            stored_task['execution_spec'],
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        raw_project_id = stored_task.get('project_id')
+        try:
+            project_id_param = str(uuid.UUID(str(raw_project_id))) if raw_project_id else None
+        except ValueError:
+            project_id_param = None
         task_upsert_result = await db.execute(
             sa.text(
                 """
@@ -883,6 +899,10 @@ class SqlAlchemySyncGateway:
                     created_by_kind,
                     builtin_key,
                     builtin_synced_revision,
+                    project_id,
+                    app_id,
+                    execution_kind,
+                    execution_spec,
                     created_time,
                     updated_time
                 ) VALUES (
@@ -925,6 +945,10 @@ class SqlAlchemySyncGateway:
                     :created_by_kind,
                     :builtin_key,
                     :builtin_synced_revision,
+                    CAST(:project_id AS uuid),
+                    :app_id,
+                    :execution_kind,
+                    CAST(:execution_spec AS jsonb),
                     :created_time,
                     :updated_time
                 )
@@ -970,6 +994,10 @@ class SqlAlchemySyncGateway:
                     builtin_synced_revision = COALESCE(
                         EXCLUDED.builtin_synced_revision, hasn_task.task.builtin_synced_revision
                     ),
+                    project_id = EXCLUDED.project_id,
+                    app_id = EXCLUDED.app_id,
+                    execution_kind = EXCLUDED.execution_kind,
+                    execution_spec = EXCLUDED.execution_spec,
                     updated_time = EXCLUDED.updated_time
                 RETURNING id
                 """
@@ -985,6 +1013,9 @@ class SqlAlchemySyncGateway:
                 if stored_task['enabled_toolsets'] is not None
                 else None,
                 'schedule_config': schedule_config,
+                # 三轴四列：project_id 绑规范化 uuid 字符串（VALUES 处 CAST AS uuid），execution_spec 绑 json 字符串（CAST AS jsonb）
+                'project_id': project_id_param,
+                'execution_spec': execution_spec,
             },
         )
         # 把云端整型主键（bigserial id）回填进同步事件 payload 的 server_id。

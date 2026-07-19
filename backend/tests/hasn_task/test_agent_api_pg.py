@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_task.api.v1.agent.task import router as agent_task_router
 from backend.app.hasn_task.api.v1.app.task import router as app_task_router
 from backend.common.dataclasses import AgentTokenPayload
@@ -123,7 +124,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     tag = _uid()
     owner = f'h_tsk_{tag}'
     other_owner = f'h_tsk2_{tag}'
-    owner_uid = 960000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 9_600_000_000 + int(tag, 16)
     agent_hasn = f'a_tsk_{tag}'
     session.add(
         HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='Owner', status='active')
@@ -210,14 +211,83 @@ async def test_once_creates_scheduled_and_feed_event(e2e: SimpleNamespace) -> No
 
     # 权威行进 hasn_task.task + feed 进 hasn_sync_events（节点经 sync/pull 可拉）
     row = await e2e.session.execute(
-        text(
-            "SELECT payload FROM hasn_sync_events WHERE owner_id = :o AND event_type = 'task.created'"
-        ),
+        text("SELECT payload FROM hasn_sync_events WHERE owner_id = :o AND event_type = 'task.created'"),
         {'o': e2e.owner},
     )
     events = row.mappings().all()
     assert len(events) == 1
     assert events[0]['payload']['task_id'] == task['task_id']
+
+
+async def test_app_workflow_requires_app_and_workflow_ref(e2e: SimpleNamespace) -> None:
+    """app_workflow 缺应用或工作流引用时必须显式拒绝，完整规格才允许落库。"""
+    base = {
+        'name': '应用工作流任务',
+        'prompt': '按应用工作流执行',
+        'schedule_type': 'once',
+        'schedule_config': {'run_at': '2099-01-02T08:00:00+08:00'},
+        'execution_kind': 'app_workflow',
+    }
+    missing_app = await e2e.client.post(
+        '/api/v1/hasn-task/agent/tasks',
+        json={**base, 'execution_spec': {'workflow_ref': 'daily'}},
+    )
+    assert missing_app.status_code == 400, missing_app.text
+
+    missing_workflow = await e2e.client.post(
+        '/api/v1/hasn-task/agent/tasks',
+        json={**base, 'app_id': 'hasn_creator', 'execution_spec': {'params': {}}},
+    )
+    assert missing_workflow.status_code == 400, missing_workflow.text
+
+    created = await e2e.client.post(
+        '/api/v1/hasn-task/agent/tasks',
+        json={
+            **base,
+            'app_id': 'hasn_creator',
+            'execution_spec': {'app_id': 'hasn_creator', 'workflow_ref': 'daily', 'params': {'topic': 'AI'}},
+        },
+    )
+    assert created.status_code == 200, created.text
+    task = created.json()['data']['task']
+    assert task['app_id'] == 'hasn_creator'
+    assert task['execution_kind'] == 'app_workflow'
+    assert task['execution_spec']['workflow_ref'] == 'daily'
+
+
+async def test_project_id_must_belong_to_current_owner(e2e: SimpleNamespace) -> None:
+    """任务只能挂靠当前主人名下的平台项目，创建和更新都不能跨 owner。"""
+    own_project = await project_service.create_project(e2e.session, owner=e2e.owner, data={'name': '我的项目'})
+    foreign_project = await project_service.create_project(
+        e2e.session, owner=e2e.other_owner, data={'name': '他人项目'}
+    )
+
+    created = await _create(
+        e2e.client,
+        '归属我的项目',
+        'once',
+        {'run_at': '2099-01-03T08:00:00+08:00'},
+        project_id=own_project['id'],
+    )
+    assert created['task']['project_id'] == own_project['id']
+
+    rejected = await e2e.client.post(
+        '/api/v1/hasn-task/agent/tasks',
+        json={
+            'name': '跨主人项目',
+            'prompt': '不应创建',
+            'schedule_type': 'once',
+            'schedule_config': {'run_at': '2099-01-04T08:00:00+08:00'},
+            'project_id': foreign_project['id'],
+        },
+    )
+    assert rejected.status_code == 404, rejected.text
+
+    task_id = created['task']['task_id']
+    rejected_update = await e2e.client.put(
+        f'/api/v1/hasn-task/agent/tasks/{task_id}', json={'project_id': foreign_project['id']}
+    )
+    assert rejected_update.status_code == 404, rejected_update.text
 
 
 async def test_periodic_goes_pending_approval_with_notification(e2e: SimpleNamespace) -> None:
@@ -228,10 +298,7 @@ async def test_periodic_goes_pending_approval_with_notification(e2e: SimpleNames
 
     # D4：提醒卡片 = 通知权威行（非审批票据，绝不走 ask_gate）
     row = await e2e.session.execute(
-        text(
-            'SELECT type, dedupe_key FROM hasn_notifications '
-            "WHERE target_id = :o AND type = 'task.pending_approval'"
-        ),
+        text("SELECT type, dedupe_key FROM hasn_notifications WHERE target_id = :o AND type = 'task.pending_approval'"),
         {'o': e2e.owner},
     )
     notes = row.mappings().all()
@@ -422,9 +489,7 @@ async def _risk_in_db(session: object, owner: str, task_id: str) -> str:
 
 async def test_risk_low_once_scheduled(e2e: SimpleNamespace) -> None:
     """risk=low + once → scheduled（默认场景，risk 与调度同向）。"""
-    data = await _create(
-        e2e.client, '低风险一次性', 'once', {'run_at': '2099-02-01T08:00:00+08:00'}, risk_level='low'
-    )
+    data = await _create(e2e.client, '低风险一次性', 'once', {'run_at': '2099-02-01T08:00:00+08:00'}, risk_level='low')
     task = data['task']
     assert task['state'] == 'scheduled'
     assert task['risk_level'] == 'low'
@@ -434,9 +499,7 @@ async def test_risk_low_once_scheduled(e2e: SimpleNamespace) -> None:
 
 async def test_risk_high_once_pending_approval(e2e: SimpleNamespace) -> None:
     """risk=high → pending_approval（即便 once 也要主人批，§7.4 外部后果闸）。"""
-    data = await _create(
-        e2e.client, '高风险外发', 'once', {'run_at': '2099-02-01T09:00:00+08:00'}, risk_level='high'
-    )
+    data = await _create(e2e.client, '高风险外发', 'once', {'run_at': '2099-02-01T09:00:00+08:00'}, risk_level='high')
     task = data['task']
     assert task['state'] == 'pending_approval'
     assert task['risk_level'] == 'high'

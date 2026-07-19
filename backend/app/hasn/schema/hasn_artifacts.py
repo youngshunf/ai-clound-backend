@@ -99,6 +99,12 @@ class RecordArtifactParam(SchemaBase):
     conversation_id: str | None = Field(None, description='来源会话 ID（UUID 字符串）')
     message_id: int | None = Field(None, description='来源消息 ID')
     session_id: str | None = Field(None, description='来源本地 runtime session（ULID）')
+    # 本地 transport 应用（reel/film/design/imagelab/publish）走 /artifacts/agent/record 通道、
+    # 不经云端 ContextVar 打标，故项目根产出必须把云端权威 project_id 随入参上报（P9-C 项目轴）。
+    project_id: str | None = Field(
+        None,
+        description='所属平台项目云端权威 id（hasn_project.id；聚合过滤键，非权限边界）',
+    )
     source_tool: str | None = Field(None, description='产出工具全名（hasn.image.generate）')
     source_app_id: str | None = Field(None, description='来源应用 ID（deck/imagelab/knowledge…；UI 据此显示应用图标）')
     source_kind: ArtifactSourceKind = Field(

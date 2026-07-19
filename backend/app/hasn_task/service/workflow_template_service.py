@@ -588,6 +588,22 @@ class WorkflowTemplateService:
         if not visible:
             raise errors.NotFoundError(msg='模板不存在')
 
+        # ── P9-B 场景工作流项目轴实例化硬闸（doc95 §2.1 / doc11 §4.0/§6.1）──────────────
+        # 三级取值优先级：显式入参 ＞ ContextVar 继承 ＞ 全局兜底 ＞ 拒绝。全局兜底目前无「主人
+        # 默认项目」概念，故有效链为 显式 → ContextVar → 拒绝（最后一档是拒绝，不是随便挑一个项目）。
+        from backend.app.hasn_project.service.project_app_service import project_service
+        from backend.app.mcp.context import get_current_project_id
+        from backend.app.mcp.errors import McpErrorCode, McpToolError
+
+        project_id = params.get('project_id') or get_current_project_id()
+        if not project_id:
+            raise McpToolError(
+                McpErrorCode.PROJECT_REQUIRED,
+                '开启场景前要先确定它属于哪个平台项目——请回头问主人「这个场景挂到哪个项目下」',
+            )
+        # 归属本 owner + 未归档校验：跨 owner → 403；归档 → 结构化拒绝（详见 helper 注释）
+        await project_service.resolve_open_for_new_workflow(db, owner=owner_id, project_id=project_id)
+
         # 付费模板权益判定（doc94 §10-P7 / doc11 §8.3）：sku_ref 非空才真判，免费模板（sku_ref 空）直接放行。
         # 判权走 MK 统一入口 resolve_access(feature_key=workflow_template:<template_key>)；该 feature_key
         # 未配 offering 时 _resolve_generic 天然恒 pass（reason=free），故一期未上架付费即等价短路放行。
@@ -611,6 +627,9 @@ class WorkflowTemplateService:
                 )
 
         wf_params = cls._template_to_workflow_params(tpl, params)
+        # P9-B 项目轴：把硬闸解析出的所属平台项目透传给 create_workflow，落到 workflow.project_id
+        # （_template_to_workflow_params 只映射 graph_spec，不带 project_id，故这里显式补上）。
+        wf_params['project_id'] = str(project_id)
         result = await agent_workflow_service.create_workflow(db, agent=agent, params=wf_params)
 
         # 记模板溯源到 workflow.template_key 列（HasnWorkflow ORM 未映射该列，走定向 UPDATE，同一事务内）

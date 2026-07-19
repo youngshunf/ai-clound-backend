@@ -303,12 +303,19 @@ async def test_list_filters_by_kind_and_session_real_db() -> None:
 
 
 async def _record_app_resource(
-    owner: str, agent: str, *, app_id: str, resource_kind: str, server_id: int, title: str
+    owner: str,
+    agent: str,
+    *,
+    app_id: str,
+    resource_kind: str,
+    server_id: int,
+    title: str,
+    project_id: str | None = None,
 ) -> ArtifactRegistration | None:
     """经公共接缝真登记一条**应用资源**产物（与 register-on-write 写点同一条路）。
 
     不用 `_record`：那是分身自撰通道（`hasn.artifact.record`），登记不出 `source_app_id`/`resource_kind`，
-    而应用维度过滤要的正是这两列。
+    而应用维度过滤要的正是这两列。`project_id` 非空时显式打标到平台项目（doc95 §6.4 项目轴过滤键）。
     """
     from backend.app.mcp.artifact_registration import register_app_resource_artifact
     from backend.database.db import async_db_session
@@ -323,6 +330,7 @@ async def _record_app_resource(
             owner_hasn_id=owner,
             title=title,
             source_tool=f'hasn.{app_id}.test',
+            project_id=project_id,
         )
 
 
@@ -382,6 +390,92 @@ async def test_list_filters_by_app_dimension_real_db() -> None:
         assert detail['source_app_id'] == 'knowledge'
         assert detail['resource_kind'] == 'knowledge.base'
         assert detail['resource_uri'] == 'hasn://knowledge/kbs/1'
+    finally:
+        await _cleanup(owner)
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_list_filters_by_project_real_db() -> None:
+    """doc95 §6.4 真实 PG：list/search 按平台项目（project_id）收窄。
+
+    项目全链路产物视图靠 `hasn_artifacts.project_id` 聚合过滤键——分身在项目工作会话内调
+    list/search 时，系统注入的 `_hasn_project_id` 进 ContextVar，缺省即收窄到本项目；跨项目查
+    才显式传 project_id。project_id 只是聚合过滤键、不是权限边界（归属仍由 owner+agent 隔离兜底）。
+    """
+    if not await _db_reachable():
+        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+
+    from backend.app.mcp.context import clear_current_project_id, set_current_project_id
+
+    tag = uuid.uuid4().hex[:12]
+    owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
+    # project_id 列是 sa.UUID()——过滤键必须是合法 UUID。
+    proj_a, proj_b = str(uuid.uuid4()), str(uuid.uuid4())
+    try:
+        await _seed_owner_and_agent(owner, agent)
+        # 项目 A 两条、项目 B 一条、无项目一条（游离产物）。
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=11,
+            title='A 汇报',
+            project_id=proj_a,
+        )
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='knowledge',
+            resource_kind='knowledge.base',
+            server_id=12,
+            title='A 知识库',
+            project_id=proj_a,
+        )
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=13,
+            title='B 汇报',
+            project_id=proj_b,
+        )
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=14,
+            title='游离产物',
+        )
+
+        ctx = _agent_ctx(owner, agent)
+        # 不传 project_id 且不在项目 ContextVar 中 → 全部 4 条（不收窄，project_id 非权限边界）。
+        all_items = await ArtifactListTool().execute(ctx, {})
+        assert {it['title'] for it in all_items['items']} == {'A 汇报', 'A 知识库', 'B 汇报', '游离产物'}
+
+        # 显式传 project_id → 只出该项目下的产物。
+        only_a = await ArtifactListTool().execute(ctx, {'project_id': proj_a})
+        assert {it['title'] for it in only_a['items']} == {'A 汇报', 'A 知识库'}
+        only_b = await ArtifactListTool().execute(ctx, {'project_id': proj_b})
+        assert {it['title'] for it in only_b['items']} == {'B 汇报'}
+
+        # 项目 + 应用维度叠加 = AND。
+        a_deck = await ArtifactListTool().execute(ctx, {'project_id': proj_a, 'app': 'deck'})
+        assert {it['title'] for it in a_deck['items']} == {'A 汇报'}
+
+        # search 同样吃 project_id（跨项目查素材时收窄到本项目）。
+        searched = await ArtifactSearchTool().execute(ctx, {'query': '汇报', 'project_id': proj_a})
+        assert {it['title'] for it in searched['items']} == {'A 汇报'}
+
+        # ContextVar 缺省收窄：在项目 A 工作会话内不传显式 project_id 也只出 A 的两条（doc95 §6.4 核心）。
+        set_current_project_id(proj_a)
+        try:
+            scoped = await ArtifactListTool().execute(_agent_ctx(owner, agent), {})
+            assert {it['title'] for it in scoped['items']} == {'A 汇报', 'A 知识库'}
+        finally:
+            clear_current_project_id()
     finally:
         await _cleanup(owner)
 
