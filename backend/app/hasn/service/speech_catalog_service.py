@@ -43,11 +43,15 @@ from backend.app.hasn.schema.hasn_speech_catalog import (
     SpeechPackageStageResponse,
 )
 from backend.common.exception import errors
-from backend.plugin.s3.service.storage_service import ObjectRef, StorageService
+from backend.plugin.s3.model import S3Storage
+from backend.plugin.s3.service.storage_service import (
+    SPEECH_STORAGE_LOCK_KEY,
+    ObjectRef,
+    StorageService,
+)
+from backend.plugin.s3.utils.file_ops import build_object_url, sha256_object, stat_object
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     from fastapi import UploadFile
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,10 +64,60 @@ _SIGNATURE_PATTERN = re.compile(r'^[0-9a-f]{128}$')
 _IDENTIFIER_PATTERN = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
 _V2_ENVELOPE_FIELDS = {'payload', 'key_id', 'release_sequence', 'expires_at', 'signature'}
 # PostgreSQL 事务级 advisory lock，串行化全局唯一语音目录 head 的发布判定。
-_RELEASE_LOCK_KEY = 0x535045454348
+_RELEASE_LOCK_KEY = SPEECH_STORAGE_LOCK_KEY
 # FastAPI UploadFile 会落临时文件；这里再设业务上限，防止无限大对象占满磁盘和上传连接。
 MAX_SPEECH_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
+_StorageSnapshot = tuple[str, str, str, str, str, str, str | None, str | None, str | None, str | None]
+_PackageSnapshot = tuple[int, int, str, int, str, _StorageSnapshot]
+
+
+@dataclass(frozen=True, slots=True)
+class _PackageVerificationInput:
+    """释放数据库连接前复制出的包登记与对象存储配置。"""
+
+    package_id: int
+    sha256: str
+    storage_id: int
+    object_key: str
+    size: int
+    object_etag: str | None
+    storage: S3Storage
+
+
+def _storage_snapshot(storage: S3Storage) -> _StorageSnapshot:
+    """复制会影响真实对象位置和稳定 URL 的全部存储配置。"""
+    return (
+        storage.endpoint,
+        storage.access_key,
+        storage.secret_key,
+        storage.bucket,
+        storage.access,
+        storage.sign_strategy,
+        storage.prefix,
+        storage.region,
+        storage.cdn_domain,
+        storage.remark,
+    )
+
+
+def _copy_storage(storage: S3Storage) -> S3Storage:
+    """复制远程对象访问所需配置，避免事务释放后访问已过期 ORM 行。"""
+    copied = S3Storage(
+        name=storage.name,
+        endpoint=storage.endpoint,
+        access_key=storage.access_key,
+        secret_key=storage.secret_key,
+        bucket=storage.bucket,
+        access=storage.access,
+        sign_strategy=storage.sign_strategy,
+        prefix=storage.prefix,
+        region=storage.region,
+        cdn_domain=storage.cdn_domain,
+        remark=storage.remark,
+    )
+    copied.id = storage.id
+    return copied
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,6 +409,31 @@ def compute_revision(catalog_json: str) -> str:
     return hashlib.sha256(catalog_json.encode('utf-8')).hexdigest()[:16]
 
 
+def _validate_object_stat(
+    *,
+    sha256: str,
+    registered_size: int,
+    registered_etag: str | None,
+    actual_size: int,
+    actual_etag: str | None,
+    allow_etag_backfill: bool,
+) -> str:
+    """校验对象元数据，并返回可写入登记的不可变版本标识。"""
+    if actual_size != registered_size:
+        raise errors.ServerError(
+            msg=f'语音包登记大小与真实对象不一致: {sha256}，登记 {registered_size}，实际 {actual_size}'
+        )
+    if not actual_etag:
+        raise errors.ServerError(msg=f'语音包对象存储未返回不可变版本标识: {sha256}')
+    if registered_etag is None:
+        if allow_etag_backfill:
+            return actual_etag
+        raise errors.ServerError(msg=f'语音包缺少对象版本证据，必须重新暂存: {sha256}')
+    if registered_etag != actual_etag:
+        raise errors.ServerError(msg=f'语音包对象版本已变化，拒绝发布: {sha256}')
+    return registered_etag
+
+
 def _build_summary(payload: dict[str, Any]) -> list[SpeechCatalogModelSummary]:
     """从 catalog.payload 抽模型摘要（管理端展示，非权威）。"""
     summaries: list[SpeechCatalogModelSummary] = []
@@ -397,6 +476,7 @@ class SpeechCatalogService:
         package: HasnSpeechPackage,
         *,
         already_exists: bool,
+        allow_etag_backfill: bool = False,
     ) -> tuple[SpeechPackageStageResponse, StagedSpeechPackageEvidence]:
         """复核登记行、公开直链和真实对象元数据，并构造稳定出参。"""
         expected_key = build_speech_package_object_key(package.sha256)
@@ -413,10 +493,14 @@ class SpeechCatalogService:
             storage_id=package.storage_id,
             object_key=package.object_key,
         )
-        if stat.size != package.size:
-            raise errors.ServerError(
-                msg=f'语音包登记大小与真实对象不一致: {package.sha256}，登记 {package.size}，实际 {stat.size}'
-            )
+        package.object_etag = _validate_object_stat(
+            sha256=package.sha256,
+            registered_size=package.size,
+            registered_etag=package.object_etag,
+            actual_size=stat.size,
+            actual_etag=stat.etag,
+            allow_etag_backfill=allow_etag_backfill,
+        )
         actual_sha256, hashed_size = await StorageService.sha256(
             db,
             storage_id=package.storage_id,
@@ -450,36 +534,71 @@ class SpeechCatalogService:
         digest: str,
         size: int,
         uploaded: ObjectRef,
+        storage: S3Storage,
     ) -> SpeechPackageStageResponse:
-        """登记已经上传的内容寻址对象，并处理并发同摘要写入。"""
+        """锁外复核真实对象，锁内复核存储快照并登记内容寻址包。"""
         object_key = build_speech_package_object_key(digest)
-        if uploaded.object_key != object_key or uploaded.size != size:
+        if uploaded.object_key != object_key or uploaded.size != size or uploaded.storage_id != storage.id:
             raise errors.ServerError(msg='对象存储上传结果与语音包内容寻址元数据不一致')
         if not uploaded.stable_url.startswith('https://'):
             raise errors.ServerError(msg=f'公开桶 CDN 非 https，桌面端 ATS 会拒下: {uploaded.stable_url}')
+        stat_size, object_etag = await stat_object(storage, uploaded.object_key)
+        if stat_size != size or not object_etag:
+            raise errors.ServerError(msg='语音包上传后的对象大小或版本证据无效')
+        actual_sha256, hashed_size = await sha256_object(storage, uploaded.object_key)
+        if actual_sha256 != digest or hashed_size != size:
+            raise errors.ServerError(msg='语音包上传后的真实对象 SHA-256 或大小不一致')
 
-        insert_statement = (
-            pg_insert(HasnSpeechPackage)
-            .values(
-                sha256=digest,
-                storage_id=uploaded.storage_id,
-                object_key=object_key,
-                size=size,
-                content_type='application/zip',
+        if db.in_transaction():
+            await db.rollback()
+        async with db.begin():
+            await db.execute(
+                sa.text('SELECT pg_advisory_xact_lock(:lock_key)'),
+                {'lock_key': SPEECH_STORAGE_LOCK_KEY},
             )
-            .on_conflict_do_nothing(index_elements=[HasnSpeechPackage.sha256])
-            .returning(HasnSpeechPackage.id)
-        )
-        inserted_id = (await db.execute(insert_statement)).scalar_one_or_none()
-        package = await db.scalar(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1))
-        if package is None:
-            raise errors.ServerError(msg=f'语音包上传后未能完成内容寻址登记: {digest}')
-        response, _ = await self._package_response(
-            db,
-            package,
-            already_exists=inserted_id is None,
-        )
-        return response
+            current_storage = await db.scalar(sa.select(S3Storage).where(S3Storage.id == storage.id).with_for_update())
+            if current_storage is None or _storage_snapshot(current_storage) != _storage_snapshot(storage):
+                raise errors.ConflictError(msg='语音包存储配置在暂存登记前发生变化，请重新暂存')
+
+            insert_statement = (
+                pg_insert(HasnSpeechPackage)
+                .values(
+                    sha256=digest,
+                    storage_id=uploaded.storage_id,
+                    object_key=object_key,
+                    size=size,
+                    object_etag=object_etag,
+                    content_type='application/zip',
+                )
+                .on_conflict_do_nothing(index_elements=[HasnSpeechPackage.sha256])
+                .returning(HasnSpeechPackage.id)
+            )
+            inserted_id = (await db.execute(insert_statement)).scalar_one_or_none()
+            package = await db.scalar(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1))
+            if package is None:
+                raise errors.ServerError(msg=f'语音包上传后未能完成内容寻址登记: {digest}')
+            expected_package = (
+                uploaded.storage_id,
+                object_key,
+                size,
+                object_etag,
+            )
+            actual_package = (
+                package.storage_id,
+                package.object_key,
+                package.size,
+                package.object_etag,
+            )
+            if actual_package != expected_package:
+                raise errors.ConflictError(msg=f'同摘要语音包已有不同不可变登记: {digest}')
+            return SpeechPackageStageResponse(
+                package_id=package.id,
+                sha256=digest,
+                object_key=object_key,
+                download_url=uploaded.stable_url,
+                size=size,
+                already_exists=inserted_id is None,
+            )
 
     async def stage_package_upload(
         self,
@@ -515,21 +634,24 @@ class SpeechCatalogService:
             sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == package_sha256).limit(1)
         )
         if existing is not None:
-            response, _ = await self._package_response(db, existing, already_exists=True)
+            response, _ = await self._package_response(
+                db,
+                existing,
+                already_exists=True,
+                allow_etag_backfill=True,
+            )
+            await db.commit()
             return response
 
-        async def upload_chunks() -> AsyncIterator[bytes]:
-            await upload.seek(0)
-            while chunk := await upload.read(_UPLOAD_CHUNK_BYTES):
-                yield chunk
-
+        storage_row = await StorageService.get_immutable_speech_storage(db)
+        storage = _copy_storage(storage_row)
+        await db.rollback()
         object_key = build_speech_package_object_key(package_sha256)
-        uploaded = await StorageService.upload_stream(
-            db,
-            upload_chunks(),
+        await upload.seek(0)
+        uploaded = await StorageService.upload_immutable_speech_package_to_storage(
+            storage,
+            upload.file,
             size=size,
-            category=_STORAGE_CATEGORY,
-            filename=f'{package_sha256}.zip',
             content_type='application/zip',
             key=object_key,
         )
@@ -538,6 +660,7 @@ class SpeechCatalogService:
             digest=package_sha256,
             size=size,
             uploaded=uploaded,
+            storage=storage,
         )
 
     async def get_node_response(self, db: AsyncSession) -> SpeechCatalogNodeResponse:
@@ -557,6 +680,173 @@ class SpeechCatalogService:
         row = await self._get_row(db)
         return row.revision if (row and row.catalog_json) else ''
 
+    @staticmethod
+    async def _load_package_verification_inputs(
+        db: AsyncSession,
+        digests: set[str],
+    ) -> list[_PackageVerificationInput]:
+        """复制发布所需登记与存储配置，并在返回前释放数据库事务。"""
+        package_rows = (
+            (await db.execute(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256.in_(digests))))
+            .scalars()
+            .all()
+        )
+        storage_ids = {package.storage_id for package in package_rows}
+        storage_rows = (await db.execute(sa.select(S3Storage).where(S3Storage.id.in_(storage_ids)))).scalars().all()
+        storages: dict[int, S3Storage] = {}
+        for storage_row in storage_rows:
+            storages[storage_row.id] = S3Storage(
+                name=storage_row.name,
+                endpoint=storage_row.endpoint,
+                access_key=storage_row.access_key,
+                secret_key=storage_row.secret_key,
+                bucket=storage_row.bucket,
+                access=storage_row.access,
+                sign_strategy=storage_row.sign_strategy,
+                prefix=storage_row.prefix,
+                region=storage_row.region,
+                cdn_domain=storage_row.cdn_domain,
+                remark=storage_row.remark,
+            )
+        verification_inputs: list[_PackageVerificationInput] = []
+        for package in package_rows:
+            package_storage = storages.get(package.storage_id)
+            if package_storage is None:
+                raise errors.ServerError(msg=f'S3 存储 {package.storage_id} 不存在')
+            verification_inputs.append(
+                _PackageVerificationInput(
+                    package_id=package.id,
+                    sha256=package.sha256,
+                    storage_id=package.storage_id,
+                    object_key=package.object_key,
+                    size=package.size,
+                    object_etag=package.object_etag,
+                    storage=package_storage,
+                )
+            )
+        # SQLAlchemy 的首次 SELECT 会自动开启事务。远程模型包完整 GET 之前必须回滚，
+        # 避免长时间占用 PostgreSQL 连接，更不能持有发布锁或包行锁。
+        await db.rollback()
+        return verification_inputs
+
+    @staticmethod
+    async def _verify_package_without_database(
+        package: _PackageVerificationInput,
+    ) -> tuple[_PackageSnapshot, SpeechPackageStageResponse, StagedSpeechPackageEvidence]:
+        """不持有数据库连接，复核一个真实对象并生成发布证据。"""
+        expected_key = build_speech_package_object_key(package.sha256)
+        if package.object_key != expected_key:
+            raise errors.ServerError(msg=f'语音包登记对象 key 与摘要不一致: {package.sha256}')
+        if package.storage.access != 'public':
+            raise errors.ServerError(msg=f'语音包 {package.sha256} 未存入公共存储')
+        stable_url = build_object_url(package.storage, package.object_key)
+        if not stable_url.startswith('https://'):
+            raise errors.ServerError(msg=f'公开桶 CDN 非 https，桌面端 ATS 会拒下: {stable_url}')
+        stat_size, stat_etag = await stat_object(package.storage, package.object_key)
+        object_etag = _validate_object_stat(
+            sha256=package.sha256,
+            registered_size=package.size,
+            registered_etag=package.object_etag,
+            actual_size=stat_size,
+            actual_etag=stat_etag,
+            allow_etag_backfill=False,
+        )
+        actual_sha256, hashed_size = await sha256_object(package.storage, package.object_key)
+        if hashed_size != stat_size:
+            raise errors.ServerError(
+                msg=(f'语音包流式读取大小与对象元数据不一致: {package.sha256}，元数据 {stat_size}，读取 {hashed_size}')
+            )
+        if actual_sha256 != package.sha256:
+            raise errors.ServerError(msg=f'语音包真实对象 SHA-256 与登记不一致: {package.sha256}，实际 {actual_sha256}')
+        snapshot = (
+            package.package_id,
+            package.storage_id,
+            package.object_key,
+            package.size,
+            object_etag,
+            _storage_snapshot(package.storage),
+        )
+        response = SpeechPackageStageResponse(
+            package_id=package.package_id,
+            sha256=package.sha256,
+            object_key=package.object_key,
+            download_url=stable_url,
+            size=stat_size,
+            already_exists=True,
+        )
+        evidence = StagedSpeechPackageEvidence(
+            sha256=package.sha256,
+            object_key=package.object_key,
+            stable_url=stable_url,
+            size=stat_size,
+        )
+        return snapshot, response, evidence
+
+    async def _verify_release_packages_before_transaction(
+        self,
+        db: AsyncSession,
+        release: SpeechCatalogReleaseManifest,
+    ) -> tuple[
+        dict[str, _PackageSnapshot],
+        dict[str, SpeechPackageStageResponse],
+        tuple[StagedSpeechPackageEvidence, ...],
+    ]:
+        """释放数据库连接后，完成真实对象 GET、SHA-256、大小、URL 和版本证据复核。"""
+        digests = {item.sha256 for item in release.packages}
+        verification_inputs = await self._load_package_verification_inputs(db, digests)
+
+        snapshots: dict[str, _PackageSnapshot] = {}
+        responses: dict[str, SpeechPackageStageResponse] = {}
+        evidence: dict[str, StagedSpeechPackageEvidence] = {}
+        for package in verification_inputs:
+            snapshot, response, package_evidence = await self._verify_package_without_database(package)
+            snapshots[package.sha256] = snapshot
+            responses[package.sha256] = response
+            evidence[package.sha256] = package_evidence
+        validated = validate_staged_release_packages(release, evidence)
+        return snapshots, responses, validated
+
+    @staticmethod
+    async def _lock_verified_package_rows(
+        db: AsyncSession,
+        snapshots: dict[str, _PackageSnapshot],
+    ) -> dict[str, HasnSpeechPackage]:
+        """锁内只复核不可变登记快照，禁止再次执行远程对象 I/O。"""
+        rows = (
+            (
+                await db.execute(
+                    sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256.in_(snapshots)).with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        packages = {item.sha256: item for item in rows}
+        storage_ids = {expected[1] for expected in snapshots.values()}
+        storage_rows = (
+            (await db.execute(sa.select(S3Storage).where(S3Storage.id.in_(storage_ids)).with_for_update()))
+            .scalars()
+            .all()
+        )
+        storages = {item.id: item for item in storage_rows}
+        for digest, expected in snapshots.items():
+            package = packages.get(digest)
+            if package is None:
+                raise errors.ConflictError(msg=f'语音包在发布切换前被删除: {digest}')
+            actual = (
+                package.id,
+                package.storage_id,
+                package.object_key,
+                package.size,
+                package.object_etag or '',
+            )
+            if actual != expected[:5]:
+                raise errors.ConflictError(msg=f'语音包在发布切换前发生变化: {digest}')
+            storage = storages.get(package.storage_id)
+            if storage is None or _storage_snapshot(storage) != expected[5]:
+                raise errors.ConflictError(msg=f'语音包存储配置在发布切换前发生变化: {digest}')
+        return packages
+
     async def publish_release(
         self,
         db: AsyncSession,
@@ -564,7 +854,7 @@ class SpeechCatalogService:
         catalog_json: str,
         published_by: str | None,
     ) -> SpeechCatalogPublishResponse:
-        """复核全部暂存对象，并在一个事务内写不可变 release、映射和当前 head。"""
+        """锁外复核大对象，随后在短事务内写不可变 release、映射和当前 head。"""
         catalog_json = catalog_json or ''
         if not catalog_json:
             raise errors.RequestError(msg='catalog 不能为空')
@@ -573,119 +863,120 @@ class SpeechCatalogService:
         summary = _build_summary(release.payload)
         summary_json = [s.model_dump(mode='json') for s in summary]
 
-        # 全局单 head 必须先串行化；随后 FOR UPDATE 锁定既有 head。
-        await db.execute(
-            sa.text('SELECT pg_advisory_xact_lock(:lock_key)'),
-            {'lock_key': _RELEASE_LOCK_KEY},
-        )
-        head = await self._get_row(db, for_update=True)
+        try:
+            snapshots, responses_by_sha256, validated = await self._verify_release_packages_before_transaction(
+                db, release
+            )
+        except Exception:
+            if db.in_transaction():
+                await db.rollback()
+            raise
+        if db.in_transaction():
+            await db.rollback()
 
-        digests = {item.sha256 for item in release.packages}
-        package_rows = (
-            (await db.execute(sa.select(HasnSpeechPackage).where(HasnSpeechPackage.sha256.in_(digests))))
-            .scalars()
-            .all()
-        )
-        packages_by_sha256 = {item.sha256: item for item in package_rows}
-        responses_by_sha256: dict[str, SpeechPackageStageResponse] = {}
-        evidence_by_sha256: dict[str, StagedSpeechPackageEvidence] = {}
-        for digest, package in packages_by_sha256.items():
-            response, evidence = await self._package_response(db, package, already_exists=True)
-            responses_by_sha256[digest] = response
-            evidence_by_sha256[digest] = evidence
-        validated = validate_staged_release_packages(release, evidence_by_sha256)
+        async with db.begin():
+            # 锁内只做 PostgreSQL 快速复核和权威切换，不执行 S3 GET。
+            await db.execute(
+                sa.text('SELECT pg_advisory_xact_lock(:lock_key)'),
+                {'lock_key': _RELEASE_LOCK_KEY},
+            )
+            head = await self._get_row(db, for_update=True)
+            packages_by_sha256 = await self._lock_verified_package_rows(db, snapshots)
 
-        current_sequence = (
-            int(head.release_sequence) if head is not None and head.release_sequence is not None else None
-        )
-        transition = validate_release_transition(
-            current_sequence=current_sequence,
-            current_revision=head.revision if head is not None else None,
-            candidate_sequence=release.release_sequence,
-            candidate_revision=revision,
-        )
-        if transition == 'idempotent':
-            if head is None or head.current_release_id is None:
-                raise errors.ServerError(msg='语音目录 head 命中幂等判定但缺少不可变 release 指针')
-            existing_release = await db.get(HasnSpeechCatalogRelease, head.current_release_id)
-            if existing_release is None or existing_release.revision != revision:
-                raise errors.ServerError(msg='语音目录 head 与不可变 release 账本不一致')
+            current_sequence = (
+                int(head.release_sequence) if head is not None and head.release_sequence is not None else None
+            )
+            transition = validate_release_transition(
+                current_sequence=current_sequence,
+                current_revision=head.revision if head is not None else None,
+                candidate_sequence=release.release_sequence,
+                candidate_revision=revision,
+            )
+            if transition == 'idempotent':
+                if head is None or head.current_release_id is None:
+                    raise errors.ServerError(msg='语音目录 head 命中幂等判定但缺少不可变 release 指针')
+                existing_release = await db.get(
+                    HasnSpeechCatalogRelease,
+                    head.current_release_id,
+                )
+                if existing_release is None or existing_release.revision != revision:
+                    raise errors.ServerError(msg='语音目录 head 与不可变 release 账本不一致')
+                return SpeechCatalogPublishResponse(
+                    release_id=existing_release.id,
+                    revision=revision,
+                    release_sequence=release.release_sequence,
+                    key_id=release.key_id,
+                    catalog_version=release.catalog_version,
+                    idempotent=True,
+                    packages=[responses_by_sha256[item.sha256] for item in validated],
+                    models=summary,
+                )
+
+            release_row = HasnSpeechCatalogRelease(
+                revision=revision,
+                release_sequence=Decimal(release.release_sequence),
+                key_id=release.key_id,
+                catalog_version=release.catalog_version,
+                expires_at=release.expires_at,
+                catalog_json=catalog_json,
+                model_summary=summary_json,
+                published_by=published_by,
+            )
+            db.add(release_row)
+            await db.flush()
+
+            for reference in release.packages:
+                package = packages_by_sha256[reference.sha256]
+                db.add(
+                    HasnSpeechCatalogReleasePackage(
+                        release_id=release_row.id,
+                        package_id=package.id,
+                        model_id=reference.model_id,
+                        model_version=reference.model_version,
+                        os=reference.os,
+                        arch=reference.arch,
+                        acceleration=reference.acceleration,
+                        installed_size=reference.installed_size,
+                        license_name=reference.license_name,
+                        license_url=reference.license_url,
+                        source_url=reference.source_url,
+                    )
+                )
+
+            if head is None:
+                head = HasnSpeechCatalog(
+                    config_key=_CONFIG_KEY,
+                    catalog_json=catalog_json,
+                    revision=revision,
+                    catalog_version=release.catalog_version,
+                    current_release_id=release_row.id,
+                    release_sequence=Decimal(release.release_sequence),
+                    key_id=release.key_id,
+                    model_summary=summary_json,
+                    published_by=published_by,
+                )
+                db.add(head)
+            else:
+                head.catalog_json = catalog_json
+                head.revision = revision
+                head.catalog_version = release.catalog_version
+                head.current_release_id = release_row.id
+                head.release_sequence = Decimal(release.release_sequence)
+                head.key_id = release.key_id
+                head.model_summary = summary_json
+                head.published_by = published_by
+            await db.flush()
+
             return SpeechCatalogPublishResponse(
-                release_id=existing_release.id,
+                release_id=release_row.id,
                 revision=revision,
                 release_sequence=release.release_sequence,
                 key_id=release.key_id,
                 catalog_version=release.catalog_version,
-                idempotent=True,
+                idempotent=False,
                 packages=[responses_by_sha256[item.sha256] for item in validated],
                 models=summary,
             )
-
-        release_row = HasnSpeechCatalogRelease(
-            revision=revision,
-            release_sequence=Decimal(release.release_sequence),
-            key_id=release.key_id,
-            catalog_version=release.catalog_version,
-            expires_at=release.expires_at,
-            catalog_json=catalog_json,
-            model_summary=summary_json,
-            published_by=published_by,
-        )
-        db.add(release_row)
-        await db.flush()
-
-        for reference in release.packages:
-            package = packages_by_sha256[reference.sha256]
-            db.add(
-                HasnSpeechCatalogReleasePackage(
-                    release_id=release_row.id,
-                    package_id=package.id,
-                    model_id=reference.model_id,
-                    model_version=reference.model_version,
-                    os=reference.os,
-                    arch=reference.arch,
-                    acceleration=reference.acceleration,
-                    installed_size=reference.installed_size,
-                    license_name=reference.license_name,
-                    license_url=reference.license_url,
-                    source_url=reference.source_url,
-                )
-            )
-
-        if head is None:
-            head = HasnSpeechCatalog(
-                config_key=_CONFIG_KEY,
-                catalog_json=catalog_json,
-                revision=revision,
-                catalog_version=release.catalog_version,
-                current_release_id=release_row.id,
-                release_sequence=Decimal(release.release_sequence),
-                key_id=release.key_id,
-                model_summary=summary_json,
-                published_by=published_by,
-            )
-            db.add(head)
-        else:
-            head.catalog_json = catalog_json
-            head.revision = revision
-            head.catalog_version = release.catalog_version
-            head.current_release_id = release_row.id
-            head.release_sequence = Decimal(release.release_sequence)
-            head.key_id = release.key_id
-            head.model_summary = summary_json
-            head.published_by = published_by
-        await db.flush()
-
-        return SpeechCatalogPublishResponse(
-            release_id=release_row.id,
-            revision=revision,
-            release_sequence=release.release_sequence,
-            key_id=release.key_id,
-            catalog_version=release.catalog_version,
-            idempotent=False,
-            packages=[responses_by_sha256[item.sha256] for item in validated],
-            models=summary,
-        )
 
 
 speech_catalog_service = SpeechCatalogService()

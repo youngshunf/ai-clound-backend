@@ -37,12 +37,14 @@ from backend.plugin.s3.utils.file_ops import (
     sha256_object,
     stat_object,
     write_bytes,
+    write_immutable_speech_package,
     write_stream,
 )
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable, AsyncIterator, Sequence
+    from typing import BinaryIO
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,6 +88,8 @@ CATEGORY_DIR: dict[str, str] = {
 
 # 缓存 margin：缓存 TTL = 签名有效期 - margin，保证缓存命中时签名仍有效（1c）。
 SIGN_CACHE_MARGIN_SECONDS = 120
+# 与语音 release head 共用的 PostgreSQL 事务级锁，串行化发布和存储配置变更。
+SPEECH_STORAGE_LOCK_KEY = 0x535045454348
 
 
 @dataclass(frozen=True)
@@ -238,6 +242,59 @@ class StorageService:
             stable_url=build_object_url(storage, key),
             mime=content_type or 'application/octet-stream',
             size=size,
+        )
+
+    @classmethod
+    async def get_immutable_speech_storage(cls, db: AsyncSession) -> S3Storage:
+        """返回当前公共语音包存储；调用方必须在远程 I/O 前复制配置并释放事务。"""
+        access, _ = _category_policy('speech_model')
+        return _pick_storage(await cls._storages(db), access)
+
+    @staticmethod
+    async def upload_immutable_speech_package_to_storage(
+        storage: S3Storage,
+        file: BinaryIO,
+        *,
+        size: int,
+        content_type: str,
+        key: str,
+    ) -> ObjectRef:
+        """按已经复制的存储快照执行 provider 原生 insert-only 上传。"""
+        access, _ = _category_policy('speech_model')
+        await write_immutable_speech_package(
+            storage,
+            key,
+            file,
+            size=size,
+            content_type=content_type,
+        )
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=key,
+            access=access,
+            stable_url=build_object_url(storage, key),
+            mime=content_type,
+            size=size,
+        )
+
+    @classmethod
+    async def upload_immutable_speech_package(
+        cls,
+        db: AsyncSession,
+        file: BinaryIO,
+        *,
+        size: int,
+        content_type: str,
+        key: str,
+    ) -> ObjectRef:
+        """选择公共桶并以 provider 原生 insert-only 语义写入语音模型包。"""
+        storage = await cls.get_immutable_speech_storage(db)
+        return await cls.upload_immutable_speech_package_to_storage(
+            storage,
+            file,
+            size=size,
+            content_type=content_type,
+            key=key,
         )
 
     @staticmethod

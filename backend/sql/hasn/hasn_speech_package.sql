@@ -8,6 +8,7 @@ CREATE TABLE "public"."hasn_speech_package" (
   "storage_id"   bigint         NOT NULL REFERENCES "public"."s3_storage" ("id") ON DELETE RESTRICT,
   "object_key"   varchar(1024)  NOT NULL,
   "size"         bigint         NOT NULL,
+  "object_etag"  varchar(256)   NOT NULL,
   "content_type" varchar(128)   NOT NULL DEFAULT 'application/zip',
   "created_time" timestamptz(6) NOT NULL DEFAULT now(),
   "updated_time" timestamptz(6),
@@ -23,6 +24,7 @@ COMMENT ON COLUMN "public"."hasn_speech_package"."sha256" IS '上传原始字节
 COMMENT ON COLUMN "public"."hasn_speech_package"."storage_id" IS '实际承载对象的公共 S3 存储 ID';
 COMMENT ON COLUMN "public"."hasn_speech_package"."object_key" IS '由 SHA-256 派生的不可变对象 key';
 COMMENT ON COLUMN "public"."hasn_speech_package"."size" IS '对象字节数';
+COMMENT ON COLUMN "public"."hasn_speech_package"."object_etag" IS '完整 SHA-256 复核时对应的对象存储不可变版本标识';
 COMMENT ON COLUMN "public"."hasn_speech_package"."content_type" IS '对象媒体类型，模型包固定为 application/zip';
 COMMENT ON COLUMN "public"."hasn_speech_package"."created_time" IS '首次暂存时间';
 COMMENT ON COLUMN "public"."hasn_speech_package"."updated_time" IS '登记更新时间；内容字段不可变';

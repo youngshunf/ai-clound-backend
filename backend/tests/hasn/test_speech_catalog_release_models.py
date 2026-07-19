@@ -19,7 +19,7 @@ def _sql(name: str) -> str:
 
 def test_speech_package_is_content_addressed_and_immutable_by_schema() -> None:
     columns = HasnSpeechPackage.__table__.columns
-    assert {'sha256', 'storage_id', 'object_key', 'size', 'content_type'} <= set(columns.keys())
+    assert {'sha256', 'storage_id', 'object_key', 'size', 'object_etag', 'content_type'} <= set(columns.keys())
     sql = _sql('hasn_speech_package.sql')
     assert 'CONSTRAINT "uq_speech_package_sha256" UNIQUE ("sha256")' in sql
     assert 'CONSTRAINT "uq_speech_package_object_key" UNIQUE ("object_key")' in sql
@@ -27,6 +27,8 @@ def test_speech_package_is_content_addressed_and_immutable_by_schema() -> None:
     assert columns.sha256.nullable is False
     assert columns.object_key.nullable is False
     assert columns.size.nullable is False
+    migration = _sql('migrations/2026-07-19-speech-package-object-etag.sql')
+    assert 'ADD COLUMN IF NOT EXISTS "object_etag"' in migration
 
 
 def test_catalog_release_keeps_sequence_revision_and_verbatim_document() -> None:

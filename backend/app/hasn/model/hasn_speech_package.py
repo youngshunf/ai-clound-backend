@@ -15,6 +15,9 @@ class HasnSpeechPackage(Base):
     storage_id: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='实际承载对象的公共 S3 存储 ID')
     object_key: Mapped[str] = mapped_column(sa.String(1024), default='', comment='由 SHA-256 派生的不可变对象 key')
     size: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='对象字节数')
+    object_etag: Mapped[str | None] = mapped_column(
+        sa.String(256), default=None, comment='完整 SHA-256 复核时对应的对象存储不可变版本标识'
+    )
     content_type: Mapped[str] = mapped_column(
         sa.String(128), default='', comment='对象媒体类型，模型包固定为 application/zip'
     )

@@ -12,14 +12,17 @@ import zipfile
 
 from collections.abc import AsyncIterator
 from decimal import Decimal
+from typing import cast
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
 from fastapi import UploadFile
-from sqlalchemy import delete, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import Table, func, select, text, update
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlalchemy.schema import CreateSchema, DropSchema
 from starlette.datastructures import Headers
 
 from backend.app.hasn.model.hasn_speech_catalog import HasnSpeechCatalog
@@ -28,7 +31,10 @@ from backend.app.hasn.model.hasn_speech_catalog_release_package import (
     HasnSpeechCatalogReleasePackage,
 )
 from backend.app.hasn.model.hasn_speech_package import HasnSpeechPackage
-from backend.app.hasn.schema.hasn_speech_catalog import SpeechCatalogPublishResponse
+from backend.app.hasn.schema.hasn_speech_catalog import (
+    SpeechCatalogPublishResponse,
+    SpeechPackageStageResponse,
+)
 from backend.app.hasn.service.speech_catalog_service import (
     build_speech_package_object_key,
     compute_revision,
@@ -36,9 +42,14 @@ from backend.app.hasn.service.speech_catalog_service import (
 )
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
+from backend.plugin.s3.model.storage import S3Storage
+from backend.plugin.s3.schema.storage import UpdateS3StorageParam
+from backend.plugin.s3.service.storage import s3_storage_service
 from backend.plugin.s3.service.storage_service import StorageService
+from backend.plugin.s3.utils.file_ops import get_operator_for_storage
 
 pytestmark = pytest.mark.asyncio
+_RUN_MARKER = uuid4().hex
 
 
 def _require_real_s3_test() -> None:
@@ -47,8 +58,9 @@ def _require_real_s3_test() -> None:
         pytest.skip('需显式设置 HASN_SPEECH_REAL_S3_TEST=1 才允许写入并清理真实测试对象')
 
 
-def _real_zip_bytes(marker: str = 'default') -> bytes:
+def _real_zip_bytes(marker: str | None = None) -> bytes:
     """生成确定且可被标准 ZIP 读取器打开的最小模型包。"""
+    marker = marker or _RUN_MARKER
     output = io.BytesIO()
     info = zipfile.ZipInfo('manifest.json', date_time=(2026, 7, 19, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
@@ -142,32 +154,95 @@ def _release_document(
 
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator[AsyncSession]:
-    """显式门控真实 PostgreSQL/S3，用例结束时回滚业务行并删除测试对象。"""
+    """在独立 PostgreSQL schema 中连接真实 S3，用例结束后回收对象并删除 schema。"""
     _require_real_s3_test()
-    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    base_engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
-        async with engine.connect() as connection:
+        async with base_engine.connect() as connection:
             await connection.execute(select(1))
     except Exception as exc:
-        await engine.dispose()
+        await base_engine.dispose()
         pytest.skip(f'真实 PostgreSQL 不可达，跳过: {exc!r}')
-    db = async_sessionmaker(engine, expire_on_commit=False)()
+
+    base_maker = async_sessionmaker(base_engine, expire_on_commit=False)
+    async with base_maker() as source:
+        public_storage = await source.scalar(
+            select(S3Storage).where(S3Storage.access == 'public').order_by(S3Storage.id).limit(1)
+        )
+    if public_storage is None:
+        await base_engine.dispose()
+        pytest.skip('真实环境未配置 public S3 存储')
+
+    schema = f'speech_it_{uuid4().hex}'
+    isolated_engine = base_engine.execution_options(schema_translate_map={None: schema})
+    async with isolated_engine.begin() as connection:
+        await connection.execute(CreateSchema(schema))
+        for table in (
+            S3Storage.__table__,
+            HasnSpeechPackage.__table__,
+            HasnSpeechCatalogRelease.__table__,
+            HasnSpeechCatalogReleasePackage.__table__,
+            HasnSpeechCatalog.__table__,
+        ):
+            typed_table = cast('Table', table)
+            await connection.run_sync(typed_table.create)
+        # codegen 模型不重复声明全部 SQL 约束；隔离 schema 必须补齐权威 DDL，
+        # 才能真实覆盖 ON CONFLICT、并发 release 和单 head 语义。
+        for statement in (
+            f'ALTER TABLE "{schema}"."hasn_speech_package" ALTER COLUMN "created_time" SET DEFAULT now()',
+            f'ALTER TABLE "{schema}"."hasn_speech_catalog_release" ALTER COLUMN "created_time" SET DEFAULT now()',
+            f'ALTER TABLE "{schema}"."hasn_speech_catalog_release_package" '
+            'ALTER COLUMN "created_time" SET DEFAULT now()',
+            f'ALTER TABLE "{schema}"."hasn_speech_catalog" ALTER COLUMN "created_time" SET DEFAULT now()',
+            f'ALTER TABLE "{schema}"."hasn_speech_package" ADD CONSTRAINT "uq_speech_package_sha256" UNIQUE ("sha256")',
+            f'ALTER TABLE "{schema}"."hasn_speech_package" '
+            'ADD CONSTRAINT "uq_speech_package_object_key" UNIQUE ("object_key")',
+            f'ALTER TABLE "{schema}"."hasn_speech_catalog_release" '
+            'ADD CONSTRAINT "uq_speech_catalog_release_revision" UNIQUE ("revision")',
+            f'ALTER TABLE "{schema}"."hasn_speech_catalog_release" '
+            'ADD CONSTRAINT "uq_speech_catalog_release_sequence" UNIQUE ("release_sequence")',
+            f'ALTER TABLE "{schema}"."hasn_speech_catalog_release_package" '
+            'ADD CONSTRAINT "uq_speech_release_package_platform" '
+            'UNIQUE ("release_id", "model_id", "model_version", "os", "arch", "acceleration")',
+        ):
+            await connection.execute(text(statement))
+
+    maker = async_sessionmaker(isolated_engine, expire_on_commit=False)
+    async with maker.begin() as setup:
+        setup.add(
+            S3Storage(
+                name=f'speech-integration-{schema}',
+                endpoint=public_storage.endpoint,
+                access_key=public_storage.access_key,
+                secret_key=public_storage.secret_key,
+                bucket=public_storage.bucket,
+                access='public',
+                sign_strategy=public_storage.sign_strategy,
+                prefix=public_storage.prefix,
+                region=public_storage.region,
+                cdn_domain=public_storage.cdn_domain,
+                remark=public_storage.remark,
+            )
+        )
+
+    db = maker()
     try:
         yield db
     finally:
         try:
-            digest = hashlib.sha256(_real_zip_bytes()).hexdigest()
-            package = await db.scalar(select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1))
-            if package is not None:
-                await StorageService.delete_object(
-                    db,
-                    storage_id=package.storage_id,
-                    object_key=package.object_key,
-                )
-        finally:
             await db.rollback()
             await db.close()
-            await engine.dispose()
+            async with maker() as cleanup:
+                packages = (await cleanup.execute(select(HasnSpeechPackage))).scalars().all()
+                for package in packages:
+                    storage = await StorageService.get_storage(cleanup, package.storage_id)
+                    # 测试 schema 只登记本用例随机摘要；显式绕过生产删除保护回收真实测试对象。
+                    await get_operator_for_storage(storage).delete(package.object_key)
+        finally:
+            async with base_engine.begin() as connection:
+                await connection.execute(DropSchema(schema, cascade=True))
+            await isolated_engine.dispose()
+            await base_engine.dispose()
 
 
 async def test_stage_package_is_real_s3_backed_and_idempotent(session: AsyncSession) -> None:
@@ -190,6 +265,172 @@ async def test_stage_package_is_real_s3_backed_and_idempotent(session: AsyncSess
     assert first.already_exists is False
     assert second.package_id == first.package_id
     assert second.already_exists is True
+    registered = await session.get(HasnSpeechPackage, first.package_id)
+    assert registered is not None
+
+    different_bytes = bytearray(package_bytes)
+    different_bytes[-1] ^= 0x01
+    with pytest.raises(errors.ServerError, match='不可变语音包上传失败'):
+        await StorageService.upload_immutable_speech_package(
+            session,
+            io.BytesIO(bytes(different_bytes)),
+            size=len(different_bytes),
+            content_type='application/zip',
+            key=first.object_key,
+        )
+    with pytest.raises(errors.RequestError, match='不可变语音包命名空间'):
+        await StorageService.upload(
+            session,
+            b'forbidden-overwrite',
+            category='speech_model',
+            filename='forbidden.zip',
+            content_type='application/zip',
+            key=first.object_key,
+        )
+    actual_sha256, actual_size = await StorageService.sha256(
+        session,
+        storage_id=registered.storage_id,
+        object_key=first.object_key,
+    )
+    assert actual_sha256 == first.sha256
+    assert actual_size == first.size
+
+    storage = await StorageService.get_storage(session, registered.storage_id)
+    with pytest.raises(errors.ConflictError, match='禁止修改配置'):
+        await s3_storage_service.update(
+            db=session,
+            pk=storage.id,
+            obj=UpdateS3StorageParam(
+                name=storage.name,
+                endpoint=storage.endpoint,
+                access_key=storage.access_key,
+                secret_key=storage.secret_key,
+                bucket=storage.bucket,
+                prefix=storage.prefix,
+                region=storage.region,
+                cdn_domain=storage.cdn_domain,
+                access=storage.access,
+                sign_strategy=storage.sign_strategy,
+                remark='forbidden-test-change',
+            ),
+        )
+
+
+async def test_stage_package_rejects_storage_change_and_retry_recovers_existing_object(
+    session: AsyncSession,
+) -> None:
+    """配置竞态不得写错登记，恢复原配置后必须复用已上传对象完成暂存。"""
+    engine = session.bind
+    assert isinstance(engine, AsyncEngine)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    storage = await session.scalar(select(S3Storage).where(S3Storage.access == 'public').limit(1))
+    assert storage is not None
+    storage_id = storage.id
+    original_prefix = storage.prefix
+    original_operator = get_operator_for_storage(storage)
+    package_bytes = _real_zip_bytes(f'storage-race-{_RUN_MARKER}')
+    digest = hashlib.sha256(package_bytes).hexdigest()
+    object_key = build_speech_package_object_key(digest)
+    changed_prefix = '/'.join(
+        part for part in (original_prefix.strip('/') if original_prefix else '', f'speech-race-{_RUN_MARKER}') if part
+    )
+    await session.rollback()
+
+    async def restore_storage_prefix() -> None:
+        async with maker.begin() as restore:
+            await restore.execute(update(S3Storage).where(S3Storage.id == storage_id).values(prefix=original_prefix))
+
+    stage_task: asyncio.Task[SpeechPackageStageResponse] | None = None
+    async with maker() as admin:
+        await admin.begin()
+        admin_storage = await admin.get(S3Storage, storage_id)
+        assert admin_storage is not None
+        await s3_storage_service.update(
+            db=admin,
+            pk=storage_id,
+            obj=UpdateS3StorageParam(
+                name=admin_storage.name,
+                endpoint=admin_storage.endpoint,
+                access_key=admin_storage.access_key,
+                secret_key=admin_storage.secret_key,
+                bucket=admin_storage.bucket,
+                prefix=changed_prefix,
+                region=admin_storage.region,
+                cdn_domain=admin_storage.cdn_domain,
+                access=admin_storage.access,
+                sign_strategy=admin_storage.sign_strategy,
+                remark=admin_storage.remark,
+            ),
+        )
+
+        async def stage() -> SpeechPackageStageResponse:
+            async with maker() as connection:
+                return await speech_catalog_service.stage_package_upload(
+                    connection,
+                    upload=_upload(package_bytes),
+                )
+
+        try:
+            stage_task = asyncio.create_task(stage())
+            deadline = asyncio.get_running_loop().time() + 30
+            while not await original_operator.exists(object_key):
+                if asyncio.get_running_loop().time() >= deadline:
+                    pytest.fail('等待真实语音包上传到原存储位置超时')
+                await asyncio.sleep(0.05)
+
+            assert not stage_task.done(), '暂存未等待存储配置 advisory lock'
+            await admin.commit()
+            with pytest.raises(errors.ConflictError, match='存储配置在暂存登记前发生变化'):
+                await stage_task
+            async with maker() as orphan_check:
+                assert (
+                    await orphan_check.scalar(
+                        select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1)
+                    )
+                    is None
+                )
+            assert await original_operator.exists(object_key)
+            await restore_storage_prefix()
+
+            async with maker() as retry:
+                recovered = await speech_catalog_service.stage_package_upload(
+                    retry,
+                    upload=_upload(package_bytes),
+                )
+                registered = await retry.get(HasnSpeechPackage, recovered.package_id)
+                assert registered is not None
+                assert registered.sha256 == digest
+                assert recovered.sha256 == digest
+        finally:
+            if admin.in_transaction():
+                await admin.rollback()
+            if stage_task is not None and not stage_task.done():
+                stage_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await stage_task
+            await restore_storage_prefix()
+            await original_operator.delete(object_key)
+
+
+async def test_concurrent_same_digest_stage_is_idempotent(session: AsyncSession) -> None:
+    """两个真实连接并发暂存同一内容时，共享一个不可变登记并都返回成功。"""
+    engine = session.bind
+    assert isinstance(engine, AsyncEngine)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    package_bytes = _real_zip_bytes(f'concurrent-stage-{_RUN_MARKER}')
+
+    async def stage() -> SpeechPackageStageResponse:
+        async with maker() as connection:
+            return await speech_catalog_service.stage_package_upload(
+                connection,
+                upload=_upload(package_bytes),
+            )
+
+    first, second = await asyncio.gather(stage(), stage())
+
+    assert first.package_id == second.package_id
+    assert first.sha256 == second.sha256 == hashlib.sha256(package_bytes).hexdigest()
+    assert {first.already_exists, second.already_exists} == {False, True}
 
 
 async def test_stage_package_rejects_non_zip_bytes(session: AsyncSession) -> None:
@@ -208,18 +449,25 @@ async def test_same_size_s3_corruption_is_rejected_before_head_switch(
         session,
         upload=_upload(package_bytes),
     )
+    await session.commit()
     package = await session.scalar(select(HasnSpeechPackage).where(HasnSpeechPackage.id == staged.package_id))
     assert package is not None
     corrupted = bytearray(package_bytes)
     corrupted[-1] ^= 0x01
-    await StorageService.upload(
+    storage = await StorageService.get_storage(session, package.storage_id)
+    operator = get_operator_for_storage(storage)
+    # 绕过应用命名空间保护，模拟对象存储管理员凭据遭误用后的外部覆盖。
+    await operator.write(staged.object_key, bytes(corrupted), content_type='application/zip')
+    corrupted_stat = await StorageService.stat(
         session,
-        bytes(corrupted),
-        category='speech_model',
-        filename='integration-corrupted.zip',
-        content_type='application/zip',
-        key=staged.object_key,
+        storage_id=package.storage_id,
+        object_key=staged.object_key,
     )
+    assert corrupted_stat.etag
+    # 同步登记中的版本证据，确保本用例继续深入完整 SHA-256 分支；
+    # 单纯对象覆盖已由 object_etag 不一致路径更早拒绝。
+    package.object_etag = corrupted_stat.etag
+    await session.commit()
     sequence = max(
         int((await session.scalar(select(func.max(HasnSpeechCatalogRelease.release_sequence)))) or Decimal(0)) + 1,
         time.time_ns(),
@@ -243,14 +491,7 @@ async def test_same_size_s3_corruption_is_rejected_before_head_switch(
             == before
         )
     finally:
-        await StorageService.upload(
-            session,
-            package_bytes,
-            category='speech_model',
-            filename='integration-restored.zip',
-            content_type='application/zip',
-            key=staged.object_key,
-        )
+        await operator.write(staged.object_key, package_bytes, content_type='application/zip')
 
 
 async def test_missing_package_cannot_switch_head_then_complete_release_is_atomic(
@@ -261,6 +502,7 @@ async def test_missing_package_cannot_switch_head_then_complete_release_is_atomi
         session,
         upload=_upload(package_bytes),
     )
+    await session.commit()
     current_sequence = (await session.scalar(select(func.max(HasnSpeechCatalogRelease.release_sequence)))) or Decimal(0)
     sequence = max(int(current_sequence) + 1, time.time_ns())
     before = await session.scalar(select(HasnSpeechCatalog.revision).where(HasnSpeechCatalog.config_key == 'global'))
@@ -358,137 +600,63 @@ async def test_missing_package_cannot_switch_head_then_complete_release_is_atomi
     assert unchanged_head.current_release_id == published.release_id
 
 
-async def test_concurrent_release_commit_is_serialized_and_visible_across_connections() -> None:
+async def test_concurrent_release_commit_is_serialized_and_visible_across_connections(
+    session: AsyncSession,
+) -> None:
     """两个真实连接竞争同一序列时只允许一个提交，并由第三连接读到已提交 head。"""
-    _require_real_s3_test()
-    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    engine = session.bind
+    assert isinstance(engine, AsyncEngine)
     maker = async_sessionmaker(engine, expire_on_commit=False)
-    package_bytes = _real_zip_bytes('concurrent-release')
-    digest = hashlib.sha256(package_bytes).hexdigest()
-    staged = None
-    previous_head: dict | None = None
-    release_id: int | None = None
-    package_storage_id: int | None = None
-    try:
-        async with maker() as setup:
-            async with setup.begin():
-                if (
-                    await setup.scalar(select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1))
-                ) is not None:
-                    pytest.fail('并发测试内容摘要已存在，拒绝复用非本次测试登记')
-                head = await setup.scalar(select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == 'global'))
-                if head is not None:
-                    previous_head = {
-                        'catalog_json': head.catalog_json,
-                        'revision': head.revision,
-                        'catalog_version': head.catalog_version,
-                        'current_release_id': head.current_release_id,
-                        'release_sequence': head.release_sequence,
-                        'key_id': head.key_id,
-                        'model_summary': head.model_summary,
-                        'published_by': head.published_by,
-                        'updated_time': head.updated_time,
-                    }
-                staged = await speech_catalog_service.stage_package_upload(
-                    setup,
-                    upload=_upload(package_bytes),
-                )
-                package = await setup.get(HasnSpeechPackage, staged.package_id)
-                assert package is not None
-                package_storage_id = package.storage_id
-                current_sequence = (
-                    await setup.scalar(select(func.max(HasnSpeechCatalogRelease.release_sequence)))
-                ) or Decimal(0)
+    package_bytes = _real_zip_bytes(f'concurrent-release-{_RUN_MARKER}')
+    staged = await speech_catalog_service.stage_package_upload(
+        session,
+        upload=_upload(package_bytes),
+    )
+    await session.commit()
+    sequence = time.time_ns()
+    first_catalog = _release_document(
+        package_url=staged.download_url,
+        sha256=staged.sha256,
+        compressed_size=staged.size,
+        release_sequence=sequence,
+    )
+    second_document = json.loads(first_catalog)
+    second_document['signature'] = 'ef' * 64
+    second_catalog = json.dumps(second_document, separators=(',', ':'))
 
-        assert staged is not None
-        sequence = max(int(current_sequence) + 1, time.time_ns())
-        first_catalog = _release_document(
-            package_url=staged.download_url,
-            sha256=staged.sha256,
-            compressed_size=staged.size,
-            release_sequence=sequence,
-        )
-        second_document = json.loads(first_catalog)
-        second_document['signature'] = 'ef' * 64
-        second_catalog = json.dumps(second_document, separators=(',', ':'))
-
-        async def publish(
-            catalog_json: str,
-            label: str,
-        ) -> SpeechCatalogPublishResponse:
-            async with maker() as connection:
-                async with connection.begin():
-                    return await speech_catalog_service.publish_release(
-                        connection,
-                        catalog_json=catalog_json,
-                        published_by=label,
-                    )
-
-        results = await asyncio.gather(
-            publish(first_catalog, 'concurrency-first'),
-            publish(second_catalog, 'concurrency-second'),
-            return_exceptions=True,
-        )
-        successes = [result for result in results if not isinstance(result, BaseException)]
-        conflicts = [result for result in results if isinstance(result, errors.ConflictError)]
-        if successes:
-            release_id = successes[0].release_id
-        assert len(successes) == 1
-        assert len(conflicts) == 1
-        published = successes[0]
-
-        async with maker() as observer:
-            head = await observer.scalar(select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == 'global'))
-            assert head is not None
-            assert head.current_release_id == release_id
-            assert int(head.release_sequence or 0) == sequence
-            assert head.revision == published.revision
-            assert (
-                await observer.scalar(
-                    select(func.count())
-                    .select_from(HasnSpeechCatalogRelease)
-                    .where(HasnSpeechCatalogRelease.release_sequence == sequence)
-                )
-                == 1
+    async def publish(
+        catalog_json: str,
+        label: str,
+    ) -> SpeechCatalogPublishResponse:
+        async with maker() as connection:
+            return await speech_catalog_service.publish_release(
+                connection,
+                catalog_json=catalog_json,
+                published_by=label,
             )
-    finally:
-        try:
-            async with maker() as cleanup:
-                async with cleanup.begin():
-                    current_head = await cleanup.scalar(
-                        select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == 'global')
-                    )
-                    if current_head is not None and release_id is not None:
-                        if previous_head is None:
-                            await cleanup.delete(current_head)
-                            await cleanup.flush()
-                        else:
-                            await cleanup.execute(
-                                update(HasnSpeechCatalog)
-                                .where(HasnSpeechCatalog.id == current_head.id)
-                                .values(**previous_head)
-                            )
-                            await cleanup.flush()
-                    if release_id is not None:
-                        await cleanup.execute(
-                            delete(HasnSpeechCatalogReleasePackage).where(
-                                HasnSpeechCatalogReleasePackage.release_id == release_id
-                            )
-                        )
-                        await cleanup.execute(
-                            delete(HasnSpeechCatalogRelease).where(HasnSpeechCatalogRelease.id == release_id)
-                        )
-                    package = await cleanup.scalar(
-                        select(HasnSpeechPackage).where(HasnSpeechPackage.sha256 == digest).limit(1)
-                    )
-                    if package is not None:
-                        await cleanup.delete(package)
-            if package_storage_id is not None:
-                async with maker() as storage_session:
-                    await StorageService.delete_object(
-                        storage_session,
-                        storage_id=package_storage_id,
-                        object_key=build_speech_package_object_key(digest),
-                    )
-        finally:
-            await engine.dispose()
+
+    results = await asyncio.gather(
+        publish(first_catalog, 'concurrency-first'),
+        publish(second_catalog, 'concurrency-second'),
+        return_exceptions=True,
+    )
+    successes = [result for result in results if not isinstance(result, BaseException)]
+    conflicts = [result for result in results if isinstance(result, errors.ConflictError)]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    published = successes[0]
+
+    async with maker() as observer:
+        head = await observer.scalar(select(HasnSpeechCatalog).where(HasnSpeechCatalog.config_key == 'global'))
+        assert head is not None
+        assert head.current_release_id == published.release_id
+        assert int(head.release_sequence or 0) == sequence
+        assert head.revision == published.revision
+        assert (
+            await observer.scalar(
+                select(func.count())
+                .select_from(HasnSpeechCatalogRelease)
+                .where(HasnSpeechCatalogRelease.release_sequence == sequence)
+            )
+            == 1
+        )

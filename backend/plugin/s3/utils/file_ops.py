@@ -1,17 +1,21 @@
 import asyncio
 import hashlib
 
-from collections.abc import AsyncIterable, AsyncIterator, Sequence
+from collections.abc import AsyncIterable, Sequence
+from typing import BinaryIO
 from urllib.parse import unquote, urlsplit
 
 import httpx
 
 from fastapi import UploadFile
 from opendal import AsyncOperator
+from qiniu import Auth, put_data, put_stream_v2  # type: ignore[import-untyped]
 
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.plugin.s3.model import S3Storage
+
+IMMUTABLE_SPEECH_PACKAGE_PREFIX = 'speech/sha256/'
 
 
 def normalize_storage_root(prefix: str | None) -> str:
@@ -32,6 +36,12 @@ def _clean_object_path(path: str) -> str:
     if any(part in {'', '.', '..'} for part in parts):
         raise errors.RequestError(msg='对象路径非法')
     return clean_path
+
+
+def _reject_reserved_immutable_mutation(path: str) -> None:
+    """阻止通用接口覆盖或删除内容寻址命名空间中的语音包。"""
+    if path.startswith(IMMUTABLE_SPEECH_PACKAGE_PREFIX):
+        raise errors.RequestError(msg='不可变语音包命名空间只允许专用 insert-only 上传，禁止通用覆盖或删除')
 
 
 def _join_url(base_url: str, *parts: str) -> str:
@@ -234,7 +244,8 @@ async def sha256_object(s3_storage: S3Storage, object_key: str) -> tuple[str, in
                 digest.update(chunk)
                 size += len(chunk)
     except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:300] if exc.response.text else exc.response.reason_phrase
+        body = await exc.response.aread()
+        detail = body[:300].decode('utf-8', errors='replace') if body else exc.response.reason_phrase
         raise errors.ServerError(msg=f'校验 S3 对象失败: HTTP {exc.response.status_code} {detail}') from exc
     except Exception as exc:
         log.exception(f'S3 对象校验失败: {type(exc).__name__}: {exc!r}')
@@ -245,6 +256,7 @@ async def sha256_object(s3_storage: S3Storage, object_key: str) -> tuple[str, in
 async def delete_object(s3_storage: S3Storage, object_key: str) -> None:
     """删除指定对象；供受控清理和真实集成测试回收专用对象。"""
     clean_path = _clean_object_path(object_key)
+    _reject_reserved_immutable_mutation(clean_path)
     operator = get_operator_for_storage(s3_storage)
     try:
         await operator.delete(clean_path)
@@ -255,23 +267,26 @@ async def delete_object(s3_storage: S3Storage, object_key: str) -> None:
 async def write_stream(
     s3_storage: S3Storage,
     path: str,
-    contents: AsyncIterable[bytes],
+    contents: AsyncIterable[bytes] | bytes,
     *,
     size: int,
     content_type: str | None = None,
 ) -> None:
     """以有界内存流式上传已知长度对象。"""
     clean_path = _clean_object_path(path)
+    _reject_reserved_immutable_mutation(clean_path)
     operator = get_operator_for_storage(s3_storage)
     try:
-        upload_timeout = min(1800.0, max(120.0, size / (500 * 1024)))
+        upload_timeout = min(1800.0, max(30.0, size / (500 * 1024)))
         presign_ttl = int(min(1800.0, max(300.0, upload_timeout)))
         signed = await operator.presign_write(clean_path, presign_ttl)
         headers = dict(getattr(signed, 'headers', {}) or {})
-        headers.setdefault('Content-Length', str(size))
+        if not isinstance(contents, bytes):
+            headers.setdefault('Content-Length', str(size))
         if content_type:
             headers.setdefault('Content-Type', content_type)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(upload_timeout, connect=20.0), trust_env=False) as client:
+        timeout = 30 if upload_timeout == 30 else httpx.Timeout(upload_timeout, connect=20.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             response = await client.request(
                 getattr(signed, 'method', 'PUT') or 'PUT',
                 signed.url,
@@ -289,6 +304,77 @@ async def write_stream(
         raise errors.ServerError(msg=f'上传文件到 S3 失败: {type(exc).__name__}: {detail}') from exc
 
 
+async def write_immutable_speech_package(
+    s3_storage: S3Storage,
+    path: str,
+    file: BinaryIO,
+    *,
+    size: int,
+    content_type: str,
+) -> None:
+    """用七牛原生 ``insertOnly`` 策略写入语音内容寻址包，禁止覆盖同 key 异内容。
+
+    当前生产公共桶是七牛 Kodo；其实测 S3 兼容 PUT 会忽略 ``If-None-Match``，
+    因此这里显式使用 Kodo 上传凭证的 ``insertOnly=1``。未知 provider 不降级为可覆盖 PUT。
+    """
+    clean_path = _clean_object_path(path)
+    if not clean_path.startswith(IMMUTABLE_SPEECH_PACKAGE_PREFIX):
+        raise errors.RequestError(msg='不可变语音包必须写入 speech/sha256 内容寻址命名空间')
+    hostname = (urlsplit(s3_storage.endpoint).hostname or '').lower()
+    if not hostname.endswith('.qiniucs.com'):
+        raise errors.ServerError(msg='当前对象存储不支持已验证的语音包 insert-only 上传，拒绝可覆盖写入')
+
+    prefix = _public_prefix(s3_storage.prefix)
+    provider_key = '/'.join(part for part in (prefix, clean_path) if part)
+    policy = {
+        'insertOnly': 1,
+        'fsizeMin': size,
+        'fsizeLimit': size,
+        'mimeLimit': content_type,
+        'returnBody': '{"key":$(key),"hash":$(etag),"size":$(fsize)}',
+    }
+    token = Auth(s3_storage.access_key, s3_storage.secret_key).upload_token(
+        s3_storage.bucket,
+        provider_key,
+        3600,
+        policy,
+    )
+
+    def upload() -> tuple[dict | None, object]:
+        file.seek(0)
+        if size <= 4 * 1024 * 1024:
+            return put_data(
+                token,
+                provider_key,
+                file.read(),
+                mime_type=content_type,
+                fname=provider_key.rsplit('/', 1)[-1],
+            )
+        return put_stream_v2(
+            token,
+            provider_key,
+            file,
+            provider_key.rsplit('/', 1)[-1],
+            size,
+            mime_type=content_type,
+            version='v2',
+            bucket_name=s3_storage.bucket,
+            part_size=4 * 1024 * 1024,
+        )
+
+    try:
+        result, info = await asyncio.to_thread(upload)
+    except Exception as exc:
+        log.exception(f'七牛不可变语音包上传失败: {type(exc).__name__}: {exc!r}')
+        raise errors.ServerError(msg=f'七牛不可变语音包上传失败: {type(exc).__name__}: {exc!s}') from exc
+    status_code = int(getattr(info, 'status_code', 0) or 0)
+    if status_code != 200 or result is None:
+        detail = str(getattr(info, 'text_body', '') or getattr(info, 'error', '') or 'unknown error')[:300]
+        raise errors.ServerError(msg=f'七牛不可变语音包上传失败: HTTP {status_code} {detail}')
+    if result.get('key') != provider_key or int(result.get('size', -1)) != size:
+        raise errors.ServerError(msg='七牛不可变语音包上传结果与请求 key/大小不一致')
+
+
 async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content_type: str | None = None) -> None:
     """Write bytes via a short-lived signed PUT URL.
 
@@ -297,14 +383,10 @@ async def write_bytes(s3_storage: S3Storage, path: str, contents: bytes, content
     server-side while using the storage provider's simple upload path.
     """
 
-    async def one_chunk() -> AsyncIterator[bytes]:
-        await asyncio.sleep(0)
-        yield contents
-
     await write_stream(
         s3_storage,
         path,
-        one_chunk(),
+        contents,
         size=len(contents),
         content_type=content_type,
     )

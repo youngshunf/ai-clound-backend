@@ -16,6 +16,7 @@ from backend.app.hasn.api.v1.ci.speech_catalog import (
     router as speech_catalog_ci_router,
 )
 from backend.app.hasn.service.speech_catalog_service import (
+    SpeechCatalogService,
     StagedSpeechPackageEvidence,
     build_speech_package_object_key,
     parse_release_manifest,
@@ -200,14 +201,28 @@ def test_release_rejects_staged_package_metadata_mismatch(
     catalog_json, _ = _release_document()
     release = parse_release_manifest(catalog_json)
     package = release.packages[0]
-    values: dict[str, str | int] = {
-        'sha256': package.sha256,
-        'object_key': build_speech_package_object_key(package.sha256),
-        'stable_url': package.url,
-        'size': package.compressed_size,
-    }
-    values[changed_field] = value
-    staged = StagedSpeechPackageEvidence(**values)
+    staged = StagedSpeechPackageEvidence(
+        sha256=package.sha256,
+        object_key=build_speech_package_object_key(package.sha256),
+        stable_url=package.url,
+        size=package.compressed_size,
+    )
+    if changed_field == 'size':
+        assert isinstance(value, int)
+        staged = StagedSpeechPackageEvidence(
+            sha256=staged.sha256,
+            object_key=staged.object_key,
+            stable_url=staged.stable_url,
+            size=value,
+        )
+    else:
+        assert isinstance(value, str)
+        staged = StagedSpeechPackageEvidence(
+            sha256=staged.sha256,
+            object_key=value if changed_field == 'object_key' else staged.object_key,
+            stable_url=value if changed_field == 'stable_url' else staged.stable_url,
+            size=staged.size,
+        )
 
     with pytest.raises(errors.RequestError, match=message):
         validate_staged_release_packages(release, {package.sha256: staged})
@@ -250,7 +265,7 @@ def test_release_transition_is_idempotent_only_for_identical_revision() -> None:
 
 
 def test_ci_router_exposes_only_two_phase_atomic_publish_contract() -> None:
-    paths = {route.path for route in speech_catalog_ci_router.routes}
+    paths = {getattr(route, 'path', '') for route in speech_catalog_ci_router.routes}
     assert '/packages' in paths
     assert '/releases' in paths
     assert '/publish' not in paths
@@ -258,10 +273,15 @@ def test_ci_router_exposes_only_two_phase_atomic_publish_contract() -> None:
 
 def test_release_route_commits_before_global_invalidate_and_stage_is_streamed() -> None:
     release_source = inspect.getsource(publish_speech_catalog_release)
-    transaction_position = release_source.index('async with db.begin():')
     publish_position = release_source.index('speech_catalog_service.publish_release')
     invalidate_position = release_source.index("sync_bump('speech_catalog', db)")
-    assert transaction_position < publish_position < invalidate_position
+    assert publish_position < invalidate_position
+
+    service_source = inspect.getsource(SpeechCatalogService.publish_release)
+    verify_position = service_source.index('_verify_release_packages_before_transaction')
+    transaction_position = service_source.index('async with db.begin():')
+    lock_position = service_source.index('pg_advisory_xact_lock')
+    assert verify_position < transaction_position < lock_position
 
     stage_source = inspect.getsource(stage_speech_package)
     assert 'await file.read()' not in stage_source

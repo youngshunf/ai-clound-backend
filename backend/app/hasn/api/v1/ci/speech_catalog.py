@@ -24,7 +24,7 @@ from backend.common.exception import errors
 from backend.common.response.response_code import CustomResponseCode
 from backend.common.response.response_schema import ResponseSchemaModel
 from backend.core.conf import settings
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 
@@ -47,7 +47,7 @@ def _verify_publish_bearer(authorization: str | None) -> None:
     name='hasn_speech_catalog_ci_stage_package',
 )
 async def stage_speech_package(
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     file: Annotated[UploadFile, File(description='模型分发包 ZIP，服务端据原始字节派生 SHA-256 与对象 key')],
     authorization: Annotated[str | None, Header()] = None,
 ) -> ResponseSchemaModel[SpeechPackageStageResponse]:
@@ -82,14 +82,13 @@ async def publish_speech_catalog_release(
     - 同序列同原文幂等；回退序列或同序列不同原文显式拒绝。
     """
     _verify_publish_bearer(authorization)
-    # 必须先提交权威 release/head，再向 Redis/WS 暴露新 revision；不能依赖 yield dependency
-    # 在路由返回后才提交，否则在线 daemon 收到失效信号时仍只能读到旧 catalog。
-    async with db.begin():
-        data = await speech_catalog_service.publish_release(
-            db,
-            catalog_json=catalog,
-            published_by='ci',
-        )
+    # service 先在锁外流式复核对象，再用短事务提交权威 release/head；返回时提交已经完成，
+    # 因此后续 Redis/WS invalidate 不会早于数据库可见性。
+    data = await speech_catalog_service.publish_release(
+        db,
+        catalog_json=catalog,
+        published_by='ci',
+    )
     # 语音目录发布 → 主动 push hasn.sync.invalidate(speech_catalog) 给在线节点：
     # 在线 daemon 秒级重拉 /speech-catalog/catalog 验签并落盘，离线节点靠重连握手对账。
     # best-effort，推送失败绝不影响已发布（同 platform_config 范式）。
