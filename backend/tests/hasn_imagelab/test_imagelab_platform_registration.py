@@ -42,6 +42,8 @@ from backend.app.hasn.service.app_catalog_service import (
     _CATALOG_AGENT_DEFAULTS,
     _CATALOG_DEFAULT_CONFIG,
     _CATALOG_SORT_ORDER,
+    _catalog_row_from_app,
+    catalog_to_manifest,
     ensure_catalog_seeded,
     get_all_app_configs,
     get_catalog,
@@ -201,6 +203,44 @@ def test_imagelab_workbench_app_shape() -> None:
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(IMAGELAB_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)
     assert IMAGELAB_AI_NATIVE_MANIFEST['collaboration_mode'] == app.collaboration_mode
+
+
+def test_imagelab_project_requirement_survives_catalog_projection() -> None:
+    """图坊项目必选契约须经 manifest、注册表与 catalog 投影完整保留。"""
+    app = build_imagelab_app()
+    assert IMAGELAB_AI_NATIVE_MANIFEST['project_aware'] is True
+    assert IMAGELAB_AI_NATIVE_MANIFEST['project_required'] is True
+    assert app.project_aware is True
+    assert app.project_required is True
+    assert app.to_manifest()['project_aware'] is True
+    assert app.to_manifest()['project_required'] is True
+
+    catalog = HasnAppCatalog(**_catalog_row_from_app(app))
+    projected = catalog_to_manifest(catalog, registry_app=app)
+    assert projected['project_aware'] is True
+    assert projected['project_required'] is True
+
+
+def test_imagelab_project_requirement_is_validated_against_registry() -> None:
+    """图坊项目必选不能脱离项目感知，也不能与工作台注册契约漂移。"""
+    project_unaware = {
+        **IMAGELAB_AI_NATIVE_MANIFEST,
+        'project_aware': False,
+        'project_required': True,
+    }
+    unaware_result = ai_native_app_registry.validate_manifest(project_unaware)
+    assert unaware_result.valid is False
+    assert 'project_required_requires_project_aware' in unaware_result.errors
+    assert 'project_aware_mismatch' in unaware_result.errors
+
+    optional_project = {
+        **IMAGELAB_AI_NATIVE_MANIFEST,
+        'project_aware': True,
+        'project_required': False,
+    }
+    optional_result = ai_native_app_registry.validate_manifest(optional_project)
+    assert optional_result.valid is False
+    assert 'project_required_mismatch' in optional_result.errors
 
 
 def test_imagelab_catalog_factory_source() -> None:
