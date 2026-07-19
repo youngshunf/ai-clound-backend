@@ -152,6 +152,29 @@ async def publish_engine_package(
     return response_base.success(data=engine)
 
 
+@router.post(
+    '/{pk}/finance-engine-release',
+    summary='发布 Finance Ed25519 签名引擎清单 v2',
+    dependencies=[
+        Depends(RequestPermission('hasn:app:catalog:edit')),
+        DependsRBAC,
+    ],
+    name='admin_publish_finance_engine_release',
+)
+async def publish_finance_engine_release(
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='finance 应用目录（云端权威） ID')],
+    manifest: Annotated[UploadFile, File(description='Ed25519 签名 manifest.json v2')],
+) -> ResponseSchemaModel[dict]:
+    document = await manifest.read(app_catalog_service.MAX_FINANCE_RELEASE_MANIFEST_BYTES + 1)
+    release = await app_catalog_service.publish_finance_engine_release(
+        db,
+        pk=pk,
+        document=document,
+    )
+    return response_base.success(data=release)
+
+
 @router.delete(
     '',
     summary='批量删除AI-Native 应用目录（云端权威）',
