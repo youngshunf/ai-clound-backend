@@ -8,8 +8,11 @@ import json
 import pytest
 
 from backend.app.hasn.service.speech_catalog_service import (
+    StagedSpeechPackageEvidence,
     build_speech_package_object_key,
     parse_release_manifest,
+    validate_release_transition,
+    validate_staged_release_packages,
 )
 from backend.common.exception import errors
 
@@ -154,3 +157,85 @@ def test_parse_v2_release_rejects_declared_zero_size() -> None:
 
     with pytest.raises(errors.RequestError, match='compressed_size'):
         parse_release_manifest(json.dumps(document))
+
+
+def test_release_requires_every_unique_package_to_be_staged() -> None:
+    catalog_json, package_bytes = _release_document()
+    release = parse_release_manifest(catalog_json)
+    package = release.packages[0]
+
+    with pytest.raises(errors.RequestError, match='尚未暂存'):
+        validate_staged_release_packages(release, {})
+
+    staged = StagedSpeechPackageEvidence(
+        sha256=package.sha256,
+        object_key=build_speech_package_object_key(package.sha256),
+        stable_url=package.url,
+        size=len(package_bytes),
+    )
+    assert validate_staged_release_packages(release, {package.sha256: staged}) == (staged,)
+
+
+@pytest.mark.parametrize(
+    ('changed_field', 'value', 'message'),
+    [
+        ('stable_url', 'https://cdn.example.com/speech/sha256/00/wrong.zip', 'URL'),
+        ('size', 1, '大小'),
+        ('object_key', 'speech/models/latest.zip', '对象 key'),
+    ],
+)
+def test_release_rejects_staged_package_metadata_mismatch(
+    changed_field: str,
+    value: str | int,
+    message: str,
+) -> None:
+    catalog_json, _ = _release_document()
+    release = parse_release_manifest(catalog_json)
+    package = release.packages[0]
+    values: dict[str, str | int] = {
+        'sha256': package.sha256,
+        'object_key': build_speech_package_object_key(package.sha256),
+        'stable_url': package.url,
+        'size': package.compressed_size,
+    }
+    values[changed_field] = value
+    staged = StagedSpeechPackageEvidence(**values)
+
+    with pytest.raises(errors.RequestError, match=message):
+        validate_staged_release_packages(release, {package.sha256: staged})
+
+
+def test_release_transition_is_idempotent_only_for_identical_revision() -> None:
+    assert (
+        validate_release_transition(
+            current_sequence=10,
+            current_revision='same-revision',
+            candidate_sequence=10,
+            candidate_revision='same-revision',
+        )
+        == 'idempotent'
+    )
+    assert (
+        validate_release_transition(
+            current_sequence=10,
+            current_revision='old-revision',
+            candidate_sequence=11,
+            candidate_revision='new-revision',
+        )
+        == 'publish'
+    )
+
+    with pytest.raises(errors.ConflictError, match='序列'):
+        validate_release_transition(
+            current_sequence=10,
+            current_revision='old-revision',
+            candidate_sequence=9,
+            candidate_revision='new-revision',
+        )
+    with pytest.raises(errors.ConflictError, match='冲突'):
+        validate_release_transition(
+            current_sequence=10,
+            current_revision='old-revision',
+            candidate_sequence=10,
+            candidate_revision='new-revision',
+        )

@@ -20,7 +20,7 @@ import re
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 import sqlalchemy as sa
@@ -76,6 +76,16 @@ class SpeechCatalogReleaseManifest:
     issued_at: datetime
     payload: dict[str, Any]
     packages: tuple[SpeechCatalogReleasePackageReference, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StagedSpeechPackageEvidence:
+    """云端已经成功写入不可变对象存储的模型包证据。"""
+
+    sha256: str
+    object_key: str
+    stable_url: str
+    size: int
 
 
 def _require_sha256(value: object) -> str:
@@ -271,6 +281,51 @@ def parse_release_manifest(catalog_json: str) -> SpeechCatalogReleaseManifest:
         payload=payload,
         packages=tuple(references),
     )
+
+
+def validate_staged_release_packages(
+    release: SpeechCatalogReleaseManifest,
+    staged_by_sha256: dict[str, StagedSpeechPackageEvidence],
+) -> tuple[StagedSpeechPackageEvidence, ...]:
+    """证明 release 引用的每个唯一对象都已暂存且元数据逐项一致。"""
+    validated: list[StagedSpeechPackageEvidence] = []
+    seen: set[str] = set()
+    for package in release.packages:
+        staged = staged_by_sha256.get(package.sha256)
+        if staged is None:
+            raise errors.RequestError(msg=f'模型包尚未暂存: {package.sha256}')
+        if staged.sha256 != package.sha256:
+            raise errors.RequestError(msg=f'模型包 sha256 登记不一致: {package.sha256}')
+        expected_key = build_speech_package_object_key(package.sha256)
+        if staged.object_key != expected_key:
+            raise errors.RequestError(msg=f'模型包对象 key 不符合内容寻址规则: {package.sha256}')
+        if staged.stable_url.rstrip('/') != package.url.rstrip('/'):
+            raise errors.RequestError(msg=f'模型包 URL 与暂存对象不一致: {package.sha256}')
+        if staged.size != package.compressed_size:
+            raise errors.RequestError(msg=f'模型包大小与 catalog 声明不一致: {package.sha256}')
+        if package.sha256 not in seen:
+            seen.add(package.sha256)
+            validated.append(staged)
+    return tuple(validated)
+
+
+def validate_release_transition(
+    *,
+    current_sequence: int | None,
+    current_revision: str | None,
+    candidate_sequence: int,
+    candidate_revision: str,
+) -> Literal['publish', 'idempotent']:
+    """执行全局单调序列和同内容幂等判定。"""
+    if current_sequence is None:
+        return 'publish'
+    if candidate_sequence < current_sequence:
+        raise errors.ConflictError(msg=f'发布序列回退：当前 {current_sequence}，候选 {candidate_sequence}')
+    if candidate_sequence == current_sequence:
+        if candidate_revision == current_revision:
+            return 'idempotent'
+        raise errors.ConflictError(msg=f'发布序列 {candidate_sequence} 已被不同 catalog 占用，发生冲突')
+    return 'publish'
 
 
 def compute_revision(catalog_json: str) -> str:
