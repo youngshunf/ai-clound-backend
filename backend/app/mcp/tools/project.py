@@ -91,7 +91,7 @@ async def _safe_linkage_bump(
 
 # ── handlers ─────────────────────────────────────────────────────────────────
 async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    """建项目（name 必填，可选 goal/cover_asset_uri/bound_agent_id）：建行后 register-on-write 直登记。"""
+    """建项目（name 必填，可选幂等键）：建行后 register-on-write 直登记。"""
     owner = _owner_hasn_id(ctx)
     result = await project_service.create_project(db, owner=owner, data=args)
     registration = await register_app_resource_artifact(
@@ -253,7 +253,8 @@ _SPECS: list[dict[str, Any]] = [
         'handler': _h_create,
         'desc': (
             '建平台项目（「为了哪件事」的业务容器）：name 必填；可选 goal(一句话目标)、'
-            'cover_asset_uri(封面，只收 hasn://asset/{id} 引用)、bound_agent_id(默认协作分身)。'
+            'cover_asset_uri(封面，只收 hasn://asset/{id} 引用)、bound_agent_id(默认协作分身)、'
+            'client_request_id(主人范围创建幂等键，重试必须复用原值)。'
             '建成即登记为产物并返回 hasn://project/{id}，主人可在产物 tab / 会话资源栏点开。'
         ),
         'schema': _schema(
@@ -262,6 +263,7 @@ _SPECS: list[dict[str, Any]] = [
                 'goal': _s('可选：一句话目标（供聚合视图与派发上下文注入）'),
                 'cover_asset_uri': _s('可选：封面图资产引用 hasn://asset/{id}（禁 base64/URL 直链）'),
                 'bound_agent_id': _s('可选：默认协作分身 hasn_id（owner 名下 a_* 分身）'),
+                'client_request_id': _s('可选：主人范围创建幂等键（最长 128 字符；重试必须复用原值和相同创建参数）'),
             },
             ['name'],
         ),

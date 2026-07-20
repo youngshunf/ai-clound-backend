@@ -23,6 +23,8 @@ from uuid import UUID
 
 import sqlalchemy as sa
 
+from sqlalchemy.exc import IntegrityError
+
 from backend.app.hasn_core import HasnAgents
 from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
@@ -50,6 +52,7 @@ _COVER_ASSET_URI_RE = re.compile(r'^hasn://asset/([^/?#]+)$')
 # 时间类字段：Agent/Owner API 的 body 是 untyped dict，时间值经 JSON 必为字符串，
 # PostgreSQL 不做 timestamptz=varchar 隐式转换，不转则写入报错。
 _DATETIME_KEYS = {'due_time'}
+_CLIENT_REQUEST_ID_MAX_LENGTH = 128
 
 
 def _err(code: str, msg: str, *, http_code: int = 400) -> errors.RequestError:
@@ -99,6 +102,93 @@ def _optional_text(value: Any, *, code: str, field_name: str) -> str | None:
         raise _err(code, f'{field_name}必须是字符串')
     normalized = value.strip()
     return normalized or None
+
+
+def _client_request_id(data: dict[str, Any]) -> str | None:
+    """解析可选创建幂等键；显式空值和超长值均拒绝。"""
+    value = data.get('client_request_id')
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _err('invalid_client_request_id', 'client_request_id 必须是字符串')
+    normalized = value.strip()
+    if not normalized:
+        raise _err('invalid_client_request_id', 'client_request_id 不能为空')
+    if len(normalized) > _CLIENT_REQUEST_ID_MAX_LENGTH:
+        raise _err(
+            'invalid_client_request_id',
+            f'client_request_id 最长 {_CLIENT_REQUEST_ID_MAX_LENGTH} 个字符',
+        )
+    return normalized
+
+
+def _normalized_create_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """补齐数据库创建默认值，用于写入和幂等重放比对。"""
+    return {
+        'name': fields['name'],
+        'goal': fields.get('goal'),
+        'cover_asset_uri': fields.get('cover_asset_uri'),
+        'status': fields.get('status', 'active'),
+        'bound_agent_id': fields.get('bound_agent_id'),
+    }
+
+
+def _same_create_payload(
+    row: HasnProject,
+    *,
+    fields: dict[str, Any],
+    enterprise_id: UUID | None,
+) -> bool:
+    """判断重放请求与最初创建参数是否一致，防止同键静默指向错误项目。"""
+    return (
+        row.name == fields['name']
+        and row.goal == fields['goal']
+        and row.cover_asset_uri == fields['cover_asset_uri']
+        and row.status == fields['status']
+        and row.bound_agent_id == fields['bound_agent_id']
+        and row.enterprise_id == enterprise_id
+    )
+
+
+def _serialize_idempotent_result(row: HasnProject, *, replay: bool) -> dict[str, Any]:
+    """序列化创建结果并标注是否命中幂等重放。"""
+    result = serialize(row)
+    result['idempotent_replay'] = replay
+    return result
+
+
+async def _find_idempotent_project(
+    db: AsyncSession,
+    *,
+    owner: str,
+    request_id: str | None,
+) -> HasnProject | None:
+    """按主人和请求键读取既有项目；无请求键时不查询。"""
+    if request_id is None:
+        return None
+    return (
+        await db.execute(
+            sa.select(HasnProject).where(
+                HasnProject.owner_id == owner,
+                HasnProject.client_request_id == request_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _replay_or_conflict(
+    existing: HasnProject,
+    *,
+    fields: dict[str, Any],
+    enterprise_id: UUID | None,
+) -> dict[str, Any]:
+    """同参数返回既有项目；同键异参显式拒绝。"""
+    if not _same_create_payload(existing, fields=fields, enterprise_id=enterprise_id):
+        raise errors.ConflictError(
+            msg='client_request_id 已用于不同的项目创建参数',
+            data={'error_code': 'idempotency_conflict'},
+        )
+    return _serialize_idempotent_result(existing, replay=True)
 
 
 def serialize(row: Any) -> dict[str, Any]:
@@ -527,13 +617,40 @@ class ProjectService:
     async def create_project(
         self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: str | UUID | None = None
     ) -> dict:
-        """建项目（name 必填）。enterprise_id 由服务端解析后传入，绝不来自 data。"""
-        fields = await self._validate_project_fields(db, owner=owner, data=data, creating=True)
-        row = HasnProject(owner_id=owner, enterprise_id=_as_uuid(enterprise_id) if enterprise_id else None, **fields)
-        db.add(row)
-        await db.flush()
+        """建项目；有 client_request_id 时在主人范围内安全幂等。
+
+        enterprise_id 只由服务端解析。顺序重放先读取既有行；并发重放由数据库唯一索引兜底，
+        冲突时仅回滚本次 SAVEPOINT，再读取胜出行，不污染外层工具事务。
+        """
+        validated = await self._validate_project_fields(db, owner=owner, data=data, creating=True)
+        fields = _normalized_create_fields(validated)
+        request_id = _client_request_id(data)
+        enterprise_uuid = _as_uuid(enterprise_id) if enterprise_id else None
+        existing = await _find_idempotent_project(db, owner=owner, request_id=request_id)
+        if existing is not None:
+            return _replay_or_conflict(existing, fields=fields, enterprise_id=enterprise_uuid)
+
+        row = HasnProject(
+            owner_id=owner,
+            enterprise_id=enterprise_uuid,
+            client_request_id=request_id,
+            **fields,
+        )
+        if request_id is None:
+            db.add(row)
+            await db.flush()
+        else:
+            try:
+                async with db.begin_nested():
+                    db.add(row)
+                    await db.flush()
+            except IntegrityError:
+                existing = await _find_idempotent_project(db, owner=owner, request_id=request_id)
+                if existing is None:
+                    raise
+                return _replay_or_conflict(existing, fields=fields, enterprise_id=enterprise_uuid)
         await db.refresh(row)
-        return serialize(row)
+        return _serialize_idempotent_result(row, replay=False) if request_id else serialize(row)
 
     async def update_project(self, db: AsyncSession, *, owner: str, pk: str | UUID, data: dict) -> dict:
         """改项目（省略保持原值、显式 null 清空；归档时只允许恢复为 active）。"""
