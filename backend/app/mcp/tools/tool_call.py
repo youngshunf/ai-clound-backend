@@ -98,6 +98,13 @@ class ToolCallTool(BaseTool):
         if name in _NON_DISPATCHABLE or name == self.name:
             raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, f"tool.call cannot dispatch meta tool: {name}")
 
+        # 包装器本身始终保留，但内层业务工具必须先过本次工作会话白名单；判定先于注册表查询与
+        # schema-on-error，避免未授权工具借包装器泄露存在性或 schema。
+        from backend.app.mcp.trust_gate import is_session_tool_allowed
+
+        if not is_session_tool_allowed(agent_context, name):
+            raise McpToolError(McpErrorCode.TOOL_NOT_ALLOWED, f'工作会话未授权调用工具: {name}')
+
         # 解析内层工具（含迁移别名）。App 工具已由外层 call_tool 的 _load_app_tools 载入。
         inner_tool = self._server.tool_registry.get_tool(name)
         if inner_tool is None:

@@ -19,6 +19,7 @@ import jsonschema
 import pytest
 
 from backend.app.mcp.trust_gate import (
+    RESERVED_ALLOWED_TOOL_NAMES,
     RESERVED_IS_EXTERNAL,
     RESERVED_PEER_ID,
     RESERVED_PEER_TRUST,
@@ -74,10 +75,16 @@ def test_idempotent() -> None:
 # ── 真 jsonschema 校验（复刻 SDK 那一步）──────────────────────────────────────
 @pytest.mark.parametrize(
     'reserved',
-    [RESERVED_SESSION_ID, RESERVED_IS_EXTERNAL, RESERVED_PEER_ID, RESERVED_PEER_TRUST],
+    [
+        RESERVED_SESSION_ID,
+        RESERVED_ALLOWED_TOOL_NAMES,
+        RESERVED_IS_EXTERNAL,
+        RESERVED_PEER_ID,
+        RESERVED_PEER_TRUST,
+    ],
 )
 def test_reserved_fields_pass_sdk_validation(reserved: str) -> None:
-    """四个保留字段都能过 SDK 同款校验（这正是原先 tool.search 被拒的那一步）。"""
+    """五个保留字段都能过 SDK 同款校验（这正是原先 tool.search 被拒的那一步）。"""
     schema = allow_reserved_fields_in_schema(_STRICT_SCHEMA)
     jsonschema.validate(instance={'query': 'sources', reserved: 'x'}, schema=schema)
 

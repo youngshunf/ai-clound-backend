@@ -69,6 +69,9 @@ class AgentContext:
         # （gate1 owner 启用 + gate2 agent binding，由 server.py 每次调用前注入）。
         # external 工具全局共享注册表实例，但发现/调用资格按此集合 per-request 过滤，杜绝串号。
         self.external_allowed_tools: set[str] = set()
+        # 本次工作会话允许调用的精确业务工具名。None 保持既有不限制语义；
+        # frozenset() 表示拒绝全部业务工具。传输包装器由统一判定函数始终保留。
+        self.allowed_tool_names: frozenset[str] | None = None
         # G1 平台特权门（doc18 §4.1）：Admin 授予表 ∪ ENV bootstrap 的授予值集合
         # （精确 scope 或段尾通配）。默认空 = 特权工具全不可见；两凭证入口鉴权后
         # 用 get_privileged_grants_cached 现查灌入。与已废弃的凭证 scopes 无关。

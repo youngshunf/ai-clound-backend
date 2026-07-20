@@ -28,7 +28,10 @@ from backend.app.mcp.auth import AgentContext, inject_app_access
 from backend.app.mcp.context import set_capability_ticket, set_trust_context_header
 from backend.app.mcp.json_encoding import json_default
 from backend.app.mcp.server import mcp_server
-from backend.app.mcp.trust_gate import allow_reserved_fields_in_schema
+from backend.app.mcp.trust_gate import (
+    allow_reserved_fields_in_schema,
+    apply_session_tool_allowlist_header,
+)
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.security.agent_jwt import get_agent_scopes_cached, get_privileged_grants_cached, verify_agent_token
@@ -287,6 +290,10 @@ class HasnMcpStreamableServer:
                 ))
             else:
                 set_trust_context_header(None)
+
+            # CLI runtime 的会话工具白名单走 per-dispatch Header；严格 JSON 数组解析，非法即
+            # 失败关闭并由本方法统一返回 401。字段缺失保持既有不限制语义，空数组拒绝全部业务工具。
+            apply_session_tool_allowlist_header(agent_context, headers)
 
             logger.debug(f'Authenticated agent {agent_context.hasn_id} for MCP request')
 
