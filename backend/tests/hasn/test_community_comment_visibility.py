@@ -22,6 +22,7 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_community.model import HasnFollows
 from backend.app.hasn_community.service.community_service import community_service
+from backend.app.hasn_core import HasnAgents
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -134,3 +135,82 @@ async def test_get_article_closed_policy_hides_input_for_others_but_not_author(p
     as_other = await community_service.get_article(pg, user_id=402, hasn_id=other, article_id=article['article_id'])
     assert as_other['can_comment'] is False
     assert as_other['comment_disabled_reason']
+
+
+async def test_create_comment_returns_enriched_author_for_human(pg) -> None:
+    """human 发评论：返回完整富化评论（对齐 get_comments 单条形状）。
+
+    daemon 本地优先把 create 响应经 apply_authoritative_comment 原样写入镜像 source_json；
+    若缺 author，webui 评论列表渲染 comment.author.hasn_id 直接崩（ErrorBoundary）。
+    """
+    commenter = f'h_ccs_commenter_{_uid()}'
+    nickname = f'探针评论者_{_uid()}'
+    pg.add(HasnHumans(hasn_id=commenter, star_id=f'{_uid()}#star', user_id=501, nickname=nickname))
+    await pg.flush()
+
+    result = await community_service.create_comment(
+        pg,
+        target_type='post',
+        target_id=f'p_nonexistent_{_uid()}',
+        hasn_id=commenter,
+        user_id=501,
+        content='富化形状探针',
+    )
+
+    assert result['comment_id']
+    assert result['status'] == 'visible'
+    assert result['content'] == '富化形状探针'
+    assert result['parent_id'] is None
+    assert result['like_count'] == 0
+    author = result['author']
+    assert author['hasn_id'] == commenter
+    assert author['type'] == 'human'
+    assert author['display_name'] == nickname
+    assert 'avatar' in author
+
+
+async def test_create_comment_returns_enriched_author_with_owner_for_agent(pg, monkeypatch: pytest.MonkeyPatch) -> None:
+    """agent 发评论：author 带 owner 副行，且经 _enrich_authors 补 profession/online_status。"""
+    # 与 fanout 测试 spy bump_owner 同理：stub 实时 presence，避免依赖真实 Redis
+    # （全局 redis_client 的连接绑定在前序测试的 event loop 上，复用即 Event loop is closed）。
+    from backend.app.hasn.service.ws_router import ws_router
+
+    async def _offline_map(entity_ids: list[str]) -> dict[str, bool]:
+        return {eid: False for eid in entity_ids}
+
+    monkeypatch.setattr(ws_router, 'get_online_map', _offline_map)
+
+    owner = f'h_ccs_owner_{_uid()}'
+    agent = f'a_ccs_agent_{_uid()}'
+    agent_name = f'探针分身_{_uid()}'
+    pg.add(HasnHumans(hasn_id=owner, star_id=f'{_uid()}#star', user_id=601, nickname=f'探针主人_{_uid()}'))
+    pg.add(
+        HasnAgents(
+            hasn_id=agent,
+            owner_id=owner,
+            star_id=f'{_uid()}#star',
+            display_name=agent_name,
+            profession='探针专家',
+        )
+    )
+    await pg.flush()
+
+    result = await community_service.create_comment(
+        pg,
+        target_type='post',
+        target_id=f'p_nonexistent_{_uid()}',
+        hasn_id=agent,
+        content='agent 富化形状探针',
+        author_type='agent',
+        owner_hasn_id=owner,
+        status='pending_review',
+    )
+
+    assert result['status'] == 'pending_review'
+    author = result['author']
+    assert author['hasn_id'] == agent
+    assert author['type'] == 'agent'
+    assert author['display_name'] == agent_name
+    assert author['owner']['hasn_id'] == owner
+    assert author['profession'] == '探针专家'
+    assert author['online_status'] in ('online', 'offline')
