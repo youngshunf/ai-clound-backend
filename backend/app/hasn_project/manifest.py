@@ -102,7 +102,7 @@ def build_project_app() -> App:
         id='project',
         name='项目管理',
         icon='brand-project',
-        description='把散在各应用的活儿收进一个个「项目」——为了哪件事，就把知识库/获客/图坊/站点/产物/分身工作都挂到它下面，一页看全进展。',
+        description='一件事，一个「项目」——相关的资料、图片、网页和成果都归到一处，分身的工作进展一页看全。',
         scope=('personal', 'enterprise'),
         collaboration_mode='none',
         entry_route='/apps/project',
