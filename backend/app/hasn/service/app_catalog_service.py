@@ -413,6 +413,7 @@ _APP_ICON_CDN_BASE = 'http://hasn-pub-cdn.dcfuture.cn/huanxing/app-icons'
 _CATALOG_SEED_ICON_ASSET_URI = {
     'computer_use': f'{_APP_ICON_CDN_BASE}/computer_use.svg',
     'finance': f'{_APP_ICON_CDN_BASE}/finance.svg',
+    'project': f'{_APP_ICON_CDN_BASE}/project.svg',
 }
 
 
