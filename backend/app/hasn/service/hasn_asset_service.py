@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model import HasnAgents, HasnAssetGrants, HasnAssets, HasnConversations, HasnGroupMembers
+from backend.plugin.s3.model import S3Storage
 from backend.plugin.s3.service.storage_service import ObjectRef, StorageService
 from backend.utils.timezone import timezone
 
@@ -136,14 +137,12 @@ class HasnAssetService:
         if not agent_ids:
             return False
         owned = await db.execute(
-            select(HasnAgents.id)
-            .where(HasnAgents.hasn_id.in_(agent_ids), HasnAgents.owner_id == hasn_id)
-            .limit(1)
+            select(HasnAgents.id).where(HasnAgents.hasn_id.in_(agent_ids), HasnAgents.owner_id == hasn_id).limit(1)
         )
         return owned.first() is not None
 
     @classmethod
-    async def resolve(
+    async def resolve(  # ruff:ignore[complex-structure]
         cls,
         db: AsyncSession,
         *,
@@ -188,7 +187,7 @@ class HasnAssetService:
         results: list[ResolvedAsset] = []
         private_items: list[tuple[int, str]] = []
         private_assets: list[HasnAssets] = []
-        storages_cache: dict[int, object] = {}
+        storages_cache: dict[int, S3Storage] = {}
         for asset in readable:
             if asset.access == 'public':
                 storage = storages_cache.get(asset.storage_id)
