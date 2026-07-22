@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import logging
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
@@ -235,7 +236,7 @@ class StudioService:
         可选 project_id 过滤（owned 与 shared 都收敛到该项目）。
         """
         human = subject.owner_hasn_id
-        owned_conds = [StudioArtifact.owner_hasn_id == human]
+        owned_conds: list[ColumnElement[bool]] = [StudioArtifact.owner_hasn_id == human]
         if project_id is not None:
             owned_conds.append(StudioArtifact.project_id == project_id)
         owned = (
@@ -257,7 +258,7 @@ class StudioService:
         extra_ids = {int(i) for i in shared_ids if i.isdigit()} - owned_ids
         extra: list[StudioArtifact] = []
         if extra_ids:
-            extra_conds = [StudioArtifact.id.in_(extra_ids)]
+            extra_conds: list[ColumnElement[bool]] = [StudioArtifact.id.in_(extra_ids)]
             if project_id is not None:
                 extra_conds.append(StudioArtifact.project_id == project_id)
             extra = list((await db.execute(select(StudioArtifact).where(*extra_conds))).scalars().all())
@@ -790,8 +791,11 @@ class StudioService:
     @staticmethod
     async def _poll_and_apply(db: AsyncSession, job: StudioRenderJob) -> None:
         """轮询引擎一次，把状态/进度/阶段/成本落库。传输层失败保持原态（下次重试），不造假。"""
+        engine_job_id = job.engine_job_id
+        if not engine_job_id:
+            return
         try:
-            snapshot = await montage_engine_provider.get_render(job.engine_job_id)
+            snapshot = await montage_engine_provider.get_render(engine_job_id)
         except StudioEngineError as exc:
             # 404=引擎重启丢内存态 → 标失败透传；其余瞬时错误保持原态等下次。
             if 'HTTP 404' in str(exc):
@@ -828,21 +832,24 @@ class StudioService:
         ).scalar_one_or_none()
         if existing is not None:
             return
+        engine_job_id = job.engine_job_id
+        if not engine_job_id:
+            return
 
         # 取最新 snapshot 拿成片元数据（时长/分辨率/体积）；失败则用 job 已落的字段兜底。
         snapshot: dict[str, Any] = {}
         try:
-            snapshot = await montage_engine_provider.get_render(job.engine_job_id)
+            snapshot = await montage_engine_provider.get_render(engine_job_id)
         except StudioEngineError:
             snapshot = {}
 
         try:
-            data, content_type = await montage_engine_provider.fetch_artifact(job.engine_job_id)
+            data, content_type = await montage_engine_provider.fetch_artifact(engine_job_id)
             ref = await StorageService.upload(
                 db,
                 data,
                 category=_ARTIFACT_UPLOAD_CATEGORY,
-                filename=f'{job.engine_job_id}.mp4',
+                filename=f'{engine_job_id}.mp4',
                 content_type=content_type or 'video/mp4',
             )
             asset = await hasn_asset_service.register_asset(
@@ -950,7 +957,9 @@ class StudioService:
         return row
 
     @staticmethod
-    async def _resolve_asset_urls(db: AsyncSession, *, owner_hasn_id: str, uris: list[str | None]) -> dict[str, str]:
+    async def _resolve_asset_urls(
+        db: AsyncSession, *, owner_hasn_id: str, uris: Sequence[str | None]
+    ) -> dict[str, str]:
         """批量把 hasn://asset/<id> 换 owner 可读签名 URL；返回 {原始 uri: signed_url}。"""
         uri_to_id: dict[str, str] = {}
         for uri in uris:
