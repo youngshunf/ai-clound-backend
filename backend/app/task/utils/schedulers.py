@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import math
 
 from datetime import datetime, timedelta
 from multiprocessing.util import Finalize
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from celery import current_app, schedules
-from celery.beat import ScheduleEntry, Scheduler
+from celery import schedules
+from celery._state import get_current_app
+from celery.beat import ScheduleEntry, Scheduler, event_t
 from celery.signals import beat_init
 from celery.utils.log import get_logger
 from sqlalchemy import select
@@ -39,12 +41,28 @@ DEFAULT_MAX_LOCK_TIMEOUT = DEFAULT_MAX_INTERVAL * 5  # seconds
 logger = get_logger('fba.schedulers')
 
 
+class _IntervalSchedule(Protocol):
+    """Celery interval schedule 运行时具备、但类型桩未声明的字段。"""
+
+    run_every: timedelta
+
+
+class _CrontabSchedule(Protocol):
+    """Celery crontab 运行时保留的原始表达式字段。"""
+
+    _orig_minute: object
+    _orig_hour: object
+    _orig_day_of_month: object
+    _orig_month_of_year: object
+    _orig_day_of_week: object
+
+
 class ModelEntry(ScheduleEntry):
     """任务调度实体"""
 
     def __init__(self, model: TaskScheduler, app=None) -> None:  # noqa:ANN001,C901
         super().__init__(
-            app=app or current_app._get_current_object(),
+            app=app or get_current_app(),
             name=model.name,
             task=model.task,
         )
@@ -104,7 +122,7 @@ class ModelEntry(ScheduleEntry):
                 task.no_changes = True
                 task.enabled = False
 
-    def is_due(self) -> tuple[bool, int | float | datetime]:
+    def is_due(self) -> tuple[bool, float]:
         """任务到期状态"""
         if not self.model.enabled:
             # 重新启用时延迟 5 秒
@@ -127,10 +145,15 @@ class ModelEntry(ScheduleEntry):
             run_await(self.save)(save_fields)
             return schedules.schedstate(is_due=False, next=1000000000)  # 高延迟，避免重新检查
 
+        if self.schedule is None:
+            logger.warning(f'任务 {self.name} 未配置有效计划，等待禁用状态同步')
+            return schedules.schedstate(is_due=False, next=DEFAULT_MAX_INTERVAL)
+        if self.last_run_at is None:
+            self.last_run_at = timezone.now()
         return self.schedule.is_due(self.last_run_at)
 
-    def __next__(self):  # noqa: ANN204
-        self.model.last_run_time = timezone.now()
+    def __next__(self, last_run_at: datetime | None = None) -> ModelEntry:
+        self.model.last_run_time = last_run_at or timezone.now()
         self.model.total_run_count += 1
         self.model.no_changes = True
         return self.__class__(self.model)
@@ -175,11 +198,14 @@ class ModelEntry(ScheduleEntry):
 
     @staticmethod
     async def to_model_schedule(name: str, task: str, schedule: schedules.schedule | TzAwareCrontab) -> TaskScheduler:
-        schedule = schedules.maybe_schedule(schedule)
+        normalized_schedule = schedules.maybe_schedule(schedule)
+        if not isinstance(normalized_schedule, schedules.BaseSchedule):
+            raise errors.NotFoundError(msg=f'暂不支持的计划类型：{normalized_schedule}')
 
         async with async_db_session() as db:
-            if isinstance(schedule, schedules.schedule):
-                every = max(schedule.run_every.total_seconds(), 0)
+            if isinstance(normalized_schedule, schedules.schedule):
+                interval_schedule = cast(_IntervalSchedule, normalized_schedule)
+                every = max(interval_schedule.run_every.total_seconds(), 0)
                 spec = {
                     'name': name,
                     'type': TaskSchedulerType.INTERVAL.value,
@@ -191,8 +217,9 @@ class ModelEntry(ScheduleEntry):
                 obj = query.scalars().first()
                 if not obj:
                     obj = TaskScheduler(**CreateTaskSchedulerParam(task=task, **spec).model_dump())
-            elif isinstance(schedule, schedules.crontab):
-                crontab = f'{schedule._orig_minute} {schedule._orig_hour} {schedule._orig_day_of_month} {schedule._orig_month_of_year} {schedule._orig_day_of_week}'  # noqa: E501
+            elif isinstance(normalized_schedule, schedules.crontab):
+                crontab_schedule = cast(_CrontabSchedule, normalized_schedule)
+                crontab = f'{crontab_schedule._orig_minute} {crontab_schedule._orig_hour} {crontab_schedule._orig_day_of_month} {crontab_schedule._orig_month_of_year} {crontab_schedule._orig_day_of_week}'  # noqa: E501
                 crontab_verify(crontab)
                 spec = {
                     'name': name,
@@ -205,7 +232,7 @@ class ModelEntry(ScheduleEntry):
                 if not obj:
                     obj = TaskScheduler(**CreateTaskSchedulerParam(task=task, **spec).model_dump())
             else:
-                raise errors.NotFoundError(msg=f'暂不支持的计划类型：{schedule}')
+                raise errors.NotFoundError(msg=f'暂不支持的计划类型：{normalized_schedule}')
 
             return obj
 
@@ -271,7 +298,7 @@ class DatabaseScheduler(Scheduler):
 
     Entry = ModelEntry
 
-    _schedule = None
+    _schedule: dict[str, ScheduleEntry]
     _last_update = None
     _initial_read = True
     _heap_invalidated = False
@@ -281,7 +308,8 @@ class DatabaseScheduler(Scheduler):
 
     def __init__(self, *args, **kwargs) -> None:
         self.app = kwargs['app']
-        self._dirty = set()
+        self._dirty: set[str] = set()
+        self._schedule = {}
         super().__init__(*args, **kwargs)
         self._finalize = Finalize(self, self.sync, exitpriority=5)
         self.max_interval = kwargs.get('max_interval') or self.app.conf.beat_max_loop_interval or DEFAULT_MAX_INTERVAL
@@ -316,7 +344,10 @@ class DatabaseScheduler(Scheduler):
                 name = self._dirty.pop()
                 try:
                     tasks = self.schedule
-                    run_await(tasks[name].save)()
+                    entry = tasks[name]
+                    if not isinstance(entry, ModelEntry):
+                        raise TypeError(f'任务 {name} 不是数据库调度条目')
+                    run_await(entry.save)()
                     logger.debug(f'保存任务 {name} 最新状态到数据库')
                     tried.add(name)
                 except KeyError as e:
@@ -330,13 +361,19 @@ class DatabaseScheduler(Scheduler):
             # 请稍后重试（仅针对失败的）
             self._dirty |= failed
 
-    def tick(self, **kwargs) -> float:
+    def tick(
+        self,
+        event_t: type[event_t] = event_t,
+        min: Any = min,
+        heappop: Any = heapq.heappop,
+        heappush: Any = heapq.heappush,
+    ) -> float:
         """重写父函数"""
         if self.lock:
             logger.debug('beat: Extending lock...')
             run_await(self.lock.extend)(DEFAULT_MAX_LOCK_TIMEOUT, replace_ttl=True)
 
-        return super().tick(**kwargs)
+        return super().tick(event_t=event_t, min=min, heappop=heappop, heappush=heappush)
 
     def close(self) -> None:
         """重写父函数"""
@@ -378,21 +415,22 @@ class DatabaseScheduler(Scheduler):
                 return True
         finally:
             self._last_update = now
+        return False
 
-    async def get_all_task_schedulers(self) -> dict:
+    async def get_all_task_schedulers(self) -> dict[str, ScheduleEntry]:
         """获取所有任务调度"""
         async with async_db_session() as db:
             logger.debug('DatabaseScheduler: Fetching database schedule')
             stmt = select(TaskScheduler).where(TaskScheduler.enabled == True)  # noqa: E712
             query = await db.execute(stmt)
             schedulers = query.scalars().all()
-            s = {}
+            s: dict[str, ScheduleEntry] = {}
             for scheduler in schedulers:
                 s[scheduler.name] = self.Entry(scheduler, app=self.app)
             return s
 
     @property
-    def schedule(self) -> dict[str, ModelEntry]:
+    def schedule(self) -> dict[str, ScheduleEntry]:
         """获取任务调度"""
         initial = update = False
         if self._initial_read:
@@ -409,7 +447,7 @@ class DatabaseScheduler(Scheduler):
             self._schedule = run_await(self.get_all_task_schedulers)()
             # 计划已更改，使 Scheduler.tick 中的堆无效
             if not initial:
-                self._heap = []
+                self._heap: list[event_t] = []
                 self._heap_invalidated = True
             logger.debug(
                 'Current schedule:\n%s',
@@ -418,6 +456,10 @@ class DatabaseScheduler(Scheduler):
 
         # logger.debug(self._schedule)
         return self._schedule
+
+    @schedule.setter
+    def schedule(self, value: dict[str, ScheduleEntry]) -> None:
+        self._schedule = value
 
 
 @beat_init.connect
