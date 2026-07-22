@@ -221,10 +221,12 @@ def _resolve_timeout(spec: ServiceSpec, overrides: dict) -> float:
         raw_timeout = overrides.get('timeout')
     if not raw_timeout:
         return spec.default_timeout
-    try:
-        return float(raw_timeout)
-    except (TypeError, ValueError):
-        return spec.default_timeout
+    if isinstance(raw_timeout, (str, int, float)) and not isinstance(raw_timeout, bool):
+        try:
+            return float(raw_timeout)
+        except ValueError:
+            pass
+    return spec.default_timeout
 
 
 def service_endpoint(name: str) -> ServiceEndpoint:

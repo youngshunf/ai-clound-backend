@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, validate_email
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, validate_email
 
 from backend.common.enums import PrimaryKeyType
 from backend.core.conf import settings
@@ -15,7 +15,9 @@ class CustomEmailStr(EmailStr):
 
     @classmethod
     def _validate(cls, input_value: str, /) -> str:
-        return None if not input_value else validate_email(input_value)[1]
+        if not input_value:
+            raise ValueError('邮箱不能为空')
+        return validate_email(input_value)[1]
 
 
 class SchemaBase(BaseModel):
@@ -32,18 +34,13 @@ class SchemaBase(BaseModel):
         },
     )
 
-    if PrimaryKeyType.snowflake == settings.DATABASE_PK_MODE:
-        from pydantic import field_serializer
-
-        # 详情：https://fastapi-practices.github.io/fastapi_best_architecture_docs/backend/reference/pk.html#%E6%B3%A8%E6%84%8F%E4%BA%8B%E9%A1%B9
-        @field_serializer('id', check_fields=False)
-        def serialize_id(self, value: int) -> str | int:
-            if self.model_config.get('from_attributes'):
-                return str(value)
-            return value
+    # 详情：https://fastapi-practices.github.io/fastapi_best_architecture_docs/backend/reference/pk.html#%E6%B3%A8%E6%84%8F%E4%BA%8B%E9%A1%B9
+    @field_serializer('id', check_fields=False)
+    def serialize_id(self, value: int) -> str | int:
+        if PrimaryKeyType.snowflake == settings.DATABASE_PK_MODE and self.model_config.get('from_attributes'):
+            return str(value)
+        return value
 
 
 def ser_string(value: Any) -> str | None:
-    if value:
-        return str(value)
-    return value
+    return str(value) if value is not None else None

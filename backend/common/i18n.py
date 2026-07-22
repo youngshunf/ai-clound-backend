@@ -56,7 +56,7 @@ class I18n:
                     case 'yaml' | 'yml':
                         self.locales[lang] = yaml.full_load(f.read())
 
-    def t(self, key: str, default: Any | None = None, **kwargs) -> str:
+    def t(self, key: str, default: str | None = None, **kwargs: Any) -> str:
         """
         翻译函数
 
@@ -68,7 +68,7 @@ class I18n:
         keys = key.split('.')
 
         try:
-            translation = self.locales[self.current_language]
+            translation: Any = self.locales[self.current_language]
         except KeyError:
             keys = 'error.language_not_found'.split('.')
             translation = self.locales[settings.I18N_DEFAULT_LANGUAGE]
@@ -81,10 +81,12 @@ class I18n:
                 translation = None if keys[0] == 'pydantic' else key
                 break
 
-        if translation and kwargs:
+        if isinstance(translation, str) and kwargs:
             translation = translation.format(**kwargs)
 
-        return translation or default
+        if isinstance(translation, str) and translation:
+            return translation
+        return default or key
 
 
 # 创建 i18n 单例

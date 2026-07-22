@@ -30,7 +30,7 @@ def timer(func) -> Callable:  # noqa: ANN001
     def _log_time(func, elapsed: float) -> None:  # noqa: ANN001
         # 智能选择单位（秒、毫秒、微秒、纳秒）
         if elapsed >= 1:
-            unit, factor = 's', 1
+            unit, factor = 's', 1.0
         else:
             unit, factor = 'ms', 1e3
 
