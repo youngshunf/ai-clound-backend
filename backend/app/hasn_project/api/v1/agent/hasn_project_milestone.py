@@ -49,8 +49,8 @@ async def agent_create_hasn_project_milestone(
     obj: CreateHasnProjectMilestoneParam,
 ) -> ResponseModel:
     agent: AgentTokenPayload = request.state.agent
-    result = await hasn_project_milestone_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await hasn_project_milestone_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(
