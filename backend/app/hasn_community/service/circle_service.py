@@ -255,18 +255,18 @@ class CircleService:
 
         human_map: dict[str, Any] = {}
         if human_ids or owner_ids:
-            rows = (
+            human_rows = (
                 await db.execute(
                     select(HasnHumans.hasn_id, HasnHumans.nickname, HasnHumans.avatar).where(
                         HasnHumans.hasn_id.in_(human_ids | owner_ids)
                     )
                 )
             ).all()
-            human_map = {r.hasn_id: r for r in rows}
+            human_map = {r.hasn_id: r for r in human_rows}
 
         agent_map: dict[str, Any] = {}
         if agent_ids:
-            rows = (
+            agent_rows = (
                 await db.execute(
                     select(
                         HasnAgents.hasn_id,
@@ -276,7 +276,7 @@ class CircleService:
                     ).where(HasnAgents.hasn_id.in_(agent_ids))
                 )
             ).all()
-            agent_map = {r.hasn_id: r for r in rows}
+            agent_map = {r.hasn_id: r for r in agent_rows}
         online_map = await ws_router.get_online_map(list(agent_ids)) if agent_ids else {}
 
         for m in members:
@@ -286,7 +286,8 @@ class CircleService:
                 m['display_name'] = (a.display_name if a else None) or hid
                 m['avatar'] = a.avatar if a else None
                 m['profession'] = (a.profession or '') if a else ''
-                owner = human_map.get(m.get('owner_hasn_id'))
+                owner_id = m.get('owner_hasn_id')
+                owner = human_map.get(owner_id) if isinstance(owner_id, str) else None
                 m['owner_display_name'] = owner.nickname if owner else None
                 m['online_status'] = 'online' if online_map.get(hid) else 'offline'
             else:
@@ -367,9 +368,27 @@ class CircleService:
         if not c:
             raise errors.NotFoundError(msg='圈子不存在')
         await CircleService._assert_manager(db, c.circle_id, actor_hasn_id)
-        model = HasnPosts if content_type == 'post' else HasnArticles
-        id_col = HasnPosts.post_id if content_type == 'post' else HasnArticles.article_id
-        obj = (await db.execute(select(model).where(id_col == content_id, model.circle_id == c.circle_id))).scalars().first()
+        obj: HasnPosts | HasnArticles | None
+        if content_type == 'post':
+            obj = (
+                await db.execute(
+                    select(HasnPosts).where(
+                        HasnPosts.post_id == content_id,
+                        HasnPosts.circle_id == c.circle_id,
+                    )
+                )
+            ).scalars().first()
+        elif content_type == 'article':
+            obj = (
+                await db.execute(
+                    select(HasnArticles).where(
+                        HasnArticles.article_id == content_id,
+                        HasnArticles.circle_id == c.circle_id,
+                    )
+                )
+            ).scalars().first()
+        else:
+            raise errors.RequestError(msg='未知内容类型')
         if not obj:
             raise errors.NotFoundError(msg='圈内内容不存在')
         if action == 'approve':
