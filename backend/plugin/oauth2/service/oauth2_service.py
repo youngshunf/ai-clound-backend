@@ -24,6 +24,14 @@ from backend.plugin.oauth2.service.user_social_service import user_social_servic
 from backend.utils.timezone import timezone
 
 
+def _require_oauth_text(value: object, *, field_name: str) -> str:
+    """规范化 OAuth2 回传的必填文本，拒绝缺失值而不拼接伪造标识。"""
+    normalized = str(value).strip() if value is not None else ''
+    if not normalized:
+        raise errors.RequestError(msg=f'{field_name}缺失')
+    return normalized
+
+
 class OAuth2Service:
     """OAuth2 认证服务类"""
 
@@ -54,9 +62,12 @@ class OAuth2Service:
         :param avatar: 头像地址
         :return:
         """
+        sid = _require_oauth_text(sid, field_name='第三方账号 ID')
         user_social = await user_social_dao.get_by_sid(db, sid, source.value)
         if user_social:
             sys_user = await user_dao.get(db, user_social.user_id)
+            if sys_user is None:
+                raise errors.ServerError(msg='OAuth2 绑定的用户不存在')
             # 更新用户头像
             if not sys_user.avatar and avatar is not None:
                 await user_dao.update_avatar(db, sys_user.id, avatar)
@@ -68,10 +79,11 @@ class OAuth2Service:
 
             # 创建系统用户
             if not sys_user:
-                while await user_dao.get_by_username(db, username):
-                    username = f'{username}_{text_captcha(5)}'
+                oauth_username = _require_oauth_text(username, field_name='用户名')
+                while await user_dao.get_by_username(db, oauth_username):
+                    oauth_username = f'{oauth_username}_{text_captcha(5)}'
                 new_sys_user = AddOAuth2UserParam(
-                    username=username,
+                    username=oauth_username,
                     password=None,
                     nickname=nickname,
                     email=email,
@@ -79,7 +91,9 @@ class OAuth2Service:
                 )
                 await user_dao.add_by_oauth2(db, new_sys_user)
                 await db.flush()
-                sys_user = await user_dao.get_by_username(db, username)
+                sys_user = await user_dao.get_by_username(db, oauth_username)
+                if sys_user is None:
+                    raise errors.ServerError(msg='OAuth2 用户创建后无法读取')
 
             # 绑定社交账号
             new_user_social = CreateUserSocialParam(sid=sid, source=source.value, user_id=sys_user.id)
@@ -188,7 +202,7 @@ class OAuth2Service:
             await user_social_service.binding_with_oauth2(
                 db=db,
                 user_id=user_id,
-                sid=str(sid),
+                sid=_require_oauth_text(sid, field_name='第三方账号 ID'),
                 source=social,
             )
             return None
@@ -201,7 +215,7 @@ class OAuth2Service:
             db=db,
             response=response,
             background_tasks=background_tasks,
-            sid=str(sid),
+            sid=_require_oauth_text(sid, field_name='第三方账号 ID'),
             source=social,
             username=username,
             nickname=nickname,
