@@ -4,7 +4,7 @@ MCP 工具基类
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
@@ -49,6 +49,11 @@ class BaseTool(ABC):
         return []
 
     @property
+    def execution_location(self) -> str:
+        """工具执行位置，未覆盖时按来源推导默认值。"""
+        return 'local' if self.source == 'local' else 'cloud'
+
+    @property
     def app_id(self) -> str | None:
         """所属应用 catalog app_id（G3 应用权益门·doc18/实施103 U3）。
 
@@ -84,15 +89,18 @@ class BaseTool(ABC):
         execution_location，供 source 维度索引与后续阶段消费。execution_location
         为 P0 占位（local 来源→local，其余→cloud），P3 由工具显式声明覆盖。
         """
-        from backend.app.mcp.canonical import schema_hash, validate_canonical_name
+        from backend.app.mcp.canonical import ToolSource, schema_hash, validate_canonical_name
         from backend.app.mcp.tool_app_registry import resolve_tool_app_id
 
-        parsed = validate_canonical_name(self.name, self.source)
+        source = self.source
+        if source not in {'platform', 'app', 'local', 'external'}:
+            raise ValueError(f'不支持的 MCP 工具来源: {source}')
+        parsed = validate_canonical_name(self.name, cast(ToolSource, source))
         output_schema = getattr(self, "output_schema", None)
-        default_location = "local" if self.source == "local" else "cloud"
+        default_location = "local" if source == "local" else "cloud"
         return {
             "canonical_name": parsed.full,
-            "source": self.source,
+            "source": source,
             "namespace": parsed.namespace,
             "action": parsed.action,
             "input_schema_hash": schema_hash(self.input_schema),
