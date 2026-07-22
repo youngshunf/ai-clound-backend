@@ -116,12 +116,18 @@ async def test_funnel_full_flow(session) -> None:
 
     # 6) 画像更新：silent → silent_round_count 累计
     await growth_funnel_service.update_customer_profile(
-        session, user_id=uid, customer_id=customer_id, intent_score=85, lifecycle_status='silent'
+        session,
+        user_id=uid,
+        customer_id=customer_id,
+        intent_score=85,
+        tags=['SaaS', '高意向'],
+        lifecycle_status='silent',
     )
     again = await growth_funnel_service.get_customer(session, user_id=uid, customer_id=customer_id)
     assert again['lifecycle_status'] == 'silent'
     assert again['silent_round_count'] == 1
     assert again['intent_score'] == 85.0
+    assert again['tags'] == ['SaaS', '高意向']
 
     # 7) 记活动 + 时间线（qualify + note）
     await growth_funnel_service.log_activity(

@@ -9,6 +9,7 @@ dismiss（线索不合格）、客户列表/详情/时间线、画像更新、�
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -42,6 +43,11 @@ _SOURCE_KIND_MAP = {
 
 def _gen_no(prefix: str) -> str:
     return f'{prefix}{uuid4().hex[:12].upper()}'
+
+
+def _score_decimal(score: float | int | Decimal) -> Decimal:
+    """将边界层数值转为与 PostgreSQL NUMERIC 一致的精确类型。"""
+    return Decimal(str(score))
 
 
 def _customer_to_dict(c: Customer, *, reveal_pii: bool) -> dict[str, Any]:
@@ -225,7 +231,7 @@ class GrowthFunnelService:
                 city=_clean(city),
                 source_type='manual',
                 status='active',
-                confidence_score=confidence_score if confidence_score is not None else 60,
+                confidence_score=_score_decimal(confidence_score if confidence_score is not None else 60),
                 dedupe_key_email=keys['email'],
                 dedupe_key_phone=keys['phone'],
                 dedupe_key_domain=keys['domain'],
@@ -272,18 +278,20 @@ class GrowthFunnelService:
         """
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
 
-        is_ent = scope is not None and scope.is_enterprise
+        enterprise_scope = scope if scope is not None and scope.is_enterprise else None
         # 去重键双模：enterprise 按 (enterprise_id, lead)；personal 按 (user_id, lead)。不含 assignee（同企业同线索唯一）。
         dedupe_stmt = sa.select(Customer).where(Customer.lead_contact_id == lead_contact_id)
-        if is_ent:
-            dedupe_stmt = dedupe_stmt.where(Customer.owner_scope == 'enterprise', Customer.enterprise_id == scope.enterprise_id)
+        if enterprise_scope is not None:
+            dedupe_stmt = dedupe_stmt.where(
+                Customer.owner_scope == 'enterprise', Customer.enterprise_id == enterprise_scope.enterprise_id
+            )
         else:
             dedupe_stmt = dedupe_stmt.where(Customer.owner_scope == 'personal', Customer.user_id == user_id)
         existing = (await db.execute(dedupe_stmt)).scalar_one_or_none()
         if existing:
             return _customer_to_dict(existing, reveal_pii=False)
 
-        score = intent_score if intent_score is not None else (float(contact.confidence_score or 0))
+        score = _score_decimal(intent_score) if intent_score is not None else contact.confidence_score
         customer = Customer(
             customer_no=_gen_no('CUS'),
             user_id=user_id,
@@ -298,9 +306,9 @@ class GrowthFunnelService:
             intent_score=score,
             lifecycle_status='active',
             owner_agent_id=owner_agent_id,
-            owner_scope='enterprise' if is_ent else 'personal',
-            enterprise_id=scope.enterprise_id if is_ent else None,
-            assignee=scope.owner_hasn_id if is_ent else None,
+            owner_scope='enterprise' if enterprise_scope is not None else 'personal',
+            enterprise_id=enterprise_scope.enterprise_id if enterprise_scope is not None else None,
+            assignee=enterprise_scope.owner_hasn_id if enterprise_scope is not None else None,
             tags=[],
             silent_round_count=0,
             last_activity_at=timezone.now(),
@@ -405,7 +413,7 @@ class GrowthFunnelService:
         customer_id: int,
         profile: dict | None = None,
         intent_score: float | None = None,
-        tags: list | None = None,
+        tags: list[str] | None = None,
         lifecycle_status: str | None = None,
         followup_task_id: str | None = None,
         scope: GrowthScope | None = None,
@@ -414,7 +422,7 @@ class GrowthFunnelService:
         if profile is not None:
             customer.profile_json = profile
         if intent_score is not None:
-            customer.intent_score = intent_score
+            customer.intent_score = _score_decimal(intent_score)
         if tags is not None:
             customer.tags = tags
         if lifecycle_status is not None:
