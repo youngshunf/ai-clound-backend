@@ -91,8 +91,11 @@ def parse_baidu_pois(data: Any) -> list[dict[str, Any]]:
     """解析百度响应为归一 POI 列表（status!=0 或无 results → 空·诚实）。"""
     if not isinstance(data, dict):
         return []
+    raw_status = data.get('status')
+    if raw_status is None:
+        return []
     try:
-        status = int(data.get('status'))  # 0=成功；None/非数字 → 拒（不能用 `or` 兜底，0 是成功值且 falsy）
+        status = int(raw_status)  # 0=成功；None/非数字 → 拒（不能用 `or` 兜底，0 是成功值且 falsy）
     except (TypeError, ValueError):
         return []
     if status != 0:
