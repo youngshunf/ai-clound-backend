@@ -203,7 +203,8 @@ class QuantService:
         try:
             job = await quant_engine_provider.submit_backtest(engine_request)
             run.engine_job_id = job.get('job_id')
-            run.status = job.get('status') if job.get('status') in ('queued', 'running') else 'running'
+            engine_status = job.get('status')
+            run.status = engine_status if engine_status in ('queued', 'running') else 'running'
             run.started_at = _now()
         except QuantEngineError as exc:
             run.status = 'failed'
@@ -230,8 +231,11 @@ class QuantService:
     @staticmethod
     async def _poll_and_apply(db: AsyncSession, run: QuantBacktestRun) -> None:
         """轮询引擎一次，把终态结果落库。传输层失败保持原态（下次重试），不造假。"""
+        engine_job_id = run.engine_job_id
+        if not engine_job_id:
+            return
         try:
-            job = await quant_engine_provider.get_backtest(run.engine_job_id)
+            job = await quant_engine_provider.get_backtest(engine_job_id)
         except QuantEngineError as exc:
             # 404=job 不存在（引擎重启丢内存态）→ 标失败透传；其余瞬时错误保持原态等下次。
             if 'HTTP 404' in str(exc):
