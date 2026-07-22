@@ -79,7 +79,7 @@ async def get_plugin_sql(plugin: str, db_type: DataBaseType, pk_type: PrimaryKey
     if not await path.exists():
         return None
 
-    return sql_file
+    return str(sql_file)
 
 
 async def get_plugin_destroy_sql(plugin: str, db_type: DataBaseType, pk_type: PrimaryKeyType) -> str | None:
@@ -110,7 +110,7 @@ async def get_plugin_destroy_sql(plugin: str, db_type: DataBaseType, pk_type: Pr
     if not await path.exists():
         return None
 
-    return sql_file
+    return str(sql_file)
 
 
 def load_plugin_config(plugin: str) -> dict[str, Any]:
@@ -130,20 +130,11 @@ def load_plugin_config(plugin: str) -> dict[str, Any]:
 
 def parse_plugin_config() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """解析插件配置"""
-    extend_plugins = []
-    app_plugins = []
+    extend_plugins: list[dict[str, Any]] = []
+    app_plugins: list[dict[str, Any]] = []
+    plugin_configs: dict[str, dict[str, Any]] = {}
 
     plugins = get_plugins()
-
-    # 使用独立连接
-    current_redis_client = RedisCli()
-    run_await(current_redis_client.init)()
-
-    # 清理未知插件信息
-    run_await(current_redis_client.delete_prefix)(
-        settings.PLUGIN_REDIS_PREFIX,
-        exclude=[f'{settings.PLUGIN_REDIS_PREFIX}:{key}' for key in plugins],
-    )
 
     for plugin in plugins:
         data = load_plugin_config(plugin)
@@ -154,25 +145,36 @@ def parse_plugin_config() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         else:
             app_plugins.append(data)
 
-        # 补充插件信息
         data['plugin']['name'] = plugin
-        plugin_cache_info = run_await(current_redis_client.get)(f'{settings.PLUGIN_REDIS_PREFIX}:{plugin}')
-        if plugin_cache_info:
-            data['plugin']['enable'] = json.loads(plugin_cache_info)['plugin']['enable']
-        else:
-            data['plugin']['enable'] = str(StatusType.enable.value)
+        plugin_configs[plugin] = data
 
-        # 缓存最新插件信息
-        run_await(current_redis_client.set)(
-            f'{settings.PLUGIN_REDIS_PREFIX}:{plugin}',
-            json.dumps(data, ensure_ascii=False),
-        )
+    async def refresh_plugin_cache() -> None:
+        """在同一事件循环内完成插件缓存的读写，避免 Redis 连接跨已关闭事件循环复用。"""
+        current_redis_client = RedisCli()
+        try:
+            await current_redis_client.init()
+            await current_redis_client.delete_prefix(
+                settings.PLUGIN_REDIS_PREFIX,
+                exclude=[f'{settings.PLUGIN_REDIS_PREFIX}:{key}' for key in plugins],
+            )
 
-    # 重置插件变更状态
-    run_await(current_redis_client.delete)(f'{settings.PLUGIN_REDIS_PREFIX}:changed')
+            for plugin, data in plugin_configs.items():
+                plugin_cache_info = await current_redis_client.get(f'{settings.PLUGIN_REDIS_PREFIX}:{plugin}')
+                if plugin_cache_info:
+                    data['plugin']['enable'] = json.loads(plugin_cache_info)['plugin']['enable']
+                else:
+                    data['plugin']['enable'] = str(StatusType.enable.value)
 
-    # 关闭连接
-    run_await(current_redis_client.aclose)()
+                await current_redis_client.set(
+                    f'{settings.PLUGIN_REDIS_PREFIX}:{plugin}',
+                    json.dumps(data, ensure_ascii=False),
+                )
+
+            await current_redis_client.delete(f'{settings.PLUGIN_REDIS_PREFIX}:changed')
+        finally:
+            await current_redis_client.aclose()
+
+    run_await(refresh_plugin_cache)()
 
     return extend_plugins, app_plugins
 
