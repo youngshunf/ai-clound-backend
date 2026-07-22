@@ -223,7 +223,9 @@ class TestCanonicalAppTool:
         assert response.status_code == 200
         assert response.json()['result']['data']['documents'][0]['id'] == 'doc_1'
         mock_gateway_call.assert_awaited_once()
-        args, kwargs = mock_gateway_call.await_args
+        await_args = mock_gateway_call.await_args
+        assert await_args is not None
+        args, kwargs = await_args
         assert args == (session_context.session,)
         assert kwargs['app_id'] == 'knowledge'
         assert kwargs['tool_id'] == 'knowledge.search'
