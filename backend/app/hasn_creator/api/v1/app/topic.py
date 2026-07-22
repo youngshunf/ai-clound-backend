@@ -47,8 +47,8 @@ async def create_my_topic(
     db: CurrentSessionTransaction,
     obj: CreateTopicParam,
 ) -> ResponseModel:
-    result = await topic_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await topic_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

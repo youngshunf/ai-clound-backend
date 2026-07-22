@@ -47,8 +47,8 @@ async def create_my_media(
     db: CurrentSessionTransaction,
     obj: CreateMediaParam,
 ) -> ResponseModel:
-    result = await media_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await media_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

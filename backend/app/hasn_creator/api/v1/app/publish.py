@@ -47,8 +47,8 @@ async def create_my_publish(
     db: CurrentSessionTransaction,
     obj: CreatePublishParam,
 ) -> ResponseModel:
-    result = await publish_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await publish_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(
