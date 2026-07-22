@@ -1,7 +1,9 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select, and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -10,14 +12,28 @@ from backend.app.hasn.schema.hasn_contacts import CreateHasnContactsParam, Updat
 
 
 class CRUDHasnContacts(CRUDPlus[HasnContacts]):
+    @staticmethod
+    def _single_contact(result: object) -> HasnContacts | None:
+        """将不带关联加载的查询结果收紧为单个联系人。"""
+        if result is not None and not isinstance(result, HasnContacts):
+            raise TypeError('联系人单模型查询返回了关联结果')
+        return cast(HasnContacts | None, result)
+
+    @staticmethod
+    def _contact_sequence(result: object) -> Sequence[HasnContacts]:
+        """将不带关联加载的查询结果收紧为联系人序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, HasnContacts) for item in result):
+            raise TypeError('联系人列表查询返回了关联结果')
+        return cast(Sequence[HasnContacts], result)
+
     async def get(self, db: AsyncSession, pk: int) -> HasnContacts | None:
-        return await self.select_model(db, pk)
+        return self._single_contact(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         return await self.select_order('id', 'desc')
 
     async def get_all(self, db: AsyncSession) -> Sequence[HasnContacts]:
-        return await self.select_models(db)
+        return self._contact_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateHasnContactsParam) -> None:
         await self.create_model(db, obj)
@@ -68,12 +84,12 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
         if relation_type:
             stmt = stmt.where(HasnContacts.relation_type == relation_type)
         stmt = stmt.order_by(HasnContacts.last_interaction_at.desc().nullslast()).offset(offset).limit(limit)
-        return (await db.execute(stmt)).scalars().all()
+        return list((await db.execute(stmt)).scalars().all())
 
     @staticmethod
     async def get_pending_requests(db: AsyncSession, peer_id: str, limit: int = 20) -> list[HasnContacts]:
         """获取收到的待处理好友请求 (我作为 peer_id 被加方)"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContacts)
             .where(or_(
                 HasnContacts.peer_id == peer_id,
@@ -83,21 +99,21 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
             .where(HasnContacts.relation_type == 'social')
             .order_by(HasnContacts.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def get_sent_pending_requests(
         db: AsyncSession, owner_id: str, limit: int = 20,
     ) -> list[HasnContacts]:
         """获取自己已发出但还没被对方处理的好友请求 (我作为 owner_id 发起方)"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContacts)
             .where(HasnContacts.owner_id == owner_id)
             .where(HasnContacts.status == 'pending')
             .where(HasnContacts.relation_type == 'social')
             .order_by(HasnContacts.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def create_contact(db: AsyncSession, **kwargs) -> HasnContacts:
@@ -162,7 +178,10 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
         # （否则复活 archived 行时返回对象仍是陈旧的 status='archived'）
         result = await db.execute(stmt, execution_options={'populate_existing': True})
         await db.flush()
-        return result.scalars().first()
+        contact = result.scalars().first()
+        if contact is None:
+            raise RuntimeError('联系人写入后未返回记录')
+        return contact
 
     @staticmethod
     async def accept_request(db: AsyncSession, contact_id: int) -> None:
@@ -205,14 +224,17 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
         不会误伤底层的「主人↔主人」好友关系——那两行 peer_id 是主人非分身）。
         返回删除的行数。
         """
-        result = await db.execute(
-            delete(HasnContacts).where(
-                HasnContacts.relation_type == relation_type,
-                or_(
-                    and_(HasnContacts.owner_id == id_a, HasnContacts.peer_id == id_b),
-                    and_(HasnContacts.owner_id == id_b, HasnContacts.peer_id == id_a),
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                delete(HasnContacts).where(
+                    HasnContacts.relation_type == relation_type,
+                    or_(
+                        and_(HasnContacts.owner_id == id_a, HasnContacts.peer_id == id_b),
+                        and_(HasnContacts.owner_id == id_b, HasnContacts.peer_id == id_a),
+                    ),
                 ),
-            )
+            ),
         )
         return result.rowcount or 0
 

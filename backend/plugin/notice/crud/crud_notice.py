@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,20 @@ from backend.plugin.notice.schema.notice import CreateNoticeParam, UpdateNoticeP
 class CRUDNotice(CRUDPlus[Notice]):
     """通知公告数据库操作类"""
 
+    @staticmethod
+    def _single_notice(result: object) -> Notice | None:
+        """将不带关联加载的查询结果收紧为单个通知公告。"""
+        if result is not None and not isinstance(result, Notice):
+            raise TypeError('通知公告单模型查询返回了关联结果')
+        return cast(Notice | None, result)
+
+    @staticmethod
+    def _notice_sequence(result: object) -> Sequence[Notice]:
+        """将不带关联加载的查询结果收紧为通知公告序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, Notice) for item in result):
+            raise TypeError('通知公告列表查询返回了关联结果')
+        return cast(Sequence[Notice], result)
+
     async def get(self, db: AsyncSession, pk: int) -> Notice | None:
         """
         获取通知公告
@@ -19,7 +34,7 @@ class CRUDNotice(CRUDPlus[Notice]):
         :param pk: 通知公告 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_notice(await self.select_model(db, pk))
 
     async def get_select(self, title: str, type: int | None, status: int | None) -> Select:
         """
@@ -30,7 +45,7 @@ class CRUDNotice(CRUDPlus[Notice]):
         :param status: 通知公告状态
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if title is not None:
             filters['title__like'] = f'%{title}%'
@@ -39,7 +54,7 @@ class CRUDNotice(CRUDPlus[Notice]):
         if status is not None:
             filters['status'] = status
 
-        return await self.select_order('created_time', 'desc', **filters)
+        return await self.select_order('created_time', 'desc', **cast(Any, filters))
 
     async def get_all(self, db: AsyncSession) -> Sequence[Notice]:
         """
@@ -48,7 +63,7 @@ class CRUDNotice(CRUDPlus[Notice]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._notice_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateNoticeParam) -> None:
         """
