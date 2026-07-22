@@ -39,7 +39,7 @@ def _tool(name: str) -> BaseTool:
     raise AssertionError(f'deck 工具未注册: {name}')
 
 
-def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str = 'a_deck_tools_test') -> AgentContext:
+def _agent_ctx(owner_hasn_id: str | None, agent_hasn_id: str = 'a_deck_tools_test') -> AgentContext:
     return AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=1,
@@ -104,6 +104,13 @@ def test_deck_tools_scope_split() -> None:
             assert t.required_scopes == [], f'{t.name} 读类不应有 scope'
         else:
             assert t.required_scopes == ['deck:manage'], f'{t.name} 写类应声明 deck:manage'
+
+
+@pytest.mark.asyncio
+async def test_deck_tool_rejects_missing_owner_identity() -> None:
+    """主人身份缺失时必须拒绝读取或修改主人隔离的演示文稿。"""
+    with pytest.raises(RuntimeError, match='缺少 owner_hasn_id'):
+        await _tool('hasn.deck.list').execute(_agent_ctx(None), {})
 
 
 def test_required_fields_match_contract() -> None:

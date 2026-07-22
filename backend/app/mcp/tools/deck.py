@@ -44,6 +44,14 @@ SCOPE_MANAGE = 'deck:manage'
 Handler = Callable[[Any, AgentContext, dict[str, Any]], Awaitable[Any]]
 
 
+def _require_owner_hasn_id(ctx: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离数据。"""
+    owner_hasn_id = ctx.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('deck: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 async def _bump_decks_sync(owner_hasn_id: str | None) -> None:
     """分身 deck 写点提交后 → WSPUSH ``hasn.sync.invalidate(decks)`` 给主人在线节点（best-effort）。
 
@@ -95,7 +103,7 @@ async def _register_deck_artifact(
         server_id=str(deck_id),
         session_id=ctx.session_id,
         agent_hasn_id=ctx.agent_hasn_id,
-        owner_hasn_id=ctx.owner_hasn_id,
+        owner_hasn_id=_require_owner_hasn_id(ctx),
         title=resolved_title or '演示文稿',
         source_tool=f'{NAMESPACE}.write',
     )
@@ -125,7 +133,7 @@ async def _run_deck_post_commit(post: dict[str, Any]) -> None:
 
 
 def _subject(ctx: AgentContext) -> Subject:
-    return Subject.agent(ctx.agent_hasn_id, ctx.owner_hasn_id)
+    return Subject.agent(ctx.agent_hasn_id, _require_owner_hasn_id(ctx))
 
 
 def _deck_id(args: dict[str, Any]) -> int:
@@ -201,7 +209,7 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     title = str(args.get('title') or '').strip() or '未命名演示文稿'
     deck = await deck_service.create_deck(
         db,
-        owner_id=ctx.owner_hasn_id,
+        owner_id=_require_owner_hasn_id(ctx),
         title=title,
         topic=(str(args['topic']).strip() if args.get('topic') else None),
         language=str(args.get('language') or 'zh'),
@@ -321,7 +329,7 @@ async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
             'deck_id': str(deck_id),
             'title': str(result.get('title') or ''),
             'summary': str(args.get('summary') or ''),
-            'owner_id': ctx.owner_hasn_id,
+            'owner_id': _require_owner_hasn_id(ctx),
             'agent_id': ctx.agent_hasn_id,
         }
     return out
@@ -334,13 +342,13 @@ async def _h_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_style_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    result = await deck_service.list_style_profiles(db, owner_id=ctx.owner_hasn_id)
+    result = await deck_service.list_style_profiles(db, owner_id=_require_owner_hasn_id(ctx))
     return {'styles': result['items']}
 
 
 async def _h_style_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     style_id = str(args['style_id']).strip()
-    result = await deck_service.list_style_profiles(db, owner_id=ctx.owner_hasn_id)
+    result = await deck_service.list_style_profiles(db, owner_id=_require_owner_hasn_id(ctx))
     style = next((s for s in result['items'] if s.get('slug') == style_id), None)
     if style is None:
         raise errors.NotFoundError(msg=f'样式不存在：{style_id}')
