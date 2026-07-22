@@ -114,6 +114,14 @@ def _req_str(arguments: dict[str, Any], key: str) -> str:
     return value
 
 
+def _require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离数据。"""
+    owner_hasn_id = agent_context.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('designsystem: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 def _opt_int(arguments: dict[str, Any], key: str) -> int | None:
     value = arguments.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -342,7 +350,8 @@ class DesignSystemSaveTool(BaseTool):
         recommend = arguments.get('recommend_rebuild')
         # required_scenes：仅当入参显式带 key 才透传（缺省=不改，避免每次 save 抹掉 owner 已设的场景要求）。
         required_scenes = _str_list(arguments, 'required_scenes') if 'required_scenes' in arguments else None
-        subject = Subject.agent(agent_context.agent_hasn_id, agent_context.owner_hasn_id)
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
+        subject = Subject.agent(agent_context.agent_hasn_id, owner_hasn_id)
 
         # design_system_service.save 内部 self-commit（区别于 plan/artifact 的「只 flush」约定），
         # 故用**普通 session**（非 begin() 上下文管理器）——后者会被 service 的内部 commit 关闭其事务、
@@ -365,7 +374,7 @@ class DesignSystemSaveTool(BaseTool):
                 enterprise_id=_opt_int(arguments, 'enterprise_id'),
                 required_scenes=required_scenes,
             )
-            await _bump_designsystem_sync(db, agent_context.owner_hasn_id)
+            await _bump_designsystem_sync(db, owner_hasn_id)
             await db.commit()
 
         # save 已落库后（写事务已提交）的两个 post-commit 副作用（best-effort、独立事务、失败只 warn，
@@ -405,7 +414,7 @@ class DesignSystemSaveTool(BaseTool):
                     server_id=str(ds_id),
                     session_id=agent_context.session_id,
                     agent_hasn_id=agent_context.agent_hasn_id,
-                    owner_hasn_id=agent_context.owner_hasn_id,
+                    owner_hasn_id=_require_owner_hasn_id(agent_context),
                     title=(title or '').strip() or '设计系统',
                     source_tool='hasn.designsystem.save',
                 )
@@ -434,7 +443,7 @@ class DesignSystemSaveTool(BaseTool):
             async with async_db_session() as db:
                 await emit_designsystem_completion_card(
                     db,
-                    owner_id=agent_context.owner_hasn_id,
+                    owner_id=_require_owner_hasn_id(agent_context),
                     agent_id=agent_context.agent_hasn_id,
                     design_system_id=ds_id,
                     title=str(card.get('title') or ''),
@@ -498,7 +507,7 @@ class DesignSystemListTool(BaseTool):
         async with async_db_session() as db:
             return await design_system_service.list_visible(
                 db,
-                viewer_owner_hasn_id=agent_context.owner_hasn_id,
+                viewer_owner_hasn_id=_require_owner_hasn_id(agent_context),
                 enterprise_id=_opt_int(arguments, 'enterprise_id'),
                 category=_str(arguments, 'category'),
                 limit=limit,
@@ -563,7 +572,7 @@ class DesignSystemGetTool(BaseTool):
             full = await design_system_service.get(
                 db,
                 design_system_id=design_system_id,
-                viewer_owner_hasn_id=agent_context.owner_hasn_id,
+                viewer_owner_hasn_id=_require_owner_hasn_id(agent_context),
                 enterprise_id=_opt_int(arguments, 'enterprise_id'),
             )
         # 瘦身投影：砍整包画廊，只回 tokens.css + design.md + 契约报告 + 场景摘要（DSGET·省 token）。
@@ -631,7 +640,7 @@ class DesignSystemGetGalleryTool(BaseTool):
             return await design_system_service.get_gallery(
                 db,
                 design_system_id=design_system_id,
-                viewer_owner_hasn_id=agent_context.owner_hasn_id,
+                viewer_owner_hasn_id=_require_owner_hasn_id(agent_context),
                 enterprise_id=_opt_int(arguments, 'enterprise_id'),
                 scene=_str(arguments, 'scene'),
             )
@@ -721,7 +730,7 @@ class DesignSystemCheckScenesTool(BaseTool):
             return await design_system_service.scene_coverage_report(
                 db,
                 design_system_id=design_system_id,
-                viewer_owner_hasn_id=agent_context.owner_hasn_id,
+                viewer_owner_hasn_id=_require_owner_hasn_id(agent_context),
                 enterprise_id=_opt_int(arguments, 'enterprise_id'),
                 components_html_override=components_html,
                 required_scenes_override=required_scenes,

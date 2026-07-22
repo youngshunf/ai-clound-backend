@@ -35,7 +35,7 @@ from backend.app.mcp.tools.designsystem import (
 )
 
 
-def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str = 'a_designsystem_test') -> AgentContext:
+def _agent_ctx(owner_hasn_id: str | None, agent_hasn_id: str = 'a_designsystem_test') -> AgentContext:
     return AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=1,
@@ -122,6 +122,13 @@ def test_required_fields_match_contract() -> None:
         'brand_id',
         'components_html',
     ]
+
+
+@pytest.mark.asyncio
+async def test_data_tools_reject_missing_owner_identity() -> None:
+    """主人身份缺失时，所有读取主人隔离数据的工具必须明确拒绝。"""
+    with pytest.raises(RuntimeError, match='缺少 owner_hasn_id'):
+        await DesignSystemListTool().execute(_agent_ctx(None), {})
 
 
 # ── 确定性纯函数工具执行（无需 DB，离线可跑）──────────────────────────────────────
@@ -244,7 +251,7 @@ async def test_save_list_get_roundtrip_real_db() -> None:
 
     from sqlalchemy import delete, select
 
-    from backend.app.hasn.model import HasnArtifacts
+    from backend.app.hasn.model import HasnArtifactContributions, HasnArtifactRegistrationOutbox, HasnArtifacts
     from backend.app.hasn_designsystem.model.design_system import DesignSystem
     from backend.app.hasn_designsystem.model.revision import Revision
     from backend.database.db import async_db_session
@@ -286,16 +293,20 @@ async def test_save_list_get_roundtrip_real_db() -> None:
             assert row.bound_agent_id == ctx.agent_hasn_id
 
         # save 即 register-on-write：自动登记一条**设计系统资源**产物（best-effort，应已落库）。
-        # 曾断言 `kind == 'document'` + 指向 bundle 资产——那是 doc35 四维度重排前的旧形状，
-        # 重排后 kind 只答「怎么打开」（应用资源恒 resource）、「是什么」交给 resource_kind，
-        # 断言却没跟着改，于是本用例长期红着（doc36 U1 顺带修正到 manifest 权威值）。
+        # P06 后当前态只保存资源本体（resource_app_id），本次写入的工具/应用归因由不可变参与记录保存。
         async with async_db_session() as db:
             art = (await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))).scalar_one()
             assert art.kind == 'resource', 'artifact_kind 只答「怎么打开」——应用资源恒 resource（doc35 §3.1）'
             assert art.resource_kind == 'designsystem.spec', 'resource_kind 答「是什么」，取 manifest descriptor 原值'
-            assert art.source_app_id == 'designsystem'
+            assert art.resource_app_id == 'designsystem'
             assert art.resource_uri == f'hasn://designsystem/{design_system_id}'
-            assert art.source_tool == 'hasn.designsystem.save'
+            contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == art.artifact_id)
+                )
+            ).scalar_one()
+            assert contribution.source_app_id == 'designsystem'
+            assert contribution.source_tool == 'hasn.designsystem.save'
 
         # list 可见该套（owner 维度）。
         listed = await DesignSystemListTool().execute(ctx, {})
@@ -310,4 +321,8 @@ async def test_save_list_get_roundtrip_real_db() -> None:
             if design_system_id is not None:
                 await db.execute(delete(Revision).where(Revision.design_system_id == design_system_id))
                 await db.execute(delete(DesignSystem).where(DesignSystem.id == design_system_id))
+            await db.execute(
+                delete(HasnArtifactRegistrationOutbox).where(HasnArtifactRegistrationOutbox.owner_hasn_id == owner)
+            )
+            await db.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
             await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
