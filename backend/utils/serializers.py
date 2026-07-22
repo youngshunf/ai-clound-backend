@@ -1,7 +1,7 @@
 from collections import defaultdict, namedtuple
 from collections.abc import Sequence
 from decimal import Decimal
-from typing import Any, TypeVar
+from typing import Any, TypeAlias, TypeVar, cast
 
 from fastapi.encoders import decimal_encoder
 from msgspec import json
@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse
 from backend.common.log import log
 
 RowData = Row[Any] | RowMapping | Any
+ObjectId: TypeAlias = int | str
 
 R = TypeVar('R', bound=RowData)
 
@@ -106,7 +107,7 @@ def select_join_serialize(  # noqa: C901
     list_relationship_types = {'o2m', 'm2m'}
     all_relationship_types = {'o2m', 'm2o', 'o2o', 'm2m'}
 
-    def get_obj_id(target_obj: Any) -> int | str:
+    def get_obj_id(target_obj: Any) -> ObjectId:
         return getattr(target_obj, 'id', None) or id(target_obj)
 
     def extract_row_elements(row_data: Any) -> tuple:
@@ -115,13 +116,15 @@ def select_join_serialize(  # noqa: C901
     def get_relationship_key(model: str, relationship_type: str, custom_field: str | None) -> str:
         return custom_field or (model if relationship_type not in list_relationship_types else f'{model}s')
 
-    def parse_relationships(relationship_list: list[str]) -> tuple[dict, dict, dict]:
+    def parse_relationships(
+        relationship_list: list[str],
+    ) -> tuple[dict[str, dict[str, str]], dict[str, str], dict[tuple[str, str], str]]:
         if not relationship_list:
             return {}, {}, {}
 
-        graph = defaultdict(dict)
-        reverse = {}
-        customs = {}
+        graph: defaultdict[str, dict[str, str]] = defaultdict(dict)
+        reverse: dict[str, str] = {}
+        customs: dict[tuple[str, str], str] = {}
 
         for rel_str in relationship_list:
             parts = rel_str.split(':', 1)
@@ -212,7 +215,7 @@ def select_join_serialize(  # noqa: C901
 
     # 数据分组
     main_objects = {}
-    children_objects = defaultdict(lambda: defaultdict(list))
+    children_objects: defaultdict[ObjectId, defaultdict[str, list[Any]]] = defaultdict(lambda: defaultdict(list))
 
     for row_item in rows_list:
         row_elements = extract_row_elements(row_item)
@@ -235,7 +238,7 @@ def select_join_serialize(  # noqa: C901
         return None
 
     # namedtuple 类型预生成
-    namedtuple_cache = {}
+    namedtuple_cache: dict[str, Any] = {}
     if not return_as_dict:
         for model_name, model_columns in model_info.items():
             if not model_columns:
@@ -251,7 +254,9 @@ def select_join_serialize(  # noqa: C901
             namedtuple_cache[model_name] = namedtuple(model_name.capitalize(), field_list)  # noqa: PYI024
 
     # 嵌套关系层级结构（一次性构建）
-    hierarchy = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    hierarchy: defaultdict[ObjectId, defaultdict[str, defaultdict[ObjectId, list[Any]]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
+    )
 
     if has_relationships:
         for row_item in rows_list:
@@ -287,7 +292,7 @@ def select_join_serialize(  # noqa: C901
                     hierarchy[main_id][rel_type_name][parent_pk].append(rel_obj)
 
     # 结果构建函数
-    def build_flat(target_id: int, target_obj: Any) -> dict[str, Any]:
+    def build_flat(target_id: ObjectId, target_obj: Any) -> dict[str, Any]:
         result = {col: getattr(target_obj, col, None) for col in primary_columns}
 
         for cls_type in children_objects[target_id]:
@@ -316,11 +321,11 @@ def select_join_serialize(  # noqa: C901
 
         return result
 
-    def build_nested(target_id: int, target_obj: Any) -> dict[str, Any]:
+    def build_nested(target_id: ObjectId, target_obj: Any) -> dict[str, Any]:
         result = {col: getattr(target_obj, col, None) for col in primary_columns}
         current_hierarchy = hierarchy.get(target_id, defaultdict(lambda: defaultdict(list)))
 
-        def recursive_build(cls_name: str, pk: int) -> list:
+        def recursive_build(cls_name: str, pk: ObjectId) -> list[Any]:
             nested_dict = current_hierarchy.get(cls_name)
             if nested_dict is None:
                 return []
@@ -361,7 +366,7 @@ def select_join_serialize(  # noqa: C901
         return result
 
     # 最终结果构建
-    final_results = []
+    final_results: list[Any] = []
     processed_ids = set()
 
     for row_item in rows_list:
@@ -380,7 +385,7 @@ def select_join_serialize(  # noqa: C901
         result_data = build_nested(main_id, main_obj) if has_relationships else build_flat(main_id, main_obj)
 
         if not return_as_dict:
-            result_type = namedtuple('Result', result_data.keys())  # noqa: PYI024
+            result_type = cast(Any, namedtuple)('Result', list(result_data))  # noqa: PYI024
             final_results.append(result_type(**result_data))
         else:
             final_results.append(result_data)
