@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import uuid
 
+from decimal import Decimal
+
 import pytest
 import pytest_asyncio
 
@@ -52,7 +54,7 @@ async def _qualified_customer(sess, *, user_id: int, company: str) -> int:
         email=f'{uuid.uuid4().hex[:6]}@{company.lower()}.com',
         source_type='firecrawl',
         status='new',
-        confidence_score=60,
+        confidence_score=Decimal('60'),
     )
     sess.add(lead)
     await sess.flush()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -70,18 +71,18 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = uuid.uuid4().hex[:8]
     owner = f'h_grw_{tag}'
-    owner_uid = 940000 + int(uuid.uuid4().int % 9000)
+    owner_uid = int(uuid.uuid4().hex[:15], 16)
     other_uid = owner_uid + 1
     agent_hasn = f'a_grw_{tag}'
     publish_ref = f'pg{tag}'[:32]
 
-    session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active'))
-    session.add(HasnHumans(hasn_id=f'{owner}o', star_id=f's_{other_uid}', user_id=other_uid, nickname='他人', status='active'))
+    session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname=f'主人_{tag}', status='active'))
+    session.add(HasnHumans(hasn_id=f'{owner}o', star_id=f's_{other_uid}', user_id=other_uid, nickname=f'他人_{tag}', status='active'))
     # 采集线索（owner 私有）
     lead = LeadContact(
         lead_no=f'L{tag.upper()}', pool_visibility='public', company_name='Acme',
         contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='new', confidence_score=72,
+        source_type='firecrawl', status='new', confidence_score=Decimal('72'),
     )
     session.add(lead)
     # 落地页（供 open 表单回流解析 owner）
@@ -115,7 +116,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')
     try:
         yield SimpleNamespace(
-            client=client, session=session, owner_uid=owner_uid, other_uid=other_uid,
+            client=client, session=session, owner=owner, owner_uid=owner_uid, other_uid=other_uid,
             lead_id=lead.id, publish_ref=publish_ref, state=state,
         )
     finally:
@@ -143,11 +144,9 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     leads = _ok(await c.get(f'{A}/leads', params={'q': 'Acme'}))
     assert leads and leads[0]['email'] == 'w***@acme.com'
 
-    # --- Agent: 持 growth:pii 时回明文 ---
-    e2e.state.scopes = ['agent', 'growth:read', 'growth:pii']
+    # --- Agent: JWT 不承载 capability scope，读类始终默认脱敏 ---
     leads_pii = _ok(await c.get(f'{A}/leads', params={'q': 'Acme'}))
-    assert leads_pii[0]['email'] == 'wangwu@acme.com'
-    e2e.state.scopes = ['agent', 'growth:read', 'growth:manage', 'growth:outreach']
+    assert leads_pii[0]['email'] == 'w***@acme.com'
 
     # --- Agent: qualify → 建客户 ---
     cust = _ok(await c.post(f'{A}/leads/{e2e.lead_id}/qualify', json={'profile': {'pain': '获客'}, 'intent_score': 80}))
@@ -159,13 +158,16 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     mid = sent['id']
     assert sent['status'] == 'pending_approval'
 
-    # M4 通知卡片：触达待审批 → 给主人发一条 reminder（type=growth.outreach.pending）。
+    # M4 主人回环：自有分身的待审批汇报落会话卡片，不进入通知中心。
     notif = (
         await e2e.session.execute(
-            select(HasnNotifications).where(HasnNotifications.type == 'growth.outreach.pending')
+            select(HasnNotifications).where(
+                HasnNotifications.type == 'growth.outreach.pending',
+                HasnNotifications.target_id == e2e.owner,
+            )
         )
     ).scalars().all()
-    assert any(n.target_id.startswith('h_grw_') for n in notif), '触达待审批应落一条主人通知卡片'
+    assert notif == []
 
     # --- Owner: 待审队列含这条，approve（改话术） ---
     pending = _ok(await c.get(f'{O}/outreach/pending'))
@@ -267,10 +269,10 @@ async def test_owner_create_lead_via_http(e2e) -> None:
 
 
 async def test_owner_request_leads_via_http(e2e) -> None:
-    """阶段二 2.3：主人「请求线索」→ 先查公共池命中即交付（明文），缺口触发后台补爬 job。
+    """主人「请求线索」→ 先查公共池命中即交付（明文），缺口不隐式触发旧爬虫。
 
     向用户表达「请求线索」而非「发起采集」（采集是平台黑盒，doc08 §4 数据飞轮）。命中即交付主人明文
-    PII（自己领取的线索）；池中不足 N 时交付 M + 后台补爬 N−M 回流公共池（backfill_job_id 非空）。
+    PII（自己领取的线索）；池中不足 N 时由分身派发链路负责发现新线索，接口保持只读池语义。
     """
     c = e2e.client
     O = '/api/v1/growth/app'
@@ -290,7 +292,7 @@ async def test_owner_request_leads_via_http(e2e) -> None:
             city='北京',
             source_type='firecrawl',
             status='valid',
-            confidence_score=88,
+            confidence_score=Decimal('88'),
         )
     )
     await e2e.session.flush()
@@ -301,7 +303,7 @@ async def test_owner_request_leads_via_http(e2e) -> None:
     assert one['backfill_job_id'] is None
     assert one['leads'][0]['email'] == 'pool@uniq.com'  # owner 明文（reveal_pii=True）
 
-    # --- 请求 5 条但池中仅 1 条命中 → 交付 1 + 缺口 4 触发后台补爬 job ---
+    # --- 请求 5 条但池中仅 1 条命中 → 交付 1，接口不隐式创建旧采集任务 ---
     gap = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 5}))
     assert gap['delivered'] == 1 and gap['requested'] == 5
-    assert gap['backfill_job_id'], '缺口应触发后台补爬 job'
+    assert gap['backfill_job_id'] is None

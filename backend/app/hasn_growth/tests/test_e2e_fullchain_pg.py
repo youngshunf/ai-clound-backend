@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -72,15 +73,15 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = uuid.uuid4().hex[:8]
     owner = f'h_e2e_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_uid = int(uuid.uuid4().hex[:15], 16)
     agent_hasn = f'a_e2e_{tag}'
     task_uuid = f'tk_e2e_{tag}'
 
-    session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active'))
+    session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname=f'主人_{tag}', status='active'))
     lead = LeadContact(
         lead_no=f'L{tag.upper()}', pool_visibility='public', company_name='Acme',
         contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='new', confidence_score=72,
+        source_type='firecrawl', status='new', confidence_score=Decimal('72'),
     )
     session.add(lead)
     await session.flush()
