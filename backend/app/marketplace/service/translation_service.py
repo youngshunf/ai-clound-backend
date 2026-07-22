@@ -19,7 +19,7 @@ class TranslationService:
     """Translation service for marketplace content"""
 
     def __init__(self) -> None:
-        self._translation_cache = {}  # Simple in-memory cache
+        self._translation_cache: dict[str, str | dict[str, Any]] = {}  # Simple in-memory cache
         # 统一 LLM 客户端：翻译走 TRANSLATION_MODEL/FALLBACK/TIMEOUT，默认 new-api 网关。
         self._llm = LLMChatClient(
             model=getattr(settings, 'TRANSLATION_MODEL', 'gpt-4o-mini'),
@@ -82,10 +82,11 @@ class TranslationService:
 
         # Auto-detect source language if not provided
         if source_lang is None:
-            source_lang = self.detect_language(text)
-            if source_lang == 'unknown':
+            detected_language = self.detect_language(text)
+            if detected_language == 'unknown':
                 log.warning(f"Could not detect language for text: {text[:50]}...")
                 return text
+            source_lang = detected_language
 
         # Skip translation if source and target are the same
         if source_lang == target_lang:
@@ -93,8 +94,9 @@ class TranslationService:
 
         # Check cache
         cache_key = f"{source_lang}:{target_lang}:{hash(text)}"
-        if cache_key in self._translation_cache:
-            return self._translation_cache[cache_key]
+        cached = self._translation_cache.get(cache_key)
+        if isinstance(cached, str):
+            return cached
 
         # Translate using LLM
         try:
@@ -131,8 +133,9 @@ class TranslationService:
             return text
 
         cache_key = f'md:{source_lang}:{target_lang}:{hash(text)}'
-        if cache_key in self._translation_cache:
-            return self._translation_cache[cache_key]
+        cached = self._translation_cache.get(cache_key)
+        if isinstance(cached, str):
+            return cached
 
         # 长文档分块翻译：本地翻译网关对超长 Markdown 会原样回吐（退化），但对约 3.5k 字
         # 以内的块能稳定翻译。按段落边界切块（不切开代码围栏）逐块翻译再拼接。
@@ -297,8 +300,9 @@ Translation:"""
         hints = self.normalize_tag_list(tag_hints)
         cat_sig = tuple(sorted(str(c.get('slug') or '') for c in (categories or [])))
         cache_key = f"skill-metadata:{hash((name or '', description or '', tuple(hints), source_lang or '', cat_sig))}"
-        if cache_key in self._translation_cache:
-            return self._translation_cache[cache_key]
+        cached = self._translation_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
 
         try:
             raw = await self._complete_chat(
@@ -675,15 +679,14 @@ Translation:"""
         chunk: list[dict[str, Any]],
         categories: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        normalized_inputs = [
-            {
+        normalized_inputs: list[dict[str, Any]] = []
+        for item in chunk:
+            normalized_inputs.append({
                 'name': self._clean_text(item.get('name')),
                 'description': self._clean_text(item.get('description')),
                 'tag_hints': self.normalize_tag_list(item.get('tag_hints')),
                 'source_lang': self._normalize_language(item.get('source_lang')),
-            }
-            for item in chunk
-        ]
+            })
         try:
             raw = await self._complete_chat(
                 self._batch_metadata_messages(normalized_inputs, categories=categories),
