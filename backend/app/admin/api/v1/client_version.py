@@ -2,7 +2,7 @@
 
 提供给桌面应用使用的版本检测接口，不需要登录认证。
 """
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Path, Query
 from pydantic import BaseModel, Field
@@ -32,20 +32,20 @@ class VersionManifest(BaseModel):
     build_time: str | None = Field(None, description='构建时间')
     build_timestamp: int | None = Field(None, description='构建时间戳')
     changelog: str | None = Field(None, description='更新日志')
-    is_force_update: bool = Field(False, description='是否强制更新')
+    is_force_update: bool = Field(default=False, description='是否强制更新')
     min_version: str | None = Field(None, description='最小兼容版本')
     binaries: dict[str, BinaryInfo] = Field(default_factory=dict, description='各平台二进制文件信息')
 
 
 class VersionCheckResponse(BaseModel):
     """版本检测响应"""
-    latest_version: str | None = Field(None, description='最新版本号')
-    has_update: bool = Field(False, description='是否有更新')
-    is_force_update: bool = Field(False, description='是否强制更新')
-    changelog: str | None = Field(None, description='更新日志')
-    download_url: str | None = Field(None, description='下载地址')
-    file_hash: str | None = Field(None, description='SHA256 校验值')
-    file_size: int | None = Field(None, description='文件大小')
+    latest_version: str | None = Field(default=None, description='最新版本号')
+    has_update: bool = Field(default=False, description='是否有更新')
+    is_force_update: bool = Field(default=False, description='是否强制更新')
+    changelog: str | None = Field(default=None, description='更新日志')
+    download_url: str | None = Field(default=None, description='下载地址')
+    file_hash: str | None = Field(default=None, description='SHA256 校验值')
+    file_size: int | None = Field(default=None, description='文件大小')
 
 
 # ============================================================
@@ -130,7 +130,7 @@ async def get_version_manifest(
     )
 
     if not versions:
-        return response_base.success(data=None)
+        return cast(ResponseSchemaModel[VersionManifest | None], response_base.success(data=None))
 
     # 构建 binaries 字典
     binaries: dict[str, BinaryInfo] = {}
