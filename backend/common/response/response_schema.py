@@ -112,6 +112,24 @@ class ResponseBase:
         """
         return self.__response(res=res, data=data)
 
+    @overload
+    def fail(
+        self,
+        *,
+        res: CustomResponseCode | CustomResponse = CustomResponseCode.HTTP_400,
+        data: None = None,
+        msg: str | None = None,
+    ) -> ResponseModel: ...
+
+    @overload
+    def fail(
+        self,
+        *,
+        res: CustomResponseCode | CustomResponse = CustomResponseCode.HTTP_400,
+        data: Any,
+        msg: str | None = None,
+    ) -> ResponseSchemaModel[Any]: ...
+
     def fail(
         self,
         *,
