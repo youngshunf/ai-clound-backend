@@ -221,7 +221,11 @@ class GitHubSyncService:
             # 增量：只保留本次 push 命中变更路径的技能（其余跳过翻译+落库）。
             if incremental:
                 scanned_total = len(skills_data)
-                skills_data = [s for s in skills_data if skill_dir_touched(s.get('repo_path', ''), changed_paths)]
+                skills_data = [
+                    skill
+                    for skill in skills_data
+                    if skill_dir_touched(skill.get('repo_path', ''), changed_paths or set())
+                ]
                 log.info(f"[GitHub增量] 扫描 {scanned_total} 个技能 → 命中变更 {len(skills_data)} 个")
 
             # 公共技能标记（doc12 §3.2）：从 hub common-skills.yaml 读公共集合，
@@ -692,7 +696,11 @@ class GitHubSyncService:
             return []
 
         # 一次性取出所有命中技能的现有行，用于变更门控（避免逐个 get_by_id）。
-        skill_ids = [s.get('skill_id') for s in skills_data if s.get('skill_id')]
+        skill_ids = [
+            skill_id
+            for skill_data in skills_data
+            if isinstance(skill_id := skill_data.get('skill_id'), str) and skill_id
+        ]
         existing_map: dict[str, MarketplaceSkill] = {}
         if skill_ids:
             rows = (
@@ -703,8 +711,9 @@ class GitHubSyncService:
         results: list[dict[str, Any] | None] = [None] * len(skills_data)
         pending: list[tuple[int, dict[str, Any]]] = []
         for index, skill_data in enumerate(skills_data):
-            existing = existing_map.get(skill_data.get('skill_id'))
-            if metadata_unchanged(skill_data, existing):
+            skill_id = skill_data.get('skill_id')
+            existing = existing_map.get(skill_id) if isinstance(skill_id, str) else None
+            if existing is not None and metadata_unchanged(skill_data, existing):
                 results[index] = translation_from_existing(existing)
             else:
                 pending.append((index, {
@@ -722,7 +731,9 @@ class GitHubSyncService:
                 results[index] = result
 
         log.info(f"[GitHub翻译] 元数据：{len(pending)} 需译 / {len(skills_data) - len(pending)} 复用缓存")
-        return results
+        if any(result is None for result in results):
+            raise RuntimeError('技能元数据翻译结果不完整')
+        return [result for result in results if result is not None]
 
     async def _load_categories(self, db: AsyncSession) -> list[dict[str, Any]]:
         """Load marketplace categories as {slug, name} for LLM classification."""
@@ -839,7 +850,9 @@ class GitHubSyncService:
             await db.flush()
             # Re-query to get the created skill
             new_skill = await marketplace_skill_dao.get_by_id(db, skill_id)
-            db_skill_id = new_skill.id if new_skill else None
+            if not new_skill:
+                raise RuntimeError(f'技能 {skill_id} 创建后未找到')
+            db_skill_id = new_skill.id
 
         # Sync versions
         versions = skill_data.get('versions', [])
