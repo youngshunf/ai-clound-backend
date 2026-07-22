@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import func, or_, select
+from uuid import UUID
+
+from sqlalchemy import case, exists, func, or_, select
+from sqlalchemy.orm import aliased
 
 from backend.app.hasn.model import HasnAgents, HasnArtifactContributions, HasnArtifacts, HasnHumans
 from backend.app.hasn.schema.artifact_contract import (
@@ -18,6 +21,7 @@ from backend.app.hasn.schema.artifact_contract import (
     LocalArtifactEntry,
 )
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,17 +93,49 @@ class ArtifactQueryService:
         current_node_id: str | None = None,
     ) -> ArtifactListPage:
         """按 owner 和可选上下文读取当前态，并选出该上下文内最新参与记录。"""
+        page = max(1, page)
+        size = max(1, min(size, 100))
+
+        project_uuid: UUID | None = None
+        container_uris: set[str] = set()
+        if project_id:
+            try:
+                project_uuid = UUID(project_id)
+            except (TypeError, ValueError):
+                return ArtifactListPage(items=[], total=0, page=page, size=size)
+
+            container_uris = set(
+                await project_linkage_registry.artifact_resource_uris(
+                    db,
+                    owner=owner_hasn_id,
+                    project_id=project_uuid,
+                )
+            )
+
         contribution_conditions = [HasnArtifactContributions.owner_hasn_id == owner_hasn_id]
         if agent_hasn_id:
             contribution_conditions.append(HasnArtifactContributions.agent_hasn_id == agent_hasn_id)
         if work_session_id:
             contribution_conditions.append(HasnArtifactContributions.work_session_id == work_session_id)
-        if project_id:
-            contribution_conditions.append(HasnArtifactContributions.project_id == project_id)
         if source_kind:
             contribution_conditions.append(HasnArtifactContributions.source_kind == source_kind)
         if source_app_id:
             contribution_conditions.append(HasnArtifactContributions.source_app_id == source_app_id)
+
+        rank_order: tuple[Any, ...]
+        if project_uuid:
+            # 项目视图优先展示该项目内最新参与；只经资源关联/容器关联命中的产物没有项目参与时，
+            # 再回落到其当前最新参与，避免把项目产物伪造成“参与记录”。
+            rank_order = (
+                case((HasnArtifactContributions.project_id == project_uuid, 0), else_=1).asc(),
+                HasnArtifactContributions.occurred_time.desc(),
+                HasnArtifactContributions.id.desc(),
+            )
+        else:
+            rank_order = (
+                HasnArtifactContributions.occurred_time.desc(),
+                HasnArtifactContributions.id.desc(),
+            )
 
         ranked = (
             select(
@@ -107,10 +143,7 @@ class ArtifactQueryService:
                 func.row_number()
                 .over(
                     partition_by=HasnArtifactContributions.artifact_id,
-                    order_by=(
-                        HasnArtifactContributions.occurred_time.desc(),
-                        HasnArtifactContributions.id.desc(),
-                    ),
+                    order_by=rank_order,
                 )
                 .label('rank'),
             )
@@ -131,6 +164,22 @@ class ArtifactQueryService:
             artifact_conditions.append(HasnArtifacts.resource_kind == resource_kind)
         if origin_ref:
             artifact_conditions.append(HasnArtifacts.origin_ref == origin_ref)
+        if project_uuid:
+            project_contribution = aliased(HasnArtifactContributions)
+            participation_exists = exists(
+                select(1).where(
+                    project_contribution.owner_hasn_id == owner_hasn_id,
+                    project_contribution.artifact_id == HasnArtifacts.artifact_id,
+                    project_contribution.project_id == project_uuid,
+                )
+            )
+            project_relations = [
+                participation_exists,
+                HasnArtifacts.project_id == project_uuid,
+            ]
+            if container_uris:
+                project_relations.append(HasnArtifacts.resource_uri.in_(container_uris))
+            artifact_conditions.append(or_(*project_relations))
         if keyword:
             for word in keyword.split():
                 escaped = word.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
@@ -153,8 +202,6 @@ class ArtifactQueryService:
         )
         total = (await db.execute(select(func.count()).select_from(statement.subquery()))).scalar_one()
 
-        page = max(1, page)
-        size = max(1, min(size, 100))
         rows = (
             await db.execute(
                 statement.order_by(
@@ -201,8 +248,19 @@ class ArtifactQueryService:
                     owner_name=owner_names.get(artifact.owner_hasn_id) or None,
                 )
             project_relation = None
-            if project_id and contribution.project_id and str(contribution.project_id) == project_id:
-                project_relation = ArtifactProjectRelation(project_id=project_id, via='participation')
+            if project_uuid:
+                if contribution.project_id == project_uuid:
+                    project_relation = ArtifactProjectRelation(
+                        project_id=str(project_uuid), via='participation'
+                    )
+                elif artifact.project_id == project_uuid:
+                    project_relation = ArtifactProjectRelation(
+                        project_id=str(project_uuid), via='explicit_resource_link'
+                    )
+                elif artifact.resource_uri in container_uris:
+                    project_relation = ArtifactProjectRelation(
+                        project_id=str(project_uuid), via='linked_container'
+                    )
             local_entry = None
             if artifact.local_locator_key and artifact.node_id and artifact.local_entry_kind:
                 local_entry = LocalArtifactEntry(
