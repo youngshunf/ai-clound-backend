@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import Select, delete, insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,20 @@ from backend.utils.serializers import select_join_serialize
 class CRUDDataScope(CRUDPlus[DataScope]):
     """数据范围数据库操作类"""
 
+    @staticmethod
+    def _single_data_scope(result: object) -> DataScope | None:
+        """将不带关联加载的查询结果收紧为单个数据范围。"""
+        if result is not None and not isinstance(result, DataScope):
+            raise TypeError('数据范围单模型查询返回了关联结果')
+        return cast(DataScope | None, result)
+
+    @staticmethod
+    def _data_scope_sequence(result: object) -> Sequence[DataScope]:
+        """将不带关联加载的查询结果收紧为数据范围序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, DataScope) for item in result):
+            raise TypeError('数据范围列表查询返回了关联结果')
+        return cast(Sequence[DataScope], result)
+
     async def get(self, db: AsyncSession, pk: int) -> DataScope | None:
         """
         获取数据范围详情
@@ -26,7 +40,7 @@ class CRUDDataScope(CRUDPlus[DataScope]):
         :param pk: 范围 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_data_scope(await self.select_model(db, pk))
 
     async def get_by_name(self, db: AsyncSession, name: str) -> DataScope | None:
         """
@@ -36,7 +50,7 @@ class CRUDDataScope(CRUDPlus[DataScope]):
         :param name: 范围名称
         :return:
         """
-        return await self.select_model_by_column(db, name=name)
+        return self._single_data_scope(await self.select_model_by_column(db, name=name))
 
     async def get_join(self, db: AsyncSession, pk: int) -> Any:
         """
@@ -55,7 +69,10 @@ class CRUDDataScope(CRUDPlus[DataScope]):
             ],
         )
 
-        return select_join_serialize(result, relationships=['DataScope-m2m-DataRule:rules'])
+        return select_join_serialize(
+            cast(Sequence[Any], result),
+            relationships=['DataScope-m2m-DataRule:rules'],
+        )
 
     async def get_all(self, db: AsyncSession) -> Sequence[DataScope]:
         """
@@ -64,7 +81,7 @@ class CRUDDataScope(CRUDPlus[DataScope]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._data_scope_sequence(await self.select_models(db))
 
     async def get_select(self, name: str | None, status: int | None) -> Select:
         """
@@ -74,14 +91,14 @@ class CRUDDataScope(CRUDPlus[DataScope]):
         :param status: 范围状态
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if name is not None:
             filters['name__like'] = f'%{name}%'
         if status is not None:
             filters['status'] = status
 
-        return await self.select_order('id', **filters)
+        return await self.select_order('id', **cast(Any, filters))
 
     async def create(self, db: AsyncSession, obj: CreateDataScopeParam) -> None:
         """
@@ -114,16 +131,16 @@ class CRUDDataScope(CRUDPlus[DataScope]):
         :param rule_ids: 数据规则 ID 列表
         :return:
         """
-        data_scope_rule_stmt = delete(data_scope_rule).where(data_scope_rule.c.data_scope_id == pk)
-        await db.execute(data_scope_rule_stmt)
+        data_scope_rule_delete_stmt = delete(data_scope_rule).where(data_scope_rule.c.data_scope_id == pk)
+        await db.execute(data_scope_rule_delete_stmt)
 
         if rule_ids.rules:
             data_scope_rule_data = [
                 CreateDataScopeRuleParam(data_scope_id=pk, data_rule_id=rule_id).model_dump()
                 for rule_id in rule_ids.rules
             ]
-            data_scope_rule_stmt = insert(data_scope_rule)
-            await db.execute(data_scope_rule_stmt, data_scope_rule_data)
+            data_scope_rule_insert_stmt = insert(data_scope_rule)
+            await db.execute(data_scope_rule_insert_stmt, data_scope_rule_data)
 
         return len(rule_ids.rules)
 

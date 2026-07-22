@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,20 @@ from backend.app.admin.schema.data_rule import CreateDataRuleParam, UpdateDataRu
 class CRUDDataRule(CRUDPlus[DataRule]):
     """数据规则数据库操作类"""
 
+    @staticmethod
+    def _single_data_rule(result: object) -> DataRule | None:
+        """将不带关联加载的查询结果收紧为单个数据规则。"""
+        if result is not None and not isinstance(result, DataRule):
+            raise TypeError('数据规则单模型查询返回了关联结果')
+        return cast(DataRule | None, result)
+
+    @staticmethod
+    def _data_rule_sequence(result: object) -> Sequence[DataRule]:
+        """将不带关联加载的查询结果收紧为数据规则序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, DataRule) for item in result):
+            raise TypeError('数据规则列表查询返回了关联结果')
+        return cast(Sequence[DataRule], result)
+
     async def get(self, db: AsyncSession, pk: int) -> DataRule | None:
         """
         获取规则详情
@@ -19,7 +34,7 @@ class CRUDDataRule(CRUDPlus[DataRule]):
         :param pk: 规则 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_data_rule(await self.select_model(db, pk))
 
     async def get_select(self, name: str | None) -> Select:
         """
@@ -28,12 +43,12 @@ class CRUDDataRule(CRUDPlus[DataRule]):
         :param name: 规则名称
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if name is not None:
             filters['name__like'] = f'%{name}%'
 
-        return await self.select_order('id', **filters)
+        return await self.select_order('id', **cast(Any, filters))
 
     async def get_by_name(self, db: AsyncSession, name: str) -> DataRule | None:
         """
@@ -43,7 +58,7 @@ class CRUDDataRule(CRUDPlus[DataRule]):
         :param name: 规则名称
         :return:
         """
-        return await self.select_model_by_column(db, name=name)
+        return self._single_data_rule(await self.select_model_by_column(db, name=name))
 
     async def get_all(self, db: AsyncSession) -> Sequence[DataRule]:
         """
@@ -52,7 +67,7 @@ class CRUDDataRule(CRUDPlus[DataRule]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._data_rule_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateDataRuleParam) -> None:
         """
