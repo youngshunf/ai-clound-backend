@@ -1,10 +1,21 @@
 import sys
 
+from collections.abc import Awaitable
+from typing import Any, TypeVar, cast
+
 from redis.asyncio import Redis
 from redis.exceptions import AuthenticationError, TimeoutError
 
 from backend.common.log import log
 from backend.core.conf import settings
+
+
+RedisResult = TypeVar('RedisResult')
+
+
+def _as_awaitable(value: Awaitable[RedisResult] | RedisResult) -> Awaitable[RedisResult]:
+    """收紧 redis-py 异步客户端被误标为同步联合类型的返回值。"""
+    return cast(Awaitable[RedisResult], value)
 
 
 class RedisCli(Redis):
@@ -47,6 +58,63 @@ class RedisCli(Redis):
             health_check_interval=health_check_interval,
             decode_responses=decode_responses,
         )
+
+    async def ping(self, *args: Any, **kwargs: Any) -> bool:
+        return await _as_awaitable(super().ping(*args, **kwargs))
+
+    async def hset(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().hset(*args, **kwargs))
+
+    async def hget(self, *args: Any, **kwargs: Any) -> str | None:
+        return await _as_awaitable(super().hget(*args, **kwargs))
+
+    async def hgetall(self, *args: Any, **kwargs: Any) -> dict[Any, Any]:
+        return await _as_awaitable(super().hgetall(*args, **kwargs))
+
+    async def hdel(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().hdel(*args, **kwargs))
+
+    async def hlen(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().hlen(*args, **kwargs))
+
+    async def sadd(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().sadd(*args, **kwargs))
+
+    async def srem(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().srem(*args, **kwargs))
+
+    async def smembers(self, *args: Any, **kwargs: Any) -> set[Any]:
+        return await _as_awaitable(super().smembers(*args, **kwargs))
+
+    async def spop(self, *args: Any, **kwargs: Any) -> str | list[Any] | None:
+        return await _as_awaitable(super().spop(*args, **kwargs))
+
+    async def exists(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().exists(*args, **kwargs))
+
+    async def rpush(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().rpush(*args, **kwargs))
+
+    async def lrange(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return await _as_awaitable(super().lrange(*args, **kwargs))
+
+    async def lrem(self, *args: Any, **kwargs: Any) -> int:
+        return await _as_awaitable(super().lrem(*args, **kwargs))
+
+    async def lmove(self, *args: Any, **kwargs: Any) -> str | None:
+        return await _as_awaitable(super().lmove(*args, **kwargs))
+
+    async def rpoplpush(self, *args: Any, **kwargs: Any) -> str:
+        return await _as_awaitable(super().rpoplpush(*args, **kwargs))
+
+    async def hmget(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return await _as_awaitable(super().hmget(*args, **kwargs))
+
+    async def mget(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return await _as_awaitable(super().mget(*args, **kwargs))
+
+    async def eval(self, *args: Any, **kwargs: Any) -> Any:
+        return await _as_awaitable(super().eval(*args, **kwargs))
 
     async def init(self) -> None:
         """初始化 Redis 服务器"""

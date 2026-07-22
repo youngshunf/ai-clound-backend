@@ -4,7 +4,7 @@ SocketIO 服务器实例 + 连接/断开事件
 """
 import urllib.parse
 
-import socketio
+import socketio  # type: ignore[import-untyped]
 
 from backend.common.log import log
 from backend.common.security.jwt import jwt_authentication

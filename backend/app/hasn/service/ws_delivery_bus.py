@@ -38,6 +38,8 @@ _RETRY_PENDING_INTERVAL_SECS = 2.0
 
 def _decode_payload(raw: str | bytes | None) -> dict | None:
     """解析队列帧；畸形或非对象 JSON 由调用方安全跳过。"""
+    if raw is None:
+        return None
     try:
         value = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -168,19 +170,19 @@ class WsDeliveryBus:
                 await WsDeliveryBus._safe_send(ws, payload_json)
             return
 
-        node_id = data.get('node_id')
-        if not node_id:
+        target_node_id = data.get('node_id')
+        if not target_node_id:
             return
-        if router_module._ws_connections.get(node_id) is None:
+        if router_module._ws_connections.get(target_node_id) is None:
             # 连接不在本 worker，交给真正持有它的 worker 处理
             return
         # 兼容滚动发布期间仍携带 payload 的旧 publisher：先落本 worker 的持久队列。
         legacy_payload = data.get('payload')
         if legacy_payload:
-            pending_key = f'{PENDING_PREFIX}:{node_id}'
+            pending_key = f'{PENDING_PREFIX}:{target_node_id}'
             await redis_client.rpush(pending_key, legacy_payload)
             await redis_client.expire(pending_key, DELIVERY_QUEUE_TTL_SECS)
-        await WsDeliveryBus.drain_node(node_id)
+        await WsDeliveryBus.drain_node(target_node_id)
 
     @classmethod
     async def _drain_node_safely(cls, node_id: str) -> None:

@@ -629,7 +629,7 @@ class WsRouterService:
         entity_ids: list[str],
     ) -> list[dict]:
         """获取并清理离线消息（所有已上报实体）"""
-        all_msgs = []
+        all_msgs: list[dict] = []
 
         for eid in entity_ids:
             key = f'{OFFLINE_PREFIX}:{eid}'
