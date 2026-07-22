@@ -44,8 +44,8 @@ async def agent_create_lead_collection_job(
     request: Request,
     obj: CreateLeadCollectionJobParam) -> ResponseModel:
 
-    result = await lead_collection_job_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await lead_collection_job_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

@@ -44,8 +44,8 @@ async def agent_create_lead_export_batch(
     request: Request,
     obj: CreateLeadExportBatchParam) -> ResponseModel:
 
-    result = await lead_export_batch_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await lead_export_batch_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(
