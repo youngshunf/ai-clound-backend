@@ -1,10 +1,13 @@
+import re
+
 from datetime import datetime
 
 from pydantic import ConfigDict, Field, field_validator
 
 from backend.common.exception import errors
 from backend.common.schema import SchemaBase
-from backend.utils.pattern_validate import is_english_identifier
+
+_CODEGEN_IDENTIFIER_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9_]*$')
 
 
 class GenBusinessSchemaBase(SchemaBase):
@@ -26,10 +29,10 @@ class GenBusinessSchemaBase(SchemaBase):
 
     @field_validator('app_name', 'table_name')
     @classmethod
-    def validate_english_only(cls, v: str) -> str:
-        """验证英文字段"""
-        if not is_english_identifier(v):
-            raise errors.RequestError(msg='必须以英文字母开头且只能包含英文字母和下划线')
+    def validate_codegen_identifier(cls, v: str) -> str:
+        """验证可用于代码生成的英文标识符。"""
+        if not _CODEGEN_IDENTIFIER_PATTERN.fullmatch(v):
+            raise errors.RequestError(msg='必须以英文字母开头，后续只能包含英文字母、数字和下划线')
         return v
 
     @field_validator('api_scope')

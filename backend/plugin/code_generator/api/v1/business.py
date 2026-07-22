@@ -22,7 +22,7 @@ router = APIRouter()
 
 @router.get('/all', summary='获取所有代码生成业务', dependencies=[DependsJwtAuth])
 async def get_all_businesses(db: CurrentSession) -> ResponseSchemaModel[list[GetGenBusinessDetail]]:
-    data = await gen_business_service.get_all(db=db)
+    data = [GetGenBusinessDetail.model_validate(item) for item in await gen_business_service.get_all(db=db)]
     return response_base.success(data=data)
 
 
@@ -31,7 +31,7 @@ async def get_business(
     db: CurrentSession,
     pk: Annotated[int, Path(description='业务 ID')],
 ) -> ResponseSchemaModel[GetGenBusinessDetail]:
-    data = await gen_business_service.get(db=db, pk=pk)
+    data = GetGenBusinessDetail.model_validate(await gen_business_service.get(db=db, pk=pk))
     return response_base.success(data=data)
 
 
@@ -48,7 +48,7 @@ async def get_businesses_paginated(
     table_name: Annotated[str | None, Query(description='代码生成业务表名称')] = None,
 ) -> ResponseSchemaModel[PageData[GetGenBusinessDetail]]:
     page_data = await gen_business_service.get_list(db=db, table_name=table_name)
-    return response_base.success(data=page_data)
+    return response_base.success(data=PageData[GetGenBusinessDetail].model_validate(page_data))
 
 
 @router.get('/{pk}/columns', summary='获取代码生成业务所有模型列', dependencies=[DependsJwtAuth])
@@ -56,7 +56,8 @@ async def get_business_all_columns(
     db: CurrentSession,
     pk: Annotated[int, Path(description='业务 ID')],
 ) -> ResponseSchemaModel[list[GetGenColumnDetail]]:
-    data = await gen_column_service.get_columns(db=db, business_id=pk)
+    columns = await gen_column_service.get_columns(db=db, business_id=pk)
+    data = [GetGenColumnDetail.model_validate(item) for item in columns]
     return response_base.success(data=data)
 
 
