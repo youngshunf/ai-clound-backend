@@ -119,29 +119,29 @@ class CloudCreateAgentRequest(SchemaBase):
     """hasn-node/WebUI 发起的云端优先 Agent 创建请求。"""
 
     owner_id: str = Field(description='Owner HASN ID')
-    template_id: str | None = Field(None, description='模板 ID；空表示自定义')
-    agent_name: str | None = Field(None, description='Agent 英文/目录标识；空则云端按显示名/模板生成')
+    template_id: str | None = Field(default=None, description='模板 ID；空表示自定义')
+    agent_name: str | None = Field(default=None, description='Agent 英文/目录标识；空则云端按显示名/模板生成')
     display_name: str = Field(description='Agent 显示名（像人一样的名字，全局唯一）')
     display_name_candidates: list[str] | None = Field(
-        None, description='候选人名池（来自模板 name_pool）；display_name 撞名时云端按序挑首个空闲'
+        default=None, description='候选人名池（来自模板 name_pool）；display_name 撞名时云端按序挑首个空闲'
     )
-    profession: str | None = Field(None, description='领域专家头衔（如「金融专家」，来自模板 name）')
-    description: str | None = Field(None, description='Agent 简介')
-    avatar: str | None = Field(None, description='Agent 头像 URL')
-    skills: dict[str, Any] | list[Any] | None = Field(None, description='技能配置')
-    soul_md: str | None = Field(None, description='SOUL.md 内容')
-    agents_md: str | None = Field(None, description='AGENTS.md 内容')
-    user_md: str | None = Field(None, description='USER.md 内容')
-    memory_md: str | None = Field(None, description='MEMORY.md 内容（自我演化记忆）；空则取模板种子')
-    runtime_type: str | None = Field(None, description='期望本地绑定 Runtime 类型')
+    profession: str | None = Field(default=None, description='领域专家头衔（如「金融专家」，来自模板 name）')
+    description: str | None = Field(default=None, description='Agent 简介')
+    avatar: str | None = Field(default=None, description='Agent 头像 URL')
+    skills: dict[str, Any] | list[Any] | None = Field(default=None, description='技能配置')
+    soul_md: str | None = Field(default=None, description='SOUL.md 内容')
+    agents_md: str | None = Field(default=None, description='AGENTS.md 内容')
+    user_md: str | None = Field(default=None, description='USER.md 内容')
+    memory_md: str | None = Field(default=None, description='MEMORY.md 内容（自我演化记忆）；空则取模板种子')
+    runtime_type: str | None = Field(default=None, description='期望本地绑定 Runtime 类型')
     runtime_location: str = Field(
         default='local',
         description='运行位置 (local:本地非沙箱可访问授权目录/cloud:云端 Docker 沙箱)；默认 local',
     )
-    node_id: str | None = Field(None, description='创建发起节点 ID')
+    node_id: str | None = Field(default=None, description='创建发起节点 ID')
     agent_type: str = Field(default='desktop', description='Agent 类型')
     role: str = Field(default='specialist', description='Agent 角色')
-    capabilities: dict[str, Any] | list[Any] | None = Field(None, description='能力摘要')
+    capabilities: dict[str, Any] | list[Any] | None = Field(default=None, description='能力摘要')
 
 
 class CheckDisplayNameRequest(SchemaBase):
@@ -181,26 +181,26 @@ class UpdateAgentProfileRequest(SchemaBase):
     daemon 据返回的 AgentSnapshot 回写本地镜像。
     """
 
-    display_name: str | None = Field(None, min_length=1, max_length=80, description='Agent 显示名')
-    description: str | None = Field(None, max_length=280, description='Agent 简介')
-    avatar: str | None = Field(None, max_length=500, description='Agent 头像 URL')
-    role: str | None = Field(None, min_length=1, max_length=64, description='Agent 角色')
-    profession: str | None = Field(None, max_length=60, description='领域专家头衔（如「金融专家」）')
-    star_id: str | None = Field(None, min_length=1, max_length=40, description='Agent 唤星号（同表唯一）')
-    tags: list[str] | None = Field(None, description='Agent 标签数组（覆盖式更新）')
-    capability_set_id: str | None = Field(None, max_length=80, description='Agent 能力集 ID')
-    persona_ref: str | None = Field(None, max_length=120, description='Agent persona 引用')
+    display_name: str | None = Field(default=None, min_length=1, max_length=80, description='Agent 显示名')
+    description: str | None = Field(default=None, max_length=280, description='Agent 简介')
+    avatar: str | None = Field(default=None, max_length=500, description='Agent 头像 URL')
+    role: str | None = Field(default=None, min_length=1, max_length=64, description='Agent 角色')
+    profession: str | None = Field(default=None, max_length=60, description='领域专家头衔（如「金融专家」）')
+    star_id: str | None = Field(default=None, min_length=1, max_length=40, description='Agent 唤星号（同表唯一）')
+    tags: list[str] | None = Field(default=None, description='Agent 标签数组（覆盖式更新）')
+    capability_set_id: str | None = Field(default=None, max_length=80, description='Agent 能力集 ID')
+    persona_ref: str | None = Field(default=None, max_length=120, description='Agent persona 引用')
     status: str | None = Field(
-        None,
+        default=None,
         description='Agent 状态/生命周期 (active/disabled/revoked/archived/deleted)',
     )
     # 记忆三段（doc10 PUT 记忆 tab 编辑保存写云端权威）。owner 在「记忆」tab 编辑
     # 核心人设 / 主人档案 / 分身笔记 → daemon PATCH 上行 → 云端落库为权威源 →
     # 回 AgentSnapshot 给 daemon 镜像，profile_revision 自增触发 runtime 重拉。
     # partial 语义：键传入即写（含空串=清空该段），未传则保留云端现值。
-    soul_md: str | None = Field(None, description='SOUL.md 内容（核心人设）')
-    user_md: str | None = Field(None, description='USER.md 内容（主人档案）')
-    memory_md: str | None = Field(None, description='MEMORY.md 内容（分身自我演化记忆/笔记）')
+    soul_md: str | None = Field(default=None, description='SOUL.md 内容（核心人设）')
+    user_md: str | None = Field(default=None, description='USER.md 内容（主人档案）')
+    memory_md: str | None = Field(default=None, description='MEMORY.md 内容（分身自我演化记忆/笔记）')
 
 
 class UpdateAgentProfileResponse(SchemaBase):
@@ -210,12 +210,12 @@ class UpdateAgentProfileResponse(SchemaBase):
 class AgentRuntimeModels(SchemaBase):
     """per-agent 4 槽模型选择（None=跟随主模型，runtime 不写对应键即回退 auto）。"""
 
-    main: str | None = Field(None, max_length=120, description='主模型 model.default（强模型；空=平台默认）')
+    main: str | None = Field(default=None, max_length=120, description='主模型 model.default（强模型；空=平台默认）')
     fast: str | None = Field(
-        None, max_length=120, description='快速模型，扇出到廉价文本辅助任务 auxiliary.*（空=跟随主模型）'
+        default=None, max_length=120, description='快速模型，扇出到廉价文本辅助任务 auxiliary.*（空=跟随主模型）'
     )
-    vision: str | None = Field(None, max_length=120, description='视觉模型 auxiliary.vision（空=跟随主模型）')
-    delegation: str | None = Field(None, max_length=120, description='子分身模型 delegation.model（空=跟随主模型）')
+    vision: str | None = Field(default=None, max_length=120, description='视觉模型 auxiliary.vision（空=跟随主模型）')
+    delegation: str | None = Field(default=None, max_length=120, description='子分身模型 delegation.model（空=跟随主模型）')
 
 
 class AgentRuntimeConfig(SchemaBase):
