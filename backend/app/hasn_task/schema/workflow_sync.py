@@ -28,14 +28,14 @@ class WorkflowRunUpstream(SchemaBase):
 
     workflow_run_uuid: str = Field(description='端云稳定执行实例 UUID（幂等键）')
     workflow_uuid: str = Field(description='所属工作流稳定 UUID')
-    dedupe_key: str | None = Field(None, description='幂等键 workflow_uuid:fire_at（缺省取 workflow_run_uuid）')
-    status: str | None = Field(None, description='running/completed/failed/blocked/cancelled')
-    advance_mode: str | None = Field(None, description='推进档位 manual/auto')
-    scheduled_fire_at: datetime | int | float | str | None = Field(None, description='触发时刻')
-    graph_snapshot: dict[str, Any] | None = Field(None, description='fire 时固化的 nodes+edges 快照')
-    output_summary: str | None = Field(None, description='整图终态综合')
-    started_at: datetime | int | float | str | None = Field(None, description='开始时间')
-    finished_at: datetime | int | float | str | None = Field(None, description='完成时间')
+    dedupe_key: str | None = Field(default=None, description='幂等键 workflow_uuid:fire_at（缺省取 workflow_run_uuid）')
+    status: str | None = Field(default=None, description='running/completed/failed/blocked/cancelled')
+    advance_mode: str | None = Field(default=None, description='推进档位 manual/auto')
+    scheduled_fire_at: datetime | int | float | str | None = Field(default=None, description='触发时刻')
+    graph_snapshot: dict[str, Any] | None = Field(default=None, description='fire 时固化的 nodes+edges 快照')
+    output_summary: str | None = Field(default=None, description='整图终态综合')
+    started_at: datetime | int | float | str | None = Field(default=None, description='开始时间')
+    finished_at: datetime | int | float | str | None = Field(default=None, description='完成时间')
 
 
 class WorkflowNodeRunUpstream(SchemaBase):
@@ -50,22 +50,22 @@ class WorkflowNodeRunUpstream(SchemaBase):
     workflow_uuid: str = Field(description='所属工作流稳定 UUID（冗余便于查询）')
     node_key: str = Field(description='图内节点标识')
     status: str = Field(description='节点执行态（十态 ∪ 调度器过渡态 success/error）')
-    work_session_id: str | None = Field(None, description='最新工作会话 id')
+    work_session_id: str | None = Field(default=None, description='最新工作会话 id')
     artifacts: list[dict[str, Any]] | None = Field(
-        None, description='产出物 [{artifact_id,kind,is_current,version,session_id}]'
+        default=None, description='产出物 [{artifact_id,kind,is_current,version,session_id}]'
     )
-    output_summary: str | None = Field(None, description='产出摘要')
-    output_gate_retries: int | None = Field(None, ge=0, description='产出闸重试次数')
-    review_rejects: int | None = Field(None, ge=0, description='质量门驳回次数')
-    attention_reason: str | None = Field(None, description='需要处理的原因')
-    started_at: datetime | int | float | str | None = Field(None, description='开始时间')
-    completed_at: datetime | int | float | str | None = Field(None, description='完成时间')
+    output_summary: str | None = Field(default=None, description='产出摘要')
+    output_gate_retries: int | None = Field(default=None, ge=0, description='产出闸重试次数')
+    review_rejects: int | None = Field(default=None, ge=0, description='质量门驳回次数')
+    attention_reason: str | None = Field(default=None, description='需要处理的原因')
+    started_at: datetime | int | float | str | None = Field(default=None, description='开始时间')
+    completed_at: datetime | int | float | str | None = Field(default=None, description='完成时间')
 
 
 class WorkflowNodeRunsSyncRequest(SchemaBase):
     """一次上行批：可只带 runs、只带 node_runs，或两者同批（节点终态时通常两者都推）。"""
 
-    owner_id: str | None = Field(None, description='Owner HASN ID；缺省取 Owner JWT 身份')
+    owner_id: str | None = Field(default=None, description='Owner HASN ID；缺省取 Owner JWT 身份')
     runs: list[WorkflowRunUpstream] = Field(default_factory=list, description='整图执行实例')
     node_runs: list[WorkflowNodeRunUpstream] = Field(default_factory=list, description='节点执行态')
 
