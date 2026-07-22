@@ -61,7 +61,14 @@ class UserService:
         return user.roles
 
     @staticmethod
-    async def get_list(*, db: AsyncSession, dept: int, username: str, phone: str, status: int) -> dict[str, Any]:
+    async def get_list(
+        *,
+        db: AsyncSession,
+        dept: int | None,
+        username: str | None,
+        phone: str | None,
+        status: int | None,
+    ) -> dict[str, Any]:
         """
         获取用户列表
 
@@ -291,8 +298,10 @@ class UserService:
         :return:
         """
         user = await user_dao.get(db, user_id)
+        if not user:
+            raise errors.NotFoundError(msg='用户不存在')
 
-        if user.password and not password_verify(obj.old_password, user.password):
+        if not user.password or not password_verify(obj.old_password, user.password):
             raise errors.RequestError(msg='原密码错误')
 
         if obj.new_password != obj.confirm_password:

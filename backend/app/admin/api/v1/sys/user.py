@@ -40,7 +40,7 @@ async def get_userinfo(
     pk: Annotated[int, Path(description='用户 ID')],
 ) -> ResponseSchemaModel[GetUserInfoWithRelationDetail]:
     data = await user_service.get_userinfo(db=db, pk=pk)
-    return response_base.success(data=data)
+    return response_base.success(data=GetUserInfoWithRelationDetail.model_validate(data))
 
 
 @router.get('/{pk}/roles', summary='获取用户所有角色', dependencies=[DependsJwtAuth])
@@ -48,7 +48,7 @@ async def get_user_roles(
     db: CurrentSession, pk: Annotated[int, Path(description='用户 ID')]
 ) -> ResponseSchemaModel[list[GetRoleDetail]]:
     data = await user_service.get_roles(db=db, pk=pk)
-    return response_base.success(data=data)
+    return response_base.success(data=[GetRoleDetail.model_validate(role) for role in data])
 
 
 @router.get(
@@ -67,7 +67,7 @@ async def get_users_paginated(
     status: Annotated[int | None, Query(description='状态')] = None,
 ) -> ResponseSchemaModel[PageData[GetUserInfoWithRelationDetail]]:
     page_data = await user_service.get_list(db=db, dept=dept, username=username, phone=phone, status=status)
-    return response_base.success(data=page_data)
+    return response_base.success(data=PageData[GetUserInfoWithRelationDetail].model_validate(page_data))
 
 
 @router.post('', summary='创建用户', dependencies=[DependsSuperUser])
@@ -76,7 +76,7 @@ async def create_user(
 ) -> ResponseSchemaModel[GetUserInfoWithRelationDetail]:
     await user_service.create(db=db, obj=obj)
     data = await user_service.get_userinfo(db=db, username=obj.username)
-    return response_base.success(data=data)
+    return response_base.success(data=GetUserInfoWithRelationDetail.model_validate(data))
 
 
 @router.put('/{pk}', summary='更新用户信息', dependencies=[DependsSuperUser])
