@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import uuid
 
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
 
@@ -21,17 +22,19 @@ import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_designsystem.api.v1.agent.designsystem import router as agent_router
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
+from backend.common.security.agent_jwt import invalidate_agent_scopes_cache
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.redis import redis_client
 
-pytestmark = pytest.mark.asyncio
+pytestmark = pytest.mark.asyncio(loop_scope='module')
 
 _PREFIX = '/api/v1/designsystem/agent'
 
@@ -42,6 +45,18 @@ _APP.include_router(agent_router, prefix=_PREFIX)
 @_APP.exception_handler(BaseExceptionError)
 async def _err_handler(_request: Request, exc: BaseExceptionError) -> JSONResponse:
     return JSONResponse(status_code=exc.code, content={'code': exc.code, 'msg': str(exc.msg), 'data': None})
+
+
+@pytest_asyncio.fixture(autouse=True, scope='module', loop_scope='module')
+async def reset_redis_pool() -> AsyncIterator[None]:
+    """在模块边界重置全局 Redis 连接池，避免复用上一模块已关闭事件循环的连接。"""
+    try:
+        await redis_client.connection_pool.disconnect()
+    except RuntimeError:
+        # 上一模块的事件循环已经关闭时，redis-py 不能在新循环中关闭旧 writer；随后会新建连接。
+        pass
+    yield
+    await redis_client.connection_pool.disconnect()
 
 
 def _content(bg: str) -> dict:
@@ -56,7 +71,7 @@ def _content(bg: str) -> dict:
     }
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope='module')
 async def client():
     os.environ.setdefault('DESIGNSYSTEM_IMPORT_FAKEIP_PASSTHROUGH', '1')
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
@@ -94,7 +109,7 @@ async def client():
 
     http = AsyncClient(transport=ASGITransport(app=_APP), base_url='http://e2e')
     try:
-        yield http, state, tag
+        yield http, state, tag, session
     finally:
         await http.aclose()
         _APP.dependency_overrides.clear()
@@ -105,7 +120,7 @@ async def client():
 
 async def test_create_list_get_revisions_flow(client) -> None:
     """建→出 rev_no=1→列表可见→详情可读→改→出 rev_no=2→版本历史降序。"""
-    http, _state, tag = client
+    http, _state, tag, _session = client
 
     created = await http.post(
         f'{_PREFIX}/design-systems',
@@ -141,7 +156,7 @@ async def test_create_list_get_revisions_flow(client) -> None:
 
 async def test_owner_revision_endpoint(client) -> None:
     """同步水位端点：save 后 owner_revision 变化。"""
-    http, _state, tag = client
+    http, _state, tag, _session = client
     before = (await http.get(f'{_PREFIX}/owner-revision')).json()['data']['owner_revision']
     await http.post(
         f'{_PREFIX}/design-systems',
@@ -152,21 +167,47 @@ async def test_owner_revision_endpoint(client) -> None:
 
 
 async def test_scope_gate_blocks_write_without_scope(client) -> None:
-    """缺 designsystem:write → POST 写类 403（scope 闸真实生效，非假闸门）。"""
-    http, state, tag = client
-    state['scopes'] = []  # 撤掉所有 scope
-    resp = await http.post(
-        f'{_PREFIX}/design-systems',
-        json={'slug': f'no-{tag}', 'name': '应被拒', 'content': _content('#333')},
-    )
-    assert resp.status_code == 403
+    """能力被主人设为 deny 后，写类端点从真实三态授权记录拒绝请求。"""
+    http, state, tag, session = client
+    agent_hasn_id = state['agent_hasn_id']
+    try:
+        await session.execute(
+            text(
+                """
+                INSERT INTO hasn_agent_scopes (agent_hasn_id, owner_hasn_id, default_mode, capability_modes)
+                VALUES (:agent_hasn_id, :owner_hasn_id, 'allow', CAST(:capability_modes AS jsonb))
+                ON CONFLICT (agent_hasn_id) DO UPDATE
+                SET default_mode = EXCLUDED.default_mode,
+                    capability_modes = EXCLUDED.capability_modes
+                """
+            ),
+            {
+                'agent_hasn_id': agent_hasn_id,
+                'owner_hasn_id': state['owner_hasn_id'],
+                'capability_modes': '{"designsystem:write": "deny"}',
+            },
+        )
+        await session.commit()
+        await invalidate_agent_scopes_cache(agent_hasn_id)
+
+        resp = await http.post(
+            f'{_PREFIX}/design-systems',
+            json={'slug': f'no-{tag}', 'name': '应被拒', 'content': _content('#333')},
+        )
+        assert resp.status_code == 403
+        # 读类无能力门，仍可访问。
+        assert (await http.get(f'{_PREFIX}/design-systems')).status_code == 200
+    finally:
+        await session.execute(text('DELETE FROM hasn_agent_scopes WHERE agent_hasn_id = :agent_hasn_id'), {'agent_hasn_id': agent_hasn_id})
+        await session.commit()
+        await invalidate_agent_scopes_cache(agent_hasn_id)
     # 读类无 scope 闸 → 仍可访问（避免假闸门）
     assert (await http.get(f'{_PREFIX}/design-systems')).status_code == 200
 
 
 async def test_import_shadcn_via_agent_route(client) -> None:
     """import 三入口经 agent 路由接通（真实 shadcn 样例）；网络不可达则 skip。"""
-    http, _state, _tag = client
+    http, _state, _tag, _session = client
     resp = await http.post(
         f'{_PREFIX}/import',
         json={'source': 'shadcn', 'ref': 'https://tweakcn.com/r/themes/modern-minimal.json'},
