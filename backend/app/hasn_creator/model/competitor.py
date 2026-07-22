@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 import sqlalchemy as sa
 
@@ -27,7 +28,7 @@ class Competitor(HasnCreatorAppBase):
     works_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='作品数（分身调研回填；工具层 researched=true 时必填）')
     avg_likes: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
     content_style: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
-    strengths: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
+    strengths: Mapped[list[Any]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
     notes: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
-    tags: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
+    tags: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
     last_analyzed: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)

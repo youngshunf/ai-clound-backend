@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn_creator.model.draft import Draft
 from backend.app.hasn_creator.service.creator_service import creator_service
 from backend.app.hasn_creator.service.scope_context import CreatorScope
 from backend.common.exception import errors
@@ -219,3 +220,20 @@ async def test_draft_crud_and_promote(session) -> None:
     # 转正后再 promote 已不存在的草稿 → NotFound
     with pytest.raises(errors.NotFoundError):
         await creator_service.promote_draft(session, user_id=_UID, scope=scope, draft_id=did)
+
+
+async def test_promote_draft_rejects_legacy_missing_title(session) -> None:
+    """历史空标题草稿不得伪造标题后转正，且原草稿必须保留供主人修复。"""
+    scope = _scope()
+    pid = await _new_project(session)
+    draft = await creator_service.create_draft(
+        session, user_id=_UID, scope=scope, project_id=pid, title='待修复草稿'
+    )
+    row = (await session.execute(select(Draft).where(Draft.id == draft['id']))).scalar_one()
+    row.title = None
+
+    with pytest.raises(errors.RequestError, match='草稿标题缺失'):
+        await creator_service.promote_draft(session, user_id=_UID, scope=scope, draft_id=draft['id'])
+
+    retained = (await session.execute(select(Draft).where(Draft.id == draft['id']))).scalar_one()
+    assert retained.title is None

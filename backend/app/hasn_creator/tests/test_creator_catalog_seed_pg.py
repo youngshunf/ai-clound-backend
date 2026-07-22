@@ -56,10 +56,10 @@ async def test_catalog_seeds_creator(session) -> None:
 
 
 async def test_creator_manifest_publishable(session) -> None:
-    """builtin manifest 校验通过且可发布（28 工具·S4 加账号/竞品6件）。"""
+    """builtin manifest 校验通过且可发布（38 个当前工具）。"""
     payload = await ai_native_app_registry.ensure_builtin_published(session, 'creator')
     assert payload['app_id'] == 'creator'
-    assert len(payload['manifest_json']['tools']) == 28
+    assert len(payload['manifest_json']['tools']) == 38
 
 
 async def test_enterprise_seed_idempotent(session) -> None:

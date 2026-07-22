@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime
 
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -87,7 +87,16 @@ def _gen_no(prefix: str) -> str:
     return f'{prefix}{uuid4().hex[:12].upper()}'
 
 
-def _child_ownership(project: Project) -> dict[str, Any]:
+class _ChildOwnership(TypedDict):
+    """可写入子资源的项目归属字段。"""
+
+    owner_scope: str
+    user_id: int
+    enterprise_id: int | None
+    assignee: str | None
+
+
+def _child_ownership(project: Project) -> _ChildOwnership:
     """子对象继承父 project 的归属列（owner_scope/user_id/enterprise_id/assignee）。"""
     return {
         'owner_scope': project.owner_scope,
@@ -668,18 +677,22 @@ class CreatorService:
         if source_type not in ('own', 'competitor'):
             raise errors.RequestError(msg='source_type 只能是 own 或 competitor')
         # 校验归属主体存在且属本 owner（own→account / competitor→competitor），拿到 project + 平台冗余。
+        parent: Account | Competitor
+        competitor: Competitor | None = None
         if source_type == 'own':
             parent = await CreatorService._load_account(db, account_id=owner_ref_id, user_id=user_id, scope=scope)
         else:
             stmt = apply_scope(
                 sa.select(Competitor).where(Competitor.id == owner_ref_id), Competitor, user_id=user_id, scope=scope
             )
-            parent = (await db.execute(stmt)).scalars().first()
-            if parent is None:
+            candidate = (await db.execute(stmt)).scalars().first()
+            if not isinstance(candidate, Competitor):
                 raise errors.NotFoundError(msg='竞品不存在或无权访问')
+            competitor = candidate
+            parent = competitor
         project_id = parent.project_id
         platform = parent.platform or ''
-        own = {
+        own: _ChildOwnership = {
             'owner_scope': parent.owner_scope,
             'user_id': parent.user_id,
             'enterprise_id': parent.enterprise_id,
@@ -727,7 +740,7 @@ class CreatorService:
             match.collected_at = now
             upserted += 1
         # 竞品作品数随抓取结果刷新（§6.4 works_count 由调研回填）。
-        if source_type == 'competitor':
+        if competitor is not None:
             total = (
                 await db.execute(
                     sa
@@ -736,7 +749,7 @@ class CreatorService:
                     .where(Work.source_type == 'competitor', Work.competitor_id == owner_ref_id)
                 )
             ).scalar() or 0
-            parent.works_count = int(total)
+            competitor.works_count = int(total)
         await db.flush()
         return {'upserted': upserted, 'source_type': source_type, 'owner_ref_id': owner_ref_id}
 
@@ -1060,6 +1073,8 @@ class CreatorService:
         草稿使命完成即删除，避免草稿箱与内容流水线两处并存同一条。
         """
         draft = await CreatorService._load_draft(db, draft_id=draft_id, user_id=user_id, scope=scope)
+        if not draft.title:
+            raise errors.RequestError(msg='草稿标题缺失，无法转正，请先补全标题')
         content = await CreatorService.create_content(
             db,
             user_id=user_id,
