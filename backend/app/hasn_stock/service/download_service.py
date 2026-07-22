@@ -51,6 +51,11 @@ def _host_in_whitelist(host: str, whitelist: set[str]) -> bool:
     return any(host == d or host.endswith('.' + d) for d in whitelist)
 
 
+def _resolve_redirect_url(current: str, location: str) -> str:
+    """基于当前下载地址解析重定向 Location。"""
+    return str(httpx.URL(current).join(location))
+
+
 # 透明代理（Clash/Surge/Mihomo TUN 模式）默认把公网域名劫持解析到 fake-ip 占位段
 # 198.18.0.0/15（RFC 2544 benchmarking 保留段，正常内网/生产环境绝不会使用）。
 # 仅开发环境（ENVIRONMENT='dev'）放行该段，让本机能真实测通 stock.download；
@@ -249,7 +254,7 @@ class StockDownloadService:
                         location = resp.headers.get('location')
                         if not location:
                             raise StockDownloadError('stock.download: 重定向缺 Location')
-                        current = httpx.URL(current).join(location).human_repr()
+                        current = _resolve_redirect_url(current, location)
                         continue
                     if resp.status_code >= 400:
                         raise StockDownloadError(f'stock.download: 源站 HTTP {resp.status_code}')
