@@ -26,11 +26,12 @@ def get_request_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(',')[0]
 
+    client = request.client
     # 忽略 pytest
-    if request.client.host == 'testclient':
+    if client and client.host == 'testclient':
         return '127.0.0.1'
 
-    return request.client.host
+    return client.host if client else '0.0.0.0'
 
 
 async def get_location_online(ip: str) -> dict | None:
@@ -48,6 +49,7 @@ async def get_location_online(ip: str) -> dict | None:
         except Exception as e:
             log.error(f'在线获取 IP 地址属地失败，错误信息：{e}')
             return None
+    return None
 
 
 # 离线 IP 搜索器单例（数据将缓存到内存，缓存大小取决于 IP 数据文件大小）
@@ -62,8 +64,8 @@ def get_location_offline(ip: str) -> dict | None:
     :return:
     """
     try:
-        data = __xdb_searcher.search(ip)
-        data = data.split('|')
+        raw_data = __xdb_searcher.search(ip)
+        data = raw_data.split('|')
         return {
             'country': data[0] if data[0] != '0' else None,
             'regionName': data[1] if data[1] != '0' else None,
