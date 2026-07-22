@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,20 @@ from backend.plugin.dict.schema.dict_type import CreateDictTypeParam, UpdateDict
 class CRUDDictType(CRUDPlus[DictType]):
     """字典类型数据库操作类"""
 
+    @staticmethod
+    def _single_dict_type(result: object) -> DictType | None:
+        """将不带关联加载的查询结果收紧为单个字典类型。"""
+        if result is not None and not isinstance(result, DictType):
+            raise TypeError('字典类型单模型查询返回了关联结果')
+        return cast(DictType | None, result)
+
+    @staticmethod
+    def _dict_type_sequence(result: object) -> Sequence[DictType]:
+        """将不带关联加载的查询结果收紧为字典类型序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, DictType) for item in result):
+            raise TypeError('字典类型列表查询返回了关联结果')
+        return cast(Sequence[DictType], result)
+
     async def get(self, db: AsyncSession, pk: int) -> DictType | None:
         """
         获取字典类型详情
@@ -20,7 +35,7 @@ class CRUDDictType(CRUDPlus[DictType]):
         :param pk: 字典类型 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_dict_type(await self.select_model(db, pk))
 
     async def get_all(self, db: AsyncSession) -> Sequence[DictType]:
         """
@@ -29,7 +44,7 @@ class CRUDDictType(CRUDPlus[DictType]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._dict_type_sequence(await self.select_models(db))
 
     async def get_select(self, name: str | None, code: str | None) -> Select:
         """
@@ -39,14 +54,14 @@ class CRUDDictType(CRUDPlus[DictType]):
         :param code: 字典类型编码
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if name is not None:
             filters['name__like'] = f'%{name}%'
         if code is not None:
             filters['code__like'] = f'%{code}%'
 
-        return await self.select_order('id', 'desc', **filters)
+        return await self.select_order('id', 'desc', **cast(Any, filters))
 
     async def get_by_code(self, db: AsyncSession, code: str) -> DictType | None:
         """
@@ -56,7 +71,7 @@ class CRUDDictType(CRUDPlus[DictType]):
         :param code: 字典编码
         :return:
         """
-        return await self.select_model_by_column(db, code=code)
+        return self._single_dict_type(await self.select_model_by_column(db, code=code))
 
     async def create(self, db: AsyncSession, obj: CreateDictTypeParam) -> None:
         """
