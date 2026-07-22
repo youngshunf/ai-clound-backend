@@ -69,8 +69,7 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
         return None
 
     if target.startswith('a_'):
-        result = await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == target))
-        agent = result.scalar_one_or_none()
+        agent = (await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == target))).scalar_one_or_none()
         if agent:
             return {
                 'hasn_id': agent.hasn_id,
@@ -84,14 +83,14 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
     # 群组公开 ID（g:500001）解析为群会话。
     # HASN 群组暂以 hasn_conversations(type='group') 作为群主表，group_id 是协议层公开标识。
     if target.startswith('g:'):
-        result = await db.execute(
+        group_query = await db.execute(
             select(HasnConversations).where(
                 HasnConversations.type == 'group',
                 HasnConversations.group_id == target,
                 HasnConversations.status == 'active',
             )
         )
-        group = result.scalar_one_or_none()
+        group = group_query.scalar_one_or_none()
         if group:
             return {
                 'hasn_id': group.group_id,
@@ -106,8 +105,7 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
     # Star ID 解析
     if '#' in target:
         # Agent Star ID: 100001#star
-        result = await db.execute(select(HasnAgents).where(HasnAgents.star_id == target))
-        agent = result.scalar_one_or_none()
+        agent = (await db.execute(select(HasnAgents).where(HasnAgents.star_id == target))).scalar_one_or_none()
         if agent:
             return {
                 'hasn_id': agent.hasn_id,

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import ConfigDict, Field
@@ -21,7 +22,7 @@ class HasnMessagesSchemaBase(SchemaBase):
     priority: str = Field(description='优先级 (critical:紧急:red/high:高:orange/normal:普通:blue/low:低:gray)')
     reply_to_id: int | None = Field(None, description='回复的消息 ID')
     local_id: str | UUID | None = Field(None, description='客户端本地 ID（UUID, 用于去重）')
-    mentions: dict | None = Field(None, description='@提及列表（JSONB: [{hasn_id, star_id, offset, length}]）')
+    mentions: list[dict[str, Any]] | None = Field(None, description='@提及列表（JSONB: [{hasn_id, star_id, offset, length}]）')
     mention_all: bool = Field(description='是否 @所有人')
     context: dict | None = Field(None, description='消息上下文 (JSONB)')
     recalled_at: datetime | None = Field(None, description='撤回时间')
