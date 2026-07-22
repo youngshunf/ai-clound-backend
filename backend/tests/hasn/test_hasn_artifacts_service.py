@@ -11,10 +11,11 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from pydantic import ValidationError
 
-from backend.app.hasn.model import HasnAgents, HasnConversations
+from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnConversations
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service import hasn_asset_service as asset_mod
 from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService, hasn_artifacts_service
@@ -326,12 +327,8 @@ async def test_record_carries_project_id_and_never_downgrades() -> None:
             await db.rollback()
 
 
-async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
-    """doc34 §3/§4：出参守卫——列表/详情必须回 local_path/node_id/source_app_id/action。
-
-    单测 DB row 不够：这四列是刀1 新加的，只要 schema 或 `_to_item` 漏带，行在库里对、UI 却读不到，
-    来源图标与「本机可直接打开 / 在其他设备上」全部失效。这条钉死序列化边界。
-    """
+async def test_legacy_runtime_path_is_normalized_without_response_leak() -> None:
+    """冻结 sink 的旧路径只在输入边界哈希，数据库和列表/详情响应都不得保留原文。"""
     owner = _short_id('hasnOwner')
     agent = _short_id('aAgent')
     node = _short_id('node')
@@ -340,16 +337,6 @@ async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
     async with async_db_session() as db:
         try:
             await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
-            with pytest.raises(errors.RequestError):
-                await hasn_artifacts_service.record(
-                    db,
-                    agent_hasn_id=agent,
-                    owner_hasn_id=owner,
-                    params=RecordArtifactParam(
-                        kind='file', local_path=path, node_id=node, source_kind='runtime_file'
-                    ),
-                )
-            return
             artifact_id = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent,
@@ -372,14 +359,20 @@ async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
             assert total == 1
             item = items[0]
             assert item.artifact_id == artifact_id
-            assert item.local_path == path
+            assert item.local_path is None
             assert item.node_id == node
             assert item.source_app_id == 'knowledge'
             assert item.action == 'update'
 
-            # 详情走同一 `_to_item`，一并锁住（漏一处两处口径就会分叉）
+            current = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == artifact_id))
+            ).scalar_one()
+            assert current.local_locator_key is not None
+            assert path not in current.local_locator_key
+
+            # 详情走同一投影，旧路径同样不可泄漏。
             detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=artifact_id)
-            assert detail.local_path == path
+            assert detail.local_path is None
             assert detail.node_id == node
             assert detail.source_app_id == 'knowledge'
             assert detail.action == 'update'
@@ -593,6 +586,24 @@ async def test_update_content_owner_only() -> None:
             with pytest.raises(errors.NotFoundError):
                 await hasn_artifacts_service.update_content(
                     db, owner_hasn_id=owner, artifact_id=aid, body='dead'
+                )
+
+            asset_aid = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='file',
+                    title='二进制原件',
+                    asset_id=_short_id('asset'),
+                    source_kind='platform_tool',
+                ),
+            )
+            # 严格四选一的当前态不允许把 asset 与 body 同时写入；必须在服务层显式拒绝，
+            # 而不是让 PostgreSQL 约束以 500 形式泄漏给调用方。
+            with pytest.raises(errors.RequestError):
+                await hasn_artifacts_service.update_content(
+                    db, owner_hasn_id=owner, artifact_id=asset_aid, body='不能覆盖二进制定位'
                 )
         finally:
             await db.rollback()

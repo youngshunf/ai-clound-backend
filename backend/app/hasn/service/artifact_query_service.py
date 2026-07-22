@@ -50,8 +50,10 @@ class ArtifactQueryService:
         if artifact.status == 'missing':
             return 'missing', []
         if artifact.local_locator_key:
+            # P06 只持久化不可逆 locator，尚无经路径守卫校验的本机反查端点。
+            # 因此即便 node_id 匹配，也不能伪称可定位或返回不可执行的 locate 动作。
             if current_node_id and artifact.node_id == current_node_id:
-                return 'local_current_device', ['locate']
+                return 'local_unavailable', []
             return 'local_other_device', []
         if artifact.asset_id:
             return 'cloud', ['preview', 'download']

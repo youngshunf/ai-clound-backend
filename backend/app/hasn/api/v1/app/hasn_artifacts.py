@@ -19,7 +19,7 @@ from backend.app.hasn.schema.artifact_contract import (
     ArtifactListPage,
     ArtifactSourceKind,
 )
-from backend.app.hasn.schema.hasn_artifacts import UpdateArtifactContentParam
+from backend.app.hasn.schema.hasn_artifacts import ArtifactDetail, UpdateArtifactContentParam
 from backend.app.hasn.service.artifact_query_service import artifact_query_service
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.common.exception import errors
@@ -204,17 +204,14 @@ async def get_artifact_detail(
     request: Request,
     db: CurrentSession,
     artifact_id: Annotated[str, Path(description='产物 ID')],
-) -> ResponseSchemaModel[ArtifactListItem]:
+) -> ResponseSchemaModel[ArtifactDetail]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
-    result = await artifact_query_service.list(
+    result = await hasn_artifacts_service.get_detail(
         db,
         owner_hasn_id=owner_hasn_id,
         artifact_id=artifact_id,
-        size=1,
     )
-    if not result.items:
-        raise errors.NotFoundError(msg='产物不存在或无权访问')
-    return cast(ResponseSchemaModel[ArtifactListItem], response_base.success(data=result.items[0]))
+    return cast(ResponseSchemaModel[ArtifactDetail], response_base.success(data=result))
 
 
 @router.put(

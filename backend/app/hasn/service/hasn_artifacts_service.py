@@ -402,11 +402,27 @@ class HasnArtifactsService:
     async def update_content(
         cls, db: AsyncSession, *, owner_hasn_id: str, artifact_id: str, body: str, title: str | None = None
     ) -> None:
-        """Owner 更新产物正文（markdown 编辑保存）。仅本 owner 的 active 行可改。
+        """Owner 更新文本产物正文（markdown 编辑保存）。仅本 owner 的 active document 行可改。
 
-        只写 body（+可选 title），不动 asset_id/resource_uri 指针——asset 型 .md 产物编辑后
-        body 成为权威正文（前端渲染 body 优先），原文件仍可下载。
+        当前态的本体定位严格四选一，不能在仍保留 asset/resource/local locator 时额外写入 body。
+        因此二进制、应用资源和本地产物会得到明确的请求错误，而不是把数据库约束异常泄漏为 500。
         """
+        artifact_kind = (
+            await db.execute(
+                select(HasnArtifacts.artifact_kind)
+                .where(
+                    HasnArtifacts.artifact_id == artifact_id,
+                    HasnArtifacts.owner_hasn_id == owner_hasn_id,
+                    HasnArtifacts.status == 'active',
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if artifact_kind is None:
+            raise errors.NotFoundError(msg='产物不存在或无权修改')
+        if artifact_kind != 'document':
+            raise errors.RequestError(msg='仅文本产物支持在线编辑，其他产物请使用其原始编辑入口')
+
         values: dict = {'body': body}
         if title is not None and title.strip():
             values['title'] = title.strip()

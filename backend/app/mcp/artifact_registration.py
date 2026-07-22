@@ -92,6 +92,9 @@ async def register_app_resource_artifact(
         logger.warning('[%s] 解析 %s 资源描述符失败，跳过产物登记（非致命）: %s', app_id, resource_kind, e)
         return None
 
+    resolved_session_id = get_current_work_session_id() if session_id is _UNSET else session_id
+    resolved_project_id = get_current_project_id() if project_id is _UNSET else project_id
+
     try:
         from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
 
@@ -102,19 +105,40 @@ async def register_app_resource_artifact(
                 db,
                 descriptor=descriptor,
                 server_id=str(server_id),
-                session_id=get_current_work_session_id() if session_id is _UNSET else session_id,
+                session_id=resolved_session_id,
                 agent_hasn_id=agent_hasn_id,
                 owner_hasn_id=owner_hasn_id,
                 title=title,
                 summary=summary,
                 source_tool=source_tool,
                 # doc38 §3.4：缺省自动取 ContextVar project_id（不在项目中则 None），已接应用零改造。
-                project_id=get_current_project_id() if project_id is _UNSET else project_id,
+                project_id=resolved_project_id,
                 action=action,
                 dispatch_id=dispatch_id,
             )
     except Exception as e:
         logger.warning('[%s] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', app_id, e)
+        try:
+            from backend.app.hasn.service.artifact_registration_outbox_service import (
+                artifact_registration_outbox_service,
+            )
+
+            await artifact_registration_outbox_service.enqueue_app_resource_repair_intent(
+                db,
+                descriptor=descriptor,
+                server_id=str(server_id),
+                agent_hasn_id=agent_hasn_id,
+                owner_hasn_id=owner_hasn_id,
+                title=title,
+                summary=summary,
+                source_tool=source_tool,
+                work_session_id=resolved_session_id,
+                project_id=resolved_project_id,
+                action=action,
+                dispatch_id=dispatch_id,
+            )
+        except Exception as enqueue_error:
+            logger.warning('[%s] register-on-write 修复意图入队失败（非致命）: %s', app_id, enqueue_error)
         # 登记没成，但资源建成了、地址算得出来——照常把 URI 交给分身（见 docstring）。
         return ArtifactRegistration(artifact_id=None, resource_uri=descriptor.build_uri(server_id))
 

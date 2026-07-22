@@ -71,6 +71,11 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'hasn_check_agent_heartbeat_timeout',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟执行一次
     },
+    'Agent 产物登记意图对账': {
+        'task': 'hasn_artifact_registration_reconcile',
+        # 每 5 分钟重放 savepoint 失败后留下的真实登记意图，并补齐异常中断的 outbox。
+        'schedule': TzAwareCrontab('*/5'),
+    },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
         # 每 3 天增量同步一次（真 72h 间隔）。增量：上游版本未变只刷计数、零下载零翻译；

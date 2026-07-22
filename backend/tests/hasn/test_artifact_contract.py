@@ -10,6 +10,7 @@ from backend.app.hasn.schema.artifact_contract import (
     ArtifactListItem,
     ArtifactMutation,
 )
+from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 
 
 def _resource_mutation() -> dict[str, object]:
@@ -63,6 +64,24 @@ def test_local_mutation_uses_opaque_locator_key_instead_of_absolute_path() -> No
     assert 'local_path' not in mutation.model_dump()
 
 
+def test_legacy_runtime_path_is_hashed_before_artifact_mutation_boundary() -> None:
+    """冻结 runtime sink 的旧入参只能在请求边界即时转为不可逆定位键。"""
+    params = RecordArtifactParam.model_validate(
+        {
+            'kind': 'file',
+            'local_path': '/runtime/workspace/report.md',
+            'node_id': 'node_phase1',
+            'source_kind': 'runtime_file',
+            'action': 'update',
+        }
+    )
+
+    assert params.local_locator_key is not None
+    assert params.local_locator_key.startswith('legacy-path-v1:')
+    assert params.local_entry_kind == 'file'
+    assert 'local_path' not in params.model_dump()
+
+
 def test_artifact_list_item_serialization_never_contains_local_absolute_path() -> None:
     """唯一读模型仅暴露设备和条目类型，序列化边界没有本地路径。"""
     item = ArtifactListItem.model_validate(
@@ -84,6 +103,8 @@ def test_artifact_list_item_serialization_never_contains_local_absolute_path() -
                 'device_name': '测试设备',
             },
             'availability': 'local_other_device',
+            'allowed_actions': [],
+            'sync_state': 'synced',
             'latest_contribution': {
                 'contribution_id': 'con_phase1',
                 'agent_hasn_id': 'agent_phase1',

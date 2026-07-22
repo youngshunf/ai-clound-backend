@@ -14,7 +14,9 @@ ArtifactSourceKind = Literal[
 ]
 ProjectRelationVia = Literal['participation', 'explicit_resource_link', 'linked_container']
 LocalEntryKind = Literal['file', 'directory']
-ArtifactAvailability = Literal['cloud', 'local_current_device', 'local_other_device', 'missing']
+ArtifactAvailability = Literal[
+    'cloud', 'local_current_device', 'local_other_device', 'local_unavailable', 'missing'
+]
 ArtifactSyncState = Literal['synced', 'pending', 'failed']
 
 

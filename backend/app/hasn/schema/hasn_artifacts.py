@@ -1,7 +1,8 @@
 from datetime import datetime
+from hashlib import sha256
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
 from backend.app.hasn.schema.artifact_contract import ArtifactAction, ArtifactKind, ArtifactSourceKind, LocalEntryKind
@@ -108,6 +109,23 @@ class RecordArtifactParam(SchemaBase):
     dispatch_id: str | None = Field(None, description='派发关联（审计/去重）')
     metadata: dict = Field(default_factory=dict, description='元数据快照（mime/size/width/height 等）')
 
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_legacy_runtime_path(cls, data: object) -> object:
+        """将冻结 runtime sink 的旧路径入参即时归一为不可逆定位键，不保留原路径。"""
+        if not isinstance(data, dict):
+            return data
+        legacy_path = data.get('local_path')
+        if not isinstance(legacy_path, str) or not legacy_path:
+            return data
+        normalized = dict(data)
+        normalized.pop('local_path', None)
+        if normalized.get('local_locator_key') is None:
+            digest = sha256(legacy_path.encode('utf-8')).hexdigest()
+            normalized['local_locator_key'] = f'legacy-path-v1:{digest}'
+        normalized.setdefault('local_entry_kind', 'file')
+        return normalized
+
 
 class RecordArtifactResult(SchemaBase):
     """登记结果（返回 artifact_id；去重命中时返回既有 id）。"""
@@ -118,8 +136,7 @@ class RecordArtifactResult(SchemaBase):
 class UpdateArtifactContentParam(SchemaBase):
     """Owner 更新产物正文的入参（markdown 编辑保存用）。
 
-    只允许改 body/title——asset_id/resource_uri 等指针不可改（产物溯源语义不变）。
-    对 asset 型 .md 文件产物：编辑保存写 body（body 成为权威正文，原 asset 保留为「原文件」可下载）。
+    只允许编辑文本产物的 body/title；asset_id/resource_uri/local locator 型产物必须使用各自原始编辑入口。
     """
 
     body: str = Field(description='文本/markdown 正文（编辑后全文覆盖）')
