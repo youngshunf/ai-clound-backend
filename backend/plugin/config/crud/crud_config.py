@@ -13,6 +13,20 @@ from backend.plugin.config.schema.config import CreateConfigParam, UpdateConfigP
 class CRUDConfig(CRUDPlus[Config]):
     """系统参数参数配置数据库操作类"""
 
+    @staticmethod
+    def _single_config(result: object) -> Config | None:
+        """将不带关联加载的查询结果收紧为单个参数配置。"""
+        if result is not None and not isinstance(result, Config):
+            raise TypeError('参数配置单模型查询返回了关联结果')
+        return cast(Config | None, result)
+
+    @staticmethod
+    def _config_sequence(result: object) -> Sequence[Config]:
+        """将不带关联加载的查询结果收紧为参数配置序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, Config) for item in result):
+            raise TypeError('参数配置列表查询返回了关联结果')
+        return cast(Sequence[Config], result)
+
     async def get(self, db: AsyncSession, pk: int) -> Config | None:
         """
         获取参数配置详情
@@ -21,7 +35,7 @@ class CRUDConfig(CRUDPlus[Config]):
         :param pk: 参数配置 ID
         :return:
         """
-        return await self.select_model_by_column(db, id=pk)
+        return self._single_config(await self.select_model_by_column(db, id=pk))
 
     async def get_all(self, db: AsyncSession, type: str | None) -> Sequence[Config]:
         """
@@ -31,12 +45,12 @@ class CRUDConfig(CRUDPlus[Config]):
         :param type: 参数配置类型
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if type is not None:
             filters['type'] = type
 
-        return cast('Sequence[Config]', await self.select_models(db, **filters))
+        return self._config_sequence(await self.select_models(db, **cast(Any, filters)))
 
     async def get_by_key(self, db: AsyncSession, key: str) -> Config | None:
         """
@@ -46,7 +60,7 @@ class CRUDConfig(CRUDPlus[Config]):
         :param key: 参数配置键名
         :return:
         """
-        return await self.select_model_by_column(db, key=key)
+        return self._single_config(await self.select_model_by_column(db, key=key))
 
     async def get_select(self, name: str | None, type: str | None) -> Select:
         """
@@ -56,14 +70,14 @@ class CRUDConfig(CRUDPlus[Config]):
         :param type: 参数配置类型
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if name is not None:
             filters['name__like'] = f'%{name}%'
         if type is not None:
             filters['type__like'] = f'%{type}%'
 
-        return await self.select_order('created_time', 'desc', **filters)
+        return await self.select_order('created_time', 'desc', **cast(Any, filters))
 
     async def create(self, db: AsyncSession, obj: CreateConfigParam) -> None:
         """

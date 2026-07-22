@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,20 @@ from backend.plugin.dict.schema.dict_data import CreateDictDataParam, UpdateDict
 class CRUDDictData(CRUDPlus[DictData]):
     """字典数据数据库操作类"""
 
+    @staticmethod
+    def _single_dict_data(result: object) -> DictData | None:
+        """将不带关联加载的查询结果收紧为单个字典数据。"""
+        if result is not None and not isinstance(result, DictData):
+            raise TypeError('字典数据单模型查询返回了关联结果')
+        return cast(DictData | None, result)
+
+    @staticmethod
+    def _dict_data_sequence(result: object) -> Sequence[DictData]:
+        """将不带关联加载的查询结果收紧为字典数据序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, DictData) for item in result):
+            raise TypeError('字典数据列表查询返回了关联结果')
+        return cast(Sequence[DictData], result)
+
     async def get(self, db: AsyncSession, pk: int) -> DictData | None:
         """
         获取字典数据详情
@@ -19,7 +34,7 @@ class CRUDDictData(CRUDPlus[DictData]):
         :param pk: 字典数据 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_dict_data(await self.select_model(db, pk))
 
     async def get_by_type_code(self, db: AsyncSession, type_code: str) -> Sequence[DictData]:
         """
@@ -29,11 +44,13 @@ class CRUDDictData(CRUDPlus[DictData]):
         :param type_code: 字典类型编码
         :return:
         """
-        return await self.select_models_order(
-            db,
-            sort_columns='sort',
-            sort_orders='desc',
-            type_code=type_code,
+        return self._dict_data_sequence(
+            await self.select_models_order(
+                db,
+                sort_columns='sort',
+                sort_orders='desc',
+                type_code=type_code,
+            )
         )
 
     async def get_all(self, db: AsyncSession) -> Sequence[DictData]:
@@ -43,7 +60,7 @@ class CRUDDictData(CRUDPlus[DictData]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._dict_data_sequence(await self.select_models(db))
 
     async def get_select(
         self,
@@ -63,7 +80,7 @@ class CRUDDictData(CRUDPlus[DictData]):
         :param type_id: 字典类型 ID
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if type_code is not None:
             filters['type_code'] = type_code
@@ -76,7 +93,7 @@ class CRUDDictData(CRUDPlus[DictData]):
         if type_id is not None:
             filters['type_id'] = type_id
 
-        return await self.select_order('sort', 'asc', **filters)
+        return await self.select_order('sort', 'asc', **cast(Any, filters))
 
     async def get_by_label_and_type_code(self, db: AsyncSession, label: str, type_code: str) -> DictData | None:
         """
@@ -87,7 +104,9 @@ class CRUDDictData(CRUDPlus[DictData]):
         :param type_code: 字典类型编码
         :return:
         """
-        return await self.select_model_by_column(db, and_(self.model.label == label, self.model.type_code == type_code))
+        return self._single_dict_data(
+            await self.select_model_by_column(db, and_(self.model.label == label, self.model.type_code == type_code))
+        )
 
     async def create(self, db: AsyncSession, obj: CreateDictDataParam, type_code: str) -> None:
         """
