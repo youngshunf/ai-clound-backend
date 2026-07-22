@@ -31,6 +31,11 @@ class TypedContextProtocol(Protocol):
 
     user_id: int | None
 
+    __request_http_exception__: dict[str, Any]
+    __request_validation_exception__: dict[str, Any]
+    __request_assertion_error__: dict[str, Any]
+    __request_custom_exception__: dict[str, Any]
+
 
 class TypedContext(_Context):
     def __getattr__(self, name: str) -> Any:
