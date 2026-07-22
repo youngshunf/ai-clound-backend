@@ -5,6 +5,7 @@ import heapq
 import json
 import math
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from multiprocessing.util import Finalize
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -364,9 +365,9 @@ class DatabaseScheduler(Scheduler):
     def tick(
         self,
         event_t: type[event_t] = event_t,
-        min: Any = min,
-        heappop: Any = heapq.heappop,
-        heappush: Any = heapq.heappush,
+        min: Callable[..., Any] = min,
+        heappop: Callable[..., Any] = heapq.heappop,
+        heappush: Callable[..., Any] = heapq.heappush,
     ) -> float:
         """重写父函数"""
         if self.lock:
