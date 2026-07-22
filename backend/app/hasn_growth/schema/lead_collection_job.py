@@ -9,7 +9,7 @@ class LeadCollectionJobSchemaBase(SchemaBase):
     """AI lead automation collection job基础模型"""
     job_no: str = Field(description='None')
     keyword: str = Field(description='None')
-    source_types: dict = Field(description='None')
+    source_types: list[str] = Field(description='None')
     user_id: int | None = Field(None, description='None')
     status: str = Field(description='None')
     max_pages: int = Field(description='None')
