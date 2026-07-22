@@ -5,8 +5,9 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
+import anyio
 import cappa
 
 from backend.cli_tools.cli.common import (
@@ -21,6 +22,8 @@ from backend.cli_tools.packager.skill_packager import SkillPackager
 from backend.cli_tools.publisher.skill_publisher import SkillPublisher
 from backend.cli_tools.validator.skill_validator import SkillValidator
 from backend.database.db import async_db_session
+
+BumpType = Literal['patch', 'minor', 'major']
 
 
 @cappa.command(name='validate', help='验证技能包结构', default_long=True)
@@ -61,7 +64,7 @@ class SkillPublish:
         cappa.Arg(help='技能包目录路径'),
     ]
     bump: Annotated[
-        str | None,
+        BumpType | None,
         cappa.Arg(
             short='-b',
             help='版本递增类型: patch (1.0.0 -> 1.0.1), minor (1.0.0 -> 1.1.0), major (1.0.0 -> 2.0.0)',
@@ -208,7 +211,11 @@ class SkillPublish:
 
         # 上传
         print_info('上传到远程服务器...')
-        client = RemotePublishClient(self.api_url, self.api_key)
+        api_url = self.api_url
+        api_key = self.api_key
+        if api_url is None or api_key is None:
+            raise cappa.Exit('远程发布凭据缺失', code=1)
+        client = RemotePublishClient(api_url, api_key)
         result = await client.publish_skill(
             zip_path=tmp_path,
             version=self.version,
@@ -216,7 +223,7 @@ class SkillPublish:
         )
 
         # 清理临时文件
-        tmp_path.unlink(missing_ok=True)
+        await anyio.Path(tmp_path).unlink(missing_ok=True)
 
         console.print()
         if result.success:
@@ -240,7 +247,7 @@ class SkillPublishAll:
         cappa.Arg(help='包含多个技能的目录'),
     ]
     bump: Annotated[
-        str,
+        BumpType,
         cappa.Arg(
             short='-b',
             default='patch',
@@ -270,7 +277,11 @@ class SkillPublishAll:
         console.print()
 
         # 查找所有技能目录（包含 config.yaml 的子目录）
-        skill_dirs = [subdir for subdir in self.directory.iterdir() if subdir.is_dir() and (subdir / 'config.yaml').exists()]
+        skill_dirs = [
+            subdir
+            for subdir in self.directory.iterdir()
+            if subdir.is_dir() and (subdir / 'config.yaml').exists()
+        ]
 
         if not skill_dirs:
             print_error('未找到任何技能目录（需要包含 config.yaml）')
