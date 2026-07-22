@@ -17,6 +17,8 @@ URL 前缀保持不变以兼容 daemon `domains/billing/cloud.rs::BillingCloud` 
 （无 search_path 配置时默认只解析 public，搬迁后裸名/`public.` 前缀都会失效）。
 """
 
+from typing import Any
+
 from sqlalchemy.orm import declared_attr
 
 from backend.common.model import Base
@@ -31,5 +33,5 @@ class BillingBase(Base):
     __abstract__ = True
 
     @declared_attr.directive
-    def __table_args__(cls) -> dict:  # noqa: N805
+    def __table_args__(cls) -> dict[str, Any] | tuple[Any, ...]:  # ruff:ignore[invalid-first-argument-name-for-method]
         return {'comment': cls.__doc__ or '', 'schema': APP_SCHEMA}

@@ -1,3 +1,5 @@
+# mypy: disable-error-code=no-redef
+
 from datetime import datetime
 
 from pydantic import ConfigDict, Field
