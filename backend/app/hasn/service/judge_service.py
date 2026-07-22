@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,12 +66,12 @@ _DISCLOSURE_CATEGORIES = {
 }
 
 
-def _raise_422(msg: str) -> None:
+def _raise_422(msg: str) -> NoReturn:
     """入参校验失败：422（纵深防御，daemon 侧本应已过滤）。"""
     raise errors.RequestError(code=StandardResponseCode.HTTP_422, msg=msg)
 
 
-def _raise_503(msg: str) -> None:
+def _raise_503(msg: str) -> NoReturn:
     """裁判不可用：503（owner 缺凭据 / PDC 全空 / LLM 调用失败 → daemon 按 kind fail 策略兜）。"""
     raise errors.RequestError(code=StandardResponseCode.HTTP_503, msg=msg)
 
