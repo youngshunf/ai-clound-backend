@@ -64,7 +64,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     agent_hasn = f'a_gtc_{tag}'
 
     session.add(
-        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active')
+        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname=f'主人_{tag}', status='active')
     )
     lead = LeadContact(
         lead_no=f'L{tag.upper()}',
