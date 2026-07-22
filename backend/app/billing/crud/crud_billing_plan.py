@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,20 @@ from backend.app.billing.schema.billing_plan import CreateBillingPlanParam, Upda
 
 
 class CRUDBillingPlan(CRUDPlus[BillingPlan]):
+    @staticmethod
+    def _single_plan(result: object) -> BillingPlan | None:
+        """将无关联加载的查询结果收紧为单个商品档位。"""
+        if result is not None and not isinstance(result, BillingPlan):
+            raise TypeError('商品档位单模型查询返回了关联结果')
+        return cast(BillingPlan | None, result)
+
+    @staticmethod
+    def _plan_sequence(result: Sequence[object]) -> Sequence[BillingPlan]:
+        """将无关联加载的查询结果收紧为商品档位序列。"""
+        if not all(isinstance(item, BillingPlan) for item in result):
+            raise TypeError('商品档位列表查询返回了关联结果')
+        return cast(Sequence[BillingPlan], result)
+
     async def get(self, db: AsyncSession, pk: int) -> BillingPlan | None:
         """
         获取商品档位（价格+配额快照+试用/宽限策略）
@@ -17,7 +32,7 @@ class CRUDBillingPlan(CRUDPlus[BillingPlan]):
         :param pk: 商品档位（价格+配额快照+试用/宽限策略） ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_plan(await self.select_model(db, pk))
 
     async def get_select(self, *, offering_key: str | None = None, status: str | None = None) -> Select:
         """获取商品档位（价格+配额快照+试用/宽限策略）列表查询表达式
@@ -26,7 +41,7 @@ class CRUDBillingPlan(CRUDPlus[BillingPlan]):
         :param status: 按上/下架状态精确过滤（active/inactive），None 不过滤
         """
         # 商业化中心管理面：默认按 offering 分组查看其价格档位
-        filters: dict[str, str] = {}
+        filters: dict[str, Any] = {}
         if offering_key:
             filters['offering_key'] = offering_key
         if status:
@@ -40,7 +55,7 @@ class CRUDBillingPlan(CRUDPlus[BillingPlan]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._plan_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateBillingPlanParam) -> None:
         """

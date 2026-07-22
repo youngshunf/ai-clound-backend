@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,20 @@ from backend.app.billing.schema.billing_offering import CreateBillingOfferingPar
 
 
 class CRUDBillingOffering(CRUDPlus[BillingOffering]):
+    @staticmethod
+    def _single_offering(result: object) -> BillingOffering | None:
+        """将无关联加载的查询结果收紧为单个商品目录。"""
+        if result is not None and not isinstance(result, BillingOffering):
+            raise TypeError('商品目录单模型查询返回了关联结果')
+        return cast(BillingOffering | None, result)
+
+    @staticmethod
+    def _offering_sequence(result: Sequence[object]) -> Sequence[BillingOffering]:
+        """将无关联加载的查询结果收紧为商品目录序列。"""
+        if not all(isinstance(item, BillingOffering) for item in result):
+            raise TypeError('商品目录列表查询返回了关联结果')
+        return cast(Sequence[BillingOffering], result)
+
     async def get(self, db: AsyncSession, pk: int) -> BillingOffering | None:
         """
         获取商品目录（一切可售卖物：LLM档/积分包/应用/席位/应用内档位）
@@ -17,7 +32,7 @@ class CRUDBillingOffering(CRUDPlus[BillingOffering]):
         :param pk: 商品目录（一切可售卖物：LLM档/积分包/应用/席位/应用内档位） ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_offering(await self.select_model(db, pk))
 
     async def get_select(self, *, kind: str | None = None, key: str | None = None) -> Select:
         """获取商品目录（一切可售卖物：LLM档/积分包/应用/席位/应用内档位）列表查询表达式
@@ -26,7 +41,7 @@ class CRUDBillingOffering(CRUDPlus[BillingOffering]):
         :param key: 按业务键模糊过滤（子串），None 不过滤
         """
         # 商业化中心管理面：按种类/业务键做条件检索（CRUDPlus kwargs：精确用列名、模糊用 __like）
-        filters: dict[str, str] = {}
+        filters: dict[str, Any] = {}
         if kind:
             filters['kind'] = kind
         if key:
@@ -40,7 +55,7 @@ class CRUDBillingOffering(CRUDPlus[BillingOffering]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._offering_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateBillingOfferingParam) -> None:
         """

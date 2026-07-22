@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,20 @@ from backend.plugin.s3.schema.storage import CreateS3StorageParam, UpdateS3Stora
 
 
 class CRUDS3Storage(CRUDPlus[S3Storage]):
+    @staticmethod
+    def _single_storage(result: object) -> S3Storage | None:
+        """将无关联加载的查询结果收紧为单个存储配置。"""
+        if result is not None and not isinstance(result, S3Storage):
+            raise TypeError('S3 存储单模型查询返回了关联结果')
+        return cast(S3Storage | None, result)
+
+    @staticmethod
+    def _storage_sequence(result: Sequence[object]) -> Sequence[S3Storage]:
+        """将无关联加载的查询结果收紧为存储配置序列。"""
+        if not all(isinstance(item, S3Storage) for item in result):
+            raise TypeError('S3 存储列表查询返回了关联结果')
+        return cast(Sequence[S3Storage], result)
+
     async def get(self, db: AsyncSession, pk: int) -> S3Storage | None:
         """
         获取 S3 存储
@@ -17,7 +32,7 @@ class CRUDS3Storage(CRUDPlus[S3Storage]):
         :param pk: S3 存储 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_storage(await self.select_model(db, pk))
 
     async def get_select(self, name: str | None, region: str | None) -> Select:
         """
@@ -27,7 +42,7 @@ class CRUDS3Storage(CRUDPlus[S3Storage]):
         :param region: 区域
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if name is not None:
             filters['name__like'] = f'%{name}%'
@@ -43,7 +58,7 @@ class CRUDS3Storage(CRUDPlus[S3Storage]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._storage_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateS3StorageParam) -> None:
         """
