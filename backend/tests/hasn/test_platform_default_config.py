@@ -25,6 +25,7 @@ from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefault
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn.service.platform_default_config_service import (
     DEFAULT_PLATFORM_CONFIG,
+    normalize_legacy_speech_gateway_defaults,
 )
 from backend.app.hasn.service.platform_default_config_service import (
     platform_default_config_service as svc,
@@ -73,6 +74,42 @@ async def test_factory_speech_models_match_node_fallback_contract() -> None:
     media = DEFAULT_PLATFORM_CONFIG['node']['media']
     assert media['tts_models'] == ['qwen3-tts-flash', 'qwen3-tts-instruct-flash']
     assert media['stt_models'] == ['qwen3-asr-flash']
+
+
+async def test_legacy_speech_gateway_defaults_are_normalized_without_mutating_source() -> None:
+    """旧出厂值应升级为当前 New API 模型链，且不得原地修改数据库读取结果。"""
+    raw = {
+        'node': {
+            'media': {
+                'image_models': ['gpt-image-2'],
+                'tts_models': ['tts-1', 'tts-1-hd'],
+                'stt_models': ['whisper-1'],
+                'video_models': [],
+            }
+        },
+        'agent_runtime': {'models': {}},
+    }
+
+    normalized = normalize_legacy_speech_gateway_defaults(raw)
+
+    assert normalized['node']['media']['tts_models'] == ['qwen3-tts-flash', 'qwen3-tts-instruct-flash']
+    assert normalized['node']['media']['stt_models'] == ['qwen3-asr-flash']
+    assert raw['node']['media']['tts_models'] == ['tts-1', 'tts-1-hd']
+    assert raw['node']['media']['stt_models'] == ['whisper-1']
+
+
+async def test_custom_speech_gateway_models_are_not_normalized() -> None:
+    """运营自定义模型链优先级高于平台迁移规则，不得被默认值升级覆盖。"""
+    raw = {
+        'node': {
+            'media': {
+                'tts_models': ['custom-tts', 'tts-1'],
+                'stt_models': ['custom-asr'],
+            }
+        }
+    }
+
+    assert normalize_legacy_speech_gateway_defaults(raw) == raw
 
 
 async def test_factory_default_when_no_row() -> None:

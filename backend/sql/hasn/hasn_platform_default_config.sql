@@ -1,7 +1,7 @@
 -- =====================================================
 -- 平台默认配置（云端权威，单行下发）
 -- 一行权威（config_key='global'）：运营 Admin 改一处，全平台桌面端 daemon + runtime 自动应用
---   - node.media：节点级媒体模型默认（image/tts/stt failover 顺序）
+--   - node.media：New API 网关媒体模型默认（image/tts/stt failover 顺序）
 --   - agent_runtime.models：平台默认 agent 运行时四槽模型（main/fast/vision/delegation；分身未显式设该槽时回落）
 -- 变更传播：revision = sha256(canonical_json(config_json))[:16]，daemon 比对 revision 变化即重拉
 -- 形态属"配置/元数据单行"（非实体 CRUD），故沿用 namespace_revision/hasn_app_catalog 同类手写约定，
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS "public"."hasn_platform_default_config" (
 COMMENT ON TABLE "public"."hasn_platform_default_config" IS '平台默认配置（云端权威，单行下发）';
 COMMENT ON COLUMN "public"."hasn_platform_default_config"."id" IS '主键 ID';
 COMMENT ON COLUMN "public"."hasn_platform_default_config"."config_key" IS '配置键（单行权威，恒 global）';
-COMMENT ON COLUMN "public"."hasn_platform_default_config"."config_json" IS '平台默认配置 JSON（node.media + agent_runtime.models）';
+COMMENT ON COLUMN "public"."hasn_platform_default_config"."config_json" IS '平台默认配置 JSON（New API 媒体模型 + agent runtime）';
 COMMENT ON COLUMN "public"."hasn_platform_default_config"."revision" IS '配置内容指纹 sha256(canonical_json)[:16]，daemon 比对重拉';
 COMMENT ON COLUMN "public"."hasn_platform_default_config"."updated_by" IS '最后修改管理员（用户名/ID）';
 COMMENT ON COLUMN "public"."hasn_platform_default_config"."created_time" IS '创建时间';

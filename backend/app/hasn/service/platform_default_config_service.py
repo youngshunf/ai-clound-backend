@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 
 from typing import TYPE_CHECKING
 
@@ -67,6 +68,27 @@ DEFAULT_PLATFORM_CONFIG: dict = {
     },
 }
 
+_LEGACY_TTS_GATEWAY_MODELS = ['tts-1', 'tts-1-hd']
+_LEGACY_STT_GATEWAY_MODELS = ['whisper-1']
+
+
+def normalize_legacy_speech_gateway_defaults(config_json: dict) -> dict:
+    """兼容升级旧版语音网关出厂值，同时保留所有运营自定义模型链。
+
+    仅当列表与旧出厂值完全相等时才迁移。复制后再修改，避免污染 SQLAlchemy JSONB
+    属性的变更跟踪状态；PDC 在下次 Admin 保存时会自然持久化新值。
+    """
+    normalized = deepcopy(config_json)
+    node = normalized.get('node')
+    media = node.get('media') if isinstance(node, dict) else None
+    if not isinstance(media, dict):
+        return normalized
+    if media.get('tts_models') == _LEGACY_TTS_GATEWAY_MODELS:
+        media['tts_models'] = list(DEFAULT_PLATFORM_CONFIG['node']['media']['tts_models'])
+    if media.get('stt_models') == _LEGACY_STT_GATEWAY_MODELS:
+        media['stt_models'] = list(DEFAULT_PLATFORM_CONFIG['node']['media']['stt_models'])
+    return normalized
+
 
 def compute_revision(config_json: dict) -> str:
     """配置内容指纹：sha256(canonical_json)[:16]。
@@ -113,6 +135,7 @@ class PlatformDefaultConfigService:
 
         row = await self._get_row(db)
         raw = row.config_json if (row and row.config_json) else DEFAULT_PLATFORM_CONFIG
+        raw = normalize_legacy_speech_gateway_defaults(raw)
         config = PlatformDefaultConfig.model_validate(raw)
         config = config.model_copy(update={'app_configs': await get_all_app_configs(db)})
         dumped = config.model_dump(mode='json')
