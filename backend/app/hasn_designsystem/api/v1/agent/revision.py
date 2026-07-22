@@ -45,8 +45,8 @@ async def agent_create_revision(
     db: CurrentSessionTransaction,
     obj: CreateRevisionParam,
 ) -> ResponseModel:
-    result = await revision_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await revision_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

@@ -45,8 +45,8 @@ async def agent_create_consumer_link(
     db: CurrentSessionTransaction,
     obj: CreateConsumerLinkParam,
 ) -> ResponseModel:
-    result = await consumer_link_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await consumer_link_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

@@ -45,8 +45,8 @@ async def agent_create_collaborator(
     db: CurrentSessionTransaction,
     obj: CreateCollaboratorParam,
 ) -> ResponseModel:
-    result = await collaborator_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await collaborator_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(
