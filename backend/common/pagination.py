@@ -44,10 +44,10 @@ class _Links(BaseModel):
     prev: str | None = Field(None, description='上一页链接')
 
 
-class _PageDetails(BaseModel):
+class _PageDetails(BaseModel, Generic[T]):
     """分页详情"""
 
-    items: list = Field([], description='当前页数据列表')
+    items: Sequence[T] = Field(default_factory=list, description='当前页数据列表')
     total: int = Field(description='数据总条数')
     page: int = Field(description='当前页码')
     size: int = Field(description='每页数量')
@@ -55,7 +55,7 @@ class _PageDetails(BaseModel):
     links: _Links = Field(description='分页链接')
 
 
-class _CustomPage(_PageDetails, AbstractPage[T], Generic[T]):
+class _CustomPage(_PageDetails[T], AbstractPage[T], Generic[T]):
     """自定义分页类"""
 
     __params_type__ = _CustomPageParams
@@ -63,10 +63,13 @@ class _CustomPage(_PageDetails, AbstractPage[T], Generic[T]):
     @classmethod
     def create(
         cls,
-        items: list,
-        params: _CustomPageParams,
+        items: Sequence[T],
+        params: AbstractParams,
         total: int = 0,
+        **kwargs: Any,
     ) -> Self:
+        if not isinstance(params, _CustomPageParams):
+            raise TypeError('分页参数类型不匹配')
         page = params.page
         size = params.size
         total_pages = ceil(total / size)
@@ -87,7 +90,7 @@ class _CustomPage(_PageDetails, AbstractPage[T], Generic[T]):
         )
 
 
-class PageData(_PageDetails, Generic[SchemaT]):
+class PageData(_PageDetails[SchemaT], Generic[SchemaT]):
     """
     包含返回数据 schema 的统一返回模型，仅适用于分页接口
 
@@ -108,9 +111,6 @@ class PageData(_PageDetails, Generic[SchemaT]):
             res = CustomResponseCode.HTTP_200
             return ResponseSchemaModel[PageData[GetApiDetail]](code=res.code, msg=res.msg, data=GetApiDetail(...))
     """
-
-    items: Sequence[SchemaT]
-
 
 async def paging_data(db: AsyncSession, select: Select, **kwargs) -> dict[str, Any]:
     """
