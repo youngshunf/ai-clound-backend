@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 import sqlalchemy as sa
 
@@ -94,6 +94,21 @@ _COMMUNITY_INPUT_RULES: dict[str, dict[str, Any]] = {
 }
 
 
+class _RuntimeAgentAllowed(TypedDict):
+    decision: Literal['allow']
+    agent: AgentTokenPayload
+
+
+class _RuntimeAgentDenied(TypedDict):
+    decision: Literal['deny']
+    code: str
+    message: str
+    agent: AgentTokenPayload | None
+
+
+RuntimeAgentResult = _RuntimeAgentAllowed | _RuntimeAgentDenied
+
+
 class AiNativeRuntimeGateway:
     def __init__(self) -> None:
         # gateway_internal 工具的 handler 注册表（懒构建并缓存）。
@@ -152,7 +167,7 @@ class AiNativeRuntimeGateway:
         self,
         *,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         manifest: dict[str, Any],
         tools: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -178,13 +193,13 @@ class AiNativeRuntimeGateway:
         `_dispatch_tool`，本方法只串流程。
         """
         agent_result = await self._authenticate_runtime_agent(request)
-        if agent_result.get('decision') == 'deny':
+        if agent_result['decision'] == 'deny':
             manifest = await ai_native_app_registry.ensure_builtin_published(db, app_id)
             return await self._deny(
                 db,
                 body=body,
-                workspace=self._fallback_personal_workspace(agent_result.get('agent')),
-                agent=agent_result.get('agent'),
+                workspace=self._fallback_personal_workspace(agent_result['agent']),
+                agent=agent_result['agent'],
                 manifest=manifest,
                 capability=self._find_capability(manifest, tool_id),
                 tool=self._find_tool(manifest, tool_id),
@@ -967,7 +982,7 @@ class AiNativeRuntimeGateway:
             raise errors.TokenError(msg='Agent JWT 未认证')
         return agent
 
-    async def _authenticate_runtime_agent(self, request: Request) -> dict[str, Any]:
+    async def _authenticate_runtime_agent(self, request: Request) -> RuntimeAgentResult:
         agent = getattr(request.state, 'agent', None)
         if agent is not None:
             return {'decision': 'allow', 'agent': agent}
@@ -1014,7 +1029,7 @@ class AiNativeRuntimeGateway:
         self,
         db: AsyncSession,
         *,
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         requested_workspace: dict[str, Any] | None,
     ) -> dict[str, Any]:
         workspace = dict(
@@ -1188,7 +1203,7 @@ class AiNativeRuntimeGateway:
         *,
         trace_id: str,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload,
+        agent: AgentTokenPayload | None,
         manifest: dict[str, Any],
         capability: dict[str, Any],
         tool: dict[str, Any],
