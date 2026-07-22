@@ -33,8 +33,8 @@ class GetPayContractDetail(SchemaBase):
 class GetPayContractUserView(SchemaBase):
     """用户端签约状态"""
     has_contract: bool = Field(description='是否有有效签约')
-    tier: str | None = Field(None, description='签约套餐')
-    billing_cycle: str | None = Field(None, description='计费周期')
-    deduct_amount: int | None = Field(None, description='每期扣款金额（分）')
-    next_deduct_date: date | None = Field(None, description='下次扣款日期')
-    channel_code: str | None = Field(None, description='签约渠道')
+    tier: str | None = Field(default=None, description='签约套餐')
+    billing_cycle: str | None = Field(default=None, description='计费周期')
+    deduct_amount: int | None = Field(default=None, description='每期扣款金额（分）')
+    next_deduct_date: date | None = Field(default=None, description='下次扣款日期')
+    channel_code: str | None = Field(default=None, description='签约渠道')
