@@ -1,13 +1,81 @@
+import logging
+
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from datetime import timedelta
+from functools import wraps
+from typing import Any, ParamSpec, Protocol, TypeVar, cast
+
 from celery import states
+from celery.app.base import Celery
 from celery.backends.base import BaseBackend
-from celery.backends.database import retry, session_cleanup
 from celery.exceptions import ImproperlyConfigured
 from celery.utils.time import maybe_timedelta
-from sqlalchemy import PickleType
+from sqlalchemy.exc import DatabaseError, InvalidRequestError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from backend.app.task.model.result import Task, TaskExtended, TaskSet
 from backend.app.task.session import SessionManager
+
+
+_Params = ParamSpec('_Params')
+_Result = TypeVar('_Result')
+logger = logging.getLogger(__name__)
+
+
+class _BackendRuntime(Protocol):
+    """Celery BaseBackend 运行时提供、但类型桩遗漏的内部元数据接口。"""
+
+    def _get_result_meta(
+        self,
+        *,
+        result: Any,
+        state: str,
+        traceback: str | None,
+        request: Any,
+        format_date: bool,
+        encode: bool,
+    ) -> dict[str, Any]: ...
+
+
+@contextmanager
+def _session_cleanup(session: Session) -> Generator[None, None, None]:
+    """数据库结果写入失败时回滚，并始终关闭同步会话。"""
+    try:
+        yield
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _retry_database_operation(func: Callable[_Params, _Result]) -> Callable[_Params, _Result]:
+    """按 Celery 数据库后端语义重试短暂的数据库错误。"""
+
+    @wraps(func)
+    def wrapper(*args: _Params.args, **kwargs: _Params.kwargs) -> _Result:
+        max_retries = kwargs.pop('max_retries', 3)
+        if not isinstance(max_retries, int):
+            raise ValueError('max_retries 必须是整数')
+        if max_retries < 1:
+            raise ValueError('max_retries 必须大于 0')
+        for retry_index in range(max_retries):
+            try:
+                return func(*args, **kwargs)
+            except (DatabaseError, InvalidRequestError, StaleDataError):
+                logger.warning(
+                    '数据库结果后端操作 %s 失败，剩余重试次数 %s',
+                    func.__name__,
+                    max_retries - retry_index - 1,
+                    exc_info=True,
+                )
+                if retry_index + 1 >= max_retries:
+                    raise
+        raise AssertionError('数据库重试循环未返回结果')
+
+    return wrapper
 
 
 class DatabaseBackend(BaseBackend):
@@ -19,8 +87,14 @@ class DatabaseBackend(BaseBackend):
     # to not bombard the database with queries.
     subpolling_interval = 0.5
 
-    task_cls = Task
-    taskset_cls = TaskSet
+    task_cls: type[Task] = Task
+    taskset_cls: type[TaskSet] = TaskSet
+    app: Celery
+    expires: timedelta
+    url: str
+    engine_options: dict[str, Any]
+    short_lived_sessions: bool
+    session_manager: SessionManager
 
     def __init__(self, dburi=None, engine_options=None, url=None, **kwargs) -> None:  # noqa: ANN001
         # The `url` argument was added later and is used by
@@ -52,14 +126,14 @@ class DatabaseBackend(BaseBackend):
             self._create_tables()
 
     @property
-    def extended_result(self):  # noqa: ANN201
+    def extended_result(self) -> bool:
         return self.app.conf.find_value_for_key('extended', 'result')
 
     def _create_tables(self) -> None:
         """Create the task and taskset tables."""
         self.result_session()
 
-    def result_session(self, session_manager=None) -> Session:  # noqa: ANN001
+    def result_session(self, session_manager: SessionManager | None = None) -> Session:
         if session_manager is None:
             session_manager = self.session_manager
         return session_manager.session_factory(
@@ -68,24 +142,37 @@ class DatabaseBackend(BaseBackend):
             **self.engine_options,
         )
 
-    @retry
-    def _store_result(self, task_id, result, state, traceback=None, request=None, **kwargs) -> None:  # noqa: ANN001
+    @_retry_database_operation
+    def _store_result(
+        self,
+        task_id: str,
+        result: Any,
+        state: str,
+        traceback: str | None = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> None:
         """Store return value and state of an executed task."""
         session = self.result_session()
-        with session_cleanup(session):
-            task = list(session.query(self.task_cls).filter(self.task_cls.task_id == task_id))
-            task = task and task[0]
+        with _session_cleanup(session):
+            task: Task | None = session.query(self.task_cls).filter(self.task_cls.task_id == task_id).first()
             if not task:
                 task = self.task_cls(task_id)
-                task.task_id = task_id
                 session.add(task)
                 session.flush()
 
             self._update_result(task, result, state, traceback=traceback, request=request)
             session.commit()
 
-    def _update_result(self, task, result, state, traceback=None, request=None) -> None:  # noqa: ANN001
-        meta = self._get_result_meta(
+    def _update_result(
+        self,
+        task: Task,
+        result: Any,
+        state: str,
+        traceback: str | None = None,
+        request: Any = None,
+    ) -> None:
+        meta = cast(_BackendRuntime, self)._get_result_meta(
             result=result,
             state=state,
             traceback=traceback,
@@ -105,17 +192,16 @@ class DatabaseBackend(BaseBackend):
             value = meta.get(column)
             setattr(task, column, value)
 
-    @retry
-    def _get_task_meta_for(self, task_id: str):  # noqa: ANN202
+    @_retry_database_operation
+    def _get_task_meta_for(self, task_id: str) -> dict[str, Any]:
         """Get task meta-data for a task by id."""
         session = self.result_session()
-        with session_cleanup(session):
-            task = list(session.query(self.task_cls).filter(self.task_cls.task_id == task_id))
-            task = task and task[0]
+        with _session_cleanup(session):
+            task: Task | None = session.query(self.task_cls).filter(self.task_cls.task_id == task_id).first()
             if not task:
                 task = self.task_cls(task_id)
-                task.status = states.PENDING
-                task.result = None
+                setattr(task, 'status', states.PENDING)
+                setattr(task, 'result', None)
             data = task.to_dict()
             if data.get('args', None) is not None:
                 data['args'] = self.decode(data['args'])
@@ -123,40 +209,41 @@ class DatabaseBackend(BaseBackend):
                 data['kwargs'] = self.decode(data['kwargs'])
             return self.meta_from_decoded(data)
 
-    @retry
-    def _save_group(self, group_id: str, result: PickleType):  # noqa: ANN202
+    @_retry_database_operation
+    def _save_group(self, group_id: str, result: Any) -> Any:
         """Store the result of an executed group."""
         session = self.result_session()
-        with session_cleanup(session):
+        with _session_cleanup(session):
             group = self.taskset_cls(group_id, result)
             session.add(group)
             session.flush()
             session.commit()
             return result
 
-    @retry
-    def _restore_group(self, group_id: str) -> dict | None:
+    @_retry_database_operation
+    def _restore_group(self, group_id: str) -> dict[str, Any] | None:
         """Get meta-data for group by id."""
         session = self.result_session()
-        with session_cleanup(session):
+        with _session_cleanup(session):
             group = session.query(self.taskset_cls).filter(self.taskset_cls.taskset_id == group_id).first()
             if group:
                 return group.to_dict()
+            return None
 
-    @retry
+    @_retry_database_operation
     def _delete_group(self, group_id: str) -> None:
         """Delete meta-data for group by id."""
         session = self.result_session()
-        with session_cleanup(session):
+        with _session_cleanup(session):
             session.query(self.taskset_cls).filter(self.taskset_cls.taskset_id == group_id).delete()
             session.flush()
             session.commit()
 
-    @retry
+    @_retry_database_operation
     def _forget(self, task_id: str) -> None:
         """Forget about result."""
         session = self.result_session()
-        with session_cleanup(session):
+        with _session_cleanup(session):
             session.query(self.task_cls).filter(self.task_cls.task_id == task_id).delete()
             session.commit()
 
@@ -165,7 +252,7 @@ class DatabaseBackend(BaseBackend):
         session = self.result_session()
         expires = self.expires
         now = self.app.now()
-        with session_cleanup(session):
+        with _session_cleanup(session):
             session.query(self.task_cls).filter(self.task_cls.date_done < (now - expires)).delete()
             session.query(self.taskset_cls).filter(self.taskset_cls.date_done < (now - expires)).delete()
             session.commit()
