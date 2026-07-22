@@ -18,6 +18,7 @@ from backend.app.marketplace.service.resource_id import (
 )
 from backend.common.exception import errors
 from backend.plugin.s3.crud.storage import s3_storage_dao
+from backend.plugin.s3.model.storage import S3Storage
 
 
 class MarketplaceStorageService:
@@ -27,13 +28,13 @@ class MarketplaceStorageService:
     SKILLS_PATH = 'marketplace/skills'
     TEMPLATES_PATH = 'marketplace/templates'
 
-    async def _get_operator(self, db: AsyncSession, storage_id: int | None = None) -> AsyncOperator:
+    async def _get_operator(self, db: AsyncSession, storage_id: int | None = None) -> tuple[AsyncOperator, S3Storage]:
         """
         获取 S3 操作器
 
         :param db: 数据库会话
         :param storage_id: 存储配置ID，为空则使用默认配置
-        :return: AsyncOperator
+        :return: S3 操作器及其存储配置
         """
         if storage_id:
             s3_storage = await s3_storage_dao.get(db, storage_id)
@@ -151,7 +152,7 @@ class MarketplaceStorageService:
 
         return package_url, file_hash, file_size
 
-    def _build_url(self, s3_storage: Any, path: str) -> str:
+    def _build_url(self, s3_storage: S3Storage, path: str) -> str:
         """
         构建文件访问 URL
 
