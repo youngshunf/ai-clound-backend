@@ -10,10 +10,12 @@
 
 import json
 
+from collections.abc import Mapping
 from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 from fastapi.responses import PlainTextResponse
+from starlette.datastructures import FormData
 
 from backend.app.billing.crud.crud_pay_channel import pay_channel_dao
 from backend.app.billing.crud.crud_pay_merchant import pay_merchant_dao
@@ -23,6 +25,26 @@ from backend.common.log import log
 from backend.database.db import CurrentSessionTransaction
 
 router = APIRouter()
+
+
+def _form_text_values(form_data: FormData) -> dict[str, str]:
+    """支付渠道回调只接受文本字段，拒绝意外的 multipart 文件。"""
+    values: dict[str, str] = {}
+    for field, value in form_data.items():
+        if not isinstance(value, str):
+            raise ValueError(f'支付回调字段 {field} 不能是文件')
+        values[field] = value
+    return values
+
+
+def _optional_text(data: Mapping[str, object], field: str) -> str | None:
+    """读取可选文本回调字段，拒绝错误的结构化值。"""
+    value = data.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f'支付回调字段 {field} 必须是文本')
+    return value
 
 
 @router.post(
@@ -36,6 +58,7 @@ async def unified_pay_notify(
     channel_id: Annotated[int, Path(description='支付渠道 ID')],
 ) -> PlainTextResponse:
     """统一支付回调 — 微信/支付宝共用同一入口，靠 channelId 区分"""
+    channel = None
     try:
         # 1. 查渠道
         channel = await pay_channel_dao.get(db, channel_id)
@@ -81,7 +104,7 @@ async def unified_pay_notify(
 
         if code.startswith('alipay'):
             form_data = await request.form()
-            data = dict(form_data)
+            data = _form_text_values(form_data)
             raw_data = json.dumps(data, ensure_ascii=False)
             log.info(f'支付宝回调 channel={channel_id}: {raw_data[:500]}')
 
@@ -155,12 +178,14 @@ async def unified_refund_notify(
             }
             notify_data = client.verify_callback(headers, raw_data)
             # 微信 V3 退款回调：event_type=REFUND.SUCCESS/ABNORMAL/CLOSED，resource 内含 out_refund_no/refund_status。
-            resource = notify_data.get('resource') if isinstance(notify_data.get('resource'), dict) else notify_data
-            out_refund_no = resource.get('out_refund_no')
-            refund_status = resource.get('refund_status') or (
-                'SUCCESS' if notify_data.get('event_type') == 'REFUND.SUCCESS' else notify_data.get('event_type', '')
-            )
-            channel_refund_no = resource.get('refund_id')
+            resource_data = notify_data.get('resource')
+            resource: dict[str, object] = resource_data if isinstance(resource_data, dict) else notify_data
+            out_refund_no = _optional_text(resource, 'out_refund_no')
+            refund_status = _optional_text(resource, 'refund_status')
+            if refund_status is None:
+                event_type = _optional_text(notify_data, 'event_type')
+                refund_status = 'SUCCESS' if event_type == 'REFUND.SUCCESS' else event_type or ''
+            channel_refund_no = _optional_text(resource, 'refund_id')
             if out_refund_no:
                 await pay_order_service.confirm_refund_notify(
                     db=db, refund_no=out_refund_no, refund_status=refund_status, channel_refund_no=channel_refund_no,
@@ -169,7 +194,7 @@ async def unified_refund_notify(
 
         if code.startswith('alipay'):
             form_data = await request.form()
-            data = dict(form_data)
+            data = _form_text_values(form_data)
             raw_data = json.dumps(data, ensure_ascii=False)
             log.info(f'支付宝退款回调 channel={channel_id}: {raw_data[:500]}')
             client.verify_callback({}, data)
@@ -243,7 +268,7 @@ async def unified_contract_notify(
 
         if code.startswith('alipay'):
             form_data = await request.form()
-            data = dict(form_data)
+            data = _form_text_values(form_data)
             client.verify_callback({}, data)
             status = data.get('status')
             if status == 'NORMAL':
