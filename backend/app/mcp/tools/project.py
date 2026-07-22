@@ -44,6 +44,14 @@ def _without(args: dict[str, Any], *keys: str) -> dict[str, Any]:
     return {k: v for k, v in args.items() if k not in keys}
 
 
+def _require_owner_hasn_id(ctx: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离数据。"""
+    owner_hasn_id = ctx.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('project: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 def _validate_cover(uri: Any) -> None:
     """封面入参守卫：只接受 `hasn://asset/{id}` 引用（空=不设置）。禁 base64/字节/URL 直链（铁律）。"""
     if uri is None:
@@ -80,14 +88,14 @@ async def _safe_bump(db: Any, owner_hasn_id: str | None) -> None:
 async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """建项目（name 必填，可选 goal/cover_asset_uri/bound_agent_id）：建行后 register-on-write 直登记。"""
     _validate_cover(args.get('cover_asset_uri'))
-    result = await project_service.create_project(db, owner=ctx.owner_hasn_id, data=args)
+    result = await project_service.create_project(db, owner=_require_owner_hasn_id(ctx), data=args)
     registration = await register_app_resource_artifact(
         db,
         app_id='project',
         resource_kind='project',
         server_id=str(result['id']),
         agent_hasn_id=ctx.agent_hasn_id,
-        owner_hasn_id=ctx.owner_hasn_id,
+        owner_hasn_id=_require_owner_hasn_id(ctx),
         title=str(result.get('name') or '项目'),
         summary=str(result.get('goal') or '') or None,
         source_tool=f'{NAMESPACE}.create',
@@ -97,55 +105,61 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 async def _h_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """取项目详情（含里程碑轨）+ 产物流并集读（直接命中 ∪ 挂靠容器名下产物）。"""
-    detail = await project_service.get_project(db, owner=ctx.owner_hasn_id, pk=args['id'])
+    detail = await project_service.get_project(db, owner=_require_owner_hasn_id(ctx), pk=args['id'])
     detail['artifact_flow'] = await project_service.project_artifact_flow(
-        db, owner=ctx.owner_hasn_id, project_id=args['id']
+        db, owner=_require_owner_hasn_id(ctx), project_id=args['id']
     )
     return detail
 
 
 async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """列主人名下项目（可选按 status 过滤 active/archived）。"""
-    return await project_service.list_projects(db, owner=ctx.owner_hasn_id, status=args.get('status'))
+    return await project_service.list_projects(db, owner=_require_owner_hasn_id(ctx), status=args.get('status'))
 
 
 async def _h_update(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """改项目（name/goal/封面/状态/绑分身；status=archived 即归档，v1 只归档不硬删）。"""
     _validate_cover(args.get('cover_asset_uri'))
-    return await project_service.update_project(db, owner=ctx.owner_hasn_id, pk=args['id'], data=_without(args, 'id'))
+    return await project_service.update_project(
+        db, owner=_require_owner_hasn_id(ctx), pk=args['id'], data=_without(args, 'id')
+    )
 
 
 async def _h_link(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """把资源挂靠进项目（经挂靠点注册表落挂靠列）：先校验目标项目归属，再由 adapter 写列。"""
     project_id = args['project_id']
-    await project_service.assert_owned(db, owner=ctx.owner_hasn_id, pk=project_id)
+    await project_service.assert_owned(db, owner=_require_owner_hasn_id(ctx), pk=project_id)
     return await project_linkage_registry.link(
-        db, owner=ctx.owner_hasn_id, resource_uri=args['resource_uri'], project_id=project_id
+        db, owner=_require_owner_hasn_id(ctx), resource_uri=args['resource_uri'], project_id=project_id
     )
 
 
 async def _h_unlink(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """把资源从项目摘出（经挂靠点注册表把挂靠列置 NULL）。"""
-    return await project_linkage_registry.unlink(db, owner=ctx.owner_hasn_id, resource_uri=args['resource_uri'])
+    return await project_linkage_registry.unlink(
+        db, owner=_require_owner_hasn_id(ctx), resource_uri=args['resource_uri']
+    )
 
 
 async def _h_milestone_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """在项目下建里程碑（name 必填；纯业务态标记，无依赖无门控）。"""
     return await project_service.create_milestone(
-        db, owner=ctx.owner_hasn_id, project_id=args['project_id'], data=_without(args, 'project_id')
+        db, owner=_require_owner_hasn_id(ctx), project_id=args['project_id'], data=_without(args, 'project_id')
     )
 
 
 async def _h_milestone_update(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """改里程碑（名/到期/状态/关联产物/排序）：传 id + 要改字段。"""
     return await project_service.update_milestone(
-        db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']), data=_without(args, 'id')
+        db, owner=_require_owner_hasn_id(ctx), milestone_id=int(args['id']), data=_without(args, 'id')
     )
 
 
 async def _h_milestone_complete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """完成里程碑（status→done）：纯业务态标记，不触发任何门控/依赖检查。"""
-    return await project_service.complete_milestone(db, owner=ctx.owner_hasn_id, milestone_id=int(args['id']))
+    return await project_service.complete_milestone(
+        db, owner=_require_owner_hasn_id(ctx), milestone_id=int(args['id'])
+    )
 
 
 # ── schema 小工具 ─────────────────────────────────────────────────────────────
