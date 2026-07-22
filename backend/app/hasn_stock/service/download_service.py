@@ -215,12 +215,11 @@ class StockDownloadService:
                     # （search 命中 title OR summary；素材文件名/标题常无意义，summary 才承载可检索语义）。
                     summary=(description or None),
                     asset_id=asset.asset_id,
-                    resource_uri=asset_uri,
                     session_id=session_id,
                     source_tool='hasn.stock.download',
                     # 外部取材（doc35 §5.2 点名 hasn.stock.download 就是 external_tool 的典型产出者）。
                     # 旧值 'external' 语义相同但不在 6 枚举内，Literal 收敛后会 422。
-                    source_kind='external_tool',
+                    source_kind='external_import',
                     metadata={
                         'provider': provider_view.provider if provider_view else None,
                         'license': provider_view.license_terms_url if provider_view else None,

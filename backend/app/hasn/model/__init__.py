@@ -74,3 +74,5 @@ from backend.app.hasn.model.hasn_task_run_summary import HasnTaskRunSummary as H
 from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
 from backend.app.hasn.model.hasn_unread_projection import HasnUnreadProjection as HasnUnreadProjection
+from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions as HasnArtifactContributions
+from backend.app.hasn.model.hasn_artifact_registration_outbox import HasnArtifactRegistrationOutbox as HasnArtifactRegistrationOutbox

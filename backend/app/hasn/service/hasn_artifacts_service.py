@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
@@ -24,7 +24,15 @@ from backend.app.hasn.schema.hasn_artifacts import (
     ArtifactItem,
     RecordArtifactParam,
 )
+from backend.app.hasn.schema.artifact_contract import (
+    ArtifactKind,
+    ArtifactListItem,
+    ArtifactMutation,
+    ArtifactSourceKind,
+)
 from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
+from backend.app.hasn.service.artifact_query_service import artifact_query_service
+from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.common.exception import errors
 
@@ -161,15 +169,48 @@ class HasnArtifactsService:
 
         身份由调用方注入（取自 Agent JWT），绝不信任 body 里的 agent/owner。
         """
+        try:
+            mutation = ArtifactMutation(
+                owner_hasn_id=owner_hasn_id,
+                agent_hasn_id=agent_hasn_id,
+                action=params.action,
+                source_kind=params.source_kind,
+                artifact_kind=params.kind,
+                body=params.body,
+                asset_id=params.asset_id,
+                resource_uri=params.resource_uri,
+                resource_kind=params.resource_kind,
+                resource_app_id=params.source_app_id,
+                origin_ref=params.origin_ref,
+                local_locator_key=params.local_locator_key,
+                local_entry_kind=params.local_entry_kind,
+                node_id=params.node_id,
+                work_session_id=params.session_id,
+                project_id=params.project_id,
+                conversation_id=params.conversation_id,
+                message_id=params.message_id,
+                source_tool=params.source_tool,
+                source_app_id=params.source_app_id,
+                dispatch_id=params.dispatch_id,
+                source_event_id=params.origin_ref,
+                title=params.title,
+                summary=params.summary,
+                metadata=params.metadata,
+            )
+        except ValueError as exc:
+            raise errors.RequestError(msg=f'产物登记参数不符合第一阶段契约：{exc}') from exc
+
+        return (await artifact_registration_service.register(db, mutation)).artifact_id
+
         # 产物本体四选一：body（文本/markdown 直接入库）/ asset_id（二进制）/
         # resource_uri（hasn:// 资源）/ local_path（本地文件，云端只存指针，doc34）。
-        if not params.asset_id and not params.resource_uri and not params.body and not params.local_path:
-            raise errors.RequestError(msg='产物必须带 body、asset_id、resource_uri 或 local_path 其一')
+        if not params.asset_id and not params.resource_uri and not params.body and not params.local_locator_key:
+            raise errors.RequestError(msg='产物必须带 body、asset_id、resource_uri 或 local_locator_key 其一')
 
         # 本地路径必须带设备归属：没有 node_id 的绝对路径换台设备就是死路径，
         # UI 也无从判断「本机可打开」还是「在其他设备上」（doc34 §2.1）。
-        if params.local_path and not params.node_id:
-            raise errors.RequestError(msg='本地路径产物必须同时提供 node_id（产出设备）')
+        if params.local_locator_key and not params.node_id:
+            raise errors.RequestError(msg='本地产物必须同时提供 node_id（产出设备）')
 
         # kind / source_kind 到这里已由 Literal 保证合法（越界在 schema 层就 422 了）。
         kind = params.kind
@@ -186,14 +227,14 @@ class HasnArtifactsService:
             resource_uri=params.resource_uri,
             body=params.body,
             asset_id=params.asset_id,
-            local_path=params.local_path,
+            local_path=params.local_locator_key,
             source_app_id=params.source_app_id,
         )
 
         # 本地文件产物幂等：同一文件在一次会话里反复写只留一行。这是 runtime 文件捕获
         # （write_file/patch 每次都上报）不把产物列表刷成流水账的关键——分身改 10 次
         # report.md 是 1 个产物，不是 10 个（doc34 §2.3）。
-        if params.local_path and params.node_id and params.session_id:
+        if params.local_locator_key and params.node_id and params.session_id:
             local_row = (
                 await db.execute(
                     select(HasnArtifacts)
@@ -201,7 +242,7 @@ class HasnArtifactsService:
                         HasnArtifacts.agent_hasn_id == agent_hasn_id,
                         HasnArtifacts.session_id == params.session_id,
                         HasnArtifacts.node_id == params.node_id,
-                        HasnArtifacts.local_path == params.local_path,
+                        HasnArtifacts.local_locator_key == params.local_locator_key,
                         HasnArtifacts.status == 'active',
                     )
                     .limit(1)
@@ -254,7 +295,8 @@ class HasnArtifactsService:
             body=(params.body or None),
             asset_id=(params.asset_id or None),
             resource_uri=(params.resource_uri or None),
-            local_path=(params.local_path or None),
+            local_locator_key=(params.local_locator_key or None),
+            local_entry_kind=(params.local_entry_kind or None),
             node_id=(params.node_id or None),
             origin_ref=(params.origin_ref or None),
             conversation_id=conv,
@@ -330,6 +372,7 @@ class HasnArtifactsService:
         source_tool: str | None = None,
         dispatch_id: str | None = None,
         project_id: str | None = None,
+        action: Literal['create', 'update'] = 'create',
     ) -> ArtifactRegistration:
         """据 descriptor 登记一条**应用资源产物**（deck/webpage 等，走 `resource_uri` 指针，无 asset 本体）。
 
@@ -352,9 +395,35 @@ class HasnArtifactsService:
         app_id = cls._app_id_from_descriptor(descriptor)
         # URI 一律经 descriptor.build_uri（全仓唯一拼接点，doc36 §3.1）——别在这里手拼字面量。
         resource_uri = descriptor.build_uri(server_id)
-        kind = cls._resolve_artifact_kind(descriptor)
+        kind = cast(Literal['resource'], cls._resolve_artifact_kind(descriptor))
         effective_dispatch_id = dispatch_id or f'{app_id}:{server_id}'
         origin_ref = cls._build_origin_ref(descriptor, app_id=app_id, server_id=server_id)
+
+        mutation = ArtifactMutation(
+            owner_hasn_id=owner_hasn_id,
+            agent_hasn_id=agent_hasn_id,
+            action=action,
+            source_kind='app_write',
+            artifact_kind=kind,
+            resource_uri=resource_uri,
+            resource_kind=descriptor.resource_kind,
+            resource_app_id=app_id,
+            origin_ref=origin_ref,
+            work_session_id=session_id,
+            project_id=project_id,
+            source_tool=source_tool,
+            source_app_id=app_id,
+            dispatch_id=effective_dispatch_id,
+            title=title or None,
+            summary=summary or None,
+            metadata={'origin_ref': origin_ref},
+        )
+        registered = await artifact_registration_service.register(db, mutation)
+        assert registered.resource_uri is not None
+        return ArtifactRegistration(
+            artifact_id=registered.artifact_id,
+            resource_uri=registered.resource_uri,
+        )
 
         # UPSERT：应用资源无 asset_id（record 的 dispatch_id+asset_id 去重键不适用），按
         # (agent, dispatch_id, resource_uri) 查既有 active 行。命中即**就地推进**（register-on-write
@@ -465,7 +534,7 @@ class HasnArtifactsService:
     def _to_item(cls, row: HasnArtifacts, url_map: dict[str, str]) -> ArtifactItem:
         return ArtifactItem(
             artifact_id=row.artifact_id,
-            kind=row.kind,
+            kind=cast(ArtifactKind, row.kind),
             # doc35 §4.3：UI 要显示「知识库」还是「设计系统规范」→ 据它查 registry 拿 descriptor
             # 的展示名/图标（与应用图标同源）。零硬编码、新应用零改前端。
             resource_kind=row.resource_kind,
@@ -475,7 +544,7 @@ class HasnArtifactsService:
             asset_id=row.asset_id,
             resource_uri=row.resource_uri,
             # doc34 §4：本地产物只回指针 + 产出设备，UI 据此分叉「本机可直接打开」/「在其他设备上」。
-            local_path=row.local_path,
+            local_path=None,
             node_id=row.node_id,
             origin_ref=row.origin_ref,
             conversation_id=str(row.conversation_id) if row.conversation_id else None,
@@ -484,11 +553,39 @@ class HasnArtifactsService:
             source_tool=row.source_tool,
             # doc34 §3：来源应用是权威列，UI 据此显示应用图标（不再靠 resource_uri/source_tool 反推）。
             source_app_id=row.source_app_id,
-            source_kind=row.source_kind,
+            source_kind=cast(ArtifactSourceKind, row.source_kind),
             action=row.action,
             source_link=cls.derive_source_link(row.conversation_id, row.message_id, row.session_id),
             display_url=url_map.get(row.asset_id) if row.asset_id else None,
             created_time=row.created_time,
+        )
+
+    @staticmethod
+    def _legacy_item(item: ArtifactListItem) -> ArtifactItem:
+        """供尚未迁移的 MCP 调用方读取统一 DTO；HTTP API 已直接返回 ArtifactListItem。"""
+        asset_id = item.asset_uri.rsplit('/', 1)[-1] if item.asset_uri else None
+        return ArtifactItem(
+            artifact_id=item.artifact_id,
+            kind=item.artifact_kind,
+            resource_kind=item.resource_kind,
+            title=item.title,
+            summary=item.summary,
+            body=item.body_preview,
+            asset_id=asset_id,
+            resource_uri=item.resource_uri,
+            local_path=None,
+            node_id=item.local_entry.node_id if item.local_entry else None,
+            origin_ref=None,
+            conversation_id=None,
+            message_id=None,
+            session_id=item.latest_contribution.work_session_id,
+            source_tool=item.latest_contribution.source_tool,
+            source_app_id=item.latest_contribution.source_app_id,
+            source_kind=item.latest_contribution.source_kind,
+            action=item.latest_contribution.action,
+            source_link=item.latest_contribution.source_link,
+            display_url=item.preview_url,
+            created_time=item.created_time,
         )
 
     @staticmethod
@@ -533,6 +630,21 @@ class HasnArtifactsService:
         """
         if not await cls._owns_agent(db, owner_hasn_id=owner_hasn_id, agent_hasn_id=agent_hasn_id):
             raise errors.ForbiddenError(msg='无权查看该分身的产物')
+
+        result = await artifact_query_service.list(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            agent_hasn_id=agent_hasn_id,
+            work_session_id=session_id,
+            project_id=project_id,
+            artifact_kind=kind,
+            source_app_id=source_app_id,
+            resource_kind=resource_kind,
+            keyword=keyword,
+            page=page,
+            size=size,
+        )
+        return [cls._legacy_item(item) for item in result.items], result.total
 
         conds = [
             HasnArtifacts.owner_hasn_id == owner_hasn_id,
@@ -590,6 +702,15 @@ class HasnArtifactsService:
         kind: str | None = None,
     ) -> tuple[list[ArtifactItem], int]:
         """聚合时间线：owner 名下全部分身的产物。"""
+        result = await artifact_query_service.list(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            artifact_kind=kind,
+            page=page,
+            size=size,
+        )
+        return [cls._legacy_item(item) for item in result.items], result.total
+
         conds = [HasnArtifacts.owner_hasn_id == owner_hasn_id, HasnArtifacts.status == 'active']
         if kind:
             conds.append(HasnArtifacts.kind == kind)
@@ -626,6 +747,15 @@ class HasnArtifactsService:
 
         owner 隔离：仅返回本 owner 名下产物。规划详情产物轨（P6-C）按此反查。
         """
+        result = await artifact_query_service.list(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            origin_ref=origin_ref,
+            page=page,
+            size=size,
+        )
+        return [cls._legacy_item(item) for item in result.items], result.total
+
         conds = [
             HasnArtifacts.owner_hasn_id == owner_hasn_id,
             HasnArtifacts.origin_ref == origin_ref,
@@ -667,6 +797,15 @@ class HasnArtifactsService:
         `session_id` 语义 = hasn-node 本地工作会话 id（daemon 投影完成卡与工具捕获时同一 id·V1 已核），
         与 webui 工作会话页 `/apps/tasks/sessions/:id` 的 id 一致。owner 隔离：仅返回本 owner 名下产物。
         """
+        result = await artifact_query_service.list(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            work_session_id=session_id,
+            page=page,
+            size=size,
+        )
+        return [cls._legacy_item(item) for item in result.items], result.total
+
         conds = [
             HasnArtifacts.owner_hasn_id == owner_hasn_id,
             HasnArtifacts.session_id == session_id,
@@ -694,6 +833,31 @@ class HasnArtifactsService:
     @classmethod
     async def get_detail(cls, db: AsyncSession, *, owner_hasn_id: str, artifact_id: str) -> ArtifactDetail:
         """单条产物详情（含 display_url + download_url）。仅本 owner 可读。"""
+        result = await artifact_query_service.list(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            artifact_id=artifact_id,
+            size=1,
+        )
+        if not result.items:
+            raise errors.NotFoundError(msg='产物不存在或无权访问')
+        item = cls._legacy_item(result.items[0])
+        row = (
+            await db.execute(
+                select(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == artifact_id, HasnArtifacts.owner_hasn_id == owner_hasn_id)
+                .limit(1)
+            )
+        ).scalar_one()
+        return ArtifactDetail.model_validate(
+            {
+                **item.model_dump(),
+                'body': row.body,
+                'download_url': item.display_url,
+                'metadata': row.meta_data or {},
+            }
+        )
+
         row = (
             await db.execute(
                 select(HasnArtifacts)
@@ -740,7 +904,7 @@ class HasnArtifactsService:
             )
             .values(**values)
         )
-        if result.rowcount == 0:
+        if getattr(result, 'rowcount', 0) == 0:
             raise errors.NotFoundError(msg='产物不存在或无权修改')
 
     @classmethod
@@ -755,7 +919,7 @@ class HasnArtifactsService:
             )
             .values(status='deleted')
         )
-        if result.rowcount == 0:
+        if getattr(result, 'rowcount', 0) == 0:
             raise errors.NotFoundError(msg='产物不存在或无权删除')
 
     @classmethod
@@ -780,7 +944,7 @@ class HasnArtifactsService:
             )
             .values(status='deleted')
         )
-        return result.rowcount or 0
+        return getattr(result, 'rowcount', 0) or 0
 
 
 hasn_artifacts_service: HasnArtifactsService = HasnArtifactsService()

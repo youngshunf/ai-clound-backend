@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ArtifactKind = Literal['resource', 'document', 'image', 'video', 'voice', 'file']
 ArtifactAction = Literal['create', 'update']
@@ -15,6 +15,7 @@ ArtifactSourceKind = Literal[
 ProjectRelationVia = Literal['participation', 'explicit_resource_link', 'linked_container']
 LocalEntryKind = Literal['file', 'directory']
 ArtifactAvailability = Literal['cloud', 'local_current_device', 'local_other_device', 'missing']
+ArtifactSyncState = Literal['synced', 'pending', 'failed']
 
 
 class ArtifactContractModel(BaseModel):
@@ -37,6 +38,7 @@ class ArtifactMutation(ArtifactContractModel):
     local_locator_key: str | None = None
     resource_kind: str | None = None
     resource_app_id: str | None = None
+    origin_ref: str | None = None
     node_id: str | None = None
     local_entry_kind: LocalEntryKind | None = None
     work_session_id: str | None = None
@@ -50,7 +52,7 @@ class ArtifactMutation(ArtifactContractModel):
     source_event_id: str | None = None
     title: str | None = None
     summary: str | None = None
-    metadata: dict[str, object] = {}
+    metadata: dict[str, object] = Field(default_factory=dict)
 
     @model_validator(mode='after')
     def validate_locator_and_kind(self) -> ArtifactMutation:
@@ -141,8 +143,19 @@ class ArtifactListItem(ArtifactContractModel):
     resource_uri: str | None
     local_entry: LocalArtifactEntry | None
     availability: ArtifactAvailability
+    allowed_actions: list[Literal['open', 'preview', 'download', 'locate']]
+    sync_state: ArtifactSyncState
     latest_contribution: LatestContribution
     agent_identity: ArtifactAgentIdentity | None
     project_relation: ArtifactProjectRelation | None
     created_time: datetime
     updated_time: datetime
+
+
+class ArtifactListPage(ArtifactContractModel):
+    """统一产物列表分页信封。"""
+
+    items: list[ArtifactListItem]
+    total: int
+    page: int
+    size: int

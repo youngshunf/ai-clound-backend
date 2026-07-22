@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
+from backend.app.hasn.model import HasnArtifactContributions, HasnArtifacts
 from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.mcp.context import (
     clear_current_project_id,
@@ -82,14 +82,23 @@ async def pg_session():
         await engine.dispose()
 
 
-async def _active_rows(session, agent_hasn_id: str) -> list[HasnArtifacts]:
+async def _active_rows(
+    session, agent_hasn_id: str
+) -> list[tuple[HasnArtifacts, HasnArtifactContributions]]:
+    """按参与分身读取当前态及其不可变参与记录。"""
     result = await session.execute(
-        sa.select(HasnArtifacts).where(
-            HasnArtifacts.agent_hasn_id == agent_hasn_id,
+        sa.select(HasnArtifacts, HasnArtifactContributions)
+        .join(
+            HasnArtifactContributions,
+            HasnArtifactContributions.artifact_id == HasnArtifacts.artifact_id,
+        )
+        .where(
+            HasnArtifactContributions.agent_hasn_id == agent_hasn_id,
             HasnArtifacts.status == 'active',
         )
+        .order_by(HasnArtifactContributions.id)
     )
-    return list(result.scalars().all())
+    return list(result.all())
 
 
 @pytest.mark.parametrize(('app_id', 'resource_kind', 'uri_prefix', 'artifact_kind'), ROLLOUT)
@@ -115,17 +124,18 @@ async def test_register_lands_artifact_bound_to_session(
         )
         rows = await _active_rows(pg_session, agent_hasn_id)
         assert len(rows) == 1, f'{app_id}/{resource_kind} 未登记——多半是 manifest 缺 resources[] 声明或 kind 写错'
-        assert rows[0].resource_uri == f'{uri_prefix}{server_id}', '资源 URI 必须由 manifest 的 uri_domain 派生'
-        assert rows[0].session_id == work_session_id, '产物必须绑上工作会话，否则挂不进会话资源栏'
-        assert rows[0].owner_hasn_id == owner_hasn_id
-        # doc35 三维度：kind 只答「怎么打开」、resource_kind 答「是什么」、
-        # source_app_id 答「哪个应用」、source_kind 答「怎么来的」。四者各就各位才算登记对。
-        assert rows[0].kind == artifact_kind, 'artifact_kind 只答「怎么打开」——应用资源恒 resource'
-        assert rows[0].resource_kind == resource_kind, (
+        artifact, contribution = rows[0]
+        assert artifact.resource_uri == f'{uri_prefix}{server_id}', '资源 URI 必须由 manifest 的 uri_domain 派生'
+        assert contribution.work_session_id == work_session_id, '参与记录必须绑上工作会话，否则挂不进会话资源栏'
+        assert artifact.owner_hasn_id == owner_hasn_id
+        # 当前态只保留对象描述，操作上下文只进入 contribution。
+        assert artifact.artifact_kind == artifact_kind, 'artifact_kind 只答「怎么打开」——应用资源恒 resource'
+        assert artifact.resource_kind == resource_kind, (
             'resource_kind 必须存 descriptor 原值，UI 据它查 registry 取展示名'
         )
-        assert rows[0].source_app_id == app_id
-        assert rows[0].source_kind == 'app', '应用产出的资源，来源恒为 app（旧硬编码 tool_output 是垃圾桶）'
+        assert artifact.resource_app_id == app_id
+        assert contribution.source_app_id == app_id
+        assert contribution.source_kind == 'app_write'
     finally:
         clear_current_work_session_id()
 
@@ -157,17 +167,16 @@ async def test_project_id_from_contextvar_lands_on_artifact(pg_session) -> None:
         )
         rows = await _active_rows(pg_session, agent_hasn_id)
         assert len(rows) == 1
-        assert str(rows[0].project_id) == project_id, '接缝必须把 ContextVar project_id 自动落到产物行'
-        assert rows[0].session_id == work_session_id, 'project_id 打标不得影响既有 session_id 绑定'
+        _artifact, contribution = rows[0]
+        assert str(contribution.project_id) == project_id, '接缝必须把 ContextVar project_id 写入参与记录'
+        assert contribution.work_session_id == work_session_id, 'project_id 打标不得影响既有会话参与记录'
     finally:
         clear_current_project_id()
         clear_current_work_session_id()
 
 
-async def test_project_id_only_advances_never_downgrades(pg_session) -> None:
-    """doc38 §5.1「只进不退」：分身在项目中首次写点锁定 project_id 后，后续非项目直调
-    （ContextVar 已清、project_id=None）**不得**把已锁定的项目归属抹成 None。
-    """
+async def test_project_participation_is_append_only(pg_session) -> None:
+    """项目和会话属于参与上下文，后续写入不能覆盖已记录的参与事实。"""
     tag = uuid.uuid4().hex[:8]
     agent_hasn_id, owner_hasn_id = f'a_padv_{tag}', f'h_padv_{tag}'
     project_id = str(uuid.uuid4())
@@ -188,7 +197,7 @@ async def test_project_id_only_advances_never_downgrades(pg_session) -> None:
     finally:
         clear_current_project_id()
 
-    # 第二次：非项目直调（ContextVar 已清）改同一资源 → 幂等推进，但 project_id 不退。
+    # 第二次：非项目直调改同一资源。项目归属是本次参与上下文，不能覆盖首次参与事实。
     await register_app_resource_artifact(
         pg_session,
         app_id='knowledge',
@@ -198,15 +207,20 @@ async def test_project_id_only_advances_never_downgrades(pg_session) -> None:
         owner_hasn_id=owner_hasn_id,
         title='第二版（项目外改稿）',
         source_tool='hasn.knowledge.create',
+        action='update',
+        dispatch_id=f'dispatch_{tag}_update',
     )
     rows = await _active_rows(pg_session, agent_hasn_id)
-    assert len(rows) == 1, '同一资源反复写只留一条 active 行'
-    assert str(rows[0].project_id) == project_id, 'project_id 只进不退：project_id=None 不得抹掉已锁定归属'
-    assert rows[0].title == '第二版（项目外改稿）', 'title 照常刷新（只进不退只约束 project_id/session_id）'
+    assert len(rows) == 2, '两次不同写入必须各留一条参与记录'
+    assert len({artifact.artifact_id for artifact, _contribution in rows}) == 1, '同一资源只保留一条当前态'
+    assert str(rows[0][1].project_id) == project_id, '首次项目参与事实不得被后续写入覆盖'
+    assert rows[1][1].project_id is None, '非项目写入必须如实记录为无项目参与'
+    assert rows[1][1].action == 'update'
+    assert rows[1][0].title == '第二版（项目外改稿）', '当前态标题应更新为最新写入'
 
 
-async def test_repeated_writes_stay_single_active_row(pg_session) -> None:
-    """改稿是常态：同一资源写三次只能留一条 active 产物行。"""
+async def test_repeated_writes_keep_one_current_artifact_and_append_contributions(pg_session) -> None:
+    """改稿是常态：一条当前态，且每次不同写入均留下不可变参与记录。"""
     tag = uuid.uuid4().hex[:8]
     agent_hasn_id, owner_hasn_id = f'a_idem_{tag}', f'h_idem_{tag}'
 
@@ -221,9 +235,12 @@ async def test_repeated_writes_stay_single_active_row(pg_session) -> None:
             owner_hasn_id=owner_hasn_id,
             title=f'第 {i + 1} 版策略',
             source_tool='hasn.quant.save_strategy',
+            action='create' if i == 0 else 'update',
+            dispatch_id=f'dispatch_{tag}_{i}',
         )
     rows = await _active_rows(pg_session, agent_hasn_id)
-    assert len(rows) == 1, '反复写同一资源只能有一条 active 行（幂等键 = agent + dispatch_id + resource_uri）'
+    assert len(rows) == 3, '每次不同写入都必须追加参与记录'
+    assert len({artifact.artifact_id for artifact, _contribution in rows}) == 1, '反复写同一资源只能有一条当前态'
 
 
 async def test_unknown_resource_kind_skips_without_raising(pg_session) -> None:

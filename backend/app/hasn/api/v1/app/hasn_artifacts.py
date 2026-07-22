@@ -6,14 +6,16 @@
 WebUI 永远只调 daemon，daemon 代理本组（设计 §6.2）。产物展示/下载一律经 resolve_assets 签名。
 """
 
-from typing import Annotated
+from typing import Annotated, cast
 
 import sqlalchemy as sa
 
 from fastapi import APIRouter, Path, Query, Request
 
 from backend.app.hasn.model import HasnHumans
-from backend.app.hasn.schema.hasn_artifacts import ArtifactDetail, ArtifactListData, UpdateArtifactContentParam
+from backend.app.hasn.schema.artifact_contract import ArtifactListItem, ArtifactListPage
+from backend.app.hasn.schema.hasn_artifacts import UpdateArtifactContentParam
+from backend.app.hasn.service.artifact_query_service import artifact_query_service
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
@@ -44,12 +46,17 @@ async def list_agent_artifacts(
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
     kind: Annotated[str | None, Query(description='按产物类型筛选')] = None,
-) -> ResponseSchemaModel[ArtifactListData]:
+) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
-    items, total = await hasn_artifacts_service.list_by_agent(
-        db, owner_hasn_id=owner_hasn_id, agent_hasn_id=agent_hasn_id, page=page, size=size, kind=kind
+    result = await artifact_query_service.list(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        agent_hasn_id=agent_hasn_id,
+        page=page,
+        size=size,
+        artifact_kind=kind,
     )
-    return response_base.success(data=ArtifactListData(items=items, total=total, page=page, size=size))
+    return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 
 
 @router.get('/artifacts', summary='owner 全部分身产物聚合时间线', dependencies=[DependsJwtAuth])
@@ -59,12 +66,16 @@ async def list_owner_artifacts(
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
     kind: Annotated[str | None, Query(description='按产物类型筛选')] = None,
-) -> ResponseSchemaModel[ArtifactListData]:
+) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
-    items, total = await hasn_artifacts_service.list_for_owner(
-        db, owner_hasn_id=owner_hasn_id, page=page, size=size, kind=kind
+    result = await artifact_query_service.list(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        page=page,
+        size=size,
+        artifact_kind=kind,
     )
-    return response_base.success(data=ArtifactListData(items=items, total=total, page=page, size=size))
+    return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 
 
 @router.get(
@@ -78,12 +89,16 @@ async def list_artifacts_by_origin(
     origin_ref: Annotated[str, Query(description='业务资源回指，如 resource:plan:todo:{id}')],
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 50,
-) -> ResponseSchemaModel[ArtifactListData]:
+) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
-    items, total = await hasn_artifacts_service.list_by_origin(
-        db, owner_hasn_id=owner_hasn_id, origin_ref=origin_ref, page=page, size=size
+    result = await artifact_query_service.list(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        origin_ref=origin_ref,
+        page=page,
+        size=size,
     )
-    return response_base.success(data=ArtifactListData(items=items, total=total, page=page, size=size))
+    return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 
 
 @router.get(
@@ -97,12 +112,16 @@ async def list_artifacts_by_session(
     session_id: Annotated[str, Query(description='工作会话 id（hasn-node 本地工作会话 id）')],
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 50,
-) -> ResponseSchemaModel[ArtifactListData]:
+) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
-    items, total = await hasn_artifacts_service.list_by_session(
-        db, owner_hasn_id=owner_hasn_id, session_id=session_id, page=page, size=size
+    result = await artifact_query_service.list(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        work_session_id=session_id,
+        page=page,
+        size=size,
     )
-    return response_base.success(data=ArtifactListData(items=items, total=total, page=page, size=size))
+    return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 
 
 @router.get('/artifacts/{artifact_id}', summary='产物详情（含签名 URL）', dependencies=[DependsJwtAuth])
@@ -110,10 +129,17 @@ async def get_artifact_detail(
     request: Request,
     db: CurrentSession,
     artifact_id: Annotated[str, Path(description='产物 ID')],
-) -> ResponseSchemaModel[ArtifactDetail]:
+) -> ResponseSchemaModel[ArtifactListItem]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
-    detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner_hasn_id, artifact_id=artifact_id)
-    return response_base.success(data=detail)
+    result = await artifact_query_service.list(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        artifact_id=artifact_id,
+        size=1,
+    )
+    if not result.items:
+        raise errors.NotFoundError(msg='产物不存在或无权访问')
+    return cast(ResponseSchemaModel[ArtifactListItem], response_base.success(data=result.items[0]))
 
 
 @router.put(

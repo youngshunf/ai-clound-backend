@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,8 @@ async def register_app_resource_artifact(
     summary: str | None = None,
     session_id: Any = _UNSET,
     project_id: Any = _UNSET,
+    action: Literal['create', 'update'] = 'create',
+    dispatch_id: str | None = None,
 ) -> ArtifactRegistration | None:
     """把分身刚写过的应用资源登记为产物（每个写点都调，不要只在 finalize 调）。
 
@@ -93,19 +95,24 @@ async def register_app_resource_artifact(
     try:
         from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService
 
-        return await HasnArtifactsService.record_app_resource_artifact(
-            db,
-            descriptor=descriptor,
-            server_id=str(server_id),
-            session_id=get_current_work_session_id() if session_id is _UNSET else session_id,
-            agent_hasn_id=agent_hasn_id,
-            owner_hasn_id=owner_hasn_id,
-            title=title,
-            summary=summary,
-            source_tool=source_tool,
-            # doc38 §3.4：缺省自动取 ContextVar project_id（不在项目中则 None），已接应用零改造。
-            project_id=get_current_project_id() if project_id is _UNSET else project_id,
-        )
+        # 登记仅是业务写后的 best-effort 投影。以 SAVEPOINT 隔离其失败，不能把调用方已开始的
+        # 真实业务事务标记为回滚态。
+        async with db.begin_nested():
+            return await HasnArtifactsService.record_app_resource_artifact(
+                db,
+                descriptor=descriptor,
+                server_id=str(server_id),
+                session_id=get_current_work_session_id() if session_id is _UNSET else session_id,
+                agent_hasn_id=agent_hasn_id,
+                owner_hasn_id=owner_hasn_id,
+                title=title,
+                summary=summary,
+                source_tool=source_tool,
+                # doc38 §3.4：缺省自动取 ContextVar project_id（不在项目中则 None），已接应用零改造。
+                project_id=get_current_project_id() if project_id is _UNSET else project_id,
+                action=action,
+                dispatch_id=dispatch_id,
+            )
     except Exception as e:
         logger.warning('[%s] register-on-write 登记 hasn_artifacts 失败（非致命）: %s', app_id, e)
         # 登记没成，但资源建成了、地址算得出来——照常把 URI 交给分身（见 docstring）。
