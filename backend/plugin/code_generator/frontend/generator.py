@@ -2,9 +2,11 @@
 
 import re
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic.alias_generators import to_pascal
+from sqlalchemy import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.path_conf import BASE_PATH
@@ -206,7 +208,11 @@ class FrontendGenerator:
             columns=column_infos,
         )
 
-    def _convert_db_to_table_info(self, table_data: dict, columns_data: list[dict]) -> TableInfo:
+    def _convert_db_to_table_info(
+        self,
+        table_data: RowMapping,
+        columns_data: Sequence[RowMapping],
+    ) -> TableInfo:
         """
         Convert database metadata to TableInfo.
 

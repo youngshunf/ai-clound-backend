@@ -73,9 +73,12 @@ class CodegenFrontend:
                     force=self.force,
                 )
             else:
+                table = self.table
+                if table is None:
+                    raise cappa.Exit('必须指定数据表名称', code=1)
                 async with async_db_session() as db:
-                    await frontend_generator.generate_from_db(
-                        table=self.table,
+                    await frontend_generator.generate_from_db_introspection(
+                        table=table,
                         db_schema=self.db,
                         app=self.app,
                         module=self.module,
@@ -144,12 +147,15 @@ class CodegenMenu:
             else:
                 from backend.plugin.code_generator.crud.crud_gen import gen_dao
 
+                table = self.table
+                if table is None:
+                    raise cappa.Exit('必须指定数据表名称', code=1)
                 async with async_db_session() as db:
-                    table_data = await gen_dao.get_table(db, self.db, self.table)
+                    table_data = await gen_dao.get_table(db, self.db, table)
                     if not table_data:
-                        raise ValueError(f"Table '{self.table}' not found in schema '{self.db}'")
+                        raise ValueError(f"Table '{table}' not found in schema '{self.db}'")
 
-                    columns_data = await gen_dao.get_all_columns(db, self.db, self.table)
+                    columns_data = await gen_dao.get_all_columns(db, self.db, table)
                     table_info = frontend_generator._convert_db_to_table_info(table_data, columns_data)
 
             # Generate menu SQL
@@ -245,9 +251,12 @@ class CodegenFull:
                     force=self.force,
                 )
             else:
+                table = self.table
+                if table is None:
+                    raise cappa.Exit('必须指定数据表名称', code=1)
                 async with async_db_session() as db:
-                    await frontend_generator.generate_from_db(
-                        table=self.table,
+                    await frontend_generator.generate_from_db_introspection(
+                        table=table,
                         db_schema=self.db,
                         app=self.app,
                         module=self.module,
@@ -266,9 +275,14 @@ class CodegenFull:
             else:
                 from backend.plugin.code_generator.crud.crud_gen import gen_dao
 
+                table = self.table
+                if table is None:
+                    raise cappa.Exit('必须指定数据表名称', code=1)
                 async with async_db_session() as db:
-                    table_data = await gen_dao.get_table(db, self.db, self.table)
-                    columns_data = await gen_dao.get_all_columns(db, self.db, self.table)
+                    table_data = await gen_dao.get_table(db, self.db, table)
+                    if not table_data:
+                        raise ValueError(f"Table '{table}' not found in schema '{self.db}'")
+                    columns_data = await gen_dao.get_all_columns(db, self.db, table)
                     table_info = frontend_generator._convert_db_to_table_info(table_data, columns_data)
 
             # Generate menu SQL
