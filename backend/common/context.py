@@ -5,6 +5,14 @@ from starlette_context.ctx import _Context, context
 
 
 class TypedContextProtocol(Protocol):
+    def exists(self) -> bool:
+        """判断当前执行上下文是否已初始化。"""
+        ...
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """读取上下文中的键值。"""
+        ...
+
     perf_time: float
     start_time: datetime
 
