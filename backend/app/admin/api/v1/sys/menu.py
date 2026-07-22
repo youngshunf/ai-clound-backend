@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.get('/sidebar', summary='获取用户菜单侧边栏', description='已适配 vben admin v5', dependencies=[DependsJwtAuth])
-async def get_user_sidebar(db: CurrentSession, request: Request) -> ResponseSchemaModel[list[dict[str, Any] | None]]:
+async def get_user_sidebar(db: CurrentSession, request: Request) -> ResponseSchemaModel[list[dict[str, Any]]]:
     menu = await menu_service.get_sidebar(db=db, request=request)
     return response_base.success(data=menu)
 
@@ -23,7 +23,7 @@ async def get_user_sidebar(db: CurrentSession, request: Request) -> ResponseSche
 async def get_menu(
     db: CurrentSession, pk: Annotated[int, Path(description='菜单 ID')]
 ) -> ResponseSchemaModel[GetMenuDetail]:
-    data = await menu_service.get(db=db, pk=pk)
+    data = GetMenuDetail.model_validate(await menu_service.get(db=db, pk=pk))
     return response_base.success(data=data)
 
 
@@ -33,7 +33,7 @@ async def get_menu_tree(
     title: Annotated[str | None, Query(description='菜单标题')] = None,
     status: Annotated[int | None, Query(description='状体')] = None,
 ) -> ResponseSchemaModel[list[GetMenuTree]]:
-    menu = await menu_service.get_tree(db=db, title=title, status=status)
+    menu = [GetMenuTree.model_validate(item) for item in await menu_service.get_tree(db=db, title=title, status=status)]
     return response_base.success(data=menu)
 
 
