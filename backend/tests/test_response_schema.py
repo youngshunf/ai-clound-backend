@@ -23,3 +23,14 @@ def test_success_with_data_returns_schema_response_without_changing_envelope() -
         'msg': '请求成功',
         'data': {'value': '质量门'},
     }
+
+
+def test_fail_accepts_custom_message_without_changing_envelope() -> None:
+    """失败响应允许覆盖提示文案，并保持统一信封。"""
+    response = response_base.fail(msg='凭证不存在或密钥不匹配')
+
+    assert response.model_dump(mode='json') == {
+        'code': 400,
+        'msg': '凭证不存在或密钥不匹配',
+        'data': None,
+    }

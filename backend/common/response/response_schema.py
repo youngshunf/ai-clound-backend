@@ -117,14 +117,18 @@ class ResponseBase:
         *,
         res: CustomResponseCode | CustomResponse = CustomResponseCode.HTTP_400,
         data: Any = None,
-    ) -> ResponseModel | ResponseSchemaModel:
+        msg: str | None = None,
+    ) -> ResponseModel | ResponseSchemaModel[Any]:
         """
         失败响应
 
         :param res: 返回信息
         :param data: 返回数据
+        :param msg: 自定义失败提示
         :return:
         """
+        if msg is not None:
+            res = CustomResponse(code=res.code, msg=msg)
         return self.__response(res=res, data=data)
 
     @staticmethod
