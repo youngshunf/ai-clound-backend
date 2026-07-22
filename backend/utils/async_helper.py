@@ -3,11 +3,13 @@ import atexit
 import threading
 import weakref
 
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
+from concurrent.futures import Future
 from functools import wraps
-from typing import Any, TypeVar
+from typing import ParamSpec, TypeVar
 
 T = TypeVar('T')
+P = ParamSpec('P')
 
 
 class _TaskRunner:
@@ -33,12 +35,15 @@ class _TaskRunner:
 
     def _target(self) -> None:
         """后台线程的目标函数"""
+        loop = self.__loop
+        if loop is None:
+            return
         try:
-            self.__loop.run_forever()
+            loop.run_forever()
         finally:
-            self.__loop.close()
+            loop.close()
 
-    def run(self, coro: Awaitable[T]) -> T:
+    def run(self, awaitable: Awaitable[T]) -> T:
         """在后台事件循环上运行协程并返回其结果"""
         with self.__lock:
             name = f'TaskRunner-{threading.get_ident()}'
@@ -46,21 +51,27 @@ class _TaskRunner:
                 self.__loop = asyncio.new_event_loop()
                 self.__thread = threading.Thread(target=self._target, daemon=True, name=name)
                 self.__thread.start()
-            future = asyncio.run_coroutine_threadsafe(coro, self.__loop)
+            loop = self.__loop
+            if loop is None:
+                raise RuntimeError('任务事件循环初始化失败')
+            future: Future[T] = asyncio.run_coroutine_threadsafe(_await_result(awaitable), loop)
             return future.result()
 
 
-_runner_map = weakref.WeakValueDictionary()
+_runner_map: weakref.WeakValueDictionary[str, _TaskRunner] = weakref.WeakValueDictionary()
 
 
-def run_await(coro: Callable[..., Awaitable[T]] | Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., T]:
+async def _await_result(awaitable: Awaitable[T]) -> T:
+    """将宽泛的可等待对象收敛为可跨线程提交的协程对象。"""
+    return await awaitable
+
+
+def run_await(coro: Callable[P, Awaitable[T]]) -> Callable[P, T]:
     """将协程包装在函数中，直到它执行完为止"""
 
     @wraps(coro)
-    def wrapped(*args, **kwargs):  # noqa: ANN202
+    def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
         inner = coro(*args, **kwargs)
-        if not asyncio.iscoroutine(inner) and not asyncio.isfuture(inner):
-            raise TypeError(f'Expected coroutine or future, got {type(inner)}')
 
         try:
             # 如果事件循环正在运行，则使用任务调用
@@ -70,13 +81,12 @@ def run_await(coro: Callable[..., Awaitable[T]] | Callable[..., Coroutine[Any, A
                 _runner_map[name] = _TaskRunner()
             return _runner_map[name].run(inner)
         except RuntimeError:
-            # 如果没有，则创建一个新的事件循环
+            # 当前线程没有运行中的事件循环时，使用独立循环并在完成后释放。
+            loop = asyncio.new_event_loop()
             try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            return loop.run_until_complete(inner)
+                return loop.run_until_complete(_await_result(inner))
+            finally:
+                loop.close()
 
     wrapped.__doc__ = coro.__doc__
     return wrapped

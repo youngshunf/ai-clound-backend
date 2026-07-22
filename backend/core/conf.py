@@ -1,7 +1,7 @@
 import shutil
 
 from functools import cache
-from re import Pattern
+from re import Pattern, compile
 from typing import Any, Literal
 
 from pydantic import model_validator
@@ -261,25 +261,25 @@ class Settings(BaseSettings):
         f'{FASTAPI_API_V1_PATH}/user_tier/my/subscription/packages',
     ]
     TOKEN_REQUEST_PATH_EXCLUDE_PATTERN: list[Pattern[str]] = [  # JWT / RBAC 路由白名单（正则）
-        rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$',
-        rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$',  # 桌面端市场公开 API
-        rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$',  # 市场下载 API
-        rf'^{FASTAPI_API_V1_PATH}/client/version/.*$',  # 桌面端版本检测公开 API
-        rf'^{FASTAPI_API_V1_PATH}/llm/proxy(/.*)?$',  # LLM Proxy API（使用 x-api-key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/huanxing/open/.*$',  # 唤星公开 API（分享文档等）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/agent/.*$',  # HASN Agent API（使用 AgentKey 认证）
-        rf'^{FASTAPI_API_V1_PATH}/mcp/.*$',  # MCP Streamable 接入面（Agent MCP Key / Agent JWT 由 handler 自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/open/.*$',  # HASN 公开 API
-        rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$',  # 桌面端发布：下载页/updater 公开面 + CI 回调（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$',  # 通用语音签名目录 CI 发布面（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/hasn/ws/.*$',  # HASN WebSocket
-        rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$',  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$',  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/user_tier/agent/.*$',  # 订阅积分 Agent API（使用 X-Agent-Key 认证，不走 JWT）
-        rf'^{FASTAPI_API_V1_PATH}/growth/agent/.*$',  # 获客 Agent API（Agent JWT，handler 自鉴权，不走 Owner JWT 中间件）
-        rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$',  # 获客旧前缀 Agent API（薄转发过渡，M8 退役）
-        rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$',  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
-        r'^/s/[^/]+(/.*)?$',  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
+        compile(rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$'),
+        compile(rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$'),  # 桌面端市场公开 API
+        compile(rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$'),  # 市场下载 API
+        compile(rf'^{FASTAPI_API_V1_PATH}/client/version/.*$'),  # 桌面端版本检测公开 API
+        compile(rf'^{FASTAPI_API_V1_PATH}/llm/proxy(/.*)?$'),  # LLM Proxy API（使用 x-api-key 认证，不走 JWT）
+        compile(rf'^{FASTAPI_API_V1_PATH}/huanxing/open/.*$'),  # 唤星公开 API（分享文档等）
+        compile(rf'^{FASTAPI_API_V1_PATH}/hasn/agent/.*$'),  # HASN Agent API（使用 AgentKey 认证）
+        compile(rf'^{FASTAPI_API_V1_PATH}/mcp/.*$'),  # MCP Streamable 接入面（Agent MCP Key / Agent JWT 由 handler 自鉴权，不走 Owner JWT 中间件）
+        compile(rf'^{FASTAPI_API_V1_PATH}/hasn/open/.*$'),  # HASN 公开 API
+        compile(rf'^{FASTAPI_API_V1_PATH}/release/(open|ci)/.*$'),  # 桌面端发布：下载页/updater 公开面 + CI 回调（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
+        compile(rf'^{FASTAPI_API_V1_PATH}/hasn/ci/speech-catalog/.*$'),  # 通用语音签名目录 CI 发布面（自带 Bearer CI 密钥自鉴权，不走 Owner JWT 中间件）
+        compile(rf'^{FASTAPI_API_V1_PATH}/hasn/ws/.*$'),  # HASN WebSocket
+        compile(rf'^{FASTAPI_API_V1_PATH}/huanxing/agent/.*$'),  # 唤星 Agent API（使用 X-Agent-Key 认证，不走 JWT）
+        compile(rf'^{FASTAPI_API_V1_PATH}/huanxing/user/.*$'),  # 唤星用户级 API（使用 Owner Key 认证，不走 JWT）
+        compile(rf'^{FASTAPI_API_V1_PATH}/user_tier/agent/.*$'),  # 订阅积分 Agent API（使用 X-Agent-Key 认证，不走 JWT）
+        compile(rf'^{FASTAPI_API_V1_PATH}/growth/agent/.*$'),  # 获客 Agent API（Agent JWT，handler 自鉴权，不走 Owner JWT 中间件）
+        compile(rf'^{FASTAPI_API_V1_PATH}/lead-automation/agent/.*$'),  # 获客旧前缀 Agent API（薄转发过渡，M8 退役）
+        compile(rf'^{FASTAPI_API_V1_PATH}/publish/agent/.*$'),  # 网页发布 Agent API（Agent JWT，handler 自鉴权）
+        compile(r'^/s/[^/]+(/.*)?$'),  # 网页发布公开查看面 /s/{slug}（独立分享域名，无鉴权外壳；模块 18）
         # 注：Agent JWT（Bearer，token_type=agent）的整类放行已不再依赖路径白名单——
         # JwtAuthMiddleware.extract_token 通过 is_agent_token 按 token 类型分流放行，
         # 交由路由自身的 DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
