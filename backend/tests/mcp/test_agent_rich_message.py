@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 
+from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.message import (
     MessageSendTool,
     _build_agent_card_body,
@@ -105,6 +106,21 @@ def test_resolve_to_target_owner_missing_rejected() -> None:
     """主人身份缺失时用 "owner" 哨兵 → 抛错不静默（避免误发到错误目标）。"""
     with pytest.raises(RuntimeError, match='主人身份'):
         _resolve_to_target('owner', None)
+
+
+@pytest.mark.asyncio
+async def test_message_send_rejects_missing_owner_identity() -> None:
+    """主人身份缺失时，发送前必须拒绝，不能进入任意会话或联系人写路径。"""
+    context = AgentContext(
+        hasn_id='a_missing_owner',
+        owner_id=1,
+        agent_status='active',
+        metadata={},
+        owner_hasn_id=None,
+        session_uuid='amk_missing_owner',
+    )
+    with pytest.raises(RuntimeError, match='缺少 owner_hasn_id'):
+        await MessageSendTool().execute(context, {'to': 'h_receiver', 'content': '你好'})
 
 
 # ── 活体 DB（真实 hasn_assets 解析 + 归属校验）─────────────────

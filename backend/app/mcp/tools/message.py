@@ -94,6 +94,14 @@ _MIME_EXT = {
 }
 
 
+def _require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离数据。"""
+    owner_hasn_id = agent_context.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('message: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 def _resolve_to_target(to_target: Any, owner_hasn_id: str | None) -> str:
     """把分身给的 `to` 解析成真实接收者：保留值 "owner"/"@owner" → 主人本人，其余原样透传。
 
@@ -253,7 +261,7 @@ async def _ensure_first_contact_request(owner_hasn_id: str, to_target: Any) -> i
 
 async def _map_direct_send_result(
     result: SendMessageResult,
-    owner_hasn_id: str | None,
+    owner_hasn_id: str,
     to_target: Any,
 ) -> dict[str, Any]:
     """把 ImGateway 的 SendMessageResult（三态）映射为 message.send 工具返回体。
@@ -418,12 +426,13 @@ class MessageSendTool(BaseTool):
 
         维度① 能力授权已在 server.call_tool 按三态 mode 统一判定（D3），工具内不二次校验。
         """
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         to_target = arguments.get('to')
         if not to_target:
             raise RuntimeError('Missing required arguments: to')
 
         # 主人寻址哨兵 → 解析为主人本人（身份注入不含主人 id，见 _OWNER_TARGET_SENTINELS 注释）。
-        to_target = _resolve_to_target(to_target, agent_context.owner_hasn_id)
+        to_target = _resolve_to_target(to_target, owner_hasn_id)
 
         text = arguments.get('content')
         attachments_uris = arguments.get('attachments') or []
@@ -448,7 +457,7 @@ class MessageSendTool(BaseTool):
                 content_type = _CT_CARD
             elif attachments_uris:
                 attachments, content_type = await _resolve_attachments(
-                    db, agent_context.owner_hasn_id, attachments_uris
+                    db, owner_hasn_id, attachments_uris
                 )
                 content = {'text': str(text) if text else '', 'attachments': attachments}
             else:
@@ -459,9 +468,7 @@ class MessageSendTool(BaseTool):
             # 不在工具层重造解析逻辑（零漂移）。direct（人/分身）走 ImGateway port（R1-05 切片①），
             # 群 / 不可达目标仍走现网 route_message（本切片不承接，错误码/群补强原样保持）。
             target = await message_router.resolve_target(db, str(to_target))
-            is_direct = target is not None and target.get('entity_type') in ('human', 'agent')
-
-            if is_direct:
+            if target is not None and target.get('entity_type') in ('human', 'agent'):
                 # ── 直聊经 ImGateway port 收敛为通信域单一写入口 ──
                 # ensure 幂等取会话 → send 投递。port 内部第一版仍复用现网 route_message，
                 # 故落库/权限/受众扇出/sync 发射逐字不变、daemon 镜像不受影响；R2 起 port 换
@@ -511,7 +518,7 @@ class MessageSendTool(BaseTool):
                         'code': rejected.code,
                     }
                 return await _map_direct_send_result(
-                    send_result, agent_context.owner_hasn_id, to_target
+                    send_result, owner_hasn_id, to_target
                 )
 
             # ── 群 / 不可达目标：过渡期仍走现网 route_message（与切换前逐字一致）──
@@ -556,7 +563,7 @@ class MessageSendTool(BaseTool):
             pending_request_id = result.get('pending_request_id')
             if not pending_request_id:
                 pending_request_id = await _ensure_first_contact_request(
-                    agent_context.owner_hasn_id, to_target,
+                    owner_hasn_id, to_target,
                 )
             return {
                 'message_id': result.get('msg_id'),
@@ -643,7 +650,7 @@ class MessageListTool(BaseTool):
         async with async_db_session() as db:
             return await agent_message_read_service.list_messages(
                 db,
-                agent_context.owner_hasn_id,
+                _require_owner_hasn_id(agent_context),
                 limit=arguments.get('limit', 20),
                 cursor=arguments.get('cursor'),
                 conversation_id=arguments.get('conversation_id'),
@@ -703,7 +710,7 @@ class ConversationListTool(BaseTool):
         async with async_db_session() as db:
             return await agent_message_read_service.list_conversations(
                 db,
-                agent_context.owner_hasn_id,
+                _require_owner_hasn_id(agent_context),
                 limit=arguments.get('limit', 20),
                 cursor=arguments.get('cursor'),
             )
@@ -770,7 +777,7 @@ class MessageSearchTool(BaseTool):
         async with async_db_session() as db:
             return await agent_message_read_service.search_messages(
                 db,
-                agent_context.owner_hasn_id,
+                _require_owner_hasn_id(agent_context),
                 str(query),
                 limit=arguments.get('limit', 20),
                 cursor=arguments.get('cursor'),
