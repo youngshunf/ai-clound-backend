@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,20 @@ from backend.plugin.code_generator.schema.business import CreateGenBusinessParam
 class CRUDGenBusiness(CRUDPlus[GenBusiness]):
     """代码生成业务 CRUD 类"""
 
+    @staticmethod
+    def _single_business(result: object) -> GenBusiness | None:
+        """将不带关联加载的查询结果收紧为单个代码生成业务。"""
+        if result is not None and not isinstance(result, GenBusiness):
+            raise TypeError('代码生成业务单模型查询返回了关联结果')
+        return cast(GenBusiness | None, result)
+
+    @staticmethod
+    def _business_sequence(result: object) -> Sequence[GenBusiness]:
+        """将不带关联加载的查询结果收紧为代码生成业务序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, GenBusiness) for item in result):
+            raise TypeError('代码生成业务列表查询返回了关联结果')
+        return cast(Sequence[GenBusiness], result)
+
     async def get(self, db: AsyncSession, pk: int) -> GenBusiness | None:
         """
         获取代码生成业务
@@ -19,7 +34,7 @@ class CRUDGenBusiness(CRUDPlus[GenBusiness]):
         :param pk: 代码生成业务 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_business(await self.select_model(db, pk))
 
     async def get_by_name(self, db: AsyncSession, name: str) -> GenBusiness | None:
         """
@@ -29,7 +44,7 @@ class CRUDGenBusiness(CRUDPlus[GenBusiness]):
         :param name: 表名
         :return:
         """
-        return await self.select_model_by_column(db, table_name=name)
+        return self._single_business(await self.select_model_by_column(db, table_name=name))
 
     async def get_all(self, db: AsyncSession) -> Sequence[GenBusiness]:
         """
@@ -38,7 +53,7 @@ class CRUDGenBusiness(CRUDPlus[GenBusiness]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._business_sequence(await self.select_models(db))
 
     async def get_select(self, table_name: str | None) -> Select:
         """
@@ -47,12 +62,12 @@ class CRUDGenBusiness(CRUDPlus[GenBusiness]):
         :param table_name: 业务表名
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if table_name is not None:
             filters['table_name__like'] = f'%{table_name}%'
 
-        return await self.select_order('id', 'desc', **filters)
+        return await self.select_order('id', 'desc', **cast(Any, filters))
 
     async def create(self, db: AsyncSession, obj: CreateGenBusinessParam) -> None:
         """
