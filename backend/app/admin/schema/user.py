@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Annotated, Any, Self
 
 from pydantic import ConfigDict, Field, HttpUrl, PlainSerializer, field_validator, model_validator
+from starlette.authentication import BaseUser
 
 from backend.app.admin.schema.dept import GetDeptDetail
 from backend.app.admin.schema.role import GetRoleWithRelationDetail
@@ -40,9 +41,10 @@ class AddUserRoleParam(SchemaBase):
     role_id: int = Field(description='角色 ID')
 
 
-class AddOAuth2UserParam(AuthSchemaBase):
+class AddOAuth2UserParam(SchemaBase):
     """添加 OAuth2 用户参数"""
 
+    username: str = Field(description='用户名')
     password: str | None = Field(None, description='密码')
     nickname: str | None = Field(None, description='昵称')
     email: CustomEmailStr | None = Field(None, description='邮箱')
@@ -120,7 +122,7 @@ class GetUserInfoDetail(UserInfoSchemaBase):
     last_login_time: datetime | None = Field(None, description='最后登录时间')
 
 
-class GetUserInfoWithRelationDetail(GetUserInfoDetail):
+class GetUserInfoWithRelationDetail(GetUserInfoDetail, BaseUser):
     """用户信息关联详情"""
 
     model_config = ConfigDict(from_attributes=True)
@@ -129,14 +131,27 @@ class GetUserInfoWithRelationDetail(GetUserInfoDetail):
     roles: list[GetRoleWithRelationDetail] = Field(description='角色列表')
     hasn_id: str | None = Field(None, description='HASN ID')
 
+    @property
+    def is_authenticated(self) -> bool:
+        return True
 
-class GetCurrentUserInfoWithRelationDetail(GetUserInfoWithRelationDetail):
+    @property
+    def display_name(self) -> str:
+        return self.nickname
+
+    @property
+    def identity(self) -> str:
+        return str(self.id)
+
+
+class GetCurrentUserInfoWithRelationDetail(GetUserInfoDetail):
     """当前用户信息关联详情"""
 
     model_config = ConfigDict(from_attributes=True)
 
     dept: str | None = Field(None, description='部门名称')
     roles: list[str] = Field(description='角色名称列表')
+    hasn_id: str | None = Field(None, description='HASN ID')
 
     @model_validator(mode='before')
     @classmethod

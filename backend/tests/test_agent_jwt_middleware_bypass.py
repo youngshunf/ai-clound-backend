@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 from jose import jwt
+from starlette.authentication import BaseUser
 from starlette.requests import Request
 
+from backend.app.admin.schema.user import GetUserInfoWithRelationDetail
 from backend.common.security.agent_jwt import is_agent_token
 from backend.core.conf import settings
 from backend.middleware.jwt_auth_middleware import JwtAuthMiddleware
@@ -103,3 +105,24 @@ def test_extract_token_none_without_authorization() -> None:
     api = settings.FASTAPI_API_V1_PATH
     request = _make_request(f'{api}/some/owner/route', None)
     assert JwtAuthMiddleware.extract_token(request) is None
+
+
+def test_owner_jwt_user_implements_starlette_user_contract() -> None:
+    """Owner JWT 解析出的用户可直接交给 Starlette 认证中间件。"""
+    user = GetUserInfoWithRelationDetail.model_validate({
+        'id': 42,
+        'uuid': 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        'username': 'owner',
+        'nickname': '主人',
+        'status': 1,
+        'is_superuser': False,
+        'is_staff': False,
+        'is_multi_login': True,
+        'join_time': '2026-07-23T00:00:00+00:00',
+        'roles': [],
+    })
+
+    assert isinstance(user, BaseUser)
+    assert user.is_authenticated is True
+    assert user.identity == '42'
+    assert user.display_name == '主人'

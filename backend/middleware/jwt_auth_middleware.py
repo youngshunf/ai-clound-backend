@@ -1,8 +1,8 @@
 from typing import Any
 
-from fastapi import Request, Response
+from fastapi import Response
 from fastapi.security.utils import get_authorization_scheme_param
-from starlette.authentication import AuthCredentials, AuthenticationBackend
+from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
 from starlette.authentication import AuthenticationError as StarletteAuthenticationError
 from starlette.requests import HTTPConnection
 
@@ -55,7 +55,7 @@ class JwtAuthMiddleware(AuthenticationBackend):
         return MsgSpecJSONResponse(content={'code': status_code, 'msg': exc.msg, 'data': None}, status_code=status_code)
 
     @staticmethod
-    def extract_token(request: Request) -> str | None:
+    def extract_token(request: HTTPConnection) -> str | None:
         """
         从请求中提取 Bearer Token
 
@@ -85,7 +85,7 @@ class JwtAuthMiddleware(AuthenticationBackend):
 
         return token
 
-    async def authenticate(self, request: Request) -> tuple[AuthCredentials, GetUserInfoWithRelationDetail] | None:
+    async def authenticate(self, request: HTTPConnection) -> tuple[AuthCredentials, BaseUser] | None:
         """
         认证请求
 
@@ -99,7 +99,11 @@ class JwtAuthMiddleware(AuthenticationBackend):
         try:
             user = await jwt_authentication(token)
         except TokenError as exc:
-            raise AuthenticationError(code=exc.code, msg=exc.detail, headers=exc.headers)
+            raise AuthenticationError(
+                code=exc.code,
+                msg=exc.detail,
+                headers=dict(exc.headers) if exc.headers else None,
+            )
         except Exception as e:
             log.exception(f'JWT 授权异常：{e}')
             raise AuthenticationError(code=getattr(e, 'code', 500), msg=getattr(e, 'msg', 'Internal Server Error'))
