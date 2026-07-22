@@ -40,6 +40,7 @@ from backend.app.hasn.service import hasn_auth as hasn_auth_service
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.app.marketplace.crud.crud_marketplace_template import marketplace_template_dao
 from backend.app.marketplace.crud.crud_marketplace_template_version import marketplace_template_version_dao
+from backend.common.dataclasses import AgentAccessToken
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.security.jwt import create_access_token, create_refresh_token
@@ -92,7 +93,7 @@ PRIVATE_NODE_INFO_KEYS = {
 
 
 class RedisLike(Protocol):
-    async def exists(self, key: str) -> bool: ...
+    async def exists(self, key: str) -> int: ...
     async def ttl(self, key: str) -> int: ...
     async def setex(self, key: str, seconds: int, value: str) -> Any: ...
     async def get(self, key: str) -> Any: ...
@@ -666,22 +667,21 @@ async def _issue_phone_verify_agent_tokens(
     issued_agent_tokens: list[AgentTokenInfo] = []
     for agent in agents:
         try:
-            token = await agent_tokens.issue(
+            agent_name = agent.display_name or agent.agent_name
+            token: AgentAccessToken = await agent_tokens.issue(
                 db,
                 agent_hasn_id=agent.hasn_id,
-                agent_name=getattr(agent, 'display_name', None) or getattr(agent, 'agent_name', None),
+                agent_name=agent_name,
                 owner_hasn_id=human.hasn_id,
                 owner_user_id=user.id,
             )
             issued_agent_tokens.append(
                 AgentTokenInfo(
                     agent_hasn_id=agent.hasn_id,
-                    agent_name=getattr(agent, 'display_name', None) or getattr(agent, 'agent_name', None),
+                    agent_name=agent_name,
                     access_token=token.access_token,
                     # scopes 已退役（实施102 S0）：AgentTokenInfo.scopes 恒空占位，daemon 兼容用。
-                    expire_time=getattr(token, 'access_token_expire_time', None).isoformat()
-                    if getattr(token, 'access_token_expire_time', None)
-                    else None,
+                    expire_time=token.access_token_expire_time.isoformat(),
                     expires_at_unix=getattr(token, 'expires_at_unix', None),
                 )
             )

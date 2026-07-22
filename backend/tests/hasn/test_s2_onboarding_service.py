@@ -22,6 +22,7 @@ from backend.app.hasn.service.hasn_onboarding_service import (
     HasnOnboardingService,
     HasnPhoneAuthService,
 )
+from backend.core.conf import settings
 
 
 class FakeRedis:
@@ -217,7 +218,7 @@ async def test_phone_verify_returns_agent_tokens_when_owner_has_active_agents(
     assert [item.agent_hasn_id for item in response.agent_tokens] == ['a_1', 'a_2']
     assert response.agent_tokens[0].agent_name == '一号 Agent'
     assert response.agent_tokens[0].access_token == 'agent-token:a_1'
-    assert response.agent_tokens[0].scopes == ['message.read', 'knowledge.read']
+    assert response.agent_tokens[0].scopes == []
     assert response.agent_tokens[0].expire_time == '2026-05-18T00:00:00+00:00'
     assert response.agent_tokens[0].expires_at_unix == 1779062400
     assert response.agent_tokens[1].agent_name == 'agent_two'
@@ -289,7 +290,7 @@ async def test_onboarding_ensure_closes_old_user_default_agent_and_pending_inten
     assert response.default_agent.hasn_id == 'a_default_1'
     assert response.default_agent.display_name == DEFAULT_AGENT_DISPLAY_NAME
     assert response.default_agent.access_token == 'agent-token:a_default_1'
-    assert response.default_agent.scopes == ['message.read', 'knowledge.read']
+    assert response.default_agent.scopes == []
     # 沙箱已退役（CLEAN-3·hasn_tenant_sandboxes 恒 None），字段仅兼容 daemon 保留。
     assert response.sandbox is None
     # B2②：bootstrap 游标必须是 gateway 给出的权威 feed 真实 head（42），不再硬编码 0。
@@ -322,5 +323,5 @@ async def test_llm_credential_issuer_never_sends_global_default_model(monkeypatc
     token, base_url, model = await SqlAlchemyLlmCredentialIssuer().issue(db=None, user=user)
 
     assert token == 'sk-tok_xyz'
-    assert base_url  # per-owner base_url 仍下发
+    assert base_url == settings.LLM_API_BASE_URL
     assert model is None  # 关键断言：主模型留空，平台默认当权威
