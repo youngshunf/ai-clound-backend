@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import uuid4
 
@@ -27,6 +28,19 @@ _VALID_STAGES = _OPEN_STAGES + _CLOSED_STAGES
 
 def _gen_no(prefix: str) -> str:
     return f'{prefix}{uuid4().hex[:12].upper()}'
+
+
+def _decimal_value(value: float | None, *, field: str) -> Decimal | None:
+    """将 API 数值转换为精确十进制，拒绝无穷和非数值。"""
+    if value is None:
+        return None
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise errors.RequestError(msg=f'{field} 必须是有效数字') from exc
+    if not decimal_value.is_finite():
+        raise errors.RequestError(msg=f'{field} 必须是有限数字')
+    return decimal_value
 
 
 def _opportunity_to_dict(o: Opportunity) -> dict[str, Any]:
@@ -93,9 +107,9 @@ class GrowthOpportunityService:
             user_id=user_id,
             name=name,
             stage=stage,
-            amount=amount,
+            amount=_decimal_value(amount, field='amount'),
             currency=currency,
-            probability=probability,
+            probability=_decimal_value(probability, field='probability'),
             expected_close_at=expected_close_at,
             created_by_kind=created_by_kind,
             owner_scope=customer.owner_scope,
@@ -183,7 +197,7 @@ class GrowthOpportunityService:
             o.stage = 'closed_won'
             o.won_at = now
             if amount is not None:
-                o.amount = amount
+                o.amount = _decimal_value(amount, field='amount')
             o.close_note = close_note
         else:
             o.stage = 'closed_lost'
