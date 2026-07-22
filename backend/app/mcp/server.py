@@ -7,6 +7,7 @@ HASN 云端 MCP Server
 import hashlib
 import logging
 
+from collections.abc import Sequence
 from typing import Any, NoReturn
 
 from backend.app.external_mcp.external_tool import load_external_mcp_tools_for_agent
@@ -63,7 +64,7 @@ _DISPATCH_TOOL_NAMES = frozenset({'hasn.cloud.tool.call', 'hasn.local.tool.call'
 _SUMMARY_AUDIT_SAMPLE_RATE = 10
 
 
-async def load_app_tools_for_agent(agent_id: str, owner_id: str) -> list[BaseTool]:  # noqa: RUF029
+async def load_app_tools_for_agent(agent_id: str, owner_id: str) -> Sequence[BaseTool]:  # noqa: RUF029
     """Agent 维度的 App 工具（P4-B）。
 
     当前 AI-Native App 的可见性按 workspace 已发布 manifest 投影（见
@@ -73,7 +74,7 @@ async def load_app_tools_for_agent(agent_id: str, owner_id: str) -> list[BaseToo
     return []
 
 
-async def load_app_tools_for_owner(owner_id: str) -> list[BaseTool]:
+async def load_app_tools_for_owner(owner_id: str) -> Sequence[BaseTool]:
     """Owner/workspace 维度的 App 工具（P4-B，Q1）：
 
     把已发布 AI-Native manifest（builtin community/knowledge + DB published）的
@@ -588,7 +589,7 @@ class HasnCloudMcpServer:
         """
         if source == 'external':
             tool_name = getattr(tool, 'name', '')
-            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
+            allowed = agent_context.external_allowed_tools
             if tool_name not in allowed:
                 # 防御性兜底：external 工具不在本 Agent 授权集合 → 拒绝（发现层已挡，此为执行层兜底）。
                 raise McpToolError(
@@ -601,9 +602,9 @@ class HasnCloudMcpServer:
         try:
             agent_tools = await load_app_tools_for_agent(
                 agent_id=agent_context.hasn_id,
-                owner_id=agent_context.owner_id,
+                owner_id=agent_context.owner_hasn_id,
             )
-            owner_tools = await load_app_tools_for_owner(owner_id=agent_context.owner_id)
+            owner_tools = await load_app_tools_for_owner(owner_id=agent_context.owner_hasn_id)
             for tool in [*agent_tools, *owner_tools]:
                 if self.tool_registry.get_tool(tool.name):
                     continue

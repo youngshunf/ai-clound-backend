@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+from fastapi import Request
 
 from backend.app.mcp.tools.base import BaseTool
 
@@ -51,7 +53,7 @@ class AppTool(BaseTool):
         validate_canonical_name(self.name, self.source)
 
     @property
-    def source(self) -> str:
+    def source(self) -> Literal['app']:
         return "app"
 
     @property
@@ -103,14 +105,10 @@ class AppTool(BaseTool):
         # （能力票走传输层 ContextVar、由 server.py 消费），这里只承载 agent 供网关复用，
         # 并以 mcp_face=True 标记让网关跳过重复的三态闸门（否则一次性能力票会被二次消费、
         # 已批准的 ask 调用反被网关重新挂起审批）。headers 置空：MCP 面不经请求头传票，
-        # 同时补齐属性避免网关 `request.headers.get(...)` 抛 AttributeError。
-        class _Request:
-            state = type(
-                "_State",
-                (),
-                {"agent": agent_context.to_token_payload(), "mcp_face": True},
-            )()
-            headers: dict[str, str] = {}
+        # 同时使用真实 Request 对象补齐 headers/state，避免网关读取请求属性时失真。
+        request = Request({'type': 'http', 'headers': []})
+        request.state.agent = agent_context.to_token_payload()
+        request.state.mcp_face = True
 
         # 裸 session + 末尾显式 commit（对齐平台工具 asset.create 模式）：网关 dispatch 全程只
         # flush（业务行 + 审计行）、从不自己 commit——末尾 commit 落库（修非自 commit 的 App 写类
@@ -121,8 +119,8 @@ class AppTool(BaseTool):
         async with async_db_session() as db:
             result = await ai_native_runtime_gateway.call_tool(
                 db,
-                request=_Request(),
-                app_id=self.app_id,
+                request=request,
+                app_id=self._app_id,
                 tool_id=self.tool_id,
                 body=AiNativeToolCallRequest(
                     agent_hasn_id=agent_context.hasn_id,
