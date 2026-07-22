@@ -4,6 +4,7 @@
 """
 
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -20,12 +21,15 @@ from backend.cli_tools.cli.common import (
     print_success,
 )
 from backend.cli_tools.packager.skill_packager import SkillPackager
-from backend.cli_tools.validator.skill_validator import SkillValidator
+from backend.cli_tools.validator.skill_validator import SkillConfig, SkillValidator
+
+BumpType = Literal['patch', 'minor', 'major']
 
 
 @dataclass
 class PublishResult:
     """发布结果"""
+
     success: bool
     skill_id: str = ''
     version: str = ''
@@ -43,10 +47,10 @@ class SkillPublisher:
         self.validator = SkillValidator(skill_path)
         self.packager = SkillPackager(skill_path)
 
-    async def publish(
+    async def publish(  # ruff:ignore[complex-structure]
         self,
         db: AsyncSession,
-        bump: Literal['patch', 'minor', 'major'] | None = None,
+        bump: BumpType | None = None,
         version: str | None = None,
         changelog: str | None = None,
     ) -> PublishResult:
@@ -81,10 +85,7 @@ class SkillPublisher:
         # 3. 检查版本是否已存在
         existing_version = await self._get_version(db, skill_id, final_version)
         if existing_version:
-            return PublishResult(
-                success=False,
-                error=f'版本 {final_version} 已存在，请使用其他版本号'
-            )
+            return PublishResult(success=False, error=f'版本 {final_version} 已存在，请使用其他版本号')
 
         # 4. 打包前更新 config.yaml 版本号（确保包内版本与数据库一致）
         if config.version != final_version:
@@ -174,7 +175,7 @@ class SkillPublisher:
         db: AsyncSession,
         skill_id: str,
         config_version: str,
-        bump: str | None,
+        bump: BumpType | None,
         explicit_version: str | None,
     ) -> str | None:
         """解析最终版本号"""
@@ -182,10 +183,11 @@ class SkillPublisher:
             # 使用显式指定的版本号
             try:
                 VersionInfo.parse(explicit_version)
-                return explicit_version
             except ValueError as e:
                 print_error(str(e))
                 return None
+            else:
+                return explicit_version
 
         if bump:
             # 获取最新版本并递增
@@ -216,12 +218,8 @@ class SkillPublisher:
 
             # 使用正则替换 version 字段
             import re
-            new_content = re.sub(
-                r'^version:\s*.+$',
-                f'version: {version}',
-                content,
-                flags=re.MULTILINE
-            )
+
+            new_content = re.sub(r'^version:\s*.+$', f'version: {version}', content, flags=re.MULTILINE)
 
             Path(config_path).write_text(new_content, encoding='utf-8')
 
@@ -253,20 +251,19 @@ class SkillPublisher:
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def _create_skill(self, db: AsyncSession, config, icon_url: str | None) -> None:
+    async def _create_skill(self, db: AsyncSession, config: SkillConfig, icon_url: str | None) -> None:
         """创建新技能"""
-        from decimal import Decimal
-        # tags 是列表时转换为逗号分隔的字符串
-        tags = ','.join(config.tags) if isinstance(config.tags, list) else config.tags
         skill = MarketplaceSkill(
             skill_id=config.id,
             name=config.name,
-            description=config.description,
+            name_en=config.name,
+            name_zh=config.name,
+            description_en=config.description,
+            description_zh=config.description,
             icon_url=icon_url,
-            emoji=getattr(config, 'emoji', None),
             author_name=config.author_name,
             category=config.category,
-            tags=tags,
+            tags=config.tags,
             pricing_type=config.pricing,
             price=Decimal(0),
             is_private=False,
@@ -276,17 +273,23 @@ class SkillPublisher:
         db.add(skill)
         await db.flush()
 
-    async def _update_skill(self, db: AsyncSession, skill_id: str, config, icon_url: str | None) -> None:
+    async def _update_skill(
+        self,
+        db: AsyncSession,
+        skill_id: str,
+        config: SkillConfig,
+        icon_url: str | None,
+    ) -> None:
         """更新已有技能"""
-        # tags 是列表时转换为逗号分隔的字符串
-        tags = ','.join(config.tags) if isinstance(config.tags, list) else config.tags
         update_data = {
             'name': config.name,
-            'description': config.description,
+            'name_en': config.name,
+            'name_zh': config.name,
+            'description_en': config.description,
+            'description_zh': config.description,
             'category': config.category,
-            'tags': tags,
+            'tags': config.tags,
             'pricing_type': config.pricing,
-            'emoji': getattr(config, 'emoji', None),
         }
         if icon_url:
             update_data['icon_url'] = icon_url
@@ -296,10 +299,14 @@ class SkillPublisher:
 
     async def _clear_latest_flag(self, db: AsyncSession, skill_id: str) -> None:
         """清除旧版本的 is_latest 标志"""
-        stmt = update(MarketplaceSkillVersion).where(
-            MarketplaceSkillVersion.skill_id == skill_id,
-            MarketplaceSkillVersion.is_latest,
-        ).values(is_latest=False)
+        stmt = (
+            update(MarketplaceSkillVersion)
+            .where(
+                MarketplaceSkillVersion.skill_id == skill_id,
+                MarketplaceSkillVersion.is_latest,
+            )
+            .values(is_latest=False)
+        )
         await db.execute(stmt)
 
     async def _create_version(
