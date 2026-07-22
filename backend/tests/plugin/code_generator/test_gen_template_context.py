@@ -1,5 +1,7 @@
 """代码生成模板上下文回归测试。"""
 
+import pytest
+
 from backend.plugin.code_generator.model import GenBusiness, GenColumn
 from backend.plugin.code_generator.utils.gen_template import GenTemplate
 
@@ -51,3 +53,24 @@ def test_template_context_preserves_heterogeneous_generation_values() -> None:
             'is_nullable': True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_api_template_uses_empty_create_response() -> None:
+    """创建服务不返回资源时，生成的 Agent API 必须保留成功空数据信封。"""
+    code = await (
+        GenTemplate()
+        .get_template('python/api_agent.jinja')
+        .render_async(
+            app_name='hasn_demo',
+            doc_comment='演示记录',
+            filename='demo_record',
+            schema_name='DemoRecord',
+            table_name='demo_record',
+        )
+    )
+
+    compile(code, '<api_agent>', 'exec')
+    assert 'await demo_record_service.create(db=db, obj=obj)' in code
+    assert 'return response_base.success()' in code
+    assert 'response_base.success(data=result)' not in code
