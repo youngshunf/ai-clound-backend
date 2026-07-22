@@ -20,24 +20,24 @@ class WorkflowNodeSpec(SchemaBase):
     """工作流节点声明（= 一个 task 模板）"""
 
     node_key: str = Field(description='图内稳定节点标识，如 research-cost（同图唯一）')
-    agent_id: str | None = Field(None, description='目标分身（可跨 Agent，W2；缺省=编排发起分身）')
-    name: str | None = Field(None, description='节点名称（缺省取 node_key）')
+    agent_id: str | None = Field(default=None, description='目标分身（可跨 Agent，W2；缺省=编排发起分身）')
+    name: str | None = Field(default=None, description='节点名称（缺省取 node_key）')
     prompt: str = Field(description='节点任务指令')
-    system_prompt: str | None = Field(None, description='节点系统提示词')
-    description: str | None = Field(None, description='节点描述')
+    system_prompt: str | None = Field(default=None, description='节点系统提示词')
+    description: str | None = Field(default=None, description='节点描述')
     skill_bundle_refs: list[dict] = Field(default_factory=list, description='节点技能包引用')
     skill_bundle_ids: list[str] = Field(default_factory=list, description='节点技能包名称列表')
-    enabled_toolsets: list[str] | None = Field(None, description='节点限制工具集（NULL=全部；派发时取授权交集）')
-    enable_subagents: bool = Field(False, description='允许节点会话内使用子分身 delegate_task')
-    is_sink: bool = Field(False, description='标记为 sink 节点（整图 output_summary 取 sink 拼接）')
+    enabled_toolsets: list[str] | None = Field(default=None, description='节点限制工具集（NULL=全部；派发时取授权交集）')
+    enable_subagents: bool = Field(default=False, description='允许节点会话内使用子分身 delegate_task')
+    is_sink: bool = Field(default=False, description='标记为 sink 节点（整图 output_summary 取 sink 拼接）')
     # ↓ doc35 B1「修死列」：以下五个字段模板层早已声明、节点表也早有列，但建图入参一直没有它们，
     # 于是模板声明的产出闸/应用绑定在实例化时被整段丢弃，`workflow_node.output_spec` 永远是 NULL
     # ——闸「配了等于没配」。补进入参，让模板声明真正落到节点行上。
-    output_spec: dict | None = Field(None, description='产出要求（doc35 §0.2 归一契约，见 OutputSpec）')
-    review_policy: dict | None = Field(None, description='质量门策略')
+    output_spec: dict | None = Field(default=None, description='产出要求（doc35 §0.2 归一契约，见 OutputSpec）')
+    review_policy: dict | None = Field(default=None, description='质量门策略')
     apps: list[str] = Field(default_factory=list, description='默认应用绑定 [app_id...]')
     skills: list[str] = Field(default_factory=list, description='默认技能绑定 [skill...]')
-    is_origin: bool = Field(False, description='是否起点节点（主人输入锚点，预完成为 done、不过产出闸）')
+    is_origin: bool = Field(default=False, description='是否起点节点（主人输入锚点，预完成为 done、不过产出闸）')
 
 
 class WorkflowEdgeSpec(SchemaBase):
@@ -50,20 +50,20 @@ class WorkflowEdgeSpec(SchemaBase):
 class CreateWorkflowParam(SchemaBase):
     """创建工作流参数（一次声明整图）"""
 
-    owner_id: str = Field('', description='归属 owner（服务端以身份覆写）')
-    workflow_uuid: str | None = Field(None, description='端云稳定工作流 UUID（缺省服务端生成）')
+    owner_id: str = Field(default='', description='归属 owner（服务端以身份覆写）')
+    workflow_uuid: str | None = Field(default=None, description='端云稳定工作流 UUID（缺省服务端生成）')
     name: str = Field(description='工作流名称')
-    goal: str | None = Field(None, description='总目标')
-    schedule_type: str = Field('once', description='整图定时 once/interval/cron')
+    goal: str | None = Field(default=None, description='总目标')
+    schedule_type: str = Field(default='once', description='整图定时 once/interval/cron')
     schedule_config: dict = Field(default_factory=dict, description='调度配置 JSON')
-    schedule_display: str | None = Field(None, description='人类可读调度描述')
-    timezone: str = Field('Asia/Shanghai', description='时区')
-    misfire_policy: str = Field('run_once', description='错过补跑策略')
-    catchup_limit: int | None = Field(None, description='补偿执行上限')
-    continuation_enabled: bool = Field(False, description='跨 fire 接续（二期）')
-    source: str = Field('owner', description='来源 owner/agent')
-    created_by_kind: str = Field('owner', description='创建者类别 owner/agent/builtin')
-    status: str | None = Field(None, description='状态（缺省 active；agent 建定时图服务端置 pending_approval）')
+    schedule_display: str | None = Field(default=None, description='人类可读调度描述')
+    timezone: str = Field(default='Asia/Shanghai', description='时区')
+    misfire_policy: str = Field(default='run_once', description='错过补跑策略')
+    catchup_limit: int | None = Field(default=None, description='补偿执行上限')
+    continuation_enabled: bool = Field(default=False, description='跨 fire 接续（二期）')
+    source: str = Field(default='owner', description='来源 owner/agent')
+    created_by_kind: str = Field(default='owner', description='创建者类别 owner/agent/builtin')
+    status: str | None = Field(default=None, description='状态（缺省 active；agent 建定时图服务端置 pending_approval）')
     nodes: list[WorkflowNodeSpec] = Field(description='节点列表')
     edges: list[WorkflowEdgeSpec] = Field(default_factory=list, description='依赖边列表')
 

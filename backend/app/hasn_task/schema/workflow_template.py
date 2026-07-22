@@ -15,8 +15,8 @@ from backend.common.schema import SchemaBase
 class WorkflowTemplateGraphSummary(SchemaBase):
     """图蓝图派生摘要（不含明细，供卡片渲染）"""
 
-    node_count: int = Field(0, description='节点数')
-    app_count: int = Field(0, description='去重后应用数（各节点 apps 并集）')
+    node_count: int = Field(default=0, description='节点数')
+    app_count: int = Field(default=0, description='去重后应用数（各节点 apps 并集）')
     apps: list[str] = Field(
         default_factory=list,
         description='去重后应用键（各节点 apps 并集·首见序）——供卡片渲染应用图标堆',
@@ -88,17 +88,17 @@ class CreateWorkflowTemplateParam(SchemaBase):
 
     template_key: str = Field(description='模板键（全局唯一）')
     name: str = Field(description='展示名')
-    domain: str | None = Field(None, description='领域分组 code（非空=场景模板）')
-    tagline: str | None = Field(None, description='一句话标签')
-    description: str | None = Field(None, description='链路详述')
-    sort_order: int = Field(0, description='展示排序')
-    icon: str | None = Field(None, description='图标 key')
-    accent: str | None = Field(None, description='主题强调色')
+    domain: str | None = Field(default=None, description='领域分组 code（非空=场景模板）')
+    tagline: str | None = Field(default=None, description='一句话标签')
+    description: str | None = Field(default=None, description='链路详述')
+    sort_order: int = Field(default=0, description='展示排序')
+    icon: str | None = Field(default=None, description='图标 key')
+    accent: str | None = Field(default=None, description='主题强调色')
     graph_spec: dict = Field(default_factory=dict, description='图蓝图 {nodes:[],edges:[]}')
-    is_builtin: bool = Field(False, description='官方内置标记')
-    builtin_key: str | None = Field(None, description='内置溯源键')
-    status: str = Field('draft', description='状态（内置一般 active/coming_soon）')
-    source: str = Field('owner', description='来源 builtin/owner/agent/marketplace')
-    market_ref: str | None = Field(None, description='市场发布物溯源')
-    sku_ref: str | None = Field(None, description='官方付费挂钩')
-    version: int = Field(1, description='模板版本')
+    is_builtin: bool = Field(default=False, description='官方内置标记')
+    builtin_key: str | None = Field(default=None, description='内置溯源键')
+    status: str = Field(default='draft', description='状态（内置一般 active/coming_soon）')
+    source: str = Field(default='owner', description='来源 builtin/owner/agent/marketplace')
+    market_ref: str | None = Field(default=None, description='市场发布物溯源')
+    sku_ref: str | None = Field(default=None, description='官方付费挂钩')
+    version: int = Field(default=1, description='模板版本')

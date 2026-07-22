@@ -35,6 +35,7 @@ from backend.app.billing.model.billing_offering import BillingOffering
 from backend.app.billing.model.billing_plan import BillingPlan
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
+from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_task.schema.workflow_template import CreateWorkflowTemplateParam
 from backend.app.hasn_task.service.workflow_template_service import (
     _MAX_NODES,
@@ -110,6 +111,14 @@ async def _seed_agent(session: AsyncSession, *, owner_id: str, agent_id: str, na
         )
     )
     await session.flush()
+
+
+async def _seed_project(session: AsyncSession, *, owner_id: str) -> str:
+    """创建场景实例化所需的云端权威平台项目。"""
+    project = HasnProject(owner_id=owner_id, name='工作流模板测试项目', status='active')
+    session.add(project)
+    await session.flush()
+    return str(project.id)
 
 
 def _valid_graph() -> dict:
@@ -418,6 +427,7 @@ async def test_instantiate_builds_cloud_workflow(env: SimpleNamespace) -> None:
     owner = f'io_{_uid()}'
     agent_id = f'ag_{_uid()}'
     await _seed_agent(env.session, owner_id=owner, agent_id=agent_id, name='发起分身')
+    project_id = await _seed_project(env.session, owner_id=owner)
 
     # 内置模板供实例化（免权益判定）
     key = f'ibi_{_uid()}'
@@ -439,7 +449,10 @@ async def test_instantiate_builds_cloud_workflow(env: SimpleNamespace) -> None:
         expire_time=datetime.now(),
     )
     result = await workflow_template_service.instantiate_template(
-        env.session, agent=agent, template_key=key, params={'origin_input': '做一个 AI 记账 App', 'title': '我的一人公司'}
+        env.session,
+        agent=agent,
+        template_key=key,
+        params={'origin_input': '做一个 AI 记账 App', 'title': '我的一人公司', 'project_id': project_id},
     )
     try:
         assert result['template_key'] == key
@@ -541,6 +554,7 @@ async def test_instantiate_paid_template_denied_without_entitlement(env: SimpleN
     okey = f'off_wft_{tag}'
     feature_key = f'workflow_template:{key}'
     await _seed_agent(env.session, owner_id=owner, agent_id=agent_id, name='发起分身')
+    project_id = await _seed_project(env.session, owner_id=owner)
     await _seed_paid_offering(env.session, offering_key=okey, feature_key=feature_key)
     await _mk_paid_builtin_template(env.session, key=key, sku_ref=okey)
 
@@ -554,7 +568,7 @@ async def test_instantiate_paid_template_denied_without_entitlement(env: SimpleN
     )
     with pytest.raises(McpToolError) as ei:
         await workflow_template_service.instantiate_template(
-            env.session, agent=agent, template_key=key, params={'origin_input': '想法'}
+            env.session, agent=agent, template_key=key, params={'origin_input': '想法', 'project_id': project_id}
         )
     err = ei.value
     assert err.code is McpErrorCode.WORKFLOW_TEMPLATE_ENTITLEMENT_REQUIRED
@@ -576,6 +590,7 @@ async def test_instantiate_paid_template_allowed_with_entitlement(env: SimpleNam
     okey = f'off_wft_{tag}'
     feature_key = f'workflow_template:{key}'
     await _seed_agent(env.session, owner_id=owner, agent_id=agent_id, name='发起分身')
+    project_id = await _seed_project(env.session, owner_id=owner)
     await _seed_paid_offering(env.session, offering_key=okey, feature_key=feature_key)
     await _mk_paid_builtin_template(env.session, key=key, sku_ref=okey)
 
@@ -602,7 +617,7 @@ async def test_instantiate_paid_template_allowed_with_entitlement(env: SimpleNam
         expire_time=datetime.now(),
     )
     result = await workflow_template_service.instantiate_template(
-        env.session, agent=agent, template_key=key, params={'title': '已购一人公司'}
+        env.session, agent=agent, template_key=key, params={'title': '已购一人公司', 'project_id': project_id}
     )
     try:
         assert result['template_key'] == key
@@ -619,6 +634,7 @@ async def test_instantiate_free_template_bypasses_paywall(env: SimpleNamespace) 
     agent_id = f'freeAg_{tag}'
     key = f'freeTpl_{tag}'
     await _seed_agent(env.session, owner_id=owner, agent_id=agent_id, name='发起分身')
+    project_id = await _seed_project(env.session, owner_id=owner)
     # sku_ref 缺省=None（免费）
     await workflow_template_service.create_template(
         env.session,
@@ -641,7 +657,7 @@ async def test_instantiate_free_template_bypasses_paywall(env: SimpleNamespace) 
         expire_time=datetime.now(),
     )
     result = await workflow_template_service.instantiate_template(
-        env.session, agent=agent, template_key=key, params={}
+        env.session, agent=agent, template_key=key, params={'project_id': project_id}
     )
     try:
         assert result['workflow_id']
