@@ -136,6 +136,19 @@ class SyncGateway(Protocol):
         agent_hasn_id: str,
         summary: dict[str, Any],
     ) -> dict[str, Any]: ...
+    async def emit_memory_event(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        event_type: str,
+        namespace: str,
+        aggregate_id: str,
+        payload: dict[str, Any],
+        sync_scope_kind: str = 'owner',
+        sync_scope_id: str | None = None,
+        hasn_id: str | None = None,
+    ) -> tuple[int, str]: ...
 
 
 class SqlAlchemySyncGateway:
