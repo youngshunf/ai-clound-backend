@@ -20,7 +20,7 @@ class TaskSchedulerService:
     """任务调度服务类"""
 
     @staticmethod
-    async def get(*, db: AsyncSession, pk: int) -> TaskScheduler | None:
+    async def get(*, db: AsyncSession, pk: int) -> TaskScheduler:
         """
         获取任务调度详情
 
