@@ -5,6 +5,8 @@
 import random
 import string
 
+from collections.abc import Awaitable, Callable
+
 from fastapi import APIRouter, Depends, Request, Response
 from pyrate_limiter import Duration, Rate
 
@@ -29,6 +31,7 @@ from backend.database.redis import redis_client
 from backend.utils.limiter import RateLimiter
 from backend.utils.timezone import timezone
 
+_ensure_hasn_owner_key: Callable[..., Awaitable[str | None]] | None
 try:
     from backend.app.hasn.service.hasn_auth import ensure_hasn_owner_key as _ensure_hasn_owner_key
 except ImportError:
