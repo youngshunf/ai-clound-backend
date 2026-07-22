@@ -165,22 +165,32 @@ def build_conversation_projection(
         }
     else:
         participants = [
-            {'hasn_id': conv.participant_a_id, 'hasn_type': conv.participant_a_type or _entity_type_str(conv.participant_a_id), 'role': 'member'},
+            {
+                'hasn_id': conv.participant_a_id,
+                'hasn_type': conv.participant_a_type or _entity_type_str(conv.participant_a_id),
+                'role': 'member',
+            },
         ]
         if conv.participant_b_id:
             participants.append(
-                {'hasn_id': conv.participant_b_id, 'hasn_type': conv.participant_b_type or _entity_type_str(conv.participant_b_id), 'role': 'member'}
+                {
+                    'hasn_id': conv.participant_b_id,
+                    'hasn_type': conv.participant_b_type or _entity_type_str(conv.participant_b_id),
+                    'role': 'member',
+                }
             )
         group_meta = None
 
+    created_time = conv.created_time
+    updated_time = conv.updated_time
     projection: dict[str, Any] = {
         'conversation_id': str(conv.id),
         'type': conv.type or 'direct',
         'participants': participants,
         'group': group_meta,
         'revision': int(conv.revision or 1),
-        'created_time': conv.created_time.isoformat() if getattr(conv, 'created_time', None) else None,
-        'updated_time': conv.updated_time.isoformat() if getattr(conv, 'updated_time', None) else None,
+        'created_time': created_time.isoformat() if created_time else None,
+        'updated_time': updated_time.isoformat() if updated_time else None,
     }
 
     # doc14 §6.5：差事背景仅对其归属 owner（= 发起方）序列化，对端 owner / 无 viewer 语境一律裁剪。

@@ -1,6 +1,5 @@
 import urllib.parse
 
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, File, UploadFile
@@ -12,6 +11,7 @@ from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.database.db import CurrentSession
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import write_file
+from backend.utils.timezone import timezone
 
 router = APIRouter()
 
@@ -36,7 +36,7 @@ async def agent_upload_s3_files(
     if not file or not file.filename:
         raise errors.RequestError(msg='上传文件不能为空')
 
-    date_str = datetime.now().strftime('%Y/%m/%d')
+    date_str = timezone.now().strftime('%Y/%m/%d')
     original_filename = file.filename
     # 存储路径: agent_uploads/{user_id}/年/月/日/filename（年/月/日层级目录，加前缀防冲突）
     file.filename = f'agent_uploads/{user_id}/{date_str}/{original_filename}'
@@ -57,4 +57,4 @@ async def agent_upload_s3_files(
         else:
             url = f'{s3_storage.endpoint}{bucket_path}/{encoded_filename}'
 
-    return response_base.success(data={'url': url})
+    return response_base.success(data=UploadUrl(url=url))

@@ -13,7 +13,7 @@
 设计事实源：docs/hasn-node设计文档/16-订阅与积分计费/02-统一商业化内核设计.md §4（订单 kind 分发）。
 """
 
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from typing import Any
 
 from backend.common.log import log
@@ -92,8 +92,7 @@ async def dispatch_fulfillment(order: Any) -> bool:
 
     :return: True=命中 kind 处理器且执行成功；False=无 ``offering_ref`` / kind 未注册（调用方回落旧分发）。
     """
-    offering_ref = getattr(order, 'offering_ref', None) or {}
-    kind = offering_ref.get('kind')
+    kind = _offering_kind(order)
     if not kind:
         return False
     handler = _fulfillment_handlers.get(kind)
@@ -105,19 +104,29 @@ async def dispatch_fulfillment(order: Any) -> bool:
         return False
     try:
         await handler(order)
-        return True
     except Exception as e:
         log.error(f'[fulfillment] 发货处理器异常: kind={kind}, error={e}')
         raise
+    else:
+        return True
 
 
 def _resolve_order_kind(order: Any) -> str | None:
     """解析订单的 offering.kind：优先 ``offering_ref.kind``，回落 ``order_type`` 映射（存量订单无 offering_ref）。"""
-    offering_ref = getattr(order, 'offering_ref', None) or {}
-    kind = offering_ref.get('kind')
+    kind = _offering_kind(order)
     if kind:
         return kind
-    return ORDER_TYPE_TO_KIND.get(getattr(order, 'order_type', None))
+    order_type = getattr(order, 'order_type', None)
+    return ORDER_TYPE_TO_KIND.get(order_type) if isinstance(order_type, str) else None
+
+
+def _offering_kind(order: Any) -> str | None:
+    """读取订单快照中的商品类型；格式异常时保守回落旧分发。"""
+    offering_ref = getattr(order, 'offering_ref', None)
+    if not isinstance(offering_ref, Mapping):
+        return None
+    kind = offering_ref.get('kind')
+    return kind if isinstance(kind, str) and kind else None
 
 
 async def reverse_fulfillment(db: Any, order: Any) -> None:

@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 # 决策分叉（与 inbound_gatekeeper 的 ALLOW/SUPPRESS 动作区分，命名独立避免混淆）
 DELIVER = 'deliver'  # 直连边≥2 命中，或主人边≥3 派生物化 → 直接送达
 REQUEST_AND_SUPPRESS = 'request_and_suppress'  # 主人边=2 普通朋友 → 代发好友请求 + 暂存拦截箱
@@ -24,6 +26,13 @@ NORMAL_TRUST_LEVEL = 2
 FRIEND_TRUST_FLOOR = 3
 
 
+class EffectiveRelationVerdict(TypedDict):
+    """有效关系判定结果。"""
+
+    decision: str
+    inherit_trust: int | None
+
+
 def resolve_effective_relation(
     *,
     from_is_agent: bool,
@@ -31,7 +40,7 @@ def resolve_effective_relation(
     direct_edge_blocked: bool = False,
     owner_edge_trust: int | None = None,
     owner_edge_blocked: bool = False,
-) -> dict[str, object]:
+) -> EffectiveRelationVerdict:
     """有效关系解析（§4.1.1 主人派生的纯判定核）。
 
     入参：

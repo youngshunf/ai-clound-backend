@@ -7,8 +7,9 @@ LLM，不设上限会撑爆分身上下文。状态流转按 §5.2 状态机校�
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
@@ -53,7 +54,7 @@ def _decode_cursor(cursor: str | None) -> tuple[datetime, int] | None:
         raise errors.RequestError(msg='非法分页游标')
 
 
-def _issue_row(row: dict) -> dict:
+def _issue_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         'fingerprint': row['fingerprint'],
         'title': row['title'],
@@ -86,11 +87,13 @@ async def list_issues(
     stale_days: int | None = None,
     limit: int | None = None,
     cursor: str | None = None,
+    fingerprints: Collection[str] | None = None,
 ) -> dict:
     """按 fingerprint 的问题清单，keyset 分页（last_seen_at DESC, id DESC）。
 
     - status 默认 'open'（含自动重开的）；显式传 None 则不过滤状态。
     - stale_days 配合 status='investigating' 做孤儿回扫：只留 last_seen_at 早于阈值的。
+    - fingerprints 非空时仅查询指定问题；空集合直接返回空页。
     """
     n = _clamp_limit(limit)
     clauses = []
@@ -110,6 +113,11 @@ async def list_issues(
     if stale_days and stale_days > 0:
         clauses.append("updated_time < now() - make_interval(days => :stale_days)")
         params['stale_days'] = stale_days
+    if fingerprints is not None:
+        if not fingerprints:
+            return {'items': [], 'next_cursor': None}
+        clauses.append('fingerprint = ANY(:fingerprints)')
+        params['fingerprints'] = list(fingerprints)
     decoded = _decode_cursor(cursor)
     if decoded:
         params['cur_ts'], params['cur_id'] = decoded
@@ -140,7 +148,7 @@ async def list_issues(
     has_more = len(rows) > n
     page = rows[:n]
     next_cursor = _encode_cursor(page[-1]['last_seen_at'], page[-1]['id']) if has_more else None
-    return {'items': [_issue_row(r) for r in page], 'next_cursor': next_cursor}
+    return {'items': [_issue_row(dict(row)) for row in page], 'next_cursor': next_cursor}
 
 
 async def get_issue(db: AsyncSession, *, fingerprint: str, occurrence_limit: int = 10) -> dict:
@@ -185,7 +193,7 @@ async def get_issue(db: AsyncSession, *, fingerprint: str, occurrence_limit: int
         .mappings()
         .all()
     )
-    detail = _issue_row(issue)
+    detail = _issue_row(dict(issue))
     detail['duplicate_of_fingerprint'] = issue['duplicate_of_fingerprint']
     detail['recent_occurrences'] = occurrences['items']
     detail['events'] = [dict(e) for e in events]

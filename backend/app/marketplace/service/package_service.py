@@ -107,7 +107,10 @@ class PackageService:
             Tuple of (package_path, package_hash)
         """
         # Get skill directory
-        skill_dir = self.hub_repo_path / skill.repo_path
+        repo_path = skill.repo_path
+        if not repo_path:
+            raise ValueError(f'技能 {skill.skill_id} 缺少仓库路径，无法打包')
+        skill_dir = self.hub_repo_path / repo_path
         if not skill_dir.exists():
             raise FileNotFoundError(f"Skill directory not found: {skill_dir}")
 

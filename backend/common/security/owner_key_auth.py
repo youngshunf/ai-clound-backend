@@ -61,7 +61,7 @@ async def verify_owner_key_standalone(
         raise HTTPException(status_code=401, detail='API Key 已过期')
 
     # user_id 必须存在
-    if not key.user_id:
+    if key.user_id is None:
         raise HTTPException(status_code=401, detail='API Key 未绑定平台用户')
 
     # 更新最后使用时间
@@ -105,6 +105,8 @@ async def owner_key_auth(
         raise HTTPException(status_code=401, detail='请使用 Owner API Key (hasn_ok_xxx 格式)')
 
     key = await verify_owner_key_standalone(credentials, db)
+    if key.user_id is None:
+        raise HTTPException(status_code=401, detail='API Key 未绑定平台用户')
     return key.user_id
 
 

@@ -61,7 +61,7 @@ def _ev(
     )
 
 
-async def _ingest(db, *, owner, node, events, app_version=None, platform='darwin') -> list[dict]:  # noqa: ANN001
+async def _ingest(db, *, owner, node, events, app_version=None, platform='darwin') -> list[dict]:  # ruff:ignore[missing-type-function-argument]
     return await ingest_errors(
         db,
         owner_hasn_id=owner,
@@ -347,11 +347,15 @@ async def test_list_issues_keyset_pagination() -> None:
                     db, owner='h_o1', node='n1',
                     events=[_ev(fingerprint=fp, occurred_at=_T0 + timedelta(minutes=i))],
                 )
-            page1 = await error_issue_service.list_issues(db, status='open', limit=2)
+            page1 = await error_issue_service.list_issues(db, status='open', limit=2, fingerprints=fps)
             assert len(page1['items']) == 2 and page1['next_cursor']
-            page2 = await error_issue_service.list_issues(db, status='open', limit=2, cursor=page1['next_cursor'])
+            page2 = await error_issue_service.list_issues(
+                db, status='open', limit=2, cursor=page1['next_cursor'], fingerprints=fps
+            )
             assert len(page2['items']) == 2 and page2['next_cursor']
-            page3 = await error_issue_service.list_issues(db, status='open', limit=2, cursor=page2['next_cursor'])
+            page3 = await error_issue_service.list_issues(
+                db, status='open', limit=2, cursor=page2['next_cursor'], fingerprints=fps
+            )
             assert len(page3['items']) == 1 and page3['next_cursor'] is None, '末页无 next_cursor'
             seen = [r['fingerprint'] for r in page1['items'] + page2['items'] + page3['items']]
             assert set(seen) == set(fps), '三页并集 = 全部 5 个，无重无漏'

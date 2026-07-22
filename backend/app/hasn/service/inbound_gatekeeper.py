@@ -133,10 +133,12 @@ async def _auto_first_contact_request(
             channel_source='system',
             add_source='auto_first_contact',
         )
-        return req.id
-    except Exception as exc:  # noqa: BLE001 - 代发失败不应阻塞入站暂存
+    except Exception as exc:
+        # 代发失败不应阻塞入站暂存。
         log.warning(f'[inbound_gate] 自动代发好友请求异常: {exc}')
         return None
+    else:
+        return req.id
 
 
 async def _derive_via_owner(
@@ -256,7 +258,7 @@ async def evaluate_a2h_inbound(
         return GateOutcome(SUPPRESS, 'permission_denied', {'decision_reason': 'gate_error'})
 
 
-async def evaluate_inbound(
+async def evaluate_inbound(  # ruff:ignore[complex-structure]
     db: Any,
     *,
     from_id: str,
