@@ -57,7 +57,7 @@ class ManifestValidationResult:
 class AINativeAppRegistry:
     def __init__(self, *, catalog_registry: AppCatalogRegistry | None = None) -> None:
         self.catalog_registry = catalog_registry or app_catalog_registry
-        self._builtin_manifests = {
+        self._builtin_manifests: dict[str, dict[str, Any]] = {
             'knowledge': KNOWLEDGE_AI_NATIVE_MANIFEST,
             'community': COMMUNITY_AI_NATIVE_MANIFEST,
             'deck': DECK_AI_NATIVE_MANIFEST,
