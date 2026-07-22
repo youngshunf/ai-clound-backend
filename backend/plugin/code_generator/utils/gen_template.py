@@ -162,7 +162,7 @@ class GenTemplate:
         return result
 
     @staticmethod
-    def get_vars(business: GenBusiness, models: Sequence[GenColumn]) -> dict[str, str | Sequence[GenColumn]]:
+    def get_vars(business: GenBusiness, models: Sequence[GenColumn]) -> dict[str, object]:
         """
         获取模板变量
 
@@ -174,7 +174,7 @@ class GenTemplate:
         processed_models = GenTemplate._rename_reserved_fields(models)
         scopes = GenTemplate._parse_scopes(business)
 
-        vars_dict = {
+        vars_dict: dict[str, object] = {
             'app_name': business.app_name,
             'table_name': business.table_name,
             'doc_comment': business.doc_comment,
