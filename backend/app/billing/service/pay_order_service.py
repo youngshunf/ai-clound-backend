@@ -221,18 +221,21 @@ class PayOrderService:
     ) -> CreatePayOrderResponse:
         if obj.billing_cycle not in ('monthly', 'yearly'):
             raise errors.RequestError(msg=f'无效的计费周期: {obj.billing_cycle}')
+        tier_id = obj.tier
+        if not tier_id:
+            raise errors.RequestError(msg='订阅订单缺少套餐标识')
 
         # 从数据库读取套餐配置（按 app_code 区分应用）
         tier_config = await subscription_tier_dao.select_model_by_column(
-            db, tier_name=obj.tier, app_code=app_code, enabled=True
+            db, tier_name=tier_id, app_code=app_code, enabled=True
         )
         if not tier_config:
-            raise errors.RequestError(msg=f'无效的套餐: {obj.tier}（app={app_code}）')
+            raise errors.RequestError(msg=f'无效的套餐: {tier_id}（app={app_code}）')
 
         # MK-5：价格以商品目录 plan 为权威（admin 改价即时生效于新单）；plan 缺档回落 legacy 价。
         from backend.app.billing.service import offering_pricing
 
-        monthly_key, yearly_key = offering_pricing.tier_plan_keys(obj.tier)
+        monthly_key, yearly_key = offering_pricing.tier_plan_keys(tier_id)
         plan_key = yearly_key if obj.billing_cycle == 'yearly' else monthly_key
         plan_amount = await offering_pricing.plan_price(db, offering_pricing.OFFERING_LLM_TIER, plan_key)
         if plan_amount is not None:
@@ -264,7 +267,7 @@ class PayOrderService:
             'order_type': 'subscribe',
             'subject': subject,
             'body': body,
-            'target_tier': obj.tier,
+            'target_tier': tier_id,
             'billing_cycle': obj.billing_cycle,
             'amount': pay_amount,
             'pay_amount': pay_amount,
@@ -275,7 +278,7 @@ class PayOrderService:
             'offering_ref': build_offering_ref(
                 'subscribe',
                 offering_key='llm:tier',
-                plan_key=obj.tier if obj.billing_cycle == 'monthly' else f'{obj.tier}_yearly',
+                plan_key=tier_id if obj.billing_cycle == 'monthly' else f'{tier_id}_yearly',
             ),
         }
         await pay_order_dao.create(db, order_dict)
@@ -287,7 +290,7 @@ class PayOrderService:
                 'user_id': user_id,
                 'channel_code': channel.code,
                 'contract_no': contract_no,
-                'tier': obj.tier,
+                'tier': tier_id,
                 'billing_cycle': obj.billing_cycle,
                 'deduct_amount': pay_amount,
                 'status': 0,
@@ -327,7 +330,10 @@ class PayOrderService:
         """积分包真实支付下单。积分数写入 `extra_data.credit_amount`，到账由
         `handle_credit_pack_paid` 回调读取并发放（购买积分 `is_purchased=True` 永不过期）。
         """
-        package = await credit_package_dao.get(db, obj.package_id)
+        package_id = obj.package_id
+        if package_id is None:
+            raise errors.RequestError(msg='积分包订单缺少积分包标识')
+        package = await credit_package_dao.get(db, package_id)
         if not package or not package.enabled or package.app_code != app_code:
             raise errors.RequestError(msg=f'无效的积分包: {obj.package_id}（app={app_code}）')
 
@@ -415,7 +421,10 @@ class PayOrderService:
         # 延迟导入避免 pay → hasn 顶层循环依赖（与 user_tier dao 同为业务定价来源）。
         from backend.app.hasn_core.app_platform import app_catalog_service
 
-        catalog = await app_catalog_service.get_published_catalog(db, app_id=obj.app_id)
+        app_id = obj.app_id
+        if not app_id:
+            raise errors.RequestError(msg='应用购买订单缺少应用标识')
+        catalog = await app_catalog_service.get_published_catalog(db, app_id=app_id)
         if catalog is None:
             raise errors.RequestError(msg=f'应用不存在或已下架: {obj.app_id}')
         if (catalog.access_type or 'free') != 'purchase':
@@ -501,7 +510,16 @@ class PayOrderService:
         """
         from backend.app.hasn_core.app_platform import app_catalog_service
 
-        catalog = await app_catalog_service.get_published_catalog(db, app_id=obj.app_id)
+        app_id = obj.app_id
+        enterprise_id = obj.enterprise_id
+        seats = obj.seats
+        if not app_id:
+            raise errors.RequestError(msg='企业席位订单缺少应用标识')
+        if enterprise_id is None:
+            raise errors.RequestError(msg='企业席位订单缺少企业标识')
+        if seats is None or seats <= 0:
+            raise errors.RequestError(msg='企业席位订单的席位数必须大于零')
+        catalog = await app_catalog_service.get_published_catalog(db, app_id=app_id)
         if catalog is None:
             raise errors.RequestError(msg=f'应用不存在或已下架: {obj.app_id}')
         if (catalog.access_type or 'free') != 'purchase':
@@ -511,7 +529,6 @@ class PayOrderService:
         # P1-4：企业只能购买 purchasable_by ∈ {enterprise, both} 的应用。
         app_catalog_service.check_purchasable_by(catalog, buyer='enterprise')
 
-        seats = int(obj.seats or 0)
         pay_amount = int(float(catalog.price_amount) * 100) * seats
         subject = f'唤星AI-企业席位-{catalog.name}×{seats}'
         body = f'企业购买应用「{catalog.name}」{seats} 席'
@@ -539,7 +556,7 @@ class PayOrderService:
             'extra_data': {
                 'app_code': app_code,
                 'app_id': catalog.app_id,
-                'enterprise_id': int(obj.enterprise_id),
+                'enterprise_id': enterprise_id,
                 'seats': seats,
             },
             # MK-3：商品目录引用快照；offering_key=seat:<id>（席位 feature 前缀族）。
@@ -717,6 +734,8 @@ class PayOrderService:
         await reverse_fulfillment(db, order)
 
         # ③ 渠道退款（外部边界）。
+        if not order.channel_code:
+            raise errors.RequestError(msg='订单缺少支付渠道，无法退款')
         channel, merchant_config = await PayOrderService._resolve_channel(db, order.channel_code)
         refund_reason = reason or '管理端退款'
         result = PayOrderService._invoke_channel_refund(

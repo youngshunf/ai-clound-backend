@@ -219,7 +219,7 @@ class CreditService:
         balances = await self._get_active_balances_for_update(db, user_id, app_code)
 
         # 计算总可用积分
-        total_available = sum(b.remaining_amount for b in balances)
+        total_available = sum((b.remaining_amount for b in balances), Decimal(0))
 
         if total_available < credits:
             raise InsufficientCreditsError(total_available, credits)
@@ -513,6 +513,9 @@ class CreditService:
         sub_end = getattr(subscription, 'subscription_end_date', None)
         if subscription.tier != 'free' and sub_end is not None and now > sub_end:
             effective_status = 'expired'
+        subscription_start_date = subscription.subscription_start_date
+        subscription_end_date = subscription.subscription_end_date
+        next_grant_date = subscription.next_grant_date
 
         return {
             'user_id': user_id,
@@ -528,9 +531,9 @@ class CreditService:
             'bonus_remaining': float(bonus_remaining),
             'billing_cycle_start': subscription.billing_cycle_start.isoformat(),
             'billing_cycle_end': subscription.billing_cycle_end.isoformat(),
-            'subscription_start_date': subscription.subscription_start_date.isoformat() if getattr(subscription, 'subscription_start_date', None) else None,
-            'subscription_end_date': subscription.subscription_end_date.isoformat() if getattr(subscription, 'subscription_end_date', None) else None,
-            'next_grant_date': subscription.next_grant_date.isoformat() if getattr(subscription, 'next_grant_date', None) else None,
+            'subscription_start_date': subscription_start_date.isoformat() if subscription_start_date else None,
+            'subscription_end_date': subscription_end_date.isoformat() if subscription_end_date else None,
+            'next_grant_date': next_grant_date.isoformat() if next_grant_date else None,
             'status': effective_status,
             'balances': [
                 {
