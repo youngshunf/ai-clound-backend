@@ -21,7 +21,7 @@ router = APIRouter()
 
 @router.get('/all', summary='获取所有字典数据', dependencies=[DependsJwtAuth])
 async def get_all_dict_datas(db: CurrentSession) -> ResponseSchemaModel[list[GetDictDataDetail]]:
-    data = await dict_data_service.get_all(db=db)
+    data = [GetDictDataDetail.model_validate(item) for item in await dict_data_service.get_all(db=db)]
     return response_base.success(data=data)
 
 
@@ -30,7 +30,7 @@ async def get_dict_data(
     db: CurrentSession,
     pk: Annotated[int, Path(description='字典数据 ID')],
 ) -> ResponseSchemaModel[GetDictDataDetail]:
-    data = await dict_data_service.get(db=db, pk=pk)
+    data = GetDictDataDetail.model_validate(await dict_data_service.get(db=db, pk=pk))
     return response_base.success(data=data)
 
 
@@ -39,7 +39,8 @@ async def get_dict_data_by_type_code(
     db: CurrentSession,
     code: Annotated[str, Path(description='字典类型编码')],
 ) -> ResponseSchemaModel[list[GetDictDataDetail]]:
-    data = await dict_data_service.get_by_type_code(db=db, code=code)
+    dict_datas = await dict_data_service.get_by_type_code(db=db, code=code)
+    data = [GetDictDataDetail.model_validate(item) for item in dict_datas]
     return response_base.success(data=data)
 
 
@@ -67,7 +68,7 @@ async def get_dict_datas_paginated(
         status=status,
         type_id=type_id,
     )
-    return response_base.success(data=page_data)
+    return response_base.success(data=PageData[GetDictDataDetail].model_validate(page_data))
 
 
 @router.post(
