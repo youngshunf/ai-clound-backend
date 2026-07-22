@@ -56,12 +56,12 @@ class Generate:
         cappa.Arg(default='public', help='数据库schema（默认public）'),
     ] = 'public'
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """验证参数"""
         if not self.sql_file.exists():
             raise cappa.Exit(f'SQL文件不存在: {self.sql_file}', code=1)
 
-    async def __call__(self) -> None:
+    async def __call__(self) -> None:  # ruff:ignore[complex-structure]
         """执行完整代码生成"""
         try:
             console.print('\n[bold cyan]═══════════════════════════════════════════════[/]')
@@ -87,7 +87,7 @@ class Generate:
                 db_table_info = await gen_dao.get_table(db, self.schema, table_info.name)
 
             if not db_table_info:
-                console.print(f'   ⚠ 表 [yellow]{table_info.name}[/] 不存在，准备自动执行SQL建表...', flush=True)
+                console.print(f'   ⚠ 表 [yellow]{table_info.name}[/] 不存在，准备自动执行SQL建表...')
                 async with async_db_session.begin() as db:
                     # 分割多条语句执行
                     for stmt in sql_content.split(';'):
@@ -108,7 +108,7 @@ class Generate:
                     business_id = existing_business.id
                     if existing_business.app_name != self.app:
                         async with async_db_session.begin() as db:
-                            await gen_business_dao.update(db, business_id, {'app_name': self.app})
+                            await gen_business_dao.update_app_name(db, business_id, self.app)
                         console.print(f'   ✓ 表元数据已存在 (id={business_id})，app 已更新为 [cyan]{self.app}[/]')
                     else:
                         console.print(f'   ✓ 表元数据已存在 (id={business_id})')
@@ -128,9 +128,9 @@ class Generate:
                     if business_id:
                         console.print(f'   [green]✓ 表元数据导入成功 (id={business_id})[/]')
                     else:
-                        raise BaseExceptionError('表元数据导入失败')
+                        raise BaseExceptionError(msg='表元数据导入失败')
             except Exception as e:
-                raise BaseExceptionError(f'导入表元数据失败: {e}')
+                raise BaseExceptionError(msg=f'导入表元数据失败: {e}') from e
 
             # 步骤1: 生成前端代码
             if codegen_config.generate_frontend:

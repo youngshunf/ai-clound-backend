@@ -72,7 +72,7 @@ class GenerateAll:
         if self.sql_file and not self.sql_file.exists():
             raise cappa.Exit(f'SQL文件不存在: {self.sql_file}', code=1)
 
-    async def __call__(self) -> None:
+    async def __call__(self) -> None:  # ruff:ignore[complex-structure]
         """执行一键代码生成"""
         try:
             print('\n' + '=' * 60, flush=True)
@@ -93,7 +93,10 @@ class GenerateAll:
                 print(f'   注释: {table_info.comment or "无"}', flush=True)
                 print(f'   字段数: {len(table_info.columns)}', flush=True)
             else:
-                table_names = [t.strip() for t in self.table.split(',') if t.strip()]
+                table_arg = self.table
+                if table_arg is None:
+                    raise cappa.Exit('请指定表名', code=1)
+                table_names = [t.strip() for t in table_arg.split(',') if t.strip()]
                 if not table_names:
                     raise cappa.Exit('请指定表名', code=1)
                 print(f'📄 准备处理 {len(table_names)} 个表:', flush=True)
@@ -115,9 +118,9 @@ class GenerateAll:
                 # 步骤1: 检查表是否存在，不存在则自动建表
                 print('\n🔍 检查数据库表...', flush=True)
                 async with async_db_session() as db:
-                    table_info = await gen_dao.get_table(db, self.schema, table_name)
+                    db_table_info = await gen_dao.get_table(db, self.schema, table_name)
 
-                if not table_info:
+                if not db_table_info:
                     if table_name in sql_contents:
                         print(f'   ⚠ 表 {table_name} 不存在，自动执行建表SQL...', flush=True)
                         try:
@@ -134,7 +137,7 @@ class GenerateAll:
                         print('     提示: 使用 --sql-file 参数可自动建表', flush=True)
                         continue
                 else:
-                    print(f'   ✓ 表已存在: {table_info["table_comment"] or table_name}', flush=True)
+                    print(f'   ✓ 表已存在: {db_table_info["table_comment"] or table_name}', flush=True)
 
                 # 步骤2: 导入表元数据到 gen_business/gen_column
                 print('\n📥 导入表元数据...', flush=True)
@@ -142,11 +145,12 @@ class GenerateAll:
                     async with async_db_session() as db:
                         existing_business = await gen_business_dao.get_by_name(db, table_name)
 
+                    business_id: int | None
                     if existing_business:
                         business_id = existing_business.id
                         if existing_business.app_name != self.app:
                             async with async_db_session.begin() as db:
-                                await gen_business_dao.update(db, business_id, {'app_name': self.app})
+                                await gen_business_dao.update_app_name(db, business_id, self.app)
                             print(f'   ✓ 表元数据已存在 (id={business_id})，app 已更新为 {self.app}', flush=True)
                         else:
                             print(f'   ✓ 表元数据已存在 (id={business_id})', flush=True)
@@ -163,7 +167,7 @@ class GenerateAll:
                             business = await gen_business_dao.get_by_name(db, table_name)
                             business_id = business.id if business else None
 
-                        if business_id:
+                        if business_id is not None:
                             print(f'   ✓ 表元数据导入成功 (id={business_id})', flush=True)
                         else:
                             print('   ⚠ 表元数据导入失败', flush=True)

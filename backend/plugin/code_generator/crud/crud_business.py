@@ -75,6 +75,10 @@ class CRUDGenBusiness(CRUDPlus[GenBusiness]):
         """
         return await self.update_model(db, pk, obj)
 
+    async def update_app_name(self, db: AsyncSession, pk: int, app_name: str) -> int:
+        """仅更新业务元数据所属应用，保留其余生成配置。"""
+        return await self.update_model(db, pk, {'app_name': app_name})
+
     async def delete(self, db: AsyncSession, pk: int) -> int:
         """
         删除代码生成业务
