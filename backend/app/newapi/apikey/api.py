@@ -14,7 +14,7 @@ from backend.app.newapi.apikey.schema import (
 )
 from backend.app.newapi.apikey.service import api_key_service
 from backend.common.pagination import DependsPagination, PageData
-from backend.common.response.response_schema import ResponseSchemaModel, response_base
+from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.common.security.permission import RequestPermission
 from backend.common.security.rbac import DependsRBAC
@@ -39,8 +39,14 @@ async def get_all_api_keys(
     status: Annotated[str | None, Query(description='状态')] = None,
     user_keyword: Annotated[str | None, Query(description='用户昵称/手机号搜索')] = None,
 ) -> ResponseSchemaModel[PageData[GetUserApiKeyList]]:
-    page_data = await api_key_service.get_all_keys(db, user_id=user_id, name=name, status=status, user_keyword=user_keyword)
-    return response_base.success(data=page_data)
+    page_data = await api_key_service.get_all_keys(
+        db,
+        user_id=user_id,
+        name=name,
+        status=status,
+        user_keyword=user_keyword,
+    )
+    return response_base.success(data=PageData[GetUserApiKeyList].model_validate(page_data))
 
 
 @router.get(
@@ -53,11 +59,13 @@ async def get_all_api_keys(
 )
 async def get_full_api_key(db: CurrentSession, pk: int) -> ResponseSchemaModel:
     from backend.common.security.encryption import key_encryption
+
     api_key = await api_key_service.get(db, pk)
     try:
         full_key = key_encryption.decrypt(api_key.key_encrypted)
     except Exception:
         from backend.common.exception import errors
+
         raise errors.ServerError(msg='API Key 解密失败')
     return response_base.success(data={'api_key': full_key})
 
@@ -73,7 +81,11 @@ async def get_full_api_key(db: CurrentSession, pk: int) -> ResponseSchemaModel:
 async def admin_create_api_key(
     db: CurrentSessionTransaction, obj: AdminCreateUserApiKeyParam
 ) -> ResponseSchemaModel[CreateUserApiKeyResponse]:
-    data = await api_key_service.create(db, obj, obj.user_id)
+    data = await api_key_service.create(
+        db,
+        CreateUserApiKeyParam.model_validate(obj.model_dump(exclude={'user_id'})),
+        obj.user_id,
+    )
     return response_base.success(data=data)
 
 
@@ -119,7 +131,7 @@ async def create_api_key(
 )
 async def update_api_key(
     request: Request, db: CurrentSessionTransaction, pk: int, obj: UpdateUserApiKeyParam
-) -> ResponseSchemaModel:
+) -> ResponseModel:
     user_id = request.user.id
     is_admin = request.user.is_superuser
     await api_key_service.update(db, pk, obj, user_id, is_admin)
@@ -131,7 +143,7 @@ async def update_api_key(
     summary='删除 API Key',
     dependencies=[DependsJwtAuth],
 )
-async def delete_api_key(request: Request, db: CurrentSessionTransaction, pk: int) -> ResponseSchemaModel:
+async def delete_api_key(request: Request, db: CurrentSessionTransaction, pk: int) -> ResponseModel:
     user_id = request.user.id
     is_admin = request.user.is_superuser
     await api_key_service.delete(db, pk, user_id, is_admin)
