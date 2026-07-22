@@ -15,7 +15,7 @@ import string
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import sqlalchemy as sa
 
@@ -142,7 +142,7 @@ class SqlAlchemyPlatformUserGateway:
     """Platform-user adapter for HASN phone verification."""
 
     async def get_or_create_phone_user(self, db: AsyncSession, phone: str) -> tuple[User, bool]:
-        user = await user_dao.select_model_by_column(db, phone=phone)
+        user = await user_dao.get_by_phone(db, phone)
         if user:
             return user, False
 
@@ -408,7 +408,7 @@ class SqlAlchemyOnboardingGateway:
 
 @dataclass(slots=True)
 class HasnPhoneAuthService:
-    redis: RedisLike = field(default=redis_client)
+    redis: RedisLike = field(default=cast(RedisLike, redis_client))
     sms: SmsLike = field(default=sms_service)
     users: PlatformUserGateway = field(default_factory=SqlAlchemyPlatformUserGateway)
     token_expire_seconds: int = settings.TOKEN_EXPIRE_SECONDS
@@ -632,7 +632,7 @@ def _safe_node_info(request: OnboardingEnsureRequest) -> dict[str, Any]:
     return {key: value for key, value in raw.items() if key not in PRIVATE_NODE_INFO_KEYS and value is not None}
 
 
-def _binding_status(status: str) -> str:
+def _binding_status(status: str) -> Literal['active', 'expiring', 'revoked']:
     if status == 'revoked':
         return 'revoked'
     if status == 'expired':
