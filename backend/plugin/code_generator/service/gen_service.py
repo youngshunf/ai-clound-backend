@@ -134,7 +134,7 @@ class GenService:
         return rendered_codes
 
     @staticmethod
-    async def _update_app_router(*, business: GenBusiness, app_path: str) -> str:
+    async def _update_app_router(*, business: GenBusiness, app_path: str) -> str:  # ruff:ignore[complex-structure]
         """
         更新应用路由文件（追加而非覆盖），支持多 scope 路由
 
@@ -200,9 +200,16 @@ class GenService:
 
                     # 追加 include_router（位置要在 section_end_idx 之后，因为插入了一行 import）
                     prefix = f"/{business.table_name.replace('_', '/')}s"
-                    include_line_str = f"{scope_router_var}.include_router({scope}_{business.table_name}_router, prefix='{prefix}')"
+                    include_line_str = (
+                        f'{scope_router_var}.include_router('
+                        f"{scope}_{business.table_name}_router, prefix='{prefix}')"
+                    )
                     if business.tag:
-                        include_line_str = f"{scope_router_var}.include_router({scope}_{business.table_name}_router, prefix='{prefix}', tags=['{business.tag}-{business.doc_comment}'])"
+                        include_line_str = (
+                            f'{scope_router_var}.include_router('
+                            f"{scope}_{business.table_name}_router, prefix='{prefix}', "
+                            f"tags=['{business.tag}-{business.doc_comment}'])"
+                        )
                     lines.insert(section_end_idx + 1, include_line_str)  # +1 because we already inserted import above
                 else:
                     # 该 scope 的 section 不存在，在文件末尾追加新 section
@@ -216,9 +223,15 @@ class GenService:
                     elif scope == 'app':
                         var_def = f"app = APIRouter(prefix=f'{{settings.FASTAPI_API_V1_PATH}}/{business.app_name}/app'"
                     elif scope == 'open':
-                        var_def = f"open_api = APIRouter(prefix=f'{{settings.FASTAPI_API_V1_PATH}}/{business.app_name}/open'"
+                        var_def = (
+                            "open_api = APIRouter(prefix=f'"
+                            f"{{settings.FASTAPI_API_V1_PATH}}/{business.app_name}/open'"
+                        )
                     elif scope == 'agent':
-                        var_def = f"agent = APIRouter(prefix=f'{{settings.FASTAPI_API_V1_PATH}}/{business.app_name}/agent'"
+                        var_def = (
+                            "agent = APIRouter(prefix=f'"
+                            f"{{settings.FASTAPI_API_V1_PATH}}/{business.app_name}/agent'"
+                        )
                     else:
                         continue
 
@@ -229,9 +242,16 @@ class GenService:
                     lines.append('')
 
                     prefix = f"/{business.table_name.replace('_', '/')}s"
-                    include_line_str = f"{scope_router_var}.include_router({scope}_{business.table_name}_router, prefix='{prefix}')"
+                    include_line_str = (
+                        f'{scope_router_var}.include_router('
+                        f"{scope}_{business.table_name}_router, prefix='{prefix}')"
+                    )
                     if business.tag:
-                        include_line_str = f"{scope_router_var}.include_router({scope}_{business.table_name}_router, prefix='{prefix}', tags=['{business.tag}-{business.doc_comment}'])"
+                        include_line_str = (
+                            f'{scope_router_var}.include_router('
+                            f"{scope}_{business.table_name}_router, prefix='{prefix}', "
+                            f"tags=['{business.tag}-{business.doc_comment}'])"
+                        )
                     lines.append(include_line_str)
 
                 existing_content = '\n'.join(lines)
@@ -256,7 +276,9 @@ class GenService:
         return content
 
     @staticmethod
-    async def _inject_app_router(*, app_name: str, scopes: list[str] | None = None, write: bool = True) -> str | None:
+    async def _inject_app_router(  # ruff:ignore[complex-structure]
+        *, app_name: str, scopes: list[str] | None = None, write: bool = True
+    ) -> str | None:
         """
         注入应用路由到全局router.py，支持多 scope 路由
 
@@ -390,7 +412,7 @@ class GenService:
             raise errors.NotFoundError(msg='业务不存在')
 
         gen_path = business.gen_path or '<project_root>/backend/app'
-        paths = []
+        paths: list[str] = []
 
         init_files = gen_template.get_init_files(business)
         paths.extend(os.path.join(gen_path, *filepath.split('/')) for filepath in init_files.keys())

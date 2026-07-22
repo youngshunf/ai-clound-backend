@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import StreamingResponse
 
+from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.common.security.permission import RequestPermission
@@ -20,7 +21,13 @@ async def get_all_tables(
     db: CurrentSession,
     table_schema: Annotated[str, Query(description='数据库 schema 名称')] = 'public',
 ) -> ResponseSchemaModel[list[dict[str, str | None]]]:
-    data = await gen_service.get_tables(db=db, table_schema=table_schema)
+    data: list[dict[str, str | None]] = []
+    for row in await gen_service.get_tables(db=db, table_schema=table_schema):
+        table_name = row['table_name']
+        table_comment = row['table_comment']
+        if not isinstance(table_name, str) or (table_comment is not None and not isinstance(table_comment, str)):
+            raise errors.ServerError(msg='数据库表元数据字段类型异常')
+        data.append({'table_name': table_name, 'table_comment': table_comment})
     return response_base.success(data=data)
 
 
@@ -68,7 +75,7 @@ async def generate_code(db: CurrentSession, pk: Annotated[int, Path(description=
 
 
 @router.get('/{pk}', summary='下载代码', dependencies=[DependsJwtAuth])
-async def download_code(db: CurrentSession, pk: Annotated[int, Path(description='业务 ID')]):  # noqa: ANN201
+async def download_code(db: CurrentSession, pk: Annotated[int, Path(description='业务 ID')]):  # ruff:ignore[missing-return-type-undocumented-public-function]
     bio = await gen_service.download(db=db, pk=pk)
     return StreamingResponse(
         bio,

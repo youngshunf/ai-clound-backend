@@ -9,6 +9,7 @@ import pytest
 
 from backend.database.db import async_db_session
 from backend.plugin.code_generator.api.v1.business import get_all_businesses, get_business
+from backend.plugin.code_generator.api.v1.gen import get_all_tables
 from backend.plugin.code_generator.crud.crud_business import gen_business_dao
 from backend.plugin.code_generator.model.business import GenBusiness
 from backend.plugin.code_generator.schema.business import CreateGenBusinessParam, GetGenBusinessDetail
@@ -92,3 +93,13 @@ async def test_business_api_returns_declared_detail_dto() -> None:
         assert isinstance(matching[0], GetGenBusinessDetail)
         assert isinstance(detail_response.data, GetGenBusinessDetail)
         assert detail_response.data.table_name == table_name
+
+
+async def test_tables_api_serializes_real_postgresql_metadata() -> None:
+    """表元数据接口必须输出声明的 JSON 字符串字段，而非 SQLAlchemy 行对象。"""
+    async with async_db_session() as db:
+        response = await get_all_tables(db)
+
+    assert response.data
+    assert all(isinstance(item['table_name'], str) for item in response.data)
+    assert all(item['table_comment'] is None or isinstance(item['table_comment'], str) for item in response.data)
