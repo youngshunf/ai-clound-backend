@@ -126,6 +126,31 @@ path = "backend/__init__.py"
 module = ["asyncpg"]
 ignore_missing_imports = true
 
+# 上游或可选运行时依赖未发布 py.typed / 类型存根；仅跳过其导入边界，项目调用点仍继续检查。
+[[tool.mypy.overrides]]
+module = [
+  "alipay",
+  "celery_aio_pool",
+  "croniter",
+  "fast_captcha",
+  "ip2loc",
+  "ip2region",
+  "jose",
+  "jsonschema",
+  "langdetect",
+  "playwright.async_api",
+  "psutil",
+  "socketio",
+  "user_agents",
+  "wechatpayv3",
+  "wechatpayv3.type",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["backend.database.db_postgres", "backend.plugin.casbin_rbac.rbac"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 120
 preview = true
