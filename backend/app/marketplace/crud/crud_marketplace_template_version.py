@@ -1,6 +1,7 @@
 from collections.abc import Sequence
+from typing import cast
 
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -12,6 +13,20 @@ from backend.app.marketplace.schema.marketplace_template_version import (
 
 
 class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
+    @staticmethod
+    def _single_template_version(result: object) -> MarketplaceTemplateVersion | None:
+        """将不带关联加载的查询结果收紧为单个模板版本。"""
+        if result is not None and not isinstance(result, MarketplaceTemplateVersion):
+            raise TypeError('模板版本单模型查询返回了关联结果')
+        return cast(MarketplaceTemplateVersion | None, result)
+
+    @staticmethod
+    def _template_version_sequence(result: object) -> Sequence[MarketplaceTemplateVersion]:
+        """将不带关联加载的查询结果收紧为模板版本序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, MarketplaceTemplateVersion) for item in result):
+            raise TypeError('模板版本列表查询返回了关联结果')
+        return cast(Sequence[MarketplaceTemplateVersion], result)
+
     async def get(self, db: AsyncSession, pk: int) -> MarketplaceTemplateVersion | None:
         """
         获取模板版本
@@ -20,7 +35,7 @@ class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
         :param pk: 模板版本 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_template_version(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取模板版本列表查询表达式"""
@@ -33,7 +48,7 @@ class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._template_version_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateMarketplaceTemplateVersionParam) -> None:
         """
@@ -77,7 +92,9 @@ class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
         :param version: 版本号
         :return:
         """
-        return await self.select_model_by_column(db, template_id=template_id, version=version)
+        return self._single_template_version(
+            await self.select_model_by_column(db, template_id=template_id, version=version)
+        )
 
     async def get_latest_by_template(
         self, db: AsyncSession, template_id: str
@@ -89,7 +106,9 @@ class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
         :param template_id: 模板 ID
         :return:
         """
-        return await self.select_model_by_column(db, template_id=template_id, is_latest=True)
+        return self._single_template_version(
+            await self.select_model_by_column(db, template_id=template_id, is_latest=True)
+        )
 
     async def get_by_template(
         self, db: AsyncSession, template_id: str
@@ -101,7 +120,12 @@ class CRUDMarketplaceTemplateVersion(CRUDPlus[MarketplaceTemplateVersion]):
         :param template_id: 模板 ID
         :return:
         """
-        return await self.select_models_by_column(db, template_id=template_id)
+        result = await db.execute(
+            select(MarketplaceTemplateVersion)
+            .where(MarketplaceTemplateVersion.template_id == template_id)
+            .order_by(MarketplaceTemplateVersion.id.desc())
+        )
+        return list(result.scalars().all())
 
     async def mark_all_not_latest(self, db: AsyncSession, template_id: str) -> int:
         """

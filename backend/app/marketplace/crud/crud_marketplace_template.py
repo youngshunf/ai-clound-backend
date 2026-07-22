@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,20 @@ from backend.app.marketplace.service.resource_id import PUBLIC_VISIBILITY, PUBLI
 
 
 class CRUDMarketplaceTemplate(CRUDPlus[MarketplaceTemplate]):
+    @staticmethod
+    def _single_template(result: object) -> MarketplaceTemplate | None:
+        """将不带关联加载的查询结果收紧为单个市场模板。"""
+        if result is not None and not isinstance(result, MarketplaceTemplate):
+            raise TypeError('市场模板单模型查询返回了关联结果')
+        return cast(MarketplaceTemplate | None, result)
+
+    @staticmethod
+    def _template_sequence(result: object) -> Sequence[MarketplaceTemplate]:
+        """将不带关联加载的查询结果收紧为市场模板序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, MarketplaceTemplate) for item in result):
+            raise TypeError('市场模板列表查询返回了关联结果')
+        return cast(Sequence[MarketplaceTemplate], result)
+
     async def get(self, db: AsyncSession, pk: int) -> MarketplaceTemplate | None:
         """
         获取技能市场模板表（Agent模板/技能包/SOP包）
@@ -21,7 +36,7 @@ class CRUDMarketplaceTemplate(CRUDPlus[MarketplaceTemplate]):
         :param pk: 技能市场模板表（Agent模板/技能包/SOP包） ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_template(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取技能市场模板表（Agent模板/技能包/SOP包）列表查询表达式"""
@@ -34,7 +49,7 @@ class CRUDMarketplaceTemplate(CRUDPlus[MarketplaceTemplate]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._template_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateMarketplaceTemplateParam) -> None:
         """
@@ -75,7 +90,7 @@ class CRUDMarketplaceTemplate(CRUDPlus[MarketplaceTemplate]):
         :param template_id: 模板ID
         :return:
         """
-        return await self.select_model_by_column(db, template_id=template_id)
+        return self._single_template(await self.select_model_by_column(db, template_id=template_id))
 
     async def get_by_namespace_slug(
         self,

@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,20 @@ from backend.app.marketplace.schema.marketplace_skill_version import (
 
 
 class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
+    @staticmethod
+    def _single_skill_version(result: object) -> MarketplaceSkillVersion | None:
+        """将不带关联加载的查询结果收紧为单个技能版本。"""
+        if result is not None and not isinstance(result, MarketplaceSkillVersion):
+            raise TypeError('技能版本单模型查询返回了关联结果')
+        return cast(MarketplaceSkillVersion | None, result)
+
+    @staticmethod
+    def _skill_version_sequence(result: object) -> Sequence[MarketplaceSkillVersion]:
+        """将不带关联加载的查询结果收紧为技能版本序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, MarketplaceSkillVersion) for item in result):
+            raise TypeError('技能版本列表查询返回了关联结果')
+        return cast(Sequence[MarketplaceSkillVersion], result)
+
     async def get(self, db: AsyncSession, pk: int) -> MarketplaceSkillVersion | None:
         """
         获取技能版本
@@ -20,7 +35,7 @@ class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
         :param pk: 技能版本 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_skill_version(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取技能版本列表查询表达式"""
@@ -33,7 +48,7 @@ class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._skill_version_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateMarketplaceSkillVersionParam) -> None:
         """
@@ -94,7 +109,7 @@ class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
         :param version: 版本号
         :return:
         """
-        return await self.select_model_by_column(db, skill_id=skill_id, version=version)
+        return self._single_skill_version(await self.select_model_by_column(db, skill_id=skill_id, version=version))
 
     async def get_latest_by_skill(
         self, db: AsyncSession, skill_id: str
@@ -106,7 +121,7 @@ class CRUDMarketplaceSkillVersion(CRUDPlus[MarketplaceSkillVersion]):
         :param skill_id: 技能ID
         :return:
         """
-        return await self.select_model_by_column(db, skill_id=skill_id, is_latest=True)
+        return self._single_skill_version(await self.select_model_by_column(db, skill_id=skill_id, is_latest=True))
 
     async def get_versions_by_skill(
         self, db: AsyncSession, skill_id: str
