@@ -132,7 +132,7 @@ async def phone_login(
 
     # 查找或创建用户
     is_new_user = False
-    user = await user_dao.select_model_by_column(db, phone=phone)
+    user = await user_dao.get_by_phone(db, phone)
 
     if not user:
         # 自动注册新用户

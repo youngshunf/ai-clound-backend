@@ -35,6 +35,13 @@ from backend.utils.timezone import timezone
 class CRUDUser(CRUDPlus[User]):
     """用户数据库操作类"""
 
+    @staticmethod
+    def _single_user(result: object) -> User | None:
+        """将不带关联加载的查询结果收紧为单个用户。"""
+        if result is not None and not isinstance(result, User):
+            raise TypeError('用户单模型查询返回了关联结果')
+        return cast(User | None, result)
+
     async def get(self, db: AsyncSession, user_id: int) -> User | None:
         """
         获取用户详情
@@ -43,7 +50,7 @@ class CRUDUser(CRUDPlus[User]):
         :param user_id: 用户 ID
         :return:
         """
-        return await self.select_model(db, user_id)
+        return self._single_user(await self.select_model(db, user_id))
 
     async def get_by_username(self, db: AsyncSession, username: str) -> User | None:
         """
@@ -53,7 +60,7 @@ class CRUDUser(CRUDPlus[User]):
         :param username: 用户名
         :return:
         """
-        return await self.select_model_by_column(db, username=username)
+        return self._single_user(await self.select_model_by_column(db, username=username))
 
     async def get_by_nickname(self, db: AsyncSession, nickname: str) -> User | None:
         """
@@ -63,7 +70,7 @@ class CRUDUser(CRUDPlus[User]):
         :param nickname: 用户昵称
         :return:
         """
-        return await self.select_model_by_column(db, nickname=nickname)
+        return self._single_user(await self.select_model_by_column(db, nickname=nickname))
 
     async def get_by_phone(self, db: AsyncSession, phone: str) -> User | None:
         """
@@ -73,7 +80,7 @@ class CRUDUser(CRUDPlus[User]):
         :param phone: 手机号
         :return:
         """
-        return await self.select_model_by_column(db, phone=phone)
+        return self._single_user(await self.select_model_by_column(db, phone=phone))
 
     async def check_email(self, db: AsyncSession, email: str) -> User | None:
         """
@@ -83,7 +90,7 @@ class CRUDUser(CRUDPlus[User]):
         :param email: 电子邮箱
         :return:
         """
-        return await self.select_model_by_column(db, email=email)
+        return self._single_user(await self.select_model_by_column(db, email=email))
 
     async def get_select(self, dept: int | None, username: str | None, phone: str | None, status: int | None) -> Select:
         """
