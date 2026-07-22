@@ -124,7 +124,7 @@ class AuthService:
                 # extra info
                 username=user.username,
                 nickname=user.nickname,
-                last_login_time=timezone.to_str(user.last_login_time),
+                last_login_time=timezone.to_str(user.last_login_time) if user.last_login_time else '未知',
                 ip=ctx.ip,
                 os=ctx.os,
                 browser=ctx.browser,
@@ -144,7 +144,7 @@ class AuthService:
             )
         except errors.NotFoundError as e:
             log.error('登陆错误: 用户名不存在')
-            raise errors.NotFoundError(msg=e.msg)
+            raise errors.NotFoundError(msg=e.msg or '用户名或密码有误')
         except (errors.RequestError, errors.CustomError) as e:
             if not user:
                 log.error('登陆错误: 用户密码有误')
@@ -154,9 +154,9 @@ class AuthService:
                 username=obj.username,
                 login_time=timezone.now(),
                 status=LoginLogStatusType.fail.value,
-                msg=e.msg,
+                msg=e.msg or '请求失败',
             )
-            raise errors.RequestError(code=e.code, msg=e.msg, background=task)
+            raise errors.RequestError(code=e.code, msg=e.msg or '请求失败', background=task)
         except Exception as e:
             log.error(f'登陆错误: {e}')
             raise
@@ -243,7 +243,7 @@ class AuthService:
         :param request: FastAPI 请求对象
         :return:
         """
-        codes = set()
+        codes: set[str] = set()
         if request.user.is_superuser:
             menus = await menu_dao.get_all(db, None, None)
             for menu in menus:
@@ -300,7 +300,7 @@ class AuthService:
             # extra info
             username=user.username,
             nickname=user.nickname,
-            last_login_time=timezone.to_str(user.last_login_time),
+            last_login_time=timezone.to_str(user.last_login_time) if user.last_login_time else '未知',
             ip=ctx.ip,
             os=ctx.os,
             browser=ctx.browser,

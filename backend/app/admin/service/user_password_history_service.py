@@ -54,8 +54,8 @@ class UserPasswordHistoryService:
         if settings.USER_LOCK_THRESHOLD == 0:
             return
 
-        failure_count = await redis_client.get(f'{settings.LOGIN_FAILURE_PREFIX}:{user_id}')
-        failure_count = int(failure_count) if failure_count else 0
+        failure_count_raw = await redis_client.get(f'{settings.LOGIN_FAILURE_PREFIX}:{user_id}')
+        failure_count = int(failure_count_raw) if failure_count_raw else 0
         failure_count += 1
         await redis_client.setex(
             f'{settings.LOGIN_FAILURE_PREFIX}:{user_id}',
@@ -73,7 +73,7 @@ class UserPasswordHistoryService:
             raise errors.AuthorizationError(msg='登录失败次数过多，账号已被锁定')
 
     @staticmethod
-    async def check_password_expiry_status(db: AsyncSession, password_changed_time: datetime) -> int | None:
+    async def check_password_expiry_status(db: AsyncSession, password_changed_time: datetime | None) -> int | None:
         """
         检查密码过期状态
 
