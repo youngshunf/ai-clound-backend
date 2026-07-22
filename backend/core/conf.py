@@ -630,7 +630,8 @@ def get_settings() -> Settings:
     """获取全局配置单例"""
     if not ENV_FILE_PATH.exists():
         shutil.copy(ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH)
-    return Settings()
+    # BaseSettings 由环境、.env 和插件配置源填充必填项；静态构造签名无法表达这些外部来源。
+    return Settings()  # type: ignore[call-arg]
 
 
 # 创建全局配置实例
