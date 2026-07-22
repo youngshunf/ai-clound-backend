@@ -105,18 +105,18 @@ async def list_my_conversations(
         peer_name = peer_id
         peer_avatar = None
         if peer_id.startswith('h_'):
-            pr = await db.execute(
+            human_result = await db.execute(
                 select(HasnHumans).where(HasnHumans.hasn_id == peer_id)
             )
-            human = pr.scalar_one_or_none()
+            human = human_result.scalar_one_or_none()
             if human:
                 peer_name = human.nickname or peer_id
                 peer_avatar = getattr(human, 'avatar', None)
         elif peer_id.startswith('a_'):
-            pr = await db.execute(
+            agent_result = await db.execute(
                 select(HasnAgents).where(HasnAgents.hasn_id == peer_id)
             )
-            agent = pr.scalar_one_or_none()
+            agent = agent_result.scalar_one_or_none()
             if agent:
                 peer_name = agent.display_name or peer_id
                 peer_avatar = getattr(agent, 'avatar', None)
@@ -173,7 +173,7 @@ async def list_conversation_messages(
     except ValueError:
         # 用 peer_id 查两人是否有单聊会话
         peer_id = conversation_id
-        result = await db.execute(
+        conversation_result = await db.execute(
             select(HasnConversations).where(
                 or_(
                     and_(HasnConversations.participant_a_id == hasn_id, HasnConversations.participant_b_id == peer_id),
@@ -181,7 +181,7 @@ async def list_conversation_messages(
                 )
             )
         )
-        conv = result.scalar_one_or_none()
+        conv = conversation_result.scalar_one_or_none()
 
     if not conv:
         # 如果既不是正确数字ID，也没找到双边单聊（如真的未创建），返回空列表
@@ -202,8 +202,8 @@ async def list_conversation_messages(
     if before_id:
         query = query.where(HasnMessages.id < before_id)
 
-    result = await db.execute(query)
-    messages = result.scalars().all()
+    message_result = await db.execute(query)
+    messages = message_result.scalars().all()
 
     # 构造 HasnEnvelope
     envelopes = []
@@ -257,11 +257,10 @@ async def mark_conversation_read(
 
     try:
         from uuid import UUID
-        UUID(conversation_id)
-        conv_id_str = conversation_id
+        conv = await db.get(HasnConversations, UUID(conversation_id))
     except ValueError:
         peer_id = conversation_id
-        result = await db.execute(
+        conversation_result = await db.execute(
             select(HasnConversations).where(
                 or_(
                     and_(HasnConversations.participant_a_id == hasn_id, HasnConversations.participant_b_id == peer_id),
@@ -269,18 +268,23 @@ async def mark_conversation_read(
                 )
             )
         )
-        conv = result.scalar_one_or_none()
-        if not conv:
-            return response_base.success()
-        conv_id_str = str(conv.id)
+        conv = conversation_result.scalar_one_or_none()
 
-    result = await db.execute(
+    if not conv:
+        return response_base.success()
+
+    if hasn_id not in (conv.participant_a_id, conv.participant_b_id):
+        raise HTTPException(status_code=403, detail='无权访问该会话')
+
+    conv_id_str = str(conv.id)
+
+    unread_result = await db.execute(
         select(HasnUnreadCounts).where(
             HasnUnreadCounts.hasn_id == hasn_id,
             HasnUnreadCounts.conversation_id == conv_id_str,
         )
     )
-    unread = result.scalar_one_or_none()
+    unread = unread_result.scalar_one_or_none()
 
     if unread:
         unread.unread_count = 0
