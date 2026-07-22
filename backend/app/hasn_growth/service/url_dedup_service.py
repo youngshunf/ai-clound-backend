@@ -62,13 +62,12 @@ class UrlDedupService:
                     )
                 )
             ).first()
-            recently_succeeded = (
+            if (
                 row is not None
                 and row.last_outcome == 'succeeded'
                 and row.last_crawled_at is not None
                 and row.last_crawled_at >= cutoff
-            )
-            if recently_succeeded:
+            ):
                 await self.db.execute(
                     sa.update(CrawledUrl).where(CrawledUrl.id == row.id).values(hit_count=CrawledUrl.hit_count + 1)
                 )
