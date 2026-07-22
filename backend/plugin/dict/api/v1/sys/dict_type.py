@@ -21,7 +21,7 @@ router = APIRouter()
 
 @router.get('/all', summary='获取所有字典数据', dependencies=[DependsJwtAuth])
 async def get_all_dict_types(db: CurrentSession) -> ResponseSchemaModel[list[GetDictTypeDetail]]:
-    data = await dict_type_service.get_all(db=db)
+    data = [GetDictTypeDetail.model_validate(item) for item in await dict_type_service.get_all(db=db)]
     return response_base.success(data=data)
 
 
@@ -30,7 +30,7 @@ async def get_dict_type(
     db: CurrentSession,
     pk: Annotated[int, Path(description='字典类型 ID')],
 ) -> ResponseSchemaModel[GetDictTypeDetail]:
-    data = await dict_type_service.get(db=db, pk=pk)
+    data = GetDictTypeDetail.model_validate(await dict_type_service.get(db=db, pk=pk))
     return response_base.success(data=data)
 
 
@@ -48,7 +48,7 @@ async def get_dict_types_paginated(
     code: Annotated[str | None, Query(description='字典类型编码')] = None,
 ) -> ResponseSchemaModel[PageData[GetDictTypeDetail]]:
     page_data = await dict_type_service.get_list(db=db, name=name, code=code)
-    return response_base.success(data=page_data)
+    return response_base.success(data=PageData[GetDictTypeDetail].model_validate(page_data))
 
 
 @router.post(
