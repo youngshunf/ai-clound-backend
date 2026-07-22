@@ -2085,6 +2085,7 @@ dependencies = [
     { name = "python-alipay-sdk" },
     { name = "python-jose" },
     { name = "python-socketio" },
+    { name = "qiniu" },
     { name = "redis", extra = ["hiredis"] },
     { name = "rtoml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -2168,6 +2169,7 @@ requires-dist = [
     { name = "python-alipay-sdk", specifier = ">=3.2.0" },
     { name = "python-jose", specifier = ">=3.5.0" },
     { name = "python-socketio", specifier = ">=5.16.1" },
+    { name = "qiniu", specifier = ">=7.17.0" },
     { name = "redis", extras = ["hiredis"], specifier = ">=7.2.0" },
     { name = "rtoml", specifier = ">=0.13.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.46" },
@@ -4264,6 +4266,18 @@ wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65" },
     { url = "https://mirrors.aliyun.com/pypi/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9" },
     { url = "https://mirrors.aliyun.com/pypi/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b" },
+]
+
+[[package]]
+name = "qiniu"
+version = "7.18.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/32/e5/82e5078de1204b641d6b24fdd15b3c5a87a7dd71f514e4a3cfb845a2d988/qiniu-7.18.0.tar.gz", hash = "sha256:d9edca3a1c5217c13638a08d9095cd1661f5ba6cf92ea3827949ff3d332ea4fa" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/1d/56/9368cd96d2132017f5748a812cb20a87263498de314e1823472cb4bdbad9/qiniu-7.18.0-py3-none-any.whl", hash = "sha256:0f1be608ac6800ad5f32690d1aa02353b6b2ff5edc78f32a2318859d375a27df" },
 ]
 
 [[package]]

@@ -184,6 +184,11 @@ def _task_storage_row(
         'created_by_kind': str(payload.get('created_by_kind') or 'owner'),
         'builtin_key': _optional_string(payload.get('builtin_key')),
         'builtin_synced_revision': _optional_int(payload.get('builtin_synced_revision')),
+        # 任务中心三轴四列（doc12 §6.1）：项目/应用/执行方式贯通事件溯源存储行。
+        'project_id': _optional_string(payload.get('project_id')),
+        'app_id': _optional_string(payload.get('app_id')),
+        'execution_kind': str(payload.get('execution_kind') or 'freeform'),
+        'execution_spec': _coerce_dict(payload.get('execution_spec')),
         'created_time': created_time,
         'updated_time': timestamp,
     }
@@ -218,6 +223,11 @@ def _task_sync_payload(
         'created_by_kind': stored_task['created_by_kind'],
         'builtin_key': stored_task.get('builtin_key'),
         'builtin_synced_revision': stored_task.get('builtin_synced_revision'),
+        # 任务中心三轴四列（doc12 §6.1）：随任务下行事件带给 daemon，客户端镜像即可见项目/应用视角。
+        'project_id': stored_task.get('project_id'),
+        'app_id': stored_task.get('app_id'),
+        'execution_kind': stored_task.get('execution_kind') or 'freeform',
+        'execution_spec': stored_task.get('execution_spec') or {},
         'next_run_at': payload.get('next_run_at'),
         'run_count': stored_task['run_count'],
         'repeat_times': stored_task['repeat_times'],
@@ -255,6 +265,11 @@ def _task_sync_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
         'created_by_kind': str(row.get('created_by_kind') or 'owner'),
         'builtin_key': row.get('builtin_key'),
         'builtin_synced_revision': _optional_int(row.get('builtin_synced_revision')),
+        # 任务中心三轴四列（doc12 §6.1）：从存储行下行时同样带上（assignment 变更等下行路径一致可见）。
+        'project_id': _optional_string(row.get('project_id')),
+        'app_id': _optional_string(row.get('app_id')),
+        'execution_kind': str(row.get('execution_kind') or 'freeform'),
+        'execution_spec': _coerce_dict(row.get('execution_spec')),
         'next_run_at': _timestamp_or_original(row.get('next_run_at')),
         'run_count': _optional_int(row.get('run_count')) or 0,
         'repeat_times': _optional_int(row.get('repeat_times')),

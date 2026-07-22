@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 
 from typing import TYPE_CHECKING, NoReturn
@@ -76,6 +77,122 @@ def test_merge_version_bump_resets_packages() -> None:
     # 版本跃迁：旧 darwin-aarch64 包不属于 2.0.0，被清掉。
     assert c2['engine']['version'] == '2.0.0'
     assert list(c2['engine']['packages']) == ['linux-x86_64']
+
+
+def finance_release_manifest(*, sequence: int = 2026071901, sha256: str = 'a' * 64) -> dict:
+    """构造与 daemon Finance Package Adapter 一致的签名清单形状。"""
+    return {
+        'schema_version': 2,
+        'artifact_id': 'app.engine.finance',
+        'version': '0.1.11',
+        'release_sequence': sequence,
+        'channel': 'stable',
+        'issued_at': '2026-07-19T00:00:00Z',
+        'expires_at': '2026-08-19T00:00:00Z',
+        'minimum_daemon_version': '0.1.0',
+        'packages': {
+            'darwin-aarch64': {
+                'url': 'https://cdn.example/finance/0.1.11/darwin-aarch64.zip',
+                'sha256': sha256,
+                'compressed_size': 1024,
+                'installed_size_limit': 4096,
+                'file_manifest_sha256': 'b' * 64,
+            }
+        },
+        'revocations': [],
+        'key_id': 'finance-release-2026',
+        'signature': 'c' * 128,
+    }
+
+
+def uploaded_finance_config(*, sha256: str = 'a' * 64) -> dict:
+    """构造旧上传入口刚写入的真实公共包元数据。"""
+    return {
+        'models': {'llm': ['preserved']},
+        'engine': {
+            'version': '0.1.11',
+            'packages': {
+                'darwin-aarch64': {
+                    'key': 'film-engine/finance/0.1.11/darwin-aarch64.zip',
+                    'url': 'https://cdn.example/finance/0.1.11/darwin-aarch64.zip',
+                    'sha256': sha256,
+                    'size': 1024,
+                }
+            },
+        },
+    }
+
+
+def test_merge_finance_release_manifest_preserves_uploaded_packages() -> None:
+    out = app_catalog_service.merge_finance_engine_release(
+        uploaded_finance_config(),
+        finance_release_manifest(),
+    )
+    assert out['models'] == {'llm': ['preserved']}
+    assert out['engine']['packages']['darwin-aarch64']['size'] == 1024
+    assert out['engine_release']['release_sequence'] == 2026071901
+    assert out['engine_release']['signature'] == 'c' * 128
+
+
+def test_merge_finance_release_manifest_is_idempotent_for_exact_retry() -> None:
+    manifest = finance_release_manifest()
+    once = app_catalog_service.merge_finance_engine_release(uploaded_finance_config(), manifest)
+    twice = app_catalog_service.merge_finance_engine_release(once, manifest)
+    assert twice == once
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    [
+        ('signature', 'not-a-signature'),
+        ('artifact_id', 'app.engine.film'),
+        ('schema_version', 1),
+        ('release_sequence', 0),
+    ],
+)
+def test_merge_finance_release_manifest_rejects_invalid_identity(
+    field: str,
+    value: object,
+) -> None:
+    from backend.common.exception import errors
+
+    manifest = finance_release_manifest()
+    manifest[field] = value
+    with pytest.raises(errors.RequestError):
+        app_catalog_service.merge_finance_engine_release(uploaded_finance_config(), manifest)
+
+
+def test_merge_finance_release_manifest_rejects_unpublished_package() -> None:
+    from backend.common.exception import errors
+
+    with pytest.raises(errors.RequestError):
+        app_catalog_service.merge_finance_engine_release(
+            uploaded_finance_config(),
+            finance_release_manifest(sha256='d' * 64),
+        )
+
+
+def test_merge_finance_release_manifest_normalizes_malformed_url_to_request_error() -> None:
+    from backend.common.exception import errors
+
+    manifest = finance_release_manifest()
+    manifest['packages']['darwin-aarch64']['url'] = 'http://['
+    with pytest.raises(errors.RequestError):
+        app_catalog_service.merge_finance_engine_release(uploaded_finance_config(), manifest)
+
+
+def test_merge_finance_release_manifest_rejects_release_sequence_replay() -> None:
+    from backend.common.exception import errors
+
+    current = app_catalog_service.merge_finance_engine_release(
+        uploaded_finance_config(),
+        finance_release_manifest(sequence=2026071902),
+    )
+    with pytest.raises(errors.RequestError):
+        app_catalog_service.merge_finance_engine_release(
+            current,
+            finance_release_manifest(sequence=2026071901),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +286,35 @@ async def test_publish_uploads_public_and_writes_engine_config(
         await session.execute(select(HasnAppCatalog).where(HasnAppCatalog.id == catalog.id))
     ).scalar_one()
     assert refreshed.config_json['engine']['packages']['darwin-aarch64']['sha256'] == expected_sha
+
+
+async def test_publish_finance_release_persists_and_enters_platform_config(
+    session: AsyncSession,
+) -> None:
+    from backend.app.hasn.service.platform_default_config_service import (
+        platform_default_config_service,
+    )
+
+    await app_catalog_service.ensure_catalog_seeded(session)
+    await session.flush()
+    catalog = (
+        await session.execute(select(HasnAppCatalog).where(HasnAppCatalog.app_id == 'finance'))
+    ).scalar_one()
+    catalog.config_json = uploaded_finance_config()
+    await session.flush()
+    manifest = finance_release_manifest()
+
+    published = await app_catalog_service.publish_finance_engine_release(
+        session,
+        pk=catalog.id,
+        document=json.dumps(manifest, ensure_ascii=False).encode(),
+    )
+
+    assert published == manifest
+    await session.refresh(catalog)
+    assert catalog.config_json['engine_release'] == manifest
+    effective, _revision = await platform_default_config_service.get_effective_config(session)
+    assert effective.app_configs['finance']['engine_release'] == manifest
 
 
 async def test_publish_rejects_sha256_mismatch(

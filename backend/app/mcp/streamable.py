@@ -28,6 +28,7 @@ from backend.app.mcp.auth import AgentContext, inject_app_access
 from backend.app.mcp.context import set_capability_ticket, set_trust_context_header
 from backend.app.mcp.json_encoding import json_default
 from backend.app.mcp.server import mcp_server
+from backend.app.mcp.trust_gate import allow_reserved_fields_in_schema
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.security.agent_jwt import get_agent_scopes_cached, get_privileged_grants_cached, verify_agent_token
@@ -68,11 +69,14 @@ class HasnMcpStreamableServer:
                 # 调用现有的 HasnCloudMcpServer
                 tools_data = await mcp_server.list_tools(agent_context)
 
-                # 转换为 MCP types.Tool
+                # 转换为 MCP types.Tool。schema 过一道 `allow_reserved_fields_in_schema`：
+                # SDK 会拿这里给出的 inputSchema 去校验**未剥离**的 wire 入参（校验早于我们的
+                # call_tool），不开口则声明 additionalProperties:false 的工具会把系统注入的
+                # `_hasn_*` 判为非法入参直接拒掉。详见该函数 docstring。
                 tools = [types.Tool(
                             name=tool_data['name'],
                             description=tool_data['description'],
-                            inputSchema=tool_data['input_schema'],
+                            inputSchema=allow_reserved_fields_in_schema(tool_data['input_schema']),
                         ) for tool_data in tools_data]
 
                 # 无状态 MCP 下每个请求都会走一遍 list_tools（stateless=True 每请求新建 transport），

@@ -133,11 +133,16 @@ def build_conversation_projection(
     conv: HasnConversations,
     *,
     members: list[HasnGroupMembers] | None = None,
+    viewer_owner_hasn_id: str | None = None,
 ) -> dict[str, Any]:
     """会话对象投影（doc02 §3.1）：daemon 消费的标准序列化。
 
     形态：`{conversation_id, type, participants:[{hasn_id, hasn_type, role}], group|null,
     revision, created_time, updated_time}`。direct 的 participants 是 A/B 两方；group 从名册取。
+
+    ``viewer_owner_hasn_id``（doc14 §6.5）：观看者 owner，用于 ``mission_note`` 的**私有裁剪**
+    ——差事背景是发送方 owner 的私有框定，只对 ``mission_note_owner_id`` 序列化，对端 owner
+    一律不含该键。不传 viewer（内部/无观看者语境）→ 一律裁剪（fail-closed，宁可不给）。
     """
     if conv.type == 'group':
         member_list = members or []
@@ -168,7 +173,7 @@ def build_conversation_projection(
             )
         group_meta = None
 
-    return {
+    projection: dict[str, Any] = {
         'conversation_id': str(conv.id),
         'type': conv.type or 'direct',
         'participants': participants,
@@ -177,6 +182,14 @@ def build_conversation_projection(
         'created_time': conv.created_time.isoformat() if getattr(conv, 'created_time', None) else None,
         'updated_time': conv.updated_time.isoformat() if getattr(conv, 'updated_time', None) else None,
     }
+
+    # doc14 §6.5：差事背景仅对其归属 owner（= 发起方）序列化，对端 owner / 无 viewer 语境一律裁剪。
+    mission_note = getattr(conv, 'mission_note', None)
+    mission_owner = getattr(conv, 'mission_note_owner_id', None)
+    if mission_note and viewer_owner_hasn_id and viewer_owner_hasn_id == mission_owner:
+        projection['mission_note'] = mission_note
+
+    return projection
 
 
 async def load_conversation_object(
@@ -201,7 +214,7 @@ async def load_conversation_object(
     if viewer_owner_hasn_id not in audience:
         return None
 
-    return build_conversation_projection(conv, members=members)
+    return build_conversation_projection(conv, members=members, viewer_owner_hasn_id=viewer_owner_hasn_id)
 
 
 async def bump_conversation_revision(db: AsyncSession, conversation_id: str) -> int:
@@ -249,6 +262,7 @@ async def append_message_new_event(
     content_body: dict,
     local_id: str | None,
     created_at: int,
+    origin_session_id: str | None = None,
 ) -> int:
     """给某受众 owner 的 feed 写一条瘦事件 message.new（doc02 §3.2）。
 
@@ -256,7 +270,24 @@ async def append_message_new_event(
     content_body, local_id, created_at}`——不再携带 relation_view/peer/conversation_type/group_name，
     方向由 sender 在渲染时派生。幂等键 = (owner_id, aggregate_id=message_id, event_type)，由
     _append_message_feed_event_idempotent / 上层去重保证。
+
+    ``origin_session_id``（doc14 §6.2）：**条件字段**，只有发送方 owner 的那份事件才传值
+    （受众分叉由调用方 ``_fanout_message_new`` 判定，本函数只负责「给了就带、没给就不带」）。
+    传 None 时 payload 里**不出现该键**——对端 owner 的事件形态与 doc02 原样一致。
     """
+    payload: dict[str, Any] = {
+        'conversation_id': str(conversation_id),
+        'message_id': str(message_id),
+        'sender_hasn_id': sender_hasn_id,
+        'origin_node_id': origin_node_id,
+        'content_type': content_type_to_mime(content_type),
+        'content_body': content_body,
+        'local_id': local_id,
+        'created_at': int(created_at),
+    }
+    if origin_session_id:
+        payload['origin_session_id'] = origin_session_id
+
     return await sync_gw._append_sync_event(
         db,
         owner_id=owner_id,
@@ -264,14 +295,5 @@ async def append_message_new_event(
         event_type=MESSAGE_NEW_EVENT_TYPE,
         aggregate_type='message',
         aggregate_id=str(message_id),
-        payload={
-            'conversation_id': str(conversation_id),
-            'message_id': str(message_id),
-            'sender_hasn_id': sender_hasn_id,
-            'origin_node_id': origin_node_id,
-            'content_type': content_type_to_mime(content_type),
-            'content_body': content_body,
-            'local_id': local_id,
-            'created_at': int(created_at),
-        },
+        payload=payload,
     )

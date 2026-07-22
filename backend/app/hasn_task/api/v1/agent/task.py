@@ -39,6 +39,10 @@ class AgentCreateTaskRequest(BaseModel):
     timezone: str | None = None
     continuation_enabled: bool = Field(default=False, description='任务接续（D2）')
     enable_subagents: bool = Field(default=False, description='允许子分身（D5）')
+    project_id: str | None = Field(default=None, description='归属平台项目云端权威 id')
+    app_id: str | None = Field(default=None, description='驱动应用 app_id')
+    execution_kind: str = Field(default='freeform', description='执行方式 app_workflow/freeform')
+    execution_spec: dict = Field(default_factory=dict, description='执行规格')
 
 
 class AgentUpdateTaskRequest(BaseModel):
@@ -51,6 +55,10 @@ class AgentUpdateTaskRequest(BaseModel):
     timezone: str | None = None
     continuation_enabled: bool | None = None
     enable_subagents: bool | None = None
+    project_id: str | None = None
+    app_id: str | None = None
+    execution_kind: str | None = None
+    execution_spec: dict | None = None
 
 
 async def _agent(request: Request, db: AsyncSession, *scopes: str) -> AgentTokenPayload:
@@ -99,7 +107,9 @@ async def agent_get_task(
 
 
 @router.put(
-    '/tasks/{task_uuid}', summary='Agent 改任务（R2 守卫）', dependencies=[DependsAgentJwtAuth],
+    '/tasks/{task_uuid}',
+    summary='Agent 改任务（R2 守卫）',
+    dependencies=[DependsAgentJwtAuth],
     name='hasn_task_agent_update',
 )
 async def agent_update_task(
@@ -114,7 +124,9 @@ async def agent_update_task(
 
 
 @router.post(
-    '/tasks/{task_uuid}/pause', summary='Agent 暂停任务', dependencies=[DependsAgentJwtAuth],
+    '/tasks/{task_uuid}/pause',
+    summary='Agent 暂停任务',
+    dependencies=[DependsAgentJwtAuth],
     name='hasn_task_agent_pause',
 )
 async def agent_pause_task(
@@ -128,7 +140,9 @@ async def agent_pause_task(
 
 
 @router.post(
-    '/tasks/{task_uuid}/resume', summary='Agent 恢复任务（仅 paused）', dependencies=[DependsAgentJwtAuth],
+    '/tasks/{task_uuid}/resume',
+    summary='Agent 恢复任务（仅 paused）',
+    dependencies=[DependsAgentJwtAuth],
     name='hasn_task_agent_resume',
 )
 async def agent_resume_task(
@@ -142,7 +156,9 @@ async def agent_resume_task(
 
 
 @router.delete(
-    '/tasks/{task_uuid}', summary='Agent 删任务（软删）', dependencies=[DependsAgentJwtAuth],
+    '/tasks/{task_uuid}',
+    summary='Agent 删任务（软删）',
+    dependencies=[DependsAgentJwtAuth],
     name='hasn_task_agent_delete',
 )
 async def agent_delete_task(
@@ -156,8 +172,10 @@ async def agent_delete_task(
 
 
 @router.post(
-    '/tasks/{task_uuid}/run-now', summary='Agent 立即触发（仅 scheduled/paused）',
-    dependencies=[DependsAgentJwtAuth], name='hasn_task_agent_run_now',
+    '/tasks/{task_uuid}/run-now',
+    summary='Agent 立即触发（仅 scheduled/paused）',
+    dependencies=[DependsAgentJwtAuth],
+    name='hasn_task_agent_run_now',
 )
 async def agent_run_now(
     request: Request,
@@ -170,8 +188,10 @@ async def agent_run_now(
 
 
 @router.get(
-    '/tasks/{task_uuid}/runs', summary='Agent 列执行记录（run 摘要倒序）',
-    dependencies=[DependsAgentJwtAuth], name='hasn_task_agent_list_runs',
+    '/tasks/{task_uuid}/runs',
+    summary='Agent 列执行记录（run 摘要倒序）',
+    dependencies=[DependsAgentJwtAuth],
+    name='hasn_task_agent_list_runs',
 )
 async def agent_list_runs(
     request: Request,
@@ -188,8 +208,10 @@ async def agent_list_runs(
 
 
 @router.get(
-    '/runs/{run_uuid}', summary='Agent 取单次结果（output_summary + 产物）',
-    dependencies=[DependsAgentJwtAuth], name='hasn_task_agent_get_run',
+    '/runs/{run_uuid}',
+    summary='Agent 取单次结果（output_summary + 产物）',
+    dependencies=[DependsAgentJwtAuth],
+    name='hasn_task_agent_get_run',
 )
 async def agent_get_run(
     request: Request,
@@ -202,8 +224,10 @@ async def agent_get_run(
 
 
 @router.get(
-    '/tasks/{task_uuid}/results', summary='Agent 查任务历史结果（接续深查，D2）',
-    dependencies=[DependsAgentJwtAuth], name='hasn_task_agent_query_results',
+    '/tasks/{task_uuid}/results',
+    summary='Agent 查任务历史结果（接续深查，D2）',
+    dependencies=[DependsAgentJwtAuth],
+    name='hasn_task_agent_query_results',
 )
 async def agent_query_results(
     request: Request,

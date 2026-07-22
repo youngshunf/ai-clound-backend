@@ -209,7 +209,7 @@ DESIGN_AI_NATIVE_MANIFEST = {
             'uri_domain': 'design/projects',  # → hasn://design/projects/{server_id}（doc08 §3 已登记 native_window 域）
             'open': {'mode': 'native_window', 'window': 'design'},
             'card': {'verb': '矢量设计', 'action_label': '打开设计'},
-            'artifact_kind': 'image',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': [

@@ -63,9 +63,32 @@ _RESOURCE_TYPE = 'knowledge'
 _RESOURCE_TYPE_DOC = 'knowledge_doc'
 
 
+def _resource_uri(resource_kind: str, server_id: int) -> str | None:
+    """算这条知识库资源的 `hasn://` 地址——经 manifest descriptor 的统一 builder（doc36 §3.1/§3.3）。
+
+    **不在这里手拼字符串**：URI 的唯一拼接点是 `ResourceDescriptor.build_uri`，manifest 的 `uri_domain`
+    是唯一事实源。各处各拼一份 `f'hasn://knowledge/...'`，就是 doc36 §1.3 盘出的「N 处字面量 +
+    与 manifest 声明对不上」的来路。
+
+    `_kb_dict`/`_document_dict` 是**读路径**（list/get 也走）——正是「单点必须是拼接函数、而非把写路径
+    算好的值透传下去」的实证：读路径没有登记回执可透传，只能自己调 builder。
+
+    descriptor 解析不出（manifest 没声明）→ 返 `None`，投影省略 `uri` 字段，绝不返空串或假 URI。
+    """
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+    descriptor = ai_native_app_registry.resource_descriptor('knowledge', resource_kind)
+    if descriptor is None or descriptor.resource_kind != resource_kind:
+        return None
+    return descriptor.build_uri(server_id)
+
+
 def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None = None) -> dict[str, Any]:
     out = {
         'id': kb.id,
+        # 库深链（doc36 §3.3 补齐）：此前**只有文档有 uri、库没有**——分身建完知识库只拿到一个裸
+        # `kb_id`，不知道怎么打开它；往里写一篇文档反而拿得到地址。同一应用内两类资源的不对称到此为止。
+        'uri': _resource_uri('knowledge.base', kb.id),
         'owner_id': kb.owner_id,
         'name': kb.name,
         'description': kb.description,
@@ -105,7 +128,9 @@ def _document_dict(d: Document, *, with_content: bool = False) -> dict[str, Any]
         'id': d.id,
         # 文档深链（客户端无关 + 云端权威 id）：卡片/正文互连、webui 点击跳转都用它，
         # 分身撰写深链时也照这个格式引用同库其它文档。
-        'uri': f'hasn://knowledge/documents/{d.id}',
+        # doc36 §3.1：改经统一 builder，不再手拼字面量（原 `f'hasn://knowledge/documents/{id}'`）——
+        # 手拼的那一刻就和 manifest 的 uri_domain 脱钩了，改声明时这里不会跟着变、也不会报错。
+        'uri': _resource_uri('knowledge.document', d.id),
         'kb_id': d.kb_id,
         'folder_id': d.folder_id,
         'kind': d.kind,

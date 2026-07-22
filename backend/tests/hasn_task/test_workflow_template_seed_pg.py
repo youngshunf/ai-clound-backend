@@ -104,7 +104,7 @@ def _graph_spec() -> dict[str, Any]:
                 'skills': [],
                 'prompt': '',
                 'system_prompt': '',
-                'output_spec': {'kind': 'workflow_anchor', 'label': '想法陈述'},
+                # 起点是主人输入的内联锚点，预完成为 done、不过产出闸 → 不声明 output_spec（doc35 B3）。
                 'review_policy': {'mode': 'none', 'max_rejects': 0},
                 'display': {'order': 1, 'step_label': '想法'},
             },
@@ -118,7 +118,11 @@ def _graph_spec() -> dict[str, Any]:
                 'skills': [],
                 'prompt': '围绕想法做市场研究',
                 'system_prompt': '你是主人的市场研究专家',
-                'output_spec': {'kind': 'knowledge_base', 'label': '市场分析知识库'},
+                'output_spec': {
+                    'required': True,
+                    'label': '市场分析知识库',
+                    'expects': [{'resource_kind': 'knowledge.base'}],
+                },
                 'review_policy': {'mode': 'none', 'max_rejects': 0},
                 'display': {'order': 2, 'step_label': '调研'},
             },
@@ -200,7 +204,7 @@ async def test_sync_inserts_builtin_row_with_graph_spec(env: SimpleNamespace, tm
     assert row.graph_spec['edges'] == [{'parent': 'idea', 'child': 'research'}]
     assert row.graph_spec['nodes'][1]['node_key'] == 'research'
     assert row.graph_spec['nodes'][1]['apps'] == ['knowledge', 'growth']
-    assert row.graph_spec['nodes'][1]['output_spec']['kind'] == 'knowledge_base'
+    assert row.graph_spec['nodes'][1]['output_spec']['expects'] == [{'resource_kind': 'knowledge.base'}]
     assert row.graph_spec['nodes'][0]['review_policy']['mode'] == 'none'
 
 

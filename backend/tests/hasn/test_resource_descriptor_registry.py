@@ -24,7 +24,9 @@ def test_deck_manifest_declares_resource_descriptor() -> None:
     assert descriptor.open.window == 'deck'
     assert descriptor.card.verb == '演示文稿'
     assert descriptor.card.action_label == '打开演示文稿'
-    assert descriptor.artifact_kind == 'deck'
+    # 应用资源恒 resource（doc35 §3）——「是 deck」由 resource_kind='deck.presentation' 与
+    # source_app_id='deck' 表达，kind 只答「怎么打开」。
+    assert descriptor.artifact_kind == 'resource'
 
 
 def test_resource_routes_projects_deck_route() -> None:
@@ -100,11 +102,11 @@ def test_descriptor_schema_validation_rules() -> None:
     ok = ResourceDescriptor.model_validate({
         'resource_kind': 'imagelab.project',
         'uri_domain': 'imagelab/projects',
-        'open': {'mode': 'entry_query', 'entry_route': '/apps/imagelab', 'query_key': 'item'},
+        'open': {'mode': 'entry_query', 'entry_route': '/apps/imagelab', 'query_key': 'project'},
         'card': {'verb': '图像', 'action_label': '打开图坊'},
     })
     assert ok.open.entry_route == '/apps/imagelab'
-    assert ok.open.query_key == 'item'
+    assert ok.open.query_key == 'project'
 
 
 # ── RC-P5 守卫①：descriptor↔doc08 域一致性（全应用，防漂移） ──────────────────────

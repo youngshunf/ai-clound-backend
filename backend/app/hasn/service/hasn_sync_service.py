@@ -403,7 +403,7 @@ class SqlAlchemySyncGateway:
                 sync_scope_id=sync_scope_id,
                 namespace=namespace,
             )
-            server_revision, event_id = await self._append_sync_event_with_id(
+            server_revision, event_id, _deduped = await self._append_sync_event_with_id(
                 db,
                 owner_id=owner_id,
                 hasn_id=event.hasn_id or owner_id,
@@ -841,6 +841,21 @@ class SqlAlchemySyncGateway:
             sort_keys=True,
             default=str,
         )
+        # 任务中心三轴四列（doc12 §6.1）：execution_spec 是 jsonb，照 schedule_config 先 json.dumps 再 CAST；
+        # project_id 是 uuid 列——绑「规范化字符串 + VALUES 处 CAST(:project_id AS uuid)」（asyncpg+SQLAlchemy 下
+        # 绑 uuid.UUID 对象到无类型上下文会 DataError，绑字符串经 CAST 才稳）；非法 uuid 降级为 NULL 保任务写入韧性
+        # （doc38：project_id 只是「为了哪件事」的业务归属标签，非权限边界，摘/删项目不中断执行）。
+        execution_spec = json.dumps(
+            stored_task['execution_spec'],
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        raw_project_id = stored_task.get('project_id')
+        try:
+            project_id_param = str(uuid.UUID(str(raw_project_id))) if raw_project_id else None
+        except ValueError:
+            project_id_param = None
         task_upsert_result = await db.execute(
             sa.text(
                 """
@@ -884,6 +899,10 @@ class SqlAlchemySyncGateway:
                     created_by_kind,
                     builtin_key,
                     builtin_synced_revision,
+                    project_id,
+                    app_id,
+                    execution_kind,
+                    execution_spec,
                     created_time,
                     updated_time
                 ) VALUES (
@@ -926,6 +945,10 @@ class SqlAlchemySyncGateway:
                     :created_by_kind,
                     :builtin_key,
                     :builtin_synced_revision,
+                    CAST(:project_id AS uuid),
+                    :app_id,
+                    :execution_kind,
+                    CAST(:execution_spec AS jsonb),
                     :created_time,
                     :updated_time
                 )
@@ -971,6 +994,10 @@ class SqlAlchemySyncGateway:
                     builtin_synced_revision = COALESCE(
                         EXCLUDED.builtin_synced_revision, hasn_task.task.builtin_synced_revision
                     ),
+                    project_id = EXCLUDED.project_id,
+                    app_id = EXCLUDED.app_id,
+                    execution_kind = EXCLUDED.execution_kind,
+                    execution_spec = EXCLUDED.execution_spec,
                     updated_time = EXCLUDED.updated_time
                 RETURNING id
                 """
@@ -986,6 +1013,9 @@ class SqlAlchemySyncGateway:
                 if stored_task['enabled_toolsets'] is not None
                 else None,
                 'schedule_config': schedule_config,
+                # 三轴四列：project_id 绑规范化 uuid 字符串（VALUES 处 CAST AS uuid），execution_spec 绑 json 字符串（CAST AS jsonb）
+                'project_id': project_id_param,
+                'execution_spec': execution_spec,
             },
         )
         # 把云端整型主键（bigserial id）回填进同步事件 payload 的 server_id。
@@ -1008,7 +1038,7 @@ class SqlAlchemySyncGateway:
                 'resolved_at': stored_task['updated_time'],
             },
         )
-        revision, _event_id = await self._append_sync_event_with_id(
+        revision, _event_id, _deduped = await self._append_sync_event_with_id(
             db,
             owner_id=owner_id,
             hasn_id=stored_task['agent_id'] or owner_id,
@@ -1263,7 +1293,7 @@ class SqlAlchemySyncGateway:
             'record_id': aggregate_id,
             'namespace_revision': namespace_revision,
         }
-        server_revision, event_id = await self._append_sync_event_with_id(
+        server_revision, event_id, _deduped = await self._append_sync_event_with_id(
             db,
             owner_id=owner_id,
             hasn_id=hasn_id or owner_id,
@@ -1363,8 +1393,11 @@ class SqlAlchemySyncGateway:
         aggregate_type: str,
         aggregate_id: str,
         payload: dict[str, Any],
+        producer: str | None = None,
+        source_event_id: str | None = None,
+        occurred_at: Any = None,
     ) -> int:
-        revision, _event_id = await self._append_sync_event_with_id(
+        revision, _event_id, _deduped = await self._append_sync_event_with_id(
             db,
             owner_id=owner_id,
             hasn_id=hasn_id,
@@ -1372,6 +1405,9 @@ class SqlAlchemySyncGateway:
             aggregate_type=aggregate_type,
             aggregate_id=aggregate_id,
             payload=payload,
+            producer=producer,
+            source_event_id=source_event_id,
+            occurred_at=occurred_at,
         )
         return revision
 
@@ -1385,74 +1421,48 @@ class SqlAlchemySyncGateway:
         aggregate_type: str,
         aggregate_id: str,
         payload: dict[str, Any],
-    ) -> tuple[int, str]:
-        # 串行化同一 owner 的 revision 分配。hasn_sync_events 的
-        # uq_hasn_sync_events_owner_revision (owner_id, revision) 唯一约束要求每个 owner 的
-        # revision 连续无冲突，但 "SELECT MAX(revision)+1" 看不到其它事务尚未提交的行：两个
-        # 并发写（如同一 owner 的两个 memory 抽取任务 push）会都读到 N、都算出 N+1、都
-        # INSERT，触发 UniqueViolationError。用事务级 advisory lock 按 owner 分桶把 revision
-        # 分配串起来——后到的事务阻塞到前一个提交后再读 MAX，拿到正确的下一个值；锁在事务
-        # 结束（commit/rollback）时自动释放。这是 Postgres 生成 gapless 序列的标准做法，无需
-        # 新表 / 迁移播种，MAX 推导与现存数据天然一致。hashtext 哈希分桶极少量跨 owner 串行
-        # 亦无害。所有写入方都经 _append_sync_event(_with_id)，此处加锁即覆盖全部 callsite。
-        await db.execute(
-            sa.text('SELECT pg_advisory_xact_lock(hashtext(CAST(:owner_id AS text)))'),
-            {'owner_id': owner_id},
-        )
-        revision_result = await db.execute(
+        producer: str | None = None,
+        source_event_id: str | None = None,
+        occurred_at: Any = None,
+    ) -> tuple[int, str, bool]:
+        # sync 事件唯一写入口（R2-07 · doc16 §3.2）。原「advisory lock + SELECT MAX+1 + INSERT」
+        # 逻辑已下沉为 PG 函数 hasn_sync.append_event：函数内 per-owner advisory xact lock 串行化
+        # gapless revision 分配（uq_hasn_sync_events_owner_revision 要求每 owner 连续无冲突，并发
+        # 写不会都读到同一 MAX），并叠加 (owner_id, producer, source_event_id) 幂等去重
+        # （带 producer 时跨重启重放返回原 revision·deduped=true，不新增行）。函数在 db 当前事务内
+        # 执行，与业务写同事务提交/回滚。所有写入方都经此方法 → 这里就是唯一 append 实现，
+        # 严禁「函数 + ORM 直写」双路径（§8.1）。
+        result = await db.execute(
             sa.text(
                 """
-                SELECT COALESCE(MAX(revision), 0) + 1 AS revision
-                FROM public.hasn_sync_events
-                WHERE owner_id = :owner_id
-                """
-            ),
-            {'owner_id': owner_id},
-        )
-        revision = int(revision_result.mappings().one()['revision'])
-        event_id = f'se_{uuid.uuid4().hex[:24]}'
-        await db.execute(
-            sa.text(
-                """
-                INSERT INTO public.hasn_sync_events (
-                    event_id,
-                    owner_id,
-                    hasn_id,
-                    event_type,
-                    aggregate_type,
-                    aggregate_id,
-                    payload,
-                    revision,
-                    occurred_at,
-                    created_time,
-                    updated_time
-                ) VALUES (
-                    :event_id,
+                SELECT revision, event_id, deduped
+                FROM hasn_sync.append_event(
                     :owner_id,
                     :hasn_id,
                     :event_type,
                     :aggregate_type,
                     :aggregate_id,
                     CAST(:payload AS jsonb),
-                    :revision,
-                    now(),
-                    now(),
-                    now()
+                    :producer,
+                    :source_event_id,
+                    :occurred_at
                 )
                 """
             ),
             {
-                'event_id': event_id,
                 'owner_id': owner_id,
                 'hasn_id': hasn_id,
                 'event_type': event_type,
                 'aggregate_type': aggregate_type,
                 'aggregate_id': aggregate_id,
                 'payload': json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
-                'revision': revision,
+                'producer': producer,
+                'source_event_id': source_event_id,
+                'occurred_at': occurred_at,
             },
         )
-        return revision, event_id
+        row = result.mappings().one()
+        return int(row['revision']), row['event_id'], bool(row['deduped'])
 
     async def save_session(self, db: AsyncSession, session: dict[str, Any]) -> None:
         """保存或更新 session 到云端投影表"""

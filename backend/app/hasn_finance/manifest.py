@@ -1,14 +1,14 @@
-"""金融数据（hasn_finance，app_id=finance）AI-Native 内置 manifest + App 声明。
+"""金融投研（hasn_finance，app_id=finance）AI-Native 内置 manifest + App 声明。
 
-设计：docs/hasn-node设计文档/14-AI-Native应用平台/24-金融数据源(akshare)行情与投研应用接入设计.md §4。
+事实源：docs/hasn-node设计文档/金融投研与量化交易/02-分身工具面与swarm编排设计.md。
 
-形态（对齐 growth/creator 云端工具模型）：
-- `execution_mode='cloud'`、`transport_mode='cloud'`——金融数据是**纯云端只读数据应用**，
-  `hasn.finance.*` 工具一律走云端 MCP：Agent MCP Key → `/api/v1/mcp/streamable` → `app_tool_loader`
-  投影成 AppTool → `ai_native_runtime_gateway`（transport=gateway_internal）→ 进程内直调
-  `app/hasn_finance/service/finance_tool_handlers.py` → finance_provider → finance-data-service。
-- 14 工具**全只读**（required_scopes=[finance:read]），故 `idempotent=True`、`risk_level=low`、
-  `human_confirmation.required=False`（出厂 Allow）。无下单/无真钱/无审批/无写类。
+当前形态：
+- `execution_mode='local_tool'`、`transport_mode='local'`：最终 44 个 `hasn.finance.*` 工具由
+  hasn-node 本地 MCP 与 Owner 隔离的 Vibe-Trading 引擎执行，云端 manifest 不重复声明 tools。
+- 六类产物继续由云端表、严格 `:sync` 与 register-on-write 承接。
+- `project_aware=true`、`project_required=false`：支持可选项目归集，不选项目也能完整使用。
+
+旧 14 个云端只读 handler 在 F8 退役前仅服务旧客户端，不再进入新工具发现面。
 """
 
 from __future__ import annotations
@@ -31,6 +31,64 @@ _AUDIT_FIELDS = [
 ]
 
 _SCOPE_READ = 'finance:read'
+
+# 资源描述符（doc31 §2 / 05 §1.1 权威表）：finance 是**多资源**应用——六类产物各占一个
+# `hasn://finance/<域>/{id}` 域。**本模块必须声明 `ref_type`**（有意识的决策，05 §1.2 第 4 条）：
+# `ref_type` 是 opt-in 的——任一 descriptor 声明它，整个 app 进多资源模式，此后 register-on-write 的
+# `origin_ref` 恒为 `resource:finance:{ref_type}:{server_id}`（如 resource:finance:strategy:42），
+# 派发工作会话据 `origin_ref` 的 `ref_type` 段反查是哪类资源。判据是**要不要按业务对象反查**：流程 B/C
+# 要支持「从策略详情页 / 影子账户详情页直接派分身协作」，那条链路正靠 ref_type 段选中本 descriptor。
+# URI 只准由 `ResourceDescriptor.build_uri()` 拼（全仓唯一拼接点），别处不得再写 f'hasn://finance/...'。
+_FINANCE_RESOURCES = [
+    {
+        'resource_kind': 'finance.research_report',
+        'ref_type': 'research',  # origin_ref=resource:finance:research:{id}
+        'uri_domain': 'finance/reports',  # → hasn://finance/reports/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/reports/:id'},
+        'card': {'verb': '投研报告', 'action_label': '打开报告'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.strategy',
+        'ref_type': 'strategy',  # origin_ref=resource:finance:strategy:{id}
+        'uri_domain': 'finance/strategies',  # → hasn://finance/strategies/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/strategies/:id'},
+        'card': {'verb': '策略', 'action_label': '打开策略'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.backtest_report',
+        'ref_type': 'backtest',  # origin_ref=resource:finance:backtest:{id}
+        'uri_domain': 'finance/backtests',  # → hasn://finance/backtests/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/backtests/:id'},
+        'card': {'verb': '回测报告', 'action_label': '打开回测'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.trade_review',
+        'ref_type': 'review',  # origin_ref=resource:finance:review:{id}
+        'uri_domain': 'finance/reviews',  # → hasn://finance/reviews/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/reviews/:id'},
+        'card': {'verb': '复盘报告', 'action_label': '打开复盘'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.shadow_account',
+        'ref_type': 'shadow',  # origin_ref=resource:finance:shadow:{id}
+        'uri_domain': 'finance/shadow',  # → hasn://finance/shadow/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/shadow/:id'},
+        'card': {'verb': '影子账户', 'action_label': '打开账户'},
+        'artifact_kind': 'resource',
+    },
+    {
+        'resource_kind': 'finance.watch_briefing',
+        'ref_type': 'briefing',  # origin_ref=resource:finance:briefing:{id}
+        'uri_domain': 'finance/briefings',  # → hasn://finance/briefings/{id}
+        'open': {'mode': 'internal_route', 'route_template': '/apps/finance/briefings/:id'},
+        'card': {'verb': '盯盘简报', 'action_label': '打开简报'},
+        'artifact_kind': 'resource',
+    },
+]
 
 # 通用历史 K 线入参（A股/港股/美股/指数共用骨架）。
 _KLINE_PROPS = {
@@ -291,23 +349,26 @@ _CAPABILITIES = [
 FINANCE_AI_NATIVE_MANIFEST = {
     'app_id': 'finance',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
-    'domain_summary': {'finance': '金融数据（行情/财报/资讯查询）'},
-    'version': '1.0.0',
+    'domain_summary': {'finance': '金融投研（数据、专家团队、策略回测、交易复盘与盯盘简报）'},
+    'version': '2.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
-    'execution_mode': 'cloud',
-    # 云端工具模型（对齐 growth/creator）：工具数据面经 gateway_internal 进程内直调云端 handler → provider →
-    # finance-data-service，不经本地 hasn-mcp / daemon Agent 代理（金融数据无本地文件/电脑操作的理由）。
-    'transport_mode': 'cloud',
+    'project_aware': True,
+    'project_required': False,
+    # 六类产物资源描述符（05 §1.1）：完成卡 / 工作会话资源栏 / URI 解析 / 详情跳转全从这份声明派生。
+    'resources': _FINANCE_RESOURCES,
+    'execution_mode': 'local_tool',
+    # 方案 A：工具数据面在 hasn-node 本地 MCP，经 daemon owner 隔离引擎执行；云端不重复暴露 tools。
+    'transport_mode': 'local',
     'notifications': {
         'emit': {
             'categories': ['app', 'reminder'],
             'card_message': True,
-            'display_name': '金融数据',
+            'display_name': '金融投研',
         }
     },
-    'capabilities': _CAPABILITIES,
-    'tools': [_tool_from_cap(cap) for cap in _CAPABILITIES],
+    'capabilities': [],
+    'tools': [],
     'events': [],
     'reverse_invoke': {'supported': False},
     'ui_interfaces': [{'face': 'ui', 'transport': 'daemon_direct'}],
@@ -321,19 +382,21 @@ def build_finance_app() -> App:
     """构造 finance 的 App（catalog seed 源 + 工作台入口）。
 
     UI 为 webui 原生路由（内联导航至 ``/apps/finance``，同 knowledge/community）。
-    execution_mode=cloud（取数云端，工具走 gateway_internal）；install_policy=manual（行情非人人需要，
-    用户在工作台主动安装，设计 §4C.1）。
+    execution_mode=local_tool（本地 Vibe-Trading 引擎）；install_policy=manual（按需安装引擎）。
+    项目档位为可选挂靠：支持策略/影子账户容器与六类产物归集，不选择项目也可使用。
     """
     from backend.app.hasn.service.app_catalog_registry import App
 
     return App(
         id='finance',
-        name='金融数据',
+        name='金融投研',
         icon='brand-finance',
-        description='让分身/你随时查 A股·港美股·基金·期货·债券·指数行情与宏观数据——只读看人，数据仅供参考，不构成投资建议。',
+        description='本地优先的金融投研工作台：行情与宏观、专家团队、策略回测、交易复盘、自选盯盘一体化，研究结果不构成投资建议。',
         scope=('personal', 'enterprise'),
         collaboration_mode='workspace_shared',
         entry_route='/apps/finance',
         install_policy='manual',
-        execution_mode='cloud',
+        execution_mode='local_tool',
+        project_aware=True,
+        project_required=False,
     )

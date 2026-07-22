@@ -1,0 +1,2 @@
+from backend.app.hasn_project.model.hasn_project import HasnProject as HasnProject
+from backend.app.hasn_project.model.hasn_project_milestone import HasnProjectMilestone as HasnProjectMilestone

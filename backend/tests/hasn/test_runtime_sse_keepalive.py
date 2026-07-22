@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import asyncio
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
+from backend.app.hasn.service import hasn_agent_runtime_dispatch_service as dispatch_module
 from backend.app.hasn.service.hasn_agent_runtime_dispatch_service import (
     _SSE_KEEPALIVE_FRAME,
     HasnAgentRuntimeDispatchService,
@@ -83,3 +85,131 @@ async def test_relay_run_stream_unexpected_error_becomes_sse_error_not_decoding_
     assert 'event: error' in body
     assert 'runtime_relay_internal_error' in body
     assert 'boom upstream' in body
+
+
+async def test_read_only_relay_rejects_old_runtime_before_creating_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧 runtime 缺少只读与幂等契约时，只探测能力，绝不能创建 run。"""
+
+    class _EndpointClient:
+        async def start_gateway_by_profile(self, runtime_profile_id: str, trace_id: str | None = None) -> None:
+            return None
+
+        async def get_upstream_endpoint(
+            self, runtime_profile_id: str, trace_id: str | None = None
+        ) -> dict[str, object]:
+            return {
+                'api_server_host': 'runtime.test',
+                'api_server_port': 80,
+                'api_server_key': 'secret',
+            }
+
+    requests: list[tuple[str, str]] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == 'GET' and request.url.path == '/v1/capabilities':
+            return httpx.Response(status_code=404, json={'detail': 'not found'})
+        pytest.fail(f'旧 runtime 不应收到后续请求：{request.method} {request.url.path}')
+
+    transport = httpx.MockTransport(_handler)
+    real_async_client = httpx.AsyncClient
+
+    def _client_factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs['transport'] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(dispatch_module.httpx, 'AsyncClient', _client_factory)
+    service = HasnAgentRuntimeDispatchService(runtime_client=_EndpointClient())
+
+    frames = [
+        chunk
+        async for chunk in service._relay_run_stream_inner(
+            runtime_profile_id='profile-1',
+            payload={
+                'dispatch_id': 'dispatch-1',
+                'input': '只读回灌',
+                'tool_execution': 'disabled',
+            },
+        )
+    ]
+    body = b''.join(frames).decode()
+
+    assert requests == [('GET', '/v1/capabilities')]
+    assert 'event: error' in body
+    assert 'runtime_capability_unsupported' in body
+
+
+async def test_read_only_relay_negotiates_contract_before_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """新版 runtime 声明完整契约后，才允许创建 run 并中继终态事件。"""
+
+    class _EndpointClient:
+        async def start_gateway_by_profile(self, runtime_profile_id: str, trace_id: str | None = None) -> None:
+            return None
+
+        async def get_upstream_endpoint(
+            self, runtime_profile_id: str, trace_id: str | None = None
+        ) -> dict[str, object]:
+            return {
+                'api_server_host': 'runtime.test',
+                'api_server_port': 80,
+                'api_server_key': 'secret',
+            }
+
+    requests: list[tuple[str, str]] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == 'GET' and request.url.path == '/v1/capabilities':
+            return httpx.Response(
+                status_code=200,
+                json={
+                    'object': 'hermes.api_server.capabilities',
+                    'features': {
+                        'tool_execution_disabled_v1': True,
+                        'dispatch_idempotency_v1': True,
+                        'run_terminal_replay_v1': True,
+                    },
+                },
+            )
+        if request.method == 'POST' and request.url.path == '/v1/runs':
+            return httpx.Response(status_code=200, json={'run_id': 'run-1'})
+        if request.method == 'GET' and request.url.path == '/v1/runs/run-1/events':
+            return httpx.Response(
+                status_code=200,
+                content=b'event: run.completed\ndata: {"run_id":"run-1"}\n\n',
+                headers={'Content-Type': 'text/event-stream'},
+            )
+        pytest.fail(f'收到意外请求：{request.method} {request.url.path}')
+
+    transport = httpx.MockTransport(_handler)
+    real_async_client = httpx.AsyncClient
+
+    def _client_factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs['transport'] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(dispatch_module.httpx, 'AsyncClient', _client_factory)
+    service = HasnAgentRuntimeDispatchService(runtime_client=_EndpointClient())
+
+    frames = [
+        chunk
+        async for chunk in service._relay_run_stream_inner(
+            runtime_profile_id='profile-1',
+            payload={
+                'dispatch_id': 'dispatch-1',
+                'input': '只读回灌',
+                'tool_execution': 'disabled',
+            },
+        )
+    ]
+
+    assert requests == [
+        ('GET', '/v1/capabilities'),
+        ('POST', '/v1/runs'),
+        ('GET', '/v1/runs/run-1/events'),
+    ]
+    assert b''.join(frames) == b'event: run.completed\ndata: {"run_id":"run-1"}\n\n'

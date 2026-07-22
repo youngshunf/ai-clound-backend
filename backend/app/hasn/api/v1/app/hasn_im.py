@@ -12,6 +12,7 @@ from sqlalchemy import and_, desc, or_, select
 from backend.app.hasn.model import HasnConversations, HasnHumans, HasnMessages, HasnUnreadCounts
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.service.hasn_auth import hasn_auth
+from backend.app.hasn_im.domain.read_cursor import monotonic_read_cursor
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.database.db import CurrentSession
 
@@ -283,14 +284,14 @@ async def mark_conversation_read(
 
     if unread:
         unread.unread_count = 0
-        if obj.last_msg_id:
-            unread.last_read_msg_id = obj.last_msg_id
+        # 已读游标只进不退（§4.3）：陈旧/乱序低值请求不得把游标拨回去（旧代码无条件覆写会倒退）。
+        unread.last_read_msg_id = monotonic_read_cursor(unread.last_read_msg_id, obj.last_msg_id)
     else:
         unread = HasnUnreadCounts(
             hasn_id=hasn_id,
             conversation_id=conv_id_str,
             unread_count=0,
-            last_read_msg_id=obj.last_msg_id,
+            last_read_msg_id=monotonic_read_cursor(None, obj.last_msg_id),
         )
         db.add(unread)
 

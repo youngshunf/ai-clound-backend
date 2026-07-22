@@ -24,22 +24,41 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.mcp.artifact_registration import register_app_resource_artifact
-from backend.app.mcp.context import clear_current_work_session_id, set_current_work_session_id
+from backend.app.mcp.context import (
+    clear_current_project_id,
+    clear_current_work_session_id,
+    set_current_project_id,
+    set_current_work_session_id,
+)
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
 
-# 已接 register-on-write 的应用 → (resource_kind, 期望 URI 前缀)。
+# 已接 register-on-write 的应用 → (app_id, resource_kind, 期望 URI 前缀, 期望 artifact_kind)。
 # 新接应用请在此补一行——漏了就没有守卫，等于回到「声明了 resources[] 却没人登记」的老账。
+#
+# 第四列 `artifact_kind` 是 doc35 A4 补的：此前三元组**一个 kind 都没钉**，于是 kind 长年随便漂
+# （deck/dataset/webpage/other 混着来），谁也没红。应用资源恒 'resource'，明写出来是为了「某天有人
+# 把它改回 'dataset' 就当场红」。
 ROLLOUT = [
-    ('knowledge', 'knowledge.base', 'hasn://knowledge/kbs/'),
-    ('knowledge', 'knowledge.document', 'hasn://knowledge/documents/'),
-    ('community', 'community.post', 'hasn://community/posts/'),
-    ('community', 'community.article', 'hasn://community/articles/'),
-    ('creator', 'creator.project', 'hasn://creator/projects/'),
-    ('growth', 'growth.customer', 'hasn://growth/customers/'),
-    ('quant', 'quant.strategy', 'hasn://quant/strategies/'),
-    ('studio', 'studio.project', 'hasn://studio/projects/'),
+    ('knowledge', 'knowledge.base', 'hasn://knowledge/kbs/', 'resource'),
+    ('knowledge', 'knowledge.document', 'hasn://knowledge/documents/', 'resource'),
+    ('community', 'community.post', 'hasn://community/posts/', 'resource'),
+    ('community', 'community.article', 'hasn://community/articles/', 'resource'),
+    ('creator', 'creator.project', 'hasn://creator/projects/', 'resource'),
+    ('growth', 'growth.customer', 'hasn://growth/customers/', 'resource'),
+    ('quant', 'quant.strategy', 'hasn://quant/strategies/', 'resource'),
+    ('quant', 'quant.backtest', 'hasn://quant/backtests/', 'resource'),
+    ('studio', 'studio.project', 'hasn://studio/projects/', 'resource'),
+    # doc36 U1 收编：这四条以前**绕过公共接缝**直调 service（各自手取 descriptor），于是守卫覆盖不到
+    # ——deck/designsystem/plan 三个应用的 register-on-write 长年无守卫。收编进接缝后补上。
+    ('deck', 'deck.presentation', 'hasn://deck/', 'resource'),
+    ('designsystem', 'designsystem.spec', 'hasn://designsystem/', 'resource'),
+    ('plan', 'plan.goal', 'hasn://plan/goals/', 'resource'),
+    ('plan', 'plan.plan', 'hasn://plan/plans/', 'resource'),
+    # doc38 PJ U3：平台项目自身也是一等资源（`hasn.project.create` register-on-write）。
+    # 单资源 manifest（resource_kind=project / uri_domain=project）→ URI 前缀 hasn://project/。
+    ('project', 'project', 'hasn://project/', 'resource'),
 ]
 
 
@@ -73,8 +92,10 @@ async def _active_rows(session, agent_hasn_id: str) -> list[HasnArtifacts]:
     return list(result.scalars().all())
 
 
-@pytest.mark.parametrize(('app_id', 'resource_kind', 'uri_prefix'), ROLLOUT)
-async def test_register_lands_artifact_bound_to_session(pg_session, app_id, resource_kind, uri_prefix) -> None:
+@pytest.mark.parametrize(('app_id', 'resource_kind', 'uri_prefix', 'artifact_kind'), ROLLOUT)
+async def test_register_lands_artifact_bound_to_session(
+    pg_session, app_id, resource_kind, uri_prefix, artifact_kind
+) -> None:
     tag = uuid.uuid4().hex[:8]
     agent_hasn_id, owner_hasn_id = f'a_row_{tag}', f'h_row_{tag}'
     server_id = 90001
@@ -97,8 +118,91 @@ async def test_register_lands_artifact_bound_to_session(pg_session, app_id, reso
         assert rows[0].resource_uri == f'{uri_prefix}{server_id}', '资源 URI 必须由 manifest 的 uri_domain 派生'
         assert rows[0].session_id == work_session_id, '产物必须绑上工作会话，否则挂不进会话资源栏'
         assert rows[0].owner_hasn_id == owner_hasn_id
+        # doc35 三维度：kind 只答「怎么打开」、resource_kind 答「是什么」、
+        # source_app_id 答「哪个应用」、source_kind 答「怎么来的」。四者各就各位才算登记对。
+        assert rows[0].kind == artifact_kind, 'artifact_kind 只答「怎么打开」——应用资源恒 resource'
+        assert rows[0].resource_kind == resource_kind, (
+            'resource_kind 必须存 descriptor 原值，UI 据它查 registry 取展示名'
+        )
+        assert rows[0].source_app_id == app_id
+        assert rows[0].source_kind == 'app', '应用产出的资源，来源恒为 app（旧硬编码 tool_output 是垃圾桶）'
     finally:
         clear_current_work_session_id()
+
+
+async def test_project_id_from_contextvar_lands_on_artifact(pg_session) -> None:
+    """doc38 §3.4：分发入口把系统注入的 `_hasn_project_id` 落进 ContextVar 后，接缝**缺省自动取用**
+    落 `hasn_artifacts.project_id`——已接应用零改造即自动打标。
+
+    与 `_hasn_session_id` 完全同管道（同一 register-on-write 接缝一次取两个 ContextVar）。这里用
+    已接 register-on-write 的 knowledge 应用验证接缝行为，不依赖平台项目应用自身的 resources[] 声明。
+    """
+    tag = uuid.uuid4().hex[:8]
+    agent_hasn_id, owner_hasn_id = f'a_proj_{tag}', f'h_proj_{tag}'
+    work_session_id = f'ws_proj_{tag}'
+    project_id = str(uuid.uuid4())
+
+    set_current_work_session_id(work_session_id)
+    set_current_project_id(project_id)
+    try:
+        await register_app_resource_artifact(
+            pg_session,
+            app_id='knowledge',
+            resource_kind='knowledge.base',
+            server_id=90003,
+            agent_hasn_id=agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            title=f'项目内产物 {tag}',
+            source_tool='hasn.knowledge.create',
+        )
+        rows = await _active_rows(pg_session, agent_hasn_id)
+        assert len(rows) == 1
+        assert str(rows[0].project_id) == project_id, '接缝必须把 ContextVar project_id 自动落到产物行'
+        assert rows[0].session_id == work_session_id, 'project_id 打标不得影响既有 session_id 绑定'
+    finally:
+        clear_current_project_id()
+        clear_current_work_session_id()
+
+
+async def test_project_id_only_advances_never_downgrades(pg_session) -> None:
+    """doc38 §5.1「只进不退」：分身在项目中首次写点锁定 project_id 后，后续非项目直调
+    （ContextVar 已清、project_id=None）**不得**把已锁定的项目归属抹成 None。
+    """
+    tag = uuid.uuid4().hex[:8]
+    agent_hasn_id, owner_hasn_id = f'a_padv_{tag}', f'h_padv_{tag}'
+    project_id = str(uuid.uuid4())
+
+    # 第一次：在项目中写（ContextVar 有 project_id）→ 锁定。
+    set_current_project_id(project_id)
+    try:
+        await register_app_resource_artifact(
+            pg_session,
+            app_id='knowledge',
+            resource_kind='knowledge.base',
+            server_id=90004,
+            agent_hasn_id=agent_hasn_id,
+            owner_hasn_id=owner_hasn_id,
+            title='第一版（项目内）',
+            source_tool='hasn.knowledge.create',
+        )
+    finally:
+        clear_current_project_id()
+
+    # 第二次：非项目直调（ContextVar 已清）改同一资源 → 幂等推进，但 project_id 不退。
+    await register_app_resource_artifact(
+        pg_session,
+        app_id='knowledge',
+        resource_kind='knowledge.base',
+        server_id=90004,
+        agent_hasn_id=agent_hasn_id,
+        owner_hasn_id=owner_hasn_id,
+        title='第二版（项目外改稿）',
+        source_tool='hasn.knowledge.create',
+    )
+    rows = await _active_rows(pg_session, agent_hasn_id)
+    assert len(rows) == 1, '同一资源反复写只留一条 active 行'
+    assert str(rows[0].project_id) == project_id, 'project_id 只进不退：project_id=None 不得抹掉已锁定归属'
+    assert rows[0].title == '第二版（项目外改稿）', 'title 照常刷新（只进不退只约束 project_id/session_id）'
 
 
 async def test_repeated_writes_stay_single_active_row(pg_session) -> None:
@@ -123,11 +227,14 @@ async def test_repeated_writes_stay_single_active_row(pg_session) -> None:
 
 
 async def test_unknown_resource_kind_skips_without_raising(pg_session) -> None:
-    """声明缺失 → 跳过登记但**绝不抛**：登记是 best-effort，不能拖垮业务写本身。"""
+    """声明缺失 → 跳过登记但**绝不抛**：登记是 best-effort，不能拖垮业务写本身。
+
+    doc36 §3.1：此路径**返 None**（URI 算不出来——不知道 uri_domain），写工具据此省略 `uri` 字段。
+    """
     tag = uuid.uuid4().hex[:8]
     agent_hasn_id = f'a_none_{tag}'
 
-    await register_app_resource_artifact(
+    registration = await register_app_resource_artifact(
         pg_session,
         app_id='quant',
         resource_kind='quant.does_not_exist',
@@ -137,4 +244,67 @@ async def test_unknown_resource_kind_skips_without_raising(pg_session) -> None:
         title='不该登记',
         source_tool='hasn.quant.test',
     )
+    assert registration is None, 'descriptor 解析不出 → 返 None，写工具省略 uri（不许返空串/假 URI）'
     assert await _active_rows(pg_session, agent_hasn_id) == []
+
+
+@pytest.mark.parametrize(('app_id', 'resource_kind', 'uri_prefix', 'artifact_kind'), ROLLOUT)
+async def test_register_returns_resource_uri(pg_session, app_id, resource_kind, uri_prefix, artifact_kind) -> None:
+    """doc36 §3.1 D1 核心：接缝必须把算好的 `resource_uri` 交还给写工具。
+
+    以前 URI 在 `record_app_resource_artifact` 里算出来就地扔掉（返回值只有 artifact_id），于是
+    **分身写完拿不到能打开的地址**——这是 doc36 要修的根因单点。这里逐应用钉死返回值。
+    """
+    tag = uuid.uuid4().hex[:8]
+    server_id = 90002
+
+    registration = await register_app_resource_artifact(
+        pg_session,
+        app_id=app_id,
+        resource_kind=resource_kind,
+        server_id=server_id,
+        agent_hasn_id=f'a_uri_{tag}',
+        owner_hasn_id=f'h_uri_{tag}',
+        title=f'{app_id} 产物 {tag}',
+        source_tool=f'hasn.{app_id}.test',
+    )
+    assert registration is not None, f'{app_id}/{resource_kind} 登记应成功并返回 ArtifactRegistration'
+    assert registration.resource_uri == f'{uri_prefix}{server_id}', 'URI 必须由 manifest 的 uri_domain 派生'
+    assert registration.artifact_id, '登记成功必须带 artifact_id（审计用）'
+
+
+async def test_uri_is_built_by_descriptor_single_point() -> None:  # noqa: RUF029  # 模块级 pytestmark 统一 asyncio，纯函数用例跟着写 async 保持一致
+    """doc36 §3.1 修订：真正的单点是**拼接函数** `ResourceDescriptor.build_uri`，不止「返回值透传」。
+
+    读路径（`_kb_dict` 等投影）也要产 URI；若只让写路径算好再透传，读路径仍得自己拼一份，单点即破。
+    这里钉死 builder 本身的行为，任何人想再手拼 `f'hasn://{...}/{...}'` 都该先看到它。
+    """
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+
+    descriptor = ai_native_app_registry.resource_descriptor('knowledge', 'knowledge.base')
+    assert descriptor is not None
+    assert descriptor.build_uri(42) == 'hasn://knowledge/kbs/42'
+    assert descriptor.build_uri('42') == 'hasn://knowledge/kbs/42', 'str/int 两种 server_id 结果一致'
+
+
+async def test_merge_resource_uri_puts_uri_into_write_payload() -> None:  # noqa: RUF029  # 同上：模块级 pytestmark 统一 asyncio
+    """doc36 §3.2 契约：写工具返回体带 `uri`，登记失败则**省略**该字段。
+
+    这条是 doc36 的核心根因——URI 在登记那一刻就算出来了，然后被原地扔掉，分身写完只拿到一个裸 id。
+    所有写工具统一经 `merge_resource_uri` 并进返回体，这里钉死它的两种分支。
+    """
+    from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
+    from backend.app.mcp.artifact_registration import merge_resource_uri
+
+    registration = ArtifactRegistration(artifact_id='art_1', resource_uri='hasn://knowledge/kbs/7')
+    merged = merge_resource_uri({'id': 7, 'name': '库'}, registration)
+    assert merged == {'id': 7, 'name': '库', 'uri': 'hasn://knowledge/kbs/7'}
+
+    # 登记返 None（descriptor 解析不出、URI 无从算起）→ 原样返回、省略 uri。
+    # 绝不能返空串或假 URI：分身拿到打不开的地址，只会以为是自己用错了。
+    payload = {'id': 7, 'name': '库'}
+    assert merge_resource_uri(payload, None) == payload
+    assert 'uri' not in merge_resource_uri(payload, None)
+
+    # 不就地改入参（写工具的 result 常还要被调用方复用）。
+    assert 'uri' not in payload

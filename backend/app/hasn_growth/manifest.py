@@ -552,7 +552,7 @@ GROWTH_AI_NATIVE_MANIFEST = {
             'uri_domain': 'growth/customers',  # → hasn://growth/customers/{server_id}（doc08 §3 登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/growth/customers/:id'},
             'card': {'verb': '客户资料', 'action_label': '查看客户'},
-            'artifact_kind': 'other',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': _CAPABILITIES,

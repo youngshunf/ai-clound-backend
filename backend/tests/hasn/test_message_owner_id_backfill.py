@@ -75,19 +75,34 @@ async def test_persist_message_group_leaves_owner_id_empty() -> None:
     if not await _db_reachable():
         pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
 
+    from sqlalchemy import text
+
     async with async_db_session() as db:
         suffix = uuid.uuid4().hex[:12]
         sender = f'a_p0_grp_sender_{suffix}'
         someone = f'h_p0_grp_someone_{suffix}'
         group_conv_id = str(uuid.uuid4())
+        group_id = f'g:{500000 + (int(suffix, 16) % 100000)}'
         marker = f'群里发言_{suffix}'
+
+        # R2-02：persist_message 现在同事务内 allocate_seq（UPDATE hasn_conversations RETURNING），
+        # 要求会话行必须已存在。生产群分支里 route_message 先 get_group_conversation 拿到活跃群会话
+        # 才 persist，故这里如实先建一条最小群会话行（同一未提交事务内，末尾 rollback 不落库）。
+        await db.execute(
+            text(
+                'INSERT INTO hasn_conversations '
+                '(id, type, group_id, participant_a_id, participant_a_type, status, current_seq) '
+                "VALUES (:id, 'group', :gid, :creator, 'human', 'active', 0)"
+            ),
+            {'id': group_conv_id, 'gid': group_id, 'creator': f'h_p0_grp_creator_{suffix}'},
+        )
 
         # 群消息落库不传 owner_id（模拟 route_message 群分支）；直接给 conversation_id，to_id 为 g:*
         msg = await persist_message(
             db=db,
             conversation_id=group_conv_id,
             from_id=sender,
-            to_id=f'g:{500000 + (int(suffix, 16) % 100000)}',
+            to_id=group_id,
             content={'text': marker},
         )
         assert msg.owner_id is None, '群消息 owner_id 应留空（按 conversation_id 归属）'

@@ -40,6 +40,12 @@ _RUN_CREATE_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10
 # SSE 事件流：read 无超时（流到上游 run.completed/failed/EOF 自然结束），其余有界。
 # 对齐 MCP ask 窗口（≥660s），由上游 run 终态/取消收口，不靠 read 超时掐断。
 _SSE_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+_UPSTREAM_CAPABILITIES_PATH = '/v1/capabilities'
+_READ_ONLY_RUN_CAPABILITIES = (
+    'tool_execution_disabled_v1',
+    'dispatch_idempotency_v1',
+    'run_terminal_replay_v1',
+)
 
 
 def _sse_error(error: str, *, details: str | None = None, status_code: int | None = None) -> bytes:
@@ -49,6 +55,89 @@ def _sse_error(error: str, *, details: str | None = None, status_code: int | Non
     if status_code is not None:
         payload['status_code'] = status_code
     return f'event: error\ndata: {jsonlib.dumps(payload)}\n\n'.encode()
+
+
+def _read_only_run_capability_error(capabilities: Any) -> str | None:
+    """校验只读回灌依赖的完整上游契约，返回稳定错误详情。"""
+    if not isinstance(capabilities, dict):
+        return 'read_only_run_contract_v1: capabilities must be an object'
+    if capabilities.get('object') != 'hermes.api_server.capabilities':
+        return 'read_only_run_contract_v1: invalid capabilities object'
+    features = capabilities.get('features')
+    if not isinstance(features, dict):
+        return 'read_only_run_contract_v1: missing features'
+    missing = [name for name in _READ_ONLY_RUN_CAPABILITIES if features.get(name) is not True]
+    if missing:
+        return f'read_only_run_contract_v1: missing or disabled {",".join(missing)}'
+    return None
+
+
+async def _negotiate_read_only_run_contract(
+    client: httpx.AsyncClient,
+    *,
+    base_url: str,
+    headers: dict[str, str],
+) -> bytes | None:
+    """协商只读回灌契约；成功返回空，失败返回可直接下行的 SSE 错误帧。"""
+    response = await client.get(
+        f'{base_url}{_UPSTREAM_CAPABILITIES_PATH}',
+        headers=headers,
+        timeout=_RUN_CREATE_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        return _sse_error(
+            'runtime_capability_unsupported',
+            details=f'read_only_run_contract_v1: capabilities HTTP {response.status_code}',
+            status_code=response.status_code,
+        )
+    try:
+        capabilities = response.json()
+    except ValueError:
+        return _sse_error(
+            'runtime_capability_unsupported',
+            details='read_only_run_contract_v1: invalid capabilities JSON',
+        )
+    capability_error = _read_only_run_capability_error(capabilities)
+    if capability_error is None:
+        return None
+    return _sse_error(
+        'runtime_capability_unsupported',
+        details=capability_error,
+    )
+
+
+async def _create_runtime_run(
+    client: httpx.AsyncClient,
+    *,
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+) -> tuple[str | None, bytes | None]:
+    """创建上游 run，并把协议错误收敛为可下行的 SSE 错误帧。"""
+    response = await client.post(url, json=body, headers=headers, timeout=_RUN_CREATE_TIMEOUT)
+    if response.status_code >= 400:
+        return (
+            None,
+            _sse_error(
+                'runtime_run_rejected',
+                details=response.text,
+                status_code=response.status_code,
+            ),
+        )
+    try:
+        run = response.json()
+    except ValueError:
+        return None, _sse_error('runtime_run_bad_response', details=response.text)
+    run_id = run.get('run_id') if isinstance(run, dict) else None
+    if not run_id:
+        return (
+            None,
+            _sse_error(
+                'runtime_run_missing_run_id',
+                details='upstream /v1/runs response missing run_id',
+            ),
+        )
+    return str(run_id), None
 
 
 # SSE 心跳：上游静默期每 _SSE_KEEPALIVE_INTERVAL 秒发一个 SSE 注释帧（`:` 开头、无 data 行），
@@ -128,9 +217,7 @@ class HasnAgentRuntimeDispatchService:
             raise errors.ForbiddenError(msg='无权派发该分身')
         location = getattr(row, 'runtime_location', 'local') or 'local'
         if location != 'cloud':
-            raise errors.ForbiddenError(
-                msg='该分身运行在本地，应经本地 runtime 派发，不走云端派发代理'
-            )
+            raise errors.ForbiddenError(msg='该分身运行在本地，应经本地 runtime 派发，不走云端派发代理')
         status = getattr(row, 'status', 'active') or 'active'
         if status not in _DISPATCHABLE_STATUS:
             raise errors.ForbiddenError(msg='该分身非活跃状态，不可派发')
@@ -187,9 +274,7 @@ class HasnAgentRuntimeDispatchService:
         nginx proxy_read_timeout 在 daemon↔本服务这段切断长连接。本生成器在路由返回
         StreamingResponse 后执行——**不得**触碰请求级 db 会话。
         """
-        inner = self._relay_run_stream_inner(
-            runtime_profile_id=runtime_profile_id, payload=payload, trace_id=trace_id
-        )
+        inner = self._relay_run_stream_inner(runtime_profile_id=runtime_profile_id, payload=payload, trace_id=trace_id)
         try:
             async for chunk in _with_keepalive(inner):
                 yield chunk
@@ -239,22 +324,27 @@ class HasnAgentRuntimeDispatchService:
 
         try:
             async with httpx.AsyncClient(timeout=_SSE_TIMEOUT) as client:
+                if run_body.get('tool_execution') == 'disabled':
+                    capability_error = await _negotiate_read_only_run_contract(
+                        client,
+                        base_url=base_url,
+                        headers=headers,
+                    )
+                    if capability_error is not None:
+                        yield capability_error
+                        return
+
                 # 数据面 1：POST /v1/runs 启动 run（短超时，应快速返回 run_id）。
-                resp = await client.post(
-                    f'{base_url}{runs_create_path}', json=run_body, headers=headers, timeout=_RUN_CREATE_TIMEOUT
+                run_id, run_error = await _create_runtime_run(
+                    client,
+                    url=f'{base_url}{runs_create_path}',
+                    body=run_body,
+                    headers=headers,
                 )
-                if resp.status_code >= 400:
-                    yield _sse_error('runtime_run_rejected', details=resp.text, status_code=resp.status_code)
+                if run_error is not None:
+                    yield run_error
                     return
-                try:
-                    run = resp.json()
-                except ValueError:
-                    yield _sse_error('runtime_run_bad_response', details=resp.text)
-                    return
-                run_id = run.get('run_id') if isinstance(run, dict) else None
-                if not run_id:
-                    yield _sse_error('runtime_run_missing_run_id', details='upstream /v1/runs response missing run_id')
-                    return
+                assert run_id is not None
 
                 # 数据面 2：SSE GET events → 逐帧中继（read 无超时，由上游终态收口）。
                 # ⚠️ replace 的第一参必须是**字面占位符** '{run_id}'，不是 f'{run_id}'——后者会被
@@ -265,7 +355,8 @@ class HasnAgentRuntimeDispatchService:
                     if events.status_code >= 400:
                         body = await events.aread()
                         yield _sse_error(
-                            'runtime_events_rejected', details=body.decode('utf-8', 'replace'),
+                            'runtime_events_rejected',
+                            details=body.decode('utf-8', 'replace'),
                             status_code=events.status_code,
                         )
                         return

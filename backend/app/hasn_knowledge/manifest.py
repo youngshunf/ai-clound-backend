@@ -96,7 +96,7 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             'uri_domain': 'knowledge/kbs',  # → hasn://knowledge/kbs/{kb_id}（doc08 §3 已登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/knowledge/kbs/:id'},
             'card': {'verb': '知识库', 'action_label': '打开知识库'},
-            'artifact_kind': 'dataset',
+            'artifact_kind': 'resource',
         },
         {
             # 文档（doc31 register-on-write）：分身建/改的**每篇文档**都是独立产物，须能在工作会话资源栏
@@ -106,7 +106,7 @@ KNOWLEDGE_AI_NATIVE_MANIFEST = {
             'uri_domain': 'knowledge/documents',  # → hasn://knowledge/documents/{doc_id}
             'open': {'mode': 'internal_route', 'route_template': '/apps/knowledge/docs/:id'},
             'card': {'verb': '文档', 'action_label': '打开文档'},
-            'artifact_kind': 'document',
+            'artifact_kind': 'resource',
         },
         # ⚠️ 两条 descriptor 都**不**声明 `ref_type`——knowledge 保持「单资源模式」：
         # KBDISP 派发的整理会话 origin_ref=`resource:knowledge:{kb_id}` 是整段作 id 的历史形状，

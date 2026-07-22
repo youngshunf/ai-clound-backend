@@ -24,14 +24,19 @@ from backend.app.hasn.model.hasn_channel_bindings import HasnChannelBindings as 
 from backend.app.hasn.model.hasn_clients import HasnClients as HasnClients
 from backend.app.hasn.model.hasn_contact_requests import HasnContactRequests as HasnContactRequests
 from backend.app.hasn.model.hasn_contacts import HasnContacts as HasnContacts
+from backend.app.hasn.model.hasn_conversation_memberships import (
+    HasnConversationMemberships as HasnConversationMemberships,
+)
 from backend.app.hasn.model.hasn_conversations import HasnConversations as HasnConversations
 from backend.app.hasn.model.hasn_enterprise import HasnEnterprise as HasnEnterprise
 from backend.app.hasn.model.hasn_enterprise_invite_code import HasnEnterpriseInviteCode as HasnEnterpriseInviteCode
 from backend.app.hasn.model.hasn_enterprise_member_role import HasnEnterpriseMemberRole as HasnEnterpriseMemberRole
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership as HasnEnterpriseMembership
 from backend.app.hasn.model.hasn_enterprise_role import HasnEnterpriseRole as HasnEnterpriseRole
+from backend.app.hasn.model.hasn_group_agent_invites import HasnGroupAgentInvites as HasnGroupAgentInvites
 from backend.app.hasn.model.hasn_group_members import HasnGroupMembers as HasnGroupMembers
 from backend.app.hasn.model.hasn_humans import HasnHumans as HasnHumans
+from backend.app.hasn.model.hasn_judge_verdict import HasnJudgeVerdict as HasnJudgeVerdict
 from backend.app.hasn.model.hasn_messages import HasnMessages as HasnMessages
 from backend.app.hasn.model.hasn_node_bindings import HasnNodeBindings as HasnNodeBindings
 from backend.app.hasn.model.hasn_nodes import HasnNodes as HasnNodes
@@ -43,10 +48,19 @@ from backend.app.hasn.model.hasn_pending_intents import HasnPendingIntents as Ha
 from backend.app.hasn.model.hasn_platform_default_config import (
     HasnPlatformDefaultConfig as HasnPlatformDefaultConfig,
 )
+from backend.app.hasn.model.hasn_platform_operator_grants import (
+    HasnPlatformOperatorGrants as HasnPlatformOperatorGrants,
+)
 from backend.app.hasn.model.hasn_resource_share import HasnResourceShare as HasnResourceShare
 from backend.app.hasn.model.hasn_session_artifacts import HasnSessionArtifacts as HasnSessionArtifacts
 from backend.app.hasn.model.hasn_session_events import HasnSessionEvents as HasnSessionEvents
 from backend.app.hasn.model.hasn_sessions import HasnSessions as HasnSessions
+from backend.app.hasn.model.hasn_speech_catalog import HasnSpeechCatalog as HasnSpeechCatalog
+from backend.app.hasn.model.hasn_speech_catalog_release import HasnSpeechCatalogRelease as HasnSpeechCatalogRelease
+from backend.app.hasn.model.hasn_speech_catalog_release_package import (
+    HasnSpeechCatalogReleasePackage as HasnSpeechCatalogReleasePackage,
+)
+from backend.app.hasn.model.hasn_speech_package import HasnSpeechPackage as HasnSpeechPackage
 from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages as HasnSuppressedMessages
 from backend.app.hasn.model.hasn_sync_events import HasnSyncEvents as HasnSyncEvents
 from backend.app.hasn.model.hasn_sync_inbox_events import HasnSyncInboxEvents as HasnSyncInboxEvents
@@ -59,8 +73,4 @@ from backend.app.hasn.model.hasn_task_run import HasnTaskRun as HasnTaskRun
 from backend.app.hasn.model.hasn_task_run_summary import HasnTaskRunSummary as HasnTaskRunSummary
 from backend.app.hasn.model.hasn_trade_sessions import HasnTradeSessions as HasnTradeSessions
 from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUnreadCounts
-from backend.app.hasn.model.hasn_platform_operator_grants import (
-    HasnPlatformOperatorGrants as HasnPlatformOperatorGrants,
-)
-from backend.app.hasn.model.hasn_judge_verdict import HasnJudgeVerdict as HasnJudgeVerdict
-from backend.app.hasn.model.hasn_group_agent_invites import HasnGroupAgentInvites as HasnGroupAgentInvites
+from backend.app.hasn.model.hasn_unread_projection import HasnUnreadProjection as HasnUnreadProjection

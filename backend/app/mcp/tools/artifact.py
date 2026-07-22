@@ -10,8 +10,9 @@
 不转文件上传）。本体三选一（互斥）：`body` / `asset_id` / `resource_uri`。带 `origin_ref`
 （如 `resource:plan:todo:{id}`）则可被该业务对象详情页的产物轨按 origin 反查（P6 §6.5）。
 
-身份恒由 `agent_context`（取自 Agent JWT/MCP Key）注入，body 绝不含 agent/owner；云端按白名单
-归一 kind、按 `(agent, dispatch_id, asset_id)` 去重幂等。
+身份恒由 `agent_context`（取自 Agent JWT/MCP Key）注入，body 绝不含 agent/owner；kind 越界由
+schema Literal **拒绝**（doc35：旧实现按白名单静默归一成 `other`，分身写错了也不知道），
+按 `(agent, dispatch_id, asset_id)` 去重幂等。
 
 - 工具名 + input_schema 与原 hasn-mcp `ArtifactRecordTool` **逐字段 1:1**。
 - 与本地工具一致：**不声明 capability scope**（低风险账本写、身份钉死本主人）；三态闸门由
@@ -20,10 +21,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
-from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
+from backend.app.hasn.schema.hasn_artifacts import ArtifactKind, RecordArtifactParam
+from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
+from backend.app.mcp.context import get_current_project_id
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 
@@ -31,8 +34,9 @@ if TYPE_CHECKING:
     from backend.app.hasn.schema.hasn_artifacts import ArtifactDetail, ArtifactItem
     from backend.app.mcp.auth import AgentContext
 
-_ARTIFACT_KINDS = ['image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other']
-_SOURCE_KINDS = ['task_result', 'tool_output', 'upload', 'external']
+# 从 Literal 派生，不手抄一份（doc35）。旧代码手写了 9 个值的清单，schema 收敛到 6 枚举后
+# 这里若不跟着改，分身看到的 enum 会继续教它写 deck/dataset/other——填了就 422。
+_ARTIFACT_KINDS = list(get_args(ArtifactKind))
 
 # Agent 面出参裁剪常量（有别于 owner 端点：省分身上下文，见设计 §3.1.5）。
 _LIST_SIZE_DEFAULT = 10  # agent 列表默认页大小（比 owner 面收紧）
@@ -51,6 +55,32 @@ _PAGE_PROP = {'type': 'integer', 'description': '页码（默认 1）'}
 _SIZE_PROP = {
     'type': 'integer',
     'description': f'页大小（默认 {_LIST_SIZE_DEFAULT}，封顶 {_LIST_SIZE_MAX}）',
+}
+
+# doc36 U3 应用维度入参（list/search 共用）。
+#
+# 为什么不写 enum：应用目录是**运行期数据**（`hasn_app_catalog` + 各应用 manifest 的 `resources[]`），
+# 装了哪些应用因主人而异；把 18 个应用键硬编码进 schema，等于每上一个新应用就得改这里，
+# 又是一份会漂移的字面量清单。取值靠 `hasn.artifact.domains` 自省（权威、随注册表走）。
+_APP_PROP = {
+    'type': 'string',
+    'description': '按来源应用过滤（可选，如 knowledge/deck/plan；取值用 hasn.artifact.domains 查）',
+}
+_RESOURCE_KIND_PROP = {
+    'type': 'string',
+    'description': (
+        '按应用内资源类型过滤（可选，如 knowledge.base/deck.presentation）。'
+        '应用资源的 kind 恒为 resource，要分「是什么」得用这个；取值用 hasn.artifact.domains 查'
+    ),
+}
+# doc95 §6.4 项目轴过滤（list/search 共用）。缺省不用分身自己填——分身在项目工作会话内工作时，
+# 系统注入的 `_hasn_project_id` 已进 ContextVar，缺省即收窄到本项目；显式传则覆盖（跨项目查用）。
+_PROJECT_ID_PROP = {
+    'type': 'string',
+    'description': (
+        '按平台项目过滤（可选）。只看某项目下产出的产物——通常不用自己填，'
+        '在项目里干活时缺省即收窄到本项目；跨项目查才显式传云端权威 project_id'
+    ),
 }
 
 
@@ -78,6 +108,11 @@ def _project_list_item(item: ArtifactItem) -> dict[str, Any]:
         'resource_uri': item.resource_uri,  # deck/webpage 类给
         'has_body': bool(item.body),  # 文本类产物标记，正文用 artifact.get 取
         'source_tool': item.source_tool,
+        # doc36 U3：应用维度两列本就落了库，出参却一直没给——分身列自己的产物，18 个应用的资源
+        # 全是 `kind='resource'`（doc35 四维分类），光看 kind 分不出哪条是知识库、哪条是演示文稿。
+        # `source_app_id` 答「哪个应用」、`resource_kind` 答「是什么」，缺了它们出参就是一堆同质行。
+        'source_app_id': item.source_app_id,
+        'resource_kind': item.resource_kind,
         'source_kind': item.source_kind,
         'created_time': item.created_time.isoformat() if item.created_time else None,
     }
@@ -123,7 +158,7 @@ class ArtifactRecordTool(BaseTool):
                 'kind': {
                     'type': 'string',
                     'enum': _ARTIFACT_KINDS,
-                    'description': '产物类型（见 enum）；文本/markdown 用 document',
+                    'description': '产物类型 = 这东西怎么打开；文本/markdown 用 document，应用内资源用 resource',
                 },
                 'title': {'type': 'string', 'description': '展示标题（可选，<=200 字）'},
                 'summary': {'type': 'string', 'description': '简要描述（可选）'},
@@ -133,16 +168,14 @@ class ArtifactRecordTool(BaseTool):
                         '文本/markdown 正文（document 文本产物用，直接入库不上传文件；与 asset_id/resource_uri 三选一）'
                     ),
                 },
-                'asset_id': {'type': 'string', 'description': '已上传资产 ID（image/voice/file 二进制产物用）'},
-                'resource_uri': {'type': 'string', 'description': 'hasn:// 资源 URI（deck/webpage 等本体即资源时用）'},
+                'asset_id': {'type': 'string', 'description': '已上传资产 ID（image/voice/video/file 二进制产物用）'},
+                'resource_uri': {
+                    'type': 'string',
+                    'description': 'hasn:// 应用资源 URI（kind=resource 时用，如 hasn://deck/{id}）',
+                },
                 'origin_ref': {
                     'type': 'string',
                     'description': '产出所属业务资源（如 resource:plan:todo:{id}），供该对象详情产物轨反查',
-                },
-                'source_kind': {
-                    'type': 'string',
-                    'enum': _SOURCE_KINDS,
-                    'description': '产出来源（默认 task_result）',
                 },
             },
             'required': ['kind'],
@@ -184,8 +217,14 @@ class ArtifactRecordTool(BaseTool):
             asset_id=asset_id,
             resource_uri=resource_uri,
             origin_ref=_str('origin_ref'),
-            # 显式登记默认归「任务成果」（区别于工具副作用 tool_output）。
-            source_kind=_str('source_kind') or 'task_result',
+            # 绑当次工作会话：取系统注入的 `_hasn_session_id`（server.call_tool 已剥进 agent_context，
+            # 分身不可伪造）。漏传会让产物只进分身产物 tab、挂不进工作会话资源栏——主人在会话里
+            # 看不到分身刚干的活（2026-07-15 实测：record 成功、artifact.get 取得到，资源栏却空）。
+            session_id=agent_context.session_id,
+            # 本工具**就是**「分身自撰登记」这条通道，来源恒为 agent_note——不由分身自报（doc35 §5）。
+            # 旧实现收 source_kind 入参、缺省 'task_result'：前者给了分身一个说谎的旋钮（它可以把
+            # 自撰成果标成 upload/external），后者本就不是来源而是产出**场景**（那由 session_id 表达）。
+            source_kind='agent_note',
             source_tool='hasn.artifact.record',
         )
 
@@ -215,8 +254,30 @@ def _clamp_page_size(arguments: dict[str, Any]) -> tuple[int, int]:
     return page, size
 
 
+def _app_filters(arguments: dict[str, Any]) -> tuple[str | None, str | None]:
+    """归一 doc36 U3 应用维度入参 → (source_app_id, resource_kind)，空串一律当没传。
+
+    入参叫 `app`（分身视角：哪个应用），落库列叫 `source_app_id`（产物视角：来源应用）——
+    这层改名就在这里做完，别让两个名字在 service/工具之间来回渗。
+    """
+    source_app_id = (arguments.get('app') or '').strip() or None
+    resource_kind = (arguments.get('resource_kind') or '').strip() or None
+    return source_app_id, resource_kind
+
+
+def _project_id_filter(arguments: dict[str, Any]) -> str | None:
+    """归一 doc95 §6.4 项目轴过滤键：显式 `project_id` 优先，缺省回落当前工作会话的项目 ContextVar。
+
+    分身在项目工作会话内调 list/search 时，系统注入的 `_hasn_project_id` 已进 ContextVar
+    （与 register-on-write 打标同一管道），缺省即收窄到本项目——分身不必显式传；显式传（空串
+    除外）则覆盖 ContextVar，用于跨项目查。
+    """
+    explicit = (arguments.get('project_id') or '').strip()
+    return explicit or get_current_project_id()
+
+
 class ArtifactListTool(BaseTool):
-    """`hasn.artifact.list`：列**本分身**的产物时间线（按 kind/session 过滤、分页）。"""
+    """`hasn.artifact.list`：列**本分身**的产物时间线（按 app/resource_kind/kind/session 过滤、分页）。"""
 
     @property
     def source(self) -> str:
@@ -241,9 +302,13 @@ class ArtifactListTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            '列我（本分身）产过的资源时间线（图/语音/视频/文件/文档/deck/网页等），倒序，'
-            '可按 kind、session_id（某工作会话）过滤、分页。找回自己造过的东西用它。'
-            '出参给 asset_uri（有本体时，正文嵌图用它）+ preview_url（临时预览）+ has_body'
+            '列我（本分身）产过的资源时间线（图/语音/视频/文件/文档/应用内资源），倒序，'
+            '可按 app（哪个应用，如 knowledge/deck）、resource_kind（应用内资源类型，如 knowledge.base）、'
+            'kind、session_id（某工作会话）过滤、分页。找回自己造过的东西用它——'
+            '「我在知识库里建过哪些库」= app=knowledge + resource_kind=knowledge.base。'
+            '出参给 resource_uri（hasn:// 深链，打开它用这个；与写工具返回体的 uri 是同一个地址）+ '
+            'source_app_id/resource_kind（哪个应用的什么东西）+ '
+            'asset_uri（有本体时，正文嵌图用它）+ preview_url（临时预览）+ has_body'
             '（文本产物标记，取正文用 hasn.artifact.get）。' + _PREVIEW_URL_WARNING
         )
 
@@ -257,6 +322,9 @@ class ArtifactListTool(BaseTool):
                     'enum': _ARTIFACT_KINDS,
                     'description': '按产物类型过滤（可选）',
                 },
+                'app': _APP_PROP,
+                'resource_kind': _RESOURCE_KIND_PROP,
+                'project_id': _PROJECT_ID_PROP,
                 'session_id': {
                     'type': 'string',
                     'description': '只看某工作会话产出的（可选，找我这个任务里产的东西）',
@@ -276,6 +344,8 @@ class ArtifactListTool(BaseTool):
         page, size = _clamp_page_size(arguments)
         kind = (arguments.get('kind') or '').strip() or None
         session_id = (arguments.get('session_id') or '').strip() or None
+        source_app_id, resource_kind = _app_filters(arguments)
+        project_id = _project_id_filter(arguments)
         async with async_db_session() as db:
             items, total = await hasn_artifacts_service.list_by_agent(
                 db,
@@ -285,6 +355,9 @@ class ArtifactListTool(BaseTool):
                 size=size,
                 kind=kind,
                 session_id=session_id,
+                source_app_id=source_app_id,
+                resource_kind=resource_kind,
+                project_id=project_id,
             )
         return {
             'items': [_project_list_item(it) for it in items],
@@ -321,8 +394,10 @@ class ArtifactSearchTool(BaseTool):
     def description(self) -> str:
         return (
             '按关键词搜我产过的资源（匹配 title/summary 子串，多词空格分隔=全部命中），'
-            '可再按 kind、session_id 过滤、分页。写图文文章找现成配图先用它。'
-            '出参同 hasn.artifact.list（asset_uri 正文嵌图用）。' + _PREVIEW_URL_WARNING
+            '可再按 app（哪个应用）、resource_kind（应用内资源类型）、kind、session_id 过滤、分页。'
+            '写图文文章找现成配图先用它。'
+            '出参同 hasn.artifact.list（resource_uri 是打开用的 hasn:// 深链，asset_uri 正文嵌图用）。'
+            + _PREVIEW_URL_WARNING
         )
 
     @property
@@ -336,6 +411,9 @@ class ArtifactSearchTool(BaseTool):
                     'enum': _ARTIFACT_KINDS,
                     'description': '按产物类型过滤（可选）',
                 },
+                'app': _APP_PROP,
+                'resource_kind': _RESOURCE_KIND_PROP,
+                'project_id': _PROJECT_ID_PROP,
                 'session_id': {'type': 'string', 'description': '只看某工作会话产出的（可选）'},
                 'page': {'type': 'integer', 'description': '页码（默认 1）'},
                 'size': {
@@ -358,6 +436,8 @@ class ArtifactSearchTool(BaseTool):
         page, size = _clamp_page_size(arguments)
         kind = (arguments.get('kind') or '').strip() or None
         session_id = (arguments.get('session_id') or '').strip() or None
+        source_app_id, resource_kind = _app_filters(arguments)
+        project_id = _project_id_filter(arguments)
         async with async_db_session() as db:
             items, total = await hasn_artifacts_service.list_by_agent(
                 db,
@@ -368,6 +448,9 @@ class ArtifactSearchTool(BaseTool):
                 kind=kind,
                 keyword=query,
                 session_id=session_id,
+                source_app_id=source_app_id,
+                resource_kind=resource_kind,
+                project_id=project_id,
             )
         return {
             'items': [_project_list_item(it) for it in items],
@@ -391,6 +474,9 @@ def _project_detail(detail: ArtifactDetail) -> dict[str, Any]:
         'asset_uri': f'hasn://asset/{detail.asset_id}' if detail.asset_id else None,
         'preview_url': detail.display_url,  # 短时效签名 URL
         'resource_uri': detail.resource_uri,
+        # doc36 U3：与列表面对称——详情同样要答「哪个应用」+「是什么」。
+        'source_app_id': detail.source_app_id,
+        'resource_kind': detail.resource_kind,
         'origin_ref': detail.origin_ref,
         'conversation_id': detail.conversation_id,
         'message_id': detail.message_id,
@@ -428,7 +514,8 @@ class ArtifactGetTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            '取一条产物的详情（含正文 body、asset_uri、resource_uri、溯源信息）。'
+            '取一条产物的详情（含正文 body、asset_uri、resource_uri 深链、'
+            'source_app_id/resource_kind 应用归属、溯源信息）。'
             '要基于历史产物改写、或取文本产物全文时用它。同主人任意分身的产物均可读'
             '（支撑分身间复用）。' + _PREVIEW_URL_WARNING
         )
@@ -461,9 +548,60 @@ class ArtifactGetTool(BaseTool):
         return _project_detail(detail)
 
 
+class ArtifactDomainsTool(BaseTool):
+    """`hasn.artifact.domains`：枚举系统里全部资源域（哪些应用产哪些资源、URI 什么形状）。"""
+
+    @property
+    def source(self) -> str:
+        return 'platform'
+
+    @property
+    def name(self) -> str:
+        return 'hasn.artifact.domains'
+
+    @property
+    def namespace(self) -> str:
+        return 'hasn.artifact'
+
+    @property
+    def risk_level(self) -> str:
+        return 'low'
+
+    @property
+    def execution_location(self) -> str:
+        return 'cloud'
+
+    @property
+    def description(self) -> str:
+        return (
+            '列系统里全部资源域：哪个应用（app_id）产哪类资源（resource_kind）、'
+            'hasn:// 地址长什么样（uri_example）、人话叫什么（label）。'
+            '日常不用查——写工具返回体自带 uri、artifact.list 出参自带 resource_uri；'
+            '只在需要**枚举全域**时用它：给 artifact.list/search 的 app/resource_kind 取合法值，'
+            '或汇总产物时认清每条 URI 是什么。零入参，返回全量。'
+        )
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        # 零入参：全量就 18 条上下，分页/过滤纯属给分身添乱。
+        return {'type': 'object', 'properties': {}}
+
+    @property
+    def required_scopes(self) -> list[str]:
+        # 只读自省（读的是代码里的 manifest 声明，连库都不碰），按「默认权限只拦外发/动钱」
+        # 铁律出厂 Allow——与 artifact.list/search/get 一致。
+        return []
+
+    async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        """投影 manifest `resources[]` → 资源域目录。权威在声明，故无需 db、与主人无关。"""
+        domains = ai_native_app_registry.resource_domains()
+        return {'items': [d.model_dump() for d in domains], 'total': len(domains)}
+
+
 ARTIFACT_TOOLS: list[BaseTool] = [
     ArtifactRecordTool(),
     ArtifactListTool(),
     ArtifactSearchTool(),
     ArtifactGetTool(),
+    ArtifactDomainsTool(),
 ]

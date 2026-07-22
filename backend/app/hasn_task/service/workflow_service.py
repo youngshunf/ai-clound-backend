@@ -258,10 +258,14 @@ class WorkflowService:
                     agent_id=node.agent_id,
                     prompt=node.prompt,
                     system_prompt=node.system_prompt,
-                    apps=[],
-                    skills=[],
+                    apps=node.apps,
+                    skills=node.skills,
                     enabled_toolsets=node.enabled_toolsets,
-                    is_origin=False,
+                    # doc35 B1：这三个曾被硬编码成空值，把模板声明的应用绑定/起点标记/产出闸
+                    # 在实例化时整段丢掉；节点表列一直在，只是从没被写进去过。
+                    is_origin=node.is_origin,
+                    output_spec=node.output_spec,
+                    review_policy=node.review_policy,
                     display={},
                     max_retries=4,
                     enable_subagents=node.enable_subagents,
@@ -318,9 +322,11 @@ class WorkflowService:
         return {'workflow': workflow, 'nodes': nodes, 'edges': edges}
 
     @staticmethod
-    async def list_workflows(db: AsyncSession, *, owner_id: str) -> list[HasnWorkflow]:
-        """列某 owner 的工作流（未删除）。"""
-        return list(await hasn_workflow_dao.list_by_owner(db, owner_id))
+    async def list_workflows(
+        db: AsyncSession, *, owner_id: str, project_id: str | None = None
+    ) -> list[HasnWorkflow]:
+        """列某 owner 的工作流（未删除）；`project_id` 给值则只返挂在该项目下的（P9-D 项目侧聚合读）。"""
+        return list(await hasn_workflow_dao.list_by_owner(db, owner_id, project_id=project_id))
 
     @staticmethod
     async def list_runs(db: AsyncSession, *, owner_id: str, workflow_uuid: str, limit: int = 50) -> list[dict]:

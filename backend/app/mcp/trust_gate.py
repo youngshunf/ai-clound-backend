@@ -39,10 +39,53 @@ _RESERVED_KEYS = (RESERVED_IS_EXTERNAL, RESERVED_PEER_ID, RESERVED_PEER_TRUST)
 
 # ── 系统注入的工作会话 id 保留参数（register-on-write，doc31/32 RC-P8 泛化）──────────
 # 分身经工作会话派发时，Hermes/daemon 在每次出站 MCP 调用后无条件戳进此保留参数（分身不可伪造、
-# 工具体不该见）。云端 dispatch 前剥离 → 落 ``AgentContext.work_session_id``，供 deck/app 写点把
+# 工具体不该见）。云端 dispatch 前剥离 → 落 ``AgentContext.session_id``，供 deck/app 写点把
 # 产出登记进「工作会话资源栏 / 分身产物 tab」。缺省（主会话直调 / 非工作会话）→ None，产物仍凭
 # resource_uri 归位、进产物 tab，只是不额外挂到某工作会话资源栏。
 RESERVED_SESSION_ID = '_hasn_session_id'
+
+# ── 系统注入的平台项目 id 保留参数（doc38 §3.3·第三条轴「为了哪件事」联邦挂靠）───────────
+# 与 `_hasn_session_id` 完全同管道：分身经项目上下文派发时，daemon 在每次出站 MCP 调用后无条件
+# 戳进此保留参数（分身不可伪造、工具体不该见）。云端 dispatch 前剥离 → 落 ContextVar，供 register-on-write
+# 公共接缝把产物自动打标进 ``hasn_artifacts.project_id``（只进不退）。缺省（不在项目中工作）→ None，
+# 产物仍凭 resource_uri 归位、进产物 tab，只是不额外挂到某项目。
+RESERVED_PROJECT_ID = '_hasn_project_id'
+
+# 系统注入保留字段的公共前缀：三族（`_hasn_session_id` / `_hasn_project_id` 与 `_hasn_is_external` /
+# `_hasn_peer_id` / `_hasn_peer_trust`）都在此命名空间下，wire 上按前缀整族放行。
+_RESERVED_FIELD_PATTERN = '^_hasn_'
+
+
+def allow_reserved_fields_in_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """把工具 input_schema 投影到 MCP SDK 前，先让它在 wire 上容得下 `_hasn_*` 保留字段。
+
+    **为什么非在这一层开口不可**：MCP SDK 在把请求交给我们的 ``call_tool`` 之前，就已经拿工具
+    声明的 ``inputSchema`` 校验了**原始 wire 入参**（``mcp/server/lowlevel/server.py`` 的
+    ``jsonschema.validate``）；而保留字段是 Hermes 出站时**逐调用**打进入参的（MCP 连接长活、
+    会话逐调用变，只能走入参、不能像 CLI runtime 那样走 ``X-Hasn-*`` header），我们的剥离发生
+    在 SDK 校验**之后**。于是任何声明 ``additionalProperties: false`` 的工具都会被 SDK 判
+    ``Additional properties are not allowed ('_hasn_session_id' was unexpected)`` 直接拒掉——
+    ``hasn.cloud.tool.search`` 首当其冲：分身连工具都发现不了，连续失败还会触发 Runtime 侧的
+    MCP 熔断，把整个 cloud server 判为不可达，全线工具跟着雪崩。
+
+    做法是给严格 schema 补一条 ``patternProperties: {"^_hasn_": {}}``：JSON Schema 里
+    ``additionalProperties`` 只管 ``properties`` / ``patternProperties`` **都没匹配上**的键，
+    故保留命名空间被放行、其余未知键照旧严格拒绝（**严格度零损失**）。``properties`` 不动——
+    保留字段仍不在工具对外声明的字段表里，分身读 schema 看不到它们。
+
+    只处理顶层：保留字段只打在 arguments 顶层；``additionalProperties`` 非 ``False`` 的 schema
+    本就放行未知键，原样返回不动。**返回新对象**，绝不改原 schema（工具的 input_schema 常是
+    模块级字面量，就地改会污染全局）。
+    """
+    if not isinstance(schema, dict) or schema.get('additionalProperties') is not False:
+        return schema
+    existing = schema.get('patternProperties')
+    patterns = dict(existing) if isinstance(existing, dict) else {}
+    if _RESERVED_FIELD_PATTERN in patterns:
+        return schema
+    patterns[_RESERVED_FIELD_PATTERN] = {}
+    return {**schema, 'patternProperties': patterns}
+
 
 # fail-closed 兜底档：对外会话里 peer_trust 缺失时按**陌生人(1)** 判定（宁拒不漏）。
 # 不用 0（黑名单——那是「显式拉黑」语义）；缺失只是「未知」，按陌生人已足够严。
@@ -126,6 +169,21 @@ def pop_session_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | Non
     raw = arguments.get(RESERVED_SESSION_ID)
     sid = str(raw).strip() if raw is not None else ''
     return cleaned, (sid or None)
+
+
+def pop_project_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """从工具入参剥离系统注入的平台项目 id 保留参数（``_hasn_project_id``）。
+
+    返回 ``(cleaned_args, project_id)``。无该参数 → 原样返回 + ``None``（never over-block：
+    缺项目 id 只是不把产物额外打标进某项目，绝不影响工具执行、也不影响产物按 resource_uri 归位）。
+    与 ``pop_session_id`` 同形状——同一分发入口先后各剥离一次。
+    """
+    if not isinstance(arguments, dict) or RESERVED_PROJECT_ID not in arguments:
+        return arguments, None
+    cleaned = {k: v for k, v in arguments.items() if k != RESERVED_PROJECT_ID}
+    raw = arguments.get(RESERVED_PROJECT_ID)
+    pid = str(raw).strip() if raw is not None else ''
+    return cleaned, (pid or None)
 
 
 def _coerce_bool(value: str | None) -> bool:

@@ -40,6 +40,14 @@ class HasnConversations(Base):
     last_message_preview: Mapped[str | None] = mapped_column(sa.String(200), default=None, comment='最后消息预览')
     last_message_from: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='最后消息发送方 hasn_id')
     message_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='消息总数')
+    current_seq: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='会话内消息序号游标（下一条 = current_seq+1·UPDATE RETURNING 原子分配·§4.1）')
     status: Mapped[str] = mapped_column(sa.String(20), default='', comment='状态 (active:活跃:green/archived:已归档:gray/disbanded:已解散:red/unreachable:不可达:orange)')
     # doc02 §3.2：会话元数据版本号——成员/群名/策略变更时 +1，供 daemon 按 revision 判断本地镜像是否过期
     revision: Mapped[int] = mapped_column(sa.BIGINT(), default=1, comment='会话元数据版本号（成员/群名/策略变更 +1，供 daemon 判镜像是否过期）')
+    # doc14 §6.5（E 刀）：差事背景——分身自撰的一句话，说明「这个对外会话是来干什么的」。
+    # 仅**发起层建会话时**写入（既有会话不覆盖）；是发送方 owner 的**私有框定**：
+    # 会话对象投影只对 mission_note_owner_id 序列化，对端 owner 一律裁剪（§7-1 同精神）。
+    # daemon 在 peer 会话首次派发时随 IdentityPeer 同层注入，让对端会话知道差事背景。
+    mission_note: Mapped[str | None] = mapped_column(UniversalText, default=None, comment='差事背景（分身自撰一句话·发起层建会话时写入·发送方 owner 私有）')
+    # mission_note 的归属 owner——投影裁剪判据。显式落列而非从首条消息反推「发送方」（零推断）。
+    mission_note_owner_id: Mapped[str | None] = mapped_column(sa.String(40), default=None, comment='mission_note 的归属 owner hasn_id（投影只对该 owner 序列化 mission_note）')

@@ -20,6 +20,7 @@ import sqlalchemy as sa
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.schema.hasn_message_hub import (
     ErrorObject,
@@ -281,11 +282,20 @@ class SqlAlchemyMessageHubGateway:
         if record.runtime_summary:
             context['runtime_summary'] = _public_runtime_summary(record.runtime_summary)
 
+        # R2-02：Message Hub 的原始 SQL 写点也必须进入统一会话序号分配链路。
+        # 取号与消息 INSERT 共用当前事务，写入失败不会留下已消费的序号。
+        conversation_seq = await hasn_conversations_dao.allocate_seq(db, record.conversation_id)
+        if conversation_seq is None:
+            raise ValueError(
+                f'allocate_seq 失败：会话 {record.conversation_id} 不存在，无法分配 conversation_seq'
+            )
+
         result = await db.execute(
             sa.text(
                 """
                 INSERT INTO public.hasn_messages (
                     conversation_id,
+                    conversation_seq,
                     owner_id,
                     hasn_id,
                     from_id,
@@ -308,12 +318,11 @@ class SqlAlchemyMessageHubGateway:
                     dispatch_status,
                     owner_copy_of_message_id,
                     context,
-                    session_id,
-                    session_seq,
                     server_received_at,
                     created_time
                 ) VALUES (
                     CAST(:conversation_id AS uuid),
+                    :conversation_seq,
                     :owner_id,
                     :hasn_id,
                     :from_id,
@@ -336,8 +345,6 @@ class SqlAlchemyMessageHubGateway:
                     :dispatch_status,
                     CAST(:owner_copy_of_message_id AS bigint),
                     CAST(:context AS jsonb),
-                    :session_id,
-                    :session_seq,
                     now(),
                     now()
                 )
@@ -346,6 +353,7 @@ class SqlAlchemyMessageHubGateway:
             ),
             {
                 'conversation_id': record.conversation_id,
+                'conversation_seq': conversation_seq,
                 'owner_id': record.owner_id,
                 'hasn_id': record.hasn_id,
                 'from_id': record.from_id,
@@ -366,8 +374,6 @@ class SqlAlchemyMessageHubGateway:
                 'dispatch_status': record.dispatch_status,
                 'owner_copy_of_message_id': record.owner_copy_of_message_id,
                 'context': json.dumps(context, ensure_ascii=False, sort_keys=True, default=str),
-                'session_id': getattr(record, 'session_id', None),
-                'session_seq': getattr(record, 'session_seq', None),
             },
         )
         row = result.mappings().one()

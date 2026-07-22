@@ -22,7 +22,6 @@ import os
 import posixpath
 
 from dataclasses import dataclass
-from datetime import datetime
 from itertools import starmap
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -32,13 +31,20 @@ from backend.database.redis import redis_client
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.utils.file_ops import (
     build_object_url,
+    delete_object,
     presign_read_key,
     read_bytes,
+    sha256_object,
+    stat_object,
     write_bytes,
+    write_immutable_speech_package,
+    write_stream,
 )
+from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterable, AsyncIterator, Sequence
+    from typing import BinaryIO
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,6 +68,10 @@ CATEGORY_POLICY: dict[str, tuple[str, int | None]] = {
     # 官网下载页/Tauri updater 直接读 CDN 长效直链，桌面端 ATS 要求 https（见 build_object_url）；
     # CI 出包后把二进制交云端此处入桶，复用云端既有七牛，CI 不再需要任何七牛凭据。
     'release_asset': ('public', None),
+    # 通用语音模型分发包（SPCAT-4）：**公共桶、不签名、无 TTL**。
+    # daemon 无鉴权纯 GET 下载 + sha256 + 包级 Ed25519 双重校验，URL 内嵌在签名 catalog 里、
+    # 必须长效 https（桌面端 ATS），不能是会过期的签名 URL——故归 public，同 release_asset 策略。
+    'speech_model': ('public', None),
 }
 
 # category → 对象前缀目录（key 的第一段，content-addressed 之上）。
@@ -73,10 +83,13 @@ CATEGORY_DIR: dict[str, str] = {
     'private_doc': 'docs',
     'published_artifact': 'published',
     'film_engine': 'film-engine',
+    'speech_model': 'speech-models',
 }
 
 # 缓存 margin：缓存 TTL = 签名有效期 - margin，保证缓存命中时签名仍有效（1c）。
 SIGN_CACHE_MARGIN_SECONDS = 120
+# 与语音 release head 共用的 PostgreSQL 事务级锁，串行化发布和存储配置变更。
+SPEECH_STORAGE_LOCK_KEY = 0x535045454348
 
 
 @dataclass(frozen=True)
@@ -89,6 +102,14 @@ class ObjectRef:
     stable_url: str  # public 为 CDN 直读 URL；private 为内部稳定 URL（不可直接公开访问）
     mime: str
     size: int
+
+
+@dataclass(frozen=True)
+class ObjectStat:
+    """对象存储返回的真实文件元数据。"""
+
+    size: int
+    etag: str | None
 
 
 def _category_policy(category: str) -> tuple[str, int | None]:
@@ -117,7 +138,7 @@ def _build_key(category: str, *, filename: str | None, data: bytes) -> str:
     """content-addressed key（07 D7）：{dir}/{YYYY}/{MM}/{DD}/{md5[:12]}{ext}。"""
     directory = CATEGORY_DIR.get(category, 'files')
     digest = hashlib.md5(data).hexdigest()[:12]
-    now = datetime.now()
+    now = timezone.now()
     return f'{directory}/{now:%Y/%m/%d}/{digest}{_ext_of(filename)}'
 
 
@@ -188,6 +209,94 @@ class StorageService:
             size=len(data),
         )
 
+    @classmethod
+    async def upload_stream(
+        cls,
+        db: AsyncSession,
+        data: AsyncIterable[bytes],
+        *,
+        size: int,
+        category: str,
+        filename: str | None = None,
+        content_type: str | None = None,
+        key: str | None = None,
+    ) -> ObjectRef:
+        """按 category 选择存储，并以有界内存上传已知长度对象。"""
+        if size <= 0:
+            raise errors.RequestError(msg='流式上传对象大小必须大于 0')
+        if key is None:
+            raise errors.RequestError(msg='流式上传必须显式提供服务端派生对象 key')
+        access, _ = _category_policy(category)
+        storage = _pick_storage(await cls._storages(db), access)
+        await write_stream(
+            storage,
+            key,
+            data,
+            size=size,
+            content_type=content_type,
+        )
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=key,
+            access=access,
+            stable_url=build_object_url(storage, key),
+            mime=content_type or 'application/octet-stream',
+            size=size,
+        )
+
+    @classmethod
+    async def get_immutable_speech_storage(cls, db: AsyncSession) -> S3Storage:
+        """返回当前公共语音包存储；调用方必须在远程 I/O 前复制配置并释放事务。"""
+        access, _ = _category_policy('speech_model')
+        return _pick_storage(await cls._storages(db), access)
+
+    @staticmethod
+    async def upload_immutable_speech_package_to_storage(
+        storage: S3Storage,
+        file: BinaryIO,
+        *,
+        size: int,
+        content_type: str,
+        key: str,
+    ) -> ObjectRef:
+        """按已经复制的存储快照执行 provider 原生 insert-only 上传。"""
+        access, _ = _category_policy('speech_model')
+        await write_immutable_speech_package(
+            storage,
+            key,
+            file,
+            size=size,
+            content_type=content_type,
+        )
+        return ObjectRef(
+            storage_id=storage.id,
+            object_key=key,
+            access=access,
+            stable_url=build_object_url(storage, key),
+            mime=content_type,
+            size=size,
+        )
+
+    @classmethod
+    async def upload_immutable_speech_package(
+        cls,
+        db: AsyncSession,
+        file: BinaryIO,
+        *,
+        size: int,
+        content_type: str,
+        key: str,
+    ) -> ObjectRef:
+        """选择公共桶并以 provider 原生 insert-only 语义写入语音模型包。"""
+        storage = await cls.get_immutable_speech_storage(db)
+        return await cls.upload_immutable_speech_package_to_storage(
+            storage,
+            file,
+            size=size,
+            content_type=content_type,
+            key=key,
+        )
+
     @staticmethod
     def public_url(storage: S3Storage, object_key: str) -> str:
         """公开资产的 CDN 直读 URL（不签名）。"""
@@ -222,7 +331,7 @@ class StorageService:
         prefix = (storage.prefix or '').strip('/')
         path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
         base = storage.cdn_domain.rstrip('/') + quote(path, safe='/')
-        deadline = int(datetime.now().timestamp()) + expires_in
+        deadline = int(timezone.now().timestamp()) + expires_in
         to_sign = f'{base}?e={deadline}'
         digest = hmac.new(storage.secret_key.encode(), to_sign.encode(), hashlib.sha1).digest()
         token = f'{storage.access_key}:{base64.urlsafe_b64encode(digest).decode()}'
@@ -237,7 +346,7 @@ class StorageService:
         prefix = (storage.prefix or '').strip('/')
         path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
         encoded_path = quote(path, safe='/')
-        expire_ts = int(datetime.now().timestamp()) + expires_in
+        expire_ts = int(timezone.now().timestamp()) + expires_in
         t_hex = format(expire_ts, 'x')
         sign = hashlib.md5(f'{sign_key}{encoded_path}{t_hex}'.encode()).hexdigest()
         base = storage.cdn_domain.rstrip('/')
@@ -251,7 +360,7 @@ class StorageService:
             raise errors.ServerError(msg='sign_strategy=nginx_secure_link 但该存储未配置 cdn_domain')
         prefix = (storage.prefix or '').strip('/')
         path = '/' + '/'.join(p for p in (prefix, object_key.strip('/')) if p)
-        expire_ts = int(datetime.now().timestamp()) + expires_in
+        expire_ts = int(timezone.now().timestamp()) + expires_in
         raw = f'{sign_key}{path}{expire_ts}'.encode()
         digest = hashlib.md5(raw).digest()
         md5b64 = base64.urlsafe_b64encode(digest).decode().rstrip('=')
@@ -281,9 +390,33 @@ class StorageService:
         return await read_bytes(storage, object_key)
 
     @classmethod
+    async def stat(cls, db: AsyncSession, *, storage_id: int, object_key: str) -> ObjectStat:
+        """读取真实对象元数据；对象缺失或 provider 失败时显式报错。"""
+        storage = await cls.get_storage(db, storage_id)
+        size, etag = await stat_object(storage, object_key)
+        return ObjectStat(size=size, etag=etag)
+
+    @classmethod
+    async def sha256(cls, db: AsyncSession, *, storage_id: int, object_key: str) -> tuple[str, int]:
+        """流式复算真实对象 SHA-256 和读取字节数。"""
+        storage = await cls.get_storage(db, storage_id)
+        return await sha256_object(storage, object_key)
+
+    @classmethod
+    async def delete_object(cls, db: AsyncSession, *, storage_id: int, object_key: str) -> None:
+        """删除受控对象；调用方必须先证明对象属于自身清理范围。"""
+        storage = await cls.get_storage(db, storage_id)
+        await delete_object(storage, object_key)
+
+    @classmethod
     async def read_stream(
-        cls, db: AsyncSession, *, storage_id: int, object_key: str, chunk_size: int = 65536
-    ):
+        cls,
+        db: AsyncSession,
+        *,
+        storage_id: int,
+        object_key: str,
+        chunk_size: int = 65536,
+    ) -> AsyncIterator[bytes]:
         """服务端流式读私有桶对象（异步生成器，逐 chunk yield）。
 
         single-html 制品代吐用；制品 ≤25MB（[01] §7 不变量 5），整读后分块下发。

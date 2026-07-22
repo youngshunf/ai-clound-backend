@@ -242,6 +242,9 @@ async def test_deck_lifecycle_roundtrip_real_db() -> None:
         # 分身用工具建 deck 自动绑定它自己为协作分身（首页纯派发流程依赖：绑定落在 create 这一刻，
         # 不再靠预建带 bound_agent_id 的空 deck）。
         assert created['deck']['bound_agent_id'] == ctx.agent_hasn_id
+        # doc36 §3.2：写工具返回体必须带 `uri`——登记那一刻算出的地址就地返给分身，
+        # 而不是算完扔掉、只留一个裸 deck_id 让分身不知道怎么打开自己刚建的东西。
+        assert created['uri'] == f'hasn://deck/{deck_id}'
 
         # 2) 写大纲（存储为 {'items': pages}）
         await _tool('hasn.deck.outline.set').execute(

@@ -29,11 +29,21 @@ class CRUDHasnWorkflow(CRUDPlus[HasnWorkflow]):
         """按稳定 UUID 获取工作流定义"""
         return await self.select_model_by_column(db, workflow_uuid=workflow_uuid)
 
-    async def list_by_owner(self, db: AsyncSession, owner_id: str) -> Sequence[HasnWorkflow]:
-        """获取某 owner 的全部工作流（未删除），按更新时间倒序"""
+    async def list_by_owner(
+        self, db: AsyncSession, owner_id: str, *, project_id: str | None = None
+    ) -> Sequence[HasnWorkflow]:
+        """获取某 owner 的全部工作流（未删除），按更新时间倒序
+
+        `project_id` 给值则只返挂在该项目下的（doc38 §6「项目是导航面」的聚合读口径：
+        按项目过滤，不做统一聚合端点）。它**只是过滤键、不是权限边界**——owner_id 才是隔离键，
+        项目过滤永远叠在 owner 之上，不会因为「在这个项目里」而看见别人的工作流。
+        """
+        conditions = [HasnWorkflow.owner_id == owner_id, HasnWorkflow.deleted_at.is_(None)]
+        if project_id:
+            conditions.append(HasnWorkflow.project_id == project_id)
         stmt = (
             select(HasnWorkflow)
-            .where(HasnWorkflow.owner_id == owner_id, HasnWorkflow.deleted_at.is_(None))
+            .where(*conditions)
             .order_by(HasnWorkflow.updated_time.desc().nullslast(), HasnWorkflow.id.desc())
         )
         result = await db.execute(stmt)
@@ -111,6 +121,21 @@ class CRUDHasnWorkflowNodeRun(CRUDPlus[HasnWorkflowNodeRun]):
                 HasnWorkflowNodeRun.node_key == node_key,
             )
             .order_by(HasnWorkflowNodeRun.created_time.desc(), HasnWorkflowNodeRun.id.desc())
+            .limit(1)
+        )
+        result = await db.execute(stmt)
+        return result.scalars().first()
+
+    async def get_run_uuid_by_session(self, db: AsyncSession, work_session_id: str) -> str | None:
+        """据「最新工作会话」反查所属 workflow_run（doc36 §6.2 零入参）。
+
+        汇总节点跑 run_artifacts 时，自己的节点行 work_session_id 即当前会话，
+        反查恒成立。多行共享同一会话时取最近一条（id 倒序）。
+        """
+        stmt = (
+            select(HasnWorkflowNodeRun.workflow_run_uuid)
+            .where(HasnWorkflowNodeRun.work_session_id == work_session_id)
+            .order_by(HasnWorkflowNodeRun.id.desc())
             .limit(1)
         )
         result = await db.execute(stmt)

@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import uuid
 
+from typing import TYPE_CHECKING
+
 import pytest
 
+from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.artifact import (
     ARTIFACT_TOOLS,
@@ -29,11 +32,15 @@ from backend.app.mcp.tools.artifact import (
     _LIST_SIZE_DEFAULT,
     _LIST_SIZE_MAX,
     _SUMMARY_MAX,
+    ArtifactDomainsTool,
     ArtifactGetTool,
     ArtifactListTool,
     ArtifactSearchTool,
 )
 from backend.app.mcp.tools.asset import ASSET_TOOLS, AssetGetTool, _normalize_asset_id
+
+if TYPE_CHECKING:
+    from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 
 
 def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str) -> AgentContext:
@@ -63,12 +70,14 @@ async def _db_reachable() -> bool:
 
 # ── 契约（无需 DB）────────────────────────────────────────────────────────────
 def test_artifact_tools_register_full_set() -> None:
-    """artifact 域含 record + list + search + get 四工具；asset 域含 get 一工具。"""
+    """artifact 域含 record + list + search + get + domains 五工具；asset 域含 get 一工具。"""
     assert [t.name for t in ARTIFACT_TOOLS] == [
         'hasn.artifact.record',
         'hasn.artifact.list',
         'hasn.artifact.search',
         'hasn.artifact.get',
+        # doc36 U4：资源域目录自省（挂既有 artifact 命名空间，不新开顶层域）。
+        'hasn.artifact.domains',
     ]
     assert [t.name for t in ASSET_TOOLS] == ['hasn.asset.get']
 
@@ -96,20 +105,15 @@ def test_read_tools_required_fields() -> None:
 
 
 def test_list_schema_filters() -> None:
-    """list 支持 kind（enum）/session_id/page/size 过滤，kind enum 与产物类型一致。"""
+    """list 支持 kind（enum）/session_id/page/size 过滤，kind enum = doc35 六枚举。
+
+    读侧的 enum 必须与写侧同源（都取自 `ArtifactKind` Literal）：这里若还留着
+    deck/webpage/dataset/other，分身就会按那些值去筛，永远筛不到任何行——库里已经
+    没有这些值了，而分身得不到任何报错，只会以为「没有产物」。
+    """
     props = ArtifactListTool().input_schema['properties']
     assert set(props) >= {'kind', 'session_id', 'page', 'size'}
-    assert props['kind']['enum'] == [
-        'image',
-        'voice',
-        'video',
-        'file',
-        'document',
-        'deck',
-        'webpage',
-        'dataset',
-        'other',
-    ]
+    assert props['kind']['enum'] == ['resource', 'document', 'image', 'video', 'voice', 'file']
 
 
 def test_projection_constants_are_trim_bounds() -> None:
@@ -162,7 +166,10 @@ async def _seed_owner_and_agent(owner: str, agent: str) -> None:
     from backend.database.db import async_db_session
 
     tag = uuid.uuid4().hex[:8]
-    uid = 970000 + int(uuid.uuid4().int % 9000)
+    # 取值空间放宽到千万级：旧写法 `% 9000` 只有 9000 个坑，而库里积着几十行历次跑测遗留的
+    # `h_own_%` 主人（每行占一个 star_id），撞 `idx_hasn_humans_star_id` 唯一索引是概率问题——
+    # 表现成偶发 IntegrityError，看着像谁改坏了，其实是生日悖论。
+    uid = 970000 + int(uuid.uuid4().int % 9_000_000)
     async with async_db_session.begin() as db:
         db.add_all([
             HasnHumans(hasn_id=owner, star_id=f's_{uid}', user_id=uid, nickname=f'主人{tag}', status='active'),
@@ -187,13 +194,19 @@ async def _record(
     body: str | None = None,
     asset_id: str | None = None,
     session_id: str | None = None,
-    source_kind: str = 'tool_output',
+    source_kind: str | None = None,
 ) -> str:
-    """经 service 真登记一条产物，返回 artifact_id。"""
+    """经 service 真登记一条产物，返回 artifact_id。
+
+    `source_kind` 不传则按产出者推导，与 `source_tool` 保持同一口径（doc35 §5）：
+    图片走平台工具 `hasn.image.generate`→`platform_tool`，其余是分身自撰
+    `hasn.artifact.record`→`agent_note`。旧的统一缺省 `tool_output` 是垃圾桶值，已砍。
+    """
     from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
     from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
     from backend.database.db import async_db_session
 
+    is_platform_media = kind in ('image', 'video', 'voice')
     params = RecordArtifactParam(
         kind=kind,
         title=title,
@@ -201,7 +214,7 @@ async def _record(
         body=body,
         asset_id=asset_id,
         session_id=session_id,
-        source_kind=source_kind,
+        source_kind=source_kind or ('platform_tool' if is_platform_media else 'agent_note'),
         source_tool='hasn.image.generate' if kind == 'image' else 'hasn.artifact.record',
     )
     async with async_db_session.begin() as db:
@@ -285,6 +298,184 @@ async def test_list_filters_by_kind_and_session_real_db() -> None:
 
         by_session = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'session_id': sess})
         assert {it['title'] for it in by_session['items']} == {'图A', '文B'}
+    finally:
+        await _cleanup(owner)
+
+
+async def _record_app_resource(
+    owner: str,
+    agent: str,
+    *,
+    app_id: str,
+    resource_kind: str,
+    server_id: int,
+    title: str,
+    project_id: str | None = None,
+) -> ArtifactRegistration | None:
+    """经公共接缝真登记一条**应用资源**产物（与 register-on-write 写点同一条路）。
+
+    不用 `_record`：那是分身自撰通道（`hasn.artifact.record`），登记不出 `source_app_id`/`resource_kind`，
+    而应用维度过滤要的正是这两列。`project_id` 非空时显式打标到平台项目（doc95 §6.4 项目轴过滤键）。
+    """
+    from backend.app.mcp.artifact_registration import register_app_resource_artifact
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as db:
+        return await register_app_resource_artifact(
+            db,
+            app_id=app_id,
+            resource_kind=resource_kind,
+            server_id=server_id,
+            agent_hasn_id=agent,
+            owner_hasn_id=owner,
+            title=title,
+            source_tool=f'hasn.{app_id}.test',
+            project_id=project_id,
+        )
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_list_filters_by_app_dimension_real_db() -> None:
+    """doc36 U3 真实 PG：list 按 app / resource_kind 过滤 + 出参给应用归属两列。
+
+    这是 doc36 §1.4 的正题：应用资源的 `kind` 恒为 `resource`（doc35 四维分类），
+    18 个应用的资源全挤在这一个桶里——「我在知识库里建过哪些库」按 kind 根本筛不出来。
+    """
+    if not await _db_reachable():
+        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+
+    tag = uuid.uuid4().hex[:12]
+    owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
+    try:
+        await _seed_owner_and_agent(owner, agent)
+        kb_reg = await _record_app_resource(
+            owner, agent, app_id='knowledge', resource_kind='knowledge.base', server_id=1, title='我的库'
+        )
+        await _record_app_resource(
+            owner, agent, app_id='knowledge', resource_kind='knowledge.document', server_id=2, title='库里的文档'
+        )
+        await _record_app_resource(
+            owner, agent, app_id='deck', resource_kind='deck.presentation', server_id=3, title='季度汇报'
+        )
+
+        # 三条产物的 kind 全是 resource——只按 kind 筛等于没筛（这正是要修的）。
+        by_kind = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'kind': 'resource'})
+        assert len(by_kind['items']) == 3
+
+        # 按应用筛：只剩知识库的两条。
+        by_app = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'app': 'knowledge'})
+        assert {it['title'] for it in by_app['items']} == {'我的库', '库里的文档'}
+
+        # 按应用内资源类型筛：精确到「库」，不含文档。
+        by_kb = await ArtifactListTool().execute(_agent_ctx(owner, agent), {'resource_kind': 'knowledge.base'})
+        assert [it['title'] for it in by_kb['items']] == ['我的库']
+        row = by_kb['items'][0]
+        assert row['source_app_id'] == 'knowledge', '出参必须答「哪个应用」'
+        assert row['resource_kind'] == 'knowledge.base', '出参必须答「是什么」'
+        assert row['resource_uri'] == 'hasn://knowledge/kbs/1', '深链即打开依据'
+
+        # 两维度叠加 = AND。
+        both = await ArtifactListTool().execute(
+            _agent_ctx(owner, agent), {'app': 'deck', 'resource_kind': 'knowledge.base'}
+        )
+        assert both['items'] == [], 'app 与 resource_kind 是 AND，互相矛盾时应为空'
+
+        # search 同样吃应用维度（写图文找素材时按应用收窄）。
+        searched = await ArtifactSearchTool().execute(_agent_ctx(owner, agent), {'query': '库', 'app': 'knowledge'})
+        assert {it['title'] for it in searched['items']} == {'我的库', '库里的文档'}
+
+        # 详情面与列表面对称：get 也要答「哪个应用的什么东西」。
+        assert kb_reg is not None
+        detail = await ArtifactGetTool().execute(_agent_ctx(owner, agent), {'artifact_id': kb_reg.artifact_id})
+        assert detail['source_app_id'] == 'knowledge'
+        assert detail['resource_kind'] == 'knowledge.base'
+        assert detail['resource_uri'] == 'hasn://knowledge/kbs/1'
+    finally:
+        await _cleanup(owner)
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_list_filters_by_project_real_db() -> None:
+    """doc95 §6.4 真实 PG：list/search 按平台项目（project_id）收窄。
+
+    项目全链路产物视图靠 `hasn_artifacts.project_id` 聚合过滤键——分身在项目工作会话内调
+    list/search 时，系统注入的 `_hasn_project_id` 进 ContextVar，缺省即收窄到本项目；跨项目查
+    才显式传 project_id。project_id 只是聚合过滤键、不是权限边界（归属仍由 owner+agent 隔离兜底）。
+    """
+    if not await _db_reachable():
+        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+
+    from backend.app.mcp.context import clear_current_project_id, set_current_project_id
+
+    tag = uuid.uuid4().hex[:12]
+    owner, agent = f'h_own_{tag}', f'a_mine_{tag}'
+    # project_id 列是 sa.UUID()——过滤键必须是合法 UUID。
+    proj_a, proj_b = str(uuid.uuid4()), str(uuid.uuid4())
+    try:
+        await _seed_owner_and_agent(owner, agent)
+        # 项目 A 两条、项目 B 一条、无项目一条（游离产物）。
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=11,
+            title='A 汇报',
+            project_id=proj_a,
+        )
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='knowledge',
+            resource_kind='knowledge.base',
+            server_id=12,
+            title='A 知识库',
+            project_id=proj_a,
+        )
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=13,
+            title='B 汇报',
+            project_id=proj_b,
+        )
+        await _record_app_resource(
+            owner,
+            agent,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=14,
+            title='游离产物',
+        )
+
+        ctx = _agent_ctx(owner, agent)
+        # 不传 project_id 且不在项目 ContextVar 中 → 全部 4 条（不收窄，project_id 非权限边界）。
+        all_items = await ArtifactListTool().execute(ctx, {})
+        assert {it['title'] for it in all_items['items']} == {'A 汇报', 'A 知识库', 'B 汇报', '游离产物'}
+
+        # 显式传 project_id → 只出该项目下的产物。
+        only_a = await ArtifactListTool().execute(ctx, {'project_id': proj_a})
+        assert {it['title'] for it in only_a['items']} == {'A 汇报', 'A 知识库'}
+        only_b = await ArtifactListTool().execute(ctx, {'project_id': proj_b})
+        assert {it['title'] for it in only_b['items']} == {'B 汇报'}
+
+        # 项目 + 应用维度叠加 = AND。
+        a_deck = await ArtifactListTool().execute(ctx, {'project_id': proj_a, 'app': 'deck'})
+        assert {it['title'] for it in a_deck['items']} == {'A 汇报'}
+
+        # search 同样吃 project_id（跨项目查素材时收窄到本项目）。
+        searched = await ArtifactSearchTool().execute(ctx, {'query': '汇报', 'project_id': proj_a})
+        assert {it['title'] for it in searched['items']} == {'A 汇报'}
+
+        # ContextVar 缺省收窄：在项目 A 工作会话内不传显式 project_id 也只出 A 的两条（doc95 §6.4 核心）。
+        set_current_project_id(proj_a)
+        try:
+            scoped = await ArtifactListTool().execute(_agent_ctx(owner, agent), {})
+            assert {it['title'] for it in scoped['items']} == {'A 汇报', 'A 知识库'}
+        finally:
+            clear_current_project_id()
     finally:
         await _cleanup(owner)
 
@@ -431,3 +622,58 @@ async def test_asset_get_metadata_owner_check_and_transcript_trim_real_db() -> N
             await db.execute(delete(HasnAssets).where(HasnAssets.asset_id == asset_id))
         await _cleanup(owner)
         await _cleanup(other_owner)
+
+
+# ---------------------------------------------------------------------------
+# doc36 U4 · hasn.artifact.domains（资源域目录自省，零 DB）
+# ---------------------------------------------------------------------------
+
+
+def test_domains_tool_contract() -> None:
+    """契约：名/命名空间/位置/scope + 零入参 + 已注册进 ARTIFACT_TOOLS。"""
+    tool = ArtifactDomainsTool()
+    assert tool.name == 'hasn.artifact.domains'
+    assert tool.namespace == 'hasn.artifact'
+    assert tool.execution_location == 'cloud'
+    assert tool.source == 'platform'
+    # 只读自省（连库都不碰）→ 按「默认权限只拦外发/动钱」铁律出厂 Allow，与 list/search/get 一致。
+    assert tool.required_scopes == []
+    # 零入参：全域 18 条上下，加 required 只会让分身以为得先知道点什么才能问。
+    assert tool.input_schema == {'type': 'object', 'properties': {}}
+    assert tool.name in {t.name for t in ARTIFACT_TOOLS}
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_domains_projects_manifest_declarations() -> None:
+    """doc36 §5.2：域目录如实投影 manifest `resources[]`，与 `resource_routes()` 同源。
+
+    同源是本条的正题——分身看到的域清单若跟 webui 寻址表对不上，就等于系统里有两份互相
+    漂移的「有哪些资源」；这里钉死两者一一对应。
+    """
+    result = await ArtifactDomainsTool().execute(_agent_ctx('h_any', 'a_any'), {})
+    items = result['items']
+    assert result['total'] == len(items) > 0
+
+    # 与 webui 寻址投影同源：同一份 descriptor 出的两份投影，(app_id, uri_domain) 必须逐条对上。
+    routes = ai_native_app_registry.resource_routes()
+    assert {(i['app_id'], i['uri_domain']) for i in items} == {(r.app_id, r.uri_domain) for r in routes}
+
+    by_kind = {i['resource_kind']: i for i in items}
+    kb = by_kind['knowledge.base']
+    assert kb['app_id'] == 'knowledge'
+    assert kb['uri_domain'] == 'knowledge/kbs'
+    # uri_example 给形状不给猜：分身照着填 id 就能拼出真地址。
+    assert kb['uri_example'] == 'hasn://knowledge/kbs/{id}'
+    # label 是**名词性**资源名。descriptor 里字段名叫 card.verb，值却全是名词
+    # （完成卡标题 "{verb}做好了" 正需名词）——拿它当 label 是对的，不是把动词当名字。
+    assert kb['label'] == '知识库'
+    assert by_kind['deck.presentation']['label'] == '演示文稿'
+
+    # 全域自洽：每条的 uri_example 都由 uri_domain 派生，没有哪条是手拼的字面量。
+    for item in items:
+        assert item['uri_example'] == f'hasn://{item["uri_domain"]}/{{id}}'
+        assert item['label'], f'{item["resource_kind"]} 缺人话名——分身只能看见内部键'
+
+    # U3 的入参描述让分身「用 domains 查取值」，这里钉死那句话是真的：
+    # list/search 的 app / resource_kind 取值确实来自本工具的出参。
+    assert {i['app_id'] for i in items} >= {'knowledge', 'deck'}

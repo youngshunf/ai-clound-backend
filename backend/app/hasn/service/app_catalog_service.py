@@ -14,8 +14,12 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+import copy
+import json
+
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import sqlalchemy as sa
 
@@ -33,7 +37,6 @@ from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +48,7 @@ _TIER_RANK: dict[str, int] = {'free': 0, 'pro': 1, 'advanced': 2, 'flagship': 3}
 
 # 工作台排序（小在前）。未列出的 app 落到默认值之后。
 _CATALOG_SORT_ORDER: dict[str, int] = {
+    'project': 5,  # 项目管理（第三条轴「为了哪件事」聚合门面，doc38；一级容器置顶，install_policy=auto 默认挂载）
     'knowledge': 10,
     'community': 20,
     'deck': 35,
@@ -56,13 +60,52 @@ _CATALOG_SORT_ORDER: dict[str, int] = {
     'imagelab': 58,  # 图像处理（图坊，自研本地引擎，doc30；default_mount=FALSE 由 install_policy=manual 推导）
     'copilot': 60,  # 会议副驾（local_tool 无 Agent 工具；default_mount=FALSE 由 install_policy=manual 推导）
     'plan': 65,  # 规划与目标管理（PIM；default_mount=FALSE 由 install_policy=manual 推导）
-    'finance': 70,  # 金融数据（cloud 只读数据应用；default_mount=FALSE 由 install_policy=manual 推导）
+    'finance': 70,  # 金融投研（local_tool 本地应用；default_mount=FALSE 由 install_policy=manual 推导）
     'quant': 75,  # 量化交易（cloud-brokered 量化工作台，模块 14 doc23；default_mount=FALSE 由 manual 推导）
     'studio': 76,  # 统一视频引擎（cloud-brokered 视频工作台，模块 14 doc22；default_mount=FALSE 由 manual 推导）
     'design': 78,  # 矢量设计（local_tool 本地 sidecar，源自 OpenPencil，doc27；default_mount=FALSE 由 manual 推导）
     'computer_use': 80,  # 桌面控制（local_tool 能力型应用，模块 23 V2；default_mount=FALSE 由 manual 推导）
 }
 _DEFAULT_SORT_ORDER = 100
+
+MAX_FINANCE_RELEASE_MANIFEST_BYTES = 1024 * 1024
+_FINANCE_RELEASE_FIELDS = {
+    'schema_version',
+    'artifact_id',
+    'version',
+    'release_sequence',
+    'channel',
+    'issued_at',
+    'expires_at',
+    'minimum_daemon_version',
+    'packages',
+    'revocations',
+    'key_id',
+    'signature',
+}
+_FINANCE_PACKAGE_FIELDS = {
+    'url',
+    'sha256',
+    'compressed_size',
+    'installed_size_limit',
+    'file_manifest_sha256',
+}
+_FINANCE_REVOCATION_FIELDS = {
+    'version',
+    'platform',
+    'sha256',
+    'revoked_at',
+    'reason',
+    'critical',
+}
+_FINANCE_RELEASE_PLATFORMS = {
+    'darwin-aarch64',
+    'darwin-x86_64',
+    'linux-aarch64',
+    'linux-x86_64',
+    'win-aarch64',
+    'win-x86_64',
+}
 
 # AppCollab（doc21 §4.3/§5.4）：应用默认承接的内置 agent 类型键 + 唤起分身注入的业务提示词模板。
 # 类型键 = hub 内置模板的 ``builtin_key``（``builtin: true``）；daemon ``resolve_default_agent_for_app`` 按
@@ -86,6 +129,16 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         'assistant',
         '你是任务应用的执行分身：把主人交办的事按计划执行、把结果带回并可追溯；'
         '只调用 hasn.task.* 工具，零 fake，失败如实报错。',
+    ),
+    # 项目管理归「全能助理（assistant）」——项目是「为了哪件事」的业务容器门面（doc38），
+    # 分身建项目/在项目内推进，不接管各应用容器（三条铁律）。
+    'project': (
+        'assistant',
+        '你是项目管理应用的执行分身：帮主人把「为了哪件事」的活儿收进项目——建项目（一句话目标'
+        '→ hasn.project.create）、把已有资源挂靠进来（hasn.project.link 知识库/获客项目/图坊项目/'
+        '站点/deck…）、按里程碑推进（hasn.project.milestone.*）、在项目内派发分身干活。项目只回答'
+        '「为了哪件事」——不替代各应用（知识库/获客/图坊仍在各自应用里操作），只做聚合与推进。'
+        '只调用 hasn.project.* 工具，挂靠/摘出统一经工具（不擅自跨应用改数据），零 fake，失败如实报错。',
     ),
     # 社区归「内容运营官（content_operator）」——与 deck/creator/film/designsystem 同一分身。
     'community': (
@@ -189,13 +242,13 @@ _CATALOG_AGENT_DEFAULTS: dict[str, tuple[str, str]] = {
         '合理排期到日历，每日给简报、定期做复盘；只调用 hasn.plan.* 工具就地管理主人的规划数据，'
         '尊重主人的最终决定权，零 fake、失败如实报错。',
     ),
-    # 金融数据用专属「投研分析师（analyst）」分身（hub 模板 analyst，builtin_key=analyst，FIN-S8 落地）。
-    # 行情/基本面/宏观全只读取数 → 分析师只查不动，给出有数据支撑的研判。
+    # 金融投研使用专属「投研分析师（analyst）」分身；工具由 hasn-node 本地引擎执行。
     'finance': (
         'analyst',
-        '你是主人的投研分析师：用 hasn.finance.* 工具查 A股/港美股/基金/期货/债券/指数行情与宏观数据，'
-        '为主人做有数据支撑的研判；所有数据仅供参考、不构成投资建议，引用须标注口径与日期，'
-        '取不到就如实说，零 fake、失败如实报错。',
+        '你是主人的投研分析师：使用 hasn.finance.* 本地工具完成数据研究、专家团队、策略回测、'
+        '交易复盘、自选盯盘与简报。异步任务启动后立即结束当前轮，不自行轮询，由后台回灌结果；'
+        '不执行真实下单。所有数据仅供参考、不构成投资建议，引用须标注口径与日期；'
+        '取不到就如实说明，零 fake、失败如实报错。',
     ),
     # 量化归口「金融理财专家（analyst）」分身（2026-07-03 一类应用一模板：quant_trader 折叠进 analyst）。
     # 模板同 finance 共用 analyst（builtin_key=analyst），但工作会话提示词按应用区分——本条保留量化回测专属提示词。
@@ -351,6 +404,7 @@ _APP_ICON_CDN_BASE = 'http://hasn-pub-cdn.dcfuture.cn/huanxing/app-icons'
 _CATALOG_SEED_ICON_ASSET_URI = {
     'computer_use': f'{_APP_ICON_CDN_BASE}/computer_use.svg',
     'finance': f'{_APP_ICON_CDN_BASE}/finance.svg',
+    'project': f'{_APP_ICON_CDN_BASE}/project.svg',
 }
 
 
@@ -472,6 +526,139 @@ def merge_engine_package(
     return existing
 
 
+def _request_error(message: str) -> errors.RequestError:
+    return errors.RequestError(msg=f'金融引擎发布清单无效：{message}')
+
+
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in '0123456789abcdef' for character in value)
+    )
+
+
+def _parse_finance_release_time(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith('Z'):
+        raise _request_error(f'{field} 必须是 UTC RFC3339 时间')
+    try:
+        parsed = datetime.fromisoformat(f'{value[:-1]}+00:00')
+    except ValueError as exc:
+        raise _request_error(f'{field} 不是合法时间') from exc
+    if parsed.tzinfo != UTC:
+        raise _request_error(f'{field} 必须使用 UTC')
+    return parsed
+
+
+def _validate_finance_release_package(platform: object, package: object) -> None:
+    if platform not in _FINANCE_RELEASE_PLATFORMS:
+        raise _request_error(f'不支持平台 {platform!r}')
+    if not isinstance(package, dict) or set(package) != _FINANCE_PACKAGE_FIELDS:
+        raise _request_error(f'packages.{platform} 字段不完整')
+    try:
+        parsed_url = urlparse(package['url']) if isinstance(package['url'], str) else None
+    except ValueError as exc:
+        raise _request_error(f'packages.{platform}.url 不是合法 URL') from exc
+    loopback = (
+        parsed_url is not None
+        and parsed_url.scheme == 'http'
+        and parsed_url.hostname in {'127.0.0.1', '::1', 'localhost'}
+    )
+    if parsed_url is None or not ((parsed_url.scheme == 'https' and parsed_url.netloc) or loopback):
+        raise _request_error(f'packages.{platform}.url 只允许 https 或 loopback http')
+    if not _is_lower_hex(package['sha256'], 64):
+        raise _request_error(f'packages.{platform}.sha256 必须是小写 SHA-256')
+    if not _is_lower_hex(package['file_manifest_sha256'], 64):
+        raise _request_error(f'packages.{platform}.file_manifest_sha256 必须是小写 SHA-256')
+    for field in ('compressed_size', 'installed_size_limit'):
+        if not _is_positive_int(package[field]):
+            raise _request_error(f'packages.{platform}.{field} 必须是正整数')
+
+
+def _validate_finance_release_identity(manifest: dict) -> None:
+    if manifest['schema_version'] != 2 or manifest['artifact_id'] != 'app.engine.finance':
+        raise _request_error('schema_version 或 artifact_id 不匹配')
+    if not _is_positive_int(manifest['release_sequence']):
+        raise _request_error('release_sequence 必须是正整数')
+    for field in ('version', 'channel', 'minimum_daemon_version', 'key_id'):
+        if not isinstance(manifest[field], str) or not manifest[field].strip():
+            raise _request_error(f'{field} 必须是非空字符串')
+    if not _is_lower_hex(manifest['signature'], 128):
+        raise _request_error('signature 必须是 128 位小写十六进制')
+    issued_at = _parse_finance_release_time(manifest['issued_at'], 'issued_at')
+    expires_at = _parse_finance_release_time(manifest['expires_at'], 'expires_at')
+    if expires_at <= issued_at:
+        raise _request_error('expires_at 必须晚于 issued_at')
+
+
+def _validate_finance_release_revocations(revocations: object) -> None:
+    if not isinstance(revocations, list):
+        raise _request_error('revocations 必须是数组')
+    for index, revocation in enumerate(revocations):
+        if not isinstance(revocation, dict) or set(revocation) != _FINANCE_REVOCATION_FIELDS:
+            raise _request_error(f'revocations[{index}] 字段不完整')
+        for field in ('version', 'reason'):
+            if not isinstance(revocation[field], str) or not revocation[field].strip():
+                raise _request_error(f'revocations[{index}].{field} 必须是非空字符串')
+        if revocation['platform'] not in _FINANCE_RELEASE_PLATFORMS:
+            raise _request_error(f'revocations[{index}].platform 不受支持')
+        if not _is_lower_hex(revocation['sha256'], 64):
+            raise _request_error(f'revocations[{index}].sha256 必须是小写 SHA-256')
+        _parse_finance_release_time(revocation['revoked_at'], f'revocations[{index}].revoked_at')
+        if not isinstance(revocation['critical'], bool):
+            raise _request_error(f'revocations[{index}].critical 必须是布尔值')
+
+
+def _validate_finance_release_manifest(manifest: object) -> dict:
+    if not isinstance(manifest, dict) or set(manifest) != _FINANCE_RELEASE_FIELDS:
+        raise _request_error('顶层字段必须与 schema v2 完全一致')
+    _validate_finance_release_identity(manifest)
+    packages = manifest['packages']
+    if not isinstance(packages, dict) or not packages:
+        raise _request_error('packages 必须是非空对象')
+    for platform, package in packages.items():
+        _validate_finance_release_package(platform, package)
+    _validate_finance_release_revocations(manifest['revocations'])
+    return manifest
+
+
+def merge_finance_engine_release(config_json: dict | None, manifest: object) -> dict:
+    """校验并写入 Finance 签名发布清单，保留已上传包与其它应用配置。"""
+    manifest = _validate_finance_release_manifest(manifest)
+    existing = copy.deepcopy(config_json or {})
+    engine = existing.get('engine')
+    if not isinstance(engine, dict) or engine.get('version') != manifest['version']:
+        raise _request_error('清单版本尚未完成公共包上传')
+    uploaded_packages = engine.get('packages')
+    if not isinstance(uploaded_packages, dict):
+        raise _request_error('缺少已上传公共包元数据')
+    for platform, package in manifest['packages'].items():
+        uploaded = uploaded_packages.get(platform)
+        if not isinstance(uploaded, dict) or any(
+            uploaded.get(uploaded_field) != package[manifest_field]
+            for uploaded_field, manifest_field in (
+                ('url', 'url'),
+                ('sha256', 'sha256'),
+                ('size', 'compressed_size'),
+            )
+        ):
+            raise _request_error(f'packages.{platform} 与已上传公共包不一致')
+
+    current = existing.get('engine_release')
+    if current == manifest:
+        return existing
+    if isinstance(current, dict):
+        current_sequence = current.get('release_sequence')
+        if _is_positive_int(current_sequence) and manifest['release_sequence'] <= current_sequence:
+            raise _request_error('release_sequence 不得回退或复用')
+    existing['engine_release'] = copy.deepcopy(manifest)
+    return existing
+
+
 async def publish_engine_package(
     db: AsyncSession,
     *,
@@ -530,6 +717,34 @@ async def publish_engine_package(
     await db.flush()
     await sync_bump('platform_config', db)
     return catalog.config_json['engine']
+
+
+async def publish_finance_engine_release(
+    db: AsyncSession,
+    *,
+    pk: int,
+    document: bytes,
+) -> dict:
+    """把已签名 Finance v2 清单写入 catalog，并推送平台配置失效通知。"""
+    from backend.app.hasn.crud.crud_hasn_app_catalog import hasn_app_catalog_dao
+    from backend.app.hasn.service.sync_invalidate_service import bump as sync_bump
+
+    if not document or len(document) > MAX_FINANCE_RELEASE_MANIFEST_BYTES:
+        raise _request_error('文件为空或超过 1 MiB')
+    try:
+        manifest = json.loads(document.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _request_error('文件不是合法 UTF-8 JSON') from exc
+
+    catalog = await hasn_app_catalog_dao.get(db, pk)
+    if not catalog:
+        raise errors.NotFoundError(msg=f'应用目录 {pk} 不存在')
+    if catalog.app_id != 'finance':
+        raise _request_error('仅 finance 应用允许发布此清单')
+    catalog.config_json = merge_finance_engine_release(catalog.config_json, manifest)
+    await db.flush()
+    await sync_bump('platform_config', db)
+    return catalog.config_json['engine_release']
 
 
 async def resolve_default_agent_for_app(db: AsyncSession, *, owner_id: str, app_id: str) -> str | None:
@@ -604,8 +819,9 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
 def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: App | None = None) -> dict:
     """把 catalog 行映射为工作台 manifest（与 ``App.to_manifest`` 同形 + ``icon_asset_uri``）。
 
-    launch 字段（ui_kind/window_url/window_origin）catalog 不存——迁移期从本地 ``registry_app``
-    overlay；registry 在 C6 退役后由 daemon 本地提供（对齐设计 §3 边界「本地 builtin 只保留 launch 字段」）。
+    执行契约字段（execution_mode/ui_kind/window_url/window_origin/project_aware/project_required）
+    不允许被陈旧 catalog 行改写——迁移期从本地 ``registry_app`` overlay；registry 在 C6 退役后由
+    daemon 本地提供（对齐设计 §3 边界「本地 builtin 只保留 launch/执行契约字段」）。
     """
     return {
         'id': cat.app_id,
@@ -618,10 +834,12 @@ def catalog_to_manifest(cat: HasnAppCatalog, *, registry_app: App | None = None)
         'entry_route': cat.entry_route,
         'install_policy': 'auto' if cat.default_mount else 'manual',
         'requires_role': cat.requires_role,
-        'execution_mode': cat.execution_mode,
+        'execution_mode': registry_app.execution_mode if registry_app else cat.execution_mode,
         'ui_kind': registry_app.ui_kind if registry_app else None,
         'window_url': registry_app.window_url if registry_app else None,
         'window_origin': registry_app.window_origin if registry_app else None,
+        'project_aware': registry_app.project_aware if registry_app else False,
+        'project_required': registry_app.project_required if registry_app else False,
         # APPBETA-2：发布阶段（ga/beta_full/beta_gray）+ 自定义角标（文字+颜色）。
         # 客户端据 release_phase 渲染「内测」标识、据 badge 渲染右上角自定义角标；
         # 灰度门控（beta_gray 未授权 → 锁定卡 + 申请）由 access 字段承载（resolve_app_access）。

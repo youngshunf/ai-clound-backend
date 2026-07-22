@@ -6,18 +6,19 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.crud.crud_hasn_ai_native_app_manifest import hasn_ai_native_app_manifest_dao
 from backend.app.hasn.model import HasnAiNativeAppManifest
-from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor, ResourceRoute
+from backend.app.hasn.schema.resource_descriptor import ResourceDescriptor, ResourceDomainInfo, ResourceRoute
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_AI_NATIVE_MANIFEST
 from backend.app.hasn.service.app_catalog_registry import AppCatalogRegistry, app_catalog_registry
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
 from backend.app.hasn_community.service.ai_native_manifest import COMMUNITY_AI_NATIVE_MANIFEST
 from backend.app.hasn_computer_use.manifest import COMPUTER_USE_AI_NATIVE_MANIFEST
-from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
-from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 
 # G6 资源类型适配器注册（doc33 S2-6）：import 即把各应用 adapter 注册进平台注册表。必须在
 # manifest 校验（validate_manifest 查 registered_types）之前完成，否则新增 resource_access 声明会
 # 被误判「type 未注册」。各应用自注册模块见 `<app>/service/resource_adapter.py`。
+from backend.app.hasn_copilot.service import resource_adapter as _copilot_resource_adapter  # noqa: F401
+from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401
 from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
 from backend.app.hasn_design.service import resource_adapter as _design_resource_adapter  # noqa: F401
@@ -25,10 +26,12 @@ from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFE
 from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
+from backend.app.hasn_finance.service import project_linkage as _finance_project_linkage  # noqa: F401
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
 from backend.app.hasn_knowledge.service import resource_adapter as _knowledge_resource_adapter  # noqa: F401
 from backend.app.hasn_plan.manifest import PLAN_AI_NATIVE_MANIFEST
+from backend.app.hasn_project.manifest import PROJECT_AI_NATIVE_MANIFEST
 from backend.app.hasn_plan.service import resource_adapter as _plan_resource_adapter  # noqa: F401
 from backend.app.hasn_publish.manifest import PUBLISH_AI_NATIVE_MANIFEST
 from backend.app.hasn_quant.manifest import QUANT_AI_NATIVE_MANIFEST
@@ -76,6 +79,10 @@ class AINativeAppRegistry:
             'imagelab': IMAGELAB_AI_NATIVE_MANIFEST,
             # 规划与目标管理应用（app_id=plan，模块/schema hasn_plan，模块 19；local_tool，PLAN-P1 铸 scope）。
             'plan': PLAN_AI_NATIVE_MANIFEST,
+            # 项目管理应用（app_id=project，模块/schema hasn_project，模块 14 doc38；cloud 承载，PJ U3 铸 scope。
+            # 「平台项目·联邦挂靠」——第三条轴「为了哪件事」：跨应用产物流并集读 + 里程碑 + hasn_artifacts.project_id
+            # 挂靠列。工具面 hasn.project.* 走云端 MCP platform tool（mcp/tools/project.py），非 local_tool）。
+            'project': PROJECT_AI_NATIVE_MANIFEST,
             # 金融数据（app_id=finance，模块/schema hasn_finance，模块 24；纯云端只读数据应用，
             # 工具全走 gateway_internal → finance_provider → finance-data-service，唯一接触 akshare 处隔离独立服务）。
             'finance': FINANCE_AI_NATIVE_MANIFEST,
@@ -112,11 +119,19 @@ class AINativeAppRegistry:
         version = str(manifest.get('version') or '')
         workspace_scope = list(manifest.get('workspace_scope') or [])
         collaboration_mode = str(manifest.get('collaboration_mode') or 'none')
+        project_aware = manifest.get('project_aware', False)
+        project_required = manifest.get('project_required', False)
 
         if not app_id:
             errors_list.append('app_id_required')
         if not version:
             errors_list.append('version_required')
+        if not isinstance(project_aware, bool):
+            errors_list.append('project_aware_must_be_boolean')
+        if not isinstance(project_required, bool):
+            errors_list.append('project_required_must_be_boolean')
+        if project_required is True and project_aware is not True:
+            errors_list.append('project_required_requires_project_aware')
 
         try:
             registered_app = self.catalog_registry.get(app_id)
@@ -129,6 +144,10 @@ class AINativeAppRegistry:
                 errors_list.append('workspace_scope_exceeds_workbench_scope')
             if collaboration_mode != registered_app.collaboration_mode:
                 errors_list.append('collaboration_mode_mismatch')
+            if isinstance(project_aware, bool) and project_aware != registered_app.project_aware:
+                errors_list.append('project_aware_mismatch')
+            if isinstance(project_required, bool) and project_required != registered_app.project_required:
+                errors_list.append('project_required_mismatch')
 
         # 资源描述符校验（doc31 §2.1，RC-P0）：manifest.resources[] 若声明，逐项按 ResourceDescriptor
         # 校验（uri_domain 非空/无 scheme、open.mode 三枚举、route_template 含 :id、card.verb/action_label…）。
@@ -316,6 +335,63 @@ class AINativeAppRegistry:
             return ResourceDescriptor.model_validate(resources[0]), local_ref
         except Exception:
             return None, None
+
+    def known_resource_kinds(self) -> frozenset[str]:
+        """全部 builtin 应用声明过的 `resource_kind` 集合（doc35 B1，`output_spec` 校验用）。
+
+        产出要求里写 `resource_kind: knowledge.bass`（拼错）必须在**发布期**就被拒——否则闸在
+        运行期永远比不中，表现成「分身干完了却过不了闸」，查起来极难。权威只有一处：各 app
+        manifest 的 `resources[]` 声明，这里如实投影，不另立一张会漂移的手写白名单。
+        """
+        kinds: set[str] = set()
+        for manifest in self._builtin_manifests.values():
+            resources = manifest.get('resources')
+            if not isinstance(resources, list):
+                continue
+            for resource in resources:
+                if isinstance(resource, dict) and resource.get('resource_kind'):
+                    kinds.add(str(resource['resource_kind']))
+        return frozenset(kinds)
+
+    def resource_kind_labels(self) -> dict[str, str]:
+        """`resource_kind` → 人话展示名（取 `descriptor.card.verb`，如 deck.presentation → 演示文稿）。
+
+        产出闸拒绝主人置完成时，得说「尚未交付演示文稿」而不是把 `deck.presentation` 甩到脸上——
+        主人不认识内部键。展示名的权威也在 manifest（完成卡标题同源），此处如实投影。
+        """
+        labels: dict[str, str] = {}
+        for manifest in self._builtin_manifests.values():
+            resources = manifest.get('resources')
+            if not isinstance(resources, list):
+                continue
+            for resource in resources:
+                if not isinstance(resource, dict):
+                    continue
+                kind = resource.get('resource_kind')
+                verb = (resource.get('card') or {}).get('verb') if isinstance(resource.get('card'), dict) else None
+                if kind and verb:
+                    labels[str(kind)] = str(verb)
+        return labels
+
+    def resource_domains(self) -> list[ResourceDomainInfo]:
+        """投影全部 builtin 应用 `resources[]` 为**给分身看**的资源域目录（doc36 §5.2）。
+
+        与 `resource_routes()` **同源不同投影**：那份给 webui 寻址（路由模板/窗口/单入口），
+        这份给分身认知（有哪些资源类型、URI 什么形状、归哪个应用）。同源保证 manifest 仍是
+        唯一权威——绝不为分身另手写一份会漂移的域清单。非法声明跳过（与 routes 一致）。
+        """
+        domains: list[ResourceDomainInfo] = []
+        for app_id, manifest in self._builtin_manifests.items():
+            resources = manifest.get('resources')
+            if not isinstance(resources, list):
+                continue
+            for resource in resources:
+                try:
+                    descriptor = ResourceDescriptor.model_validate(resource)
+                except Exception:
+                    continue
+                domains.append(ResourceDomainInfo.from_descriptor(app_id, descriptor))
+        return domains
 
     def resource_routes(self) -> list[ResourceRoute]:
         """投影全部 builtin 应用 `resources[]` 为扁平资源路由读模型（doc31 §2.4，RC-P0）。

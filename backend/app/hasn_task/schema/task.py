@@ -1,6 +1,7 @@
 """任务定义 Pydantic 模型（hasn_task 应用）。"""
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
@@ -67,6 +68,10 @@ class HasnTaskSchemaBase(SchemaBase):
     builtin_synced_revision: int | None = Field(
         None, description='播种/更新时同步的 catalog revision（可更新检测基准）'
     )
+    project_id: str | UUID | None = Field(None, description='归属平台项目云端权威 id')
+    app_id: str | None = Field(None, description='驱动应用 app_id')
+    execution_kind: str = Field('freeform', description='执行方式 app_workflow/freeform')
+    execution_spec: dict = Field(default_factory=dict, description='应用工作流或自由指令执行规格')
 
 
 class CreateHasnTaskParam(HasnTaskSchemaBase):

@@ -31,6 +31,8 @@ router = APIRouter(prefix='/errors', tags=['错误诊断-用户端'])
 # 限频口径（§9）：每 owner 每分钟请求数封顶 + 每 node 每分钟请求数封顶（node 自报，故 owner 兜底）。
 _OWNER_LIMIT_PER_MIN = 240
 _NODE_LIMIT_PER_MIN = 120
+# 固定窗口长度（秒）。计数桶必须带此 TTL，过期即重置窗口。
+_RATE_WINDOW_SECONDS = 60
 
 
 async def _current_owner_id(request: Request, db: CurrentSession) -> str:
@@ -45,14 +47,28 @@ async def _current_owner_id(request: Request, db: CurrentSession) -> str:
 
 
 async def _rate_limit(dimension: str, key: str, limit: int) -> None:
-    """Redis 滑窗计数限频；Redis 不可达时 fail-open（不阻断上报）。"""
+    """Redis 固定窗口计数限频；Redis 不可达时 fail-open（不阻断上报）。
+
+    ⚠️ TTL 必须自愈——这是本函数的核心不变量。历史写法「仅在 count==1 时 expire」有
+    致命竞态：`incr` 建桶后紧跟的 `expire` 若没落上（进程重启/异常/并发抢先），桶就
+    **永久无 TTL（ttl=-1）**，count 只增不减，一旦越过 limit 对该 owner/node **永久 429**
+    ——与真实请求速率彻底脱钩（实测有 owner 桶卡在 6798、node 桶卡在 1277，把每分钟仅
+    1 次的上报也全部打成 429，且冷却/自反馈守卫等客户端修复根本无法解毒）。
+
+    改为「INCR 后只要 ttl<0 就重新武装窗口」：
+    - `ttl == -1`（键存在但无过期）——刚被 INCR 建出的新桶，或历史毒桶，都在这里自愈；
+    - `ttl == -2`（键在 INCR 与 TTL 之间恰好过期，极罕见）——EXPIRE 对不存在的键 no-op，
+      本次少设一个窗口、下次请求重建，无害。
+    这样新桶必设窗口、存量毒桶下次请求即自愈，杜绝「永久 429」再次形成。
+    """
     if not key:
         return
     bucket = f'diag:ratelimit:{dimension}:{key}'
     try:
         count = await redis_client.incr(bucket)
-        if count == 1:
-            await redis_client.expire(bucket, 60)
+        # ttl<0 覆盖「新建无过期」与「毒桶无过期」两种情况，一律重新武装固定窗口。
+        if await redis_client.ttl(bucket) < 0:
+            await redis_client.expire(bucket, _RATE_WINDOW_SECONDS)
     except Exception:
         return
     if count > limit:

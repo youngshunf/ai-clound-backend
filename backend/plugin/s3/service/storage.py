@@ -1,6 +1,8 @@
 from collections.abc import Sequence
 from typing import Any
 
+import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.exception import errors
@@ -8,6 +10,7 @@ from backend.common.pagination import paging_data
 from backend.plugin.s3.crud.storage import s3_storage_dao
 from backend.plugin.s3.model import S3Storage
 from backend.plugin.s3.schema.storage import CreateS3StorageParam, DeleteS3StorageParam, UpdateS3StorageParam
+from backend.plugin.s3.service.storage_service import SPEECH_STORAGE_LOCK_KEY
 
 
 class S3StorageService:
@@ -70,6 +73,15 @@ class S3StorageService:
         :param obj: 更新S3 存储参数
         :return:
         """
+        await db.execute(
+            sa.text('SELECT pg_advisory_xact_lock(:lock_key)'),
+            {'lock_key': SPEECH_STORAGE_LOCK_KEY},
+        )
+        from backend.app.hasn.model.hasn_speech_package import HasnSpeechPackage
+
+        referenced = await db.scalar(sa.select(sa.literal(True)).where(HasnSpeechPackage.storage_id == pk).limit(1))
+        if referenced:
+            raise errors.ConflictError(msg='该 S3 存储已承载不可变语音包，禁止修改配置')
         count = await s3_storage_dao.update(db, pk, obj)
         return count
 
@@ -82,6 +94,17 @@ class S3StorageService:
         :param obj: S3 存储 ID 列表
         :return:
         """
+        await db.execute(
+            sa.text('SELECT pg_advisory_xact_lock(:lock_key)'),
+            {'lock_key': SPEECH_STORAGE_LOCK_KEY},
+        )
+        from backend.app.hasn.model.hasn_speech_package import HasnSpeechPackage
+
+        referenced = await db.scalar(
+            sa.select(sa.literal(True)).where(HasnSpeechPackage.storage_id.in_(obj.pks)).limit(1)
+        )
+        if referenced:
+            raise errors.ConflictError(msg='选中的 S3 存储已承载不可变语音包，禁止删除')
         count = await s3_storage_dao.delete(db, obj.pks)
         return count
 

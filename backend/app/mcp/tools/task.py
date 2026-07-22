@@ -55,8 +55,16 @@ async def _h_update(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    # filter 是任务列表唯一过滤契约，避免继续扩散顶层状态/三轴字段。
+    filters = dict(args.get('filter') or {})
     return await agent_task_service.list_tasks(
-        db, owner_id=ctx.owner_hasn_id, state=args.get('state'), limit=int(args.get('limit') or 20)
+        db,
+        owner_id=ctx.owner_hasn_id,
+        state=filters.get('status'),
+        project_id=filters.get('project_id'),
+        app_id=filters.get('app_id'),
+        agent_id=filters.get('agent'),
+        limit=int(args.get('limit') or 20),
     )
 
 
@@ -143,6 +151,27 @@ _SPECS: list[dict[str, Any]] = [
                 'skill_bundle_refs': {'type': 'array', 'description': '市场技能包引用（可选）'},
                 'continuation_enabled': {'type': 'boolean', 'description': '任务接续（D2）'},
                 'enable_subagents': {'type': 'boolean', 'description': '允许子分身（D5）'},
+                # 任务中心三轴（doc12 §6.1）：项目/应用/执行方式，均可选。
+                'project_id': {
+                    'type': ['string', 'null'],
+                    'description': '归属平台项目 id（云端权威 id，可选；不归属项目留空）',
+                },
+                'app_id': {
+                    'type': ['string', 'null'],
+                    'description': '驱动的应用 app_id（可选；execution_kind=app_workflow 时填，freeform 留空）',
+                },
+                'execution_kind': {
+                    'enum': ['app_workflow', 'freeform'],
+                    'description': (
+                        '执行方式：freeform=自由指令（默认，走 prompt）；app_workflow=应用工作流（由 app 驱动）'
+                    ),
+                },
+                'execution_spec': {
+                    'type': 'object',
+                    'description': (
+                        '执行规格（可选）：app_workflow 存 {app_id, workflow_ref, params}；freeform 存 {prompt}'
+                    ),
+                },
             },
             'required': ['name', 'prompt', 'schedule_type', 'schedule_config'],
         },
@@ -152,11 +181,21 @@ _SPECS: list[dict[str, Any]] = [
         'write': False,
         'scopes': [],
         'handler': _h_list,
-        'desc': '列主人的任务（含状态/调度/下次执行）。确定性读。',
+        'desc': '列主人的任务（含状态/调度/下次执行/项目·应用归属）。确定性读。',
         'schema': {
             'type': 'object',
             'properties': {
-                'state': {'type': ['string', 'null'], 'description': '按状态过滤（可选）'},
+                'filter': {
+                    'type': ['object', 'null'],
+                    'description': '任务过滤条件（可选）',
+                    'properties': {
+                        'project_id': {'type': ['string', 'null'], 'description': '按归属项目过滤'},
+                        'app_id': {'type': ['string', 'null'], 'description': '按驱动应用过滤'},
+                        'agent': {'type': ['string', 'null'], 'description': '按执行分身过滤'},
+                        'status': {'type': ['string', 'null'], 'description': '按任务状态过滤'},
+                    },
+                    'additionalProperties': False,
+                },
                 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'description': '默认 20'},
             },
         },
@@ -194,6 +233,10 @@ _SPECS: list[dict[str, Any]] = [
                 'timezone': {'type': ['string', 'null']},
                 'continuation_enabled': {'type': ['boolean', 'null']},
                 'enable_subagents': {'type': ['boolean', 'null']},
+                'project_id': {'type': ['string', 'null'], 'description': '归属平台项目 id'},
+                'app_id': {'type': ['string', 'null'], 'description': '驱动应用 app_id'},
+                'execution_kind': {'enum': ['app_workflow', 'freeform', None], 'description': '执行方式'},
+                'execution_spec': {'type': ['object', 'null'], 'description': '执行规格'},
             },
             'required': ['task_id'],
         },

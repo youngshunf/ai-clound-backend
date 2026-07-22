@@ -31,10 +31,15 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_project.model import HasnProject
 from backend.app.hasn_task.api.v1.agent.workflow import router as agent_workflow_router
 from backend.app.hasn_task.api.v1.app.workflow import router as app_workflow_router
+from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate
+from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
+from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
+from backend.app.mcp.errors import McpErrorCode, McpToolError
 from backend.common.dataclasses import AgentTokenPayload
-from backend.common.exception.errors import BaseExceptionError
+from backend.common.exception.errors import BaseExceptionError, ForbiddenError, RequestError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -129,7 +134,12 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     tag = _uid()
     owner = f'h_wf_{tag}'
     other_owner = f'h_wf2_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    # id 空间必须够宽：本项目「测试数据不删」是铁律，历次跑残留的 owner 行会持续累积。
+    # 旧的 9000 槽位（970000~978999）撞唯一索引 idx_hasn_humans_star_id 的概率随跑的
+    # 次数单调恶化 → fixture setup 抛 UniqueViolation → 该 loop 未清理 → 后续测试全部
+    # 「got Future attached to a different loop / Event loop is closed」级联假红。
+    # 放宽到千亿级槽位，碰撞概率可忽略（+1 给 other_owner 留位，仍在 bigint 内）。
+    owner_uid = 900_000_000_000 + int(uuid.uuid4().int % 90_000_000_000)
     research = f'a_wf_r_{tag}'
     writer = f'a_wf_w_{tag}'
 
@@ -296,3 +306,152 @@ async def test_create_rejects_cross_owner_node_agent(e2e: SimpleNamespace) -> No
     }
     resp = await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=body)
     assert resp.json()['code'] == 404, resp.text
+
+
+# ---------- P9-B 场景工作流项目轴实例化硬闸（doc95 §2.3） ----------
+
+
+def _payload(e2e: SimpleNamespace) -> AgentTokenPayload:
+    return AgentTokenPayload(
+        agent_hasn_id=e2e.research,
+        agent_name='wf-agent',
+        owner_hasn_id=e2e.owner,
+        owner_user_id=970001,
+        session_uuid=f'sess_{_uid()}',
+        expire_time=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+
+
+async def _seed_template(session, key: str) -> HasnWorkflowTemplate:  # noqa: ANN001
+    """种一条内置免费场景模板（is_builtin=True → 对任何 owner 可见，sku_ref=None → 免判权）。"""
+    tpl = HasnWorkflowTemplate(
+        template_key=key,
+        template_uuid=f'wft_{key}',
+        name='测试场景',
+        is_builtin=True,
+        status='active',
+        graph_spec={
+            'nodes': [
+                {'node_key': 'origin', 'name': '起点', 'is_origin': True, 'prompt': '开始'},
+                {'node_key': 'work', 'name': '干活', 'prompt': '产出'},
+            ],
+            'edges': [{'parent': 'origin', 'child': 'work'}],
+        },
+    )
+    session.add(tpl)
+    await session.flush()
+    return tpl
+
+
+async def _seed_project(session, owner: str, status: str = 'active') -> HasnProject:  # noqa: ANN001
+    proj = HasnProject(owner_id=owner, name='测试项目', status=status)
+    session.add(proj)
+    await session.flush()
+    return proj
+
+
+async def test_instantiate_requires_project(e2e: SimpleNamespace) -> None:
+    """无 project_id（显式无 + ContextVar 无）→ 结构化 PROJECT_REQUIRED。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    with pytest.raises(McpToolError) as ei:
+        await workflow_template_service.instantiate_template(
+            e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={}
+        )
+    assert ei.value.code == McpErrorCode.PROJECT_REQUIRED
+
+
+async def test_instantiate_with_project_lands_on_workflow(e2e: SimpleNamespace) -> None:
+    """合法 project_id → 建图成功且 project_id 落到 workflow 行。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    proj = await _seed_project(e2e.session, e2e.owner)
+    result = await workflow_template_service.instantiate_template(
+        e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj.id)}
+    )
+    assert result['project_id'] == str(proj.id)
+    row = await e2e.session.execute(
+        text('SELECT project_id FROM hasn_task.workflow WHERE workflow_uuid = :wu'),
+        {'wu': result['workflow_id']},
+    )
+    assert str(row.scalar_one()) == str(proj.id)
+
+
+async def test_instantiate_cross_owner_project_403(e2e: SimpleNamespace) -> None:
+    """跨 owner 的 project_id → 403（不是 404，不做存在性隐藏）。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    foreign = await _seed_project(e2e.session, e2e.other_owner)
+    with pytest.raises(ForbiddenError):
+        await workflow_template_service.instantiate_template(
+            e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(foreign.id)}
+        )
+
+
+async def test_instantiate_archived_project_rejected(e2e: SimpleNamespace) -> None:
+    """归档项目 → 结构化拒绝（error_code=project_archived）。"""
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    proj = await _seed_project(e2e.session, e2e.owner, status='archived')
+    with pytest.raises(RequestError) as ei:
+        await workflow_template_service.instantiate_template(
+            e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj.id)}
+        )
+    assert (ei.value.data or {}).get('error_code') == 'project_archived'
+
+
+async def test_bare_workflow_create_unaffected(e2e: SimpleNamespace) -> None:
+    """裸工程图创建路径（template_key IS NULL）不受硬闸影响，仍可建，project_id 为空。"""
+    created = _data(
+        await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=_diamond_body(e2e, f'wf-{_uid()}'))
+    )
+    assert created['workflow']['project_id'] is None
+
+
+# ---------- P9-D 项目侧聚合读：list 加 project_id 过滤（doc95 §4.3/§4.4） ----------
+
+
+async def test_list_workflows_filters_by_project(e2e: SimpleNamespace) -> None:
+    """给 project_id 只返该项目下的图；不给则全返（含项目外的裸图）。"""
+    proj_a = await _seed_project(e2e.session, e2e.owner)
+    proj_b = await _seed_project(e2e.session, e2e.owner)
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    wf_a = await workflow_template_service.instantiate_template(
+        e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj_a.id)}
+    )
+    wf_b = await workflow_template_service.instantiate_template(
+        e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj_b.id)}
+    )
+    bare = _data(await e2e.client.post('/api/v1/hasn-task/agent/workflows', json=_diamond_body(e2e, f'wf-{_uid()}')))
+    bare_id = bare['workflow']['workflow_id']
+
+    only_a = await agent_workflow_service.list_workflows(
+        e2e.session, owner_id=e2e.owner, project_id=str(proj_a.id)
+    )
+    ids_a = {w['workflow_id'] for w in only_a}
+    assert wf_a['workflow_id'] in ids_a
+    assert wf_b['workflow_id'] not in ids_a, '不该串到别的项目'
+    assert bare_id not in ids_a, '项目外的裸图不该出现在项目过滤结果里'
+
+    all_ids = {w['workflow_id'] for w in await agent_workflow_service.list_workflows(e2e.session, owner_id=e2e.owner)}
+    assert {wf_a['workflow_id'], wf_b['workflow_id'], bare_id} <= all_ids, '不给 project_id 应全返'
+
+
+async def test_list_workflows_project_filter_never_crosses_owner(e2e: SimpleNamespace) -> None:
+    """项目只是过滤键、不是权限边界（doc95 §0.2 ①）：拿别人项目的 id 也不会看见别人的图。
+
+    owner_id 才是隔离键，项目过滤永远叠在 owner 之上——两者是 AND，不是「在这个项目里所以能看见」。
+    """
+    foreign_proj = await _seed_project(e2e.session, e2e.other_owner)
+    tpl = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    my_proj = await _seed_project(e2e.session, e2e.owner)
+    mine = await workflow_template_service.instantiate_template(
+        e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(my_proj.id)}
+    )
+
+    # 用别人的 project_id 过滤自己的列表 → 空集（不报错、也不越权返对方的图）
+    rows = await agent_workflow_service.list_workflows(
+        e2e.session, owner_id=e2e.owner, project_id=str(foreign_proj.id)
+    )
+    assert rows == []
+    # 反向：对方拿我的 project_id 也看不到我的图
+    foreign_rows = await agent_workflow_service.list_workflows(
+        e2e.session, owner_id=e2e.other_owner, project_id=str(my_proj.id)
+    )
+    assert mine['workflow_id'] not in {w['workflow_id'] for w in foreign_rows}

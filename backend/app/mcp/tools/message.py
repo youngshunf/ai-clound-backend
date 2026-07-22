@@ -21,6 +21,16 @@ from backend.app.hasn.service import message_router
 from backend.app.hasn.service.agent_message_read_service import agent_message_read_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_im.application.errors import ImSendRejected
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports.dto import (
+    ActorKind,
+    DeliveryState,
+    EnsureDirectConversationCommand,
+    SendMessageCommand,
+    SendMessageResult,
+    ServicePrincipal,
+)
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
@@ -31,6 +41,37 @@ _CT_IMAGE = 2
 _CT_FILE = 3
 _CT_VOICE = 4
 _CT_CARD = 5
+
+# doc14 §6.5：mission_note 长度上限（字素簇计）。一句话框定，不是简报。
+_MISSION_NOTE_MAX_CHARS = 500
+
+# doc14 §6.1（A 刀）：返回体 hint——把 conversation_id 语义化成分身看得懂的行动指引。
+# 三态（sent / suppressed / pending_confirmation）各配一句，弱模型也知道这个 id 拿来干什么。
+# 纯文案增强，零行为变化：不改判决、不改任何既有字段。
+_SEND_HINT_SENT = (
+    '已发出。此会话 id 是你追踪后续往来的句柄；对方回复后系统会提示你，'
+    '也可随时用 hasn.message.list(conversation_id="{conversation_id}") 查看完整往来。'
+    '不必轮询干等——去接着做你自己的事。'
+)
+_SEND_HINT_SUPPRESSED = (
+    '尚未与对方建立联系人关系，已自动代发好友请求；须对方（或其主人）同意后消息才能'
+    '送达。请勿改用其它方式重试，也不要重复发送——耐心等待对方通过即可。'
+    '对方放行后你会收到提示；此会话 id 是你追踪后续往来的句柄，'
+    '可用 hasn.message.list(conversation_id="{conversation_id}") 查看往来。'
+)
+_SEND_HINT_PENDING_CONFIRMATION = (
+    '已提交你主人确认，主人放行后才会送达。此会话 id 是你追踪后续往来的句柄；'
+    '放行且对方回复后系统会提示你，也可用 '
+    'hasn.message.list(conversation_id="{conversation_id}") 查看完整往来。'
+    '不必轮询干等。'
+)
+
+
+def _send_hint(template: str, conversation_id: Any) -> str:
+    """按会话 id 渲染 hint；会话 id 缺失（理论上不该发生）时降级为不带 id 的通用句，绝不吐 None。"""
+    if not conversation_id:
+        return template.replace('(conversation_id="{conversation_id}")', '(conversation_id=…)')
+    return template.format(conversation_id=conversation_id)
 
 # 寻址主人的保留哨兵：分身的每轮身份注入只给主人画像自由文本，**不含**主人 hasn_id/唤星号
 # （identity-owner 模板只注入 owner_portrait.text），分身无法可靠拿到主人的 `to`。云端 AgentContext
@@ -210,6 +251,58 @@ async def _ensure_first_contact_request(owner_hasn_id: str, to_target: Any) -> i
             return None
 
 
+async def _map_direct_send_result(
+    result: SendMessageResult,
+    owner_hasn_id: str | None,
+    to_target: Any,
+) -> dict[str, Any]:
+    """把 ImGateway 的 SendMessageResult（三态）映射为 message.send 工具返回体。
+
+    与切换前 route_message 直返的字段形状**逐字一致**（reachable/delivered/status/hint），
+    仅数据来源从 route dict 换成 port 的强类型结果——分身看到的返回不变。
+    """
+    conversation_id = result.conversation_id
+
+    if result.delivery_state == DeliveryState.PENDING_POLICY:
+        # 需主人确认 → 已挂起、未送达但目标可达。
+        return {
+            'message_id': None,
+            'conversation_id': conversation_id,
+            'delivered': False,
+            'reachable': True,
+            'status': 'pending_confirmation',
+            'reason': result.suppress_reason or '',
+            'hint': _send_hint(_SEND_HINT_PENDING_CONFIRMATION, conversation_id),
+        }
+
+    if result.delivery_state == DeliveryState.SUPPRESSED:
+        # 未建立联系人关系/低信任 → 结构化关系反馈（修 B12：不误报 reachable=true）；
+        # 无 pending_request_id 时自动代发好友请求（幂等复用入站门控已代发的那条）。
+        pending_request_id = result.pending_request_id
+        if not pending_request_id:
+            pending_request_id = await _ensure_first_contact_request(owner_hasn_id, to_target)
+        return {
+            'message_id': result.message_id,
+            'conversation_id': conversation_id,
+            'delivered': False,
+            'reachable': False,
+            'status': 'pending_contact_approval',
+            'relation': result.relation,
+            'pending_request_id': pending_request_id,
+            'hint': _send_hint(_SEND_HINT_SUPPRESSED, conversation_id),
+        }
+
+    # ACCEPTED（含幂等 deduped 命中）→ 已送达。
+    return {
+        'message_id': result.message_id,
+        'conversation_id': conversation_id,
+        'delivered': True,
+        'reachable': True,
+        'status': 'sent',
+        'hint': _send_hint(_SEND_HINT_SENT, conversation_id),
+    }
+
+
 class MessageSendTool(BaseTool):
     """发送私信工具——文本 + 富媒体（图片/语音/文件/卡片），走真实路由 + 关系门控 + 主人透明（G1/MEDIA-P3）。"""
 
@@ -232,6 +325,11 @@ class MessageSendTool(BaseTool):
             '可发：纯文本（content）、图片/语音/文件（attachments 传 hasn://asset/ 资产引用，'
             '来自 hasn.image.generate / hasn.voice.synthesize 生成，或本地 hasn.asset.upload(path) 上传）、'
             '信息卡片（card：title 必填，可含 description/fields/link）。'
+            '首次联系某人、新建会话时建议带 mission_note 写清这趟差事的背景（只有你主人看得到），'
+            '方便主人一眼看懂你为何发起这个会话。'
+            '返回的 conversation_id 是**追踪这趟对话后续往来的句柄**：记住它，'
+            '要看完整往来就用 hasn.message.list(conversation_id=…)、要按关键词找就用 hasn.message.search。'
+            '对方回复后系统会主动提示你，不用轮询干等——发完就去接着做你自己的事。'
             '若返回 status="pending_contact_approval"，表示尚未与对方建立联系人关系、消息已暂存并已'
             '**自动代发好友请求**（见返回 pending_request_id）；此时 reachable=false，不要改用其它方式'
             '重试或重复发送，等对方（或其主人）通过后再发即可。主动加好友用 hasn.contact.request。'
@@ -296,6 +394,16 @@ class MessageSendTool(BaseTool):
                         },
                     },
                 },
+                # doc14 §6.5（E 刀）：差事背景。只在**新建**会话时生效，既有会话不覆盖。
+                # 这是你自己写给自己主人看的框定，对端看不到（投影只对你主人序列化）。
+                'mission_note': {
+                    'type': 'string',
+                    'description': (
+                        '差事背景：一句话说明「这个对外会话是来干什么的」（如「替主人约王工聊周五联调时间」）。'
+                        '首次给某个联系人发消息、新建会话时填；会话已存在则忽略。'
+                        '仅你主人可见（对方看不到），便于主人一眼看懂你为何发起这个会话。上限 500 字。'
+                    ),
+                },
             },
             'required': ['to'],
         }
@@ -324,6 +432,13 @@ class MessageSendTool(BaseTool):
         if not card_input and not attachments_uris and not (text and str(text).strip()):
             raise RuntimeError('需提供 content（文本）或 attachments（附件）或 card（卡片）之一')
 
+        # doc14 §6.5：差事背景长度上限——按**字素簇**（用户感知字符）计，不用 UTF-8 字节，
+        # 免得中文一句话就超限。超限直接报错，不静默截断（宁可让分身重写也不歪曲它的框定）。
+        mission_note = arguments.get('mission_note')
+        mission_note = str(mission_note).strip() if mission_note else None
+        if mission_note and len(mission_note) > _MISSION_NOTE_MAX_CHARS:
+            raise RuntimeError(f'mission_note 超长（{len(mission_note)} 字，上限 {_MISSION_NOTE_MAX_CHARS} 字），请精简为一句话')
+
         async with async_db_session() as db:
             if card_input:
                 display_name = await _resolve_agent_display_name(
@@ -340,7 +455,66 @@ class MessageSendTool(BaseTool):
                 content = {'text': str(text)}
                 content_type = _CT_TEXT
 
-            # 身份取自 Agent 凭证（agent_hasn_id），不用 owner_user_id 冒名（G2）。
+            # 目标解析（唤星号/HASN ID/群 g:）——复用 message_router.resolve_target 单一实现，
+            # 不在工具层重造解析逻辑（零漂移）。direct（人/分身）走 ImGateway port（R1-05 切片①），
+            # 群 / 不可达目标仍走现网 route_message（本切片不承接，错误码/群补强原样保持）。
+            target = await message_router.resolve_target(db, str(to_target))
+            is_direct = target is not None and target.get('entity_type') in ('human', 'agent')
+
+            if is_direct:
+                # ── 直聊经 ImGateway port 收敛为通信域单一写入口 ──
+                # ensure 幂等取会话 → send 投递。port 内部第一版仍复用现网 route_message，
+                # 故落库/权限/受众扇出/sync 发射逐字不变、daemon 镜像不受影响；R2 起 port 换
+                # 独立事务/事件写点，本调用点零改动。身份取自 Agent 凭证（G2），origin_session_id
+                # 取自 AgentContext（doc14 §6.2，server.call_tool 从 `_hasn_session_id` 剥离而来，
+                # 不收分身自报，故不可伪造）。
+                # mission_note 归属 owner：与现网 route 主链同口径显式解析发送方主人（仅有 note 时）。
+                mission_note_owner_id: str | None = None
+                if mission_note:
+                    from backend.app.hasn.service import conversation_projection as _cp
+
+                    resolved_owner = await _cp._resolve_owner_ids(db, [agent_context.agent_hasn_id])
+                    mission_note_owner_id = resolved_owner.get(agent_context.agent_hasn_id)
+
+                gateway = get_im_gateway()
+                principal = ServicePrincipal(
+                    canonical_sender=agent_context.agent_hasn_id,
+                    actor_kind=ActorKind.AGENT,
+                    origin_session_id=agent_context.session_id,
+                )
+                conv_ref = await gateway.ensure_direct_conversation(
+                    EnsureDirectConversationCommand(
+                        peer_hasn_id=str(target['hasn_id']),
+                        mission_note=mission_note,
+                        mission_note_owner_id=mission_note_owner_id,
+                    ),
+                    principal,
+                )
+                try:
+                    send_result = await gateway.send_message(
+                        SendMessageCommand(
+                            conversation_id=conv_ref.conversation_id,
+                            content=content,
+                            content_type=content_type,
+                            msg_type='message',
+                        ),
+                        principal,
+                    )
+                except ImSendRejected as rejected:
+                    # 协议级硬拒（对方屏蔽/自发/身份未声明）——不可达，不静默成功（维度②）。
+                    return {
+                        'message_id': None,
+                        'conversation_id': None,
+                        'delivered': False,
+                        'reachable': False,
+                        'reason': rejected.message,
+                        'code': rejected.code,
+                    }
+                return await _map_direct_send_result(
+                    send_result, agent_context.owner_hasn_id, to_target
+                )
+
+            # ── 群 / 不可达目标：过渡期仍走现网 route_message（与切换前逐字一致）──
             result = await message_router.route_message(
                 db=db,
                 from_id=agent_context.agent_hasn_id,
@@ -348,6 +522,8 @@ class MessageSendTool(BaseTool):
                 content=content,
                 content_type=content_type,
                 msg_type='message',
+                origin_session_id=agent_context.session_id,
+                mission_note=mission_note,
             )
 
         # 维度②：路由内 permission_engine（关系/信任）判决，不可达不静默成功。
@@ -371,6 +547,7 @@ class MessageSendTool(BaseTool):
                 'reachable': True,
                 'status': status,
                 'reason': result.get('reason', ''),
+                'hint': _send_hint(_SEND_HINT_PENDING_CONFIRMATION, result.get('conversation_id')),
             }
 
         # 被暂存拦截箱（未建立联系人关系/低信任）→ 结构化关系反馈（修 B12：不再误报 reachable=true）。
@@ -389,10 +566,7 @@ class MessageSendTool(BaseTool):
                 'status': 'pending_contact_approval',
                 'relation': result.get('relation'),
                 'pending_request_id': pending_request_id,
-                'hint': (
-                    '尚未与对方建立联系人关系，已自动代发好友请求；须对方（或其主人）同意后消息才能'
-                    '送达。请勿改用其它方式重试，也不要重复发送——耐心等待对方通过即可。'
-                ),
+                'hint': _send_hint(_SEND_HINT_SUPPRESSED, result.get('conversation_id')),
             }
 
         return {
@@ -401,6 +575,7 @@ class MessageSendTool(BaseTool):
             'delivered': status == 'sent',
             'reachable': True,
             'status': status,
+            'hint': _send_hint(_SEND_HINT_SENT, result.get('conversation_id')),
         }
 
 

@@ -402,7 +402,7 @@ STUDIO_AI_NATIVE_MANIFEST = {
             'uri_domain': 'studio/projects',  # → hasn://studio/projects/{server_id}（doc08 §3 登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/studio/projects/:id'},
             'card': {'verb': '视频项目', 'action_label': '打开视频项目'},
-            'artifact_kind': 'video',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': _CAPABILITIES,

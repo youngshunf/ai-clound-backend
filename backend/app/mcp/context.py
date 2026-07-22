@@ -94,6 +94,32 @@ def clear_current_work_session_id() -> None:
     _work_session_id_var.set(None)
 
 
+# 平台项目 id 注入通道（doc38 §3.3 · 第三条轴「为了哪件事」联邦挂靠，照抄上方工作会话先例）：
+# 系统注入的 `_hasn_project_id`（分身不可伪造，daemon 出站打在入参、runtime 系统注入）由两个分发入口
+# 剥离后落入 —— 与 `_hasn_session_id` 完全同管道：
+# - MCP 直连面 `server.py::call_tool` —— 剥离后落本通道；
+# - daemon 代理面 `ai_native_runtime_gateway.call_tool` —— handler 只收 `AgentTokenPayload`，经本通道取。
+# register-on-write 公共接缝 `register_app_resource_artifact` 缺省经 `get_current_project_id()` 取本次
+# 项目 id 落 `hasn_artifacts.project_id`（自动打标·只进不退），已接应用零改造。None = 不在项目中工作
+# （产物不挂项目，仍凭 resource_uri 进分身产物 tab 与工作会话资源栏）。分发入口 finally 清，防跨调用串味。
+_project_id_var: ContextVar[str | None] = ContextVar('hasn_project_id', default=None)
+
+
+def set_current_project_id(project_id: str | None) -> None:
+    """落入本次调用的平台项目 id（无则传 None）。"""
+    _project_id_var.set(project_id or None)
+
+
+def get_current_project_id() -> str | None:
+    """取本次调用的平台项目 id；无（不在项目中工作 / 未注入）则 None。"""
+    return _project_id_var.get()
+
+
+def clear_current_project_id() -> None:
+    """清本次调用的平台项目 id（分发入口 finally 调，防跨请求串味）。"""
+    _project_id_var.set(None)
+
+
 # G6 已判权资源注入通道（doc32 §5.5 / doc33 S2-3，照抄上方能力票据先例）：两个分发入口
 # （MCP 直连面 server.py::call_tool、daemon 代理面 gateway.call_tool）在 enforce_declaration
 # 判过后 set、调用工具体前生效、finally 清；handler 侧经 `get_authorized_resource(param)` 取

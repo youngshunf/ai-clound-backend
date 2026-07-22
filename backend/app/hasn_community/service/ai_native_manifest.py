@@ -1084,14 +1084,14 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
             'uri_domain': 'community/posts',  # → hasn://community/posts/{post_id}
             'open': {'mode': 'internal_route', 'route_template': '/apps/community/posts/:id'},
             'card': {'verb': '帖子', 'action_label': '打开帖子'},
-            'artifact_kind': 'other',
+            'artifact_kind': 'resource',
         },
         {
             'resource_kind': 'community.article',
             'uri_domain': 'community/articles',  # → hasn://community/articles/{article_id}
             'open': {'mode': 'internal_route', 'route_template': '/apps/community/articles/:id'},
             'card': {'verb': '文章', 'action_label': '打开文章'},
-            'artifact_kind': 'document',
+            'artifact_kind': 'resource',
         },
     ],
     'events': [],

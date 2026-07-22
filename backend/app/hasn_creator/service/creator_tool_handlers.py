@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_creator.service.creator_service import creator_service
 from backend.app.hasn_creator.service.scope_context import CreatorScope, resolve_creator_scope
-from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
     from backend.common.dataclasses import AgentTokenPayload
 
 
@@ -91,8 +92,9 @@ async def handle_project_create(
     # register-on-write：创作项目是本应用对外的产物载体（画像/选题/内容都挂在它下面），
     # 分身建完主人须能从会话资源栏直接点进去。
     project_id = result.get('id')
+    registration: ArtifactRegistration | None = None
     if isinstance(project_id, int):
-        await register_app_resource_artifact(
+        registration = await register_app_resource_artifact(
             db,
             app_id='creator',
             resource_kind='creator.project',
@@ -102,7 +104,8 @@ async def handle_project_create(
             title=str(result.get('name') or input_payload.get('name') or '').strip() or '创作项目',
             source_tool='hasn.creator.project.create',
         )
-    return result
+    # doc36 §3.2：返回体带 `uri`——分身建完项目当场知道怎么打开，不必二次查询。
+    return merge_resource_uri(result, registration)
 
 
 # ---------------- 画像 ----------------

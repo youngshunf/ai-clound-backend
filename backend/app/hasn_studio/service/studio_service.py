@@ -895,13 +895,19 @@ class StudioService:
                     agent_hasn_id=job.agent_hasn_id,
                     owner_hasn_id=job.owner_hasn_id,
                     params=RecordArtifactParam(
-                        kind='other',  # 通用索引白名单无 'video' → 归 other（meta 标 media_kind=video）
+                        # doc35：kind 只答「怎么打开」——这是一段视频，就写 video。旧值 'other' 是
+                        # 白名单没有 'video' 逼出来的降级（真类型只好塞进 meta.media_kind），
+                        # UI 拿到 other 不知道该播还是该下载。6 枚举里 video 本来就在。
+                        kind='video',
                         title=artifact.title,
                         asset_id=asset.asset_id,
                         resource_uri=asset_uri,
                         session_id=job.work_session_id,
                         source_tool='hasn.studio.run_pipeline',
-                        source_kind='tool_output',
+                        # 与 hasn.image.generate / voice.synthesize 同族：工具产出的媒体资产。
+                        # 不能写 'app'——I4 钉死 source_kind='app' ⟺ artifact_kind='resource'，
+                        # 而这行是 asset 型产物（studio.project 那条应用资源另有登记）。
+                        source_kind='platform_tool',
                         dispatch_id=f'studio:render:{job.id}',  # 去重键，惰性轮询重入幂等
                         metadata={
                             'media_kind': 'video',

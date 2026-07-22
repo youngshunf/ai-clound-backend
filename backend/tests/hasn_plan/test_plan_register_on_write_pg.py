@@ -7,8 +7,9 @@
 
 覆盖（doc31 §32 RC-P8「直建」半场，manifest 多资源 goal/plan）：
 - goal.create → `hasn://plan/goals/{id}`、plan.plan → `hasn://plan/plans/{id}`（id 即云端权威 id）；
-- kind=other（manifest artifact_kind）、origin_ref=`resource:plan:{id}`、dispatch_id=`plan:{id}`、
-  source_kind=tool_output、owner/agent 归属取自凭证；
+- kind=resource（doc35 §3：应用资源统一 `resource`，真身由 resource_kind 说）、
+  resource_kind=plan.goal / plan.plan、origin_ref=`resource:plan:{id}`、dispatch_id=`plan:{id}`、
+  source_kind=app（doc35 §5：应用产出恒 app，旧 `tool_output` 是垃圾桶已砍）、owner/agent 归属取自凭证；
 - 主会话直建（无工作会话）→ session_id 为 None（产物仍凭 resource_uri 进产物 tab）；
 - 幂等：同一目标重复登记只一条 active 行（UPSERT 命中就地推进，不重复登记）。
 """
@@ -80,10 +81,11 @@ async def test_create_goal_registers_artifact() -> None:
             rows = await _artifacts_for_uri(db, owner_hasn_id=owner, resource_uri=uri)
             assert len(rows) == 1
             row = rows[0]
-            assert row.kind == 'other'  # manifest plan.goal artifact_kind
+            assert row.kind == 'resource'  # doc35：应用资源一律 resource
+            assert row.resource_kind == 'plan.goal'  # 「是什么」由 resource_kind 答
             assert row.origin_ref == f'resource:plan:{gid}'  # 云端权威 id，非本地 id
             assert row.dispatch_id == f'plan:{gid}'  # 缺省幂等键
-            assert row.source_kind == 'tool_output'
+            assert row.source_kind == 'app'
             assert row.owner_hasn_id == owner
             assert row.agent_hasn_id == ctx.agent_hasn_id  # 身份取自凭证
             assert row.title == '成为独立开发者'
@@ -107,7 +109,8 @@ async def test_create_plan_registers_artifact() -> None:
             rows = await _artifacts_for_uri(db, owner_hasn_id=owner, resource_uri=uri)
             assert len(rows) == 1
             row = rows[0]
-            assert row.kind == 'other'  # manifest plan.plan artifact_kind
+            assert row.kind == 'resource'
+            assert row.resource_kind == 'plan.plan'
             assert row.origin_ref == f'resource:plan:{pid}'
             assert row.dispatch_id == f'plan:{pid}'
             assert row.title == '一季度出海计划'

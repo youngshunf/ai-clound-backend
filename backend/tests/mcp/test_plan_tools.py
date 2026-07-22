@@ -1,7 +1,8 @@
 """平台工具 · plan 域 真实 service 测试（禁 mock）。
 
 验证从 hasn-node 本地 hasn-mcp 迁来的「纯云端代理」规划工具：
-- 注册齐全（32 个 PURE_RELAY，含 PLAN-ENT 企业会议协同 invite/rsvp/availability），
+- 注册齐全（34 个 PURE_RELAY，含 PLAN-ENT 企业会议协同 invite/rsvp/availability
+  与 PLAN-LOOP 里程碑改删 milestone.update/delete），
   工具名/命名空间/execution_location/scope 与原工具 1:1；
 - input_schema 关键约束（priority 仍 string、id integer、必填项）防回归；
 - 真实 PG 往返：goal/todo CRUD + capture/triage（事务真提交，测试后清理该 owner 行）。
@@ -70,6 +71,8 @@ _EXPECTED_NAMES = {
     'hasn.plan.project.update',
     'hasn.plan.project.delete',
     'hasn.plan.project.add_milestone',
+    'hasn.plan.milestone.update',
+    'hasn.plan.milestone.delete',
     'hasn.plan.todo.list',
     'hasn.plan.todo.get',
     'hasn.plan.todo.create',
@@ -102,8 +105,8 @@ _LOCAL_ONLY = {
 
 
 def test_plan_tools_register_exactly_pure_relay() -> None:
-    """32 个纯代理工具全注册（含 PLAN-ENT 企业会议协同 invite/rsvp/availability），
-    且不含任何应留本地的复合/引擎/daemon 工具。"""
+    """34 个纯代理工具全注册（含 PLAN-ENT 企业会议协同 invite/rsvp/availability
+    与 PLAN-LOOP 里程碑改删 milestone.update/delete），且不含任何应留本地的复合/引擎/daemon 工具。"""
     names = {t.name for t in PLAN_TOOLS}
     assert names == _EXPECTED_NAMES, f'差异: {names ^ _EXPECTED_NAMES}'
     assert not (names & _LOCAL_ONLY), '复合/引擎/daemon 工具不应迁到云端'

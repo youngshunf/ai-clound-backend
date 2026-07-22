@@ -10,6 +10,7 @@ Agent JWT 通道的工作流读写（owner = agent.owner_hasn_id，跨户恒 Not
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -34,9 +35,79 @@ if TYPE_CHECKING:
 
 PERIODIC_TYPES = ('interval', 'cron')
 
+# doc36 §6.2：run_artifacts 每节点产物条数上限，超限于出参标注截断（不静默吞）
+_MAX_ARTIFACTS_PER_NODE = 50
+
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _snapshot_node_keys(graph_snapshot: Any) -> list[str]:
+    """从 graph_snapshot.nodes 抽声明序节点键（去重保序）。快照缺失/畸形 → 空列表。"""
+    if not isinstance(graph_snapshot, dict):
+        return []
+    raw = graph_snapshot.get('nodes')
+    if not isinstance(raw, list):
+        return []
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        key = item.get('node_key') if isinstance(item, dict) else None
+        if isinstance(key, str) and key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
+def _snapshot_edges(graph_snapshot: Any) -> list[tuple[str, str]]:
+    """从 graph_snapshot.edges 抽 (parent, child) 依赖对。兼容 [p,c] 数组与 {parent,child} 字典两形。"""
+    if not isinstance(graph_snapshot, dict):
+        return []
+    raw = graph_snapshot.get('edges')
+    if not isinstance(raw, list):
+        return []
+    edges: list[tuple[str, str]] = []
+    for item in raw:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            parent, child = item[0], item[1]
+        elif isinstance(item, dict):
+            parent, child = item.get('parent'), item.get('child')
+        else:
+            continue
+        if isinstance(parent, str) and isinstance(child, str) and parent and child:
+            edges.append((parent, child))
+    return edges
+
+
+def _topological_node_order(node_keys: list[str], edges: list[tuple[str, str]]) -> list[str]:
+    """按依赖边拓扑排序（doc36 §6.2）：parent 排在 child 前；tiebreak 固定为声明序（node_keys 顺序），
+    保证同一 run 两次查询顺序稳定。有环兜底：无法推进时把剩余节点按声明序补末尾，不崩。
+    """
+    order_index = {k: i for i, k in enumerate(node_keys)}
+    indeg: dict[str, int] = {k: 0 for k in node_keys}
+    adj: dict[str, list[str]] = {k: [] for k in node_keys}
+    for parent, child in edges:
+        # 只认声明过的节点，脏边跳过（不误伤排序）
+        if parent not in order_index or child not in order_index:
+            continue
+        adj[parent].append(child)
+        indeg[child] += 1
+    result: list[str] = []
+    remaining = set(node_keys)
+    while remaining:
+        # 每轮取入度为 0 中声明序最小的一批（声明序 tiebreak，确定性）
+        ready = sorted((k for k in remaining if indeg[k] == 0), key=lambda k: order_index[k])
+        if not ready:
+            # 有环：剩余按声明序补齐后退出，避免死循环
+            result.extend(sorted(remaining, key=lambda k: order_index[k]))
+            break
+        for k in ready:
+            result.append(k)
+            remaining.discard(k)
+            for nxt in adj[k]:
+                indeg[nxt] -= 1
+    return result
 
 
 def workflow_to_public(wf: HasnWorkflow) -> dict[str, Any]:
@@ -51,6 +122,8 @@ def workflow_to_public(wf: HasnWorkflow) -> dict[str, Any]:
         'status': wf.status,
         'enabled': wf.enabled,
         'source': wf.source,
+        # 平台项目挂靠（doc38·实施95 P9-A）：云端权威 id 序列化为字符串（None=裸工程图未挂项目）。
+        'project_id': str(wf.project_id) if wf.project_id else None,
         'created_by_kind': wf.created_by_kind,
         'continuation_enabled': wf.continuation_enabled,
         'next_run_at': _iso(wf.next_run_at),
@@ -128,8 +201,11 @@ class AgentWorkflowService:
         return {r['node_key']: r['status'] for r in rows.mappings().all()}
 
     @classmethod
-    async def list_workflows(cls, db: AsyncSession, *, owner_id: str) -> list[dict[str, Any]]:
-        workflows = await workflow_service.list_workflows(db, owner_id=owner_id)
+    async def list_workflows(
+        cls, db: AsyncSession, *, owner_id: str, project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列主人的工作流；`project_id` 给值则只返该项目下的（分身问「这个项目里有哪些工作流」时用）。"""
+        workflows = await workflow_service.list_workflows(db, owner_id=owner_id, project_id=project_id)
         return [workflow_to_public(wf) for wf in workflows]
 
     @staticmethod
@@ -189,6 +265,129 @@ class AgentWorkflowService:
             'artifacts': r['artifacts_json'] if isinstance(r['artifacts_json'], list) else [],
         }
 
+    @classmethod
+    async def run_artifacts(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        session_id: str | None,
+        workflow_run_uuid: str | None = None,
+    ) -> dict[str, Any]:
+        """本次 run 全节点产物聚合（doc36 §6.2·刀 5 场景成果总览基石）。
+
+        - 零入参反查：workflow_run_uuid 缺省时经当前会话（session_id）反查所属 run；
+          汇总节点跑本工具时自己的行即最新会话，反查恒成立。
+        - owner 隔离：run.owner_id 必须等于 owner_id，否则 NotFound（与 artifact.get 一致）。
+        - 节点按 graph_snapshot 拓扑序返回（tiebreak=声明序），不是 created_time。
+        - 产物默认只取 current 版本（artifacts JSON 的 is_current），每节点上限 50 + 超限标注截断。
+        - 字段名用 uri（=artifact.list 的 resource_uri，doc36 §4.1 命名约定）。
+        """
+        run_uuid = (workflow_run_uuid or '').strip() or None
+        if run_uuid is None:
+            if not session_id:
+                raise errors.RequestError(msg='无当前会话上下文，且未显式指定 workflow_run_uuid')
+            run_uuid = await hasn_workflow_node_run_dao.get_run_uuid_by_session(db, session_id)
+            if run_uuid is None:
+                raise errors.NotFoundError(msg='当前会话未关联任何工作流执行实例')
+
+        run = await hasn_workflow_run_dao.get_by_uuid(db, run_uuid)
+        if run is None or run.owner_id != owner_id:
+            raise errors.NotFoundError(msg='工作流执行实例不存在')
+
+        node_runs = await hasn_workflow_node_run_dao.list_by_run(db, run_uuid)
+        node_run_by_key = {nr.node_key: nr for nr in node_runs}
+
+        # 拓扑序（快照声明序）+ 快照未含的节点按 node_run.id 补末尾（诚实兜底，不丢）
+        snapshot_keys = _snapshot_node_keys(run.graph_snapshot)
+        ordered = _topological_node_order(snapshot_keys, _snapshot_edges(run.graph_snapshot))
+        ordered_set = set(ordered)
+        extras = sorted(
+            (nr.node_key for nr in node_runs if nr.node_key not in ordered_set),
+            key=lambda k: node_run_by_key[k].id,
+        )
+        final_order = [k for k in ordered if k in node_run_by_key] + extras
+
+        # 先收集全节点 current 产物 id（去重批量取 hasn_artifacts，owner-scoped active），再按节点组装
+        per_node_ids: dict[str, list[str]] = {}
+        per_node_truncated: dict[str, bool] = {}
+        all_ids: set[str] = set()
+        for key in final_order:
+            nr = node_run_by_key[key]
+            raw = nr.artifacts if isinstance(nr.artifacts, list) else []
+            current_ids: list[str] = []
+            seen: set[str] = set()
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    continue
+                # is_current 缺省视为 current（不静默丢），显式 False 才剔除
+                if not entry.get('is_current', True):
+                    continue
+                art_id = entry.get('artifact_id')
+                if isinstance(art_id, str) and art_id and art_id not in seen:
+                    seen.add(art_id)
+                    current_ids.append(art_id)
+            truncated = len(current_ids) > _MAX_ARTIFACTS_PER_NODE
+            if truncated:
+                current_ids = current_ids[:_MAX_ARTIFACTS_PER_NODE]
+            per_node_ids[key] = current_ids
+            per_node_truncated[key] = truncated
+            all_ids.update(current_ids)
+
+        art_meta = await cls._load_artifacts_meta(db, owner_id=owner_id, artifact_ids=all_ids)
+
+        nodes_out: list[dict[str, Any]] = []
+        for key in final_order:
+            nr = node_run_by_key[key]
+            artifacts_out = [art_meta[aid] for aid in per_node_ids[key] if aid in art_meta]
+            node_dict: dict[str, Any] = {
+                'node_key': key,
+                'status': nr.status,
+                'work_session_id': nr.work_session_id,
+                'output_summary': nr.output_summary,
+                'artifacts': artifacts_out,
+            }
+            if per_node_truncated[key]:
+                # 超限标注，不静默吞（doc36 §6.2）
+                node_dict['artifacts_truncated'] = True
+            nodes_out.append(node_dict)
+
+        return {'workflow_run_uuid': run_uuid, 'nodes': nodes_out}
+
+    @staticmethod
+    async def _load_artifacts_meta(
+        db: AsyncSession, *, owner_id: str, artifact_ids: set[str]
+    ) -> dict[str, dict[str, Any]]:
+        """按 id 批量取 hasn_artifacts（owner-scoped + active），产出 {artifact_id: 投影}。
+
+        投影字段对齐 doc36 §6.2：uri = resource_uri（命名约定，§4.1）。查不到的 id
+        （已删/跨户）自然缺席，不造假。
+        """
+        if not artifact_ids:
+            return {}
+        # 延迟导入避免模块加载期潜在环
+        from sqlalchemy import select as sa_select
+
+        from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
+
+        stmt = sa_select(HasnArtifacts).where(
+            HasnArtifacts.artifact_id.in_(artifact_ids),
+            HasnArtifacts.owner_hasn_id == owner_id,
+            HasnArtifacts.status == 'active',
+        )
+        result = await db.execute(stmt)
+        out: dict[str, dict[str, Any]] = {}
+        for art in result.scalars().all():
+            out[art.artifact_id] = {
+                'artifact_id': art.artifact_id,
+                'title': art.title,
+                'uri': art.resource_uri,
+                'resource_kind': art.resource_kind,
+                'source_app_id': art.source_app_id,
+                'created_time': _iso(getattr(art, 'created_time', None)),
+            }
+        return out
+
     # ---------- 写 ----------
 
     @classmethod
@@ -214,6 +413,13 @@ class AgentWorkflowService:
             edges=edges,
         )
         wf = await workflow_service.create_workflow(db, owner_id=agent.owner_hasn_id, obj=obj)
+        # P9-B 场景工作流项目轴：实例化路径经硬闸解析出所属平台项目后，把 project_id 透传到这里落到
+        # workflow.project_id（场景实例必填、裸工程图为空）。CreateWorkflowParam 不带此列，故建图后
+        # 直接写 ORM 列（同一事务内 flush）。非实例化（裸 hasn.workflow.create）无 project_id → 保持 NULL。
+        raw_project_id = params.get('project_id')
+        if raw_project_id:
+            wf.project_id = raw_project_id if isinstance(raw_project_id, UUID) else UUID(str(raw_project_id))
+            await db.flush()
         if wf.status == 'pending_approval':
             await cls._notify_pending_approval(db, agent=agent, workflow_uuid=wf.workflow_uuid, name=wf.name)
         return workflow_to_public(wf)

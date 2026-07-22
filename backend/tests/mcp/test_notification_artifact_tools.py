@@ -51,10 +51,16 @@ async def _db_reachable() -> bool:
 
 
 # ── 契约（无需 DB）────────────────────────────────────────────────────────────
-def test_tools_register_single_each() -> None:
-    """各域恰好 1 个工具，名/命名空间正确。"""
+def test_tools_register_expected_names() -> None:
+    """两域注册的工具名单钉死（artifact 域后续补了 A-P0-1 的三个读工具 + doc36 U4 的域目录）。"""
     assert [t.name for t in NOTIFICATION_TOOLS] == ['hasn.notifications.emit']
-    assert [t.name for t in ARTIFACT_TOOLS] == ['hasn.artifact.record']
+    assert [t.name for t in ARTIFACT_TOOLS] == [
+        'hasn.artifact.record',
+        'hasn.artifact.list',
+        'hasn.artifact.search',
+        'hasn.artifact.get',
+        'hasn.artifact.domains',
+    ]
 
 
 def test_tools_are_cloud_platform() -> None:
@@ -89,13 +95,18 @@ def test_notification_category_and_priority_enums() -> None:
     assert props['priority']['enum'] == ['critical', 'high', 'normal', 'low']
 
 
-def test_artifact_kind_and_source_kind_enums() -> None:
-    """kind / source_kind 枚举与原工具一致（含 video，P6）。"""
+def test_artifact_kind_enum_is_six_and_source_kind_not_agent_settable() -> None:
+    """暴露给分身的 kind 枚举 = doc35 六枚举；source_kind 不再是入参。
+
+    旧断言钉的是 9 枚举（含 deck/webpage/dataset/other）+ 可传 source_kind。doc35 两处都推翻：
+    - kind 只答「怎么打开」，deck/webpage 是应用名（source_app_id 已表达）、dataset 与 file 同渲染
+      分支、other 只是白名单拒绝的降级产物；
+    - `hasn.artifact.record` 本身就是「分身自撰」通道，来源恒 agent_note，让分身自报等于给它
+      一个说谎的旋钮。
+    """
     props = ARTIFACT_TOOLS[0].input_schema['properties']
-    assert props['kind']['enum'] == [
-        'image', 'voice', 'video', 'file', 'document', 'deck', 'webpage', 'dataset', 'other'
-    ]
-    assert props['source_kind']['enum'] == ['task_result', 'tool_output', 'upload', 'external']
+    assert props['kind']['enum'] == ['resource', 'document', 'image', 'video', 'voice', 'file']
+    assert 'source_kind' not in props, 'source_kind 应由工具钉死为 agent_note，不接受分身传入'
 
 
 @pytest.mark.asyncio(loop_scope='module')
@@ -124,7 +135,7 @@ async def test_artifact_record_requires_one_body_asset_resource() -> None:
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio(loop_scope='module')
 async def test_artifact_record_text_roundtrip_real_db() -> None:
-    """真实 PG：record 文本产物（kind=document + body + origin_ref）→ 落库可查；测试后清理。"""
+    """真实 PG：record 文本产物（kind=document + body + origin_ref）→ 落库可查、绑上工作会话；测试后清理。"""
     if not await _db_reachable():
         pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
 
@@ -135,6 +146,9 @@ async def test_artifact_record_text_roundtrip_real_db() -> None:
 
     owner = f'h_artifact_tool_{uuid.uuid4().hex[:16]}'
     ctx = _agent_ctx(owner)
+    # 工作会话派发态：server.call_tool 剥 `_hasn_session_id` 后落在这里（分身不可伪造）。
+    work_session_id = f'ws_artifact_tool_{uuid.uuid4().hex[:12]}'
+    ctx.session_id = work_session_id
     try:
         res = await ArtifactRecordTool().execute(
             ctx,
@@ -157,8 +171,11 @@ async def test_artifact_record_text_roundtrip_real_db() -> None:
             assert row.kind == 'document'
             assert row.body.startswith('# 竞品调研')
             assert row.origin_ref == 'resource:plan:todo:42'
-            # 显式登记默认归 task_result，并自带 source_tool。
-            assert row.source_kind == 'task_result'
+            # 绑当次工作会话：漏了这条，产物只进分身产物 tab、挂不进工作会话资源栏
+            # （2026-07-15 实测过的真 bug：record 成功、artifact.get 取得到，会话资源栏却空）。
+            assert row.session_id == work_session_id
+            # 本工具就是「分身自撰」通道，来源恒 agent_note（doc35 §5，不由分身自报）。
+            assert row.source_kind == 'agent_note'
             assert row.source_tool == 'hasn.artifact.record'
             assert row.status == 'active'
     finally:

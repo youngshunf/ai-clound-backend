@@ -10,7 +10,10 @@
 from fastapi import APIRouter
 
 from backend.app.hasn_copilot.api.v1.app.copilot import router as copilot_app_router
+from backend.app.hasn_copilot.api.v1.app.meetings import router as meetings_app_router
 from backend.core.conf import settings
 
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/copilot/app', tags=['会议副驾-用户端'])
 app.include_router(copilot_app_router)
+# 会议结果域（v5，/meetings*）：Owner JWT，owner 硬隔离，统一信封（daemon domains/copilot/cloud.rs 调用）。
+app.include_router(meetings_app_router)

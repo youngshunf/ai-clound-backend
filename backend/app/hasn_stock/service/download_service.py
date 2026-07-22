@@ -209,7 +209,7 @@ class StockDownloadService:
                 agent_hasn_id=agent_hasn_id,
                 owner_hasn_id=owner_hasn_id,
                 params=RecordArtifactParam(
-                    kind=kind_media,  # artifact 层 kind=image|video（都在白名单内）
+                    kind=kind_media,  # artifact 层 kind=image|video（doc35 6 枚举内）
                     title=(title or filename),
                     # 素材站语义描述落 summary → hasn.artifact.search 按语义关键词可搜回
                     # （search 命中 title OR summary；素材文件名/标题常无意义，summary 才承载可检索语义）。
@@ -218,7 +218,9 @@ class StockDownloadService:
                     resource_uri=asset_uri,
                     session_id=session_id,
                     source_tool='hasn.stock.download',
-                    source_kind='external',
+                    # 外部取材（doc35 §5.2 点名 hasn.stock.download 就是 external_tool 的典型产出者）。
+                    # 旧值 'external' 语义相同但不在 6 枚举内，Literal 收敛后会 422。
+                    source_kind='external_tool',
                     metadata={
                         'provider': provider_view.provider if provider_view else None,
                         'license': provider_view.license_terms_url if provider_view else None,

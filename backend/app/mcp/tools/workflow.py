@@ -56,8 +56,25 @@ async def _h_get_node_result(db: Any, ctx: AgentContext, args: dict[str, Any]) -
     )
 
 
+async def _h_run_artifacts(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    # doc36 §6.2 零入参：缺 workflow_run_uuid 时经当前会话（_hasn_session_id → ctx.session_id）反查所属 run。
+    run_uuid = args.get('workflow_run_uuid')
+    return await agent_workflow_service.run_artifacts(
+        db,
+        owner_id=ctx.owner_hasn_id,
+        session_id=ctx.session_id,
+        workflow_run_uuid=str(run_uuid) if run_uuid else None,
+    )
+
+
 async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_workflow_service.list_workflows(db, owner_id=ctx.owner_hasn_id)
+    # project_id 只认显式入参，**不从 ContextVar 继承**：doc11 §4.0 的继承链管的是「新东西挂到哪个项目」
+    # （写语义），不该拿来悄悄裁剪「能看见什么」（读语义）——同一句 list 因为看不见的上下文返回不同
+    # 结果，分身无从判断列表是否完整。要按项目筛就显式给 project_id。
+    project_id = args.get('project_id')
+    return await agent_workflow_service.list_workflows(
+        db, owner_id=ctx.owner_hasn_id, project_id=str(project_id) if project_id else None
+    )
 
 
 async def _h_run(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
@@ -143,6 +160,28 @@ _SPECS: list[dict[str, Any]] = [
         },
     },
     {
+        'action': 'run_artifacts',
+        'write': False,
+        'scopes': [],
+        'handler': _h_run_artifacts,
+        'desc': (
+            '拿本次工作流执行（run）全部节点的产物清单——用于场景末尾出「成果总览」文档。零入参：'
+            '不传 workflow_run_uuid 时，服务端据当前工作会话反查本次 run。返回按拓扑序（第几步）排列的节点，'
+            '每个节点带其产物 [{artifact_id, title, uri, resource_kind, source_app_id, created_time}]（uri 即 '
+            'artifact.list 里的 resource_uri；写总览时链接用 uri 原值，勿自行拼 URI）。产物只含最新版本，'
+            '每节点上限 50，超限置 artifacts_truncated=true。确定性读。'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'workflow_run_uuid': {
+                    'type': ['string', 'null'],
+                    'description': '可选：显式指定要查的执行实例（主人 UI / 非节点会话用）；缺省由当前会话反查',
+                },
+            },
+        },
+    },
+    {
         'action': 'run',
         'write': True,
         'scopes': [SCOPE_RUN],
@@ -183,10 +222,16 @@ _SPECS: list[dict[str, Any]] = [
         'write': False,
         'scopes': [],
         'handler': _h_list,
-        'desc': '列主人的工作流（含状态/调度/最近执行）。确定性读。',
+        'desc': '列主人的工作流（含状态/调度/最近执行）。确定性读。给 project_id 则只列该项目下的。',
         'schema': {
             'type': 'object',
-            'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'description': '默认 20'}},
+            'properties': {
+                'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'description': '默认 20'},
+                'project_id': {
+                    'type': 'string',
+                    'description': '按所属平台项目筛选（hasn_project.id 云端权威 id）；不给则列全部',
+                },
+            },
         },
     },
 ]
@@ -258,7 +303,10 @@ _GRAPH_SPEC_SCHEMA = {
     'description': (
         '图蓝图 {nodes:[...], edges:[...]}。node：node_key(唯一)/name/node_kind(origin|agent)/'
         'is_origin(bool)/description/default_agent_type/apps[]/skills[]/prompt/system_prompt/'
-        'output_spec{kind,label}/review_policy{mode,criteria,reviewer_agent_type,max_rejects}/'
+        'output_spec{required,label?,expects:[...]}（expects 每条二选一：应用资源写 resource_kind '
+        '如 knowledge.base/deck.presentation，非应用资源写 artifact_kind∈document|image|video|voice|file；'
+        '多条之间是「或」。写错即报错，不静默放行）/'
+        'review_policy{mode,criteria,reviewer_agent_type,max_rejects}/'
         'display{order,step_label}；edge：{parent, child}（DAG 无环，至少一个 is_origin 起点）。'
     ),
     'properties': {
@@ -387,11 +435,17 @@ _TEMPLATE_SPECS: list[dict[str, Any]] = [
         'desc': (
             '据模板实例化一条 cloud 权威工作流：读模板蓝图 → 建 workflow（节点缺省=发起分身）→ 返 workflow 引用。'
             '起点输入 origin_input 作为锚点，node_overrides 可逐节点定制 prompt/agent_id。付费模板本期免判直接放行。'
+            '⚠️ 场景必须挂到一个平台项目下：显式传 project_id，或经工作会话上下文继承；两者都无会返 PROJECT_REQUIRED，'
+            '此时回头问主人「这个场景挂到哪个项目下」。'
         ),
         'schema': {
             'type': 'object',
             'properties': {
                 'template_key': {'type': 'string', 'minLength': 1, 'description': '要实例化的模板键'},
+                'project_id': {
+                    'type': ['string', 'null'],
+                    'description': '所属平台项目 id（云端权威 id）。场景必填；缺省则从工作会话上下文继承，都无则 PROJECT_REQUIRED。',
+                },
                 'title': {'type': ['string', 'null'], 'description': '实例工作流名称（缺省取模板名）'},
                 'goal': {'type': ['string', 'null'], 'description': '实例总目标（缺省取模板描述）'},
                 'origin_input': {'type': ['string', 'null'], 'description': '起点输入（主人锚点，如想法/研究命题）'},

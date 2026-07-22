@@ -21,15 +21,21 @@ from typing import TYPE_CHECKING, Any
 import sqlalchemy as sa
 import yaml
 
+from pydantic import ValidationError
+
+# 产出要求契约单源（doc35 §0.2）：待办与工作流节点共用同一 schema，判定共用同一纯函数。
+from backend.app.hasn.schema.output_spec import OutputSpec
 from backend.app.hasn_task.crud.crud_workflow import hasn_workflow_template_dao
 from backend.app.hasn_task.model import HasnWorkflowTemplate
-# 实例化复用 agent 建图权威路径（cloud workflow，daemon 经 sync mirror tick/fire）。
-from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.hasn_task.schema.workflow_template import (
     CreateWorkflowTemplateParam,
     WorkflowTemplateGraphSummary,
     WorkflowTemplatePublic,
 )
+
+# 实例化复用 agent 建图权威路径（cloud workflow，daemon 经 sync mirror tick/fire）。
+from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
+
 # 复用工作流建图的无环检测（07 §9.3 · Kahn 拓扑），避免重写；模板校验与执行建图同一语义。
 from backend.app.hasn_task.service.workflow_service import detect_cycle
 from backend.common.exception import errors
@@ -46,39 +52,32 @@ _DOMAIN_DICT_CODE = 'workflow_template_domain'
 # 模板节点数上限（模板是「场景蓝图」，节点远少于自由工作流；取保守常量，与 webui 画廊卡负载相称）。
 _MAX_NODES = 20
 
-# 产物 kind 权威注册表（doc11 §4.3 node.output_spec.kind）：两内置模板（一人公司 / 金融投研）
-# 的 canonical 取值并集 + 通用产物 kind。新增 kind 须先在此登记（与 hub 模板 canonical 对齐），
-# 否则 draft/update/publish 校验拒绝——分身读 message 里的具体 kind 名即可自修。
-_OUTPUT_KINDS: frozenset[str] = frozenset(
-    {
-        'workflow_anchor',  # 起点锚点产物（主人输入）
-        'knowledge_base',
-        'dataset',
-        'strategy_card',
-        'backtest_report',
-        'design_system',
-        'design_asset',
-        'website',
-        'content_collection',
-        'lead_list',
-        'deck',
-        'article',
-        # 通用产物 kind（跨场景复用）
-        'document',
-        'report',
-        'image',
-        'video',
-        'presentation',
-        'code',
-        'data',
-    }
-)
-
 # 内置人设 builtin_key（2026-07-12 收敛为 3：全能助理 assistant / 创作专家 content_operator /
 # 分析专家 analyst，见 app_catalog_service._CATALOG_AGENT_DEFAULTS）。default_agent_type 命中即
 # 「有内置人设模板」；未命中 = 需主人自备（daemon resolve_default_agent_for_app 回退主脑）——**允许**，
 # 只是软识别、不拒绝（doc94 §10-P5：允许缺失但要能识别）。
 _BUILTIN_PERSONA_KEYS: frozenset[str] = frozenset({'assistant', 'content_operator', 'analyst'})
+
+# 内置人设展示名（与 _BUILTIN_PERSONA_KEYS 对齐·2026-07-12 收敛为 3，见 app_catalog_service._CATALOG_AGENT_DEFAULTS
+# 的注释口径：全能助理 assistant / 创作专家 content_operator / 分析专家 analyst）。搭建器人设下拉用。
+# 三条固定小集，就地列出即可（不另立会漂移的表）；tuple 顺序 = 下拉稳定展示序。
+_BUILTIN_PERSONA_ORDER: tuple[str, ...] = ('assistant', 'content_operator', 'analyst')
+_BUILTIN_PERSONA_LABELS: dict[str, str] = {
+    'assistant': '全能助理',
+    'content_operator': '创作专家',
+    'analyst': '分析专家',
+}
+
+# artifact_kind 载体维度可选值（doc35 6 闭集去掉 `resource`）——搭建器 output_spec picker 用。
+# 刻意不放 `resource`：expect 里基本不该出现 artifact_kind:resource（只答「是个应用资源」却不说是哪种，
+# 闸会被任意应用资源满足）——要判应用资源就选 resource_kind（见 hub workflow-templates/README §output_spec）。
+_ARTIFACT_KIND_LABELS: dict[str, str] = {
+    'document': '文档',
+    'image': '图片',
+    'video': '视频',
+    'voice': '语音',
+    'file': '文件',
+}
 
 # 内置模板可被 hub 重新下发覆盖的派生字段（对齐 hub 官方内置不变量：INSERT-only + builtin_key 可更新）。
 # 这些字段随 hub 重扫覆盖；template_uuid（端云同步主键）与 owner_id（归属）恒不动。
@@ -190,7 +189,8 @@ def validate_graph_spec(graph_spec: Any) -> None:
     便于分身读 message 自修（scenario-designer 技能据此教分身修蓝图）。校验项：
     1. **图合法**：结构对、node_key 全局唯一、边引用存在、无自环、DAG 无环（复用 detect_cycle）、
        至少一个 is_origin=true 起点、节点数 ≤ _MAX_NODES；
-    2. **引用合法**：apps[] 每个 app 在应用目录存在、output_spec.kind 在产物 kind 注册表内；
+    2. **引用合法**：apps[] 每个 app 在应用目录存在、output_spec 符合 doc35 §0.2 归一契约
+       （expects 里的 resource_kind 必须是某个 app manifest 真声明过的）；
        default_agent_type 非内置人设 → 软识别为「需主人自备」（不拒绝）。
     """
     if not isinstance(graph_spec, dict):
@@ -206,9 +206,12 @@ def validate_graph_spec(graph_spec: Any) -> None:
 
     # 应用目录权威来源：in-process app_catalog_registry（catalog DB 的 seed 源，同步权威）。
     # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
+    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
     from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 
     valid_app_ids = {app.id for app in app_catalog_registry.list()}
+    # resource_kind 权威 = 各 app manifest 的 resources[] 声明（单源，不另立手写白名单）。
+    valid_resource_kinds = ai_native_app_registry.known_resource_kinds()
 
     node_keys: list[str] = []
     key_set: set[str] = set()
@@ -223,7 +226,11 @@ def validate_graph_spec(graph_spec: Any) -> None:
             raise errors.RequestError(msg=f'node_key 重复: {node_key}')
         key_set.add(node_key)
         node_keys.append(node_key)
-        if node.get('is_origin') is True:
+        # origin 判定必须与 daemon 取同一口径（`workflow_instantiate.rs` 认 `is_origin || node_kind=='origin'`）。
+        # 云端只认 is_origin 的话，只写 `node_kind: origin` 的模板会被云端当普通节点——下面「起点不得声明
+        # output_spec」的校验就漏了，而 daemon 照样预完成它，模板作者永远等不到那个闸。
+        is_origin = node.get('is_origin') is True or node.get('node_kind') == 'origin'
+        if is_origin:
             origin_count += 1
 
         # 引用合法：apps[] 每个 app 必须在应用目录存在
@@ -234,12 +241,25 @@ def validate_graph_spec(graph_spec: Any) -> None:
             if app_id not in valid_app_ids:
                 raise errors.RequestError(msg=f'节点 {node_key} 引用了不存在的应用: {app_id}')
 
-        # 引用合法：output_spec.kind 必须在产物 kind 注册表内（缺省/空放行——起点等可无产物）
+        # 引用合法：output_spec 必须符合 doc35 §0.2 归一契约（缺省/空放行——起点等可无产出要求）。
+        # 旧形状 `{kind: dataset}` 会被 extra='forbid' 硬拒——这正是目的：静默接受不认得的 kind，
+        # 等于把「闸永远比不中」推迟到运行期，主人只看到分身干完了却过不了闸，根因埋在模板里。
         output_spec = node.get('output_spec')
+        # 起点节点声明产出要求 = 误导：它是主人输入的内联锚点，daemon 建图即预完成为 done，
+        # **永不到达产出闸**。声明了却永不生效，模板作者会以为闸在守着。宁可发布期就拒。
+        if is_origin and output_spec:
+            raise errors.RequestError(msg=f'起点节点 {node_key} 不得声明 output_spec：它预完成、不过产出闸')
         if isinstance(output_spec, dict):
-            kind = output_spec.get('kind')
-            if kind and kind not in _OUTPUT_KINDS:
-                raise errors.RequestError(msg=f'节点 {node_key} 的 output_spec.kind 未注册: {kind}')
+            try:
+                spec = OutputSpec.model_validate(output_spec)
+            except ValidationError as e:
+                raise errors.RequestError(msg=f'节点 {node_key} 的 output_spec 不合法: {e.errors()[0]["msg"]}') from e
+            # resource_kind 存在性：拼错（knowledge.bass）在发布期就拒，别等运行期闸永不通过。
+            for expect in spec.expects:
+                if expect.resource_kind and expect.resource_kind not in valid_resource_kinds:
+                    raise errors.RequestError(
+                        msg=f'节点 {node_key} 的 output_spec 引用了未声明的 resource_kind: {expect.resource_kind}'
+                    )
 
         # default_agent_type：软识别（内置人设 vs 需主人自备），**不拒绝**（doc94 §10-P5）。
         # 非内置也允许——daemon resolve_default_agent_for_app 命中不到则回退主脑。
@@ -428,6 +448,88 @@ class WorkflowTemplateService:
         return _to_public(tpl, include_graph_spec=True)
 
     @classmethod
+    async def create_owner_template(
+        cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """主人手动搭建器建模板（source=owner，过 §6.3 校验；status draft/active 二选一）。
+
+        「自定义场景」全页搭建器的云端落点：主人自己选应用 / 选人设 / 设提示词 → 拼出 graph_spec
+        → 本方法落库。与 `draft_template`（分身草案 source=agent、status 恒 draft）同一套校验 / 同一套
+        key 生成 / 同一套 create_template，区别仅在 source=owner 与可指定 status（草稿保存 vs 直接上架）。
+        """
+        graph_spec = params.get('graph_spec') or {}
+        validate_graph_spec(graph_spec)  # 不合法即抛，message 具体便于 webui 逐条提示修
+
+        status = params.get('status') or 'draft'
+        if status not in ('draft', 'active'):
+            raise errors.RequestError(msg=f'status 只能是 draft（草稿）或 active（上架），收到: {status}')
+
+        template_key = await cls._gen_unique_template_key(db, str(params.get('name') or 'scenario'))
+        obj = CreateWorkflowTemplateParam(
+            template_key=template_key,
+            name=str(params.get('name') or '未命名场景'),
+            domain=params.get('domain') or None,
+            tagline=params.get('tagline') or None,
+            description=params.get('description') or None,
+            sort_order=int(params.get('sort_order') or 0),
+            icon=params.get('icon') or None,
+            accent=params.get('accent') or None,
+            graph_spec=graph_spec,
+            is_builtin=False,
+            status=status,
+            source='owner',
+            version=1,
+        )
+        tpl = await cls.create_template(db, owner_id=owner_id, obj=obj)
+        return _to_public(tpl, include_graph_spec=True)
+
+    @classmethod
+    async def builder_options(cls, db: AsyncSession) -> dict[str, Any]:
+        """自定义场景搭建器所需的权威选项集（apps+resource_kinds / personas / artifact_kinds / domains）。
+
+        webui 全页搭建器据此渲染「选应用 / 选人设 / 设产出」下拉——取值全部来自云端权威源
+        （app_catalog_registry + ai_native_app_registry + sys_dict），避免 webui 手抄一张会漂移的表。
+        校验（validate_graph_spec）用的 valid_app_ids / valid_resource_kinds 与此同源，故搭建器给出的
+        选项一定能过服务端校验。
+        """
+        # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
+        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+        from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+
+        resource_labels = ai_native_app_registry.resource_kind_labels()
+        known_kinds = ai_native_app_registry.known_resource_kinds()
+
+        # 应用 → 该应用声明的 resource_kind 列表（按 {app_id}.{kind} 前缀归组，doc35）。
+        # 只投影会登记资源的应用的 kind；行情查询这类只读应用 resource_kinds 为空（搭建器提示改落知识库）。
+        apps: list[dict[str, Any]] = []
+        for app in app_catalog_registry.list():
+            app_kinds = [
+                {'resource_kind': k, 'label': resource_labels.get(k, k)}
+                for k in sorted(known_kinds)
+                if k.split('.', 1)[0] == app.id
+            ]
+            apps.append(
+                {
+                    'app_id': app.id,
+                    'name': app.name,
+                    'icon': app.icon,
+                    'resource_kinds': app_kinds,
+                }
+            )
+
+        personas = [
+            {'key': k, 'label': _BUILTIN_PERSONA_LABELS.get(k, k)} for k in _BUILTIN_PERSONA_ORDER
+        ]
+        artifact_kinds = [{'artifact_kind': k, 'label': v} for k, v in _ARTIFACT_KIND_LABELS.items()]
+        domains = await cls._domain_meta(db)
+        return {
+            'apps': apps,
+            'personas': personas,
+            'artifact_kinds': artifact_kinds,
+            'domains': domains,
+        }
+
+    @classmethod
     async def update_template(
         cls, db: AsyncSession, *, owner_id: str, template_key: str, params: dict[str, Any]
     ) -> dict[str, Any]:
@@ -456,6 +558,14 @@ class WorkflowTemplateService:
         if params.get('sort_order') is not None:
             tpl.sort_order = int(params['sort_order'])
 
+        # 状态切换（草稿 ↔ 上架）：搭建器「保存草稿」→ draft，「保存并上架」→ active。
+        # 只接受 draft/active，其余非法值拒绝（archived/coming_soon 属内置/运营态，不由主人编辑切换）。
+        new_status = params.get('status')
+        if new_status is not None:
+            if new_status not in ('draft', 'active'):
+                raise errors.RequestError(msg=f'status 只能是 draft（草稿）或 active（上架），收到: {new_status}')
+            tpl.status = new_status
+
         tpl.version = (tpl.version or 1) + 1
         await db.flush()
         return _to_public(tpl, include_graph_spec=True)
@@ -477,6 +587,22 @@ class WorkflowTemplateService:
         visible = tpl.is_builtin or tpl.owner_id is None or tpl.owner_id == owner_id
         if not visible:
             raise errors.NotFoundError(msg='模板不存在')
+
+        # ── P9-B 场景工作流项目轴实例化硬闸（doc95 §2.1 / doc11 §4.0/§6.1）──────────────
+        # 三级取值优先级：显式入参 ＞ ContextVar 继承 ＞ 全局兜底 ＞ 拒绝。全局兜底目前无「主人
+        # 默认项目」概念，故有效链为 显式 → ContextVar → 拒绝（最后一档是拒绝，不是随便挑一个项目）。
+        from backend.app.hasn_project.service.project_app_service import project_service
+        from backend.app.mcp.context import get_current_project_id
+        from backend.app.mcp.errors import McpErrorCode, McpToolError
+
+        project_id = params.get('project_id') or get_current_project_id()
+        if not project_id:
+            raise McpToolError(
+                McpErrorCode.PROJECT_REQUIRED,
+                '开启场景前要先确定它属于哪个平台项目——请回头问主人「这个场景挂到哪个项目下」',
+            )
+        # 归属本 owner + 未归档校验：跨 owner → 403；归档 → 结构化拒绝（详见 helper 注释）
+        await project_service.resolve_open_for_new_workflow(db, owner=owner_id, project_id=project_id)
 
         # 付费模板权益判定（doc94 §10-P7 / doc11 §8.3）：sku_ref 非空才真判，免费模板（sku_ref 空）直接放行。
         # 判权走 MK 统一入口 resolve_access(feature_key=workflow_template:<template_key>)；该 feature_key
@@ -501,6 +627,9 @@ class WorkflowTemplateService:
                 )
 
         wf_params = cls._template_to_workflow_params(tpl, params)
+        # P9-B 项目轴：把硬闸解析出的所属平台项目透传给 create_workflow，落到 workflow.project_id
+        # （_template_to_workflow_params 只映射 graph_spec，不带 project_id，故这里显式补上）。
+        wf_params['project_id'] = str(project_id)
         result = await agent_workflow_service.create_workflow(db, agent=agent, params=wf_params)
 
         # 记模板溯源到 workflow.template_key 列（HasnWorkflow ORM 未映射该列，走定向 UPDATE，同一事务内）
@@ -532,7 +661,8 @@ class WorkflowTemplateService:
                 continue
             node_key = tn.get('node_key')
             ov = overrides.get(node_key) or {}
-            is_origin = tn.get('is_origin') is True
+            # 与 validate_graph_spec / daemon 同口径取或（详见上方 origin 判定注释）
+            is_origin = tn.get('is_origin') is True or tn.get('node_kind') == 'origin'
             # prompt 非空兜底链：override → (起点用 origin_input / 其余用模板 prompt) → 描述 → 名称 → node_key
             if is_origin:
                 prompt = ov.get('prompt') or origin_input or tn.get('description') or tn.get('name') or node_key
@@ -546,6 +676,13 @@ class WorkflowTemplateService:
                     'prompt': prompt,
                     'system_prompt': ov.get('system_prompt') or tn.get('system_prompt') or None,
                     'description': tn.get('description'),
+                    # doc35 B1「修死列」：模板早就声明了这些，此前全被丢在这一步，
+                    # 于是节点行上产出闸恒 NULL、应用绑定恒空——模板配了等于没配。
+                    'output_spec': tn.get('output_spec'),
+                    'review_policy': tn.get('review_policy'),
+                    'apps': tn.get('apps') or [],
+                    'skills': tn.get('skills') or [],
+                    'is_origin': is_origin,
                 }
             )
         edges = [

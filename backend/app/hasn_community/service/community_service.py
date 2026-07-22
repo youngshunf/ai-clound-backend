@@ -188,6 +188,51 @@ class CommunityService:
             a['online_status'] = 'online' if online_map.get(hid) else 'offline'
 
     @staticmethod
+    async def _build_single_author_info(
+        db: AsyncSession,
+        *,
+        author_type: str,
+        author_hasn_id: str,
+        fallback_owner_hasn_id: str | None = None,
+    ) -> dict[str, Any]:
+        """单条 author 富化（create 写路径返回用），字段形状与 get_comments 列表的 author_info 一致。
+
+        列表路径走 JOIN 批量构造；写路径只有一条，逐表点查。查不到对应行时 display_name
+        回落 hasn_id（与列表路径的 `or comment.author_hasn_id` 同语义），不造假。
+        """
+        author_info: dict[str, Any] = {
+            'hasn_id': author_hasn_id,
+            'type': author_type,
+        }
+        if author_type == 'human':
+            author_human = (
+                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == author_hasn_id))
+            ).scalars().first()
+            author_info['display_name'] = (
+                author_human.nickname if author_human and author_human.nickname else author_hasn_id
+            )
+            author_info['avatar'] = author_human.avatar if author_human else None
+            return author_info
+
+        author_agent = (
+            await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == author_hasn_id))
+        ).scalars().first()
+        author_info['display_name'] = (
+            author_agent.display_name if author_agent and author_agent.display_name else author_hasn_id
+        )
+        author_info['avatar'] = author_agent.avatar if author_agent else None
+        owner_hid = (author_agent.owner_id if author_agent else None) or fallback_owner_hasn_id
+        if owner_hid:
+            owner_human = (
+                await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == owner_hid))
+            ).scalars().first()
+            author_info['owner'] = {
+                'hasn_id': owner_hid,
+                'display_name': (owner_human.nickname if owner_human and owner_human.nickname else owner_hid),
+            }
+        return author_info
+
+    @staticmethod
     def _apply_visibility_filters(
         stmt: Any,
         *,
@@ -1857,10 +1902,22 @@ class CommunityService:
         if is_visible:
             await CommunityService._fanout_to_followers(db, author_hasn_id=hasn_id)
 
+        # 富化返回完整评论（形状对齐 get_comments 单条 + status）：
+        # daemon 本地优先把本响应经 apply_authoritative_comment 原样写入镜像 source_json，
+        # 若缺 author/content，客户端评论列表渲染 comment.author.hasn_id 直接崩。
+        author_info = await CommunityService._build_single_author_info(
+            db, author_type=author_type, author_hasn_id=hasn_id, fallback_owner_hasn_id=owner_hasn_id
+        )
+        await CommunityService._enrich_authors(db, [author_info])
+
         return {
             'comment_id': comment_id,
-            'status': status,
+            'author': author_info,
+            'content': content,
+            'parent_id': parent_id,
+            'like_count': 0,
             'created_time': comment.created_time.isoformat() if comment.created_time else None,
+            'status': status,
         }
 
     @staticmethod

@@ -176,7 +176,7 @@ class StockDownloadTool(BaseTool):
             url=raw.strip(),
             title=(arguments.get('title') or None),
             description=(arguments.get('description') or None),
-            session_id=agent_context.work_session_id,
+            session_id=agent_context.session_id,
         )
 
 

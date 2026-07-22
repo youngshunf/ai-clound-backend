@@ -81,6 +81,7 @@ dependencies = [
   "dicebear-core>=10.3.0",
   "dicebear-styles>=10.2.0",
   "py-ip2region>=3.0.4",
+  "qiniu>=7.17.0",
 ]
 dynamic = ["version"]
 

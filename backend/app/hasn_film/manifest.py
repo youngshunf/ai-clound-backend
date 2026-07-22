@@ -146,7 +146,7 @@ FILM_AI_NATIVE_MANIFEST = {
             'uri_domain': 'film/projects',  # → hasn://film/projects/{server_id}（doc08 §3 登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/film/:id'},
             'card': {'verb': '影片', 'action_label': '打开影片'},
-            'artifact_kind': 'video',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': [

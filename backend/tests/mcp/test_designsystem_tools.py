@@ -1,7 +1,8 @@
 """平台工具 · designsystem 域 真实 service 测试（禁 mock，TOOLMIG-4 + TOOLMIG 纯函数上云）。
 
-验证 8 个云端 designsystem 工具：
-- **云端权威（操作云端数据）**：`import` / `save`（写类，designsystem:write）、`list` / `get`（读类，无 scope）。
+验证 10 个云端 designsystem 工具：
+- **云端权威（操作云端数据）**：`import` / `save`（写类，designsystem:write）、`list` / `get` /
+  `get_gallery` / `check_scenes`（读类，无 scope）。
 - **确定性纯函数（TOOLMIG：Python 移植 hasn_designsystem_core，云端分身可用）**：
   `compile_tokens` / `derive` / `validate` / `extract_components`（读类，无 scope，无 DB/无网络）。
 
@@ -60,13 +61,19 @@ async def _db_reachable() -> bool:
 
 
 # ── 契约（无需 DB）────────────────────────────────────────────────────────────
-def test_tools_register_eight_with_stable_names() -> None:
-    """恰好 8 个 designsystem 工具（4 云端权威 + 4 确定性纯函数），名稳定、顺序固定。"""
+def test_tools_register_ten_with_stable_names() -> None:
+    """恰好 10 个 designsystem 工具（6 云端权威 + 4 确定性纯函数），名稳定、顺序固定。
+
+    云端权威在 4 个基础上增补两个按需读（不是新语义，是 DSGET 瘦身/DSGAL 场景标准的产物）：
+    `get_gallery`（get 瘦身后画廊按需单取）、`check_scenes`（场景覆盖自检）。
+    """
     assert [t.name for t in DESIGNSYSTEM_TOOLS] == [
         'hasn.designsystem.import',
         'hasn.designsystem.save',
         'hasn.designsystem.list',
         'hasn.designsystem.get',
+        'hasn.designsystem.get_gallery',
+        'hasn.designsystem.check_scenes',
         'hasn.designsystem.compile_tokens',
         'hasn.designsystem.derive',
         'hasn.designsystem.validate',
@@ -75,7 +82,7 @@ def test_tools_register_eight_with_stable_names() -> None:
 
 
 def test_tools_are_cloud_platform() -> None:
-    """8 工具 source=platform、execution_location=cloud、命名空间统一 hasn.designsystem。"""
+    """10 工具 source=platform、execution_location=cloud、命名空间统一 hasn.designsystem。"""
     for tool in DESIGNSYSTEM_TOOLS:
         assert tool.source == 'platform'
         assert tool.namespace == 'hasn.designsystem'
@@ -83,13 +90,15 @@ def test_tools_are_cloud_platform() -> None:
 
 
 def test_write_tools_declare_scope_read_and_pure_tools_do_not() -> None:
-    """写类 import/save → designsystem:write；读类 list/get + 4 纯函数无 scope（与本地 1:1）。"""
+    """写类 import/save → designsystem:write；读类 list/get/get_gallery/check_scenes + 4 纯函数无 scope（与本地 1:1）。"""
     by_name = {t.name: t for t in DESIGNSYSTEM_TOOLS}
     assert by_name['hasn.designsystem.import'].required_scopes == ['designsystem:write']
     assert by_name['hasn.designsystem.save'].required_scopes == ['designsystem:write']
     for read_only in (
         'hasn.designsystem.list',
         'hasn.designsystem.get',
+        'hasn.designsystem.get_gallery',
+        'hasn.designsystem.check_scenes',
         'hasn.designsystem.compile_tokens',
         'hasn.designsystem.derive',
         'hasn.designsystem.validate',
@@ -264,6 +273,8 @@ async def test_save_list_get_roundtrip_real_db() -> None:
         design_system_id = saved['id']
         assert design_system_id
         assert saved['revision']['bundle_asset_id'] == bundle_asset_id
+        # doc36 §3.2：写工具返回体必须带 `uri`，与下面登记落库的 resource_uri 同一个地址。
+        assert saved['uri'] == f'hasn://designsystem/{design_system_id}'
 
         # 落库核实：DesignSystem 行 + 一版 revision。
         async with async_db_session() as db:
@@ -274,11 +285,16 @@ async def test_save_list_get_roundtrip_real_db() -> None:
             # save 创建即绑定生成它的分身（AppCollab bind-only-if-unbound）。
             assert row.bound_agent_id == ctx.agent_hasn_id
 
-        # 携 bundle → 自动登记一条 document 产物指向 bundle 资产（best-effort，应已落库）。
+        # save 即 register-on-write：自动登记一条**设计系统资源**产物（best-effort，应已落库）。
+        # 曾断言 `kind == 'document'` + 指向 bundle 资产——那是 doc35 四维度重排前的旧形状，
+        # 重排后 kind 只答「怎么打开」（应用资源恒 resource）、「是什么」交给 resource_kind，
+        # 断言却没跟着改，于是本用例长期红着（doc36 U1 顺带修正到 manifest 权威值）。
         async with async_db_session() as db:
             art = (await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))).scalar_one()
-            assert art.kind == 'document'
-            assert art.asset_id == bundle_asset_id
+            assert art.kind == 'resource', 'artifact_kind 只答「怎么打开」——应用资源恒 resource（doc35 §3.1）'
+            assert art.resource_kind == 'designsystem.spec', 'resource_kind 答「是什么」，取 manifest descriptor 原值'
+            assert art.source_app_id == 'designsystem'
+            assert art.resource_uri == f'hasn://designsystem/{design_system_id}'
             assert art.source_tool == 'hasn.designsystem.save'
 
         # list 可见该套（owner 维度）。

@@ -41,6 +41,7 @@ from backend.app.mcp.tools.message import (
 from backend.app.mcp.tools.notification import NOTIFICATION_TOOLS
 from backend.app.mcp.tools.owner import OWNER_TOOLS
 from backend.app.mcp.tools.plan import PLAN_TOOLS
+from backend.app.mcp.tools.project import PROJECT_TOOLS
 from backend.app.mcp.tools.registry import ToolRegistry
 from backend.app.mcp.tools.stock import STOCK_TOOLS
 from backend.app.mcp.tools.task import TASK_TOOLS
@@ -132,6 +133,12 @@ class HasnCloudMcpServer:
         # 仍留本地的是有真本地编排/计算的 decompose/briefing/review/schedule/reschedule/delegate/validate。
         for plan_tool in PLAN_TOOLS:
             self.tool_registry.register(plan_tool)
+
+        # 项目管理工具（14-平台项目·联邦挂靠，doc38）：hasn.project.create/get/list/update/link/unlink +
+        # milestone.create/update/complete。纯云端平台工具，直调 project_service / 挂靠点注册表；
+        # scope project:read/project:write 均 Allow 出厂。link/unlink 一律经挂靠点注册表，不散写跨 schema。
+        for project_tool in PROJECT_TOOLS:
+            self.tool_registry.register(project_tool)
 
         # 主人画像工具（19-了解主人）：hasn.owner.coverage.get — 采访分身读「主人 5 维画像还缺哪几维」，
         # 定向采访（缺什么采访什么）。纯云端只读，直调 OwnerProfileCoverageService.assess_if_stale。
@@ -305,20 +312,34 @@ class HasnCloudMcpServer:
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
 
-            # register-on-write（doc31/32 RC-P8 泛化）：剥离系统注入的工作会话 id（`_hasn_session_id`，
-            # 分身不可伪造）→ agent_context.work_session_id，供 deck/app 写点把产物登记进「工作会话
-            # 资源栏」。须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站
-            # 打在入参）与 daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=主会话直调。
+            # register-on-write（doc31/32 RC-P8）+ 发起溯源（doc14 §6.2）：剥离系统注入的发起方会话 id
+            # （`_hasn_session_id`，分身不可伪造）→ agent_context.session_id。两处消费：deck/app 写点
+            # 把产物登记进「工作会话资源栏」；message.send 落 origin_session_id 供结果回灌定位发起方会话。
+            # 须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站打在入参）与
+            # daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=非派发路径直调。
             from backend.app.mcp import trust_gate as _tg
 
-            arguments, work_session_id = _tg.pop_session_id(arguments)
-            if work_session_id:
-                agent_context.work_session_id = work_session_id
+            arguments, origin_session_id = _tg.pop_session_id(arguments)
+            if origin_session_id:
+                agent_context.session_id = origin_session_id
             # 同时落 ContextVar：AI-Native 应用 handler（knowledge 等，经 ai_native gateway 分发、
             # 只收 AgentTokenPayload 拿不到 AgentContext）只能经本通道取会话 id 做 register-on-write。
+            # 必须落 agent_context.session_id（已沉淀值）而非 origin_session_id：渐进暴露下 app 工具
+            # 经 hasn.cloud.tool.call 重入本方法，内层入参没有系统注入的 stamp（只打在最外层调用上），
+            # origin_session_id=None 会把外层已落的会话 id 覆写掉 → knowledge 等 handler 面登记的产物
+            # 全部丢会话归属（挂不进工作会话资源栏）。字段与 ContextVar 同源，重入自然继承。
             from backend.app.mcp.context import set_current_work_session_id
 
-            set_current_work_session_id(work_session_id)
+            set_current_work_session_id(agent_context.session_id)
+
+            # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
+            # （`_hasn_project_id`，分身不可伪造）→ ContextVar，供 register-on-write 公共接缝把产物
+            # 自动打标进 hasn_artifacts.project_id（只进不退）。缺省=不在项目中工作，产物不挂项目。
+            from backend.app.mcp.context import set_current_project_id
+
+            arguments, _origin_project_id = _tg.pop_project_id(arguments)
+            if _origin_project_id:
+                set_current_project_id(_origin_project_id)
 
             # L3 工具门（doc08 §4·RT3·云端半场）：先剥离系统注入的会话信任语境保留参数
             # （_hasn_is_external / _hasn_peer_id / _hasn_peer_trust，分身不可伪造），令下游
@@ -393,11 +414,17 @@ class HasnCloudMcpServer:
             return result
         finally:
             # G6 已判权资源随请求结束即清（doc33 S2-3/S2-4），防跨调用串味。
-            from backend.app.mcp.context import clear_authorized_resources, clear_current_work_session_id
+            from backend.app.mcp.context import (
+                clear_authorized_resources,
+                clear_current_project_id,
+                clear_current_work_session_id,
+            )
 
             clear_authorized_resources()
             # 工作会话 id 同理随调用结束即清，防跨调用串味（下次主会话直调误挂上次会话）。
             clear_current_work_session_id()
+            # 平台项目 id 同理随调用结束即清（doc38 §3.3），防跨调用把上次项目串给下次主会话直调。
+            clear_current_project_id()
 
     async def _enforce_resource_gate(
         self, agent_context: AgentContext, tool: BaseTool, arguments: dict[str, Any]

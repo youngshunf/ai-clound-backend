@@ -38,8 +38,16 @@ KIND_BUILTIN_CATALOG = 'builtin_catalog'
 KIND_COMMON_SKILLS = 'common_skills'
 KIND_PLATFORM_CONFIG = 'platform_config'
 KIND_DESIGNSYSTEM = 'designsystem'
+# 通用语音模型签名目录（SPCAT-4）：全局单行 catalog，发布即 bump，daemon 比对重拉验签写盘。
+KIND_SPEECH_CATALOG = 'speech_catalog'
 # 全局 kind：单一全局 revision，进 get_all_revisions 握手快照，bump(owner_id=None) 全局广播。
-KINDS = (KIND_BUILTIN_CATALOG, KIND_COMMON_SKILLS, KIND_PLATFORM_CONFIG, KIND_DESIGNSYSTEM)
+KINDS = (
+    KIND_BUILTIN_CATALOG,
+    KIND_COMMON_SKILLS,
+    KIND_PLATFORM_CONFIG,
+    KIND_DESIGNSYSTEM,
+    KIND_SPEECH_CATALOG,
+)
 
 # owner 定向 kind（doc02-07 LF-P3）：revision 是「某 owner 维度」的指纹，对全局握手无意义，
 # 故**不进 KINDS / get_all_revisions 握手快照**——离线追平靠该 owner 任务镜像的周期 sync_pull，
@@ -102,6 +110,15 @@ KIND_BILLING = 'billing'
 # 在线态长时间不刷新。revision 仅作 invalidate 帧字段（presence 在 Redis、不进表指纹，daemon 也
 # 不据 revision 去重、收到即拉）——push 本身即触发刷新。
 KIND_CONTACTS = 'contacts'
+# owner 定向：该 owner 名下平台项目（doc38 U5，app_id=project）数据变更——任一设备/分身经用户端
+# API（/api/v1/project/app/*）或 hasn.project.* 平台工具建/改/归档项目、增删改里程碑、挂靠/摘除资源后
+# bump。daemon 收到即拉该 owner 的项目镜像（local_first）。与 plan/tasks 同形态——per-owner 指纹，
+# 不进全局握手，靠 bump_owner push + 周期 sync_pull 兜底。
+KIND_PROJECT = 'project'
+# owner 定向：该 owner 的金融投研六类产物或自选股发生有效 create/update/delete。
+# revision 聚合 hasn_finance 七表并保留 tombstone，daemon 收到即后台 read-through 合并本地镜像，
+# 再通知 WebUI 只刷新当前命中的 finance query。离线设备靠下一次机会刷新追平。
+KIND_FINANCE = 'finance'
 OWNER_KINDS = (
     KIND_TASKS,
     KIND_PLAN,
@@ -115,6 +132,8 @@ OWNER_KINDS = (
     KIND_GROUPS,
     KIND_BILLING,
     KIND_CONTACTS,
+    KIND_PROJECT,
+    KIND_FINANCE,
 )
 # 某 owner 任务镜像为空时的稳定指纹
 EMPTY_TASKS_REVISION = 'empty'
@@ -136,6 +155,10 @@ EMPTY_NOTIFICATION_REVISION = 'empty'
 EMPTY_GROUPS_REVISION = 'empty'
 # 某 owner 无订阅/权益时的稳定指纹（同上约定）
 EMPTY_BILLING_REVISION = 'empty'
+# 某 owner 名下无平台项目时的稳定指纹（同上约定）
+EMPTY_PROJECT_REVISION = 'empty'
+# 某 owner 没有任何金融资源时的稳定指纹。
+EMPTY_FINANCE_REVISION = 'empty'
 # 联系人在线态失效的固定 revision。presence 在 Redis、不进表指纹，且 daemon 收到即拉不据
 # revision 去重、owner 定向 kind 又是零 jitter——故 revision 值无实际作用，用固定串即可，
 # 避免每次翻转都对 hasn_contacts 做一次纯为算指纹的查询。
@@ -461,6 +484,59 @@ async def compute_owner_billing_revision(db: AsyncSession, owner_id: str) -> str
     return hashlib.sha256('\n'.join(sorted(lines)).encode('utf-8')).hexdigest()[:16]
 
 
+async def compute_owner_project_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 的平台项目指纹：sha256(sorted "project:{id}@{updated_time}" 行)[:16]（doc38 U5）。
+
+    聚合该 owner 名下全部平台项目（``hasn_project``），任一被建/改（含归档 status→archived 落
+    ``updated_time``）或增删行 → 集合内某行指纹变 → 整体指纹变。仅作 invalidate 帧的 ``revision``
+    字段：daemon 不据此去重、收到即拉该 owner 的项目镜像。owner 隔离按 ``owner_id`` 列。
+    """
+    from backend.app.hasn_project.model import HasnProject
+
+    rows = (
+        await db.execute(sa.select(HasnProject.id, HasnProject.updated_time).where(HasnProject.owner_id == owner_id))
+    ).all()
+    lines = sorted(f'project:{row_id}@{updated.isoformat() if updated else ""}' for row_id, updated in rows)
+    if not lines:
+        return EMPTY_PROJECT_REVISION
+    return hashlib.sha256('\n'.join(lines).encode('utf-8')).hexdigest()[:16]
+
+
+async def compute_owner_finance_revision(db: AsyncSession, owner_id: str) -> str:
+    """某 owner 金融七表指纹：sha256(sorted "kind:id@revision@status" 行)[:16]。
+
+    六类产物和 watchlist 的有效 create/update/delete 都会改变成员或单调 ``revision``；
+    tombstone 仍保留在集合中并带 ``status='deleted'``，因此删除也必然改变指纹并触发跨设备下行。
+    """
+    from backend.app.hasn_finance.model.backtest_report import BacktestReport
+    from backend.app.hasn_finance.model.research_report import ResearchReport
+    from backend.app.hasn_finance.model.shadow_account import ShadowAccount
+    from backend.app.hasn_finance.model.strategy import Strategy
+    from backend.app.hasn_finance.model.trade_review import TradeReview
+    from backend.app.hasn_finance.model.watch_briefing import WatchBriefing
+    from backend.app.hasn_finance.model.watchlist import Watchlist
+
+    lines: list[str] = []
+    for label, model in (
+        ('research', ResearchReport),
+        ('strategy', Strategy),
+        ('backtest', BacktestReport),
+        ('review', TradeReview),
+        ('shadow', ShadowAccount),
+        ('briefing', WatchBriefing),
+        ('watchlist', Watchlist),
+    ):
+        rows = (
+            await db.execute(
+                sa.select(model.id, model.revision, model.status).where(model.owner_id == owner_id)
+            )
+        ).all()
+        lines.extend(f'{label}:{row_id}@{revision}@{status}' for row_id, revision, status in rows)
+    if not lines:
+        return EMPTY_FINANCE_REVISION
+    return hashlib.sha256('\n'.join(sorted(lines)).encode('utf-8')).hexdigest()[:16]
+
+
 async def compute_owner_memory_revision(db: AsyncSession, owner_id: str) -> str:
     """某 owner 记忆命名空间指纹：sha256(sorted "namespace@revision" 行)[:16]。
 
@@ -507,6 +583,10 @@ async def _compute_revision(kind: str, db: AsyncSession) -> str:
         return rev
     if kind == KIND_DESIGNSYSTEM:
         return await compute_designsystem_revision(db)
+    if kind == KIND_SPEECH_CATALOG:
+        from backend.app.hasn.service.speech_catalog_service import speech_catalog_service
+
+        return await speech_catalog_service.get_revision(db)
     raise ValueError(f'unknown sync kind: {kind}')
 
 
@@ -611,6 +691,10 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
         rev = await compute_owner_groups_revision(db, owner_id)
     elif kind == KIND_BILLING:
         rev = await compute_owner_billing_revision(db, owner_id)
+    elif kind == KIND_PROJECT:
+        rev = await compute_owner_project_revision(db, owner_id)
+    elif kind == KIND_FINANCE:
+        rev = await compute_owner_finance_revision(db, owner_id)
     elif kind == KIND_CONTACTS:
         # presence 不进表指纹，固定 revision（见 CONTACTS_PRESENCE_REVISION 注释）。
         rev = CONTACTS_PRESENCE_REVISION

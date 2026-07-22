@@ -26,6 +26,10 @@ class App:
     ui_kind: str | None = None
     window_url: str | None = None
     window_origin: str | None = None
+    # 平台项目参与档位（doc38 §3.4）：aware 表示可选归集，required 表示必须先选项目才能工作。
+    # 两者是应用执行契约，不是运营展示字段；catalog 投影从 registry 取，避免数据库旧行漂移。
+    project_aware: bool = False
+    project_required: bool = False
 
     def to_manifest(self, *, workspace_kind: str | None = None) -> dict[str, Any]:
         data = {
@@ -43,6 +47,8 @@ class App:
             'ui_kind': self.ui_kind,
             'window_url': self.window_url,
             'window_origin': self.window_origin,
+            'project_aware': self.project_aware,
+            'project_required': self.project_required,
         }
         if workspace_kind and self.health_check:
             data['health'] = self.health_check({'workspace_kind': workspace_kind})
@@ -131,8 +137,8 @@ class AppCatalogRegistry:
         from backend.app.hasn_plan.manifest import build_plan_app
 
         registry.register(build_plan_app())
-        # 金融数据 finance（cloud AI-Native，schema hasn_finance，模块 24；install_policy=manual
-        # 非默认挂载——纯云端只读数据应用，14 工具经 finance_provider → finance-data-service 取数）。延迟导入避免循环依赖。
+        # 金融投研 finance（local_tool AI-Native；install_policy=manual 非默认挂载；
+        # 最终 44 个工具由 hasn-node 本地引擎提供）。延迟导入避免循环依赖。
         from backend.app.hasn_finance.manifest import build_finance_app
 
         registry.register(build_finance_app())
@@ -160,6 +166,12 @@ class AppCatalogRegistry:
         from backend.app.hasn_computer_use.manifest import build_computer_use_app
 
         registry.register(build_computer_use_app())
+        # 项目管理 project（cloud AI-Native，schema hasn_project，模块 14 doc38；install_policy=auto
+        # 一级容器门面默认挂载——第三条轴「为了哪件事」，各应用容器/产物/工作会话经可空 project_id
+        # 联邦挂靠聚合。hasn.project.* 云端平台工具随 U3 注册 + 铸 scope）。延迟导入避免循环依赖。
+        from backend.app.hasn_project.manifest import build_project_app
+
+        registry.register(build_project_app())
         return registry
 
     def register(self, app: App) -> None:

@@ -243,8 +243,22 @@ QUANT_AI_NATIVE_MANIFEST = {
             'uri_domain': 'quant/strategies',  # → hasn://quant/strategies/{server_id}（doc08 §3 登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/quant/strategies/:id'},
             'card': {'verb': '策略回测', 'action_label': '打开回测'},
-            'artifact_kind': 'other',
-        }
+            'artifact_kind': 'resource',
+        },
+        # doc35 A3 补：回测报告此前**从来没有 descriptor**——分身跑完回测，这份成果没有 URI、没有
+        # 完成卡、登记也无从挂靠，于是 hub README 只好教模板作者绕道「假装落 knowledge 出 dataset」。
+        # 绕路的根因不是「登记不可靠」，是这个资源压根没声明过。
+        #
+        # 用 entry_query 而非 internal_route：回测没有独立详情页，它在工作台页由 `?backtest=` 选中
+        # 呈现（webui QuantWorkbenchPage 的 BacktestResultPanel）。照 strategy 写成 /:id 路由会造出
+        # 一条点开是 404 的深链。
+        {
+            'resource_kind': 'quant.backtest',
+            'uri_domain': 'quant/backtests',  # → hasn://quant/backtests/{server_id}
+            'open': {'mode': 'entry_query', 'entry_route': '/apps/quant', 'query_key': 'backtest'},
+            'card': {'verb': '回测报告', 'action_label': '查看回测报告'},
+            'artifact_kind': 'resource',
+        },
     ],
     'capabilities': _CAPABILITIES,
     'tools': [_tool_from_cap(cap) for cap in _CAPABILITIES],

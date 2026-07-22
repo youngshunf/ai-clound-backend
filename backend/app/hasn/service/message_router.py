@@ -18,6 +18,7 @@ from backend.app.hasn.constants import (
     SCOPE_LTD,
     check_action_permission,
 )
+from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.model import HasnConversations, HasnHumans, HasnMessages, HasnUnreadCounts
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_contacts import HasnContacts
@@ -317,8 +318,14 @@ async def get_or_create_conversation(
     participant_b_id: str,
     participant_b_type: str,
     relation_type: str = 'social',
+    mission_note: str | None = None,
+    mission_note_owner_id: str | None = None,
 ) -> HasnConversations:
     """获取或创建单聊会话。
+
+    ``mission_note``（doc14 §6.5）：差事背景，**仅新建会话时写入**——既有会话直接返回、
+    绝不覆盖（一个对外会话的差事背景由发起那一刻定调，后续消息不改写）。
+    ``mission_note_owner_id`` 是其归属 owner（= 发起方 owner），投影裁剪据此判定。
 
     唯一性不变量：一对参与者（排序后 a<b）只允许**一个** direct 会话，
     **与 relation_type 无关**——同一对人/人-agent 永远收敛到同一行
@@ -372,6 +379,9 @@ async def get_or_create_conversation(
         member_count=2,
         message_count=0,
         status='active',
+        # doc14 §6.5：差事背景只在建会话这一刻落（上方 `if conv: return conv` 已保证既有会话不覆盖）。
+        mission_note=mission_note or None,
+        mission_note_owner_id=(mission_note_owner_id or None) if mission_note else None,
     )
     db.add(conv)
     await db.flush()
@@ -531,6 +541,7 @@ async def persist_message(
     mentions: list[dict[str, Any]] | None = None,
     mention_all: bool = False,
     origin_node_id: str | None = None,
+    origin_session_id: str | None = None,
     owner_id: str | None = None,
 ) -> HasnMessages:
     """持久化消息并更新会话。
@@ -538,6 +549,12 @@ async def persist_message(
     ``origin_node_id``（doc02 §3.8）：产生该消息的节点 ID，由 Server 从认证上下文
     自动填入（不可伪造）——node WS/HTTP 带的节点 ID / 云端 runtime 填 'cloud' 哨兵；
     存 node_id 不存设备名，渲染边界 join hasn_nodes.node_name 解析显示名。
+
+    ``origin_session_id``（doc14 §6.2）：产生该消息的**发起方 runtime 会话**（工作会话 id
+    或主会话 runtime session id），与 origin_node_id 同款三约束——由 Server 从
+    ``AgentContext.session_id`` 自动填、入参 schema 不收、不可伪造。无会话上下文=None。
+    daemon 据此登记 session_outbound_links，对端出结果时把结果回灌回发起方会话。
+    **发起方私有**：见 _fanout_message_new 的受众分叉——只有发送方 owner 的事件携带此字段。
 
     ``owner_id``（doc18 P0）：1:1 消息落库时回填「收件方 owner」，令该 owner 的透明视图与
     `hasn.message.search`（硬过滤 `WHERE owner_id`）能读到 route 落库的消息——此前 route 路径
@@ -547,8 +564,16 @@ async def persist_message(
     """
     now = timezone.now()
 
+    # R2-02（doc16 §4.1）：落库前原子分配会话内序号——同事务 UPDATE ... RETURNING，
+    # PG 行锁串行化同会话并发发送，权威顺序事实。会话必已存在（调用链先 get_or_create），
+    # None 说明会话行缺失，属不变量破坏，直接抛（终局故障，见「日志分级」铁律）。
+    conversation_seq = await hasn_conversations_dao.allocate_seq(db, conversation_id)
+    if conversation_seq is None:
+        raise ValueError(f'allocate_seq 失败：会话 {conversation_id} 不存在，无法分配 conversation_seq')
+
     msg = HasnMessages(
         conversation_id=conversation_id,
+        conversation_seq=conversation_seq,
         owner_id=owner_id or None,
         from_id=from_id,
         from_type=_entity_type_int(from_id),
@@ -567,6 +592,7 @@ async def persist_message(
         mention_all=mention_all,
         server_received_at=now,
         origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
     )
     db.add(msg)
     await db.flush()
@@ -616,8 +642,9 @@ async def _fanout_message_new(
     content_type: int,
     local_id: str | None,
     origin_node_id: str | None,
+    origin_session_id: str | None = None,
     members: list[HasnGroupMembers] | None = None,
-) -> list[str]:
+) -> tuple[list[str], list[tuple[str, dict[str, Any]]]]:
     """会话一等实体·统一受众扇出（doc02 §3.3）——投递链路唯一的形态无关出口。
 
     受众 = ``⋃ resolve_owner(participant)``（direct 两方 / group 名册），去重稳定排序。
@@ -631,17 +658,27 @@ async def _fanout_message_new(
     - 回流到产生设备的那份由 daemon ``ingest_message`` 幂等键吸收（message_id + local_id）。
 
     ``message.new`` 与实时推送同构，严格 8 字段（``relation_view/peer/conversation_type/
-    group_name/direction`` 一律不带，方向由 sender 在渲染时派生）。
+    group_name/direction`` 一律不带，方向由 sender 在渲染时派生）+ doc14 的第 9 个**条件**字段
+    ``origin_session_id``（仅发送方 owner 携带，见下方分叉）。
+
+    ``origin_session_id`` **受众分叉（doc14 §6.2/§7-1 隐私红线）**：发起溯源是**发送方的执行细节**
+    ——「对方用一个自动化工作会话在跟你说话」无必要外泄。故只有 ``audience_owner == sender_owner``
+    的那份事件/推送携带该字段，其余受众（对端 owner、群里其他成员）一律**剥除**。
     """
     from backend.app.hasn.service import conversation_projection as cp
-    from backend.app.hasn.service.ws_router import ws_router
 
     audience = await cp.compute_audience_owner_ids(db, conv, members=members)
     created_at = int(msg.created_time.timestamp()) if msg.created_time else 0
-    ws_payload = {
-        'hasn': 'hasn/0.2',
-        'method': 'hasn.message.new',
-        'params': {
+
+    # 发送方 owner（分身→解析其主人；人→本人）。仅用于 origin_session_id 的受众分叉；
+    # 溯源为空时无需解析（省一次查询）。
+    sender_owner_id: str | None = None
+    if origin_session_id:
+        resolved = await cp._resolve_owner_ids(db, [from_id])
+        sender_owner_id = resolved.get(from_id)
+
+    def _params_for(owner_id: str) -> dict[str, Any]:
+        params: dict[str, Any] = {
             'conversation_id': str(conv.id),
             'message_id': str(msg.id),
             'sender_hasn_id': from_id,
@@ -650,9 +687,21 @@ async def _fanout_message_new(
             'content_body': content,
             'local_id': local_id,
             'created_at': created_at,
-        },
-    }
+        }
+        # 分叉点：只有发送方 owner 看得到自己的发起溯源。
+        if origin_session_id and owner_id == sender_owner_id:
+            params['origin_session_id'] = origin_session_id
+        return params
+
+    # R1-08 事务收口：扇出循环内**只写 sync feed 事件**（与 route_message 主链同事务、
+    # 单 commit 落库）；实时 push 是外部 IO，一律收集进 deferred_pushes 延后到 commit **之后**
+    # 由 _flush_pushes 发出，绝不夹在事务里。任一受众 append 失败即整条主链回滚——杜绝
+    # 「消息已落库但 feed 事件丢失」的半状态（doc92 §7.1）。
+    deferred_pushes: list[tuple[str, dict[str, Any]]] = []
     for owner_id in audience:
+        owner_origin_session_id = (
+            origin_session_id if (origin_session_id and owner_id == sender_owner_id) else None
+        )
         await cp.append_message_new_event(
             sync_gw,
             db,
@@ -661,13 +710,32 @@ async def _fanout_message_new(
             message_id=str(msg.id),
             sender_hasn_id=from_id,
             origin_node_id=origin_node_id,
+            origin_session_id=owner_origin_session_id,
             content_type=content_type,
             content_body=content,
             local_id=local_id,
             created_at=created_at,
         )
-        await ws_router.push_to_owner(owner_id, ws_payload)
-    return audience
+        deferred_pushes.append(
+            (owner_id, {'hasn': 'hasn/0.2', 'method': 'hasn.message.new', 'params': _params_for(owner_id)})
+        )
+    return audience, deferred_pushes
+
+
+async def _flush_pushes(pushes: list[tuple[str, dict[str, Any]]]) -> None:
+    """route_message 主链 commit **之后**发出 _fanout_message_new 收集的实时推送（R1-08 外部 IO 出事务）。
+
+    消息 + sync feed 事件已单 commit 落库、durable；本步是纯实时投递优化，**best-effort**：
+    任一 owner 推送失败（Redis 抖动 / 目标节点瞬断）只记 warn 并继续下一个——权威 feed 已在库，
+    对端重连自会 sync/pull 补回。绝不因推送失败连累已落库的消息（记 warn 而非 error：可恢复、会自愈）。
+    """
+    from backend.app.hasn.service.ws_router import ws_router
+
+    for owner_id, payload in pushes:
+        try:
+            await ws_router.push_to_owner(owner_id, payload)
+        except Exception as exc:
+            log.warning('message.new 实时推送失败（owner=%s），已落 feed，靠重连补拉：%r', owner_id, exc)
 
 
 # ─── 消息路由主入口 ───
@@ -783,6 +851,8 @@ async def route_message(
     local_id: str | None = None,
     context: dict | None = None,
     origin_node_id: str | None = None,
+    origin_session_id: str | None = None,
+    mission_note: str | None = None,
 ) -> dict[str, Any]:
     """
     消息路由主入口（会话一等实体·doc02 §3.3）
@@ -793,6 +863,13 @@ async def route_message(
 
     ``origin_node_id``（§3.8）：产生该消息的节点，由**调用方从认证上下文**传入（node WS/
     HTTP 的节点 ID / 云端 runtime 填 'cloud'），Server 侧不收客户端自报入参、不可伪造。
+
+    ``origin_session_id``（doc14 §6.2）：产生该消息的发起方 runtime 会话，同样由调用方从
+    ``AgentContext.session_id`` 传入、不收客户端自报。落 hasn_messages 列 + 仅发送方 owner
+    的事件携带（受众分叉见 _fanout_message_new）。
+
+    ``mission_note``（doc14 §6.5）：差事背景，仅**新建 direct 会话**时写入 conversation
+    （群消息不适用——群不是「差事会话」）。归属 owner = 发送方 owner。
 
     返回: {msg_id, conversation_id, status, local_id}
     """
@@ -853,6 +930,7 @@ async def route_message(
             mentions=grp_mentions,
             mention_all=grp_mention_all,
             origin_node_id=origin_node_id,
+            origin_session_id=origin_session_id,
         )
 
         members = await list_group_members(db, group_conv_id)
@@ -860,8 +938,6 @@ async def route_message(
             if member.member_id == from_id:
                 continue
             await increment_unread_for(db, group_conv_id, member.member_id)
-
-        await db.commit()
 
         # 会话一等实体·统一受众扇出（doc02 §3.3）：群受众 = 名册每个成员解析出的 owner 集合，
         # emit message.new 瘦事件 + 按 owner push。退役旧 _grp_sync_event 双写（message.sent/
@@ -874,7 +950,7 @@ async def route_message(
         grp_event_content = content
         if grp_mentions or grp_mention_all:
             grp_event_content = {**content, 'mentions': grp_mentions, 'mention_all': grp_mention_all}
-        audience = await _fanout_message_new(
+        audience, deferred_pushes = await _fanout_message_new(
             db,
             grp_sync,
             group,
@@ -887,7 +963,11 @@ async def route_message(
             members=members,
         )
 
+        # R1-08 事务收口：persist_message + 未读自增 + 扇出 sync feed 事件同一事务**单 commit**落库
+        # （删原扇出前的中间 commit——它会把消息落库但 feed 尚未写，crash 即半状态）。
         await db.commit()
+        # 外部 IO 出事务：commit 之后再发实时推送（best-effort，失败靠对端重连 sync 补回）。
+        await _flush_pushes(deferred_pushes)
 
         return {
             'error': False,
@@ -1048,7 +1128,26 @@ async def route_message(
     from_type = _entity_type_str(from_id)
     relation_type = ctx_relation_type or 'social'
 
-    conv = await get_or_create_conversation(db, from_id, from_type, to_id, to_type, relation_type)
+    # doc14 §6.5（E 刀）：差事背景只在**新建** direct 会话时随会话落库（既有会话不覆盖，
+    # 由 get_or_create_conversation 的早退保证）。归属 owner 显式解析发送方主人后落列——
+    # 不从「首条消息发送方」反推（零推断），投影裁剪据此判定。
+    mission_note_owner_id: str | None = None
+    if mission_note:
+        from backend.app.hasn.service import conversation_projection as _cp
+
+        resolved_sender = await _cp._resolve_owner_ids(db, [from_id])
+        mission_note_owner_id = resolved_sender.get(from_id)
+
+    conv = await get_or_create_conversation(
+        db,
+        from_id,
+        from_type,
+        to_id,
+        to_type,
+        relation_type,
+        mission_note=mission_note,
+        mission_note_owner_id=mission_note_owner_id,
+    )
 
     # 5. 持久化
     # doc18 P0：1:1 消息回填 owner_id=收件方 owner（发给分身=该分身 owner，发给人=其本人），
@@ -1067,10 +1166,9 @@ async def route_message(
         local_id=local_id,
         context=context,
         origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
         owner_id=recipient_owner_for_row or None,
     )
-
-    await db.commit()
 
     # 6. 会话一等实体·统一受众扇出（doc02 §3.3）：direct 受众 = 两参与者各自解析出的 owner 集合。
     # - A2A：两分身各解析主人 → 两主人都在受众 → **A2AFIRST/Fix#5「补推发送方」补丁天然消失**；
@@ -1082,7 +1180,7 @@ async def route_message(
     from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
 
     sync_gw = SqlAlchemySyncGateway()
-    audience = await _fanout_message_new(
+    audience, deferred_pushes = await _fanout_message_new(
         db,
         sync_gw,
         conv,
@@ -1092,9 +1190,14 @@ async def route_message(
         content_type=content_type,
         local_id=local_id,
         origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
     )
 
+    # R1-08 事务收口：persist_message + 扇出 sync feed 事件同一事务**单 commit**落库
+    # （删原扇出前的中间 commit——它会把消息落库但 feed 尚未写，crash 即半状态）。
     await db.commit()
+    # 外部 IO 出事务：commit 之后再发实时推送（best-effort，失败靠对端重连 sync 补回）。
+    await _flush_pushes(deferred_pushes)
 
     return {
         'error': False,

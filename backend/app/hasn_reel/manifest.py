@@ -170,7 +170,7 @@ REEL_AI_NATIVE_MANIFEST = {
             'uri_domain': 'reel/projects',  # → hasn://reel/projects/{server_id}（doc08 §3 登记 internal_route 域）
             'open': {'mode': 'internal_route', 'route_template': '/apps/reel/projects/:id'},
             'card': {'verb': '短视频', 'action_label': '打开短视频'},
-            'artifact_kind': 'video',
+            'artifact_kind': 'resource',
         }
     ],
     'capabilities': [

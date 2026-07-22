@@ -113,6 +113,7 @@ from backend.app.hasn.api.v1.app.judge import router as app_judge_router
 from backend.app.hasn.api.v1.app.knowledge import router as app_knowledge_router
 from backend.app.hasn.api.v1.app.owner_memory import router as app_owner_memory_router
 from backend.app.hasn.api.v1.app.platform_config import router as app_platform_config_router
+from backend.app.hasn.api.v1.app.speech_catalog import router as app_speech_catalog_router
 from backend.app.hasn.api.v1.app.suppressed_release import router as app_suppressed_release_router
 from backend.app.hasn_memory.api.router import app_owner_profile_coverage_router
 
@@ -138,6 +139,7 @@ app.include_router(app_knowledge_router, tags=['知识库'])
 app.include_router(app_owner_memory_router, prefix='/owner', tags=['Owner 记忆（主人透明）'])
 app.include_router(app_owner_profile_coverage_router, prefix='/owner', tags=['主人画像完整度（了解主人）'])
 app.include_router(app_platform_config_router, prefix='/platform', tags=['平台默认配置（节点下发）'])
+app.include_router(app_speech_catalog_router, prefix='/speech-catalog', tags=['通用语音模型签名目录（节点下发）'])
 app.include_router(app_suppressed_release_router, tags=['入站门控抑制箱放行'])
 app.include_router(app_judge_router, tags=['通用LLM裁判（出站披露/A2A终止）'])
 app.include_router(agent_scopes_router, tags=['Agent权限管理'])
@@ -317,3 +319,9 @@ artifacts_agent.include_router(agent_hasn_artifacts_router)
 
 artifacts_app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/artifacts/app', tags=['分身产物 用户端'])
 artifacts_app.include_router(app_hasn_artifacts_router)
+
+# --- CI 发布面（Bearer 发布密钥，非 JWT）：离线发布方一键发布语音模型签名目录 ---
+from backend.app.hasn.api.v1.ci.speech_catalog import router as ci_speech_catalog_router
+
+ci = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/ci', tags=['HASN CI 发布面'])
+ci.include_router(ci_speech_catalog_router, prefix='/speech-catalog', tags=['通用语音模型签名目录发布（CI Bearer）'])

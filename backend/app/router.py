@@ -139,6 +139,7 @@ def _load_hasn() -> None:
     from backend.app.hasn.api.router import app as hasn_app
     from backend.app.hasn.api.router import artifacts_agent as hasn_artifacts_agent
     from backend.app.hasn.api.router import artifacts_app as hasn_artifacts_app
+    from backend.app.hasn.api.router import ci as hasn_ci
     from backend.app.hasn.api.router import open_api as hasn_open
     from backend.app.hasn.api.router import v1 as hasn_v1
     from backend.app.hasn.api.router import ws as hasn_ws
@@ -151,6 +152,7 @@ def _load_hasn() -> None:
     router.include_router(hasn_ai_native)        # AI-Native 应用平台 API
     router.include_router(hasn_artifacts_agent)  # 分身产物 Agent API（/api/v1/artifacts/agent）
     router.include_router(hasn_artifacts_app)    # 分身产物 用户端 API（/api/v1/artifacts/app）
+    router.include_router(hasn_ci)               # HASN CI 发布面（Bearer 发布密钥·语音目录）
 
 
 def _load_hasn_community() -> None:
@@ -351,6 +353,20 @@ def _load_hasn_release() -> None:
     router.include_router(hasn_release_ci)
 
 
+def _load_hasn_project() -> None:
+    # 项目管理 project（schema hasn_project，模块 14 doc38）——平台项目·联邦挂靠一级应用，
+    # canonical 前缀 /api/v1/project/*（app=owner 端·agent=Agent JWT·open=公开只读·v1=admin）。
+    from backend.app.hasn_project.api.router import agent as hasn_project_agent
+    from backend.app.hasn_project.api.router import app as hasn_project_app
+    from backend.app.hasn_project.api.router import open_api as hasn_project_open
+    from backend.app.hasn_project.api.router import v1 as hasn_project_v1
+
+    router.include_router(hasn_project_v1)
+    router.include_router(hasn_project_app)
+    router.include_router(hasn_project_agent)
+    router.include_router(hasn_project_open)
+
+
 # 应用名 → loader。改 FBA_DEV_APPS 时用这里的 key（左列）。
 _APP_LOADERS: dict[str, Callable[[], None]] = {
     'task': _load_task,
@@ -382,6 +398,7 @@ _APP_LOADERS: dict[str, Callable[[], None]] = {
     'hasn_diag': _load_hasn_diag,
     'hasn_stock': _load_hasn_stock,
     'hasn_release': _load_hasn_release,
+    'hasn_project': _load_hasn_project,
 }
 
 for _name, _loader in _APP_LOADERS.items():

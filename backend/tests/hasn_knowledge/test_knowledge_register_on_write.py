@@ -2,8 +2,8 @@
 
 守的是产物自动登记铁律（doc31）在知识库的落地：**分身建库/写文档，主人必须在工作会话资源栏
 看得见**。三条不变量：
-1. 建库 → `hasn_artifacts` 出一条 `hasn://knowledge/kbs/{kb_id}` 的 dataset 产物；
-2. 写文档 → 出一条 `hasn://knowledge/documents/{doc_id}` 的 document 产物（库与文档各自独立可见）；
+1. 建库 → `hasn_artifacts` 出一条 `hasn://knowledge/kbs/{kb_id}` 的应用资源产物；
+2. 写文档 → 出一条 `hasn://knowledge/documents/{doc_id}` 的应用资源产物（库与文档各自独立可见）；
 3. 工作会话 id 经 ContextVar 通道（`_hasn_session_id` 由分发入口剥离后落入）绑上产物——
    这是 AI-Native 应用工具面唯一能拿到会话 id 的路（handler 只收 AgentTokenPayload）。
 
@@ -72,8 +72,14 @@ async def test_create_kb_and_write_doc_register_artifacts_with_session(session, 
         kb_artifact = await _artifact_of(session, agent.agent_hasn_id, f'hasn://knowledge/kbs/{kb["id"]}')
         assert kb_artifact is not None, '分身建库必须登记产物，否则工作会话资源栏看不见'
         assert kb_artifact.session_id == work_session_id, '产物必须绑上工作会话，否则挂不进会话资源栏'
-        assert kb_artifact.kind == 'dataset'
+        # doc35 四维分类：`kind`（怎么打开）对应用资源恒为 resource，具体是什么由 `resource_kind` 说；
+        # 从哪个应用来由 `source_app_id` 说。三者都钉死，防止哪天登记回落到别的 descriptor 上。
+        assert kb_artifact.kind == 'resource'
+        assert kb_artifact.resource_kind == 'knowledge.base'
+        assert kb_artifact.source_app_id == 'knowledge'
         assert kb_artifact.owner_hasn_id == owner
+        # doc36 §3.2：建库返回体必须自带 `uri`——此前只有文档有、库没有，分身建完库只拿到裸 id。
+        assert kb['uri'] == f'hasn://knowledge/kbs/{kb["id"]}', '建库返回体必须带库的 hasn:// 深链'
 
         doc = await tool_handlers.handle_knowledge_write_doc(
             session,
@@ -83,7 +89,11 @@ async def test_create_kb_and_write_doc_register_artifacts_with_session(session, 
         doc_artifact = await _artifact_of(session, agent.agent_hasn_id, f'hasn://knowledge/documents/{doc["doc_id"]}')
         assert doc_artifact is not None, '分身写的每篇文档都要独立登记（只登记库=主人不知道产出了什么）'
         assert doc_artifact.session_id == work_session_id
-        assert doc_artifact.kind == 'document'
+        assert doc_artifact.kind == 'resource'
+        assert doc_artifact.resource_kind == 'knowledge.document'
+        assert doc_artifact.source_app_id == 'knowledge'
+        # doc36 §3.2：写文档返回体的 `uri` 经统一 builder 算出（不再是手拼字面量），与登记的地址同源。
+        assert doc['uri'] == f'hasn://knowledge/documents/{doc["doc_id"]}', '写文档返回体必须带文档的 hasn:// 深链'
 
         # 幂等：同一文档再写一次不重复登记（键 = agent + dispatch_id + resource_uri）。
         await tool_handlers.handle_knowledge_write_doc(

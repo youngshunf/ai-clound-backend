@@ -51,6 +51,38 @@ class WorkflowTemplatePublic(SchemaBase):
     graph_spec: dict | None = Field(None, description='图蓝图全量（仅详情返回，列表为 None）')
 
 
+class OwnerCreateTemplateParam(SchemaBase):
+    """主人搭建器建模板入参（自定义场景全页搭建器 → POST /workflow-templates）。
+
+    name + graph_spec 必填；status 二选一（draft 草稿 / active 上架），缺省 draft。
+    其余展示字段可选。service 侧 create_owner_template 过 §6.3 校验后落 source=owner。
+    """
+
+    name: str = Field(description='展示名')
+    graph_spec: dict = Field(description='图蓝图 {nodes:[...], edges:[...]}')
+    domain: str | None = Field(None, description='领域分组 code（非空=场景模板）')
+    tagline: str | None = Field(None, description='一句话标签')
+    description: str | None = Field(None, description='链路详述')
+    sort_order: int | None = Field(None, description='展示排序')
+    icon: str | None = Field(None, description='图标 key')
+    accent: str | None = Field(None, description='主题强调色')
+    status: str | None = Field(None, description='状态 draft（草稿）/active（上架），缺省 draft')
+
+
+class OwnerUpdateTemplateParam(SchemaBase):
+    """主人搭建器改模板入参（PUT /workflow-templates/{key}）——全字段可选，只改显式传入的非 None 值。"""
+
+    name: str | None = Field(None, description='展示名')
+    graph_spec: dict | None = Field(None, description='图蓝图 {nodes:[...], edges:[...]}（传新版即过校验替换）')
+    domain: str | None = Field(None, description='领域分组 code')
+    tagline: str | None = Field(None, description='一句话标签')
+    description: str | None = Field(None, description='链路详述')
+    sort_order: int | None = Field(None, description='展示排序')
+    icon: str | None = Field(None, description='图标 key')
+    accent: str | None = Field(None, description='主题强调色')
+    status: str | None = Field(None, description='状态 draft（草稿）/active（上架）')
+
+
 class CreateWorkflowTemplateParam(SchemaBase):
     """建模板入参（内置 seed / 分身 draft / 测试共用）"""
 
