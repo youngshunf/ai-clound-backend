@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,20 @@ from backend.app.admin.schema.menu import CreateMenuParam, UpdateMenuParam
 class CRUDMenu(CRUDPlus[Menu]):
     """菜单数据库操作类"""
 
+    @staticmethod
+    def _single_menu(result: object) -> Menu | None:
+        """将不带关联加载的查询结果收紧为单个菜单。"""
+        if result is not None and not isinstance(result, Menu):
+            raise TypeError('菜单单模型查询返回了关联结果')
+        return cast(Menu | None, result)
+
+    @staticmethod
+    def _menu_sequence(result: object) -> Sequence[Menu]:
+        """将不带关联加载的查询结果收紧为菜单序列。"""
+        if not isinstance(result, Sequence) or not all(isinstance(item, Menu) for item in result):
+            raise TypeError('菜单列表查询返回了关联结果')
+        return cast(Sequence[Menu], result)
+
     async def get(self, db: AsyncSession, menu_id: int) -> Menu | None:
         """
         获取菜单详情
@@ -19,7 +34,7 @@ class CRUDMenu(CRUDPlus[Menu]):
         :param menu_id: 菜单 ID
         :return:
         """
-        return await self.select_model(db, menu_id)
+        return self._single_menu(await self.select_model(db, menu_id))
 
     async def get_by_title(self, db: AsyncSession, title: str) -> Menu | None:
         """
@@ -29,7 +44,7 @@ class CRUDMenu(CRUDPlus[Menu]):
         :param title: 菜单标题
         :return:
         """
-        return await self.select_model_by_column(db, title=title, type__ne=2)
+        return self._single_menu(await self.select_model_by_column(db, title=title, type__ne=2))
 
     async def get_all(self, db: AsyncSession, title: str | None, status: int | None) -> Sequence[Menu]:
         """
@@ -40,14 +55,15 @@ class CRUDMenu(CRUDPlus[Menu]):
         :param status: 菜单状态
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if title is not None:
             filters['title__like'] = f'%{title}%'
         if status is not None:
             filters['status'] = status
 
-        return await self.select_models_order(db, 'sort', 'asc', **filters)
+        result = await self.select_models_order(db, 'sort', 'asc', **cast(Any, filters))
+        return self._menu_sequence(result)
 
     async def get_sidebar(self, db: AsyncSession, menu_ids: list[int] | None) -> Sequence[Menu]:
         """
@@ -57,12 +73,13 @@ class CRUDMenu(CRUDPlus[Menu]):
         :param menu_ids: 菜单 ID 列表
         :return:
         """
-        filters = {'type__in': [0, 1, 3, 4]}
+        filters: dict[str, Any] = {'type__in': [0, 1, 3, 4]}
 
         if menu_ids:
             filters['id__in'] = menu_ids
 
-        return await self.select_models_order(db, 'sort', 'asc', **filters)
+        result = await self.select_models_order(db, 'sort', 'asc', **cast(Any, filters))
+        return self._menu_sequence(result)
 
     async def create(self, db: AsyncSession, obj: CreateMenuParam) -> None:
         """
@@ -98,7 +115,7 @@ class CRUDMenu(CRUDPlus[Menu]):
 
         return await self.delete_model(db, menu_id)
 
-    async def get_children(self, db: AsyncSession, menu_id: int) -> Sequence[Menu | None]:
+    async def get_children(self, db: AsyncSession, menu_id: int) -> Sequence[Menu]:
         """
         获取子菜单列表
 
@@ -106,7 +123,7 @@ class CRUDMenu(CRUDPlus[Menu]):
         :param menu_id: 菜单 ID
         :return:
         """
-        return await self.select_models(db, parent_id=menu_id)
+        return self._menu_sequence(await self.select_models(db, parent_id=menu_id))
 
 
 menu_dao: CRUDMenu = CRUDMenu(Menu)
