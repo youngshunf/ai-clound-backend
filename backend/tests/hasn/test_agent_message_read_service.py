@@ -37,15 +37,16 @@ _READER = 'h_msgtool_test_group_reader'
 
 
 async def _seed(db, owner_id: str, conversation_id: str, content: dict, content_type: int = 1) -> None:
-    """在当前（未提交）事务里插一条 hasn_messages 行；id 自增 → 插入顺序即 id 升序。"""
+    """在当前（未提交）事务里插一条真实消息；测试夹具用数据库序列提供唯一 conversation_seq。"""
     await db.execute(
         sa.text(
             """
             INSERT INTO public.hasn_messages
-                (conversation_id, owner_id, hasn_id, from_id, sender_hasn_id,
+                (conversation_id, conversation_seq, owner_id, hasn_id, from_id, sender_hasn_id,
                  from_type, to_id, to_type, content_type, content, msg_type, status, created_time)
             VALUES
-                (CAST(:conv AS uuid), :owner, :owner, :from_id, :from_id,
+                (CAST(:conv AS uuid), nextval(pg_get_serial_sequence('public.hasn_messages', 'id')),
+                 :owner, :owner, :from_id, :from_id,
                  2, :owner, 1, :ct, CAST(:content AS jsonb), 'message', 1, now())
             """
         ),
