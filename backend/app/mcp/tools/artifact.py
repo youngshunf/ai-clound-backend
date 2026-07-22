@@ -209,31 +209,32 @@ class ArtifactRecordTool(BaseTool):
         if not body and not asset_id and not resource_uri:
             raise RuntimeError('artifact.record: 必须带 body、asset_id 或 resource_uri 其一（文本走 body 不上传文件）')
 
-        params = RecordArtifactParam(
-            kind=kind,
-            title=_str('title'),
-            summary=_str('summary'),
-            body=body,
-            asset_id=asset_id,
-            resource_uri=resource_uri,
-            origin_ref=_str('origin_ref'),
+        params = RecordArtifactParam.model_validate({
+            'kind': kind,
+            'title': _str('title'),
+            'summary': _str('summary'),
+            'body': body,
+            'asset_id': asset_id,
+            'resource_uri': resource_uri,
+            'origin_ref': _str('origin_ref'),
             # 绑当次工作会话：取系统注入的 `_hasn_session_id`（server.call_tool 已剥进 agent_context，
             # 分身不可伪造）。漏传会让产物只进分身产物 tab、挂不进工作会话资源栏——主人在会话里
             # 看不到分身刚干的活（2026-07-15 实测：record 成功、artifact.get 取得到，资源栏却空）。
-            session_id=agent_context.session_id,
+            'session_id': agent_context.session_id,
             # 本工具**就是**「分身自撰登记」这条通道，来源恒为 agent_note——不由分身自报（doc35 §5）。
             # 旧实现收 source_kind 入参、缺省 'task_result'：前者给了分身一个说谎的旋钮（它可以把
             # 自撰成果标成 upload/external），后者本就不是来源而是产出**场景**（那由 session_id 表达）。
-            source_kind='agent_note',
-            source_tool='hasn.artifact.record',
-        )
+            'source_kind': 'agent_note',
+            'source_tool': 'hasn.artifact.record',
+        })
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
 
         # 写类 → .begin() 自动提交（service 只 flush 不 commit）。
         async with async_db_session.begin() as db:
             artifact_id = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent_context.agent_hasn_id,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 params=params,
             )
         return {'artifact_id': artifact_id}
@@ -252,6 +253,14 @@ def _clamp_page_size(arguments: dict[str, Any]) -> tuple[int, int]:
     page = max(1, page)
     size = max(1, min(size, _LIST_SIZE_MAX))
     return page, size
+
+
+def _require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离数据。"""
+    owner_hasn_id = agent_context.owner_hasn_id
+    if owner_hasn_id is None:
+        raise RuntimeError('artifact: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
 
 
 def _app_filters(arguments: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -341,6 +350,7 @@ class ArtifactListTool(BaseTool):
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         """本分身产物时间线 → list_by_agent（owner+agent 隔离）→ 工具层投影出参（剥 body）。"""
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         page, size = _clamp_page_size(arguments)
         kind = (arguments.get('kind') or '').strip() or None
         session_id = (arguments.get('session_id') or '').strip() or None
@@ -349,7 +359,7 @@ class ArtifactListTool(BaseTool):
         async with async_db_session() as db:
             items, total = await hasn_artifacts_service.list_by_agent(
                 db,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 agent_hasn_id=agent_context.agent_hasn_id,
                 page=page,
                 size=size,
@@ -430,6 +440,7 @@ class ArtifactSearchTool(BaseTool):
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         """关键词搜本分身产物 → list_by_agent(keyword=...) → 同 list 投影出参。"""
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         query = (arguments.get('query') or '').strip()
         if not query:
             raise RuntimeError("artifact.search: 'query' 必填")
@@ -441,7 +452,7 @@ class ArtifactSearchTool(BaseTool):
         async with async_db_session() as db:
             items, total = await hasn_artifacts_service.list_by_agent(
                 db,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 agent_hasn_id=agent_context.agent_hasn_id,
                 page=page,
                 size=size,
@@ -536,13 +547,14 @@ class ArtifactGetTool(BaseTool):
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         """按 owner 隔离取详情（同主人任意分身的产物均可读）→ body 截断投影。"""
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         artifact_id = (arguments.get('artifact_id') or '').strip()
         if not artifact_id:
             raise RuntimeError("artifact.get: 'artifact_id' 必填")
         async with async_db_session() as db:
             detail = await hasn_artifacts_service.get_detail(
                 db,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 artifact_id=artifact_id,
             )
         return _project_detail(detail)

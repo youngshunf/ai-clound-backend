@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from uuid import uuid4
 
 import pytest
@@ -15,7 +16,7 @@ from sqlalchemy import select
 
 from pydantic import ValidationError
 
-from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnConversations
+from backend.app.hasn.model import HasnAgents, HasnArtifactContributions, HasnArtifacts, HasnConversations
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service import hasn_asset_service as asset_mod
 from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService, hasn_artifacts_service
@@ -101,7 +102,7 @@ async def test_record_dedup_and_validation() -> None:
             # 非法 kind → **拒绝**（doc35 §7）。旧行为是静默归一成 'other'：写错了照样落库、
             # 还落成另一类，等到 UI 打不开才发现。现在 Literal 在构造期就炸。
             with pytest.raises(ValidationError):
-                RecordArtifactParam(kind='banana', resource_uri='hasn://deck/d_1')
+                RecordArtifactParam.model_validate({'kind': 'banana', 'resource_uri': 'hasn://deck/d_1'})
         finally:
             await db.rollback()
 
@@ -132,10 +133,10 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                     db,
                     agent_hasn_id=agent,
                     owner_hasn_id=owner,
-                    params=RecordArtifactParam(kind='file', local_path=path, source_kind='runtime_file'),
+                    params=RecordArtifactParam.model_validate(
+                        {'kind': 'file', 'local_path': path, 'source_kind': 'runtime_file'}
+                    ),
                 )
-
-            return
 
             # 四选一第四种：只给 local_path（无 body/asset_id/resource_uri）也能登记。
             # doc35 §3：本体在 local_path 的 .md 归 `file` 而非 `document`——`document` 的语义
@@ -144,16 +145,18 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
-                params=RecordArtifactParam(
-                    kind='file',
-                    title='report.md',
-                    local_path=path,
-                    node_id=node,
-                    session_id=session_id,
-                    source_tool='write_file',
-                    # runtime 原生 write/edit 写的文件（doc35 §5）。
-                    source_kind='runtime_file',
-                    action='create',
+                params=RecordArtifactParam.model_validate(
+                    {
+                        'kind': 'file',
+                        'title': 'report.md',
+                        'local_path': path,
+                        'node_id': node,
+                        'session_id': session_id,
+                        'source_tool': 'write_file',
+                        # runtime 原生 write/edit 写的文件（doc35 §5）。
+                        'source_kind': 'runtime_file',
+                        'action': 'create',
+                    }
                 ),
             )
             assert aid1.startswith('art_')
@@ -164,15 +167,17 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                     db,
                     agent_hasn_id=agent,
                     owner_hasn_id=owner,
-                    params=RecordArtifactParam(
-                        kind='file',
-                        title='report.md',
-                        local_path=path,
-                        node_id=node,
-                        session_id=session_id,
-                        source_tool='patch',
-                        source_kind='runtime_file',
-                        action='update',
+                    params=RecordArtifactParam.model_validate(
+                        {
+                            'kind': 'file',
+                            'title': 'report.md',
+                            'local_path': path,
+                            'node_id': node,
+                            'session_id': session_id,
+                            'source_tool': 'patch',
+                            'source_kind': 'runtime_file',
+                            'action': 'update',
+                        }
                     ),
                 )
                 assert aid_again == aid1
@@ -180,46 +185,61 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
             row = (
                 await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid1))
             ).scalar_one()
-            assert row.local_path == path
+            assert row.local_locator_key == f'legacy-path-v1:{sha256(path.encode("utf-8")).hexdigest()}'
             assert row.node_id == node
-            # action 只进不退：被 update 写了两次，仍是 create（这个文件确实是分身新建的）
-            assert row.action == 'create'
+            contributions = (
+                await db.execute(
+                    select(HasnArtifactContributions.action)
+                    .where(HasnArtifactContributions.artifact_id == aid1)
+                    .order_by(HasnArtifactContributions.id)
+                )
+            ).scalars().all()
+            # 当前态只保存对象；操作历史必须留在不可变参与记录，不能被后续 update 抹掉。
+            assert contributions == ['create', 'update', 'update']
 
             # 改的是既有文件 → 首次登记即 update，保持 update
             aid_edit = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
-                params=RecordArtifactParam(
-                    kind='file',
-                    local_path='/Users/fz/work/existing.py',
-                    node_id=node,
-                    session_id=session_id,
-                    source_tool='patch',
-                    source_kind='runtime_file',
-                    action='update',
-                    source_app_id='imagelab',
+                params=RecordArtifactParam.model_validate(
+                    {
+                        'kind': 'file',
+                        'local_path': '/Users/fz/work/existing.py',
+                        'node_id': node,
+                        'session_id': session_id,
+                        'source_tool': 'patch',
+                        'source_kind': 'runtime_file',
+                        'action': 'update',
+                        'source_app_id': 'imagelab',
+                    }
                 ),
             )
-            edit_row = (
-                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid_edit))
-            ).scalar_one()
-            assert edit_row.action == 'update'
-            # 来源应用落权威列（UI 据此显示应用图标，不再从 source_tool 反推）
-            assert edit_row.source_app_id == 'imagelab'
+            edit_contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions.action, HasnArtifactContributions.source_app_id).where(
+                        HasnArtifactContributions.artifact_id == aid_edit
+                    )
+                )
+            ).one()
+            assert edit_contribution.action == 'update'
+            # 来源应用属于本次参与上下文，UI 据此显示应用图标，不再从 source_tool 反推。
+            assert edit_contribution.source_app_id == 'imagelab'
 
             # 换设备 = 另一条产物（同路径在另一台机器上是另一个文件）
             aid_other_node = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
-                params=RecordArtifactParam(
-                    kind='file',
-                    local_path=path,
-                    node_id=_short_id('node2'),
-                    session_id=session_id,
-                    source_kind='runtime_file',
-                    action='create',
+                params=RecordArtifactParam.model_validate(
+                    {
+                        'kind': 'file',
+                        'local_path': path,
+                        'node_id': _short_id('node2'),
+                        'session_id': session_id,
+                        'source_kind': 'runtime_file',
+                        'action': 'create',
+                    }
                 ),
             )
             assert aid_other_node != aid1
@@ -341,15 +361,17 @@ async def test_legacy_runtime_path_is_normalized_without_response_leak() -> None
                 db,
                 agent_hasn_id=agent,
                 owner_hasn_id=owner,
-                params=RecordArtifactParam(
-                    kind='file',
-                    title='周报.md',
-                    local_path=path,
-                    node_id=node,
-                    source_tool='write_file',
-                    source_kind='runtime_file',
-                    action='update',
-                    source_app_id='knowledge',
+                params=RecordArtifactParam.model_validate(
+                    {
+                        'kind': 'file',
+                        'title': '周报.md',
+                        'local_path': path,
+                        'node_id': node,
+                        'source_tool': 'write_file',
+                        'source_kind': 'runtime_file',
+                        'action': 'update',
+                        'source_app_id': 'knowledge',
+                    }
                 ),
             )
 
@@ -446,8 +468,9 @@ async def test_body_artifact_origin_ref_and_video_kind() -> None:
             )
             assert total == 2
             by_id = {it.artifact_id: it for it in items}
-            assert by_id[aid_doc].body and by_id[aid_doc].body.startswith('# 竞品调研')
-            assert by_id[aid_doc].body and by_id[aid_doc].body.startswith('# 竞品调研')
+            document = by_id[aid_doc]
+            assert document.body is not None
+            assert document.body.startswith('# 竞品调研')
             assert by_id[aid_video].kind == 'video'  # 放行未归一 other
 
             # 不同 owner 反查同一 origin_ref → 隔离为空

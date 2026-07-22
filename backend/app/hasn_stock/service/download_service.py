@@ -17,7 +17,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -122,7 +122,7 @@ def _ssrf_check(url: str, whitelist: set[str]) -> None:
     _reject_private_ip(host)
 
 
-def _kind_and_cap(content_type: str) -> tuple[str, int]:
+def _kind_and_cap(content_type: str) -> tuple[Literal['image', 'video'], int]:
     """按 Content-Type 判媒体类型与大小上限。非 image/video → 拒绝。"""
     ct = (content_type or '').split(';')[0].strip().lower()
     if ct.startswith('image/'):

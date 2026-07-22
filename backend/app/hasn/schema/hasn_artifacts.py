@@ -79,34 +79,34 @@ class RecordArtifactParam(SchemaBase):
         description='产物类型·怎么打开 (resource:应用资源 / document:body 存 markdown / image / video / voice / file)',
     )
     resource_kind: str | None = Field(
-        None,
+        default=None,
         description='应用资源类型（descriptor.resource_kind 原值，如 knowledge.base；仅 kind=resource 时给）',
     )
-    title: str | None = Field(None, description='展示标题')
-    summary: str | None = Field(None, description='简要描述')
-    body: str | None = Field(None, description='文本/markdown 正文直接入库（kind=document 文本产物用，不上传文件）')
-    asset_id: str | None = Field(None, description='关联资产 ID（image/voice/file 主路径）')
-    resource_uri: str | None = Field(None, description='hasn:// 资源 URI（deck/webpage 等无 asset 本体时用）')
-    local_locator_key: str | None = Field(None, description='经节点守卫生成的不可逆本地对象定位键')
-    local_entry_kind: LocalEntryKind | None = Field(None, description='本地条目类型')
-    node_id: str | None = Field(None, description='产出设备节点 ID（给 local_locator_key 时必填）')
-    origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等，按业务反查）')
-    conversation_id: str | None = Field(None, description='来源会话 ID（UUID 字符串）')
-    message_id: int | None = Field(None, description='来源消息 ID')
-    session_id: str | None = Field(None, description='来源本地 runtime session（ULID）')
+    title: str | None = Field(default=None, description='展示标题')
+    summary: str | None = Field(default=None, description='简要描述')
+    body: str | None = Field(default=None, description='文本/markdown 正文直接入库（kind=document 文本产物用，不上传文件）')
+    asset_id: str | None = Field(default=None, description='关联资产 ID（image/voice/file 主路径）')
+    resource_uri: str | None = Field(default=None, description='hasn:// 资源 URI（deck/webpage 等无 asset 本体时用）')
+    local_locator_key: str | None = Field(default=None, description='经节点守卫生成的不可逆本地对象定位键')
+    local_entry_kind: LocalEntryKind | None = Field(default=None, description='本地条目类型')
+    node_id: str | None = Field(default=None, description='产出设备节点 ID（给 local_locator_key 时必填）')
+    origin_ref: str | None = Field(default=None, description='产出所属业务资源（resource:plan:todo:{id} 等，按业务反查）')
+    conversation_id: str | None = Field(default=None, description='来源会话 ID（UUID 字符串）')
+    message_id: int | None = Field(default=None, description='来源消息 ID')
+    session_id: str | None = Field(default=None, description='来源本地 runtime session（ULID）')
     # 本地 transport 应用（reel/film/design/imagelab/publish）走 /artifacts/agent/record 通道、
     # 不经云端 ContextVar 打标，故项目根产出必须把云端权威 project_id 随入参上报（P9-C 项目轴）。
     project_id: str | None = Field(
-        None,
+        default=None,
         description='所属平台项目云端权威 id（hasn_project.id；聚合过滤键，非权限边界）',
     )
-    source_tool: str | None = Field(None, description='产出工具全名（hasn.image.generate）')
-    source_app_id: str | None = Field(None, description='来源应用 ID（deck/imagelab/knowledge…；UI 据此显示应用图标）')
+    source_tool: str | None = Field(default=None, description='产出工具全名（hasn.image.generate）')
+    source_app_id: str | None = Field(default=None, description='来源应用 ID（deck/imagelab/knowledge…；UI 据此显示应用图标）')
     source_kind: ArtifactSourceKind = Field(
         description='产出来源（app_write/platform_tool/runtime_file/agent_note/external_import）',
     )
-    action: ArtifactAction = Field('create', description='产出动作 (create:新增 / update:修改)')
-    dispatch_id: str | None = Field(None, description='派发关联（审计/去重）')
+    action: ArtifactAction = Field(default='create', description='产出动作 (create:新增 / update:修改)')
+    dispatch_id: str | None = Field(default=None, description='派发关联（审计/去重）')
     metadata: dict = Field(default_factory=dict, description='元数据快照（mime/size/width/height 等）')
 
     @model_validator(mode='before')

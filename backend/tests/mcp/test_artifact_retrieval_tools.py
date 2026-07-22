@@ -207,15 +207,17 @@ async def _record(
     from backend.database.db import async_db_session
 
     is_platform_media = kind in ('image', 'video', 'voice')
-    params = RecordArtifactParam(
-        kind=kind,
-        title=title,
-        summary=summary,
-        body=body,
-        asset_id=asset_id,
-        session_id=session_id,
-        source_kind=source_kind or ('platform_tool' if is_platform_media else 'agent_note'),
-        source_tool='hasn.image.generate' if kind == 'image' else 'hasn.artifact.record',
+    params = RecordArtifactParam.model_validate(
+        {
+            'kind': kind,
+            'title': title,
+            'summary': summary,
+            'body': body,
+            'asset_id': asset_id,
+            'session_id': session_id,
+            'source_kind': source_kind or ('platform_tool' if is_platform_media else 'agent_note'),
+            'source_tool': 'hasn.image.generate' if kind == 'image' else 'hasn.artifact.record',
+        }
     )
     async with async_db_session.begin() as db:
         return await hasn_artifacts_service.record(db, agent_hasn_id=agent, owner_hasn_id=owner, params=params)
@@ -224,11 +226,19 @@ async def _record(
 async def _cleanup(owner: str) -> None:
     from sqlalchemy import delete
 
-    from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnHumans
+    from backend.app.hasn.model import (
+        HasnAgents,
+        HasnArtifactContributions,
+        HasnArtifactRegistrationOutbox,
+        HasnArtifacts,
+        HasnHumans,
+    )
     from backend.app.hasn.model.hasn_assets import HasnAssets
     from backend.database.db import async_db_session
 
     async with async_db_session.begin() as db:
+        await db.execute(delete(HasnArtifactRegistrationOutbox).where(HasnArtifactRegistrationOutbox.owner_hasn_id == owner))
+        await db.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
         await db.execute(delete(HasnAssets).where(HasnAssets.owner_hasn_id == owner))
         await db.execute(delete(HasnAgents).where(HasnAgents.owner_id == owner))
