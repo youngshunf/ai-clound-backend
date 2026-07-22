@@ -1,11 +1,13 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
+from pydantic import BaseModel
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.plugin.config.model import Config
-from backend.plugin.config.schema.config import CreateConfigParam, UpdateConfigParam
+from backend.plugin.config.schema.config import CreateConfigParam, UpdateConfigParam, UpdateConfigsParam
 
 
 class CRUDConfig(CRUDPlus[Config]):
@@ -21,7 +23,7 @@ class CRUDConfig(CRUDPlus[Config]):
         """
         return await self.select_model_by_column(db, id=pk)
 
-    async def get_all(self, db: AsyncSession, type: str | None) -> Sequence[Config | None]:
+    async def get_all(self, db: AsyncSession, type: str | None) -> Sequence[Config]:
         """
         通过键名获取参数配置
 
@@ -34,7 +36,7 @@ class CRUDConfig(CRUDPlus[Config]):
         if type is not None:
             filters['type'] = type
 
-        return await self.select_models(db, **filters)
+        return cast('Sequence[Config]', await self.select_models(db, **filters))
 
     async def get_by_key(self, db: AsyncSession, key: str) -> Config | None:
         """
@@ -84,7 +86,7 @@ class CRUDConfig(CRUDPlus[Config]):
         """
         return await self.update_model(db, pk, obj)
 
-    async def bulk_update(self, db: AsyncSession, objs: list[UpdateConfigParam]) -> int:
+    async def bulk_update(self, db: AsyncSession, objs: list[UpdateConfigsParam]) -> int:
         """
         批量更新参数配置
 
@@ -92,7 +94,8 @@ class CRUDConfig(CRUDPlus[Config]):
         :param objs: 批量更新参数配置参数
         :return:
         """
-        return await self.bulk_update_models(db, objs)
+        values: list[BaseModel | dict[str, Any]] = [obj.model_dump() for obj in objs]
+        return await self.bulk_update_models(db, values)
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         """

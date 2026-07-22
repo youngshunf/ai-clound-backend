@@ -36,7 +36,7 @@ class ConfigService:
 
     @staticmethod
     @cached(settings.CACHE_CONFIG_REDIS_PREFIX, key='type')
-    async def get_all(*, db: AsyncSession, type: str | None) -> Sequence[Config | None]:
+    async def get_all(*, db: AsyncSession, type: str | None) -> Sequence[Config]:
         """
         获取所有参数配置
 

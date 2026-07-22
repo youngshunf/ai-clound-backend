@@ -24,7 +24,7 @@ async def get_all_configs(
     db: CurrentSession,
     type: Annotated[str | None, Query(description='参数配置类型')] = None,
 ) -> ResponseSchemaModel[list[GetConfigDetail]]:
-    configs = await config_service.get_all(db=db, type=type)
+    configs = [GetConfigDetail.model_validate(config) for config in await config_service.get_all(db=db, type=type)]
     return response_base.success(data=configs)
 
 
@@ -32,7 +32,7 @@ async def get_all_configs(
 async def get_config(
     db: CurrentSession, pk: Annotated[int, Path(description='参数配置 ID')]
 ) -> ResponseSchemaModel[GetConfigDetail]:
-    config = await config_service.get(db=db, pk=pk)
+    config = GetConfigDetail.model_validate(await config_service.get(db=db, pk=pk))
     return response_base.success(data=config)
 
 
@@ -50,7 +50,7 @@ async def get_configs_paginated(
     type: Annotated[str | None, Query(description='参数配置类型')] = None,
 ) -> ResponseSchemaModel[PageData[GetConfigDetail]]:
     page_data = await config_service.get_list(db=db, name=name, type=type)
-    return response_base.success(data=page_data)
+    return response_base.success(data=PageData[GetConfigDetail].model_validate(page_data))
 
 
 @router.post(
