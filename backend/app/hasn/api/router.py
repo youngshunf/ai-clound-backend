@@ -97,18 +97,10 @@ v1.include_router(admin_hasn_enterprise_invite_code_router, prefix='/enterprise/
 
 # --- 用户端（仅 JWT） ---
 from backend.app.hasn.api.agent_scopes import router as agent_scopes_router
-from backend.app.hasn.api.v1.app.hasn_agent_capabilities import router as app_hasn_agent_capabilities_router
 from backend.app.hasn.api.v1.app.hasn_agent_channel_mirrors import router as app_hasn_agent_channel_mirrors_router
 from backend.app.hasn.api.v1.app.hasn_agents import router as app_hasn_agents_router
-from backend.app.hasn.api.v1.app.hasn_audit_log import router as app_hasn_audit_log_router
 from backend.app.hasn.api.v1.app.hasn_conversations import router as app_hasn_conversations_router
-from backend.app.hasn.api.v1.app.hasn_group_members import router as app_hasn_group_members_router
 from backend.app.hasn.api.v1.app.hasn_groups import router as app_hasn_groups_router
-from backend.app.hasn.api.v1.app.hasn_humans import router as app_hasn_humans_router
-from backend.app.hasn.api.v1.app.hasn_messages import router as app_hasn_messages_router
-from backend.app.hasn.api.v1.app.hasn_notifications import router as app_hasn_notifications_router
-from backend.app.hasn.api.v1.app.hasn_trade_sessions import router as app_hasn_trade_sessions_router
-from backend.app.hasn.api.v1.app.hasn_unread_counts import router as app_hasn_unread_counts_router
 from backend.app.hasn.api.v1.app.judge import router as app_judge_router
 from backend.app.hasn.api.v1.app.knowledge import router as app_knowledge_router
 from backend.app.hasn.api.v1.app.owner_memory import router as app_owner_memory_router
@@ -119,7 +111,6 @@ from backend.app.hasn_memory.api.router import app_owner_profile_coverage_router
 
 app = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/app', tags=['HASN 用户端'])
 
-app.include_router(app_hasn_humans_router, prefix='/humans', tags=['用户管理'])
 app.include_router(app_hasn_agents_router, prefix='/agents', tags=['Agent管理'])
 app.include_router(
     app_hasn_agent_channel_mirrors_router,
@@ -127,14 +118,7 @@ app.include_router(
     tags=['Agent 渠道脱敏摘要跨设备镜像（仅可见性）'],
 )
 app.include_router(app_hasn_conversations_router, prefix='/conversations', tags=['会话管理'])
-app.include_router(app_hasn_messages_router, prefix='/messages', tags=['消息管理'])
-app.include_router(app_hasn_unread_counts_router, prefix='/unread/counts', tags=['未读计数'])
-app.include_router(app_hasn_group_members_router, prefix='/group/members', tags=['群成员管理'])
 app.include_router(app_hasn_groups_router, prefix='/groups', tags=['群组（建群/群管理）'])
-app.include_router(app_hasn_agent_capabilities_router, prefix='/agent/capabilities', tags=['Agent能力'])
-app.include_router(app_hasn_trade_sessions_router, prefix='/trade/sessions', tags=['交易会话'])
-app.include_router(app_hasn_notifications_router, prefix='/notifications', tags=['通知管理'])
-app.include_router(app_hasn_audit_log_router, prefix='/audit/logs', tags=['审计日志'])
 app.include_router(app_knowledge_router, tags=['知识库'])
 app.include_router(app_owner_memory_router, prefix='/owner', tags=['Owner 记忆（主人透明）'])
 app.include_router(app_owner_profile_coverage_router, prefix='/owner', tags=['主人画像完整度（了解主人）'])
@@ -145,45 +129,25 @@ app.include_router(app_judge_router, tags=['通用LLM裁判（出站披露/A2A�
 app.include_router(agent_scopes_router, tags=['Agent权限管理'])
 
 # --- Agent（Agent Key） ---
-from backend.app.hasn.api.v1.agent.hasn_agent_capabilities import router as agent_hasn_agent_capabilities_router
 from backend.app.hasn.api.v1.agent.hasn_agent_profile import router as agent_hasn_agent_profile_router
 from backend.app.hasn.api.v1.agent.hasn_agent_runtime import router as agent_hasn_agent_runtime_router
 from backend.app.hasn.api.v1.agent.hasn_agents import router as agent_hasn_agents_router
-from backend.app.hasn.api.v1.agent.hasn_audit_log import router as agent_hasn_audit_log_router
-from backend.app.hasn.api.v1.agent.hasn_contacts import router as agent_hasn_contacts_router
-from backend.app.hasn.api.v1.agent.hasn_conversations import router as agent_hasn_conversations_router
-from backend.app.hasn.api.v1.agent.hasn_group_members import router as agent_hasn_group_members_router
 from backend.app.hasn.api.v1.agent.hasn_groups import router as agent_hasn_groups_router
-from backend.app.hasn.api.v1.agent.hasn_humans import router as agent_hasn_humans_router
-from backend.app.hasn.api.v1.agent.hasn_messages import router as agent_hasn_messages_router
 from backend.app.hasn.api.v1.agent.hasn_nodes import router as agent_hasn_nodes_router
-from backend.app.hasn.api.v1.agent.hasn_notifications import router as agent_hasn_notifications_router
 from backend.app.hasn.api.v1.agent.hasn_session_artifacts import router as agent_hasn_session_artifacts_router
 from backend.app.hasn.api.v1.agent.hasn_session_events import router as agent_hasn_session_events_router
 from backend.app.hasn.api.v1.agent.hasn_sessions import router as agent_hasn_sessions_router
 from backend.app.hasn.api.v1.agent.hasn_task_run import router as agent_hasn_task_run_router
-from backend.app.hasn.api.v1.agent.hasn_trade_sessions import router as agent_hasn_trade_sessions_router
-from backend.app.hasn.api.v1.agent.hasn_unread_counts import router as agent_hasn_unread_counts_router
 from backend.app.hasn_task.api.v1.agent.skill_bundle import router as agent_hasn_skill_bundle_router
 
 agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/agent', tags=['HASN Agent端'])
 
-agent.include_router(agent_hasn_humans_router, prefix='/humans', tags=['用户管理'])
 agent.include_router(agent_hasn_agents_router, prefix='/agents', tags=['Agent管理'])
 agent.include_router(agent_hasn_agent_profile_router, tags=['Agent Profile（云端权威）'])
 agent.include_router(agent_hasn_agent_runtime_router, prefix='/runtime', tags=['云端 Runtime 派发代理（双形态）'])
-agent.include_router(agent_hasn_contacts_router, prefix='/contacts', tags=['联系人管理'])
-agent.include_router(agent_hasn_conversations_router, prefix='/conversations', tags=['会话管理'])
-agent.include_router(agent_hasn_messages_router, prefix='/messages', tags=['消息管理'])
-agent.include_router(agent_hasn_unread_counts_router, prefix='/unread/counts', tags=['未读计数'])
-agent.include_router(agent_hasn_group_members_router, prefix='/group/members', tags=['群成员管理'])
 agent.include_router(agent_hasn_groups_router, prefix='/groups', tags=['群组（分身只读）'])
-agent.include_router(agent_hasn_agent_capabilities_router, prefix='/agent/capabilities', tags=['Agent能力'])
-agent.include_router(agent_hasn_trade_sessions_router, prefix='/trade/sessions', tags=['交易会话'])
 # 保留：legacy 任务调度协议 task-result 上报 + run 读取（Agent JWT）；任务 CRUD 已收口 hasn_task 应用
 agent.include_router(agent_hasn_task_run_router, prefix='/hasn/task/runs', tags=['任务执行记录-任务执行记录'])
-agent.include_router(agent_hasn_notifications_router, prefix='/notifications', tags=['通知管理'])
-agent.include_router(agent_hasn_audit_log_router, prefix='/audit/logs', tags=['审计日志'])
 agent.include_router(agent_hasn_nodes_router, prefix='/hasn/nodess', tags=['HASN Node 主-HASN Node 主'])
 agent.include_router(
     agent_hasn_skill_bundle_router,

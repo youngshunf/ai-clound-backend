@@ -40,11 +40,6 @@ CRUD_CASES = (
         'id__in',
     ),
     (
-        'backend.app.hasn.crud.crud_hasn_contacts',
-        'CRUDHasnContacts',
-        'id__in',
-    ),
-    (
         'backend.app.hasn.crud.crud_hasn_conversations',
         'CRUDHasnConversations',
         'id__in',
@@ -284,31 +279,10 @@ GENERATED_API_MODULES = (
     'backend.app.hasn.api.v1.open.hasn_notifications',
     'backend.app.hasn.api.v1.open.hasn_trade_sessions',
     'backend.app.hasn.api.v1.open.hasn_unread_counts',
-    'backend.app.hasn.api.v1.agent.hasn_agent_capabilities',
-    'backend.app.hasn.api.v1.agent.hasn_agents',
-    'backend.app.hasn.api.v1.agent.hasn_audit_log',
-    'backend.app.hasn.api.v1.agent.hasn_contacts',
-    'backend.app.hasn.api.v1.agent.hasn_conversations',
-    'backend.app.hasn.api.v1.agent.hasn_group_members',
-    'backend.app.hasn.api.v1.agent.hasn_humans',
-    'backend.app.hasn.api.v1.agent.hasn_messages',
-    'backend.app.hasn.api.v1.agent.hasn_node_bindings',
     'backend.app.hasn.api.v1.agent.hasn_nodes',
-    'backend.app.hasn.api.v1.agent.hasn_notifications',
     'backend.app.hasn.api.v1.agent.hasn_owner_api_keys',
-    'backend.app.hasn.api.v1.agent.hasn_trade_sessions',
-    'backend.app.hasn.api.v1.agent.hasn_unread_counts',
-    'backend.app.hasn.api.v1.app.hasn_agent_capabilities',
-    'backend.app.hasn.api.v1.app.hasn_audit_log',
-    'backend.app.hasn.api.v1.app.hasn_group_members',
-    'backend.app.hasn.api.v1.app.hasn_humans',
-    'backend.app.hasn.api.v1.app.hasn_messages',
-    'backend.app.hasn.api.v1.app.hasn_node_bindings',
     'backend.app.hasn.api.v1.app.hasn_nodes',
-    'backend.app.hasn.api.v1.app.hasn_notifications',
     'backend.app.hasn.api.v1.app.hasn_owner_api_keys',
-    'backend.app.hasn.api.v1.app.hasn_trade_sessions',
-    'backend.app.hasn.api.v1.app.hasn_unread_counts',
 )
 
 
@@ -541,75 +515,3 @@ async def test_generated_api_endpoints_delegate_to_services(
     methods = [method for method, _ in service.calls]
     assert methods
     assert all(method in {'get', 'get_list', 'create', 'update', 'delete'} for method in methods)
-
-
-@pytest.mark.parametrize(
-    'module_name',
-    (
-        'backend.app.hasn.api.v1.admin.hasn_agent_capabilities',
-        'backend.app.hasn.api.v1.agent.hasn_agent_capabilities',
-        'backend.app.hasn.api.v1.app.hasn_agent_capabilities',
-    ),
-)
-@pytest.mark.asyncio
-async def test_generated_api_update_and_delete_fail_when_service_changes_no_rows(
-    monkeypatch: pytest.MonkeyPatch,
-    module_name: str,
-) -> None:
-    module = importlib.import_module(module_name)
-    service_names = _module_service_names(module)
-    assert len(service_names) == 1
-
-    service = CapturingGeneratedService(count=0)
-    monkeypatch.setattr(module, service_names[0], service)
-
-    endpoints = [
-        value
-        for name, value in vars(module).items()
-        if inspect.iscoroutinefunction(value)
-        and (
-            name.startswith(('update', 'delete', 'agent_update', 'agent_delete'))
-        )
-    ]
-    assert endpoints
-
-    for endpoint in endpoints:
-        await _call_standard_endpoint(endpoint)
-
-    assert {method for method, _ in service.calls} <= {'get', 'update', 'delete'}
-
-
-@pytest.mark.parametrize(
-    'module_name',
-    (
-        'backend.app.hasn.api.v1.agent.hasn_agent_capabilities',
-        'backend.app.hasn.api.v1.app.hasn_agent_capabilities',
-    ),
-)
-@pytest.mark.asyncio
-async def test_generated_api_owner_mismatch_raises_forbidden(
-    monkeypatch: pytest.MonkeyPatch,
-    module_name: str,
-) -> None:
-    module = importlib.import_module(module_name)
-    service_names = _module_service_names(module)
-    assert len(service_names) == 1
-
-    service = CapturingGeneratedService(owner_user_id=202)
-    monkeypatch.setattr(module, service_names[0], service)
-
-    guarded = [
-        value
-        for name, value in vars(module).items()
-        if inspect.iscoroutinefunction(value)
-        and (
-            name.startswith(('get_', 'update_', 'delete_', 'agent_get', 'agent_update', 'agent_delete'))
-        )
-        and 'pk' in inspect.signature(value).parameters
-    ]
-    assert guarded
-
-    for endpoint in guarded:
-        with pytest.raises(Exception) as exc_info:
-            await _call_standard_endpoint(endpoint, owner_user_id=101)
-        assert exc_info.value.__class__.__name__ == 'ForbiddenError'

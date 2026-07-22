@@ -5,21 +5,15 @@
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Path, Request
+from fastapi import APIRouter, Body, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.schema.hasn_conversations import (
-    CreateHasnConversationsParam,
-    GetHasnConversationsDetail,
-    UpdateHasnConversationsParam,
-)
 from backend.app.hasn.service.hasn_conversations_service import hasn_conversations_service
 from backend.common.exception import errors
-from backend.common.pagination import DependsPagination, PageData
-from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
+from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSessionTransaction
 
 
 class EnsureConversationRequest(BaseModel):
@@ -154,88 +148,3 @@ async def ensure_conversation(
     )
 
     return response_base.success(data=response_data)
-
-
-@router.get(
-    '',
-    summary='获取我的HASN 会话列表',
-    dependencies=[DependsJwtAuth, DependsPagination],
-)
-async def get_my_hasn_conversationss(
-    request: Request,
-    db: CurrentSession,
-) -> ResponseSchemaModel[PageData[GetHasnConversationsDetail]]:
-    page_data = await hasn_conversations_service.get_list(db=db)
-    return response_base.success(data=page_data)
-
-
-@router.post(
-    '',
-    summary='创建HASN 会话',
-    dependencies=[DependsJwtAuth],
-)
-async def create_my_hasn_conversations(
-    request: Request,
-    db: CurrentSessionTransaction,
-    obj: CreateHasnConversationsParam,
-) -> ResponseModel:
-    result = await hasn_conversations_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
-
-
-@router.get(
-    '/{pk}',
-    summary='获取HASN 会话详情',
-    dependencies=[DependsJwtAuth],
-)
-async def get_my_hasn_conversations(
-    request: Request,
-    db: CurrentSession,
-    pk: Annotated[int, Path(description='HASN 会话 ID')],
-) -> ResponseSchemaModel[GetHasnConversationsDetail]:
-    hasn_conversations = await hasn_conversations_service.get(db=db, pk=pk)
-    if hasn_conversations.user_id != request.user.id:
-        raise errors.ForbiddenError(msg='无权访问该HASN 会话')
-    return response_base.success(data=hasn_conversations)
-
-
-@router.put(
-    '/{pk}',
-    summary='更新HASN 会话',
-    dependencies=[DependsJwtAuth],
-)
-async def update_my_hasn_conversations(
-    request: Request,
-    db: CurrentSessionTransaction,
-    pk: Annotated[int, Path(description='HASN 会话 ID')],
-    obj: UpdateHasnConversationsParam,
-) -> ResponseModel:
-    user_id = request.user.id
-    hasn_conversations = await hasn_conversations_service.get(db=db, pk=pk)
-    if hasn_conversations.user_id != user_id:
-        raise errors.ForbiddenError(msg='无权修改该HASN 会话')
-    count = await hasn_conversations_service.update(db=db, pk=pk, obj=obj)
-    if count > 0:
-        return response_base.success()
-    return response_base.fail()
-
-
-@router.delete(
-    '/{pk}',
-    summary='删除HASN 会话',
-    dependencies=[DependsJwtAuth],
-)
-async def delete_my_hasn_conversations(
-    request: Request,
-    db: CurrentSessionTransaction,
-    pk: Annotated[int, Path(description='HASN 会话 ID')],
-) -> ResponseModel:
-    user_id = request.user.id
-    hasn_conversations = await hasn_conversations_service.get(db=db, pk=pk)
-    if hasn_conversations.user_id != user_id:
-        raise errors.ForbiddenError(msg='无权删除该HASN 会话')
-    from backend.app.hasn.schema.hasn_conversations import DeleteHasnConversationsParam
-    count = await hasn_conversations_service.delete(db=db, obj=DeleteHasnConversationsParam(pks=[pk]))
-    if count > 0:
-        return response_base.success()
-    return response_base.fail()
