@@ -120,6 +120,10 @@ packages = ["backend"]
 [tool.hatch.version]
 path = "backend/__init__.py"
 
+[[tool.mypy.overrides]]
+module = ["asyncpg"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 120
 preview = true
