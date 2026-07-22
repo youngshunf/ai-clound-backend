@@ -43,7 +43,7 @@ class JwtAuthMiddleware(AuthenticationBackend):
     """JWT 认证中间件"""
 
     @staticmethod
-    def auth_exception_handler(conn: HTTPConnection, exc: AuthenticationError) -> Response:
+    def auth_exception_handler(conn: HTTPConnection, exc: StarletteAuthenticationError) -> Response:
         """
         覆盖内部认证错误处理
 
@@ -51,8 +51,13 @@ class JwtAuthMiddleware(AuthenticationBackend):
         :param exc: 认证错误对象
         :return:
         """
-        status_code = int(exc.code) if exc.code else 401
-        return MsgSpecJSONResponse(content={'code': status_code, 'msg': exc.msg, 'data': None}, status_code=status_code)
+        if isinstance(exc, AuthenticationError):
+            status_code = int(exc.code) if exc.code else 401
+            msg = exc.msg
+        else:
+            status_code = 401
+            msg = str(exc) or '认证失败'
+        return MsgSpecJSONResponse(content={'code': status_code, 'msg': msg, 'data': None}, status_code=status_code)
 
     @staticmethod
     def extract_token(request: HTTPConnection) -> str | None:

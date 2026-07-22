@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from jose import jwt
+from starlette.authentication import AuthenticationError as StarletteAuthenticationError
 from starlette.authentication import BaseUser
 from starlette.requests import Request
 
@@ -126,3 +127,13 @@ def test_owner_jwt_user_implements_starlette_user_contract() -> None:
     assert user.is_authenticated is True
     assert user.identity == '42'
     assert user.display_name == '主人'
+
+
+def test_auth_exception_handler_accepts_starlette_base_error() -> None:
+    """认证框架传入基类异常时，中间件仍返回标准 401 响应。"""
+    response = JwtAuthMiddleware.auth_exception_handler(
+        _make_request('/api/v1/admin', None),
+        StarletteAuthenticationError('认证失败'),
+    )
+
+    assert response.status_code == 401
