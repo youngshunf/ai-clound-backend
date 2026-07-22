@@ -29,6 +29,7 @@ from backend.app.hasn_growth.service.outreach_service import growth_outreach_ser
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
+from backend.common.exception import errors
 from backend.common.log import log
 
 if TYPE_CHECKING:
@@ -54,6 +55,17 @@ async def _scope(db: AsyncSession, agent: AgentTokenPayload, view: str = 'team')
 
 def _int(payload: dict[str, Any], key: str) -> int:
     return int(payload[key])
+
+
+ToolResult = dict[str, Any] | list[dict[str, Any]]
+
+
+def _required_text(payload: dict[str, Any], key: str) -> str:
+    """取工具的必填非空文本字段，handler 被直接调用时也保持契约。"""
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise errors.RequestError(msg=f'{key}不能为空')
+    return value
 
 
 # ---------------- 采集（hasn.growth.collect.*） ----------------
@@ -202,7 +214,7 @@ async def handle_growth_enrich_company(
 
 async def handle_growth_lead_search(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
-) -> dict[str, Any]:
+) -> ToolResult:
     return await growth_funnel_service.search_leads(
         db,
         user_id=agent.owner_user_id,
@@ -286,7 +298,7 @@ async def handle_growth_customer_get(
 
 async def handle_growth_customer_timeline(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
-) -> dict[str, Any]:
+) -> ToolResult:
     scope = await _scope(db, agent)
     return await growth_funnel_service.customer_timeline(
         db, user_id=agent.owner_user_id, customer_id=_int(input_payload, 'customer_id'), scope=scope
@@ -321,8 +333,8 @@ async def handle_growth_activity_log(
         db,
         user_id=agent.owner_user_id,
         customer_id=customer_id,
-        kind=input_payload.get('kind'),
-        content=input_payload.get('content'),
+        kind=_required_text(input_payload, 'kind'),
+        content=_required_text(input_payload, 'content'),
         opportunity_id=input_payload.get('opportunity_id'),
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
@@ -391,12 +403,13 @@ async def handle_growth_outreach_send(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
+    channel = _required_text(input_payload, 'channel')
     data = await growth_outreach_service.send_outreach(
         db,
         user_id=agent.owner_user_id,
         customer_id=_int(input_payload, 'customer_id'),
-        channel=input_payload.get('channel'),
-        content=input_payload.get('content'),
+        channel=channel,
+        content=_required_text(input_payload, 'content'),
         agent_id=agent.agent_hasn_id,
         subject=input_payload.get('subject'),
         intent_note=input_payload.get('intent_note'),
@@ -411,14 +424,14 @@ async def handle_growth_outreach_send(
             agent=agent,
             message_id=int(data['id']),
             customer_id=_int(input_payload, 'customer_id'),
-            channel=input_payload.get('channel'),
+            channel=channel,
         )
     return data
 
 
 async def handle_growth_outreach_status(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
-) -> dict[str, Any]:
+) -> ToolResult:
     scope = await _scope(db, agent)
     return await growth_outreach_service.list_customer_outreach(
         db,
@@ -440,7 +453,7 @@ async def handle_growth_opportunity_create(
         db,
         user_id=agent.owner_user_id,
         customer_id=_int(input_payload, 'customer_id'),
-        name=input_payload.get('name'),
+        name=_required_text(input_payload, 'name'),
         amount=input_payload.get('amount'),
         # 镜像 CreateOpportunityParam 默认值（currency='CNY'/stage='contacted'）——service 不自带默认，
         # 工具入参省略时须补齐，否则 None 触发「非法商机阶段」。
@@ -457,11 +470,12 @@ async def handle_growth_opportunity_update_stage(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
+    stage = _required_text(input_payload, 'stage')
     data = await growth_opportunity_service.update_stage(
         db,
         user_id=agent.owner_user_id,
         opportunity_id=_int(input_payload, 'opportunity_id'),
-        stage=input_payload.get('stage'),
+        stage=stage,
         note=input_payload.get('note'),
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
@@ -471,7 +485,7 @@ async def handle_growth_opportunity_update_stage(
         db,
         agent=agent,
         opportunity_id=_int(input_payload, 'opportunity_id'),
-        stage=input_payload.get('stage'),
+        stage=stage,
         name=data.get('name'),
     )
     return data
@@ -480,11 +494,12 @@ async def handle_growth_opportunity_update_stage(
 async def handle_growth_deal_close(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
+    result = _required_text(input_payload, 'result')
     data = await growth_opportunity_service.close_deal(
         db,
         user_id=agent.owner_user_id,
         opportunity_id=_int(input_payload, 'opportunity_id'),
-        result=input_payload.get('result'),
+        result=result,
         amount=input_payload.get('amount'),
         close_note=input_payload.get('close_note'),
         lost_reason=input_payload.get('lost_reason'),
@@ -495,7 +510,7 @@ async def handle_growth_deal_close(
         db,
         agent=agent,
         opportunity_id=_int(input_payload, 'opportunity_id'),
-        result=input_payload.get('result'),
+        result=result,
         amount=data.get('amount'),
         name=data.get('name'),
     )

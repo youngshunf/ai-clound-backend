@@ -321,7 +321,7 @@ class GrowthFunnelService:
 
     @staticmethod
     async def dismiss_lead(
-        db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str
+        db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str | None
     ) -> dict[str, Any]:
         """用户忽略该线索（ref.status=dismissed + dismiss_reason，落引用层不污染公共池行；列表/检索不再返回）。"""
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
