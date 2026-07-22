@@ -47,8 +47,9 @@ def build_card_body(
     来源既可能是服务号（app/system/external），也可能是 Agent 本身（agent 源不建服务号，
     卡片落「主人 ⇄ agent」会话）。source_kind 必须是 CardSourceKind 合法值。
     """
-    data = notif.data or {}
-    target = data.get('target') or {}
+    data: dict[str, Any] = notif.data if isinstance(notif.data, dict) else {}
+    target_value = data.get('target')
+    target: dict[str, Any] = target_value if isinstance(target_value, dict) else {}
     fields: list[dict[str, str]] = []
     if data.get('preview'):
         fields.append({'label': '摘要', 'value': str(data['preview'])[:200]})
@@ -70,7 +71,7 @@ def build_card_body(
             'style': 'primary',
         }
 
-    body = {
+    body: dict[str, Any] = {
         'schema_version': 'hasn.card/0.1',
         'title': notif.title or '新通知',
         'description': notif.body or None,
