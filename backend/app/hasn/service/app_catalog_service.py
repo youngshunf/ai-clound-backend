@@ -4,8 +4,8 @@
 
 职责：
 - ``ensure_catalog_seeded``：从 ``app_catalog_registry`` 幂等播种 ``hasn_app_catalog``（迁移 M2）。
-  **只插入缺失行，绝不回写已存在行的 display/价格**——这是「代码不覆盖运营改动」的关键
-  （区别于 manifest 的 hash 自愈逻辑，见设计 §6.1）。
+  **不回写已存在行的 display/价格**——这是「代码不覆盖运营改动」的关键（区别于 manifest 的
+  hash 自愈逻辑，见设计 §6.1）；仅对已废弃且会绕过公共基础设施的配置执行窄范围安全迁移。
 - ``sweep_expired_entitlements``：把 ``expires_at < now`` 的 active 权益置 expired（设计 §5.4 定时兜底）。
 
 生成的 ``hasn_app_catalog_service`` / ``hasn_app_entitlement_service`` 负责 Admin CRUD；
@@ -312,15 +312,14 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
             'packages': {},
         },
     },
-    # 短视频合成（reel，源自 MoneyPrinterTurbo，doc19 §6.4）：合成式管线，**只有 llm（文案/搜索词）
-    # + tts（配音）+ stt（字幕，可选）三类模型，绝无 image/video 生成模型**（不烧视频 token）。
+    # 短视频合成（reel，源自 MoneyPrinterTurbo，doc19 §6.4）：应用只选择 llm（文案/搜索词）和
+    # 统一语音 voice_id；TTS 模型/本地或网关路由由全局 SpeechService/PDC 权威决定。
     # 出厂给出**完整骨架 + 示例值**（管理端「编辑配置」开箱即见结构），运营/主人改值即可：
     #   - models.llm 是 **failover 列表**（首个为主、其余兜底）：默认 agnes-2.0-flash 为主
     #     + deepseek-v4-pro / qwen3.7-plus 兜底（均为 new-api 已开通的真实文案模型，reel **无需开通
     #     视频渠道**）。agnes 单渠道偶发 503/超时（vllm 自建上游 ~10s/次），有兜底则自动切换不硬失败；
-    #     运营可在管理端「编辑配置」换主/增删兜底；models.stt 默认空（字幕默认走 edge 时间戳，
-    #     subtitle_provider=whisper 时才下 whisper 模型）。
-    #   - tts 默认 edge（免费微软），可切 platform（走 hasn.voice.synthesize / owner 配额）。
+    #     运营可在管理端「编辑配置」换主/增删兜底。
+    #   - tts 只保留统一语音 catalog 的 voice_id，禁止应用选择 provider 或模型。
     #   - material.platform_keys 是平台统一兜底素材 key（M2）：**留空占位，运营在管理端填**，绝不硬编码
     #     真实 key；owner 可在应用内自填（多 key 轮换避限流，doc19 §6.3）。
     #   - engine.bundled_deps=['ffmpeg','imagemagick']（reel 特有本地合成依赖，M3/N5）；engine manifest
@@ -328,17 +327,9 @@ _CATALOG_DEFAULT_CONFIG: dict[str, dict] = {
     'reel': {
         'models': {
             'llm': ['agnes-2.0-flash', 'deepseek-v4-pro', 'qwen3.7-plus'],
-            'tts': ['edge'],
-            'stt': [],
         },
         'tts': {
-            'tts_provider': 'edge',
-            'voice_name': 'zh-CN-XiaoxiaoNeural',
-            'voice_rate': 1.0,
-        },
-        'subtitle': {
-            'subtitle_provider': 'edge',
-            'whisper_model_size': 'large-v3',
+            'voice_id': 'Cherry',
         },
         'material': {
             'video_source': 'pexels',
@@ -455,19 +446,40 @@ def _catalog_row_from_app(app: App) -> dict:
     }
 
 
+def _normalize_reel_speech_config(config_json: dict | None) -> dict:
+    """删除 Reel 已废弃的应用级语音路由，只保留运营选择的统一 voice_id。"""
+    normalized = dict(config_json or {})
+    models = dict(normalized.get('models') or {})
+    models.pop('tts', None)
+    models.pop('stt', None)
+    normalized['models'] = models
+    legacy_tts = normalized.get('tts')
+    voice_id = legacy_tts.get('voice_id') if isinstance(legacy_tts, dict) else None
+    normalized['tts'] = {'voice_id': voice_id.strip() if isinstance(voice_id, str) and voice_id.strip() else 'Cherry'}
+    normalized.pop('subtitle', None)
+    return normalized
+
+
 async def ensure_catalog_seeded(db: AsyncSession) -> int:
-    """幂等播种 catalog：仅插入缺失的 app_id 行，已存在行原样保留。
+    """幂等播种 catalog；已存在行保留运营字段，仅清除 Reel 已废弃的语音旁路配置。
 
     返回新插入的行数。可在部署 reconcile / 测试夹具中调用。
     """
-    existing = set((await db.execute(sa.select(HasnAppCatalog.app_id))).scalars().all())
+    existing_rows = list((await db.execute(sa.select(HasnAppCatalog))).scalars().all())
+    existing = {row.app_id: row for row in existing_rows}
+    changed = False
+    if reel := existing.get('reel'):
+        normalized = _normalize_reel_speech_config(reel.config_json)
+        if normalized != reel.config_json:
+            reel.config_json = normalized
+            changed = True
     inserted = 0
     for app in app_catalog_registry.list():
         if app.id in existing:
             continue
         db.add(HasnAppCatalog(**_catalog_row_from_app(app)))
         inserted += 1
-    if inserted:
+    if inserted or changed:
         await db.flush()
     return inserted
 

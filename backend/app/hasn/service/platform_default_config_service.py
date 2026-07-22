@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 
 from typing import TYPE_CHECKING
 
@@ -38,8 +39,8 @@ DEFAULT_PLATFORM_CONFIG: dict = {
     'node': {
         'media': {
             'image_models': ['gpt-image-2', 'dall-e-3'],
-            'tts_models': ['tts-1', 'tts-1-hd'],
-            'stt_models': ['whisper-1'],
+            'tts_models': ['qwen3-tts-flash', 'qwen3-tts-instruct-flash'],
+            'stt_models': ['qwen3-asr-flash'],
             # 视频默认空：视频渠道尚需运营在 new-api 开通后，经 Admin 平台默认配置下发，
             # 否则填非空模型名会让分身 hasn.video.generate 直接撞 503 无渠道。
             'video_models': [],
@@ -66,6 +67,27 @@ DEFAULT_PLATFORM_CONFIG: dict = {
         'sensitive_scanner_enabled': True,
     },
 }
+
+_LEGACY_TTS_GATEWAY_MODELS = ['tts-1', 'tts-1-hd']
+_LEGACY_STT_GATEWAY_MODELS = ['whisper-1']
+
+
+def normalize_legacy_speech_gateway_defaults(config_json: dict) -> dict:
+    """兼容升级旧版语音网关出厂值，同时保留所有运营自定义模型链。
+
+    仅当列表与旧出厂值完全相等时才迁移。复制后再修改，避免污染 SQLAlchemy JSONB
+    属性的变更跟踪状态；PDC 在下次 Admin 保存时会自然持久化新值。
+    """
+    normalized = deepcopy(config_json)
+    node = normalized.get('node')
+    media = node.get('media') if isinstance(node, dict) else None
+    if not isinstance(media, dict):
+        return normalized
+    if media.get('tts_models') == _LEGACY_TTS_GATEWAY_MODELS:
+        media['tts_models'] = list(DEFAULT_PLATFORM_CONFIG['node']['media']['tts_models'])
+    if media.get('stt_models') == _LEGACY_STT_GATEWAY_MODELS:
+        media['stt_models'] = list(DEFAULT_PLATFORM_CONFIG['node']['media']['stt_models'])
+    return normalized
 
 
 def compute_revision(config_json: dict) -> str:
@@ -113,6 +135,7 @@ class PlatformDefaultConfigService:
 
         row = await self._get_row(db)
         raw = row.config_json if (row and row.config_json) else DEFAULT_PLATFORM_CONFIG
+        raw = normalize_legacy_speech_gateway_defaults(raw)
         config = PlatformDefaultConfig.model_validate(raw)
         config = config.model_copy(update={'app_configs': await get_all_app_configs(db)})
         dumped = config.model_dump(mode='json')

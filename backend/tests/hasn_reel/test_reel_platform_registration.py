@@ -10,8 +10,8 @@
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 == {reel:write, reel:export}
   （= hasn-node crates/hasn-mcp/src/reel.rs capability_scopes() 契约，见 test_local_tool_scope_alignment）。
 - App 形态（local_tool / 手动安装 / 瘦引擎页 /apps/reel；瘦引擎应用按需装，内容创作在创作运营）。
-- catalog 出厂源：sort_order / default_agent_type(content_operator) / config_json（仅 llm+tts+stt 三类模型，
-  无 image/video；bundled_deps=ffmpeg/imagemagick）。
+- catalog 出厂源：sort_order / default_agent_type(content_operator) / config_json（仅应用文案 llm；
+  语音由全局 SpeechService/PDC 路由；bundled_deps=ffmpeg/imagemagick）。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等；
   ``ensure_catalog_seeded`` 幂等播种 reel catalog 行（重复跑不重复插）+ config_json 经 app_configs 下发。
 
@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -41,6 +42,7 @@ from backend.app.hasn.service.app_catalog_service import (
     _CATALOG_AGENT_DEFAULTS,
     _CATALOG_DEFAULT_CONFIG,
     _CATALOG_SORT_ORDER,
+    _normalize_reel_speech_config,
     ensure_catalog_seeded,
     get_all_app_configs,
     get_catalog,
@@ -56,6 +58,9 @@ _EXPORT_TOOLS = {'artifact.upload'}
 _READ_SCOPE = 'reel:read'
 _WRITE_SCOPE = 'reel:write'
 _EXPORT_SCOPE = 'reel:export'
+_REEL_UNIFIED_SPEECH_MIGRATION = (
+    Path(__file__).resolve().parents[2] / 'sql/hasn/migrations/2026-07-15-reel-unified-speech.sql'
+).read_text(encoding='utf-8')
 
 
 # ============================ 纯 Python（无 DB）============================
@@ -160,22 +165,37 @@ def test_reel_workbench_app_shape() -> None:
 
 
 def test_reel_catalog_factory_source() -> None:
-    """catalog 出厂源（app_catalog_service）：sort_order / content_operator 默认承接 / config_json 三类模型。"""
+    """catalog 出厂源：sort_order / content_operator 默认承接，语音配置只留 voice_id。"""
     assert _CATALOG_SORT_ORDER['reel'] == 57
     assert _CATALOG_AGENT_DEFAULTS['reel'][0] == 'content_operator'
     assert _CATALOG_AGENT_DEFAULTS['reel'][1]  # 业务提示词非空
 
     cfg = _CATALOG_DEFAULT_CONFIG['reel']
-    # 合成式：只有 llm（文案/搜索词）+ tts（配音）+ stt（字幕，可选）三类模型，绝无 image/video 生成模型。
-    assert set(cfg['models'].keys()) == {'llm', 'tts', 'stt'}
+    # 合成式应用只选文案 LLM；语音模型/路由归全局 SpeechService/PDC。
+    assert set(cfg['models'].keys()) == {'llm'}
     assert 'image_t2i' not in cfg['models'] and 'video' not in cfg['models']
     # reel 特有本地合成依赖。
     assert cfg['engine']['bundled_deps'] == ['ffmpeg', 'imagemagick']
-    # TTS 默认 edge 免费；字幕默认 edge（不下 whisper）。
-    assert cfg['tts']['tts_provider'] == 'edge'
-    assert cfg['subtitle']['subtitle_provider'] == 'edge'
+    assert cfg['tts'] == {'voice_id': 'Cherry'}
+    assert 'subtitle' not in cfg
     # 素材平台兜底 key 留空占位（绝不硬编码真实 key）。
     assert cfg['material']['platform_keys'] == {'pexels': [], 'pixabay': []}
+
+
+def test_reel_speech_config_normalization_preserves_non_speech_settings() -> None:
+    """升级自愈只删应用级语音路由，保留运营的文案模型、素材和 voice_id。"""
+    normalized = _normalize_reel_speech_config({
+        'models': {'llm': ['operator-llm'], 'tts': ['edge'], 'stt': ['whisper']},
+        'tts': {'tts_provider': 'edge', 'voice_id': ' Serena ', 'voice_rate': 1.2},
+        'subtitle': {'subtitle_provider': 'whisper'},
+        'material': {'video_source': 'pixabay'},
+    })
+
+    assert normalized == {
+        'models': {'llm': ['operator-llm']},
+        'tts': {'voice_id': 'Serena'},
+        'material': {'video_source': 'pixabay'},
+    }
 
 
 # ============================ 真实 PostgreSQL ============================
@@ -226,8 +246,8 @@ async def test_reel_catalog_seeded_idempotent(db: AsyncSession) -> None:
     assert cat.default_agent_type == 'content_operator'
     assert cat.default_mount is False  # install_policy=manual → 不自动挂载
     assert cat.access_type == 'free'
-    # config_json：三类模型 + bundled_deps（合成式无 image/video）。
-    assert set(cat.config_json['models'].keys()) == {'llm', 'tts', 'stt'}
+    # config_json：应用只选文案 LLM；语音归全局 SpeechService/PDC。
+    assert set(cat.config_json['models'].keys()) == {'llm'}
     assert cat.config_json['engine']['bundled_deps'] == ['ffmpeg', 'imagemagick']
 
     # 二次播种：不重复插（reel 行仍唯一）。
@@ -241,10 +261,43 @@ async def test_reel_catalog_seeded_idempotent(db: AsyncSession) -> None:
 @pytest.mark.asyncio
 async def test_reel_config_in_app_configs_downlink(db: AsyncSession) -> None:
     """app_configs.reel 经 get_all_app_configs 聚合下发（daemon 据此从 app_configs.reel 读配置注入 sidecar）。"""
+    existing = await get_catalog(db, app_id='reel')
+    expected_platform_keys = (
+        existing.config_json.get('material', {}).get('platform_keys')
+        if existing is not None
+        else {'pexels': [], 'pixabay': []}
+    )
     await ensure_catalog_seeded(db)
     app_configs = await get_all_app_configs(db)
     assert 'reel' in app_configs, 'reel 未进 app_configs 下发聚合'
     reel_cfg = app_configs['reel']
-    assert set(reel_cfg['models'].keys()) == {'llm', 'tts', 'stt'}
-    assert reel_cfg['tts']['tts_provider'] == 'edge'
-    assert reel_cfg['material']['platform_keys'] == {'pexels': [], 'pixabay': []}
+    assert set(reel_cfg['models'].keys()) == {'llm'}
+    assert reel_cfg['tts'] == {'voice_id': 'Cherry'}
+    assert reel_cfg['material']['platform_keys'] == expected_platform_keys
+
+
+@pytest.mark.asyncio
+async def test_reel_unified_speech_migration_removes_provider_bypass(db: AsyncSession) -> None:
+    """真实 PG 执行升级迁移：保留 LLM/素材和已有 voice_id，删除应用级语音 provider/model 选择。"""
+    await ensure_catalog_seeded(db)
+    cat = await get_catalog(db, app_id='reel')
+    assert cat is not None
+    cat.config_json = {
+        'models': {'llm': ['agnes'], 'tts': ['edge'], 'stt': ['whisper']},
+        'tts': {
+            'tts_provider': 'edge',
+            'voice_name': 'legacy-edge-voice',
+            'voice_rate': 1.1,
+            'voice_id': 'Serena',
+        },
+        'subtitle': {'subtitle_provider': 'whisper'},
+        'material': {'video_source': 'pexels'},
+    }
+    await db.flush()
+    await db.execute(sa.text(_REEL_UNIFIED_SPEECH_MIGRATION))
+    await db.refresh(cat)
+
+    assert cat.config_json['models'] == {'llm': ['agnes']}
+    assert cat.config_json['tts'] == {'voice_id': 'Serena'}
+    assert 'subtitle' not in cat.config_json
+    assert cat.config_json['material'] == {'video_source': 'pexels'}

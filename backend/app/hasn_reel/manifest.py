@@ -132,7 +132,7 @@ _GENERATE_PROPERTIES = {
     'content_id': {'type': ['integer', 'null'], 'description': 'creator 内容项 id（归属 + 取脚本/素材上下文，doc19 §5.5）'},
     'video_aspect': {'type': ['string', 'null'], 'description': '画面比例（9:16 竖 / 16:9 横 / 1:1 方）'},
     'video_clip_duration': {'type': ['integer', 'null'], 'minimum': 1, 'description': '单片段时长（秒）'},
-    'voice_name': {'type': ['string', 'null'], 'description': '配音音色（edge/平台 TTS）'},
+    'voice_name': {'type': ['string', 'null'], 'description': '统一语音 catalog/profile 的 voice id'},
     'voice_rate': {'type': ['number', 'null'], 'description': '语速'},
     'subtitle_enabled': {'type': ['boolean', 'null'], 'description': '是否加字幕'},
     'bgm_type': {'type': ['string', 'null'], 'description': 'BGM 类型/曲目'},
