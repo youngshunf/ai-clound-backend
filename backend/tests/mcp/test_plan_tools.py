@@ -194,6 +194,20 @@ async def test_todo_create_requires_notes_for_agent_actor() -> None:
     assert res.get('error') == 'notes_required'
 
 
+@pytest.mark.asyncio(loop_scope='module')
+async def test_plan_tool_rejects_missing_owner_identity() -> None:
+    """主人身份缺失时拒绝访问主人隔离的计划数据。"""
+    ctx = AgentContext(
+        hasn_id='a_ownerless_plan_tool',
+        owner_id=1,
+        agent_status='active',
+        metadata={},
+        session_uuid='amk_ownerless_plan_tool',
+    )
+    with pytest.raises(RuntimeError, match='缺少 owner_hasn_id'):
+        await _tool('hasn.plan.goal.list').execute(ctx, {})
+
+
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio(loop_scope='module')
 async def test_goal_and_todo_roundtrip_real_db() -> None:
