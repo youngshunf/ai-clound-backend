@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,23 @@ from backend.app.billing.schema.subscription_tier import CreateSubscriptionTierP
 
 
 class CRUDSubscriptionTier(CRUDPlus[SubscriptionTier]):
+    async def get_by_tier_name(
+        self,
+        db: AsyncSession,
+        tier_name: str,
+        *,
+        app_code: str,
+        enabled: bool | None = None,
+    ) -> SubscriptionTier | None:
+        """按等级标识读取单个订阅配置，不支持关联查询结果。"""
+        filters: dict[str, Any] = {'tier_name': tier_name, 'app_code': app_code}
+        if enabled is not None:
+            filters['enabled'] = enabled
+        result = await self.select_model_by_column(db, **filters)
+        if result is not None and not isinstance(result, SubscriptionTier):
+            raise TypeError('订阅等级单模型查询返回了关联结果')
+        return cast(SubscriptionTier | None, result)
+
     async def get(self, db: AsyncSession, pk: int) -> SubscriptionTier | None:
         """
         获取订阅等级配置
@@ -17,7 +35,10 @@ class CRUDSubscriptionTier(CRUDPlus[SubscriptionTier]):
         :param pk: 订阅等级配置 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        result = await self.select_model(db, pk)
+        if result is not None and not isinstance(result, SubscriptionTier):
+            raise TypeError('订阅等级主键查询返回了关联结果')
+        return cast(SubscriptionTier | None, result)
 
     async def get_select(self) -> Select:
         """获取订阅等级配置列表查询表达式"""
@@ -30,7 +51,10 @@ class CRUDSubscriptionTier(CRUDPlus[SubscriptionTier]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        result = await self.select_models(db)
+        if not all(isinstance(item, SubscriptionTier) for item in result):
+            raise TypeError('订阅等级列表查询返回了关联结果')
+        return cast(Sequence[SubscriptionTier], result)
 
     async def create(self, db: AsyncSession, obj: CreateSubscriptionTierParam) -> None:
         """

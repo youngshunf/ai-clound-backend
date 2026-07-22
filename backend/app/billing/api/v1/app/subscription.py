@@ -15,6 +15,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.billing.model import SubscriptionTier
 from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_credit_transaction import credit_transaction_dao
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
@@ -360,6 +361,15 @@ def _calculate_remaining_value(
     return remaining_value, remaining_days
 
 
+def _subscription_price(tier: SubscriptionTier, subscription_type: str) -> Decimal:
+    """读取订阅价格；年度价格缺失表示配置违反已启用年度订阅的不变量。"""
+    if subscription_type == 'yearly':
+        if tier.yearly_price is None:
+            raise ValueError('年度订阅缺少年度价格配置')
+        return tier.yearly_price
+    return tier.monthly_price
+
+
 @router.post(
     '/upgrade/calculate',
     summary='计算升级价格',
@@ -375,7 +385,9 @@ async def calculate_upgrade_price(
     user_id = request.user.id
     app_code = request.state.app_code
 
-    target_tier = await subscription_tier_dao.select_model_by_column(db, tier_name=body.tier_name, enabled=True, app_code=app_code)
+    target_tier = await subscription_tier_dao.get_by_tier_name(
+        db, body.tier_name, app_code=app_code, enabled=True,
+    )
     if not target_tier:
         return response_base.success(data=UpgradePriceResult(
             can_upgrade=False,
@@ -394,7 +406,9 @@ async def calculate_upgrade_price(
     subscription = await credit_service.get_or_create_subscription(db, user_id, app_code)
     current_subscription_type = getattr(subscription, 'subscription_type', 'monthly') or 'monthly'
 
-    current_tier_config = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
+    current_tier_config = await subscription_tier_dao.get_by_tier_name(
+        db, subscription.tier, app_code=app_code,
+    )
     current_price = Decimal(0)
     if current_tier_config:
         if current_subscription_type == 'yearly' and current_tier_config.yearly_price:
@@ -464,7 +478,7 @@ async def calculate_upgrade_price(
             current_subscription_type=current_subscription_type,
         ))
 
-    original_price = target_tier.yearly_price if body.subscription_type == 'yearly' else target_tier.monthly_price
+    original_price = _subscription_price(target_tier, body.subscription_type)
 
     subscription_end = getattr(subscription, 'subscription_end_date', None)
     remaining_value, remaining_days = _calculate_remaining_value(
@@ -507,7 +521,9 @@ async def upgrade_subscription(
     user_id = request.user.id
     app_code = request.state.app_code
 
-    target_tier = await subscription_tier_dao.select_model_by_column(db, tier_name=body.tier_name, enabled=True, app_code=app_code)
+    target_tier = await subscription_tier_dao.get_by_tier_name(
+        db, body.tier_name, app_code=app_code, enabled=True,
+    )
     if not target_tier:
         return response_base.fail(data=PaymentResult(
             success=False,
@@ -518,7 +534,9 @@ async def upgrade_subscription(
     subscription = await credit_service.get_or_create_subscription(db, user_id, app_code)
     current_subscription_type = getattr(subscription, 'subscription_type', 'monthly') or 'monthly'
 
-    current_tier_config = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
+    current_tier_config = await subscription_tier_dao.get_by_tier_name(
+        db, subscription.tier, app_code=app_code,
+    )
     current_price = Decimal(0)
     if current_tier_config:
         if current_subscription_type == 'yearly' and current_tier_config.yearly_price:
@@ -563,7 +581,7 @@ async def upgrade_subscription(
             message=f'{target_tier.display_name} 暂不支持年度订阅',
         ))
 
-    original_price = target_tier.yearly_price if body.subscription_type == 'yearly' else target_tier.monthly_price
+    original_price = _subscription_price(target_tier, body.subscription_type)
 
     subscription_end = getattr(subscription, 'subscription_end_date', None)
     remaining_value, _remaining_days = _calculate_remaining_value(
@@ -676,7 +694,7 @@ async def purchase_credits(
     user_id = request.user.id
     app_code = request.state.app_code
 
-    package = await credit_package_dao.select_model(db, pk=body.package_id)
+    package = await credit_package_dao.get(db, body.package_id)
     if not package or not package.enabled:
         return response_base.fail(data=PaymentResult(
             success=False,
