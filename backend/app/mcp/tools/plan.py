@@ -180,8 +180,12 @@ async def _h_triage(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_today(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    day_start = _parse_dt(args['start'])
+    day_end = _parse_dt(args['end'])
+    if day_start is None or day_end is None:
+        raise ValueError('今日概览必须提供完整的 start 和 end 时间范围')
     return await plan_service.today_overview(
-        db, owner=ctx.owner_hasn_id, day_start=_parse_dt(args['start']), day_end=_parse_dt(args['end'])
+        db, owner=ctx.owner_hasn_id, day_start=day_start, day_end=day_end
     )
 
 
