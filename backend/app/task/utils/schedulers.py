@@ -10,11 +10,11 @@ from datetime import datetime, timedelta
 from multiprocessing.util import Finalize
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from celery import schedules
-from celery._state import get_current_app
-from celery.beat import ScheduleEntry, Scheduler, event_t
-from celery.signals import beat_init
-from celery.utils.log import get_logger
+from celery import schedules  # type: ignore[import-untyped]
+from celery._state import get_current_app  # type: ignore[import-untyped]
+from celery.beat import ScheduleEntry, Scheduler, event_t  # type: ignore[import-untyped]
+from celery.signals import beat_init  # type: ignore[import-untyped]
+from celery.utils.log import get_logger  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.exc import DatabaseError, InterfaceError
 
@@ -206,32 +206,45 @@ class ModelEntry(ScheduleEntry):
         async with async_db_session() as db:
             if isinstance(normalized_schedule, schedules.schedule):
                 interval_schedule = cast(_IntervalSchedule, normalized_schedule)
-                every = max(interval_schedule.run_every.total_seconds(), 0)
-                spec = {
-                    'name': name,
-                    'type': TaskSchedulerType.INTERVAL.value,
-                    'interval_every': every,
-                    'interval_period': PeriodType.SECONDS.value,
-                }
-                stmt = select(TaskScheduler).filter_by(**spec)
+                every = max(math.ceil(interval_schedule.run_every.total_seconds()), 0)
+                stmt = select(TaskScheduler).filter_by(
+                    name=name,
+                    type=TaskSchedulerType.INTERVAL,
+                    interval_every=every,
+                    interval_period=PeriodType.SECONDS,
+                )
                 query = await db.execute(stmt)
                 obj = query.scalars().first()
                 if not obj:
-                    obj = TaskScheduler(**CreateTaskSchedulerParam(task=task, **spec).model_dump())
+                    obj = TaskScheduler(
+                        **CreateTaskSchedulerParam(
+                            name=name,
+                            task=task,
+                            type=TaskSchedulerType.INTERVAL,
+                            interval_every=every,
+                            interval_period=PeriodType.SECONDS,
+                        ).model_dump()
+                    )
             elif isinstance(normalized_schedule, schedules.crontab):
                 crontab_schedule = cast(_CrontabSchedule, normalized_schedule)
                 crontab = f'{crontab_schedule._orig_minute} {crontab_schedule._orig_hour} {crontab_schedule._orig_day_of_month} {crontab_schedule._orig_month_of_year} {crontab_schedule._orig_day_of_week}'  # noqa: E501
                 crontab_verify(crontab)
-                spec = {
-                    'name': name,
-                    'type': TaskSchedulerType.CRONTAB.value,
-                    'crontab': crontab,
-                }
-                stmt = select(TaskScheduler).filter_by(**spec)
+                stmt = select(TaskScheduler).filter_by(
+                    name=name,
+                    type=TaskSchedulerType.CRONTAB,
+                    crontab=crontab,
+                )
                 query = await db.execute(stmt)
                 obj = query.scalars().first()
                 if not obj:
-                    obj = TaskScheduler(**CreateTaskSchedulerParam(task=task, **spec).model_dump())
+                    obj = TaskScheduler(
+                        **CreateTaskSchedulerParam(
+                            name=name,
+                            task=task,
+                            type=TaskSchedulerType.CRONTAB,
+                            crontab=crontab,
+                        ).model_dump()
+                    )
             else:
                 raise errors.NotFoundError(msg=f'暂不支持的计划类型：{normalized_schedule}')
 
