@@ -284,7 +284,8 @@ class ClawHubSyncService:
             process = list(filtered_skills)
         else:
             for skill_data in filtered_skills:
-                existing = existing_by_slug.get(skill_data.get('slug'))
+                raw_slug = skill_data.get('slug')
+                existing = existing_by_slug.get(raw_slug) if isinstance(raw_slug, str) else None
                 if existing is not None and self._is_version_unchanged(
                     existing, skill_data, latest_versions, body_skill_ids
                 ):
@@ -329,7 +330,8 @@ class ClawHubSyncService:
                     )
                     log.warning(paused_reason)
                     break
-            slug = skill_data.get('slug')
+            raw_slug = skill_data.get('slug')
+            slug = raw_slug if isinstance(raw_slug, str) and raw_slug else None
             try:
                 # SAVEPOINT：单技能失败只回滚自己，不污染整批事务（async session
                 # 一旦 flush 出错会进入 PendingRollback，savepoint 隔离避免连累后续）。
@@ -337,8 +339,8 @@ class ClawHubSyncService:
                     await self._sync_skill(
                         db,
                         skill_data,
-                        existing=existing_by_slug.get(slug),
-                        prepared=prepared_map.get(slug),
+                        existing=existing_by_slug.get(slug) if slug else None,
+                        prepared=prepared_map.get(slug) if slug else None,
                         translate_body=translate_body,
                     )
                 synced_count += 1
@@ -505,9 +507,12 @@ class ClawHubSyncService:
             return {}
         prepared: dict[str, dict[str, Any]] = {}
         pending_items: list[dict[str, Any]] = []
-        pending_slugs: list[str | None] = []
+        pending_slugs: list[str] = []
         for s in skills:
-            slug = s.get('slug')
+            raw_slug = s.get('slug')
+            if not isinstance(raw_slug, str) or not raw_slug:
+                continue
+            slug = raw_slug
             existing = existing_by_slug.get(slug)
             scanned = {
                 'name': s.get('displayName') or slug,
@@ -529,15 +534,19 @@ class ClawHubSyncService:
         if pending_items:
             batch_size = int(getattr(settings, 'TRANSLATION_BATCH_SIZE', 10) or 10)
             concurrency = int(getattr(settings, 'MARKETPLACE_CLAWHUB_TRANSLATE_CONCURRENCY', 3) or 3)
+            results: list[dict[str, Any] | None] = [None] * len(pending_items)
             try:
-                results = await translation_service.batch_translate_skill_metadata(
+                translated_results = await translation_service.batch_translate_skill_metadata(
                     pending_items,
                     batch_size=batch_size,
                     concurrency=concurrency,
                 )
+                for index, translated in enumerate(translated_results):
+                    if index >= len(results):
+                        break
+                    results[index] = translated
             except Exception as e:
                 log.warning(f"[clawhub] 批量元数据翻译失败，回退逐条翻译：{e}")
-                results = [None] * len(pending_items)
             prepared.update({slug: result for slug, result in zip(pending_slugs, results) if slug and result})
 
         log.info(
@@ -1074,7 +1083,7 @@ class ClawHubSyncService:
         # Use keyword matching (LLM classification disabled due to API issues)
         slug = self._map_category_from_text(name + ' ' + description, category_slugs)
         # 归一兜底：把命中结果收口到权威 12 领域 slug（防止旧 slug 漏网）。
-        return normalize_category(slug)
+        return normalize_category(slug) or 'other'
 
     def _map_category_from_text(self, text: str, available_categories: list[str]) -> str:
         """
