@@ -12,6 +12,8 @@ from backend.app.hasn.model import HasnAgents
 from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.app.hasn.schema.hasn_agents import (
     AgentRuntimeConfig,
+    AgentHeartbeatRequest,
+    AgentHeartbeatResponse,
     AgentSnapshot,
     AgentSyncRequest,
     AgentSyncResponse,
@@ -1254,16 +1256,14 @@ class HasnAgentProfileService:
         self,
         db: AsyncSession,
         hasn_id: str,
-        request: 'AgentHeartbeatRequest',
+        request: AgentHeartbeatRequest,
         *,
         user_id: int | None = None,
-    ) -> 'AgentHeartbeatResponse':
+    ) -> AgentHeartbeatResponse:
         """更新 agent 心跳状态。"""
         from datetime import datetime
 
         import sqlalchemy as sa
-
-        from backend.app.hasn.schema.hasn_agents import AgentHeartbeatResponse
 
         result = await db.execute(sa.select(HasnAgents).where(HasnAgents.hasn_id == hasn_id).limit(1))
         agent = result.scalar_one_or_none()
@@ -1352,12 +1352,12 @@ async def _resolve_skill_display(
             MarketplaceSkill.description_en,
         ).where(MarketplaceSkill.skill_id.in_(ids))
     )
-    for row in mk_result.all():
-        name = (row.name_zh or row.name_en or row.name or '').strip()
+    for marketplace_row in mk_result.all():
+        name = (marketplace_row.name_zh or marketplace_row.name_en or marketplace_row.name or '').strip()
         if not name:
             continue
-        desc = row.description_zh or row.description_en
-        display[row.skill_id] = {'name': name, 'description': desc.strip() if desc else None}
+        desc = marketplace_row.description_zh or marketplace_row.description_en
+        display[marketplace_row.skill_id] = {'name': name, 'description': desc.strip() if desc else None}
     # 个人技能：owner 内 scope（hasn_id），按 slug 或 personal_skill_id 命中；不覆盖市场命中项
     ps_result = await db.execute(
         sa.select(
@@ -1374,16 +1374,16 @@ async def _resolve_skill_display(
         )
     )
     id_set = set(ids)
-    for row in ps_result.all():
-        name = (row.name or '').strip()
+    for personal_skill_row in ps_result.all():
+        name = (personal_skill_row.name or '').strip()
         if not name:
             continue
         entry: dict[str, str | None] = {
             'name': name,
-            'description': row.description.strip() if row.description else None,
+            'description': personal_skill_row.description.strip() if personal_skill_row.description else None,
         }
         # skills 里可能用 slug 或 personal_skill_id 引用，命中哪个补哪个键
-        for candidate in (row.slug, row.personal_skill_id):
+        for candidate in (personal_skill_row.slug, personal_skill_row.personal_skill_id):
             if candidate and candidate in id_set and candidate not in display:
                 display[candidate] = entry
     return display
@@ -1559,7 +1559,7 @@ class HasnAgentsService:
                 subscription=False,
                 interaction_count=0,
                 custom_permissions={},
-                nickname=obj.name,
+                nickname=obj.display_name,
                 connected_at=timezone.now(),
             )
             .on_conflict_do_nothing(
@@ -1572,7 +1572,7 @@ class HasnAgentsService:
 
         agent_token = await create_agent_access_token(
             agent_hasn_id=obj.hasn_id,
-            agent_name=obj.name,
+            agent_name=obj.display_name,
             owner_hasn_id=obj.owner_id,
             owner_user_id=user_id,
         )
@@ -1580,7 +1580,7 @@ class HasnAgentsService:
         return {
             'hasn_id': obj.hasn_id,
             'owner_id': obj.owner_id,
-            'name': obj.name,
+            'name': obj.display_name,
             'access_token': agent_token.access_token,
             # scopes 已退役（实施102 S0）：恒空占位，兼容旧 daemon 反序列化。
             'scopes': [],
