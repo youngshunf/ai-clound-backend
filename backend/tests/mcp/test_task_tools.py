@@ -30,7 +30,7 @@ def _tool(name: str) -> Any:
     raise AssertionError(f'task 工具未注册: {name}')
 
 
-def _agent_ctx(owner_hasn_id: str, agent_hasn_id: str = 'a_task_tools_test') -> AgentContext:
+def _agent_ctx(owner_hasn_id: str | None, agent_hasn_id: str = 'a_task_tools_test') -> AgentContext:
     return AgentContext(
         hasn_id=agent_hasn_id,
         owner_id=1,
@@ -150,7 +150,17 @@ def test_task_tool_schema_matches_ai_native_manifest() -> None:
             return [contract_shape(item) for item in value]
         return value
 
-    capabilities = {item['mcp_name']: item for item in HASN_TASK_AI_NATIVE_MANIFEST['capabilities']}
+    raw_capabilities = HASN_TASK_AI_NATIVE_MANIFEST['capabilities']
+    if not isinstance(raw_capabilities, list):
+        raise AssertionError('任务应用 manifest 的 capabilities 必须是列表')
+    capabilities: dict[str, dict[str, Any]] = {}
+    for item in raw_capabilities:
+        if not isinstance(item, dict):
+            raise AssertionError('任务应用 manifest 的 capability 必须是对象')
+        mcp_name = item.get('mcp_name')
+        if not isinstance(mcp_name, str):
+            raise AssertionError('任务应用 manifest 的 capability 缺少 mcp_name')
+        capabilities[mcp_name] = item
     for tool in TASK_TOOLS:
         manifest_schema = capabilities[tool.name]['input_schema']
         assert contract_shape(manifest_schema['properties']) == contract_shape(tool.input_schema['properties']), (
@@ -167,6 +177,13 @@ def test_task_scopes_in_aggregated_catalog() -> None:
 
     assert SCOPE_CATALOG['task:manage']['domain'] == 'task'
     assert SCOPE_CATALOG['task:run']['domain'] == 'task'
+
+
+@pytest.mark.asyncio
+async def test_task_tool_rejects_missing_owner_identity() -> None:
+    """主人身份缺失时必须在调用任务服务前失败，不能查询或修改其他主人的数据。"""
+    with pytest.raises(RuntimeError, match='缺少 owner_hasn_id'):
+        await _tool('hasn.task.list').execute(_agent_ctx(None), {})
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
