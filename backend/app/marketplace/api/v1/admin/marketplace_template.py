@@ -31,7 +31,7 @@ async def get_marketplace_template_paginated(
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetMarketplaceTemplateDetail]]:
     page_data = await marketplace_template_service.get_list(db=db)
-    return response_base.success(data=page_data)
+    return response_base.success(data=PageData[GetMarketplaceTemplateDetail].model_validate(page_data))
 
 
 @router.get(
@@ -48,7 +48,7 @@ async def get_marketplace_template(
         db=db,
         resource_id=resource_id,
     )
-    return response_base.success(data=marketplace_template)
+    return response_base.success(data=GetMarketplaceTemplateDetail.model_validate(marketplace_template))
 
 
 @router.post(
@@ -65,7 +65,7 @@ async def create_marketplace_template(
     obj: CreateMarketplaceTemplateParam,
 ) -> ResponseSchemaModel[GetMarketplaceTemplateDetail]:
     template = await marketplace_template_service.admin_create(db=db, obj=obj)
-    return response_base.success(data=template)
+    return response_base.success(data=GetMarketplaceTemplateDetail.model_validate(template))
 
 
 @router.put(
@@ -83,7 +83,7 @@ async def update_marketplace_template(
     obj: UpdateMarketplaceTemplateParam,
 ) -> ResponseSchemaModel[GetMarketplaceTemplateDetail]:
     template = await marketplace_template_service.admin_update(db=db, resource_id=resource_id, obj=obj)
-    return response_base.success(data=template)
+    return response_base.success(data=GetMarketplaceTemplateDetail.model_validate(template))
 
 
 @router.delete(

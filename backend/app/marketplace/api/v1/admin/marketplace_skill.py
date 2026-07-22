@@ -31,7 +31,7 @@ async def get_marketplace_skill_paginated(
     db: CurrentSession,
 ) -> ResponseSchemaModel[PageData[GetMarketplaceSkillDetail]]:
     page_data = await marketplace_skill_service.get_list(db=db)
-    return response_base.success(data=page_data)
+    return response_base.success(data=PageData[GetMarketplaceSkillDetail].model_validate(page_data))
 
 
 @router.get(
@@ -45,7 +45,7 @@ async def get_marketplace_skill(
     resource_id: Annotated[str, Path(description='技能资源 ID')],
 ) -> ResponseSchemaModel[GetMarketplaceSkillDetail]:
     marketplace_skill = await marketplace_skill_service.get_by_resource_id_admin(db=db, resource_id=resource_id)
-    return response_base.success(data=marketplace_skill)
+    return response_base.success(data=GetMarketplaceSkillDetail.model_validate(marketplace_skill))
 
 
 @router.post(
@@ -62,7 +62,7 @@ async def create_marketplace_skill(
     obj: CreateMarketplaceSkillParam,
 ) -> ResponseSchemaModel[GetMarketplaceSkillDetail]:
     skill = await marketplace_skill_service.admin_create(db=db, obj=obj)
-    return response_base.success(data=skill)
+    return response_base.success(data=GetMarketplaceSkillDetail.model_validate(skill))
 
 
 @router.put(
@@ -80,7 +80,7 @@ async def update_marketplace_skill(
     obj: UpdateMarketplaceSkillParam,
 ) -> ResponseSchemaModel[GetMarketplaceSkillDetail]:
     skill = await marketplace_skill_service.admin_update(db=db, resource_id=resource_id, obj=obj)
-    return response_base.success(data=skill)
+    return response_base.success(data=GetMarketplaceSkillDetail.model_validate(skill))
 
 
 @router.delete(
