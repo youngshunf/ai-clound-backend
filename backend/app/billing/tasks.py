@@ -8,9 +8,10 @@ import math
 
 from datetime import timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-from celery import shared_task
+from celery import shared_task  # type: ignore[import-untyped]
+from sqlalchemy.engine import CursorResult
 from sqlalchemy import and_, select, update
 
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
@@ -65,26 +66,36 @@ async def grant_yearly_subscription_credits() -> str:
         for subscription in subscriptions:
             try:
                 # 获取等级配置
-                tier = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier)
+                tier = await subscription_tier_dao.get_by_tier_name(
+                    db, subscription.tier, app_code=subscription.app_code,
+                )
                 if not tier:
                     log.warning(f'[YearlyGrant] 用户 {subscription.user_id} 的订阅等级 {subscription.tier} 不存在')
                     error_count += 1
                     continue
 
                 monthly_credits = tier.monthly_credits
+                grant_date = subscription.next_grant_date
+                subscription_end = subscription.subscription_end_date
+                if grant_date is None or subscription_end is None:
+                    log.warning(
+                        f'[YearlyGrant] 用户 {subscription.user_id} 的年度订阅缺少下次发放或结束时间，跳过本次发放'
+                    )
+                    error_count += 1
+                    continue
 
                 # 计算下次发放时间和积分有效期
-                next_grant = subscription.next_grant_date + timedelta(days=30)
-                cycle_end = subscription.next_grant_date + timedelta(days=30)
+                next_grant = grant_date + timedelta(days=30)
+                cycle_end = grant_date + timedelta(days=30)
 
                 # 确保不超过订阅结束时间
-                if next_grant > subscription.subscription_end_date:
+                if next_grant > subscription_end:
                     next_grant = None  # 最后一次发放，不再设置下次发放时间
 
                 # 计算发放的月份数（从订阅开始算起）
                 if subscription.subscription_start_date:
                     months_elapsed = (
-                        subscription.next_grant_date - subscription.subscription_start_date
+                        grant_date - subscription.subscription_start_date
                     ).days // 30 + 1
                 else:
                     months_elapsed = 1
@@ -178,7 +189,7 @@ async def check_expired_api_keys() -> str:
             .values(status=ApiKeyStatus.EXPIRED)
         )
         result = await db.execute(stmt)
-        expired_count = result.rowcount
+        expired_count = cast(CursorResult[Any], result).rowcount
 
     result_msg = f'API Key 过期检查完成: {expired_count} 个 Key 已标记为过期'
     log.info(f'[ExpiredKeyCheck] {result_msg}')
@@ -229,7 +240,7 @@ async def expire_overdue_subscriptions() -> str:
             .values(status='expired')
         )
         result = await db.execute(stmt)
-        expired_count = result.rowcount
+        expired_count = cast(CursorResult[Any], result).rowcount
 
     result_msg = f'订阅过期检查完成: {expired_count} 个订阅已标记为过期'
     log.info(f'[ExpiredSubscription] {result_msg}')
@@ -329,7 +340,10 @@ async def _emit_due_reminders(db: AsyncSession, now: datetime, horizon: datetime
         .all()
     )
     for ent in ent_soon:
-        days_left = _days_until(ent.expires_at, now)
+        expires_at = ent.expires_at
+        if expires_at is None:
+            continue
+        days_left = _days_until(expires_at, now)
         if days_left in _EXPIRY_REMINDER_DAYS and ent.subject_id:
             await _emit_expiry_reminder(
                 db,
@@ -358,7 +372,10 @@ async def _emit_due_reminders(db: AsyncSession, now: datetime, horizon: datetime
         .all()
     )
     for sub in sub_soon:
-        days_left = _days_until(sub.subscription_end_date, now)
+        subscription_end = sub.subscription_end_date
+        if subscription_end is None:
+            continue
+        days_left = _days_until(subscription_end, now)
         if days_left in _EXPIRY_REMINDER_DAYS:
             owner_hasn = await _owner_hasn_for_user(db, sub.user_id)
             if owner_hasn:
