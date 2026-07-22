@@ -105,6 +105,7 @@ async def test_resource_create_and_update_keep_one_current_artifact_and_two_cont
             assert len(artifacts) == 1
             assert artifacts[0].artifact_key == 'resource:hasn://deck/deck_phase1'
             assert artifacts[0].title == '二稿'
+            assert str(artifacts[0].project_id) == project_two
             assert len(contributions) == 2
             assert [(row.action, row.agent_hasn_id) for row in contributions] == [
                 ('create', agent_one),

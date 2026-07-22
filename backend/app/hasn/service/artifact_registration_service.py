@@ -102,6 +102,7 @@ class ArtifactRegistrationService:
                 local_locator_key=mutation.local_locator_key,
                 local_entry_kind=mutation.local_entry_kind,
                 node_id=mutation.node_id,
+                project_id=self._uuid_or_none(mutation.project_id),
                 meta_data=mutation.metadata,
                 status='active',
             )
@@ -121,6 +122,8 @@ class ArtifactRegistrationService:
                     'local_locator_key': mutation.local_locator_key,
                     'local_entry_kind': mutation.local_entry_kind,
                     'node_id': mutation.node_id,
+                    # 项目关联只进不退：无项目上下文的后续更新不得抹去已显式挂靠的当前态。
+                    'project_id': func.coalesce(self._uuid_or_none(mutation.project_id), HasnArtifacts.project_id),
                     'metadata': mutation.metadata,
                     'updated_time': func.now(),
                 },
