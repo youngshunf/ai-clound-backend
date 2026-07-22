@@ -21,6 +21,17 @@ from backend.utils.locks import acquire_distributed_reload_lock
 from backend.utils.pattern_validate import is_git_url
 
 
+def _plugin_name_from_filename(filename: str | None) -> str:
+    """从上传文件名提取合法插件名。"""
+    if not filename:
+        raise errors.RequestError(msg='插件文件名非法')
+    name_without_extension = os.path.splitext(os.path.basename(filename))[0].strip()
+    match = re.match(r'^([a-zA-Z0-9_]+)', name_without_extension)
+    if match is None:
+        raise errors.RequestError(msg='插件文件名非法')
+    return match.group()
+
+
 async def _append_env_example(plugin_path: anyio.Path) -> None:
     """
     追加主 .env 文件
@@ -71,9 +82,9 @@ async def install_zip_plugin(file: UploadFile | str) -> str:
         with zipfile.ZipFile(file_bytes) as zf:
             # 校验压缩包
             plugin_namelist = zf.namelist()
-            plugin_dir_name = plugin_namelist[0].split('/')[0]
             if not plugin_namelist:
                 raise errors.RequestError(msg='插件压缩包内容非法')
+            plugin_dir_name = plugin_namelist[0].split('/')[0]
             if (
                 len(plugin_namelist) <= 3
                 or f'{plugin_dir_name}/plugin.toml' not in plugin_namelist
@@ -82,12 +93,7 @@ async def install_zip_plugin(file: UploadFile | str) -> str:
                 raise errors.RequestError(msg='插件压缩包内缺少必要文件')
 
             # 插件是否可安装
-            plugin_name = re.match(
-                r'^([a-zA-Z0-9_]+)',
-                file.split(os.sep)[-1].split('.')[0].strip()
-                if isinstance(file, str)
-                else file.filename.split('.')[0].strip(),
-            ).group()
+            plugin_name = _plugin_name_from_filename(file if isinstance(file, str) else file.filename)
             full_plugin_path = anyio.Path(PLUGIN_DIR / plugin_name)
             if await full_plugin_path.exists():
                 raise errors.ConflictError(msg='此插件已安装')
@@ -139,7 +145,7 @@ async def install_git_plugin(repo_url: str) -> str:
     return repo_name
 
 
-def remove_plugin(plugin_dir: os.PathLike) -> None:
+def remove_plugin(plugin_dir: str | os.PathLike[str]) -> None:
     """
     删除插件
 
@@ -155,7 +161,7 @@ def remove_plugin(plugin_dir: os.PathLike) -> None:
     shutil.rmtree(plugin_dir, onerror=_on_error)
 
 
-def zip_plugin(plugin_dir: os.PathLike, target: os.PathLike | io.BytesIO) -> None:
+def zip_plugin(plugin_dir: str | os.PathLike[str], target: str | os.PathLike[str] | io.BytesIO) -> None:
     """
     zip 压缩插件
 
@@ -164,8 +170,9 @@ def zip_plugin(plugin_dir: os.PathLike, target: os.PathLike | io.BytesIO) -> Non
     :return:
     """
     with zipfile.ZipFile(target, 'w') as zf:
-        plugin_dir_parent = os.path.dirname(plugin_dir)
-        for root, dirs, files in os.walk(plugin_dir):
+        plugin_dir_path = os.fspath(plugin_dir)
+        plugin_dir_parent = os.path.dirname(plugin_dir_path)
+        for root, dirs, files in os.walk(plugin_dir_path):
             dirs[:] = [d for d in dirs if d != '__pycache__']
             for file in files:
                 file_path = os.path.join(root, file)
