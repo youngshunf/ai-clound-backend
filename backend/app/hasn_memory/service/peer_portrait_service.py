@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import sqlalchemy as sa
 
@@ -39,6 +39,22 @@ if TYPE_CHECKING:
 
 # 注入式 LLM completion：messages -> 合成后的画像正文。便于单测打桩（同 owner_memory）。
 LlmComplete = Callable[[list[dict[str, str]]], Awaitable[str]]
+
+
+class _MemoryEventEmitter(Protocol):
+    async def emit_memory_event(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        event_type: str,
+        namespace: str,
+        aggregate_id: str,
+        payload: dict[str, Any],
+        sync_scope_kind: str = 'owner',
+        sync_scope_id: str | None = None,
+        hasn_id: str | None = None,
+    ) -> tuple[int, str]: ...
 
 _SYNTHESIZE_MAX_TOKENS = 1200
 _MAX_FACTS = 200  # 单个 peer 单次合成最多纳入的 active 事实数
@@ -296,7 +312,8 @@ class PeerPortraitService:
             'created_at': int(portrait['created_at']),
             'updated_at': int(portrait['updated_at']),
         }
-        await hasn_sync_service.gateway.emit_memory_event(
+        emitter = cast(_MemoryEventEmitter, hasn_sync_service.gateway)
+        await emitter.emit_memory_event(
             db,
             owner_id=owner_id,
             event_type='memory.peer_portrait.upserted',
