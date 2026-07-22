@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import uuid
 
+from operator import itemgetter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -113,7 +114,7 @@ def build_builtin_template_data(raw: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('缺少 name')
     graph_spec = raw.get('graph_spec')
     if not isinstance(graph_spec, dict):
-        raise ValueError('graph_spec 缺失或不是 mapping')
+        raise TypeError('graph_spec 缺失或不是 mapping')
     # template_uuid：hub 显式声明的端云稳定 id 原样沿用（daemon 镜像/实例化据此对齐）；缺省才本地生成 wft_ 前缀
     template_uuid = str(raw.get('template_uuid') or '').strip() or f'wft_{uuid.uuid4().hex}'
     return {
@@ -144,7 +145,8 @@ def build_builtin_template_data(raw: dict[str, Any]) -> dict[str, Any]:
 def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummary:
     """从图蓝图派生卡片摘要：节点数 / 去重应用数 / 阶段面包屑（按 order）/ 去重人设类型。"""
     spec = graph_spec if isinstance(graph_spec, dict) else {}
-    nodes = spec.get('nodes') if isinstance(spec.get('nodes'), list) else []
+    raw_nodes = spec.get('nodes')
+    nodes: list[Any] = raw_nodes if isinstance(raw_nodes, list) else []
 
     app_union: set[str] = set()
     apps_ordered: list[str] = []  # 去重后应用键·首见序（供卡片按链路顺序渲染应用图标堆）
@@ -167,12 +169,13 @@ def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummar
             seen_agent.add(agent_type)
             agent_types.append(agent_type)
 
-        display = node.get('display') if isinstance(node.get('display'), dict) else {}
+        raw_display = node.get('display')
+        display: dict[str, Any] = raw_display if isinstance(raw_display, dict) else {}
         order = display.get('order')
         label = display.get('step_label') or node.get('name') or node.get('node_key') or ''
         steps.append({'label': label, 'order': order if isinstance(order, int) else idx})
 
-    steps.sort(key=lambda s: s['order'])
+    steps.sort(key=itemgetter('order'))
     return WorkflowTemplateGraphSummary(
         node_count=len(nodes),
         app_count=len(app_union),
@@ -182,7 +185,7 @@ def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummar
     )
 
 
-def validate_graph_spec(graph_spec: Any) -> None:
+def validate_graph_spec(graph_spec: Any) -> None:  # ruff:ignore[complex-structure]
     """§6.3 服务端图蓝图校验护栏（不触库·纯函数·draft/update/publish 共用）。
 
     不合法即抛 `errors.RequestError`，message 指名到具体 node_key / edge / app / kind，
@@ -421,9 +424,7 @@ class WorkflowTemplateService:
         return f'tpl_{base}_{uuid.uuid4().hex}'
 
     @classmethod
-    async def draft_template(
-        cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def draft_template(cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """分身提交模板草案（graph_spec 全量）→ 过 §6.3 校验 → 存 draft/source=agent/owner=本人/version=1。"""
         graph_spec = params.get('graph_spec') or {}
         validate_graph_spec(graph_spec)  # 不合法即抛，message 具体便于分身自修
@@ -448,9 +449,7 @@ class WorkflowTemplateService:
         return _to_public(tpl, include_graph_spec=True)
 
     @classmethod
-    async def create_owner_template(
-        cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def create_owner_template(cls, db: AsyncSession, *, owner_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """主人手动搭建器建模板（source=owner，过 §6.3 校验；status draft/active 二选一）。
 
         「自定义场景」全页搭建器的云端落点：主人自己选应用 / 选人设 / 设提示词 → 拼出 graph_spec
@@ -508,18 +507,14 @@ class WorkflowTemplateService:
                 for k in sorted(known_kinds)
                 if k.split('.', 1)[0] == app.id
             ]
-            apps.append(
-                {
-                    'app_id': app.id,
-                    'name': app.name,
-                    'icon': app.icon,
-                    'resource_kinds': app_kinds,
-                }
-            )
+            apps.append({
+                'app_id': app.id,
+                'name': app.name,
+                'icon': app.icon,
+                'resource_kinds': app_kinds,
+            })
 
-        personas = [
-            {'key': k, 'label': _BUILTIN_PERSONA_LABELS.get(k, k)} for k in _BUILTIN_PERSONA_ORDER
-        ]
+        personas = [{'key': k, 'label': _BUILTIN_PERSONA_LABELS.get(k, k)} for k in _BUILTIN_PERSONA_ORDER]
         artifact_kinds = [{'artifact_kind': k, 'label': v} for k, v in _ARTIFACT_KIND_LABELS.items()]
         domains = await cls._domain_meta(db)
         return {
@@ -530,7 +525,7 @@ class WorkflowTemplateService:
         }
 
     @classmethod
-    async def update_template(
+    async def update_template(  # ruff:ignore[complex-structure]
         cls, db: AsyncSession, *, owner_id: str, template_key: str, params: dict[str, Any]
     ) -> dict[str, Any]:
         """更新自己名下 draft/active 模板（version+1）；改 builtin/别人的 → 拒绝。"""
@@ -668,28 +663,22 @@ class WorkflowTemplateService:
                 prompt = ov.get('prompt') or origin_input or tn.get('description') or tn.get('name') or node_key
             else:
                 prompt = ov.get('prompt') or tn.get('prompt') or tn.get('description') or tn.get('name') or node_key
-            nodes.append(
-                {
-                    'node_key': node_key,
-                    'name': tn.get('name') or node_key,
-                    'agent_id': ov.get('agent_id'),  # None → 发起分身
-                    'prompt': prompt,
-                    'system_prompt': ov.get('system_prompt') or tn.get('system_prompt') or None,
-                    'description': tn.get('description'),
-                    # doc35 B1「修死列」：模板早就声明了这些，此前全被丢在这一步，
-                    # 于是节点行上产出闸恒 NULL、应用绑定恒空——模板配了等于没配。
-                    'output_spec': tn.get('output_spec'),
-                    'review_policy': tn.get('review_policy'),
-                    'apps': tn.get('apps') or [],
-                    'skills': tn.get('skills') or [],
-                    'is_origin': is_origin,
-                }
-            )
-        edges = [
-            {'parent': e.get('parent'), 'child': e.get('child')}
-            for e in t_edges
-            if isinstance(e, dict)
-        ]
+            nodes.append({
+                'node_key': node_key,
+                'name': tn.get('name') or node_key,
+                'agent_id': ov.get('agent_id'),  # None → 发起分身
+                'prompt': prompt,
+                'system_prompt': ov.get('system_prompt') or tn.get('system_prompt') or None,
+                'description': tn.get('description'),
+                # doc35 B1「修死列」：模板早就声明了这些，此前全被丢在这一步，
+                # 于是节点行上产出闸恒 NULL、应用绑定恒空——模板配了等于没配。
+                'output_spec': tn.get('output_spec'),
+                'review_policy': tn.get('review_policy'),
+                'apps': tn.get('apps') or [],
+                'skills': tn.get('skills') or [],
+                'is_origin': is_origin,
+            })
+        edges = [{'parent': e.get('parent'), 'child': e.get('child')} for e in t_edges if isinstance(e, dict)]
         return {
             'name': params.get('title') or tpl.name,
             'goal': params.get('goal') or tpl.description,
@@ -699,9 +688,7 @@ class WorkflowTemplateService:
         }
 
     @classmethod
-    async def publish_template(
-        cls, db: AsyncSession, *, owner_id: str, template_key: str
-    ) -> dict[str, Any]:
+    async def publish_template(cls, db: AsyncSession, *, owner_id: str, template_key: str) -> dict[str, Any]:
         """上架自己名下模板：过 §6.3 校验 → status 转 active + version 快照 + market_ref 占位。
 
         本期 publish 只做「校验 + status 转换 + market_ref 占位 + version 快照」；完整 marketplace
@@ -735,7 +722,8 @@ class WorkflowTemplateService:
         - 已存在且为内置行（is_builtin 且 owner_id 空）→ 只更新派生字段（domain/name/tagline/description/
           sort_order/icon/accent/graph_spec/status/version/source/builtin_key）；**绝不**改 template_uuid
           （端云同步主键）与 owner_id（归属）。
-        - 已存在但 owner_id 非空或非内置（用户自建 / 市场物化 / 分身生成）→ 拒绝覆盖，记 warning 跳过（守 owner 归属边界）。
+        - 已存在但 owner_id 非空或非内置（用户自建 / 市场物化 / 分身生成）→ 拒绝覆盖，记 warning 跳过
+          （守 owner 归属边界）。
 
         返回 'inserted' / 'updated' / 'skipped'（供扫描编排汇总统计）。
         """
@@ -782,9 +770,7 @@ class WorkflowTemplateService:
         return 'updated'
 
     @classmethod
-    async def sync_builtin_workflow_templates(
-        cls, db: AsyncSession, *, repo_root: str | Path
-    ) -> dict[str, int]:
+    async def sync_builtin_workflow_templates(cls, db: AsyncSession, *, repo_root: str | Path) -> dict[str, int]:
         """扫描 hub `workflow-templates/*/workflow-template.yaml` 并幂等 upsert 进 workflow_template 表。
 
         由 marketplace 的 github sync 传入已 checkout 的 hub 仓根（repo_root）+ 已开事务触发；解析/字段映射/
@@ -805,7 +791,7 @@ class WorkflowTemplateService:
                 data = build_builtin_template_data(raw)
                 outcome = await cls.upsert_builtin_template(db, data=data)
                 results[outcome] += 1
-            except Exception as exc:  # noqa: PERF203
+            except Exception as exc:
                 # 单模板可恢复失败：记 warning 跳过，绝不拖垮整体 sync
                 results['failed'] += 1
                 log.warning(f'内置工作流模板 seed 跳过 {yaml_path}：{exc}')
