@@ -17,21 +17,21 @@ class CreatePayOrderParam(SchemaBase):
     - `lead_pack`：必填 `lead_count`，按条计价（`GROWTH_LEAD_UNIT_PRICE_FEN`）下单（到账回调
       `handle_lead_pack_paid` 增加可领取线索额度）。线索是独立支付商品，**不走 new-api 积分**（doc93 §4.2）。
     """
-    order_type: str = Field('subscribe', description='订单类型 subscribe | credit_pack | app_purchase | lead_pack | app_seat')
+    order_type: str = Field(default='subscribe', description='订单类型 subscribe | credit_pack | app_purchase | lead_pack | app_seat')
     channel_code: str = Field(description='支付渠道编码 wx_native/alipay_qr/alipay_pc')
     # 订阅时必填
-    tier: str | None = Field(None, description='order_type=subscribe 时必填，目标套餐 free/pro/advanced/flagship')
-    billing_cycle: str = Field('monthly', description='计费周期 monthly/yearly')
-    auto_renew: bool = Field(True, description='是否开通自动续费（v1 桌面端恒 false）')
+    tier: str | None = Field(default=None, description='order_type=subscribe 时必填，目标套餐 free/pro/advanced/flagship')
+    billing_cycle: str = Field(default='monthly', description='计费周期 monthly/yearly')
+    auto_renew: bool = Field(default=True, description='是否开通自动续费（v1 桌面端恒 false）')
     # 积分包时必填
-    package_id: int | None = Field(None, description='order_type=credit_pack 时必填，积分包 ID')
+    package_id: int | None = Field(default=None, description='order_type=credit_pack 时必填，积分包 ID')
     # AI-Native 应用购买时必填
-    app_id: str | None = Field(None, description='order_type=app_purchase/app_seat 时必填，应用目录 app_id')
+    app_id: str | None = Field(default=None, description='order_type=app_purchase/app_seat 时必填，应用目录 app_id')
     # 线索购买时必填（doc93 §4.2 线索付费）
-    lead_count: int | None = Field(None, description='order_type=lead_pack 时必填，购买线索条数（按条计价）')
+    lead_count: int | None = Field(default=None, description='order_type=lead_pack 时必填，购买线索条数（按条计价）')
     # 企业席位购买时必填（doc04 §6.4）
-    enterprise_id: int | None = Field(None, description='order_type=app_seat 时必填，下单企业 ID')
-    seats: int | None = Field(None, description='order_type=app_seat 时必填，购买席位数（>0）')
+    enterprise_id: int | None = Field(default=None, description='order_type=app_seat 时必填，下单企业 ID')
+    seats: int | None = Field(default=None, description='order_type=app_seat 时必填，购买席位数（>0）')
 
     @model_validator(mode='after')
     def _validate_cross_fields(self) -> 'CreatePayOrderParam':
