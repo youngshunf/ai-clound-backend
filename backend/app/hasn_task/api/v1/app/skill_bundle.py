@@ -62,8 +62,8 @@ async def create_my_hasn_skill_bundle(
 ) -> ResponseModel:
     owner_id = await _current_owner_id(request, db)
     obj.owner_id = owner_id
-    result = await hasn_skill_bundle_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await hasn_skill_bundle_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

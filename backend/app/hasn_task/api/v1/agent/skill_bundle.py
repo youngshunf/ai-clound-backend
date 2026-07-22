@@ -53,8 +53,8 @@ async def agent_create_hasn_skill_bundle(
     agent: AgentTokenPayload = request.state.agent
     # 不信入参身份：强制覆盖 owner_id 为令牌身份（防伪造）
     obj = obj.model_copy(update={'owner_id': agent.owner_hasn_id})
-    result = await hasn_skill_bundle_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await hasn_skill_bundle_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(
