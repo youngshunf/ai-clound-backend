@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,20 @@ from backend.app.marketplace.service.resource_id import PUBLIC_VISIBILITY, PUBLI
 
 
 class CRUDMarketplaceSkill(CRUDPlus[MarketplaceSkill]):
+    @staticmethod
+    def _single_skill(result: object) -> MarketplaceSkill | None:
+        """将无关联加载的查询结果收紧为单个市场技能。"""
+        if result is not None and not isinstance(result, MarketplaceSkill):
+            raise TypeError('市场技能单模型查询返回了关联结果')
+        return cast(MarketplaceSkill | None, result)
+
+    @staticmethod
+    def _skill_sequence(result: Sequence[object]) -> Sequence[MarketplaceSkill]:
+        """将无关联加载的查询结果收紧为市场技能序列。"""
+        if not all(isinstance(item, MarketplaceSkill) for item in result):
+            raise TypeError('市场技能列表查询返回了关联结果')
+        return cast(Sequence[MarketplaceSkill], result)
+
     async def get(self, db: AsyncSession, pk: int) -> MarketplaceSkill | None:
         """
         获取技能市场技能
@@ -18,7 +33,7 @@ class CRUDMarketplaceSkill(CRUDPlus[MarketplaceSkill]):
         :param pk: 技能市场技能 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_skill(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取技能市场技能列表查询表达式"""
@@ -31,7 +46,7 @@ class CRUDMarketplaceSkill(CRUDPlus[MarketplaceSkill]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._skill_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateMarketplaceSkillParam) -> None:
         """
@@ -72,7 +87,7 @@ class CRUDMarketplaceSkill(CRUDPlus[MarketplaceSkill]):
         :param skill_id: 技能ID
         :return:
         """
-        return await self.select_model_by_column(db, skill_id=skill_id)
+        return self._single_skill(await self.select_model_by_column(db, skill_id=skill_id))
 
     async def get_by_namespace_slug(
         self,

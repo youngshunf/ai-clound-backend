@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,14 +10,28 @@ from backend.app.marketplace.schema.marketplace_sop import CreateMarketplaceSopP
 
 
 class CRUDMarketplaceSop(CRUDPlus[MarketplaceSop]):
+    @staticmethod
+    def _single_sop(result: object) -> MarketplaceSop | None:
+        """将无关联加载的查询结果收紧为单个市场 SOP。"""
+        if result is not None and not isinstance(result, MarketplaceSop):
+            raise TypeError('市场 SOP 单模型查询返回了关联结果')
+        return cast(MarketplaceSop | None, result)
+
+    @staticmethod
+    def _sop_sequence(result: Sequence[object]) -> Sequence[MarketplaceSop]:
+        """将无关联加载的查询结果收紧为市场 SOP 序列。"""
+        if not all(isinstance(item, MarketplaceSop) for item in result):
+            raise TypeError('市场 SOP 列表查询返回了关联结果')
+        return cast(Sequence[MarketplaceSop], result)
+
     async def get(self, db: AsyncSession, pk: int) -> MarketplaceSop | None:
-        return await self.select_model(db, pk)
+        return self._single_sop(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         return await self.select_order('id', 'desc')
 
     async def get_all(self, db: AsyncSession) -> Sequence[MarketplaceSop]:
-        return await self.select_models(db)
+        return self._sop_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateMarketplaceSopParam) -> None:
         await self.create_model(db, obj)
@@ -28,7 +43,7 @@ class CRUDMarketplaceSop(CRUDPlus[MarketplaceSop]):
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)
 
     async def get_by_id(self, db: AsyncSession, sop_id: str) -> MarketplaceSop | None:
-        return await self.select_model_by_column(db, sop_id=sop_id)
+        return self._single_sop(await self.select_model_by_column(db, sop_id=sop_id))
 
     async def increment_download_count(self, db: AsyncSession, sop_id: str) -> None:
         stmt = (

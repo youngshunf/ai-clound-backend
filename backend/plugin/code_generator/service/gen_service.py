@@ -77,8 +77,12 @@ class GenService:
                 class_name=to_pascal(table_name),
                 schema_name=to_pascal(table_name),
                 filename=table_name,
+                datetime_mixin=True,
+                api_version='v1',
                 tag=doc_comment,
                 api_scope=getattr(obj, 'api_scope', 'admin'),
+                gen_path=None,
+                remark=None,
             ).model_dump(),
         )
         db.add(new_business)
@@ -94,6 +98,7 @@ class GenService:
                     name=column['column_name'],
                     comment=column['column_comment'],
                     type=column_type,
+                    default=None,
                     sort=column['sort'],
                     length=column['column_type'].split('(')[1][:-1]
                     if pd_type == 'str' and '(' in column['column_type']

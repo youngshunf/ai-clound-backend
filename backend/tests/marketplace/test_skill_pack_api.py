@@ -218,7 +218,16 @@ async def test_list_hides_other_owner_private_packs(client) -> None:
     await _seed_default_members(client.session)
     slug = f'priv-{_tag()}'
     # 当前作者的私有包
-    await client.http.post('/api/v1/marketplace/app/skill-packs', json=_payload(slug, is_private=True, is_official=False))
+    created = await client.http.post(
+        '/api/v1/marketplace/app/skill-packs',
+        json=_payload(slug, is_private=True, is_official=False),
+    )
+    assert created.status_code == 200, created.text
+    current_author = await client.session.execute(
+        text('SELECT author_id, user_id FROM hasn_marketplace.marketplace_template WHERE template_id = :template_id'),
+        {'template_id': f'huanxing/{slug}'},
+    )
+    assert current_author.one() == (_AUTHOR_ID, _AUTHOR_ID)
     # 他人的私有包（直接落库，author_id 不同）
     other_slug = f'other-{_tag()}'
     await client.session.execute(
@@ -244,7 +253,7 @@ async def test_list_hides_other_owner_private_packs(client) -> None:
     )
     await client.session.flush()
 
-    r = await client.http.get('/api/v1/marketplace/app/skill-packs')
+    r = await client.http.get('/api/v1/marketplace/app/skill-packs?mine=true')
     assert r.status_code == 200, r.text
     slugs = [item['bundle_slug'] for item in r.json()['data']['items']]
     assert slug in slugs
