@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 import sqlalchemy as sa
 
@@ -22,14 +23,16 @@ class ExternalMcpServer(ExternalMcpAppBase):
     transport: Mapped[str] = mapped_column(sa.String(20), default='', comment='传输 (http:HTTP/websocket:WebSocket/sse:SSE/stdio:本机stdio)')
     endpoint: Mapped[str | None] = mapped_column(sa.String(1024), default=None, comment='远程端点 URL（remote_service 必填；http/ws/sse）')
     command: Mapped[str | None] = mapped_column(sa.String(256), default=None, comment='本机启动命令（local_process stdio，如 npx）')
-    args: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='本机启动参数 jsonb（local_process）')
+    args: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment='本机启动参数 jsonb（local_process）')
     env: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='环境变量 jsonb（值可为 secret:// 引用；明文拒绝）')
     headers: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='请求头 jsonb（remote_service；值可为 secret:// 引用，如 Authorization）')
     origin: Mapped[str] = mapped_column(sa.String(20), default='', comment='配置归属 (system:平台预置:gold/owner:用户自配:blue/marketplace:市场安装:purple)')
     owner_hasn_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='归属主人 hasn_id（owner/marketplace-origin 必填；system-origin 为空=全平台共享）')
     scope: Mapped[str] = mapped_column(sa.String(20), default='', comment='可见范围（owner=该主人及其 Agent）')
     risk_level: Mapped[str] = mapped_column(sa.String(16), default='', comment='风险等级 (low:低:green/medium:中:orange/high:高:red)')
-    advertised_tools_cache: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='自省到的第三方工具缓存 jsonb（tools/list 归一 ToolMeta[]，目录层缓存非调用缓存）')
+    advertised_tools_cache: Mapped[list[dict[str, Any]]] = mapped_column(
+        postgresql.JSONB(), default_factory=list, comment='自省到的第三方工具缓存 jsonb（tools/list 归一 ToolMeta[]，目录层缓存非调用缓存）'
+    )
     tools_hash: Mapped[str | None] = mapped_column(sa.String(80), default=None, comment='工具集 hash（tools/list 内容指纹，变更触发 re-probe / SCHEMA_HASH_MISMATCH）')
     advertised_tools_cached_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='工具缓存刷新时间')
     health_status: Mapped[str] = mapped_column(sa.String(20), default='', comment='健康 (unknown:未知/unstarted:未拉起/healthy:健康:green/unhealthy:不健康:orange/circuit_broken:熔断:red/not_installed:未安装)')
