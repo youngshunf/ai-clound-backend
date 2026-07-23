@@ -48,7 +48,6 @@ _WS_DELIVERY_BUS_ALLOW: dict[str, tuple[str, str]] = {
 }
 
 _WS_NODE_ALLOW: dict[str, tuple[str, str]] = {
-    'app/hasn/api/router.py': ('im-refactor', 'R1-09 协议层净化后收进兼容 adapter'),
 }
 
 # legacy IM key 访问仅允许在这两处兼容入口；超过这两处即拦截收口偏差
@@ -144,6 +143,7 @@ def test_no_new_ws_node_importers():
     """除路由注册处外，不得有新文件直接 import ws_node（协议入口）。"""
     importers = _files_importing('backend.app.hasn.api.ws_node')
     importers.discard('app/hasn/api/ws_node.py')
+    importers.discard('app/hasn_im/api/ws_node.py')
     offenders = sorted(importers - set(_WS_NODE_ALLOW))
     assert not offenders, (
         '发现新增的 ws_node 直接 import（违背 §0.1）——协议帧处理应经 hasn_im 协议层：\n  '
