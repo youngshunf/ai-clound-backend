@@ -226,8 +226,8 @@ class PayOrderService:
             raise errors.RequestError(msg='订阅订单缺少套餐标识')
 
         # 从数据库读取套餐配置（按 app_code 区分应用）
-        tier_config = await subscription_tier_dao.select_model_by_column(
-            db, tier_name=tier_id, app_code=app_code, enabled=True
+        tier_config = await subscription_tier_dao.get_by_tier_name(
+            db, tier_id, app_code=app_code, enabled=True
         )
         if not tier_config:
             raise errors.RequestError(msg=f'无效的套餐: {tier_id}（app={app_code}）')
