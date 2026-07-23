@@ -34,7 +34,7 @@ from backend.app.hasn.schema.hasn_contacts_business import (
 )
 from backend.app.hasn.service.hasn_auth import hasn_auth
 from backend.app.hasn.service.hasn_contacts_service import ContactRequestError, HasnContactsService
-from backend.app.hasn.service.ws_router import ws_router
+from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 from backend.common.response.response_code import CustomResponse
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.database.db import CurrentSession
@@ -59,7 +59,7 @@ async def _resolve_peer_user_profile(db, peer_info, *, peer_type: str):
 
 async def _push_contact_event(target_hasn_id: str, payload: dict) -> None:
     try:
-        await ws_router.push_message_to(target_hasn_id, payload)
+        await ws_node_runtime.ws_router.push_message_to(target_hasn_id, payload)
     except Exception:
         return
 
