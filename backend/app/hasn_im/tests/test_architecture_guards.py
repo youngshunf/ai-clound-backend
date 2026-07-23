@@ -55,8 +55,6 @@ _WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     # R0-02 / P0 统计的业务直连方，完成每片切片后对应行应移除
     'app/hasn/service/hasn_agents_service.py': ('im-refactor', 'R1-05 slice① MCP/agent'),
     'app/hasn/service/hasn_contacts_service.py': ('im-refactor', 'R1-05 slice④ 联系人关系事件'),
-    'app/hasn/service/workspace_notification_subscriber.py': ('im-refactor', 'R1-05 slice② 通知通道'),
-    'app/hasn/service/task_scheduler.py': ('im-refactor', 'R1-05 slice③ 后台任务'),
     'app/hasn/service/hasn_message_hub_service.py': ('im-refactor', 'R1-05 slice② 消息中枢'),
     'app/hasn/service/inbound_release.py': ('im-refactor', 'R1-05 slice⑥ 会话入口'),
     'app/hasn/service/sync_invalidate_service.py': ('im-refactor', 'R1-04 invalidate 直发，R1-05/2 收口'),

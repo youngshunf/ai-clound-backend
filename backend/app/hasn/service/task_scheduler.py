@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_task import HasnTask
 from backend.app.hasn.model.hasn_task_run import HasnTaskRun
-from backend.app.hasn.service.ws_router import ws_router
+from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle
 from backend.common.exception import errors
 from backend.database.db import async_db_session
@@ -180,7 +180,7 @@ class TaskSchedulerService:
             'params': task_exec_params,
         }
 
-        pushed = await ws_router.push_message_to(task.agent_id, task_exec_msg)
+        pushed = await ws_node_runtime.push_message_to(task.agent_id, task_exec_msg)
         if not pushed:
             logger.warning(f'[TaskScheduler] task {task.id} agent {task.agent_id} offline, message queued')
 

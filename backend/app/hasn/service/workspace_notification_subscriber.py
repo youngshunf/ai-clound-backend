@@ -7,7 +7,7 @@ import sqlalchemy as sa
 
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
-from backend.app.hasn.service.ws_router import ws_router
+from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -55,7 +55,7 @@ class SqlAlchemyWorkspaceNotificationActions:
         self,
         *,
         sessionmaker: async_sessionmaker[AsyncSession] | None = None,
-        router: WorkspacePushRouter = ws_router,
+        router: WorkspacePushRouter = ws_node_runtime.ws_router,
     ) -> None:
         self.sessionmaker = sessionmaker or async_db_session
         self.router = router
