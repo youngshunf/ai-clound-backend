@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 
+from pathlib import Path
+
 import pytest
 
+from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.schema.artifact_contract import (
     ArtifactListItem,
     ArtifactMutation,
@@ -127,3 +130,17 @@ def test_artifact_list_item_serialization_never_contains_local_absolute_path() -
     serialized = json.loads(item.model_dump_json())
     assert 'local_path' not in serialized
     assert serialized['local_entry']['node_id'] == 'node_phase1'
+
+
+def test_current_state_migration_supports_databases_without_legacy_local_path() -> None:
+    """当前态迁移必须兼容从未落过 local_path 的初始产物表。"""
+    columns = HasnArtifacts.__table__.columns
+    assert 'local_path' not in columns
+
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / 'sql/hasn/migrations/2026-07-22-artifact-current-state-and-contributions.sql'
+    ).read_text(encoding='utf-8')
+    compatibility_statement = 'ADD COLUMN IF NOT EXISTS "local_path" VARCHAR(512)'
+    assert compatibility_statement in migration
+    assert migration.index(compatibility_statement) < migration.index('WHEN "local_locator_key" IS NULL')

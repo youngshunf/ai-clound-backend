@@ -1,4 +1,8 @@
 -- 将旧产物行中的当前态补齐为独立字段；参与上下文后续只写入 contributions。
+-- 有些环境从未部署过 local_path 版本；临时补列以便统一完成遗留数据转换，迁移末尾必定删除。
+ALTER TABLE "public"."hasn_artifacts"
+    ADD COLUMN IF NOT EXISTS "local_path" VARCHAR(512);
+
 ALTER TABLE "public"."hasn_artifacts"
     DROP CONSTRAINT IF EXISTS "ck_hasn_artifacts_exactly_one_locator";
 
