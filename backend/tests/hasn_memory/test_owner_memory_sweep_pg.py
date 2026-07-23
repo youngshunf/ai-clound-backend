@@ -39,6 +39,9 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator:
+    # pytest-asyncio 为每个用例创建独立事件循环；先换出前一循环遗留的全局连接池，
+    # 避免 sweeper 复用绑定到旧循环的 asyncpg 连接。close=False 不在当前循环关闭旧连接。
+    await async_engine.dispose(close=False)
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
