@@ -1,6 +1,8 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select, and_, or_, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -9,6 +11,20 @@ from backend.app.hasn.schema.hasn_conversations import CreateHasnConversationsPa
 
 
 class CRUDHasnConversations(CRUDPlus[HasnConversations]):
+    @staticmethod
+    def _single_conversation(result: object) -> HasnConversations | None:
+        """将无关联加载的查询结果收紧为单个会话。"""
+        if result is not None and not isinstance(result, HasnConversations):
+            raise TypeError('会话单模型查询返回了关联结果')
+        return cast(HasnConversations | None, result)
+
+    @staticmethod
+    def _conversation_sequence(result: Sequence[object]) -> Sequence[HasnConversations]:
+        """将无关联加载的查询结果收紧为会话序列。"""
+        if not all(isinstance(item, HasnConversations) for item in result):
+            raise TypeError('会话列表查询返回了关联结果')
+        return cast(Sequence[HasnConversations], result)
+
     async def get(self, db: AsyncSession, pk: int) -> HasnConversations | None:
         """
         获取HASN 会话
@@ -17,7 +33,7 @@ class CRUDHasnConversations(CRUDPlus[HasnConversations]):
         :param pk: HASN 会话 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_conversation(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取HASN 会话列表查询表达式"""
@@ -30,7 +46,7 @@ class CRUDHasnConversations(CRUDPlus[HasnConversations]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._conversation_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateHasnConversationsParam) -> None:
         """
@@ -91,23 +107,26 @@ class CRUDHasnConversations(CRUDPlus[HasnConversations]):
         对端后续发消息按无关系门控/暂存。只改 active 行（幂等，已 archived/disbanded 不动）。
         返回标记条数。
         """
-        result = await db.execute(
-            update(HasnConversations)
-            .where(HasnConversations.type == 'direct')
-            .where(HasnConversations.status == 'active')
-            .where(
-                or_(
-                    and_(
-                        HasnConversations.participant_a_id == id_a,
-                        HasnConversations.participant_b_id == id_b,
-                    ),
-                    and_(
-                        HasnConversations.participant_a_id == id_b,
-                        HasnConversations.participant_b_id == id_a,
-                    ),
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                update(HasnConversations)
+                .where(HasnConversations.type == 'direct')
+                .where(HasnConversations.status == 'active')
+                .where(
+                    or_(
+                        and_(
+                            HasnConversations.participant_a_id == id_a,
+                            HasnConversations.participant_b_id == id_b,
+                        ),
+                        and_(
+                            HasnConversations.participant_a_id == id_b,
+                            HasnConversations.participant_b_id == id_a,
+                        ),
+                    )
                 )
-            )
-            .values(status='unreachable')
+                .values(status='unreachable')
+            ),
         )
         return result.rowcount or 0
 

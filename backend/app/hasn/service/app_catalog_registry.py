@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import builtins
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -32,7 +34,7 @@ class App:
     project_required: bool = False
 
     def to_manifest(self, *, workspace_kind: str | None = None) -> dict[str, Any]:
-        data = {
+        data: dict[str, Any] = {
             'id': self.id,
             'name': self.name,
             'icon': self.icon,
@@ -180,13 +182,13 @@ class AppCatalogRegistry:
     def get(self, app_id: str) -> App:
         return self._apps[app_id]
 
-    def list(self, workspace_kind: str | None = None) -> list[App]:
+    def list(self, workspace_kind: str | None = None) -> builtins.list[App]:
         apps = list(self._apps.values())
         if workspace_kind:
             apps = [app for app in apps if workspace_kind in app.scope]
         return apps
 
-    def auto_install_apps(self, workspace_kind: str) -> list[App]:
+    def auto_install_apps(self, workspace_kind: str) -> builtins.list[App]:
         return [app for app in self.list(workspace_kind) if app.install_policy == 'auto']
 
 
