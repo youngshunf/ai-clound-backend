@@ -901,7 +901,6 @@ class StudioService:
                         kind='video',
                         title=artifact.title,
                         asset_id=asset.asset_id,
-                        resource_uri=asset_uri,
                         session_id=job.work_session_id,
                         source_tool='hasn.studio.run_pipeline',
                         # 与 hasn.image.generate / voice.synthesize 同族：工具产出的媒体资产。

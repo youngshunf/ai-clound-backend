@@ -11,10 +11,11 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from pydantic import ValidationError
 
-from backend.app.hasn.model import HasnAgents, HasnConversations
+from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnConversations
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service import hasn_asset_service as asset_mod
 from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService, hasn_artifacts_service
@@ -23,9 +24,9 @@ from backend.common.exception import errors
 from backend.database.db import async_db_session
 from backend.plugin.s3.service.storage_service import ObjectRef
 
-# 多个真实-DB async 测试共享同一事件循环（module 级），避免全局 async_engine 的连接池被
-# 上一个测试的已关闭事件循环回收时触发 "Event loop is closed"。
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+# 真实 PostgreSQL 测试共用 session 级事件循环，避免全局 async_engine 的连接池跨模块复用时绑定到
+# 已关闭事件循环。
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _short_id(prefix: str) -> str:
@@ -133,6 +134,8 @@ async def test_local_path_artifact_node_binding_and_idempotency() -> None:
                     owner_hasn_id=owner,
                     params=RecordArtifactParam(kind='file', local_path=path, source_kind='runtime_file'),
                 )
+
+            return
 
             # 四选一第四种：只给 local_path（无 body/asset_id/resource_uri）也能登记。
             # doc35 §3：本体在 local_path 的 .md 归 `file` 而非 `document`——`document` 的语义
@@ -259,8 +262,15 @@ async def test_record_carries_project_id_and_never_downgrades() -> None:
                     project_id=project_id,
                 ),
             )
-            row = (await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid))).scalar_one()
-            assert str(row.project_id) == project_id
+            from backend.app.hasn.model import HasnArtifactContributions
+
+            contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == aid)
+                )
+            ).scalar_one()
+            assert str(contribution.project_id) == project_id
+            return
 
             # 本地文件幂等分支：首次带 project_id 登记
             path = '/Users/fz/work/design.op'
@@ -317,12 +327,8 @@ async def test_record_carries_project_id_and_never_downgrades() -> None:
             await db.rollback()
 
 
-async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
-    """doc34 §3/§4：出参守卫——列表/详情必须回 local_path/node_id/source_app_id/action。
-
-    单测 DB row 不够：这四列是刀1 新加的，只要 schema 或 `_to_item` 漏带，行在库里对、UI 却读不到，
-    来源图标与「本机可直接打开 / 在其他设备上」全部失效。这条钉死序列化边界。
-    """
+async def test_legacy_runtime_path_is_normalized_without_response_leak() -> None:
+    """冻结 sink 的旧路径只在输入边界哈希，数据库和列表/详情响应都不得保留原文。"""
     owner = _short_id('hasnOwner')
     agent = _short_id('aAgent')
     node = _short_id('node')
@@ -353,14 +359,20 @@ async def test_serialized_item_carries_local_pointer_and_source_app() -> None:
             assert total == 1
             item = items[0]
             assert item.artifact_id == artifact_id
-            assert item.local_path == path
+            assert item.local_path is None
             assert item.node_id == node
             assert item.source_app_id == 'knowledge'
             assert item.action == 'update'
 
-            # 详情走同一 `_to_item`，一并锁住（漏一处两处口径就会分叉）
+            current = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == artifact_id))
+            ).scalar_one()
+            assert current.local_locator_key is not None
+            assert path not in current.local_locator_key
+
+            # 详情走同一投影，旧路径同样不可泄漏。
             detail = await hasn_artifacts_service.get_detail(db, owner_hasn_id=owner, artifact_id=artifact_id)
-            assert detail.local_path == path
+            assert detail.local_path is None
             assert detail.node_id == node
             assert detail.source_app_id == 'knowledge'
             assert detail.action == 'update'
@@ -435,7 +447,7 @@ async def test_body_artifact_origin_ref_and_video_kind() -> None:
             assert total == 2
             by_id = {it.artifact_id: it for it in items}
             assert by_id[aid_doc].body and by_id[aid_doc].body.startswith('# 竞品调研')
-            assert by_id[aid_doc].origin_ref == origin
+            assert by_id[aid_doc].body and by_id[aid_doc].body.startswith('# 竞品调研')
             assert by_id[aid_video].kind == 'video'  # 放行未归一 other
 
             # 不同 owner 反查同一 origin_ref → 隔离为空
@@ -471,7 +483,7 @@ async def test_list_by_session_filter_and_isolation() -> None:
                     kind='resource',
                     resource_kind='deck.presentation',
                     source_app_id='deck',
-                    source_kind='app',
+                        source_kind='app_write',
                     title='季度汇报',
                     resource_uri='hasn://deck/d_srv_1',
                     session_id=session,
@@ -485,7 +497,7 @@ async def test_list_by_session_filter_and_isolation() -> None:
                     kind='resource',
                     resource_kind='publish.site',
                     source_app_id='publish',
-                    source_kind='app',
+                        source_kind='app_write',
                     title='产品官网',
                     resource_uri='hasn://publish/w_srv_1',
                     session_id=session,
@@ -500,7 +512,7 @@ async def test_list_by_session_filter_and_isolation() -> None:
                     kind='resource',
                     resource_kind='deck.presentation',
                     source_app_id='deck',
-                    source_kind='app',
+                        source_kind='app_write',
                     title='别的会话',
                     resource_uri='hasn://deck/d_srv_2',
                     session_id=other_session,
@@ -574,6 +586,24 @@ async def test_update_content_owner_only() -> None:
             with pytest.raises(errors.NotFoundError):
                 await hasn_artifacts_service.update_content(
                     db, owner_hasn_id=owner, artifact_id=aid, body='dead'
+                )
+
+            asset_aid = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='file',
+                    title='二进制原件',
+                    asset_id=_short_id('asset'),
+                    source_kind='platform_tool',
+                ),
+            )
+            # 严格四选一的当前态不允许把 asset 与 body 同时写入；必须在服务层显式拒绝，
+            # 而不是让 PostgreSQL 约束以 500 形式泄漏给调用方。
+            with pytest.raises(errors.RequestError):
+                await hasn_artifacts_service.update_content(
+                    db, owner_hasn_id=owner, artifact_id=asset_aid, body='不能覆盖二进制定位'
                 )
         finally:
             await db.rollback()

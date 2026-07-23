@@ -40,7 +40,7 @@ async def _seed_artifact(db, *, owner: str, agent: str, artifact_id: str) -> Non
             agent_hasn_id=agent,
             owner_hasn_id=owner,
             kind='resource',
-            source_kind='app',
+            source_kind='app_write',
             status='active',
             title=f'产物 {artifact_id}',
         )

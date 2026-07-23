@@ -35,7 +35,7 @@ async def hasn_check_agent_heartbeat_timeout(self) -> str:
         )
         await session.commit()
 
-        count = result.rowcount
+        count = getattr(result, 'rowcount', 0) or 0
         if count > 0:
             return f'marked {count} agents as offline due to heartbeat timeout'
         return 'no agents timed out'
@@ -110,3 +110,38 @@ async def hasn_contact_lifecycle_expire_sweep() -> str:
     if req_n or ct_n:
         return f'expired {req_n} contact requests, archived {ct_n} auto-expire contacts'
     return 'no overdue contact requests or auto-expire contacts'
+
+
+@celery_app.task(name='hasn_artifact_registration_reconcile')
+async def hasn_artifact_registration_reconcile() -> str:
+    """定期重放失败的产物登记意图，并补齐贡献记录缺失的 outbox。"""
+    from sqlalchemy import select
+
+    from backend.app.hasn.model import HasnArtifactRegistrationOutbox, HasnArtifacts
+    from backend.app.hasn.service.artifact_registration_outbox_service import (
+        artifact_registration_outbox_service,
+    )
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as session:
+        owners = list(
+            (
+                await session.execute(
+                    select(HasnArtifacts.owner_hasn_id)
+                    .union(
+                        select(HasnArtifactRegistrationOutbox.owner_hasn_id).where(
+                            HasnArtifactRegistrationOutbox.status == 'pending'
+                        )
+                    )
+                    .limit(500)
+                )
+            ).scalars()
+        )
+        repaired = 0
+        for owner_hasn_id in owners:
+            repaired += await artifact_registration_outbox_service.reconcile(
+                session,
+                owner_hasn_id=owner_hasn_id,
+            )
+
+    return f'reconciled {repaired} artifact registration records for {len(owners)} owners'

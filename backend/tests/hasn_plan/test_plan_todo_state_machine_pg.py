@@ -58,7 +58,7 @@ async def _seed_artifact(db: AsyncSession, *, owner: str, todo_id: int, kind: st
             kind=kind,
             title='交付产物',
             origin_ref=oref.todo_ref(todo_id),
-            source_kind='app',  # doc35 §5：`tool_output` 已砍
+            source_kind='app_write',  # doc35 §5：`tool_output` 已砍
             status=status,
         )
     )

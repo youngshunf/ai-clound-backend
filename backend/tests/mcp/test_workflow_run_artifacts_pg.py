@@ -101,7 +101,7 @@ def _seed_artifact(owner: str, artifact_id: str, *, status: str = 'active') -> H
         title=f'产物-{artifact_id}',
         resource_uri=f'hasn://knowledge/{artifact_id}',
         source_app_id='knowledge',
-        source_kind='app',
+        source_kind='app_write',
         status=status,
     )
 

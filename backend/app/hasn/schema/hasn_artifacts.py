@@ -1,10 +1,11 @@
 from datetime import datetime
-from typing import Literal
+from hashlib import sha256
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
+from backend.app.hasn.schema.artifact_contract import ArtifactAction, ArtifactKind, ArtifactSourceKind, LocalEntryKind
 
 # ============================================================================
 # 产物分类三维度（doc35）：一个字段一个维度，不互相僭越。
@@ -17,10 +18,6 @@ from backend.common.schema import SchemaBase
 # 这两个 Literal 是**拒绝**而非归一：越界 → 422。旧白名单静默改写成 other 才是
 # 「模板声明 kind → 分身真产出了 → 登记被降级 → 闸门比对不上 → 判定未产出」死锁的根因（§1.5）。
 # ============================================================================
-ArtifactKind = Literal['resource', 'document', 'image', 'video', 'voice', 'file']
-ArtifactSourceKind = Literal['app', 'platform_tool', 'external_tool', 'runtime_file', 'agent_note', 'upload']
-
-
 class HasnArtifactsSchemaBase(SchemaBase):
     """分身产物登记表（分身产出的图片/文件/文档/演示文稿/网页等的溯源指针）基础模型"""
     artifact_id: str = Field(description='产物 ID (art_<ulid> 公开标识)')
@@ -90,11 +87,9 @@ class RecordArtifactParam(SchemaBase):
     body: str | None = Field(None, description='文本/markdown 正文直接入库（kind=document 文本产物用，不上传文件）')
     asset_id: str | None = Field(None, description='关联资产 ID（image/voice/file 主路径）')
     resource_uri: str | None = Field(None, description='hasn:// 资源 URI（deck/webpage 等无 asset 本体时用）')
-    local_path: str | None = Field(
-        None,
-        description='本地绝对路径（本地权威产物，云端只存指针不存正文；必须同时给 node_id）',
-    )
-    node_id: str | None = Field(None, description='产出设备节点 ID（给 local_path 时必填）')
+    local_locator_key: str | None = Field(None, description='经节点守卫生成的不可逆本地对象定位键')
+    local_entry_kind: LocalEntryKind | None = Field(None, description='本地条目类型')
+    node_id: str | None = Field(None, description='产出设备节点 ID（给 local_locator_key 时必填）')
     origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等，按业务反查）')
     conversation_id: str | None = Field(None, description='来源会话 ID（UUID 字符串）')
     message_id: int | None = Field(None, description='来源消息 ID')
@@ -108,11 +103,28 @@ class RecordArtifactParam(SchemaBase):
     source_tool: str | None = Field(None, description='产出工具全名（hasn.image.generate）')
     source_app_id: str | None = Field(None, description='来源应用 ID（deck/imagelab/knowledge…；UI 据此显示应用图标）')
     source_kind: ArtifactSourceKind = Field(
-        description='产出来源·谁产的 (app:应用 / platform_tool:平台工具 / external_tool:外部取材 / runtime_file:运行时文件 / agent_note:分身自撰 / upload:主人上传)',
+        description='产出来源（app_write/platform_tool/runtime_file/agent_note/external_import）',
     )
-    action: str = Field('create', description='产出动作 (create:新增 / update:修改)')
+    action: ArtifactAction = Field('create', description='产出动作 (create:新增 / update:修改)')
     dispatch_id: str | None = Field(None, description='派发关联（审计/去重）')
     metadata: dict = Field(default_factory=dict, description='元数据快照（mime/size/width/height 等）')
+
+    @model_validator(mode='before')
+    @classmethod
+    def normalize_legacy_runtime_path(cls, data: object) -> object:
+        """将冻结 runtime sink 的旧路径入参即时归一为不可逆定位键，不保留原路径。"""
+        if not isinstance(data, dict):
+            return data
+        legacy_path = data.get('local_path')
+        if not isinstance(legacy_path, str) or not legacy_path:
+            return data
+        normalized = dict(data)
+        normalized.pop('local_path', None)
+        if normalized.get('local_locator_key') is None:
+            digest = sha256(legacy_path.encode('utf-8')).hexdigest()
+            normalized['local_locator_key'] = f'legacy-path-v1:{digest}'
+        normalized.setdefault('local_entry_kind', 'file')
+        return normalized
 
 
 class RecordArtifactResult(SchemaBase):
@@ -124,8 +136,7 @@ class RecordArtifactResult(SchemaBase):
 class UpdateArtifactContentParam(SchemaBase):
     """Owner 更新产物正文的入参（markdown 编辑保存用）。
 
-    只允许改 body/title——asset_id/resource_uri 等指针不可改（产物溯源语义不变）。
-    对 asset 型 .md 文件产物：编辑保存写 body（body 成为权威正文，原 asset 保留为「原文件」可下载）。
+    只允许编辑文本产物的 body/title；asset_id/resource_uri/local locator 型产物必须使用各自原始编辑入口。
     """
 
     body: str = Field(description='文本/markdown 正文（编辑后全文覆盖）')
