@@ -640,10 +640,10 @@ async def bump(kind: str, db: AsyncSession, *, owner_id: str | None = None) -> s
     except Exception as exc:
         logger.warning('[sync] cache revision failed kind=%s: %s', kind, exc)
 
-    from backend.app.hasn.service.ws_router import ws_router
+    from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
     try:
-        pushed = await ws_router.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
+        pushed = await ws_node_runtime.ws_router.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
         logger.info(
             '[sync] invalidate kind=%s rev=%s pushed=%d owner=%s',
             kind,
@@ -701,10 +701,10 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 
-    from backend.app.hasn.service.ws_router import ws_router
+    from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
     try:
-        pushed = await ws_router.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
+        pushed = await ws_node_runtime.ws_router.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
         logger.info('[sync] invalidate kind=%s rev=%s pushed=%d owner=%s', kind, rev, pushed, owner_id)
     except Exception as exc:  # 推送 best-effort，不拖垮写点
         logger.warning('[sync] broadcast invalidate failed kind=%s owner=%s: %s', kind, owner_id, exc)

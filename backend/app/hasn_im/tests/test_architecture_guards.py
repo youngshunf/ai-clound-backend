@@ -57,7 +57,6 @@ _WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     'app/hasn/service/hasn_contacts_service.py': ('im-refactor', 'R1-05 slice④ 联系人关系事件'),
     'app/hasn/service/hasn_message_hub_service.py': ('im-refactor', 'R1-05 slice② 消息中枢'),
     'app/hasn/service/inbound_release.py': ('im-refactor', 'R1-05 slice⑥ 会话入口'),
-    'app/hasn/service/sync_invalidate_service.py': ('im-refactor', 'R1-04 invalidate 直发，R1-05/2 收口'),
     'app/hasn/service/message_router.py': ('im-refactor', 'R1-04 兼容层收编'),
     'app/hasn/service/ws_delivery_bus.py': ('im-refactor', 'R1-02 routing 内核迁移中间层'),
 }
