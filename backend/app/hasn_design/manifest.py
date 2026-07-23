@@ -31,7 +31,7 @@ sidecar 本机执行 + OpenPencil 真实画布 UI）。UI 载体：`ui_interface
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -91,7 +91,7 @@ DESIGN_BUSINESS_PROMPT = (
 def _read_cap(*, name: str, description: str, properties: dict, required: list[str], page_rank: int) -> dict:
     """读类能力（design:read；读画布/取设计知识/导出渲染结果，出厂 Allow）——对齐 design.rs 读类工具。"""
     short = name.split('.', 1)[-1]
-    cap = {
+    cap: dict[str, Any] = {
         'capability_id': f'design.{name}.capability',
         'name': short,
         'description': description,
@@ -146,7 +146,7 @@ def _write_cap(
     ``resource_need``：G6 判权档位——改画布的写类默认 'editor'；codegen（读设计出码、不改画布，同 export 读类）
     传 'viewer'。
     """
-    cap = {
+    cap: dict[str, Any] = {
         'capability_id': f'design.{name}.capability',
         'name': title,
         'description': description,
@@ -185,7 +185,7 @@ _PROJECT_ID = {
     'project_id': {'type': 'string', 'minLength': 1, 'description': '设计项目 id（= 一个 OpenPencil 文档/.op）'}
 }
 
-DESIGN_AI_NATIVE_MANIFEST = {
+DESIGN_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'design',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'design': '矢量设计（画布出图：海报/UI 稿/插画/图形/Logo）'},
