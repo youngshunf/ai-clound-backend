@@ -14,7 +14,7 @@ import uuid
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import sqlalchemy as sa
 
@@ -24,6 +24,8 @@ from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
 from backend.app.hasn.schema.hasn_message_hub import (
     ErrorObject,
+    DispatchStatus,
+    InboxKind,
     InboxItem,
     InboxPullRequest,
     InboxPullResponse,
@@ -120,9 +122,9 @@ class StoredMessage:
     owner_id: str
     hasn_id: str
     conversation_id: str
-    inbox_kind: str
+    inbox_kind: InboxKind
     envelope: dict[str, Any]
-    dispatch_status: str
+    dispatch_status: DispatchStatus
     created_at: datetime
 
 
@@ -135,8 +137,8 @@ class MessageRecord:
     to_id: str
     content: dict[str, Any]
     envelope: dict[str, Any]
-    inbox_kind: str
-    dispatch_status: str
+    inbox_kind: InboxKind
+    dispatch_status: DispatchStatus
     delivery_status: str = 'delivered'
     owner_copy_of_message_id: str | None = None
     runtime_summary: RuntimeSummary | None = None
@@ -159,14 +161,14 @@ class MessageHubGateway(Protocol):
         *,
         source_message: StoredMessage,
         reason: str,
-        dispatch_status: str,
+        dispatch_status: DispatchStatus,
         runtime_summary: RuntimeSummary | None,
     ) -> None: ...
     async def pull_inbox(
         self, db: AsyncSession, request: InboxPullRequest, *, limit: int = 100
     ) -> InboxPullResponse: ...
     async def mark_dispatch_status(
-        self, db: AsyncSession, *, message_id: str, dispatch_status: str
+        self, db: AsyncSession, *, message_id: str, dispatch_status: DispatchStatus
     ) -> None: ...
 
 
@@ -535,10 +537,10 @@ class SqlAlchemyMessageHubGateway:
             ),
             {'owner_id': owner_id, 'cursor_id': cursor_id, 'limit': limit},
         )
-        return list(result.mappings().all())
+        return [dict(row) for row in result.mappings().all()]
 
     async def mark_dispatch_status(
-        self, db: AsyncSession, *, message_id: str, dispatch_status: str
+        self, db: AsyncSession, *, message_id: str, dispatch_status: DispatchStatus
     ) -> None:
         await db.execute(
             sa.text(
@@ -580,7 +582,7 @@ class SqlAlchemyMessageHubGateway:
             ),
             {'owner_id': owner_id, 'cursor_id': cursor_id, 'limit': limit},
         )
-        return list(result.mappings().all())
+        return [dict(row) for row in result.mappings().all()]
 
 
 @dataclass(slots=True)
@@ -610,7 +612,7 @@ class HasnMessageHubService:
         envelope.setdefault('to_id', target_id)
         envelope.setdefault('owner_id', request.owner_id)
 
-        dispatch_status = 'not_required'
+        dispatch_status: DispatchStatus = 'not_required'
         runtime: RuntimeSummary | None = None
         if recipient.entity_type == 'agent':
             runtime = await self.gateway.latest_runtime_summary(
@@ -620,7 +622,7 @@ class HasnMessageHubService:
             )
             dispatch_status = 'runtime_unavailable' if runtime is None or not runtime.is_reachable else 'dispatched'
 
-        primary_kind = 'agent_inbox' if recipient.entity_type == 'agent' else 'human_inbox'
+        primary_kind: InboxKind = 'agent_inbox' if recipient.entity_type == 'agent' else 'human_inbox'
         primary = await self.gateway.store_inbox_message(
             db,
             MessageRecord(
@@ -959,11 +961,42 @@ def _row_datetime(value: Any) -> datetime:
     return timezone.now()
 
 
+def _dispatch_status_from_row(value: Any) -> DispatchStatus:
+    """验证数据库中的调度状态，拒绝将脏数据伪装成协议枚举。"""
+    allowed: frozenset[DispatchStatus] = frozenset(
+        {
+            'not_required',
+            'pending_runtime',
+            'dispatched',
+            'runtime_unavailable',
+            'dispatch_failed',
+            'suppressed_by_policy',
+        }
+    )
+    if value not in allowed:
+        raise errors.ServerError(msg=f'消息调度状态非法: {value!r}')
+    return cast(DispatchStatus, value)
+
+
+def _inbox_kind_from_row(value: Any, *, hasn_id: str, owner_copy: bool) -> InboxKind:
+    """验证数据库中的收件箱类型，缺失时按已知收件主体推导。"""
+    resolved = value or ('owner_copy' if owner_copy else _inbox_kind_for_hasn(hasn_id))
+    allowed: frozenset[InboxKind] = frozenset(
+        {'human_inbox', 'agent_inbox', 'owner_copy', 'suppressed_inbox'}
+    )
+    if resolved not in allowed:
+        raise errors.ServerError(msg=f'消息收件箱类型非法: {resolved!r}')
+    return cast(InboxKind, resolved)
+
+
 def _inbox_item_from_message_row(row: dict[str, Any]) -> InboxItem:
     context = _row_json(row.get('context'))
-    inbox_kind = context.get('s4_inbox_kind')
-    if not inbox_kind:
-        inbox_kind = 'owner_copy' if row.get('owner_copy_of_message_id') else _inbox_kind_for_hasn(row['hasn_id'])
+    inbox_kind = _inbox_kind_from_row(
+        context.get('s4_inbox_kind'),
+        hasn_id=str(row['hasn_id']),
+        owner_copy=bool(row.get('owner_copy_of_message_id')),
+    )
+    dispatch_status = _dispatch_status_from_row(row['dispatch_status'])
     envelope = context.get('s4_envelope') or {'content': _row_json(row.get('content'))}
     envelope = copy.deepcopy(envelope)
     envelope['process_blocks'] = _row_list(row.get('process_blocks'))
@@ -973,7 +1006,7 @@ def _inbox_item_from_message_row(row: dict[str, Any]) -> InboxItem:
             'conversation_id': str(row['conversation_id']),
             'owner_id': row['owner_id'],
             'hasn_id': row['hasn_id'],
-            'dispatch_status': row['dispatch_status'],
+            'dispatch_status': dispatch_status,
         }
     )
     envelope.pop('node_role', None)
@@ -984,7 +1017,7 @@ def _inbox_item_from_message_row(row: dict[str, Any]) -> InboxItem:
         conversation_id=str(row['conversation_id']),
         inbox_kind=inbox_kind,
         envelope=envelope,
-        dispatch_status=row['dispatch_status'],
+        dispatch_status=dispatch_status,
         created_at=_row_datetime(row.get('created_time')),
     )
 
@@ -994,13 +1027,14 @@ def _inbox_item_from_suppressed_row(row: dict[str, Any]) -> InboxItem:
     envelope = context.get('s4_envelope') or {'content': _row_json(row.get('content'))}
     envelope = copy.deepcopy(envelope)
     envelope['process_blocks'] = _row_list(row.get('process_blocks'))
+    dispatch_status = _dispatch_status_from_row(row['dispatch_status'])
     envelope.update(
         {
             'message_id': str(row['message_id']),
             'conversation_id': str(row['conversation_id']),
             'owner_id': row['owner_id'],
             'hasn_id': row['hasn_id'],
-            'dispatch_status': row['dispatch_status'],
+            'dispatch_status': dispatch_status,
         }
     )
     envelope.pop('node_role', None)
@@ -1011,12 +1045,12 @@ def _inbox_item_from_suppressed_row(row: dict[str, Any]) -> InboxItem:
         conversation_id=str(row['conversation_id']),
         inbox_kind='suppressed_inbox',
         envelope=envelope,
-        dispatch_status=row['dispatch_status'],
+        dispatch_status=dispatch_status,
         created_at=_row_datetime(row.get('created_time')),
     )
 
 
-def _inbox_kind_for_hasn(hasn_id: str) -> str:
+def _inbox_kind_for_hasn(hasn_id: str) -> InboxKind:
     return 'agent_inbox' if str(hasn_id).startswith('a_') else 'human_inbox'
 
 
