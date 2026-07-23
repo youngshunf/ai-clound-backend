@@ -2,9 +2,10 @@ import uuid
 
 from collections.abc import Sequence
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_node_bindings import hasn_node_bindings_dao
@@ -202,7 +203,7 @@ class HasnNodeBindingsService:
             )
             .values(status='expired', updated_time=now)
         )
-        return result.rowcount or 0
+        return cast('CursorResult[Any]', result).rowcount or 0
 
 
 hasn_node_bindings_service: HasnNodeBindingsService = HasnNodeBindingsService()

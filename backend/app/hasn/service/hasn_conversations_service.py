@@ -118,7 +118,7 @@ class HasnConversationsService:
                 return 'human'
             if hasn_id.startswith('a_'):
                 return 'agent'
-            raise errors.BadRequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
+            raise errors.RequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
 
         # 校验两侧 HASN ID 格式（排序与去重在 get_or_create 内部完成）
         caller_type = get_participant_type(caller_hasn_id)

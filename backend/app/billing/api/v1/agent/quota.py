@@ -106,7 +106,6 @@ async def deduct_credits(
             db,
             user_id=body.user_id,
             credits=body.credits,
-            transaction_type='model_call',
             reference_type='model',
             description=body.description or f'模型调用: {body.model_name or "unknown"}',
             app_code=app_code,

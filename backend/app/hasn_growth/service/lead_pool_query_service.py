@@ -12,11 +12,12 @@ industry/region/keyword/city 维度检索，**不限 lead_scope = 公共池语�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 
 from backend.app.hasn_growth.model import LeadContact, LeadQuota, LeadRef
 
@@ -233,7 +234,7 @@ class LeadPoolQueryService:
                 .values(user_id=user_id, lead_contact_id=lead.id, source='request', status='new')
                 .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
             )
-            if (res.rowcount or 0) > 0:
+            if (cast('CursorResult[Any]', res).rowcount or 0) > 0:
                 newly_acquired += 1
         await db.flush()
         leads = [_lead_to_dict(r, reveal_pii=reveal_pii) for r in delivered]

@@ -18,11 +18,12 @@ import re
 
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
@@ -216,7 +217,7 @@ class OwnerMemoryService:
                 profile_revision=HasnAgents.profile_revision + 1,
             )
         )
-        agents_updated = int(result.rowcount or 0)
+        agents_updated = int(cast('CursorResult[Any]', result).rowcount or 0)
         await db.flush()
 
         # 画像下行 WSPUSH（KIND_AGENTS）：覆盖 user_md + bump profile_revision 后，主动推该 owner

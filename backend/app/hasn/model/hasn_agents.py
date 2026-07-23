@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 import sqlalchemy as sa
 
@@ -61,7 +62,7 @@ class HasnAgents(Base):
     node_id: Mapped[str | None] = mapped_column(
         sa.String(40), default=None, comment='Agent 驻留节点 ID（设备指纹派生，格式: n_{hash}）'
     )
-    capabilities: Mapped[dict | None] = mapped_column(
+    capabilities: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(
         postgresql.JSONB(), default=None, comment='Agent 能力列表（A2A AgentCard 兼容 JSONB）'
     )
     template_id: Mapped[str | None] = mapped_column(

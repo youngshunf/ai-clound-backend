@@ -18,10 +18,12 @@ import copy
 import json
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import sqlalchemy as sa
+
+from sqlalchemy.engine import CursorResult
 
 from backend.app.billing.model import UserSubscription
 from backend.app.hasn.model.hasn_agents import HasnAgents
@@ -810,7 +812,7 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
         )
         .values(status='expired', updated_time=now)
     )
-    return result.rowcount or 0
+    return cast('CursorResult[Any]', result).rowcount or 0
 
 
 # ============================ C2：catalog 作为展示权威 ============================
@@ -1253,7 +1255,7 @@ async def revoke_entitlement(db: AsyncSession, *, entitlement_id: int) -> bool:
         .where(HasnAppEntitlement.id == entitlement_id, HasnAppEntitlement.status == 'active')
         .values(status='revoked', updated_time=timezone.now())
     )
-    return (result.rowcount or 0) > 0
+    return (cast('CursorResult[Any]', result).rowcount or 0) > 0
 
 
 async def list_entitlements(
