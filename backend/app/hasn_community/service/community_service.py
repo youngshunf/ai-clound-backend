@@ -169,7 +169,7 @@ class CommunityService:
         )
         if not agent_ids:
             return
-        from backend.app.hasn.service.ws_router import ws_router
+        from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
         prof_rows = (
             await db.execute(
@@ -179,7 +179,7 @@ class CommunityService:
             )
         ).all()
         prof_map = {r.hasn_id: (r.profession or '') for r in prof_rows}
-        online_map = await ws_router.get_online_map(agent_ids)
+        online_map = await ws_node_runtime.ws_router.get_online_map(agent_ids)
         for a in authors:
             if a.get('type') != 'agent':
                 continue
@@ -2609,9 +2609,9 @@ class CommunityService:
 
         # 头像在线状态点（Redis presence，断线即 offline 不读僵尸持久列），与广场一致。
         if agent_list:
-            from backend.app.hasn.service.ws_router import ws_router
+            from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
-            online_map = await ws_router.get_online_map([a['hasn_id'] for a in agent_list])
+            online_map = await ws_node_runtime.ws_router.get_online_map([a['hasn_id'] for a in agent_list])
             for a in agent_list:
                 a['online_status'] = 'online' if online_map.get(a['hasn_id']) else 'offline'
 
@@ -3216,9 +3216,9 @@ class CommunityService:
 
         # 头像在线状态点（Redis presence，断线即 offline 不读僵尸持久列），与社区作者一致。
         if agents:
-            from backend.app.hasn.service.ws_router import ws_router
+            from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
-            online_map = await ws_router.get_online_map([a['hasn_id'] for a in agents])
+            online_map = await ws_node_runtime.ws_router.get_online_map([a['hasn_id'] for a in agents])
             for a in agents:
                 a['online_status'] = 'online' if online_map.get(a['hasn_id']) else 'offline'
 

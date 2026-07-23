@@ -246,7 +246,7 @@ class CircleService:
 
         诚实留空：查不到 profession → ''；display_name 兜底用 member_hasn_id（前端再兜底）。
         """
-        from backend.app.hasn.service.ws_router import ws_router
+        from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
         from backend.app.hasn_core import HasnAgents, HasnHumans
 
         human_ids = {m['member_hasn_id'] for m in members if m.get('member_type') == 'human'}
@@ -277,7 +277,7 @@ class CircleService:
                 )
             ).all()
             agent_map = {r.hasn_id: r for r in rows}
-        online_map = await ws_router.get_online_map(list(agent_ids)) if agent_ids else {}
+        online_map = await ws_node_runtime.ws_router.get_online_map(list(agent_ids)) if agent_ids else {}
 
         for m in members:
             hid = m['member_hasn_id']
