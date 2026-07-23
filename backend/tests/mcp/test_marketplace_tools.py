@@ -26,6 +26,7 @@ from backend.app.mcp.tools.marketplace import (
     PublishSkillTool,
     SearchSkillsTool,
     SearchTemplatesTool,
+    _require_owner_hasn_id,
 )
 from backend.common.exception import errors
 
@@ -39,6 +40,19 @@ def _agent_ctx() -> AgentContext:
         owner_hasn_id='h_marketplace_tool_test',
         session_uuid='amk_marketplace_tool_test',
     )
+
+
+def test_marketplace_tools_require_owner_identity() -> None:
+    """凭证缺少主人身份时必须在访问市场写服务前拒绝。"""
+    context = AgentContext(
+        hasn_id='a_marketplace_missing_owner',
+        owner_id=1,
+        agent_status='active',
+        metadata={},
+    )
+
+    with pytest.raises(RuntimeError, match='owner_hasn_id'):
+        _require_owner_hasn_id(context)
 
 
 async def _db_reachable() -> bool:

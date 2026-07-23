@@ -38,6 +38,14 @@ _MAX_LIMIT = 20
 _MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 
 
+def _require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离资源。"""
+    owner_hasn_id = agent_context.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('marketplace: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 def _normalize_installed_skill_ids(skills: Any) -> list[str]:
     """把 hasn_agents.skills（JSONB）归一成 skill_id 字符串清单（保序去重）。
 
@@ -445,6 +453,7 @@ class InstallSkillTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         from backend.app.hasn.service.hasn_agents_service import agent_profile_service
 
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         skill_id = str(arguments.get('skill_id', '')).strip()
         if not skill_id:
             return {'skill_id': skill_id, 'installed': False, 'reachable': False, 'reason': 'skill_id 必填'}
@@ -455,7 +464,7 @@ class InstallSkillTool(BaseTool):
                 # 维度②：attach 内部校验技能 published/public，未发布抛 NotFoundError。
                 result = await agent_profile_service.attach_skill_cloud_first(
                     db,
-                    owner_id=agent_context.owner_hasn_id,
+                    owner_id=owner_hasn_id,
                     hasn_id=agent_context.agent_hasn_id,
                     skill_id=skill_id,
                     user_id=agent_context.owner_id,
@@ -512,13 +521,14 @@ class UninstallSkillTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         from backend.app.hasn.service.hasn_agents_service import agent_profile_service
 
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         skill_id = str(arguments.get('skill_id', '')).strip()
         if not skill_id:
             return {'skill_id': skill_id, 'uninstalled': False, 'reason': 'skill_id 必填'}
         async with async_db_session() as db:
             result = await agent_profile_service.detach_skill_cloud_first(
                 db,
-                owner_id=agent_context.owner_hasn_id,
+                owner_id=owner_hasn_id,
                 hasn_id=agent_context.agent_hasn_id,
                 skill_id=skill_id,
                 user_id=agent_context.owner_id,
@@ -598,6 +608,7 @@ class PublishSkillTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         from backend.app.marketplace.service.marketplace_skill_service import marketplace_skill_service
 
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         content = _decode_package(arguments)
         submit_review = bool(arguments.get('submit_review'))
         async with async_db_session() as db:
@@ -605,7 +616,7 @@ class PublishSkillTool(BaseTool):
             skill = await marketplace_skill_service.upload_user_skill(
                 db=db,
                 user_id=agent_context.owner_id,
-                hasn_id=agent_context.owner_hasn_id,
+                hasn_id=owner_hasn_id,
                 content=content,
                 filename=(arguments.get('filename') or None),
                 slug=(arguments.get('slug') or None),
@@ -666,13 +677,14 @@ class PublishTemplateTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         from backend.app.marketplace.service.marketplace_template_service import marketplace_template_service
 
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         content = _decode_package(arguments)
         submit_review = bool(arguments.get('submit_review'))
         async with async_db_session() as db:
             template = await marketplace_template_service.upload_user_template(
                 db=db,
                 user_id=agent_context.owner_id,
-                hasn_id=agent_context.owner_hasn_id,
+                hasn_id=owner_hasn_id,
                 content=content,
                 filename=(arguments.get('filename') or None),
                 slug=(arguments.get('slug') or None),

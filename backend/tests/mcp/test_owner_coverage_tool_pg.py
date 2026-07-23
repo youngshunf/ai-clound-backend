@@ -30,6 +30,7 @@ from backend.app.mcp.tools.owner import (
     OwnerGrowthClaimTool,
     OwnerMemoryContributeTool,
     OwnerOnboardingClaimTool,
+    _require_owner_hasn_id,
 )
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 from backend.utils.timezone import timezone
@@ -48,6 +49,19 @@ def _ctx(owner_hasn_id: str) -> AgentContext:
         metadata={},
         owner_hasn_id=owner_hasn_id,
     )
+
+
+def test_owner_tools_require_owner_identity() -> None:
+    """凭证缺少主人身份时必须拒绝，不能把空身份带入主人数据服务。"""
+    context = AgentContext(
+        hasn_id='a_knowu_missing_owner',
+        owner_id=0,
+        agent_status='active',
+        metadata={},
+    )
+
+    with pytest.raises(RuntimeError, match='owner_hasn_id'):
+        _require_owner_hasn_id(context)
 
 
 @pytest_asyncio.fixture

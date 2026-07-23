@@ -34,6 +34,14 @@ def _short_merge_error(exc: Exception) -> str:
     return msg[:_MERGE_ERROR_MAX]
 
 
+def _require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离数据。"""
+    owner_hasn_id = agent_context.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('owner: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 class OwnerCoverageGetTool(BaseTool):
     """读主人 5 维画像完整度（缺什么采访什么）。"""
 
@@ -78,10 +86,9 @@ class OwnerCoverageGetTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> Any:
         # 只读：用普通 session（assess_if_stale 内部按需重判并自提交，独立 session 安全，
         # 与 owner 读 API 同范式）。owner 身份强制取自 agent_context，绝不读 arguments。
+        owner_id = _require_owner_hasn_id(agent_context)
         async with async_db_session() as db:
-            return await owner_profile_coverage_service.assess_if_stale(
-                db, owner_id=agent_context.owner_hasn_id
-            )
+            return await owner_profile_coverage_service.assess_if_stale(db, owner_id=owner_id)
 
 
 class OwnerMemoryContributeTool(BaseTool):
@@ -140,7 +147,7 @@ class OwnerMemoryContributeTool(BaseTool):
         content = str(arguments.get('content') or '').strip()
         if not content:
             return {'accepted': False, 'merged': False, 'version': None, 'reason': 'empty_content'}
-        owner_id = agent_context.owner_hasn_id
+        owner_id = _require_owner_hasn_id(agent_context)
         # 复用既有 owner_memory_service（与 Agent REST /memory/contribute 同一服务、同一语义）：
         # 先落 contribution 并提交（即便合并失败也不丢观察），再尽力合并；合并失败如实延后、零 fake。
         async with async_db_session() as db:
@@ -224,8 +231,9 @@ class _OwnerPeriodicClaimTool(BaseTool):
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> Any:
         cooldown = arguments.get('cooldown_days')
         cooldown_days = int(cooldown) if isinstance(cooldown, int) and cooldown > 0 else 7
+        owner_id = _require_owner_hasn_id(agent_context)
         async with async_db_session() as db:
-            claimed = await self._do_claim(db, agent_context.owner_hasn_id, cooldown_days)
+            claimed = await self._do_claim(db, owner_id, cooldown_days)
             await db.commit()
             return {'claimed': bool(claimed), 'cooldown_days': cooldown_days}
 
