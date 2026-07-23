@@ -31,6 +31,9 @@ from backend.database.db import async_db_session
 
 logger = logging.getLogger(__name__)
 
+# 兼容层：保留历史模块变量名，便于 monkeypatch/老路径接入继续生效。
+ws_router = ws_node_runtime
+
 TICK_INTERVAL_SECONDS = 60
 TASK_EXEC_TIMEOUT_SECONDS = 600
 
@@ -180,7 +183,7 @@ class TaskSchedulerService:
             'params': task_exec_params,
         }
 
-        pushed = await ws_node_runtime.push_message_to(task.agent_id, task_exec_msg)
+        pushed = await ws_router.push_message_to(task.agent_id, task_exec_msg)
         if not pushed:
             logger.warning(f'[TaskScheduler] task {task.id} agent {task.agent_id} offline, message queued')
 

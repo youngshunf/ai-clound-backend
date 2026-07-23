@@ -14,6 +14,10 @@ from backend.app.hasn_im.adapters.routing.redis_presence_store import (
 from backend.database.redis import redis_client
 
 
+# 兼容旧调用方与单测，保留历史命名别名。
+NODE_CONN_KEY = CLIENT_CONN_KEY
+
+
 class NodeSchedulerService:
     """提供云端节点的负载均衡和分配能力"""
 
