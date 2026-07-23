@@ -36,8 +36,7 @@ from backend.app.hasn.schema.hasn_agents import (
 )
 from backend.app.hasn.service.hasn_agents_service import agent_profile_service, hasn_agents_service
 from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn.service.message_router import check_relation_permission
-from backend.app.hasn.service.ws_router import ws_router
+from backend.app.hasn_im.application.provider import get_im_gateway, get_presence_query
 from backend.common.exception import errors
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
@@ -45,6 +44,10 @@ from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+
+
+_presence_query = get_presence_query()
+_im_gateway = get_im_gateway()
 
 
 @router.get(
@@ -104,8 +107,12 @@ async def get_agent_reachability(
     if agent is None:
         raise errors.NotFoundError(msg='Agent 不存在')
 
-    perm = await check_relation_permission(db, requester_id, agent_id, 'message')
-    online = await ws_router.is_agent_online(agent_id)
+    perm = await _im_gateway.authz_verdict(
+        sender_hasn_id=requester_id,
+        receiver_hasn_id=agent_id,
+        relation_type='message',
+    )
+    online = await _presence_query.is_agent_online(agent_id)
 
     # runtime_type（hermes 等运行时适配器类型）：hasn_agents.runtime_summary_json
     # 列虽存在，但当前无任何写入方（实库恒为 {}），且该字段不参与 evaluate_remote

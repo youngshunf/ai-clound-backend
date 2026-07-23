@@ -1,11 +1,4 @@
-"""分身发完帖子/文章 → 给主人投「可点进详情」卡片消息的回归测试。
-
-覆盖（不依赖 PG，纯逻辑 + 路由接缝；route_message 真实行为由 message_router 自有测试覆盖）：
-1. 卡片体构造——标题「{分身名}发布了一篇社区{帖子|文章}」、携状态+审核提示、过 schema 自检、
-   URI/资源类型/primary_action 正确。
-2. 路由接缝——notify_* 以 from=分身、to=主人、content_type=5（卡片）调 route_message，content 即卡片体。
-3. best-effort——route_message 抛异常时 notify_* 吞掉不外抛（绝不影响发帖事务）。
-"""
+"""分身发完帖子/文章 → 给主人投「可点进详情」卡片消息的回归测试。"""
 
 from __future__ import annotations
 
@@ -76,15 +69,15 @@ class _FakeSessionCtx:
 
 @pytest.fixture
 def captured_route(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """把 async_db_session 与 route_message 换成捕获桩（接缝测试，非伪造结果）。"""
+    """把 async_db_session 与 deliver_system_card 换成接缝桩（非伪造结果）。"""
     captured: dict[str, Any] = {}
 
-    async def _fake_route(**kwargs: Any) -> dict[str, Any]:
+    async def _fake_deliver(*_args: Any, **kwargs: Any) -> int:
         captured.update(kwargs)
-        return {'error': False, 'msg_id': 1, 'conversation_id': 'c1', 'status': 'sent'}
+        return 1
 
     monkeypatch.setattr(notifier, 'async_db_session', lambda: _FakeSessionCtx())
-    monkeypatch.setattr(notifier.message_router, 'route_message', _fake_route)
+    monkeypatch.setattr(notifier, 'deliver_system_card', _fake_deliver)
     return captured
 
 
@@ -99,11 +92,15 @@ async def test_notify_post_routes_card_to_owner(captured_route: dict[str, Any]) 
         status='pending_review',
     )
     assert captured_route['from_id'] == _AGENT
-    assert captured_route['to_target'] == _OWNER
-    assert captured_route['content_type'] == 5  # 卡片
+    assert captured_route['recipient_id'] == _OWNER
+    assert captured_route['recipient_type'] == 'human'
+    assert captured_route['peer_type'] == 'agent'
+    assert captured_route['relation_type'] == 'social'
+    assert captured_route['conversation_type'] == 'agent'
     assert captured_route['msg_type'] == 'message'
+    assert captured_route['priority'] == 'normal'
     assert captured_route['local_id'] == 'community-card-p_abc123'
-    content = captured_route['content']
+    content = captured_route['card_body']
     assert content['title'] == '星创发布了一篇社区帖子'
     assert content['resource']['uri'] == 'hasn://community/posts/p_abc123'
     assert content['primary_action']['uri'] == 'hasn://community/posts/p_abc123'
@@ -122,9 +119,11 @@ async def test_notify_article_routes_card_to_owner(captured_route: dict[str, Any
         status='pending_review',
     )
     assert captured_route['from_id'] == _AGENT
-    assert captured_route['to_target'] == _OWNER
-    assert captured_route['content_type'] == 5
-    content = captured_route['content']
+    assert captured_route['recipient_id'] == _OWNER
+    assert captured_route['peer_type'] == 'agent'
+    assert captured_route['conversation_type'] == 'agent'
+    assert captured_route['msg_type'] == 'message'
+    content = captured_route['card_body']
     assert content['title'] == '星创发布了一篇社区文章'
     assert content['resource']['uri'] == 'hasn://community/articles/art_xyz789'
     assert content['resource']['title'] == '深度长文'
@@ -140,13 +139,13 @@ async def test_notify_skips_when_identities_missing(captured_route: dict[str, An
 
 @pytest.mark.asyncio
 async def test_notify_is_best_effort_on_route_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """route_message 抛异常 → notify 必须吞掉（best-effort，发帖事务已独立提交）。"""
+    """deliver_system_card 抛异常 → notify 必须吞掉（best-effort，发帖事务已独立提交）。"""
 
-    async def _boom(**_kwargs: Any) -> dict[str, Any]:
+    async def _boom(**_kwargs: Any) -> int:
         raise RuntimeError('路由炸了')
 
     monkeypatch.setattr(notifier, 'async_db_session', lambda: _FakeSessionCtx())
-    monkeypatch.setattr(notifier.message_router, 'route_message', _boom)
+    monkeypatch.setattr(notifier, 'deliver_system_card', _boom)
 
     # 不抛即通过。
     await notifier.notify_owner_post_card(

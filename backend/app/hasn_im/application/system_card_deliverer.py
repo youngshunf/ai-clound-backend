@@ -46,6 +46,7 @@ async def deliver_system_card(
     priority: str,
     msg_type: str = 'notification',
     notif_id: int | None = None,
+    local_id: str | None = None,
 ) -> int:
     """以系统身份把卡片投进「from ⇄ recipient」会话，返回消息 id（绕 social 权限：主人自见）。
 
@@ -75,6 +76,7 @@ async def deliver_system_card(
         content_type=_CONTENT_TYPE_CARD,
         msg_type=msg_type,
         priority=priority if priority in _VALID_PRIORITIES else 'normal',
+        local_id=local_id,
         context={'notification_id': notif_id, 'conversation_type': conversation_type},
     )
 

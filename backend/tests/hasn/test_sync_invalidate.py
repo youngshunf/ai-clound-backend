@@ -143,6 +143,7 @@ async def test_get_all_revisions_cache_then_compute(monkeypatch: pytest.MonkeyPa
     redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_COMMON_SKILLS}'] = 'cs_cached'
     redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_PLATFORM_CONFIG}'] = 'pc_cached'
     redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_DESIGNSYSTEM}'] = 'ds_cached'
+    redis.strings[f'{svc.REV_PREFIX}:{svc.KIND_SPEECH_CATALOG}'] = 'sp_cached'
 
     revs = await svc.get_all_revisions(FakeDb([RowsResult([('a', 1)])]))
     assert revs[svc.KIND_COMMON_SKILLS] == 'cs_cached'

@@ -7,13 +7,15 @@
 import json
 
 from typing import Any
-
+from backend.app.hasn_im.adapters.routing.redis_presence_store import (
+    CLIENT_CONN_KEY,
+    PUSH_PREFIX,
+)
 from backend.database.redis import redis_client
 
-# Redis 键前缀
-NODE_CONN_KEY = 'hasn:node_conn'
-AGENT_NODE_KEY = 'hasn:agent_node'
-PUSH_PREFIX = 'hasn:push'
+
+# 兼容旧调用方与单测，保留历史命名别名。
+NODE_CONN_KEY = CLIENT_CONN_KEY
 
 
 class NodeSchedulerService:
@@ -21,7 +23,7 @@ class NodeSchedulerService:
 
     async def get_all_active_nodes(self) -> list[dict[str, Any]]:
         """获取所有存活节点的状态信息"""
-        nodes_raw = await redis_client.hgetall(NODE_CONN_KEY)
+        nodes_raw = await redis_client.hgetall(CLIENT_CONN_KEY)
         nodes = []
         for node_id, data_str in nodes_raw.items():
             if data_str:

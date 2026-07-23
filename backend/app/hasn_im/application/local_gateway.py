@@ -15,6 +15,7 @@ group 发送、撤回、读列表、read cursor、成员周期、抑制放行随
 
 from __future__ import annotations
 
+from typing import Any
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -25,6 +26,7 @@ from backend.app.hasn.service.message_router import (
     _entity_type_str,
     get_or_create_conversation,
     route_message,
+    check_relation_permission,
 )
 from backend.app.hasn_im.application.errors import (
     ImConversationNotFound,
@@ -46,6 +48,64 @@ from backend.app.hasn_im.ports.dto import (
     ServicePrincipal,
     UpdateGroupMembersCommand,
 )
+
+
+async def resolve_target(db: AsyncSession, to_target: str) -> dict[str, Any] | None:
+    """过渡期目标解析桥：复用现网 message_router.resolve_target，避免工具层重复解析逻辑。"""
+    from backend.app.hasn.service import message_router
+
+    return await message_router.resolve_target(db, to_target)
+
+
+async def send_to_target(
+    db: AsyncSession,
+    from_id: str,
+    to_target: str,
+    *,
+    content: dict[str, Any],
+    content_type: int = 1,
+    msg_type: str = 'message',
+    priority: str = 'normal',
+    reply_to_id: int | None = None,
+    local_id: str | None = None,
+    context: dict[str, Any] | None = None,
+    origin_node_id: str | None = None,
+    origin_session_id: str | None = None,
+) -> dict[str, Any]:
+    """过渡期 fallback：群聊等未迁移场景由现网 route_message 处理，保证行为逐字对齐。"""
+    from backend.app.hasn.service import message_router
+
+    return await message_router.route_message(
+        db=db,
+        from_id=from_id,
+        to_target=to_target,
+        content=content,
+        content_type=content_type,
+        msg_type=msg_type,
+        priority=priority,
+        reply_to_id=reply_to_id,
+        local_id=local_id,
+        context=context,
+        origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
+    )
+
+
+async def mark_read(
+    db: AsyncSession,
+    reader: str,
+    conversation_id: str,
+    last_msg_id: int,
+) -> None:
+    """过渡期 mark_read 兼容封装，复用现网 message_router mark_read。"""
+    from backend.app.hasn.service import message_router
+
+    await message_router.mark_read(
+        db=db,
+        reader=reader,
+        conversation_id=conversation_id,
+        last_msg_id=last_msg_id,
+    )
 
 
 def _participant_type(hasn_id: str) -> str:
@@ -200,7 +260,13 @@ class PythonLocalImGateway:
         relation_type: str = 'social',
         envelope: dict | None = None,
     ) -> dict:
-        raise NotImplementedError('确定性判权裁决随 R2-08 关系域落地')
+        async with self.session_factory() as db:
+            return await check_relation_permission(
+                db,
+                sender_id=sender_hasn_id,
+                receiver_id=receiver_hasn_id,
+                msg_type=relation_type,
+            )
 
     async def release_suppressed(
         self, *, suppressed_id: int, principal: ServicePrincipal

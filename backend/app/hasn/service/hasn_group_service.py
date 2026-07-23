@@ -25,6 +25,14 @@ from backend.app.hasn.model.hasn_conversations import HasnConversations
 from backend.app.hasn.model.hasn_group_agent_invites import HasnGroupAgentInvites
 from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_im.application.errors import ImSendRejected
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports.dto import (
+    ActorKind,
+    EnsureDirectConversationCommand,
+    SendMessageCommand,
+    ServicePrincipal,
+)
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -70,6 +78,14 @@ def effective_agent_policy(agent_policy: str, agent_count: int) -> str:
 def _agent_member_count(roster: list[HasnGroupMembers]) -> int:
     """名册中 member_type=='agent' 的成员数（含 muted，见决策 #3：禁言是临时态不参与状态机）。"""
     return sum(1 for m in roster if m.member_type == 'agent')
+
+
+def _actor_principal(hasn_id: str) -> ServicePrincipal:
+    """按 hasn_id 推断发送方 principal。"""
+    return ServicePrincipal(
+        canonical_sender=hasn_id,
+        actor_kind=ActorKind.AGENT if hasn_id.startswith('a_') else ActorKind.HUMAN,
+    )
 
 
 class HasnGroupService:
@@ -432,11 +448,10 @@ class HasnGroupService:
     ) -> None:
         """向分身主人发拉分身确认卡片（复用既有卡片 action/resolved 审批范式）。
 
-        经 route_message(content_type=5) 投递（含跨设备 sync_event + WS 推送）。daemon 收到
-        卡片 action（group_agent_invite.accepted/declined）→ 代理云端 accept/decline 端点。
+        经 ImGateway(route_message 封装) 发送 content_type=5（含跨设备 sync_event + WS 推送）。
+        daemon 收到卡片 action（group_agent_invite.accepted/declined）→ 代理云端 accept/decline 端点。
         best-effort：投递失败不回滚邀请（邀请行是权威，主人可从群详情 pending 列表处理）。
         """
-        from backend.app.hasn.service import message_router
         from backend.database.db import async_db_session
 
         card = {
@@ -484,16 +499,30 @@ class HasnGroupService:
             ],
         }
         try:
+            principal = _actor_principal(inviter_id)
             async with async_db_session() as card_db:
-                await message_router.route_message(
-                    card_db,
-                    from_id=inviter_id,
-                    to_target=agent_owner_id,
-                    content=card,
-                    content_type=5,
-                    msg_type='message',
+                gateway = get_im_gateway()
+                conv_ref = await gateway.ensure_direct_conversation(
+                    EnsureDirectConversationCommand(peer_hasn_id=agent_owner_id, relation_type='social'),
+                    principal,
                 )
-        except Exception:  # noqa: BLE001 - 卡片投递 best-effort，不拖垮邀请落库
+                await gateway.send_message(
+                    SendMessageCommand(
+                        conversation_id=conv_ref.conversation_id,
+                        content=card,
+                        content_type=5,
+                        msg_type='message',
+                        context={
+                            'projection_kind': 'group_agent_invite',
+                            'invite_id': invite_id,
+                            'group_id': group_public_id,
+                        },
+                    ),
+                    principal,
+                )
+        except ImSendRejected:
+            pass
+        except Exception:  # noqa: BLE001 - best-effort：投递失败不回滚邀请
             pass
 
     # ─── 对外编排 ───

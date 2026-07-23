@@ -19,10 +19,15 @@ from backend.app.hasn.schema.hasn_contacts import (
     DeleteHasnContactsParam,
     UpdateHasnContactsParam,
 )
+from backend.app.hasn_im.application.provider import get_presence_query, get_realtime_gateway
+from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
+
+_presence_query = get_presence_query()
+_realtime_gateway = get_realtime_gateway()
 
 # 好友请求未响应过期阈值（天）：pending 超此天数由 celery beat 兜底置 expired（B7）。
 CONTACT_REQUEST_EXPIRE_DAYS = 30
@@ -39,6 +44,14 @@ class ContactRequestError(Exception):
     def __init__(self, msg: str) -> None:
         super().__init__(msg)
         self.msg = msg
+
+
+async def _safe_push_contact_event(owner_id: str, frame: RealtimeFrame) -> None:
+    """联系人事件推送统一走 realtime gateway（best-effort，不阻塞主链路）。"""
+    try:
+        await _realtime_gateway.push_to_owner(owner_id, frame)
+    except Exception:
+        return
 
 
 class HasnContactsService:
@@ -119,9 +132,7 @@ class HasnContactsService:
                 # 走 get_online_map）。此前 peer 分支从不回填 online_status，导致跨主人/跨设备
                 # 看好友的分身永远显示离线、输入框被禁发（webui useSenderLabels 对无 presence
                 # 的 agent peer 一律按 offline 灰点）。
-                from backend.app.hasn.service.ws_router import ws_router
-
-                online_map = await ws_router.get_online_map([agent.hasn_id])
+                online_map = await _presence_query.get_online_map([agent.hasn_id])
                 peer_info = {
                     "hasn_id": agent.hasn_id,
                     "star_id": agent.star_id,
@@ -163,8 +174,6 @@ class HasnContactsService:
         :param peer_id: 联系人（human）的 hasn_id
         :return: owned_agents 字典列表
         """
-        from backend.app.hasn.service.ws_router import ws_router
-
         agents_result = await db.execute(
             select(HasnAgents).where(
                 HasnAgents.owner_id == peer_id,
@@ -175,7 +184,7 @@ class HasnContactsService:
         )
         agents = list(agents_result.scalars().all())
         # 实时在线：Redis presence + node_alive 门控（僵尸节点判离线）。
-        online_map = await ws_router.get_online_map([a.hasn_id for a in agents])
+        online_map = await _presence_query.get_online_map([a.hasn_id for a in agents])
         owned_agents: list[dict[str, Any]] = [{
                     "hasn_id": agent.hasn_id,
                     "star_id": agent.star_id,
@@ -313,6 +322,7 @@ class HasnContactsService:
         return None, None
 
     @staticmethod
+    @staticmethod
     def _request_out(req: Any, *, to_type: str, target: dict[str, Any], message: str | None) -> dict[str, Any]:
         return {
             'request_id': req.id,
@@ -331,8 +341,6 @@ class HasnContactsService:
         db: AsyncSession, requester_hasn_id: str, to_owner_id: str, req: Any, target_peer: dict, message: str | None,
     ) -> None:
         """给审批方（被加人 / 分身主人）推 hasn.contact.request_received（best-effort，失败不阻塞）。"""
-        from backend.app.hasn.service.ws_router import ws_router
-
         requester = await hasn_humans_dao.get_by_hasn_id(db, requester_hasn_id)
         from_peer = {
             'hasn_id': requester_hasn_id,
@@ -340,22 +348,17 @@ class HasnContactsService:
             'name': HasnContactsService._peer_name(requester, peer_type='human') if requester else '',
             'type': 'human',
         }
-        try:
-            await ws_router.push_message_to(
-                to_owner_id,
-                {
-                    'method': 'hasn.contact.request_received',
-                    'params': {
-                        'owner_id': to_owner_id,
-                        'request_id': req.id,
-                        'from_peer': from_peer,
-                        'target': target_peer,
-                        'message': message or '',
-                    },
-                },
-            )
-        except Exception:
-            return
+        frame = RealtimeFrame(
+            method='hasn.contact.request_received',
+            params={
+                'owner_id': to_owner_id,
+                'request_id': req.id,
+                'from_peer': from_peer,
+                'target': target_peer,
+                'message': message or '',
+            },
+        )
+        await _safe_push_contact_event(to_owner_id, frame)
 
     @staticmethod
     async def request_contact(
@@ -365,6 +368,8 @@ class HasnContactsService:
         target: str,
         message: str | None = None,
         add_source: str = 'other',
+        resolved_target: Any | None = None,
+        resolved_target_type: str | None = None,
     ) -> dict[str, Any]:
         """发起一条 social 好友请求（人端 owner 与 Agent 代主人加好友的唯一实现）。
 
@@ -373,7 +378,10 @@ class HasnContactsService:
         - human 目标：审批人=对方本人；agent 目标：审批人=分身主人（不因主人已是好友而拦截）。
         - 业务校验失败抛 ContactRequestError；成功返回 dict（见 _request_out）。
         """
-        entity, kind = await HasnContactsService._resolve_contact_target(db, target)
+        entity = resolved_target
+        kind = resolved_target_type
+        if entity is None or kind not in {'human', 'agent'}:
+            entity, kind = await HasnContactsService._resolve_contact_target(db, target)
         if not entity:
             raise ContactRequestError(f'目标 {target} 不存在')
         if kind == 'agent':
@@ -480,22 +488,18 @@ class HasnContactsService:
         D4 铁律：不暴露「被删除/被拉黑」等贬损细节——只告知关系已解除、需重新建立。
         对端 daemon/webui 据此清本地策展行 + 会话标不可达（daemon/webui 侧留后续切片）。
         """
-        from backend.app.hasn.service.ws_router import ws_router
-
         try:
-            await ws_router.push_message_to(
-                target_hasn_id,
-                {
-                    'method': 'hasn.contact.removed',
-                    'params': {
-                        'owner_id': target_hasn_id,
-                        'peer_id': actor_hasn_id,
-                        # 中性文案：只说关系已解除，不暴露是被删还是被拉黑
-                        'reason': 'relation_dissolved',
-                        'message': '你们的联系人关系已解除',
-                    },
+            frame = RealtimeFrame(
+                method='hasn.contact.removed',
+                params={
+                    'owner_id': target_hasn_id,
+                    'peer_id': actor_hasn_id,
+                    # 中性文案：只说关系已解除，不暴露是被删还是被拉黑
+                    'reason': 'relation_dissolved',
+                    'message': '你们的联系人关系已解除',
                 },
             )
+            await _safe_push_contact_event(target_hasn_id, frame)
         except Exception:
             return
 

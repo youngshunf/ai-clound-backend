@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import Any
 
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
@@ -98,10 +99,9 @@ class HasnConversationsService:
         """
         确保会话存在（如果不存在则创建）
 
-        用于 1:1 会话的幂等创建。**单一去重收口**：委托
-        `message_router.get_or_create_conversation`（事务级 advisory lock +
-        仅按排序后参与者对去重，与 relation_type 无关），保证同一对参与者
-        跨调用方、跨设备始终收敛到同一行，并发也不产生重复行。
+        用于 1:1 会话的幂等创建。**单一去重收口**：按排序后参与者对建
+        `uq_hasn_conversations_direct` 唯一会话，配套事务级 advisory lock
+        避免并发重复创建，关系类型仅作为新建初值写入，不参与去重键。
 
         :param db: 数据库会话
         :param caller_hasn_id: 调用者的 HASN ID
@@ -109,29 +109,79 @@ class HasnConversationsService:
         :param relation_type: 关系类型，默认 'social'（仅新建初值，不参与去重键）
         :return: 会话对象
         """
-        # 局部导入避免 service ↔ message_router 循环依赖
-        from backend.app.hasn.service.message_router import get_or_create_conversation
-
         # 确定参与者类型（h_ 开头是 human，a_ 开头是 agent）
-        def get_participant_type(hasn_id: str) -> str:
-            if hasn_id.startswith('h_'):
-                return 'human'
-            if hasn_id.startswith('a_'):
-                return 'agent'
-            raise errors.BadRequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
+        caller_type = _participant_type(caller_hasn_id)
+        peer_type = _participant_type(peer_hasn_id)
 
-        # 校验两侧 HASN ID 格式（排序与去重在 get_or_create 内部完成）
-        caller_type = get_participant_type(caller_hasn_id)
-        peer_type = get_participant_type(peer_hasn_id)
-
-        return await get_or_create_conversation(
+        return await _get_or_create_direct_conversation(
             db,
             caller_hasn_id,
             caller_type,
             peer_hasn_id,
             peer_type,
-            relation_type,
+            relation_type=relation_type,
         )
+
+
+def _participant_type(hasn_id: str) -> str:
+    """按 has_id 前缀推断会话参与者类型。"""
+    if hasn_id.startswith('h_'):
+        return 'human'
+    if hasn_id.startswith('a_'):
+        return 'agent'
+    raise errors.BadRequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
+
+
+async def _get_or_create_direct_conversation(
+    db: AsyncSession,
+    participant_a_id: str,
+    participant_a_type: str,
+    participant_b_id: str,
+    participant_b_type: str,
+    relation_type: str = 'social',
+) -> HasnConversations:
+    """获取或创建单聊会话（同 message_router 直连实现，保持并发幂等不变量）。"""
+    if participant_a_id > participant_b_id:
+        participant_a_id, participant_b_id = participant_b_id, participant_a_id
+        participant_a_type, participant_b_type = participant_b_type, participant_a_type
+
+    await db.execute(
+        text('SELECT pg_advisory_xact_lock(hashtext(:pair_key))'),
+        {'pair_key': f'hasn_conv_direct:{participant_a_id}:{participant_b_id}'},
+    )
+
+    result = await db.execute(
+        select(HasnConversations)
+        .where(
+            HasnConversations.type == 'direct',
+            HasnConversations.participant_a_id == participant_a_id,
+            HasnConversations.participant_b_id == participant_b_id,
+        )
+        .order_by(HasnConversations.created_time.asc())
+    )
+    conv = result.scalars().first()
+    if conv:
+        return conv
+
+    conv = HasnConversations(
+        type='direct',
+        relation_type=relation_type,
+        participant_a_id=participant_a_id,
+        participant_b_id=participant_b_id,
+        participant_a_type=participant_a_type,
+        participant_b_type=participant_b_type,
+        agent_policy='free',
+        join_policy='',
+        max_members=2,
+        allow_invite=False,
+        mute_all=False,
+        member_count=2,
+        message_count=0,
+        status='active',
+    )
+    db.add(conv)
+    await db.flush()
+    return conv
 
 
 hasn_conversations_service: HasnConversationsService = HasnConversationsService()

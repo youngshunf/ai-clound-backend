@@ -17,10 +17,10 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
-from backend.app.hasn.service import message_router
 from backend.app.hasn.service.agent_message_read_service import agent_message_read_service
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_im.application import local_gateway
 from backend.app.hasn_im.application.errors import ImSendRejected
 from backend.app.hasn_im.application.provider import get_im_gateway
 from backend.app.hasn_im.ports.dto import (
@@ -414,7 +414,7 @@ class MessageSendTool(BaseTool):
         return ['message:send']
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        """走 message_router.route_message 真实投递；文本/图片/语音/文件/卡片统一出口。
+        """直聊经 ImGateway port，群聊/历史路径兜底 send_to_target 真实投递。
 
         维度① 能力授权已在 server.call_tool 按三态 mode 统一判定（D3），工具内不二次校验。
         """
@@ -455,10 +455,10 @@ class MessageSendTool(BaseTool):
                 content = {'text': str(text)}
                 content_type = _CT_TEXT
 
-            # 目标解析（唤星号/HASN ID/群 g:）——复用 message_router.resolve_target 单一实现，
+            # 目标解析（唤星号/HASN ID/群 g:）——走兼容入口复用现网 resolve_target 实现，
             # 不在工具层重造解析逻辑（零漂移）。direct（人/分身）走 ImGateway port（R1-05 切片①），
             # 群 / 不可达目标仍走现网 route_message（本切片不承接，错误码/群补强原样保持）。
-            target = await message_router.resolve_target(db, str(to_target))
+            target = await local_gateway.resolve_target(db, str(to_target))
             is_direct = target is not None and target.get('entity_type') in ('human', 'agent')
 
             if is_direct:
@@ -514,8 +514,8 @@ class MessageSendTool(BaseTool):
                     send_result, agent_context.owner_hasn_id, to_target
                 )
 
-            # ── 群 / 不可达目标：过渡期仍走现网 route_message（与切换前逐字一致）──
-            result = await message_router.route_message(
+            # ── 群 / 不可达目标：过渡期 fallback 到 send_to_target 保持逐字一致（接收方兼容现网）──
+            result = await local_gateway.send_to_target(
                 db=db,
                 from_id=agent_context.agent_hasn_id,
                 to_target=str(to_target),
@@ -523,7 +523,6 @@ class MessageSendTool(BaseTool):
                 content_type=content_type,
                 msg_type='message',
                 origin_session_id=agent_context.session_id,
-                mission_note=mission_note,
             )
 
         # 维度②：路由内 permission_engine（关系/信任）判决，不可达不静默成功。

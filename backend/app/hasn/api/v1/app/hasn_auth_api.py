@@ -18,6 +18,8 @@ from sqlalchemy import select
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_nodes import HasnNodes
+from backend.app.hasn_im.application.provider import get_presence_query
+from backend.app.hasn_im.application.provider import get_node_session_gateway
 from backend.app.hasn.service.hasn_auth import (
     hasn_auth_from_jwt,
     issue_node_jwt,
@@ -27,13 +29,16 @@ from backend.app.hasn.service.hasn_auth import (
     reissue_hasn_node_key,
 )
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
-from backend.app.hasn.service.ws_router import ws_router
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth, jwt_authentication
 from backend.database.db import CurrentSession, async_db_session
 
 router = APIRouter()
+
+
+_presence_query = get_presence_query()
+_node_session_gateway = get_node_session_gateway()
 
 
 # ─── 请求/响应模型 ───
@@ -327,7 +332,7 @@ async def api_list_devices(
     # 名下 Agent → 当前所在节点（实时 presence），按节点归组
     agents_by_node: dict[str, list[dict]] = {}
     for a in agents:
-        node_of = await ws_router.get_entity_node(a.hasn_id)
+        node_of = await _presence_query.get_entity_node(a.hasn_id)
         if not node_of:
             continue
         agents_by_node.setdefault(node_of, []).append({
@@ -338,7 +343,7 @@ async def api_list_devices(
 
     devices = []
     for n in nodes:
-        online = await ws_router.is_node_online(n.node_id)
+        online = await _presence_query.is_node_online(n.node_id)
         devices.append({
             'node_id': n.node_id,
             'node_name': n.node_name,
@@ -388,7 +393,7 @@ async def api_logout_device(
         await db.commit()
 
     # 清 presence + 释放名下 Agent + 关闭 WS（若在本进程）
-    disconnected = await ws_router.disconnect_node(node_id)
+    disconnected = await _node_session_gateway.disconnect_node(node_id=node_id)
 
     return response_base.success(data={
         'node_id': node_id,
@@ -414,7 +419,7 @@ async def api_list_agents(
 
     agents_data = []
     for a in agents:
-        online = await ws_router.is_agent_online(a.hasn_id)
+        online = await _presence_query.is_agent_online(a.hasn_id)
         agents_data.append({
             'hasn_id': a.hasn_id,
             'star_id': a.star_id,

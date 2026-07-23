@@ -65,7 +65,7 @@ async def _run(
 
     with (
         patch('backend.app.mcp.tools.message.async_db_session', _fake_session),
-        patch.object(message_module.message_router, 'resolve_target', AsyncMock(side_effect=_fake_resolve)),
+        patch.object(message_module.local_gateway, 'resolve_target', AsyncMock(side_effect=_fake_resolve)),
         patch.object(message_module, 'get_im_gateway', lambda: fake_gateway),
         patch.object(
             message_module, '_ensure_first_contact_request',

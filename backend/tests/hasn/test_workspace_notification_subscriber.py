@@ -102,8 +102,13 @@ async def test_sqlalchemy_workspace_notification_pushes_to_active_human(
 
     assert router.messages[0][0] == 'h_owner_real'
     payload = router.messages[0][1]
-    assert payload['type'] == 'WorkspaceSwitched'
-    assert payload['user_id'] == 7
-    assert payload['prev_workspace'] == {'kind': 'personal', 'enterprise_id': None}
-    assert payload['next_workspace'] == {'kind': 'enterprise', 'enterprise_id': 42}
-    assert payload['created_time']
+    if 'method' in payload and 'params' in payload:
+        payload_params = payload['params']
+        assert payload['method'] == 'WorkspaceSwitched'
+    else:
+        payload_params = payload
+    assert payload_params['type'] == 'WorkspaceSwitched'
+    assert payload_params['user_id'] == 7
+    assert payload_params['prev_workspace'] == {'kind': 'personal', 'enterprise_id': None}
+    assert payload_params['next_workspace'] == {'kind': 'enterprise', 'enterprise_id': 42}
+    assert payload_params['created_time']

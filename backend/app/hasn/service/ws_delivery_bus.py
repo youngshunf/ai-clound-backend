@@ -22,6 +22,14 @@ from fastapi import WebSocket
 
 from backend.common.log import log
 from backend.database.redis import RedisCli, redis_client
+from backend.app.hasn_im.adapters.routing.redis_presence_store import NODE_GENERATION_KEY
+from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
+    get_connection,
+    get_connection_id,
+    get_ready_connection_id,
+    iter_connections,
+    local_nodes,
+)
 
 # 共享投递频道：所有 worker 订阅，发送方 publish
 WS_DELIVERY_CHANNEL = 'hasn:ws:deliver'
@@ -97,21 +105,19 @@ class WsDeliveryBus:
     @classmethod
     async def drain_node(cls, node_id: str) -> int:
         """当前连接代际消费 node 的持久待投队列，成功发送后才确认删除。"""
-        from backend.app.hasn.service import ws_router as router_module
-
-        ws = router_module._ws_connections.get(node_id)
-        connection_id = router_module._ws_connection_ids.get(node_id)
-        ready_id = router_module._ws_ready_connection_ids.get(node_id)
+        ws = get_connection(node_id)
+        connection_id = get_connection_id(node_id)
+        ready_id = get_ready_connection_id(node_id)
         if ws is None or not connection_id or ready_id != connection_id:
             return 0
 
         lock = cls._drain_locks.setdefault(node_id, asyncio.Lock())
         async with lock:
             if (
-                router_module._ws_connections.get(node_id) is not ws
-                or router_module._ws_connection_ids.get(node_id) != connection_id
-                or router_module._ws_ready_connection_ids.get(node_id) != connection_id
-                or await redis_client.hget(router_module.NODE_GENERATION_KEY, node_id) != connection_id
+                get_connection(node_id) is not ws
+                or get_connection_id(node_id) != connection_id
+                or get_ready_connection_id(node_id) != connection_id
+                or await redis_client.hget(NODE_GENERATION_KEY, node_id) != connection_id
             ):
                 return 0
 
@@ -132,10 +138,10 @@ class WsDeliveryBus:
                 # drain 期间可能已有同 node 的新连接在其它 worker 抢占代际；旧 socket
                 # 不得继续消费。条目已在 processing，下一代 drain 会先恢复它。
                 if (
-                    router_module._ws_connections.get(node_id) is not ws
-                    or router_module._ws_connection_ids.get(node_id) != connection_id
-                    or router_module._ws_ready_connection_ids.get(node_id) != connection_id
-                    or await redis_client.hget(router_module.NODE_GENERATION_KEY, node_id) != connection_id
+                    get_connection(node_id) is not ws
+                    or get_connection_id(node_id) != connection_id
+                    or get_ready_connection_id(node_id) != connection_id
+                    or await redis_client.hget(NODE_GENERATION_KEY, node_id) != connection_id
                 ):
                     break
                 if not await cls._safe_send(ws, payload_json):
@@ -150,19 +156,16 @@ class WsDeliveryBus:
     @staticmethod
     async def _deliver_local(data: dict) -> None:
         """订阅者回调：仅下发本 worker 持有的连接。"""
-        # 延迟 import 打破与 ws_router 的循环依赖（ws_router 在模块顶层 import 本总线）
-        from backend.app.hasn.service import ws_router as router_module
-
         if data.get('broadcast'):
             payload_json = data.get('payload')
             if not payload_json:
                 return
-            for node_id, ws in list(router_module._ws_connections.items()):
-                connection_id = router_module._ws_connection_ids.get(node_id)
+            for node_id, ws in iter_connections():
+                connection_id = get_connection_id(node_id)
                 if (
                     not connection_id
-                    or router_module._ws_ready_connection_ids.get(node_id) != connection_id
-                    or await redis_client.hget(router_module.NODE_GENERATION_KEY, node_id) != connection_id
+                    or get_ready_connection_id(node_id) != connection_id
+                    or await redis_client.hget(NODE_GENERATION_KEY, node_id) != connection_id
                 ):
                     continue
                 await WsDeliveryBus._safe_send(ws, payload_json)
@@ -171,7 +174,7 @@ class WsDeliveryBus:
         node_id = data.get('node_id')
         if not node_id:
             return
-        if router_module._ws_connections.get(node_id) is None:
+        if get_connection(node_id) is None:
             # 连接不在本 worker，交给真正持有它的 worker 处理
             return
         # 兼容滚动发布期间仍携带 payload 的旧 publisher：先落本 worker 的持久队列。
@@ -194,9 +197,7 @@ class WsDeliveryBus:
         """周期扫描本 worker 连接，弥补 Pub/Sub 唤醒窗口中的漏通知。"""
         while True:
             await asyncio.sleep(_RETRY_PENDING_INTERVAL_SECS)
-            from backend.app.hasn.service.ws_router import _ws_connections
-
-            for node_id in list(_ws_connections):
+            for node_id in local_nodes():
                 await cls._drain_node_safely(node_id)
 
     @classmethod

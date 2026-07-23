@@ -30,8 +30,17 @@ from backend.app.hasn.schema.hasn_message_hub import (
     MessageHubSendRequest,
     MessageHubSendResponse,
 )
+from backend.app.hasn_im.application.provider import get_node_session_gateway
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
+
+
+class _WsRuntimeGateway(Protocol):
+    async def push_message_to(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
+        ...
+
+
+_node_session_gateway = get_node_session_gateway()
 
 PRIVATE_RUNTIME_KEYS = {
     'workspace',
@@ -184,17 +193,14 @@ class SideEffectDispatcher(Protocol):
 
 class WsFanoutGateway:
     async def push(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
-        """Lazy-import ws_router to avoid service import cycles."""
-        from backend.app.hasn.service.ws_router import ws_router
-
-        return await ws_router.push_message_to(target_hasn_id, payload)
+        """复用运行时适配层，避免 service 直连 ws_router。"""
+        gateway: _WsRuntimeGateway = _node_session_gateway
+        return await gateway.push_message_to(target_hasn_id, payload)
 
 
 class WsRuntimeDispatcher:
     async def dispatch(self, target_agent_id: str, payload: dict[str, Any], runtime: RuntimeSummary) -> bool:
         """Minimal S4 dispatch intent: only emits when runtime is already known dispatchable."""
-        from backend.app.hasn.service.ws_router import ws_router
-
         dispatch_payload = {
             'hasn': 'hasn/0.2',
             'method': 'hasn.runtime.dispatch',
@@ -205,7 +211,8 @@ class WsRuntimeDispatcher:
                 'message': payload['params']['message'],
             },
         }
-        return await ws_router.push_message_to(target_agent_id, dispatch_payload)
+        gateway: _WsRuntimeGateway = _node_session_gateway
+        return await gateway.push_message_to(target_agent_id, dispatch_payload)
 
 
 class NoopServerSideEffectDispatcher:

@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from backend.app.hasn.service import message_router as mr
 from backend.app.hasn_im.application.errors import ImSendRejected
 from backend.app.hasn_im.ports.dto import ConversationRef, DeliveryState, SendMessageResult
 from backend.app.mcp.tools.message import MessageSendTool
@@ -71,7 +70,7 @@ async def _drive(
 
     import backend.app.mcp.tools.message as message_mod
 
-    monkeypatch.setattr(mr, 'resolve_target', _fake_resolve)
+    monkeypatch.setattr(message_mod.local_gateway, 'resolve_target', _fake_resolve)
     monkeypatch.setattr(message_mod, 'get_im_gateway', lambda: gw)
     monkeypatch.setattr(message_mod, '_ensure_first_contact_request', _fake_ensure_req)
     monkeypatch.setattr(message_mod, 'async_db_session', _fake_session)

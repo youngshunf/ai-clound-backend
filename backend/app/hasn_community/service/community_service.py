@@ -34,6 +34,7 @@ from backend.app.hasn_community.service._community_codec import (
 from backend.app.hasn_community.service.article_summary import effective_summary
 from backend.app.hasn_community.service.settings_service import community_settings_service
 from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn_im.application.provider import get_presence_query
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
@@ -44,6 +45,8 @@ if TYPE_CHECKING:
     from backend.common.dataclasses import AgentTokenPayload
 
 logger = logging.getLogger(__name__)
+
+_presence_query = get_presence_query()
 
 # ==================== 引用卡片（reference_cards）====================
 # 社区文章/帖子可引用 Agent 技能 / 任务结果 / 聊天摘要，沿用 IM 卡片消息 HasnCardResource 形状。
@@ -169,8 +172,6 @@ class CommunityService:
         )
         if not agent_ids:
             return
-        from backend.app.hasn.service.ws_router import ws_router
-
         prof_rows = (
             await db.execute(
                 select(HasnAgents.hasn_id, HasnAgents.profession).where(
@@ -179,7 +180,7 @@ class CommunityService:
             )
         ).all()
         prof_map = {r.hasn_id: (r.profession or '') for r in prof_rows}
-        online_map = await ws_router.get_online_map(agent_ids)
+        online_map = await _presence_query.get_online_map(agent_ids)
         for a in authors:
             if a.get('type') != 'agent':
                 continue
@@ -2609,9 +2610,7 @@ class CommunityService:
 
         # 头像在线状态点（Redis presence，断线即 offline 不读僵尸持久列），与广场一致。
         if agent_list:
-            from backend.app.hasn.service.ws_router import ws_router
-
-            online_map = await ws_router.get_online_map([a['hasn_id'] for a in agent_list])
+            online_map = await _presence_query.get_online_map([a['hasn_id'] for a in agent_list])
             for a in agent_list:
                 a['online_status'] = 'online' if online_map.get(a['hasn_id']) else 'offline'
 
@@ -3216,9 +3215,7 @@ class CommunityService:
 
         # 头像在线状态点（Redis presence，断线即 offline 不读僵尸持久列），与社区作者一致。
         if agents:
-            from backend.app.hasn.service.ws_router import ws_router
-
-            online_map = await ws_router.get_online_map([a['hasn_id'] for a in agents])
+            online_map = await _presence_query.get_online_map([a['hasn_id'] for a in agents])
             for a in agents:
                 a['online_status'] = 'online' if online_map.get(a['hasn_id']) else 'offline'
 

@@ -1,8 +1,8 @@
 """联系人模块 P-A: 好友请求 / 通过 走 WS push（拆 hasn_contact_requests 表后）.
 
 覆盖:
-- POST /contacts/request 调用 ws_router.push_message_to(target_owner, hasn.contact.request_received)
-- PUT /contacts/requests/{id}/respond accept 调用 ws_router.push_message_to(from_id, hasn.contact.connected)
+- POST /contacts/request 通过 realtime gateway 推送 target_owner: hasn.contact.request_received
+- PUT /contacts/requests/{id}/respond accept 通过 realtime gateway 推送 from_id: hasn.contact.connected
 - reject 不推 ws
 - WS push 失败时 HTTP 仍然成功 (best-effort, 不阻塞主链路)
 
@@ -78,6 +78,13 @@ def _humans_lookup(*humans: SimpleNamespace) -> AsyncMock:
     return AsyncMock(side_effect=_lookup)
 
 
+class _GatewayStub:
+    """给 contacts 单测注入的最小 realtime gateway 替身。"""
+
+    def __init__(self, push_to_owner: AsyncMock) -> None:
+        self.push_to_owner = push_to_owner
+
+
 @pytest.mark.asyncio
 async def test_send_request_pushes_request_received_to_target() -> None:
     """A 发好友请求给 B → 后端推 hasn.contact.request_received 给 B."""
@@ -101,8 +108,8 @@ async def test_send_request_pushes_request_received_to_target() -> None:
         'backend.app.hasn.api.v1.app.contacts.hasn_humans_dao.get_by_hasn_id',
         new=_humans_lookup(sender, receiver),
     ), patch(
-        'backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to',
-        new=push,
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(push),
     ):
         db = AsyncMock()
         await send_contact_request(
@@ -116,14 +123,14 @@ async def test_send_request_pushes_request_received_to_target() -> None:
     assert create_request.await_args.kwargs['to_id'] == RECEIVER
     assert create_request.await_args.kwargs['channel_source'] == 'manual'
     push.assert_awaited_once()
-    target, payload = push.await_args.args
+    target, frame = push.await_args.args
     assert target == RECEIVER
-    assert payload['method'] == 'hasn.contact.request_received'
-    assert payload['params']['owner_id'] == RECEIVER  # daemon 用 owner_id 路由 ws sink
-    assert payload['params']['request_id'] == 42
-    assert payload['params']['from_peer']['hasn_id'] == SENDER
-    assert payload['params']['from_peer']['star_id'] == SENDER_STAR
-    assert payload['params']['message'] == 'hi'
+    assert frame.method == 'hasn.contact.request_received'
+    assert frame.params['owner_id'] == RECEIVER  # daemon 用 owner_id 路由 ws sink
+    assert frame.params['request_id'] == 42
+    assert frame.params['from_peer']['hasn_id'] == SENDER
+    assert frame.params['from_peer']['star_id'] == SENDER_STAR
+    assert frame.params['message'] == 'hi'
 
 
 @pytest.mark.asyncio
@@ -152,8 +159,8 @@ async def test_send_agent_request_keeps_agent_target_and_pushes_to_owner() -> No
         'backend.app.hasn.api.v1.app.contacts.hasn_humans_dao.get_by_hasn_id',
         new=_humans_lookup(sender),
     ), patch(
-        'backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to',
-        new=push,
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(push),
     ):
         db = AsyncMock()
         await send_contact_request(
@@ -170,14 +177,14 @@ async def test_send_agent_request_keeps_agent_target_and_pushes_to_owner() -> No
     assert create_request.await_args.kwargs['requested_trust_level'] == 2
 
     push.assert_awaited_once()
-    target, payload = push.await_args.args
+    target, frame = push.await_args.args
     assert target == RECEIVER  # 推给分身主人（审批人）
-    assert payload['method'] == 'hasn.contact.request_received'
-    assert payload['params']['owner_id'] == RECEIVER
-    assert payload['params']['request_id'] == 43
-    assert payload['params']['from_peer']['hasn_id'] == SENDER
-    assert payload['params']['target']['hasn_id'] == RECEIVER_AGENT
-    assert payload['params']['target']['type'] == 'agent'
+    assert frame.method == 'hasn.contact.request_received'
+    assert frame.params['owner_id'] == RECEIVER
+    assert frame.params['request_id'] == 43
+    assert frame.params['from_peer']['hasn_id'] == SENDER
+    assert frame.params['target']['hasn_id'] == RECEIVER_AGENT
+    assert frame.params['target']['type'] == 'agent'
 
 
 @pytest.mark.asyncio
@@ -200,8 +207,8 @@ async def test_respond_accept_pushes_connected_to_original_sender() -> None:
         'backend.app.hasn.api.v1.app.contacts.hasn_humans_dao.get_by_hasn_id',
         new=AsyncMock(return_value=acceptor),
     ), patch(
-        'backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to',
-        new=push,
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(push),
     ):
         db = AsyncMock()
         await respond_to_request(
@@ -217,14 +224,14 @@ async def test_respond_accept_pushes_connected_to_original_sender() -> None:
     mark_accepted.assert_awaited_once()
     assert mark_accepted.await_args.kwargs['resulting_contact_id'] == 900
     push.assert_awaited_once()
-    target, payload = push.await_args.args
+    target, frame = push.await_args.args
     assert target == SENDER  # 推给原发起方,不是 acceptor
-    assert payload['method'] == 'hasn.contact.connected'
-    assert payload['params']['owner_id'] == SENDER  # daemon 用 owner_id 路由 ws sink
-    assert payload['params']['request_id'] == 42
-    assert payload['params']['peer']['hasn_id'] == RECEIVER
-    assert payload['params']['peer']['name'] == 'Bob'
-    assert payload['params']['trust_level'] == 2
+    assert frame.method == 'hasn.contact.connected'
+    assert frame.params['owner_id'] == SENDER  # daemon 用 owner_id 路由 ws sink
+    assert frame.params['request_id'] == 42
+    assert frame.params['peer']['hasn_id'] == RECEIVER
+    assert frame.params['peer']['name'] == 'Bob'
+    assert frame.params['trust_level'] == 2
 
 
 @pytest.mark.asyncio
@@ -239,8 +246,8 @@ async def test_respond_reject_does_not_push() -> None:
         'backend.app.hasn.api.v1.app.contacts.hasn_contact_requests_dao.mark_rejected',
         new=AsyncMock(),
     ) as mark_rejected, patch(
-        'backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to',
-        new=push,
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(push),
     ):
         db = AsyncMock()
         await respond_to_request(
@@ -275,8 +282,8 @@ async def test_send_request_succeeds_even_if_ws_push_fails() -> None:
         'backend.app.hasn.api.v1.app.contacts.hasn_humans_dao.get_by_hasn_id',
         new=_humans_lookup(sender, receiver),
     ), patch(
-        'backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to',
-        new=AsyncMock(side_effect=RuntimeError('redis unreachable')),
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(side_effect=RuntimeError('redis unreachable'))),
     ):
         db = AsyncMock()
         resp = await send_contact_request(
