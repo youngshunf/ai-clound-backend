@@ -31,17 +31,10 @@ from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_r
 # --- Agent（Agent Key） ---
 from backend.app.hasn_growth.api.v1.app.business import router as app_business_router
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
-from backend.app.hasn_growth.api.v1.app.lead_audit_log import router as app_lead_audit_log_router
 from backend.app.hasn_growth.api.v1.app.lead_collection_job import router as app_lead_collection_job_router
-from backend.app.hasn_growth.api.v1.app.lead_contact_source import router as app_lead_contact_source_router
 from backend.app.hasn_growth.api.v1.app.lead_export_batch import router as app_lead_export_batch_router
-from backend.app.hasn_growth.api.v1.app.lead_export_item import router as app_lead_export_item_router
-from backend.app.hasn_growth.api.v1.app.lead_firecrawl_request import router as app_lead_firecrawl_request_router
-from backend.app.hasn_growth.api.v1.app.lead_raw_record import router as app_lead_raw_record_router
-from backend.app.hasn_growth.api.v1.app.lead_rejected_record import router as app_lead_rejected_record_router
 
 # --- 用户端（仅 JWT） ---
-from backend.app.hasn_growth.api.v1.app.lead_source_config import router as app_lead_source_config_router
 from backend.app.hasn_growth.api.v1.open.business import router as open_business_router
 from backend.app.hasn_growth.api.v1.open.forms import router as open_forms_router
 
@@ -74,15 +67,8 @@ def _build_routers(seg: str) -> tuple[APIRouter, APIRouter, APIRouter, APIRouter
 
     # --- 用户端 API（仅 JWT，前缀 base/app） ---
     app_ = APIRouter(prefix=f'{base}/app', tags=['AI lead automation source configuration用户端'])
-    app_.include_router(app_lead_source_config_router, prefix='/lead-source-configs', tags=['AI lead automation source configuration用户端-AI lead automation source configuration'])
     app_.include_router(app_lead_collection_job_router, prefix='/lead/collection/jobs', tags=['AI lead automation collection job-AI lead automation collection job'])
-    app_.include_router(app_lead_firecrawl_request_router, prefix='/lead/firecrawl/requests', tags=['Firecrawl request audit for AI lead automation-Firecrawl request audit for AI lead automation'])
-    app_.include_router(app_lead_raw_record_router, prefix='/lead/raw/records', tags=['Raw crawled lead page record-Raw crawled lead page record'])
-    app_.include_router(app_lead_contact_source_router, prefix='/lead/contact/sources', tags=['Lead multi-source evidence-Lead multi-source evidence'])
-    app_.include_router(app_lead_rejected_record_router, prefix='/lead/rejected/records', tags=['Rejected, invalid, duplicate, or failed lead record-Rejected, invalid, duplicate, or failed lead record'])
     app_.include_router(app_lead_export_batch_router, prefix='/lead/export/batchs', tags=['Lead CSV export batch-Lead CSV export batch'])
-    app_.include_router(app_lead_export_item_router, prefix='/lead/export/items', tags=['Lead CSV export item snapshot-Lead CSV export item snapshot'])
-    app_.include_router(app_lead_audit_log_router, prefix='/lead/audit/logs', tags=['Lead automation PII and compliance audit log-Lead automation PII and compliance audit log'])
     app_.include_router(app_business_router, tags=['AI lead automation业务接口'])
 
     # --- 公开 API（无需认证，前缀 base/open） ---
