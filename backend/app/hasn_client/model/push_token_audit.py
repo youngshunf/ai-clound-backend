@@ -65,7 +65,7 @@ class PushTokenAudit(Base):
     )
 
 
-def register_audit_listeners(token_model: Any, audit_table: sa.Table) -> None:
+def register_audit_listeners(token_model: Any, audit_table: sa.FromClause) -> None:
     """Register after_insert/after_update/after_delete handlers on `token_model`.
 
     Each handler inserts one audit row into `audit_table` using the supplied
@@ -73,6 +73,9 @@ def register_audit_listeners(token_model: Any, audit_table: sa.Table) -> None:
     ORM class + `PushTokenAudit.__table__`, or with a mirror pair for isolated
     SQLite tests.
     """
+
+    if not isinstance(audit_table, sa.Table):
+        raise TypeError('推送令牌审计监听器必须绑定数据表')
 
     def _emit(connection: Any, target: Any, action: str) -> None:
         connection.execute(

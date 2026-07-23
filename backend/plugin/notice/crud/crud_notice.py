@@ -36,7 +36,7 @@ class CRUDNotice(CRUDPlus[Notice]):
         """
         return self._single_notice(await self.select_model(db, pk))
 
-    async def get_select(self, title: str, type: int | None, status: int | None) -> Select:
+    async def get_select(self, title: str | None, type: int | None, status: int | None) -> Select:
         """
         获取通知公告列表查询表达式
 

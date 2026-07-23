@@ -427,7 +427,7 @@ class SearchService:
         if not tags:
             tags = skill.tags
 
-        result = {
+        result: dict[str, Any] = {
             'skill_id': skill.skill_id,
             'namespace': skill.namespace,
             'slug': skill.slug,

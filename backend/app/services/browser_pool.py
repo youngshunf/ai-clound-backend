@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from playwright.async_api import Browser, BrowserContext, async_playwright
+from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class BrowserPool:
             config: 池配置
         """
         self._config = config or PoolConfig()
-        self._playwright = None
+        self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._instances: dict[str, BrowserInstance] = {}
         self._lock = asyncio.Lock()
@@ -89,15 +89,22 @@ class BrowserPool:
         if self._running:
             return
 
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._config.headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
-        )
+        playwright = await async_playwright().start()
+        try:
+            browser = await playwright.chromium.launch(
+                headless=self._config.headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                ],
+            )
+        except Exception:
+            await playwright.stop()
+            raise
+
+        self._playwright = playwright
+        self._browser = browser
         self._running = True
 
         # 启动清理任务
@@ -247,7 +254,10 @@ class BrowserPool:
         instance_id = f"{platform}_{self._instance_counter}"
 
         # 创建浏览器上下文
-        context = await self._browser.new_context(
+        browser = self._browser
+        if browser is None:
+            raise RuntimeError("浏览器池尚未启动")
+        context = await browser.new_context(
             viewport={"width": 1920, "height": 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
