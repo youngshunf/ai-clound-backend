@@ -41,6 +41,10 @@ async def handle_subscribe_paid(order: PayOrder) -> None:
     billing_cycle = order.billing_cycle or 'monthly'
     app_code = (order.extra_data or {}).get('app_code', 'huanxing')
 
+    if not target_tier:
+        log.error(f'[PayCallback] 订阅订单缺少目标套餐: order_no={order.order_no}')
+        return
+
     log.info(
         f'[PayCallback] 订阅支付成功: user_id={user_id}, '
         f'tier={target_tier}, cycle={billing_cycle}, '
@@ -49,8 +53,11 @@ async def handle_subscribe_paid(order: PayOrder) -> None:
 
     async with async_db_session.begin() as db:
         # 1. 获取目标套餐配置
-        tier_config = await subscription_tier_dao.select_model_by_column(
-            db, tier_name=target_tier, app_code=app_code, enabled=True
+        tier_config = await subscription_tier_dao.get_by_tier_name(
+            db,
+            target_tier,
+            app_code=app_code,
+            enabled=True,
         )
         if not tier_config:
             log.error(f'[PayCallback] 套餐配置不存在: tier={target_tier}, app={app_code}')
@@ -155,8 +162,11 @@ async def revoke_subscribe(db: AsyncSession, *, order: Any) -> None:
     target_tier = order.target_tier
     app_code = (order.extra_data or {}).get('app_code', 'huanxing')
 
-    tier_config = await subscription_tier_dao.select_model_by_column(
-        db, tier_name=target_tier, app_code=app_code, enabled=True
+    tier_config = await subscription_tier_dao.get_by_tier_name(
+        db,
+        target_tier,
+        app_code=app_code,
+        enabled=True,
     )
     grant_credits = tier_config.monthly_credits if tier_config else Decimal(0)
     if grant_credits and grant_credits > 0:

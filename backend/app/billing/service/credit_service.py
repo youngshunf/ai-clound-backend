@@ -68,7 +68,7 @@ class CreditService:
         :return: 用户订阅
         """
         # 查询用户订阅
-        subscription = await user_subscription_dao.select_model_by_column(db, user_id=user_id, app_code=app_code)
+        subscription = await user_subscription_dao.get_by_user_and_app(db, user_id=user_id, app_code=app_code)
 
         if subscription:
             return subscription
@@ -86,7 +86,7 @@ class CreditService:
     ) -> UserSubscription:
         """创建免费订阅"""
         # 获取免费等级配置
-        free_tier = await subscription_tier_dao.select_model_by_column(db, tier_name='free', app_code=app_code)
+        free_tier = await subscription_tier_dao.get_by_tier_name(db, 'free', app_code=app_code)
         monthly_credits = free_tier.monthly_credits if free_tier else Decimal(100)  # 默认 100 积分
         max_agents = free_tier.max_agents if free_tier else 1
 
@@ -375,7 +375,7 @@ class CreditService:
 
         # 以下是月度订阅的刷新逻辑
         # 获取等级配置
-        tier = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
+        tier = await subscription_tier_dao.get_by_tier_name(db, subscription.tier, app_code=app_code)
         monthly_credits = tier.monthly_credits if tier else Decimal(500)  # 默认 500 积分
 
         # 获取当前总可用积分
@@ -474,7 +474,7 @@ class CreditService:
         subscription = await self.get_or_create_subscription(db, user_id, app_code)
 
         # 获取等级配置
-        tier = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
+        tier = await subscription_tier_dao.get_by_tier_name(db, subscription.tier, app_code=app_code)
 
         # 从 balance 表获取详细积分信息（有效期内的所有记录，不管是否用完）
         balances = await self.get_user_valid_balances(db, user_id, app_code)

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from datetime import date, datetime
+from typing import cast
 
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,31 @@ from backend.app.billing.schema.user_subscription import CreateUserSubscriptionP
 
 
 class CRUDUserSubscription(CRUDPlus[UserSubscription]):
+    @staticmethod
+    def _single_subscription(result: object) -> UserSubscription | None:
+        """将无关联加载的查询结果收紧为单个用户订阅。"""
+        if result is not None and not isinstance(result, UserSubscription):
+            raise TypeError('用户订阅单模型查询返回了关联结果')
+        return cast(UserSubscription | None, result)
+
+    @staticmethod
+    def _subscription_sequence(result: Sequence[object]) -> Sequence[UserSubscription]:
+        """将无关联加载的查询结果收紧为用户订阅序列。"""
+        if not all(isinstance(item, UserSubscription) for item in result):
+            raise TypeError('用户订阅列表查询返回了关联结果')
+        return cast(Sequence[UserSubscription], result)
+
+    async def get_by_user_and_app(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int,
+        app_code: str,
+    ) -> UserSubscription | None:
+        """按用户与应用读取单个订阅。"""
+        result = await self.select_model_by_column(db, user_id=user_id, app_code=app_code)
+        return self._single_subscription(result)
+
     async def get(self, db: AsyncSession, pk: int) -> UserSubscription | None:
         """
         获取用户订阅
@@ -19,7 +45,7 @@ class CRUDUserSubscription(CRUDPlus[UserSubscription]):
         :param pk: 用户订阅 ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_subscription(await self.select_model(db, pk))
 
     async def get_select(
         self,
@@ -78,7 +104,7 @@ class CRUDUserSubscription(CRUDPlus[UserSubscription]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._subscription_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateUserSubscriptionParam) -> None:
         """
