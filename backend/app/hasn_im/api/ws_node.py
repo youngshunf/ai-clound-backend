@@ -414,7 +414,7 @@ async def _handle_renew_owner(
 
 async def _handle_list_owners(websocket: WebSocket, node_id: str) -> None:
     async with async_db_session() as db:
-        result = await ws_node_runtime.list_owners(node_id=node_id)
+        result = await ws_node_runtime.list_owners(node_id=node_id, db=db)
     await _send_json(websocket, _frame('hasn.node.list_owners_ack', result))
 
 

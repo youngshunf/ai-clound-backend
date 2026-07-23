@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import WebSocket
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_im.application import message_service
 from backend.app.hasn_im.application.node_session_service import node_session_service
@@ -126,8 +127,9 @@ class WsNodeRuntime:
             db=db,
         )
 
-    async def list_owners(self, node_id: str) -> dict[str, Any]:
-        return await node_session_service.list_owners(node_id=node_id)
+    async def list_owners(self, node_id: str, db: AsyncSession) -> dict[str, Any]:
+        """列出节点 owner，并复用协议 handler 已打开的数据库会话。"""
+        return await node_session_service.list_owners(node_id=node_id, db=db)
 
     async def add_agent_presence(
         self,

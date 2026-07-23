@@ -33,3 +33,20 @@ def test_provider_returns_native_node_session_service() -> None:
     from backend.app.hasn_im.application.provider import get_node_session_gateway
 
     assert get_node_session_gateway() is node_session_service
+
+
+@pytest.mark.asyncio
+async def test_list_owners_forwards_active_db_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """读取节点 owner 必须使用 WS handler 已打开的数据库会话。"""
+    from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
+
+    db = object()
+
+    async def list_owners(*, node_id: str, db: object) -> dict[str, list[str]]:
+        assert node_id == 'node-1'
+        assert db is not None
+        return {'owners': ['h_owner']}
+
+    monkeypatch.setattr(node_session_service, 'list_owners', list_owners)
+
+    assert await ws_node_runtime.list_owners(node_id='node-1', db=db) == {'owners': ['h_owner']}
