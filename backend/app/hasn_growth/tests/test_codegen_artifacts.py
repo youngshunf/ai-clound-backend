@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -198,7 +199,7 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     assert GROWTH_AI_NATIVE_MANIFEST['execution_mode'] == 'cloud'
     # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
     assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
-    caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
+    caps = cast(list[dict[str, Any]], GROWTH_AI_NATIVE_MANIFEST['capabilities'])
     # 22 = 19（漏斗+customer_reassign+lead_request）+ lookup/search/enrich_company（GROWTH-QCC-4 企业数据读穿中台）
     assert len(caps) == 22
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
@@ -208,14 +209,15 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
             assert ':' in s and '.' not in s, s
 
     # tools[] 由 capabilities 派生，每条 gateway_internal + handler 指向云端 handler 注册表键。
-    tools = GROWTH_AI_NATIVE_MANIFEST['tools']
+    tools = cast(list[dict[str, Any]], GROWTH_AI_NATIVE_MANIFEST['tools'])
     assert len(tools) == len(caps)
     assert {t['tool_id'] for t in tools} == {c['tool_id'] for c in caps}
     assert all(t['transport'] == 'gateway_internal' and t['handler'].startswith('growth.') for t in tools)
 
     # manifest registry
     reg = AINativeAppRegistry()
-    assert reg.get_builtin_manifest('growth')['app_id'] == 'growth'
+    growth_manifest = cast(dict[str, Any], reg.get_builtin_manifest('growth'))
+    assert growth_manifest['app_id'] == 'growth'
 
     # 5 scope 聚合进 SCOPE_CATALOG
     for s in ('growth:read', 'growth:manage', 'growth:outreach', 'growth:collect', 'growth:pii'):
@@ -226,7 +228,8 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     assert wapp.id == 'growth'
     assert wapp.name == '获客'
     assert wapp.install_policy == 'manual'
-    assert 'growth' not in {a.id for a in app_catalog_registry.auto_install_apps('personal')}
+    auto_install_apps = cast(list[Any], app_catalog_registry.auto_install_apps('personal'))
+    assert 'growth' not in {app.id for app in auto_install_apps}
 
 
 def test_business_layer_does_not_replace_generated_crud() -> None:
