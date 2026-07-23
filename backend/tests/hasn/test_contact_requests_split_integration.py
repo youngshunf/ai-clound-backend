@@ -32,7 +32,7 @@ from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.model import HasnAgents, HasnContactRequests, HasnContacts, HasnHumans
 from backend.app.hasn.schema.hasn_contacts_business import HasnContactRequestReq, HasnContactRespondReq
-from backend.app.hasn.service.message_router import check_relation_permission
+from backend.app.hasn_im.application.message_service import check_relation_permission
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio

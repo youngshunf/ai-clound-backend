@@ -9,8 +9,8 @@ counterpart 由会话反解），但底层仍复用现网 `route_message`（R2-0
 group 发送、撤回、读列表、read cursor、成员周期、抑制放行随各自 R1-05 切片 / R2 卡逐个补上——
 本类现只实现 direct 会话的 ensure + send（contract suite 覆盖面），其余显式抛未实现指向后续卡。
 
-依赖方向（§0.1）：本类属 application 层，**允许**依赖现网 message_router（收编期过渡），
-对外只经 ports 暴露；业务模块不得直接 import 本类，只认 `ImGateway` 抽象。
+依赖方向（§0.1）：本类属 application 层，对外只经 ports 暴露；业务模块不得直接
+import 本类，只认 `ImGateway` 抽象。
 """
 
 from __future__ import annotations
@@ -22,12 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.hasn.model import HasnConversations
-from backend.app.hasn.service.message_router import (
-    _entity_type_str,
-    get_or_create_conversation,
-    route_message,
-    check_relation_permission,
-)
+from backend.app.hasn_im.application import message_service
 from backend.app.hasn_im.application.errors import (
     ImConversationNotFound,
     ImSenderNotParticipant,
@@ -51,10 +46,8 @@ from backend.app.hasn_im.ports.dto import (
 
 
 async def resolve_target(db: AsyncSession, to_target: str) -> dict[str, Any] | None:
-    """过渡期目标解析桥：复用现网 message_router.resolve_target，避免工具层重复解析逻辑。"""
-    from backend.app.hasn.service import message_router
-
-    return await message_router.resolve_target(db, to_target)
+    """通过消息应用服务解析发送目标。"""
+    return await message_service.resolve_target(db, to_target)
 
 
 async def send_to_target(
@@ -72,10 +65,8 @@ async def send_to_target(
     origin_node_id: str | None = None,
     origin_session_id: str | None = None,
 ) -> dict[str, Any]:
-    """过渡期 fallback：群聊等未迁移场景由现网 route_message 处理，保证行为逐字对齐。"""
-    from backend.app.hasn.service import message_router
-
-    return await message_router.route_message(
+    """通过消息应用服务发送消息。"""
+    return await message_service.route_message(
         db=db,
         from_id=from_id,
         to_target=to_target,
@@ -97,10 +88,8 @@ async def mark_read(
     conversation_id: str,
     last_msg_id: int,
 ) -> None:
-    """过渡期 mark_read 兼容封装，复用现网 message_router mark_read。"""
-    from backend.app.hasn.service import message_router
-
-    await message_router.mark_read(
+    """通过消息应用服务更新已读游标。"""
+    await message_service.mark_read(
         db=db,
         reader=reader,
         conversation_id=conversation_id,
@@ -109,8 +98,8 @@ async def mark_read(
 
 
 def _participant_type(hasn_id: str) -> str:
-    """按 hasn_id 前缀判定参与者类型（与 message_router._entity_type_str 同口径）。"""
-    return _entity_type_str(hasn_id)
+    """按 hasn_id 前缀判定参与者类型。"""
+    return message_service._entity_type_str(hasn_id)
 
 
 @dataclass(slots=True)
@@ -136,7 +125,7 @@ class PythonLocalImGateway:
         sender = self._effective_sender(principal)
         peer = command.peer_hasn_id
         async with self.session_factory() as db:
-            conv = await get_or_create_conversation(
+            conv = await message_service.get_or_create_conversation(
                 db,
                 sender,
                 _participant_type(sender),
@@ -172,7 +161,7 @@ class PythonLocalImGateway:
 
             to_target = self._counterpart(conv, sender, command.conversation_id)
 
-            result = await route_message(
+            result = await message_service.route_message(
                 db,
                 from_id=sender,
                 to_target=to_target,
@@ -261,7 +250,7 @@ class PythonLocalImGateway:
         envelope: dict | None = None,
     ) -> dict:
         async with self.session_factory() as db:
-            return await check_relation_permission(
+            return await message_service.check_relation_permission(
                 db,
                 sender_id=sender_hasn_id,
                 receiver_id=receiver_hasn_id,

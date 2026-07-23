@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model import HasnConversations, HasnMessages
-from backend.app.hasn.service.message_router import route_message
+from backend.app.hasn_im.application.message_service import route_message
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio

@@ -51,7 +51,7 @@ def _patch_router_pipeline(
 ):
     """统一 mock route_message 的下游依赖（含统一受众扇出）。"""
     from backend.app.hasn.service import conversation_projection as cp
-    from backend.app.hasn.service import message_router as mr
+    from backend.app.hasn_im.application import message_service as mr
     from backend.app.hasn_im.application.node_session_service import node_session_service as ws_router
 
     # 目标解析：人类收件人
@@ -145,7 +145,7 @@ def _first_message_new_params(mocks) -> dict:
 # ── Test 1: ALLOW → 扇出 message.new 到受众 owner ──
 async def test_allow_fans_out_message_new(monkeypatch) -> None:
     mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
-    from backend.app.hasn.service.message_router import route_message
+    from backend.app.hasn_im.application.message_service import route_message
 
     result = await route_message(
         db=_fake_db(), from_id='h_sender', to_target='h_receiver',
@@ -174,8 +174,8 @@ async def test_agent_target_fans_out_to_agent_owner(monkeypatch) -> None:
     """
     mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW, audience=('h_owner', 'h_sender'))
     from backend.app.hasn.service import conversation_projection as cp
-    from backend.app.hasn.service import message_router as mr
-    from backend.app.hasn.service.message_router import route_message
+    from backend.app.hasn_im.application import message_service as mr
+    from backend.app.hasn_im.application.message_service import route_message
 
     monkeypatch.setattr(
         mr,
@@ -215,7 +215,7 @@ async def test_deny_returns_error_no_delivery(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=DENY, perm_reason='blocked', error_code=2002,
     )
-    from backend.app.hasn.service.message_router import route_message
+    from backend.app.hasn_im.application.message_service import route_message
 
     result = await route_message(
         db=_fake_db(), from_id='h_sender', to_target='h_receiver',
@@ -232,7 +232,7 @@ async def test_confirm_stashes_no_delivery(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=CONFIRM, perm_reason='need confirm',
     )
-    from backend.app.hasn.service.message_router import route_message
+    from backend.app.hasn_im.application.message_service import route_message
 
     result = await route_message(
         db=_fake_db(), from_id='h_sender', to_target='h_receiver',
@@ -250,7 +250,7 @@ async def test_scope_limited_masks_content_body(monkeypatch) -> None:
     mocks = _patch_router_pipeline(
         monkeypatch, perm_decision=SCOPE_LTD, allowed_fields=['body'],
     )
-    from backend.app.hasn.service.message_router import route_message
+    from backend.app.hasn_im.application.message_service import route_message
 
     await route_message(
         db=_fake_db(), from_id='h_sender', to_target='h_receiver',
@@ -271,7 +271,7 @@ async def test_allow_and_scope_limited_both_deliver(monkeypatch) -> None:
         mocks = _patch_router_pipeline(
             monkeypatch, perm_decision=decision, allowed_fields=fields,
         )
-        from backend.app.hasn.service.message_router import route_message
+        from backend.app.hasn_im.application.message_service import route_message
 
         await route_message(
             db=_fake_db(), from_id='h_sender', to_target='h_receiver',
@@ -284,7 +284,7 @@ async def test_allow_and_scope_limited_both_deliver(monkeypatch) -> None:
 # ── Test 6: legacy check_relation_permission 已不被 route_message 调用 ──
 async def test_legacy_check_relation_permission_not_called(monkeypatch) -> None:
     mocks = _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
-    from backend.app.hasn.service.message_router import route_message
+    from backend.app.hasn_im.application.message_service import route_message
 
     await route_message(
         db=_fake_db(), from_id='h_sender', to_target='h_receiver',
@@ -301,7 +301,7 @@ async def test_direct_route_commits_exactly_once(monkeypatch) -> None:
     commit 之后的 _flush_pushes，不再夹在事务里。await_count > 1 即回归。
     """
     _patch_router_pipeline(monkeypatch, perm_decision=ALLOW)
-    from backend.app.hasn.service.message_router import route_message
+    from backend.app.hasn_im.application.message_service import route_message
 
     db = _fake_db()
     result = await route_message(

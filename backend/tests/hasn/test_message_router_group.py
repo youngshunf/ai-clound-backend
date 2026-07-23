@@ -93,7 +93,7 @@ def _patch_group_common(monkeypatch, mr, group, members, owner_map):
 @pytest.mark.asyncio
 async def test_group_message_fans_out_to_member_owners(monkeypatch) -> None:
     """群受众 = 名册每个成员的 owner（agent→主人），去重稳定排序；每 owner 一条 message.new + push。"""
-    from backend.app.hasn.service import message_router as mr
+    from backend.app.hasn_im.application import message_service as mr
 
     group = _Group()
     members = [
@@ -140,7 +140,7 @@ async def test_group_message_fans_out_to_member_owners(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_group_route_rejects_non_member(monkeypatch) -> None:
-    from backend.app.hasn.service import message_router as mr
+    from backend.app.hasn_im.application import message_service as mr
 
     monkeypatch.setattr(mr, 'resolve_target', AsyncMock(return_value={'hasn_id': 'g:500001', 'entity_type': 'group'}))
     monkeypatch.setattr(mr, 'get_group_conversation', AsyncMock(return_value=_Group()))
@@ -152,7 +152,7 @@ async def test_group_route_rejects_non_member(monkeypatch) -> None:
 
 
 def test_entity_type_int_supports_group() -> None:
-    from backend.app.hasn.service.message_router import _entity_type_int
+    from backend.app.hasn_im.application.message_service import _entity_type_int
 
     assert _entity_type_int('g:500001') == 4
 
@@ -164,7 +164,7 @@ async def test_group_mentions_folded_into_content_body(monkeypatch) -> None:
     瘦事件顶层严格 8 字段、不带 mentions/agent_policy——mentions 进 content_body、
     agent_policy 由 daemon 从会话对象镜像（group_meta.agent_policy）读，事件不携带。
     """
-    from backend.app.hasn.service import message_router as mr
+    from backend.app.hasn_im.application import message_service as mr
 
     group = _Group(agent_policy='mention_only')
     members = [
@@ -204,7 +204,7 @@ async def test_group_route_commits_exactly_once(monkeypatch) -> None:
     的中间 commit（它会把消息落库但 feed 尚未写、crash 即半状态）。实时 push 移到 commit 之后
     的 _flush_pushes，不再夹在事务里。commit 计数 > 1 即回归。
     """
-    from backend.app.hasn.service import message_router as mr
+    from backend.app.hasn_im.application import message_service as mr
 
     group = _Group()
     members = [_Member('h_sender'), _Member('h_peer')]

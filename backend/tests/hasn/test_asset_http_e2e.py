@@ -27,7 +27,7 @@ from backend.app.hasn.api.v1.app.hasn_assets_app import router as assets_router
 from backend.app.hasn.model import HasnAssets, HasnConversations
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import hasn_asset_service as asset_svc_mod
-from backend.app.hasn.service.message_router import _grant_private_attachments
+from backend.app.hasn_im.application.message_service import _grant_private_attachments
 from backend.common.exception import errors
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction

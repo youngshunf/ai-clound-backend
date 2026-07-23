@@ -15,7 +15,7 @@ from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages
 from backend.app.hasn.service.inbound_gatekeeper import record_suppression
 from backend.app.hasn.service.inbound_release import release_suppressed
-from backend.app.hasn.service.message_router import get_or_create_conversation, persist_message
+from backend.app.hasn_im.application.message_service import get_or_create_conversation, persist_message
 from backend.database.db import async_db_session
 
 OWNER = 'h_rl_owner'

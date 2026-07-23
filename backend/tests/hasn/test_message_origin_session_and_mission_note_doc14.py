@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from backend.app.hasn.service import conversation_projection as cp
-from backend.app.hasn.service import message_router as mr
+from backend.app.hasn_im.application import message_service as mr
 from backend.app.mcp import trust_gate
 from backend.app.mcp.tools.message import MessageSendTool
 

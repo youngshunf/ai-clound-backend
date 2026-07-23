@@ -2,27 +2,15 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi import WebSocket
 
-from backend.app.hasn_im.application.local_gateway import (
-    mark_read as local_mark_read,
-    send_to_target,
-)
+from backend.app.hasn_im.application import message_service
 from backend.app.hasn_im.application.node_session_service import node_session_service
-
-_legacy_message_router = SimpleNamespace(route_message=send_to_target, mark_read=local_mark_read)
-
 
 class WsNodeRuntime:
     """组合节点会话与消息应用服务，供 WS 协议入口调用。"""
-
-    @property
-    def message_router(self):
-        """供协议层兼容 patch：返回现网 message_router 模块。"""
-        return _legacy_message_router
 
     async def claim_offline_messages(
         self,
@@ -171,11 +159,11 @@ class WsNodeRuntime:
         await node_session_service.push_self_sync(owner_id, payload, exclude_node)
 
     async def route_message(self, **kwargs: Any) -> dict[str, Any]:
-        """调用现网 `message_router.route_message`（兼容层）。"""
-        return await _legacy_message_router.route_message(**kwargs)
+        """调用消息应用服务的发送用例。"""
+        return await message_service.route_message(**kwargs)
 
     async def mark_read(self, db, reader: str, conversation_id: str, last_msg_id: int) -> None:
-        await _legacy_message_router.mark_read(db, reader, conversation_id, last_msg_id)
+        await message_service.mark_read(db, reader, conversation_id, last_msg_id)
 
 
 ws_node_runtime = WsNodeRuntime()

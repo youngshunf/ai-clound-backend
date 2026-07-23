@@ -1,18 +1,13 @@
-"""R1-12 · CI 架构守卫（§0.1 单向依赖不变量的静态半边）。
+"""96号施工的 CI 架构守卫（§0.1 单向依赖不变量的静态半边）。
 
 三道红线，任一被打破即 CI 红：
 
-1. **import guard**：`backend/app/**` 下**禁止新增**对 `message_router` / `ws_router` /
-   `ws_delivery_bus` / `ws_node` 的直接 import——业务模块只能经
-   `hasn_im.ports.ImGateway` / `RelationGateway` / `RealtimeGateway` 调通信域（§0.1）。
-   白名单 = R0-02 存量导入方（带 owner + 删除期限），R1-05 各切片切到 port 后从白名单移除；
-   **不得往白名单加新行**（加行=违背收编方向，评审拦）。
-
-2. **legacy Redis key guard**：`backend/app/**` 禁止新增直接访问 IM 遗留 Redis key
-   `hasn:node_*`、`hasn:entity_node`、`hasn:offline:*`、`hasn:push:*`。旧 key 访问必须
-   限定在收口期间的兼容入口并持续清单化。
-
-3. **DML guard**：`backend/app/**`（除 `hasn_im`/`hasn_sync` 自身 adapters）**禁止**直接
+1. **遗留模块清除守卫**：旧 IM WebSocket/消息模块必须物理删除；`backend/app/**`
+   既不能静态 import，也不能借 `importlib` 动态加载它们。业务模块只能经
+   `hasn_im` 的 application / ports 调通信域。
+2. **legacy Redis key guard**：除 `hasn_im.adapters.routing` 外，`backend/app/**` 禁止
+   直接访问 `hasn:node_*`、`hasn:entity_node`、`hasn:offline:*`、`hasn:push:*`。
+3. **DML guard**：`backend/app/**`（除 `hasn_im`/`hasn_sync` 自身 adapters）禁止直接
    import `hasn_im.model` / `hasn_sync.model` 的 ORM 实体做写入——IM/sync 写一律经 port /
    `append_event`。当前新模型未建（R2-01/R2-07），保护集为空、守卫自然放行，R2 建模后
    自动生效（无需回来打开开关）。
@@ -30,30 +25,22 @@ from pathlib import Path
 _BACKEND_ROOT = Path(__file__).resolve().parents[3]
 _APP_ROOT = _BACKEND_ROOT / 'app'
 
-# —— import guard 白名单（R0-02 存量 + 授权包装）——
-# 每项：相对 backend/ 的路径 → (owner, 删除期限/去向)。切到 ImGateway 后删除对应行。
-_MESSAGE_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
-    # 授权收编点：通信域 application 自身允许直连现网 message_router 作收编封装（非业务模块，
-    # 与「R0-02 业务存量」段区分；R2 消费者化后逐一退役，非「往白名单加业务行」）。
-    'app/hasn_im/application/local_gateway.py': ('im-refactor', 'R2-04 后内联 route 逻辑，删本依赖'),
-    'app/hasn_im/application/system_card_deliverer.py': ('im-refactor', 'R1-06 系统卡片投递收编点：R1-08 事务收口 / R2 消费者化后退役'),
-}
+# 路径拆分构造，避免简单全文检索把守卫的检测目标误判为生产依赖。
+_LEGACY_SERVICE_PACKAGE = 'backend.app.hasn.service'
+_LEGACY_API_PACKAGE = 'backend.app.hasn.api'
+_LEGACY_IM_MODULES = (
+    *tuple(f'{_LEGACY_SERVICE_PACKAGE}.{name}' for name in ('message_router', 'ws_router', 'ws_delivery_bus')),
+    f'{_LEGACY_API_PACKAGE}.ws_node',
+)
+_LEGACY_IM_FILES = tuple(
+    f'app/hasn/{directory}/{name}.py'
+    for directory, names in (
+        ('service', ('message_router', 'ws_router', 'ws_delivery_bus')),
+        ('api', ('ws_node',)),
+    )
+    for name in names
+)
 
-_WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
-    # R0-02 / P0 统计的业务直连方，完成每片切片后对应行应移除
-}
-
-_WS_DELIVERY_BUS_ALLOW: dict[str, tuple[str, str]] = {}
-
-_WS_NODE_ALLOW: dict[str, tuple[str, str]] = {
-}
-
-# legacy IM key 访问仅允许在这两处兼容入口；超过这两处即拦截收口偏差
-_IM_LEGACY_REDIS_KEY_ALLOW: dict[str, tuple[str, str]] = {
-    'app/hasn/service/ws_router.py': ('im-refactor', 'R2-01 迁出前保留统一收口点'),
-    'app/hasn/service/ws_delivery_bus.py': ('im-refactor', 'R1-02 兼容层仍含 legacy key 语义注释'),
-    'app/hasn_im/adapters/routing/redis_presence_store.py': ('im-refactor', 'R1-02 routing 收口入口统一 legacy key 所在'),
-}
 _IM_LEGACY_REDIS_KEY_RE = re.compile(r"hasn:(?:node_conn|node_generation|node_entities|node_alive|entity_node|offline:|push:)")
 
 # —— DML guard：受保护的新 IM/sync 模型模块前缀（R2 建模后填充生效）——
@@ -79,143 +66,69 @@ def _rel(path: Path) -> str:
     return str(path.relative_to(_BACKEND_ROOT))
 
 
-def _imported_modules(path: Path) -> set[str]:
-    """返回该文件 import 的完整点分目标集合（Import + ImportFrom 两种形态都覆盖）。
-
-    - `import a.b.c` → {'a.b.c'}
-    - `from a.b import c` → {'a.b', 'a.b.c'}（后者覆盖 `from x.service import message_router`）
-    - `from a.b.c import d` → {'a.b.c', 'a.b.c.d'}
-    相对 import（level>0）无法静态解析包路径，跳过。
-    """
+def _parse(path: Path) -> ast.AST | None:
     try:
-        tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+        return ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
     except (SyntaxError, UnicodeDecodeError):
+        return None
+
+
+def _imported_modules(path: Path) -> set[str]:
+    """返回该文件 import 的完整点分目标集合（含 `from x import y`）。"""
+    tree = _parse(path)
+    if tree is None:
         return set()
-    mods: set[str] = set()
+    modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                mods.add(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module and node.level == 0:
-                mods.add(node.module)
-                for alias in node.names:
-                    mods.add(f'{node.module}.{alias.name}')
-    return mods
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            modules.add(node.module)
+            modules.update(f'{node.module}.{alias.name}' for alias in node.names)
+    return modules
 
 
-def _files_importing(full_module: str) -> set[str]:
-    """所有 import 了 full_module（精确点分路径）的 app 文件（相对 backend/ 路径）。"""
-    hit: set[str] = set()
+def _string_literals(path: Path) -> set[str]:
+    """返回 AST 中的字符串常量，用于拦截 importlib 的动态加载。"""
+    tree = _parse(path)
+    if tree is None:
+        return set()
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+
+def test_legacy_im_modules_are_physically_deleted():
+    """硬切换后不得保留同名遗留文件，防止路由注册回退到旧实现。"""
+    remaining = sorted(relative for relative in _LEGACY_IM_FILES if (_BACKEND_ROOT / relative).exists())
+    assert not remaining, '遗留 IM 文件尚未删除：\n  ' + '\n  '.join(remaining)
+
+
+def test_legacy_im_modules_cannot_be_loaded():
+    """静态 import 与字符串动态加载都不得重新引用已删除的遗留模块。"""
+    offenders: list[str] = []
     for path in _iter_app_py_files():
-        if full_module in _imported_modules(path):
-            hit.add(_rel(path))
-    return hit
-
-
-def test_no_new_message_router_importers():
-    """除白名单外，不得有新文件直接 import message_router（走 hasn_im.ports.ImGateway）。"""
-    importers = _files_importing('backend.app.hasn.service.message_router')
-    # message_router.py 自身不算
-    importers.discard('app/hasn/service/message_router.py')
-    offenders = sorted(importers - set(_MESSAGE_ROUTER_ALLOW))
+        modules = _imported_modules(path)
+        strings = _string_literals(path)
+        referenced = sorted(module for module in _LEGACY_IM_MODULES if module in modules or module in strings)
+        if referenced:
+            offenders.append(f'{_rel(path)}: {", ".join(referenced)}')
     assert not offenders, (
-        '发现新增的 message_router 直接 import（违背 §0.1）——请改经 '
-        'backend.app.hasn_im.ports.ImGateway 调用，不要往白名单加行：\n  '
+        '发现对已删除遗留 IM 模块的引用（包括 importlib 动态加载）：\n  '
         + '\n  '.join(offenders)
     )
 
 
-def test_message_router_whitelist_has_no_dead_entries():
-    """白名单不得含已不再 import message_router 的死行（切到 port 后应移除白名单行）。"""
-    importers = _files_importing('backend.app.hasn.service.message_router')
-    importers.discard('app/hasn/service/message_router.py')
-    dead = sorted(set(_MESSAGE_ROUTER_ALLOW) - importers)
-    assert not dead, (
-        '白名单存在已不再 import message_router 的死行，请删除（切到 port 后应移除白名单行）：\n  '
-        + '\n  '.join(dead)
-    )
-
-
-def test_no_new_ws_node_importers():
-    """除路由注册处外，不得有新文件直接 import ws_node（协议入口）。"""
-    importers = _files_importing('backend.app.hasn.api.ws_node')
-    importers.discard('app/hasn/api/ws_node.py')
-    importers.discard('app/hasn_im/api/ws_node.py')
-    offenders = sorted(importers - set(_WS_NODE_ALLOW))
-    assert not offenders, (
-        '发现新增的 ws_node 直接 import（违背 §0.1）——协议帧处理应经 hasn_im 协议层：\n  '
-        + '\n  '.join(offenders)
-    )
-
-
-def test_ws_node_whitelist_has_no_dead_entries():
-    """白名单不得含已不再 import ws_node 的死行。"""
-    importers = _files_importing('backend.app.hasn.api.ws_node')
-    importers.discard('app/hasn/api/ws_node.py')
-    dead = sorted(set(_WS_NODE_ALLOW) - importers)
-    assert not dead, (
-        '白名单存在已不再 import ws_node 的死行，请删除：\n  '
-        + '\n  '.join(dead)
-    )
-
-
-def test_no_new_ws_router_importers():
-    """除白名单外，不得有新文件直接 import ws_router（走 `hasn_im` ports）。"""
-    importers = _files_importing('backend.app.hasn.service.ws_router')
-    # ws_router.py 为定义方，不算消费者
-    importers.discard('app/hasn/service/ws_router.py')
-    offenders = sorted(importers - set(_WS_ROUTER_ALLOW))
-    assert not offenders, (
-        '发现新增的 ws_router 直接 import（违背 §0.1）——请改经 hasn_im.ports 调用，不要往白名单加行：\n  '
-        + '\n  '.join(offenders)
-    )
-
-
-def test_ws_router_whitelist_has_no_dead_entries():
-    """白名单不得含已不再 import ws_router 的死行（切到 port 后应移除白名单行）。"""
-    importers = _files_importing('backend.app.hasn.service.ws_router')
-    importers.discard('app/hasn/service/ws_router.py')
-    dead = sorted(set(_WS_ROUTER_ALLOW) - importers)
-    assert not dead, (
-        '白名单存在已不再 import ws_router 的死行，请删除：\n  '
-        + '\n  '.join(dead)
-    )
-
-
-def test_no_new_ws_delivery_bus_importers():
-    """除白名单外，不得有新文件直接 import ws_delivery_bus（禁止扩散私有字典依赖）。"""
-    importers = _files_importing('backend.app.hasn.service.ws_delivery_bus')
-    # ws_delivery_bus.py 为定义方，不算消费者
-    importers.discard('app/hasn/service/ws_delivery_bus.py')
-    offenders = sorted(importers - set(_WS_DELIVERY_BUS_ALLOW))
-    assert not offenders, (
-        '发现新增的 ws_delivery_bus 直接 import（违背 §0.1）：\n  '
-        + '\n  '.join(offenders)
-    )
-
-
-def test_ws_delivery_bus_whitelist_has_no_dead_entries():
-    """白名单不得含已不再 import ws_delivery_bus 的死行。"""
-    importers = _files_importing('backend.app.hasn.service.ws_delivery_bus')
-    importers.discard('app/hasn/service/ws_delivery_bus.py')
-    dead = sorted(set(_WS_DELIVERY_BUS_ALLOW) - importers)
-    assert not dead, (
-        '白名单存在已不再 import ws_delivery_bus 的死行，请删除：\n  '
-        + '\n  '.join(dead)
-    )
-
-
-def test_no_new_legacy_im_redis_key_access():
-    """除白名单外，不得有新文件直接访问 legacy IM Redis key（收口前先走守卫）。"""
+def test_legacy_im_redis_key_access_is_limited_to_routing_adapters():
+    """遗留 Redis key 只能留在 `hasn_im.adapters.routing` 的迁移实现内。"""
     offenders: list[str] = []
     for path in _iter_app_py_files():
         rel = _rel(path)
         if rel.startswith('app/hasn_im/tests/'):
             continue
         if any(rel.startswith(prefix) for prefix in _DML_ALLOW_PREFIXES):
-            continue
-        if rel in _IM_LEGACY_REDIS_KEY_ALLOW:
             continue
         try:
             content = path.read_text(encoding='utf-8')
@@ -224,23 +137,20 @@ def test_no_new_legacy_im_redis_key_access():
         if _IM_LEGACY_REDIS_KEY_RE.search(content):
             offenders.append(rel)
     assert not offenders, (
-        '发现新增直接访问 legacy IM Redis key（应迁移到 hasn_im.adapters.routing）：\n  '
+        '发现直接访问 legacy IM Redis key（应迁移到 hasn_im.adapters.routing）：\n  '
         + '\n  '.join(sorted(set(offenders)))
     )
 
 
 def test_no_direct_im_sync_model_dml_outside_adapters():
-    """业务模块不得直接 import hasn_im/hasn_sync 的 ORM 模型（写一律经 port/append_event）。
-
-    当前新模型未建（R2-01/R2-07），保护集为空 → 放行；R2 建模后自动生效。
-    """
+    """业务模块不得直接 import hasn_im/hasn_sync ORM 模型（写一律经 port/append_event）。"""
     offenders: list[str] = []
     for path in _iter_app_py_files():
         rel = _rel(path)
         if any(rel.startswith(prefix) for prefix in _DML_ALLOW_PREFIXES):
             continue
-        mods = _imported_modules(path)
-        if any(mod.startswith(prefix) for mod in mods for prefix in _PROTECTED_MODEL_PREFIXES):
+        modules = _imported_modules(path)
+        if any(module.startswith(prefix) for module in modules for prefix in _PROTECTED_MODEL_PREFIXES):
             offenders.append(rel)
     assert not offenders, (
         '发现业务模块直接 import 受保护的 IM/sync ORM 模型（应经 port/append_event 写）：\n  '

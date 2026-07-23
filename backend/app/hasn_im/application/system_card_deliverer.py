@@ -13,15 +13,18 @@ notification 域收编进通信域——原 `notification_carrier._persist_card`
 事务；R1-08 事务收口 / R2 消费者化后，卡片投递改为经 `integration_events` →
 `sync_projector` 消费者，本函数随之退役。
 
-依赖方向（§0.1）：本函数属 `hasn_im.application`，**允许**依赖现网 `message_router`
-（收编期过渡）；notification 业务模块经本函数（通信域 application API）投递，**不再
-直连 `persist_message`**——`persist_message` 从此只被通信域内部（`route_message` +
-本函数）调用，业务层零直连（R1-06 验收）。
+依赖方向（§0.1）：notification 业务模块经本函数（通信域 application API）投递，
+不再直连 `persist_message`；业务层保持零直连。
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
+from backend.app.hasn_im.application.message_service import (
+    get_or_create_conversation,
+    persist_message,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,11 +58,9 @@ async def deliver_system_card(
     ——persist_message 直写绕开 route_message，本身不产生同步事件，缺这步则云端落库但 daemon
     永不镜像）。owner 即接收方（recipient_id）。**用调用方 db，不 commit**（参与其事务）。
     """
-    # 延迟 import：与 notification_carrier 原实现同源，收编期允许依赖现网 message_router（§0.1）。
-    from backend.app.hasn.service import message_router
     from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
 
-    conv = await message_router.get_or_create_conversation(
+    conv = await get_or_create_conversation(
         db,
         recipient_id,
         recipient_type,
@@ -67,7 +68,7 @@ async def deliver_system_card(
         peer_type,
         relation_type=relation_type,
     )
-    msg = await message_router.persist_message(
+    msg = await persist_message(
         db,
         conversation_id=str(conv.id),
         from_id=from_id,
