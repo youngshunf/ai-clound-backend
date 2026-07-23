@@ -214,14 +214,21 @@ def test_workbench_registry_auto_installs_knowledge_for_personal_and_enterprise(
     # - deck（自研演示文稿，模块 17）scope=personal，唯一默认演示文稿应用（presentation 已删除）；
     # - hasn_task scope=(personal, enterprise)，两空间皆自动安装；
     # - publish scope=personal，仅 personal 自动安装。
+    # - project 是跨应用产物和工作会话的一级容器，个人与企业空间默认常驻。
     assert [app.id for app in registry.auto_install_apps('personal')] == [
         'knowledge',
         'community',
         'deck',
         'hasn_task',
         'publish',
+        'project',
     ]
-    assert [app.id for app in registry.auto_install_apps('enterprise')] == ['knowledge', 'community', 'hasn_task']
+    assert [app.id for app in registry.auto_install_apps('enterprise')] == [
+        'knowledge',
+        'community',
+        'hasn_task',
+        'project',
+    ]
     assert registry.get('knowledge').entry_route == '/apps/knowledge'
 
 
