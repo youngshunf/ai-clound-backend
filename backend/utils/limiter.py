@@ -2,9 +2,9 @@ from collections.abc import Awaitable, Callable
 from math import ceil
 
 from fastapi import Request, Response
-from fastapi_pagination.utils import is_async_callable
 from pyrate_limiter import AbstractBucket, Limiter, Rate
 from pyrate_limiter.buckets import RedisBucket
+from starlette._utils import is_async_callable
 from starlette.concurrency import run_in_threadpool
 
 from backend.common.exception import errors

@@ -52,7 +52,8 @@ class HermesRuntimeClient:
         # [service.hermes] → dev 本机回落 127.0.0.1:8765）。token 不派生（derive_token=False，固定服务级
         # Bearer）。HUANXING_HERMES_RUNTIME_ID 与 RUNTIME_INTERNAL_TOKEN 是非连接配置，仍读 settings。
         ep = service_endpoint('hermes')
-        self.base_url = (base_url or ep.base_url or getattr(settings, 'HUANXING_HERMES_RUNTIME_BASE_URL', '')).rstrip('/')
+        runtime_base_url = base_url or ep.base_url or getattr(settings, 'HUANXING_HERMES_RUNTIME_BASE_URL', '') or ''
+        self.base_url = str(runtime_base_url).rstrip('/')
         self.api_token = (
             api_token
             if api_token is not None
