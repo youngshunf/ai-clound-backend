@@ -651,11 +651,25 @@ class WsRouterService:
         在下一次 IO 失败 / 重认证时完成。
         """
         ws = get_connection(node_id)
-        connection_id = (
-            get_connection_id(node_id) if ws is not None else await redis_client.hget(NODE_GENERATION_KEY, node_id)
-        )
+        connection_id = get_connection_id(node_id) or await redis_client.hget(NODE_GENERATION_KEY, node_id)
         if connection_id:
             await self.unregister_node(node_id, connection_id)
+        else:
+            # 兼容场景：节点仍在 NODE_CONN_KEY 或 USER/NODE 实体集合中，但 generation 已丢失。
+            # 为避免遗留在线误判，按 node_id 做一次幂等的强制清理（best-effort）。
+            entity_ids = await redis_client.smembers(f'{NODE_ENTITIES_PREFIX}:{node_id}')
+            for hasn_id in entity_ids:
+                if not isinstance(hasn_id, str):
+                    hasn_id = hasn_id.decode('utf-8')
+                bound_node = await redis_client.hget(ENTITY_NODE_KEY, hasn_id)
+                if bound_node == node_id:
+                    await redis_client.hdel(ENTITY_NODE_KEY, hasn_id)
+                if hasn_id.startswith('h_'):
+                    await redis_client.srem(f'{USER_NODES_PREFIX}:{hasn_id}', node_id)
+            await redis_client.delete(f'{NODE_ENTITIES_PREFIX}:{node_id}')
+            await redis_client.delete(f'{NODE_ALIVE_PREFIX}:{node_id}')
+            await redis_client.hdel(NODE_CONN_KEY, node_id)
+            await redis_client.hdel(NODE_GENERATION_KEY, node_id)
         if ws is not None:
             try:
                 await ws.close(code=4002, reason='remote logout')
