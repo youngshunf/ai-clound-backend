@@ -12,10 +12,11 @@ entitlement「套餐」行 ``SELECT ... FOR UPDATE`` 加锁，再 count/校验/�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 
+from sqlalchemy.engine import CursorResult
 from backend.app.hasn.model.hasn_app_entitlement import HasnAppEntitlement
 from backend.app.hasn.model.hasn_app_seat import HasnAppSeat
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
@@ -137,31 +138,37 @@ async def assign_seat(
 
 async def release_seat(db: AsyncSession, *, enterprise_id: int, app_id: str, member_hasn_id: str) -> bool:
     """回收成员的席位（§6.2）。幂等：无 assigned 席位返回 False，不报错。"""
-    result = await db.execute(
-        sa
-        .update(HasnAppSeat)
-        .where(
-            HasnAppSeat.enterprise_id == enterprise_id,
-            HasnAppSeat.app_id == app_id,
-            HasnAppSeat.member_hasn_id == member_hasn_id,
-            HasnAppSeat.status == 'assigned',
+    result = cast(
+        CursorResult[Any],
+        await db.execute(
+            sa
+            .update(HasnAppSeat)
+            .where(
+                HasnAppSeat.enterprise_id == enterprise_id,
+                HasnAppSeat.app_id == app_id,
+                HasnAppSeat.member_hasn_id == member_hasn_id,
+                HasnAppSeat.status == 'assigned',
+            )
+            .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
         )
-        .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
     )
     return (result.rowcount or 0) > 0
 
 
 async def release_all_seats_for_member(db: AsyncSession, *, enterprise_id: int, member_hasn_id: str) -> int:
     """释放某成员在该企业**所有应用**的 assigned 席位（P4 成员退出/移除/企业解散用）。返回释放条数。"""
-    result = await db.execute(
-        sa
-        .update(HasnAppSeat)
-        .where(
-            HasnAppSeat.enterprise_id == enterprise_id,
-            HasnAppSeat.member_hasn_id == member_hasn_id,
-            HasnAppSeat.status == 'assigned',
+    result = cast(
+        CursorResult[Any],
+        await db.execute(
+            sa
+            .update(HasnAppSeat)
+            .where(
+                HasnAppSeat.enterprise_id == enterprise_id,
+                HasnAppSeat.member_hasn_id == member_hasn_id,
+                HasnAppSeat.status == 'assigned',
+            )
+            .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
         )
-        .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
     )
     return int(result.rowcount or 0)
 
@@ -171,29 +178,35 @@ async def release_all_seats_for_enterprise(db: AsyncSession, *, enterprise_id: i
 
     企业解散无需逐成员 ``sys_user.id→hasn_id`` 翻译（M3），按 enterprise_id 整批释放更省。
     """
-    result = await db.execute(
-        sa
-        .update(HasnAppSeat)
-        .where(
-            HasnAppSeat.enterprise_id == enterprise_id,
-            HasnAppSeat.status == 'assigned',
+    result = cast(
+        CursorResult[Any],
+        await db.execute(
+            sa
+            .update(HasnAppSeat)
+            .where(
+                HasnAppSeat.enterprise_id == enterprise_id,
+                HasnAppSeat.status == 'assigned',
+            )
+            .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
         )
-        .values(status='released', released_at=timezone.now(), updated_time=timezone.now())
     )
     return int(result.rowcount or 0)
 
 
 async def revoke_enterprise_entitlements(db: AsyncSession, *, enterprise_id: int) -> int:
     """吊销该企业**所有** active 应用权益「套餐」行（P4 企业解散用）。返回吊销条数。"""
-    result = await db.execute(
-        sa
-        .update(HasnAppEntitlement)
-        .where(
-            HasnAppEntitlement.subject_type == 'enterprise',
-            HasnAppEntitlement.subject_id == str(enterprise_id),
-            HasnAppEntitlement.status == 'active',
+    result = cast(
+        CursorResult[Any],
+        await db.execute(
+            sa
+            .update(HasnAppEntitlement)
+            .where(
+                HasnAppEntitlement.subject_type == 'enterprise',
+                HasnAppEntitlement.subject_id == str(enterprise_id),
+                HasnAppEntitlement.status == 'active',
+            )
+            .values(status='revoked', updated_time=timezone.now())
         )
-        .values(status='revoked', updated_time=timezone.now())
     )
     return int(result.rowcount or 0)
 
