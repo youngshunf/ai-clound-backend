@@ -24,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_task import HasnTask
 from backend.app.hasn.model.hasn_task_run import HasnTaskRun
-from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
+from backend.app.hasn_im.application.provider import get_realtime_gateway
+from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle
 from backend.common.exception import errors
 from backend.database.db import async_db_session
@@ -32,7 +33,24 @@ from backend.database.db import async_db_session
 logger = logging.getLogger(__name__)
 
 # 兼容层：保留历史模块变量名，便于 monkeypatch/老路径接入继续生效。
-ws_router = ws_node_runtime
+_realtime_gateway = get_realtime_gateway()
+
+
+class _TaskSchedulerRealtimeAdapter:
+    """任务调度器历史兼容适配，提供 push_message_to 以复用既有测试桩。"""
+
+    def __init__(self, gateway: Any) -> None:
+        self._gateway = gateway
+
+    async def push_message_to(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
+        await self._gateway.push_to_owner(
+            target_hasn_id,
+            RealtimeFrame(method=payload['method'], params=payload['params']),
+        )
+        return True
+
+
+ws_router = _TaskSchedulerRealtimeAdapter(_realtime_gateway)
 
 TICK_INTERVAL_SECONDS = 60
 TASK_EXEC_TIMEOUT_SECONDS = 600
