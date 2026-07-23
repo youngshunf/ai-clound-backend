@@ -64,6 +64,14 @@ _DISPATCH_TOOL_NAMES = frozenset({'hasn.cloud.tool.call', 'hasn.local.tool.call'
 _SUMMARY_AUDIT_SAMPLE_RATE = 10
 
 
+def _require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝访问主人隔离服务。"""
+    owner_hasn_id = agent_context.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('mcp: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 async def load_app_tools_for_agent(agent_id: str, owner_id: str) -> Sequence[BaseTool]:  # noqa: RUF029
     """Agent 维度的 App 工具（P4-B）。
 
@@ -446,7 +454,7 @@ class HasnCloudMcpServer:
         from backend.common.exception import errors
         from backend.database.db import async_db_session
 
-        subject = Subject.agent(agent_context.agent_hasn_id, agent_context.owner_hasn_id)
+        subject = Subject.agent(agent_context.agent_hasn_id, _require_owner_hasn_id(agent_context))
         try:
             async with async_db_session() as db:
                 authorized = await resource_gate.enforce_declaration(db, subject, declarations, arguments)
@@ -600,11 +608,12 @@ class HasnCloudMcpServer:
 
     async def _load_app_tools(self, agent_context: AgentContext) -> None:
         try:
+            owner_hasn_id = _require_owner_hasn_id(agent_context)
             agent_tools = await load_app_tools_for_agent(
                 agent_id=agent_context.hasn_id,
-                owner_id=agent_context.owner_hasn_id,
+                owner_id=owner_hasn_id,
             )
-            owner_tools = await load_app_tools_for_owner(owner_id=agent_context.owner_hasn_id)
+            owner_tools = await load_app_tools_for_owner(owner_id=owner_hasn_id)
             for tool in [*agent_tools, *owner_tools]:
                 if self.tool_registry.get_tool(tool.name):
                     continue

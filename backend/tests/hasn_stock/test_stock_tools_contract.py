@@ -8,12 +8,28 @@ from __future__ import annotations
 
 import json
 
-from backend.app.mcp.tools.stock import STOCK_TOOLS, StockDownloadTool, StockSearchTool
+import pytest
+
+from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.tools.stock import STOCK_TOOLS, StockDownloadTool, StockSearchTool, _require_owner_hasn_id
 
 
 def test_stock_tools_exported() -> None:
     names = {t.name for t in STOCK_TOOLS}
     assert names == {'hasn.stock.search', 'hasn.stock.download'}
+
+
+def test_stock_download_requires_owner_identity() -> None:
+    """下载写入主人私有桶前，必须从凭证获得完整主人身份。"""
+    context = AgentContext(
+        hasn_id='a_stock_missing_owner',
+        owner_id=1,
+        agent_status='active',
+        metadata={},
+    )
+
+    with pytest.raises(RuntimeError, match='owner_hasn_id'):
+        _require_owner_hasn_id(context)
 
 
 def test_server_registers_stock_tools() -> None:

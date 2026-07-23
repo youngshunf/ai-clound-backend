@@ -25,6 +25,14 @@ _PER_PAGE_DEFAULT = 10
 _PER_PAGE_MAX = 20
 
 
+def _require_owner_hasn_id(agent_context: AgentContext) -> str:
+    """从已鉴权分身上下文取得主人身份，缺失时拒绝写入主人私有资源。"""
+    owner_hasn_id = agent_context.owner_hasn_id
+    if not owner_hasn_id:
+        raise RuntimeError('stock: Agent 凭证缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 class StockSearchTool(BaseTool):
     """`hasn.stock.search`：搜外部素材站（图片 + 视频）。"""
 
@@ -167,11 +175,12 @@ class StockDownloadTool(BaseTool):
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
         """SSRF 闸 → 流式下载封顶 → 落私有桶 → 双登记。"""
+        owner_hasn_id = _require_owner_hasn_id(agent_context)
         raw = arguments.get('url')
         if not isinstance(raw, str) or not raw.strip():
             raise RuntimeError("stock.download: 'url' 必填")
         return await stock_download_service.download(
-            owner_hasn_id=agent_context.owner_hasn_id,
+            owner_hasn_id=owner_hasn_id,
             agent_hasn_id=agent_context.agent_hasn_id,
             url=raw.strip(),
             title=(arguments.get('title') or None),
