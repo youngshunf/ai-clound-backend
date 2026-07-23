@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import re
 
+from typing import Any, cast
+
 from sqlalchemy import delete, select
+from sqlalchemy.engine import CursorResult
 
 from backend.app.external_mcp.model import ExternalMcpSecret
 from backend.common.security.encryption import key_encryption
@@ -103,7 +106,10 @@ class SecretStore:
     async def revoke(self, secret_uri: str) -> bool:
         """撤销：删除密文。返回是否删除了记录。"""
         async with async_db_session.begin() as db:
-            result = await db.execute(delete(ExternalMcpSecret).where(ExternalMcpSecret.secret_uri == secret_uri))
+            result = cast(
+                'CursorResult[Any]',
+                await db.execute(delete(ExternalMcpSecret).where(ExternalMcpSecret.secret_uri == secret_uri)),
+            )
         return (result.rowcount or 0) > 0
 
     async def exists(self, secret_uri: str) -> bool:

@@ -13,7 +13,7 @@ class HermesAgentLlmTokenSchemaBase(SchemaBase):
     newapi_token_id: int = Field(description='new-api tokens.id')
     token_key_prefix: str = Field(description='token 明文前 8 字符（脱敏展示与审计）')
     token_key_sha256: str = Field(description='token 明文 SHA256（反查匹配，不可逆）')
-    model_allowlist: dict | None = Field(None, description='平台模型白名单 JSON，留空 = 跟随 user 默认')
+    model_allowlist: list[str] | None = Field(None, description='平台模型白名单 JSON 数组，留空 = 跟随 user 默认')
     rate_limit_rps: int | None = Field(None, description='单 Agent QPS 限速，留空 = 跟随 user 默认')
     per_token_quota_remaining: int | None = Field(None, description='可选：单 token 独立配额；留空 = 与 user.quota 共享')
     issued_at: datetime = Field(description='签发时间')

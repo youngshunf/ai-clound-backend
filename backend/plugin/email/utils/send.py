@@ -1,5 +1,6 @@
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import Any
 
 from aiosmtplib import SMTP
 from anyio import open_file
@@ -13,7 +14,7 @@ from backend.utils.dynamic_config import load_email_config
 from backend.utils.timezone import timezone
 
 
-async def render_message(subject: str, from_header: str, content: str | dict, template: str | None) -> bytes:
+async def render_message(subject: str, from_header: str, content: str | dict[str, Any], template: str | None) -> bytes:
     """
     渲染邮件内容
 
@@ -29,10 +30,14 @@ async def render_message(subject: str, from_header: str, content: str | dict, te
     message['date'] = timezone.now().strftime('%a, %d %b %Y %H:%M:%S %z')
 
     if template:
+        if not isinstance(content, dict):
+            raise ValueError('邮件模板渲染需要字典类型内容')
         async with await open_file(PLUGIN_DIR / 'email' / 'templates' / template, encoding='utf-8') as f:
             html = Template(await f.read(), enable_async=True)
         mail_body = MIMEText(await html.render_async(**content), 'html', 'utf-8')
     else:
+        if not isinstance(content, str):
+            raise ValueError('纯文本邮件需要字符串类型内容')
         mail_body = MIMEText(content, 'plain', 'utf-8')
 
     message.attach(mail_body)
@@ -44,7 +49,7 @@ async def send_email(
     db: AsyncSession,
     recipients: str | list[str],
     subject: str,
-    content: str | dict,
+    content: str | dict[str, Any],
     template: str | None = None,
 ) -> None:
     """
