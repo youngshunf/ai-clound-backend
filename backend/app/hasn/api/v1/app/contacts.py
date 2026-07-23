@@ -34,13 +34,31 @@ from backend.app.hasn.schema.hasn_contacts_business import (
 )
 from backend.app.hasn.service.hasn_auth import hasn_auth
 from backend.app.hasn.service.hasn_contacts_service import ContactRequestError, HasnContactsService
-from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
+from backend.app.hasn_im.application.provider import get_realtime_gateway
+from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 from backend.common.response.response_code import CustomResponse
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.database.db import CurrentSession
 
 router = APIRouter(prefix='/contacts', tags=['HASN Contacts'])
-ws_router = ws_node_runtime
+_realtime_gateway = get_realtime_gateway()
+
+
+class _ContactRealtimeAdapter:
+    """联系人事件推送兼容适配，保留 push_message_to 形态供业务端与测试补丁。"""
+
+    def __init__(self, gateway: Any) -> None:
+        self._gateway = gateway
+
+    async def push_message_to(self, target_hasn_id: str, payload: dict) -> bool:
+        await self._gateway.push_to_owner(
+            target_hasn_id,
+            RealtimeFrame(method=payload['method'], params=payload['params']),
+        )
+        return True
+
+
+ws_router = _ContactRealtimeAdapter(_realtime_gateway)
 
 
 async def _resolve_star_id(db, target_star_id: str) -> tuple[Any, str | None]:
