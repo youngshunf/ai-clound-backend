@@ -91,6 +91,23 @@ async def send_to_target(
     )
 
 
+async def mark_read(
+    db: AsyncSession,
+    reader: str,
+    conversation_id: str,
+    last_msg_id: int,
+) -> None:
+    """过渡期 mark_read 兼容封装，复用现网 message_router mark_read。"""
+    from backend.app.hasn.service import message_router
+
+    await message_router.mark_read(
+        db=db,
+        reader=reader,
+        conversation_id=conversation_id,
+        last_msg_id=last_msg_id,
+    )
+
+
 def _participant_type(hasn_id: str) -> str:
     """按 hasn_id 前缀判定参与者类型（与 message_router._entity_type_str 同口径）。"""
     return _entity_type_str(hasn_id)

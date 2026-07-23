@@ -44,23 +44,6 @@ router = APIRouter(prefix='/contacts', tags=['HASN Contacts'])
 _realtime_gateway = get_realtime_gateway()
 
 
-class _ContactRealtimeAdapter:
-    """联系人事件推送兼容适配，保留 push_message_to 形态供业务端与测试补丁。"""
-
-    def __init__(self, gateway: Any) -> None:
-        self._gateway = gateway
-
-    async def push_message_to(self, target_hasn_id: str, payload: dict) -> bool:
-        await self._gateway.push_to_owner(
-            target_hasn_id,
-            RealtimeFrame(method=payload['method'], params=payload['params']),
-        )
-        return True
-
-
-ws_router = _ContactRealtimeAdapter(_realtime_gateway)
-
-
 async def _resolve_star_id(db, target_star_id: str) -> tuple[Any, str | None]:
     """兼容层解析接口：优先复用服务内部解析逻辑，供测试和历史调用打补丁。"""
     return await HasnContactsService._resolve_contact_target(db, target_star_id)
@@ -83,7 +66,10 @@ async def _resolve_peer_user_profile(db, peer_info, *, peer_type: str):
 
 async def _push_contact_event(target_hasn_id: str, payload: dict) -> None:
     try:
-        await ws_router.push_message_to(target_hasn_id, payload)
+        await _realtime_gateway.push_to_owner(
+            target_hasn_id,
+            RealtimeFrame(method=payload['method'], params=payload['params']),
+        )
     except Exception:
         return
 

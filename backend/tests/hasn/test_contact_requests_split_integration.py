@@ -46,6 +46,13 @@ B = 'h_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
 REL = 'social'
 
 
+class _GatewayStub:
+    """联系人实时推送替身，仅用于本文件中的 monkeypatch。"""
+
+    def __init__(self, push_to_owner: AsyncMock) -> None:
+        self.push_to_owner = push_to_owner
+
+
 @pytest_asyncio.fixture
 async def pg_session():
     """每个用例独立 engine（NullPool 绑当前 loop）；不可达则 skip；末尾 rollback 不污染。"""
@@ -201,7 +208,13 @@ async def test_e2e_send_list_accept_builds_bidirectional_edges(pg_session_endpoi
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_human(session, B, B_STAR, 'Bob')
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='交个朋友'),
             db=session, auth={'hasn_id': A},
@@ -237,7 +250,13 @@ async def test_e2e_reject_then_resend_succeeds(pg_session_endpoint) -> None:
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_human(session, B, B_STAR, 'Bob')
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='第一次'),
             db=session, auth={'hasn_id': A},
@@ -267,7 +286,13 @@ async def test_e2e_blocked_sender_cannot_request(pg_session_endpoint) -> None:
     )
     await session.flush()
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='hi'),
             db=session, auth={'hasn_id': A},
@@ -295,7 +320,13 @@ async def test_e2e_add_source_roundtrips_to_contact(pg_session_endpoint) -> None
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_human(session, B, B_STAR, 'Bob')
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_STAR, message='手机号加的', add_source='search_phone'),
             db=session, auth={'hasn_id': A},
@@ -376,7 +407,13 @@ async def test_e2e_agent_request_not_blocked_by_owner_friendship(pg_session_endp
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='想和你的分身聊聊'),
             db=session, auth={'hasn_id': A},
@@ -401,7 +438,13 @@ async def test_e2e_agent_request_lists_show_agent_target(pg_session_endpoint) ->
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='hi'),
             db=session, auth={'hasn_id': A},
@@ -425,7 +468,13 @@ async def test_e2e_agent_accept_builds_forward_agent_edge(pg_session_endpoint) -
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         sent = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='hi'),
             db=session, auth={'hasn_id': A},
@@ -455,7 +504,13 @@ async def test_e2e_agent_request_idempotent(pg_session_endpoint) -> None:
     await _seed_agent(session, B_AGENT, B_AGENT_STAR, owner_id=B, display_name='Bob 的分身')
     await _make_owners_friends(session, trust=2)
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         first = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=B_AGENT_STAR, message='一次'),
             db=session, auth={'hasn_id': A},
@@ -475,7 +530,13 @@ async def test_e2e_cannot_request_own_agent(pg_session_endpoint) -> None:
     await _seed_human(session, A, A_STAR, 'Alice')
     await _seed_agent(session, A_AGENT, A_AGENT_STAR, owner_id=A, display_name='Alice 的分身')
 
-    with patch('backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to', new=AsyncMock(return_value=True)):
+    with patch(
+        'backend.app.hasn.api.v1.app.contacts._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ), patch(
+        'backend.app.hasn.service.hasn_contacts_service._realtime_gateway',
+        new=_GatewayStub(AsyncMock(return_value=True)),
+    ):
         result = await send_contact_request(
             obj_in=HasnContactRequestReq(target_star_id=A_AGENT_STAR, message='hi'),
             db=session, auth={'hasn_id': A},

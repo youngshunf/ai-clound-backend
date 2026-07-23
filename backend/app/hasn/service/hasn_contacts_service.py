@@ -46,31 +46,8 @@ class ContactRequestError(Exception):
         self.msg = msg
 
 
-def _resolve_ws_router() -> Any | None:
-    """联系人场景兼容回退：先尝试走 API 兼容适配入口，再走直接实时网关。"""
-    try:
-        from backend.app.hasn.api.v1.app import contacts as contacts_api
-        return contacts_api.ws_router
-    except Exception:
-        return None
-
-
 async def _safe_push_contact_event(owner_id: str, frame: RealtimeFrame) -> None:
-    """先兼容补丁点 `backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to`。"""
-    router = _resolve_ws_router()
-    if router is not None:
-        try:
-            await router.push_message_to(
-                owner_id,
-                {
-                    'method': frame.method,
-                    'params': frame.params,
-                },
-            )
-            return
-        except Exception:
-            pass
-
+    """联系人事件推送统一走 realtime gateway（best-effort，不阻塞主链路）。"""
     try:
         await _realtime_gateway.push_to_owner(owner_id, frame)
     except Exception:
