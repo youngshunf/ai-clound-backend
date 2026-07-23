@@ -5,5 +5,5 @@ __all__ = [
     'node_session_service',
     'redis_presence_store',
     'ws_connection_registry',
-    'ws_realtime_gateway',
+    'node_session_realtime_gateway',
 ]

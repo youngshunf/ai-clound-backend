@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service import conversation_projection as cp
-from backend.app.hasn_im.adapters.ws_realtime_gateway import WsRouterRealtimeGateway
+from backend.app.hasn_im.adapters.routing.node_session_realtime_gateway import NodeSessionRealtimeGateway
 from backend.app.hasn_im.consumers.base import ConsumerClass, IntegrationEvent
 from backend.app.hasn_im.consumers.facts import IM_MESSAGE_COMMITTED, MessageCommittedFacts
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame, RealtimeGateway
@@ -29,7 +29,7 @@ _METHOD_MESSAGE_NEW = 'hasn.message.new'
 class RealtimeNotifier:
     """best-effort：把已提交消息实时推给每个受众 owner 的在线设备（§7.3-2）。"""
 
-    gateway: RealtimeGateway = field(default_factory=WsRouterRealtimeGateway)
+    gateway: RealtimeGateway = field(default_factory=NodeSessionRealtimeGateway)
 
     @property
     def name(self) -> str:

@@ -475,6 +475,11 @@ class NodeSessionService:
         payload_json = json.dumps(payload, ensure_ascii=False)
         return await self._push_to_human(owner_id, payload_json, None)
 
+    async def push_to_node(self, node_id: str, payload: dict) -> bool:
+        """把协议帧投递到指定在线节点（跨 worker 时经投递总线转发）。"""
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        return await self._send_or_publish(node_id, payload_json)
+
     async def _send_or_publish(self, node_id: str, payload_json: str) -> bool:
         """投给某 node：连接在本 worker 直发；否则经投递总线交给持有它的 worker。
 

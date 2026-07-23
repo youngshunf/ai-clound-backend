@@ -17,7 +17,7 @@ from backend.app.hasn_im.application.node_session_service import node_session_se
 from backend.app.hasn_im.ports import ImGateway, NodeSessionGateway, PresenceQuery
 from backend.app.hasn_im.ports.presence_query import OnlinePresence
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeGateway
-from backend.app.hasn_im.adapters.ws_realtime_gateway import WsRouterRealtimeGateway
+from backend.app.hasn_im.adapters.routing.node_session_realtime_gateway import NodeSessionRealtimeGateway
 from backend.database.db import async_db_session
 
 
@@ -89,5 +89,5 @@ def get_realtime_gateway() -> RealtimeGateway:
     """取得实时推送端口。"""
     global _realtime_gateway_instance
     if _realtime_gateway_instance is None:
-        _realtime_gateway_instance = WsRouterRealtimeGateway()
+        _realtime_gateway_instance = NodeSessionRealtimeGateway()
     return _realtime_gateway_instance
