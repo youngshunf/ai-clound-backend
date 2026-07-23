@@ -124,6 +124,7 @@ path = "backend/__init__.py"
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
+mypy_path = ["typings"]
 
 [[tool.mypy.overrides]]
 module = ["asyncpg"]
