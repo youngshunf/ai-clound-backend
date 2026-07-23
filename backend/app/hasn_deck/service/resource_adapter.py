@@ -44,7 +44,7 @@ class DeckResourceAdapter:
     """deck（演示文稿）资源适配器：resource_type='deck'，leaf id = deck_id。"""
 
     resource_type = 'deck'
-    id_param_aliases = ('deck_id',)
+    id_param_aliases: tuple[str, ...] = ('deck_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         deck_id = _to_int(resource_id)
@@ -103,7 +103,7 @@ class DeckPageResourceAdapter:
     """
 
     resource_type = 'deck_page'
-    id_param_aliases = ('page_id',)
+    id_param_aliases: tuple[str, ...] = ('page_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         page_id = _to_int(resource_id)

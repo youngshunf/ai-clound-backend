@@ -45,7 +45,7 @@ class KbResourceAdapter:
     """知识库（库级）资源适配器：resource_type='knowledge'，leaf id = kb_id。"""
 
     resource_type = 'knowledge'
-    id_param_aliases = ('kb_id',)
+    id_param_aliases: tuple[str, ...] = ('kb_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         kb_id = _to_int(resource_id)
@@ -108,7 +108,7 @@ class KbDocResourceAdapter:
     """
 
     resource_type = 'knowledge_doc'
-    id_param_aliases = ('doc_id',)
+    id_param_aliases: tuple[str, ...] = ('doc_id',)
     has_own_shares = True
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
@@ -153,7 +153,7 @@ class KbFolderResourceAdapter:
     """
 
     resource_type = 'knowledge_folder'
-    id_param_aliases = ('folder_id',)
+    id_param_aliases: tuple[str, ...] = ('folder_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         folder_id = _to_int(resource_id)
