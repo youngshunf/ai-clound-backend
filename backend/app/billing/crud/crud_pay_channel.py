@@ -1,6 +1,8 @@
 from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Select, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -9,8 +11,15 @@ from backend.app.billing.schema.pay_channel import CreatePayChannelParam, Update
 
 
 class CRUDPayChannel(CRUDPlus[PayChannel]):
+    @staticmethod
+    def _single_channel(result: object) -> PayChannel | None:
+        """将无关联加载的查询结果收紧为单个支付渠道。"""
+        if result is not None and not isinstance(result, PayChannel):
+            raise TypeError('支付渠道单模型查询返回了关联结果')
+        return cast(PayChannel | None, result)
+
     async def get(self, db: AsyncSession, pk: int) -> PayChannel | None:
-        return await self.select_model(db, pk)
+        return self._single_channel(await self.select_model(db, pk))
 
     async def get_by_code(self, db: AsyncSession, code: str) -> PayChannel | None:
         result = await db.execute(
@@ -38,10 +47,13 @@ class CRUDPayChannel(CRUDPlus[PayChannel]):
         from sqlalchemy import update
 
         from backend.utils.timezone import timezone
-        result = await db.execute(
-            update(PayChannel).where(PayChannel.id == pk).values(status=status, updated_time=timezone.now())
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                update(PayChannel).where(PayChannel.id == pk).values(status=status, updated_time=timezone.now())
+            ),
         )
-        return result.rowcount
+        return result.rowcount or 0
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)

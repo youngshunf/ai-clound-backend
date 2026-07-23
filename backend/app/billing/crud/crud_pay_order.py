@@ -1,7 +1,9 @@
 from collections.abc import Sequence
 from datetime import datetime
+from typing import Any, cast
 
 from sqlalchemy import Select, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -10,8 +12,15 @@ from backend.utils.timezone import timezone
 
 
 class CRUDPayOrder(CRUDPlus[PayOrder]):
+    @staticmethod
+    def _single_order(result: object) -> PayOrder | None:
+        """将无关联加载的查询结果收紧为单个支付订单。"""
+        if result is not None and not isinstance(result, PayOrder):
+            raise TypeError('支付订单单模型查询返回了关联结果')
+        return cast(PayOrder | None, result)
+
     async def get(self, db: AsyncSession, pk: int) -> PayOrder | None:
-        return await self.select_model(db, pk)
+        return self._single_order(await self.select_model(db, pk))
 
     async def get_by_order_no(self, db: AsyncSession, order_no: str) -> PayOrder | None:
         result = await db.execute(select(PayOrder).where(PayOrder.order_no == order_no))
@@ -69,29 +78,36 @@ class CRUDPayOrder(CRUDPlus[PayOrder]):
             values['channel_user_id'] = channel_user_id
         if success_time:
             values['success_time'] = success_time
-        result = await db.execute(
-            update(PayOrder).where(PayOrder.order_no == order_no).values(**values)
+        result = cast(
+            CursorResult[Any],
+            await db.execute(update(PayOrder).where(PayOrder.order_no == order_no).values(**values)),
         )
-        return result.rowcount
+        return result.rowcount or 0
 
     async def mark_refunded(self, db: AsyncSession, order_no: str, refund_amount: int) -> int:
         """标记订单为已退款（status=2）并记录退款金额（退款编排层调用）。"""
-        result = await db.execute(
-            update(PayOrder)
-            .where(PayOrder.order_no == order_no)
-            .values(status=2, refund_amount=refund_amount, updated_time=timezone.now())
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                update(PayOrder)
+                .where(PayOrder.order_no == order_no)
+                .values(status=2, refund_amount=refund_amount, updated_time=timezone.now())
+            ),
         )
-        return result.rowcount
+        return result.rowcount or 0
 
     async def expire_timeout_orders(self, db: AsyncSession) -> int:
         """将超时未支付的订单标记为过期"""
         now = timezone.now()
-        result = await db.execute(
-            update(PayOrder)
-            .where(PayOrder.status == 0, PayOrder.expire_time < now)
-            .values(status=4, updated_time=now)
+        result = cast(
+            CursorResult[Any],
+            await db.execute(
+                update(PayOrder)
+                .where(PayOrder.status == 0, PayOrder.expire_time < now)
+                .values(status=4, updated_time=now)
+            ),
         )
-        return result.rowcount
+        return result.rowcount or 0
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)

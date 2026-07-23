@@ -1,6 +1,8 @@
 from datetime import datetime
+from typing import Any, cast
 
 from sqlalchemy import Select, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -8,8 +10,15 @@ from backend.app.billing.model.pay_refund import PayRefund
 
 
 class CRUDPayRefund(CRUDPlus[PayRefund]):
+    @staticmethod
+    def _single_refund(result: object) -> PayRefund | None:
+        """将无关联加载的查询结果收紧为单个退款单。"""
+        if result is not None and not isinstance(result, PayRefund):
+            raise TypeError('退款单单模型查询返回了关联结果')
+        return cast(PayRefund | None, result)
+
     async def get(self, db: AsyncSession, pk: int) -> PayRefund | None:
-        return await self.select_model(db, pk)
+        return self._single_refund(await self.select_model(db, pk))
 
     async def get_by_refund_no(self, db: AsyncSession, refund_no: str) -> PayRefund | None:
         result = await db.execute(select(PayRefund).where(PayRefund.refund_no == refund_no))
@@ -42,8 +51,11 @@ class CRUDPayRefund(CRUDPlus[PayRefund]):
             values['channel_refund_no'] = channel_refund_no
         if success_time is not None:
             values['success_time'] = success_time
-        result = await db.execute(update(PayRefund).where(PayRefund.refund_no == refund_no).values(**values))
-        return result.rowcount
+        result = cast(
+            CursorResult[Any],
+            await db.execute(update(PayRefund).where(PayRefund.refund_no == refund_no).values(**values)),
+        )
+        return result.rowcount or 0
 
 
 pay_refund_dao: CRUDPayRefund = CRUDPayRefund(PayRefund)

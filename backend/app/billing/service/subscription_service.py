@@ -3,8 +3,10 @@
 """
 
 from datetime import timedelta
+from typing import Any, cast
 
 from sqlalchemy import and_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.billing.model import UserSubscription
@@ -145,7 +147,7 @@ class SubscriptionService:
             .values(expires_at=expires_at)
         )
         result = await db.execute(update_stmt)
-        updated_count = result.rowcount
+        updated_count = cast(CursorResult[Any], result).rowcount
 
         log.info(
             f'[Subscription] 用户 {user_id} 降级到免费版，'
