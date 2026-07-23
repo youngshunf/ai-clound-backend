@@ -19,7 +19,7 @@ from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_nodes import HasnNodes
 from backend.app.hasn_im.application.provider import get_presence_query
-from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
+from backend.app.hasn_im.application.provider import get_node_session_gateway
 from backend.app.hasn.service.hasn_auth import (
     hasn_auth_from_jwt,
     issue_node_jwt,
@@ -38,6 +38,7 @@ router = APIRouter()
 
 
 _presence_query = get_presence_query()
+_node_session_gateway = get_node_session_gateway()
 
 
 # ─── 请求/响应模型 ───
@@ -392,7 +393,7 @@ async def api_logout_device(
         await db.commit()
 
     # 清 presence + 释放名下 Agent + 关闭 WS（若在本进程）
-    disconnected = await ws_node_runtime.disconnect_node(node_id)
+    disconnected = await _node_session_gateway.disconnect_node(node_id=node_id)
 
     return response_base.success(data={
         'node_id': node_id,

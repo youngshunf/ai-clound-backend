@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from backend.app.hasn_im.application.local_gateway import PythonLocalImGateway
-from backend.app.hasn_im.ports import ImGateway, PresenceQuery
+from backend.app.hasn_im.ports import ImGateway, NodeSessionGateway, PresenceQuery
 from backend.app.hasn_im.ports.presence_query import OnlinePresence
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeGateway
 from backend.app.hasn_im.adapters.ws_realtime_gateway import WsRouterRealtimeGateway
@@ -64,6 +64,7 @@ class _LegacyPresenceQuery(PresenceQuery):
 
 
 _presence_query_instance: PresenceQuery | None = None
+_node_session_gateway_instance: NodeSessionGateway | None = None
 _realtime_gateway_instance: RealtimeGateway | None = None
 
 
@@ -78,6 +79,14 @@ def get_presence_query() -> PresenceQuery:
     if _presence_query_instance is None:
         _presence_query_instance = _LegacyPresenceQuery()
     return _presence_query_instance
+
+
+def get_node_session_gateway() -> NodeSessionGateway:
+    """取得节点会话与 Presence 管理端口（兼容实现）。"""
+    global _node_session_gateway_instance
+    if _node_session_gateway_instance is None:
+        _node_session_gateway_instance = ws_node_runtime
+    return _node_session_gateway_instance
 
 
 def get_realtime_gateway() -> RealtimeGateway:
