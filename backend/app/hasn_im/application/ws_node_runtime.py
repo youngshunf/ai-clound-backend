@@ -20,6 +20,16 @@ from backend.app.hasn_im.adapters.routing import ws_router as routing_ws_router
 class WsNodeRuntime:
     """ws_node 兼容 adapter：当前阶段保留现网路由实现，避免协议层二次封装膨胀。"""
 
+    @property
+    def message_router(self):
+        """供协议层兼容 patch：返回现网 message_router 模块。"""
+        return importlib.import_module('backend.app.hasn.service.message_router')
+
+    @property
+    def ws_router(self):
+        """供协议层兼容 patch：返回现网 ws_router 单例。"""
+        return routing_ws_router.ws_router
+
     async def claim_offline_messages(
         self,
         entity_ids: list[str],

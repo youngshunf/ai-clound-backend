@@ -29,83 +29,36 @@ from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.service.hasn_auth import verify_owner_proof
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.app.hasn.service.ws_delivery_bus import ws_delivery_bus
+from backend.app.hasn_im.adapters.routing.redis_presence_store import (
+    AGENT_READY_PREFIX,
+    OFFLINE_PREFIX,
+    OFFLINE_TTL,
+    NODE_ALIVE_PREFIX,
+    NODE_CONN_KEY,
+    NODE_ENTITIES_PREFIX,
+    NODE_GENERATION_KEY,
+    NODE_PRESENCE_TTL_SECS,
+    USER_NODES_PREFIX,
+    ENTITY_NODE_KEY,
+    _ACK_OFFLINE_PREFIX_SCRIPT,
+    _REFRESH_PRESENCE_IF_CURRENT_SCRIPT,
+    _UNREGISTER_NODE_IF_CURRENT_SCRIPT,
+)
 from backend.database.redis import redis_client
+from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
+    _ws_connections,
+    _ws_connection_ids,
+    _ws_ready_connection_ids,
+    get_connection,
+    get_connection_id,
+    get_ready_connection_id,
+    mark_connection_ready,
+    register_connection,
+    unregister_connection,
+)
 from backend.utils.timezone import timezone
 
 logger = logging.getLogger(__name__)
-
-# Redis 键
-NODE_CONN_KEY = 'hasn:node_conn'
-NODE_GENERATION_KEY = 'hasn:node_generation'
-ENTITY_NODE_KEY = 'hasn:entity_node'
-NODE_ENTITIES_PREFIX = 'hasn:node_entities'
-USER_NODES_PREFIX = 'hasn:user_nodes'
-PUSH_PREFIX = 'hasn:push'
-OFFLINE_PREFIX = 'hasn:offline'
-OFFLINE_TTL = 7 * 86400  # 7 天
-
-# 节点存活心跳键（P3 僵尸回收）：每节点一个带 TTL 的 string 键，注册时写、
-# 应用层 hasn.ping 心跳续期；过期（非优雅退出，无续期）即视为离线 → 其 agent
-# 一并判离线，供他机接管。注意 NODE_CONN_KEY 是单 hash（无法对单字段设 TTL），
-# 故另用 per-node alive 键承载 TTL。daemon 心跳间隔 30s，TTL 90s 留 3 次丢包余量。
-NODE_ALIVE_PREFIX = 'hasn:node_alive'
-NODE_PRESENCE_TTL_SECS = 90
-
-# Agent 运行时就绪键（在线语义收紧）：每个 agent 一个带 TTL 的 string 键，
-# **仅当** daemon 心跳报 online_status=online ∧ health_status=ok（= 协议权威「在线」：
-# owner 在线 + runtime 已启动连接、可收消息）才写；report degraded/offline 立即删。
-# 「在线」判定 = 路由表命中(ENTITY_NODE_KEY) ∧ 节点存活(NODE_ALIVE) ∧ **本键在**。
-# 修「启动后显示在线但 runtime 未就绪、发消息报错」——路由注册 ≠ 网关就绪，
-# 旧 is_agent_online 只看路由+节点存活、漏了网关就绪这维，会谎报在线。
-# TTL 同节点存活键（90s，daemon 心跳 30s 留 3 次丢包余量）：心跳停 → 自然过期判未就绪。
-# 注意：**不**参与消息路由（_push_to_entity 仍直读 ENTITY_NODE_KEY），只收紧对外显示的在线态。
-AGENT_READY_PREFIX = 'hasn:agent_ready'
-
-# 兼容别名（旧代码过渡期引用）
-AGENT_NODE_KEY = ENTITY_NODE_KEY
-CLIENT_CONN_KEY = NODE_CONN_KEY
-USER_CLIENTS_PREFIX = USER_NODES_PREFIX
-AGENT_CLIENT_KEY = ENTITY_NODE_KEY
-
-_REFRESH_PRESENCE_IF_CURRENT_SCRIPT = """
-if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then
-    return 0
-end
-redis.call('SET', KEYS[2], '1', 'EX', ARGV[3])
-return 1
-"""
-
-_UNREGISTER_NODE_IF_CURRENT_SCRIPT = """
-if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then
-    return 0
-end
-
-local entity_ids = redis.call('SMEMBERS', KEYS[3])
-for _, hasn_id in ipairs(entity_ids) do
-    if redis.call('HGET', KEYS[4], hasn_id) == ARGV[1] then
-        redis.call('HDEL', KEYS[4], hasn_id)
-    end
-    if string.sub(hasn_id, 1, 2) == 'h_' then
-        redis.call('SREM', ARGV[3] .. ':' .. hasn_id, ARGV[1])
-    end
-end
-
-redis.call('DEL', KEYS[3])
-redis.call('HDEL', KEYS[2], ARGV[1])
-redis.call('DEL', KEYS[5])
-redis.call('HDEL', KEYS[1], ARGV[1])
-return 1
-"""
-
-_ACK_OFFLINE_PREFIX_SCRIPT = """
-for index = 1, #ARGV do
-    if redis.call('LINDEX', KEYS[1], index - 1) ~= ARGV[index] then
-        return 0
-    end
-end
-redis.call('LTRIM', KEYS[1], #ARGV, -1)
-return #ARGV
-"""
 
 
 def _decode_offline_message(raw: str | bytes) -> dict | None:
@@ -144,8 +97,10 @@ class WsRouterService:
         await redis_client.set(f'{NODE_ALIVE_PREFIX}:{node_id}', '1', ex=NODE_PRESENCE_TTL_SECS)
 
         # 存储 WebSocket 引用（进程内，用于直接推送）
-        _ws_connections[node_id] = ws
-        _ws_connection_ids[node_id] = connection_id
+        old_connection_id = _ws_connection_ids.get(node_id)
+        if old_connection_id:
+            unregister_connection(node_id, old_connection_id)
+        register_connection(node_id, ws, connection_id)
         _ws_ready_connection_ids.pop(node_id, None)
         return connection_id
 
@@ -156,7 +111,7 @@ class WsRouterService:
         current = await redis_client.hget(NODE_GENERATION_KEY, node_id)
         if current != connection_id:
             return False
-        _ws_ready_connection_ids[node_id] = connection_id
+        mark_connection_ready(node_id, connection_id)
         await ws_delivery_bus.drain_node(node_id)
         return True
 
@@ -204,10 +159,7 @@ class WsRouterService:
             logger.warning(f'[HASN] 注销节点 redis 清理失败 (非致命，TTL 自愈): {node_id} - {e}')
         finally:
             # 本地引用同样按代际清理，旧 handler 不得弹掉已覆盖的新 socket。
-            if _ws_connection_ids.get(node_id) == connection_id:
-                _ws_connections.pop(node_id, None)
-                _ws_connection_ids.pop(node_id, None)
-                _ws_ready_connection_ids.pop(node_id, None)
+            unregister_connection(node_id, connection_id)
         return removed
 
     # ─── 现行控制平面：Owner Binding / Agent Presence ───
@@ -527,9 +479,9 @@ class WsRouterService:
         worker 下发。这替换了旧的 ``rpush hasn:push:{node_id}``（一个无消费者的死队列，
         是「多 worker 完全收不到消息」的根因）。
         """
-        ws = _ws_connections.get(node_id)
-        connection_id = _ws_connection_ids.get(node_id)
-        ready_id = _ws_ready_connection_ids.get(node_id)
+        ws = get_connection(node_id)
+        connection_id = get_connection_id(node_id)
+        ready_id = get_ready_connection_id(node_id)
         current_id = (
             await redis_client.hget(NODE_GENERATION_KEY, node_id)
             if ws is not None and connection_id and ready_id == connection_id
@@ -694,9 +646,9 @@ class WsRouterService:
         其它 worker，此处仅清共享 presence，物理 socket 关闭由该 worker 的收发循环
         在下一次 IO 失败 / 重认证时完成。
         """
-        ws = _ws_connections.get(node_id)
+        ws = get_connection(node_id)
         connection_id = (
-            _ws_connection_ids.get(node_id) if ws is not None else await redis_client.hget(NODE_GENERATION_KEY, node_id)
+            get_connection_id(node_id) if ws is not None else await redis_client.hget(NODE_GENERATION_KEY, node_id)
         )
         if connection_id:
             await self.unregister_node(node_id, connection_id)
@@ -731,11 +683,6 @@ class WsRouterService:
             result[eid] = bool(node) and bool(ready) and await self._node_alive(node)
         return result
 
-
-# 进程内 WebSocket 连接引用与代际。拆成两个表以保持既有投递代码的 WebSocket 值契约。
-_ws_connections: dict[str, WebSocket] = {}
-_ws_connection_ids: dict[str, str] = {}
-_ws_ready_connection_ids: dict[str, str] = {}
 
 # 全局单例
 ws_router: WsRouterService = WsRouterService()

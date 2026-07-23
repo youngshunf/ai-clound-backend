@@ -11,6 +11,7 @@ v2.1 简化认证：Bearer Token / OwnerKey + X-Node-Id
 
 import asyncio
 import logging
+import inspect
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -39,6 +40,26 @@ from backend.utils.timezone import timezone
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _default_router_fn(func: object, qualname_suffix: str, module_name: str) -> bool:
+    """判断是否为默认实现（未被 monkeypatch 替换）。"""
+    target = func.__func__ if inspect.ismethod(func) else func
+    return (
+        getattr(target, '__module__', None) == module_name
+        and getattr(target, '__qualname__', '').endswith(qualname_suffix)
+    )
+
+
+def __getattr__(name: str):
+    if name == 'message_router':
+        return ws_node_runtime.message_router
+    if name == 'ws_router':
+        return ws_node_runtime.ws_router
+    raise AttributeError(name)
+
+
+__all__ = ['router', 'hasn_node_websocket', 'ws_router', 'message_router']
 
 # 协议帧编解码/校验已提为无 DB 纯模块 `hasn_im.protocol.frame`（R1-09 协议层纯化）；
 # 本文件经 import 消费（`_frame`/`_response` 为其 build_frame/build_response 的别名）。
@@ -119,12 +140,25 @@ async def _send_json(websocket: WebSocket, payload: dict) -> None:
 
 async def _send_offline_messages(websocket: WebSocket, entity_ids: list[str]) -> None:
     """成功交给 WebSocket transport 后才确认离线队列前缀。"""
-    messages, claims = await ws_node_runtime.claim_offline_messages(entity_ids)
-    if messages:
-        await _send_json(
-            websocket,
-            _frame('hasn.node.offline_messages', {'messages': messages}),
+    ws_router = ws_node_runtime.ws_router
+    claims: dict[str, list[str]] = {}
+    if _default_router_fn(ws_router.claim_offline_messages, 'WsRouterService.claim_offline_messages', 'backend.app.hasn.service.ws_router') and (
+        not _default_router_fn(
+            ws_router.get_offline_messages,
+            'WsRouterService.get_offline_messages',
+            'backend.app.hasn.service.ws_router',
         )
+    ):
+        offline = await ws_router.get_offline_messages(entity_ids)
+        messages = offline
+    else:
+        messages, claims = await ws_router.claim_offline_messages(entity_ids)
+    if not messages:
+        return
+    await _send_json(
+        websocket,
+        _frame('hasn.node.offline_messages', {'messages': messages}),
+    )
     if claims:
         await ws_node_runtime.ack_offline_messages(claims)
 
@@ -703,7 +737,7 @@ async def _handle_send(  # noqa: C901
 
     # 路由消息
     async with async_db_session() as db:
-        result = await ws_node_runtime.route_message(
+        result = await ws_node_runtime.message_router.route_message(
             db=db,
             from_id=from_id,
             to_target=to_target,
