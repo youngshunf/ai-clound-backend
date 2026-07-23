@@ -46,20 +46,38 @@ class ContactRequestError(Exception):
         self.msg = msg
 
 
-class HasnContactsService:
-    class _RealtimeAdapter:
-        """联系人服务实时推送兼容适配，保留 push_message_to 形态供既有补丁点与调用方。"""
+def _resolve_ws_router() -> Any | None:
+    """联系人场景兼容回退：先尝试走 API 兼容适配入口，再走直接实时网关。"""
+    try:
+        from backend.app.hasn.api.v1.app import contacts as contacts_api
+        return contacts_api.ws_router
+    except Exception:
+        return None
 
-        def __init__(self, gateway) -> None:
-            self._gateway = gateway
 
-        async def push_message_to(self, target_hasn_id: str, payload: dict) -> bool:
-            await self._gateway.push_to_owner(
-                target_hasn_id,
-                RealtimeFrame(method=payload['method'], params=payload['params']),
+async def _safe_push_contact_event(owner_id: str, frame: RealtimeFrame) -> None:
+    """先兼容补丁点 `backend.app.hasn.api.v1.app.contacts.ws_router.push_message_to`。"""
+    router = _resolve_ws_router()
+    if router is not None:
+        try:
+            await router.push_message_to(
+                owner_id,
+                {
+                    'method': frame.method,
+                    'params': frame.params,
+                },
             )
-            return True
+            return
+        except Exception:
+            pass
 
+    try:
+        await _realtime_gateway.push_to_owner(owner_id, frame)
+    except Exception:
+        return
+
+
+class HasnContactsService:
     @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> dict[str, Any]:
         """
@@ -327,15 +345,6 @@ class HasnContactsService:
         return None, None
 
     @staticmethod
-    async def _resolve_ws_router():
-        """优先使用 app 兼容路由，允许旧测试 patch `contacts.ws_router`。"""
-        try:
-            from backend.app.hasn.api.v1.app.contacts import ws_router
-
-            return ws_router
-        except Exception:
-            return HasnContactsService._RealtimeAdapter(_realtime_gateway)
-
     @staticmethod
     def _request_out(req: Any, *, to_type: str, target: dict[str, Any], message: str | None) -> dict[str, Any]:
         return {
@@ -362,23 +371,17 @@ class HasnContactsService:
             'name': HasnContactsService._peer_name(requester, peer_type='human') if requester else '',
             'type': 'human',
         }
-        try:
-            push_target = await HasnContactsService._resolve_ws_router()
-            await push_target.push_message_to(
-                to_owner_id,
-                {
-                    'method': 'hasn.contact.request_received',
-                    'params': {
-                        'owner_id': to_owner_id,
-                        'request_id': req.id,
-                        'from_peer': from_peer,
-                        'target': target_peer,
-                        'message': message or '',
-                    },
-                },
-            )
-        except Exception:
-            return
+        frame = RealtimeFrame(
+            method='hasn.contact.request_received',
+            params={
+                'owner_id': to_owner_id,
+                'request_id': req.id,
+                'from_peer': from_peer,
+                'target': target_peer,
+                'message': message or '',
+            },
+        )
+        await _safe_push_contact_event(to_owner_id, frame)
 
     @staticmethod
     async def request_contact(
@@ -509,20 +512,17 @@ class HasnContactsService:
         对端 daemon/webui 据此清本地策展行 + 会话标不可达（daemon/webui 侧留后续切片）。
         """
         try:
-            push_target = await HasnContactsService._resolve_ws_router()
-            await push_target.push_message_to(
-                target_hasn_id,
-                {
-                    'method': 'hasn.contact.removed',
-                    'params': {
-                        'owner_id': target_hasn_id,
-                        'peer_id': actor_hasn_id,
-                        # 中性文案：只说关系已解除，不暴露是被删还是被拉黑
-                        'reason': 'relation_dissolved',
-                        'message': '你们的联系人关系已解除',
-                    },
+            frame = RealtimeFrame(
+                method='hasn.contact.removed',
+                params={
+                    'owner_id': target_hasn_id,
+                    'peer_id': actor_hasn_id,
+                    # 中性文案：只说关系已解除，不暴露是被删还是被拉黑
+                    'reason': 'relation_dissolved',
+                    'message': '你们的联系人关系已解除',
                 },
             )
+            await _safe_push_contact_event(target_hasn_id, frame)
         except Exception:
             return
 
