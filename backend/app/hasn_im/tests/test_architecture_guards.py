@@ -37,8 +37,6 @@ _MESSAGE_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     # 与「R0-02 业务存量」段区分；R2 消费者化后逐一退役，非「往白名单加业务行」）。
     'app/hasn_im/application/local_gateway.py': ('im-refactor', 'R2-04 后内联 route 逻辑，删本依赖'),
     'app/hasn_im/application/system_card_deliverer.py': ('im-refactor', 'R1-06 系统卡片投递收编点：R1-08 事务收口 / R2 消费者化后退役'),
-    # R0-02 存量调用方（R1-05 各切 port 后逐个移除）
-    'app/mcp/tools/message.py': ('im-refactor', 'R1-05 slice① MCP message'),
 }
 
 _WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {

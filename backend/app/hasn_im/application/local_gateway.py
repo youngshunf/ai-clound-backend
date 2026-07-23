@@ -15,6 +15,7 @@ group 发送、撤回、读列表、read cursor、成员周期、抑制放行随
 
 from __future__ import annotations
 
+from typing import Any
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -47,6 +48,47 @@ from backend.app.hasn_im.ports.dto import (
     ServicePrincipal,
     UpdateGroupMembersCommand,
 )
+
+
+async def resolve_target(db: AsyncSession, to_target: str) -> dict[str, Any] | None:
+    """过渡期目标解析桥：复用现网 message_router.resolve_target，避免工具层重复解析逻辑。"""
+    from backend.app.hasn.service import message_router
+
+    return await message_router.resolve_target(db, to_target)
+
+
+async def send_to_target(
+    db: AsyncSession,
+    from_id: str,
+    to_target: str,
+    *,
+    content: dict[str, Any],
+    content_type: int = 1,
+    msg_type: str = 'message',
+    priority: str = 'normal',
+    reply_to_id: int | None = None,
+    local_id: str | None = None,
+    context: dict[str, Any] | None = None,
+    origin_node_id: str | None = None,
+    origin_session_id: str | None = None,
+) -> dict[str, Any]:
+    """过渡期 fallback：群聊等未迁移场景由现网 route_message 处理，保证行为逐字对齐。"""
+    from backend.app.hasn.service import message_router
+
+    return await message_router.route_message(
+        db=db,
+        from_id=from_id,
+        to_target=to_target,
+        content=content,
+        content_type=content_type,
+        msg_type=msg_type,
+        priority=priority,
+        reply_to_id=reply_to_id,
+        local_id=local_id,
+        context=context,
+        origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
+    )
 
 
 def _participant_type(hasn_id: str) -> str:

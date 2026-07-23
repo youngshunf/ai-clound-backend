@@ -1,6 +1,6 @@
 """P4-A — 平台工具真实 service 单测（禁 mock）。
 
-message.send 绑 message_router.route_message（G1）：维度②对象可达性由真实路由判定，
+message.send 走 ImGateway direct + send_to_target 兼容兜底（G1）：维度②对象可达性由真实路由判定，
 工具返回 reachable/reason，不可达不静默成功。需活体 DB（本地 15432）：
     DATABASE_PORT=15432 pytest backend/tests/mcp/test_platform_tools.py
 无 DB 时跳过（不伪造）。
@@ -37,13 +37,15 @@ async def _db_reachable() -> bool:
 
 
 def test_message_send_uses_real_router_not_bare_insert() -> None:
-    """静态保证 G1：工具绑 message_router（非 hasn_messages_service 裸插）。"""
+    """静态保证 G1：工具绑 ImGateway / send_to_target（非 hasn_messages_service 裸插）。"""
     import inspect
 
     from backend.app.mcp.tools import message as message_module
 
     src = inspect.getsource(message_module.MessageSendTool.execute)
-    assert 'route_message' in src, 'message.send 必须走 message_router.route_message（G1）'
+    assert 'local_gateway.resolve_target' in src, 'message.send 必须走兼容目标解析入口'
+    assert 'send_to_target' in src, 'message.send 群聊兜底须走 send_to_target'
+    assert 'get_im_gateway' in src, 'message.send 直聊仍需经 ImGateway port'
     assert 'reachable' in src, 'message.send 必须返回维度②可达性'
 
 
