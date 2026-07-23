@@ -30,9 +30,17 @@ from backend.app.hasn.schema.hasn_message_hub import (
     MessageHubSendRequest,
     MessageHubSendResponse,
 )
+from backend.app.hasn_im.application.provider import get_node_session_gateway
 from backend.common.exception import errors
-from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 from backend.utils.timezone import timezone
+
+
+class _WsRuntimeGateway(Protocol):
+    async def push_message_to(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
+        ...
+
+
+_node_session_gateway = get_node_session_gateway()
 
 PRIVATE_RUNTIME_KEYS = {
     'workspace',
@@ -186,7 +194,8 @@ class SideEffectDispatcher(Protocol):
 class WsFanoutGateway:
     async def push(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
         """复用运行时适配层，避免 service 直连 ws_router。"""
-        return await ws_node_runtime.push_message_to(target_hasn_id, payload)
+        gateway: _WsRuntimeGateway = _node_session_gateway
+        return await gateway.push_message_to(target_hasn_id, payload)
 
 
 class WsRuntimeDispatcher:
@@ -202,7 +211,8 @@ class WsRuntimeDispatcher:
                 'message': payload['params']['message'],
             },
         }
-        return await ws_node_runtime.push_message_to(target_agent_id, dispatch_payload)
+        gateway: _WsRuntimeGateway = _node_session_gateway
+        return await gateway.push_message_to(target_agent_id, dispatch_payload)
 
 
 class NoopServerSideEffectDispatcher:

@@ -25,8 +25,11 @@ from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.app.hasn.model.hasn_messages import HasnMessages
 from backend.app.hasn.model.hasn_suppressed_messages import HasnSuppressedMessages
 from backend.app.hasn.service import sync_invalidate_service
-from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
+from backend.app.hasn_im.application.provider import get_node_session_gateway
 from backend.common.log import log
+
+
+_node_session_gateway = get_node_session_gateway()
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -367,10 +370,10 @@ async def _deliver_message(db: AsyncSession, msg: HasnMessages, *, owner_id: str
         'params': {'to_id': to_id, 'message': hasn_envelope},
     }
     # 投递给接收方实体节点（Agent 所在节点 → 唤醒 runtime）
-    await ws_node_runtime.push_message_to(to_id, payload)
+    await _node_session_gateway.push_message_to(to_id, payload)
     # 主人在线节点（排除 Agent 所在节点，避免同节点收两遍）也作为 IM 客户端收到
     if to_entity_type == 'agent' and owner_id and owner_id != to_id:
-        await ws_node_runtime.push_to_owner_excluding_agent_node(owner_id, to_id, payload)
+        await _node_session_gateway.push_to_owner_excluding_agent_node(owner_id, to_id, payload)
 
 
 async def accept_first_contact_request(

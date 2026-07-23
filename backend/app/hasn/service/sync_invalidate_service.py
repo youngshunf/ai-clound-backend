@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 
@@ -28,6 +28,18 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+_node_session_gateway: Any | None = None
+
+
+def _get_node_session_gateway():
+    global _node_session_gateway
+    if _node_session_gateway is None:
+        from backend.app.hasn_im.application.provider import get_node_session_gateway
+
+        _node_session_gateway = cast(Any, get_node_session_gateway())
+    return _node_session_gateway
 
 # revision 缓存键前缀
 REV_PREFIX = 'hasn:sync:rev'
@@ -640,10 +652,8 @@ async def bump(kind: str, db: AsyncSession, *, owner_id: str | None = None) -> s
     except Exception as exc:
         logger.warning('[sync] cache revision failed kind=%s: %s', kind, exc)
 
-    from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
-
     try:
-        pushed = await ws_node_runtime.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
+        pushed = await _get_node_session_gateway().broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
         logger.info(
             '[sync] invalidate kind=%s rev=%s pushed=%d owner=%s',
             kind,
@@ -701,10 +711,8 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
     else:  # pragma: no cover - 新增 owner kind 须在此补分支
         raise ValueError(f'unsupported owner sync kind: {kind}')
 
-    from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
-
     try:
-        pushed = await ws_node_runtime.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
+        pushed = await _get_node_session_gateway().broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
         logger.info('[sync] invalidate kind=%s rev=%s pushed=%d owner=%s', kind, rev, pushed, owner_id)
     except Exception as exc:  # 推送 best-effort，不拖垮写点
         logger.warning('[sync] broadcast invalidate failed kind=%s owner=%s: %s', kind, owner_id, exc)

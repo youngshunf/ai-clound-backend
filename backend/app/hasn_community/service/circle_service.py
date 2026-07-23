@@ -249,7 +249,6 @@ class CircleService:
 
         诚实留空：查不到 profession → ''；display_name 兜底用 member_hasn_id（前端再兜底）。
         """
-        from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
         from backend.app.hasn_core import HasnAgents, HasnHumans
 
         human_ids = {m['member_hasn_id'] for m in members if m.get('member_type') == 'human'}
