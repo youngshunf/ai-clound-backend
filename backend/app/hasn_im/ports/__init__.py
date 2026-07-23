@@ -20,6 +20,15 @@ from backend.app.hasn_im.ports.dto import (
     UpdateGroupMembersCommand,
 )
 from backend.app.hasn_im.ports.im_gateway import ImGateway
+from backend.app.hasn_im.ports.node_binding_view import NodeBindingView, OwnerBindingRef
+from backend.app.hasn_im.ports.node_session_gateway import (
+    AgentSessionResult,
+    NodeRegistration,
+    NodeSessionGateway,
+    NodeSessionResult,
+    OwnerBindingResult,
+)
+from backend.app.hasn_im.ports.presence_query import OnlinePresence, PresenceQuery
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame, RealtimeGateway
 from backend.app.hasn_im.ports.relation_gateway import (
     EffectiveRelation,
@@ -43,6 +52,15 @@ __all__ = [
     'UpdateGroupMembersCommand',
     # Protocol
     'ImGateway',
+    'NodeBindingView',
+    'OwnerBindingRef',
+    'NodeSessionGateway',
+    'NodeRegistration',
+    'NodeSessionResult',
+    'OwnerBindingResult',
+    'AgentSessionResult',
+    'PresenceQuery',
+    'OnlinePresence',
     'RealtimeFrame',
     'RealtimeGateway',
     'EffectiveRelation',
