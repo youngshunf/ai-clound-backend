@@ -38,27 +38,11 @@ _MESSAGE_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     'app/hasn_im/application/local_gateway.py': ('im-refactor', 'R2-04 后内联 route 逻辑，删本依赖'),
     'app/hasn_im/application/system_card_deliverer.py': ('im-refactor', 'R1-06 系统卡片投递收编点：R1-08 事务收口 / R2 消费者化后退役'),
     # R0-02 存量调用方（R1-05 各切 port 后逐个移除）
-    'app/hasn_community/service/community_card_notifier.py': ('im-refactor', 'R1-05 slice③ 应用完成卡'),
-    'app/hasn/api/v1/app/hasn_agents.py': ('im-refactor', 'R1-05 slice① MCP/agent'),
-    'app/hasn/service/hasn_conversations_service.py': ('im-refactor', 'R1-05 slice⑥ 会话查询'),
-    'app/hasn/service/hasn_group_service.py': ('im-refactor', 'R1-05 slice⑤ groups'),
-    'app/hasn/service/inbound_release.py': ('im-refactor', 'R2-04 抑制放行事务化'),
-    'app/hasn/service/owner_message_sync_service.py': ('im-refactor', 'R1-05 slice⑥ presence/查询'),
-    'app/hasn/service/hasn_sessions_service.py': ('im-refactor', 'R1-05 slice① 会话/消息同步入口'),
-    'app/mcp/ask_gate.py': ('im-refactor', 'R1-05 slice① MCP ask gate'),
-    'app/mcp/tools/group.py': ('im-refactor', 'R1-05 slice⑤ groups'),
     'app/mcp/tools/message.py': ('im-refactor', 'R1-05 slice① MCP message'),
-    'app/notification/service/notification_carrier.py': ('im-refactor', 'R1-06 已删 persist_message 旁路；剩 deliver_card_to_agent(route) 待 R1-05 slice② 切'),
 }
 
 _WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     # R0-02 / P0 统计的业务直连方，完成每片切片后对应行应移除
-    'app/hasn/service/hasn_agents_service.py': ('im-refactor', 'R1-05 slice① MCP/agent'),
-    'app/hasn/service/hasn_contacts_service.py': ('im-refactor', 'R1-05 slice④ 联系人关系事件'),
-    'app/hasn/service/hasn_message_hub_service.py': ('im-refactor', 'R1-05 slice② 消息中枢'),
-    'app/hasn/service/inbound_release.py': ('im-refactor', 'R1-05 slice⑥ 会话入口'),
-    'app/hasn/service/message_router.py': ('im-refactor', 'R1-04 兼容层收编'),
-    'app/hasn/service/ws_delivery_bus.py': ('im-refactor', 'R1-02 routing 内核迁移中间层'),
 }
 
 _WS_DELIVERY_BUS_ALLOW: dict[str, tuple[str, str]] = {

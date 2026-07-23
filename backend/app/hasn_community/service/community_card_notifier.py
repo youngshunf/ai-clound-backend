@@ -1,7 +1,7 @@
 """分身发完帖子/文章后，给主人投一张「可点进详情」的卡片消息。
 
 落点：「主人↔分身」IM 会话（不是社区通知 feed——那由 notification_service.notify_draft_pending 负责）。
-出口复用 message_router.route_message（同 hasn.message.send 的卡片路径），from=分身、to=主人。
+出口复用卡片投递能力（同 hasn.message.send 的路径），from=分身、to=主人。
 卡片 schema 对齐 hasn-node `card_messages::build_community_card`，webui CardMessage 渲染、点击
 primary_action 的 `hasn://community/{posts|articles}/{id}` 进详情页。
 
@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
-from backend.app.hasn.service import message_router
+from backend.app.hasn_im.application.system_card_deliverer import deliver_system_card
 from backend.common.log import log
 from backend.database.db import async_db_session
 
@@ -154,18 +154,20 @@ async def notify_owner_resource_card(
                 preview=preview,
                 resource_title=resource_title,
             )
-            result = await message_router.route_message(
-                db=db,
+            await deliver_system_card(
+                db,
+                recipient_id=owner_hasn_id,
+                recipient_type='human',
                 from_id=agent_hasn_id,
-                to_target=owner_hasn_id,
-                content=card,
-                content_type=_CT_CARD,
+                peer_type='agent',
+                relation_type='social',
+                conversation_type='agent',
+                card_body=card,
+                priority='normal',
                 msg_type='message',
                 # local_id 幂等：同一资源重复触发不二次落库/投递（resource_id 短，未超 64 上限）。
                 local_id=f'community-card-{resource_id}'[:64],
             )
-        if result.get('error'):
-            log.warning(f'社区发布知情卡投递失败（best-effort）：{result.get("message")}')
     except Exception as exc:
         log.warning(f'社区发布知情卡投递异常（best-effort，不影响发帖）：{exc!r}')
 

@@ -186,7 +186,7 @@ class SideEffectDispatcher(Protocol):
 class WsFanoutGateway:
     async def push(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
         """复用运行时适配层，避免 service 直连 ws_router。"""
-        return await ws_node_runtime.ws_router.push_message_to(target_hasn_id, payload)
+        return await ws_node_runtime.push_message_to(target_hasn_id, payload)
 
 
 class WsRuntimeDispatcher:
@@ -202,7 +202,7 @@ class WsRuntimeDispatcher:
                 'message': payload['params']['message'],
             },
         }
-        return await ws_node_runtime.ws_router.push_message_to(target_agent_id, dispatch_payload)
+        return await ws_node_runtime.push_message_to(target_agent_id, dispatch_payload)
 
 
 class NoopServerSideEffectDispatcher:

@@ -34,15 +34,15 @@ from backend.app.hasn_im.adapters.routing.redis_presence_store import (
     OFFLINE_PREFIX,
     OFFLINE_TTL,
     NODE_ALIVE_PREFIX,
-    NODE_CONN_KEY,
+NODE_CONN_KEY,
     NODE_ENTITIES_PREFIX,
     NODE_GENERATION_KEY,
     NODE_PRESENCE_TTL_SECS,
-    USER_NODES_PREFIX,
-    ENTITY_NODE_KEY,
-    _ACK_OFFLINE_PREFIX_SCRIPT,
-    _REFRESH_PRESENCE_IF_CURRENT_SCRIPT,
-    _UNREGISTER_NODE_IF_CURRENT_SCRIPT,
+USER_NODES_PREFIX,
+ENTITY_NODE_KEY,
+_ACK_OFFLINE_PREFIX_SCRIPT,
+_REFRESH_PRESENCE_IF_CURRENT_SCRIPT,
+_UNREGISTER_NODE_IF_CURRENT_SCRIPT,
 )
 from backend.database.redis import redis_client
 from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
@@ -59,6 +59,10 @@ from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
 from backend.utils.timezone import timezone
 
 logger = logging.getLogger(__name__)
+
+# 遗留 dead queue 前缀（保留常量，仅用于兼容测试/兼容层回归判断；
+# 生产投递不再写该键，详见 96 号方案 P6-01。
+PUSH_PREFIX = 'hasn:push'
 
 
 def _decode_offline_message(raw: str | bytes) -> dict | None:

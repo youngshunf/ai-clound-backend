@@ -36,6 +36,7 @@ from backend.app.hasn.service.inbound_gatekeeper import (
 
 # Phase 7 (07-02): A 路线中央判决器；替换 check_relation_permission 在 route_message 中的调用
 from backend.app.hasn.service.permission_engine import permission_engine
+from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 from backend.common.log import log
 from backend.utils.timezone import timezone
 
@@ -44,9 +45,7 @@ from backend.utils.timezone import timezone
 
 async def _push_message_to(hasn_id: str, payload: dict[str, Any]) -> None:
     """延迟导入 WS 路由器，避免服务模块启动时与 binding_event_service 循环导入。"""
-    from backend.app.hasn.service.ws_router import ws_router
-
-    await ws_router.push_message_to(hasn_id, payload)
+    await ws_node_runtime.push_message_to(hasn_id, payload)
 
 
 async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None:
@@ -729,11 +728,9 @@ async def _flush_pushes(pushes: list[tuple[str, dict[str, Any]]]) -> None:
     任一 owner 推送失败（Redis 抖动 / 目标节点瞬断）只记 warn 并继续下一个——权威 feed 已在库，
     对端重连自会 sync/pull 补回。绝不因推送失败连累已落库的消息（记 warn 而非 error：可恢复、会自愈）。
     """
-    from backend.app.hasn.service.ws_router import ws_router
-
     for owner_id, payload in pushes:
         try:
-            await ws_router.push_to_owner(owner_id, payload)
+            await ws_node_runtime.push_to_owner(owner_id, payload)
         except Exception as exc:
             log.warning('message.new 实时推送失败（owner=%s），已落 feed，靠重连补拉：%r', owner_id, exc)
 

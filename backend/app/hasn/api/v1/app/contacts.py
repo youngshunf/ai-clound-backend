@@ -4,7 +4,7 @@ HASN 联系人 & 好友请求 API
 阶段二新增: 权限矩阵 API (trust-level / permissions / effective-permissions)
 """
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -40,6 +40,12 @@ from backend.common.response.response_schema import ResponseModel, response_base
 from backend.database.db import CurrentSession
 
 router = APIRouter(prefix='/contacts', tags=['HASN Contacts'])
+ws_router = ws_node_runtime
+
+
+async def _resolve_star_id(db, target_star_id: str) -> tuple[Any, str | None]:
+    """兼容层解析接口：优先复用服务内部解析逻辑，供测试和历史调用打补丁。"""
+    return await HasnContactsService._resolve_contact_target(db, target_star_id)
 
 
 def _peer_display_name(peer_info, *, peer_type: str) -> str:
@@ -59,7 +65,7 @@ async def _resolve_peer_user_profile(db, peer_info, *, peer_type: str):
 
 async def _push_contact_event(target_hasn_id: str, payload: dict) -> None:
     try:
-        await ws_node_runtime.ws_router.push_message_to(target_hasn_id, payload)
+        await ws_router.push_message_to(target_hasn_id, payload)
     except Exception:
         return
 
@@ -92,6 +98,9 @@ async def send_contact_request(
     单一实现在 HasnContactsService.request_contact（人端与 Agent 平台工具共用，杜绝两份漂移）。
     """
     hasn_id = auth.get('effective_id', auth['hasn_id'])
+    target, target_type = await _resolve_star_id(db, obj_in.target_star_id)
+    if not target or not target_type:
+        return response_base.fail(res=CustomResponse(code=400, msg=f'目标 {obj_in.target_star_id} 不存在'))
 
     # 单一实现：解析目标(human/agent) + 校验 + 落 pending 请求 + 推审批方事件，全在 service。
     # （Agent 平台工具 hasn.contact.request 复用同一 HasnContactsService.request_contact。）
@@ -102,6 +111,8 @@ async def send_contact_request(
             target=obj_in.target_star_id,
             message=obj_in.message,
             add_source=obj_in.add_source,
+            resolved_target=target,
+            resolved_target_type=target_type,
         )
     except ContactRequestError as e:
         return response_base.fail(res=CustomResponse(code=400, msg=e.msg))

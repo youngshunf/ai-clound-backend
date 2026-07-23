@@ -25,9 +25,12 @@ from backend.app.hasn.schema.hasn_agents import (
     UpdateHasnAgentsParam,
 )
 from backend.app.marketplace.service.common_skills_service import get_common_skill_snapshot
+from backend.app.hasn_im.application.provider import get_presence_query
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
+
+_presence_query = get_presence_query()
 
 # 默认/内置分身名的当前格式：`{主人昵称}的{专家名称}`（如「小智的全能助理」），连接词为「的」。
 DEFAULT_AGENT_NAME_CONNECTOR = '的'
@@ -1175,9 +1178,7 @@ class HasnAgentProfileService:
         # 回填实时在线状态：daemon 换设备登录时据此判断「其他设备是否仍在线持有该
         # agent」——仅当在线持有才跳过自动绑定，离线/未绑定则接管到当前设备。必须用
         # Redis presence（断线即清），不能用持久列 online_status（断线不清零会误判）。
-        from backend.app.hasn.service.ws_router import ws_router
-
-        online_map = await ws_router.get_online_map([snapshot.hasn_id for snapshot in snapshots])
+        online_map = await _presence_query.get_online_map([snapshot.hasn_id for snapshot in snapshots])
         for snapshot in snapshots:
             snapshot.online_status = 'online' if online_map.get(snapshot.hasn_id) else 'offline'
         # 技能显示层元数据（SKILLNAME）：skills 只是 skill_id slug 清单，命令浮层要显示真友好名+

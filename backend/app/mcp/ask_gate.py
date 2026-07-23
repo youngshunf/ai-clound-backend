@@ -26,6 +26,9 @@ from typing import Any
 from backend.app.mcp.errors import McpErrorCode
 from backend.app.mcp.scopes import scope_meta
 from backend.common.security.scope_policy import MODE_ASK, resolve_capability_mode
+from backend.app.hasn_im.ports.dto import ActorKind, EnsureDirectConversationCommand, SendMessageCommand, ServicePrincipal
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.application.errors import ImSendRejected
 from backend.utils.timezone import timezone
 
 logger = logging.getLogger(__name__)
@@ -248,14 +251,11 @@ class AskApprovalGate:
 
         镜像 daemon `card.rs::build_agent_tool_approval_card` 的 schema（三按钮 + authorization_request
         + 每个授权 action 的 payload.request_id 一致），以便主人点按钮时走既有 daemon
-        `emit_card_action` → 云端 grant/deny 解析路径。经 `route_message` 投递（含跨设备 sync_event +
+        `emit_card_action` → 云端 grant/deny 解析路径。经 `ImGateway` 投递（含跨设备 sync_event +
         WS 推送）。失败返回 False（调用方零 fake 处理）。
 
         面向主人友好展示：卡片只讲“谁、想要什么权限、能做什么”，**不写工具名、不暴露参数**。
         """
-        from backend.app.hasn.service import message_router
-        from backend.database.db import async_db_session
-
         display = await self._agent_display(agent_hasn_id)
         label, capability_desc = _capability_text(required_scopes)
         # 「请求能力」字段：权限中文名 +（能力说明），不含工具名/参数。
@@ -306,22 +306,27 @@ class AskApprovalGate:
             ],
         }
         try:
-            # route_message 自带 commit（见 message_router.py），**不能**再包 `.begin()`——否则
-            # 退出时二次 commit 抛异常 → 误判发卡失败 → 工具被即时拒绝（这正是「设置每次询问却
-            # 0.x 秒就被拒」的根因）。与规范调用面 `mcp/tools/message.py` 一致用裸工厂会话。
-            async with async_db_session() as db:
-                result = await message_router.route_message(
-                    db,
-                    from_id=agent_hasn_id,
-                    to_target=owner_hasn_id,
+            # 保持 best-effort：审批卡片本身失败不阻断 ask 流程，仅回传 pending。
+            gateway = get_im_gateway()
+            principal = ServicePrincipal(canonical_sender=agent_hasn_id, actor_kind=ActorKind.AGENT)
+            conv_ref = await gateway.ensure_direct_conversation(
+                EnsureDirectConversationCommand(peer_hasn_id=owner_hasn_id),
+                principal,
+            )
+            await gateway.send_message(
+                SendMessageCommand(
+                    conversation_id=conv_ref.conversation_id,
                     content=card,
                     content_type=5,
                     msg_type='message',
-                )
-            if isinstance(result, dict) and result.get('error'):
-                logger.error('ask gate: failed to deliver approval card %s: %s', request_id, result)
-                return False
+                ),
+                principal,
+            )
             return True
+        except ImSendRejected as exc:
+            # 审批卡与业务发送一致：协议级拒绝返回 False，不静默吞掉，允许上层记录原因。
+            logger.warning('ask gate: failed to deliver approval card %s: %s', request_id, exc)
+            return False
         except Exception:
             logger.exception('ask gate: exception delivering approval card %s', request_id)
             return False

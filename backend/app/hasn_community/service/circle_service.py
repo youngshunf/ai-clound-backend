@@ -14,6 +14,7 @@ from sqlalchemy import func, select, update
 
 from backend.app.hasn_community.model import HasnArticles, HasnCircleMembers, HasnCircles, HasnPosts
 from backend.app.hasn_community.service.community_cards import fetch_article_cards, fetch_post_cards
+from backend.app.hasn_im.application.provider import get_presence_query
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
@@ -26,6 +27,8 @@ _VALID_JOIN = {'open', 'approval', 'invite'}
 _VALID_POST = {'members', 'approval', 'owner_admin'}
 _VALID_VIS = {'public', 'private'}
 _MGMT_ROLES = {'owner', 'admin'}
+
+_presence_query = get_presence_query()
 
 
 def _slugify(name: str) -> str:
@@ -277,7 +280,7 @@ class CircleService:
                 )
             ).all()
             agent_map = {r.hasn_id: r for r in rows}
-        online_map = await ws_node_runtime.ws_router.get_online_map(list(agent_ids)) if agent_ids else {}
+        online_map = await _presence_query.get_online_map(list(agent_ids)) if agent_ids else {}
 
         for m in members:
             hid = m['member_hasn_id']

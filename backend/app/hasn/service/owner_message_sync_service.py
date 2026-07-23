@@ -26,13 +26,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
 from backend.app.hasn.model import HasnConversations, HasnMessages
 from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.service.message_router import (
-    _entity_type_int,
-    _entity_type_str,
-    _find_message_by_local_id,
-    _grant_private_attachments,
-    get_or_create_conversation,
-)
+from backend.app.hasn.service.hasn_conversations_service import hasn_conversations_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -78,6 +72,52 @@ def _coerce_created_time(created_at_unix: int | None) -> datetime:
         return timezone.from_datetime(timezone.to_utc(int(created_at_unix)))
     except (TypeError, ValueError, OSError, OverflowError):
         return timezone.now()
+
+
+def _entity_type_int(hasn_id: str) -> int:
+    """hasn_id → from_type/to_type 数字。"""
+    if hasn_id.startswith('h_'):
+        return 1  # human
+    if hasn_id.startswith('a_'):
+        return 2  # agent
+    if hasn_id.startswith('g:'):
+        return 4  # group
+    if hasn_id.startswith('sv_'):
+        return 5  # service（统一通知服务）
+    return 3  # system
+
+
+def _asset_id_from_uri(uri: object) -> str | None:
+    """`hasn://asset/{asset_id}` → `asset_id`。"""
+    if isinstance(uri, str) and uri.startswith('hasn://asset/'):
+        candidate = uri[len('hasn://asset/') :].strip('/')
+        return candidate or None
+    return None
+
+
+async def _grant_private_attachments(db: AsyncSession, conversation_id: str, content: dict | None) -> None:
+    """为消息内私有附件按会话写读权 grant（1f），public 附件跳过。"""
+    if not isinstance(content, dict):
+        return
+    attachments = content.get('attachments')
+    if not isinstance(attachments, list) or not attachments:
+        return
+    asset_ids = [aid for a in attachments if isinstance(a, dict) and (aid := _asset_id_from_uri(a.get('uri')))]
+    if not asset_ids:
+        return
+    # 延迟 import 避免潜在循环依赖
+    from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+
+    assets = await hasn_asset_service.get_many(db, asset_ids)
+    for asset in assets.values():
+        if asset.access == 'private':
+            await hasn_asset_service.grant_to_conversation(db, asset_id=asset.asset_id, conversation_id=conversation_id)
+
+
+async def _find_message_by_local_id(db: AsyncSession, local_id: str) -> HasnMessages | None:
+    """按 local_id 查既有消息，用于 loopback 的幂等去重。"""
+    result = await db.execute(select(HasnMessages).where(HasnMessages.local_id == local_id).limit(1))
+    return result.scalar_one_or_none()
 
 
 async def _resolve_owned_agent(
@@ -258,12 +298,10 @@ async def sync_owner_conversation_message(
     else:
         from_id, to_id = agent_hasn_id, owner_human_hasn_id
 
-    conv = await get_or_create_conversation(
-        db,
-        from_id,
-        _entity_type_str(from_id),
-        to_id,
-        _entity_type_str(to_id),
+    conv = await hasn_conversations_service.ensure_conversation(
+        db=db,
+        caller_hasn_id=from_id,
+        peer_hasn_id=to_id,
     )
 
     created_time = _coerce_created_time(created_at_unix)

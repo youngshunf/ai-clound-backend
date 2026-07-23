@@ -1,5 +1,7 @@
 """路由适配层出口（兼容接入）。"""
 
+from __future__ import annotations
+
 import importlib
 
 

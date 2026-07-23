@@ -643,7 +643,7 @@ async def bump(kind: str, db: AsyncSession, *, owner_id: str | None = None) -> s
     from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
     try:
-        pushed = await ws_node_runtime.ws_router.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
+        pushed = await ws_node_runtime.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
         logger.info(
             '[sync] invalidate kind=%s rev=%s pushed=%d owner=%s',
             kind,
@@ -704,7 +704,7 @@ async def bump_owner(kind: str, db: AsyncSession, owner_id: str) -> str:
     from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
     try:
-        pushed = await ws_node_runtime.ws_router.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
+        pushed = await ws_node_runtime.broadcast_sync_invalidate(kind, rev, owner_id=owner_id)
         logger.info('[sync] invalidate kind=%s rev=%s pushed=%d owner=%s', kind, rev, pushed, owner_id)
     except Exception as exc:  # 推送 best-effort，不拖垮写点
         logger.warning('[sync] broadcast invalidate failed kind=%s owner=%s: %s', kind, owner_id, exc)

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import importlib
 from dataclasses import dataclass
 
+from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 
 
@@ -15,9 +15,7 @@ class WsRouterRealtimeGateway:
     _HASN_ENVELOPE = 'hasn/0.2'
 
     async def push_to_owner(self, owner_id: str, frame: RealtimeFrame) -> None:
-        from backend.app.hasn_im.adapters.routing import ws_router as routing_ws_router
-
-        await routing_ws_router.ws_router.push_to_owner(owner_id, self._envelope(frame))
+        await ws_node_runtime.push_to_owner(owner_id, self._envelope(frame))
 
     async def push_to_node(self, node_id: str, frame: RealtimeFrame) -> None:
         # 现网 ws_router 当前仅提供 owner 级投递。

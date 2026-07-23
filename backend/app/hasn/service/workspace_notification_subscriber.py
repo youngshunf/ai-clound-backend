@@ -7,7 +7,8 @@ import sqlalchemy as sa
 
 from backend.app.hasn.model import HasnHumans
 from backend.app.hasn.service.enterprise_event_bus import EnterpriseEventBus, enterprise_event_bus
-from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
+from backend.app.hasn_im.application.provider import get_realtime_gateway
+from backend.app.hasn_im.ports import RealtimeFrame
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -27,6 +28,20 @@ class WorkspaceNotificationActions(Protocol):
 
 class WorkspacePushRouter(Protocol):
     async def push_message_to(self, target_hasn_id: str, payload: dict[str, Any]) -> bool: ...
+
+
+class _RealtimeWorkspacePushRouter:
+    """通知面历史 `type` 帧的兼容桥接。
+
+    当前阶段保持事件载荷语义不变：将历史 payload 按参数封装为 `WorkspaceSwitched` 帧透传。
+    """
+
+    async def push_message_to(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
+        await get_realtime_gateway().push_to_owner(
+            target_hasn_id,
+            RealtimeFrame(method='WorkspaceSwitched', params=payload),
+        )
+        return True
 
 
 @dataclass
@@ -55,10 +70,10 @@ class SqlAlchemyWorkspaceNotificationActions:
         self,
         *,
         sessionmaker: async_sessionmaker[AsyncSession] | None = None,
-        router: WorkspacePushRouter = ws_node_runtime.ws_router,
+        router: WorkspacePushRouter | None = None,
     ) -> None:
         self.sessionmaker = sessionmaker or async_db_session
-        self.router = router
+        self.router = router or _RealtimeWorkspacePushRouter()
 
     async def notify_workspace_switched(
         self,

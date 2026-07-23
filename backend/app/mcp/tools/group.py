@@ -19,8 +19,8 @@ from typing import Any
 from sqlalchemy import or_, select
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_conversations import HasnConversations
 from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
-from backend.app.hasn.service import message_router
 from backend.app.hasn.service.agent_message_read_service import agent_message_read_service
 from backend.app.hasn.service.hasn_group_service import hasn_group_service
 from backend.app.mcp.auth import AgentContext
@@ -163,8 +163,18 @@ class GroupMessageListTool(BaseTool):
         if not group_id:
             return {'ok': False, 'error': 'group_id 不能为空（群公开 ID g:NNNNNN）'}
         async with async_db_session() as db:
-            # 解析群会话（g:NNNNNN → conversation_id），复用 message_router 现成实现，不把 uuid 暴露给分身。
-            group = await message_router.get_group_conversation(db, group_id)
+            # 解析群会话（g:NNNNNN → conversation_id），按 group_id 直接读活跃群。
+            group = (
+                (
+                    await db.execute(
+                        select(HasnConversations).where(
+                            HasnConversations.type == 'group',
+                            HasnConversations.group_id == group_id,
+                            HasnConversations.status == 'active',
+                        )
+                    )
+                ).scalar_one_or_none()
+            )
             if group is None:
                 return {'ok': False, 'error': f'群不存在或已解散：{group_id}'}
             # 群成员资格鉴权：主人本人或其名下任一分身在群内即可读。
