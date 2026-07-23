@@ -4,7 +4,7 @@ import secrets
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -89,6 +89,13 @@ def _safe_json(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     return value
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    """将运行时返回值收紧为键为字符串的 JSON 对象。"""
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
 
 
 def _host_workspace_display(workspace_path: str | None, agent_id: str) -> str | None:
@@ -291,82 +298,45 @@ class HermesAgentAppService:
         }
 
     async def _resolve_template(self, db: AsyncSession, template_id: str) -> dict[str, Any]:
-        """Look up an agent template by template_id, returning the version + package metadata
-        backend will hand to runtime.apply_template (PROMPT.md §5.2 step 2).
-
-        - Filters marketplace_template.template_type = 'agent' to keep skill/sop packs out.
-        - Picks the marketplace_template_version row with is_latest = TRUE.
-        - Raises errors.NotFoundError(msg='template_not_found') when nothing matches.
-        """
+        """查询 Agent 模板及其最新版本，供运行时应用模板。"""
         if not template_id:
             raise errors.NotFoundError(msg='template_not_found')
-        if hasattr(db, 'marketplace_templates'):
-            template = next(
-                (
-                    item for item in db.marketplace_templates
-                    if item.template_id == template_id and getattr(item, 'template_type', 'agent') == 'agent'
-                ),
-                None,
+        stmt = (
+            sa.select(
+                MarketplaceTemplate.template_id,
+                MarketplaceTemplate.name,
+                MarketplaceTemplate.description,
+                MarketplaceTemplate.emoji,
+                MarketplaceTemplate.icon_url,
+                MarketplaceTemplate.skill_dependencies,
+                MarketplaceTemplateVersion.version,
+                MarketplaceTemplateVersion.package_url,
+                MarketplaceTemplateVersion.file_hash,
             )
-            if not template:
-                raise errors.NotFoundError(msg='template_not_found')
-            version = next(
-                (
-                    item for item in getattr(db, 'marketplace_template_versions', [])
-                    if item.template_id == template_id and getattr(item, 'is_latest', False)
-                ),
-                None,
+            .join(
+                MarketplaceTemplateVersion,
+                MarketplaceTemplateVersion.template_id == MarketplaceTemplate.template_id,
             )
-        else:
-            stmt = (
-                sa.select(
-                    MarketplaceTemplate.template_id,
-                    MarketplaceTemplate.name,
-                    MarketplaceTemplate.description,
-                    MarketplaceTemplate.emoji,
-                    MarketplaceTemplate.icon_url,
-                    MarketplaceTemplate.skill_dependencies,
-                    MarketplaceTemplateVersion.version,
-                    MarketplaceTemplateVersion.package_url,
-                    MarketplaceTemplateVersion.file_hash,
-                )
-                .join(
-                    MarketplaceTemplateVersion,
-                    MarketplaceTemplateVersion.template_id == MarketplaceTemplate.template_id,
-                )
-                .where(
-                    MarketplaceTemplate.template_id == template_id,
-                    MarketplaceTemplate.template_type == 'agent',
-                    MarketplaceTemplateVersion.is_latest.is_(True),
-                )
-                .limit(1)
+            .where(
+                MarketplaceTemplate.template_id == template_id,
+                MarketplaceTemplate.template_type == 'agent',
+                MarketplaceTemplateVersion.is_latest.is_(True),
             )
-            row = (await db.execute(stmt)).mappings().first()
-            if not row:
-                raise errors.NotFoundError(msg='template_not_found')
-            return {
-                'template_id': row['template_id'],
-                'name': row['name'],
-                'description': row['description'],
-                'emoji': row['emoji'],
-                'icon_url': row['icon_url'],
-                'skill_dependencies': row['skill_dependencies'],
-                'version': row['version'],
-                'package_url': row['package_url'],
-                'file_hash': row['file_hash'],
-            }
-        if not version:
+            .limit(1)
+        )
+        row = (await db.execute(stmt)).mappings().first()
+        if not row:
             raise errors.NotFoundError(msg='template_not_found')
         return {
-            'app_id': app.template_id,
-            'name': app.name,
-            'description': getattr(app, 'description', None),
-            'emoji': getattr(app, 'emoji', None),
-            'icon_url': getattr(app, 'icon_url', None),
-            'skill_dependencies': getattr(app, 'skill_dependencies', None),
-            'version': version.version,
-            'package_url': getattr(version, 'package_url', None),
-            'file_hash': getattr(version, 'file_hash', None),
+            'template_id': row['template_id'],
+            'name': row['name'],
+            'description': row['description'],
+            'emoji': row['emoji'],
+            'icon_url': row['icon_url'],
+            'skill_dependencies': row['skill_dependencies'],
+            'version': row['version'],
+            'package_url': row['package_url'],
+            'file_hash': row['file_hash'],
         }
 
     async def create_agent(
@@ -392,7 +362,7 @@ class HermesAgentAppService:
             agent_id=agent_id,
             user_id=user_id,
             agent_name=payload.agent_name,
-            template=template['app_id'],
+            template=template['template_id'],
             timezone=payload.timezone or 'Asia/Shanghai',
             status='creating',
             llm_mode='platform',
@@ -452,7 +422,7 @@ class HermesAgentAppService:
             user_phone = (getattr(user_row, 'phone', None) if user_row else None) or ''
 
             apply_payload: dict[str, Any] = {
-                'template_id': template['app_id'],
+                'template_id': template['template_id'],
                 'template_version': template['version'],
                 'package_url': template.get('package_url'),
                 'file_hash': template.get('file_hash'),
@@ -582,7 +552,12 @@ class HermesAgentAppService:
             if status:
                 agents_all = [item for item in agents_all if item.status == status]
             if channel:
-                allowed = {item.agent_id for item in db.channel_bindings if item.user_id == user_id and item.channel == channel}
+                test_db = cast(Any, db)
+                allowed = {
+                    item.agent_id
+                    for item in test_db.channel_bindings
+                    if item.user_id == user_id and item.channel == channel
+                }
                 agents_all = [item for item in agents_all if item.agent_id in allowed]
             agents_all.sort(key=lambda item: item.id or 0, reverse=True)
             total = len(agents_all)
@@ -758,7 +733,7 @@ class HermesAgentAppService:
                 if not isinstance(item, dict):
                     continue
                 channel = str(item.get('channel') or '')
-                metadata = item.get('metadata') if isinstance(item.get('metadata'), dict) else {}
+                metadata = _json_object(item.get('metadata'))
                 channels.append(
                     {
                         'channel': channel,
@@ -822,7 +797,7 @@ class HermesAgentAppService:
         item.status = data.get('status', item.status)
         item.runtime_session_id = data.get('session_id', item.runtime_session_id)
         item.expires_at = _parse_datetime(data.get('expires_at')) or item.expires_at
-        metadata = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
+        metadata = _json_object(data.get('metadata'))
         item.metadata_json = _safe_json(metadata)
         item.bound_account_display = metadata.get('account_display') or metadata.get('open_id') or item.bound_account_display
         await db.flush()
