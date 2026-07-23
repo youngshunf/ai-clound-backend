@@ -28,9 +28,10 @@ if TYPE_CHECKING:
 
 
 def _platform_llm_model() -> str:
-    return getattr(settings, 'HUANXING_HERMES_PLATFORM_LLM_MODEL', None) or getattr(
+    model = getattr(settings, 'HUANXING_HERMES_PLATFORM_LLM_MODEL', None) or getattr(
         settings, 'HERMES_PLATFORM_LLM_MODEL', 'openai/gpt-5.5'
     )
+    return str(model) if model else 'openai/gpt-5.5'
 
 
 async def _owner_llm_credentials(db: AsyncSession, user_id: int) -> tuple[str, str]:
@@ -52,7 +53,10 @@ async def _owner_llm_credentials(db: AsyncSession, user_id: int) -> tuple[str, s
         username=(user_row.phone or user_row.username) if user_row else '',
         nickname=(user_row.nickname or '') if user_row else '',
     )
-    return f'sk-{mapping.newapi_token_key}', settings.LLM_API_BASE_URL
+    base_url = settings.LLM_API_BASE_URL
+    if not base_url:
+        raise errors.ServerError(msg='云端运行时缺少 LLM API 基址配置')
+    return f'sk-{mapping.newapi_token_key}', str(base_url)
 
 
 async def _platform_main_model(db: AsyncSession) -> str:
@@ -110,7 +114,7 @@ async def _ensure_cloud_agent_mcp_key(
     *,
     agent_hasn_id: str,
     owner_hasn_id: str,
-    owner_user_id: int,
+    owner_user_id: int | None,
 ) -> str:
     """给云端 profile 铸一把 node-agnostic Agent MCP Key，返回明文（仅签发时返回一次）。
 
@@ -123,7 +127,12 @@ async def _ensure_cloud_agent_mcp_key(
 
     issued = await hasn_agent_mcp_keys_service.issue(
         db,
-        obj=IssueAgentMcpKeyParam(agent_hasn_id=agent_hasn_id, scopes=['tool.call'], node_id=None),
+        obj=IssueAgentMcpKeyParam(
+            agent_hasn_id=agent_hasn_id,
+            scopes=['tool.call'],
+            node_id=None,
+            expire_time=None,
+        ),
         owner_hasn_id=owner_hasn_id,
         owner_user_id=owner_user_id,
     )
