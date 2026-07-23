@@ -107,7 +107,7 @@ class FakeRedis:
 @pytest.mark.asyncio
 async def test_deliver_local_only_to_held_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """本 worker 持有该 node → 下发；不持有 → 无操作（不误投其它本地连接）。"""
-    from backend.app.hasn.service import ws_delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn.service import ws_router as rmod
 
     redis = FakeRedis()
@@ -148,7 +148,7 @@ async def test_deliver_local_only_to_held_connection(monkeypatch: pytest.MonkeyP
 async def test_deliver_local_broadcast_only_hits_current_ready_connections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from backend.app.hasn.service import ws_delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn.service import ws_router as rmod
 
     redis = FakeRedis()
@@ -181,7 +181,7 @@ async def test_targeted_queue_waits_for_connected_handshake(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """连接已注册但未 ready 时，持久业务帧不能抢在 hasn.connected 前发送。"""
-    from backend.app.hasn.service import ws_delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn.service import ws_router as rmod
 
     redis = FakeRedis()
@@ -209,7 +209,7 @@ async def test_targeted_queue_waits_for_connected_handshake(
 
 @pytest.mark.asyncio
 async def test_deliver_local_malformed_is_noop() -> None:
-    from backend.app.hasn.service import ws_delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn.service import ws_router as rmod
 
     rmod._ws_connections.clear()
@@ -227,7 +227,7 @@ async def test_deliver_local_malformed_is_noop() -> None:
 @pytest.mark.asyncio
 async def test_publish_then_deliver_full_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """确定性模拟跨 worker：worker-A publish → worker-B（持有连接）_deliver_local 下发。"""
-    from backend.app.hasn.service import ws_delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn.service import ws_router as rmod
 
     redis = FakeRedis()
@@ -261,7 +261,7 @@ async def test_publish_persists_payload_when_pubsub_wakeup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """目标 worker 订阅短暂中断时，消息仍留在 node 待投队列等待周期重试。"""
-    from backend.app.hasn.service import ws_delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
 
     redis = FakeRedis(fail_publish=True)
     monkeypatch.setattr(busmod, 'redis_client', redis)
@@ -305,7 +305,7 @@ async def test_offline_messages_remain_unacked_when_ws_send_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """send_json 失败时不确认 Redis 离线队列。"""
-    from backend.app.hasn.api import ws_node
+    from backend.app.hasn_im.api import ws_node
 
     claims = {'hasn:offline:h-owner': ['raw']}
     acked: list[dict[str, list[str]]] = []
@@ -331,7 +331,7 @@ async def test_drain_keeps_failed_send_for_current_connection_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """发送失败不确认条目；同一当前代际恢复后可再次 drain 并成功下发。"""
-    from backend.app.hasn.service import ws_delivery_bus as busmod
+    from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
     from backend.app.hasn.service import ws_router as rmod
 
     redis = FakeRedis()

@@ -43,9 +43,7 @@ _WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     # R0-02 / P0 统计的业务直连方，完成每片切片后对应行应移除
 }
 
-_WS_DELIVERY_BUS_ALLOW: dict[str, tuple[str, str]] = {
-    'app/hasn/service/ws_router.py': ('im-refactor', 'R1-02 兼容桥：后续迁移到 hasn_im.adapters.routing.delivery_bus'),
-}
+_WS_DELIVERY_BUS_ALLOW: dict[str, tuple[str, str]] = {}
 
 _WS_NODE_ALLOW: dict[str, tuple[str, str]] = {
 }

@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.service.hasn_auth import verify_owner_proof
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
-from backend.app.hasn.service.ws_delivery_bus import ws_delivery_bus
+from backend.app.hasn_im.adapters.routing.delivery_bus import ws_delivery_bus
 from backend.app.hasn_im.adapters.routing.redis_presence_store import (
     AGENT_READY_PREFIX,
     OFFLINE_PREFIX,
