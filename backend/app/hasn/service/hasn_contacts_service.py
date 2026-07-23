@@ -19,14 +19,15 @@ from backend.app.hasn.schema.hasn_contacts import (
     DeleteHasnContactsParam,
     UpdateHasnContactsParam,
 )
-from backend.app.hasn_im.application.provider import get_presence_query
-from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
+from backend.app.hasn_im.application.provider import get_presence_query, get_realtime_gateway
+from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.pagination import paging_data
 from backend.utils.timezone import timezone
 
 _presence_query = get_presence_query()
+_realtime_gateway = get_realtime_gateway()
 
 # 好友请求未响应过期阈值（天）：pending 超此天数由 celery beat 兜底置 expired（B7）。
 CONTACT_REQUEST_EXPIRE_DAYS = 30
@@ -46,6 +47,19 @@ class ContactRequestError(Exception):
 
 
 class HasnContactsService:
+    class _RealtimeAdapter:
+        """联系人服务实时推送兼容适配，保留 push_message_to 形态供既有补丁点与调用方。"""
+
+        def __init__(self, gateway) -> None:
+            self._gateway = gateway
+
+        async def push_message_to(self, target_hasn_id: str, payload: dict) -> bool:
+            await self._gateway.push_to_owner(
+                target_hasn_id,
+                RealtimeFrame(method=payload['method'], params=payload['params']),
+            )
+            return True
+
     @staticmethod
     async def get(*, db: AsyncSession, pk: int) -> dict[str, Any]:
         """
@@ -320,7 +334,7 @@ class HasnContactsService:
 
             return ws_router
         except Exception:
-            return ws_node_runtime
+            return HasnContactsService._RealtimeAdapter(_realtime_gateway)
 
     @staticmethod
     def _request_out(req: Any, *, to_type: str, target: dict[str, Any], message: str | None) -> dict[str, Any]:
