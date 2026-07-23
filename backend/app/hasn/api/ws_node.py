@@ -16,10 +16,10 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.security.utils import get_authorization_scheme_param
 
-from backend.app.hasn.service import geoip_service, message_router
+from backend.app.hasn.service import geoip_service
 from backend.app.hasn.service.hasn_auth import authenticate_ws_connection
 from backend.app.hasn.service.hasn_nodes_service import hasn_nodes_service
-from backend.app.hasn.service.ws_router import ws_router
+from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 from backend.app.hasn_im.protocol.frame import (
     FrameDecodeError,
     build_error_frame,
@@ -119,14 +119,14 @@ async def _send_json(websocket: WebSocket, payload: dict) -> None:
 
 async def _send_offline_messages(websocket: WebSocket, entity_ids: list[str]) -> None:
     """成功交给 WebSocket transport 后才确认离线队列前缀。"""
-    messages, claims = await ws_router.claim_offline_messages(entity_ids)
+    messages, claims = await ws_node_runtime.claim_offline_messages(entity_ids)
     if messages:
         await _send_json(
             websocket,
             _frame('hasn.node.offline_messages', {'messages': messages}),
         )
     if claims:
-        await ws_router.ack_offline_messages(claims)
+        await ws_node_runtime.ack_offline_messages(claims)
 
 
 @router.websocket('/ws/node')
@@ -200,7 +200,12 @@ async def hasn_node_websocket(  # noqa: C901
     await websocket.accept()
 
     # 2. 注册节点在线
-    connection_id = await ws_router.register_node(node_id, node_type, websocket, capacity)
+    connection_id = await ws_node_runtime.register_node(
+        node_id=node_id,
+        node_type=node_type,
+        ws=websocket,
+        capacity=capacity,
+    )
 
     # 2.5 回填设备元数据（IP/归属地/OS/版本），用于设备管理页（非致命）
     await _backfill_node_metadata(websocket, node_id)
@@ -210,7 +215,7 @@ async def hasn_node_websocket(  # noqa: C901
     if owner_hasn_id:
         try:
             async with async_db_session() as db:
-                bind_result = await ws_router.add_owner(
+                bind_result = await ws_node_runtime.add_owner(
                     node_id=node_id,
                     owner_id=owner_hasn_id,
                     owner_proof={
@@ -266,7 +271,7 @@ async def hasn_node_websocket(  # noqa: C901
             await _send_offline_messages(websocket, [owner_hasn_id])
 
         # hasn.connected 必须是 daemon 收到的首帧；到这里才开放业务投递并排空持久队列。
-        if not await ws_router.mark_node_ready(node_id, connection_id):
+        if not await ws_node_runtime.mark_node_ready(node_id=node_id, connection_id=connection_id):
             await websocket.close(code=1000, reason='superseded connection')
             return
 
@@ -286,7 +291,7 @@ async def hasn_node_websocket(  # noqa: C901
     finally:
         # 7. 清理：注销节点 + 清理所有实体（best-effort，绝不让清理异常冒泡出 ASGI handler）
         try:
-            await ws_router.unregister_node(node_id, connection_id)
+            await ws_node_runtime.unregister_node(node_id=node_id, connection_id=connection_id)
         except Exception as e:
             log.warning(f'[HASN] 节点清理失败 (非致命): {node_id} - {e}')
 
@@ -358,7 +363,7 @@ async def _handle_add_owner(
     active_entities: set[str],
 ) -> None:
     async with async_db_session() as db:
-        result = await ws_router.add_owner(
+        result = await ws_node_runtime.add_owner(
             node_id=node_id,
             owner_id=params.get('owner_id', ''),
             owner_proof=params.get('owner_proof', {}),
@@ -380,7 +385,7 @@ async def _handle_remove_owner(
 ) -> None:
     owner_id = params.get('owner_id', '')
     async with async_db_session() as db:
-        result = await ws_router.remove_owner(node_id=node_id, owner_id=owner_id, db=db)
+        result = await ws_node_runtime.remove_owner(node_id=node_id, owner_id=owner_id, db=db)
         await db.commit()
     active_entities.discard(owner_id)
     await _send_json(websocket, _frame('hasn.node.remove_owner_ack', result))
@@ -393,7 +398,7 @@ async def _handle_renew_owner(
     active_entities: set[str],
 ) -> None:
     async with async_db_session() as db:
-        result = await ws_router.renew_owner(
+        result = await ws_node_runtime.renew_owner(
             node_id=node_id,
             owner_id=params.get('owner_id', ''),
             owner_proof=params.get('owner_proof', {}),
@@ -405,7 +410,7 @@ async def _handle_renew_owner(
 
 async def _handle_list_owners(websocket: WebSocket, node_id: str) -> None:
     async with async_db_session() as db:
-        result = await ws_router.list_owners(node_id=node_id, db=db)
+        result = await ws_node_runtime.list_owners(node_id=node_id)
     await _send_json(websocket, _frame('hasn.node.list_owners_ack', result))
 
 
@@ -478,7 +483,7 @@ async def _handle_add_agent(
     active_entities: set[str],
 ) -> None:
     async with async_db_session() as db:
-        result = await ws_router.add_agent_presence(
+        result = await ws_node_runtime.add_agent_presence(
             node_id=node_id,
             agent_id=params.get('agent_id', ''),
             owner_id=params.get('owner_id', ''),
@@ -514,7 +519,7 @@ async def _handle_add_agent(
             # （online+ok 才写；degraded/offline 删）。就绪键是对外「在线」判定的第三维，
             # 不影响路由；失败不拖垮路由注册，单独 try/except。
             try:
-                transition = await ws_router.set_agent_readiness(
+                transition = await ws_node_runtime.set_agent_readiness(
                     agent_id,
                     str(params.get('online_status')),
                     params.get('health_status'),
@@ -543,7 +548,7 @@ async def _handle_remove_agent(
     active_entities: set[str],
 ) -> None:
     agent_id = params.get('agent_id', '')
-    result = await ws_router.remove_agent_presence(node_id=node_id, agent_id=agent_id)
+    result = await ws_node_runtime.remove_agent_presence(node_id=node_id, agent_id=agent_id)
     active_entities.discard(agent_id)
     await _send_json(websocket, _frame('hasn.node.remove_agent_ack', result))
 
@@ -620,7 +625,7 @@ async def _handle_agent_deregister(
         return
 
     # 先下线
-    await ws_router.unregister_entity_route(node_id, hasn_id)
+    await ws_node_runtime.unregister_entity_route(node_id=node_id, hasn_id=hasn_id)
     active_entities.discard(hasn_id)
 
     # DB 标记删除
@@ -698,7 +703,7 @@ async def _handle_send(  # noqa: C901
 
     # 路由消息
     async with async_db_session() as db:
-        result = await message_router.route_message(
+        result = await ws_node_runtime.route_message(
             db=db,
             from_id=from_id,
             to_target=to_target,
@@ -770,7 +775,7 @@ async def _handle_send(  # noqa: C901
                 },
             },
         )
-        await ws_router.push_self_sync(sync_target, sender_payload, node_id)
+        await ws_node_runtime.push_self_sync(owner_id=sync_target, payload=sender_payload, exclude_node=node_id)
 
 
 async def _handle_read(params: dict, active_entities: set[str]) -> None:
@@ -787,7 +792,7 @@ async def _handle_read(params: dict, active_entities: set[str]) -> None:
         return
 
     async with async_db_session() as db:
-        await message_router.mark_read(db, reader, conversation_id, last_msg_id)
+        await ws_node_runtime.mark_read(db, reader=reader, conversation_id=conversation_id, last_msg_id=last_msg_id)
 
 
 async def _handle_typing(params: dict, active_entities: set[str]) -> None:
@@ -810,7 +815,7 @@ async def _handle_typing(params: dict, active_entities: set[str]) -> None:
             'conversation_id': conversation_id,
         },
     )
-    await ws_router.push_message_to(to_id, typing_payload)
+    await ws_node_runtime.push_message_to(to_id=to_id, payload=typing_payload)
 
 
 async def _handle_ping(
@@ -824,7 +829,7 @@ async def _handle_ping(
     返回 True 表示本连接已被更新连接顶替（superseded）、已 `ws.close`，收发循环应结束；
     正常续期回 hasn.pong 后返回 False（继续收发）。返回值仅对 may_close_loop 方法有意义。
     """
-    if not await ws_router.refresh_node_presence(node_id, connection_id):
+    if not await ws_node_runtime.refresh_node_presence(node_id=node_id, connection_id=connection_id):
         await websocket.close(code=1000, reason='superseded connection')
         return True
     await _send_json(websocket, _frame('hasn.pong', {'ts': params.get('ts')}))

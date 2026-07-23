@@ -40,7 +40,6 @@ _MESSAGE_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     # R0-02 存量调用方（R1-05 各切 port 后逐个移除）
     'app/hasn_community/service/community_card_notifier.py': ('im-refactor', 'R1-05 slice③ 应用完成卡'),
     'app/hasn/api/v1/app/hasn_agents.py': ('im-refactor', 'R1-05 slice① MCP/agent'),
-    'app/hasn/api/ws_node.py': ('im-refactor', 'R1-09 协议层净化：WS 帧路由收进 hasn_im 协议 adapter'),
     'app/hasn/service/hasn_conversations_service.py': ('im-refactor', 'R1-05 slice⑥ 会话查询'),
     'app/hasn/service/hasn_group_service.py': ('im-refactor', 'R1-05 slice⑤ groups'),
     'app/hasn/service/inbound_release.py': ('im-refactor', 'R2-04 抑制放行事务化'),
@@ -54,7 +53,6 @@ _MESSAGE_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
 
 _WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     # R0-02 / P0 统计的业务直连方，完成每片切片后对应行应移除
-    'app/hasn/api/ws_node.py': ('im-refactor', 'R1-09 协议层收口：本阶段允许直接调用，R2 起移除'),
     'app/hasn/service/hasn_agents_service.py': ('im-refactor', 'R1-05 slice① MCP/agent'),
     'app/hasn/service/hasn_contacts_service.py': ('im-refactor', 'R1-05 slice④ 联系人关系事件'),
     'app/hasn/service/workspace_notification_subscriber.py': ('im-refactor', 'R1-05 slice② 通知通道'),
@@ -64,7 +62,6 @@ _WS_ROUTER_ALLOW: dict[str, tuple[str, str]] = {
     'app/hasn/service/sync_invalidate_service.py': ('im-refactor', 'R1-04 invalidate 直发，R1-05/2 收口'),
     'app/hasn/service/message_router.py': ('im-refactor', 'R1-04 兼容层收编'),
     'app/hasn/service/ws_delivery_bus.py': ('im-refactor', 'R1-02 routing 内核迁移中间层'),
-    'app/hasn_im/adapters/ws_realtime_gateway.py': ('im-refactor', 'R1-07 兼容入口：后续改接 hasn_im.adapters.routing'),
     'app/hasn/api/v1/app/hasn_auth_api.py': ('im-refactor', 'R1-05 slice⑥ presence 查询'),
     'app/hasn/api/v1/app/hasn_agents.py': ('im-refactor', 'R1-05 slice① MCP/agent'),
     'app/hasn/api/v1/app/contacts.py': ('im-refactor', 'R1-05 slice④ 联系人 API'),
@@ -84,7 +81,7 @@ _WS_NODE_ALLOW: dict[str, tuple[str, str]] = {
 _IM_LEGACY_REDIS_KEY_ALLOW: dict[str, tuple[str, str]] = {
     'app/hasn/service/ws_router.py': ('im-refactor', 'R2-01 迁出前保留统一收口点'),
     'app/hasn/service/ws_delivery_bus.py': ('im-refactor', 'R1-02 兼容层仍含 legacy key 语义注释'),
-    'app/hasn/service/node_scheduler.py': ('im-refactor', 'R1-02 仍需与 owner/agent 兼容行为对齐'),
+    'app/hasn_im/adapters/routing/redis_presence_store.py': ('im-refactor', 'R1-02 routing 收口入口统一 legacy key 所在'),
 }
 _IM_LEGACY_REDIS_KEY_RE = re.compile(r"hasn:(?:node_conn|node_generation|node_entities|node_alive|entity_node|offline:|push:)")
 
