@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import cast
 
 from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,20 @@ from backend.app.hasn.schema.hasn_contact_requests import CreateHasnContactReque
 
 
 class CRUDHasnContactRequests(CRUDPlus[HasnContactRequests]):
+    @staticmethod
+    def _single_contact_request(result: object) -> HasnContactRequests | None:
+        """将无关联加载的查询结果收紧为单个好友请求。"""
+        if result is not None and not isinstance(result, HasnContactRequests):
+            raise TypeError('好友请求单模型查询返回了关联结果')
+        return cast(HasnContactRequests | None, result)
+
+    @staticmethod
+    def _contact_request_sequence(result: Sequence[object]) -> Sequence[HasnContactRequests]:
+        """将无关联加载的查询结果收紧为好友请求序列。"""
+        if not all(isinstance(item, HasnContactRequests) for item in result):
+            raise TypeError('好友请求列表查询返回了关联结果')
+        return cast(Sequence[HasnContactRequests], result)
+
     async def get(self, db: AsyncSession, pk: int) -> HasnContactRequests | None:
         """
         获取HASN 好友请求表（请求生命周期独立于 hasn_contacts 关系表）
@@ -17,7 +32,7 @@ class CRUDHasnContactRequests(CRUDPlus[HasnContactRequests]):
         :param pk: HASN 好友请求表（请求生命周期独立于 hasn_contacts 关系表） ID
         :return:
         """
-        return await self.select_model(db, pk)
+        return self._single_contact_request(await self.select_model(db, pk))
 
     async def get_select(self) -> Select:
         """获取HASN 好友请求表（请求生命周期独立于 hasn_contacts 关系表）列表查询表达式"""
@@ -30,7 +45,7 @@ class CRUDHasnContactRequests(CRUDPlus[HasnContactRequests]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._contact_request_sequence(await self.select_models(db))
 
     async def create(self, db: AsyncSession, obj: CreateHasnContactRequestsParam) -> None:
         """
@@ -116,26 +131,26 @@ class CRUDHasnContactRequests(CRUDPlus[HasnContactRequests]):
         db: AsyncSession, to_owner_id: str, limit: int = 20,
     ) -> list[HasnContactRequests]:
         """审批人视角：我收到的待处理请求"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContactRequests)
             .where(HasnContactRequests.to_owner_id == to_owner_id)
             .where(HasnContactRequests.status == 'pending')
             .order_by(HasnContactRequests.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def get_sent_pending(
         db: AsyncSession, from_id: str, limit: int = 20,
     ) -> list[HasnContactRequests]:
         """发起方视角：我发出的待处理请求"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContactRequests)
             .where(HasnContactRequests.from_id == from_id)
             .where(HasnContactRequests.status == 'pending')
             .order_by(HasnContactRequests.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def mark_accepted(

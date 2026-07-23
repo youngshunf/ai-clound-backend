@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import Select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,20 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
     """任务调度数据库操作类"""
 
     @staticmethod
+    def _single_scheduler(result: object) -> TaskScheduler | None:
+        """将无关联加载的查询结果收紧为单个任务调度。"""
+        if result is not None and not isinstance(result, TaskScheduler):
+            raise TypeError('任务调度单模型查询返回了关联结果')
+        return cast(TaskScheduler | None, result)
+
+    @staticmethod
+    def _scheduler_sequence(result: Sequence[object]) -> Sequence[TaskScheduler]:
+        """将无关联加载的查询结果收紧为任务调度序列。"""
+        if not all(isinstance(item, TaskScheduler) for item in result):
+            raise TypeError('任务调度列表查询返回了关联结果')
+        return cast(Sequence[TaskScheduler], result)
+
+    @staticmethod
     async def get(db: AsyncSession, pk: int) -> TaskScheduler | None:
         """
         获取任务调度
@@ -21,7 +35,7 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :param pk: 任务调度 ID
         :return:
         """
-        return await task_scheduler_dao.select_model(db, pk)
+        return task_scheduler_dao._single_scheduler(await task_scheduler_dao.select_model(db, pk))
 
     async def get_all(self, db: AsyncSession) -> Sequence[TaskScheduler]:
         """
@@ -30,7 +44,7 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :param db: 数据库会话
         :return:
         """
-        return await self.select_models(db)
+        return self._scheduler_sequence(await self.select_models(db))
 
     async def get_select(self, name: str | None, type: int | None) -> Select:
         """
@@ -57,7 +71,7 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :param name: 任务调度名称
         :return:
         """
-        return await self.select_model_by_column(db, name=name)
+        return self._single_scheduler(await self.select_model_by_column(db, name=name))
 
     async def create(self, db: AsyncSession, obj: CreateTaskSchedulerParam) -> None:
         """
