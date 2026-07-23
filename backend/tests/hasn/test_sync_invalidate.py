@@ -87,7 +87,7 @@ async def test_compute_builtin_catalog_revision_stable_and_changes() -> None:
 async def test_broadcast_sync_invalidate_global_and_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     """多 worker 化后：全局广播经投递总线 publish_broadcast（每 worker 下发本地连接），
     owner 定向逐节点 _send_or_publish（本 worker 直发、跨 worker 经总线）。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -108,7 +108,7 @@ async def test_broadcast_sync_invalidate_global_and_owner(monkeypatch: pytest.Mo
 
     ws_a = FakeWS()
     module._ws_connections['node-a'] = ws_a  # node-a 连接在本 worker
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     # 全局广播 → 经投递总线 publish_broadcast；返回在线节点数（NODE_CONN_KEY 有 2 个）
     redis.hashes[module.NODE_CONN_KEY] = {'node-a': 'x', 'node-b': 'y'}

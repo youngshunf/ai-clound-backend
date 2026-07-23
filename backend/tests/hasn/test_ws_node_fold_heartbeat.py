@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from backend.app.hasn.api import ws_node
+from backend.app.hasn_im.api import ws_node
 from backend.app.hasn.service import hasn_agents_service
-from backend.app.hasn.service.ws_router import ws_router
+from backend.app.hasn_im.application.node_session_service import node_session_service as ws_router
 
 
 class FakeWebSocket:
@@ -39,7 +39,7 @@ def patched(monkeypatch):
 
     monkeypatch.setattr(ws_node, 'async_db_session', fake_session)
     monkeypatch.setattr(ws_router, 'add_agent_presence', AsyncMock(return_value={'accepted': True}))
-    monkeypatch.setattr(ws_router, 'get_offline_messages', AsyncMock(return_value=[]))
+    monkeypatch.setattr(ws_router, 'claim_offline_messages', AsyncMock(return_value=([], {})))
     update = AsyncMock(return_value=SimpleNamespace(success=True))
     monkeypatch.setattr(hasn_agents_service.agent_profile_service, 'update_heartbeat', update)
     return update

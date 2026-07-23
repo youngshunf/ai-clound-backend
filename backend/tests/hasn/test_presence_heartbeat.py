@@ -1,4 +1,4 @@
-"""P3 presence 心跳 + 僵尸回收：节点存活键 TTL 门控（真实 WsRouterService，FakeRedis）。
+"""P3 presence 心跳 + 僵尸回收：节点存活键 TTL 门控（真实 NodeSessionService，FakeRedis）。
 
 证明（不依赖 wall-clock TTL 过期；用「删 alive 键」模拟过期）：
 - 注册写存活键 → 节点在线；删存活键（模拟 SIGKILL 后 TTL 过期，无心跳续期）→ 节点离线。
@@ -95,12 +95,12 @@ class _DummyWs:
 
 
 def _router(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, FakeRedis]:
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
-    return module, module.WsRouterService(), redis
+    return module, module.NodeSessionService(), redis
 
 
 @pytest.mark.asyncio

@@ -170,13 +170,13 @@ async def test_route_guard_uses_cache_db_and_invalidates(monkeypatch: pytest.Mon
 
 @pytest.mark.asyncio
 async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
 
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
     node_ws = FakeWebSocket()
     connection_id = await router.register_node('node-1', 'desktop', node_ws, capacity=2)
     module._ws_ready_connection_ids['node-1'] = connection_id
@@ -264,12 +264,12 @@ async def test_ws_router_registration_owner_agent_and_push_paths(monkeypatch: py
 @pytest.mark.asyncio
 async def test_stale_connection_cleanup_cannot_remove_replacement(monkeypatch: pytest.MonkeyPatch) -> None:
     """同一 node 重连后，旧 handler 的 finally 只能清理自己的连接代际。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     old_ws = FakeWebSocket()
     new_ws = FakeWebSocket()
@@ -291,12 +291,12 @@ async def test_stale_connection_cleanup_cannot_remove_replacement(monkeypatch: p
 @pytest.mark.asyncio
 async def test_stale_connection_heartbeat_cannot_refresh_presence(monkeypatch: pytest.MonkeyPatch) -> None:
     """被新连接取代的旧 socket 不得继续用 ping 维持在线假象。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     old_connection_id = await router.register_node('node-overlap', 'desktop', FakeWebSocket())
     new_connection_id = await router.register_node('node-overlap', 'desktop', FakeWebSocket())
@@ -313,14 +313,14 @@ async def test_business_frames_wait_until_current_connection_handshake_is_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """hasn.connected 前只入持久队列，握手 ready 后当前代际才允许直发。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
     module._ws_connection_ids.clear()
     module._ws_ready_connection_ids.clear()
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
     ws = FakeWebSocket()
     connection_id = await router.register_node('node-ready', 'desktop', ws)
     published: list[tuple[str, str]] = []
@@ -352,7 +352,7 @@ async def test_stale_worker_local_socket_is_not_used_for_direct_delivery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """跨 worker 重叠连接时，Redis 中非当前代际的本地 socket 只能绕到持久总线。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -372,19 +372,19 @@ async def test_stale_worker_local_socket_is_not_used_for_direct_delivery(
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _publish)
 
-    assert await module.WsRouterService()._send_or_publish('node-stale', 'MSG') is True
+    assert await module.NodeSessionService()._send_or_publish('node-stale', 'MSG') is True
     assert stale_ws.sent == []
     assert published == [('node-stale', 'MSG')]
 
 
 @pytest.mark.asyncio
 async def test_ws_router_rejects_invalid_or_moved_agents(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     assert await router._validate_agent(
         'node-1', 'a_missing', {'owner_id': 'h_owner'}, FakeDb([ScalarResult(value=None)])

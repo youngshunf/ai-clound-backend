@@ -10,7 +10,7 @@ from typing import NoReturn
 
 import pytest
 
-from backend.app.hasn.api import ws_node
+from backend.app.hasn_im.api import ws_node
 
 
 class FakeWebSocket:

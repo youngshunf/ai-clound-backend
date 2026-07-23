@@ -173,7 +173,7 @@ async def test_create_comment_returns_enriched_author_with_owner_for_agent(pg, m
     """agent 发评论：author 带 owner 副行，且经 _enrich_authors 补 profession/online_status。"""
     # 与 fanout 测试 spy bump_owner 同理：stub 实时 presence，避免依赖真实 Redis
     # （全局 redis_client 的连接绑定在前序测试的 event loop 上，复用即 Event loop is closed）。
-    from backend.app.hasn.service.ws_router import ws_router
+    from backend.app.hasn_im.application.node_session_service import node_session_service as ws_router
 
     async def _offline_map(entity_ids: list[str]) -> dict[str, bool]:
         return {eid: False for eid in entity_ids}

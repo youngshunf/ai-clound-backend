@@ -2,8 +2,8 @@
 
 __all__ = [
     'delivery_bus',
+    'node_session_service',
     'redis_presence_store',
     'ws_connection_registry',
     'ws_realtime_gateway',
-    'ws_router',
 ]

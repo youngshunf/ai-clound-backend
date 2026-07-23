@@ -52,7 +52,7 @@ def _patch_router_pipeline(
     """统一 mock route_message 的下游依赖（含统一受众扇出）。"""
     from backend.app.hasn.service import conversation_projection as cp
     from backend.app.hasn.service import message_router as mr
-    from backend.app.hasn.service.ws_router import ws_router
+    from backend.app.hasn_im.application.node_session_service import node_session_service as ws_router
 
     # 目标解析：人类收件人
     monkeypatch.setattr(

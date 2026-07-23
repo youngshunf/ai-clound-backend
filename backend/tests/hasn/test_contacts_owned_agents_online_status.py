@@ -101,7 +101,7 @@ async def test_query_filters_hasn_agents_without_runtime_reports_join() -> None:
 @pytest.mark.asyncio
 async def test_online_status_comes_from_presence_not_stale_column(monkeypatch) -> None:
     """在线判定取自 Redis presence（node_alive 门控），胜过过期持久列；description/last_seen 带出。"""
-    from backend.app.hasn.service import ws_router as ws_module
+    from backend.app.hasn_im.adapters.routing import node_session_service as ws_module
 
     redis = FakeRedis()
     monkeypatch.setattr(ws_module, 'redis_client', redis)

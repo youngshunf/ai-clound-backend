@@ -24,7 +24,7 @@ class _FakeWS:
 
 @pytest.mark.asyncio
 async def test_handle_send_passes_context_to_route_message(monkeypatch) -> None:
-    from backend.app.hasn.api import ws_node
+    from backend.app.hasn_im.api import ws_node
 
     captured: dict = {}
 
@@ -68,7 +68,7 @@ async def test_handle_send_passes_context_to_route_message(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_handle_send_without_context_passes_none(monkeypatch) -> None:
     """不带 context 的帧照常路由，context 参数收敛为 None（与 route_message 默认一致）。"""
-    from backend.app.hasn.api import ws_node
+    from backend.app.hasn_im.api import ws_node
 
     captured: dict = {}
 

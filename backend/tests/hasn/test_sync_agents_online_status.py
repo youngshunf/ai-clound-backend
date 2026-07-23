@@ -67,7 +67,7 @@ def _fake_agent(hasn_id: str) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_get_online_map_reflects_redis_presence(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.service import ws_router as ws_module
+    from backend.app.hasn_im.adapters.routing import node_session_service as ws_module
 
     redis = FakeRedis()
     monkeypatch.setattr(ws_module, 'redis_client', redis)
@@ -77,7 +77,7 @@ async def test_get_online_map_reflects_redis_presence(monkeypatch: pytest.Monkey
     # 在线语义收紧：还需 agent 就绪键（心跳 online+ok 才写）才算真在线。
     await redis.set(f'{ws_module.AGENT_READY_PREFIX}:a_online', '1', ex=90)
 
-    router = ws_module.WsRouterService()
+    router = ws_module.NodeSessionService()
     result = await router.get_online_map(['a_online', 'a_offline'])
 
     assert result == {'a_online': True, 'a_offline': False}
@@ -88,7 +88,7 @@ async def test_get_online_map_reflects_redis_presence(monkeypatch: pytest.Monkey
 async def test_sync_agents_backfills_online_status_from_presence(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.app.hasn.schema.hasn_agents import AgentSyncRequest
     from backend.app.hasn.service import hasn_agents_service as svc_module
-    from backend.app.hasn.service import ws_router as ws_module
+    from backend.app.hasn_im.adapters.routing import node_session_service as ws_module
 
     redis = FakeRedis()
     monkeypatch.setattr(ws_module, 'redis_client', redis)

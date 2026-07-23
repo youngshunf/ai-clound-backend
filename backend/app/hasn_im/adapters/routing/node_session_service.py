@@ -1,4 +1,4 @@
-"""HASN WebSocket 连接管理服务
+"""IM 节点会话与 Presence 应用服务。
 
 现行模型：
 - Node 先建立物理连接
@@ -74,8 +74,8 @@ def _decode_offline_message(raw: str | bytes) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-class WsRouterService:
-    """WebSocket 连接路由管理（统一实体模型）"""
+class NodeSessionService:
+    """WebSocket 节点会话、实体 Presence 与实时投递协调服务。"""
 
     # ─── 节点连接管理 ───
 
@@ -703,4 +703,4 @@ class WsRouterService:
 
 
 # 全局单例
-ws_router: WsRouterService = WsRouterService()
+node_session_service = NodeSessionService()

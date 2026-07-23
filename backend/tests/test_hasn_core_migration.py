@@ -61,26 +61,28 @@ async def run_tests():
     except Exception as e:
         fail("认证接口检查", e)
 
-    print("\n📡 模块2: ws_router / 新控制平面")
+    print("\n📡 模块2: 节点会话 / 新控制平面")
     print("─" * 50)
 
     try:
-        from backend.app.hasn.service.ws_router import (
+        from backend.app.hasn_im.adapters.routing.redis_presence_store import (
             ENTITY_NODE_KEY,
             NODE_CONN_KEY,
             OFFLINE_PREFIX,
             OFFLINE_TTL,
             USER_NODES_PREFIX,
-            WsRouterService,
-            ws_router,
         )
-        ok("ws_router 导入成功")
+        from backend.app.hasn_im.application.node_session_service import (
+            NodeSessionService,
+            node_session_service,
+        )
+        ok("节点会话服务导入成功")
     except Exception as e:
-        fail("ws_router 导入", e)
+        fail("节点会话服务导入", e)
         return results
 
     try:
-        assert isinstance(ws_router, WsRouterService)
+        assert isinstance(node_session_service, NodeSessionService)
         for method in [
             "register_node",
             "unregister_node",
@@ -93,10 +95,10 @@ async def run_tests():
             "push_message_to",
             "get_offline_messages",
         ]:
-            assert hasattr(ws_router, method), f"缺少方法: {method}"
-        ok("ws_router 新控制平面方法完整")
+            assert hasattr(node_session_service, method), f"缺少方法: {method}"
+        ok("节点会话新控制平面方法完整")
     except Exception as e:
-        fail("ws_router 方法检查", e)
+        fail("节点会话方法检查", e)
 
     try:
         assert NODE_CONN_KEY == "hasn:node_conn"
@@ -129,7 +131,7 @@ async def run_tests():
     print("─" * 50)
 
     try:
-        from backend.app.hasn.api.ws_node import router as ws_router_api
+        from backend.app.hasn_im.api.ws_node import router as ws_router_api
         ws_paths = [r.path for r in ws_router_api.routes]
         assert "/ws/node" in ws_paths
         assert "/ws/client" not in ws_paths

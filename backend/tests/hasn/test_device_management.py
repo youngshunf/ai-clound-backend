@@ -102,12 +102,12 @@ class FakeWebSocket:
 
 @pytest.mark.asyncio
 async def test_node_online_and_entity_node_lookup(monkeypatch) -> None:
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     # P3：在线 = 存活心跳键在（非 NODE_CONN_KEY 残留）。
     assert await router.is_node_online('node_X') is False
@@ -122,12 +122,12 @@ async def test_node_online_and_entity_node_lookup(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch) -> None:
     """远程登出核心契约：断开节点 → 清节点 presence + 名下 Agent 在路由表离线（他机可接管）+ 关 WS。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     node_id = 'node_B'
     owner_id = 'h_owner'
@@ -165,12 +165,12 @@ async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch) 
 @pytest.mark.asyncio
 async def test_disconnect_node_not_in_process_still_clears_presence(monkeypatch) -> None:
     """连接落在其它 worker（本进程无 ws）→ 返回 False，但共享 presence 仍清干净。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
     module._ws_connections.clear()
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     node_id = 'node_remote'
     await redis.hset(module.NODE_CONN_KEY, node_id, '{}')

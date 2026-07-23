@@ -108,7 +108,7 @@ class FakeRedis:
 async def test_deliver_local_only_to_held_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """本 worker 持有该 node → 下发；不持有 → 无操作（不误投其它本地连接）。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
-    from backend.app.hasn.service import ws_router as rmod
+    from backend.app.hasn_im.adapters.routing import node_session_service as rmod
 
     redis = FakeRedis()
     monkeypatch.setattr(busmod, 'redis_client', redis)
@@ -149,7 +149,7 @@ async def test_deliver_local_broadcast_only_hits_current_ready_connections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
-    from backend.app.hasn.service import ws_router as rmod
+    from backend.app.hasn_im.adapters.routing import node_session_service as rmod
 
     redis = FakeRedis()
     monkeypatch.setattr(busmod, 'redis_client', redis)
@@ -182,7 +182,7 @@ async def test_targeted_queue_waits_for_connected_handshake(
 ) -> None:
     """连接已注册但未 ready 时，持久业务帧不能抢在 hasn.connected 前发送。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
-    from backend.app.hasn.service import ws_router as rmod
+    from backend.app.hasn_im.adapters.routing import node_session_service as rmod
 
     redis = FakeRedis()
     monkeypatch.setattr(busmod, 'redis_client', redis)
@@ -210,7 +210,7 @@ async def test_targeted_queue_waits_for_connected_handshake(
 @pytest.mark.asyncio
 async def test_deliver_local_malformed_is_noop() -> None:
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
-    from backend.app.hasn.service import ws_router as rmod
+    from backend.app.hasn_im.adapters.routing import node_session_service as rmod
 
     rmod._ws_connections.clear()
     ws = FakeWS()
@@ -228,7 +228,7 @@ async def test_deliver_local_malformed_is_noop() -> None:
 async def test_publish_then_deliver_full_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """确定性模拟跨 worker：worker-A publish → worker-B（持有连接）_deliver_local 下发。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
-    from backend.app.hasn.service import ws_router as rmod
+    from backend.app.hasn_im.adapters.routing import node_session_service as rmod
 
     redis = FakeRedis()
     monkeypatch.setattr(busmod, 'redis_client', redis)
@@ -277,7 +277,7 @@ async def test_offline_messages_are_acked_only_as_original_queue_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """补推期间并发追加的消息不能被旧领取确认误删。"""
-    from backend.app.hasn.service import ws_router as rmod
+    from backend.app.hasn_im.adapters.routing import node_session_service as rmod
 
     redis = FakeRedis()
     monkeypatch.setattr(rmod, 'redis_client', redis)
@@ -287,7 +287,7 @@ async def test_offline_messages_are_acked_only_as_original_queue_prefix(
     concurrent = json.dumps({'created_time': '3', 'body': 'concurrent'})
     redis.lists[key] = [first, second]
 
-    router = rmod.WsRouterService()
+    router = rmod.NodeSessionService()
     messages, claims = await router.claim_offline_messages(['h-owner'])
     assert [message['body'] for message in messages] == ['first', 'second']
 
@@ -306,6 +306,7 @@ async def test_offline_messages_remain_unacked_when_ws_send_fails(
 ) -> None:
     """send_json 失败时不确认 Redis 离线队列。"""
     from backend.app.hasn_im.api import ws_node
+    from backend.app.hasn_im.application.node_session_service import node_session_service
 
     claims = {'hasn:offline:h-owner': ['raw']}
     acked: list[dict[str, list[str]]] = []
@@ -318,8 +319,8 @@ async def test_offline_messages_remain_unacked_when_ws_send_fails(
     async def _ack(value: dict[str, list[str]]) -> None:  # noqa: RUF029
         acked.append(value)
 
-    monkeypatch.setattr(ws_node.ws_router, 'claim_offline_messages', _claim)
-    monkeypatch.setattr(ws_node.ws_router, 'ack_offline_messages', _ack)
+    monkeypatch.setattr(node_session_service, 'claim_offline_messages', _claim)
+    monkeypatch.setattr(node_session_service, 'ack_offline_messages', _ack)
 
     with pytest.raises(RuntimeError, match='ws closed'):
         await ws_node._send_offline_messages(FakeWS(fail=True), ['h-owner'])
@@ -332,7 +333,7 @@ async def test_drain_keeps_failed_send_for_current_connection_retry(
 ) -> None:
     """发送失败不确认条目；同一当前代际恢复后可再次 drain 并成功下发。"""
     from backend.app.hasn_im.adapters.routing import delivery_bus as busmod
-    from backend.app.hasn.service import ws_router as rmod
+    from backend.app.hasn_im.adapters.routing import node_session_service as rmod
 
     redis = FakeRedis()
     monkeypatch.setattr(busmod, 'redis_client', redis)
@@ -365,7 +366,7 @@ async def test_drain_keeps_failed_send_for_current_connection_retry(
 
 @pytest.mark.asyncio
 async def test_send_or_publish_local_direct_else_bus(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -385,7 +386,7 @@ async def test_send_or_publish_local_direct_else_bus(monkeypatch: pytest.MonkeyP
     module._ws_connection_ids['node-local'] = 'conn-local'
     module._ws_ready_connection_ids['node-local'] = 'conn-local'
     redis.hash[module.NODE_GENERATION_KEY] = {'node-local': 'conn-local'}
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     # 本 worker 持有 → 直发，不经总线
     await router._send_or_publish('node-local', 'L')
@@ -403,7 +404,7 @@ async def test_send_or_publish_local_direct_else_bus(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_push_to_human_online_via_bus_else_offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -415,7 +416,7 @@ async def test_push_to_human_online_via_bus_else_offline(monkeypatch: pytest.Mon
         return True
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy)
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     # 在线（presence 有节点，但都不在本 worker）→ 经总线投递，**不**入离线
     redis.sets[f'{module.USER_NODES_PREFIX}:h_u'] = {'node-1', 'node-2'}
@@ -436,7 +437,7 @@ async def test_push_to_human_online_via_bus_else_offline(monkeypatch: pytest.Mon
 
 @pytest.mark.asyncio
 async def test_push_to_entity_online_via_bus_else_offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -448,7 +449,7 @@ async def test_push_to_entity_online_via_bus_else_offline(monkeypatch: pytest.Mo
         return True
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy)
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     # Agent 在线（entity_node 有路由，连接不在本 worker）→ 经总线
     redis.hash[module.ENTITY_NODE_KEY] = {'a_x': 'node-7'}
@@ -471,7 +472,7 @@ async def test_route_falls_back_offline_when_durable_node_queue_write_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """有 presence 但 node 队列不可写时，不得谎报在线投递成功。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -486,7 +487,7 @@ async def test_route_falls_back_offline_when_durable_node_queue_write_fails(
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _failed_publish)
 
-    delivered = await module.WsRouterService().push_message_to('a_x', {'body': 'retry-me'})
+    delivered = await module.NodeSessionService().push_message_to('a_x', {'body': 'retry-me'})
 
     assert delivered is False
     assert redis.lists[f'{module.OFFLINE_PREFIX}:a_x']
@@ -495,7 +496,7 @@ async def test_route_falls_back_offline_when_durable_node_queue_write_fails(
 @pytest.mark.asyncio
 async def test_push_self_sync_excludes_sender_node(monkeypatch: pytest.MonkeyPatch) -> None:
     """多端自同步：投给 owner 的其它节点，跳过发送节点，不入离线。"""
-    from backend.app.hasn.service import ws_router as module
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -507,7 +508,7 @@ async def test_push_self_sync_excludes_sender_node(monkeypatch: pytest.MonkeyPat
         return True
 
     monkeypatch.setattr(module.ws_delivery_bus, 'publish_to_node', _spy)
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
 
     redis.sets[f'{module.USER_NODES_PREFIX}:h_owner'] = {'node-send', 'node-other'}
     await router.push_self_sync('h_owner', {'method': 'hasn.message.received', 'params': {}}, 'node-send')

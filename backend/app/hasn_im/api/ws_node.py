@@ -44,12 +44,10 @@ router = APIRouter()
 def __getattr__(name: str):
     if name == 'message_router':
         return ws_node_runtime.message_router
-    if name == 'ws_router':
-        return ws_node_runtime.ws_router
     raise AttributeError(name)
 
 
-__all__ = ['router', 'hasn_node_websocket', 'ws_router', 'message_router']
+__all__ = ['router', 'hasn_node_websocket', 'message_router']
 
 # 协议帧编解码/校验已提为无 DB 纯模块 `hasn_im.protocol.frame`（R1-09 协议层纯化）；
 # 本文件经 import 消费（`_frame`/`_response` 为其 build_frame/build_response 的别名）。

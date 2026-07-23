@@ -166,7 +166,7 @@ async def test_fanout_skips_owner_resolution_without_origin_session_id(monkeypat
     monkeypatch.setattr(cp, 'compute_audience_owner_ids', AsyncMock(return_value=['h_master', 'h_peer']))
     monkeypatch.setattr(cp, '_resolve_owner_ids', resolve_spy)
     monkeypatch.setattr(cp, 'append_message_new_event', _fake_append)
-    from backend.app.hasn.service.ws_router import ws_router
+    from backend.app.hasn_im.application.node_session_service import node_session_service as ws_router
 
     monkeypatch.setattr(ws_router, 'push_to_owner', AsyncMock())
 

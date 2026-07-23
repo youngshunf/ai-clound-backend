@@ -12,7 +12,7 @@
      Agent 实体所在节点（设备 B），避免 B 同节点收两遍。
 
 这正是「在其他设备登录也能和自己 Agent 正常多轮对话」依赖的云端投递缝。
-本测试驱动真实 `WsRouterService` 方法，仅在 Redis / WebSocket 基础设施边界
+本测试驱动真实 `NodeSessionService` 方法，仅在 Redis / WebSocket 基础设施边界
 使用 in-process fake（与已有 test_ws_router_and_route_guard.py 同款约定）。
 
 设计事实源：docs/hasn-node设计文档/多设备登录与跨设备消息路由/00-设计总览.md
@@ -72,8 +72,8 @@ class FakeWebSocket:
 
 
 def _build_router(monkeypatch):
-    """装配真实 WsRouterService + 双节点（设备 A / 设备 B）在线连接。"""
-    from backend.app.hasn.service import ws_router as module
+    """装配真实 NodeSessionService + 双节点（设备 A / 设备 B）在线连接。"""
+    from backend.app.hasn_im.adapters.routing import node_session_service as module
 
     redis = FakeRedis()
     monkeypatch.setattr(module, 'redis_client', redis)
@@ -84,7 +84,7 @@ def _build_router(monkeypatch):
     module._ws_connections['node_A'] = ws_a
     module._ws_connections['node_B'] = ws_b
 
-    router = module.WsRouterService()
+    router = module.NodeSessionService()
     return module, router, redis, ws_a, ws_b
 
 

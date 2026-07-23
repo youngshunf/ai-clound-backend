@@ -55,7 +55,7 @@ def _patch_group_common(monkeypatch, mr, group, members, owner_map):
     """群路由 fanout 前的公共桩：目标解析/建群/权限/落库/名册/受众解析/实时推送。"""
     from backend.app.hasn.service import conversation_projection as cp
     from backend.app.hasn.service import hasn_sync_service as sync_service_module
-    from backend.app.hasn.service.ws_router import ws_router
+    from backend.app.hasn_im.application.node_session_service import node_session_service as ws_router
 
     monkeypatch.setattr(
         mr,
