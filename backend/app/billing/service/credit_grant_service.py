@@ -28,6 +28,7 @@ from backend.app.billing.crud.crud_subscription_tier import subscription_tier_da
 from backend.app.billing.model.credit_grant_event import CreditGrantEvent
 from backend.app.billing.model.subscription_tier import SubscriptionTier
 from backend.app.billing.model.user_subscription import UserSubscription
+from backend.app.billing.service.contract_status import CURRENT_CONTRACT_STATUSES
 from backend.app.billing.service.credit_grant_event_service import (
     CYCLE_SECONDS,
     EVENT_SUBSCRIPTION_ACTIVATE,
@@ -75,7 +76,8 @@ class CreditGrantService:
                 select(UserSubscription).where(
                     UserSubscription.app_code == app_code,
                     UserSubscription.user_id == user_id,
-                    UserSubscription.status == 'active',
+                    # 取消自动续费的合同仍然生效，必须算进来，否则会重复建免费合同。
+                    UserSubscription.status.in_(CURRENT_CONTRACT_STATUSES),
                 )
             )
         ).scalar_one_or_none()

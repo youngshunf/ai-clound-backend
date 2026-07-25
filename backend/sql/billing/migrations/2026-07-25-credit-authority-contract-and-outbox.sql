@@ -89,9 +89,11 @@ ALTER TABLE "hasn_billing"."user_subscription"
 
 -- 同用户同应用只允许一份「在生效窗口内」的合同（active）与一份未来合同（scheduled）。
 -- 升级/续费必须显式处理旧合同，不能靠再插一行绕过。
+-- 「取消自动续费」的合同**仍然生效**（用户已付过这一期的钱），因此必须与 active
+-- 一起纳入唯一约束，否则用户取消续费后再买一份就会同时持有两个可用订阅池。
 CREATE UNIQUE INDEX IF NOT EXISTS "uk_user_subscription_one_active"
   ON "hasn_billing"."user_subscription" ("app_code", "user_id")
-  WHERE "status" = 'active';
+  WHERE "status" IN ('active', 'cancel_at_period_end');
 CREATE UNIQUE INDEX IF NOT EXISTS "uk_user_subscription_one_scheduled"
   ON "hasn_billing"."user_subscription" ("app_code", "user_id")
   WHERE "status" = 'scheduled';

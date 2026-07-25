@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model.subscription_tier import SubscriptionTier
 from backend.app.billing.model.user_subscription import UserSubscription
+from backend.app.billing.service.contract_status import CURRENT_CONTRACT_STATUSES, STATUS_CANCEL_AT_PERIOD_END
 from backend.app.billing.service.credit_grant_event_service import (
     CYCLE_SECONDS,
     EVENT_SUBSCRIPTION_ACTIVATE,
@@ -41,6 +42,8 @@ from backend.utils.timezone import timezone
 
 #: 月付 1 期、年付 12 期。这是商品合同参数，不是余额。
 CYCLE_COUNT_BY_BILLING_CYCLE = {'monthly': 1, 'yearly': 12}
+
+# 合同状态常量统一在 contract_status 模块，避免两处判定漂移。
 
 
 def _rfc3339(value: Any) -> str:
@@ -57,7 +60,7 @@ class SubscriptionContractService:
             .where(
                 UserSubscription.app_code == app_code,
                 UserSubscription.user_id == user_id,
-                UserSubscription.status == 'active',
+                UserSubscription.status.in_(CURRENT_CONTRACT_STATUSES),
             )
             .with_for_update()
         )
@@ -103,6 +106,8 @@ class SubscriptionContractService:
         start_at = now
         status = 'active'
         if current is not None:
+            current_rank = await SubscriptionContractService._tier_rank(db, current.tier, app_code)
+            target_rank = await SubscriptionContractService._tier_rank(db, tier_name, app_code)
             if current.tier == tier_name:
                 # 同档续费：新合同排在旧合同之后，不得提前消费。
                 start_at = current.contract_end_at or now
@@ -110,8 +115,10 @@ class SubscriptionContractService:
                     start_at = now
                 else:
                     status = 'scheduled'
-            else:
-                # 升级：旧合同当场终止，剩余额度由 NewAPI 清零且不退款（首版规则）。
+            elif target_rank > current_rank:
+                # 升级（首版规则）：全价购买目标档，新合同立即生效；
+                # 旧订阅剩余额度由 NewAPI 清零且不退款——不做按比例折算，
+                # 折算需要把「已用多少」当成云端事实，而用量权威在 NewAPI。
                 await SubscriptionContractService._terminate(
                     db,
                     contract=current,
@@ -119,6 +126,14 @@ class SubscriptionContractService:
                     reason='upgrade_supersede',
                     newapi_user_id=newapi_user_id,
                 )
+            else:
+                # 降级：下周期生效。当前合同照常用到期末，新合同排在其后。
+                # 立即降级会把用户已经付过钱的这一期额度砍掉。
+                start_at = current.contract_end_at or now
+                if start_at <= now:
+                    start_at = now
+                else:
+                    status = 'scheduled'
 
         contract_no = f'HXC{uuid.uuid4().hex[:20].upper()}'
         end_at = start_at + timedelta(seconds=CYCLE_SECONDS * cycle_count)
@@ -192,6 +207,45 @@ class SubscriptionContractService:
             f'cycle={billing_cycle} status={status} order_no={order.order_no}'
         )
         return contract
+
+    @staticmethod
+    async def _tier_rank(db: AsyncSession, tier_name: str | None, app_code: str) -> int:
+        """套餐档位高低，用 sort_order 表达。取不到时按最低档处理。
+
+        「升级立即生效、降级下周期生效」必须有一个确定的高低序，
+        否则同一次换档在不同人眼里可能一个算升级一个算降级。
+        """
+        if not tier_name:
+            return -1
+        row = await subscription_tier_dao.select_model_by_column(db, tier_name=tier_name, app_code=app_code)
+        if not isinstance(row, SubscriptionTier):
+            return -1
+        return int(row.sort_order or 0)
+
+    @staticmethod
+    async def cancel_auto_renew(db: AsyncSession, *, user_id: int, app_code: str = 'huanxing') -> bool:
+        """取消自动续费：只改合同状态，**不提前清空额度**。
+
+        用户已经付过这一期的钱，额度用到期末天经地义；到期后由 NewAPI 按 30 天周期清零。
+        云端在这里做任何「立即回收」都是在替 NewAPI 决定余额。
+        """
+        contract = (
+            await db.execute(
+                select(UserSubscription)
+                .where(
+                    UserSubscription.app_code == app_code,
+                    UserSubscription.user_id == user_id,
+                    UserSubscription.status == 'active',
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if contract is None:
+            return False
+        contract.auto_renew = False
+        contract.status = STATUS_CANCEL_AT_PERIOD_END
+        log.info(f'[Contract] 已取消自动续费（额度保留至期末）: user_id={user_id} contract_no={contract.contract_no}')
+        return True
 
     @staticmethod
     async def _terminate(
