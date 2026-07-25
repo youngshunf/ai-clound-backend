@@ -177,5 +177,25 @@ class NewApiCreditClient:
             retryable=status_code == 429 or status_code >= 500,
         )
 
+    async def get_consumption_summary(self, newapi_user_id: int) -> dict[str, Any]:
+        """读历史消费的资金池拆分汇总（doc94 R1 存量 rebase 专用）。
+
+        云端与 NewAPI 的库已解耦，请求日志只在 NewAPI 手上；重建基线所需的
+        「真实消费」必须由消费权威给出，不能云端自行推断。
+
+        返回体里的 ``determinate=False`` 表示存在无法归因的历史消费，
+        调用方必须把该用户放进人工清单——绝不按比例摊派。
+        """
+        status_code, body = await self._request('GET', f'/credit-consumption/{newapi_user_id}')
+        if status_code == 200:
+            return body
+        code = str(body.get('code') or f'http_{status_code}')
+        raise NewApiCreditError(
+            f'NewAPI 消费汇总查询失败（{status_code} {code}）',
+            code=code,
+            status_code=status_code,
+            retryable=status_code == 429 or status_code >= 500,
+        )
+
 
 newapi_credit_client: NewApiCreditClient = NewApiCreditClient()
