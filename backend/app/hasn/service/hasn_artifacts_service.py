@@ -19,12 +19,12 @@ from uuid import UUID
 from sqlalchemy import select, update
 
 from backend.app.hasn.model import HasnAgents, HasnArtifacts
+from backend.app.hasn.schema.artifact_contract import ArtifactListItem, ArtifactMutation
 from backend.app.hasn.schema.hasn_artifacts import (
     ArtifactDetail,
     ArtifactItem,
     RecordArtifactParam,
 )
-from backend.app.hasn.schema.artifact_contract import ArtifactListItem, ArtifactMutation
 from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn.service.artifact_query_service import artifact_query_service
 from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
@@ -97,14 +97,18 @@ class HasnArtifactsService:
                 local_locator_key=params.local_locator_key,
                 local_entry_kind=params.local_entry_kind,
                 node_id=params.node_id,
-                work_session_id=params.session_id,
+                # 优先取显式工作会话；`session_id` 只是过渡期兼容入口（设计 §4.3）。
+                work_session_id=params.work_session_id or params.session_id,
                 project_id=params.project_id,
                 conversation_id=params.conversation_id,
                 message_id=params.message_id,
                 source_tool=params.source_tool,
                 source_app_id=params.source_app_id,
                 dispatch_id=params.dispatch_id,
+                tool_call_id=params.tool_call_id,
                 source_event_id=params.origin_ref,
+                idempotency_key=params.idempotency_key,
+                supersedes_locator_key=params.supersedes_locator_key,
                 title=params.title,
                 summary=params.summary,
                 metadata=params.metadata,
@@ -194,7 +198,7 @@ class HasnArtifactsService:
         app_id = cls._app_id_from_descriptor(descriptor)
         # URI 一律经 descriptor.build_uri（全仓唯一拼接点，doc36 §3.1）——别在这里手拼字面量。
         resource_uri = descriptor.build_uri(server_id)
-        kind = cast(Literal['resource'], cls._resolve_artifact_kind(descriptor))
+        kind = cast('Literal["resource"]', cls._resolve_artifact_kind(descriptor))
         effective_dispatch_id = dispatch_id or f'{app_id}:{server_id}'
         origin_ref = cls._build_origin_ref(descriptor, app_id=app_id, server_id=server_id)
 

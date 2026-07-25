@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +15,7 @@ from backend.app.hasn.model import (
     HasnArtifacts,
 )
 from backend.app.hasn.schema.artifact_contract import ArtifactMutation
+from backend.common.log import log
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,14 @@ class ArtifactRegistrationService:
 
     @staticmethod
     def _contribution_idempotency_key(mutation: ArtifactMutation, artifact_key: str) -> str:
-        """按本体类别派生可重放的参与记录幂等键。"""
+        """确定客户端幂等键；缺省时按确定性规则兜底（设计 A12）。
+
+        **绝不生成随机键**。随机兜底看着能过，实际会让 outbox 每重试一次就在云端多一条参与
+        记录——无 `dispatch_id` 的主会话直调恰好命中这条路径，那正是最常见的 runtime 文件写。
+        过渡期允许调用方不带 `idempotency_key`，但兜底值必须由稳定字段派生，重放得到同一个键。
+        """
+        if mutation.idempotency_key:
+            return mutation.idempotency_key
         if mutation.resource_uri and mutation.dispatch_id:
             return f'resource:{mutation.dispatch_id}:{mutation.resource_uri}'
         if mutation.asset_id and mutation.dispatch_id:
@@ -63,7 +71,15 @@ class ArtifactRegistrationService:
             return f'body:{mutation.dispatch_id}:{artifact_key}'
         if mutation.source_event_id:
             return f'event:{mutation.source_event_id}:{artifact_key}'
-        return f'once:{uuid4().hex}'
+        # 最后的确定性兜底：同一分身对同一对象的同一动作只会得到同一个键。调用方应显式带键，
+        # 否则同一对象的多次真实修改会被折叠成一条参与记录（丢历史，但不会造重复）。
+        log.warning(
+            '产物登记缺少 idempotency_key，按对象键确定性兜底：owner=%s agent=%s artifact_key=%s',
+            mutation.owner_hasn_id,
+            mutation.agent_hasn_id,
+            artifact_key,
+        )
+        return f'fallback:{mutation.action}:{artifact_key}'
 
     @staticmethod
     def _outbox_payload(mutation: ArtifactMutation, artifact_key: str) -> dict[str, object]:
@@ -77,9 +93,49 @@ class ArtifactRegistrationService:
             'source_app_id': mutation.source_app_id,
         }
 
+    @staticmethod
+    async def _merge_superseded_locator(db: AsyncSession, mutation: ArtifactMutation, artifact_key: str) -> None:
+        """把历史无密钥定位键的存量行原地改键，避免同一文件留下两条产物（设计 §4.7）。
+
+        云端没有节点密钥，无法自己把 `legacy-path-v1:{sha256(path)}` 换算成 `locator-v2`，因此
+        这条归并**只能由节点驱动**：节点为同一路径重新登记时带上 `supersedes_locator_key`，命中
+        存量行就改键并保留全部参与记录。不存在"跑一次批量 migration 就收敛"的做法。
+
+        目标键已存在（两条都已上云）时不动：此时改键会撞 owner 内 `artifact_key` 唯一约束，
+        留着让后续按新键正常 upsert，旧行随其参与记录保留为历史。
+        """
+        if not mutation.supersedes_locator_key or not mutation.node_id:
+            return
+        legacy_key = f'local:{mutation.node_id}:{mutation.supersedes_locator_key}'
+        if legacy_key == artifact_key:
+            return
+        target_exists = (
+            await db.execute(
+                select(HasnArtifacts.artifact_id).where(
+                    HasnArtifacts.owner_hasn_id == mutation.owner_hasn_id,
+                    HasnArtifacts.artifact_key == artifact_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if target_exists is not None:
+            return
+        await db.execute(
+            update(HasnArtifacts)
+            .where(
+                HasnArtifacts.owner_hasn_id == mutation.owner_hasn_id,
+                HasnArtifacts.artifact_key == legacy_key,
+            )
+            .values(
+                artifact_key=artifact_key,
+                local_locator_key=mutation.local_locator_key,
+                updated_time=func.now(),
+            )
+        )
+
     async def register(self, db: AsyncSession, mutation: ArtifactMutation) -> ArtifactRegistrationResult:
         """在同一事务写入当前态、参与记录和已确认的登记意图。"""
         artifact_key = self._artifact_key(mutation)
+        await self._merge_superseded_locator(db, mutation, artifact_key)
         contribution_key = self._contribution_idempotency_key(mutation, artifact_key)
         artifact_id = self._public_id('art')
         artifact_statement = (
