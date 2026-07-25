@@ -22,12 +22,7 @@ from sqlalchemy import delete, select
 
 from backend.app.hermes.model import HermesAgentLlmToken
 from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
-from backend.app.newapi.service import (
-    DEFAULT_TIER_QUOTA,
-)
-from backend.app.newapi.service import (
-    llm_newapi_user_mapping_service as svc,
-)
+from backend.app.newapi.service import llm_newapi_user_mapping_service as svc
 from backend.common.security.encryption import key_encryption
 from backend.core.conf import settings
 from backend.database.db import async_db_session
@@ -68,7 +63,8 @@ async def test_service_full_lifecycle() -> None:
         async with async_db_session.begin() as db:
             # 1. ensure_newapi_user：建用户 + 设额度 + 写映射（含加密 access_token）
             info = await svc.ensure_newapi_user(
-                db, huanxing_user_id, initial_quota=DEFAULT_TIER_QUOTA['pro']
+                # pro 档 1000 积分 × 500000 quota/积分（new-api 协议精度）
+                db, huanxing_user_id, initial_quota=1_000 * 500_000
             )
             assert info.huanxing_user_id == huanxing_user_id
             assert info.newapi_user_id > 0
