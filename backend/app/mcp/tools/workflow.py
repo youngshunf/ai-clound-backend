@@ -165,7 +165,8 @@ _SPECS: list[dict[str, Any]] = [
         'scopes': [],
         'handler': _h_run_artifacts,
         'desc': (
-            '拿本次工作流执行（run）全部节点的产物清单——用于场景末尾出「成果总览」文档。零入参：'
+            '拿本次工作流执行（run）全部节点的产物清单——**任何一环都能调**：要看上游几环产了什么、'
+            '要跨环复用前面的产出，用它一次拿全（不只是末环出「成果总览」时才用）。零入参：'
             '不传 workflow_run_uuid 时，服务端据当前工作会话反查本次 run。返回按拓扑序（第几步）排列的节点，'
             '每个节点带其产物 [{artifact_id, title, uri, resource_kind, source_app_id, created_time}]（uri 即 '
             'artifact.list 里的 resource_uri；写总览时链接用 uri 原值，勿自行拼 URI）。产物只含最新版本，'

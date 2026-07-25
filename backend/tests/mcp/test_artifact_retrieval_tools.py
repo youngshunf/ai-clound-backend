@@ -184,6 +184,25 @@ async def _seed_owner_and_agent(owner: str, agent: str) -> None:
         ])
 
 
+async def _seed_extra_agent(owner: str, agent: str) -> None:
+    """给已存在的主人再挂一个分身（doc97：场景多环 = 同主人多分身，跨环读要真有第二个分身）。"""
+    from backend.app.hasn.model import HasnAgents
+    from backend.database.db import async_db_session
+
+    tag = uuid.uuid4().hex[:8]
+    async with async_db_session.begin() as db:
+        db.add(
+            HasnAgents(
+                hasn_id=agent,
+                star_id=f'sa_{tag}',
+                owner_id=owner,
+                display_name=f'另一个分身{tag}',
+                agent_name=f'other{tag}',
+                status='active',
+            )
+        )
+
+
 async def _record(
     owner: str,
     agent: str,
@@ -224,11 +243,24 @@ async def _record(
 async def _cleanup(owner: str) -> None:
     from sqlalchemy import delete
 
-    from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnHumans
+    from backend.app.hasn.model import (
+        HasnAgents,
+        HasnArtifactContributions,
+        HasnArtifactRegistrationOutbox,
+        HasnArtifacts,
+        HasnHumans,
+    )
     from backend.app.hasn.model.hasn_assets import HasnAssets
     from backend.database.db import async_db_session
 
     async with async_db_session.begin() as db:
+        # 两张子表先删：`hasn_artifact_contributions` 与 `hasn_artifact_registration_outbox`
+        # 都有指向 hasn_artifacts 的外键，直接删产物必 FK 违约（两表是 2026-07-22 产物当前态/
+        # 参与记录重构新加的，本夹具漏了跟——该文件 6 个真库用例因此在 main 上恒红）。
+        await db.execute(
+            delete(HasnArtifactRegistrationOutbox).where(HasnArtifactRegistrationOutbox.owner_hasn_id == owner)
+        )
+        await db.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
         await db.execute(delete(HasnAssets).where(HasnAssets.owner_hasn_id == owner))
         await db.execute(delete(HasnAgents).where(HasnAgents.owner_id == owner))
@@ -476,6 +508,90 @@ async def test_list_filters_by_project_real_db() -> None:
             assert {it['title'] for it in scoped['items']} == {'A 汇报', 'A 知识库'}
         finally:
             clear_current_project_id()
+    finally:
+        await _cleanup(owner)
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_project_scope_reads_across_agents_real_db() -> None:
+    """doc97 T1-A 真实 PG：命中项目时 list/search **跨分身**读；未命中项目仍按本分身隔离。
+
+    这是场景多环闭环的地基：一条场景每一环通常换一个专家分身，第 2 环按 project_id 查若仍按
+    调用分身隔离，就永远取不到第 1 环（别的分身）的产出，还会据此对主人断言「项目里就这些」。
+    权限边界仍是 owner 隔离——与 `hasn.artifact.get`「同主人任意分身的产物均可读」同口径。
+    """
+    if not await _db_reachable():
+        pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
+
+    tag = uuid.uuid4().hex[:12]
+    owner = f'h_own_{tag}'
+    agent_first, agent_second = f'a_first_{tag}', f'a_second_{tag}'
+    project = str(uuid.uuid4())
+    try:
+        await _seed_owner_and_agent(owner, agent_first)
+        await _seed_extra_agent(owner, agent_second)
+        # 第 1 环分身在项目里产两条；第 2 环分身在同项目产一条；第 1 环再产一条游离产物（无项目）。
+        first_reg = await _record_app_resource(
+            owner,
+            agent_first,
+            app_id='knowledge',
+            resource_kind='knowledge.base',
+            server_id=21,
+            title='一环·调研库',
+            project_id=project,
+        )
+        await _record_app_resource(
+            owner,
+            agent_first,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=22,
+            title='一环·调研汇报',
+            project_id=project,
+        )
+        await _record_app_resource(
+            owner,
+            agent_second,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=23,
+            title='二环·成稿',
+            project_id=project,
+        )
+        await _record_app_resource(
+            owner,
+            agent_first,
+            app_id='deck',
+            resource_kind='deck.presentation',
+            server_id=24,
+            title='一环·项目外草稿',
+        )
+
+        second_ctx = _agent_ctx(owner, agent_second)
+        # 核心断言：第 2 环分身按项目查 → 拿到第 1 环两条 + 自己一条（项目外那条不出现）。
+        in_project = await ArtifactListTool().execute(second_ctx, {'project_id': project})
+        assert {it['title'] for it in in_project['items']} == {'一环·调研库', '一环·调研汇报', '二环·成稿'}
+        assert in_project['total'] == 3
+        # 出参必须答「哪个分身产的」，否则下游分不清哪条是上游那一环的产出。
+        producers = {it['title']: it['agent_hasn_id'] for it in in_project['items']}
+        assert producers['一环·调研库'] == agent_first
+        assert producers['二环·成稿'] == agent_second
+
+        # 不命中项目 → 保持本分身隔离（个人产物时间线语义不变）。
+        own_only = await ArtifactListTool().execute(second_ctx, {})
+        assert {it['title'] for it in own_only['items']} == {'二环·成稿'}
+
+        # search 同口径跨分身。
+        searched = await ArtifactSearchTool().execute(second_ctx, {'query': '调研', 'project_id': project})
+        assert {it['title'] for it in searched['items']} == {'一环·调研库', '一环·调研汇报'}
+        # 不带项目时搜不到别人的（隔离仍在）。
+        searched_own = await ArtifactSearchTool().execute(second_ctx, {'query': '调研'})
+        assert searched_own['items'] == []
+
+        # 拿到 artifact_id 后能取全文（owner 隔离既有语义回归——索引→详情这一跳必须通）。
+        assert first_reg is not None
+        detail = await ArtifactGetTool().execute(second_ctx, {'artifact_id': first_reg.artifact_id})
+        assert detail['title'] == '一环·调研库'
     finally:
         await _cleanup(owner)
 
