@@ -54,8 +54,9 @@ def register_fulfillment(kind: str, handler: Callable[..., Coroutine[Any, Any, N
 def register_refund_handler(kind: str, handler: Callable[..., Coroutine[Any, Any, None]]) -> None:
     """注册某 kind 的退款回收处理器（各业务模块启动时与发货处理器成对注册）。
 
-    handler 签名：``async handler(db, *, order) -> None``——在 refund_order 的事务内回收
-    该 kind 发出的权益/额度（应用撤权益、席位减 seats_total、积分/线索扣减）。
+    handler 签名：``async handler(db, *, order, refund_no) -> None``——在退款单事务内回收
+    该 kind 发出的权益/额度。积分类回收只**写一条回收命令**，真正调 NewAPI 与支付渠道
+    都在事务外：这就是 saga 与「同事务」不冲突的原因。
     """
     _refund_handlers[kind] = handler
     log.info(f'[fulfillment] 注册退款回收处理器: kind={kind}, handler={handler.__name__}')
@@ -130,7 +131,7 @@ def _resolve_order_kind(order: Any) -> str | None:
     return ORDER_TYPE_TO_KIND.get(str(order_type))
 
 
-async def reverse_fulfillment(db: Any, order: Any) -> None:
+async def reverse_fulfillment(db: Any, order: Any, *, refund_no: str | None = None) -> None:
     """退款时按 ``offering.kind`` 反向回收已发出的权益/额度（发货的逆操作）。
 
     **fail-closed（铁律）**：无法确定 kind、或该 kind 未注册退款回收处理器 → 直接抛错拒绝退款——
@@ -150,7 +151,7 @@ async def reverse_fulfillment(db: Any, order: Any) -> None:
             msg=f'商品类型 {kind} 未注册退款回收处理器，拒绝退款（避免退钱不回收权益）'
         )
     try:
-        await handler(db, order=order)
+        await handler(db, order=order, refund_no=refund_no)
     except Exception as e:
         log.error(f'[fulfillment] 退款回收处理器异常: kind={kind}, error={e}')
         raise

@@ -105,6 +105,14 @@ class Settings(BaseSettings):
     # 新用户注册赠送积分（口径统一为 $100=100 积分，与免费档 subscription_tier(free).monthly_credits 一致；
     # 最终对账以账本为准，此值仅作新建用户初始 new-api quota，避免「先 $500 后被对账打回 $100」的瞬时不一致）
     NEWAPI_REGISTER_BONUS_CREDITS: int = 100
+    # 注册奖励的活动键与版本（doc94 §2.1 幂等键组件）。
+    # 调整赠送额度时**必须**递增版本号：同一活动同一版本对同一用户只发一次，
+    # 换版本才能重新发放；不递增就会被旧幂等键挡住，改了额度也发不出去。
+    REGISTER_BONUS_CAMPAIGN_KEY: str = 'register'
+    REGISTER_BONUS_CAMPAIGN_VERSION: int = 1
+    # 免费档政策版本（doc94 §2.1）。免费政策变更（额度调整、条款换代）时递增，
+    # 与「每用户每次失效→重授 +1」的 epoch 一起构成免费档幂等键。
+    FREE_TIER_POLICY_VERSION: int = 1
 
     # .env Redis
     REDIS_HOST: str

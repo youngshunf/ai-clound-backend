@@ -70,7 +70,7 @@ async def handle_app_purchase_paid(db: AsyncSession, *, order: Any) -> None:
     await apply_app_purchase(db, order=order)
 
 
-async def revoke_app_purchase(db: AsyncSession, *, order: Any) -> None:
+async def revoke_app_purchase(db: AsyncSession, *, order: Any, refund_no: str | None = None) -> None:
     """应用购买退款回收（发货 ``apply_app_purchase`` 的逆操作·MK-9 退款编排）：撤销本订单授予的 owner 权益。
 
     据 ``order_ref==order.order_no`` 精确定位本次购买写入的 active 权益行并置 ``revoked``（幂等：

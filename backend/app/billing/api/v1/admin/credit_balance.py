@@ -10,7 +10,7 @@ from backend.app.billing.schema.user_credit_balance import (
     GetUserCreditBalanceDetail,
     UpdateUserCreditBalanceParam,
 )
-from backend.app.billing.service.credit_service import credit_service
+from backend.app.billing.service.credit_grant_service import credit_grant_service
 from backend.app.billing.service.user_credit_balance_service import user_credit_balance_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
@@ -134,35 +134,92 @@ async def delete_user_credit_balances(
     ],
 )
 async def grant_credits(db: CurrentSessionTransaction, obj: GrantCreditsParam) -> ResponseSchemaModel[GrantCreditsResult]:
-    """
-    管理员批量赠送积分给用户
+    """管理员批量赠送积分（doc94 F1 改造后）。
 
-    - 支持单用户或多用户批量赠送
-    - 积分类型自动标记为 official_grant（官方赠送）
-    - 记录完整的积分交易日志
-    """
+    不再直接改云端余额——余额是 NewAPI 权威。这里只在事务内登记一条
+    ``wallet_grant`` 履约命令，由 outbox worker 投递给 NewAPI，返回事件与履约状态。
 
+    幂等键以**每张赠送单据的 grant_no** 为组件（不是 user_id），
+    因此同一用户的连续两笔赠送都会真实到账，第二笔不会被当成第一笔的重放。
+    """
     success_count = 0
     failed_count = 0
-    details = []
+    details: list[dict] = []
 
     for user_id in obj.user_ids:
         try:
-            await credit_service.add_credits(
-                db=db,
+            event = await credit_grant_service.admin_grant(
+                db,
                 user_id=user_id,
                 credits=obj.amount,
-                transaction_type='official_grant',
-                reference_type='system',
-                description=obj.description or '管理员赠送积分',
-                is_purchased=False,
-                expires_at=obj.expires_at,
+                reason=(obj.description or 'admin_grant'),
             )
-            success_count += 1
-            details.append({'user_id': user_id, 'status': 'success', 'credits': float(obj.amount)})
         except Exception as e:
             failed_count += 1
             details.append({'user_id': user_id, 'status': 'failed', 'error': str(e)})
+            continue
+        success_count += 1
+        details.append(
+            {
+                'user_id': user_id,
+                'status': 'pending',
+                'credits': float(obj.amount),
+                'event_id': event.event_id,
+                'grant_no': (event.payload or {}).get('grant_no'),
+                'fulfillment_status': event.status,
+            }
+        )
+
+    result = GrantCreditsResult(
+        success_count=success_count,
+        failed_count=failed_count,
+        total_credits=obj.amount * success_count,
+        details=details,
+    )
+    return response_base.success(data=result)
+
+
+@router.post(
+    '/revoke',
+    summary='管理员撤销积分',
+    dependencies=[
+        Depends(RequestPermission('user:credit:balance:del')),
+        DependsRBAC,
+    ],
+)
+async def revoke_credits(db: CurrentSessionTransaction, obj: GrantCreditsParam) -> ResponseSchemaModel[GrantCreditsResult]:
+    """管理员批量撤销积分：登记 ``wallet_revoke`` 命令。
+
+    钱包余额不足以回收时由 NewAPI 终局拒绝（``wallet_credit_insufficient``），
+    余额永不为负；云端这里只写命令，不做任何余额判断。
+    """
+    success_count = 0
+    failed_count = 0
+    details: list[dict] = []
+
+    for user_id in obj.user_ids:
+        try:
+            event = await credit_grant_service.admin_revoke(
+                db,
+                user_id=user_id,
+                credits=obj.amount,
+                reason=(obj.description or 'admin_revoke'),
+            )
+        except Exception as e:
+            failed_count += 1
+            details.append({'user_id': user_id, 'status': 'failed', 'error': str(e)})
+            continue
+        success_count += 1
+        details.append(
+            {
+                'user_id': user_id,
+                'status': 'pending',
+                'credits': float(obj.amount),
+                'event_id': event.event_id,
+                'revoke_no': (event.payload or {}).get('revoke_no'),
+                'fulfillment_status': event.status,
+            }
+        )
 
     result = GrantCreditsResult(
         success_count=success_count,

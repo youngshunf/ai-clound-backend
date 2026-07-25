@@ -12,7 +12,12 @@ from backend.app.billing.core.config import (
     ORDER_EXPIRE_MINUTES,
     PAY_ORDER_NOTIFY_URL,
 )
-from backend.app.billing.core.fulfillment import build_offering_ref, dispatch_fulfillment, reverse_fulfillment
+from backend.app.billing.core.fulfillment import (
+    KIND_CREDIT_PACK,
+    build_offering_ref,
+    dispatch_fulfillment,
+    reverse_fulfillment,
+)
 from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_pay_channel import pay_channel_dao
 from backend.app.billing.crud.crud_pay_contract import pay_contract_dao
@@ -673,19 +678,23 @@ class PayOrderService:
         refund_amount: int | None = None,
         operator_id: int | None = None,
     ) -> RefundOrderResponse:
-        """管理端发起退款（MK-9 退款编排层·统一商业化内核唯一退款入口）。
+        """管理端发起退款（doc94 §4.4 saga·统一商业化内核唯一退款入口）。
 
-        编排步骤（全程在调用方的**单一事务** ``db`` 内，与订单状态翻转原子提交）：
+        **改造要点**：渠道调用不再塞进数据库事务。事务里只做数据库能原子完成的事——
+        建退款单 + 写回收命令；等 NewAPI 幂等回收成功之后，才由 worker 调支付渠道。
+        这样「退了钱却没回收额度」与「回收了额度却没退钱」两种裂口都不会出现。
+
+        编排步骤：
           ① 行锁取订单 → 幂等短路（已 status=2 直接返回既有退款记录）+ 校验「已支付」；
-          ② **先按 offering.kind 回收权益/额度**（``reverse_fulfillment`` fail-closed——回收失败即抛，
-             绝不进入退款：不退钱不回收 > 退钱不回收）；
-          ③ 调渠道 SDK 退款（外部边界，退款单号确定性 ``RF{order_no}`` → 渠道/DB 双层幂等，
-             重试复用同一 out_refund_no 由渠道去重，规避重复退款）；
-          ④ 落 ``pay_refund``（status=1 成功）+ 订单 ``status=2 已退款`` + ``refund_amount``。
+          ② 积分类商品只支持**整包退款**：按支付金额与积分数量做比例换算会让退款额度对不上，
+             首版直接拒绝部分退款；
+          ③ **同事务**建 ``pay_refund(status=0, fulfillment_status=pending)`` 并按 kind 写回收命令
+             （``reverse_fulfillment`` fail-closed——kind 未注册即抛，绝不进入退款）；
+          ④ 事务提交后由 outbox worker 投递回收命令；NewAPI 回收成功 → 触发渠道退款 →
+             落退款成功与订单 ``status=2``；渠道明确失败 → 反向补偿事件恢复额度。
 
         :raises NotFoundError: 订单不存在。
-        :raises RequestError: 订单非「已支付」态 / 金额非法 / kind 未注册回收处理器（拒绝退款）。
-        :raises ServerError: 渠道退款 SDK 失败。
+        :raises RequestError: 订单非「已支付」态 / 金额非法 / 积分类部分退款 / kind 未注册回收处理器。
         """
         order = await pay_order_dao.get_by_order_no_for_update(db, order_no)
         if not order:
@@ -705,6 +714,17 @@ class PayOrderService:
                 already_refunded=True,
             )
 
+        # 退款已在途：同一张退款单只走一次 saga，重复请求返回当前进度。
+        pending_refund = await pay_refund_dao.get_by_refund_no(db, refund_no)
+        if pending_refund is not None:
+            return RefundOrderResponse(
+                order_no=order.order_no,
+                refund_no=refund_no,
+                refund_amount=int(pending_refund.refund_amount),
+                status=int(pending_refund.status),
+                already_refunded=False,
+            )
+
         if order.status != 1:
             raise errors.RequestError(msg='只有已支付订单可退款（当前订单状态不允许退款）')
 
@@ -712,25 +732,13 @@ class PayOrderService:
         if amount <= 0 or amount > int(order.pay_amount):
             raise errors.RequestError(msg=f'退款金额非法: {amount} 分（订单实付 {order.pay_amount} 分）')
 
-        # ② 先回收权益/额度（fail-closed·同事务）——回收失败即抛，绝不退钱不回收。
-        await reverse_fulfillment(db, order)
+        kind = (order.offering_ref or {}).get('kind')
+        if kind == KIND_CREDIT_PACK and amount != int(order.pay_amount):
+            # 首版规则：积分包只支持整包退款。部分退款要拿支付金额去比例换算积分，
+            # 一旦调价或用过优惠券，换算出来的回收量就和实际发放量对不上。
+            raise errors.RequestError(msg='积分包首版只支持整包退款，不支持部分退款')
 
-        # ③ 渠道退款（外部边界）。
-        channel, merchant_config = await PayOrderService._resolve_channel(db, order.channel_code)
         refund_reason = reason or '管理端退款'
-        result = PayOrderService._invoke_channel_refund(
-            channel,
-            merchant_config,
-            order_no=order.order_no,
-            refund_no=refund_no,
-            refund_amount=amount,
-            total_amount=int(order.pay_amount),
-            reason=refund_reason,
-        )
-        channel_refund_no = (result or {}).get('channel_refund_no') or (result or {}).get('refund_id')
-
-        # ④ 落退款记录 + 订单状态→已退款（同事务原子提交）。
-        now = timezone.now()
         await pay_refund_dao.create(
             db,
             {
@@ -740,21 +748,23 @@ class PayOrderService:
                 'refund_amount': amount,
                 'channel_code': order.channel_code,
                 'reason': refund_reason,
-                'channel_refund_no': channel_refund_no,
-                'status': 1,
-                'success_time': now,
+                'status': 0,
+                'fulfillment_status': 'pending',
             },
         )
-        await pay_order_dao.mark_refunded(db, order_no=order.order_no, refund_amount=amount)
+
+        # ③ 同事务写回收命令（fail-closed）：额度回收在 NewAPI 完成，这里只下命令。
+        await reverse_fulfillment(db, order, refund_no=refund_no)
+
         log.info(
-            f'[Refund] 退款完成: order_no={order.order_no}, refund_no={refund_no}, '
-            f'amount={amount}分, kind={(order.offering_ref or {}).get("kind")}, operator={operator_id}'
+            f'[Refund] 退款已受理，等待额度回收后调用渠道: order_no={order.order_no}, '
+            f'refund_no={refund_no}, amount={amount}分, kind={kind}, operator={operator_id}'
         )
         return RefundOrderResponse(
             order_no=order.order_no,
             refund_no=refund_no,
             refund_amount=amount,
-            status=1,
+            status=0,
             already_refunded=False,
         )
 
@@ -772,14 +782,16 @@ class PayOrderService:
         refund_status: str,
         channel_refund_no: str | None = None,
     ) -> bool:
-        """渠道退款异步回调确认（幂等·仅确认，不重复回收权益）。
+        """渠道退款异步回调确认（幂等·仅确认，不重复回收额度）。
 
-        退款编排在 ``refund_order`` 发起时已同步：回收权益 → 调渠道 → 落 ``pay_refund``(status=1) →
-        订单 status=2。本回调用于渠道**异步**退款（如微信退款先返 PROCESSING 后推 REFUND.SUCCESS）
-        的**最终态确认**，只更新退款记录/订单状态，**绝不再跑 ``reverse_fulfillment``**（避免重复回收）。
+        退款 saga 的第二段可能拿到「处理中」而非终态（如微信退款先返 PROCESSING 后推 REFUND.SUCCESS），
+        本回调负责把最终态落库，**绝不再跑 ``reverse_fulfillment``**（额度已在第一段回收）。
 
-        :param refund_status: 渠道退款态——``SUCCESS`` 成功 / ``PROCESSING`` 处理中 / 其它（``CLOSED`` /
-                              ``ABNORMAL``）视为失败。
+        渠道**明确失败**时登记反向补偿事件把额度还回去（doc94 §4.4）——
+        额度已回收而钱没退，不补偿就是让用户白亏一笔。渠道超时/未知不会走到这里，
+        那种情况留在 pending 等查单，绝不贸然补偿造成用户双得。
+
+        :param refund_status: 渠道退款态——``SUCCESS`` 成功 / ``PROCESSING`` 处理中 / 其它视为失败。
         :return: 是否有状态变更（幂等重放返回 False）。
         """
         refund = await pay_refund_dao.get_by_refund_no(db, refund_no)
@@ -811,17 +823,18 @@ class PayOrderService:
         )
 
         if target_status == 1:
-            # 成功终态——补确保订单已置退款态（发起时通常已置，兜底幂等）。
             order = await pay_order_dao.get_by_order_no_for_update(db, refund.order_no)
             if order and order.status != 2:
                 await pay_order_dao.mark_refunded(db, order_no=refund.order_no, refund_amount=int(refund.refund_amount))
             log.info(f'[Refund] 退款回调确认成功: refund_no={refund_no}, order_no={refund.order_no}')
         else:
-            # 失败终态——发起时已乐观回收权益+置退款态，此处渠道最终判失败 → 需人工对账（钱未退但权益已收回）。
-            log.critical(
-                f'[Refund] 渠道退款最终失败，需人工对账: refund_no={refund_no}, '
-                f'order_no={refund.order_no}, channel_status={refund_status}（权益已在发起时回收）'
+            from backend.app.billing.service.refund_settlement_service import refund_settlement_service
+
+            log.error(
+                f'[Refund] 渠道退款最终失败，登记反向补偿: refund_no={refund_no}, '
+                f'order_no={refund.order_no}, channel_status={refund_status}'
             )
+            await refund_settlement_service.compensate_failed_refund(refund_no, reason='channel_refund_failed')
         return True
 
     @staticmethod

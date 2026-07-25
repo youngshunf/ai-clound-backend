@@ -84,63 +84,18 @@ class CreditService:
         user_id: int,
         app_code: str = 'huanxing',
     ) -> UserSubscription:
-        """创建免费订阅"""
-        # 获取免费等级配置
-        free_tier = await subscription_tier_dao.select_model_by_column(db, tier_name='free', app_code=app_code)
-        monthly_credits = free_tier.monthly_credits if free_tier else Decimal(100)  # 默认 100 积分
-        max_agents = free_tier.max_agents if free_tier else 1
+        """创建免费合同（doc94 F1 改造后：只建合同 + 登记履约命令，不写任何余额）。
 
-        now = timezone.now()
-        cycle_end = now + timedelta(days=30)
+        免费额度的授予收敛到 `credit_grant_service.ensure_free_contract` 一处，
+        幂等键带 policy_version 与 epoch——否则免费政策撤销后再授予会被自己写下的键
+        永久挡住，该用户此生再也发不出第二次免费额度。
+        """
+        from backend.app.billing.service.credit_grant_service import credit_grant_service
 
-        subscription = UserSubscription(
-            app_code=app_code,
-            user_id=user_id,
-            tier='free',
-            subscription_type='monthly',
-            monthly_credits=monthly_credits,
-            current_credits=monthly_credits,
-            used_credits=Decimal(0),
-            purchased_credits=Decimal(0),
-            billing_cycle_start=now,
-            billing_cycle_end=cycle_end,
-            subscription_start_date=now,
-            subscription_end_date=None,  # 免费版无订阅结束时间
-            next_grant_date=None,
-            status='active',
-            auto_renew=True,
-            max_agents=max_agents,
-        )
-
-        db.add(subscription)
-        await db.flush()
-        await db.refresh(subscription)
-
-        # 创建积分余额记录
-        await self._create_balance_record(
-            db,
-            user_id=user_id,
-            credit_type='monthly',
-            amount=monthly_credits,
-            expires_at=cycle_end,
-            source_type='subscription_grant',
-            description='免费版月度赠送积分',
-            app_code=app_code,
-        )
-
-        # 记录月度赠送交易
-        await self._record_transaction(
-            db,
-            user_id=user_id,
-            transaction_type='monthly_grant',
-            credits=monthly_credits,
-            balance_before=Decimal(0),
-            balance_after=monthly_credits,
-            description='免费版月度赠送积分',
-            app_code=app_code,
-        )
-
-        return subscription
+        contract = await credit_grant_service.ensure_free_contract(db, user_id=user_id, app_code=app_code)
+        if contract is None:
+            raise errors.RequestError(msg=f'免费档配置缺失，无法为用户 {user_id} 建立免费合同')
+        return contract
 
     # 最小积分阈值：用户至少需要有这么多积分才能发起请求
     # 这是为了防止零积分用户发起请求后无法扣费的问题

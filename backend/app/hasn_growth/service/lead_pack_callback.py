@@ -43,7 +43,7 @@ async def handle_lead_pack_paid(db: AsyncSession, *, order: Any) -> None:
     log.info(f'[LeadPack] 线索额度发放完成: user_id={user_id}, +{lead_count} → 余额 {balance}')
 
 
-async def revoke_lead_pack(db: AsyncSession, *, order: Any) -> None:
+async def revoke_lead_pack(db: AsyncSession, *, order: Any, refund_no: str | None = None) -> None:
     """线索购买退款回收（``handle_lead_pack_paid`` 的逆操作·MK-9 退款编排）：扣回本单发放的线索余额。
 
     据 ``extra_data.lead_count`` 从余额里回收（``revoke_purchased_leads`` 只回收未消费部分、如实 log 缺口）。

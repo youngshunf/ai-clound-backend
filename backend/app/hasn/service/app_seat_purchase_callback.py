@@ -66,7 +66,7 @@ async def handle_app_seat_paid(db: AsyncSession, *, order: Any) -> None:
     await settle_app_seat_purchase(db, order=order)
 
 
-async def revoke_app_seat_purchase(db: AsyncSession, *, order: Any) -> None:
+async def revoke_app_seat_purchase(db: AsyncSession, *, order: Any, refund_no: str | None = None) -> None:
     """企业席位退款回收（发货 ``settle_app_seat_purchase`` 的逆操作·MK-9 退款编排）：``seats_total`` 减回本单席位数。
 
     据 ``extra_data``（app_id/enterprise_id/seats）定位企业权益行并减席位（fail-closed：减后 < 已指派

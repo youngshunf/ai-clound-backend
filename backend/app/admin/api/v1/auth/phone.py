@@ -154,19 +154,20 @@ async def phone_login(
         await db.flush()
         await db.refresh(user)
 
-        # 自动创建 new-api 用户 + 永不过期的 API Key（新用户赠送积分）
-        from backend.app.newapi.service import credits_to_quota
-        bonus_quota = credits_to_quota(settings.NEWAPI_REGISTER_BONUS_CREDITS)
+        # 自动创建 new-api 用户 + 永不过期的 API Key。
+        # 注册赠送额度不再在这里做 quota 换算写死——余额是 NewAPI 权威，
+        # 云端只能通过幂等履约事件增量发放（doc94 F1）。
         mapping = await llm_newapi_user_mapping_service.ensure_newapi_user(
             db, user.id,
             username=phone,
             nickname=nickname,
-            initial_quota=bonus_quota,
         )
 
-        # 初始化订阅和赠送积分
-        from backend.app.billing.service.credit_service import credit_service
-        await credit_service.get_or_create_subscription(db, user.id)
+        # 免费合同 + 注册奖励：两条命令都在本事务内登记，由 outbox 投递给 NewAPI。
+        from backend.app.billing.service.credit_grant_service import credit_grant_service
+
+        await credit_grant_service.ensure_free_contract(db, user_id=user.id)
+        await credit_grant_service.grant_registration_bonus(db, user_id=user.id)
 
     # 更新最后登录时间
     user.last_login_time = timezone.now()

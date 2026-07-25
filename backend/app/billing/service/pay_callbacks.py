@@ -94,7 +94,7 @@ async def handle_subscribe_paid(db: AsyncSession, *, order: Any) -> None:
     await subscription_contract_service.activate_from_order(db, order=order)
 
 
-async def revoke_credit_pack(db: AsyncSession, *, order: Any) -> None:
+async def revoke_credit_pack(db: AsyncSession, *, order: Any, refund_no: str | None = None) -> None:
     """积分包退款回收：在退款单事务内登记钱包回收命令。
 
     钱包余额不足以回收原始发放量时，NewAPI 会返回 ``wallet_credit_insufficient`` 并落终局失败，
@@ -103,7 +103,6 @@ async def revoke_credit_pack(db: AsyncSession, *, order: Any) -> None:
     app_code = _app_code(order)
     newapi_user_id = await _resolve_newapi_user_id(db, order.user_id, app_code)
     credits = _order_credit_amount(order)
-    refund_no = getattr(order, 'refund_no', None)
     if not refund_no:
         raise errors.RequestError(msg=f'订单 {order.order_no} 的退款回收缺少退款单号')
 
@@ -122,9 +121,8 @@ async def revoke_credit_pack(db: AsyncSession, *, order: Any) -> None:
     log.info(f'[PayCallback] 积分包回收命令已登记: refund_no={refund_no} credits={credits}')
 
 
-async def revoke_subscribe(db: AsyncSession, *, order: Any) -> None:
+async def revoke_subscribe(db: AsyncSession, *, order: Any, refund_no: str | None = None) -> None:
     """订阅退款回收：在退款单事务内登记订阅到期命令。"""
-    refund_no = getattr(order, 'refund_no', None)
     if not refund_no:
         raise errors.RequestError(msg=f'订单 {order.order_no} 的退款回收缺少退款单号')
     await subscription_contract_service.expire_for_refund(db, order=order, refund_no=refund_no)

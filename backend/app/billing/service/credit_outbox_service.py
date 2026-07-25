@@ -156,13 +156,14 @@ class CreditOutboxService:
                 event.applied_credits = Decimal(str(outcome.applied_credits))
             await CreditOutboxService._propagate_success(db, event)
         log.info(f'[CreditOutbox] 履约成功 event_id={event_id} applied={outcome.applied_credits}')
+        await CreditOutboxService._continue_refund_saga(event_id)
         return STATUS_SUCCEEDED
 
     @staticmethod
     async def _propagate_success(db: AsyncSession, event: CreditGrantEvent) -> None:
         """事件成功后原子更新关联单据的履约状态。"""
         now = timezone.now()
-        if event.order_no:
+        if event.order_no and not event.refund_no:
             await db.execute(
                 update(PayOrder)
                 .where(PayOrder.order_no == event.order_no)
@@ -172,6 +173,14 @@ class CreditOutboxService:
                     fulfillment_error_code=None,
                     fulfillment_event_id=event.event_id,
                 )
+            )
+        elif event.order_no:
+            # 退款回收成功：订单的履约状态是「已回收」，不是「已到账」。
+            # 两者共用 order_no，写错一个字用户端就会在退款后仍显示「购买完成」。
+            await db.execute(
+                update(PayOrder)
+                .where(PayOrder.order_no == event.order_no)
+                .values(fulfillment_status='reversed', fulfillment_error_code=None)
             )
         if event.refund_no:
             await db.execute(
@@ -186,6 +195,34 @@ class CreditOutboxService:
             await db.execute(
                 update(UserSubscription).where(UserSubscription.id == event.subscription_id).values(**values)
             )
+
+    @staticmethod
+    async def _continue_refund_saga(event_id: str) -> None:
+        """回收命令成功后推进退款 saga 的第二段：调支付渠道。
+
+        顺序不能反——先回收额度、再退钱。补偿事件本身不再触发渠道调用，
+        否则「补偿成功 → 又去退一次钱」会绕成死循环。
+        """
+        async with async_db_session() as db:
+            event = (
+                await db.execute(select(CreditGrantEvent).where(CreditGrantEvent.event_id == event_id))
+            ).scalar_one_or_none()
+            if event is None or not event.refund_no:
+                return
+            reason = (event.payload or {}).get('reason', '')
+            event_type = event.event_type
+            refund_no = event.refund_no
+        if event_type not in (EVENT_SUBSCRIPTION_EXPIRE, 'wallet_revoke'):
+            return
+        if str(reason).startswith('channel_refund_failed'):
+            return
+
+        from backend.app.billing.service.refund_settlement_service import refund_settlement_service
+
+        try:
+            await refund_settlement_service.settle_channel_refund(refund_no)
+        except Exception as exc:
+            log.error(f'[CreditOutbox] 退款 saga 渠道结算异常 refund_no={refund_no}: {exc!r}')
 
     @staticmethod
     async def _schedule_retry(event_id: str, attempt: int, error_code: str, message: str) -> str:
