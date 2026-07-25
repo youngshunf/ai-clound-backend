@@ -23,6 +23,18 @@ def init_celery_worker_tracing(*args, **kwargs) -> None:
         CeleryInstrumentor().instrument()
 
 
+def _guarded_beat_schedule() -> dict:
+    """返回经守卫校验的 beat 调度表。
+
+    已退役的云端积分定时任务只要还排在表里就会继续把云端算出的余额反向覆盖回 NewAPI，
+    因此这里让它启动即失败，而不是等到下一个整点才发现额度又被写回去了。
+    """
+    from backend.app.billing.core.retired_credit_paths import assert_no_retired_credit_tasks
+
+    assert_no_retired_credit_tasks(LOCAL_BEAT_SCHEDULE)
+    return LOCAL_BEAT_SCHEDULE
+
+
 def find_task_packages() -> list[str]:
     packages = []
     # 扫描 app 下所有模块的 tasks 子目录
@@ -61,7 +73,7 @@ def init_celery() -> celery.Celery:
         database_engine_options={'echo': settings.DATABASE_ECHO},
         # result_expires=0,
         # beat_sync_every=1,
-        beat_schedule=LOCAL_BEAT_SCHEDULE,
+        beat_schedule=_guarded_beat_schedule(),
         beat_scheduler='backend.app.task.utils.schedulers:DatabaseScheduler',
         task_cls='backend.app.task.tasks.base:TaskBase',
         task_track_started=True,

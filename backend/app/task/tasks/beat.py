@@ -28,10 +28,6 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'backend.app.task.tasks.db_log.tasks.delete_db_login_log',
         'schedule': TzAwareCrontab('0', '0', day_of_month='15'),
     },
-    '年度订阅积分发放': {
-        'task': 'grant_yearly_subscription_credits',
-        'schedule': TzAwareCrontab('0', '1'),  # 每天凌晨 1 点执行
-    },
     '订阅过期检查': {
         'task': 'expire_overdue_subscriptions',
         'schedule': TzAwareCrontab('30', '1'),  # 每天凌晨 1:30（年度发放后收敛存量 status）
@@ -62,10 +58,6 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'hasn_contact_lifecycle_expire_sweep',
         # 每天凌晨 2:20 收敛好友请求 30 天未响应过期 + 联系人 auto_expire 到期（doc08 RT5·B7）
         'schedule': TzAwareCrontab('20', '2'),
-    },
-    '积分账本每小时对账': {
-        'task': 'newapi_hourly_credit_sync',
-        'schedule': TzAwareCrontab('0'),  # 每小时整点：new-api 真实消费增量回扣账本 + 重设 quota（§5A.5）
     },
     'Agent 心跳超时检测': {
         'task': 'hasn_check_agent_heartbeat_timeout',

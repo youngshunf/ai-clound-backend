@@ -1,4 +1,7 @@
-"""定时任务：年度订阅积分发放 + API Key 过期检查 + 统一商业化生命周期 sweeper（MK-5）
+"""定时任务：API Key 过期检查 + 统一商业化生命周期 sweeper（MK-5）
+
+积分相关的两支任务（年付发积分、每小时积分对账）已在 doc94 P0 退役：
+NewAPI 是积分余额、用量、扣减与清零的唯一权威，云端不再发放余额、也不再覆盖写回 quota。
 @author Ysf
 """
 
@@ -7,14 +10,12 @@ from __future__ import annotations
 import math
 
 from datetime import timedelta
-from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from celery import shared_task
 from sqlalchemy import and_, select, update
 
-from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
-from backend.app.billing.model import CreditTransaction, UserCreditBalance, UserSubscription
+from backend.app.billing.model import UserSubscription
 from backend.app.newapi.apikey.enums import ApiKeyStatus
 from backend.app.newapi.apikey.model import UserApiKey
 from backend.common.log import log
@@ -29,129 +30,15 @@ if TYPE_CHECKING:
 
 @shared_task(name='grant_yearly_subscription_credits')
 async def grant_yearly_subscription_credits() -> str:
+    """已退役（doc94 P0）：年付订阅的周期额度改由 NewAPI 按 30 天固定周期清零重置。
+
+    原实现在云端直接写 UserCreditBalance / CreditTransaction 发积分，属于「云端算余额」的
+    反向数据流。云端已彻底退出积分余额与发放，本任务只保留一个显式的退役返回，
+    以免存量调度表或人工触发时以为它还在正常工作。调度表条目已移除，
+    并由 `assert_no_retired_credit_tasks` 在启动期守住。
     """
-    年度订阅用户每月积分发放任务
-
-    每天凌晨执行，检查符合条件的年度订阅用户：
-    - subscription_type = 'yearly'
-    - status = 'active'
-    - next_grant_date <= now
-    - subscription_end_date > now (订阅未过期)
-
-    为符合条件的用户：
-    1. 创建积分余额记录
-    2. 更新 next_grant_date 为下个月
-    3. 记录交易
-    """
-    now = timezone.now()
-    granted_count = 0
-    error_count = 0
-
-    async with async_db_session.begin() as db:
-        # 查询需要发放积分的年度订阅用户
-        stmt = select(UserSubscription).where(
-            and_(
-                UserSubscription.subscription_type == 'yearly',
-                UserSubscription.status == 'active',
-                UserSubscription.next_grant_date <= now,
-                UserSubscription.subscription_end_date > now,
-            )
-        )
-        result = await db.execute(stmt)
-        subscriptions = result.scalars().all()
-
-        log.info(f'[YearlyGrant] 找到 {len(subscriptions)} 个需要发放积分的年度订阅用户')
-
-        for subscription in subscriptions:
-            try:
-                # 获取等级配置
-                tier = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier)
-                if not tier:
-                    log.warning(f'[YearlyGrant] 用户 {subscription.user_id} 的订阅等级 {subscription.tier} 不存在')
-                    error_count += 1
-                    continue
-
-                monthly_credits = tier.monthly_credits
-
-                # 计算下次发放时间和积分有效期
-                next_grant = subscription.next_grant_date + timedelta(days=30)
-                cycle_end = subscription.next_grant_date + timedelta(days=30)
-
-                # 确保不超过订阅结束时间
-                if next_grant > subscription.subscription_end_date:
-                    next_grant = None  # 最后一次发放，不再设置下次发放时间
-
-                # 计算发放的月份数（从订阅开始算起）
-                if subscription.subscription_start_date:
-                    months_elapsed = (
-                        subscription.next_grant_date - subscription.subscription_start_date
-                    ).days // 30 + 1
-                else:
-                    months_elapsed = 1
-
-                # 创建积分余额记录
-                balance = UserCreditBalance(
-                    user_id=subscription.user_id,
-                    credit_type='monthly',
-                    original_amount=monthly_credits,
-                    used_amount=Decimal(0),
-                    remaining_amount=monthly_credits,
-                    expires_at=cycle_end,
-                    granted_at=now,
-                    source_type='yearly_subscription_grant',
-                    description=f'年度订阅: {subscription.tier} (第{months_elapsed}个月)',
-                )
-                db.add(balance)
-
-                # 获取当前总积分（用于记录交易）
-                from sqlalchemy import func
-
-                from backend.app.billing.model import UserCreditBalance as UCB
-
-                balance_stmt = select(func.coalesce(func.sum(UCB.remaining_amount), 0)).where(
-                    and_(
-                        UCB.user_id == subscription.user_id,
-                        UCB.remaining_amount > 0,
-                    )
-                )
-                balance_result = await db.execute(balance_stmt)
-                current_balance = Decimal(str(balance_result.scalar() or 0))
-
-                # 记录交易
-                transaction = CreditTransaction(
-                    user_id=subscription.user_id,
-                    transaction_type='yearly_grant',
-                    credits=monthly_credits,
-                    balance_before=current_balance,
-                    balance_after=current_balance + monthly_credits,
-                    description=f'年度订阅月度赠送: {subscription.tier} (第{months_elapsed}个月)',
-                    extra_data={
-                        'tier': subscription.tier,
-                        'month': months_elapsed,
-                        'subscription_type': 'yearly',
-                    },
-                )
-                db.add(transaction)
-
-                # 更新订阅的下次发放时间和计费周期
-                subscription.next_grant_date = next_grant
-                subscription.billing_cycle_start = now
-                subscription.billing_cycle_end = cycle_end
-                subscription.current_credits = current_balance + monthly_credits
-
-                granted_count += 1
-                log.info(
-                    f'[YearlyGrant] 用户 {subscription.user_id} 发放 {monthly_credits} 积分成功 (第{months_elapsed}个月)'
-                )
-
-            except Exception as e:
-                log.error(f'[YearlyGrant] 用户 {subscription.user_id} 发放积分失败: {e}')
-                error_count += 1
-                continue
-
-    result_msg = f'年度订阅积分发放完成: 成功 {granted_count} 个, 失败 {error_count} 个'
-    log.info(f'[YearlyGrant] {result_msg}')
-    return result_msg
+    log.warning('[YearlyGrant] 任务已退役：年付周期额度由 NewAPI 按 30 天固定周期清零重置，云端不再发放积分')
+    return '年度订阅积分发放任务已退役（NewAPI 为积分唯一权威）'
 
 
 @shared_task(name='check_expired_api_keys')
@@ -187,21 +74,14 @@ async def check_expired_api_keys() -> str:
 
 @shared_task(name='newapi_hourly_credit_sync')
 async def newapi_hourly_credit_sync() -> str:
-    """§5A.5 每小时积分账本对账：把 new-api 真实消费增量回扣账本 + 重设 quota = 账本剩余。
+    """已退役（doc94 P0）：云端不再与 NewAPI 对账余额，更不会覆盖写回 quota。
 
-    遍历所有 active new-api 映射用户，逐用户独立事务对账（单用户失败不影响其余，
-    new-api 不可达则跳过该用户、下轮重试，绝不臆造扣减——零 fake）。
+    原实现按「NewAPI 已用量 + 云端剩余额度」算出目标 quota 覆盖写回，导致 NewAPI 刚扣掉的
+    额度在下一轮同步又被云端写回，余额不足门禁被反向充值抵消（这正是「超额仍可用」的根因）。
+    余额、用量、扣减与清零现在只有 NewAPI 一个权威，云端只读不写。
     """
-    from backend.app.newapi.credit_sync_service import credit_sync_service
-
-    summary = await credit_sync_service.reconcile_all()
-    result_msg = (
-        f'积分账本每小时对账完成: 共 {summary["total"]} 户, '
-        f'有消费 {summary["ok"]} / 无变化 {summary["no_delta"]} / 跳过 {summary["skipped"]} / 失败 {summary["failed"]}, '
-        f'合计回扣 {summary["consumed_credits_total"]} 积分'
-    )
-    log.info(f'[CreditSync] {result_msg}')
-    return result_msg
+    log.warning('[CreditSync] 任务已退役：NewAPI 是积分唯一权威，云端不再回扣账本或重设 quota')
+    return '积分账本每小时对账任务已退役（NewAPI 为积分唯一权威）'
 
 
 @shared_task(name='expire_overdue_subscriptions')

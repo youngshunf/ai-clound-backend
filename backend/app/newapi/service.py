@@ -362,14 +362,14 @@ class LlmNewapiUserMappingService:
                 status=existing.status,
             )
 
-        quota = initial_quota if initial_quota is not None else DEFAULT_TIER_QUOTA.get('free', credits_to_quota(100))
         newapi_username = username or f'{DEFAULT_USERNAME_PREFIX}{huanxing_user_id}'
         display = nickname or newapi_username
 
         # 1. 幂等确保 new-api 用户（撞 username → 复用，替代旧 DB ON CONFLICT 自愈）
         newapi_user_id = await newapi_admin_client.ensure_user(username=newapi_username, display_name=display)
-        # 2. 覆盖式设额度（token 无限额度，用户额度由 users.quota 统一控制）
-        await newapi_admin_client.set_user_quota(newapi_user_id=newapi_user_id, quota=quota)
+        # 2. 不再在建号时覆盖式设额度：余额是 NewAPI 权威，云端只能通过幂等履约事件增量发放。
+        #    新用户的注册赠送额度由 `wallet_grant` 事件发放（幂等键 bonus:{campaign}:{version}:{user}），
+        #    在这里写绝对 quota 会重新打开「云端覆盖余额」的反向数据流。
         # 3. 铸用户 access_token（建 relay token 必须以用户身份）
         access_token = await newapi_admin_client.bootstrap_user_access_token(
             newapi_user_id=newapi_user_id, username=newapi_username
@@ -406,10 +406,7 @@ class LlmNewapiUserMappingService:
         db.add(mapping)
         await db.flush()
 
-        log.info(
-            f'[NewApi] 为唤星用户 {huanxing_user_id} 创建 new-api 用户 {newapi_user_id}，'
-            f'token_id={token_id}，quota={quota}'
-        )
+        log.info(f'[NewApi] 为唤星用户 {huanxing_user_id} 创建 new-api 用户 {newapi_user_id}，token_id={token_id}')
 
         return NewApiMappingInfo(
             huanxing_user_id=huanxing_user_id,
@@ -419,21 +416,6 @@ class LlmNewapiUserMappingService:
             status='active',
         )
 
-    @staticmethod
-    async def sync_quota(
-        db: AsyncSession,
-        huanxing_user_id: int,
-        new_quota: int,
-        *,
-        app_code: str = 'huanxing',
-    ) -> None:
-        """同步 quota 到 new-api（订阅变更时调用）。"""
-        mapping = await llm_newapi_user_mapping_dao.get_by_user(db, huanxing_user_id, app_code)
-        if not mapping:
-            log.warning(f'[NewApi] 用户 {huanxing_user_id} 无 new-api 映射，跳过 quota 同步')
-            return
-        await newapi_admin_client.set_user_quota(newapi_user_id=mapping.newapi_user_id, quota=new_quota)
-        log.info(f'[NewApi] 用户 {huanxing_user_id} quota 同步到 {new_quota}')
 
     @staticmethod
     async def get_quota_info(

@@ -6,24 +6,20 @@
 @author Ysf
 """
 
-import uuid
-
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_credit_transaction import credit_transaction_dao
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.service.credit_service import credit_service
-from backend.common.log import log
 from backend.common.pagination import DependsPagination, PageData, paging_data
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession
 from backend.utils.timezone import timezone
 
 router = APIRouter()
@@ -494,218 +490,44 @@ async def calculate_upgrade_price(
 
 @router.post(
     '/upgrade',
-    summary='升级订阅（模拟支付）',
-    description='升级到更高级的订阅等级，使用模拟支付，按比例折算剩余价值',
+    summary='升级订阅（已退役）',
+    description='模拟支付入口已退役：升级必须走真实下单与支付回调履约',
     dependencies=[DependsJwtAuth],
+    status_code=status.HTTP_410_GONE,
 )
-async def upgrade_subscription(
-    request: Request,
-    db: CurrentSessionTransaction,
-    body: UpgradeSubscriptionRequest,
-) -> ResponseSchemaModel[PaymentResult]:
-    """升级订阅"""
-    user_id = request.user.id
-    app_code = request.state.app_code
+async def upgrade_subscription() -> None:
+    """已退役（doc94 P0）：不经真实支付即可改订阅的模拟入口。
 
-    target_tier = await subscription_tier_dao.select_model_by_column(db, tier_name=body.tier_name, enabled=True, app_code=app_code)
-    if not target_tier:
-        return response_base.fail(data=PaymentResult(
-            success=False,
-            order_id='',
-            message=f'订阅等级 {body.tier_name} 不存在或未启用',
-        ))
-
-    subscription = await credit_service.get_or_create_subscription(db, user_id, app_code)
-    current_subscription_type = getattr(subscription, 'subscription_type', 'monthly') or 'monthly'
-
-    current_tier_config = await subscription_tier_dao.select_model_by_column(db, tier_name=subscription.tier, app_code=app_code)
-    current_price = Decimal(0)
-    if current_tier_config:
-        if current_subscription_type == 'yearly' and current_tier_config.yearly_price:
-            current_price = current_tier_config.yearly_price
-        else:
-            current_price = current_tier_config.monthly_price or Decimal(0)
-
-    if subscription.tier == body.tier_name and current_subscription_type == body.subscription_type:
-        return response_base.fail(data=PaymentResult(
-            success=False,
-            order_id='',
-            message=f'您已经是 {target_tier.display_name} {"年度" if body.subscription_type == "yearly" else "月度"}用户',
-        ))
-
-    if body.subscription_type not in ('monthly', 'yearly'):
-        return response_base.fail(data=PaymentResult(
-            success=False,
-            order_id='',
-            message='无效的订阅类型，请选择 monthly 或 yearly',
-        ))
-
-    if current_subscription_type == 'yearly' and body.subscription_type == 'monthly':
-        return response_base.fail(data=PaymentResult(
-            success=False,
-            order_id='',
-            message='年度订阅用户不能切换为月度订阅',
-        ))
-
-    target_price_monthly = target_tier.monthly_price or Decimal(0)
-    current_price_monthly = current_tier_config.monthly_price if current_tier_config else Decimal(0)
-    if target_price_monthly < current_price_monthly:
-        return response_base.fail(data=PaymentResult(
-            success=False,
-            order_id='',
-            message='不支持降级订阅',
-        ))
-
-    if body.subscription_type == 'yearly' and not target_tier.yearly_price:
-        return response_base.fail(data=PaymentResult(
-            success=False,
-            order_id='',
-            message=f'{target_tier.display_name} 暂不支持年度订阅',
-        ))
-
-    original_price = target_tier.yearly_price if body.subscription_type == 'yearly' else target_tier.monthly_price
-
-    subscription_end = getattr(subscription, 'subscription_end_date', None)
-    remaining_value, _remaining_days = _calculate_remaining_value(
-        current_price,
-        subscription_end,
-        current_subscription_type,
-    )
-
-    final_price = original_price - remaining_value
-    if final_price < 0:
-        final_price = Decimal(0)
-
-    order_id = f'SUB-{uuid.uuid4().hex[:12].upper()}'
-    subscription_type_display = '年度' if body.subscription_type == 'yearly' else '月度'
-    log.info(f'[Subscription] 模拟支付: user_id={user_id}, tier={body.tier_name}, type={body.subscription_type}, '
-             f'order_id={order_id}, original_price={original_price}, remaining_value={remaining_value}, final_price={final_price}')
-
-    balance_before = await credit_service.get_total_available_credits(db, user_id, app_code)
-
-    now = timezone.now()
-    if body.subscription_type == 'yearly':
-        subscription_end_new = now + timedelta(days=365)
-        cycle_end = now + timedelta(days=30)
-        next_grant = now + timedelta(days=30)
-    else:
-        subscription_end_new = now + timedelta(days=30)
-        cycle_end = now + timedelta(days=30)
-        next_grant = None
-
-    old_tier = subscription.tier
-    subscription.tier = body.tier_name
-    subscription.subscription_type = body.subscription_type
-    subscription.monthly_credits = target_tier.monthly_credits
-    subscription.max_agents = target_tier.max_agents
-    subscription.billing_cycle_start = now
-    subscription.billing_cycle_end = cycle_end
-    subscription.subscription_start_date = now
-    subscription.subscription_end_date = subscription_end_new
-    subscription.next_grant_date = next_grant
-    subscription.status = 'active'
-
-    from backend.app.billing.model import CreditTransaction, UserCreditBalance
-    upgrade_balance = UserCreditBalance(
-        app_code=app_code,
-        user_id=user_id,
-        credit_type='monthly',
-        original_amount=target_tier.monthly_credits,
-        used_amount=Decimal(0),
-        remaining_amount=target_tier.monthly_credits,
-        expires_at=cycle_end,
-        granted_at=now,
-        source_type='subscription_upgrade',
-        source_reference_id=order_id,
-        description=f'{subscription_type_display}订阅: {body.tier_name} (第1个月)',
-    )
-    db.add(upgrade_balance)
-
-    new_total = balance_before + target_tier.monthly_credits
-    subscription.current_credits = new_total
-
-    transaction = CreditTransaction(
-        app_code=app_code,
-        user_id=user_id,
-        transaction_type='subscription_upgrade',
-        credits=target_tier.monthly_credits,
-        balance_before=balance_before,
-        balance_after=new_total,
-        reference_id=order_id,
-        reference_type='payment',
-        description=f'{subscription_type_display}订阅: {old_tier} -> {body.tier_name}',
-        extra_data={
-            'old_tier': old_tier,
-            'new_tier': body.tier_name,
-            'subscription_type': body.subscription_type,
-            'original_price': float(original_price),
-            'remaining_value': float(remaining_value),
-            'final_price': float(final_price),
+    这个端点原本直接改订阅等级并在云端发积分，绕过了支付与履约。订阅变更现在必须走
+    「下单 → 第三方支付回调验签 → 履约事件 → NewAPI 订阅池」这一条链路，
+    支付状态与履约状态分别可观察，重复通知与超时都不会重复发放。
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            'code': 'billing_endpoint_retired',
+            'message': '该入口已退役，请通过统一下单接口完成真实支付后由履约事件生效',
         },
     )
-    db.add(transaction)
-
-    log.info(f'[Subscription] 订阅升级成功: user_id={user_id}, {old_tier} -> {body.tier_name} ({body.subscription_type})')
-
-    price_info = f'（原价¥{original_price}'
-    if remaining_value > 0:
-        price_info += f'，折抵¥{remaining_value}'
-    price_info += f'，实付¥{final_price}）'
-
-    return response_base.success(data=PaymentResult(
-        success=True,
-        order_id=order_id,
-        message=f'成功订阅 {target_tier.display_name} {subscription_type_display}版{price_info}',
-        new_credits=subscription.current_credits,
-        new_tier=body.tier_name,
-    ))
 
 
 @router.post(
     '/purchase',
-    summary='购买积分包（模拟支付）',
-    description='购买积分包，使用模拟支付',
+    summary='购买积分包（已退役）',
+    description='模拟支付入口已退役：积分包购买必须走真实下单与支付回调履约',
     dependencies=[DependsJwtAuth],
+    status_code=status.HTTP_410_GONE,
 )
-async def purchase_credits(
-    request: Request,
-    db: CurrentSessionTransaction,
-    body: PurchaseCreditsRequest,
-) -> ResponseSchemaModel[PaymentResult]:
-    """购买积分包"""
-    user_id = request.user.id
-    app_code = request.state.app_code
+async def purchase_credits() -> None:
+    """已退役（doc94 P0）：summary 里写着「模拟支付」的积分包购买入口。
 
-    package = await credit_package_dao.select_model(db, pk=body.package_id)
-    if not package or not package.enabled:
-        return response_base.fail(data=PaymentResult(
-            success=False,
-            order_id='',
-            message='积分包不存在或未启用',
-        ))
-
-    total_credits = package.credits + package.bonus_credits
-
-    order_id = f'CRD-{uuid.uuid4().hex[:12].upper()}'
-    log.info(f'[Subscription] 模拟支付: user_id={user_id}, package={package.package_name}, order_id={order_id}, price={package.price}')
-
-    subscription = await credit_service.add_credits(
-        db,
-        user_id=user_id,
-        credits=total_credits,
-        transaction_type='purchase',
-        reference_id=order_id,
-        reference_type='payment',
-        description=f'购买积分包: {package.package_name} ({package.credits}+{package.bonus_credits})',
-        is_purchased=True,
-        app_code=app_code,
+    它把模拟成功当成真实购买成功，直接在云端加余额。积分包购买现在必须走统一下单 API，
+    支付成功后由 `wallet_grant` 履约事件把额度增量记进 NewAPI 永久钱包。
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            'code': 'billing_endpoint_retired',
+            'message': '该入口已退役，请通过统一下单接口完成真实支付后由履约事件生效',
+        },
     )
-
-    log.info(f'[Subscription] 积分购买成功: user_id={user_id}, credits={total_credits}, balance={subscription.current_credits}')
-
-    return response_base.success(data=PaymentResult(
-        success=True,
-        order_id=order_id,
-        message=f'成功购买 {package.package_name}，获得 {total_credits} 积分',
-        new_credits=subscription.current_credits,
-    ))
