@@ -74,10 +74,9 @@ class Settings(BaseSettings):
     SYNC_SERVICE_DATABASE_URL: str = ''
     PYTHON_BACKEND_DATABASE_URL: str = ''
 
-    # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）。
-    # NEWAPI_QUOTA_PER_DOLLAR = new-api QuotaPerUnit（协议精度，非业务费率）。
-    # （NEWAPI_DATABASE_SCHEMA + 旧别名 NEWAPI_CREDITS_TO_QUOTA_RATE 已随第二数据库引擎删除，2026-06-15。）
-    NEWAPI_QUOTA_PER_DOLLAR: int = 500_000
+    # 积分↔quota 的换算常量已随 doc94 D1 删除：NewAPI 是积分唯一权威，
+    # 云端持有一份换算算法就等于持有第二套金额口径。需要积分数值时读 NewAPI
+    # 已换算好的字符串（backend/app/newapi/credit_client.py）。
 
     # new-api 管理 HTTP API（DB 直连 → HTTP 管理 API 迁移，2026-06-15）
     # admin/root access_token + New-Api-User: <NEWAPI_ADMIN_USER_ID> 走 admin 端点；

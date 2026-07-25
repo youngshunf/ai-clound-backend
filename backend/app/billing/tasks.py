@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 async def grant_yearly_subscription_credits() -> str:
     """已退役（doc94 P0）：年付订阅的周期额度改由 NewAPI 按 30 天固定周期清零重置。
 
-    原实现在云端直接写 UserCreditBalance / CreditTransaction 发积分，属于「云端算余额」的
+    原实现在云端直接写余额桶与流水表发积分，属于「云端算余额」的
     反向数据流。云端已彻底退出积分余额与发放，本任务只保留一个显式的退役返回，
     以免存量调度表或人工触发时以为它还在正常工作。调度表条目已移除，
     并由 `assert_no_retired_credit_tasks` 在启动期守住。
@@ -70,18 +70,6 @@ async def check_expired_api_keys() -> str:
     result_msg = f'API Key 过期检查完成: {expired_count} 个 Key 已标记为过期'
     log.info(f'[ExpiredKeyCheck] {result_msg}')
     return result_msg
-
-
-@shared_task(name='newapi_hourly_credit_sync')
-async def newapi_hourly_credit_sync() -> str:
-    """已退役（doc94 P0）：云端不再与 NewAPI 对账余额，更不会覆盖写回 quota。
-
-    原实现按「NewAPI 已用量 + 云端剩余额度」算出目标 quota 覆盖写回，导致 NewAPI 刚扣掉的
-    额度在下一轮同步又被云端写回，余额不足门禁被反向充值抵消（这正是「超额仍可用」的根因）。
-    余额、用量、扣减与清零现在只有 NewAPI 一个权威，云端只读不写。
-    """
-    log.warning('[CreditSync] 任务已退役：NewAPI 是积分唯一权威，云端不再回扣账本或重设 quota')
-    return '积分账本每小时对账任务已退役（NewAPI 为积分唯一权威）'
 
 
 @shared_task(name='expire_overdue_subscriptions')

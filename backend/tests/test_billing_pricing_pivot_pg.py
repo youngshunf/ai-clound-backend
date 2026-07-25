@@ -81,9 +81,11 @@ async def sess() -> AsyncIterator:
     s = async_sessionmaker(engine, expire_on_commit=False)()
 
     async def _purge() -> None:
+        # 只删本用例自己造的 plan_key。doc94 D1 之后 billing_plan 是**全站档位事实源**，
+        # 按 offering 整片删会把本机真实档位一起抹掉，让同批次的其它用例莫名其妙地红。
         await s.execute(
-            text('DELETE FROM hasn_billing.billing_plan WHERE offering_key IN (:a, :b)'),
-            {'a': offering_pricing.OFFERING_LLM_TIER, 'b': offering_pricing.OFFERING_CREDITS_TOPUP},
+            text('DELETE FROM hasn_billing.billing_plan WHERE plan_key IN (:a, :b, :c)'),
+            {'a': _TIER, 'b': f'{_TIER}_yearly', 'c': 'mk5pack'},
         )
         await s.commit()
 
@@ -135,8 +137,9 @@ async def test_catalog_is_the_only_tier_source(sess) -> None:
     # 年付 plan 不存在 → 年价为空。不回落 legacy，也不拿月价冒充年价。
     assert tier.yearly_price is None
 
-    listed = await offering_pricing.list_tiers(sess)
-    assert [t.tier_name for t in listed] == [_TIER]
+    # 本机目录里还有真实档位，这里只断言本用例的档位确实被列出（并且只出现一次）
+    listed = [t.tier_name for t in await offering_pricing.list_tiers(sess)]
+    assert listed.count(_TIER) == 1
 
 
 async def test_missing_monthly_plan_means_tier_does_not_exist(sess) -> None:
@@ -158,7 +161,7 @@ async def test_missing_monthly_plan_means_tier_does_not_exist(sess) -> None:
     await sess.commit()
 
     assert await offering_pricing.get_tier(sess, _TIER) is None
-    assert await offering_pricing.list_tiers(sess) == []
+    assert _TIER not in [t.tier_name for t in await offering_pricing.list_tiers(sess)]
 
 
 async def test_repricing_reflects_immediately(sess) -> None:
@@ -212,7 +215,7 @@ async def test_catalog_is_the_only_credit_pack_source(sess) -> None:
     by_id = await offering_pricing.get_credit_pack_by_id(sess, pack.plan_id)
     assert by_id is not None and by_id.package_name == 'mk5pack'
 
-    assert [p.package_name for p in await offering_pricing.list_credit_packs(sess)] == ['mk5pack']
+    assert [p.package_name for p in await offering_pricing.list_credit_packs(sess)].count('mk5pack') == 1
 
 
 async def test_inactive_plan_is_invisible(sess) -> None:
@@ -232,4 +235,4 @@ async def test_inactive_plan_is_invisible(sess) -> None:
     await sess.commit()
 
     assert await offering_pricing.get_credit_pack(sess, 'mk5pack') is None
-    assert await offering_pricing.list_credit_packs(sess) == []
+    assert 'mk5pack' not in [p.package_name for p in await offering_pricing.list_credit_packs(sess)]

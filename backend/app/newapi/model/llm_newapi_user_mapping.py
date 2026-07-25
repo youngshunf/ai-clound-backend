@@ -1,5 +1,3 @@
-from datetime import datetime
-
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
@@ -25,10 +23,5 @@ class LlmNewapiUserMapping(Base):
     newapi_access_token: Mapped[str | None] = mapped_column(
         sa.String(512), default=None, comment='用户 new-api access_token（Fernet 加密，建 relay token 复用）'
     )
-    # §5A 积分账本闭环：每小时增量同步用量游标（used_quota 单调递增，差额回扣积分）。
-    last_synced_used_quota: Mapped[int] = mapped_column(
-        sa.BIGINT(), default=0, comment='上次同步时的 new-api used_quota 游标（增量回扣用）'
-    )
-    last_synced_at: Mapped[datetime | None] = mapped_column(
-        sa.DateTime(timezone=True), default=None, comment='上次用量同步时间'
-    )
+    # 两个「每小时增量回扣」的同步游标已随 doc94 D1 删除：
+    # 云端不再对账余额，更不会按已用量算出目标 quota 覆盖写回 NewAPI。

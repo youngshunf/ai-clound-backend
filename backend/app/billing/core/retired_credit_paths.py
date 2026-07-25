@@ -25,7 +25,7 @@ RETIRED_CREDIT_TASK_NAMES: frozenset[str] = frozenset(
     {
         # 每小时把「NewAPI 已用量 + 云端剩余额度」算成目标 quota 覆盖写回 NewAPI。
         'newapi_hourly_credit_sync',
-        # 年付订阅在云端直接写 UserCreditBalance / CreditTransaction 发积分。
+        # 年付订阅在云端直接写余额桶与流水表发积分。
         'grant_yearly_subscription_credits',
     }
 )

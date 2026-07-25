@@ -42,12 +42,19 @@ pytest_skip = pytest.mark.skipif(
 )
 
 
+#: new-api 的协议精度：1 积分 = 500000 quota。
+#: doc94 D1 后云端不再持有换算常量，但这条**契约**仍需被锁住——
+#: new-api 一旦改了 QuotaPerUnit，它自己产出的所有积分字符串刻度都会变。
+_EXPECTED_QUOTA_PER_UNIT = 500_000
+
+
 @pytest_skip
 async def test_status_and_quota_per_unit() -> None:
     client = NewApiAdminClient()
     qpu = await client.get_quota_per_unit()
-    assert qpu == settings.NEWAPI_QUOTA_PER_DOLLAR, (
-        f'new-api quota_per_unit={qpu} 与 NEWAPI_QUOTA_PER_DOLLAR={settings.NEWAPI_QUOTA_PER_DOLLAR} 不一致'
+    assert qpu == _EXPECTED_QUOTA_PER_UNIT, (
+        f'new-api quota_per_unit={qpu} 与协议精度 {_EXPECTED_QUOTA_PER_UNIT} 不一致：'
+        '积分刻度变了，所有积分字符串的含义都会跟着变'
     )
 
 

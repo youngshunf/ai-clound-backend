@@ -15,7 +15,6 @@ from backend.app.billing.api.v1.admin.billing_offering import router as admin_of
 from backend.app.billing.api.v1.admin.billing_plan import router as admin_plan_router
 from backend.app.billing.api.v1.admin.channel import router as admin_channel_router
 from backend.app.billing.api.v1.admin.contract import router as admin_contract_router
-from backend.app.billing.api.v1.admin.credit_balance import router as admin_balance_router
 
 # ── 支付 admin（JWT + RBAC）──
 from backend.app.billing.api.v1.admin.merchant import router as admin_merchant_router
@@ -24,12 +23,9 @@ from backend.app.billing.api.v1.admin.merchant import router as admin_merchant_r
 from backend.app.billing.api.v1.admin.newapi_quota import router as admin_newapi_quota_router
 from backend.app.billing.api.v1.admin.notify_log import router as admin_notify_log_router
 from backend.app.billing.api.v1.admin.order import router as admin_order_router
-from backend.app.billing.api.v1.admin.package import router as admin_package_router
 
 # ── 订阅积分 admin（JWT + RBAC）──
 from backend.app.billing.api.v1.admin.subscription import router as admin_subscription_router
-from backend.app.billing.api.v1.admin.tier import router as admin_tier_router
-from backend.app.billing.api.v1.admin.transaction import router as admin_transaction_router
 from backend.app.billing.api.v1.agent.quota import router as agent_quota_router
 from backend.app.billing.api.v1.agent.subscription import router as agent_subscription_router
 from backend.app.billing.api.v1.agent.usage import router as agent_usage_router
@@ -69,10 +65,8 @@ pay_open.include_router(open_notify_router, tags=['支付-回调'])
 user_tier_v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/user_tier', tags=['订阅积分-管理'])
 
 user_tier_v1.include_router(admin_subscription_router, prefix='/subscriptions', tags=['管理-用户订阅'])
-user_tier_v1.include_router(admin_balance_router, prefix='/balances', tags=['管理-积分余额'])
-user_tier_v1.include_router(admin_transaction_router, prefix='/transactions', tags=['管理-积分交易'])
-user_tier_v1.include_router(admin_package_router, prefix='/packages', tags=['管理-积分包'])
-user_tier_v1.include_router(admin_tier_router, prefix='/tiers', tags=['管理-订阅等级'])
+# /balances、/transactions、/packages、/tiers 四个 admin 面随 doc94 D1 删除：
+# 余额与流水的权威在 NewAPI；档位与积分包的管理面是商业化中心的 /offerings + /plans。
 # /rates（模型积分费率 model_credit_rate，D3）随自建 LLM 网关删除（2026-06-15 new-api 解耦）。
 user_tier_v1.include_router(admin_newapi_quota_router, prefix='/newapi-quota', tags=['管理-Token额度用量'])
 # 统一商业化内核（MK-6）：商品目录 offering + 价格档位 plan 管理面（商业化中心）

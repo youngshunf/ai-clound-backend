@@ -104,12 +104,21 @@ class NewApiCreditClient:
                 retryable=False,
             )
 
-    async def _request(self, method: str, path: str, *, json: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
         self._require_credentials()
         client = get_service_client('newapi')
         url = f'{self.base_url}{path}'
         try:
-            response = await client.request(method, url, headers=self._headers(), json=json, timeout=self.timeout)
+            response = await client.request(
+                method, url, headers=self._headers(), json=json, params=params, timeout=self.timeout
+            )
         except httpx.HTTPError as exc:
             # 传输层失败：这次操作**可能**发生了也可能没发生，必须靠 GET 对账，不能换 ID 重发。
             raise NewApiCreditError(
@@ -172,6 +181,65 @@ class NewApiCreditClient:
         code = str(body.get('code') or f'http_{status_code}')
         raise NewApiCreditError(
             f'NewAPI 账户查询失败（{status_code} {code}）',
+            code=code,
+            status_code=status_code,
+            retryable=status_code == 429 or status_code >= 500,
+        )
+
+    async def get_usage_page(
+        self,
+        newapi_user_id: int,
+        *,
+        page: int = 1,
+        size: int = 20,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> dict[str, Any]:
+        """读消费流水（doc94 D1：流水的唯一来源）。
+
+        金额由 NewAPI 换算成积分字符串，云端原样透传——云端不再持有 quota↔credit 换算常量，
+        也不再维护自己的流水表。两套算法只要不一致，用户看到的流水就和真实扣费对不上。
+        """
+        params = {'page': str(page), 'size': str(size)}
+        if start is not None:
+            params['start'] = str(start)
+        if end is not None:
+            params['end'] = str(end)
+        status_code, body = await self._request('GET', f'/credit-usage/{newapi_user_id}', params=params)
+        if status_code == 200:
+            return body
+        code = str(body.get('code') or f'http_{status_code}')
+        raise NewApiCreditError(
+            f'NewAPI 用量流水查询失败（{status_code} {code}）',
+            code=code,
+            status_code=status_code,
+            retryable=status_code == 429 or status_code >= 500,
+        )
+
+    async def get_usage_daily(
+        self,
+        newapi_user_id: int,
+        *,
+        tz_offset_minutes: int,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> dict[str, Any]:
+        """读按本地日聚合的消费。
+
+        日边界由 ``tz_offset_minutes`` 决定并交给 NewAPI 计算：两侧各切各的日，
+        同一笔消费会出现在两个不同日期上。
+        """
+        params = {'tz_offset_minutes': str(tz_offset_minutes)}
+        if start is not None:
+            params['start'] = str(start)
+        if end is not None:
+            params['end'] = str(end)
+        status_code, body = await self._request('GET', f'/credit-usage/{newapi_user_id}/daily', params=params)
+        if status_code == 200:
+            return body
+        code = str(body.get('code') or f'http_{status_code}')
+        raise NewApiCreditError(
+            f'NewAPI 日聚合查询失败（{status_code} {code}）',
             code=code,
             status_code=status_code,
             retryable=status_code == 429 or status_code >= 500,

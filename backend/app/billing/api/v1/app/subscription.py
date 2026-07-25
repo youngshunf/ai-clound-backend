@@ -13,9 +13,9 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.billing.crud.crud_credit_transaction import credit_transaction_dao
 from backend.app.billing.service import offering_pricing
 from backend.app.billing.service.credit_service import credit_service
+from backend.app.billing.service.credit_usage_service import credit_usage_service
 from backend.common.pagination import DependsPagination, PageData, paging_data
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -28,33 +28,35 @@ router = APIRouter()
 # ==================== Response Schemas ====================
 
 
-class CreditBalanceItem(BaseModel):
-    """积分余额项"""
-    id: int
-    credit_type: str
-    original_amount: Decimal
-    used_amount: Decimal
-    remaining_amount: Decimal
-    expires_at: datetime | None = None
-    granted_at: datetime
-    source_type: str
-    description: str | None = None
-
-
-class CreditTransactionItem(BaseModel):
-    """用户端积分流水项（含 LLM 消耗 usage 类）"""
-    model_config = ConfigDict(from_attributes=True)
+class CreditUsageItem(BaseModel):
+    """一条 LLM 消费流水（NewAPI 权威，云端不做金额算术）"""
 
     id: int
-    transaction_type: str = Field(description='交易类型 usage/purchase/refund/monthly_grant/subscription_grant/bonus/adjustment')
-    credits: Decimal = Field(description='积分变动数量（正=入账，负=消耗）')
-    balance_before: Decimal
-    balance_after: Decimal
-    reference_id: str | None = None
-    reference_type: str | None = Field(None, description='关联类型 llm_usage/payment/pay_order/system')
-    description: str | None = None
-    extra_data: dict | None = None
-    created_time: datetime
+    created_at: int = Field(description='消费时刻 Unix 秒')
+    model_name: str = ''
+    token_name: str = ''
+    credits: str = Field(description='本次消费的积分数（十进制字符串，正数表示消耗）')
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    use_time: int = 0
+    is_stream: bool = False
+    funding_source: str | None = Field(None, description='资金来源 subscription/wallet/composite；历史日志可能为空')
+
+
+class CreditUsagePage(BaseModel):
+    """消费流水分页。
+
+    `usage_status` 区分「读到了」「读不到」「还没开通账户」——
+    绝不用空列表把「读不到」伪装成「没有消费」。
+    """
+
+    usage_status: str = Field(description='ok / unavailable / unmapped')
+    items: list[CreditUsageItem] = []
+    total: int = 0
+    page: int = 1
+    size: int = 20
+    measured_at: str | None = Field(None, description='NewAPI 的测量时刻，展示侧据此显示新鲜度')
+    unavailable_reason: str | None = None
 
 
 class CreditDailyItem(BaseModel):
@@ -69,12 +71,14 @@ class CreditDailyItem(BaseModel):
 
 
 class CreditDailyPage(BaseModel):
-    """积分流水按日聚合分页（字段与通用 PageData 对齐，省去 links）"""
+    """流水按日聚合分页（字段与通用 PageData 对齐，省去 links）"""
     items: list[CreditDailyItem] = []
     total: int = Field(description='总天数')
     page: int
     size: int
     total_pages: int
+    usage_status: str = Field('ok', description='消费侧读取状态 ok / unavailable / unmapped')
+    measured_at: str | None = Field(None, description='NewAPI 的测量时刻')
 
 
 class SubscriptionInfoResponse(BaseModel):
@@ -102,7 +106,6 @@ class SubscriptionInfoResponse(BaseModel):
     subscription_end_date: datetime | None = None
     next_grant_date: datetime | None = None
     status: str
-    balances: list[CreditBalanceItem] = []
 
 
 class UpgradeSubscriptionRequest(BaseModel):
@@ -165,21 +168,6 @@ async def get_my_subscription_info(
 
     info = await credit_service.get_user_credits_info(db, user_id, app_code)
 
-    balances = [
-        CreditBalanceItem(
-            id=b['id'],
-            credit_type=b['credit_type'],
-            original_amount=Decimal(str(b['original_amount'])),
-            used_amount=Decimal(str(b['used_amount'])),
-            remaining_amount=Decimal(str(b['remaining_amount'])),
-            expires_at=datetime.fromisoformat(b['expires_at']) if b['expires_at'] else None,
-            granted_at=datetime.fromisoformat(b['granted_at']),
-            source_type=b['source_type'],
-            description=b['description'],
-        )
-        for b in info.get('balances', [])
-    ]
-
     data = SubscriptionInfoResponse(
         user_id=info['user_id'],
         tier=info['tier'],
@@ -204,76 +192,41 @@ async def get_my_subscription_info(
         subscription_end_date=datetime.fromisoformat(info['subscription_end_date']) if info.get('subscription_end_date') else None,
         next_grant_date=datetime.fromisoformat(info['next_grant_date']) if info.get('next_grant_date') else None,
         status=info['status'],
-        balances=balances,
     )
 
     return response_base.success(data=data)
 
 
 @router.get(
-    '/balances/history',
-    summary='获取历史积分记录',
-    description='获取已过期的积分余额记录',
-    dependencies=[DependsJwtAuth],
-)
-async def get_credit_balance_history(
-    request: Request,
-    db: CurrentSession,
-) -> ResponseSchemaModel[list[CreditBalanceItem]]:
-    """获取历史积分记录"""
-    user_id = request.user.id
-    app_code = request.state.app_code
-
-    expired_balances = await credit_service.get_user_expired_balances(db, user_id, app_code)
-
-    items = [
-        CreditBalanceItem(
-            id=b.id,
-            credit_type=b.credit_type,
-            original_amount=b.original_amount,
-            used_amount=b.used_amount,
-            remaining_amount=b.remaining_amount,
-            expires_at=b.expires_at,
-            granted_at=b.granted_at,
-            source_type=b.source_type,
-            description=b.description,
-        )
-        for b in expired_balances
-    ]
-
-    return response_base.success(data=items)
-
-
-@router.get(
     '/transactions',
-    summary='获取积分流水（含 LLM 消耗）',
-    description='分页获取当前用户的积分流水（充值/赠送/月度发放/消耗），按时间倒序，强制数据隔离',
-    dependencies=[DependsJwtAuth, DependsPagination],
+    summary='获取消费流水（NewAPI 权威）',
+    description='分页获取当前用户的 LLM 消费流水；金额由 NewAPI 换算成积分，云端原样透传',
+    dependencies=[DependsJwtAuth],
 )
 async def get_credit_transactions(
     request: Request,
     db: CurrentSession,
-    transaction_type: Annotated[str | None, Query(description='交易类型筛选 usage/purchase/...')] = None,
-    reference_type: Annotated[str | None, Query(description='关联类型筛选 llm_usage/payment/...')] = None,
-) -> ResponseSchemaModel[PageData[CreditTransactionItem]]:
-    """用户端积分流水（含 LLM 消耗 usage 类，reference_type='llm_usage'）。"""
-    user_id = request.user.id
-    app_code = request.state.app_code
+    page: Annotated[int, Query(ge=1, description='页码')] = 1,
+    size: Annotated[int, Query(ge=1, le=100, description='每页条数')] = 20,
+) -> ResponseSchemaModel[CreditUsagePage]:
+    """消费流水（doc94 D1）。
 
-    select_stmt = await credit_transaction_dao.get_select_by_user(
-        user_id=user_id,
-        app_code=app_code,
-        transaction_type=transaction_type,
-        reference_type=reference_type,
+    过去这里读云端 `credit_transaction`——一张每小时才同步一次的影子流水表，
+    金额还用云端自己的换算常量算。现在只有 NewAPI 一个来源。
+
+    NewAPI 读不到时返回 `usage_status='unavailable'` 且列表为空，**不伪造「没有消费」**：
+    把「读不到」显示成「这段时间没花钱」，比直接报错更容易让人做错判断。
+    """
+    result = await credit_usage_service.list_usage(
+        db, request.user.id, page=page, size=size, app_code=request.state.app_code
     )
-    page_data = await paging_data(db, select_stmt)
-    return response_base.success(data=page_data)
+    return response_base.success(data=CreditUsagePage(**result))
 
 
 @router.get(
     '/transactions/daily',
-    summary='获取积分流水（按日聚合）',
-    description='按本地日（Asia/Shanghai）聚合当前用户的积分流水，返回每日消耗/入账/净额/笔数/请求次数/消耗token数，分页倒序；用于流水列表，避免逐条 LLM 请求',
+    summary='获取流水（按日聚合）',
+    description='按本地日（Asia/Shanghai）聚合：消费取 NewAPI 权威，入账取云端履约事件',
     dependencies=[DependsJwtAuth],
 )
 async def get_credit_transactions_daily(
@@ -282,67 +235,25 @@ async def get_credit_transactions_daily(
     page: Annotated[int, Query(ge=1, description='页码')] = 1,
     size: Annotated[int, Query(ge=1, le=100, description='每页天数')] = 20,
 ) -> ResponseSchemaModel[CreditDailyPage]:
-    """用户端积分流水按日聚合 —— **合并口径**（new-api 消耗 + 内部发放/购买）。
+    """按日聚合流水（doc94 D1）。
 
-    消耗（请求/token/积分）取自 **new-api logs**（真实 LLM 计量，权威）；入账（月度发放/
-    购买/退款）取自内部 credit_transaction。两源在 Python 里按本地日合并、倒序、分页
-    （在合并结果上分页，避免日边界被切断）。内部 usage 行已废弃、不参与消耗（零重复计）。
+    **消费**取 NewAPI（唯一计量权威），**入账**取云端履约事件 `credit_grant_event`
+    ——那是云端权威的「发了什么」，不是余额表。日边界交给 NewAPI 按展示时区切分，
+    避免两侧各切各的日、同一笔消费落在两个日期上。
     """
-    user_id = request.user.id
-    app_code = request.state.app_code
-
-    from backend.app.billing.service.billing_usage_service import billing_usage_service
-
-    # 1) 内部账本：发放/购买/退款（入账，正向）。get_daily_aggregate 的 granted 即正向合计。
-    stmt = await credit_transaction_dao.get_daily_aggregate_by_user(user_id=user_id, app_code=app_code)
-    internal_rows = (await db.execute(stmt)).all()
-
-    # 2) new-api 权威：本地日真实消耗（负向）+ 请求数 + token 数（10 年窗口足够覆盖账户历史）。
-    now = timezone.now()
-    consumed_by_day = await billing_usage_service.get_daily_consumed(
-        db, user_id, now - timedelta(days=3650), now, app_code,
+    result = await credit_usage_service.daily_flow(
+        db, request.user.id, page=page, size=size, app_code=request.state.app_code
     )
-
-    # 3) 按本地日合并：入账取内部、消耗/请求/token 取 new-api（new-api 为消耗权威，不叠加内部 usage）。
-    merged: dict[str, dict] = {}
-    for row in internal_rows:
-        key = row.day.strftime('%Y-%m-%d')
-        merged[key] = {
-            'granted': Decimal(str(row.granted or 0)),
-            'consumed': Decimal(0),
-            'count': int(row.cnt or 0),
-            'request_count': 0,
-            'token_count': 0,
-        }
-    for day, consume in consumed_by_day.items():
-        key = day.strftime('%Y-%m-%d')
-        entry = merged.setdefault(
-            key, {'granted': Decimal(0), 'consumed': Decimal(0), 'count': 0, 'request_count': 0, 'token_count': 0}
-        )
-        entry['consumed'] = consume['consumed_credits']  # 已为 ≤0
-        entry['request_count'] = consume['request_count']
-        entry['token_count'] = consume['token_count']
-        entry['count'] += consume['request_count']
-
-    # 4) 按日倒序 + 在合并结果上分页。
-    all_days = sorted(merged.keys(), reverse=True)
-    total = len(all_days)
-    page_days = all_days[(page - 1) * size: (page - 1) * size + size]
-    items = [
-        CreditDailyItem(
-            date=key,
-            consumed=merged[key]['consumed'],
-            granted=merged[key]['granted'],
-            net=merged[key]['granted'] + merged[key]['consumed'],
-            count=merged[key]['count'],
-            request_count=merged[key]['request_count'],
-            token_count=merged[key]['token_count'],
-        )
-        for key in page_days
-    ]
-    total_pages = (total + size - 1) // size if size else 0
     return response_base.success(
-        data=CreditDailyPage(items=items, total=total, page=page, size=size, total_pages=total_pages)
+        data=CreditDailyPage(
+            items=[CreditDailyItem(**item) for item in result['items']],
+            total=result['total'],
+            page=result['page'],
+            size=result['size'],
+            total_pages=result['total_pages'],
+            usage_status=result['usage_status'],
+            measured_at=result['measured_at'],
+        )
     )
 
 

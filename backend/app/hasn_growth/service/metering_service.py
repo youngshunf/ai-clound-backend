@@ -1,7 +1,7 @@
 """获客计量上报服务（设计 07 §10.1/§759 G7：采集按量计积分）。
 
 **获客只报量不自建账本**：采集 job 完成时按 `firecrawl_success_count` 把用量上报给平台计费模块
-（user_tier `CreditService.deduct_credits`，平台 CreditTransaction 即权威账本）。本服务不维护任何
+（doc94 D1 之后，积分权威在 NewAPI，云端不再有扣分原语）。本服务不维护任何
 获客侧积分台账。单价开发期默认 0（free，G7「开发期先 free 便于联调，上线前切」），由环境变量
 `GROWTH_CRAWL_CREDIT_UNIT` 配置，真正定价随计费模块定价体系（运营项，§810）。
 
@@ -17,7 +17,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.billing.service.credit_service import InsufficientCreditsError, credit_service
 from backend.common.log import log
 
 # 采集单条成功的积分单价（开发期 0=free；上线由计费模块定价，运营改环境变量不动代码）。
@@ -45,25 +44,19 @@ class GrowthMeteringService:
         if not user_id or success_count <= 0 or credits <= 0:
             # free（unit=0）或无量 → 不上报（不写任何台账，符合「只报量」）。
             return {'reported': False, 'credits': float(credits), 'count': max(success_count, 0)}
-        try:
-            await credit_service.deduct_credits(
-                db,
-                user_id=user_id,
-                credits=credits,
-                reference_id=f'{_REFERENCE_TYPE}:{job_id}',
-                reference_type=_REFERENCE_TYPE,
-                description=f'获客采集计量 job={job_id} 成功 {success_count} 条',
-                extra_data={'job_id': job_id, 'success_count': success_count, 'unit': str(unit)},
-                app_code='huanxing',
-            )
-        except InsufficientCreditsError:
-            # 纯按量无订阅门槛：积分不足只告警，不回滚已完成的采集。
-            log.warning(f'[GrowthMetering] 积分不足，采集已完成不阻断: user_id={user_id}, job_id={job_id}, credits={credits}')
-            return {'reported': False, 'credits': float(credits), 'count': success_count, 'error': 'insufficient_credits'}
-        except Exception as exc:
-            log.warning(f'[GrowthMetering] 计量上报失败，忽略: user_id={user_id}, job_id={job_id}, error={exc!r}')
-            return {'reported': False, 'credits': float(credits), 'count': success_count, 'error': 'report_failed'}
-        return {'reported': True, 'credits': float(credits), 'count': success_count}
+        # doc94 D1：云端的扣分原语已删除——积分的唯一权威是 NewAPI，云端不再有
+        # 任何直接改余额的入口。获客采集目前没有接 NewAPI 计量接缝，因此这里
+        # **只记录应计量，不扣费**，并把这件事显式说出来，而不是假装扣成功了。
+        log.warning(
+            f'[GrowthMetering] 采集计量暂未接 NewAPI 计费接缝，仅记录不扣费: '
+            f'user_id={user_id}, job_id={job_id}, credits={credits}, count={success_count}'
+        )
+        return {
+            'reported': False,
+            'credits': float(credits),
+            'count': success_count,
+            'error': 'metering_seam_not_wired',
+        }
 
 
 growth_metering_service = GrowthMeteringService()

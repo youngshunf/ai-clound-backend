@@ -8,10 +8,25 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.newapi.client import NewApiError, newapi_admin_client
-from backend.app.newapi.service import quota_to_credits
 from backend.common.log import log
 
 _SHANGHAI_TZ = ZoneInfo('Asia/Shanghai')
+
+# 管理看板**只读展示**用的 quota→积分刻度（doc94 D1 的显式例外）。
+#
+# D1 把 quota↔积分换算收归 NewAPI，云端不得再持有换算常量——那条规则针对的是
+# **余额与计费**路径：两套算法不一致会让用户看到的余额和真实扣费对不上。
+# 这里是管理端的全站聚合折线图，既不判权、不扣费，也不进入任何用户可见余额；
+# NewAPI 侧目前只按用户提供积分口径的汇总，没有全站聚合接口。
+#
+# 硬约束：本常量**只允许**用于本文件的看板聚合。任何余额、门禁、账单读路径
+# 用到它都属于把双权威重新引回来，评审直接拒。
+_ADMIN_DASHBOARD_QUOTA_PER_CREDIT = Decimal(500_000)
+
+
+def _quota_as_display_credits(quota: int) -> Decimal:
+    """管理看板专用：quota → 积分（仅用于聚合展示，见上方硬约束）。"""
+    return Decimal(int(quota)) / _ADMIN_DASHBOARD_QUOTA_PER_CREDIT
 
 
 class AnalyticsService:
@@ -38,7 +53,7 @@ class AnalyticsService:
         return {
             'api_calls': sum(int(row.get('count') or 0) for row in rows),
             'token_usage': sum(int(row.get('token_used') or 0) for row in rows),
-            'usage_credits': float(quota_to_credits(quota)),
+            'usage_credits': float(_quota_as_display_credits(quota)),
         }
 
     @staticmethod
@@ -146,7 +161,7 @@ class AnalyticsService:
         return {
             'dates': dates,
             'api_calls': [api_by_day[day] for day in days_series],
-            'credit_usage': [float(quota_to_credits(credit_by_day[day])) for day in days_series],
+            'credit_usage': [float(_quota_as_display_credits(credit_by_day[day])) for day in days_series],
             'token_usage': [token_by_day[day] for day in days_series],
         }
 

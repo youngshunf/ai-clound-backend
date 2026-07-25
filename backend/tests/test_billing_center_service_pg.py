@@ -115,7 +115,10 @@ async def test_center_subscription_snapshot(sess) -> None:
     assert resp.subscription
     assert resp.subscription['user_id'] == TEST_USER_ID
     # 关键原语字段存在且为 JSON 安全类型
-    assert isinstance(resp.subscription['current_credits'], float)
+    # doc94 F3/D1：余额来自 NewAPI 权威快照。本用例的测试用户没有 NewAPI 映射，
+    # 于是余额为 None + credit_status='unmapped'——**不许**回落云端旧值或伪造 0。
+    assert resp.subscription['current_credits'] is None
+    assert resp.subscription['credit_status'] == 'unmapped'
     assert 'tier' in resp.subscription and 'status' in resp.subscription
 
 
