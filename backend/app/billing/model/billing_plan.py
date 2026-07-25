@@ -24,5 +24,8 @@ class BillingPlan(BillingBase):
     quota_json: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='配额包快照（站点数/内存/卷/席位数/max_agents…；购买时固化进权益行）')
     trial_json: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='试用策略（enabled/days/times）')
     grace_json: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='宽限策略（remind_days/grace_days，到期提醒节奏+宽限天数）')
+    # doc94 D1：subscription_tier / credit_package 要被删除，其展示字段迁到这里，
+    # 定价页与积分包列表改从商品目录取，不再回落 legacy 表。
+    display_json: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='展示字段快照（display_name/features/description 等）')
     status: Mapped[str] = mapped_column(sa.String(16), default='', comment='状态 (active:上架:green/inactive:下架:gray)')
     sort_order: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='排序权重')

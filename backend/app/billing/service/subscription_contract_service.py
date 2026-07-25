@@ -24,9 +24,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
-from backend.app.billing.model.subscription_tier import SubscriptionTier
 from backend.app.billing.model.user_subscription import UserSubscription
+from backend.app.billing.service import offering_pricing
 from backend.app.billing.service.contract_status import CURRENT_CONTRACT_STATUSES, STATUS_CANCEL_AT_PERIOD_END
 from backend.app.billing.service.credit_grant_event_service import (
     CYCLE_SECONDS,
@@ -85,14 +84,11 @@ class SubscriptionContractService:
         if not cycle_count:
             raise errors.RequestError(msg=f'不支持的计费周期: {billing_cycle}')
 
-        tier_row = await subscription_tier_dao.select_model_by_column(
-            db, tier_name=tier_name, app_code=app_code, enabled=True
-        )
-        # 显式收窄类型：dao 的返回签名是联合类型，拿到序列说明查询条件写错了，不能当单行用。
-        if not isinstance(tier_row, SubscriptionTier):
+        # doc94 D1：档位配置的唯一事实源是商品目录 billing_plan，不再读 subscription_tier。
+        tier = await offering_pricing.get_tier(db, tier_name)
+        if tier is None:
             raise errors.RequestError(msg=f'套餐配置不存在或未启用: {tier_name}')
-        tier = tier_row
-        credits_per_cycle = Decimal(str(tier.monthly_credits or 0))
+        credits_per_cycle = tier.credits_per_cycle
         if credits_per_cycle <= 0:
             raise errors.RequestError(msg=f'套餐 {tier_name} 未配置每周期积分额度，拒绝履约')
 
@@ -217,10 +213,10 @@ class SubscriptionContractService:
         """
         if not tier_name:
             return -1
-        row = await subscription_tier_dao.select_model_by_column(db, tier_name=tier_name, app_code=app_code)
-        if not isinstance(row, SubscriptionTier):
+        tier = await offering_pricing.get_tier(db, tier_name)
+        if tier is None:
             return -1
-        return int(row.sort_order or 0)
+        return tier.sort_order
 
     @staticmethod
     async def cancel_auto_renew(db: AsyncSession, *, user_id: int, app_code: str = 'huanxing') -> bool:

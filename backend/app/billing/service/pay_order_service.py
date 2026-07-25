@@ -18,14 +18,12 @@ from backend.app.billing.core.fulfillment import (
     dispatch_fulfillment,
     reverse_fulfillment,
 )
-from backend.app.billing.crud.crud_credit_package import credit_package_dao
 from backend.app.billing.crud.crud_pay_channel import pay_channel_dao
 from backend.app.billing.crud.crud_pay_contract import pay_contract_dao
 from backend.app.billing.crud.crud_pay_merchant import pay_merchant_dao
 from backend.app.billing.crud.crud_pay_notify_log import pay_notify_log_dao
 from backend.app.billing.crud.crud_pay_order import pay_order_dao
 from backend.app.billing.crud.crud_pay_refund import pay_refund_dao
-from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model.pay_order import PayOrder
 from backend.app.billing.schema.pay_order import (
     CreatePayOrderParam,
@@ -226,25 +224,17 @@ class PayOrderService:
         if obj.billing_cycle not in ('monthly', 'yearly'):
             raise errors.RequestError(msg=f'无效的计费周期: {obj.billing_cycle}')
 
-        # 从数据库读取套餐配置（按 app_code 区分应用）
-        tier_config = await subscription_tier_dao.select_model_by_column(
-            db, tier_name=obj.tier, app_code=app_code, enabled=True
-        )
-        if not tier_config:
-            raise errors.RequestError(msg=f'无效的套餐: {obj.tier}（app={app_code}）')
-
-        # MK-5：价格以商品目录 plan 为权威（admin 改价即时生效于新单）；plan 缺档回落 legacy 价。
+        # doc94 D1：套餐配置的唯一事实源是商品目录 billing_plan，不再读 subscription_tier。
         from backend.app.billing.service import offering_pricing
 
-        monthly_key, yearly_key = offering_pricing.tier_plan_keys(obj.tier)
-        plan_key = yearly_key if obj.billing_cycle == 'yearly' else monthly_key
-        plan_amount = await offering_pricing.plan_price(db, offering_pricing.OFFERING_LLM_TIER, plan_key)
-        if plan_amount is not None:
-            pay_amount = int(float(plan_amount) * 100)
-        elif obj.billing_cycle == 'yearly' and tier_config.yearly_price:
-            pay_amount = int(float(tier_config.yearly_price) * 100)
-        else:
-            pay_amount = int(float(tier_config.monthly_price) * 100)
+        tier_config = await offering_pricing.get_tier(db, obj.tier) if obj.tier else None
+        if tier_config is None:
+            raise errors.RequestError(msg=f'无效的套餐: {obj.tier}（app={app_code}）')
+
+        price = tier_config.yearly_price if obj.billing_cycle == 'yearly' else tier_config.monthly_price
+        if price is None:
+            raise errors.RequestError(msg=f'套餐 {obj.tier} 未配置{obj.billing_cycle}价格')
+        pay_amount = int(float(price) * 100)
 
         if pay_amount <= 0:
             raise errors.RequestError(msg='免费套餐无需支付')
@@ -331,17 +321,17 @@ class PayOrderService:
         """积分包真实支付下单。积分数写入 `extra_data.credit_amount`，到账由
         `handle_credit_pack_paid` 回调读取并发放（购买积分 `is_purchased=True` 永不过期）。
         """
-        package = await credit_package_dao.get(db, obj.package_id)
-        if not package or not package.enabled or package.app_code != app_code:
-            raise errors.RequestError(msg=f'无效的积分包: {obj.package_id}（app={app_code}）')
-
-        # MK-5：价格以商品目录 plan 为权威（plan_key = 积分包名）；plan 缺档回落 legacy 价。
+        # doc94 D1：积分包配置的唯一事实源是商品目录 billing_plan，不再读 credit_package。
+        # `/packages` 列表回的 id 即 plan 主键，下单原样带回来，这里按同一把钥匙查。
         from backend.app.billing.service import offering_pricing
 
-        plan_amount = await offering_pricing.plan_price(
-            db, offering_pricing.OFFERING_CREDITS_TOPUP, package.package_name
-        )
-        pay_amount = int(float(plan_amount if plan_amount is not None else package.price) * 100)
+        package = await offering_pricing.get_credit_pack_by_id(db, obj.package_id) if obj.package_id else None
+        if package is None:
+            raise errors.RequestError(msg=f'无效的积分包: {obj.package_id}（app={app_code}）')
+        if package.price is None:
+            raise errors.RequestError(msg=f'积分包 {package.package_name} 未配置价格')
+
+        pay_amount = int(float(package.price) * 100)
         if pay_amount <= 0:
             raise errors.RequestError(msg='免费积分包无需支付')
 
@@ -371,7 +361,7 @@ class PayOrderService:
             'user_ip': user_ip,
             'extra_data': {
                 'app_code': app_code,
-                'package_id': package.id,
+                'package_id': package.plan_id,
                 'credit_amount': float(total_credits),
             },
             # MK-3：商品目录引用快照；plan_key=积分包名（对齐 seed cp.package_name）。

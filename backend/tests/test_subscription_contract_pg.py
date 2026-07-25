@@ -33,6 +33,7 @@ from backend.app.billing.service.credit_grant_event_service import (
 )
 from backend.app.billing.service.subscription_contract_service import subscription_contract_service
 from backend.database.db import async_db_session
+from backend.tests.billing_catalog_seed import CatalogSeed
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -42,6 +43,8 @@ pytestmark = pytest.mark.asyncio
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 _CREDIT_EVENT_SQL = _BACKEND / 'sql' / 'billing' / 'credit_grant_event.sql'
 _CONTRACT_MIGRATION = _BACKEND / 'sql' / 'billing' / 'migrations' / '2026-07-25-credit-authority-contract-and-outbox.sql'
+# doc94 D1：档位事实源迁到商品目录，plan 需要 display_json 列
+_DISPLAY_MIGRATION = _BACKEND / 'sql' / 'billing' / 'migrations' / '2026-07-25-credit-authority-plan-display-migrate.sql'
 _APP_CODE = 'doc94f2'
 
 
@@ -80,6 +83,7 @@ async def user_id(monkeypatch) -> AsyncIterator[int]:
         async with ddl_engine.begin() as conn:
             await _apply_sql(conn, _CREDIT_EVENT_SQL)
             await _apply_sql(conn, _CONTRACT_MIGRATION)
+            await _apply_sql(conn, _DISPLAY_MIGRATION)
     except Exception as exc:
         await ddl_engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
@@ -94,26 +98,19 @@ async def user_id(monkeypatch) -> AsyncIterator[int]:
 
     monkeypatch.setattr(callbacks_module, '_resolve_newapi_user_id', _fake_resolve)
 
-    # 两个档位：pro(sort_order=10) < flagship(sort_order=30)，用于升/降级判定
+    # 两个档位：pro(sort_order=10) < flagship(sort_order=30)，用于升/降级判定。
+    # doc94 D1 起档位事实源是商品目录 billing_plan，不再是 subscription_tier。
+    seed = CatalogSeed()
     async with async_db_session.begin() as db:
         for tier, credits, order in (('pro', 1000, 10), ('flagship', 10000, 30)):
-            await db.execute(
-                text("""
-                    INSERT INTO hasn_billing.subscription_tier
-                        (app_code, tier_name, display_name, monthly_credits, monthly_price, yearly_price,
-                         max_agents, features, enabled, sort_order, created_time)
-                    VALUES (:app, :tier, :tier, :credits, 100, 1000, 5, '{}'::jsonb, true, :sort, NOW())
-                    ON CONFLICT DO NOTHING
-                """),
-                {'app': _APP_CODE, 'tier': tier, 'credits': credits, 'sort': order},
-            )
+            await seed.seed_tier(db, tier_name=tier, credits_per_cycle=credits, sort_order=order)
     try:
         yield uid
     finally:
         async with async_db_session.begin() as db:
             await db.execute(text('DELETE FROM hasn_billing.credit_grant_event WHERE user_id = :u'), {'u': uid})
             await db.execute(text('DELETE FROM hasn_billing.user_subscription WHERE app_code = :a'), {'a': _APP_CODE})
-            await db.execute(text('DELETE FROM hasn_billing.subscription_tier WHERE app_code = :a'), {'a': _APP_CODE})
+            await seed.restore(db)
         await async_engine.dispose()
 
 

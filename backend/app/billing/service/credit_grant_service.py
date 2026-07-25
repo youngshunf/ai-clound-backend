@@ -24,10 +24,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.model.credit_grant_event import CreditGrantEvent
-from backend.app.billing.model.subscription_tier import SubscriptionTier
 from backend.app.billing.model.user_subscription import UserSubscription
+from backend.app.billing.service import offering_pricing
 from backend.app.billing.service.contract_status import CURRENT_CONTRACT_STATUSES
 from backend.app.billing.service.credit_grant_event_service import (
     CYCLE_SECONDS,
@@ -84,11 +83,12 @@ class CreditGrantService:
         if existing is not None:
             return existing
 
-        tier_row = await subscription_tier_dao.select_model_by_column(db, tier_name='free', app_code=app_code)
-        if not isinstance(tier_row, SubscriptionTier):
+        # doc94 D1：档位配置的唯一事实源是商品目录 billing_plan，不再读 subscription_tier。
+        tier = await offering_pricing.get_tier(db, 'free')
+        if tier is None:
             log.warning(f'[CreditGrant] 免费档配置缺失，跳过免费合同创建: app_code={app_code}')
             return None
-        credits_per_cycle = Decimal(str(tier_row.monthly_credits or 0))
+        credits_per_cycle = tier.credits_per_cycle
         if credits_per_cycle <= 0:
             log.warning(f'[CreditGrant] 免费档未配置每周期额度，跳过: app_code={app_code}')
             return None
@@ -126,7 +126,7 @@ class CreditGrantService:
             subscription_end_date=None,
             status='active',
             auto_renew=False,
-            max_agents=tier_row.max_agents or 1,
+            max_agents=tier.max_agents or 1,
             contract_no=contract_no,
             contract_start_at=now,
             contract_end_at=None,

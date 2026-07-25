@@ -32,6 +32,7 @@ from backend.app.billing.service.credit_grant_event_service import (
 )
 from backend.app.billing.service.credit_grant_service import credit_grant_service
 from backend.database.db import async_db_session
+from backend.tests.billing_catalog_seed import CatalogSeed
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -41,6 +42,8 @@ pytestmark = pytest.mark.asyncio
 _BACKEND = pathlib.Path(__file__).resolve().parents[1]
 _CREDIT_EVENT_SQL = _BACKEND / 'sql' / 'billing' / 'credit_grant_event.sql'
 _CONTRACT_MIGRATION = _BACKEND / 'sql' / 'billing' / 'migrations' / '2026-07-25-credit-authority-contract-and-outbox.sql'
+# doc94 D1：档位事实源迁到商品目录，plan 需要 display_json 列
+_DISPLAY_MIGRATION = _BACKEND / 'sql' / 'billing' / 'migrations' / '2026-07-25-credit-authority-plan-display-migrate.sql'
 _APP_CODE = 'doc94f1'
 
 
@@ -65,6 +68,7 @@ async def user_id(monkeypatch) -> AsyncIterator[int]:
         async with ddl_engine.begin() as conn:
             await _apply_sql(conn, _CREDIT_EVENT_SQL)
             await _apply_sql(conn, _CONTRACT_MIGRATION)
+            await _apply_sql(conn, _DISPLAY_MIGRATION)
     except Exception as exc:
         await ddl_engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
@@ -81,25 +85,17 @@ async def user_id(monkeypatch) -> AsyncIterator[int]:
 
     monkeypatch.setattr(callbacks_module, '_resolve_newapi_user_id', _fake_resolve)
 
-    # 免费档配置：ensure_free_contract 读它取每周期额度。
+    # 免费档配置：doc94 D1 起 ensure_free_contract 从商品目录取每周期额度。
+    seed = CatalogSeed()
     async with async_db_session.begin() as db:
-        await db.execute(
-            text("""
-                INSERT INTO hasn_billing.subscription_tier
-                    (app_code, tier_name, display_name, monthly_credits, monthly_price, max_agents,
-                     features, enabled, sort_order, created_time)
-                VALUES (:app, 'free', '免费档', 100, 0, 1, '{}'::jsonb, true, 0, NOW())
-                ON CONFLICT DO NOTHING
-            """),
-            {'app': _APP_CODE},
-        )
+        await seed.seed_tier(db, tier_name='free', credits_per_cycle=100, monthly_price=0, yearly_price=None, max_agents=1)
     try:
         yield uid
     finally:
         async with async_db_session.begin() as db:
             await db.execute(text('DELETE FROM hasn_billing.credit_grant_event WHERE user_id = :u'), {'u': uid})
             await db.execute(text('DELETE FROM hasn_billing.user_subscription WHERE app_code = :a'), {'a': _APP_CODE})
-            await db.execute(text('DELETE FROM hasn_billing.subscription_tier WHERE app_code = :a'), {'a': _APP_CODE})
+            await seed.restore(db)
         await async_engine.dispose()
 
 
