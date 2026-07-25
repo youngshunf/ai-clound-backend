@@ -84,7 +84,13 @@ class SubscriptionInfoResponse(BaseModel):
     tier_display_name: str | None = None
     subscription_type: str = 'monthly'
     monthly_credits: Decimal
-    current_credits: Decimal
+    # current_credits 可为空：读不到 NewAPI 权威余额时如实留空，
+    # 既不回落云端旧值，也不伪造 0——前者让用户按过时数字决策，后者让用户以为额度用光了。
+    current_credits: Decimal | None = None
+    credit_status: str = Field(default='ok', description='权威余额读取状态 ok/unavailable/unmapped')
+    measured_at: datetime | None = Field(default=None, description='NewAPI 测量时刻，展示层据此判断新鲜度')
+    wallet_credits: Decimal | None = Field(default=None, description='永久钱包剩余积分（NewAPI 权威）')
+    newapi_subscriptions: list[dict] = Field(default_factory=list, description='NewAPI 当前订阅周期快照')
     used_credits: Decimal
     cycle_consumed_credits: Decimal = Field(default=Decimal(0), description='本计费周期真实消耗积分（new-api logs 权威）')
     purchased_credits: Decimal
@@ -180,7 +186,13 @@ async def get_my_subscription_info(
         tier_display_name=info['tier_display_name'],
         subscription_type=info.get('subscription_type', 'monthly'),
         monthly_credits=Decimal(str(info['monthly_credits'])),
-        current_credits=Decimal(str(info['current_credits'])),
+        current_credits=Decimal(str(info['current_credits'])) if info.get('current_credits') is not None else None,
+        credit_status=info.get('credit_status', 'ok'),
+        measured_at=datetime.fromisoformat(info['measured_at'].replace('Z', '+00:00'))
+        if info.get('measured_at')
+        else None,
+        wallet_credits=Decimal(str(info['wallet_credits'])) if info.get('wallet_credits') is not None else None,
+        newapi_subscriptions=info.get('newapi_subscriptions', []),
         used_credits=Decimal(str(info['used_credits'])),
         cycle_consumed_credits=Decimal(str(info.get('cycle_consumed_credits', 0))),
         purchased_credits=Decimal(str(info['purchased_credits'])),

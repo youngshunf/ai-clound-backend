@@ -444,15 +444,21 @@ class CreditService:
         purchased_remaining = sum(b.remaining_amount for b in active_balances if b.credit_type == 'purchased')
         bonus_remaining = sum(b.remaining_amount for b in active_balances if b.credit_type == 'bonus')
 
-        # ===== new-api 权威：可用积分 + 本期真实消耗 =====
-        # LLM 网关是 new-api（非内置 litellm）。真实余额=(quota−used_quota)/RATE、真实消耗=logs；
-        # 内部 user_credit_balance 不被 new-api 消耗扣减，故可用积分/本月已用必须实时取 new-api，
-        # 否则会出现「内部显示 20000 可用、实际已大量消耗」的脱节（零 fake，无映射才回退内部）。
+        # ===== NewAPI 权威账户：可用积分 + 当前周期用量（doc94 F3）=====
+        # 绝不再用 (quota − used_quota) 推算——users.quota 本身就是当前剩余额度，
+        # used_quota 是累计用量，两者相减会算出负数或错误进度。
+        # 读不到就如实说读不到：余额字段为 None、credit_status=unavailable，
+        # 既不回落云端旧值，也不伪造 0。
         from backend.app.billing.service.billing_usage_service import billing_usage_service
+        from backend.app.billing.service.credit_account_service import credit_account_service
 
         now = timezone.now()
-        available = await billing_usage_service.get_available_credits(db, user_id, app_code)
-        current_credits = available['available_credits'] if available is not None else total_credits
+        account = await credit_account_service.get_account(db, user_id, app_code)
+        current_credits: float | None
+        if account['available_credits'] is not None:
+            current_credits = float(account['available_credits'])
+        else:
+            current_credits = None
 
         # 消耗窗口上界取 min(now, 周期结束)：周期内 → 至今消耗；已过期 → 该周期内消耗（不外溢）
         cycle_end = min(now, subscription.billing_cycle_end)
@@ -462,8 +468,8 @@ class CreditService:
         cycle_consumed_credits = cycle['consumed_credits']
 
         # ===== 状态按日期重算（修复「过期却显示生效中」）=====
-        # status 是存量字段，真实 LLM 走 new-api 从不触发内部 check_credits 翻转 → 永远停在
-        # 上次升级写入的 'active'。读取时按订阅结束日与 now 比对得出有效状态；免费版无结束日，永不过期。
+        # status 是存量字段，真实 LLM 走 NewAPI 从不触发内部翻转 → 永远停在上次写入的 'active'。
+        # 读取时按合同结束日与 now 比对得出有效状态；免费档无结束日，永不过期。
         effective_status = subscription.status
         sub_end = getattr(subscription, 'subscription_end_date', None)
         if subscription.tier != 'free' and sub_end is not None and now > sub_end:
@@ -474,7 +480,12 @@ class CreditService:
             'tier': subscription.tier,
             'tier_display_name': tier.display_name if tier else subscription.tier,
             'subscription_type': getattr(subscription, 'subscription_type', 'monthly') or 'monthly',
-            'current_credits': float(current_credits),
+            'current_credits': current_credits,
+            # 权威读状态与测量时刻：展示层据此三态渲染，并显示「数据更新于 X 前」。
+            'credit_status': account['credit_status'],
+            'measured_at': account['measured_at'],
+            'wallet_credits': account['wallet_credits'],
+            'newapi_subscriptions': account['subscriptions'],
             'monthly_credits': float(subscription.monthly_credits),
             'used_credits': float(total_used),
             'cycle_consumed_credits': float(cycle_consumed_credits),
