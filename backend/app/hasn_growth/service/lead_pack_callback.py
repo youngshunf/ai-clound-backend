@@ -15,29 +15,31 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.common.log import log
-from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def handle_lead_pack_paid(order: Any) -> None:
+async def handle_lead_pack_paid(db: AsyncSession, *, order: Any) -> None:
     """线索购买支付成功回调 → 增加可领取线索余额（purchased_balance·永不过期）。
+
+    doc94 C2 起收 ``db`` 参与支付回调的同一事务；参数缺失直接抛错让订单进死信，
+    不再「打日志后 return」把订单留在假成功。
 
     :param order: 已支付的订单对象（extra_data.lead_count 为购买条数）
     """
+    from backend.common.exception import errors
+
     user_id = order.user_id
     lead_count = int((order.extra_data or {}).get('lead_count') or 0)
     if lead_count <= 0:
-        log.error(f'[LeadPack] 线索订单缺少 lead_count: order_no={order.order_no}')
-        return
+        raise errors.RequestError(msg=f'线索订单 {order.order_no} 缺少 lead_count，拒绝静默放行')
 
     log.info(
         f'[LeadPack] 线索购买成功: user_id={user_id}, '
         f'leads={lead_count}, amount={order.pay_amount}分, order_no={order.order_no}'
     )
-    async with async_db_session.begin() as db:
-        balance = await lead_pool_query_service.grant_purchased_leads(db, user_id=user_id, count=lead_count)
+    balance = await lead_pool_query_service.grant_purchased_leads(db, user_id=user_id, count=lead_count)
     log.info(f'[LeadPack] 线索额度发放完成: user_id={user_id}, +{lead_count} → 余额 {balance}')
 
 

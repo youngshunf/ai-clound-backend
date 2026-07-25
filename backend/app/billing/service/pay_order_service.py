@@ -8,7 +8,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.billing.core.callback import dispatch_pay_success
 from backend.app.billing.core.config import (
     ORDER_EXPIRE_MINUTES,
     PAY_ORDER_NOTIFY_URL,
@@ -878,10 +877,19 @@ class PayOrderService:
             success_time=now,
         )
 
-        # MK-3：优先按商品目录 offering_ref.kind 分发履约（内核唯一发货入口）；
-        #        无 offering_ref 的存量订单回落 order_type 旧分发（向后兼容，逐步收敛）。
-        if not await dispatch_fulfillment(order):
-            await dispatch_pay_success(order.order_type, order)
+        # 履约命令与订单状态同事务写入（doc94 C2）：
+        # 通知幂等 → 订单置已支付 → 建合同（订阅类）→ 写 credit_grant_event(pending)，
+        # 任一数据库步骤失败整体回滚。真正调用 NewAPI 的动作在事务外由 outbox worker 执行——
+        # 支付回调的数据库事务里绝不发 HTTP。
+        #
+        # order_type 回落分支已删除：无 offering_ref 或 kind 未注册直接抛错，
+        # 订单进 fulfillment_status=dead 等人工处置，绝不静默 return 把订单留在假成功。
+        try:
+            await dispatch_fulfillment(db, order)
+        except Exception as exc:
+            await pay_order_dao.mark_fulfillment_dead(db, order_no=order_no, error_code='fulfillment_dispatch_failed')
+            log.error(f'[Pay] 订单 {order_no} 履约命令登记失败，已置死信: {exc!r}')
+            raise
         return True
 
     @staticmethod

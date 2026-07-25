@@ -5,8 +5,9 @@
 
 - ``register_fulfillment(kind, handler)``：各业务模块启动时把「某 kind 该怎么发货」注册进来
   （与既有 ``register_pay_callback(order_type, handler)`` 并存，逐步把发货轴从 order_type 收敛到 kind）。
-- ``dispatch_fulfillment(order)``：读 ``order.offering_ref.kind`` → 命中处理器执行；无 ``offering_ref``
-  或该 kind 未注册时返回 ``False``，由调用方（``handle_pay_notify``）回落旧 ``order_type`` 分发（存量兼容）。
+- ``dispatch_fulfillment(db, order)``：读 ``order.offering_ref.kind`` → 命中处理器，在调用方事务内
+  写一条待投递的履约命令；无 ``offering_ref`` 或该 kind 未注册时**直接抛错**（fail-closed），
+  订单进 ``fulfillment_status=dead`` 等人工处置，绝不静默放行。
 - ``build_offering_ref(order_type, ...)``：下单入口用来把「买的是什么」快照进 ``pay_order.offering_ref``，
   ``kind`` 由 ``order_type`` 唯一确定（``ORDER_TYPE_TO_KIND``）。
 
@@ -87,27 +88,33 @@ def build_offering_ref(
     return {'offering_key': offering_key, 'plan_key': plan_key, 'kind': kind}
 
 
-async def dispatch_fulfillment(order: Any) -> bool:
-    """按 ``order.offering_ref.kind`` 分发发货。
+async def dispatch_fulfillment(db: Any, order: Any) -> None:
+    """按 ``order.offering_ref.kind`` 分发履约，**在调用方事务内执行**。
 
-    :return: True=命中 kind 处理器且执行成功；False=无 ``offering_ref`` / kind 未注册（调用方回落旧分发）。
+    handler 的职责已从「直接发货（改余额/改订阅）」改成「写一条待投递的履约命令」——
+    发什么货仍由这张 kind 注册表路由，真正碰 NewAPI 的动作交给 outbox worker。
+    这样 saga 与「同事务」就不冲突了：事务内只写命令，事务外才碰外部系统。
+
+    **fail-closed（铁律）**：无 ``offering_ref`` 或 kind 未注册一律抛错，让订单进
+    ``fulfillment_status=dead`` 等人工处置。原先的「回落 order_type 旧分发」分支已删除——
+    静默回落一旦漏配，用户就会看到「支付成功」却永远收不到额度。
+
+    :raises RequestError: 订单缺 ``offering_ref`` 或 kind 未注册处理器。
     """
+    from backend.common.exception import errors
+
+    order_no = getattr(order, 'order_no', '?')
     offering_ref = getattr(order, 'offering_ref', None) or {}
     kind = offering_ref.get('kind')
     if not kind:
-        return False
+        raise errors.RequestError(msg=f'订单 {order_no} 缺少商品类型快照（offering_ref），无法安全履约')
     handler = _fulfillment_handlers.get(kind)
     if not handler:
-        log.warning(
-            f'[fulfillment] kind 未注册发货处理器，回落旧分发: '
-            f'kind={kind}, order_no={getattr(order, "order_no", "?")}'
-        )
-        return False
+        raise errors.RequestError(msg=f'商品类型 {kind} 未注册履约处理器，拒绝静默放行订单 {order_no}')
     try:
-        await handler(order)
-        return True
+        await handler(db, order=order)
     except Exception as e:
-        log.error(f'[fulfillment] 发货处理器异常: kind={kind}, error={e}')
+        log.error(f'[fulfillment] 履约处理器异常: kind={kind}, order_no={order_no}, error={e}')
         raise
 
 
@@ -116,8 +123,11 @@ def _resolve_order_kind(order: Any) -> str | None:
     offering_ref = getattr(order, 'offering_ref', None) or {}
     kind = offering_ref.get('kind')
     if kind:
-        return kind
-    return ORDER_TYPE_TO_KIND.get(getattr(order, 'order_type', None))
+        return str(kind)
+    order_type = getattr(order, 'order_type', None)
+    if not order_type:
+        return None
+    return ORDER_TYPE_TO_KIND.get(str(order_type))
 
 
 async def reverse_fulfillment(db: Any, order: Any) -> None:

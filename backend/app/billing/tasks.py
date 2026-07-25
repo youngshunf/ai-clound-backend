@@ -346,3 +346,56 @@ async def billing_lifecycle_sweep() -> str:
     )
     log.info(f'[BillingSweep] {result_msg}')
     return result_msg
+
+
+# ==================== doc94 C2：履约 outbox worker ====================
+
+
+@shared_task(name='credit_outbox_dispatch')
+async def credit_outbox_dispatch() -> str:
+    """投递待履约命令到 NewAPI（每分钟一轮）。
+
+    云端事务里只写命令，真正碰 NewAPI 的动作在这里。抢占用 FOR UPDATE SKIP LOCKED，
+    多副本并发跑同一张表互不重复也不阻塞；超时只用同一个 event_id 对账重投，绝不换 ID 重发。
+    """
+    from backend.app.billing.service.credit_outbox_service import credit_outbox_service
+
+    summary = await credit_outbox_service.run_once()
+    result_msg = (
+        f'履约投递完成: 抢占 {summary["claimed"]} 条, 成功 {summary["succeeded"]}, '
+        f'重试 {summary["retrying"]}, 死信 {summary["dead"]}'
+    )
+    if summary['claimed']:
+        log.info(f'[CreditOutbox] {result_msg}')
+    return result_msg
+
+
+@shared_task(name='credit_outbox_reconcile')
+async def credit_outbox_reconcile() -> str:
+    """履约对账：只核对「云端事件是否在 NewAPI 有对应结果」，缺失就重放事件。
+
+    绝不根据云端数据重算或覆盖 NewAPI 余额——那正是本轮要消灭的反向数据流。
+    """
+    from backend.app.billing.service.credit_outbox_service import credit_outbox_service
+
+    summary = await credit_outbox_service.reconcile_missing_projections()
+    result_msg = f'履约对账完成: 核对 {summary["checked"]} 条, 收敛 {summary["reconciled"]} 条'
+    log.info(f'[CreditOutbox] {result_msg}')
+    return result_msg
+
+
+@shared_task(name='credit_outbox_metrics_refresh')
+async def credit_outbox_metrics_refresh() -> str:
+    """刷新履约相关的 Gauge 指标（已支付未履约、outbox 积压与最老等待时长）。"""
+    from backend.app.billing.observability.metrics import (
+        BILLING_PAID_UNFULFILLED_TOTAL,
+        CREDIT_OUTBOX_OLDEST_AGE_SECONDS,
+        CREDIT_OUTBOX_PENDING_TOTAL,
+    )
+    from backend.app.billing.service.credit_outbox_service import credit_outbox_service
+
+    metrics = await credit_outbox_service.collect_metrics()
+    CREDIT_OUTBOX_PENDING_TOTAL.set(metrics['credit_outbox_pending_total'])
+    CREDIT_OUTBOX_OLDEST_AGE_SECONDS.set(metrics['credit_outbox_oldest_age_seconds'])
+    BILLING_PAID_UNFULFILLED_TOTAL.set(metrics['billing_paid_unfulfilled_total'])
+    return f'履约指标已刷新: {metrics}'

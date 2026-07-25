@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     NEWAPI_ADMIN_ACCESS_TOKEN: str = ''
     NEWAPI_ADMIN_USER_ID: int = 1
     NEWAPI_HTTP_TIMEOUT_SECONDS: int = 15
+
+    # NewAPI 内部积分履约通道（doc94 §3）。与 admin 通道分开：
+    # 它只认服务凭据、不挂 CORS、不接受 Owner cookie/JWT，版本前缀固定 /api/internal/v1。
+    # 凭据未配置时履约调用直接失败，绝不退化成匿名可写。
+    NEWAPI_INTERNAL_BASE_URL: str = 'http://localhost:3180/api/internal/v1'
+    NEWAPI_CREDIT_SERVICE_TOKEN: str = ''
+    # outbox worker 单轮抓取的事件数上限（配合 FOR UPDATE SKIP LOCKED 支持多 worker 并发）
+    CREDIT_OUTBOX_BATCH_SIZE: int = 50
+    # 履约重试上限：达到后进 dead letter 并发 error 告警，不再无限重投
+    CREDIT_OUTBOX_MAX_ATTEMPTS: int = 8
     # new-api 用户默认分组：relay 渠道按「用户分组」匹配可用渠道（token 空组继承用户组）。
     # new-api admin CreateUser 不接受 group 字段 → 新建用户分组为空字符串 → relay 报
     # 「No available channel for model X under group  ()」（空组匹配不到任何渠道）。

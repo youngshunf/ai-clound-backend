@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.service import app_seat_service
 from backend.common.log import log
-from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,16 +52,18 @@ async def settle_app_seat_purchase(db: AsyncSession, *, order: Any) -> HasnAppEn
     return ent
 
 
-async def handle_app_seat_paid(order: Any) -> None:
-    """企业席位购买支付成功回调 → 累加企业权益 seats_total（独立 session 提交）。"""
+async def handle_app_seat_paid(db: AsyncSession, *, order: Any) -> None:
+    """企业席位购买支付成功回调 → 累加企业权益 seats_total。
+
+    doc94 C2 起收 ``db`` 参与支付回调的同一事务（原先另开 session 提交）。
+    """
     log.info(
         f'[AppSeat] 席位购买支付成功: user_id={order.user_id}, '
         f'app_id={(order.extra_data or {}).get("app_id")}, '
         f'seats={(order.extra_data or {}).get("seats")}, '
         f'amount={order.pay_amount}分, order_no={order.order_no}'
     )
-    async with async_db_session.begin() as db:
-        await settle_app_seat_purchase(db, order=order)
+    await settle_app_seat_purchase(db, order=order)
 
 
 async def revoke_app_seat_purchase(db: AsyncSession, *, order: Any) -> None:

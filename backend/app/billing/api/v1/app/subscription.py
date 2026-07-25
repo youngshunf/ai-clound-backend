@@ -17,7 +17,7 @@ from backend.app.billing.crud.crud_credit_transaction import credit_transaction_
 from backend.app.billing.crud.crud_subscription_tier import subscription_tier_dao
 from backend.app.billing.service.credit_service import credit_service
 from backend.common.pagination import DependsPagination, PageData, paging_data
-from backend.common.response.response_schema import ResponseSchemaModel, response_base
+from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession
 from backend.utils.timezone import timezone
@@ -495,7 +495,7 @@ async def calculate_upgrade_price(
     dependencies=[DependsJwtAuth],
     status_code=status.HTTP_410_GONE,
 )
-async def upgrade_subscription() -> None:
+async def upgrade_subscription() -> ResponseModel:
     """已退役（doc94 P0）：不经真实支付即可改订阅的模拟入口。
 
     这个端点原本直接改订阅等级并在云端发积分，绕过了支付与履约。订阅变更现在必须走
@@ -518,7 +518,7 @@ async def upgrade_subscription() -> None:
     dependencies=[DependsJwtAuth],
     status_code=status.HTTP_410_GONE,
 )
-async def purchase_credits() -> None:
+async def purchase_credits() -> ResponseModel:
     """已退役（doc94 P0）：summary 里写着「模拟支付」的积分包购买入口。
 
     它把模拟成功当成真实购买成功，直接在云端加余额。积分包购买现在必须走统一下单 API，

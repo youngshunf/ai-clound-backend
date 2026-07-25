@@ -59,6 +59,23 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天凌晨 2:20 收敛好友请求 30 天未响应过期 + 联系人 auto_expire 到期（doc08 RT5·B7）
         'schedule': TzAwareCrontab('20', '2'),
     },
+    '履约 outbox 投递': {
+        'task': 'credit_outbox_dispatch',
+        # 每分钟投递一轮待履约命令。云端事务只写命令，真正调用 NewAPI 在这里；
+        # 抢占用 FOR UPDATE SKIP LOCKED，多副本并发安全。
+        'schedule': TzAwareCrontab('*'),
+    },
+    '履约对账': {
+        'task': 'credit_outbox_reconcile',
+        # 每 15 分钟核对死信事件在 NewAPI 侧的真实结果，收敛「其实成功了只是回执丢了」的事件。
+        # 只补投影不覆盖余额。
+        'schedule': TzAwareCrontab('*/15'),
+    },
+    '履约指标刷新': {
+        'task': 'credit_outbox_metrics_refresh',
+        # 每分钟刷新「已支付未履约」与 outbox 积压 Gauge，供告警判定。
+        'schedule': TzAwareCrontab('*'),
+    },
     'Agent 心跳超时检测': {
         'task': 'hasn_check_agent_heartbeat_timeout',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟执行一次

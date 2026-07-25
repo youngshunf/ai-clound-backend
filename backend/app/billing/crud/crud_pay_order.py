@@ -74,6 +74,19 @@ class CRUDPayOrder(CRUDPlus[PayOrder]):
         )
         return result.rowcount
 
+    async def mark_fulfillment_dead(self, db: AsyncSession, *, order_no: str, error_code: str) -> int:
+        """把订单的履约状态置为死信（doc94 C2）。
+
+        订单已经收到钱，绝不回滚成未支付；但履约命令没能登记下来，
+        必须显式标成 dead 让运营看得见，而不是留在「已支付」假装一切正常。
+        """
+        result = await db.execute(
+            update(PayOrder)
+            .where(PayOrder.order_no == order_no)
+            .values(fulfillment_status='dead', fulfillment_error_code=error_code, updated_time=timezone.now())
+        )
+        return result.rowcount
+
     async def mark_refunded(self, db: AsyncSession, order_no: str, refund_amount: int) -> int:
         """标记订单为已退款（status=2）并记录退款金额（退款编排层调用）。"""
         result = await db.execute(
