@@ -16,3 +16,4 @@ from backend.app.billing.model.user_credit_balance import UserCreditBalance as U
 from backend.app.billing.model.user_subscription import UserSubscription as UserSubscription
 from backend.app.billing.model.billing_offering import BillingOffering as BillingOffering
 from backend.app.billing.model.billing_plan import BillingPlan as BillingPlan
+from backend.app.billing.model.credit_grant_event import CreditGrantEvent as CreditGrantEvent
