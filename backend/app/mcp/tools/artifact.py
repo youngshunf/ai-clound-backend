@@ -79,7 +79,9 @@ _PROJECT_ID_PROP = {
     'type': 'string',
     'description': (
         '按平台项目过滤（可选）。只看某项目下产出的产物——通常不用自己填，'
-        '在项目里干活时缺省即收窄到本项目；跨项目查才显式传云端权威 project_id'
+        '在项目里干活时缺省即收窄到本项目；跨项目查才显式传云端权威 project_id。'
+        '⚠️ 命中项目时看到的是**本项目内所有分身**（同一主人名下）的产物，'
+        '这样场景多环协作里你才能取到上游那一环（别的分身）产的东西'
     ),
 }
 
@@ -114,6 +116,8 @@ def _project_list_item(item: ArtifactItem) -> dict[str, Any]:
         'source_app_id': item.source_app_id,
         'resource_kind': item.resource_kind,
         'source_kind': item.source_kind,
+        # doc97：项目内跨分身查时，这条是哪个分身产的（自己产的也照给，口径一致）。
+        'agent_hasn_id': item.agent_hasn_id,
         'created_time': item.created_time.isoformat() if item.created_time else None,
     }
 
@@ -276,6 +280,54 @@ def _project_id_filter(arguments: dict[str, Any]) -> str | None:
     return explicit or get_current_project_id()
 
 
+async def _query_artifacts(
+    agent_context: AgentContext,
+    *,
+    project_id: str | None,
+    page: int,
+    size: int,
+    kind: str | None,
+    session_id: str | None,
+    source_app_id: str | None,
+    resource_kind: str | None,
+    keyword: str | None = None,
+) -> tuple[list[ArtifactItem], int]:
+    """list/search 共用读取（doc97 T1-A 两档口径）。
+
+    - **命中项目**（显式传 `project_id` 或在项目工作会话内）→ `list_in_project`：项目内
+      **跨分身**读。场景多环协作里每一环换分身，不跨分身就永远取不到上游那一环的产出。
+    - **未命中项目** → `list_by_agent`：保持既有本分身隔离语义（个人产物时间线）。
+
+    两档的权限边界都是 owner 隔离，`project_id` 只是聚合过滤键。
+    """
+    async with async_db_session() as db:
+        if project_id:
+            return await hasn_artifacts_service.list_in_project(
+                db,
+                owner_hasn_id=agent_context.owner_hasn_id,
+                project_id=project_id,
+                page=page,
+                size=size,
+                kind=kind,
+                keyword=keyword,
+                session_id=session_id,
+                source_app_id=source_app_id,
+                resource_kind=resource_kind,
+            )
+        return await hasn_artifacts_service.list_by_agent(
+            db,
+            owner_hasn_id=agent_context.owner_hasn_id,
+            agent_hasn_id=agent_context.agent_hasn_id,
+            page=page,
+            size=size,
+            kind=kind,
+            keyword=keyword,
+            session_id=session_id,
+            source_app_id=source_app_id,
+            resource_kind=resource_kind,
+        )
+
+
 class ArtifactListTool(BaseTool):
     """`hasn.artifact.list`：列**本分身**的产物时间线（按 app/resource_kind/kind/session 过滤、分页）。"""
 
@@ -309,7 +361,9 @@ class ArtifactListTool(BaseTool):
             '出参给 resource_uri（hasn:// 深链，打开它用这个；与写工具返回体的 uri 是同一个地址）+ '
             'source_app_id/resource_kind（哪个应用的什么东西）+ '
             'asset_uri（有本体时，正文嵌图用它）+ preview_url（临时预览）+ has_body'
-            '（文本产物标记，取正文用 hasn.artifact.get）。' + _PREVIEW_URL_WARNING
+            '（文本产物标记，取正文用 hasn.artifact.get）+ agent_hasn_id（哪个分身产的）。'
+            '传 project_id（或在项目里干活时缺省收窄）看到的是**本项目内所有分身**的产物——'
+            '场景多环协作里取上游那一环（别的分身）的产出就用它。' + _PREVIEW_URL_WARNING
         )
 
     @property
@@ -340,25 +394,22 @@ class ArtifactListTool(BaseTool):
         return []
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        """本分身产物时间线 → list_by_agent（owner+agent 隔离）→ 工具层投影出参（剥 body）。"""
+        """产物时间线 → 项目内跨分身读 / 本分身读（doc97 两档，见 `_query_artifacts`）→ 投影出参（剥 body）。"""
         page, size = _clamp_page_size(arguments)
         kind = (arguments.get('kind') or '').strip() or None
         session_id = (arguments.get('session_id') or '').strip() or None
         source_app_id, resource_kind = _app_filters(arguments)
         project_id = _project_id_filter(arguments)
-        async with async_db_session() as db:
-            items, total = await hasn_artifacts_service.list_by_agent(
-                db,
-                owner_hasn_id=agent_context.owner_hasn_id,
-                agent_hasn_id=agent_context.agent_hasn_id,
-                page=page,
-                size=size,
-                kind=kind,
-                session_id=session_id,
-                source_app_id=source_app_id,
-                resource_kind=resource_kind,
-                project_id=project_id,
-            )
+        items, total = await _query_artifacts(
+            agent_context,
+            project_id=project_id,
+            page=page,
+            size=size,
+            kind=kind,
+            session_id=session_id,
+            source_app_id=source_app_id,
+            resource_kind=resource_kind,
+        )
         return {
             'items': [_project_list_item(it) for it in items],
             'total': total,
@@ -396,7 +447,8 @@ class ArtifactSearchTool(BaseTool):
             '按关键词搜我产过的资源（匹配 title/summary 子串，多词空格分隔=全部命中），'
             '可再按 app（哪个应用）、resource_kind（应用内资源类型）、kind、session_id 过滤、分页。'
             '写图文文章找现成配图先用它。'
-            '出参同 hasn.artifact.list（resource_uri 是打开用的 hasn:// 深链，asset_uri 正文嵌图用）。'
+            '出参同 hasn.artifact.list（resource_uri 是打开用的 hasn:// 深链，asset_uri 正文嵌图用）；'
+            '同样地，传 project_id / 在项目里干活时，搜的是**本项目内所有分身**的产物。'
             + _PREVIEW_URL_WARNING
         )
 
@@ -429,7 +481,7 @@ class ArtifactSearchTool(BaseTool):
         return []
 
     async def execute(self, agent_context: AgentContext, arguments: dict[str, Any]) -> dict[str, Any]:
-        """关键词搜本分身产物 → list_by_agent(keyword=...) → 同 list 投影出参。"""
+        """关键词搜产物 → 项目内跨分身读 / 本分身读（doc97 两档）→ 同 list 投影出参。"""
         query = (arguments.get('query') or '').strip()
         if not query:
             raise RuntimeError("artifact.search: 'query' 必填")
@@ -438,20 +490,17 @@ class ArtifactSearchTool(BaseTool):
         session_id = (arguments.get('session_id') or '').strip() or None
         source_app_id, resource_kind = _app_filters(arguments)
         project_id = _project_id_filter(arguments)
-        async with async_db_session() as db:
-            items, total = await hasn_artifacts_service.list_by_agent(
-                db,
-                owner_hasn_id=agent_context.owner_hasn_id,
-                agent_hasn_id=agent_context.agent_hasn_id,
-                page=page,
-                size=size,
-                kind=kind,
-                keyword=query,
-                session_id=session_id,
-                source_app_id=source_app_id,
-                resource_kind=resource_kind,
-                project_id=project_id,
-            )
+        items, total = await _query_artifacts(
+            agent_context,
+            project_id=project_id,
+            page=page,
+            size=size,
+            kind=kind,
+            keyword=query,
+            session_id=session_id,
+            source_app_id=source_app_id,
+            resource_kind=resource_kind,
+        )
         return {
             'items': [_project_list_item(it) for it in items],
             'total': total,

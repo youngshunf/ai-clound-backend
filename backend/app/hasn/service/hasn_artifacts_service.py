@@ -240,6 +240,8 @@ class HasnArtifactsService:
             local_path=None,
             node_id=item.local_entry.node_id if item.local_entry else None,
             origin_ref=None,
+            # doc97：把「哪个分身产的」透出来——项目内跨分身查产物时，分身要据它判断这条是哪一环的产出。
+            agent_hasn_id=item.latest_contribution.agent_hasn_id,
             conversation_id=None,
             message_id=None,
             session_id=item.latest_contribution.work_session_id,
@@ -296,6 +298,48 @@ class HasnArtifactsService:
             source_app_id=source_app_id,
             resource_kind=resource_kind,
             keyword=keyword,
+            page=page,
+            size=size,
+        )
+        return [cls._legacy_item(item) for item in result.items], result.total
+
+    @classmethod
+    async def list_in_project(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        project_id: str,
+        page: int = 1,
+        size: int = 20,
+        kind: str | None = None,
+        keyword: str | None = None,
+        session_id: str | None = None,
+        source_app_id: str | None = None,
+        resource_kind: str | None = None,
+    ) -> tuple[list[ArtifactItem], int]:
+        """列**某平台项目内全部分身**的产物（doc97 T1-A：场景多环跨分身取上游产出）。
+
+        与 [`list_by_agent`] 的唯一差别是**不按 `agent_hasn_id` 收窄**：场景工作流每一环
+        通常是不同专家分身，第 2 环按 project_id 查若仍按调用分身隔离，就永远看不到第 1 环的
+        产出，还会据此误判「项目里就这些」（doc95 §6.2-6 零 fake 的反面）。
+
+        权限边界仍是 **owner 隔离**（`owner_hasn_id`），与 `hasn.artifact.get`「同主人任意分身
+        的产物均可读」同口径；`project_id` 只是聚合过滤键，不是权限边界。并集读语义由
+        `artifact_query_service.list` 提供：项目内参与记录 ∪ `hasn_artifacts.project_id` 直接
+        命中 ∪ 挂靠容器名下产物。
+        """
+        result = await artifact_query_service.list(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            # 关键：不传 agent_hasn_id —— 项目内跨分身。
+            agent_hasn_id=None,
+            project_id=project_id,
+            work_session_id=session_id,
+            artifact_kind=kind,
+            keyword=keyword,
+            source_app_id=source_app_id,
+            resource_kind=resource_kind,
             page=page,
             size=size,
         )

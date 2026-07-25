@@ -189,7 +189,11 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'get',
         'write': False,
         'handler': _h_get,
-        'desc': '取项目详情：基本信息 + 里程碑轨(milestones) + 产物流并集读(artifact_flow)。传 id。',
+        'desc': (
+            '取项目详情：基本信息 + 里程碑轨(milestones) + 产物流并集读(artifact_flow)。传 id。'
+            'artifact_flow = 本项目**全链路**产物（跨执行、跨应用、跨分身，含 artifact_id 与 hasn:// 深链）——'
+            '要知道「这个项目到目前为止各环产了什么」用它；只要本次工作流执行的用 hasn.workflow.run_artifacts。'
+        ),
         'schema': _schema({'id': _s('项目 id（云端权威 UUID，必填）')}, ['id']),
     },
     {

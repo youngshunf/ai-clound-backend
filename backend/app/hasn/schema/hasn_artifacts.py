@@ -160,6 +160,10 @@ class ArtifactItem(SchemaBase):
     local_path: str | None = Field(None, description='本地文件绝对路径（本地产物；正文留在产出设备磁盘，云端只存指针）')
     node_id: str | None = Field(None, description='产出设备 node_id（local_path 在场必带；UI 据此判本机可开还是在其他设备）')
     origin_ref: str | None = Field(None, description='产出所属业务资源（resource:plan:todo:{id} 等）')
+    agent_hasn_id: str | None = Field(
+        None,
+        description='产出该产物的分身 hasn_id（doc97：项目内跨分身查产物时，据它判断这条是哪一环产的）',
+    )
     conversation_id: str | None = None
     message_id: int | None = None
     session_id: str | None = None
