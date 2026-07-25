@@ -139,6 +139,10 @@ class PayOrderService:
             status=order.status,
             pay_amount=order.pay_amount,
             success_time=order.success_time,
+            # 付款与履约分开报：额度还在投递中时 UI 要显示「已付款，额度发放中」，
+            # 而不是「已完成」——后者会让用户以为能用了，结果被 relay 403 挡住。
+            fulfillment_status=getattr(order, 'fulfillment_status', None),
+            fulfilled_at=getattr(order, 'fulfilled_at', None),
         )
 
     @staticmethod
