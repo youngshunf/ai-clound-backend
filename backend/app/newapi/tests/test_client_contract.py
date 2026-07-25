@@ -42,12 +42,19 @@ pytest_skip = pytest.mark.skipif(
 )
 
 
+#: new-api 的协议精度：1 积分 = 500000 quota。
+#: doc94 D1 后云端不再持有换算常量，但这条**契约**仍需被锁住——
+#: new-api 一旦改了 QuotaPerUnit，它自己产出的所有积分字符串刻度都会变。
+_EXPECTED_QUOTA_PER_UNIT = 500_000
+
+
 @pytest_skip
 async def test_status_and_quota_per_unit() -> None:
     client = NewApiAdminClient()
     qpu = await client.get_quota_per_unit()
-    assert qpu == settings.NEWAPI_QUOTA_PER_DOLLAR, (
-        f'new-api quota_per_unit={qpu} 与 NEWAPI_QUOTA_PER_DOLLAR={settings.NEWAPI_QUOTA_PER_DOLLAR} 不一致'
+    assert qpu == _EXPECTED_QUOTA_PER_UNIT, (
+        f'new-api quota_per_unit={qpu} 与协议精度 {_EXPECTED_QUOTA_PER_UNIT} 不一致：'
+        '积分刻度变了，所有积分字符串的含义都会跟着变'
     )
 
 
@@ -63,17 +70,19 @@ async def test_full_credential_lifecycle() -> None:
         assert uid1 == uid2 and uid1 > 0
         newapi_user_id = uid1
 
-        # 2. 设/读 quota
-        await client.set_user_quota(newapi_user_id=newapi_user_id, quota=5_000_000)
+        # 2. 读 quota：余额是 NewAPI 权威，云端只读。
+        #    「设置绝对 quota」已在 doc94 P0 封禁，发放/回收一律走幂等履约事件，
+        #    因此这里只校验读契约的形状，不再断言由云端写入的具体数值。
+        with pytest.raises(NewApiError):
+            await client.set_user_quota(newapi_user_id=newapi_user_id, quota=5_000_000, reason='contract-test')
         info = await client.get_user_quota(newapi_user_id)
         assert info is not None
-        assert info['quota'] == 5_000_000
-        assert info['used_quota'] == 0
-        assert info['request_count'] == 0
+        assert set(info) >= {'quota', 'used_quota', 'request_count'}
 
-        # 3. 批量 quota
+        # 3. 批量 quota：形状一致
         batch = await client.get_batch_users_quota([newapi_user_id])
-        assert batch[newapi_user_id]['quota'] == 5_000_000
+        assert newapi_user_id in batch
+        assert 'quota' in batch[newapi_user_id]
 
         # 4. 铸用户 access_token
         access_token = await client.bootstrap_user_access_token(newapi_user_id=newapi_user_id, username=username)

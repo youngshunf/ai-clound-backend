@@ -30,24 +30,12 @@ class QuotaResponse(BaseModel):
     tier_display_name: str | None = None
     status: str
     monthly_credits: Decimal
-    current_credits: Decimal
+    # 余额读不到就是 None，不伪造 0——假 0 会让调用方以为额度用光了
+    current_credits: Decimal | None = None
+    credit_status: str = 'ok'
     used_credits: Decimal
-    available: bool  # 是否还有可用额度
+    available: bool  # 是否还有可用额度（仅展示；硬门禁在 NewAPI relay）
 
-
-class DeductRequest(BaseModel):
-    """积分扣减请求"""
-    user_id: int
-    credits: Decimal
-    model_name: str | None = None
-    description: str | None = None
-
-
-class DeductResponse(BaseModel):
-    """积分扣减响应"""
-    success: bool
-    remaining_credits: Decimal
-    message: str
 
 # ==================== APIs ====================
 
@@ -68,10 +56,11 @@ async def get_user_quota(
 
     info = await credit_service.get_user_credits_info(db, user_id, app_code)
 
-    available = (
-        info['status'] == 'active'
-        and float(info['current_credits']) > 0
-    )
+    # 余额读不到时 current_credits 为 None：那是「不知道」，不是「没有额度」。
+    # 这里如实返回 None 并把 available 交给硬门禁——能不能发起调用只有一处判定，
+    # 就是 NewAPI relay 的 403。
+    current_credits = Decimal(str(info['current_credits'])) if info.get('current_credits') is not None else None
+    available = info['status'] == 'active' and (current_credits is None or current_credits > 0)
 
     data = QuotaResponse(
         user_id=info['user_id'],
@@ -79,47 +68,10 @@ async def get_user_quota(
         tier_display_name=info['tier_display_name'],
         status=info['status'],
         monthly_credits=Decimal(str(info['monthly_credits'])),
-        current_credits=Decimal(str(info['current_credits'])),
+        current_credits=current_credits,
+        credit_status=info.get('credit_status', 'ok'),
         used_credits=Decimal(str(info['used_credits'])),
         available=available,
     )
 
     return response_base.success(data=data)
-
-
-@router.post(
-    '/deduct',
-    summary='扣减用户积分',
-    description='模型调用计费时扣减用户积分',
-    dependencies=[DependsAgentJwtAuth],
-)
-async def deduct_credits(
-    request: Request,
-    db: CurrentSession,
-    body: DeductRequest,
-) -> ResponseSchemaModel[DeductResponse]:
-    """扣减积分"""
-    app_code = request.state.app_code
-
-    try:
-        subscription = await credit_service.deduct_credits(
-            db,
-            user_id=body.user_id,
-            credits=body.credits,
-            transaction_type='model_call',
-            reference_type='model',
-            description=body.description or f'模型调用: {body.model_name or "unknown"}',
-            app_code=app_code,
-        )
-
-        return response_base.success(data=DeductResponse(
-            success=True,
-            remaining_credits=subscription.current_credits,
-            message='扣减成功',
-        ))
-    except Exception as e:
-        return response_base.fail(data=DeductResponse(
-            success=False,
-            remaining_credits=Decimal(0),
-            message=str(e),
-        ))

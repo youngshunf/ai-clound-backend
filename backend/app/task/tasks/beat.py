@@ -28,10 +28,6 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'backend.app.task.tasks.db_log.tasks.delete_db_login_log',
         'schedule': TzAwareCrontab('0', '0', day_of_month='15'),
     },
-    '年度订阅积分发放': {
-        'task': 'grant_yearly_subscription_credits',
-        'schedule': TzAwareCrontab('0', '1'),  # 每天凌晨 1 点执行
-    },
     '订阅过期检查': {
         'task': 'expire_overdue_subscriptions',
         'schedule': TzAwareCrontab('30', '1'),  # 每天凌晨 1:30（年度发放后收敛存量 status）
@@ -63,9 +59,22 @@ LOCAL_BEAT_SCHEDULE = {
         # 每天凌晨 2:20 收敛好友请求 30 天未响应过期 + 联系人 auto_expire 到期（doc08 RT5·B7）
         'schedule': TzAwareCrontab('20', '2'),
     },
-    '积分账本每小时对账': {
-        'task': 'newapi_hourly_credit_sync',
-        'schedule': TzAwareCrontab('0'),  # 每小时整点：new-api 真实消费增量回扣账本 + 重设 quota（§5A.5）
+    '履约 outbox 投递': {
+        'task': 'credit_outbox_dispatch',
+        # 每分钟投递一轮待履约命令。云端事务只写命令，真正调用 NewAPI 在这里；
+        # 抢占用 FOR UPDATE SKIP LOCKED，多副本并发安全。
+        'schedule': TzAwareCrontab('*'),
+    },
+    '履约对账': {
+        'task': 'credit_outbox_reconcile',
+        # 每 15 分钟核对死信事件在 NewAPI 侧的真实结果，收敛「其实成功了只是回执丢了」的事件。
+        # 只补投影不覆盖余额。
+        'schedule': TzAwareCrontab('*/15'),
+    },
+    '履约指标刷新': {
+        'task': 'credit_outbox_metrics_refresh',
+        # 每分钟刷新「已支付未履约」与 outbox 积压 Gauge，供告警判定。
+        'schedule': TzAwareCrontab('*'),
     },
     'Agent 心跳超时检测': {
         'task': 'hasn_check_agent_heartbeat_timeout',

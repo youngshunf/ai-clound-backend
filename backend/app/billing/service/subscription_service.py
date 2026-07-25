@@ -19,13 +19,14 @@ class SubscriptionService:
 
     @staticmethod
     async def _sync_newapi_quota(db: AsyncSession, user_id: int, tier_name: str) -> None:
-        """同步 new-api quota（内部方法，失败不阻断主流程）"""
-        try:
-            from backend.app.newapi.service import llm_newapi_user_mapping_service
-            quota = llm_newapi_user_mapping_service.tier_to_quota(tier_name)
-            await llm_newapi_user_mapping_service.sync_quota(db, user_id, quota)
-        except Exception as e:
-            log.warning(f'[Subscription] new-api quota 同步失败: user_id={user_id}, tier={tier_name}, error={e}')
+        """已退役（doc94 P0）：订阅变更不再把套餐额度覆盖写进 NewAPI。
+
+        套餐额度是商品合同参数，不是用户余额。订阅生效/到期现在由幂等履约事件
+        （`subscription_activate` / `subscription_expire`）驱动 NewAPI 的订阅池，
+        云端既不计算余额也不覆盖余额。保留空实现是为了让调用点在切到事件流之前
+        不至于报错，同时留下明确的退役说明。
+        """
+        log.info(f'[Subscription] 跳过已退役的 new-api quota 覆盖同步: user_id={user_id}, tier={tier_name}')
 
     @staticmethod
     async def upgrade_subscription(

@@ -77,11 +77,18 @@ class PayContractService:
 
     @staticmethod
     async def cancel_contract(*, db: AsyncSession, user_id: int) -> None:
-        """用户主动取消自动续费"""
+        """用户主动取消自动续费。
+
+        只解除签约并把订阅合同标记为「到期后不再续」，**绝不提前清空额度**——
+        用户已经付过这一期的钱，额度用到期末天经地义；到期后由 NewAPI 按 30 天周期清零。
+        """
+        from backend.app.billing.service.subscription_contract_service import subscription_contract_service
+
         contract = await pay_contract_dao.get_active_by_user(db, user_id)
         if not contract:
             raise errors.NotFoundError(msg='没有有效的签约')
         await pay_contract_dao.update_terminated(db, contract_no=contract.contract_no, reason='用户主动取消')
+        await subscription_contract_service.cancel_auto_renew(db, user_id=user_id)
 
     @staticmethod
     async def handle_unsign_notify(*, db: AsyncSession, contract_no: str) -> bool:

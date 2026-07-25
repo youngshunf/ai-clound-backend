@@ -1,12 +1,15 @@
-"""MK-5 定价读侧收编·真实 PG（实施/92 MK-5）——零 mock。
+"""定价读侧收编·真实 PG（实施/92 MK-5 → doc94 D1）——零 mock。
 
-覆盖「LLM 订阅/积分定价切读 offering·出参字段名不变·改价只影响新单」：
-1. 出参 schema 字段名锁死（SubscriptionTierItem/CreditPackageItem 回归锚·风险#2）；
-2. plan 为价格权威：active_plans_map / plan_price 取 billing_plan 权威价；
-3. 列表叠加逻辑：plan 命中用 plan 价、缺档回落 legacy 价（出参字段名不变）；
-4. 改价即时：改 billing_plan.price_amount → plan_price 反映新价（下单/列表都以其为准）。
+MK-5 时价格权威迁到 `billing_plan`，但展示字段仍回落 legacy 表。**doc94 D1 起
+`subscription_tier` / `credit_package` 被删除，商品目录成为档位的唯一事实源**，
+本用例随之改锁 D1 契约：
 
-需本地 PostgreSQL :15432（含 hasn_billing.billing_offering/billing_plan/subscription_tier/credit_package）。
+1. 出参 schema 字段名锁死（SubscriptionTierItem/CreditPackageItem 回归锚）；
+2. 档位的价格、每周期额度、展示名、features 全部来自 plan，**不存在 legacy 回落**；
+3. 只有年付 plan 的档不成立（不拿年价冒充月价）；
+4. 改价即时反映；下架的档位既不列出也查不到。
+
+需本地 PostgreSQL :15432（含 hasn_billing.billing_offering/billing_plan）。
 """
 
 from __future__ import annotations
@@ -24,8 +27,6 @@ from sqlalchemy.pool import NullPool
 from backend.app.billing.api.v1.open.pricing import CreditPackageItem, SubscriptionTierItem
 from backend.app.billing.model.billing_offering import BillingOffering
 from backend.app.billing.model.billing_plan import BillingPlan
-from backend.app.billing.model.credit_package import CreditPackage
-from backend.app.billing.model.subscription_tier import SubscriptionTier
 from backend.app.billing.service import offering_pricing
 from backend.database.db import SQLALCHEMY_DATABASE_URL, async_engine
 
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.asyncio
 
-_APP = 'mk5_pricing_test'
 _TIER = 'mk5pro'
 
 
@@ -81,12 +81,12 @@ async def sess() -> AsyncIterator:
     s = async_sessionmaker(engine, expire_on_commit=False)()
 
     async def _purge() -> None:
+        # 只删本用例自己造的 plan_key。doc94 D1 之后 billing_plan 是**全站档位事实源**，
+        # 按 offering 整片删会把本机真实档位一起抹掉，让同批次的其它用例莫名其妙地红。
         await s.execute(
-            text('DELETE FROM hasn_billing.billing_plan WHERE offering_key IN (:a, :b)'),
-            {'a': offering_pricing.OFFERING_LLM_TIER, 'b': offering_pricing.OFFERING_CREDITS_TOPUP},
+            text('DELETE FROM hasn_billing.billing_plan WHERE plan_key IN (:a, :b, :c)'),
+            {'a': _TIER, 'b': f'{_TIER}_yearly', 'c': 'mk5pack'},
         )
-        await s.execute(text('DELETE FROM hasn_billing.subscription_tier WHERE app_code = :a'), {'a': _APP})
-        await s.execute(text('DELETE FROM hasn_billing.credit_package WHERE app_code = :a'), {'a': _APP})
         await s.commit()
 
     try:
@@ -106,24 +106,12 @@ async def _ensure_offering(s, key: str, kind: str) -> None:
         await s.flush()
 
 
-async def test_plan_is_price_authority_for_tiers(sess) -> None:
-    """月付/年付价取 billing_plan 权威值；plan 缺档的字段回落 legacy 价。"""
+async def test_catalog_is_the_only_tier_source(sess) -> None:
+    """订阅档完全由商品目录描述：价格、每周期额度、展示名、features 都来自 plan。
+
+    doc94 D1 起**不存在 legacy 回落**——`subscription_tier` 已不在读路径上。
+    """
     await _ensure_offering(sess, offering_pricing.OFFERING_LLM_TIER, 'llm_tier')
-    # legacy tier：月 99 / 年 999（作回落基准）
-    sess.add(
-        SubscriptionTier(
-            app_code=_APP,
-            tier_name=_TIER,
-            display_name='MK5 专业版',
-            monthly_credits=Decimal(1000),
-            monthly_price=Decimal('99.00'),
-            yearly_price=Decimal('999.00'),
-            max_agents=3,
-            enabled=True,
-            sort_order=1,
-        )
-    )
-    # plan：仅月付档存在，权威价 88（≠ legacy 99）；年付档不建 → 回落 legacy 999
     sess.add(
         BillingPlan(
             offering_key=offering_pricing.OFFERING_LLM_TIER,
@@ -131,26 +119,53 @@ async def test_plan_is_price_authority_for_tiers(sess) -> None:
             price_amount=Decimal('88.00'),
             price_unit='cny',
             cycle='month',
+            quota_json={'tier': _TIER, 'credits_per_cycle': '1000', 'max_agents': 3},
+            display_json={'display_name': 'MK5 专业版', 'tier_name': _TIER, 'features': {'x': 1}},
+            status='active',
+            sort_order=1,
+        )
+    )
+    await sess.commit()
+
+    tier = await offering_pricing.get_tier(sess, _TIER)
+    assert tier is not None
+    assert tier.monthly_price == Decimal('88.00')
+    assert tier.credits_per_cycle == Decimal('1000')
+    assert tier.display_name == 'MK5 专业版'
+    assert tier.max_agents == 3
+    assert tier.features == {'x': 1}
+    # 年付 plan 不存在 → 年价为空。不回落 legacy，也不拿月价冒充年价。
+    assert tier.yearly_price is None
+
+    # 本机目录里还有真实档位，这里只断言本用例的档位确实被列出（并且只出现一次）
+    listed = [t.tier_name for t in await offering_pricing.list_tiers(sess)]
+    assert listed.count(_TIER) == 1
+
+
+async def test_missing_monthly_plan_means_tier_does_not_exist(sess) -> None:
+    """只有年付 plan 的档不成立：get_tier 返回 None、list_tiers 不列出。
+
+    否则前端会看到一个「月价 = 年价」的假档位，用户按这个价下单就是错单。
+    """
+    await _ensure_offering(sess, offering_pricing.OFFERING_LLM_TIER, 'llm_tier')
+    sess.add(
+        BillingPlan(
+            offering_key=offering_pricing.OFFERING_LLM_TIER,
+            plan_key=f'{_TIER}_yearly',
+            price_amount=Decimal('999.00'),
+            price_unit='cny',
+            cycle='year',
             status='active',
         )
     )
     await sess.commit()
 
-    monthly_key, yearly_key = offering_pricing.tier_plan_keys(_TIER)
-    assert await offering_pricing.plan_price(sess, offering_pricing.OFFERING_LLM_TIER, monthly_key) == Decimal('88.00')
-    assert await offering_pricing.plan_price(sess, offering_pricing.OFFERING_LLM_TIER, yearly_key) is None
-
-    plans = await offering_pricing.active_plans_map(sess, offering_pricing.OFFERING_LLM_TIER)
-    # 叠加契约（= 端点内联逻辑）：命中 plan 用 plan 价、缺档回落 legacy
-    tier = (await sess.execute(select(SubscriptionTier).where(SubscriptionTier.tier_name == _TIER))).scalar_one()
-    monthly = plans[monthly_key].price_amount if monthly_key in plans else tier.monthly_price
-    yearly = plans[yearly_key].price_amount if yearly_key in plans else tier.yearly_price
-    assert monthly == Decimal('88.00'), '月付应取 plan 权威价'
-    assert yearly == Decimal('999.00'), '年付无 plan 档应回落 legacy 价'
+    assert await offering_pricing.get_tier(sess, _TIER) is None
+    assert _TIER not in [t.tier_name for t in await offering_pricing.list_tiers(sess)]
 
 
 async def test_repricing_reflects_immediately(sess) -> None:
-    """改 billing_plan.price_amount → plan_price 立即反映新价（改价只影响新单）。"""
+    """改 billing_plan.price_amount → 目录读立即反映新价（改价只影响新单）。"""
     await _ensure_offering(sess, offering_pricing.OFFERING_LLM_TIER, 'llm_tier')
     plan = BillingPlan(
         offering_key=offering_pricing.OFFERING_LLM_TIER,
@@ -162,27 +177,18 @@ async def test_repricing_reflects_immediately(sess) -> None:
     )
     sess.add(plan)
     await sess.commit()
-    assert await offering_pricing.plan_price(sess, offering_pricing.OFFERING_LLM_TIER, _TIER) == Decimal('88.00')
+    tier = await offering_pricing.get_tier(sess, _TIER)
+    assert tier is not None and tier.monthly_price == Decimal('88.00')
 
     plan.price_amount = Decimal('66.00')  # admin 商业化中心改价
     await sess.commit()
-    assert await offering_pricing.plan_price(sess, offering_pricing.OFFERING_LLM_TIER, _TIER) == Decimal('66.00')
+    tier = await offering_pricing.get_tier(sess, _TIER)
+    assert tier is not None and tier.monthly_price == Decimal('66.00')
 
 
-async def test_plan_is_price_authority_for_packages(sess) -> None:
-    """积分包价取 billing_plan（plan_key = package_name）；缺档回落 legacy。"""
+async def test_catalog_is_the_only_credit_pack_source(sess) -> None:
+    """积分包同理：积分数、赠送、价格、描述全部来自 plan，不再读 credit_package。"""
     await _ensure_offering(sess, offering_pricing.OFFERING_CREDITS_TOPUP, 'credit_pack')
-    sess.add(
-        CreditPackage(
-            app_code=_APP,
-            package_name='mk5pack',
-            credits=Decimal(500),
-            price=Decimal('50.00'),
-            bonus_credits=Decimal(50),
-            enabled=True,
-            sort_order=1,
-        )
-    )
     sess.add(
         BillingPlan(
             offering_key=offering_pricing.OFFERING_CREDITS_TOPUP,
@@ -190,13 +196,43 @@ async def test_plan_is_price_authority_for_packages(sess) -> None:
             price_amount=Decimal('45.00'),
             price_unit='cny',
             cycle='once',
+            quota_json={'credits': '500', 'bonus_credits': '50'},
+            display_json={'package_name': 'mk5pack', 'description': '测试包'},
             status='active',
+            sort_order=1,
         )
     )
     await sess.commit()
 
-    assert await offering_pricing.plan_price(sess, offering_pricing.OFFERING_CREDITS_TOPUP, 'mk5pack') == Decimal(
-        '45.00'
+    pack = await offering_pricing.get_credit_pack(sess, 'mk5pack')
+    assert pack is not None
+    assert pack.price == Decimal('45.00')
+    assert pack.credits == Decimal('500')
+    assert pack.bonus_credits == Decimal('50')
+    assert pack.description == '测试包'
+
+    # 下单入口按 plan 主键回查，必须拿到同一条
+    by_id = await offering_pricing.get_credit_pack_by_id(sess, pack.plan_id)
+    assert by_id is not None and by_id.package_name == 'mk5pack'
+
+    assert [p.package_name for p in await offering_pricing.list_credit_packs(sess)].count('mk5pack') == 1
+
+
+async def test_inactive_plan_is_invisible(sess) -> None:
+    """下架的档位既不列出也查不到——下架必须真的挡住下单，而不只是前端隐藏。"""
+    await _ensure_offering(sess, offering_pricing.OFFERING_CREDITS_TOPUP, 'credit_pack')
+    sess.add(
+        BillingPlan(
+            offering_key=offering_pricing.OFFERING_CREDITS_TOPUP,
+            plan_key='mk5pack',
+            price_amount=Decimal('45.00'),
+            price_unit='cny',
+            cycle='once',
+            quota_json={'credits': '500'},
+            status='inactive',
+        )
     )
-    # 缺档回落
-    assert await offering_pricing.plan_price(sess, offering_pricing.OFFERING_CREDITS_TOPUP, 'nonexistent') is None
+    await sess.commit()
+
+    assert await offering_pricing.get_credit_pack(sess, 'mk5pack') is None
+    assert 'mk5pack' not in [p.package_name for p in await offering_pricing.list_credit_packs(sess)]

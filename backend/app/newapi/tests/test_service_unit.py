@@ -52,6 +52,8 @@ async def test_ensure_newapi_user_recovers_orphan_newapi_user_after_local_mappin
     )
     client.ensure_user_group = AsyncMock()  # type: ignore[method-assign]
     client.set_user_quota = AsyncMock()  # type: ignore[method-assign]
+    # set_user_quota 已在 doc94 P0 封禁：建号不得覆盖式写余额。这里仍然打桩，
+    # 是为了让「一旦有人把它加回建号流程，断言立刻红」而不是静默通过。
     client.bootstrap_user_access_token = AsyncMock(return_value='user-access-token')  # type: ignore[method-assign]
     client.provision_user_relay_token = AsyncMock(return_value=(601, 'relay-token-key'))  # type: ignore[method-assign]
     monkeypatch.setattr(service_module, 'newapi_admin_client', client)
@@ -74,7 +76,7 @@ async def test_ensure_newapi_user_recovers_orphan_newapi_user_after_local_mappin
     assert client.search_user_by_username.await_count == 2
     # 新建分支必须把用户设为 default 分组，否则空组 relay 报 no available channel（新用户首次对话即挂）。
     client.ensure_user_group.assert_awaited_once_with(newapi_user_id=117, group='default')
-    client.set_user_quota.assert_awaited_once()
+    client.set_user_quota.assert_not_awaited()
     client.bootstrap_user_access_token.assert_awaited_once_with(newapi_user_id=117, username='13800138000')
     client.provision_user_relay_token.assert_awaited_once_with(
         newapi_user_id=117,

@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn.service import app_catalog_service
 from backend.common.log import log
-from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,21 +56,21 @@ async def apply_app_purchase(db: AsyncSession, *, order: Any) -> HasnAppEntitlem
     return ent
 
 
-async def handle_app_purchase_paid(order: Any) -> None:
+async def handle_app_purchase_paid(db: AsyncSession, *, order: Any) -> None:
     """应用购买支付成功回调 → 写 owner 维度 active 权益（幂等：已有 active 不重复发）。
 
-    与订阅回调（user_tier/pay_callbacks.py）一致，取独立 session 提交。
+    doc94 C2 起收 ``db`` 参与支付回调的**同一事务**：原先另开 session 提交，
+    订单状态与权益授予可能一个成功一个失败，留下「付了钱没权益」或「有权益订单没成」的裂口。
     """
     log.info(
         f'[AppPurchase] 应用购买支付成功: user_id={order.user_id}, '
         f'app_id={(order.extra_data or {}).get("app_id")}, '
         f'amount={order.pay_amount}分, order_no={order.order_no}'
     )
-    async with async_db_session.begin() as db:
-        await apply_app_purchase(db, order=order)
+    await apply_app_purchase(db, order=order)
 
 
-async def revoke_app_purchase(db: AsyncSession, *, order: Any) -> None:
+async def revoke_app_purchase(db: AsyncSession, *, order: Any, refund_no: str | None = None) -> None:
     """应用购买退款回收（发货 ``apply_app_purchase`` 的逆操作·MK-9 退款编排）：撤销本订单授予的 owner 权益。
 
     据 ``order_ref==order.order_no`` 精确定位本次购买写入的 active 权益行并置 ``revoked``（幂等：

@@ -59,34 +59,46 @@ def test_build_offering_ref_maps_kind() -> None:
 async def test_dispatch_routes_to_registered_handler() -> None:
     seen = []
 
-    async def _probe(order) -> None:  # noqa: ANN001
-        seen.append(order.order_no)
+    async def _probe(db, *, order) -> None:  # noqa: ANN001
+        seen.append((db, order.order_no))
 
     fulfillment.register_fulfillment('test:mk3probe', _probe)
     order = SimpleNamespace(order_no='o1', offering_ref={'kind': 'test:mk3probe'})
-    assert await fulfillment.dispatch_fulfillment(order) is True
-    assert seen == ['o1']
+    sentinel = object()
+    await fulfillment.dispatch_fulfillment(sentinel, order)
+    # handler 必须拿到调用方事务的 session：履约命令要与订单状态同事务写入
+    assert seen == [(sentinel, 'o1')]
 
 
-async def test_dispatch_returns_false_without_offering_ref() -> None:
-    # None / 空 dict 均回落 False（存量订单走旧 order_type 分发）
-    assert await fulfillment.dispatch_fulfillment(SimpleNamespace(order_no='o2', offering_ref=None)) is False
-    assert await fulfillment.dispatch_fulfillment(SimpleNamespace(order_no='o3', offering_ref={})) is False
+async def test_dispatch_rejects_order_without_offering_ref() -> None:
+    """无 offering_ref 一律抛错（fail-closed）。
+
+    原先这里回落 order_type 旧分发；doc94 C2 删除了该分支——静默回落一旦漏配，
+    用户就会看到「支付成功」却永远收不到额度。
+    """
+    from backend.common.exception import errors
+
+    for offering_ref in (None, {}):
+        with pytest.raises(errors.RequestError):
+            await fulfillment.dispatch_fulfillment(object(), SimpleNamespace(order_no='o2', offering_ref=offering_ref))
 
 
-async def test_dispatch_returns_false_for_unregistered_kind() -> None:
+async def test_dispatch_rejects_unregistered_kind() -> None:
+    from backend.common.exception import errors
+
     order = SimpleNamespace(order_no='o4', offering_ref={'kind': 'test:mk3neverregistered'})
-    assert await fulfillment.dispatch_fulfillment(order) is False
+    with pytest.raises(errors.RequestError):
+        await fulfillment.dispatch_fulfillment(object(), order)
 
 
 async def test_dispatch_reraises_handler_error() -> None:
-    async def _boom(order) -> None:  # noqa: ANN001
+    async def _boom(db, *, order) -> None:  # noqa: ANN001
         raise RuntimeError('发货失败')
 
     fulfillment.register_fulfillment('test:mk3boom', _boom)
     order = SimpleNamespace(order_no='o5', offering_ref={'kind': 'test:mk3boom'})
     with pytest.raises(RuntimeError, match='发货失败'):
-        await fulfillment.dispatch_fulfillment(order)
+        await fulfillment.dispatch_fulfillment(object(), order)
 
 
 def test_core_kinds_registered_after_registrars() -> None:
@@ -166,9 +178,9 @@ async def test_pay_order_offering_ref_roundtrip_and_dispatch(sess) -> None:
     # 分发器据真实持久行的 offering_ref.kind 路由到探针（证明快照可驱动发货）
     routed = []
 
-    async def _probe(o) -> None:  # noqa: ANN001
-        routed.append(o.order_no)
+    async def _probe(db, *, order) -> None:  # noqa: ANN001
+        routed.append(order.order_no)
 
     fulfillment.register_fulfillment('test:mk3roundtrip', _probe)
-    assert await fulfillment.dispatch_fulfillment(reloaded) is True
+    await fulfillment.dispatch_fulfillment(sess, reloaded)
     assert routed == [_TEST_ORDER_NO]

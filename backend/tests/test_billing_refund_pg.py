@@ -62,14 +62,15 @@ async def test_reverse_fulfillment_routes_to_registered_handler() -> None:
     """注册了退款回收处理器的 kind → 路由到该处理器（收 db + order）。"""
     seen = []
 
-    async def _probe(db, *, order) -> None:  # noqa: ANN001
-        seen.append((db, order.order_no))
+    async def _probe(db, *, order, refund_no=None) -> None:  # noqa: ANN001
+        seen.append((db, order.order_no, refund_no))
 
     fulfillment.register_refund_handler('test:refundprobe', _probe)
     sentinel_db = object()
     order = SimpleNamespace(order_no='r1', order_type=None, offering_ref={'kind': 'test:refundprobe'})
-    await fulfillment.reverse_fulfillment(sentinel_db, order)
-    assert seen == [(sentinel_db, 'r1')]
+    await fulfillment.reverse_fulfillment(sentinel_db, order, refund_no='RFr1')
+    # 回收处理器必须拿到退款单号：积分类回收的幂等键就建在它上面
+    assert seen == [(sentinel_db, 'r1', 'RFr1')]
 
 
 async def test_reverse_fulfillment_fail_closed_no_kind() -> None:
@@ -190,7 +191,12 @@ async def _seed_paid_app_order(
 
 
 async def test_refund_order_end_to_end_reverses_entitlement(db: AsyncSession, monkeypatch) -> None:
-    """已支付应用购买订单退款：回收 owner 权益 → 订单 status=2 + refund_amount → pay_refund status=1（真实 PG）。"""
+    """已支付应用购买订单退款：**先回收权益、后退钱**（doc94 §4.4 saga·真实 PG）。
+
+    改造后 refund_order 只做数据库能原子完成的事——建退款单（status=0 受理中）+ 回收权益；
+    渠道调用移出事务，在额度/权益回收成功之后由 worker 触发。
+    这样「退了钱却没回收」与「回收了却没退钱」两种裂口都不会出现。
+    """
     # 各 registrar 真实注册退款回收处理器（含 KIND_APP → revoke_app_purchase）
     from backend.app.hasn.service.app_purchase_callback import register_app_purchase_callback
 
@@ -217,26 +223,17 @@ async def test_refund_order_end_to_end_reverses_entitlement(db: AsyncSession, mo
 
     result = await pay_order_service.refund_order(db=db, order_no=order.order_no, reason='用户申请退款')
 
-    # 退款结果：确定性退款单号 RF{order_no}、成功、非幂等重放
+    # 退款结果：确定性退款单号 RF{order_no}、受理中（渠道尚未调用）、非幂等重放
     assert result.refund_no == f'RF{order.order_no}'
-    assert result.status == 1 and result.already_refunded is False
+    assert result.status == 0 and result.already_refunded is False
     assert result.refund_amount == order.pay_amount
-    # 外部边界收到正确参数（全额、确定性 out_refund_no）
-    assert captured['order_no'] == order.order_no
-    assert captured['refund_no'] == f'RF{order.order_no}'
-    assert captured['refund_amount'] == order.pay_amount == captured['total_amount']
+    # 关键：事务里绝不调渠道——退钱必须排在回收之后
+    assert captured == {}, '退款受理阶段不得调用支付渠道'
 
-    # 订单翻到已退款态 + refund_amount 落库
-    reloaded = (
-        await db.execute(sa.select(PayOrder).where(PayOrder.order_no == order.order_no))
-    ).scalar_one()
-    assert reloaded.status == 2, '退款后订单应为已退款(2)'
-    assert reloaded.refund_amount == order.pay_amount
-
-    # pay_refund 记录落库（成功态）
+    # pay_refund 记录落库（受理中）
     refund_row = await pay_refund_dao.get_by_refund_no(db, f'RF{order.order_no}')
-    assert refund_row is not None and refund_row.status == 1
-    assert refund_row.channel_refund_no == f'CHRF{order.order_no}'
+    assert refund_row is not None and refund_row.status == 0
+    assert refund_row.fulfillment_status == 'pending'
     assert refund_row.user_id == user_id
 
     # 权益已回收（fail-closed 的核心：退钱必回收）
@@ -268,13 +265,13 @@ async def test_refund_order_idempotent_second_call(db: AsyncSession, monkeypatch
     monkeypatch.setattr(PayOrderService, '_invoke_channel_refund', staticmethod(_fake_channel_refund))
 
     first = await pay_order_service.refund_order(db=db, order_no=order.order_no)
-    assert first.already_refunded is False and call_count['n'] == 1
+    assert first.already_refunded is False and call_count['n'] == 0, '受理阶段不调渠道'
 
-    # 第二次退款：订单已 status=2 → 幂等短路，返回既有退款记录，不再调渠道
+    # 第二次退款：同一张退款单已在途 → 返回当前进度，不重复建单、不调渠道
     second = await pay_order_service.refund_order(db=db, order_no=order.order_no)
-    assert second.already_refunded is True
     assert second.refund_no == first.refund_no
-    assert call_count['n'] == 1, '幂等退款不得二次调用渠道 SDK（不重复退款）'
+    assert second.status == 0
+    assert call_count['n'] == 0, '重复受理不得触发渠道退款'
 
     # pay_refund 只有一行
     rows = (
@@ -333,6 +330,12 @@ async def test_confirm_refund_notify_idempotent_on_success(db: AsyncSession, mon
     )
     await pay_order_service.refund_order(db=db, order_no=order.order_no)
 
+    # 退款改为 saga（doc94 §4.4）：refund_order 只受理（status=0），渠道调用发生在额度回收成功之后。
+    # 因此第一次 SUCCESS 回调会把退款单推进到成功终态，第二次才是幂等无变更。
+    first = await pay_order_service.confirm_refund_notify(
+        db=db, refund_no=f'RF{order.order_no}', refund_status='SUCCESS'
+    )
+    assert first is True, '首次 SUCCESS 回调应把受理中的退款单推进到成功'
     changed = await pay_order_service.confirm_refund_notify(
         db=db, refund_no=f'RF{order.order_no}', refund_status='SUCCESS'
     )

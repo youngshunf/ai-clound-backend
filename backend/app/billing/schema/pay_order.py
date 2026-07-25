@@ -79,11 +79,22 @@ class CreatePayOrderResponse(SchemaBase):
 # ========== 查询订单状态 ==========
 
 class PayOrderStatusResponse(SchemaBase):
-    """订单状态响应"""
+    """订单状态响应。
+
+    **支付成功 ≠ 额度到账**（doc94 §2.2）：云端事务只登记履约命令，真正的发放由 outbox
+    worker 投给 NewAPI。所以「付款状态」和「履约状态」必须是两个独立字段——
+    只回 `status=1` 会让 UI 在额度还没到账时就显示「已完成」，用户马上去用却被 403 挡住。
+    """
     order_no: str
     status: int = Field(description='0=待支付 1=已支付 2=已退款 3=已关闭 4=已过期')
     pay_amount: int = Field(description='实付金额（分）')
     success_time: datetime | None = None
+    fulfillment_status: str | None = Field(
+        None,
+        description='履约状态 not_required/pending/processing/succeeded/retrying/dead/reversed；'
+        '只有 succeeded 才是「额度已到账」',
+    )
+    fulfilled_at: datetime | None = Field(None, description='额度真正到账的时刻')
 
 
 # ========== 订单列表 ==========

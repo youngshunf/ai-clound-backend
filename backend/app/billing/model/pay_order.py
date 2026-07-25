@@ -38,6 +38,18 @@ class PayOrder(BillingBase):
     channel_user_id: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='第三方用户标识')
     success_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='支付成功时间')
     extra_data: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='扩展数据')
+    # 履约状态（doc94 C1）：支付状态与履约状态必须是两个可观察状态——
+    # 用户端只有 status=已支付 且 fulfillment_status=succeeded 才显示「购买完成」，
+    # 否则显示「已付款，额度发放中」并给出订单号，绝不假报完成。
+    fulfillment_status: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='not_required',
+        index=True,
+        comment='履约状态 not_required/pending/processing/succeeded/retrying/dead/reversed',
+    )
+    fulfilled_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='履约完成时间（额度真正到账的时刻）')
+    fulfillment_error_code: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='履约失败机器码')
+    fulfillment_event_id: Mapped[str | None] = mapped_column(sa.String(36), default=None, comment='关联的履约事件 ID')
     # 统一商业化内核（MK-1）：商品目录引用快照，下单入口按 kind 分发 fulfillment（收编散落 order_type）
     offering_ref: Mapped[dict | None] = mapped_column(
         postgresql.JSONB(),

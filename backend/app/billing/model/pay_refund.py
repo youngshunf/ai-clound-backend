@@ -25,3 +25,11 @@ class PayRefund(BillingBase):
     channel_refund_no: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='第三方退款单号')
     status: Mapped[int] = mapped_column(sa.SMALLINT(), default=0, comment='状态 0=待处理 1=成功 2=失败')
     success_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='退款成功时间')
+    # 额度回收（doc94 C1）：退款走 saga——事务内写回收事件，NewAPI 幂等回收成功后才调支付渠道。
+    fulfillment_status: Mapped[str] = mapped_column(
+        sa.String(16),
+        default='not_required',
+        comment='额度回收状态 not_required/pending/processing/succeeded/retrying/dead',
+    )
+    revoke_event_id: Mapped[str | None] = mapped_column(sa.String(36), default=None, comment='额度回收事件 ID')
+    compensate_event_id: Mapped[str | None] = mapped_column(sa.String(36), default=None, comment='渠道退款失败后的反向补偿事件 ID')

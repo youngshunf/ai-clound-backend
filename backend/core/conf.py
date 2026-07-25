@@ -74,10 +74,9 @@ class Settings(BaseSettings):
     SYNC_SERVICE_DATABASE_URL: str = ''
     PYTHON_BACKEND_DATABASE_URL: str = ''
 
-    # 唤星积分 → new-api quota 换算比例（1 积分 = 1 美元 = 500000 quota）。
-    # NEWAPI_QUOTA_PER_DOLLAR = new-api QuotaPerUnit（协议精度，非业务费率）。
-    # （NEWAPI_DATABASE_SCHEMA + 旧别名 NEWAPI_CREDITS_TO_QUOTA_RATE 已随第二数据库引擎删除，2026-06-15。）
-    NEWAPI_QUOTA_PER_DOLLAR: int = 500_000
+    # 积分↔quota 的换算常量已随 doc94 D1 删除：NewAPI 是积分唯一权威，
+    # 云端持有一份换算算法就等于持有第二套金额口径。需要积分数值时读 NewAPI
+    # 已换算好的字符串（backend/app/newapi/credit_client.py）。
 
     # new-api 管理 HTTP API（DB 直连 → HTTP 管理 API 迁移，2026-06-15）
     # admin/root access_token + New-Api-User: <NEWAPI_ADMIN_USER_ID> 走 admin 端点；
@@ -86,6 +85,16 @@ class Settings(BaseSettings):
     NEWAPI_ADMIN_ACCESS_TOKEN: str = ''
     NEWAPI_ADMIN_USER_ID: int = 1
     NEWAPI_HTTP_TIMEOUT_SECONDS: int = 15
+
+    # NewAPI 内部积分履约通道（doc94 §3）。与 admin 通道分开：
+    # 它只认服务凭据、不挂 CORS、不接受 Owner cookie/JWT，版本前缀固定 /api/internal/v1。
+    # 凭据未配置时履约调用直接失败，绝不退化成匿名可写。
+    NEWAPI_INTERNAL_BASE_URL: str = 'http://localhost:3180/api/internal/v1'
+    NEWAPI_CREDIT_SERVICE_TOKEN: str = ''
+    # outbox worker 单轮抓取的事件数上限（配合 FOR UPDATE SKIP LOCKED 支持多 worker 并发）
+    CREDIT_OUTBOX_BATCH_SIZE: int = 50
+    # 履约重试上限：达到后进 dead letter 并发 error 告警，不再无限重投
+    CREDIT_OUTBOX_MAX_ATTEMPTS: int = 8
     # new-api 用户默认分组：relay 渠道按「用户分组」匹配可用渠道（token 空组继承用户组）。
     # new-api admin CreateUser 不接受 group 字段 → 新建用户分组为空字符串 → relay 报
     # 「No available channel for model X under group  ()」（空组匹配不到任何渠道）。
@@ -95,6 +104,14 @@ class Settings(BaseSettings):
     # 新用户注册赠送积分（口径统一为 $100=100 积分，与免费档 subscription_tier(free).monthly_credits 一致；
     # 最终对账以账本为准，此值仅作新建用户初始 new-api quota，避免「先 $500 后被对账打回 $100」的瞬时不一致）
     NEWAPI_REGISTER_BONUS_CREDITS: int = 100
+    # 注册奖励的活动键与版本（doc94 §2.1 幂等键组件）。
+    # 调整赠送额度时**必须**递增版本号：同一活动同一版本对同一用户只发一次，
+    # 换版本才能重新发放；不递增就会被旧幂等键挡住，改了额度也发不出去。
+    REGISTER_BONUS_CAMPAIGN_KEY: str = 'register'
+    REGISTER_BONUS_CAMPAIGN_VERSION: int = 1
+    # 免费档政策版本（doc94 §2.1）。免费政策变更（额度调整、条款换代）时递增，
+    # 与「每用户每次失效→重授 +1」的 epoch 一起构成免费档幂等键。
+    FREE_TIER_POLICY_VERSION: int = 1
 
     # .env Redis
     REDIS_HOST: str

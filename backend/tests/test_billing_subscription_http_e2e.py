@@ -1,18 +1,22 @@
-"""桌面端订阅与积分计费 · 云端真实 HTTP E2E（真实 PostgreSQL，零 mock）。
+"""桌面端订阅与流水 · 云端真实 HTTP E2E（真实 PostgreSQL，零 mock 于数据层）。
 
-覆盖（B0/B0'/B0''/B0''' 中可在进程内真实验证的部分）：
-  - B0''' 用户端积分流水端点 `GET /api/v1/user_tier/app/subscription/transactions`：
-    时间倒序、user_id+app_code 严格隔离、含 LLM 消耗(usage/llm_usage)、按类型筛选、统一信封、分页。
-  - B0  `CreatePayOrderParam` 可辨识联合跨字段校验（subscribe 必 tier / credit_pack 必 package_id）。
-  - B0' 渠道工厂 `_build_client` 把 `alipay_qr` 路由到 `AlipayQrClient`（当面付 precreate）。
+**doc94 D1 之后这套用例换了断言对象**：云端不再有 `credit_transaction` 流水表，
+消费流水与日聚合的唯一来源是 NewAPI。所以这里锁的不再是「云端账本记对了没」，
+而是**云端有没有老老实实转述 NewAPI**：
 
-真实支付下单返回 `qr_code_url`（依赖真实渠道商户凭据 + 网络）属 E1 真实 E2E（打运行中 8020），
-本进程内测试不 mock 支付 SDK（零 fake），只覆盖数据层端点 + 纯构造逻辑。
+- `GET .../transactions`：金额字符串原样透传，云端不做任何换算；
+- NewAPI 读不到时 `usage_status='unavailable'` 且列表为空——**不能**用空列表
+  把「读不到」伪装成「这段时间没花钱」；
+- `GET .../transactions/daily`：消费取 NewAPI、入账取云端履约事件，按本地日合并、倒序、分页；
+- `GET .../info`：状态按订阅结束日重算（修复「过期却显示生效中」）。
 
-模块级把 app subscription 路由挂最小 app，AppContextMiddleware 注入 app_code，
-dependency_overrides 把 DependsJwtAuth 换成注入 user_id、get_db 指向真实 PG。
-每测试用唯一 user_id 隔离。
+NewAPI 内部通道用一个**桩客户端**替身（只替网络边界，不 mock 业务逻辑）：真实 NewAPI
+不可能在单测里造出指定日期的历史日志，那属于 staging 真值验证。数据库、路由、信封、
+分页全部走真实实现。
+
+另外保留两个纯构造用例（下单参数跨字段校验、支付渠道工厂路由），它们与积分权威无关。
 """
+
 from __future__ import annotations
 
 import uuid
@@ -35,13 +39,11 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.billing.api.v1.app.subscription import router as app_subscription_router
-from backend.app.billing.model import CreditTransaction, UserSubscription
-from backend.app.billing.service.billing_usage_service import quota_to_credits
-from backend.app.newapi.client import NewApiError, newapi_admin_client
+from backend.app.billing.model import UserSubscription
+from backend.app.newapi.credit_client import NewApiCreditError
 from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
-from backend.core.conf import settings
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 from backend.middleware.app_context_middleware import AppContextMiddleware
 
@@ -56,44 +58,41 @@ add_pagination(_APP)
 
 _TXNS = '/api/v1/user_tier/app/subscription/transactions'
 _DAILY = '/api/v1/user_tier/app/subscription/transactions/daily'
+_INFO = '/api/v1/user_tier/app/subscription/info'
 
 
 def _new_user_id() -> int:
     return 960_000_000 + int(uuid.uuid4().int % 20_000_000)
 
 
-def _txn(
-    user_id: int,
-    *,
-    ttype: str,
-    credits: Decimal,
-    before: Decimal,
-    after: Decimal,
-    ref_type: str | None,
-    desc: str,
-    created: datetime,
-    app_code: str = 'huanxing',
-    extra: dict | None = None,
-) -> CreditTransaction:
-    txn = CreditTransaction(
-        app_code=app_code,
-        user_id=user_id,
-        transaction_type=ttype,
-        credits=credits,
-        balance_before=before,
-        balance_after=after,
-        reference_id=None,
-        reference_type=ref_type,
-        description=desc,
-        extra_data=extra,
-    )
-    # created_time 是 init=False 自动时间戳，构造后显式赋值以控制排序断言。
-    txn.created_time = created
-    return txn
+class _StubCreditClient:
+    """NewAPI 内部通道的网络边界替身。
+
+    只替 HTTP 边界：路由、信封、分页、合并、时区口径全部走真实实现。
+    `fail=True` 时抛可重试错误，用来验证「读不到就说读不到」。
+    """
+
+    def __init__(self) -> None:
+        self.usage_page: dict = {'items': [], 'total': 0, 'page': 1, 'size': 20, 'measured_at': None}
+        self.usage_daily: dict = {'items': [], 'measured_at': None}
+        self.fail = False
+
+    async def get_usage_page(self, newapi_user_id: int, **kwargs) -> dict:
+        if self.fail:
+            raise NewApiCreditError('模拟不可达', code='newapi_credit_unreachable', retryable=True)
+        return self.usage_page
+
+    async def get_usage_daily(self, newapi_user_id: int, **kwargs) -> dict:
+        if self.fail:
+            raise NewApiCreditError('模拟不可达', code='newapi_credit_unreachable', retryable=True)
+        return self.usage_daily
+
+    async def get_credit_account(self, newapi_user_id: int) -> dict:
+        raise NewApiCreditError('本用例不覆盖账户读', code='newapi_credit_unreachable', retryable=True)
 
 
 @pytest_asyncio.fixture
-async def env():
+async def env(monkeypatch):
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -104,6 +103,13 @@ async def env():
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     auth_state = {'user_id': _new_user_id()}
+    stub = _StubCreditClient()
+
+    import backend.app.billing.service.credit_account_service as account_module
+    import backend.app.billing.service.credit_usage_service as usage_module
+
+    monkeypatch.setattr(usage_module, 'newapi_credit_client', stub)
+    monkeypatch.setattr(account_module, 'newapi_credit_client', stub)
 
     async def _yield_session():
         yield session
@@ -119,7 +125,7 @@ async def env():
 
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')
     try:
-        yield SimpleNamespace(client=client, session=session, auth_state=auth_state)
+        yield SimpleNamespace(client=client, session=session, auth_state=auth_state, stub=stub)
     finally:
         await client.aclose()
         _APP.dependency_overrides.clear()
@@ -135,243 +141,188 @@ def _data(resp: httpx.Response):
     return body['data']
 
 
-async def test_transactions_ordered_isolated_with_llm_usage(env) -> None:
-    """流水时间倒序 + user/app 隔离 + 含 LLM 消耗(usage/llm_usage) + 统一信封。"""
-    s, c, uid = env.session, env.client, env.auth_state['user_id']
-    base = datetime(2026, 6, 1, 12, 0, 0)
-    # 我的三条：购买(+) / 月度发放(+) / LLM 消耗(-)
-    s.add(_txn(uid, ttype='purchase', credits=Decimal(1100), before=Decimal(0), after=Decimal(1100),
-               ref_type='pay_order', desc='购买积分包', created=base))
-    s.add(_txn(uid, ttype='monthly_grant', credits=Decimal(1000), before=Decimal(1100), after=Decimal(2100),
-               ref_type='pay_order', desc='月度赠送', created=base + timedelta(minutes=1)))
-    s.add(_txn(uid, ttype='usage', credits=Decimal('-12.5'), before=Decimal(2100), after=Decimal('2087.5'),
-               ref_type='llm_usage', desc='LLM 调用消耗', created=base + timedelta(minutes=2)))
-    # 别的用户一条（隔离）
-    other = _new_user_id()
-    s.add(_txn(other, ttype='purchase', credits=Decimal(999), before=Decimal(0), after=Decimal(999),
-               ref_type='pay_order', desc='别人的', created=base + timedelta(minutes=3)))
-    # 另一 app_code 一条（隔离）
-    s.add(_txn(uid, ttype='purchase', credits=Decimal(777), before=Decimal(0), after=Decimal(777),
-               ref_type='pay_order', desc='知小鸦的', created=base + timedelta(minutes=4), app_code='zhixiaoya'))
-    await s.flush()
-
-    data = _data(await c.get(_TXNS, params={'page': 1, 'size': 50}))
-    items = data['items']
-    assert len(items) == 3, f'仅我的 huanxing 三条（隔离别人/别 app），实际 {len(items)}'
-    # 时间倒序：usage(最新) → monthly_grant → purchase
-    assert [it['transaction_type'] for it in items] == ['usage', 'monthly_grant', 'purchase']
-    # LLM 消耗条目：负积分 + reference_type=llm_usage
-    usage = items[0]
-    assert usage['reference_type'] == 'llm_usage'
-    assert Decimal(str(usage['credits'])) < 0, 'usage 为消耗（负积分）'
-    # 不泄漏别人/别 app 的描述
-    descs = {it['description'] for it in items}
-    assert '别人的' not in descs and '知小鸦的' not in descs
+async def _seed_mapping(session, user_id: int) -> None:
+    session.add(
+        LlmNewapiUserMapping(
+            huanxing_user_id=user_id,
+            newapi_user_id=user_id,
+            newapi_token_key=f'e2e{user_id}',
+            newapi_token_id=0,
+            app_code='huanxing',
+            status='active',
+        )
+    )
+    await session.flush()
 
 
-async def test_transactions_filter_by_type(env) -> None:
-    """按 transaction_type 筛选只返回该类。"""
-    s, c, uid = env.session, env.client, env.auth_state['user_id']
-    base = datetime(2026, 6, 2, 9, 0, 0)
-    s.add(_txn(uid, ttype='purchase', credits=Decimal(100), before=Decimal(0), after=Decimal(100),
-               ref_type='pay_order', desc='买', created=base))
-    s.add(_txn(uid, ttype='usage', credits=Decimal(-5), before=Decimal(100), after=Decimal(95),
-               ref_type='llm_usage', desc='耗', created=base + timedelta(minutes=1)))
-    await s.flush()
+async def test_transactions_passes_through_newapi_amounts(env) -> None:
+    """流水金额原样透传：云端不做任何单位换算，也不改字段口径。"""
+    await _seed_mapping(env.session, env.auth_state['user_id'])
+    env.stub.usage_page = {
+        'items': [
+            {
+                'id': 2,
+                'created_at': 1_784_997_000,
+                'model_name': 'gpt-x',
+                'token_name': 'default',
+                'credits': '0.5',
+                'prompt_tokens': 10,
+                'completion_tokens': 20,
+                'use_time': 3,
+                'is_stream': False,
+                'funding_source': 'subscription',
+            }
+        ],
+        'total': 1,
+        'page': 1,
+        'size': 20,
+        'measured_at': '2026-07-25T10:00:00Z',
+    }
 
-    data = _data(await c.get(_TXNS, params={'page': 1, 'size': 50, 'transaction_type': 'usage'}))
-    assert len(data['items']) == 1 and data['items'][0]['transaction_type'] == 'usage'
+    data = _data(await env.client.get(_TXNS, params={'page': 1, 'size': 20}))
+
+    assert data['usage_status'] == 'ok'
+    assert data['total'] == 1
+    # 字符串原样：不能变成 0.5 浮点，也不能被二次量化成 '0.50'
+    assert data['items'][0]['credits'] == '0.5'
+    assert data['items'][0]['funding_source'] == 'subscription'
+    assert data['measured_at'] == '2026-07-25T10:00:00Z'
 
 
-async def test_transactions_empty_returns_envelope(env) -> None:
-    """无流水也返回统一信封 + 空 items（零 fake）。"""
-    c = env.client
-    data = _data(await c.get(_TXNS, params={'page': 1, 'size': 20}))
-    assert data['items'] == [] and data['total'] == 0
+async def test_transactions_unavailable_is_not_disguised_as_no_usage(env) -> None:
+    """NewAPI 读不到 → usage_status=unavailable；绝不用空列表伪装成「没有消费」。"""
+    await _seed_mapping(env.session, env.auth_state['user_id'])
+    env.stub.fail = True
+
+    data = _data(await env.client.get(_TXNS))
+
+    assert data['usage_status'] == 'unavailable'
+    assert data['items'] == []
+    assert data['unavailable_reason']
 
 
-async def test_transactions_daily_grants_internal_usage_not_counted(env) -> None:
-    """按日合并新口径：入账取内部账本；内部 usage 行**不再**计为消耗（消耗权威在 new-api）。
+async def test_transactions_unmapped_user_is_distinguished(env) -> None:
+    """尚未开通 NewAPI 账户是「没有账户」，与「没有消费」必须能区分。"""
+    data = _data(await env.client.get(_TXNS))
 
-    本测试用户无 new-api 映射 → 消耗/请求/token 全 0；验证入账侧 + 本地日归并 + 隔离，
-    且内部历史 usage 行不被当作消耗。new-api 真实消耗的合并见
-    `test_newapi_authoritative_info_and_daily`（按 new-api 可达性 gated）。
-    """
-    s, c, uid = env.session, env.client, env.auth_state['user_id']
-    utc = dt_tz.utc
-    # 06-07 本地：入账 +1000（purchase）+ 一条内部 usage（旧账本遗留，应被忽略）
-    s.add(_txn(uid, ttype='purchase', credits=Decimal(1000), before=Decimal(0), after=Decimal(1000),
-               ref_type='pay_order', desc='充值', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
-    s.add(_txn(uid, ttype='usage', credits=Decimal(-30), before=Decimal(1000), after=Decimal(970),
-               ref_type='llm_usage', desc='内部usage(应忽略)', created=datetime(2026, 6, 7, 13, 0, tzinfo=utc),
-               extra={'input_tokens': 1200, 'output_tokens': 300}))
-    # 隔离：别的用户 + 别 app 不计入
-    s.add(_txn(_new_user_id(), ttype='purchase', credits=Decimal(999), before=Decimal(0), after=Decimal(999),
-               ref_type='pay_order', desc='别人', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc)))
-    s.add(_txn(uid, ttype='purchase', credits=Decimal(888), before=Decimal(0), after=Decimal(888),
-               ref_type='pay_order', desc='别app', created=datetime(2026, 6, 7, 12, 0, tzinfo=utc), app_code='zhixiaoya'))
-    await s.flush()
+    assert data['usage_status'] == 'unmapped'
+    assert data['items'] == []
 
-    data = _data(await c.get(_DAILY, params={'page': 1, 'size': 20}))
-    items = data['items']
-    assert data['total'] == 1 and len(items) == 1, f'仅 06-07 一天（含我的 huanxing 入账），实际 {items}'
-    d7 = items[0]
-    assert d7['date'] == '2026-06-07'
-    assert Decimal(str(d7['granted'])) == Decimal(1000)
-    # 内部 usage 不再计为消耗（消耗权威在 new-api，本用户无映射）
-    assert Decimal(str(d7['consumed'])) == Decimal(0), '内部 usage 不应再计为消耗'
-    assert Decimal(str(d7['net'])) == Decimal(1000)
-    assert d7['request_count'] == 0 and d7['token_count'] == 0, '消耗/请求/token 权威在 new-api'
-    # count 仍含当日全部内部流水（purchase + usage = 2 笔）
-    assert d7['count'] == 2
+
+async def test_daily_merges_newapi_consumption_desc_and_paginates(env) -> None:
+    """日聚合：消费取 NewAPI，按日倒序，在合并结果上分页（日边界不被切断）。"""
+    await _seed_mapping(env.session, env.auth_state['user_id'])
+    env.stub.usage_daily = {
+        'items': [
+            {'day': '2026-07-25', 'consumed_credits': '3', 'request_count': 3, 'token_count': 300},
+            {'day': '2026-07-24', 'consumed_credits': '2', 'request_count': 2, 'token_count': 200},
+            {'day': '2026-07-23', 'consumed_credits': '1', 'request_count': 1, 'token_count': 100},
+        ],
+        'measured_at': '2026-07-25T10:00:00Z',
+    }
+
+    first = _data(await env.client.get(_DAILY, params={'page': 1, 'size': 2}))
+    second = _data(await env.client.get(_DAILY, params={'page': 2, 'size': 2}))
+
+    assert first['total'] == 3
+    assert [item['date'] for item in first['items']] == ['2026-07-25', '2026-07-24']
+    assert [item['date'] for item in second['items']] == ['2026-07-23']
+    # 展示口径：消耗为负数
+    assert Decimal(str(first['items'][0]['consumed'])) == Decimal('-3')
+    assert first['items'][0]['request_count'] == 3
+    assert first['usage_status'] == 'ok'
+    assert first['measured_at'] == '2026-07-25T10:00:00Z'
+
+
+async def test_daily_unavailable_is_reported_not_swallowed(env) -> None:
+    """日聚合读不到时同样如实标注，而不是回一串「当天消耗 0」。"""
+    await _seed_mapping(env.session, env.auth_state['user_id'])
+    env.stub.fail = True
+
+    data = _data(await env.client.get(_DAILY))
+
+    assert data['usage_status'] == 'unavailable'
+    assert data['items'] == []
+
+
+async def test_daily_empty_returns_envelope(env) -> None:
+    """无数据也必须回统一信封与稳定形状，不能空 body。"""
+    await _seed_mapping(env.session, env.auth_state['user_id'])
+
+    data = _data(await env.client.get(_DAILY))
+
+    assert data['items'] == []
+    assert data['total'] == 0
+    assert data['total_pages'] == 0
 
 
 async def test_info_status_expired_recomputed(env) -> None:
     """/info 状态按订阅结束日重算：付费且已过期 → expired（修复「过期却显示生效中」）。
 
-    只依赖唤星 PG；new-api 不可达时 get_available_credits 优雅降级回退内部，不影响状态判定。
+    该用户没有 NewAPI 映射，余额字段为 None，但**不影响状态判定**——
+    状态来自合同，余额来自权威快照，两者互不兜底。
     """
-    s, c, uid = env.session, env.client, env.auth_state['user_id']
+    session, client, uid = env.session, env.client, env.auth_state['user_id']
     now = datetime.now(dt_tz.utc)
-    s.add(UserSubscription(
-        app_code='huanxing', user_id=uid, tier='pro', subscription_type='monthly',
-        monthly_credits=Decimal(1000), current_credits=Decimal(1000),
-        used_credits=Decimal(0), purchased_credits=Decimal(0),
-        billing_cycle_start=now - timedelta(days=95), billing_cycle_end=now - timedelta(days=65),
-        subscription_start_date=now - timedelta(days=95), subscription_end_date=now - timedelta(days=65),
-        next_grant_date=None, status='active', auto_renew=False, max_agents=3,
-    ))
-    await s.flush()
+    session.add(
+        UserSubscription(
+            app_code='huanxing',
+            user_id=uid,
+            tier='pro',
+            subscription_type='monthly',
+            monthly_credits=Decimal(1000),
+            current_credits=Decimal(1000),
+            used_credits=Decimal(0),
+            purchased_credits=Decimal(0),
+            billing_cycle_start=now - timedelta(days=95),
+            billing_cycle_end=now - timedelta(days=65),
+            subscription_start_date=now - timedelta(days=95),
+            subscription_end_date=now - timedelta(days=65),
+            next_grant_date=None,
+            status='active',
+            auto_renew=False,
+            max_agents=3,
+        )
+    )
+    await session.flush()
 
-    data = _data(await c.get('/api/v1/user_tier/app/subscription/info'))
+    data = _data(await client.get(_INFO))
+
     assert data['status'] == 'expired', f"已过期付费订阅应判 expired，实际 {data['status']}"
     assert data['tier'] == 'pro'
-    # cycle_consumed_credits 字段存在（无 new-api 映射 → 0），不再用「额度−剩余」假象
-    assert Decimal(str(data['cycle_consumed_credits'])) == Decimal(0)
-
-
-async def test_newapi_authoritative_info_and_daily(env) -> None:
-    """**真实联调**：new-api 为权威源 —— 可用积分 = (quota − used_quota)/RATE，经 HTTP 管理 API 读取。
-
-    解耦后（2026-06-15）唤星不再直连 new-api 数据库：本测试经 `newapi_admin_client`（HTTP）
-    创建真实 new-api 用户并 `set_user_quota`，再建唤星映射/订阅，断言 /info current_credits 反映
-    new-api 权威额度（新建用户 used_quota=0 → 可用=全额）、cycle_consumed=0（无真实流量）。
-
-    > 历史 `logs`（type=2 消耗明细）无法经 HTTP 管理 API 注入（只由真实中转流量写入），
-    > 故不再 seed 假日志、不再断言 /daily 的逐日消耗——那需真实计费流量，属 staging 真值验证。
-    new-api 不可达 → skip（infra-gated）。
-    """
-    s, c, uid = env.session, env.client, env.auth_state['user_id']
-    rate = settings.NEWAPI_QUOTA_PER_DOLLAR
-
-    try:
-        status = await newapi_admin_client.get_status()  # 返回 /status 配置块（非 {success,data} 信封）
-    except Exception as exc:
-        pytest.skip(f'new-api 管理 API 不可达，跳过真实联调: {exc!r}')
-    if not status:
-        pytest.skip('new-api 管理 API 未就绪（/status 空响应），跳过真实联调')
-
-    newapi_user_id = None
-    try:
-        # 1) 经 HTTP 创建真实 new-api 用户并设额度为 20000 积分（quota 单位）；新建用户 used_quota=0
-        newapi_user_id = await newapi_admin_client.ensure_user(username=f'hx_e2e_{uid}', display_name='e2e')
-        await newapi_admin_client.set_user_quota(newapi_user_id=newapi_user_id, quota=20_000 * rate)
-
-        # 2) 唤星侧：映射 + 付费订阅
-        s.add(LlmNewapiUserMapping(
-            huanxing_user_id=uid, newapi_user_id=newapi_user_id,
-            newapi_token_key='e2e', newapi_token_id=0, app_code='huanxing', status='active',
-        ))
-        now = datetime.now(dt_tz.utc)
-        s.add(UserSubscription(
-            app_code='huanxing', user_id=uid, tier='flagship', subscription_type='monthly',
-            monthly_credits=Decimal(20000), current_credits=Decimal(0),
-            used_credits=Decimal(0), purchased_credits=Decimal(0),
-            billing_cycle_start=datetime(2026, 6, 1, tzinfo=dt_tz.utc), billing_cycle_end=now + timedelta(days=10),
-            subscription_start_date=datetime(2026, 6, 1, tzinfo=dt_tz.utc), subscription_end_date=now + timedelta(days=10),
-            next_grant_date=None, status='active', auto_renew=False, max_agents=10,
-        ))
-        await s.flush()
-
-        # /info：可用积分 = (20000 − 0) = 20000（new-api 权威，新建用户 used_quota=0）；本期消耗 = 0（无流量）
-        info = _data(await c.get('/api/v1/user_tier/app/subscription/info'))
-        assert Decimal(str(info['current_credits'])) == quota_to_credits(20_000 * rate)
-        assert Decimal(str(info['cycle_consumed_credits'])) == Decimal(0)
-        assert info['status'] == 'active'
-
-        # /daily：无真实计费流量 → new-api 消耗 0；端点正常返回统一信封（不再 seed 假日志）
-        daily = _data(await c.get(_DAILY, params={'page': 1, 'size': 20}))
-        for it in daily['items']:
-            assert Decimal(str(it['consumed'])) == Decimal(0), 'new-api 无真实流量，消耗应为 0'
-    finally:
-        # 清理：经 HTTP 删除 new-api 用户（避免污染共享实例）
-        if newapi_user_id is not None:
-            try:
-                await newapi_admin_client.delete_user(newapi_user_id)
-            except NewApiError:
-                pass
-
-
-async def test_quota_to_credits_conversion() -> None:
-    """quota → 积分换算（÷ NEWAPI_QUOTA_PER_DOLLAR），与 credits_to_quota 互逆（纯函数，无 DB）。"""
-    rate = settings.NEWAPI_QUOTA_PER_DOLLAR
-    assert quota_to_credits(rate) == Decimal('1.00')
-    assert quota_to_credits(rate * 1000) == Decimal('1000.00')
-    assert quota_to_credits(rate * 19000) == Decimal('19000.00')
-    assert quota_to_credits(0) == Decimal('0.00')
-    assert quota_to_credits(None) == Decimal('0.00')
-
-
-async def test_transactions_daily_pagination(env) -> None:
-    """按日聚合分页：3 天 size=2 → 第一页两天（倒序）、第二页一天。"""
-    s, c, uid = env.session, env.client, env.auth_state['user_id']
-    utc = dt_tz.utc
-    for day in (5, 6, 7):
-        # 03:00Z = 11:00+08，稳落当地同一天
-        s.add(_txn(uid, ttype='usage', credits=Decimal(-10), before=Decimal(100), after=Decimal(90),
-                   ref_type='llm_usage', desc=f'd{day}', created=datetime(2026, 6, day, 3, 0, tzinfo=utc)))
-    await s.flush()
-
-    p1 = _data(await c.get(_DAILY, params={'page': 1, 'size': 2}))
-    assert p1['total'] == 3 and p1['total_pages'] == 2 and len(p1['items']) == 2
-    assert [it['date'] for it in p1['items']] == ['2026-06-07', '2026-06-06']
-    p2 = _data(await c.get(_DAILY, params={'page': 2, 'size': 2}))
-    assert len(p2['items']) == 1 and p2['items'][0]['date'] == '2026-06-05'
-
-
-async def test_transactions_daily_empty_returns_envelope(env) -> None:
-    """无流水也返回统一信封 + 空 items（零 fake）。"""
-    data = _data(await env.client.get(_DAILY, params={'page': 1, 'size': 20}))
-    assert data['items'] == [] and data['total'] == 0
+    # 拿不到权威余额时如实为 None，绝不回落云端旧值，也不伪造 0
+    assert data['current_credits'] is None
+    assert data['credit_status'] == 'unmapped'
 
 
 def test_create_pay_order_param_cross_field_validation() -> None:
-    """B0：可辨识联合跨字段校验。"""
+    """下单参数可辨识联合跨字段校验。"""
     import pydantic
 
     from backend.app.billing.schema.pay_order import CreatePayOrderParam
 
-    # 合法
     assert CreatePayOrderParam(order_type='subscribe', tier='pro', channel_code='wx_native').tier == 'pro'
     assert CreatePayOrderParam(order_type='credit_pack', package_id=10, channel_code='alipay_qr').package_id == 10
-    # subscribe 缺 tier → 422
     with pytest.raises(pydantic.ValidationError):
         CreatePayOrderParam(order_type='subscribe', channel_code='wx_native')
-    # credit_pack 缺 package_id → 422
     with pytest.raises(pydantic.ValidationError):
         CreatePayOrderParam(order_type='credit_pack', channel_code='wx_native')
-    # 非法 order_type → 422
     with pytest.raises(pydantic.ValidationError):
         CreatePayOrderParam(order_type='bogus', channel_code='wx_native')
 
 
 def test_build_client_routes_alipay_qr() -> None:
-    """B0'：渠道工厂把 alipay_qr 路由到 AlipayQrClient（当面付），alipay_pc → AlipayPcClient。"""
+    """渠道工厂把 alipay_qr 路由到 AlipayQrClient（当面付），alipay_pc → AlipayPcClient。"""
     from backend.app.billing.service.channel.alipay_pc import AlipayPcClient
     from backend.app.billing.service.channel.alipay_qr import AlipayQrClient
     from backend.app.billing.service.pay_order_service import _build_client
 
-    cfg = {'appId': 'x', 'serverUrl': 'https://openapi-sandbox.dl.alipaydev.com/gateway.do', 'privateKey': 'k', 'alipayPublicKey': 'p'}
+    cfg = {
+        'appId': 'x',
+        'serverUrl': 'https://openapi-sandbox.dl.alipaydev.com/gateway.do',
+        'privateKey': 'k',
+        'alipayPublicKey': 'p',
+    }
     qr_channel = SimpleNamespace(code='alipay_qr', id=999, config=cfg, extra_config=None)
     pc_channel = SimpleNamespace(code='alipay_pc', id=998, config=cfg, extra_config=None)
     assert isinstance(_build_client(qr_channel, cfg), AlipayQrClient)

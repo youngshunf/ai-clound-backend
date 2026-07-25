@@ -80,9 +80,8 @@ async def _seed_newapi_mapping(session: AsyncSession, *, user_id: int, token_key
     await session.execute(
         text(
             'insert into llm_newapi_user_mapping '
-            '(huanxing_user_id, newapi_user_id, newapi_token_key, newapi_token_id, app_code, status, '
-            'last_synced_used_quota) '
-            "values (:uid, :nid, :key, :tid, 'huanxing', 'active', 0)"
+            '(huanxing_user_id, newapi_user_id, newapi_token_key, newapi_token_id, app_code, status) '
+            "values (:uid, :nid, :key, :tid, 'huanxing', 'active')"
         ),
         {'uid': user_id, 'nid': user_id, 'key': token_key, 'tid': user_id},
     )

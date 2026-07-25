@@ -5,10 +5,10 @@
   本次全部改为经 `newapi_admin_client`（HTTP 管理 API）落地，**唤星不再连 new-api 库**。
 - 仍保留唤星库映射表 `llm_newapi_user_mapping`（CRUD 不变），新增三列：
   `newapi_access_token`（用户 access_token Fernet 密文，复用于建 relay token）、
-  `last_synced_used_quota` / `last_synced_at`（§5A 积分账本增量同步游标）。
+  （§5A 的积分账本增量同步游标已随 doc94 D1 删除：云端不再回扣账本。）
 
 单位约定：本服务是「积分 = $」业务层与 new-api 原生 `quota`（微单位整数）的换算边界。
-quota = 积分 × NEWAPI_QUOTA_PER_DOLLAR（=new-api QuotaPerUnit，协议精度非业务费率）。
+quota↔积分的换算自 doc94 D1 起只在 new-api 一侧进行，云端不再持有换算常量。
 """
 
 import hashlib
@@ -42,26 +42,9 @@ from backend.common.security.encryption import key_encryption
 from backend.core.conf import settings
 from backend.utils.timezone import timezone as _tz
 
-# ========== 单位换算（1 积分 = $1；quota = 积分 × QUOTA_PER_DOLLAR）==========
-
-
-def credits_to_quota(credits: int) -> int:
-    """唤星积分 → new-api quota（整数微单位）。"""
-    return int(credits) * settings.NEWAPI_QUOTA_PER_DOLLAR
-
-
-def quota_to_credits(quota: int) -> float:
-    """new-api quota → 唤星积分（= $）。"""
-    return quota / settings.NEWAPI_QUOTA_PER_DOLLAR
-
-
-# 各套餐默认 quota（当 subscription_tier.features 中未配置 newapi_quota 时使用）
-DEFAULT_TIER_QUOTA = {
-    'free': credits_to_quota(100),  # 微星 100 积分
-    'pro': credits_to_quota(1_000),  # 明星 1,000 积分
-    'advanced': credits_to_quota(5_000),  # 恒星 5,000 积分
-    'flagship': credits_to_quota(20_000),  # 超新星 20,000 积分
-}
+# doc94 D1：quota↔积分的换算只在 NewAPI 一侧做。云端持有一份换算常量，
+# 就等于持有第二套金额算法——两套一旦不一致，用户看到的数字和真实扣费就对不上。
+# 需要积分口径的数字时，读 NewAPI 已换算好的字符串（见 newapi/credit_client.py）。
 
 DEFAULT_USERNAME_PREFIX = 'hx_'
 AGENT_TOKEN_NAME_PREFIX = 'hermes-agent'
@@ -143,7 +126,7 @@ async def summarize_usage(username: str | None, start_time: int, end_time: int) 
     """分页拉 /log/ 汇总为 UsageSummary 形状（用于 `/api/v1/llm/usage/summary`）。
 
     username=None → 汇总全部用户（超管口径）。new-api type=2 消费日志只记可计费的成功调用，
-    故 success=total、error=0（如实：错误不计费、不在消费日志）。total_cost = 积分（= $）。
+    故 success=total、error=0（如实：错误不计费、不在消费日志）。金额以原始 quota 直出，积分换算在 NewAPI 侧。
     不可达 → 全 0（调用方如实回退，零 fake）。
     """
     requests = prompt = completion = quota = use_time_sum = 0
@@ -182,7 +165,8 @@ async def summarize_usage(username: str | None, start_time: int, end_time: int) 
         'total_tokens': prompt + completion,
         'total_input_tokens': prompt,
         'total_output_tokens': completion,
-        'total_cost': quota_to_credits(quota),  # 积分 = $（1:1）
+        # 原始 quota 直出：换算成积分由 NewAPI 负责，云端不做金额算术（doc94 D1）
+        'total_quota': quota,
         'avg_latency_ms': avg_latency_ms,
     }
 
@@ -362,14 +346,14 @@ class LlmNewapiUserMappingService:
                 status=existing.status,
             )
 
-        quota = initial_quota if initial_quota is not None else DEFAULT_TIER_QUOTA.get('free', credits_to_quota(100))
         newapi_username = username or f'{DEFAULT_USERNAME_PREFIX}{huanxing_user_id}'
         display = nickname or newapi_username
 
         # 1. 幂等确保 new-api 用户（撞 username → 复用，替代旧 DB ON CONFLICT 自愈）
         newapi_user_id = await newapi_admin_client.ensure_user(username=newapi_username, display_name=display)
-        # 2. 覆盖式设额度（token 无限额度，用户额度由 users.quota 统一控制）
-        await newapi_admin_client.set_user_quota(newapi_user_id=newapi_user_id, quota=quota)
+        # 2. 不再在建号时覆盖式设额度：余额是 NewAPI 权威，云端只能通过幂等履约事件增量发放。
+        #    新用户的注册赠送额度由 `wallet_grant` 事件发放（幂等键 bonus:{campaign}:{version}:{user}），
+        #    在这里写绝对 quota 会重新打开「云端覆盖余额」的反向数据流。
         # 3. 铸用户 access_token（建 relay token 必须以用户身份）
         access_token = await newapi_admin_client.bootstrap_user_access_token(
             newapi_user_id=newapi_user_id, username=newapi_username
@@ -400,16 +384,11 @@ class LlmNewapiUserMappingService:
             newapi_access_token=key_encryption.encrypt(access_token),
             app_code=app_code,
             status='active',
-            last_synced_used_quota=0,
-            last_synced_at=None,
         )
         db.add(mapping)
         await db.flush()
 
-        log.info(
-            f'[NewApi] 为唤星用户 {huanxing_user_id} 创建 new-api 用户 {newapi_user_id}，'
-            f'token_id={token_id}，quota={quota}'
-        )
+        log.info(f'[NewApi] 为唤星用户 {huanxing_user_id} 创建 new-api 用户 {newapi_user_id}，token_id={token_id}')
 
         return NewApiMappingInfo(
             huanxing_user_id=huanxing_user_id,
@@ -419,21 +398,6 @@ class LlmNewapiUserMappingService:
             status='active',
         )
 
-    @staticmethod
-    async def sync_quota(
-        db: AsyncSession,
-        huanxing_user_id: int,
-        new_quota: int,
-        *,
-        app_code: str = 'huanxing',
-    ) -> None:
-        """同步 quota 到 new-api（订阅变更时调用）。"""
-        mapping = await llm_newapi_user_mapping_dao.get_by_user(db, huanxing_user_id, app_code)
-        if not mapping:
-            log.warning(f'[NewApi] 用户 {huanxing_user_id} 无 new-api 映射，跳过 quota 同步')
-            return
-        await newapi_admin_client.set_user_quota(newapi_user_id=mapping.newapi_user_id, quota=new_quota)
-        log.info(f'[NewApi] 用户 {huanxing_user_id} quota 同步到 {new_quota}')
 
     @staticmethod
     async def get_quota_info(
@@ -774,13 +738,6 @@ class LlmNewapiUserMappingService:
         else:
             await db.commit()
         return report
-
-    @staticmethod
-    def tier_to_quota(tier_name: str, features: dict | None = None) -> int:
-        """将订阅等级转换为 new-api quota。"""
-        if features and 'newapi_quota' in features:
-            return int(features['newapi_quota'])
-        return DEFAULT_TIER_QUOTA.get(tier_name, DEFAULT_TIER_QUOTA['free'])
 
 
 llm_newapi_user_mapping_service: LlmNewapiUserMappingService = LlmNewapiUserMappingService()

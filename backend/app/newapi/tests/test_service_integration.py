@@ -24,7 +24,6 @@ from backend.app.hermes.model import HermesAgentLlmToken
 from backend.app.newapi.model.llm_newapi_user_mapping import LlmNewapiUserMapping
 from backend.app.newapi.service import (
     DEFAULT_TIER_QUOTA,
-    credits_to_quota,
 )
 from backend.app.newapi.service import (
     llm_newapi_user_mapping_service as svc,
@@ -99,12 +98,13 @@ async def test_service_full_lifecycle() -> None:
 
             # 4. get_quota_info：经 API 读额度，等于设定值（pro = 1000 积分）
             quota = await svc.get_quota_info(db, huanxing_user_id)
-            assert quota.total_quota == credits_to_quota(1_000)
+            # 1 积分 = 500000 quota（new-api 协议精度）
+            assert quota.total_quota == 1_000 * 500_000
             assert quota.used_quota == 0
             assert quota.request_count == 0
 
             # 5. sync_quota：改额度后读回生效
-            new_q = credits_to_quota(2_000)
+            new_q = 2_000 * 500_000
             await svc.sync_quota(db, huanxing_user_id, new_q)
             assert (await svc.get_quota_info(db, huanxing_user_id)).total_quota == new_q
 
