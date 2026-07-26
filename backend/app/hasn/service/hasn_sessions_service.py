@@ -3,6 +3,7 @@ import json
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -70,6 +71,7 @@ class HasnSessionsService:
         session_scope: str | None = None,
         session_status: str | None = None,
         hasn_id: str | None = None,
+        project_id: UUID | str | None = None,
         origin_type: str | None = None,
         origin_ref: str | None = None,
     ) -> dict[str, Any]:
@@ -80,6 +82,8 @@ class HasnSessionsService:
         stmt = _apply_csv_filter(stmt, HasnSessions.session_status, session_status)
         if hasn_id:
             stmt = stmt.where(HasnSessions.hasn_id == hasn_id)
+        if project_id is not None:
+            stmt = stmt.where(HasnSessions.project_id == project_id)
         if origin_type:
             stmt = stmt.where(HasnSessions.origin_type == origin_type)
         if origin_ref:
@@ -161,6 +165,8 @@ class HasnSessionsService:
                 raise errors.ForbiddenError(msg='无权修改该 Session')
             # 更新现有 Session
             for key, value in session_data.items():
+                if key == 'project_id' and value is None:
+                    continue
                 if hasattr(existing, key):
                     setattr(existing, key, value)
             existing.updated_time = timezone.now()
@@ -481,6 +487,7 @@ class HasnSessionsService:
         *,
         db: AsyncSession,
         owner_id: str,
+        project_id: UUID | str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """列 owner 名下（**所有设备**）工作会话摘要——主会话跨会话感知用（doc13 决策 D）。
@@ -501,6 +508,8 @@ class HasnSessionsService:
             )
             .limit(capped)
         )
+        if project_id is not None:
+            stmt = stmt.where(HasnSessions.project_id == project_id)
         rows = (await db.execute(stmt)).scalars().all()
         return [_work_session_summary_row(session) for session in rows]
 
@@ -587,6 +596,7 @@ def _work_session_summary_row(session: HasnSessions) -> dict[str, Any]:
         'app': _app_from_origin(session.origin_type, session.origin_ref),
         'origin_type': session.origin_type,
         'origin_ref': session.origin_ref,
+        'project_id': str(session.project_id) if session.project_id is not None else None,
         'status': _map_cloud_status(session.session_status),
         'summary_preview': preview,
         'last_active': _epoch_ms(session.last_message_at or session.updated_time),

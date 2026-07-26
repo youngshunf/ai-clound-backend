@@ -9,6 +9,7 @@ from backend.common.schema import SchemaBase
 class HasnSessionsSchemaBase(SchemaBase):
     """HASN 会话分层 - 逻辑会话基础模型"""
     conversation_id: str | UUID | None = Field(None, description='关联的 conversation ID')
+    project_id: UUID | None = Field(None, description='平台项目挂靠 UUID')
     session_kind: str = Field(description='会话类型 (conversation/task/temporary/external/system)')
     session_scope: str = Field(description='同步范围 (conversation_visible/summary_only/local_only)')
     session_status: str = Field(description='会话状态 (active/paused/completed/archived)')

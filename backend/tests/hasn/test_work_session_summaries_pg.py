@@ -133,6 +133,57 @@ async def test_list_work_session_summaries_owner_scoped_and_ordered(db) -> None:
     assert items[2]['status'] == 'failed', 'error → failed'
 
 
+async def test_project_filter_and_null_upsert_preserve_existing_project(db) -> None:
+    """项目摘要过滤必须稳定，空载荷不能把既有项目归属抹掉。"""
+    owner_id = f'h_owner_{_uid()}'
+    project_id = uuid.uuid4()
+    other_project_id = uuid.uuid4()
+    session_id = f'sess_project_{_uid()}'
+    session_data = {
+        'session_id': session_id,
+        'owner_id': owner_id,
+        'hasn_id': f'a_{_uid()}',
+        'session_kind': 'task',
+        'session_scope': 'summary_only',
+        'session_status': 'active',
+        'origin_type': 'app',
+        'project_id': project_id,
+        'summary_checkpoint_json': {'summary': '项目会话摘要'},
+    }
+
+    await HasnSessionsService.upsert(db=db, owner_id=owner_id, session_data=session_data)
+    await HasnSessionsService.upsert(
+        db=db,
+        owner_id=owner_id,
+        session_data={**session_data, 'project_id': None, 'title': '后续同步'},
+    )
+    db.add(
+        HasnSessions(
+            session_id=f'sess_other_project_{_uid()}',
+            owner_id=owner_id,
+            hasn_id=f'a_{_uid()}',
+            session_kind='task',
+            session_scope='summary_only',
+            session_status='active',
+            origin_type='app',
+            project_id=other_project_id,
+            summary_checkpoint_json={'summary': '另一个项目'},
+        )
+    )
+    await db.flush()
+
+    items = await HasnSessionsService.list_work_session_summaries(
+        db=db,
+        owner_id=owner_id,
+        project_id=project_id,
+        limit=20,
+    )
+
+    assert [item['session_id'] for item in items] == [session_id]
+    assert items[0]['project_id'] == str(project_id)
+    assert 'events' not in items[0], '跨设备摘要不得暴露设备 A 的逐条事件'
+
+
 async def test_summary_preview_hard_capped(db) -> None:
     owner_id = f'h_owner_{_uid()}'
     long_text = '进' * 300  # 远超 _SUMMARY_PREVIEW_CAP
