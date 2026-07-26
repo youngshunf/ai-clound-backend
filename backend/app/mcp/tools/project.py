@@ -4,10 +4,11 @@
 （in-process，不经 daemon HTTP relay）。owner 隔离由凭证解析出的 `agent_context.owner_hasn_id`
 强制，身份绝不入请求体。
 
-10 个工具（doc38 §3 item 5 + C11）：
+11 个工具（doc38 §3 item 5 + C11/C13）：
 - `hasn.project.create/get/list/update/link/unlink`
 - `hasn.project.milestone.create/update/complete`
 - `hasn.project.inspection.publish`
+- `hasn.project.report.publish`
 
 三态闸门由 `server.call_tool` 统一判定（维度①），工具体不二次校验。写类经 `async_db_session.begin()`
 自动提交 + best-effort WSPUSH `project` 失效；读类走 `async_db_session()`。
@@ -25,9 +26,10 @@ import logging
 
 from typing import Any
 
-from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
+from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
+from backend.app.hasn_project.service.project_report_service import report_service
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
@@ -192,6 +194,22 @@ async def _h_inspection_publish(db: Any, ctx: AgentContext, args: dict[str, Any]
         fingerprint=args['fingerprint'],
         suggestion=args['suggestion'],
         suggested_instruction=args.get('suggested_instruction'),
+    )
+
+
+async def _h_report_publish(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """由当前工作会话分身把本周正文登记为项目 document 产物。"""
+    return await report_service.publish(
+        db,
+        owner=_owner_hasn_id(ctx),
+        agent_id=ctx.agent_hasn_id,
+        project_id=args['project_id'],
+        work_session_id=ctx.session_id,
+        period_start=args['period_start'],
+        period_end=args['period_end'],
+        title=args['title'],
+        body=args['body'],
+        summary=args.get('summary'),
     )
 
 
@@ -361,6 +379,27 @@ _SPECS: list[dict[str, Any]] = [
                 'suggested_instruction': _s('可选：主人按建议派发时预填的执行指令'),
             },
             ['project_id', 'fingerprint', 'suggestion'],
+        ),
+    },
+    {
+        'action': 'report.publish',
+        'write': True,
+        'handler': _h_report_publish,
+        'desc': (
+            '发布项目周报：先用 hasn.project.get 读取权威项目数据，再传 project_id、报告周期、标题和正文。'
+            '只能在已挂靠目标项目的真实工作会话中调用；同项目同周期会更新同一份 document 产物并返回 '
+            'hasn://artifact/{artifact_id}，归档项目会如实拒绝。'
+        ),
+        'schema': _schema(
+            {
+                'project_id': _s('项目 id（云端权威 UUID，必填）'),
+                'period_start': _s('报告周期开始日期 YYYY-MM-DD（必填）'),
+                'period_end': _s('报告周期结束日期 YYYY-MM-DD（必填）'),
+                'title': _s('周报标题（必填）'),
+                'body': _s('周报 Markdown 正文（必填，基于已读取的真实事实）'),
+                'summary': _s('可选：供卡片与每日简报引用的简短摘要；不得编造进展'),
+            },
+            ['project_id', 'period_start', 'period_end', 'title', 'body'],
         ),
     },
 ]

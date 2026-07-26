@@ -31,6 +31,7 @@ from backend.app.hasn_project.schema.project_app import (
 from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
 from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
+from backend.app.hasn_project.service.project_report_service import report_service
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -139,6 +140,24 @@ async def app_project_artifact_flow(
         size=size,
     )
     return response_base.success(data=flow)
+
+
+@router.get(
+    '/{pk}/reports',
+    summary='项目周报列表',
+    dependencies=[DependsJwtAuth],
+    name='project_app_list_reports',
+)
+async def app_list_reports(
+    request: Request,
+    db: CurrentSession,
+    pk: Annotated[str, Path()],
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> ResponseModel:
+    """列项目真实周报 document 索引；正文统一经 artifact 深链打开。"""
+    owner = await resolve_owner(db, request)
+    rows = await report_service.list_for_project(db, owner=owner, project_id=pk, limit=size)
+    return response_base.success(data={'items': rows})
 
 
 @router.get(
