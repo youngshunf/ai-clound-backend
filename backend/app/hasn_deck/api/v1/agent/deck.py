@@ -6,6 +6,8 @@
 scope 闸：deck:read / deck:write。manager 类操作（改共享名单/可见性）仅 owner 端可做（§8.2：不下放分身）。
 """
 
+from uuid import UUID
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
@@ -97,10 +99,20 @@ async def agent_list_style_profiles(
 
 @router.get('/decks', summary='分身可访问的演示文稿（主人的 ∪ 共享给分身/主人的 ∪ 企业可见）')
 async def agent_list_decks(
-    db: CurrentSession, limit: int = 50, offset: int = 0, agent: AgentTokenPayload = DependsAgentJwtAuth
+    db: CurrentSession,
+    limit: int = 50,
+    offset: int = 0,
+    platform_project_id: UUID | None = None,
+    agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
     await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_READ)
-    data = await deck_service.list_accessible_decks(db, subject=_subject(agent), limit=limit, offset=offset)
+    data = await deck_service.list_accessible_decks(
+        db,
+        subject=_subject(agent),
+        limit=limit,
+        offset=offset,
+        platform_project_id=platform_project_id,
+    )
     return response_base.success(data=data)
 
 
