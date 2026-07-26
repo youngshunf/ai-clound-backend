@@ -320,6 +320,34 @@ async def test_link_unlink_and_artifact_flow(env) -> None:
     assert art_in not in {r['artifact_id'] for r in flow2['items']}
 
 
+async def test_link_reassigns_resource_atomically_without_unlink(env) -> None:
+    """改挂只需目标项目的一次 link，失败前不会留下资源已摘出的中间态。"""
+    c = env.client
+    artifact_id = f'art_{uuid.uuid4().hex[:16]}'
+    await _seed_artifact(env.session, owner=env.owner, agent=env.agent, artifact_id=artifact_id)
+    original = _data(await c.post(_PROJECTS, json={'name': '原项目'}))
+    target = _data(await c.post(_PROJECTS, json={'name': '目标项目'}))
+    resource_uri = f'hasn://artifact/{artifact_id}'
+
+    initial = _data(await c.post(f'{_PROJECTS}/{original["id"]}/link', json={'resource_uri': resource_uri}))
+    assert initial['project_id'] == original['id']
+    assert initial['previous_project_id'] is None
+
+    reassigned = _data(await c.post(f'{_PROJECTS}/{target["id"]}/link', json={'resource_uri': resource_uri}))
+    assert reassigned == {
+        'linked': True,
+        'changed': True,
+        'resource_uri': resource_uri,
+        'project_id': target['id'],
+        'previous_project_id': original['id'],
+    }
+
+    old_flow = _data(await c.get(f'{_PROJECTS}/{original["id"]}/artifact-flow'))
+    new_flow = _data(await c.get(f'{_PROJECTS}/{target["id"]}/artifact-flow'))
+    assert artifact_id not in {item['artifact_id'] for item in old_flow['items']}
+    assert artifact_id in {item['artifact_id'] for item in new_flow['items']}
+
+
 async def test_link_designsystem_publishes_after_production_transaction_commit() -> None:
     """生产事务依赖提交后用新 session 发布 project 与 designsystem 合法指纹。"""
     # pytest 每用例独立事件循环；先换掉单例连接池并关闭 Redis 旧连接，让真实依赖在本用例循环重连。
