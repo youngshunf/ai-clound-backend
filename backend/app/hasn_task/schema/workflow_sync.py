@@ -16,7 +16,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
+from uuid import UUID
 
 from pydantic import Field
 
@@ -28,6 +29,9 @@ class WorkflowRunUpstream(SchemaBase):
 
     workflow_run_uuid: str = Field(description='端云稳定执行实例 UUID（幂等键）')
     workflow_uuid: str = Field(description='所属工作流稳定 UUID')
+    workflow_name_snapshot: Annotated[str | None, Field(description='fire 时的工作流名称快照')] = None
+    template_key_snapshot: Annotated[str | None, Field(description='fire 时的场景模板键快照')] = None
+    project_id: Annotated[UUID | None, Field(description='云端权威平台项目 UUID；空值表示未挂项目的历史')] = None
     dedupe_key: str | None = Field(None, description='幂等键 workflow_uuid:fire_at（缺省取 workflow_run_uuid）')
     status: str | None = Field(None, description='running/completed/failed/blocked/cancelled')
     advance_mode: str | None = Field(None, description='推进档位 manual/auto')

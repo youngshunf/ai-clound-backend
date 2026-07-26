@@ -19,7 +19,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import pytest_asyncio
@@ -33,8 +33,8 @@ from backend.app.hasn_task.crud.crud_workflow import (
     hasn_workflow_run_dao,
 )
 from backend.app.hasn_task.schema.workflow_sync import (
-    WorkflowNodeRunsSyncRequest,
     WorkflowNodeRunUpstream,
+    WorkflowNodeRunsSyncRequest,
     WorkflowRunUpstream,
 )
 from backend.app.hasn_task.service.workflow_sync_service import (
@@ -53,6 +53,7 @@ AINATIVE_SQL = (_SQL_DIR / '2026-06-10-ainative-refactor.sql').read_text(encodin
 WORKFLOW_SQL = (_SQL_DIR / '2026-06-11-workflow.sql').read_text(encoding='utf-8')
 NODE_TABLES_SQL = (_SQL_DIR / '2026-07-14-workflow-node-tables.sql').read_text(encoding='utf-8')
 ADVANCE_MODE_SQL = (_SQL_DIR / '2026-07-14-workflow-run-advance-mode.sql').read_text(encoding='utf-8')
+WORKFLOW_HISTORY_SQL = (_SQL_DIR / '2026-07-26-workflow-history-recovery.sql').read_text(encoding='utf-8')
 
 
 def _uid() -> str:
@@ -86,6 +87,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
     await _run_sql(WORKFLOW_SQL)
     await _run_sql(NODE_TABLES_SQL)
     await _run_sql(ADVANCE_MODE_SQL)
+    await _run_sql(WORKFLOW_HISTORY_SQL)
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     try:
@@ -105,7 +107,7 @@ def _run(run_uuid: str, wf_uuid: str, **over: object) -> WorkflowRunUpstream:
         'graph_snapshot': {'nodes': [{'node_key': 'research'}, {'node_key': 'summary'}], 'edges': []},
     }
     payload.update(over)
-    return WorkflowRunUpstream(**payload)
+    return WorkflowRunUpstream(**cast(dict[str, Any], payload))
 
 
 def _node(node_uuid: str, run_uuid: str, wf_uuid: str, node_key: str, **over: object) -> WorkflowNodeRunUpstream:

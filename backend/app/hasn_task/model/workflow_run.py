@@ -7,6 +7,7 @@
 """
 
 from datetime import datetime
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -32,6 +33,15 @@ class HasnWorkflowRun(HasnTaskAppBase):
     )
     workflow_uuid: Mapped[str] = mapped_column(sa.String(64), default='', comment='所属工作流稳定 UUID')
     owner_id: Mapped[str] = mapped_column(sa.String(64), default='', comment='归属 owner')
+    workflow_name_snapshot: Mapped[str | None] = mapped_column(
+        sa.String(255), default=None, comment='fire 时的工作流名称快照（父定义缺失仍可呈现）'
+    )
+    template_key_snapshot: Mapped[str | None] = mapped_column(
+        sa.String(128), default=None, comment='fire 时的场景模板键快照（父定义缺失仍可呈现）'
+    )
+    project_id: Mapped[UUID | None] = mapped_column(
+        sa.UUID(), default=None, comment='fire 时的云端权威平台项目 UUID（历史可为空）'
+    )
     scheduled_fire_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='触发时刻')
     dedupe_key: Mapped[str] = mapped_column(
         sa.String(160), default='', unique=True, comment='幂等键 workflow_uuid:fire_at'

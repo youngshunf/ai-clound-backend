@@ -43,6 +43,7 @@ _WF_MIGRATION_CHAIN = (
     '2026-06-11-workflow.sql',
     '2026-07-14-workflow-node-tables.sql',
     '2026-07-14-workflow-run-advance-mode.sql',
+    '2026-07-26-workflow-history-recovery.sql',
     '2026-07-14-workflow-template.sql',
 )
 

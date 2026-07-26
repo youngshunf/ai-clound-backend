@@ -4,7 +4,7 @@
 - manifest：hasn.workflow.* 能力齐全 + required_scopes/risk_level + 写类走统一授权开关
 - scope catalog：workflow:read/manage/run 登记
 - Agent JWT → /api/v1/hasn-task/agent/workflows：建菱形图 / 查图 / 列图 / 发现分身 / run / pause
-- 定时图 → pending_approval + 通知；owner app approve → active
+- 定时图 → pending_approval + 主会话汇报卡；owner app approve → active
 - 跨户 NotFound
 
 事实源: docs/hasn-node设计文档/12-任务系统实施方案/07-多任务编排（工作流）设计.md §9；实施 92 N2。
@@ -43,6 +43,7 @@ from backend.common.exception.errors import BaseExceptionError, ForbiddenError, 
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.redis import redis_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -76,6 +77,14 @@ async def _run_sql(sql: str) -> None:
         await conn.execute(sql)
     finally:
         await conn.close()
+
+
+async def _reset_redis_pool() -> None:
+    """每例重连全局 Redis 池，避免连接绑定已关闭的 pytest 事件循环。"""
+    try:
+        await redis_client.connection_pool.disconnect()
+    except Exception:
+        pass
 
 
 # ---------- 纯 Python：manifest + scope ----------
@@ -119,6 +128,7 @@ def test_scope_catalog_has_workflow() -> None:
 
 @pytest_asyncio.fixture
 async def e2e() -> AsyncIterator[SimpleNamespace]:
+    await _reset_redis_pool()
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -199,6 +209,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         await session.rollback()
         await session.close()
         await engine.dispose()
+        await _reset_redis_pool()
 
 
 def _data(resp: httpx.Response) -> dict:
@@ -277,12 +288,18 @@ async def test_agent_periodic_pending_approval_then_owner_approve(e2e: SimpleNam
     assert wf['status'] == 'pending_approval'  # D4：agent 建定时图待主人确认
     wfid = wf['workflow_id']
 
-    # 通知行落库
+    # 自有分身向主人请示走主会话汇报卡，不污染通知中心。
     row = await e2e.session.execute(
-        text("SELECT 1 FROM hasn_notifications WHERE target_id = :o AND type = 'workflow.pending_approval'"),
-        {'o': e2e.owner},
+        text(
+            'SELECT content FROM hasn_messages '
+            'WHERE to_id = :owner AND from_id = :agent AND content_type = 5 '
+            'ORDER BY id DESC LIMIT 1'
+        ),
+        {'owner': e2e.owner, 'agent': e2e.research},
     )
-    assert row.first() is not None
+    card = row.scalar_one()
+    assert card['metadata']['report'] is True
+    assert card['resource']['id'] == wfid
 
     # owner app approve → active
     approved = _data(await e2e.client.post(f'/api/v1/hasn-task/app/workflows/{wfid}/approve'))
@@ -393,7 +410,7 @@ async def test_instantiate_archived_project_rejected(e2e: SimpleNamespace) -> No
         await workflow_template_service.instantiate_template(
             e2e.session, agent=_payload(e2e), template_key=tpl.template_key, params={'project_id': str(proj.id)}
         )
-    assert (ei.value.data or {}).get('error_code') == 'project_archived'
+    assert (ei.value.data or {}).get('error_code') == 'PROJECT_ARCHIVED'
 
 
 async def test_bare_workflow_create_unaffected(e2e: SimpleNamespace) -> None:

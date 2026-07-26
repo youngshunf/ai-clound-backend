@@ -96,6 +96,7 @@ def _seed_artifact(owner: str, artifact_id: str, *, status: str = 'active') -> H
         artifact_id=artifact_id,
         agent_hasn_id=f'hasnAgent_{_uid()}',
         owner_hasn_id=owner,
+        artifact_key=f'workflow-run-artifacts:{artifact_id}',
         kind='resource',
         resource_kind='knowledge.base',
         title=f'产物-{artifact_id}',
