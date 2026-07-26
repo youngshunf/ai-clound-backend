@@ -28,6 +28,7 @@ from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
+from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service import sync_invalidate_service
@@ -127,6 +128,7 @@ async def env():
                     HasnProjectMilestone.project_id.in_(project_ids)
                 )
             )
+        await session.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await session.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
         await session.execute(delete(HasnProject).where(HasnProject.owner_id == owner))
         await session.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
@@ -160,6 +162,18 @@ async def _seed_artifact(session, *, owner: str, agent: str, artifact_id: str) -
         )
     )
     await session.flush()
+    session.add(
+        HasnArtifactContributions(
+            contribution_id=f'con_{uuid.uuid4().hex[:20]}',
+            artifact_id=artifact_id,
+            owner_hasn_id=owner,
+            agent_hasn_id=agent,
+            action='create',
+            source_kind='app_write',
+            idempotency_key=f'test:{uuid.uuid4().hex}',
+        )
+    )
+    await session.flush()
 
 
 # ── project CRUD ──────────────────────────────────────────────────────────────
@@ -180,7 +194,7 @@ async def test_create_list_get_roundtrip(env) -> None:
     detail = _data(await c.get(f'{_PROJECTS}/{created["id"]}'))
     assert detail['id'] == created['id']
     assert detail['milestones'] == []  # 新建无里程碑
-    assert detail['artifact_flow'] == []  # 无产物挂靠
+    assert detail['artifact_flow'] == {'items': [], 'total': 0, 'page': 1, 'size': 50}  # 无产物挂靠
 
 
 async def test_create_name_required_400(env) -> None:

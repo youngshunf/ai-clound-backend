@@ -23,8 +23,8 @@ from uuid import UUID
 import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_assets import HasnAssets
+from backend.app.hasn.service.artifact_query_service import artifact_query_service
 from backend.app.hasn_project.model import HasnProject, HasnProjectMilestone
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.exception import errors
@@ -360,48 +360,30 @@ class ProjectService:
         return serialize(row)
 
     # ── 产物流并集读（doc38 §5 item 6）────────────────────────────────────────────
-    async def _attached_container_uris(self, db: AsyncSession, *, owner: str, project_id: UUID) -> list[str]:
-        """列挂靠容器本体及其名下历史产物 URI；业务关系由 adapter 钩子派生。"""
-        return await project_linkage_registry.artifact_resource_uris(
-            db,
-            owner=owner,
-            project_id=project_id,
-        )
-
     async def project_artifact_flow(
-        self, db: AsyncSession, *, owner: str, project_id: str | UUID, limit: int = 50
-    ) -> list[dict]:
-        """产物流并集读：`project_id` 直接命中 ∪ 挂靠容器名下产物（读时派生不回填）。
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        project_id: str | UUID,
+        page: int = 1,
+        size: int = 50,
+    ) -> dict[str, Any]:
+        """委托唯一权威产物查询，返回三路并集分页信封。
 
-        - **直接命中**：`hasn_artifacts.project_id == pid`（register-on-write 自动打标 / 显式 link）。
-        - **容器名下**：经容器 `platform_project_id` 反查其 `hasn://` URI，并入 `resource_uri` 命中的产物。
-          U3 无容器 adapter → 并集退化为仅直接命中，但代码路径已就位（U11 注册容器 adapter 即生效）。
-        - 读时派生不回填：不把容器名下产物的 `project_id` 写实（doc38 §5/§6）。
+        项目流不能再维护第二套 SQL。`artifact_query_service` 统一负责历史参与、当前显式
+        project_id 与挂靠容器子资源的去重、排序、分页和 `project_relation.via`，项目 service
+        只保留 owner 项目存在性校验与 JSON 序列化边界。
         """
         await self.get_owned_project(db, owner=owner, pk=project_id)  # 归属校验（非本人 → 404）
-        pid = _as_uuid(project_id)
-        union_conds = [HasnArtifacts.project_id == pid]
-        container_uris = await self._attached_container_uris(db, owner=owner, project_id=pid)
-        if container_uris:
-            union_conds.append(HasnArtifacts.resource_uri.in_(container_uris))
-        stmt = (
-            sa.select(HasnArtifacts)
-            .where(
-                HasnArtifacts.owner_hasn_id == owner,
-                HasnArtifacts.status == 'active',
-                sa.or_(*union_conds),
-            )
-            .order_by(HasnArtifacts.created_time.desc())
-            .limit(limit)
+        result = await artifact_query_service.list(
+            db,
+            owner_hasn_id=owner,
+            project_id=str(_as_uuid(project_id)),
+            page=page,
+            size=size,
         )
-        rows = (await db.execute(stmt)).scalars().all()
-        output: list[dict[str, Any]] = []
-        container_uri_set = set(container_uris)
-        for row in rows:
-            item = serialize(row)
-            item['via'] = 'container' if row.resource_uri in container_uri_set and row.project_id != pid else 'linked'
-            output.append(item)
-        return output
+        return result.model_dump(mode='json')
 
 
 project_service = ProjectService()

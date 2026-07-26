@@ -20,6 +20,7 @@ import pytest
 import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_assets import HasnAssets
 from backend.app.mcp.auth import AgentContext
@@ -50,6 +51,30 @@ async def _seed_artifact(db, *, owner: str, agent: str, artifact_id: str) -> Non
             source_kind='app',
             status='active',
             title=f'产物 {artifact_id}',
+        )
+    )
+    await db.flush()
+
+
+async def _seed_contribution(
+    db,
+    *,
+    owner: str,
+    agent: str,
+    artifact_id: str,
+    project_id: str | None,
+) -> None:
+    """插入一条不可变参与记录，覆盖项目流的历史参与关系。"""
+    db.add(
+        HasnArtifactContributions(
+            contribution_id=f'con_{uuid4().hex[:20]}',
+            artifact_id=artifact_id,
+            owner_hasn_id=owner,
+            agent_hasn_id=agent,
+            project_id=project_id,
+            action='create',
+            source_kind='app_write',
+            idempotency_key=f'test:{uuid4().hex}',
         )
     )
     await db.flush()
@@ -442,14 +467,119 @@ async def test_project_artifact_flow_direct_hits() -> None:
             proj = await svc.create_project(db, owner=owner, data={'name': 'P'})
             await _seed_artifact(db, owner=owner, agent=agent, artifact_id=art_in)
             await _seed_artifact(db, owner=owner, agent=agent, artifact_id=art_out)
+            await _seed_contribution(
+                db,
+                owner=owner,
+                agent=agent,
+                artifact_id=art_in,
+                project_id=None,
+            )
             # 只把 art_in 挂进项目。
             await project_linkage_registry.link(
                 db, owner=owner, resource_uri=f'hasn://artifact/{art_in}', project_id=proj['id']
             )
             flow = await svc.project_artifact_flow(db, owner=owner, project_id=proj['id'])
-            ids = {r['artifact_id'] for r in flow}
+            ids = {r['artifact_id'] for r in flow['items']}
             assert art_in in ids
             assert art_out not in ids  # 未挂靠的不进流
-            assert next(r for r in flow if r['artifact_id'] == art_in)['via'] == 'linked'
+            assert flow['total'] == 1
+            assert next(r for r in flow['items'] if r['artifact_id'] == art_in)['project_relation'] == {
+                'project_id': proj['id'],
+                'via': 'explicit_resource_link',
+            }
+        finally:
+            await db.rollback()
+
+
+async def test_project_artifact_flow_unifies_history_explicit_link_and_pagination() -> None:
+    """项目流按权威三路并集查询，历史参与不被当前项目挂靠覆盖。"""
+    owner = _owner()
+    agent = f'a_{uuid4().hex[:12]}'
+    historical_artifact = f'art_{uuid4().hex[:16]}'
+    explicit_artifact = f'art_{uuid4().hex[:16]}'
+    svc = ProjectService()
+    async with async_db_session() as db:
+        try:
+            project_a = await svc.create_project(db, owner=owner, data={'name': '历史项目 A'})
+            project_b = await svc.create_project(db, owner=owner, data={'name': '历史项目 B'})
+            await _seed_artifact(db, owner=owner, agent=agent, artifact_id=historical_artifact)
+            await _seed_artifact(db, owner=owner, agent=agent, artifact_id=explicit_artifact)
+            await _seed_contribution(
+                db,
+                owner=owner,
+                agent=agent,
+                artifact_id=historical_artifact,
+                project_id=project_a['id'],
+            )
+            await _seed_contribution(
+                db,
+                owner=owner,
+                agent=agent,
+                artifact_id=historical_artifact,
+                project_id=project_b['id'],
+            )
+            await _seed_contribution(
+                db,
+                owner=owner,
+                agent=agent,
+                artifact_id=explicit_artifact,
+                project_id=None,
+            )
+            await project_linkage_registry.link(
+                db,
+                owner=owner,
+                resource_uri=f'hasn://artifact/{explicit_artifact}',
+                project_id=project_a['id'],
+            )
+
+            first_page = await svc.project_artifact_flow(
+                db,
+                owner=owner,
+                project_id=project_a['id'],
+                page=1,
+                size=1,
+            )
+            second_page = await svc.project_artifact_flow(
+                db,
+                owner=owner,
+                project_id=project_a['id'],
+                page=2,
+                size=1,
+            )
+            project_b_flow = await svc.project_artifact_flow(
+                db,
+                owner=owner,
+                project_id=project_b['id'],
+            )
+
+            assert first_page['total'] == 2
+            assert first_page['page'] == 1
+            assert first_page['size'] == 1
+            assert len(first_page['items']) == 1
+            assert second_page['total'] == 2
+            assert second_page['page'] == 2
+            assert len(second_page['items']) == 1
+            assert {row['artifact_id'] for row in first_page['items'] + second_page['items']} == {
+                historical_artifact,
+                explicit_artifact,
+            }
+
+            rows_a = {
+                row['artifact_id']: row for row in first_page['items'] + second_page['items']
+            }
+            assert rows_a[historical_artifact]['project_relation'] == {
+                'project_id': project_a['id'],
+                'via': 'participation',
+            }
+            assert rows_a[explicit_artifact]['project_relation'] == {
+                'project_id': project_a['id'],
+                'via': 'explicit_resource_link',
+            }
+            assert project_b_flow['total'] == 1
+            assert project_b_flow['items'][0]['artifact_id'] == historical_artifact
+            assert project_b_flow['items'][0]['project_relation'] == {
+                'project_id': project_b['id'],
+                'via': 'participation',
+            }
         finally:
             await db.rollback()
