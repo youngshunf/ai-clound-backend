@@ -14,13 +14,17 @@ owner 隔离铁律（doc38 三铁律之外的隔离约束）：所有读写按 `
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import sqlalchemy as sa
 
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
+from backend.app.hasn.model.hasn_assets import HasnAssets
 from backend.app.hasn_project.model import HasnProject, HasnProjectMilestone
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.exception import errors
@@ -35,15 +39,16 @@ _MILESTONE_FIELDS = {'name', 'due_time', 'status', 'artifact_ref', 'sort'}
 # 状态白名单（doc38 §12.3：项目 active/archived；里程碑 pending/done，纯业务态无门控）。
 _PROJECT_STATUSES = frozenset({'active', 'archived'})
 _MILESTONE_STATUSES = frozenset({'pending', 'done'})
+_COVER_ASSET_URI_RE = re.compile(r'^hasn://asset/([^/?#]+)$')
 
 # 时间类字段：Agent/Owner API 的 body 是 untyped dict，时间值经 JSON 必为字符串，
 # PostgreSQL 不做 timestamptz=varchar 隐式转换，不转则写入报错。
 _DATETIME_KEYS = {'due_time'}
 
 
-def _err(code: str, msg: str) -> errors.RequestError:
-    """业务 400 + 机器可读 error_code（经信封 data 透出，msg 给人话）。"""
-    return errors.RequestError(msg=msg, data={'error_code': code})
+def _err(code: str, msg: str, *, http_code: int = 400) -> errors.RequestError:
+    """带机器可读 error_code 的业务错误（经统一信封 data 透出）。"""
+    return errors.RequestError(code=http_code, msg=msg, data={'error_code': code})
 
 
 def _as_uuid(value: Any) -> UUID:
@@ -64,8 +69,30 @@ def _coerce_field(key: str, value: Any) -> Any:
 
 
 def _pick(fields: set[str], data: dict[str, Any]) -> dict[str, Any]:
-    """仅保留白名单字段且值不为 None（None 视为「不设置」，由 DB 默认/原值兜底）。"""
+    """仅保留白名单字段且值不为 None（里程碑沿用既有局部更新语义）。"""
     return {k: _coerce_field(k, v) for k, v in data.items() if k in fields and v is not None}
+
+
+def _required_text(value: Any, *, code: str, field_name: str, limit: int) -> str:
+    """规范化必填文本；拒绝 null、空白、非字符串和超过表约束的值。"""
+    if not isinstance(value, str):
+        raise _err(code, f'{field_name}不能为空')
+    normalized = value.strip()
+    if not normalized:
+        raise _err(code, f'{field_name}不能为空')
+    if len(normalized) > limit:
+        raise _err(code, f'{field_name}长度不能超过 {limit} 个字符')
+    return normalized
+
+
+def _optional_text(value: Any, *, code: str, field_name: str) -> str | None:
+    """规范化可清空文本；显式 null 和空白字符串均归一为 null。"""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _err(code, f'{field_name}必须是字符串')
+    normalized = value.strip()
+    return normalized or None
 
 
 def serialize(row: Any) -> dict[str, Any]:
@@ -117,6 +144,83 @@ class ProjectService:
             raise errors.NotFoundError(msg='项目不存在')
         return row
 
+    async def _validate_project_fields(
+        self, db: AsyncSession, *, owner: str, data: dict[str, Any], creating: bool = False
+    ) -> dict[str, Any]:
+        """校验并规范化项目写入字段，Owner API 与 MCP 必须共用此处。
+
+        使用「字段是否出现」而非值是否为 ``None`` 判定 PATCH 意图：省略字段保持原值，
+        显式 ``null`` 则按字段契约清空。封面和默认分身均在写入前按主人归属查权威表。
+        """
+        fields = {key: data[key] for key in _PROJECT_FIELDS if key in data}
+        if creating and 'name' not in fields:
+            raise _err('INVALID_PROJECT_NAME', '项目名不能为空')
+
+        if 'name' in fields:
+            fields['name'] = _required_text(
+                fields['name'], code='INVALID_PROJECT_NAME', field_name='项目名', limit=200
+            )
+        if 'goal' in fields:
+            fields['goal'] = _optional_text(
+                fields['goal'], code='INVALID_PROJECT_GOAL', field_name='项目目标'
+            )
+        if 'status' in fields:
+            status = fields['status']
+            if not isinstance(status, str) or status not in _PROJECT_STATUSES:
+                raise _err('INVALID_PROJECT_STATUS', f'项目状态非法（仅 {sorted(_PROJECT_STATUSES)}）')
+
+        if 'cover_asset_uri' in fields:
+            cover_asset_uri = _optional_text(
+                fields['cover_asset_uri'], code='INVALID_COVER_ASSET', field_name='项目封面'
+            )
+            if cover_asset_uri is not None:
+                matched = _COVER_ASSET_URI_RE.fullmatch(cover_asset_uri)
+                if matched is None:
+                    raise _err(
+                        'INVALID_COVER_ASSET',
+                        '项目封面只接受主人名下的 hasn://asset/{id} 引用',
+                        http_code=422,
+                    )
+                asset = (
+                    await db.execute(
+                        sa.select(HasnAssets.id).where(
+                            HasnAssets.asset_id == matched.group(1),
+                            HasnAssets.owner_hasn_id == owner,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if asset is None:
+                    raise _err('INVALID_COVER_ASSET', '项目封面资产不存在或不属于当前主人', http_code=422)
+            fields['cover_asset_uri'] = cover_asset_uri
+
+        if 'bound_agent_id' in fields:
+            bound_agent_id = _optional_text(
+                fields['bound_agent_id'], code='INVALID_BOUND_AGENT', field_name='默认协作分身'
+            )
+            if bound_agent_id is not None:
+                agent = (
+                    await db.execute(
+                        sa.select(HasnAgents.id).where(
+                            HasnAgents.hasn_id == bound_agent_id,
+                            HasnAgents.owner_id == owner,
+                            HasnAgents.deleted_at.is_(None),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if agent is None:
+                    raise _err('INVALID_BOUND_AGENT', '默认协作分身不存在或不属于当前主人', http_code=422)
+            fields['bound_agent_id'] = bound_agent_id
+        return fields
+
+    async def resolve_active_project_for_work(
+        self, db: AsyncSession, *, owner: str, pk: str | UUID
+    ) -> HasnProject:
+        """校验可新增项目工作：归档项目仍可读和恢复，但不能新增资源或里程碑。"""
+        row = await self._get_project(db, owner=owner, pk=pk)
+        if row.status == 'archived':
+            raise _err('PROJECT_ARCHIVED', '项目已归档，不能新增项目工作', http_code=409)
+        return row
+
     async def get_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> dict:
         """取单个项目详情（含里程碑轨与注册表派生的挂靠资源）。"""
         row = await self._get_project(db, owner=owner, pk=pk)
@@ -156,21 +260,14 @@ class ProjectService:
                 msg='无权在他人的项目中开启场景', data={'error_code': 'project_cross_owner'}
             )
         if row.status == 'archived':
-            raise _err('project_archived', '项目已归档，不能在其中开启新场景')
+            raise _err('PROJECT_ARCHIVED', '项目已归档，不能在其中开启新场景', http_code=409)
         return row
 
     async def create_project(
         self, db: AsyncSession, *, owner: str, data: dict, enterprise_id: str | UUID | None = None
     ) -> dict:
         """建项目（name 必填）。enterprise_id 由服务端解析后传入，绝不来自 data。"""
-        fields = _pick(_PROJECT_FIELDS, data)
-        name = str(fields.get('name') or '').strip()
-        if not name:
-            raise _err('name_required', '项目名不能为空')
-        fields['name'] = name
-        status = fields.get('status')
-        if status is not None and status not in _PROJECT_STATUSES:
-            raise _err('invalid_status', f'项目状态非法（仅 {sorted(_PROJECT_STATUSES)}）')
+        fields = await self._validate_project_fields(db, owner=owner, data=data, creating=True)
         row = HasnProject(owner_id=owner, enterprise_id=_as_uuid(enterprise_id) if enterprise_id else None, **fields)
         db.add(row)
         await db.flush()
@@ -178,12 +275,11 @@ class ProjectService:
         return serialize(row)
 
     async def update_project(self, db: AsyncSession, *, owner: str, pk: str | UUID, data: dict) -> dict:
-        """改项目（name/goal/封面/状态/绑分身；owner 隔离；空 patch 直接返回原值）。"""
+        """改项目（省略保持原值、显式 null 清空；归档时只允许恢复为 active）。"""
         row = await self._get_project(db, owner=owner, pk=pk)
-        fields = _pick(_PROJECT_FIELDS, data)
-        status = fields.get('status')
-        if status is not None and status not in _PROJECT_STATUSES:
-            raise _err('invalid_status', f'项目状态非法（仅 {sorted(_PROJECT_STATUSES)}）')
+        fields = await self._validate_project_fields(db, owner=owner, data=data)
+        if row.status == 'archived' and fields and fields != {'status': 'active'}:
+            raise _err('PROJECT_ARCHIVED', '项目已归档，仅可恢复为进行中', http_code=409)
         for k, v in fields.items():
             setattr(row, k, v)
         await db.flush()
@@ -227,7 +323,7 @@ class ProjectService:
 
     async def create_milestone(self, db: AsyncSession, *, owner: str, project_id: str | UUID, data: dict) -> dict:
         """在项目下建里程碑（name 必填）。先校验项目归属。"""
-        await self._get_project(db, owner=owner, pk=project_id)
+        await self.resolve_active_project_for_work(db, owner=owner, pk=project_id)
         fields = _pick(_MILESTONE_FIELDS, data)
         name = str(fields.get('name') or '').strip()
         if not name:

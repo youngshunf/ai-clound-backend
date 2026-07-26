@@ -29,7 +29,6 @@ from backend.app.hasn_project.service.project_linkage_registry import project_li
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
-from backend.common.exception import errors
 from backend.database.db import async_db_session
 
 logger = logging.getLogger(__name__)
@@ -50,21 +49,6 @@ def _owner_hasn_id(ctx: AgentContext) -> str:
     if not owner:
         raise RuntimeError('project tool: Agent 主人身份缺失')
     return owner
-
-
-def _validate_cover(uri: Any) -> None:
-    """封面入参守卫：只接受 `hasn://asset/{id}` 引用（空=不设置）。禁 base64/字节/URL 直链（铁律）。"""
-    if uri is None:
-        return
-    text = str(uri).strip()
-    if text == '':
-        return
-    if not text.startswith('hasn://asset/'):
-        raise errors.RequestError(
-            msg='封面图只接受 hasn://asset/{id} 引用——请先经 hasn.image.generate（AI 生成）或 '
-            'hasn.stock.download（素材下载）产出资产，再把返回的 asset 引用写进项目（禁 base64/URL 直链）',
-            data={'error_code': 'invalid_cover'},
-        )
 
 
 async def _safe_bump(db: Any, owner_hasn_id: str | None) -> None:
@@ -104,7 +88,6 @@ async def _safe_linkage_bump(
 # ── handlers ─────────────────────────────────────────────────────────────────
 async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """建项目（name 必填，可选 goal/cover_asset_uri/bound_agent_id）：建行后 register-on-write 直登记。"""
-    _validate_cover(args.get('cover_asset_uri'))
     owner = _owner_hasn_id(ctx)
     result = await project_service.create_project(db, owner=owner, data=args)
     registration = await register_app_resource_artifact(
@@ -138,7 +121,6 @@ async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 async def _h_update(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """改项目（name/goal/封面/状态/绑分身；status=archived 即归档，v1 只归档不硬删）。"""
-    _validate_cover(args.get('cover_asset_uri'))
     return await project_service.update_project(
         db,
         owner=_owner_hasn_id(ctx),
@@ -151,7 +133,7 @@ async def _h_link(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """把资源挂靠进项目（经挂靠点注册表落挂靠列）：先校验目标项目归属，再由 adapter 写列。"""
     project_id = args['project_id']
     owner = _owner_hasn_id(ctx)
-    await project_service.assert_owned(db, owner=owner, pk=project_id)
+    await project_service.resolve_active_project_for_work(db, owner=owner, pk=project_id)
     return await project_linkage_registry.link(
         db, owner=owner, resource_uri=args['resource_uri'], project_id=project_id
     )
@@ -198,6 +180,11 @@ async def _h_milestone_complete(db: Any, ctx: AgentContext, args: dict[str, Any]
 # ── schema 小工具 ─────────────────────────────────────────────────────────────
 def _s(desc: str) -> dict[str, Any]:
     return {'type': 'string', 'description': desc}
+
+
+def _nullable_s(desc: str) -> dict[str, Any]:
+    """允许工具明确传 null 清空可空字段；省略字段仍表示保持原值。"""
+    return {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'description': desc}
 
 
 def _i(desc: str) -> dict[str, Any]:
@@ -262,9 +249,9 @@ _SPECS: list[dict[str, Any]] = [
             {
                 'id': _s('项目 id（必填）'),
                 'name': _s('可选：项目名'),
-                'goal': _s('可选：一句话目标'),
-                'cover_asset_uri': _s('可选：封面图 hasn://asset/{id}'),
-                'bound_agent_id': _s('可选：默认协作分身 hasn_id'),
+                'goal': _nullable_s('可选：一句话目标；传 null 或空白清空，省略则保持原值'),
+                'cover_asset_uri': _nullable_s('可选：封面图 hasn://asset/{id}；传 null 清空'),
+                'bound_agent_id': _nullable_s('可选：默认协作分身 hasn_id；传 null 解绑'),
                 'status': _s('可选：active(进行中)|archived(已归档，即归档)'),
             },
             ['id'],
