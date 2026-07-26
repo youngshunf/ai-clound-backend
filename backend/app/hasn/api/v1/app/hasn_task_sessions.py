@@ -10,6 +10,7 @@
 import hashlib
 
 from typing import Annotated, Any
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -53,6 +54,7 @@ class SessionUpsertRequest(BaseModel):
     continuation_from_session_id: str | None = Field(None, description='续接自哪个 Session')
     origin_type: str = Field(..., description='来源类型')
     origin_ref: str | None = Field(None, description='来源引用')
+    project_id: UUID | None = Field(None, description='平台项目挂靠 UUID')
     title: str | None = Field(None, description='Session 标题')
     summary_checkpoint_json: dict | None = Field(default={}, description='摘要快照')
     active_binding_id: str | None = Field(None, description='当前活跃的绑定 ID')
@@ -205,6 +207,7 @@ async def session_list(
     session_scope: Annotated[str | None, Query(description='同步范围')] = None,
     session_status: Annotated[str | None, Query(description='Session 状态')] = None,
     hasn_id: Annotated[str | None, Query(description='Agent ID')] = None,
+    project_id: Annotated[UUID | None, Query(description='平台项目 UUID')] = None,
     origin_type: Annotated[str | None, Query(description='来源类型')] = None,
     origin_ref: Annotated[str | None, Query(description='来源引用')] = None,
 ) -> ResponseModel:
@@ -217,6 +220,7 @@ async def session_list(
         session_scope=session_scope,
         session_status=session_status,
         hasn_id=hasn_id,
+        project_id=project_id,
         origin_type=origin_type,
         origin_ref=origin_ref,
     )
@@ -297,6 +301,7 @@ async def work_session_summaries_list(
     request: Request,
     db: CurrentSession,
     limit: Annotated[int, Query(description='数量上限', ge=1, le=100)] = 20,
+    project_id: Annotated[UUID | None, Query(description='平台项目 UUID')] = None,
 ) -> ResponseModel:
     """owner-scoped 只读：列 owner 名下（含**跑在别的设备**）的工作会话摘要。
 
@@ -304,7 +309,12 @@ async def work_session_summaries_list(
     「活儿跑在另一台设备」的工作会话摘要（本地无该 session 行）。owner 隔离。
     """
     owner_id = await _current_owner_id(request, db)
-    items = await hasn_sessions_service.list_work_session_summaries(db=db, owner_id=owner_id, limit=limit)
+    items = await hasn_sessions_service.list_work_session_summaries(
+        db=db,
+        owner_id=owner_id,
+        project_id=project_id,
+        limit=limit,
+    )
     return response_base.success(data={'items': items})
 
 
