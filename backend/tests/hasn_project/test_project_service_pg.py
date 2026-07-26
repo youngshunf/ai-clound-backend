@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -23,12 +24,17 @@ from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_assets import HasnAssets
+from backend.app.hasn.model.hasn_sessions import HasnSessions
+from backend.app.hasn_designsystem.model.design_system import DesignSystem
+from backend.app.hasn_designsystem.service import project_linkage as _designsystem_project_linkage  # noqa: F401
 from backend.app.mcp.auth import AgentContext
+from backend.app.hasn_project.model.hasn_project_milestone import HasnProjectMilestone
 from backend.app.mcp.tools.project import _h_update
 from backend.app.hasn_project.service.project_app_service import ProjectService
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.exception import errors
 from backend.database.db import async_db_session
+from backend.utils.timezone import timezone
 
 pytestmark = pytest.mark.asyncio(loop_scope='module')
 
@@ -333,6 +339,180 @@ async def test_list_orders_active_before_archived() -> None:
             rows = await svc.list_projects(db, owner=owner)
             assert [r['id'] for r in rows] == [a['id'], b['id']]  # active 在前
             assert all(r['owner_id'] == owner for r in rows)
+        finally:
+            await db.rollback()
+
+
+async def test_project_summary_is_set_based_complete_and_keeps_zero_values() -> None:
+    """列表与详情摘要必须覆盖真实聚合，空项目的所有计数也必须显式为零。"""
+    owner = _owner()
+    bound_agent = f'a_{uuid4().hex[:12]}'
+    participation_agent = f'a_{uuid4().hex[:12]}'
+    session_agents = [f'a_{uuid4().hex[:12]}' for _ in range(3)]
+    svc = ProjectService()
+    base_time = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+
+    async with async_db_session() as db:
+        try:
+            await _seed_owned_agent(db, owner=owner, agent_id=bound_agent)
+            active = await svc.create_project(
+                db,
+                owner=owner,
+                data={'name': '聚合项目', 'bound_agent_id': bound_agent},
+            )
+            archived = await svc.create_project(db, owner=owner, data={'name': '空归档项目'})
+            await svc.archive_project(db, owner=owner, pk=archived['id'])
+
+            active_id = active['id']
+            direct_artifact = f'art_{uuid4().hex[:16]}'
+            participation_artifact = f'art_{uuid4().hex[:16]}'
+            container_artifact = f'art_{uuid4().hex[:16]}'
+            await _seed_artifact(db, owner=owner, agent=bound_agent, artifact_id=direct_artifact)
+            await _seed_artifact(db, owner=owner, agent=participation_agent, artifact_id=participation_artifact)
+            await _seed_artifact(db, owner=owner, agent=bound_agent, artifact_id=container_artifact)
+            await db.execute(
+                sa.update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == direct_artifact)
+                .values(project_id=active_id, updated_time=base_time + timedelta(minutes=2))
+            )
+            await _seed_contribution(
+                db,
+                owner=owner,
+                agent=participation_agent,
+                artifact_id=participation_artifact,
+                project_id=active_id,
+            )
+            await db.execute(
+                sa.update(HasnArtifactContributions)
+                .where(HasnArtifactContributions.artifact_id == participation_artifact)
+                .values(occurred_time=base_time + timedelta(minutes=3))
+            )
+
+            db.add_all(
+                [
+                    HasnProjectMilestone(project_id=active_id, name='已完成', status='done'),
+                    HasnProjectMilestone(project_id=active_id, name='待完成', status='pending'),
+                    HasnSessions(
+                        session_id=f'sess_{uuid4().hex[:16]}',
+                        owner_id=owner,
+                        hasn_id=session_agents[0],
+                        session_kind='task',
+                        session_scope='summary_only',
+                        session_status='active',
+                        origin_type='app',
+                        project_id=active_id,
+                        last_message_at=base_time + timedelta(minutes=4),
+                    ),
+                    HasnSessions(
+                        session_id=f'sess_{uuid4().hex[:16]}',
+                        owner_id=owner,
+                        hasn_id=session_agents[1],
+                        session_kind='task',
+                        session_scope='summary_only',
+                        session_status='waiting_for_user',
+                        origin_type='app',
+                        project_id=active_id,
+                    ),
+                    HasnSessions(
+                        session_id=f'sess_{uuid4().hex[:16]}',
+                        owner_id=owner,
+                        hasn_id=session_agents[2],
+                        session_kind='task',
+                        session_scope='summary_only',
+                        session_status='completed',
+                        origin_type='app',
+                        project_id=active_id,
+                    ),
+                ]
+            )
+            await db.flush()
+            await db.execute(
+                sa.update(HasnSessions)
+                .where(HasnSessions.owner_id == owner, HasnSessions.project_id == active_id)
+                .values(created_time=base_time, updated_time=base_time)
+            )
+            await db.execute(
+                sa.update(HasnProjectMilestone)
+                .where(HasnProjectMilestone.project_id == active_id)
+                .values(updated_time=base_time + timedelta(minutes=1))
+            )
+
+            design_system = DesignSystem(
+                owner_hasn_id=owner,
+                name='项目设计系统',
+                slug=f'project-summary-{uuid4().hex[:12]}',
+                platform_project_id=active_id,
+            )
+            db.add(design_system)
+            await db.flush()
+            await db.execute(
+                sa.update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == container_artifact)
+                .values(
+                    resource_uri=f'hasn://designsystem/{design_system.id}',
+                    created_time=base_time,
+                    updated_time=base_time + timedelta(minutes=2),
+                )
+            )
+            await db.execute(
+                sa.update(DesignSystem)
+                .where(DesignSystem.id == design_system.id)
+                .values(updated_time=base_time + timedelta(minutes=5))
+            )
+            await db.flush()
+
+            rows = await svc.list_projects(db, owner=owner)
+            assert [row['id'] for row in rows] == [active_id, archived['id']]
+            summary = rows[0]
+            assert summary['artifact_count'] == 3
+            assert summary['session_count'] == 3
+            assert summary['active_session_count'] == 2
+            assert summary['milestone_done_count'] == 1
+            assert summary['milestone_total_count'] == 2
+            assert summary['link_count'] == 1
+            assert summary['linked_apps'] == [{'app_id': 'designsystem', 'count': 1}]
+            assert summary['agent_ids'] == [bound_agent, *sorted({participation_agent, *session_agents})]
+            assert summary['agent_count'] == 5
+            expected_activity = (
+                await db.execute(
+                    sa.select(DesignSystem.updated_time).where(DesignSystem.id == design_system.id)
+                )
+            ).scalar_one()
+            assert summary['last_activity_time'] == timezone.to_str(timezone.from_datetime(expected_activity))
+
+            empty = rows[1]
+            assert {
+                key: empty[key]
+                for key in (
+                    'artifact_count',
+                    'session_count',
+                    'active_session_count',
+                    'agent_count',
+                    'link_count',
+                    'milestone_done_count',
+                    'milestone_total_count',
+                )
+            } == {
+                'artifact_count': 0,
+                'session_count': 0,
+                'active_session_count': 0,
+                'agent_count': 0,
+                'link_count': 0,
+                'milestone_done_count': 0,
+                'milestone_total_count': 0,
+            }
+            assert empty['agent_ids'] == []
+            assert empty['linked_apps'] == []
+
+            detail = await svc.get_project(db, owner=owner, pk=active_id)
+            assert detail['summary'] == summary
+            assert len(detail['recent_sessions']) == 3
+            assert {session['status'] for session in detail['recent_sessions']} == {
+                'running',
+                'waiting',
+                'completed',
+            }
+            assert 'designsystem' in detail['linkable_domains']
         finally:
             await db.rollback()
 

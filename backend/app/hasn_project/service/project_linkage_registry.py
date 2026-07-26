@@ -88,6 +88,9 @@ class LinkageAdapter:
     sync_kind: str | None = None
     sync_scope: Literal['owner', 'global'] = 'owner'
     related_resource_uris: Callable[[Any, str, tuple[Any, ...]], Awaitable[list[str]]] | None = None
+    related_resource_uri_pairs: Callable[
+        [Any, str, dict[UUID, tuple[Any, ...]]], Awaitable[list[tuple[UUID, str]]]
+    ] | None = None
 
 
 class ProjectLinkageRegistry:
@@ -107,6 +110,10 @@ class ProjectLinkageRegistry:
     def container_adapters(self) -> list[LinkageAdapter]:
         """容器级 adapter（`platform_project_id`）——挂靠资源与并集读反查用。"""
         return [a for a in self._adapters.values() if a.is_container]
+
+    def linkable_domains(self) -> list[str]:
+        """返回当前注册表可显式挂靠的资源域，供项目详情按真实能力展示。"""
+        return sorted(self._adapters)
 
     @staticmethod
     def _active_conditions(adapter: LinkageAdapter) -> list[Any]:
@@ -188,13 +195,102 @@ class ProjectLinkageRegistry:
         `related_resource_uris` 钩子查询，避免 project 模块出现跨 schema if/else。
         """
         pid = project_id if isinstance(project_id, UUID) else UUID(str(project_id))
-        uris: set[str] = set()
+        pairs = await self.artifact_resource_uri_pairs(db, owner=owner, project_ids=[pid])
+        return sorted({uri for pair_project_id, uri in pairs if pair_project_id == pid})
+
+    async def artifact_resource_uri_pairs(
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        project_ids: list[UUID],
+    ) -> list[tuple[UUID, str]]:
+        """批量列容器及其派生产物 URI 到平台项目的映射。
+
+        聚合列表不能为每个项目逐个调用 ``artifact_resource_uris``。此处固定按已注册 adapter
+        扫描，每个 adapter 只查一次；带历史子资源的 adapter 以批量回调提供项目归属，保证查询
+        数量与项目数量无关。
+        """
+        requested_ids = set(project_ids)
+        if not requested_ids:
+            return []
+        pairs: set[tuple[UUID, str]] = set()
         for adapter in self.container_adapters():
-            rows = await self._attached_rows(db, adapter, owner=owner, project_id=pid)
-            uris.update(f'hasn://{adapter.domain}/{getattr(row, adapter.id_column)}' for row in rows)
-            if rows and adapter.related_resource_uris is not None:
-                uris.update(await adapter.related_resource_uris(db, owner, rows))
-        return sorted(uris)
+            owner_col = getattr(adapter.model, adapter.owner_column)
+            attach_col = getattr(adapter.model, adapter.attach_column)
+            conditions = [owner_col == owner, attach_col.in_(requested_ids)]
+            conditions.extend(self._active_conditions(adapter))
+            rows: tuple[Any, ...] = tuple(
+                (await db.execute(sa.select(adapter.model).where(*conditions))).scalars().all()
+            )
+            by_project: dict[UUID, list[Any]] = {}
+            for row in rows:
+                project_id = getattr(row, adapter.attach_column)
+                if project_id is None:
+                    continue
+                normalized_project_id = project_id if isinstance(project_id, UUID) else UUID(str(project_id))
+                by_project.setdefault(normalized_project_id, []).append(row)
+                pairs.add(
+                    (normalized_project_id, f'hasn://{adapter.domain}/{getattr(row, adapter.id_column)}')
+                )
+            if not by_project:
+                continue
+            frozen_by_project = {project_id: tuple(rows) for project_id, rows in by_project.items()}
+            if adapter.related_resource_uri_pairs is not None:
+                pairs.update(await adapter.related_resource_uri_pairs(db, owner, frozen_by_project))
+            elif adapter.related_resource_uris is not None:
+                # 旧回调未携带项目 ID；当前所有历史子资源 adapter 均升级到批量回调。保留这个
+                # 显式错误以避免未来新 adapter 静默退化成按项目 N+1 查询。
+                raise RuntimeError(f'{adapter.domain} 缺少 related_resource_uri_pairs 批量聚合回调')
+        return sorted(pairs, key=lambda item: (str(item[0]), item[1]))
+
+    async def project_link_summaries(
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        project_ids: list[UUID],
+    ) -> dict[UUID, dict[str, Any]]:
+        """批量聚合已挂靠容器数、应用分布与最后挂靠变更时间。"""
+        requested_ids = set(project_ids)
+        summaries: dict[UUID, dict[str, Any]] = {
+            project_id: {'link_count': 0, 'linked_apps': {}, 'last_activity_time': None}
+            for project_id in requested_ids
+        }
+        for adapter in self.container_adapters():
+            owner_col = getattr(adapter.model, adapter.owner_column)
+            attach_col = getattr(adapter.model, adapter.attach_column)
+            changed_time = sa.func.coalesce(
+                getattr(adapter.model, 'updated_time'),
+                getattr(adapter.model, 'created_time'),
+            )
+            conditions = [owner_col == owner, attach_col.in_(requested_ids)]
+            conditions.extend(self._active_conditions(adapter))
+            rows = (
+                await db.execute(
+                    sa.select(
+                        attach_col.label('project_id'),
+                        sa.func.count().label('link_count'),
+                        sa.func.max(changed_time).label('last_activity_time'),
+                    )
+                    .where(*conditions)
+                    .group_by(attach_col)
+                )
+            ).all()
+            app_id = adapter.app_id or adapter.domain.split('/', 1)[0]
+            for project_id, link_count, last_activity_time in rows:
+                normalized_project_id = project_id if isinstance(project_id, UUID) else UUID(str(project_id))
+                summary = summaries.get(normalized_project_id)
+                if summary is None:
+                    continue
+                count = int(link_count)
+                summary['link_count'] += count
+                summary['linked_apps'][app_id] = summary['linked_apps'].get(app_id, 0) + count
+                if last_activity_time is not None and (
+                    summary['last_activity_time'] is None or last_activity_time > summary['last_activity_time']
+                ):
+                    summary['last_activity_time'] = last_activity_time
+        return summaries
 
     async def _locate(self, db: AsyncSession, adapter: LinkageAdapter, owner: str, server_id: str) -> Any:
         """按 (owner, server_id) 定位资源行；不存在/非本人 → 404（owner 隔离兜死）。"""

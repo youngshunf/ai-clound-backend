@@ -197,6 +197,42 @@ async def test_create_list_get_roundtrip(env) -> None:
     assert detail['artifact_flow'] == {'items': [], 'total': 0, 'page': 1, 'size': 50}  # 无产物挂靠
 
 
+async def test_owner_api_keeps_complete_zero_summary_contract(env) -> None:
+    """Owner API 即使项目尚无聚合对象，也必须稳定返回全部零值摘要字段。"""
+    created = _data(await env.client.post(_PROJECTS, json={'name': '零值摘要项目'}))
+    listed = _data(await env.client.get(_PROJECTS))
+    row = next(item for item in listed['items'] if item['id'] == created['id'])
+
+    assert {
+        key: row[key]
+        for key in (
+            'artifact_count',
+            'session_count',
+            'active_session_count',
+            'agent_count',
+            'link_count',
+            'milestone_done_count',
+            'milestone_total_count',
+        )
+    } == {
+        'artifact_count': 0,
+        'session_count': 0,
+        'active_session_count': 0,
+        'agent_count': 0,
+        'link_count': 0,
+        'milestone_done_count': 0,
+        'milestone_total_count': 0,
+    }
+    assert row['agent_ids'] == []
+    assert row['linked_apps'] == []
+
+    detail = _data(await env.client.get(f'{_PROJECTS}/{created["id"]}'))
+    assert detail['summary'] == row
+    assert detail['recent_sessions'] == []
+    assert detail['sessions'] == []
+    assert 'artifact' in detail['linkable_domains']
+
+
 async def test_create_name_required_400(env) -> None:
     """name 为空 → 业务 400（name_required），不落库。"""
     resp = await env.client.post(_PROJECTS, json={'name': '   '})

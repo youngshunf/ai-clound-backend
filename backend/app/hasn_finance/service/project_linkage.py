@@ -12,6 +12,7 @@ import 即把两个容器级 LinkageAdapter 注册进 project_linkage_registry�
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -51,6 +52,34 @@ async def _strategy_related_uris(db: AsyncSession, owner: str, rows: tuple[Any, 
     return [_build_uri('finance.backtest_report', server_id) for server_id in ids]
 
 
+async def _strategy_related_uri_pairs(
+    db: AsyncSession,
+    owner: str,
+    rows_by_project: dict[UUID, tuple[Any, ...]],
+) -> list[tuple[UUID, str]]:
+    """批量映射策略历史回测 URI，供项目列表 set-based 聚合复用。"""
+    strategy_to_project = {
+        row.id: project_id
+        for project_id, rows in rows_by_project.items()
+        for row in rows
+    }
+    if not strategy_to_project:
+        return []
+    rows = (
+        await db.execute(
+            sa.select(BacktestReport.id, BacktestReport.strategy_id).where(
+                BacktestReport.owner_id == owner,
+                BacktestReport.strategy_id.in_(strategy_to_project),
+                BacktestReport.status != 'deleted',
+            )
+        )
+    ).all()
+    return [
+        (strategy_to_project[strategy_id], _build_uri('finance.backtest_report', report_id))
+        for report_id, strategy_id in rows
+    ]
+
+
 async def _shadow_related_uris(db: AsyncSession, owner: str, rows: tuple[Any, ...]) -> list[str]:
     """取已挂靠影子账户名下的历史复盘及其影子回测 URI。"""
     shadow_ids = [row.id for row in rows]
@@ -72,6 +101,37 @@ async def _shadow_related_uris(db: AsyncSession, owner: str, rows: tuple[Any, ..
     return uris
 
 
+async def _shadow_related_uri_pairs(
+    db: AsyncSession,
+    owner: str,
+    rows_by_project: dict[UUID, tuple[Any, ...]],
+) -> list[tuple[UUID, str]]:
+    """批量映射影子账户名下复盘与回测 URI，避免项目列表逐项目反查。"""
+    shadow_to_project = {
+        row.id: project_id
+        for project_id, rows in rows_by_project.items()
+        for row in rows
+    }
+    if not shadow_to_project:
+        return []
+    rows = (
+        await db.execute(
+            sa.select(TradeReview.id, TradeReview.shadow_backtest_id, TradeReview.shadow_account_id).where(
+                TradeReview.owner_id == owner,
+                TradeReview.shadow_account_id.in_(shadow_to_project),
+                TradeReview.status != 'deleted',
+            )
+        )
+    ).all()
+    pairs: list[tuple[UUID, str]] = []
+    for review_id, backtest_id, shadow_account_id in rows:
+        project_id = shadow_to_project[shadow_account_id]
+        pairs.append((project_id, _build_uri('finance.trade_review', review_id)))
+        if backtest_id is not None:
+            pairs.append((project_id, _build_uri('finance.backtest_report', backtest_id)))
+    return pairs
+
+
 # 策略容器：长生命周期，项目总览要能看到「沉淀了哪些策略」（doc38 §4 层2 表）
 project_linkage_registry.register(
     LinkageAdapter(
@@ -88,6 +148,7 @@ project_linkage_registry.register(
         revision_column='revision',
         sync_kind='finance',
         related_resource_uris=_strategy_related_uris,
+        related_resource_uri_pairs=_strategy_related_uri_pairs,
     )
 )
 
@@ -107,5 +168,6 @@ project_linkage_registry.register(
         revision_column='revision',
         sync_kind='finance',
         related_resource_uris=_shadow_related_uris,
+        related_resource_uri_pairs=_shadow_related_uri_pairs,
     )
 )
