@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model import HasnArtifactContributions, HasnArtifacts
+from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.app.mcp.context import (
     clear_current_project_id,
@@ -30,6 +31,7 @@ from backend.app.mcp.context import (
     set_current_project_id,
     set_current_work_session_id,
 )
+from backend.app.mcp.tools.project import _h_create
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -173,6 +175,38 @@ async def test_project_id_from_contextvar_lands_on_artifact(pg_session) -> None:
     finally:
         clear_current_project_id()
         clear_current_work_session_id()
+
+
+async def test_project_tool_create_registers_artifact_to_its_new_project(pg_session) -> None:
+    """`hasn.project.create` 是项目根资源：即使从旧项目会话发起，也必须自归属新项目。
+
+    这里同时覆盖无项目/旧项目两种危险上下文中的后一种：若写点继续依赖接缝默认
+    ContextVar，新项目产物会错误落到旧项目，项目自身的全链路视图就永远看不见它。
+    """
+    tag = uuid.uuid4().hex[:8]
+    old_project_id = str(uuid.uuid4())
+    owner = f'h_project_create_{tag}'
+    agent = f'a_project_create_{tag}'
+    context = AgentContext(
+        hasn_id=agent,
+        owner_id=1,
+        agent_status='active',
+        metadata={},
+        owner_hasn_id=owner,
+        session_uuid=str(uuid.uuid4()),
+    )
+
+    set_current_project_id(old_project_id)
+    try:
+        created = await _h_create(pg_session, context, {'name': '新项目自身产物'})
+        rows = await _active_rows(pg_session, agent)
+        assert created['uri'] == f"hasn://project/{created['id']}"
+        assert len(rows) == 1
+        _artifact, contribution = rows[0]
+        assert str(contribution.project_id) == created['id']
+        assert str(contribution.project_id) != old_project_id
+    finally:
+        clear_current_project_id()
 
 
 async def test_project_participation_is_append_only(pg_session) -> None:

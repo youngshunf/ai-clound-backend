@@ -100,6 +100,9 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         title=str(result.get('name') or '项目'),
         summary=str(result.get('goal') or '') or None,
         source_tool=f'{NAMESPACE}.create',
+        # 项目本身是项目根资源：无项目会话时不能空挂，在旧项目会话中创建时也绝不能继承旧项目。
+        # 这里显式覆盖 ContextVar，令参与记录和当前态都归属刚创建的云端权威项目。
+        project_id=result['id'],
     )
     return merge_resource_uri(result, registration)
 
