@@ -45,6 +45,9 @@ class CreateKbRequest(BaseModel):
     cover_asset_uri: str | None = Field(
         default=None, max_length=512, description='封面资产 hasn://asset/（主人上传得到，可选）'
     )
+    # doc38 §5.5 容器创建时的项目归属：daemon 代主人建库（派分身建库）时带上本次派发定稿的项目，
+    # 新库直接进项目「挂靠资源区」；缺省不挂。非本主人的项目 → service 侧 404。
+    platform_project_id: str | None = Field(default=None, description='挂进的平台项目 id（云端权威 UUID，可选）')
 
 
 class UpdateKbRequest(BaseModel):
@@ -113,9 +116,16 @@ class AddDocShareRequest(BaseModel):
 
 
 @router.get('/kbs', summary='列知识库（我的 ∪ 共享给我的 ∪ 企业可见）', dependencies=[DependsJwtAuth])
-async def list_kbs(request: Request, db: CurrentSession) -> ResponseModel:
+async def list_kbs(
+    request: Request,
+    db: CurrentSession,
+    platform_project_id: Annotated[str | None, Query(description='按挂靠的平台项目收窄（可选；缺省列全部）')] = None,
+) -> ResponseModel:
+    # 缺省不按项目过滤（doc38 §5.6 读侧不收窄）；项目总览「挂靠资源区」显式传参逐应用查。
     owner_id = await _resolve_owner(db, request)
-    data = await knowledge_service.list_accessible_kbs(db, subject=Subject.human(owner_id))
+    data = await knowledge_service.list_accessible_kbs(
+        db, subject=Subject.human(owner_id), platform_project_id=platform_project_id
+    )
     return response_base.success(data=data)
 
 
@@ -124,7 +134,12 @@ async def create_kb(request: Request, db: CurrentSessionTransaction, body: Creat
     owner_id = await _resolve_owner(db, request)
     try:
         data = await knowledge_service.create_kb(
-            db, owner_id, name=body.name, description=body.description, cover_asset_uri=body.cover_asset_uri
+            db,
+            owner_id,
+            name=body.name,
+            description=body.description,
+            cover_asset_uri=body.cover_asset_uri,
+            platform_project_id=body.platform_project_id,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc

@@ -103,10 +103,21 @@ class ProjectLinkageRegistry:
         return [a for a in self._adapters.values() if a.is_container]
 
     @staticmethod
-    def _active_condition(adapter: LinkageAdapter) -> Any | None:
-        """若容器模型有 status 列，则统一排除 tombstone；无状态列的容器不额外过滤。"""
+    def _active_conditions(adapter: LinkageAdapter) -> list[Any]:
+        """排除 tombstone：`status='deleted'` 与 `deleted_time IS NOT NULL` 两种软删口径都认。
+
+        各应用软删语义不统一——finance/artifact 用 `status`，knowledge 用 `deleted_time`（删库只置
+        时间戳、status 保持 active）。只认 status 会让已删容器继续出现在挂靠资源区与并集读里。
+        两列都没有的容器不额外过滤。
+        """
+        conditions: list[Any] = []
         status_col = getattr(adapter.model, 'status', None)
-        return status_col != 'deleted' if status_col is not None else None
+        if status_col is not None:
+            conditions.append(status_col != 'deleted')
+        deleted_time_col = getattr(adapter.model, 'deleted_time', None)
+        if deleted_time_col is not None:
+            conditions.append(deleted_time_col.is_(None))
+        return conditions
 
     async def _attached_rows(
         self,
@@ -119,11 +130,8 @@ class ProjectLinkageRegistry:
         """按 owner + 项目取某 adapter 的全部有效容器行。"""
         owner_col = getattr(adapter.model, adapter.owner_column)
         attach_col = getattr(adapter.model, adapter.attach_column)
-        conditions = [owner_col == owner, attach_col == project_id]
-        active = self._active_condition(adapter)
-        if active is not None:
-            conditions.append(active)
-        rows = (await db.execute(sa.select(adapter.model).where(*conditions))).scalars().all()
+        conditions = [owner_col == owner, attach_col == project_id, *self._active_conditions(adapter)]
+        rows: Any = (await db.execute(sa.select(adapter.model).where(*conditions))).scalars().all()
         return tuple(rows)
 
     async def list_linked_resources(
@@ -201,9 +209,14 @@ class ProjectLinkageRegistry:
             except (AttributeError, TypeError, ValueError) as e:
                 raise _err('invalid_uri', f'{adapter.domain} 资源 id 类型非法：{server_id!r}') from e
         row = (
-            await db.execute(sa.select(adapter.model).where(id_col == value, owner_col == owner))
+            await db.execute(
+                sa.select(adapter.model).where(
+                    id_col == value, owner_col == owner, *self._active_conditions(adapter)
+                )
+            )
         ).scalar_one_or_none()
         if row is None:
+            # 不存在 / 非本人 / 已删（软删容器不该再改挂，摘出也无意义）→ 一律 404，不泄漏存在性。
             raise errors.NotFoundError(msg='要挂靠的资源不存在或不属于你')
         return row
 

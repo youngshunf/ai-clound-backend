@@ -83,6 +83,16 @@ def _resource_uri(resource_kind: str, server_id: int) -> str | None:
     return descriptor.build_uri(server_id)
 
 
+def _as_project_uuid(value: str | uuid.UUID) -> uuid.UUID:
+    """把入参项目 id 归一成 UUID；非法格式如实报 400（不静默忽略，避免「过滤了个寂寞」）。"""
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value).strip())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise errors.RequestError(msg=f'项目 id 不是合法 UUID：{value!r}') from exc
+
+
 def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None = None) -> dict[str, Any]:
     out = {
         'id': kb.id,
@@ -101,6 +111,9 @@ def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None =
         'document_count': kb.document_count,
         'chunk_count': kb.chunk_count,
         'status': kb.status,
+        # 平台项目挂靠（doc38 层2 / doc §3.4）：读侧**不按项目默认收窄**，改为每行回带归属，
+        # 分身与 webui 据此自证「这个库属于哪个项目」，需要收窄时再显式传过滤参。
+        'platform_project_id': str(kb.platform_project_id) if kb.platform_project_id else None,
         'created_time': kb.created_time,
         'updated_time': kb.updated_time,
     }
@@ -350,11 +363,18 @@ class KnowledgeService:
             rows.append((kb, eff, relation))
         return rows
 
-    async def list_accessible_kbs(self, db: AsyncSession, *, subject: Subject) -> list[dict[str, Any]]:
-        """可访问知识库 = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。"""
+    async def list_accessible_kbs(
+        self, db: AsyncSession, *, subject: Subject, platform_project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """可访问知识库 = 我拥有的 ∪ 共享给我的 ∪ 我企业可见的，每条带 relation + my_permission。
+
+        `platform_project_id` 非空时按挂靠项目收窄（缺省不过滤，见 `list_kbs` 口径说明）。
+        """
+        pid = _as_project_uuid(platform_project_id) if platform_project_id else None
         return [
             _kb_dict(kb, my_permission=perm, relation=relation)
             for kb, perm, relation in await self._accessible_kb_rows(db, subject=subject)
+            if pid is None or kb.platform_project_id == pid
         ]
 
     @staticmethod
@@ -492,13 +512,35 @@ class KnowledgeService:
             db, resource_type=_RESOURCE_TYPE_DOC, resource_id=str(doc_id), grantee_type=grantee_type, grantee_id=grantee_id
         )
 
-    async def list_kbs(self, db: AsyncSession, owner_id: str) -> list[dict[str, Any]]:
-        rows = (
-            await db.execute(
-                select(Kb).where(Kb.owner_id == owner_id, Kb.deleted_time.is_(None)).order_by(Kb.id.desc())
-            )
-        ).scalars()
+    async def list_kbs(
+        self, db: AsyncSession, owner_id: str, *, platform_project_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列主人自己的库；`platform_project_id` 非空时收窄到该项目（项目总览「挂靠资源区」用）。
+
+        缺省**不过滤**——知识库是长期资产、跨项目复用是常态，默认按当前项目收窄会让分身/主人
+        看不见绝大多数库（doc38 §5.6「写侧继承、读侧不收窄」）。
+        """
+        conditions = [Kb.owner_id == owner_id, Kb.deleted_time.is_(None)]
+        if platform_project_id:
+            conditions.append(Kb.platform_project_id == _as_project_uuid(platform_project_id))
+        rows = (await db.execute(select(Kb).where(*conditions).order_by(Kb.id.desc()))).scalars()
         return [_kb_dict(kb) for kb in rows]
+
+    @staticmethod
+    async def _resolve_owned_project_id(
+        db: AsyncSession, *, owner_id: str, platform_project_id: str | None
+    ) -> uuid.UUID | None:
+        """校验并归一「新库要挂进哪个平台项目」：空 → None（不挂）；非本主人项目 → 404。
+
+        延迟导入 project 域，避免应用间 import 环（knowledge 只在此一处依赖 project service）。
+        """
+        if not platform_project_id or not str(platform_project_id).strip():
+            return None
+        from backend.app.hasn_project.service.project_app_service import project_service
+
+        pid = _as_project_uuid(platform_project_id)
+        await project_service.assert_owned(db, owner=owner_id, pk=pid)
+        return pid
 
     async def create_kb(
         self,
@@ -508,12 +550,19 @@ class KnowledgeService:
         name: str,
         description: str | None,
         cover_asset_uri: str | None = None,
+        platform_project_id: str | None = None,
     ) -> dict[str, Any]:
         """建库：先建 RAGFlow dataset（失败则不落 kb 行，如实报错），成功后落域行。
 
         cover_asset_uri：封面资产引用（hasn://asset/{id}），主人建库上传或分身建库配图得到；
         存原始引用、不存 CDN 直链，渲染边界再换签名 URL。
+
+        platform_project_id：新库直接挂进的平台项目（doc38 §5.5 容器创建时的项目归属）。
+        三条来源——① daemon 代主人建库时带上本次派发定稿的项目；② 分身在项目工作会话里调
+        `create_kb` 时由 ContextVar 缺省；③ 分身显式指名项目（先经 `hasn.project.list` 换权威 UUID）。
+        **写前必过归属校验**：非本主人的项目 → 404，绝不直写列（否则绕过挂靠点注册表的 owner 隔离）。
         """
+        project_id = await self._resolve_owned_project_id(db, owner_id=owner_id, platform_project_id=platform_project_id)
         client, config = await resolve_knowledge_instance(db)
         # dataset 内部名取唯一随机串（单平台租户下避免撞名；展示名只活在域行）
         dataset = await client.create_dataset(name=f'hxkb_{uuid.uuid4().hex[:16]}', embedding_model=config.default_embd_id)
@@ -529,6 +578,7 @@ class KnowledgeService:
             document_count=0,
             chunk_count=0,
             status='active',
+            platform_project_id=project_id,
         )
         db.add(kb)
         await db.flush()
@@ -1036,8 +1086,8 @@ class KnowledgeService:
         if result['valid']:
             return
         bad = [lk for lk in result['links'] if not lk['ok']]
-        _reason_zh = {'not_found': '不存在/已删除', 'cross_kb': '属于其它知识库'}
-        detail = '；'.join(f'{lk["uri"]}（{_reason_zh.get(lk["reason"], lk["reason"])}）' for lk in bad)
+        reason_zh = {'not_found': '不存在/已删除', 'cross_kb': '属于其它知识库'}
+        detail = '；'.join(f'{lk["uri"]}（{reason_zh.get(lk["reason"], lk["reason"])}）' for lk in bad)
         raise errors.RequestError(
             msg=f'正文含 {len(bad)} 条无效深链，无法保存：{detail}。'
             '深链只能指向同一知识库内已存在的文档，请先建好目标文档或修正链接'
