@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import datetime
 
+from uuid import uuid4
+
 import pytest
 import pytest_asyncio
 
@@ -22,6 +24,10 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn_core.app_platform import ai_native_runtime_gateway as gateway
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_creator.service import creator_tool_handlers as H
+from backend.app.hasn_creator.service import project_linkage as _creator_project_linkage  # noqa: F401
+from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
+from backend.app.mcp.context import clear_current_project_id, set_current_project_id
 from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -70,6 +76,32 @@ async def test_manifest_handlers_all_registered() -> None:
     # 每个 handler 是 async callable
     for t in tools:
         assert callable(reg[t['handler']])
+
+
+async def test_creator_project_inherits_current_platform_project_and_registers_container(session) -> None:
+    """项目会话创建的创作运营容器继承平台项目，且适配器进入统一注册表。"""
+    agent = _agent(owner=f'h_creator_context_{uuid4().hex[:16]}')
+    platform_project = HasnProject(owner_id=agent.owner_hasn_id, name='内容增长战役')
+    session.add(platform_project)
+    await session.flush()
+
+    set_current_project_id(str(platform_project.id))
+    try:
+        created = await H.handle_project_create(session, agent, {'name': '增长内容号'})
+    finally:
+        clear_current_project_id()
+
+    assert created['platform_project_id'] == str(platform_project.id)
+    filtered = await H.handle_project_list(
+        session,
+        agent,
+        {'platform_project_id': str(platform_project.id)},
+    )
+    assert [item['id'] for item in filtered['items']] == [created['id']]
+    adapter = project_linkage_registry.get('creator/projects')
+    assert adapter is not None
+    assert adapter.attach_column == 'platform_project_id'
+    assert adapter.is_container is True
 
 
 async def test_full_pipeline_via_handlers(session) -> None:

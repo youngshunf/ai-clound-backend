@@ -143,6 +143,7 @@ _CAPABILITIES = [
         risk_level='low',
         properties={
             'status': {'type': ['string', 'null'], 'description': '按状态过滤 active/paused/archived'},
+            'platform_project_id': {'type': ['string', 'null'], 'description': '按平台项目 UUID 过滤'},
             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 50},
         },
         required=[],
@@ -174,6 +175,10 @@ _CAPABILITIES = [
             'primary_platform': {'type': ['string', 'null'], 'description': '主平台 xiaohongshu/douyin/...'},
             'pipeline_mode': {'type': ['string', 'null'], 'description': '流水线模式 semi-auto/manual/full-auto'},
             'playbook_id': {'type': ['integer', 'null']},
+            'platform_project_id': {
+                'type': ['string', 'null'],
+                'description': '可选：本人进行中的平台项目 UUID；项目会话中省略时自动继承',
+            },
         },
         required=['name'],
         page_rank=12,

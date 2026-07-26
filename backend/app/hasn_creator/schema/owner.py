@@ -21,6 +21,7 @@ class CreateProjectParam(SchemaBase):
     pipeline_mode: str = Field(default='semi-auto', description='流水线自主度 manual/semi-auto/auto')
     playbook_id: int | None = Field(default=None, description='绑定打法模板')
     assignee_agent_id: str | None = Field(default=None, max_length=128, description='默认承接分身 hasn_id')
+    platform_project_id: str | None = Field(default=None, description='可选：本人进行中的平台项目 UUID')
 
 
 class UpdateProjectParam(SchemaBase):

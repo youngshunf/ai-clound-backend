@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from backend.app.hasn_creator.service.creator_service import creator_service
 from backend.app.hasn_creator.service.scope_context import CreatorScope, resolve_creator_scope
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
+from backend.app.mcp.context import get_current_project_id
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +62,7 @@ async def handle_project_list(
         user_id=agent.owner_user_id,
         scope=scope,
         status=input_payload.get('status'),
+        platform_project_id=input_payload.get('platform_project_id'),
         limit=int(input_payload.get('limit', 50)),
     )
     return {'items': items, 'scope': scope.to_meta()}
@@ -88,6 +90,7 @@ async def handle_project_create(
         primary_platform=input_payload.get('primary_platform'),
         pipeline_mode=input_payload.get('pipeline_mode') or 'semi-auto',
         playbook_id=input_payload.get('playbook_id'),
+        platform_project_id=input_payload.get('platform_project_id') or get_current_project_id(),
     )
     # register-on-write：创作项目是本应用对外的产物载体（画像/选题/内容都挂在它下面），
     # 分身建完主人须能从会话资源栏直接点进去。

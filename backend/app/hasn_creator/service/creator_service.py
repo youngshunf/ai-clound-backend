@@ -14,7 +14,7 @@ import datetime
 
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 
@@ -41,6 +41,7 @@ from backend.app.hasn_creator.service.scope_context import (
     ownership_fields,
     validate_enterprise_member_hasn_id,
 )
+from backend.app.hasn_project.service.project_app_service import project_service as platform_project_service
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -73,6 +74,8 @@ _PUBLISH_TRANSITIONS: dict[str, set[str]] = {
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, UUID):
+        return str(value)
     if isinstance(value, (datetime.datetime, datetime.date)):
         return value.isoformat()
     return value
@@ -237,10 +240,22 @@ class CreatorService:
         pipeline_mode: str = 'semi-auto',
         playbook_id: int | None = None,
         assignee_agent_id: str | None = None,
+        platform_project_id: str | UUID | None = None,
     ) -> dict[str, Any]:
-        """建项目（运营单元根）+ 1:1 空画像。落双模归属。绑定分身须归本 owner（建时即校验）。"""
+        """建运营单元 + 空画像，并可继承本人进行中的平台项目。"""
         if assignee_agent_id:
             await CreatorService._validate_assignee_agent(db, scope=scope, agent_id=assignee_agent_id)
+        resolved_platform_project_id: UUID | None = None
+        if platform_project_id is not None:
+            owner_hasn_id = scope.owner_hasn_id if scope else None
+            if not owner_hasn_id:
+                raise errors.NotFoundError(msg='指定的平台项目不存在或不属于你')
+            platform_project = await platform_project_service.resolve_open_for_new_workflow(
+                db,
+                owner=owner_hasn_id,
+                project_id=platform_project_id,
+            )
+            resolved_platform_project_id = platform_project.id
         own = ownership_fields(scope, user_id=user_id)
         proj = Project(
             project_no=_gen_no('PROJ'),
@@ -250,6 +265,7 @@ class CreatorService:
             pipeline_mode=pipeline_mode,
             playbook_id=playbook_id,
             assignee_agent_id=assignee_agent_id,
+            platform_project_id=resolved_platform_project_id,
             status='active',
             **own,
         )
@@ -263,11 +279,23 @@ class CreatorService:
 
     @staticmethod
     async def list_projects(
-        db: AsyncSession, *, user_id: int, scope: CreatorScope | None, status: str | None = None, limit: int = 50
+        db: AsyncSession,
+        *,
+        user_id: int,
+        scope: CreatorScope | None,
+        status: str | None = None,
+        platform_project_id: str | UUID | None = None,
+        limit: int = 50,
     ) -> list[dict[str, Any]]:
         stmt = apply_scope(sa.select(Project), Project, user_id=user_id, scope=scope)
         if status:
             stmt = stmt.where(Project.status == status)
+        if platform_project_id is not None:
+            owner_hasn_id = scope.owner_hasn_id if scope else None
+            if not owner_hasn_id:
+                raise errors.NotFoundError(msg='指定的平台项目不存在或不属于你')
+            await platform_project_service.assert_owned(db, owner=owner_hasn_id, pk=platform_project_id)
+            stmt = stmt.where(Project.platform_project_id == UUID(str(platform_project_id)))
         stmt = stmt.order_by(Project.created_time.desc()).limit(min(limit, 200))
         rows = (await db.execute(stmt)).scalars().all()
         return [_to_dict(r) for r in rows]

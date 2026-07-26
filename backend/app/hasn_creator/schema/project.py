@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
@@ -13,6 +14,7 @@ class ProjectSchemaBase(SchemaBase):
     enterprise_id: int | None = Field(None, description='企业 ID（enterprise 模式；personal 为 NULL）')
     assignee: str | None = Field(None, description='负责运营的人 hasn_id（角色裁剪键；personal=owner_hasn_id）')
     assignee_agent_id: str | None = Field(None, description='负责运营的分身 hasn_id（§8.4 主脑 re-bind）')
+    platform_project_id: UUID | None = Field(None, description='挂靠的平台项目 id（独立于创作业务 project_id）')
     name: str = Field(description='None')
     description: str | None = Field(None, description='None')
     primary_platform: str | None = Field(None, description='主平台 (xiaohongshu:小红书:red/douyin:抖音:gray/wechat_mp:公众号:green/weibo:微博:orange/bilibili:B站:cyan/zhihu:知乎:blue)')

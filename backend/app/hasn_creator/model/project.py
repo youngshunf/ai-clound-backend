@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import sqlalchemy as sa
 
 from sqlalchemy.orm import Mapped, mapped_column
@@ -18,6 +20,11 @@ class Project(HasnCreatorAppBase):
     enterprise_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='企业 ID（enterprise 模式；personal 为 NULL）')
     assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='负责运营的人 hasn_id（角色裁剪键；personal=owner_hasn_id）')
     assignee_agent_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='负责运营的分身 hasn_id（§8.4 主脑 re-bind）')
+    platform_project_id: Mapped[UUID | None] = mapped_column(
+        sa.UUID(),
+        default=None,
+        comment='挂靠的平台项目 id（独立于创作业务 project_id；仅作跨应用归集视角）',
+    )
     name: Mapped[str] = mapped_column(sa.String(100), default='', comment=None)
     description: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     primary_platform: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment='主平台 (xiaohongshu:小红书:red/douyin:抖音:gray/wechat_mp:公众号:green/weibo:微博:orange/bilibili:B站:cyan/zhihu:知乎:blue)')
