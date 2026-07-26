@@ -45,6 +45,7 @@ from backend.app.hasn_project.model.hasn_project_inspection import HasnProjectIn
 from backend.app.hasn_project.model.hasn_project_milestone import HasnProjectMilestone
 from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
 from backend.app.hasn_project.service.project_app_service import project_service
+from backend.app.hasn_project.service.project_report_service import report_service
 from backend.common.exception import errors
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
@@ -411,6 +412,114 @@ async def test_inspection_schedule_uses_existing_owner_task_and_defaults_off(env
     )
     assert disabled['enabled'] is False
     assert task.enabled is False
+
+
+async def test_weekly_report_is_a_real_project_document_and_regeneration_updates_it(env) -> None:
+    """周报必须是绑定真实会话的 document 产物；同周期重生成原地更新并留 update 贡献记录。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '周报闭环项目'}))
+    session_id = f'ws_{uuid.uuid4().hex[:16]}'
+    env.session.add(
+        HasnSessions(
+            session_id=session_id,
+            owner_id=env.owner,
+            hasn_id=env.agent,
+            session_kind='task',
+            session_scope='conversation_visible',
+            origin_type='app',
+            project_id=uuid.UUID(project['id']),
+        )
+    )
+    await env.session.flush()
+
+    first = await report_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        work_session_id=session_id,
+        period_start='2026-07-20',
+        period_end='2026-07-26',
+        title='第 30 周项目周报',
+        body='本周完成里程碑校验，并确认下一步风险处理人。',
+        summary='完成里程碑校验，待处理风险归属。',
+    )
+    assert first['uri'] == f"hasn://artifact/{first['artifact_id']}"
+    artifact = (
+        await env.session.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == first['artifact_id']))
+    ).scalar_one()
+    assert artifact.artifact_kind == 'document'
+    assert artifact.project_id == uuid.UUID(project['id'])
+    assert artifact.body == '本周完成里程碑校验，并确认下一步风险处理人。'
+    assert artifact.meta_data['period_start'] == '2026-07-20'
+    assert artifact.meta_data['period_end'] == '2026-07-26'
+    assert artifact.meta_data['work_session_id'] == session_id
+
+    replay = await report_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        work_session_id=session_id,
+        period_start='2026-07-20',
+        period_end='2026-07-26',
+        title='第 30 周项目周报',
+        body='本周完成里程碑校验，并确认下一步风险处理人。',
+        summary='完成里程碑校验，待处理风险归属。',
+    )
+    assert replay['artifact_id'] == first['artifact_id']
+    contributions = (
+        await env.session.execute(
+            select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == first['artifact_id'])
+        )
+    ).scalars().all()
+    assert len(contributions) == 1
+    assert contributions[0].work_session_id == session_id
+
+    updated = await report_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        work_session_id=session_id,
+        period_start='2026-07-20',
+        period_end='2026-07-26',
+        title='第 30 周项目周报（更新）',
+        body='本周完成里程碑校验，风险处理人已经确认。',
+        summary='里程碑校验完成，风险已明确负责人。',
+    )
+    assert updated['artifact_id'] == first['artifact_id']
+    await env.session.refresh(artifact)
+    assert artifact.title == '第 30 周项目周报（更新）'
+    assert artifact.body == '本周完成里程碑校验，风险处理人已经确认。'
+    contributions = (
+        await env.session.execute(
+            select(HasnArtifactContributions)
+            .where(HasnArtifactContributions.artifact_id == first['artifact_id'])
+            .order_by(HasnArtifactContributions.occurred_time)
+        )
+    ).scalars().all()
+    assert [row.action for row in contributions] == ['create', 'update']
+
+    detail = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}'))
+    assert detail['reports'][0]['report_id'] == first['artifact_id']
+    assert detail['reports'][0]['resource_uri'] == first['uri']
+    listed = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}/reports'))
+    assert listed['items'][0]['report_id'] == first['artifact_id']
+
+    _data(await env.client.post(f'{_PROJECTS}/{project["id"]}/archive'))
+    with pytest.raises(errors.RequestError) as archived_error:
+        await report_service.publish(
+            env.session,
+            owner=env.owner,
+            agent_id=env.agent,
+            project_id=project['id'],
+            work_session_id=session_id,
+            period_start='2026-07-20',
+            period_end='2026-07-26',
+            title='归档后不应生成',
+            body='不得写入。',
+        )
+    assert archived_error.value.data['error_code'] == 'PROJECT_ARCHIVED'
 
 
 async def test_create_name_required_400(env) -> None:

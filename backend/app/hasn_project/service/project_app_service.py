@@ -483,6 +483,15 @@ class ProjectService:
             owner=owner,
             project_id=row.id,
         )
+        # 周报正文只作为统一 document 产物保存；详情仅带最近索引，完整历史走独立 reports 端点。
+        from backend.app.hasn_project.service.project_report_service import report_service
+
+        data['reports'] = await report_service.list_for_project(
+            db,
+            owner=owner,
+            project_id=row.id,
+            limit=10,
+        )
         data['linkable_domains'] = project_linkage_registry.linkable_domains()
         return data
 

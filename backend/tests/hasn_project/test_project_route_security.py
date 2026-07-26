@@ -48,3 +48,19 @@ def test_project_inspection_publish_is_a_scoped_platform_tool() -> None:
     assert tool.execution_location == 'cloud'
     assert tool.required_scopes == ['project:write']
     assert set(tool.input_schema['required']) == {'project_id', 'fingerprint', 'suggestion'}
+
+
+def test_project_report_publish_is_a_scoped_platform_tool() -> None:
+    """周报只能由分身通过项目平台工具登记 document 产物，不能开放裸 Agent CRUD。"""
+    tool = next(tool for tool in PROJECT_TOOLS if tool.name == 'hasn.project.report.publish')
+
+    assert tool.source == 'platform'
+    assert tool.execution_location == 'cloud'
+    assert tool.required_scopes == ['project:write']
+    assert set(tool.input_schema['required']) == {
+        'project_id',
+        'period_start',
+        'period_end',
+        'title',
+        'body',
+    }
