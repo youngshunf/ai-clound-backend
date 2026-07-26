@@ -20,8 +20,6 @@ import json
 
 from fastapi import WebSocket
 
-from backend.common.log import log
-from backend.database.redis import RedisCli, redis_client
 from backend.app.hasn_im.adapters.routing.redis_presence_store import NODE_GENERATION_KEY
 from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
     get_connection,
@@ -30,6 +28,8 @@ from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
     iter_connections,
     local_nodes,
 )
+from backend.common.log import log
+from backend.database.redis import RedisCli, redis_client
 
 # 共享投递频道：所有 worker 订阅，发送方 publish
 WS_DELIVERY_CHANNEL = 'hasn:ws:deliver'
@@ -43,6 +43,15 @@ DELIVERY_SEND_TIMEOUT_SECS = 10.0
 _RECONNECT_DELAY_SECS = 2.0
 _RETRY_PENDING_INTERVAL_SECS = 2.0
 
+# Redis 6.0 没有 LMOVE；用 Lua 保持“队头取出并追加到处理中队尾”的原子语义。
+_MOVE_PENDING_TO_PROCESSING_LUA = """
+local payload = redis.call('LPOP', KEYS[1])
+if payload then
+    redis.call('RPUSH', KEYS[2], payload)
+end
+return payload
+"""
+
 
 def _decode_payload(raw: str | bytes | None) -> dict | None:
     """解析队列帧；畸形或非对象 JSON 由调用方安全跳过。"""
@@ -51,6 +60,16 @@ def _decode_payload(raw: str | bytes | None) -> dict | None:
     except (json.JSONDecodeError, TypeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+async def _move_pending_to_processing(pending_key: str, processing_key: str) -> str | bytes | None:
+    """兼容 Redis 6.0，原子领取一条待投帧。"""
+    return await redis_client.eval(
+        _MOVE_PENDING_TO_PROCESSING_LUA,
+        2,
+        pending_key,
+        processing_key,
+    )
 
 
 class WsDeliveryBus:
@@ -132,7 +151,7 @@ class WsDeliveryBus:
 
             delivered = 0
             for _ in range(DELIVERY_BATCH_SIZE):
-                payload_json = await redis_client.lmove(pending_key, processing_key, 'LEFT', 'RIGHT')
+                payload_json = await _move_pending_to_processing(pending_key, processing_key)
                 if payload_json is None:
                     break
                 # drain 期间可能已有同 node 的新连接在其它 worker 抢占代际；旧 socket
