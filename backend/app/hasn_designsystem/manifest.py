@@ -126,6 +126,7 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
     'collaboration_mode': 'none',
     'project_aware': True,
     'project_required': False,
+    'project_integration': 'project_aware',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     # 通知发布能力声明（统一通知设计）：生成完成 / 分享经 Agent JWT 通道发卡给主人（P10 接 emit）。

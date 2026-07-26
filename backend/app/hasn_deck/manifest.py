@@ -163,6 +163,7 @@ DECK_AI_NATIVE_MANIFEST = {
     'collaboration_mode': 'none',
     'project_aware': True,
     'project_required': False,
+    'project_integration': 'project_aware',
     # catalog 枚举 local_tool（[07] §6.4 设计标签 native_huanxing 映射至此）。
     'execution_mode': 'local_tool',
     # 本地工具数据面（hasn-mcp source=Local），不经云端 Runtime Gateway。

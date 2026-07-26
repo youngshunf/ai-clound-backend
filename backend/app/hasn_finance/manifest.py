@@ -355,6 +355,7 @@ FINANCE_AI_NATIVE_MANIFEST = {
     'collaboration_mode': 'workspace_shared',
     'project_aware': True,
     'project_required': False,
+    'project_integration': 'project_aware',
     # 六类产物资源描述符（05 §1.1）：完成卡 / 工作会话资源栏 / URI 解析 / 详情跳转全从这份声明派生。
     'resources': _FINANCE_RESOURCES,
     'execution_mode': 'local_tool',

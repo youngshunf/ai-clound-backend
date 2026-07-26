@@ -130,6 +130,9 @@ FILM_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     'notifications': {

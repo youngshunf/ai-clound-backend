@@ -33,6 +33,29 @@ if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
 
 
+COPILOT_AI_NATIVE_MANIFEST = {
+    'app_id': 'copilot',
+    'domain_summary': {'copilot': '会议副驾（实时建议、会议纪要与待办）'},
+    'version': '1.0.0',
+    'workspace_scope': ['personal'],
+    'collaboration_mode': 'none',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
+    'execution_mode': 'local_tool',
+    'transport_mode': 'local',
+    'resources': [],
+    'capabilities': [],
+    'tools': [],
+    'events': [],
+    'reverse_invoke': {'supported': False},
+    'ui_interfaces': [{'face': 'ui', 'transport': 'daemon_direct'}],
+    'publisher': {'developer_id': 'huanxing-first-party', 'publisher_type': 'first_party', 'name': '唤星'},
+    'endpoints': {'tool_endpoint': None, 'event_endpoint': None, 'component_origin': 'loopback'},
+    'audit': {'fields': []},
+}
+
+
 def build_copilot_app() -> App:
     """会议副驾 App（local_tool / 原生 webui 路由 / 非自动挂载）。
 

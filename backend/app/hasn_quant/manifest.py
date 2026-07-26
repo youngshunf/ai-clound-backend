@@ -223,6 +223,9 @@ QUANT_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     'execution_mode': 'cloud',
     # cloud-brokered 工具模型（对齐 creator/finance）：工具数据面经 gateway_internal 进程内直调云端 handler →
     # quant_service（落 hasn_quant PG）→ quant_engine_provider → quant-engine-service，不经本地 hasn-mcp / daemon

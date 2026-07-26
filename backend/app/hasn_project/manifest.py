@@ -56,6 +56,9 @@ PROJECT_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],  # 双模应用（个人 / 企业，enterprise_id 列，对齐 GE）
     'collaboration_mode': 'none',
+    'project_aware': True,
+    'project_required': True,
+    'project_integration': 'project_required',
     'resources': [
         {
             'resource_kind': 'project',
@@ -109,4 +112,6 @@ def build_project_app() -> App:
         install_policy='auto',
         execution_mode='cloud',
         ui_kind=None,
+        project_aware=True,
+        project_required=True,
     )

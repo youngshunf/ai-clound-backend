@@ -533,6 +533,9 @@ GROWTH_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     'execution_mode': 'cloud',
     # 云端工具模型（对齐 community/knowledge）：工具数据面经 gateway_internal 进程内直调云端 handler，
     # 不经本地 hasn-mcp / daemon Agent 代理（获客无本地文件/电脑操作的本地理由）。
