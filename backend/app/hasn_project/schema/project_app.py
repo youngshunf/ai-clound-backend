@@ -29,6 +29,22 @@ class ProjectUpdateBody(_ProjectWriteBody):
     """更新项目请求体。"""
 
 
+class InspectionMarkDispatchedBody(SchemaBase):
+    """按建议派发完成后回填的真实工作会话。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    work_session_id: str = Field(min_length=1, max_length=64, description='按建议派发创建的项目工作会话 ID')
+
+
+class InspectionMarkRemindedBody(SchemaBase):
+    """提醒今晚创建后回填的真实计划待办。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    plan_todo_id: int = Field(gt=0, description='提醒今晚创建的计划待办 ID')
+
+
 class ProjectLinkedApp(SchemaBase):
     """项目挂靠容器按应用聚合后的稳定展示项。"""
 

@@ -4,9 +4,10 @@
 （in-process，不经 daemon HTTP relay）。owner 隔离由凭证解析出的 `agent_context.owner_hasn_id`
 强制，身份绝不入请求体。
 
-9 个工具（doc38 §3 item 5）：
+10 个工具（doc38 §3 item 5 + C11）：
 - `hasn.project.create/get/list/update/link/unlink`
 - `hasn.project.milestone.create/update/complete`
+- `hasn.project.inspection.publish`
 
 三态闸门由 `server.call_tool` 统一判定（维度①），工具体不二次校验。写类经 `async_db_session.begin()`
 自动提交 + best-effort WSPUSH `project` 失效；读类走 `async_db_session()`。
@@ -25,6 +26,7 @@ import logging
 from typing import Any
 
 from backend.app.hasn_project.service.project_app_service import project_service
+from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
@@ -180,6 +182,19 @@ async def _h_milestone_complete(db: Any, ctx: AgentContext, args: dict[str, Any]
     )
 
 
+async def _h_inspection_publish(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
+    """由当前项目经理分身发布巡检建议；身份只取 Agent JWT 上下文。"""
+    return await inspection_service.publish(
+        db,
+        owner=_owner_hasn_id(ctx),
+        agent_id=ctx.agent_hasn_id,
+        project_id=args['project_id'],
+        fingerprint=args['fingerprint'],
+        suggestion=args['suggestion'],
+        suggested_instruction=args.get('suggested_instruction'),
+    )
+
+
 # ── schema 小工具 ─────────────────────────────────────────────────────────────
 def _s(desc: str) -> dict[str, Any]:
     return {'type': 'string', 'description': desc}
@@ -329,6 +344,24 @@ _SPECS: list[dict[str, Any]] = [
         'handler': _h_milestone_complete,
         'desc': '完成里程碑（status→done）：传 id。纯业务态标记，不触发门控/依赖检查。',
         'schema': _schema({'id': _i('里程碑 id（必填）')}, ['id']),
+    },
+    {
+        'action': 'inspection.publish',
+        'write': True,
+        'handler': _h_inspection_publish,
+        'desc': (
+            '发布项目巡检建议：传 project_id、fingerprint 与 suggestion；同一主人、项目和 fingerprint '
+            '重放只更新本次巡检内容，不会重复生成建议卡。归档项目和非本人项目会如实拒绝。'
+        ),
+        'schema': _schema(
+            {
+                'project_id': _s('项目 id（云端权威 UUID，必填）'),
+                'fingerprint': _s('本次建议的稳定幂等指纹（必填，最大 128 字符）'),
+                'suggestion': _s('给主人展示的巡检建议正文（必填）'),
+                'suggested_instruction': _s('可选：主人按建议派发时预填的执行指令'),
+            },
+            ['project_id', 'fingerprint', 'suggestion'],
+        ),
     },
 ]
 

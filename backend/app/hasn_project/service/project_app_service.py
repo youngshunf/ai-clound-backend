@@ -434,6 +434,21 @@ class ProjectService:
             raise _err('PROJECT_ARCHIVED', '项目已归档，不能新增项目工作', http_code=409)
         return row
 
+    async def assert_active_owned_agent(self, db: AsyncSession, *, owner: str, agent_id: str) -> None:
+        """确认当前分身仍活跃且属于该主人，避免 Agent JWT 误写到其它主人项目。"""
+        agent = (
+            await db.execute(
+                sa.select(HasnAgents.id).where(
+                    HasnAgents.hasn_id == agent_id,
+                    HasnAgents.owner_id == owner,
+                    HasnAgents.status == 'active',
+                    HasnAgents.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if agent is None:
+            raise _err('INVALID_PROJECT_AGENT', '当前分身不存在、已停用或不属于当前主人', http_code=403)
+
     async def get_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> dict:
         """取单个项目详情（含里程碑轨与注册表派生的挂靠资源）。"""
         row = await self.get_owned_project(db, owner=owner, pk=pk)
@@ -454,6 +469,15 @@ class ProjectService:
         # `recent_sessions` 是稳定契约；保留 `sessions` 同一真实摘要的别名，供现有 WebUI 无缝升级。
         data['recent_sessions'] = recent_sessions
         data['sessions'] = recent_sessions
+        # 巡检建议只展示未处理项；全部历史由显式 Owner list API 提供，防止处理过的卡片反复出现。
+        from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
+
+        data['inspections'] = await inspection_service.list_for_project(
+            db,
+            owner=owner,
+            project_id=row.id,
+            status='unread',
+        )
         data['linkable_domains'] = project_linkage_registry.linkable_domains()
         return data
 
