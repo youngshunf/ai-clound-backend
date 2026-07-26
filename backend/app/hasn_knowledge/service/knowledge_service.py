@@ -512,6 +512,13 @@ class KnowledgeService:
             db, resource_type=_RESOURCE_TYPE_DOC, resource_id=str(doc_id), grantee_type=grantee_type, grantee_id=grantee_id
         )
 
+    async def get_kb_detail(self, db: AsyncSession, *, subject: Subject, kb_id: int) -> dict[str, Any]:
+        """单库详情（viewer 权即可读）：含 `platform_project_id`，供 daemon 继承挂靠项目与 webui 详情页用。"""
+        kb = await self.authorize_kb(db, subject=subject, kb_id=kb_id, need='viewer')
+        eff = await self._effective_permission(db, kb=kb, subject=subject)
+        relation = 'owner' if kb.owner_id == subject.hasn_id else 'shared'
+        return _kb_dict(kb, my_permission=eff, relation=relation)
+
     async def list_kbs(
         self, db: AsyncSession, owner_id: str, *, platform_project_id: str | None = None
     ) -> list[dict[str, Any]]:

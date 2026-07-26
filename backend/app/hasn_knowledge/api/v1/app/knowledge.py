@@ -149,6 +149,14 @@ async def create_kb(request: Request, db: CurrentSessionTransaction, body: Creat
     return response_base.success(data=data)
 
 
+@router.get('/kbs/{kb_id}', summary='知识库详情（含挂靠的平台项目）', dependencies=[DependsJwtAuth])
+async def get_kb(request: Request, db: CurrentSession, kb_id: int) -> ResponseModel:
+    # 单库详情：daemon 派发时据此继承容器挂靠的项目（doc38 §5.2），webui 详情页也免于从整张 list 里筛。
+    owner_id = await _resolve_owner(db, request)
+    data = await knowledge_service.get_kb_detail(db, subject=Subject.human(owner_id), kb_id=kb_id)
+    return response_base.success(data=data)
+
+
 @router.put('/kbs/{kb_id}', summary='改知识库名称 / 描述（需 manager 权）', dependencies=[DependsJwtAuth])
 async def update_kb(
     request: Request, db: CurrentSessionTransaction, kb_id: int, body: UpdateKbRequest
