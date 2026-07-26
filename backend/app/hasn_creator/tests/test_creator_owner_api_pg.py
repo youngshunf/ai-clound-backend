@@ -10,6 +10,7 @@ JWT/中间件级活体 HTTP 测试在 M12 全链路 E2E（打运行中 :8020）�
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -31,6 +32,10 @@ from backend.app.hasn_creator.schema.owner import (
     UpdateContentParam,
     UpdateMetricsParam,
 )
+from backend.app.hasn_creator.service.creator_service import creator_service
+from backend.app.hasn_creator.service.scope_context import CreatorScope
+from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -65,6 +70,51 @@ def _ok(resp):
     """断言统一信封并取出 data。"""
     assert resp.code == 200, f'非成功信封: code={resp.code} msg={getattr(resp, "msg", None)}'
     return resp.data
+
+
+async def test_creator_project_inherits_platform_project_and_rejects_unavailable_project(session) -> None:
+    """创作运营容器独立保存平台项目，且只接受本人仍进行中的项目。"""
+    owner = f'h_creator_platform_{uuid4().hex[:16]}'
+    scope = CreatorScope(user_id=925001, owner_hasn_id=owner)
+    platform_project = HasnProject(owner_id=owner, name='秋季内容战役')
+    foreign_project = HasnProject(owner_id=f'h_creator_foreign_{uuid4().hex[:12]}', name='他人项目')
+    archived_project = HasnProject(owner_id=owner, name='已归档项目', status='archived')
+    session.add_all([platform_project, foreign_project, archived_project])
+    await session.flush()
+
+    created = await creator_service.create_project(
+        session,
+        user_id=scope.user_id,
+        scope=scope,
+        name='秋季品牌号',
+        platform_project_id=str(platform_project.id),
+    )
+    assert created['platform_project_id'] == str(platform_project.id)
+
+    filtered = await creator_service.list_projects(
+        session,
+        user_id=scope.user_id,
+        scope=scope,
+        platform_project_id=str(platform_project.id),
+    )
+    assert [item['id'] for item in filtered] == [created['id']]
+
+    with pytest.raises(errors.ForbiddenError):
+        await creator_service.create_project(
+            session,
+            user_id=scope.user_id,
+            scope=scope,
+            name='越权项目',
+            platform_project_id=str(foreign_project.id),
+        )
+    with pytest.raises(errors.RequestError):
+        await creator_service.create_project(
+            session,
+            user_id=scope.user_id,
+            scope=scope,
+            name='归档项目',
+            platform_project_id=str(archived_project.id),
+        )
 
 
 async def test_owner_full_chain(session) -> None:

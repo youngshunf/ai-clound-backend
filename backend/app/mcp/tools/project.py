@@ -234,6 +234,17 @@ def _schema(props: dict[str, Any], required: list[str] | None = None) -> dict[st
     return out
 
 
+def _link_description() -> str:
+    """从当前挂靠注册表派生描述，防止工具说明滞后于真实可挂靠域。"""
+    domains = project_linkage_registry.linkable_domains()
+    rendered = '、'.join(f'hasn://{domain}/{{id}}' for domain in domains) or '暂无已注册资源域'
+    return (
+        '把一个资源挂靠进项目（联邦挂靠）：传 project_id + resource_uri(hasn:// 资源地址)。'
+        f'当前可显式挂靠的资源域由平台注册表实时派生：{rendered}。'
+        '挂靠只是归属标签，不改权限、不搬数据、随时可摘；域未列出时不得猜 URI 或直改应用表。'
+    )
+
+
 # ── 工具规格（action → name=hasn.project.<action>）──────────────────────────────
 _SPECS: list[dict[str, Any]] = [
     {
@@ -297,11 +308,7 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'link',
         'write': True,
         'handler': _h_link,
-        'desc': (
-            '把一个资源挂靠进项目（联邦挂靠）：传 project_id + resource_uri(hasn:// 资源地址)。'
-            '当前支持 hasn://artifact/{id}（把产物显式改挂到本项目，覆盖自动打标）；'
-            '知识库/deck/图坊项目等容器挂靠随后续版本开放。'
-        ),
+        'desc': '',
         'schema': _schema(
             {
                 'project_id': _s('目标项目 id（云端权威 UUID，必填）'),
@@ -434,6 +441,8 @@ class _ProjectTool(BaseTool):
 
     @property
     def description(self) -> str:
+        if self._action == 'link':
+            return _link_description()
         return self._desc
 
     @property

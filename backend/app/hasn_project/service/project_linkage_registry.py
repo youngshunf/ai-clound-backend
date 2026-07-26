@@ -117,7 +117,12 @@ class ProjectLinkageRegistry:
 
     @staticmethod
     def _active_conditions(adapter: LinkageAdapter) -> list[Any]:
-        """返回有效行条件：显式或通用软删列为空，通用 status 不为 deleted。"""
+        """排除 tombstone：`status='deleted'` 与 `deleted_time IS NOT NULL` 两种软删口径都认。
+
+        各应用软删语义不统一——finance/artifact 用 `status`，knowledge 用 `deleted_time`（删库只置
+        时间戳、status 保持 active）。只认 status 会让已删容器继续出现在挂靠资源区与并集读里。
+        两列都没有的容器不额外过滤。
+        """
         conditions: list[Any] = []
         deleted_column = adapter.deleted_column
         if deleted_column is None and getattr(adapter.model, 'deleted_time', None) is not None:
@@ -314,6 +319,7 @@ class ProjectLinkageRegistry:
         conditions.extend(self._active_conditions(adapter))
         row = (await db.execute(sa.select(adapter.model).where(*conditions))).scalar_one_or_none()
         if row is None:
+            # 不存在 / 非本人 / 已删（软删容器不该再改挂，摘出也无意义）→ 一律 404，不泄漏存在性。
             raise errors.NotFoundError(msg='要挂靠的资源不存在或不属于你')
         return row
 

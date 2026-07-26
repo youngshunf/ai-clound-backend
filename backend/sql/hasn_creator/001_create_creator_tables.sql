@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS project (
     enterprise_id bigint,
     assignee varchar(64),
     assignee_agent_id varchar(64),
+    platform_project_id uuid REFERENCES hasn_project.hasn_project(id) ON DELETE SET NULL,
     name varchar(100) NOT NULL,
     description text,
     primary_platform varchar(50),
@@ -59,6 +60,7 @@ COMMENT ON COLUMN project.owner_scope IS '归属模式 (personal:个人:blue/ent
 COMMENT ON COLUMN project.enterprise_id IS '企业 ID（enterprise 模式；personal 为 NULL）';
 COMMENT ON COLUMN project.assignee IS '负责运营的人 hasn_id（角色裁剪键；personal=owner_hasn_id）';
 COMMENT ON COLUMN project.assignee_agent_id IS '负责运营的分身 hasn_id（§8.4 主脑 re-bind）';
+COMMENT ON COLUMN project.platform_project_id IS '挂靠的平台项目 id（独立于创作业务 project_id；仅作跨应用归集视角）';
 COMMENT ON COLUMN project.primary_platform IS '主平台 (xiaohongshu:小红书:red/douyin:抖音:gray/wechat_mp:公众号:green/weibo:微博:orange/bilibili:B站:cyan/zhihu:知乎:blue)';
 COMMENT ON COLUMN project.pipeline_mode IS '运营自主度 (manual:手动:gray/semi-auto:半自动:blue/auto:自动:green)';
 COMMENT ON COLUMN project.playbook_id IS '采用的账号打法（playbook.id 逻辑引用）';
@@ -67,6 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_creator_project_user_status ON project (user_id, 
 CREATE INDEX IF NOT EXISTS idx_creator_project_owner_scope ON project (user_id, owner_scope);
 CREATE INDEX IF NOT EXISTS idx_creator_project_enterprise_assignee ON project (enterprise_id, assignee) WHERE owner_scope = 'enterprise';
 CREATE INDEX IF NOT EXISTS idx_creator_project_assignee_agent ON project (assignee_agent_id);
+CREATE INDEX IF NOT EXISTS idx_creator_project_platform_project ON project (assignee, platform_project_id) WHERE platform_project_id IS NOT NULL;
 
 -- ========== 3. profile 项目画像（1:1 project） ==========
 CREATE TABLE IF NOT EXISTS profile (

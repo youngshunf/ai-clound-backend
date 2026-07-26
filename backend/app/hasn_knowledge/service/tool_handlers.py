@@ -19,7 +19,7 @@ from backend.app.hasn_knowledge.service.error_adapter import to_http_error
 from backend.app.hasn_knowledge.service.knowledge_service import knowledge_service
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
 from backend.app.mcp.artifact_registration import register_app_resource_artifact
-from backend.app.mcp.context import get_authorized_resource
+from backend.app.mcp.context import get_authorized_resource, get_current_project_id
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -78,9 +78,19 @@ def _resource_owner(param: str, agent: AgentTokenPayload) -> tuple[str, bool]:
 async def handle_knowledge_search(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.search：检索主人可见知识库（维度② 在 service 内裁剪）。"""
+    """knowledge.search：检索主人可见知识库（维度② 在 service 内裁剪）。
+
+    `platform_project_id` 可选——只检索挂靠在该项目下的库。**缺省不收窄**（doc38 §5.6）：
+    知识库是长期资产、跨项目复用是常态，按当前项目默认过滤会让分身检索不到主人绝大多数资料。
+    """
     kb_ids_raw = input_payload.get('kb_ids')
     kb_ids = [int(i) for i in kb_ids_raw] if kb_ids_raw else None
+    project_id = str(input_payload.get('platform_project_id') or '').strip()
+    if project_id:
+        kb_ids = await _project_scoped_kb_ids(db, agent, project_id=project_id, kb_ids=kb_ids)
+        if not kb_ids:
+            # 该项目名下没有分身可达的库：如实回空（零 fake），不退化成全库检索。
+            return {'chunks': [], 'total': 0, 'kb_count': 0}
     try:
         return await knowledge_service.search(
             db,
@@ -95,14 +105,41 @@ async def handle_knowledge_search(
         raise to_http_error(exc) from exc
 
 
+async def _project_scoped_kb_ids(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    *,
+    project_id: str,
+    kb_ids: list[int] | None = None,
+) -> list[int]:
+    """把「某平台项目」换算成分身可达且挂靠在该项目下的 kb_ids（与显式 kb_ids 取交集）。"""
+    try:
+        visible = await knowledge_service.resolve_agent_visible_kbs(db, agent.owner_hasn_id, agent.agent_hasn_id)
+    except KnowledgeProviderError as exc:
+        raise to_http_error(exc) from exc
+    pid = str(project_id).strip()
+    scoped = [kb.id for kb in visible if str(kb.platform_project_id or '') == pid]
+    if kb_ids is not None:
+        allowed = set(kb_ids)
+        scoped = [kb_id for kb_id in scoped if kb_id in allowed]
+    return scoped
+
+
 async def handle_knowledge_list_datasets(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
-    """knowledge.list_datasets：列出分身可达的知识库（维度② 裁剪后）。"""
+    """knowledge.list_datasets：列出分身可达的知识库（维度② 裁剪后）。
+
+    每行回带 `platform_project_id`（doc38 §5.6 读侧口径）——分身据此自证「这个库属于哪个项目」；
+    传 `platform_project_id` 才收窄，**缺省列全部**，免得分身在项目会话里看不见未挂靠的长期库。
+    """
     try:
         kbs = await knowledge_service.resolve_agent_visible_kbs(db, agent.owner_hasn_id, agent.agent_hasn_id)
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
+    project_id = str(input_payload.get('platform_project_id') or '').strip()
+    if project_id:
+        kbs = [kb for kb in kbs if str(kb.platform_project_id or '') == project_id]
     return {
         'datasets': [
             {
@@ -111,6 +148,7 @@ async def handle_knowledge_list_datasets(
                 'description': kb.description,
                 'document_count': kb.document_count,
                 'chunk_count': kb.chunk_count,
+                'platform_project_id': str(kb.platform_project_id) if kb.platform_project_id else None,
             }
             for kb in kbs
         ]
@@ -229,6 +267,10 @@ async def handle_knowledge_create_kb(
             '再以 hasn://asset/{id} 作为 cover_asset_uri 传入'
         )
     description = input_payload.get('description')
+    # 项目归属（doc38 §5.5）：显式入参优先，缺省取本次工作会话的项目 ContextVar（系统注入
+    # `_hasn_project_id`，与 register-on-write 打标同管道）——分身在项目里建库无须自己填。
+    # 归属校验在 service 侧统一做（非本主人项目 → 404），绝不直写列。
+    platform_project_id = str(input_payload.get('platform_project_id') or '').strip() or get_current_project_id()
     try:
         kb = await knowledge_service.create_kb(
             db,
@@ -236,6 +278,7 @@ async def handle_knowledge_create_kb(
             name=name,
             description=str(description).strip() if description else None,
             cover_asset_uri=cover_asset_uri,
+            platform_project_id=platform_project_id,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc
