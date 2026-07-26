@@ -36,6 +36,7 @@ from backend.app.hasn.model.hasn_sessions import HasnSessions
 from backend.app.hasn.service import sync_invalidate_service
 from backend.app.hasn_designsystem.model.design_system import DesignSystem
 from backend.app.hasn_plan.model.todo import Todo
+from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_designsystem.service import project_linkage as _designsystem_project_linkage  # noqa: F401
 from backend.app.hasn_project.api.v1.app.hasn_project import router as app_project_router
 from backend.app.hasn_project.api.v1.app.hasn_project_milestone import router as app_milestone_router
@@ -151,6 +152,7 @@ async def env():
         await session.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await session.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
         await session.execute(delete(Todo).where(Todo.owner_hasn_id == owner))
+        await session.execute(delete(HasnTask).where(HasnTask.owner_id == owner))
         await session.execute(delete(HasnProject).where(HasnProject.owner_id == owner))
         await session.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent))
         await session.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
@@ -328,17 +330,18 @@ async def test_inspection_publish_owner_actions_and_active_project_guard(env) ->
         fingerprint='tonight-followup-v1',
         suggestion='今晚确认对方是否已回复。',
     )
-    todo = Todo(owner_hasn_id=env.owner, title='今晚处理项目巡检建议', status='todo')
-    env.session.add(todo)
-    await env.session.flush()
     reminded = _data(
         await env.client.post(
-            f'{_PROJECTS}/{project["id"]}/inspections/{remindable["id"]}/mark-reminded',
-            json={'plan_todo_id': todo.id},
+            f'{_PROJECTS}/{project["id"]}/inspections/{remindable["id"]}/remind-tonight',
         )
     )
     assert reminded['status'] == 'reminded'
-    assert reminded['plan_todo_id'] == todo.id
+    assert isinstance(reminded['plan_todo_id'], int)
+    todo = (
+        await env.session.execute(select(Todo).where(Todo.id == reminded['plan_todo_id']))
+    ).scalar_one()
+    assert todo.owner_hasn_id == env.owner
+    assert todo.title.startswith('今晚处理：')
 
     missing_owner = f'h_other_{_uid()}'
     with pytest.raises(errors.NotFoundError):
@@ -381,6 +384,33 @@ async def test_inspection_owner_api_hides_other_owner_project(env) -> None:
         env.auth_state['user_id'] = env.user_id
         await env.session.delete(other_human)
         await env.session.flush()
+
+
+async def test_inspection_schedule_uses_existing_owner_task_and_defaults_off(env) -> None:
+    """周期巡检默认关闭；主人启用后创建既有任务实体，停用只暂停该任务。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '周期巡检项目'}))
+    before = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}'))
+    assert before['inspection_schedule']['enabled'] is False
+    assert before['inspection_schedule']['task_id'] is None
+
+    enabled = _data(
+        await env.client.post(f'{_PROJECTS}/{project["id"]}/inspection-schedule', json={'enabled': True})
+    )
+    assert enabled['enabled'] is True
+    assert enabled['agent_id'] == env.agent
+    task = (
+        await env.session.execute(select(HasnTask).where(HasnTask.id == enabled['task_id']))
+    ).scalar_one()
+    assert task.owner_id == env.owner
+    assert task.project_id == uuid.UUID(project['id'])
+    assert task.execution_spec == {'kind': 'project_inspection'}
+    assert task.schedule_type == 'cron'
+
+    disabled = _data(
+        await env.client.post(f'{_PROJECTS}/{project["id"]}/inspection-schedule', json={'enabled': False})
+    )
+    assert disabled['enabled'] is False
+    assert task.enabled is False
 
 
 async def test_create_name_required_400(env) -> None:

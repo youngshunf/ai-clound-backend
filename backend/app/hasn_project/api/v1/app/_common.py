@@ -52,6 +52,16 @@ async def bump_project_sync(db: AsyncSession, owner_hasn_id: str) -> None:
         log.warning('[project] sync invalidate 推送失败 (非致命): %s', e)
 
 
+async def bump_task_sync(db: AsyncSession, owner_hasn_id: str) -> None:
+    """项目巡检任务变更后通知 owner 节点拉取既有任务镜像（best-effort）。"""
+    try:
+        from backend.app.hasn.service import sync_invalidate_service as siv
+
+        await siv.bump_owner(siv.KIND_TASKS, db, owner_hasn_id)
+    except Exception as e:
+        log.warning('[project] tasks sync invalidate 推送失败 (非致命): %s', e)
+
+
 async def bump_linked_resource_sync(
     db: AsyncSession,
     *,

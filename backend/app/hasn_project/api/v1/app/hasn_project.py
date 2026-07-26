@@ -17,12 +17,14 @@ from fastapi import APIRouter, Body, Path, Query, Request
 
 from backend.app.hasn_project.api.v1.app._common import (
     bump_project_sync,
+    bump_task_sync,
     publish_project_linkage_sync_after_commit,
     resolve_owner,
 )
 from backend.app.hasn_project.schema.project_app import (
     InspectionMarkDispatchedBody,
     InspectionMarkRemindedBody,
+    InspectionScheduleBody,
     ProjectCreateBody,
     ProjectUpdateBody,
 )
@@ -230,6 +232,50 @@ async def app_mark_inspection_reminded(
         plan_todo_id=body.plan_todo_id,
     )
     await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/remind-tonight',
+    summary='创建今晚处理的计划待办',
+    dependencies=[DependsJwtAuth],
+    name='project_app_remind_inspection_tonight',
+)
+async def app_remind_inspection_tonight(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+) -> ResponseModel:
+    """复用计划待办服务创建真实提醒，并在同一事务回填 `plan_todo_id`。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.remind_tonight(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspection-schedule',
+    summary='启停项目周期巡检',
+    dependencies=[DependsJwtAuth],
+    name='project_app_set_inspection_schedule',
+)
+async def app_set_inspection_schedule(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    body: InspectionScheduleBody,
+) -> ResponseModel:
+    """复用既有任务 scheduler 创建或启停项目巡检任务，默认不创建也不运行。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.set_inspection_schedule(db, owner=owner, project_id=pk, enabled=body.enabled)
+    await bump_project_sync(db, owner)
+    await bump_task_sync(db, owner)
     return response_base.success(data=data)
 
 
