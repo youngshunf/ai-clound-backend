@@ -112,6 +112,9 @@ PUBLISH_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     # catalog 枚举 local_tool（本地工具数据面 + 原生 UI）。
     'execution_mode': 'local_tool',
     # 本地工具数据面（hasn-mcp source=Platform/Local → daemon PublishGateway），不经云端 Runtime Gateway。

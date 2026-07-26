@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,7 +32,7 @@ class App:
     project_required: bool = False
 
     def to_manifest(self, *, workspace_kind: str | None = None) -> dict[str, Any]:
-        data = {
+        data: dict[str, Any] = {
             'id': self.id,
             'name': self.name,
             'icon': self.icon,
@@ -49,10 +49,19 @@ class App:
             'window_origin': self.window_origin,
             'project_aware': self.project_aware,
             'project_required': self.project_required,
+            'project_integration': self.project_integration,
         }
         if workspace_kind and self.health_check:
             data['health'] = self.health_check({'workspace_kind': workspace_kind})
         return data
+
+    @property
+    def project_integration(self) -> str:
+        if self.project_required:
+            return 'project_required'
+        if self.project_aware:
+            return 'project_aware'
+        return 'artifact_only'
 
 
 class AppCatalogRegistry:
@@ -72,6 +81,7 @@ class AppCatalogRegistry:
                 collaboration_mode='workspace_shared',
                 entry_route='/apps/knowledge',
                 install_policy='auto',
+                project_aware=True,
             )
         )
         registry.register(
@@ -186,8 +196,11 @@ class AppCatalogRegistry:
             apps = [app for app in apps if workspace_kind in app.scope]
         return apps
 
-    def auto_install_apps(self, workspace_kind: str) -> list[App]:
+    def auto_install_apps(self, workspace_kind: str) -> AppList:
         return [app for app in self.list(workspace_kind) if app.install_policy == 'auto']
+
+
+AppList: TypeAlias = list[App]
 
 
 app_catalog_registry = AppCatalogRegistry.default()

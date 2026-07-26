@@ -162,6 +162,9 @@ IMAGELAB_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': True,
+    'project_required': True,
+    'project_integration': 'project_required',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     'notifications': {
@@ -423,4 +426,6 @@ def build_imagelab_app() -> App:
         install_policy='manual',
         execution_mode='local_tool',
         ui_kind=None,
+        project_aware=True,
+        project_required=True,
     )

@@ -7,6 +7,9 @@ COMMUNITY_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     # 通知发布能力声明（统一通知设计 §7 / P5）：App 可经 Agent JWT 通道
     # backend_gateway.for_agent(agent).notification.emit 发通知给主人；
     # categories = 允许的通知粗类白名单；card_message = 是否可投递卡片承载。

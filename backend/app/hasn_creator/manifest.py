@@ -795,6 +795,9 @@ CREATOR_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': True,
+    'project_required': False,
+    'project_integration': 'project_aware',
     'execution_mode': 'cloud',
     # 云端工具模型（对齐 community/knowledge/growth）：工具数据面经 gateway_internal 进程内直调云端 handler，
     # 不经本地 hasn-mcp / daemon Agent 代理（创作运营无本地文件/电脑操作的本地理由）。
@@ -849,4 +852,6 @@ def build_creator_app() -> App:
         entry_route='/apps/creator',
         install_policy='manual',
         execution_mode='cloud',
+        project_aware=True,
+        project_required=False,
     )

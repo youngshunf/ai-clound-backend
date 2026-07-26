@@ -436,6 +436,9 @@ HASN_TASK_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
+    'project_aware': False,
+    'project_required': False,
+    'project_integration': 'artifact_only',
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     # 通知：agent 建周期任务 → 「待你确认」提醒卡片（D4，通知非审批票据）；run 完成可发 app 卡。
