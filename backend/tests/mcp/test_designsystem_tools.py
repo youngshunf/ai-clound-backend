@@ -23,6 +23,8 @@ import uuid
 import pytest
 
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import clear_current_project_id, set_current_project_id
+from backend.app.mcp.tools import designsystem as designsystem_tools
 from backend.app.mcp.tools.designsystem import (
     DESIGNSYSTEM_TOOLS,
     DesignSystemCompileTokensTool,
@@ -122,6 +124,34 @@ def test_required_fields_match_contract() -> None:
         'brand_id',
         'components_html',
     ]
+    assert 'platform_project_id' in by_name['hasn.designsystem.save'].input_schema['properties']
+    assert 'platform_project_id' in by_name['hasn.designsystem.list'].input_schema['properties']
+
+
+def test_save_project_resolution_precedence() -> None:
+    """新建时显式项目优先于上下文；显式 null 禁止继承；更新存量不自动改挂靠。"""
+    current_project_id = str(uuid.uuid4())
+    explicit_project_id = str(uuid.uuid4())
+    set_current_project_id(current_project_id)
+    try:
+        assert designsystem_tools._resolve_save_platform_project_id({}, is_create=True) == current_project_id
+        assert (
+            designsystem_tools._resolve_save_platform_project_id(
+                {'platform_project_id': explicit_project_id},
+                is_create=True,
+            )
+            == explicit_project_id
+        )
+        assert (
+            designsystem_tools._resolve_save_platform_project_id(
+                {'platform_project_id': None},
+                is_create=True,
+            )
+            is None
+        )
+        assert designsystem_tools._resolve_save_platform_project_id({}, is_create=False) is None
+    finally:
+        clear_current_project_id()
 
 
 # ── 确定性纯函数工具执行（无需 DB，离线可跑）──────────────────────────────────────
@@ -244,9 +274,11 @@ async def test_save_list_get_roundtrip_real_db() -> None:
 
     from sqlalchemy import delete, select
 
-    from backend.app.hasn.model import HasnArtifacts
+    from backend.app.hasn.model import HasnArtifactContributions, HasnArtifactRegistrationOutbox, HasnArtifacts
     from backend.app.hasn_designsystem.model.design_system import DesignSystem
     from backend.app.hasn_designsystem.model.revision import Revision
+    from backend.app.hasn_project.model.hasn_project import HasnProject
+    from backend.app.hasn_project.service.project_app_service import project_service
     from backend.database.db import async_db_session
 
     owner = f'h_ds_tool_{uuid.uuid4().hex[:16]}'
@@ -254,22 +286,32 @@ async def test_save_list_get_roundtrip_real_db() -> None:
     slug = f'ds-{uuid.uuid4().hex[:8]}'
     bundle_asset_id = f'ast_bundle_{uuid.uuid4().hex[:12]}'
     design_system_id: int | None = None
+    project_id: str | None = None
     try:
-        saved = await DesignSystemSaveTool().execute(
-            ctx,
-            {
-                'slug': slug,
-                'name': '唤星品牌系统',
-                'content': {
-                    'tokens_css': ':root { --color-bg-base: #ffffff; --color-accent-default: #6d28d9; }',
-                    'design_tokens_json': '{}',
+        async with async_db_session.begin() as db:
+            project = await project_service.create_project(db, owner=owner, data={'name': '设计系统自动挂靠测试'})
+            project_id = project['id']
+
+        # AppCollab 只把项目写入可信 ContextVar；分身调用 save 时不需要显式传 platform_project_id。
+        set_current_project_id(project_id)
+        try:
+            saved = await DesignSystemSaveTool().execute(
+                ctx,
+                {
+                    'slug': slug,
+                    'name': '唤星品牌系统',
+                    'content': {
+                        'tokens_css': ':root { --color-bg-base: #ffffff; --color-accent-default: #6d28d9; }',
+                        'design_tokens_json': '{}',
+                    },
+                    'category': 'brand',
+                    'score': 88,
+                    'grade': 'excellent',
+                    'bundle_asset_id': bundle_asset_id,
                 },
-                'category': 'brand',
-                'score': 88,
-                'grade': 'excellent',
-                'bundle_asset_id': bundle_asset_id,
-            },
-        )
+            )
+        finally:
+            clear_current_project_id()
         design_system_id = saved['id']
         assert design_system_id
         assert saved['revision']['bundle_asset_id'] == bundle_asset_id
@@ -282,6 +324,7 @@ async def test_save_list_get_roundtrip_real_db() -> None:
             assert row.owner_hasn_id == owner
             assert row.slug == slug
             assert row.score == 88
+            assert str(row.platform_project_id) == project_id
             # save 创建即绑定生成它的分身（AppCollab bind-only-if-unbound）。
             assert row.bound_agent_id == ctx.agent_hasn_id
 
@@ -291,11 +334,18 @@ async def test_save_list_get_roundtrip_real_db() -> None:
         # 断言却没跟着改，于是本用例长期红着（doc36 U1 顺带修正到 manifest 权威值）。
         async with async_db_session() as db:
             art = (await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))).scalar_one()
+            contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == art.artifact_id)
+                )
+            ).scalar_one()
             assert art.kind == 'resource', 'artifact_kind 只答「怎么打开」——应用资源恒 resource（doc35 §3.1）'
             assert art.resource_kind == 'designsystem.spec', 'resource_kind 答「是什么」，取 manifest descriptor 原值'
-            assert art.source_app_id == 'designsystem'
+            assert art.resource_app_id == 'designsystem'
             assert art.resource_uri == f'hasn://designsystem/{design_system_id}'
-            assert art.source_tool == 'hasn.designsystem.save'
+            # 来源属于不可变参与记录；当前态只保存稳定对象属性。
+            assert contribution.source_app_id == 'designsystem'
+            assert contribution.source_tool == 'hasn.designsystem.save'
 
         # list 可见该套（owner 维度）。
         listed = await DesignSystemListTool().execute(ctx, {})
@@ -310,4 +360,13 @@ async def test_save_list_get_roundtrip_real_db() -> None:
             if design_system_id is not None:
                 await db.execute(delete(Revision).where(Revision.design_system_id == design_system_id))
                 await db.execute(delete(DesignSystem).where(DesignSystem.id == design_system_id))
+            # 参与记录与可靠投递队列均外键指向产物当前态，测试清理必须先删子表。
+            await db.execute(
+                delete(HasnArtifactRegistrationOutbox).where(
+                    HasnArtifactRegistrationOutbox.owner_hasn_id == owner
+                )
+            )
+            await db.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
             await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+            if project_id is not None:
+                await db.execute(delete(HasnProject).where(HasnProject.id == project_id))

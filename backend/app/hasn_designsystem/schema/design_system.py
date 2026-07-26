@@ -17,6 +17,7 @@ class DesignSystemSchemaBase(SchemaBase):
     recommend_rebuild: bool = Field(description='是否建议重建（评分过低）')
     is_builtin: bool = Field(description='是否官方内置（seed，跨 owner 只读可见）')
     enterprise_id: int | None = Field(None, description='归属企业 ID（null=个人；非空=企业私有，引用 public.hasn_enterprise）')
+    platform_project_id: str | None = Field(None, description='挂靠的平台项目 id（可空=未挂靠）')
     current_revision_id: int | None = Field(None, description='当前版 revision.id（指向最新 revision）')
     content_hash: str = Field(description='当前版内容 hash（供同步 revision diff）')
     required_scenes: list[str] = Field(

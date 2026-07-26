@@ -29,12 +29,20 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
+from backend.app.hasn.service import sync_invalidate_service
+from backend.app.hasn_designsystem.model.design_system import DesignSystem
 from backend.app.hasn_designsystem.manifest import (
     DESIGNSYSTEM_AI_NATIVE_MANIFEST,
     build_designsystem_app,
 )
+from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_project.service.project_app_service import project_service
+from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
+from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
+from backend.database.redis import redis_client
+from backend.utils.timezone import timezone
 
 # 落地真相：写类 2 工具（import/save）/ 读类（含纯函数 + 场景自查）7 工具。
 # check_scenes 是云端专属自查工具（DSGAL；读设计系统 required_scenes × 当前 HTML 实检覆盖 → 缺什么/怎么补），
@@ -113,9 +121,28 @@ def test_designsystem_workbench_app_shape() -> None:
     assert app.scope == ('personal',)
     assert app.entry_route == '/apps/designsystem'
     assert app.ui_kind is None
+    assert app.project_aware is True
+    assert app.project_required is False
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(DESIGNSYSTEM_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)
     assert DESIGNSYSTEM_AI_NATIVE_MANIFEST['collaboration_mode'] == app.collaboration_mode
+    assert DESIGNSYSTEM_AI_NATIVE_MANIFEST['project_aware'] is True
+    assert DESIGNSYSTEM_AI_NATIVE_MANIFEST['project_required'] is False
+
+
+def test_designsystem_project_linkage_adapter_registered() -> None:
+    """设计系统根资源作为容器挂靠点进入统一项目注册表。"""
+    assert hasattr(DesignSystem, 'platform_project_id')
+    adapter = project_linkage_registry.get('designsystem')
+    assert adapter is not None
+    assert adapter.model is DesignSystem
+    assert adapter.owner_column == 'owner_hasn_id'
+    assert adapter.attach_column == 'platform_project_id'
+    assert adapter.is_container is True
+    assert adapter.app_id == 'designsystem'
+    assert adapter.deleted_column == 'deleted_time'
+    assert adapter.sync_kind == 'designsystem'
+    assert adapter.sync_scope == 'global'
 
 
 # ============================ 真实 PostgreSQL ============================
@@ -151,3 +178,134 @@ async def test_designsystem_builtin_published_and_self_heals(db: AsyncSession) -
     # 二次调用：hash 未变 → 直接返回已发布（不新增/不报错）。
     again = await ai_native_app_registry.ensure_builtin_published(db, 'designsystem')
     assert again['manifest_hash'] == published['manifest_hash']
+
+
+@pytest.mark.asyncio
+async def test_designsystem_project_linkage_changes_revision_and_hides_deleted_rows(db: AsyncSession) -> None:
+    """显式挂靠/摘除可用且改变同步指纹；软删容器不可定位，也不进入项目聚合。"""
+    tag = f'{id(db):x}'
+    owner = f'h_ds_link_{tag}'
+    project = await project_service.create_project(db, owner=owner, data={'name': f'项目 {tag}'})
+    row = DesignSystem(
+        owner_hasn_id=owner,
+        name=f'设计系统 {tag}',
+        slug=f'ds-link-{tag}',
+        source_kind='generated',
+        content_hash=f'hash-{tag}',
+    )
+    db.add(row)
+    await db.flush()
+    uri = f'hasn://designsystem/{row.id}'
+
+    before = await sync_invalidate_service.compute_designsystem_revision(db)
+    linked = await project_linkage_registry.link(
+        db,
+        owner=owner,
+        resource_uri=uri,
+        project_id=project['id'],
+    )
+    assert linked['changed'] is True
+    after_link = await sync_invalidate_service.compute_designsystem_revision(db)
+    assert after_link != before
+    linked_resources = await project_linkage_registry.list_linked_resources(
+        db,
+        owner=owner,
+        project_id=project['id'],
+    )
+    assert {item['resource_uri'] for item in linked_resources} == {uri}
+
+    unlinked = await project_linkage_registry.unlink(
+        db,
+        owner=owner,
+        resource_uri=uri,
+        project_id=project['id'],
+    )
+    assert unlinked['changed'] is True
+    after_unlink = await sync_invalidate_service.compute_designsystem_revision(db)
+    assert after_unlink == before
+
+    row.platform_project_id = project['id']
+    row.deleted_time = timezone.now()
+    await db.flush()
+    assert await project_linkage_registry.list_linked_resources(
+        db,
+        owner=owner,
+        project_id=project['id'],
+    ) == []
+    with pytest.raises(errors.NotFoundError, match='要挂靠的资源不存在或不属于你'):
+        await project_linkage_registry.link(
+            db,
+            owner=owner,
+            resource_uri=uri,
+            project_id=project['id'],
+        )
+
+
+@pytest.mark.asyncio
+async def test_designsystem_linkage_only_publishes_revision_after_commit(db: AsyncSession) -> None:
+    """挂靠事务提交前不得污染全局 revision；提交后由写边界显式发布。"""
+    try:
+        await redis_client.ping()
+    except Exception as exc:
+        pytest.skip(f'本地 Redis 不可达，跳过: {exc!r}')
+
+    tag = f'{id(db):x}-commit'
+    owner = f'h_ds_link_{tag}'
+    revision_key = (
+        f'{sync_invalidate_service.REV_PREFIX}:'
+        f'{sync_invalidate_service.KIND_DESIGNSYSTEM}'
+    )
+    project_id: str | None = None
+    design_system_id: int | None = None
+    try:
+        project = await project_service.create_project(db, owner=owner, data={'name': f'项目 {tag}'})
+        project_id = project['id']
+        row = DesignSystem(
+            owner_hasn_id=owner,
+            name=f'设计系统 {tag}',
+            slug=f'ds-link-{tag}',
+            source_kind='generated',
+            content_hash=f'hash-{tag}',
+        )
+        db.add(row)
+        await db.flush()
+        design_system_id = row.id
+        uri = f'hasn://designsystem/{row.id}'
+        await db.commit()
+
+        # 先发布数据库当前的合法指纹（资源尚未挂靠），不能往共享 Redis 塞测试 marker。
+        before = await sync_invalidate_service.bump(
+            sync_invalidate_service.KIND_DESIGNSYSTEM,
+            db,
+        )
+
+        linked = await project_linkage_registry.link(
+            db,
+            owner=owner,
+            resource_uri=uri,
+            project_id=project['id'],
+        )
+        assert linked['changed'] is True
+        assert await redis_client.get(revision_key) == before
+
+        await db.commit()
+        await project_linkage_registry.bump_sync_after_commit(
+            db,
+            owner=owner,
+            resource_uri=uri,
+        )
+        published = await redis_client.get(revision_key)
+        expected = await sync_invalidate_service.compute_designsystem_revision(db)
+        assert published == expected
+        assert published != before
+    finally:
+        await db.rollback()
+        if design_system_id is not None:
+            await db.execute(sa.delete(DesignSystem).where(DesignSystem.id == design_system_id))
+        if project_id is not None:
+            await db.execute(sa.delete(HasnProject).where(HasnProject.id == project_id))
+        await db.commit()
+        await sync_invalidate_service.bump(
+            sync_invalidate_service.KIND_DESIGNSYSTEM,
+            db,
+        )

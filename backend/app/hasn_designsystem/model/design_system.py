@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -38,6 +39,11 @@ class DesignSystem(DesignSystemBase):
     )
     enterprise_id: Mapped[int | None] = mapped_column(
         sa.BIGINT(), default=None, comment='归属企业 ID（null=个人；非空=企业私有，引用 public.hasn_enterprise）'
+    )
+    platform_project_id: Mapped[str | UUID | None] = mapped_column(
+        sa.UUID(),
+        default=None,
+        comment='挂靠的平台项目 id（doc38 层2 容器级挂靠，可空=不挂；项目只是视角，不改变权限）',
     )
     current_revision_id: Mapped[int | None] = mapped_column(
         sa.BIGINT(), default=None, comment='当前版 revision.id（指向最新 revision）'

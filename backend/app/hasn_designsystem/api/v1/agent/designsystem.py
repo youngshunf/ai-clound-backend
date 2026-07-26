@@ -23,7 +23,7 @@ from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_capability import require_capability_not_denied
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession, CurrentSessionTransaction, async_db_session
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -52,6 +52,19 @@ async def _bump_designsystem_sync(db: AsyncSession, owner_hasn_id: str) -> None:
         log.warning('[designsystem] sync invalidate 推送失败 (非致命): %s', e)
 
 
+async def _publish_designsystem_sync_after_commit(owner_hasn_id: str) -> None:
+    """设计系统权威写提交后，用独立会话发布同步指纹。
+
+    ``design_system_service`` 的写方法会自行提交；路由不能把它放进
+    ``CurrentSessionTransaction`` 的 ``begin()`` 上下文，也不能在提交后继续复用已关闭的事务。
+    """
+    try:
+        async with async_db_session() as sync_db:
+            await _bump_designsystem_sync(sync_db, owner_hasn_id)
+    except Exception as e:  # 推送 best-effort
+        log.warning('[designsystem] post-commit sync invalidate 发布失败 (非致命): %s', e)
+
+
 class SaveDesignSystemRequest(BaseModel):
     design_system_id: int | None = Field(default=None, description='存量 id（None=新建）')
     slug: str = Field(min_length=1, max_length=128, description='owner 内唯一短名')
@@ -74,6 +87,10 @@ class SaveDesignSystemRequest(BaseModel):
         default=None,
         description='组件画廊要求覆盖的场景 id 列表（None=不改；owner 派发时设定，分身透传）',
     )
+    platform_project_id: str | None = Field(
+        default=None,
+        description='新建设计系统挂靠的平台项目 id（可空=不挂靠）',
+    )
 
 
 class AddCollaboratorRequest(BaseModel):
@@ -88,7 +105,7 @@ class ImportRequest(BaseModel):
 # ── 设计系统：建/查/改/删 ─────────────────────────────────────────────────────
 @router.post('/design-systems', summary='创建或更新设计系统（落一版 revision）')
 async def agent_save_design_system(
-    db: CurrentSessionTransaction, body: SaveDesignSystemRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
+    db: CurrentSession, body: SaveDesignSystemRequest, agent: AgentTokenPayload = DependsAgentJwtAuth
 ) -> ResponseModel:
     await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     data = await design_system_service.save(
@@ -107,8 +124,9 @@ async def agent_save_design_system(
         note=body.note,
         enterprise_id=body.enterprise_id,
         required_scenes=body.required_scenes,
+        platform_project_id=body.platform_project_id,
     )
-    await _bump_designsystem_sync(db, agent.owner_hasn_id)
+    await _publish_designsystem_sync_after_commit(agent.owner_hasn_id)
     return response_base.success(data=data)
 
 
@@ -118,6 +136,7 @@ async def agent_list_design_systems(
     agent: AgentTokenPayload = DependsAgentJwtAuth,
     category: Annotated[str | None, Query()] = None,
     enterprise_id: Annotated[int | None, Query()] = None,
+    platform_project_id: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ResponseModel:
@@ -126,6 +145,7 @@ async def agent_list_design_systems(
         viewer_owner_hasn_id=agent.owner_hasn_id,
         enterprise_id=enterprise_id,
         category=category,
+        platform_project_id=platform_project_id,
         limit=limit,
         offset=offset,
     )
@@ -147,13 +167,13 @@ async def agent_get_design_system(
 
 @router.delete('/design-systems/{design_system_id}', summary='软删设计系统（仅 owner，非 builtin）')
 async def agent_delete_design_system(
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     design_system_id: Annotated[int, Path(ge=1)],
     agent: AgentTokenPayload = DependsAgentJwtAuth,
 ) -> ResponseModel:
     await require_capability_not_denied(db, agent.agent_hasn_id, _SCOPE_WRITE)
     await design_system_service.delete(db, design_system_id=design_system_id, owner_hasn_id=agent.owner_hasn_id)
-    await _bump_designsystem_sync(db, agent.owner_hasn_id)
+    await _publish_designsystem_sync_after_commit(agent.owner_hasn_id)
     return response_base.success()
 
 

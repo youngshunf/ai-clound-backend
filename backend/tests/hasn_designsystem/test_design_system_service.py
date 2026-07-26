@@ -11,12 +11,14 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn_designsystem.model import DesignSystem
+from backend.app.hasn_designsystem.model import DesignSystem, Revision
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
+from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_project.service.project_app_service import project_service
 from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -101,6 +103,77 @@ async def test_save_creates_with_revision_and_bumps(session) -> None:
         session, revision_id=revs['items'][0]['id'], viewer_owner_hasn_id=a.hasn_id
     )
     assert rev_full['tokens_css'] is not None
+
+
+async def test_create_attaches_owned_project_and_list_filters_explicitly(session) -> None:
+    """创建时校验并挂靠主人项目；列表只有显式传项目时才收窄。"""
+    tag = uuid.uuid4().hex[:8]
+    owner = f'h_project_{tag}'
+    subject = Subject.human(owner)
+    project_id: str | None = None
+    design_system_ids: list[int] = []
+    try:
+        project = await project_service.create_project(
+            session,
+            owner=owner,
+            data={'name': f'设计项目 {tag}'},
+        )
+        project_id = project['id']
+        await session.commit()
+
+        attached = await design_system_service.save(
+            session,
+            subject=subject,
+            design_system_id=None,
+            slug=f'attached-{tag}',
+            name='项目内设计系统',
+            content=_content('#ffffff'),
+            platform_project_id=project_id,
+        )
+        design_system_ids.append(attached['id'])
+        detached = await design_system_service.save(
+            session,
+            subject=subject,
+            design_system_id=None,
+            slug=f'detached-{tag}',
+            name='未挂靠设计系统',
+            content=_content('#111111'),
+        )
+        design_system_ids.append(detached['id'])
+
+        assert attached['platform_project_id'] == project_id
+        assert detached['platform_project_id'] is None
+
+        # 缺 design_system_id 但 slug 幂等命中的是存量更新，不能借当前项目上下文隐式改挂靠。
+        detached_again = await design_system_service.save(
+            session,
+            subject=subject,
+            design_system_id=None,
+            slug=f'detached-{tag}',
+            name='未挂靠设计系统 v2',
+            content=_content('#222222'),
+            platform_project_id=project_id,
+        )
+        assert detached_again['id'] == detached['id']
+        assert detached_again['platform_project_id'] is None
+
+        all_visible = await design_system_service.list_visible(session, viewer_owner_hasn_id=owner)
+        assert {attached['id'], detached['id']} <= {item['id'] for item in all_visible['items']}
+
+        filtered = await design_system_service.list_visible(
+            session,
+            viewer_owner_hasn_id=owner,
+            platform_project_id=project_id,
+        )
+        assert [item['id'] for item in filtered['items']] == [attached['id']]
+    finally:
+        # save 会自行 commit；必须显式按外键顺序清理本用例数据，不能依赖 fixture rollback。
+        if design_system_ids:
+            await session.execute(delete(Revision).where(Revision.design_system_id.in_(design_system_ids)))
+            await session.execute(delete(DesignSystem).where(DesignSystem.id.in_(design_system_ids)))
+        if project_id is not None:
+            await session.execute(delete(HasnProject).where(HasnProject.id == project_id))
+        await session.commit()
 
 
 async def test_owner_isolation_and_visibility(session) -> None:

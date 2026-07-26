@@ -124,6 +124,8 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': True,
+    'project_required': False,
     'execution_mode': 'local_tool',
     'transport_mode': 'local',
     # 通知发布能力声明（统一通知设计）：生成完成 / 分享经 Agent JWT 通道发卡给主人（P10 接 emit）。
@@ -223,6 +225,11 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
                 'category': {'type': ['string', 'null'], 'description': '分类（saas/editorial/...）'},
                 'score': {'type': ['integer', 'null'], 'minimum': 0, 'maximum': 100},
                 'grade': {'type': ['string', 'null']},
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'format': 'uuid',
+                    'description': '新建时挂靠的平台项目 id；缺字段时继承当前工作项目',
+                },
             },
             required=['slug', 'name', 'content'],
             page_rank=15,
@@ -234,6 +241,11 @@ DESIGNSYSTEM_AI_NATIVE_MANIFEST = {
             description='列出分身可见的设计系统（builtin ∪ owner ∪ 企业 ∪ 共享）。',
             properties={
                 'category': {'type': ['string', 'null'], 'description': '按分类过滤（可选）'},
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'format': 'uuid',
+                    'description': '显式按平台项目过滤（缺省不收窄）',
+                },
             },
             required=[],
             page_rank=16,
@@ -304,4 +316,6 @@ def build_designsystem_app() -> App:
         install_policy='manual',
         execution_mode='local_tool',
         ui_kind=None,
+        project_aware=True,
+        project_required=False,
     )

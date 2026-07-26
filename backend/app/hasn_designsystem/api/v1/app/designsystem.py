@@ -68,6 +68,7 @@ async def app_list_design_systems(
     db: CurrentSession,
     category: Annotated[str | None, Query()] = None,
     enterprise_id: Annotated[int | None, Query()] = None,
+    platform_project_id: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ResponseModel:
@@ -77,6 +78,7 @@ async def app_list_design_systems(
         viewer_owner_hasn_id=owner,
         enterprise_id=enterprise_id,
         category=category,
+        platform_project_id=platform_project_id,
         limit=limit,
         offset=offset,
     )

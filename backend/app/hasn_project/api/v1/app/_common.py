@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from backend.app.hasn_core import hasn_humans_dao
 from backend.common.exception import errors
+from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -49,3 +50,48 @@ async def bump_project_sync(db: AsyncSession, owner_hasn_id: str) -> None:
         await siv.bump_owner(siv.KIND_PROJECT, db, owner_hasn_id)
     except Exception as e:  # 推送 best-effort
         log.warning('[project] sync invalidate 推送失败 (非致命): %s', e)
+
+
+async def bump_linked_resource_sync(
+    db: AsyncSession,
+    *,
+    owner_hasn_id: str,
+    resource_uri: str,
+) -> None:
+    """挂靠事务提交后发布资源域失效信号；失败只告警，不回滚已提交业务。"""
+    try:
+        from backend.app.hasn_project.service.project_linkage_registry import (
+            project_linkage_registry,
+        )
+
+        await project_linkage_registry.bump_sync_after_commit(
+            db,
+            owner=owner_hasn_id,
+            resource_uri=resource_uri,
+        )
+    except Exception as e:  # 推送 best-effort
+        log.warning('[project] linked resource sync invalidate 推送失败 (非致命): %s', e)
+
+
+async def publish_project_linkage_sync_after_commit(
+    *,
+    owner_hasn_id: str,
+    resource_uri: str,
+    resource_changed: bool,
+) -> None:
+    """挂靠事务提交后用独立 session 发布项目域与资源域失效。
+
+    ``CurrentSessionTransaction`` 由 ``async_db_session.begin()`` 提供；调用方手动提交后不能继续
+    复用该 session 做 revision 查询，因此这里新开只读 session，避免提交成功却静默漏发失效。
+    """
+    try:
+        async with async_db_session() as sync_db:
+            await bump_project_sync(sync_db, owner_hasn_id)
+            if resource_changed:
+                await bump_linked_resource_sync(
+                    sync_db,
+                    owner_hasn_id=owner_hasn_id,
+                    resource_uri=resource_uri,
+                )
+    except Exception as e:  # 推送 best-effort
+        log.warning('[project] post-commit sync invalidate 发布失败 (非致命): %s', e)

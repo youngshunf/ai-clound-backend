@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -66,7 +66,9 @@ class LinkageAdapter:
     - `id_is_uuid`：`{server_id}` 是否需转 UUID 再比对（UUID 主键列为 True）。
     - `is_container`：True=容器级（`platform_project_id`，参与并集读反查）；False=artifact 级。
     - `app_id` / `kind` / `title_column`：项目总览挂靠资源行的通用展示元数据。
-    - `revision_column` / `sync_kind`：显式挂靠变更时递增业务版本并推对应 owner 失效信号。
+    - `deleted_column`：软删除时间列；声明后定位与项目聚合都只接受该列为空的有效行。
+    - `revision_column` / `sync_kind` / `sync_scope`：显式挂靠变更时递增业务版本，并供写边界在提交后
+      发布对应失效信号。
     - `related_resource_uris`：容器名下历史产物 URI 派生钩子；由应用 adapter 自己实现关系查询，
       project service 不得跨 schema 特判。
     """
@@ -81,8 +83,10 @@ class LinkageAdapter:
     app_id: str | None = None
     kind: str | None = None
     title_column: str | None = None
+    deleted_column: str | None = None
     revision_column: str | None = None
     sync_kind: str | None = None
+    sync_scope: Literal['owner', 'global'] = 'owner'
     related_resource_uris: Callable[[Any, str, tuple[Any, ...]], Awaitable[list[str]]] | None = None
 
 
@@ -93,6 +97,8 @@ class ProjectLinkageRegistry:
         self._adapters: dict[str, LinkageAdapter] = {}
 
     def register(self, adapter: LinkageAdapter) -> None:
+        if adapter.sync_scope not in {'owner', 'global'}:
+            raise ValueError(f'unsupported linkage sync scope: {adapter.sync_scope}')
         self._adapters[adapter.domain] = adapter
 
     def get(self, domain: str) -> LinkageAdapter | None:
@@ -103,10 +109,16 @@ class ProjectLinkageRegistry:
         return [a for a in self._adapters.values() if a.is_container]
 
     @staticmethod
-    def _active_condition(adapter: LinkageAdapter) -> Any | None:
-        """若容器模型有 status 列，则统一排除 tombstone；无状态列的容器不额外过滤。"""
+    def _active_conditions(adapter: LinkageAdapter) -> list[Any]:
+        """返回 adapter 的有效行条件：显式软删列为空，通用 status 不为 deleted。"""
+        conditions: list[Any] = []
+        if adapter.deleted_column is not None:
+            deleted_col = getattr(adapter.model, adapter.deleted_column)
+            conditions.append(deleted_col.is_(None))
         status_col = getattr(adapter.model, 'status', None)
-        return status_col != 'deleted' if status_col is not None else None
+        if status_col is not None:
+            conditions.append(status_col != 'deleted')
+        return conditions
 
     async def _attached_rows(
         self,
@@ -120,11 +132,10 @@ class ProjectLinkageRegistry:
         owner_col = getattr(adapter.model, adapter.owner_column)
         attach_col = getattr(adapter.model, adapter.attach_column)
         conditions = [owner_col == owner, attach_col == project_id]
-        active = self._active_condition(adapter)
-        if active is not None:
-            conditions.append(active)
-        rows = (await db.execute(sa.select(adapter.model).where(*conditions))).scalars().all()
-        return tuple(rows)
+        conditions.extend(self._active_conditions(adapter))
+        return tuple(
+            (await db.execute(sa.select(adapter.model).where(*conditions))).scalars().all()
+        )
 
     async def list_linked_resources(
         self,
@@ -200,9 +211,9 @@ class ProjectLinkageRegistry:
                 value = python_type(server_id)
             except (AttributeError, TypeError, ValueError) as e:
                 raise _err('invalid_uri', f'{adapter.domain} 资源 id 类型非法：{server_id!r}') from e
-        row = (
-            await db.execute(sa.select(adapter.model).where(id_col == value, owner_col == owner))
-        ).scalar_one_or_none()
+        conditions = [id_col == value, owner_col == owner]
+        conditions.extend(self._active_conditions(adapter))
+        row = (await db.execute(sa.select(adapter.model).where(*conditions))).scalar_one_or_none()
         if row is None:
             raise errors.NotFoundError(msg='要挂靠的资源不存在或不属于你')
         return row
@@ -219,7 +230,7 @@ class ProjectLinkageRegistry:
         changed = previous != pid
         setattr(row, adapter.attach_column, pid)
         if changed:
-            await self._mark_changed(db, adapter, row, owner)
+            await self._mark_changed(db, adapter, row)
         return {
             'linked': True,
             'changed': changed,
@@ -260,7 +271,7 @@ class ProjectLinkageRegistry:
         changed = previous is not None
         setattr(row, adapter.attach_column, None)
         if changed:
-            await self._mark_changed(db, adapter, row, owner)
+            await self._mark_changed(db, adapter, row)
         return {
             'unlinked': True,
             'changed': changed,
@@ -269,16 +280,34 @@ class ProjectLinkageRegistry:
         }
 
     @staticmethod
-    async def _mark_changed(db: AsyncSession, adapter: LinkageAdapter, row: Any, owner: str) -> None:
-        """递增容器版本、flush，并按 adapter 声明推 owner 定向失效信号。"""
+    async def _mark_changed(db: AsyncSession, adapter: LinkageAdapter, row: Any) -> None:
+        """只递增容器版本并 flush；失效信号必须由写边界在事务成功提交后发布。"""
         if adapter.revision_column is not None:
             revision = int(getattr(row, adapter.revision_column) or 0)
             setattr(row, adapter.revision_column, revision + 1)
         await db.flush()
-        if adapter.sync_kind is not None:
-            from backend.app.hasn.service import sync_invalidate_service as siv
 
-            await siv.bump_owner(adapter.sync_kind, db, owner)
+    async def bump_sync_after_commit(
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        resource_uri: str,
+    ) -> str | None:
+        """按挂靠点声明发布同步失效；调用方必须先确认业务事务已经成功提交。
+
+        注册表的 ``link/unlink`` 只负责事务内业务写。把 Redis revision 与 WSPUSH 留到提交后的
+        写边界执行，避免回滚事务提前发布一个从未落地的挂靠状态。
+        """
+        domain, _ = parse_hasn_uri(resource_uri)
+        adapter = self.get(domain)
+        if adapter is None or adapter.sync_kind is None:
+            return None
+        from backend.app.hasn.service import sync_invalidate_service as siv
+
+        if adapter.sync_scope == 'global':
+            return await siv.bump(adapter.sync_kind, db, owner_id=owner)
+        return await siv.bump_owner(adapter.sync_kind, db, owner)
 
 
 project_linkage_registry = ProjectLinkageRegistry()

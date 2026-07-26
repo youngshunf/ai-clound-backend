@@ -22,7 +22,7 @@ import pytest
 import pytest_asyncio
 
 from fastapi import FastAPI, Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
@@ -30,11 +30,24 @@ from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn.service import sync_invalidate_service
+from backend.app.hasn_designsystem.model.design_system import DesignSystem
+from backend.app.hasn_designsystem.service import project_linkage as _designsystem_project_linkage  # noqa: F401
 from backend.app.hasn_project.api.v1.app.hasn_project import router as app_project_router
 from backend.app.hasn_project.api.v1.app.hasn_project_milestone import router as app_milestone_router
+from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_project.model.hasn_project_milestone import HasnProjectMilestone
+from backend.app.hasn_project.service.project_app_service import project_service
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import (
+    SQLALCHEMY_DATABASE_URL,
+    async_engine,
+    async_db_session,
+    get_db,
+    get_db_transaction,
+)
+from backend.database.redis import redis_client
 
 pytestmark = pytest.mark.asyncio
 
@@ -83,8 +96,8 @@ async def env():
     auth_state = {'user_id': user_id}
 
     async def _yield_session():
-        # 用户端两类会话（读 get_db / 写 get_db_transaction）在测试里共用同一未提交 session，
-        # 末尾统一 rollback 不污染库（与既有 HTTP E2E 范式一致）。
+        # 用户端两类会话共用真实 session。link/unlink 为保证资源域失效晚于权威提交会显式 commit，
+        # fixture 末尾因此按 owner 精确清理，不能再只依赖 rollback。
         yield session
 
     async def _auth_inject(request: Request) -> str:
@@ -105,6 +118,19 @@ async def env():
         await client.aclose()
         _APP.dependency_overrides.clear()
         await session.rollback()
+        project_ids = (
+            await session.execute(select(HasnProject.id).where(HasnProject.owner_id == owner))
+        ).scalars().all()
+        if project_ids:
+            await session.execute(
+                delete(HasnProjectMilestone).where(
+                    HasnProjectMilestone.project_id.in_(project_ids)
+                )
+            )
+        await session.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+        await session.execute(delete(HasnProject).where(HasnProject.owner_id == owner))
+        await session.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
+        await session.commit()
         await session.close()
         await engine.dispose()
 
@@ -124,8 +150,11 @@ async def _seed_artifact(session, *, owner: str, agent: str, artifact_id: str) -
             artifact_id=artifact_id,
             agent_hasn_id=agent,
             owner_hasn_id=owner,
+            artifact_key=f'test:{artifact_id}',
+            artifact_kind='resource',
             kind='resource',
-            source_kind='app_write',
+            resource_uri=f'hasn://artifact/{artifact_id}',
+            source_kind='app',
             status='active',
             title=f'产物 {artifact_id}',
         )
@@ -226,6 +255,92 @@ async def test_link_unlink_and_artifact_flow(env) -> None:
 
     flow2 = _data(await c.get(f'{_PROJECTS}/{pid}/artifact-flow'))
     assert art_in not in {r['artifact_id'] for r in flow2['items']}
+
+
+async def test_link_designsystem_publishes_after_production_transaction_commit() -> None:
+    """生产事务依赖提交后用新 session 发布 project 与 designsystem 合法指纹。"""
+    # pytest 每用例独立事件循环；先换掉单例连接池并关闭 Redis 旧连接，让真实依赖在本用例循环重连。
+    await async_engine.dispose(close=False)
+    try:
+        await redis_client.aclose()
+    except Exception:
+        pass
+    try:
+        await redis_client.ping()
+    except Exception as exc:
+        pytest.skip(f'本地 Redis 不可达，跳过: {exc!r}')
+
+    owner = f'h_prj_ds_{_uid()}'
+    user_id = _new_user_id()
+    project_id: str | None = None
+    design_system_id: int | None = None
+    async with async_db_session.begin() as db:
+        db.add(_human(owner, user_id))
+        project = await project_service.create_project(
+            db,
+            owner=owner,
+            data={'name': '设计系统挂靠提交顺序'},
+        )
+        project_id = project['id']
+        row = DesignSystem(
+            owner_hasn_id=owner,
+            name='事务后发布测试',
+            slug=f'ds-http-{_uid()}',
+            source_kind='generated',
+            content_hash=f'hash-{_uid()}',
+        )
+        db.add(row)
+        await db.flush()
+        design_system_id = row.id
+
+    async def _auth_inject(request: Request) -> str:
+        request.scope['user'] = SimpleNamespace(id=user_id)
+        request.scope['auth'] = ['authenticated']
+        return 'e2e-token'
+
+    _APP.dependency_overrides[DependsJwtAuth.dependency] = _auth_inject
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')
+    try:
+        response = await client.post(
+            f'{_PROJECTS}/{project_id}/link',
+            json={'resource_uri': f'hasn://designsystem/{design_system_id}'},
+        )
+        linked = _data(response)
+        assert linked['changed'] is True
+
+        async with async_db_session() as db:
+            attached_project_id = (
+                await db.execute(
+                    select(DesignSystem.platform_project_id).where(
+                        DesignSystem.id == design_system_id
+                    )
+                )
+            ).scalar_one()
+            expected_revision = (
+                await sync_invalidate_service.compute_designsystem_revision(db)
+            )
+        assert str(attached_project_id) == project_id
+        revision_key = (
+            f'{sync_invalidate_service.REV_PREFIX}:'
+            f'{sync_invalidate_service.KIND_DESIGNSYSTEM}'
+        )
+        assert await redis_client.get(revision_key) == expected_revision
+    finally:
+        await client.aclose()
+        _APP.dependency_overrides.clear()
+        async with async_db_session.begin() as db:
+            if design_system_id is not None:
+                await db.execute(
+                    delete(DesignSystem).where(DesignSystem.id == design_system_id)
+                )
+            if project_id is not None:
+                await db.execute(delete(HasnProject).where(HasnProject.id == project_id))
+            await db.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
+        async with async_db_session() as db:
+            await sync_invalidate_service.bump(
+                sync_invalidate_service.KIND_DESIGNSYSTEM,
+                db,
+            )
 
 
 async def test_link_unsupported_domain_400(env) -> None:

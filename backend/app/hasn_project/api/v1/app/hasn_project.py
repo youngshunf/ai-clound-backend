@@ -15,7 +15,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Path, Query, Request
 
-from backend.app.hasn_project.api.v1.app._common import bump_project_sync, resolve_owner
+from backend.app.hasn_project.api.v1.app._common import (
+    bump_project_sync,
+    publish_project_linkage_sync_after_commit,
+    resolve_owner,
+)
 from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -146,7 +150,13 @@ async def app_link_resource(
     result = await project_linkage_registry.link(
         db, owner=owner, resource_uri=str(body.get('resource_uri') or ''), project_id=pk
     )
-    await bump_project_sync(db, owner)
+    # 资源域 revision / WSPUSH 必须晚于挂靠事务提交，避免客户端读到未提交或已回滚状态。
+    await db.commit()
+    await publish_project_linkage_sync_after_commit(
+        owner_hasn_id=owner,
+        resource_uri=result['resource_uri'],
+        resource_changed=result['changed'],
+    )
     return response_base.success(data=result)
 
 
@@ -171,5 +181,11 @@ async def app_unlink_resource(
         resource_uri=str(body.get('resource_uri') or ''),
         project_id=pk,
     )
-    await bump_project_sync(db, owner)
+    # 与 link 同一顺序：先提交权威业务状态，再 best-effort 发布两个同步维度。
+    await db.commit()
+    await publish_project_linkage_sync_after_commit(
+        owner_hasn_id=owner,
+        resource_uri=result['resource_uri'],
+        resource_changed=result['changed'],
+    )
     return response_base.success(data=result)

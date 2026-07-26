@@ -18,6 +18,7 @@ import logging
 import re
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from sqlalchemy import func, or_, select
 
@@ -36,6 +37,7 @@ from backend.app.hasn_designsystem.core.scenes import (
 )
 from backend.app.hasn_designsystem.model import Collaborator, DesignSystem, Revision
 from backend.app.hasn_designsystem.service.scene_guidance import build_scene_report
+from backend.app.hasn_project.service.project_app_service import project_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -236,6 +238,7 @@ def _ds_dict(d: DesignSystem) -> dict[str, Any]:
         'recommend_rebuild': d.recommend_rebuild,
         'is_builtin': d.is_builtin,
         'enterprise_id': d.enterprise_id,
+        'platform_project_id': str(d.platform_project_id) if d.platform_project_id is not None else None,
         'current_revision_id': d.current_revision_id,
         'content_hash': d.content_hash,
         'bound_agent_id': d.bound_agent_id,
@@ -331,11 +334,14 @@ class DesignSystemService:
         note: str | None = None,
         enterprise_id: int | None = None,
         required_scenes: list[str] | None = None,
+        platform_project_id: str | UUID | None = None,
     ) -> dict[str, Any]:
         """创建或更新一套设计系统：落一版 revision + 回填 current/content_hash/评分。
 
         `content` 含 tokens.css + 派生 + 创意（见 _REVISION_CONTENT）。每次 save 都出一版（可回滚）。
         `required_scenes`：owner 派发时要求覆盖的组件画廊场景（None=不改，新建时回落默认 [brand_website]）。
+        `platform_project_id` 仅在实际插入新行时挂靠；同 slug 幂等命中和显式更新都属于存量更新，
+        改挂必须走项目 link/unlink。
         """
         owner = subject.owner_hasn_id
 
@@ -349,6 +355,7 @@ class DesignSystemService:
         hashed = _content_hash(content)
         now = timezone.now()
 
+        created_new_row = False
         if design_system_id is None:
             # 新建：slug 在 owner 维度唯一（撞 slug → 视为更新已存在的同 slug 行）
             existing = (
@@ -374,6 +381,7 @@ class DesignSystemService:
                 )
                 db.add(d)
                 await db.flush()
+                created_new_row = True
         else:
             d = await self._get_alive(db, design_system_id)
             if d.is_builtin:
@@ -392,6 +400,12 @@ class DesignSystemService:
                 )
                 if rank(perm) < rank('editor'):
                     raise errors.ForbiddenError(msg='无权修改该设计系统')
+
+        # 容器级自动挂靠只发生在真正插入新行时；slug 幂等命中属于存量更新，不得借当前
+        # 项目上下文隐式改变挂靠。存量改挂/摘除统一走 hasn.project.link/unlink。
+        if created_new_row and platform_project_id is not None:
+            await project_service.assert_owned(db, owner=owner, pk=platform_project_id)
+            d.platform_project_id = UUID(str(platform_project_id))
 
         # AppCollab（doc21 / 实施21 AC-P3）：创建即绑定生成它的分身（DECKBIND 同模型）。
         # bind-only-if-unbound——未绑定且作者是分身 → 绑该分身；已绑定不因再次 save 静默改绑
@@ -551,10 +565,11 @@ class DesignSystemService:
         viewer_owner_hasn_id: str,
         enterprise_id: int | None = None,
         category: str | None = None,
+        platform_project_id: str | UUID | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """可见域 = builtin ∪ owner ∪ 企业 ∪ 显式共享给我的（P9 resource_share）。"""
+        """可见域 = builtin ∪ owner ∪ 企业 ∪ 显式共享；项目仅在显式传参时过滤。"""
         conds = [DesignSystem.is_builtin.is_(True), DesignSystem.owner_hasn_id == viewer_owner_hasn_id]
         if enterprise_id is not None:
             conds.append(DesignSystem.enterprise_id == enterprise_id)
@@ -568,6 +583,9 @@ class DesignSystemService:
         where = [DesignSystem.deleted_time.is_(None), or_(*conds)]
         if category:
             where.append(DesignSystem.category == category)
+        if platform_project_id is not None:
+            await project_service.assert_owned(db, owner=viewer_owner_hasn_id, pk=platform_project_id)
+            where.append(DesignSystem.platform_project_id == UUID(str(platform_project_id)))
         total = (await db.execute(select(func.count()).select_from(DesignSystem).where(*where))).scalar_one()
         rows = (
             (

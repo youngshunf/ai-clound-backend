@@ -183,20 +183,27 @@ EMPTY_DESIGNSYSTEM_REVISION = 'empty'
 
 
 async def compute_designsystem_revision(db: AsyncSession) -> str:
-    """设计系统全局指纹：sha256(sorted "id@content_hash" 行)[:16]，对齐 common_skills_revision。
+    """设计系统全局指纹：sha256(sorted "id@content_hash@project_id" 行)[:16]。
 
-    任一设计系统的 ``content_hash`` 变（save 落新版）或增删 → 指纹变 → 在线节点对账各自
-    owner 镜像（云端权威，节点只拉自己可见域 builtin∪owner∪共享）。软删行（``deleted_time``
-    非空）落出集合 → 删一套 → 集合缩小 → 指纹变 → 镜像感知下线。
+    任一设计系统的内容、项目挂靠或成员增删发生变化 → 指纹变 → 在线节点对账各自 owner 镜像
+    （云端权威，节点只拉自己可见域 builtin∪owner∪共享）。软删行（``deleted_time`` 非空）
+    落出集合 → 集合缩小 → 指纹变 → 镜像感知下线。
     """
     from backend.app.hasn_designsystem.model.design_system import DesignSystem
 
     rows = (
         await db.execute(
-            sa.select(DesignSystem.id, DesignSystem.content_hash).where(DesignSystem.deleted_time.is_(None))
+            sa.select(
+                DesignSystem.id,
+                DesignSystem.content_hash,
+                DesignSystem.platform_project_id,
+            ).where(DesignSystem.deleted_time.is_(None))
         )
     ).all()
-    lines = sorted(f'{ds_id}@{content_hash or ""}' for ds_id, content_hash in rows)
+    lines = sorted(
+        f'{ds_id}@{content_hash or ""}@{platform_project_id or ""}'
+        for ds_id, content_hash, platform_project_id in rows
+    )
     if not lines:
         return EMPTY_DESIGNSYSTEM_REVISION
     signature = '\n'.join(lines)

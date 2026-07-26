@@ -9,6 +9,7 @@ scope 闸真实生效（缺 designsystem:write → 403）+ import 三入口接�
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 
@@ -21,15 +22,25 @@ import pytest_asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_designsystem.api.v1.agent.designsystem import router as agent_router
+from backend.app.hasn_designsystem.model.design_system import DesignSystem
+from backend.app.hasn_designsystem.model.revision import Revision
+from backend.app.hasn.service import sync_invalidate_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import (
+    SQLALCHEMY_DATABASE_URL,
+    async_db_session,
+    async_engine,
+    get_db,
+    get_db_transaction,
+)
+from backend.database.redis import redis_client
 
 pytestmark = pytest.mark.asyncio
 
@@ -59,6 +70,11 @@ def _content(bg: str) -> dict:
 @pytest_asyncio.fixture
 async def client():
     os.environ.setdefault('DESIGNSYSTEM_IMPORT_FAKEIP_PASSTHROUGH', '1')
+    # pytest 为每个异步用例创建独立事件循环；Redis 单例不能复用上一用例循环里的连接。
+    try:
+        await redis_client.aclose()
+    except Exception:
+        pass
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -72,7 +88,7 @@ async def client():
     state = {
         'agent_hasn_id': f'a_{tag}',
         'owner_hasn_id': f'h_owner_{tag}',
-        'scopes': ['designsystem:write', 'designsystem:publish'],
+        'session': session,
     }
 
     async def _yield_session():
@@ -101,6 +117,7 @@ async def client():
         await session.rollback()
         await session.close()
         await engine.dispose()
+        await async_engine.dispose()
 
 
 async def test_create_list_get_revisions_flow(client) -> None:
@@ -151,17 +168,120 @@ async def test_owner_revision_endpoint(client) -> None:
     assert before != after
 
 
+async def test_save_publishes_after_production_session_commit() -> None:
+    """生产数据库依赖下 save 返回 200，且只在权威提交后发布同步指纹。"""
+    # pytest 每用例独立事件循环；重置单例连接池，确保生产依赖在当前循环重新建连。
+    await async_engine.dispose()
+    try:
+        await redis_client.aclose()
+    except Exception:
+        pass
+    try:
+        await redis_client.ping()
+    except Exception as exc:
+        pytest.skip(f'本地 Redis 不可达，跳过: {exc!r}')
+
+    tag = uuid.uuid4().hex[:8]
+    owner = f'h_ds_http_{tag}'
+    design_system_id: int | None = None
+
+    async def _agent_auth() -> AgentTokenPayload:
+        return AgentTokenPayload(
+            agent_hasn_id=f'a_ds_http_{tag}',
+            agent_name='事务测试分身',
+            owner_hasn_id=owner,
+            owner_user_id=980_000_000 + int(uuid.uuid4().int % 10_000_000),
+            session_uuid=uuid.uuid4().hex,
+            expire_time=datetime.now(dt_timezone.utc) + timedelta(hours=1),
+        )
+
+    _APP.dependency_overrides[agent_jwt_auth] = _agent_auth
+    http = AsyncClient(
+        transport=ASGITransport(app=_APP, raise_app_exceptions=False),
+        base_url='http://e2e',
+    )
+    try:
+        response = await http.post(
+            f'{_PREFIX}/design-systems',
+            json={
+                'slug': f'production-session-{tag}',
+                'name': '生产事务边界',
+                'content': _content('#2563eb'),
+            },
+        )
+        assert response.status_code == 200, response.text
+        design_system_id = response.json()['data']['id']
+
+        async with async_db_session() as db:
+            persisted_owner = (
+                await db.execute(
+                    select(DesignSystem.owner_hasn_id).where(DesignSystem.id == design_system_id)
+                )
+            ).scalar_one()
+            expected_revision = await sync_invalidate_service.compute_designsystem_revision(db)
+        assert persisted_owner == owner
+        revision_key = (
+            f'{sync_invalidate_service.REV_PREFIX}:'
+            f'{sync_invalidate_service.KIND_DESIGNSYSTEM}'
+        )
+        assert await redis_client.get(revision_key) == expected_revision
+    finally:
+        await http.aclose()
+        _APP.dependency_overrides.clear()
+        async with async_db_session.begin() as db:
+            if design_system_id is not None:
+                await db.execute(
+                    delete(Revision).where(Revision.design_system_id == design_system_id)
+                )
+                await db.execute(
+                    delete(DesignSystem).where(DesignSystem.id == design_system_id)
+                )
+        async with async_db_session() as db:
+            await sync_invalidate_service.bump(
+                sync_invalidate_service.KIND_DESIGNSYSTEM,
+                db,
+            )
+        await async_engine.dispose()
+
+
 async def test_scope_gate_blocks_write_without_scope(client) -> None:
     """缺 designsystem:write → POST 写类 403（scope 闸真实生效，非假闸门）。"""
     http, state, tag = client
-    state['scopes'] = []  # 撤掉所有 scope
-    resp = await http.post(
-        f'{_PREFIX}/design-systems',
-        json={'slug': f'no-{tag}', 'name': '应被拒', 'content': _content('#333')},
+    session = state['session']
+    await session.execute(
+        text("""
+            INSERT INTO hasn_agent_scopes (
+                agent_hasn_id, owner_hasn_id, default_mode, capability_modes
+            )
+            VALUES (:agent, :owner, 'allow', CAST(:modes AS jsonb))
+            ON CONFLICT (agent_hasn_id) DO UPDATE
+            SET capability_modes = EXCLUDED.capability_modes,
+                updated_time = now()
+        """),
+        {
+            'agent': state['agent_hasn_id'],
+            'owner': state['owner_hasn_id'],
+            'modes': json.dumps({'designsystem:write': 'deny'}),
+        },
     )
-    assert resp.status_code == 403
-    # 读类无 scope 闸 → 仍可访问（避免假闸门）
-    assert (await http.get(f'{_PREFIX}/design-systems')).status_code == 200
+    await session.commit()
+    cache_key = f"agent_scopes:{state['agent_hasn_id']}"
+    await redis_client.delete(cache_key)
+    try:
+        resp = await http.post(
+            f'{_PREFIX}/design-systems',
+            json={'slug': f'no-{tag}', 'name': '应被拒', 'content': _content('#333')},
+        )
+        assert resp.status_code == 403
+        # 读类无 scope 闸 → 仍可访问（避免假闸门）
+        assert (await http.get(f'{_PREFIX}/design-systems')).status_code == 200
+    finally:
+        await session.execute(
+            text('DELETE FROM hasn_agent_scopes WHERE agent_hasn_id = :agent'),
+            {'agent': state['agent_hasn_id']},
+        )
+        await session.commit()
+        await redis_client.delete(cache_key)
 
 
 async def test_import_shadcn_via_agent_route(client) -> None:

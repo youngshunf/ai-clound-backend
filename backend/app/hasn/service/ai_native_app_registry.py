@@ -23,6 +23,7 @@ from backend.app.hasn_deck.service import resource_adapter as _deck_resource_ada
 from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
 from backend.app.hasn_design.service import resource_adapter as _design_resource_adapter  # noqa: F401
 from backend.app.hasn_designsystem.manifest import DESIGNSYSTEM_AI_NATIVE_MANIFEST
+from backend.app.hasn_designsystem.service import project_linkage as _designsystem_project_linkage  # noqa: F401
 from backend.app.hasn_designsystem.service import resource_adapter as _designsystem_resource_adapter  # noqa: F401
 from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
@@ -57,7 +58,7 @@ class ManifestValidationResult:
 class AINativeAppRegistry:
     def __init__(self, *, catalog_registry: AppCatalogRegistry | None = None) -> None:
         self.catalog_registry = catalog_registry or app_catalog_registry
-        self._builtin_manifests = {
+        self._builtin_manifests: dict[str, dict[str, Any]] = {
             'knowledge': KNOWLEDGE_AI_NATIVE_MANIFEST,
             'community': COMMUNITY_AI_NATIVE_MANIFEST,
             'deck': DECK_AI_NATIVE_MANIFEST,

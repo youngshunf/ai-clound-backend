@@ -23,6 +23,7 @@ CREATE TABLE "hasn_designsystem"."design_system" (
   "recommend_rebuild"   boolean        NOT NULL DEFAULT false,
   "is_builtin"          boolean        NOT NULL DEFAULT false,
   "enterprise_id"       bigint,
+  "platform_project_id" uuid           REFERENCES "hasn_project"."hasn_project"("id") ON DELETE SET NULL,
   "current_revision_id" bigint,
   "content_hash"        varchar(128)   NOT NULL DEFAULT '',
   "bound_agent_id"      varchar(40),
@@ -36,6 +37,7 @@ CREATE TABLE "hasn_designsystem"."design_system" (
 CREATE INDEX "idx_ds_owner"      ON "hasn_designsystem"."design_system" ("owner_hasn_id") WHERE "deleted_time" IS NULL;
 CREATE INDEX "idx_ds_builtin"    ON "hasn_designsystem"."design_system" ("is_builtin") WHERE "is_builtin";
 CREATE INDEX "idx_ds_enterprise" ON "hasn_designsystem"."design_system" ("enterprise_id") WHERE "enterprise_id" IS NOT NULL;
+CREATE INDEX "idx_ds_owner_project" ON "hasn_designsystem"."design_system" ("owner_hasn_id", "platform_project_id") WHERE "platform_project_id" IS NOT NULL;
 
 COMMENT ON TABLE  "hasn_designsystem"."design_system" IS '设计系统（云端权威）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."id" IS '主键 ID（自增 BigInt；端云经本地 server_id 映射）';
@@ -49,6 +51,7 @@ COMMENT ON COLUMN "hasn_designsystem"."design_system"."grade" IS '等级 (excell
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."recommend_rebuild" IS '是否建议重建（评分过低）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."is_builtin" IS '是否官方内置（seed，跨 owner 只读可见）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."enterprise_id" IS '归属企业 ID（null=个人；非空=企业私有，引用 public.hasn_enterprise）';
+COMMENT ON COLUMN "hasn_designsystem"."design_system"."platform_project_id" IS '挂靠的平台项目 id（doc38 层2 容器级挂靠，可空=不挂；项目只是视角，不改变权限）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."current_revision_id" IS '当前版 revision.id（指向最新 revision）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."content_hash" IS '当前版内容 hash（供同步 revision diff）';
 COMMENT ON COLUMN "hasn_designsystem"."design_system"."bound_agent_id" IS '协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；生成它的分身，负责后续精修，改绑需二次确认）';

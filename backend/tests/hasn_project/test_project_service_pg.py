@@ -39,8 +39,11 @@ async def _seed_artifact(db, *, owner: str, agent: str, artifact_id: str) -> Non
             artifact_id=artifact_id,
             agent_hasn_id=agent,
             owner_hasn_id=owner,
+            artifact_key=f'test:{artifact_id}',
+            artifact_kind='resource',
             kind='resource',
-            source_kind='app_write',
+            resource_uri=f'hasn://artifact/{artifact_id}',
+            source_kind='app',
             status='active',
             title=f'产物 {artifact_id}',
         )
