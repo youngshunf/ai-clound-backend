@@ -35,6 +35,7 @@ from backend.app.hasn_project.model import HasnProject
 from backend.app.hasn_task.api.v1.agent.workflow import router as agent_workflow_router
 from backend.app.hasn_task.api.v1.app.sync import router as app_sync_router
 from backend.app.hasn_task.api.v1.app.workflow import router as app_workflow_router
+from backend.app.hasn_task.api.v1.app.workflow_template import router as app_workflow_template_router
 from backend.app.hasn_task.model.workflow_template import HasnWorkflowTemplate
 from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
@@ -62,6 +63,7 @@ _APP = FastAPI()
 _APP.include_router(agent_workflow_router, prefix='/api/v1/hasn-task/agent')
 _APP.include_router(app_sync_router, prefix='/api/v1/hasn-task/app')
 _APP.include_router(app_workflow_router, prefix='/api/v1/hasn-task/app')
+_APP.include_router(app_workflow_template_router, prefix='/api/v1/hasn-task/app')
 
 
 @_APP.exception_handler(BaseExceptionError)
@@ -539,3 +541,44 @@ async def test_list_workflows_project_filter_never_crosses_owner(e2e: SimpleName
         e2e.session, owner_id=e2e.other_owner, project_id=str(my_proj.id)
     )
     assert mine['workflow_id'] not in {w['workflow_id'] for w in foreign_rows}
+
+
+async def test_owner_instantiate_is_idempotent_and_returns_definition_snapshot(e2e: SimpleNamespace) -> None:
+    """R2：Owner 实例化先生成云端定义，网络重放不重复建图。"""
+    template = await _seed_template(e2e.session, f'tpl_{_uid()}')
+    project = await _seed_project(e2e.session, e2e.owner)
+    idempotency_key = f'inst_{_uid()}'
+    payload = {
+        'project_id': str(project.id),
+        'idempotency_key': idempotency_key,
+        'goal': '先在云端建权威定义',
+        'node_overrides': {
+            'origin': {'agent_id': e2e.research},
+            'work': {'agent_id': e2e.writer},
+        },
+    }
+
+    first = _data(
+        await e2e.client.post(
+            f'/api/v1/hasn-task/app/workflow-templates/{template.template_key}:instantiate', json=payload
+        )
+    )
+    replay = _data(
+        await e2e.client.post(
+            f'/api/v1/hasn-task/app/workflow-templates/{template.template_key}:instantiate', json=payload
+        )
+    )
+
+    assert first['workflow_uuid'].startswith('wf_')
+    assert replay['workflow_uuid'] == first['workflow_uuid']
+    assert first['definition_revision'] == 1
+    assert first['project_id'] == str(project.id)
+    assert [node['node_key'] for node in first['graph_snapshot']['nodes']] == ['origin', 'work']
+    count = await e2e.session.execute(
+        text(
+            'SELECT count(*) FROM hasn_task.workflow '
+            'WHERE owner_id = :owner AND instantiation_idempotency_key = :idempotency_key'
+        ),
+        {'owner': e2e.owner, 'idempotency_key': idempotency_key},
+    )
+    assert count.scalar_one() == 1
