@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
@@ -25,7 +27,11 @@ from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST, build_deck_app
+from backend.app.hasn_deck.service.deck_service import deck_service
+from backend.app.hasn_project.service.project_app_service import project_service
+from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
+from backend.common.exception import errors
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 # 落地真相（云端 backend/app/mcp/tools/deck.py，TOOLMIG2-P3 后本地 hasn-mcp deck 工具已删）：写类 9 工具 / 读类 4 工具。
@@ -113,9 +119,24 @@ def test_deck_workbench_app_shape() -> None:
     assert app.scope == ('personal',)
     assert app.entry_route == '/apps/deck'
     assert app.ui_kind is None
+    assert app.project_aware is True
+    assert app.project_required is False
     # manifest.workspace_scope 必须 ⊆ workbench_app.scope（validate_manifest 闸门）。
     assert set(DECK_AI_NATIVE_MANIFEST['workspace_scope']) <= set(app.scope)
     assert DECK_AI_NATIVE_MANIFEST['collaboration_mode'] == app.collaboration_mode
+    assert DECK_AI_NATIVE_MANIFEST['project_aware'] is True
+    assert DECK_AI_NATIVE_MANIFEST['project_required'] is False
+
+
+def test_deck_container_linkage_adapter_registered() -> None:
+    """deck 容器挂靠点使用云端权威 id、owner 隔离和 platform_project_id 列。"""
+    adapter = project_linkage_registry.get('deck')
+    assert adapter is not None
+    assert adapter.model.__name__ == 'Deck'
+    assert adapter.id_column == 'id'
+    assert adapter.owner_column == 'owner_id'
+    assert adapter.attach_column == 'platform_project_id'
+    assert adapter.is_container is True
 
 
 # ============================ 真实 PostgreSQL ============================
@@ -169,3 +190,34 @@ async def test_deck_builtin_published_and_self_heals(db) -> None:
     # 二次调用：hash 未变 → 直接返回已发布（不新增/不报错）。
     again = await ai_native_app_registry.ensure_builtin_published(db, 'deck')
     assert again['manifest_hash'] == published['manifest_hash']
+
+
+@pytest.mark.asyncio
+async def test_deck_create_mounts_owned_project_and_rejects_cross_owner(db) -> None:
+    """真实 PG：Deck 创建挂入本人项目并进入联邦挂靠并集，跨 owner 项目必须拒绝。"""
+    suffix = uuid.uuid4().hex[:12]
+    owner = f'h_deck_project_{suffix}'
+    project = await project_service.create_project(db, owner=owner, data={'name': '演示文稿归集测试'})
+
+    deck = await deck_service.create_deck(
+        db,
+        owner_id=owner,
+        title='项目复盘',
+        platform_project_id=project['id'],
+    )
+    assert deck['platform_project_id'] == project['id']
+
+    linked = await project_linkage_registry.list_linked_resources(
+        db,
+        owner=owner,
+        project_id=project['id'],
+    )
+    assert any(item['resource_uri'] == f"hasn://deck/{deck['id']}" for item in linked)
+
+    with pytest.raises(errors.NotFoundError):
+        await deck_service.create_deck(
+            db,
+            owner_id=f'h_other_{suffix}',
+            title='越权挂靠',
+            platform_project_id=project['id'],
+        )

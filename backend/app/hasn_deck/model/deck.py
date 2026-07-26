@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 import sqlalchemy as sa
 
@@ -28,6 +29,11 @@ class Deck(DeckBase):
     source: Mapped[str] = mapped_column(sa.String(16), default='', comment='来源 agent/manual/imported')
     bound_agent_id: Mapped[str | None] = mapped_column(
         sa.String(40), default=None, comment='协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；负责后续生成/精修）'
+    )
+    platform_project_id: Mapped[str | UUID | None] = mapped_column(
+        sa.UUID(),
+        default=None,
+        comment='挂靠的平台项目 id（doc38 层2 容器级挂靠，可空=不挂；项目只是视角，不是权限边界）',
     )
     # 应用平台 v3 §4.2(3) 产物级协作快路径列
     owner_scope: Mapped[str] = mapped_column(sa.String(16), default='personal', comment='归属 personal/enterprise')

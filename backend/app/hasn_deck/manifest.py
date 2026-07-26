@@ -161,6 +161,8 @@ DECK_AI_NATIVE_MANIFEST = {
     'version': '1.0.0',
     'workspace_scope': ['personal'],
     'collaboration_mode': 'none',
+    'project_aware': True,
+    'project_required': False,
     # catalog 枚举 local_tool（[07] §6.4 设计标签 native_huanxing 映射至此）。
     'execution_mode': 'local_tool',
     # 本地工具数据面（hasn-mcp source=Local），不经云端 Runtime Gateway。
@@ -194,6 +196,10 @@ DECK_AI_NATIVE_MANIFEST = {
                 'topic': {'type': ['string', 'null'], 'description': '主题（可选）'},
                 'language': {'type': ['string', 'null'], 'description': '语言（可选）'},
                 'style_profile_id': {'type': ['string', 'null'], 'description': '引用样式 id（见 style.list）'},
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'description': '挂靠的平台项目 UUID（可选；省略时自动继承当前工作会话项目）',
+                },
             },
             required=[],
             page_rank=10,
@@ -374,6 +380,8 @@ def build_deck_app() -> App:
         # 唯一默认演示文稿应用：自动挂载（Presenton 已删除，[07] §7）。
         install_policy='auto',
         collaboration_mode='none',
+        project_aware=True,
+        project_required=False,
         requires_role=None,
         execution_mode='local_tool',
         # 工作台内路由（内联导航至 entry_route），非新窗口/非 iframe。

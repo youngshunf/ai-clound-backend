@@ -22,7 +22,8 @@ import pytest
 
 from backend.app.hasn_deck.service.page_skeleton import validate_page_skeleton
 from backend.app.mcp.auth import AgentContext
-from backend.app.mcp.tools.deck import DECK_TOOLS
+from backend.app.mcp.context import clear_current_project_id, set_current_project_id
+from backend.app.mcp.tools.deck import DECK_TOOLS, _resolve_create_project_id
 
 if TYPE_CHECKING:
     from backend.app.mcp.tools.base import BaseTool
@@ -107,12 +108,33 @@ def test_deck_tools_scope_split() -> None:
 
 
 def test_required_fields_match_contract() -> None:
-    assert 'required' not in _tool('hasn.deck.create').input_schema
+    create_schema = _tool('hasn.deck.create').input_schema
+    assert 'required' not in create_schema
+    assert 'platform_project_id' in create_schema['properties']
     assert _tool('hasn.deck.get').input_schema['required'] == ['deck_id']
     assert _tool('hasn.deck.outline.set').input_schema['required'] == ['deck_id', 'pages']
     assert _tool('hasn.deck.page.write').input_schema['required'] == ['deck_id', 'position', 'html']
     assert _tool('hasn.deck.page.reorder').input_schema['required'] == ['deck_id', 'page_ids']
     assert _tool('hasn.deck.style.get').input_schema['required'] == ['style_id']
+
+
+def test_create_inherits_project_from_work_session_context() -> None:
+    """分身省略项目入参时自动继承 AppCollab 注入的当前项目。"""
+    set_current_project_id('0192aaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    try:
+        assert _resolve_create_project_id({}) == '0192aaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    finally:
+        clear_current_project_id()
+
+
+def test_create_explicit_project_or_null_overrides_context() -> None:
+    """显式项目优先；显式 null 表示不挂项目，不能回落工作会话上下文。"""
+    set_current_project_id('0192aaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+    try:
+        assert _resolve_create_project_id({'platform_project_id': ' project-explicit '}) == 'project-explicit'
+        assert _resolve_create_project_id({'platform_project_id': None}) is None
+    finally:
+        clear_current_project_id()
 
 
 def test_deck_scope_in_aggregated_catalog() -> None:

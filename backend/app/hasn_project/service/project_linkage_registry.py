@@ -110,10 +110,13 @@ class ProjectLinkageRegistry:
 
     @staticmethod
     def _active_conditions(adapter: LinkageAdapter) -> list[Any]:
-        """返回 adapter 的有效行条件：显式软删列为空，通用 status 不为 deleted。"""
+        """返回有效行条件：显式或通用软删列为空，通用 status 不为 deleted。"""
         conditions: list[Any] = []
-        if adapter.deleted_column is not None:
-            deleted_col = getattr(adapter.model, adapter.deleted_column)
+        deleted_column = adapter.deleted_column
+        if deleted_column is None and getattr(adapter.model, 'deleted_time', None) is not None:
+            deleted_column = 'deleted_time'
+        if deleted_column is not None:
+            deleted_col = getattr(adapter.model, deleted_column)
             conditions.append(deleted_col.is_(None))
         status_col = getattr(adapter.model, 'status', None)
         if status_col is not None:

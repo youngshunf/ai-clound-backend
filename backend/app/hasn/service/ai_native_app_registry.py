@@ -19,6 +19,7 @@ from backend.app.hasn_computer_use.manifest import COMPUTER_USE_AI_NATIVE_MANIFE
 from backend.app.hasn_copilot.service import resource_adapter as _copilot_resource_adapter  # noqa: F401
 from backend.app.hasn_creator.manifest import CREATOR_AI_NATIVE_MANIFEST
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST
+from backend.app.hasn_deck.service import project_linkage as _deck_project_linkage  # noqa: F401
 from backend.app.hasn_deck.service import resource_adapter as _deck_resource_adapter  # noqa: F401
 from backend.app.hasn_design.manifest import DESIGN_AI_NATIVE_MANIFEST
 from backend.app.hasn_design.service import resource_adapter as _design_resource_adapter  # noqa: F401

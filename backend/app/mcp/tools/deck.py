@@ -32,6 +32,7 @@ from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.app.hasn_deck.service.page_skeleton import validate_page_skeleton
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import get_current_project_id
 from backend.app.mcp.tools.base import BaseTool
 from backend.common.exception import errors
 from backend.database.db import async_db_session
@@ -142,6 +143,21 @@ def _page_id(args: dict[str, Any]) -> int:
         raise errors.RequestError(msg="'page_id' 必须是整数 id") from exc
 
 
+def _resolve_create_project_id(args: dict[str, Any]) -> str | None:
+    """解析新建 Deck 的项目归属：显式入参优先，否则继承 AppCollab 工作会话上下文。
+
+    显式 ``null`` 表示主人明确要求不挂项目，不能再回落上下文；普通分身调用无需知道或传入
+    ``platform_project_id``，Runtime 注入的 ``_hasn_project_id`` 已由分发入口落进 ContextVar。
+    """
+    if 'platform_project_id' in args:
+        raw = args.get('platform_project_id')
+        if raw is None:
+            return None
+        return str(raw).strip() or None
+    project_id = get_current_project_id()
+    return project_id.strip() if project_id and project_id.strip() else None
+
+
 async def _upsert_pages(db: Any, ctx: AgentContext, deck_id: int, pages_input: list[dict[str, Any]]) -> Any:
     """按 position 序数 upsert 多页（复刻 daemon write_pages）：逐页骨架校验，不合格进 rejected，
     合格页已有该位 → update_page，否则 create_page（status=generated）。existing 在循环前取一次。"""
@@ -208,6 +224,7 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         source='agent',
         style_profile_id=(str(args['style_profile_id']).strip() if args.get('style_profile_id') else None),
         bound_agent_id=ctx.agent_hasn_id,
+        platform_project_id=_resolve_create_project_id(args),
     )
     # register-on-write：建 deck 即登记进工作会话资源栏 / 分身产物 tab（不等 finalize）。
     registration = await _register_deck_artifact(db, ctx, int(deck['id']), title=title)
@@ -400,6 +417,10 @@ _SPECS: list[dict[str, Any]] = [
                 'topic': {'type': ['string', 'null'], 'description': '主题（可选）'},
                 'language': {'type': ['string', 'null'], 'description': '语言（默认 zh）'},
                 'style_profile_id': {'type': ['string', 'null'], 'description': '引用样式 slug（见 style.list）'},
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'description': '挂靠的平台项目 UUID（可选；省略时自动继承当前工作会话项目）',
+                },
             },
         },
     },
