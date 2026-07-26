@@ -215,8 +215,13 @@ DECK_AI_NATIVE_MANIFEST = {
         ),
         _read_cap(
             name='list',
-            description='列出当前 owner 的全部 deck（不含已删）。',
-            properties={},
+            description='列出当前 owner 的 Deck；默认不收窄，可显式按平台项目筛选。',
+            properties={
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'description': '显式筛选的平台项目 UUID；省略时返回全部',
+                }
+            },
             required=[],
             page_rank=12,
             tags=['deck', 'list', 'read'],

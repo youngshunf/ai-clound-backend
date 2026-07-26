@@ -240,7 +240,15 @@ async def _h_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    result = await deck_service.list_accessible_decks(db, subject=_subject(ctx))
+    raw_project_id = args.get('platform_project_id')
+    platform_project_id = (
+        str(raw_project_id).strip() or None if raw_project_id is not None else None
+    )
+    result = await deck_service.list_accessible_decks(
+        db,
+        subject=_subject(ctx),
+        platform_project_id=platform_project_id,
+    )
     return {'decks': result['items'], 'total': result['total']}
 
 
@@ -436,8 +444,16 @@ _SPECS: list[dict[str, Any]] = [
         'action': 'list',
         'write': False,
         'handler': _h_list,
-        'desc': '列出可访问的 deck（我的 ∪ 共享给我/我分身的 ∪ 企业可见）。确定性读。',
-        'schema': {'type': 'object', 'properties': {}},
+        'desc': '列出可访问的 deck；默认不按工作会话项目收窄，可显式按平台项目筛选。确定性读。',
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'platform_project_id': {
+                    'type': ['string', 'null'],
+                    'description': '显式筛选的平台项目 UUID；省略时返回全部可访问 Deck',
+                }
+            },
+        },
     },
     {
         'action': 'outline.set',

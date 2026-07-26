@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import inspect
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -27,7 +29,8 @@ from backend.app.hasn.model.hasn_app_catalog import HasnAppCatalog
 from backend.app.hasn.service.ai_native_app_registry import _manifest_hash, ai_native_app_registry
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn_deck.manifest import DECK_AI_NATIVE_MANIFEST, build_deck_app
-from backend.app.hasn_deck.service.deck_service import deck_service
+from backend.app.hasn_deck.model import Deck
+from backend.app.hasn_deck.service.deck_service import Subject, deck_service
 from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.app.mcp.scopes import SCOPE_CATALOG, scope_meta
@@ -139,6 +142,12 @@ def test_deck_container_linkage_adapter_registered() -> None:
     assert adapter.is_container is True
 
 
+def test_deck_list_contract_accepts_explicit_platform_project_filter() -> None:
+    """读侧只接受显式项目筛选，不从工作会话上下文隐式收窄。"""
+    parameters = inspect.signature(deck_service.list_accessible_decks).parameters
+    assert 'platform_project_id' in parameters
+
+
 # ============================ 真实 PostgreSQL ============================
 
 
@@ -221,3 +230,86 @@ async def test_deck_create_mounts_owned_project_and_rejects_cross_owner(db) -> N
             title='越权挂靠',
             platform_project_id=project['id'],
         )
+
+
+@pytest.mark.asyncio
+async def test_deck_list_explicitly_filters_platform_project_without_narrowing_default(db) -> None:
+    """真实 PG：显式项目只返回该项目 Deck；省略筛选仍返回主人的全部 Deck。"""
+    suffix = uuid.uuid4().hex[:12]
+    owner = f'h_deck_list_project_{suffix}'
+    project_a = await project_service.create_project(db, owner=owner, data={'name': '项目 A'})
+    project_b = await project_service.create_project(db, owner=owner, data={'name': '项目 B'})
+
+    await deck_service.create_deck(
+        db,
+        owner_id=owner,
+        title='项目 A 的演示文稿',
+        platform_project_id=project_a['id'],
+    )
+    await deck_service.create_deck(
+        db,
+        owner_id=owner,
+        title='项目 B 的演示文稿',
+        platform_project_id=project_b['id'],
+    )
+    await deck_service.create_deck(db, owner_id=owner, title='未挂项目的演示文稿')
+
+    filtered = await deck_service.list_accessible_decks(
+        db,
+        subject=Subject.human(owner),
+        platform_project_id=project_a['id'],
+    )
+    assert filtered['total'] == 1
+    assert [item['title'] for item in filtered['items']] == ['项目 A 的演示文稿']
+
+    unfiltered = await deck_service.list_accessible_decks(db, subject=Subject.human(owner))
+    assert unfiltered['total'] == 3
+
+
+@pytest.mark.asyncio
+async def test_deck_project_pagination_uses_stable_total_order(db) -> None:
+    """真实 PG：同更新时间的 201 条项目 Deck 仍按 id 降序稳定跨页且不重不漏。"""
+    suffix = uuid.uuid4().hex[:12]
+    owner = f'h_deck_page_order_{suffix}'
+    project = await project_service.create_project(db, owner=owner, data={'name': '分页稳定性项目'})
+    project_id = uuid.UUID(project['id'])
+    rows = [
+        Deck(
+            owner_id=owner,
+            title=f'稳定分页稿-{index}',
+            status='draft',
+            language='zh',
+            source='manual',
+            platform_project_id=project_id,
+        )
+        for index in range(201)
+    ]
+    db.add_all(rows)
+    await db.flush()
+    row_ids = [row.id for row in rows]
+    await db.execute(
+        sa.update(Deck)
+        .where(Deck.id.in_(row_ids))
+        .values(updated_time=datetime(2026, 7, 26, tzinfo=UTC))
+    )
+    await db.flush()
+
+    first_page = await deck_service.list_accessible_decks(
+        db,
+        subject=Subject.human(owner),
+        platform_project_id=project_id,
+        limit=200,
+        offset=0,
+    )
+    second_page = await deck_service.list_accessible_decks(
+        db,
+        subject=Subject.human(owner),
+        platform_project_id=project_id,
+        limit=200,
+        offset=200,
+    )
+    paged_ids = [item['id'] for item in first_page['items'] + second_page['items']]
+
+    assert first_page['total'] == 201
+    assert second_page['total'] == 201
+    assert paged_ids == sorted(row_ids, reverse=True)

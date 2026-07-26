@@ -109,8 +109,10 @@ def test_deck_tools_scope_split() -> None:
 
 def test_required_fields_match_contract() -> None:
     create_schema = _tool('hasn.deck.create').input_schema
+    list_schema = _tool('hasn.deck.list').input_schema
     assert 'required' not in create_schema
     assert 'platform_project_id' in create_schema['properties']
+    assert 'platform_project_id' in list_schema['properties']
     assert _tool('hasn.deck.get').input_schema['required'] == ['deck_id']
     assert _tool('hasn.deck.outline.set').input_schema['required'] == ['deck_id', 'pages']
     assert _tool('hasn.deck.page.write').input_schema['required'] == ['deck_id', 'position', 'html']
