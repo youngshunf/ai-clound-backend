@@ -447,11 +447,17 @@ async def compute_owner_groups_revision(db: AsyncSession, owner_id: str) -> str:
 async def compute_owner_billing_revision(db: AsyncSession, owner_id: str) -> str:
     """某 owner 的商业化状态指纹：sha256(sorted 订阅行 ∪ 权益行)[:16]（实施/92 MK-5）。
 
-    聚合两个权威源，任一变即整体指纹变：
+    聚合三个权威源，任一变即整体指纹变：
     - 订阅（``user_subscription``，经 ``hasn_humans`` 把 owner hasn_id 映射到 ``user_id``）：
       指纹字段 ``tier@status@subscription_end_date``——升降级、过期、续费（end_date 前移）均变。
     - 权益（``hasn_app_entitlement``，``subject_type='owner'`` 且 ``subject_id=owner_id``）：
       指纹字段 ``app_id@status@expires_at``——授予/到期/撤销（status 迁移）、新购（增行）均变。
+    - **履约事件计数**（``credit_grant_event``，doc94B M3 补入）：只取「已成功事件数 + 最新一条
+      的 id」。**为什么非补不可**：doc94 之后钱包余额搬去了 NewAPI，买积分包不改订阅行也不改权益行
+      ——原来的两源指纹**纹丝不动**，daemon 的 ``invalidate_resource`` 会按「revision 未变」
+      把这次失效当重复推送丢掉，用户买完积分要等下一次机会刷新才看得到到账。
+      不把余额本身放进指纹：余额在 NewAPI，云端读它既慢又会把展示读变成一次跨服务调用；
+      「成功事件数」已经能唯一标识「又有一笔到账了」。
 
     仅作 invalidate 帧的 ``revision`` 字段：daemon 不据此去重、收到即拉该 owner 的费用账单中心
     镜像。空（无订阅无权益）返回稳定占位指纹。owner 隔离靠 ``user_id`` / ``subject_id`` 两列。
@@ -490,6 +496,25 @@ async def compute_owner_billing_revision(db: AsyncSession, owner_id: str) -> str
         )
     ).all()
     lines.extend(f'ent:{app_id}@{status}@{exp.isoformat() if exp else ""}' for app_id, status, exp in ent_rows)
+
+    # 履约事件：买积分包/赠送到账不改订阅也不改权益，靠这一行让指纹动起来（doc94B M3）
+    if user_id:
+        from backend.app.billing.model.credit_grant_event import CreditGrantEvent
+
+        grant_row = (
+            await db.execute(
+                sa.select(
+                    sa.func.count(CreditGrantEvent.id),
+                    sa.func.max(CreditGrantEvent.id),
+                ).where(
+                    CreditGrantEvent.user_id == user_id,
+                    CreditGrantEvent.status == 'succeeded',
+                )
+            )
+        ).one_or_none()
+        if grant_row is not None:
+            grant_count, latest_grant_id = grant_row
+            lines.append(f'grant:{int(grant_count or 0)}@{int(latest_grant_id or 0)}')
 
     if not lines:
         return EMPTY_BILLING_REVISION

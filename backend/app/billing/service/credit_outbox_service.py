@@ -156,6 +156,7 @@ class CreditOutboxService:
                 event.applied_credits = Decimal(str(outcome.applied_credits))
             await CreditOutboxService._propagate_success(db, event)
         log.info(f'[CreditOutbox] 履约成功 event_id={event_id} applied={outcome.applied_credits}')
+        await CreditOutboxService._notify_billing_changed(event_id)
         await CreditOutboxService._continue_refund_saga(event_id)
         return STATUS_SUCCEEDED
 
@@ -195,6 +196,38 @@ class CreditOutboxService:
             await db.execute(
                 update(UserSubscription).where(UserSubscription.id == event.subscription_id).values(**values)
             )
+
+    @staticmethod
+    async def _notify_billing_changed(event_id: str) -> None:
+        """履约成功后向该 owner 推 billing 失效（doc94B M3）。
+
+        **少了这一步，用户买完积分要等下一次机会刷新才看得到到账**——账单中心是本地优先读，
+        没有失效推送就一直回放旧快照。
+
+        在业务事务**之外**做，且 best-effort：权威数据（NewAPI 余额 + 云端履约状态）已经落地，
+        推送只是让镜像早点回填。失败按父仓日志规则记 `warn` 而非 `error`——它可自愈，
+        下一次机会刷新或周期 sync_pull 会补上。
+        """
+        from backend.app.hasn.model.hasn_humans import HasnHumans
+        from backend.app.hasn.service.sync_invalidate_service import KIND_BILLING, bump_owner
+
+        try:
+            async with async_db_session() as db:
+                event = (
+                    await db.execute(select(CreditGrantEvent).where(CreditGrantEvent.event_id == event_id))
+                ).scalar_one_or_none()
+                if event is None:
+                    return
+                owner_hasn = (
+                    await db.execute(select(HasnHumans.hasn_id).where(HasnHumans.user_id == event.user_id))
+                ).scalars().first()
+            if not owner_hasn:
+                # 没有 owner 身份的用户（例如纯 admin 造数）不需要推送，不是错误。
+                return
+            async with async_db_session() as db:
+                await bump_owner(KIND_BILLING, db, owner_hasn)
+        except Exception as exc:
+            log.warning(f'[CreditOutbox] billing 失效推送失败（可自愈）event_id={event_id}: {exc!r}')
 
     @staticmethod
     async def _continue_refund_saga(event_id: str) -> None:
