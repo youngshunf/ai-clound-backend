@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -23,9 +24,14 @@ from uuid import UUID
 import sqlalchemy as sa
 
 from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
+from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_assets import HasnAssets
+from backend.app.hasn.model.hasn_sessions import HasnSessions
 from backend.app.hasn.service.artifact_query_service import artifact_query_service
+from backend.app.hasn.service.hasn_sessions_service import hasn_sessions_service
 from backend.app.hasn_project.model import HasnProject, HasnProjectMilestone
+from backend.app.hasn_project.schema.project_app import ProjectSummary
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.exception import errors
 
@@ -124,14 +130,221 @@ class ProjectService:
 
     # ── project ─────────────────────────────────────────────────────────────────
     async def list_projects(self, db: AsyncSession, *, owner: str, status: str | None = None) -> list[dict]:
-        """列主人名下项目（默认活跃在前、新建在前）。status 可选过滤 active/archived。"""
+        """列主人名下项目及稳定摘要（active 在前；聚合绝不按项目逐行查询）。"""
         stmt = sa.select(HasnProject).where(HasnProject.owner_id == owner)
         if status:
             stmt = stmt.where(HasnProject.status == status)
         # active 在前、archived 在后；同状态内按创建时间倒序（新项目在上）。
         stmt = stmt.order_by(HasnProject.status.asc(), HasnProject.created_time.desc())
         rows = (await db.execute(stmt)).scalars().all()
-        return [serialize(r) for r in rows]
+        summaries = await self._project_summaries(db, owner=owner, projects=rows)
+        return [summaries[row.id] for row in rows]
+
+    async def _project_summaries(
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        projects: Sequence[HasnProject],
+    ) -> dict[UUID, dict[str, Any]]:
+        """以固定数量的 set-based 查询构造项目列表/详情共用摘要。
+
+        这里刻意不调用单项目的产物流或挂靠读取：所有项目 id 一次传入各聚合查询，容器注册表
+        也只按 adapter 批量扫描。这样项目数量增长不会引入 N+1，同时统计仍遵循三路产物流口径。
+        """
+        project_ids = [project.id for project in projects]
+        if not project_ids:
+            return {}
+
+        link_summaries = await project_linkage_registry.project_link_summaries(
+            db,
+            owner=owner,
+            project_ids=project_ids,
+        )
+        aggregates: dict[UUID, dict[str, Any]] = {}
+        for project in projects:
+            link_summary = link_summaries.get(project.id, {})
+            aggregates[project.id] = {
+                'artifact_ids': set(),
+                'agent_ids': {project.bound_agent_id} if project.bound_agent_id else set(),
+                'session_count': 0,
+                'active_session_count': 0,
+                'milestone_done_count': 0,
+                'milestone_total_count': 0,
+                'link_count': int(link_summary.get('link_count') or 0),
+                'linked_apps': dict(link_summary.get('linked_apps') or {}),
+                'last_activity_time': link_summary.get('last_activity_time'),
+            }
+
+        def record_activity(project_id: UUID, occurred_at: datetime | None) -> None:
+            if occurred_at is None or project_id not in aggregates:
+                return
+            current = aggregates[project_id]['last_activity_time']
+            if current is None or occurred_at > current:
+                aggregates[project_id]['last_activity_time'] = occurred_at
+
+        milestone_rows = (
+            await db.execute(
+                sa.select(
+                    HasnProjectMilestone.project_id,
+                    sa.func.count().label('total_count'),
+                    sa.func.count().filter(HasnProjectMilestone.status == 'done').label('done_count'),
+                    sa.func.max(
+                        sa.func.coalesce(
+                            HasnProjectMilestone.updated_time,
+                            HasnProjectMilestone.created_time,
+                        )
+                    ).label('last_activity_time'),
+                )
+                .where(HasnProjectMilestone.project_id.in_(project_ids))
+                .group_by(HasnProjectMilestone.project_id)
+            )
+        ).all()
+        for project_id, total_count, done_count, last_activity_time in milestone_rows:
+            aggregate = aggregates[project_id]
+            aggregate['milestone_total_count'] = int(total_count)
+            aggregate['milestone_done_count'] = int(done_count)
+            record_activity(project_id, last_activity_time)
+
+        session_rows = (
+            await db.execute(
+                sa.select(
+                    HasnSessions.project_id,
+                    HasnSessions.hasn_id,
+                    HasnSessions.session_status,
+                    sa.func.coalesce(
+                        HasnSessions.last_message_at,
+                        HasnSessions.updated_time,
+                        HasnSessions.created_time,
+                    ).label('last_activity_time'),
+                ).where(
+                    HasnSessions.owner_id == owner,
+                    HasnSessions.project_id.in_(project_ids),
+                )
+            )
+        ).all()
+        for project_id, agent_id, session_status, last_activity_time in session_rows:
+            aggregate = aggregates[project_id]
+            aggregate['session_count'] += 1
+            if session_status in {'active', 'waiting_for_user'}:
+                aggregate['active_session_count'] += 1
+            if agent_id:
+                aggregate['agent_ids'].add(agent_id)
+            record_activity(project_id, last_activity_time)
+
+        contribution_rows = (
+            await db.execute(
+                sa.select(
+                    HasnArtifactContributions.project_id,
+                    HasnArtifactContributions.agent_hasn_id,
+                    HasnArtifactContributions.occurred_time,
+                ).where(
+                    HasnArtifactContributions.owner_hasn_id == owner,
+                    HasnArtifactContributions.project_id.in_(project_ids),
+                )
+            )
+        ).all()
+        for project_id, agent_id, occurred_time in contribution_rows:
+            if agent_id:
+                aggregates[project_id]['agent_ids'].add(agent_id)
+            record_activity(project_id, occurred_time)
+
+        participating_artifact_rows = (
+            await db.execute(
+                sa.select(
+                    HasnArtifactContributions.project_id,
+                    HasnArtifactContributions.artifact_id,
+                )
+                .join(
+                    HasnArtifacts,
+                    HasnArtifacts.artifact_id == HasnArtifactContributions.artifact_id,
+                )
+                .where(
+                    HasnArtifactContributions.owner_hasn_id == owner,
+                    HasnArtifactContributions.project_id.in_(project_ids),
+                    HasnArtifacts.owner_hasn_id == owner,
+                    HasnArtifacts.status == 'active',
+                )
+            )
+        ).all()
+        for project_id, artifact_id in participating_artifact_rows:
+            aggregates[project_id]['artifact_ids'].add(artifact_id)
+
+        explicit_artifact_rows = (
+            await db.execute(
+                sa.select(
+                    HasnArtifacts.project_id,
+                    HasnArtifacts.artifact_id,
+                    sa.func.coalesce(HasnArtifacts.updated_time, HasnArtifacts.created_time).label('last_activity_time'),
+                ).where(
+                    HasnArtifacts.owner_hasn_id == owner,
+                    HasnArtifacts.project_id.in_(project_ids),
+                    HasnArtifacts.status == 'active',
+                )
+            )
+        ).all()
+        for project_id, artifact_id, last_activity_time in explicit_artifact_rows:
+            aggregates[project_id]['artifact_ids'].add(artifact_id)
+            record_activity(project_id, last_activity_time)
+
+        container_pairs = await project_linkage_registry.artifact_resource_uri_pairs(
+            db,
+            owner=owner,
+            project_ids=project_ids,
+        )
+        resource_projects: dict[str, set[UUID]] = {}
+        for project_id, resource_uri in container_pairs:
+            resource_projects.setdefault(resource_uri, set()).add(project_id)
+        if resource_projects:
+            container_artifact_rows = (
+                await db.execute(
+                    sa.select(
+                        HasnArtifacts.resource_uri,
+                        HasnArtifacts.artifact_id,
+                        sa.func.coalesce(
+                            HasnArtifacts.updated_time,
+                            HasnArtifacts.created_time,
+                        ).label('last_activity_time'),
+                    ).where(
+                        HasnArtifacts.owner_hasn_id == owner,
+                        HasnArtifacts.resource_uri.in_(resource_projects),
+                        HasnArtifacts.status == 'active',
+                    )
+                )
+            ).all()
+            for resource_uri, artifact_id, last_activity_time in container_artifact_rows:
+                for project_id in resource_projects[resource_uri]:
+                    aggregates[project_id]['artifact_ids'].add(artifact_id)
+                    record_activity(project_id, last_activity_time)
+
+        summaries: dict[UUID, dict[str, Any]] = {}
+        for project in projects:
+            aggregate = aggregates[project.id]
+            agent_ids = set(aggregate['agent_ids'])
+            ordered_agent_ids = (
+                [project.bound_agent_id] if project.bound_agent_id else []
+            ) + sorted(agent_ids - {project.bound_agent_id})
+            linked_apps = [
+                {'app_id': app_id, 'count': count}
+                for app_id, count in sorted(aggregate['linked_apps'].items())
+            ]
+            summary = ProjectSummary.model_validate(
+                {
+                    **serialize(project),
+                    'artifact_count': len(aggregate['artifact_ids']),
+                    'session_count': aggregate['session_count'],
+                    'active_session_count': aggregate['active_session_count'],
+                    'agent_count': len(agent_ids),
+                    'link_count': aggregate['link_count'],
+                    'milestone_done_count': aggregate['milestone_done_count'],
+                    'milestone_total_count': aggregate['milestone_total_count'],
+                    'agent_ids': ordered_agent_ids,
+                    'linked_apps': linked_apps,
+                    'last_activity_time': aggregate['last_activity_time'],
+                }
+            )
+            summaries[project.id] = summary.model_dump(mode='json')
+        return summaries
 
     async def get_owned_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> HasnProject:
         """按 (owner, id) 取项目行；不存在/非本人 → 404（owner 隔离兜死，不泄漏他人项目存在性）。"""
@@ -224,14 +437,24 @@ class ProjectService:
     async def get_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> dict:
         """取单个项目详情（含里程碑轨与注册表派生的挂靠资源）。"""
         row = await self.get_owned_project(db, owner=owner, pk=pk)
-        data = serialize(row)
+        summary = (await self._project_summaries(db, owner=owner, projects=[row]))[row.id]
+        data = {**serialize(row), **summary, 'summary': summary}
         data['milestones'] = await self.list_milestones(db, owner=owner, project_id=row.id)
         data['linked_resources'] = await project_linkage_registry.list_linked_resources(
             db,
             owner=owner,
             project_id=row.id,
         )
-        data['link_count'] = len(data['linked_resources'])
+        recent_sessions = await hasn_sessions_service.list_work_session_summaries(
+            db=db,
+            owner_id=owner,
+            project_id=row.id,
+            limit=10,
+        )
+        # `recent_sessions` 是稳定契约；保留 `sessions` 同一真实摘要的别名，供现有 WebUI 无缝升级。
+        data['recent_sessions'] = recent_sessions
+        data['sessions'] = recent_sessions
+        data['linkable_domains'] = project_linkage_registry.linkable_domains()
         return data
 
     async def assert_owned(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> None:

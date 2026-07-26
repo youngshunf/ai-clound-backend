@@ -550,10 +550,11 @@ _SUMMARY_PREVIEW_CAP = 200
 # origin_ref 形如 ``resource:<app>:<id>``（AppCollab doc21 §D3）——取中间的 <app> 段作应用标识。
 _RESOURCE_ORIGIN_PREFIX = 'resource:'
 
-# 云端 session_status（active/completed/error/cancelled）→ digest 状态词表
+# 云端 session_status（active/waiting_for_user/completed/error/cancelled）→ digest 状态词表
 # （running/waiting_for_user/completed/failed）。云端只有粗粒度，daemon 有本地则用本地细状态。
 _CLOUD_STATUS_MAP = {
     'active': 'running',
+    'waiting_for_user': 'waiting',
     'completed': 'completed',
     'error': 'failed',
     'cancelled': 'cancelled',
