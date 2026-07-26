@@ -110,17 +110,27 @@ async def app_restore_project(
 
 @router.get(
     '/{pk}/artifact-flow',
-    summary='项目产物流（并集读：直接命中 ∪ 挂靠容器名下产物）',
+    summary='项目产物流（权威三路并集）',
     dependencies=[DependsJwtAuth],
     name='project_app_artifact_flow',
 )
 async def app_project_artifact_flow(
-    request: Request, db: CurrentSession, pk: Annotated[str, Path()]
+    request: Request,
+    db: CurrentSession,
+    pk: Annotated[str, Path()],
+    page: Annotated[int, Query(ge=1)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> ResponseModel:
-    """产物流并集读：``project_id`` 直接命中 ∪ 挂靠容器名下产物（读时派生不回填）。"""
+    """产物流唯一三路并集读，返回 `items/total/page/size` 与 `project_relation.via`。"""
     owner = await resolve_owner(db, request)
-    rows = await project_service.project_artifact_flow(db, owner=owner, project_id=pk)
-    return response_base.success(data={'items': rows})
+    flow = await project_service.project_artifact_flow(
+        db,
+        owner=owner,
+        project_id=pk,
+        page=page,
+        size=size,
+    )
+    return response_base.success(data=flow)
 
 
 @router.post(

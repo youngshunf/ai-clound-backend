@@ -329,13 +329,36 @@ async def test_project_artifact_flow_includes_finance_container_descendants_only
             )
 
             flow = await service.project_artifact_flow(db, owner=owner, project_id=project['id'])
-            uris = {item['resource_uri'] for item in flow}
+            uris = {item['resource_uri'] for item in flow['items']}
             assert f'hasn://finance/strategies/{strategy_id}' in uris
             assert f'hasn://finance/backtests/{backtest_id}' in uris
             assert f'hasn://finance/shadow/{shadow_id}' in uris
             assert f'hasn://finance/reviews/{review_id}' in uris
             assert f'hasn://finance/backtests/{unrelated_backtest_id}' in uris
             assert f'hasn://finance/backtests/{truly_unrelated_backtest_id}' not in uris
-            assert all(item['via'] == 'container' for item in flow)
+            assert flow['total'] == len(flow['items'])
+            assert all(
+                item['project_relation'] == {
+                    'project_id': project['id'],
+                    'via': 'linked_container',
+                }
+                for item in flow['items']
+            )
+
+            await project_linkage_registry.unlink(
+                db,
+                owner=owner,
+                resource_uri=f'hasn://finance/strategies/{strategy_id}',
+                project_id=project['id'],
+            )
+            await project_linkage_registry.unlink(
+                db,
+                owner=owner,
+                resource_uri=f'hasn://finance/shadow/{shadow_id}',
+                project_id=project['id'],
+            )
+            detached = await service.project_artifact_flow(db, owner=owner, project_id=project['id'])
+            assert detached['items'] == []
+            assert detached['total'] == 0
         finally:
             await db.rollback()
