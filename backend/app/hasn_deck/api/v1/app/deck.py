@@ -31,6 +31,7 @@ class CreateDeckRequest(BaseModel):
     source: str = Field(default='manual', description='来源 agent/manual/imported')
     style_profile_id: str | None = Field(default=None, description='引用的 StyleProfile slug')
     bound_agent_id: str | None = Field(default=None, description='协作分身 HASN ID（创建即绑定）')
+    platform_project_id: str | None = Field(default=None, description='挂靠的平台项目 UUID（可空）')
 
 
 class UpdateDeckRequest(BaseModel):
@@ -101,6 +102,7 @@ async def create_deck(request: Request, db: CurrentSessionTransaction, body: Cre
         source=body.source,
         style_profile_id=body.style_profile_id,
         bound_agent_id=body.bound_agent_id,
+        platform_project_id=body.platform_project_id,
     )
     return response_base.success(data=data)
 

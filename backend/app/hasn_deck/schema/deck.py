@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
@@ -19,6 +20,7 @@ class DeckSchemaBase(SchemaBase):
     cover_asset_id: str | None = Field(None, description='封面缩略图资产 id（引用 public.hasn_assets.asset_id，可空）')
     source: str = Field(description='来源 (agent:分身生成:violet/manual:手建:gray/imported:导入:blue)')
     bound_agent_id: str | None = Field(None, description='协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；负责后续生成/精修）')
+    platform_project_id: UUID | None = Field(None, description='挂靠的平台项目 id（可空=不挂；项目只是视角，不是权限边界）')
     rev: int = Field(description='单调版本（乐观并发 + 同步水位，每次写 +1）')
     deleted_time: datetime | None = Field(None, description='软删时间（非空=已删，不物理删以便同步感知）')
 

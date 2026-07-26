@@ -104,7 +104,10 @@ class ProjectLinkageRegistry:
 
     @staticmethod
     def _active_condition(adapter: LinkageAdapter) -> Any | None:
-        """若容器模型有 status 列，则统一排除 tombstone；无状态列的容器不额外过滤。"""
+        """优先按软删时间排除 tombstone，否则按 status 排除；无对应列时不额外过滤。"""
+        deleted_time_col = getattr(adapter.model, 'deleted_time', None)
+        if deleted_time_col is not None:
+            return deleted_time_col.is_(None)
         status_col = getattr(adapter.model, 'status', None)
         return status_col != 'deleted' if status_col is not None else None
 

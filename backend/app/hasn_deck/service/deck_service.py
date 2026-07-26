@@ -13,12 +13,14 @@ owner_id 仍是产物归属键，但访问控制不再是「owner==当前用户�
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from sqlalchemy import func, or_, select
 
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_deck.model import Deck, Page, StyleProfile
+from backend.app.hasn_project.service.project_app_service import project_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -59,6 +61,7 @@ def _deck_dict(d: Deck, *, my_permission: str | None = None, relation: str | Non
         'cover_asset_id': d.cover_asset_id,
         'source': d.source,
         'bound_agent_id': d.bound_agent_id,
+        'platform_project_id': str(d.platform_project_id) if d.platform_project_id is not None else None,
         'owner_scope': d.owner_scope,
         'enterprise_id': d.enterprise_id,
         'visibility': d.visibility,
@@ -163,10 +166,19 @@ class DeckService:
         source: str = 'manual',
         style_profile_id: str | None = None,
         bound_agent_id: str | None = None,
+        platform_project_id: str | UUID | None = None,
         owner_scope: str = 'personal',
         enterprise_id: int | None = None,
         visibility: str = 'private',
     ) -> dict[str, Any]:
+        project_uuid: UUID | None = None
+        if platform_project_id is not None:
+            await project_service.assert_owned(db, owner=owner_id, pk=platform_project_id)
+            project_uuid = (
+                platform_project_id
+                if isinstance(platform_project_id, UUID)
+                else UUID(str(platform_project_id))
+            )
         deck = Deck(
             owner_id=owner_id,
             title=title,
@@ -176,6 +188,7 @@ class DeckService:
             source=source,
             style_profile_id=style_profile_id,
             bound_agent_id=bound_agent_id,
+            platform_project_id=project_uuid,
             owner_scope=owner_scope,
             enterprise_id=enterprise_id,
             visibility=visibility,

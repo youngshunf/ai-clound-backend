@@ -31,6 +31,7 @@ class CreateDeckRequest(BaseModel):
     topic: str | None = Field(default=None, description='原始主题/brief')
     language: str = Field(default='zh', description='主语言')
     style_profile_id: str | None = Field(default=None, description='引用的 StyleProfile slug')
+    platform_project_id: str | None = Field(default=None, description='挂靠的平台项目 UUID（可空）')
 
 
 class UpdateDeckRequest(BaseModel):
@@ -80,6 +81,7 @@ async def agent_create_deck(
         language=body.language,
         source='agent',
         style_profile_id=body.style_profile_id,
+        platform_project_id=body.platform_project_id,
     )
     return response_base.success(data=data)
 

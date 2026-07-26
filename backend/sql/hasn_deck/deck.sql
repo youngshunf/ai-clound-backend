@@ -25,6 +25,7 @@ CREATE TABLE "hasn_deck"."deck" (
   "cover_asset_id"   varchar(64),
   "source"           varchar(16)    NOT NULL DEFAULT 'manual',
   "bound_agent_id"   varchar(40),
+  "platform_project_id" uuid        REFERENCES "hasn_project"."hasn_project"("id") ON DELETE SET NULL,
   "rev"              bigint         NOT NULL DEFAULT 1,
   "created_time"     timestamptz(6) NOT NULL DEFAULT now(),
   "updated_time"     timestamptz(6),
@@ -32,6 +33,7 @@ CREATE TABLE "hasn_deck"."deck" (
 );
 
 CREATE INDEX "idx_deck_owner_status" ON "hasn_deck"."deck" ("owner_id", "status") WHERE "deleted_time" IS NULL;
+CREATE INDEX "idx_deck_owner_project" ON "hasn_deck"."deck" ("owner_id", "platform_project_id") WHERE "platform_project_id" IS NOT NULL;
 
 COMMENT ON TABLE  "hasn_deck"."deck" IS '演示文稿（云端权威）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."id" IS '主键 ID（自增 BigInt；端云经本地 server_id 映射）';
@@ -47,6 +49,7 @@ COMMENT ON COLUMN "hasn_deck"."hasn_deck"."page_count" IS '页数冗余计数（
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."cover_asset_id" IS '封面缩略图资产 id（引用 public.hasn_assets.asset_id，可空）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."source" IS '来源 (agent:分身生成:violet/manual:手建:gray/imported:导入:blue)';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."bound_agent_id" IS '协作分身 HASN ID（owner 名下 a_* 分身，null=未绑定；负责后续生成/精修，改绑需二次确认）';
+COMMENT ON COLUMN "hasn_deck"."deck"."platform_project_id" IS '挂靠的平台项目 id（doc38 层2 容器级挂靠，可空=不挂；项目只是视角，不是权限边界）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."rev" IS '单调版本（乐观并发 + 同步水位，每次写 +1）';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."created_time" IS '创建时间';
 COMMENT ON COLUMN "hasn_deck"."hasn_deck"."updated_time" IS '更新时间';
