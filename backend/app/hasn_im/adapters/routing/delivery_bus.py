@@ -55,14 +55,16 @@ return payload
 
 def _decode_payload(raw: str | bytes | None) -> dict | None:
     """解析队列帧；畸形或非对象 JSON 由调用方安全跳过。"""
+    if raw is None:
+        return None
     try:
         value = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 
 
-async def _move_pending_to_processing(pending_key: str, processing_key: str) -> str | bytes | None:
+async def _move_pending_to_processing(pending_key: str, processing_key: str) -> str | None:
     """兼容 Redis 6.0，原子领取一条待投帧。"""
     return await redis_client.eval(
         _MOVE_PENDING_TO_PROCESSING_LUA,
