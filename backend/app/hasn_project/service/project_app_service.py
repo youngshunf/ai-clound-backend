@@ -478,6 +478,11 @@ class ProjectService:
             project_id=row.id,
             status='unread',
         )
+        data['inspection_schedule'] = await inspection_service.inspection_schedule(
+            db,
+            owner=owner,
+            project_id=row.id,
+        )
         data['linkable_domains'] = project_linkage_registry.linkable_domains()
         return data
 

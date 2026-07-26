@@ -17,12 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_sessions import HasnSessions
 from backend.app.hasn_plan.model.todo import Todo
+from backend.app.hasn_plan.service.plan_app_service import plan_service
+from backend.app.hasn_task.model.task import HasnTask
+from backend.app.hasn_task.service.task_service import calc_next_run_at
+from backend.app.hasn.service.app_catalog_service import resolve_default_agent_for_app
 from backend.app.hasn_project.model import HasnProjectInspection
 from backend.app.hasn_project.service.project_app_service import _as_uuid, _err, project_service, serialize
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
 _STATUSES = frozenset({'unread', 'dispatched', 'dismissed', 'reminded'})
+_INSPECTION_SCHEDULE_KIND = 'project_inspection'
+_INSPECTION_SCHEDULE_CRON = '0 9 * * 1'
 
 
 def _required_text(value: Any, *, code: str, field_name: str, limit: int) -> str:
@@ -200,6 +206,102 @@ class ProjectInspectionService:
             await db.flush()
         return serialize(row)
 
+    async def remind_tonight(
+        self,
+        db: AsyncSession,
+        *,
+        owner: str,
+        project_id: str | UUID,
+        inspection_id: str | UUID,
+    ) -> dict[str, Any]:
+        """用既有计划待办服务创建今晚提醒，再在同一事务回填建议行。"""
+        row = await self._get_owned(db, owner=owner, project_id=project_id, inspection_id=inspection_id)
+        self._ensure_transition(row, target='reminded')
+        if row.status == 'reminded':
+            return serialize(row)
+        title = f'今晚处理：{row.suggestion[:80]}'
+        todo = await plan_service.create_todo(
+            db,
+            owner=owner,
+            data={
+                'title': title,
+                'notes': f'来自项目巡检建议：{row.suggestion}',
+                'status': 'todo',
+                'source': 'manual',
+            },
+        )
+        row.status = 'reminded'
+        row.plan_todo_id = int(todo['id'])
+        row.handled_time = timezone.now()
+        await db.flush()
+        return serialize(row)
+
+    async def inspection_schedule(self, db: AsyncSession, *, owner: str, project_id: str | UUID) -> dict[str, Any]:
+        """读取项目巡检在既有任务 scheduler 中的真实配置，不另造调度表。"""
+        project = await project_service.get_owned_project(db, owner=owner, pk=project_id)
+        task = await self._inspection_task(db, owner=owner, project_id=project.id)
+        if task is None:
+            return {'enabled': False, 'task_id': None, 'agent_id': None, 'schedule_display': '每周一 09:00'}
+        return {
+            'enabled': bool(task.enabled),
+            'task_id': task.id,
+            'agent_id': task.agent_id,
+            'schedule_display': task.schedule_display or '每周一 09:00',
+            'last_status': task.last_status,
+            'last_error': task.last_error,
+        }
+
+    async def set_inspection_schedule(
+        self, db: AsyncSession, *, owner: str, project_id: str | UUID, enabled: bool
+    ) -> dict[str, Any]:
+        """主人显式启停既有 `hasn_task.task` 周期任务；默认从未创建即关闭。"""
+        project = await project_service.resolve_active_project_for_work(db, owner=owner, pk=project_id)
+        task = await self._inspection_task(db, owner=owner, project_id=project.id)
+        if not enabled:
+            if task is not None:
+                task.enabled = False
+                task.state = 'paused'
+                await db.flush()
+            return await self.inspection_schedule(db, owner=owner, project_id=project.id)
+
+        agent_id = project.bound_agent_id or await resolve_default_agent_for_app(
+            db, owner_id=owner, app_id='project'
+        )
+        if not agent_id:
+            raise _err('INSPECTION_AGENT_UNAVAILABLE', '没有可用于巡检的项目经理分身，请先创建或绑定分身', http_code=422)
+        await project_service.assert_active_owned_agent(db, owner=owner, agent_id=agent_id)
+        if task is None:
+            task = HasnTask(
+                owner_id=owner,
+                agent_id=agent_id,
+                name=f'项目巡检 · {project.name}',
+                prompt=(
+                    f'请巡检平台项目 {project.id}。先调用 hasn.project.get 读取权威数据；仅在有真实、可处理的建议时调用 '
+                    'hasn.project.inspection.publish，fingerprint 必须稳定且建议不得编造。'
+                ),
+                schedule_type='cron',
+                schedule_config={'expr': _INSPECTION_SCHEDULE_CRON},
+                schedule_display='每周一 09:00',
+                enabled=True,
+                state='scheduled',
+                next_run_at=calc_next_run_at('cron', {'expr': _INSPECTION_SCHEDULE_CRON}),
+                created_by=owner,
+                created_by_kind='owner',
+                project_id=project.id,
+                app_id='project',
+                execution_kind='freeform',
+                execution_spec={'kind': _INSPECTION_SCHEDULE_KIND},
+            )
+            db.add(task)
+        else:
+            task.agent_id = agent_id
+            task.enabled = True
+            task.state = 'scheduled'
+            if task.next_run_at is None:
+                task.next_run_at = calc_next_run_at('cron', {'expr': _INSPECTION_SCHEDULE_CRON})
+        await db.flush()
+        return await self.inspection_schedule(db, owner=owner, project_id=project.id)
+
     async def _get_owned(
         self,
         db: AsyncSession,
@@ -222,6 +324,26 @@ class ProjectInspectionService:
         if row is None:
             raise errors.NotFoundError(msg='巡检建议不存在')
         return row
+
+    @staticmethod
+    async def _inspection_task(
+        db: AsyncSession, *, owner: str, project_id: UUID
+    ) -> HasnTask | None:
+        """按 owner/project/执行规格定位本项目唯一巡检任务，不误伤其它项目任务。"""
+        return (
+            await db.execute(
+                sa.select(HasnTask)
+                .where(
+                    HasnTask.owner_id == owner,
+                    HasnTask.project_id == project_id,
+                    HasnTask.app_id == 'project',
+                    HasnTask.execution_spec['kind'].astext == _INSPECTION_SCHEDULE_KIND,
+                    HasnTask.deleted_at.is_(None),
+                )
+                .order_by(HasnTask.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
 
     @staticmethod
     def _ensure_transition(row: HasnProjectInspection, *, target: str, reference: str | None = None) -> None:

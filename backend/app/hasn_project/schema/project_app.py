@@ -45,6 +45,14 @@ class InspectionMarkRemindedBody(SchemaBase):
     plan_todo_id: int = Field(gt=0, description='提醒今晚创建的计划待办 ID')
 
 
+class InspectionScheduleBody(SchemaBase):
+    """主人显式启停项目的周期巡检任务。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    enabled: bool = Field(description='是否启用每周巡检；默认关闭')
+
+
 class ProjectLinkedApp(SchemaBase):
     """项目挂靠容器按应用聚合后的稳定展示项。"""
 
