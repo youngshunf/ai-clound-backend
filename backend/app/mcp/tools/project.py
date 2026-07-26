@@ -299,8 +299,10 @@ _SPECS: list[dict[str, Any]] = [
         'handler': _h_link,
         'desc': (
             '把一个资源挂靠进项目（联邦挂靠）：传 project_id + resource_uri(hasn:// 资源地址)。'
-            '当前支持 hasn://artifact/{id}（把产物显式改挂到本项目，覆盖自动打标）；'
-            '知识库/deck/图坊项目等容器挂靠随后续版本开放。'
+            '当前支持：hasn://artifact/{id}（产物显式改挂，覆盖自动打标）、'
+            'hasn://knowledge/kbs/{id}（整个知识库挂进项目，库内文档一并进项目产物流）、'
+            'hasn://finance/strategies/{id} 与 hasn://finance/shadow/{id}；'
+            'deck/图坊项目等容器随各应用接入陆续开放。挂靠只是归属标签，不改权限、不搬数据、随时可摘。'
         ),
         'schema': _schema(
             {
