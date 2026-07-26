@@ -51,6 +51,26 @@ async def _seed_artifact(db, *, owner: str, agent: str, artifact_id: str) -> Non
     await db.flush()
 
 
+async def test_artifact_orm_defaults_satisfy_current_state_constraints() -> None:
+    """当前态产物未显式给类型时，ORM 默认值也必须满足真实 PostgreSQL 约束。"""
+    artifact_id = f'art_{uuid4().hex[:20]}'
+    async with async_db_session() as db:
+        try:
+            artifact = HasnArtifacts(
+                artifact_id=artifact_id,
+                agent_hasn_id=f'a_{uuid4().hex[:12]}',
+                owner_hasn_id=_owner(),
+                artifact_key=f'resource:hasn://project/{uuid4()}',
+                resource_uri=f'hasn://project/{uuid4()}',
+            )
+            db.add(artifact)
+            await db.flush()
+            assert artifact.artifact_kind == 'resource'
+            assert artifact.status == 'active'
+        finally:
+            await db.rollback()
+
+
 # ── 项目 CRUD ────────────────────────────────────────────────────────────────
 async def test_create_get_update_archive_roundtrip() -> None:
     """建→查→改→归档全链路：字段落库、里程碑轨随查出、归档只改状态不删。"""
