@@ -4,8 +4,9 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
-from backend.common.schema import SchemaBase
 from backend.app.hasn.schema.artifact_contract import ArtifactAction, ArtifactKind, ArtifactSourceKind, LocalEntryKind
+from backend.common.schema import SchemaBase
+
 
 # ============================================================================
 # 产物分类三维度（doc35）：一个字段一个维度，不互相僭越。
@@ -94,6 +95,22 @@ class RecordArtifactParam(SchemaBase):
     conversation_id: str | None = Field(None, description='来源会话 ID（UUID 字符串）')
     message_id: int | None = Field(None, description='来源消息 ID')
     session_id: str | None = Field(None, description='来源本地 runtime session（ULID）')
+    # 工作会话轴与运行时 session 是两回事（设计 §4.3）：前者是主人在工作会话页看到的那条会话，
+    # 后者只是本次派发的运行时标识。历史上两者共用 `session_id` 入参，主会话派发时写进去的其实是
+    # 运行时 ID，于是工作会话筛选里长期混着一批永远筛不出东西的值。新调用点一律用本字段。
+    work_session_id: str | None = Field(None, description='所属工作会话 id（只接受工作会话，不接受运行时 session）')
+    tool_call_id: str | None = Field(
+        None,
+        description='工具调用标识（进幂等键，配合 dispatch_id 区分同一次派发里的多次调用）',
+    )
+    idempotency_key: str | None = Field(
+        None,
+        description='客户端计算的参与记录幂等键；云端按 (owner, agent, idempotency_key) 去重，不重算',
+    )
+    supersedes_locator_key: str | None = Field(
+        None,
+        description='同一路径的历史无密钥定位键；命中存量行时原地改键并保留参与记录',
+    )
     # 本地 transport 应用（reel/film/design/imagelab/publish）走 /artifacts/agent/record 通道、
     # 不经云端 ContextVar 打标，故项目根产出必须把云端权威 project_id 随入参上报（P9-C 项目轴）。
     project_id: str | None = Field(

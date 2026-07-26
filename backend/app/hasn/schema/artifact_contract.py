@@ -55,6 +55,37 @@ class ArtifactMutation(ArtifactContractModel):
     title: str | None = None
     summary: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    # 幂等键由产生 mutation 的一侧计算并原样过网，云端不得重算（设计 A12）。缺省时按确定性规则
+    # 兜底并告警，绝不生成随机键——随机兜底会让 outbox 每重试一次就多一条参与记录。
+    idempotency_key: str | None = None
+    # 节点为同一路径算出的历史无密钥定位键；命中存量行时原地改键，避免同一文件留下两条产物
+    # （设计 §4.7）。云端没有节点密钥，因而这条归并只能由节点驱动，不存在批量迁移的做法。
+    supersedes_locator_key: str | None = None
+
+    def _expected_kind_for_locator(self) -> ArtifactKind:
+        """由本体定位方式反推唯一合法的打开类型（设计 §4.1）。"""
+        if self.resource_uri is not None:
+            if not self.resource_uri.startswith('hasn://') or self.resource_uri.startswith('hasn://asset/'):
+                raise ValueError('应用资源必须使用非 asset 域的 hasn:// URI')
+            if not self.resource_kind or not self.resource_app_id:
+                raise ValueError('应用资源必须提供 resource_kind 和 resource_app_id')
+            return 'resource'
+        if self.body is not None:
+            return 'document'
+        if self.local_locator_key is not None:
+            if not self.node_id or not self.local_entry_kind:
+                raise ValueError('本地产物必须提供 node_id 和 local_entry_kind')
+            # 本地对象与资产同族：按打开方式分 image/video/voice/file。目录统一走
+            # file + local_entry_kind=directory，不为打开方式再造 kind（A3）。
+            return self._media_kind_or_raise('本地产物只允许 image、video、voice 或 file 类型')
+        return self._media_kind_or_raise('资产本体只允许 image、video、voice 或 file 类型')
+
+    def _media_kind_or_raise(self, message: str) -> ArtifactKind:
+        """媒体族缺省为 `file`；越界值直接拒绝，不静默归一。"""
+        kind = self.artifact_kind or 'file'
+        if kind not in {'image', 'video', 'voice', 'file'}:
+            raise ValueError(message)
+        return kind
 
     @model_validator(mode='after')
     def validate_locator_and_kind(self) -> ArtifactMutation:
@@ -66,23 +97,7 @@ class ArtifactMutation(ArtifactContractModel):
         if locator_count != 1:
             raise ValueError('产物本体必须且只能提供 body、asset_id、resource_uri、local_locator_key 之一')
 
-        if self.resource_uri is not None:
-            if not self.resource_uri.startswith('hasn://') or self.resource_uri.startswith('hasn://asset/'):
-                raise ValueError('应用资源必须使用非 asset 域的 hasn:// URI')
-            if not self.resource_kind or not self.resource_app_id:
-                raise ValueError('应用资源必须提供 resource_kind 和 resource_app_id')
-            expected_kind: ArtifactKind = 'resource'
-        elif self.body is not None:
-            expected_kind = 'document'
-        elif self.local_locator_key is not None:
-            if not self.node_id or not self.local_entry_kind:
-                raise ValueError('本地产物必须提供 node_id 和 local_entry_kind')
-            expected_kind = 'file'
-        else:
-            expected_kind = self.artifact_kind or 'file'
-            if expected_kind not in {'image', 'video', 'voice', 'file'}:
-                raise ValueError('资产本体只允许 image、video、voice 或 file 类型')
-
+        expected_kind = self._expected_kind_for_locator()
         if self.artifact_kind is not None and self.artifact_kind != expected_kind:
             raise ValueError('artifact_kind 与产物本体定位方式不一致')
         self.artifact_kind = expected_kind
