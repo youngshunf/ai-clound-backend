@@ -20,6 +20,7 @@ from backend.app.hasn_project.api.v1.app._common import (
     publish_project_linkage_sync_after_commit,
     resolve_owner,
 )
+from backend.app.hasn_project.schema.project_app import ProjectCreateBody, ProjectUpdateBody
 from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -41,11 +42,11 @@ async def app_list_projects(
 
 @router.post('', summary='创建项目', dependencies=[DependsJwtAuth], name='project_app_create_project')
 async def app_create_project(
-    request: Request, db: CurrentSessionTransaction, body: Annotated[dict[str, Any], Body()]
+    request: Request, db: CurrentSessionTransaction, body: ProjectCreateBody
 ) -> ResponseModel:
     """建项目（name 必填；可选 goal/cover_asset_uri/bound_agent_id）。"""
     owner = await resolve_owner(db, request)
-    data = await project_service.create_project(db, owner=owner, data=body)
+    data = await project_service.create_project(db, owner=owner, data=body.model_dump(exclude_unset=True))
     await bump_project_sync(db, owner)
     return response_base.success(data=data)
 
@@ -69,11 +70,13 @@ async def app_update_project(
     request: Request,
     db: CurrentSessionTransaction,
     pk: Annotated[str, Path()],
-    body: Annotated[dict[str, Any], Body()],
+    body: ProjectUpdateBody,
 ) -> ResponseModel:
     """改项目（name/goal/cover_asset_uri/bound_agent_id/status 局部更新；空 patch 返回原值）。"""
     owner = await resolve_owner(db, request)
-    data = await project_service.update_project(db, owner=owner, pk=pk, data=body)
+    data = await project_service.update_project(
+        db, owner=owner, pk=pk, data=body.model_dump(exclude_unset=True)
+    )
     await bump_project_sync(db, owner)
     return response_base.success(data=data)
 
@@ -146,7 +149,7 @@ async def app_link_resource(
     """把 ``resource_uri`` 指向的资源挂靠进项目。先校验目标项目归属（不写他人项目），
     再由挂靠点注册表落挂靠列（唯一收口，绝不散写跨 schema UPDATE）。"""
     owner = await resolve_owner(db, request)
-    await project_service.assert_owned(db, owner=owner, pk=pk)
+    await project_service.resolve_active_project_for_work(db, owner=owner, pk=pk)
     result = await project_linkage_registry.link(
         db, owner=owner, resource_uri=str(body.get('resource_uri') or ''), project_id=pk
     )

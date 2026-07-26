@@ -19,7 +19,11 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
+from backend.app.hasn.model.hasn_assets import HasnAssets
+from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.tools.project import _h_update
 from backend.app.hasn_project.service.project_app_service import ProjectService
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.exception import errors
@@ -51,6 +55,49 @@ async def _seed_artifact(db, *, owner: str, agent: str, artifact_id: str) -> Non
     await db.flush()
 
 
+async def _seed_owned_asset(db, *, owner: str, asset_id: str) -> None:
+    """插入一个当前主人真实拥有的封面资产。"""
+    db.add(
+        HasnAssets(
+            asset_id=asset_id,
+            owner_hasn_id=owner,
+            access='private',
+            storage_id=1,
+            object_key=f'project-test/{asset_id}.png',
+            kind='image',
+            mime='image/png',
+            size_bytes=1,
+            extract_status='done',
+        )
+    )
+    await db.flush()
+
+
+async def _seed_owned_agent(db, *, owner: str, agent_id: str) -> None:
+    """插入一个当前主人真实拥有的活跃分身。"""
+    db.add(
+        HasnAgents(
+            hasn_id=agent_id,
+            star_id=f'{agent_id[:20]}#star',
+            owner_id=owner,
+            display_name='项目协作分身',
+            agent_name='project-collaborator',
+            type='cloud',
+            role='specialist',
+            api_key_hash='test-key',
+            status='active',
+            created_via='client',
+        )
+    )
+    await db.flush()
+
+
+def _assert_request_error(exc: pytest.ExceptionInfo[errors.RequestError], *, code: int, error_code: str) -> None:
+    """统一断言项目字段校验的 HTTP 状态与机器错误码。"""
+    assert exc.value.code == code
+    assert exc.value.data == {'error_code': error_code}
+
+
 async def test_artifact_orm_defaults_satisfy_current_state_constraints() -> None:
     """当前态产物未显式给类型时，ORM 默认值也必须满足真实 PostgreSQL 约束。"""
     artifact_id = f'art_{uuid4().hex[:20]}'
@@ -67,6 +114,133 @@ async def test_artifact_orm_defaults_satisfy_current_state_constraints() -> None
             await db.flush()
             assert artifact.artifact_kind == 'resource'
             assert artifact.status == 'active'
+        finally:
+            await db.rollback()
+
+
+async def test_project_patch_preserves_omitted_fields_and_clears_explicit_nulls() -> None:
+    """项目 PATCH 必须区分未传与显式 null，并校验封面和默认分身确属主人。"""
+    owner = _owner()
+    asset_id = f'ast_{uuid4().hex[:16]}'
+    agent_id = f'a_{uuid4().hex[:16]}'
+    svc = ProjectService()
+    async with async_db_session() as db:
+        try:
+            await _seed_owned_asset(db, owner=owner, asset_id=asset_id)
+            await _seed_owned_agent(db, owner=owner, agent_id=agent_id)
+            project = await svc.create_project(
+                db,
+                owner=owner,
+                data={
+                    'name': '字段语义项目',
+                    'goal': '保留目标',
+                    'cover_asset_uri': f'hasn://asset/{asset_id}',
+                    'bound_agent_id': agent_id,
+                },
+            )
+
+            renamed = await svc.update_project(db, owner=owner, pk=project['id'], data={'name': '改名'})
+            assert renamed['goal'] == '保留目标'
+            assert renamed['cover_asset_uri'] == f'hasn://asset/{asset_id}'
+            assert renamed['bound_agent_id'] == agent_id
+
+            cleared = await svc.update_project(
+                db,
+                owner=owner,
+                pk=project['id'],
+                data={'goal': None, 'cover_asset_uri': None, 'bound_agent_id': None},
+            )
+            assert cleared['goal'] is None
+            assert cleared['cover_asset_uri'] is None
+            assert cleared['bound_agent_id'] is None
+
+            normalized = await svc.update_project(db, owner=owner, pk=project['id'], data={'goal': '   '})
+            assert normalized['goal'] is None
+            with pytest.raises(errors.RequestError) as exc:
+                await svc.update_project(db, owner=owner, pk=project['id'], data={'name': None})
+            _assert_request_error(exc, code=400, error_code='INVALID_PROJECT_NAME')
+        finally:
+            await db.rollback()
+
+
+async def test_project_rejects_invalid_or_foreign_cover_and_bound_agent() -> None:
+    """封面和默认分身必须是当前主人的真实资源，URI 不得夹带路径或外部 URL。"""
+    owner, other = _owner(), _owner()
+    other_asset_id = f'ast_{uuid4().hex[:16]}'
+    other_agent_id = f'a_{uuid4().hex[:16]}'
+    svc = ProjectService()
+    async with async_db_session() as db:
+        try:
+            await _seed_owned_asset(db, owner=other, asset_id=other_asset_id)
+            await _seed_owned_agent(db, owner=other, agent_id=other_agent_id)
+            with pytest.raises(errors.RequestError) as malformed:
+                await svc.create_project(
+                    db,
+                    owner=owner,
+                    data={'name': '非法封面', 'cover_asset_uri': 'hasn://asset/ast_x/extra'},
+                )
+            _assert_request_error(malformed, code=422, error_code='INVALID_COVER_ASSET')
+            with pytest.raises(errors.RequestError) as foreign_asset:
+                await svc.create_project(
+                    db,
+                    owner=owner,
+                    data={'name': '他人封面', 'cover_asset_uri': f'hasn://asset/{other_asset_id}'},
+                )
+            _assert_request_error(foreign_asset, code=422, error_code='INVALID_COVER_ASSET')
+            with pytest.raises(errors.RequestError) as foreign_agent:
+                await svc.create_project(
+                    db,
+                    owner=owner,
+                    data={'name': '他人分身', 'bound_agent_id': other_agent_id},
+                )
+            _assert_request_error(foreign_agent, code=422, error_code='INVALID_BOUND_AGENT')
+        finally:
+            await db.rollback()
+
+
+async def test_archived_project_rejects_new_writes_but_can_be_restored() -> None:
+    """归档项目可读可恢复，但不能再修改业务字段或新增里程碑。"""
+    owner = _owner()
+    svc = ProjectService()
+    async with async_db_session() as db:
+        try:
+            project = await svc.create_project(db, owner=owner, data={'name': '归档项目'})
+            await svc.archive_project(db, owner=owner, pk=project['id'])
+            assert (await svc.get_project(db, owner=owner, pk=project['id']))['status'] == 'archived'
+            with pytest.raises(errors.RequestError) as patch_exc:
+                await svc.update_project(db, owner=owner, pk=project['id'], data={'goal': '不允许写'})
+            _assert_request_error(patch_exc, code=409, error_code='PROJECT_ARCHIVED')
+            with pytest.raises(errors.RequestError) as milestone_exc:
+                await svc.create_milestone(db, owner=owner, project_id=project['id'], data={'name': '不允许新增'})
+            _assert_request_error(milestone_exc, code=409, error_code='PROJECT_ARCHIVED')
+            restored = await svc.update_project(db, owner=owner, pk=project['id'], data={'status': 'active'})
+            assert restored['status'] == 'active'
+        finally:
+            await db.rollback()
+
+
+async def test_project_mcp_update_uses_same_cover_validation_as_owner_service() -> None:
+    """MCP 工具必须复用项目 service 的 422 封面校验，不能保留另一套 400 规则。"""
+    owner = _owner()
+    svc = ProjectService()
+    context = AgentContext(
+        hasn_id=f'a_{uuid4().hex[:16]}',
+        owner_id=1,
+        agent_status='active',
+        metadata={},
+        owner_hasn_id=owner,
+        session_uuid=str(uuid4()),
+    )
+    async with async_db_session() as db:
+        try:
+            project = await svc.create_project(db, owner=owner, data={'name': '工具校验项目'})
+            with pytest.raises(errors.RequestError) as exc:
+                await _h_update(
+                    db,
+                    context,
+                    {'id': project['id'], 'cover_asset_uri': 'https://invalid.example/cover.png'},
+                )
+            _assert_request_error(exc, code=422, error_code='INVALID_COVER_ASSET')
         finally:
             await db.rollback()
 

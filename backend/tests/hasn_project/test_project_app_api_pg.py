@@ -207,6 +207,19 @@ async def test_update_archive_restore(env) -> None:
     assert restored['status'] == 'active'
 
 
+async def test_owner_api_strict_body_and_explicit_null_patch(env) -> None:
+    """Owner API 禁止未知字段，并把显式 null 原样交给统一 service 清空字段。"""
+    c = env.client
+    project = _data(await c.post(_PROJECTS, json={'name': '契约项目', 'goal': '稍后清空'}))
+
+    cleared = _data(await c.put(f'{_PROJECTS}/{project["id"]}', json={'goal': None}))
+    assert cleared['name'] == '契约项目'  # 未传字段保持原值
+    assert cleared['goal'] is None  # 显式 null 清空
+
+    invalid = await c.put(f'{_PROJECTS}/{project["id"]}', json={'unknown_field': '拒绝'})
+    assert invalid.status_code == 422, invalid.text
+
+
 # ── milestone（create 在 /projects 面，update/complete 在 /milestones 面）─────────
 async def test_milestone_create_update_complete(env) -> None:
     """POST /projects/{pk}/milestones 建 → PUT /milestones/{id} 改 → complete → 详情随查出。"""
@@ -349,6 +362,29 @@ async def test_link_unsupported_domain_400(env) -> None:
     proj = _data(await c.post(_PROJECTS, json={'name': 'P'}))
     resp = await c.post(f'{_PROJECTS}/{proj["id"]}/link', json={'resource_uri': 'hasn://deck/deck_x'})
     assert resp.status_code == 400, resp.text
+
+
+async def test_archived_project_rejects_new_work_but_allows_unlink(env) -> None:
+    """归档项目可读、可摘除既有挂靠，但不能再新增挂靠或里程碑。"""
+    c = env.client
+    artifact_id = f'art_{uuid.uuid4().hex[:16]}'
+    await _seed_artifact(env.session, owner=env.owner, agent=env.agent, artifact_id=artifact_id)
+    project = _data(await c.post(_PROJECTS, json={'name': '归档挂靠项目'}))
+    pid = project['id']
+    resource_uri = f'hasn://artifact/{artifact_id}'
+    _data(await c.post(f'{_PROJECTS}/{pid}/link', json={'resource_uri': resource_uri}))
+    _data(await c.post(f'{_PROJECTS}/{pid}/archive'))
+
+    new_link = await c.post(f'{_PROJECTS}/{pid}/link', json={'resource_uri': resource_uri})
+    assert new_link.status_code == 409, new_link.text
+    assert new_link.json()['data'] == {'error_code': 'PROJECT_ARCHIVED'}
+
+    milestone = await c.post(f'{_PROJECTS}/{pid}/milestones', json={'name': '不允许新增'})
+    assert milestone.status_code == 409, milestone.text
+    assert milestone.json()['data'] == {'error_code': 'PROJECT_ARCHIVED'}
+
+    unlinked = _data(await c.post(f'{_PROJECTS}/{pid}/unlink', json={'resource_uri': resource_uri}))
+    assert unlinked['unlinked'] is True
 
 
 # ── owner 隔离 ─────────────────────────────────────────────────────────────────
