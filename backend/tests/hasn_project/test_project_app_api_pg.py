@@ -30,15 +30,21 @@ from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn.model.hasn_sessions import HasnSessions
 from backend.app.hasn.service import sync_invalidate_service
 from backend.app.hasn_designsystem.model.design_system import DesignSystem
+from backend.app.hasn_plan.model.todo import Todo
 from backend.app.hasn_designsystem.service import project_linkage as _designsystem_project_linkage  # noqa: F401
 from backend.app.hasn_project.api.v1.app.hasn_project import router as app_project_router
 from backend.app.hasn_project.api.v1.app.hasn_project_milestone import router as app_milestone_router
 from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_project.model.hasn_project_inspection import HasnProjectInspection
 from backend.app.hasn_project.model.hasn_project_milestone import HasnProjectMilestone
+from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
 from backend.app.hasn_project.service.project_app_service import project_service
+from backend.common.exception import errors
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import (
@@ -92,6 +98,16 @@ async def env():
     owner = f'h_prj_{_uid()}'
     agent = f'a_prj_{_uid()}'
     session.add(_human(owner, user_id))
+    session.add(
+        HasnAgents(
+            hasn_id=agent,
+            star_id=f's_{agent}',
+            owner_id=owner,
+            display_name='巡检项目经理',
+            agent_name='inspection-manager',
+            status='active',
+        )
+    )
     await session.flush()
 
     auth_state = {'user_id': user_id}
@@ -124,13 +140,19 @@ async def env():
         ).scalars().all()
         if project_ids:
             await session.execute(
+                delete(HasnProjectInspection).where(HasnProjectInspection.project_id.in_(project_ids))
+            )
+            await session.execute(
                 delete(HasnProjectMilestone).where(
                     HasnProjectMilestone.project_id.in_(project_ids)
                 )
             )
+            await session.execute(delete(HasnSessions).where(HasnSessions.project_id.in_(project_ids)))
         await session.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await session.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+        await session.execute(delete(Todo).where(Todo.owner_hasn_id == owner))
         await session.execute(delete(HasnProject).where(HasnProject.owner_id == owner))
+        await session.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent))
         await session.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
         await session.commit()
         await session.close()
@@ -231,6 +253,134 @@ async def test_owner_api_keeps_complete_zero_summary_contract(env) -> None:
     assert detail['recent_sessions'] == []
     assert detail['sessions'] == []
     assert 'artifact' in detail['linkable_domains']
+
+
+async def test_inspection_publish_owner_actions_and_active_project_guard(env) -> None:
+    """巡检建议按指纹幂等发布，Owner 能读取并把真实会话回填为已派发。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '巡检闭环项目'}))
+    first = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='weekly-risk-v1',
+        suggestion='里程碑本周没有更新，建议先确认阻塞项。',
+        suggested_instruction='请梳理阻塞项并给出今天可执行的下一步。',
+    )
+    replay = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='weekly-risk-v1',
+        suggestion='里程碑本周没有更新，建议先确认阻塞项。',
+        suggested_instruction='请梳理阻塞项并给出今天可执行的下一步。',
+    )
+    assert replay['id'] == first['id']
+
+    detail = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}'))
+    assert detail['inspections'] == [replay]
+    listed = _data(await env.client.get(f'{_PROJECTS}/{project["id"]}/inspections'))
+    assert listed['items'] == [replay]
+
+    session_id = f'ws_{uuid.uuid4().hex[:16]}'
+    env.session.add(
+        HasnSessions(
+            session_id=session_id,
+            owner_id=env.owner,
+            hasn_id=env.agent,
+            session_kind='task',
+            session_scope='conversation_visible',
+            origin_type='app',
+            project_id=uuid.UUID(project['id']),
+        )
+    )
+    await env.session.flush()
+    dispatched = _data(
+        await env.client.post(
+            f'{_PROJECTS}/{project["id"]}/inspections/{first["id"]}/mark-dispatched',
+            json={'work_session_id': session_id},
+        )
+    )
+    assert dispatched['status'] == 'dispatched'
+    assert dispatched['work_session_id'] == session_id
+
+    dismissable = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='optional-next-step-v1',
+        suggestion='可以暂时忽略的可选优化。',
+    )
+    dismissed = _data(
+        await env.client.post(
+            f'{_PROJECTS}/{project["id"]}/inspections/{dismissable["id"]}/dismiss'
+        )
+    )
+    assert dismissed['status'] == 'dismissed'
+
+    remindable = await inspection_service.publish(
+        env.session,
+        owner=env.owner,
+        agent_id=env.agent,
+        project_id=project['id'],
+        fingerprint='tonight-followup-v1',
+        suggestion='今晚确认对方是否已回复。',
+    )
+    todo = Todo(owner_hasn_id=env.owner, title='今晚处理项目巡检建议', status='todo')
+    env.session.add(todo)
+    await env.session.flush()
+    reminded = _data(
+        await env.client.post(
+            f'{_PROJECTS}/{project["id"]}/inspections/{remindable["id"]}/mark-reminded',
+            json={'plan_todo_id': todo.id},
+        )
+    )
+    assert reminded['status'] == 'reminded'
+    assert reminded['plan_todo_id'] == todo.id
+
+    missing_owner = f'h_other_{_uid()}'
+    with pytest.raises(errors.NotFoundError):
+        await inspection_service.publish(
+            env.session,
+            owner=missing_owner,
+            agent_id=env.agent,
+            project_id=project['id'],
+            fingerprint='cross-owner',
+            suggestion='不应写入他人项目。',
+        )
+
+    archived = _data(await env.client.post(f'{_PROJECTS}/{project["id"]}/archive'))
+    assert archived['status'] == 'archived'
+    with pytest.raises(errors.RequestError) as archived_error:
+        await inspection_service.publish(
+            env.session,
+            owner=env.owner,
+            agent_id=env.agent,
+            project_id=project['id'],
+            fingerprint='after-archive',
+            suggestion='归档项目不得出现新建议。',
+        )
+    assert archived_error.value.data['error_code'] == 'PROJECT_ARCHIVED'
+
+
+async def test_inspection_owner_api_hides_other_owner_project(env) -> None:
+    """Owner JWT 切换到另一主人后，巡检列表不能泄漏原项目是否存在。"""
+    project = _data(await env.client.post(_PROJECTS, json={'name': '不可跨主人读取'}))
+    other_user_id = _new_user_id()
+    other_owner = f'h_prj_{_uid()}'
+    other_human = _human(other_owner, other_user_id)
+    env.session.add(other_human)
+    await env.session.flush()
+    try:
+        env.auth_state['user_id'] = other_user_id
+        response = await env.client.get(f'{_PROJECTS}/{project["id"]}/inspections')
+        assert response.status_code == 404, response.text
+    finally:
+        env.auth_state['user_id'] = env.user_id
+        await env.session.delete(other_human)
+        await env.session.flush()
 
 
 async def test_create_name_required_400(env) -> None:

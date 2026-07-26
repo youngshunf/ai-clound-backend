@@ -20,7 +20,13 @@ from backend.app.hasn_project.api.v1.app._common import (
     publish_project_linkage_sync_after_commit,
     resolve_owner,
 )
-from backend.app.hasn_project.schema.project_app import ProjectCreateBody, ProjectUpdateBody
+from backend.app.hasn_project.schema.project_app import (
+    InspectionMarkDispatchedBody,
+    InspectionMarkRemindedBody,
+    ProjectCreateBody,
+    ProjectUpdateBody,
+)
+from backend.app.hasn_project.service.hasn_project_inspection_service import inspection_service
 from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.response.response_schema import ResponseModel, response_base
@@ -131,6 +137,100 @@ async def app_project_artifact_flow(
         size=size,
     )
     return response_base.success(data=flow)
+
+
+@router.get(
+    '/{pk}/inspections',
+    summary='项目巡检建议列表',
+    dependencies=[DependsJwtAuth],
+    name='project_app_list_inspections',
+)
+async def app_list_inspections(
+    request: Request,
+    db: CurrentSession,
+    pk: Annotated[str, Path()],
+    status: Annotated[str | None, Query()] = None,
+) -> ResponseModel:
+    """读取当前主人项目的巡检建议；不传 status 时返回全部处理历史。"""
+    owner = await resolve_owner(db, request)
+    rows = await inspection_service.list_for_project(db, owner=owner, project_id=pk, status=status)
+    return response_base.success(data={'items': rows})
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/dismiss',
+    summary='忽略项目巡检建议',
+    dependencies=[DependsJwtAuth],
+    name='project_app_dismiss_inspection',
+)
+async def app_dismiss_inspection(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+) -> ResponseModel:
+    """把待处理巡检建议标记为 dismissed；重复请求保持幂等。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.dismiss(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/mark-dispatched',
+    summary='回填按建议派发的工作会话',
+    dependencies=[DependsJwtAuth],
+    name='project_app_mark_inspection_dispatched',
+)
+async def app_mark_inspection_dispatched(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+    body: InspectionMarkDispatchedBody,
+) -> ResponseModel:
+    """只接受已真实创建、属于当前主人且挂靠本项目的工作会话。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.mark_dispatched(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+        work_session_id=body.work_session_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/{pk}/inspections/{inspection_id}/mark-reminded',
+    summary='回填提醒今晚的计划待办',
+    dependencies=[DependsJwtAuth],
+    name='project_app_mark_inspection_reminded',
+)
+async def app_mark_inspection_reminded(
+    request: Request,
+    db: CurrentSessionTransaction,
+    pk: Annotated[str, Path()],
+    inspection_id: Annotated[str, Path()],
+    body: InspectionMarkRemindedBody,
+) -> ResponseModel:
+    """只接受主人名下真实计划待办；待办由巡检调度动作先创建。"""
+    owner = await resolve_owner(db, request)
+    data = await inspection_service.mark_reminded(
+        db,
+        owner=owner,
+        project_id=pk,
+        inspection_id=inspection_id,
+        plan_todo_id=body.plan_todo_id,
+    )
+    await bump_project_sync(db, owner)
+    return response_base.success(data=data)
 
 
 @router.post(
