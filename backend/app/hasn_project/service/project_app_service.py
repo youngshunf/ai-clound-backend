@@ -133,7 +133,7 @@ class ProjectService:
         rows = (await db.execute(stmt)).scalars().all()
         return [serialize(r) for r in rows]
 
-    async def _get_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> HasnProject:
+    async def get_owned_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> HasnProject:
         """按 (owner, id) 取项目行；不存在/非本人 → 404（owner 隔离兜死，不泄漏他人项目存在性）。"""
         row = (
             await db.execute(
@@ -216,14 +216,14 @@ class ProjectService:
         self, db: AsyncSession, *, owner: str, pk: str | UUID
     ) -> HasnProject:
         """校验可新增项目工作：归档项目仍可读和恢复，但不能新增资源或里程碑。"""
-        row = await self._get_project(db, owner=owner, pk=pk)
+        row = await self.get_owned_project(db, owner=owner, pk=pk)
         if row.status == 'archived':
             raise _err('PROJECT_ARCHIVED', '项目已归档，不能新增项目工作', http_code=409)
         return row
 
     async def get_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> dict:
         """取单个项目详情（含里程碑轨与注册表派生的挂靠资源）。"""
-        row = await self._get_project(db, owner=owner, pk=pk)
+        row = await self.get_owned_project(db, owner=owner, pk=pk)
         data = serialize(row)
         data['milestones'] = await self.list_milestones(db, owner=owner, project_id=row.id)
         data['linked_resources'] = await project_linkage_registry.list_linked_resources(
@@ -236,7 +236,7 @@ class ProjectService:
 
     async def assert_owned(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> None:
         """校验项目归属（不存在/非本人 → 404）。link/unlink 前置校验用（挂靠不写他人项目）。"""
-        await self._get_project(db, owner=owner, pk=pk)
+        await self.get_owned_project(db, owner=owner, pk=pk)
 
     async def resolve_open_for_new_workflow(
         self, db: AsyncSession, *, owner: str, project_id: str | UUID
@@ -276,7 +276,7 @@ class ProjectService:
 
     async def update_project(self, db: AsyncSession, *, owner: str, pk: str | UUID, data: dict) -> dict:
         """改项目（省略保持原值、显式 null 清空；归档时只允许恢复为 active）。"""
-        row = await self._get_project(db, owner=owner, pk=pk)
+        row = await self.get_owned_project(db, owner=owner, pk=pk)
         fields = await self._validate_project_fields(db, owner=owner, data=data)
         if row.status == 'archived' and fields and fields != {'status': 'active'}:
             raise _err('PROJECT_ARCHIVED', '项目已归档，仅可恢复为进行中', http_code=409)
@@ -288,7 +288,7 @@ class ProjectService:
 
     async def archive_project(self, db: AsyncSession, *, owner: str, pk: str | UUID) -> dict:
         """归档项目（status→archived）。归档只是状态标记，不删数据、不断挂靠（doc38：项目非权限边界）。"""
-        row = await self._get_project(db, owner=owner, pk=pk)
+        row = await self.get_owned_project(db, owner=owner, pk=pk)
         row.status = 'archived'
         await db.flush()
         await db.refresh(row)
@@ -297,7 +297,7 @@ class ProjectService:
     # ── milestone（纯业务状态标记·无依赖无门控，doc38 第四铁律）────────────────────────
     async def list_milestones(self, db: AsyncSession, *, owner: str, project_id: str | UUID) -> list[dict]:
         """列某项目里程碑（横向轨次序：sort 升序、到期时间升序）。先校验项目归属。"""
-        await self._get_project(db, owner=owner, pk=project_id)
+        await self.get_owned_project(db, owner=owner, pk=project_id)
         stmt = (
             sa.select(HasnProjectMilestone)
             .where(HasnProjectMilestone.project_id == _as_uuid(project_id))
@@ -318,7 +318,7 @@ class ProjectService:
         if row is None:
             raise errors.NotFoundError(msg='里程碑不存在')
         # 经父项目归属校验（不存在/非本人即抛 404）。
-        await self._get_project(db, owner=owner, pk=row.project_id)
+        await self.get_owned_project(db, owner=owner, pk=row.project_id)
         return row
 
     async def create_milestone(self, db: AsyncSession, *, owner: str, project_id: str | UUID, data: dict) -> dict:
@@ -378,7 +378,7 @@ class ProjectService:
           U3 无容器 adapter → 并集退化为仅直接命中，但代码路径已就位（U11 注册容器 adapter 即生效）。
         - 读时派生不回填：不把容器名下产物的 `project_id` 写实（doc38 §5/§6）。
         """
-        await self._get_project(db, owner=owner, pk=project_id)  # 归属校验（非本人 → 404）
+        await self.get_owned_project(db, owner=owner, pk=project_id)  # 归属校验（非本人 → 404）
         pid = _as_uuid(project_id)
         union_conds = [HasnArtifacts.project_id == pid]
         container_uris = await self._attached_container_uris(db, owner=owner, project_id=pid)
