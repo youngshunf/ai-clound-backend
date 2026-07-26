@@ -355,16 +355,11 @@ def _load_hasn_release() -> None:
 
 def _load_hasn_project() -> None:
     # 项目管理 project（schema hasn_project，模块 14 doc38）——平台项目·联邦挂靠一级应用，
-    # canonical 前缀 /api/v1/project/*（app=owner 端·agent=Agent JWT·open=公开只读·v1=admin）。
-    from backend.app.hasn_project.api.router import agent as hasn_project_agent
+    # 只装载 Owner App API。分身经 hasn.project.* MCP 工具调用；不装载 codegen 的 agent/open/v1 CRUD，
+    # 避免公开读取、Agent 裸 CRUD 与硬删除重新进入业务路由面。
     from backend.app.hasn_project.api.router import app as hasn_project_app
-    from backend.app.hasn_project.api.router import open_api as hasn_project_open
-    from backend.app.hasn_project.api.router import v1 as hasn_project_v1
 
-    router.include_router(hasn_project_v1)
     router.include_router(hasn_project_app)
-    router.include_router(hasn_project_agent)
-    router.include_router(hasn_project_open)
 
 
 # 应用名 → loader。改 FBA_DEV_APPS 时用这里的 key（左列）。
