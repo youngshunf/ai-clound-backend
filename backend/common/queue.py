@@ -1,11 +1,12 @@
 import asyncio
 
 from asyncio import Queue
+from typing import Any
 
 from backend.common.log import log
 
 
-async def batch_dequeue(queue: Queue, max_items: int, timeout: float) -> list:
+async def batch_dequeue(queue: Queue[Any], max_items: int, timeout: float) -> list[Any]:
     """
     从异步队列中获取多个项目
 
@@ -14,7 +15,7 @@ async def batch_dequeue(queue: Queue, max_items: int, timeout: float) -> list:
     :param timeout: 总的等待超时时间（秒）
     :return:
     """
-    items = []
+    items: list[Any] = []
 
     async def collector() -> None:
         while len(items) < max_items:

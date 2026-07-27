@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -52,3 +52,87 @@ class SyncEventRef:
     event_type: str
     # R2-07：命中 (owner_id, producer, source_event_id) 已落行→True（返回原 revision，未新增行）。
     deduped: bool = False
+
+
+@dataclass(frozen=True)
+class StoredSyncEvent:
+    """pull 返回的通用事件信封；payload 原样来自同步事件表。"""
+
+    event_id: str
+    event_type: str
+    revision: int
+    occurred_at: datetime
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FullRefreshContract:
+    """游标不可继续增量拉取时的显式 full-refresh 契约。"""
+
+    owner_id: str
+    reason: Literal['cursor_expired', 'cursor_ahead']
+    requested_revision: int
+    min_available_revision: int
+    head_revision: int
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class PullResult:
+    """一页通用同步事件或 full-refresh 指令。"""
+
+    events: tuple[StoredSyncEvent, ...]
+    next_cursor: str
+    has_more: bool
+    full_refresh: FullRefreshContract | None = None
+
+
+@dataclass(frozen=True)
+class InboxEnvelope:
+    """daemon 上行到 sync inbox 的不透明业务信封。"""
+
+    owner_id: str
+    node_id: str
+    client_event_id: str
+    hasn_id: str
+    event_type: str
+    payload: dict[str, Any]
+    dedupe_key: str | None = None
+
+
+@dataclass(frozen=True)
+class InboxAcceptance:
+    """单条 inbox 接收结果。"""
+
+    client_event_id: str
+    status: Literal['accepted', 'duplicate', 'conflict']
+
+
+@dataclass(frozen=True)
+class ClaimedInboxEvent:
+    """worker 已持有租约的一条 inbox 事件。"""
+
+    row_id: int
+    envelope: InboxEnvelope
+    attempt_count: int
+    idempotency_key: str
+    locked_by: str
+
+
+@dataclass(frozen=True)
+class PushResult:
+    """一批不透明信封的接收结果。"""
+
+    items: tuple[InboxAcceptance, ...]
+
+    @property
+    def accepted(self) -> int:
+        """首次接收和幂等重复均视为已接收。"""
+        return sum(item.status in {'accepted', 'duplicate'} for item in self.items)
+
+
+@dataclass(frozen=True)
+class RetentionResult:
+    """单轮 retention 结果。"""
+
+    deleted: int

@@ -42,8 +42,10 @@ def _node_snapshot(node: dict[str, Any]) -> dict[str, Any]:
 def canonical_definition(workflow: CreateWorkflowParam | dict[str, Any]) -> dict[str, Any]:
     """把传入或已落库定义压成用于幂等比较的稳定 JSON 对象。"""
     value = workflow.model_dump(mode='json') if isinstance(workflow, CreateWorkflowParam) else workflow
-    nodes = value.get('nodes') if isinstance(value.get('nodes'), list) else []
-    edges = value.get('edges') if isinstance(value.get('edges'), list) else []
+    raw_nodes = value.get('nodes')
+    raw_edges = value.get('edges')
+    nodes: list[Any] = raw_nodes if isinstance(raw_nodes, list) else []
+    edges: list[Any] = raw_edges if isinstance(raw_edges, list) else []
     return {
         'workflow_uuid': str(value.get('workflow_uuid') or ''),
         'name': str(value.get('name') or ''),

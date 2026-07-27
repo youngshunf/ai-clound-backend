@@ -8,7 +8,10 @@
 设计事实源：docs/hasn-node设计文档/12-任务系统实施方案/06-任务系统AI-Native应用化重构设计.md §2。
 """
 
+from typing import Any
+
 from sqlalchemy.orm import declared_attr
+from sqlalchemy.sql.schema import SchemaItem
 
 from backend.common.model import Base
 
@@ -22,5 +25,7 @@ class HasnTaskAppBase(Base):
     __abstract__ = True
 
     @declared_attr.directive
-    def __table_args__(cls) -> dict:  # noqa: N805
+    def __table_args__(
+        cls,
+    ) -> dict[str, Any] | tuple[SchemaItem | dict[str, Any], ...]:  # noqa: N805
         return {'comment': cls.__doc__ or '', 'schema': APP_SCHEMA}

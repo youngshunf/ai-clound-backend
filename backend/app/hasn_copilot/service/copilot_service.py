@@ -22,7 +22,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from backend.app.hasn.model import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_copilot.model import CopilotPreference, CopilotSession
 from backend.common.exception import errors
 from backend.utils.timezone import timezone

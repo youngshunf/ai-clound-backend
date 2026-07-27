@@ -82,7 +82,7 @@ async def test_concurrent_append_assigns_gapless_distinct_revisions(sessionmaker
         failures = [r for r in results if isinstance(r, BaseException)]
         assert not failures, f'并发 append 不应抛错（修复前会撞唯一约束）：{failures!r}'
 
-        revisions = sorted(int(r) for r in results)
+        revisions = sorted(int(r) for r in results if not isinstance(r, BaseException))
         assert revisions == list(range(1, _CONCURRENCY + 1)), (
             f'revision 应连续无重复 1..{_CONCURRENCY}，实际 {revisions}'
         )

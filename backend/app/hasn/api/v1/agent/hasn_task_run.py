@@ -118,8 +118,8 @@ async def agent_create_hasn_task_run(
     db: CurrentSessionTransaction,
     obj: CreateHasnTaskRunParam,
 ) -> ResponseModel:
-    result = await hasn_task_run_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await hasn_task_run_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

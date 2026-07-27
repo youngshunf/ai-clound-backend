@@ -19,10 +19,13 @@ from backend.app.hasn.constants import (
     check_action_permission,
 )
 from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
-from backend.app.hasn.model import HasnConversations, HasnHumans, HasnMessages, HasnUnreadCounts
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn.model import HasnConversations, HasnMessages
+from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn.model.hasn_conversation_memberships import HasnConversationMemberships
 from backend.app.hasn.model.hasn_contacts import HasnContacts
-from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
+from backend.app.hasn.model.hasn_conversation_memberships import (
+    HasnConversationMemberships as HasnGroupMembers,
+)
 from backend.app.hasn.service import sync_invalidate_service
 
 # 入站门控（外部→Agent 全门控，设计 05/06）：五闸判定 + 抑制记录
@@ -32,17 +35,20 @@ from backend.app.hasn.service.inbound_gatekeeper import (
     evaluate_a2h_inbound,
     evaluate_inbound,
     record_suppression,
+    suppression_command_identity,
 )
 
 # Phase 7 (07-02): A 路线中央判决器；替换 check_relation_permission 在 route_message 中的调用
 from backend.app.hasn.service.permission_engine import permission_engine
-from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
+from backend.app.hasn_im.application import membership_service
+from backend.app.hasn_im.application.event_appender import append_event
+from backend.app.hasn_im.consumers.facts import IM_MESSAGE_COMMITTED
 from backend.common.log import log
+from backend.database.schema_names import SCHEMA_NAMES
 from backend.utils.timezone import timezone
 
 
 _node_session_gateway = None
-_realtime_gateway = None
 
 
 def _get_node_session_gateway():
@@ -54,14 +60,6 @@ def _get_node_session_gateway():
         _node_session_gateway = get_node_session_gateway()
     return _node_session_gateway
 
-
-def _get_realtime_gateway():
-    global _realtime_gateway
-    if _realtime_gateway is None:
-        from backend.app.hasn_im.application.provider import get_realtime_gateway
-
-        _realtime_gateway = get_realtime_gateway()
-    return _realtime_gateway
 
 # ─── 目标解析 ───
 
@@ -80,8 +78,8 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
     """
     # 直接是 HASN ID
     if target.startswith('h_'):
-        result = await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == target))
-        human = result.scalar_one_or_none()
+        human_result = await db.execute(select(HasnHumans).where(HasnHumans.hasn_id == target))
+        human = human_result.scalar_one_or_none()
         if human:
             return {
                 'hasn_id': human.hasn_id,
@@ -92,8 +90,8 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
         return None
 
     if target.startswith('a_'):
-        result = await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == target))
-        agent = result.scalar_one_or_none()
+        agent_result = await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == target))
+        agent = agent_result.scalar_one_or_none()
         if agent:
             return {
                 'hasn_id': agent.hasn_id,
@@ -107,14 +105,14 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
     # 群组公开 ID（g:500001）解析为群会话。
     # HASN 群组暂以 hasn_conversations(type='group') 作为群主表，group_id 是协议层公开标识。
     if target.startswith('g:'):
-        result = await db.execute(
+        group_result = await db.execute(
             select(HasnConversations).where(
                 HasnConversations.type == 'group',
                 HasnConversations.group_id == target,
                 HasnConversations.status == 'active',
             )
         )
-        group = result.scalar_one_or_none()
+        group = group_result.scalar_one_or_none()
         if group:
             return {
                 'hasn_id': group.group_id,
@@ -129,26 +127,26 @@ async def resolve_target(db: AsyncSession, target: str) -> dict[str, Any] | None
     # Star ID 解析
     if '#' in target:
         # Agent Star ID: 100001#star
-        result = await db.execute(select(HasnAgents).where(HasnAgents.star_id == target))
-        agent = result.scalar_one_or_none()
-        if agent:
+        agent_by_star_result = await db.execute(select(HasnAgents).where(HasnAgents.star_id == target))
+        agent_by_star = agent_by_star_result.scalar_one_or_none()
+        if agent_by_star:
             return {
-                'hasn_id': agent.hasn_id,
-                'star_id': agent.star_id,
+                'hasn_id': agent_by_star.hasn_id,
+                'star_id': agent_by_star.star_id,
                 'entity_type': 'agent',
-                'name': agent.display_name,  # HasnAgents 使用 display_name 字段
-                'owner_id': agent.owner_id,
+                'name': agent_by_star.display_name,  # HasnAgents 使用 display_name 字段
+                'owner_id': agent_by_star.owner_id,
             }
     else:
         # Human Star ID: 100001 或 fuzi
-        result = await db.execute(select(HasnHumans).where(HasnHumans.star_id == target))
-        human = result.scalar_one_or_none()
-        if human:
+        human_by_star_result = await db.execute(select(HasnHumans).where(HasnHumans.star_id == target))
+        human_by_star = human_by_star_result.scalar_one_or_none()
+        if human_by_star:
             return {
-                'hasn_id': human.hasn_id,
-                'star_id': human.star_id,
+                'hasn_id': human_by_star.hasn_id,
+                'star_id': human_by_star.star_id,
                 'entity_type': 'human',
-                'name': human.nickname,  # HasnHumans 使用 nickname 字段
+                'name': human_by_star.nickname,  # HasnHumans 使用 nickname 字段
             }
 
     return None
@@ -408,6 +406,31 @@ async def get_or_create_conversation(
     )
     db.add(conv)
     await db.flush()
+    db.add_all(
+        [
+            HasnConversationMemberships(
+                conversation_id=conv.id,
+                member_hasn_id=participant_a_id,
+                member_type=participant_a_type,
+                role='member',
+                joined_seq=1,
+                read_seq=0,
+                state='active',
+                joined_at=timezone.now(),
+            ),
+            HasnConversationMemberships(
+                conversation_id=conv.id,
+                member_hasn_id=participant_b_id,
+                member_type=participant_b_type,
+                role='member',
+                joined_seq=1,
+                read_seq=0,
+                state='active',
+                joined_at=timezone.now(),
+            ),
+        ]
+    )
+    await db.flush()
     return conv
 
 
@@ -424,8 +447,14 @@ async def get_group_conversation(db: AsyncSession, group_id: str) -> HasnConvers
 
 
 async def list_group_members(db: AsyncSession, conversation_id: str) -> list[HasnGroupMembers]:
-    """列出群活跃成员。当前模型无 removed_at/status 字段，存在即视为成员。"""
-    result = await db.execute(select(HasnGroupMembers).where(HasnGroupMembers.conversation_id == conversation_id))
+    """列出群活动成员周期。"""
+    result = await db.execute(
+        select(HasnGroupMembers).where(
+            HasnGroupMembers.conversation_id == conversation_id,
+            HasnGroupMembers.left_seq.is_(None),
+            HasnGroupMembers.state == 'active',
+        )
+    )
     return list(result.scalars().all())
 
 
@@ -440,6 +469,8 @@ async def check_group_send_permission(
         select(HasnGroupMembers).where(
             HasnGroupMembers.conversation_id == conversation_id,
             HasnGroupMembers.member_id == sender_id,
+            HasnGroupMembers.left_seq.is_(None),
+            HasnGroupMembers.state == 'active',
         )
     )
     member = result.scalar_one_or_none()
@@ -468,24 +499,27 @@ async def _delivery_targets_for_member(db: AsyncSession, member: HasnGroupMember
 
 
 async def increment_unread_for(db: AsyncSession, conversation_id: str, hasn_id: str) -> None:
-    unread_result = await db.execute(
-        select(HasnUnreadCounts).where(
-            HasnUnreadCounts.hasn_id == hasn_id,
-            HasnUnreadCounts.conversation_id == conversation_id,
-        )
+    """按现存消息精确重建指定成员的未读投影。
+
+    ``conversation_seq`` 允许撤回、迁移与失败恢复形成空洞，不能用
+    ``current_seq - read_seq`` 推算条数。
+    """
+    membership = await membership_service.get_active_epoch(
+        db,
+        conversation_id,
+        hasn_id,
     )
-    unread = unread_result.scalar_one_or_none()
-    if unread:
-        unread.unread_count = (unread.unread_count or 0) + 1
-    else:
-        db.add(
-            HasnUnreadCounts(
-                hasn_id=hasn_id,
-                conversation_id=conversation_id,
-                unread_count=1,
-                last_read_msg_id=0,
-            )
-        )
+    if membership is None:
+        return
+    conversation = await db.get(HasnConversations, conversation_id)
+    if conversation is None:
+        raise ValueError(f'会话 {conversation_id} 不存在，无法重建未读投影')
+    await membership_service.rebuild_unread_projection(
+        db,
+        conversation_id,
+        hasn_id,
+        current_seq=conversation.current_seq,
+    )
 
 
 # ─── 消息持久化 ───
@@ -577,7 +611,7 @@ async def persist_message(
     或主会话 runtime session id），与 origin_node_id 同款三约束——由 Server 从
     ``AgentContext.session_id`` 自动填、入参 schema 不收、不可伪造。无会话上下文=None。
     daemon 据此登记 session_outbound_links，对端出结果时把结果回灌回发起方会话。
-    **发起方私有**：见 _fanout_message_new 的受众分叉——只有发送方 owner 的事件携带此字段。
+    **发起方私有**：消费者按发送方 owner 做受众分叉，只有发送方 owner 的事件携带此字段。
 
     ``owner_id``（doc18 P0）：1:1 消息落库时回填「收件方 owner」，令该 owner 的透明视图与
     `hasn.message.search`（硬过滤 `WHERE owner_id`）能读到 route 落库的消息——此前 route 路径
@@ -654,112 +688,125 @@ async def persist_message(
     return msg
 
 
-async def _fanout_message_new(
+async def _append_message_committed_event(
     db: AsyncSession,
-    sync_gw: Any,
-    conv: HasnConversations,
     *,
-    from_id: str,
+    conversation_id: str,
+    sender_hasn_id: str,
     msg: HasnMessages,
-    content: dict,
-    content_type: int,
-    local_id: str | None,
     origin_node_id: str | None,
-    origin_session_id: str | None = None,
-    members: list[HasnGroupMembers] | None = None,
-) -> tuple[list[str], list[tuple[str, dict[str, Any]]]]:
-    """会话一等实体·统一受众扇出（doc02 §3.3）——投递链路唯一的形态无关出口。
-
-    受众 = ``⋃ resolve_owner(participant)``（direct 两方 / group 名册），去重稳定排序。
-    对每个受众 owner：写一条 ``message.new`` sync feed 瘦事件 + 实时 push 到其全部在线节点
-    （``push_to_owner``，离线自动入队补拉）。direct / group / A2A / owner↔自有分身 loopback
-    **全走这一条链路，零形态分叉**：
-
-    - **A2AFIRST/Fix#5「补推发送方」补丁天然消失**——发送方 owner 本就在受众集合里。
-    - **旧 message.sent/received 双事件、群 ``_grp_sync_event``、entity 直推 + exclude 补投**
-      全部由本函数取代。
-    - 回流到产生设备的那份由 daemon ``ingest_message`` 幂等键吸收（message_id + local_id）。
-
-    ``message.new`` 与实时推送同构，严格 8 字段（``relation_view/peer/conversation_type/
-    group_name/direction`` 一律不带，方向由 sender 在渲染时派生）+ doc14 的第 9 个**条件**字段
-    ``origin_session_id``（仅发送方 owner 携带，见下方分叉）。
-
-    ``origin_session_id`` **受众分叉（doc14 §6.2/§7-1 隐私红线）**：发起溯源是**发送方的执行细节**
-    ——「对方用一个自动化工作会话在跟你说话」无必要外泄。故只有 ``audience_owner == sender_owner``
-    的那份事件/推送携带该字段，其余受众（对端 owner、群里其他成员）一律**剥除**。
-    """
-    from backend.app.hasn.service import conversation_projection as cp
-
-    audience = await cp.compute_audience_owner_ids(db, conv, members=members)
+    origin_session_id: str | None,
+    content_body: dict[str, Any] | None = None,
+) -> None:
+    """在消息事务末尾追加唯一集成事件，扇出由三个独立消费者完成。"""
     created_at = int(msg.created_time.timestamp()) if msg.created_time else 0
-
-    # 发送方 owner（分身→解析其主人；人→本人）。仅用于 origin_session_id 的受众分叉；
-    # 溯源为空时无需解析（省一次查询）。
-    sender_owner_id: str | None = None
-    if origin_session_id:
-        resolved = await cp._resolve_owner_ids(db, [from_id])
-        sender_owner_id = resolved.get(from_id)
-
-    def _params_for(owner_id: str) -> dict[str, Any]:
-        params: dict[str, Any] = {
-            'conversation_id': str(conv.id),
+    await append_event(
+        db,
+        event_type=IM_MESSAGE_COMMITTED,
+        aggregate_type='conversation',
+        aggregate_id=conversation_id,
+        aggregate_seq=msg.conversation_seq,
+        payload={
+            'conversation_id': conversation_id,
             'message_id': str(msg.id),
-            'sender_hasn_id': from_id,
+            'sender_hasn_id': sender_hasn_id,
+            'conversation_seq': msg.conversation_seq,
             'origin_node_id': origin_node_id,
-            'content_type': cp.content_type_to_mime(content_type),
-            'content_body': content,
-            'local_id': local_id,
+            'origin_session_id': origin_session_id,
+            'content_type': msg.content_type,
+            'content_body': content_body if content_body is not None else msg.content,
+            'local_id': msg.local_id,
             'created_at': created_at,
-        }
-        # 分叉点：只有发送方 owner 看得到自己的发起溯源。
-        if origin_session_id and owner_id == sender_owner_id:
-            params['origin_session_id'] = origin_session_id
-        return params
-
-    # R1-08 事务收口：扇出循环内**只写 sync feed 事件**（与 route_message 主链同事务、
-    # 单 commit 落库）；实时 push 是外部 IO，一律收集进 deferred_pushes 延后到 commit **之后**
-    # 由 _flush_pushes 发出，绝不夹在事务里。任一受众 append 失败即整条主链回滚——杜绝
-    # 「消息已落库但 feed 事件丢失」的半状态（doc92 §7.1）。
-    deferred_pushes: list[tuple[str, dict[str, Any]]] = []
-    for owner_id in audience:
-        owner_origin_session_id = (
-            origin_session_id if (origin_session_id and owner_id == sender_owner_id) else None
-        )
-        await cp.append_message_new_event(
-            sync_gw,
-            db,
-            owner_id=owner_id,
-            conversation_id=str(conv.id),
-            message_id=str(msg.id),
-            sender_hasn_id=from_id,
-            origin_node_id=origin_node_id,
-            origin_session_id=owner_origin_session_id,
-            content_type=content_type,
-            content_body=content,
-            local_id=local_id,
-            created_at=created_at,
-        )
-        deferred_pushes.append(
-            (owner_id, {'hasn': 'hasn/0.2', 'method': 'hasn.message.new', 'params': _params_for(owner_id)})
-        )
-    return audience, deferred_pushes
+        },
+    )
 
 
-async def _flush_pushes(pushes: list[tuple[str, dict[str, Any]]]) -> None:
-    """route_message 主链 commit **之后**发出 _fanout_message_new 收集的实时推送（R1-08 外部 IO 出事务）。
+async def commit_released_command(
+    db: AsyncSession,
+    command: dict[str, Any],
+) -> tuple[HasnMessages, bool]:
+    """把主人批准的抑制命令按当前时点写成权威消息与唯一集成事件。
 
-    消息 + sync feed 事件已单 commit 落库、durable；本步是纯实时投递优化，**best-effort**：
-    任一 owner 推送失败（Redis 抖动 / 目标节点瞬断）只记 warn 并继续下一个——权威 feed 已在库，
-    对端重连自会 sync/pull 补回。绝不因推送失败连累已落库的消息（记 warn 而非 error：可恢复、会自愈）。
+    本函数只供 ``ImGateway.release_suppressed`` 在已经完成 owner 判权、锁定抑制行后调用。
+    它不重新执行会再次抑制的入站五闸，但仍校验会话参与者、幂等键和命令载荷；消息、
+    conversation_seq、会话投影与 integration event 均留在调用方同一事务中提交。
     """
-    for owner_id, payload in pushes:
-        try:
-            await _get_realtime_gateway().push_to_owner(
-                owner_id,
-                RealtimeFrame(method=payload['method'], params=payload['params']),
-            )
-        except Exception as exc:
-            log.warning('message.new 实时推送失败（owner=%s），已落 feed，靠重连补拉：%r', owner_id, exc)
+    conversation_id = str(command.get('conversation_id') or '')
+    from_id = str(command.get('from_id') or '')
+    to_id = str(command.get('to_id') or '')
+    idempotency_key = str(command.get('idempotency_key') or '')
+    if not conversation_id or not from_id or not to_id or not idempotency_key:
+        raise ValueError('抑制命令缺少 conversation/from/to/idempotency_key')
+
+    conversation = await db.get(HasnConversations, conversation_id)
+    if conversation is None or conversation.type != 'direct':
+        raise ValueError('抑制命令关联的直聊会话不存在')
+    participants = {
+        conversation.participant_a_id,
+        conversation.participant_b_id,
+    }
+    if participants != {from_id, to_id}:
+        raise ValueError('抑制命令参与者与权威会话不一致')
+
+    content = command.get('content')
+    if not isinstance(content, dict):
+        raise ValueError('抑制命令 content 必须是对象')
+    content_type = int(command.get('content_type') or 1)
+    msg_type = str(command.get('msg_type') or 'message')
+    priority = str(command.get('priority') or 'normal')
+    reply_to_id = command.get('reply_to_id')
+    context = command.get('context')
+    origin_node_id = command.get('origin_node_id')
+    origin_session_id = command.get('origin_session_id')
+
+    idempotent = await _resolve_idempotent_send(
+        db,
+        local_id=idempotency_key,
+        conversation_id=conversation_id,
+        from_id=from_id,
+        to_id=to_id,
+        content=content,
+        content_type=content_type,
+        msg_type=msg_type,
+        priority=priority,
+        reply_to_id=reply_to_id,
+        context=context,
+        origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
+    )
+    if idempotent is not None:
+        if idempotent.get('error'):
+            raise ValueError(str(idempotent.get('message') or '抑制命令幂等冲突'))
+        existing = await db.get(HasnMessages, int(idempotent['msg_id']))
+        if existing is None:
+            raise ValueError('幂等记录命中的权威消息不存在')
+        return existing, True
+
+    message = await persist_message(
+        db=db,
+        conversation_id=conversation_id,
+        from_id=from_id,
+        to_id=to_id,
+        content=content,
+        content_type=content_type,
+        msg_type=msg_type,
+        priority=priority,
+        reply_to_id=reply_to_id,
+        local_id=idempotency_key,
+        context=context,
+        origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
+        owner_id=command.get('owner_id'),
+    )
+    await _append_message_committed_event(
+        db,
+        conversation_id=conversation_id,
+        sender_hasn_id=from_id,
+        msg=message,
+        origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
+    )
+    return message, False
 
 
 # ─── 消息路由主入口 ───
@@ -773,6 +820,62 @@ async def _find_message_by_local_id(db: AsyncSession, local_id: str) -> HasnMess
     """
     result = await db.execute(select(HasnMessages).where(HasnMessages.local_id == local_id).limit(1))
     return result.scalar_one_or_none()
+
+
+async def _resolve_idempotent_send(
+    db: AsyncSession,
+    *,
+    local_id: str | None,
+    conversation_id: str,
+    from_id: str,
+    to_id: str,
+    content: dict[str, Any],
+    content_type: int,
+    msg_type: str,
+    priority: str,
+    reply_to_id: int | None,
+    context: dict[str, Any] | None,
+    origin_node_id: str | None,
+    origin_session_id: str | None,
+) -> dict[str, Any] | None:
+    """串行化幂等键并判定重放或冲突；首次请求返回 ``None``。"""
+    if not local_id:
+        return None
+    await db.execute(
+        text('SELECT pg_advisory_xact_lock(hashtext(:lock_key))'),
+        {'lock_key': f'hasn_im.message.local_id:{local_id}'},
+    )
+    existing = await _find_message_by_local_id(db, local_id)
+    if existing is None:
+        return None
+    same_command = (
+        str(existing.conversation_id) == conversation_id
+        and existing.from_id == from_id
+        and existing.to_id == to_id
+        and existing.content == content
+        and existing.content_type == content_type
+        and existing.msg_type == msg_type
+        and existing.priority == priority
+        and existing.reply_to_id == reply_to_id
+        and (existing.context or None) == (context or None)
+        and existing.origin_node_id == origin_node_id
+        and existing.origin_session_id == origin_session_id
+    )
+    if not same_command:
+        return {
+            'error': True,
+            'code': 3015,
+            'message': '同一 local_id 已被不同消息命令使用',
+            'local_id': local_id,
+        }
+    return {
+        'error': False,
+        'msg_id': existing.id,
+        'conversation_id': str(existing.conversation_id),
+        'status': 'sent',
+        'local_id': local_id,
+        'deduped': True,
+    }
 
 
 async def _suppress_inbound(
@@ -790,12 +893,13 @@ async def _suppress_inbound(
     reason: str,
     snapshot: dict[str, Any],
     to_entity_type: str = 'agent',
+    origin_node_id: str | None = None,
+    origin_session_id: str | None = None,
 ) -> dict[str, Any]:
-    """入站门控未过：落库消息为受抑制态 + 写抑制箱 + WSPUSH，不投递不唤醒 runtime。
+    """入站门控未过：只写待放行命令 + WSPUSH，不落消息、不占 seq、不唤醒 runtime。
 
-    被门控的外部→Agent 消息保留 message_id 与正文、visible_to_owner=true，主人在抑制箱可见、
-    放行后才真正投递+唤醒（设计 06：记录不丢弃）。不写 message.received sync_event，故不污染
-    主人正常会话列表，仅经抑制箱镜像（WSPUSH suppressed kind）呈现。
+    主人在抑制箱可见命令正文；放行时按普通消息重新分配当时的新 conversation_seq 并追加
+    integration event，保证已越过原时点的客户端仍能通过 sync 恢复。
 
     to_entity_type='human' 支持 A2H（分身→人类）接收侧暂存（§4.1.3）：此时收件主体即主人本人
     （hasn_id == owner_id），会话 to_type 记 'human'。返回结构化关系反馈（供消息工具诚实回传，
@@ -806,8 +910,11 @@ async def _suppress_inbound(
     owner_id = agent_info.get('owner_id') or (to_id if to_entity_type == 'human' else '')
     from_type = _entity_type_str(from_id)
     conv = await get_or_create_conversation(db, from_id, from_type, to_id, to_entity_type, 'social')
-    msg = await persist_message(
-        db=db,
+    if not local_id:
+        return {'error': True, 'code': 2002, 'message': 'idempotency_key 必填'}
+    idempotent = await _resolve_idempotent_send(
+        db,
+        local_id=local_id,
         conversation_id=str(conv.id),
         from_id=from_id,
         to_id=to_id,
@@ -816,21 +923,49 @@ async def _suppress_inbound(
         msg_type=msg_type,
         priority=priority,
         reply_to_id=reply_to_id,
-        local_id=local_id,
         context=context,
-        # doc18 P0：被抑制的入站消息也回填收件方 owner（=上面已算的 owner_id），
-        # 令主人在抑制箱/透明视图可检索（放行后正常投递）。
-        owner_id=owner_id or None,
+        origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
     )
-    await record_suppression(
-        db,
-        message_id=msg.id,
-        owner_id=owner_id,
-        hasn_id=to_id,
-        conversation_id=str(conv.id),
-        reason=reason,
-        policy_snapshot=snapshot,
+    if idempotent is not None:
+        return idempotent
+    command_payload = {
+        'conversation_id': str(conv.id),
+        'from_id': from_id,
+        'to_id': to_id,
+        'content': content,
+        'content_type': content_type,
+        'msg_type': msg_type,
+        'priority': priority,
+        'reply_to_id': reply_to_id,
+        'idempotency_key': local_id,
+        'context': context,
+        'origin_node_id': origin_node_id,
+        'origin_session_id': origin_session_id,
+        'owner_id': owner_id,
+    }
+    idempotency_scope, command_hash = suppression_command_identity(
+        sender_hasn_id=from_id,
+        origin_node_id=origin_node_id,
+        idempotency_key=local_id,
+        command_payload=command_payload,
     )
+    try:
+        suppressed = await record_suppression(
+            db,
+            owner_id=owner_id,
+            hasn_id=to_id,
+            conversation_id=str(conv.id),
+            sender_hasn_id=from_id,
+            idempotency_scope=idempotency_scope,
+            command_hash=command_hash,
+            command_payload=command_payload,
+            reason=reason,
+            policy_snapshot=snapshot,
+        )
+    except ValueError as exc:
+        await db.rollback()
+        return {'error': True, 'code': 3015, 'message': str(exc)}
     await db.commit()
     # WSPUSH：触发该 owner 在线 daemon 拉取抑制箱镜像（best-effort，不拖垮写点）
     if owner_id:
@@ -854,7 +989,8 @@ async def _suppress_inbound(
         'error': False,
         'status': 'suppressed',
         'suppress_reason': reason,
-        'msg_id': msg.id,
+        'msg_id': None,
+        'suppressed_id': int(suppressed['id']),
         'conversation_id': str(conv.id),
         'local_id': local_id,
         'suppressed': True,
@@ -868,6 +1004,7 @@ async def route_message(
     from_id: str,
     to_target: str,
     content: dict,
+    conversation_id: str | None = None,
     content_type: int = 1,
     msg_type: str = 'message',
     priority: str = 'normal',
@@ -882,37 +1019,20 @@ async def route_message(
     消息路由主入口（会话一等实体·doc02 §3.3）
 
     流程：目标解析（发起层 get_or_create 拿权威会话）→ 闸串联（关系/入站门控/披露/拦截）
-    → 落库 → **统一受众扇出**（``_fanout_message_new``：形态无关的唯一投递出口，emit
-    ``message.new`` 瘦事件 + 按 owner push）。
+    → 落库并追加唯一 integration event；Sync、实时和移动推送由独立消费者扇出。
 
     ``origin_node_id``（§3.8）：产生该消息的节点，由**调用方从认证上下文**传入（node WS/
     HTTP 的节点 ID / 云端 runtime 填 'cloud'），Server 侧不收客户端自报入参、不可伪造。
 
     ``origin_session_id``（doc14 §6.2）：产生该消息的发起方 runtime 会话，同样由调用方从
     ``AgentContext.session_id`` 传入、不收客户端自报。落 hasn_messages 列 + 仅发送方 owner
-    的事件携带（受众分叉见 _fanout_message_new）。
+    的事件携带（受众分叉由消费者完成）。
 
     ``mission_note``（doc14 §6.5）：差事背景，仅**新建 direct 会话**时写入 conversation
     （群消息不适用——群不是「差事会话」）。归属 owner = 发送方 owner。
 
     返回: {msg_id, conversation_id, status, local_id}
     """
-    # 0. 幂等去重（local_id）：daemon 出站投递队列在断连/重连后会重发同一帧（带相同
-    #    local_id），用于补达「发出去丢在断连窗口」的消息。若该 local_id 已落库（hasn_messages
-    #    上有唯一索引 idx_hasn_msg_local_id），直接回原 msg_id+conversation_id，**不二次落库、
-    #    不二次投递**——发送端据此补到 ack（标记已达），对方绝不会收到重复消息。
-    if local_id:
-        existing = await _find_message_by_local_id(db, local_id)
-        if existing is not None:
-            return {
-                'error': False,
-                'msg_id': existing.id,
-                'conversation_id': str(existing.conversation_id),
-                'status': 'sent',
-                'local_id': local_id,
-                'deduped': True,
-            }
-
     # 1. 目标解析
     target_info = await resolve_target(db, to_target)
     if not target_info:
@@ -927,6 +1047,8 @@ async def route_message(
         if not group:
             return {'error': True, 'code': 3001, 'message': f'群组 {to_id} 不存在'}
         group_conv_id = str(group.id)
+        if conversation_id != group_conv_id:
+            return {'error': True, 'code': 2002, 'message': 'conversation_id 与群会话不匹配'}
         group_perm = await check_group_send_permission(db, group_conv_id, from_id, group)
         if not group_perm.get('allowed'):
             return {'error': True, 'code': 2002, 'message': group_perm.get('reason', '无权发送群消息')}
@@ -936,6 +1058,31 @@ async def route_message(
         grp_ctx = context or {}
         grp_mentions = grp_ctx.get('mentions') if isinstance(grp_ctx.get('mentions'), list) else None
         grp_mention_all = bool(grp_ctx.get('mention_all'))
+        message_context = {**grp_ctx, 'conversation_type': 'group', 'group_id': to_id}
+        grp_event_content = content
+        if grp_mentions or grp_mention_all:
+            grp_event_content = {
+                **content,
+                'mentions': grp_mentions,
+                'mention_all': grp_mention_all,
+            }
+        idempotent = await _resolve_idempotent_send(
+            db,
+            local_id=local_id,
+            conversation_id=group_conv_id,
+            from_id=from_id,
+            to_id=to_id,
+            content=content,
+            content_type=content_type,
+            msg_type=msg_type,
+            priority=priority,
+            reply_to_id=reply_to_id,
+            context=message_context,
+            origin_node_id=origin_node_id,
+            origin_session_id=origin_session_id,
+        )
+        if idempotent is not None:
+            return idempotent
 
         # doc18 P0：群消息不填 owner_id——群读走 list_group_messages 按 conversation_id +
         # 成员资格归属（一条群消息属于全体成员，非单一 owner），单一 owner_id 列表达不了群语义。
@@ -950,7 +1097,7 @@ async def route_message(
             priority=priority,
             reply_to_id=reply_to_id,
             local_id=local_id,
-            context={**grp_ctx, 'conversation_type': 'group', 'group_id': to_id},
+            context=message_context,
             mentions=grp_mentions,
             mention_all=grp_mention_all,
             origin_node_id=origin_node_id,
@@ -968,30 +1115,21 @@ async def route_message(
         # received）+ hasn.message.received envelope 直推。daemon 群派发闸（G4）改从**会话对象
         # 镜像**（group_meta.agent_policy）读生效策略、从 content_body 取 @提及——不再靠事件
         # 附带 agent_policy/mentions 字段（§3.4）；故 @提及折进瘦事件的 content_body。
-        from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
+        from backend.app.hasn.service import conversation_projection as cp
 
-        grp_sync = SqlAlchemySyncGateway()
-        grp_event_content = content
-        if grp_mentions or grp_mention_all:
-            grp_event_content = {**content, 'mentions': grp_mentions, 'mention_all': grp_mention_all}
-        audience, deferred_pushes = await _fanout_message_new(
+        audience = await cp.compute_audience_owner_ids(db, group, members=members)
+        await _append_message_committed_event(
             db,
-            grp_sync,
-            group,
-            from_id=from_id,
+            conversation_id=group_conv_id,
+            sender_hasn_id=from_id,
             msg=msg,
-            content=grp_event_content,
-            content_type=content_type,
-            local_id=local_id,
             origin_node_id=origin_node_id,
-            members=members,
+            origin_session_id=origin_session_id,
+            content_body=grp_event_content,
         )
 
-        # R1-08 事务收口：persist_message + 未读自增 + 扇出 sync feed 事件同一事务**单 commit**落库
-        # （删原扇出前的中间 commit——它会把消息落库但 feed 尚未写，crash 即半状态）。
+        # 消息、未读投影和唯一集成事件同一事务提交；扇出由独立消费者完成。
         await db.commit()
-        # 外部 IO 出事务：commit 之后再发实时推送（best-effort，失败靠对端重连 sync 补回）。
-        await _flush_pushes(deferred_pushes)
 
         return {
             'error': False,
@@ -1040,6 +1178,8 @@ async def route_message(
                 context=context,
                 reason=gate.reason or 'permission_denied',
                 snapshot=gate.snapshot,
+                origin_node_id=origin_node_id,
+                origin_session_id=origin_session_id,
             )
 
     perm_result = await permission_engine.evaluate(
@@ -1094,6 +1234,8 @@ async def route_message(
                     reason=a2h_gate.reason or 'permission_denied',
                     snapshot=a2h_gate.snapshot,
                     to_entity_type='human',
+                    origin_node_id=origin_node_id,
+                    origin_session_id=origin_session_id,
                 )
             # ALLOW（接收侧视好友/直连≥2）→ 覆盖出站关系门 DENY，放行走正常投递
             from backend.app.hasn.service.iron_laws import DecisionResult
@@ -1123,6 +1265,8 @@ async def route_message(
                 context=context,
                 reason='abuse_restricted',
                 snapshot={'limit_kind': 'rate', 'error_code': perm_result.error_code},
+                origin_node_id=origin_node_id,
+                origin_session_id=origin_session_id,
             )
         else:
             # 未被 A2H 覆盖、也非限流 → 硬拒（协议级），保持静默 2002
@@ -1148,35 +1292,39 @@ async def route_message(
         allowed = set(perm_result.allowed_fields)
         content = {k: v for k, v in (content or {}).items() if k in allowed}
 
-    # 4. 获取/创建会话
-    from_type = _entity_type_str(from_id)
-    relation_type = ctx_relation_type or 'social'
-
-    # doc14 §6.5（E 刀）：差事背景只在**新建** direct 会话时随会话落库（既有会话不覆盖，
-    # 由 get_or_create_conversation 的早退保证）。归属 owner 显式解析发送方主人后落列——
-    # 不从「首条消息发送方」反推（零推断），投影裁剪据此判定。
-    mission_note_owner_id: str | None = None
-    if mission_note:
-        from backend.app.hasn.service import conversation_projection as _cp
-
-        resolved_sender = await _cp._resolve_owner_ids(db, [from_id])
-        mission_note_owner_id = resolved_sender.get(from_id)
-
-    conv = await get_or_create_conversation(
-        db,
-        from_id,
-        from_type,
-        to_id,
-        to_type,
-        relation_type,
-        mission_note=mission_note,
-        mission_note_owner_id=mission_note_owner_id,
+    # 4. 发送只接受已经 ensure 的权威会话，不在消息事务里隐式创建。
+    if not conversation_id:
+        return {'error': True, 'code': 2002, 'message': 'R3 协议要求 conversation_id'}
+    conv = await db.get(HasnConversations, conversation_id)
+    participants = (
+        {conv.participant_a_id, conv.participant_b_id}
+        if conv is not None and conv.type == 'direct'
+        else set()
     )
+    if conv is None or participants != {from_id, to_id}:
+        return {'error': True, 'code': 2002, 'message': 'conversation_id 与发送双方不匹配'}
 
     # 5. 持久化
     # doc18 P0：1:1 消息回填 owner_id=收件方 owner（发给分身=该分身 owner，发给人=其本人），
     # 与下方 message.received 事件的 recipient_owner_id 同源，令收件方透明视图/hasn.message.search 可读。
     recipient_owner_for_row = target_info.get('owner_id') if to_id.startswith('a_') else to_id
+    idempotent = await _resolve_idempotent_send(
+        db,
+        local_id=local_id,
+        conversation_id=str(conv.id),
+        from_id=from_id,
+        to_id=to_id,
+        content=content,
+        content_type=content_type,
+        msg_type=msg_type,
+        priority=priority,
+        reply_to_id=reply_to_id,
+        context=context,
+        origin_node_id=origin_node_id,
+        origin_session_id=origin_session_id,
+    )
+    if idempotent is not None:
+        return idempotent
     msg = await persist_message(
         db=db,
         conversation_id=str(conv.id),
@@ -1201,27 +1349,20 @@ async def route_message(
     # - 跨 owner 1:1：sender_owner ∪ recipient_owner。
     # 退役旧 message.sent/received 双写 + entity 直推(_push_message_to) +
     # push_to_owner_excluding_agent_node + A2AFIRST push_to_owner（受众计算统一覆盖）。
-    from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
+    from backend.app.hasn.service import conversation_projection as cp
 
-    sync_gw = SqlAlchemySyncGateway()
-    audience, deferred_pushes = await _fanout_message_new(
+    audience = await cp.compute_audience_owner_ids(db, conv)
+    await _append_message_committed_event(
         db,
-        sync_gw,
-        conv,
-        from_id=from_id,
+        conversation_id=str(conv.id),
+        sender_hasn_id=from_id,
         msg=msg,
-        content=content,
-        content_type=content_type,
-        local_id=local_id,
         origin_node_id=origin_node_id,
         origin_session_id=origin_session_id,
     )
 
-    # R1-08 事务收口：persist_message + 扇出 sync feed 事件同一事务**单 commit**落库
-    # （删原扇出前的中间 commit——它会把消息落库但 feed 尚未写，crash 即半状态）。
+    # 消息与唯一集成事件同一事务提交；Sync、实时和移动推送均由消费者后置处理。
     await db.commit()
-    # 外部 IO 出事务：commit 之后再发实时推送（best-effort，失败靠对端重连 sync 补回）。
-    await _flush_pushes(deferred_pushes)
 
     return {
         'error': False,
@@ -1242,27 +1383,27 @@ async def mark_read(
     conversation_id: str,
     last_msg_id: int,
 ) -> None:
-    """标记会话已读"""
-    result = await db.execute(
-        select(HasnUnreadCounts).where(
-            HasnUnreadCounts.hasn_id == hasn_id,
-            HasnUnreadCounts.conversation_id == conversation_id,
-        )
+    """按消息序号单调推进活动 membership 的已读游标。"""
+    memberships = SCHEMA_NAMES.im_table('hasn_conversation_memberships')
+    messages = SCHEMA_NAMES.im_table('hasn_messages')
+    await db.execute(
+        text(
+            f'UPDATE {memberships} m SET '  # noqa: S608 内部常量表名
+            'read_seq = GREATEST(m.read_seq, target.conversation_seq), updated_time = now() '
+            f'FROM {messages} target '  # noqa: S608 内部常量表名
+            'WHERE m.conversation_id = CAST(:conversation_id AS uuid) '
+            'AND m.member_hasn_id = :member_hasn_id '
+            "AND m.left_seq IS NULL AND m.state = 'active' "
+            'AND target.id = :last_msg_id '
+            'AND target.conversation_id = m.conversation_id'
+        ),
+        {
+            'conversation_id': conversation_id,
+            'member_hasn_id': hasn_id,
+            'last_msg_id': last_msg_id,
+        },
     )
-    unread = result.scalar_one_or_none()
-
-    if unread:
-        unread.unread_count = 0
-        unread.last_read_msg_id = last_msg_id
-    else:
-        unread = HasnUnreadCounts(
-            hasn_id=hasn_id,
-            conversation_id=conversation_id,
-            unread_count=0,
-            last_read_msg_id=last_msg_id,
-        )
-        db.add(unread)
-
+    await increment_unread_for(db, conversation_id, hasn_id)
     await db.commit()
 
 

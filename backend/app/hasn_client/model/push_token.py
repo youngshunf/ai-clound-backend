@@ -22,6 +22,7 @@ from __future__ import annotations
 import enum
 
 from datetime import datetime
+from typing import cast
 
 import sqlalchemy as sa
 
@@ -98,4 +99,4 @@ class PushToken(Base):
 
 # B10 — attach after_insert/after_update/after_delete audit listeners.
 # PushTokenAudit.__table__ receives one row per row-level mutation, same txn.
-register_audit_listeners(PushToken, PushTokenAudit.__table__)
+register_audit_listeners(PushToken, cast(sa.Table, PushTokenAudit.__table__))

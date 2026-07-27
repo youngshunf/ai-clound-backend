@@ -23,8 +23,8 @@ from backend.app.external_mcp.schema.management import (
 )
 from backend.app.external_mcp.service.gateway_service import external_mcp_gateway
 from backend.app.external_mcp.service.quota import quota_service
-from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
+from backend.app.hasn_core import HasnAgents
+from backend.app.hasn_core.app_platform import resolve_owner_hasn_id
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth

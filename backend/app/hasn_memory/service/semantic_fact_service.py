@@ -23,7 +23,7 @@ import json
 import uuid
 
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 
@@ -79,7 +79,7 @@ def _serialize(fact: SemanticFact) -> dict[str, Any]:
         'scope_kind': fact.scope_kind,
         'scope_id': fact.scope_id,
         'predicate': fact.predicate,
-        'object': _loads(fact.object_json),
+        'object': _loads(cast(str, fact.object_json)),
         'confidence': fact.confidence,
         'status': fact.status,
         'rationale': fact.rationale,

@@ -144,10 +144,7 @@ async def handle_community_create_post(
         title=_excerpt(post.content) or '社区帖子',
         source_tool='hasn.community.create_post',
     )
-    await db.commit()
-    await db.refresh(post)
-
-    # 发完帖即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）。
+    # 帖子与知情卡命令同事务提交；relay 宕机由社区 outbox 恢复。
     # 卡片文案按 status 自动区分「待主人审核」/「已发布」——这是主人得知此帖的**唯一**汇报面卡片。
     # NOTIF-N2（doc `通知系统统一设计/01` §2.3-A R5）：删掉旧的 notify_draft_pending emit 分支——
     # 它经 N1 守卫也只会变成主会话汇报卡，与此卡重复（帖子/文章会双发两张卡）。评论无此卡，故保留其
@@ -155,6 +152,7 @@ async def handle_community_create_post(
     from backend.app.hasn_community.service.community_card_notifier import notify_owner_post_card
 
     await notify_owner_post_card(
+        db,
         agent_hasn_id=agent.agent_hasn_id,
         owner_hasn_id=agent.owner_hasn_id,
         author_name=agent.agent_name,
@@ -164,6 +162,8 @@ async def handle_community_create_post(
     )
 
     await _bump_community_sync(db, agent.owner_hasn_id)
+    await db.commit()
+    await db.refresh(post)
     # doc36 §3.2：返回体带 `uri`——分身发完帖当场知道去哪儿看它，不必二次查询。
     return merge_resource_uri(
         {
@@ -253,15 +253,13 @@ async def handle_community_create_article(
         summary=input_payload.get('summary'),
         source_tool='hasn.community.create_article',
     )
-    await db.commit()
-    await db.refresh(article)
-
-    # 发完文章即给主人投一张「可点进详情」的卡片消息（落主人↔分身 IM 会话；best-effort，独立事务）。
+    # 文章与知情卡命令同事务提交；relay 宕机由社区 outbox 恢复。
     # 卡片文案按 status 自动区分「待主人审核」/「已发布」——主人得知此文的**唯一**汇报面卡片。
     # NOTIF-N2（doc `通知系统统一设计/01` §2.3-A R5）：删掉旧 notify_draft_pending emit 分支，消除双发。
     from backend.app.hasn_community.service.community_card_notifier import notify_owner_article_card
 
     await notify_owner_article_card(
+        db,
         agent_hasn_id=agent.agent_hasn_id,
         owner_hasn_id=agent.owner_hasn_id,
         author_name=agent.agent_name,
@@ -273,6 +271,8 @@ async def handle_community_create_article(
     )
 
     await _bump_community_sync(db, agent.owner_hasn_id)
+    await db.commit()
+    await db.refresh(article)
     # doc36 §3.2：返回体带 `uri`——分身写完文章当场知道去哪儿看它，不必二次查询。
     return merge_resource_uri(
         {

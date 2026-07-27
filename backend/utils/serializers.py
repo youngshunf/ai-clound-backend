@@ -1,7 +1,7 @@
 from collections import defaultdict, namedtuple
 from collections.abc import Sequence
 from decimal import Decimal
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from fastapi.encoders import decimal_encoder
 from msgspec import json
@@ -14,6 +14,12 @@ from backend.common.log import log
 RowData = Row[Any] | RowMapping | Any
 
 R = TypeVar('R', bound=RowData)
+
+
+def _dynamic_namedtuple(name: str, fields: Sequence[str]) -> Any:
+    """创建运行时字段集合的 namedtuple 类型，隔离静态检查器的字面量限制。"""
+    factory: Any = namedtuple
+    return factory(name, fields)
 
 
 class MsgSpecJSONResponse(JSONResponse):
@@ -75,7 +81,7 @@ def select_as_dict(row: R, *, use_alias: bool = False) -> dict[str, Any]:
 
 
 def select_join_serialize(  # noqa: C901
-    row: R | Sequence[R],
+    row: Any | Sequence[Any],
     relationships: list[str] | None = None,
     *,
     return_as_dict: bool = False,
@@ -115,13 +121,15 @@ def select_join_serialize(  # noqa: C901
     def get_relationship_key(model: str, relationship_type: str, custom_field: str | None) -> str:
         return custom_field or (model if relationship_type not in list_relationship_types else f'{model}s')
 
-    def parse_relationships(relationship_list: list[str]) -> tuple[dict, dict, dict]:
+    def parse_relationships(
+        relationship_list: list[str],
+    ) -> tuple[dict[str, dict[str, str]], dict[str, str], dict[tuple[str, str], str]]:
         if not relationship_list:
             return {}, {}, {}
 
-        graph = defaultdict(dict)
-        reverse = {}
-        customs = {}
+        graph: defaultdict[str, dict[str, str]] = defaultdict(dict)
+        reverse: dict[str, str] = {}
+        customs: dict[tuple[str, str], str] = {}
 
         for rel_str in relationship_list:
             parts = rel_str.split(':', 1)
@@ -157,8 +165,8 @@ def select_join_serialize(  # noqa: C901
         ]
 
     def dedupe_objects(obj_list: list[Any]) -> list[Any]:
-        seen = set()
-        unique = []
+        seen: set[Any] = set()
+        unique: list[Any] = []
         for item in obj_list:
             item_id = getattr(item, 'id', None)
             if item_id is not None and item_id not in seen:
@@ -196,8 +204,8 @@ def select_join_serialize(  # noqa: C901
     has_relationships = bool(relation_graph)
 
     # 预处理模型信息
-    model_info = {}
-    cls_idx = {}
+    model_info: dict[str, list[str]] = {}
+    cls_idx: dict[str, int] = {}
 
     for row_item in rows_list:
         row_elements = extract_row_elements(row_item)
@@ -211,8 +219,10 @@ def select_join_serialize(  # noqa: C901
                 cls_idx[element_cls] = idx
 
     # 数据分组
-    main_objects = {}
-    children_objects = defaultdict(lambda: defaultdict(list))
+    main_objects: dict[int | str, Any] = {}
+    children_objects: defaultdict[int | str, defaultdict[str, list[Any]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
 
     for row_item in rows_list:
         row_elements = extract_row_elements(row_item)
@@ -235,7 +245,7 @@ def select_join_serialize(  # noqa: C901
         return None
 
     # namedtuple 类型预生成
-    namedtuple_cache = {}
+    namedtuple_cache: dict[str, Any] = {}
     if not return_as_dict:
         for model_name, model_columns in model_info.items():
             if not model_columns:
@@ -248,10 +258,13 @@ def select_join_serialize(  # noqa: C901
                     field_list.append(nt_key)
                 field_list = list(dict.fromkeys(field_list))
 
-            namedtuple_cache[model_name] = namedtuple(model_name.capitalize(), field_list)  # noqa: PYI024
+            namedtuple_cache[model_name] = _dynamic_namedtuple(model_name.capitalize(), field_list)
 
     # 嵌套关系层级结构（一次性构建）
-    hierarchy = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    hierarchy: defaultdict[
+        int | str,
+        defaultdict[str, defaultdict[int | str, list[Any]]],
+    ] = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
     if has_relationships:
         for row_item in rows_list:
@@ -287,7 +300,7 @@ def select_join_serialize(  # noqa: C901
                     hierarchy[main_id][rel_type_name][parent_pk].append(rel_obj)
 
     # 结果构建函数
-    def build_flat(target_id: int, target_obj: Any) -> dict[str, Any]:
+    def build_flat(target_id: int | str, target_obj: Any) -> dict[str, Any]:
         result = {col: getattr(target_obj, col, None) for col in primary_columns}
 
         for cls_type in children_objects[target_id]:
@@ -316,11 +329,11 @@ def select_join_serialize(  # noqa: C901
 
         return result
 
-    def build_nested(target_id: int, target_obj: Any) -> dict[str, Any]:
+    def build_nested(target_id: int | str, target_obj: Any) -> dict[str, Any]:
         result = {col: getattr(target_obj, col, None) for col in primary_columns}
         current_hierarchy = hierarchy.get(target_id, defaultdict(lambda: defaultdict(list)))
 
-        def recursive_build(cls_name: str, pk: int) -> list:
+        def recursive_build(cls_name: str, pk: int | str) -> list[Any]:
             nested_dict = current_hierarchy.get(cls_name)
             if nested_dict is None:
                 return []
@@ -328,7 +341,7 @@ def select_join_serialize(  # noqa: C901
             if not objs:
                 return []
 
-            output = []
+            output: list[Any] = []
             for item in objs:
                 item_data = {col: getattr(item, col, None) for col in model_info[cls_name]}
 
@@ -361,8 +374,8 @@ def select_join_serialize(  # noqa: C901
         return result
 
     # 最终结果构建
-    final_results = []
-    processed_ids = set()
+    final_results: list[dict[str, Any] | tuple[Any, ...]] = []
+    processed_ids: set[int | str] = set()
 
     for row_item in rows_list:
         row_elements = extract_row_elements(row_item)
@@ -380,9 +393,13 @@ def select_join_serialize(  # noqa: C901
         result_data = build_nested(main_id, main_obj) if has_relationships else build_flat(main_id, main_obj)
 
         if not return_as_dict:
-            result_type = namedtuple('Result', result_data.keys())  # noqa: PYI024
+            result_type = _dynamic_namedtuple('Result', list(result_data))
             final_results.append(result_type(**result_data))
         else:
             final_results.append(result_data)
 
-    return final_results[0] if len(final_results) == 1 else final_results
+    result = final_results[0] if len(final_results) == 1 else final_results
+    return cast(
+        dict[str, Any] | list[dict[str, Any]] | tuple[Any, ...] | list[tuple[Any, ...]],
+        result,
+    )

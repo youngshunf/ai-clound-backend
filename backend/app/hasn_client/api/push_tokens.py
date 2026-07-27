@@ -36,6 +36,7 @@ from backend.common.response.response_schema import (
 from backend.common.schema import SchemaBase
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSessionTransaction
+from backend.database.result import affected_rows
 
 router = APIRouter()
 
@@ -150,7 +151,7 @@ async def delete_push_tokens_by_device_for_user(
         .where(PushToken.hasn_id == hasn_id)
         .where(PushToken.device_id == device_id)
     )
-    return result.rowcount or 0
+    return affected_rows(result)
 
 
 @router.post(

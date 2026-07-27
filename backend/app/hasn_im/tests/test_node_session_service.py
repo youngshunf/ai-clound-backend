@@ -1,6 +1,10 @@
 """节点会话实现归属测试。"""
 
+from typing import cast
+
 import pytest
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_im.application.node_session_service import (
     NodeSessionService,
@@ -40,9 +44,9 @@ async def test_list_owners_forwards_active_db_session(monkeypatch: pytest.Monkey
     """读取节点 owner 必须使用 WS handler 已打开的数据库会话。"""
     from backend.app.hasn_im.application.ws_node_runtime import ws_node_runtime
 
-    db = object()
+    db = cast(AsyncSession, object())
 
-    async def list_owners(*, node_id: str, db: object) -> dict[str, list[str]]:
+    async def list_owners(*, node_id: str, db: AsyncSession) -> dict[str, list[str]]:
         assert node_id == 'node-1'
         assert db is not None
         return {'owners': ['h_owner']}

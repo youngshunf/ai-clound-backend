@@ -57,6 +57,8 @@ async def session():
     try:
         yield sess
     finally:
+        await sess.rollback()
+        await sess.close()
         # 清理测试行（99.x 版本 + test/* 构建 ref）；资产经 FK CASCADE 随版本删
         async with maker() as cleanup:
             ids = (
@@ -69,8 +71,6 @@ async def session():
                 await cleanup.execute(delete(AppRelease).where(AppRelease.id.in_(ids)))
             await cleanup.execute(delete(ReleaseBuild).where(ReleaseBuild.ref.like('test/%')))
             await cleanup.commit()
-        await sess.rollback()
-        await sess.close()
         await engine.dispose()
 
 

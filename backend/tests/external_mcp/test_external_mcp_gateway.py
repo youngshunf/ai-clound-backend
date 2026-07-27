@@ -51,7 +51,7 @@ from backend.app.mcp.tools.registry import ToolRegistry
 from backend.database.db import async_db_session
 
 # 多个真实-DB async 测试共享同一 module 级事件循环，避免连接池被上一个已关闭 loop 回收。
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _suffix() -> str:
@@ -145,7 +145,7 @@ def _free_port() -> int:
     return port
 
 
-@pytest_asyncio.fixture(scope='module', loop_scope='module')
+@pytest_asyncio.fixture(scope='module', loop_scope='session')
 async def stub_mcp_endpoint():
     """启动真实 uvicorn MCP stub server，yield 其 /mcp endpoint URL，结束优雅关闭。"""
     app = Starlette(routes=[Route('/mcp', _mcp_endpoint, methods=['POST'])])

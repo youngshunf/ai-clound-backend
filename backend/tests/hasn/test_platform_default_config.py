@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +34,7 @@ from backend.app.hasn.service.platform_default_config_service import (
 )
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _config(
@@ -78,7 +80,7 @@ async def test_factory_speech_models_match_node_fallback_contract() -> None:
 
 async def test_legacy_speech_gateway_defaults_are_normalized_without_mutating_source() -> None:
     """旧出厂值应升级为当前 New API 模型链，且不得原地修改数据库读取结果。"""
-    raw = {
+    raw: dict[str, Any] = {
         'node': {
             'media': {
                 'image_models': ['gpt-image-2'],

@@ -130,7 +130,7 @@ async def get_version_manifest(
     )
 
     if not versions:
-        return response_base.success(data=None)
+        return ResponseSchemaModel[VersionManifest | None](data=None)
 
     # 构建 binaries 字典
     binaries: dict[str, BinaryInfo] = {}
@@ -168,7 +168,7 @@ async def get_version_manifest(
         binaries=binaries,
     )
 
-    return response_base.success(data=manifest)
+    return ResponseSchemaModel[VersionManifest | None](data=manifest)
 
 
 # ============================================================

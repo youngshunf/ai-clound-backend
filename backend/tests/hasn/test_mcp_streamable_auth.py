@@ -77,13 +77,13 @@ def install_mcp_sdk_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     streamable_module = types.ModuleType("mcp.server.streamable_http_manager")
     types_module = types.ModuleType("mcp.types")
 
-    server_module.Server = StubServer
-    streamable_module.StreamableHTTPSessionManager = StubStreamableHTTPSessionManager
-    types_module.Tool = StubTool
-    types_module.TextContent = StubTextContent
-    types_module.ImageContent = type("StubImageContent", (), {})
-    types_module.EmbeddedResource = type("StubEmbeddedResource", (), {})
-    mcp_module.types = types_module
+    setattr(server_module, 'Server', StubServer)
+    setattr(streamable_module, 'StreamableHTTPSessionManager', StubStreamableHTTPSessionManager)
+    setattr(types_module, 'Tool', StubTool)
+    setattr(types_module, 'TextContent', StubTextContent)
+    setattr(types_module, 'ImageContent', type("StubImageContent", (), {}))
+    setattr(types_module, 'EmbeddedResource', type("StubEmbeddedResource", (), {}))
+    setattr(mcp_module, 'types', types_module)
 
     monkeypatch.setitem(sys.modules, "mcp", mcp_module)
     monkeypatch.setitem(sys.modules, "mcp.server", server_module)

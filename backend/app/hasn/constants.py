@@ -175,18 +175,26 @@ DEFAULT_PERMISSION_MATRIX: dict[str, dict[int, dict[str, str] | None]] = {
 }
 
 
+def runtime_effective_trust_level(relation_type: str, trust_level: int) -> int:
+    """应用 Owner 等级的运行时防御性降级规则。"""
+    if relation_type != 'social' and trust_level == 5:
+        return 4
+    return trust_level
+
+
 def effective_trust_level(relation_type: str, trust_level: int) -> int:
     """解析有效信任等级（处理 None fallback 向下取整到最近有效等级）。
 
     Core/02 §7.4.1: 非 social + trust_level=5 时运行时降级为 4 处理。
     """
     # 协议级降级：Owner=5 仅 social 合法，其他类型运行时降级
-    if relation_type != 'social' and trust_level == 5:
+    runtime_level = runtime_effective_trust_level(relation_type, trust_level)
+    if runtime_level != trust_level:
         log.warning(
             f'[trust_level] 非 social 关系收到 trust_level=5，'
             f'运行时降级为 4 (relation_type={relation_type})'
         )
-        trust_level = 4
+        trust_level = runtime_level
 
     matrix = DEFAULT_PERMISSION_MATRIX.get(relation_type, {})
     level = min(trust_level, 5)
@@ -259,6 +267,17 @@ SCOPE_LIFECYCLE_TRANSITIONS: dict[str, frozenset[str]] = {
 def is_lifecycle_transition_valid(from_state: str, to_state: str) -> bool:
     """检查 scope 生命周期状态转换是否合法。"""
     return to_state in SCOPE_LIFECYCLE_TRANSITIONS.get(from_state, frozenset())
+
+
+def apply_lifecycle_to_decision(decision: str, lifecycle: str | None) -> str:
+    """把 scope 生命周期终态约束应用到权限判定。
+
+    只有 ``scope_limited`` 依赖仍然有效的业务 scope；scope 已关闭或过期时必须拒绝。
+    其他权限态不由 scope 生命周期改写。
+    """
+    if decision == SCOPE_LTD and lifecycle in {'closed', 'expired'}:
+        return DENY
+    return decision
 
 
 # ── 协议级约束校验 (Core/04 §1.4) ──────────────

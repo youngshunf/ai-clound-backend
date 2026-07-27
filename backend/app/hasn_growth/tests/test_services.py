@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 
@@ -181,7 +182,7 @@ async def test_provider_returns_crawled_items_from_firecrawl_client() -> None:
     provider = get_provider('public_web')
     items = await provider.crawl(
         CrawlRequest(job_id=1, keyword='example.com', source_type='public_web'),
-        firecrawl_client=FakeFirecrawl(),
+        firecrawl_client=cast(Any, FakeFirecrawl()),
     )
 
     assert len(items) == 1
@@ -222,7 +223,7 @@ async def test_provider_searches_keyword_then_scrapes_result_urls() -> None:
             max_results=2,
             config={'firecrawl_options': {'search_limit': 5}},
         ),
-        firecrawl_client=FakeFirecrawl(),
+        firecrawl_client=cast(Any, FakeFirecrawl()),
     )
 
     assert calls == [
@@ -269,11 +270,13 @@ async def test_provider_can_use_firecrawl_extract_mode_from_options() -> None:
             source_type='public_web',
             config={'firecrawl_options': {'extract_mode': 'extract', 'schema_version': 'lead_v2', 'prompt_version': 'lead_prompt_v2'}},
         ),
-        firecrawl_client=FakeFirecrawl(),
+        firecrawl_client=cast(Any, FakeFirecrawl()),
     )
 
     assert calls == [('extract', ['https://www.iana.org/contact'], 'lead_v2', 'lead_prompt_v2')]
+    assert items
     assert items[0].extract_mode == 'extract'
+    assert items[0].structured_payload is not None
     assert items[0].structured_payload['emails'] == ['iana@iana.org']
 
 
@@ -306,7 +309,7 @@ async def test_crawl_stream_stops_early_when_should_continue_returns_false() -> 
                 max_results=3,
                 config={'firecrawl_options': {'search_limit': 10}},
             ),
-            firecrawl_client=FakeFirecrawl(),
+            firecrawl_client=cast(Any, FakeFirecrawl()),
             should_continue=lambda: len(scraped) < 3,
         )
     ]
@@ -337,7 +340,7 @@ async def test_crawl_returns_all_candidates_when_no_should_continue() -> None:
             source_type='public_web',
             config={'firecrawl_options': {'search_limit': 4}},
         ),
-        firecrawl_client=FakeFirecrawl(),
+        firecrawl_client=cast(Any, FakeFirecrawl()),
     )
 
     assert len(items) == 4

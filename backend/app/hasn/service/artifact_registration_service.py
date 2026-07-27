@@ -143,6 +143,7 @@ class ArtifactRegistrationService:
             .values(
                 artifact_id=artifact_id,
                 owner_hasn_id=mutation.owner_hasn_id,
+                agent_hasn_id=mutation.agent_hasn_id,
                 artifact_key=artifact_key,
                 artifact_kind=mutation.artifact_kind,
                 # 兼容旧读路径期间同步该字段；参与上下文不再写入旧列。
@@ -158,13 +159,20 @@ class ArtifactRegistrationService:
                 local_locator_key=mutation.local_locator_key,
                 local_entry_kind=mutation.local_entry_kind,
                 node_id=mutation.node_id,
+                session_id=mutation.work_session_id,
                 project_id=self._uuid_or_none(mutation.project_id),
+                source_tool=mutation.source_tool,
+                source_app_id=mutation.source_app_id,
+                source_kind=mutation.source_kind,
+                action=mutation.action,
+                dispatch_id=mutation.dispatch_id,
                 meta_data=mutation.metadata,
                 status='active',
             )
             .on_conflict_do_update(
                 index_elements=['owner_hasn_id', 'artifact_key'],
                 set_={
+                    'agent_hasn_id': mutation.agent_hasn_id,
                     'artifact_kind': mutation.artifact_kind,
                     'kind': mutation.artifact_kind,
                     'resource_kind': mutation.resource_kind,
@@ -178,8 +186,18 @@ class ArtifactRegistrationService:
                     'local_locator_key': mutation.local_locator_key,
                     'local_entry_kind': mutation.local_entry_kind,
                     'node_id': mutation.node_id,
+                    # 工作会话归属只进不退：无会话上下文的后续写不得抹去已有绑定。
+                    'session_id': func.coalesce(
+                        mutation.work_session_id,
+                        HasnArtifacts.session_id,
+                    ),
                     # 项目关联只进不退：无项目上下文的后续更新不得抹去已显式挂靠的当前态。
                     'project_id': func.coalesce(self._uuid_or_none(mutation.project_id), HasnArtifacts.project_id),
+                    'source_tool': mutation.source_tool,
+                    'source_app_id': mutation.source_app_id,
+                    'source_kind': mutation.source_kind,
+                    'action': mutation.action,
+                    'dispatch_id': mutation.dispatch_id,
                     'metadata': mutation.metadata,
                     'updated_time': func.now(),
                 },

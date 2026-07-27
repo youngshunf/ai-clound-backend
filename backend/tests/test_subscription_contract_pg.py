@@ -139,6 +139,8 @@ async def test_monthly_contract_is_exactly_one_thirty_day_cycle(user_id) -> None
     contract = await _activate(user_id, 'pro', 'monthly')
     assert contract.cycle_seconds == CYCLE_SECONDS
     assert contract.cycle_count == 1
+    assert contract.contract_start_at is not None
+    assert contract.contract_end_at is not None
     assert contract.contract_end_at - contract.contract_start_at == timedelta(seconds=CYCLE_SECONDS)
 
     events = await _events(user_id)
@@ -153,6 +155,8 @@ async def test_yearly_contract_is_twelve_thirty_day_cycles(user_id) -> None:
     """年付合同 = 12 个连续 30 天周期 = 360 天（不是 365 天自然年）。"""
     contract = await _activate(user_id, 'pro', 'yearly')
     assert contract.cycle_count == 12
+    assert contract.contract_start_at is not None
+    assert contract.contract_end_at is not None
     assert contract.contract_end_at - contract.contract_start_at == timedelta(seconds=CYCLE_SECONDS * 12)
     assert (contract.contract_end_at - contract.contract_start_at).days == 360
 

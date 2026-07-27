@@ -70,8 +70,9 @@ async def test_decide_live_fetches_policy(
 
     monkeypatch.setattr(agent_jwt_module, 'get_agent_scopes_cached', _fake)
 
+    db: Any = object()
     mode = await capability_guard.decide(
-        object(),  # db 未被使用（get_agent_scopes_cached 已 mock）
+        db,  # db 未被使用（get_agent_scopes_cached 已 mock）
         agent_hasn_id='a_guard_test',
         tool_name='hasn.community.create_post',
         required_scopes=['community:post'],

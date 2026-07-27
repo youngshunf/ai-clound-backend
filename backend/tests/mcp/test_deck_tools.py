@@ -260,7 +260,7 @@ def test_skeleton_rejects_cropping_image_object_fit() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_deck_lifecycle_roundtrip_real_db() -> None:
     """真实 PG：create→outline.set→page.write_batch(含 rejected)→get→reorder→edit→delete-page→delete。"""
     if not await _db_reachable():

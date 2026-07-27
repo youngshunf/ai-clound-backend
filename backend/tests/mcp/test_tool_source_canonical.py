@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import pytest
 
+from typing import Any
+
 from backend.app.mcp.canonical import CanonicalNameError, validate_canonical_name
 from backend.app.mcp.tool_directory import ToolDirectoryService
 from backend.app.mcp.tools.app_tools import AppTool
@@ -181,6 +183,32 @@ class TestExecutionLocation:
         tool = self._app_tool("local")
         assert tool.descriptor()["execution_location"] == "local"
 
+    def test_registry_replaces_dynamic_app_snapshot(self) -> None:
+        registry = ToolRegistry()
+        original = self._app_tool()
+        refreshed = AppTool(
+            installation_id='appi_k_v2',
+            app_id='knowledge',
+            app_namespace='knowledge',
+            tool_id='knowledge.search',
+            tool_name='search',
+            action='search',
+            tool_description='更新后的知识检索',
+            tool_input_schema={
+                'type': 'object',
+                'properties': {'query': {'type': 'string'}},
+                'required': ['query'],
+            },
+            tool_required_scopes=['knowledge.read'],
+        )
+
+        registry.replace_source_tools('app', [original])
+        registry.replace_source_tools('app', [refreshed])
+
+        resolved = registry.get_tool('hasn.knowledge.search')
+        assert resolved is refreshed
+        assert len(registry.get_all_tools()) == 1
+
     def test_directory_schema_projection_carries_execution_location(self) -> None:
         import asyncio
 
@@ -209,7 +237,7 @@ class TestExecutionLocation:
 class TestAuditSampling:
     """P5: audit landing (`04 §6`) — calls/schema/denials always; summary sampled."""
 
-    def _server(self) -> HasnCloudMcpServer:  # noqa: F821
+    def _server(self) -> Any:
         from backend.app.mcp.server import HasnCloudMcpServer
 
         return HasnCloudMcpServer()

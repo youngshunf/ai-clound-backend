@@ -1,8 +1,8 @@
-"""演示文稿（模块 17）云端数据层集成测试：5 张表 + 独立 PG schema=deck。
+"""演示文稿（模块 17）云端数据层集成测试：5 张表 + 独立 PG schema=hasn_deck。
 
 连真实本地 PostgreSQL（127.0.0.1:15432/huanxing），savepoint 事务隔离，结束整体回滚不留痕
 （符合"零 Mock 零 Fake"：连真库但不污染）。验证：
-- deck/page/asset/revision/style_profile 全部落到独立 schema `deck.*`（非 public）；
+- deck/page/asset/revision/style_profile 全部落到独立 schema `hasn_deck.*`（非 public）；
 - bigint 自增主键（对齐 fba id_key）；created_time 自动写入；
 - owner_id 列支持 owner 隔离查询（A 看不到 B 的数据）；
 - deleted_time 软删（不物理删，过滤未删行）；
@@ -21,11 +21,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.deck.model.asset import Asset
-from backend.app.deck.model.deck import Deck
-from backend.app.deck.model.page import Page
-from backend.app.deck.model.revision import Revision
-from backend.app.deck.model.style_profile import StyleProfile
+from backend.app.hasn_deck.model.asset import Asset
+from backend.app.hasn_deck.model.deck import Deck
+from backend.app.hasn_deck.model.page import Page
+from backend.app.hasn_deck.model.revision import Revision
+from backend.app.hasn_deck.model.style_profile import StyleProfile
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
 
@@ -66,11 +66,11 @@ async def _owner_deck_count(db: AsyncSession, owner_id: str) -> int:
 
 def test_all_deck_models_map_to_independent_schema() -> None:
     # Arrange / Act：模型元数据（纯元数据断言，无需 DB/await）
-    # Assert：5 张表全部落到独立 schema deck.*，bigint 主键
+    # Assert：5 张表全部落到独立 schema hasn_deck.*，bigint 主键
     for model in ALL_MODELS:
         table = model.__table__
-        assert table.schema == 'deck', f'{model.__name__} 未落到 deck schema'
-        assert table.fullname == f'deck.{table.name}'
+        assert table.schema == 'hasn_deck', f'{model.__name__} 未落到 hasn_deck schema'
+        assert table.fullname == f'hasn_deck.{table.name}'
         assert table.c.id.type.__class__.__name__ == 'BigInteger', f'{model.__name__}.id 非 bigint'
 
 
@@ -87,7 +87,7 @@ async def test_deck_owner_isolation_and_soft_delete(db: AsyncSession) -> None:
     # Assert：bigint 自增主键已分配 + created_time 自动写入
     assert isinstance(a1.id, int) and a1.id > 0
     assert a1.created_time is not None
-    assert a1.__table__.fullname == 'deck.deck'
+    assert a1.__table__.fullname == 'hasn_deck.deck'
 
     # Assert：owner 隔离（A 看到 2，B 看到 1）
     assert await _owner_deck_count(db, owner_a) == 2

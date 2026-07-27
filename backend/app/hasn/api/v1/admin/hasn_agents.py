@@ -8,6 +8,8 @@ from backend.app.hasn.schema.hasn_agents import (
     GetHasnAgentsDetail,
     UpdateHasnAgentsParam,
 )
+from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.common.exception import errors
 from backend.app.hasn.service.hasn_agents_service import hasn_agents_service
 from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
@@ -49,7 +51,10 @@ async def get_hasn_agentss_paginated(db: CurrentSession) -> ResponseSchemaModel[
     ],
 )
 async def create_hasn_agents(db: CurrentSessionTransaction, obj: CreateHasnAgentsParam) -> ResponseModel:
-    await hasn_agents_service.create(db=db, obj=obj)
+    owner = await hasn_humans_dao.get_by_hasn_id(db, obj.owner_id)
+    if owner is None:
+        raise errors.NotFoundError(msg='Agent 主人不存在')
+    await hasn_agents_service.create(db=db, obj=obj, user_id=owner.user_id)
     return response_base.success()
 
 

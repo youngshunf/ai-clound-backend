@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import pathlib
@@ -142,27 +143,37 @@ async def test_a2a_termination_live_scoring() -> None:
     false_continue: list[str] = []  # 漏判空转（严重）：该停却判继续
     false_stop: list[str] = []  # 误判早停（次要）：该继续却判停
     failures: list[tuple[str, int, str]] = []
+    pending_cases = CASES
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url='http://eval'
     ) as client:
-        for c in CASES:
-            r = await client.post(
-                '/api/v1/hasn/app/judge/termination',
-                json={
-                    'agent_hasn_id': f"a_eval_{c['id']}",
-                    'peer_hasn_id': f"a_peer_{c['id']}",
-                    'conversation_ref': f"eval_{c['id']}",
-                    'payload': _payload(c),
-                },
-            )
-            if r.status_code != 200:
-                failures.append((c['id'], r.status_code, r.text[:120]))
-                continue
-            should_end = bool((r.json().get('data') or {}).get('should_end'))
-            if c['expect_end'] and not should_end:
-                false_continue.append(c['id'])
-            elif not c['expect_end'] and should_end:
-                false_stop.append(c['id'])
+        for attempt in range(2):
+            failures = []
+            retry_cases: list[dict] = []
+            for c in pending_cases:
+                r = await client.post(
+                    '/api/v1/hasn/app/judge/termination',
+                    json={
+                        'agent_hasn_id': f"a_eval_{c['id']}",
+                        'peer_hasn_id': f"a_peer_{c['id']}",
+                        'conversation_ref': f"eval_{c['id']}",
+                        'payload': _payload(c),
+                    },
+                )
+                if r.status_code != 200:
+                    failures.append((c['id'], r.status_code, r.text[:120]))
+                    retry_cases.append(c)
+                    continue
+                should_end = bool((r.json().get('data') or {}).get('should_end'))
+                if c['expect_end'] and not should_end:
+                    false_continue.append(c['id'])
+                elif not c['expect_end'] and should_end:
+                    false_stop.append(c['id'])
+            if not retry_cases or attempt == 1:
+                break
+            # 免费活体通道可能短时 429；仅重试未评分样本，第二次仍失败就硬失败。
+            await asyncio.sleep(10)
+            pending_cases = retry_cases
 
     await session.rollback()
     await session.close()
@@ -170,6 +181,7 @@ async def test_a2a_termination_live_scoring() -> None:
 
     scored = len(CASES) - len(failures)
     assert scored >= 1, f'评测未打到分（全部报错）：{failures[:3]}'
+    assert not failures, f'真实裁判评测存在未评分样本，不得以部分结果软通过：{failures}'
     n_end = sum(1 for c in CASES if c['expect_end'])
     n_cont = sum(1 for c in CASES if not c['expect_end'])
     miss_rate = len(false_continue) / n_end if n_end else 0.0

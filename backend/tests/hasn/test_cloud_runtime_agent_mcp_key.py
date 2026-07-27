@@ -18,11 +18,12 @@ import uuid
 import pytest
 import sqlalchemy as sa
 
+from backend.app.admin.model.user import User
 from backend.app.hasn.model import HasnAgentMcpKeys, HasnAgents
 from backend.app.hasn.service.hasn_agent_runtime_provision_service import _ensure_cloud_agent_mcp_key
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 async def test_mints_node_agnostic_cloud_agent_mcp_key() -> None:
@@ -30,6 +31,14 @@ async def test_mints_node_agnostic_cloud_agent_mcp_key() -> None:
     owner = f'h_cloudrt_{tag}'
     agent = f'a_cloudrt_{tag}'
     async with async_db_session() as db:
+        user = User(
+            username=f'cloudrt_{tag}',
+            nickname='云端分身主人',
+            password=None,
+            salt=None,
+        )
+        db.add(user)
+        await db.flush()
         db.add(
             HasnAgents(
                 hasn_id=agent,
@@ -46,10 +55,9 @@ async def test_mints_node_agnostic_cloud_agent_mcp_key() -> None:
         )
         await db.flush()
 
-        # owner_user_id 仅作审计快照透传给 issue（owner_user_id 列 FK→sys_user，可空）；
-        # 本测试关注 key 形态/node 绑定，故传 None 免去种一个完整 sys_user。
+        owner_user_id = user.id
         key = await _ensure_cloud_agent_mcp_key(
-            db, agent_hasn_id=agent, owner_hasn_id=owner, owner_user_id=None
+            db, agent_hasn_id=agent, owner_hasn_id=owner, owner_user_id=owner_user_id
         )
 
         # 明文前缀 hasn_amk_（streamable 按前缀分流到 key 鉴权路）。
@@ -63,7 +71,7 @@ async def test_mints_node_agnostic_cloud_agent_mcp_key() -> None:
         record = rows[0]
         assert record.node_id is None
         assert record.owner_hasn_id == owner
-        assert record.owner_user_id is None
+        assert record.owner_user_id == owner_user_id
         assert record.status == 'active'
         # 明文不入库（只存哈希），key_prefix 是可展示前缀。
         assert key.startswith(record.key_prefix)

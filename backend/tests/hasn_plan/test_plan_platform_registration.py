@@ -6,7 +6,7 @@
 - manifest 通过 ``validate_manifest``（含 workbench_app 一致性闸门）；进 ``_builtin_manifests``。
 - 方案 A：``tools[]``/``capabilities[]`` 置空（本地工具随 P2 hasn-mcp 落地，本期不进 manifest）。
 - scopes.py 登记 plan:read/:write（聚合进全局 SCOPE_CATALOG 供三态权限 UI 中文化）。
-- catalog 默认绑定（AppCollab doc21）：plan → planner 内置分身类型 + work_session_system_prompt。
+- catalog 默认绑定（AppCollab doc21）：plan → assistant 内置分身类型 + work_session_system_prompt。
 - App 形态（local_tool / 手动安装 / 内联路由 / ui_kind=None）。
 
 真实 PostgreSQL（schema hasn_plan，dev DB 已应用迁移；会话内回滚不污染）：
@@ -92,14 +92,14 @@ def test_plan_scopes_registered_in_catalog() -> None:
 
 
 def test_plan_catalog_default_agent_binding() -> None:
-    """AppCollab：plan catalog 行默认承接 planner 内置分身类型 + 非空 work_session_system_prompt（doc21 §4.3）。
+    """AppCollab：plan catalog 行默认承接全能助理 + 非空 work_session_system_prompt（doc21 §4.3）。
 
     catalog 行由 ``_catalog_row_from_app`` 从 ``_CATALOG_AGENT_DEFAULTS['plan']`` 派生；
-    运行时 ``resolve_default_agent_for_app`` 据此 default_agent_type 匹配 owner 名下 builtin_agent_key=='planner'
-    的分身（命中即承接，否则回退主脑）。本测验证目录默认绑定数据正确，不触 DB。
+    运行时 ``resolve_default_agent_for_app`` 据此匹配 owner 名下 builtin_agent_key=='assistant'
+    的全能助理（命中即承接，否则回退主脑）。本测验证目录默认绑定数据正确，不触 DB。
     """
     row = _catalog_row_from_app(build_plan_app())
-    assert row['default_agent_type'] == 'planner'
+    assert row['default_agent_type'] == 'assistant'
     assert row['work_session_system_prompt'] and '参谋长' in row['work_session_system_prompt']
 
 

@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 
 from backend.app.hasn.model import HasnAppCredential
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.newapi.crud import llm_newapi_user_mapping_dao
 from backend.common.exception import errors
 from backend.common.security.encryption import key_encryption
@@ -268,24 +268,32 @@ async def list_byo_credentials(db: AsyncSession, *, owner_hasn_id: str) -> list[
             .where(HasnAppCredential.app_id == STUDIO_APP_ID, HasnAppCredential.user_id == user_id)
             .order_by(HasnAppCredential.id.desc())
         )
-        for row in (await db.execute(stmt)).scalars().all():
-            provider = str((row.config or {}).get('provider') or '')
-            if provider and provider not in rows_by_provider:  # 取每 provider 最新一行
-                rows_by_provider[provider] = row
+        for credential_row in (await db.execute(stmt)).scalars().all():
+            provider_key = str((credential_row.config or {}).get('provider') or '')
+            if provider_key and provider_key not in rows_by_provider:  # 取每 provider 最新一行
+                rows_by_provider[provider_key] = credential_row
 
     out: list[dict[str, str | bool | None]] = []
-    for provider in all_byo_providers():
-        row = rows_by_provider.get(provider.provider)
-        has_owner_key = bool(row and row.status == 'active' and row.credential_ref)
+    for provider_spec in all_byo_providers():
+        selected_credential = rows_by_provider.get(provider_spec.provider)
+        has_owner_key = bool(
+            selected_credential
+            and selected_credential.status == 'active'
+            and selected_credential.credential_ref
+        )
         out.append(
             {
-                'provider': provider.provider,
-                'label': provider.label,
-                'env_name': provider.env_name,
-                'status': (row.status if row else 'unset'),
+                'provider': provider_spec.provider,
+                'label': provider_spec.label,
+                'env_name': provider_spec.env_name,
+                'status': (selected_credential.status if selected_credential else 'unset'),
                 'has_key': has_owner_key,  # 主人自己是否配了 key（脱敏，绝不回值）
-                'has_platform_fallback': _platform_fallback(provider) is not None,
-                'updated_time': (row.updated_time.isoformat() if row and row.updated_time else None),
+                'has_platform_fallback': _platform_fallback(provider_spec) is not None,
+                'updated_time': (
+                    selected_credential.updated_time.isoformat()
+                    if selected_credential and selected_credential.updated_time
+                    else None
+                ),
             }
         )
     return out

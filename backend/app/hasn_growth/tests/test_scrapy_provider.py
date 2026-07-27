@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, get_provider
@@ -95,5 +97,6 @@ async def test_scrapy_provider_skips_when_unconfigured(monkeypatch) -> None:
     provider = get_provider('yellow_pages')
     req = CrawlRequest(job_id=1, keyword='建材批发', source_type='yellow_pages')
 
-    items = [item async for item in provider.crawl_stream(req, firecrawl_client=None)]
+    firecrawl_client: Any = None
+    items = [item async for item in provider.crawl_stream(req, firecrawl_client=firecrawl_client)]
     assert items == []

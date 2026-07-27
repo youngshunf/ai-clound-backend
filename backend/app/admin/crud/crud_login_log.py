@@ -1,3 +1,5 @@
+from typing import Any
+
 from sqlalchemy import Select
 from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +21,7 @@ class CRUDLoginLog(CRUDPlus[LoginLog]):
         :param ip: IP 地址
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if username is not None:
             filters['username__like'] = f'%{username}%'

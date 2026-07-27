@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -8,6 +8,7 @@ from sqlalchemy import DateTime, Text, TypeDecorator
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, MappedAsDataclass, declared_attr, mapped_column
+from sqlalchemy.sql.schema import SchemaItem
 
 from backend.common.enums import DataBaseType
 from backend.core.conf import settings
@@ -126,7 +127,7 @@ class MappedBase(AsyncAttrs, DeclarativeBase):
         return self.__name__.lower()
 
     @declared_attr.directive
-    def __table_args__(self) -> dict:
+    def __table_args__(self) -> dict[str, Any] | tuple[SchemaItem | dict[str, Any], ...]:
         """表配置"""
         return {'comment': self.__doc__ or ''}
 

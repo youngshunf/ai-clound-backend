@@ -36,7 +36,7 @@ from backend.common.exception import errors
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _owner() -> str:
@@ -478,6 +478,7 @@ async def test_project_summary_is_set_based_complete_and_keeps_zero_values() -> 
                     sa.select(DesignSystem.updated_time).where(DesignSystem.id == design_system.id)
                 )
             ).scalar_one()
+            assert expected_activity is not None
             assert summary['last_activity_time'] == timezone.to_str(timezone.from_datetime(expected_activity))
 
             empty = rows[1]

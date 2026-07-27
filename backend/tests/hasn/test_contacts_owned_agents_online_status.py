@@ -66,16 +66,20 @@ def _fake_agent(suffix: str, online_status: str | None, heartbeat: datetime | No
 
 
 def _mock_db(agents: list) -> tuple[MagicMock, list]:
-    """构造 db，使 db.execute(...).scalars().all() 返回 agents，并记录 statement。"""
+    """构造 db：Agent 查询返回种子行，通信设置查询返回无显式禁用。"""
     captured: list = []
-    scalars = MagicMock()
-    scalars.all.return_value = agents
-    result = MagicMock()
-    result.scalars.return_value = scalars
+    agent_scalars = MagicMock()
+    agent_scalars.all.return_value = agents
+    agent_result = MagicMock()
+    agent_result.scalars.return_value = agent_scalars
+    settings_result = MagicMock()
+    settings_result.scalars.return_value = []
 
-    async def fake_execute(stmt: object) -> MagicMock:
+    async def fake_execute(stmt: object, *_args: object, **_kwargs: object) -> MagicMock:
         captured.append(stmt)
-        return result
+        if 'agent_communication_settings' in str(stmt):
+            return settings_result
+        return agent_result
 
     db = MagicMock()
     db.execute = AsyncMock(side_effect=fake_execute)
@@ -89,10 +93,9 @@ async def test_query_filters_hasn_agents_without_runtime_reports_join() -> None:
 
     await HasnContactsService.fetch_owned_agents_with_status(db, 'h_owner')
 
-    assert len(captured) == 1, f'expected 1 select, got {len(captured)}'
+    assert len(captured) == 1, f'空候选集不应查询通信设置，实际查询数：{len(captured)}'
     sql = str(captured[0].compile(dialect=pg_dialect())).lower()
     assert 'hasn_agents' in sql
-    assert 'social_enabled' in sql
     assert 'deleted_at' in sql
     # 不再 JOIN 空置的运行时上报表。
     assert 'hasn_agent_runtime_reports' not in sql, f'unexpected runtime-report join: {sql}'

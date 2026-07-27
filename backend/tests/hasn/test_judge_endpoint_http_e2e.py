@@ -15,6 +15,7 @@ ASGITransport 走完整 FastAPI HTTP 栈（依赖注入 + 统一信封 + errors�
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -71,21 +72,25 @@ async def e2e():
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
 
-    uid_owner = 960000 + int(uuid.uuid4().int % 9000)
-    owner = f'h_own_{_uid()}'
+    uid_owner = 2_000_000_000 + int(uuid.uuid4().int % 6_000_000_000)
+    owner_suffix = _uid()
+    peer_suffix = _uid()
+    owner = f'h_own_{owner_suffix}'
     my_agent = f'a_mine_{_uid()}'
-    peer = f'h_peer_{_uid()}'
+    peer = f'h_peer_{peer_suffix}'
+    owner_star_id = f's_judge_{owner_suffix}'
+    peer_star_id = f's_judge_{peer_suffix}'
     session.add_all([
-        HasnHumans(hasn_id=owner, star_id=f's_{uid_owner}', user_id=uid_owner, nickname='Owner', status='active'),
+        HasnHumans(hasn_id=owner, star_id=owner_star_id, user_id=uid_owner, nickname='Owner', status='active'),
         HasnAgents(
             hasn_id=my_agent, star_id=f'sa_{_uid()}', owner_id=owner,
             display_name='我的分身', agent_name='mine', status='active',
         ),
-        HasnHumans(hasn_id=peer, star_id=f's_{uid_owner + 1}', user_id=uid_owner + 1, nickname='Peer', status='active'),
+        HasnHumans(hasn_id=peer, star_id=peer_star_id, user_id=uid_owner + 1, nickname='Peer', status='active'),
     ])
     await session.flush()
 
-    current = {'hasn_id': owner, 'star_id': f's_{uid_owner}', 'user_id': uid_owner, 'auth_type': 'jwt'}
+    current = {'hasn_id': owner, 'star_id': owner_star_id, 'user_id': uid_owner, 'auth_type': 'jwt'}
 
     async def _yield_session():
         yield session
@@ -259,14 +264,17 @@ async def test_contract_persists_when_llm_reachable(e2e, kind, payload_fn, verdi
 
     _APP.dependency_overrides[hasn_auth] = _auth_live
     try:
-        r = await e2e.client.post(_term_url(kind), json={
-            'agent_hasn_id': e2e.my_agent, 'peer_hasn_id': e2e.peer,
-            'conversation_ref': f'conv_{_uid()}', 'payload': payload_fn(),
-        })
+        for attempt in range(2):
+            r = await e2e.client.post(_term_url(kind), json={
+                'agent_hasn_id': e2e.my_agent, 'peer_hasn_id': e2e.peer,
+                'conversation_ref': f'conv_{_uid()}', 'payload': payload_fn(),
+            })
+            if r.status_code != 503 or attempt == 1:
+                break
+            # 免费活体通道可能短时限流；第二次仍不可用就按生产门槛硬失败。
+            await asyncio.sleep(10)
     finally:
         _APP.dependency_overrides[hasn_auth] = lambda: {'hasn_id': e2e.owner}
-    if r.status_code == 503:
-        pytest.skip(f'裁判 LLM 网关不可达/未配模型，跳过契约: {r.text}')
     assert r.status_code == 200, r.text
     body = r.json()
     assert body['code'] == 200, body  # 统一信封

@@ -20,7 +20,7 @@ from backend.plugin.s3.service.storage_service import ObjectRef
 
 # 同模块多个 async 测试共用一个 event loop：全局 async engine 连接池绑定首个 loop，
 # 缺此标记时第二个测试会撞 "attached to a different loop"（仓内先例 test_hasn_artifacts_service.py）。
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _short_id(prefix: str) -> str:

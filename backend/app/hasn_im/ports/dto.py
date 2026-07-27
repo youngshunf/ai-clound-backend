@@ -75,6 +75,7 @@ class ConversationRef:
     conversation_id: str
     conversation_type: str = 'direct'  # direct | group
     created: bool = False  # 本次调用是否新建
+    relation_type: str = 'social'
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ class SendMessageResult:
     message_id: int | None = None
     conversation_seq: int | None = None
     deduped: bool = False
+    suppressed_id: int | None = None
     # 抑制/暂存时的结构化关系反馈（供消息工具诚实回传，§4.1.4 修 B12）
     suppress_reason: str | None = None
     relation: dict[str, Any] | None = None
@@ -151,13 +153,13 @@ class ListMessagesQuery:
     conversation_id: str
     limit: int = 30
     before_cursor: str | None = None  # 游标（不透明），None=最新
+    origin_session_id: str | None = None  # 受信任服务端按工作会话来源收窄
 
 
 @dataclass(frozen=True)
 class ListConversationsQuery:
     """会话列表查询（cursor/limit + 批量 profile join）。"""
 
-    viewer_hasn_id: str
     limit: int = 30
     cursor: str | None = None
 

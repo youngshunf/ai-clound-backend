@@ -82,6 +82,7 @@ def test_update_agent_scopes_rejects_unknown_capability_key() -> None:
     with pytest.raises(errors.RequestError) as exc_info:
         agent_scopes_service._assert_known_capability_keys({'bogus:scope': 'allow'})
     assert exc_info.value.code == StandardResponseCode.HTTP_422
+    assert exc_info.value.msg is not None
     assert 'unknown_capability_key' in exc_info.value.msg
     assert 'bogus:scope' in exc_info.value.msg
 

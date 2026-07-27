@@ -7,6 +7,7 @@ from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.hasn.model import HasnContacts
 from backend.app.hasn.schema.hasn_contacts import CreateHasnContactsParam, UpdateHasnContactsParam
+from backend.database.result import affected_rows
 
 
 class CRUDHasnContacts(CRUDPlus[HasnContacts]):
@@ -68,12 +69,12 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
         if relation_type:
             stmt = stmt.where(HasnContacts.relation_type == relation_type)
         stmt = stmt.order_by(HasnContacts.last_interaction_at.desc().nullslast()).offset(offset).limit(limit)
-        return (await db.execute(stmt)).scalars().all()
+        return list((await db.execute(stmt)).scalars().all())
 
     @staticmethod
     async def get_pending_requests(db: AsyncSession, peer_id: str, limit: int = 20) -> list[HasnContacts]:
         """获取收到的待处理好友请求 (我作为 peer_id 被加方)"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContacts)
             .where(or_(
                 HasnContacts.peer_id == peer_id,
@@ -83,21 +84,21 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
             .where(HasnContacts.relation_type == 'social')
             .order_by(HasnContacts.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def get_sent_pending_requests(
         db: AsyncSession, owner_id: str, limit: int = 20,
     ) -> list[HasnContacts]:
         """获取自己已发出但还没被对方处理的好友请求 (我作为 owner_id 发起方)"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContacts)
             .where(HasnContacts.owner_id == owner_id)
             .where(HasnContacts.status == 'pending')
             .where(HasnContacts.relation_type == 'social')
             .order_by(HasnContacts.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def create_contact(db: AsyncSession, **kwargs) -> HasnContacts:
@@ -162,7 +163,7 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
         # （否则复活 archived 行时返回对象仍是陈旧的 status='archived'）
         result = await db.execute(stmt, execution_options={'populate_existing': True})
         await db.flush()
-        return result.scalars().first()
+        return result.scalar_one()
 
     @staticmethod
     async def accept_request(db: AsyncSession, contact_id: int) -> None:
@@ -214,7 +215,7 @@ class CRUDHasnContacts(CRUDPlus[HasnContacts]):
                 ),
             )
         )
-        return result.rowcount or 0
+        return affected_rows(result)
 
 
 hasn_contacts_dao: CRUDHasnContacts = CRUDHasnContacts(HasnContacts)

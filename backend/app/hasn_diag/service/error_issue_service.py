@@ -8,7 +8,7 @@ LLM，不设上限会撑爆分身上下文。状态流转按 §5.2 状态机校�
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
@@ -53,7 +53,7 @@ def _decode_cursor(cursor: str | None) -> tuple[datetime, int] | None:
         raise errors.RequestError(msg='非法分页游标')
 
 
-def _issue_row(row: dict) -> dict:
+def _issue_row(row: Any) -> dict:
     return {
         'fingerprint': row['fingerprint'],
         'title': row['title'],

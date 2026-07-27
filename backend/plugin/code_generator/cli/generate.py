@@ -25,6 +25,7 @@ from backend.plugin.code_generator.frontend.menu_generator import (
     save_menu_sql_to_file,
 )
 from backend.plugin.code_generator.parser.sql_parser import sql_parser
+from backend.plugin.code_generator.schema.business import UpdateGenBusinessParam
 from backend.plugin.code_generator.schema.gen import ImportParam
 from backend.plugin.code_generator.service.gen_service import gen_service
 from backend.utils.console import console
@@ -87,7 +88,7 @@ class Generate:
                 db_table_info = await gen_dao.get_table(db, self.schema, table_info.name)
 
             if not db_table_info:
-                console.print(f'   ⚠ 表 [yellow]{table_info.name}[/] 不存在，准备自动执行SQL建表...', flush=True)
+                console.print(f'   ⚠ 表 [yellow]{table_info.name}[/] 不存在，准备自动执行SQL建表...')
                 async with async_db_session.begin() as db:
                     # 分割多条语句执行
                     for stmt in sql_content.split(';'):
@@ -107,8 +108,12 @@ class Generate:
                 if existing_business:
                     business_id = existing_business.id
                     if existing_business.app_name != self.app:
+                        update_obj = UpdateGenBusinessParam.model_validate(
+                            existing_business,
+                            from_attributes=True,
+                        ).model_copy(update={'app_name': self.app})
                         async with async_db_session.begin() as db:
-                            await gen_business_dao.update(db, business_id, {'app_name': self.app})
+                            await gen_business_dao.update(db, business_id, update_obj)
                         console.print(f'   ✓ 表元数据已存在 (id={business_id})，app 已更新为 [cyan]{self.app}[/]')
                     else:
                         console.print(f'   ✓ 表元数据已存在 (id={business_id})')
@@ -128,9 +133,12 @@ class Generate:
                     if business_id:
                         console.print(f'   [green]✓ 表元数据导入成功 (id={business_id})[/]')
                     else:
-                        raise BaseExceptionError('表元数据导入失败')
+                        raise BaseExceptionError(msg='表元数据导入失败')
             except Exception as e:
-                raise BaseExceptionError(f'导入表元数据失败: {e}')
+                raise BaseExceptionError(msg=f'导入表元数据失败: {e}') from e
+
+            if business_id is None:
+                raise BaseExceptionError(msg='表元数据缺少有效 ID')
 
             # 步骤1: 生成前端代码
             if codegen_config.generate_frontend:

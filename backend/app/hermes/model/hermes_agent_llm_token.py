@@ -21,7 +21,7 @@ class HermesAgentLlmToken(Base):
     newapi_token_id: Mapped[int] = mapped_column(sa.BIGINT(), default=0, comment='new-api tokens.id')
     token_key_prefix: Mapped[str] = mapped_column(sa.String(16), default='', comment='token 明文前 8 字符（脱敏展示与审计）')
     token_key_sha256: Mapped[str] = mapped_column(sa.String(64), default='', comment='token 明文 SHA256（反查匹配，不可逆）')
-    model_allowlist: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='平台模型白名单 JSON，留空 = 跟随 user 默认')
+    model_allowlist: Mapped[list[str] | None] = mapped_column(postgresql.JSONB(), default=None, comment='平台模型白名单 JSON，留空 = 跟随 user 默认')
     rate_limit_rps: Mapped[int | None] = mapped_column(sa.INTEGER(), default=None, comment='单 Agent QPS 限速，留空 = 跟随 user 默认')
     per_token_quota_remaining: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='可选：单 token 独立配额；留空 = 与 user.quota 共享')
     issued_at: Mapped[datetime] = mapped_column(TimeZone, default_factory=timezone.now, comment='签发时间')

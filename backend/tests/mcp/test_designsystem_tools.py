@@ -88,7 +88,7 @@ def test_tools_are_cloud_platform() -> None:
     for tool in DESIGNSYSTEM_TOOLS:
         assert tool.source == 'platform'
         assert tool.namespace == 'hasn.designsystem'
-        assert tool.execution_location == 'cloud'
+        assert getattr(tool, 'execution_location') == 'cloud'
 
 
 def test_write_tools_declare_scope_read_and_pure_tools_do_not() -> None:
@@ -155,7 +155,7 @@ def test_save_project_resolution_precedence() -> None:
 
 
 # ── 确定性纯函数工具执行（无需 DB，离线可跑）──────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_compile_tokens_from_tokens_css() -> None:
     """compile_tokens：由 tokens_css 编译 → {tokens_css, report}，report 带 56 token 摘要。"""
     result = await DesignSystemCompileTokensTool().execute(
@@ -169,7 +169,7 @@ async def test_compile_tokens_from_tokens_css() -> None:
     assert accent['value'] == '#2563eb'
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_compile_tokens_from_source_tokens_array() -> None:
     """compile_tokens：显式 source_tokens 数组亦可（优先于 tokens_css）。"""
     result = await DesignSystemCompileTokensTool().execute(
@@ -181,14 +181,14 @@ async def test_compile_tokens_from_source_tokens_array() -> None:
     assert accent['value'] == '#111111'
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_compile_tokens_rejects_empty_input() -> None:
     """compile_tokens：既无 tokens_css 又无非空 source_tokens → RuntimeError（对齐本地措辞）。"""
     with pytest.raises(RuntimeError, match='tokens_css'):
         await DesignSystemCompileTokensTool().execute(_agent_ctx('h_x'), {})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_derive_returns_two_artifacts() -> None:
     """derive：tokens.css → {design_tokens_json, tailwind_v4_css}。"""
     contract = await DesignSystemCompileTokensTool().execute(
@@ -199,14 +199,14 @@ async def test_derive_returns_two_artifacts() -> None:
     assert '@theme {' in result['tailwind_v4_css']
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_derive_rejects_missing_tokens_css() -> None:
     """derive：缺 tokens_css → RuntimeError。"""
     with pytest.raises(RuntimeError, match='tokens_css'):
         await DesignSystemDeriveTool().execute(_agent_ctx('h_x'), {})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_validate_returns_score_report() -> None:
     """validate：完整契约 → score=100/excellent；含 selfCheck。"""
     contract = await DesignSystemCompileTokensTool().execute(
@@ -219,7 +219,7 @@ async def test_validate_returns_score_report() -> None:
     assert report['selfCheck']['ok'] is True
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_extract_components_returns_manifest() -> None:
     """extract_components：components.html → manifest（brandId + selectors + fixture）。"""
     html = '<html><head><title>Demo</title></head><body><button class="btn">Go</button></body></html>'
@@ -231,7 +231,7 @@ async def test_extract_components_returns_manifest() -> None:
     assert isinstance(manifest['groups'], list)
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_extract_components_rejects_missing_html() -> None:
     """extract_components：缺 components_html → RuntimeError。"""
     with pytest.raises(RuntimeError, match='components_html'):
@@ -244,21 +244,21 @@ def _all_schema_names() -> list[str]:
     return all_schema_names()
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_save_rejects_missing_content() -> None:
     """save 缺 content（或非对象）→ RuntimeError（校验在打 DB 前，无需活体库）。"""
     with pytest.raises(RuntimeError, match='content'):
         await DesignSystemSaveTool().execute(_agent_ctx('h_x'), {'slug': 's', 'name': 'n', 'content': 'not-a-dict'})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_save_rejects_missing_slug() -> None:
     """save 缺 slug → RuntimeError（校验在打 DB 前）。"""
     with pytest.raises(RuntimeError, match='slug'):
         await DesignSystemSaveTool().execute(_agent_ctx('h_x'), {'name': 'n', 'content': {}})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_get_rejects_invalid_id() -> None:
     """get 缺/非法 design_system_id → RuntimeError（校验在打 DB 前）。"""
     with pytest.raises(RuntimeError, match='design_system_id'):
@@ -266,7 +266,7 @@ async def test_get_rejects_invalid_id() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_save_list_get_roundtrip_real_db() -> None:
     """真实 PG：save → 落库 + 携 bundle 自动登记产物；list 可见；get 取回当前版本内容。"""
     if not await _db_reachable():

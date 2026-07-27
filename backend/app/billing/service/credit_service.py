@@ -147,6 +147,7 @@ class CreditService:
         tier = await offering_pricing.get_tier(db, 'free')
         account = await credit_account_service.get_account(db, user_id, app_code)
         now = timezone.now()
+
         return {
             'user_id': user_id,
             'tier': 'free',
@@ -227,6 +228,13 @@ class CreditService:
         sub_end = getattr(subscription, 'subscription_end_date', None)
         if subscription.tier != 'free' and sub_end is not None and now > sub_end:
             effective_status = 'expired'
+        billing_cycle_start = subscription.billing_cycle_start
+        billing_cycle_end = subscription.billing_cycle_end
+        if billing_cycle_start is None or billing_cycle_end is None:
+            raise errors.ServerError(msg='订阅计费周期不完整')
+        subscription_start = subscription.subscription_start_date
+        subscription_end = subscription.subscription_end_date
+        next_grant_date = subscription.next_grant_date
 
         return {
             'user_id': user_id,
@@ -246,11 +254,11 @@ class CreditService:
             'purchased_credits': float(account['wallet_credits']) if account['wallet_credits'] is not None else 0.0,
             'monthly_remaining': 0.0,
             'bonus_remaining': 0.0,
-            'billing_cycle_start': subscription.billing_cycle_start.isoformat(),
-            'billing_cycle_end': subscription.billing_cycle_end.isoformat(),
-            'subscription_start_date': subscription.subscription_start_date.isoformat() if getattr(subscription, 'subscription_start_date', None) else None,
-            'subscription_end_date': subscription.subscription_end_date.isoformat() if getattr(subscription, 'subscription_end_date', None) else None,
-            'next_grant_date': subscription.next_grant_date.isoformat() if getattr(subscription, 'next_grant_date', None) else None,
+            'billing_cycle_start': billing_cycle_start.isoformat(),
+            'billing_cycle_end': billing_cycle_end.isoformat(),
+            'subscription_start_date': subscription_start.isoformat() if subscription_start else None,
+            'subscription_end_date': subscription_end.isoformat() if subscription_end else None,
+            'next_grant_date': next_grant_date.isoformat() if next_grant_date else None,
             'status': effective_status,
         }
 

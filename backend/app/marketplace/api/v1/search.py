@@ -100,8 +100,8 @@ async def search(
             MarketplaceSkill.download_count.desc()
         ).limit(limit)
 
-        result = await db.execute(skill_query)
-        skill_models = result.scalars().all()
+        skill_result = await db.execute(skill_query)
+        skill_models = skill_result.scalars().all()
 
         skills = [
             SearchSkillItem(
@@ -148,8 +148,8 @@ async def search(
             MarketplaceTemplate.download_count.desc()
         ).limit(limit)
 
-        result = await db.execute(template_query)
-        template_models = result.scalars().all()
+        template_result = await db.execute(template_query)
+        template_models = template_result.scalars().all()
 
         templates = [
             SearchTemplateItem(

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.billing.model.pay_refund import PayRefund
+from backend.database.result import affected_rows
 
 
 class CRUDPayRefund(CRUDPlus[PayRefund]):
@@ -43,7 +44,7 @@ class CRUDPayRefund(CRUDPlus[PayRefund]):
         if success_time is not None:
             values['success_time'] = success_time
         result = await db.execute(update(PayRefund).where(PayRefund.refund_no == refund_no).values(**values))
-        return result.rowcount
+        return affected_rows(result)
 
 
 pay_refund_dao: CRUDPayRefund = CRUDPayRefund(PayRefund)

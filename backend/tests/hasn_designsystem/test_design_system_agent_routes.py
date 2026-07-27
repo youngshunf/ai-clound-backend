@@ -30,6 +30,7 @@ from backend.app.hasn_designsystem.api.v1.agent.designsystem import router as ag
 from backend.app.hasn_designsystem.model.design_system import DesignSystem
 from backend.app.hasn_designsystem.model.revision import Revision
 from backend.app.hasn.service import sync_invalidate_service
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
@@ -85,11 +86,33 @@ async def client():
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = uuid.uuid4().hex[:8]
+    owner_user_id = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     state = {
         'agent_hasn_id': f'a_{tag}',
         'owner_hasn_id': f'h_owner_{tag}',
+        'owner_user_id': owner_user_id,
         'session': session,
     }
+    async with async_db_session.begin() as identity_db:
+        identity_db.add(
+            HasnHumans(
+                hasn_id=state['owner_hasn_id'],
+                star_id=f's_ds_{tag}',
+                user_id=owner_user_id,
+                nickname='设计系统测试主人',
+                status='active',
+            )
+        )
+        identity_db.add(
+            HasnAgents(
+                hasn_id=state['agent_hasn_id'],
+                star_id=f's_ds_{tag}#agent',
+                owner_id=state['owner_hasn_id'],
+                display_name='设计系统测试分身',
+                agent_name=f'designsystem_{tag}',
+                status='active',
+            )
+        )
 
     async def _yield_session():
         yield session
@@ -99,7 +122,7 @@ async def client():
             agent_hasn_id=state['agent_hasn_id'],
             agent_name='测试分身',
             owner_hasn_id=state['owner_hasn_id'],
-            owner_user_id=900000 + int(uuid.uuid4().int % 9000),
+            owner_user_id=owner_user_id,
             session_uuid=uuid.uuid4().hex,
             expire_time=datetime.now(dt_timezone.utc) + timedelta(hours=1),
         )
@@ -117,6 +140,13 @@ async def client():
         await session.rollback()
         await session.close()
         await engine.dispose()
+        async with async_db_session.begin() as identity_db:
+            await identity_db.execute(
+                delete(HasnAgents).where(HasnAgents.hasn_id == state['agent_hasn_id'])
+            )
+            await identity_db.execute(
+                delete(HasnHumans).where(HasnHumans.hasn_id == state['owner_hasn_id'])
+            )
         await async_engine.dispose()
 
 
@@ -183,14 +213,37 @@ async def test_save_publishes_after_production_session_commit() -> None:
 
     tag = uuid.uuid4().hex[:8]
     owner = f'h_ds_http_{tag}'
+    agent_id = f'a_ds_http_{tag}'
+    owner_user_id = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     design_system_id: int | None = None
+
+    async with async_db_session.begin() as identity_db:
+        identity_db.add(
+            HasnHumans(
+                hasn_id=owner,
+                star_id=f's_ds_http_{tag}',
+                user_id=owner_user_id,
+                nickname='设计系统事务测试主人',
+                status='active',
+            )
+        )
+        identity_db.add(
+            HasnAgents(
+                hasn_id=agent_id,
+                star_id=f's_ds_http_{tag}#agent',
+                owner_id=owner,
+                display_name='事务测试分身',
+                agent_name=f'designsystem_http_{tag}',
+                status='active',
+            )
+        )
 
     async def _agent_auth() -> AgentTokenPayload:
         return AgentTokenPayload(
-            agent_hasn_id=f'a_ds_http_{tag}',
+            agent_hasn_id=agent_id,
             agent_name='事务测试分身',
             owner_hasn_id=owner,
-            owner_user_id=980_000_000 + int(uuid.uuid4().int % 10_000_000),
+            owner_user_id=owner_user_id,
             session_uuid=uuid.uuid4().hex,
             expire_time=datetime.now(dt_timezone.utc) + timedelta(hours=1),
         )
@@ -236,6 +289,8 @@ async def test_save_publishes_after_production_session_commit() -> None:
                 await db.execute(
                     delete(DesignSystem).where(DesignSystem.id == design_system_id)
                 )
+            await db.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent_id))
+            await db.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
         async with async_db_session() as db:
             await sync_invalidate_service.bump(
                 sync_invalidate_service.KIND_DESIGNSYSTEM,

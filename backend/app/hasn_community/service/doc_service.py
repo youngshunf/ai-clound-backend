@@ -227,7 +227,7 @@ class DocService:
         path = (parent.path + '/' + node_id) if parent else ('/' + node_id)
         if sort_order is None:
             mx = (await db.execute(select(func.coalesce(func.max(HasnDocNodes.sort_order), -1)).where(HasnDocNodes.space_id == s.space_id, HasnDocNodes.parent_node_id.is_(parent_node_id) if parent_node_id is None else HasnDocNodes.parent_node_id == parent_node_id))).scalar()
-            sort_order = int(mx) + 1
+            sort_order = int(mx if mx is not None else -1) + 1
         vis = None
         pw_hash = None
         if allow_visibility and visibility is not None:
@@ -276,14 +276,14 @@ class DocService:
 
     @staticmethod
     async def _subtree(db: AsyncSession, node: HasnDocNodes) -> list[HasnDocNodes]:
-        return (
+        return list((
             await db.execute(
                 select(HasnDocNodes).where(
                     HasnDocNodes.space_id == node.space_id, HasnDocNodes.status == 'active',
                     (HasnDocNodes.path == node.path) | (HasnDocNodes.path.like(node.path + '/%')),
                 )
             )
-        ).scalars().all()
+        ).scalars().all())
 
     @staticmethod
     async def move_node(db: AsyncSession, *, node_id: str, actor_hasn_id: str, new_parent_node_id: str | None) -> dict[str, Any]:
@@ -432,7 +432,9 @@ class DocService:
 
         def effective_vis(n: HasnDocNodes) -> str:
             gov = DocService._effective_governing(n, by_id)
-            return gov.visibility if gov else s.default_visibility
+            if gov is not None and gov.visibility is not None:
+                return gov.visibility
+            return s.default_visibility
 
         def visible(n: HasnDocNodes) -> bool:
             if is_owner:

@@ -128,11 +128,15 @@ class CommunitySettingsService:
         if not human:
             return True
         stored = human.community_settings if isinstance(human.community_settings, dict) else {}
-        notify = stored.get('notify') if isinstance(stored.get('notify'), dict) else {}
+        raw_notify = stored.get('notify')
+        notify: dict[str, Any] = raw_notify if isinstance(raw_notify, dict) else {}
         value = notify.get(notify_key)
         if isinstance(value, bool):
             return value
-        default_notify = DEFAULT_COMMUNITY_SETTINGS['notify']
+        raw_default_notify = DEFAULT_COMMUNITY_SETTINGS.get('notify')
+        default_notify: dict[str, Any] = (
+            raw_default_notify if isinstance(raw_default_notify, dict) else {}
+        )
         return bool(default_notify.get(notify_key, True))
 
     @staticmethod

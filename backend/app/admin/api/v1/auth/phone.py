@@ -18,6 +18,7 @@ from backend.app.admin.schema.phone_auth import (
     SendCodeParam,
     SendCodeResponse,
 )
+from backend.app.hasn.service.hasn_auth import ensure_hasn_owner_key
 from backend.app.newapi.service import llm_newapi_user_mapping_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
@@ -28,11 +29,6 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 from backend.database.redis import redis_client
 from backend.utils.limiter import RateLimiter
 from backend.utils.timezone import timezone
-
-try:
-    from backend.app.hasn.service.hasn_auth import ensure_hasn_owner_key as _ensure_hasn_owner_key
-except ImportError:
-    _ensure_hasn_owner_key = None
 
 router = APIRouter()
 
@@ -228,13 +224,11 @@ async def phone_login(
     hasn_node_id = None
 
     # 自动签发 Owner API Key（hasn_ok_xxx）用于文档/云函数等用户级认证
-    owner_key = None
-    if _ensure_hasn_owner_key is not None:
-        owner_key = await _ensure_hasn_owner_key(
-            db=db,
-            user_id=user.id,
-            nickname=user.nickname or '唤星用户',
-        )
+    owner_key = await ensure_hasn_owner_key(
+        db=db,
+        user_id=user.id,
+        nickname=user.nickname or '唤星用户',
+    )
 
     return response_base.success(
         data=PhoneLoginResponse(

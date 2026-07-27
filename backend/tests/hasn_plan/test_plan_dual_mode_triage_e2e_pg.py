@@ -42,7 +42,7 @@ from backend.app.mcp.tools.plan import (
 )
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _DAY_START = datetime(2026, 7, 2, 0, 0, tzinfo=timezone.utc)
 _DAY_END = datetime(2026, 7, 2, 23, 59, tzinfo=timezone.utc)

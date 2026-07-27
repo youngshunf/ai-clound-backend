@@ -7,6 +7,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, TimeZone, id_key
+from backend.database.schema_names import SYNC_SCHEMA
 from backend.utils.timezone import timezone
 
 
@@ -14,6 +15,7 @@ class HasnSyncEvents(Base):
     """HASN 服务端下行同步事件表"""
 
     __tablename__ = 'hasn_sync_events'
+    __table_args__ = {'schema': SYNC_SCHEMA}
 
     id: Mapped[id_key] = mapped_column(init=False)
     event_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='事件唯一 ID (se_{uuid})')

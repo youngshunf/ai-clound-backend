@@ -179,7 +179,7 @@ class WsDeliveryBus:
         """订阅者回调：仅下发本 worker 持有的连接。"""
         if data.get('broadcast'):
             payload_json = data.get('payload')
-            if not payload_json:
+            if not isinstance(payload_json, str) or not payload_json:
                 return
             for node_id, ws in iter_connections():
                 connection_id = get_connection_id(node_id)
@@ -192,19 +192,19 @@ class WsDeliveryBus:
                 await WsDeliveryBus._safe_send(ws, payload_json)
             return
 
-        node_id = data.get('node_id')
-        if not node_id:
+        target_node_id = data.get('node_id')
+        if not isinstance(target_node_id, str) or not target_node_id:
             return
-        if get_connection(node_id) is None:
+        if get_connection(target_node_id) is None:
             # 连接不在本 worker，交给真正持有它的 worker 处理
             return
         # 兼容滚动发布期间仍携带 payload 的旧 publisher：先落本 worker 的持久队列。
         legacy_payload = data.get('payload')
-        if legacy_payload:
-            pending_key = f'{PENDING_PREFIX}:{node_id}'
+        if isinstance(legacy_payload, str) and legacy_payload:
+            pending_key = f'{PENDING_PREFIX}:{target_node_id}'
             await redis_client.rpush(pending_key, legacy_payload)
             await redis_client.expire(pending_key, DELIVERY_QUEUE_TTL_SECS)
-        await WsDeliveryBus.drain_node(node_id)
+        await WsDeliveryBus.drain_node(target_node_id)
 
     @classmethod
     async def _drain_node_safely(cls, node_id: str) -> None:

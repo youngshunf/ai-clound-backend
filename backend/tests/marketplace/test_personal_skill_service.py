@@ -271,7 +271,7 @@ class _SeqSession:
         self.flush_count += 1
 
 
-def _service(gateway: _Gateway) -> Any:
+def _service(gateway: Any) -> Any:
     from backend.app.hasn.service.hasn_agents_service import HasnAgentProfileService
 
     return HasnAgentProfileService(gateway=gateway)

@@ -5,6 +5,26 @@ from datetime import datetime, timedelta
 from backend.app.task.celery import celery_app
 
 
+@celery_app.task(name='hasn_relation_outbox_dispatch')
+async def hasn_relation_outbox_dispatch() -> str:
+    """投递身份事实到 IM 控制边的可靠关系命令。"""
+    from backend.app.hasn.service.hasn_relation_command_outbox_service import (
+        RelationCommandOutboxRelay,
+    )
+    from backend.app.hasn_im.application.provider import get_relation_gateway
+    from backend.database.db import python_backend_db_session
+
+    relay = RelationCommandOutboxRelay(
+        session_factory=python_backend_db_session,
+        relation_gateway=get_relation_gateway(),
+    )
+    stats = await relay.drain_once()
+    return (
+        f'claimed={stats.claimed} completed={stats.completed} '
+        f'retried={stats.retried} dead_lettered={stats.dead_lettered}'
+    )
+
+
 @celery_app.task(name='hasn_check_agent_heartbeat_timeout', bind=True)
 async def hasn_check_agent_heartbeat_timeout(self) -> str:
     """检查 agent 心跳超时，将超过 1 小时未上报的 agent 标记为离线。
@@ -67,9 +87,9 @@ async def hasn_group_agent_invite_expire_sweep() -> str:
     partial unique（其主人下次可被重新邀请）。建议每天凌晨执行一次。
     """
     from backend.app.hasn.service.hasn_group_service import hasn_group_service
-    from backend.database.db import async_db_session
+    from backend.database.db import im_service_db_session
 
-    async with async_db_session.begin() as session:
+    async with im_service_db_session.begin() as session:
         count = await hasn_group_service.sweep_expired_invites(session)
     return f'expired {count} overdue group agent invites' if count else 'no overdue group agent invites'
 
@@ -100,11 +120,9 @@ async def hasn_contact_lifecycle_expire_sweep() -> str:
     ① hasn_contact_requests：pending 且创建超 30 天 → expired（幂等，只收敛存量 pending）；
     ② hasn_contacts：auto_expire 已过且仍 connected → archived（service 到期自动断，铁律5b）。
     """
-    from backend.app.hasn.service.hasn_contacts_service import HasnContactsService
-    from backend.database.db import async_db_session
+    from backend.app.hasn_im.application.provider import get_relation_gateway
 
-    async with async_db_session() as session:
-        result = await HasnContactsService.sweep_expired_relation_lifecycle(session)
+    result = await get_relation_gateway().sweep_expired_relation_lifecycle()
     req_n = result['requests_expired']
     ct_n = result['contacts_expired']
     if req_n or ct_n:

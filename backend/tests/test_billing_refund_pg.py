@@ -370,6 +370,7 @@ async def test_confirm_refund_notify_advances_processing_to_success(db: AsyncSes
     assert changed is True, 'PROCESSING→SUCCESS 应有状态变更'
 
     refund_row = await pay_refund_dao.get_by_refund_no(db, refund_no)
+    assert refund_row is not None
     assert refund_row.status == 1 and refund_row.channel_refund_no == 'CH_ASYNC_1'
 
     reloaded = (

@@ -16,7 +16,7 @@ import uuid
 
 from datetime import timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
@@ -47,7 +47,7 @@ def _uid() -> str:
 
 
 def _catalog(app_id: str, **over) -> HasnAppCatalog:
-    base = {
+    base: dict[str, Any] = {
         'app_id': app_id,
         'name': '席位准入测试',
         'icon': 'app-window',

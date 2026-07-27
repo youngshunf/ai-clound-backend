@@ -25,7 +25,7 @@ from fastapi import WebSocket
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn.service.hasn_auth import verify_owner_proof
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.app.hasn_im.adapters.routing.delivery_bus import ws_delivery_bus
@@ -590,7 +590,7 @@ class NodeSessionService:
         entity_ids: list[str],
     ) -> list[dict]:
         """获取并清理离线消息（所有已上报实体）"""
-        all_msgs = []
+        all_msgs: list[dict] = []
 
         for eid in entity_ids:
             key = f'{OFFLINE_PREFIX}:{eid}'

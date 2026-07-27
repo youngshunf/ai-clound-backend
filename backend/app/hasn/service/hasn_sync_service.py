@@ -61,8 +61,11 @@ from backend.app.hasn.service._sync_codec import (
     _task_sync_payload,
     _task_sync_payload_from_row,
 )
+from backend.app.hasn_sync.adapters.sqlalchemy_appender import SqlAlchemySyncAppender
+from backend.app.hasn_sync.ports.dto import SyncEnvelope
 from backend.common.exception import errors
 from backend.common.log import log
+from backend.database.schema_names import SCHEMA_NAMES
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -97,11 +100,8 @@ _TASK_SYNC_CONFLICT_ERROR = ErrorObject(
 
 TASK_SYNC_EVENT_TYPES = {'task.created', 'task.updated', 'task.deleted'}
 
-# 会话消息事件：客户端推上来后必须落入权威 feed（hasn_sync_events），供换设备 sync/pull
-# 还原完整会话历史。owner↔自己分身的对话本地短路执行、不经 route_message，唯一上云路径
-# 就是这里（见 docs/hasn-node设计文档/02-数据与同步/06-owner与分身会话跨设备同步修复设计.md）。
-# h↔h / 跨 owner 消息由 message_router.route_message 直接写 feed，daemon 侧不重复镜像（去重边界）。
-FEED_MESSAGE_EVENT_TYPES = {'message.sent', 'message.received', 'message.agent_reply'}
+_SYNC_EVENTS = SCHEMA_NAMES.sync_table('hasn_sync_events')
+_SYNC_INBOX_EVENTS = SCHEMA_NAMES.sync_table('hasn_sync_inbox_events')
 
 
 class SyncGateway(Protocol):
@@ -128,6 +128,19 @@ class SyncGateway(Protocol):
         self, db: AsyncSession, *, owner_id: str, node_id: str, client_event_id: str
     ) -> int | None: ...
     async def save_task_event(self, db: AsyncSession, *, owner_id: str, node_id: str, event: ClientEvent) -> int | None: ...
+    async def emit_memory_event(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        event_type: str,
+        namespace: str,
+        aggregate_id: str,
+        payload: dict[str, Any],
+        sync_scope_kind: str = 'owner',
+        sync_scope_id: str | None = None,
+        hasn_id: str | None = None,
+    ) -> tuple[int, str]: ...
     async def save_task_run_summary(
         self,
         db: AsyncSession,
@@ -225,9 +238,9 @@ class SqlAlchemySyncGateway:
     ) -> list[SyncEventRecord]:
         result = await db.execute(
             sa.text(
-                """
+                f"""
                 SELECT event_id, event_type, revision, occurred_at, payload
-                FROM public.hasn_sync_events
+                FROM {_SYNC_EVENTS}
                 WHERE owner_id = :owner_id
                   AND event_type NOT LIKE 'task.%'
                   AND event_type <> 'task_run.summary_reported'
@@ -254,9 +267,9 @@ class SqlAlchemySyncGateway:
     ) -> list[SyncEventRecord]:
         result = await db.execute(
             sa.text(
-                """
+                f"""
                 SELECT event_id, event_type, revision, occurred_at, payload
-                FROM public.hasn_sync_events e
+                FROM {_SYNC_EVENTS} e
                 WHERE e.owner_id = :owner_id
                   AND revision > :after_revision
                   AND (
@@ -278,29 +291,10 @@ class SqlAlchemySyncGateway:
                     )
                     OR (
                       NOT (e.payload ? 'visible_node_ids')
-                      AND EXISTS (
-                        SELECT 1
-                        FROM hasn_task.assignment a
-                        WHERE a.owner_id = e.owner_id
-                          AND a.task_uuid = COALESCE(e.payload->>'task_uuid', e.payload->>'task_id', e.aggregate_id)
-                          AND a.assignment_state = 'assigned'
-                          AND a.executor_node_id = :node_id
-                      )
-                    )
-                    OR (
-                      NOT (e.payload ? 'visible_node_ids')
-                      AND NOT EXISTS (
-                        SELECT 1
-                        FROM hasn_task.assignment a
-                        WHERE a.owner_id = e.owner_id
-                          AND a.task_uuid = COALESCE(e.payload->>'task_uuid', e.payload->>'task_id', e.aggregate_id)
-                          AND a.assignment_state = 'assigned'
-                      )
-                      AND (
-                        COALESCE(e.payload->>'node_id', '') = :node_id
-                        OR COALESCE(e.payload->>'executor_node_id', '') = :node_id
-                        OR COALESCE(e.payload->>'node_id', e.payload->>'executor_node_id') IS NULL
-                      )
+                      AND COALESCE(
+                        NULLIF(e.payload->>'executor_node_id', ''),
+                        NULLIF(e.payload->>'node_id', '')
+                      ) = :node_id
                     )
                   )
                 ORDER BY revision ASC
@@ -341,14 +335,14 @@ class SqlAlchemySyncGateway:
         ]
         result = await db.execute(
             sa.text(
-                """
+                f"""
                 WITH requested(sync_scope_kind, sync_scope_id, namespace, last_pulled_revision) AS (
                     SELECT *
                     FROM jsonb_to_recordset(CAST(:selections AS jsonb))
                     AS x(sync_scope_kind text, sync_scope_id text, namespace text, last_pulled_revision bigint)
                 )
                 SELECT event_id, event_type, revision, occurred_at, payload
-                FROM public.hasn_sync_events e
+                FROM {_SYNC_EVENTS} e
                 JOIN requested r
                   ON e.payload->>'sync_scope_kind' = r.sync_scope_kind
                  AND e.payload->>'sync_scope_id' = r.sync_scope_id
@@ -378,16 +372,23 @@ class SqlAlchemySyncGateway:
         ]
 
     async def save_client_event(
-        self, db: AsyncSession, *, owner_id: str, node_id: str, event: ClientEvent
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        node_id: str,
+        event: ClientEvent,
+        manage_inbox: bool = True,
     ) -> int | None:
-        existing_revision = await self.existing_client_event_revision(
-            db,
-            owner_id=owner_id,
-            node_id=node_id,
-            client_event_id=event.client_event_id,
-        )
-        if existing_revision is not None:
-            return existing_revision
+        if manage_inbox:
+            existing_revision = await self.existing_client_event_revision(
+                db,
+                owner_id=owner_id,
+                node_id=node_id,
+                client_event_id=event.client_event_id,
+            )
+            if existing_revision is not None:
+                return existing_revision
 
         server_revision = None
         if event.event_type.startswith('memory.'):
@@ -424,143 +425,74 @@ class SqlAlchemySyncGateway:
                 namespace=namespace,
                 event_id=event_id,
             )
-        elif event.event_type in FEED_MESSAGE_EVENT_TYPES:
-            # owner↔自己分身的会话消息（主人提问 message.sent / 分身回复 message.agent_reply）
-            # 本地短路执行、不经 route_message，必须在此落入权威 feed，否则换设备 sync/pull
-            # 永远拉不回（历史 bug：这里只写 inbox 死信表）。message.received 一并支持。
-            server_revision = await self._append_message_feed_event_idempotent(
-                db, owner_id=owner_id, event=event
+        else:
+            raise errors.RequestError(msg='ERR_SYNC_EVENT_UNSUPPORTED')
+        if manage_inbox:
+            await db.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {_SYNC_INBOX_EVENTS} (
+                        client_event_id,
+                        owner_id,
+                        hasn_id,
+                        node_id,
+                        event_type,
+                        payload,
+                        dedupe_key,
+                        status,
+                        server_revision,
+                        received_at,
+                        created_time,
+                        updated_time
+                    ) VALUES (
+                        :client_event_id,
+                        :owner_id,
+                        :hasn_id,
+                        :node_id,
+                        :event_type,
+                        CAST(:payload AS jsonb),
+                        :dedupe_key,
+                        :status,
+                        :server_revision,
+                        now(),
+                        now(),
+                        now()
+                    )
+                    ON CONFLICT (owner_id, node_id, client_event_id) DO NOTHING
+                    """
+                ),
+                {
+                    'client_event_id': event.client_event_id,
+                    'owner_id': owner_id,
+                    'hasn_id': event.hasn_id or owner_id,
+                    'node_id': node_id,
+                    'event_type': event.event_type,
+                    'payload': json.dumps(event.payload, ensure_ascii=False, sort_keys=True, default=str),
+                    'dedupe_key': event.dedupe_key,
+                    'status': 'applied' if server_revision is not None else 'accepted',
+                    'server_revision': server_revision,
+                },
             )
-            # doc16 Phase A「消息上云」：同一条 loopback 消息**额外**落入权威 hasn_messages
-            # （单一云端记忆提取的数据源）。feed 已写（上一行），此处只补会话/消息表、不重复
-            # 写 feed。best-effort + SAVEPOINT 隔离：落库失败绝不连累 feed/跨设备同步。
-            await self._persist_loopback_message_best_effort(db, owner_id=owner_id, event=event)
-        await db.execute(
-            sa.text(
-                """
-                INSERT INTO public.hasn_sync_inbox_events (
-                    client_event_id,
-                    owner_id,
-                    hasn_id,
-                    node_id,
-                    event_type,
-                    payload,
-                    dedupe_key,
-                    status,
-                    server_revision,
-                    received_at,
-                    created_time,
-                    updated_time
-                ) VALUES (
-                    :client_event_id,
-                    :owner_id,
-                    :hasn_id,
-                    :node_id,
-                    :event_type,
-                    CAST(:payload AS jsonb),
-                    :dedupe_key,
-                    :status,
-                    :server_revision,
-                    now(),
-                    now(),
-                    now()
-                )
-                ON CONFLICT (owner_id, node_id, client_event_id) DO NOTHING
-                """
-            ),
-            {
-                'client_event_id': event.client_event_id,
-                'owner_id': owner_id,
-                'hasn_id': event.hasn_id or owner_id,
-                'node_id': node_id,
-                'event_type': event.event_type,
-                'payload': json.dumps(event.payload, ensure_ascii=False, sort_keys=True, default=str),
-                'dedupe_key': event.dedupe_key,
-                'status': 'applied' if server_revision is not None else 'accepted',
-                'server_revision': server_revision,
-            },
-        )
         return server_revision
 
-    async def _append_message_feed_event_idempotent(
-        self, db: AsyncSession, *, owner_id: str, event: ClientEvent
+    async def save_task_event(
+        self,
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        node_id: str,
+        event: ClientEvent,
+        manage_inbox: bool = True,
     ) -> int | None:
-        """将会话消息事件幂等地追加到权威 feed（hasn_sync_events）。
-
-        幂等键 = (owner_id, aggregate_id, event_type)，其中 aggregate_id 取 payload.message_id
-        （回退 dedupe_key）。同一条镜像消息重复 push 时返回既有 revision、不重复追加。
-        h↔h / 跨 owner 消息由 route_message 用云端数字 message_id 写 feed，与本地 ULID
-        天然不撞键；daemon 侧也不镜像它们，双重保证不双写。
-        """
-        message_id = event.payload.get('message_id') or event.dedupe_key
-        if not message_id:
-            raise errors.RequestError(msg='ERR_MESSAGE_ID_REQUIRED')
-        existing = await db.execute(
-            sa.text(
-                """
-                SELECT revision
-                FROM public.hasn_sync_events
-                WHERE owner_id = :owner_id
-                  AND aggregate_type = 'message'
-                  AND aggregate_id = :aggregate_id
-                  AND event_type = :event_type
-                LIMIT 1
-                """
-            ),
-            {
-                'owner_id': owner_id,
-                'aggregate_id': str(message_id),
-                'event_type': event.event_type,
-            },
-        )
-        existing_row = existing.mappings().first()
-        if existing_row is not None:
-            return int(existing_row['revision'])
-        return await self._append_sync_event(
-            db,
-            owner_id=owner_id,
-            hasn_id=event.hasn_id or owner_id,
-            event_type=event.event_type,
-            aggregate_type='message',
-            aggregate_id=str(message_id),
-            payload={**event.payload, 'client_event_id': event.client_event_id},
-        )
-
-    async def _persist_loopback_message_best_effort(
-        self, db: AsyncSession, *, owner_id: str, event: ClientEvent
-    ) -> None:
-        """把一条 owner↔自有分身会话同步事件**额外**落入权威 ``hasn_messages``（doc16 Phase A）。
-
-        SAVEPOINT 隔离 + best-effort：本步是「记忆提取数据源」的补写，与跨设备 feed 解耦。
-        失败（如分身已删、并发撞键、瞬时 DB 错）只记日志并回滚本 SAVEPOINT，**绝不**连累
-        外层 feed 写入与跨设备同步——这正是 daemon 侧「镜像入队 best-effort」的云端对偶。
-        """
-        from backend.app.hasn.service.owner_message_sync_service import (
-            persist_loopback_message_from_sync_event,
-        )
-
-        try:
-            async with db.begin_nested():
-                await persist_loopback_message_from_sync_event(
-                    db, owner_id=owner_id, event_type=event.event_type, payload=event.payload
-                )
-        except Exception as exc:
-            log.warning(
-                'doc16 hasn_messages persist skipped (owner=%s, event=%s): %r',
-                owner_id,
-                event.event_type,
-                exc,
+        if manage_inbox:
+            existing_revision = await self.existing_client_event_revision(
+                db,
+                owner_id=owner_id,
+                node_id=node_id,
+                client_event_id=event.client_event_id,
             )
-
-    async def save_task_event(self, db: AsyncSession, *, owner_id: str, node_id: str, event: ClientEvent) -> int | None:
-        existing_revision = await self.existing_client_event_revision(
-            db,
-            owner_id=owner_id,
-            node_id=node_id,
-            client_event_id=event.client_event_id,
-        )
-        if existing_revision is not None:
-            return existing_revision
+            if existing_revision is not None:
+                return existing_revision
 
         task_payload = _task_payload_for_storage(owner_id, event)
         task_uuid = _required_string(task_payload, 'task_id', 'ERR_TASK_ID_REQUIRED')
@@ -576,6 +508,7 @@ class SqlAlchemySyncGateway:
             task_uuid=task_uuid,
             stored_task=stored_task,
             event_payload=_task_sync_payload(task_uuid, stored_task, task_payload, event),
+            manage_inbox=manage_inbox,
         )
         return revision
 
@@ -826,6 +759,7 @@ class SqlAlchemySyncGateway:
         task_uuid: str,
         stored_task: dict[str, Any],
         event_payload: dict[str, Any],
+        manage_inbox: bool = True,
     ) -> int:
         skill_bundle_refs = json.dumps(
             stored_task['skill_bundle_refs'],
@@ -1024,7 +958,12 @@ class SqlAlchemySyncGateway:
         # 更新（refresh-builtin）都因「task id 非数字」失败。upsert 后 RETURNING id 拿到
         # 权威整型主键，注入 payload（普通任务亦无害——值即该行权威 id，幂等）。
         task_server_id = int(task_upsert_result.scalar_one())
-        event_payload = {**event_payload, 'server_id': task_server_id}
+        event_executor_node_id = stored_task['executor_node_id'] or node_id
+        event_payload = {
+            **event_payload,
+            'server_id': task_server_id,
+            'visible_node_ids': [event_executor_node_id],
+        }
         await self._upsert_current_assignment(
             db,
             task_uuid=task_uuid,
@@ -1032,7 +971,7 @@ class SqlAlchemySyncGateway:
             agent_id=stored_task['agent_id'],
             assignment={
                 'executor_kind': stored_task['executor_policy'],
-                'executor_node_id': stored_task['executor_node_id'] or node_id,
+                'executor_node_id': event_executor_node_id,
                 'binding_id': stored_task.get('binding_id'),
                 'assignment_state': 'unresolved' if event_payload.get('state') == 'deleted' else 'assigned',
                 'resolved_at': stored_task['updated_time'],
@@ -1051,50 +990,51 @@ class SqlAlchemySyncGateway:
                 'node_id': node_id,
             },
         )
-        await db.execute(
-            sa.text(
-                """
-                INSERT INTO public.hasn_sync_inbox_events (
-                    client_event_id,
-                    owner_id,
-                    hasn_id,
-                    node_id,
-                    event_type,
-                    payload,
-                    dedupe_key,
-                    status,
-                    server_revision,
-                    received_at,
-                    created_time,
-                    updated_time
-                ) VALUES (
-                    :client_event_id,
-                    :owner_id,
-                    :hasn_id,
-                    :node_id,
-                    :event_type,
-                    CAST(:payload AS jsonb),
-                    :dedupe_key,
-                    'applied',
-                    :server_revision,
-                    now(),
-                    now(),
-                    now()
-                )
-                ON CONFLICT (owner_id, node_id, client_event_id) DO NOTHING
-                """
-            ),
-            {
-                'client_event_id': event.client_event_id,
-                'owner_id': owner_id,
-                'hasn_id': event.hasn_id or owner_id,
-                'node_id': node_id,
-                'event_type': event.event_type,
-                'payload': json.dumps(event_payload, ensure_ascii=False, sort_keys=True, default=str),
-                'dedupe_key': event.dedupe_key,
-                'server_revision': revision,
-            },
-        )
+        if manage_inbox:
+            await db.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {_SYNC_INBOX_EVENTS} (
+                        client_event_id,
+                        owner_id,
+                        hasn_id,
+                        node_id,
+                        event_type,
+                        payload,
+                        dedupe_key,
+                        status,
+                        server_revision,
+                        received_at,
+                        created_time,
+                        updated_time
+                    ) VALUES (
+                        :client_event_id,
+                        :owner_id,
+                        :hasn_id,
+                        :node_id,
+                        :event_type,
+                        CAST(:payload AS jsonb),
+                        :dedupe_key,
+                        'applied',
+                        :server_revision,
+                        now(),
+                        now(),
+                        now()
+                    )
+                    ON CONFLICT (owner_id, node_id, client_event_id) DO NOTHING
+                    """
+                ),
+                {
+                    'client_event_id': event.client_event_id,
+                    'owner_id': owner_id,
+                    'hasn_id': event.hasn_id or owner_id,
+                    'node_id': node_id,
+                    'event_type': event.event_type,
+                    'payload': json.dumps(event_payload, ensure_ascii=False, sort_keys=True, default=str),
+                    'dedupe_key': event.dedupe_key,
+                    'server_revision': revision,
+                },
+            )
         return revision
 
     async def save_task_run_summary(
@@ -1203,9 +1143,9 @@ class SqlAlchemySyncGateway:
         stored = dict(result.mappings().one())
         existing_event = await db.execute(
             sa.text(
-                """
+                f"""
                 SELECT event_id
-                FROM public.hasn_sync_events
+                FROM {_SYNC_EVENTS}
                 WHERE owner_id = :owner_id
                   AND event_type = 'task_run.summary_reported'
                   AND payload->>'dedupe_key' = :dedupe_key
@@ -1231,9 +1171,9 @@ class SqlAlchemySyncGateway:
     ) -> int | None:
         result = await db.execute(
             sa.text(
-                """
+                f"""
                 SELECT server_revision
-                FROM public.hasn_sync_inbox_events
+                FROM {_SYNC_INBOX_EVENTS}
                 WHERE owner_id = :owner_id
                   AND node_id = :node_id
                   AND client_event_id = :client_event_id
@@ -1425,44 +1365,22 @@ class SqlAlchemySyncGateway:
         source_event_id: str | None = None,
         occurred_at: Any = None,
     ) -> tuple[int, str, bool]:
-        # sync 事件唯一写入口（R2-07 · doc16 §3.2）。原「advisory lock + SELECT MAX+1 + INSERT」
-        # 逻辑已下沉为 PG 函数 hasn_sync.append_event：函数内 per-owner advisory xact lock 串行化
-        # gapless revision 分配（uq_hasn_sync_events_owner_revision 要求每 owner 连续无冲突，并发
-        # 写不会都读到同一 MAX），并叠加 (owner_id, producer, source_event_id) 幂等去重
-        # （带 producer 时跨重启重放返回原 revision·deduped=true，不新增行）。函数在 db 当前事务内
-        # 执行，与业务写同事务提交/回滚。所有写入方都经此方法 → 这里就是唯一 append 实现，
-        # 严禁「函数 + ORM 直写」双路径（§8.1）。
-        result = await db.execute(
-            sa.text(
-                """
-                SELECT revision, event_id, deduped
-                FROM hasn_sync.append_event(
-                    :owner_id,
-                    :hasn_id,
-                    :event_type,
-                    :aggregate_type,
-                    :aggregate_id,
-                    CAST(:payload AS jsonb),
-                    :producer,
-                    :source_event_id,
-                    :occurred_at
-                )
-                """
+        """兼容旧 service 内部调用；实际写入委托唯一 SyncAppender。"""
+        ref = await SqlAlchemySyncAppender().append(
+            db,
+            SyncEnvelope(
+                owner_id=owner_id,
+                hasn_id=hasn_id,
+                event_type=event_type,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+                payload=payload,
+                producer=producer,
+                source_event_id=source_event_id,
+                occurred_at=occurred_at,
             ),
-            {
-                'owner_id': owner_id,
-                'hasn_id': hasn_id,
-                'event_type': event_type,
-                'aggregate_type': aggregate_type,
-                'aggregate_id': aggregate_id,
-                'payload': json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
-                'producer': producer,
-                'source_event_id': source_event_id,
-                'occurred_at': occurred_at,
-            },
         )
-        row = result.mappings().one()
-        return int(row['revision']), row['event_id'], bool(row['deduped'])
+        return ref.revision, ref.event_id, ref.deduped
 
     async def save_session(self, db: AsyncSession, session: dict[str, Any]) -> None:
         """保存或更新 session 到云端投影表"""

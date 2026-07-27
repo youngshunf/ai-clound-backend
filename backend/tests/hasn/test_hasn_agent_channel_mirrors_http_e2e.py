@@ -87,7 +87,7 @@ async def env():
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
 
-    user_a = 970000 + int(uuid.uuid4().int % 20000)
+    user_a = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     user_b = user_a + 1
     owner_a = _hasn40('h')
     owner_b = _hasn40('h')

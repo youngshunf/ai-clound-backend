@@ -390,7 +390,7 @@ class GenService:
             raise errors.NotFoundError(msg='业务不存在')
 
         gen_path = business.gen_path or '<project_root>/backend/app'
-        paths = []
+        paths: list[str] = []
 
         init_files = gen_template.get_init_files(business)
         paths.extend(os.path.join(gen_path, *filepath.split('/')) for filepath in init_files.keys())

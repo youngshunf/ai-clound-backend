@@ -31,7 +31,7 @@ from backend.app.hasn_finance.service.finance_sync_service import finance_sync_s
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 # 05 §3.1.5 隐私红线：这两个字段是**本地绝对路径 / 当前原件 hash**，永远不该有云端列。
 # 一旦有人加了同名列，此守卫立刻红——比事后在响应里剔除可靠得多（剔除会漏，缺列漏不了）。

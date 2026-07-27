@@ -67,7 +67,7 @@ def test_no_stale_public_memory_tables_in_metadata() -> None:
 def test_owner_memory_routes_preserved() -> None:
     from backend.app.hasn_memory.api.v1.app.owner_memory import router
 
-    paths = {r.path for r in router.routes}
+    paths = {getattr(r, 'path') for r in router.routes}
     assert paths == {'/memory', '/memory/contributions'}, f'owner_memory 路由漂移：{sorted(paths)}'
 
 

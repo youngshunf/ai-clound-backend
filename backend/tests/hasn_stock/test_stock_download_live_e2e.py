@@ -49,12 +49,12 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 # 多个真实-DB async 测试共享同一 module 级事件循环（对齐 conftest 的连接池隔离）。
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _TEST_PREFIX = 'test_stock_dl_'
-# 活体下载目标：Wikimedia 公共示例图（稳定、可匿名下载、image/jpeg）。
-_LIVE_HOST = 'upload.wikimedia.org'
-_LIVE_URL = 'https://upload.wikimedia.org/wikipedia/commons/a/a9/Example.jpg'
+# 活体下载目标：GitHub 官方公开仓库中的 Python 图标（稳定、可匿名下载、image/png）。
+_LIVE_HOST = 'raw.githubusercontent.com'
+_LIVE_URL = 'https://raw.githubusercontent.com/github/explore/main/topics/python/python.png'
 # 真实分身/主人对（本地库既有）。下载路径只用 owner_hasn_id / agent_hasn_id。
 _AGENT = 'a_one_66cee7c3'
 _OWNER = 'h_wb_0423b018'
@@ -70,7 +70,7 @@ async def _cleanup_providers() -> None:
     stock_provider_store.invalidate_cache()
 
 
-@pytest_asyncio.fixture(autouse=True, loop_scope='module')
+@pytest_asyncio.fixture(autouse=True, loop_scope='session')
 async def _auto_cleanup() -> AsyncGenerator[None, None]:
     """每个用例前后清掉本族自建 provider 行，避免污染。"""
     await _cleanup_providers()
@@ -155,7 +155,7 @@ async def test_enabled_download_domains_reflects_seeded_provider() -> None:
 
 async def test_download_rejects_non_whitelisted_host_via_db_whitelist() -> None:
     """服务据 DB 白名单拒绝不在白名单内的 host（host 检查在任何网络请求之前，确定性）。"""
-    await _seed_provider(_LIVE_HOST)  # 白名单只含 wikimedia
+    await _seed_provider(_LIVE_HOST)  # 白名单只含活体下载目标域名
     with pytest.raises(StockDownloadError, match='白名单'):
         await stock_download_service.download(
             owner_hasn_id=_OWNER,
@@ -280,6 +280,14 @@ async def test_store_and_register_with_real_bytes_roundtrip() -> None:
     # 清理本次创建的 artifact/asset 行（真实删除，不留残行）。
     aid = asset_uri.rsplit('/', 1)[-1]
     async with async_db_session.begin() as db:
+        await db.execute(
+            text('DELETE FROM hasn_artifact_registration_outbox WHERE artifact_id = :i'),
+            {'i': artifact_id},
+        )
+        await db.execute(
+            text('DELETE FROM hasn_artifact_contributions WHERE artifact_id = :i'),
+            {'i': artifact_id},
+        )
         await db.execute(text('DELETE FROM hasn_artifacts WHERE artifact_id = :i'), {'i': artifact_id})
         await db.execute(text('DELETE FROM hasn_assets WHERE asset_id = :a'), {'a': aid})
 
@@ -320,5 +328,13 @@ async def test_live_download_upload_register_search_roundtrip() -> None:
     # 清理本次创建的 artifact/asset 行（真实删除，不留残行）。
     aid = asset_uri.rsplit('/', 1)[-1]
     async with async_db_session.begin() as db:
+        await db.execute(
+            text('DELETE FROM hasn_artifact_registration_outbox WHERE artifact_id = :i'),
+            {'i': artifact_id},
+        )
+        await db.execute(
+            text('DELETE FROM hasn_artifact_contributions WHERE artifact_id = :i'),
+            {'i': artifact_id},
+        )
         await db.execute(text('DELETE FROM hasn_artifacts WHERE artifact_id = :i'), {'i': artifact_id})
         await db.execute(text('DELETE FROM hasn_assets WHERE asset_id = :a'), {'a': aid})

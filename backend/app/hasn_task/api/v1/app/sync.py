@@ -21,6 +21,15 @@ from backend.app.hasn.schema.hasn_sync import (
     TaskRunSummaryRequest,
 )
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
+from backend.app.hasn.service._sync_codec import _contains_private_runtime_key
+from backend.app.hasn.service.sync_business_handlers import TASK_SYNC_EVENTS
+from backend.app.hasn.service.sync_entry_auth import (
+    require_node_identity,
+    require_owner_identity,
+)
+from backend.app.hasn.schema.hasn_message_hub import ErrorObject
+from backend.app.hasn_sync.application.push import accept_envelopes
+from backend.app.hasn_sync.ports.dto import InboxEnvelope
 from backend.app.hasn_task.api.v1.app.task import current_owner_id
 from backend.app.hasn_task.schema.workflow_sync import (
     WorkflowDefinitionsSyncRequest,
@@ -33,12 +42,32 @@ from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import (
+    CurrentSession,
+    CurrentSessionTransaction,
+    CurrentSyncSession,
+    CurrentSyncSessionTransaction,
+)
 
 if TYPE_CHECKING:
     from backend.app.hasn_task.schema.builtin_catalog import BuiltinTaskCatalogResponse
 
 router = APIRouter()
+_TASK_EVENT_UNSUPPORTED_ERROR = ErrorObject(
+    code=8037,
+    name='ERR_TASK_SYNC_EVENT_UNSUPPORTED',
+    message='任务同步事件类型不受支持',
+)
+_PRIVATE_METADATA_ERROR = ErrorObject(
+    code=8034,
+    name='ERR_RUNTIME_PRIVATE_METADATA_REJECTED',
+    message='任务同步载荷包含本地私有元数据',
+)
+_TASK_CONFLICT_ERROR = ErrorObject(
+    code=8042,
+    name='ERR_TASK_SYNC_INBOX_CONFLICT',
+    message='同一任务客户端事件 ID 的载荷与已接收事件不一致',
+)
 
 
 @router.post(
@@ -49,11 +78,12 @@ router = APIRouter()
 )
 async def pull_task_sync_events(
     request: Request,
-    db: CurrentSession,
+    db: CurrentSyncSession,
     request_body: SyncPullRequest,
 ) -> SyncPullResponse:
     request_body.node_id = request_body.node_id or request.headers.get('X-Node-Id')
-    return await hasn_sync_service.pull_tasks(db, request_body, user_id=request.user.id)
+    require_owner_identity(request, request_body.owner_id)
+    return await hasn_sync_service.pull_tasks(db, request_body, user_id=None)
 
 
 @router.post(
@@ -64,10 +94,48 @@ async def pull_task_sync_events(
 )
 async def push_task_sync_events(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSyncSessionTransaction,
     request_body: SyncPushRequest,
 ) -> SyncPushResponse:
-    return await hasn_sync_service.push_tasks(db, request_body, user_id=request.user.id)
+    owner_id = require_owner_identity(request, request_body.owner_id)
+    node_id = require_node_identity(request, request_body.node_id)
+    envelopes: list[InboxEnvelope] = []
+    rejected: list[ErrorObject] = []
+    for event in request_body.events:
+        if event.event_type not in TASK_SYNC_EVENTS:
+            rejected.append(_TASK_EVENT_UNSUPPORTED_ERROR)
+            continue
+        if _contains_private_runtime_key(event.payload):
+            rejected.append(_PRIVATE_METADATA_ERROR)
+            continue
+        payload_agent_id = event.payload.get('agent_id')
+        subject_hasn_id = event.hasn_id
+        if not subject_hasn_id and isinstance(payload_agent_id, str):
+            subject_hasn_id = payload_agent_id
+        envelopes.append(
+            InboxEnvelope(
+                owner_id=owner_id,
+                node_id=node_id,
+                client_event_id=event.client_event_id,
+                hasn_id=subject_hasn_id or owner_id,
+                event_type=event.event_type,
+                payload=event.payload,
+                dedupe_key=event.dedupe_key,
+            )
+        )
+    result = await accept_envelopes(db, envelopes)
+    for item in result.items:
+        if item.status == 'conflict':
+            rejected.append(
+                _TASK_CONFLICT_ERROR.model_copy(
+                    update={'detail': {'client_event_id': item.client_event_id}}
+                )
+            )
+    return SyncPushResponse(
+        accepted=result.accepted,
+        rejected=rejected,
+        next_cursor=f'owner:{owner_id}:task:0',
+    )
 
 
 @router.post(

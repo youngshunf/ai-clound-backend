@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from backend.app.mcp.tools.base import BaseTool
+from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 from backend.common.log import log
 from backend.database.db import async_db_session
 
@@ -229,7 +229,7 @@ class PublishBriefingTool(BaseTool):
             try:
                 row = await hasn_workbench_briefing_service.publish(
                     db=db,
-                    owner_hasn_id=agent_context.owner_hasn_id,
+                    owner_hasn_id=require_owner_hasn_id(agent_context),
                     agent_hasn_id=agent_context.hasn_id,
                     document=document,
                 )

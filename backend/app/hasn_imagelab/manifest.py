@@ -32,7 +32,7 @@ enhance/recipe.save/list/get/import）`imagelab:process`（出厂 Allow）；写
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -155,7 +155,7 @@ _RECIPE = {
     }
 }
 
-IMAGELAB_AI_NATIVE_MANIFEST = {
+IMAGELAB_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'imagelab',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'imagelab': '图像处理（去背景/裁剪/调色/拼图/动画/配方批量）'},

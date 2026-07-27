@@ -66,10 +66,10 @@ async def get_newapi_usage_summary(
         end_time = now
 
     if agent_id is None:
-        data = await llm_newapi_user_mapping_service.get_usage_summary(
+        usage_summary = await llm_newapi_user_mapping_service.get_usage_summary(
             db, request.user.id, start_time, end_time,
         )
-        return response_base.success(data=data)
+        return response_base.success(data=usage_summary)
 
     # per-Agent 路径：先校验 hermes_agent.user_id == request.user.id
     stmt = select(HermesAgent.user_id).where(HermesAgent.agent_id == agent_id)
@@ -78,10 +78,10 @@ async def get_newapi_usage_summary(
         # 不区分「不存在」与「他人持有」，避免泄漏 agent_id 是否存在
         raise errors.ForbiddenError(msg='无权查看该 Agent 用量')
 
-    data = await llm_newapi_user_mapping_service.get_usage_summary_by_agent(
+    agent_usage_summary = await llm_newapi_user_mapping_service.get_usage_summary_by_agent(
         db, agent_id, start_time, end_time,
     )
-    return response_base.success(data=data)
+    return response_base.success(data=agent_usage_summary)
 
 
 @router.get(

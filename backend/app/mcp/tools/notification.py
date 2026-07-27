@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from backend.app.mcp.tools.base import BaseTool
+from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 from backend.app.notification.service.notification_service import notification_service
 from backend.database.db import async_db_session
 
@@ -124,7 +124,7 @@ class NotificationEmitTool(BaseTool):
             notification_id = await notification_service.app_emit(
                 db,
                 app_id=app_id,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=require_owner_hasn_id(agent_context),
                 category=category,
                 type=notif_type,
                 title=title,

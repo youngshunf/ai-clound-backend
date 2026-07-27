@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from backend.app.hasn_im.protocol.version_gate import (
+    R3_COMPANION_DAEMON_VERSION,
     UPGRADE_REQUIRED_CLOSE_CODE,
     UPGRADE_REQUIRED_REASON_PREFIX,
     build_upgrade_required_reason,
@@ -83,6 +84,14 @@ def test_fail_closed_missing_client_version_when_threshold_set():
     assert is_below_minimum(None, '1.4.0') is True
     assert is_below_minimum('', '1.4.0') is True
     assert is_below_minimum('garbage', '1.4.0') is True
+
+
+def test_r3_companion_version_rejects_existing_daemon_and_accepts_companion():
+    """R3 冻结版本必须拒绝已发布 daemon，并放行配套更新版本。"""
+    assert R3_COMPANION_DAEMON_VERSION == '0.3.0'
+    assert is_below_minimum('0.1.0', R3_COMPANION_DAEMON_VERSION) is True
+    assert is_below_minimum(None, R3_COMPANION_DAEMON_VERSION) is True
+    assert is_below_minimum(R3_COMPANION_DAEMON_VERSION, R3_COMPANION_DAEMON_VERSION) is False
 
 
 # ── 拒连错误码契约（D3 消费）──

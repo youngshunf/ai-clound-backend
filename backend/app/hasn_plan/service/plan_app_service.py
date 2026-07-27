@@ -813,7 +813,10 @@ class PlanService:
     ) -> dict:
         """组织者加/减参会人（[04] §6.2）：仅事件 owner 可调；组织者行不可移除。返回 added/removed + 最新名单。"""
         ev = await self._get_enterprise_event(db, owner=owner, pk=event_id)
-        existing = {
+        enterprise_id = ev.enterprise_id
+        if enterprise_id is None:
+            raise errors.ServerError(msg='企业事件缺少 enterprise_id')
+        existing: dict[str, EventAttendee | None] = {
             r.attendee_hasn_id: r
             for r in (await db.execute(sa.select(EventAttendee).where(EventAttendee.event_id == event_id)))
             .scalars()
@@ -827,7 +830,7 @@ class PlanService:
             db.add(
                 EventAttendee(
                     event_id=event_id,
-                    enterprise_id=ev.enterprise_id,
+                    enterprise_id=enterprise_id,
                     attendee_hasn_id=h,
                     role=default_role,
                     rsvp='none',

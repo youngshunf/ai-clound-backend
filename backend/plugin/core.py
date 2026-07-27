@@ -79,7 +79,7 @@ async def get_plugin_sql(plugin: str, db_type: DataBaseType, pk_type: PrimaryKey
     if not await path.exists():
         return None
 
-    return sql_file
+    return str(sql_file)
 
 
 async def get_plugin_destroy_sql(plugin: str, db_type: DataBaseType, pk_type: PrimaryKeyType) -> str | None:
@@ -110,7 +110,7 @@ async def get_plugin_destroy_sql(plugin: str, db_type: DataBaseType, pk_type: Pr
     if not await path.exists():
         return None
 
-    return sql_file
+    return str(sql_file)
 
 
 def load_plugin_config(plugin: str) -> dict[str, Any]:

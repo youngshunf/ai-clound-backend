@@ -47,8 +47,8 @@ async def create_my_{{ table_name }}(
     db: CurrentSessionTransaction,
     obj: Create{{ schema_name }}Param,
 ) -> ResponseModel:
-    result = await {{ table_name }}_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await {{ table_name }}_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

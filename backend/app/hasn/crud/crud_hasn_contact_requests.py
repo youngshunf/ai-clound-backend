@@ -116,26 +116,26 @@ class CRUDHasnContactRequests(CRUDPlus[HasnContactRequests]):
         db: AsyncSession, to_owner_id: str, limit: int = 20,
     ) -> list[HasnContactRequests]:
         """审批人视角：我收到的待处理请求"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContactRequests)
             .where(HasnContactRequests.to_owner_id == to_owner_id)
             .where(HasnContactRequests.status == 'pending')
             .order_by(HasnContactRequests.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def get_sent_pending(
         db: AsyncSession, from_id: str, limit: int = 20,
     ) -> list[HasnContactRequests]:
         """发起方视角：我发出的待处理请求"""
-        return (await db.execute(
+        return list((await db.execute(
             select(HasnContactRequests)
             .where(HasnContactRequests.from_id == from_id)
             .where(HasnContactRequests.status == 'pending')
             .order_by(HasnContactRequests.created_time.desc())
             .limit(limit)
-        )).scalars().all()
+        )).scalars().all())
 
     @staticmethod
     async def mark_accepted(

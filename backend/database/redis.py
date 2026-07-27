@@ -1,10 +1,20 @@
+import builtins
 import sys
+
+from typing import Any, Awaitable, TypeVar, cast
 
 from redis.asyncio import Redis
 from redis.exceptions import AuthenticationError, TimeoutError
 
 from backend.common.log import log
 from backend.core.conf import settings
+
+_RedisResult = TypeVar('_RedisResult')
+
+
+async def _await_redis_command(result: Awaitable[_RedisResult] | _RedisResult) -> _RedisResult:
+    """收口 redis-py 同步/异步混合类型声明，运行时只接受异步客户端结果。"""
+    return await cast(Awaitable[_RedisResult], result)
 
 
 class RedisCli(Redis):
@@ -47,6 +57,93 @@ class RedisCli(Redis):
             health_check_interval=health_check_interval,
             decode_responses=decode_responses,
         )
+
+    async def ping(self, *args: Any, **kwargs: Any) -> bool:
+        return await _await_redis_command(super().ping(*args, **kwargs))
+
+    async def delete(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().delete(*args, **kwargs))
+
+    async def get(self, *args: Any, **kwargs: Any) -> Any:
+        return await _await_redis_command(super().get(*args, **kwargs))
+
+    async def set(self, *args: Any, **kwargs: Any) -> Any:
+        return await _await_redis_command(super().set(*args, **kwargs))
+
+    async def setex(self, *args: Any, **kwargs: Any) -> bool:
+        return await _await_redis_command(super().setex(*args, **kwargs))
+
+    async def exists(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().exists(*args, **kwargs))
+
+    async def expire(self, *args: Any, **kwargs: Any) -> bool:
+        return await _await_redis_command(super().expire(*args, **kwargs))
+
+    async def ttl(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().ttl(*args, **kwargs))
+
+    async def incr(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().incr(*args, **kwargs))
+
+    async def eval(self, *args: Any, **kwargs: Any) -> Any:
+        return await _await_redis_command(super().eval(*args, **kwargs))
+
+    async def publish(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().publish(*args, **kwargs))
+
+    async def hset(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().hset(*args, **kwargs))
+
+    async def hget(self, *args: Any, **kwargs: Any) -> Any:
+        return await _await_redis_command(super().hget(*args, **kwargs))
+
+    async def hmget(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return await _await_redis_command(super().hmget(*args, **kwargs))
+
+    async def hgetall(self, *args: Any, **kwargs: Any) -> dict[Any, Any]:
+        return await _await_redis_command(super().hgetall(*args, **kwargs))
+
+    async def hdel(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().hdel(*args, **kwargs))
+
+    async def hlen(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().hlen(*args, **kwargs))
+
+    async def sadd(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().sadd(*args, **kwargs))
+
+    async def srem(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().srem(*args, **kwargs))
+
+    async def smembers(self, *args: Any, **kwargs: Any) -> builtins.set[Any]:
+        return await _await_redis_command(super().smembers(*args, **kwargs))
+
+    async def spop(self, *args: Any, **kwargs: Any) -> Any:
+        return await _await_redis_command(super().spop(*args, **kwargs))
+
+    async def rpush(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().rpush(*args, **kwargs))
+
+    async def llen(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().llen(*args, **kwargs))
+
+    async def lrange(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return await _await_redis_command(super().lrange(*args, **kwargs))
+
+    async def lrem(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().lrem(*args, **kwargs))
+
+    async def rpoplpush(self, *args: Any, **kwargs: Any) -> Any:
+        return await _await_redis_command(super().rpoplpush(*args, **kwargs))
+
+    async def mget(self, *args: Any, **kwargs: Any) -> list[Any]:
+        return await _await_redis_command(super().mget(*args, **kwargs))
+
+    async def info(self, *args: Any, **kwargs: Any) -> dict[Any, Any]:
+        return await _await_redis_command(super().info(*args, **kwargs))
+
+    async def dbsize(self, *args: Any, **kwargs: Any) -> int:
+        return await _await_redis_command(super().dbsize(*args, **kwargs))
 
     async def init(self) -> None:
         """初始化 Redis 服务器"""

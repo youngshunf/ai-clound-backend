@@ -42,6 +42,7 @@ from backend.app.marketplace.service.skill_content_extractor import (
 )
 from backend.app.marketplace.service.translation_service import translation_service
 from backend.app.marketplace.storage.s3_storage import marketplace_storage_service
+from backend.common.exception import errors
 from backend.common.log import log
 from backend.core.conf import settings
 from backend.utils.timezone import timezone
@@ -220,6 +221,7 @@ class GitHubSyncService:
 
             # 增量：只保留本次 push 命中变更路径的技能（其余跳过翻译+落库）。
             if incremental:
+                assert changed_paths is not None
                 scanned_total = len(skills_data)
                 skills_data = [s for s in skills_data if skill_dir_touched(s.get('repo_path', ''), changed_paths)]
                 log.info(f"[GitHub增量] 扫描 {scanned_total} 个技能 → 命中变更 {len(skills_data)} 个")
@@ -703,8 +705,10 @@ class GitHubSyncService:
         results: list[dict[str, Any] | None] = [None] * len(skills_data)
         pending: list[tuple[int, dict[str, Any]]] = []
         for index, skill_data in enumerate(skills_data):
-            existing = existing_map.get(skill_data.get('skill_id'))
+            skill_id = skill_data.get('skill_id')
+            existing = existing_map.get(skill_id) if isinstance(skill_id, str) else None
             if metadata_unchanged(skill_data, existing):
+                assert existing is not None
                 results[index] = translation_from_existing(existing)
             else:
                 pending.append((index, {
@@ -722,7 +726,9 @@ class GitHubSyncService:
                 results[index] = result
 
         log.info(f"[GitHub翻译] 元数据：{len(pending)} 需译 / {len(skills_data) - len(pending)} 复用缓存")
-        return results
+        if any(result is None for result in results):
+            raise errors.ServerError(msg='技能元数据翻译结果不完整')
+        return [result for result in results if result is not None]
 
     async def _load_categories(self, db: AsyncSession) -> list[dict[str, Any]]:
         """Load marketplace categories as {slug, name} for LLM classification."""
@@ -829,6 +835,7 @@ class GitHubSyncService:
             'translated_at': timezone.now(),
         }
 
+        db_skill_id: int | None
         if existing_skill:
             # Update existing skill
             await marketplace_skill_dao.update(db, existing_skill.id, UpdateMarketplaceSkillParam(**skill_record))
@@ -842,6 +849,8 @@ class GitHubSyncService:
             db_skill_id = new_skill.id if new_skill else None
 
         # Sync versions
+        if db_skill_id is None:
+            raise errors.ServerError(msg=f'技能落库后缺少主键: {skill_id}')
         versions = skill_data.get('versions', [])
         for version_data in versions:
             await self._sync_skill_version(db, db_skill_id, skill_id, version_data)

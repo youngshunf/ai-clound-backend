@@ -169,7 +169,7 @@ class LeadAutomationBusinessService:
                     max_bytes=int((job.request_config or {}).get('max_html_bytes', 524288)),
                     raw_record_id=firecrawl_request.id,
                 )
-                raw_dict = {
+                raw_dict: dict[str, Any] = {
                     'job_id': job.id,
                     'source_type': item.source_type,
                     'source_url': item.source_url,

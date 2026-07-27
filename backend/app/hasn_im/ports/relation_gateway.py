@@ -37,6 +37,19 @@ class EffectiveRelation:
 class RelationGateway(Protocol):
     """关系域对外唯一写入口。"""
 
+    async def ensure_owner_agent_control_edge(
+        self,
+        *,
+        owner_hasn_id: str,
+        agent_hasn_id: str,
+    ) -> dict[str, Any]:
+        """把已提交的 Agent 身份事实幂等投影为 owner→agent 控制边。"""
+        ...
+
+    async def sweep_expired_relation_lifecycle(self) -> dict[str, int]:
+        """收敛过期联系人请求和到期关系。"""
+        ...
+
     async def request_contact(
         self,
         *,
@@ -58,6 +71,10 @@ class RelationGateway(Protocol):
         """拒绝请求。"""
         ...
 
+    async def withdraw_request(self, *, request_id: int, decided_by: str) -> dict[str, Any]:
+        """发起方撤回仍为 pending 的请求。"""
+        ...
+
     async def update_trust(
         self, *, owner_hasn_id: str, peer_hasn_id: str, trust_level: int
     ) -> dict[str, Any]:
@@ -76,8 +93,78 @@ class RelationGateway(Protocol):
         """删除关系。"""
         ...
 
+    async def update_permissions(
+        self,
+        *,
+        owner_hasn_id: str,
+        peer_hasn_id: str,
+        permissions: dict[str, str],
+    ) -> dict[str, Any]:
+        """合并自定义权限覆盖，并执行协议铁律校验。"""
+        ...
+
     async def resolve_effective_relation(
         self, *, owner_hasn_id: str, peer_hasn_id: str
     ) -> EffectiveRelation | None:
         """解析有效关系（供通信判权，不反向调用交易/服务 API，§9.1）。"""
+        ...
+
+    async def materialize_derived_agent(
+        self,
+        *,
+        owner_hasn_id: str,
+        peer_agent_hasn_id: str,
+        peer_owner_hasn_id: str,
+        trust_level: int,
+    ) -> dict[str, Any]:
+        """把主人关系派生为 owner→对方分身的通信边。"""
+        ...
+
+    async def ensure_auto_first_contact_request(
+        self,
+        *,
+        from_agent_hasn_id: str,
+        receiver_hasn_id: str,
+        receiver_owner_hasn_id: str,
+        receiver_type: str,
+    ) -> int:
+        """幂等创建自动首联请求并返回权威请求 ID。"""
+        ...
+
+    async def upsert_release_contact(
+        self,
+        *,
+        owner_hasn_id: str,
+        peer_hasn_id: str,
+        minimum_trust_level: int = 2,
+        request_id: int | None = None,
+    ) -> dict[str, Any]:
+        """主人放行时幂等建边/提档，并可原子接受关联的自动首联请求。"""
+        ...
+
+    async def update_agent_communication_settings(
+        self,
+        *,
+        owner_hasn_id: str,
+        agent_hasn_id: str,
+        social_enabled: bool | None = None,
+        inbound_policy: str | None = None,
+    ) -> dict[str, Any]:
+        """主人更新自有分身的 IM 通信设置。"""
+        ...
+
+    async def get_agent_communication_settings(
+        self,
+        *,
+        agent_hasn_id: str,
+    ) -> dict[str, Any]:
+        """读取分身的 IM 权威通信设置；未显式建行时返回协议默认值。"""
+        ...
+
+    async def filter_socially_enabled_agents(
+        self,
+        *,
+        agent_hasn_ids: list[str],
+    ) -> set[str]:
+        """从候选分身中返回允许公开社交发现的 ID。"""
         ...

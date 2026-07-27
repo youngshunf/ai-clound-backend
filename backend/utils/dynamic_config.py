@@ -7,7 +7,6 @@ from backend.core.conf import settings
 from backend.database.db import async_engine
 from backend.plugin.config.enums import ConfigType
 from backend.plugin.config.service.config_service import config_service
-from backend.utils.serializers import select_list_serialize
 
 _sys_config_table_exists: bool | None = None
 
@@ -29,7 +28,7 @@ def _to_bool(value: str) -> bool:
 async def _load_config(
     db: AsyncSession,
     config_type: ConfigType,
-    mapping: dict[str, Callable],
+    mapping: dict[str, Callable[[str], object]],
     status_key: str,
 ) -> None:
     """
@@ -48,8 +47,7 @@ async def _load_config(
     if not dynamic_config:
         return
 
-    config_list = select_list_serialize(dynamic_config) if hasattr(dynamic_config[0], '__table__') else dynamic_config
-    configs = {dc['key']: dc['value'] for dc in config_list}
+    configs = {config.key: config.value for config in dynamic_config if config is not None}
     if configs.get(status_key, '1') == '0':
         return
 
@@ -65,7 +63,7 @@ async def load_user_security_config(db: AsyncSession) -> None:
     :param db: 数据库会话
     :return:
     """
-    mapping = {
+    mapping: dict[str, Callable[[str], object]] = {
         'USER_LOCK_THRESHOLD': int,
         'USER_LOCK_SECONDS': int,
         'USER_PASSWORD_EXPIRY_DAYS': int,
@@ -85,7 +83,7 @@ async def load_login_config(db: AsyncSession) -> None:
     :param db: 数据库会话
     :return:
     """
-    mapping = {
+    mapping: dict[str, Callable[[str], object]] = {
         'LOGIN_CAPTCHA_ENABLED': _to_bool,
     }
     await _load_config(db, ConfigType.login, mapping, 'LOGIN_CONFIG_STATUS')
@@ -98,7 +96,7 @@ async def load_email_config(db: AsyncSession) -> None:
     :param db: 数据库会话
     :return:
     """
-    mapping = {
+    mapping: dict[str, Callable[[str], object]] = {
         'EMAIL_HOST': str,
         'EMAIL_PORT': int,
         'EMAIL_SSL': _to_bool,

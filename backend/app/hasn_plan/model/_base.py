@@ -7,6 +7,8 @@
 共享表（身份 public.hasn_humans/hasn_agents、资产 public.hasn_assets）仍留 public，跨 schema 全限定引用。
 """
 
+from typing import Any
+
 from sqlalchemy.orm import declared_attr
 
 from backend.common.model import Base
@@ -21,5 +23,5 @@ class PlanBase(Base):
     __abstract__ = True
 
     @declared_attr.directive
-    def __table_args__(cls) -> dict:  # noqa: N805
+    def __table_args__(cls) -> Any:  # noqa: N805
         return {'comment': cls.__doc__ or '', 'schema': APP_SCHEMA}

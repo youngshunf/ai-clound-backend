@@ -20,7 +20,7 @@ class MediaSchemaBase(SchemaBase):
     height: int | None = Field(None, description='None')
     duration: int | None = Field(None, description='None')
     thumbnail_uri: str | None = Field(None, description='None')
-    tags: dict = Field(description='None')
+    tags: list[str] = Field(description='None')
     description: str | None = Field(None, description='None')
 
 

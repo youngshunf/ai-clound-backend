@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -30,7 +31,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_router
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.model.lead_contact import LeadContact
@@ -72,15 +73,37 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = uuid.uuid4().hex[:8]
     owner = f'h_e2e_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 92_700_000_000 + int(uuid.uuid4().int % 900_000_000)
     agent_hasn = f'a_e2e_{tag}'
     task_uuid = f'tk_e2e_{tag}'
 
-    session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active'))
+    session.add(
+        HasnHumans(
+            hasn_id=owner,
+            star_id=f's_{owner_uid}',
+            user_id=owner_uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
+    )
+    session.add(
+        HasnAgents(
+            hasn_id=agent_hasn,
+            star_id=f'a_{tag}',
+            owner_id=owner,
+            display_name=f'获客分身-{tag}',
+            agent_name=f'agent_{tag}',
+            type='cloud',
+            role='specialist',
+            api_key_hash='test',
+            status='active',
+            created_via='client',
+        )
+    )
     lead = LeadContact(
         lead_no=f'L{tag.upper()}', pool_visibility='public', company_name='Acme',
         contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='new', confidence_score=72,
+        source_type='firecrawl', status='new', confidence_score=Decimal(72),
     )
     session.add(lead)
     await session.flush()

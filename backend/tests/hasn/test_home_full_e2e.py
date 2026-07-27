@@ -5,7 +5,7 @@
   2. 简报 publish（合 schema 落库）→ GET latest 取回完整文档（四类操作齐全）。
   3. dismiss 关注项 → 写反馈（喂下次去重）。
   4. 应用注册即用：/apps 列全部已注册；/apps/{id}/entry 返回
-     gateway_internal 句柄 + entry_route，且**不含 credential**（凭据不下发浏览器）。
+     daemon_direct 句柄 + entry_route，且**不含 credential**（凭据不下发浏览器）。
 
 LLM 触发的「cron→runtime→publish」自动生成属运行时职责，其唯一契约即调用 publish 工具，
 本测试在 publish 边界直接验证（零 mock：真实 service 真实落库），不引入不确定的活体 LLM。
@@ -226,9 +226,9 @@ async def test_workbench_briefing_and_apps_full_flow(env) -> None:
     assert {'knowledge', 'community'} <= ids, '列出全部已注册应用'
 
     entry = _data(await c.get(f'{_BASE}/apps/knowledge/entry'))
-    assert entry['transport'] == 'gateway_internal'
+    assert entry['transport'] == 'daemon_direct'
     assert entry['entry_route'] == '/apps/knowledge'
-    assert entry['requires_credential'] is False
+    assert entry['requires_credential'] is True
     assert 'credential' not in entry, '凭据不下发浏览器'
 
     # 未知应用如实 404。

@@ -249,7 +249,7 @@ class StockDownloadService:
                         location = resp.headers.get('location')
                         if not location:
                             raise StockDownloadError('stock.download: 重定向缺 Location')
-                        current = httpx.URL(current).join(location).human_repr()
+                        current = str(httpx.URL(current).join(location))
                         continue
                     if resp.status_code >= 400:
                         raise StockDownloadError(f'stock.download: 源站 HTTP {resp.status_code}')

@@ -57,6 +57,8 @@ class OAuth2Service:
         user_social = await user_social_dao.get_by_sid(db, sid, source.value)
         if user_social:
             sys_user = await user_dao.get(db, user_social.user_id)
+            if sys_user is None:
+                raise errors.ServerError(msg='OAuth2 绑定指向的系统用户不存在')
             # 更新用户头像
             if not sys_user.avatar and avatar is not None:
                 await user_dao.update_avatar(db, sys_user.id, avatar)
@@ -68,10 +70,11 @@ class OAuth2Service:
 
             # 创建系统用户
             if not sys_user:
-                while await user_dao.get_by_username(db, username):
-                    username = f'{username}_{text_captcha(5)}'
+                resolved_username = (username or f'{source.value}_{sid}').strip()
+                while await user_dao.get_by_username(db, resolved_username):
+                    resolved_username = f'{resolved_username}_{text_captcha(5)}'
                 new_sys_user = AddOAuth2UserParam(
-                    username=username,
+                    username=resolved_username,
                     password=None,
                     nickname=nickname,
                     email=email,
@@ -79,7 +82,9 @@ class OAuth2Service:
                 )
                 await user_dao.add_by_oauth2(db, new_sys_user)
                 await db.flush()
-                sys_user = await user_dao.get_by_username(db, username)
+                sys_user = await user_dao.get_by_username(db, resolved_username)
+                if sys_user is None:
+                    raise errors.ServerError(msg='OAuth2 系统用户创建后无法读取')
 
             # 绑定社交账号
             new_user_social = CreateUserSocialParam(sid=sid, source=source.value, user_id=sys_user.id)

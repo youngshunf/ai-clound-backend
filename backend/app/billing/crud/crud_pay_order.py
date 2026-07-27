@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.billing.model.pay_order import PayOrder
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 
@@ -72,7 +73,7 @@ class CRUDPayOrder(CRUDPlus[PayOrder]):
         result = await db.execute(
             update(PayOrder).where(PayOrder.order_no == order_no).values(**values)
         )
-        return result.rowcount
+        return affected_rows(result)
 
     async def mark_fulfillment_dead(self, db: AsyncSession, *, order_no: str, error_code: str) -> int:
         """把订单的履约状态置为死信（doc94 C2）。
@@ -85,7 +86,7 @@ class CRUDPayOrder(CRUDPlus[PayOrder]):
             .where(PayOrder.order_no == order_no)
             .values(fulfillment_status='dead', fulfillment_error_code=error_code, updated_time=timezone.now())
         )
-        return result.rowcount
+        return affected_rows(result)
 
     async def mark_refunded(self, db: AsyncSession, order_no: str, refund_amount: int) -> int:
         """标记订单为已退款（status=2）并记录退款金额（退款编排层调用）。"""
@@ -94,7 +95,7 @@ class CRUDPayOrder(CRUDPlus[PayOrder]):
             .where(PayOrder.order_no == order_no)
             .values(status=2, refund_amount=refund_amount, updated_time=timezone.now())
         )
-        return result.rowcount
+        return affected_rows(result)
 
     async def expire_timeout_orders(self, db: AsyncSession) -> int:
         """将超时未支付的订单标记为过期"""
@@ -104,7 +105,7 @@ class CRUDPayOrder(CRUDPlus[PayOrder]):
             .where(PayOrder.status == 0, PayOrder.expire_time < now)
             .values(status=4, updated_time=now)
         )
-        return result.rowcount
+        return affected_rows(result)
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)

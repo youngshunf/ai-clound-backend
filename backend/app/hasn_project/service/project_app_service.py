@@ -23,7 +23,7 @@ from uuid import UUID
 
 import sqlalchemy as sa
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn.model.hasn_assets import HasnAssets

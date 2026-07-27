@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from sqlalchemy import Select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -39,14 +39,12 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :param type: 任务调度类型
         :return:
         """
-        filters = {}
-
+        stmt = select(TaskScheduler).order_by(TaskScheduler.id.desc())
         if name is not None:
-            filters['name__like'] = f'%{name}%'
+            stmt = stmt.where(TaskScheduler.name.ilike(f'%{name}%'))
         if type is not None:
-            filters['type'] = type
-
-        return await self.select_order('id', **filters)
+            stmt = stmt.where(TaskScheduler.type == type)
+        return stmt
 
     async def get_by_name(self, db: AsyncSession, name: str) -> TaskScheduler | None:
         """
@@ -66,7 +64,8 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :param obj: 创建任务调度参数
         :return:
         """
-        await self.create_model(db, obj, flush=True)
+        db.add(TaskScheduler(**obj.model_dump(by_alias=True)))
+        await db.flush()
         TaskScheduler.no_changes = False
 
     async def update(self, db: AsyncSession, pk: int, obj: UpdateTaskSchedulerParam) -> int:
@@ -79,7 +78,9 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :return:
         """
         task_scheduler = await self.get(db, pk)
-        for key, value in obj.model_dump(exclude_unset=True).items():
+        if task_scheduler is None:
+            raise RuntimeError(f'任务调度不存在: {pk}')
+        for key, value in obj.model_dump(exclude_unset=True, by_alias=True).items():
             setattr(task_scheduler, key, value)
         TaskScheduler.no_changes = False
         return 1
@@ -94,6 +95,8 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :return:
         """
         task_scheduler = await self.get(db, pk)
+        if task_scheduler is None:
+            raise RuntimeError(f'任务调度不存在: {pk}')
         task_scheduler.enabled = status
         TaskScheduler.no_changes = False
         return 1
@@ -107,6 +110,8 @@ class CRUDTaskScheduler(CRUDPlus[TaskScheduler]):
         :return:
         """
         task_scheduler = await self.get(db, pk)
+        if task_scheduler is None:
+            raise RuntimeError(f'任务调度不存在: {pk}')
         await db.delete(task_scheduler)
         TaskScheduler.no_changes = False
         return 1

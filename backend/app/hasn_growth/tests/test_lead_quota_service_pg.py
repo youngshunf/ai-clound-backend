@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -136,14 +137,18 @@ async def test_handle_lead_pack_paid_grants_real(monkeypatch) -> None:
         pay_amount=1000, extra_data={'app_code': 'huanxing', 'lead_count': 10},
     )
     try:
-        await handle_lead_pack_paid(order)
-        # 用独立 session 读回真实落库的余额
+        async with async_db_session.begin() as db:
+            await handle_lead_pack_paid(db, order=order)
         async with async_db_session() as db:
             row = (await db.execute(select(LeadQuota).where(LeadQuota.user_id == uid))).scalar_one()
             assert row.purchased_balance == 10 and row.purchased_total == 10
-        # 缺 lead_count 的订单不发放（防御）
+        # 缺 lead_count 的订单必须显式拒绝，不能留下假成功。
         bad = SimpleNamespace(user_id=uid, order_no='X', pay_amount=0, extra_data={})
-        await handle_lead_pack_paid(bad)
+        from backend.common.exception import errors
+
+        async with async_db_session.begin() as db:
+            with pytest.raises(errors.RequestError):
+                await handle_lead_pack_paid(db, order=bad)
         async with async_db_session() as db:
             row = (await db.execute(select(LeadQuota).where(LeadQuota.user_id == uid))).scalar_one()
             assert row.purchased_balance == 10  # 未变
@@ -165,7 +170,7 @@ async def test_request_leads_shortfall_and_consume(session, monkeypatch) -> None
             LeadContact(
                 lead_no=f'LQ{tag.upper()}{i}', company_name=uniq,
                 contact_name='池主', email=f'p{i}@uniq.com', source_type='firecrawl',
-                status='valid', confidence_score=80,
+                status='valid', confidence_score=Decimal(80),
             )
         )
     await session.flush()

@@ -78,7 +78,7 @@ def _patch_skill_lookup(monkeypatch: pytest.MonkeyPatch, *, found: bool) -> None
     )
 
 
-def _service(gateway: _Gateway) -> Any:
+def _service(gateway: Any) -> Any:
     from backend.app.hasn.service.hasn_agents_service import HasnAgentProfileService
 
     return HasnAgentProfileService(gateway=gateway)

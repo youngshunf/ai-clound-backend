@@ -1,5 +1,6 @@
 from collections.abc import Awaitable, Callable
 from math import ceil
+from typing import cast
 
 from fastapi import Request, Response
 from fastapi_pagination.utils import is_async_callable
@@ -87,15 +88,19 @@ class RateLimiter:
 
     async def __call__(self, request: Request, response: Response) -> None:
         if is_async_callable(self.identifier):
-            identifier = await self.identifier(request)
+            async_identifier = cast(Callable[[Request], Awaitable[str]], self.identifier)
+            identifier = await async_identifier(request)
         else:
-            identifier = await run_in_threadpool(self.identifier, request)
+            sync_identifier = cast(Callable[[Request], str], self.identifier)
+            identifier = await run_in_threadpool(sync_identifier, request)
 
         limiter = await self._get_limiter(identifier)
         acquired = await limiter.try_acquire_async(identifier, blocking=False)
         if not acquired:
             retry_after = ceil(self.rates[0].interval / 1000) if self.rates else 60
             if is_async_callable(self.callback):
-                await self.callback(request, response, retry_after)
+                async_callback = cast(Callable[[Request, Response, int], Awaitable[None]], self.callback)
+                await async_callback(request, response, retry_after)
             else:
-                await run_in_threadpool(self.callback, request, response, retry_after)
+                sync_callback = cast(Callable[[Request, Response, int], None], self.callback)
+                await run_in_threadpool(sync_callback, request, response, retry_after)

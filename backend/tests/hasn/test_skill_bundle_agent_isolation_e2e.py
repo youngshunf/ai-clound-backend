@@ -68,7 +68,7 @@ async def e2e():
     tag = _uid()
     owner_a = f'h_owner_a_{tag}'
     owner_b = f'h_owner_b_{tag}'
-    owner_a_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_a_uid = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
 
     # A/B 两 owner 各一个私有 bundle
     bundle_a = HasnSkillBundle(

@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -348,7 +349,7 @@ async def test_enforce_multi_declaration(session, adapters) -> None:
     ])
     await session.flush()
     grantee = Subject.human(h_grantee)
-    declarations = [
+    declarations: list[dict[str, Any]] = [
         {'param': 'kb_id', 'type': 'gate_test_kb', 'need': 'editor'},
         {'param': 'target_kb_id', 'type': 'gate_test_kb', 'need': 'editor'},
     ]
@@ -368,7 +369,7 @@ async def test_enforce_optional_missing_skipped(session, adapters) -> None:
     session.add(_share('gate_test_kb', kb_id, h_owner, h_grantee, 'viewer'))
     await session.flush()
     grantee = Subject.human(h_grantee)
-    declarations = [
+    declarations: list[dict[str, Any]] = [
         {'param': 'kb_id', 'type': 'gate_test_kb', 'need': 'viewer'},
         {'param': 'folder_id', 'type': 'gate_test_folder', 'need': 'editor', 'required': False},
     ]

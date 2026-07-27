@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 from unittest.mock import MagicMock
 
 from backend.app.mcp.tool_directory import ToolDirectoryService
+from backend.app.mcp.tools.base import BaseTool
 
 
 @dataclass(frozen=True)
@@ -21,7 +23,8 @@ class _StubTool:
 
 def _match(tools: list[_StubTool], query: str, source: str = 'all') -> list[_StubTool]:
     service = ToolDirectoryService(MagicMock())
-    return service._match_tools(tools, query, source)  # type: ignore[arg-type]
+    matched = service._match_tools(cast(list[BaseTool], tools), query, source)
+    return cast(list[_StubTool], matched)
 
 
 def test_multi_word_query_no_longer_returns_empty() -> None:

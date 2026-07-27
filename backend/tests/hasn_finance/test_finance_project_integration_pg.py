@@ -27,7 +27,7 @@ from backend.app.hasn_project.service.project_linkage_registry import project_li
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 async def _seed_owner(db) -> str:  # noqa: ANN001

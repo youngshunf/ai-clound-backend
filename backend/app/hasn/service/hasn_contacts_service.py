@@ -178,11 +178,22 @@ class HasnContactsService:
             select(HasnAgents).where(
                 HasnAgents.owner_id == peer_id,
                 HasnAgents.status == "active",
-                HasnAgents.social_enabled.is_(True),
                 HasnAgents.deleted_at.is_(None),
             )
         )
         agents = list(agents_result.scalars().all())
+        from backend.app.hasn_im.application.provider import (
+            get_transactional_relation_gateway,
+        )
+
+        socially_enabled = await get_transactional_relation_gateway(
+            db,
+        ).filter_socially_enabled_agents(
+            agent_hasn_ids=[agent.hasn_id for agent in agents],
+        )
+        agents = [
+            agent for agent in agents if agent.hasn_id in socially_enabled
+        ]
         # 实时在线：Redis presence + node_alive 门控（僵尸节点判离线）。
         online_map = await _presence_query.get_online_map([a.hasn_id for a in agents])
         owned_agents: list[dict[str, Any]] = [{

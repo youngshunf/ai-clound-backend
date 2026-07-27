@@ -17,7 +17,11 @@ from uuid import uuid4
 
 import pytest
 
+import sqlalchemy as sa
+
 from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
+from backend.app.hasn.schema.artifact_contract import ArtifactMutation
+from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
 from backend.app.hasn_plan.service import origin_ref as oref
 from backend.app.hasn_plan.service.plan_app_service import (
     _TODO_STATUSES,
@@ -30,7 +34,7 @@ from backend.database.db import async_db_session
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 def _owner() -> str:
@@ -50,18 +54,33 @@ def test_agent_seam_has_no_override_default() -> None:
 
 async def _seed_artifact(db: AsyncSession, *, owner: str, todo_id: int, kind: str, status: str = 'active') -> None:
     """按权威 origin_ref=resource:plan:todo:{id}（L0 冒号形）登记一条产物，喂 P6-C 反查。"""
-    db.add(
-        HasnArtifacts(
-            artifact_id=f'art_{uuid4().hex[:20]}',
-            agent_hasn_id=f'hasnAgent_{uuid4().hex[:14]}',
-            owner_hasn_id=owner,
-            kind=kind,
-            title='交付产物',
-            origin_ref=oref.todo_ref(todo_id),
-            source_kind='app_write',  # doc35 §5：`tool_output` 已砍
-            status=status,
-        )
+    mutation_data = {
+        'owner_hasn_id': owner,
+        'agent_hasn_id': f'hasnAgent_{uuid4().hex[:14]}',
+        'action': 'create',
+        'source_kind': 'app_write',
+        'artifact_kind': kind,
+        'body': '交付产物' if kind == 'document' else None,
+        'asset_id': f'asset_{uuid4().hex[:20]}' if kind != 'document' else None,
+        'title': '交付产物',
+        'origin_ref': oref.todo_ref(todo_id),
+        'source_app_id': 'plan',
+        'source_tool': 'hasn.plan.write',
+        'source_event_id': uuid4().hex,
+    }
+    registered = await artifact_registration_service.register(
+        db,
+        ArtifactMutation.model_validate(mutation_data),
     )
+    if status != 'active':
+        await db.execute(
+            sa.update(HasnArtifacts)
+            .where(
+                HasnArtifacts.artifact_id == registered.artifact_id,
+                HasnArtifacts.owner_hasn_id == owner,
+            )
+            .values(status=status)
+        )
     await db.flush()
 
 

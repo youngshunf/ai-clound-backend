@@ -17,7 +17,7 @@ import uuid
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -82,7 +82,7 @@ async def host() -> AsyncIterator[SimpleNamespace]:
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = _uid()
     owner = f'h_host_{tag}'
-    owner_uid = 980000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 9_800_000_000 + int(uuid.uuid4().int % 1_000_000_000)
     session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='H', status='active'))
     await session.flush()
 
@@ -90,7 +90,11 @@ async def host() -> AsyncIterator[SimpleNamespace]:
         yield session
 
     _APP.dependency_overrides[get_db] = _yield_session
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://share.test')
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_APP),
+        base_url='http://share.test',
+        headers={'x-forwarded-for': f'2001:db8::{tag}'},
+    )
     try:
         yield SimpleNamespace(client=client, session=session, owner=owner)
     finally:
@@ -101,7 +105,7 @@ async def host() -> AsyncIterator[SimpleNamespace]:
         await engine.dispose()
 
 
-async def _make_site(host: SimpleNamespace, *, visibility: str, password: str | None = None, **extra: object) -> dict:
+async def _make_site(host: SimpleNamespace, *, visibility: str, password: str | None = None, **extra: Any) -> dict:
     data = await publish_service.create_site(
         host.session,
         owner_id=host.owner,
@@ -250,5 +254,5 @@ async def test_content_streams_real_artifact_with_csp(host: SimpleNamespace) -> 
 
 
 def test_share_origin_fallback() -> None:
-    req = SimpleNamespace(url=SimpleNamespace(scheme='https', netloc='share.test'), headers={'host': 'share.test'})
+    req: Any = SimpleNamespace(url=SimpleNamespace(scheme='https', netloc='share.test'), headers={'host': 'share.test'})
     assert _share_origin(req) == 'https://share.test'  # 未配置 → 回退请求 origin

@@ -222,7 +222,7 @@ def _resolve_timeout(spec: ServiceSpec, overrides: dict) -> float:
     if not raw_timeout:
         return spec.default_timeout
     try:
-        return float(raw_timeout)
+        return float(str(raw_timeout))
     except (TypeError, ValueError):
         return spec.default_timeout
 

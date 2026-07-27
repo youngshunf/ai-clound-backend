@@ -68,7 +68,7 @@ async def e2e():
 
     tag = _uid()
     owner1 = f'h_owner1_{tag}'
-    owner1_uid = 960000 + int(uuid.uuid4().int % 9000)
+    owner1_uid = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     owner2 = f'h_owner2_{tag}'
     owner2_uid = owner1_uid + 1
     agent1 = f'a_one_{tag}'

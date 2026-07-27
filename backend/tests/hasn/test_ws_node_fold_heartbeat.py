@@ -47,7 +47,7 @@ def patched(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fold_persists_health_when_frame_carries_online_status(patched) -> None:
-    ws = FakeWebSocket()
+    ws: Any = FakeWebSocket()
     await ws_node._handle_add_agent(
         ws,
         'n_node_X',
@@ -77,7 +77,7 @@ async def test_fold_persists_health_when_frame_carries_online_status(patched) ->
 
 @pytest.mark.asyncio
 async def test_lifecycle_claim_without_online_status_skips_persist(patched) -> None:
-    ws = FakeWebSocket()
+    ws: Any = FakeWebSocket()
     await ws_node._handle_add_agent(
         ws, 'n_node_X', {'agent_id': 'a_brain', 'owner_id': 'h_owner'}, set()
     )
@@ -87,7 +87,7 @@ async def test_lifecycle_claim_without_online_status_skips_persist(patched) -> N
 @pytest.mark.asyncio
 async def test_rejected_registration_skips_persist(monkeypatch, patched) -> None:
     monkeypatch.setattr(ws_router, 'add_agent_presence', AsyncMock(return_value={'accepted': False}))
-    ws = FakeWebSocket()
+    ws: Any = FakeWebSocket()
     await ws_node._handle_add_agent(
         ws,
         'n_node_X',
@@ -100,7 +100,7 @@ async def test_rejected_registration_skips_persist(monkeypatch, patched) -> None
 @pytest.mark.asyncio
 async def test_persist_failure_does_not_break_registration(monkeypatch, patched) -> None:
     patched.side_effect = RuntimeError('db blip')
-    ws = FakeWebSocket()
+    ws: Any = FakeWebSocket()
     # 不抛：健康写入失败被吞，路由 ack 仍发。
     await ws_node._handle_add_agent(
         ws,

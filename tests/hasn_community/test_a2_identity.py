@@ -43,7 +43,7 @@ async def test_create_post_author_is_always_human(db):
         await db.execute(
             text(
                 'SELECT author_type, author_hasn_id, owner_hasn_id, generation_type '
-                'FROM hasn_posts WHERE post_id = :pid'
+                'FROM hasn_community.hasn_posts WHERE post_id = :pid'
             ),
             {'pid': result['post_id']},
         )
@@ -72,7 +72,7 @@ async def test_create_article_author_is_always_human(db):
         await db.execute(
             text(
                 'SELECT author_type, author_hasn_id, generation_type '
-                'FROM hasn_articles WHERE article_id = :aid'
+                'FROM hasn_community.hasn_articles WHERE article_id = :aid'
             ),
             {'aid': result['article_id']},
         )

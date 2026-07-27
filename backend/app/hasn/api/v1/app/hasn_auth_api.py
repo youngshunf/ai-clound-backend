@@ -30,6 +30,7 @@ from backend.app.hasn.service.hasn_auth import (
 )
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.common.exception import errors
+from backend.common.response.response_code import CustomResponse
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth, jwt_authentication
 from backend.database.db import CurrentSession, async_db_session
@@ -60,10 +61,10 @@ class RegisterClientReq(BaseModel):
 
 @router.post('/auth/register', summary='注册 HASN 身份')
 async def api_register_hasn(
+    request: Request,
     obj_in: RegisterHasnReq,
     db: CurrentSession,
     _token: str = DependsJwtAuth,
-    request: Request = None,
 ) -> ResponseModel:
     """为当前平台用户注册 HASN 身份（Human + 默认 Agent），幂等"""
     authorization = request.headers.get('Authorization', '')
@@ -202,7 +203,7 @@ async def api_node_token(
         node = result.scalar_one_or_none()
 
     if not node:
-        return response_base.fail(msg='节点不存在或不属于当前用户')
+        return response_base.fail(res=CustomResponse(code=400, msg='节点不存在或不属于当前用户'))
 
     token = issue_node_jwt(
         user_hasn_id=auth['hasn_id'],
@@ -230,7 +231,7 @@ async def api_get_me(
         human = result.scalar_one_or_none()
 
     if not human:
-        return response_base.fail(msg='HASN 身份不存在')
+        return response_base.fail(res=CustomResponse(code=400, msg='HASN 身份不存在'))
 
     return response_base.success(data={
         'hasn_id': human.hasn_id,

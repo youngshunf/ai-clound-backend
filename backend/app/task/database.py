@@ -1,13 +1,18 @@
 from celery import states
 from celery.backends.base import BaseBackend
-from celery.backends.database import retry, session_cleanup
+from celery.backends import database as celery_database
 from celery.exceptions import ImproperlyConfigured
 from celery.utils.time import maybe_timedelta
 from sqlalchemy import PickleType
 from sqlalchemy.orm import Session
 
+from typing import Any
+
 from backend.app.task.model.result import Task, TaskExtended, TaskSet
 from backend.app.task.session import SessionManager
+
+retry: Any = getattr(celery_database, 'retry')
+session_cleanup: Any = getattr(celery_database, 'session_cleanup')
 
 
 class DatabaseBackend(BaseBackend):
@@ -19,8 +24,10 @@ class DatabaseBackend(BaseBackend):
     # to not bombard the database with queries.
     subpolling_interval = 0.5
 
-    task_cls = Task
-    taskset_cls = TaskSet
+    app: Any
+    expires: Any
+    task_cls: type[Task] = Task
+    taskset_cls: type[TaskSet] = TaskSet
 
     def __init__(self, dburi=None, engine_options=None, url=None, **kwargs) -> None:  # noqa: ANN001
         # The `url` argument was added later and is used by
@@ -52,8 +59,8 @@ class DatabaseBackend(BaseBackend):
             self._create_tables()
 
     @property
-    def extended_result(self):  # noqa: ANN201
-        return self.app.conf.find_value_for_key('extended', 'result')
+    def extended_result(self) -> bool:
+        return bool(self.app.conf.find_value_for_key('extended', 'result'))
 
     def _create_tables(self) -> None:
         """Create the task and taskset tables."""
@@ -73,8 +80,7 @@ class DatabaseBackend(BaseBackend):
         """Store return value and state of an executed task."""
         session = self.result_session()
         with session_cleanup(session):
-            task = list(session.query(self.task_cls).filter(self.task_cls.task_id == task_id))
-            task = task and task[0]
+            task = session.query(self.task_cls).filter(self.task_cls.task_id == task_id).first()
             if not task:
                 task = self.task_cls(task_id)
                 task.task_id = task_id
@@ -85,7 +91,8 @@ class DatabaseBackend(BaseBackend):
             session.commit()
 
     def _update_result(self, task, result, state, traceback=None, request=None) -> None:  # noqa: ANN001
-        meta = self._get_result_meta(
+        get_result_meta: Any = getattr(self, '_get_result_meta')
+        meta = get_result_meta(
             result=result,
             state=state,
             traceback=traceback,
@@ -110,17 +117,18 @@ class DatabaseBackend(BaseBackend):
         """Get task meta-data for a task by id."""
         session = self.result_session()
         with session_cleanup(session):
-            task = list(session.query(self.task_cls).filter(self.task_cls.task_id == task_id))
-            task = task and task[0]
+            task = session.query(self.task_cls).filter(self.task_cls.task_id == task_id).first()
             if not task:
                 task = self.task_cls(task_id)
                 task.status = states.PENDING
                 task.result = None
             data = task.to_dict()
-            if data.get('args', None) is not None:
-                data['args'] = self.decode(data['args'])
-            if data.get('kwargs', None) is not None:
-                data['kwargs'] = self.decode(data['kwargs'])
+            args_value = data.get('args')
+            if isinstance(args_value, bytes):
+                data['args'] = self.decode(args_value)
+            kwargs_value = data.get('kwargs')
+            if isinstance(kwargs_value, bytes):
+                data['kwargs'] = self.decode(kwargs_value)
             return self.meta_from_decoded(data)
 
     @retry
@@ -142,6 +150,7 @@ class DatabaseBackend(BaseBackend):
             group = session.query(self.taskset_cls).filter(self.taskset_cls.taskset_id == group_id).first()
             if group:
                 return group.to_dict()
+            return None
 
     @retry
     def _delete_group(self, group_id: str) -> None:

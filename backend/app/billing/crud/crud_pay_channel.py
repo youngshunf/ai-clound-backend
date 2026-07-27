@@ -6,6 +6,7 @@ from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.billing.model.pay_channel import PayChannel
 from backend.app.billing.schema.pay_channel import CreatePayChannelParam, UpdatePayChannelParam
+from backend.database.result import affected_rows
 
 
 class CRUDPayChannel(CRUDPlus[PayChannel]):
@@ -41,7 +42,7 @@ class CRUDPayChannel(CRUDPlus[PayChannel]):
         result = await db.execute(
             update(PayChannel).where(PayChannel.id == pk).values(status=status, updated_time=timezone.now())
         )
-        return result.rowcount
+        return affected_rows(result)
 
     async def delete(self, db: AsyncSession, pks: list[int]) -> int:
         return await self.delete_model_by_column(db, allow_multiple=True, id__in=pks)

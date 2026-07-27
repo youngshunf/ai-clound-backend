@@ -14,13 +14,32 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
-from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
 from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
 from backend.app.hasn.service.hasn_auth import hasn_auth
+from backend.app.hasn_im.application.provider import get_relation_gateway
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.database.db import CurrentSession
 
 router = APIRouter(prefix='/users', tags=['HASN Users'])
+
+
+class _RelationReader:
+    """保留路由测试接缝，生产读取统一转交 RelationGateway。"""
+
+    @staticmethod
+    async def get_relation(
+        _db: Any,
+        owner_hasn_id: str,
+        peer_hasn_id: str,
+        _relation_type: str,
+    ) -> Any:
+        return await get_relation_gateway().resolve_effective_relation(
+            owner_hasn_id=owner_hasn_id,
+            peer_hasn_id=peer_hasn_id,
+        )
+
+
+hasn_contacts_dao = _RelationReader()
 
 
 @router.get('/search', summary='按唤星号或昵称搜索用户')
@@ -54,7 +73,12 @@ async def search_users(
 
     # 补 existing_relation（驱动前端「已是好友/已发送/可添加」按钮态）
     for item in items:
-        relation = await hasn_contacts_dao.get_relation(db, self_hasn_id, item['hasn_id'], 'social')
+        relation = await hasn_contacts_dao.get_relation(
+            db,
+            self_hasn_id,
+            item['hasn_id'],
+            'social',
+        )
         item['existing_relation'] = relation.status if relation else None
 
     return response_base.success(data={'items': items, 'total': len(items)})

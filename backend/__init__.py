@@ -9,7 +9,9 @@ for cls in get_all_models():
         if table_name not in globals():
             globals()[table_name] = cls
     else:
-        class_name = cls.__name__
+        class_name = getattr(cls, '__name__', None)
+        if not isinstance(class_name, str):
+            continue
         if class_name not in globals():
             globals()[class_name] = cls
 

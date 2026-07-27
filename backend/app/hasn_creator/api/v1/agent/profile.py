@@ -45,8 +45,8 @@ async def agent_create_profile(
     db: CurrentSessionTransaction,
     obj: CreateProfileParam,
 ) -> ResponseModel:
-    result = await profile_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await profile_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

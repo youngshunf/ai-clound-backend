@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path, Request
 
-from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn_task.schema.skill_bundle import (
     CreateHasnSkillBundleParam,
     GetHasnSkillBundleDetail,

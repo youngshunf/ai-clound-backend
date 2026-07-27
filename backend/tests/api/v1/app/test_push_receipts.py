@@ -111,7 +111,7 @@ def _patch_record(
 
 def test_router_exposes_post_root(test_app: FastAPI) -> None:
     paths_methods = {
-        (route.path, tuple(sorted(route.methods)))
+        (getattr(route, 'path'), tuple(sorted(getattr(route, 'methods'))))
         for route in test_app.routes
         if hasattr(route, 'methods') and getattr(route, 'methods', None)
     }

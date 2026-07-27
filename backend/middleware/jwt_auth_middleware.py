@@ -1,12 +1,12 @@
-from typing import Any
+from collections.abc import Mapping
+from typing import cast
 
-from fastapi import Request, Response
+from fastapi import Response
 from fastapi.security.utils import get_authorization_scheme_param
-from starlette.authentication import AuthCredentials, AuthenticationBackend
+from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
 from starlette.authentication import AuthenticationError as StarletteAuthenticationError
 from starlette.requests import HTTPConnection
 
-from backend.app.admin.schema.user import GetUserInfoWithRelationDetail
 from backend.common.context import ctx
 from backend.common.exception.errors import TokenError
 from backend.common.log import log
@@ -24,7 +24,7 @@ class AuthenticationError(StarletteAuthenticationError):
         *,
         code: int | None = None,
         msg: str | None = None,
-        headers: dict[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         """
         初始化认证错误
@@ -43,7 +43,10 @@ class JwtAuthMiddleware(AuthenticationBackend):
     """JWT 认证中间件"""
 
     @staticmethod
-    def auth_exception_handler(conn: HTTPConnection, exc: AuthenticationError) -> Response:
+    def auth_exception_handler(
+        conn: HTTPConnection,
+        exc: StarletteAuthenticationError,
+    ) -> Response:
         """
         覆盖内部认证错误处理
 
@@ -51,11 +54,19 @@ class JwtAuthMiddleware(AuthenticationBackend):
         :param exc: 认证错误对象
         :return:
         """
-        status_code = int(exc.code) if exc.code else 401
-        return MsgSpecJSONResponse(content={'code': status_code, 'msg': exc.msg, 'data': None}, status_code=status_code)
+        if isinstance(exc, AuthenticationError):
+            status_code = int(exc.code) if exc.code else 401
+            message = exc.msg
+        else:
+            status_code = 401
+            message = str(exc)
+        return MsgSpecJSONResponse(
+            content={'code': status_code, 'msg': message, 'data': None},
+            status_code=status_code,
+        )
 
     @staticmethod
-    def extract_token(request: Request) -> str | None:
+    def extract_token(request: HTTPConnection) -> str | None:
         """
         从请求中提取 Bearer Token
 
@@ -85,7 +96,10 @@ class JwtAuthMiddleware(AuthenticationBackend):
 
         return token
 
-    async def authenticate(self, request: Request) -> tuple[AuthCredentials, GetUserInfoWithRelationDetail] | None:
+    async def authenticate(
+        self,
+        request: HTTPConnection,
+    ) -> tuple[AuthCredentials, BaseUser] | None:
         """
         认证请求
 
@@ -109,4 +123,5 @@ class JwtAuthMiddleware(AuthenticationBackend):
 
         # 请注意，此返回使用非标准模式，所以在认证通过时，将丢失某些标准特性
         # 标准返回模式请查看：https://www.starlette.io/authentication/
-        return AuthCredentials(['authenticated']), user
+        # Starlette 运行时只保存该对象，不要求继承 BaseUser；现有下游依赖完整用户 schema。
+        return AuthCredentials(['authenticated']), cast(BaseUser, user)

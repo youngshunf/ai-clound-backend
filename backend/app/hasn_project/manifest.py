@@ -24,7 +24,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -50,7 +50,7 @@ _AUDIT_FIELDS = [
 # 分身建/改项目即经公共接缝 `register_app_resource_artifact(app_id='project', resource_kind='project', ...)`
 # 把项目登记进 `hasn_artifacts`（project_id 自挂靠自身），完成即出「项目」卡 + 绑工作会话资源栏。
 # uri_domain='project' → hasn://project/{server_id}（U4 进 doc08 §3 registry）；server_id=hasn_project.id（UUID 权威）。
-PROJECT_AI_NATIVE_MANIFEST = {
+PROJECT_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'project',
     'domain_summary': {'project': '项目（为了哪件事·跨应用产物流聚合·里程碑·联邦挂靠）'},
     'version': '1.0.0',

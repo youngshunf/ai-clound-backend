@@ -1,6 +1,6 @@
 import functools
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, ParamSpec, TypeVar
 
 from msgspec import json
@@ -105,7 +105,7 @@ def cached(  # noqa: C901
     *,
     key: str | None = None,
     key_builder: Callable[..., str] | None = None,
-) -> Callable[[Callable[P, T]], Callable[P, T]]:
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
     """
     缓存装饰器
 
@@ -117,7 +117,7 @@ def cached(  # noqa: C901
     if key is not None and key_builder is not None:
         raise errors.ServerError(msg='缓存 key 和 key_builder 不能同时使用')
 
-    def decorator(func: Callable[P, T]) -> Callable[P, T]:  # noqa: C901
+    def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:  # noqa: C901
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             cache_key = _build_cache_key(name, key, key_builder, *args, **kwargs)
@@ -173,7 +173,7 @@ def cache_invalidate(  # noqa: C901
     key: str | None = None,
     key_builder: Callable[..., str] | None = None,
     atomic: bool = True,
-) -> Callable[[Callable[P, T]], Callable[P, T]]:
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
     """
     缓存失效装饰器
 
@@ -186,7 +186,7 @@ def cache_invalidate(  # noqa: C901
     if key is not None and key_builder is not None:
         raise errors.ServerError(msg='缓存 key 和 key_builder 不能同时使用')
 
-    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+    def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             result = await func(*args, **kwargs)

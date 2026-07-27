@@ -47,8 +47,8 @@ async def create_my_competitor(
     db: CurrentSessionTransaction,
     obj: CreateCompetitorParam,
 ) -> ResponseModel:
-    result = await competitor_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await competitor_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

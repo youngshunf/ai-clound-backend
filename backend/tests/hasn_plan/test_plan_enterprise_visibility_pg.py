@@ -30,7 +30,7 @@ from backend.app.hasn_plan.service.plan_app_service import PlanService
 from backend.app.hasn_plan.service.plan_authz import resolve_plan_enterprise_scope
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _T0 = datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc)
 _T1 = datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc)

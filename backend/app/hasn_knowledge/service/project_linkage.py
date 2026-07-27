@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 def _build_uri(resource_kind: str, server_id: object) -> str:
     """经 manifest descriptor 构造云端权威资源 URI，禁止在 adapter 手拼域。"""
     # 延迟导入，避免 ai_native_app_registry 加载本注册模块时形成循环导入。
-    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+    from backend.app.hasn_core.app_platform import ai_native_app_registry
 
     descriptor = ai_native_app_registry.resource_descriptor('knowledge', resource_kind)
     if descriptor is None:

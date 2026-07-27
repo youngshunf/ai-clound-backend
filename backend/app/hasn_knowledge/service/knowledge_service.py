@@ -75,7 +75,7 @@ def _resource_uri(resource_kind: str, server_id: int) -> str | None:
 
     descriptor 解析不出（manifest 没声明）→ 返 `None`，投影省略 `uri` 字段，绝不返空串或假 URI。
     """
-    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+    from backend.app.hasn_core.app_platform import ai_native_app_registry
 
     descriptor = ai_native_app_registry.resource_descriptor('knowledge', resource_kind)
     if descriptor is None or descriptor.resource_kind != resource_kind:

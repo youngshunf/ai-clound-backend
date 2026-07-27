@@ -129,7 +129,7 @@ def _participant_type(hasn_id: str) -> str:
         return 'human'
     if hasn_id.startswith('a_'):
         return 'agent'
-    raise errors.BadRequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
+    raise errors.RequestError(msg=f'无效的 HASN ID 格式: {hasn_id}')
 
 
 async def _get_or_create_direct_conversation(

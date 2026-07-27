@@ -33,6 +33,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn_publish.api.v1.agent.site import router as agent_site_router
 from backend.app.hasn_publish.api.v1.app.site import router as app_site_router
@@ -42,6 +43,7 @@ from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.redis import redis_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -112,7 +114,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     tag = _uid()
     owner = f'h_pub_{tag}'
     other_owner = f'h_pub2_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 9_700_000_000 + int(uuid.uuid4().int % 1_000_000_000)
     agent_hasn = f'a_pub_{tag}'
     session.add(HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='O', status='active'))
     session.add(
@@ -120,12 +122,22 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             hasn_id=other_owner, star_id=f's_{owner_uid + 1}', user_id=owner_uid + 1, nickname='O2', status='active'
         )
     )
+    session.add(
+        HasnAgents(
+            hasn_id=agent_hasn,
+            star_id=f'a_{owner_uid}',
+            owner_id=owner,
+            display_name=f'发布分身 {tag}',
+            agent_name=f'agent_{tag}',
+            status='active',
+        )
+    )
     await session.flush()
 
     async def _yield_session() -> AsyncIterator:  # noqa: RUF029
         yield session
 
-    state = SimpleNamespace(agent_owner=owner, agent_scopes=['agent', 'publish:read', 'publish:write'])
+    state = SimpleNamespace(agent_owner=owner)
 
     async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
         payload = AgentTokenPayload(
@@ -331,16 +343,39 @@ async def test_agent_create_records_publisher_and_scope_gate(e2e: SimpleNamespac
     assert site['publisher_agent_id'] == e2e.agent_hasn
     assert site['owner_id'] == e2e.owner
 
-    # 撤掉 publish:write → 创建被 403
-    e2e.state.agent_scopes = ['agent', 'publish:read']
+    # 权威三态策略把 publish:write 设为 deny → 创建被 403
+    await e2e.session.execute(
+        text("""
+            INSERT INTO hasn_agent_scopes (
+                agent_hasn_id, owner_hasn_id, default_mode, capability_modes
+            )
+            VALUES (:agent, :owner, 'allow', CAST(:modes AS jsonb))
+            ON CONFLICT (agent_hasn_id) DO UPDATE
+            SET capability_modes = EXCLUDED.capability_modes,
+                updated_time = now()
+        """),
+        {
+            'agent': e2e.agent_hasn,
+            'owner': e2e.owner,
+            'modes': '{"publish:write":"deny"}',
+        },
+    )
+    await e2e.session.flush()
+    cache_key = f'agent_scopes:{e2e.agent_hasn}'
+    await redis_client.delete(cache_key)
     try:
         r = await c.post(
             '/api/v1/publish/agent/sites',
             json={'kind': 'page', 'title': 'no write', 'asset_id': 'ast_x', 'content_hash': 'h_x', 'size_bytes': 1},
         )
-        assert r.status_code != 200, r.text
+        assert r.status_code == 403, r.text
     finally:
-        e2e.state.agent_scopes = ['agent', 'publish:read', 'publish:write']
+        await e2e.session.execute(
+            text('DELETE FROM hasn_agent_scopes WHERE agent_hasn_id = :agent'),
+            {'agent': e2e.agent_hasn},
+        )
+        await e2e.session.flush()
+        await redis_client.delete(cache_key)
 
 
 async def test_agent_cross_owner_isolation(e2e: SimpleNamespace) -> None:

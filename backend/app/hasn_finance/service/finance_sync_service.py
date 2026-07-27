@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.hasn_core.app_platform import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.hasn_finance.service.finance_read_service import serialize_resource_detail
 from backend.common.exception import errors

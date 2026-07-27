@@ -5,12 +5,14 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, TimeZone, UniversalText, id_key
+from backend.database.schema_names import IM_SCHEMA
 
 
 class HasnContactRequests(Base):
     """HASN 好友请求表（请求生命周期独立于 hasn_contacts 关系表）"""
 
     __tablename__ = 'hasn_contact_requests'
+    __table_args__ = {'schema': IM_SCHEMA}
 
     id: Mapped[id_key] = mapped_column(init=False)
     from_id: Mapped[str] = mapped_column(sa.String(40), default='', comment='发起方 hasn_id（恒 human）')

@@ -21,11 +21,11 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 from fastapi.responses import JSONResponse
 
-from backend.app.llm.api.v1.app import llm_newapi_user_mapping as endpoint_module
-from backend.app.llm.schema.llm_newapi_user_mapping import NewApiUsageSummary
+from backend.app.newapi.api.v1.app import llm_newapi_user_mapping as endpoint_module
+from backend.app.newapi.schema.llm_newapi_user_mapping import NewApiUsageSummary
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import get_db, get_newapi_db
+from backend.database.db import get_db
 
 
 FAKE_USER_ID = 42
@@ -51,21 +51,13 @@ def _make_db_with_owner(owner_user_id: int | None):
 
 
 @pytest.fixture
-def newapi_db_obj():
-    return SimpleNamespace(name='fake-newapi-db')
-
-
-@pytest.fixture
-def make_test_app(newapi_db_obj):
+def make_test_app():
     """工厂 fixture：参数为 ownership 校验返回的 user_id（None=不存在）"""
     def _build(owner_user_id: int | None):
         db = _make_db_with_owner(owner_user_id)
 
         async def _fake_db():
             yield db
-
-        async def _fake_newapi_db():
-            yield newapi_db_obj
 
         app = FastAPI()
 
@@ -80,7 +72,6 @@ def make_test_app(newapi_db_obj):
         app.include_router(endpoint_module.router, prefix='/api/v1/llm/app')
         app.dependency_overrides[DependsJwtAuth.dependency] = _fake_jwt_auth_ok
         app.dependency_overrides[get_db] = _fake_db
-        app.dependency_overrides[get_newapi_db] = _fake_newapi_db
         return app, db
     return _build
 
@@ -156,10 +147,10 @@ def test_summary_with_agent_id_calls_by_agent_path(make_test_app, monkeypatch):
     fake_by_user.assert_not_awaited()
     fake_by_agent.assert_awaited_once()
     args = fake_by_agent.await_args.args
-    # service 签名: (db, newapi_db, agent_id, start_time, end_time)
-    assert args[2] == 'agt_x'
-    assert args[3] == 1000
-    assert args[4] == 2000
+    # service 签名: (db, agent_id, start_time, end_time)
+    assert args[1] == 'agt_x'
+    assert args[2] == 1000
+    assert args[3] == 2000
 
     # ownership 查询确实跑了
     db.execute.assert_awaited_once()

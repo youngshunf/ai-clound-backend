@@ -31,7 +31,10 @@ async def test_collect_auto_creates_default_collection(db):
 
     # 帖子 collect_count +1
     cc = (
-        await db.execute(text('SELECT collect_count FROM hasn_posts WHERE post_id = :p'), {'p': pid})
+        await db.execute(
+            text('SELECT collect_count FROM hasn_community.hasn_posts WHERE post_id = :p'),
+            {'p': pid},
+        )
     ).scalar()
     assert cc == 1
 
@@ -48,7 +51,10 @@ async def test_collect_idempotent(db):
     cols = await community_service.list_collections(db, owner_hasn_id=owner['hasn_id'])
     assert cols['items'][0]['item_count'] == 1  # 不重复计数
     cc = (
-        await db.execute(text('SELECT collect_count FROM hasn_posts WHERE post_id = :p'), {'p': pid})
+        await db.execute(
+            text('SELECT collect_count FROM hasn_community.hasn_posts WHERE post_id = :p'),
+            {'p': pid},
+        )
     ).scalar()
     assert cc == 1
 
@@ -68,7 +74,10 @@ async def test_uncollect_decrements_counts(db):
     cols = await community_service.list_collections(db, owner_hasn_id=owner['hasn_id'])
     assert cols['items'][0]['item_count'] == 0
     cc = (
-        await db.execute(text('SELECT collect_count FROM hasn_posts WHERE post_id = :p'), {'p': pid})
+        await db.execute(
+            text('SELECT collect_count FROM hasn_community.hasn_posts WHERE post_id = :p'),
+            {'p': pid},
+        )
     ).scalar()
     assert cc == 0
 

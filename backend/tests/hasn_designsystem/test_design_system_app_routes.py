@@ -24,18 +24,18 @@ import pytest
 import pytest_asyncio
 
 from fastapi import FastAPI, Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_designsystem.api.v1.app.designsystem import router as app_router
 from backend.app.hasn_designsystem.service.design_system_service import Subject, design_system_service
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import SQLALCHEMY_DATABASE_URL, async_db_session, get_db, get_db_transaction
 
 pytestmark = pytest.mark.asyncio
 
@@ -87,9 +87,20 @@ async def env():
     user_b = _new_user_id()
     owner_a = f'h_dsa_{tag}'
     owner_b = f'h_dsb_{tag}'
-    session.add(_human(owner_a, user_a))
-    session.add(_human(owner_b, user_b))
-    await session.flush()
+    agent_a = f'a_{tag}'
+    async with async_db_session.begin() as identity_db:
+        identity_db.add(_human(owner_a, user_a))
+        identity_db.add(_human(owner_b, user_b))
+        identity_db.add(
+            HasnAgents(
+                hasn_id=agent_a,
+                star_id=f's_ds_app_{tag}#agent',
+                owner_id=owner_a,
+                display_name='设计系统测试分身',
+                agent_name=f'designsystem_app_{tag}',
+                status='active',
+            )
+        )
 
     # 当前生效身份（测试内可切换以验证 owner 隔离）。
     auth_state = {'user_id': user_a}
@@ -124,6 +135,11 @@ async def env():
         await session.rollback()
         await session.close()
         await engine.dispose()
+        async with async_db_session.begin() as identity_db:
+            await identity_db.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent_a))
+            await identity_db.execute(
+                delete(HasnHumans).where(HasnHumans.hasn_id.in_([owner_a, owner_b]))
+            )
 
 
 def _data(resp: httpx.Response):

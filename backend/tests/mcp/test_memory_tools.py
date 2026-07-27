@@ -79,7 +79,7 @@ def test_memory_tools_are_cloud_platform() -> None:
     for t in MEMORY_TOOLS:
         assert t.source == 'platform'
         assert t.namespace == 'hasn.memory'
-        assert t.execution_location == 'cloud'
+        assert getattr(t, 'execution_location') == 'cloud'
 
 
 def test_memory_scope_split_read_vs_write() -> None:
@@ -121,7 +121,7 @@ def test_memory_scope_in_platform_catalog() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_memory_save_and_read_roundtrip_real_db() -> None:
     """真实 PG：save agent_self/owner/peer/world → search/recall/list 读回；owner 隔离；
     subject 规约；world 非 global 纠偏；confidence 落 [0,1]。事务真提交，测试后清理。"""

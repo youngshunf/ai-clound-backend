@@ -40,6 +40,7 @@ from backend.app.hasn.service import hasn_auth as hasn_auth_service
 from backend.app.hasn.service.hasn_node_bindings_service import hasn_node_bindings_service
 from backend.app.marketplace.crud.crud_marketplace_template import marketplace_template_dao
 from backend.app.marketplace.crud.crud_marketplace_template_version import marketplace_template_version_dao
+from backend.app.newapi.client import NewApiError
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.common.security.jwt import create_access_token, create_refresh_token
@@ -92,7 +93,7 @@ PRIVATE_NODE_INFO_KEYS = {
 
 
 class RedisLike(Protocol):
-    async def exists(self, key: str) -> bool: ...
+    async def exists(self, key: str) -> int: ...
     async def ttl(self, key: str) -> int: ...
     async def setex(self, key: str, seconds: int, value: str) -> Any: ...
     async def get(self, key: str) -> Any: ...
@@ -397,12 +398,23 @@ class SqlAlchemyOnboardingGateway:
         return result.first() is not None
 
     async def get_sync_feed_head(self, db: AsyncSession, owner_id: str) -> int:
-        """该 owner 权威 sync feed（hasn_sync_events）当前 head revision；空 feed 为 0。"""
-        result = await db.execute(
-            sa.text('SELECT COALESCE(MAX(revision), 0) FROM public.hasn_sync_events WHERE owner_id = :owner_id'),
-            {'owner_id': owner_id},
-        )
-        return int(result.scalar_one())
+        """该 owner 权威 sync feed 当前 head；读取必须使用 sync 受限角色。"""
+        from backend.database.db import sync_service_db_session
+        from backend.database.schema_names import SCHEMA_NAMES
+
+        sync_events = SCHEMA_NAMES.sync_table('hasn_sync_events')
+        # ``db`` 是 onboarding 的 python 业务事务，只用于同一接口形态；R3 角色切换后它
+        # 被明确禁止直读 hasn_sync 表。跨域读在适配器边界另开 sync role 的只读会话。
+        _ = db
+        async with sync_service_db_session() as sync_db:
+            result = await sync_db.execute(
+                sa.text(
+                    f'SELECT COALESCE(MAX(revision), 0) FROM {sync_events} '  # noqa: S608 内部常量表名
+                    'WHERE owner_id = :owner_id'
+                ),
+                {'owner_id': owner_id},
+            )
+            return int(result.scalar_one())
 
 
 @dataclass(slots=True)
@@ -464,6 +476,12 @@ class HasnPhoneAuthService:
         # PR7: ensure newapi user + token so the daemon receives per-owner LLM credentials.
         try:
             llm_token, llm_base_url, llm_model = await self.llm_credentials.issue(db, user)
+        except NewApiError as exc:
+            # hasn-node 首先是 IM 客户端，Runtime/LLM 是可选挂载能力。NewAPI 暂时不可用时
+            # 明确返回「未配置 LLM」状态并继续签发 Owner 会话；不伪造 token，也不吞数据库/
+            # 编程错误。后续重新登录可再次尝试补齐凭据。
+            log.warning(f'NewAPI 暂不可用，Owner 登录继续但不下发 LLM 凭据: {exc}')
+            llm_token, llm_base_url, llm_model = None, None, None
         except Exception as exc:
             raise errors.ServerError(msg=f'LLM 服务初始化失败: {exc}') from exc
 
@@ -666,22 +684,25 @@ async def _issue_phone_verify_agent_tokens(
     issued_agent_tokens: list[AgentTokenInfo] = []
     for agent in agents:
         try:
+            agent_name = agent.display_name or agent.agent_name
+            if not agent_name:
+                log.error(f'为 Agent {agent.hasn_id} 签发 JWT 失败: 缺少有效名称')
+                continue
             token = await agent_tokens.issue(
                 db,
                 agent_hasn_id=agent.hasn_id,
-                agent_name=getattr(agent, 'display_name', None) or getattr(agent, 'agent_name', None),
+                agent_name=agent_name,
                 owner_hasn_id=human.hasn_id,
                 owner_user_id=user.id,
             )
+            expires_at = getattr(token, 'access_token_expire_time', None)
             issued_agent_tokens.append(
                 AgentTokenInfo(
                     agent_hasn_id=agent.hasn_id,
-                    agent_name=getattr(agent, 'display_name', None) or getattr(agent, 'agent_name', None),
+                    agent_name=agent_name,
                     access_token=token.access_token,
                     # scopes 已退役（实施102 S0）：AgentTokenInfo.scopes 恒空占位，daemon 兼容用。
-                    expire_time=getattr(token, 'access_token_expire_time', None).isoformat()
-                    if getattr(token, 'access_token_expire_time', None)
-                    else None,
+                    expire_time=expires_at.isoformat() if expires_at is not None else None,
                     expires_at_unix=getattr(token, 'expires_at_unix', None),
                 )
             )

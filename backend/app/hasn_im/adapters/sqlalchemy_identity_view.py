@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -26,7 +27,7 @@ import sqlalchemy as sa
 from backend.app.hasn_im.ports.identity_view import IdentityRef
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 # 存活态：human / agent 均以 status=='active' 为存活，其余生命周期态一律停用。
 _ACTIVE_STATUS = 'active'
@@ -42,17 +43,27 @@ class SqlAlchemyIdentityView:
     # 会话工厂：默认走全局 async_db_session；测试注入每测试 NullPool sessionmaker 隔离事件循环
     # （与 SqlAlchemyRelationGateway 同款测试缝）。port 契约仍「同库只读视图」，不变。
     session_factory: async_sessionmaker | None = None
+    # 业务事务内创建分身后立即登记汇报卡时，身份尚未提交；绑定同一事务可保持身份
+    # fail-closed，同时避免为了可见性提前提交身份域写入。
+    bound_session: AsyncSession | None = None
 
-    def _session(self):
+    @asynccontextmanager
+    async def _session(self):
+        if self.bound_session is not None:
+            yield self.bound_session
+            return
         if self.session_factory is not None:
-            return self.session_factory()
+            async with self.session_factory() as db:
+                yield db
+            return
         from backend.database.db import async_db_session
 
-        return async_db_session()
+        async with async_db_session() as db:
+            yield db
 
     async def resolve(self, hasn_id: str) -> IdentityRef | None:
         """解析身份最小投影：命中→IdentityRef（active 按 status 派生），未命中→None。"""
-        from backend.app.hasn.model import HasnAgents, HasnHumans
+        from backend.app.hasn_core import HasnAgents, HasnHumans
 
         if hasn_id.startswith(_AGENT_PREFIX):
             async with self._session() as db:

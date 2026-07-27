@@ -16,6 +16,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -42,7 +43,7 @@ def _uid() -> str:
 
 
 def _catalog(app_id: str, **over) -> HasnAppCatalog:
-    base = {
+    base: dict[str, Any] = {
         'app_id': app_id,
         'name': '准入测试',
         'icon': 'app-window',
@@ -315,6 +316,7 @@ async def test_entitlement_gate_denies_unpaid_on_both_faces(db, skip_mode_gate: 
     """付费未准入：**两条到达面**（中继 + MCP 直连 shim）都经 _authorize_tool_call 拦下，
     返回 15030 deny 并写审计——证 gate③ 不在 skip_mode_gate 块内，分身无法经 MCP 面绕过付费墙。"""
     from backend.app.hasn.model import HasnAiNativeAppAudit
+    from backend.app.hasn.schema.ai_native_runtime import AiNativeToolCallRequest
 
     app_id = f'tier_{_uid()}'
     db.add(_catalog(app_id, access_type='tier', min_tier='pro'))
@@ -323,7 +325,7 @@ async def test_entitlement_gate_denies_unpaid_on_both_faces(db, skip_mode_gate: 
 
     deny = await ai_native_runtime_gateway._authorize_tool_call(
         db,
-        body=SimpleNamespace(trace_id=trace_id),
+        body=AiNativeToolCallRequest(trace_id=trace_id),
         workspace={'kind': 'personal', 'user_id': 0, 'enterprise_id': None},
         agent=_agent(owner),
         manifest={'app_id': app_id, 'version': '1.0.0'},

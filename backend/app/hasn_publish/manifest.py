@@ -31,7 +31,7 @@ hasn-mcp execute 内的执行期闸门（``enforce_visibility_upgrade_gate``）�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -105,7 +105,7 @@ _SOURCE_REF_SCHEMA = {
     'description': '组件型来源溯源 {app, id}（如 deck，由 webui 路径 B 渲染成静态 HTML 随 html 一并传入）',
 }
 
-PUBLISH_AI_NATIVE_MANIFEST = {
+PUBLISH_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'publish',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'publish': '网页发布（建站/可见性/撤回）'},

@@ -57,11 +57,19 @@ class ImGateway(Protocol):
         """撤回消息（造成 conversation_seq 空洞是允许的）。"""
         ...
 
-    async def list_messages(self, query: ListMessagesQuery) -> MessagePage:
+    async def list_messages(
+        self,
+        query: ListMessagesQuery,
+        principal: ServicePrincipal,
+    ) -> MessagePage:
         """消息列表（稳定 cursor：items/has_more/next_cursor）。"""
         ...
 
-    async def list_conversations(self, query: ListConversationsQuery) -> MessagePage:
+    async def list_conversations(
+        self,
+        query: ListConversationsQuery,
+        principal: ServicePrincipal,
+    ) -> MessagePage:
         """会话列表（cursor/limit + 批量 profile join）。"""
         ...
 
@@ -99,4 +107,12 @@ class ImGateway(Protocol):
         principal: ServicePrincipal,
     ) -> SendMessageResult:
         """放行抑制箱消息（§5.2：重走完整事务分配新 seq）。"""
+        ...
+
+    async def list_suppressed(
+        self,
+        *,
+        principal: ServicePrincipal,
+    ) -> list[dict[str, Any]]:
+        """列出认证主人当前可见的待放行命令。"""
         ...

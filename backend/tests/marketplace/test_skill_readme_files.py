@@ -19,7 +19,7 @@ import uuid
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 import pytest_asyncio
@@ -164,6 +164,7 @@ async def test_detail_emits_readme_per_lang_files_and_count(db_session) -> None:
         assert set(f.keys()) == {'path', 'size'}, f
 
     detail_en = await search_service.get_skill_detail(db_session, skill_id, 'en')
+    assert detail_en is not None
     assert detail_en['readme'] == '# Demo\n\nEnglish body.'    # en → 英文正文
 
 
@@ -178,6 +179,7 @@ async def test_detail_readme_falls_back_to_other_language(db_session) -> None:
         body_en='# Only EN\n\nbody', body_zh=None, files=None,
     )
     detail_zh = await search_service.get_skill_detail(db_session, skill_id, 'zh')
+    assert detail_zh is not None
     assert detail_zh['readme'] == '# Only EN\n\nbody'          # 回退英文
     assert detail_zh['files'] == [] and detail_zh['file_count'] == 0  # 无文件清单 → 空
 
@@ -241,7 +243,7 @@ async def test_resolve_bilingual_body_reuses_cached_translation(monkeypatch) -> 
 
     monkeypatch.setattr(translation_service, '_complete_chat', _must_not_touch_network)
 
-    existing = SimpleNamespace(body_en=body, body_zh='# 演示\n\n旧译文。')
+    existing: Any = SimpleNamespace(body_en=body, body_zh='# 演示\n\n旧译文。')
     body_en, body_zh = await github_sync_service._resolve_bilingual_body(
         existing_skill=existing, source_language='en', body=body,
     )
@@ -273,8 +275,9 @@ async def test_resolve_bilingual_body_detects_body_language_not_name_hint(monkey
 
 @pytest.mark.asyncio
 async def test_resolve_bilingual_body_empty_clears_both_sides() -> None:
+    existing: Any = SimpleNamespace(body_en='old', body_zh='旧')
     body_en, body_zh = await github_sync_service._resolve_bilingual_body(
-        existing_skill=SimpleNamespace(body_en='old', body_zh='旧'),
+        existing_skill=existing,
         source_language='en', body='   ',
     )
     assert body_en is None and body_zh is None      # 空正文 → 两侧清空（诚实：无 readme）
@@ -328,6 +331,7 @@ async def test_clawhub_extract_body_and_files_from_disk(tmp_path: Path, monkeypa
     body_en, body_zh, files_json = await clawhub_sync_service._extract_body_and_files(
         existing_skill=None, source_language='en', skill_dir=tmp_path,
     )
+    assert body_en is not None
     assert body_en.startswith('# Demo Skill')   # 英文正文落英文侧
     assert body_zh == '# 演示\n\n已翻译正文。'    # 中文侧是译文
     files = json.loads(files_json)

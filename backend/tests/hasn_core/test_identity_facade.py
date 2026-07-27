@@ -20,6 +20,8 @@ from backend.app.hasn.model.hasn_agents import HasnAgents as _SrcAgents
 from backend.app.hasn.model.hasn_humans import HasnHumans as _SrcHumans
 from backend.app.hasn_core.identity import AgentRef, HumanRef, identity
 
+TEST_DB: Any = None
+
 # ---- (1) re-export 契约：方案 A 公开的就是 app/hasn 原对象 ----
 
 
@@ -94,7 +96,7 @@ async def test_get_human_by_user_id_delegates(monkeypatch: pytest.MonkeyPatch) -
     sentinel = SimpleNamespace(hasn_id='h_9', user_id=7)
     log: list = []
     monkeypatch.setattr(_src_humans_dao, 'get_by_user_id', _recording(sentinel, log))
-    out = await identity.get_human_by_user_id(db=None, user_id=7)
+    out = await identity.get_human_by_user_id(db=TEST_DB, user_id=7)
     assert out is sentinel  # 透传 DAO 返回
     assert log == [7]
 
@@ -102,7 +104,7 @@ async def test_get_human_by_user_id_delegates(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_ref_human_returns_none_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_src_humans_dao, 'get_by_hasn_id', _recording(None, []))
-    assert await identity.ref_human(db=None, hasn_id='missing') is None
+    assert await identity.ref_human(db=TEST_DB, hasn_id='missing') is None
 
 
 @pytest.mark.asyncio
@@ -117,6 +119,6 @@ async def test_ref_human_maps_dto_when_present(monkeypatch: pytest.MonkeyPatch) 
         status='active',
     )
     monkeypatch.setattr(_src_humans_dao, 'get_by_hasn_id', _recording(model, []))
-    ref = await identity.ref_human(db=None, hasn_id='h_2')
+    ref = await identity.ref_human(db=TEST_DB, hasn_id='h_2')
     assert isinstance(ref, HumanRef)
     assert ref.hasn_id == 'h_2' and ref.user_id == 8

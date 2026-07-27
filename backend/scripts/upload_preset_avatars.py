@@ -38,12 +38,12 @@ DEFAULT_SOURCE_DIR = _REPO_PARENT / 'hasn-node' / 'webui' / 'public' / 'avatars'
 
 def _render_png(path: Path, size: int) -> bytes:
     """读取源 PNG，缩放到 size×size（LANCZOS 高质量重采样），编码为 PNG 字节。"""
-    with Image.open(path) as img:
-        img = img.convert('RGBA')
-        if img.size != (size, size):
-            img = img.resize((size, size), Image.LANCZOS)
+    with Image.open(path) as source_image:
+        image = source_image.convert('RGBA')
+        if image.size != (size, size):
+            image = image.resize((size, size), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
-        img.save(buffer, format='PNG', optimize=True)
+        image.save(buffer, format='PNG', optimize=True)
         return buffer.getvalue()
 
 

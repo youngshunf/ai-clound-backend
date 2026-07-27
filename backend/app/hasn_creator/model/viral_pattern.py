@@ -27,5 +27,5 @@ class ViralPattern(HasnCreatorAppBase):
     usage_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment=None)
     success_rate: Mapped[Decimal] = mapped_column(sa.NUMERIC(), default=None, comment=None)
     source: Mapped[str] = mapped_column(sa.String(20), default='', comment='来源 (ai_extracted:AI提炼:violet/manual:手动:blue/builtin:内置:gray)')
-    tags: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
+    tags: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
     is_builtin: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment=None)

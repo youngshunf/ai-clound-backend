@@ -27,7 +27,7 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transact
 
 pytestmark = pytest.mark.asyncio
 
-_USER_ID = 990000 + int(uuid.uuid4().int % 20000)
+_USER_ID = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
 
 _APP = FastAPI()
 

@@ -391,9 +391,9 @@ class AgentTaskService:
                 'since': now - IDEMPOTENCY_WINDOW,
             },
         )
-        row = existing.mappings().first()
-        if row is not None:
-            return task_to_public(dict(row)), False
+        existing_row = existing.mappings().first()
+        if existing_row is not None:
+            return task_to_public(dict(existing_row)), False
 
         # R4 频控：单 agent 每小时建任务上限
         count = await db.execute(
@@ -452,8 +452,8 @@ class AgentTaskService:
         )
         if state == 'pending_approval':
             await cls._notify_pending_approval(db, agent=agent, task_uuid=task_uuid, name=name)
-        row = await cls.get_task_row(db, owner_id=owner_id, task_uuid=task_uuid)
-        return task_to_public(row), True
+        created_row = await cls.get_task_row(db, owner_id=owner_id, task_uuid=task_uuid)
+        return task_to_public(created_row), True
 
     @classmethod
     async def _notify_pending_approval(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,7 +13,7 @@ from backend.plugin.s3.service import storage_service as svc_mod
 from backend.plugin.s3.service.storage_service import StorageService
 
 
-def _storage(**overrides: object) -> SimpleNamespace:
+def _storage(**overrides: object) -> Any:
     data = {
         'id': 1,
         'endpoint': 'https://oss.example.com',
@@ -28,6 +29,9 @@ def _storage(**overrides: object) -> SimpleNamespace:
     }
     data.update(overrides)
     return SimpleNamespace(**data)
+
+
+TEST_DB: Any = object()
 
 
 def test_category_policy_public_vs_private() -> None:
@@ -63,7 +67,7 @@ async def test_upload_routes_to_private_bucket(monkeypatch: pytest.MonkeyPatch) 
 
     data = b'attachment-bytes'
     ref = await StorageService.upload(
-        db=object(), data=data, category='dm_attachment', filename='a.png', content_type='image/png'
+        db=TEST_DB, data=data, category='dm_attachment', filename='a.png', content_type='image/png'
     )
 
     assert ref.access == 'private'
@@ -84,7 +88,7 @@ async def test_signed_url_dispatches_s3_presign(monkeypatch: pytest.MonkeyPatch)
         'presign_read_key',
         AsyncMock(return_value='https://oss.example.com/private-bucket/huanxing/dm/x.png?sig=abc'),
     )
-    url = await StorageService.signed_url(db=object(), storage_id=2, object_key='dm/x.png', expires_in=600)
+    url = await StorageService.signed_url(db=TEST_DB, storage_id=2, object_key='dm/x.png', expires_in=600)
     assert url.endswith('?sig=abc')
 
 
@@ -138,7 +142,7 @@ async def test_unknown_sign_strategy_raises(monkeypatch: pytest.MonkeyPatch) -> 
     storage = _storage(sign_strategy='bogus')
     monkeypatch.setattr(svc_mod.s3_storage_dao, 'get', AsyncMock(return_value=storage))
     with pytest.raises(errors.ServerError):
-        await StorageService.signed_url(db=object(), storage_id=2, object_key='dm/x.png')
+        await StorageService.signed_url(db=TEST_DB, storage_id=2, object_key='dm/x.png')
 
 
 class _FakeRedis:
@@ -167,13 +171,13 @@ async def test_signed_url_cached_miss_then_hit(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(StorageService, 'signed_url', classmethod(lambda cls, db, **kw: sign_spy(**kw)))
 
     # 未命中：live 签名 + SETEX(ttl = expires_in - margin)
-    url1 = await StorageService.signed_url_cached(db=object(), storage_id=2, object_key='dm/x.png', expires_in=600)
+    url1 = await StorageService.signed_url_cached(db=TEST_DB, storage_id=2, object_key='dm/x.png', expires_in=600)
     assert url1 == 'https://signed/url?sig=1'
     assert sign_spy.await_count == 1
     assert fake.setex_calls[0][1] == 600 - svc_mod.SIGN_CACHE_MARGIN_SECONDS  # margin 生效
 
     # 命中：不再签名
-    url2 = await StorageService.signed_url_cached(db=object(), storage_id=2, object_key='dm/x.png', expires_in=600)
+    url2 = await StorageService.signed_url_cached(db=TEST_DB, storage_id=2, object_key='dm/x.png', expires_in=600)
     assert url2 == 'https://signed/url?sig=1'
     assert sign_spy.await_count == 1  # 仍是 1，命中缓存
 
@@ -187,7 +191,7 @@ async def test_signed_urls_cached_batch_only_signs_misses(monkeypatch: pytest.Mo
     monkeypatch.setattr(svc_mod, 'presign_read_key', AsyncMock(return_value='fresh-signed'))
 
     items = [(2, 'dm/a.png'), (2, 'dm/b.png')]
-    result = await StorageService.signed_urls_cached(db=object(), items=items, expires_in=600)
+    result = await StorageService.signed_urls_cached(db=TEST_DB, items=items, expires_in=600)
     assert result[2, 'dm/a.png'] == 'cached-a'  # 命中
     assert result[2, 'dm/b.png'] == 'fresh-signed'  # 未命中→签名
     # 仅未命中的 b 触发 setex

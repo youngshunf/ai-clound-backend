@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.hasn_im.consumers import store
 from backend.app.hasn_im.consumers.base import ConsumerClass, EventConsumer
+from backend.app.hasn_im.observability import metrics
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +171,12 @@ class ConsumerRunner:
                 )
                 await db.commit()
                 stats.dead_lettered += 1
+                metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(
+                    consumer=self.name
+                ).inc()
+                metrics.HASN_IM_DEAD_LETTER_TOTAL.labels(
+                    consumer=self.name
+                ).inc()
                 # dead letter = 永久卡住须人介入 → error（warn/error 铁律：终局不可恢复）
                 log.error(
                     'IM 消费者事件进 dead letter（consumer=%s event_seq=%d attempts=%d）：%r',
@@ -183,6 +190,9 @@ class ConsumerRunner:
             )
             await db.commit()
             stats.retried += 1
+            metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(
+                consumer=self.name
+            ).inc()
             # 会退避重试 / 自愈 → warn（warn/error 铁律：可恢复不提级）
             log.warning(
                 'IM 消费者事件处理失败将退避重试（consumer=%s event_seq=%d attempts=%d next=+%ds）：%r',
@@ -200,6 +210,9 @@ class ConsumerRunner:
                     await db.commit()
             except Exception as exc:  # noqa: BLE001 best-effort：已尝试即算，记 metric 后仍推进
                 stats.best_effort_failed += 1
+                metrics.HASN_IM_CONSUMER_FAILURE_TOTAL.labels(
+                    consumer=self.name
+                ).inc()
                 # 不重试、不进 DLQ、不阻塞 retention（§7.2）→ warn（预期可丢失、sync pull 兜底）
                 log.warning(
                     'IM best-effort 消费者投递失败（consumer=%s event_seq=%d，不重试·sync pull 兜底）：%r',

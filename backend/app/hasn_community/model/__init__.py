@@ -12,3 +12,4 @@ from backend.app.hasn_community.model.hasn_follows import HasnFollows as HasnFol
 from backend.app.hasn_community.model.hasn_likes import HasnLikes as HasnLikes
 from backend.app.hasn_community.model.hasn_posts import HasnPosts as HasnPosts
 from backend.app.hasn_community.model.hasn_topics import HasnTopics as HasnTopics
+from backend.app.hasn_community.model.im_command_outbox import ImCommandOutbox as ImCommandOutbox

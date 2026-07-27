@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import ConfigDict, Field
 
@@ -14,9 +15,9 @@ class DraftSchemaBase(SchemaBase):
     assignee: str | None = Field(None, description='None')
     title: str | None = Field(None, description='None')
     content: str | None = Field(None, description='None')
-    media: dict = Field(description='媒体引用（hasn://asset/）')
-    tags: dict = Field(description='None')
-    target_platforms: dict = Field(description='None')
+    media: list[Any] = Field(description='媒体引用（hasn://asset/）')
+    tags: list[str] = Field(description='None')
+    target_platforms: list[str] = Field(description='None')
 
 
 class CreateDraftParam(DraftSchemaBase):

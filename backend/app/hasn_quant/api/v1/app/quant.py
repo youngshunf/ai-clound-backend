@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
+from backend.app.hasn_core.app_platform import resolve_owner_hasn_id
 from backend.app.hasn_quant.provider import quant_engine_provider
 from backend.app.hasn_quant.schema.owner import SaveStrategyParam, SubmitBacktestParam
 from backend.app.hasn_quant.service.quant_service import quant_service

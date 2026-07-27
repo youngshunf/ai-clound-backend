@@ -12,6 +12,7 @@ SQLite 上无法跑；本测试只验路由组装与字段映射。
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -45,6 +46,7 @@ def _relation(status: str) -> SimpleNamespace:
 
 
 SELF = "h_selfaaaaaaaaaaaaaaaa"
+TEST_DB: Any = object()
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +77,7 @@ async def test_star_id_exact_hit_human() -> None:
         'backend.app.hasn.api.v1.app.search.hasn_contacts_dao.get_relation',
         new=AsyncMock(return_value=_relation('connected')),
     ):
-        resp = await search_users(db=object(), q='100002', limit=20, auth={'hasn_id': SELF})
+        resp = await search_users(db=TEST_DB, q='100002', limit=20, auth={'hasn_id': SELF})
 
     data = resp.data
     assert data['total'] == 1
@@ -105,7 +107,7 @@ async def test_star_id_exact_hit_agent_with_hash() -> None:
         'backend.app.hasn.api.v1.app.search.hasn_contacts_dao.get_relation',
         new=AsyncMock(return_value=None),
     ):
-        resp = await search_users(db=object(), q='foo#01', limit=20, auth={'hasn_id': SELF})
+        resp = await search_users(db=TEST_DB, q='foo#01', limit=20, auth={'hasn_id': SELF})
 
     human_mock.assert_not_awaited()
     item = resp.data['items'][0]
@@ -134,7 +136,7 @@ async def test_name_prefix_match_excludes_self() -> None:
         'backend.app.hasn.api.v1.app.search.hasn_contacts_dao.get_relation',
         new=AsyncMock(return_value=None),
     ):
-        resp = await search_users(db=object(), q='ali', limit=20, auth={'hasn_id': SELF})
+        resp = await search_users(db=TEST_DB, q='ali', limit=20, auth={'hasn_id': SELF})
 
     assert captured['prefix'] == 'ali'
     assert captured['exclude_hasn_id'] == SELF
@@ -158,7 +160,7 @@ async def test_existing_relation_status_passthrough() -> None:
         'backend.app.hasn.api.v1.app.search.hasn_contacts_dao.get_relation',
         new=AsyncMock(return_value=_relation('pending')),
     ):
-        resp = await search_users(db=object(), q='100003', limit=20, auth={'hasn_id': SELF})
+        resp = await search_users(db=TEST_DB, q='100003', limit=20, auth={'hasn_id': SELF})
 
     assert resp.data['items'][0]['existing_relation'] == 'pending'
 
@@ -178,7 +180,7 @@ async def test_exact_hit_does_not_duplicate_in_prefix_results() -> None:
         'backend.app.hasn.api.v1.app.search.hasn_contacts_dao.get_relation',
         new=AsyncMock(return_value=None),
     ):
-        resp = await search_users(db=object(), q='bobby', limit=20, auth={'hasn_id': SELF})
+        resp = await search_users(db=TEST_DB, q='bobby', limit=20, auth={'hasn_id': SELF})
 
     items = resp.data['items']
     hasn_ids = [i['hasn_id'] for i in items]

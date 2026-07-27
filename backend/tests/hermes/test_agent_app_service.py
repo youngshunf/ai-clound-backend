@@ -84,6 +84,14 @@ class FakeRuntimeClient:
         self.calls.append(('put_user_profile', runtime_profile_id, content))
         return {'kind': 'user-profile', 'updated_at': '2026-04-29T10:00:02+08:00', 'requires_gateway_restart': False}
 
+    async def install_credential(self, runtime_profile_id, payload, trace_id=None):
+        self.calls.append(('install_credential', runtime_profile_id, payload))
+        return {'status': 'installed'}
+
+    async def delete_agent(self, runtime_profile_id, trace_id=None):
+        self.calls.append(('delete_agent', runtime_profile_id, None))
+        return {'status': 'deleted'}
+
     async def start_gateway(self, runtime_profile_id, trace_id=None):
         self.calls.append(('start_gateway', runtime_profile_id, None))
         return {
@@ -139,11 +147,38 @@ class FakeRuntimeClient:
 @pytest_asyncio.fixture
 async def db_session(monkeypatch):
     import backend.app.hermes.service.hermes_agent_app_service as service_mod
+    from backend.app.newapi.service import LlmNewapiUserMappingService
 
     monkeypatch.setattr(service_mod, 'HermesAgent', HermesAgentStub, raising=True)
     monkeypatch.setattr(service_mod, 'HermesAgentRuntimeState', HermesAgentRuntimeStateStub, raising=True)
     monkeypatch.setattr(service_mod, 'HermesAgentChannelBinding', HermesAgentChannelBindingStub, raising=True)
     monkeypatch.setattr(service_mod, 'HermesAgentOperation', HermesAgentOperationStub, raising=True)
+
+    async def _issue_agent_token(db, agent_id, user_id, **kwargs):
+        return {
+            'agent_id': agent_id,
+            'newapi_user_id': user_id,
+            'newapi_token_id': user_id,
+            'token_key_prefix': 'test',
+            'raw_token_key': f'hermes-{agent_id}',
+            'reused': False,
+        }
+
+    async def _revoke_agent_token(db, agent_id):
+        return None
+
+    monkeypatch.setattr(
+        LlmNewapiUserMappingService,
+        'ensure_agent_token',
+        staticmethod(_issue_agent_token),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        LlmNewapiUserMappingService,
+        'revoke_agent_token',
+        staticmethod(_revoke_agent_token),
+        raising=True,
+    )
 
     class _MarketplaceAppFixture:
         def __init__(self, **kw) -> None:
@@ -152,10 +187,10 @@ async def db_session(monkeypatch):
 
     class InMemorySession:
         def __init__(self) -> None:
-            self.hermes_agents = []
-            self.runtime_states = []
-            self.channel_bindings = []
-            self.operations = []
+            self.hermes_agents: list[Any] = []
+            self.runtime_states: list[Any] = []
+            self.channel_bindings: list[Any] = []
+            self.operations: list[Any] = []
             self.users = [
                 SimpleNamespace(id=1001, nickname='星主', phone='13800138000'),
             ]
@@ -181,7 +216,7 @@ async def db_session(monkeypatch):
                     is_latest=True,
                 )
             ]
-            self._ids = {}
+            self._ids: dict[type[Any], int] = {}
 
         def add(self, obj) -> None:
             table = {

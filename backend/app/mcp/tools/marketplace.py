@@ -25,7 +25,7 @@ import base64
 
 from typing import TYPE_CHECKING, Any
 
-from backend.app.mcp.tools.base import BaseTool
+from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
@@ -455,7 +455,7 @@ class InstallSkillTool(BaseTool):
                 # 维度②：attach 内部校验技能 published/public，未发布抛 NotFoundError。
                 result = await agent_profile_service.attach_skill_cloud_first(
                     db,
-                    owner_id=agent_context.owner_hasn_id,
+                    owner_id=require_owner_hasn_id(agent_context),
                     hasn_id=agent_context.agent_hasn_id,
                     skill_id=skill_id,
                     user_id=agent_context.owner_id,
@@ -518,7 +518,7 @@ class UninstallSkillTool(BaseTool):
         async with async_db_session() as db:
             result = await agent_profile_service.detach_skill_cloud_first(
                 db,
-                owner_id=agent_context.owner_hasn_id,
+                owner_id=require_owner_hasn_id(agent_context),
                 hasn_id=agent_context.agent_hasn_id,
                 skill_id=skill_id,
                 user_id=agent_context.owner_id,
@@ -605,7 +605,7 @@ class PublishSkillTool(BaseTool):
             skill = await marketplace_skill_service.upload_user_skill(
                 db=db,
                 user_id=agent_context.owner_id,
-                hasn_id=agent_context.owner_hasn_id,
+                hasn_id=require_owner_hasn_id(agent_context),
                 content=content,
                 filename=(arguments.get('filename') or None),
                 slug=(arguments.get('slug') or None),
@@ -672,7 +672,7 @@ class PublishTemplateTool(BaseTool):
             template = await marketplace_template_service.upload_user_template(
                 db=db,
                 user_id=agent_context.owner_id,
-                hasn_id=agent_context.owner_hasn_id,
+                hasn_id=require_owner_hasn_id(agent_context),
                 content=content,
                 filename=(arguments.get('filename') or None),
                 slug=(arguments.get('slug') or None),

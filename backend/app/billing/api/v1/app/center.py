@@ -15,7 +15,7 @@ from backend.app.billing.schema.access import AccessDecision
 from backend.app.billing.schema.center import BillingCenterResponse, GrantTrialParam
 from backend.app.billing.service import access_service
 from backend.app.billing.service.billing_center_service import billing_center_service
-from backend.app.hasn.service import app_catalog_service
+from backend.app.hasn_core.app_platform import app_catalog_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth

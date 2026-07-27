@@ -8,7 +8,12 @@ from backend.app.hasn.model.hasn_conversations import HasnConversations
 from backend.app.hasn.model.hasn_messages import HasnMessages
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.service.notification_service import notification_service
-from tests.notification.conftest import seed_human
+from backend.database.schema_names import SCHEMA_NAMES
+from tests.notification.conftest import (
+    notification_outbox_result,
+    seed_agent,
+    seed_human,
+)
 
 
 async def _card_messages_to(db, recipient_id: str) -> list[HasnMessages]:
@@ -26,7 +31,10 @@ async def _card_messages_to(db, recipient_id: str) -> list[HasnMessages]:
 
 
 @pytest.mark.asyncio
-async def test_system_emit_projects_card_into_service_conversation(db):
+async def test_system_emit_projects_card_into_service_conversation(
+    db,
+    drain_notification_outbox,
+):
     owner = await seed_human(db, nickname='主人')
     nid = await notification_service.emit(
         db,
@@ -39,16 +47,22 @@ async def test_system_emit_projects_card_into_service_conversation(db):
         payload={'target': {'type': 'sys', 'id': 'm1'}, 'preview': '维护 30 分钟', 'link': '/settings'},
     )
 
-    # 权威行回写了 card_message_id（投影回指 D1）
+    # 权威行记录发送命令；业务事务不伪装成消息已投递。
     row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
-    assert row.delivery.get('card_message_id')
+    command_id = row.delivery.get('card_command_id')
+    assert command_id
+    assert row.delivery.get('card_delivery_state') == 'pending'
     sv_id = row.delivery.get('service_account')
     assert sv_id and sv_id.startswith('sv_')
+
+    stats = await drain_notification_outbox()
+    assert stats.completed == 1
 
     # 卡片消息落进 服务号 ⇄ 主人 的 service 会话
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 1
     card = cards[0]
+    assert await notification_outbox_result(db, command_id) == ('completed', card.id)
     assert card.from_id == sv_id
     assert card.from_type == 5  # service（D8）
     assert card.content['schema_version'] == 'hasn.card/0.1'
@@ -60,7 +74,10 @@ async def test_system_emit_projects_card_into_service_conversation(db):
 
 
 @pytest.mark.asyncio
-async def test_same_source_reuses_one_service_conversation(db):
+async def test_same_source_reuses_one_service_conversation(
+    db,
+    drain_notification_outbox,
+):
     owner = await seed_human(db, nickname='主人')
     for i in range(2):
         await notification_service.emit(
@@ -72,6 +89,8 @@ async def test_same_source_reuses_one_service_conversation(db):
             title=f'消息{i}',
             payload={'target': {'type': 'm', 'id': f'm{i}'}},
         )
+    stats = await drain_notification_outbox()
+    assert stats.completed == 2
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 2  # 两条卡片
     assert len({c.conversation_id for c in cards}) == 1  # 同一个服务号会话（微信服务号效果）
@@ -91,17 +110,25 @@ async def test_social_emit_makes_no_card(db):
         payload={'target': {'type': 'post', 'id': 'p1'}},
     )
     row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
-    assert 'card_message_id' not in (row.delivery or {})
+    assert 'card_command_id' not in (row.delivery or {})
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 0
 
 
 @pytest.mark.asyncio
-async def test_agent_source_projects_card_into_owner_agent_conversation(db):
-    """agent 源卡片落「主人 ⇄ agent」既有 social 会话（§4.5：agent 本身即会话身份，不建服务号）。"""
+async def test_owned_agent_source_routes_to_report_conversation(
+    db,
+    drain_notification_outbox,
+):
+    """自有 Agent 汇报只进主人主会话，不污染通知中心。"""
     owner = await seed_human(db, nickname='主人')
-    agent_id = 'a_mine'
-    nid = await notification_service.emit(
+    agent = await seed_agent(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        display_name='我的分身',
+    )
+    agent_id = agent['hasn_id']
+    command_id = await notification_service.emit(
         db,
         recipient_id=owner['hasn_id'],
         source={'kind': 'agent', 'id': agent_id, 'display_name': '我的分身'},
@@ -110,16 +137,24 @@ async def test_agent_source_projects_card_into_owner_agent_conversation(db):
         title='你的分身 我的分身 有一篇帖子待确认',
         payload={'target': {'type': 'post', 'id': 'd1'}, 'preview': '副业', 'link': '/community?tab=drafts'},
     )
-    # 权威行回写 card_message_id + card_peer（指向 agent，不建 sv_ 服务号）
-    row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
-    assert row.delivery.get('card_message_id')
-    assert row.delivery.get('card_peer') == agent_id
-    assert 'service_account' not in (row.delivery or {})
+    assert command_id
+    notification_count = (
+        await db.execute(
+            select(HasnNotifications.id).where(
+                HasnNotifications.target_id == owner['hasn_id'],
+            )
+        )
+    ).scalars().all()
+    assert notification_count == []
 
-    # 卡片 from=agent，schema 合法，source.kind=agent
+    stats = await drain_notification_outbox()
+    assert stats.completed == 1
+
+    # 汇报卡 from=agent，schema 合法，source.kind=agent。
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 1
     card = cards[0]
+    assert await notification_outbox_result(db, command_id) == ('completed', card.id)
     assert card.from_id == agent_id
     assert card.content['schema_version'] == 'hasn.card/0.1'
     assert card.content['source']['kind'] == 'agent'
@@ -132,17 +167,22 @@ async def test_agent_source_projects_card_into_owner_agent_conversation(db):
     assert conv.relation_type == 'social'
     assert {conv.participant_a_id, conv.participant_b_id} == {owner['hasn_id'], agent_id}
 
-    # 写了 message.received sync_event（否则 daemon 永不镜像这条卡片，本地列表看不到）
-    received = (
+    # 消息事务只写唯一集成事件；Sync 投影由 durable consumer 后置完成。
+    committed = (
         await db.execute(
             text(
-                "SELECT count(*) FROM hasn_sync_events "
-                "WHERE owner_id = :o AND event_type = 'message.received' AND aggregate_id = :mid"
+                f'SELECT count(*) FROM {SCHEMA_NAMES.im_event_table("integration_events")} '
+                "WHERE aggregate_id = :conversation_id "
+                "AND event_type = 'im.message.committed.v1' "
+                "AND payload->>'message_id' = :message_id"
             ),
-            {'o': owner['hasn_id'], 'mid': str(card.id)},
+            {
+                'conversation_id': str(card.conversation_id),
+                'message_id': str(card.id),
+            },
         )
     ).scalar()
-    assert received == 1
+    assert committed == 1
 
 
 @pytest.mark.asyncio
@@ -168,7 +208,10 @@ async def test_list_service_accounts_for_owner(db):
 
 
 @pytest.mark.asyncio
-async def test_dnd_suppresses_does_not_block_card(db):
+async def test_dnd_suppresses_does_not_block_card(
+    db,
+    drain_notification_outbox,
+):
     """免打扰只压 toast/push（吵），不影响 card_message/center —— 卡片仍投递。"""
     owner = await seed_human(db, nickname='主人')
     await notification_service.upsert_preference(
@@ -188,4 +231,7 @@ async def test_dnd_suppresses_does_not_block_card(db):
     assert row.delivery['dnd_suppressed'] is True
     assert row.delivery['channels']['toast'] is False
     assert row.delivery['channels']['card_message'] is True  # 卡片不被 DND 压
-    assert row.delivery.get('card_message_id')
+    assert row.delivery.get('card_command_id')
+    stats = await drain_notification_outbox()
+    assert stats.completed == 1
+    assert len(await _card_messages_to(db, owner['hasn_id'])) == 1

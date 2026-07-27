@@ -1,7 +1,7 @@
 import shutil
 
 from functools import cache
-from re import Pattern
+from re import Pattern, compile as compile_pattern
 from typing import Any, Literal
 
 from pydantic import model_validator
@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     IM_SERVICE_DATABASE_URL: str = ''
     SYNC_SERVICE_DATABASE_URL: str = ''
     PYTHON_BACKEND_DATABASE_URL: str = ''
+    # R3 硬切换总闸。False 使用 public 旧物理名；True 使用 hasn_im/hasn_sync 显式限定名。
+    # 生产开启时必须同时配置三个受限 role DSN 与最低 daemon 版本，否则启动即拒绝。
+    HASN_IM_SCHEMA_CUTOVER: bool = False
 
     # 积分↔quota 的换算常量已随 doc94 D1 删除：NewAPI 是积分唯一权威，
     # 云端持有一份换算算法就等于持有第二套金额口径。需要积分数值时读 NewAPI
@@ -278,6 +281,8 @@ class Settings(BaseSettings):
         f'{FASTAPI_API_V1_PATH}/user_tier/my/subscription/packages',
     ]
     TOKEN_REQUEST_PATH_EXCLUDE_PATTERN: list[Pattern[str]] = [  # JWT / RBAC 路由白名单（正则）
+        compile_pattern(pattern)
+        for pattern in (
         rf'^{FASTAPI_API_V1_PATH}/monitors/(redis|server)$',
         rf'^{FASTAPI_API_V1_PATH}/marketplace/client/.*$',  # 桌面端市场公开 API
         rf'^{FASTAPI_API_V1_PATH}/marketplace/download/.*$',  # 市场下载 API
@@ -301,6 +306,7 @@ class Settings(BaseSettings):
         # JwtAuthMiddleware.extract_token 通过 is_agent_token 按 token 类型分流放行，
         # 交由路由自身的 DependsAgentJwtAuth 验签（守卫：tests/test_agent_jwt_middleware_bypass.py）。
         # 上面 *_agent/* 模式保留的是 X-Agent-Key（无 Authorization 头）等非 Bearer 自鉴权面。
+        )
     ]
 
     # 用户安全
@@ -628,6 +634,25 @@ class Settings(BaseSettings):
     @classmethod
     def check_env(cls, values: Any) -> Any:
         """检查环境变量"""
+        cutover_value = values.get('HASN_IM_SCHEMA_CUTOVER', False)
+        cutover = cutover_value is True or str(cutover_value).strip().lower() in {
+            '1',
+            'true',
+            'yes',
+            'on',
+        }
+        if values.get('ENVIRONMENT') == 'prod' and cutover:
+            required = (
+                'IM_SERVICE_DATABASE_URL',
+                'SYNC_SERVICE_DATABASE_URL',
+                'PYTHON_BACKEND_DATABASE_URL',
+                'HASN_WS_MIN_CLIENT_VERSION',
+            )
+            missing = [name for name in required if not str(values.get(name) or '').strip()]
+            if missing:
+                raise ValueError(
+                    'R3 生产硬切换配置不完整，缺少：' + ', '.join(missing)
+                )
         if values.get('ENVIRONMENT') == 'prod':
             # FastAPI
             values['FASTAPI_OPENAPI_URL'] = None

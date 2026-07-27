@@ -9,19 +9,22 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import and_, false, func, or_, select
 
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.model.hasn_notification_preferences import HasnNotificationPreferences
 from backend.app.notification.service.delivery_policy import default_priority, resolve_policy
+from backend.app.hasn_sync.adapters.sqlalchemy_appender import SqlAlchemySyncAppender
+from backend.app.hasn_sync.ports.dto import SyncEnvelope
 from backend.common.exception import errors
 from backend.common.log import log
 from backend.utils.timezone import timezone as _tz
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+    from backend.app.hasn_im.ports.im_gateway import ImGateway
 
 
 class NotificationService:
@@ -50,7 +53,8 @@ class NotificationService:
         dedupe_key: str | None = None,
         group_key: str | None = None,
         delivery_hint: dict[str, Any] | None = None,
-    ) -> int:
+        im_gateway: ImGateway | None = None,
+    ) -> int | str:
         """落一条权威通知行，返回 notification_id（§5）。
 
         P1：解析策略 → 去重/聚合 → 落权威行（delivery 记录策略意图）。
@@ -67,6 +71,9 @@ class NotificationService:
         #    落点：分身主会话一条汇报卡（agent 本身即会话身份，未读挂在与该分身的会话上）。
         #    即使某 producer 漏改仍走 emit()，此守卫也保证「自分身→主人」绝不污染通知中心。
         if await cls._is_owner_loopback(db, source=source, recipient_id=recipient_id):
+            from backend.app.hasn_im.application.provider import (
+                get_transactional_im_gateway,
+            )
             from backend.app.notification.service.notification_carrier import deliver_report_card_to_owner
 
             return await deliver_report_card_to_owner(
@@ -77,6 +84,7 @@ class NotificationService:
                 body=body,
                 payload=payload,
                 priority=priority,
+                gateway=im_gateway or get_transactional_im_gateway(db),
             )
 
         # 1) 解析投递策略 = category 默认 ⊕ 主人偏好 ⊕ delivery_hint
@@ -151,7 +159,12 @@ class NotificationService:
         # 4b) 卡片消息承载（§6.2）：策略允许 card_message + 来源可建服务号 →
         #     投影成 type=notification,content_type=card 消息落「服务号 ⇄ 接收方」service 会话。
         if policy.get('channels', {}).get('card_message'):
-            await cls._fanout_card(db, row=row, source=dict(source or {}))
+            await cls._fanout_card(
+                db,
+                row=row,
+                source=dict(source or {}),
+                im_gateway=im_gateway,
+            )
 
         # 4c) toast 在线投递（§5）：策略允许 toast → 写 notification.created sync_event，
         #     供 daemon 下行 sync 拉取 → 经 NotificationBus 投 OS Toast（权威策略仍在云端）。
@@ -229,19 +242,22 @@ class NotificationService:
             'display_name': decl.get('display_name') or app_id,
             'on_behalf_of': owner_hasn_id,
         }
-        return await cls.emit(
-            db,
-            recipient_id=owner_hasn_id,
-            source=source,
-            category=category,
-            type=type,
-            title=title,
-            body=body,
-            payload=payload,
-            priority=priority,
-            dedupe_key=dedupe_key,
-            group_key=group_key,
-            delivery_hint=delivery_hint,
+        return cast(
+            int,
+            await cls.emit(
+                db,
+                recipient_id=owner_hasn_id,
+                source=source,
+                category=category,
+                type=type,
+                title=title,
+                body=body,
+                payload=payload,
+                priority=priority,
+                dedupe_key=dedupe_key,
+                group_key=group_key,
+                delivery_hint=delivery_hint,
+            ),
         )
 
     @staticmethod
@@ -345,29 +361,36 @@ class NotificationService:
         载荷只含 owner 自有数据的非敏感投影（id/category/type/priority/title），与
         message.received sync_event 同口径；明文不外泄（接收方是 owner 自己的节点）。
         """
-        from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
-
-        sync_gw = SqlAlchemySyncGateway()
-        await sync_gw._append_sync_event(
+        await SqlAlchemySyncAppender().append(
             db,
-            owner_id=row.target_id,
-            hasn_id=row.target_id,
-            event_type='notification.created',
-            aggregate_type='notification',
-            aggregate_id=str(row.id),
-            payload={
-                'notification_id': row.id,
-                'category': row.category,
-                'type': row.type,
-                'priority': row.priority,
-                'title': row.title,
-                'source': dict(row.source or {}),
-            },
+            SyncEnvelope(
+                owner_id=row.target_id,
+                hasn_id=row.target_id,
+                event_type='notification.created',
+                aggregate_type='notification',
+                aggregate_id=str(row.id),
+                payload={
+                    'notification_id': row.id,
+                    'category': row.category,
+                    'type': row.type,
+                    'priority': row.priority,
+                    'title': row.title,
+                    'source': dict(row.source or {}),
+                },
+                producer='notification',
+                source_event_id=f'notification:{row.id}:created',
+            ),
         )
 
     @staticmethod
-    async def _fanout_card(db: AsyncSession, *, row: HasnNotifications, source: dict[str, Any]) -> None:
-        """卡片承载 fanout：建/取服务号 → 投递卡片 → 回写 delivery.card_message_id（D1 投影回指）。
+    async def _fanout_card(
+        db: AsyncSession,
+        *,
+        row: HasnNotifications,
+        source: dict[str, Any],
+        im_gateway: ImGateway | None = None,
+    ) -> None:
+        """卡片承载 fanout：建/取服务号 → 同事务登记发送命令。
 
         - app/system/external 源 + 收件方=主人 → 服务号（sv_）⇄ 主人 service 会话（直写）；
         - app/system/external 源 + 收件方=Agent（§4.5 发 Agent）→ 服务号 ⇄ Agent service 会话，
@@ -389,11 +412,16 @@ class NotificationService:
         # agent 源 → 「主人 ⇄ agent」social 会话（recipient 恒为主人；agent 自己通知主人）。
         # 收件方本身是 Agent 的 agent→agent 通知出范围（落服务号分支并因 source.kind=agent 不建号而退出）。
         if src.get('kind') == 'agent' and src.get('id') and not recipient_is_agent:
-            card_message_id = await deliver_agent_card_to_owner(
-                db, recipient_id=row.target_id, source=src, notif=row
+            card_command_id = await deliver_agent_card_to_owner(
+                db,
+                recipient_id=row.target_id,
+                source=src,
+                notif=row,
+                gateway=im_gateway,
             )
             delivery = dict(row.delivery or {})
-            delivery['card_message_id'] = card_message_id
+            delivery['card_command_id'] = card_command_id
+            delivery['card_delivery_state'] = 'pending'
             delivery['card_peer'] = str(src.get('id'))
             row.delivery = delivery
             await db.flush()
@@ -417,11 +445,16 @@ class NotificationService:
             if account is None:
                 # agent/user 源发 Agent 不建服务号、默认无卡片承载（出范围）
                 return
-            card_message_id = await deliver_card_to_agent(
-                db, agent_id=str(row.target_id), account=account, notif=row
+            card_command_id = await deliver_card_to_agent(
+                db,
+                agent_id=str(row.target_id),
+                account=account,
+                notif=row,
+                gateway=im_gateway,
             )
             delivery = dict(row.delivery or {})
-            delivery['card_message_id'] = card_message_id
+            delivery['card_command_id'] = card_command_id
+            delivery['card_delivery_state'] = 'pending'
             delivery['service_account'] = account.sa_hasn_id
             delivery['card_recipient'] = 'agent'
             row.delivery = delivery
@@ -435,11 +468,16 @@ class NotificationService:
         if account is None:
             # user 社交源不建服务号、默认无卡片承载
             return
-        card_message_id = await deliver_card_to_owner(
-            db, recipient_id=row.target_id, account=account, notif=row
+        card_command_id = await deliver_card_to_owner(
+            db,
+            recipient_id=row.target_id,
+            account=account,
+            notif=row,
+            gateway=im_gateway,
         )
         delivery = dict(row.delivery or {})
-        delivery['card_message_id'] = card_message_id
+        delivery['card_command_id'] = card_command_id
+        delivery['card_delivery_state'] = 'pending'
         delivery['service_account'] = account.sa_hasn_id
         row.delivery = delivery
         await db.flush()

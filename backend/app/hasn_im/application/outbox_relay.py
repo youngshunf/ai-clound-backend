@@ -24,9 +24,13 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import Protocol
 
-from backend.app.hasn_im.ports.dto import SendMessageCommand, ServicePrincipal
-from backend.app.hasn_im.ports.im_gateway import ImGateway
+from backend.app.hasn_im.ports.dto import (
+    SendMessageCommand,
+    SendMessageResult,
+    ServicePrincipal,
+)
 from backend.app.hasn_im.ports.outbox import OutboxRecord, OutboxStore
 
 log = logging.getLogger(__name__)
@@ -39,6 +43,16 @@ _DEFAULT_MAX_ATTEMPTS = 5
 BuildCommand = Callable[[OutboxRecord], tuple[SendMessageCommand, ServicePrincipal]]
 # dead letter 告警钩子（Runbook 集成点）：命令达最大重试进 DLQ 时调用，best-effort。
 DeadLetterHook = Callable[[OutboxRecord, str], Awaitable[None] | None]
+
+
+class MessageSender(Protocol):
+    """relay 实际依赖的最小消息发送能力。"""
+
+    async def send_message(
+        self,
+        command: SendMessageCommand,
+        principal: ServicePrincipal,
+    ) -> SendMessageResult: ...
 
 
 @dataclass
@@ -72,7 +86,7 @@ class OutboxRelay:
         self,
         *,
         store: OutboxStore,
-        gateway: ImGateway,
+        gateway: MessageSender,
         build_command: BuildCommand,
         producer: str,
         max_attempts: int | None = None,

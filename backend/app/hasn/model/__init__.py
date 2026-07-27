@@ -76,3 +76,7 @@ from backend.app.hasn.model.hasn_unread_counts import HasnUnreadCounts as HasnUn
 from backend.app.hasn.model.hasn_unread_projection import HasnUnreadProjection as HasnUnreadProjection
 from backend.app.hasn.model.hasn_artifact_contributions import HasnArtifactContributions as HasnArtifactContributions
 from backend.app.hasn.model.hasn_artifact_registration_outbox import HasnArtifactRegistrationOutbox as HasnArtifactRegistrationOutbox
+from backend.app.hasn.model.hasn_sync_business_receipts import HasnSyncBusinessReceipts as HasnSyncBusinessReceipts
+from backend.app.hasn.model.hasn_relation_command_outbox import HasnRelationCommandOutbox as HasnRelationCommandOutbox
+from backend.app.hasn.model.hasn_session_im_command_outbox import HasnSessionImCommandOutbox as HasnSessionImCommandOutbox
+from backend.app.hasn.model.hasn_group_im_command_outbox import HasnGroupImCommandOutbox as HasnGroupImCommandOutbox

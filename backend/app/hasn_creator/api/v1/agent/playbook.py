@@ -45,8 +45,8 @@ async def agent_create_playbook(
     db: CurrentSessionTransaction,
     obj: CreatePlaybookParam,
 ) -> ResponseModel:
-    result = await playbook_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await playbook_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

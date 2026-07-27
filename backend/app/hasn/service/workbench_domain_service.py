@@ -953,7 +953,7 @@ class WorkbenchDomainService:
                     sa.select(HasnHumans.hasn_id, HasnHumans.nickname).where(HasnHumans.hasn_id.in_(member_ids))
                 )
             ).all()
-            nick_map = dict(rows)
+            nick_map = {row[0]: row[1] for row in rows}
         return {
             'enterprise_id': enterprise_id,
             'app_id': app_id,
@@ -974,10 +974,10 @@ class WorkbenchDomainService:
         """解析应用入口句柄（设计 11 §3.1，doc 11「注册即用」）。
 
         点开应用时按**当前工作空间**解析实例：
-        - 内置 UI 应用（knowledge/community 等，无 AI-Native manifest）→ 云端就地
+        - 无 AI-Native manifest 的内置 UI 应用（如 community）→ 云端就地
           (`gateway_internal`)，仅返回 `entry_route` 供客户端原生导航，无凭据。
-        - 第三方 AI-Native 应用（有已发布 manifest）→ `InstanceResolver.resolve(face=ui)`
-          按企业/公共实例选址；实例未配置等如实抛 15050。
+        - 有已发布 manifest 的应用（包括 knowledge）→ `InstanceResolver.resolve(face=ui)`
+          按企业/公共实例选址；实例未配置时保留可用的客户端原生入口。
 
         **凭据绝不下发浏览器**：响应不含 `credential`；daemon_direct 由 daemon 另行持有，
         cloud_relay 的 app secret 只留云端（设计 11 §0.3/§7.2）。

@@ -24,7 +24,7 @@ from backend.app.hasn_plan.model import Event, EventAttendee
 from backend.app.hasn_plan.service.plan_app_service import PlanService
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _ENT_A = 90001  # 逻辑企业 id A（本测试专用，逻辑引用无硬 FK）
 _ENT_B = 90002  # 逻辑企业 id B
@@ -159,6 +159,7 @@ async def test_event_attendee_roundtrip_unique_and_cascade() -> None:
             row.rsvp = 'accepted'
             await db.flush()
             reread = (await db.execute(sa.select(EventAttendee).where(EventAttendee.id == row.id))).scalars().first()
+            assert reread is not None
             assert reread.rsvp == 'accepted'
 
             # UNIQUE(event_id, attendee_hasn_id) 冲突

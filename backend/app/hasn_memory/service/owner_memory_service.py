@@ -28,6 +28,7 @@ from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_memory.model import HasnOwnerMemory, HasnOwnerMemoryContribution
 from backend.common.log import log
 from backend.database.db import async_db_session
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -216,7 +217,7 @@ class OwnerMemoryService:
                 profile_revision=HasnAgents.profile_revision + 1,
             )
         )
-        agents_updated = int(result.rowcount or 0)
+        agents_updated = affected_rows(result)
         await db.flush()
 
         # 画像下行 WSPUSH（KIND_AGENTS）：覆盖 user_md + bump profile_revision 后，主动推该 owner

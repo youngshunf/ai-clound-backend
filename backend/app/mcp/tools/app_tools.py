@@ -4,9 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from backend.app.mcp.tools.base import BaseTool
+from starlette.requests import Request
 
 if TYPE_CHECKING:
     from backend.app.mcp.auth import AgentContext
@@ -46,9 +47,9 @@ class AppTool(BaseTool):
 
         # P0: validate the derived canonical name (rejects reserved-namespace
         # conflicts and malformed names) at construction time.
-        from backend.app.mcp.canonical import validate_canonical_name
+        from backend.app.mcp.canonical import ToolSource, validate_canonical_name
 
-        validate_canonical_name(self.name, self.source)
+        validate_canonical_name(self.name, cast(ToolSource, self.source))
 
     @property
     def source(self) -> str:
@@ -104,13 +105,9 @@ class AppTool(BaseTool):
         # 并以 mcp_face=True 标记让网关跳过重复的三态闸门（否则一次性能力票会被二次消费、
         # 已批准的 ask 调用反被网关重新挂起审批）。headers 置空：MCP 面不经请求头传票，
         # 同时补齐属性避免网关 `request.headers.get(...)` 抛 AttributeError。
-        class _Request:
-            state = type(
-                "_State",
-                (),
-                {"agent": agent_context.to_token_payload(), "mcp_face": True},
-            )()
-            headers: dict[str, str] = {}
+        request = Request({'type': 'http', 'method': 'POST', 'path': '/', 'headers': []})
+        request.state.agent = agent_context.to_token_payload()
+        request.state.mcp_face = True
 
         # 裸 session + 末尾显式 commit（对齐平台工具 asset.create 模式）：网关 dispatch 全程只
         # flush（业务行 + 审计行）、从不自己 commit——末尾 commit 落库（修非自 commit 的 App 写类
@@ -121,8 +118,8 @@ class AppTool(BaseTool):
         async with async_db_session() as db:
             result = await ai_native_runtime_gateway.call_tool(
                 db,
-                request=_Request(),
-                app_id=self.app_id,
+                request=request,
+                app_id=self._app_id,
                 tool_id=self.tool_id,
                 body=AiNativeToolCallRequest(
                     agent_hasn_id=agent_context.hasn_id,

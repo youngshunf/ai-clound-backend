@@ -28,9 +28,12 @@ if TYPE_CHECKING:
 
 
 def _platform_llm_model() -> str:
-    return getattr(settings, 'HUANXING_HERMES_PLATFORM_LLM_MODEL', None) or getattr(
+    model = getattr(settings, 'HUANXING_HERMES_PLATFORM_LLM_MODEL', None) or getattr(
         settings, 'HERMES_PLATFORM_LLM_MODEL', 'openai/gpt-5.5'
     )
+    if not isinstance(model, str) or not model:
+        raise errors.ServerError(msg='云端 Runtime 平台模型配置无效')
+    return model
 
 
 async def _owner_llm_credentials(db: AsyncSession, user_id: int) -> tuple[str, str]:
@@ -52,7 +55,10 @@ async def _owner_llm_credentials(db: AsyncSession, user_id: int) -> tuple[str, s
         username=(user_row.phone or user_row.username) if user_row else '',
         nickname=(user_row.nickname or '') if user_row else '',
     )
-    return f'sk-{mapping.newapi_token_key}', settings.LLM_API_BASE_URL
+    base_url = settings.LLM_API_BASE_URL
+    if not base_url:
+        raise errors.ServerError(msg='云端 Runtime LLM API 地址未配置')
+    return f'sk-{mapping.newapi_token_key}', base_url
 
 
 async def _platform_main_model(db: AsyncSession) -> str:

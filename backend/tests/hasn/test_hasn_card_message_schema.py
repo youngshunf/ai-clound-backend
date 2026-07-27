@@ -93,8 +93,11 @@ def test_card_schema_accepts_community_post_and_task_cards() -> None:
     task = CardMessageBody.model_validate(_task_card())
 
     assert community.resource.type == 'community.post'
+    assert community.primary_action is not None
     assert community.primary_action.action_id == 'open_community_post'
     assert task.resource.type == 'task_session'
+    assert task.primary_action is not None
+    assert task.primary_action.event is not None
     assert task.primary_action.event.event_type == 'task.summary.opened'
 
 

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -93,9 +94,9 @@ class GrowthOpportunityService:
             user_id=user_id,
             name=name,
             stage=stage,
-            amount=amount,
+            amount=Decimal(str(amount)) if amount is not None else None,
             currency=currency,
-            probability=probability,
+            probability=Decimal(str(probability)) if probability is not None else None,
             expected_close_at=expected_close_at,
             created_by_kind=created_by_kind,
             owner_scope=customer.owner_scope,
@@ -183,7 +184,7 @@ class GrowthOpportunityService:
             o.stage = 'closed_won'
             o.won_at = now
             if amount is not None:
-                o.amount = amount
+                o.amount = Decimal(str(amount))
             o.close_note = close_note
         else:
             o.stage = 'closed_lost'

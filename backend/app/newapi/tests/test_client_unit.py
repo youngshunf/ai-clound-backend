@@ -78,8 +78,10 @@ async def test_ensure_user_group_sets_group_when_empty() -> None:
     changed = await client.ensure_user_group(newapi_user_id=8, group='default')
 
     assert changed is True
-    method, path = client._request.await_args.args
-    payload = client._request.await_args.kwargs['json']
+    call = client._request.await_args
+    assert call is not None
+    method, path = call.args
+    payload = call.kwargs['json']
     assert (method, path) == ('PUT', '/user/')
     assert payload['group'] == 'default'
     assert payload['quota'] == 500000  # 整对象回写，不丢额度
@@ -104,62 +106,42 @@ async def test_ensure_user_group_noop_when_target_empty() -> None:
     client.get_user.assert_not_awaited()
 
 
-async def test_set_user_quota_updateuser_path_when_put_takes_effect() -> None:
-    """生产构建：PUT /user/（UpdateUser）即生效 → 回读校验通过，不再回退 ManageUser."""
+async def test_set_user_quota_rejects_absolute_write_before_remote_call() -> None:
+    """NewAPI 已成为积分唯一权威，绝对 quota 写在发请求前即显式拒绝。"""
     client = _client()
-    client.get_user = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[
-            {'id': 8, 'group': 'default', 'quota': 0, 'used_quota': 100},  # 取整对象
-            {'id': 8, 'quota': 5_000_000, 'used_quota': 100},  # PUT 后回读：已生效
-        ]
-    )
+    client.get_user = AsyncMock()  # type: ignore[method-assign]
     client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
-    await client.set_user_quota(newapi_user_id=8, quota=5_000_000)
-
-    assert client._request.await_count == 1  # 只发了 PUT，未回退
-    method, path = client._request.await_args.args
-    payload = client._request.await_args.kwargs['json']
-    assert (method, path) == ('PUT', '/user/')
-    assert payload['quota'] == 5_000_000
-    assert payload['group'] == 'default'  # 整对象回写，不丢其它字段
-
-
-async def test_set_user_quota_falls_back_to_manageuser_when_put_noops() -> None:
-    """另一类构建：PUT 忽略 quota（回读仍旧值）→ 回退 ManageUser add_quota override 并校验通过."""
-    client = _client()
-    client.get_user = AsyncMock(  # type: ignore[method-assign]
-        side_effect=[
-            {'id': 8, 'group': 'default', 'quota': 0},  # 取整对象
-            {'id': 8, 'quota': 0},  # PUT 后回读：未生效（no-op）
-            {'id': 8, 'quota': 5_000_000},  # ManageUser 后回读：已生效
-        ]
-    )
-    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
-
-    await client.set_user_quota(newapi_user_id=8, quota=5_000_000)
-
-    assert client._request.await_count == 2
-    first, second = client._request.await_args_list
-    assert first.args[:2] == ('PUT', '/user/')
-    assert second.args[:2] == ('POST', '/user/manage')
-    assert second.kwargs['json'] == {
-        'id': 8,
-        'action': 'add_quota',
-        'mode': 'override',
-        'value': 5_000_000,
-    }
-
-
-async def test_set_user_quota_raises_when_neither_mechanism_takes_effect() -> None:
-    """两条机制回读都未生效 → 抛 NewApiError（禁静默漂移，这正是历史 quota=0 的失败模式）."""
-    client = _client()
-    client.get_user = AsyncMock(return_value={'id': 8, 'group': 'default', 'quota': 0})  # type: ignore[method-assign]
-    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
-
-    with pytest.raises(NewApiError):
+    with pytest.raises(NewApiError, match='绝对 quota'):
         await client.set_user_quota(newapi_user_id=8, quota=5_000_000)
-    assert client._request.await_count == 2  # 两条机制都尝试过
+
+    client.get_user.assert_not_awaited()
+    client._request.assert_not_awaited()
+
+
+async def test_set_user_quota_reports_callsite_reason() -> None:
+    """拦截错误携带调用方 reason，便于定位残留绝对余额写点。"""
+    client = _client()
+    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(NewApiError, match='legacy_sync_job'):
+        await client.set_user_quota(
+            newapi_user_id=8,
+            quota=5_000_000,
+            reason='legacy_sync_job',
+        )
+
+    client._request.assert_not_awaited()
+
+
+async def test_set_user_quota_zero_value_is_also_blocked() -> None:
+    """即使目标值为零也不得走绝对覆盖，回收同样必须使用幂等履约事件。"""
+    client = _client()
+    client._request = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(NewApiError, match='幂等履约事件'):
+        await client.set_user_quota(newapi_user_id=8, quota=0)
+    client._request.assert_not_awaited()
 
 
 async def test_set_user_quota_raises_when_user_missing() -> None:

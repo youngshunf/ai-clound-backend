@@ -13,7 +13,7 @@
 
 from fastapi import APIRouter, Request
 
-from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
+from backend.app.hasn_core.app_platform import resolve_owner_hasn_id
 from backend.app.hasn_reel.schema.owner import CreateCreationParam, SaveProjectParam, SyncCreationParam
 from backend.app.hasn_reel.service.reel_service import reel_service
 from backend.common.exception import errors
