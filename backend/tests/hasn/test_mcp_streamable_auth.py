@@ -130,3 +130,49 @@ async def test_streamable_rejects_revoked_agent_jwt_before_agent_lookup(
         sys.modules.pop("backend.app.mcp.streamable", None)
 
     get_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streamable_binds_daemon_work_session_header_to_agent_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """daemon 注入的工作会话头必须进入本次云端 MCP 工具调用上下文。"""
+    install_mcp_sdk_stub(monkeypatch)
+    from backend.app.mcp.auth import AgentContext
+    from backend.app.mcp.streamable import HasnMcpStreamableServer, _streamable_agent_context
+
+    context = AgentContext(
+        hasn_id='a_test_agent_001',
+        owner_id=1001,
+        agent_status='active',
+        metadata={},
+        owner_hasn_id='h_test_owner_001',
+    )
+    observed_session_ids: list[str | None] = []
+
+    class CapturingSessionManager:
+        async def handle_request(self, *_args: object) -> None:
+            current_context = _streamable_agent_context.get()
+            assert current_context is context
+            observed_session_ids.append(current_context.session_id)
+
+    server = HasnMcpStreamableServer()
+    server.session_manager = CapturingSessionManager()
+    monkeypatch.setattr(server, '_authenticate_from_headers', AsyncMock(return_value=context))
+
+    async def receive() -> dict[str, object]:
+        return {'type': 'http.request', 'body': b'', 'more_body': False}
+
+    async def send(_message: object) -> None:
+        return None
+
+    try:
+        await server.handle_request_with_auth(
+            {'headers': [(b'x-hasn-work-session-id', b'sess_cli_artifact_1')]},
+            receive,
+            send,
+        )
+    finally:
+        sys.modules.pop('backend.app.mcp.streamable', None)
+
+    assert observed_session_ids == ['sess_cli_artifact_1']
