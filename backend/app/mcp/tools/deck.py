@@ -382,7 +382,12 @@ _HTML_DESC = (
     '且图表父容器必须有固定像素高（如 class="h-[300px]" 或 aspect 比例类）——'
     'flex-1/h-full/仅百分比/仅 min-height 会被量到约 0 高而渲染空白（导出/截图尤甚）；'
     '简单条形/占比图优先用纯 CSS（flex 高度比例）更稳。'
-    '动画用 PPT.animate(targets, params)；初始态必须可见'
+    '动画用 PPT.animate(targets, params)：scale 自动导出为 zoom，小幅 translateY:[正值,0] 自动导出为 rise，'
+    '其他位移按运动方向导出为 fly-up/fly-down/fly-left/fly-right；'
+    '需精确指定时可在元素写 data-anim="fade|wipe-up|wipe-down|wipe-left|wipe-right|rise|zoom|'
+    'fly-up|fly-down|fly-left|fly-right" + data-anim-step="N" 归步；'
+    '其中 fly-* 后缀表示运动方向，显式 data-anim 优先。'
+    '这些效果会进入应用内放映并导出为 PPTX 原生入场动画；未知值才降级 fade。初始态必须可见'
     '（入场用 opacity:[0,1] 等参数，勿用 opacity-0/visibility:hidden 作默认）。'
 )
 # outline item / page item 细校验留给服务端（与本地 hasn-mcp 一致，宽松对象）。

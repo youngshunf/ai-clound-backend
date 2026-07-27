@@ -120,6 +120,22 @@ def test_required_fields_match_contract() -> None:
     assert _tool('hasn.deck.style.get').input_schema['required'] == ['style_id']
 
 
+def test_page_html_schema_teaches_exportable_advanced_animations() -> None:
+    """三个页写工具都应向分身暴露可原生导出的高级入场动画契约。"""
+    descriptions = [
+        _tool('hasn.deck.page.write_batch').input_schema['properties']['pages']['items'][
+            'properties'
+        ]['html']['description'],
+        _tool('hasn.deck.page.write').input_schema['properties']['html']['description'],
+        _tool('hasn.deck.page.edit').input_schema['properties']['html']['description'],
+    ]
+    for description in descriptions:
+        for effect in ('rise', 'zoom', 'fly-up', 'fly-down', 'fly-left', 'fly-right'):
+            assert effect in description
+        assert '运动方向' in description
+        assert 'data-anim' in description
+
+
 def test_create_inherits_project_from_work_session_context() -> None:
     """分身省略项目入参时自动继承 AppCollab 注入的当前项目。"""
     set_current_project_id('0192aaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
