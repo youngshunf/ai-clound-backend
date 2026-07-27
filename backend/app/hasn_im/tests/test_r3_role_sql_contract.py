@@ -137,6 +137,22 @@ def test_suppressed_migration_qualifies_pgcrypto_digest_schema() -> None:
     assert 'target_schema,\n            pgcrypto_schema' in sql
 
 
+def test_rehearsal_starts_old_shape_after_reverse_and_rejects_backfill_errors() -> None:
+    """反向后必须启动旧形态 cloud，且 read_seq 异常不得带入候选版本。"""
+    rehearsal = _REHEARSAL.read_text(encoding='utf-8')
+    baseline_at = rehearsal.index('def _run_baseline')
+    reverse_at = rehearsal.index('_run_reverse(database, before)', baseline_at)
+    old_start_at = rehearsal.index(
+        '_assert_cloud_startup(database, cutover=False)',
+        reverse_at,
+    )
+    second_forward_at = rehearsal.index('_run_forward(database)', old_start_at)
+
+    assert reverse_at < old_start_at < second_forward_at
+    assert 'membership_read_backfill_exceptions' in rehearsal
+    assert 'read_seq 回填异常' in rehearsal
+
+
 def test_login_operation_uses_psql_variables_and_contains_no_password() -> None:
     """LOGIN 启用脚本只接受 psql 变量，不在源码内保存任何密码。"""
     sql = _LOGIN_OPERATION.read_text(encoding='utf-8')

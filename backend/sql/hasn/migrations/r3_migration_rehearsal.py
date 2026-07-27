@@ -786,6 +786,17 @@ SELECT
             f'{settings_and_outbox}'
         )
     _assert_legacy_suppression_migrated(database)
+    read_backfill_exceptions = int(
+        _scalar(
+            database,
+            'SELECT count(*) '
+            'FROM hasn_im.membership_read_backfill_exceptions',
+        )
+    )
+    if read_backfill_exceptions != 0:
+        raise RehearsalError(
+            f'read_seq 回填异常清单非空：{read_backfill_exceptions}'
+        )
     return {
         'messages': int(
             _scalar(database, 'SELECT count(*) FROM hasn_im.hasn_messages')
@@ -796,6 +807,7 @@ SELECT
                 'SELECT count(*) FROM hasn_im.hasn_conversation_memberships',
             )
         ),
+        'read_backfill_exceptions': read_backfill_exceptions,
     }
 
 
@@ -1218,6 +1230,7 @@ def _run_baseline(
         _drop_unauthorized_role(database)
 
         _run_reverse(database, before)
+        _assert_cloud_startup(database, cutover=False)
         _run_forward(database)
         after = _assert_forward_shape(database)
         if after['messages'] != before['messages']:
@@ -1246,6 +1259,7 @@ def _run_baseline(
             engine_current_users=engine_users,
             permission_writes_rolled_back=True,
             cloud_pre_cutover_started=True,
+            cloud_after_reverse_started=True,
             cloud_post_cutover_started=True,
         )
     finally:
