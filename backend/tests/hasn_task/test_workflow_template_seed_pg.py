@@ -247,6 +247,7 @@ async def test_sync_idempotent_and_updates_derived(env: SimpleNamespace, tmp_pat
     assert cnt.scalar_one() == 1
 
     row = await hasn_workflow_template_dao.get_by_key(env.session, key)
+    assert row is not None
     await env.session.refresh(row)
     assert row.name == '金融投研（升级）'  # 派生字段被覆盖
     assert row.sort_order == 5
@@ -285,6 +286,7 @@ async def test_sync_does_not_overwrite_owner_row(env: SimpleNamespace, tmp_path:
     assert results['inserted'] == 0 and results['updated'] == 0
 
     row = await hasn_workflow_template_dao.get_by_key(env.session, key)
+    assert row is not None
     await env.session.refresh(row)
     assert row.owner_id == owner  # 归属未被抹掉
     assert row.name == '用户自建模板'  # 内容未被内置声明覆盖

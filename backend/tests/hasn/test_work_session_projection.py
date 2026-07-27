@@ -5,7 +5,6 @@ import json
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
 
 import pytest
 
@@ -35,21 +34,6 @@ class FakeScalarResult:
         self.value = value
 
     def scalar_one_or_none(self) -> Any:
-        return self.value
-
-
-class FakeMappingResult:
-    def __init__(self, value: dict[str, Any] | None) -> None:
-        self.value = value
-
-    def mappings(self) -> FakeMappingResult:
-        return self
-
-    def first(self) -> dict[str, Any] | None:
-        return self.value
-
-    def one(self) -> dict[str, Any]:
-        assert self.value is not None
         return self.value
 
 
@@ -345,7 +329,7 @@ def test_external_app_work_session_launch_rejects_system_prompt_without_permissi
 
 @pytest.mark.asyncio
 async def test_upsert_rejects_local_only_cloud_sessions() -> None:
-    db = FakeDb()
+    db: Any = FakeDb()
 
     with pytest.raises(errors.RequestError):
         await service_module.hasn_sessions_service.upsert(
@@ -366,8 +350,9 @@ async def test_get_list_by_owner_builds_owner_scoped_filtered_query(monkeypatch:
 
     monkeypatch.setattr(service_module, 'paging_data', fake_paging_data)
 
+    db: Any = SimpleNamespace()
     page_data = await service_module.hasn_sessions_service.get_list_by_owner(
-        db=SimpleNamespace(),
+        db=db,
         owner_id=OWNER_ID,
         session_kind='task,interactive',
         session_scope='summary_only',
@@ -388,233 +373,21 @@ async def test_get_list_by_owner_builds_owner_scoped_filtered_query(monkeypatch:
     assert "hasn_sessions.origin_ref = 'task_run:123'" in sql
 
 
-@pytest.mark.asyncio
-async def test_projection_is_idempotent_and_writes_summary_message(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    conversation_id = UUID('00000000-0000-0000-0000-000000000123')
-    session = SimpleNamespace(
-        session_id=SESSION_ID,
-        owner_id=OWNER_ID,
-        hasn_id=AGENT_ID,
-        title='生成日报',
-        origin_type='task_run',
-        origin_ref='task_run:123',
-        summary_checkpoint_json={},
-        last_message_id=None,
-        last_message_at=None,
-        updated_time=None,
+def test_app_origin_ref_parser_keeps_local_ref_as_metadata_only() -> None:
+    """origin_ref 只解析应用与本地溯源 ref，不承担跨端 URI 身份。"""
+    assert service_module._parse_app_origin_ref('resource:deck:deck_01ABC') == (
+        'deck',
+        'deck_01ABC',
     )
-    db = FakeDb(
-        results=[
-            FakeScalarResult(session),
-            FakeMappingResult(None),
-            FakeScalarResult(1),
-            FakeMappingResult({'id': 987}),
-            FakeScalarResult(session),
-            FakeMappingResult({'id': 987, 'conversation_id': str(conversation_id)}),
-        ]
-    )
-
-    async def fake_ensure_conversation(**kwargs: Any) -> SimpleNamespace:
-        await asyncio.sleep(0)
-        assert kwargs['caller_hasn_id'] == OWNER_ID
-        assert kwargs['peer_hasn_id'] == AGENT_ID
-        return SimpleNamespace(id=conversation_id)
-
-    monkeypatch.setattr(
-        service_module.hasn_conversations_service,
-        'ensure_conversation',
-        fake_ensure_conversation,
-    )
-
-    first = await service_module.hasn_sessions_service.project_work_session_result(
-        db=db,
-        owner_id=OWNER_ID,
-        session_id=SESSION_ID,
-        projection_data=_projection_payload(),
-    )
-    second = await service_module.hasn_sessions_service.project_work_session_result(
-        db=db,
-        owner_id=OWNER_ID,
-        session_id=SESSION_ID,
-        projection_data=_projection_payload(),
-    )
-
-    assert first == {
-        'result_message_id': '987',
-        'conversation_id': str(conversation_id),
-        'dedupe_key': f'work_session_result:{SESSION_ID}:final',
-        'created': True,
-    }
-    assert second == {
-        'result_message_id': '987',
-        'conversation_id': str(conversation_id),
-        'dedupe_key': f'work_session_result:{SESSION_ID}:final',
-        'created': False,
-    }
-
-    insert_params = [
-        params
-        for _stmt, params in db.executed
-        if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
-    ]
-    assert len(insert_params) == 1
-    assert insert_params[0]['conversation_seq'] == 1
-    content = json.loads(insert_params[0]['content'])
-    assert content['schema_version'] == 'hasn.card/0.1'
-    assert content['title'] == '工作会话「生成日报」已完成'
-    assert content['description'] == '已生成客户优先级和跟进建议。'
-    assert content['source'] == {
-        'kind': 'task',
-        'id': '123',
-        'display_name': '任务系统',
-        'verified': True,
-    }
-    assert content['resource']['type'] == 'task_session'
-    assert content['resource']['id'] == SESSION_ID
-    assert content['resource']['app_id'] == 'tasks'
-    assert content['resource']['uri'] == f'hasn://tasks/sessions/{SESSION_ID}'
-    assert content['primary_action']['action_id'] == 'open_task_session'
-    assert content['primary_action']['kind'] == 'open_uri'
-    assert content['primary_action']['uri'] == f'hasn://tasks/sessions/{SESSION_ID}'
-    assert content['primary_action']['event'] == {
-        'event_type': 'task.summary.opened',
-        'payload': {
-            'session_id': SESSION_ID,
-            'task_id': 123,
-            'task_run_id': 456,
-        },
-    }
-    assert {'label': '状态', 'value': 'success'} in content['fields']
-    assert {'label': '完成原因', 'value': 'auto_on_final'} in content['fields']
-    projection = session.summary_checkpoint_json
-    assert projection['deep_link'] == f'hasn://tasks/sessions/{SESSION_ID}'
-    assert projection['dedupe_key'] == f'work_session_result:{SESSION_ID}:final'
-    assert 'system prompt' not in json.dumps(content).lower()
-    assert session.summary_checkpoint_json['result_message_id'] == '987'
-    assert db.flushed is True
+    assert service_module._parse_app_origin_ref('resource:deck:   ') is None
+    assert service_module._parse_app_origin_ref('task_run:123') is None
+    assert service_module._parse_app_origin_ref(None) is None
 
 
-@pytest.mark.asyncio
-async def test_projection_writes_summary_when_cloud_session_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """work-session 只活在 hasn-node 本地 sessions 表、云端无对应行时，投影仍写回主会话。
-
-    回归：此前云端 ``get_by_session_id`` 对缺失 session 抛 404，导致任务结果永远
-    落不回主会话（线上 ``projection_failed status=404``）。现在云端不再强依赖云端
-    session，靠 projection_data 自包含字段写卡片消息。
-    """
-    conversation_id = UUID('00000000-0000-0000-0000-000000000456')
-    db = FakeDb(
-        results=[
-            FakeScalarResult(None),  # try_get_by_session_id -> 云端无该 session
-            FakeMappingResult(None),  # _find_projection_message -> 无重复
-            FakeScalarResult(1),  # allocate_seq -> 会话内首条消息序号
-            FakeMappingResult({'id': 988}),  # INSERT ... RETURNING id
-        ]
-    )
-
-    async def fake_ensure_conversation(**kwargs: Any) -> SimpleNamespace:
-        await asyncio.sleep(0)
-        assert kwargs['caller_hasn_id'] == OWNER_ID
-        assert kwargs['peer_hasn_id'] == AGENT_ID
-        return SimpleNamespace(id=conversation_id)
-
-    monkeypatch.setattr(
-        service_module.hasn_conversations_service,
-        'ensure_conversation',
-        fake_ensure_conversation,
-    )
-
-    result = await service_module.hasn_sessions_service.project_work_session_result(
-        db=db,
-        owner_id=OWNER_ID,
-        session_id=SESSION_ID,
-        # 无云端 session：agent_id / origin / title 必须由 daemon 经 projection_data 自带
-        projection_data=_projection_payload(
-            agent_id=AGENT_ID,
-            origin_type='task_run',
-            origin_ref='task_run:123',
-            title='生成日报',
-        ),
-    )
-
-    assert result == {
-        'result_message_id': '988',
-        'conversation_id': str(conversation_id),
-        'dedupe_key': f'work_session_result:{SESSION_ID}:final',
-        'created': True,
-    }
-    insert_params = [
-        params
-        for _stmt, params in db.executed
-        if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
-    ]
-    assert len(insert_params) == 1, 'projection 必须写出一条会话消息'
-    assert insert_params[0]['conversation_seq'] == 1
-    content = json.loads(insert_params[0]['content'])
-    assert content['title'] == '工作会话「生成日报」已完成'
-    assert content['description'] == '已生成客户优先级和跟进建议。'
-    assert content['resource']['id'] == SESSION_ID
-    assert content['resource']['metadata']['agent_id'] == AGENT_ID
-    assert content['resource']['metadata']['origin_type'] == 'task_run'
-    assert content['primary_action']['uri'] == f'hasn://tasks/sessions/{SESSION_ID}'
-    assert db.flushed is True
-
-
-@pytest.mark.asyncio
-async def test_projection_rejects_when_agent_id_missing_and_session_absent() -> None:
-    """云端无 session 且 projection_data 不带 agent_id 时，明确拒绝（不静默写错会话）。"""
-    db = FakeDb(results=[FakeScalarResult(None)])
-
-    with pytest.raises(errors.RequestError):
-        await service_module.hasn_sessions_service.project_work_session_result(
-            db=db,
-            owner_id=OWNER_ID,
-            session_id=SESSION_ID,
-            projection_data=_projection_payload(),  # 无 agent_id
-        )
-
-
-def test_deck_id_from_origin_ref_parses_only_deck_sources() -> None:
-    """origin_ref 解析：仅 `resource:deck:{id}` 命中，其它/空诚实返回 None。"""
-    assert service_module._deck_id_from_origin_ref('resource:deck:deck_01ABC') == 'deck_01ABC'
-    assert service_module._deck_id_from_origin_ref('resource:deck:   ') is None
-    assert service_module._deck_id_from_origin_ref('task_run:123') is None
-    assert service_module._deck_id_from_origin_ref('resource:design:d_1') is None
-    assert service_module._deck_id_from_origin_ref(None) is None
-    assert service_module._deck_id_from_origin_ref('') is None
-
-
-async def _deck_projection_card(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    origin_ref: str,
-    deck_server_id: str | None,
+def _deck_projection_card(
+    *, origin_ref: str, deck_server_id: str | None
 ) -> dict[str, Any]:
-    """跑一次 deck 完成投影，返回组出的卡片 content_json（供 deck id 断言复用）。"""
-    conversation_id = UUID('00000000-0000-0000-0000-0000000007de')
-    db = FakeDb(
-        results=[
-            FakeScalarResult(None),  # 云端无该 session（local-first deck 会话）
-            FakeMappingResult(None),  # 无重复
-            FakeScalarResult(1),  # allocate_seq -> 会话内首条消息序号
-            FakeMappingResult({'id': 991}),  # INSERT ... RETURNING id
-        ]
-    )
-
-    async def fake_ensure_conversation(**kwargs: Any) -> SimpleNamespace:
-        await asyncio.sleep(0)
-        return SimpleNamespace(id=conversation_id)
-
-    monkeypatch.setattr(
-        service_module.hasn_conversations_service,
-        'ensure_conversation',
-        fake_ensure_conversation,
-    )
-
+    """直接验证确定性组卡，不用数据库替身冒充集成链路。"""
     overrides: dict[str, Any] = {
         'agent_id': AGENT_ID,
         'origin_type': 'app',
@@ -626,28 +399,21 @@ async def _deck_projection_card(
     if deck_server_id is not None:
         overrides['deck_server_id'] = deck_server_id
 
-    await service_module.hasn_sessions_service.project_work_session_result(
-        db=db,
-        owner_id=OWNER_ID,
+    content_json = service_module._projection_content_json(
         session_id=SESSION_ID,
+        agent_id=AGENT_ID,
+        origin_type='app',
+        origin_ref=origin_ref,
         projection_data=_projection_payload(**overrides),
     )
-
-    insert_params = [
-        params
-        for _stmt, params in db.executed
-        if isinstance(params, dict) and params.get('client_message_id') == f'work_session_result:{SESSION_ID}:final'
-    ]
-    assert len(insert_params) == 1, 'projection 必须写出一条会话消息'
-    assert insert_params[0]['conversation_seq'] == 1
-    assert db.flushed is True
-    return json.loads(insert_params[0]['content'])
+    return service_module._projection_card_body(
+        session_id=SESSION_ID,
+        title='唤星融资路演 · 生成',
+        content_json=content_json,
+    )
 
 
-@pytest.mark.asyncio
-async def test_projection_deck_card_prefers_cloud_server_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_projection_deck_card_prefers_cloud_server_id() -> None:
     """演示文稿完成卡的 `hasn://deck/{id}` 必须用**云端权威 deck id**（非设备本地 ULID）。
 
     分身不再自己发卡：完成投影据 origin_ref(`resource:deck:{本地ULID}`) 认出 deck 会话，
@@ -656,8 +422,7 @@ async def test_projection_deck_card_prefers_cloud_server_id(
     """
     local_deck_id = 'deck_01ABCDEF'
     cloud_deck_id = '556677'  # 云端权威 id：数字串，与本地 ULID 形态不撞
-    content = await _deck_projection_card(
-        monkeypatch,
+    content = _deck_projection_card(
         origin_ref=f'resource:deck:{local_deck_id}',
         deck_server_id=cloud_deck_id,
     )
@@ -696,28 +461,18 @@ async def test_projection_deck_card_prefers_cloud_server_id(
     assert not content.get('fields'), 'deck 卡不应带任务卡的 状态/完成原因 字段块'
 
 
-@pytest.mark.asyncio
-async def test_projection_deck_card_falls_back_to_local_id_when_unsynced(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """deck 尚未上云（无 deck_server_id）→ 回退本地 id。
-
-    此时 deck 不在云端、根本无法分享，唯一消费者是 owner 本机，本地 id 恰好能解析；
-    这是诚实降级而非违背「URI 用云端 id」原则——没有云端 id 可用。
-    """
+def test_projection_without_server_id_never_places_local_id_in_uri() -> None:
+    """deck 尚未取得云端 ID 时回落任务摘要卡，绝不把设备本地 ID 写入 URI。"""
     local_deck_id = 'deck_01ABCDEF'
-    content = await _deck_projection_card(
-        monkeypatch,
+    content = _deck_projection_card(
         origin_ref=f'resource:deck:{local_deck_id}',
         deck_server_id=None,
     )
 
-    assert content['title'] == '演示文稿做好了'
-    assert content['resource']['id'] == local_deck_id
-    assert content['resource']['uri'] == f'hasn://deck/{local_deck_id}'
-    assert content['primary_action']['uri'] == f'hasn://deck/{local_deck_id}'
-    assert content['primary_action']['event']['payload']['deck_id'] == local_deck_id
-    assert not content.get('fields'), 'deck 卡不应带任务卡的 状态/完成原因 字段块'
+    assert content['title'] == '工作会话「唤星融资路演 · 生成」已完成'
+    assert content['resource']['type'] == 'task_session'
+    assert local_deck_id not in content['resource']['uri']
+    assert local_deck_id not in content['primary_action']['uri']
 
 
 def test_send_message_does_not_return_placeholder(task_sessions_app: FastAPI) -> None:

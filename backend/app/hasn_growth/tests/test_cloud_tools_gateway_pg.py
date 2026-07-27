@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -27,7 +28,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
@@ -60,11 +61,31 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = uuid.uuid4().hex[:8]
     owner = f'h_gtc_{tag}'
-    owner_uid = 960000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 94_700_000_000 + int(uuid.uuid4().int % 900_000_000)
     agent_hasn = f'a_gtc_{tag}'
 
     session.add(
-        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active')
+        HasnHumans(
+            hasn_id=owner,
+            star_id=f's_{owner_uid}',
+            user_id=owner_uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
+    )
+    session.add(
+        HasnAgents(
+            hasn_id=agent_hasn,
+            star_id=f'a_{tag}',
+            owner_id=owner,
+            display_name=f'获客分身-{tag}',
+            agent_name=f'agent_{tag}',
+            type='cloud',
+            role='specialist',
+            api_key_hash='test',
+            status='active',
+            created_via='client',
+        )
     )
     lead = LeadContact(
         lead_no=f'L{tag.upper()}',
@@ -75,7 +96,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         phone='13800138000',
         source_type='firecrawl',
         status='new',
-        confidence_score=72,
+        confidence_score=Decimal(72),
     )
     session.add(lead)
     await session.flush()
@@ -173,13 +194,13 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleName
     assert funnel['won_this_month']['count'] >= 1 and funnel['won_this_month']['amount'] >= 118000
 
 
-async def test_growth_cloud_tools_pii_scope_reveals_plaintext(ctx: SimpleNamespace) -> None:
-    """持 growth:pii 增强 scope 的 agent → 读类回明文（默认脱敏，PII 边界经 handler 透传）。"""
+async def test_growth_cloud_tools_legacy_pii_scope_stays_masked(ctx: SimpleNamespace) -> None:
+    """旧 growth:pii claim 已退役，分身读类保持脱敏，明文授权不得回落到凭证 scope。"""
     s = ctx.session
     masked = await _REG['growth.lead_search'](s, ctx.agent(['agent', 'growth:read']), {'query': 'Acme'})
     assert masked and masked[0]['email'] == 'w***@acme.com'
     revealed = await _REG['growth.lead_search'](s, ctx.agent(['agent', 'growth:read', 'growth:pii']), {'query': 'Acme'})
-    assert revealed and revealed[0]['email'] == 'wangwu@acme.com'
+    assert revealed and revealed[0]['email'] == 'w***@acme.com'
 
 
 async def test_growth_cloud_tools_reassign_requires_manager(ctx: SimpleNamespace) -> None:
@@ -203,19 +224,13 @@ async def test_lead_request_pool_hit_delivers_without_backfill(ctx: SimpleNamesp
     assert result['leads'] and result['leads'][0]['email'] == 'w***@acme.com', '读类默认脱敏'
 
 
-async def test_lead_request_gap_triggers_backfill(ctx: SimpleNamespace) -> None:
-    """2.1 缺口补爬：查池命中 M<N → 交付 M 条 + 后台补爬 job（公共池·max_results=N−M）。"""
+async def test_lead_request_gap_stays_pool_only(ctx: SimpleNamespace) -> None:
+    """请求线索轻入口只看池；缺口不再暗启旧爬虫，由获客分身读穿工具补齐。"""
     s, agent = ctx.session, ctx.agent(['agent', 'growth:collect'])
     miss = f'zzq{uuid.uuid4().hex[:8]}'  # 不会命中任何已有线索的关键词
     result = await _REG['growth.lead_request'](s, agent, {'keyword': miss, 'limit': 3})
     assert result['delivered'] == 0
-    assert result['backfill_job_id'] is not None, 'M<N 应触发补爬 job'
-    # 补爬 job 应为公共池采集、max_results=缺口 N−M=3
-    job = (
-        await s.execute(select(LeadCollectionJob).where(LeadCollectionJob.id == result['backfill_job_id']))
-    ).scalar_one()
-    assert job.max_results == 3
-    assert miss in job.keyword
+    assert result['backfill_job_id'] is None
 
 
 async def test_query_pool_filters_by_keyword(ctx: SimpleNamespace) -> None:

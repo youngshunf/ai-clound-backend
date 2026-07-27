@@ -98,8 +98,8 @@ async def test_import_github_real() -> None:
 
 
 async def test_import_github_missing_repo_honest_failure() -> None:
-    """不存在的仓/无样式入口 → 诚实报错。"""
-    await _expect_honest_failure('github', 'huanxing-nonexistent-owner/no-such-repo-xyz', '草稿失败')
+    """真实公开仓没有候选样式入口 → 诚实报错。"""
+    await _expect_honest_failure('github', 'octocat/Hello-World', '草稿失败')
 
 
 # ── 入口三：screenshot / url ──────────────────────────────────────────────────

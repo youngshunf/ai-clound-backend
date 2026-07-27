@@ -16,7 +16,7 @@ HTTP 仍 200（传输成功、业务态在 data.status/data.error 里），零 f
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
+from backend.app.hasn_core.app_platform import resolve_owner_hasn_id
 from backend.app.hasn_studio.provider import montage_engine_provider
 from backend.app.hasn_studio.schema.owner import (
     ExportParam,

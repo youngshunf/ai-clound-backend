@@ -329,3 +329,49 @@ async def test_lease_single_instance(sessionmaker_pg) -> None:
     ).tick()
     assert not s2.lease_held and c2.handled == []
     await _cleanup(sessionmaker_pg, aid, cn)
+
+
+async def test_graceful_release_allows_immediate_restart(sessionmaker_pg) -> None:
+    """优雅停机只释放自己的租约，新进程无需等待 TTL 即可接管。"""
+    cn = f'sync_projector_{uuid.uuid4().hex[:8]}'
+    async with sessionmaker_pg() as db:
+        assert await store.try_acquire_lease(
+            db,
+            consumer_name=cn,
+            owner='worker-before-restart',
+            ttl_seconds=300,
+        )
+        await db.commit()
+
+    async with sessionmaker_pg() as db:
+        await store.release_lease(
+            db,
+            consumer_name=cn,
+            owner='other-worker',
+        )
+        await db.commit()
+    async with sessionmaker_pg() as db:
+        assert not await store.try_acquire_lease(
+            db,
+            consumer_name=cn,
+            owner='worker-after-restart',
+            ttl_seconds=300,
+        )
+        await db.rollback()
+
+    async with sessionmaker_pg() as db:
+        await store.release_lease(
+            db,
+            consumer_name=cn,
+            owner='worker-before-restart',
+        )
+        await db.commit()
+    async with sessionmaker_pg() as db:
+        assert await store.try_acquire_lease(
+            db,
+            consumer_name=cn,
+            owner='worker-after-restart',
+            ttl_seconds=300,
+        )
+        await db.commit()
+    await _cleanup(sessionmaker_pg, 'aggregate-unused', cn)

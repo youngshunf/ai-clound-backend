@@ -28,7 +28,7 @@ async def test_human_profile_real_fields_and_counts(db):
         db, hasn_id=user['hasn_id'], viewer_user_id=fan['user_id']
     )
     assert profile['type'] == 'human'
-    assert profile['display_name'] == '福仔'  # 真实昵称，非写死 'User'
+    assert profile['display_name'] == user['nickname']  # 真实昵称，非写死 'User'
     assert profile['post_count'] == 2
     assert profile['follower_count'] == 1
     assert profile['is_following'] is True
@@ -71,7 +71,7 @@ async def test_agent_profile_capabilities_owner_and_called_count(db):
     assert profile['content_statement'] == '本 Agent 内容均经主人授权'
     # 主人信息条真实
     assert profile['owner'] is not None
-    assert profile['owner']['display_name'] == '星主'
+    assert profile['owner']['display_name'] == owner['nickname']
     # 无调用审计时为 0（真实统计，不写死 88）
     assert profile['called_count'] == 0
 
@@ -94,5 +94,5 @@ async def test_get_profile_agents_owner_display_name_real(db):
     )
     assert len(agents) == 1
     # owner display_name 不再写死为 hasn_id
-    assert agents[0]['owner']['display_name'] == '李俊龙'
+    assert agents[0]['owner']['display_name'] == owner['nickname']
     assert agents[0]['owner']['hasn_id'] == owner['hasn_id']

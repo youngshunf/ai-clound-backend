@@ -14,12 +14,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from typing import Any
 
 import pytest
 
 from backend.app.hasn.service import conversation_projection as cp
 from backend.app.hasn_im.application import message_service as mr
+from backend.app.hasn_im.consumers.facts import MessageCommittedFacts
+from backend.app.hasn_im.consumers.sync_projector import _message_new_payload
 from backend.app.mcp import trust_gate
 from backend.app.mcp.tools.message import MessageSendTool
 
@@ -27,7 +29,7 @@ _SESSION = 'sess_work_01J8'
 
 
 @dataclass
-class _Conv:
+class _ConvImpl:
     id: str = '00000000-0000-0000-0000-0000000000aa'
     type: str = 'direct'
     participant_a_id: str = 'a_bot'
@@ -47,30 +49,14 @@ class _Conv:
     updated_time: datetime = datetime(2026, 7, 15, tzinfo=timezone.utc)
 
 
-@dataclass
-class _Msg:
-    id: int = 1001
-    created_time: datetime = datetime(2026, 7, 15, tzinfo=timezone.utc)
+_Conv: Any = _ConvImpl
 
 
 # ─── 事件形状：带溯源 / 不带溯源 ───
 
 
-class _FakeGw:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
-
-    async def _append_sync_event(self, db, **kwargs):
-        self.calls.append(kwargs)
-        return len(self.calls)
-
-
-@pytest.mark.asyncio
-async def test_event_carries_origin_session_id_when_present() -> None:
-    gw = _FakeGw()
-    await cp.append_message_new_event(
-        gw,
-        object(),
+def test_event_carries_origin_session_id_when_present() -> None:
+    envelope = cp.build_message_new_envelope(
         owner_id='h_master',
         conversation_id='conv-1',
         message_id='1001',
@@ -82,17 +68,12 @@ async def test_event_carries_origin_session_id_when_present() -> None:
         created_at=1700000000,
         origin_session_id=_SESSION,
     )
-    payload = gw.calls[0]['payload']
-    assert payload['origin_session_id'] == _SESSION
+    assert envelope.payload['origin_session_id'] == _SESSION
 
 
-@pytest.mark.asyncio
-async def test_event_shape_unchanged_without_origin_session_id() -> None:
+def test_event_shape_unchanged_without_origin_session_id() -> None:
     """无溯源 → key 直接缺席（不是 None）：对端 owner 的事件与 doc02 瘦事件逐字段一致。"""
-    gw = _FakeGw()
-    await cp.append_message_new_event(
-        gw,
-        object(),
+    envelope = cp.build_message_new_envelope(
         owner_id='h_peer',
         conversation_id='conv-1',
         message_id='1001',
@@ -103,86 +84,44 @@ async def test_event_shape_unchanged_without_origin_session_id() -> None:
         local_id=None,
         created_at=1700000000,
     )
-    payload = gw.calls[0]['payload']
+    payload = envelope.payload
     assert set(payload.keys()) == {
         'conversation_id', 'message_id', 'sender_hasn_id', 'origin_node_id',
         'content_type', 'content_body', 'local_id', 'created_at',
     }
     assert 'origin_session_id' not in payload
 
-
 # ─── §7-1 隐私红线：受众分叉 ───
 
 
-@pytest.mark.asyncio
-async def test_fanout_forks_origin_session_id_by_audience(monkeypatch) -> None:
-    """发起溯源是发送方的执行细节：只有发送方 owner 的事件+推送带它，对端一律剥除。"""
-    events: list[dict] = []
-
-    async def _fake_append(gw, db, *, owner_id, origin_session_id=None, **kwargs):
-        events.append({'owner_id': owner_id, 'origin_session_id': origin_session_id})
-        return 1
-
-    # a_bot 的主人是 h_master（发送方 owner）；h_peer 是对端 owner。
-    monkeypatch.setattr(cp, 'compute_audience_owner_ids', AsyncMock(return_value=['h_master', 'h_peer']))
-    monkeypatch.setattr(cp, '_resolve_owner_ids', AsyncMock(return_value={'a_bot': 'h_master'}))
-    monkeypatch.setattr(cp, 'append_message_new_event', _fake_append)
-
-    # R1-08 后：扇出不再内联 push，而是把待发推送收集进 deferred_pushes 返回（由 route_message
-    # 在主链 commit 之后 _flush_pushes 发出）。§7-1 隐私红线在收集的推送载荷上同样成立。
-    audience, deferred_pushes = await mr._fanout_message_new(
-        object(),
-        _FakeGw(),
-        _Conv(),
-        from_id='a_bot',
-        msg=_Msg(),
-        content={'text': '你好，想约个时间'},
+def _committed_facts(origin_session_id: str | None) -> MessageCommittedFacts:
+    """构造 durable consumer 使用的已提交消息事实。"""
+    return MessageCommittedFacts(
+        conversation_id='conv-1',
+        message_id='1001',
+        sender_hasn_id='a_bot',
         content_type=1,
-        local_id=None,
+        content_body={'text': '你好，想约个时间'},
         origin_node_id='node-1',
-        origin_session_id=_SESSION,
+        origin_session_id=origin_session_id,
+        created_at=1700000000,
     )
 
-    assert audience == ['h_master', 'h_peer']
-    by_owner = {e['owner_id']: e['origin_session_id'] for e in events}
-    assert by_owner['h_master'] == _SESSION, '发送方 owner 应看到自己的发起溯源'
-    assert by_owner['h_peer'] is None, '§7-1 红线：对端 owner 的事件绝不带 origin_session_id'
 
-    push_by_owner = {owner: msg['params'] for owner, msg in deferred_pushes}
-    assert push_by_owner['h_master']['origin_session_id'] == _SESSION
-    assert 'origin_session_id' not in push_by_owner['h_peer'], '§7-1 红线：对端推送同样剥除'
+def test_sync_projection_forks_origin_session_id_by_audience() -> None:
+    """consumer 只给发送方 owner 投影溯源，对端 owner 的载荷必须剥除。"""
+    facts = _committed_facts(_SESSION)
+    sender_payload = _message_new_payload(facts, facts.origin_session_id)
+    peer_payload = _message_new_payload(facts, None)
+
+    assert sender_payload['origin_session_id'] == _SESSION
+    assert 'origin_session_id' not in peer_payload
 
 
-@pytest.mark.asyncio
-async def test_fanout_skips_owner_resolution_without_origin_session_id(monkeypatch) -> None:
-    """无溯源 → 不解析发送方 owner（省一次查询），且两端事件都不带该字段。"""
-    events: list[dict] = []
-
-    async def _fake_append(gw, db, *, owner_id, origin_session_id=None, **kwargs):
-        events.append({'owner_id': owner_id, 'origin_session_id': origin_session_id})
-        return 1
-
-    resolve_spy = AsyncMock(return_value={'a_bot': 'h_master'})
-    monkeypatch.setattr(cp, 'compute_audience_owner_ids', AsyncMock(return_value=['h_master', 'h_peer']))
-    monkeypatch.setattr(cp, '_resolve_owner_ids', resolve_spy)
-    monkeypatch.setattr(cp, 'append_message_new_event', _fake_append)
-    from backend.app.hasn_im.application.node_session_service import node_session_service as ws_router
-
-    monkeypatch.setattr(ws_router, 'push_to_owner', AsyncMock())
-
-    await mr._fanout_message_new(
-        object(),
-        _FakeGw(),
-        _Conv(),
-        from_id='a_bot',
-        msg=_Msg(),
-        content={'text': 'hi'},
-        content_type=1,
-        local_id=None,
-        origin_node_id='node-1',
-    )
-    resolve_spy.assert_not_awaited()
-    assert all(e['origin_session_id'] is None for e in events)
+def test_sync_projection_omits_origin_session_id_when_absent() -> None:
+    """原始事实无溯源时，所有受众投影都保持八字段瘦事件。"""
+    payload = _message_new_payload(_committed_facts(None), None)
+    assert 'origin_session_id' not in payload
 
 
 # ─── E 刀：mission_note 投影裁剪 ───
@@ -236,9 +175,9 @@ class _SpyGateway:
     """桩 ImGateway：记录 ensure/send 收到的命令 + principal，send 返回已送达态。"""
 
     def __init__(self) -> None:
-        self.ensure_cmd: object | None = None
-        self.ensure_principal: object | None = None
-        self.send_principal: object | None = None
+        self.ensure_cmd: Any = None
+        self.ensure_principal: Any = None
+        self.send_principal: Any = None
 
     async def ensure_direct_conversation(self, command, principal):
         from backend.app.hasn_im.ports.dto import ConversationRef
@@ -316,7 +255,7 @@ async def test_no_session_context_sends_null_origin(monkeypatch) -> None:
 # ─── 测试替身 ───
 
 
-class _AgentCtx:
+class _AgentCtxImpl:
     """最小 AgentContext 替身：工具只读这几个字段。"""
 
     def __init__(self) -> None:
@@ -325,6 +264,9 @@ class _AgentCtx:
         self.agent_name = '小助手'
         self.owner_hasn_id = 'h_master'
         self.session_id: str | None = None
+
+
+_AgentCtx: Any = _AgentCtxImpl
 
 
 def _patch_db_session(monkeypatch) -> None:

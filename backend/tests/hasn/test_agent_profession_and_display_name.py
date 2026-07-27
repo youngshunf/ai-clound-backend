@@ -55,11 +55,15 @@ def _patch_uniqueness(monkeypatch, taken: set[str]) -> None:
     monkeypatch.setattr(SqlAlchemyAgentProfileGateway, '_ensure_unique_agent_name', _fake_slug)
 
 
-class _FakeDB:
+class _FakeDBImpl:
     """最小 db：仅 create_agent 末尾的 flush 会被调用（查重均已 monkeypatch）。"""
 
     async def flush(self) -> None:
         return None
+
+
+_FakeDB: Any = _FakeDBImpl
+TEST_DB: Any = None
 
 
 def _capture_register(monkeypatch) -> dict[str, Any]:
@@ -104,7 +108,7 @@ async def test_resolve_unique_display_name_falls_back_to_suffix(monkeypatch) -> 
     """候选池全被占 → 退化为数字后缀。"""
     _patch_uniqueness(monkeypatch, taken={'明远', '思齐'})
     gateway = SqlAlchemyAgentProfileGateway()
-    resolved = await gateway.resolve_unique_display_name(db=None, desired='明远', candidates=['明远', '思齐'])
+    resolved = await gateway.resolve_unique_display_name(db=TEST_DB, desired='明远', candidates=['明远', '思齐'])
     assert resolved == '明远2'
 
 
@@ -113,7 +117,7 @@ async def test_resolve_unique_display_name_returns_desired_when_free(monkeypatch
     """desired 未被占用 → 原样返回。"""
     _patch_uniqueness(monkeypatch, taken=set())
     gateway = SqlAlchemyAgentProfileGateway()
-    resolved = await gateway.resolve_unique_display_name(db=None, desired='明远', candidates=['思齐'])
+    resolved = await gateway.resolve_unique_display_name(db=TEST_DB, desired='明远', candidates=['思齐'])
     assert resolved == '明远'
 
 
@@ -136,7 +140,7 @@ async def test_default_agent_name_uses_nickname_and_profession_when_free(monkeyp
     _patch_uniqueness(monkeypatch, taken=set())
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, profession='全能助理', owner_nickname='小智'
+        db=TEST_DB, profession='全能助理', owner_nickname='小智'
     )
     assert resolved == '小智的全能助理'
 
@@ -147,7 +151,7 @@ async def test_default_agent_name_numbers_on_collision(monkeypatch) -> None:
     _patch_uniqueness(monkeypatch, taken={'小智的全能助理'})
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, profession='全能助理', owner_nickname='小智'
+        db=TEST_DB, profession='全能助理', owner_nickname='小智'
     )
     assert resolved == '小智的全能助理2'
 
@@ -158,7 +162,7 @@ async def test_default_agent_name_placeholder_without_nickname(monkeypatch) -> N
     _patch_uniqueness(monkeypatch, taken=set())
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, profession='全能助理', owner_nickname='186****2019'
+        db=TEST_DB, profession='全能助理', owner_nickname='186****2019'
     )
     assert resolved == '全能助理'
 
@@ -169,6 +173,6 @@ async def test_default_agent_name_placeholder_numbers_on_collision(monkeypatch) 
     _patch_uniqueness(monkeypatch, taken={'全能助理'})
     gateway = SqlAlchemyAgentProfileGateway()
     resolved = await gateway.resolve_default_agent_display_name(
-        db=None, profession='全能助理', owner_nickname=''
+        db=TEST_DB, profession='全能助理', owner_nickname=''
     )
     assert resolved == '全能助理2'

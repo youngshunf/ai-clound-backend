@@ -26,6 +26,7 @@ def create_database_url(*, unittest: bool = False, with_database: bool = True) -
     :param with_database: 是否包含数据库名（创建数据库时不需要）
     :return:
     """
+    database: str | None
     if with_database:
         database = settings.DATABASE_SCHEMA if not unittest else f'{settings.DATABASE_SCHEMA}_test'
     else:
@@ -97,6 +98,30 @@ async def get_db_transaction() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+async def get_im_db() -> AsyncGenerator[AsyncSession, None]:
+    """获取 IM 受限角色会话。"""
+    async with im_service_db_session() as session:
+        yield session
+
+
+async def get_im_db_transaction() -> AsyncGenerator[AsyncSession, None]:
+    """获取带事务边界的 IM 受限角色会话。"""
+    async with im_service_db_session.begin() as session:
+        yield session
+
+
+async def get_sync_db() -> AsyncGenerator[AsyncSession, None]:
+    """获取 sync 受限角色会话。"""
+    async with sync_service_db_session() as session:
+        yield session
+
+
+async def get_sync_db_transaction() -> AsyncGenerator[AsyncSession, None]:
+    """获取带事务边界的 sync 受限角色会话。"""
+    async with sync_service_db_session.begin() as session:
+        yield session
+
+
 def metadata_schemas() -> list[str]:
     """汇总 metadata 里声明的全部自定义 schema（去重升序；public/None 不算）。
 
@@ -104,7 +129,13 @@ def metadata_schemas() -> list[str]:
     """
     from backend.common.model import MappedBase
 
-    return sorted({table.schema for table in MappedBase.metadata.tables.values() if table.schema})
+    return sorted(
+        {
+            table.schema
+            for table in MappedBase.metadata.tables.values()
+            if table.schema and table.schema != 'public'
+        }
+    )
 
 
 def _resolve_role_engine(override_url: str, default_engine: AsyncEngine) -> AsyncEngine:
@@ -147,18 +178,17 @@ async def create_tables() -> None:
     # 硬闸（即便 DATABASE_AUTO_CREATE_TABLES 被误设 True 也不生效），杜绝启动期误建旧表 /
     # 与迁移漂移的整类事故。dev/演练环境默认自动建表（可经 DATABASE_AUTO_CREATE_TABLES 关）。
     auto_create = _should_auto_create_tables(settings.ENVIRONMENT, settings.DATABASE_AUTO_CREATE_TABLES)
+    if not auto_create:
+        # 生产角色不应在启动期为“什么都不做”额外建立管理连接；在连库前直接返回，既杜绝
+        # create_all/CREATE SCHEMA，也避免误用主 DSN 绕过三个受限服务连接池。
+        log.info('启动期跳过 metadata.create_all（R1-11：建表走 migration）')
+        return
 
     async with async_engine.begin() as coon:
-        # 仅 PostgreSQL 需要显式建 schema；MySQL 无独立 schema 概念，跳过。
-        # 建 schema 的幂等安全网**任何环境都保留**（防「部署新 schema 后一重启即崩」老坑），
-        # 与是否 create_all 无关——schema 是命名空间容器，表由 migration 在其内创建。
         if DataBaseType.mysql != settings.DATABASE_TYPE:
             for schema in metadata_schemas():
                 await coon.execute(CreateSchema(schema, if_not_exists=True))
-        if auto_create:
-            await coon.run_sync(MappedBase.metadata.create_all)
-        else:
-            log.info('生产环境跳过启动期 metadata.create_all（R1-11：建表走 migration）')
+        await coon.run_sync(MappedBase.metadata.create_all)
 
 
 async def drop_tables() -> None:
@@ -179,7 +209,6 @@ SQLALCHEMY_DATABASE_URL = create_database_url()
 
 # SALA 异步引擎和会话
 async_engine = create_database_async_engine(SQLALCHEMY_DATABASE_URL)
-async_db_session = create_database_async_session(async_engine)
 
 # 云端 IM 服务化 R1-13：三 DB 角色专属 engine/session maker 分置（§3.2 同进程也必须分 session maker）。
 # 覆盖 DSN 留空时三者回落主 engine（dev/演练：共享同一连接池、行为不变）；生产 R3 授权 role 并填入
@@ -191,10 +220,36 @@ python_backend_engine = _resolve_role_engine(settings.PYTHON_BACKEND_DATABASE_UR
 im_service_db_session = create_database_async_session(im_service_engine)
 sync_service_db_session = create_database_async_session(sync_service_engine)
 python_backend_db_session = create_database_async_session(python_backend_engine)
+# 现有通用依赖和惰性 import 统一指向 python backend 受限角色；留空时仍回落主连接。
+async_db_session = python_backend_db_session
+
+
+async def close_database_engines() -> None:
+    """关闭主库及三个受限角色的连接池，同一 engine 只关闭一次。
+
+    dev 环境未配置角色 DSN 时，三个角色会复用主 engine；生产则可能是四个独立
+    engine。应用 shutdown 必须在创建连接的同一事件循环内释放这些池，否则测试
+    重启或进程内重建应用时会把旧 loop 绑定的 asyncpg 连接带到新 loop。
+    """
+    disposed: set[int] = set()
+    for engine in (async_engine, im_service_engine, sync_service_engine, python_backend_engine):
+        engine_id = id(engine)
+        if engine_id in disposed:
+            continue
+        await engine.dispose()
+        disposed.add(engine_id)
+
 
 # Session Annotated
 CurrentSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentSessionTransaction = Annotated[AsyncSession, Depends(get_db_transaction)]
+CurrentImSession = Annotated[AsyncSession, Depends(get_im_db)]
+CurrentImSessionTransaction = Annotated[AsyncSession, Depends(get_im_db_transaction)]
+CurrentSyncSession = Annotated[AsyncSession, Depends(get_sync_db)]
+CurrentSyncSessionTransaction = Annotated[
+    AsyncSession,
+    Depends(get_sync_db_transaction),
+]
 
 # new-api 第二数据库引擎（直连 new-api 库）已删除（2026-06-15 解耦）：
 # huanxing 不再直连 new-api 数据库，所有 new-api 交互改走 HTTP 管理 API（app/newapi/client.py）。

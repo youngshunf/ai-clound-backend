@@ -257,7 +257,7 @@ class StudioService:
         extra_ids = {int(i) for i in shared_ids if i.isdigit()} - owned_ids
         extra: list[StudioArtifact] = []
         if extra_ids:
-            extra_conds = [StudioArtifact.id.in_(extra_ids)]
+            extra_conds: list[Any] = [StudioArtifact.id.in_(extra_ids)]
             if project_id is not None:
                 extra_conds.append(StudioArtifact.project_id == project_id)
             extra = list((await db.execute(select(StudioArtifact).where(*extra_conds))).scalars().all())
@@ -609,10 +609,13 @@ class StudioService:
             conds.append(StudioArtifact.project_id == project_id)
         stmt = select(StudioArtifact).where(*conds).order_by(StudioArtifact.id.desc())
         rows = (await db.execute(stmt)).scalars().all()
+        uris: list[str | None] = []
+        for row in rows:
+            uris.extend((row.video_asset_uri, row.thumbnail_asset_uri))
         url_map = await StudioService._resolve_asset_urls(
             db,
             owner_hasn_id=owner_hasn_id,
-            uris=[r.video_asset_uri for r in rows] + [r.thumbnail_asset_uri for r in rows],
+            uris=uris,
         )
         return [_serialize_artifact(r, url_map) for r in rows]
 
@@ -790,8 +793,11 @@ class StudioService:
     @staticmethod
     async def _poll_and_apply(db: AsyncSession, job: StudioRenderJob) -> None:
         """轮询引擎一次，把状态/进度/阶段/成本落库。传输层失败保持原态（下次重试），不造假。"""
+        engine_job_id = job.engine_job_id
+        if not engine_job_id:
+            return
         try:
-            snapshot = await montage_engine_provider.get_render(job.engine_job_id)
+            snapshot = await montage_engine_provider.get_render(engine_job_id)
         except StudioEngineError as exc:
             # 404=引擎重启丢内存态 → 标失败透传；其余瞬时错误保持原态等下次。
             if 'HTTP 404' in str(exc):
@@ -828,21 +834,26 @@ class StudioService:
         ).scalar_one_or_none()
         if existing is not None:
             return
+        engine_job_id = job.engine_job_id
+        if not engine_job_id:
+            job.error = '引擎 job ID 缺失，无法物化成品'
+            await db.flush()
+            return
 
         # 取最新 snapshot 拿成片元数据（时长/分辨率/体积）；失败则用 job 已落的字段兜底。
         snapshot: dict[str, Any] = {}
         try:
-            snapshot = await montage_engine_provider.get_render(job.engine_job_id)
+            snapshot = await montage_engine_provider.get_render(engine_job_id)
         except StudioEngineError:
             snapshot = {}
 
         try:
-            data, content_type = await montage_engine_provider.fetch_artifact(job.engine_job_id)
+            data, content_type = await montage_engine_provider.fetch_artifact(engine_job_id)
             ref = await StorageService.upload(
                 db,
                 data,
                 category=_ARTIFACT_UPLOAD_CATEGORY,
-                filename=f'{job.engine_job_id}.mp4',
+                filename=f'{engine_job_id}.mp4',
                 content_type=content_type or 'video/mp4',
             )
             asset = await hasn_asset_service.register_asset(

@@ -12,6 +12,8 @@ RAGFlow 是云端服务身后的内部处理后端（纯实现细节），manife
 
 from __future__ import annotations
 
+from typing import Any
+
 # 项目轴入参（doc38 §5.5/§5.6）：**读侧不收窄、写侧继承**——两条描述有意写得不一样，
 # 别合并成一个常量。读工具缺省列全部（知识库是长期资产、跨项目复用是常态，默认按当前项目
 # 过滤会让分身「检索不到」）；写工具缺省继承当前项目会话（系统注入，分身无须填）。
@@ -98,7 +100,7 @@ def _tool(
     return tool
 
 
-KNOWLEDGE_AI_NATIVE_MANIFEST = {
+KNOWLEDGE_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'knowledge',
     # doc38 §3.3 project-aware：① kb 表有 platform_project_id 列且派发链路透传；② resources[] 可被项目
     # 总览聚合；③ dispatch 与 create_kb 接受可选 platform_project_id。挂靠是纯归属标签，不改权限。

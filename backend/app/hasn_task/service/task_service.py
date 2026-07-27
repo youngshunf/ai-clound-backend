@@ -124,6 +124,8 @@ class HasnTaskService:
 
         # 查询并返回创建的任务
         task = await hasn_task_dao.get(db, task_id)
+        if task is None:
+            raise RuntimeError(f'任务创建后无法读取：task_id={task_id}')
         return task
 
     @staticmethod

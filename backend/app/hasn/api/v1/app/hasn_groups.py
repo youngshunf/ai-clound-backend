@@ -8,14 +8,16 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Path, Request
+from fastapi import APIRouter, Body, Depends, Path, Request
 from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.hasn_group_service import hasn_group_service
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports.im_gateway import ImGateway
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentImSession, CurrentImSessionTransaction
 
 router = APIRouter()
 
@@ -52,7 +54,7 @@ class SetTrustLevelBody(BaseModel):
     trust_level: int = Field(description='分身群内披露档：2 普通朋友 / 3 好友 / 4 密友（doc08 §3.4）')
 
 
-async def _caller_hasn_id(request: Request, db: CurrentSession) -> str:
+async def _caller_hasn_id(request: Request, db: CurrentImSession) -> str:
     caller = getattr(request.user, 'hasn_id', None)
     if caller:
         return caller
@@ -67,7 +69,7 @@ async def _caller_hasn_id(request: Request, db: CurrentSession) -> str:
 @router.post('', summary='建群', dependencies=[DependsJwtAuth])
 async def create_group(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     body: Annotated[CreateGroupBody, Body()],
 ) -> ResponseSchemaModel[dict]:
     caller = await _caller_hasn_id(request, db)
@@ -84,7 +86,7 @@ async def create_group(
 
 
 @router.get('', summary='我的群列表', dependencies=[DependsJwtAuth])
-async def list_my_groups(request: Request, db: CurrentSession) -> ResponseSchemaModel[dict]:
+async def list_my_groups(request: Request, db: CurrentImSession) -> ResponseSchemaModel[dict]:
     caller = await _caller_hasn_id(request, db)
     items = await hasn_group_service.list_my_groups(db=db, hasn_id=caller)
     return response_base.success(data={'items': items})
@@ -93,7 +95,7 @@ async def list_my_groups(request: Request, db: CurrentSession) -> ResponseSchema
 @router.get('/{group_id}/preview', summary='群公开元信息（非成员可读·群名片预览）', dependencies=[DependsJwtAuth])
 async def preview_group(
     request: Request,
-    db: CurrentSession,
+    db: CurrentImSession,
     group_id: Annotated[str, Path(description='群组公开 ID g:NNNNNN')],
 ) -> ResponseSchemaModel[dict]:
     # doc22 群名片：非成员也可读到群名/头像/人数/加入策略等公开字段（不含完整名册）。
@@ -106,7 +108,7 @@ async def preview_group(
 @router.post('/{group_id}/join', summary='申请加入群聊（尊重群加入策略）', dependencies=[DependsJwtAuth])
 async def join_group(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID g:NNNNNN')],
 ) -> ResponseSchemaModel[dict]:
     # doc22 群名片：非成员从群预览页点「加入群聊」。尊重群加入策略——
@@ -120,7 +122,7 @@ async def join_group(
 @router.get('/{group_id}', summary='群详情 + 名册', dependencies=[DependsJwtAuth])
 async def get_group(
     request: Request,
-    db: CurrentSession,
+    db: CurrentImSession,
     group_id: Annotated[str, Path(description='群组公开 ID g:NNNNNN')],
 ) -> ResponseSchemaModel[dict]:
     caller = await _caller_hasn_id(request, db)
@@ -131,13 +133,18 @@ async def get_group(
 @router.post('/{group_id}/members', summary='加成员', dependencies=[DependsJwtAuth])
 async def add_members(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
+    im_gateway: Annotated[ImGateway, Depends(get_im_gateway)],
     group_id: Annotated[str, Path(description='群组公开 ID')],
     body: Annotated[AddMembersBody, Body()],
 ) -> ResponseSchemaModel[dict]:
     caller = await _caller_hasn_id(request, db)
     data = await hasn_group_service.add_members(
-        db=db, actor_hasn_id=caller, group_id=group_id, members=[m.model_dump() for m in body.members]
+        db=db,
+        actor_hasn_id=caller,
+        group_id=group_id,
+        members=[m.model_dump() for m in body.members],
+        im_gateway=im_gateway,
     )
     return response_base.success(data=data)
 
@@ -145,7 +152,7 @@ async def add_members(
 @router.delete('/{group_id}/members/{member_id}', summary='移除成员 / 退群', dependencies=[DependsJwtAuth])
 async def remove_group_member(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
     member_id: Annotated[str, Path(description='成员 HASN ID')],
 ) -> ResponseSchemaModel[dict]:
@@ -159,7 +166,7 @@ async def remove_group_member(
 @router.patch('/{group_id}', summary='改群设置', dependencies=[DependsJwtAuth])
 async def update_group(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
     body: Annotated[UpdateGroupBody, Body()],
 ) -> ResponseSchemaModel[dict]:
@@ -184,7 +191,7 @@ async def update_group(
 )
 async def set_agent_charter(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
     agent_hasn_id: Annotated[str, Path(description='分身 HASN ID a_...')],
     body: Annotated[SetCharterBody, Body()],
@@ -204,7 +211,7 @@ async def set_agent_charter(
 )
 async def set_agent_group_trust_level(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
     agent_hasn_id: Annotated[str, Path(description='分身 HASN ID a_...')],
     body: Annotated[SetTrustLevelBody, Body()],
@@ -224,7 +231,7 @@ async def set_agent_group_trust_level(
 )
 async def accept_agent_invite(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
     invite_id: Annotated[int, Path(description='邀请 ID')],
 ) -> ResponseSchemaModel[dict]:
@@ -243,7 +250,7 @@ async def accept_agent_invite(
 )
 async def decline_agent_invite(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
     invite_id: Annotated[int, Path(description='邀请 ID')],
 ) -> ResponseSchemaModel[dict]:
@@ -261,7 +268,7 @@ async def decline_agent_invite(
 )
 async def cancel_agent_invite(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
     invite_id: Annotated[int, Path(description='邀请 ID')],
 ) -> ResponseSchemaModel[dict]:
@@ -275,7 +282,7 @@ async def cancel_agent_invite(
 @router.delete('/{group_id}', summary='解散群', dependencies=[DependsJwtAuth])
 async def disband_group(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentImSessionTransaction,
     group_id: Annotated[str, Path(description='群组公开 ID')],
 ) -> ResponseSchemaModel[dict]:
     caller = await _caller_hasn_id(request, db)

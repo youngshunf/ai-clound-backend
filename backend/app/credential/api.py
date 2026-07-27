@@ -10,7 +10,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.common.response.response_schema import ResponseModel, response_base
+from backend.common.exception import errors
+from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import get_db
 
@@ -35,7 +36,7 @@ async def sync_credential(
     request: CredentialSyncRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: dict = DependsJwtAuth,
-) -> ResponseModel[CredentialSyncResponse]:
+) -> ResponseSchemaModel[CredentialSyncResponse]:
     """同步凭证到云端"""
     result = await CredentialService.sync_credential(
         db=db,
@@ -56,7 +57,7 @@ async def get_credential(
     sync_key_hash: Annotated[str, Header(alias="X-Sync-Key-Hash")],
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: dict = DependsJwtAuth,
-) -> ResponseModel[CredentialInfo | None]:
+) -> ResponseSchemaModel[CredentialInfo]:
     """获取凭证"""
     result = await CredentialService.get_credential(
         db=db,
@@ -66,7 +67,7 @@ async def get_credential(
         sync_key_hash=sync_key_hash,
     )
     if not result:
-        return response_base.fail(msg="凭证不存在或密钥不匹配")
+        raise errors.NotFoundError(msg="凭证不存在或密钥不匹配")
     return response_base.success(data=result)
 
 
@@ -79,7 +80,7 @@ async def list_credentials(
     platform: Annotated[str | None, Query(description="平台名称")] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = DependsJwtAuth,
-) -> ResponseModel[CredentialListResponse]:
+) -> ResponseSchemaModel[CredentialListResponse]:
     """列出凭证"""
     result = await CredentialService.list_credentials(
         db=db,
@@ -99,7 +100,7 @@ async def delete_credential(
     account_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: dict = DependsJwtAuth,
-) -> ResponseModel[CredentialDeleteResponse]:
+) -> ResponseSchemaModel[CredentialDeleteResponse]:
     """删除凭证"""
     result = await CredentialService.delete_credential(
         db=db,

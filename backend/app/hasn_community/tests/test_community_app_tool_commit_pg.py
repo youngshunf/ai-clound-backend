@@ -25,6 +25,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_community.model import HasnPosts
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.app_tool_loader import load_published_app_tools
@@ -34,14 +35,14 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL
 pytestmark = pytest.mark.asyncio
 
 
-def _agent() -> AgentTokenPayload:
-    # 合成身份：MCP 直连面恒取 request.state.agent，不查 Redis/DB；owner_user_id 用高位测试值避免撞真实数据。
+def _agent(tag: str) -> AgentTokenPayload:
+    """构造与本用例真实身份行一一对应的 Agent 凭据。"""
     return AgentTokenPayload(
-        agent_hasn_id='hasn:agent:commctx-x',
+        agent_hasn_id=f'a_commctx_{tag}',
         agent_name='社区提交边界回归分身',
-        owner_hasn_id='hasn:owner:commctx-a',
-        owner_user_id=920078,
-        session_uuid='sess-commctx-test',
+        owner_hasn_id=f'h_commctx_{tag}',
+        owner_user_id=920_000_000 + int(tag, 16),
+        session_uuid=f'sess-commctx-{tag}',
         expire_time=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1),
     )
 
@@ -68,25 +69,51 @@ async def test_app_tool_execute_commits_community_create_post() -> None:
     tool = next((t for t in tools if t.name == 'hasn.community.create_post'), None)
     assert tool is not None, 'community create_post AppTool 未在已发布工具中（builtin manifest 应含）'
 
-    marker = uuid.uuid4().hex[:8]
+    marker = uuid.uuid4().hex[:6]
     content = f'[工具测试-commctx 可忽略] community 提交边界回归 {marker}'
-    agent_ctx = AgentContext.from_token_payload(_agent(), agent_status='active')
+    token = _agent(marker)
+    agent_ctx = AgentContext.from_token_payload(token, agent_status='active')
 
-    # handler 内部自 db.commit()；AppTool.execute 现用裸 session + 末尾 commit，不再撞 closed-transaction。
-    result = await tool.execute(agent_ctx, {'content': content, 'visibility': 'private'})
-
-    assert result.get('decision') == 'allow', f'网关未放行：{result}'
-    post_id = result['result']['post_id']
-
-    # 独立 session：必须看得到这一行（证明已提交；修前因 closed-transaction 根本到不了这）。
+    # 先提交真实 Human/Agent 身份。IM 发卡必须走身份视图 fail-closed 校验，禁止测试合成不存在的身份。
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     sess = async_sessionmaker(engine, expire_on_commit=False)()
+    post_id: str | None = None
     try:
+        sess.add_all(
+            [
+                HasnHumans(
+                    hasn_id=token.owner_hasn_id,
+                    star_id=f'commctx-owner-{marker}',
+                    user_id=token.owner_user_id,
+                    nickname='社区提交边界主人',
+                    status='active',
+                ),
+                HasnAgents(
+                    hasn_id=token.agent_hasn_id,
+                    star_id=f'commctx-agent-{marker}',
+                    owner_id=token.owner_hasn_id,
+                    display_name=token.agent_name,
+                    agent_name='community_commit',
+                    status='active',
+                ),
+            ]
+        )
+        await sess.commit()
+
+        # handler 内部自 db.commit()；AppTool.execute 现用裸 session + 末尾 commit，不再撞 closed-transaction。
+        result = await tool.execute(agent_ctx, {'content': content, 'visibility': 'private'})
+        assert result.get('decision') == 'allow', f'网关未放行：{result}'
+        post_id = result['result']['post_id']
+
+        # 独立 session：必须看得到这一行（证明已提交；修前因 closed-transaction 根本到不了这）。
         row = (await sess.execute(select(HasnPosts).where(HasnPosts.post_id == post_id))).scalar_one_or_none()
         assert row is not None, '帖子未落库——网关到达面事务未提交'
         assert row.content == content
     finally:
-        await sess.execute(delete(HasnPosts).where(HasnPosts.post_id == post_id))
+        if post_id is not None:
+            await sess.execute(delete(HasnPosts).where(HasnPosts.post_id == post_id))
+        await sess.execute(delete(HasnAgents).where(HasnAgents.hasn_id == token.agent_hasn_id))
+        await sess.execute(delete(HasnHumans).where(HasnHumans.hasn_id == token.owner_hasn_id))
         await sess.commit()
         await sess.close()
         await engine.dispose()

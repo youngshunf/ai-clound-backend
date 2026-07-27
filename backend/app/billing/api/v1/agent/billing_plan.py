@@ -49,8 +49,8 @@ async def agent_create_billing_plan(
     obj: CreateBillingPlanParam,
 ) -> ResponseModel:
     agent: AgentTokenPayload = request.state.agent
-    result = await billing_plan_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await billing_plan_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

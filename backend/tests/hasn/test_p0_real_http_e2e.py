@@ -11,26 +11,14 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1 import ai_native_app as ai_native_api
-from backend.app.hasn.api.v1 import message_hub as message_hub_api
 from backend.app.hasn.api.v1 import onboarding as onboarding_api
 from backend.app.hasn.api.v1 import sync as sync_api
 from backend.app.hasn.api.v1.app import hasn_task_sessions as task_sessions_api
 from backend.app.hasn.api.v1.app import knowledge as knowledge_api
 from backend.app.hasn.api.v1.app import workspace as workspace_api
 from backend.app.hasn.model import HasnAiNativeAppAudit, HasnSessions
-from backend.app.hasn.schema.hasn_message_hub import InboxItem, InboxPullRequest, InboxPullResponse
 from backend.app.hasn.schema.hasn_onboarding import SandboxSummary
 from backend.app.hasn.service import hasn_onboarding_service as onboarding_service_module
-from backend.app.hasn.service.hasn_message_hub_service import (
-    HasnMessageHubService,
-    MessageRecord,
-    NoopServerSideEffectDispatcher,
-    Recipient,
-    StoredMessage,
-)
-from backend.app.hasn.service.hasn_message_hub_service import (
-    RuntimeSummary as HubRuntimeSummary,
-)
 from backend.app.hasn.service.hasn_onboarding_service import (
     DEFAULT_AGENT_DISPLAY_NAME,
     SMS_CODE_PREFIX,
@@ -167,7 +155,9 @@ class FakeDb:
         params = getattr(stmt.compile(), 'params', {})
         if 'hasn_agents' in sql:
             if 'hasn_id_1' in params:
-                row = self.agents_by_hasn_id.get(params.get('hasn_id_1'))
+                hasn_id = params.get('hasn_id_1')
+                assert isinstance(hasn_id, str)
+                row = self.agents_by_hasn_id.get(hasn_id)
                 return _ScalarResult([row] if row is not None else [])
             rows = [
                 agent
@@ -177,18 +167,26 @@ class FakeDb:
             ]
             return _ScalarResult(rows)
         if 'hasn_enterprise_membership' in sql:
-            row = self.enterprise_memberships.get((params.get('enterprise_id_1'), params.get('user_id_1')))
+            enterprise_id = params.get('enterprise_id_1')
+            user_id = params.get('user_id_1')
+            assert isinstance(enterprise_id, int)
+            assert isinstance(user_id, int)
+            row = self.enterprise_memberships.get((enterprise_id, user_id))
             return _ScalarResult([row] if row is not None else [])
         if 'hasn_ai_native_app_audit' in sql:
             return _ScalarResult(self._filter_audit_rows(params))
         if 'hasn_ai_native_app_manifest' in sql:
             return _ScalarResult([])
         if 'hasn_humans' in sql:
-            row = self.humans_by_user_id.get(params.get('user_id_1'))
+            user_id = params.get('user_id_1')
+            assert isinstance(user_id, int)
+            row = self.humans_by_user_id.get(user_id)
             return _ScalarResult([row] if row is not None else [])
         if 'hasn_sessions' in sql:
             if 'session_id_1' in params:
-                row = self.sessions_by_id.get(params.get('session_id_1'))
+                session_id = params.get('session_id_1')
+                assert isinstance(session_id, str)
+                row = self.sessions_by_id.get(session_id)
                 return _ScalarResult([row] if row is not None else [])
             rows = [
                 session
@@ -291,6 +289,10 @@ class TaskRecord:
     continuation_enabled: bool = False
     enable_subagents: bool = False
     created_by_kind: str = 'owner'
+    project_id: str | None = None
+    app_id: str | None = None
+    execution_kind: str = 'freeform'
+    execution_spec: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -647,9 +649,45 @@ class InMemorySyncGateway:
     task_records: dict[str, dict[str, Any]] = field(default_factory=dict)
     assignments: dict[str, dict[str, Any]] = field(default_factory=dict)
     inbox_event_ids: set[tuple[str, str, str]] = field(default_factory=set)
+    sessions: list[dict[str, Any]] = field(default_factory=list)
+    session_events: list[dict[str, Any]] = field(default_factory=list)
+    session_artifacts: list[dict[str, Any]] = field(default_factory=list)
 
     async def owns_owner(self, _db: Any, *, owner_id: str, user_id: int) -> bool:
         return self.owner_user_ids.get(owner_id) == user_id
+
+    async def save_session(self, _db: Any, session: dict[str, Any]) -> None:
+        self.sessions.append(session)
+
+    async def save_session_event(self, _db: Any, event: dict[str, Any]) -> None:
+        self.session_events.append(event)
+
+    async def save_session_artifact(self, _db: Any, artifact: dict[str, Any]) -> None:
+        self.session_artifacts.append(artifact)
+
+    async def existing_client_event_revision(
+        self, _db: Any, *, owner_id: str, node_id: str, client_event_id: str
+    ) -> int | None:
+        if (owner_id, node_id, client_event_id) not in self.inbox_event_ids:
+            return None
+        return self._latest_revision()
+
+    async def emit_memory_event(
+        self,
+        _db: Any,
+        *,
+        owner_id: str,
+        event_type: str,
+        namespace: str,
+        aggregate_id: str,
+        payload: dict[str, Any],
+        sync_scope_kind: str = 'owner',
+        sync_scope_id: str | None = None,
+        hasn_id: str | None = None,
+    ) -> tuple[int, str]:
+        revision = len(self.sync_events) + 1
+        event_id = f'se_memory_{revision}'
+        return revision, event_id
 
     async def save_runtime_report(self, _db: Any, report: dict[str, Any]) -> None:
         self.reports.append(report)
@@ -920,100 +958,6 @@ def _fake_assignment_from_runtime_report(report: dict[str, Any]) -> dict[str, An
     }
 
 
-@dataclass
-class InMemoryMessageGateway:
-    recipients: dict[str, Recipient]
-    runtimes: dict[str, HubRuntimeSummary] = field(default_factory=dict)
-    messages: list[StoredMessage] = field(default_factory=list)
-    suppressed: list[StoredMessage] = field(default_factory=list)
-
-    async def resolve_recipient(self, _db: Any, target_hasn_id: str) -> Recipient | None:
-        return self.recipients.get(target_hasn_id)
-
-    async def latest_runtime_summary(self, _db: Any, *, owner_id: str, agent_hasn_id: str) -> HubRuntimeSummary | None:
-        assert owner_id == 'h_p0_owner'
-        return self.runtimes.get(agent_hasn_id)
-
-    async def store_inbox_message(self, _db: Any, record: MessageRecord) -> StoredMessage:
-        message = StoredMessage(
-            message_id=str(len(self.messages) + 1),
-            owner_id=record.owner_id,
-            hasn_id=record.hasn_id,
-            conversation_id=record.conversation_id,
-            inbox_kind=record.inbox_kind,
-            envelope=dict(record.envelope),
-            dispatch_status=record.dispatch_status,
-            created_at=datetime(2026, 5, 1, 10, 0, len(self.messages), tzinfo=timezone.utc),
-        )
-        self.messages.append(message)
-        return message
-
-    async def store_suppressed(
-        self,
-        _db: Any,
-        *,
-        source_message: StoredMessage,
-        reason: str,
-        dispatch_status: str,
-        runtime_summary: HubRuntimeSummary | None,
-    ) -> None:
-        assert runtime_summary and runtime_summary.runtime_type == 'hermes'
-        source_message.dispatch_status = dispatch_status
-        self.suppressed.append(source_message)
-
-    async def mark_dispatch_status(self, _db: Any, *, message_id: str, dispatch_status: str) -> None:
-        for message in self.messages:
-            if message.message_id == message_id:
-                message.dispatch_status = dispatch_status
-
-    async def pull_inbox(self, _db: Any, request: InboxPullRequest, *, limit: int = 100) -> InboxPullResponse:
-        items = [
-            InboxItem(
-                message_id=message.message_id,
-                owner_id=message.owner_id,
-                hasn_id=message.hasn_id,
-                conversation_id=message.conversation_id,
-                inbox_kind=message.inbox_kind,
-                dispatch_status=message.dispatch_status,
-                created_at=message.created_at,
-                envelope=message.envelope,
-            )
-            for message in self.messages[:limit]
-        ]
-        if request.include_suppressed:
-            items.extend(
-                InboxItem(
-                    message_id=f'suppressed:{message.message_id}',
-                    owner_id=message.owner_id,
-                    hasn_id=message.hasn_id,
-                    conversation_id=message.conversation_id,
-                    inbox_kind='suppressed_inbox',
-                    dispatch_status=message.dispatch_status,
-                    created_at=message.created_at,
-                    envelope=message.envelope,
-                )
-                for message in self.suppressed
-            )
-        return InboxPullResponse(items=items, next_cursor=f'owner:{request.owner_id}:{len(items)}', has_more=False)
-
-
-class RecordingFanout:
-    def __init__(self) -> None:
-        self.pushes: list[tuple[str, dict[str, Any]]] = []
-
-    async def push(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
-        self.pushes.append((target_hasn_id, payload))
-        return True
-
-
-class FailingRuntimeDispatcher:
-    async def dispatch(self, target_agent_id: str, payload: dict[str, Any], runtime: HubRuntimeSummary) -> bool:
-        assert target_agent_id == 'a_p0_default'
-        assert runtime.runtime_type == 'hermes'
-        assert payload['method'] == 'hasn.message.received'
-        return False
-
-
 def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app = FastAPI()
     app.add_middleware(ContextMiddleware, plugins=[RequestIdPlugin(validate=True)])
@@ -1029,7 +973,6 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app.include_router(community_api.router, prefix='/api/v1/community/app')
     app.include_router(task_sessions_api.work_sessions_router, prefix='/api/v1/hasn')
     app.include_router(sync_api.router, prefix='/api/v1/hasn')
-    app.include_router(message_hub_api.router, prefix='/api/v1/hasn')
     app.include_router(ai_native_api.apps_router, prefix='/api/v1/ai-native/apps')
     app.include_router(ai_native_api.runtime_router, prefix='/api/v1/ai-native/runtime')
     app.include_router(ai_native_api.audit_router, prefix='/api/v1/ai-native/audit')
@@ -1065,7 +1008,6 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         },
     )
     app.dependency_overrides[sync_api.DependsJwtAuth.dependency] = jwt_override
-    app.dependency_overrides[message_hub_api.DependsJwtAuth.dependency] = jwt_override
     app.dependency_overrides[onboarding_api.DependsJwtAuth.dependency] = jwt_override
     app.dependency_overrides[task_sessions_api.DependsJwtAuth.dependency] = jwt_override
     app.dependency_overrides[community_api.DependsJwtAuth.dependency] = jwt_override
@@ -1255,6 +1197,7 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         agent_tokens=FakeAgentTokenIssuer(redis),
     )
     monkeypatch.setattr(onboarding_api, 'hasn_phone_auth_service', phone_auth)
+    monkeypatch.setattr(onboarding_api, 'redis_client', redis)
     monkeypatch.setattr(
         onboarding_api,
         'hasn_onboarding_service',
@@ -1267,36 +1210,6 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setattr(sync_api, 'hasn_sync_service', fake_sync_service)
     # 新面 task sync 模块持有自己的 hasn_sync_service 引用，须同步替换
     monkeypatch.setattr(task_sync_api, 'hasn_sync_service', fake_sync_service)
-
-    message_gateway = InMemoryMessageGateway(
-        recipients={
-            'h_p0_owner': Recipient('h_p0_owner', 'human', 'h_p0_owner'),
-            'a_p0_default': Recipient('a_p0_default', 'agent', 'h_p0_owner'),
-        },
-        runtimes={
-            'a_p0_default': HubRuntimeSummary(
-                agent_hasn_id='a_p0_default',
-                runtime_status='online',
-                adapter_registered=True,
-                handle_available=True,
-                binding_id='bind_p0_default',
-                runtime_type='hermes',
-                node_id='n_p0_desktop',
-                binding_node_id='n_p0_desktop',
-                presence='online',
-            )
-        },
-    )
-    monkeypatch.setattr(
-        message_hub_api,
-        'hasn_message_hub_service',
-        HasnMessageHubService(
-            gateway=message_gateway,
-            fanout=RecordingFanout(),
-            runtime_dispatcher=FailingRuntimeDispatcher(),
-            side_effect_dispatcher=NoopServerSideEffectDispatcher(),
-        ),
-    )
 
     redis.values[f'{SMS_CODE_PREFIX}:13800138000'] = '123456'
     fake_db_instance.enterprise_memberships[42, 7] = SimpleNamespace(
@@ -1318,145 +1231,43 @@ def make_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     return app
 
 
-def test_memory_sync_pull_endpoint_filters_by_namespace_revision(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = TestClient(make_app(monkeypatch))
-    auth = {'Authorization': 'Bearer jwt-p0-real-http'}
-
-    owner_push = client.post(
-        '/api/v1/hasn/sync/push',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_p0_desktop',
-            'events': [
-                {
-                    'client_event_id': 'ce_memory_owner_event_1',
-                    'event_type': 'memory.owner_event.upserted',
-                    'hasn_id': 'h_p0_owner',
-                    'payload': {
-                        'sync_scope_kind': 'owner',
-                        'sync_scope_id': 'h_p0_owner',
-                        'namespace': 'events',
-                        'record_id': 'owner_event:h_p0_owner:1',
-                        'revision': 1,
-                    },
-                },
-                {
-                    'client_event_id': 'ce_memory_owner_event_2',
-                    'event_type': 'memory.owner_event.upserted',
-                    'hasn_id': 'h_p0_owner',
-                    'payload': {
-                        'sync_scope_kind': 'owner',
-                        'sync_scope_id': 'h_p0_owner',
-                        'namespace': 'events',
-                        'record_id': 'owner_event:h_p0_owner:2',
-                        'revision': 2,
-                    },
-                },
-                {
-                    'client_event_id': 'ce_memory_owner_fact_1',
-                    'event_type': 'memory.owner_fact.upserted',
-                    'hasn_id': 'h_p0_owner',
-                    'payload': {
-                        'sync_scope_kind': 'owner',
-                        'sync_scope_id': 'h_p0_owner',
-                        'namespace': 'facts',
-                        'record_id': 'fact:h_p0_owner:1',
-                        'revision': 1,
-                    },
-                },
-                {
-                    'client_event_id': 'ce_memory_agent_event_1',
-                    'event_type': 'memory.agent_self_event.upserted',
-                    'hasn_id': 'a_p0_default',
-                    'payload': {
-                        'sync_scope_kind': 'agent',
-                        'sync_scope_id': 'a_p0_default',
-                        'namespace': 'agent_events',
-                        'record_id': 'agent_event:a_p0_default:1',
-                        'revision': 1,
-                    },
-                },
-            ],
-        },
-    )
-    assert owner_push.status_code == 200
-    assert owner_push.json()['accepted'] == 4
-
-    pull = client.post(
-        '/api/v1/hasn/memory/sync/pull',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'agent_ids': ['a_p0_default'],
-            'namespaces': [
-                {'sync_scope_kind': 'owner', 'names': ['events']},
-                {'sync_scope_kind': 'agent', 'names': ['agent_events']},
-            ],
-            'cursors': [
-                {
-                    'sync_scope_kind': 'owner',
-                    'sync_scope_id': 'h_p0_owner',
-                    'namespace': 'events',
-                    'last_pulled_revision': 1,
-                },
-                {
-                    'sync_scope_kind': 'agent',
-                    'sync_scope_id': 'a_p0_default',
-                    'namespace': 'agent_events',
-                    'last_pulled_revision': 0,
-                },
-            ],
-            'max_events': 10,
-        },
-    )
-
-    assert pull.status_code == 200, pull.text
-    body = pull.json()
-    assert [event['event_id'] for event in body['events']] == ['se_memory_2', 'se_memory_4']
-    assert [event['payload']['namespace_revision'] for event in body['events']] == [2, 1]
-    assert body['next_cursors'] == [
-        {
-            'sync_scope_kind': 'owner',
-            'sync_scope_id': 'h_p0_owner',
-            'namespace': 'events',
-            'last_pulled_revision': 2,
-        },
-        {
-            'sync_scope_kind': 'agent',
-            'sync_scope_id': 'a_p0_default',
-            'namespace': 'agent_events',
-            'last_pulled_revision': 1,
-        },
-    ]
-    assert body['has_more'] is False
-
-
-def make_sync_auth_app(monkeypatch: pytest.MonkeyPatch, user_id: int = 7) -> tuple[FastAPI, InMemorySyncGateway]:
+def make_sync_auth_app(
+    monkeypatch: pytest.MonkeyPatch,
+    user_id: int = 7,
+) -> tuple[FastAPI, InMemorySyncGateway]:
+    """构造只验证旧 runtime-report 鉴权边界的轻量 HTTP 应用。"""
     app = FastAPI()
-    app.add_middleware(ContextMiddleware, plugins=[RequestIdPlugin(validate=True)])
+    app.add_middleware(
+        ContextMiddleware,
+        plugins=[RequestIdPlugin(validate=True)],
+    )
     register_exception(app)
     app.include_router(sync_api.router, prefix='/api/v1/hasn')
-    app.include_router(task_sync_api.router, prefix='/api/v1/hasn-task/app')
 
     async def fake_db():
         yield FakeDb()
 
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_db_transaction] = fake_db
-    app.dependency_overrides[sync_api.DependsJwtAuth.dependency] = _fake_jwt_user(user_id)
+    app.dependency_overrides[sync_api.DependsJwtAuth.dependency] = (
+        _fake_jwt_user(user_id)
+    )
 
     sync_gateway = InMemorySyncGateway()
-    fake_sync_service = HasnSyncService(gateway=sync_gateway)
-    monkeypatch.setattr(sync_api, 'hasn_sync_service', fake_sync_service)
-    # 新面 task sync 模块持有自己的 hasn_sync_service 引用，须同步替换
-    monkeypatch.setattr(task_sync_api, 'hasn_sync_service', fake_sync_service)
+    monkeypatch.setattr(
+        sync_api,
+        'hasn_sync_service',
+        HasnSyncService(gateway=sync_gateway),
+    )
     return app, sync_gateway
 
 
 def _fake_jwt_user(user_id: int, *, external_app_permissions: dict[str, Any] | None = None):
     async def fake_jwt(request: Request) -> None:
-        request.scope['user'] = SimpleNamespace(id=user_id)
+        request.scope['user'] = SimpleNamespace(
+            id=user_id,
+            hasn_id=P0_OWNER_ID if user_id == P0_OWNER_USER_ID else None,
+        )
         if external_app_permissions is not None:
             request.scope['external_app_permissions'] = external_app_permissions
 
@@ -1486,7 +1297,7 @@ async def _fake_mcp_log_tool_call(*_args: Any, **_kwargs: Any) -> None:
     return None
 
 
-def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_and_inbox(
+def test_p0_real_http_flow_covers_auth_onboarding_and_runtime_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = TestClient(make_app(monkeypatch))
@@ -1511,7 +1322,7 @@ def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_an
                 'platform': 'macos',
                 'client_version': 'p0-real-http',
             },
-            'client': {'protocol': 'hasn/0.2', 'supported_extensions': ['sync.pull', 'message_hub']},
+            'client': {'protocol': 'hasn/0.2', 'supported_extensions': ['sync.pull']},
             'pending_intent_id': 'pi_p0_real',
         },
     )
@@ -1561,140 +1372,6 @@ def test_p0_real_http_flow_covers_auth_onboarding_sync_runtime_report_message_an
     )
     assert runtime_report.status_code == 200
     assert runtime_report.json()['accepted'] == 1
-
-    sync_push = client.post(
-        '/api/v1/hasn/sync/push',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_p0_desktop',
-            'events': [{'client_event_id': 'ce_1', 'event_type': 'node.session', 'payload': {'status': 'ready'}}],
-        },
-    )
-    assert sync_push.status_code == 200
-    assert sync_push.json()['accepted'] == 1
-
-    memory_push = client.post(
-        '/api/v1/hasn/sync/push',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_p0_desktop',
-            'events': [
-                {
-                    'client_event_id': 'ce_memory_owner_event_1',
-                    'event_type': 'memory.owner_event.upserted',
-                    'hasn_id': 'h_p0_owner',
-                    'dedupe_key': 'memory:owner_event:h_p0_owner:1',
-                    'payload': {
-                        'sync_scope_kind': 'owner',
-                        'sync_scope_id': 'h_p0_owner',
-                        'namespace': 'events',
-                        'record_id': 'owner_event:h_p0_owner:1',
-                        'revision': 1,
-                    },
-                }
-            ],
-        },
-    )
-    assert memory_push.status_code == 200
-    assert memory_push.json()['accepted'] == 1
-    assert memory_push.json()['next_cursor'] == 'owner:h_p0_owner:1'
-
-    memory_pull = client.post(
-        '/api/v1/hasn/sync/pull',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner:0'},
-    )
-    assert memory_pull.status_code == 200
-    assert [event['event_type'] for event in memory_pull.json()['events']] == ['memory.owner_event.upserted']
-    assert memory_pull.json()['events'][0]['payload']['namespace'] == 'events'
-    assert memory_pull.json()['events'][0]['payload']['namespace_revision'] == 1
-    assert memory_pull.json()['next_cursor'] == 'owner:h_p0_owner:1'
-
-    agent_memory_push = client.post(
-        '/api/v1/hasn/sync/push',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_p0_desktop',
-            'events': [
-                {
-                    'client_event_id': 'ce_memory_agent_event_1',
-                    'event_type': 'memory.agent_self_event.upserted',
-                    'hasn_id': 'a_p0_default',
-                    'dedupe_key': 'memory:agent_self_event:a_p0_default:1',
-                    'payload': {
-                        'sync_scope_kind': 'agent',
-                        'sync_scope_id': 'a_p0_default',
-                        'namespace': 'agent_events',
-                        'record_id': 'agent_event:a_p0_default:1',
-                        'revision': 1,
-                    },
-                }
-            ],
-        },
-    )
-    assert agent_memory_push.status_code == 200
-    assert agent_memory_push.json()['accepted'] == 1
-    assert agent_memory_push.json()['next_cursor'] == 'owner:h_p0_owner:2'
-
-    agent_memory_pull = client.post(
-        '/api/v1/hasn/sync/pull',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner:1'},
-    )
-    assert agent_memory_pull.status_code == 200
-    assert [event['event_type'] for event in agent_memory_pull.json()['events']] == [
-        'memory.agent_self_event.upserted'
-    ]
-    assert agent_memory_pull.json()['events'][0]['payload']['namespace'] == 'agent_events'
-    assert agent_memory_pull.json()['events'][0]['payload']['namespace_revision'] == 1
-    assert agent_memory_pull.json()['next_cursor'] == 'owner:h_p0_owner:2'
-
-    human_message = client.post(
-        '/api/v1/hasn/messages/send',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'envelope': {
-                'conversation_id': '00000000-0000-0000-0000-000000000201',
-                'to_id': 'h_p0_owner',
-            },
-        },
-    )
-    assert human_message.status_code == 200
-    assert human_message.json()['delivery_status'] == 'delivered'
-    assert human_message.json()['dispatch_status'] == 'not_required'
-
-    agent_message = client.post(
-        '/api/v1/hasn/messages/send',
-        headers=auth,
-        json={
-            'owner_id': 'h_sender',
-            'envelope': {
-                'conversation_id': '00000000-0000-0000-0000-000000000202',
-                'to_id': 'a_p0_default',
-            },
-        },
-    )
-    assert agent_message.status_code == 200
-    assert agent_message.json()['delivery_status'] == 'delivered'
-    assert agent_message.json()['dispatch_status'] == 'dispatch_failed'
-    assert agent_message.json()['suppressed_inbox_created'] is True
-    assert agent_message.json()['warnings'][0]['name'] == 'ERR_RUNTIME_DISPATCH_FAILED_NON_BLOCKING'
-
-    inbox = client.post(
-        '/api/v1/hasn/inbox/pull',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'include_suppressed': True},
-    )
-    assert inbox.status_code == 200
-    inbox_kinds = [item['inbox_kind'] for item in inbox.json()['items']]
-    assert 'human_inbox' in inbox_kinds
-    assert 'agent_inbox' in inbox_kinds
-    assert 'owner_copy' in inbox_kinds
-    assert 'suppressed_inbox' in inbox_kinds
 
     capabilities = client.post(
         '/api/v1/ai-native/runtime/capabilities',
@@ -1844,310 +1521,6 @@ def test_runtime_report_rejects_owner_not_bound_to_authenticated_user(monkeypatc
     assert sync_gateway.reports == []
 
 
-def test_task_sync_push_pull_deduplicates_and_uses_task_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, sync_gateway = make_sync_auth_app(monkeypatch, user_id=7)
-    client = TestClient(app)
-    auth = {'Authorization': 'Bearer jwt-p0-task-sync'}
-    task_event = {
-        'client_event_id': 'ce_task_created_1',
-        'event_type': 'task.created',
-        'hasn_id': 'h_p0_owner',
-        'dedupe_key': 'task_local_1',
-        'payload': {
-            'task_id': 'task_local_1',
-            'owner_id': 'h_p0_owner',
-            'agent_id': 'a_p0_default',
-            'name': '日报任务',
-            'description': '生成日报',
-            'prompt': '生成日报',
-            'system_prompt': '你是任务执行 Agent',
-            'skill_bundle_ids': ['legacy-backend-dev'],
-            'skill_bundle_refs': [
-                {
-                    'package_id': 'huanxing/backend-dev',
-                    'version': '1.0.0',
-                    'bundle_slug': 'backend-dev',
-                    'command_key': '/backend-dev',
-                    'content_hash': 'sha256:abc123',
-                }
-            ],
-            'skill_ids': ['pytest'],
-            'schedule_type': 'once',
-            'schedule_config': {'run_at': '2026-05-22T09:00:00Z'},
-            'schedule_display': '一次性执行',
-            'enabled': True,
-            'state': 'scheduled',
-            'next_run_at': 1_779_721_000,
-            'run_count': 0,
-            'repeat_times': None,
-            'repeat_completed': 0,
-            'sync_status': 'synced',
-            'created_at': 1_779_720_000,
-            'updated_at': 1_779_720_000,
-        },
-    }
-
-    first_push = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'node_id': 'n_a', 'events': [task_event]},
-    )
-    duplicate_push = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'node_id': 'n_a', 'events': [task_event]},
-    )
-    general_pull = client.post(
-        '/api/v1/hasn/sync/pull',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner:0'},
-    )
-    task_pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
-    )
-
-    assert first_push.status_code == 200, first_push.text
-    assert first_push.json()['accepted'] == 1
-    assert first_push.json()['next_cursor'] == 'owner:h_p0_owner:task:1'
-    assert duplicate_push.status_code == 200, duplicate_push.text
-    assert duplicate_push.json()['accepted'] == 1
-    assert len(sync_gateway.task_records) == 1
-    assert len([event for event in sync_gateway.sync_events if event.event_type == 'task.created']) == 1
-    assert general_pull.status_code == 200
-    assert general_pull.json()['next_cursor'] == 'owner:h_p0_owner:0'
-    assert general_pull.json()['events'] == []
-    assert task_pull.status_code == 200, task_pull.text
-    body = task_pull.json()
-    assert body['next_cursor'] == 'owner:h_p0_owner:task:1'
-    assert [event['event_type'] for event in body['events']] == ['task.created']
-    assert body['events'][0]['payload']['task_id'] == 'task_local_1'
-    assert body['events'][0]['payload']['skill_bundle_refs'][0]['bundle_slug'] == 'backend-dev'
-
-
-def test_task_sync_push_rejects_private_runtime_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, sync_gateway = make_sync_auth_app(monkeypatch, user_id=7)
-    client = TestClient(app)
-
-    response = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers={'Authorization': 'Bearer jwt-p0-task-sync'},
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_a',
-            'events': [
-                {
-                    'client_event_id': 'ce_task_private_runtime',
-                    'event_type': 'task.created',
-                    'dedupe_key': 'task_private_runtime',
-                    'payload': {
-                        'task_id': 'task_private_runtime',
-                        'owner_id': 'h_p0_owner',
-                        'agent_id': 'a_p0_default',
-                        'name': '带本地路径的任务',
-                        'prompt': 'must be rejected',
-                        'schedule_type': 'once',
-                        'schedule_config': {'run_at': '2026-05-22T09:00:00Z'},
-                        'runtime': {'workspace_path': '/Users/mac/private/project'},
-                    },
-                }
-            ],
-        },
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()['accepted'] == 0
-    assert response.json()['rejected'][0]['name'] == 'ERR_RUNTIME_PRIVATE_METADATA_REJECTED'
-    assert sync_gateway.task_records == {}
-
-
-def test_task_sync_delete_tombstone_reaches_next_task_pull(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, _sync_gateway = make_sync_auth_app(monkeypatch, user_id=7)
-    client = TestClient(app)
-    auth = {'Authorization': 'Bearer jwt-p0-task-sync'}
-
-    response = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_a',
-            'events': [
-                {
-                    'client_event_id': 'ce_task_deleted_1',
-                    'event_type': 'task.deleted',
-                    'hasn_id': 'h_p0_owner',
-                    'dedupe_key': 'task_local_deleted',
-                    'payload': {
-                        'task_id': 'task_local_deleted',
-                        'owner_id': 'h_p0_owner',
-                        'agent_id': 'a_p0_default',
-                        'updated_at': 1_779_720_100,
-                    },
-                }
-            ],
-        },
-    )
-    pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0'},
-    )
-
-    assert response.status_code == 200, response.text
-    assert pull.status_code == 200, pull.text
-    assert pull.json()['events'][0]['event_type'] == 'task.deleted'
-    assert pull.json()['events'][0]['payload']['state'] == 'deleted'
-
-
-def test_task_sync_push_rejects_stale_base_revision(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, sync_gateway = make_sync_auth_app(monkeypatch, user_id=7)
-    client = TestClient(app)
-    auth = {'Authorization': 'Bearer jwt-p0-task-sync'}
-    create_event = {
-        'client_event_id': 'ce_task_conflict_create',
-        'event_type': 'task.created',
-        'hasn_id': 'h_p0_owner',
-        'dedupe_key': 'task_conflict_1',
-        'payload': {
-            'task_id': 'task_conflict_1',
-            'owner_id': 'h_p0_owner',
-            'agent_id': 'a_p0_default',
-            'name': '原始任务',
-            'prompt': 'do it',
-            'schedule_type': 'once',
-            'schedule_config': {'run_at': '2026-05-22T09:00:00Z'},
-        },
-    }
-    stale_update_event = {
-        'client_event_id': 'ce_task_conflict_update',
-        'event_type': 'task.updated',
-        'hasn_id': 'h_p0_owner',
-        'dedupe_key': 'task_conflict_1',
-        'payload': {
-            'task_id': 'task_conflict_1',
-            'owner_id': 'h_p0_owner',
-            'agent_id': 'a_p0_default',
-            'name': '过期编辑',
-            'prompt': 'stale edit',
-            'base_revision': 0,
-            'schedule_type': 'once',
-            'schedule_config': {'run_at': '2026-05-22T10:00:00Z'},
-        },
-    }
-
-    created = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'node_id': 'n_a', 'events': [create_event]},
-    )
-    stale = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'node_id': 'n_b', 'events': [stale_update_event]},
-    )
-    pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers=auth,
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
-    )
-
-    assert created.status_code == 200, created.text
-    assert created.json()['accepted'] == 1
-    assert stale.status_code == 200, stale.text
-    assert stale.json()['accepted'] == 0
-    assert stale.json()['rejected'][0]['name'] == 'ERR_TASK_SYNC_CONFLICT'
-    assert sync_gateway.task_records['task_conflict_1']['name'] == '原始任务'
-    assert pull.status_code == 200, pull.text
-    assert [event['event_type'] for event in pull.json()['events']] == ['task.created']
-
-
-def test_task_sync_pull_follows_agent_runtime_host_assignment(monkeypatch: pytest.MonkeyPatch) -> None:
-    app, sync_gateway = make_sync_auth_app(monkeypatch, user_id=7)
-    client = TestClient(app)
-    auth = {'Authorization': 'Bearer jwt-p0-task-sync'}
-    task_event = {
-        'client_event_id': 'ce_task_assignment_create',
-        'event_type': 'task.created',
-        'hasn_id': 'h_p0_owner',
-        'dedupe_key': 'task_assignment_1',
-        'payload': {
-            'task_id': 'task_assignment_1',
-            'owner_id': 'h_p0_owner',
-            'agent_id': 'a_p0_default',
-            'name': '跟随 Runtime 的任务',
-            'prompt': 'run where the agent lives',
-            'schedule_type': 'once',
-            'schedule_config': {'run_at': '2026-05-22T09:00:00Z'},
-            'enabled': True,
-            'state': 'scheduled',
-            'created_at': 1_779_720_000,
-            'updated_at': 1_779_720_000,
-        },
-    }
-
-    created = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers={**auth, 'X-Node-Id': 'n_local'},
-        json={'owner_id': 'h_p0_owner', 'node_id': 'n_local', 'events': [task_event]},
-    )
-    local_initial_pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers={**auth, 'X-Node-Id': 'n_local'},
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
-    )
-    moved_runtime = client.post(
-        '/api/v1/hasn/runtime/report',
-        headers=auth,
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_cloud',
-            'runtime_summaries': [
-                {
-                    'agent_id': 'a_p0_default',
-                    'binding_id': 'bind_cloud_default',
-                    'runtime_type': 'hermes',
-                    'status': 'online',
-                    'adapter_registered': True,
-                    'handle_available': True,
-                    'runtime_revision': 2,
-                    'summary_json': {'runtime_host': 'cloud', 'cloud_runtime_host': True},
-                }
-            ],
-        },
-    )
-    old_node_incremental_pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers={**auth, 'X-Node-Id': 'n_local'},
-        json={
-            'owner_id': 'h_p0_owner',
-            'cursor': local_initial_pull.json()['next_cursor'],
-            'limit': 10,
-        },
-    )
-    cloud_node_pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers={**auth, 'X-Node-Id': 'n_cloud'},
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0', 'limit': 10},
-    )
-
-    assert created.status_code == 200, created.text
-    assert local_initial_pull.status_code == 200, local_initial_pull.text
-    assert [event['event_type'] for event in local_initial_pull.json()['events']] == ['task.created']
-    assert moved_runtime.status_code == 200, moved_runtime.text
-    assert old_node_incremental_pull.status_code == 200, old_node_incremental_pull.text
-    assert [event['event_type'] for event in old_node_incremental_pull.json()['events']] == ['task.updated']
-    assert old_node_incremental_pull.json()['events'][0]['payload']['state'] == 'waiting_for_runtime'
-    assert cloud_node_pull.status_code == 200, cloud_node_pull.text
-    cloud_events = cloud_node_pull.json()['events']
-    assert 'task.assignment_updated' in [event['event_type'] for event in cloud_events]
-    assert any(event['payload'].get('state') == 'scheduled' for event in cloud_events)
-    assignment = sync_gateway.assignments['task_assignment_1']
-    assert assignment['executor_kind'] == 'cloud_runtime_host'
-    assert assignment['executor_node_id'] == 'n_cloud'
-
-
 def test_task_run_summary_requires_agent_jwt_and_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(make_app(monkeypatch))
     owner_auth = {'Authorization': 'Bearer jwt-p0-real-http'}
@@ -2197,20 +1570,12 @@ def test_task_run_summary_requires_agent_jwt_and_is_idempotent(monkeypatch: pyte
             'dedupe_key': 'work_session_result:sess_task_456:final',
         },
     )
-    pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers=owner_auth,
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0'},
-    )
-
     assert owner_response.status_code == 401
     assert first.status_code == 200, first.text
     assert first.json()['data']['run_uuid'] == '456'
     assert first.json()['data']['status'] == 'success'
     assert duplicate.status_code == 200, duplicate.text
     assert duplicate.json()['data']['output_summary'] == 'done'
-    assert pull.status_code == 200, pull.text
-    assert [event['event_type'] for event in pull.json()['events']] == ['task_run.summary_reported']
 
 
 def test_task_run_summary_keeps_legacy_run_id_separate_from_task_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2229,64 +1594,9 @@ def test_task_run_summary_keeps_legacy_run_id_separate_from_task_uuid(monkeypatc
             'dedupe_key': 'work_session_result:sess_task_456:final',
         },
     )
-    pull = client.post(
-        '/api/v1/hasn-task/app/sync/pull',
-        headers={'Authorization': 'Bearer jwt-p0-real-http'},
-        json={'owner_id': 'h_p0_owner', 'cursor': 'owner:h_p0_owner::tasks:0'},
-    )
-
     assert response.status_code == 200, response.text
     assert response.json()['data']['run_uuid'] == '456'
     assert response.json()['data']['task_uuid'] == ''
-    assert pull.status_code == 200, pull.text
-    event = pull.json()['events'][0]
-    assert event['event_type'] == 'task_run.summary_reported'
-    assert event['payload']['run_uuid'] == '456'
-    assert event['payload']['task_uuid'] == ''
-    assert event['payload']['task_id'] == ''
-
-
-def test_task_run_summary_rejects_other_agent_task(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = TestClient(make_app(monkeypatch))
-    auth = {'Authorization': 'Bearer agent.jwt.task'}
-
-    task_push = client.post(
-        '/api/v1/hasn-task/app/sync/push',
-        headers={'Authorization': 'Bearer jwt-p0-real-http'},
-        json={
-            'owner_id': 'h_p0_owner',
-            'node_id': 'n_a',
-            'events': [
-                {
-                    'client_event_id': 'ce_task_created_other_agent',
-                    'event_type': 'task.created',
-                    'dedupe_key': 'task_other_agent',
-                    'payload': {
-                        'task_id': 'task_other_agent',
-                        'owner_id': 'h_p0_owner',
-                        'agent_id': 'a_other_agent',
-                        'name': '其他 Agent 任务',
-                        'prompt': 'do it',
-                    },
-                }
-            ],
-        },
-    )
-    response = client.post(
-        '/api/v1/hasn-task/app/runs/summary',
-        headers=auth,
-        json={
-            'run_id': 789,
-            'task_id': 'task_other_agent',
-            'agent_id': 'a_other_agent',
-            'session_id': 'sess_task_789',
-            'status': 'success',
-            'dedupe_key': 'work_session_result:sess_task_789:final',
-        },
-    )
-
-    assert task_push.status_code == 200, task_push.text
-    assert response.status_code == 403
 
 
 def test_p0_real_http_flow_covers_task_system_routes(monkeypatch: pytest.MonkeyPatch) -> None:

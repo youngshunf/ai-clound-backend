@@ -1,14 +1,13 @@
-"""DSCARD 设计系统「完成发卡 + 产物登记」真实 PG 测试（零 mock）。
+"""DSCARD 设计系统「可靠完成卡 + 产物登记」真实 PG 测试（零 mock）。
 
 福仔 2026-07-14「像 deck 那样」：分身新增/修改设计系统完成后，应像 deck 一样
 ① 自动发卡到主人主会话（`route_message` 从分身→主人，深链 `hasn://designsystem/{云端权威 id}`）；
 ② 登记进 `hasn_artifacts`（`hasn://designsystem/{id}`）→ 出现在「工作会话资源栏 / 分身产物 tab」可查看。
 
 与旧 DSFIX-1（notification_service.emit → OwnerLoopback 汇报面）不同，现按 deck 范式两段式：
-- `save()` 只**判定并打包完成信号**（`out['completion_card']`），不再内联发卡/落水位；
-- `hasn.designsystem.save` 工具在写事务**提交后**独立会话里经 `emit_designsystem_completion_card`
-  发卡（`route_message`，`local_id=designsystem_complete:{id}` 幂等）+ 投递成功才回填
-  `completed_notified_at`（`mark_completion_notified`，首投失败留空、下次完整 save 自愈补发）。
+- `save()` 在设计系统事务内写 session outbox，并以
+  `designsystem_complete:{id}` 作为稳定幂等键；
+- 独立 relay 经 `ImGateway` 投递，业务回滚无消息、业务提交后可恢复；
 
 覆盖：
 - `_content_complete` 纯函数：全非空 True，任一空/缺 False；
@@ -25,9 +24,11 @@
 from __future__ import annotations
 
 import uuid
+import time
 
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -43,11 +44,13 @@ from backend.app.hasn.service.hasn_sessions_service import (
     _designsystem_resource_descriptor,
     emit_designsystem_completion_card,
 )
+from backend.app.hasn.service.session_im_outbox import build_session_im_relay
 from backend.app.hasn_designsystem.service.design_system_service import (
     Subject,
     _content_complete,
     design_system_service,
 )
+from backend.app.hasn_im.application.local_gateway import PythonLocalImGateway
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -75,7 +78,7 @@ async def session():
 async def seeded(session):
     """主人（HasnHumans）+ 其名下分身（HasnAgents.owner_id=owner）——route_message 分身→主人放行前提。"""
     tag = uuid.uuid4().hex[:8]
-    uid_owner = 970000 + int(uuid.uuid4().int % 9000)
+    uid_owner = 95_700_000_000 + int(uuid.uuid4().int % 900_000_000)
     owner = f'h_own_{tag}'
     agent = f'a_ds_{tag}'
     session.add_all(
@@ -108,6 +111,13 @@ def _complete_content() -> dict:
         'components_manifest_json': {'groups': [{'name': 'buttons', 'items': ['btn']}]},
         'token_contract_report_json': {'summary': {'score': 88, 'grade': 'good', 'recommendRebuild': False}},
     }
+
+
+def _real_gateway(session) -> PythonLocalImGateway:
+    """绑定当前 NullPool 测试引擎，避免跨事件循环复用全局连接。"""
+    return PythonLocalImGateway(
+        async_sessionmaker(session.bind, expire_on_commit=False)
+    )
 
 
 async def _designsystem_cards(session, owner: str, agent: str, ds_id: int) -> list[HasnMessages]:
@@ -153,11 +163,11 @@ def test_content_complete_pure() -> None:
     assert _content_complete(empty) is False
 
 
-# ==================== save() 只发信号，不内联发卡/落水位 ====================
+# ==================== save() 同事务登记可靠投递命令 ====================
 
 
 async def test_agent_complete_save_emits_signal_only(seeded) -> None:
-    """分身写满必填字段 → save 透出 completion_card 信号；此时不落水位、主会话无卡（发卡由工具 post-commit）。"""
+    """分身写满必填字段后，状态与 pending outbox 同事务提交，relay 前没有消息。"""
     session, owner, agent, tag = seeded['session'], seeded['owner'], seeded['agent'], seeded['tag']
     saved = await design_system_service.save(
         session,
@@ -167,6 +177,7 @@ async def test_agent_complete_save_emits_signal_only(seeded) -> None:
         name='已完成设计系统',
         content=_complete_content(),
         score=88,  # 工具从 token_contract_report 摘要透传，进完成卡 summary「· 评分 88」
+        im_gateway=_real_gateway(session),
     )
     ds_id = saved['id']
     # 信号已透出，字段齐全
@@ -176,9 +187,20 @@ async def test_agent_complete_save_emits_signal_only(seeded) -> None:
     assert card['title'] == '已完成设计系统'
     assert card['summary'].startswith('已完成设计系统')
     assert '评分 88' in card['summary']
-    # save 不再内联落水位（改由工具投递成功后回填）
-    assert saved['completed_notified_at'] is None
-    # save 本身不发卡，主会话还没有完成卡
+    assert saved['completed_notified_at'] is not None
+    command = (
+        await session.execute(
+            sa.text(
+                'SELECT command_id, status '
+                'FROM public.hasn_session_im_command_outbox '
+                'WHERE idempotency_key = :key'
+            ),
+            {'key': f'designsystem_complete:{ds_id}'},
+        )
+    ).mappings().one()
+    assert command['command_id'] == card['delivery_command_id']
+    assert command['status'] == 'pending'
+    # save 本身不直接写 IM，relay 前主会话没有完成卡。
     assert await _designsystem_cards(session, owner, agent, ds_id) == []
 
 
@@ -218,21 +240,41 @@ async def test_owner_complete_save_no_signal(seeded) -> None:
 
 
 async def test_emit_completion_card_lands_in_conversation_and_idempotent(seeded) -> None:
-    """emit_designsystem_completion_card：主人主会话落一张 content_type=5 卡，深链=云端权威 id；重复 emit 幂等。"""
+    """显式完成卡命令经真实 relay 落主会话，重复登记与重复 relay 均幂等。"""
     session, owner, agent, tag = seeded['session'], seeded['owner'], seeded['agent'], seeded['tag']
+    incomplete = _complete_content()
+    del incomplete['components_html']
     saved = await design_system_service.save(
         session,
         subject=Subject.agent(agent, owner),
         design_system_id=None,
         slug=f'cc-{tag}',
         name='季度设计规范',
-        content=_complete_content(),
+        content=incomplete,
     )
     ds_id = saved['id']
+    session_factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    gateway = PythonLocalImGateway(session_factory)
 
-    await emit_designsystem_completion_card(
-        session, owner_id=owner, agent_id=agent, design_system_id=str(ds_id), title='季度设计规范', summary='第一版做好了'
+    delivery = await emit_designsystem_completion_card(
+        session,
+        owner_id=owner,
+        agent_id=agent,
+        design_system_id=str(ds_id),
+        title='季度设计规范',
+        summary='第一版做好了',
+        im_gateway=gateway,
     )
+    assert delivery['status'] == 'pending'
+    assert await _designsystem_cards(session, owner, agent, ds_id) == []
+    await session.commit()
+    relay = build_session_im_relay(
+        session_factory=session_factory,
+        gateway=gateway,
+        instance_id=f'designsystem-test-{uuid.uuid4().hex}',
+    )
+    stats = await relay.drain_once(now=int(time.time()) + 2)
+    assert stats.completed >= 1
 
     cards = await _designsystem_cards(session, owner, agent, ds_id)
     assert len(cards) == 1, f'应恰好落 1 张完成卡，实际 {len(cards)}'
@@ -249,15 +291,36 @@ async def test_emit_completion_card_lands_in_conversation_and_idempotent(seeded)
     assert await _center_rows(session, owner) == []
 
     # 幂等：同 ds_id → 同 local_id(designsystem_complete:{id}) → 不重复发卡
-    await emit_designsystem_completion_card(
-        session, owner_id=owner, agent_id=agent, design_system_id=str(ds_id), title='季度设计规范'
+    duplicate = await emit_designsystem_completion_card(
+        session,
+        owner_id=owner,
+        agent_id=agent,
+        design_system_id=str(ds_id),
+        title='季度设计规范',
+        summary='第一版做好了',
+        im_gateway=gateway,
     )
+    assert duplicate['command_id'] == delivery['command_id']
+    await session.commit()
+    await relay.drain_once(now=int(time.time()) + 2)
+    own_command = (
+        await session.execute(
+            sa.text(
+                'SELECT status, message_id '
+                'FROM public.hasn_session_im_command_outbox '
+                'WHERE command_id = :command_id'
+            ),
+            {'command_id': delivery['command_id']},
+        )
+    ).mappings().one()
+    assert own_command['status'] == 'completed'
+    assert own_command['message_id'] == cards[0].id
     cards2 = await _designsystem_cards(session, owner, agent, ds_id)
     assert len(cards2) == 1, f'重复 emit 应幂等不重复发卡，实际 {len(cards2)}'
 
 
 async def test_mark_completion_notified_idempotent_and_gates_signal(seeded) -> None:
-    """mark_completion_notified 回填水位（幂等不覆盖）；标记后再完整 save 不再出信号（快路跳过）。"""
+    """可靠命令登记即原子落水位；兼容标记方法不覆盖，后续 save 不重复登记。"""
     session, owner, agent, tag = seeded['session'], seeded['owner'], seeded['agent'], seeded['tag']
     first = await design_system_service.save(
         session,
@@ -266,17 +329,17 @@ async def test_mark_completion_notified_idempotent_and_gates_signal(seeded) -> N
         slug=f'cc-{tag}',
         name='水位测试',
         content=_complete_content(),
+        im_gateway=_real_gateway(session),
     )
     ds_id = first['id']
     assert first['completion_card'] is not None
-    assert first['completed_notified_at'] is None
+    assert first['completed_notified_at'] is not None
 
-    # 工具投递成功后回填水位
+    # 兼容标记方法保持幂等，不覆盖事务内已落水位。
+    marked_at = first['completed_notified_at']
     await design_system_service.mark_completion_notified(session, ds_id)
     saved_row = await design_system_service.get(session, viewer_owner_hasn_id=owner, design_system_id=ds_id)
-    marked_at = saved_row['completed_notified_at']
-    assert marked_at is not None
-    # 幂等：再标不覆盖既有时间戳
+    assert saved_row['completed_notified_at'] == marked_at
     await design_system_service.mark_completion_notified(session, ds_id)
     saved_row2 = await design_system_service.get(session, viewer_owner_hasn_id=owner, design_system_id=ds_id)
     assert saved_row2['completed_notified_at'] == marked_at
@@ -307,6 +370,7 @@ async def test_register_on_write_designsystem_artifact(seeded) -> None:
         slug=f'cc-{tag}',
         name='产物登记测试',
         content=_complete_content(),
+        im_gateway=_real_gateway(session),
     )
     ds_id = saved['id']
     sess_id = f'sess_{tag}'

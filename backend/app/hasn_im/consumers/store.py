@@ -16,10 +16,11 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_im.consumers.base import IntegrationEvent
+from backend.database.schema_names import SCHEMA_NAMES
 
-_EVENTS = 'public.hasn_im_integration_events'
-_OFFSETS = 'public.hasn_im_event_consumer_offsets'
-_FAILURES = 'public.hasn_im_event_consumer_failures'
+_EVENTS = SCHEMA_NAMES.im_event_table('integration_events')
+_OFFSETS = SCHEMA_NAMES.im_event_table('event_consumer_offsets')
+_FAILURES = SCHEMA_NAMES.im_event_table('event_consumer_failures')
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,23 @@ async def try_acquire_lease(
         )
     ).scalar_one_or_none()
     return row is not None
+
+
+async def release_lease(
+    db: AsyncSession,
+    *,
+    consumer_name: str,
+    owner: str,
+) -> None:
+    """仅由当前持有者释放租约，供 worker 优雅退出后立即接管。"""
+    await db.execute(
+        sa.text(
+            f'UPDATE {_OFFSETS} '  # noqa: S608 内部常量表名
+            'SET lease_owner = NULL, lease_until = NULL, updated_at = now() '
+            'WHERE consumer_name = :name AND lease_owner = :owner'
+        ),
+        {'name': consumer_name, 'owner': owner},
+    )
 
 
 async def get_cursor(db: AsyncSession, consumer_name: str) -> int:

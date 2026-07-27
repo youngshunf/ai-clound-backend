@@ -28,11 +28,14 @@ FROM numbered
 WHERE m.id = numbered.id
   AND m.conversation_seq IS NULL;
 
--- 4) 回填会话 current_seq = 该会话已回填的最大 conversation_seq（无消息则 0）
+-- 4) 首次回填 current_seq；重复执行时只进不退，保留撤回/抑制迁移形成的合法序号空洞。
 UPDATE hasn_conversations c
-SET current_seq = COALESCE(
-    (SELECT MAX(m.conversation_seq) FROM hasn_messages m WHERE m.conversation_id = c.id),
-    0
+SET current_seq = GREATEST(
+    c.current_seq,
+    COALESCE(
+        (SELECT MAX(m.conversation_seq) FROM hasn_messages m WHERE m.conversation_id = c.id),
+        0
+    )
 );
 
 -- 5) 收紧：conversation_seq 非空 + 同会话唯一（并发无重复/倒退 seq 的落库硬约束）

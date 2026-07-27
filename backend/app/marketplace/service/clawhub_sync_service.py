@@ -25,7 +25,7 @@ from backend.app.marketplace.schema.marketplace_sync_log import (
     CreateMarketplaceSyncLogParam,
     UpdateMarketplaceSyncLogParam,
 )
-from backend.app.marketplace.service.category_taxonomy import normalize_category
+from backend.app.marketplace.service.category_taxonomy import DEFAULT_CATEGORY, normalize_category
 
 # 复用 github_sync 已验证的元数据变更门控（同构、零行为差异），避免每轮全量重译元数据。
 from backend.app.marketplace.service.github_sync_service import (
@@ -284,7 +284,9 @@ class ClawHubSyncService:
             process = list(filtered_skills)
         else:
             for skill_data in filtered_skills:
-                existing = existing_by_slug.get(skill_data.get('slug'))
+                slug_value = skill_data.get('slug')
+                slug_key = slug_value if isinstance(slug_value, str) else ''
+                existing = existing_by_slug.get(slug_key)
                 if existing is not None and self._is_version_unchanged(
                     existing, skill_data, latest_versions, body_skill_ids
                 ):
@@ -329,7 +331,13 @@ class ClawHubSyncService:
                     )
                     log.warning(paused_reason)
                     break
-            slug = skill_data.get('slug')
+            slug_value = skill_data.get('slug')
+            slug = slug_value if isinstance(slug_value, str) else ''
+            if not slug:
+                failed_count += 1
+                errors.append('unknown: 技能缺少 slug')
+                log.error('Failed to sync skill: 技能缺少 slug')
+                continue
             try:
                 # SAVEPOINT：单技能失败只回滚自己，不污染整批事务（async session
                 # 一旦 flush 出错会进入 PendingRollback，savepoint 隔离避免连累后续）。
@@ -505,9 +513,13 @@ class ClawHubSyncService:
             return {}
         prepared: dict[str, dict[str, Any]] = {}
         pending_items: list[dict[str, Any]] = []
-        pending_slugs: list[str | None] = []
+        pending_slugs: list[str] = []
         for s in skills:
-            slug = s.get('slug')
+            slug_value = s.get('slug')
+            slug = slug_value if isinstance(slug_value, str) else ''
+            if not slug:
+                log.warning('[clawhub] 跳过缺少 slug 的技能元数据翻译')
+                continue
             existing = existing_by_slug.get(slug)
             scanned = {
                 'name': s.get('displayName') or slug,
@@ -529,15 +541,18 @@ class ClawHubSyncService:
         if pending_items:
             batch_size = int(getattr(settings, 'TRANSLATION_BATCH_SIZE', 10) or 10)
             concurrency = int(getattr(settings, 'MARKETPLACE_CLAWHUB_TRANSLATE_CONCURRENCY', 3) or 3)
+            results: list[dict[str, Any] | None] = []
             try:
-                results = await translation_service.batch_translate_skill_metadata(
-                    pending_items,
-                    batch_size=batch_size,
-                    concurrency=concurrency,
+                results.extend(
+                    await translation_service.batch_translate_skill_metadata(
+                        pending_items,
+                        batch_size=batch_size,
+                        concurrency=concurrency,
+                    )
                 )
             except Exception as e:
                 log.warning(f"[clawhub] 批量元数据翻译失败，回退逐条翻译：{e}")
-                results = [None] * len(pending_items)
+                results.extend([None] * len(pending_items))
             prepared.update({slug: result for slug, result in zip(pending_slugs, results) if slug and result})
 
         log.info(
@@ -1074,7 +1089,7 @@ class ClawHubSyncService:
         # Use keyword matching (LLM classification disabled due to API issues)
         slug = self._map_category_from_text(name + ' ' + description, category_slugs)
         # 归一兜底：把命中结果收口到权威 12 领域 slug（防止旧 slug 漏网）。
-        return normalize_category(slug)
+        return normalize_category(slug) or DEFAULT_CATEGORY
 
     def _map_category_from_text(self, text: str, available_categories: list[str]) -> str:
         """

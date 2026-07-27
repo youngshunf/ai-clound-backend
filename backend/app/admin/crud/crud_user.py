@@ -93,7 +93,7 @@ class CRUDUser(CRUDPlus[User]):
         :param status: 用户状态
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if dept:
             filters['dept_id'] = dept
@@ -158,6 +158,8 @@ class CRUDUser(CRUDPlus[User]):
         role_stmt = select(Role)
         result = await db.execute(role_stmt)
         role = result.scalars().first()  # 默认绑定第一个角色
+        if role is None:
+            raise RuntimeError('系统尚未配置默认角色，无法创建 OAuth2 用户')
 
         user_role_stmt = insert(user_role).values(AddUserRoleParam(user_id=new_user.id, role_id=role.id).model_dump())
         await db.execute(user_role_stmt)
@@ -176,8 +178,8 @@ class CRUDUser(CRUDPlus[User]):
 
         count = await self.update_model(db, user_id, obj)
 
-        user_role_stmt = delete(user_role).where(user_role.c.user_id == user_id)
-        await db.execute(user_role_stmt)
+        delete_user_role_stmt = delete(user_role).where(user_role.c.user_id == user_id)
+        await db.execute(delete_user_role_stmt)
 
         if role_ids:
             role_stmt = select(Role).where(Role.id.in_(role_ids))
@@ -185,8 +187,8 @@ class CRUDUser(CRUDPlus[User]):
             roles = result.scalars().all()
 
             user_role_data = [AddUserRoleParam(user_id=user_id, role_id=role.id).model_dump() for role in roles]
-            user_role_stmt = insert(user_role)
-            await db.execute(user_role_stmt, user_role_data)
+            insert_user_role_stmt = insert(user_role)
+            await db.execute(insert_user_role_stmt, user_role_data)
 
         return count
 
@@ -349,7 +351,7 @@ class CRUDUser(CRUDPlus[User]):
         :param username: 用户名
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if user_id:
             filters['id'] = user_id

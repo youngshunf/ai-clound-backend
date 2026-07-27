@@ -20,7 +20,7 @@ from backend.app.hasn.service.hasn_node_bindings_service import (
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _NODE = 'n_c3_test_node'
 _OWNER = 'h_c3_test_owner'

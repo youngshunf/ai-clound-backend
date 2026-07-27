@@ -1,6 +1,7 @@
 """P0 HASN sync/runtime report endpoints."""
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Path, Request
@@ -10,21 +11,59 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.hasn.schema.hasn_sync import (
     MemorySyncPullRequest,
     MemorySyncPullResponse,
+    FullRefreshDirective,
     RuntimeReportRequest,
     RuntimeReportResponse,
+    SyncEventRecord,
     SyncPullRequest,
     SyncPullResponse,
     SyncPushRequest,
     SyncPushResponse,
 )
+from backend.app.hasn.schema.hasn_message_hub import ErrorObject
+from backend.app.hasn.service._sync_codec import _contains_private_runtime_key
 from backend.app.hasn.service.conversation_projection import load_conversation_object
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
+from backend.app.hasn.service.sync_business_handlers import (
+    MEMORY_SYNC_EVENTS,
+    SESSION_SYNC_EVENT,
+)
+from backend.app.hasn.service.sync_entry_auth import (
+    require_node_identity,
+    require_owner_identity,
+)
+from backend.app.hasn_sync.adapters.sqlalchemy_store import SQLAlchemySyncStore
+from backend.app.hasn_sync.application.pull import pull_events
+from backend.app.hasn_sync.application.push import accept_envelopes
+from backend.app.hasn_sync.domain.cursor import owner_cursor
+from backend.app.hasn_sync.ports.dto import InboxEnvelope
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import (
+    CurrentImSession,
+    CurrentSessionTransaction,
+    CurrentSyncSession,
+    CurrentSyncSessionTransaction,
+)
 
 router = APIRouter()
+_GENERAL_PUSH_EVENTS = MEMORY_SYNC_EVENTS | {SESSION_SYNC_EVENT}
+_PRIVATE_METADATA_ERROR = ErrorObject(
+    code=8034,
+    name='ERR_RUNTIME_PRIVATE_METADATA_REJECTED',
+    message='同步载荷包含本地私有元数据',
+)
+_UNSUPPORTED_EVENT_ERROR = ErrorObject(
+    code=8040,
+    name='ERR_SYNC_EVENT_UNSUPPORTED',
+    message='当前版本不支持该同步事件类型',
+)
+_CONFLICT_ERROR = ErrorObject(
+    code=8041,
+    name='ERR_SYNC_EVENT_CONFLICT',
+    message='同一客户端事件 ID 的载荷与已接收事件不一致',
+)
 
 
 async def _resolve_owner_human_hasn_id(request: Request, db: AsyncSession) -> str:
@@ -43,19 +82,84 @@ async def _resolve_owner_human_hasn_id(request: Request, db: AsyncSession) -> st
 @router.post('/sync/pull', summary='Pull HASN sync events after cursor', dependencies=[DependsJwtAuth])
 async def pull_sync_events(
     request: Request,
-    db: CurrentSession,
+    db: CurrentSyncSession,
     request_body: SyncPullRequest,
 ) -> SyncPullResponse:
-    return await hasn_sync_service.pull(db, request_body, user_id=request.user.id)
+    owner_id = require_owner_identity(request, request_body.owner_id)
+    result = await pull_events(
+        db,
+        owner_id=owner_id,
+        cursor=request_body.cursor,
+        limit=request_body.limit,
+    )
+    return SyncPullResponse(
+        events=[
+            SyncEventRecord(
+                event_id=event.event_id,
+                event_type=event.event_type,
+                revision=event.revision,
+                created_at=event.occurred_at,
+                payload=event.payload,
+            )
+            for event in result.events
+        ],
+        next_cursor=result.next_cursor,
+        has_more=result.has_more,
+        full_refresh=(
+            FullRefreshDirective(**asdict(result.full_refresh))
+            if result.full_refresh is not None
+            else None
+        ),
+    )
 
 
 @router.post('/sync/push', summary='Push HASN local client events', dependencies=[DependsJwtAuth])
 async def push_sync_events(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSyncSessionTransaction,
     request_body: SyncPushRequest,
 ) -> SyncPushResponse:
-    return await hasn_sync_service.push(db, request_body, user_id=request.user.id)
+    owner_id = require_owner_identity(request, request_body.owner_id)
+    node_id = require_node_identity(request, request_body.node_id)
+    envelopes: list[InboxEnvelope] = []
+    rejected: list[ErrorObject] = []
+    for event in request_body.events:
+        if _contains_private_runtime_key(event.payload):
+            rejected.append(_PRIVATE_METADATA_ERROR)
+            continue
+        if event.event_type not in _GENERAL_PUSH_EVENTS:
+            rejected.append(_UNSUPPORTED_EVENT_ERROR)
+            continue
+        subject_hasn_id = event.hasn_id
+        if not subject_hasn_id and event.event_type == SESSION_SYNC_EVENT:
+            payload_hasn_id = event.payload.get('hasn_id')
+            if isinstance(payload_hasn_id, str):
+                subject_hasn_id = payload_hasn_id
+        envelopes.append(
+            InboxEnvelope(
+                owner_id=owner_id,
+                node_id=node_id,
+                client_event_id=event.client_event_id,
+                hasn_id=subject_hasn_id or owner_id,
+                event_type=event.event_type,
+                payload=event.payload,
+                dedupe_key=event.dedupe_key,
+            )
+        )
+    result = await accept_envelopes(db, envelopes)
+    for item in result.items:
+        if item.status == 'conflict':
+            rejected.append(
+                _CONFLICT_ERROR.model_copy(
+                    update={'detail': {'client_event_id': item.client_event_id}}
+                )
+            )
+    bounds = await SQLAlchemySyncStore().stream_bounds(db, owner_id=owner_id)
+    return SyncPushResponse(
+        accepted=result.accepted,
+        rejected=rejected,
+        next_cursor=owner_cursor(owner_id, bounds.head_revision),
+    )
 
 
 @router.post(
@@ -65,10 +169,11 @@ async def push_sync_events(
 )
 async def pull_memory_sync_events(
     request: Request,
-    db: CurrentSession,
+    db: CurrentSyncSession,
     request_body: MemorySyncPullRequest,
 ) -> MemorySyncPullResponse:
-    return await hasn_sync_service.pull_memory(db, request_body, user_id=request.user.id)
+    require_owner_identity(request, request_body.owner_id)
+    return await hasn_sync_service.pull_memory(db, request_body, user_id=None)
 
 
 @router.post('/runtime/report', summary='Report redacted local Runtime status', dependencies=[DependsJwtAuth])
@@ -97,7 +202,7 @@ class BatchGetConversationsRequest(BaseModel):
 )
 async def get_conversation_object(
     request: Request,
-    db: CurrentSession,
+    db: CurrentImSession,
     conversation_id: Annotated[str, Path(description='云端权威 conversation_id（UUID）')],
 ) -> ResponseSchemaModel[dict]:
     """按 conversation_id 拉会话对象投影。
@@ -121,7 +226,7 @@ async def get_conversation_object(
 )
 async def batch_get_conversation_objects(
     request: Request,
-    db: CurrentSession,
+    db: CurrentImSession,
     body: Annotated[BatchGetConversationsRequest, Body()],
 ) -> ResponseSchemaModel[dict]:
     """批量拉会话对象——冷启动一次补拉多条，避免逐条 read-through 打爆详情端点（doc02 §7 兜底）。

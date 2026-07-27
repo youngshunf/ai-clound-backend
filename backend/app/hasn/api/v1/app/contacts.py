@@ -11,9 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from backend.app.admin.crud.crud_user import user_dao
 from backend.app.hasn.constants import (
     ERR_TRUST_LEVEL_INVALID,
-    IronLawViolation,
     compute_effective_permissions,
-    validate_against_iron_laws,
     validate_relation_constraints,
 )
 from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
@@ -33,12 +31,14 @@ from backend.app.hasn.schema.hasn_contacts_business import (
     HasnTrustLevelReq,
 )
 from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn.service.hasn_contacts_service import ContactRequestError, HasnContactsService
-from backend.app.hasn_im.application.provider import get_realtime_gateway
+from backend.app.hasn.service.hasn_contacts_service import HasnContactsService
+from backend.app.hasn_im.adapters.sqlalchemy_relation_gateway import RelationGatewayError
+from backend.app.hasn_im.application.provider import get_realtime_gateway, get_relation_gateway
+from backend.app.hasn_im.ports.relation_gateway import RelationGateway
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 from backend.common.response.response_code import CustomResponse
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.database.db import CurrentSession
+from backend.database.db import CurrentImSession, CurrentSession
 
 router = APIRouter(prefix='/contacts', tags=['HASN Contacts'])
 _realtime_gateway = get_realtime_gateway()
@@ -88,8 +88,9 @@ def _agent_peer_out(agent) -> HasnContactPeerOut:
 @router.post('/request', summary='发送好友请求')
 async def send_contact_request(
     obj_in: HasnContactRequestReq,
-    db: CurrentSession,
+    db: CurrentImSession,
     auth: Annotated[dict, Depends(hasn_auth)],
+    relation_gateway: Annotated[RelationGateway, Depends(get_relation_gateway)],
 ) -> ResponseModel:
     """发送好友请求 (social 关系)。
 
@@ -99,27 +100,23 @@ async def send_contact_request(
     - agent 唤星号 → 请求把好友的『分身』加为联系人（agent 级）；审批人=分身主人，
       不再坍缩成主人、也不因主人已是好友而拦截。
     校验：无 connected 关系 + 无 pending 请求 + 未被对方拉黑。
-    单一实现在 HasnContactsService.request_contact（人端与 Agent 平台工具共用，杜绝两份漂移）。
+    人端与 Agent 平台工具统一经 RelationGateway 写入，底层固定使用 IM 受限角色。
     """
     hasn_id = auth.get('effective_id', auth['hasn_id'])
     target, target_type = await _resolve_star_id(db, obj_in.target_star_id)
     if not target or not target_type:
         return response_base.fail(res=CustomResponse(code=400, msg=f'目标 {obj_in.target_star_id} 不存在'))
 
-    # 单一实现：解析目标(human/agent) + 校验 + 落 pending 请求 + 推审批方事件，全在 service。
-    # （Agent 平台工具 hasn.contact.request 复用同一 HasnContactsService.request_contact。）
+    # 关系写统一进入 IM role 的 RelationGateway。
     try:
-        result = await HasnContactsService.request_contact(
-            db,
-            requester_hasn_id=hasn_id,
-            target=obj_in.target_star_id,
+        result = await relation_gateway.request_contact(
+            from_hasn_id=hasn_id,
+            to_hasn_id=target.hasn_id,
             message=obj_in.message,
-            add_source=obj_in.add_source,
-            resolved_target=target,
-            resolved_target_type=target_type,
+            channel_source=obj_in.add_source,
         )
-    except ContactRequestError as e:
-        return response_base.fail(res=CustomResponse(code=400, msg=e.msg))
+    except RelationGatewayError as exc:
+        return response_base.fail(res=CustomResponse(code=400, msg=str(exc)))
 
     return response_base.success(
         data=HasnContactRequestOut(
@@ -137,7 +134,7 @@ async def send_contact_request(
 
 @router.get('/requests', summary='获取待处理好友请求')
 async def list_pending_requests(
-    db: CurrentSession,
+    db: CurrentImSession,
     auth: Annotated[dict, Depends(hasn_auth)],
     direction: Annotated[str, Query(description='received=收到的, sent=自己发出的')] = 'received',
 ) -> ResponseModel:
@@ -239,8 +236,9 @@ async def list_pending_requests(
 async def respond_to_request(
     request_id: int,
     obj_in: HasnContactRespondReq,
-    db: CurrentSession,
+    db: CurrentImSession,
     auth: Annotated[dict, Depends(hasn_auth)],
+    relation_gateway: Annotated[RelationGateway, Depends(get_relation_gateway)],
 ) -> ResponseModel:
     """回应好友请求：accept / reject（审批人）/ withdraw（发起方）。
 
@@ -259,14 +257,15 @@ async def respond_to_request(
     if obj_in.action == 'accept':
         if req.to_owner_id != hasn_id:
             raise HTTPException(status_code=403, detail='只有被请求方可以接受该请求')
+        try:
+            result = await relation_gateway.accept_request(
+                request_id=request_id,
+                decided_by=hasn_id,
+            )
+        except RelationGatewayError as exc:
+            return response_base.fail(res=CustomResponse(code=400, msg=str(exc)))
 
-        # 首联自动请求（RT1.5·入站派生 =2 普通朋友代发）：from=发送分身、审批人=接收方主人。
-        # 通用 respond 会把边建反方向（分身→A），故改走放行三合一对称路径：建 A→发送分身 边 +
-        # accept + 重投该 peer 全部暂存拦截消息（联系人页与拦截箱双入口任一同意都生效·D6）。
         if req.add_source == 'auto_first_contact':
-            from backend.app.hasn.service.inbound_release import accept_first_contact_request
-
-            res = await accept_first_contact_request(db, request=req, approver_id=hasn_id)
             peer_agent = await hasn_agents_dao.get_by_hasn_id(db, hasn_id=req.from_id)
             peer = (
                 _agent_peer_out(peer_agent)
@@ -281,29 +280,19 @@ async def respond_to_request(
                         'owner_id': req.to_owner_id,
                         'request_id': request_id,
                         'peer': peer.model_dump(),
-                        'trust_level': res.get('trust_level', trust),
+                        'trust_level': result.get('trust_level', trust),
                     },
                 },
             )
             return response_base.success(
-                data={'status': 'connected', 'trust_level': res.get('trust_level', trust),
-                      'redelivered': res.get('redelivered', 0)},
+                data={
+                    'status': 'connected',
+                    'trust_level': result.get('trust_level', trust),
+                    'redelivered': result.get('redelivered', 0),
+                },
             )
 
-        # agent 目标：只建『请求方 → 分身』单向 agent 边（分身回复依赖主人↔主人 trust，已≥2，
-        # 无需反向 agent 边）。信任等级沿用请求时落库的『与主人一致』值。
         if req.to_type == 'agent':
-            forward = await hasn_contacts_dao.upsert_connected(
-                db, owner_id=req.from_id, peer_id=req.to_id, peer_type='agent',
-                relation_type=req.relation_type, trust_level=trust,
-                peer_owner_id=req.to_owner_id, channel_source=req.channel_source or 'manual',
-                add_source=req.add_source, request_message=req.message,
-            )
-            await hasn_contact_requests_dao.mark_accepted(
-                db, request_id, decided_by=hasn_id, resulting_contact_id=forward.id,
-            )
-            await db.commit()
-
             agent = await hasn_agents_dao.get_by_hasn_id(db, req.to_id)
             peer = (
                 _agent_peer_out(agent)
@@ -323,24 +312,6 @@ async def respond_to_request(
                 },
             )
             return response_base.success(data={'status': 'connected', 'trust_level': trust})
-
-        # UPSERT 双向边：发起方→目标、目标→发起方，均 connected
-        forward = await hasn_contacts_dao.upsert_connected(
-            db, owner_id=req.from_id, peer_id=req.to_id, peer_type='human',
-            relation_type=req.relation_type, trust_level=trust,
-            peer_owner_id=req.to_id, channel_source=req.channel_source or 'manual',
-            add_source=req.add_source, request_message=req.message,
-        )
-        await hasn_contacts_dao.upsert_connected(
-            db, owner_id=req.to_id, peer_id=req.from_id, peer_type='human',
-            relation_type=req.relation_type, trust_level=trust,
-            peer_owner_id=req.from_id, channel_source=req.channel_source or 'manual',
-            request_message=req.message,
-        )
-        await hasn_contact_requests_dao.mark_accepted(
-            db, request_id, decided_by=hasn_id, resulting_contact_id=forward.id,
-        )
-        await db.commit()
 
         acceptor = await hasn_humans_dao.get_by_hasn_id(db, req.to_id)
         peer = HasnContactPeerOut(
@@ -366,23 +337,34 @@ async def respond_to_request(
     if obj_in.action == 'reject':
         if req.to_owner_id != hasn_id:
             raise HTTPException(status_code=403, detail='只有被请求方可以拒绝该请求')
-        await hasn_contact_requests_dao.mark_rejected(db, request_id, decided_by=hasn_id)
-        await db.commit()
-        return response_base.success(data={'status': 'rejected'})
+        try:
+            result = await relation_gateway.reject_request(
+                request_id=request_id,
+                decided_by=hasn_id,
+            )
+        except RelationGatewayError as exc:
+            return response_base.fail(res=CustomResponse(code=400, msg=str(exc)))
+        return response_base.success(data=result)
 
     if obj_in.action == 'withdraw':
         if req.from_id != hasn_id:
             raise HTTPException(status_code=403, detail='只有发起方可以撤回该请求')
-        await hasn_contact_requests_dao.mark_withdrawn(db, request_id, decided_by=hasn_id)
-        await db.commit()
-        return response_base.success(data={'status': 'withdrawn'})
+        try:
+            result = await relation_gateway.withdraw_request(
+                request_id=request_id,
+                decided_by=hasn_id,
+            )
+        except RelationGatewayError as exc:
+            return response_base.fail(res=CustomResponse(code=400, msg=str(exc)))
+        return response_base.success(data=result)
 
     return response_base.fail(res=CustomResponse(code=400, msg='action 必须是 accept / reject / withdraw'))
 
 
 @router.get('', summary='联系人列表')
 async def list_contacts(
-    db: CurrentSession,
+    db: CurrentImSession,
+    identity_db: CurrentSession,
     auth: Annotated[dict, Depends(hasn_auth)],
     relation_type: Annotated[str | None, Query(description='关系类型筛选；不传则返回全部联系人')] = None,
 ) -> ResponseModel:
@@ -392,9 +374,9 @@ async def list_contacts(
     items = []
     for c in contacts:
         # 查 peer 信息（使用 hasn_id）
-        peer_info = await hasn_humans_dao.get_by_hasn_id(db, c.peer_id)
+        peer_info: Any = await hasn_humans_dao.get_by_hasn_id(identity_db, c.peer_id)
         if not peer_info:
-            peer_info = await hasn_agents_dao.get_by_hasn_id(db, c.peer_id)
+            peer_info = await hasn_agents_dao.get_by_hasn_id(identity_db, c.peer_id)
         if not peer_info:
             continue
         # agent 联系人需带「主人摘要」：列表第二行展示这个分身归属谁（头像 + 昵称）。
@@ -404,7 +386,7 @@ async def list_contacts(
             if peer_owner_id == hasn_id:
                 continue
             if peer_owner_id:
-                owner_human = await hasn_humans_dao.get_by_hasn_id(db, peer_owner_id)
+                owner_human = await hasn_humans_dao.get_by_hasn_id(identity_db, peer_owner_id)
                 if owner_human:
                     owner_peer = HasnContactPeerOut(
                         hasn_id=owner_human.hasn_id,
@@ -439,8 +421,12 @@ async def list_contacts(
             )
 
         # HasnHumans 使用 nickname，HasnAgents 使用 display_name
-        peer_name = peer_info.nickname if c.peer_type == 'human' else peer_info.display_name
-        peer_user = await _resolve_peer_user_profile(db, peer_info, peer_type=c.peer_type)
+        peer_name = _peer_display_name(peer_info, peer_type=c.peer_type)
+        peer_user = await _resolve_peer_user_profile(
+            identity_db,
+            peer_info,
+            peer_type=c.peer_type,
+        )
         items.append(
             HasnContactOut(
                 id=c.id,
@@ -505,8 +491,9 @@ def _resolve_status_on_trust_change(previous_status: str, new_trust_level: int) 
 async def update_trust_level(
     contact_id: int,
     obj_in: HasnTrustLevelReq,
-    db: CurrentSession,
+    db: CurrentImSession,
     auth: Annotated[dict, Depends(hasn_auth)],
+    relation_gateway: Annotated[RelationGateway, Depends(get_relation_gateway)],
 ) -> ResponseModel:
     """
     修改联系人信任等级 (0-5)。
@@ -539,20 +526,21 @@ async def update_trust_level(
         if not agent or agent.owner_id != hasn_id:
             raise HTTPException(status_code=403, detail='只能将自己名下的 Agent 设为所有者等级')
 
-    # B1/B6/D1：trust_level 与 status 联动（纯判定抽到 _resolve_status_on_trust_change 便于单测）。
-    # - trust=0（拉入黑名单）→ status=blocked（Discovery/搜索静默过滤，消息静默丢弃）；
-    # - trust≥1 且当前为 blocked（移出黑名单）→ status=connected（D1：关系行保留，
-    #   前端「移出黑名单」传 trust=2 即恢复普通朋友，被拉黑期间的消息不补投）。
-    contact.trust_level = obj_in.trust_level
-    contact.status = _resolve_status_on_trust_change(contact.status, obj_in.trust_level)
-    await db.commit()
+    try:
+        result = await relation_gateway.update_trust(
+            owner_hasn_id=hasn_id,
+            peer_hasn_id=contact.peer_id,
+            trust_level=obj_in.trust_level,
+        )
+    except RelationGatewayError as exc:
+        return response_base.fail(res=CustomResponse(code=400, msg=str(exc)))
 
     return response_base.success(
         data={
             'contact_id': contact_id,
             'trust_level': obj_in.trust_level,
             'trust_level_label': TRUST_LEVEL_LABELS.get(obj_in.trust_level, ''),
-            'status': contact.status,
+            'status': result['status'],
         }
     )
 
@@ -560,8 +548,9 @@ async def update_trust_level(
 @router.delete('/{contact_id}', summary='删除联系人')
 async def delete_contact(
     contact_id: int,
-    db: CurrentSession,
+    db: CurrentImSession,
     auth: Annotated[dict, Depends(hasn_auth)],
+    relation_gateway: Annotated[RelationGateway, Depends(get_relation_gateway)],
 ) -> ResponseModel:
     """删除联系人（D4·hasn.relation.remove 云端权威实现·修 B5）。
 
@@ -577,7 +566,13 @@ async def delete_contact(
     if contact.owner_id != hasn_id:
         raise HTTPException(status_code=403, detail='无权删除此联系人')
 
-    result = await HasnContactsService.remove_contact(db, owner_id=hasn_id, contact=contact)
+    try:
+        result = await relation_gateway.remove_relation(
+            owner_hasn_id=hasn_id,
+            peer_hasn_id=contact.peer_id,
+        )
+    except RelationGatewayError as exc:
+        return response_base.fail(res=CustomResponse(code=400, msg=str(exc)))
     return response_base.success(data=result)
 
 
@@ -585,8 +580,9 @@ async def delete_contact(
 async def update_permissions(
     contact_id: int,
     obj_in: HasnPermissionsReq,
-    db: CurrentSession,
+    db: CurrentImSession,
     auth: Annotated[dict, Depends(hasn_auth)],
+    relation_gateway: Annotated[RelationGateway, Depends(get_relation_gateway)],
 ) -> ResponseModel:
     """
     覆盖特定联系人的权限（叠加在默认矩阵之上）。
@@ -599,27 +595,19 @@ async def update_permissions(
     if contact.owner_id != hasn_id:
         raise HTTPException(status_code=403, detail='无权修改此联系人')
 
-    # 铁律冲突校验
     try:
-        validate_against_iron_laws(
-            relation_type=contact.relation_type,
+        result = await relation_gateway.update_permissions(
+            owner_hasn_id=hasn_id,
+            peer_hasn_id=contact.peer_id,
             permissions=obj_in.permissions,
-            peer_type=contact.peer_type,
-            trust_level=contact.trust_level,
         )
-    except IronLawViolation as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    # 合并写入（保留未涉及的已有覆盖项）
-    existing = contact.custom_permissions or {}
-    existing.update(obj_in.permissions)
-    contact.custom_permissions = existing
-    await db.commit()
+    except RelationGatewayError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return response_base.success(
         data={
             'contact_id': contact_id,
-            'custom_permissions': contact.custom_permissions,
+            'custom_permissions': result['custom_permissions'],
         }
     )
 
@@ -627,7 +615,7 @@ async def update_permissions(
 @router.get('/{contact_id}/effective-permissions', summary='有效权限')
 async def get_effective_permissions(
     contact_id: int,
-    db: CurrentSession,
+    db: CurrentImSession,
     auth: Annotated[dict, Depends(hasn_auth)],
 ) -> ResponseModel:
     """

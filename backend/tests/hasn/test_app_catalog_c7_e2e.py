@@ -19,6 +19,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -45,7 +46,7 @@ def _uid() -> str:
 
 
 def _catalog(app_id: str, **over) -> HasnAppCatalog:
-    base = {
+    base: dict[str, Any] = {
         'app_id': app_id,
         'name': 'C7 应用',
         'icon': 'app-window',
@@ -130,9 +131,11 @@ async def _gate3_denial(db, app_id: str, owner: str):
 
 async def _gate3_authorize_denies(db, app_id: str, owner: str, *, skip_mode_gate: bool) -> dict | None:
     """闸门③ 经真实 _authorize_tool_call 全路径（含审计写入）。"""
+    from backend.app.hasn.schema.ai_native_runtime import AiNativeToolCallRequest
+
     return await ai_native_runtime_gateway._authorize_tool_call(
         db,
-        body=SimpleNamespace(trace_id=f'c7-{_uid()}'),
+        body=AiNativeToolCallRequest(trace_id=f'c7-{_uid()}'),
         workspace={'kind': 'personal', 'user_id': 0, 'enterprise_id': None},
         agent=_agent(owner),
         manifest={'app_id': app_id, 'version': '1.0.0'},

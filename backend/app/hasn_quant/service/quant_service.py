@@ -202,8 +202,10 @@ class QuantService:
         )
         try:
             job = await quant_engine_provider.submit_backtest(engine_request)
-            run.engine_job_id = job.get('job_id')
-            run.status = job.get('status') if job.get('status') in ('queued', 'running') else 'running'
+            engine_job_id = job.get('job_id')
+            run.engine_job_id = str(engine_job_id) if engine_job_id else None
+            raw_status = job.get('status')
+            run.status = raw_status if isinstance(raw_status, str) and raw_status in ('queued', 'running') else 'running'
             run.started_at = _now()
         except QuantEngineError as exc:
             run.status = 'failed'
@@ -223,15 +225,21 @@ class QuantService:
     async def get_backtest(db: AsyncSession, *, owner_hasn_id: str, backtest_id: int) -> dict[str, Any]:
         """读回测（owner 隔离）。非终态且有 engine_job_id → 惰性轮询引擎并把绩效/错误落库。"""
         run = await QuantService._load_run(db, owner_hasn_id=owner_hasn_id, backtest_id=backtest_id)
-        if run.status not in _TERMINAL and run.engine_job_id:
-            await QuantService._poll_and_apply(db, run)
+        engine_job_id = run.engine_job_id
+        if run.status not in _TERMINAL and engine_job_id:
+            await QuantService._poll_and_apply(db, run, engine_job_id=engine_job_id)
         return _serialize_run(run)
 
     @staticmethod
-    async def _poll_and_apply(db: AsyncSession, run: QuantBacktestRun) -> None:
+    async def _poll_and_apply(
+        db: AsyncSession,
+        run: QuantBacktestRun,
+        *,
+        engine_job_id: str,
+    ) -> None:
         """轮询引擎一次，把终态结果落库。传输层失败保持原态（下次重试），不造假。"""
         try:
-            job = await quant_engine_provider.get_backtest(run.engine_job_id)
+            job = await quant_engine_provider.get_backtest(engine_job_id)
         except QuantEngineError as exc:
             # 404=job 不存在（引擎重启丢内存态）→ 标失败透传；其余瞬时错误保持原态等下次。
             if 'HTTP 404' in str(exc):

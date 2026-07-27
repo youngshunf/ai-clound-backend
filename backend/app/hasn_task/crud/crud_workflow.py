@@ -4,6 +4,7 @@
 """
 
 from collections.abc import Sequence
+from typing import cast
 
 import sqlalchemy as sa
 from sqlalchemy import select
@@ -23,11 +24,14 @@ from backend.app.hasn_task.model import (
 class CRUDHasnWorkflow(CRUDPlus[HasnWorkflow]):
     async def get(self, db: AsyncSession, pk: int) -> HasnWorkflow | None:
         """按主键获取工作流定义"""
-        return await self.select_model(db, pk)
+        return cast(HasnWorkflow | None, await self.select_model(db, pk))
 
     async def get_by_uuid(self, db: AsyncSession, workflow_uuid: str) -> HasnWorkflow | None:
         """按稳定 UUID 获取工作流定义"""
-        return await self.select_model_by_column(db, workflow_uuid=workflow_uuid)
+        return cast(
+            HasnWorkflow | None,
+            await self.select_model_by_column(db, workflow_uuid=workflow_uuid),
+        )
 
     async def list_by_owner(
         self, db: AsyncSession, owner_id: str, *, project_id: str | None = None
@@ -61,7 +65,10 @@ class CRUDHasnWorkflowEdge(CRUDPlus[HasnWorkflowEdge]):
 class CRUDHasnWorkflowRun(CRUDPlus[HasnWorkflowRun]):
     async def get_by_uuid(self, db: AsyncSession, workflow_run_uuid: str) -> HasnWorkflowRun | None:
         """按稳定 UUID 获取执行实例"""
-        return await self.select_model_by_column(db, workflow_run_uuid=workflow_run_uuid)
+        return cast(
+            HasnWorkflowRun | None,
+            await self.select_model_by_column(db, workflow_run_uuid=workflow_run_uuid),
+        )
 
     async def list_by_workflow(
         self, db: AsyncSession, workflow_uuid: str, limit: int = 50
@@ -92,7 +99,10 @@ class CRUDHasnWorkflowNode(CRUDPlus[HasnWorkflowNode]):
         self, db: AsyncSession, workflow_uuid: str, node_key: str
     ) -> HasnWorkflowNode | None:
         """按 (workflow_uuid, node_key) 取单个节点定义"""
-        return await self.select_model_by_column(db, workflow_uuid=workflow_uuid, node_key=node_key)
+        return cast(
+            HasnWorkflowNode | None,
+            await self.select_model_by_column(db, workflow_uuid=workflow_uuid, node_key=node_key),
+        )
 
 
 class CRUDHasnWorkflowNodeRun(CRUDPlus[HasnWorkflowNodeRun]):
@@ -106,8 +116,11 @@ class CRUDHasnWorkflowNodeRun(CRUDPlus[HasnWorkflowNodeRun]):
         self, db: AsyncSession, workflow_run_uuid: str, node_key: str
     ) -> HasnWorkflowNodeRun | None:
         """按 (workflow_run_uuid, node_key) 取单条节点执行态"""
-        return await self.select_model_by_column(
-            db, workflow_run_uuid=workflow_run_uuid, node_key=node_key
+        return cast(
+            HasnWorkflowNodeRun | None,
+            await self.select_model_by_column(
+                db, workflow_run_uuid=workflow_run_uuid, node_key=node_key
+            ),
         )
 
     async def latest_by_workflow_node(
@@ -145,11 +158,17 @@ class CRUDHasnWorkflowNodeRun(CRUDPlus[HasnWorkflowNodeRun]):
 class CRUDHasnWorkflowTemplate(CRUDPlus[HasnWorkflowTemplate]):
     async def get_by_key(self, db: AsyncSession, template_key: str) -> HasnWorkflowTemplate | None:
         """按全局唯一 template_key 取模板"""
-        return await self.select_model_by_column(db, template_key=template_key)
+        return cast(
+            HasnWorkflowTemplate | None,
+            await self.select_model_by_column(db, template_key=template_key),
+        )
 
     async def get_by_uuid(self, db: AsyncSession, template_uuid: str) -> HasnWorkflowTemplate | None:
         """按端云稳定 template_uuid 取模板"""
-        return await self.select_model_by_column(db, template_uuid=template_uuid)
+        return cast(
+            HasnWorkflowTemplate | None,
+            await self.select_model_by_column(db, template_uuid=template_uuid),
+        )
 
     async def list_visible(
         self,

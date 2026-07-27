@@ -73,7 +73,7 @@ class UserPasswordHistoryService:
             raise errors.AuthorizationError(msg='登录失败次数过多，账号已被锁定')
 
     @staticmethod
-    async def check_password_expiry_status(db: AsyncSession, password_changed_time: datetime) -> int | None:
+    async def check_password_expiry_status(db: AsyncSession, password_changed_time: datetime | None) -> int | None:
         """
         检查密码过期状态
 

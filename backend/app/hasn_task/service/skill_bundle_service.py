@@ -59,7 +59,7 @@ class HasnSkillBundleService:
         return hasn_skill_bundle_list
 
     @staticmethod
-    async def create(*, db: AsyncSession, obj: CreateHasnSkillBundleParam) -> None:
+    async def create(*, db: AsyncSession, obj: CreateHasnSkillBundleParam) -> HasnSkillBundle:
         """
         创建Skill Bundle 定义表（多个 skill 的组合）
 
@@ -67,7 +67,7 @@ class HasnSkillBundleService:
         :param obj: 创建Skill Bundle 定义表（多个 skill 的组合）参数
         :return:
         """
-        await hasn_skill_bundle_dao.create(db, obj)
+        return await hasn_skill_bundle_dao.create(db, obj)
 
     @staticmethod
     async def update(*, db: AsyncSession, pk: int, obj: UpdateHasnSkillBundleParam) -> int:

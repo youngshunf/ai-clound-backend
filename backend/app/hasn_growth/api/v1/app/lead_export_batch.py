@@ -45,8 +45,8 @@ async def create_my_lead_export_batch(
     db: CurrentSessionTransaction,
     obj: CreateLeadExportBatchParam,
 ) -> ResponseModel:
-    result = await lead_export_batch_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await lead_export_batch_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

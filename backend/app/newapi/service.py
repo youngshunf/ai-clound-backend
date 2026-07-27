@@ -15,6 +15,7 @@ import hashlib
 import operator
 
 from collections.abc import Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import select, update
@@ -126,10 +127,12 @@ async def summarize_usage(username: str | None, start_time: int, end_time: int) 
     """分页拉 /log/ 汇总为 UsageSummary 形状（用于 `/api/v1/llm/usage/summary`）。
 
     username=None → 汇总全部用户（超管口径）。new-api type=2 消费日志只记可计费的成功调用，
-    故 success=total、error=0（如实：错误不计费、不在消费日志）。金额以原始 quota 直出，积分换算在 NewAPI 侧。
+    故 success=total、error=0（如实：错误不计费、不在消费日志）。积分金额只累加 NewAPI
+    已换算的 ``credits`` 字符串，云端不持有 quota 换算算法。
     不可达 → 全 0（调用方如实回退，零 fake）。
     """
-    requests = prompt = completion = quota = use_time_sum = 0
+    requests = prompt = completion = use_time_sum = 0
+    total_cost = Decimal('0')
     truncated = False
     for page in range(1, MAX_SUMMARY_PAGES + 1):
         try:
@@ -149,7 +152,13 @@ async def summarize_usage(username: str | None, start_time: int, end_time: int) 
             requests += 1
             prompt += int(it.get('prompt_tokens') or 0)
             completion += int(it.get('completion_tokens') or 0)
-            quota += int(it.get('quota') or 0)
+            credits = it.get('credits')
+            if credits is None:
+                raise NewApiError('NewAPI 用量日志缺少权威 credits 字段', endpoint='/log/')
+            try:
+                total_cost += Decimal(str(credits))
+            except InvalidOperation as exc:
+                raise NewApiError(f'NewAPI 用量日志 credits 非法: {credits!r}', endpoint='/log/') from exc
             use_time_sum += int(it.get('use_time') or 0)
         if len(items) < SUMMARY_PAGE_SIZE:
             break
@@ -165,8 +174,7 @@ async def summarize_usage(username: str | None, start_time: int, end_time: int) 
         'total_tokens': prompt + completion,
         'total_input_tokens': prompt,
         'total_output_tokens': completion,
-        # 原始 quota 直出：换算成积分由 NewAPI 负责，云端不做金额算术（doc94 D1）
-        'total_quota': quota,
+        'total_cost': str(total_cost),
         'avg_latency_ms': avg_latency_ms,
     }
 
@@ -213,7 +221,10 @@ class LlmNewapiUserMappingService:
         """
         if mapping.newapi_access_token:
             try:
-                return key_encryption.decrypt(mapping.newapi_access_token)
+                token = key_encryption.decrypt(mapping.newapi_access_token).strip()
+                if token:
+                    return token
+                log.warning(f'[NewApi] access_token 解密后为空，重新铸发 user_id={mapping.huanxing_user_id}')
             except Exception:
                 log.warning(f'[NewApi] access_token 解密失败（密钥变更？）重新铸发 user_id={mapping.huanxing_user_id}')
         token = await newapi_admin_client.bootstrap_user_access_token(

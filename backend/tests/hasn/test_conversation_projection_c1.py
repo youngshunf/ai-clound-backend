@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -17,7 +18,7 @@ from backend.app.hasn.service import conversation_projection as cp
 
 
 @dataclass
-class _Conv:
+class _ConvImpl:
     id: str = '00000000-0000-0000-0000-0000000000aa'
     type: str = 'direct'
     participant_a_id: str = 'h_alice'
@@ -35,11 +36,18 @@ class _Conv:
     updated_time: datetime = datetime(2026, 7, 14, tzinfo=timezone.utc)
 
 
+_Conv: Any = _ConvImpl
+
+
 @dataclass
-class _Member:
+class _MemberImpl:
     member_id: str
     member_type: str = 'human'
     role: str = 'member'
+
+
+_Member: Any = _MemberImpl
+TEST_DB: Any = object()
 
 
 # ─── 纯函数：投影形状 ───
@@ -94,7 +102,7 @@ async def test_audience_direct_agent_resolves_to_owner(monkeypatch) -> None:
     monkeypatch.setattr(
         cp, '_resolve_owner_ids', AsyncMock(return_value={'h_alice': 'h_alice', 'a_bot': 'h_owner'})
     )
-    audience = await cp.compute_audience_owner_ids(object(), _Conv())
+    audience = await cp.compute_audience_owner_ids(TEST_DB, _Conv())
     assert audience == ['h_alice', 'h_owner']
 
 
@@ -103,7 +111,7 @@ async def test_audience_a2a_two_owners(monkeypatch) -> None:
     # A2A：两个分身各自解析主人 → 两个主人都在受众（A2AFIRST 补推补丁天然消失）
     conv = _Conv(participant_a_id='a_x', participant_a_type='agent', participant_b_id='a_y', participant_b_type='agent')
     monkeypatch.setattr(cp, '_resolve_owner_ids', AsyncMock(return_value={'a_x': 'h_m1', 'a_y': 'h_m2'}))
-    audience = await cp.compute_audience_owner_ids(object(), conv)
+    audience = await cp.compute_audience_owner_ids(TEST_DB, conv)
     assert audience == ['h_m1', 'h_m2']
 
 
@@ -119,7 +127,7 @@ def _patch_load(monkeypatch, conv, members, owner_map) -> None:
 @pytest.mark.asyncio
 async def test_load_participant_human_allowed(monkeypatch) -> None:
     _patch_load(monkeypatch, _Conv(), None, {'h_alice': 'h_alice', 'a_bot': 'h_owner'})
-    proj = await cp.load_conversation_object(object(), _Conv().id, viewer_owner_hasn_id='h_alice')
+    proj = await cp.load_conversation_object(TEST_DB, _Conv().id, viewer_owner_hasn_id='h_alice')
     assert proj is not None and proj['type'] == 'direct'
 
 
@@ -127,7 +135,7 @@ async def test_load_participant_human_allowed(monkeypatch) -> None:
 async def test_load_agent_owner_allowed(monkeypatch) -> None:
     # 主人拉「自己分身参与的 A2A/A2H 会话」——这是主人通道的权限本体
     _patch_load(monkeypatch, _Conv(), None, {'h_alice': 'h_alice', 'a_bot': 'h_owner'})
-    proj = await cp.load_conversation_object(object(), _Conv().id, viewer_owner_hasn_id='h_owner')
+    proj = await cp.load_conversation_object(TEST_DB, _Conv().id, viewer_owner_hasn_id='h_owner')
     assert proj is not None
 
 
@@ -136,7 +144,7 @@ async def test_load_group_member_allowed(monkeypatch) -> None:
     conv = _Conv(type='group', participant_b_id=None, group_id='g:1', group_owner_id='h_owner')
     members = [_Member('h_owner', 'human', 'owner'), _Member('a_bot', 'agent')]
     _patch_load(monkeypatch, conv, members, {'h_owner': 'h_owner', 'a_bot': 'h_owner'})
-    proj = await cp.load_conversation_object(object(), conv.id, viewer_owner_hasn_id='h_owner')
+    proj = await cp.load_conversation_object(TEST_DB, conv.id, viewer_owner_hasn_id='h_owner')
     assert proj is not None and proj['type'] == 'group'
 
 
@@ -144,32 +152,22 @@ async def test_load_group_member_allowed(monkeypatch) -> None:
 async def test_load_unrelated_owner_denied(monkeypatch) -> None:
     # 无关 owner 不在受众 → None（端点回 403/404）
     _patch_load(monkeypatch, _Conv(), None, {'h_alice': 'h_alice', 'a_bot': 'h_owner'})
-    proj = await cp.load_conversation_object(object(), _Conv().id, viewer_owner_hasn_id='h_stranger')
+    proj = await cp.load_conversation_object(TEST_DB, _Conv().id, viewer_owner_hasn_id='h_stranger')
     assert proj is None
 
 
 @pytest.mark.asyncio
 async def test_load_not_found(monkeypatch) -> None:
     monkeypatch.setattr(cp, '_fetch_conversation', AsyncMock(return_value=None))
-    proj = await cp.load_conversation_object(object(), 'nope', viewer_owner_hasn_id='h_alice')
+    proj = await cp.load_conversation_object(TEST_DB, 'nope', viewer_owner_hasn_id='h_alice')
     assert proj is None
 
 
 # ─── 瘦事件形状 ───
 
 
-@pytest.mark.asyncio
-async def test_message_new_event_shape() -> None:
-    captured: dict = {}
-
-    class _FakeGw:
-        async def _append_sync_event(self, db, **kwargs):
-            captured.update(kwargs)
-            return 42
-
-    rev = await cp.append_message_new_event(
-        _FakeGw(),
-        object(),
+def test_message_new_event_shape() -> None:
+    envelope = cp.build_message_new_envelope(
         owner_id='h_owner',
         conversation_id='conv-1',
         message_id='1001',
@@ -180,11 +178,12 @@ async def test_message_new_event_shape() -> None:
         local_id='lid-1',
         created_at=1700000000,
     )
-    assert rev == 42
-    assert captured['event_type'] == 'message.new' == cp.MESSAGE_NEW_EVENT_TYPE
-    assert captured['aggregate_type'] == 'message'
-    assert captured['aggregate_id'] == '1001'
-    payload = captured['payload']
+    assert envelope.event_type == 'message.new' == cp.MESSAGE_NEW_EVENT_TYPE
+    assert envelope.aggregate_type == 'message'
+    assert envelope.aggregate_id == '1001'
+    assert envelope.producer == 'hasn_im'
+    assert envelope.source_event_id == 'message:1001'
+    payload = envelope.payload
     # 瘦事件只带这 8 个字段，绝不含旧框定字段
     assert set(payload.keys()) == {
         'conversation_id', 'message_id', 'sender_hasn_id', 'origin_node_id',
@@ -196,20 +195,18 @@ async def test_message_new_event_shape() -> None:
         assert forbidden not in payload
 
 
-@pytest.mark.asyncio
-async def test_conversation_updated_emits_per_owner() -> None:
-    calls: list[dict] = []
-
-    class _FakeGw:
-        async def _append_sync_event(self, db, **kwargs):
-            calls.append(kwargs)
-            return len(calls)
-
-    await cp.emit_conversation_updated(
-        _FakeGw(), object(), conversation_id='conv-1', revision=7, owner_ids=['h_b', 'h_a', 'h_a']
+def test_conversation_updated_emits_per_owner() -> None:
+    envelopes = cp.build_conversation_updated_envelopes(
+        conversation_id='conv-1',
+        revision=7,
+        owner_ids=['h_b', 'h_a', 'h_a'],
     )
     # 去重 + 排序：h_a、h_b 各一条
-    assert [c['payload']['conversation_id'] for c in calls] == ['conv-1', 'conv-1']
-    assert sorted(c['owner_id'] for c in calls) == ['h_a', 'h_b']
-    assert all(c['event_type'] == 'conversation.updated' for c in calls)
-    assert all(c['payload']['revision'] == 7 for c in calls)
+    assert [item.payload['conversation_id'] for item in envelopes] == [
+        'conv-1',
+        'conv-1',
+    ]
+    assert [item.owner_id for item in envelopes] == ['h_a', 'h_b']
+    assert all(item.event_type == 'conversation.updated' for item in envelopes)
+    assert all(item.payload['revision'] == 7 for item in envelopes)
+    assert len({item.source_event_id for item in envelopes}) == 1

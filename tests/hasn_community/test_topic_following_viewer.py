@@ -50,7 +50,8 @@ async def test_trending_backfills_is_following_for_viewer(db):
     for _ in range(15):
         await db.execute(
             text(
-                'INSERT INTO hasn_content_topics (topic_id, content_type, content_id, owner_hasn_id, '
+                'INSERT INTO hasn_community.hasn_content_topics '
+                '(topic_id, content_type, content_id, owner_hasn_id, '
                 "created_time, updated_time) VALUES (:tid, 'post', :cid, :owner, now(), now())"
             ),
             {'tid': topic_id, 'cid': f'p_{uuid4_str()[:12]}', 'owner': owner['hasn_id']},

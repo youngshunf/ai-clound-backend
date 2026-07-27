@@ -20,7 +20,7 @@ from backend.app.hasn_plan.model.todo import Todo
 from backend.app.hasn_plan.service.plan_app_service import plan_service
 from backend.app.hasn_task.model.task import HasnTask
 from backend.app.hasn_task.service.task_service import calc_next_run_at
-from backend.app.hasn.service.app_catalog_service import resolve_default_agent_for_app
+from backend.app.hasn_core.app_platform import resolve_default_agent_for_app
 from backend.app.hasn_project.model import HasnProjectInspection
 from backend.app.hasn_project.service.project_app_service import _as_uuid, _err, project_service, serialize
 from backend.common.exception import errors

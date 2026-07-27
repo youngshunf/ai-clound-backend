@@ -117,7 +117,7 @@ class ToolExposurePolicy:
         # 能搜就能用，本地分身两面都能调、云端分身只连云端面。故此处不再有按位置的隐藏门。
         tool_name = getattr(tool, 'name', '')
         if getattr(tool, 'source', 'platform') == 'external':
-            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
+            allowed: set[str] = getattr(agent_context, 'external_allowed_tools', set()) or set()
             if tool_name not in allowed:
                 return ExposureDecision(ACTION_HIDDEN, gate=GATE_SOURCE, reason=REASON_EXTERNAL_NOT_BOUND)
 

@@ -187,6 +187,7 @@ async def test_token_retry_executes_then_replay_blocked(monkeypatch: pytest.Monk
         # request 落 consumed
         async with async_db_session() as db:
             row = await hasn_agent_approval_requests_dao.get_by_request_id(db, request_id)
+        assert row is not None
         assert row.status == 'consumed'
 
         # 4) 同票再调 → jti 已用 → 不跳闸 → 落回云端挂起（stub 成 denied）→ **不执行**
@@ -241,6 +242,7 @@ async def test_grant_always_issues_ticket_and_writes_back_allow() -> None:
             policy = await get_agent_scopes_from_db(db, agent_hasn_id)
             row = await hasn_agent_approval_requests_dao.get_by_request_id(db, request_id)
         assert policy['capability_modes'].get('stub:act') == 'allow'
+        assert row is not None
         assert row.status == 'approved'
         assert row.grant_scope == 'always'
     finally:

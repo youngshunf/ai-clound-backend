@@ -24,33 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.model.hasn_task import HasnTask
 from backend.app.hasn.model.hasn_task_run import HasnTaskRun
-from backend.app.hasn_im.application.provider import get_realtime_gateway
-from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame
 from backend.app.hasn_task.model.skill_bundle import HasnSkillBundle
+from backend.app.hasn_task.service.task_dispatch_outbox import enqueue_task_exec
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
 logger = logging.getLogger(__name__)
-
-# 兼容层：保留历史模块变量名，便于 monkeypatch/老路径接入继续生效。
-_realtime_gateway = get_realtime_gateway()
-
-
-class _TaskSchedulerRealtimeAdapter:
-    """任务调度器历史兼容适配，提供 push_message_to 以复用既有测试桩。"""
-
-    def __init__(self, gateway: Any) -> None:
-        self._gateway = gateway
-
-    async def push_message_to(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
-        await self._gateway.push_to_owner(
-            target_hasn_id,
-            RealtimeFrame(method=payload['method'], params=payload['params']),
-        )
-        return True
-
-
-ws_router = _TaskSchedulerRealtimeAdapter(_realtime_gateway)
 
 TICK_INTERVAL_SECONDS = 60
 TASK_EXEC_TIMEOUT_SECONDS = 600
@@ -100,14 +79,20 @@ class TaskSchedulerService:
         1. 查找 enabled=true AND next_run_at <= NOW() 的任务
         2. 预先推进 next_run_at（at-most-once）
         3. 创建 hasn_task_run 记录（status=pending）
-        4. 发送 TaskExec 消息到 Agent 所在节点
+        4. 同事务登记 TaskExec outbox，提交后可靠投递
         """
         now = datetime.now(tz.utc)
         dispatched = 0
 
         async with async_db_session() as session:
             # 1. 查找到期任务
-            stmt = select(HasnTask).where(HasnTask.enabled.is_(True)).where(HasnTask.next_run_at <= now).limit(100)
+            stmt = (
+                select(HasnTask)
+                .where(HasnTask.enabled.is_(True))
+                .where(HasnTask.next_run_at <= now)
+                .limit(100)
+                .with_for_update(skip_locked=True)
+            )
             result = await session.execute(stmt)
             tasks = result.scalars().all()
 
@@ -126,7 +111,8 @@ class TaskSchedulerService:
         now: datetime,
     ) -> bool:
         try:
-            await self._dispatch_task(session, task, now)
+            async with session.begin_nested():
+                await self._dispatch_task(session, task, now)
         except Exception:
             logger.exception(f'[TaskScheduler] dispatch task {task.id} failed')
             return False
@@ -179,9 +165,11 @@ class TaskSchedulerService:
         await session.flush()  # 获取 task_run.id
         task_run.session_id = f'sess_task_{task_run.id}'
 
-        # 4. 发送 TaskExec 消息到 Agent
+        # 4. 与任务运行同事务登记 TaskExec 命令，提交后由独立 relay 投递。
+        dispatch_id = f'task:run:{task_run.id}:exec'
         task_exec_params = {
             'type': 'task_exec',
+            'dispatch_id': dispatch_id,
             'task_id': task.id,
             'run_id': task_run.id,
             'session_id': task_run.session_id,
@@ -195,15 +183,13 @@ class TaskSchedulerService:
             'enabled_toolsets': task.enabled_toolsets,
             'context': context,
         }
-        task_exec_msg = {
-            'hasn': 'hasn/0.2',
-            'method': 'hasn.task.exec',
-            'params': task_exec_params,
-        }
-
-        pushed = await ws_router.push_message_to(task.agent_id, task_exec_msg)
-        if not pushed:
-            logger.warning(f'[TaskScheduler] task {task.id} agent {task.agent_id} offline, message queued')
+        await enqueue_task_exec(
+            session,
+            run_id=task_run.id,
+            task_id=task.id,
+            target_owner_id=task.owner_id,
+            payload=task_exec_params,
+        )
 
     def _calc_next_run(self, task: HasnTask, now: datetime) -> datetime | None:
         """根据 schedule_type 计算下一次执行时间"""

@@ -65,16 +65,28 @@ def jwt_decode_agent(token: str) -> AgentTokenPayload:
         session_uuid = payload.get('session_uuid')
         expire = payload.get('exp')
 
-        if not all([agent_hasn_id, owner_hasn_id, owner_user_id, session_uuid, expire]):
+        if not isinstance(agent_hasn_id, str) or not agent_hasn_id:
+            raise errors.TokenError(msg='Agent Token 缺少有效的 agent_hasn_id')
+        if not isinstance(owner_hasn_id, str) or not owner_hasn_id:
+            raise errors.TokenError(msg='Agent Token 缺少有效的 owner_hasn_id')
+        if not isinstance(session_uuid, str) or not session_uuid:
+            raise errors.TokenError(msg='Agent Token 缺少有效的 session_uuid')
+        if (
+            isinstance(owner_user_id, bool)
+            or not isinstance(owner_user_id, (int, str))
+            or not str(owner_user_id).isdigit()
+        ):
+            raise errors.TokenError(msg='Agent Token 缺少有效的 owner_user_id')
+        if isinstance(expire, bool) or not isinstance(expire, (int, float)):
             raise errors.TokenError(msg='Agent Token 无效')
 
         return AgentTokenPayload(
             agent_hasn_id=agent_hasn_id,
-            agent_name=agent_name or '',
+            agent_name=agent_name if isinstance(agent_name, str) else '',
             owner_hasn_id=owner_hasn_id,
             owner_user_id=int(owner_user_id),
             session_uuid=session_uuid,
-            expire_time=timezone.from_datetime(timezone.to_utc(expire)),
+            expire_time=timezone.from_datetime(timezone.to_utc(int(expire))),
             token_type='agent',
         )
     except errors.TokenError:

@@ -22,7 +22,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
@@ -575,6 +575,7 @@ async def test_instantiate_paid_template_denied_without_entitlement(env: SimpleN
     err = ei.value
     assert err.code is McpErrorCode.WORKFLOW_TEMPLATE_ENTITLEMENT_REQUIRED
     # data 携完整 AccessDecision（供 daemon→webui PaywallDialog 渲染）
+    assert err.data is not None
     decision = err.data['decision']
     assert decision['allowed'] is False
     assert decision['reason'] == 'need_purchase'

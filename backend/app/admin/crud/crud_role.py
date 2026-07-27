@@ -82,7 +82,7 @@ class CRUDRole(CRUDPlus[Role]):
         :return:
         """
 
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if name is not None:
             filters['name__like'] = f'%{name}%'
@@ -139,8 +139,8 @@ class CRUDRole(CRUDPlus[Role]):
             role_menu_data = [
                 CreateRoleMenuParam(role_id=role_id, menu_id=menu_id).model_dump() for menu_id in menu_ids.menus
             ]
-            role_menu_stmt = insert(role_menu)
-            await db.execute(role_menu_stmt, role_menu_data)
+            role_menu_insert_stmt = insert(role_menu)
+            await db.execute(role_menu_insert_stmt, role_menu_data)
 
         return len(menu_ids.menus)
 
@@ -162,8 +162,8 @@ class CRUDRole(CRUDPlus[Role]):
                 CreateRoleScopeParam(role_id=role_id, data_scope_id=scope_id).model_dump()
                 for scope_id in scope_ids.scopes
             ]
-            role_scope_stmt = insert(role_data_scope)
-            await db.execute(role_scope_stmt, role_scope_data)
+            role_scope_insert_stmt = insert(role_data_scope)
+            await db.execute(role_scope_insert_stmt, role_scope_data)
 
         return len(scope_ids.scopes)
 

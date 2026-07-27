@@ -208,7 +208,7 @@ class CreditOutboxService:
         推送只是让镜像早点回填。失败按父仓日志规则记 `warn` 而非 `error`——它可自愈，
         下一次机会刷新或周期 sync_pull 会补上。
         """
-        from backend.app.hasn.model.hasn_humans import HasnHumans
+        from backend.app.hasn_core import HasnHumans
         from backend.app.hasn.service.sync_invalidate_service import KIND_BILLING, bump_owner
 
         try:

@@ -25,12 +25,11 @@ import pytest_asyncio
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_project.model import HasnProject
 from backend.app.hasn_task.api.v1.agent.workflow import router as agent_workflow_router
 from backend.app.hasn_task.api.v1.app.sync import router as app_sync_router
@@ -44,7 +43,7 @@ from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError, ForbiddenError, RequestError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import SQLALCHEMY_DATABASE_URL, async_db_session, get_db, get_db_transaction
 from backend.database.redis import redis_client
 
 if TYPE_CHECKING:
@@ -165,25 +164,41 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     research = f'a_wf_r_{tag}'
     writer = f'a_wf_w_{tag}'
 
-    session.add(
-        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='Owner', status='active')
-    )
-    session.add(
-        HasnHumans(
-            hasn_id=other_owner, star_id=f's_{owner_uid + 1}', user_id=owner_uid + 1, nickname='Other', status='active'
+    # 严格 IM 网关使用独立数据库会话校验主人和分身身份，测试身份必须先提交，不能只在
+    # 业务事务中 flush。业务数据仍由下方 session 统一回滚。
+    async with async_db_session.begin() as identity_db:
+        identity_db.add(
+            HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='Owner', status='active')
         )
-    )
-    session.add(
-        HasnAgents(
-            hasn_id=research, star_id=f'{_uid()}#star', owner_id=owner, display_name='研究分身', agent_name='research'
+        identity_db.add(
+            HasnHumans(
+                hasn_id=other_owner,
+                star_id=f's_{owner_uid + 1}',
+                user_id=owner_uid + 1,
+                nickname='Other',
+                status='active',
+            )
         )
-    )
-    session.add(
-        HasnAgents(
-            hasn_id=writer, star_id=f'{_uid()}#star', owner_id=owner, display_name='写作分身', agent_name='writer'
+        identity_db.add(
+            HasnAgents(
+                hasn_id=research,
+                star_id=f'{_uid()}#star',
+                owner_id=owner,
+                display_name='研究分身',
+                agent_name='research',
+                status='active',
+            )
         )
-    )
-    await session.flush()
+        identity_db.add(
+            HasnAgents(
+                hasn_id=writer,
+                star_id=f'{_uid()}#star',
+                owner_id=owner,
+                display_name='写作分身',
+                agent_name='writer',
+                status='active',
+            )
+        )
 
     async def _yield_session() -> AsyncIterator:  # noqa: RUF029
         yield session
@@ -218,6 +233,9 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         _APP.dependency_overrides.clear()
         await session.rollback()
         await session.close()
+        async with async_db_session.begin() as identity_db:
+            await identity_db.execute(delete(HasnAgents).where(HasnAgents.hasn_id.in_([research, writer])))
+            await identity_db.execute(delete(HasnHumans).where(HasnHumans.hasn_id.in_([owner, other_owner])))
         await engine.dispose()
         await _reset_redis_pool()
 
@@ -298,18 +316,33 @@ async def test_agent_periodic_pending_approval_then_owner_approve(e2e: SimpleNam
     assert wf['status'] == 'pending_approval'  # D4：agent 建定时图待主人确认
     wfid = wf['workflow_id']
 
-    # 自有分身向主人请示走主会话汇报卡，不污染通知中心。
+    # 自有分身向主人请示走主会话汇报卡，不污染通知中心；业务事务只登记发送命令，
+    # 独立 relay 在提交后投递，测试不再依赖旧的 hasn_messages 直写路径。
+    notifications = (
+        await e2e.session.execute(
+            text(
+                "SELECT id FROM hasn_notifications "
+                "WHERE target_id = :owner AND type = 'workflow.pending_approval'"
+            ),
+            {'owner': e2e.owner},
+        )
+    ).all()
+    assert notifications == []
+
     row = await e2e.session.execute(
         text(
-            'SELECT content FROM hasn_messages '
-            'WHERE to_id = :owner AND from_id = :agent AND content_type = 5 '
-            'ORDER BY id DESC LIMIT 1'
+            "SELECT payload, idempotency_key FROM hasn_notification_im_command_outbox "
+            "WHERE payload->'principal'->>'canonical_sender' = :agent "
+            "AND payload->'message'->'content'->'resource'->'metadata'->>'target_kind' = 'workflow'"
         ),
-        {'owner': e2e.owner, 'agent': e2e.research},
+        {'agent': e2e.research},
     )
-    card = row.scalar_one()
+    cards = row.mappings().all()
+    assert len(cards) == 1
+    card = cards[0]['payload']['message']['content']
     assert card['metadata']['report'] is True
     assert card['resource']['id'] == wfid
+    assert card['primary_action']['uri'] == f'hasn://tasks/workflows/{wfid}'
 
     # owner app approve → active
     approved = _data(await e2e.client.post(f'/api/v1/hasn-task/app/workflows/{wfid}/approve'))

@@ -10,19 +10,20 @@ daemon 经 BackendGateway owner 通道调用此端点放行被门控的外部→
 统一信封返回（ResponseModel + response_base.success）：daemon transport decode_ok_envelope 依赖之。
 """
 
+from dataclasses import asdict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn.service.inbound_release import (
-    list_suppressed_for_owner,
-    release_suppressed,
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports.dto import (
+    ActorKind,
+    ServicePrincipal,
 )
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
 
@@ -33,11 +34,15 @@ router = APIRouter()
     dependencies=[DependsJwtAuth],
 )
 async def list_suppressed_messages(
-    db: CurrentSession,
     auth: Annotated[dict, Depends(hasn_auth)],
 ) -> ResponseModel:
     owner_id = auth['hasn_id']
-    items = await list_suppressed_for_owner(db, owner_id=owner_id)
+    items = await get_im_gateway().list_suppressed(
+        principal=ServicePrincipal(
+            canonical_sender=owner_id,
+            actor_kind=ActorKind.HUMAN,
+        )
+    )
     return response_base.success(data={'items': items})
 
 
@@ -52,21 +57,27 @@ class SuppressedReleaseRequest(BaseModel):
 
 
 @router.post(
-    '/suppressed/{message_id}/release',
+    '/suppressed/{suppressed_id}/release',
     summary='放行一条被入站门控抑制的外部→Agent 消息（Owner JWT）',
     dependencies=[DependsJwtAuth],
 )
 async def release_suppressed_message(
-    db: CurrentSessionTransaction,
-    message_id: Annotated[int, Path(description='被抑制消息的 message_id')],
+    suppressed_id: Annotated[int, Path(description='抑制命令的权威 suppressed_id')],
     request_body: SuppressedReleaseRequest,
     auth: Annotated[dict, Depends(hasn_auth)],
 ) -> ResponseModel:
     owner_id = auth['hasn_id']
-    # mode 已退役（放行=同意并添加联系人三合一），不再透传
-    result = await release_suppressed(
-        db,
-        owner_id=owner_id,
-        message_id=message_id,
+    result = await get_im_gateway().release_suppressed(
+        suppressed_id=suppressed_id,
+        principal=ServicePrincipal(
+            canonical_sender=owner_id,
+            actor_kind=ActorKind.HUMAN,
+        ),
     )
-    return response_base.success(data=result)
+    data = {
+        **asdict(result),
+        'delivery_state': result.delivery_state.value,
+        'released': True,
+        'status': 'delivered',
+    }
+    return response_base.success(data=data)

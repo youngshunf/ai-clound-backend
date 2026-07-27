@@ -24,10 +24,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, get_args
 
 from backend.app.hasn.schema.hasn_artifacts import ArtifactKind, RecordArtifactParam
-from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.hasn_core.app_platform import ai_native_app_registry
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
 from backend.app.mcp.context import get_current_project_id
-from backend.app.mcp.tools.base import BaseTool
+from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 from backend.database.db import async_db_session
 
 if TYPE_CHECKING:
@@ -233,11 +233,12 @@ class ArtifactRecordTool(BaseTool):
         )
 
         # 写类 → .begin() 自动提交（service 只 flush 不 commit）。
+        owner_hasn_id = require_owner_hasn_id(agent_context)
         async with async_db_session.begin() as db:
             artifact_id = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent_context.agent_hasn_id,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 params=params,
             )
         return {'artifact_id': artifact_id}
@@ -300,11 +301,12 @@ async def _query_artifacts(
 
     两档的权限边界都是 owner 隔离，`project_id` 只是聚合过滤键。
     """
+    owner_hasn_id = require_owner_hasn_id(agent_context)
     async with async_db_session() as db:
         if project_id:
             return await hasn_artifacts_service.list_in_project(
                 db,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 project_id=project_id,
                 page=page,
                 size=size,
@@ -316,7 +318,7 @@ async def _query_artifacts(
             )
         return await hasn_artifacts_service.list_by_agent(
             db,
-            owner_hasn_id=agent_context.owner_hasn_id,
+            owner_hasn_id=owner_hasn_id,
             agent_hasn_id=agent_context.agent_hasn_id,
             page=page,
             size=size,
@@ -588,10 +590,11 @@ class ArtifactGetTool(BaseTool):
         artifact_id = (arguments.get('artifact_id') or '').strip()
         if not artifact_id:
             raise RuntimeError("artifact.get: 'artifact_id' 必填")
+        owner_hasn_id = require_owner_hasn_id(agent_context)
         async with async_db_session() as db:
             detail = await hasn_artifacts_service.get_detail(
                 db,
-                owner_hasn_id=agent_context.owner_hasn_id,
+                owner_hasn_id=owner_hasn_id,
                 artifact_id=artifact_id,
             )
         return _project_detail(detail)

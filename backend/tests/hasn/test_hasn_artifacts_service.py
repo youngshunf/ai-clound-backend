@@ -101,7 +101,11 @@ async def test_record_dedup_and_validation() -> None:
             # 非法 kind → **拒绝**（doc35 §7）。旧行为是静默归一成 'other'：写错了照样落库、
             # 还落成另一类，等到 UI 打不开才发现。现在 Literal 在构造期就炸。
             with pytest.raises(ValidationError):
-                RecordArtifactParam(kind='banana', resource_uri='hasn://deck/d_1')
+                RecordArtifactParam(
+                    kind='banana',
+                    resource_uri='hasn://deck/d_1',
+                    source_kind='platform_tool',
+                )
         finally:
             await db.rollback()
 
@@ -446,8 +450,9 @@ async def test_body_artifact_origin_ref_and_video_kind() -> None:
             )
             assert total == 2
             by_id = {it.artifact_id: it for it in items}
-            assert by_id[aid_doc].body and by_id[aid_doc].body.startswith('# 竞品调研')
-            assert by_id[aid_doc].body and by_id[aid_doc].body.startswith('# 竞品调研')
+            document_body = by_id[aid_doc].body
+            assert document_body is not None
+            assert document_body.startswith('# 竞品调研')
             assert by_id[aid_video].kind == 'video'  # 放行未归一 other
 
             # 不同 owner 反查同一 origin_ref → 隔离为空

@@ -116,11 +116,17 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = uuid.uuid4().hex[:8]
     owner = f'h_qcc_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 91_700_000_000 + int(uuid.uuid4().int % 900_000_000)
     agent_hasn = f'a_qcc_{tag}'
     other_uid = owner_uid + 1
     session.add(
-        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active')
+        HasnHumans(
+            hasn_id=owner,
+            star_id=f's_{owner_uid}',
+            user_id=owner_uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
     )
     await session.flush()
     try:

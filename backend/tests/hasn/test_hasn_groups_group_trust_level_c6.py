@@ -34,11 +34,15 @@ from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.service.hasn_group_service import hasn_group_service
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import (
+    SQLALCHEMY_DATABASE_URL,
+    get_db,
+    get_db_transaction,
+    get_im_db,
+    get_im_db_transaction,
+)
 
 pytestmark = pytest.mark.asyncio
-
-_USER_ID = 990000 + int(uuid.uuid4().int % 20000)
 
 _APP = FastAPI()
 _APP.add_middleware(ContextMiddleware, plugins=(RequestIdPlugin(),))
@@ -65,31 +69,34 @@ async def env():
     owner_hasn = f'h_o1_{owner_uid}'
     other_uid = _uid()
     other_hasn = f'h_o2_{other_uid}'
+    user_id = 103_500_000 + int(uuid.uuid4().int % 100_000_000)
     session.add_all([
-        HasnHumans(hasn_id=owner_hasn, star_id=f'so1{owner_uid}', user_id=_USER_ID, nickname='群主', status='active'),
-        HasnHumans(hasn_id=other_hasn, star_id=f'so2{other_uid}', user_id=_USER_ID + 1, nickname='对方主人', status='active'),
+        HasnHumans(hasn_id=owner_hasn, star_id=f'so1{owner_uid}', user_id=user_id, nickname=f'群主{owner_uid}', status='active'),
+        HasnHumans(hasn_id=other_hasn, star_id=f'so2{other_uid}', user_id=user_id + 1, nickname=f'对方主人{other_uid}', status='active'),
     ])
     # owner 名下两个分身（a1 入群、a2 用于「不在群 → 404」），第二主人名下一个分身（白名单剥离场景）
     a1 = f'a_own1_{_uid()}'
     a2 = f'a_own2_{_uid()}'
     a_other = f'a_oth_{_uid()}'
     session.add_all([
-        HasnAgents(hasn_id=a1, star_id=f'ag{_uid()}', owner_id=owner_hasn, display_name='我的分身甲', status='active'),
-        HasnAgents(hasn_id=a2, star_id=f'ag{_uid()}', owner_id=owner_hasn, display_name='我的分身乙', status='active'),
-        HasnAgents(hasn_id=a_other, star_id=f'ag{_uid()}', owner_id=other_hasn, display_name='对方分身', status='active'),
+        HasnAgents(hasn_id=a1, star_id=f'ag{_uid()}', owner_id=owner_hasn, display_name=f'我的分身甲{owner_uid}', status='active'),
+        HasnAgents(hasn_id=a2, star_id=f'ag{_uid()}', owner_id=owner_hasn, display_name=f'我的分身乙{owner_uid}', status='active'),
+        HasnAgents(hasn_id=a_other, star_id=f'ag{_uid()}', owner_id=other_hasn, display_name=f'对方分身{other_uid}', status='active'),
     ])
-    await session.flush()
+    await session.commit()
 
     async def _yield_session():
         yield session
 
     async def _auth_inject(request: Request) -> str:
-        request.scope['user'] = SimpleNamespace(id=_USER_ID)
+        request.scope['user'] = SimpleNamespace(id=user_id, hasn_id=owner_hasn)
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'
 
     _APP.dependency_overrides[get_db] = _yield_session
     _APP.dependency_overrides[get_db_transaction] = _yield_session
+    _APP.dependency_overrides[get_im_db] = _yield_session
+    _APP.dependency_overrides[get_im_db_transaction] = _yield_session
     _APP.dependency_overrides[DependsJwtAuth.dependency] = _auth_inject
 
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')

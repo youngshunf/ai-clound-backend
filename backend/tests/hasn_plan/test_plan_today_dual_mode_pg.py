@@ -24,7 +24,7 @@ from backend.app.hasn_plan.service.plan_app_service import PlanService
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _DAY_START = datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc)
 _DAY_END = datetime(2026, 7, 1, 23, 59, tzinfo=timezone.utc)

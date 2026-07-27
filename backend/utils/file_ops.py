@@ -8,6 +8,13 @@ from backend.core.path_conf import UPLOAD_DIR
 from backend.utils.timezone import timezone
 
 
+def _require_filename(file: UploadFile) -> str:
+    """读取上传文件名；缺失时按非法请求拒绝。"""
+    if not file.filename:
+        raise errors.RequestError(msg='上传文件缺少文件名')
+    return file.filename
+
+
 def build_filename(file: UploadFile) -> str:
     """
     构建文件名
@@ -16,7 +23,7 @@ def build_filename(file: UploadFile) -> str:
     :return:
     """
     timestamp = int(timezone.now().timestamp())
-    filename = file.filename
+    filename = _require_filename(file)
     file_ext = filename.split('.')[-1].lower()
     new_filename = f'{filename.replace(f".{file_ext}", f"_{timestamp}")}.{file_ext}'
     return new_filename
@@ -29,16 +36,20 @@ def upload_file_verify(file: UploadFile) -> None:
     :param file: FastAPI 上传文件对象
     :return:
     """
-    filename = file.filename
+    filename = _require_filename(file)
     file_ext = filename.split('.')[-1].lower()
     if not file_ext:
         raise errors.RequestError(msg='未知的文件类型')
 
+    file_size = file.size
+    if file_size is None:
+        raise errors.RequestError(msg='上传文件缺少大小信息')
+
     if file_ext in settings.UPLOAD_IMAGE_EXT_INCLUDE:
-        if file.size > settings.UPLOAD_IMAGE_SIZE_MAX:
+        if file_size > settings.UPLOAD_IMAGE_SIZE_MAX:
             raise errors.RequestError(msg='图片超出最大限制，请重新选择')
     elif file_ext in settings.UPLOAD_VIDEO_EXT_INCLUDE:
-        if file.size > settings.UPLOAD_VIDEO_SIZE_MAX:
+        if file_size > settings.UPLOAD_VIDEO_SIZE_MAX:
             raise errors.RequestError(msg='视频超出最大限制，请重新选择')
     else:
         raise errors.RequestError(msg=f'此文件格式 {file_ext} 暂不支持')

@@ -216,11 +216,12 @@ async def test_create_rejects_invalid_hermes_yaml(client) -> None:
 
 async def test_list_hides_other_owner_private_packs(client) -> None:
     await _seed_default_members(client.session)
-    slug = f'priv-{_tag()}'
+    tag = _tag()
+    slug = f'priv-{tag}'
     # 当前作者的私有包
     await client.http.post('/api/v1/marketplace/app/skill-packs', json=_payload(slug, is_private=True, is_official=False))
     # 他人的私有包（直接落库，author_id 不同）
-    other_slug = f'other-{_tag()}'
+    other_slug = f'other-{tag}'
     await client.session.execute(
         text(
             """
@@ -244,7 +245,9 @@ async def test_list_hides_other_owner_private_packs(client) -> None:
     )
     await client.session.flush()
 
-    r = await client.http.get('/api/v1/marketplace/app/skill-packs')
+    # 共享开发库中的官方技能包可能超过默认 24 条；按本用例的目标 slug 检索，
+    # 避免把分页排序误判成私有可见性失败。
+    r = await client.http.get('/api/v1/marketplace/app/skill-packs', params={'q': tag})
     assert r.status_code == 200, r.text
     slugs = [item['bundle_slug'] for item in r.json()['data']['items']]
     assert slug in slugs

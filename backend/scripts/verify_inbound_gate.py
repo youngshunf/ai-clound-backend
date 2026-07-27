@@ -105,15 +105,25 @@ async def main() -> None:
 
         # H. record_suppression 落库 + 查回
         conv = str(uuid.uuid4())
-        msg_id = 9_000_000_777
+        idempotency_scope = f'gate-verify:{conv}'
         await record_suppression(
-            session, message_id=msg_id, owner_id=OWNER, hasn_id='a_gv_open',
-            conversation_id=conv, reason='permission_denied', policy_snapshot={'trust_level': 1},
+            session,
+            owner_id=OWNER,
+            hasn_id='a_gv_open',
+            conversation_id=conv,
+            sender_hasn_id=STRANGER,
+            idempotency_scope=idempotency_scope,
+            command_hash='0' * 64,
+            command_payload={'content': '门控验证消息'},
+            reason='permission_denied',
+            policy_snapshot={'trust_level': 1},
         )
         await session.commit()
         row = (
             await session.execute(
-                select(HasnSuppressedMessages).where(HasnSuppressedMessages.message_id == msg_id)
+                select(HasnSuppressedMessages).where(
+                    HasnSuppressedMessages.idempotency_scope == idempotency_scope
+                )
             )
         ).scalar_one_or_none()
         results.append((

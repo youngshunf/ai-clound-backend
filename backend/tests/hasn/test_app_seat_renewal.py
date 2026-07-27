@@ -20,7 +20,7 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
@@ -88,7 +88,7 @@ async def _seed_catalog(
         price_amount=Decimal(99),
         price_unit='cny',
         billing_cycle='month',
-        trial_days=trial_days,
+        trial_days=trial_days or 0,
     )
     db.add(cat)
     await db.flush()
@@ -321,7 +321,7 @@ async def test_runtime_gateway_overlays_enterprise_seat(db: AsyncSession) -> Non
     await app_seat_service.settle_seat_purchase(
         db, enterprise_id=ent_id, app_id=cat.app_id, seats=2, billing_cycle='month', order_ref=f'o-{_uid()}'
     )
-    agent = SimpleNamespace(owner_hasn_id=member_hasn)
+    agent: Any = SimpleNamespace(owner_hasn_id=member_hasn)
 
     # 企业买了但没席 → 仍拒
     denial = await ai_native_runtime_gateway._entitlement_denial(db, app_id=cat.app_id, agent=agent)

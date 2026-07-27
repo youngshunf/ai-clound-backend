@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import uuid
 
+from decimal import Decimal
+
 import pytest
 import pytest_asyncio
 
@@ -58,7 +60,7 @@ async def _seed_lead(sess, *, user_id: int, email: str, phone: str, company: str
         source_type='firecrawl',
         keyword='CRM',
         status='new',
-        confidence_score=78.5,
+        confidence_score=Decimal('78.5'),
     )
     sess.add(lead)
     await sess.flush()

@@ -25,9 +25,10 @@ import pytest
 import pytest_asyncio
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_designsystem.service.design_system_service import (
     Subject,
     _authoritative_scenes,
@@ -75,6 +76,33 @@ def _complete_content(scenes: list[dict] | None = None) -> dict:
         'components_manifest_json': manifest,
         'token_contract_report_json': {'summary': {'score': 88, 'grade': 'good', 'recommendRebuild': False}},
     }
+
+
+async def _seed_identity(session: AsyncSession, tag: str) -> tuple[str, str]:
+    """落库真实主人与分身身份，使完成卡发送经过 fail-closed 身份校验。"""
+    owner = f'h_{tag}'
+    agent = f'a_{tag}'
+    session.add_all(
+        [
+            HasnHumans(
+                hasn_id=owner,
+                star_id=f'hsc{tag}',
+                user_id=int(uuid.uuid4().hex[:15], 16),
+                nickname=f'场景测试主人{tag}',
+                status='active',
+            ),
+            HasnAgents(
+                hasn_id=agent,
+                star_id=f'asc{tag}',
+                owner_id=owner,
+                display_name=f'场景测试分身{tag}',
+                agent_name=f'scene_{tag}',
+                status='active',
+            ),
+        ]
+    )
+    await session.commit()
+    return owner, agent
 
 
 # ── 纯函数：required_scenes 规整 ───────────────────────────────────────────────
@@ -168,9 +196,10 @@ def test_authoritative_scenes_overrides_manifest_pure() -> None:
 async def test_new_save_defaults_required_scenes(session) -> None:
     """新建 save 不传 required_scenes → 默认 [brand_website]（_ds_dict 回显）。"""
     tag = uuid.uuid4().hex[:8]
+    owner, agent = await _seed_identity(session, tag)
     saved = await design_system_service.save(
         session,
-        subject=Subject.agent(f'a_{tag}', f'h_{tag}'),
+        subject=Subject.agent(agent, owner),
         design_system_id=None,
         slug=f'sc-{tag}',
         name='默认场景',
@@ -183,8 +212,7 @@ async def test_new_save_defaults_required_scenes(session) -> None:
 async def test_agent_save_accepts_required_scenes(session) -> None:
     """save 显式传 required_scenes → 规整落库并回显；再 save 不传 → 沿用存量（不被抹掉）。"""
     tag = uuid.uuid4().hex[:8]
-    owner = f'h_{tag}'
-    agent = f'a_{tag}'
+    owner, agent = await _seed_identity(session, tag)
     saved = await design_system_service.save(
         session,
         subject=Subject.agent(agent, owner),
@@ -213,8 +241,7 @@ async def test_agent_save_accepts_required_scenes(session) -> None:
 async def test_owner_set_required_scenes_and_forbidden(session) -> None:
     """owner 改场景要求成功（不动版本内容）；非 owner → ForbiddenError。"""
     tag = uuid.uuid4().hex[:8]
-    owner = f'h_{tag}'
-    agent = f'a_{tag}'
+    owner, agent = await _seed_identity(session, tag)
     saved = await design_system_service.save(
         session,
         subject=Subject.agent(agent, owner),
@@ -247,8 +274,7 @@ async def test_owner_set_required_scenes_and_forbidden(session) -> None:
 async def test_soft_hint_is_nonblocking(session) -> None:
     """品牌网站缺件（3/5）但五项必填齐 → 仍发完成卡：场景覆盖只是软提示，绝不拦发卡。"""
     tag = uuid.uuid4().hex[:8]
-    owner = f'h_{tag}'
-    agent = f'a_{tag}'
+    owner, agent = await _seed_identity(session, tag)
     # manifest 只标了 nav/hero/features → 品牌网站缺 cta/footer（3/5）
     partial_scenes = [{'id': 'brand_website', 'presentComponents': ['nav', 'hero', 'features']}]
     saved = await design_system_service.save(
@@ -260,9 +286,9 @@ async def test_soft_hint_is_nonblocking(session) -> None:
         content=_complete_content(scenes=partial_scenes),
         required_scenes=['brand_website'],
     )
-    # 五必填齐 → 仍透出完成卡信号（软提示不阻断发卡；DSCARD 后发卡/落水位由工具 post-commit）
+    # 五必填齐 → 仍透出完成卡信号；可靠 outbox 与通知水位在同一事务登记。
     assert saved['completion_card'] is not None
-    assert saved['completed_notified_at'] is None
+    assert saved['completed_notified_at'] is not None
     assert saved['required_scenes'] == ['brand_website']
 
 
@@ -274,8 +300,7 @@ async def test_get_derives_manifest_scenes_from_html_not_stored_manifest(session
     与 check_scenes 逐场景一致。这样存量行无需重存、详情页覆盖分区即修好。
     """
     tag = uuid.uuid4().hex[:8]
-    owner = f'h_{tag}'
-    agent = f'a_{tag}'
+    owner, agent = await _seed_identity(session, tag)
     # 关键构造：manifest **不含** scenes[]（模拟分身补齐画廊标记却没重跑抽取器），但 HTML 标记齐全
     content = {
         'tokens_css': ':root { --accent: #2563EB; }',

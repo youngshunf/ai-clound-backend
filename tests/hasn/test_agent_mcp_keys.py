@@ -22,7 +22,7 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn.crud.crud_hasn_agent_mcp_keys import hasn_agent_mcp_keys_dao
 from backend.app.hasn.schema.hasn_agent_mcp_keys import IssueAgentMcpKeyParam
 from backend.app.hasn.service.hasn_agent_mcp_keys_service import KEY_PREFIX, hasn_agent_mcp_keys_service
-from backend.app.llm.core.encryption import key_encryption
+from backend.common.security.encryption import key_encryption
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 
@@ -124,7 +124,8 @@ async def test_issue_returns_plaintext_once_and_stores_only_hash(db: AsyncSessio
     assert issued.key.startswith(f'{KEY_PREFIX}_'), issued.key
     assert issued.key_prefix == issued.key[:16]
     assert issued.status == 'active'
-    assert issued.scopes == ['hasn.memory.read']
+    # MCP Key 只承载身份；旧 scopes 入参为兼容占位，签发结果恒为空。
+    assert issued.scopes == []
 
     # 库存哈希：DB 行的 key_hash 等于 SHA-256(明文)，且行上不存在明文列
     row = await hasn_agent_mcp_keys_dao.get(db, issued.id)
@@ -257,13 +258,28 @@ async def test_key_auth_self_identifies_without_agent_id_header(
         owner_hasn_id=owner_id,
         owner_user_id=uid,
     )
+    await db.execute(
+        text(
+            'INSERT INTO hasn_agent_scopes '
+            '(agent_hasn_id, owner_hasn_id, default_mode, capability_modes, updated_time) '
+            "VALUES (:agent_id, :owner_id, 'ask', "
+            "CAST('{\"hasn.memory.read\":\"allow\",\"hasn.memory.write\":\"deny\"}' AS jsonb), now())"
+        ),
+        {'agent_id': agent_id, 'owner_id': owner_id},
+    )
+    await db.flush()
 
     ctx = await server._authenticate_from_headers(_headers(issued.key))
 
     assert ctx.hasn_id == agent_id
     assert ctx.owner_hasn_id == owner_id
     assert ctx.owner_id == uid
-    assert ctx.scopes == ['hasn.memory.read', 'hasn.memory.write']
+    assert not hasattr(ctx, 'scopes')
+    assert ctx.default_mode == 'ask'
+    assert ctx.capability_modes == {
+        'hasn.memory.read': 'allow',
+        'hasn.memory.write': 'deny',
+    }
     assert ctx.agent_status == 'active'
     # 合成稳定标识：amk_<key_id>，与 JWT 会话可区分
     assert ctx.session_uuid == f'amk_{issued.id}'

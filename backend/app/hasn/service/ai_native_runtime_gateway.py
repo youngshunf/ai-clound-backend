@@ -60,6 +60,9 @@ _COMMUNITY_INPUT_RULES: dict[str, dict[str, Any]] = {
     },
     'community.get_trending_topics': {},
     'community.get_recommended_agents': {},
+    'community.discover_peers': {
+        'optional_enums': {'peer_type': {'all', 'human', 'agent'}},
+    },
     'community.get_notifications': {},
     'community.mark_notifications_read': {},
     'community.create_post': {'required_str': ['content'], 'maxlen': {'content': 10000}},
@@ -152,7 +155,7 @@ class AiNativeRuntimeGateway:
         self,
         *,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         manifest: dict[str, Any],
         tools: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -867,7 +870,7 @@ class AiNativeRuntimeGateway:
         *,
         body: AiNativeToolCallRequest,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         manifest: dict[str, Any],
         capability: dict[str, Any],
         tool: dict[str, Any],
@@ -1014,7 +1017,7 @@ class AiNativeRuntimeGateway:
         self,
         db: AsyncSession,
         *,
-        agent: AgentTokenPayload | None,
+        agent: AgentTokenPayload,
         requested_workspace: dict[str, Any] | None,
     ) -> dict[str, Any]:
         workspace = dict(
@@ -1159,6 +1162,10 @@ class AiNativeRuntimeGateway:
             val = data.get(field)
             if not isinstance(val, str) or val not in allowed:
                 return False
+        for field, allowed in rule.get('optional_enums', {}).items():
+            val = data.get(field)
+            if val is not None and (not isinstance(val, str) or val not in allowed):
+                return False
         for field, maxlen in rule.get('maxlen', {}).items():
             val = data.get(field)
             if isinstance(val, str) and len(val) > maxlen:
@@ -1188,7 +1195,7 @@ class AiNativeRuntimeGateway:
         *,
         trace_id: str,
         workspace: dict[str, Any],
-        agent: AgentTokenPayload,
+        agent: AgentTokenPayload | None,
         manifest: dict[str, Any],
         capability: dict[str, Any],
         tool: dict[str, Any],

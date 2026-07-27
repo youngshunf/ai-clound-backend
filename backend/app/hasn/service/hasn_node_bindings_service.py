@@ -16,6 +16,7 @@ from backend.app.hasn.schema.hasn_node_bindings import (
 )
 from backend.common.exception import errors
 from backend.common.pagination import paging_data
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 
@@ -202,7 +203,7 @@ class HasnNodeBindingsService:
             )
             .values(status='expired', updated_time=now)
         )
-        return result.rowcount or 0
+        return affected_rows(result)
 
 
 hasn_node_bindings_service: HasnNodeBindingsService = HasnNodeBindingsService()

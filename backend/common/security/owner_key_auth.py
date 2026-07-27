@@ -105,6 +105,8 @@ async def owner_key_auth(
         raise HTTPException(status_code=401, detail='请使用 Owner API Key (hasn_ok_xxx 格式)')
 
     key = await verify_owner_key_standalone(credentials, db)
+    if key.user_id is None:
+        raise HTTPException(status_code=401, detail='Owner API Key 未关联有效用户')
     return key.user_id
 
 

@@ -20,10 +20,9 @@ from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.diag import DIAG_TOOLS
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _TOOLS = {t.name: t for t in DIAG_TOOLS}
-_T0 = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)  # 固定 occurred_at（error_report NOT NULL）
 # 本文件工具体真提交（各自开 session）→ 播下的行会留库，污染断言「全量 open issue」的 keyset 测试。
 # 四张 diag 表（schema=hasn_diag）都以 fingerprint 归类，用例结束按 fingerprint 精确清场（finally 兜底，异常也清）。
 _DIAG_TABLES = ('error_issue_event', 'error_issue_seen', 'error_issue', 'error_report')
@@ -50,6 +49,7 @@ def _operator_ctx() -> AgentContext:
 
 async def _seed_issue(fingerprint: str, *, owner: str = 'h_seed', node: str = 'n_seed') -> None:
     """真 PG 播一个 issue（一条 occurrence），已提交。"""
+    occurred_at = datetime.now(timezone.utc)
     async with async_db_session.begin() as db:
         await ingest_errors(
             db,
@@ -68,7 +68,7 @@ async def _seed_issue(fingerprint: str, *, owner: str = 'h_seed', node: str = 'n
                     message='空指针解引用',
                     location='backend/foo.py:mod',
                     context={},
-                    occurred_at=_T0,
+                    occurred_at=occurred_at,
                     suppressed_count=0,
                 )
             ],

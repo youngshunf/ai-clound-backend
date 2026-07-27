@@ -5,7 +5,7 @@
 - **Owner/WebUI 端**（DS-P8，`/app/*`，Owner JWT）：daemon `domains/designsystem` 经
   `BackendGateway.owner_transport` 回源做 read_through/local_first；WebUI 只调 daemon。
 
-codegen 生成的泛型 admin/open per-table 路由为产物留盘但**不接线**（与自定义业务 service 不兼容）。
+codegen 生成的泛型 per-table 路由与自定义业务 service 不兼容，已移除且不接线。
 """
 
 from fastapi import APIRouter

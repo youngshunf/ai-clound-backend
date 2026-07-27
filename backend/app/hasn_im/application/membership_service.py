@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import sqlalchemy as sa
+
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -221,7 +223,7 @@ async def list_visible_message_seqs(
     epoch_clauses = [
         and_(
             HasnMessages.conversation_seq >= e.joined_seq,
-            HasnMessages.conversation_seq <= e.left_seq if e.left_seq is not None else True,
+            HasnMessages.conversation_seq <= e.left_seq if e.left_seq is not None else sa.true(),
         )
         for e in epochs
     ]

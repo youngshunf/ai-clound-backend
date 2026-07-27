@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,7 +67,7 @@ async def _make_lead(session, *, tag: str) -> LeadContact:
     # 统一线索池：contact 无 user_id（公共池行）。本 helper 仅为 Customer 测试提供 lead_contact_id FK。
     lead = LeadContact(
         lead_no=f'LGE1{tag}', company_name='Acme',
-        contact_name='王五', source_type='manual', status='valid', confidence_score=70,
+        contact_name='王五', source_type='manual', status='valid', confidence_score=Decimal(70),
     )
     session.add(lead)
     await session.flush()

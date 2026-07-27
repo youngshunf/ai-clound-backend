@@ -13,12 +13,12 @@ from __future__ import annotations
 import datetime
 
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 
-from backend.app.hasn.model.hasn_agents import HasnAgents
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_creator.model.account import Account
 from backend.app.hasn_creator.model.competitor import Competitor
 from backend.app.hasn_creator.model.content import Content
@@ -696,23 +696,19 @@ class CreatorService:
         if source_type not in ('own', 'competitor'):
             raise errors.RequestError(msg='source_type 只能是 own 或 competitor')
         # 校验归属主体存在且属本 owner（own→account / competitor→competitor），拿到 project + 平台冗余。
+        parent: Account | Competitor
         if source_type == 'own':
             parent = await CreatorService._load_account(db, account_id=owner_ref_id, user_id=user_id, scope=scope)
         else:
             stmt = apply_scope(
                 sa.select(Competitor).where(Competitor.id == owner_ref_id), Competitor, user_id=user_id, scope=scope
             )
-            parent = (await db.execute(stmt)).scalars().first()
-            if parent is None:
+            competitor_parent = cast(Competitor | None, (await db.execute(stmt)).scalars().first())
+            if competitor_parent is None:
                 raise errors.NotFoundError(msg='竞品不存在或无权访问')
+            parent = competitor_parent
         project_id = parent.project_id
         platform = parent.platform or ''
-        own = {
-            'owner_scope': parent.owner_scope,
-            'user_id': parent.user_id,
-            'enterprise_id': parent.enterprise_id,
-            'assignee': parent.assignee,
-        }
         # 该主体下现有作品（用于归并匹配）。
         base = sa.select(Work).where(Work.project_id == project_id, Work.source_type == source_type)
         base = (
@@ -739,7 +735,10 @@ class CreatorService:
                     platform=item.get('platform') or platform,
                     external_id=ext,
                     url=url,
-                    **own,
+                    owner_scope=parent.owner_scope,
+                    user_id=parent.user_id,
+                    enterprise_id=parent.enterprise_id,
+                    assignee=parent.assignee,
                 )
                 db.add(match)
                 if ext:
@@ -755,7 +754,7 @@ class CreatorService:
             match.collected_at = now
             upserted += 1
         # 竞品作品数随抓取结果刷新（§6.4 works_count 由调研回填）。
-        if source_type == 'competitor':
+        if source_type == 'competitor' and isinstance(parent, Competitor):
             total = (
                 await db.execute(
                     sa
@@ -929,7 +928,7 @@ class CreatorService:
             height=fields.get('height'),
             duration=fields.get('duration'),
             thumbnail_uri=fields.get('thumbnail_uri'),
-            tags=fields.get('tags') or {},
+            tags=fields.get('tags') or [],
             description=fields.get('description'),
             **_child_ownership(proj),
         )
@@ -1088,6 +1087,8 @@ class CreatorService:
         草稿使命完成即删除，避免草稿箱与内容流水线两处并存同一条。
         """
         draft = await CreatorService._load_draft(db, draft_id=draft_id, user_id=user_id, scope=scope)
+        if not draft.title:
+            raise errors.RequestError(msg='草稿缺少标题，无法转正')
         content = await CreatorService.create_content(
             db,
             user_id=user_id,

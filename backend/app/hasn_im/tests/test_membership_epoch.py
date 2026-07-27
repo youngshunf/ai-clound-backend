@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_im.application import membership_service as svc
+from backend.app.hasn_im.application import message_service
 from backend.app.hasn_im.domain import membership as membership_domain
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
@@ -208,6 +209,45 @@ async def test_compute_unread_and_projection(sessionmaker_pg) -> None:
         await svc.advance_read_seq(session, conv_id, member, incoming_seq=3, current_seq=4)
         await session.commit()
         assert await svc.compute_unread(session, conv_id, member) == 0
+    await _cleanup(sessionmaker_pg, conv_id)
+
+
+async def test_increment_unread_rebuilds_from_messages_when_seq_has_hole(
+    sessionmaker_pg,
+) -> None:
+    """合法 seq 空洞不得被误算成未读消息。"""
+    async with sessionmaker_pg() as session:
+        conv_id = await _make_group_conversation(session)
+        member = f'h_{uuid.uuid4().hex[:10]}'
+        await svc.join_epoch(
+            session,
+            conv_id,
+            member,
+            current_seq=0,
+        )
+        # seq=1 可由撤回、历史抑制迁移或失败事务后的保留游标形成空洞。
+        await _insert_message(
+            session,
+            conv_id,
+            2,
+            from_id='h_other',
+        )
+        await message_service.increment_unread_for(
+            session,
+            conv_id,
+            member,
+        )
+        unread = await session.scalar(
+            sa.text(
+                'SELECT unread_count '
+                'FROM public.hasn_unread_projection '
+                'WHERE conversation_id = :cid '
+                'AND member_hasn_id = :member'
+            ),
+            {'cid': conv_id, 'member': member},
+        )
+        assert unread == 1
+        await session.commit()
     await _cleanup(sessionmaker_pg, conv_id)
 
 

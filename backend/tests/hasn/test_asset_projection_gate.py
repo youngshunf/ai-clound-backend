@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from backend.app.hasn.service.authz import asset_projection
@@ -24,7 +26,7 @@ from backend.app.hasn.service.authz.subject import Subject
 pytestmark = pytest.mark.asyncio
 
 # db 恒不被解引用（见模块 docstring）：所有分支都在触库前返回，用哨兵表意「此处不该碰库」。
-_NO_DB = None
+_NO_DB: Any = None
 
 
 class _FakeAssetAdapter:

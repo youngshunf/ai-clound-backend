@@ -15,9 +15,12 @@
 from __future__ import annotations
 
 import base64
+import uuid
 
 import pytest
+import sqlalchemy as sa
 
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.marketplace import (
     MARKETPLACE_TOOLS,
@@ -28,6 +31,7 @@ from backend.app.mcp.tools.marketplace import (
     SearchTemplatesTool,
 )
 from backend.common.exception import errors
+from backend.database.db import async_db_session
 
 
 def _agent_ctx() -> AgentContext:
@@ -43,10 +47,6 @@ def _agent_ctx() -> AgentContext:
 
 async def _db_reachable() -> bool:
     try:
-        import sqlalchemy as sa
-
-        from backend.database.db import async_db_session
-
         async with async_db_session() as db:
             await db.execute(sa.text('SELECT 1'))
     except Exception:
@@ -98,7 +98,7 @@ def test_marketplace_tools_are_cloud_platform() -> None:
     for cls in MARKETPLACE_TOOLS:
         tool = cls()
         assert tool.source == 'platform'
-        assert tool.execution_location == 'cloud'
+        assert getattr(tool, 'execution_location') == 'cloud'
         assert tool.namespace == 'hasn.marketplace'
 
 
@@ -173,10 +173,47 @@ async def test_install_skill_unreachable_returns_reachable_false() -> None:
     """维度②：目标 agent/技能不存在 → reachable=False + reason，不静默成功（零 mock）。"""
     if not await _db_reachable():
         pytest.skip('需活体 DB（DATABASE_PORT=15432）；无 DB 时跳过，不伪造')
-    result = await InstallSkillTool().execute(_agent_ctx(), {'skill_id': 'user/h_nope/does-not-exist-xyz'})
-    assert result['installed'] is False
-    assert result['reachable'] is False
-    assert result.get('reason')
+    tag = uuid.uuid4().hex[:12]
+    owner_id = f'h_marketplace_{tag}'
+    agent_id = f'a_marketplace_{tag}'
+    owner_user_id = 8_800_000_000 + int(tag[:8], 16)
+    async with async_db_session.begin() as db:
+        db.add(
+            HasnHumans(
+                hasn_id=owner_id,
+                star_id=f's_{owner_user_id}',
+                user_id=owner_user_id,
+                nickname='技能市场测试主人',
+                status='active',
+            )
+        )
+        db.add(
+            HasnAgents(
+                hasn_id=agent_id,
+                star_id=f's_{owner_user_id}#agent',
+                owner_id=owner_id,
+                display_name='技能市场测试分身',
+                agent_name=f'marketplace_{tag}',
+                status='active',
+            )
+        )
+    try:
+        context = AgentContext(
+            hasn_id=agent_id,
+            owner_id=owner_user_id,
+            agent_status='active',
+            metadata={},
+            owner_hasn_id=owner_id,
+            session_uuid=f'amk_{tag}',
+        )
+        result = await InstallSkillTool().execute(context, {'skill_id': 'user/h_nope/does-not-exist-xyz'})
+        assert result['installed'] is False
+        assert result['reachable'] is False
+        assert result.get('reason')
+    finally:
+        async with async_db_session.begin() as db:
+            await db.execute(sa.delete(HasnAgents).where(HasnAgents.hasn_id == agent_id))
+            await db.execute(sa.delete(HasnHumans).where(HasnHumans.hasn_id == owner_id))
 
 
 @pytest.mark.asyncio

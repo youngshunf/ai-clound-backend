@@ -47,7 +47,7 @@ class _Links(BaseModel):
 class _PageDetails(BaseModel):
     """分页详情"""
 
-    items: list = Field([], description='当前页数据列表')
+    items: Sequence[Any] = Field(default_factory=list, description='当前页数据列表')
     total: int = Field(description='数据总条数')
     page: int = Field(description='当前页码')
     size: int = Field(description='每页数量')
@@ -63,10 +63,13 @@ class _CustomPage(_PageDetails, AbstractPage[T], Generic[T]):
     @classmethod
     def create(
         cls,
-        items: list,
-        params: _CustomPageParams,
-        total: int = 0,
+        items: Sequence[T],
+        params: AbstractParams,
+        **kwargs: Any,
     ) -> Self:
+        if not isinstance(params, _CustomPageParams):
+            raise TypeError('分页参数必须为 _CustomPageParams')
+        total = int(kwargs.get('total', 0))
         page = params.page
         size = params.size
         total_pages = ceil(total / size)

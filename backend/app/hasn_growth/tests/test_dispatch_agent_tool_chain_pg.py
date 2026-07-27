@@ -21,6 +21,7 @@ from __future__ import annotations
 import uuid
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -59,13 +60,19 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     session = async_sessionmaker(engine, expire_on_commit=False)()
     tag = uuid.uuid4().hex[:8]
     owner = f'h_disp_{tag}'
-    owner_uid = 970000 + int(uuid.uuid4().int % 9000)
+    owner_uid = 90_700_000_000 + int(uuid.uuid4().int % 900_000_000)
     agent_hasn = f'a_disp_{tag}'
     # 唯一公司名（含 tag）：保证 search 关键词只命中本测试造的这一条池线索、且 qcc 对该 gibberish 无结果。
     company = f'唤星测试专用企业_{tag}'
 
     session.add(
-        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='主人', status='active')
+        HasnHumans(
+            hasn_id=owner,
+            star_id=f's_{owner_uid}',
+            user_id=owner_uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
     )
     # 模拟一条**已在主人线索池**的公司线索（此前 read-through / 采集入池的结果）。
     lead = LeadContact(
@@ -77,7 +84,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         phone='13900139000',
         source_type='qcc',
         status='new',
-        confidence_score=88,
+        confidence_score=Decimal(88),
     )
     session.add(lead)
     await session.flush()

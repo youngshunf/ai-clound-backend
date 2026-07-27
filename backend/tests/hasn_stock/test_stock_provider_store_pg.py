@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 # 多个真实-DB async 测试共享同一 module 级事件循环，避免连接池被上一个已关闭 loop 回收。
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _TEST_PREFIX = 'test_stock_'
 
@@ -53,7 +53,7 @@ async def _cleanup() -> None:
     stock_provider_store.invalidate_cache()
 
 
-@pytest_asyncio.fixture(autouse=True, loop_scope='module')
+@pytest_asyncio.fixture(autouse=True, loop_scope='session')
 async def _auto_cleanup() -> AsyncGenerator[None, None]:
     """每个用例前后都清场，避免相互污染 + 不给库留测试残行。"""
     await _cleanup()

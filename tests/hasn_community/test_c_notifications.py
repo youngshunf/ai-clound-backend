@@ -25,7 +25,7 @@ async def test_like_notifies_author(db):
     assert len(notes['items']) == 1
     n = notes['items'][0]
     assert n['type'] == 'community_like'
-    assert n['actor']['display_name'] == '点赞者'
+    assert n['actor']['display_name'] == liker['nickname']
     assert n['target'] == {'type': 'post', 'id': pid}
     assert n['read'] is False
 

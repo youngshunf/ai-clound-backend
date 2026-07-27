@@ -85,6 +85,8 @@ class TopicService:
             if not tid:
                 continue
             topic = (await db.execute(select(HasnTopics).where(HasnTopics.topic_id == tid))).scalars().first()
+            if topic is None:
+                raise errors.ServerError(msg='话题创建成功但权威记录不可见')
             out.append({
                 'topic_id': topic.topic_id, 'name': topic.name, 'slug': topic.slug,
                 'content_count': topic.content_count, 'is_new': before is None,
@@ -305,7 +307,11 @@ class TopicService:
             await db.flush()
             return TopicService._topic_dict(existing)
         tid = await TopicService._resolve_one(db, norm, created_by=created_by_hasn_id)
+        if tid is None:
+            raise errors.ServerError(msg='话题创建失败')
         topic = (await db.execute(select(HasnTopics).where(HasnTopics.topic_id == tid))).scalars().first()
+        if topic is None:
+            raise errors.ServerError(msg='话题创建成功但权威记录不可见')
         if description:
             topic.description = description
         if cover_url:

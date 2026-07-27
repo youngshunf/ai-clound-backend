@@ -61,7 +61,7 @@ async def test_service_full_lifecycle() -> None:
     newapi_user_id: int | None = None
     try:
         async with async_db_session.begin() as db:
-            # 1. ensure_newapi_user：建用户 + 设额度 + 写映射（含加密 access_token）
+            # 1. ensure_newapi_user：建用户并写映射；initial_quota 仅保留兼容入参
             info = await svc.ensure_newapi_user(
                 # pro 档 1000 积分 × 500000 quota/积分（new-api 协议精度）
                 db, huanxing_user_id, initial_quota=1_000 * 500_000
@@ -92,19 +92,14 @@ async def test_service_full_lifecycle() -> None:
             assert api_key.startswith('sk-')
             assert api_key[3:] == row.newapi_token_key
 
-            # 4. get_quota_info：经 API 读额度，等于设定值（pro = 1000 积分）
+            # 4. get_quota_info：新用户的权威余额由 NewAPI 账本维护
             quota = await svc.get_quota_info(db, huanxing_user_id)
-            # 1 积分 = 500000 quota（new-api 协议精度）
-            assert quota.total_quota == 1_000 * 500_000
+            # 旧 initial_quota 入参不得再直接覆盖 NewAPI 的绝对额度。
+            assert quota.total_quota == 0
             assert quota.used_quota == 0
             assert quota.request_count == 0
 
-            # 5. sync_quota：改额度后读回生效
-            new_q = 2_000 * 500_000
-            await svc.sync_quota(db, huanxing_user_id, new_q)
-            assert (await svc.get_quota_info(db, huanxing_user_id)).total_quota == new_q
-
-            # 6. ensure_agent_token：签发 Agent 级 token（复用已存 access_token）
+            # 5. ensure_agent_token：签发 Agent 级 token（复用已存 access_token）
             issued = await svc.ensure_agent_token(db, agent_id=agent_id, user_id=huanxing_user_id)
             assert issued['reused'] is False
             assert issued['newapi_token_id'] > 0

@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -54,7 +55,7 @@ def _uid() -> str:
 
 
 def _catalog(app_id: str, **over) -> HasnAppCatalog:
-    base = {
+    base: dict[str, Any] = {
         'app_id': app_id,
         'name': 'C5 测试应用',
         'icon': 'app-window',

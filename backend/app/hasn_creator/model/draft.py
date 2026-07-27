@@ -20,6 +20,8 @@ class Draft(HasnCreatorAppBase):
     assignee: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     title: Mapped[str | None] = mapped_column(sa.String(200), default=None, comment=None)
     content: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
-    media: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='媒体引用（hasn://asset/）')
-    tags: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
-    target_platforms: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
+    media: Mapped[list[object]] = mapped_column(
+        postgresql.JSONB(), default_factory=list, comment='媒体引用（hasn://asset/）'
+    )
+    tags: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
+    target_platforms: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)

@@ -47,8 +47,8 @@ async def create_my_content_stage(
     db: CurrentSessionTransaction,
     obj: CreateContentStageParam,
 ) -> ResponseModel:
-    result = await content_stage_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await content_stage_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

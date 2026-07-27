@@ -25,20 +25,22 @@ from backend.app.hasn.schema.hasn_agents import (
     CheckDisplayNameResponse,
     CloudCreateAgentRequest,
     CloudCreateAgentResponse,
-    CreateHasnAgentsParam,
     GetAgentRuntimeConfigResponse,
-    GetHasnAgentsDetail,
     UpdateAgentBindingRequest,
     UpdateAgentProfileRequest,
     UpdateAgentProfileResponse,
     UpdateAgentRuntimeConfigRequest,
-    UpdateHasnAgentsParam,
 )
-from backend.app.hasn.service.hasn_agents_service import agent_profile_service, hasn_agents_service
+from backend.app.hasn.service.hasn_agents_service import agent_profile_service
 from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn_im.application.provider import get_im_gateway, get_presence_query
+from backend.app.hasn_im.adapters.sqlalchemy_relation_gateway import RelationGatewayError
+from backend.app.hasn_im.application.provider import (
+    get_im_gateway,
+    get_presence_query,
+    get_relation_gateway,
+)
+from backend.app.hasn_im.ports.relation_gateway import RelationGateway
 from backend.common.exception import errors
-from backend.common.pagination import DependsPagination, PageData
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
@@ -66,7 +68,7 @@ async def sync_my_hasn_agents(
         request=AgentSyncRequest(owner_id=owner_id, after_revision=after_revision),
         user_id=request.user.id,
     )
-    return response_base.success(data=result)
+    return ResponseSchemaModel[AgentSyncResponse](data=result)
 
 
 class AgentReachabilityResponse(BaseModel):
@@ -164,70 +166,6 @@ async def check_agent_display_name(
     return response_base.success(
         data=CheckDisplayNameResponse(available=bool(name) and not taken, suggestion=suggestion)
     )
-
-
-@router.get(
-    '',
-    summary='获取我的HASN Agent 列表',
-    dependencies=[DependsJwtAuth, DependsPagination],
-)
-async def get_my_hasn_agentss(
-    request: Request,
-    db: CurrentSession,
-) -> ResponseSchemaModel[PageData[GetHasnAgentsDetail]]:
-    page_data = await hasn_agents_service.get_list(db=db)
-    return response_base.success(data=page_data)
-
-
-@router.post(
-    '',
-    summary='创建HASN Agent ',
-    dependencies=[DependsJwtAuth],
-)
-async def create_my_hasn_agents(
-    request: Request,
-    db: CurrentSessionTransaction,
-    obj: CreateHasnAgentsParam,
-) -> ResponseModel:
-    result = await hasn_agents_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
-
-
-@router.get(
-    '/{pk}',
-    summary='获取HASN Agent 详情',
-    dependencies=[DependsJwtAuth],
-)
-async def get_my_hasn_agents(
-    request: Request,
-    db: CurrentSession,
-    pk: Annotated[int, Path(description='HASN Agent  ID')],
-) -> ResponseSchemaModel[GetHasnAgentsDetail]:
-    hasn_agents = await hasn_agents_service.get(db=db, pk=pk)
-    if hasn_agents.user_id != request.user.id:
-        raise errors.ForbiddenError(msg='无权访问该HASN Agent ')
-    return response_base.success(data=hasn_agents)
-
-
-@router.put(
-    '/{pk}',
-    summary='更新HASN Agent ',
-    dependencies=[DependsJwtAuth],
-)
-async def update_my_hasn_agents(
-    request: Request,
-    db: CurrentSessionTransaction,
-    pk: Annotated[int, Path(description='HASN Agent  ID')],
-    obj: UpdateHasnAgentsParam,
-) -> ResponseModel:
-    user_id = request.user.id
-    hasn_agents = await hasn_agents_service.get(db=db, pk=pk)
-    if hasn_agents.user_id != user_id:
-        raise errors.ForbiddenError(msg='无权修改该HASN Agent ')
-    count = await hasn_agents_service.update(db=db, pk=pk, obj=obj)
-    if count > 0:
-        return response_base.success()
-    return response_base.fail()
 
 
 class ToggleSocialBody(BaseModel):
@@ -453,9 +391,10 @@ async def update_my_hasn_agent_binding(
 )
 async def toggle_my_hasn_agent_social(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     hasn_id: Annotated[str, Path(description='Agent HASN ID, 如 a_xxx')],
     body: ToggleSocialBody,
+    relation_gateway: Annotated[RelationGateway, Depends(get_relation_gateway)],
 ) -> ResponseModel:
     user_id = request.user.id
     owner = (await db.execute(sa.select(HasnHumans.hasn_id).where(HasnHumans.user_id == user_id))).scalar_one_or_none()
@@ -471,38 +410,20 @@ async def toggle_my_hasn_agent_social(
     ).scalar_one_or_none()
     if not agent:
         raise errors.NotFoundError(msg='Agent 不存在或不属于当前用户')
-    agent.social_enabled = body.enabled
-    if hasattr(agent, 'profile_revision'):
-        agent.profile_revision = (agent.profile_revision or 1) + 1
-    await db.flush()
+    try:
+        result = await relation_gateway.update_agent_communication_settings(
+            owner_hasn_id=owner,
+            agent_hasn_id=hasn_id,
+            social_enabled=body.enabled,
+        )
+    except RelationGatewayError as exc:
+        raise errors.ForbiddenError(msg=str(exc)) from exc
     return response_base.success(
         data={
-            'hasn_id': agent.hasn_id,
-            'social_enabled': agent.social_enabled,
+            'hasn_id': hasn_id,
+            'social_enabled': result['social_enabled'],
         }
     )
-
-
-@router.delete(
-    '/{pk}',
-    summary='删除HASN Agent ',
-    dependencies=[DependsJwtAuth],
-)
-async def delete_my_hasn_agents(
-    request: Request,
-    db: CurrentSessionTransaction,
-    pk: Annotated[int, Path(description='HASN Agent  ID')],
-) -> ResponseModel:
-    user_id = request.user.id
-    hasn_agents = await hasn_agents_service.get(db=db, pk=pk)
-    if hasn_agents.user_id != user_id:
-        raise errors.ForbiddenError(msg='无权删除该HASN Agent ')
-    from backend.app.hasn.schema.hasn_agents import DeleteHasnAgentsParam
-
-    count = await hasn_agents_service.delete(db=db, obj=DeleteHasnAgentsParam(pks=[pk]))
-    if count > 0:
-        return response_base.success()
-    return response_base.fail()
 
 
 @router.post(
@@ -523,4 +444,6 @@ async def report_agent_heartbeat(
         request=body,
         user_id=request.user.id,
     )
-    return response_base.success(data=result)
+    return ResponseSchemaModel[AgentHeartbeatResponse](
+        data=AgentHeartbeatResponse.model_validate(result)
+    )

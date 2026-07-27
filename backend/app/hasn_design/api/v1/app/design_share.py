@@ -14,7 +14,7 @@ WebUI 经 daemon `/api/v1/design/projects/{id}/share*` 薄代理调用本面（�
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from backend.app.hasn.service.app_catalog_service import resolve_owner_hasn_id
+from backend.app.hasn_core.app_platform import resolve_owner_hasn_id
 from backend.app.hasn.service.resource_share_service import ResourceShareService
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base

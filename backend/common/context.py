@@ -1,10 +1,10 @@
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any
 
 from starlette_context.ctx import _Context, context
 
 
-class TypedContextProtocol(Protocol):
+class TypedContext(_Context):
     perf_time: float
     start_time: datetime
 
@@ -23,8 +23,6 @@ class TypedContextProtocol(Protocol):
 
     user_id: int | None
 
-
-class TypedContext(TypedContextProtocol, _Context):
     def __getattr__(self, name: str) -> Any:
         return context.get(name)
 

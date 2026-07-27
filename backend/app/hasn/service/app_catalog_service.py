@@ -34,6 +34,7 @@ from backend.app.hasn.service.app_catalog_registry import App, app_catalog_regis
 from backend.app.hasn_design.manifest import DESIGN_BUSINESS_PROMPT
 from backend.app.home.model.hasn_owner_workbench_pref import HasnOwnerWorkbenchPref
 from backend.common.exception import errors
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -810,7 +811,7 @@ async def sweep_expired_entitlements(db: AsyncSession) -> int:
         )
         .values(status='expired', updated_time=now)
     )
-    return result.rowcount or 0
+    return affected_rows(result)
 
 
 # ============================ C2：catalog 作为展示权威 ============================
@@ -1253,7 +1254,7 @@ async def revoke_entitlement(db: AsyncSession, *, entitlement_id: int) -> bool:
         .where(HasnAppEntitlement.id == entitlement_id, HasnAppEntitlement.status == 'active')
         .values(status='revoked', updated_time=timezone.now())
     )
-    return (result.rowcount or 0) > 0
+    return affected_rows(result) > 0
 
 
 async def list_entitlements(

@@ -240,25 +240,22 @@ async def resolve_conversation_peer_trust(
     """
     from sqlalchemy import select
 
-    from backend.app.hasn.model.hasn_agents import HasnAgents
-    from backend.app.hasn.model.hasn_contacts import HasnContacts
+    from backend.app.hasn_core import HasnAgents
     from backend.app.hasn.service.effective_relation import (
         DELIVER,
         resolve_effective_relation,
     )
+    from backend.app.hasn_im.application.provider import get_relation_gateway
 
     if not owner_hasn_id:
         return None
 
     # ① 直连实体边优先（尊重主人对该 peer 的显式设档）。
-    direct = (
-        await db.execute(
-            select(HasnContacts).where(
-                HasnContacts.owner_id == owner_hasn_id,
-                HasnContacts.peer_id == peer_id,
-            )
-        )
-    ).scalar_one_or_none()
+    relation_gateway = get_relation_gateway()
+    direct = await relation_gateway.resolve_effective_relation(
+        owner_hasn_id=owner_hasn_id,
+        peer_hasn_id=peer_id,
+    )
     if direct is not None:
         trust = direct.trust_level if direct.trust_level is not None else _NORMAL_TRUST_LEVEL
         if direct.status == 'blocked' or trust == 0:
@@ -273,14 +270,10 @@ async def resolve_conversation_peer_trust(
     ).scalar_one_or_none()
     if not peer_owner:
         return None
-    owner_edge = (
-        await db.execute(
-            select(HasnContacts).where(
-                HasnContacts.owner_id == owner_hasn_id,
-                HasnContacts.peer_id == peer_owner,
-            )
-        )
-    ).scalar_one_or_none()
+    owner_edge = await relation_gateway.resolve_effective_relation(
+        owner_hasn_id=owner_hasn_id,
+        peer_hasn_id=peer_owner,
+    )
     owner_trust = owner_edge.trust_level if owner_edge and owner_edge.trust_level is not None else None
     owner_blocked = owner_edge is not None and (owner_edge.status == 'blocked' or owner_trust == 0)
 

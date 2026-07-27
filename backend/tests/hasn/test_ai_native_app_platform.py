@@ -160,7 +160,7 @@ def test_manifest_validator_rejects_scope_and_collaboration_drift() -> None:
 def test_hasn_router_mounts_ai_native_app_routes() -> None:
     from backend.app.hasn.api.router import ai_native
 
-    routes = {route.path for route in ai_native.routes}
+    routes = {getattr(route, 'path', '') for route in ai_native.routes}
 
     assert '/api/v1/ai-native/apps' in routes
     assert '/api/v1/ai-native/apps/{app_id}' in routes
@@ -252,6 +252,9 @@ class _FakeDb:
             row.id = len(self.added)
 
     async def flush(self) -> None:
+        return None
+
+    async def commit(self) -> None:
         return None
 
     async def refresh(self, row: Any) -> None:
@@ -391,7 +394,7 @@ def _make_runtime_test_app(
 def test_runtime_capabilities_returns_current_workspace_knowledge_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.app.hasn.service import ai_native_runtime_gateway as gateway_module
 
-    fake_db = _FakeDb(
+    fake_db: Any = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
         app_row=_WorkspaceAppStub(
             workspace_kind='personal',
@@ -1044,7 +1047,7 @@ async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypa
     from backend.common.security import agent_jwt as agent_jwt_module
     from backend.common.security.agent_jwt import jwt_encode_agent
 
-    fake_db = _FakeDb(
+    fake_db: Any = _FakeDb(
         workspace={'kind': 'personal', 'enterprise_id': None},
         app_row=_WorkspaceAppStub(
             workspace_kind='personal',
@@ -1091,9 +1094,10 @@ async def test_runtime_gateway_revoked_agent_session_writes_15011_audit(monkeypa
 
         state = State()
 
+    revoked_request: Any = RequestWithRevokedToken()
     data = await gateway_module.ai_native_runtime_gateway.call_tool(
         fake_db,
-        request=RequestWithRevokedToken(),
+        request=revoked_request,
         app_id='community',
         tool_id='community.get_post',
         body=AiNativeToolCallRequest(

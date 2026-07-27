@@ -25,14 +25,20 @@ from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.app.hasn_groups import router as app_groups_router
 from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_im.application.local_gateway import PythonLocalImGateway
+from backend.app.hasn_im.application.provider import get_im_gateway
 from backend.common.exception import errors
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import (
+    SQLALCHEMY_DATABASE_URL,
+    get_db,
+    get_db_transaction,
+    get_im_db,
+    get_im_db_transaction,
+)
 
 pytestmark = pytest.mark.asyncio
-
-_USER_ID = 960000 + int(uuid.uuid4().int % 20000)
 
 _APP = FastAPI()
 _APP.add_middleware(ContextMiddleware, plugins=(RequestIdPlugin(),))
@@ -54,9 +60,12 @@ async def http():
         await engine.dispose()
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
-    session = async_sessionmaker(engine, expire_on_commit=False)()
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    session = session_factory()
+    im_gateway = PythonLocalImGateway(session_factory)
     owner_uid = _uid()
     owner_hasn = f'h_grp_{owner_uid}'
+    user_id = 203_500_000 + int(uuid.uuid4().int % 100_000_000)
     # 唯一 star_id（非空）：服务在请求内会 commit 这条 owner，fixture 末尾 rollback 已太迟，
     # 故每跑一次会“泄漏”一条 owner 行；空 star_id 会撞 idx_hasn_humans_star_id 唯一索引导致
     # 下次 setup 失败。用唯一 star_id 让残留行互不冲突，测试可重复跑。
@@ -64,23 +73,26 @@ async def http():
         HasnHumans(
             hasn_id=owner_hasn,
             star_id=f'sg{owner_uid}',
-            user_id=_USER_ID,
-            nickname='群主E2E',
+            user_id=user_id,
+            nickname=f'群主E2E{owner_uid}',
             status='active',
         )
     )
-    await session.flush()
+    await session.commit()
 
     async def _yield_session():
         yield session
 
     async def _auth_inject(request: Request) -> str:
-        request.scope['user'] = SimpleNamespace(id=_USER_ID)
+        request.scope['user'] = SimpleNamespace(id=user_id, hasn_id=owner_hasn)
         request.scope['auth'] = ['authenticated']
         return 'e2e-token'
 
     _APP.dependency_overrides[get_db] = _yield_session
     _APP.dependency_overrides[get_db_transaction] = _yield_session
+    _APP.dependency_overrides[get_im_db] = _yield_session
+    _APP.dependency_overrides[get_im_db_transaction] = _yield_session
+    _APP.dependency_overrides[get_im_gateway] = lambda: im_gateway
     _APP.dependency_overrides[DependsJwtAuth.dependency] = _auth_inject
 
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')

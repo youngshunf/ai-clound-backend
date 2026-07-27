@@ -25,7 +25,7 @@ Gateway，故不进 `tools[]`（自造 transport 会静默过 validate_manifest 
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -154,7 +154,7 @@ _OUTLINE_ITEM_SCHEMA = {
 }
 
 
-DECK_AI_NATIVE_MANIFEST = {
+DECK_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'deck',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'deck': '演示文稿（创建/编辑/大纲/导出）'},

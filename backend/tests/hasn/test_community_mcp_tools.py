@@ -1,4 +1,4 @@
-"""社区 Agent MCP 工具集（32 工具）一致性与入参校验单测。
+"""社区 Agent MCP 工具集（33 工具）一致性与入参校验单测。
 
 零漂移守卫：manifest（运行时权威源）的每个社区工具，必须同时有
   - dispatch handler（community_tool_handlers.handle_community_*，或 get_post/get_article 走 service 直取）
@@ -21,7 +21,7 @@ from backend.app.mcp.scopes import SCOPE_CATALOG
 _SERVICE_DIRECT = {'community.get_post', 'community.get_article'}
 _EXPECTED_TOOLS = {
     'community.get_feed', 'community.get_post', 'community.get_article', 'community.get_comments',
-    'community.search', 'community.get_profile', 'community.get_profile_content',
+    'community.search', 'community.discover_peers', 'community.get_profile', 'community.get_profile_content',
     'community.get_trending_topics', 'community.get_recommended_agents', 'community.get_notifications',
     'community.mark_notifications_read', 'community.create_post', 'community.create_article',
     'community.create_comment', 'community.like', 'community.unlike', 'community.follow',
@@ -34,11 +34,11 @@ _EXPECTED_TOOLS = {
 }
 
 
-def test_manifest_has_32_tools_and_capabilities() -> None:
+def test_manifest_has_33_tools_and_capabilities() -> None:
     caps = COMMUNITY_AI_NATIVE_MANIFEST['capabilities']
     tools = COMMUNITY_AI_NATIVE_MANIFEST['tools']
-    assert len(caps) == 32
-    assert len(tools) == 32
+    assert len(caps) == 33
+    assert len(tools) == 33
     cap_ids = {c['tool_id'] for c in caps}
     tool_ids = {t['tool_id'] for t in tools}
     assert cap_ids == tool_ids == _EXPECTED_TOOLS
@@ -79,8 +79,8 @@ def test_scope_grouping_matches_design() -> None:
     }
     assert by_scope['community:circle'] == {'community.join_circle', 'community.leave_circle'}
     assert by_scope['community:doc'] == {'community.create_doc_space', 'community.create_doc_node'}
-    # 原 11 读 + 话题2 + 圈子读4 + 文档读2 = 19
-    assert len(by_scope['community:read']) == 19
+    # 原 11 读 + 发现同伴1 + 话题2 + 圈子读4 + 文档读2 = 20
+    assert len(by_scope['community:read']) == 20
 
 
 def test_valid_tool_input_create_comment() -> None:
@@ -101,6 +101,9 @@ def test_valid_tool_input_interact_and_read() -> None:
     assert gw._valid_tool_input('community.search', {'query': '   '}) is False  # 空查询
     assert gw._valid_tool_input('community.get_profile_content', {'hasn_id': 'h_1', 'kind': 'posts'}) is True
     assert gw._valid_tool_input('community.get_profile_content', {'hasn_id': 'h_1', 'kind': 'bad'}) is False
+    assert gw._valid_tool_input('community.discover_peers', {}) is True
+    assert gw._valid_tool_input('community.discover_peers', {'peer_type': 'agent', 'limit': 12}) is True
+    assert gw._valid_tool_input('community.discover_peers', {'peer_type': 'unknown'}) is False
     # 无参读取工具
     assert gw._valid_tool_input('community.get_trending_topics', {}) is True
     assert gw._valid_tool_input('community.get_trending_topics', {'limit': 999}) is False  # limit 越界

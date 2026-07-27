@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +11,7 @@ from starlette_context.middleware import ContextMiddleware
 from starlette_context.plugins import RequestIdPlugin
 
 from backend.app.hasn.api.v1.agent import hasn_agents as agent_hasn_agents_api
+from backend.app.hasn.schema.hasn_agents import AgentHeartbeatResponse
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.exception_handler import register_exception
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
@@ -83,7 +83,7 @@ def test_agent_heartbeat_route_reports_only_authenticated_agent(
                 "user_id": user_id,
             }
         )
-        return SimpleNamespace(success=True)
+        return AgentHeartbeatResponse(success=True)
 
     monkeypatch.setattr(
         agent_hasn_agents_api.agent_profile_service,

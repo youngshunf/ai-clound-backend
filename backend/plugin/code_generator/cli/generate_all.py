@@ -25,6 +25,7 @@ from backend.plugin.code_generator.frontend.menu_generator import (
     save_menu_sql_to_file,
 )
 from backend.plugin.code_generator.parser.sql_parser import sql_parser
+from backend.plugin.code_generator.schema.business import UpdateGenBusinessParam
 from backend.plugin.code_generator.schema.gen import ImportParam
 from backend.plugin.code_generator.service.gen_service import gen_service
 
@@ -93,7 +94,10 @@ class GenerateAll:
                 print(f'   注释: {table_info.comment or "无"}', flush=True)
                 print(f'   字段数: {len(table_info.columns)}', flush=True)
             else:
-                table_names = [t.strip() for t in self.table.split(',') if t.strip()]
+                table_arg = self.table
+                if table_arg is None:
+                    raise cappa.Exit('请指定表名', code=1)
+                table_names = [t.strip() for t in table_arg.split(',') if t.strip()]
                 if not table_names:
                     raise cappa.Exit('请指定表名', code=1)
                 print(f'📄 准备处理 {len(table_names)} 个表:', flush=True)
@@ -115,9 +119,9 @@ class GenerateAll:
                 # 步骤1: 检查表是否存在，不存在则自动建表
                 print('\n🔍 检查数据库表...', flush=True)
                 async with async_db_session() as db:
-                    table_info = await gen_dao.get_table(db, self.schema, table_name)
+                    db_table_info = await gen_dao.get_table(db, self.schema, table_name)
 
-                if not table_info:
+                if not db_table_info:
                     if table_name in sql_contents:
                         print(f'   ⚠ 表 {table_name} 不存在，自动执行建表SQL...', flush=True)
                         try:
@@ -134,19 +138,24 @@ class GenerateAll:
                         print('     提示: 使用 --sql-file 参数可自动建表', flush=True)
                         continue
                 else:
-                    print(f'   ✓ 表已存在: {table_info["table_comment"] or table_name}', flush=True)
+                    print(f'   ✓ 表已存在: {db_table_info["table_comment"] or table_name}', flush=True)
 
                 # 步骤2: 导入表元数据到 gen_business/gen_column
                 print('\n📥 导入表元数据...', flush=True)
                 try:
+                    business_id: int | None = None
                     async with async_db_session() as db:
                         existing_business = await gen_business_dao.get_by_name(db, table_name)
 
                     if existing_business:
                         business_id = existing_business.id
                         if existing_business.app_name != self.app:
+                            update_obj = UpdateGenBusinessParam.model_validate(
+                                existing_business,
+                                from_attributes=True,
+                            ).model_copy(update={'app_name': self.app})
                             async with async_db_session.begin() as db:
-                                await gen_business_dao.update(db, business_id, {'app_name': self.app})
+                                await gen_business_dao.update(db, business_id, update_obj)
                             print(f'   ✓ 表元数据已存在 (id={business_id})，app 已更新为 {self.app}', flush=True)
                         else:
                             print(f'   ✓ 表元数据已存在 (id={business_id})', flush=True)
@@ -175,6 +184,10 @@ class GenerateAll:
                 # 步骤3: 生成前端代码
                 print('\n🎨 生成前端代码...', flush=True)
                 try:
+                    if business_id is None:
+                        print('   ⚠ 表元数据缺少有效 ID，跳过', flush=True)
+                        continue
+
                     await frontend_generator.generate_from_db(
                         business_id=business_id,
                         app=self.app,

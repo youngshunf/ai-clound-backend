@@ -82,7 +82,9 @@ async def load_app_tools_for_owner(owner_id: str) -> list[BaseTool]:
     """
     from backend.app.mcp.tools.app_tool_loader import load_published_app_tools
 
-    return await load_published_app_tools()
+    tools: list[BaseTool] = []
+    tools.extend(await load_published_app_tools())
+    return tools
 
 
 class HasnCloudMcpServer:
@@ -445,7 +447,10 @@ class HasnCloudMcpServer:
         from backend.common.exception import errors
         from backend.database.db import async_db_session
 
-        subject = Subject.agent(agent_context.agent_hasn_id, agent_context.owner_hasn_id)
+        owner_hasn_id = agent_context.owner_hasn_id
+        if not owner_hasn_id:
+            raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, 'AgentContext 缺少主人身份')
+        subject = Subject.agent(agent_context.agent_hasn_id, owner_hasn_id)
         try:
             async with async_db_session() as db:
                 authorized = await resource_gate.enforce_declaration(db, subject, declarations, arguments)
@@ -588,7 +593,7 @@ class HasnCloudMcpServer:
         """
         if source == 'external':
             tool_name = getattr(tool, 'name', '')
-            allowed = getattr(agent_context, 'external_allowed_tools', set()) or set()
+            allowed: set[str] = getattr(agent_context, 'external_allowed_tools', set()) or set()
             if tool_name not in allowed:
                 # 防御性兜底：external 工具不在本 Agent 授权集合 → 拒绝（发现层已挡，此为执行层兜底）。
                 raise McpToolError(
@@ -599,15 +604,18 @@ class HasnCloudMcpServer:
 
     async def _load_app_tools(self, agent_context: AgentContext) -> None:
         try:
+            owner_hasn_id = agent_context.owner_hasn_id
+            if not owner_hasn_id:
+                raise McpToolError(McpErrorCode.DIRECT_CALL_DENIED, 'AgentContext 缺少主人身份')
             agent_tools = await load_app_tools_for_agent(
                 agent_id=agent_context.hasn_id,
-                owner_id=agent_context.owner_id,
+                owner_id=owner_hasn_id,
             )
-            owner_tools = await load_app_tools_for_owner(owner_id=agent_context.owner_id)
-            for tool in [*agent_tools, *owner_tools]:
-                if self.tool_registry.get_tool(tool.name):
-                    continue
-                self.tool_registry.register(tool)
+            owner_tools = await load_app_tools_for_owner(owner_id=owner_hasn_id)
+            self.tool_registry.replace_source_tools(
+                'app',
+                [*agent_tools, *owner_tools],
+            )
         except Exception as e:
             logger.error(f'Failed to load app tools: {e}', exc_info=True)
 

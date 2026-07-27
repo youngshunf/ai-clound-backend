@@ -23,9 +23,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.model.hasn_conversations import HasnConversations
 from backend.app.hasn.model.hasn_group_agent_invites import HasnGroupAgentInvites
-from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
+from backend.app.hasn.model.hasn_conversation_memberships import (
+    HasnConversationMemberships as HasnGroupMembers,
+)
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.hasn_im.application.errors import ImSendRejected
+from backend.app.hasn.service.group_im_outbox import GROUP_IM_OUTBOX
+from backend.app.hasn_im.adapters.sqlalchemy_producer_outbox import (
+    enqueue_send_message,
+)
+from backend.app.hasn_im.application import membership_service
 from backend.app.hasn_im.application.provider import get_im_gateway
 from backend.app.hasn_im.ports.dto import (
     ActorKind,
@@ -33,6 +39,7 @@ from backend.app.hasn_im.ports.dto import (
     SendMessageCommand,
     ServicePrincipal,
 )
+from backend.app.hasn_im.ports.im_gateway import ImGateway
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -317,7 +324,11 @@ class HasnGroupService:
             (
                 await db.execute(
                     select(HasnGroupMembers)
-                    .where(HasnGroupMembers.conversation_id == conv_id)
+                    .where(
+                        HasnGroupMembers.conversation_id == conv_id,
+                        HasnGroupMembers.left_seq.is_(None),
+                        HasnGroupMembers.state == 'active',
+                    )
                     .order_by(HasnGroupMembers.joined_at.asc())
                 )
             )
@@ -345,18 +356,22 @@ class HasnGroupService:
         roster: list[HasnGroupMembers],
     ) -> HasnGroupMembers:
         mtype, mname, mstar = await cls._resolve_meta(db, hasn_id)
-        row = HasnGroupMembers(
-            conversation_id=conv_id,
-            member_id=hasn_id,
+        conv = await db.get(HasnConversations, conv_id)
+        if conv is None:
+            raise errors.NotFoundError(msg='群组不存在')
+        row = await membership_service.join_epoch(
+            db,
+            str(conv_id),
+            hasn_id,
+            current_seq=int(conv.current_seq or 0),
             member_type=mtype,
-            member_star_id=mstar,
-            member_name=mname,
             role=role,
-            muted=False,
-            joined_at=now,
-            invited_by=invited_by,
         )
-        db.add(row)
+        row.member_star_id = mstar
+        row.member_name = mname
+        row.muted = False
+        row.joined_at = now
+        row.invited_by = invited_by
         roster.append(row)
         return row
 
@@ -436,6 +451,7 @@ class HasnGroupService:
     @classmethod
     async def _send_agent_invite_card(
         cls,
+        db: AsyncSession,
         *,
         invite_id: int,
         group_public_id: str,
@@ -445,15 +461,9 @@ class HasnGroupService:
         agent_owner_id: str,
         inviter_id: str,
         inviter_name: str,
-    ) -> None:
-        """向分身主人发拉分身确认卡片（复用既有卡片 action/resolved 审批范式）。
-
-        经 ImGateway(route_message 封装) 发送 content_type=5（含跨设备 sync_event + WS 推送）。
-        daemon 收到卡片 action（group_agent_invite.accepted/declined）→ 代理云端 accept/decline 端点。
-        best-effort：投递失败不回滚邀请（邀请行是权威，主人可从群详情 pending 列表处理）。
-        """
-        from backend.database.db import async_db_session
-
+        im_gateway: ImGateway | None = None,
+    ) -> str:
+        """与邀请状态同事务登记主人确认卡命令。"""
         card = {
             'schema_version': 'hasn.card/0.1',
             'title': f'{inviter_name} 想把你的分身 {agent_name} 拉进群 {group_name}',
@@ -461,7 +471,7 @@ class HasnGroupService:
             'source': {'kind': 'system', 'display_name': '群邀请'},
             'resource': {
                 'type': 'group',
-                'id': str(invite_id),
+                'id': group_public_id,
                 'uri': f'hasn://groups/{group_public_id}',
                 'title': group_name,
                 'metadata': {
@@ -498,32 +508,37 @@ class HasnGroupService:
                 },
             ],
         }
-        try:
-            principal = _actor_principal(inviter_id)
-            async with async_db_session() as card_db:
-                gateway = get_im_gateway()
-                conv_ref = await gateway.ensure_direct_conversation(
-                    EnsureDirectConversationCommand(peer_hasn_id=agent_owner_id, relation_type='social'),
-                    principal,
-                )
-                await gateway.send_message(
-                    SendMessageCommand(
-                        conversation_id=conv_ref.conversation_id,
-                        content=card,
-                        content_type=5,
-                        msg_type='message',
-                        context={
-                            'projection_kind': 'group_agent_invite',
-                            'invite_id': invite_id,
-                            'group_id': group_public_id,
-                        },
-                    ),
-                    principal,
-                )
-        except ImSendRejected:
-            pass
-        except Exception:  # noqa: BLE001 - best-effort：投递失败不回滚邀请
-            pass
+        # 卡片投递到“受邀分身 ⇄ 该分身主人”的自有直聊，避免把群邀请伪装成
+        # 陌生人 H2H 消息绕过关系门；邀请人身份保留在卡片正文和 context。
+        principal = _actor_principal(agent_hasn_id)
+        gateway = im_gateway or get_im_gateway()
+        conv_ref = await gateway.ensure_direct_conversation(
+            EnsureDirectConversationCommand(
+                peer_hasn_id=agent_owner_id,
+                relation_type='social',
+            ),
+            principal,
+        )
+        idempotency_key = f'group:agent-invite:{invite_id}:owner-card'
+        return await enqueue_send_message(
+            db,
+            table=GROUP_IM_OUTBOX,
+            command=SendMessageCommand(
+                conversation_id=conv_ref.conversation_id,
+                content=card,
+                content_type=5,
+                msg_type='card',
+                idempotency_key=idempotency_key,
+                context={
+                    'projection_kind': 'group_agent_invite',
+                    'invite_id': invite_id,
+                    'group_id': group_public_id,
+                    'inviter_id': inviter_id,
+                },
+            ),
+            principal=principal,
+            causation_id=f'group-invite:{invite_id}',
+        )
 
     # ─── 对外编排 ───
     @classmethod
@@ -604,7 +619,9 @@ class HasnGroupService:
             (
                 await db.execute(
                     select(HasnGroupMembers.conversation_id).where(
-                        HasnGroupMembers.member_id == hasn_id
+                        HasnGroupMembers.member_id == hasn_id,
+                        HasnGroupMembers.left_seq.is_(None),
+                        HasnGroupMembers.state == 'active',
                     )
                 )
             )
@@ -635,7 +652,11 @@ class HasnGroupService:
                 (
                     await db.execute(
                         select(HasnGroupMembers)
-                        .where(HasnGroupMembers.conversation_id.in_(active_ids))
+                        .where(
+                            HasnGroupMembers.conversation_id.in_(active_ids),
+                            HasnGroupMembers.left_seq.is_(None),
+                            HasnGroupMembers.state == 'active',
+                        )
                         .order_by(HasnGroupMembers.joined_at.asc())
                     )
                 )
@@ -694,6 +715,7 @@ class HasnGroupService:
         actor_hasn_id: str,
         group_id: str,
         members: list[dict[str, Any]],
+        im_gateway: ImGateway | None = None,
     ) -> dict[str, Any]:
         """加成员（任意群成员可加人）。
 
@@ -724,6 +746,9 @@ class HasnGroupService:
                 agent_owner = await cls._agent_owner_id(db, mid)
                 # ② 主人同意分叉：非主人发起（含群主/管理员）一律走邀请确认
                 if agent_owner and agent_owner != actor_hasn_id:
+                    group_public_id = conv.group_id
+                    if not group_public_id:
+                        raise errors.ServerError(msg='群会话缺少 group_id')
                     # 幂等：已有 pending 邀请 → 跳过（不重复发起）
                     dup = (
                         await db.execute(
@@ -738,7 +763,7 @@ class HasnGroupService:
                         continue
                     inv = HasnGroupAgentInvites(
                         conversation_id=conv.id,
-                        group_id=conv.group_id,
+                        group_id=group_public_id,
                         agent_hasn_id=mid,
                         agent_owner_id=agent_owner,
                         inviter_id=actor_hasn_id,
@@ -749,14 +774,16 @@ class HasnGroupService:
                     agent_name = await cls._resolve_display_name(db, mid)
                     inviter_name = await cls._resolve_display_name(db, actor_hasn_id)
                     await cls._send_agent_invite_card(
+                        db,
                         invite_id=inv.id,
-                        group_public_id=conv.group_id,
-                        group_name=conv.group_name or conv.group_id,
+                        group_public_id=group_public_id,
+                        group_name=conv.group_name or group_public_id,
                         agent_hasn_id=mid,
                         agent_name=agent_name,
                         agent_owner_id=agent_owner,
                         inviter_id=actor_hasn_id,
                         inviter_name=inviter_name,
+                        im_gateway=im_gateway,
                     )
                     invited.append({'agent_hasn_id': mid, 'invite_id': inv.id, 'agent_owner_id': agent_owner})
                     continue
@@ -798,7 +825,13 @@ class HasnGroupService:
                 allowed = target_owner == actor_hasn_id
             if not allowed:
                 raise errors.ForbiddenError(msg='仅群主/管理员可移除成员')
-        await db.delete(target)
+        await membership_service.leave_epoch(
+            db,
+            str(conv.id),
+            member_id,
+            current_seq=int(conv.current_seq or 0),
+            state='left' if actor_hasn_id == member_id else 'removed',
+        )
         conv.member_count = max(0, (conv.member_count or 1) - 1)
         await db.flush()
         # 减员可能恢复生效策略（2→1 分身回到 free）→ 广播刷新（含被移除成员 owner，故用移除前 roster）
@@ -875,6 +908,8 @@ class HasnGroupService:
                     HasnGroupMembers.conversation_id == conv.id,
                     HasnGroupMembers.member_id == agent_hasn_id,
                     HasnGroupMembers.member_type == 'agent',
+                    HasnGroupMembers.left_seq.is_(None),
+                    HasnGroupMembers.state == 'active',
                 )
             )
         ).scalar_one_or_none()
@@ -921,6 +956,8 @@ class HasnGroupService:
                     HasnGroupMembers.conversation_id == conv.id,
                     HasnGroupMembers.member_id == agent_hasn_id,
                     HasnGroupMembers.member_type == 'agent',
+                    HasnGroupMembers.left_seq.is_(None),
+                    HasnGroupMembers.state == 'active',
                 )
             )
         ).scalar_one_or_none()
@@ -1119,6 +1156,15 @@ class HasnGroupService:
         conv = await cls._get_group_or_404(db, group_id)
         if actor_hasn_id != conv.group_owner_id:
             raise errors.ForbiddenError(msg='仅群主可解散群')
+        roster = await cls._load_members(db, conv.id)
+        for member in roster:
+            await membership_service.leave_epoch(
+                db,
+                str(conv.id),
+                member.member_id,
+                current_seq=int(conv.current_seq or 0),
+                state='removed',
+            )
         conv.status = 'disbanded'
         await db.flush()
         return {'group_id': group_id, 'status': 'disbanded'}

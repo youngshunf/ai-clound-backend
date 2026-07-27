@@ -21,10 +21,11 @@ permission_engine 的 iron_law_6 在 route_message DENY 路径落抑制箱，本
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import sqlalchemy as sa
 
@@ -40,6 +41,7 @@ from backend.app.hasn.service.effective_relation import (
     resolve_effective_relation,
 )
 from backend.common.log import log
+from backend.database.schema_names import SCHEMA_NAMES
 
 # 门控动作
 ALLOW = 'allow'
@@ -56,9 +58,41 @@ class GateOutcome:
     snapshot: dict[str, Any] = field(default_factory=dict)  # 门控上下文（脱敏后供主人理解）
 
 
-async def _load_agent(db: Any, hasn_id: str) -> HasnAgents | None:
-    result = await db.execute(select(HasnAgents).where(HasnAgents.hasn_id == hasn_id))
-    return result.scalar_one_or_none()
+@dataclass(frozen=True)
+class _AgentGateState:
+    """消息门控所需的身份状态与 IM 通信设置。"""
+
+    status: str
+    social_enabled: bool
+    inbound_policy: str
+
+
+async def _load_agent(db: Any, hasn_id: str) -> _AgentGateState | None:
+    """读取身份存活态与 IM 权威通信设置，不再依赖身份表兼容列。"""
+    settings_table = SCHEMA_NAMES.im_table('agent_communication_settings')
+    row = (
+        await db.execute(
+            sa.text(
+                f"""
+                SELECT agent.status,
+                       COALESCE(settings.social_enabled, true) AS social_enabled,
+                       COALESCE(settings.inbound_policy, 'auto') AS inbound_policy
+                FROM public.hasn_agents AS agent
+                LEFT JOIN {settings_table} AS settings
+                  ON settings.agent_hasn_id = agent.hasn_id
+                WHERE agent.hasn_id = :hasn_id
+                """  # noqa: S608 表名来自进程固定 schema 配置
+            ),
+            {'hasn_id': hasn_id},
+        )
+    ).mappings().one_or_none()
+    if row is None:
+        return None
+    return _AgentGateState(
+        status=row['status'],
+        social_enabled=bool(row['social_enabled']),
+        inbound_policy=str(row['inbound_policy'] or 'auto'),
+    )
 
 
 async def _load_contact(db: Any, owner_id: str, peer_id: str) -> HasnContacts | None:
@@ -88,18 +122,18 @@ async def _materialize_edge(
     协议 §7.6 继承规则的**入站对称**落地（出站侧 daemon 已有同规则）。用 UPSERT 兜历史行，
     add_source='auto_materialized' 标注来源，供审计区分「主人手动加」与「派生自动加」。
     """
-    from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
+    from backend.app.hasn_im.application.provider import (
+        get_transactional_relation_gateway,
+    )
 
-    await hasn_contacts_dao.upsert_connected(
-        db,
-        owner_id=owner_id,
-        peer_id=peer_agent,
-        peer_type='agent',
-        relation_type='social',
+    if not peer_owner_id:
+        raise ValueError('自动物化关系缺少对方分身主人')
+    gateway = get_transactional_relation_gateway(db)
+    await gateway.materialize_derived_agent(
+        owner_hasn_id=owner_id,
+        peer_agent_hasn_id=peer_agent,
+        peer_owner_hasn_id=peer_owner_id,
         trust_level=trust_level,
-        peer_owner_id=peer_owner_id,
-        channel_source='system',
-        add_source='auto_materialized',
     )
 
 
@@ -110,33 +144,20 @@ async def _auto_first_contact_request(
 
     请求方 from_id = **发送分身本体**（与暂存消息的 from_id 一致，放行/联系人页 accept 才能按
     同一 peer 反向联动重投）；审批人 to_owner_id = 接收方主人 A。已有 pending 幂等返回其 id
-    （partial unique 索引 + 应用层去重双保险，绝不重复建）。任何异常 → None（退化为纯门控暂存）。
+    （partial unique 索引 + 应用层去重双保险，绝不重复建）。关系事实与抑制命令共用 IM 事务，
+    任一步失败都整体回滚，禁止产生无法追溯的半状态。
     """
-    from backend.app.hasn.crud.crud_hasn_contact_requests import hasn_contact_requests_dao
+    from backend.app.hasn_im.application.provider import (
+        get_transactional_relation_gateway,
+    )
 
-    try:
-        pending = await hasn_contact_requests_dao.get_active_pending(
-            db, from_agent, receiver_target, 'social',
-        )
-        if pending:
-            return pending.id
-        req = await hasn_contact_requests_dao.create_request(
-            db,
-            from_id=from_agent,
-            from_type='agent',
-            to_id=receiver_target,
-            to_type=receiver_type,
-            to_owner_id=receiver_owner,
-            relation_type='social',
-            requested_trust_level=2,
-            message=None,
-            channel_source='system',
-            add_source='auto_first_contact',
-        )
-        return req.id
-    except Exception as exc:  # noqa: BLE001 - 代发失败不应阻塞入站暂存
-        log.warning(f'[inbound_gate] 自动代发好友请求异常: {exc}')
-        return None
+    gateway = get_transactional_relation_gateway(db)
+    return await gateway.ensure_auto_first_contact_request(
+        from_agent_hasn_id=from_agent,
+        receiver_hasn_id=receiver_target,
+        receiver_owner_hasn_id=receiver_owner,
+        receiver_type=receiver_type,
+    )
 
 
 async def _derive_via_owner(
@@ -178,7 +199,7 @@ async def _derive_via_owner(
         return GateOutcome(REJECT_SILENT, 'permission_denied', {'reason': 'owner_blocked'})
 
     if decision == DELIVER:
-        inherit_trust = int(verdict['inherit_trust'] or 0)
+        inherit_trust = cast(int | None, verdict['inherit_trust']) or 0
         await _materialize_edge(
             db, owner_id=receiver_owner_id, peer_agent=from_agent,
             peer_owner_id=owner_b, trust_level=inherit_trust,
@@ -271,6 +292,13 @@ async def evaluate_inbound(
     to_id = agent_info.get('hasn_id', '')
     owner_id = agent_info.get('owner_id')
 
+    if not to_id or not owner_id:
+        return GateOutcome(
+            SUPPRESS,
+            'permission_denied',
+            {'decision_reason': 'gate_error'},
+        )
+
     # 0. Owner 直放（route 已过滤，双保险）
     if owner_id and from_id == owner_id:
         return GateOutcome(ALLOW)
@@ -278,8 +306,12 @@ async def evaluate_inbound(
     try:
         agent = await _load_agent(db, to_id)
         if agent is None:
-            # 目标不存在交给 resolve_target（已返回 None）；这里出现说明并发删除，放行交后续兜底
-            return GateOutcome(ALLOW)
+            # resolve_target 后并发删除也必须 fail-closed，禁止把不存在身份误判为可投递。
+            return GateOutcome(
+                SUPPRESS,
+                'permission_denied',
+                {'decision_reason': 'gate_error'},
+            )
 
         # 1. 状态/冻结：非 active（disabled/revoked/archived，未来 frozen）→ 不唤醒，暂留待恢复
         if agent.status and agent.status != 'active':
@@ -341,46 +373,103 @@ async def evaluate_inbound(
 async def record_suppression(
     db: Any,
     *,
-    message_id: int,
     owner_id: str,
     hasn_id: str,
     conversation_id: str,
+    sender_hasn_id: str,
+    idempotency_scope: str,
+    command_hash: str,
+    command_payload: dict[str, Any],
     reason: str,
     policy_snapshot: dict[str, Any] | None = None,
     dispatch_status: str = 'suppressed_by_policy',
-) -> None:
-    """把已落库的受抑制消息写入抑制箱（hasn_suppressed_messages，visible_to_owner=true）。
+) -> dict[str, Any]:
+    """把待放行发送命令写入抑制箱，不创建消息、不占用会话序号。
 
-    与 hasn_message_hub_service.store_suppressed 同 SQL 形态（ON CONFLICT(message_id) 幂等）；
-    入参为裸字段，供 route_message 的入站门控路径复用，不绑定 hub 的 StoredMessage。
+    ``idempotency_scope`` 唯一约束保证同发送主体、来源节点和幂等键只产生一条抑制命令。
+    同键不同 ``command_hash`` 显式报冲突，禁止覆盖已待主人审核的正文。
     """
-    await db.execute(
-        sa.text(
-            """
-            INSERT INTO hasn_suppressed_messages (
-                message_id, owner_id, hasn_id, conversation_id,
-                suppress_reason, dispatch_status, policy_snapshot,
-                runtime_summary, visible_to_owner, created_time
-            ) VALUES (
-                CAST(:message_id AS bigint), :owner_id, :hasn_id, CAST(:conversation_id AS uuid),
-                :suppress_reason, :dispatch_status, CAST(:policy_snapshot AS jsonb),
-                CAST('{}' AS jsonb), true, now()
-            )
-            ON CONFLICT (message_id) DO UPDATE SET
-                suppress_reason = EXCLUDED.suppress_reason,
-                dispatch_status = EXCLUDED.dispatch_status,
-                policy_snapshot = EXCLUDED.policy_snapshot,
-                visible_to_owner = true,
-                updated_time = now()
-            """
-        ),
-        {
-            'message_id': message_id,
-            'owner_id': owner_id,
-            'hasn_id': hasn_id,
-            'conversation_id': conversation_id,
-            'suppress_reason': reason,
-            'dispatch_status': dispatch_status,
-            'policy_snapshot': json.dumps(policy_snapshot or {}, ensure_ascii=False),
-        },
+    suppressed_table = SCHEMA_NAMES.im_table('hasn_suppressed_messages')
+    inserted = (
+        await db.execute(
+            sa.text(
+                f"""
+                INSERT INTO {suppressed_table} (
+                    message_id, owner_id, hasn_id, conversation_id,
+                    sender_hasn_id, idempotency_scope, command_hash, command_payload,
+                    suppress_reason, dispatch_status, policy_snapshot,
+                    runtime_summary, visible_to_owner, created_time
+                ) VALUES (
+                    NULL, :owner_id, :hasn_id, CAST(:conversation_id AS uuid),
+                    :sender_hasn_id, :idempotency_scope, :command_hash,
+                    CAST(:command_payload AS jsonb),
+                    :suppress_reason, :dispatch_status, CAST(:policy_snapshot AS jsonb),
+                    CAST('{{}}' AS jsonb), true, now()
+                )
+                ON CONFLICT (idempotency_scope)
+                    WHERE idempotency_scope IS NOT NULL
+                DO NOTHING
+                RETURNING id, message_id, command_hash, resolved_at
+                """  # noqa: S608 表名来自进程固定的 schema 配置
+            ),
+            {
+                'owner_id': owner_id,
+                'hasn_id': hasn_id,
+                'conversation_id': conversation_id,
+                'sender_hasn_id': sender_hasn_id,
+                'idempotency_scope': idempotency_scope,
+                'command_hash': command_hash,
+                'command_payload': json.dumps(
+                    command_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(',', ':'),
+                ),
+                'suppress_reason': reason,
+                'dispatch_status': dispatch_status,
+                'policy_snapshot': json.dumps(policy_snapshot or {}, ensure_ascii=False),
+            },
+        )
+    ).mappings().one_or_none()
+    if inserted is not None:
+        return dict(inserted)
+
+    existing = (
+        await db.execute(
+            sa.text(
+                f"""
+                SELECT id, message_id, command_hash, resolved_at
+                FROM {suppressed_table}
+                WHERE idempotency_scope = :idempotency_scope
+                FOR UPDATE
+                """  # noqa: S608 表名来自进程固定的 schema 配置
+            ),
+            {'idempotency_scope': idempotency_scope},
+        )
+    ).mappings().one()
+    if existing['command_hash'] != command_hash:
+        raise ValueError('同一幂等键已被不同的抑制消息命令使用')
+    return dict(existing)
+
+
+def suppression_command_identity(
+    *,
+    sender_hasn_id: str,
+    origin_node_id: str | None,
+    idempotency_key: str,
+    command_payload: dict[str, Any],
+) -> tuple[str, str]:
+    """计算抑制命令唯一作用域和载荷指纹。"""
+    scope_source = '\0'.join(
+        (sender_hasn_id, origin_node_id or '', idempotency_key)
+    )
+    canonical_payload = json.dumps(
+        command_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    return (
+        hashlib.sha256(scope_source.encode()).hexdigest(),
+        hashlib.sha256(canonical_payload.encode()).hexdigest(),
     )

@@ -20,11 +20,11 @@ from typing import TYPE_CHECKING, Literal
 
 import sqlalchemy as sa
 
-from backend.app.hasn.crud.crud_hasn_humans import hasn_humans_dao
+from backend.app.hasn_core import hasn_humans_dao
 from backend.app.hasn.model.hasn_enterprise_member_role import HasnEnterpriseMemberRole
 from backend.app.hasn.model.hasn_enterprise_membership import HasnEnterpriseMembership
 from backend.app.hasn.model.hasn_enterprise_role import HasnEnterpriseRole
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnHumans
 from backend.app.hasn.model.hasn_resource_share import HasnResourceShare
 from backend.app.hasn.service.resource_share_service import ResourceShareService
 from backend.app.hasn_plan.model import Event, EventAttendee

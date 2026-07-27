@@ -7,8 +7,14 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 from typing import TYPE_CHECKING, Any
 
+from backend.app.hasn_im.adapters.sqlalchemy_producer_outbox import (
+    enqueue_send_message,
+)
 from backend.app.hasn_im.application.errors import ImSendRejected
 from backend.app.hasn_im.application.provider import get_im_gateway
 from backend.app.hasn_im.ports.dto import (
@@ -17,7 +23,11 @@ from backend.app.hasn_im.ports.dto import (
     SendMessageCommand,
     ServicePrincipal,
 )
+from backend.app.hasn_im.ports.im_gateway import ImGateway
 from backend.app.hasn.schema.hasn_card_message import validate_card_message_body
+from backend.app.notification.service.notification_im_outbox import (
+    NOTIFICATION_IM_OUTBOX,
+)
 from backend.common.exception import errors
 
 if TYPE_CHECKING:
@@ -77,7 +87,7 @@ def build_card_body(
             'style': 'primary',
         }
 
-    body = {
+    body: dict[str, Any] = {
         'schema_version': 'hasn.card/0.1',
         'title': notif.title or '新通知',
         'description': notif.body or None,
@@ -160,31 +170,81 @@ async def _persist_card(
     priority: str,
     notif_id: int | None = None,
     msg_type: str = 'notification',
-) -> int:
-    """落卡片消息到「from ⇄ 接收方」会话，返回消息 id（绕开 social 权限矩阵：主人自见）。
+    gateway: ImGateway | None = None,
+) -> str:
+    """ensure 会话并在调用方事务登记卡片发送命令，返回 command_id。
 
     notif_id 为 None 时是「汇报面」卡片（分身→主人主会话，非通知投影，无权威通知行）。
 
-    R1-06 收编：投递机制（get_or_create + persist_message + message.received sync_event）
-    下沉到通信域 `hasn_im.application.system_card_deliverer`——notification 域只负责构造
-    卡片体（`build_card_body` / `build_report_card_body`），落库交给通信域，`persist_message`
-    业务层零直连（§1.1/§1.2-3 消灭第二套落库旁路）。复用调用方 db、不 commit：`emit()`
-    的「权威通知行 + 卡片 + sync event」单事务原子不变量保持不变。
+    ensure 允许先于业务事务产生空会话；发送命令与通知/完成状态同事务写入通知生产方自有
+    outbox。提交后由统一 relay 以稳定幂等键调用 ImGateway，消除业务提交后的崩溃窗口。
     """
-    from backend.app.hasn_im.application.system_card_deliverer import deliver_system_card
+    del peer_type
+    if from_id.startswith('a_'):
+        actor_kind = ActorKind.AGENT
+    elif from_id.startswith('h_'):
+        actor_kind = ActorKind.HUMAN
+    else:
+        actor_kind = ActorKind.SYSTEM_SERVICE
+    principal = ServicePrincipal(
+        canonical_sender=from_id,
+        actor_kind=actor_kind,
+    )
+    try:
+        conversation = await (gateway or get_im_gateway()).ensure_direct_conversation(
+            EnsureDirectConversationCommand(
+                peer_hasn_id=recipient_id,
+                relation_type=relation_type,
+            ),
+            principal,
+        )
+    except ImSendRejected as exc:
+        raise errors.ServerError(msg=f'通知卡片建立会话失败: {exc}') from exc
+    except Exception as exc:
+        raise errors.ServerError(msg=f'通知卡片建立会话失败: {exc}') from exc
 
-    return await deliver_system_card(
+    if notif_id is not None:
+        idempotency_key = (
+            f'notification:{notif_id}:{from_id}:{recipient_id}:card'
+        )
+        causation_id = f'notification:{notif_id}'
+    else:
+        cause = json.dumps(
+            {
+                'from_id': from_id,
+                'recipient_id': recipient_id,
+                'resource': card_body.get('resource'),
+                'title': card_body.get('title'),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        digest = hashlib.sha256(cause.encode()).hexdigest()
+        idempotency_key = f'notification:report:{digest}'
+        causation_id = f'report:{digest}'
+    return await enqueue_send_message(
         db,
-        recipient_id=recipient_id,
-        recipient_type=_recipient_entity_type(recipient_id),
-        from_id=from_id,
-        peer_type=peer_type,
-        relation_type=relation_type,
-        conversation_type=conversation_type,
-        card_body=card_body,
-        priority=priority,
-        msg_type=msg_type,
-        notif_id=notif_id,
+        table=NOTIFICATION_IM_OUTBOX,
+        command=SendMessageCommand(
+            conversation_id=conversation.conversation_id,
+            content=card_body,
+            content_type=_CONTENT_TYPE_CARD,
+            idempotency_key=idempotency_key,
+            msg_type=msg_type,
+            priority=(
+                priority
+                if priority in ('critical', 'high', 'normal', 'low')
+                else 'normal'
+            ),
+            context={
+                'relation_type': relation_type,
+                'notification_id': notif_id,
+                'conversation_type': conversation_type,
+            },
+        ),
+        principal=principal,
+        causation_id=causation_id,
     )
 
 
@@ -194,8 +254,9 @@ async def deliver_card_to_owner(
     recipient_id: str,
     account: HasnServiceAccounts,
     notif: HasnNotifications,
-) -> int:
-    """把通知卡片投递到「服务号 ⇄ 接收方」的 service 会话，返回消息 id。"""
+    gateway: ImGateway | None = None,
+) -> str:
+    """登记「服务号 ⇄ 接收方」通知卡片命令，返回 command_id。"""
     card_body = build_card_body(
         notif,
         source_kind=account.kind,
@@ -214,6 +275,7 @@ async def deliver_card_to_owner(
         card_body=card_body,
         priority=notif.priority,
         notif_id=notif.id,
+        gateway=gateway,
     )
 
 
@@ -223,7 +285,8 @@ async def deliver_agent_card_to_owner(
     recipient_id: str,
     source: dict[str, Any],
     notif: HasnNotifications,
-) -> int:
+    gateway: ImGateway | None = None,
+) -> str:
     """Agent 源通知卡片投递到「主人 ⇄ agent」既有 social 会话（§4.5：agent 本身即会话身份）。
 
     relation_type 用 'social'（与 message_router 对 h_/a_ 收件方的默认一致），确保落进主人
@@ -248,6 +311,7 @@ async def deliver_agent_card_to_owner(
         card_body=card_body,
         priority=notif.priority,
         notif_id=notif.id,
+        gateway=gateway,
     )
 
 
@@ -257,19 +321,9 @@ async def deliver_card_to_agent(
     agent_id: str,
     account: HasnServiceAccounts,
     notif: HasnNotifications,
-) -> int:
-    """收件方是 Agent 的通知卡片（§4.5 发 Agent）：经
-    `ImGateway.send_message(from=服务号, to=agent, msg_type=notification)` 投递到「服务号 ⇄ Agent」
-    direct 会话，返回消息 id。
-
-    与 `deliver_card_to_owner`（直写 `_persist_card` 绕权限矩阵）的本质区别：发给 Agent
-    需走 ImGateway 才能复用「既有 agent dispatch（投 runtime，让分身去处理这条通知）
-    + 既有 owner_copy（message.received sync_event owner_id=Agent 的主人，主人旁观透明）」。
-    服务号 → Agent 经 permission_engine 默认 ALLOW（iron_laws 全过：service 源 entity_type
-    非 agent、非承诺行为、卡片无敏感字段、relation 非 commerce、未超滑窗限频），无需改权限矩阵。
-    relation_type='service' 使会话落「服务号 ⇄ Agent」service 会话（与「服务号 ⇄ 主人」同源
-    异会话，对应 D6 一个服务号下多条子会话）。
-    """
+    gateway: ImGateway | None = None,
+) -> str:
+    """登记「服务号 ⇄ Agent」通知卡片命令，返回 command_id。"""
     card_body = build_card_body(
         notif,
         source_kind=account.kind,
@@ -278,40 +332,18 @@ async def deliver_card_to_agent(
         source_icon=account.avatar or None,
         source_verified=account.verified,
     )
-    principal = ServicePrincipal(
-        canonical_sender=account.sa_hasn_id,
-        actor_kind=ActorKind.SYSTEM_SERVICE if account.kind == 'system' else ActorKind.HUMAN,
+    return await _persist_card(
+        db,
+        recipient_id=agent_id,
+        from_id=account.sa_hasn_id,
+        peer_type='agent',
+        relation_type='service',
+        conversation_type='service',
+        card_body=card_body,
+        priority=notif.priority,
+        notif_id=notif.id,
+        gateway=gateway,
     )
-    try:
-        gateway = get_im_gateway()
-        conv_ref = await gateway.ensure_direct_conversation(
-            EnsureDirectConversationCommand(peer_hasn_id=agent_id, relation_type='service'),
-            principal,
-        )
-        send_result = await gateway.send_message(
-            SendMessageCommand(
-                conversation_id=conv_ref.conversation_id,
-                content=card_body,
-                content_type=_CONTENT_TYPE_CARD,
-                msg_type='notification',
-                priority=notif.priority if notif.priority in ('critical', 'high', 'normal', 'low') else 'normal',
-                context={
-                    'relation_type': 'service',
-                    'notification_id': notif.id,
-                    'conversation_type': 'service',
-                },
-            ),
-            principal,
-        )
-    except ImSendRejected as exc:
-        raise errors.ServerError(msg=f'通知卡片投递 Agent 失败: {exc}') from exc
-    except Exception as exc:
-        raise errors.ServerError(msg=f'通知卡片投递 Agent 失败: {exc}') from exc
-
-    message_id = send_result.message_id
-    if message_id is None:
-        raise errors.ServerError(msg='通知卡片投递 Agent 失败: 未获取消息 ID')
-    return message_id
 
 
 # ==================== 汇报面（分身 → 主人主会话，非通知投影） ====================
@@ -392,8 +424,9 @@ async def deliver_report_card_to_owner(
     body: str | None,
     payload: dict[str, Any],
     priority: str = 'normal',
-) -> int:
-    """汇报面：把分身「操作完成/汇报」卡片投进「主人 ⇄ 该分身」既有主会话，返回消息 id。
+    gateway: ImGateway | None = None,
+) -> str:
+    """汇报面：登记分身完成卡发送命令，返回 command_id。
 
     R2：分身自己发起的操作（完成/汇报）**不落 hasn_notifications 权威行**——它是分身向主人的
     普通会话消息（agent 本身即会话身份），未读自然挂在「与该分身的会话」上。relation_type='social'
@@ -411,4 +444,5 @@ async def deliver_report_card_to_owner(
         card_body=card_body,
         priority=priority,
         notif_id=None,
+        gateway=gateway,
     )

@@ -184,7 +184,7 @@ def test_plan_scope_in_platform_catalog() -> None:
     )
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_todo_create_requires_notes_for_agent_actor() -> None:
     """actor=agent/collab 的委托待办缺 notes → 返回 notes_required（不写库、不报 500）。"""
     res = await _tool('hasn.plan.todo.create').execute(
@@ -195,7 +195,7 @@ async def test_todo_create_requires_notes_for_agent_actor() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_goal_and_todo_roundtrip_real_db() -> None:
     """真实 PG：建目标→读→改→列→删；capture→triage→读。事务真提交，测试后清理。"""
     if not await _db_reachable():

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -154,7 +154,7 @@ def test_workbench_codegen_schemas_validate_workspace_and_instance_invariants() 
 def test_workbench_codegen_admin_api_modules_import_and_mount() -> None:
     from backend.app.hasn.api.router import v1
 
-    routes = {route.path for route in v1.routes}
+    routes = {getattr(route, 'path', '') for route in v1.routes}
 
     assert '/api/v1/hasn/enterprises' in routes
     assert '/api/v1/hasn/enterprise/memberships' in routes
@@ -213,15 +213,22 @@ def test_workbench_registry_auto_installs_knowledge_for_personal_and_enterprise(
     # 内置应用均 install_policy=auto；按 scope 过滤自动安装：
     # - deck（自研演示文稿，模块 17）scope=personal，唯一默认演示文稿应用（presentation 已删除）；
     # - hasn_task scope=(personal, enterprise)，两空间皆自动安装；
-    # - publish scope=personal，仅 personal 自动安装。
+    # - publish scope=personal，仅 personal 自动安装；
+    # - project scope=(personal, enterprise)，两空间皆自动安装。
     assert [app.id for app in registry.auto_install_apps('personal')] == [
         'knowledge',
         'community',
         'deck',
         'hasn_task',
         'publish',
+        'project',
     ]
-    assert [app.id for app in registry.auto_install_apps('enterprise')] == ['knowledge', 'community', 'hasn_task']
+    assert [app.id for app in registry.auto_install_apps('enterprise')] == [
+        'knowledge',
+        'community',
+        'hasn_task',
+        'project',
+    ]
     assert registry.get('knowledge').entry_route == '/apps/knowledge'
 
 
@@ -232,7 +239,7 @@ def test_hasn_router_exposes_enterprise_workbench_and_knowledge_routes() -> None
     # 路由器 home_app 仍挂同一 prefix /api/v1/hasn/app（节点无感知）。
     from backend.app.home.api.router import home_app
 
-    routes = {route.path for router in (v1, app, home_app) for route in router.routes}
+    routes = {getattr(route, 'path', '') for router in (v1, app, home_app) for route in router.routes}
 
     assert '/api/v1/hasn/enterprises' in routes
     assert '/api/v1/hasn/users/me/workspaces' in routes
@@ -244,7 +251,11 @@ def test_hasn_router_exposes_enterprise_workbench_and_knowledge_routes() -> None
     from backend.app.hasn_knowledge.api.router import agent as knowledge_agent
     from backend.app.hasn_knowledge.api.router import app as knowledge_app
 
-    knowledge_routes = {route.path for router in (knowledge_app, knowledge_agent) for route in router.routes}
+    knowledge_routes = {
+        getattr(route, 'path', '')
+        for router in (knowledge_app, knowledge_agent)
+        for route in router.routes
+    }
     assert '/api/v1/knowledge/app/kbs' in knowledge_routes
     assert '/api/v1/knowledge/app/search' in knowledge_routes
     assert '/api/v1/knowledge/agent/search' in knowledge_routes
@@ -270,7 +281,8 @@ def test_workbench_app_routes_inject_database_sessions() -> None:
         if not path.startswith(affected_prefixes):
             continue
         checked.append(path)
-        if any(param.name == 'db' for param in route.dependant.query_params):
+        dependant = getattr(route, 'dependant', None)
+        if dependant is not None and any(param.name == 'db' for param in dependant.query_params):
             offenders.append(path)
 
     assert checked
@@ -297,8 +309,8 @@ async def test_workbench_app_handlers_delegate_to_domain_service(monkeypatch: py
 
     monkeypatch.setattr(module.workbench_domain_service, 'list_apps', list_apps)
 
-    request = SimpleNamespace(user=SimpleNamespace(id=7))
-    db = object()
+    request: Any = SimpleNamespace(user=SimpleNamespace(id=7))
+    db: Any = object()
 
     assert (await module.list_apps(request, db)).data == ['knowledge', 'chat']
     assert calls == [
@@ -329,8 +341,8 @@ async def test_workspace_handlers_delegate_to_domain_service(monkeypatch: pytest
     monkeypatch.setattr(module.workbench_domain_service, 'list_user_workspaces', list_user_workspaces)
     monkeypatch.setattr(module.workbench_domain_service, 'switch_active_workspace', switch_active_workspace)
 
-    request = SimpleNamespace(user=SimpleNamespace(id=7))
-    db = object()
+    request: Any = SimpleNamespace(user=SimpleNamespace(id=7))
+    db: Any = object()
 
     assert (await module.list_my_workspaces(request, db)).data == [{'kind': 'personal'}]
     assert (
@@ -381,8 +393,8 @@ async def test_knowledge_handlers_delegate_to_domain_service(monkeypatch: pytest
         record('disable_instance', {'disabled': True}),
     )
 
-    request = SimpleNamespace(user=SimpleNamespace(id=7))
-    db = object()
+    request: Any = SimpleNamespace(user=SimpleNamespace(id=7))
+    db: Any = object()
 
     assert (await module.get_enterprise_ragflow_instance(request, db, enterprise_id=42)).data == {'enterprise_id': 42}
     assert (
@@ -457,8 +469,8 @@ async def test_enterprise_handlers_delegate_to_domain_service(monkeypatch: pytes
     for method, result in method_results.items():
         monkeypatch.setattr(module.workbench_domain_service, method, record(method, result))
 
-    request = SimpleNamespace(user=SimpleNamespace(id=7))
-    db = object()
+    request: Any = SimpleNamespace(user=SimpleNamespace(id=7))
+    db: Any = object()
     expires_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     assert (
@@ -601,10 +613,11 @@ async def test_api_key_handlers_delegate_and_commit(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(module.hasn_api_key_service, 'create_api_key', create_api_key)
     monkeypatch.setattr(module.hasn_api_key_service, 'delete_api_key', delete_api_key)
 
-    db = Db()
+    db: Any = Db()
     auth = {'user_id': 7, 'hasn_id': 'h_owner'}
 
     listed = await module.list_hasn_api_keys(db, auth)
+    assert listed.data is not None
     assert listed.data[0]['key_id'] == 'key1'
     assert listed.data[0]['last_seen_at'] is None
 
@@ -613,6 +626,7 @@ async def test_api_key_handlers_delegate_and_commit(monkeypatch: pytest.MonkeyPa
         db,
         auth,
     )
+    assert created.data is not None
     assert created.data['owner_api_key'] == 'plain-once'
     assert db.commits == 1
 

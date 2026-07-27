@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import importlib
 
+from collections.abc import Iterator
+from typing import cast
+
 import pytest
 import sqlalchemy as sa
 
@@ -94,7 +97,7 @@ def test_push_token_model_has_required_columns() -> None:
 
 def test_push_token_table_has_composite_unique_constraint() -> None:
     """B3 核心约束: (hasn_id, device_id, channel) 复合唯一."""
-    constraints = PushToken.__table__.constraints
+    constraints = cast(sa.Table, PushToken.__table__).constraints
     uniques = [c for c in constraints if isinstance(c, sa.UniqueConstraint)]
     assert uniques, 'PushToken 必须至少有 1 个 UniqueConstraint'
 
@@ -111,7 +114,7 @@ def test_push_token_table_has_hasn_id_index() -> None:
     """hasn_id 必须有独立索引 (按 owner 查活跃 token 是推送热路径)."""
     index_cols = [
         sorted(col.name for col in ix.columns)
-        for ix in PushToken.__table__.indexes
+        for ix in cast(sa.Table, PushToken.__table__).indexes
     ]
     assert ['hasn_id'] in index_cols, f'hasn_id 索引缺失; 实际={index_cols}'
 
@@ -152,7 +155,7 @@ class _PushTokenMirror(_IsolatedBase):
 
 
 @pytest.fixture
-def sqlite_session() -> sa.orm.Session:
+def sqlite_session() -> Iterator[sa.orm.Session]:
     engine = sa.create_engine('sqlite://')
     _IsolatedBase.metadata.create_all(engine)
     session_factory = sa.orm.sessionmaker(engine, expire_on_commit=False)
@@ -314,11 +317,11 @@ class _PushTokenAuditMirror(_B10Base):
 
 
 # 注册一次事件监听器到 mirror 类 + mirror audit 表 (与生产同结构的 wiring).
-register_audit_listeners(_PushTokenEncryptedMirror, _PushTokenAuditMirror.__table__)
+register_audit_listeners(_PushTokenEncryptedMirror, cast(sa.Table, _PushTokenAuditMirror.__table__))
 
 
 @pytest.fixture
-def b10_session() -> sa.orm.Session:
+def b10_session() -> Iterator[sa.orm.Session]:
     """SQLite in-memory 会话, 两张 mirror 表 DDL 就绪."""
     reset_fernet_for_tests()
     engine = sa.create_engine('sqlite://')
@@ -387,6 +390,7 @@ def test_push_token_insert_writes_audit_row(b10_session: sa.orm.Session) -> None
     after_count = b10_session.scalar(
         sa.select(sa.func.count()).select_from(_PushTokenAuditMirror)
     )
+    assert before_count is not None and after_count is not None
     assert after_count == before_count + 1, 'INSERT 必须触发 1 行审计'
 
     audit = b10_session.execute(
@@ -421,6 +425,7 @@ def test_push_token_update_writes_audit_row(b10_session: sa.orm.Session) -> None
     after_count = b10_session.scalar(
         sa.select(sa.func.count()).select_from(_PushTokenAuditMirror)
     )
+    assert before_count is not None and after_count is not None
     assert after_count == before_count + 1, 'UPDATE 必须触发 1 行审计'
 
     last_audit = b10_session.execute(
@@ -453,6 +458,7 @@ def test_push_token_delete_writes_audit_row(b10_session: sa.orm.Session) -> None
     after_count = b10_session.scalar(
         sa.select(sa.func.count()).select_from(_PushTokenAuditMirror)
     )
+    assert before_count is not None and after_count is not None
     assert after_count == before_count + 1, 'DELETE 必须触发 1 行审计'
 
     last_audit = b10_session.execute(

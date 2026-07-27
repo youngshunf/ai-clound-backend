@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.mcp.routes import mcp_router
+from backend.app.mcp.auth import AgentContext
 from backend.common.exception.exception_handler import register_exception
 
 
@@ -456,7 +458,9 @@ class TestMcpToolRegistry:
             def input_schema(self) -> dict:
                 return {'type': 'object', 'properties': {}}
 
-            async def execute(self, arguments: dict, agent_context):
+            async def execute(
+                self, agent_context: AgentContext, arguments: dict[str, Any]
+            ) -> dict[str, Any]:
                 return {'result': 'ok'}
 
         registry = ToolRegistry()
@@ -484,7 +488,9 @@ class TestMcpToolRegistry:
             def input_schema(self) -> dict:
                 return {'type': 'object'}
 
-            async def execute(self, arguments: dict, agent_context):
+            async def execute(
+                self, agent_context: AgentContext, arguments: dict[str, Any]
+            ) -> dict[str, Any]:
                 return {}
 
         class Tool2(BaseTool):
@@ -500,7 +506,9 @@ class TestMcpToolRegistry:
             def input_schema(self) -> dict:
                 return {'type': 'object'}
 
-            async def execute(self, arguments: dict, agent_context):
+            async def execute(
+                self, agent_context: AgentContext, arguments: dict[str, Any]
+            ) -> dict[str, Any]:
                 return {}
 
         registry = ToolRegistry()

@@ -15,8 +15,8 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
 
-def _storage(**overrides: object) -> SimpleNamespace:
-    data = {
+def _storage(**overrides: Any) -> Any:
+    data: dict[str, Any] = {
         'endpoint': 'https://oss.example.com',
         'access_key': 'ak',
         'secret_key': 'sk',
@@ -113,14 +113,15 @@ async def test_upload_user_avatar_uses_normalized_root_and_returns_url_only(
     except Exception:
         pass
 
-    file = SimpleNamespace(
+    file: Any = SimpleNamespace(
         content_type='image/png',
         filename='profile.png',
         read=AsyncMock(return_value=content),
     )
-    request = SimpleNamespace(user=SimpleNamespace(uuid='u-123'))
+    request: Any = SimpleNamespace(user=SimpleNamespace(uuid='u-123'))
+    db: Any = object()
 
-    response = await user_api.upload_user_avatar(db=object(), request=request, file=file)
+    response = await user_api.upload_user_avatar(db=db, request=request, file=file)
 
     digest = hashlib.md5(content).hexdigest()[:8]
     assert captured['root'] == '/assets'
@@ -138,8 +139,9 @@ async def test_upload_user_avatar_uses_normalized_root_and_returns_url_only(
 @pytest.mark.asyncio
 async def test_preset_avatars_return_cdn_storage_urls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(profile_api.s3_storage_dao, 'get_all', AsyncMock(return_value=[_storage()]))
+    db: Any = object()
 
-    response = await profile_api.get_preset_avatars(db=object())
+    response = await profile_api.get_preset_avatars(db=db)
 
     assert response.data[0] == {
         'id': 'avatar-01',

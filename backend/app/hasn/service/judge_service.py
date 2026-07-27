@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from typing import Any, Callable, NoReturn
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,12 +66,12 @@ _DISCLOSURE_CATEGORIES = {
 }
 
 
-def _raise_422(msg: str) -> None:
+def _raise_422(msg: str) -> NoReturn:
     """入参校验失败：422（纵深防御，daemon 侧本应已过滤）。"""
     raise errors.RequestError(code=StandardResponseCode.HTTP_422, msg=msg)
 
 
-def _raise_503(msg: str) -> None:
+def _raise_503(msg: str) -> NoReturn:
     """裁判不可用：503（owner 缺凭据 / PDC 全空 / LLM 调用失败 → daemon 按 kind fail 策略兜）。"""
     raise errors.RequestError(code=StandardResponseCode.HTTP_503, msg=msg)
 
@@ -174,11 +174,17 @@ _DISCLOSURE_SYSTEM_PROMPT = """你是 HASN 网络的隐私披露裁判。一个 
 社会关系图谱 social_graph、身份证件 id_card、联系方式 contact、日程 schedule、未公开计划 plan）
 
 判断规则：
-1. 只判「披露主人或第三人的隐私」，不判消息礼貌性 / 正确性——那不是你的职责。
-2. 对方明确索取 + 关系等级允许 → 可发；对方索取但等级不够 → 不可发。
-3. 上下文中主人本人（接管发言）明确授权披露的内容 → 可发。
-4. 拿不准 → 从严（不可发），宁可误拦让主人放行，不可漏放。
-5. L1 扫描已标记的片段（电话 / 邮箱）：只有关系等级 ≥3 且语境合理才放行。
+1. 先判断正文是否真的披露了主人或第三人的隐私。礼貌拒绝、公开商务信息、公开活动、
+   不含精确地点/时间的泛化日常近况，不因提到主人就算隐私；不要判消息礼貌性或正确性。
+2. 敏感类别出现不等于一律拦截，必须结合信任等级、关系类型、对方是否明确索取和上下文判越权。
+3. 对方明确索取 + 关系等级允许 → 可发；对方索取但等级不够 → 不可发。
+4. 上下文中主人本人（接管发言）明确授权披露的内容 → 可发。
+5. 密友档的合理安排可以给出约定时间和公开会面地点；只要不涉及金钱、对外承诺、
+   私人住址或实时轨迹，不要把正常代约误判为越权。
+6. L1 扫描已标记的电话 / 邮箱：关系等级 ≥3 且语境合理时应放行，例如朋友为正当事务索取电话、
+   专业关系索取工作邮箱；私人联系方式、关系等级不足或语境可疑时拦截。
+7. 普通联系人可获知不含健康细节、精确位置和未公开计划的泛化日常近况，例如过去周末参加普通活动。
+8. 拿不准 → 从严（不可发），宁可误拦让主人放行，不可漏放；但不得用这一条推翻前述明确允许边界。
 
 只输出严格 JSON，不要任何多余文字：
 {"allow": true/false, "categories": ["涉及的语义类别英文标识"], "reason": "一句话中文理由"}"""
@@ -415,7 +421,12 @@ class JudgeService:
         started = time.monotonic()
         try:
             client = LLMChatClient(api_key=api_key)  # owner key → 计费归 owner
-            raw = await client.complete_json(messages, models=model_chain, timeout=_JUDGE_TIMEOUT_S)
+            raw = await client.complete_json(
+                messages,
+                models=model_chain,
+                temperature=0,
+                timeout=_JUDGE_TIMEOUT_S,
+            )
             verdict = parse_verdict(raw)
         except LLMError as exc:
             log.warning(f'[judge] kind={kind} LLM 调用/解析失败（daemon 兜 fail 策略）: {exc}')

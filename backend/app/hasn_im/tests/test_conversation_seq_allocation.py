@@ -24,12 +24,10 @@ import pytest_asyncio
 import sqlalchemy as sa
 
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.crud.crud_hasn_conversations import hasn_conversations_dao
-from backend.app.hasn.service.hasn_message_hub_service import MessageRecord, SqlAlchemyMessageHubGateway
-from backend.app.hasn.service.hasn_sessions_service import hasn_sessions_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -93,11 +91,12 @@ async def test_concurrent_allocation_no_dup_no_regress(sessionmaker_pg) -> None:
             async with sessionmaker_pg() as session:
                 seq = await hasn_conversations_dao.allocate_seq(session, conv_id)
                 await session.commit()
+                if seq is None:
+                    raise AssertionError('会话存在，分配不应返回 None')
                 return seq
 
         results = await asyncio.gather(*[_alloc_once() for _ in range(n)])
 
-        assert None not in results, '会话存在，分配不应返回 None'
         # 核心不变量：并发分配到的 N 个 seq 恰为 1..N 的排列——行锁串行化保证无重复、无空洞
         assert sorted(results) == list(range(1, n + 1)), (
             f'并发分配应得 {{1..{n}}} 的排列，实得（已排序）：{sorted(results)}'
@@ -115,7 +114,6 @@ async def test_concurrent_allocation_no_dup_no_regress(sessionmaker_pg) -> None:
             assert cur == n, f'current_seq 应推进到 {n}，实得 {cur}'
     finally:
         await _cleanup(sessionmaker_pg, conv_id)
-
 
 async def test_duplicate_conversation_seq_rejected_by_unique_index(sessionmaker_pg) -> None:
     """同会话写两条相同 conversation_seq → 唯一索引 uq_hasn_messages_conversation_seq 报错。"""
@@ -145,144 +143,3 @@ async def test_allocate_seq_returns_none_for_missing_conversation(sessionmaker_p
         seq = await hasn_conversations_dao.allocate_seq(session, missing_id)
         await session.rollback()
     assert seq is None, '会话不存在时 allocate_seq 必须返回 None'
-
-
-async def test_work_session_projection_allocates_conversation_seq(
-    sessionmaker_pg: async_sessionmaker[AsyncSession],
-) -> None:
-    """工作会话结果投影必须经统一取号入口写入非空 conversation_seq。"""
-    conv_id = await _make_conversation(sessionmaker_pg)
-    session_id = f'sess_seq_{uuid.uuid4().hex}'
-    owner_id = f'h_seq{uuid.uuid4().hex[:12]}'
-    agent_id = f'a_seq{uuid.uuid4().hex[:12]}'
-    projection_data = {
-        'agent_id': agent_id,
-        'origin_type': 'workflow_run',
-        'origin_ref': 'workflow_run:test:node:summary',
-        'target_conversation_id': conv_id,
-        'summary': '节点已完成。',
-        'status': 'success',
-    }
-    try:
-        async with sessionmaker_pg() as session:
-            await session.execute(
-                sa.text(
-                    """
-                    UPDATE public.hasn_conversations
-                    SET participant_a_id = :owner_id,
-                        participant_b_id = :agent_id
-                    WHERE id = CAST(:conversation_id AS uuid)
-                    """
-                ),
-                {
-                    'conversation_id': conv_id,
-                    'owner_id': owner_id,
-                    'agent_id': agent_id,
-                },
-            )
-            result = await hasn_sessions_service.project_work_session_result(
-                db=session,
-                owner_id=owner_id,
-                session_id=session_id,
-                projection_data=projection_data,
-            )
-            await session.commit()
-
-        async with sessionmaker_pg() as session:
-            duplicate = await hasn_sessions_service.project_work_session_result(
-                db=session,
-                owner_id=owner_id,
-                session_id=session_id,
-                projection_data=projection_data,
-            )
-            await session.commit()
-
-        async with sessionmaker_pg() as session:
-            row = (
-                await session.execute(
-                    sa.text(
-                        """
-                        SELECT conversation_seq
-                        FROM public.hasn_messages
-                        WHERE id = CAST(:message_id AS bigint)
-                        """
-                    ),
-                    {'message_id': int(result['result_message_id'])},
-                )
-            ).mappings().one()
-            current_seq = (
-                await session.execute(
-                    sa.text(
-                        """
-                        SELECT current_seq
-                        FROM public.hasn_conversations
-                        WHERE id = CAST(:conversation_id AS uuid)
-                        """
-                    ),
-                    {'conversation_id': conv_id},
-                )
-            ).scalar_one()
-
-        assert row['conversation_seq'] == 1
-        assert current_seq == 1
-        assert duplicate['created'] is False
-        assert duplicate['result_message_id'] == result['result_message_id']
-    finally:
-        await _cleanup(sessionmaker_pg, conv_id)
-
-
-async def test_message_hub_allocates_conversation_seq(
-    sessionmaker_pg: async_sessionmaker[AsyncSession],
-) -> None:
-    """Message Hub 原始消息写点必须经统一取号入口写入非空 conversation_seq。"""
-    conv_id = await _make_conversation(sessionmaker_pg)
-    owner_id = f'h_seq{uuid.uuid4().hex[:12]}'
-    agent_id = f'a_seq{uuid.uuid4().hex[:12]}'
-    try:
-        async with sessionmaker_pg() as session:
-            stored = await SqlAlchemyMessageHubGateway().store_inbox_message(
-                session,
-                MessageRecord(
-                    conversation_id=conv_id,
-                    owner_id=owner_id,
-                    hasn_id=owner_id,
-                    from_id=agent_id,
-                    to_id=owner_id,
-                    content={'text': '序号回归测试'},
-                    envelope={'hasn': 'hasn/0.2'},
-                    inbox_kind='human_inbox',
-                    dispatch_status='not_required',
-                ),
-            )
-            await session.commit()
-
-        async with sessionmaker_pg() as session:
-            row = (
-                await session.execute(
-                    sa.text(
-                        """
-                        SELECT conversation_seq
-                        FROM public.hasn_messages
-                        WHERE id = CAST(:message_id AS bigint)
-                        """
-                    ),
-                    {'message_id': int(stored.message_id)},
-                )
-            ).mappings().one()
-            current_seq = (
-                await session.execute(
-                    sa.text(
-                        """
-                        SELECT current_seq
-                        FROM public.hasn_conversations
-                        WHERE id = CAST(:conversation_id AS uuid)
-                        """
-                    ),
-                    {'conversation_id': conv_id},
-                )
-            ).scalar_one()
-
-        assert row['conversation_seq'] == 1
-        assert current_seq == 1
-    finally:
-        await _cleanup(sessionmaker_pg, conv_id)

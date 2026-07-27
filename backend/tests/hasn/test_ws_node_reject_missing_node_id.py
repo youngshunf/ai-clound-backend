@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import pytest
 
@@ -38,7 +38,7 @@ async def test_reject_when_missing_node_id(monkeypatch) -> None:
 
     monkeypatch.setattr(ws_node, 'authenticate_ws_connection', _boom)
 
-    ws = FakeWebSocket(headers={'Authorization': 'Bearer xxx'})  # 有鉴权头但无 X-Node-Id
+    ws: Any = FakeWebSocket(headers={'Authorization': 'Bearer xxx'})  # 有鉴权头但无 X-Node-Id
     await ws_node.hasn_node_websocket(ws)
 
     assert ws.closed_code == 4001
@@ -47,7 +47,7 @@ async def test_reject_when_missing_node_id(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_reject_when_missing_authorization() -> None:
-    ws = FakeWebSocket(headers={})  # 无 Authorization → 更早拒连
+    ws: Any = FakeWebSocket(headers={})  # 无 Authorization → 更早拒连
     await ws_node.hasn_node_websocket(ws)
     assert ws.closed_code == 4001
 
@@ -64,6 +64,6 @@ async def test_node_id_via_query_param_passes_gate(monkeypatch) -> None:
 
     monkeypatch.setattr(ws_node, 'authenticate_ws_connection', _auth)
 
-    ws = FakeWebSocket(headers={'Authorization': 'Bearer xxx'}, query={'node_id': 'n_via_query'})
+    ws: Any = FakeWebSocket(headers={'Authorization': 'Bearer xxx'}, query={'node_id': 'n_via_query'})
     await ws_node.hasn_node_websocket(ws)
     assert reached['auth'] is True  # node_id 闸放行了合法的 query 形态，未误杀

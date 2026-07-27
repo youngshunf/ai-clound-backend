@@ -170,7 +170,7 @@ def test_task_scopes_in_aggregated_catalog() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_task_lifecycle_roundtrip_real_db() -> None:
     """真实 PG：create(once)→get→list→pause→resume→run_now→delete。事务真提交，测试后清理。"""
     if not await _db_reachable():
@@ -234,7 +234,7 @@ async def test_task_lifecycle_roundtrip_real_db() -> None:
             await db.execute(text('DELETE FROM hasn_sync_events WHERE owner_id = :o'), {'o': owner})
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_three_axis_roundtrip_and_filter_real_db() -> None:
     """真实 PG：三轴四列（doc12 §6.1）贯通事件溯源投影链。
     create 带三轴 → get/list 投影读回四轴 → execution_spec jsonb 深层往返不丢 →

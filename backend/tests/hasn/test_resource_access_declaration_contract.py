@@ -64,7 +64,9 @@ def _alias_params() -> set[str]:
     """全部**已注册**适配器的 id 别名并集（如 {kb_id, doc_id, folder_id, deck_id, page_id}）。"""
     params: set[str] = set()
     for rtype in resource_kind_registry.registered_types():
-        params.update(resource_kind_registry.get(rtype).id_param_aliases)
+        adapter = resource_kind_registry.get(rtype)
+        assert adapter is not None
+        params.update(adapter.id_param_aliases)
     return params
 
 

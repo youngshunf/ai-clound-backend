@@ -231,6 +231,9 @@ class WorkflowService:
 
         # 节点 = task（workflow_uuid + node_key；调度由 WorkflowScheduler 触发，节点本身不自调度）
         for node in obj.nodes:
+            node_agent_id = node.agent_id
+            if not node_agent_id:
+                raise errors.RequestError(msg=f'节点 {node.node_key} 缺少目标分身 agent_id')
             task_uuid = f'tsk_{uuid.uuid4().hex}'
             await db.execute(
                 sa.text(
@@ -248,7 +251,7 @@ class WorkflowService:
                 ),
                 {
                     'o': owner_id,
-                    'a': node.agent_id,
+                    'a': node_agent_id,
                     'n': node.name or node.node_key,
                     'd': node.description,
                     'p': node.prompt,
@@ -277,7 +280,7 @@ class WorkflowService:
                     node_key=node.node_key,
                     name=node.name or node.node_key,
                     description=node.description,
-                    agent_id=node.agent_id,
+                    agent_id=node_agent_id,
                     prompt=node.prompt,
                     system_prompt=node.system_prompt,
                     apps=node.apps,

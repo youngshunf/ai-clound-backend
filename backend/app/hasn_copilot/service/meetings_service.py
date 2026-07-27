@@ -19,7 +19,8 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 
-from backend.app.hasn.model import HasnAgents, HasnResourceShare
+from backend.app.hasn.model import HasnResourceShare
+from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_copilot.model import MeetingMinutes, MeetingTranscriptSegments, Meetings
 
 # 触发会议资源适配器注册（分享建行 fail-closed 依赖 resource_type='meeting' 已注册）。

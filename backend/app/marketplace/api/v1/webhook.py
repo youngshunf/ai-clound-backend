@@ -18,7 +18,7 @@ from backend.app.marketplace.service.github_sync_service import (
     github_sync_service,
 )
 from backend.common.log import log
-from backend.common.response.response_schema import ResponseSchemaModel, response_base
+from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.core.conf import settings
 from backend.database.db import async_db_session
 
@@ -125,7 +125,7 @@ async def github_webhook_skills(
     background_tasks: BackgroundTasks,
     x_hub_signature_256: Annotated[str | None, Header(alias='X-Hub-Signature-256')] = None,
     x_github_event: Annotated[str | None, Header(alias='X-GitHub-Event')] = None,
-) -> ResponseSchemaModel[WebhookResponse]:
+) -> ResponseModel | ResponseSchemaModel[WebhookResponse]:
     """
     GitHub webhook endpoint for skills
 
@@ -195,7 +195,7 @@ async def github_webhook_templates(
     background_tasks: BackgroundTasks,
     x_hub_signature_256: Annotated[str | None, Header(alias='X-Hub-Signature-256')] = None,
     x_github_event: Annotated[str | None, Header(alias='X-GitHub-Event')] = None,
-) -> ResponseSchemaModel[WebhookResponse]:
+) -> ResponseModel | ResponseSchemaModel[WebhookResponse]:
     """
     GitHub webhook endpoint for templates
 

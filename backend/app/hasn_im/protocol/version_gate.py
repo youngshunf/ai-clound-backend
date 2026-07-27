@@ -16,6 +16,11 @@ D3（客户端侧版本闸）识别并出「需要升级」引导 UX、停止重
 
 from __future__ import annotations
 
+# R3 配套 daemon 的冻结版本。现网稳定桌面包为 0.2.0，但其 daemon 握手仍上报
+# workspace 旧值 0.1.0；R3 同时修正包版本并切换为唯一 message.new 协议，因此使用下一
+# 个 pre-1.0 次版本 0.3.0，确保 updater 能识别为新版本且旧节点必定被闸住。
+R3_COMPANION_DAEMON_VERSION = '0.3.0'
+
 # ── 拒连错误码契约（D3 客户端侧据此识别「需要升级」并停重连风暴、出升级引导）──
 # WS 应用级关闭码（4000-4999 保留给应用）：4001=认证失败、4002=登出顶替、4003=版本过低需升级。
 UPGRADE_REQUIRED_CLOSE_CODE = 4003

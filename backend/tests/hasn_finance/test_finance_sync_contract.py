@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -38,7 +39,7 @@ from backend.app.hasn_project.service.project_linkage_registry import project_li
 from backend.common.exception import errors
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 # 六类产物 → (ref_type, uri_domain)（05 §1.1 稳定值，事实源 manifest._FINANCE_RESOURCES）
 _FIN = {
@@ -67,6 +68,7 @@ def test_finance_origin_ref_is_multi_resource_shape() -> None:
     """契约1 多资源回指：origin_ref 恒为 resource:finance:{ref_type}:{server_id}（唯一拼接点）。"""
     for kind, (ref_type, _domain) in _FIN.items():
         d = ai_native_app_registry.resource_descriptor('finance', kind)
+        assert d is not None
         origin = hasn_artifacts_service._build_origin_ref(d, app_id='finance', server_id='7')
         assert origin == f'resource:finance:{ref_type}:7', f'{kind} origin_ref={origin}'
 
@@ -169,7 +171,7 @@ async def test_sync_create_idempotent_replay_same_local_ref() -> None:
         try:
             owner = await _seed_owner(db)
             agent = f'a_{uuid4().hex[:16]}'
-            kw = dict(
+            kw: dict[str, Any] = dict(
                 model_cls=ResearchReport, resource_kind='finance.research_report', owner_id=owner,
                 op='create', base_revision=None, local_ref='lr-dup', server_id=None,
                 fields=_report_fields(), agent_hasn_id=agent, title='X',

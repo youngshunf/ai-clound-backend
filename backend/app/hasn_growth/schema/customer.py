@@ -23,7 +23,7 @@ class CustomerSchemaBase(SchemaBase):
     lifecycle_status: str = Field(description='生命周期 (active:跟进中:blue/engaged:有回应:cyan/opportunity:已立商机:purple/silent:沉默:gray/won:成交:green/lost:流失:red/archived:归档:gray)')
     owner_agent_id: str | None = Field(None, description='None')
     followup_task_id: str | None = Field(None, description='当前跟进任务（hasn_task.task.id 逻辑引用）')
-    tags: dict = Field(description='None')
+    tags: list[str] = Field(description='None')
     last_activity_at: datetime | None = Field(None, description='None')
     next_followup_at: datetime | None = Field(None, description='None')
     silent_round_count: int = Field(description='None')

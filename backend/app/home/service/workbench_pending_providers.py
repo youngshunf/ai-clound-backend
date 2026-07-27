@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from backend.app.hasn.service.app_catalog_service import resolve_owner_user_id
+from backend.app.hasn_core.app_platform import resolve_owner_user_id
 from backend.app.hasn_community.service.notification_service import (
     notification_service as community_notification_service,
 )
@@ -70,7 +70,8 @@ def _pick_by_status(
     """
     items: list[PendingItem] = []
     for row in rows:
-        spec = status_map.get(row.get('status'))
+        raw_status = row.get('status')
+        spec = status_map.get(raw_status) if isinstance(raw_status, str) else None
         if spec is None:
             continue
         urgency, hint = spec

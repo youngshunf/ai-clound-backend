@@ -32,7 +32,7 @@ hasn-mcp（`crates/hasn-mcp/src/computer/tools.rs`，`source=Platform`/`executio
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -100,7 +100,7 @@ def _cap(
     }
 
 
-COMPUTER_USE_AI_NATIVE_MANIFEST = {
+COMPUTER_USE_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'computer_use',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'computer_use': '桌面控制（截屏观察 + 点击/输入/拖拽驱动 GUI）'},

@@ -12,6 +12,7 @@ import anyio
 import cappa
 import granian
 
+from granian.constants import Interfaces
 from rich.panel import Panel
 from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
@@ -51,27 +52,11 @@ from backend.utils.dynamic_import import import_module_cached
 from backend.utils.sql_parser import parse_sql_script
 from backend.utils.timezone import timezone
 
-# Import frontend code generator CLI commands
-try:
-    from backend.plugin.code_generator.cli.codegen import CodegenFrontend, CodegenFull, CodegenMenu
-    from backend.plugin.code_generator.cli.generate import Generate as CodegenGenerate
-    from backend.plugin.code_generator.cli.generate_all import GenerateAll
-except ImportError:
-    CodegenFrontend = None
-    CodegenMenu = None
-    CodegenFull = None
-    CodegenGenerate = None
-    GenerateAll = None
-
-# Import marketplace CLI commands
-try:
-    from backend.cli_tools.cli.app import App as AppCmd
-    from backend.cli_tools.cli.category import Category as CategoryCmd
-    from backend.cli_tools.cli.skill import Skill as SkillCmd
-except ImportError:
-    SkillCmd = None
-    AppCmd = None
-    CategoryCmd = None
+from backend.cli_tools.cli.category import Category as CategoryCmd
+from backend.cli_tools.cli.skill import Skill as SkillCmd
+from backend.plugin.code_generator.cli.codegen import CodegenFrontend, CodegenFull, CodegenMenu
+from backend.plugin.code_generator.cli.generate import Generate as CodegenGenerate
+from backend.plugin.code_generator.cli.generate_all import GenerateAll
 
 output_help = "\n更多信息，尝试 '[cyan]--help[/]'"
 
@@ -97,17 +82,18 @@ def setup_env_file() -> bool:
     try:
         env_content = Path(ENV_EXAMPLE_FILE_PATH).read_text(encoding='utf-8')
         console.print('配置数据库连接信息...', style='white')
-        db_type = Prompt.ask('数据库类型', choices=['mysql', 'postgresql'], default='postgresql')
+        db_type_input = Prompt.ask('数据库类型', choices=['mysql', 'postgresql'], default='postgresql')
+        db_type: Literal['mysql', 'postgresql'] = 'mysql' if db_type_input == 'mysql' else 'postgresql'
         db_host = Prompt.ask('数据库主机', default='127.0.0.1')
-        db_port = Prompt.ask('数据库端口', default='5432' if db_type == 'postgresql' else '3306')
+        db_port = int(Prompt.ask('数据库端口', default='5432' if db_type == 'postgresql' else '3306'))
         db_user = Prompt.ask('数据库用户名', default='postgres' if db_type == 'postgresql' else 'root')
         db_password = Prompt.ask('数据库密码', password=True, default='123456')
 
         console.print('配置 Redis 连接信息...', style='white')
         redis_host = Prompt.ask('Redis 主机', default='127.0.0.1')
-        redis_port = Prompt.ask('Redis 端口', default='6379')
+        redis_port = int(Prompt.ask('Redis 端口', default='6379'))
         redis_password = Prompt.ask('Redis 密码（留空表示无密码）', password=True, default='')
-        redis_db = Prompt.ask('Redis 数据库编号', default='0')
+        redis_db = int(Prompt.ask('Redis 数据库编号', default='0'))
 
         console.print('生成 Token 密钥...', style='white')
         token_secret = secrets.token_urlsafe(32)
@@ -331,7 +317,7 @@ def run(host: str, port: int, reload: bool, workers: int) -> None:  # noqa: FBT0
     console.print(Panel(panel_content, title=f'fba (v{__version__})', border_style='purple', padding=(1, 2)))
     granian.Granian(
         target='backend.main:app',
-        interface='asgi',
+        interface=Interfaces.ASGI,
         address=host,
         port=port,
         reload=not reload,
@@ -372,8 +358,8 @@ def run_celery_flower(port: int, basic_auth: str) -> None:
 
 
 async def install_plugin(
-    path: str,
-    repo_url: str,
+    path: str | None,
+    repo_url: str | None,
     no_sql: bool,  # noqa: FBT001
     db_type: DataBaseType,
     pk_type: PrimaryKeyType,
@@ -395,6 +381,8 @@ async def install_plugin(
             plugin_name = await install_zip_plugin(file=path)
         if repo_url:
             plugin_name = await install_git_plugin(repo_url=repo_url)
+        if plugin_name is None:
+            raise cappa.Exit('未能从安装来源解析插件名称', code=1)
 
         console.print(f'插件 {plugin_name} 安装成功', style='bold green')
 
@@ -417,29 +405,36 @@ async def remove_plugin(plugin: str | None, *, no_sql: bool = False) -> None:  #
         raise cappa.Exit('插件卸载仅在开发环境可用', code=1)
 
     async def remove() -> None:
-        plugin_dir = PLUGIN_DIR / plugin
+        selected_plugin = plugin
+        if selected_plugin is None:
+            raise cappa.Exit('未选择要卸载的插件', code=1)
+        plugin_dir = PLUGIN_DIR / selected_plugin
         if not plugin_dir.exists():
-            raise cappa.Exit(f'插件 {plugin} 不存在', code=1)
+            raise cappa.Exit(f'插件 {selected_plugin} 不存在', code=1)
 
         if not no_sql:
-            destroy_sql_file = await get_plugin_destroy_sql(plugin, settings.DATABASE_TYPE, settings.DATABASE_PK_MODE)
+            destroy_sql_file = await get_plugin_destroy_sql(
+                selected_plugin,
+                DataBaseType(settings.DATABASE_TYPE),
+                PrimaryKeyType(settings.DATABASE_PK_MODE),
+            )
             if destroy_sql_file:
-                console.print(f'正在执行插件 {plugin} 销毁 SQL 脚本...', style='bold cyan')
+                console.print(f'正在执行插件 {selected_plugin} 销毁 SQL 脚本...', style='bold cyan')
                 async with async_db_session.begin() as db:
                     await execute_destroy_sql_scripts(db, destroy_sql_file)
             else:
-                console.print(f'插件 {plugin} 未提供销毁 SQL 脚本，跳过数据库清理', style='yellow')
+                console.print(f'插件 {selected_plugin} 未提供销毁 SQL 脚本，跳过数据库清理', style='yellow')
 
-        console.print(f'正在卸载插件 {plugin} 依赖...', style='white')
-        await uninstall_requirements_async(plugin)
+        console.print(f'正在卸载插件 {selected_plugin} 依赖...', style='white')
+        await uninstall_requirements_async(selected_plugin)
 
-        console.print(f'正在备份插件 {plugin}...', style='white')
-        backup_file = PLUGIN_DIR / f'{plugin}.{timezone.now().strftime("%Y%m%d%H%M%S")}.backup.zip'
+        console.print(f'正在备份插件 {selected_plugin}...', style='white')
+        backup_file = PLUGIN_DIR / f'{selected_plugin}.{timezone.now().strftime("%Y%m%d%H%M%S")}.backup.zip'
         await run_in_threadpool(zip_plugin, plugin_dir, backup_file)
         await run_in_threadpool(_remove_plugin, plugin_dir)
 
         console.print(f'备份文件：{backup_file}', style='white')
-        console.print(f'插件 {plugin} 卸载成功', style='bold green')
+        console.print(f'插件 {selected_plugin} 卸载成功', style='bold green')
         console.print('\n请根据插件说明（README.md）移除相关配置并重启服务', style='yellow')
 
     plugins = get_plugins()
@@ -483,7 +478,11 @@ async def get_sql_scripts() -> list[str]:
 
     plugins = get_plugins()
     for plugin in plugins:
-        plugin_sql = await get_plugin_sql(plugin, settings.DATABASE_TYPE, settings.DATABASE_PK_MODE)
+        plugin_sql = await get_plugin_sql(
+            plugin,
+            DataBaseType(settings.DATABASE_TYPE),
+            PrimaryKeyType(settings.DATABASE_PK_MODE),
+        )
         if plugin_sql:
             sql_scripts.append(str(plugin_sql))
 
@@ -919,7 +918,7 @@ class FbaCli:
         str,
         cappa.Arg(value_name='PATH', default='', show_default=False, help='在事务中执行 SQL 脚本'),
     ]
-    subcmd: cappa.Subcommands[Init | Run | Add | Remove | Format | Celery | Alembic | CodeGenerator | SkillCmd | AppCmd | CategoryCmd | None] = None
+    subcmd: cappa.Subcommands[Init | Run | Add | Remove | Format | Celery | Alembic | CodeGenerator | SkillCmd | CategoryCmd | None] = None
 
     async def __call__(self) -> None:
         if self.sql:

@@ -70,8 +70,9 @@ class NotificationService:
     @staticmethod
     def _actor_source(actor: dict[str, Any]) -> dict[str, Any]:
         """actor → NotificationSource（社区互动 source 即触发者）。"""
+        actor_type = actor.get('type')
         return {
-            'kind': _ACTOR_KIND.get(actor.get('type'), 'system'),
+            'kind': _ACTOR_KIND.get(actor_type, 'system') if isinstance(actor_type, str) else 'system',
             'id': actor.get('hasn_id'),
             'display_name': actor.get('display_name', ''),
             'avatar': actor.get('avatar', ''),

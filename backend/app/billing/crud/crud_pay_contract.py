@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.billing.model.pay_contract import PayContract
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 
@@ -78,7 +79,7 @@ class CRUDPayContract(CRUDPlus[PayContract]):
                 updated_time=timezone.now(),
             )
         )
-        return result.rowcount
+        return affected_rows(result)
 
     async def update_terminated(self, db: AsyncSession, contract_no: str, reason: str | None = None) -> int:
         """解约更新"""
@@ -92,7 +93,7 @@ class CRUDPayContract(CRUDPlus[PayContract]):
                 updated_time=timezone.now(),
             )
         )
-        return result.rowcount
+        return affected_rows(result)
 
     async def update_deducted(
         self,
@@ -111,7 +112,7 @@ class CRUDPayContract(CRUDPlus[PayContract]):
                 updated_time=timezone.now(),
             )
         )
-        return result.rowcount
+        return affected_rows(result)
 
 
 pay_contract_dao: CRUDPayContract = CRUDPayContract(PayContract)

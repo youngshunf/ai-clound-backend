@@ -44,8 +44,8 @@ def _to_int(resource_id: str) -> int | None:
 class KbResourceAdapter:
     """知识库（库级）资源适配器：resource_type='knowledge'，leaf id = kb_id。"""
 
-    resource_type = 'knowledge'
-    id_param_aliases = ('kb_id',)
+    resource_type: str = 'knowledge'
+    id_param_aliases: tuple[str, ...] = ('kb_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         kb_id = _to_int(resource_id)
@@ -107,8 +107,8 @@ class KbDocResourceAdapter:
     文档可独立分享（`has_own_shares=True`），门取 `max(文档级 share, 库级 share)`。
     """
 
-    resource_type = 'knowledge_doc'
-    id_param_aliases = ('doc_id',)
+    resource_type: str = 'knowledge_doc'
+    id_param_aliases: tuple[str, ...] = ('doc_id',)
     has_own_shares = True
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
@@ -152,8 +152,8 @@ class KbFolderResourceAdapter:
     目录无独立 share（`authorize_folder` 即委托 `authorize_kb`），纯继承库档位（无 `has_own_shares`）。
     """
 
-    resource_type = 'knowledge_folder'
-    id_param_aliases = ('folder_id',)
+    resource_type: str = 'knowledge_folder'
+    id_param_aliases: tuple[str, ...] = ('folder_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         folder_id = _to_int(resource_id)

@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.constants import ALLOW, DENY, get_default_permissions
 from backend.app.hasn.model.hasn_agents import HasnAgents
@@ -208,16 +209,15 @@ class PermissionEngine:
         result: DecisionResult,
         severity: str | None = None,
     ) -> None:
-        """审计写入。失败仅 log.warning，不 raise (业务可用性优先 / L8)。"""
+        """用独立 Python 角色事务写审计，失败不得污染调用方 IM 事务。"""
         try:
-            await hasn_audit_log_service.append(
-                db=db,
-                actor_id=sender.get('hasn_id') or 'central',
-                actor_type=sender.get('entity_type', 'system'),
-                action='permission_decision',
-                target_id=receiver.get('hasn_id'),
-                target_type=receiver.get('entity_type', 'agent'),
-                details={
+            audit_kwargs = {
+                'actor_id': sender.get('hasn_id') or 'central',
+                'actor_type': sender.get('entity_type', 'system'),
+                'action': 'permission_decision',
+                'target_id': receiver.get('hasn_id'),
+                'target_type': receiver.get('entity_type', 'agent'),
+                'details': {
                     'decision': result.decision,
                     'reason': result.reason,
                     'matched_rule': result.matched_rule,
@@ -225,10 +225,18 @@ class PermissionEngine:
                     'from': sender.get('hasn_id'),
                     'to': receiver.get('hasn_id'),
                 },
-                severity=severity or (
+                'severity': severity or (
                     'warning' if result.decision == DENY else None
                 ),
-            )
+            }
+            if isinstance(db, AsyncSession):
+                from backend.database.db import python_backend_db_session
+
+                async with python_backend_db_session.begin() as audit_db:
+                    await hasn_audit_log_service.append(db=audit_db, **audit_kwargs)
+            else:
+                # 纯单元测试的无会话输入仍只验证判决/审计参数，不建立数据库连接。
+                await hasn_audit_log_service.append(db=db, **audit_kwargs)
         except Exception as exc:
             log.warning(f'[perm_engine] audit append 失败 (不阻断): {exc}')
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -59,7 +60,7 @@ async def test_ensure_newapi_user_recovers_orphan_newapi_user_after_local_mappin
     monkeypatch.setattr(service_module, 'newapi_admin_client', client)
     monkeypatch.setattr(service_module, 'llm_newapi_user_mapping_dao', _NoMappingDao())
 
-    db = _FakeDb()
+    db: Any = _FakeDb()
     info = await svc.ensure_newapi_user(db, 900117, username='13800138000', nickname='生产恢复用户')
 
     assert info.newapi_user_id == 117
@@ -68,7 +69,7 @@ async def test_ensure_newapi_user_recovers_orphan_newapi_user_after_local_mappin
     assert db.flush_count == 1
     assert len(db.added) == 1
 
-    mapping = db.added[0]
+    mapping: Any = db.added[0]
     assert mapping.huanxing_user_id == 900117
     assert mapping.newapi_user_id == 117
     assert mapping.newapi_token_id == 601

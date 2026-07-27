@@ -65,6 +65,11 @@ LOCAL_BEAT_SCHEDULE = {
         # 抢占用 FOR UPDATE SKIP LOCKED，多副本并发安全。
         'schedule': TzAwareCrontab('*'),
     },
+    'Agent 控制边关系 outbox 投递': {
+        'task': 'hasn_relation_outbox_dispatch',
+        # 提交后即时唤醒失败时，每分钟扫描一次持久命令，保证控制边最终落入 IM 关系域。
+        'schedule': TzAwareCrontab('*'),
+    },
     '履约对账': {
         'task': 'credit_outbox_reconcile',
         # 每 15 分钟核对死信事件在 NewAPI 侧的真实结果，收敛「其实成功了只是回执丢了」的事件。

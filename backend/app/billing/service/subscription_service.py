@@ -11,6 +11,7 @@ from backend.app.billing.model import UserSubscription
 from backend.app.newapi.apikey.enums import ApiKeyStatus
 from backend.app.newapi.apikey.model import UserApiKey
 from backend.common.log import log
+from backend.database.result import affected_rows
 from backend.utils.timezone import timezone
 
 
@@ -146,7 +147,7 @@ class SubscriptionService:
             .values(expires_at=expires_at)
         )
         result = await db.execute(update_stmt)
-        updated_count = result.rowcount
+        updated_count = affected_rows(result)
 
         log.info(
             f'[Subscription] 用户 {user_id} 降级到免费版，'

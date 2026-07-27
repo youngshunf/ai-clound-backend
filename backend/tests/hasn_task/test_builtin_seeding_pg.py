@@ -4,7 +4,7 @@
 
 覆盖：
 - §5 reconcile_builtin_agents：注册时建齐 builtin=true 模板分身（主脑 assistant 由 ensure_default_agent 建，
-  reconcile 跳过；专业分身 content_operator / sales_advisor 经真实 register_hasn_agent 建并 stamp builtin_agent_key）。
+  reconcile 跳过；专业分身 content_operator / analyst 经真实 register_hasn_agent 建并 stamp builtin_agent_key）。
 - §6.1 seed_builtin_tasks（INSERT-only，经 save_task_event 走权威 upsert + hasn_sync_events feed）：
   daily_briefing 绑主脑（target NULL 回退）、daily_hot_topic 绑 content_operator（按类型匹配）、
   enabled=catalog.default_enabled（daily_briefing True / 其余 False）、created_by_kind='builtin'。
@@ -68,7 +68,7 @@ def _uid() -> str:
 async def _make_owner(session) -> tuple[str, int]:
     tag = _uid()
     owner = f'h_bts_{tag}'
-    uid = 970000 + int(uuid.uuid4().int % 9000)
+    uid = 5_000_000_000 + int(uuid.uuid4().int % 1_000_000_000)
     session.add(HasnHumans(hasn_id=owner, star_id=f's_{uid}', user_id=uid, nickname='BTSOwner', status='active'))
     await session.flush()
     return owner, uid
@@ -116,13 +116,13 @@ async def _agents_by_key(session, owner: str) -> dict[str, HasnAgents]:
 
 
 async def test_reconcile_creates_specialist_builtin_agents(session) -> None:
-    """reconcile 建齐 content_operator / sales_advisor（stamp builtin_agent_key），主脑 assistant 不重复建。"""
+    """reconcile 建齐 content_operator / analyst（stamp builtin_agent_key），主脑 assistant 不重复建。"""
     owner, _ = await _make_owner(session)
     await _bootstrap_owner_agents(session, owner)
     by_key = await _agents_by_key(session, owner)
     assert 'assistant' in by_key and by_key['assistant'].role == 'primary'
     assert 'content_operator' in by_key, 'reconcile 未建内容运营官'
-    assert 'sales_advisor' in by_key, 'reconcile 未建销售顾问'
+    assert 'analyst' in by_key, 'reconcile 未建分析专家'
     # 主脑唯一（reconcile 跳过 assistant，不重复建）
     assistant_count = sum(1 for a in (await session.execute(
         select(HasnAgents).where(HasnAgents.owner_id == owner, HasnAgents.builtin_agent_key == 'assistant')
@@ -163,10 +163,10 @@ async def test_seed_binds_by_type_and_emits_sync_event(session) -> None:
     assert hot.agent_id == by_key['content_operator'].hasn_id, 'daily_hot_topic 应绑内容运营官'
     assert hot.enabled is False, 'daily_hot_topic 首播应 enabled=False（default_enabled）'
     assert hot.system_prompt and '内容运营官' in hot.system_prompt
-    # growth_*/creator_*：catalog.enabled=false（官方下线）但仍必须播种，按类型绑专业内置 agent，
+    # growth_*/creator_*：catalog.enabled=false（官方下线）但仍必须播种，按当前三类内置 agent 绑定，
     # 初始 enabled=default_enabled=False（首播停用、用户手动启用即可）。
     growth = tasks['growth_daily_briefing']
-    assert growth.agent_id == by_key['sales_advisor'].hasn_id, 'growth 应绑销售顾问'
+    assert growth.agent_id == by_key['assistant'].hasn_id, 'growth 应绑全能助理'
     assert growth.created_by_kind == 'builtin'
     assert growth.enabled is False, 'growth 首播应停用（default_enabled=False）'
     creator = tasks['creator_operate']

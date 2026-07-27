@@ -93,7 +93,10 @@ class CRUDHasnOwnerWorkbenchPref(CRUDPlus[HasnOwnerWorkbenchPref]):
         )
         result = await db.execute(stmt, execution_options={'populate_existing': True})
         await db.flush()
-        return result.scalars().first()
+        row = result.scalars().first()
+        if row is None:
+            raise RuntimeError('工作台偏好 UPSERT 未返回记录')
+        return row
 
 
 hasn_owner_workbench_pref_dao: CRUDHasnOwnerWorkbenchPref = CRUDHasnOwnerWorkbenchPref(HasnOwnerWorkbenchPref)

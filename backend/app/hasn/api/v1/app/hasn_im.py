@@ -1,22 +1,33 @@
-"""HASN IM 业务 API — 会话列表 + 消息分页 + 已读
+"""HASN IM 业务 API——会话列表、消息分页与已读。
 
-对齐协议: Core/03-消息与通信.md §4 会话管理
-认证方式: hasn_auth (JWT / Owner API Key / Agent Key)
+所有 IM 读写均经 ``ImGateway`` 和 IM 受限角色执行；普通业务 Session、旧
+``hasn_unread_counts`` 不再参与生产路径。
 """
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, desc, or_, select
 
-from backend.app.hasn.model import HasnConversations, HasnHumans, HasnMessages, HasnUnreadCounts
-from backend.app.hasn.model.hasn_agents import HasnAgents
 from backend.app.hasn.service.hasn_auth import hasn_auth
-from backend.app.hasn_im.domain.read_cursor import monotonic_read_cursor
+from backend.app.hasn_im.application.errors import (
+    ImConversationNotFound,
+    ImSenderNotParticipant,
+    ImSendRejected,
+)
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports.dto import (
+    ActorKind,
+    EnsureDirectConversationCommand,
+    ListConversationsQuery,
+    ListMessagesQuery,
+    ReadCursorCommand,
+    ServicePrincipal,
+)
+from backend.app.hasn_im.ports.im_gateway import ImGateway
 from backend.common.response.response_schema import ResponseModel, response_base
-from backend.database.db import CurrentSession
 
 router = APIRouter()
+conversation_contract_router = APIRouter()
 
 
 # ─── 响应结构 ───────────────────────────────────
@@ -54,246 +65,152 @@ class MarkReadReq(BaseModel):
     last_msg_id: int = 0
 
 
+class EnsureConversationRequest(BaseModel):
+    """确保直聊会话存在的请求。"""
+
+    peer_hasn_id: str = Field(..., description='对端 HASN ID')
+    relation_type: str | None = Field(default='social', description='关系类型')
+
+
+class EnsureConversationResponse(BaseModel):
+    """daemon 稳定会话 ensure 契约的响应。"""
+
+    conversation_id: str = Field(..., description='云端权威会话 UUID')
+    peer_hasn_id: str = Field(..., description='对端 HASN ID')
+    kind: str = Field(..., description='会话类型')
+    relation_type: str = Field(..., description='生效关系类型')
+
+
+def _principal_from_auth(auth: dict) -> ServicePrincipal:
+    """把服务端认证结果规范化为不可由请求体伪造的调用主体。"""
+    canonical_sender = str(auth['hasn_id'])
+    effective_sender = str(auth.get('effective_id') or canonical_sender)
+    entity_type = auth.get('entity_type')
+    actor_kind = (
+        ActorKind.AGENT
+        if entity_type == 'agent' or canonical_sender.startswith('a_')
+        else ActorKind.HUMAN
+    )
+    return ServicePrincipal(
+        canonical_sender=canonical_sender,
+        actor_kind=actor_kind,
+        send_as=effective_sender if effective_sender != canonical_sender else None,
+    )
+
+
+def _raise_http_error(exc: Exception) -> None:
+    """把应用层结构化错误映射为稳定 HTTP 状态。"""
+    if isinstance(exc, ImConversationNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, ImSenderNotParticipant):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if isinstance(exc, ImSendRejected):
+        status = 404 if exc.code == 3001 else 400
+        raise HTTPException(status_code=status, detail=exc.message) from exc
+    raise exc
+
+
+# ─── daemon 稳定会话契约 ─────────────────────────────
+
+@conversation_contract_router.post('/ensure', summary='确保直聊会话存在（幂等）')
+async def ensure_conversation(
+    body: EnsureConversationRequest,
+    auth: Annotated[dict, Depends(hasn_auth)],
+    gateway: Annotated[ImGateway, Depends(get_im_gateway)],
+) -> ResponseModel:
+    """保持 daemon 云端调用路径稳定，实际写入统一收口到 ``ImGateway``。"""
+    relation_type = body.relation_type or 'social'
+    try:
+        conversation = await gateway.ensure_direct_conversation(
+            EnsureDirectConversationCommand(
+                peer_hasn_id=body.peer_hasn_id,
+                relation_type=relation_type,
+            ),
+            _principal_from_auth(auth),
+        )
+    except (ImConversationNotFound, ImSenderNotParticipant, ImSendRejected) as exc:
+        _raise_http_error(exc)
+        raise AssertionError('不可达')
+    return response_base.success(
+        data=EnsureConversationResponse(
+            conversation_id=conversation.conversation_id,
+            peer_hasn_id=body.peer_hasn_id,
+            kind=conversation.conversation_type,
+            relation_type=conversation.relation_type,
+        )
+    )
+
+
 # ─── 会话列表 ───────────────────────────────────
 
 @router.get('/conversations', summary='获取我的会话列表')
 async def list_my_conversations(
-    db: CurrentSession,
     auth: Annotated[dict, Depends(hasn_auth)],
+    gateway: Annotated[ImGateway, Depends(get_im_gateway)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+    cursor: Annotated[str | None, Query(description='稳定分页游标')] = None,
 ) -> ResponseModel:
-    """按当前用户 hasn_id 查询所参与的所有活跃会话"""
-    hasn_id = auth.get('effective_id', auth['hasn_id'])
-
-    # 查询我作为 participant_a 或 participant_b 的所有会话
-    result = await db.execute(
-        select(HasnConversations)
-        .where(
-            or_(
-                HasnConversations.participant_a_id == hasn_id,
-                HasnConversations.participant_b_id == hasn_id,
-            )
+    """按认证主体的活动 membership 查询会话。"""
+    try:
+        page = await gateway.list_conversations(
+            ListConversationsQuery(limit=limit, cursor=cursor),
+            _principal_from_auth(auth),
         )
-        .order_by(desc(HasnConversations.last_message_at))
-    )
-    conversations = result.scalars().all()
-
-    # 批量查未读
-    unread_map: dict[str, int] = {}
-    if conversations:
-        conv_ids = [str(c.id) for c in conversations]
-        unread_result = await db.execute(
-            select(HasnUnreadCounts)
-            .where(
-                HasnUnreadCounts.hasn_id == hasn_id,
-                HasnUnreadCounts.conversation_id.in_(conv_ids),
-            )
-        )
-        for u in unread_result.scalars().all():
-            unread_map[str(u.conversation_id)] = u.unread_count or 0
-
-    items = []
-    for conv in conversations:
-        # 确定对端
-        if conv.participant_a_id == hasn_id:
-            peer_id = conv.participant_b_id or ''
-            peer_type = conv.participant_b_type or 'human'
-        else:
-            peer_id = conv.participant_a_id or ''
-            peer_type = conv.participant_a_type or 'human'
-
-        # 查对端名称和头像
-        peer_name = peer_id
-        peer_avatar = None
-        if peer_id.startswith('h_'):
-            pr = await db.execute(
-                select(HasnHumans).where(HasnHumans.hasn_id == peer_id)
-            )
-            human = pr.scalar_one_or_none()
-            if human:
-                peer_name = human.nickname or peer_id
-                peer_avatar = getattr(human, 'avatar', None)
-        elif peer_id.startswith('a_'):
-            pr = await db.execute(
-                select(HasnAgents).where(HasnAgents.hasn_id == peer_id)
-            )
-            agent = pr.scalar_one_or_none()
-            if agent:
-                peer_name = agent.display_name or peer_id
-                peer_avatar = getattr(agent, 'avatar', None)
-
-        items.append(ConversationOut(
-            id=str(conv.id),
-            type=conv.type or 'direct',
-            peer_id=peer_id,
-            peer_name=peer_name,
-            peer_type=peer_type,
-            peer_avatar=peer_avatar,
-            relation_type=conv.relation_type,
-            last_message_preview=conv.last_message_preview,
-            last_message_at=str(conv.last_message_at) if conv.last_message_at else None,
-            last_message_from=conv.last_message_from,
-            unread_count=unread_map.get(str(conv.id), 0),
-            message_count=conv.message_count or 0,
-        ).model_dump())
-
-    return response_base.success(data=items)
-
-
-# ─── 消息分页 ───────────────────────────────────
-
-def _entity_type_str(hasn_id: str) -> str:
-    if hasn_id.startswith('h_'):
-        return 'human'
-    if hasn_id.startswith('a_'):
-        return 'agent'
-    return 'system'
-
-
-def _content_type_str(ct: int) -> str:
-    return {1: 'text', 2: 'image', 3: 'file', 4: 'voice', 5: 'card',
-            6: 'capability_request', 7: 'capability_response'}.get(ct, 'text')
+    except (ImConversationNotFound, ImSenderNotParticipant, ImSendRejected) as exc:
+        _raise_http_error(exc)
+        raise AssertionError('不可达')
+    return response_base.success(data=page.items)
 
 
 @router.get('/conversations/{conversation_id}/messages', summary='获取会话消息（分页）')
 async def list_conversation_messages(
-    db: CurrentSession,
     conversation_id: Annotated[str, Path(description='会话 ID 或对端的 hasn_id')],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before_id: Annotated[int | None, Query(description='游标: 返回 ID 小于此值的消息')] = None,
     auth: dict = Depends(hasn_auth),
+    gateway: ImGateway = Depends(get_im_gateway),
 ) -> ResponseModel:
-    """按 conversation_id 分页查消息，支持未建会话前使用 peer_id 作为临时 id 查询"""
-    hasn_id = auth.get('effective_id', auth['hasn_id'])
-
-    # 验证用户是否是该会话的参与者
+    """按 conversation_id 与成员周期分页读取消息。"""
     try:
-        from uuid import UUID
-        conv_uuid = UUID(conversation_id)
-        conv = await db.get(HasnConversations, conv_uuid)
-    except ValueError:
-        # 用 peer_id 查两人是否有单聊会话
-        peer_id = conversation_id
-        result = await db.execute(
-            select(HasnConversations).where(
-                or_(
-                    and_(HasnConversations.participant_a_id == hasn_id, HasnConversations.participant_b_id == peer_id),
-                    and_(HasnConversations.participant_b_id == hasn_id, HasnConversations.participant_a_id == peer_id)
-                )
-            )
+        page = await gateway.list_messages(
+            ListMessagesQuery(
+                conversation_id=conversation_id,
+                limit=limit,
+                before_cursor=str(before_id) if before_id is not None else None,
+            ),
+            _principal_from_auth(auth),
         )
-        conv = result.scalar_one_or_none()
-
-    if not conv:
-        # 如果既不是正确数字ID，也没找到双边单聊（如真的未创建），返回空列表
+    except ImConversationNotFound:
+        # 兼容未建立会话时用 peer_id 打开页面的旧行为。
         return response_base.success(data=[])
-
-    if hasn_id not in (conv.participant_a_id, conv.participant_b_id):
-        raise HTTPException(status_code=403, detail='无权访问该会话')
-
-    actual_conv_id = conv.id
-
-    # 查消息
-    query = (
-        select(HasnMessages)
-        .where(HasnMessages.conversation_id == str(actual_conv_id))
-        .order_by(desc(HasnMessages.id))
-        .limit(limit)
-    )
-    if before_id:
-        query = query.where(HasnMessages.id < before_id)
-
-    result = await db.execute(query)
-    messages = result.scalars().all()
-
-    # 构造 HasnEnvelope
-    envelopes = []
-    for msg in reversed(messages):  # 恢复时间正序
-        envelope = {
-            'id': f'msg_{msg.id}',
-            'version': '1.0',
-            'type': msg.msg_type or 'message',
-            'from': {
-                'hasn_id': msg.from_id,
-                'entity_type': _entity_type_str(msg.from_id),
-                'owner_id': msg.from_id,
-            },
-            'to': {
-                'hasn_id': msg.to_id,
-                'entity_type': _entity_type_str(msg.to_id),
-                'owner_id': msg.to_id,
-            },
-            'content': {
-                'content_type': _content_type_str(msg.content_type),
-                'body': msg.content if isinstance(msg.content, dict) else {'text': str(msg.content)},
-            },
-            'context': {
-                'conversation_id': str(msg.conversation_id),
-                'relation_type': conv.relation_type,
-                'reply_to': str(msg.reply_to_id) if msg.reply_to_id else None,
-            },
-            'metadata': {
-                'priority': msg.priority or 'normal',
-                'created_at': msg.created_time.isoformat() if msg.created_time else None,
-                'server_received_at': msg.server_received_at.isoformat() if msg.server_received_at else None,
-            },
-            'local_id': str(msg.local_id) if msg.local_id else None,
-        }
-        envelopes.append(envelope)
-
-    return response_base.success(data=envelopes)
+    except (ImSenderNotParticipant, ImSendRejected) as exc:
+        _raise_http_error(exc)
+        raise AssertionError('不可达')
+    return response_base.success(data=page.items)
 
 
 # ─── 已读标记 ───────────────────────────────────
 
 @router.post('/conversations/{conversation_id}/read', summary='标记会话已读')
 async def mark_conversation_read(
-    db: CurrentSession,
     obj: MarkReadReq,
     conversation_id: Annotated[str, Path(description='会话 ID 或对端 hasn_id')],
     auth: Annotated[dict, Depends(hasn_auth)],
+    gateway: Annotated[ImGateway, Depends(get_im_gateway)],
 ) -> ResponseModel:
-    """标记会话已读（清零未读计数）"""
-    hasn_id = auth.get('effective_id', auth['hasn_id'])
-
+    """单调推进 membership ``read_seq`` 并重建当前主体未读投影。"""
     try:
-        from uuid import UUID
-        UUID(conversation_id)
-        conv_id_str = conversation_id
-    except ValueError:
-        peer_id = conversation_id
-        result = await db.execute(
-            select(HasnConversations).where(
-                or_(
-                    and_(HasnConversations.participant_a_id == hasn_id, HasnConversations.participant_b_id == peer_id),
-                    and_(HasnConversations.participant_b_id == hasn_id, HasnConversations.participant_a_id == peer_id)
-                )
-            )
+        await gateway.advance_read_cursor(
+            ReadCursorCommand(
+                conversation_id=conversation_id,
+                up_to_message_id=obj.last_msg_id if obj.last_msg_id > 0 else None,
+            ),
+            _principal_from_auth(auth),
         )
-        conv = result.scalar_one_or_none()
-        if not conv:
-            return response_base.success()
-        conv_id_str = str(conv.id)
-
-    result = await db.execute(
-        select(HasnUnreadCounts).where(
-            HasnUnreadCounts.hasn_id == hasn_id,
-            HasnUnreadCounts.conversation_id == conv_id_str,
-        )
-    )
-    unread = result.scalar_one_or_none()
-
-    if unread:
-        unread.unread_count = 0
-        # 已读游标只进不退（§4.3）：陈旧/乱序低值请求不得把游标拨回去（旧代码无条件覆写会倒退）。
-        unread.last_read_msg_id = monotonic_read_cursor(unread.last_read_msg_id, obj.last_msg_id)
-    else:
-        unread = HasnUnreadCounts(
-            hasn_id=hasn_id,
-            conversation_id=conv_id_str,
-            unread_count=0,
-            last_read_msg_id=monotonic_read_cursor(None, obj.last_msg_id),
-        )
-        db.add(unread)
-
-    await db.commit()
+    except ImConversationNotFound:
+        # 未建立会话或仍使用 peer_id 的旧客户端，保持幂等空成功。
+        return response_base.success()
+    except (ImSenderNotParticipant, ImSendRejected) as exc:
+        _raise_http_error(exc)
+        raise AssertionError('不可达')
     return response_base.success()

@@ -15,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.hermes.api.v1.internal import llm_credential as endpoint_module
-from backend.database.db import get_db, get_newapi_db
+from backend.database.db import get_db
 
 
 INTERNAL_TOKEN = 'test-internal-token-abc-987'
@@ -23,10 +23,6 @@ HEADERS_OK = {'X-Internal-Token': INTERNAL_TOKEN}
 
 
 async def _fake_db():
-    yield SimpleNamespace()
-
-
-async def _fake_newapi_db():
     yield SimpleNamespace()
 
 
@@ -41,7 +37,6 @@ def test_app(configured_internal_token):
     app = FastAPI()
     app.include_router(endpoint_module.router, prefix='/api/v1/hermes/internal/llm')
     app.dependency_overrides[get_db] = _fake_db
-    app.dependency_overrides[get_newapi_db] = _fake_newapi_db
     return app
 
 
@@ -184,8 +179,8 @@ def test_revoke_happy_returns_revoked_true(test_app, monkeypatch):
     # service 收到正确参数
     fake_revoke.assert_awaited_once()
     args = fake_revoke.await_args.args
-    # revoke_agent_token(db, newapi_db, agent_id) — 第三个 positional 是 agent_id
-    assert args[2] == 'agt_x'
+    # revoke_agent_token(db, agent_id) — 第二个 positional 是 agent_id
+    assert args[1] == 'agt_x'
 
 
 def test_revoke_when_not_exists_returns_revoked_false(test_app, monkeypatch):

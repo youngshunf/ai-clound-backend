@@ -24,7 +24,7 @@ from sqlalchemy.exc import DBAPIError
 from backend.app.hasn_plan.service.plan_app_service import PlanService
 from backend.database.db import async_db_session
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 
 async def test_todo_actor_owner_decision_roundtrip() -> None:

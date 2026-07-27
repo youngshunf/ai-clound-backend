@@ -28,6 +28,39 @@ class ToolRegistry:
         """注册迁移别名，解析到已存在的 canonical 工具。"""
         self._aliases[alias] = canonical
 
+    def replace_source_tools(
+        self,
+        source: str,
+        tools: list[BaseTool],
+    ) -> None:
+        """原子替换某一动态来源的完整工具快照。
+
+        App manifest 会在线更新；若继续使用首次注册后永久缓存的实例，发现面会返回
+        旧 schema，已下架工具也会残留。这里先验证同源快照及跨来源重名，再用一次字典
+        赋值完成替换，避免异步请求观察到“先删后加”的中间状态。
+        """
+        replacement: dict[str, BaseTool] = {}
+        for tool in tools:
+            tool_source = getattr(tool, 'source', 'platform')
+            if tool_source != source:
+                raise ValueError(
+                    f'Tool source mismatch: expected {source}, got {tool_source}'
+                )
+            if tool.name in replacement:
+                raise ValueError(f'Duplicate tool in source snapshot: {tool.name}')
+            replacement[tool.name] = tool
+
+        retained = {
+            name: tool
+            for name, tool in self._tools.items()
+            if getattr(tool, 'source', 'platform') != source
+        }
+        collision = retained.keys() & replacement.keys()
+        if collision:
+            names = ', '.join(sorted(collision))
+            raise ValueError(f'Tool source collision: {names}')
+        self._tools = retained | replacement
+
     def get_tool(self, name: str) -> BaseTool | None:
         """获取工具，解析迁移别名。"""
         tool = self._tools.get(name)

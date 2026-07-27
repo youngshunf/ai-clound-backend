@@ -54,7 +54,7 @@ def get_model_objects(module_path: str) -> list[object] | None:
     except Exception as e:
         raise e from None
 
-    classes = []
+    classes: list[object] = []
 
     for _name, obj in inspect.getmembers(module):
         if (inspect.isclass(obj) and module_path in obj.__module__) or (

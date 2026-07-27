@@ -45,8 +45,8 @@ async def agent_create_draft(
     db: CurrentSessionTransaction,
     obj: CreateDraftParam,
 ) -> ResponseModel:
-    result = await draft_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await draft_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

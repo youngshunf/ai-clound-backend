@@ -153,6 +153,7 @@ def test_g1_faces_consistent_ungranted(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx()
 
     tool = server.tool_registry.get_tool(DIAG_TOOL)
+    assert tool is not None
     # 发现面不可见
     assert not server.tool_directory._can_discover(ctx, tool)
 
@@ -191,6 +192,7 @@ async def test_g1_granted_visible_and_callable(monkeypatch: pytest.MonkeyPatch) 
     ctx = _ctx(granted={DIAG_SCOPE})
 
     tool = server.tool_registry.get_tool(DIAG_TOOL)
+    assert tool is not None
     assert server.tool_directory._can_discover(ctx, tool)
     result = await server.call_tool(ctx, DIAG_TOOL, {})
     assert result == {'executed': True}
@@ -204,6 +206,7 @@ async def test_g1_owner_deny_over_grant_permission_error(monkeypatch: pytest.Mon
     ctx = _ctx(granted={DIAG_SCOPE}, capability_modes={DIAG_SCOPE: 'deny'})
 
     tool = server.tool_registry.get_tool(DIAG_TOOL)
+    assert tool is not None
     assert not server.tool_directory._can_discover(ctx, tool)
     with pytest.raises(PermissionError):
         await server.call_tool(ctx, DIAG_TOOL, {})

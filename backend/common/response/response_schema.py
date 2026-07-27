@@ -1,4 +1,4 @@
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, overload
 
 from fastapi import Response
 from pydantic import BaseModel, Field
@@ -33,7 +33,7 @@ class ResponseModel(BaseModel):
 
     code: int = Field(CustomResponseCode.HTTP_200.code, description='返回状态码')
     msg: str = Field(CustomResponseCode.HTTP_200.msg, description='返回信息')
-    data: Any | None = Field(None, description='返回数据')
+    data: Any = Field(None, description='返回数据')
 
 
 class ResponseSchemaModel(ResponseModel, Generic[SchemaT]):
@@ -77,14 +77,32 @@ class ResponseBase:
         :param data: 返回数据
         :return:
         """
-        return ResponseModel(code=res.code, msg=res.msg, data=data)
+        if data is None:
+            return ResponseModel(code=res.code, msg=res.msg, data=None)
+        return ResponseSchemaModel[Any](code=res.code, msg=res.msg, data=data)
+
+    @overload
+    def success(
+        self,
+        *,
+        res: CustomResponseCode | CustomResponse = CustomResponseCode.HTTP_200,
+        data: None = None,
+    ) -> ResponseModel: ...
+
+    @overload
+    def success(
+        self,
+        *,
+        res: CustomResponseCode | CustomResponse = CustomResponseCode.HTTP_200,
+        data: Any,
+    ) -> ResponseSchemaModel[Any]: ...
 
     def success(
         self,
         *,
         res: CustomResponseCode | CustomResponse = CustomResponseCode.HTTP_200,
         data: Any | None = None,
-    ) -> ResponseModel | ResponseSchemaModel:
+    ) -> ResponseModel | ResponseSchemaModel[Any]:
         """
         成功响应
 

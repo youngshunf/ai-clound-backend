@@ -3,15 +3,8 @@ from fastapi import APIRouter
 # --- 管理端（JWT + RBAC） ---
 from backend.app.hasn_design.api.v1.admin.hasn_design_project import router as admin_hasn_design_project_router
 
-# --- Agent（Agent Key） ---
-from backend.app.hasn_design.api.v1.agent.hasn_design_project import router as agent_hasn_design_project_router
-
 # --- 用户端（仅 JWT） ---
 from backend.app.hasn_design.api.v1.app.design_share import router as app_design_share_router
-from backend.app.hasn_design.api.v1.app.hasn_design_project import router as app_hasn_design_project_router
-
-# --- 公开（无需认证） ---
-from backend.app.hasn_design.api.v1.open.hasn_design_project import router as open_hasn_design_project_router
 from backend.core.conf import settings
 
 # ========================================
@@ -38,12 +31,6 @@ app = APIRouter(
     tags=['设计项目（矢量设计 design：云端轻登记元数据，源文件本地优先）用户端'],
 )
 
-app.include_router(
-    app_hasn_design_project_router,
-    prefix='/hasn-design-project',
-    tags=['矢量设计-设计项目（用户端）'],
-)
-
 # 分享协作（项目；全复用泛型 resource_share）——路径 /api/v1/hasn_design/app/projects/{project_id}/shares
 app.include_router(
     app_design_share_router,
@@ -59,11 +46,6 @@ open_api = APIRouter(
     tags=['设计项目（矢量设计 design：云端轻登记元数据，源文件本地优先）公开'],
 )
 
-open_api.include_router(
-    open_hasn_design_project_router,
-    prefix='/hasn-design-project',
-    tags=['矢量设计-设计项目（公开）'],
-)
 
 # ========================================
 # Agent API
@@ -72,10 +54,4 @@ open_api.include_router(
 agent = APIRouter(
     prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn_design/agent',
     tags=['设计项目（矢量设计 design：云端轻登记元数据，源文件本地优先）Agent'],
-)
-
-agent.include_router(
-    agent_hasn_design_project_router,
-    prefix='/hasn-design-project',
-    tags=['矢量设计-设计项目（Agent）'],
 )

@@ -1,8 +1,9 @@
 """P5 应用入口（注册即用）真实 HTTP E2E（真实 PostgreSQL，零 mock）。
 
 覆盖 `GET /apps`（全部已注册）+ `GET /apps/{app_id}/entry`：
-  - 内置 UI 应用（knowledge/community）→ entry_route + transport=gateway_internal，
-    且响应**不含 credential**（凭据不进浏览器，设计 11 §0.3/§7.2）。
+  - knowledge → entry_route + 已配置的 daemon_direct 实例句柄；
+  - community → entry_route + gateway_internal；
+  - 两者响应均**不含 credential**（凭据不进浏览器，设计 11 §0.3/§7.2）。
   - 未知应用 → 404。
   - `/apps` 返回全部已注册应用（注册即用，非「已挂载」）。
 
@@ -116,13 +117,14 @@ async def test_list_apps_returns_all_registered(env) -> None:
 
 
 async def test_entry_builtin_app_returns_internal_handle_without_credential(env) -> None:
-    """内置应用 entry → gateway_internal + entry_route，且响应不含凭据。"""
+    """knowledge entry → daemon_direct 实例句柄 + entry_route，且响应不含凭据。"""
     handle = _data(await env.client.get(f'{_APPS}/knowledge/entry'))
     assert handle['app_id'] == 'knowledge'
     assert handle['entry_route'] == '/apps/knowledge'
-    assert handle['transport'] == 'gateway_internal'
-    assert handle['instance_id'] is None
-    assert handle['requires_credential'] is False
+    assert handle['transport'] == 'daemon_direct'
+    assert str(handle['instance_id']).isdigit()
+    assert handle['endpoint']
+    assert handle['requires_credential'] is True
     # 凭据绝不下发浏览器。
     assert 'credential' not in handle
     # 当前空间（默认个人）随句柄返回，便于切空间重解析。

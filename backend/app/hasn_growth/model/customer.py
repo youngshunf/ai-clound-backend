@@ -31,7 +31,7 @@ class Customer(HasnGrowthAppBase):
     lifecycle_status: Mapped[str] = mapped_column(sa.String(16), default='', comment='生命周期 (active:跟进中:blue/engaged:有回应:cyan/opportunity:已立商机:purple/silent:沉默:gray/won:成交:green/lost:流失:red/archived:归档:gray)')
     owner_agent_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment=None)
     followup_task_id: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='当前跟进任务（hasn_task.task.id 逻辑引用）')
-    tags: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
+    tags: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
     last_activity_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
     next_followup_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
     last_followup_trigger_at: Mapped[datetime | None] = mapped_column(

@@ -40,9 +40,10 @@ class AddUserRoleParam(SchemaBase):
     role_id: int = Field(description='角色 ID')
 
 
-class AddOAuth2UserParam(AuthSchemaBase):
+class AddOAuth2UserParam(SchemaBase):
     """添加 OAuth2 用户参数"""
 
+    username: str = Field(description='用户名')
     password: str | None = Field(None, description='密码')
     nickname: str | None = Field(None, description='昵称')
     email: CustomEmailStr | None = Field(None, description='邮箱')
@@ -130,13 +131,14 @@ class GetUserInfoWithRelationDetail(GetUserInfoDetail):
     hasn_id: str | None = Field(None, description='HASN ID')
 
 
-class GetCurrentUserInfoWithRelationDetail(GetUserInfoWithRelationDetail):
+class GetCurrentUserInfoWithRelationDetail(GetUserInfoDetail):
     """当前用户信息关联详情"""
 
     model_config = ConfigDict(from_attributes=True)
 
     dept: str | None = Field(None, description='部门名称')
     roles: list[str] = Field(description='角色名称列表')
+    hasn_id: str | None = Field(None, description='HASN ID')
 
     @model_validator(mode='before')
     @classmethod

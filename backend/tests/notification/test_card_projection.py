@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -54,7 +55,7 @@ async def session():
         await engine.dispose()
 
 
-def _row(*, source: dict | None, title: str, data: dict, category: str = 'social') -> SimpleNamespace:
+def _row(*, source: dict | None, title: str, data: dict, category: str = 'social') -> Any:
     """构造一条内存态权威通知行占位（投影为纯读，只读属性，不落库、不建 ORM 实例）。
 
     `project_notification_card` / `build_card_body` 只读 source/data/id/title/body/category/type/priority，

@@ -5,7 +5,7 @@
      resolve_app_access free 放行。
   B) Agent API（/api/v1/hasn-task/agent，Agent JWT）经事件通道（save_task_event）落
      hasn_task.task + hasn_sync_events feed：
-     - D4：once → scheduled（有 next_run_at）；interval → pending_approval + 提醒通知行
+     - D4：once → scheduled（有 next_run_at）；interval → pending_approval + 主会话汇报卡 outbox
      - R4：10 分钟幂等键（created=False）+ 单 agent 10/小时频控
      - R2：改调度升级成周期 → 回 pending_approval；rejected 拒写；resume 仅 paused；
            run_now 仅 scheduled/paused
@@ -31,11 +31,11 @@ import pytest_asyncio
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.hasn.model.hasn_humans import HasnHumans
+from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_project.service.project_app_service import project_service
 from backend.app.hasn_task.api.v1.agent.task import router as agent_task_router
 from backend.app.hasn_task.api.v1.app.task import router as app_task_router
@@ -43,7 +43,7 @@ from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
+from backend.database.db import SQLALCHEMY_DATABASE_URL, async_db_session, get_db, get_db_transaction
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -126,19 +126,29 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     other_owner = f'h_tsk2_{tag}'
     owner_uid = 9_600_000_000 + int(tag, 16)
     agent_hasn = f'a_tsk_{tag}'
-    session.add(
-        HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='Owner', status='active')
-    )
-    session.add(
-        HasnHumans(
-            hasn_id=other_owner,
-            star_id=f's_{owner_uid + 1}',
-            user_id=owner_uid + 1,
-            nickname='Other',
-            status='active',
+    async with async_db_session.begin() as identity_db:
+        identity_db.add(
+            HasnHumans(hasn_id=owner, star_id=f's_{owner_uid}', user_id=owner_uid, nickname='Owner', status='active')
         )
-    )
-    await session.flush()
+        identity_db.add(
+            HasnHumans(
+                hasn_id=other_owner,
+                star_id=f's_{owner_uid + 1}',
+                user_id=owner_uid + 1,
+                nickname='Other',
+                status='active',
+            )
+        )
+        identity_db.add(
+            HasnAgents(
+                hasn_id=agent_hasn,
+                star_id=f's_{owner_uid}#agent',
+                owner_id=owner,
+                display_name=f'agent_{tag}',
+                agent_name=f'agent_{tag}',
+                status='active',
+            )
+        )
 
     async def _yield_session() -> AsyncIterator:  # noqa: RUF029 FastAPI 依赖 override 须为 async generator
         yield session
@@ -178,6 +188,9 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         _APP.dependency_overrides.clear()
         await session.rollback()
         await session.close()
+        async with async_db_session.begin() as identity_db:
+            await identity_db.execute(delete(HasnAgents).where(HasnAgents.hasn_id == agent_hasn))
+            await identity_db.execute(delete(HasnHumans).where(HasnHumans.hasn_id.in_([owner, other_owner])))
         await engine.dispose()
 
 
@@ -290,20 +303,38 @@ async def test_project_id_must_belong_to_current_owner(e2e: SimpleNamespace) -> 
     assert rejected_update.status_code == 404, rejected_update.text
 
 
-async def test_periodic_goes_pending_approval_with_notification(e2e: SimpleNamespace) -> None:
+async def test_periodic_goes_pending_approval_with_report_card(e2e: SimpleNamespace) -> None:
     data = await _create(e2e.client, '每日简报', 'interval', {'minutes': 1440})
     task = data['task']
     assert task['state'] == 'pending_approval'
     assert task['next_run_at'] is None
 
-    # D4：提醒卡片 = 通知权威行（非审批票据，绝不走 ask_gate）
+    # 自有分身向主人汇报不进入通知中心，而是在同一事务登记主会话卡片 outbox。
+    notifications = (
+        await e2e.session.execute(
+            text(
+                "SELECT id FROM hasn_notifications "
+                "WHERE target_id = :owner AND type = 'task.pending_approval'"
+            ),
+            {'owner': e2e.owner},
+        )
+    ).all()
+    assert notifications == []
+
     row = await e2e.session.execute(
-        text("SELECT type, dedupe_key FROM hasn_notifications WHERE target_id = :o AND type = 'task.pending_approval'"),
-        {'o': e2e.owner},
+        text(
+            "SELECT payload, idempotency_key FROM hasn_notification_im_command_outbox "
+            "WHERE payload->'principal'->>'canonical_sender' = :agent "
+            "AND payload->'message'->'content'->'resource'->'metadata'->>'target_kind' = 'task'"
+        ),
+        {'agent': e2e.agent_hasn},
     )
-    notes = row.mappings().all()
-    assert len(notes) == 1
-    assert notes[0]['dedupe_key'] == f'task.pending_approval:{task["task_id"]}'
+    cards = row.mappings().all()
+    assert len(cards) == 1
+    card = cards[0]['payload']['message']['content']
+    assert card['metadata']['report'] is True
+    assert card['resource']['id'] == task['task_id']
+    assert card['primary_action']['uri'] == f'hasn://tasks/{task["task_id"]}'
 
 
 async def test_create_idempotency_window(e2e: SimpleNamespace) -> None:

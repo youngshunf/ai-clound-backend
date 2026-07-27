@@ -18,7 +18,7 @@ studio 是 **cloud-brokered** AI-Native 应用（对齐 creator/finance/quant，
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -77,7 +77,7 @@ def _cap(
     input_schema.properties（注册期 `_manifest_resource_access_errors` 校验，拼错即炸）。无资源实例入参的
     工具（list_pipelines/list_projects/get_render_job/run_tool 等）不声明，门零介入。
     """
-    cap = {
+    cap: dict[str, Any] = {
         'capability_id': f'hasn_studio.{name}.capability',
         'name': title,
         'description': description,
@@ -117,7 +117,7 @@ def _tool_from_cap(cap: dict) -> dict:
     幂等性按 scope 推导：纯读（studio:read）可安全重试 → idempotent=True；写/渲染/导出 → False。
     """
     scopes = list(cap.get('required_scopes') or [])
-    tool = {
+    tool: dict[str, Any] = {
         'tool_id': cap['tool_id'],
         'mcp_name': cap['mcp_name'],
         'transport': 'gateway_internal',
@@ -375,7 +375,7 @@ _CAPABILITIES = [
 ]
 
 
-STUDIO_AI_NATIVE_MANIFEST = {
+STUDIO_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'studio',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'studio': '视频引擎（统一流水线合成视频）'},

@@ -60,7 +60,7 @@ async def logout(
     try:
         payload = jwt_decode(token)
     except errors.TokenError as exc:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc.msg))
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc.detail)) from exc
 
     jti = payload.session_uuid
     user_id = payload.id
@@ -102,7 +102,7 @@ async def mobile_jwt_auth_with_revocation(
         token = get_token(request)
         payload = jwt_decode(token)
     except errors.TokenError as exc:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc.msg))
+        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail=str(exc.detail)) from exc
 
     if await jwt_revocation_module.is_jwt_revoked(db, jti=payload.session_uuid):
         raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail='Token 已吊销')

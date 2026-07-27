@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import builtins
 import uuid
 
 from typing import Any
@@ -77,13 +78,13 @@ class FakeRedis:
         self.hashes.get(key, {}).pop(field, None)
 
     async def sadd(self, key: str, value: Any) -> None:
-        self.sets.setdefault(key, set()).add(value)
+        self.sets.setdefault(key, builtins.set()).add(value)
 
     async def srem(self, key: str, value: Any) -> None:
-        self.sets.get(key, set()).discard(value)
+        self.sets.get(key, builtins.set()).discard(value)
 
-    async def smembers(self, key: str) -> set[Any]:
-        return set(self.sets.get(key, set()))
+    async def smembers(self, key: str) -> builtins.set[Any]:
+        return builtins.set(self.sets.get(key, builtins.set()))
 
     async def delete(self, key: str) -> None:
         self.hashes.pop(key, None)
@@ -132,7 +133,7 @@ async def test_disconnect_node_clears_presence_and_releases_agents(monkeypatch) 
     node_id = 'node_B'
     owner_id = 'h_owner'
     agent_id = 'a_brain'
-    ws = FakeWebSocket()
+    ws: Any = FakeWebSocket()
     module._ws_connections[node_id] = ws
 
     # 模拟节点在线：conn 记录 + 存活心跳键 + 节点实体集合 + 路由表 + owner 节点集合

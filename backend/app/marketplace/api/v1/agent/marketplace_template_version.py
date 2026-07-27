@@ -45,8 +45,8 @@ async def agent_create_marketplace_template_version(
     db: CurrentSessionTransaction,
     obj: CreateMarketplaceTemplateVersionParam,
 ) -> ResponseModel:
-    result = await marketplace_template_version_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await marketplace_template_version_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

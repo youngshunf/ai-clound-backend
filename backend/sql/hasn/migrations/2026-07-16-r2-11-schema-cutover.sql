@@ -45,7 +45,7 @@ BEGIN
 END $$;
 
 COMMENT ON ROLE astra_im_service    IS 'IM use case 角色：hasn_im.* 全 DML + 身份只读投影 SELECT；禁 hasn_sync DML/其他业务 DML（doc16 §3.2）';
-COMMENT ON ROLE astra_sync_service  IS 'sync pull/retention 角色：hasn_sync.* DML；禁任意业务表读取（doc16 §3.2）';
+COMMENT ON ROLE astra_sync_service  IS 'sync pull/retention/worker 角色：事件只读清理、inbox DML；禁直接创建下行事件与读取业务表（doc16 §3.2）';
 COMMENT ON ROLE astra_python_backend IS '普通业务/生产方角色：业务 schema DML；hasn_im 只读运营视图；禁 hasn_im/hasn_sync 表 DML；仅 EXECUTE hasn_sync.append_event（doc16 §3.2）';
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -58,15 +58,49 @@ COMMENT ON ROLE astra_python_backend IS '普通业务/生产方角色：业务 s
 ALTER TABLE public.hasn_messages ALTER COLUMN mention_all SET DEFAULT false;
 -- hasn_contacts.trust_level：裁决 default=1（陌生人 fail-closed·R0-01）
 ALTER TABLE public.hasn_contacts ALTER COLUMN trust_level SET DEFAULT 1;
+-- metadata.create_all 基线不会携带 codegen SQL 里的复合唯一约束和 server default；
+-- 若不显式补齐，联系人接受/控制边投影的 ON CONFLICT 会在干净 R3 库直接 500。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.hasn_contacts'::regclass
+          AND conname = 'uq_hasn_contact_relation'
+    ) THEN
+        ALTER TABLE public.hasn_contacts
+            ADD CONSTRAINT uq_hasn_contact_relation
+            UNIQUE (owner_id, peer_id, relation_type);
+    END IF;
+END
+$$;
+ALTER TABLE public.hasn_contacts
+    ALTER COLUMN custom_permissions SET DEFAULT '{}'::jsonb,
+    ALTER COLUMN created_time SET DEFAULT now();
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ③ §10.2 成员周期 epoch + read_seq 回填（移表前，操作 public.* 原名）
 --    权威 = seq + 可见区间 + read_seq；不以 unread_count 盲算事实（不可映射者入异常清单）。
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- 3a. 成员周期表补 history_complete_from_seq（join time 缺失采保守边界时记录完整性起点·§10.2）
+-- 3a. 成员周期表先补齐本次回填读取/写入的全部字段。R2-11 必须自包含，不能依赖按日期
+-- 排在本文件之后的迁移，否则生产 runner 会在回填 INSERT 时先撞 UndefinedColumn。
 ALTER TABLE public.hasn_conversation_memberships
+    ADD COLUMN IF NOT EXISTS member_star_id VARCHAR(40) NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS member_name VARCHAR(100) NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS muted BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS invited_by VARCHAR(40) NULL,
+    ADD COLUMN IF NOT EXISTS charter_updated_time TIMESTAMPTZ NULL,
     ADD COLUMN IF NOT EXISTS history_complete_from_seq BIGINT NULL;
+COMMENT ON COLUMN public.hasn_conversation_memberships.member_star_id IS
+    '成员唤星号展示快照；成员身份权威仍是 member_hasn_id + epoch';
+COMMENT ON COLUMN public.hasn_conversation_memberships.member_name IS
+    '成员名称展示快照；不作为成员身份或判权依据';
+COMMENT ON COLUMN public.hasn_conversation_memberships.muted IS
+    '本成员在当前会话的免打扰设置';
+COMMENT ON COLUMN public.hasn_conversation_memberships.invited_by IS
+    '邀请该成员进入当前周期的 hasn_id';
+COMMENT ON COLUMN public.hasn_conversation_memberships.charter_updated_time IS
+    '分身群内发言准则最后更新时间';
 COMMENT ON COLUMN public.hasn_conversation_memberships.history_complete_from_seq IS
     '成员周期完整性起点 seq（回填时 join time 缺失→保守边界=1，记录此起点；历史退群曾物删行，完整性从 cutover 起保证·§10.2）';
 
@@ -101,7 +135,8 @@ WHERE c.type = 'direct'
 -- 3d. group 会话当前成员 epoch：有 join time → 首个可见 seq（received_at >= joined_at）；否则保守边界 1
 INSERT INTO public.hasn_conversation_memberships
     (conversation_id, member_hasn_id, member_type, role, joined_seq, left_seq, read_seq, state,
-     agent_group_trust_level, agent_charter, joined_at, created_time, history_complete_from_seq)
+     agent_group_trust_level, agent_charter, member_star_id, member_name, muted, invited_by,
+     charter_updated_time, joined_at, created_time, history_complete_from_seq)
 SELECT
     gm.conversation_id,
     gm.member_id,
@@ -121,6 +156,11 @@ SELECT
     'active',
     COALESCE(gm.agent_group_trust_level, 2),
     gm.agent_charter,
+    COALESCE(gm.member_star_id, ''),
+    COALESCE(gm.member_name, ''),
+    COALESCE(gm.muted, false),
+    gm.invited_by,
+    gm.charter_updated_time,
     gm.joined_at,
     now(),
     CASE WHEN gm.joined_at IS NULL THEN 1 ELSE NULL END
@@ -132,7 +172,19 @@ WHERE gm.conversation_id IS NOT NULL
       WHERE m.conversation_id = gm.conversation_id AND m.member_hasn_id = gm.member_id AND m.left_seq IS NULL
   );
 
--- 3e. read_seq 映射：last_read_msg_id → 该消息 conversation_seq（§4.3 clamp：单调只进 + 不越 joined 可见下界）
+-- 3e. 已有活动周期也要补齐群名册展示/策略字段；不能只照顾上一步新插入的周期。
+UPDATE public.hasn_conversation_memberships m
+SET member_star_id = gm.member_star_id,
+    member_name = gm.member_name,
+    muted = gm.muted,
+    invited_by = gm.invited_by,
+    charter_updated_time = gm.charter_updated_time
+FROM public.hasn_group_members gm
+WHERE m.conversation_id = gm.conversation_id
+  AND m.member_hasn_id = gm.member_id
+  AND m.left_seq IS NULL;
+
+-- 3f. read_seq 映射：last_read_msg_id → 该消息 conversation_seq（§4.3 clamp：单调只进 + 不越 joined 可见下界）
 UPDATE public.hasn_conversation_memberships m
 SET read_seq = mapped.seq
 FROM (
@@ -148,7 +200,7 @@ WHERE m.conversation_id = mapped.conversation_id
   AND mapped.seq > m.read_seq
   AND mapped.seq >= m.joined_seq;
 
--- 3f. 异常清单：last_read_msg_id 存在但映射不到本会话消息（删档/跨会话）→ 入清单，不动 read_seq
+-- 3g. 异常清单：last_read_msg_id 存在但映射不到本会话消息（删档/跨会话）→ 入清单，不动 read_seq
 INSERT INTO hasn_im.membership_read_backfill_exceptions (conversation_id, member_hasn_id, last_read_msg_id, reason)
 SELECT uc.conversation_id, uc.hasn_id, uc.last_read_msg_id, 'msg_not_found_in_conversation'
 FROM public.hasn_unread_counts uc
@@ -170,7 +222,8 @@ BEGIN
     FOREACH t IN ARRAY ARRAY[
         'hasn_messages', 'hasn_conversations', 'hasn_conversation_memberships',
         'hasn_unread_projection', 'hasn_group_agent_invites', 'hasn_suppressed_messages',
-        'hasn_asset_grants', 'hasn_contacts', 'hasn_contact_requests'
+        'hasn_asset_grants', 'hasn_contacts', 'hasn_contact_requests',
+        'agent_communication_settings'
     ]
     LOOP
         IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
@@ -207,6 +260,23 @@ BEGIN
     END IF;
 END $$;
 
+-- metadata.create_all 的旧基线没有携带 codegen SQL 中的 inbox 复合唯一约束；
+-- sync push 使用同一三列作为 ON CONFLICT arbiter，故切换迁移必须自包含补齐。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'hasn_sync.hasn_sync_inbox_events'::regclass
+          AND conname = 'uq_hasn_sync_inbox_client_event'
+    ) THEN
+        ALTER TABLE hasn_sync.hasn_sync_inbox_events
+            ADD CONSTRAINT uq_hasn_sync_inbox_client_event
+            UNIQUE (owner_id, node_id, client_event_id);
+    END IF;
+END
+$$;
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ⑤ append_event 换源（sync 表已迁入 hasn_sync）：固定 search_path=pg_catalog,hasn_sync，
 --    全限定 hasn_sync.hasn_sync_events。语义与 R2-07 一致（per-owner advisory lock +
@@ -239,10 +309,54 @@ DECLARE
     v_event_id          text;
     v_occurred_at       timestamptz;
 BEGIN
+    IF p_owner_id IS NULL OR btrim(p_owner_id) = '' OR char_length(p_owner_id) > 40 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: owner_id 必须为 1 至 40 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_hasn_id IS NULL OR btrim(p_hasn_id) = '' OR char_length(p_hasn_id) > 40 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: hasn_id 必须为 1 至 40 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_event_type IS NULL OR btrim(p_event_type) = '' OR char_length(p_event_type) > 50 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: event_type 必须为 1 至 50 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_aggregate_type IS NULL OR btrim(p_aggregate_type) = '' OR char_length(p_aggregate_type) > 40 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: aggregate_type 必须为 1 至 40 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_aggregate_id IS NULL OR btrim(p_aggregate_id) = '' OR char_length(p_aggregate_id) > 80 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: aggregate_id 必须为 1 至 80 个字符'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_payload IS NULL OR jsonb_typeof(p_payload) <> 'object' THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: payload 必须是 JSON object'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF octet_length(p_payload::text) > 262144 THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: payload 不能超过 262144 字节'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
     IF (p_producer IS NULL) <> (p_source_event_id IS NULL) THEN
         RAISE EXCEPTION
             'hasn_sync.append_event: producer 与 source_event_id 必须同时提供或同时省略 (producer=%, source_event_id=%)',
             p_producer, p_source_event_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_producer IS NOT NULL AND (
+        char_length(p_producer) > 40
+        OR p_producer !~ '^[a-z][a-z0-9_]{0,39}$'
+    ) THEN
+        RAISE EXCEPTION
+            'hasn_sync.append_event: producer 必须匹配 ^[a-z][a-z0-9_]{0,39}$'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    IF p_source_event_id IS NOT NULL AND (
+        btrim(p_source_event_id) = ''
+        OR char_length(p_source_event_id) > 64
+    ) THEN
+        RAISE EXCEPTION 'hasn_sync.append_event: source_event_id 必须为 1 至 64 个字符'
             USING ERRCODE = 'check_violation';
     END IF;
 
@@ -334,20 +448,86 @@ GRANT USAGE ON SCHEMA hasn_im TO astra_im_service;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA hasn_im TO astra_im_service;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA hasn_im TO astra_im_service;
 ALTER DEFAULT PRIVILEGES IN SCHEMA hasn_im GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astra_im_service;
-GRANT SELECT ON public.hasn_agents, public.hasn_humans TO astra_im_service;  -- 明确授权的身份只读投影
+GRANT SELECT ON public.hasn_agents, public.hasn_humans, public.hasn_assets,
+                public.hasn_nodes, public.hasn_node_bindings
+    TO astra_im_service;  -- 明确授权的身份/路由/通知只读投影
+GRANT SELECT, INSERT, UPDATE ON public.hasn_group_im_command_outbox
+    TO astra_im_service;
+GRANT USAGE, SELECT ON SEQUENCE public.hasn_group_im_command_outbox_id_seq
+    TO astra_im_service;
+GRANT USAGE ON SCHEMA hasn_client TO astra_im_service;
+GRANT SELECT ON hasn_client.push_tokens TO astra_im_service;
 
--- astra_sync_service：hasn_sync.* DML（禁任意业务表读）
+-- astra_sync_service：事件只读/清理 + inbox DML（禁直接创建下行事件与读取业务表）
 GRANT USAGE ON SCHEMA hasn_sync TO astra_sync_service;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA hasn_sync TO astra_sync_service;
+-- 兼容迁移重复执行：先撤销早期候选版本授出的全表 DML，再按具名表最小授权。
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA hasn_sync FROM astra_sync_service;
+ALTER DEFAULT PRIVILEGES IN SCHEMA hasn_sync
+    REVOKE ALL PRIVILEGES ON TABLES FROM astra_sync_service;
+GRANT SELECT, DELETE ON hasn_sync.hasn_sync_events TO astra_sync_service;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON hasn_sync.hasn_sync_inbox_events TO astra_sync_service;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA hasn_sync TO astra_sync_service;
-ALTER DEFAULT PRIVILEGES IN SCHEMA hasn_sync GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astra_sync_service;
 
 -- astra_python_backend：hasn_im 只读运营视图 + 仅 EXECUTE append_event；禁 hasn_im/hasn_sync 表 DML
-GRANT USAGE ON SCHEMA hasn_im TO astra_python_backend;
-GRANT SELECT ON ALL TABLES IN SCHEMA hasn_im TO astra_python_backend;
-ALTER DEFAULT PRIVILEGES IN SCHEMA hasn_im GRANT SELECT ON TABLES TO astra_python_backend;
+GRANT USAGE ON SCHEMA public TO astra_python_backend;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO astra_python_backend;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO astra_python_backend;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astra_python_backend;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO astra_python_backend;
+-- 旧 group_members/unread_counts 已退役，普通业务角色不得继续写回旧事实。
+REVOKE INSERT, UPDATE, DELETE ON public.hasn_group_members, public.hasn_unread_counts
+    FROM astra_python_backend;
+
+DO $$
+DECLARE
+    s text;
+BEGIN
+    FOR s IN
+        SELECT nspname
+        FROM pg_namespace
+        WHERE nspname NOT IN ('public', 'hasn_im', 'hasn_sync', 'pg_catalog', 'information_schema')
+          AND nspname NOT LIKE 'pg_toast%'
+          AND nspname NOT LIKE 'pg_temp_%'
+    LOOP
+        EXECUTE format('GRANT USAGE ON SCHEMA %I TO astra_python_backend', s);
+        EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO astra_python_backend',
+            s
+        );
+        EXECUTE format(
+            'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO astra_python_backend',
+            s
+        );
+        EXECUTE format(
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA %I '
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astra_python_backend',
+            s
+        );
+        EXECUTE format(
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA %I '
+            'GRANT USAGE, SELECT ON SEQUENCES TO astra_python_backend',
+            s
+        );
+    END LOOP;
+END $$;
+
+-- Python 角色不直接读取 IM 基表；后续确需运营读取时只对具名只读 VIEW 单独授权。
+-- 显式 REVOKE 使本迁移从旧候选版本重复执行时也能收紧已经授出的宽权限。
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA hasn_im FROM astra_python_backend;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA hasn_im FROM astra_python_backend;
+ALTER DEFAULT PRIVILEGES IN SCHEMA hasn_im
+    REVOKE ALL PRIVILEGES ON TABLES FROM astra_python_backend;
 GRANT USAGE ON SCHEMA hasn_sync TO astra_python_backend;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA hasn_sync FROM astra_python_backend;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA hasn_sync FROM astra_python_backend;
+REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA hasn_sync FROM astra_python_backend;
+REVOKE ALL ON FUNCTION hasn_sync.append_event(text, text, text, text, text, jsonb, text, text, timestamptz)
+    FROM PUBLIC;
+GRANT USAGE ON SCHEMA hasn_sync TO astra_im_service;
 GRANT EXECUTE ON FUNCTION hasn_sync.append_event(text, text, text, text, text, jsonb, text, text, timestamptz)
-    TO astra_python_backend;
+    TO astra_python_backend, astra_im_service;
 
 COMMIT;

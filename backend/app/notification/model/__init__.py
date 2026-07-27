@@ -10,3 +10,4 @@ from backend.app.notification.model.hasn_notification_preferences import (
 from backend.app.notification.model.hasn_service_accounts import (
     HasnServiceAccounts as HasnServiceAccounts,
 )
+from backend.app.notification.model.hasn_notification_im_command_outbox import HasnNotificationImCommandOutbox as HasnNotificationImCommandOutbox

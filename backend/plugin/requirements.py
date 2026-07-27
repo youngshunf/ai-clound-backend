@@ -47,11 +47,14 @@ def install_requirements(plugin: str | None) -> None:  # noqa: C901
                         missing_dependencies = True
 
         if missing_dependencies:
-            pip_install = ['uv', 'pip', 'install', '-r', requirements_file]
+            pip_install: list[str] = ['uv', 'pip', 'install', '-r', str(requirements_file)]
             if not _is_in_virtualenv():
                 pip_install.append('--system')
             if settings.PLUGIN_PIP_CHINA:
-                pip_install.extend(['-i', settings.PLUGIN_PIP_INDEX_URL])
+                index_url = settings.PLUGIN_PIP_INDEX_URL
+                if not index_url:
+                    raise PluginInstallError('已启用插件镜像源，但未配置镜像地址')
+                pip_install.extend(['-i', index_url])
 
             max_retries = settings.PLUGIN_PIP_MAX_RETRY
             for attempt in range(max_retries):

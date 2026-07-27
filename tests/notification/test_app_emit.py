@@ -15,7 +15,11 @@ from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.service.notification_service import notification_service
 from backend.app.notification.service.service_account_service import service_account_service
 from backend.common.exception import errors
-from tests.notification.conftest import seed_agent, seed_human
+from tests.notification.conftest import (
+    notification_outbox_result,
+    seed_agent,
+    seed_human,
+)
 
 
 async def _card_messages_to(db, recipient_id: str) -> list[HasnMessages]:
@@ -33,7 +37,10 @@ async def _card_messages_to(db, recipient_id: str) -> list[HasnMessages]:
 
 
 @pytest.mark.asyncio
-async def test_app_emit_projects_card_into_app_service_conversation(db):
+async def test_app_emit_projects_card_into_app_service_conversation(
+    db,
+    drain_notification_outbox,
+):
     """community App emit（白名单内 category=app + card）→ 主人收卡片，落 App 服务号会话。"""
     owner = await seed_human(db, nickname='主人')
     nid = await notification_service.app_emit(
@@ -53,14 +60,20 @@ async def test_app_emit_projects_card_into_app_service_conversation(db):
     assert row.source['kind'] == 'app'
     assert row.source['id'] == 'community'
     assert row.source['on_behalf_of'] == owner['hasn_id']
-    assert row.delivery.get('card_message_id')
+    command_id = row.delivery.get('card_command_id')
+    assert command_id
+    assert row.delivery.get('card_delivery_state') == 'pending'
     sv_id = row.delivery.get('service_account')
     assert sv_id and sv_id.startswith('sv_')
+
+    stats = await drain_notification_outbox()
+    assert stats.completed == 1
 
     # 卡片落进 App 服务号 ⇄ 主人 的 service 会话，source.kind=app，展示名取 manifest
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 1
     card = cards[0]
+    assert await notification_outbox_result(db, command_id) == ('completed', card.id)
     assert card.from_id == sv_id
     assert card.content['schema_version'] == 'hasn.card/0.1'
     assert card.content['source']['kind'] == 'app'
@@ -91,7 +104,7 @@ async def test_app_emit_without_card_only_center(db):
     )
     row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
     assert row.source['kind'] == 'app'
-    assert 'card_message_id' not in (row.delivery or {})
+    assert 'card_command_id' not in (row.delivery or {})
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 0
 
@@ -127,7 +140,10 @@ async def test_app_emit_undeclared_app_forbidden(db):
 
 
 @pytest.mark.asyncio
-async def test_app_emit_real_agent_jwt_endpoint_e2e(db):
+async def test_app_emit_real_agent_jwt_endpoint_e2e(
+    db,
+    drain_notification_outbox,
+):
     """真机 E2E（App→主人收卡片）：真 Agent JWT 签发(写 redis)→真 verify(读 redis)→真端点
     handler→主人 DB 收卡片。覆盖凭证路径 + AppEmitRequest schema + handler + service + 服务号
     卡片承载（HTTP 传输/路由层由 test_routes_contract 锁定）。零 Mock：真库 + 真 redis。"""
@@ -147,7 +163,6 @@ async def test_app_emit_real_agent_jwt_endpoint_e2e(db):
         agent_name='我的分身',
         owner_hasn_id=owner['hasn_id'],
         owner_user_id=owner['user_id'],
-        scopes=['notifications:emit'],
     )
     try:
         # 真凭证校验：解码 + 命中 redis session → AgentTokenPayload（身份恒取自 JWT）
@@ -170,6 +185,9 @@ async def test_app_emit_real_agent_jwt_endpoint_e2e(db):
         row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
         assert row.source['kind'] == 'app'
         assert row.source['on_behalf_of'] == owner['hasn_id']
+
+        stats = await drain_notification_outbox()
+        assert stats.completed == 1
 
         # 主人 DB 收到卡片，落 App 服务号会话
         cards = await _card_messages_to(db, owner['hasn_id'])
@@ -198,6 +216,6 @@ async def test_app_emit_card_respects_owner_pref_off(db):
     )
     row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
     assert row.delivery['channels']['card_message'] is False
-    assert 'card_message_id' not in (row.delivery or {})
+    assert 'card_command_id' not in (row.delivery or {})
     cards = await _card_messages_to(db, owner['hasn_id'])
     assert len(cards) == 0

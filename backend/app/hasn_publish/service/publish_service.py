@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from jose import JWTError, jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from backend.app.hasn_publish.model import Revision, Site
 from backend.common.exception import errors
@@ -424,7 +424,7 @@ class PublishService:
     async def increment_view_count(db: AsyncSession, *, site_id: int) -> None:
         """访问计数 +1（best-effort，统计非鉴权；失败不抛）。"""
         try:
-            await db.execute(Site.__table__.update().where(Site.id == site_id).values(view_count=Site.view_count + 1))
+            await db.execute(update(Site).where(Site.id == site_id).values(view_count=Site.view_count + 1))
             await db.flush()
         except Exception:
             pass

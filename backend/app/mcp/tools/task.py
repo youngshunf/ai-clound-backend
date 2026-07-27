@@ -27,6 +27,7 @@ from typing import Any
 from backend.app.hasn_task.service.agent_task_service import agent_task_service, task_to_public
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
+from backend.common.exception import errors
 from backend.database.db import async_db_session
 
 NAMESPACE = 'hasn.task'
@@ -39,6 +40,14 @@ Handler = Callable[[Any, AgentContext, dict[str, Any]], Awaitable[Any]]
 # ── helpers ──────────────────────────────────────────────────────────────────
 def _without(args: dict[str, Any], *keys: str) -> dict[str, Any]:
     return {k: v for k, v in args.items() if k not in keys}
+
+
+def _owner(ctx: AgentContext) -> str:
+    """获取已认证分身的主人 HASN ID；缺失时按架构不变量拒绝执行。"""
+    owner_hasn_id = ctx.owner_hasn_id
+    if not owner_hasn_id:
+        raise errors.TokenError(msg='AgentContext 缺少主人 HASN ID')
+    return owner_hasn_id
 
 
 # ── handlers（读：owner-scoped；写：建/改用完整 AgentTokenPayload，状态转换用 owner_id）─────
@@ -59,7 +68,7 @@ async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     filters = dict(args.get('filter') or {})
     return await agent_task_service.list_tasks(
         db,
-        owner_id=ctx.owner_hasn_id,
+        owner_id=_owner(ctx),
         state=filters.get('status'),
         project_id=filters.get('project_id'),
         app_id=filters.get('app_id'),
@@ -69,41 +78,41 @@ async def _h_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    row = await agent_task_service.get_task_row(db, owner_id=ctx.owner_hasn_id, task_uuid=str(args['task_id']))
+    row = await agent_task_service.get_task_row(db, owner_id=_owner(ctx), task_uuid=str(args['task_id']))
     return task_to_public(row)
 
 
 async def _h_pause(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_task_service.pause_task(db, owner_id=ctx.owner_hasn_id, task_uuid=str(args['task_id']))
+    return await agent_task_service.pause_task(db, owner_id=_owner(ctx), task_uuid=str(args['task_id']))
 
 
 async def _h_resume(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_task_service.resume_task(db, owner_id=ctx.owner_hasn_id, task_uuid=str(args['task_id']))
+    return await agent_task_service.resume_task(db, owner_id=_owner(ctx), task_uuid=str(args['task_id']))
 
 
 async def _h_run_now(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_task_service.run_now(db, owner_id=ctx.owner_hasn_id, task_uuid=str(args['task_id']))
+    return await agent_task_service.run_now(db, owner_id=_owner(ctx), task_uuid=str(args['task_id']))
 
 
 async def _h_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    await agent_task_service.delete_task(db, owner_id=ctx.owner_hasn_id, task_uuid=str(args['task_id']))
+    await agent_task_service.delete_task(db, owner_id=_owner(ctx), task_uuid=str(args['task_id']))
     return {'deleted': True}
 
 
 async def _h_list_runs(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await agent_task_service.list_run_summaries(
-        db, owner_id=ctx.owner_hasn_id, task_uuid=str(args['task_id']), limit=int(args.get('limit') or 10)
+        db, owner_id=_owner(ctx), task_uuid=str(args['task_id']), limit=int(args.get('limit') or 10)
     )
 
 
 async def _h_get_run(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    return await agent_task_service.get_run_summary(db, owner_id=ctx.owner_hasn_id, run_uuid=str(args['run_id']))
+    return await agent_task_service.get_run_summary(db, owner_id=_owner(ctx), run_uuid=str(args['run_id']))
 
 
 async def _h_query_results(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     return await agent_task_service.list_run_summaries(
         db,
-        owner_id=ctx.owner_hasn_id,
+        owner_id=_owner(ctx),
         task_uuid=str(args['task_id']),
         limit=int(args.get('limit') or 10),
         status=args.get('status'),

@@ -10,7 +10,7 @@
 - 跨仓零漂移：manifest 管理类（非 :read）required_scopes 集合 == {design:write, design:codegen}
   （= hasn-node crates/hasn-mcp/src/design.rs capability_scopes() 契约，OP-P3-A 待落，本测为云端侧契约源）。
 - App 形态（local_tool / 手动安装 / 项目管理+派发台 /apps/design）。
-- catalog 出厂源：sort_order 78 / default_agent_type(designer) / config_json（engine 分发骨架 bundled_deps=['node']）。
+- catalog 出厂源：sort_order 78 / default_agent_type(content_operator) / config_json（engine 分发骨架 bundled_deps=['node']）。
 - 真实 PG：``ensure_builtin_published`` 把 manifest 落 ``hasn_ai_native_app_manifest`` 且 hash 自愈幂等；
   ``ensure_catalog_seeded`` 幂等播种 design catalog 行（重复跑不重复插）+ config_json 经 app_configs 下发；
   轻登记表 ``hasn_design_project`` 落 ``hasn_design`` schema，CRUD create→query→delete + owner 行级隔离往返。
@@ -189,9 +189,9 @@ def test_design_workbench_app_shape() -> None:
 
 
 def test_design_catalog_factory_source() -> None:
-    """catalog 出厂源（app_catalog_service）：sort_order 78 / designer 默认承接 / config_json engine 分发骨架。"""
+    """catalog 出厂源：sort_order 78 / 创作专家默认承接 / config_json engine 分发骨架。"""
     assert _CATALOG_SORT_ORDER['design'] == 78
-    assert _CATALOG_AGENT_DEFAULTS['design'][0] == 'designer'
+    assert _CATALOG_AGENT_DEFAULTS['design'][0] == 'content_operator'
     assert _CATALOG_AGENT_DEFAULTS['design'][1]  # 业务提示词非空
 
     cfg = _CATALOG_DEFAULT_CONFIG['design']
@@ -246,7 +246,7 @@ async def test_design_catalog_seeded_idempotent(db: AsyncSession) -> None:
     assert cat.name == '矢量设计'
     assert cat.execution_mode == 'local_tool'
     assert cat.entry_route == '/apps/design'
-    assert cat.default_agent_type == 'designer'
+    assert cat.default_agent_type == 'content_operator'
     assert cat.default_mount is False  # install_policy=manual → 不自动挂载
     assert cat.access_type == 'free'
     assert cat.config_json['engine']['bundled_deps'] == ['node']

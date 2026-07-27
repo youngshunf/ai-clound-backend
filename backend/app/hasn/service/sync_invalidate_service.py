@@ -415,7 +415,9 @@ async def compute_owner_groups_revision(db: AsyncSession, owner_id: str) -> str:
     """
     from backend.app.hasn.model.hasn_agents import HasnAgents
     from backend.app.hasn.model.hasn_conversations import HasnConversations
-    from backend.app.hasn.model.hasn_group_members import HasnGroupMembers
+    from backend.app.hasn.model.hasn_conversation_memberships import (
+        HasnConversationMemberships as HasnGroupMembers,
+    )
 
     # owner 本人 hasn_id + 名下 agent 的 hasn_ids
     agent_ids = (await db.execute(sa.select(HasnAgents.hasn_id).where(HasnAgents.owner_id == owner_id))).scalars().all()
@@ -423,7 +425,11 @@ async def compute_owner_groups_revision(db: AsyncSession, owner_id: str) -> str:
     conv_ids = (
         (
             await db.execute(
-                sa.select(HasnGroupMembers.conversation_id.distinct()).where(HasnGroupMembers.member_id.in_(member_ids))
+                sa.select(HasnGroupMembers.conversation_id.distinct()).where(
+                    HasnGroupMembers.member_id.in_(member_ids),
+                    HasnGroupMembers.left_seq.is_(None),
+                    HasnGroupMembers.state == 'active',
+                )
             )
         )
         .scalars()

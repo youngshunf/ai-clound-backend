@@ -142,7 +142,8 @@ def build_builtin_template_data(raw: dict[str, Any]) -> dict[str, Any]:
 def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummary:
     """从图蓝图派生卡片摘要：节点数 / 去重应用数 / 阶段面包屑（按 order）/ 去重人设类型。"""
     spec = graph_spec if isinstance(graph_spec, dict) else {}
-    nodes = spec.get('nodes') if isinstance(spec.get('nodes'), list) else []
+    raw_nodes = spec.get('nodes')
+    nodes: list[Any] = raw_nodes if isinstance(raw_nodes, list) else []
 
     app_union: set[str] = set()
     apps_ordered: list[str] = []  # 去重后应用键·首见序（供卡片按链路顺序渲染应用图标堆）
@@ -165,7 +166,8 @@ def derive_graph_summary(graph_spec: dict | None) -> WorkflowTemplateGraphSummar
             seen_agent.add(agent_type)
             agent_types.append(agent_type)
 
-        display = node.get('display') if isinstance(node.get('display'), dict) else {}
+        raw_display = node.get('display')
+        display: dict[str, Any] = raw_display if isinstance(raw_display, dict) else {}
         order = display.get('order')
         label = display.get('step_label') or node.get('name') or node.get('node_key') or ''
         steps.append({'label': label, 'order': order if isinstance(order, int) else idx})
@@ -204,8 +206,7 @@ def validate_graph_spec(graph_spec: Any) -> None:
 
     # 应用目录权威来源：in-process app_catalog_registry（catalog DB 的 seed 源，同步权威）。
     # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
-    from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-    from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+    from backend.app.hasn_core.app_platform import ai_native_app_registry, app_catalog_registry
 
     valid_app_ids = {app.id for app in app_catalog_registry.list()}
     # resource_kind 权威 = 各 app manifest 的 resources[] 声明（单源，不另立手写白名单）。
@@ -487,8 +488,7 @@ class WorkflowTemplateService:
         选项一定能过服务端校验。
         """
         # 延迟导入避免模块初始化期触发 registry.default()（其会 import 全部应用 manifest）。
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
-        from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
+        from backend.app.hasn_core.app_platform import ai_native_app_registry, app_catalog_registry
 
         resource_labels = ai_native_app_registry.resource_kind_labels()
         known_kinds = ai_native_app_registry.known_resource_kinds()

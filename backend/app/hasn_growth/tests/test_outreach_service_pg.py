@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import uuid
 
+from decimal import Decimal
+
 import pytest
 import pytest_asyncio
 
@@ -63,7 +65,7 @@ async def _qualified_customer(sess, *, user_id: int, email: str, company: str) -
         phone='13800138000',
         source_type='firecrawl',
         status='new',
-        confidence_score=70,
+        confidence_score=Decimal(70),
     )
     sess.add(lead)
     await sess.flush()
@@ -186,7 +188,13 @@ async def test_inbound_reply_emits_owner_notification(session) -> None:
     uid = 990000 + int(uuid.uuid4().int % 9000)
     owner_hasn = f'h_grw_{tag}'
     session.add(
-        HasnHumans(hasn_id=owner_hasn, star_id=f's_{uid}', user_id=uid, nickname='主人', status='active')
+        HasnHumans(
+            hasn_id=owner_hasn,
+            star_id=f's_{uid}',
+            user_id=uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
     )
     await session.flush()
     cid = await _qualified_customer(session, user_id=uid, email=f'reply{tag}@zeta.com', company='Zeta')
@@ -255,7 +263,15 @@ async def _owner_with_task(sess, *, uid: int, state: str) -> tuple[str, str]:
     tag = uuid.uuid4().hex[:8]
     owner_hasn = f'h_j3_{tag}'
     task_uuid = f'tk_j3_{tag}'
-    sess.add(HasnHumans(hasn_id=owner_hasn, star_id=f's_{uid}', user_id=uid, nickname='主人', status='active'))
+    sess.add(
+        HasnHumans(
+            hasn_id=owner_hasn,
+            star_id=f's_{uid}',
+            user_id=uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
+    )
     await sess.flush()
     await sess.execute(
         text(
@@ -302,8 +318,15 @@ async def test_j3_inbound_triggers_run_now_and_debounces(session) -> None:
 async def test_j3_no_followup_task_is_noop(session) -> None:
     """M6 J3：客户未绑定跟进任务 → 不触发（兜底：任务 interval 节奏照常，不丢跟进），且不报错。"""
     uid = 995000 + int(uuid.uuid4().int % 5000)
+    tag = uuid.uuid4().hex[:8]
     session.add(
-        HasnHumans(hasn_id=f'h_j3n_{uuid.uuid4().hex[:8]}', star_id=f's_{uid}', user_id=uid, nickname='主人', status='active')
+        HasnHumans(
+            hasn_id=f'h_j3n_{tag}',
+            star_id=f's_{uid}',
+            user_id=uid,
+            nickname=f'主人-{tag}',
+            status='active',
+        )
     )
     await session.flush()
     cid = await _qualified_customer(session, user_id=uid, email=f'j3n{uuid.uuid4().hex[:6]}@eta.com', company='EtaJ3N')

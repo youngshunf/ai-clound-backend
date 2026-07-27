@@ -29,7 +29,7 @@ manifest 落**应用根目录** `app/hasn_growth/manifest.py`（对齐 hasn_deck
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
@@ -526,7 +526,7 @@ _CAPABILITIES = [
 ]
 
 
-GROWTH_AI_NATIVE_MANIFEST = {
+GROWTH_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'growth',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'growth': '获客（线索采集/触达/转化）'},

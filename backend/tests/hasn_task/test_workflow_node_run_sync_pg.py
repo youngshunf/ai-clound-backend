@@ -99,7 +99,7 @@ async def env() -> AsyncIterator[SimpleNamespace]:
 
 
 def _run(run_uuid: str, wf_uuid: str, **over: object) -> WorkflowRunUpstream:
-    payload = {
+    payload: dict[str, Any] = {
         'workflow_run_uuid': run_uuid,
         'workflow_uuid': wf_uuid,
         'dedupe_key': f'{wf_uuid}:1',
@@ -111,7 +111,7 @@ def _run(run_uuid: str, wf_uuid: str, **over: object) -> WorkflowRunUpstream:
 
 
 def _node(node_uuid: str, run_uuid: str, wf_uuid: str, node_key: str, **over: object) -> WorkflowNodeRunUpstream:
-    payload = {
+    payload: dict[str, Any] = {
         'node_run_uuid': node_uuid,
         'workflow_run_uuid': run_uuid,
         'workflow_uuid': wf_uuid,

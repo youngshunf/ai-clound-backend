@@ -107,7 +107,7 @@ def _seed_artifact(owner: str, artifact_id: str, *, status: str = 'active') -> H
     )
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_run_artifacts_real_db() -> None:
     """真实 PG：seed 三节点 run（research/compete→summary）+ 产物 → 六路契约断言 → 清理。"""
     if not await _db_reachable():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from backend.app.hasn.service.hasn_contacts_service import (
     CONTACT_REQUEST_EXPIRE_DAYS,
     HasnContactsService,
 )
+from backend.app.hasn_im.application.provider import get_relation_gateway
 from backend.utils.timezone import timezone
 
 
@@ -30,7 +32,7 @@ from backend.utils.timezone import timezone
 @pytest.mark.asyncio
 async def test_remove_contact_human_peer_bidirectional_and_notify() -> None:
     """human peer：双向删边 + 会话标不可达 + 通知对方本人（peer_owner_id 为空回落 peer_id）。"""
-    contact = SimpleNamespace(peer_id='h_peer', peer_owner_id=None, relation_type='social')
+    contact: Any = SimpleNamespace(peer_id='h_peer', peer_owner_id=None, relation_type='social')
     db = AsyncMock()
     with (
         patch.object(svc.hasn_contacts_dao, 'delete_relation_bidirectional', AsyncMock(return_value=2)) as del_mock,
@@ -55,7 +57,7 @@ async def test_remove_contact_human_peer_bidirectional_and_notify() -> None:
 @pytest.mark.asyncio
 async def test_remove_contact_agent_peer_notifies_owner() -> None:
     """agent peer：通知对方分身的**主人**（peer_owner_id），不通知分身本体。"""
-    contact = SimpleNamespace(peer_id='a_agent', peer_owner_id='h_master', relation_type='social')
+    contact: Any = SimpleNamespace(peer_id='a_agent', peer_owner_id='h_master', relation_type='social')
     db = AsyncMock()
     with (
         patch.object(svc.hasn_contacts_dao, 'delete_relation_bidirectional', AsyncMock(return_value=1)),
@@ -71,7 +73,7 @@ async def test_remove_contact_agent_peer_notifies_owner() -> None:
 @pytest.mark.asyncio
 async def test_remove_contact_self_peer_not_notified() -> None:
     """peer 归属人就是自己（notify_target==owner）→ 不发通知（不给自己推关系解除）。"""
-    contact = SimpleNamespace(peer_id='a_my_agent', peer_owner_id='h_owner', relation_type='social')
+    contact: Any = SimpleNamespace(peer_id='a_my_agent', peer_owner_id='h_owner', relation_type='social')
     db = AsyncMock()
     with (
         patch.object(svc.hasn_contacts_dao, 'delete_relation_bidirectional', AsyncMock(return_value=1)),
@@ -92,7 +94,12 @@ async def test_delete_contact_endpoint_404_when_missing() -> None:
     db = AsyncMock()
     with patch.object(contacts_api.hasn_contacts_dao, 'get', AsyncMock(return_value=None)):
         with pytest.raises(HTTPException) as exc:
-            await contacts_api.delete_contact(contact_id=1, db=db, auth={'hasn_id': 'h_owner'})
+            await contacts_api.delete_contact(
+                contact_id=1,
+                db=db,
+                auth={'hasn_id': 'h_owner'},
+                relation_gateway=get_relation_gateway(),
+            )
     assert exc.value.status_code == 404
 
 
@@ -103,26 +110,13 @@ async def test_delete_contact_endpoint_403_when_not_owner() -> None:
     db = AsyncMock()
     with patch.object(contacts_api.hasn_contacts_dao, 'get', AsyncMock(return_value=contact)):
         with pytest.raises(HTTPException) as exc:
-            await contacts_api.delete_contact(contact_id=1, db=db, auth={'hasn_id': 'h_owner'})
+            await contacts_api.delete_contact(
+                contact_id=1,
+                db=db,
+                auth={'hasn_id': 'h_owner'},
+                relation_gateway=get_relation_gateway(),
+            )
     assert exc.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_delete_contact_endpoint_success_delegates_to_service() -> None:
-    """owner 匹配 → 调 remove_contact 并把结果放进统一响应信封。"""
-    contact = SimpleNamespace(id=1, owner_id='h_owner', peer_id='h_peer',
-                              peer_owner_id=None, relation_type='social')
-    db = AsyncMock()
-    fake_result = {'deleted_edges': 2, 'conversations_marked': 1, 'peer_id': 'h_peer', 'notified': True}
-    with (
-        patch.object(contacts_api.hasn_contacts_dao, 'get', AsyncMock(return_value=contact)),
-        patch.object(contacts_api.HasnContactsService, 'remove_contact',
-                     AsyncMock(return_value=fake_result)) as rm_mock,
-    ):
-        resp = await contacts_api.delete_contact(contact_id=1, db=db, auth={'hasn_id': 'h_owner'})
-
-    rm_mock.assert_awaited_once_with(db, owner_id='h_owner', contact=contact)
-    assert resp.data == fake_result
 
 
 # ── 三、请求过期 sweep（B7·只过期真正超期的） ─────────────

@@ -45,8 +45,8 @@ async def agent_create_studio_asset(
     db: CurrentSessionTransaction,
     obj: CreateStudioAssetParam,
 ) -> ResponseModel:
-    result = await studio_asset_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await studio_asset_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

@@ -61,7 +61,7 @@ async def e2e(monkeypatch):
     session = async_sessionmaker(engine, expire_on_commit=False)()
 
     # 三个真实身份 + 一个私有存储空间（同一回滚事务内 seed）
-    uid_a = 980000 + int(uuid.uuid4().int % 9000)
+    uid_a = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     uid_b, uid_c = uid_a + 1, uid_a + 2
     owner_a, peer_b, stranger_c = f'h_a_{_uid()}', f'h_b_{_uid()}', f'h_c_{_uid()}'
     session.add_all([

@@ -6,6 +6,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, id_key, TimeZone
+from backend.database.schema_names import IM_SCHEMA
 from backend.utils.timezone import timezone
 
 
@@ -13,6 +14,7 @@ class HasnGroupAgentInvites(Base):
     """HASN 群内拉分身邀请确认表（非主人拉分身需主人同意）"""
 
     __tablename__ = 'hasn_group_agent_invites'
+    __table_args__ = {'schema': IM_SCHEMA}
 
     id: Mapped[id_key] = mapped_column(init=False)
     conversation_id: Mapped[str | UUID] = mapped_column(sa.UUID(), default=None, comment='群会话 ID（关联 hasn_conversations）')

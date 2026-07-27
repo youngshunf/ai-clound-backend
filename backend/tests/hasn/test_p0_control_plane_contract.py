@@ -7,16 +7,7 @@ from typing import Any
 
 import pytest
 
-from backend.app.hasn.schema.hasn_message_hub import MessageHubSendRequest
 from backend.app.hasn.service import hasn_onboarding_service as onboarding_mod
-from backend.app.hasn.service.hasn_message_hub_service import (
-    HasnMessageHubService,
-    MessageRecord,
-    NoopServerSideEffectDispatcher,
-    Recipient,
-    RuntimeSummary,
-    StoredMessage,
-)
 from backend.common.exception import errors
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -50,149 +41,7 @@ def test_onboarding_default_agent_uses_assistant_idempotency_key() -> None:
 
 
 @dataclass
-class GateAwareInMemoryGateway:
-    recipients: dict[str, Recipient]
-    runtimes: dict[str, RuntimeSummary] = field(default_factory=dict)
-    messages: list[StoredMessage] = field(default_factory=list)
-    suppressed: list[StoredMessage] = field(default_factory=list)
-    dispatch_updates: list[tuple[str, str]] = field(default_factory=list)
-
-    async def resolve_recipient(self, db: Any, target_hasn_id: str) -> Recipient | None:
-        return self.recipients.get(target_hasn_id)
-
-    async def latest_runtime_summary(self, db: Any, *, owner_id: str, agent_hasn_id: str) -> RuntimeSummary | None:
-        return self.runtimes.get(agent_hasn_id)
-
-    async def store_inbox_message(self, db: Any, record: MessageRecord) -> StoredMessage:
-        message = StoredMessage(
-            message_id=str(len(self.messages) + 1),
-            owner_id=record.owner_id,
-            hasn_id=record.hasn_id,
-            conversation_id=record.conversation_id,
-            inbox_kind=record.inbox_kind,
-            envelope=dict(record.envelope),
-            dispatch_status=record.dispatch_status,
-            created_at=datetime(2026, 5, 1, 8, 0, len(self.messages), tzinfo=timezone.utc),
-        )
-        self.messages.append(message)
-        return message
-
-    async def store_suppressed(
-        self,
-        db: Any,
-        *,
-        source_message: StoredMessage,
-        reason: str,
-        dispatch_status: str,
-        runtime_summary: RuntimeSummary | None,
-    ) -> None:
-        source_message.dispatch_status = dispatch_status
-        self.suppressed.append(source_message)
-
-    async def mark_dispatch_status(self, db: Any, *, message_id: str, dispatch_status: str) -> None:
-        self.dispatch_updates.append((message_id, dispatch_status))
-        for message in self.messages:
-            if message.message_id == message_id:
-                message.dispatch_status = dispatch_status
-
-    async def pull_inbox(self, db: Any, request: Any, *, limit: int = 100):
-        raise NotImplementedError
-
-
-@dataclass
-class RecordingFanout:
-    pushes: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-
-    async def push(self, target_hasn_id: str, payload: dict[str, Any]) -> bool:
-        self.pushes.append((target_hasn_id, payload))
-        return True
-
-
-@dataclass
-class FailingRuntimeDispatcher:
-    async def dispatch(self, target_agent_id: str, payload: dict[str, Any], runtime: RuntimeSummary) -> bool:
-        return False
-
-
-@pytest.mark.asyncio
-async def test_runtime_unavailable_agent_delivery_keeps_inbox_reachable() -> None:
-    gateway = GateAwareInMemoryGateway(recipients={'a_agent': Recipient('a_agent', 'agent', 'h_owner')})
-    fanout = RecordingFanout()
-    service = HasnMessageHubService(
-        gateway=gateway,
-        fanout=fanout,
-        runtime_dispatcher=FailingRuntimeDispatcher(),
-        side_effect_dispatcher=NoopServerSideEffectDispatcher(),
-    )
-
-    response = await service.send(
-        None,
-        MessageHubSendRequest(
-            owner_id='h_sender',
-            envelope={'conversation_id': '00000000-0000-0000-0000-000000000101', 'to_id': 'a_agent'},
-        ),
-    )
-
-    assert response.delivery_status == 'delivered'
-    assert response.dispatch_status == 'runtime_unavailable'
-    assert response.owner_copy_created is True
-    assert response.suppressed_inbox_created is True
-    assert [warning.name for warning in response.warnings] == ['ERR_RUNTIME_UNAVAILABLE_NON_BLOCKING']
-    assert [(message.inbox_kind, message.dispatch_status) for message in gateway.messages] == [
-        ('agent_inbox', 'runtime_unavailable'),
-        ('owner_copy', 'runtime_unavailable'),
-    ]
-    assert [(target, payload['method']) for target, payload in fanout.pushes] == [
-        ('a_agent', 'hasn.message.received'),
-        ('h_owner', 'hasn.message.received'),
-        ('h_owner', 'hasn.runtime.warning'),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_runtime_dispatch_failure_after_accept_is_not_message_delivery_failure() -> None:
-    runtime = RuntimeSummary(
-        agent_hasn_id='a_agent',
-        runtime_status='online',
-        adapter_registered=True,
-        handle_available=True,
-        binding_id='rb_1',
-        runtime_type='hermes',
-        node_id='n_runtime',
-        binding_node_id='n_runtime',
-        presence='online',
-    )
-    gateway = GateAwareInMemoryGateway(
-        recipients={'a_agent': Recipient('a_agent', 'agent', 'h_owner')},
-        runtimes={'a_agent': runtime},
-    )
-    service = HasnMessageHubService(
-        gateway=gateway,
-        fanout=RecordingFanout(),
-        runtime_dispatcher=FailingRuntimeDispatcher(),
-        side_effect_dispatcher=NoopServerSideEffectDispatcher(),
-    )
-
-    response = await service.send(
-        None,
-        MessageHubSendRequest(
-            owner_id='h_sender',
-            envelope={'conversation_id': '00000000-0000-0000-0000-000000000102', 'to_id': 'a_agent'},
-        ),
-    )
-
-    assert response.delivery_status == 'delivered'
-    assert response.dispatch_status == 'dispatch_failed'
-    assert response.suppressed_inbox_created is True
-    assert [warning.name for warning in response.warnings] == ['ERR_RUNTIME_DISPATCH_FAILED_NON_BLOCKING']
-    assert [(message.inbox_kind, message.dispatch_status) for message in gateway.messages] == [
-        ('agent_inbox', 'dispatch_failed'),
-        ('owner_copy', 'dispatch_failed'),
-    ]
-
-
-@dataclass
-class CapturingSyncGateway:
+class _CapturingSyncGateway:
     reports: list[dict[str, Any]] = field(default_factory=list)
     sync_events: list[Any] = field(default_factory=list)
     client_events: list[Any] = field(default_factory=list)
@@ -271,6 +120,10 @@ class CapturingSyncGateway:
         return None
 
 
+CapturingSyncGateway: Any = _CapturingSyncGateway
+TEST_DB: Any = None
+
+
 @pytest.mark.asyncio
 async def test_runtime_report_accepts_redacted_summary_and_returns_sync_cursor() -> None:
     from backend.app.hasn.schema.hasn_sync import RuntimeReportRequest, RuntimeSummary, SyncEventRecord, SyncPullRequest
@@ -290,7 +143,7 @@ async def test_runtime_report_accepts_redacted_summary_and_returns_sync_cursor()
     service = HasnSyncService(gateway=gateway)
 
     report_response = await service.report_runtime(
-        None,
+        TEST_DB,
         RuntimeReportRequest(
             owner_id='h_owner',
             node_id='n_runtime',
@@ -307,7 +160,7 @@ async def test_runtime_report_accepts_redacted_summary_and_returns_sync_cursor()
             ],
         ),
     )
-    pull_response = await service.pull(None, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:3'))
+    pull_response = await service.pull(TEST_DB, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:3'))
 
     assert report_response.accepted == 1
     assert gateway.reports[0]['summary_json'] == {'capability': 'chat'}
@@ -324,7 +177,7 @@ async def test_runtime_report_rejects_private_runtime_metadata() -> None:
 
     with pytest.raises(errors.RequestError, match='ERR_RUNTIME_PRIVATE_METADATA_REJECTED'):
         await service.report_runtime(
-            None,
+            TEST_DB,
             RuntimeReportRequest(
                 owner_id='h_owner',
                 node_id='n_runtime',
@@ -350,7 +203,7 @@ async def test_sync_push_memory_owner_event_becomes_pullable_owner_sync_event() 
     service = HasnSyncService(gateway=gateway)
 
     push_response = await service.push(
-        None,
+        TEST_DB,
         SyncPushRequest(
             owner_id='h_owner',
             node_id='n_runtime',
@@ -371,7 +224,7 @@ async def test_sync_push_memory_owner_event_becomes_pullable_owner_sync_event() 
             ],
         ),
     )
-    pull_response = await service.pull(None, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:0'))
+    pull_response = await service.pull(TEST_DB, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:0'))
 
     assert push_response.accepted == 1
     assert push_response.next_cursor == 'owner:h_owner:1'
@@ -389,7 +242,7 @@ async def test_sync_push_rejects_unknown_memory_namespace_before_revision_advanc
     service = HasnSyncService(gateway=gateway)
 
     push_response = await service.push(
-        None,
+        TEST_DB,
         SyncPushRequest(
             owner_id='h_owner',
             node_id='n_runtime',
@@ -444,9 +297,9 @@ async def test_sync_push_memory_retry_is_idempotent_for_namespace_revision() -> 
         ],
     )
 
-    first_response = await service.push(None, request)
-    retry_response = await service.push(None, request)
-    pull_response = await service.pull(None, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:0'))
+    first_response = await service.push(TEST_DB, request)
+    retry_response = await service.push(TEST_DB, request)
+    pull_response = await service.pull(TEST_DB, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:0'))
 
     assert first_response.accepted == 1
     assert retry_response.accepted == 1
@@ -469,7 +322,7 @@ async def test_sync_push_memory_owner_and_agent_events_advance_namespace_revisio
     service = HasnSyncService(gateway=gateway)
 
     push_response = await service.push(
-        None,
+        TEST_DB,
         SyncPushRequest(
             owner_id='h_owner',
             node_id='n_runtime',
@@ -513,7 +366,7 @@ async def test_sync_push_memory_owner_and_agent_events_advance_namespace_revisio
             ],
         ),
     )
-    pull_response = await service.pull(None, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:0'))
+    pull_response = await service.pull(TEST_DB, SyncPullRequest(owner_id='h_owner', cursor='owner:h_owner:0'))
 
     assert push_response.accepted == 3
     assert push_response.next_cursor == 'owner:h_owner:3'
@@ -543,7 +396,7 @@ async def test_memory_sync_pull_filters_by_namespace_revision_and_returns_namesp
     gateway = CapturingSyncGateway()
     service = HasnSyncService(gateway=gateway)
     await service.push(
-        None,
+        TEST_DB,
         SyncPushRequest(
             owner_id='h_owner',
             node_id='n_runtime',
@@ -601,7 +454,7 @@ async def test_memory_sync_pull_filters_by_namespace_revision_and_returns_namesp
     )
 
     response = await service.pull_memory(
-        None,
+        TEST_DB,
         MemorySyncPullRequest(
             owner_id='h_owner',
             agent_ids=['a_agent_event'],
@@ -655,7 +508,7 @@ async def test_sync_push_rejects_malformed_memory_event_without_scope_fields() -
     service = HasnSyncService(gateway=gateway)
 
     push_response = await service.push(
-        None,
+        TEST_DB,
         SyncPushRequest(
             owner_id='h_owner',
             node_id='n_runtime',

@@ -77,7 +77,8 @@ class NewApiAdminClient:
         # ep.base_url 恒含 /api（dev 端口回落 :3180 仅在 settings 默认被显式清空时才会触发）。
         ep = service_endpoint('newapi')
         self.base_url = (base_url or ep.base_url or settings.NEWAPI_ADMIN_BASE_URL).rstrip('/')
-        self.access_token = access_token if access_token is not None else (ep.token or settings.NEWAPI_ADMIN_ACCESS_TOKEN)
+        raw_access_token = access_token if access_token is not None else (ep.token or settings.NEWAPI_ADMIN_ACCESS_TOKEN)
+        self.access_token = raw_access_token.strip()
         self.admin_user_id = admin_user_id if admin_user_id is not None else settings.NEWAPI_ADMIN_USER_ID
         self.timeout = timeout if timeout is not None else (ep.timeout or settings.NEWAPI_HTTP_TIMEOUT_SECONDS)
 
@@ -330,7 +331,10 @@ class NewApiAdminClient:
             )
         if not token or not isinstance(token, str):
             raise NewApiError(f'铸 access_token 失败 user={username}', endpoint='/user/token')
-        return token
+        normalized_token = token.strip()
+        if not normalized_token:
+            raise NewApiError(f'铸 access_token 返回空白令牌 user={username}', endpoint='/user/token')
+        return normalized_token
 
     async def add_token(
         self,
@@ -343,7 +347,10 @@ class NewApiAdminClient:
         expired_time: int = -1,
     ) -> None:
         """以用户身份建 relay token（AddToken）。不返回 id/key（须随后 admin 查取）。"""
-        user_headers = {'Authorization': user_access_token, 'New-Api-User': str(newapi_user_id)}
+        normalized_token = user_access_token.strip()
+        if not normalized_token:
+            raise NewApiError(f'用户 access_token 为空 id={newapi_user_id}', endpoint='/token/')
+        user_headers = {'Authorization': normalized_token, 'New-Api-User': str(newapi_user_id)}
         await self._request(
             'POST',
             '/token/',

@@ -18,11 +18,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.service import conversation_projection as cp
 from backend.app.hasn_im.adapters.routing.node_session_realtime_gateway import NodeSessionRealtimeGateway
+from backend.app.hasn_im.consumers.audience import (
+    resolve_audience_owner_ids,
+)
 from backend.app.hasn_im.consumers.base import ConsumerClass, IntegrationEvent
-from backend.app.hasn_im.consumers.facts import IM_MESSAGE_COMMITTED, MessageCommittedFacts
+from backend.app.hasn_im.consumers.facts import (
+    IM_CONVERSATION_UPDATED,
+    IM_MESSAGE_COMMITTED,
+    IM_MESSAGE_RECALLED,
+    ConversationUpdatedFacts,
+    MessageCommittedFacts,
+    MessageRecalledFacts,
+)
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame, RealtimeGateway
 
 _METHOD_MESSAGE_NEW = 'hasn.message.new'
+_METHOD_MESSAGE_INVALIDATED = 'hasn.message.invalidated'
+_METHOD_CONVERSATION_INVALIDATED = 'hasn.conversation.invalidated'
 
 
 @dataclass(slots=True)
@@ -40,16 +52,27 @@ class RealtimeNotifier:
         return ConsumerClass.BEST_EFFORT
 
     async def handle(self, event: IntegrationEvent, db: AsyncSession) -> None:
-        """推一帧 hasn.message.new 给每个受众 owner（best-effort，失败抛给框架记 metric）。"""
-        if event.event_type != IM_MESSAGE_COMMITTED:
-            return
-        facts = MessageCommittedFacts.from_event(event)
+        """把新消息或失效信号推给在线受众。"""
+        if event.event_type == IM_MESSAGE_COMMITTED:
+            await self._push_message_new(event, db)
+        elif event.event_type == IM_MESSAGE_RECALLED:
+            await self._push_message_invalidated(event, db)
+        elif event.event_type == IM_CONVERSATION_UPDATED:
+            await self._push_conversation_invalidated(event, db)
 
-        conv = await cp._fetch_conversation(db, facts.conversation_id)
-        if conv is None:
+    async def _push_message_new(
+        self,
+        event: IntegrationEvent,
+        db: AsyncSession,
+    ) -> None:
+        """推一帧 hasn.message.new 给每个当前受众 owner。"""
+        facts = MessageCommittedFacts.from_event(event)
+        audience = await resolve_audience_owner_ids(
+            db,
+            conversation_id=facts.conversation_id,
+        )
+        if not audience:
             return
-        members = await cp._load_group_members(db, str(conv.id)) if conv.type == 'group' else None
-        audience = await cp.compute_audience_owner_ids(db, conv, members=members)
 
         sender_owner_id: str | None = None
         if facts.origin_session_id:
@@ -67,6 +90,49 @@ class RealtimeNotifier:
                 params=_frame_params(facts, owner_origin_session_id),
             )
             await self.gateway.push_to_owner(owner_id, frame)
+
+    async def _push_message_invalidated(
+        self,
+        event: IntegrationEvent,
+        db: AsyncSession,
+    ) -> None:
+        """实时通知在线设备撤回既有消息。"""
+        facts = MessageRecalledFacts.from_event(event)
+        audience = await resolve_audience_owner_ids(
+            db,
+            conversation_id=facts.conversation_id,
+        )
+        params = {**facts.payload(), 'event_id': event.event_id}
+        for owner_id in audience:
+            await self.gateway.push_to_owner(
+                owner_id,
+                RealtimeFrame(
+                    method=_METHOD_MESSAGE_INVALIDATED,
+                    params=params,
+                ),
+            )
+
+    async def _push_conversation_invalidated(
+        self,
+        event: IntegrationEvent,
+        db: AsyncSession,
+    ) -> None:
+        """实时通知变更前后受众重新读取会话对象。"""
+        facts = ConversationUpdatedFacts.from_event(event)
+        audience = await resolve_audience_owner_ids(
+            db,
+            conversation_id=facts.conversation_id,
+            frozen_hasn_ids=facts.audience_hasn_ids,
+        )
+        params = {**facts.payload(), 'event_id': event.event_id}
+        for owner_id in audience:
+            await self.gateway.push_to_owner(
+                owner_id,
+                RealtimeFrame(
+                    method=_METHOD_CONVERSATION_INVALIDATED,
+                    params=params,
+                ),
+            )
 
 
 def _frame_params(facts: MessageCommittedFacts, origin_session_id: str | None) -> dict[str, Any]:

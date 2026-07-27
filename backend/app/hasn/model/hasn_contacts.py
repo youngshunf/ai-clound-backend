@@ -6,12 +6,14 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, TimeZone, UniversalText, id_key
+from backend.database.schema_names import IM_SCHEMA
 
 
 class HasnContacts(Base):
     """HASN 联系人关系表"""
 
     __tablename__ = 'hasn_contacts'
+    __table_args__ = {'schema': IM_SCHEMA}
 
     id: Mapped[id_key] = mapped_column(init=False)
     owner_id: Mapped[str] = mapped_column(sa.String(36), default='', comment='关系拥有者 hasn_id')

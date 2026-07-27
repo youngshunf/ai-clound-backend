@@ -19,7 +19,7 @@ from typing import Any
 from backend.app.hasn_memory.service.owner_memory_service import owner_memory_service
 from backend.app.hasn_memory.service.owner_profile_coverage_service import owner_profile_coverage_service
 from backend.app.mcp.auth import AgentContext
-from backend.app.mcp.tools.base import BaseTool
+from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 from backend.common.log import log
 from backend.database.db import async_db_session
 
@@ -80,7 +80,7 @@ class OwnerCoverageGetTool(BaseTool):
         # 与 owner 读 API 同范式）。owner 身份强制取自 agent_context，绝不读 arguments。
         async with async_db_session() as db:
             return await owner_profile_coverage_service.assess_if_stale(
-                db, owner_id=agent_context.owner_hasn_id
+                db, owner_id=require_owner_hasn_id(agent_context)
             )
 
 
@@ -140,7 +140,7 @@ class OwnerMemoryContributeTool(BaseTool):
         content = str(arguments.get('content') or '').strip()
         if not content:
             return {'accepted': False, 'merged': False, 'version': None, 'reason': 'empty_content'}
-        owner_id = agent_context.owner_hasn_id
+        owner_id = require_owner_hasn_id(agent_context)
         # 复用既有 owner_memory_service（与 Agent REST /memory/contribute 同一服务、同一语义）：
         # 先落 contribution 并提交（即便合并失败也不丢观察），再尽力合并；合并失败如实延后、零 fake。
         async with async_db_session() as db:
@@ -225,7 +225,7 @@ class _OwnerPeriodicClaimTool(BaseTool):
         cooldown = arguments.get('cooldown_days')
         cooldown_days = int(cooldown) if isinstance(cooldown, int) and cooldown > 0 else 7
         async with async_db_session() as db:
-            claimed = await self._do_claim(db, agent_context.owner_hasn_id, cooldown_days)
+            claimed = await self._do_claim(db, require_owner_hasn_id(agent_context), cooldown_days)
             await db.commit()
             return {'claimed': bool(claimed), 'cooldown_days': cooldown_days}
 

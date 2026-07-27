@@ -3,7 +3,7 @@
 纯函数（组卡不落库），验证：
 - deck 完成卡逐字节等价旧硬编码 `_projection_deck_card`（回归——去 deck 特例不改行为）；
 - 任意声明了 descriptor 的应用（reel 样例）完成即出「{verb}做好了」卡（零改代码泛化）；
-- 卡里 `hasn://{域}/{id}` 的 id 优先用云端权威 `{app}_server_id`，未上云才回退本地 local_ref；
+- 卡里 `hasn://{域}/{id}` 的 id 只用云端权威 `{app}_server_id`，未上云时回落通用会话卡；
 - origin_ref 解析边界（含冒号 local_ref / 非 resource 前缀）。
 """
 
@@ -89,11 +89,14 @@ def test_deck_card_byte_identical_regression_prefers_server_id() -> None:
     assert card == _expected_deck_card(deck_id='deck_server_99', content_json=content_json, session_id='sess_1')
 
 
-def test_deck_card_falls_back_to_local_ref_when_not_synced() -> None:
-    """deck 尚未上云（无 server_id）→ id 回退本地 local_ref（此时资源仅 owner 本机可解析）。"""
+def test_deck_card_falls_back_to_task_when_not_synced() -> None:
+    """deck 尚未上云（无 server_id）→ 通用会话卡，本地 ID 不得进入跨端 URI。"""
     content_json = _deck_content_json(deck_server_id=None, local_id='deck_local_7')
     card = _projection_card_body(session_id='sess_2', title='x', content_json=content_json)
-    assert card == _expected_deck_card(deck_id='deck_local_7', content_json=content_json, session_id='sess_2')
+    assert card['resource']['type'] == 'task_session'
+    assert card['resource']['app_id'] == 'tasks'
+    assert card['resource']['uri'] == 'hasn://tasks/sessions/sess_2'
+    assert 'deck_local_7' not in card['resource']['uri']
 
 
 def test_deck_card_default_description_when_no_summary() -> None:
@@ -262,6 +265,7 @@ def test_plan_goal_card_via_real_manifest_multi_resource() -> None:
         'agent_id': 'a_plan',
         'origin_type': 'app',
         'origin_ref': 'resource:plan:goal:5',
+        'plan_server_id': '5',
         'summary': '',
         'dedupe_key': 'work_session_result:sess_g:final',
     }
@@ -283,6 +287,7 @@ def test_plan_plan_card_via_real_manifest_multi_resource() -> None:
         'agent_id': 'a_plan',
         'origin_type': 'app',
         'origin_ref': 'resource:plan:plan:9',
+        'plan_server_id': '9',
         'summary': '双月推进计划',
         'dedupe_key': 'work_session_result:sess_p:final',
     }

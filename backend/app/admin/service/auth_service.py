@@ -107,10 +107,10 @@ class AuthService:
             await load_login_config(db)
             if settings.LOGIN_CAPTCHA_ENABLED:
                 if not obj.uuid or not obj.captcha:
-                    raise errors.RequestError(msg=t('error.captcha.invalid'))
+                    raise errors.RequestError(msg=t('error.captcha.invalid') or '验证码无效')
                 captcha_code = await redis_client.get(f'{settings.LOGIN_CAPTCHA_REDIS_PREFIX}:{obj.uuid}')
                 if not captcha_code:
-                    raise errors.RequestError(msg=t('error.captcha.expired'))
+                    raise errors.RequestError(msg=t('error.captcha.expired') or '验证码已过期')
                 if captcha_code.lower() != obj.captcha.lower():
                     raise errors.CustomError(error=CustomErrorCode.CAPTCHA_ERROR)
                 await redis_client.delete(f'{settings.LOGIN_CAPTCHA_REDIS_PREFIX}:{obj.uuid}')
@@ -118,6 +118,8 @@ class AuthService:
             user, days_remaining = await self.user_verify(db, obj.username, obj.password)
             await user_dao.update_login_time(db, obj.username)
             await db.refresh(user)
+            if user.last_login_time is None:
+                raise errors.ServerError(msg='用户登录时间回填失败')
             access_token_data = await create_access_token(
                 user.id,
                 multi_login=user.is_multi_login,
@@ -144,19 +146,20 @@ class AuthService:
             )
         except errors.NotFoundError as e:
             log.error('登陆错误: 用户名不存在')
-            raise errors.NotFoundError(msg=e.msg)
+            raise errors.NotFoundError(msg=e.msg or '用户名或密码有误')
         except (errors.RequestError, errors.CustomError) as e:
             if not user:
                 log.error('登陆错误: 用户密码有误')
+            error_message = e.msg or '登录失败'
             task = BackgroundTask(
                 login_log_service.create,
                 user_uuid=user.uuid if user else uuid4_str(),
                 username=obj.username,
                 login_time=timezone.now(),
                 status=LoginLogStatusType.fail.value,
-                msg=e.msg,
+                msg=error_message,
             )
-            raise errors.RequestError(code=e.code, msg=e.msg, background=task)
+            raise errors.RequestError(code=e.code, msg=error_message, background=task)
         except Exception as e:
             log.error(f'登陆错误: {e}')
             raise
@@ -243,7 +246,7 @@ class AuthService:
         :param request: FastAPI 请求对象
         :return:
         """
-        codes = set()
+        codes: set[str] = set()
         if request.user.is_superuser:
             menus = await menu_dao.get_all(db, None, None)
             for menu in menus:
@@ -292,6 +295,8 @@ class AuthService:
             raise errors.AuthorizationError(msg='用户已被锁定, 请联系统管理员')
         if not user.is_multi_login and await redis_client.get_prefix(f'{settings.TOKEN_REDIS_PREFIX}:{user.id}:*'):
             raise errors.ForbiddenError(msg='此用户已在异地登录，请重新登录并及时修改密码')
+        if user.last_login_time is None:
+            raise errors.TokenError(msg='用户登录时间缺失，请重新登录')
         new_token = await create_new_token(
             refresh_token,
             token_payload.session_uuid,

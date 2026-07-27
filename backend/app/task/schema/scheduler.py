@@ -10,10 +10,17 @@ from backend.common.schema import SchemaBase
 class TaskSchedulerSchemeBase(SchemaBase):
     """任务调度参数"""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     name: str = Field(description='任务名称')
     task: str = Field(description='要运行的 Celery 任务')
     args: JsonValue | None = Field(default=None, description='任务可接收的位置参数')
-    kwargs: JsonValue | None = Field(default=None, description='任务可接收的关键字参数')
+    task_kwargs: JsonValue | None = Field(
+        default=None,
+        validation_alias='kwargs',
+        serialization_alias='kwargs',
+        description='任务可接收的关键字参数',
+    )
     queue: str | None = Field(default=None, description='CELERY_TASK_QUEUES 中定义的队列')
     exchange: str | None = Field(default=None, description='低级别 AMQP 路由的交换机')
     routing_key: str | None = Field(default=None, description='低级别 AMQP 路由的路由密钥')
@@ -39,7 +46,7 @@ class UpdateTaskSchedulerParam(TaskSchedulerSchemeBase):
 class GetTaskSchedulerDetail(TaskSchedulerSchemeBase):
     """任务调度详情"""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: int = Field(description='任务调度 ID')
     enabled: bool = Field(description='是否启用任务')

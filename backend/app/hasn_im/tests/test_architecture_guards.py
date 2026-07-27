@@ -121,6 +121,16 @@ def test_legacy_im_modules_cannot_be_loaded():
     )
 
 
+def test_common_socketio_has_no_legacy_im_handlers():
+    """通用 Socket.IO 只承载传统业务事件，不得重新接管 HASN IM。"""
+    actions = (_BACKEND_ROOT / 'common/socketio/actions.py').read_text(encoding='utf-8')
+    server = (_BACKEND_ROOT / 'common/socketio/server.py').read_text(encoding='utf-8')
+    for token in ('hasn_message', 'hasn_read', 'hasn_ping', 'hasn_message_push'):
+        assert token not in actions, f'通用 Socket.IO actions 仍注册旧 IM 事件：{token}'
+    for token in ('hasn:offline:', 'hasn:ws:sid2id:', 'hasn_message_push'):
+        assert token not in server, f'通用 Socket.IO server 仍保留旧 IM 在线路由：{token}'
+
+
 def test_legacy_im_redis_key_access_is_limited_to_routing_adapters():
     """遗留 Redis key 只能留在 `hasn_im.adapters.routing` 的迁移实现内。"""
     offenders: list[str] = []
@@ -156,3 +166,100 @@ def test_no_direct_im_sync_model_dml_outside_adapters():
         '发现业务模块直接 import 受保护的 IM/sync ORM 模型（应经 port/append_event 写）：\n  '
         + '\n  '.join(sorted(offenders))
     )
+
+
+def test_message_send_chain_only_appends_integration_event():
+    """发送主链不得再直接写 Sync 或调用实时网关。"""
+    path = _BACKEND_ROOT / 'app/hasn_im/application/message_service.py'
+    tree = _parse(path)
+    assert tree is not None
+    route = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == 'route_message'
+    )
+    source = ast.get_source_segment(
+        path.read_text(encoding='utf-8'),
+        route,
+    )
+    assert source is not None
+    for forbidden in (
+        'SqlAlchemySyncAppender',
+        '_fanout_message_new',
+        '_flush_pushes',
+        '_get_realtime_gateway',
+    ):
+        assert forbidden not in source, f'route_message 仍包含旧发送旁路：{forbidden}'
+    assert source.count('_append_message_committed_event(') == 2
+    assert 'if not conversation_id:' in source
+    assert 'HASN_IM_SCHEMA_CUTOVER' not in source
+
+
+def test_permission_audit_uses_isolated_python_transaction():
+    """best-effort 审计失败不得把 IM 消息事务置为 aborted。"""
+    path = _BACKEND_ROOT / 'app/hasn/service/permission_engine.py'
+    source = path.read_text(encoding='utf-8')
+    assert 'python_backend_db_session.begin()' in source
+    assert 'hasn_audit_log_service.append(db=audit_db' in source
+
+
+def test_relation_gateway_never_falls_back_to_python_session():
+    """关系写适配器不得回落普通 Python 会话绕过 IM role。"""
+    path = _BACKEND_ROOT / 'app/hasn_im/adapters/sqlalchemy_relation_gateway.py'
+    source = path.read_text(encoding='utf-8')
+    assert 'async_db_session' not in source
+    assert 'im_service_db_session' in source
+
+
+def test_relation_writes_are_closed_behind_gateway():
+    """联系人业务入口不得再直接调用 DAO/service 写方法。"""
+    business_paths = (
+        _BACKEND_ROOT / 'app/hasn/api/v1/app/contacts.py',
+        _BACKEND_ROOT / 'app/hasn/service/inbound_gatekeeper.py',
+        _BACKEND_ROOT / 'app/hasn/service/hasn_agents_service.py',
+        _BACKEND_ROOT / 'app/hasn/service/hasn_auth.py',
+        _BACKEND_ROOT / 'app/mcp/tools/contact.py',
+        _BACKEND_ROOT / 'app/mcp/tools/message.py',
+    )
+    forbidden = (
+        'HasnContactsService.request_contact(',
+        'HasnContactsService.remove_contact(',
+        'hasn_contacts_dao.upsert_connected(',
+        'hasn_contact_requests_dao.mark_accepted(',
+        'hasn_contact_requests_dao.mark_rejected(',
+        'hasn_contact_requests_dao.mark_withdrawn(',
+        'pg_insert(HasnContacts)',
+        'HasnContacts(',
+    )
+    offenders: list[str] = []
+    for path in business_paths:
+        source = path.read_text(encoding='utf-8')
+        for token in forbidden:
+            if token in source:
+                offenders.append(f'{_rel(path)}: {token}')
+    assert not offenders, '关系业务仍有绕过 RelationGateway 的写点：\n  ' + '\n  '.join(offenders)
+
+
+def test_legacy_inbound_release_module_is_deleted():
+    """抑制放行只能经 ImGateway，旧直写 Sync/Realtime 模块必须物理删除。"""
+    path = _BACKEND_ROOT / 'app/hasn/service/inbound_release.py'
+    assert not path.exists(), '旧 inbound_release 仍存在，可绕过 ImGateway 放行'
+
+
+def test_generic_relation_admin_routes_are_read_only():
+    """管理端通用 contacts/request CRUD 只能保留只读运营查询。"""
+    for relative in (
+        'app/hasn/api/v1/admin/hasn_contacts.py',
+        'app/hasn/api/v1/admin/hasn_contact_requests.py',
+    ):
+        source = (_BACKEND_ROOT / relative).read_text(encoding='utf-8')
+        for method in ('post', 'put', 'patch', 'delete'):
+            assert f'@router.{method}(' not in source, f'{relative} 仍暴露 {method.upper()} 写路由'
+
+
+def test_agent_generic_contacts_route_is_disabled_after_cutover():
+    """R3 切换后 Agent 通用联系人 CRUD 不得注册。"""
+    source = (_BACKEND_ROOT / 'app/hasn/api/router.py').read_text(encoding='utf-8')
+    route_path = _BACKEND_ROOT / 'app/hasn/api/v1/agent/hasn_contacts.py'
+    assert 'agent_hasn_contacts_router' not in source
+    assert not route_path.exists()

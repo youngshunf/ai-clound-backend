@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 import cappa
 
@@ -163,7 +163,7 @@ class SkillPublish:
         async with async_db_session.begin() as db:
             result = await publisher.publish(
                 db=db,
-                bump=self.bump,
+                bump=cast(Literal['patch', 'minor', 'major'] | None, self.bump),
                 version=self.version,
                 changelog=self.changelog,
             )
@@ -208,6 +208,8 @@ class SkillPublish:
 
         # 上传
         print_info('上传到远程服务器...')
+        if not self.api_url or not self.api_key:
+            raise cappa.Exit('远程发布缺少 API 地址或密钥', code=1)
         client = RemotePublishClient(self.api_url, self.api_key)
         result = await client.publish_skill(
             zip_path=tmp_path,
@@ -292,7 +294,7 @@ class SkillPublishAll:
                 publisher = SkillPublisher(skill_dir)
                 result = await publisher.publish(
                     db=db,
-                    bump=self.bump,
+                    bump=cast(Literal['patch', 'minor', 'major'], self.bump),
                     changelog=self.changelog,
                 )
 

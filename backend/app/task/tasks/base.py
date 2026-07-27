@@ -15,16 +15,26 @@ class TaskBase(Task):
     autoretry_for = (SQLAlchemyError,)
     max_retries = settings.CELERY_TASK_MAX_RETRIES
 
-    async def before_start(self, task_id: str, args, kwargs) -> None:  # noqa: ANN001
+    @staticmethod
+    def _notify(message: str) -> None:
+        """从 Celery 同步生命周期钩子可靠派发异步通知。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(task_notification(msg=message))
+        else:
+            loop.create_task(task_notification(msg=message))
+
+    def before_start(self, task_id: str, args, kwargs) -> None:  # noqa: ANN001
         """
         任务开始前执行钩子
 
         :param task_id: 任务 ID
         :return:
         """
-        await task_notification(msg=f'任务 {task_id} 开始执行')
+        self._notify(f'任务 {task_id} 开始执行')
 
-    async def on_success(self, retval: Any, task_id: str, args, kwargs) -> None:  # noqa: ANN001
+    def on_success(self, retval: Any, task_id: str, args, kwargs) -> None:  # noqa: ANN001
         """
         任务成功后执行钩子
 
@@ -32,7 +42,7 @@ class TaskBase(Task):
         :param task_id: 任务 ID
         :return:
         """
-        await task_notification(msg=f'任务 {task_id} 执行成功')
+        self._notify(f'任务 {task_id} 执行成功')
 
     def on_failure(self, exc: Exception, task_id: str, args, kwargs, einfo) -> None:  # noqa: ANN001
         """
@@ -43,4 +53,4 @@ class TaskBase(Task):
         :param einfo: 异常信息
         :return:
         """
-        asyncio.create_task(task_notification(msg=f'任务 {task_id} 执行失败'))
+        self._notify(f'任务 {task_id} 执行失败')

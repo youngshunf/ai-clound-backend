@@ -9,7 +9,7 @@
 
 from typing import Any
 
-from backend.app.hasn.crud.crud_hasn_contacts import hasn_contacts_dao
+from backend.app.hasn_im.application.provider import get_relation_gateway
 from backend.app.hasn_core import hasn_agents_dao, hasn_humans_dao
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.base import BaseTool
@@ -103,7 +103,10 @@ class UserSearchTool(BaseTool):
 
             # 3) 真实关系 → 可达性提示（维度②轻量提示）
             for item in results:
-                relation = await hasn_contacts_dao.get_relation(db, self_hasn_id, item['hasn_id'], 'social')
+                relation = await get_relation_gateway().resolve_effective_relation(
+                    owner_hasn_id=self_hasn_id,
+                    peer_hasn_id=item['hasn_id'],
+                )
                 status = relation.status if relation else None
                 item['existing_relation'] = status
                 item['can_message'] = status == 'connected'

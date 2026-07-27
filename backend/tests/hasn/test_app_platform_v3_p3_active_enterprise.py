@@ -109,14 +109,18 @@ async def test_active_enterprise_pointer_full_lifecycle(db) -> None:
     # ③ 切回个人 → 清指针。
     ws = await svc.switch_active_workspace(db, user_id=u1, kind='personal', enterprise_id=None)
     assert ws == {'kind': 'personal', 'enterprise_id': None}
-    assert (await _pref(db, owner1)).active_enterprise_id is None
+    pref = await _pref(db, owner1)
+    assert pref is not None
+    assert pref.active_enterprise_id is None
 
     # ④ 切换到未加入企业 → ForbiddenError，不写指针。
     u2, _owner2 = await _seed_owner(db)
     ent2 = await _seed_enterprise(db, owner_user_id=u2, with_membership_for=u2)
     with pytest.raises(errors.ForbiddenError):
         await svc.switch_active_workspace(db, user_id=u1, kind='enterprise', enterprise_id=ent2)
-    assert (await _pref(db, owner1)).active_enterprise_id is None
+    pref = await _pref(db, owner1)
+    assert pref is not None
+    assert pref.active_enterprise_id is None
 
     # ⑤ 自愈：指针指向已失去成员资格的企业 → get 复位个人并清指针。
     u3, owner3 = await _seed_owner(db)
@@ -124,12 +128,18 @@ async def test_active_enterprise_pointer_full_lifecycle(db) -> None:
     db.add(HasnOwnerWorkbenchPref(owner_hasn_id=owner3, active_enterprise_id=ent3))
     await db.flush()
     assert await svc.get_active_workspace(db, user_id=u3) == {'kind': 'personal', 'enterprise_id': None}
-    assert (await _pref(db, owner3)).active_enterprise_id is None
+    pref = await _pref(db, owner3)
+    assert pref is not None
+    assert pref.active_enterprise_id is None
 
     # ⑥ _fallback_to_personal_if_active（成员被移除 / 退出）→ 清当前指针。
     u4, owner4 = await _seed_owner(db)
     ent4 = await _seed_enterprise(db, owner_user_id=u4, with_membership_for=u4)
     await svc.switch_active_workspace(db, user_id=u4, kind='enterprise', enterprise_id=ent4)
-    assert (await _pref(db, owner4)).active_enterprise_id == ent4
+    pref = await _pref(db, owner4)
+    assert pref is not None
+    assert pref.active_enterprise_id == ent4
     await svc._fallback_to_personal_if_active(db, user_id=u4, enterprise_id=ent4)
-    assert (await _pref(db, owner4)).active_enterprise_id is None
+    pref = await _pref(db, owner4)
+    assert pref is not None
+    assert pref.active_enterprise_id is None

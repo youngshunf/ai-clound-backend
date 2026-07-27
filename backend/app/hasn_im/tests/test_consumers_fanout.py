@@ -30,7 +30,11 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model import HasnConversations
 from backend.app.hasn_im.consumers.base import IntegrationEvent
-from backend.app.hasn_im.consumers.facts import IM_MESSAGE_COMMITTED
+from backend.app.hasn_im.consumers.facts import (
+    IM_CONVERSATION_UPDATED,
+    IM_MESSAGE_COMMITTED,
+    IM_MESSAGE_RECALLED,
+)
 from backend.app.hasn_im.consumers.push_notifier import PushNotifier
 from backend.app.hasn_im.consumers.realtime_notifier import RealtimeNotifier
 from backend.app.hasn_im.consumers.sync_projector import SyncProjector
@@ -161,6 +165,48 @@ def _committed_event(conv_id: str, sender: str, *, origin_session_id: str | None
     )
 
 
+def _recalled_event(conv_id: str) -> IntegrationEvent:
+    """构造一条消息撤回事实事件。"""
+    return IntegrationEvent(
+        event_seq=2,
+        event_id=f'ie_{uuid.uuid4().hex[:20]}',
+        event_type=IM_MESSAGE_RECALLED,
+        aggregate_type='conversation',
+        aggregate_id=conv_id,
+        payload={
+            'conversation_id': conv_id,
+            'message_id': f'msg_{uuid.uuid4().hex[:16]}',
+            'conversation_seq': 2,
+            'recalled_by': f'h_actor_{uuid.uuid4().hex[:10]}',
+            'recalled_at': 1_700_000_100,
+        },
+    )
+
+
+def _conversation_updated_event(
+    conv_id: str,
+    *,
+    audience_hasn_ids: list[str],
+) -> IntegrationEvent:
+    """构造一条含变更前后受众的会话更新事实事件。"""
+    return IntegrationEvent(
+        event_seq=3,
+        event_id=f'ie_{uuid.uuid4().hex[:20]}',
+        event_type=IM_CONVERSATION_UPDATED,
+        aggregate_type='conversation',
+        aggregate_id=conv_id,
+        payload={
+            'conversation_id': conv_id,
+            'revision': 3,
+            'change': 'members',
+            'added_member_hasn_ids': [],
+            'removed_member_hasn_ids': [],
+            'audience_hasn_ids': audience_hasn_ids,
+            'updated_by': audience_hasn_ids[0],
+        },
+    )
+
+
 async def _cleanup(sm, conv_id: str) -> None:
     async with sm() as db:
         await db.execute(
@@ -199,19 +245,55 @@ async def test_sync_projector_fans_out_message_new_per_owner(sessionmaker_pg) ->
     await _cleanup(sessionmaker_pg, conv_id)
 
 
-async def test_sync_projector_skips_non_committed_event(sessionmaker_pg) -> None:
-    conv_id, owner_a, _ = await _seed_direct_conversation(sessionmaker_pg)
-    # 非消息提交事件（如会话元数据变更）→ 本消费者跳过、不扇出、不报错
-    event = _committed_event(conv_id, sender=owner_a, origin_session_id=None)
-    other = IntegrationEvent(
-        event_seq=event.event_seq, event_id=event.event_id, event_type='conversation.updated.v1',
-        aggregate_type='conversation', aggregate_id=conv_id, payload=event.payload,
+async def test_sync_projector_projects_recall_and_conversation_update(
+    sessionmaker_pg,
+) -> None:
+    conv_id, owner_a, owner_b = await _seed_direct_conversation(sessionmaker_pg)
+    recalled = _recalled_event(conv_id)
+    conversation_updated = _conversation_updated_event(
+        conv_id,
+        audience_hasn_ids=[owner_a, owner_b],
     )
     appender = _RecordingAppender()
     async with sessionmaker_pg() as db:
-        await SyncProjector(appender=appender).handle(other, db)
+        projector = SyncProjector(appender=appender)
+        await projector.handle(recalled, db)
+        await projector.handle(conversation_updated, db)
         await db.commit()
-    assert appender.envelopes == []
+
+    recalled_rows = [
+        envelope
+        for envelope in appender.envelopes
+        if envelope.event_type == 'message.recalled'
+    ]
+    assert {envelope.owner_id for envelope in recalled_rows} == {
+        owner_a,
+        owner_b,
+    }
+    assert all(
+        envelope.aggregate_id == recalled.payload['message_id']
+        and envelope.aggregate_type == 'message'
+        and envelope.source_event_id == recalled.event_id
+        and envelope.payload == recalled.payload
+        for envelope in recalled_rows
+    )
+
+    updated_rows = [
+        envelope
+        for envelope in appender.envelopes
+        if envelope.event_type == 'conversation.updated'
+    ]
+    assert {envelope.owner_id for envelope in updated_rows} == {
+        owner_a,
+        owner_b,
+    }
+    assert all(
+        envelope.aggregate_id == conv_id
+        and envelope.aggregate_type == 'conversation'
+        and envelope.source_event_id == conversation_updated.event_id
+        and envelope.payload == {'conversation_id': conv_id, 'revision': 3}
+        for envelope in updated_rows
+    )
     await _cleanup(sessionmaker_pg, conv_id)
 
 
@@ -236,6 +318,59 @@ async def test_realtime_notifier_pushes_frame_per_owner(sessionmaker_pg) -> None
     assert by_owner[owner_a].params.get('origin_session_id') == 'sess_a1'
     assert 'origin_session_id' not in by_owner[owner_b].params
 
+    await _cleanup(sessionmaker_pg, conv_id)
+
+
+async def test_realtime_notifier_pushes_invalidations_for_recall_and_conversation_update(
+    sessionmaker_pg,
+) -> None:
+    conv_id, owner_a, owner_b = await _seed_direct_conversation(sessionmaker_pg)
+    recalled = _recalled_event(conv_id)
+    conversation_updated = _conversation_updated_event(
+        conv_id,
+        audience_hasn_ids=[owner_a, owner_b],
+    )
+    gateway = _RecordingGateway()
+    async with sessionmaker_pg() as db:
+        notifier = RealtimeNotifier(gateway=gateway)
+        await notifier.handle(recalled, db)
+        await notifier.handle(conversation_updated, db)
+        await db.commit()
+
+    recalled_frames = [
+        (owner_id, frame)
+        for owner_id, frame in gateway.frames
+        if frame.method == 'hasn.message.invalidated'
+    ]
+    assert {owner_id for owner_id, _ in recalled_frames} == {
+        owner_a,
+        owner_b,
+    }
+    assert all(
+        frame.params == {
+            **recalled.payload,
+            'event_id': recalled.event_id,
+        }
+        for _, frame in recalled_frames
+    )
+
+    conversation_frames = [
+        (owner_id, frame)
+        for owner_id, frame in gateway.frames
+        if frame.method == 'hasn.conversation.invalidated'
+    ]
+    assert {owner_id for owner_id, _ in conversation_frames} == {
+        owner_a,
+        owner_b,
+    }
+    assert all(
+        frame.params == {
+            'conversation_id': conv_id,
+            'revision': 3,
+            'event_id': conversation_updated.event_id,
+        }
+        for _, frame in conversation_frames
+    )
     await _cleanup(sessionmaker_pg, conv_id)
 
 

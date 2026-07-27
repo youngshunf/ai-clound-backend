@@ -45,7 +45,7 @@ class MenuService:
         return menu_tree
 
     @staticmethod
-    async def get_sidebar(*, db: AsyncSession, request: Request) -> list[dict[str, Any] | None]:
+    async def get_sidebar(*, db: AsyncSession, request: Request) -> list[dict[str, Any]]:
         """
         获取用户的菜单侧边栏
 
@@ -58,14 +58,14 @@ class MenuService:
             menu_data = await menu_dao.get_sidebar(db, None)
         else:
             roles = request.user.roles
-            menu_ids = set()
+            menu_ids: set[int] = set()
             if roles:
                 for role in roles:
                     menu_ids.update(menu.id for menu in role.menus)
                 menu_data = await menu_dao.get_sidebar(db, list(menu_ids))
 
         if menu_data:
-            return get_vben5_tree_data(menu_data)
+            return list(get_vben5_tree_data(menu_data))
 
         return []
 

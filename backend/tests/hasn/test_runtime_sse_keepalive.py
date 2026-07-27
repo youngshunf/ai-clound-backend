@@ -76,8 +76,9 @@ async def test_relay_run_stream_unexpected_error_becomes_sse_error_not_decoding_
     # control-plane 抛非 HermesRuntimeError 的未预期异常（inner 的 try 不 catch 它）→ 必须被
     # relay_run_stream 的兜底转成明确 SSE error 帧，绝不逃逸到 StreamingResponse（否则 daemon
     # 只看到 error decoding response body、拿不到真因）。
-    svc = HasnAgentRuntimeDispatchService(runtime_client=AsyncMock())
-    svc.runtime_client.start_gateway_by_profile = AsyncMock(side_effect=ValueError('boom upstream'))
+    runtime_client: Any = AsyncMock()
+    runtime_client.start_gateway_by_profile = AsyncMock(side_effect=ValueError('boom upstream'))
+    svc = HasnAgentRuntimeDispatchService(runtime_client=runtime_client)
 
     frames = [chunk async for chunk in svc.relay_run_stream(runtime_profile_id='p1', payload={})]
     body = b''.join(frames).decode()
@@ -121,7 +122,8 @@ async def test_read_only_relay_rejects_old_runtime_before_creating_run(
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr(dispatch_module.httpx, 'AsyncClient', _client_factory)
-    service = HasnAgentRuntimeDispatchService(runtime_client=_EndpointClient())
+    runtime_client: Any = _EndpointClient()
+    service = HasnAgentRuntimeDispatchService(runtime_client=runtime_client)
 
     frames = [
         chunk
@@ -193,7 +195,8 @@ async def test_read_only_relay_negotiates_contract_before_streaming(
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr(dispatch_module.httpx, 'AsyncClient', _client_factory)
-    service = HasnAgentRuntimeDispatchService(runtime_client=_EndpointClient())
+    runtime_client: Any = _EndpointClient()
+    service = HasnAgentRuntimeDispatchService(runtime_client=runtime_client)
 
     frames = [
         chunk

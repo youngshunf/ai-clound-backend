@@ -130,7 +130,7 @@ def test_workflow_scopes_in_aggregated_catalog() -> None:
 
 
 # ── 真实 PG 往返 ────────────────────────────────────────────────────────────────
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_workflow_lifecycle_roundtrip_real_db() -> None:
     """真实 PG：create(once,1节点)→get→list→run→pause→cancel。事务真提交，测试后清理。"""
     if not await _db_reachable():

@@ -47,7 +47,7 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         code = 200
         msg = 'Success'
         status = StatusType.enable
-        elapsed = 0
+        elapsed = 0.0
 
         try:
             username = request.user.username
@@ -161,7 +161,7 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         :param request: FastAPI 请求对象
         :return:
         """
-        args = {}
+        args: dict[str, Any] = {}
 
         # 查询参数
         query_params = dict(request.query_params)
@@ -193,7 +193,7 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         # 表单参数
         form_data = await request.form()
         if len(form_data) > 0:
-            serialized_form = {}
+            serialized_form: dict[str, Any] = {}
             for k, v in form_data.items():
                 if isinstance(v, UploadFile):
                     serialized_form[k] = {

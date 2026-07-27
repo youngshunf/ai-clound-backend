@@ -30,6 +30,9 @@ async def upload_s3_files(
     if not s3_storage:
         raise errors.NotFoundError(msg='S3 存储不存在')
     upload_file_verify(file)
+    filename = file.filename
+    if not filename:
+        raise errors.RequestError(msg='上传文件缺少文件名')
     await write_file(s3_storage, file)
 
-    return response_base.success(data={'url': build_object_url(s3_storage, file.filename)})
+    return response_base.success(data={'url': build_object_url(s3_storage, filename)})

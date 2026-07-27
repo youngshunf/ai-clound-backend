@@ -20,20 +20,21 @@ daemon（``domains/copilot`` 本地镜像 + 产物本地优先存储），非云
 桌面端原生层就绪，不强制自动挂载到侧栏；工作台目录始终可见可进入（回看历史会话/产物/设置），
 原生采集随桌面端能力探测渐进解锁。
 
-⚠️ default_agent_type='meeting_copilot'（AppCollab doc21 §4.3）：打开会议副驾时默认承接
-owner 名下的「会议副驾」内置分身（hub 模板 ``meeting-copilot``，builtin_key=meeting_copilot），
-无则回退主脑——见 ``app_catalog_service._CATALOG_AGENT_DEFAULTS`` / ``resolve_default_agent_for_app``。
+⚠️ default_agent_type='assistant'（AppCollab doc21 §4.3）：2026-07-12 内置分身收敛后，
+打开会议副驾默认由 owner 名下的「全能助理」承接；专用 ``meeting-copilot`` 模板仍可从市场
+按需创建，但不再作为内置分身——见 ``app_catalog_service._CATALOG_AGENT_DEFAULTS`` /
+``resolve_default_agent_for_app``。
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend.app.hasn.service.app_catalog_registry import App
 
 
-COPILOT_AI_NATIVE_MANIFEST = {
+COPILOT_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'copilot',
     'domain_summary': {'copilot': '会议副驾（实时建议、会议纪要与待办）'},
     'version': '1.0.0',

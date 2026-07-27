@@ -203,6 +203,78 @@ async def test_append_producer_source_both_or_neither(sessionmaker_pg):
         await _cleanup(sessionmaker_pg, owner)
 
 
+@pytest.mark.parametrize(
+    ('envelope', 'error_fragment'),
+    [
+        (
+            SyncEnvelope(
+                owner_id='',
+                hasn_id='h_invalid',
+                event_type='contract.probe',
+                aggregate_type='probe',
+                aggregate_id='p_invalid_owner',
+                payload={'n': 1},
+            ),
+            'owner_id',
+        ),
+        (
+            SyncEnvelope(
+                owner_id='h_invalid_producer',
+                hasn_id='h_invalid_producer',
+                event_type='contract.probe',
+                aggregate_type='probe',
+                aggregate_id='p_invalid_producer',
+                payload={'n': 1},
+                producer='Invalid Producer',
+                source_event_id='event-1',
+            ),
+            'producer',
+        ),
+        (
+            SyncEnvelope(
+                owner_id='h_invalid_source',
+                hasn_id='h_invalid_source',
+                event_type='contract.probe',
+                aggregate_type='probe',
+                aggregate_id='p_invalid_source',
+                payload={'n': 1},
+                producer='sync_contract',
+                source_event_id='s' * 65,
+            ),
+            'source_event_id',
+        ),
+        (
+            SyncEnvelope(
+                owner_id='h_invalid_payload',
+                hasn_id='h_invalid_payload',
+                event_type='contract.probe',
+                aggregate_type='probe',
+                aggregate_id='p_invalid_payload',
+                payload={'content': '中' * 100_000},
+                producer='sync_contract',
+                source_event_id='event-large',
+            ),
+            'payload',
+        ),
+    ],
+)
+async def test_append_rejects_invalid_namespace_identifier_and_payload(
+    sessionmaker_pg,
+    envelope: SyncEnvelope,
+    error_fragment: str,
+) -> None:
+    """唯一数据库函数统一拒绝非法命名空间、越界标识符与超大载荷。"""
+    appender = SqlAlchemySyncAppender()
+    try:
+        with pytest.raises(Exception) as exc_info:
+            async with sessionmaker_pg.begin() as db:
+                await appender.append(db, envelope)
+        assert error_fragment in str(exc_info.value)
+        assert await _count_rows(sessionmaker_pg, envelope.owner_id) == 0
+    finally:
+        await _cleanup(sessionmaker_pg, envelope.owner_id)
+
+
 async def test_append_shares_caller_transaction_rollback(sessionmaker_pg):
     """append 落在调用方事务内——事务回滚则该事件一并消失（§7.1 同事务证据）。"""
     owner = _fresh_owner()

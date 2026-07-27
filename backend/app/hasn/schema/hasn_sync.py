@@ -34,10 +34,27 @@ class SyncPullRequest(CursorMixin):
     limit: int = Field(default=100, ge=1, le=500, description='最大事件数')
 
 
+class FullRefreshDirective(SchemaBase):
+    """增量游标不可继续时返回给 daemon 的全量刷新指令。"""
+
+    owner_id: str = Field(description='Owner HASN ID')
+    reason: Literal['cursor_expired', 'cursor_ahead'] = Field(
+        description='要求全量刷新的原因'
+    )
+    requested_revision: int = Field(ge=0, description='客户端请求的 revision')
+    min_available_revision: int = Field(ge=0, description='服务端最早可用 revision')
+    head_revision: int = Field(ge=0, description='服务端当前 head revision')
+    required: bool = Field(default=True, description='是否必须执行全量刷新')
+
+
 class SyncPullResponse(SchemaBase):
     events: list[SyncEventRecord] = Field(description='同步事件')
     next_cursor: str = Field(description='下一游标')
     has_more: bool = Field(description='是否还有更多')
+    full_refresh: FullRefreshDirective | None = Field(
+        default=None,
+        description='增量游标失效时的显式全量刷新指令',
+    )
 
 
 class ClientEvent(SchemaBase):

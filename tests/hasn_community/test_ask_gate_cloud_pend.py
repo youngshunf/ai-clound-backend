@@ -19,6 +19,8 @@ from sqlalchemy import text
 
 from backend.app.mcp import ask_gate as ask_gate_module
 from backend.app.mcp.ask_gate import ask_approval_gate
+from backend.app.hasn_im.application.local_gateway import PythonLocalImGateway
+from backend.database.schema_names import SCHEMA_NAMES
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 from tests.hasn_community.conftest import seed_agent, seed_human
@@ -77,6 +79,24 @@ def _bind_session_no_begin(monkeypatch, db) -> None:
     monkeypatch.setattr('backend.database.db.async_db_session', _FactoryOnlyMaker())
 
 
+def _bind_im_gateway(monkeypatch, db) -> None:
+    """把真实 Python IM 网关绑定到本用例的隔离事务。"""
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _SessionFactory:
+        def __call__(self):
+            return _SessionCtx()
+
+    gateway = PythonLocalImGateway(session_factory=_SessionFactory())
+    monkeypatch.setattr(ask_gate_module, 'get_im_gateway', lambda: gateway)
+
+
 async def _approval_row(db, request_id: str):
     from backend.app.hasn.crud.crud_hasn_agent_approval_requests import hasn_agent_approval_requests_dao as dao
 
@@ -119,6 +139,7 @@ async def test_send_approval_card_delivers_card_to_owner_conversation(db, monkey
     # 用「.begin() 会抛」的会话绑定：锁住发卡片必须走裸工厂会话（route_message 自带 commit），
     # 否则二次提交→发卡失败→工具被即时拒绝（线上事故根因，本断言防回归）。
     _bind_session_no_begin(monkeypatch, db)
+    _bind_im_gateway(monkeypatch, db)
 
     request_id = 'areq_test_card_delivery'
     ok = await ask_approval_gate._send_approval_card(
@@ -134,7 +155,7 @@ async def test_send_approval_card_delivers_card_to_owner_conversation(db, monkey
     row = (
         await db.execute(
             text(
-                'SELECT content_type, content FROM hasn_messages '
+                f'SELECT content_type, content FROM {SCHEMA_NAMES.im_table("hasn_messages")} '
                 'WHERE from_id = :a AND to_id = :o AND content_type = 5 '
                 'ORDER BY id DESC LIMIT 1'
             ),

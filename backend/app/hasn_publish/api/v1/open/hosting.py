@@ -26,6 +26,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn_publish.model.site import Site
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.core.conf import settings
 from backend.database.db import CurrentSession
@@ -97,7 +98,7 @@ def _noindex_headers(site) -> dict[str, str]:  # noqa: ANN001
 
 async def _authorize_view(
     db: CurrentSession, request: Request, slug: str, vt: str | None
-) -> tuple[object, Response | None]:
+) -> tuple[Site | None, Response | None]:
     """返回 (site, error_response)。error_response 非 None 时直接返回它。"""
     site = await publish_service.get_site_by_slug(db, slug=slug)
     if site is None or site.status == 'revoked':
@@ -112,7 +113,7 @@ async def _authorize_view(
     if site.current_revision_id is None:
         return None, JSONResponse(status_code=410, content={'code': 410, 'msg': '分享内容不可用', 'data': None})
 
-    ticket_ok = bool(vt) and publish_service.verify_view_ticket(vt, site_id=site.id)
+    ticket_ok = publish_service.verify_view_ticket(vt, site_id=site.id) if vt else False
     if site.visibility == 'private' and not ticket_ok:
         return None, JSONResponse(
             status_code=401, content={'code': 401, 'msg': '私有分享，请在唤星桌面端打开', 'data': None}
@@ -138,6 +139,8 @@ async def viewer_shell(
         ):
             return HTMLResponse(content=_password_page(slug), headers={'X-Robots-Tag': 'noindex, nofollow'})
         return err
+    if site is None:
+        raise RuntimeError('分享授权成功但站点实体缺失')
     await publish_service.increment_view_count(db, site_id=site.id)
     origin = _share_origin(request)
     # 查看器外壳是本服务生成的**可信** HTML（title 经 html.escape，无用户脚本注入面）：
@@ -179,6 +182,8 @@ async def content(
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         return err
+    if site is None:
+        raise RuntimeError('分享授权成功但站点实体缺失')
     revision = await publish_service.get_current_revision(db, site_id=site.id)
     if revision is None:
         return JSONResponse(status_code=410, content={'code': 410, 'msg': '内容不可用', 'data': None})
@@ -230,6 +235,8 @@ async def asset(
     site, err = await _authorize_view(db, request, slug, vt)
     if err is not None:
         return err
+    if site is None:
+        raise RuntimeError('分享授权成功但站点实体缺失')
     revision = await publish_service.get_current_revision(db, site_id=site.id)
     if revision is None or revision.runtime != 'bundle-zip':
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})

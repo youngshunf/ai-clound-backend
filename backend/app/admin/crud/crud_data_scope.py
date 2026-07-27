@@ -74,7 +74,7 @@ class CRUDDataScope(CRUDPlus[DataScope]):
         :param status: 范围状态
         :return:
         """
-        filters = {}
+        filters: dict[str, Any] = {}
 
         if name is not None:
             filters['name__like'] = f'%{name}%'
@@ -122,8 +122,8 @@ class CRUDDataScope(CRUDPlus[DataScope]):
                 CreateDataScopeRuleParam(data_scope_id=pk, data_rule_id=rule_id).model_dump()
                 for rule_id in rule_ids.rules
             ]
-            data_scope_rule_stmt = insert(data_scope_rule)
-            await db.execute(data_scope_rule_stmt, data_scope_rule_data)
+            data_scope_rule_insert_stmt = insert(data_scope_rule)
+            await db.execute(data_scope_rule_insert_stmt, data_scope_rule_data)
 
         return len(rule_ids.rules)
 

@@ -45,6 +45,14 @@ SCOPE_MANAGE = 'deck:manage'
 Handler = Callable[[Any, AgentContext, dict[str, Any]], Awaitable[Any]]
 
 
+def _owner_hasn_id(ctx: AgentContext) -> str:
+    """从已认证 Agent 上下文取得主人 HASN ID；缺失时显式拒绝。"""
+    owner_hasn_id = ctx.owner_hasn_id
+    if not owner_hasn_id:
+        raise errors.TokenError(msg='AgentContext 缺少 owner_hasn_id')
+    return owner_hasn_id
+
+
 async def _bump_decks_sync(owner_hasn_id: str | None) -> None:
     """分身 deck 写点提交后 → WSPUSH ``hasn.sync.invalidate(decks)`` 给主人在线节点（best-effort）。
 
@@ -96,37 +104,14 @@ async def _register_deck_artifact(
         server_id=str(deck_id),
         session_id=ctx.session_id,
         agent_hasn_id=ctx.agent_hasn_id,
-        owner_hasn_id=ctx.owner_hasn_id,
+        owner_hasn_id=_owner_hasn_id(ctx),
         title=resolved_title or '演示文稿',
         source_tool=f'{NAMESPACE}.write',
     )
 
 
-async def _run_deck_post_commit(post: dict[str, Any]) -> None:
-    """写事务**提交后**的 deck 副作用（当前仅 finalize 完成卡）。独立会话——`route_message`
-    自管 `db.commit()`，绝不能塞进 `execute` 的 `begin()` 事务里（否则 route_message 的提交会提前
-    结束该事务，收尾时触发「Can't operate on closed transaction inside context manager」）。best-effort。
-    """
-    if post.get('kind') != 'deck_completion_card':
-        return
-    try:
-        from backend.app.hasn.service.hasn_sessions_service import emit_deck_completion_card
-
-        async with async_db_session() as db:
-            await emit_deck_completion_card(
-                db,
-                owner_id=post['owner_id'],
-                agent_id=post['agent_id'],
-                deck_id=post['deck_id'],
-                title=post.get('title') or '',
-                summary=post.get('summary') or '',
-            )
-    except Exception as e:
-        logger.warning('[deck] finalize 完成卡投递失败（非致命）: %s', e)
-
-
 def _subject(ctx: AgentContext) -> Subject:
-    return Subject.agent(ctx.agent_hasn_id, ctx.owner_hasn_id)
+    return Subject.agent(ctx.agent_hasn_id, _owner_hasn_id(ctx))
 
 
 def _deck_id(args: dict[str, Any]) -> int:
@@ -217,7 +202,7 @@ async def _h_create(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     title = str(args.get('title') or '').strip() or '未命名演示文稿'
     deck = await deck_service.create_deck(
         db,
-        owner_id=ctx.owner_hasn_id,
+        owner_id=_owner_hasn_id(ctx),
         title=title,
         topic=(str(args['topic']).strip() if args.get('topic') else None),
         language=str(args.get('language') or 'zh'),
@@ -315,16 +300,9 @@ async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """收尾：把演示文稿标记为「已完成」，由云端自动给主人发「演示文稿做好了」卡
     （分身不用、也不该自己发卡）；重复调不会重复发卡。
 
-    ⚠️ 完成卡**不在此处直接发**——`emit_deck_completion_card` 内部经 `route_message` 会
-    `db.commit()`，若在 `execute` 的 `begin()` 事务里调用，会提前结束该事务，收尾提交时触发
-    「Can't operate on closed transaction inside context manager」。这里只 finalize + register-on-write，
-    完成卡打包成 `_post_commit` 标记，由 `execute` 在写事务**提交后**的独立会话里投递。
-
-    发卡条件是 **status=ready 即排投递**（不只 changed 首次转换）：投递自带
-    `local_id=deck_complete:{deck_id}` 幂等（hasn_messages 唯一索引，`route_message` 命中即返回
-    原消息、绝不二次发卡），故 ready 重调是**自愈补发**——治「首次收尾时完成卡投递失败
-    （旧版事务 bug / route 瞬时失败）后被 changed=False 守卫卡死、卡永久丢失」
-    （2026-07-11/12 生产 deck 完成卡丢失事故）。archived 不发。
+    完成卡不在业务事务内直接写 IM；这里与 deck 状态、产物登记同事务写 session outbox。
+    独立 relay 提交后投递，进程崩溃可恢复。ready 重调仍使用稳定幂等键
+    ``deck_complete:{deck_id}``，可自愈首次响应丢失且不会重复发卡；archived 不发。
     """
     deck_id = _deck_id(args)
     result = await deck_service.finalize_deck(db, subject=_subject(ctx), deck_id=deck_id)
@@ -341,14 +319,20 @@ async def _h_finalize(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
         registration,
     )
     if will_emit:
-        out['_post_commit'] = {
-            'kind': 'deck_completion_card',
-            'deck_id': str(deck_id),
-            'title': str(result.get('title') or ''),
-            'summary': str(args.get('summary') or ''),
-            'owner_id': ctx.owner_hasn_id,
-            'agent_id': ctx.agent_hasn_id,
-        }
+        from backend.app.hasn.service.hasn_sessions_service import (
+            emit_deck_completion_card,
+        )
+
+        delivery = await emit_deck_completion_card(
+            db,
+            owner_id=_owner_hasn_id(ctx),
+            agent_id=ctx.agent_hasn_id,
+            deck_id=str(deck_id),
+            title=str(result.get('title') or ''),
+            summary=str(args.get('summary') or ''),
+        )
+        out['card_delivery_command_id'] = delivery.get('command_id')
+        out['card_delivery_state'] = delivery.get('status')
     return out
 
 
@@ -359,13 +343,13 @@ async def _h_delete(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
 
 
 async def _h_style_list(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    result = await deck_service.list_style_profiles(db, owner_id=ctx.owner_hasn_id)
+    result = await deck_service.list_style_profiles(db, owner_id=_owner_hasn_id(ctx))
     return {'styles': result['items']}
 
 
 async def _h_style_get(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     style_id = str(args['style_id']).strip()
-    result = await deck_service.list_style_profiles(db, owner_id=ctx.owner_hasn_id)
+    result = await deck_service.list_style_profiles(db, owner_id=_owner_hasn_id(ctx))
     style = next((s for s in result['items'] if s.get('slug') == style_id), None)
     if style is None:
         raise errors.NotFoundError(msg=f'样式不存在：{style_id}')
@@ -651,12 +635,6 @@ class _DeckTool(BaseTool):
                 result = await self._handler(db, agent_context, arguments)
             # LFRT 刀4：提交后 bump（best-effort），主人在线节点秒级重拉 deck 镜像。
             await _bump_decks_sync(agent_context.owner_hasn_id)
-            # 写事务提交后的副作用（如 finalize 完成卡）在独立会话里做——route_message 自管 commit，
-            # 不能嵌进上面的 begin() 事务（否则收尾提交撞「closed transaction」）。
-            if isinstance(result, dict):
-                post = result.pop('_post_commit', None)
-                if post is not None:
-                    await _run_deck_post_commit(post)
             return result
         async with async_db_session() as db:
             return await self._handler(db, agent_context, arguments)

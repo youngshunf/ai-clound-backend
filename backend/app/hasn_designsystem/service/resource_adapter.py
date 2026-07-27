@@ -45,8 +45,8 @@ def _to_int(resource_id: str) -> int | None:
 class DesignSystemResourceAdapter:
     """设计系统资源适配器：resource_type='designsystem'，leaf id = design_system_id。"""
 
-    resource_type = 'designsystem'
-    id_param_aliases = ('design_system_id',)
+    resource_type: str = 'designsystem'
+    id_param_aliases: tuple[str, ...] = ('design_system_id',)
 
     async def load_meta(self, db: AsyncSession, resource_id: str) -> ResourceMeta | None:
         ds_id = _to_int(resource_id)

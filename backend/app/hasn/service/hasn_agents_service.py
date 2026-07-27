@@ -1,17 +1,18 @@
+import hashlib
 import re
 import string
 
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn.crud.crud_hasn_agents import hasn_agents_dao
 from backend.app.hasn.model import HasnAgents
-from backend.app.hasn.model.hasn_contacts import HasnContacts
 from backend.app.hasn.schema.hasn_agents import (
     AgentRuntimeConfig,
+    AgentHeartbeatRequest,
+    AgentHeartbeatResponse,
     AgentSnapshot,
     AgentSyncRequest,
     AgentSyncResponse,
@@ -508,16 +509,27 @@ class SqlAlchemyAgentProfileGateway:
         return list(result.scalars().all())
 
     async def append_agent_sync_event(self, db: AsyncSession, *, owner_id: str, agent: Any, event_type: str) -> None:
-        from backend.app.hasn.service.hasn_sync_service import SqlAlchemySyncGateway
+        from backend.app.hasn_sync.adapters.sqlalchemy_appender import (
+            SqlAlchemySyncAppender,
+        )
+        from backend.app.hasn_sync.ports.dto import SyncEnvelope
 
-        await SqlAlchemySyncGateway()._append_sync_event(
+        source = (
+            f'{event_type}:{agent.hasn_id}:'
+            f'{int(getattr(agent, "profile_revision", 0) or 0)}'
+        )
+        await SqlAlchemySyncAppender().append(
             db,
-            owner_id=owner_id,
-            hasn_id=agent.hasn_id,
-            event_type=event_type,
-            aggregate_type='agent',
-            aggregate_id=agent.hasn_id,
-            payload={'agent': _agent_snapshot(agent).model_dump(mode='json')},
+            SyncEnvelope(
+                owner_id=owner_id,
+                hasn_id=agent.hasn_id,
+                event_type=event_type,
+                aggregate_type='agent',
+                aggregate_id=agent.hasn_id,
+                payload={'agent': _agent_snapshot(agent).model_dump(mode='json')},
+                producer='agent_profile',
+                source_event_id=hashlib.sha256(source.encode('utf-8')).hexdigest(),
+            ),
         )
 
 
@@ -1264,8 +1276,6 @@ class HasnAgentProfileService:
 
         import sqlalchemy as sa
 
-        from backend.app.hasn.schema.hasn_agents import AgentHeartbeatResponse
-
         result = await db.execute(sa.select(HasnAgents).where(HasnAgents.hasn_id == hasn_id).limit(1))
         agent = result.scalar_one_or_none()
         if agent is None:
@@ -1353,12 +1363,12 @@ async def _resolve_skill_display(
             MarketplaceSkill.description_en,
         ).where(MarketplaceSkill.skill_id.in_(ids))
     )
-    for row in mk_result.all():
-        name = (row.name_zh or row.name_en or row.name or '').strip()
+    for market_row in mk_result.all():
+        name = (market_row.name_zh or market_row.name_en or market_row.name or '').strip()
         if not name:
             continue
-        desc = row.description_zh or row.description_en
-        display[row.skill_id] = {'name': name, 'description': desc.strip() if desc else None}
+        desc = market_row.description_zh or market_row.description_en
+        display[market_row.skill_id] = {'name': name, 'description': desc.strip() if desc else None}
     # 个人技能：owner 内 scope（hasn_id），按 slug 或 personal_skill_id 命中；不覆盖市场命中项
     ps_result = await db.execute(
         sa.select(
@@ -1375,16 +1385,16 @@ async def _resolve_skill_display(
         )
     )
     id_set = set(ids)
-    for row in ps_result.all():
-        name = (row.name or '').strip()
+    for personal_row in ps_result.all():
+        name = (personal_row.name or '').strip()
         if not name:
             continue
         entry: dict[str, str | None] = {
             'name': name,
-            'description': row.description.strip() if row.description else None,
+            'description': personal_row.description.strip() if personal_row.description else None,
         }
         # skills 里可能用 slug 或 personal_skill_id 引用，命中哪个补哪个键
-        for candidate in (row.slug, row.personal_skill_id):
+        for candidate in (personal_row.slug, personal_row.personal_skill_id):
             if candidate and candidate in id_set and candidate not in display:
                 display[candidate] = entry
     return display
@@ -1534,11 +1544,8 @@ class HasnAgentsService:
         """
         创建HASN Agent
 
-        附带写入 hasn_contacts（owner→agent 的控制边，social + trust_level=5/connected），
-        与 hasn_auth.register_hasn_agent 行为对齐：所有 agent 创建路径
-        （app create_my_hasn_agents / admin create_hasn_agents）一律自动落 contacts。
-        D3：控制边 MUST social+5（Core/02 §7.4.2），此前误写 service+5 已对齐 social。
-        ON CONFLICT (owner_id, peer_id, relation_type) DO NOTHING 幂等。
+        同事务登记 owner→agent 控制边投影命令，由关系 relay 经 IM role 的
+        RelationGateway 幂等落 social+5 关系。
 
         :param db: 数据库会话
         :param obj: 创建HASN Agent 参数
@@ -1546,26 +1553,14 @@ class HasnAgentsService:
         :return: Agent 信息及 JWT
         """
         await hasn_agents_dao.create(db, obj)
-        await db.execute(
-            pg_insert(HasnContacts)
-            .values(
-                owner_id=obj.owner_id,
-                peer_id=obj.hasn_id,
-                peer_owner_id=obj.owner_id,
-                peer_type='agent',
-                relation_type='social',
-                trust_level=5,
-                status='connected',
-                channel_source='system',
-                subscription=False,
-                interaction_count=0,
-                custom_permissions={},
-                nickname=obj.name,
-                connected_at=timezone.now(),
-            )
-            .on_conflict_do_nothing(
-                index_elements=['owner_id', 'peer_id', 'relation_type'],
-            )
+        from backend.app.hasn.service.hasn_relation_command_outbox_service import (
+            hasn_relation_command_outbox_service,
+        )
+
+        await hasn_relation_command_outbox_service.enqueue_owner_agent_control_edge(
+            db,
+            owner_hasn_id=obj.owner_id,
+            agent_hasn_id=obj.hasn_id,
         )
 
         # 签发 Agent JWT（scopes 已退役·实施102 S0：JWT 不再携带 scopes，授权只看三态）
@@ -1573,7 +1568,7 @@ class HasnAgentsService:
 
         agent_token = await create_agent_access_token(
             agent_hasn_id=obj.hasn_id,
-            agent_name=obj.name,
+            agent_name=obj.display_name,
             owner_hasn_id=obj.owner_id,
             owner_user_id=user_id,
         )
@@ -1581,7 +1576,7 @@ class HasnAgentsService:
         return {
             'hasn_id': obj.hasn_id,
             'owner_id': obj.owner_id,
-            'name': obj.name,
+            'name': obj.display_name,
             'access_token': agent_token.access_token,
             # scopes 已退役（实施102 S0）：恒空占位，兼容旧 daemon 反序列化。
             'scopes': [],

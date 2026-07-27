@@ -1,6 +1,6 @@
 """§4.5 发 Agent（#1130 P2-余 b）：收件方是 Agent 的通知 → 卡片落「服务号 ⇄ Agent」
 service 会话，经 route_message 复用「既有 agent dispatch（投 runtime，让分身去处理）+
-既有 owner_copy（message.received sync_event owner_id=Agent 的主人，主人旁观透明）」。
+既有 owner_copy（由消息集成事件的独立消费者投影，主人旁观透明）」。
 
 连真库（127.0.0.1:15432/huanxing）+ 真 redis（route_message 限频滑窗 + WS 在线表），
 事务回滚隔离：conftest `db` fixture 用 `join_transaction_mode='create_savepoint'`，使
@@ -15,14 +15,18 @@ emit(recipient_id=agent) 验证派发链路 + owner_copy 接线正确（同时�
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from backend.app.hasn.model.hasn_conversations import HasnConversations
 from backend.app.hasn.model.hasn_messages import HasnMessages
-from backend.app.hasn.model.hasn_sync_events import HasnSyncEvents
 from backend.app.hasn.model.hasn_notifications import HasnNotifications
 from backend.app.notification.service.notification_service import notification_service
-from tests.notification.conftest import seed_agent, seed_human
+from backend.database.schema_names import SCHEMA_NAMES
+from tests.notification.conftest import (
+    notification_outbox_result,
+    seed_agent,
+    seed_human,
+)
 
 
 async def _agent_cards(db, agent_id: str) -> list[HasnMessages]:
@@ -40,9 +44,12 @@ async def _agent_cards(db, agent_id: str) -> list[HasnMessages]:
 
 
 @pytest.mark.asyncio
-async def test_emit_to_agent_routes_card_into_sv_agent_service_conversation(db):
+async def test_emit_to_agent_routes_card_into_sv_agent_service_conversation(
+    db,
+    drain_notification_outbox,
+):
     """system 源通知发给 Agent（system 默认含 card_message）→ 卡片落「服务号 ⇄ Agent」
-    service 会话；message.received sync_event owner_id=主人（owner_copy）/hasn_id=Agent（dispatch）。"""
+    service 会话，并写入唯一消息集成事件供后置消费者扇出。"""
     owner = await seed_human(db, nickname='主人')
     agent = await seed_agent(db, owner_hasn_id=owner['hasn_id'], display_name='我的分身')
 
@@ -57,6 +64,9 @@ async def test_emit_to_agent_routes_card_into_sv_agent_service_conversation(db):
         payload={'link': '/settings'},
     )
     assert nid
+
+    stats = await drain_notification_outbox()
+    assert stats.completed == 1
 
     # 1) 卡片落「服务号 ⇄ Agent」service 会话，from 是 sv_ 服务号（from_type=5 service，D8）
     cards = await _agent_cards(db, agent['hasn_id'])
@@ -79,33 +89,38 @@ async def test_emit_to_agent_routes_card_into_sv_agent_service_conversation(db):
     assert part_types[card.from_id] == 'service'
     assert part_types[agent['hasn_id']] == 'agent'
 
-    # 2) owner_copy + dispatch：唯一 message.received sync_event
-    #    owner_id=主人（主人节点 sync/pull 旁观该 Agent 会话）、hasn_id=Agent（daemon 据此派发 runtime）
-    events = list(
-        (
-            await db.execute(
-                select(HasnSyncEvents).where(
-                    HasnSyncEvents.aggregate_id == str(card.id),
-                    HasnSyncEvents.event_type == 'message.received',
-                )
-            )
-        ).scalars().all()
-    )
-    assert len(events) == 1
-    ev = events[0]
-    assert ev.owner_id == owner['hasn_id']  # owner_copy：事件落主人维度
-    assert ev.hasn_id == agent['hasn_id']  # dispatch：投 Agent runtime
+    # 2) 消息事务只写唯一集成事件；owner 旁观与 Agent 派发由独立消费者后置完成。
+    committed = (
+        await db.execute(
+            text(
+                f'SELECT count(*) FROM {SCHEMA_NAMES.im_event_table("integration_events")} '
+                "WHERE aggregate_id = :conversation_id "
+                "AND event_type = 'im.message.committed.v1' "
+                "AND payload->>'message_id' = :message_id"
+            ),
+            {
+                'conversation_id': str(card.conversation_id),
+                'message_id': str(card.id),
+            },
+        )
+    ).scalar_one()
+    assert committed == 1
 
-    # 3) 权威行记账：service_account + card_recipient=agent + 投影回指
+    # 3) 权威行记账：service_account + card_recipient=agent + outbox 命令回指
     row = (await db.execute(select(HasnNotifications).where(HasnNotifications.id == nid))).scalar_one()
     delivery = row.delivery or {}
     assert delivery.get('card_recipient') == 'agent'
     assert str(delivery.get('service_account', '')).startswith('sv_')
-    assert delivery.get('card_message_id') == card.id
+    command_id = delivery.get('card_command_id')
+    assert command_id
+    assert await notification_outbox_result(db, command_id) == ('completed', card.id)
 
 
 @pytest.mark.asyncio
-async def test_emit_to_agent_app_source_uses_owner_service_account(db):
+async def test_emit_to_agent_app_source_uses_owner_service_account(
+    db,
+    drain_notification_outbox,
+):
     """app 源通知发给 Agent（delivery_hint 开 card_message）→ 服务号属 Agent 的主人；
     「服务号 ⇄ Agent」会话的服务号与「服务号 ⇄ 主人」同源同一个 sv_（D6 子会话基础）。"""
     owner = await seed_human(db, nickname='主人')
@@ -121,6 +136,8 @@ async def test_emit_to_agent_app_source_uses_owner_service_account(db):
         title='主人的帖子被加精',
         delivery_hint={'channels': {'card_message': True}},
     )
+    first_stats = await drain_notification_outbox()
+    assert first_stats.completed == 1
     owner_cards = list(
         (
             await db.execute(
@@ -145,6 +162,8 @@ async def test_emit_to_agent_app_source_uses_owner_service_account(db):
         title='分身被 @ 了',
         delivery_hint={'channels': {'card_message': True}},
     )
+    second_stats = await drain_notification_outbox()
+    assert second_stats.completed == 1
     agent_cards = await _agent_cards(db, agent['hasn_id'])
     assert len(agent_cards) == 1
     assert agent_cards[0].from_id == sv_id  # 同一个服务号身份

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -139,7 +140,7 @@ class GrowthFormService:
                 wechat=wechat,
                 im_refs={},
                 profile_json={'inbound_message': message} if message else {},
-                intent_score=50,  # 主动留资意向中等偏上起步
+                intent_score=Decimal('50'),  # 主动留资意向中等偏上起步
                 lifecycle_status='engaged',
                 tags=[],
                 silent_round_count=0,

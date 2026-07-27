@@ -29,10 +29,14 @@ async def render_message(subject: str, from_header: str, content: str | dict, te
     message['date'] = timezone.now().strftime('%a, %d %b %Y %H:%M:%S %z')
 
     if template:
+        if not isinstance(content, dict):
+            raise TypeError('使用邮件模板时 content 必须是字典')
         async with await open_file(PLUGIN_DIR / 'email' / 'templates' / template, encoding='utf-8') as f:
             html = Template(await f.read(), enable_async=True)
         mail_body = MIMEText(await html.render_async(**content), 'html', 'utf-8')
     else:
+        if not isinstance(content, str):
+            raise TypeError('发送纯文本邮件时 content 必须是字符串')
         mail_body = MIMEText(content, 'plain', 'utf-8')
 
     message.attach(mail_body)

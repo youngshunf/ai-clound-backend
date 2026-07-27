@@ -49,8 +49,8 @@ async def agent_create_content(
     agent = getattr(request.state, 'agent', None)
     if agent is not None and not obj.created_by_agent_id:
         obj = obj.model_copy(update={'created_by_agent_id': agent.agent_hasn_id})
-    result = await content_service.create(db=db, obj=obj)
-    return response_base.success(data=result)
+    await content_service.create(db=db, obj=obj)
+    return response_base.success()
 
 
 @router.get(

@@ -31,7 +31,7 @@ from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transact
 
 pytestmark = pytest.mark.asyncio
 
-_USER_ID = 970000 + int(uuid.uuid4().int % 20000)
+_USER_ID = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
 
 # 模块级构建（依赖图一次成型，避免在 async fixture 内 include_router 触发的重建怪味）。
 _APP = FastAPI()

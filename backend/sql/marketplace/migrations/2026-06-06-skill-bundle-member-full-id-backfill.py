@@ -29,7 +29,10 @@ import asyncpg
 import yaml
 
 # 本地开发库；生产执行时按 117.72.92.229:5432 等调整。
-DB = {'host': '127.0.0.1', 'port': 15432, 'user': 'mac', 'database': 'huanxing'}
+DB_HOST = '127.0.0.1'
+DB_PORT = 15432
+DB_USER = 'mac'
+DB_NAME = 'huanxing'
 
 
 def _content_hash(value: str) -> str:
@@ -123,7 +126,7 @@ async def _backfill_agent_skills(conn: asyncpg.Connection) -> int:
 
 
 async def main() -> None:
-    conn = await asyncpg.connect(**DB)
+    conn = await asyncpg.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, database=DB_NAME)
     try:
         packs = await _backfill_hermes_yaml(conn)
         agents = await _backfill_agent_skills(conn)

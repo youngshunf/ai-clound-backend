@@ -29,7 +29,12 @@ from backend.app.hasn.service.ai_native_app_registry import AINativeAppRegistry,
 from backend.app.hasn.service.ai_native_knowledge_manifest import KNOWLEDGE_SCOPE_CATALOG
 from backend.app.hasn.service.ai_native_runtime_gateway import ai_native_runtime_gateway
 from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
-from backend.app.hasn.service.app_catalog_service import grant_entitlement
+from backend.app.hasn.service.app_catalog_service import (
+    grant_entitlement,
+    resolve_default_agent_for_app,
+    resolve_owner_hasn_id,
+    resolve_owner_user_id,
+)
 from backend.app.hasn.service.instance_resolver import InstanceResolutionError
 from backend.app.hasn.service.workbench_domain_service import workbench_domain_service
 
@@ -51,5 +56,8 @@ __all__ = [
     'app_catalog_service',
     'capability_guard',
     'grant_entitlement',
+    'resolve_default_agent_for_app',
+    'resolve_owner_hasn_id',
+    'resolve_owner_user_id',
     'workbench_domain_service',
 ]

@@ -58,7 +58,7 @@ class _Result:
         return self._value
 
 
-class _FakeDB:
+class _FakeDBImpl:
     """最小 async db：select 恒返预置 agent（None 表示不存在）；记录 delete/flush 调用。"""
 
     def __init__(self, agent: _Agent | None) -> None:
@@ -76,7 +76,10 @@ class _FakeDB:
         self.flushed += 1
 
 
-class _Gateway:
+_FakeDB: Any = _FakeDBImpl
+
+
+class _GatewayImpl:
     def __init__(self, *, owns: bool = True) -> None:
         self._owns = owns
         self.sync_events: list[dict[str, Any]] = []
@@ -88,7 +91,10 @@ class _Gateway:
         self.sync_events.append({'owner_id': owner_id, 'agent_id': agent.hasn_id, 'event_type': event_type})
 
 
-def _service(gateway: _Gateway) -> HasnAgentProfileService:
+_Gateway: Any = _GatewayImpl
+
+
+def _service(gateway: Any) -> HasnAgentProfileService:
     from backend.app.hasn.service.hasn_agents_service import HasnAgentProfileService
 
     return HasnAgentProfileService(gateway=gateway)

@@ -25,12 +25,16 @@ class Profile(HasnCreatorAppBase):
     persona: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     target_audience: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     tone: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment='调性（轻松幽默/专业严谨/温暖治愈…自由文本）')
-    keywords: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
-    content_pillars: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='内容支柱 ["食谱教程","厨房好物","探店"]')
+    keywords: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
+    content_pillars: Mapped[list[str]] = mapped_column(
+        postgresql.JSONB(), default_factory=list, comment='内容支柱 ["食谱教程","厨房好物","探店"]'
+    )
     posting_frequency: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment=None)
     best_posting_time: Mapped[str | None] = mapped_column(sa.String(50), default=None, comment=None)
-    style_references: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment=None)
-    taboo_topics: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='禁区话题（合规红线硬过滤，§12）')
+    style_references: Mapped[list[str]] = mapped_column(postgresql.JSONB(), default_factory=list, comment=None)
+    taboo_topics: Mapped[list[str]] = mapped_column(
+        postgresql.JSONB(), default_factory=list, comment='禁区话题（合规红线硬过滤，§12）'
+    )
     bio: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
     pillar_weights: Mapped[dict] = mapped_column(postgresql.JSONB(), default_factory=dict, comment='支柱权重（进化核心）：复盘后按数据反馈调整，下次按权重选支柱')
     pillar_weights_updated_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)

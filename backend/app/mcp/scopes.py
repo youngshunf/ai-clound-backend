@@ -88,6 +88,7 @@ DOMAIN_LABELS: dict[str, dict[str, str]] = {
     'diag': {'zh': '平台诊断', 'en': 'Diagnostics'},
     # —— 应用域 ——
     'plan': {'zh': '规划', 'en': 'Planning'},
+    'project': {'zh': '项目', 'en': 'Projects'},
     'task': {'zh': '任务与工作流', 'en': 'Tasks & Workflows'},
     'deck': {'zh': '演示文稿', 'en': 'Slides'},
     'designsystem': {'zh': '设计系统', 'en': 'Design System'},

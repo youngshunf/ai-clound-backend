@@ -72,7 +72,7 @@ async def register_app_resource_artifact(
       会让分身既拿不到地址、又查不到产物（没登记），凭空双输。
     """
     try:
-        from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+        from backend.app.hasn_core.app_platform import ai_native_app_registry
 
         descriptor = ai_native_app_registry.resource_descriptor(app_id, resource_kind)
         if descriptor is None:

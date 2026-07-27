@@ -40,7 +40,7 @@ class GenBusinessService:
         return await gen_business_dao.get_all(db)
 
     @staticmethod
-    async def get_list(*, db: AsyncSession, table_name: str) -> dict[str, Any]:
+    async def get_list(*, db: AsyncSession, table_name: str | None) -> dict[str, Any]:
         """
         获取代码生成业务列表
 

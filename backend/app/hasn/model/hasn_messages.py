@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -7,6 +8,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, TimeZone, id_key
+from backend.database.schema_names import IM_SCHEMA
 from backend.utils.timezone import timezone
 
 
@@ -14,6 +16,7 @@ class HasnMessages(Base):
     """HASN 消息表"""
 
     __tablename__ = 'hasn_messages'
+    __table_args__ = {'schema': IM_SCHEMA}
 
     id: Mapped[id_key] = mapped_column(init=False)
     conversation_id: Mapped[str | UUID] = mapped_column(sa.UUID(), default=None, comment='所属会话 ID')
@@ -35,7 +38,11 @@ class HasnMessages(Base):
     priority: Mapped[str] = mapped_column(sa.String(10), default='', comment='优先级 (critical:紧急:red/high:高:orange/normal:普通:blue/low:低:gray)')
     reply_to_id: Mapped[int | None] = mapped_column(sa.BIGINT(), default=None, comment='回复的消息 ID')
     local_id: Mapped[str | None] = mapped_column(sa.String(100), default=None, comment='客户端本地 ID（用于去重，不限格式）')
-    mentions: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='@提及列表（JSONB: [{hasn_id, star_id, offset, length}]）')
+    mentions: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        postgresql.JSONB(),
+        default=None,
+        comment='@提及列表（JSONB: [{hasn_id, star_id, offset, length}]）',
+    )
     mention_all: Mapped[bool] = mapped_column(sa.BOOLEAN(), default=True, comment='是否 @所有人')
     context: Mapped[dict | None] = mapped_column(postgresql.JSONB(), default=None, comment='消息上下文 (JSONB)')
     recalled_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='撤回时间')

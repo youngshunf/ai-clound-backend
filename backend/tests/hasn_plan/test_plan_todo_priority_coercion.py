@@ -51,7 +51,7 @@ def test_coerce_priority(value: object, expected: int) -> None:
     assert _coerce_priority(value) == expected
 
 
-@pytest.mark.asyncio(loop_scope='module')
+@pytest.mark.asyncio(loop_scope='session')
 async def test_create_todo_string_priority_persists_as_int() -> None:
     """真实 PG：create_todo 传字符串 priority 不再 500，按语义/数字落库为正确 int。"""
     owner = f'hasnOwner_{uuid4().hex[:18]}'

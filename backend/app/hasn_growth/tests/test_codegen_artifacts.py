@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[4]
 
 # 采集子域收编（设计 07 §5.0）：app/lead_automation → app/hasn_growth，
@@ -23,6 +21,10 @@ def test_codegen_generated_all_crud_model_schema_api_files() -> None:
         'lead_export_item',
         'lead_audit_log',
     )
+    owner_scoped_generated_routes = {
+        'lead_collection_job',
+        'lead_export_batch',
+    }
 
     for table in tables:
         assert (app_root / f'model/{table}.py').exists()
@@ -30,11 +32,13 @@ def test_codegen_generated_all_crud_model_schema_api_files() -> None:
         assert (app_root / f'crud/crud_{table}.py').exists()
         assert (app_root / f'service/{table}_service.py').exists()
         assert (app_root / f'api/v1/admin/{table}.py').exists()
-        # lead_contact 的 app/agent/open 通用 CRUD 已删（统一线索池 slice3b·福仔决策）：公共池行无按行归属，
-        # 用户/Agent 线索面走 /leads(funnel_service)+lead_ref，仅保留 admin 运维 CRUD；其余表保持四 scope。
+        # 用户与 Agent 业务面已收口到 growth.py；仅仍具 owner 隔离语义的后台任务/导出批次
+        # 保留生成路由，其余采集流水表禁止重新暴露通用写面。
+        for scope in ('app', 'agent'):
+            route = app_root / f'api/v1/{scope}/{table}.py'
+            assert route.exists() is (table in owner_scoped_generated_routes)
+        # 匿名只读历史面仍保留；公共线索池本体 lead_contact 不公开通用详情路由。
         if table != 'lead_contact':
-            assert (app_root / f'api/v1/app/{table}.py').exists()
-            assert (app_root / f'api/v1/agent/{table}.py').exists()
             assert (app_root / f'api/v1/open/{table}.py').exists()
     # lead_contact 三 scope 文件确已删除（防回归再生成）
     for scope in ('app', 'agent', 'open'):
@@ -297,10 +301,16 @@ def test_codegen_templates_keep_generated_output_importable() -> None:
 
 def test_generated_frontend_api_paths_match_registered_backend_prefixes() -> None:
     # M1 收编：管理端前端 api 前缀切到 canonical /api/v1/growth/*
-    # 仅当前端仓与后端仓同级（主 clone 布局）时跑；worktree 下前端不在 ROOT.parent 同级 → skip
-    frontend_api_root = ROOT.parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation'
-    if not frontend_api_root.exists():
-        pytest.skip('前端仓不在 ROOT.parent 同级（worktree 布局），跳过跨仓前缀一致性校验')
+    # 兼容主 clone 与 `.worktrees/<任务>` 两种布局，找不到真实前端仓必须失败。
+    frontend_api_root = next(
+        (
+            parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation'
+            for parent in (ROOT, *ROOT.parents)
+            if (parent / 'huanxing-cloud-frontend/apps/web-antdv-next/src/api/lead_automation').is_dir()
+        ),
+        None,
+    )
+    assert frontend_api_root is not None, '未找到真实 huanxing-cloud-frontend 仓，无法校验跨仓 API 前缀'
     for path in frontend_api_root.glob('*.ts'):
         text = path.read_text(encoding='utf-8')
         assert '/api/v1/lead_automation/' not in text

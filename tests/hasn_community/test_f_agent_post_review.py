@@ -27,9 +27,7 @@ from tests.hasn_community.conftest import seed_agent, seed_human
 async def _seed_published_post(db, *, author_hasn_id: str, content: str) -> str:
     """经 ORM（schema-aware）插一条已发布 human 帖，返回 post_id。
 
-    不用 conftest.seed_post：其裸 `INSERT INTO hasn_posts` 不带 hasn_community schema
-    前缀，在本应用「每应用独立 PG schema」下会 relation does not exist（同样拖垮 test_b_feed）。
-    ORM 路径继承 CommunityBase 的 schema=hasn_community，是已验证可用的写入路径。
+    直接走 ORM 路径，覆盖 CommunityBase 的 schema=hasn_community 映射。
     """
     from backend.utils.timezone import timezone
 

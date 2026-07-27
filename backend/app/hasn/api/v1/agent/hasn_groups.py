@@ -15,13 +15,13 @@ from backend.app.hasn.service.hasn_group_service import hasn_group_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.database.db import CurrentSession
+from backend.database.db import CurrentImSession
 
 router = APIRouter()
 
 
 @router.get('', summary='分身所在群列表', dependencies=[DependsAgentJwtAuth])
-async def agent_list_groups(request: Request, db: CurrentSession) -> ResponseSchemaModel[dict]:
+async def agent_list_groups(request: Request, db: CurrentImSession) -> ResponseSchemaModel[dict]:
     agent: AgentTokenPayload = request.state.agent
     items = await hasn_group_service.list_my_groups(db=db, hasn_id=agent.agent_hasn_id)
     return response_base.success(data={'items': items})
@@ -30,7 +30,7 @@ async def agent_list_groups(request: Request, db: CurrentSession) -> ResponseSch
 @router.get('/{group_id}', summary='群名册（分身视角）', dependencies=[DependsAgentJwtAuth])
 async def agent_group_detail(
     request: Request,
-    db: CurrentSession,
+    db: CurrentImSession,
     group_id: Annotated[str, Path(description='群组公开 ID g:NNNNNN')],
 ) -> ResponseSchemaModel[dict]:
     agent: AgentTokenPayload = request.state.agent

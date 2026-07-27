@@ -49,6 +49,8 @@ RESOURCE_TYPE = 'designsystem'
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from backend.app.hasn_im.ports.im_gateway import ImGateway
+
 # builtin（官方内置）设计系统的归属 owner 哨兵：对所有 owner 只读可见、不属任何真实 owner。
 BUILTIN_OWNER = 'system'
 
@@ -335,6 +337,7 @@ class DesignSystemService:
         enterprise_id: int | None = None,
         required_scenes: list[str] | None = None,
         platform_project_id: str | UUID | None = None,
+        im_gateway: ImGateway | None = None,
     ) -> dict[str, Any]:
         """创建或更新一套设计系统：落一版 revision + 回填 current/content_hash/评分。
 
@@ -460,16 +463,9 @@ class DesignSystemService:
         await db.flush()
         if advance_current:
             d.current_revision_id = rev.id
-        await db.commit()
-        await db.refresh(d)
 
-        # DSFIX-1 / DSCARD：分身写满必填字段 → 发一次「设计系统做好了·打开」完成卡给主人。时机不是
-        # runtime 自动完成，而是「必填字段齐了」（福仔铁律）：仅落当前版（advance_current）、作者是分身、
-        # 从未发过（completed_notified_at 为空）、本版内容完整才发。此处只**判定并打包完成信号**，真正
-        # 发卡改由 `hasn.designsystem.save` 工具在写事务**提交后**的独立会话里走 route_message（对齐
-        # deck 的 emit_deck_completion_card——route_message 自管 commit，绝不能塞进本 save 的事务里，
-        # 否则会提前结束事务）。completed_notified_at 由工具**投递成功后**才回填（首投失败则留空、下次
-        # 完整 save 自愈补发），叠加 route_message 的 local_id 幂等，双保只发一张、且不丢卡。
+        # 分身写满必填字段时，在设计系统状态事务内登记完成卡 outbox 命令。状态提交后即使
+        # API/worker 崩溃，relay 仍能恢复投递；业务事务失败则命令一并回滚。
         should_notify = (
             advance_current
             and subject.kind == 'agent'
@@ -478,8 +474,7 @@ class DesignSystemService:
         )
         completion_card: dict[str, Any] | None = None
         if should_notify:
-            # DSGAL：软提示——交叉 owner 要求的 required_scenes 与本版 manifest.scenes[]，算「品牌网站 3/5 ·
-            # 缺 CTA/页脚」，压成一行挂进完成卡 summary（软提示，不阻断；完成判定只看五项必填字段）。
+            # DSGAL：交叉 owner 要求与实际画廊场景，把覆盖提示压进完成卡摘要。
             preview = f'{d.name} · 评分 {d.score}' if d.score is not None else d.name
             hint = _scene_coverage_hint(
                 _scene_coverage_annotation(
@@ -489,12 +484,36 @@ class DesignSystemService:
             )
             if hint:
                 preview = f'{preview} · 画廊 {hint}'
-            completion_card = {'design_system_id': str(d.id), 'title': d.name, 'summary': preview}
+            from backend.app.hasn.service.hasn_sessions_service import (
+                emit_designsystem_completion_card,
+            )
+
+            delivery = await emit_designsystem_completion_card(
+                db,
+                owner_id=owner,
+                agent_id=subject.hasn_id,
+                design_system_id=str(d.id),
+                title=d.name,
+                summary=preview,
+                im_gateway=im_gateway,
+            )
+            if delivery.get('command_id'):
+                d.completed_notified_at = now
+                completion_card = {
+                    'design_system_id': str(d.id),
+                    'title': d.name,
+                    'summary': preview,
+                    'delivery_command_id': delivery['command_id'],
+                    'delivery_state': delivery['status'],
+                }
+
+        await db.commit()
+        await db.refresh(d)
 
         out = _ds_dict(d)
         out['revision'] = _revision_dict(rev, with_content=False)
         out['pending'] = not advance_current  # True=协作待确认版（未落当前态）
-        # 完成信号透传给工具 post-commit 投递（None=未完整/协作待确认版/owner 本人 save，不发卡）。
+        # 完成信号仅用于工具返回清理与诊断；投递命令已在 save 事务中持久化。
         out['completion_card'] = completion_card
         return out
 
