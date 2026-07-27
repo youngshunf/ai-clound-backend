@@ -54,10 +54,20 @@ $function$;
 DO $migration$
 DECLARE
     target_schema text;
+    pgcrypto_schema text;
     orphan_count bigint;
     invalid_count bigint;
     client_message_expression text;
 BEGIN
+    SELECT namespace.nspname
+    INTO pgcrypto_schema
+    FROM pg_extension extension
+    JOIN pg_namespace namespace ON namespace.oid = extension.extnamespace
+    WHERE extension.extname = 'pgcrypto';
+    IF pgcrypto_schema IS NULL THEN
+        RAISE EXCEPTION 'R3 抑制命令迁移无法解析 pgcrypto 扩展 schema';
+    END IF;
+
     FOREACH target_schema IN ARRAY ARRAY['public', 'hasn_im']
     LOOP
         IF to_regclass(format('%I.hasn_suppressed_messages', target_schema)) IS NULL THEN
@@ -152,19 +162,20 @@ BEGIN
         -- sender + NUL + origin_node + NUL + idempotency_key。
         EXECUTE format(
             'UPDATE %1$I.hasn_suppressed_messages s '
-            'SET idempotency_scope = encode(digest('
+            'SET idempotency_scope = encode(%2$I.digest('
             'convert_to(s.sender_hasn_id, ''UTF8'') || decode(''00'', ''hex'') || '
             'convert_to(COALESCE(s.command_payload->>''origin_node_id'', ''''), ''UTF8'') || '
             'decode(''00'', ''hex'') || '
             'convert_to(s.command_payload->>''idempotency_key'', ''UTF8''), '
             '''sha256''), ''hex''), '
-            'command_hash = encode(digest(convert_to('
+            'command_hash = encode(%2$I.digest(convert_to('
             'pg_temp.hasn_r3_canonical_jsonb(s.command_payload), '
             '''UTF8''), ''sha256''), ''hex''), '
             'updated_time = now() '
             'WHERE s.resolved_at IS NULL '
             'AND s.message_id IS NOT NULL',
-            target_schema
+            target_schema,
+            pgcrypto_schema
         );
 
         -- 旧未读计数仍可能参与 reverse 或 cutover 回填，先按被删除的收件消息数扣减。

@@ -524,25 +524,53 @@ BEGIN
         message_count = 2
     WHERE id = '{LEGACY_SUPPRESSION_CONVERSATION}'::uuid;
 
-    INSERT INTO public.hasn_conversation_memberships (
-        conversation_id, member_hasn_id, member_star_id, member_name,
-        member_type, role, joined_seq, left_seq, read_seq, state,
-        agent_group_trust_level, agent_charter, muted, invited_by,
-        charter_updated_time, joined_at, left_at, created_time
-    ) VALUES
-        (
-            '{LEGACY_SUPPRESSION_CONVERSATION}'::uuid,
-            '{LEGACY_SUPPRESSION_SENDER}', '', '迁移探针发送者',
-            'human', 'member', 1, NULL, 0, 'active',
-            2, NULL, false, NULL, NULL, now(), NULL, now()
-        ),
-        (
-            '{LEGACY_SUPPRESSION_CONVERSATION}'::uuid,
-            '{LEGACY_SUPPRESSION_RECIPIENT}', '', '迁移探针接收者',
-            'agent', 'member', 1, NULL, 0, 'active',
-            2, NULL, false, NULL, NULL, now(), NULL, now()
-        )
-    ON CONFLICT DO NOTHING;
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'hasn_conversation_memberships'
+          AND column_name = 'member_star_id'
+    ) THEN
+        INSERT INTO public.hasn_conversation_memberships (
+            conversation_id, member_hasn_id, member_star_id, member_name,
+            member_type, role, joined_seq, left_seq, read_seq, state,
+            agent_group_trust_level, agent_charter, muted, invited_by,
+            charter_updated_time, joined_at, left_at, created_time
+        ) VALUES
+            (
+                '{LEGACY_SUPPRESSION_CONVERSATION}'::uuid,
+                '{LEGACY_SUPPRESSION_SENDER}', '', '迁移探针发送者',
+                'human', 'member', 1, NULL, 0, 'active',
+                2, NULL, false, NULL, NULL, now(), NULL, now()
+            ),
+            (
+                '{LEGACY_SUPPRESSION_CONVERSATION}'::uuid,
+                '{LEGACY_SUPPRESSION_RECIPIENT}', '', '迁移探针接收者',
+                'agent', 'member', 1, NULL, 0, 'active',
+                2, NULL, false, NULL, NULL, now(), NULL, now()
+            )
+        ON CONFLICT DO NOTHING;
+    ELSE
+        INSERT INTO public.hasn_conversation_memberships (
+            conversation_id, member_hasn_id, member_type, role,
+            joined_seq, left_seq, read_seq, state,
+            agent_group_trust_level, agent_charter,
+            joined_at, left_at, created_time
+        ) VALUES
+            (
+                '{LEGACY_SUPPRESSION_CONVERSATION}'::uuid,
+                '{LEGACY_SUPPRESSION_SENDER}', 'human', 'member',
+                1, NULL, 0, 'active',
+                2, NULL, now(), NULL, now()
+            ),
+            (
+                '{LEGACY_SUPPRESSION_CONVERSATION}'::uuid,
+                '{LEGACY_SUPPRESSION_RECIPIENT}', 'agent', 'member',
+                1, NULL, 0, 'active',
+                2, NULL, now(), NULL, now()
+            )
+        ON CONFLICT DO NOTHING;
+    END IF;
 
     INSERT INTO public.hasn_unread_projection (
         conversation_id, member_hasn_id, unread_count,

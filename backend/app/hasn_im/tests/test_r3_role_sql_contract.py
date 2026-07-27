@@ -23,6 +23,9 @@ _TASK_VISIBILITY_MIGRATION = (
 _SYNC_INBOX_WORKER_MIGRATION = (
     _MIGRATIONS / '2026-07-27-r3-sync-inbox-worker.sql'
 )
+_SUPPRESSED_COMMAND_MIGRATION = (
+    _MIGRATIONS / '2026-07-27-r3-suppressed-command.sql'
+)
 _REHEARSAL = _MIGRATIONS / 'r3_migration_rehearsal.py'
 
 
@@ -75,6 +78,63 @@ def test_membership_fields_have_pre_cutover_additive_migration() -> None:
         'HISTORY_COMPLETE_FROM_SEQ',
     ):
         assert f'ADD COLUMN IF NOT EXISTS {column}' in sql
+
+
+def test_legacy_suppression_probe_accepts_both_membership_shapes() -> None:
+    """旧生产列集与新 metadata 列集都必须有显式的探针写入分支。"""
+    rehearsal = _REHEARSAL.read_text(encoding='utf-8')
+    seed_at = rehearsal.index('def _seed_legacy_suppressed')
+    catalog_at = rehearsal.index(
+        "column_name = 'member_star_id'",
+        seed_at,
+    )
+    modern_insert_at = rehearsal.index(
+        'INSERT INTO public.hasn_conversation_memberships',
+        catalog_at,
+    )
+    modern_insert_end = rehearsal.index(
+        'ON CONFLICT DO NOTHING',
+        modern_insert_at,
+    )
+    legacy_insert_at = rehearsal.index(
+        'INSERT INTO public.hasn_conversation_memberships',
+        modern_insert_end,
+    )
+    legacy_insert_end = rehearsal.index(
+        'ON CONFLICT DO NOTHING',
+        legacy_insert_at,
+    )
+    modern_insert = rehearsal[modern_insert_at:modern_insert_end]
+    legacy_insert = rehearsal[legacy_insert_at:legacy_insert_end]
+
+    for legacy_column in (
+        'conversation_id',
+        'member_hasn_id',
+        'member_type',
+        'joined_seq',
+        'read_seq',
+    ):
+        assert legacy_column in modern_insert
+        assert legacy_column in legacy_insert
+    for additive_column in (
+        'member_star_id',
+        'member_name',
+        'muted',
+        'invited_by',
+        'charter_updated_time',
+    ):
+        assert additive_column in modern_insert
+        assert additive_column not in legacy_insert
+
+
+def test_suppressed_migration_qualifies_pgcrypto_digest_schema() -> None:
+    """pgcrypto 安装在业务 schema 时，迁移不能依赖默认 search_path。"""
+    sql = _SUPPRESSED_COMMAND_MIGRATION.read_text(encoding='utf-8')
+
+    assert 'JOIN pg_namespace' in sql
+    assert 'INTO pgcrypto_schema' in sql
+    assert sql.count('%2$I.digest(') == 2
+    assert 'target_schema,\n            pgcrypto_schema' in sql
 
 
 def test_login_operation_uses_psql_variables_and_contains_no_password() -> None:
