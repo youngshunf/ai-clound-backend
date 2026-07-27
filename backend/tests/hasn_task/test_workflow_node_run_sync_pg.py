@@ -364,6 +364,35 @@ async def test_backfilled_placeholder_row_converges_to_daemon_uuid(env: SimpleNa
     assert nodes[0].work_session_id == 'ws_real'
 
 
+async def test_protocol_v2_defers_run_until_parent_workflow_definition_exists(env: SimpleNamespace) -> None:
+    """新协议不得为缺失定义的运行记录制造孤儿；旧协议仍可回灌历史。"""
+    owner, db = env.owner, env.session
+    workflow_uuid, workflow_run_uuid = f'wf_{_uid()}', f'wfr_{_uid()}'
+
+    v2_result = await workflow_sync_service.sync_node_runs(
+        db,
+        WorkflowNodeRunsSyncRequest(
+            sync_protocol_version=2,
+            runs=[_run(workflow_run_uuid, workflow_uuid)],
+        ),
+        owner_id=owner,
+    )
+    assert v2_result.accepted_runs == 0
+    assert v2_result.rejected == []
+    assert v2_result.deferred == [
+        {'uuid': workflow_run_uuid, 'reason': 'PARENT_WORKFLOW_MISSING'}
+    ]
+    assert await hasn_workflow_run_dao.get_by_uuid(db, workflow_run_uuid) is None
+
+    v1_result = await workflow_sync_service.sync_node_runs(
+        db,
+        WorkflowNodeRunsSyncRequest(runs=[_run(workflow_run_uuid, workflow_uuid)]),
+        owner_id=owner,
+    )
+    assert v1_result.accepted_runs == 1
+    assert v1_result.deferred == []
+
+
 async def test_node_run_under_another_owners_run_is_rejected(env: SimpleNamespace) -> None:
     """父 run 属于别人 → 节点行不许挂进去（否则能往别人的 run 里塞节点）。"""
     owner, db = env.owner, env.session

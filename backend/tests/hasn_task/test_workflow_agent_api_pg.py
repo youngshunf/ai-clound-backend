@@ -381,7 +381,7 @@ async def test_owner_history_api_keeps_orphan_run_read_only(e2e: SimpleNamespace
             },
         )
     )
-    assert synced == {'accepted_runs': 1, 'accepted_node_runs': 2, 'rejected': []}
+    assert synced == {'accepted_runs': 1, 'accepted_node_runs': 2, 'rejected': [], 'deferred': []}
 
     history = _data(await e2e.client.get('/api/v1/hasn-task/app/workflow-runs', params={'project_id': project_id}))
     item = next(row for row in history['items'] if row['workflow_run_id'] == workflow_run_uuid)
@@ -582,3 +582,67 @@ async def test_owner_instantiate_is_idempotent_and_returns_definition_snapshot(e
         {'owner': e2e.owner, 'idempotency_key': idempotency_key},
     )
     assert count.scalar_one() == 1
+
+
+async def test_legacy_definition_import_is_create_only_and_hash_idempotent(e2e: SimpleNamespace) -> None:
+    """R2-c：旧 daemon 定义首次建图、同哈希重放不新增、差异图明确冲突。"""
+    workflow_uuid = f'wf_legacy_{_uid()}'
+    definition = {
+        'workflow_uuid': workflow_uuid,
+        'name': '旧版工程工作流',
+        'goal': '把存量定义补到云端',
+        'nodes': [
+            {'node_key': 'origin', 'agent_id': e2e.research, 'prompt': '主人输入', 'is_origin': True},
+            {'node_key': 'work', 'agent_id': e2e.writer, 'prompt': '完成执行'},
+        ],
+        'edges': [{'parent': 'origin', 'child': 'work'}],
+    }
+    payload = {'sync_protocol_version': 2, 'definitions': [{'workflow': definition}]}
+
+    first = _data(await e2e.client.post('/api/v1/hasn-task/app/workflows:sync', json=payload))
+    assert first == {'created': [workflow_uuid], 'idempotent': []}
+    replay = _data(await e2e.client.post('/api/v1/hasn-task/app/workflows:sync', json=payload))
+    assert replay == {'created': [], 'idempotent': [workflow_uuid]}
+
+    conflicting = {
+        **definition,
+        'nodes': [
+            {'node_key': 'origin', 'agent_id': e2e.research, 'prompt': '已被篡改', 'is_origin': True},
+            {'node_key': 'work', 'agent_id': e2e.writer, 'prompt': '完成执行'},
+        ],
+    }
+    response = await e2e.client.post(
+        '/api/v1/hasn-task/app/workflows:sync',
+        json={'sync_protocol_version': 2, 'definitions': [{'workflow': conflicting}]},
+    )
+    assert response.status_code == 409, response.text
+    assert 'DEFINITION_CONFLICT' in response.text
+
+
+async def test_sync_protocol_v2_defers_orphan_node_run_but_v1_keeps_compatibility(e2e: SimpleNamespace) -> None:
+    """R2-c：新协议缺父 run 保持 pending，旧 daemon 协议仍可兼容写入历史。"""
+    run_uuid = f'wfr_orphan_{_uid()}'
+    node = {
+        'node_run_uuid': f'ndr_orphan_{_uid()}',
+        'workflow_run_uuid': run_uuid,
+        'workflow_uuid': f'wf_orphan_{_uid()}',
+        'node_key': 'legacy',
+        'status': 'done',
+    }
+    deferred = _data(
+        await e2e.client.post(
+            '/api/v1/hasn-task/app/workflow-node-runs:sync',
+            json={'sync_protocol_version': 2, 'node_runs': [node]},
+        )
+    )
+    assert deferred['accepted_node_runs'] == 0
+    assert deferred['rejected'] == []
+    assert deferred['deferred'][0]['uuid'] == node['node_run_uuid']
+    accepted = _data(
+        await e2e.client.post(
+            '/api/v1/hasn-task/app/workflow-node-runs:sync',
+            json={'sync_protocol_version': 1, 'node_runs': [node]},
+        )
+    )
+    assert accepted['accepted_node_runs'] == 1
+    assert accepted['deferred'] == []

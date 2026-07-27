@@ -22,9 +22,13 @@ from backend.app.hasn.schema.hasn_sync import (
 )
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
 from backend.app.hasn_task.api.v1.app.task import current_owner_id
-from backend.app.hasn_task.schema.workflow_sync import WorkflowNodeRunsSyncRequest
+from backend.app.hasn_task.schema.workflow_sync import (
+    WorkflowDefinitionsSyncRequest,
+    WorkflowNodeRunsSyncRequest,
+)
 from backend.app.hasn_task.service.builtin_task_service import workbench_builtin_task_service
 from backend.app.hasn_task.service.workflow_sync_service import workflow_sync_service
+from backend.app.hasn_task.service.workflow_definition_import_service import workflow_definition_import_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
@@ -103,6 +107,32 @@ async def sync_workflow_node_runs(
         raise errors.ForbiddenError(msg='不能替其它主人上报工作流执行态')
     data = await workflow_sync_service.sync_node_runs(db, request_body, owner_id=owner_id)
     return response_base.success(data=data)
+
+
+@router.post(
+    '/workflows:sync',
+    summary='导入旧 daemon 工作流定义（create-only）',
+    dependencies=[DependsJwtAuth],
+    name='hasn_task_app_sync_workflow_definitions',
+)
+async def sync_workflow_definitions(
+    request: Request,
+    db: CurrentSessionTransaction,
+    request_body: WorkflowDefinitionsSyncRequest,
+) -> ResponseModel:
+    """仅承接存量定义修复；新版场景实例化必须走模板 Owner 权威入口。"""
+    owner_id = await current_owner_id(request, db)
+    if request_body.owner_id and request_body.owner_id != owner_id:
+        raise errors.ForbiddenError(msg='不能替其它主人导入工作流定义')
+    created: list[str] = []
+    idempotent: list[str] = []
+    for item in request_body.definitions:
+        result = await workflow_definition_import_service.import_one(
+            db, owner_id=owner_id, workflow=item.workflow
+        )
+        target = created if result == 'created' else idempotent
+        target.append(item.workflow.workflow_uuid or '')
+    return response_base.success(data={'created': created, 'idempotent': idempotent})
 
 
 @router.get(

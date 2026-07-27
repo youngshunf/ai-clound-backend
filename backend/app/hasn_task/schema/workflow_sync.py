@@ -22,6 +22,7 @@ from uuid import UUID
 from pydantic import Field
 
 from backend.common.schema import SchemaBase
+from backend.app.hasn_task.schema.workflow import CreateWorkflowParam
 
 
 class WorkflowRunUpstream(SchemaBase):
@@ -70,6 +71,7 @@ class WorkflowNodeRunsSyncRequest(SchemaBase):
     """一次上行批：可只带 runs、只带 node_runs，或两者同批（节点终态时通常两者都推）。"""
 
     owner_id: str | None = Field(None, description='Owner HASN ID；缺省取 Owner JWT 身份')
+    sync_protocol_version: int = Field(1, ge=1, description='1=兼容孤儿历史；2=缺父定义或父 run 时逐条 deferred')
     runs: list[WorkflowRunUpstream] = Field(default_factory=list, description='整图执行实例')
     node_runs: list[WorkflowNodeRunUpstream] = Field(default_factory=list, description='节点执行态')
 
@@ -84,3 +86,25 @@ class WorkflowNodeRunsSyncResponse(SchemaBase):
     accepted_runs: int = Field(ge=0, description='成功 upsert 的执行实例数')
     accepted_node_runs: int = Field(ge=0, description='成功 upsert 的节点执行态数')
     rejected: list[dict[str, Any]] = Field(default_factory=list, description='被拒条目 [{uuid, reason}]')
+    deferred: list[dict[str, Any]] = Field(default_factory=list, description='暂缓条目 [{uuid, reason}]')
+
+
+class WorkflowDefinitionImport(SchemaBase):
+    """旧 daemon 工作流定义的 create-only 导入快照。"""
+
+    workflow: CreateWorkflowParam = Field(description='完整 workflow + nodes + edges 定义')
+
+
+class WorkflowDefinitionsSyncRequest(SchemaBase):
+    """旧定义导入请求；新版实例化不得走本接口。"""
+
+    owner_id: str | None = Field(None, description='仅与 Owner JWT 一致时允许')
+    sync_protocol_version: int = Field(2, ge=1, description='1=兼容孤儿执行态；2=缺父定义 deferred')
+    definitions: list[WorkflowDefinitionImport] = Field(default_factory=list, max_length=200)
+
+
+class WorkflowDefinitionsSyncResponse(SchemaBase):
+    """旧定义导入逐条结果。"""
+
+    created: list[str] = Field(default_factory=list, description='首次创建的 workflow_uuid')
+    idempotent: list[str] = Field(default_factory=list, description='定义哈希一致的重放 workflow_uuid')
