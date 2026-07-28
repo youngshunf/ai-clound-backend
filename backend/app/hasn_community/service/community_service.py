@@ -1655,17 +1655,83 @@ class CommunityService:
             )
         )
 
-        # 排序
-        if sort == 'time_asc':
-            stmt = stmt.order_by(HasnComments.created_time.asc())
-        elif sort == 'time_desc':
-            stmt = stmt.order_by(HasnComments.created_time.desc())
-        elif sort == 'hot':
-            stmt = stmt.order_by(HasnComments.like_count.desc())
+        if sort not in {'time_asc', 'time_desc', 'hot'}:
+            raise errors.RequestError(msg='未知评论排序方式')
 
-        stmt = stmt.limit(limit)
+        # 游标字段和排序字段保持完全一致，最后用 comment_id 打破并列。
+        if cursor:
+            try:
+                if sort == 'hot':
+                    like_count_raw, created_time_raw, comment_id = cursor.split('|', 2)
+                    cursor_like_count = int(like_count_raw)
+                    cursor_created_time = datetime.fromisoformat(created_time_raw)
+                    if not comment_id:
+                        raise ValueError
+                    stmt = stmt.where(
+                        or_(
+                            HasnComments.like_count < cursor_like_count,
+                            and_(
+                                HasnComments.like_count == cursor_like_count,
+                                or_(
+                                    HasnComments.created_time < cursor_created_time,
+                                    and_(
+                                        HasnComments.created_time == cursor_created_time,
+                                        HasnComments.comment_id < comment_id,
+                                    ),
+                                ),
+                            ),
+                        )
+                    )
+                else:
+                    created_time_raw, comment_id = cursor.split('|', 1)
+                    cursor_created_time = datetime.fromisoformat(created_time_raw)
+                    if not comment_id:
+                        raise ValueError
+                    if sort == 'time_asc':
+                        stmt = stmt.where(
+                            or_(
+                                HasnComments.created_time > cursor_created_time,
+                                and_(
+                                    HasnComments.created_time == cursor_created_time,
+                                    HasnComments.comment_id > comment_id,
+                                ),
+                            )
+                        )
+                    else:
+                        stmt = stmt.where(
+                            or_(
+                                HasnComments.created_time < cursor_created_time,
+                                and_(
+                                    HasnComments.created_time == cursor_created_time,
+                                    HasnComments.comment_id < comment_id,
+                                ),
+                            )
+                        )
+            except (TypeError, ValueError) as exc:
+                raise errors.RequestError(msg='评论分页游标无效') from exc
+
+        if sort == 'time_asc':
+            stmt = stmt.order_by(
+                HasnComments.created_time.asc(),
+                HasnComments.comment_id.asc(),
+            )
+        elif sort == 'time_desc':
+            stmt = stmt.order_by(
+                HasnComments.created_time.desc(),
+                HasnComments.comment_id.desc(),
+            )
+        else:
+            stmt = stmt.order_by(
+                HasnComments.like_count.desc(),
+                HasnComments.created_time.desc(),
+                HasnComments.comment_id.desc(),
+            )
+
+        stmt = stmt.limit(limit + 1)
         result = await db.execute(stmt)
         rows = result.all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
 
         items = []
         for row in rows:
@@ -1700,10 +1766,15 @@ class CommunityService:
             })
 
         await CommunityService._enrich_authors(db, [it['author'] for it in items if it.get('author')])
-        return {
-            'items': items,
-            'next_cursor': rows[-1].HasnComments.comment_id if rows else None,
-        }
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1].HasnComments
+            if sort == 'hot':
+                next_cursor = f'{last.like_count}|{last.created_time.isoformat()}|{last.comment_id}'
+            else:
+                next_cursor = f'{last.created_time.isoformat()}|{last.comment_id}'
+
+        return {'items': items, 'next_cursor': next_cursor}
 
     @staticmethod
     async def _check_can_comment(
