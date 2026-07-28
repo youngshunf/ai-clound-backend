@@ -165,16 +165,29 @@ def test_m2_create_sql_has_seven_tables_and_key_constraints() -> None:
     assert 'pending_approval:待审批:orange' in sql
 
 
-def test_m2_new_admin_crud_mounted_canonical_growth_only() -> None:
-    """7 张新业务表管理端 CRUD 挂 canonical /api/v1/growth/*；旧 lead-automation 薄转发已 M8 退役。"""
+def test_sensitive_admin_codegen_crud_is_not_mounted() -> None:
+    """高风险生成 CRUD 只保留 codegen 产物，不挂路由绕过脱敏、主体隔离和专用审计。"""
     import backend.app.hasn_growth.api.router as growth_router_mod
 
     from backend.app.hasn_growth.api.router import v1
 
     v1_paths = {getattr(r, 'path', '') for r in v1.routes}
-    assert any(p == '/api/v1/growth/customers' for p in v1_paths)
     assert any(p == '/api/v1/growth/opportunitys' for p in v1_paths)
-    assert any(p == '/api/v1/growth/optout-records' for p in v1_paths)
+    assert any(p == '/api/v1/growth/playbooks' for p in v1_paths)
+    sensitive_prefixes = (
+        '/api/v1/growth/lead/raw/records',
+        '/api/v1/growth/lead/contacts',
+        '/api/v1/growth/lead/contact/sources',
+        '/api/v1/growth/lead/rejected/records',
+        '/api/v1/growth/lead/export/items',
+        '/api/v1/growth/lead/audit/logs',
+        '/api/v1/growth/customers',
+        '/api/v1/growth/outreach-messages',
+        '/api/v1/growth/activitys',
+        '/api/v1/growth/form-submissions',
+        '/api/v1/growth/optout-records',
+    )
+    assert all(not any(path.startswith(prefix) for path in v1_paths) for prefix in sensitive_prefixes)
     # M8 退役：legacy_* 符号已删除，旧 /api/v1/lead-automation/* 转发面整体清零（双中心归一）
     assert not hasattr(growth_router_mod, 'legacy_v1')
     assert not any('lead-automation' in p for p in v1_paths)
