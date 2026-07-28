@@ -16,12 +16,11 @@ Pillow 光栅编辑 + scipy 形态学 + libwebp 动画组装）收编为一个�
 validate_manifest 变潜伏炸弹）；`capabilities[]` 只承载发现/权限元数据控制面记录。
 
 ⚠️ scope 与落地工具对齐（hasn-node `crates/hasn-mcp/src/imagelab.rs` `capability_scopes()` + `scopes.py`）：
-读类（analyze/job.get/job.list）`imagelab:read`（出厂 Allow）；非破坏性处理类（process/pipeline/animate/
+读类（workspace.get/analyze/job.get/job.list）`imagelab:read`（出厂 Allow）；处理类（process/pipeline/animate/
 enhance/recipe.save/list/get/import）`imagelab:process`（出厂 Allow）；写盘导出类（export，写本地输出目录+
-登记产物，非读——不得挂 read）`imagelab:export`（出厂 Allow）；大批量类（batch，耗算力/可能计费）
-`imagelab:batch`（出厂 Ask）；破坏性类（retouch=inpaint/水印去除/物体消除，伪造抹除像素）`imagelab:destructive`
-（出厂 Ask）；生成类（generate，桥接平台 hasn.image.generate 花积分）`imagelab:generate`（出厂 Ask）；
-外发分享类（share，产物上云发好友/群）`imagelab:share`（出厂 Ask）。
+登记产物，非读——不得挂 read）`imagelab:export`（出厂 Allow）；批处理、破坏性另存和生成类分别使用
+`imagelab:batch`、`imagelab:destructive`、`imagelab:generate`（均出厂 Allow，owner 可覆盖 Ask/Deny）；
+外发分享类（share，产物上云发好友/群）使用 `imagelab:share`（唯一出厂 Ask）。
 七 scope 与 §5.4 工具表、scopes.py IMAGELAB_SCOPE_CATALOG 三方逐一对齐——单一事实源，禁再漂移。
 
 ⚠️ execution_mode：catalog 枚举（`cloud/embedded_desktop/local_tool`）取 **`local_tool`**
@@ -69,9 +68,9 @@ def _allow_cap(
     page_rank: int,
     scope: str,
 ) -> dict:
-    """出厂 Allow 类能力（读类 imagelab:read / 非破坏性处理类 imagelab:process / 写盘导出类 imagelab:export）。
+    """出厂 Allow 类能力（除外发分享外的读取、处理、生成、批量与写盘能力）。
 
-    非破坏性处理默认不覆盖原图、产物只落本地、可回滚 → 出厂 Allow；owner 可经 capability_modes 三态覆盖。
+    操作默认不覆盖原图、产物只落本地、可回滚；owner 可经 capability_modes 三态覆盖。
     """
     return {
         'capability_id': f'imagelab.{name}.capability',
@@ -111,8 +110,7 @@ def _ask_cap(
     page_rank: int,
     scope: str,
 ) -> dict:
-    """出厂 Ask 类能力（大批量 imagelab:batch / 破坏性 imagelab:destructive / 生成 imagelab:generate /
-    外发分享 imagelab:share）——耗算力/伪造抹除像素/花积分/外发上云，默认需主人确认；owner 三态可覆盖。
+    """出厂 Ask 类能力，仅用于外发分享；owner 可经 capability_modes 三态覆盖。
     """
     return {
         'capability_id': f'imagelab.{name}.capability',
@@ -130,7 +128,7 @@ def _ask_cap(
         },
         'output_schema': {'type': 'object'},
         'risk_level': 'medium',
-        # 出厂 Ask（大批量耗算力/破坏性伪造像素/生成花积分/外发上云）；human_confirmation 仅 UI 提示，owner 三态可覆盖。
+        # 外发上云是唯一出厂 Ask；human_confirmation 仅承载 UI 提示，服务端仍执行 owner 三态门。
         'human_confirmation': {'required': True},
         'result_writeback': ['agent_message', 'audit'],
         'discovery': {
@@ -187,6 +185,22 @@ IMAGELAB_AI_NATIVE_MANIFEST: dict[str, Any] = {
     ],
     'capabilities': [
         # —— 读类（imagelab:read，出厂 Allow）——
+        _allow_cap(
+            name='workspace.get',
+            title='读取本机工作区状态',
+            description='读取当前平台项目在本设备是否已授权且目录可写；只返回安全状态，不返回绝对路径。',
+            properties={
+                'platform_project_id': {
+                    'type': 'string',
+                    'format': 'uuid',
+                    'minLength': 1,
+                    'description': '当前工作会话挂靠的云端权威平台项目 UUID',
+                }
+            },
+            required=['platform_project_id'],
+            page_rank=9,
+            scope=_READ_SCOPE,
+        ),
         _allow_cap(
             name='analyze',
             title='读取与分析图片',
@@ -327,8 +341,8 @@ IMAGELAB_AI_NATIVE_MANIFEST: dict[str, Any] = {
             page_rank=30,
             scope=_EXPORT_SCOPE,
         ),
-        # —— 大批量类（imagelab:batch，出厂 Ask——耗算力/可能计费；提交即返 job_id 不阻塞）——
-        _ask_cap(
+        # —— 大批量类（imagelab:batch，出厂 Allow；提交即返 job_id 不阻塞）——
+        _allow_cap(
             name='batch',
             title='配方批量处理',
             description='把一条配方批量应用到 N 张图/目录/asset 列表；提交即返 {job_id} 不阻塞'
@@ -339,8 +353,8 @@ IMAGELAB_AI_NATIVE_MANIFEST: dict[str, Any] = {
             page_rank=40,
             scope=_BATCH_SCOPE,
         ),
-        # —— 破坏性类（imagelab:destructive，出厂 Ask——伪造/抹除像素）——
-        _ask_cap(
+        # —— 破坏性另存类（imagelab:destructive，出厂 Allow；owner 可覆盖 Ask/Deny）——
+        _allow_cap(
             name='retouch',
             title='局部消除 / 去水印（破坏性）',
             description='局部消除/物体消除/路人消除/水印去除（inpaint，伪造/抹除像素，默认询问）；可对比原图、不覆盖原图。',
@@ -353,8 +367,8 @@ IMAGELAB_AI_NATIVE_MANIFEST: dict[str, Any] = {
             page_rank=41,
             scope=_DESTRUCTIVE_SCOPE,
         ),
-        # —— 生成类（imagelab:generate，出厂 Ask——桥接平台 hasn.image.generate 消耗积分）——
-        _ask_cap(
+        # —— 生成类（imagelab:generate，出厂 Allow；桥接平台 hasn.image.generate 消耗配额）——
+        _allow_cap(
             name='generate',
             title='生成式处理（桥接平台）',
             description='生成式填充/扩图/图生图/云增强 → 桥接平台 hasn.image.generate'
