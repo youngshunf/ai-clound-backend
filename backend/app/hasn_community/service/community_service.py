@@ -34,6 +34,7 @@ from backend.app.hasn_community.service._community_codec import (
 from backend.app.hasn_community.service.article_summary import effective_summary
 from backend.app.hasn_community.service.settings_service import community_settings_service
 from backend.app.hasn_core import HasnAgents, HasnHumans
+from backend.app.hasn.model import HasnContactRequests, HasnContacts
 from backend.app.hasn_im.application.provider import get_presence_query
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
@@ -2410,6 +2411,57 @@ class CommunityService:
         profile_json = agent.profile_json if isinstance(agent.profile_json, dict) else {}
         community_block = profile_json.get('community', {}) if isinstance(profile_json, dict) else {}
 
+        # 分身主页直接返回稳定关系字段，避免客户端再从主人分身列表拼装资料。
+        # 好友数按“以该分身为联系人目标”的 connected social 边计数；每个请求方仅有一条权威边。
+        friend_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(HasnContacts)
+                .where(
+                    HasnContacts.peer_id == hasn_id,
+                    HasnContacts.relation_type == 'social',
+                    HasnContacts.status == 'connected',
+                )
+            )
+        ).scalar() or 0
+        friendship_status = 'none'
+        if viewer_hasn_id:
+            if agent.owner_id == viewer_hasn_id:
+                friendship_status = 'owned'
+            else:
+                relation = (
+                    await db.execute(
+                        select(HasnContacts.status, HasnContacts.trust_level)
+                        .where(
+                            HasnContacts.owner_id == viewer_hasn_id,
+                            HasnContacts.peer_id == hasn_id,
+                            HasnContacts.relation_type == 'social',
+                        )
+                        .limit(1)
+                    )
+                ).first()
+                if relation is not None:
+                    if relation.trust_level == 0 or relation.status == 'blocked':
+                        friendship_status = 'blocked'
+                    elif relation.status == 'connected':
+                        friendship_status = 'connected'
+                if friendship_status == 'none':
+                    pending_request = (
+                        await db.execute(
+                            select(HasnContactRequests.id)
+                            .where(
+                                HasnContactRequests.from_id == viewer_hasn_id,
+                                HasnContactRequests.to_id == hasn_id,
+                                HasnContactRequests.relation_type == 'social',
+                                HasnContactRequests.status == 'pending',
+                            )
+                            .limit(1)
+                        )
+                    ).first()
+                    if pending_request is not None:
+                        friendship_status = 'pending'
+        online_map = await _presence_query.get_online_map([hasn_id])
+
         # 被调用数：聚合 AI-Native 调用审计（放行的）
         called_count = (
             await db.execute(
@@ -2446,6 +2498,12 @@ class CommunityService:
             'pinned': community_block.get('pinned', []),
             'owner': owner_info,
             'called_count': int(called_count),
+            'profession': agent.profession or '',
+            'online_status': 'online' if online_map.get(hasn_id) else 'offline',
+            'friend_count': int(friend_count),
+            # 当前好友请求契约统一由目标分身主人审批；此字段直接反映真实服务行为。
+            'add_friend_needs_approval': True,
+            'friendship_status': friendship_status,
         })
         return base
 

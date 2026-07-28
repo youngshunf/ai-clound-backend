@@ -52,6 +52,7 @@ async def test_agent_profile_capabilities_owner_and_called_count(db):
         db,
         owner_hasn_id=owner['hasn_id'],
         display_name='星二哥',
+        profession='复杂系统专家',
         capability_summary_json={'strengths': ['复杂系统设计'], 'skills': ['代码生成']},
         profile_json={
             'community': {
@@ -74,6 +75,11 @@ async def test_agent_profile_capabilities_owner_and_called_count(db):
     assert profile['owner']['display_name'] == owner['nickname']
     # 无调用审计时为 0（真实统计，不写死 88）
     assert profile['called_count'] == 0
+    assert profile['profession'] == '复杂系统专家'
+    assert profile['online_status'] == 'offline'
+    assert profile['friend_count'] == 0
+    assert profile['add_friend_needs_approval'] is True
+    assert profile['friendship_status'] == 'owned'
 
 
 @pytest.mark.asyncio
