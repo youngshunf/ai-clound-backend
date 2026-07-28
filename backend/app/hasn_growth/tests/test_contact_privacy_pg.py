@@ -39,7 +39,9 @@ from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_r
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.model.contact_channel import ContactChannel
 from backend.app.hasn_growth.model.contact_private_access_audit import ContactPrivateAccessAudit
+from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
 from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.growth_pii_key_state import GrowthPiiKeyState
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
 from backend.app.hasn_growth.schema.optout_record import (
     CreateOptoutRecordParam,
@@ -73,7 +75,11 @@ pytestmark = pytest.mark.asyncio
 
 _REPO = Path(__file__).resolve().parents[4]
 _SCHEMA_SQL = _REPO / 'backend/sql/hasn_growth/007_create_growth_project_v4_tables.sql'
+_KEY_STATE_SQL = _REPO / 'backend/sql/hasn_growth/008_create_growth_pii_key_state.sql'
 _MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-project-v4-columns.sql'
+_KEY_FENCE_SQL = (
+    _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-pii-key-fence-triggers.sql'
+)
 
 
 def _keyring() -> GrowthPiiKeyring:
@@ -90,7 +96,9 @@ async def _apply_sql(session: AsyncSession) -> None:
     connection = raw.driver_connection
     assert connection is not None
     await connection.execute(_SCHEMA_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_KEY_STATE_SQL.read_text(encoding='utf-8'))
     await connection.execute(_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_KEY_FENCE_SQL.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
@@ -316,6 +324,176 @@ async def test_private_contact_upsert_is_concurrent_and_never_reassigns_channel(
         await engine.dispose()
 
 
+async def test_private_contact_rejects_cross_version_channel_reassignment() -> None:
+    """密钥轮换并发窗口中，同一地址不能跨 HMAC 版本改挂其他联系人。"""
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    owner_user_id = 981200 + int(uuid4().int % 8000)
+    async with sessions.begin() as setup:
+        await _apply_sql(setup)
+        first_contact_id = await _lead_contact_id(setup, suffix='ROTATEA')
+        second_contact_id = await _lead_contact_id(setup, suffix='ROTATEB')
+    old_keyring = GrowthPiiKeyring(
+        encryption_keys={1: b'\x11' * 32},
+        hmac_keys={1: b'\x33' * 32},
+        active_encryption_version=1,
+        active_hmac_version=1,
+    )
+
+    async def write(*, keyring: GrowthPiiKeyring, lead_contact_id: int) -> dict:
+        async with sessions.begin() as write_db:
+            return await contact_privacy_service.store_private_contact(
+                write_db,
+                keyring=keyring,
+                lead_contact_id=lead_contact_id,
+                owner_scope='personal',
+                user_id=owner_user_id,
+                enterprise_id=None,
+                contact_name='轮换联系人',
+                title=None,
+                lawful_basis='public_business_contact',
+                source_ref='hasn://asset/s1-pii-rotation',
+                retention_until=datetime.now(UTC) + timedelta(days=90),
+                channels=[
+                    ContactChannelWrite(
+                        channel='email',
+                        value='rotation.owner@example.com',
+                        lawful_basis='public_business_contact',
+                        source_ref='hasn://asset/s1-pii-rotation',
+                    )
+                ],
+            )
+
+    try:
+        results = await asyncio.gather(
+            write(keyring=old_keyring, lead_contact_id=first_contact_id),
+            write(keyring=_keyring(), lead_contact_id=second_contact_id),
+            return_exceptions=True,
+        )
+        conflicts = [result for result in results if isinstance(result, errors.ConflictError)]
+        successes = [result for result in results if isinstance(result, dict)]
+        assert len(conflicts) == 1, [
+            (
+                type(result).__name__,
+                type(getattr(result, 'orig', None)).__name__,
+                getattr(getattr(result, 'orig', None), 'sqlstate', None),
+                getattr(result, 'data', None),
+            )
+            for result in results
+        ]
+        assert len(successes) == 1
+        assert conflicts[0].data['error_code'] in {
+            'GROWTH_PII_CHANNEL_CONTACT_CONFLICT',
+            'GROWTH_PII_KEY_VERSION_STALE',
+        }
+
+        async with sessions() as verify:
+            channels = (
+                (
+                    await verify.execute(
+                        select(ContactChannel).where(
+                            ContactChannel.user_id == owner_user_id,
+                            ContactChannel.channel == 'email',
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(channels) == 1
+    finally:
+        async with engine.begin() as cleanup:
+            await cleanup.execute(
+                text('DELETE FROM hasn_growth.contact_channel WHERE user_id = :user_id'),
+                {'user_id': owner_user_id},
+            )
+            await cleanup.execute(
+                text('DELETE FROM hasn_growth.contact_private_profile WHERE user_id = :user_id'),
+                {'user_id': owner_user_id},
+            )
+            await cleanup.execute(
+                text('DELETE FROM hasn_growth.contact WHERE id IN (:first_id, :second_id)'),
+                {'first_id': first_contact_id, 'second_id': second_contact_id},
+            )
+        await engine.dispose()
+
+
+async def test_private_contact_stale_process_cannot_downgrade_key_versions(
+    session: AsyncSession,
+) -> None:
+    """新版本写入提交后，仅持旧密钥的进程不能把同一联系人降级回旧版本。"""
+    owner_user_id = 981300 + int(uuid4().int % 8000)
+    contact_id = await _lead_contact_id(session, suffix='DOWNGRADE')
+    old_keyring = GrowthPiiKeyring(
+        encryption_keys={1: b'\x11' * 32},
+        hmac_keys={1: b'\x33' * 32},
+        active_encryption_version=1,
+        active_hmac_version=1,
+    )
+
+    async def write(keyring: GrowthPiiKeyring) -> dict:
+        return await contact_privacy_service.store_private_contact(
+            session,
+            keyring=keyring,
+            lead_contact_id=contact_id,
+            owner_scope='personal',
+            user_id=owner_user_id,
+            enterprise_id=None,
+            contact_name='版本栅栏联系人',
+            title=None,
+            lawful_basis='public_business_contact',
+            source_ref='hasn://asset/s1-pii-fence',
+            retention_until=datetime.now(UTC) + timedelta(days=90),
+            channels=[
+                ContactChannelWrite(
+                    channel='email',
+                    value='fenced.owner@example.com',
+                    lawful_basis='public_business_contact',
+                    source_ref='hasn://asset/s1-pii-fence',
+                )
+            ],
+        )
+
+    created = await write(_keyring())
+    with pytest.raises(errors.ConflictError) as exc_info:
+        await write(old_keyring)
+    assert exc_info.value.data == {
+        'error_code': 'GROWTH_PII_KEY_VERSION_STALE',
+    }
+
+    profile = await session.get(
+        ContactPrivateProfile,
+        created['private_profile_id'],
+    )
+    channel = await session.get(ContactChannel, created['channels'][0]['id'])
+    assert profile is not None and profile.encryption_key_version == 2
+    assert channel is not None
+    assert channel.encryption_key_version == 2
+    assert channel.hash_key_version == 2
+    with pytest.raises(sa.exc.IntegrityError):
+        async with session.begin_nested():
+            await session.execute(
+                sa
+                .update(ContactChannel)
+                .where(ContactChannel.id == channel.id)
+                .values(
+                    encryption_key_version=1,
+                    hash_key_version=1,
+                )
+            )
+    with pytest.raises(sa.exc.IntegrityError):
+        async with session.begin_nested():
+            await session.execute(
+                sa
+                .update(GrowthPiiKeyState)
+                .where(GrowthPiiKeyState.id == 1)
+                .values(
+                    min_encryption_write_version=1,
+                    min_hmac_write_version=1,
+                )
+            )
+
+
 async def test_owner_reveal_is_single_resource_and_agent_is_denied(session: AsyncSession) -> None:
     channel_id, plaintext = await _stored_channel(session)
     trace_prefix = str(session.info['trace_prefix'])
@@ -408,7 +586,22 @@ async def test_optout_matches_retained_hmac_versions_and_new_write_uses_active_v
             source='s1-retained-key-test',
         )
     )
-    await session.flush()
+    # 只在种子区间绕过新写门禁，模拟栅栏上线前已存在的 v1 历史行。
+    await session.execute(
+        text(
+            'ALTER TABLE hasn_growth.optout_record '
+            'DISABLE TRIGGER trg_growth_optout_key_fence'
+        )
+    )
+    try:
+        await session.flush()
+    finally:
+        await session.execute(
+            text(
+                'ALTER TABLE hasn_growth.optout_record '
+                'ENABLE TRIGGER trg_growth_optout_key_fence'
+            )
+        )
 
     assert await contact_privacy_service.is_opted_out(
         session,

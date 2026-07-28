@@ -38,7 +38,11 @@ pytestmark = pytest.mark.asyncio
 
 _REPO = Path(__file__).resolve().parents[4]
 _SCHEMA_SQL = _REPO / 'backend/sql/hasn_growth/007_create_growth_project_v4_tables.sql'
+_KEY_STATE_SQL = _REPO / 'backend/sql/hasn_growth/008_create_growth_pii_key_state.sql'
 _MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-project-v4-columns.sql'
+_KEY_FENCE_SQL = (
+    _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-pii-key-fence-triggers.sql'
+)
 
 _NEW_TABLES = {
     'growth_project',
@@ -50,6 +54,7 @@ _NEW_TABLES = {
     'outreach_message_event',
     'contact_private_profile',
     'contact_channel',
+    'growth_pii_key_state',
     'growth_pii_migration_quarantine',
     'contact_private_access_audit',
 }
@@ -61,7 +66,9 @@ async def _apply_sql(session: AsyncSession) -> None:
     connection = raw.driver_connection
     assert connection is not None
     await connection.execute(_SCHEMA_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_KEY_STATE_SQL.read_text(encoding='utf-8'))
     await connection.execute(_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_KEY_FENCE_SQL.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture

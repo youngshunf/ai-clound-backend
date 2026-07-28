@@ -21,6 +21,7 @@ from backend.app.hasn_growth.model.contact_channel import ContactChannel
 from backend.app.hasn_growth.model.contact_private_access_audit import ContactPrivateAccessAudit
 from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
 from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.growth_pii_key_state import GrowthPiiKeyState
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
 from backend.app.hasn_growth.service.audit_service import assert_audit_payload_safe
 from backend.app.hasn_growth.service.pii import mask_email, mask_name, mask_phone, mask_wechat
@@ -144,6 +145,60 @@ def _validate_channel_write(channel_write: ContactChannelWrite) -> tuple[str, st
     return channel, lawful_basis, source_ref
 
 
+async def ensure_growth_pii_key_write_fence(
+    db: AsyncSession,
+    *,
+    keyring: GrowthPiiKeyring,
+) -> None:
+    """锁定并单调推进 PII 写入版本栅栏，拒绝已过期进程继续写旧版本。"""
+
+    async def read_versions(*, write_lock: bool | None = None) -> tuple[int, int] | None:
+        statement = sa.select(
+            GrowthPiiKeyState.min_encryption_write_version,
+            GrowthPiiKeyState.min_hmac_write_version,
+        ).where(GrowthPiiKeyState.id == 1)
+        if write_lock is not None:
+            statement = statement.with_for_update(read=not write_lock)
+        row = (await db.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        return int(row[0]), int(row[1])
+
+    snapshot = await read_versions()
+    if snapshot is None:
+        raise errors.ServerError(
+            msg='PII 密钥版本栅栏尚未初始化',
+            data={'error_code': 'GROWTH_PII_KEY_FENCE_UNAVAILABLE'},
+        )
+    active = (
+        keyring.active_encryption_version,
+        keyring.active_hmac_version,
+    )
+    needs_advance = active[0] > snapshot[0] or active[1] > snapshot[1]
+    locked = await read_versions(write_lock=needs_advance)
+    if locked is None:
+        raise errors.ServerError(
+            msg='PII 密钥版本栅栏尚未初始化',
+            data={'error_code': 'GROWTH_PII_KEY_FENCE_UNAVAILABLE'},
+        )
+    if active[0] < locked[0] or active[1] < locked[1]:
+        raise errors.ConflictError(
+            msg='当前进程的 PII 密钥版本已过期，请完成滚动发布',
+            data={'error_code': 'GROWTH_PII_KEY_VERSION_STALE'},
+        )
+    if active[0] > locked[0] or active[1] > locked[1]:
+        await db.execute(
+            sa
+            .update(GrowthPiiKeyState)
+            .where(GrowthPiiKeyState.id == 1)
+            .values(
+                min_encryption_write_version=max(active[0], locked[0]),
+                min_hmac_write_version=max(active[1], locked[1]),
+                updated_time=timezone.now(),
+            )
+        )
+
+
 class ContactPrivacyService:
     """联系人 PII 主体隔离写入、脱敏读取、Owner reveal 和退订匹配。"""
 
@@ -186,7 +241,7 @@ class ContactPrivacyService:
             )
 
     @staticmethod
-    async def store_private_contact(  # noqa: C901
+    async def store_private_contact(  # ruff: ignore[complex-structure]
         db: AsyncSession,
         *,
         keyring: GrowthPiiKeyring,
@@ -201,6 +256,7 @@ class ContactPrivacyService:
         retention_until: datetime,
         channels: list[ContactChannelWrite],
         preserve_existing: bool = False,
+        allow_profile_only: bool = False,
     ) -> dict:
         """按主体 UPSERT 私有资料和渠道；公开回流可选择只补缺失数据。"""
         scope = _validate_owner(
@@ -214,8 +270,12 @@ class ContactPrivacyService:
             raise errors.RequestError(msg='PII 合法依据或来源超过长度限制')
         if retention_until <= timezone.now():
             raise errors.RequestError(msg='PII 保留期必须晚于当前时间')
-        if not channels:
-            raise errors.RequestError(msg='PII 新写至少需要一个联系方式')
+        if not channels and (
+            not allow_profile_only
+            or not ((contact_name or '').strip() or (title or '').strip())
+        ):
+            raise errors.RequestError(msg='PII 新写至少需要联系方式或私有资料')
+        await ensure_growth_pii_key_write_fence(db, keyring=keyring)
 
         normalized_channels: list[tuple[ContactChannelWrite, str, str, str, datetime]] = []
         for channel_write in channels:
@@ -326,7 +386,74 @@ class ContactPrivacyService:
 
         channel_views: list[dict] = []
         for channel_write, channel, channel_basis, channel_source, channel_retention in normalized_channels:
-            address_hmac = keyring.hmac_for(channel, channel_write.value)
+            hmac_candidates = keyring.hmac_candidates(channel, channel_write.value)
+            active_hmac = next(
+                candidate.value
+                for candidate in hmac_candidates
+                if candidate.version == keyring.active_hmac_version
+            )
+            oldest_candidate = min(hmac_candidates, key=lambda candidate: candidate.version)
+            owner_lock_id = user_id if scope == 'personal' else enterprise_id
+            lock_key = (
+                f'growth-contact-channel:{scope}:{owner_lock_id}:{channel}:'
+                f'v{oldest_candidate.version}:{oldest_candidate.value}'
+            )
+            # 轮换窗口的新旧进程都保留最老 HMAC 版本，用无明文 advisory lock 串行化跨版本写入。
+            await db.execute(
+                sa.select(
+                    sa.func.pg_advisory_xact_lock(
+                        sa.func.hashtextextended(lock_key, 0)
+                    )
+                )
+            )
+            existing_candidates = (
+                (
+                    await db.execute(
+                        sa
+                        .select(ContactChannel)
+                        .where(
+                            ContactChannel.channel == channel,
+                            sa.tuple_(
+                                ContactChannel.hash_key_version,
+                                ContactChannel.value_hmac,
+                            ).in_([
+                                (candidate.version, candidate.value)
+                                for candidate in hmac_candidates
+                            ]),
+                            *_owner_conditions(
+                                ContactChannel,
+                                owner_scope=scope,
+                                user_id=user_id,
+                                enterprise_id=enterprise_id,
+                            ),
+                        )
+                        .order_by(
+                            ContactChannel.hash_key_version.desc(),
+                            ContactChannel.id,
+                        )
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if any(
+                existing.lead_contact_id != lead_contact_id
+                for existing in existing_candidates
+            ):
+                raise errors.ConflictError(
+                    msg='同一主体下该联系方式已归属于其他联系人，必须先执行联系人合并',
+                    data={'error_code': 'GROWTH_PII_CHANNEL_CONTACT_CONFLICT'},
+                )
+            existing = next(
+                (
+                    row
+                    for row in existing_candidates
+                    if row.hash_key_version == keyring.active_hmac_version
+                    and row.value_hmac == active_hmac
+                ),
+                existing_candidates[0] if existing_candidates else None,
+            )
             ciphertext = keyring.encrypt(
                 channel_write.value,
                 purpose=_pii_purpose(
@@ -338,6 +465,37 @@ class ContactPrivacyService:
                     channel=channel,
                 ),
             )
+            if existing is not None:
+                if not preserve_existing:
+                    await db.execute(
+                        sa
+                        .update(ContactChannel)
+                        .where(ContactChannel.id == existing.id)
+                        .values(
+                            private_profile_id=profile_id,
+                            value_ciphertext=ciphertext,
+                            encryption_key_version=keyring.active_encryption_version,
+                            value_hmac=active_hmac,
+                            hash_key_version=keyring.active_hmac_version,
+                            lawful_basis=channel_basis,
+                            source_ref=channel_source,
+                            consent_ref=channel_write.consent_ref,
+                            verified_at=channel_write.verified_at,
+                            fresh_until=channel_write.fresh_until,
+                            retention_until=channel_retention,
+                            status='active',
+                            updated_time=timezone.now(),
+                        )
+                    )
+                channel_id = existing.id
+                channel_views.append({
+                    'id': channel_id,
+                    'channel': channel,
+                    'masked_value': _mask_channel(channel, channel_write.value),
+                    'status': 'active',
+                })
+                continue
+
             channel_insert = pg_insert(ContactChannel).values(
                 private_profile_id=profile_id,
                 lead_contact_id=lead_contact_id,
@@ -347,7 +505,7 @@ class ContactPrivacyService:
                 channel=channel,
                 value_ciphertext=ciphertext,
                 encryption_key_version=keyring.active_encryption_version,
-                value_hmac=address_hmac,
+                value_hmac=active_hmac,
                 hash_key_version=keyring.active_hmac_version,
                 lawful_basis=channel_basis,
                 source_ref=channel_source,
@@ -386,7 +544,7 @@ class ContactPrivacyService:
                             .select(ContactChannel)
                             .where(
                                 ContactChannel.channel == channel,
-                                ContactChannel.value_hmac == address_hmac,
+                                ContactChannel.value_hmac == active_hmac,
                                 ContactChannel.hash_key_version == keyring.active_hmac_version,
                                 *_owner_conditions(
                                     ContactChannel,
@@ -879,6 +1037,7 @@ class ContactPrivacyService:
         normalized_source = source.strip()
         if not normalized_source or len(normalized_source) > 64:
             raise errors.RequestError(msg='退订来源无效')
+        await ensure_growth_pii_key_write_fence(db, keyring=keyring)
         address_hmac = keyring.hmac_for(normalized_channel, address)
         insert_stmt = (
             pg_insert(OptoutRecord)

@@ -8,6 +8,7 @@ from backend.app.hasn_growth.model.crawled_url import CrawledUrl as CrawledUrl
 from backend.app.hasn_growth.model.customer import Customer as Customer
 from backend.app.hasn_growth.model.form_submission import FormSubmission as FormSubmission
 from backend.app.hasn_growth.model.growth_attribution_event import GrowthAttributionEvent as GrowthAttributionEvent
+from backend.app.hasn_growth.model.growth_pii_key_state import GrowthPiiKeyState as GrowthPiiKeyState
 from backend.app.hasn_growth.model.growth_pii_migration_quarantine import (
     GrowthPiiMigrationQuarantine as GrowthPiiMigrationQuarantine,
 )

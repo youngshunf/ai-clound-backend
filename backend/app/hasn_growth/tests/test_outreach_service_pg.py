@@ -88,10 +88,10 @@ async def _qualified_customer(sess, *, user_id: int, email: str, company: str) -
 
 def _pii_keyring() -> GrowthPiiKeyring:
     return GrowthPiiKeyring(
-        encryption_keys={1: b'\x61' * 32},
-        hmac_keys={1: b'\x62' * 32},
-        active_encryption_version=1,
-        active_hmac_version=1,
+        encryption_keys={2: b'\x61' * 32},
+        hmac_keys={2: b'\x62' * 32},
+        active_encryption_version=2,
+        active_hmac_version=2,
     )
 
 

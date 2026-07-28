@@ -30,6 +30,7 @@ from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.contact_privacy_service import (
     ContactChannelWrite,
     contact_privacy_service,
+    ensure_growth_pii_key_write_fence,
 )
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.pii import redact_pii_value
@@ -315,6 +316,7 @@ class GrowthFormService:
                 data={'error_code': 'GROWTH_PII_NEW_WRITE_DISABLED'},
             )
         keyring = require_growth_pii_keyring()
+        await ensure_growth_pii_key_write_fence(db, keyring=keyring)
         user_id, _owner, site = await cls._resolve_owner(db, publish_ref=publish_ref)
 
         email = _clean_optional(data.get('email'), max_length=255)
