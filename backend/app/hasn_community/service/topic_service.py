@@ -11,7 +11,7 @@ import operator
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.hasn_community.model import HasnContentTopics, HasnFollows, HasnTopics
@@ -266,6 +266,48 @@ class TopicService:
             d = TopicService._topic_dict(row.HasnTopics)
             d['recent_count'] = int(row.recent_cnt)
             out.append(d)
+        topic_ids = [item['topic_id'] for item in out]
+        if topic_ids:
+            movement_rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT topic_id,
+                               count(*) FILTER (
+                                   WHERE created_time >= now() - interval '24 hours'
+                               ) AS current_count,
+                               count(*) FILTER (
+                                   WHERE created_time >= now() - interval '48 hours'
+                                     AND created_time < now() - interval '24 hours'
+                               ) AS previous_count
+                        FROM hasn_community.hasn_content_topics
+                        WHERE created_time >= now() - interval '48 hours'
+                        GROUP BY topic_id
+                        """
+                    )
+                )
+            ).mappings().all()
+            current_counts = {row['topic_id']: int(row['current_count']) for row in movement_rows}
+            previous_counts = {row['topic_id']: int(row['previous_count']) for row in movement_rows}
+            current_order = sorted(
+                topic_ids,
+                key=lambda topic_id: (-current_counts.get(topic_id, 0), topic_id),
+            )
+            previous_order = sorted(
+                previous_counts,
+                key=lambda topic_id: (-previous_counts[topic_id], topic_id),
+            )
+            current_ranks = {topic_id: index + 1 for index, topic_id in enumerate(current_order)}
+            previous_ranks = {topic_id: index + 1 for index, topic_id in enumerate(previous_order)}
+            for index, item in enumerate(out):
+                topic_id = item['topic_id']
+                item['rank'] = index + 1
+                item['new_content_count'] = current_counts.get(topic_id, 0)
+                item['rank_delta'] = (
+                    previous_ranks[topic_id] - current_ranks[topic_id]
+                    if topic_id in previous_ranks
+                    else 0
+                )
         if viewer_hasn_id is not None:
             followed = await TopicService._followed_topic_ids(db, viewer_hasn_id, [d['topic_id'] for d in out])
             for d in out:
@@ -350,7 +392,47 @@ class TopicService:
             .where(HasnFollows.follower_hasn_id == follower_hasn_id, HasnTopics.status == 'active')
             .order_by(HasnFollows.created_time.desc())
         )
-        return [TopicService._topic_dict(t, is_following=True) for t in (await db.execute(stmt)).scalars().all()]
+        items = [
+            TopicService._topic_dict(t, is_following=True)
+            for t in (await db.execute(stmt)).scalars().all()
+        ]
+        topic_ids = [item['topic_id'] for item in items]
+        if not topic_ids:
+            return items
+        activity_rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (ct.topic_id)
+                           ct.topic_id,
+                           count(*) FILTER (
+                               WHERE ct.created_time >= now() - interval '24 hours'
+                           ) OVER (PARTITION BY ct.topic_id) AS new_content_count,
+                           CASE
+                               WHEN ct.content_type = 'article' THEN article.title
+                               ELSE post.content
+                           END AS latest_title
+                    FROM hasn_community.hasn_content_topics AS ct
+                    LEFT JOIN hasn_community.hasn_articles AS article
+                      ON ct.content_type = 'article' AND article.article_id = ct.content_id
+                    LEFT JOIN hasn_community.hasn_posts AS post
+                      ON ct.content_type = 'post' AND post.post_id = ct.content_id
+                    WHERE ct.topic_id = ANY(CAST(:topic_ids AS varchar[]))
+                    ORDER BY ct.topic_id, ct.created_time DESC
+                    """
+                ),
+                {'topic_ids': topic_ids},
+            )
+        ).mappings().all()
+        activity = {row['topic_id']: row for row in activity_rows}
+        for item in items:
+            row = activity.get(item['topic_id'])
+            item['new_content_count'] = int(row['new_content_count']) if row else 0
+            latest_title = (row['latest_title'] or '').strip() if row else ''
+            item['latest_title'] = (
+                f'{latest_title[:77]}…' if len(latest_title) > 78 else latest_title
+            ) or None
+        return items
 
     # ---------- admin ----------
 

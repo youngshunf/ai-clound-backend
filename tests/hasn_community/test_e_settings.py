@@ -99,6 +99,12 @@ async def test_recommended_agents_capability_filter(db):
     names = {a['display_name'] for a in res['items']}
     assert '代码分身' in names
     assert '市场分身' not in names
+    code_agent = next(a for a in res['items'] if a['display_name'] == '代码分身')
+    assert code_agent['capabilities'] == ['代码生成', 'Python']
+    assert code_agent['friend_count'] == 0
+    assert code_agent['friendship_status'] == 'owned'
+    assert code_agent['add_friend_needs_approval'] is True
+    assert code_agent['last_heartbeat_at'] is None
 
 
 @pytest.mark.asyncio

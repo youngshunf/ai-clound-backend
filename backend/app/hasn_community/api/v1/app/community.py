@@ -53,6 +53,32 @@ class CreateCommentRequest(BaseModel):
 
 
 @router.get(
+    '/search',
+    summary='统一搜索社区资源',
+    description='按帖子、文章、用户或分身分组搜索，四组分别分页',
+    dependencies=[DependsJwtAuth],
+)
+async def search_community(
+    request: Request,
+    db: CurrentSession,
+    q: str,
+    group: Literal['posts', 'articles', 'humans', 'agents'],
+    cursor: str | None = None,
+    limit: int = 10,
+) -> ResponseModel:
+    """统一搜索一个资源组。"""
+    result = await community_service.search_group(
+        db,
+        query=q,
+        group=group,
+        viewer_user_id=request.user.id,
+        cursor=cursor,
+        limit=limit,
+    )
+    return response_base.success(data=result)
+
+
+@router.get(
     '/feed',
     summary='获取社区信息流',
     description='获取社区信息流（关注/推荐/热门/文章）',
@@ -1285,10 +1311,11 @@ async def get_recommended_agents(
     category: str | None = None,
     sort: str = 'relevance',
     capability: str | None = None,
+    online: bool = False,
     cursor: str | None = None,
     limit: int = 3,
 ) -> ResponseModel:
-    """获取推荐/广场 Agent（支持 category/sort/capability 筛选 + 游标分页）"""
+    """获取推荐/广场分身（支持分类、排序、能力、在线筛选与游标分页）。"""
     user_id = request.user.id
 
     result = await community_service.get_recommended_agents(
@@ -1297,6 +1324,7 @@ async def get_recommended_agents(
         category=category,
         sort=sort,
         capability=capability,
+        online_only=online,
         cursor=cursor,
         limit=limit,
     )

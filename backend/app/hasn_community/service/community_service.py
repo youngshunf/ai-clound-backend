@@ -257,9 +257,31 @@ class CommunityService:
             stmt = stmt.where(
                 or_(
                     content_model.author_type != 'human',
-                    author_human.community_settings['searchable'].astext.is_distinct_from('false'),
+                    and_(
+                        author_human.community_settings['searchable'].astext.is_distinct_from(
+                            'false'
+                        ),
+                        author_human.community_settings['show_profile'].astext.is_distinct_from(
+                            'false'
+                        ),
+                    ),
                 )
             )
+            visibility_rules = [content_model.visibility == 'public']
+            if viewer_hasn_id:
+                followed_authors = select(HasnFollows.target_hasn_id).where(
+                    HasnFollows.follower_hasn_id == viewer_hasn_id
+                )
+                visibility_rules.extend(
+                    [
+                        content_model.author_hasn_id == viewer_hasn_id,
+                        and_(
+                            content_model.visibility == 'followers',
+                            content_model.author_hasn_id.in_(followed_authors),
+                        ),
+                    ]
+                )
+            stmt = stmt.where(or_(*visibility_rules))
         if viewer_hasn_id:
             blocked_by_me = select(HasnCommunityBlocks.blocked_hasn_id).where(
                 HasnCommunityBlocks.blocker_hasn_id == viewer_hasn_id
@@ -504,6 +526,258 @@ class CommunityService:
             db, user_id=user_id, feed_type='recommend', tag=tag, q=q, cursor=cursor, limit=limit,
             exclude_unsearchable_authors=True,
         )
+
+    @staticmethod
+    async def _search_content_total(
+        db: AsyncSession,
+        *,
+        query: str,
+        content_type: str,
+        viewer_hasn_id: str | None,
+    ) -> int:
+        """按统一搜索的可见性规则计算帖子或文章精确总数。"""
+        author_human = aliased(HasnHumans)
+        model = HasnArticles if content_type == 'article' else HasnPosts
+        stmt = (
+            select(func.count())
+            .select_from(model)
+            .outerjoin(
+                author_human,
+                (model.author_type == 'human')
+                & (model.author_hasn_id == author_human.hasn_id),
+            )
+            .where(model.status == 'published', model.circle_id.is_(None))
+        )
+        keyword = f'%{query}%'
+        if content_type == 'article':
+            stmt = stmt.where(
+                or_(
+                    HasnArticles.title.ilike(keyword),
+                    HasnArticles.summary.ilike(keyword),
+                    HasnArticles.content.ilike(keyword),
+                )
+            )
+        else:
+            stmt = stmt.where(HasnPosts.content.ilike(keyword))
+        stmt = CommunityService._apply_visibility_filters(
+            stmt,
+            content_model=model,
+            author_human=author_human,
+            viewer_hasn_id=viewer_hasn_id,
+            exclude_unsearchable_authors=True,
+        )
+        return int((await db.execute(stmt)).scalar() or 0)
+
+    @staticmethod
+    async def search_group(
+        db: AsyncSession,
+        *,
+        query: str,
+        group: str,
+        viewer_user_id: int | None,
+        cursor: str | None = None,
+        limit: int = 10,
+        relation_gateway: Any | None = None,
+    ) -> dict[str, Any]:
+        """统一搜索一个资源组，返回独立分页、精确总数和真实关系状态。"""
+        q = (query or '').strip()
+        if not q:
+            return {'group': group, 'items': [], 'total': 0, 'next_cursor': None}
+        limit = max(1, min(int(limit), 20))
+        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, viewer_user_id)
+
+        if group in {'posts', 'articles'}:
+            content_type = 'article' if group == 'articles' else 'post'
+            page = await CommunityService.search(
+                db,
+                query=q,
+                content_type=content_type,
+                user_id=viewer_user_id,
+                cursor=cursor,
+                limit=limit,
+            )
+            total = await CommunityService._search_content_total(
+                db,
+                query=q,
+                content_type=content_type,
+                viewer_hasn_id=viewer_hasn_id,
+            )
+            return {
+                'group': group,
+                'items': page['items'],
+                'total': total,
+                'next_cursor': page['next_cursor'],
+            }
+
+        if group not in {'humans', 'agents'}:
+            raise errors.RequestError(msg='不支持的搜索分组')
+
+        from backend.app.hasn_im.application.provider import get_relation_gateway
+
+        resolved_relation_gateway = relation_gateway or get_relation_gateway()
+        offset = max(0, int(cursor or 0))
+        keyword = f'%{q}%'
+        blocked_by_me = select(HasnCommunityBlocks.blocked_hasn_id).where(
+            HasnCommunityBlocks.blocker_hasn_id == viewer_hasn_id
+        )
+        blocked_me = select(HasnCommunityBlocks.blocker_hasn_id).where(
+            HasnCommunityBlocks.blocked_hasn_id == viewer_hasn_id
+        )
+
+        if group == 'humans':
+            conditions: list[Any] = [
+                HasnHumans.status == 'active',
+                CommunityService._human_searchable_cond(),
+                HasnHumans.community_settings['show_profile'].astext.is_distinct_from('false'),
+                or_(
+                    HasnHumans.nickname.ilike(keyword),
+                    HasnHumans.star_id.ilike(keyword),
+                    HasnHumans.bio.ilike(keyword),
+                ),
+            ]
+            if viewer_hasn_id:
+                conditions.extend(
+                    [
+                        HasnHumans.hasn_id != viewer_hasn_id,
+                        HasnHumans.hasn_id.notin_(blocked_by_me),
+                        HasnHumans.hasn_id.notin_(blocked_me),
+                    ]
+                )
+            total = int(
+                (
+                    await db.execute(
+                        select(func.count()).select_from(HasnHumans).where(*conditions)
+                    )
+                ).scalar()
+                or 0
+            )
+            rows = (
+                await db.execute(
+                    select(HasnHumans)
+                    .where(*conditions)
+                    .order_by(
+                        func.lower(HasnHumans.nickname)
+                        .like(f'{q.lower()}%')
+                        .desc(),
+                        HasnHumans.id.desc(),
+                    )
+                    .offset(offset)
+                    .limit(limit)
+                )
+            ).scalars().all()
+            items = []
+            for human in rows:
+                item = CommunityService._peer_human_item(
+                    human,
+                    match_reason='社区搜索',
+                    rank=0,
+                )
+                item.pop('_rank', None)
+                item['friendship_status'] = await CommunityService._resolve_friendship_status(
+                    db,
+                    viewer_hasn_id=viewer_hasn_id,
+                    target_hasn_id=human.hasn_id,
+                )
+                items.append(item)
+            next_cursor = str(offset + len(items)) if offset + len(items) < total else None
+            return {
+                'group': group,
+                'items': items,
+                'total': total,
+                'next_cursor': next_cursor,
+            }
+
+        owner_human = aliased(HasnHumans)
+        follower_sq = (
+            select(func.count())
+            .select_from(HasnFollows)
+            .where(
+                HasnFollows.target_type == 'agent',
+                HasnFollows.target_hasn_id == HasnAgents.hasn_id,
+            )
+            .correlate(HasnAgents)
+            .scalar_subquery()
+        )
+        conditions = [
+            HasnAgents.status == 'active',
+            HasnAgents.deleted_at.is_(None),
+            or_(
+                HasnAgents.display_name.ilike(keyword),
+                HasnAgents.agent_name.ilike(keyword),
+                HasnAgents.bio.ilike(keyword),
+                HasnAgents.description.ilike(keyword),
+                HasnAgents.profession.ilike(keyword),
+                cast(HasnAgents.capability_summary_json, Text).ilike(keyword),
+            ),
+        ]
+        if viewer_hasn_id:
+            conditions.extend(
+                [
+                    HasnAgents.owner_id != viewer_hasn_id,
+                    HasnAgents.hasn_id.notin_(blocked_by_me),
+                    HasnAgents.hasn_id.notin_(blocked_me),
+                    HasnAgents.owner_id.notin_(blocked_by_me),
+                    HasnAgents.owner_id.notin_(blocked_me),
+                ]
+            )
+        agent_rows = list(
+            (
+                await db.execute(
+                    select(
+                        HasnAgents,
+                        owner_human.hasn_id.label('owner_hasn_id'),
+                        owner_human.nickname.label('owner_nickname'),
+                        follower_sq.label('follower_count'),
+                    )
+                    .join(owner_human, HasnAgents.owner_id == owner_human.hasn_id)
+                    .where(*conditions)
+                    .order_by(
+                        func.lower(HasnAgents.display_name)
+                        .like(f'{q.lower()}%')
+                        .desc(),
+                        HasnAgents.created_time.desc(),
+                    )
+                )
+            ).all()
+        )
+        enabled = await resolved_relation_gateway.filter_socially_enabled_agents(
+            agent_hasn_ids=[row.HasnAgents.hasn_id for row in agent_rows]
+        )
+        visible_rows = [row for row in agent_rows if row.HasnAgents.hasn_id in enabled]
+        total = len(visible_rows)
+        page_rows = visible_rows[offset : offset + limit]
+        online_map = await _presence_query.get_online_map(
+            [row.HasnAgents.hasn_id for row in page_rows]
+        )
+        items = []
+        for row in page_rows:
+            agent = row.HasnAgents
+            item = CommunityService._peer_agent_item(
+                agent,
+                owner_hasn_id=row.owner_hasn_id,
+                owner_name=row.owner_nickname,
+                follower_count=row.follower_count,
+                match_reason='社区搜索',
+                rank=0,
+            )
+            item.pop('_rank', None)
+            item['online_status'] = (
+                'online' if online_map.get(agent.hasn_id) else 'offline'
+            )
+            item['friendship_status'] = await CommunityService._resolve_friendship_status(
+                db,
+                viewer_hasn_id=viewer_hasn_id,
+                target_hasn_id=agent.hasn_id,
+                target_owner_hasn_id=agent.owner_id,
+            )
+            items.append(item)
+        next_cursor = str(offset + len(items)) if offset + len(items) < total else None
+        return {
+            'group': group,
+            'items': items,
+            'total': total,
+            'next_cursor': next_cursor,
+        }
 
     @staticmethod
     async def _get_articles_feed(
@@ -3446,6 +3720,7 @@ class CommunityService:
         category: str | None = None,
         sort: str = 'relevance',
         capability: str | None = None,
+        online_only: bool = False,
         cursor: str | None = None,
         limit: int = 3,
         relation_gateway: Any | None = None,
@@ -3455,6 +3730,7 @@ class CommunityService:
 
         - category/capability：按 capability_summary_json 文本匹配过滤（真实过滤）
         - sort：relevance（粉丝数）/ collected（内容被收藏数）/ active（最近活跃）
+        - online_only：仅返回 Redis presence 当前在线的分身
         - cursor：offset 分页
         社交开放读取 IM 权威设置；follower_count 使用实时统计（身份表无该列）。
 
@@ -3481,6 +3757,17 @@ class CommunityService:
             .correlate(HasnAgents)
             .scalar_subquery()
         )
+        friend_sq = (
+            select(func.count())
+            .select_from(HasnContacts)
+            .where(
+                HasnContacts.peer_id == HasnAgents.hasn_id,
+                HasnContacts.relation_type == 'social',
+                HasnContacts.status == 'connected',
+            )
+            .correlate(HasnAgents)
+            .scalar_subquery()
+        )
         # 内容被收藏数（相关子查询，用于 collected 排序）
         collected_sq = (
             select(func.coalesce(func.sum(HasnPosts.collect_count), 0))
@@ -3496,6 +3783,7 @@ class CommunityService:
                 OwnerHuman.nickname.label('owner_nickname'),
                 follower_sq.label('follower_count'),
                 following_sq.label('following_count'),
+                friend_sq.label('friend_count'),
                 collected_sq.label('collected_count'),
             )
             .join(OwnerHuman, HasnAgents.owner_id == OwnerHuman.hasn_id)
@@ -3543,9 +3831,18 @@ class CommunityService:
             enabled = await resolved_relation_gateway.filter_socially_enabled_agents(
                 agent_hasn_ids=[row.HasnAgents.hasn_id for row in page],
             )
+            online_map = (
+                await _presence_query.get_online_map(
+                    [row.HasnAgents.hasn_id for row in page if row.HasnAgents.hasn_id in enabled]
+                )
+                if online_only
+                else {}
+            )
             found_more = False
             for index, row in enumerate(page):
                 if row.HasnAgents.hasn_id not in enabled:
+                    continue
+                if online_only and not online_map.get(row.HasnAgents.hasn_id):
                     continue
                 if len(rows) < limit:
                     rows.append(row)
@@ -3577,6 +3874,22 @@ class CommunityService:
                         ).limit(1)
                     )
                 ).first() is not None
+            friendship_status = await CommunityService._resolve_friendship_status(
+                db,
+                viewer_hasn_id=viewer_hasn_id,
+                target_hasn_id=agent.hasn_id,
+                target_owner_hasn_id=agent.owner_id,
+            )
+            summary = agent.capability_summary_json or {}
+            capabilities: list[str] = []
+            if isinstance(summary, dict):
+                for key in ('skills', 'strengths', 'tags'):
+                    values = summary.get(key)
+                    if not isinstance(values, list):
+                        continue
+                    for value in values:
+                        if isinstance(value, str) and value.strip() and value.strip() not in capabilities:
+                            capabilities.append(value.strip())
 
             agents.append({
                 'hasn_id': agent.hasn_id,
@@ -3585,15 +3898,22 @@ class CommunityService:
                 'description': agent.description,
                 'bio': agent.bio or '',
                 'avatar': agent.avatar,
-                'capability_summary': agent.capability_summary_json or {},
+                'capability_summary': summary,
+                'capabilities': capabilities,
                 'owner': {
                     'hasn_id': row.owner_hasn_id,
                     'display_name': row.owner_nickname or row.owner_hasn_id,
                 },
                 'follower_count': int(row.follower_count or 0),
                 'following_count': int(row.following_count or 0),
+                'friend_count': int(row.friend_count or 0),
                 'collected_count': int(row.collected_count or 0),
                 'is_following': is_following,
+                'friendship_status': friendship_status,
+                'add_friend_needs_approval': True,
+                'last_heartbeat_at': (
+                    agent.last_heartbeat_at.isoformat() if agent.last_heartbeat_at else None
+                ),
             })
 
         # 头像在线状态点（Redis presence，断线即 offline 不读僵尸持久列），与社区作者一致。
