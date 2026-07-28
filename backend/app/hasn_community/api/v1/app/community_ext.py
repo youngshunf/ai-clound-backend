@@ -259,6 +259,26 @@ async def app_spaces_discover(request: Request, db: CurrentSession, cursor: str 
     return response_base.success(data=await doc_service.discover_public(db, cursor=cursor, limit=limit))
 
 
+@router.get('/profiles/{hasn_id}/doc-spaces', summary='作者主页文集', dependencies=[DependsJwtAuth], response_model=ResponseModel)
+async def app_profile_doc_spaces(
+    request: Request,
+    db: CurrentSession,
+    hasn_id: str,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
+    human, _ = await _human(db, request)
+    return response_base.success(
+        data=await doc_service.list_by_author(
+            db,
+            author_hasn_id=hasn_id,
+            viewer_hasn_id=human.hasn_id,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
+
+
 @router.get('/docs/spaces/{ident}', summary='文集详情', dependencies=[DependsJwtAuth], response_model=ResponseModel)
 async def app_doc_space(request: Request, db: CurrentSession, ident: str) -> ResponseModel:
     human, _ = await _human(db, request)

@@ -8,13 +8,13 @@ depth = 路径段数 - 1（根下一级=0）。子树查询：path = X.path OR p
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import bcrypt
 
 from jose import jwt
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from backend.app.hasn_community.model import HasnArticles, HasnDocNodes, HasnDocSpaces
 from backend.app.hasn_core import HasnAgents, HasnHumans
@@ -64,6 +64,8 @@ class DocService:
             'cover_url': s.cover_url, 'default_visibility': s.default_visibility, 'node_count': s.node_count,
             'article_count': s.article_count, 'status': s.status,
             'has_password': bool(s.default_password_hash),
+            'created_time': s.created_time.isoformat() if s.created_time else None,
+            'updated_time': s.updated_time.isoformat() if s.updated_time else None,
         }
 
     @staticmethod
@@ -114,6 +116,71 @@ class DocService:
             )
         ).scalars().all()
         return [DocService._space_dict(s) for s in rows]
+
+    @staticmethod
+    async def list_by_author(
+        db: AsyncSession,
+        *,
+        author_hasn_id: str,
+        viewer_hasn_id: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """按作者列出 viewer 可见文集，使用 ``(created_time, space_id)`` 稳定游标。"""
+        if limit < 1 or limit > 50:
+            raise errors.RequestError(msg='limit 必须在 1 到 50 之间')
+
+        stmt = select(HasnDocSpaces).where(
+            HasnDocSpaces.author_hasn_id == author_hasn_id,
+            HasnDocSpaces.status == 'active',
+            or_(
+                HasnDocSpaces.default_visibility == 'public',
+                HasnDocSpaces.owner_hasn_id == viewer_hasn_id,
+            ),
+        )
+        if cursor:
+            try:
+                created_raw, space_id = cursor.rsplit('|', 1)
+                created_time = datetime.fromisoformat(created_raw)
+                if not space_id:
+                    raise ValueError
+            except (TypeError, ValueError) as exc:
+                raise errors.RequestError(msg='文集分页游标无效') from exc
+            stmt = stmt.where(
+                or_(
+                    HasnDocSpaces.created_time < created_time,
+                    and_(
+                        HasnDocSpaces.created_time == created_time,
+                        HasnDocSpaces.space_id < space_id,
+                    ),
+                )
+            )
+
+        rows = (
+            await db.execute(
+                stmt.order_by(
+                    HasnDocSpaces.created_time.desc(),
+                    HasnDocSpaces.space_id.desc(),
+                ).limit(limit + 1)
+            )
+        ).scalars().all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items: list[dict[str, Any]] = []
+        for space in rows:
+            item = DocService._space_dict(space)
+            item['author'] = await DocService._author_info(
+                db,
+                space.author_type,
+                space.author_hasn_id,
+                space.owner_hasn_id,
+            )
+            items.append(item)
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = f'{last.created_time.isoformat()}|{last.space_id}'
+        return {'items': items, 'next_cursor': next_cursor}
 
     @staticmethod
     async def _author_info(db: AsyncSession, author_type: str, author_hasn_id: str, owner_hasn_id: str) -> dict[str, Any]:
