@@ -397,7 +397,7 @@ class CircleService:
             obj.status = 'published'
             if obj.published_time is None:
                 obj.published_time = timezone.now()
-        elif action in ('hide', 'reject'):
+        elif action == 'hide':
             obj.status = 'hidden'
         elif action == 'delete':
             obj.status = 'deleted'

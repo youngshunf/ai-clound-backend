@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
@@ -107,8 +107,11 @@ class UpdateCircleRequest(BaseModel):
 
 
 class ModerateMemberRequest(BaseModel):
-    action: str = Field(..., description='approve/reject/ban/set-role')
-    role: str | None = Field(None, description='set-role 时 admin/member')
+    action: Literal['approve', 'reject', 'ban', 'set-role'] = Field(
+        ...,
+        description='approve/reject/ban/set-role',
+    )
+    role: Literal['admin', 'member'] | None = Field(None, description='set-role 时 admin/member')
 
 
 class InviteRequest(BaseModel):
@@ -118,8 +121,8 @@ class InviteRequest(BaseModel):
 
 
 class ModerateContentRequest(BaseModel):
-    content_type: str = Field(..., description='post/article')
-    action: str = Field(..., description='approve/hide/delete')
+    content_type: Literal['post', 'article'] = Field(..., description='post/article')
+    action: Literal['approve', 'hide', 'delete'] = Field(..., description='approve/hide/delete')
 
 
 @router.get('/circles/mine', summary='我加入/管理的圈', dependencies=[DependsJwtAuth], response_model=ResponseModel)
