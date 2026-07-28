@@ -46,6 +46,9 @@ _KEY_FENCE_SQL = (
 _PLAYBOOK_TRACE_SQL = (
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-playbook-trace-columns.sql'
 )
+_ASSOCIATION_UNIQUES_SQL = (
+    _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-project-association-uniques.sql'
+)
 
 _NEW_TABLES = {
     'growth_project',
@@ -73,6 +76,7 @@ async def _apply_sql(session: AsyncSession) -> None:
     await connection.execute(_MIGRATION_SQL.read_text(encoding='utf-8'))
     await connection.execute(_KEY_FENCE_SQL.read_text(encoding='utf-8'))
     await connection.execute(_PLAYBOOK_TRACE_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_ASSOCIATION_UNIQUES_SQL.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
@@ -325,6 +329,17 @@ async def test_s1_project_unique_constraints_reject_duplicates(session: AsyncSes
                 {'growth_project_id': growth_project_id, 'lead_contact_id': lead_contact_id},
             )
 
+    customer_project_lead_index = (
+        await session.execute(
+            text(
+                'SELECT indexdef FROM pg_indexes '
+                "WHERE schemaname='hasn_growth' "
+                "AND indexname='uq_growth_customer_project_lead'"
+            )
+        )
+    ).scalar_one()
+    assert '(growth_project_id, lead_contact_id)' in customer_project_lead_index
+
 
 async def test_s1_historical_execution_rejects_mismatched_playbook_snapshot(
     session: AsyncSession,
@@ -379,6 +394,19 @@ async def test_s1_historical_execution_rejects_mismatched_playbook_snapshot(
             },
         )
     ).scalar_one()
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            await session.execute(
+                text(
+                    'INSERT INTO hasn_growth.growth_project_playbook '
+                    '(growth_project_id, playbook_id, playbook_version) '
+                    'VALUES (:growth_project_id, :playbook_id, 1)'
+                ),
+                {
+                    'growth_project_id': growth_project_id,
+                    'playbook_id': playbook_id,
+                },
+            )
     lead_contact_id = (
         await session.execute(
             text(
