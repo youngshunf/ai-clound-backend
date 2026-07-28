@@ -30,14 +30,19 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_core import HasnHumans
+from backend.app.hasn_growth.model.contact_channel import ContactChannel
+from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.enterprise_lookup_service import (
     _best_company_match,
     _is_fresh,
     _qcc_records,
+    _summarize,
     enterprise_lookup_service,
 )
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
+from backend.core.conf import settings
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 from backend.utils.timezone import timezone
 
@@ -63,26 +68,26 @@ _QCC_RECORD = {
 # ---------------- 纯函数（无 DB/无网关） ----------------
 
 
-async def test_qcc_records_structured_preferred() -> None:  # noqa: RUF029
+async def test_qcc_records_structured_preferred() -> None:  # ruff: ignore[unused-async]
     """structured 优先：`{result:[record]}` → 抽出记录列表。"""
     out = _qcc_records({'is_error': False, 'structured': {'result': [_QCC_RECORD]}, 'text': None})
     assert out == [_QCC_RECORD]
 
 
-async def test_qcc_records_text_json_fallback() -> None:  # noqa: RUF029
+async def test_qcc_records_text_json_fallback() -> None:  # ruff: ignore[unused-async]
     """structured 缺 → text JSON 解析回落。"""
     out = _qcc_records({'is_error': False, 'structured': None, 'text': json.dumps({'data': [_QCC_RECORD]})})
     assert out == [_QCC_RECORD]
 
 
-async def test_qcc_records_error_or_empty_returns_empty() -> None:  # noqa: RUF029
+async def test_qcc_records_error_or_empty_returns_empty() -> None:  # ruff: ignore[unused-async]
     """is_error / 空 / 不可解析 → 空列表（诚实，不 fake）。"""
     assert _qcc_records({'is_error': True, 'structured': {'result': [_QCC_RECORD]}}) == []
     assert _qcc_records({'is_error': False, 'structured': None, 'text': 'not json'}) == []
     assert _qcc_records({}) == []
 
 
-async def test_is_fresh_within_and_beyond_ttl() -> None:  # noqa: RUF029
+async def test_is_fresh_within_and_beyond_ttl() -> None:  # ruff: ignore[unused-async]
     """维度缓存 TTL：内 → True；过期/解析失败/naive → False（保守重取）。"""
     fresh = timezone.now().isoformat()
     expired = (timezone.now() - timedelta(hours=48)).isoformat()
@@ -92,12 +97,34 @@ async def test_is_fresh_within_and_beyond_ttl() -> None:  # noqa: RUF029
     assert _is_fresh('2026-01-01T00:00:00', ttl_hours=24) is False  # naive → False
 
 
-async def test_best_company_match_prefers_name_contains() -> None:  # noqa: RUF029
+async def test_best_company_match_prefers_name_contains() -> None:  # ruff: ignore[unused-async]
     """池命中里优先公司名包含 query 的；都不含 → None。"""
     a = LeadContact(company_name='北京示例科技有限公司', confidence_score=Decimal(80))
     b = LeadContact(company_name='上海无关贸易有限公司', confidence_score=Decimal(90))
     assert _best_company_match([a, b], '示例') is a
     assert _best_company_match([b], '示例') is None
+
+
+async def test_enrichment_summary_never_repeats_qcc_pii() -> None:  # ruff: ignore[unused-async]
+    """富化摘要只能是派生统计，不得复制 QCC 文本中的姓名和联系方式。"""
+    result = {
+        'is_error': False,
+        'structured': {
+            'result': [
+                {
+                    'name': '张三',
+                    'phone': '13800138000',
+                    'email': 'zhang@example.com',
+                }
+            ]
+        },
+        'text': '高管张三，电话 13800138000，邮箱 zhang@example.com',
+    }
+    summary = _summarize(result)
+    serialized = json.dumps(summary, ensure_ascii=False)
+    assert '张三' not in serialized
+    assert '13800138000' not in serialized
+    assert 'zhang@example.com' not in serialized
 
 
 # ---------------- 真实 PG（零 mock，无网关） ----------------
@@ -129,6 +156,8 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         )
     )
     await session.flush()
+    previous_pii_new_write = settings.GROWTH_PII_NEW_WRITE_ENABLED
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
     try:
         yield SimpleNamespace(
             session=session,
@@ -139,23 +168,53 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
             tag=tag,
         )
     finally:
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = previous_pii_new_write
         await session.rollback()
         await session.close()
         await engine.dispose()
 
 
 async def test_ingest_record_creates_contact_with_qcc_meta(ctx: SimpleNamespace) -> None:
-    """单条 qcc 记录 → 入公共池 + 全量保真 meta_data['qcc'] + 为 owner 建引用。"""
+    """单条 qcc 记录只把公开登记事实入池，法人和联系方式进入 Owner 私有密文。"""
     s = ctx.session
-    contact = await enterprise_lookup_service._ingest_record(
-        s, record=dict(_QCC_RECORD), user_id=ctx.owner_uid, keyword='企查查测试'
-    )
+    previous = settings.GROWTH_PII_NEW_WRITE_ENABLED
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    try:
+        contact = await enterprise_lookup_service._ingest_record(
+            s,
+            record=dict(_QCC_RECORD),
+            user_id=ctx.owner_uid,
+            keyword='企查查测试',
+        )
+    finally:
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = previous
     assert contact is not None
     assert contact.company_name == '北京示例科技有限公司'
     assert contact.pool_visibility == 'public'
-    # 全量保真：原始记录整体落 meta_data['qcc']['registration'] + fetched_at。
-    assert contact.meta_data['qcc']['registration'] == _QCC_RECORD
+    assert contact.contact_name is None
+    assert contact.email is None and contact.email_normalized is None
+    assert contact.phone is None and contact.phone_normalized is None
+    assert contact.address is None
+    serialized_meta = json.dumps(contact.meta_data, ensure_ascii=False)
+    for plaintext in ('张三', '010-88886666', 'contact@example-bj.com', '北京市海淀区中关村大街1号'):
+        assert plaintext not in serialized_meta
     assert contact.meta_data['qcc']['fetched_at']
+    assert contact.meta_data['qcc']['registration_fields']
+    profile = (
+        await s.execute(
+            select(ContactPrivateProfile).where(
+                ContactPrivateProfile.user_id == ctx.owner_uid,
+                ContactPrivateProfile.lead_contact_id == contact.id,
+            )
+        )
+    ).scalar_one()
+    channels = (
+        await s.execute(
+            select(ContactChannel).where(ContactChannel.private_profile_id == profile.id)
+        )
+    ).scalars().all()
+    assert {channel.channel for channel in channels} == {'email', 'phone', 'postal_address'}
+    assert all(channel.hash_key_version == require_growth_pii_keyring().active_hmac_version for channel in channels)
     # 统一池众包语义：owner 引用已建（拥有=引用）。
     ref = (
         await s.execute(

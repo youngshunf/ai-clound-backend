@@ -20,10 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn_growth.model.contact_channel import ContactChannel
+from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
 from backend.common.exception import errors
+from backend.core.conf import settings
 from backend.database.db import SQLALCHEMY_DATABASE_URL
 
 pytestmark = pytest.mark.asyncio
@@ -152,22 +156,47 @@ async def test_funnel_full_flow(session) -> None:
 
 
 async def test_create_manual_lead_pool_and_ref(session) -> None:
-    """手动建线索：落私有池行（不进公共匹配）+ 建用户引用（source=manual，note 落引用层）。"""
+    """手动建线索：池行只留公开事实，姓名和联系方式进入 Owner 私有密文。"""
     uid = 980000 + int(uuid.uuid4().int % 9000)
-    created = await growth_funnel_service.create_manual_lead(
-        session,
-        user_id=uid,
-        company_name='手动公司',
-        contact_name='李四',
-        email='lisi@manual.com',
-        phone='13700137000',
-        note='展会换的名片',
-    )
+    previous = settings.GROWTH_PII_NEW_WRITE_ENABLED
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    try:
+        created = await growth_funnel_service.create_manual_lead(
+            session,
+            user_id=uid,
+            company_name='手动公司',
+            contact_name='李四',
+            email='lisi@manual.com',
+            phone='13700137000',
+            note='展会换的名片',
+        )
+    finally:
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = previous
     cid = created['lead_contact_id']
     # 池行私有
     contact = (await session.execute(select(LeadContact).where(LeadContact.id == cid))).scalar_one()
     assert contact.pool_visibility == 'private'
     assert contact.source_type == 'manual'
+    assert contact.contact_name is None
+    assert contact.email is None and contact.email_normalized is None
+    assert contact.phone is None and contact.phone_normalized is None
+    assert contact.dedupe_key_email is None and contact.dedupe_key_phone is None
+    profile = (
+        await session.execute(
+            select(ContactPrivateProfile).where(
+                ContactPrivateProfile.user_id == uid,
+                ContactPrivateProfile.lead_contact_id == cid,
+            )
+        )
+    ).scalar_one()
+    channels = (
+        await session.execute(
+            select(ContactChannel).where(ContactChannel.private_profile_id == profile.id)
+        )
+    ).scalars().all()
+    assert {channel.channel for channel in channels} == {'email', 'phone'}
+    assert all(channel.value_ciphertext not in {'lisi@manual.com', '13700137000'} for channel in channels)
+    assert all(channel.hash_key_version == require_growth_pii_keyring().active_hmac_version for channel in channels)
     # 引用层：source=manual + note
     ref = await _ref_of(session, user_id=uid, lead_contact_id=cid)
     assert ref.source == 'manual'
@@ -179,5 +208,14 @@ async def test_create_manual_lead_pool_and_ref(session) -> None:
     assert created['note'] == '展会换的名片'
 
     # 缺公司名+联系人名 → 拒绝（问题1：空壳不入池）
-    with pytest.raises(errors.RequestError):
-        await growth_funnel_service.create_manual_lead(session, user_id=uid, company_name='', contact_name='')
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    try:
+        with pytest.raises(errors.RequestError):
+            await growth_funnel_service.create_manual_lead(
+                session,
+                user_id=uid,
+                company_name='',
+                contact_name='',
+            )
+    finally:
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = previous

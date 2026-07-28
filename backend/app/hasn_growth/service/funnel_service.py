@@ -9,6 +9,7 @@ dismiss（线索不合格）、客户列表/详情/时间线、画像更新、�
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -24,10 +25,15 @@ from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.model.opportunity import Opportunity
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
-from backend.app.hasn_growth.service.dedupe_service import dedupe_key
-from backend.app.hasn_growth.service.pii import mask_contact_fields
+from backend.app.hasn_growth.service.lead_ingestion_privacy_service import (
+    PrivateLeadWrite,
+    lead_ingestion_privacy_service,
+)
+from backend.app.hasn_growth.service.pii import mask_contact_fields, redact_pii_value
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
 from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope, can_manage_assignment
 from backend.common.exception import errors
+from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
 # 采集来源 → 客户来源映射（contact.source_type 多样，归一到 customer.source_kind 字典）。
@@ -97,6 +103,21 @@ def _lead_to_dict(c: LeadContact, *, ref: LeadRef | None = None, reveal_pii: boo
         'confidence_score': float(c.confidence_score) if c.confidence_score is not None else 0.0,
     }
     return mask_contact_fields(data, reveal=reveal_pii)
+
+
+def _apply_masked_private_contact(
+    lead: dict[str, Any],
+    private_contact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """把私有表生成的脱敏视图覆盖到响应，不把明文写回公共 ORM。"""
+    if private_contact is None:
+        return lead
+    lead['contact_name'] = private_contact.get('contact_name')
+    for channel in private_contact.get('channels', []):
+        channel_name = channel.get('channel')
+        if channel_name in {'email', 'phone', 'wechat'}:
+            lead[channel_name] = channel.get('masked_value')
+    return lead
 
 
 class GrowthFunnelService:
@@ -174,11 +195,7 @@ class GrowthFunnelService:
         note: str | None = None,
         confidence_score: float | None = None,
     ) -> dict[str, Any]:
-        """主人在 UI 手动登记线索（统一线索池：默认私有 pool_visibility='private'，不进公共匹配·福仔决策）。
-
-        AI-native 宗旨：UI 给人操作。手动登记先按全局 dedupe_key 查池，命中则复用既有池行（统一池一份），
-        否则建私有池行；再建用户引用（lead_ref，note 落引用层）。至少公司名或联系人名之一。
-        """
+        """主人手工登记线索；池行只留公开事实，姓名和联系方式进入 Owner 私有表。"""
         from urllib.parse import urlparse
 
         from backend.app.hasn_growth.service.cleaner_service import normalize_email, normalize_phone
@@ -191,6 +208,11 @@ class GrowthFunnelService:
         contact_name = _clean(contact_name)
         if not company_name and not contact_name:
             raise errors.RequestError(msg='请至少填写公司名或联系人名')
+        if not settings.GROWTH_PII_NEW_WRITE_ENABLED:
+            raise errors.ConflictError(
+                msg='联系人 PII 新写尚未启用',
+                data={'error_code': 'GROWTH_PII_NEW_WRITE_DISABLED'},
+            )
 
         email = _clean(email)
         phone = _clean(phone)
@@ -201,43 +223,43 @@ class GrowthFunnelService:
         if website:
             netloc = urlparse(website if '://' in website else f'http://{website}').netloc
             domain = netloc.removeprefix('www.').lower() or None
-        keys = {'email': dedupe_key(email_n), 'phone': dedupe_key(phone_n), 'domain': dedupe_key(domain)}
-
-        # 全局去重：池中已有同 email/phone/domain 的线索 → 复用（统一池一份），否则建私有池行。
-        contact = None
-        for dim in ('email', 'phone', 'domain'):
-            if keys[dim]:
-                contact = await db.scalar(
-                    sa.select(LeadContact).where(getattr(LeadContact, f'dedupe_key_{dim}') == keys[dim])
-                )
-                if contact is not None:
-                    break
-        if contact is None:
-            contact = LeadContact(
-                lead_no=_gen_no('LEAD'),
-                pool_visibility='private',  # 手动登记默认仅自己可见，不进公共匹配
+        if email and email_n is None:
+            raise errors.RequestError(msg='邮箱格式无效')
+        if phone and phone_n is None:
+            raise errors.RequestError(msg='电话格式无效')
+        write_result = await lead_ingestion_privacy_service.upsert(
+            db,
+            keyring=require_growth_pii_keyring(),
+            write=PrivateLeadWrite(
+                user_id=user_id,
+                pool_visibility='private',
                 company_name=company_name,
                 contact_name=contact_name,
-                email=email,
-                email_normalized=email_n,
-                phone=phone,
-                phone_normalized=phone_n,
+                email=email_n,
+                phone=phone_n,
+                address=None,
                 website=website,
                 domain=domain,
-                industry=_clean(industry),
+                country=None,
+                region=None,
                 city=_clean(city),
+                industry=_clean(industry),
                 source_type='manual',
-                status='active',
-                confidence_score=Decimal(str(confidence_score if confidence_score is not None else 60)),
-                dedupe_key_email=keys['email'],
-                dedupe_key_phone=keys['phone'],
-                dedupe_key_domain=keys['domain'],
-                meta_data={},
-            )
-            db.add(contact)
-            await db.flush()
+                source_url=None,
+                lawful_basis='owner_provided',
+                source_ref='manual_entry',
+                retention_until=timezone.now() + timedelta(days=365),
+                confidence_score=Decimal(
+                    str(confidence_score if confidence_score is not None else 60)
+                ),
+                public_metadata={},
+                preserve_existing_private=False,
+            ),
+        )
+        contact = write_result.contact
 
         # 建用户引用（幂等：已引用则跳过）；note 为用户私有备注，落引用层。
+        safe_note = redact_pii_value(note.strip()) if note and note.strip() else None
         await db.execute(
             pg_insert(LeadRef)
             .values(
@@ -245,7 +267,7 @@ class GrowthFunnelService:
                 lead_contact_id=contact.id,
                 source='manual',
                 status='new',
-                note=(note.strip() if note and note.strip() else None),
+                note=safe_note,
             )
             .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
         )
@@ -253,7 +275,10 @@ class GrowthFunnelService:
         ref = await db.scalar(
             sa.select(LeadRef).where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == contact.id)
         )
-        return _lead_to_dict(contact, ref=ref, reveal_pii=False)
+        return _apply_masked_private_contact(
+            _lead_to_dict(contact, ref=ref, reveal_pii=False),
+            write_result.masked_private_contact,
+        )
 
     # ----------------------------- 晋级 / 淘汰 -----------------------------
 
@@ -276,7 +301,8 @@ class GrowthFunnelService:
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
 
         enterprise_scope = scope if scope is not None and scope.is_enterprise else None
-        # 去重键双模：enterprise 按 (enterprise_id, lead)；personal 按 (user_id, lead)。不含 assignee（同企业同线索唯一）。
+        # 去重键双模：enterprise 按 (enterprise_id, lead)，personal 按 (user_id, lead)；
+        # 不含 assignee（同企业同线索唯一）。
         dedupe_stmt = sa.select(Customer).where(Customer.lead_contact_id == lead_contact_id)
         if enterprise_scope is not None:
             dedupe_stmt = dedupe_stmt.where(

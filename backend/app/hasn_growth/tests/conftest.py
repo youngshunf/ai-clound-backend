@@ -16,6 +16,7 @@ def configure_growth_pii_test_keys() -> Iterator[None]:
         settings.GROWTH_PII_HMAC_KEYS_JSON,
         settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION,
         settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION,
+        settings.GROWTH_PII_NEW_WRITE_ENABLED,
     )
     settings.GROWTH_PII_ENCRYPTION_KEYS_JSON = (
         '{"1":"ERERERERERERERERERERERERERERERERERERERERERE=","2":"IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="}'
@@ -25,6 +26,7 @@ def configure_growth_pii_test_keys() -> Iterator[None]:
     )
     settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION = 2
     settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION = 2
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
     get_growth_pii_keyring.cache_clear()
     try:
         yield
@@ -34,5 +36,6 @@ def configure_growth_pii_test_keys() -> Iterator[None]:
             settings.GROWTH_PII_HMAC_KEYS_JSON,
             settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION,
             settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION,
+            settings.GROWTH_PII_NEW_WRITE_ENABLED,
         ) = previous
         get_growth_pii_keyring.cache_clear()

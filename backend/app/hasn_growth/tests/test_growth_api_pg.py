@@ -673,7 +673,32 @@ async def test_owner_create_lead_via_http(e2e) -> None:
     assert created['status'] == 'new'  # 用户级状态来自 lead_ref（新建即 new）
     assert created['company_name'] == '星尘科技'
     assert created['email'] == 'l***@xingchen.com'
-    assert created['phone'] == '1390****9000'
+    assert created['phone'] == '+861****9000'
+    public_contact = await e2e.session.get(LeadContact, created['lead_contact_id'])
+    assert public_contact is not None
+    assert public_contact.contact_name is None
+    assert public_contact.email is None and public_contact.email_normalized is None
+    assert public_contact.phone is None and public_contact.phone_normalized is None
+    private_profile = (
+        await e2e.session.execute(
+            select(ContactPrivateProfile).where(
+                ContactPrivateProfile.user_id == e2e.owner_uid,
+                ContactPrivateProfile.lead_contact_id == created['lead_contact_id'],
+            )
+        )
+    ).scalar_one()
+    private_channels = (
+        await e2e.session.execute(
+            select(ContactChannel).where(
+                ContactChannel.private_profile_id == private_profile.id,
+            )
+        )
+    ).scalars().all()
+    assert {channel.channel for channel in private_channels} == {'email', 'phone'}
+    assert all(
+        channel.value_ciphertext not in {'lilei@xingchen.com', '13900139000'}
+        for channel in private_channels
+    )
 
     # --- 建的线索出现在 owner 线索池检索 ---
     leads = _ok(await c.get(f'{O}/leads', params={'q': '星尘'}))
