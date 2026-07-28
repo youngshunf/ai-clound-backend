@@ -266,10 +266,8 @@ class ScrapyProvider(BaseProvider):
         )
         if not result.get('ok'):
             log.warning(
-                '[ScrapyProvider] %s 深爬未出数（%s）：%s',
+                '[ScrapyProvider] %s 深爬未出数',
                 self.source_type,
-                result.get('error'),
-                result.get('message'),
             )
             return  # 空生成器：诚实不出数，不 fake
         emitted = 0

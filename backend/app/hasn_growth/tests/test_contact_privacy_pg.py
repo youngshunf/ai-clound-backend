@@ -569,6 +569,57 @@ async def test_owner_reveal_is_single_resource_and_agent_is_denied(session: Asyn
     assert all('ciphertext' not in str(item.request_metadata) for item in audits)
 
 
+async def test_owner_reveal_missing_keyring_is_audited_before_failing(
+    session: AsyncSession,
+) -> None:
+    channel_id, plaintext = await _stored_channel(session)
+    trace_id = f"{session.info['trace_prefix']}-keyring-unavailable"
+    previous = (
+        settings.GROWTH_PII_ENCRYPTION_KEYS_JSON,
+        settings.GROWTH_PII_HMAC_KEYS_JSON,
+        settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION,
+        settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION,
+    )
+    settings.GROWTH_PII_ENCRYPTION_KEYS_JSON = ''
+    settings.GROWTH_PII_HMAC_KEYS_JSON = ''
+    settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION = 0
+    settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION = 0
+    get_growth_pii_keyring.cache_clear()
+    try:
+        with pytest.raises(errors.ServerError) as exc_info:
+            await contact_privacy_service.reveal_channel(
+                session,
+                channel_id=channel_id,
+                actor_type='owner',
+                actor_id='h_owner_s1_pii',
+                scope=GrowthScope(user_id=981001, owner_hasn_id='h_owner_s1_pii'),
+                purpose='contact_verification',
+                trace_id=trace_id,
+            )
+        assert exc_info.value.data == {
+            'error_code': 'GROWTH_PII_KEYRING_UNAVAILABLE',
+        }
+    finally:
+        (
+            settings.GROWTH_PII_ENCRYPTION_KEYS_JSON,
+            settings.GROWTH_PII_HMAC_KEYS_JSON,
+            settings.GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION,
+            settings.GROWTH_PII_ACTIVE_HMAC_KEY_VERSION,
+        ) = previous
+        get_growth_pii_keyring.cache_clear()
+
+    audit = (
+        await session.execute(
+            select(ContactPrivateAccessAudit).where(
+                ContactPrivateAccessAudit.trace_id == trace_id,
+            )
+        )
+    ).scalar_one()
+    assert audit.result == 'error'
+    assert audit.denial_code == 'GROWTH_PII_KEYRING_UNAVAILABLE'
+    assert plaintext not in str(audit.request_metadata)
+
+
 async def test_optout_matches_retained_hmac_versions_and_new_write_uses_active_version(
     session: AsyncSession,
 ) -> None:

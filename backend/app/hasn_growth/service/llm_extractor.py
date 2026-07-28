@@ -145,7 +145,10 @@ class LeadLLMExtractor:
                 response_format={'type': 'json_object'},
             )
         except LLMError as exc:
-            log.warning(f'[LeadLLMExtractor] LLM 提取失败，退回正则兜底: {exc!r}')
+            log.warning(
+                '[LeadLLMExtractor] LLM 提取失败，退回正则兜底：error_type=%s',
+                exc.__class__.__name__,
+            )
             return None
         structured = parse_extract_response(content)
         if not structured:

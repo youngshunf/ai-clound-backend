@@ -280,7 +280,7 @@ async def send_outreach(
             agent=agent,
             message_id=int(data['id']),
             customer_id=obj.customer_id,
-            channel=obj.channel,
+            channel=str(data['channel']),
         )
     return response_base.success(data=data)
 
@@ -347,7 +347,7 @@ async def update_stage(
     )
     # 商机阶段变更 → 通知主人。
     await growth_notification_service.opportunity_stage_changed(
-        db, agent=agent, opportunity_id=opportunity_id, stage=obj.stage, name=data.get('name')
+        db, agent=agent, opportunity_id=opportunity_id, stage=obj.stage
     )
     return response_base.success(data=data)
 
@@ -379,7 +379,6 @@ async def close_deal(
         opportunity_id=opportunity_id,
         result=obj.result,
         amount=data.get('amount'),
-        name=data.get('name'),
     )
     return response_base.success(data=data)
 

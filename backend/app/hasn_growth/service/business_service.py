@@ -432,7 +432,6 @@ class LeadAutomationBusinessService:
                     owner_hasn_id=owner_hasn_id,
                     job_id=job.id,
                     new_count=job.valid_count,
-                    keyword=job.keyword,
                 )
         return model_to_dict(job)
 

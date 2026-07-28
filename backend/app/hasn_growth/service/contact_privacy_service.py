@@ -719,7 +719,53 @@ class ContactPrivacyService:
             'channels': channel_views,
         }
 
-    async def reveal_channel(
+    @staticmethod
+    async def find_masked_contact_for_lead(
+        db: AsyncSession,
+        *,
+        keyring: GrowthPiiKeyring | None = None,
+        lead_contact_id: int,
+        owner_scope: str,
+        user_id: int | None,
+        enterprise_id: int | None,
+    ) -> dict | None:
+        """按联系人和授权主体查找私有资料；不存在时返回空，不跨主体回退。"""
+        scope = _validate_owner(
+            owner_scope=owner_scope,
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+        )
+        private_profile_id = (
+            await db.execute(
+                sa
+                .select(ContactPrivateProfile.id)
+                .where(
+                    ContactPrivateProfile.lead_contact_id == lead_contact_id,
+                    ContactPrivateProfile.status == 'active',
+                    ContactPrivateProfile.retention_until > timezone.now(),
+                    *_owner_conditions(
+                        ContactPrivateProfile,
+                        owner_scope=scope,
+                        user_id=user_id,
+                        enterprise_id=enterprise_id,
+                    ),
+                )
+                .order_by(ContactPrivateProfile.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if private_profile_id is None:
+            return None
+        return await ContactPrivacyService.get_masked_contact(
+            db,
+            keyring=keyring or require_growth_pii_keyring(),
+            private_profile_id=int(private_profile_id),
+            owner_scope=scope,
+            user_id=user_id,
+            enterprise_id=enterprise_id,
+        )
+
+    async def reveal_channel(  # ruff: ignore[complex-structure]
         self,
         db: AsyncSession,
         *,
@@ -840,7 +886,27 @@ class ContactPrivacyService:
             )
             raise errors.NotFoundError(msg='联系人渠道不存在')
 
-        active_keyring = keyring or require_growth_pii_keyring()
+        try:
+            active_keyring = keyring or require_growth_pii_keyring()
+        except errors.ServerError as exc:
+            if exc.data != {'error_code': 'GROWTH_PII_KEYRING_UNAVAILABLE'}:
+                raise
+            await self._write_access_audit(
+                owner_scope=owner_scope,
+                user_id=user_id,
+                enterprise_id=enterprise_id,
+                actor_type='owner',
+                actor_id=actor_id,
+                action='reveal',
+                resource_type='contact_channel',
+                resource_id=str(channel_id),
+                purpose=purpose,
+                trace_id=trace_id,
+                result='error',
+                denial_code='GROWTH_PII_KEYRING_UNAVAILABLE',
+                request_metadata={'channel_id': channel_id, 'channel': channel.channel},
+            )
+            raise
         try:
             value = active_keyring.decrypt(
                 channel.value_ciphertext,

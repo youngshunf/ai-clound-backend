@@ -8,6 +8,8 @@ from pydantic import Field
 
 from backend.common.schema import SchemaBase
 
+OutreachChannel = Literal['manual_assist', 'wechat', 'qq', 'feishu', 'email', 'hasn_dm']
+
 
 class QualifyLeadParam(SchemaBase):
     profile: dict[str, Any] = Field(default_factory=dict, description='画像快照')
@@ -74,7 +76,7 @@ class LogActivityParam(SchemaBase):
 
 class SendOutreachParam(SchemaBase):
     customer_id: int = Field(description='客户 ID')
-    channel: str = Field(description='渠道 manual_assist/wechat/qq/feishu/email/hasn_dm')
+    channel: OutreachChannel = Field(description='渠道 manual_assist/wechat/qq/feishu/email/hasn_dm')
     content: str = Field(min_length=1, description='话术正文（不含明文联系方式）')
     subject: str | None = Field(default=None, max_length=200)
     intent_note: str | None = Field(default=None, max_length=500, description='给主人看的一句话：为什么现在发')
@@ -91,7 +93,7 @@ class RejectOutreachParam(SchemaBase):
 
 
 class MarkSentParam(SchemaBase):
-    channel_actual: str | None = Field(default=None, description='manual_assist 实际发送渠道')
+    channel_actual: OutreachChannel | None = Field(default=None, description='manual_assist 实际发送渠道')
 
 
 class CreateOpportunityParam(SchemaBase):

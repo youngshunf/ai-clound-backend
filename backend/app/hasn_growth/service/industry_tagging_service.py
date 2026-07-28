@@ -115,7 +115,10 @@ class IndustryTaggingService:
                 base_url=base_url, api_key=api_key, model=model, timeout=30.0
             ).complete([{'role': 'user', 'content': prompt}], temperature=0, max_tokens=20)
         except LLMError as exc:
-            log.warning(f'[IndustryTagging] LLM 分类失败，保留原始行业: {exc!r}')
+            log.warning(
+                '[IndustryTagging] LLM 分类失败，保留原始行业：error_type=%s',
+                exc.__class__.__name__,
+            )
             return None
         answer = (content or '').strip().lower().strip('`').strip()
         return answer if answer in codes else None
