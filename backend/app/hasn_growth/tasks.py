@@ -4,6 +4,9 @@ from typing import Any
 
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
 from backend.app.hasn_growth.service.dispatch_service import growth_dispatch_service
+from backend.app.hasn_growth.service.growth_project_provision_service import (
+    growth_project_provision_service,
+)
 from backend.app.hasn_growth.service.pipeline_service import lead_automation_pipeline_service
 from backend.app.task.celery import celery_app
 from backend.common.log import log
@@ -35,7 +38,7 @@ async def _archive_expired() -> int:
 
 
 @celery_app.task(name='lead_automation_run_job', bind=True)
-async def lead_automation_run_job(self, job_id: int) -> dict[str, Any]:  # noqa: ANN001
+async def lead_automation_run_job(self, job_id: int) -> dict[str, Any]:
     """采集执行 worker — ``lead_automation_run_job.delay(job_id)`` 触发（设计 07 §6.2 / 方案A）。
 
     分身调 ``hasn.growth.collect.start`` 建 pending job 后，由 handler 的 after_commit 钩子入队
@@ -46,7 +49,7 @@ async def lead_automation_run_job(self, job_id: int) -> dict[str, Any]:  # noqa:
 
 
 @celery_app.task(name='lead_automation_archive_expired', bind=True)
-async def lead_automation_archive_expired(self) -> dict[str, int]:  # noqa: ANN001
+async def lead_automation_archive_expired(self) -> dict[str, int]:
     """保留期归档 worker（设计 05 / 07 §5.0）——归档过期线索为匿名化（PIPL/GDPR）。
 
     可由 beat 定时调度（任务名 ``lead_automation_archive_expired``）；当前留任务入口，beat 接入
@@ -67,3 +70,44 @@ async def growth_dispatch_approved_outreach() -> str:
         stat = await growth_dispatch_service.dispatch_approved_batch(db)
     log.info(f'[GrowthDispatch] 发送 worker 完成: {stat}')
     return f'扫 {stat["scanned"]}，发出 {stat["sent"]}，失败 {stat["failed"]}，挂起(静默) {stat["queued_quiet_hours"]}'
+
+
+@celery_app.task(name='growth_project_provision')
+async def growth_project_provision(growth_project_id: str) -> dict[str, Any]:
+    """从可靠步骤表继续开通；失败按真实错误进入退避重试。"""
+    result = await growth_project_provision_service.run(growth_project_id)
+    retry_seconds = result.get('retry_in_seconds')
+    if isinstance(retry_seconds, int) and retry_seconds > 0:
+        try:
+            growth_project_provision.apply_async(
+                args=(growth_project_id,),
+                countdown=retry_seconds,
+            )
+        except Exception as exc:
+            log.warning(
+                '[GrowthProvision] 自动重试入队失败，等待 reconcile: growth_project_id=%s error_type=%s',
+                growth_project_id,
+                exc.__class__.__name__,
+            )
+    return result
+
+
+@celery_app.task(name='growth_project_provision_reconcile')
+async def growth_project_provision_reconcile() -> dict[str, int]:
+    """兜底重投到期失败与超时 running，修复 worker 崩溃留下的中间态。"""
+
+    def enqueue_one(growth_project_id: str) -> bool:
+        try:
+            growth_project_provision.delay(growth_project_id)
+        except Exception as exc:
+            log.warning(
+                '[GrowthProvision] reconcile 入队失败: growth_project_id=%s error_type=%s',
+                growth_project_id,
+                exc.__class__.__name__,
+            )
+            return False
+        return True
+
+    project_ids = await growth_project_provision_service.due_for_reconcile()
+    enqueued = sum(enqueue_one(project_id) for project_id in project_ids)
+    return {'scanned': len(project_ids), 'enqueued': enqueued}

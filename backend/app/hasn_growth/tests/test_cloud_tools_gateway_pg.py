@@ -28,6 +28,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
@@ -35,6 +36,13 @@ from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
+from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.mcp.context import (
+    clear_current_project_id,
+    clear_current_work_session_id,
+    set_current_project_id,
+    set_current_work_session_id,
+)
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import ForbiddenError
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -99,6 +107,13 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         confidence_score=Decimal(72),
     )
     session.add(lead)
+    platform_project = HasnProject(
+        owner_id=owner,
+        name=f'获客工具项目-{tag}',
+        goal='验证分身启用获客',
+        status='active',
+    )
+    session.add(platform_project)
     await session.flush()
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
@@ -115,7 +130,13 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
 
     try:
         yield SimpleNamespace(
-            session=session, owner=owner, owner_uid=owner_uid, agent_hasn=agent_hasn, lead_id=lead.id, agent=_agent
+            session=session,
+            owner=owner,
+            owner_uid=owner_uid,
+            agent_hasn=agent_hasn,
+            lead_id=lead.id,
+            platform_project_id=platform_project.id,
+            agent=_agent,
         )
     finally:
         await session.rollback()
@@ -123,10 +144,17 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
         await engine.dispose()
 
 
-async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # noqa: RUF029
+async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # ruff: ignore[unused-async]
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
-    assert len(handlers) == 22  # +lead_request（2.1）+ lookup/search/enrich_company（GROWTH-QCC-4 读穿中台）
+    assert len(handlers) == 26  # +project 四工具 + lead_request + lookup/search/enrich_company
+    for h in (
+        'growth.project_get',
+        'growth.project_create',
+        'growth.project_update',
+        'growth.project_pause',
+    ):
+        assert h in handlers, h
     assert 'growth.lead_request' in handlers
     for h in ('growth.lookup_company', 'growth.search_companies', 'growth.enrich_company'):
         assert h in handlers, h
@@ -134,6 +162,70 @@ async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # noqa: 
         assert h.startswith('growth.'), h
         assert h in _REG, f'manifest 声明的工具 handler {h} 未在网关注册表中'
         assert callable(_REG[h])
+
+
+async def test_growth_project_agent_writes_register_one_session_artifact(
+    ctx: SimpleNamespace,
+) -> None:
+    """分身创建、更新、暂停都自动登记同一 Growth 项目，并绑定工作会话与平台项目。"""
+    session = ctx.session
+    agent = ctx.agent(['agent', 'growth:read', 'growth:manage'])
+    work_session_id = f'ws_growth_project_{uuid.uuid4().hex[:8]}'
+    set_current_work_session_id(work_session_id)
+    set_current_project_id(str(ctx.platform_project_id))
+    try:
+        created = await _REG['growth.project_create'](
+            session,
+            agent,
+            {
+                'platform_project_id': str(ctx.platform_project_id),
+                'trace_id': str(uuid.uuid4()),
+                'idempotency_key': f'growth-agent-create-{uuid.uuid4()}',
+                'name': '分身创建的获客漏斗',
+            },
+        )
+        growth_project_id = created['growth_project']['id']
+        expected_uri = f'hasn://growth/projects/{growth_project_id}'
+        assert created['uri'] == expected_uri
+
+        updated = await _REG['growth.project_update'](
+            session,
+            agent,
+            {
+                'growth_project_id': growth_project_id,
+                'tagline': '已由分身补充说明',
+            },
+        )
+        assert updated['uri'] == expected_uri
+        paused = await _REG['growth.project_pause'](
+            session,
+            agent,
+            {'growth_project_id': growth_project_id},
+        )
+        assert paused['status'] == 'paused'
+        assert paused['uri'] == expected_uri
+
+        artifacts = (
+            (
+                await session.execute(
+                    select(HasnArtifacts).where(
+                        HasnArtifacts.agent_hasn_id == ctx.agent_hasn,
+                        HasnArtifacts.resource_uri == expected_uri,
+                        HasnArtifacts.status == 'active',
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(artifacts) == 1
+        artifact = artifacts[0]
+        assert artifact.session_id == work_session_id
+        assert artifact.project_id == ctx.platform_project_id
+        assert artifact.resource_kind == 'growth.project'
+    finally:
+        clear_current_project_id()
+        clear_current_work_session_id()
 
 
 async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleNamespace) -> None:

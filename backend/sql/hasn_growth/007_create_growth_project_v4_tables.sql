@@ -254,10 +254,11 @@ CREATE TABLE IF NOT EXISTS growth_project_provision (
     finished_time timestamptz,
     created_time timestamptz NOT NULL DEFAULT now(),
     updated_time timestamptz DEFAULT now(),
-    CONSTRAINT uq_growth_project_provision_command UNIQUE (command_id),
-    CONSTRAINT uq_growth_project_provision_idempotency UNIQUE (idempotency_key),
+    CONSTRAINT uq_growth_project_provision_command_step UNIQUE (command_id, step),
+    CONSTRAINT uq_growth_project_provision_idempotency_step UNIQUE (idempotency_key, step),
+    CONSTRAINT uq_growth_project_provision_project_step UNIQUE (growth_project_id, step),
     CONSTRAINT ck_growth_project_provision_status CHECK (
-        status IN ('pending', 'running', 'ready', 'failed')
+        status IN ('pending', 'running', 'success', 'failed')
     ),
     CONSTRAINT ck_growth_project_provision_attempts CHECK (attempts >= 0)
 );

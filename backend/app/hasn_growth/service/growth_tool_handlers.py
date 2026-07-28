@@ -23,6 +23,12 @@ from backend.app.hasn_growth.schema.business import CreateLeadJobParam
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.growth_project_app_service import (
+    growth_project_app_service,
+)
+from backend.app.hasn_growth.service.growth_project_provision_service import (
+    enqueue_growth_provision_after_commit,
+)
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
@@ -65,6 +71,134 @@ def _required_str(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise errors.RequestError(msg=f'{key} 不能为空')
     return value.strip()
+
+
+async def _register_growth_project(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    project: dict[str, Any],
+    *,
+    source_tool: str,
+) -> ArtifactRegistration | None:
+    project_id = project.get('id')
+    if not isinstance(project_id, str):
+        return None
+    return await register_app_resource_artifact(
+        db,
+        app_id='growth',
+        resource_kind='growth.project',
+        server_id=project_id,
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=str(project.get('name') or '获客漏斗'),
+        source_tool=source_tool,
+    )
+
+
+# ---------------- 项目（hasn.growth.project.*） ----------------
+
+
+async def handle_growth_project_get(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    growth_project_id = input_payload.get('growth_project_id')
+    if isinstance(growth_project_id, str) and growth_project_id.strip():
+        return await growth_project_app_service.get_by_id(
+            db,
+            owner_hasn_id=agent.owner_hasn_id,
+            growth_project_id=growth_project_id,
+        )
+    return await growth_project_app_service.get_for_platform(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        platform_project_id=_required_str(
+            input_payload,
+            'platform_project_id',
+        ),
+    )
+
+
+async def handle_growth_project_create(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    result = await growth_project_app_service.enable(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        owner_user_id=agent.owner_user_id,
+        platform_project_id=_required_str(
+            input_payload,
+            'platform_project_id',
+        ),
+        name=input_payload.get('name'),
+        tagline=input_payload.get('tagline'),
+        command_id=_required_str(input_payload, 'trace_id'),
+        idempotency_key=_required_str(
+            input_payload,
+            'idempotency_key',
+        ),
+    )
+    project = result['growth_project']
+    enqueue_growth_provision_after_commit(db, project['id'])
+    registration = await _register_growth_project(
+        db,
+        agent,
+        project,
+        source_tool='hasn.growth.project.create',
+    )
+    if registration is not None:
+        project['uri'] = registration.resource_uri
+        result['uri'] = registration.resource_uri
+    return result
+
+
+async def handle_growth_project_update(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    project = await growth_project_app_service.update(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=_required_str(
+            input_payload,
+            'growth_project_id',
+        ),
+        name=input_payload.get('name'),
+        tagline=input_payload.get('tagline'),
+    )
+    registration = await _register_growth_project(
+        db,
+        agent,
+        project,
+        source_tool='hasn.growth.project.update',
+    )
+    return merge_resource_uri(project, registration)
+
+
+async def handle_growth_project_pause(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    project = await growth_project_app_service.pause(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=_required_str(
+            input_payload,
+            'growth_project_id',
+        ),
+    )
+    registration = await _register_growth_project(
+        db,
+        agent,
+        project,
+        source_tool='hasn.growth.project.pause',
+    )
+    return merge_resource_uri(project, registration)
 
 
 # ---------------- 采集（hasn.growth.collect.*） ----------------

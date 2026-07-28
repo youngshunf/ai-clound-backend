@@ -34,6 +34,10 @@ from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_project_app_service import growth_project_app_service
+from backend.app.hasn_growth.service.growth_project_provision_service import (
+    enqueue_growth_provision_after_commit,
+    growth_project_provision_service,
+)
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
@@ -113,6 +117,113 @@ async def enable_growth_project(
         platform_project_id=obj.platform_project_id,
         name=obj.name,
         tagline=obj.tagline,
+        command_id=str(obj.trace_id),
+        idempotency_key=obj.idempotency_key,
+    )
+    enqueue_growth_provision_after_commit(
+        db,
+        data['growth_project']['id'],
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/pause',
+    summary='[Owner] 暂停获客自动动作',
+    dependencies=[DependsJwtAuth],
+)
+async def pause_growth_project(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_project_app_service.pause(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/archive',
+    summary='[Owner] 归档获客项目',
+    dependencies=[DependsJwtAuth],
+)
+async def archive_growth_project(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_project_app_service.archive(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/restore',
+    summary='[Owner] 恢复归档获客项目为暂停态',
+    dependencies=[DependsJwtAuth],
+)
+async def restore_growth_project(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_project_app_service.restore(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/resume',
+    summary='[Owner] 显式恢复获客自动动作',
+    dependencies=[DependsJwtAuth],
+)
+async def resume_growth_project(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_project_app_service.resume(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/provision/retry',
+    summary='[Owner] 从失败步骤重试获客基础资源开通',
+    dependencies=[DependsJwtAuth],
+)
+async def retry_growth_project_provision(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    growth = await growth_project_provision_service.retry(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    enqueue_growth_provision_after_commit(db, growth.id)
+    data = await growth_project_app_service.get_by_id(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth.id,
     )
     return response_base.success(data=data)
 
@@ -165,9 +276,7 @@ async def list_leads(
         min_score=min_score,
         limit=limit,
         reveal_pii=False,
-        growth_project_id=(
-            str(growth_project_id) if growth_project_id is not None else None
-        ),
+        growth_project_id=(str(growth_project_id) if growth_project_id is not None else None),
     )
     return response_base.success(data=data)
 
@@ -224,9 +333,7 @@ async def get_lead(
         user_id=request.user.id,
         lead_contact_id=lead_contact_id,
         reveal_pii=False,
-        growth_project_id=(
-            str(growth_project_id) if growth_project_id is not None else None
-        ),
+        growth_project_id=(str(growth_project_id) if growth_project_id is not None else None),
     )
     return response_base.success(data=data)
 
