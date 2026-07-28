@@ -59,6 +59,7 @@ async def list_agent_artifacts(
     resource_kind: Annotated[str | None, Query(description='按资源类型筛选')] = None,
     keyword: Annotated[str | None, Query(description='按标题或摘要搜索')] = None,
     status: Annotated[Literal['active', 'deleted', 'missing'], Query(description='按当前状态筛选')] = 'active',
+    cursor: Annotated[str | None, Query(description='keyset 游标（设计 02 §8.2/A16，daemon 聚合用；与 page 二选一）')] = None,
 ) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
     result = await artifact_query_service.list(
@@ -76,6 +77,7 @@ async def list_agent_artifacts(
         resource_kind=resource_kind,
         keyword=keyword,
         status=status,
+        cursor=cursor,
     )
     return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 
@@ -96,6 +98,7 @@ async def list_owner_artifacts(
     resource_kind: Annotated[str | None, Query(description='按资源类型筛选')] = None,
     keyword: Annotated[str | None, Query(description='按标题或摘要搜索')] = None,
     status: Annotated[Literal['active', 'deleted', 'missing'], Query(description='按当前状态筛选')] = 'active',
+    cursor: Annotated[str | None, Query(description='keyset 游标（设计 02 §8.2/A16，daemon 聚合用；与 page 二选一）')] = None,
 ) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
     result = await artifact_query_service.list(
@@ -113,6 +116,7 @@ async def list_owner_artifacts(
         resource_kind=resource_kind,
         keyword=keyword,
         status=status,
+        cursor=cursor,
     )
     return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 
@@ -137,6 +141,7 @@ async def list_artifacts_by_origin(
     resource_kind: Annotated[str | None, Query(description='按资源类型筛选')] = None,
     keyword: Annotated[str | None, Query(description='按标题或摘要搜索')] = None,
     status: Annotated[Literal['active', 'deleted', 'missing'], Query(description='按当前状态筛选')] = 'active',
+    cursor: Annotated[str | None, Query(description='keyset 游标（设计 02 §8.2/A16，daemon 聚合用；与 page 二选一）')] = None,
 ) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
     result = await artifact_query_service.list(
@@ -154,6 +159,7 @@ async def list_artifacts_by_origin(
         resource_kind=resource_kind,
         keyword=keyword,
         status=status,
+        cursor=cursor,
     )
     return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 
@@ -178,6 +184,7 @@ async def list_artifacts_by_session(
     resource_kind: Annotated[str | None, Query(description='按资源类型筛选')] = None,
     keyword: Annotated[str | None, Query(description='按标题或摘要搜索')] = None,
     status: Annotated[Literal['active', 'deleted', 'missing'], Query(description='按当前状态筛选')] = 'active',
+    cursor: Annotated[str | None, Query(description='keyset 游标（设计 02 §8.2/A16，daemon 聚合用；与 page 二选一）')] = None,
 ) -> ResponseSchemaModel[ArtifactListPage]:
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
     result = await artifact_query_service.list(
@@ -195,6 +202,7 @@ async def list_artifacts_by_session(
         resource_kind=resource_kind,
         keyword=keyword,
         status=status,
+        cursor=cursor,
     )
     return cast(ResponseSchemaModel[ArtifactListPage], response_base.success(data=result))
 

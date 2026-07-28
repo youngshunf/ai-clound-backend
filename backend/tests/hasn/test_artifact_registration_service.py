@@ -17,6 +17,7 @@ from backend.app.hasn.service.artifact_query_service import artifact_query_servi
 from backend.app.hasn.service.artifact_registration_outbox_service import artifact_registration_outbox_service
 from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
 from backend.app.mcp.artifact_registration import register_app_resource_artifact
+from backend.common.exception import errors
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
 
@@ -754,5 +755,126 @@ async def test_supersede_merge_survives_concurrent_target_insert() -> None:
             assert any(row.dispatch_id == 'v2_race_dispatch' for row in contributions), (
                 '归并撞键后本笔登记的参与记录仍须落库'
             )
+        finally:
+            await db.rollback()
+
+
+async def test_list_orders_by_updated_time_desc_then_artifact_id() -> None:
+    """设计 02 §8.2：排序键统一 `(updated_time DESC, artifact_id DESC)`，与本地索引对齐——
+    daemon 合并本地/云端两个分页源时只有同一排序键才能稳定去重。"""
+    owner = _id('owner')
+    agent = _id('agent')
+
+    async with async_db_session() as db:
+        try:
+            ids: list[str] = []
+            for index in range(3):
+                created = await artifact_registration_service.register(
+                    db,
+                    _resource_mutation(
+                        owner=owner,
+                        agent=agent,
+                        action='create',
+                        dispatch_id=f'order_dispatch_{index}',
+                        session_id=None,
+                        project_id=None,
+                        title=f'产物{index}',
+                    ).model_copy(
+                        update={'resource_uri': f'hasn://deck/deck_order_{index}'}
+                    ),
+                )
+                ids.append(created.artifact_id)
+
+            # 回写确定时间戳：t3 > t2 > t1；同刻两条靠 artifact_id DESC 决胜。
+            base = timezone.now()
+            await db.execute(
+                update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == ids[0])
+                .values(updated_time=base)
+            )
+            await db.execute(
+                update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == ids[1])
+                .values(updated_time=base)
+            )
+            await db.execute(
+                update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == ids[2])
+                .values(updated_time=base.replace(year=base.year - 1))
+            )
+
+            page = await artifact_query_service.list(db, owner_hasn_id=owner, size=10)
+
+            assert page.total == 3
+            got = [item.artifact_id for item in page.items]
+            # 同刻两条按 artifact_id 字典序倒序，最后是去年那条。
+            same_tick = sorted([ids[0], ids[1]], reverse=True)
+            assert got == [*same_tick, ids[2]]
+            # updated_time 回落与 DTO 同口径：排序键不显式 updated_time 时用 created_time。
+            assert page.items[0].updated_time is not None
+        finally:
+            await db.rollback()
+
+
+async def test_list_keyset_cursor_paginates_without_overlap() -> None:
+    """keyset 游标（A16）：翻页不重不漏；total 恒为全量权威值（云端单一数据源）。"""
+    owner = _id('owner')
+    agent = _id('agent')
+
+    async with async_db_session() as db:
+        try:
+            ids: list[str] = []
+            for index in range(3):
+                created = await artifact_registration_service.register(
+                    db,
+                    _resource_mutation(
+                        owner=owner,
+                        agent=agent,
+                        action='create',
+                        dispatch_id=f'cursor_dispatch_{index}',
+                        session_id=None,
+                        project_id=None,
+                        title=f'产物{index}',
+                    ).model_copy(
+                        update={'resource_uri': f'hasn://deck/deck_cursor_{index}'}
+                    ),
+                )
+                ids.append(created.artifact_id)
+
+            base = timezone.now()
+            for index, artifact_id in enumerate(ids):
+                await db.execute(
+                    update(HasnArtifacts)
+                    .where(HasnArtifacts.artifact_id == artifact_id)
+                    .values(updated_time=base.replace(hour=10 - index))
+                )
+
+            first = await artifact_query_service.list(db, owner_hasn_id=owner, size=2)
+            assert first.total == 3
+            assert [item.artifact_id for item in first.items] == [ids[0], ids[1]]
+
+            tail = first.items[-1]
+            from backend.app.hasn.service.artifact_query_service import encode_keyset_cursor
+
+            cursor = encode_keyset_cursor(tail.updated_time, tail.artifact_id)
+            second = await artifact_query_service.list(
+                db, owner_hasn_id=owner, size=2, cursor=cursor
+            )
+            assert second.total == 3, 'keyset 翻页下 total 仍是全量权威值，不是剩余条数'
+            assert [item.artifact_id for item in second.items] == [ids[2]]
+        finally:
+            await db.rollback()
+
+
+async def test_list_rejects_broken_cursor() -> None:
+    """损坏/手改的游标一律 422——静默退回第一页会丢页还看似正常。"""
+    owner = _id('owner')
+
+    async with async_db_session() as db:
+        try:
+            # 空串与未传同义（不进 decode）；其余损坏/手改形态一律 422。
+            for bad in ('not-a-cursor', '2026-01-01|', '|art_x', 'garbage|art_x'):
+                with pytest.raises(errors.RequestError):
+                    await artifact_query_service.list(db, owner_hasn_id=owner, cursor=bad)
         finally:
             await db.rollback()

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from uuid import UUID
 
-from sqlalchemy import case, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
 from backend.app.hasn.model import HasnAgents, HasnArtifactContributions, HasnArtifacts, HasnHumans
@@ -22,9 +23,34 @@ from backend.app.hasn.schema.artifact_contract import (
 )
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
+from backend.common.exception import errors
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+def encode_keyset_cursor(updated_time: datetime, artifact_id: str) -> str:
+    """把排序键末行编码为 keyset 游标（设计 02 §8.2/A16）。
+
+    格式 `{isoformat}|{artifact_id}`：artifact_id 是 ULID/文本、不含 `|`；
+    ISO 时间戳保留时区，decode 回同瞬时不漂移。
+    """
+    return f'{updated_time.isoformat()}|{artifact_id}'
+
+
+def decode_keyset_cursor(cursor: str) -> tuple[datetime, str]:
+    """解码 keyset 游标；损坏/手改的游标一律 422，不静默退回第一页（那会丢页还看似正常）。"""
+    raw = (cursor or '').strip()
+    if not raw or '|' not in raw:
+        raise errors.RequestError(msg='cursor 格式无效')
+    ts_text, _, artifact_id = raw.rpartition('|')
+    if not artifact_id:
+        raise errors.RequestError(msg='cursor 格式无效')
+    try:
+        updated_time = datetime.fromisoformat(ts_text)
+    except ValueError:
+        raise errors.RequestError(msg='cursor 格式无效') from None
+    return updated_time, artifact_id
 
 
 class ArtifactQueryService:
@@ -104,8 +130,16 @@ class ArtifactQueryService:
         page: int = 1,
         size: int = 20,
         current_node_id: str | None = None,
+        cursor: str | None = None,
     ) -> ArtifactListPage:
-        """按 owner 和可选上下文读取当前态，并选出该上下文内最新参与记录。"""
+        """按 owner 和可选上下文读取当前态，并选出该上下文内最新参与记录。
+
+        排序键统一 `(updated_time DESC, artifact_id DESC)`（设计 02 §8.2，与本地
+        `idx_agent_artifacts_owner_updated` 对齐）——daemon 本地优先合并两个分页源时
+        只有同一排序键才能稳定去重。`cursor` 非空时按 keyset 过滤（编码见
+        `encode_keyset_cursor`），与 `page` 叠加语义为「先 keyset 再偏移」，daemon
+        聚合只传其一。
+        """
         page = max(1, page)
         size = max(1, min(size, 100))
 
@@ -220,11 +254,24 @@ class ArtifactQueryService:
         )
         total = (await db.execute(select(func.count()).select_from(statement.subquery()))).scalar_one()
 
+        # 排序键对齐设计 02 §8.2：`(updated_time DESC, artifact_id DESC)`，与本地索引
+        # `idx_agent_artifacts_owner_updated` 同键——daemon 合并本地/云端两源 keyset 分页时
+        # 靠同键稳定去重。`updated_time` 可空，统一回落 `created_time`（DTO 同口径）。
+        sort_key = func.coalesce(HasnArtifacts.updated_time, HasnArtifacts.created_time)
+        if cursor:
+            cursor_time, cursor_artifact_id = decode_keyset_cursor(cursor)
+            statement = statement.where(
+                or_(
+                    sort_key < cursor_time,
+                    and_(sort_key == cursor_time, HasnArtifacts.artifact_id < cursor_artifact_id),
+                )
+            )
+
         rows = (
             await db.execute(
                 statement.order_by(
-                    HasnArtifactContributions.occurred_time.desc(),
-                    HasnArtifactContributions.id.desc(),
+                    sort_key.desc(),
+                    HasnArtifacts.artifact_id.desc(),
                 )
                 .offset((page - 1) * size)
                 .limit(size)
