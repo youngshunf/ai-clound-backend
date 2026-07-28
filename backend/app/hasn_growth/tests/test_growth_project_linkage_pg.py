@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -20,6 +23,7 @@ from backend.app.hasn_growth.model.opportunity import Opportunity
 # 单文件测试显式触发生产注册链的两个 Growth 模块。
 from backend.app.hasn_growth.service import project_linkage as _growth_project_linkage  # ruff: ignore[unused-import]
 from backend.app.hasn_growth.service import resource_adapter as _growth_resource_adapter  # ruff: ignore[unused-import]
+from backend.app.hasn_growth.service.growth_project_app_service import growth_project_app_service
 from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.exception import errors
@@ -233,3 +237,184 @@ async def test_growth_resource_adapters_load_only_authoritative_server_ids(
         assert meta.owner_hasn_id == owner
         assert meta.visibility == 'private'
         assert await adapter.load_meta(session, f'local-{server_id}') is None
+
+
+async def test_growth_project_enable_is_owner_scoped_and_idempotent(
+    session: AsyncSession,
+) -> None:
+    owner = 'h_growth_enable_owner'
+    platform_project = await _seed_project(
+        session,
+        owner=owner,
+        name='待启用项目',
+    )
+
+    created = await growth_project_app_service.enable(
+        session,
+        owner_hasn_id=owner,
+        owner_user_id=101,
+        platform_project_id=platform_project.id,
+        name=None,
+        tagline='测试标语',
+    )
+    replayed = await growth_project_app_service.enable(
+        session,
+        owner_hasn_id=owner,
+        owner_user_id=101,
+        platform_project_id=platform_project.id,
+        name=None,
+        tagline='测试标语',
+    )
+    assert created['created'] is True
+    assert replayed['created'] is False
+    assert replayed['growth_project']['id'] == created['growth_project']['id']
+    assert replayed['growth_project']['platform_project_id'] == str(
+        platform_project.id
+    )
+
+    current = await growth_project_app_service.get_for_platform(
+        session,
+        owner_hasn_id=owner,
+        platform_project_id=platform_project.id,
+    )
+    assert current['platform_project']['id'] == str(platform_project.id)
+    assert current['growth_project']['id'] == created['growth_project']['id']
+
+    with pytest.raises(errors.ConflictError) as duplicate:
+        await growth_project_app_service.enable(
+            session,
+            owner_hasn_id=owner,
+            owner_user_id=101,
+            platform_project_id=platform_project.id,
+            name='另一创建意图',
+            tagline='测试标语',
+        )
+    assert (
+        duplicate.value.data['error_code']
+        == 'GROWTH_PROJECT_ALREADY_EXISTS'
+    )
+
+    with pytest.raises(errors.NotFoundError):
+        await growth_project_app_service.get_by_id(
+            session,
+            owner_hasn_id='h_growth_enable_intruder',
+            growth_project_id=created['growth_project']['id'],
+        )
+
+
+async def test_growth_project_enable_rejects_archived_and_enterprise_projects(
+    session: AsyncSession,
+) -> None:
+    owner = 'h_growth_enable_gate_owner'
+    archived = HasnProject(owner_id=owner, name='已归档', status='archived')
+    enterprise = HasnProject(
+        owner_id=owner,
+        name='企业项目',
+        status='active',
+        enterprise_id='11111111-1111-4111-8111-111111111111',
+    )
+    session.add_all([archived, enterprise])
+    await session.flush()
+
+    with pytest.raises(errors.ConflictError) as archived_error:
+        await growth_project_app_service.enable(
+            session,
+            owner_hasn_id=owner,
+            owner_user_id=102,
+            platform_project_id=archived.id,
+            name=None,
+            tagline=None,
+        )
+    assert archived_error.value.data['error_code'] == 'PROJECT_ARCHIVED'
+
+    with pytest.raises(errors.RequestError) as enterprise_error:
+        await growth_project_app_service.enable(
+            session,
+            owner_hasn_id=owner,
+            owner_user_id=102,
+            platform_project_id=enterprise.id,
+            name=None,
+            tagline=None,
+        )
+    assert enterprise_error.value.code == 422
+    assert (
+        enterprise_error.value.data['error_code']
+        == 'ENTERPRISE_IDENTITY_MAPPING_REQUIRED'
+    )
+
+
+async def test_concurrent_growth_project_create_conflict_is_deterministic() -> None:
+    """两个真实事务竞争同一平台项目锁，第二个不同创建意图稳定返回 409。"""
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    owner = 'h_growth_concurrent_owner'
+    setup = sessions()
+    first = sessions()
+    second = sessions()
+    platform_project_id = None
+    try:
+        await _apply_sql(setup)
+        platform_project = HasnProject(
+            owner_id=owner,
+            name='并发项目',
+            status='active',
+        )
+        setup.add(platform_project)
+        await setup.commit()
+        platform_project_id = platform_project.id
+
+        created = await growth_project_app_service.enable(
+            first,
+            owner_hasn_id=owner,
+            owner_user_id=103,
+            platform_project_id=platform_project.id,
+            name='并发漏斗 A',
+            tagline=None,
+        )
+        assert created['created'] is True
+
+        second_request = asyncio.create_task(
+            growth_project_app_service.enable(
+                second,
+                owner_hasn_id=owner,
+                owner_user_id=103,
+                platform_project_id=platform_project.id,
+                name='并发漏斗 B',
+                tagline=None,
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not second_request.done()
+
+        await first.commit()
+        with pytest.raises(errors.ConflictError) as conflict:
+            await second_request
+        assert (
+            conflict.value.data['error_code']
+            == 'GROWTH_PROJECT_ALREADY_EXISTS'
+        )
+        await second.rollback()
+    finally:
+        await first.rollback()
+        await second.rollback()
+        await first.close()
+        await second.close()
+        await setup.close()
+        if platform_project_id is not None:
+            cleanup = sessions()
+            try:
+                await cleanup.execute(
+                    sa.delete(GrowthProject).where(
+                        GrowthProject.platform_project_id
+                        == platform_project_id
+                    )
+                )
+                await cleanup.execute(
+                    sa.delete(HasnProject).where(
+                        HasnProject.id == platform_project_id
+                    )
+                )
+                await cleanup.commit()
+            finally:
+                await cleanup.close()
+        await engine.dispose()

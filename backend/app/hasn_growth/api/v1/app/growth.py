@@ -28,21 +28,92 @@ from backend.app.hasn_growth.schema.funnel import (
     RequestLeadsParam,
     UpdateStageParam,
 )
+from backend.app.hasn_growth.schema.project_app import EnableGrowthProjectBody
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.growth_project_app_service import growth_project_app_service
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.playbook_service import playbook_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import resolve_growth_scope
+from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 from backend.utils.trace_id import get_request_trace_id
 
 router = APIRouter()
+
+
+async def _resolve_owner_hasn_id(db: CurrentSession, request: Request) -> str:
+    """只信任 Owner JWT 解析出的主人身份，不接收客户端自报 owner。"""
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    if not scope.owner_hasn_id:
+        raise errors.ForbiddenError(msg='当前账号尚未绑定主人身份')
+    return scope.owner_hasn_id
+
+
+@router.get(
+    '/projects/by-platform/{platform_project_id}',
+    summary='[Owner] 当前平台项目的获客漏斗',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project_by_platform(
+    request: Request,
+    db: CurrentSession,
+    platform_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_project_app_service.get_for_platform(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        platform_project_id=platform_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}',
+    summary='[Owner] 按云端 ID 读取获客漏斗',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_project_app_service.get_by_id(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects',
+    summary='[Owner] 为平台项目启用获客漏斗',
+    dependencies=[DependsJwtAuth],
+)
+async def enable_growth_project(
+    request: Request,
+    db: CurrentSessionTransaction,
+    obj: EnableGrowthProjectBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_project_app_service.enable(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        owner_user_id=request.user.id,
+        platform_project_id=obj.platform_project_id,
+        name=obj.name,
+        tagline=obj.tagline,
+    )
+    return response_base.success(data=data)
 
 
 @router.post(

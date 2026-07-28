@@ -132,6 +132,12 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     session.add(lead)
     platform_project = HasnProject(owner_id=owner, name=f'获客项目-{tag}', status='active')
     session.add(platform_project)
+    empty_platform_project = HasnProject(
+        owner_id=owner,
+        name=f'待启用获客-{tag}',
+        status='active',
+    )
+    session.add(empty_platform_project)
     enterprise_platform_project = HasnProject(
         owner_id=owner,
         name=f'企业获客项目-{tag}',
@@ -173,17 +179,16 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     )
     session.add(enterprise_site)
     await session.flush()
-    session.add(
-        GrowthProject(
-            platform_project_id=platform_project.id,
-            user_id=owner_uid,
-            owner_hasn_id=owner,
-            name=f'获客漏斗-{tag}',
-            landing_site_ref=f'hasn://publish/sites/{landing_site.id}',
-            status='active',
-            provision_status='ready',
-        )
+    personal_growth_project = GrowthProject(
+        platform_project_id=platform_project.id,
+        user_id=owner_uid,
+        owner_hasn_id=owner,
+        name=f'获客漏斗-{tag}',
+        landing_site_ref=f'hasn://publish/sites/{landing_site.id}',
+        status='active',
+        provision_status='ready',
     )
+    session.add(personal_growth_project)
     session.add(
         GrowthProject(
             platform_project_id=enterprise_platform_project.id,
@@ -239,6 +244,10 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             publish_ref=publish_ref,
             unbound_publish_ref=unbound_publish_ref,
             enterprise_publish_ref=enterprise_publish_ref,
+            platform_project_id=platform_project.id,
+            growth_project_id=personal_growth_project.id,
+            empty_platform_project_id=empty_platform_project.id,
+            enterprise_platform_project_id=enterprise_platform_project.id,
             state=state,
         )
     finally:
@@ -255,6 +264,51 @@ def _ok(resp: httpx.Response) -> dict:
     assert set(body) >= {'code', 'msg', 'data'}, body  # 统一信封铁律
     assert body['code'] == 200, body
     return body['data']
+
+
+async def test_owner_growth_project_context_http_contract(e2e) -> None:
+    owner_api = '/api/v1/growth/app'
+
+    current = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/by-platform/{e2e.platform_project_id}'
+        )
+    )
+    assert current['platform_project']['id'] == str(e2e.platform_project_id)
+    assert current['growth_project']['id'] == str(e2e.growth_project_id)
+
+    detail = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/{e2e.growth_project_id}'
+        )
+    )
+    assert detail['platform_project_id'] == str(e2e.platform_project_id)
+
+    before_enable = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/by-platform/{e2e.empty_platform_project_id}'
+        )
+    )
+    assert before_enable['growth_project'] is None
+    enabled = _ok(
+        await e2e.client.post(
+            f'{owner_api}/projects',
+            json={
+                'platform_project_id': str(e2e.empty_platform_project_id),
+                'name': 'HTTP 启用漏斗',
+            },
+        )
+    )
+    assert enabled['created'] is True
+    assert (
+        enabled['growth_project']['platform_project_id']
+        == str(e2e.empty_platform_project_id)
+    )
+
+    enterprise = await e2e.client.get(
+        f'{owner_api}/projects/by-platform/{e2e.enterprise_platform_project_id}'
+    )
+    assert enterprise.status_code == 422
 
 
 async def test_four_scope_funnel_flow(e2e) -> None:

@@ -1,8 +1,11 @@
 """获客项目化 S2 manifest、挂靠与资源 ACL 静态契约测试。"""
 
+from fastapi.routing import APIRoute
+
 from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.app_catalog_registry import app_catalog_registry
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
+from backend.app.hasn_growth.api.v1.app.growth import router as growth_app_router
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 
@@ -80,3 +83,15 @@ def test_growth_resource_acl_adapters_are_registered() -> None:
         'growth_customer',
         'growth_opportunity',
     } <= registered
+
+
+def test_growth_owner_project_routes_exist_without_rebind() -> None:
+    paths = {
+        route.path
+        for route in growth_app_router.routes
+        if isinstance(route, APIRoute)
+    }
+    assert '/projects/by-platform/{platform_project_id}' in paths
+    assert '/projects/{growth_project_id}' in paths
+    assert '/projects' in paths
+    assert not [path for path in paths if 'rebind' in path]
