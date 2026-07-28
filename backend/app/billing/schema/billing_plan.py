@@ -1,7 +1,8 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Self
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -18,6 +19,16 @@ class BillingPlanSchemaBase(SchemaBase):
     grace_json: dict = Field(description='宽限策略（remind_days/grace_days，到期提醒节奏+宽限天数）')
     status: str = Field(description='状态 (active:上架:green/inactive:下架:gray)')
     sort_order: int = Field(description='排序权重')
+
+    @model_validator(mode='after')
+    def validate_storage_quota(self) -> Self:
+        """LLM 套餐必须显式携带精确的正整数字节配额。"""
+        if self.offering_key != 'llm:tier':
+            return self
+        storage_bytes = self.quota_json.get('storage_bytes')
+        if isinstance(storage_bytes, bool) or not isinstance(storage_bytes, int) or storage_bytes <= 0:
+            raise ValueError('llm:tier 的 quota_json.storage_bytes 必须是正整数')
+        return self
 
 
 class CreateBillingPlanParam(BillingPlanSchemaBase):

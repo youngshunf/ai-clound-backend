@@ -1,60 +1,52 @@
-import urllib.parse
+"""旧 OwnerKey 上传入口的用户云存储薄代理。"""
 
-from datetime import datetime
+from __future__ import annotations
+
 from typing import Annotated
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Header, UploadFile
+from sqlalchemy import text
 
+from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 from backend.common.dataclasses import UploadUrl
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.owner_key_auth import DependsOwnerKeyAuth
-from backend.database.db import CurrentSession
-from backend.plugin.s3.crud.storage import s3_storage_dao
-from backend.plugin.s3.utils.file_ops import write_file
+from backend.database.db import CurrentSession, async_db_session
 
 router = APIRouter()
+_owner_storage = OwnerStorageService(async_db_session)
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
-@router.post(
-    '/upload',
-    summary='用户 Agent 文件上传',
-    description='使用 OwnerKey 认证，上传文件到 OSS',
-)
+@router.post('/upload', summary='用户 Agent 文件上传（兼容入口）')
 async def user_upload_s3_files(
     db: CurrentSession,
     file: Annotated[UploadFile, File()],
+    idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=128)],
     user_id: int = DependsOwnerKeyAuth,
 ) -> ResponseSchemaModel[UploadUrl]:
-    s3_storages = await s3_storage_dao.get_all(db)
-    if not s3_storages:
-        raise errors.NotFoundError(msg='系统未开启或未配置 S3 存储')
+    owner_hasn_id = (
+        await db.execute(
+            text("SELECT hasn_id FROM hasn_humans WHERE user_id = :user_id AND status = 'active' LIMIT 1"),
+            {'user_id': user_id},
+        )
+    ).scalar_one_or_none()
+    if owner_hasn_id is None:
+        raise errors.NotFoundError(msg='STORAGE_OWNER_IDENTITY_NOT_READY')
 
-    # 取第一个 S3 配置作为 Agent 使用的配置
-    s3_storage = s3_storages[0]
+    async def chunks():
+        while chunk := await file.read(_UPLOAD_CHUNK_SIZE):
+            yield chunk
 
-    if not file or not file.filename:
-        raise errors.RequestError(msg='上传文件不能为空')
-
-    date_str = datetime.now().strftime('%Y/%m/%d')
-    original_filename = file.filename
-    # 存储路径: agent_uploads/{user_id}/年/月/日/filename（年/月/日层级目录，加前缀防冲突）
-    file.filename = f'agent_uploads/{user_id}/{date_str}/{original_filename}'
-
-    await write_file(s3_storage, file)
-
-    encoded_filename = urllib.parse.quote(file.filename)
-
-    # 构建完整 URL，参考 plugin/s3/api/v1/file.py
-    if s3_storage.cdn_domain:
-        base_url = s3_storage.cdn_domain.rstrip('/')
-        url = f'{base_url}/{encoded_filename}'
-    else:
-        bucket_path = f'/{s3_storage.bucket}'
-        if s3_storage.prefix:
-            prefix = s3_storage.prefix if s3_storage.prefix.startswith('/') else f'/{s3_storage.prefix}'
-            url = f'{s3_storage.endpoint}{bucket_path}{prefix}/{encoded_filename}'
-        else:
-            url = f'{s3_storage.endpoint}{bucket_path}/{encoded_filename}'
-
-    return response_base.success(data={'url': url})
+    stored = await _owner_storage.upload(
+        owner_hasn_id=str(owner_hasn_id),
+        chunks=chunks(),
+        declared_size=file.size,
+        filename=file.filename or '未命名文件',
+        mime=file.content_type or 'application/octet-stream',
+        category='user_upload',
+        source_app='legacy_owner_key_upload',
+        idempotency_key=idempotency_key,
+    )
+    return response_base.success(data={'url': stored.uri})

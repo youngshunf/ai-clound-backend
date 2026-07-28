@@ -1,12 +1,14 @@
 import asyncio
 import hashlib
 
-from collections.abc import AsyncIterable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from typing import BinaryIO
 from urllib.parse import unquote, urlsplit
 
 import httpx
 
+import boto3  # type: ignore[import-untyped]
+from botocore.config import Config  # type: ignore[import-untyped]
 from fastapi import UploadFile
 from opendal import AsyncOperator
 from qiniu import Auth, put_data, put_stream_v2  # type: ignore[import-untyped]
@@ -86,6 +88,158 @@ def get_operator_for_storage(s3_storage: S3Storage) -> AsyncOperator:
         s3_storage.prefix or '/',
         s3_storage.region or 'any',
     )
+
+
+def _provider_object_key(s3_storage: S3Storage, object_key: str) -> str:
+    """把相对存储根的对象键转换为供应商桶内完整键。"""
+    clean_key = _clean_object_path(object_key)
+    prefix = _public_prefix(s3_storage.prefix)
+    return '/'.join(part for part in (prefix, clean_key) if part)
+
+
+def _s3_client(s3_storage: S3Storage):
+    """创建短生命周期 S3 客户端，供受控 multipart 原语使用。"""
+    return boto3.client(
+        's3',
+        endpoint_url=s3_storage.endpoint,
+        aws_access_key_id=s3_storage.access_key,
+        aws_secret_access_key=s3_storage.secret_key,
+        region_name=s3_storage.region or 'us-east-1',
+        config=Config(
+            signature_version='s3v4',
+            s3={'addressing_style': 'virtual'},
+            retries={'max_attempts': 1, 'mode': 'standard'},
+            connect_timeout=20,
+            read_timeout=1800,
+        ),
+    )
+
+
+async def create_multipart_upload(
+    s3_storage: S3Storage,
+    object_key: str,
+    *,
+    content_type: str,
+) -> str:
+    """在真实 S3 兼容服务创建 multipart 会话。"""
+    clean_key = _clean_object_path(object_key)
+    _reject_reserved_immutable_mutation(clean_key)
+    provider_key = _provider_object_key(s3_storage, clean_key)
+
+    def create() -> str:
+        response = _s3_client(s3_storage).create_multipart_upload(
+            Bucket=s3_storage.bucket,
+            Key=provider_key,
+            ContentType=content_type,
+        )
+        upload_id = response.get('UploadId')
+        if not upload_id:
+            raise RuntimeError('对象存储未返回 UploadId')
+        return str(upload_id)
+
+    try:
+        return await asyncio.to_thread(create)
+    except Exception as exc:
+        log.exception(f'S3 multipart 初始化失败: {type(exc).__name__}: {exc!r}')
+        raise errors.ServerError(msg=f'S3 multipart 初始化失败: {type(exc).__name__}: {exc!s}') from exc
+
+
+async def upload_multipart_part(
+    s3_storage: S3Storage,
+    object_key: str,
+    *,
+    upload_id: str,
+    part_number: int,
+    file: BinaryIO,
+    size: int,
+) -> str:
+    """上传一个 multipart 分片，并返回完成会话所需的 ETag。"""
+    clean_key = _clean_object_path(object_key)
+    provider_key = _provider_object_key(s3_storage, clean_key)
+    if part_number < 1 or part_number > 10_000:
+        raise errors.RequestError(msg='multipart 分片序号必须在 1 到 10000 之间')
+    if size <= 0:
+        raise errors.RequestError(msg='multipart 分片不能为空')
+
+    def upload() -> str:
+        file.seek(0)
+        response = _s3_client(s3_storage).upload_part(
+            Bucket=s3_storage.bucket,
+            Key=provider_key,
+            UploadId=upload_id,
+            PartNumber=part_number,
+            Body=file,
+            ContentLength=size,
+        )
+        etag = response.get('ETag')
+        if not etag:
+            raise RuntimeError('对象存储未返回分片 ETag')
+        return str(etag)
+
+    try:
+        return await asyncio.to_thread(upload)
+    except Exception as exc:
+        log.exception(f'S3 multipart 分片上传失败: {type(exc).__name__}: {exc!r}')
+        raise errors.ServerError(msg=f'S3 multipart 分片上传失败: {type(exc).__name__}: {exc!s}') from exc
+
+
+async def complete_multipart_upload(
+    s3_storage: S3Storage,
+    object_key: str,
+    *,
+    upload_id: str,
+    parts: Sequence[tuple[int, str]],
+) -> None:
+    """按序提交 multipart 会话。"""
+    clean_key = _clean_object_path(object_key)
+    provider_key = _provider_object_key(s3_storage, clean_key)
+    ordered = sorted(parts)
+    if not ordered or [number for number, _ in ordered] != list(range(1, len(ordered) + 1)):
+        raise errors.RequestError(msg='multipart 分片必须从 1 开始连续')
+
+    def complete() -> None:
+        _s3_client(s3_storage).complete_multipart_upload(
+            Bucket=s3_storage.bucket,
+            Key=provider_key,
+            UploadId=upload_id,
+            MultipartUpload={
+                'Parts': [{'PartNumber': number, 'ETag': etag} for number, etag in ordered],
+            },
+        )
+
+    try:
+        await asyncio.to_thread(complete)
+    except Exception as exc:
+        log.exception(f'S3 multipart 完成失败: {type(exc).__name__}: {exc!r}')
+        raise errors.ServerError(msg=f'S3 multipart 完成失败: {type(exc).__name__}: {exc!s}') from exc
+
+
+async def abort_multipart_upload(
+    s3_storage: S3Storage,
+    object_key: str,
+    *,
+    upload_id: str,
+) -> None:
+    """幂等终止 multipart 会话并清理供应商侧残留分片。"""
+    clean_key = _clean_object_path(object_key)
+    provider_key = _provider_object_key(s3_storage, clean_key)
+
+    def abort() -> None:
+        _s3_client(s3_storage).abort_multipart_upload(
+            Bucket=s3_storage.bucket,
+            Key=provider_key,
+            UploadId=upload_id,
+        )
+
+    try:
+        await asyncio.to_thread(abort)
+    except Exception as exc:
+        response = getattr(exc, 'response', None)
+        error = response.get('Error', {}) if isinstance(response, dict) else {}
+        if error.get('Code') in {'NoSuchUpload', 'NoSuchKey'}:
+            return
+        log.exception(f'S3 multipart 终止失败: {type(exc).__name__}: {exc!r}')
+        raise errors.ServerError(msg=f'S3 multipart 终止失败: {type(exc).__name__}: {exc!s}') from exc
 
 
 def pick_public_storage(storages: Sequence[S3Storage]) -> S3Storage | None:
@@ -251,6 +405,74 @@ async def sha256_object(s3_storage: S3Storage, object_key: str) -> tuple[str, in
         log.exception(f'S3 对象校验失败: {type(exc).__name__}: {exc!r}')
         raise errors.ServerError(msg=f'校验 S3 对象失败: {type(exc).__name__}: {exc!s}') from exc
     return digest.hexdigest(), size
+
+
+async def read_object_stream(
+    s3_storage: S3Storage,
+    object_key: str,
+    *,
+    expected_size: int,
+) -> AsyncIterator[bytes]:
+    """以有界内存读取对象，供跨存储复制使用。"""
+    clean_path = _clean_object_path(object_key)
+    signed = await presign_read_key(s3_storage, clean_path, 1800)
+    received = 0
+    try:
+        async with (
+            httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=20.0), trust_env=False) as client,
+            client.stream('GET', signed) as response,
+        ):
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                received += len(chunk)
+                if received > expected_size:
+                    raise errors.ServerError(msg='跨存储复制源对象大小超过权威记录')
+                yield chunk
+    except errors.BaseExceptionError:
+        raise
+    except httpx.HTTPStatusError as exc:
+        body = await exc.response.aread()
+        detail = body[:300].decode('utf-8', errors='replace') if body else exc.response.reason_phrase
+        raise errors.ServerError(msg=f'跨存储读取源对象失败: HTTP {exc.response.status_code} {detail}') from exc
+    except Exception as exc:
+        log.exception(f'跨存储读取源对象失败: {type(exc).__name__}: {exc!r}')
+        raise errors.ServerError(msg=f'跨存储读取源对象失败: {type(exc).__name__}: {exc!s}') from exc
+    if received != expected_size:
+        raise errors.ServerError(msg='跨存储复制源对象大小与权威记录不一致')
+
+
+async def copy_object_between_storages(
+    source: S3Storage,
+    source_key: str,
+    target: S3Storage,
+    target_key: str,
+    *,
+    size: int,
+    content_type: str,
+) -> None:
+    """同存储优先服务端复制，跨存储时以有界流中转。"""
+    clean_source = _clean_object_path(source_key)
+    clean_target = _clean_object_path(target_key)
+    _reject_reserved_immutable_mutation(clean_target)
+    same_root = (
+        source.endpoint == target.endpoint
+        and source.bucket == target.bucket
+        and normalize_storage_root(source.prefix) == normalize_storage_root(target.prefix)
+    )
+    if same_root:
+        operator = get_operator_for_storage(target)
+        try:
+            await operator.copy(clean_source, clean_target)
+            return
+        except Exception as exc:
+            raise errors.ServerError(msg=f'S3 服务端复制失败: {type(exc).__name__}: {exc!s}') from exc
+    await write_stream(
+        target,
+        clean_target,
+        read_object_stream(source, clean_source, expected_size=size),
+        size=size,
+        content_type=content_type,
+    )
 
 
 async def delete_object(s3_storage: S3Storage, object_key: str) -> None:

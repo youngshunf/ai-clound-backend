@@ -25,11 +25,13 @@ from sqlalchemy import func, select
 from backend.app.hasn.model.hasn_ai_native_app_audit import HasnAiNativeAppAudit
 from backend.app.hasn.service.authz import Subject  # G6：收编来源，模块级再导出（既有调用点不变）
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 from backend.app.hasn.service.resource_share_service import rank, resource_share_service
 from backend.app.hasn_knowledge.model import AgentKbGrant, Document, DocumentVersion, Folder, Kb
 from backend.app.hasn_knowledge.service.instance import resolve_knowledge_instance
 from backend.app.hasn_knowledge.service.ragflow_client import KnowledgeProviderError
 from backend.common.exception import errors
+from backend.database.db import async_db_session
 from backend.plugin.s3.service.storage_service import storage_service
 from backend.utils.timezone import timezone
 
@@ -53,6 +55,7 @@ MAX_NATIVE_CONTENT_CHARS = 5000
 _DOC_LINK_RE = re.compile(r'hasn://knowledge/documents/(\d+)')
 # folder_id 查询参数的「库根」哨兵（真实 id 从 1 起）
 ROOT_FOLDER_SENTINEL = 0
+_owner_storage = OwnerStorageService(async_db_session)
 
 _GRANT_MODES = ('inherit', 'restricted', 'denied')
 
@@ -862,6 +865,7 @@ class KnowledgeService:
         folder_id: int | None = None,
         source: str = 'ui',
         agent_hasn_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """§4.3-A：原件落私有桶（权威，失败=整次失败）→ 落行 → 推引擎副本 → 触发解析。"""
         if not data:
@@ -870,9 +874,15 @@ class KnowledgeService:
             raise errors.RequestError(msg=f'文件超出大小上限 {MAX_FILE_SIZE // (1024 * 1024)}MB')
         kb = await self._get_kb(db, resource_owner_id, kb_id)
         folder_id = await self._validate_folder_for_kb(db, resource_owner_id, kb_id, folder_id)
-        ref = await storage_service.upload(db, data, category='private_doc', filename=filename, content_type=mime)
-        asset = await hasn_asset_service.register_asset(
-            db, owner_hasn_id=resource_owner_id, ref=ref, kind='file', extract_status='done'
+        stored = await _owner_storage.upload_bytes(
+            owner_hasn_id=resource_owner_id,
+            data=data,
+            filename=filename,
+            mime=mime,
+            category='private_doc',
+            source_app='knowledge',
+            idempotency_key=f'knowledge:{idempotency_key or uuid.uuid4().hex}',
+            extract_status='done',
         )
         doc = Document(
             kb_id=kb_id,
@@ -883,7 +893,7 @@ class KnowledgeService:
             size_bytes=len(data),
             mime_type=mime,
             content=None,
-            asset_uri=f'hasn://asset/{asset.asset_id}',
+            asset_uri=stored.uri,
             current_version=0,
             ragflow_document_id=None,
             parse_status='uploading',
@@ -894,6 +904,13 @@ class KnowledgeService:
         )
         db.add(doc)
         await db.flush()
+        await _owner_storage.bind_asset_in_transaction(
+            db,
+            owner_hasn_id=resource_owner_id,
+            asset_id=stored.asset_id,
+            resource_uri=f'hasn://knowledge/documents/{doc.id}',
+            role='source',
+        )
         await self._push_copy_to_engine(db, kb, doc, filename=filename, data=data, mime=mime)
         await self._refresh_kb_counts(db, kb)
         return _document_dict(doc)
@@ -930,6 +947,8 @@ class KnowledgeService:
             raise errors.NotFoundError(msg='资产不存在')
         if asset.owner_hasn_id != resource_owner_id:
             raise errors.ForbiddenError(msg='该资产不属于你的主人，无法入库')
+        if asset.object_state == 'missing':
+            raise errors.NotFoundError(msg='STORAGE_OBJECT_MISSING')
         data = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=asset.object_key)
         filename = self._asset_filename(title, asset.mime)
         return await self.upload_file_document(
@@ -1017,6 +1036,8 @@ class KnowledgeService:
         asset = await hasn_asset_service.get_by_asset_id(db, asset_id)
         if asset is None:
             raise errors.NotFoundError(msg='原件资产不存在')
+        if asset.object_state == 'missing':
+            raise errors.NotFoundError(msg='STORAGE_OBJECT_MISSING')
         stream = storage_service.read_stream(db, storage_id=asset.storage_id, object_key=asset.object_key)
         return doc.name, doc.mime_type or 'application/octet-stream', stream
 
@@ -1286,6 +1307,8 @@ class KnowledgeService:
             asset = await hasn_asset_service.get_by_asset_id(db, asset_id)
             if asset is None:
                 raise errors.NotFoundError(msg='原件资产不存在')
+            if asset.object_state == 'missing':
+                raise errors.NotFoundError(msg='STORAGE_OBJECT_MISSING')
             data = await storage_service.read_bytes(db, storage_id=asset.storage_id, object_key=asset.object_key)
             filename = doc.name
             mime = doc.mime_type or 'application/octet-stream'
@@ -1439,6 +1462,7 @@ class KnowledgeService:
                         select(Document).where(
                             Document.ragflow_document_id.in_(rf_doc_ids),
                             Document.kb_id.in_(visible_kb_ids),
+                            Document.parse_status == 'parsed',
                             Document.deleted_time.is_(None),
                         )
                     )
@@ -1447,6 +1471,11 @@ class KnowledgeService:
                 .all()
             ):
                 doc_rows[str(row.ragflow_document_id)] = row
+        raw_chunks = [
+            chunk
+            for chunk in raw_chunks
+            if str(chunk.get('document_id')) in doc_rows
+        ]
         chunks: list[dict[str, Any]] = []
         for c in raw_chunks:
             doc = doc_rows.get(str(c.get('document_id')))

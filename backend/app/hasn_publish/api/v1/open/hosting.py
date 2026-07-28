@@ -188,7 +188,7 @@ async def content(
     if revision is None:
         return JSONResponse(status_code=410, content={'code': 410, 'msg': '内容不可用', 'data': None})
     asset = await hasn_asset_service.get_by_asset_id(db, revision.asset_id)
-    if asset is None:
+    if asset is None or asset.object_state == 'missing':
         return JSONResponse(status_code=410, content={'code': 410, 'msg': '制品丢失', 'data': None})
 
     from backend.plugin.s3.service.storage_service import storage_service
@@ -245,7 +245,7 @@ async def asset(
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '资源不存在', 'data': None})
 
     asset = await hasn_asset_service.get_by_asset_id(db, revision.asset_id)
-    if asset is None:
+    if asset is None or asset.object_state == 'missing':
         return JSONResponse(status_code=404, content={'code': 404, 'msg': '制品丢失', 'data': None})
 
     from backend.plugin.s3.service.storage_service import storage_service

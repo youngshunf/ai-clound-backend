@@ -563,8 +563,13 @@ def _asset_id_from_uri(uri: Any) -> str | None:
     return None
 
 
-async def _grant_private_attachments(db: AsyncSession, conversation_id: str, content: dict | None) -> None:
-    """为消息内私有附件按会话写读权 grant（1f）。public 跳过，零越权。"""
+async def _grant_private_attachments(
+    db: AsyncSession,
+    conversation_id: str,
+    message_id: int,
+    content: dict | None,
+) -> None:
+    """为私有附件原子写会话 grant 与删除保护 binding。"""
     if not isinstance(content, dict):
         return
     attachments = content.get('attachments')
@@ -575,11 +580,19 @@ async def _grant_private_attachments(db: AsyncSession, conversation_id: str, con
         return
     # 延迟 import 避免潜在循环依赖
     from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+    from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 
     assets = await hasn_asset_service.get_many(db, asset_ids)
     for asset in assets.values():
         if asset.access == 'private':
             await hasn_asset_service.grant_to_conversation(db, asset_id=asset.asset_id, conversation_id=conversation_id)
+            await OwnerStorageService.bind_asset_in_transaction(
+                db,
+                owner_hasn_id=asset.owner_hasn_id,
+                asset_id=asset.asset_id,
+                resource_uri=f'hasn://messages/c/{conversation_id}#{message_id}',
+                role='attachment',
+            )
 
 
 async def persist_message(
@@ -656,7 +669,7 @@ async def persist_message(
 
     # 私有附件按会话授权（1f）：落消息即为 content.attachments 内的私有 asset 写 grant，
     # 关闭跨 owner 越权洞（08 §1.6）。public 附件无需 grant（resolve 直读）。
-    await _grant_private_attachments(db, conversation_id, content)
+    await _grant_private_attachments(db, conversation_id, msg.id, content)
 
     # 更新会话最后消息
     conv = await db.get(HasnConversations, conversation_id)

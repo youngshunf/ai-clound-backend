@@ -80,3 +80,11 @@ from backend.app.hasn.model.hasn_sync_business_receipts import HasnSyncBusinessR
 from backend.app.hasn.model.hasn_relation_command_outbox import HasnRelationCommandOutbox as HasnRelationCommandOutbox
 from backend.app.hasn.model.hasn_session_im_command_outbox import HasnSessionImCommandOutbox as HasnSessionImCommandOutbox
 from backend.app.hasn.model.hasn_group_im_command_outbox import HasnGroupImCommandOutbox as HasnGroupImCommandOutbox
+from backend.app.hasn.model.hasn_storage_objects import HasnStorageObjects as HasnStorageObjects
+from backend.app.hasn.model.hasn_storage_accounts import HasnStorageAccounts as HasnStorageAccounts
+from backend.app.hasn.model.hasn_storage_reservations import HasnStorageReservations as HasnStorageReservations
+from backend.app.hasn.model.hasn_storage_entries import HasnStorageEntries as HasnStorageEntries
+from backend.app.hasn.model.hasn_asset_bindings import HasnAssetBindings as HasnAssetBindings
+from backend.app.hasn.model.hasn_storage_jobs import HasnStorageJobs as HasnStorageJobs
+from backend.app.hasn.model.hasn_storage_migration_items import HasnStorageMigrationItems as HasnStorageMigrationItems
+from backend.app.hasn.model.hasn_storage_export_items import HasnStorageExportItems as HasnStorageExportItems

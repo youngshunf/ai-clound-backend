@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Annotated
 from urllib.parse import quote
 
-from fastapi import APIRouter, File, Query, Request, UploadFile
+from fastapi import APIRouter, File, Header, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -371,6 +371,10 @@ async def upload_document(
     kb_id: int,
     file: Annotated[UploadFile, File(description='文档文件')],
     folder_id: Annotated[int | None, Query(description='目录 ID（空=库根）')] = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias='Idempotency-Key', min_length=1, max_length=96, description='上传幂等键'),
+    ] = None,
 ) -> ResponseModel:
     owner_id = await _resolve_owner(db, request)
     kb = await knowledge_service.authorize_kb(db, subject=Subject.human(owner_id), kb_id=kb_id, need='editor')
@@ -385,6 +389,7 @@ async def upload_document(
             mime=file.content_type or 'application/octet-stream',
             folder_id=folder_id,
             source='ui',
+            idempotency_key=idempotency_key,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc

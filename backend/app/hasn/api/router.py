@@ -22,6 +22,9 @@ from backend.app.hasn.api.v1.admin.hasn_node_bindings import router as admin_has
 from backend.app.hasn.api.v1.admin.hasn_nodes import router as admin_hasn_nodes_router
 from backend.app.hasn.api.v1.admin.hasn_notifications import router as admin_hasn_notifications_router
 from backend.app.hasn.api.v1.admin.hasn_owner_api_keys import router as admin_hasn_owner_api_keys_router
+from backend.app.hasn.api.v1.admin.owner_storage_migrations import (
+    router as admin_owner_storage_migrations_router,
+)
 from backend.app.hasn.api.v1.admin.hasn_pending_intents import router as admin_hasn_pending_intents_router
 from backend.app.hasn.api.v1.admin.hasn_platform_default_config import (
     router as admin_hasn_platform_default_config_router,
@@ -70,6 +73,11 @@ v1.include_router(admin_hasn_agent_capabilities_router, prefix='/agent/capabilit
 v1.include_router(admin_hasn_trade_sessions_router, prefix='/trade/sessions', tags=['交易会话'])
 v1.include_router(admin_hasn_notifications_router, prefix='/notifications', tags=['通知管理'])
 v1.include_router(admin_hasn_audit_log_router, prefix='/audit/logs', tags=['审计日志'])
+v1.include_router(
+    admin_owner_storage_migrations_router,
+    prefix='/storage-migrations',
+    tags=['用户私有存储迁移'],
+)
 v1.include_router(admin_hasn_nodes_router, prefix='/hasn/nodess', tags=['HASN Node 主-HASN Node 主'])
 v1.include_router(
     admin_hasn_owner_api_keys_router, prefix='/hasn/owner/api/keyss', tags=['HASN Owner API Key -HASN Owner API Key ']
@@ -105,6 +113,7 @@ from backend.app.hasn.api.v1.app.hasn_humans import router as app_hasn_humans_ro
 from backend.app.hasn.api.v1.app.judge import router as app_judge_router
 from backend.app.hasn.api.v1.app.knowledge import router as app_knowledge_router
 from backend.app.hasn.api.v1.app.owner_memory import router as app_owner_memory_router
+from backend.app.hasn.api.v1.app.owner_storage import router as app_owner_storage_router
 from backend.app.hasn.api.v1.app.platform_config import router as app_platform_config_router
 from backend.app.hasn.api.v1.app.speech_catalog import router as app_speech_catalog_router
 from backend.app.hasn.api.v1.app.suppressed_release import router as app_suppressed_release_router
@@ -122,6 +131,7 @@ app.include_router(
 app.include_router(app_hasn_groups_router, prefix='/groups', tags=['群组（建群/群管理）'])
 app.include_router(app_knowledge_router, tags=['知识库'])
 app.include_router(app_owner_memory_router, prefix='/owner', tags=['Owner 记忆（主人透明）'])
+app.include_router(app_owner_storage_router, prefix='/storage', tags=['用户私有存储'])
 app.include_router(app_owner_profile_coverage_router, prefix='/owner', tags=['主人画像完整度（了解主人）'])
 app.include_router(app_platform_config_router, prefix='/platform', tags=['平台默认配置（节点下发）'])
 app.include_router(app_speech_catalog_router, prefix='/speech-catalog', tags=['通用语音模型签名目录（节点下发）'])
@@ -131,6 +141,7 @@ app.include_router(agent_scopes_router, tags=['Agent权限管理'])
 
 # --- Agent（Agent Key） ---
 from backend.app.hasn.api.v1.agent.hasn_agent_profile import router as agent_hasn_agent_profile_router
+from backend.app.hasn.api.v1.agent.hasn_assets_agent import router as agent_hasn_assets_router
 from backend.app.hasn.api.v1.agent.hasn_agent_runtime import router as agent_hasn_agent_runtime_router
 from backend.app.hasn.api.v1.agent.hasn_agents import router as agent_hasn_agents_router
 from backend.app.hasn.api.v1.agent.hasn_groups import router as agent_hasn_groups_router
@@ -144,6 +155,7 @@ from backend.app.hasn_task.api.v1.agent.skill_bundle import router as agent_hasn
 agent = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/hasn/agent', tags=['HASN Agent端'])
 
 agent.include_router(agent_hasn_agents_router, prefix='/agents', tags=['Agent管理'])
+agent.include_router(agent_hasn_assets_router, prefix='/assets', tags=['HASN Agent 资产'])
 agent.include_router(agent_hasn_agent_profile_router, tags=['Agent Profile（云端权威）'])
 agent.include_router(agent_hasn_agent_runtime_router, prefix='/runtime', tags=['云端 Runtime 派发代理（双形态）'])
 agent.include_router(agent_hasn_groups_router, prefix='/groups', tags=['群组（分身只读）'])

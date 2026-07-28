@@ -163,3 +163,109 @@ async def hasn_artifact_registration_reconcile() -> str:
             )
 
     return f'reconciled {repaired} artifact registration records for {len(owners)} owners'
+
+
+@celery_app.task(name='owner_storage_job_dispatch')
+async def owner_storage_job_dispatch() -> str:
+    """执行用户云存储导出、迁移、对象回收与补偿 outbox。"""
+    from backend.app.hasn.service.owner_storage_service import OwnerStorageService
+    from backend.database.db import async_db_session
+
+    processed = await OwnerStorageService(async_db_session).process_jobs(limit=100)
+    return f'processed {processed} owner storage jobs'
+
+
+@celery_app.task(name='owner_storage_upload_lifecycle_sweep')
+async def owner_storage_upload_lifecycle_sweep() -> str:
+    """清理过期 multipart 与上传预占，供应商确认终止后才释放额度。"""
+    from backend.app.hasn.service.owner_storage_maintenance_service import (
+        OwnerStorageMaintenanceService,
+    )
+    from backend.database.db import async_db_session
+
+    maintenance = OwnerStorageMaintenanceService(async_db_session)
+    multipart = await maintenance.sweep_expired_multipart(limit=500)
+    reservations = await maintenance.sweep_expired_reservations(limit=1000)
+    return (
+        f'multipart_checked={multipart["checked"]} multipart_aborted={multipart["aborted"]} '
+        f'multipart_failed={multipart["failed"]} '
+        f'reservations_completed={reservations["completed"]} '
+        f'reservations_expired={reservations["expired"]}'
+    )
+
+
+@celery_app.task(name='owner_storage_legacy_backfill')
+async def owner_storage_legacy_backfill() -> str:
+    """分批把旧资产位置投影为对象层，兼容窗口内由双读保证可访问。"""
+    from backend.app.hasn.service.owner_storage_maintenance_service import (
+        OwnerStorageMaintenanceService,
+    )
+    from backend.database.db import async_db_session
+
+    result = await OwnerStorageMaintenanceService(async_db_session).backfill_legacy_assets(
+        batch_size=500,
+        verify_objects=False,
+    )
+    return (
+        f'assets_backfilled={result["assets_backfilled"]} '
+        f'objects_created={result["objects_created"]} '
+        f'owners_without_identity={result["owners_without_identity"]}'
+    )
+
+
+@celery_app.task(name='owner_storage_retention_sweep')
+async def owner_storage_retention_sweep() -> str:
+    """执行导出过期、迁移观察期清源与保守的无引用资产回收。"""
+    from backend.app.hasn.service.owner_storage_maintenance_service import (
+        OwnerStorageMaintenanceService,
+    )
+    from backend.database.db import async_db_session
+
+    maintenance = OwnerStorageMaintenanceService(async_db_session)
+    exports = await maintenance.sweep_expired_exports(limit=500)
+    migrations = await maintenance.sweep_migration_sources(limit=500)
+    unbound = await maintenance.sweep_unbound_assets(limit=500)
+    return (
+        f'exports_checked={exports["checked"]} exports_purged={exports["purged"]} '
+        f'migrations_checked={migrations["checked"]} migrations_deleted={migrations["deleted"]} '
+        f'unbound_checked={unbound["checked"]} unbound_trashed={unbound["trashed"]}'
+    )
+
+
+@celery_app.task(name='owner_storage_reconcile')
+async def owner_storage_reconcile() -> str:
+    """按 Owner 以数据库为权威游标核对对象、引用计数和已用额度。"""
+    from sqlalchemy import text
+
+    from backend.app.hasn.service.owner_storage_maintenance_service import (
+        OwnerStorageMaintenanceService,
+    )
+    from backend.database.db import async_db_session
+
+    async with async_db_session() as db:
+        owners = [
+            str(owner)
+            for owner in (
+                await db.execute(
+                    text(
+                        """
+                        SELECT owner_hasn_id
+                        FROM hasn_storage_accounts
+                        ORDER BY owner_hasn_id
+                        """
+                    )
+                )
+            ).scalars()
+        ]
+    maintenance = OwnerStorageMaintenanceService(async_db_session)
+    repaired = 0
+    for owner_hasn_id in owners:
+        result = await maintenance.reconcile_owner(
+            owner_hasn_id=owner_hasn_id,
+            verify_objects=True,
+            repair_counters=True,
+        )
+        repaired += int(result['ref_count_repairs'])
+        if int(result['used_bytes_before']) != int(result['used_bytes_after']):
+            repaired += 1
+    return f'reconciled {len(owners)} owner storage accounts, repaired {repaired} differences'

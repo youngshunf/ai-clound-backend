@@ -90,6 +90,31 @@ LOCAL_BEAT_SCHEDULE = {
         # 每 5 分钟重放 savepoint 失败后留下的真实登记意图，并补齐异常中断的 outbox。
         'schedule': TzAwareCrontab('*/5'),
     },
+    '用户云存储作业投递': {
+        'task': 'owner_storage_job_dispatch',
+        # 每分钟推进导出、迁移、物理回收与补偿 outbox；作业内部使用 SKIP LOCKED 支持多副本。
+        'schedule': TzAwareCrontab('*'),
+    },
+    '用户云存储上传生命周期清理': {
+        'task': 'owner_storage_upload_lifecycle_sweep',
+        # 每 5 分钟终止过期 multipart 并核实过期预占，避免供应商分片和额度长期悬挂。
+        'schedule': TzAwareCrontab('*/5'),
+    },
+    '用户云存储旧资产回填': {
+        'task': 'owner_storage_legacy_backfill',
+        # 兼容窗口内持续补齐 object_id；读取路径保留双读，任务失败不会中断旧资产访问。
+        'schedule': TzAwareCrontab('*/5'),
+    },
+    '用户云存储保留期清理': {
+        'task': 'owner_storage_retention_sweep',
+        # 每天 3:10 清理过期导出、迁移源对象和策略允许的长期无引用资产。
+        'schedule': TzAwareCrontab('10', '3'),
+    },
+    '用户云存储周期对账': {
+        'task': 'owner_storage_reconcile',
+        # 每天 3:30 以数据库对象行逐 Owner 核实真实对象与计数器，不依赖桶前缀遍历。
+        'schedule': TzAwareCrontab('30', '3'),
+    },
     '技能市场-ClawHub 定时同步': {
         'task': 'marketplace_sync_clawhub',
         # 每 3 天增量同步一次（真 72h 间隔）。增量：上游版本未变只刷计数、零下载零翻译；

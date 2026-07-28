@@ -20,6 +20,24 @@ class UploadedAsset(BaseModel):
     duration_ms: int | None = Field(default=None, description='语音时长毫秒')
 
 
+class UploadedSourceSnapshot(UploadedAsset):
+    """Agent 本地原件快照上传后的强校验结果。"""
+
+    asset_uri: str = Field(description='跨端稳定资产 URI')
+    content_sha256: str = Field(min_length=64, max_length=64, description='服务端复算的内容 SHA-256')
+
+
+class StartMultipartParam(BaseModel):
+    """初始化受控 multipart 上传。"""
+
+    declared_size: int = Field(gt=0, description='客户端声明的完整文件大小')
+    filename: str = Field(min_length=1, max_length=1024)
+    mime: str = Field(min_length=1, max_length=255)
+    category: str = Field(default='user_upload', max_length=32)
+    source_app: str = Field(default='hasn_assets_app', max_length=64)
+    parent_entry_id: str | None = Field(default=None, max_length=40)
+
+
 class ResolveAssetsParam(BaseModel):
     """批量解析入参：asset_ids + 会话上下文。"""
 

@@ -18,7 +18,21 @@ INSERT INTO "hasn_billing"."billing_plan"
   ("offering_key", "plan_key", "price_amount", "price_unit", "cycle", "quota_json", "trial_json", "grace_json", "status", "sort_order")
 SELECT
   'llm:tier', st."tier_name", st."monthly_price", 'cny', 'month',
-  jsonb_build_object('monthly_credits', st."monthly_credits", 'max_agents', st."max_agents", 'tier', st."tier_name"),
+  jsonb_build_object(
+    'monthly_credits', st."monthly_credits",
+    'max_agents', st."max_agents",
+    'tier', st."tier_name",
+    'storage_bytes',
+    CASE st."tier_name"
+      WHEN 'free' THEN 10737418240
+      WHEN 'pro' THEN 107374182400
+      WHEN 'max' THEN 107374182400
+      WHEN 'advanced' THEN 536870912000
+      WHEN 'ultra' THEN 536870912000
+      WHEN 'flagship' THEN 1099511627776
+      ELSE 0
+    END
+  ),
   '{}'::jsonb, '{}'::jsonb,
   CASE WHEN st."enabled" THEN 'active' ELSE 'inactive' END,
   COALESCE(st."sort_order", 0)
@@ -31,7 +45,21 @@ INSERT INTO "hasn_billing"."billing_plan"
   ("offering_key", "plan_key", "price_amount", "price_unit", "cycle", "quota_json", "trial_json", "grace_json", "status", "sort_order")
 SELECT
   'llm:tier', st."tier_name" || '_yearly', st."yearly_price", 'cny', 'year',
-  jsonb_build_object('monthly_credits', st."monthly_credits", 'max_agents', st."max_agents", 'tier', st."tier_name"),
+  jsonb_build_object(
+    'monthly_credits', st."monthly_credits",
+    'max_agents', st."max_agents",
+    'tier', st."tier_name",
+    'storage_bytes',
+    CASE st."tier_name"
+      WHEN 'free' THEN 10737418240
+      WHEN 'pro' THEN 107374182400
+      WHEN 'max' THEN 107374182400
+      WHEN 'advanced' THEN 536870912000
+      WHEN 'ultra' THEN 536870912000
+      WHEN 'flagship' THEN 1099511627776
+      ELSE 0
+    END
+  ),
   '{}'::jsonb, '{}'::jsonb,
   CASE WHEN st."enabled" THEN 'active' ELSE 'inactive' END,
   COALESCE(st."sort_order", 0)
