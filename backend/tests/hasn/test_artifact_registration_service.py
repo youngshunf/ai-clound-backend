@@ -6,14 +6,14 @@ from uuid import uuid4
 
 import pytest
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.app.hasn.model import HasnArtifactContributions, HasnArtifactRegistrationOutbox, HasnArtifacts
 from backend.app.hasn.schema.artifact_contract import ArtifactMutation
-from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
+from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
 from backend.app.hasn.service.artifact_query_service import artifact_query_service
 from backend.app.hasn.service.artifact_registration_outbox_service import artifact_registration_outbox_service
-from backend.app.hasn.service.ai_native_app_registry import ai_native_app_registry
+from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
 from backend.app.mcp.artifact_registration import register_app_resource_artifact
 from backend.database.db import async_db_session
 from backend.utils.timezone import timezone
@@ -432,5 +432,90 @@ async def test_failed_best_effort_registration_persists_repair_intent() -> None:
             assert intent.status == 'dead_letter'
             assert intent.attempt_count == 1
             assert intent.last_error
+        finally:
+            await db.rollback()
+
+
+async def test_body_artifact_without_dispatch_falls_back_to_content_key_not_random() -> None:
+    """无 dispatch/source_event 的正文产物必须按内容派生对象键（设计 A12，绝不随机）。
+
+    历史实现用 `uuid4().hex` 兜底：outbox 每重试一次就新生成一个对象键，同一正文在云端堆出
+    一排产物。内容键兜底下，重放折叠回同一产物与同一参与记录；内容不同才落在不同产物上。
+    """
+    owner = _id('owner')
+    agent = _id('agent')
+
+    def body_mutation(body: str) -> ArtifactMutation:
+        return ArtifactMutation.model_validate(
+            {
+                'owner_hasn_id': owner,
+                'agent_hasn_id': agent,
+                'action': 'create',
+                'source_kind': 'agent_note',
+                'artifact_kind': 'document',
+                'body': body,
+                'title': '随想',
+            }
+        )
+
+    async with async_db_session() as db:
+        try:
+            first = await artifact_registration_service.register(db, body_mutation('第一版正文'))
+            replay = await artifact_registration_service.register(db, body_mutation('第一版正文'))
+            other = await artifact_registration_service.register(db, body_mutation('另一条正文'))
+
+            assert replay.artifact_id == first.artifact_id, '同一正文重放不得新生成产物'
+            assert other.artifact_id != first.artifact_id, '不同正文不得折叠成同一产物'
+
+            artifacts = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+            ).scalars().all()
+            assert len(artifacts) == 2
+            assert all(row.artifact_key.startswith('body:agent:content:') for row in artifacts)
+
+            contributions = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(
+                        HasnArtifactContributions.owner_hasn_id == owner
+                    )
+                )
+            ).scalars().all()
+            assert len(contributions) == 2, '重放的参与记录必须按确定性幂等键去重'
+        finally:
+            await db.rollback()
+
+
+async def test_soft_deleted_artifact_revives_on_reregister() -> None:
+    """软删后的同一对象被分身再次写入时必须复活，否则参与记录会在一条隐形产物上累积。"""
+    owner = _id('owner')
+    agent = _id('agent')
+    mutation = _resource_mutation(
+        owner=owner,
+        agent=agent,
+        action='create',
+        dispatch_id='dispatch_revive',
+        session_id=_id('session'),
+        project_id=str(uuid4()),
+        title='删后又写',
+    )
+
+    async with async_db_session() as db:
+        try:
+            created = await artifact_registration_service.register(db, mutation)
+            await db.execute(
+                update(HasnArtifacts)
+                .where(HasnArtifacts.artifact_id == created.artifact_id)
+                .values(status='deleted')
+            )
+
+            revived = await artifact_registration_service.register(db, mutation)
+
+            assert revived.artifact_id == created.artifact_id
+            row = (
+                await db.execute(
+                    select(HasnArtifacts).where(HasnArtifacts.artifact_id == created.artifact_id)
+                )
+            ).scalar_one()
+            assert row.status == 'active'
         finally:
             await db.rollback()

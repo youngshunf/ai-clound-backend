@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -48,8 +49,24 @@ class ArtifactRegistrationService:
             return f'asset:{mutation.asset_id}'
         if mutation.local_locator_key:
             return f'local:{mutation.node_id}:{mutation.local_locator_key}'
-        stable_id = mutation.source_event_id or mutation.dispatch_id or uuid4().hex
-        return f'body:{mutation.source_app_id or "agent"}:{stable_id}'
+        if mutation.source_event_id or mutation.dispatch_id:
+            stable_id = mutation.source_event_id or mutation.dispatch_id
+            return f'body:{mutation.source_app_id or "agent"}:{stable_id}'
+        # 最后的确定性兜底（设计 A12，**绝不随机**）：正文类产物连 dispatch/source_event 都没
+        # 有时，对象键只能由稳定内容派生——同一内容重放得到同一产物（折叠，不造重复），不同
+        # 内容自然落在不同产物上。历史上这里用 `uuid4().hex` 兜底，outbox 每重试一次就新生成
+        # 一个对象键，同一文件在云端堆出一排产物。
+        digest = sha256(
+            '|'.join([
+                mutation.owner_hasn_id,
+                mutation.agent_hasn_id,
+                mutation.artifact_kind or '',
+                mutation.origin_ref or '',
+                mutation.title or '',
+                mutation.body or '',
+            ]).encode()
+        ).hexdigest()
+        return f'body:{mutation.source_app_id or "agent"}:content:{digest}'
 
     @staticmethod
     def _contribution_idempotency_key(mutation: ArtifactMutation, artifact_key: str) -> str:
@@ -198,6 +215,9 @@ class ArtifactRegistrationService:
                     'source_kind': mutation.source_kind,
                     'action': mutation.action,
                     'dispatch_id': mutation.dispatch_id,
+                    # 同一对象被分身再次写入即视为复活：软删后若只累积参与记录而当前态保持
+                    # deleted，列表（过滤 status='active'）会永远查不到这条仍在生长的产物。
+                    'status': 'active',
                     'metadata': mutation.metadata,
                     'updated_time': func.now(),
                 },

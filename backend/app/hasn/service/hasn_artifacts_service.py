@@ -106,7 +106,11 @@ class HasnArtifactsService:
                 source_app_id=params.source_app_id,
                 dispatch_id=params.dispatch_id,
                 tool_call_id=params.tool_call_id,
-                source_event_id=params.origin_ref,
+                # `origin_ref` 是「产出所属业务资源」的反查指针（第 96 行单列），不是产出事件身份；
+                # 线上契约根本没有 source_event_id 入参，不得把 origin_ref 复制进去——否则同一
+                # 业务资源下的正文产物会共享 `body:{app}:{origin_ref}` 对象键互相覆盖，参与记录
+                # 也会沿 `event:{origin_ref}:...` 兜底键折叠。
+                source_event_id=None,
                 idempotency_key=params.idempotency_key,
                 supersedes_locator_key=params.supersedes_locator_key,
                 title=params.title,

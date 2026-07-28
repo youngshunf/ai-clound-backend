@@ -11,11 +11,11 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 
 from pydantic import ValidationError
+from sqlalchemy import select
 
-from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnConversations
+from backend.app.hasn.model import HasnAgents, HasnArtifactContributions, HasnArtifacts, HasnConversations
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service import hasn_asset_service as asset_mod
 from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService, hasn_artifacts_service
@@ -106,6 +106,68 @@ async def test_record_dedup_and_validation() -> None:
                     resource_uri='hasn://deck/d_1',
                     source_kind='platform_tool',
                 )
+        finally:
+            await db.rollback()
+
+
+async def test_record_body_documents_sharing_origin_ref_stay_distinct() -> None:
+    """同一业务资源下的两条正文产物不得共享对象键互相覆盖（origin_ref 错接 source_event_id 回归）。
+
+    origin_ref 是「产出所属业务资源」的反查指针；线上契约没有 source_event_id 入参，把它复制
+    进去会让同一资源下的正文产物共享 `body:{app}:{origin_ref}` 对象键——后写的把先写的当前态
+    顶掉，参与记录也沿同一兜底键折叠。
+    """
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            origin = 'resource:plan:todo:todo_1'
+            first = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    title='调研纪要 v1',
+                    body='第一版正文',
+                    origin_ref=origin,
+                    source_kind='agent_note',
+                ),
+            )
+            second = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='document',
+                    title='调研纪要 v2',
+                    body='第二版正文',
+                    origin_ref=origin,
+                    source_kind='agent_note',
+                ),
+            )
+
+            assert first != second, '同一 origin_ref 的不同正文必须是两条产物'
+
+            artifacts = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+            ).scalars().all()
+            assert len(artifacts) == 2
+            assert {row.origin_ref for row in artifacts} == {origin}, 'origin_ref 必须照常落反查列'
+
+            contributions = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(
+                        HasnArtifactContributions.owner_hasn_id == owner
+                    )
+                )
+            ).scalars().all()
+            assert len(contributions) == 2
+            assert all(row.source_event_id is None for row in contributions), (
+                '客户端没发的字段不得由服务端伪造'
+            )
         finally:
             await db.rollback()
 
