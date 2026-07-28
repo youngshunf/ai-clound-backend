@@ -186,6 +186,9 @@ async def test_outreach_state_machine(session) -> None:
         customer_id=cid,
     )
     assert '13800138000' not in str(outreach_history)
+    assert 'approval_status' in outreach_history[0]
+    assert 'delivery_status' in outreach_history[0]
+    assert 'replied_at' in outreach_history[0]
     timeline = await growth_funnel_service.customer_timeline(session, user_id=uid, customer_id=cid)
     assert '13800138000' not in str(timeline)
     cust = await growth_funnel_service.get_customer(session, user_id=uid, customer_id=cid)

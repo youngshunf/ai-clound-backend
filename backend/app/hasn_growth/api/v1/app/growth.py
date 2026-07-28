@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
 
@@ -155,9 +156,18 @@ async def list_leads(
     q: Annotated[str | None, Query()] = None,
     min_score: Annotated[float | None, Query(ge=0, le=100)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    growth_project_id: Annotated[UUID | None, Query()] = None,
 ) -> ResponseModel:
     data = await growth_funnel_service.search_leads(
-        db, user_id=request.user.id, query=q, min_score=min_score, limit=limit, reveal_pii=False
+        db,
+        user_id=request.user.id,
+        query=q,
+        min_score=min_score,
+        limit=limit,
+        reveal_pii=False,
+        growth_project_id=(
+            str(growth_project_id) if growth_project_id is not None else None
+        ),
     )
     return response_base.success(data=data)
 
@@ -203,9 +213,20 @@ async def request_leads(request: Request, db: CurrentSessionTransaction, obj: Re
 
 
 @router.get('/leads/{lead_contact_id}', summary='[Owner] 线索详情', dependencies=[DependsJwtAuth])
-async def get_lead(request: Request, db: CurrentSession, lead_contact_id: int) -> ResponseModel:
+async def get_lead(
+    request: Request,
+    db: CurrentSession,
+    lead_contact_id: int,
+    growth_project_id: Annotated[UUID | None, Query()] = None,
+) -> ResponseModel:
     data = await growth_funnel_service.get_lead(
-        db, user_id=request.user.id, lead_contact_id=lead_contact_id, reveal_pii=False
+        db,
+        user_id=request.user.id,
+        lead_contact_id=lead_contact_id,
+        reveal_pii=False,
+        growth_project_id=(
+            str(growth_project_id) if growth_project_id is not None else None
+        ),
     )
     return response_base.success(data=data)
 
