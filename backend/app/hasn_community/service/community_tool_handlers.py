@@ -727,9 +727,20 @@ async def handle_community_create_doc_space(db: AsyncSession, agent: AgentTokenP
         db, owner_hasn_id=agent.owner_hasn_id, author_type='agent', author_hasn_id=agent.agent_hasn_id, owner_user_id=agent.owner_user_id,
         title=str(input_payload['title']), description=input_payload.get('description'), cover_url=input_payload.get('cover_url'), default_visibility='private',
     )
+    registration = await register_app_resource_artifact(
+        db,
+        app_id='community',
+        resource_kind='community.doc_space',
+        server_id=result['space_id'],
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=result['title'],
+        summary=result.get('description'),
+        source_tool='hasn.community.create_doc_space',
+    )
     await db.commit()
     await _bump_community_sync(db, agent.owner_hasn_id)
-    return result
+    return merge_resource_uri(result, registration)
 
 
 async def handle_community_create_doc_node(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
@@ -740,6 +751,23 @@ async def handle_community_create_doc_node(db: AsyncSession, agent: AgentTokenPa
         db, space_id=str(input_payload['space_id']), actor_hasn_id=agent.owner_hasn_id, node_type='directory',
         title=str(input_payload['title']), parent_node_id=input_payload.get('parent_node_id'), allow_visibility=False,
     )
+    space = await doc_service.get_space(
+        db,
+        str(input_payload['space_id']),
+        viewer_hasn_id=agent.owner_hasn_id,
+    )
+    registration = await register_app_resource_artifact(
+        db,
+        app_id='community',
+        resource_kind='community.doc_space',
+        server_id=space['space_id'],
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=space['title'],
+        summary=space.get('description'),
+        source_tool='hasn.community.create_doc_node',
+        action='update',
+    )
     await db.commit()
     await _bump_community_sync(db, agent.owner_hasn_id)
-    return result
+    return merge_resource_uri(result, registration)
