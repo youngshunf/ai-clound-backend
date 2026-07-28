@@ -127,7 +127,13 @@ class CircleService:
             m = await CircleService._membership(db, c.circle_id, viewer_hasn_id)
             if m:
                 my_role, my_status = m.role, m.status
-        return CircleService._circle_dict(c, my_role=my_role, my_status=my_status)
+        item = CircleService._circle_dict(c, my_role=my_role, my_status=my_status)
+        await CircleService._enrich_discovery(
+            db,
+            items=[item],
+            viewer_hasn_id=viewer_hasn_id,
+        )
+        return item
 
     @staticmethod
     async def update_circle(db: AsyncSession, *, ident: str, actor_hasn_id: str, **fields: Any) -> dict[str, Any]:
@@ -301,10 +307,33 @@ class CircleService:
 
     @staticmethod
     async def invite(db: AsyncSession, *, ident: str, actor_hasn_id: str, invitee_hasn_id: str, invitee_type: str = 'human', invitee_owner_hasn_id: str | None = None) -> dict[str, Any]:
+        from backend.app.hasn_core import HasnAgents, HasnHumans
+
         c = await CircleService._get(db, ident)
         if not c:
             raise errors.NotFoundError(msg='圈子不存在')
         await CircleService._assert_manager(db, c.circle_id, actor_hasn_id)
+        if invitee_type == 'agent':
+            authoritative_owner = (
+                await db.execute(
+                    select(HasnAgents.owner_id).where(HasnAgents.hasn_id == invitee_hasn_id)
+                )
+            ).scalar_one_or_none()
+            if not authoritative_owner:
+                raise errors.NotFoundError(msg='受邀分身不存在')
+        elif invitee_type == 'human':
+            human_exists = (
+                await db.execute(
+                    select(HasnHumans.hasn_id).where(HasnHumans.hasn_id == invitee_hasn_id)
+                )
+            ).scalar_one_or_none()
+            if not human_exists:
+                raise errors.NotFoundError(msg='受邀用户不存在')
+            authoritative_owner = invitee_hasn_id
+        else:
+            raise errors.RequestError(msg='受邀成员类型非法')
+        if invitee_owner_hasn_id and invitee_owner_hasn_id != authoritative_owner:
+            raise errors.RequestError(msg='受邀分身主人信息与权威身份不一致')
         existing = await CircleService._membership(db, c.circle_id, invitee_hasn_id)
         if existing and existing.status in ('active', 'pending'):
             return {'circle_id': c.circle_id, 'member_hasn_id': invitee_hasn_id, 'status': existing.status}
@@ -316,7 +345,7 @@ class CircleService:
         else:
             db.add(HasnCircleMembers(
                 circle_id=c.circle_id, member_hasn_id=invitee_hasn_id, member_type=invitee_type,
-                owner_hasn_id=invitee_owner_hasn_id or invitee_hasn_id, role='member', status='active',
+                owner_hasn_id=authoritative_owner, role='member', status='active',
                 invited_by_hasn_id=actor_hasn_id, joined_time=timezone.now(),
             ))
         await db.execute(update(HasnCircles).where(HasnCircles.circle_id == c.circle_id).values(member_count=HasnCircles.member_count + 1))
@@ -330,7 +359,7 @@ class CircleService:
             circle_id=c.circle_id,
             circle_name=c.name,
             recipient_type=invitee_type,
-            recipient_owner_hasn_id=invitee_owner_hasn_id,
+            recipient_owner_hasn_id=authoritative_owner,
         )
         return {'circle_id': c.circle_id, 'member_hasn_id': invitee_hasn_id, 'status': 'active'}
 

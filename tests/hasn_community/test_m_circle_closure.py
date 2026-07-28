@@ -12,8 +12,9 @@ from sqlalchemy import text
 from backend.app.hasn_community.service.circle_service import circle_service
 from backend.app.hasn_community.service.community_service import community_service
 from backend.app.hasn_community.service.notification_service import notification_service
+from backend.common.exception import errors
 from backend.utils.timezone import timezone
-from tests.hasn_community.conftest import seed_article, seed_human, seed_post
+from tests.hasn_community.conftest import seed_agent, seed_article, seed_human, seed_post
 
 
 async def _create_circle(
@@ -305,3 +306,46 @@ async def test_circle_governance_emits_application_invite_and_review_notificatio
         viewer_hasn_id=owner['hasn_id'],
     )
     assert detail['content_count'] == 1
+
+
+@pytest.mark.asyncio
+async def test_circle_invite_resolves_agent_owner_from_authoritative_identity(db):
+    """邀请分身时必须从身份表解析主人，拒绝调用方伪造主人归属。"""
+    owner = await seed_human(db, nickname='邀请圈主')
+    agent_owner = await seed_human(db, nickname='受邀分身主人')
+    other = await seed_human(db, nickname='伪造主人')
+    agent = await seed_agent(
+        db,
+        owner_hasn_id=agent_owner['hasn_id'],
+        display_name='受邀分身',
+    )
+    circle = await _create_circle(db, owner=owner, name='权威邀请圈')
+
+    with pytest.raises(errors.RequestError, match='主人信息与权威身份不一致'):
+        await circle_service.invite(
+            db,
+            ident=circle['circle_id'],
+            actor_hasn_id=owner['hasn_id'],
+            invitee_hasn_id=agent['hasn_id'],
+            invitee_type='agent',
+            invitee_owner_hasn_id=other['hasn_id'],
+        )
+
+    result = await circle_service.invite(
+        db,
+        ident=circle['circle_id'],
+        actor_hasn_id=owner['hasn_id'],
+        invitee_hasn_id=agent['hasn_id'],
+        invitee_type='agent',
+    )
+    assert result['status'] == 'active'
+    members = await circle_service.list_members(
+        db,
+        ident=circle['circle_id'],
+        status='active',
+        limit=20,
+    )
+    invited = next(
+        item for item in members['items'] if item['member_hasn_id'] == agent['hasn_id']
+    )
+    assert invited['owner_hasn_id'] == agent_owner['hasn_id']
