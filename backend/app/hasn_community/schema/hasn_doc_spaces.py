@@ -21,6 +21,8 @@ class HasnDocSpacesSchemaBase(SchemaBase):
     default_password_hash: str | None = Field(None, description='default_visibility=password 时的密码哈希')
     node_count: int = Field(description='节点数（冗余，异步维护）')
     article_count: int = Field(description='文章数（冗余，异步维护）')
+    subscribe_count: int = Field(description='当前有效订阅者数')
+    view_count: int = Field(description='通过文集阅读入口累计的真实阅读次数')
     status: str = Field(description='状态 (active:正常:green/archived:已归档:gray/deleted:已删除:red)')
 
 
