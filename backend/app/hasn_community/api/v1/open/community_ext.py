@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Query, Request
 
@@ -65,8 +65,22 @@ async def open_topic_feed(db: CurrentSession, ident: str, sort: str = 'latest', 
 
 # ---------- 圈子 ----------
 @router.get('/circles/discover', summary='发现公开圈', response_model=ResponseModel)
-async def open_circles_discover(db: CurrentSession, cursor: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
-    return response_base.success(data=await circle_service.discover(db, cursor=cursor, limit=limit))
+async def open_circles_discover(
+    db: CurrentSession,
+    sort: Literal['active', 'newest', 'members'] = 'active',
+    join_policy: Literal['open', 'approval', 'invite'] | None = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
+    return response_base.success(
+        data=await circle_service.discover(
+            db,
+            sort=sort,
+            join_policy=join_policy,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.get('/circles/{ident}', summary='公开圈详情', response_model=ResponseModel)

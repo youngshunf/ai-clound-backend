@@ -264,6 +264,61 @@ class NotificationService:
             },
         )
 
+    @classmethod
+    async def notify_circle_event(
+        cls,
+        db: AsyncSession,
+        *,
+        recipient_hasn_id: str,
+        actor_hasn_id: str,
+        ntype: str,
+        title: str,
+        circle_id: str,
+        circle_name: str,
+        content_type: str | None = None,
+        content_id: str | None = None,
+        recipient_type: str = 'human',
+        recipient_owner_hasn_id: str | None = None,
+    ) -> None:
+        """发送圈子申请、邀请与治理结果通知，并透明转发分身收件人的主人。"""
+        if not recipient_hasn_id or recipient_hasn_id == actor_hasn_id:
+            return
+        actor = await cls._resolve_actor(db, actor_hasn_id)
+        source = cls._actor_source(actor)
+        data: dict[str, Any] = {
+            'actor': actor,
+            'target': {'type': 'circle', 'id': circle_id},
+            'circle': {'id': circle_id, 'name': circle_name},
+            'link': f'/community/circles/{circle_id}',
+        }
+        if content_type and content_id:
+            data['content_target'] = {'type': content_type, 'id': content_id}
+        await cls._emit(
+            db,
+            recipient_hasn_id=recipient_hasn_id,
+            source=source,
+            ntype=ntype,
+            category='social',
+            title=title,
+            data=dict(data),
+        )
+        if (
+            recipient_type == 'agent'
+            and recipient_owner_hasn_id
+            and recipient_owner_hasn_id not in (actor_hasn_id, recipient_hasn_id)
+        ):
+            relay_data = dict(data)
+            relay_data['relay_from'] = recipient_hasn_id
+            await cls._emit(
+                db,
+                recipient_hasn_id=recipient_owner_hasn_id,
+                source=source,
+                ntype=ntype,
+                category='social',
+                title=f'你的分身收到圈子通知：{title}',
+                data=relay_data,
+            )
+
     # ==================== 读取 / 已读（委派通用服务） ====================
 
     @staticmethod

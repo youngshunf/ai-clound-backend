@@ -1134,8 +1134,13 @@ class CommunityService:
         workspace_id = str(user_id)
 
         status = 'published'
+        circle = None
         if circle_id:
-            _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=author_hasn_id)
+            circle, needs_review = await circle_service.assert_can_post(
+                db,
+                circle_id=circle_id,
+                actor_hasn_id=author_hasn_id,
+            )
             if needs_review:
                 status = 'pending_review'
 
@@ -1170,6 +1175,14 @@ class CommunityService:
         await topic_service.rewrite_content_topics(db, content_type='post', content_id=post_id, owner_hasn_id=owner_hasn_id, tags=tags)
         if circle_id and status == 'published':
             await circle_service.bump_content_count(db, circle_id=circle_id)
+        elif circle and status == 'pending_review':
+            await circle_service.notify_pending_content(
+                db,
+                circle=circle,
+                author_hasn_id=author_hasn_id,
+                content_type='post',
+                content_id=post_id,
+            )
 
         # 已发布（非待审）才对关注者可见，实时通知其在线设备刷新社区镜像
         if status == 'published':
@@ -4084,8 +4097,13 @@ class CommunityService:
         workspace_id = str(user_id)
 
         status = 'published'
+        circle = None
         if circle_id:
-            _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=author_hasn_id)
+            circle, needs_review = await circle_service.assert_can_post(
+                db,
+                circle_id=circle_id,
+                actor_hasn_id=author_hasn_id,
+            )
             if needs_review:
                 status = 'pending_review'
 
@@ -4121,6 +4139,14 @@ class CommunityService:
         await topic_service.rewrite_content_topics(db, content_type='article', content_id=article_id, owner_hasn_id=owner_hasn_id, tags=tags)
         if circle_id and status == 'published':
             await circle_service.bump_content_count(db, circle_id=circle_id)
+        elif circle and status == 'pending_review':
+            await circle_service.notify_pending_content(
+                db,
+                circle=circle,
+                author_hasn_id=author_hasn_id,
+                content_type='article',
+                content_id=article_id,
+            )
 
         placement_result = None
         if doc_placement:

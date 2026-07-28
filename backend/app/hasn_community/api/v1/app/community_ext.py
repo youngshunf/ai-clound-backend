@@ -126,14 +126,43 @@ class ModerateContentRequest(BaseModel):
 
 
 @router.get('/circles/mine', summary='我加入/管理的圈', dependencies=[DependsJwtAuth], response_model=ResponseModel)
-async def app_circles_mine(request: Request, db: CurrentSession) -> ResponseModel:
+async def app_circles_mine(
+    request: Request,
+    db: CurrentSession,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
     human, _ = await _human(db, request)
-    return response_base.success(data={'items': await circle_service.list_mine(db, member_hasn_id=human.hasn_id)})
+    return response_base.success(
+        data=await circle_service.list_mine(
+            db,
+            member_hasn_id=human.hasn_id,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.get('/circles/discover', summary='发现公开圈', dependencies=[DependsJwtAuth], response_model=ResponseModel)
-async def app_circles_discover(request: Request, db: CurrentSession, cursor: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
-    return response_base.success(data=await circle_service.discover(db, cursor=cursor, limit=limit))
+async def app_circles_discover(
+    request: Request,
+    db: CurrentSession,
+    sort: Literal['active', 'newest', 'members'] = 'active',
+    join_policy: Literal['open', 'approval', 'invite'] | None = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
+    human, _ = await _human(db, request)
+    return response_base.success(
+        data=await circle_service.discover(
+            db,
+            viewer_hasn_id=human.hasn_id,
+            sort=sort,
+            join_policy=join_policy,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.post('/circles', summary='建圈（建者自动 owner 成员）', dependencies=[DependsJwtAuth], response_model=ResponseModel)
@@ -170,9 +199,24 @@ async def app_leave_circle(request: Request, db: CurrentSessionTransaction, iden
 
 
 @router.get('/circles/{ident}/members', summary='成员列表', dependencies=[DependsJwtAuth], response_model=ResponseModel)
-async def app_circle_members(request: Request, db: CurrentSession, ident: str, status: str = 'active', limit: Annotated[int, Query(ge=1, le=200)] = 50) -> ResponseModel:
+async def app_circle_members(
+    request: Request,
+    db: CurrentSession,
+    ident: str,
+    status: Literal['active', 'pending', 'banned', 'left', 'all'] = 'active',
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> ResponseModel:
     await _human(db, request)
-    return response_base.success(data={'items': await circle_service.list_members(db, ident=ident, status=status, limit=limit)})
+    return response_base.success(
+        data=await circle_service.list_members(
+            db,
+            ident=ident,
+            status=status,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.post('/circles/{ident}/members/{member_hasn_id}/moderate', summary='成员治理（owner/admin）', dependencies=[DependsJwtAuth], response_model=ResponseModel)
@@ -191,6 +235,26 @@ async def app_invite(request: Request, db: CurrentSessionTransaction, ident: str
 async def app_circle_feed(request: Request, db: CurrentSession, ident: str, cursor: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
     human, _ = await _human(db, request)
     return response_base.success(data=await circle_service.get_circle_feed(db, ident, cursor=cursor, limit=limit, viewer_hasn_id=human.hasn_id))
+
+
+@router.get('/circles/{ident}/content/pending', summary='圈内待审内容', dependencies=[DependsJwtAuth], response_model=ResponseModel)
+async def app_circle_pending_content(
+    request: Request,
+    db: CurrentSession,
+    ident: str,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
+    human, _ = await _human(db, request)
+    return response_base.success(
+        data=await circle_service.list_pending_content(
+            db,
+            ident=ident,
+            actor_hasn_id=human.hasn_id,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.post('/circles/{ident}/content/{content_id}/moderate', summary='圈内内容治理（owner/admin）', dependencies=[DependsJwtAuth], response_model=ResponseModel)
