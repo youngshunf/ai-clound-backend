@@ -44,6 +44,20 @@ def test_manifest_has_33_tools_and_capabilities() -> None:
     assert cap_ids == tool_ids == _EXPECTED_TOOLS
 
 
+def test_manifest_declares_doc_space_resource() -> None:
+    """文集是社区第三种稳定资源，必须由 manifest 权威声明打开协议。"""
+    descriptors = {
+        item['resource_kind']: item
+        for item in COMMUNITY_AI_NATIVE_MANIFEST['resources']
+    }
+    descriptor = descriptors['community.doc_space']
+    assert descriptor['uri_domain'] == 'community/doc-spaces'
+    assert descriptor['open'] == {
+        'mode': 'internal_route',
+        'route_template': '/apps/community/docs/:id',
+    }
+
+
 def test_every_tool_has_handler_validation_and_scope() -> None:
     """漂移守卫：每个 manifest 工具都有 dispatch handler + 校验规则 + 已登记 scope。"""
     for cap in COMMUNITY_AI_NATIVE_MANIFEST['capabilities']:

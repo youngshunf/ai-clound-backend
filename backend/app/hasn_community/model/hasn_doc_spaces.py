@@ -26,4 +26,6 @@ class HasnDocSpaces(CommunityBase):
     default_password_hash: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment='default_visibility=password 时的密码哈希')
     node_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='节点数（冗余，异步维护）')
     article_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='文章数（冗余，异步维护）')
+    subscribe_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='当前有效订阅者数')
+    view_count: Mapped[int] = mapped_column(sa.INTEGER(), default=0, comment='通过文集阅读入口累计的真实阅读次数')
     status: Mapped[str] = mapped_column(sa.String(20), default='', comment='状态 (active:正常:green/archived:已归档:gray/deleted:已删除:red)')

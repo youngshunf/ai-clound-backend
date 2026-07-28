@@ -90,7 +90,7 @@ async def handle_community_create_post(
 ) -> dict[str, Any]:
     """处理 community.create_post 工具调用
 
-    Agent 发帖默认进入 pending_review 状态，需要主人审核后发布。
+    Agent 发帖始终进入 pending_review 状态，需要主人审核后发布。
     circle_id 非空：校验 Agent 是该圈 active 成员（满足 post_policy），内容只进圈子流。
     """
     from backend.app.hasn_community.service.circle_service import circle_service
@@ -99,11 +99,15 @@ async def handle_community_create_post(
     post_id = f"p_{uuid4_str()[:12]}"
     circle_id = input_payload.get('circle_id')
 
-    # 主人「分身内容审核」设置：开（默认）=进 pending_review 待主人审核；关=直接 published 公开。
-    review_on = await community_settings_service.get_agent_post_review(db, owner_hasn_id=agent.owner_hasn_id)
-    status = 'pending_review' if review_on else 'published'
+    # 施工方案 96 的硬边界：Agent 帖子不能因主人关闭评论审核而直接公开。
+    status = 'pending_review'
+    circle = None
     if circle_id:
-        _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
+        circle, needs_review = await circle_service.assert_can_post(
+            db,
+            circle_id=circle_id,
+            actor_hasn_id=agent.agent_hasn_id,
+        )
         if needs_review:
             status = 'pending_review'  # 圈子自身要求审核：无论主人设置如何一律先审
 
@@ -132,6 +136,14 @@ async def handle_community_create_post(
     await topic_service.rewrite_content_topics(db, content_type='post', content_id=post_id, owner_hasn_id=agent.owner_hasn_id, tags=input_payload.get('tags', []))
     if circle_id and status == 'published':
         await circle_service.bump_content_count(db, circle_id=circle_id)
+    elif circle:
+        await circle_service.notify_pending_content(
+            db,
+            circle=circle,
+            author_hasn_id=agent.agent_hasn_id,
+            content_type='post',
+            content_id=post_id,
+        )
     # register-on-write（doc31 铁律）：分身发的帖子是主人事后要能打开的产物，登记进 hasn_artifacts 并绑
     # 当次工作会话。放在 commit 前 = 与帖子同事务落库（待审的帖子同样登记：主人正是要能点开去审）。
     registration = await register_app_resource_artifact(
@@ -182,7 +194,7 @@ async def handle_community_create_article(
 ) -> dict[str, Any]:
     """处理 community.create_article 工具调用
 
-    Agent 发文章默认进入 pending_review 状态，需要主人审核后发布。
+    Agent 发文章始终进入 pending_review 状态，需要主人审核后发布。
     circle_id 校验圈成员；doc_placement 挂文集（额外需 community:doc，Agent 不可设节点可见性/密码）。
     """
     from backend.app.hasn_community.service.circle_service import circle_service
@@ -196,11 +208,15 @@ async def handle_community_create_article(
     read_time_min = max(1, word_count // 400)  # 假设每分钟阅读 400 字
     circle_id = input_payload.get('circle_id')
 
-    # 主人「分身内容审核」设置：开（默认）=进 pending_review 待主人审核；关=直接 published 公开。
-    review_on = await community_settings_service.get_agent_post_review(db, owner_hasn_id=agent.owner_hasn_id)
-    status = 'pending_review' if review_on else 'published'
+    # 施工方案 96 的硬边界：Agent 文章不能因主人关闭评论审核而直接公开。
+    status = 'pending_review'
+    circle = None
     if circle_id:
-        _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
+        circle, needs_review = await circle_service.assert_can_post(
+            db,
+            circle_id=circle_id,
+            actor_hasn_id=agent.agent_hasn_id,
+        )
         if needs_review:
             status = 'pending_review'  # 圈子自身要求审核：无论主人设置如何一律先审
 
@@ -241,6 +257,14 @@ async def handle_community_create_article(
         )
     if circle_id and status == 'published':
         await circle_service.bump_content_count(db, circle_id=circle_id)
+    elif circle:
+        await circle_service.notify_pending_content(
+            db,
+            circle=circle,
+            author_hasn_id=agent.agent_hasn_id,
+            content_type='article',
+            content_id=article_id,
+        )
     # register-on-write（doc31 铁律）：同帖子——分身写的文章登记为产物、绑当次工作会话，commit 前落库。
     registration = await register_app_resource_artifact(
         db,
@@ -637,14 +661,26 @@ async def handle_community_discover_circles(db: AsyncSession, agent: AgentTokenP
     """community.discover_circles：发现公开圈。"""
     from backend.app.hasn_community.service.circle_service import circle_service
 
-    return await circle_service.discover(db, cursor=input_payload.get('cursor'), limit=int(input_payload.get('limit') or 20))
+    return await circle_service.discover(
+        db,
+        viewer_hasn_id=agent.agent_hasn_id,
+        sort=str(input_payload.get('sort') or 'active'),
+        join_policy=input_payload.get('join_policy'),
+        cursor=input_payload.get('cursor'),
+        limit=int(input_payload.get('limit') or 20),
+    )
 
 
 async def handle_community_list_my_circles(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
     """community.list_my_circles：我加入/管理的圈。"""
     from backend.app.hasn_community.service.circle_service import circle_service
 
-    return {'items': await circle_service.list_mine(db, member_hasn_id=agent.agent_hasn_id)}
+    return await circle_service.list_mine(
+        db,
+        member_hasn_id=agent.agent_hasn_id,
+        cursor=input_payload.get('cursor'),
+        limit=int(input_payload.get('limit') or 20),
+    )
 
 
 async def handle_community_join_circle(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
@@ -691,9 +727,20 @@ async def handle_community_create_doc_space(db: AsyncSession, agent: AgentTokenP
         db, owner_hasn_id=agent.owner_hasn_id, author_type='agent', author_hasn_id=agent.agent_hasn_id, owner_user_id=agent.owner_user_id,
         title=str(input_payload['title']), description=input_payload.get('description'), cover_url=input_payload.get('cover_url'), default_visibility='private',
     )
+    registration = await register_app_resource_artifact(
+        db,
+        app_id='community',
+        resource_kind='community.doc_space',
+        server_id=result['space_id'],
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=result['title'],
+        summary=result.get('description'),
+        source_tool='hasn.community.create_doc_space',
+    )
     await db.commit()
     await _bump_community_sync(db, agent.owner_hasn_id)
-    return result
+    return merge_resource_uri(result, registration)
 
 
 async def handle_community_create_doc_node(db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]) -> dict[str, Any]:
@@ -704,6 +751,23 @@ async def handle_community_create_doc_node(db: AsyncSession, agent: AgentTokenPa
         db, space_id=str(input_payload['space_id']), actor_hasn_id=agent.owner_hasn_id, node_type='directory',
         title=str(input_payload['title']), parent_node_id=input_payload.get('parent_node_id'), allow_visibility=False,
     )
+    space = await doc_service.get_space(
+        db,
+        str(input_payload['space_id']),
+        viewer_hasn_id=agent.owner_hasn_id,
+    )
+    registration = await register_app_resource_artifact(
+        db,
+        app_id='community',
+        resource_kind='community.doc_space',
+        server_id=space['space_id'],
+        agent_hasn_id=agent.agent_hasn_id,
+        owner_hasn_id=agent.owner_hasn_id,
+        title=space['title'],
+        summary=space.get('description'),
+        source_tool='hasn.community.create_doc_node',
+        action='update',
+    )
     await db.commit()
     await _bump_community_sync(db, agent.owner_hasn_id)
-    return result
+    return merge_resource_uri(result, registration)

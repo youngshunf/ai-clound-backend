@@ -8,19 +8,25 @@ depth = 路径段数 - 1（根下一级=0）。子树查询：path = X.path OR p
 
 from __future__ import annotations
 
-from datetime import timedelta
+import logging
+
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import bcrypt
 
 from jose import jwt
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from backend.app.hasn_community.model import HasnArticles, HasnDocNodes, HasnDocSpaces
+from backend.app.hasn_community.service.hasn_doc_space_subscriptions_service import (
+    hasn_doc_space_subscriptions_service,
+)
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.database.db import uuid4_str
+from backend.database.redis import redis_client
 from backend.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -29,6 +35,9 @@ if TYPE_CHECKING:
 _VALID_NODE_VIS = {'public', 'private', 'password'}
 _GRANT_TTL_HOURS = 2
 _GRANT_TYP = 'doc_grant'
+_VIEW_DEDUP_SECONDS = 30 * 60
+
+logger = logging.getLogger(__name__)
 
 
 def _hash_pw(pw: str) -> str:
@@ -63,8 +72,121 @@ class DocService:
             'author_hasn_id': s.author_hasn_id, 'title': s.title, 'slug': s.slug, 'description': s.description,
             'cover_url': s.cover_url, 'default_visibility': s.default_visibility, 'node_count': s.node_count,
             'article_count': s.article_count, 'status': s.status,
+            'subscribe_count': s.subscribe_count, 'view_count': s.view_count,
             'has_password': bool(s.default_password_hash),
+            'created_time': s.created_time.isoformat() if s.created_time else None,
+            'updated_time': s.updated_time.isoformat() if s.updated_time else None,
         }
+
+    @staticmethod
+    async def _project_spaces(
+        db: AsyncSession,
+        *,
+        spaces: list[HasnDocSpaces],
+        viewer_hasn_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """批量补订阅态、目录骨架与 owner 草稿数，不逐文集查询。"""
+        if not spaces:
+            return []
+        space_ids = [space.space_id for space in spaces]
+        subscribed_ids = (
+            await hasn_doc_space_subscriptions_service.subscribed_space_ids(
+                db,
+                subscriber_hasn_id=viewer_hasn_id,
+                space_ids=space_ids,
+            )
+            if viewer_hasn_id
+            else set()
+        )
+        nodes = (
+            await db.execute(
+                select(HasnDocNodes)
+                .where(
+                    HasnDocNodes.space_id.in_(space_ids),
+                    HasnDocNodes.status == 'active',
+                )
+                .order_by(HasnDocNodes.sort_order, HasnDocNodes.id)
+            )
+        ).scalars().all()
+        article_ids = [
+            node.article_id for node in nodes if node.article_id is not None
+        ]
+        article_status: dict[str, str] = {}
+        if article_ids:
+            status_rows = (
+                await db.execute(
+                    select(HasnArticles.article_id, HasnArticles.status).where(
+                        HasnArticles.article_id.in_(article_ids)
+                    )
+                )
+            ).all()
+            article_status = {
+                row.article_id: row.status
+                for row in status_rows
+            }
+        nodes_by_space: dict[str, list[HasnDocNodes]] = {}
+        for node in nodes:
+            nodes_by_space.setdefault(node.space_id, []).append(node)
+
+        items: list[dict[str, Any]] = []
+        for space in spaces:
+            item = DocService._space_dict(space)
+            item['is_subscribed'] = space.space_id in subscribed_ids
+            space_nodes = nodes_by_space.get(space.space_id, [])
+            by_id = {node.node_id: node for node in space_nodes}
+            is_owner = viewer_hasn_id == space.owner_hasn_id
+
+            def visible(node: HasnDocNodes) -> bool:
+                if is_owner:
+                    return True
+                governing = DocService._effective_governing(node, by_id)
+                visibility = (
+                    governing.visibility if governing else space.default_visibility
+                )
+                return visibility == 'public'
+
+            outline: list[dict[str, Any]] = []
+            for top in (node for node in space_nodes if node.parent_node_id is None):
+                if not visible(top):
+                    continue
+                if top.node_type == 'article':
+                    count = int(
+                        is_owner
+                        or (
+                            top.article_id is not None
+                            and article_status.get(top.article_id) == 'published'
+                        )
+                    )
+                else:
+                    count = len(
+                        [
+                            child
+                            for child in space_nodes
+                            if child.node_type == 'article'
+                            and child.article_id is not None
+                            and child.path.startswith(f'{top.path}/')
+                            and visible(child)
+                            and (
+                                is_owner
+                                or article_status.get(child.article_id) == 'published'
+                            )
+                        ]
+                    )
+                outline.append({'title': top.title, 'article_count': count})
+            item['outline'] = outline
+            if is_owner:
+                item['draft_count'] = len(
+                    [
+                        node
+                        for node in space_nodes
+                        if node.node_type == 'article'
+                        and node.article_id is not None
+                        and article_status.get(node.article_id)
+                        in ('draft', 'pending_review')
+                    ]
+                )
+            items.append(item)
+        return items
 
     @staticmethod
     async def create_space(
@@ -102,7 +224,11 @@ class DocService:
         if public_only and s.default_visibility == 'private' and viewer_hasn_id != s.owner_hasn_id:
             # 私有文集根：仅在存在公开子树时可被发现；这里仍返回壳（标题/描述），树接口负责裁剪
             pass
-        d = DocService._space_dict(s)
+        d = (await DocService._project_spaces(
+            db,
+            spaces=[s],
+            viewer_hasn_id=viewer_hasn_id,
+        ))[0]
         d['is_owner'] = viewer_hasn_id == s.owner_hasn_id
         return d
 
@@ -113,7 +239,78 @@ class DocService:
                 select(HasnDocSpaces).where(HasnDocSpaces.owner_hasn_id == owner_hasn_id, HasnDocSpaces.status == 'active').order_by(HasnDocSpaces.created_time.desc())
             )
         ).scalars().all()
-        return [DocService._space_dict(s) for s in rows]
+        return await DocService._project_spaces(
+            db,
+            spaces=list(rows),
+            viewer_hasn_id=owner_hasn_id,
+        )
+
+    @staticmethod
+    async def list_by_author(
+        db: AsyncSession,
+        *,
+        author_hasn_id: str,
+        viewer_hasn_id: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """按作者列出 viewer 可见文集，使用 ``(created_time, space_id)`` 稳定游标。"""
+        if limit < 1 or limit > 50:
+            raise errors.RequestError(msg='limit 必须在 1 到 50 之间')
+
+        stmt = select(HasnDocSpaces).where(
+            HasnDocSpaces.author_hasn_id == author_hasn_id,
+            HasnDocSpaces.status == 'active',
+            or_(
+                HasnDocSpaces.default_visibility == 'public',
+                HasnDocSpaces.owner_hasn_id == viewer_hasn_id,
+            ),
+        )
+        if cursor:
+            try:
+                created_raw, space_id = cursor.rsplit('|', 1)
+                created_time = datetime.fromisoformat(created_raw)
+                if not space_id:
+                    raise ValueError
+            except (TypeError, ValueError) as exc:
+                raise errors.RequestError(msg='文集分页游标无效') from exc
+            stmt = stmt.where(
+                or_(
+                    HasnDocSpaces.created_time < created_time,
+                    and_(
+                        HasnDocSpaces.created_time == created_time,
+                        HasnDocSpaces.space_id < space_id,
+                    ),
+                )
+            )
+
+        rows = (
+            await db.execute(
+                stmt.order_by(
+                    HasnDocSpaces.created_time.desc(),
+                    HasnDocSpaces.space_id.desc(),
+                ).limit(limit + 1)
+            )
+        ).scalars().all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = await DocService._project_spaces(
+            db,
+            spaces=list(rows),
+            viewer_hasn_id=viewer_hasn_id,
+        )
+        for item, space in zip(items, rows, strict=True):
+            item['author'] = await DocService._author_info(
+                db,
+                space.author_type,
+                space.author_hasn_id,
+                space.owner_hasn_id,
+            )
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = f'{last.created_time.isoformat()}|{last.space_id}'
+        return {'items': items, 'next_cursor': next_cursor}
 
     @staticmethod
     async def _author_info(db: AsyncSession, author_type: str, author_hasn_id: str, owner_hasn_id: str) -> dict[str, Any]:
@@ -133,29 +330,119 @@ class DocService:
         return info
 
     @staticmethod
-    async def discover_public(db: AsyncSession, *, cursor: str | None = None, limit: int = 20) -> dict[str, Any]:
+    async def discover_public(
+        db: AsyncSession,
+        *,
+        viewer_hasn_id: str | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
         """发现公开文集：default_visibility='public' 且 active，按创建时间倒序，附作者信息。
 
         :return: {items, next_cursor}
         """
-        offset = int(cursor) if cursor else 0
+        if limit < 1 or limit > 50:
+            raise errors.RequestError(msg='limit 必须在 1 到 50 之间')
+        stmt = select(HasnDocSpaces).where(
+            HasnDocSpaces.status == 'active',
+            HasnDocSpaces.default_visibility == 'public',
+        )
+        if cursor:
+            try:
+                created_raw, space_id = cursor.rsplit('|', 1)
+                created_time = datetime.fromisoformat(created_raw)
+                if not space_id:
+                    raise ValueError
+            except (TypeError, ValueError) as exc:
+                raise errors.RequestError(msg='发现文集分页游标无效') from exc
+            stmt = stmt.where(
+                or_(
+                    HasnDocSpaces.created_time < created_time,
+                    and_(
+                        HasnDocSpaces.created_time == created_time,
+                        HasnDocSpaces.space_id < space_id,
+                    ),
+                )
+            )
         rows = (
             await db.execute(
-                select(HasnDocSpaces)
-                .where(HasnDocSpaces.status == 'active', HasnDocSpaces.default_visibility == 'public')
-                .order_by(HasnDocSpaces.created_time.desc())
-                .offset(offset)
-                .limit(limit + 1)
+                stmt.order_by(
+                    HasnDocSpaces.created_time.desc(),
+                    HasnDocSpaces.space_id.desc(),
+                ).limit(limit + 1)
             )
         ).scalars().all()
         has_more = len(rows) > limit
         rows = rows[:limit]
-        items = []
-        for s in rows:
-            d = DocService._space_dict(s)
+        items = await DocService._project_spaces(
+            db,
+            spaces=list(rows),
+            viewer_hasn_id=viewer_hasn_id,
+        )
+        for d, s in zip(items, rows, strict=True):
             d['author'] = await DocService._author_info(db, s.author_type, s.author_hasn_id, s.owner_hasn_id)
-            items.append(d)
-        return {'items': items, 'next_cursor': str(offset + limit) if has_more else None}
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1]
+            next_cursor = f'{last.created_time.isoformat()}|{last.space_id}'
+        return {'items': items, 'next_cursor': next_cursor}
+
+    @staticmethod
+    async def subscribe(
+        db: AsyncSession,
+        *,
+        ident: str,
+        subscriber_hasn_id: str,
+    ) -> dict[str, Any]:
+        """订阅文集。"""
+        return await hasn_doc_space_subscriptions_service.subscribe(
+            db,
+            ident=ident,
+            subscriber_hasn_id=subscriber_hasn_id,
+        )
+
+    @staticmethod
+    async def unsubscribe(
+        db: AsyncSession,
+        *,
+        ident: str,
+        subscriber_hasn_id: str,
+    ) -> dict[str, Any]:
+        """取消订阅文集。"""
+        return await hasn_doc_space_subscriptions_service.unsubscribe(
+            db,
+            ident=ident,
+            subscriber_hasn_id=subscriber_hasn_id,
+        )
+
+    @staticmethod
+    async def list_subscribed(
+        db: AsyncSession,
+        *,
+        subscriber_hasn_id: str,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """分页列出当前用户订阅且仍可见的文集。"""
+        spaces, next_cursor = await hasn_doc_space_subscriptions_service.list_spaces(
+            db,
+            subscriber_hasn_id=subscriber_hasn_id,
+            cursor=cursor,
+            limit=limit,
+        )
+        items = await DocService._project_spaces(
+            db,
+            spaces=spaces,
+            viewer_hasn_id=subscriber_hasn_id,
+        )
+        for item, space in zip(items, spaces, strict=True):
+            item['author'] = await DocService._author_info(
+                db,
+                space.author_type,
+                space.author_hasn_id,
+                space.owner_hasn_id,
+            )
+        return {'items': items, 'next_cursor': next_cursor}
 
     @staticmethod
     async def _assert_space_owner(db: AsyncSession, ident: str, actor_hasn_id: str) -> HasnDocSpaces:
@@ -245,6 +532,7 @@ class DocService:
         await db.execute(update(HasnDocSpaces).where(HasnDocSpaces.space_id == s.space_id).values(
             node_count=HasnDocSpaces.node_count + 1,
             article_count=HasnDocSpaces.article_count + (1 if node_type == 'article' else 0),
+            updated_time=timezone.now(),
         ))
         await db.flush()
         return DocService._node_dict(node)
@@ -415,6 +703,123 @@ class DocService:
                 return True
         return False
 
+    @staticmethod
+    def view_dedup_key(space_id: str, viewer_hasn_id: str) -> str:
+        """文集阅读去重键；固定 30 分钟窗口。"""
+        return f'community:doc-space-view:{space_id}:{viewer_hasn_id}'
+
+    @staticmethod
+    async def _record_view(
+        db: AsyncSession,
+        *,
+        space: HasnDocSpaces,
+        viewer_hasn_id: str | None,
+    ) -> None:
+        """通过 Redis NX 把阅读计数写放大限制为每读者每 30 分钟一次。"""
+        if not viewer_hasn_id or viewer_hasn_id == space.owner_hasn_id:
+            return
+        try:
+            claimed = await redis_client.set(
+                DocService.view_dedup_key(space.space_id, viewer_hasn_id),
+                '1',
+                nx=True,
+                ex=_VIEW_DEDUP_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning(
+                '文集阅读计数去重服务不可用，跳过本次统计 space_id=%s: %s',
+                space.space_id,
+                exc,
+            )
+            return
+        if not claimed:
+            return
+        await db.execute(
+            update(HasnDocSpaces)
+            .where(HasnDocSpaces.space_id == space.space_id)
+            .values(view_count=HasnDocSpaces.view_count + 1)
+        )
+        await db.flush()
+
+    @staticmethod
+    async def notify_article_updated(
+        db: AsyncSession,
+        *,
+        article_id: str,
+        actor_hasn_id: str,
+    ) -> None:
+        """公开文集文章发布或更新后通知所有真实订阅者。"""
+        from backend.app.hasn_community.service.notification_service import (
+            notification_service,
+        )
+
+        article = (
+            await db.execute(
+                select(HasnArticles).where(HasnArticles.article_id == article_id)
+            )
+        ).scalar_one_or_none()
+        if not article or article.status != 'published':
+            return
+        article_nodes = (
+            await db.execute(
+                select(HasnDocNodes).where(
+                    HasnDocNodes.article_id == article_id,
+                    HasnDocNodes.status == 'active',
+                )
+            )
+        ).scalars().all()
+        seen_spaces: set[str] = set()
+        for article_node in article_nodes:
+            if article_node.space_id in seen_spaces:
+                continue
+            seen_spaces.add(article_node.space_id)
+            space = (
+                await db.execute(
+                    select(HasnDocSpaces).where(
+                        HasnDocSpaces.space_id == article_node.space_id,
+                        HasnDocSpaces.status == 'active',
+                    )
+                )
+            ).scalar_one_or_none()
+            if not space:
+                continue
+            await db.execute(
+                update(HasnDocSpaces)
+                .where(HasnDocSpaces.space_id == space.space_id)
+                .values(updated_time=timezone.now())
+            )
+            nodes = (
+                await db.execute(
+                    select(HasnDocNodes).where(
+                        HasnDocNodes.space_id == space.space_id,
+                        HasnDocNodes.status == 'active',
+                    )
+                )
+            ).scalars().all()
+            governing = DocService._effective_governing(
+                article_node,
+                {node.node_id: node for node in nodes},
+            )
+            visibility = governing.visibility if governing else space.default_visibility
+            if visibility != 'public':
+                continue
+            subscriber_ids = (
+                await hasn_doc_space_subscriptions_service.subscriber_ids(
+                    db,
+                    space_id=space.space_id,
+                )
+            )
+            for recipient_hasn_id in subscriber_ids:
+                await notification_service.notify_doc_space_updated(
+                    db,
+                    recipient_hasn_id=recipient_hasn_id,
+                    actor_hasn_id=actor_hasn_id,
+                    space_id=space.space_id,
+                    space_title=space.title,
+                    article_id=article.article_id,
+                    article_title=article.title,
+                )
+
     # ---------- 树渲染（按 viewer 裁剪） ----------
 
     @staticmethod
@@ -475,6 +880,11 @@ class DocService:
             return out
 
         tree = build(None)
+        await DocService._record_view(
+            db,
+            space=s,
+            viewer_hasn_id=viewer_hasn_id,
+        )
         result: dict[str, Any] = {'space': DocService._space_dict(s), 'is_owner': is_owner, 'tree': tree}
         if focus_article_id and focus_article_id in ordered_article_leaves:
             idx = ordered_article_leaves.index(focus_article_id)
@@ -506,6 +916,11 @@ class DocService:
         article = (await db.execute(select(HasnArticles).where(HasnArticles.article_id == article_id))).scalars().first()
         if not article:
             raise errors.NotFoundError(msg='文章不存在')
+        await DocService._record_view(
+            db,
+            space=s,
+            viewer_hasn_id=viewer_hasn_id,
+        )
         return {
             'article_id': article.article_id, 'title': article.title, 'summary': article.summary,
             'content': article.content, 'cover_url': article.cover_url, 'tags': article.tags or [],

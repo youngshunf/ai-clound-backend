@@ -25,9 +25,22 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from backend.app.hasn.model import (
+    HasnArtifactContributions,
+    HasnArtifactRegistrationOutbox,
+    HasnArtifacts,
+)
 from backend.app.hasn_core import HasnAgents, HasnHumans
-from backend.app.hasn_community.model import HasnPosts
+from backend.app.hasn_community.model import HasnDocNodes, HasnDocSpaces, HasnPosts
+from backend.app.hasn_community.service.community_tool_handlers import (
+    handle_community_create_doc_node,
+    handle_community_create_doc_space,
+)
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import (
+    clear_current_work_session_id,
+    set_current_work_session_id,
+)
 from backend.app.mcp.tools.app_tool_loader import load_published_app_tools
 from backend.common.dataclasses import AgentTokenPayload
 from backend.database.db import SQLALCHEMY_DATABASE_URL
@@ -114,6 +127,84 @@ async def test_app_tool_execute_commits_community_create_post() -> None:
             await sess.execute(delete(HasnPosts).where(HasnPosts.post_id == post_id))
         await sess.execute(delete(HasnAgents).where(HasnAgents.hasn_id == token.agent_hasn_id))
         await sess.execute(delete(HasnHumans).where(HasnHumans.hasn_id == token.owner_hasn_id))
+        await sess.commit()
+        await sess.close()
+        await engine.dispose()
+
+
+async def test_doc_tool_writes_register_one_stable_space_artifact() -> None:
+    """建文集与新增目录都登记同一权威文集 URI，并把 URI 返回给分身。"""
+    if not await _pg_reachable():
+        pytest.skip('本地 PostgreSQL :15432 不可达，跳过')
+
+    marker = uuid.uuid4().hex[:6]
+    token = _agent(marker)
+    work_session_id = f'ws-doc-{marker}'
+    engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
+    sess = async_sessionmaker(engine, expire_on_commit=False)()
+    space_id: str | None = None
+    artifact_id: str | None = None
+    set_current_work_session_id(work_session_id)
+    try:
+        created = await handle_community_create_doc_space(
+            sess,
+            token,
+            {'title': f'社区文集产物 {marker}', 'description': '真实数据库登记回归'},
+        )
+        space_id = created['space_id']
+        expected_uri = f'hasn://community/doc-spaces/{space_id}'
+        assert created['uri'] == expected_uri
+
+        node = await handle_community_create_doc_node(
+            sess,
+            token,
+            {
+                'space_id': space_id,
+                'title': '第一章',
+                'parent_node_id': None,
+            },
+        )
+        assert node['uri'] == expected_uri
+
+        rows = (
+            await sess.execute(
+                select(HasnArtifacts).where(
+                    HasnArtifacts.resource_uri == expected_uri,
+                    HasnArtifacts.status == 'active',
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1, '同一文集的后续目录写入不得产生重复产物'
+        artifact_id = str(rows[0].artifact_id)
+        contributions = (
+            await sess.execute(
+                select(HasnArtifactContributions).where(
+                    HasnArtifactContributions.artifact_id == rows[0].artifact_id,
+                    HasnArtifactContributions.agent_hasn_id == token.agent_hasn_id,
+                )
+            )
+        ).scalars().all()
+        assert contributions
+        assert all(row.work_session_id == work_session_id for row in contributions)
+    finally:
+        clear_current_work_session_id()
+        if space_id is not None:
+            await sess.execute(delete(HasnDocNodes).where(HasnDocNodes.space_id == space_id))
+            await sess.execute(delete(HasnDocSpaces).where(HasnDocSpaces.space_id == space_id))
+        if artifact_id is not None:
+            await sess.execute(
+                delete(HasnArtifactRegistrationOutbox).where(
+                    HasnArtifactRegistrationOutbox.artifact_id == artifact_id
+                )
+            )
+            await sess.execute(
+                delete(HasnArtifactContributions).where(
+                    HasnArtifactContributions.artifact_id == artifact_id
+                )
+            )
+            await sess.execute(
+                delete(HasnArtifacts).where(HasnArtifacts.artifact_id == artifact_id)
+            )
         await sess.commit()
         await sess.close()
         await engine.dispose()

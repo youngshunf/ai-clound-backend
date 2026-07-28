@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import text
 
 from backend.app.hasn_community.service.community_service import community_service
-from tests.hasn_community.conftest import seed_human, seed_post
+from tests.hasn_community.conftest import seed_article, seed_human, seed_post
 
 
 @pytest.mark.asyncio
@@ -85,6 +85,9 @@ async def test_uncollect_decrements_counts(db):
 @pytest.mark.asyncio
 async def test_create_list_delete_collection(db):
     owner = await seed_human(db, nickname='收藏者')
+    await community_service.create_collection(
+        db, owner_hasn_id=owner['hasn_id'], name='默认收藏夹', is_public=False
+    )
     created = await community_service.create_collection(
         db, owner_hasn_id=owner['hasn_id'], name='技术收藏', is_public=True
     )
@@ -188,3 +191,174 @@ async def test_collection_detail_private_visible_to_owner(db):
     )
     assert detail['collection']['is_owner'] is True
     assert detail['collection']['name'] == '私密夹'
+
+
+@pytest.mark.asyncio
+async def test_update_collection_name_and_visibility_is_owner_scoped(db):
+    owner = await seed_human(db, nickname='收藏夹主人')
+    other = await seed_human(db, nickname='其他人')
+    collection = await community_service.create_collection(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        name='旧名称',
+        is_public=False,
+    )
+
+    updated = await community_service.update_collection(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        collection_id=collection['collection_id'],
+        name='新名称',
+        is_public=True,
+    )
+    assert updated['name'] == '新名称'
+    assert updated['is_public'] is True
+
+    from backend.common.exception import errors
+
+    with pytest.raises(errors.NotFoundError):
+        await community_service.update_collection(
+            db,
+            owner_hasn_id=other['hasn_id'],
+            collection_id=collection['collection_id'],
+            name='越权改名',
+        )
+
+
+@pytest.mark.asyncio
+async def test_remove_collection_item_only_affects_selected_collection(db):
+    owner = await seed_human(db, nickname='收藏者')
+    author = await seed_human(db, nickname='作者')
+    pid = await seed_post(db, author_hasn_id=author['hasn_id'])
+    first = await community_service.create_collection(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        name='收藏夹甲',
+    )
+    second = await community_service.create_collection(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        name='收藏夹乙',
+    )
+    for collection in (first, second):
+        await community_service.collect(
+            db,
+            owner_hasn_id=owner['hasn_id'],
+            target_type='post',
+            target_id=pid,
+            collection_id=collection['collection_id'],
+        )
+
+    removed = await community_service.remove_collection_item(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        collection_id=first['collection_id'],
+        target_type='post',
+        target_id=pid,
+    )
+    assert removed['is_collected'] is True
+
+    first_items = await community_service.get_collection_items(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        collection_id=first['collection_id'],
+    )
+    second_items = await community_service.get_collection_items(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        collection_id=second['collection_id'],
+    )
+    assert first_items['items'] == []
+    assert [item['target_id'] for item in second_items['items']] == [pid]
+    collect_count = (
+        await db.execute(
+            text('SELECT collect_count FROM hasn_community.hasn_posts WHERE post_id = :pid'),
+            {'pid': pid},
+        )
+    ).scalar_one()
+    assert collect_count == 1
+
+
+@pytest.mark.asyncio
+async def test_collection_item_type_filter_happens_before_pagination(db):
+    owner = await seed_human(db, nickname='收藏者')
+    author = await seed_human(db, nickname='作者')
+    collection = await community_service.create_collection(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        name='混合收藏夹',
+    )
+    post_id = await seed_post(db, author_hasn_id=author['hasn_id'])
+    article_ids = [
+        await seed_article(db, author_hasn_id=author['hasn_id'], title=f'文章{i}')
+        for i in range(2)
+    ]
+    await community_service.collect(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        target_type='post',
+        target_id=post_id,
+        collection_id=collection['collection_id'],
+    )
+    for article_id in article_ids:
+        await community_service.collect(
+            db,
+            owner_hasn_id=owner['hasn_id'],
+            target_type='article',
+            target_id=article_id,
+            collection_id=collection['collection_id'],
+        )
+
+    first_page = await community_service.get_collection_items(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        collection_id=collection['collection_id'],
+        target_type='article',
+        limit=1,
+    )
+    assert len(first_page['items']) == 1
+    assert first_page['items'][0]['target_type'] == 'article'
+    assert first_page['next_cursor'] is not None
+
+    second_page = await community_service.get_collection_items(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        collection_id=collection['collection_id'],
+        target_type='article',
+        cursor=first_page['next_cursor'],
+        limit=1,
+    )
+    assert len(second_page['items']) == 1
+    assert second_page['items'][0]['target_id'] != first_page['items'][0]['target_id']
+    assert second_page['next_cursor'] is None
+
+
+@pytest.mark.asyncio
+async def test_default_collection_cannot_be_deleted(db):
+    owner = await seed_human(db, nickname='收藏者')
+    default_collection = await community_service.create_collection(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        name='首个收藏夹',
+    )
+    await community_service.create_collection(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+        name='普通收藏夹',
+    )
+
+    collections = await community_service.list_collections(
+        db,
+        owner_hasn_id=owner['hasn_id'],
+    )
+    default_item = next(item for item in collections['items'] if item['is_default'])
+    assert default_item['collection_id'] == default_collection['collection_id']
+
+    from backend.common.exception import errors
+
+    with pytest.raises(errors.RequestError, match='默认收藏夹不能删除'):
+        await community_service.delete_collection(
+            db,
+            owner_hasn_id=owner['hasn_id'],
+            collection_id=default_collection['collection_id'],
+        )
