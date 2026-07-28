@@ -1,7 +1,8 @@
 import shutil
 
 from functools import cache
-from re import Pattern, compile as compile_pattern
+from re import Pattern
+from re import compile as compile_pattern
 from typing import Any, Literal
 
 from pydantic import model_validator
@@ -250,6 +251,8 @@ class Settings(BaseSettings):
     GROWTH_PROJECT_READ_CUTOVER_ENABLED: bool = False
     # Publish 未完成项目挂靠前，落地页与公开表单必须保持 fail-closed。
     GROWTH_PUBLISH_LANDING_ENABLED: bool = False
+    # 当前页面实际展示的隐私说明版本；为空时公开表单即使误开总开关也必须拒绝写入。
+    GROWTH_FORM_PRIVACY_NOTICE_VERSION: str = ''
     # 真实外部发送有独立授权；默认只允许 manual_assist/manual_attested。
     GROWTH_EXTERNAL_SEND_ENABLED: bool = False
 
@@ -477,6 +480,10 @@ class Settings(BaseSettings):
         f'{FASTAPI_API_V1_PATH}/auth/login/swagger',
         f'{FASTAPI_API_V1_PATH}/oauth2/github/callback',
         f'{FASTAPI_API_V1_PATH}/oauth2/google/callback',
+    ]
+    # 公开表单请求体包含联系人 PII：不得读取进操作日志，也不得写入普通访问日志。
+    OPERA_LOG_REQUEST_DETAILS_PREFIX_EXCLUDE: list[str] = [
+        f'{FASTAPI_API_V1_PATH}/growth/open/forms/',
     ]
     OPERA_LOG_REDACT_KEYS: list[str] = [
         'password',

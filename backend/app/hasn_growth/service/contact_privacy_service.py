@@ -186,7 +186,7 @@ class ContactPrivacyService:
             )
 
     @staticmethod
-    async def store_private_contact(  # ruff: ignore[complex-structure]
+    async def store_private_contact(  # noqa: C901
         db: AsyncSession,
         *,
         keyring: GrowthPiiKeyring,
@@ -200,8 +200,9 @@ class ContactPrivacyService:
         source_ref: str,
         retention_until: datetime,
         channels: list[ContactChannelWrite],
+        preserve_existing: bool = False,
     ) -> dict:
-        """按主体 UPSERT 私有资料和渠道；返回值只含 ID 与脱敏摘要。"""
+        """按主体 UPSERT 私有资料和渠道；公开回流可选择只补缺失数据。"""
         scope = _validate_owner(
             owner_scope=owner_scope,
             user_id=user_id,
@@ -275,25 +276,53 @@ class ContactPrivacyService:
             'status': 'active',
             'updated_time': timezone.now(),
         }
-        if scope == 'personal':
-            profile_insert = profile_insert.on_conflict_do_update(
-                index_elements=[
-                    ContactPrivateProfile.lead_contact_id,
-                    ContactPrivateProfile.user_id,
-                ],
-                index_where=ContactPrivateProfile.owner_scope == 'personal',
-                set_=profile_updates,
+        profile_index_elements = (
+            [
+                ContactPrivateProfile.lead_contact_id,
+                ContactPrivateProfile.user_id,
+            ]
+            if scope == 'personal'
+            else [
+                ContactPrivateProfile.lead_contact_id,
+                ContactPrivateProfile.enterprise_id,
+            ]
+        )
+        profile_index_where = ContactPrivateProfile.owner_scope == scope
+        if preserve_existing:
+            profile_insert = profile_insert.on_conflict_do_nothing(
+                index_elements=profile_index_elements,
+                index_where=profile_index_where,
             )
         else:
             profile_insert = profile_insert.on_conflict_do_update(
-                index_elements=[
-                    ContactPrivateProfile.lead_contact_id,
-                    ContactPrivateProfile.enterprise_id,
-                ],
-                index_where=ContactPrivateProfile.owner_scope == 'enterprise',
+                index_elements=profile_index_elements,
+                index_where=profile_index_where,
                 set_=profile_updates,
             )
-        profile_id = int((await db.execute(profile_insert.returning(ContactPrivateProfile.id))).scalar_one())
+        inserted_profile_id = (
+            await db.execute(profile_insert.returning(ContactPrivateProfile.id))
+        ).scalar_one_or_none()
+        if inserted_profile_id is None:
+            profile_id = int(
+                (
+                    await db.execute(
+                        sa
+                        .select(ContactPrivateProfile.id)
+                        .where(
+                            ContactPrivateProfile.lead_contact_id == lead_contact_id,
+                            *_owner_conditions(
+                                ContactPrivateProfile,
+                                owner_scope=scope,
+                                user_id=user_id,
+                                enterprise_id=enterprise_id,
+                            ),
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one()
+            )
+        else:
+            profile_id = int(inserted_profile_id)
 
         channel_views: list[dict] = []
         for channel_write, channel, channel_basis, channel_source, channel_retention in normalized_channels:
@@ -377,24 +406,25 @@ class ContactPrivacyService:
                         msg='同一主体下该联系方式已归属于其他联系人，必须先执行联系人合并',
                         data={'error_code': 'GROWTH_PII_CHANNEL_CONTACT_CONFLICT'},
                     )
-                await db.execute(
-                    sa
-                    .update(ContactChannel)
-                    .where(ContactChannel.id == existing.id)
-                    .values(
-                        private_profile_id=profile_id,
-                        value_ciphertext=ciphertext,
-                        encryption_key_version=keyring.active_encryption_version,
-                        lawful_basis=channel_basis,
-                        source_ref=channel_source,
-                        consent_ref=channel_write.consent_ref,
-                        verified_at=channel_write.verified_at,
-                        fresh_until=channel_write.fresh_until,
-                        retention_until=channel_retention,
-                        status='active',
-                        updated_time=timezone.now(),
+                if not preserve_existing:
+                    await db.execute(
+                        sa
+                        .update(ContactChannel)
+                        .where(ContactChannel.id == existing.id)
+                        .values(
+                            private_profile_id=profile_id,
+                            value_ciphertext=ciphertext,
+                            encryption_key_version=keyring.active_encryption_version,
+                            lawful_basis=channel_basis,
+                            source_ref=channel_source,
+                            consent_ref=channel_write.consent_ref,
+                            verified_at=channel_write.verified_at,
+                            fresh_until=channel_write.fresh_until,
+                            retention_until=channel_retention,
+                            status='active',
+                            updated_time=timezone.now(),
+                        )
                     )
-                )
                 channel_id = existing.id
             else:
                 channel_id = int(inserted_id)

@@ -7,6 +7,7 @@ import pytest
 from backend.app.hasn_growth.service.project_mode_gate import assert_project_scope_enabled
 from backend.common.exception import errors
 from backend.core.conf import Settings, settings
+from backend.middleware.opera_log_middleware import OperaLogMiddleware
 
 
 def test_growth_project_flags_default_to_false() -> None:
@@ -23,6 +24,13 @@ def test_growth_project_flags_default_to_false() -> None:
     )
 
     assert all(Settings.model_fields[name].default is False for name in names)
+    assert not Settings.model_fields['GROWTH_FORM_PRIVACY_NOTICE_VERSION'].default
+
+
+def test_open_growth_form_never_enters_operation_log() -> None:
+    """公开表单请求体含 PII，生产操作日志必须在读取请求体前整体排除该路径。"""
+    assert OperaLogMiddleware.is_request_details_suppressed('/api/v1/growth/open/forms/pg123/submit')
+    assert not OperaLogMiddleware.is_request_details_suppressed('/api/v1/growth/app/customers/1')
 
 
 def test_personal_project_mode_is_not_blocked_by_enterprise_gate(monkeypatch: pytest.MonkeyPatch) -> None:

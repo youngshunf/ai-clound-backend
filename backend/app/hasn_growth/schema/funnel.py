@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -125,6 +125,13 @@ class FormSubmitParam(SchemaBase):
     wechat: str | None = Field(default=None, max_length=100)
     message: str | None = Field(default=None, max_length=2000)
     extra: dict[str, Any] = Field(default_factory=dict)
+    privacy_notice_version: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r'^[A-Za-z0-9][A-Za-z0-9._-]*$',
+    )
+    consent_purpose: Literal['sales_followup']
+    consent_granted: Literal[True]
     # 蜜罐字段：人类不可见，被填充即判 spam（反滥用，§8.4）。
     website_url: str | None = Field(default=None, description='蜜罐字段，正常用户应留空')
 

@@ -32,13 +32,21 @@ from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_growth.api.v1.agent.growth import router as agent_growth_router
 from backend.app.hasn_growth.api.v1.app.growth import router as app_growth_router
 from backend.app.hasn_growth.api.v1.open.forms import router as open_forms_router
+from backend.app.hasn_growth.model.contact_channel import ContactChannel
+from backend.app.hasn_growth.model.contact_private_profile import ContactPrivateProfile
+from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.form_submission import FormSubmission
+from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
+from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_publish.model.site import Site
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
+from backend.core.conf import settings
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 
 if TYPE_CHECKING:
@@ -74,6 +82,8 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     other_uid = owner_uid + 1
     agent_hasn = f'a_grw_{tag}'
     publish_ref = f'pg{tag}'[:32]
+    unbound_publish_ref = f'px{tag}'[:32]
+    enterprise_publish_ref = f'pe{tag}'[:32]
 
     session.add(
         HasnHumans(
@@ -120,9 +130,72 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         confidence_score=Decimal(72),
     )
     session.add(lead)
-    # 落地页（供 open 表单回流解析 owner）
+    platform_project = HasnProject(owner_id=owner, name=f'获客项目-{tag}', status='active')
+    session.add(platform_project)
+    enterprise_platform_project = HasnProject(
+        owner_id=owner,
+        name=f'企业获客项目-{tag}',
+        status='active',
+        enterprise_id=uuid.uuid4(),
+    )
+    session.add(enterprise_platform_project)
+    await session.flush()
+    # 只有 Growth 权威绑定的落地页允许 open 表单回流；普通公开页面不能伪装成获客表单。
+    landing_site = Site(
+        owner_id=owner,
+        kind='page',
+        title='获客落地页',
+        slug=publish_ref,
+        source_app='growth',
+        status='active',
+        visibility='public',
+    )
+    session.add(landing_site)
     session.add(
-        Site(owner_id=owner, kind='page', title='获客落地页', slug=publish_ref, status='active', visibility='public')
+        Site(
+            owner_id=owner,
+            kind='report',
+            title='普通公开报告',
+            slug=unbound_publish_ref,
+            source_app='report',
+            status='active',
+            visibility='public',
+        )
+    )
+    enterprise_site = Site(
+        owner_id=owner,
+        kind='page',
+        title='企业获客落地页',
+        slug=enterprise_publish_ref,
+        source_app='growth',
+        status='active',
+        visibility='public',
+    )
+    session.add(enterprise_site)
+    await session.flush()
+    session.add(
+        GrowthProject(
+            platform_project_id=platform_project.id,
+            user_id=owner_uid,
+            owner_hasn_id=owner,
+            name=f'获客漏斗-{tag}',
+            landing_site_ref=f'hasn://publish/sites/{landing_site.id}',
+            status='active',
+            provision_status='ready',
+        )
+    )
+    session.add(
+        GrowthProject(
+            platform_project_id=enterprise_platform_project.id,
+            user_id=owner_uid,
+            owner_hasn_id=owner,
+            owner_scope='enterprise',
+            enterprise_id=98_000_000 + int(uuid.uuid4().int % 1_000_000),
+            name=f'企业获客漏斗-{tag}',
+            landing_site_ref=f'hasn://publish/sites/{enterprise_site.id}',
+            status='active',
+            provision_status='ready',
+        )
     )
     await session.flush()
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
@@ -164,6 +237,8 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             other_uid=other_uid,
             lead_id=lead.id,
             publish_ref=publish_ref,
+            unbound_publish_ref=unbound_publish_ref,
+            enterprise_publish_ref=enterprise_publish_ref,
             state=state,
         )
     finally:
@@ -253,23 +328,284 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     funnel = _ok(await c.get(f'{O}/report/funnel'))
     assert funnel['following'] >= 1
 
-    # --- Open: 落地页表单回流 → 建 inbound_form 客户 ---
-    form = _ok(
-        await c.post(
-            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
-            json={'company_name': 'Beta', 'contact_name': '赵六', 'email': 'zhaoliu@beta.com', 'message': '想了解'},
-        )
+    # --- Open: 默认门禁关闭时拒绝；开启后 PII 只落私有表 ---
+    previous_form_flags = (
+        settings.GROWTH_PUBLISH_LANDING_ENABLED,
+        settings.GROWTH_PII_NEW_WRITE_ENABLED,
+        settings.GROWTH_FORM_PRIVACY_NOTICE_VERSION,
     )
-    assert form['status'] == 'converted' and form['customer_id']
+    settings.GROWTH_PUBLISH_LANDING_ENABLED = False
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    settings.GROWTH_FORM_PRIVACY_NOTICE_VERSION = 'growth-form-v1'
+    try:
+        gate_response = await c.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={
+                'company_name': 'Beta',
+                'contact_name': '赵六',
+                'email': 'zhaoliu@beta.com',
+                'privacy_notice_version': 'growth-form-v1',
+                'consent_purpose': 'sales_followup',
+                'consent_granted': True,
+            },
+        )
+        assert gate_response.status_code == 409
 
-    # --- Open: 蜜罐字段 → spam 不进漏斗 ---
-    spam = _ok(
-        await c.post(
+        settings.GROWTH_PUBLISH_LANDING_ENABLED = True
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = False
+        pii_gate_response = await c.post(
             f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
-            json={'email': 'bot@x.com', 'website_url': 'http://spam'},
+            json={
+                'email': 'pii-gate@example.com',
+                'privacy_notice_version': 'growth-form-v1',
+                'consent_purpose': 'sales_followup',
+                'consent_granted': True,
+            },
         )
-    )
-    assert spam['status'] == 'spam' and spam['customer_id'] is None
+        assert pii_gate_response.status_code == 409
+
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+        missing_consent = await c.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={'email': 'no-consent@example.com'},
+        )
+        assert missing_consent.status_code == 422
+
+        unbound_site = await c.post(
+            f'/api/v1/growth/open/forms/{e2e.unbound_publish_ref}/submit',
+            json={
+                'email': 'unbound@example.com',
+                'privacy_notice_version': 'growth-form-v1',
+                'consent_purpose': 'sales_followup',
+                'consent_granted': True,
+            },
+        )
+        assert unbound_site.status_code == 404
+
+        enterprise_site = await c.post(
+            f'/api/v1/growth/open/forms/{e2e.enterprise_publish_ref}/submit',
+            json={
+                'email': 'enterprise@example.com',
+                'privacy_notice_version': 'growth-form-v1',
+                'consent_purpose': 'sales_followup',
+                'consent_granted': True,
+            },
+        )
+        assert enterprise_site.status_code == 404
+
+        wrong_notice = await c.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={
+                'email': 'wrong-notice@example.com',
+                'privacy_notice_version': 'attacker-controlled',
+                'consent_purpose': 'sales_followup',
+                'consent_granted': True,
+            },
+        )
+        assert wrong_notice.status_code == 400
+
+        form = _ok(
+            await c.post(
+                f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+                json={
+                    'company_name': 'Beta',
+                    'contact_name': '赵六',
+                    'email': 'zhaoliu@beta.com',
+                    'phone': '13812345678',
+                    'message': '请联系 zhaoliu@beta.com',
+                    'privacy_notice_version': 'growth-form-v1',
+                    'consent_purpose': 'sales_followup',
+                    'consent_granted': True,
+                    'extra': {
+                        'utm_source': 'campaign',
+                        'utm_campaign': '+1 (415) 555-2671',
+                        'utm_content': 'zhaoliu_wechat',
+                        'arbitrary_note': '不要复制 zhaoliu@beta.com',
+                    },
+                },
+                headers={
+                    'x-real-ip': '203.0.113.42',
+                    'x-forwarded-for': '198.51.100.19',
+                    'referer': 'https://zhaoliu@campaign.example/path?email=zhaoliu@beta.com',
+                },
+            )
+        )
+        assert form['status'] == 'converted' and form['customer_id']
+
+        submission = await e2e.session.get(FormSubmission, form['form_submission_id'])
+        assert submission is not None
+        assert submission.email is None and submission.phone is None and submission.name is None
+        assert submission.payload == {'message_received': True}
+        assert submission.source_meta == {}
+        keyring = require_growth_pii_keyring()
+        assert submission.utm_source == (
+            f'v{keyring.active_hmac_version}:'
+            f'{keyring.hmac_for("form_utm_source", "campaign")}'
+        )
+        assert submission.utm_campaign == (
+            f'v{keyring.active_hmac_version}:'
+            f'{keyring.hmac_for("form_utm_campaign", "+1 (415) 555-2671")}'
+        )
+        assert submission.utm_content == (
+            f'v{keyring.active_hmac_version}:'
+            f'{keyring.hmac_for("form_utm_content", "zhaoliu_wechat")}'
+        )
+        assert '+1 (415) 555-2671' not in str(submission)
+        assert 'zhaoliu_wechat' not in str(submission)
+        assert submission.ip_hmac == (
+            f'v{keyring.active_hmac_version}:'
+            f'{keyring.hmac_for("ip", "203.0.113.42")}'
+        )
+        assert submission.ip_hmac != (
+            f'v{keyring.active_hmac_version}:'
+            f'{keyring.hmac_for("ip", "198.51.100.19")}'
+        )
+        assert submission.referrer == 'https://campaign.example'
+        assert submission.privacy_notice_version == 'growth-form-v1'
+        assert submission.consent_purpose == 'sales_followup'
+        assert submission.contact_private_profile_id
+        assert submission.contact_channel_ids
+        assert 'zhaoliu@beta.com' not in str(submission)
+
+        inbound_customer = await e2e.session.get(Customer, form['customer_id'])
+        assert inbound_customer is not None
+        assert inbound_customer.contact_name is None
+        assert inbound_customer.email is None
+        assert inbound_customer.phone is None
+        assert inbound_customer.wechat is None
+        assert inbound_customer.profile_json == {}
+        assert inbound_customer.lead_contact_id == submission.lead_contact_id
+        inbound_contact = await e2e.session.get(LeadContact, submission.lead_contact_id)
+        assert inbound_contact is not None
+        assert inbound_contact.contact_name is None
+        assert inbound_contact.email is None
+        assert inbound_contact.email_normalized is None
+        assert inbound_contact.phone is None
+        assert inbound_contact.phone_normalized is None
+        assert inbound_contact.meta_data == {}
+        private_channels = (
+            (
+                await e2e.session.execute(
+                    select(ContactChannel).where(
+                        ContactChannel.id.in_(submission.contact_channel_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {channel.channel for channel in private_channels} == {'email', 'phone'}
+        assert all('zhaoliu@beta.com' not in channel.value_ciphertext for channel in private_channels)
+        activity_content = (
+            await e2e.session.execute(
+                text(
+                    'SELECT content FROM hasn_growth.activity '
+                    "WHERE ref_table = 'form_submission' AND ref_id = :submission_id"
+                ),
+                {'submission_id': str(submission.id)},
+            )
+        ).scalar_one()
+        assert activity_content == '落地页留资已转化为客户'
+
+        profile_before = await e2e.session.get(
+            ContactPrivateProfile,
+            submission.contact_private_profile_id,
+        )
+        assert profile_before is not None
+        profile_snapshot = (
+            profile_before.contact_name_ciphertext,
+            profile_before.title_ciphertext,
+            profile_before.lawful_basis,
+            profile_before.source_ref,
+            profile_before.retention_until,
+        )
+        email_channel = next(channel for channel in private_channels if channel.channel == 'email')
+        channel_snapshot = (
+            email_channel.value_ciphertext,
+            email_channel.lawful_basis,
+            email_channel.source_ref,
+            email_channel.consent_ref,
+            email_channel.retention_until,
+        )
+        repeat = _ok(
+            await c.post(
+                f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+                json={
+                    'company_name': 'Attacker',
+                    'email': 'zhaoliu@beta.com',
+                    'privacy_notice_version': 'growth-form-v1',
+                    'consent_purpose': 'sales_followup',
+                    'consent_granted': True,
+                },
+            )
+        )
+        assert repeat['customer_id'] == form['customer_id']
+        await e2e.session.refresh(inbound_contact)
+        await e2e.session.refresh(inbound_customer)
+        assert inbound_contact.company_name == 'Beta'
+        assert inbound_customer.company_name == 'Beta'
+        await e2e.session.refresh(profile_before)
+        await e2e.session.refresh(email_channel)
+        assert (
+            profile_before.contact_name_ciphertext,
+            profile_before.title_ciphertext,
+            profile_before.lawful_basis,
+            profile_before.source_ref,
+            profile_before.retention_until,
+        ) == profile_snapshot
+        assert (
+            email_channel.value_ciphertext,
+            email_channel.lawful_basis,
+            email_channel.source_ref,
+            email_channel.consent_ref,
+            email_channel.retention_until,
+        ) == channel_snapshot
+
+        channel_injection = await c.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={
+                'email': 'zhaoliu@beta.com',
+                'wechat': 'attacker_wechat',
+                'privacy_notice_version': 'growth-form-v1',
+                'consent_purpose': 'sales_followup',
+                'consent_granted': True,
+            },
+        )
+        assert channel_injection.status_code == 409
+        injected_channel = (
+            await e2e.session.execute(
+                select(ContactChannel.id).where(
+                    ContactChannel.lead_contact_id == submission.lead_contact_id,
+                    ContactChannel.channel == 'wechat',
+                )
+            )
+        ).scalar_one_or_none()
+        assert injected_channel is None
+
+        # --- Open: 蜜罐字段 → spam 不进漏斗，也不保留提交的 PII ---
+        spam = _ok(
+            await c.post(
+                f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+                json={
+                    'email': 'bot@x.com',
+                    'website_url': 'http://spam',
+                    'privacy_notice_version': 'growth-form-v1',
+                    'consent_purpose': 'sales_followup',
+                    'consent_granted': True,
+                },
+            )
+        )
+        assert spam['status'] == 'spam' and spam['customer_id'] is None
+        spam_submission = await e2e.session.get(FormSubmission, spam['form_submission_id'])
+        assert spam_submission is not None
+        assert spam_submission.email is None and spam_submission.phone is None and spam_submission.name is None
+        assert 'bot@x.com' not in str(spam_submission.payload)
+    finally:
+        (
+            settings.GROWTH_PUBLISH_LANDING_ENABLED,
+            settings.GROWTH_PII_NEW_WRITE_ENABLED,
+            settings.GROWTH_FORM_PRIVACY_NOTICE_VERSION,
+        ) = previous_form_flags
 
     # --- 跨户隔离：他 owner 的 agent 看不到本户客户 ---
     e2e.state.owner_uid = e2e.other_uid
