@@ -33,6 +33,11 @@ def _gen_no(prefix: str) -> str:
 def _opportunity_to_dict(o: Opportunity) -> dict[str, Any]:
     return {
         'id': o.id,
+        'growth_project_id': (
+            str(o.growth_project_id)
+            if o.growth_project_id is not None
+            else None
+        ),
         'opportunity_no': o.opportunity_no,
         'customer_id': o.customer_id,
         'name': o.name,

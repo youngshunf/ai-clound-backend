@@ -55,6 +55,9 @@ def _gen_no(prefix: str) -> str:
 def _customer_to_dict(c: Customer, *, reveal_pii: bool = False) -> dict[str, Any]:
     data = {
         'id': c.id,
+        'growth_project_id': (
+            str(c.growth_project_id) if c.growth_project_id is not None else None
+        ),
         'customer_no': c.customer_no,
         'lead_contact_id': c.lead_contact_id,
         'source_kind': c.source_kind,
