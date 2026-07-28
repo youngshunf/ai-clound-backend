@@ -315,6 +315,17 @@ async def test_growth_project_enable_rejects_archived_and_enterprise_projects(
     )
     session.add_all([archived, enterprise])
     await session.flush()
+    legacy_growth = GrowthProject(
+        platform_project_id=archived.id,
+        user_id=102,
+        owner_hasn_id=owner,
+        owner_scope='personal',
+        name='待改挂漏斗',
+        status='draft',
+        provision_status='pending',
+    )
+    session.add(legacy_growth)
+    await session.flush()
 
     with pytest.raises(errors.ConflictError) as archived_error:
         await growth_project_app_service.enable(
@@ -339,6 +350,19 @@ async def test_growth_project_enable_rejects_archived_and_enterprise_projects(
     assert enterprise_error.value.code == 422
     assert (
         enterprise_error.value.data['error_code']
+        == 'ENTERPRISE_IDENTITY_MAPPING_REQUIRED'
+    )
+
+    with pytest.raises(errors.RequestError) as link_error:
+        await project_linkage_registry.link(
+            session,
+            owner=owner,
+            resource_uri=f'hasn://growth/projects/{legacy_growth.id}',
+            project_id=enterprise.id,
+        )
+    assert link_error.value.code == 422
+    assert (
+        link_error.value.data['error_code']
         == 'ENTERPRISE_IDENTITY_MAPPING_REQUIRED'
     )
 

@@ -18,9 +18,10 @@ owner 隔离：adapter 定位资源行时按 `owner_column == owner` 过滤（�
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -47,7 +48,7 @@ def parse_hasn_uri(uri: str) -> tuple[str, str]:
     if not raw.startswith('hasn://'):
         raise _err('invalid_uri', f'资源地址必须是 hasn:// URI，收到：{uri!r}')
     body = raw[len('hasn://') :]
-    segs = [s for s in body.split('/') if s != '']
+    segs = [segment for segment in body.split('/') if segment]
     if len(segs) < 2:
         raise _err('invalid_uri', f'hasn:// URI 缺少资源 id 段：{uri!r}')
     server_id = segs[-1]
@@ -69,6 +70,7 @@ class LinkageAdapter:
     - `deleted_column`：软删除时间列；声明后定位与项目聚合都只接受该列为空的有效行。
     - `revision_column` / `sync_kind` / `sync_scope`：显式挂靠变更时递增业务版本，并供写边界在提交后
       发布对应失效信号。
+    - `validate_link`：应用域额外挂靠门禁；在定位资源和目标项目 UUID 后、写挂靠列前执行。
     - `related_resource_uris`：容器名下历史产物 URI 派生钩子；由应用 adapter 自己实现关系查询，
       project service 不得跨 schema 特判。
     """
@@ -89,6 +91,7 @@ class LinkageAdapter:
     sync_scope: Literal['owner', 'global'] = 'owner'
     allow_unlink: bool = True
     allow_relink: bool = True
+    validate_link: Callable[[Any, str, Any, UUID], Awaitable[None]] | None = None
     related_resource_uris: Callable[[Any, str, tuple[Any, ...]], Awaitable[list[str]]] | None = None
     related_resource_uri_pairs: Callable[
         [Any, str, dict[UUID, tuple[Any, ...]]], Awaitable[list[tuple[UUID, str]]]
@@ -333,6 +336,8 @@ class ProjectLinkageRegistry:
             raise _err('unsupported_link_domain', f'资源域「{domain}」暂不支持挂靠进项目')
         row = await self._locate(db, adapter, owner, server_id)
         pid = project_id if isinstance(project_id, UUID) else UUID(str(project_id))
+        if adapter.validate_link is not None:
+            await adapter.validate_link(db, owner, row, pid)
         previous = getattr(row, adapter.attach_column)
         if previous is not None and previous != pid and not adapter.allow_relink:
             raise errors.ConflictError(

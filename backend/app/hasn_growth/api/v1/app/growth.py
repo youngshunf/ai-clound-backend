@@ -459,6 +459,26 @@ async def list_opportunities(
     return response_base.success(data=data)
 
 
+@router.get(
+    '/opportunities/{opportunity_id}',
+    summary='[Owner] 商机详情',
+    dependencies=[DependsJwtAuth],
+)
+async def get_opportunity(
+    request: Request,
+    db: CurrentSession,
+    opportunity_id: int,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.get_opportunity(
+        db,
+        user_id=request.user.id,
+        opportunity_id=opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
 @router.patch('/opportunities/{opportunity_id}/stage', summary='[Owner] 推进商机阶段', dependencies=[DependsJwtAuth])
 async def update_stage(
     request: Request, db: CurrentSessionTransaction, opportunity_id: int, obj: UpdateStageParam
