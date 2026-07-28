@@ -8,7 +8,9 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from backend.app.hasn.model import (
     HasnArtifactContributions,
@@ -126,21 +128,26 @@ class ArtifactRegistrationService:
         legacy_key = f'local:{mutation.node_id}:{mutation.supersedes_locator_key}'
         if legacy_key == artifact_key:
             return
-        target_exists = (
-            await db.execute(
-                select(HasnArtifacts.artifact_id).where(
-                    HasnArtifacts.owner_hasn_id == mutation.owner_hasn_id,
-                    HasnArtifacts.artifact_key == artifact_key,
-                )
+        # 目标键存在性判定必须折进 UPDATE 同一条语句（别名子查询防 ORM 把条件自动关联成外层行）：
+        # 独立的先 SELECT 再 UPDATE 是 TOCTOU——并发登记同一路径（如 outbox 重放的旧 mutation
+        # 不带 supersedes，直走 upsert 插入目标键）会在两条语句之间提交目标键，改键撞上
+        # (owner, artifact_key) 唯一约束，把整笔登记炸成 5xx。折进一条语句后，已提交的目标键
+        # 在语句快照内可见，UPDATE 自动退化为 0 行（旧行原样保留）。
+        target = aliased(HasnArtifacts)
+        target_key_taken = (
+            select(target.artifact_id)
+            .where(
+                target.owner_hasn_id == mutation.owner_hasn_id,
+                target.artifact_key == artifact_key,
             )
-        ).scalar_one_or_none()
-        if target_exists is not None:
-            return
-        await db.execute(
+            .exists()
+        )
+        merge_statement = (
             update(HasnArtifacts)
             .where(
                 HasnArtifacts.owner_hasn_id == mutation.owner_hasn_id,
                 HasnArtifacts.artifact_key == legacy_key,
+                ~target_key_taken,
             )
             .values(
                 artifact_key=artifact_key,
@@ -148,6 +155,19 @@ class ArtifactRegistrationService:
                 updated_time=func.now(),
             )
         )
+        try:
+            # SAVEPOINT 兜底：目标键在语句快照里不可见、但正被并发事务**未提交**插入时，改键仍会
+            # 在唯一索引上阻塞、对方提交后报 UniqueViolation——只回滚归并这一步（旧行保持原键），
+            # 本事务后续 upsert 经 ON CONFLICT 与胜方合并，整笔登记不因竞态 5xx。
+            async with db.begin_nested():
+                await db.execute(merge_statement)
+        except IntegrityError:
+            log.warning(
+                '产物定位键归并与并发登记撞键，放弃改键改走 upsert 合并：owner=%s legacy_key=%s artifact_key=%s',
+                mutation.owner_hasn_id,
+                legacy_key,
+                artifact_key,
+            )
 
     async def register(self, db: AsyncSession, mutation: ArtifactMutation) -> ArtifactRegistrationResult:
         """在同一事务写入当前态、参与记录和已确认的登记意图。"""

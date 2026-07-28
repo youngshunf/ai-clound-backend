@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from uuid import uuid4
 
 import pytest
@@ -517,5 +519,240 @@ async def test_soft_deleted_artifact_revives_on_reregister() -> None:
                 )
             ).scalar_one()
             assert row.status == 'active'
+        finally:
+            await db.rollback()
+
+
+def _local_file_mutation(
+    *,
+    owner: str,
+    agent: str,
+    node: str,
+    locator_key: str,
+    dispatch_id: str,
+    supersedes: str | None = None,
+) -> ArtifactMutation:
+    """构造一条本地文件产物的登记命令（可带 supersedes 归并意图）。"""
+    payload: dict[str, object] = {
+        'owner_hasn_id': owner,
+        'agent_hasn_id': agent,
+        'action': 'create',
+        'source_kind': 'runtime_file',
+        'artifact_kind': 'file',
+        'local_locator_key': locator_key,
+        'node_id': node,
+        'local_entry_kind': 'file',
+        'dispatch_id': dispatch_id,
+        'title': '本地文件产物',
+    }
+    if supersedes is not None:
+        payload['supersedes_locator_key'] = supersedes
+    return ArtifactMutation.model_validate(payload)
+
+
+async def test_supersede_merge_rekeys_legacy_row_and_keeps_contributions() -> None:
+    """带 supersedes 的登记命中存量 legacy 行时原地改键，同一文件不留下两条产物（设计 §4.7）。"""
+    owner = _id('owner')
+    agent = _id('agent')
+    node = _id('node')
+    legacy_locator = f'legacy-path-v1:{uuid4().hex[:16]}'
+    v2_locator = f'locator-v2:{uuid4().hex[:16]}'
+
+    async with async_db_session() as db:
+        try:
+            legacy = await artifact_registration_service.register(
+                db,
+                _local_file_mutation(
+                    owner=owner,
+                    agent=agent,
+                    node=node,
+                    locator_key=legacy_locator,
+                    dispatch_id='legacy_dispatch',
+                ),
+            )
+            merged = await artifact_registration_service.register(
+                db,
+                _local_file_mutation(
+                    owner=owner,
+                    agent=agent,
+                    node=node,
+                    locator_key=v2_locator,
+                    dispatch_id='v2_dispatch',
+                    supersedes=legacy_locator,
+                ),
+            )
+
+            assert merged.artifact_id == legacy.artifact_id, '归并必须改键复用同一行，不得新生成产物'
+            artifacts = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
+            ).scalars().all()
+            assert len(artifacts) == 1
+            assert artifacts[0].artifact_key == f'local:{node}:{v2_locator}'
+            assert artifacts[0].local_locator_key == v2_locator
+
+            contributions = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(
+                        HasnArtifactContributions.owner_hasn_id == owner
+                    )
+                )
+            ).scalars().all()
+            assert len(contributions) == 2, '改键前的参与记录必须随行保留'
+        finally:
+            await db.rollback()
+
+
+async def test_supersede_merge_skips_when_target_key_already_exists() -> None:
+    """目标键已上云时归并不动旧行：撞唯一约束的旧路径，留给 upsert 按新键正常合并。"""
+    owner = _id('owner')
+    agent = _id('agent')
+    node = _id('node')
+    legacy_locator = f'legacy-path-v1:{uuid4().hex[:16]}'
+    v2_locator = f'locator-v2:{uuid4().hex[:16]}'
+
+    async with async_db_session() as db:
+        try:
+            legacy = await artifact_registration_service.register(
+                db,
+                _local_file_mutation(
+                    owner=owner,
+                    agent=agent,
+                    node=node,
+                    locator_key=legacy_locator,
+                    dispatch_id='legacy_dispatch',
+                ),
+            )
+            target = await artifact_registration_service.register(
+                db,
+                _local_file_mutation(
+                    owner=owner,
+                    agent=agent,
+                    node=node,
+                    locator_key=v2_locator,
+                    dispatch_id='v2_dispatch',
+                ),
+            )
+            again = await artifact_registration_service.register(
+                db,
+                _local_file_mutation(
+                    owner=owner,
+                    agent=agent,
+                    node=node,
+                    locator_key=v2_locator,
+                    dispatch_id='v2_dispatch_again',
+                    supersedes=legacy_locator,
+                ),
+            )
+
+            assert again.artifact_id == target.artifact_id
+            rows = (
+                await db.execute(
+                    select(HasnArtifacts)
+                    .where(HasnArtifacts.owner_hasn_id == owner)
+                    .order_by(HasnArtifacts.id)
+                )
+            ).scalars().all()
+            assert len(rows) == 2, '目标键已存在时旧行必须原样保留为历史'
+            assert rows[0].artifact_id == legacy.artifact_id
+            assert rows[0].artifact_key == f'local:{node}:{legacy_locator}'
+            assert rows[0].local_locator_key == legacy_locator
+            assert rows[1].artifact_key == f'local:{node}:{v2_locator}'
+        finally:
+            await db.rollback()
+
+
+async def test_supersede_merge_survives_concurrent_target_insert() -> None:
+    """归并改键与并发插入目标键撞车时不许把整笔登记炸成 5xx（TOCTOU 修复回归）。
+
+    复现路径：outbox 重放的旧 mutation（不带 supersedes）直走 upsert，插入目标键行但**未提交**；
+    带 supersedes 的新登记同时到达——其改键语句在唯一索引上阻塞，对方提交后报 UniqueViolation。
+    SAVEPOINT 只回滚归并这一步，后续 upsert 经 ON CONFLICT 与胜方合并：登记照常完成、旧行原样、
+    目标行吸收双方参与记录。若时序偏移（对方先提交），语句内 NOT EXISTS 让改键退化为 0 行，
+    断言同样成立——两种交错共用同一确定结局。
+    """
+    owner = _id('owner')
+    agent = _id('agent')
+    node = _id('node')
+    legacy_locator = f'legacy-path-v1:{uuid4().hex[:16]}'
+    v2_locator = f'locator-v2:{uuid4().hex[:16]}'
+    v2_key = f'local:{node}:{v2_locator}'
+    winner_artifact_id = _id('art')
+    winner_inserted = asyncio.Event()
+
+    async def insert_winner_without_commit() -> None:
+        """模拟并发登记：插入目标键行后挂起片刻再提交，压出改键的索引阻塞窗口。"""
+        async with async_db_session() as db:
+            db.add(
+                HasnArtifacts(
+                    artifact_id=winner_artifact_id,
+                    owner_hasn_id=owner,
+                    agent_hasn_id=agent,
+                    artifact_key=v2_key,
+                    artifact_kind='file',
+                    kind='file',
+                    local_locator_key=v2_locator,
+                    local_entry_kind='file',
+                    node_id=node,
+                )
+            )
+            await db.flush()
+            winner_inserted.set()
+            # 归并方的改键必须在此期间抵达唯一索引并阻塞；窗口内未抵达则退化为
+            # 「对方已提交」路径（语句内 NOT EXISTS 判 0 行），两种结局断言一致。
+            await asyncio.sleep(0.5)
+            await db.commit()
+
+    async with async_db_session() as db:
+        try:
+            legacy = await artifact_registration_service.register(
+                db,
+                _local_file_mutation(
+                    owner=owner,
+                    agent=agent,
+                    node=node,
+                    locator_key=legacy_locator,
+                    dispatch_id='legacy_dispatch',
+                ),
+            )
+            await db.commit()  # legacy 行必须已提交，归并语句才见得到
+
+            winner = asyncio.create_task(insert_winner_without_commit())
+            await winner_inserted.wait()
+            merged = await artifact_registration_service.register(
+                db,
+                _local_file_mutation(
+                    owner=owner,
+                    agent=agent,
+                    node=node,
+                    locator_key=v2_locator,
+                    dispatch_id='v2_race_dispatch',
+                    supersedes=legacy_locator,
+                ),
+            )
+            await winner
+
+            assert merged.artifact_id == winner_artifact_id, '撞键后必须经 upsert 与胜方合并'
+            rows = (
+                await db.execute(
+                    select(HasnArtifacts)
+                    .where(HasnArtifacts.owner_hasn_id == owner)
+                    .order_by(HasnArtifacts.id)
+                )
+            ).scalars().all()
+            assert len(rows) == 2, '归并放弃改键后旧行必须原样保留，不得消失也不得改键'
+            assert rows[0].artifact_id == legacy.artifact_id
+            assert rows[0].artifact_key == f'local:{node}:{legacy_locator}'
+            assert rows[1].artifact_id == winner_artifact_id
+
+            contributions = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(
+                        HasnArtifactContributions.owner_hasn_id == owner
+                    )
+                )
+            ).scalars().all()
+            assert any(row.dispatch_id == 'v2_race_dispatch' for row in contributions), (
+                '归并撞键后本笔登记的参与记录仍须落库'
+            )
         finally:
             await db.rollback()
