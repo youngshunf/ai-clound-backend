@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
@@ -10,7 +11,17 @@ class ActivitySchemaBase(SchemaBase):
     customer_id: int = Field(description='None')
     opportunity_id: int | None = Field(None, description='None')
     user_id: int = Field(description='None')
-    kind: str = Field(description='类型 (outreach:触达:blue/reply:回复:green/stage_change:阶段变更:orange/task_run:任务:cyan/note:备注:gray/call:电话:purple/meeting:会议:purple/qualify:晋级:blue/close:成交:green)')
+    growth_project_id: UUID | None = Field(None, description='获客漏斗 UUID')
+    growth_project_playbook_id: int | None = Field(None, description='执行时项目打法采用关系 ID')
+    playbook_id: int | None = Field(None, description='执行时打法 ID')
+    playbook_version: int | None = Field(None, description='执行时打法版本')
+    kind: str = Field(
+        description=(
+            '类型 (outreach:触达:blue/reply:回复:green/stage_change:阶段变更:orange/'
+            'task_run:任务:cyan/note:备注:gray/call:电话:purple/meeting:会议:purple/'
+            'qualify:晋级:blue/close:成交:green)'
+        )
+    )
     content: str | None = Field(None, description='None')
     actor_kind: str | None = Field(None, description='执行者 (owner:主人:blue/agent:分身:violet)')
     actor_id: str | None = Field(None, description='None')

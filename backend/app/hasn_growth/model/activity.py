@@ -22,6 +22,15 @@ class Activity(HasnGrowthAppBase):
     growth_project_id: Mapped[UUID | None] = mapped_column(
         sa.UUID(), default=None, comment='获客漏斗 UUID（迁移期可空）'
     )
+    growth_project_playbook_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='执行时项目打法采用关系 ID'
+    )
+    playbook_id: Mapped[int | None] = mapped_column(
+        sa.BIGINT(), default=None, comment='执行时打法 ID'
+    )
+    playbook_version: Mapped[int | None] = mapped_column(
+        sa.INTEGER(), default=None, comment='执行时打法版本'
+    )
     kind: Mapped[str] = mapped_column(
         sa.String(24),
         default='',

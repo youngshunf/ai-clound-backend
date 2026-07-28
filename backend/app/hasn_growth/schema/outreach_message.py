@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
@@ -11,6 +12,10 @@ class OutreachMessageSchemaBase(SchemaBase):
     customer_id: int = Field(description='None')
     opportunity_id: int | None = Field(None, description='None')
     user_id: int = Field(description='None')
+    growth_project_id: UUID | None = Field(None, description='获客漏斗 UUID')
+    growth_project_playbook_id: int | None = Field(None, description='执行时项目打法采用关系 ID')
+    playbook_id: int | None = Field(None, description='执行时打法 ID')
+    playbook_version: int | None = Field(None, description='执行时打法版本')
     agent_id: str | None = Field(None, description='None')
     direction: str = Field(description='方向 (outbound:出:blue/inbound:入:green)')
     channel: str = Field(

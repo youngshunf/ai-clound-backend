@@ -43,6 +43,9 @@ _MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-p
 _KEY_FENCE_SQL = (
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-pii-key-fence-triggers.sql'
 )
+_PLAYBOOK_TRACE_SQL = (
+    _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-playbook-trace-columns.sql'
+)
 
 _NEW_TABLES = {
     'growth_project',
@@ -69,6 +72,7 @@ async def _apply_sql(session: AsyncSession) -> None:
     await connection.execute(_KEY_STATE_SQL.read_text(encoding='utf-8'))
     await connection.execute(_MIGRATION_SQL.read_text(encoding='utf-8'))
     await connection.execute(_KEY_FENCE_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_PLAYBOOK_TRACE_SQL.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
@@ -165,6 +169,32 @@ async def test_s1_existing_table_columns_and_defaults(session: AsyncSession) -> 
         'manual_attested_by',
         'manual_attested_channel',
     }
+
+    for table_name in ('outreach_message', 'activity'):
+        trace_columns = set(
+            (
+                await session.execute(
+                    text(
+                        'SELECT column_name FROM information_schema.columns '
+                        "WHERE table_schema='hasn_growth' AND table_name=:table_name "
+                        'AND column_name = ANY(:columns)'
+                    ),
+                    {
+                        'table_name': table_name,
+                        'columns': [
+                            'growth_project_playbook_id',
+                            'playbook_id',
+                            'playbook_version',
+                        ],
+                    },
+                )
+            ).scalars()
+        )
+        assert trace_columns == {
+            'growth_project_playbook_id',
+            'playbook_id',
+            'playbook_version',
+        }
 
     default_expr = (
         await session.execute(
@@ -293,6 +323,132 @@ async def test_s1_project_unique_constraints_reject_duplicates(session: AsyncSes
                     "VALUES (:growth_project_id, :lead_contact_id, 980001, 'personal')"
                 ),
                 {'growth_project_id': growth_project_id, 'lead_contact_id': lead_contact_id},
+            )
+
+
+async def test_s1_historical_execution_rejects_mismatched_playbook_snapshot(
+    session: AsyncSession,
+) -> None:
+    """触达、活动和归因只能引用同项目、同打法、同版本的采用关系。"""
+    await _apply_sql(session)
+    platform_project_id = (
+        await session.execute(
+            text(
+                'INSERT INTO hasn_project.hasn_project (owner_id, name, status) '
+                "VALUES ('h_s1_trace_owner', 'S1 打法追溯项目', 'active') RETURNING id"
+            )
+        )
+    ).scalar_one()
+    growth_project_id = (
+        await session.execute(
+            text(
+                'INSERT INTO hasn_growth.growth_project '
+                '(platform_project_id, user_id, owner_hasn_id, owner_scope, name) '
+                "VALUES (:platform_project_id, 980003, 'h_s1_trace_owner', 'personal', 'S1 追溯漏斗') "
+                'RETURNING id'
+            ),
+            {'platform_project_id': platform_project_id},
+        )
+    ).scalar_one()
+    playbook_id = (
+        await session.execute(
+            text(
+                "INSERT INTO hasn_growth.playbook (user_id, name, version) "
+                "VALUES (980003, 'S1 追溯打法', 1) RETURNING id"
+            )
+        )
+    ).scalar_one()
+    await session.execute(
+        text(
+            'INSERT INTO hasn_growth.playbook_version '
+            '(playbook_id, version, name, definition_hash) '
+            "VALUES (:playbook_id, 1, 'S1 追溯打法', 's1-trace-v1')"
+        ),
+        {'playbook_id': playbook_id},
+    )
+    project_playbook_id = (
+        await session.execute(
+            text(
+                'INSERT INTO hasn_growth.growth_project_playbook '
+                '(growth_project_id, playbook_id, playbook_version) '
+                'VALUES (:growth_project_id, :playbook_id, 1) RETURNING id'
+            ),
+            {
+                'growth_project_id': growth_project_id,
+                'playbook_id': playbook_id,
+            },
+        )
+    ).scalar_one()
+    lead_contact_id = (
+        await session.execute(
+            text(
+                'INSERT INTO hasn_growth.contact '
+                '(lead_no, pool_visibility, status, confidence_score, normalization_version, '
+                'first_seen_at, last_seen_at) '
+                "VALUES ('S1TRACELEAD', 'private', 'valid', 80, 's1', now(), now()) RETURNING id"
+            )
+        )
+    ).scalar_one()
+    customer_id = (
+        await session.execute(
+            text(
+                'INSERT INTO hasn_growth.customer '
+                '(customer_no, user_id, growth_project_id, lead_contact_id, source_kind, '
+                'lifecycle_status, owner_scope) '
+                "VALUES ('S1TRACECUSTOMER', 980003, :growth_project_id, :lead_contact_id, "
+                "'outbound_crawl', 'active', 'personal') RETURNING id"
+            ),
+            {
+                'growth_project_id': growth_project_id,
+                'lead_contact_id': lead_contact_id,
+            },
+        )
+    ).scalar_one()
+
+    for table_name, values_sql in (
+        (
+            'outreach_message',
+            "(customer_id, user_id, growth_project_id, growth_project_playbook_id, "
+            "playbook_id, playbook_version, direction, channel, content, status) "
+            "VALUES (:customer_id, 980003, :growth_project_id, :project_playbook_id, "
+            ":playbook_id, 2, 'outbound', 'email', 'S1 追溯测试', 'draft')",
+        ),
+        (
+            'activity',
+            "(customer_id, user_id, growth_project_id, growth_project_playbook_id, "
+            "playbook_id, playbook_version, kind) "
+            "VALUES (:customer_id, 980003, :growth_project_id, :project_playbook_id, "
+            ":playbook_id, 2, 'outreach')",
+        ),
+    ):
+        with pytest.raises(IntegrityError):
+            async with session.begin_nested():
+                await session.execute(
+                    text(f'INSERT INTO hasn_growth.{table_name} {values_sql}'),
+                    {
+                        'customer_id': customer_id,
+                        'growth_project_id': growth_project_id,
+                        'project_playbook_id': project_playbook_id,
+                        'playbook_id': playbook_id,
+                    },
+                )
+
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            await session.execute(
+                text(
+                    'INSERT INTO hasn_growth.growth_attribution_event '
+                    '(growth_project_id, event_type, customer_id, growth_project_playbook_id, '
+                    'playbook_id, playbook_version, occurred_time, idempotency_key) '
+                    'VALUES (:growth_project_id, \'qualified\', :customer_id, '
+                    ':project_playbook_id, :playbook_id, 2, now(), \'s1-trace-mismatch\')'
+                ),
+                {
+                    'growth_project_id': growth_project_id,
+                    'customer_id': customer_id,
+                    'project_playbook_id': project_playbook_id,
+                    'playbook_id': playbook_id,
+                },
             )
 
 
