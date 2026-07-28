@@ -2283,6 +2283,53 @@ class CommunityService:
     # ==================== 主页功能 ====================
 
     @staticmethod
+    async def _resolve_friendship_status(
+        db: AsyncSession,
+        *,
+        viewer_hasn_id: str | None,
+        target_hasn_id: str,
+        target_owner_hasn_id: str | None = None,
+    ) -> str:
+        """返回主页查看者与目标之间的权威好友状态。"""
+        if not viewer_hasn_id:
+            return 'none'
+        if target_hasn_id == viewer_hasn_id:
+            return 'self'
+        if target_owner_hasn_id == viewer_hasn_id:
+            return 'owned'
+
+        relation = (
+            await db.execute(
+                select(HasnContacts.status, HasnContacts.trust_level)
+                .where(
+                    HasnContacts.owner_id == viewer_hasn_id,
+                    HasnContacts.peer_id == target_hasn_id,
+                    HasnContacts.relation_type == 'social',
+                )
+                .limit(1)
+            )
+        ).first()
+        if relation is not None:
+            if relation.trust_level == 0 or relation.status == 'blocked':
+                return 'blocked'
+            if relation.status == 'connected':
+                return 'connected'
+
+        pending_request = (
+            await db.execute(
+                select(HasnContactRequests.id)
+                .where(
+                    HasnContactRequests.from_id == viewer_hasn_id,
+                    HasnContactRequests.to_id == target_hasn_id,
+                    HasnContactRequests.relation_type == 'social',
+                    HasnContactRequests.status == 'pending',
+                )
+                .limit(1)
+            )
+        ).first()
+        return 'pending' if pending_request is not None else 'none'
+
+    @staticmethod
     async def get_profile(
         db: AsyncSession,
         *,
@@ -2396,12 +2443,18 @@ class CommunityService:
         }
 
         if human is not None:
+            friendship_status = await CommunityService._resolve_friendship_status(
+                db,
+                viewer_hasn_id=viewer_hasn_id,
+                target_hasn_id=hasn_id,
+            )
             base.update({
                 'type': 'human',
                 'display_name': human.nickname or hasn_id,
                 'avatar': human.avatar or '',
                 'bio': human.bio or '',
                 'tags': human.tags or [],
+                'friendship_status': friendship_status,
             })
             return base
 
@@ -2424,42 +2477,12 @@ class CommunityService:
                 )
             )
         ).scalar() or 0
-        friendship_status = 'none'
-        if viewer_hasn_id:
-            if agent.owner_id == viewer_hasn_id:
-                friendship_status = 'owned'
-            else:
-                relation = (
-                    await db.execute(
-                        select(HasnContacts.status, HasnContacts.trust_level)
-                        .where(
-                            HasnContacts.owner_id == viewer_hasn_id,
-                            HasnContacts.peer_id == hasn_id,
-                            HasnContacts.relation_type == 'social',
-                        )
-                        .limit(1)
-                    )
-                ).first()
-                if relation is not None:
-                    if relation.trust_level == 0 or relation.status == 'blocked':
-                        friendship_status = 'blocked'
-                    elif relation.status == 'connected':
-                        friendship_status = 'connected'
-                if friendship_status == 'none':
-                    pending_request = (
-                        await db.execute(
-                            select(HasnContactRequests.id)
-                            .where(
-                                HasnContactRequests.from_id == viewer_hasn_id,
-                                HasnContactRequests.to_id == hasn_id,
-                                HasnContactRequests.relation_type == 'social',
-                                HasnContactRequests.status == 'pending',
-                            )
-                            .limit(1)
-                        )
-                    ).first()
-                    if pending_request is not None:
-                        friendship_status = 'pending'
+        friendship_status = await CommunityService._resolve_friendship_status(
+            db,
+            viewer_hasn_id=viewer_hasn_id,
+            target_hasn_id=hasn_id,
+            target_owner_hasn_id=agent.owner_id,
+        )
         online_map = await _presence_query.get_online_map([hasn_id])
 
         # 被调用数：聚合 AI-Native 调用审计（放行的）

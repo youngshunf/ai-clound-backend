@@ -33,6 +33,7 @@ async def test_human_profile_real_fields_and_counts(db):
     assert profile['follower_count'] == 1
     assert profile['is_following'] is True
     assert profile['is_self'] is False
+    assert profile['friendship_status'] == 'none'
 
 
 @pytest.mark.asyncio
@@ -43,6 +44,7 @@ async def test_self_profile_is_self_true(db):
     )
     assert profile['is_self'] is True
     assert profile['is_following'] is False
+    assert profile['friendship_status'] == 'self'
 
 
 @pytest.mark.asyncio
