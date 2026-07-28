@@ -61,7 +61,7 @@ _APP.include_router(open_forms_router, prefix='/api/v1/growth/open')
 
 
 @_APP.exception_handler(BaseExceptionError)
-async def _err_handler(_request: Request, exc: BaseExceptionError) -> JSONResponse:  # noqa: RUF029
+async def _err_handler(_request: Request, exc: BaseExceptionError) -> JSONResponse:  # ruff: ignore[unused-async]
     return JSONResponse(status_code=exc.code, content={'code': exc.code, 'msg': str(exc.msg), 'data': None})
 
 
@@ -206,12 +206,12 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
 
-    async def _yield_session() -> AsyncIterator:  # noqa: RUF029
+    async def _yield_session() -> AsyncIterator:  # ruff: ignore[unused-async]
         yield session
 
     state = SimpleNamespace(owner_uid=owner_uid, scopes=['agent', 'growth:read', 'growth:manage', 'growth:outreach'])
 
-    async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
+    async def _agent_auth(request: Request) -> AgentTokenPayload:  # ruff: ignore[unused-async]
         payload = AgentTokenPayload(
             agent_hasn_id=agent_hasn,
             agent_name=f'agent_{tag}',
@@ -223,7 +223,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         request.state.agent = payload
         return payload
 
-    async def _owner_auth(request: Request) -> None:  # noqa: RUF029
+    async def _owner_auth(request: Request) -> None:  # ruff: ignore[unused-async]
         request.scope['user'] = SimpleNamespace(id=owner_uid, hasn_id=owner)
 
     _APP.dependency_overrides[get_db] = _yield_session
@@ -269,45 +269,30 @@ def _ok(resp: httpx.Response) -> dict:
 async def test_owner_growth_project_context_http_contract(e2e) -> None:
     owner_api = '/api/v1/growth/app'
 
-    current = _ok(
-        await e2e.client.get(
-            f'{owner_api}/projects/by-platform/{e2e.platform_project_id}'
-        )
-    )
+    current = _ok(await e2e.client.get(f'{owner_api}/projects/by-platform/{e2e.platform_project_id}'))
     assert current['platform_project']['id'] == str(e2e.platform_project_id)
     assert current['growth_project']['id'] == str(e2e.growth_project_id)
 
-    detail = _ok(
-        await e2e.client.get(
-            f'{owner_api}/projects/{e2e.growth_project_id}'
-        )
-    )
+    detail = _ok(await e2e.client.get(f'{owner_api}/projects/{e2e.growth_project_id}'))
     assert detail['platform_project_id'] == str(e2e.platform_project_id)
 
-    before_enable = _ok(
-        await e2e.client.get(
-            f'{owner_api}/projects/by-platform/{e2e.empty_platform_project_id}'
-        )
-    )
+    before_enable = _ok(await e2e.client.get(f'{owner_api}/projects/by-platform/{e2e.empty_platform_project_id}'))
     assert before_enable['growth_project'] is None
     enabled = _ok(
         await e2e.client.post(
             f'{owner_api}/projects',
             json={
                 'platform_project_id': str(e2e.empty_platform_project_id),
+                'trace_id': '88888888-8888-4888-8888-888888888888',
+                'idempotency_key': 'growth-http-enable-s4',
                 'name': 'HTTP 启用漏斗',
             },
         )
     )
     assert enabled['created'] is True
-    assert (
-        enabled['growth_project']['platform_project_id']
-        == str(e2e.empty_platform_project_id)
-    )
+    assert enabled['growth_project']['platform_project_id'] == str(e2e.empty_platform_project_id)
 
-    enterprise = await e2e.client.get(
-        f'{owner_api}/projects/by-platform/{e2e.enterprise_platform_project_id}'
-    )
+    enterprise = await e2e.client.get(f'{owner_api}/projects/by-platform/{e2e.enterprise_platform_project_id}')
     assert enterprise.status_code == 422
 
 
@@ -493,27 +478,18 @@ async def test_four_scope_funnel_flow(e2e) -> None:
         assert submission.source_meta == {}
         keyring = require_growth_pii_keyring()
         assert submission.utm_source == (
-            f'v{keyring.active_hmac_version}:'
-            f'{keyring.hmac_for("form_utm_source", "campaign")}'
+            f'v{keyring.active_hmac_version}:{keyring.hmac_for("form_utm_source", "campaign")}'
         )
         assert submission.utm_campaign == (
-            f'v{keyring.active_hmac_version}:'
-            f'{keyring.hmac_for("form_utm_campaign", "+1 (415) 555-2671")}'
+            f'v{keyring.active_hmac_version}:{keyring.hmac_for("form_utm_campaign", "+1 (415) 555-2671")}'
         )
         assert submission.utm_content == (
-            f'v{keyring.active_hmac_version}:'
-            f'{keyring.hmac_for("form_utm_content", "zhaoliu_wechat")}'
+            f'v{keyring.active_hmac_version}:{keyring.hmac_for("form_utm_content", "zhaoliu_wechat")}'
         )
         assert '+1 (415) 555-2671' not in str(submission)
         assert 'zhaoliu_wechat' not in str(submission)
-        assert submission.ip_hmac == (
-            f'v{keyring.active_hmac_version}:'
-            f'{keyring.hmac_for("ip", "203.0.113.42")}'
-        )
-        assert submission.ip_hmac != (
-            f'v{keyring.active_hmac_version}:'
-            f'{keyring.hmac_for("ip", "198.51.100.19")}'
-        )
+        assert submission.ip_hmac == (f'v{keyring.active_hmac_version}:{keyring.hmac_for("ip", "203.0.113.42")}')
+        assert submission.ip_hmac != (f'v{keyring.active_hmac_version}:{keyring.hmac_for("ip", "198.51.100.19")}')
         assert submission.referrer == 'https://campaign.example'
         assert submission.privacy_notice_version == 'growth-form-v1'
         assert submission.consent_purpose == 'sales_followup'
@@ -742,17 +718,18 @@ async def test_owner_create_lead_via_http(e2e) -> None:
         )
     ).scalar_one()
     private_channels = (
-        await e2e.session.execute(
-            select(ContactChannel).where(
-                ContactChannel.private_profile_id == private_profile.id,
+        (
+            await e2e.session.execute(
+                select(ContactChannel).where(
+                    ContactChannel.private_profile_id == private_profile.id,
+                )
             )
         )
-    ).scalars().all()
-    assert {channel.channel for channel in private_channels} == {'email', 'phone'}
-    assert all(
-        channel.value_ciphertext not in {'lilei@xingchen.com', '13900139000'}
-        for channel in private_channels
+        .scalars()
+        .all()
     )
+    assert {channel.channel for channel in private_channels} == {'email', 'phone'}
+    assert all(channel.value_ciphertext not in {'lilei@xingchen.com', '13900139000'} for channel in private_channels)
 
     # --- 建的线索出现在 owner 线索池检索 ---
     leads = _ok(await c.get(f'{O}/leads', params={'q': '星尘'}))

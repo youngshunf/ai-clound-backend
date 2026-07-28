@@ -132,6 +132,11 @@ LOCAL_BEAT_SCHEDULE = {
         'task': 'growth_dispatch_approved_outreach',
         'schedule': TzAwareCrontab('*/5'),  # 每 5 分钟扫 approved 触达分发（quiet hours 窗口内才实发）
     },
+    '获客-项目开通恢复对账': {
+        'task': 'growth_project_provision_reconcile',
+        # 到期失败与 worker 崩溃留下的 running 每 5 分钟重投；步骤写点自身保持幂等。
+        'schedule': TzAwareCrontab('*/5'),
+    },
     'Owner 记忆 pending 合并兜底重试': {
         'task': 'owner_memory_retry_pending_merges',
         # 每 10 分钟扫一次滞留 pending（同步内联合并失败的兜底重试）。只重试最老 pending 已超

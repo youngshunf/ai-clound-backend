@@ -116,10 +116,120 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 获客 22 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
+# 获客 26 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
 # lead_request（2.1 请求线索·用户端默认入口）为第 1 条；其后 lookup/search/enrich_company
 # （GROWTH-QCC-4 企业数据读穿中台）；customer_reassign（GE4）为末条。
 _CAPABILITIES = [
+    _cap(
+        name='project_get',
+        mcp_suffix='project.get',
+        title='读取获客项目',
+        description='按 Growth UUID 或平台项目 UUID 读取漏斗、生命周期与真实开通步骤。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'growth_project_id': {
+                'type': ['string', 'null'],
+                'format': 'uuid',
+                'description': 'Growth 云端权威 UUID；与 platform_project_id 二选一',
+            },
+            'platform_project_id': {
+                'type': ['string', 'null'],
+                'format': 'uuid',
+                'description': '平台项目云端权威 UUID；与 growth_project_id 二选一',
+            },
+        },
+        required=[],
+        page_rank=10,
+        tags=['growth', 'project', 'read'],
+    ),
+    _cap(
+        name='project_create',
+        mcp_suffix='project.create',
+        title='启用获客项目',
+        description=(
+            '为主人名下平台项目幂等创建唯一获客漏斗并启动真实基础资源开通；返回已接受状态与每个步骤，不伪造同步完成。'
+        ),
+        scope=_SCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'platform_project_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': '平台项目云端权威 UUID',
+            },
+            'trace_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': '本次启用意图的稳定追踪 UUID；重试复用',
+            },
+            'idempotency_key': {
+                'type': 'string',
+                'minLength': 1,
+                'maxLength': 200,
+                'description': '稳定业务幂等键；重试复用',
+            },
+            'name': {
+                'type': ['string', 'null'],
+                'maxLength': 200,
+                'description': '漏斗名称；空值沿用平台项目名',
+            },
+            'tagline': {
+                'type': ['string', 'null'],
+                'maxLength': 500,
+                'description': '一句话说明',
+            },
+        },
+        required=['platform_project_id', 'trace_id', 'idempotency_key'],
+        page_rank=10,
+        tags=['growth', 'project', 'create', 'provision'],
+    ),
+    _cap(
+        name='project_update',
+        mcp_suffix='project.update',
+        title='更新获客项目',
+        description='更新未归档获客漏斗的名称或一句话说明，并自动登记项目产物。',
+        scope=_SCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'growth_project_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': 'Growth 云端权威 UUID',
+            },
+            'name': {
+                'type': ['string', 'null'],
+                'maxLength': 200,
+                'description': '新名称',
+            },
+            'tagline': {
+                'type': ['string', 'null'],
+                'maxLength': 500,
+                'description': '新说明；空字符串表示清空',
+            },
+        },
+        required=['growth_project_id'],
+        page_rank=7,
+        tags=['growth', 'project', 'update'],
+    ),
+    _cap(
+        name='project_pause',
+        mcp_suffix='project.pause',
+        title='暂停获客项目',
+        description='暂停漏斗自动动作并保持已有资源可读；不会删除数据或隐式归档平台项目。',
+        scope=_SCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'growth_project_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': 'Growth 云端权威 UUID',
+            },
+        },
+        required=['growth_project_id'],
+        page_rank=8,
+        tags=['growth', 'project', 'pause'],
+    ),
     _cap(
         name='lead_request',
         mcp_suffix='lead.request',

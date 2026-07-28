@@ -6,6 +6,7 @@ import asyncio
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -18,6 +19,9 @@ from sqlalchemy.pool import NullPool
 from backend.app.hasn.service.authz.resource_registry import resource_kind_registry
 from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.growth_project import GrowthProject
+from backend.app.hasn_growth.model.growth_project_provision import (
+    GrowthProjectProvision,
+)
 from backend.app.hasn_growth.model.opportunity import Opportunity
 
 # 单文件测试显式触发生产注册链的两个 Growth 模块。
@@ -44,6 +48,7 @@ _SQL_FILES = (
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-28-growth-pii-key-fence-triggers.sql',
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-playbook-trace-columns.sql',
     _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-growth-project-association-uniques.sql',
+    _REPO / 'backend/sql/hasn_growth/migrations/2026-07-30-growth-project-provision-state-machine.sql',
 )
 
 
@@ -256,6 +261,8 @@ async def test_growth_project_enable_is_owner_scoped_and_idempotent(
         platform_project_id=platform_project.id,
         name=None,
         tagline='测试标语',
+        command_id='11111111-1111-4111-8111-111111111111',
+        idempotency_key='growth-enable-owner-1',
     )
     replayed = await growth_project_app_service.enable(
         session,
@@ -264,13 +271,13 @@ async def test_growth_project_enable_is_owner_scoped_and_idempotent(
         platform_project_id=platform_project.id,
         name=None,
         tagline='测试标语',
+        command_id='11111111-1111-4111-8111-111111111111',
+        idempotency_key='growth-enable-owner-1',
     )
     assert created['created'] is True
     assert replayed['created'] is False
     assert replayed['growth_project']['id'] == created['growth_project']['id']
-    assert replayed['growth_project']['platform_project_id'] == str(
-        platform_project.id
-    )
+    assert replayed['growth_project']['platform_project_id'] == str(platform_project.id)
 
     current = await growth_project_app_service.get_for_platform(
         session,
@@ -288,11 +295,10 @@ async def test_growth_project_enable_is_owner_scoped_and_idempotent(
             platform_project_id=platform_project.id,
             name='另一创建意图',
             tagline='测试标语',
+            command_id='22222222-2222-4222-8222-222222222222',
+            idempotency_key='growth-enable-owner-2',
         )
-    assert (
-        duplicate.value.data['error_code']
-        == 'GROWTH_PROJECT_ALREADY_EXISTS'
-    )
+    assert duplicate.value.data['error_code'] == 'GROWTH_PROJECT_ALREADY_EXISTS'
 
     with pytest.raises(errors.NotFoundError):
         await growth_project_app_service.get_by_id(
@@ -335,6 +341,8 @@ async def test_growth_project_enable_rejects_archived_and_enterprise_projects(
             platform_project_id=archived.id,
             name=None,
             tagline=None,
+            command_id='33333333-3333-4333-8333-333333333333',
+            idempotency_key='growth-enable-archived',
         )
     assert archived_error.value.data['error_code'] == 'PROJECT_ARCHIVED'
 
@@ -346,12 +354,11 @@ async def test_growth_project_enable_rejects_archived_and_enterprise_projects(
             platform_project_id=enterprise.id,
             name=None,
             tagline=None,
+            command_id='44444444-4444-4444-8444-444444444444',
+            idempotency_key='growth-enable-enterprise',
         )
     assert enterprise_error.value.code == 422
-    assert (
-        enterprise_error.value.data['error_code']
-        == 'ENTERPRISE_IDENTITY_MAPPING_REQUIRED'
-    )
+    assert enterprise_error.value.data['error_code'] == 'ENTERPRISE_IDENTITY_MAPPING_REQUIRED'
 
     with pytest.raises(errors.RequestError) as link_error:
         await project_linkage_registry.link(
@@ -361,10 +368,7 @@ async def test_growth_project_enable_rejects_archived_and_enterprise_projects(
             project_id=enterprise.id,
         )
     assert link_error.value.code == 422
-    assert (
-        link_error.value.data['error_code']
-        == 'ENTERPRISE_IDENTITY_MAPPING_REQUIRED'
-    )
+    assert link_error.value.data['error_code'] == 'ENTERPRISE_IDENTITY_MAPPING_REQUIRED'
 
 
 async def test_concurrent_growth_project_create_conflict_is_deterministic() -> None:
@@ -394,6 +398,8 @@ async def test_concurrent_growth_project_create_conflict_is_deterministic() -> N
             platform_project_id=platform_project.id,
             name='并发漏斗 A',
             tagline=None,
+            command_id='55555555-5555-4555-8555-555555555555',
+            idempotency_key='growth-enable-concurrent-a',
         )
         assert created['created'] is True
 
@@ -405,6 +411,8 @@ async def test_concurrent_growth_project_create_conflict_is_deterministic() -> N
                 platform_project_id=platform_project.id,
                 name='并发漏斗 B',
                 tagline=None,
+                command_id='66666666-6666-4666-8666-666666666666',
+                idempotency_key='growth-enable-concurrent-b',
             )
         )
         await asyncio.sleep(0.05)
@@ -413,10 +421,7 @@ async def test_concurrent_growth_project_create_conflict_is_deterministic() -> N
         await first.commit()
         with pytest.raises(errors.ConflictError) as conflict:
             await second_request
-        assert (
-            conflict.value.data['error_code']
-            == 'GROWTH_PROJECT_ALREADY_EXISTS'
-        )
+        assert conflict.value.data['error_code'] == 'GROWTH_PROJECT_ALREADY_EXISTS'
         await second.rollback()
     finally:
         await first.rollback()
@@ -428,17 +433,127 @@ async def test_concurrent_growth_project_create_conflict_is_deterministic() -> N
             cleanup = sessions()
             try:
                 await cleanup.execute(
-                    sa.delete(GrowthProject).where(
-                        GrowthProject.platform_project_id
-                        == platform_project_id
+                    sa.delete(GrowthProjectProvision).where(
+                        GrowthProjectProvision.growth_project_id.in_(
+                            sa.select(GrowthProject.id).where(GrowthProject.platform_project_id == platform_project_id)
+                        )
                     )
                 )
                 await cleanup.execute(
-                    sa.delete(HasnProject).where(
-                        HasnProject.id == platform_project_id
-                    )
+                    sa.delete(GrowthProject).where(GrowthProject.platform_project_id == platform_project_id)
                 )
+                await cleanup.execute(sa.delete(HasnProject).where(HasnProject.id == platform_project_id))
                 await cleanup.commit()
             finally:
                 await cleanup.close()
         await engine.dispose()
+
+
+async def test_growth_enable_creates_reliable_steps_and_lifecycle_is_explicit(
+    session: AsyncSession,
+) -> None:
+    """开通命令有四个持久步骤；归档恢复只回 paused，不隐式恢复自动动作。"""
+    owner = 'h_growth_s4_lifecycle_owner'
+    platform_project = await _seed_project(
+        session,
+        owner=owner,
+        name='S4 生命周期项目',
+    )
+    command_id = '77777777-7777-4777-8777-777777777777'
+    result = await growth_project_app_service.enable(
+        session,
+        owner_hasn_id=owner,
+        owner_user_id=104,
+        platform_project_id=platform_project.id,
+        name=None,
+        tagline='可靠开通',
+        command_id=command_id,
+        idempotency_key='growth-enable-s4-lifecycle',
+    )
+    growth_id = result['growth_project']['id']
+
+    provisions = (
+        (
+            await session.execute(
+                sa
+                .select(GrowthProjectProvision)
+                .where(GrowthProjectProvision.growth_project_id == growth_id)
+                .order_by(GrowthProjectProvision.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [row.step for row in provisions] == [
+        'create_funnel',
+        'create_knowledge',
+        'attach_knowledge',
+        'seed_knowledge',
+    ]
+    assert [row.status for row in provisions] == [
+        'success',
+        'pending',
+        'pending',
+        'pending',
+    ]
+    assert {row.command_id for row in provisions} == {command_id}
+    assert result['growth_project']['provision_steps'][0]['status'] == 'success'
+
+    other_platform = await _seed_project(
+        session,
+        owner=owner,
+        name='S4 另一平台项目',
+    )
+    with pytest.raises(errors.ConflictError) as reused_key:
+        await growth_project_app_service.enable(
+            session,
+            owner_hasn_id=owner,
+            owner_user_id=104,
+            platform_project_id=other_platform.id,
+            name=None,
+            tagline='错误复用稳定键',
+            command_id=command_id,
+            idempotency_key='growth-enable-s4-lifecycle',
+        )
+    assert reused_key.value.data['error_code'] == 'GROWTH_IDEMPOTENCY_CONFLICT'
+
+    paused = await growth_project_app_service.pause(
+        session,
+        owner_hasn_id=owner,
+        growth_project_id=growth_id,
+    )
+    assert paused['status'] == 'paused'
+
+    archived = await growth_project_app_service.archive(
+        session,
+        owner_hasn_id=owner,
+        growth_project_id=growth_id,
+    )
+    assert archived['status'] == 'archived'
+
+    restored = await growth_project_app_service.restore(
+        session,
+        owner_hasn_id=owner,
+        growth_project_id=growth_id,
+    )
+    assert restored['status'] == 'paused'
+
+    with pytest.raises(errors.ConflictError) as not_ready:
+        await growth_project_app_service.resume(
+            session,
+            owner_hasn_id=owner,
+            growth_project_id=growth_id,
+        )
+    assert not_ready.value.data['error_code'] == 'GROWTH_PROJECT_NOT_READY'
+
+    for provision in provisions:
+        provision.status = 'success'
+    growth = await session.get(GrowthProject, UUID(growth_id))
+    assert growth is not None
+    growth.provision_status = 'ready'
+    resumed = await growth_project_app_service.resume(
+        session,
+        owner_hasn_id=owner,
+        growth_project_id=growth_id,
+    )
+    assert resumed['status'] == 'active'

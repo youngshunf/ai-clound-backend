@@ -651,6 +651,10 @@ class AiNativeRuntimeGateway:
             'creator.report_overview': creator_handlers.handle_report_overview,
             # 获客（纯云端业务应用：CRM/获客/触达/成交，零本地操作 → 工具全走云端 gateway_internal，
             # 不经 hasn-node 本地 hasn-mcp / daemon Agent 代理；handler 落 hasn_growth service）
+            'growth.project_get': growth_handlers.handle_growth_project_get,
+            'growth.project_create': growth_handlers.handle_growth_project_create,
+            'growth.project_update': growth_handlers.handle_growth_project_update,
+            'growth.project_pause': growth_handlers.handle_growth_project_pause,
             'growth.lead_request': growth_handlers.handle_growth_lead_request,
             # 企业数据读穿中台（GROWTH-QCC-4）：内部调通用网关 call_system_tool(hasn.ext.qcc_*) + read-through 入池。
             'growth.lookup_company': growth_handlers.handle_growth_lookup_company,
