@@ -1734,6 +1734,22 @@ class CommunityService:
         has_more = len(rows) > limit
         rows = rows[:limit]
 
+        viewer_hasn_id = await CommunityService._resolve_human_hasn_id(db, user_id)
+        liked_comment_ids: set[str] = set()
+        if viewer_hasn_id and rows:
+            comment_ids = [row.HasnComments.comment_id for row in rows]
+            liked_comment_ids = set(
+                (
+                    await db.execute(
+                        select(HasnLikes.target_id).where(
+                            HasnLikes.user_hasn_id == viewer_hasn_id,
+                            HasnLikes.target_type == 'comment',
+                            HasnLikes.target_id.in_(comment_ids),
+                        )
+                    )
+                ).scalars().all()
+            )
+
         items = []
         for row in rows:
             comment = row.HasnComments
@@ -1763,6 +1779,7 @@ class CommunityService:
                 'content': comment.content,
                 'parent_id': comment.parent_id,
                 'like_count': comment.like_count,
+                'is_liked': comment.comment_id in liked_comment_ids,
                 'created_time': comment.created_time.isoformat() if comment.created_time else None,
             })
 
@@ -1991,6 +2008,7 @@ class CommunityService:
             'content': content,
             'parent_id': parent_id,
             'like_count': 0,
+            'is_liked': False,
             'created_time': comment.created_time.isoformat() if comment.created_time else None,
             'status': status,
         }
@@ -2071,6 +2089,7 @@ class CommunityService:
         target_author_type = None
         target_owner_hasn_id = None
         preview = None
+        notification_link = None
         if target_type == 'post':
             post_stmt = select(HasnPosts).where(HasnPosts.post_id == target_id)
             post_result = await db.execute(post_stmt)
@@ -2101,11 +2120,16 @@ class CommunityService:
                 target_author_type = comment.author_type
                 target_owner_hasn_id = comment.owner_hasn_id
                 preview = comment.content
+                notification_link = (
+                    f'/community/articles/{comment.target_id}#comment-{comment.comment_id}'
+                    if comment.target_type == 'article'
+                    else f'/community/posts/{comment.target_id}#comment-{comment.comment_id}'
+                )
 
         await db.flush()
 
         # 触发通知：内容作者（Agent 内容额外 relay 给主人；自赞跳过）
-        if target_author_hasn_id and target_type in ('post', 'article'):
+        if target_author_hasn_id and target_type in ('post', 'article', 'comment'):
             from backend.app.hasn_community.service.notification_service import notification_service
 
             await notification_service.notify_content_interaction(
@@ -2118,6 +2142,7 @@ class CommunityService:
                 author_type=target_author_type or 'human',
                 owner_hasn_id=target_owner_hasn_id,
                 preview=preview,
+                link=notification_link,
             )
 
         # 实时通知点赞者（动作发起人）的关注者刷新社区镜像
@@ -2817,19 +2842,25 @@ class CommunityService:
         *,
         owner_hasn_id: str,
     ) -> dict[str, Any]:
-        """收藏夹列表（含 item_count），doc-13 §3.2。"""
+        """收藏夹列表（含 item_count 与默认夹标记）。
+
+        默认夹采用不依赖名称的稳定策略：每位主人创建时间最早、同秒时内部 ID 最小的
+        收藏夹为默认夹。默认夹始终保留，作为未指定收藏夹时的确定落点。
+        """
         stmt = (
             select(HasnCollections)
             .where(HasnCollections.owner_hasn_id == owner_hasn_id)
-            .order_by(HasnCollections.created_time.desc())
+            .order_by(HasnCollections.created_time.asc(), HasnCollections.id.asc())
         )
         collections = (await db.execute(stmt)).scalars().all()
+        default_collection_id = collections[0].collection_id if collections else None
         return {
             'items': [
                 {
                     'collection_id': c.collection_id,
                     'name': c.name,
                     'is_public': c.is_public,
+                    'is_default': c.collection_id == default_collection_id,
                     'item_count': c.item_count,
                     'created_time': c.created_time.isoformat() if c.created_time else None,
                 }
@@ -2846,11 +2877,21 @@ class CommunityService:
         is_public: bool = False,
     ) -> dict[str, Any]:
         """创建收藏夹，doc-13 §3.2。"""
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise errors.RequestError(msg='收藏夹名称不能为空')
+        has_existing = (
+            await db.execute(
+                select(HasnCollections.id)
+                .where(HasnCollections.owner_hasn_id == owner_hasn_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         collection_id = f'col_{uuid4_str()[:12]}'
         collection = HasnCollections(
             collection_id=collection_id,
             owner_hasn_id=owner_hasn_id,
-            name=name,
+            name=normalized_name,
             is_public=is_public,
             item_count=0,
         )
@@ -2858,9 +2899,57 @@ class CommunityService:
         await db.flush()
         return {
             'collection_id': collection_id,
-            'name': name,
+            'name': normalized_name,
             'is_public': is_public,
+            'is_default': has_existing is None,
             'item_count': 0,
+        }
+
+    @staticmethod
+    async def update_collection(
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        collection_id: str,
+        name: str | None = None,
+        is_public: bool | None = None,
+    ) -> dict[str, Any]:
+        """更新本人收藏夹的名称与公开性。"""
+        collection = (
+            await db.execute(
+                select(HasnCollections).where(
+                    HasnCollections.collection_id == collection_id,
+                    HasnCollections.owner_hasn_id == owner_hasn_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not collection:
+            raise errors.NotFoundError(msg='收藏夹不存在')
+
+        if name is not None:
+            normalized_name = name.strip()
+            if not normalized_name:
+                raise errors.RequestError(msg='收藏夹名称不能为空')
+            collection.name = normalized_name
+        if is_public is not None:
+            collection.is_public = is_public
+        collection.updated_time = timezone.now()
+        await db.flush()
+
+        default_collection_id = (
+            await db.execute(
+                select(HasnCollections.collection_id)
+                .where(HasnCollections.owner_hasn_id == owner_hasn_id)
+                .order_by(HasnCollections.created_time.asc(), HasnCollections.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return {
+            'collection_id': collection.collection_id,
+            'name': collection.name,
+            'is_public': collection.is_public,
+            'is_default': collection.collection_id == default_collection_id,
+            'item_count': collection.item_count,
         }
 
     @staticmethod
@@ -2882,6 +2971,17 @@ class CommunityService:
         if not collection:
             raise errors.NotFoundError(msg='收藏夹不存在')
 
+        default_collection_id = (
+            await db.execute(
+                select(HasnCollections.collection_id)
+                .where(HasnCollections.owner_hasn_id == owner_hasn_id)
+                .order_by(HasnCollections.created_time.asc(), HasnCollections.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if collection.collection_id == default_collection_id:
+            raise errors.RequestError(msg='默认收藏夹不能删除')
+
         # 删除项 + 回退被收藏内容的 collect_count
         items = (
             await db.execute(
@@ -2902,10 +3002,11 @@ class CommunityService:
         *,
         owner_hasn_id: str,
         collection_id: str,
+        target_type: str | None = None,
         cursor: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
-        """收藏夹内容列表（回填 target 内容摘要），doc-13 §3.2。"""
+        """收藏夹内容列表（先按内容类型过滤，再做稳定游标分页）。"""
         collection = (
             await db.execute(
                 select(HasnCollections).where(
@@ -2922,8 +3023,14 @@ class CommunityService:
             .where(HasnCollectionItems.collection_id == collection_id)
             .order_by(HasnCollectionItems.id.desc())
         )
+        if target_type:
+            stmt = stmt.where(HasnCollectionItems.target_type == target_type)
         if cursor:
-            stmt = stmt.where(HasnCollectionItems.id < int(cursor))
+            try:
+                cursor_id = int(cursor)
+            except ValueError as exc:
+                raise errors.RequestError(msg='收藏夹游标无效') from exc
+            stmt = stmt.where(HasnCollectionItems.id < cursor_id)
         stmt = stmt.limit(limit + 1)
         items = (await db.execute(stmt)).scalars().all()
 
@@ -2965,6 +3072,59 @@ class CommunityService:
         }
 
     @staticmethod
+    async def remove_collection_item(
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        collection_id: str,
+        target_type: str,
+        target_id: str,
+    ) -> dict[str, Any]:
+        """仅从指定收藏夹移出目标，不影响同一目标在其他收藏夹中的副本。"""
+        collection = (
+            await db.execute(
+                select(HasnCollections).where(
+                    HasnCollections.collection_id == collection_id,
+                    HasnCollections.owner_hasn_id == owner_hasn_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if not collection:
+            raise errors.NotFoundError(msg='收藏夹不存在')
+
+        item = (
+            await db.execute(
+                select(HasnCollectionItems).where(
+                    HasnCollectionItems.collection_id == collection_id,
+                    HasnCollectionItems.target_type == target_type,
+                    HasnCollectionItems.target_id == target_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if item:
+            await db.delete(item)
+            collection.item_count = max(0, (collection.item_count or 0) - 1)
+            await CommunityService._adjust_collect_count(db, target_type, target_id, -1)
+            await db.flush()
+
+        remaining = (
+            await db.execute(
+                select(HasnCollectionItems.id)
+                .join(
+                    HasnCollections,
+                    HasnCollectionItems.collection_id == HasnCollections.collection_id,
+                )
+                .where(
+                    HasnCollections.owner_hasn_id == owner_hasn_id,
+                    HasnCollectionItems.target_type == target_type,
+                    HasnCollectionItems.target_id == target_id,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return {'is_collected': remaining is not None}
+
+    @staticmethod
     async def get_collection_detail(
         db: AsyncSession,
         *,
@@ -3003,6 +3163,7 @@ class CommunityService:
             db,
             owner_hasn_id=collection.owner_hasn_id,
             collection_id=collection_id,
+            target_type=None,
             cursor=cursor,
             limit=limit,
         )
@@ -3065,7 +3226,7 @@ class CommunityService:
                 await db.execute(
                     select(HasnCollections)
                     .where(HasnCollections.owner_hasn_id == owner_hasn_id)
-                    .order_by(HasnCollections.created_time.asc())
+                    .order_by(HasnCollections.created_time.asc(), HasnCollections.id.asc())
                     .limit(1)
                 )
             ).scalar_one_or_none()

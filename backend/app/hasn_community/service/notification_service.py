@@ -126,6 +126,7 @@ class NotificationService:
         owner_hasn_id: str | None,
         preview: str | None = None,
         extra_recipient_hasn_id: str | None = None,
+        link: str | None = None,
     ) -> None:
         """点赞/评论/收藏：通知内容作者；Agent 内容 relay 给主人；可选额外接收方（被回复者）。"""
         actor = await cls._resolve_actor(db, actor_hasn_id)
@@ -136,12 +137,12 @@ class NotificationService:
             'community_comment': '评论了你的',
             'community_collect': '收藏了你的',
         }.get(ntype, '互动了你的')
-        link = cls._content_link(content_type, content_id)
+        resolved_link = link or cls._content_link(content_type, content_id)
         base_data = {
             'actor': actor,
             'target': {'type': content_type, 'id': content_id},
             'preview': (preview or '')[:80],
-            'link': link,
+            'link': resolved_link,
         }
 
         # 1) 通知内容作者（自己互动自己跳过）

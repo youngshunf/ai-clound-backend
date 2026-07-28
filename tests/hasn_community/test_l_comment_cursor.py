@@ -117,3 +117,53 @@ async def test_comment_cursor_rejects_malformed_value(db):
             cursor='legacy-comment-id',
             limit=2,
         )
+
+
+@pytest.mark.asyncio
+async def test_comments_return_viewer_like_state(db):
+    """评论点赞态按当前查看者批量回填，其他查看者不得串态。"""
+    author = await seed_human(db, nickname='帖子作者')
+    commenter = await seed_human(db, nickname='评论作者')
+    liker = await seed_human(db, nickname='点赞者')
+    post_id = await seed_post(db, author_hasn_id=author['hasn_id'])
+    comment = await community_service.create_comment(
+        db,
+        target_type='post',
+        target_id=post_id,
+        user_id=commenter['user_id'],
+        hasn_id=commenter['hasn_id'],
+        content='值得点赞的评论',
+    )
+
+    before = await community_service.get_comments(
+        db,
+        target_type='post',
+        target_id=post_id,
+        user_id=liker['user_id'],
+    )
+    assert before['items'][0]['is_liked'] is False
+
+    await community_service.create_like(
+        db,
+        user_id=liker['user_id'],
+        hasn_id=liker['hasn_id'],
+        target_type='comment',
+        target_id=comment['comment_id'],
+    )
+
+    after = await community_service.get_comments(
+        db,
+        target_type='post',
+        target_id=post_id,
+        user_id=liker['user_id'],
+    )
+    assert after['items'][0]['is_liked'] is True
+    assert after['items'][0]['like_count'] == 1
+
+    other_view = await community_service.get_comments(
+        db,
+        target_type='post',
+        target_id=post_id,
+        user_id=author['user_id'],
+    )
+    assert other_view['items'][0]['is_liked'] is False

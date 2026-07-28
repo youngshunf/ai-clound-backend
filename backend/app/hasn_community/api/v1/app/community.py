@@ -4,8 +4,10 @@
 路由前缀: /api/v1/community/app
 认证方式: Owner JWT
 """
+from typing import Literal
+
 from fastapi import APIRouter, BackgroundTasks, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.app.hasn_community.service.community_service import community_service
 from backend.app.hasn_community.service.settings_service import community_settings_service
@@ -1360,10 +1362,24 @@ class CreateCollectionRequest(BaseModel):
     is_public: bool = Field(default=False, description='是否公开')
 
 
+class UpdateCollectionRequest(BaseModel):
+    """更新收藏夹请求"""
+
+    name: str | None = Field(default=None, description='收藏夹名称', min_length=1, max_length=100)
+    is_public: bool | None = Field(default=None, description='是否公开')
+
+    @model_validator(mode='after')
+    def validate_non_empty_patch(self) -> 'UpdateCollectionRequest':
+        """PATCH 至少包含一个可更新字段。"""
+        if self.name is None and self.is_public is None:
+            raise ValueError('至少提供 name 或 is_public')
+        return self
+
+
 class CollectRequest(BaseModel):
     """收藏请求"""
 
-    target_type: str = Field(description='目标类型：post/article')
+    target_type: Literal['post', 'article'] = Field(description='目标类型：post/article')
     target_id: str = Field(description='目标 ID')
     collection_id: str | None = Field(default=None, description='收藏夹 ID（缺省进默认收藏夹）')
 
@@ -1396,6 +1412,30 @@ async def create_collection(
     hasn_id = await _require_human_hasn_id(db, request.user.id)
     result = await community_service.create_collection(
         db, owner_hasn_id=hasn_id, name=body.name, is_public=body.is_public
+    )
+    return response_base.success(data=result)
+
+
+@router.patch(
+    '/collections/{collection_id}',
+    summary='更新收藏夹',
+    description='更新本人收藏夹的名称或公开性',
+    dependencies=[DependsJwtAuth],
+)
+async def update_collection(
+    request: Request,
+    db: CurrentSessionTransaction,
+    collection_id: str,
+    body: UpdateCollectionRequest,
+) -> ResponseModel:
+    """更新收藏夹"""
+    hasn_id = await _require_human_hasn_id(db, request.user.id)
+    result = await community_service.update_collection(
+        db,
+        owner_hasn_id=hasn_id,
+        collection_id=collection_id,
+        name=body.name,
+        is_public=body.is_public,
     )
     return response_base.success(data=result)
 
@@ -1452,13 +1492,44 @@ async def get_collection_items(
     request: Request,
     db: CurrentSession,
     collection_id: str,
+    type: Literal['post', 'article'] | None = None,
     cursor: str | None = None,
     limit: int = 20,
 ) -> ResponseModel:
     """收藏夹内容列表"""
     hasn_id = await _require_human_hasn_id(db, request.user.id)
     result = await community_service.get_collection_items(
-        db, owner_hasn_id=hasn_id, collection_id=collection_id, cursor=cursor, limit=limit
+        db,
+        owner_hasn_id=hasn_id,
+        collection_id=collection_id,
+        target_type=type,
+        cursor=cursor,
+        limit=limit,
+    )
+    return response_base.success(data=result)
+
+
+@router.delete(
+    '/collections/{collection_id}/items',
+    summary='从指定收藏夹移出内容',
+    description='仅移出当前收藏夹中的目标，不影响其他收藏夹副本',
+    dependencies=[DependsJwtAuth],
+)
+async def remove_collection_item(
+    request: Request,
+    db: CurrentSessionTransaction,
+    collection_id: str,
+    target_type: Literal['post', 'article'],
+    target_id: str,
+) -> ResponseModel:
+    """从指定收藏夹移出内容"""
+    hasn_id = await _require_human_hasn_id(db, request.user.id)
+    result = await community_service.remove_collection_item(
+        db,
+        owner_hasn_id=hasn_id,
+        collection_id=collection_id,
+        target_type=target_type,
+        target_id=target_id,
     )
     return response_base.success(data=result)
 
