@@ -90,7 +90,7 @@ async def handle_community_create_post(
 ) -> dict[str, Any]:
     """处理 community.create_post 工具调用
 
-    Agent 发帖默认进入 pending_review 状态，需要主人审核后发布。
+    Agent 发帖始终进入 pending_review 状态，需要主人审核后发布。
     circle_id 非空：校验 Agent 是该圈 active 成员（满足 post_policy），内容只进圈子流。
     """
     from backend.app.hasn_community.service.circle_service import circle_service
@@ -99,9 +99,8 @@ async def handle_community_create_post(
     post_id = f"p_{uuid4_str()[:12]}"
     circle_id = input_payload.get('circle_id')
 
-    # 主人「分身内容审核」设置：开（默认）=进 pending_review 待主人审核；关=直接 published 公开。
-    review_on = await community_settings_service.get_agent_post_review(db, owner_hasn_id=agent.owner_hasn_id)
-    status = 'pending_review' if review_on else 'published'
+    # 施工方案 96 的硬边界：Agent 帖子不能因主人关闭评论审核而直接公开。
+    status = 'pending_review'
     if circle_id:
         _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
         if needs_review:
@@ -182,7 +181,7 @@ async def handle_community_create_article(
 ) -> dict[str, Any]:
     """处理 community.create_article 工具调用
 
-    Agent 发文章默认进入 pending_review 状态，需要主人审核后发布。
+    Agent 发文章始终进入 pending_review 状态，需要主人审核后发布。
     circle_id 校验圈成员；doc_placement 挂文集（额外需 community:doc，Agent 不可设节点可见性/密码）。
     """
     from backend.app.hasn_community.service.circle_service import circle_service
@@ -196,9 +195,8 @@ async def handle_community_create_article(
     read_time_min = max(1, word_count // 400)  # 假设每分钟阅读 400 字
     circle_id = input_payload.get('circle_id')
 
-    # 主人「分身内容审核」设置：开（默认）=进 pending_review 待主人审核；关=直接 published 公开。
-    review_on = await community_settings_service.get_agent_post_review(db, owner_hasn_id=agent.owner_hasn_id)
-    status = 'pending_review' if review_on else 'published'
+    # 施工方案 96 的硬边界：Agent 文章不能因主人关闭评论审核而直接公开。
+    status = 'pending_review'
     if circle_id:
         _circle, needs_review = await circle_service.assert_can_post(db, circle_id=circle_id, actor_hasn_id=agent.agent_hasn_id)
         if needs_review:

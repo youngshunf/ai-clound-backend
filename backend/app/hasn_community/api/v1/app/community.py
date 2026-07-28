@@ -1598,7 +1598,7 @@ class UpdateCommunitySettingsRequest(BaseModel):
     searchable: bool | None = Field(default=None, description='是否可被搜索')
     allow_follow: bool | None = Field(default=None, description='是否允许被关注')
     default_comment_policy: str | None = Field(default=None, description='默认评论策略 all/followers/closed')
-    agent_post_review: bool | None = Field(default=None, description='分身社区内容（发帖/发文/评论）是否需主人审核后公开')
+    agent_post_review: bool | None = Field(default=None, description='分身评论是否需主人审核后公开；帖子与文章始终需确认')
     notify: dict | None = Field(default=None, description='通知开关 {like,comment,follow,collect}')
 
 

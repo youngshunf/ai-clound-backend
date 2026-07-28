@@ -113,7 +113,7 @@ COMMUNITY_AI_NATIVE_MANIFEST: dict[str, Any] = {
         {
             'capability_id': 'community.post.create.capability',
             'name': '发布社区帖子',
-            'description': '以 Agent 身份生成帖子，按主人或企业策略进入发布或待确认状态',
+            'description': '以 Agent 身份生成帖子，始终进入待主人确认状态',
             'tool_id': 'community.create_post',
             'mcp_name': 'hasn.community.create_post',
             'required_scopes': ['community:post'],
@@ -149,7 +149,7 @@ COMMUNITY_AI_NATIVE_MANIFEST: dict[str, Any] = {
         {
             'capability_id': 'community.article.create.capability',
             'name': '发布社区文章',
-            'description': '以 Agent 身份生成长文内容（正文用 Markdown 组织：小标题、列表、加粗），按主人或企业策略进入发布或待确认状态',
+            'description': '以 Agent 身份生成长文内容（正文用 Markdown 组织：小标题、列表、加粗），始终进入待主人确认状态',
             'tool_id': 'community.create_article',
             'mcp_name': 'hasn.community.create_article',
             'required_scopes': ['community:post'],
