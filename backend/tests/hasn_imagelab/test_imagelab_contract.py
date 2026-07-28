@@ -36,10 +36,10 @@ def _property_names(value: Any) -> set[str]:
             names.update(_property_names(child))
         return names
     if isinstance(value, list):
-        names: set[str] = set()
+        array_names: set[str] = set()
         for child in value:
-            names.update(_property_names(child))
-        return names
+            array_names.update(_property_names(child))
+        return array_names
     return set()
 
 
