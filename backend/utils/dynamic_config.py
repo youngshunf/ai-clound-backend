@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,24 @@ def _to_bool(value: str) -> bool:
     return value == 'true'
 
 
+def _normalize_config_values(entries: Sequence[object | None]) -> dict[str, str]:
+    """统一数据库 ORM 条目与缓存反序列化字典的配置形态。"""
+    configs: dict[str, str] = {}
+    for entry in entries:
+        if entry is None:
+            continue
+        if isinstance(entry, Mapping):
+            key = entry.get('key')
+            value = entry.get('value')
+        else:
+            key = getattr(entry, 'key', None)
+            value = getattr(entry, 'value', None)
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise TypeError('动态配置条目契约错误：key 和 value 必须为字符串')
+        configs[key] = value
+    return configs
+
+
 async def _load_config(
     db: AsyncSession,
     config_type: ConfigType,
@@ -47,7 +65,7 @@ async def _load_config(
     if not dynamic_config:
         return
 
-    configs = {config.key: config.value for config in dynamic_config if config is not None}
+    configs = _normalize_config_values(dynamic_config)
     if configs.get(status_key, '1') == '0':
         return
 
