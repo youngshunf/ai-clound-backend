@@ -40,6 +40,7 @@ from backend.app.hasn_stock.model import HasnStockProviders
 from backend.app.hasn_stock.schema.stock_provider import CreateProviderParam
 from backend.app.hasn_stock.service.download_service import StockDownloadError, stock_download_service
 from backend.app.hasn_stock.service.provider_store import stock_provider_store
+from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 from backend.app.mcp.auth import AgentContext
 from backend.app.mcp.tools.artifact import ArtifactSearchTool
 from backend.app.mcp.tools.stock import StockDownloadTool
@@ -58,6 +59,7 @@ _LIVE_URL = 'https://raw.githubusercontent.com/github/explore/main/topics/python
 # 真实分身/主人对（本地库既有）。下载路径只用 owner_hasn_id / agent_hasn_id。
 _AGENT = 'a_one_66cee7c3'
 _OWNER = 'h_wb_0423b018'
+_owner_storage = OwnerStorageService(async_db_session)
 
 
 def _pname() -> str:
@@ -95,6 +97,27 @@ async def _seed_provider(host: str) -> int:
     )
     stock_provider_store.invalidate_cache()
     return item.id
+
+
+async def _cleanup_download_result(*, asset_uri: str, artifact_id: str) -> None:
+    """按正式生命周期清理测试产物，确保对象与配额同步释放。"""
+    async with async_db_session.begin() as db:
+        await db.execute(
+            text('DELETE FROM hasn_artifact_registration_outbox WHERE artifact_id = :i'),
+            {'i': artifact_id},
+        )
+        await db.execute(
+            text('DELETE FROM hasn_artifact_contributions WHERE artifact_id = :i'),
+            {'i': artifact_id},
+        )
+        await db.execute(text('DELETE FROM hasn_artifacts WHERE artifact_id = :i'), {'i': artifact_id})
+    asset_id = asset_uri.rsplit('/', 1)[-1]
+    await _owner_storage.delete_asset(
+        owner_hasn_id=_OWNER,
+        asset_id=asset_id,
+        cascade=True,
+    )
+    await _owner_storage.process_jobs(limit=10, job_type='object_purge')
 
 
 def _ctx() -> AgentContext:
@@ -277,19 +300,7 @@ async def test_store_and_register_with_real_bytes_roundtrip() -> None:
         f'落桶产物 {artifact_id} 未能按 description 语义词 {desc_token} 搜回（summary 未生效）：{desc_ids}'
     )
 
-    # 清理本次创建的 artifact/asset 行（真实删除，不留残行）。
-    aid = asset_uri.rsplit('/', 1)[-1]
-    async with async_db_session.begin() as db:
-        await db.execute(
-            text('DELETE FROM hasn_artifact_registration_outbox WHERE artifact_id = :i'),
-            {'i': artifact_id},
-        )
-        await db.execute(
-            text('DELETE FROM hasn_artifact_contributions WHERE artifact_id = :i'),
-            {'i': artifact_id},
-        )
-        await db.execute(text('DELETE FROM hasn_artifacts WHERE artifact_id = :i'), {'i': artifact_id})
-        await db.execute(text('DELETE FROM hasn_assets WHERE asset_id = :a'), {'a': aid})
+    await _cleanup_download_result(asset_uri=asset_uri, artifact_id=str(artifact_id))
 
 
 # --------------------------------------------------------------------------- #
@@ -325,16 +336,4 @@ async def test_live_download_upload_register_search_roundtrip() -> None:
     ids = [it.get('artifact_id') or it.get('id') for it in found.get('items', [])]
     assert artifact_id in ids, f'下载产物 {artifact_id} 未被 artifact.search 搜回：{ids}'
 
-    # 清理本次创建的 artifact/asset 行（真实删除，不留残行）。
-    aid = asset_uri.rsplit('/', 1)[-1]
-    async with async_db_session.begin() as db:
-        await db.execute(
-            text('DELETE FROM hasn_artifact_registration_outbox WHERE artifact_id = :i'),
-            {'i': artifact_id},
-        )
-        await db.execute(
-            text('DELETE FROM hasn_artifact_contributions WHERE artifact_id = :i'),
-            {'i': artifact_id},
-        )
-        await db.execute(text('DELETE FROM hasn_artifacts WHERE artifact_id = :i'), {'i': artifact_id})
-        await db.execute(text('DELETE FROM hasn_assets WHERE asset_id = :a'), {'a': aid})
+    await _cleanup_download_result(asset_uri=asset_uri, artifact_id=str(artifact_id))

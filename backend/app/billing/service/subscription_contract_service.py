@@ -91,6 +91,8 @@ class SubscriptionContractService:
         credits_per_cycle = tier.credits_per_cycle
         if credits_per_cycle <= 0:
             raise errors.RequestError(msg=f'套餐 {tier_name} 未配置每周期积分额度，拒绝履约')
+        if tier.storage_bytes <= 0:
+            raise errors.RequestError(msg=f'套餐 {tier_name} 未配置存储空间额度，拒绝履约')
 
         from backend.app.billing.service.pay_callbacks import _resolve_newapi_user_id
 
@@ -166,6 +168,7 @@ class SubscriptionContractService:
                 'cycle_seconds': CYCLE_SECONDS,
                 'cycle_count': cycle_count,
                 'max_agents': tier.max_agents,
+                'storage_bytes': tier.storage_bytes,
                 'price_amount': str(tier.yearly_price if billing_cycle == 'yearly' else tier.monthly_price),
             },
             source_order_no=order.order_no,

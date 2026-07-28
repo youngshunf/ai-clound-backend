@@ -12,6 +12,7 @@ from sqlalchemy import select
 from backend.app.admin.model.user import User
 from backend.app.hasn.model.hasn_humans import HasnHumans
 from backend.app.hasn.schema.profile import GetMergedProfile, UpdateMergedProfileParam
+from backend.app.hasn.service.hasn_asset_service import HasnAssetService
 from backend.app.hasn.service.profile_service import hasn_profile_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
@@ -129,6 +130,7 @@ async def get_preset_avatars(db: CurrentSession) -> ResponseSchemaModel[list[dic
 
 @router.get('/assets/signed-url', summary='获取私有 OSS 资源临时签名 URL', dependencies=[DependsJwtAuth])
 async def sign_asset_url(
+    request: Request,
     db: CurrentSession,
     url: Annotated[str, Query(min_length=1, description='稳定存储 URL')],
     expires_in: Annotated[int, Query(ge=60, le=3600, description='签名有效期（秒）')] = 3600,
@@ -138,12 +140,28 @@ async def sign_asset_url(
 
     前端业务数据保存稳定 URL；展示时调用本接口刷新签名 URL。
     """
+    requester_hasn_id = await db.scalar(select(HasnHumans.hasn_id).where(HasnHumans.user_id == request.user.id))
+    if requester_hasn_id is None:
+        raise errors.ForbiddenError(msg='STORAGE_OWNER_IDENTITY_REQUIRED')
+
     storages = await s3_storage_dao.get_all(db)
     for s3_storage in storages:
         try:
-            object_key_from_url(s3_storage, url)
+            object_key = object_key_from_url(s3_storage, url)
         except errors.RequestError:
             continue
+        assets = await HasnAssetService.get_by_storage_location(
+            db,
+            storage_id=s3_storage.id,
+            object_key=object_key,
+        )
+        if not assets:
+            raise errors.RequestError(msg='STORAGE_ASSET_NOT_REGISTERED')
+        if not any(asset.access == 'public' or asset.owner_hasn_id == requester_hasn_id for asset in assets):
+            HasnAssetService.assert_legacy_sign_allowed(
+                asset=assets[0],
+                requester_hasn_id=requester_hasn_id,
+            )
         data = await presign_read_url(s3_storage, url, expires_in=expires_in)
         return response_base.success(data=data)
 

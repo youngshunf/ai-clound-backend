@@ -164,9 +164,14 @@ class ArtifactQueryService:
             .subquery()
         )
 
+        artifact_status_condition = (
+            HasnArtifacts.status.in_(('active', 'missing'))
+            if status == 'active'
+            else HasnArtifacts.status == status
+        )
         artifact_conditions = [
             HasnArtifacts.owner_hasn_id == owner_hasn_id,
-            HasnArtifacts.status == status,
+            artifact_status_condition,
             ranked.c.rank == 1,
         ]
         if artifact_kind:

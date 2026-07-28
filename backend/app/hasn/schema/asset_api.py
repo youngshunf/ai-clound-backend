@@ -58,6 +58,17 @@ class DeliveredSourceSnapshot(BaseModel):
     deduped: bool = False
 
 
+class StartMultipartParam(BaseModel):
+    """初始化受控 multipart 上传。"""
+
+    declared_size: int = Field(gt=0, description='客户端声明的完整文件大小')
+    filename: str = Field(min_length=1, max_length=1024)
+    mime: str = Field(min_length=1, max_length=255)
+    category: str = Field(default='user_upload', max_length=32)
+    source_app: str = Field(default='hasn_assets_app', max_length=64)
+    parent_entry_id: str | None = Field(default=None, max_length=40)
+
+
 class ResolveAssetsParam(BaseModel):
     """批量解析入参：asset_ids + 会话上下文。"""
 

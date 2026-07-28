@@ -1,11 +1,10 @@
-"""资产上传/解析 进程内 HTTP E2E（09 Stage1 收尾，真实 PG，零 mock 业务）。
+"""资产上传/解析进程内 HTTP E2E（真实 PostgreSQL + 真实对象存储）。
 
 最小 app 挂真实 assets app 路由，dependency_overrides 注入 owner + 真实 PG 会话；
 经 ASGITransport 走完整 FastAPI HTTP 栈（multipart 解析 + 依赖注入 + 统一信封），
 覆盖 upload→落消息写 grant→resolve 三态——正是 service 层测不到的路由依赖/外壳漂移层。
 
-只 mock S3 网络边界（write_bytes 写 / signed_urls_cached 签名），不碰真实七牛；事务末尾回滚不污染库。
-需要 export DATABASE_PORT=15432。
+测试写入真实七牛私有桶，并按 Owner 精确删除对象和账本；需要 export DATABASE_PORT=15432。
 """
 
 from __future__ import annotations
@@ -19,20 +18,23 @@ import pytest
 import pytest_asyncio
 
 from fastapi import FastAPI, Request
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.api.v1.app.hasn_assets_app import router as assets_router
-from backend.app.hasn.model import HasnAssets, HasnConversations
+from backend.app.hasn.model import HasnAssetBindings, HasnAssets, HasnConversations
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.hasn.service import hasn_asset_service as asset_svc_mod
-from backend.app.hasn_im.application.message_service import _grant_private_attachments
+from backend.app.hasn_im.application.message_service import persist_message
 from backend.common.exception import errors
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
-from backend.plugin.s3.model import S3Storage
-from backend.plugin.s3.service import storage_service as storage_mod
+from backend.database.db import (
+    SQLALCHEMY_DATABASE_URL,
+    async_db_session,
+    get_db,
+    get_db_transaction,
+)
+from backend.plugin.s3.service.storage_service import StorageService
 
 pytestmark = pytest.mark.asyncio
 
@@ -44,12 +46,8 @@ def _uid() -> str:
     return uuid.uuid4().hex[:10]
 
 
-async def _fake_sign(_db, *, items, expires_in=3600):
-    return {it: f'https://signed/{it[1]}?e={expires_in}' for it in items}
-
-
 @pytest_asyncio.fixture
-async def e2e(monkeypatch):
+async def e2e():
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -60,36 +58,56 @@ async def e2e(monkeypatch):
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
 
-    # 三个真实身份 + 一个私有存储空间（同一回滚事务内 seed）
+    # 三个隔离测试身份与一个配额账户；提交后统一存储服务的独立事务才能看到它们。
     uid_a = 1_200_000_000 + int(uuid.uuid4().int % 800_000_000)
     uid_b, uid_c = uid_a + 1, uid_a + 2
     owner_a, peer_b, stranger_c = f'h_a_{_uid()}', f'h_b_{_uid()}', f'h_c_{_uid()}'
-    session.add_all([
-        HasnHumans(hasn_id=owner_a, star_id=f's_{uid_a}', user_id=uid_a, nickname='A', status='active'),
-        HasnHumans(hasn_id=peer_b, star_id=f's_{uid_b}', user_id=uid_b, nickname='B', status='active'),
-        HasnHumans(hasn_id=stranger_c, star_id=f's_{uid_c}', user_id=uid_c, nickname='C', status='active'),
-    ])
-    priv_storage = S3Storage(
-        name='e2e-private', endpoint='https://oss.test', access_key='ak', secret_key='sk',
-        bucket='priv', prefix='hx', region='any', access='private', sign_strategy='s3_presign',
+    session.add_all(
+        [
+            HasnHumans(
+                hasn_id=owner_a,
+                star_id=f's_{uid_a}',
+                user_id=uid_a,
+                nickname=f'资产HTTP_A_{owner_a[-10:]}',
+                status='active',
+            ),
+            HasnHumans(
+                hasn_id=peer_b,
+                star_id=f's_{uid_b}',
+                user_id=uid_b,
+                nickname=f'资产HTTP_B_{peer_b[-10:]}',
+                status='active',
+            ),
+            HasnHumans(
+                hasn_id=stranger_c,
+                star_id=f's_{uid_c}',
+                user_id=uid_c,
+                nickname=f'资产HTTP_C_{stranger_c[-10:]}',
+                status='active',
+            ),
+        ]
     )
-    session.add(priv_storage)
     conv = HasnConversations(
         type='direct', participant_a_id=owner_a, participant_a_type='human',
         participant_b_id=peer_b, participant_b_type='human',
     )
     session.add(conv)
     await session.flush()
-
-    # 只 mock S3 网络边界：write 不落真实七牛、签名不打真实 S3/Redis
-    async def _noop_write(*a, **k) -> None:
-        return None
-
-    monkeypatch.setattr(storage_mod, 'write_bytes', _noop_write)
-    monkeypatch.setattr(
-        asset_svc_mod.StorageService, 'signed_urls_cached',
-        classmethod(lambda cls, db, **kw: _fake_sign(db, **kw)), raising=True,
+    conversation_id = str(conv.id)
+    await session.execute(
+        text(
+            """
+            INSERT INTO hasn_storage_accounts
+                (owner_hasn_id, quota_bytes, used_bytes, reserved_bytes, quota_source,
+                 quota_version, quota_valid_until, state, created_time)
+            VALUES
+                (:owner, 104857600, 0, 0, 'admin_override', 'asset-http-e2e',
+                 now() + interval '1 hour', 'active', now())
+            """
+        ),
+        {'owner': owner_a},
     )
+    await session.commit()
 
     current = {'uid': uid_a}
 
@@ -110,13 +128,62 @@ async def e2e(monkeypatch):
         yield SimpleNamespace(
             client=client, session=session, current=current,
             owner_a=owner_a, peer_b=peer_b, stranger_c=stranger_c,
-            uid_a=uid_a, uid_b=uid_b, uid_c=uid_c, conv_id=str(conv.id),
+            uid_a=uid_a, uid_b=uid_b, uid_c=uid_c, conv_id=conversation_id,
         )
     finally:
         await client.aclose()
         _APP.dependency_overrides.clear()
         await session.rollback()
         await session.close()
+        async with async_db_session() as cleanup_db:
+            objects = (
+                await cleanup_db.execute(
+                    text(
+                        """
+                        SELECT storage_id, object_key
+                        FROM hasn_storage_objects
+                        WHERE owner_hasn_id = :owner
+                        """
+                    ),
+                    {'owner': owner_a},
+                )
+            ).mappings().all()
+            for obj in objects:
+                await StorageService.delete_object(
+                    cleanup_db,
+                    storage_id=int(obj['storage_id']),
+                    object_key=str(obj['object_key']),
+                )
+        async with async_db_session.begin() as cleanup_db:
+            await cleanup_db.execute(
+                text('DELETE FROM hasn_messages WHERE conversation_id = CAST(:conversation_id AS uuid)'),
+                {'conversation_id': conversation_id},
+            )
+            await cleanup_db.execute(
+                text('DELETE FROM hasn_asset_grants WHERE conversation_id = CAST(:conversation_id AS uuid)'),
+                {'conversation_id': conversation_id},
+            )
+            for table in (
+                'hasn_storage_entries',
+                'hasn_asset_bindings',
+                'hasn_assets',
+                'hasn_storage_objects',
+                'hasn_storage_reservations',
+                'hasn_storage_jobs',
+                'hasn_storage_accounts',
+            ):
+                await cleanup_db.execute(
+                    text(f'DELETE FROM {table} WHERE owner_hasn_id = :owner'),  # noqa: S608
+                    {'owner': owner_a},
+                )
+            await cleanup_db.execute(
+                text('DELETE FROM hasn_conversations WHERE id = CAST(:conversation_id AS uuid)'),
+                {'conversation_id': conversation_id},
+            )
+            await cleanup_db.execute(
+                text('DELETE FROM hasn_humans WHERE hasn_id = ANY(CAST(:owners AS varchar[]))'),
+                {'owners': [owner_a, peer_b, stranger_c]},
+            )
         await engine.dispose()
 
 
@@ -129,6 +196,7 @@ async def test_upload_send_resolve_three_state(e2e) -> None:
         '/api/v1/hasn/app/assets/upload',
         files={'file': ('photo.png', b'fake-image-bytes', 'image/png')},
         data={'width': '120', 'height': '80'},
+        headers={'Idempotency-Key': f'asset-http-image-{e2e.owner_a}'},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -138,11 +206,24 @@ async def test_upload_send_resolve_three_state(e2e) -> None:
     asset_id = asset['asset_id']
     await e2e.session.flush()
 
-    # 2) 落消息：为该私有附件按会话写 grant（1f 真实路径）
-    await _grant_private_attachments(
-        e2e.session, e2e.conv_id, {'attachments': [{'uri': f'hasn://asset/{asset_id}'}]}
+    # 2) 落消息：同一事务自动写会话 grant 与删除保护 binding。
+    message = await persist_message(
+        e2e.session,
+        e2e.conv_id,
+        e2e.owner_a,
+        e2e.peer_b,
+        {'attachments': [{'uri': f'hasn://asset/{asset_id}', 'kind': 'image', 'mime': 'image/png'}]},
     )
     await e2e.session.flush()
+    binding = await e2e.session.execute(
+        select(HasnAssetBindings).where(
+            HasnAssetBindings.asset_id == asset_id,
+            HasnAssetBindings.resource_uri
+            == f'hasn://messages/c/{e2e.conv_id}#{message.id}',
+            HasnAssetBindings.status == 'active',
+        )
+    )
+    assert binding.scalar_one().role == 'attachment'
 
     async def _resolve(uid: int) -> set[str]:
         e2e.current['uid'] = uid
@@ -163,7 +244,7 @@ async def test_upload_send_resolve_three_state(e2e) -> None:
     e2e.current['uid'] = e2e.uid_b
     r = await c.post('/api/v1/hasn/app/assets/resolve', json={'asset_ids': [asset_id], 'conversation_id': e2e.conv_id})
     item = r.json()['data'][0]
-    assert item['display_url'].startswith('https://signed/')
+    assert item['display_url'].startswith('https://')
     assert item['expires_at'] is not None
 
 
@@ -174,6 +255,7 @@ async def test_upload_published_artifact_skips_extract(e2e) -> None:
         '/api/v1/hasn/app/assets/upload',
         files={'file': ('site.html', b'<!doctype html><h1>hi</h1>', 'text/html')},
         data={'category': 'published_artifact'},
+        headers={'Idempotency-Key': f'asset-http-published-{e2e.owner_a}'},
     )
     assert resp.status_code == 200, resp.text
     asset_id = resp.json()['data']['asset_id']
@@ -196,4 +278,5 @@ async def test_upload_rejects_unknown_category(e2e) -> None:
             '/api/v1/hasn/app/assets/upload',
             files={'file': ('x.bin', b'data', 'application/octet-stream')},
             data={'category': 'arbitrary_evil'},
+            headers={'Idempotency-Key': f'asset-http-invalid-{e2e.owner_a}'},
         )

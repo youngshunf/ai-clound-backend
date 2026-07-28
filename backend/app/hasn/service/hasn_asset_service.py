@@ -11,13 +11,12 @@
 
 from __future__ import annotations
 
-import hashlib
-
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,13 +37,60 @@ class ResolvedAsset:
     expires_at: str | None  # ISO8601；public 为 None（不过期）
 
 
-class HasnAssetService:
-    _LOCAL_SNAPSHOT_MAX_SIZE = {
-        'image': 50 * 1024 * 1024,
-        'voice': 25 * 1024 * 1024,
-        'file': 1024 * 1024 * 1024,
-    }
+@dataclass(frozen=True, slots=True)
+class AssetRecord:
+    """逻辑资产与权威物理对象位置的只读合并视图。"""
 
+    asset_id: str
+    owner_hasn_id: str
+    access: str
+    storage_id: int
+    object_key: str
+    kind: str
+    mime: str
+    size_bytes: int
+    content_sha256: str | None
+    width: int | None
+    height: int | None
+    duration_ms: int | None
+    transcript: str | None
+    thumbnail_asset_id: str | None
+    extract_status: str
+    object_id: str
+    category: str | None
+    original_name: str | None
+    source_app: str | None
+    lifecycle_status: str
+    object_state: str
+
+
+def _asset_record(row: Any) -> AssetRecord:
+    return AssetRecord(
+        asset_id=str(row['asset_id']),
+        owner_hasn_id=str(row['owner_hasn_id']),
+        access=str(row['access']),
+        storage_id=int(row['storage_id']),
+        object_key=str(row['object_key']),
+        kind=str(row['kind']),
+        mime=str(row['mime']),
+        size_bytes=int(row['size_bytes']),
+        content_sha256=row['content_sha256'],
+        width=row['width'],
+        height=row['height'],
+        duration_ms=row['duration_ms'],
+        transcript=row['transcript'],
+        thumbnail_asset_id=row['thumbnail_asset_id'],
+        extract_status=str(row['extract_status']),
+        object_id=str(row['object_id']),
+        category=row['category'],
+        original_name=row['original_name'],
+        source_app=row['source_app'],
+        lifecycle_status=str(row['lifecycle_status']),
+        object_state=str(row['object_state']),
+    )
+
+
+class HasnAssetService:
     @staticmethod
     def gen_asset_id() -> str:
         """asset_id：'ast_' + uuid4 hex（36 字符，落 varchar(40)）。"""
@@ -89,91 +135,124 @@ class HasnAssetService:
         return asset
 
     @staticmethod
-    def _kind_of_mime(mime: str) -> str:
-        """从服务端收到的 MIME 归类资产类型。"""
-        if mime.startswith('image/'):
-            return 'image'
-        if mime.startswith('audio/'):
-            return 'voice'
-        return 'file'
-
-    @classmethod
-    async def upload_local_source_snapshot(
-        cls,
-        db: AsyncSession,
-        *,
-        owner_hasn_id: str,
-        data: bytes,
-        filename: str | None,
-        content_type: str | None,
-        width: int | None = None,
-        height: int | None = None,
-        duration_ms: int | None = None,
-    ) -> HasnAssets:
-        """上传一次本地原件快照；同主人、类型与 sha256 的重试返回同一资产。
-
-        同一幂等键先取得 PostgreSQL 事务级 advisory lock，再查重并上传，避免并发重试
-        同时越过查询。对象 key 仅由 sha256 派生，数据库提交失败后的重试也只会覆盖同一对象。
-        """
-        if not data:
-            raise errors.RequestError(msg='文件为空')
-
-        mime = (content_type or 'application/octet-stream').strip().lower()
-        kind = cls._kind_of_mime(mime)
-        limit = cls._LOCAL_SNAPSHOT_MAX_SIZE[kind]
-        if len(data) > limit:
-            raise errors.RequestError(msg=f'本地原件快照不能超过 {limit // (1024 * 1024)}MB')
-
-        content_sha256 = hashlib.sha256(data).hexdigest()
-        lock_key = f'hasn_asset:{owner_hasn_id}:{kind}:{content_sha256}'
-        await db.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0))))
-
-        existing = (
+    async def get_by_asset_id(db: AsyncSession, asset_id: str) -> AssetRecord | None:
+        row = (
             await db.execute(
-                select(HasnAssets)
-                .where(
-                    HasnAssets.owner_hasn_id == owner_hasn_id,
-                    HasnAssets.kind == kind,
-                    HasnAssets.content_sha256 == content_sha256,
-                )
-                .limit(1)
+                text(
+                    """
+                    SELECT a.asset_id, a.owner_hasn_id, a.access, a.kind, a.mime,
+                           a.content_sha256,
+                           a.width, a.height, a.duration_ms, a.transcript,
+                           a.thumbnail_asset_id, a.extract_status,
+                           COALESCE(a.object_id, 'legacy:' || a.asset_id) AS object_id,
+                           a.category, a.original_name, a.source_app, a.lifecycle_status,
+                           CASE WHEN a.object_id IS NULL THEN a.storage_id ELSE o.storage_id END
+                               AS storage_id,
+                           CASE WHEN a.object_id IS NULL THEN a.object_key ELSE o.object_key END
+                               AS object_key,
+                           CASE WHEN a.object_id IS NULL THEN a.size_bytes ELSE o.size_bytes END
+                               AS size_bytes,
+                           CASE WHEN a.object_id IS NULL THEN 'active' ELSE o.state END
+                               AS object_state
+                    FROM hasn_assets AS a
+                    LEFT JOIN hasn_storage_objects AS o ON o.object_id = a.object_id
+                    WHERE a.asset_id = :asset_id
+                      AND (a.object_id IS NULL OR o.object_id IS NOT NULL)
+                    """
+                ),
+                {'asset_id': asset_id},
             )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-
-        object_key = f'local-source-snapshots/{content_sha256[:2]}/{content_sha256}'
-        ref = await StorageService.upload(
-            db,
-            data,
-            category='local_source_snapshot',
-            filename=filename,
-            content_type=mime,
-            key=object_key,
-        )
-        return await cls.register_asset(
-            db,
-            owner_hasn_id=owner_hasn_id,
-            ref=ref,
-            kind=kind,
-            width=width,
-            height=height,
-            duration_ms=duration_ms,
-            extract_status='done',
-            content_sha256=content_sha256,
-        )
+        ).mappings().one_or_none()
+        return _asset_record(row) if row is not None else None
 
     @staticmethod
-    async def get_by_asset_id(db: AsyncSession, asset_id: str) -> HasnAssets | None:
-        result = await db.execute(select(HasnAssets).where(HasnAssets.asset_id == asset_id))
-        return result.scalar_one_or_none()
-
-    @staticmethod
-    async def get_many(db: AsyncSession, asset_ids: list[str]) -> dict[str, HasnAssets]:
+    async def get_many(db: AsyncSession, asset_ids: list[str]) -> dict[str, AssetRecord]:
         if not asset_ids:
             return {}
-        result = await db.execute(select(HasnAssets).where(HasnAssets.asset_id.in_(asset_ids)))
-        return {a.asset_id: a for a in result.scalars().all()}
+        rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT a.asset_id, a.owner_hasn_id, a.access, a.kind, a.mime,
+                           a.content_sha256,
+                           a.width, a.height, a.duration_ms, a.transcript,
+                           a.thumbnail_asset_id, a.extract_status,
+                           COALESCE(a.object_id, 'legacy:' || a.asset_id) AS object_id,
+                           a.category, a.original_name, a.source_app, a.lifecycle_status,
+                           CASE WHEN a.object_id IS NULL THEN a.storage_id ELSE o.storage_id END
+                               AS storage_id,
+                           CASE WHEN a.object_id IS NULL THEN a.object_key ELSE o.object_key END
+                               AS object_key,
+                           CASE WHEN a.object_id IS NULL THEN a.size_bytes ELSE o.size_bytes END
+                               AS size_bytes,
+                           CASE WHEN a.object_id IS NULL THEN 'active' ELSE o.state END
+                               AS object_state
+                    FROM hasn_assets AS a
+                    LEFT JOIN hasn_storage_objects AS o ON o.object_id = a.object_id
+                    WHERE a.asset_id = ANY(CAST(:asset_ids AS varchar[]))
+                      AND (a.object_id IS NULL OR o.object_id IS NOT NULL)
+                    """
+                ),
+                {'asset_ids': asset_ids},
+            )
+        ).mappings().all()
+        return {str(row['asset_id']): _asset_record(row) for row in rows}
+
+    @staticmethod
+    async def get_by_storage_location(
+        db: AsyncSession,
+        *,
+        storage_id: int,
+        object_key: str,
+    ) -> list[AssetRecord]:
+        """仅供旧稳定 URL 迁移入口按权威对象位置反查逻辑资产。"""
+        rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT a.asset_id, a.owner_hasn_id, a.access, a.kind, a.mime,
+                           a.content_sha256,
+                           a.width, a.height, a.duration_ms, a.transcript,
+                           a.thumbnail_asset_id, a.extract_status,
+                           COALESCE(a.object_id, 'legacy:' || a.asset_id) AS object_id,
+                           a.category, a.original_name, a.source_app, a.lifecycle_status,
+                           CASE WHEN a.object_id IS NULL THEN a.storage_id ELSE o.storage_id END
+                               AS storage_id,
+                           CASE WHEN a.object_id IS NULL THEN a.object_key ELSE o.object_key END
+                               AS object_key,
+                           CASE WHEN a.object_id IS NULL THEN a.size_bytes ELSE o.size_bytes END
+                               AS size_bytes,
+                           CASE WHEN a.object_id IS NULL THEN 'active' ELSE o.state END
+                               AS object_state
+                    FROM hasn_assets AS a
+                    LEFT JOIN hasn_storage_objects AS o ON o.object_id = a.object_id
+                    WHERE (
+                            (
+                                a.object_id IS NULL
+                                AND a.storage_id = :storage_id
+                                AND a.object_key = :object_key
+                            )
+                            OR (
+                                o.storage_id = :storage_id
+                                AND o.object_key = :object_key
+                                AND o.state IN ('active', 'deleting')
+                            )
+                        )
+                      AND a.lifecycle_status NOT IN ('deleting', 'deleted')
+                    ORDER BY a.id
+                    """
+                ),
+                {'storage_id': storage_id, 'object_key': object_key},
+            )
+        ).mappings().all()
+        return [_asset_record(row) for row in rows]
+
+    @staticmethod
+    def assert_legacy_sign_allowed(*, asset: AssetRecord | HasnAssets, requester_hasn_id: str) -> None:
+        """校验旧稳定 URL 签名入口的最小资产读取权限。"""
+        if asset.access == 'public' or asset.owner_hasn_id == requester_hasn_id:
+            return
+        raise errors.ForbiddenError(msg='STORAGE_ASSET_FORBIDDEN')
 
     @staticmethod
     async def grant_to_conversation(db: AsyncSession, *, asset_id: str, conversation_id: str | UUID) -> None:
@@ -264,8 +343,10 @@ class HasnAssetService:
             participant = await cls.is_participant(db, conversation_id=conversation_id, hasn_id=requester_hasn_id)
 
         extra_readable = extra_readable_asset_ids or set()
-        readable: list[HasnAssets] = []
+        readable: list[AssetRecord] = []
         for asset in assets.values():
+            if asset.lifecycle_status in {'deleting', 'deleted'} or asset.object_state != 'active':
+                continue
             if asset.access == 'public':
                 readable.append(asset)  # public 恒可读（07 D3：公开直读，无需授权）
             elif requester_hasn_id == asset.owner_hasn_id:
@@ -279,7 +360,7 @@ class HasnAssetService:
         # public 直读、private 批量签名（缓存）
         results: list[ResolvedAsset] = []
         private_items: list[tuple[int, str]] = []
-        private_assets: list[HasnAssets] = []
+        private_assets: list[AssetRecord] = []
         storages_cache: dict[int, S3Storage] = {}
         for asset in readable:
             if asset.access == 'public':

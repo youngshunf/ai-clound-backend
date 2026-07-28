@@ -4,9 +4,10 @@
 1. **SSRF 闸**：https + host 命中 provider 目录 `download_domains` 并集 + 解析后禁内网/环回/链路本地 IP；
    跟随重定向**逐跳复检**。
 2. **流式下载**：大小封顶（图片 20MB / 视频 200MB）+ Content-Type 校验（image/* 或 video/*）+ 超时。
-3. `StorageService.upload` 落 owner 私有桶（access=private）。
-4. **双登记**：`register_asset`（image→kind=image，video→kind=file）→ `hasn_artifacts_service.record`
-   （kind=image|video、source_kind=external、source_tool=hasn.stock.download、meta 带 provider/license/source_url）。
+3. `OwnerStorageService.upload_bytes` 经统一配额、去重与对象登记后落 owner 私有桶。
+4. **双登记**：统一资产登记 → `hasn_artifacts_service.record`
+   （kind=image|video、source_kind=external_import、source_tool=hasn.stock.download、meta 带
+   provider/license/source_url），并登记业务引用。
 5. 出参 `{asset_uri, artifact_id, kind, width, height, size_bytes}`。
 
 范式先例：`hasn_studio/service/studio_service.py::_ensure_artifact`（上传→register_asset→登记 artifact）。
@@ -14,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import socket
 
@@ -24,11 +26,10 @@ import httpx
 
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service.hasn_artifacts_service import hasn_artifacts_service
-from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 from backend.app.hasn_stock.service.provider_store import stock_provider_store
 from backend.core.conf import settings
 from backend.database.db import async_db_session
-from backend.plugin.s3.service.storage_service import StorageService
 
 # 大小封顶（字节）：图片 20MB / 视频 200MB（§4.6 步骤 2）
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -39,6 +40,7 @@ _MAX_REDIRECTS = 5
 _UPLOAD_CATEGORY = 'published_artifact'
 _TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
 _UA = 'Mozilla/5.0 (compatible; AstraStockBot/1.0)'
+_owner_storage = OwnerStorageService(async_db_session)
 
 
 class StockDownloadError(RuntimeError):
@@ -191,19 +193,18 @@ class StockDownloadService:
         provider_view = await stock_provider_store.provider_for_domain(host=(urlparse(url).hostname or ''))
 
         filename = self._filename(url, kind_media)
+        stored = await _owner_storage.upload_bytes(
+            owner_hasn_id=owner_hasn_id,
+            data=data,
+            filename=filename,
+            mime=content_type,
+            category=_UPLOAD_CATEGORY,
+            source_app='stock',
+            idempotency_key=f'stock:{hashlib.sha256(url.encode() + b"\\0" + data).hexdigest()}',
+            extract_status='done',
+        )
         async with async_db_session.begin() as db:
-            ref = await StorageService.upload(
-                db, data, category=_UPLOAD_CATEGORY, filename=filename, content_type=content_type
-            )
-            # register_asset：image→kind=image，video→kind=file（hasn_assets.kind 仅 image/voice/file）。
-            asset = await hasn_asset_service.register_asset(
-                db,
-                owner_hasn_id=owner_hasn_id,
-                ref=ref,
-                kind='image' if kind_media == 'image' else 'file',
-                extract_status='done',  # 外部素材不进抽取流水线
-            )
-            asset_uri = f'hasn://asset/{asset.asset_id}'
+            asset_uri = stored.uri
             artifact_id = await hasn_artifacts_service.record(
                 db,
                 agent_hasn_id=agent_hasn_id,
@@ -214,7 +215,7 @@ class StockDownloadService:
                     # 素材站语义描述落 summary → hasn.artifact.search 按语义关键词可搜回
                     # （search 命中 title OR summary；素材文件名/标题常无意义，summary 才承载可检索语义）。
                     summary=(description or None),
-                    asset_id=asset.asset_id,
+                    asset_id=stored.asset_id,
                     session_id=session_id,
                     source_tool='hasn.stock.download',
                     # 外部取材（doc35 §5.2 点名 hasn.stock.download 就是 external_tool 的典型产出者）。
@@ -225,17 +226,24 @@ class StockDownloadService:
                         'license': provider_view.license_terms_url if provider_view else None,
                         'source_url': url,
                         'mime': content_type,
-                        'size_bytes': ref.size,
+                        'size_bytes': stored.size_bytes,
                     },
                 ),
+            )
+            await _owner_storage.bind_asset_in_transaction(
+                db,
+                owner_hasn_id=owner_hasn_id,
+                asset_id=stored.asset_id,
+                resource_uri=f'hasn://artifact/{artifact_id}',
+                role='source',
             )
         return {
             'asset_uri': asset_uri,
             'artifact_id': artifact_id,
             'kind': kind_media,
-            'width': asset.width,
-            'height': asset.height,
-            'size_bytes': ref.size,
+            'width': None,
+            'height': None,
+            'size_bytes': stored.size_bytes,
         }
 
     async def _stream_download(self, url: str, whitelist: set[str]) -> tuple[bytes, str]:

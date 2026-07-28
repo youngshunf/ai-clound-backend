@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from backend.app.hasn.model import HasnAssets, HasnConversations
+from backend.app.hasn.model import HasnConversations
 from backend.app.hasn.service import hasn_asset_service as svc_mod
 from backend.app.hasn.service.hasn_asset_service import HasnAssetService
 from backend.database.db import async_db_session
@@ -180,50 +180,6 @@ async def test_resolve_a2a_participant_agent_owner_can_read_granted_asset(monkey
             await db.rollback()  # 不污染本地库
 
 
-async def test_upload_local_source_snapshot_is_owner_scoped_and_idempotent() -> None:
-    """真实私有存储上传：同主人、类型与 sha256 重试只登记同一资产。"""
-    from sqlalchemy import func, select
-
-    owner = _short_id('hasnUpload')
-    data = b'huanxing-imagelab-agent-upload-live-e2e-v1'
-
-    async with async_db_session() as db:
-        try:
-            first = await HasnAssetService.upload_local_source_snapshot(
-                db,
-                owner_hasn_id=owner,
-                data=data,
-                filename='snapshot.png',
-                content_type='image/png',
-                width=1,
-                height=1,
-            )
-            retry = await HasnAssetService.upload_local_source_snapshot(
-                db,
-                owner_hasn_id=owner,
-                data=data,
-                filename='renamed.png',
-                content_type='image/png',
-                width=1,
-                height=1,
-            )
-
-            assert retry.asset_id == first.asset_id
-            assert retry.object_key == first.object_key
-            assert retry.content_sha256 == first.content_sha256
-            assert retry.owner_hasn_id == owner
-            assert retry.access == 'private'
-            count = (
-                await db.execute(
-                    select(func.count())
-                    .select_from(HasnAssets)
-                    .where(
-                        HasnAssets.owner_hasn_id == owner,
-                        HasnAssets.kind == 'image',
-                        HasnAssets.content_sha256 == first.content_sha256,
-                    )
-                )
-            ).scalar_one()
-            assert count == 1
-        finally:
-            await db.rollback()
+async def test_legacy_local_snapshot_writer_is_removed() -> None:
+    """本地原件上传不得绕过统一 Owner Storage 编排。"""
+    assert not hasattr(HasnAssetService, 'upload_local_source_snapshot')

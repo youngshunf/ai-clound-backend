@@ -11,36 +11,29 @@ from typing import Annotated
 
 import sqlalchemy as sa
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, Header, Request, UploadFile
 
 from backend.app.hasn.model import HasnHumans
-from backend.app.hasn.schema.asset_api import ResolveAssetsParam, ResolvedAssetItem, UploadedAsset
+from backend.app.hasn.schema.asset_api import (
+    ResolveAssetsParam,
+    ResolvedAssetItem,
+    StartMultipartParam,
+    UploadedAsset,
+)
 from backend.app.hasn.service.authz import Subject, asset_projection
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.owner_storage_service import OwnerStorageService
 from backend.common.exception import errors
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
-from backend.plugin.s3.service.storage_service import storage_service
+from backend.database.db import CurrentSession, async_db_session
 
 router = APIRouter()
 
-# 上传上限：图 50MB / 语音 25MB / 文件 1GB（与 daemon MAX_*_UPLOAD_BYTES、webui 三层一致）。
-_MAX_SIZE = {'image': 50 * 1024 * 1024, 'voice': 25 * 1024 * 1024, 'file': 1024 * 1024 * 1024}
-
 # 本端点允许的 category（默认消息附件；published_artifact 为模块 18 网页发布制品，私有桶、不抽取）。
-_ALLOWED_CATEGORIES = {'dm_attachment', 'published_artifact'}
-# 发布制品上限（bundle-zip 可较大）。
-_PUBLISHED_ARTIFACT_MAX_SIZE = 200 * 1024 * 1024
-
-# kind → 中文名词 + 友好大小文案（超限提示用，避免把内部 kind/裸字节抛给用户；与 webui 提示同口径）。
-_KIND_NOUN = {'image': '图片', 'voice': '语音', 'file': '文件'}
-
-
-def _human_size(num_bytes: int) -> str:
-    """字节 → 友好大小文案（≥1GB 用 GB，否则 MB）。"""
-    mb = num_bytes // (1024 * 1024)
-    return f'{mb // 1024}GB' if mb >= 1024 else f'{mb}MB'
+_ALLOWED_CATEGORIES = {'dm_attachment', 'private_doc', 'published_artifact', 'user_upload', 'user_avatar', 'post_image'}
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+_owner_storage = OwnerStorageService(async_db_session)
 
 
 async def _current_owner_hasn_id(db: CurrentSession, user_id: int) -> str:
@@ -52,61 +45,147 @@ async def _current_owner_hasn_id(db: CurrentSession, user_id: int) -> str:
     return owner_hasn_id
 
 
-def _kind_of(mime: str) -> str:
-    if mime.startswith('image/'):
-        return 'image'
-    if mime.startswith('audio/'):
-        return 'voice'
-    return 'file'
-
-
 @router.post('/upload', summary='上传消息附件（私有桶，注册资产）', dependencies=[DependsJwtAuth])
-async def upload_asset(
+async def upload_owner_asset(
     request: Request,
-    db: CurrentSessionTransaction,
+    db: CurrentSession,
     file: Annotated[UploadFile, File(description='附件文件')],
+    idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=128)],
     width: Annotated[int | None, Form()] = None,
     height: Annotated[int | None, Form()] = None,
     duration_ms: Annotated[int | None, Form()] = None,
     category: Annotated[str, Form()] = 'dm_attachment',
 ) -> ResponseSchemaModel[UploadedAsset]:
     if category not in _ALLOWED_CATEGORIES:
-        raise errors.RequestError(msg=f'不支持的资产类别：{category}')
+        raise errors.RequestError(code=422, msg='STORAGE_CATEGORY_UNSUPPORTED', data={'category': category})
     owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
     content_type = file.content_type or 'application/octet-stream'
-    kind = _kind_of(content_type)
+    filename = file.filename or '未命名文件'
 
-    data = await file.read()
-    if not data:
-        raise errors.RequestError(msg='文件为空')
-    # 发布制品（模块 18）走独立大上限；其余按 kind 限额。
-    is_published = category == 'published_artifact'
-    limit = _PUBLISHED_ARTIFACT_MAX_SIZE if is_published else _MAX_SIZE.get(kind, _MAX_SIZE['file'])
-    if len(data) > limit:
-        noun = _KIND_NOUN.get(kind, '文件')
-        raise errors.RequestError(msg=f'{noun}不能超过 {_human_size(limit)}')
+    async def chunks():
+        while chunk := await file.read(_UPLOAD_CHUNK_SIZE):
+            yield chunk
 
-    ref = await storage_service.upload(db, data, category=category, filename=file.filename, content_type=content_type)
-    asset = await hasn_asset_service.register_asset(
-        db,
+    stored = await _owner_storage.upload(
         owner_hasn_id=owner_hasn_id,
-        ref=ref,
-        kind=kind,
+        chunks=chunks(),
+        declared_size=file.size,
+        filename=filename,
+        mime=content_type,
+        category=category,
+        source_app='hasn_assets_app',
+        idempotency_key=idempotency_key,
         width=width,
         height=height,
         duration_ms=duration_ms,
-        # 发布制品不进语义抽取流水线（自包含 HTML/zip，非消息附件）。
-        extract_status='done' if is_published else 'pending',
+        extract_status='done' if category == 'published_artifact' else None,
     )
     return response_base.success(
         data=UploadedAsset(
-            asset_id=asset.asset_id,
-            kind=kind,
-            mime=ref.mime,
-            size=ref.size,
+            asset_id=stored.asset_id,
+            kind=stored.kind,
+            mime=stored.mime,
+            size=stored.size_bytes,
             width=width,
             height=height,
             duration_ms=duration_ms,
+        )
+    )
+
+
+@router.post('/multipart', summary='初始化受控分片上传', dependencies=[DependsJwtAuth])
+async def start_owner_asset_multipart_upload(
+    request: Request,
+    db: CurrentSession,
+    obj: StartMultipartParam,
+    idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=128)],
+) -> ResponseSchemaModel[dict]:
+    if obj.category not in _ALLOWED_CATEGORIES:
+        raise errors.RequestError(
+            code=422,
+            msg='STORAGE_CATEGORY_UNSUPPORTED',
+            data={'category': obj.category},
+        )
+    owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
+    return response_base.success(
+        data=await _owner_storage.start_multipart(
+            owner_hasn_id=owner_hasn_id,
+            declared_size=obj.declared_size,
+            filename=obj.filename,
+            mime=obj.mime,
+            category=obj.category,
+            source_app=obj.source_app,
+            idempotency_key=idempotency_key,
+            parent_entry_id=obj.parent_entry_id,
+        )
+    )
+
+
+@router.put(
+    '/multipart/{upload_id}/parts/{part_number}',
+    summary='上传受控 multipart 分片',
+    dependencies=[DependsJwtAuth],
+)
+async def upload_owner_asset_multipart_part(
+    request: Request,
+    db: CurrentSession,
+    upload_id: str,
+    part_number: int,
+    file: Annotated[UploadFile, File(description='当前分片')],
+    size: Annotated[int, Form(gt=0)],
+) -> ResponseSchemaModel[dict]:
+    owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
+    return response_base.success(
+        data=await _owner_storage.upload_multipart_part(
+            owner_hasn_id=owner_hasn_id,
+            upload_id=upload_id,
+            part_number=part_number,
+            file=file.file,
+            size=size,
+        )
+    )
+
+
+@router.post(
+    '/multipart/{upload_id}/complete',
+    summary='完成受控 multipart 上传',
+    dependencies=[DependsJwtAuth],
+)
+async def complete_owner_asset_multipart_upload(
+    request: Request,
+    db: CurrentSession,
+    upload_id: str,
+) -> ResponseSchemaModel[UploadedAsset]:
+    owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
+    stored = await _owner_storage.complete_multipart(
+        owner_hasn_id=owner_hasn_id,
+        upload_id=upload_id,
+    )
+    return response_base.success(
+        data=UploadedAsset(
+            asset_id=stored.asset_id,
+            kind=stored.kind,
+            mime=stored.mime,
+            size=stored.size_bytes,
+        )
+    )
+
+
+@router.delete(
+    '/multipart/{upload_id}',
+    summary='终止受控 multipart 上传',
+    dependencies=[DependsJwtAuth],
+)
+async def abort_owner_asset_multipart_upload(
+    request: Request,
+    db: CurrentSession,
+    upload_id: str,
+) -> ResponseSchemaModel[dict]:
+    owner_hasn_id = await _current_owner_hasn_id(db, request.user.id)
+    return response_base.success(
+        data=await _owner_storage.abort_multipart(
+            owner_hasn_id=owner_hasn_id,
+            upload_id=upload_id,
         )
     )
 

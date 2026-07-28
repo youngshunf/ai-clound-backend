@@ -8,16 +8,15 @@ import hashlib
 
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter
 from sqlalchemy import select
 
 from backend.app.hasn.model import HasnAgents, HasnAssets
 from backend.app.hasn.schema.asset_api import (
     DeliverSourceSnapshotParam,
     DeliveredSourceSnapshot,
-    UploadedSourceSnapshot,
 )
-from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
+from backend.app.hasn.service.hasn_asset_service import AssetRecord, hasn_asset_service
 from backend.app.hasn_im.application import local_gateway
 from backend.app.hasn_im.application.errors import ImSendRejected
 from backend.app.hasn_im.application.provider import get_im_gateway
@@ -33,12 +32,12 @@ from backend.common.exception import errors
 from backend.common.response.response_code import CustomResponseCode
 from backend.common.response.response_schema import ResponseSchemaModel
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
-from backend.database.db import CurrentSession, CurrentSessionTransaction
+from backend.database.db import CurrentSession
 
 router = APIRouter()
 
 
-def _snapshot_attachment(asset_uri: str, asset: HasnAssets) -> dict[str, object]:
+def _snapshot_attachment(asset_uri: str, asset: AssetRecord | HasnAssets) -> dict[str, object]:
     """只用云端元数据构造消息附件，绝不携带本机路径或原文件名。"""
     kind = str(asset.kind)
     names = {
@@ -64,45 +63,6 @@ def _delivery_local_id(agent_hasn_id: str, idempotency_key: str) -> str:
     """把调用方幂等键绑定到认证 Agent，避免跨身份复用全局消息 local_id。"""
     digest = hashlib.sha256(f'{agent_hasn_id}:{idempotency_key}'.encode()).hexdigest()
     return f'imagelab-share:{digest}'
-
-
-@router.post('/upload', summary='上传本地原件快照（Agent JWT、私有桶、内容幂等）')
-async def upload_local_source_snapshot(
-    db: CurrentSessionTransaction,
-    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
-    file: Annotated[UploadFile, File(description='主人已确认分享的原件快照')],
-    width: Annotated[int | None, Form()] = None,
-    height: Annotated[int | None, Form()] = None,
-    duration_ms: Annotated[int | None, Form()] = None,
-) -> ResponseSchemaModel[UploadedSourceSnapshot]:
-    data = await file.read()
-    asset = await hasn_asset_service.upload_local_source_snapshot(
-        db,
-        owner_hasn_id=agent.owner_hasn_id,
-        data=data,
-        filename=file.filename,
-        content_type=file.content_type,
-        width=width,
-        height=height,
-        duration_ms=duration_ms,
-    )
-    if asset.content_sha256 is None:
-        raise errors.ServerError(msg='本地原件快照上传后缺少内容哈希')
-    return ResponseSchemaModel[UploadedSourceSnapshot](
-        code=CustomResponseCode.HTTP_200.code,
-        msg=CustomResponseCode.HTTP_200.msg,
-        data=UploadedSourceSnapshot(
-            asset_id=asset.asset_id,
-            asset_uri=f'hasn://asset/{asset.asset_id}',
-            kind=asset.kind,
-            mime=asset.mime,
-            size=asset.size_bytes,
-            content_sha256=asset.content_sha256,
-            width=asset.width,
-            height=asset.height,
-            duration_ms=asset.duration_ms,
-        ),
-    )
 
 
 @router.post('/deliver', summary='把私有原件快照幂等投递给单个目标')
