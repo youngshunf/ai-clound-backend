@@ -25,6 +25,7 @@ from backend.app.hasn_growth.model import (
 from backend.app.hasn_growth.service.cleaner_service import clean_raw_record
 from backend.app.hasn_growth.service.dedupe_service import dedupe_key
 from backend.app.hasn_growth.service.export_service import build_csv_export
+from backend.app.hasn_growth.service.pii import mask_contact_fields
 from backend.app.hasn_growth.service.firecrawl_client import DEFAULT_FIRECRAWL_BASE_URL, FirecrawlClient
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
 from backend.app.hasn_growth.service.industry_tagging_service import IndustryTaggingService
@@ -72,7 +73,9 @@ class LeadAutomationBusinessService:
         await db.flush()
         return model_to_dict(job)
 
-    async def run_job(self, db: AsyncSession, job_id: int, *, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:  # noqa: C901
+    async def run_job(
+        self, db: AsyncSession, job_id: int, *, user_id: int | None = None, admin: bool = False
+    ) -> dict[str, Any]:  # noqa: C901
         job = await db.get(LeadCollectionJob, job_id)
         if job is None:
             raise errors.NotFoundError(msg='采集任务不存在')
@@ -243,9 +246,7 @@ class LeadAutomationBusinessService:
                     continue
 
                 # 2.2 行业标准化打标：原始行业文本 → 标准 code（公共池按 code 检索归一）；不中保留原文。
-                industry_code = await tagger.normalize(
-                    raw_industry=cleaned.industry, company_name=cleaned.company_name
-                )
+                industry_code = await tagger.normalize(raw_industry=cleaned.industry, company_name=cleaned.company_name)
                 if industry_code:
                     cleaned.industry = industry_code
 
@@ -320,7 +321,9 @@ class LeadAutomationBusinessService:
                 )
         return model_to_dict(job)
 
-    async def get_job(self, db: AsyncSession, *, job_id: int, user_id: int | None = None, admin: bool = False) -> dict[str, Any]:
+    async def get_job(
+        self, db: AsyncSession, *, job_id: int, user_id: int | None = None, admin: bool = False
+    ) -> dict[str, Any]:
         job = await db.get(LeadCollectionJob, job_id)
         if job is None:
             raise errors.NotFoundError(msg='采集任务不存在')
@@ -344,10 +347,7 @@ class LeadAutomationBusinessService:
             visible_jobs = sa.select(LeadCollectionJob.id).where(LeadCollectionJob.user_id == user_id)
             stmt = stmt.where(LeadRejectedRecord.job_id.in_(visible_jobs))
         rows = [model_to_dict(row) for row in (await db.execute(stmt)).scalars().all()]
-        for row in rows:
-            row['email'] = _mask_email(row.get('email'))
-            row['phone'] = _mask_phone(row.get('phone'))
-        return rows
+        return [mask_contact_fields(row, reveal=False) for row in rows]
 
     async def list_audit_logs(
         self,
@@ -382,7 +382,8 @@ class LeadAutomationBusinessService:
             rows = [model_to_dict(row) for row in (await db.execute(stmt)).scalars().all()]
         else:
             join_stmt = (
-                sa.select(LeadContact, LeadRef)
+                sa
+                .select(LeadContact, LeadRef)
                 .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
                 .where(LeadRef.user_id == user_id, LeadRef.status != 'dismissed')
                 .order_by(LeadContact.id.desc())
@@ -393,29 +394,15 @@ class LeadAutomationBusinessService:
                 data['status'] = ref.status  # 用户级状态覆盖池级（new/qualified）
                 data['ref_source'] = ref.source
                 rows.append(data)
-        if masked:
-            for row in rows:
-                row['email'] = _mask_email(row.get('email'))
-                row['phone'] = _mask_phone(row.get('phone'))
-        elif admin and rows:
-            db.add(
-                LeadAuditLog(
-                    event_type='pii_read',
-                    actor_role='admin',
-                    target_table='lead_contact',
-                    target_count=len(rows),
-                    payload={'endpoint': 'lead_automation_admin_contacts', 'lead_no_list': [row.get('lead_no') for row in rows[:100]]},
-                    result='success',
-                )
-            )
-            await db.flush()
-        return rows
+        return [mask_contact_fields(row, reveal=False) for row in rows]
 
     async def update_blacklist(self, db: AsyncSession, payload: dict[str, Any]) -> dict[str, Any]:
         source_type = str(payload.get('source_type') or 'public_web')
         name = str(payload.get('name') or 'default')
         config = await db.scalar(
-            sa.select(LeadSourceConfig).where(LeadSourceConfig.source_type == source_type, LeadSourceConfig.name == name)
+            sa.select(LeadSourceConfig).where(
+                LeadSourceConfig.source_type == source_type, LeadSourceConfig.name == name
+            )
         )
         if config is None:
             config = LeadSourceConfig(
@@ -455,19 +442,24 @@ class LeadAutomationBusinessService:
         await db.flush()
         return model_to_dict(config)
 
-    async def export_contacts(self, db: AsyncSession, *, user_id: int, filter_payload: dict | None = None) -> dict[str, Any]:
+    async def export_contacts(
+        self, db: AsyncSession, *, user_id: int, filter_payload: dict | None = None
+    ) -> dict[str, Any]:
         today = datetime.now(UTC).date()
         start = datetime(today.year, today.month, today.day, tzinfo=UTC)
         export_count = await db.scalar(
-            sa.select(sa.func.count())
+            sa
+            .select(sa.func.count())
             .select_from(LeadExportBatch)
             .where(LeadExportBatch.user_id == user_id, LeadExportBatch.created_time >= start)
         )
         if (export_count or 0) >= 3:
             raise ValueError('daily export limit exceeded')
-        rows = await self.list_contacts(db, user_id=user_id, admin=False, masked=False)
+        rows = await self.list_contacts(db, user_id=user_id, admin=False, masked=True)
         batch_no = f'LEX{datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")}'
-        result = build_csv_export(rows[:5000], batch_no=batch_no, user_id=user_id, filter_payload=filter_payload or {}, now=datetime.now(UTC))
+        result = build_csv_export(
+            rows[:5000], batch_no=batch_no, user_id=user_id, filter_payload=filter_payload or {}, now=datetime.now(UTC)
+        )
         batch = LeadExportBatch(
             batch_no=batch_no,
             user_id=user_id,
@@ -555,7 +547,9 @@ class LeadAutomationBusinessService:
         await db.flush()
         return model_to_dict(contact)
 
-    async def dsr_delete_by_email(self, db: AsyncSession, *, emails: list[str], request_id: str | None = None) -> dict[str, Any]:
+    async def dsr_delete_by_email(
+        self, db: AsyncSession, *, emails: list[str], request_id: str | None = None
+    ) -> dict[str, Any]:
         from backend.app.hasn_growth.service.cleaner_service import normalize_email
 
         normalized = [email for email in (normalize_email(email) for email in emails) if email]
@@ -589,7 +583,9 @@ class LeadAutomationBusinessService:
     ) -> dict[str, Any]:
         from backend.app.hasn_growth.service.cleaner_service import normalize_phone
 
-        normalized = [phone for phone in (normalize_phone(phone, country_hint=country_hint) for phone in phones) if phone]
+        normalized = [
+            phone for phone in (normalize_phone(phone, country_hint=country_hint) for phone in phones) if phone
+        ]
         contacts = (
             (await db.execute(sa.select(LeadContact).where(LeadContact.phone_normalized.in_(normalized))))
             .scalars()
@@ -627,7 +623,9 @@ class LeadAutomationBusinessService:
             key = keys[dimension]
             if not key:
                 continue
-            existing = await db.scalar(sa.select(LeadContact).where(getattr(LeadContact, f'dedupe_key_{dimension}') == key))
+            existing = await db.scalar(
+                sa.select(LeadContact).where(getattr(LeadContact, f'dedupe_key_{dimension}') == key)
+            )
             if existing is not None:
                 existing.last_seen_at = datetime.now(UTC)
                 existing.confidence_score = max(existing.confidence_score, Decimal(str(cleaned.system_score)))
@@ -670,7 +668,9 @@ class LeadAutomationBusinessService:
             return
         await db.execute(
             pg_insert(LeadRef)
-            .values([{'user_id': user_id, 'lead_contact_id': cid, 'source': source, 'status': 'new'} for cid in contact_ids])
+            .values([
+                {'user_id': user_id, 'lead_contact_id': cid, 'source': source, 'status': 'new'} for cid in contact_ids
+            ])
             .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
         )
         await db.flush()
@@ -741,12 +741,18 @@ def _domain(url: str | None) -> str | None:
 
 def _redact_request_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: ('***' if any(secret in key.lower() for secret in ('api_key', 'authorization', 'token', 'proxy', 'password')) else value)
+        key: (
+            '***'
+            if any(secret in key.lower() for secret in ('api_key', 'authorization', 'token', 'proxy', 'password'))
+            else value
+        )
         for key, value in payload.items()
     }
 
 
-def _raw_html_policy(raw_html: str | None, *, persist: bool, max_bytes: int, raw_record_id: int) -> tuple[str | None, dict[str, str]]:
+def _raw_html_policy(
+    raw_html: str | None, *, persist: bool, max_bytes: int, raw_record_id: int
+) -> tuple[str | None, dict[str, str]]:
     if not raw_html or not persist:
         return None, {}
     if len(raw_html.encode('utf-8')) <= max_bytes:

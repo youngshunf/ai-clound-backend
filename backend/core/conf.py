@@ -240,6 +240,12 @@ class Settings(BaseSettings):
     GROWTH_PROJECT_V4_ENTERPRISE_ENABLED: bool = False
     GROWTH_PII_NEW_WRITE_ENABLED: bool = False
     GROWTH_PII_SHADOW_READ_ENABLED: bool = False
+    # 联系人 PII 使用独立版本化密钥环，JSON 形如 {"1":"<base64 32字节密钥>"}。
+    # 密钥真实值只从 Vault/KMS 注入；留空或 active 版本不存在时业务写/reveal 必须 fail-closed。
+    GROWTH_PII_ENCRYPTION_KEYS_JSON: str = ''
+    GROWTH_PII_HMAC_KEYS_JSON: str = ''
+    GROWTH_PII_ACTIVE_ENCRYPTION_KEY_VERSION: int = 0
+    GROWTH_PII_ACTIVE_HMAC_KEY_VERSION: int = 0
     GROWTH_PROJECT_DUAL_WRITE_ENABLED: bool = False
     GROWTH_PROJECT_READ_CUTOVER_ENABLED: bool = False
     # Publish 未完成项目挂靠前，落地页与公开表单必须保持 fail-closed。

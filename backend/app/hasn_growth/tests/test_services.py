@@ -13,6 +13,7 @@ from backend.app.hasn_growth.service.firecrawl_client import (
     FirecrawlHTTPError,
     FirecrawlTransportError,
 )
+from backend.app.hasn_growth.service.pii import mask_contact_fields
 from backend.app.hasn_growth.service.provider_registry import PROVIDERS, CrawlRequest, get_provider
 from backend.app.hasn_growth.service.retention_service import archive_expired_contacts
 from backend.app.hasn_growth.service.scoring_service import score_cleaned_lead
@@ -117,7 +118,11 @@ def test_dedupe_uses_email_phone_domain_order_globally() -> None:
     store = InMemoryLeadStore()
     first = clean_raw_record(
         {
-            'structured_payload': {'company_name': 'Same Co', 'emails': ['sales@example.org'], 'phones': ['(415) 555-2671']},
+            'structured_payload': {
+                'company_name': 'Same Co',
+                'emails': ['sales@example.org'],
+                'phones': ['(415) 555-2671'],
+            },
             'source_url': 'https://example.org/contact',
             'source_type': 'public_web',
         },
@@ -268,7 +273,13 @@ async def test_provider_can_use_firecrawl_extract_mode_from_options() -> None:
             job_id=1,
             keyword='https://www.iana.org/contact',
             source_type='public_web',
-            config={'firecrawl_options': {'extract_mode': 'extract', 'schema_version': 'lead_v2', 'prompt_version': 'lead_prompt_v2'}},
+            config={
+                'firecrawl_options': {
+                    'extract_mode': 'extract',
+                    'schema_version': 'lead_v2',
+                    'prompt_version': 'lead_prompt_v2',
+                }
+            },
         ),
         firecrawl_client=cast(Any, FakeFirecrawl()),
     )
@@ -295,7 +306,11 @@ async def test_crawl_stream_stops_early_when_should_continue_returns_false() -> 
 
         async def scrape_markdown(self, url: str):
             scraped.append(url)
-            return {'source_url': url, 'markdown': f'sales@{url} 138 1234 5678', 'structured_payload': {'emails': ['x@y.z']}}
+            return {
+                'source_url': url,
+                'markdown': f'sales@{url} 138 1234 5678',
+                'structured_payload': {'emails': ['x@y.z']},
+            }
 
     provider = get_provider('public_web')
     # should_continue 以已抓数（scraped）为判据：抓下一条前查，凑够 3 条即停（每抓一条 scraped 先 +1，再 yield）。
@@ -460,7 +475,11 @@ async def test_firecrawl_search_sends_query_and_normalizes_result_urls() -> None
         )
     ]
     assert results == [
-        {'url': 'https://acme.example/contact', 'title': 'Acme', 'raw_payload': {'url': 'https://acme.example/contact', 'title': 'Acme'}},
+        {
+            'url': 'https://acme.example/contact',
+            'title': 'Acme',
+            'raw_payload': {'url': 'https://acme.example/contact', 'title': 'Acme'},
+        },
         {
             'url': 'https://beta.example/contact',
             'title': 'Beta',
@@ -525,7 +544,29 @@ def test_audit_payload_rejects_plaintext_pii_but_allows_hashes() -> None:
         assert_audit_payload_safe({'phone': '+14155552671'})
 
 
-def test_export_writes_csv_snapshot_and_safe_audit_payload() -> None:
+def test_default_contact_view_masks_name_normalized_fields_and_nested_pii() -> None:
+    masked = mask_contact_fields(
+        {
+            'contact_name': '王小明',
+            'email': 'sales@example.com',
+            'email_normalized': 'sales@example.com',
+            'phone': '13800138000',
+            'phone_normalized': '13800138000',
+            'address': '北京市朝阳区',
+            'profile_json': {
+                'note': '回电 13800138000，邮箱 sales@example.com',
+            },
+        },
+        reveal=False,
+    )
+    assert masked['contact_name'] == '王**'
+    assert masked['email'] == masked['email_normalized'] == 's***@example.com'
+    assert masked['phone'] == masked['phone_normalized'] == '1380****8000'
+    assert masked['address'] is None
+    assert masked['profile_json']['note'] == '回电 [已脱敏电话]，邮箱 [已脱敏邮箱]'
+
+
+def test_export_writes_only_masked_csv_snapshot_and_safe_audit_payload() -> None:
     contacts = [
         {'id': 1, 'lead_no': 'L001', 'company_name': 'Export Co', 'email': 'sales@export.co', 'phone': '+14155552671'},
     ]
@@ -538,8 +579,10 @@ def test_export_writes_csv_snapshot_and_safe_audit_payload() -> None:
     )
 
     assert export.batch['total_count'] == 1
-    assert export.items[0]['snapshot']['email'] == 'sales@export.co'
-    assert 'sales@export.co' in export.csv_text
+    assert export.items[0]['snapshot']['email'] == 's***@export.co'
+    assert export.items[0]['snapshot']['phone'] == '+141****2671'
+    assert 'sales@export.co' not in export.csv_text
+    assert '+14155552671' not in export.csv_text
     assert export.audit_log['event_type'] == 'export'
     assert 'sales@export.co' not in str(export.audit_log['payload'])
 

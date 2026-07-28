@@ -1,7 +1,7 @@
 """获客 Agent API（设计 07 §3.4 agent scope）。
 
 认证：Agent JWT（Authorization: Bearer <agent_jwt>）。身份恒取自 JWT claims（owner_user_id/agent_hasn_id），
-绝不从请求体读身份。读类默认脱敏 PII（§10.2），仅持 growth:pii 增强 scope 才回明文。
+绝不从请求体读身份。读类恒脱敏 PII（§10.2），历史 growth:pii scope 不再授权 Agent 明文。
 这是 hasn-node hasn.growth.* 工具经 BackendGateway.for_agent 调用的云端落点（M4）。
 """
 
@@ -53,9 +53,7 @@ async def _agent_scope(db: CurrentSession, agent: AgentTokenPayload, view: str =
 
     分身是企业成员（主人）名下的行动者；它看到/操作的就是主人在该企业的归属裁剪后数据。
     """
-    return await resolve_growth_scope(
-        db, user_id=agent.owner_user_id, owner_hasn_id=agent.owner_hasn_id, view=view
-    )
+    return await resolve_growth_scope(db, user_id=agent.owner_user_id, owner_hasn_id=agent.owner_hasn_id, view=view)
 
 
 # ---------------- 采集（收编子域包装：hasn.growth.collect.*） ----------------
@@ -155,8 +153,13 @@ async def list_customers(
 ) -> ResponseModel:
     scope = await _agent_scope(db, agent, view=view)
     data = await growth_funnel_service.list_customers(
-        db, user_id=agent.owner_user_id, lifecycle_status=lifecycle_status, assignee=assignee,
-        limit=limit, reveal_pii=_reveal(agent), scope=scope,
+        db,
+        user_id=agent.owner_user_id,
+        lifecycle_status=lifecycle_status,
+        assignee=assignee,
+        limit=limit,
+        reveal_pii=_reveal(agent),
+        scope=scope,
     )
     return response_base.success(data={'items': data, 'scope': scope.to_meta()})
 
@@ -322,7 +325,9 @@ async def create_opportunity(
     return response_base.success(data=data)
 
 
-@router.patch('/opportunities/{opportunity_id}/stage', summary='[Agent] 推进商机阶段', dependencies=[DependsAgentJwtAuth])
+@router.patch(
+    '/opportunities/{opportunity_id}/stage', summary='[Agent] 推进商机阶段', dependencies=[DependsAgentJwtAuth]
+)
 async def update_stage(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSessionTransaction,
@@ -347,7 +352,9 @@ async def update_stage(
     return response_base.success(data=data)
 
 
-@router.post('/opportunities/{opportunity_id}/close', summary='[Agent] 成交/流失登记', dependencies=[DependsAgentJwtAuth])
+@router.post(
+    '/opportunities/{opportunity_id}/close', summary='[Agent] 成交/流失登记', dependencies=[DependsAgentJwtAuth]
+)
 async def close_deal(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
     db: CurrentSessionTransaction,

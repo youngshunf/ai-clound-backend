@@ -7,7 +7,7 @@
 
 每个 handler 签名 `(db, agent: AgentTokenPayload, input_payload: dict) -> dict`：
 - 身份恒取自 Agent JWT claims（`owner_user_id`/`agent_hasn_id`/`owner_hasn_id`），绝不从入参读身份；
-- 读类默认脱敏 PII，仅持 `growth:pii` 增强 scope 才回明文（`_reveal`）；
+- 读类恒脱敏 PII，历史 `growth:pii` scope 不再授权 Agent 明文；
 - 企业化裁剪经 `GrowthScope`（经理见全部 / 销售见 assignee=自己），写类授权由 service 强制；
 - 返回**裸 data**（gateway 负责信封/审计），与 community/knowledge handler 一致。
 

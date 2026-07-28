@@ -59,6 +59,7 @@ async def _apply_sql(session: AsyncSession) -> None:
     """经 asyncpg simple query 协议运行多语句 SQL。"""
     raw = await (await session.connection()).get_raw_connection()
     connection = raw.driver_connection
+    assert connection is not None
     await connection.execute(_SCHEMA_SQL.read_text(encoding='utf-8'))
     await connection.execute(_MIGRATION_SQL.read_text(encoding='utf-8'))
 

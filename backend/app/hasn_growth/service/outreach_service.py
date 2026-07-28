@@ -9,14 +9,13 @@
 （blocked_optout / blocked_compliance），分身下轮经 timeline 学习。quiet hours / 微信个人号开关
 属发送 worker（M6）排队与渠道策略，本服务记录于 compliance_check 供下游裁决。
 
-PII 边界（§10.2）：本服务只处理话术正文（不含明文联系方式）；optout 命中判定在服务端用 customer
-明文联系方式哈希比对，明文不出参、不进 LLM。
+PII 边界（§10.2）：本服务只处理话术正文（不含明文联系方式）；optout 命中判定在服务端完成，
+明文不出参、不进 LLM。manual_assist 素材包不含联系方式，目标渠道由 Owner 单独 reveal。
 """
 
 from __future__ import annotations
 
 import hashlib
-import re
 
 from dataclasses import replace
 from datetime import timedelta
@@ -29,22 +28,45 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model.customer import Customer
-from backend.app.hasn_growth.model.lead_audit_log import LeadAuditLog
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
-from backend.app.hasn_growth.service.audit_service import log_event
+from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.pii_keyring import (
+    GrowthPiiKeyring,
+    require_growth_pii_keyring,
+)
 from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope
 from backend.app.hasn_task.service.agent_task_service import agent_task_service
 from backend.common.exception import errors
+from backend.core.conf import settings
 from backend.utils.timezone import timezone
 
 # 广告法极限词（节选，playbook 可收紧不可放宽）——命中 → blocked_compliance 回分身改写。
 _BANNED_SUPERLATIVES = (
-    '国家级', '最高级', '最佳', '第一品牌', '全网第一', '全国第一', '世界第一',
-    '100%', '百分之百', '绝对', '顶级', '独一无二', '唯一', '最大', '最好', '最低价',
-    '史上最', '全球领先', '永久', '万能', '彻底根治', '稳赚',
+    '国家级',
+    '最高级',
+    '最佳',
+    '第一品牌',
+    '全网第一',
+    '全国第一',
+    '世界第一',
+    '100%',
+    '百分之百',
+    '绝对',
+    '顶级',
+    '独一无二',
+    '唯一',
+    '最大',
+    '最好',
+    '最低价',
+    '史上最',
+    '全球领先',
+    '永久',
+    '万能',
+    '彻底根治',
+    '稳赚',
 )
 
 # 同客户同渠道频控：默认 ≤2 条/周（§10.3）。
@@ -62,26 +84,21 @@ _QUIET_END_HOUR = 21
 _FOLLOWUP_DEBOUNCE_MINUTES = 10
 
 
-def _norm_address(value: str | None) -> str | None:
-    """联系方式归一：邮箱小写去空格；电话留数字。其余原样 trim。"""
-    if not value:
-        return None
-    v = value.strip()
-    if '@' in v:
-        return v.lower()
-    digits = re.sub(r'\D', '', v)
-    return digits or v.lower()
-
-
-def _address_hash(value: str | None) -> str | None:
-    norm = _norm_address(value)
-    if not norm:
-        return None
-    return hashlib.sha256(norm.encode('utf-8')).hexdigest()
-
-
 def _gen_no(prefix: str) -> str:
     return f'{prefix}{uuid4().hex[:12].upper()}'
+
+
+def _legacy_address_hash(value: str | None) -> str | None:
+    """仅供 PII 切流开关关闭时维持历史 SHA256 退订链路。"""
+    if not value:
+        return None
+    normalized = value.strip()
+    if '@' in normalized:
+        normalized = normalized.casefold()
+    else:
+        digits = ''.join(character for character in normalized if character.isdigit())
+        normalized = digits or normalized.casefold()
+    return hashlib.sha256(normalized.encode()).hexdigest()
 
 
 def _outreach_to_dict(m: OutreachMessage) -> dict[str, Any]:
@@ -129,24 +146,62 @@ class GrowthOutreachService:
 
     @staticmethod
     async def _customer_optout_hit(
-        db: AsyncSession, *, user_id: int, customer: Customer, channel: str
+        db: AsyncSession,
+        *,
+        keyring: GrowthPiiKeyring | None,
+        use_private_channels: bool,
+        user_id: int,
+        customer: Customer,
+        channel: str,
     ) -> bool:
         """客户任一联系方式在该渠道（或 all）登记退订 → 命中（硬闸，无豁免）。"""
-        hashes = [h for h in (_address_hash(customer.email), _address_hash(customer.phone), _address_hash(customer.wechat)) if h]
-        if not hashes:
-            return False
-        hit = (
-            await db.execute(
-                sa.select(OptoutRecord.id)
-                .where(
-                    OptoutRecord.user_id == user_id,
-                    OptoutRecord.address_hash.in_(hashes),
-                    OptoutRecord.channel.in_([channel, 'all']),
-                )
-                .limit(1)
+        owner_scope = customer.owner_scope or 'personal'
+        legacy_addresses = tuple(address for address in (customer.email, customer.phone, customer.wechat) if address)
+        if keyring is None:
+            legacy_hashes = tuple(
+                address_hash
+                for address_hash in (_legacy_address_hash(address) for address in legacy_addresses)
+                if address_hash
             )
-        ).first()
-        return hit is not None
+            if legacy_hashes:
+                legacy_hit = (
+                    await db.execute(
+                        sa
+                        .select(OptoutRecord.id)
+                        .where(
+                            OptoutRecord.user_id == user_id,
+                            OptoutRecord.channel.in_((channel, 'all')),
+                            OptoutRecord.address_hash.in_(legacy_hashes),
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if legacy_hit is not None:
+                    return True
+        else:
+            for address in legacy_addresses:
+                if await contact_privacy_service.is_opted_out(
+                    db,
+                    keyring=keyring,
+                    owner_scope=owner_scope,
+                    user_id=user_id,
+                    enterprise_id=customer.enterprise_id,
+                    channel=channel,
+                    address=address,
+                ):
+                    return True
+
+        if use_private_channels and keyring is not None and customer.lead_contact_id is not None:
+            return await contact_privacy_service.is_private_contact_opted_out(
+                db,
+                keyring=keyring,
+                lead_contact_id=customer.lead_contact_id,
+                owner_scope=owner_scope,
+                user_id=user_id,
+                enterprise_id=customer.enterprise_id,
+                channel=channel,
+            )
+        return False
 
     @staticmethod
     def _banned_words(content: str) -> list[str]:
@@ -157,7 +212,8 @@ class GrowthOutreachService:
         since = timezone.now() - timedelta(days=_FREQ_WINDOW_DAYS)
         count = (
             await db.execute(
-                sa.select(sa.func.count())
+                sa
+                .select(sa.func.count())
                 .select_from(OutreachMessage)
                 .where(
                     OutreachMessage.user_id == user_id,
@@ -177,12 +233,27 @@ class GrowthOutreachService:
 
     @classmethod
     async def check_compliance(
-        cls, db: AsyncSession, *, user_id: int, customer: Customer, channel: str, content: str
+        cls,
+        db: AsyncSession,
+        *,
+        keyring: GrowthPiiKeyring | None,
+        use_private_channels: bool = False,
+        user_id: int,
+        customer: Customer,
+        channel: str,
+        content: str,
     ) -> dict[str, Any]:
         """返回 {blocked, block_status, reason, checks}。block_status ∈ blocked_optout/blocked_compliance。"""
         checks: dict[str, Any] = {'quiet_hours_ok': cls._quiet_hours_ok()}
 
-        if await cls._customer_optout_hit(db, user_id=user_id, customer=customer, channel=channel):
+        if await cls._customer_optout_hit(
+            db,
+            keyring=keyring,
+            use_private_channels=use_private_channels,
+            user_id=user_id,
+            customer=customer,
+            channel=channel,
+        ):
             checks['optout'] = True
             return {'blocked': True, 'block_status': 'blocked_optout', 'reason': '客户已退订该渠道', 'checks': checks}
         checks['optout'] = False
@@ -233,7 +304,8 @@ class GrowthOutreachService:
     async def _customer_has_replied(db: AsyncSession, *, user_id: int, customer_id: int) -> bool:
         hit = (
             await db.execute(
-                sa.select(OutreachMessage.id)
+                sa
+                .select(OutreachMessage.id)
                 .where(
                     OutreachMessage.user_id == user_id,
                     OutreachMessage.customer_id == customer_id,
@@ -248,7 +320,8 @@ class GrowthOutreachService:
     async def _is_first_contact(db: AsyncSession, *, user_id: int, customer_id: int, channel: str) -> bool:
         hit = (
             await db.execute(
-                sa.select(OutreachMessage.id)
+                sa
+                .select(OutreachMessage.id)
                 .where(
                     OutreachMessage.user_id == user_id,
                     OutreachMessage.customer_id == customer_id,
@@ -278,6 +351,7 @@ class GrowthOutreachService:
         workflow_run_id: str | None = None,
         whitelist_auto_send: bool = False,
         scope: GrowthScope | None = None,
+        keyring: GrowthPiiKeyring | None = None,
     ) -> dict[str, Any]:
         """分身发起触达：合规检查 → 落 outreach_message（状态机定 status）→ 记 activity。触达继承客户归属。
 
@@ -286,8 +360,18 @@ class GrowthOutreachService:
         """
         customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
 
+        needs_keyring = (
+            keyring is not None or settings.GROWTH_PII_NEW_WRITE_ENABLED or settings.GROWTH_PII_SHADOW_READ_ENABLED
+        )
+        active_keyring = keyring or (require_growth_pii_keyring() if needs_keyring else None)
         compliance = await cls.check_compliance(
-            db, user_id=user_id, customer=customer, channel=channel, content=content
+            db,
+            keyring=active_keyring,
+            use_private_channels=settings.GROWTH_PII_SHADOW_READ_ENABLED or keyring is not None,
+            user_id=user_id,
+            customer=customer,
+            channel=channel,
+            content=content,
         )
 
         # 幂等去重：同 owner+客户+渠道+正文 视为同一条（防分身重复发）。
@@ -392,7 +476,13 @@ class GrowthOutreachService:
 
     @classmethod
     async def reject_outreach(
-        cls, db: AsyncSession, *, user_id: int, message_id: int, approver_user_id: int, reason: str,
+        cls,
+        db: AsyncSession,
+        *,
+        user_id: int,
+        message_id: int,
+        approver_user_id: int,
+        reason: str,
         scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
         """owner 拒绝（reason 回流 timeline，分身下轮学习）。enterprise 下仅 assignee 主人可拒。"""
@@ -418,46 +508,32 @@ class GrowthOutreachService:
 
     @classmethod
     async def build_send_material(
-        cls, db: AsyncSession, *, user_id: int, message_id: int, actor_user_id: int,
+        cls,
+        db: AsyncSession,
+        *,
+        user_id: int,
+        message_id: int,
         scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        """manual_assist「复制发送」素材包（设计 §8.2 G4）：返回 approved 话术 + 素材链接 +
-        **明文联系方式（仅此处渲染）**，并落一条 `pii_read` 审计（payload 不含明文，只记 target_ref/渠道）。
+        """manual_assist「复制发送」素材包（设计 §8.2 G4）：只返回 approved 话术和素材链接。
 
-        仅 owner 自己的数据（跨户 → NotFound）；仅 approved 触达可取（owner 拿去手动发）。enterprise 下仅 assignee 主人。
+        联系方式必须由 Owner 另行选择一个私有渠道并调用专用 reveal；本接口不构成 PII 读取。
+        仅 owner 自己的数据（跨户 → NotFound）；仅 approved 触达可取。enterprise 下仅 assignee 主人。
         """
         m = await cls._load_message(db, user_id=user_id, message_id=message_id, scope=scope)
         if m.status != 'approved':
             raise errors.ForbiddenError(msg=f'仅已批准触达可取复制发送素材包（当前 {m.status}）')
         customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=m.customer_id, scope=scope)
 
-        # pii_read 审计：payload 经 assert_audit_payload_safe 守卫，绝不含明文 PII（只记目的/渠道/客户 id）。
-        audit = log_event(
-            event_type='pii_read',
-            actor_user_id=actor_user_id,
-            actor_role='owner',
-            target_table='outreach_message',
-            target_count=1,
-            target_ref=str(message_id),
-            payload={'purpose': 'manual_assist_send_material', 'channel': m.channel, 'customer_id': m.customer_id},
-        )
-        db.add(LeadAuditLog(**audit))
-        await db.flush()
-
         return {
             'message_id': m.id,
             'customer_id': m.customer_id,
-            'customer_name': customer.contact_name or customer.company_name,
+            'company_name': customer.company_name,
+            'lead_contact_id': customer.lead_contact_id,
             'channel': m.channel,
             'content': m.content,  # 已批准话术（含主人改稿）
             'content_assets': m.content_assets or {},  # 素材链接（图/文件等）
             'intent_note': m.intent_note,
-            'contact': {  # 明文联系方式——仅此处渲染，供主人复制发送
-                'email': customer.email,
-                'phone': customer.phone,
-                'wechat': customer.wechat,
-                'im_refs': customer.im_refs or {},
-            },
         }
 
     @classmethod
@@ -472,7 +548,12 @@ class GrowthOutreachService:
 
     @classmethod
     async def mark_sent(
-        cls, db: AsyncSession, *, user_id: int, message_id: int, channel_actual: str | None = None,
+        cls,
+        db: AsyncSession,
+        *,
+        user_id: int,
+        message_id: int,
+        channel_actual: str | None = None,
         scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
         """发送成功（manual_assist 主人「已发送」或 worker 成功；approved/sending → sent）。"""
@@ -498,9 +579,7 @@ class GrowthOutreachService:
         return _outreach_to_dict(m)
 
     @classmethod
-    async def mark_failed(
-        cls, db: AsyncSession, *, user_id: int, message_id: int, error: str
-    ) -> dict[str, Any]:
+    async def mark_failed(cls, db: AsyncSession, *, user_id: int, message_id: int, error: str) -> dict[str, Any]:
         """发送失败（如实回报错误；sending/approved → failed）。"""
         m = await cls._load_message(db, user_id=user_id, message_id=message_id)
         if m.status not in ('approved', 'sending'):
@@ -600,9 +679,9 @@ class GrowthOutreachService:
                 db,
                 owner_hasn_id=owner_hasn_id,
                 customer_id=customer_id,
-                customer_name=customer.contact_name or customer.company_name,
+                customer_name=customer.company_name,
                 channel=channel,
-                excerpt=content[:120],
+                excerpt=None,
             )
         # J3：即时跟进 run_now（防抖 10min；复用任务同步接缝下行，无跟进任务则 interval 兜底）。
         trigger = await cls._maybe_trigger_followup(db, customer=customer, owner_hasn_id=owner_hasn_id)
@@ -618,13 +697,18 @@ class GrowthOutreachService:
         # 「我名下待批队列」：enterprise 下恒按 assignee=自己（经理不代审，团队审批态总览另走 team_approval_overview）。
         stmt = apply_scope(sa.select(OutreachMessage), OutreachMessage, user_id=user_id, scope=_approval_scope(scope))
         rows = (
-            await db.execute(
-                stmt.where(OutreachMessage.status == 'pending_approval')
-                .order_by(OutreachMessage.created_time.asc(), OutreachMessage.id.asc())
-                .limit(min(limit, 200))
-                .offset(offset)
+            (
+                await db.execute(
+                    stmt
+                    .where(OutreachMessage.status == 'pending_approval')
+                    .order_by(OutreachMessage.created_time.asc(), OutreachMessage.id.asc())
+                    .limit(min(limit, 200))
+                    .offset(offset)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_outreach_to_dict(m) for m in rows]
 
     @staticmethod
@@ -639,7 +723,8 @@ class GrowthOutreachService:
             return []
         rows = (
             await db.execute(
-                sa.select(
+                sa
+                .select(
                     OutreachMessage.assignee,
                     sa.func.count(),
                     sa.func.min(OutreachMessage.created_time),
@@ -664,13 +749,18 @@ class GrowthOutreachService:
         # 先按 scope 门控客户可见性，通过后按 customer_id 取触达历史（已门控）。
         await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         rows = (
-            await db.execute(
-                sa.select(OutreachMessage)
-                .where(OutreachMessage.customer_id == customer_id)
-                .order_by(OutreachMessage.created_time.desc(), OutreachMessage.id.desc())
-                .limit(min(limit, 200))
+            (
+                await db.execute(
+                    sa
+                    .select(OutreachMessage)
+                    .where(OutreachMessage.customer_id == customer_id)
+                    .order_by(OutreachMessage.created_time.desc(), OutreachMessage.id.desc())
+                    .limit(min(limit, 200))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [_outreach_to_dict(m) for m in rows]
 
     # ---------- 退订登记 ----------
@@ -680,39 +770,56 @@ class GrowthOutreachService:
         db: AsyncSession,
         *,
         user_id: int,
+        keyring: GrowthPiiKeyring | None = None,
         channel: str = 'all',
         address: str | None = None,
         address_hash: str | None = None,
         customer_id: int | None = None,
         reason: str | None = None,
         source: str | None = None,
+        scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
-        """登记退订（UNIQUE(user_id, channel, address_hash) 幂等）。address 明文仅用于算 hash，不落库。"""
-        ahash = address_hash or _address_hash(address)
-        if not ahash:
-            raise errors.RequestError(msg='退订需提供联系方式或其哈希')
-        existing = (
-            await db.execute(
-                sa.select(OptoutRecord).where(
-                    OptoutRecord.user_id == user_id,
-                    OptoutRecord.channel == channel,
-                    OptoutRecord.address_hash == ahash,
-                )
+        """按切流开关登记退订；启用 PII 新写后只写当前 HMAC 版本。"""
+        if address_hash is not None:
+            raise errors.RequestError(
+                msg='旧 SHA256 退订仅支持读取兼容',
+                data={'error_code': 'GROWTH_OPTOUT_LEGACY_HASH_READ_ONLY'},
             )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return {'id': existing.id, 'channel': existing.channel, 'created': False}
-        rec = OptoutRecord(
+        if not address:
+            raise errors.RequestError(msg='退订需提供联系方式')
+        owner_scope = 'enterprise' if scope and scope.enterprise_id is not None else 'personal'
+        if not source:
+            raise errors.RequestError(msg='退订必须提供来源')
+        if keyring is None and not settings.GROWTH_PII_NEW_WRITE_ENABLED:
+            raise errors.ConflictError(
+                msg='联系人 PII 新写尚未启用',
+                data={'error_code': 'GROWTH_PII_NEW_WRITE_DISABLED'},
+            )
+
+        active_keyring = keyring or require_growth_pii_keyring()
+        semantic_exists = await contact_privacy_service.is_opted_out(
+            db,
+            keyring=active_keyring,
+            owner_scope=owner_scope,
             user_id=user_id,
+            enterprise_id=scope.enterprise_id if scope else None,
             channel=channel,
-            address_hash=ahash,
-            customer_id=customer_id,
+            address=address,
+        )
+        rec, row_created = await contact_privacy_service.register_optout(
+            db,
+            keyring=active_keyring,
+            owner_scope=owner_scope,
+            user_id=user_id,
+            enterprise_id=scope.enterprise_id if scope else None,
+            channel=channel,
+            address=address,
             reason=reason,
             source=source,
+            customer_id=customer_id,
         )
-        db.add(rec)
-        await db.flush()
-        if customer_id is not None:
+        created = not semantic_exists and row_created
+        if customer_id is not None and created:
             await GrowthFunnelService._add_activity(
                 db,
                 user_id=user_id,
@@ -722,7 +829,7 @@ class GrowthOutreachService:
                 actor_kind='owner',
                 actor_id=None,
             )
-        return {'id': rec.id, 'channel': rec.channel, 'created': True}
+        return {'id': rec.id, 'channel': rec.channel, 'created': created}
 
 
 growth_outreach_service = GrowthOutreachService()

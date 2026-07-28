@@ -127,7 +127,7 @@ _CAPABILITIES = [
         description=(
             '请求线索（用户端默认入口）：平台**先查公共池**命中即交付（零采集成本），'
             '缺口才后台**补爬**回流公共池补足。按行业/地区/关键词/城市检索，行业自动归一到标准类目。'
-            'PII 默认脱敏（需 growth:pii 才回明文）。'
+            'PII 恒脱敏，历史 growth:pii scope 不再授权 Agent 明文。'
         ),
         scope=_SCOPE_COLLECT,
         risk_level='medium',
@@ -149,7 +149,7 @@ _CAPABILITIES = [
         description=(
             '按企业名/统一社会信用代码取企业全画像（工商登记/法定代表人/行业/地址…）。'
             '平台**先查公共池**命中即返回（零成本秒回），未命中才经企查查取数并**自动结构化入池**；'
-            '返回带 `lead_contact_id`，可直接用于 lead.qualify/建跟进。PII 默认脱敏（需 growth:pii 才回明文）。'
+            '返回带 `lead_contact_id`，可直接用于 lead.qualify/建跟进。PII 恒脱敏。'
         ),
         scope=_SCOPE_COLLECT,
         risk_level='medium',
@@ -249,7 +249,7 @@ _CAPABILITIES = [
         name='lead_search',
         mcp_suffix='lead.search',
         title='检索线索池',
-        description='检索线索池（关键词过滤）。PII 默认脱敏（§10.2，需 growth:pii 才回明文）。',
+        description='检索线索池（关键词过滤）。Agent PII 恒脱敏（§10.2）。',
         scope=_SCOPE_READ,
         risk_level='low',
         properties={
@@ -264,7 +264,7 @@ _CAPABILITIES = [
         name='lead_get',
         mcp_suffix='lead.get',
         title='取线索详情',
-        description='单线索详情（含多源证据；PII 默认脱敏，需 growth:pii 才回明文）。',
+        description='单线索详情（含多源证据；Agent PII 恒脱敏）。',
         scope=_SCOPE_READ,
         risk_level='low',
         properties={'lead_contact_id': {'type': 'integer'}},

@@ -12,12 +12,21 @@ from backend.database.db import CurrentSession, CurrentSessionTransaction
 router = APIRouter()
 
 
-@router.get('/admin/contacts', summary='全量线索列表', name='lead_automation_admin_list_contacts', dependencies=[DependsJwtAuth, Depends(RequestPermission('lead_automation:read_pii'))])
+@router.get(
+    '/admin/contacts',
+    summary='全量线索脱敏列表',
+    name='lead_automation_admin_list_contacts',
+    dependencies=[DependsJwtAuth, Depends(RequestPermission('lead_automation:read_pii'))],
+)
 async def list_contacts(db: CurrentSession) -> ResponseModel:
-    return response_base.success(data=await lead_automation_business_service.list_contacts(db, admin=True, masked=False))
+    return response_base.success(data=await lead_automation_business_service.list_contacts(db, admin=True, masked=True))
 
 
-@router.get('/admin/audit-logs', summary='审计日志查询', dependencies=[DependsJwtAuth, Depends(RequestPermission('lead_automation:audit'))])
+@router.get(
+    '/admin/audit-logs',
+    summary='审计日志查询',
+    dependencies=[DependsJwtAuth, Depends(RequestPermission('lead_automation:audit'))],
+)
 async def list_audit_logs(
     db: CurrentSession,
     event_type: str | None = None,
@@ -36,7 +45,9 @@ async def list_audit_logs(
     )
 
 
-@router.post('/admin/archive-expired', summary='执行到期线索归档', dependencies=[DependsJwtAuth], name='admin_archive_expired')
+@router.post(
+    '/admin/archive-expired', summary='执行到期线索归档', dependencies=[DependsJwtAuth], name='admin_archive_expired'
+)
 async def archive_expired(db: CurrentSessionTransaction) -> ResponseModel:
     return response_base.success(data={'archived_count': await lead_automation_business_service.archive_expired(db)})
 
@@ -81,4 +92,6 @@ async def delete_by_phone(db: CurrentSessionTransaction, obj: DsrPhoneParam) -> 
     dependencies=[DependsJwtAuth, Depends(RequestPermission('lead_automation:retention'))],
 )
 async def extend_retention(db: CurrentSessionTransaction, contact_id: int) -> ResponseModel:
-    return response_base.success(data=await lead_automation_business_service.extend_retention(db, contact_id=contact_id))
+    return response_base.success(
+        data=await lead_automation_business_service.extend_retention(db, contact_id=contact_id)
+    )

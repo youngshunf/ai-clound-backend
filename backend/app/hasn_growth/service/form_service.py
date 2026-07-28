@@ -35,9 +35,7 @@ class GrowthFormService:
         """落地页 slug → 发布者 owner（user_id, hasn_id）。未发布/已删/已过期 → NotFound。"""
         site = (
             await db.execute(
-                sa.select(Site).where(
-                    Site.slug == publish_ref, Site.status == 'active', Site.deleted_time.is_(None)
-                )
+                sa.select(Site).where(Site.slug == publish_ref, Site.status == 'active', Site.deleted_time.is_(None))
             )
         ).scalar_one_or_none()
         if not site:
@@ -121,9 +119,7 @@ class GrowthFormService:
         existing: Customer | None = None
         if email:
             existing = (
-                await db.execute(
-                    sa.select(Customer).where(Customer.user_id == user_id, Customer.email == email)
-                )
+                await db.execute(sa.select(Customer).where(Customer.user_id == user_id, Customer.email == email))
             ).scalar_one_or_none()
         if existing is not None:
             customer = existing
@@ -162,7 +158,7 @@ class GrowthFormService:
         )
         from backend.app.hasn_growth.service.funnel_service import _customer_to_dict
 
-        return _customer_to_dict(customer, reveal_pii=True)
+        return _customer_to_dict(customer, reveal_pii=False)
 
 
 growth_form_service = GrowthFormService()

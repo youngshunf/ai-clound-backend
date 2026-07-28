@@ -2,7 +2,7 @@
 
 把一个客户从 检索(脱敏)→晋级→触达起草→首触达必审→owner edit-then-approve→发送态流转
 →客户回复(J3 run_now+防抖)→立商机→推进阶段→成交→漏斗 won_this_month 串成**一条连续业务链**，
-并在链路上验合规闸门（首触达不可豁免 / optout 硬闸 / 频控）与 agent 脱敏 ↔ owner 明文 的 PII 边界。
+并在链路上验合规闸门（首触达不可豁免 / optout 硬闸 / 频控）与 agent/owner 默认脱敏的 PII 边界。
 
 对应施工清单 docs/AI自动获客任务系统/实施/91 的 M8 §3 活体场景 **2/4/5/6/7 的云端业务实质**——
 经真实 HTTP（agent/owner 两 scope，鉴权与 DB 会话 override）+ 服务层（record_inbound_reply 无 HTTP 路由）
@@ -38,11 +38,13 @@ from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt_auth import agent_jwt_auth
 from backend.common.security.jwt import DependsJwtAuth
+from backend.core.conf import settings
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 
 if TYPE_CHECKING:
@@ -101,9 +103,15 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         )
     )
     lead = LeadContact(
-        lead_no=f'L{tag.upper()}', pool_visibility='public', company_name='Acme',
-        contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='new', confidence_score=Decimal(72),
+        lead_no=f'L{tag.upper()}',
+        pool_visibility='public',
+        company_name='Acme',
+        contact_name='王五',
+        email='wangwu@acme.com',
+        phone='13800138000',
+        source_type='firecrawl',
+        status='new',
+        confidence_score=Decimal(72),
     )
     session.add(lead)
     await session.flush()
@@ -126,8 +134,11 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
 
     async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
         payload = AgentTokenPayload(
-            agent_hasn_id=agent_hasn, agent_name=f'agent_{tag}', owner_hasn_id=owner,
-            owner_user_id=owner_uid, session_uuid=f'sess_{tag}',
+            agent_hasn_id=agent_hasn,
+            agent_name=f'agent_{tag}',
+            owner_hasn_id=owner,
+            owner_user_id=owner_uid,
+            session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
         request.state.agent = payload
@@ -144,8 +155,13 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_APP), base_url='http://e2e')
     try:
         yield SimpleNamespace(
-            client=client, session=session, owner=owner, owner_uid=owner_uid,
-            agent_hasn=agent_hasn, lead_id=lead.id, task_uuid=task_uuid,
+            client=client,
+            session=session,
+            owner=owner,
+            owner_uid=owner_uid,
+            agent_hasn=agent_hasn,
+            lead_id=lead.id,
+            task_uuid=task_uuid,
         )
     finally:
         await client.aclose()
@@ -175,32 +191,40 @@ async def test_fullchain_single_customer_lifecycle(e2e) -> None:
     cust = _ok(await c.post(f'{A}/leads/{e2e.lead_id}/qualify', json={'intent_score': 80}))
     cid = cust['id']
     assert cust['email'] == 'w***@acme.com'
-    # owner 看自己客户 → 明文（PII 边界）
+    # owner 列表/详情同样默认脱敏；明文只能走单渠道 reveal。
     owner_cust = _ok(await c.get(f'{O}/customers/{cid}'))
-    assert owner_cust['phone'] == '13800138000' and owner_cust['email'] == 'wangwu@acme.com'
+    assert owner_cust['phone'] == '1380****8000' and owner_cust['email'] == 'w***@acme.com'
     # 绑定 J3 跟进任务（复用客户画像 PATCH followup_task_id）
     await growth_funnel_service.update_customer_profile(
         e2e.session, user_id=e2e.owner_uid, customer_id=cid, followup_task_id=e2e.task_uuid
     )
 
     # --- 场景4：首触达起草 → 必 pending_approval（不可豁免）→ owner edit-then-approve → 发送态流转 ---
-    sent = _ok(await c.post(f'{A}/outreach', json={
-        'customer_id': cid, 'channel': 'manual_assist', 'content': '您好，想聊聊获客', 'intent_note': '破冰',
-    }))
+    sent = _ok(
+        await c.post(
+            f'{A}/outreach',
+            json={
+                'customer_id': cid,
+                'channel': 'manual_assist',
+                'content': '您好，想聊聊获客',
+                'intent_note': '破冰',
+            },
+        )
+    )
     mid = sent['id']
     assert sent['status'] == 'pending_approval', '首触达必审，不可豁免'
     pending = _ok(await c.get(f'{O}/outreach/pending'))
     assert any(p['id'] == mid for p in pending)
     approved = _ok(await c.post(f'{O}/outreach/{mid}/approve', json={'edited_content': '您好，约时间聊获客'}))
     assert approved['status'] == 'approved' and approved['content'] == '您好，约时间聊获客'
-    # manual_assist：复制发送素材包回明文（仅此处渲染）+ 落 pii_read 审计
-    packet = await growth_outreach_service.build_send_material(
-        e2e.session, user_id=e2e.owner_uid, message_id=mid, actor_user_id=e2e.owner_uid
-    )
-    assert packet['contact']['phone'] == '13800138000'
+    # manual_assist：复制发送素材包不包含联系方式，目标渠道另走单渠道 reveal。
+    packet = await growth_outreach_service.build_send_material(e2e.session, user_id=e2e.owner_uid, message_id=mid)
+    assert 'contact' not in packet and '13800138000' not in str(packet)
     # 标记已发 → sent
     await growth_outreach_service.mark_sending(e2e.session, user_id=e2e.owner_uid, message_id=mid)
-    s = await growth_outreach_service.mark_sent(e2e.session, user_id=e2e.owner_uid, message_id=mid, channel_actual='wechat')
+    s = await growth_outreach_service.mark_sent(
+        e2e.session, user_id=e2e.owner_uid, message_id=mid, channel_actual='wechat'
+    )
     assert s['status'] == 'sent'
 
     # --- 场景5（J3）：客户回复 inbound → run_now 触发；10 分钟窗口内第二条防抖合并 ---
@@ -254,17 +278,31 @@ async def test_fullchain_compliance_gates(e2e) -> None:
     assert f3['status'] == 'blocked_compliance' and f3['compliance_check']['freq_exceeded'] is True
 
     # optout 硬闸：owner 登记客户退订(all) → agent 任意渠道触达被拦 blocked_optout
-    await growth_outreach_service.register_optout(
-        e2e.session, user_id=e2e.owner_uid, channel='all', address='wangwu@acme.com', customer_id=cid, reason='客户明示拒绝'
-    )
-    blocked = _ok(await c.post(f'{A}/outreach', json={'customer_id': cid, 'channel': 'wechat', 'content': '在吗'}))
-    assert blocked['status'] == 'blocked_optout'
+    previous_new_write_enabled = settings.GROWTH_PII_NEW_WRITE_ENABLED
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    try:
+        await growth_outreach_service.register_optout(
+            e2e.session,
+            keyring=require_growth_pii_keyring(),
+            user_id=e2e.owner_uid,
+            channel='all',
+            address='wangwu@acme.com',
+            customer_id=cid,
+            reason='客户明示拒绝',
+            source='test-e2e',
+        )
+        blocked = _ok(
+            await c.post(f'{A}/outreach', json={'customer_id': cid, 'channel': 'wechat', 'content': '在吗'})
+        )
+        assert blocked['status'] == 'blocked_optout'
+    finally:
+        settings.GROWTH_PII_NEW_WRITE_ENABLED = previous_new_write_enabled
 
 
 async def test_fullchain_cross_owner_isolation_and_pii(e2e) -> None:
     """跨户隔离 + PII 边界：本户 agent 可见自己客户；他户漏斗全 0。
 
-    （scope→脱敏 的 growth:pii 明文回参由 test_growth_api_pg.py 的专项用例覆盖，
+    （历史 growth:pii scope 仍恒脱敏由 test_growth_api_pg.py 的专项用例覆盖，
     本测试聚焦「同一条链上」的跨户数据隔离与漏斗归属。）
     """
     c = e2e.client

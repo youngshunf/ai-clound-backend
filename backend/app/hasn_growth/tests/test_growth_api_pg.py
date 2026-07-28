@@ -2,7 +2,7 @@
 
 最小 app 同挂 agent/app/open 三面，override 鉴权与 DB 会话；真实 PG。覆盖：
 - 信封 {code,msg,data}；
-- agent 恒脱敏（旧 growth:pii claim 不再授权明文）；owner(app) 看自己数据回明文；
+- agent 与 owner 列表/详情恒脱敏（旧 growth:pii claim 不再授权明文）；
 - 触达审批状态机经 HTTP：agent send→pending，owner approve；
 - open 落地页表单回流 → 建 inbound_form 客户；
 - 跨户隔离（他 owner 的 agent → NotFound）。
@@ -109,13 +109,21 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     )
     # 采集线索（owner 私有）
     lead = LeadContact(
-        lead_no=f'L{tag.upper()}', pool_visibility='public', company_name='Acme',
-        contact_name='王五', email='wangwu@acme.com', phone='13800138000',
-        source_type='firecrawl', status='new', confidence_score=Decimal(72),
+        lead_no=f'L{tag.upper()}',
+        pool_visibility='public',
+        company_name='Acme',
+        contact_name='王五',
+        email='wangwu@acme.com',
+        phone='13800138000',
+        source_type='firecrawl',
+        status='new',
+        confidence_score=Decimal(72),
     )
     session.add(lead)
     # 落地页（供 open 表单回流解析 owner）
-    session.add(Site(owner_id=owner, kind='page', title='获客落地页', slug=publish_ref, status='active', visibility='public'))
+    session.add(
+        Site(owner_id=owner, kind='page', title='获客落地页', slug=publish_ref, status='active', visibility='public')
+    )
     await session.flush()
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
@@ -127,8 +135,11 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
 
     async def _agent_auth(request: Request) -> AgentTokenPayload:  # noqa: RUF029
         payload = AgentTokenPayload(
-            agent_hasn_id=agent_hasn, agent_name=f'agent_{tag}', owner_hasn_id=owner,
-            owner_user_id=state.owner_uid, session_uuid=f'sess_{tag}',
+            agent_hasn_id=agent_hasn,
+            agent_name=f'agent_{tag}',
+            owner_hasn_id=owner,
+            owner_user_id=state.owner_uid,
+            session_uuid=f'sess_{tag}',
             expire_time=datetime(2099, 1, 1, tzinfo=UTC),
         )
         request.state.agent = payload
@@ -192,32 +203,38 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     assert cust['source_kind'] == 'outbound_crawl' and cust['email'] == 'w***@acme.com'
 
     # --- Agent: 发起触达 → 首触达 pending_approval ---
-    sent = _ok(await c.post(f'{A}/outreach', json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好，想聊聊获客', 'intent_note': '破冰'}))
+    sent = _ok(
+        await c.post(
+            f'{A}/outreach',
+            json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好，想聊聊获客', 'intent_note': '破冰'},
+        )
+    )
     mid = sent['id']
     assert sent['status'] == 'pending_approval'
 
     # 自有分身向主人请示走主会话汇报卡，不污染通知中心；业务事务登记真实 IM outbox。
     notifications = (
         await e2e.session.execute(
-            text(
-                "SELECT id FROM hasn_notifications "
-                "WHERE target_id = :owner AND type = 'growth.outreach.pending'"
-            ),
+            text("SELECT id FROM hasn_notifications WHERE target_id = :owner AND type = 'growth.outreach.pending'"),
             {'owner': e2e.owner},
         )
     ).all()
     assert notifications == []
     cards = (
-        await e2e.session.execute(
-            text(
-                "SELECT payload FROM hasn_notification_im_command_outbox "
-                "WHERE payload->'principal'->>'canonical_sender' = :agent "
-                "AND payload->'message'->'content'->'resource'->'metadata'->>'target_kind' "
-                "= 'outreach_message'"
-            ),
-            {'agent': e2e.agent_hasn},
+        (
+            await e2e.session.execute(
+                text(
+                    'SELECT payload FROM hasn_notification_im_command_outbox '
+                    "WHERE payload->'principal'->>'canonical_sender' = :agent "
+                    "AND payload->'message'->'content'->'resource'->'metadata'->>'target_kind' "
+                    "= 'outreach_message'"
+                ),
+                {'agent': e2e.agent_hasn},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     assert len(cards) == 1
     assert cards[0]['payload']['message']['content']['metadata']['report'] is True
 
@@ -227,26 +244,31 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     approved = _ok(await c.post(f'{O}/outreach/{mid}/approve', json={'edited_content': '您好，约时间聊获客'}))
     assert approved['status'] == 'approved' and approved['content'] == '您好，约时间聊获客'
 
-    # --- Owner: 看客户详情回明文 ---
+    # --- Owner: 看客户详情仍默认脱敏 ---
     owner_cust = _ok(await c.get(f'{O}/customers/{cid}'))
-    assert owner_cust['phone'] == '13800138000'
+    assert owner_cust['phone'] == '1380****8000'
+    assert owner_cust['email'] == 'w***@acme.com'
 
     # --- Owner: 漏斗总览 ---
     funnel = _ok(await c.get(f'{O}/report/funnel'))
     assert funnel['following'] >= 1
 
     # --- Open: 落地页表单回流 → 建 inbound_form 客户 ---
-    form = _ok(await c.post(
-        f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
-        json={'company_name': 'Beta', 'contact_name': '赵六', 'email': 'zhaoliu@beta.com', 'message': '想了解'},
-    ))
+    form = _ok(
+        await c.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={'company_name': 'Beta', 'contact_name': '赵六', 'email': 'zhaoliu@beta.com', 'message': '想了解'},
+        )
+    )
     assert form['status'] == 'converted' and form['customer_id']
 
     # --- Open: 蜜罐字段 → spam 不进漏斗 ---
-    spam = _ok(await c.post(
-        f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
-        json={'email': 'bot@x.com', 'website_url': 'http://spam'},
-    ))
+    spam = _ok(
+        await c.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={'email': 'bot@x.com', 'website_url': 'http://spam'},
+        )
+    )
     assert spam['status'] == 'spam' and spam['customer_id'] is None
 
     # --- 跨户隔离：他 owner 的 agent 看不到本户客户 ---
@@ -272,7 +294,12 @@ async def test_agent_collect_and_outreach_status(e2e) -> None:
     # --- outreach.status：qualify→send 后按客户查到该触达 ---
     cust = _ok(await c.post(f'{A}/leads/{e2e.lead_id}/qualify', json={'qualify_reason': '高意向'}))
     cid = cust['id']
-    sent = _ok(await c.post(f'{A}/outreach', json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好', 'intent_note': '破冰'}))
+    sent = _ok(
+        await c.post(
+            f'{A}/outreach',
+            json={'customer_id': cid, 'channel': 'manual_assist', 'content': '您好', 'intent_note': '破冰'},
+        )
+    )
     msgs = _ok(await c.get(f'{A}/outreach', params={'customer_id': cid}))
     assert any(m['id'] == sent['id'] and m['status'] == 'pending_approval' for m in msgs)
 
@@ -285,7 +312,7 @@ async def test_agent_collect_and_outreach_status(e2e) -> None:
 async def test_owner_create_lead_via_http(e2e) -> None:
     """M-UI：主人在 UI 手动建线索（AI-native 宗旨：UI 给人操作）。
 
-    owner 私有池、source_type=manual、status=new（用户级状态来自 lead_ref），回明文（自己的数据）；
+    owner 私有池、source_type=manual、status=new（用户级状态来自 lead_ref），响应默认脱敏；
     建后出现在线索池检索；公司名与联系人名都空 → 400（线索无意义）。
     """
     c = e2e.client
@@ -309,7 +336,8 @@ async def test_owner_create_lead_via_http(e2e) -> None:
     assert created['lead_contact_id'] and created['source_type'] == 'manual'
     assert created['status'] == 'new'  # 用户级状态来自 lead_ref（新建即 new）
     assert created['company_name'] == '星尘科技'
-    assert created['email'] == 'lilei@xingchen.com'  # owner 看自己数据回明文
+    assert created['email'] == 'l***@xingchen.com'
+    assert created['phone'] == '1390****9000'
 
     # --- 建的线索出现在 owner 线索池检索 ---
     leads = _ok(await c.get(f'{O}/leads', params={'q': '星尘'}))
@@ -321,7 +349,7 @@ async def test_owner_create_lead_via_http(e2e) -> None:
 
 
 async def test_owner_request_leads_via_http(e2e) -> None:
-    """主人「请求线索」轻入口只查公共池并交付明文，不再暗启旧爬虫补缺。
+    """主人「请求线索」轻入口只查公共池并交付脱敏摘要，不再暗启旧爬虫补缺。
 
     找新线索改由获客分身通过读穿工具完成；本端点保留池内快速领取语义，
     因此池中不足 N 时只交付 M 条，backfill_job_id 恒为空。
@@ -349,11 +377,12 @@ async def test_owner_request_leads_via_http(e2e) -> None:
     )
     await e2e.session.flush()
 
-    # --- 请求 1 条 → 命中即交付，明文（owner 看自己领取的线索），无缺口不补爬 ---
+    # --- 请求 1 条 → 命中即交付脱敏摘要，无缺口不补爬 ---
     one = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 1}))
     assert one['delivered'] == 1 and one['from_pool'] == 1
     assert one['backfill_job_id'] is None
-    assert one['leads'][0]['email'] == 'pool@uniq.com'  # owner 明文（reveal_pii=True）
+    assert one['leads'][0]['email'] == 'p***@uniq.com'
+    assert one['leads'][0]['phone'] == '1370****7000'
 
     # --- 请求 5 条但池中仅 1 条命中 → 只交付 1 条，不暗启旧爬虫 ---
     gap = _ok(await c.post(f'{O}/leads/request', json={'keyword': uniq, 'limit': 5}))

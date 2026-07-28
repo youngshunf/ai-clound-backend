@@ -116,7 +116,8 @@ class GrowthFunnelService:
     ) -> list[dict[str, Any]]:
         """检索「该用户引用的线索」（lead_ref JOIN contact），关键词/评分过滤，默认脱敏。已忽略的不返回。"""
         stmt = (
-            sa.select(LeadContact, LeadRef)
+            sa
+            .select(LeadContact, LeadRef)
             .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
             .where(LeadRef.user_id == user_id, LeadRef.status != 'dismissed')
         )
@@ -148,7 +149,8 @@ class GrowthFunnelService:
         """加载「该用户引用的某条线索」(contact, ref)；无引用 → NotFound（统一池：拥有 = 有 lead_ref）。"""
         row = (
             await db.execute(
-                sa.select(LeadContact, LeadRef)
+                sa
+                .select(LeadContact, LeadRef)
                 .join(LeadRef, LeadRef.lead_contact_id == LeadContact.id)
                 .where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == lead_contact_id)
             )
@@ -251,7 +253,7 @@ class GrowthFunnelService:
         ref = await db.scalar(
             sa.select(LeadRef).where(LeadRef.user_id == user_id, LeadRef.lead_contact_id == contact.id)
         )
-        return _lead_to_dict(contact, ref=ref, reveal_pii=True)
+        return _lead_to_dict(contact, ref=ref, reveal_pii=False)
 
     # ----------------------------- 晋级 / 淘汰 -----------------------------
 
@@ -324,9 +326,7 @@ class GrowthFunnelService:
         return _customer_to_dict(customer, reveal_pii=False)
 
     @staticmethod
-    async def dismiss_lead(
-        db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str
-    ) -> dict[str, Any]:
+    async def dismiss_lead(db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str) -> dict[str, Any]:
         """用户忽略该线索（ref.status=dismissed + dismiss_reason，落引用层不污染公共池行；列表/检索不再返回）。"""
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
         ref.status = 'dismissed'
@@ -361,7 +361,9 @@ class GrowthFunnelService:
     async def _load_customer(
         db: AsyncSession, *, user_id: int, customer_id: int, scope: GrowthScope | None = None
     ) -> Customer:
-        stmt = apply_scope(sa.select(Customer).where(Customer.id == customer_id), Customer, user_id=user_id, scope=scope)
+        stmt = apply_scope(
+            sa.select(Customer).where(Customer.id == customer_id), Customer, user_id=user_id, scope=scope
+        )
         customer = (await db.execute(stmt)).scalar_one_or_none()
         if not customer:
             raise errors.NotFoundError(msg='客户不存在或无权访问')
@@ -381,13 +383,18 @@ class GrowthFunnelService:
         # 先 _load_customer（按 scope 校验可见性），通过后按 customer_id 取时间线（已门控，无需再按 user_id 隔离）。
         await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
         rows = (
-            await db.execute(
-                sa.select(Activity)
-                .where(Activity.customer_id == customer_id)
-                .order_by(Activity.occurred_at.desc(), Activity.id.desc())
-                .limit(min(limit, 100))
+            (
+                await db.execute(
+                    sa
+                    .select(Activity)
+                    .where(Activity.customer_id == customer_id)
+                    .order_by(Activity.occurred_at.desc(), Activity.id.desc())
+                    .limit(min(limit, 100))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [
             {
                 'id': a.id,
@@ -514,7 +521,9 @@ class GrowthFunnelService:
         # 单条轻量 SELECT，免去把 scope 透传到每个调用点（DRY）。
         cust = (
             await db.execute(
-                sa.select(Customer.owner_scope, Customer.enterprise_id, Customer.assignee).where(Customer.id == customer_id)
+                sa.select(Customer.owner_scope, Customer.enterprise_id, Customer.assignee).where(
+                    Customer.id == customer_id
+                )
             )
         ).first()
         o_scope, ent_id, assignee = cust or ('personal', None, None)
@@ -535,9 +544,7 @@ class GrowthFunnelService:
         )
         db.add(activity)
         # 同步客户最近活动游标（按 id，已由调用方门控可见性；不再按 user_id 过滤以兼容企业客户）。
-        await db.execute(
-            sa.update(Customer).where(Customer.id == customer_id).values(last_activity_at=timezone.now())
-        )
+        await db.execute(sa.update(Customer).where(Customer.id == customer_id).values(last_activity_at=timezone.now()))
         await db.flush()
         return activity
 

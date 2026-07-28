@@ -26,7 +26,9 @@ class OptoutRecordService:
         """
         optout_record = await optout_record_dao.get(db, pk)
         if not optout_record:
-            raise errors.NotFoundError(msg='获客退订/勿扰登记（合规硬约束，outreach.send 入口硬查，命中即 blocked_optout）不存在')
+            raise errors.NotFoundError(
+                msg='获客退订/勿扰登记（合规硬约束，outreach.send 入口硬查，命中即 blocked_optout）不存在'
+            )
         return optout_record
 
     @staticmethod
@@ -60,7 +62,10 @@ class OptoutRecordService:
         :param obj: 创建获客退订/勿扰登记（合规硬约束，outreach.send 入口硬查，命中即 blocked_optout）参数
         :return:
         """
-        await optout_record_dao.create(db, obj)
+        raise errors.ForbiddenError(
+            msg='管理端退订写入口已停用，请使用 Owner 退订业务端点',
+            data={'error_code': 'GROWTH_OPTOUT_ADMIN_WRITE_RETIRED'},
+        )
 
     @staticmethod
     async def update(*, db: AsyncSession, pk: int, obj: UpdateOptoutRecordParam) -> int:
@@ -72,8 +77,10 @@ class OptoutRecordService:
         :param obj: 更新获客退订/勿扰登记（合规硬约束，outreach.send 入口硬查，命中即 blocked_optout）参数
         :return:
         """
-        count = await optout_record_dao.update(db, pk, obj)
-        return count
+        raise errors.ForbiddenError(
+            msg='退订记录只允许追加，不允许改写',
+            data={'error_code': 'GROWTH_OPTOUT_APPEND_ONLY'},
+        )
 
     @staticmethod
     async def delete(*, db: AsyncSession, obj: DeleteOptoutRecordParam) -> int:
@@ -84,8 +91,10 @@ class OptoutRecordService:
         :param obj: 获客退订/勿扰登记（合规硬约束，outreach.send 入口硬查，命中即 blocked_optout） ID 列表
         :return:
         """
-        count = await optout_record_dao.delete(db, obj.pks)
-        return count
+        raise errors.ForbiddenError(
+            msg='退订记录只允许追加，不允许删除',
+            data={'error_code': 'GROWTH_OPTOUT_APPEND_ONLY'},
+        )
 
 
 optout_record_service: OptoutRecordService = OptoutRecordService()

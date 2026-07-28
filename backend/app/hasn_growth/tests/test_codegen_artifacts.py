@@ -255,12 +255,12 @@ def test_business_api_and_tasks_are_registered_beside_codegen_crud() -> None:
     assert 'run_job(db, job_id, user_id=request.user.id)' in app_business
     assert 'user_id=obj.user_id' not in app_business
     assert 'user_id: int | None = None' not in app_business
-    assert "get('/admin/audit-logs'" in admin_business
-    assert "delete(\n    '/admin/contacts/by-email'" in admin_business
-    assert "delete(\n    '/admin/contacts/by-phone'" in admin_business
-    assert "post('/admin/archive-expired'" in admin_business
-    assert "post(\n    '/admin/source-configs/blacklist'" in admin_business
-    assert "post(\n    '/admin/contacts/{contact_id}/extend-retention'" in admin_business
+    assert "'/admin/audit-logs'" in admin_business
+    assert "'/admin/contacts/by-email'" in admin_business
+    assert "'/admin/contacts/by-phone'" in admin_business
+    assert "'/admin/archive-expired'" in admin_business
+    assert "'/admin/source-configs/blacklist'" in admin_business
+    assert "'/admin/contacts/{contact_id}/extend-retention'" in admin_business
     assert "get('/status'" in agent_business
     assert "get('/healthz'" in open_business
     assert 'def lead_automation_run_job' in task_source
@@ -273,7 +273,7 @@ def test_business_api_and_tasks_are_registered_beside_codegen_crud() -> None:
 def test_business_service_covers_compliance_side_effects() -> None:
     business_source = (ROOT / 'backend/app/hasn_growth/service/business_service.py').read_text(encoding='utf-8')
 
-    assert "event_type='pii_read'" in business_source
+    assert 'mask_contact_fields(row, reveal=False)' in business_source
     assert "event_type='config_change'" in business_source
     assert 'async def update_blacklist' in business_source
     assert 'async def extend_retention' in business_source
