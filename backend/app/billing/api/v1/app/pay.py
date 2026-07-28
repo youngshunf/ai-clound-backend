@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Path, Request
+from fastapi import APIRouter, Path, Query, Request
 
 from backend.app.billing.schema.pay_channel import GetPayChannelSimple
 from backend.app.billing.schema.pay_contract import GetPayContractUserView
@@ -94,9 +94,10 @@ async def cancel_order(
 async def get_my_orders(
     request: Request,
     db: CurrentSession,
+    status: Annotated[int | None, Query(description='按支付状态过滤：0待支付 1已支付 2已退款 3已关闭 4已过期；不传返回全部')] = None,
 ) -> ResponseSchemaModel[PageData[GetPayOrderDetail]]:
     user_id = request.user.id
-    page_data = await pay_order_service.get_list(db=db, user_id=user_id)
+    page_data = await pay_order_service.get_list(db=db, user_id=user_id, status=status)
     return response_base.success(data=page_data)
 
 

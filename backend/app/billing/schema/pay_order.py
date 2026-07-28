@@ -126,6 +126,14 @@ class GetPayOrderDetail(SchemaBase):
     extra_data: dict | None = None
     # 统一商业化内核（MK-1）：商品目录引用快照，商业化中心订单页据此串出所属 offering
     offering_ref: dict | None = None
+    # 支付与履约分列（doc94 §2.2）：列表页也要能区分「已付款」与「额度已到账」，
+    # 与 PayOrderStatusResponse 同一组字段，避免订单页把「发放中」误显示成「已完成」。
+    fulfillment_status: str | None = Field(
+        None,
+        description='履约状态 not_required/pending/processing/succeeded/retrying/dead/reversed；'
+        '只有 succeeded 才是「额度已到账」',
+    )
+    fulfilled_at: datetime | None = Field(None, description='额度真正到账的时刻')
     created_time: datetime
     updated_time: datetime | None = None
 
