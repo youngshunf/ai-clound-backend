@@ -32,6 +32,8 @@ from backend.app.hasn_film.manifest import FILM_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.manifest import FINANCE_AI_NATIVE_MANIFEST
 from backend.app.hasn_finance.service import project_linkage as _finance_project_linkage  # noqa: F401
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_growth.service import project_linkage as _growth_project_linkage  # noqa: F401
+from backend.app.hasn_growth.service import resource_adapter as _growth_resource_adapter  # noqa: F401
 from backend.app.hasn_imagelab.manifest import IMAGELAB_AI_NATIVE_MANIFEST
 from backend.app.hasn_knowledge.service import project_linkage as _knowledge_project_linkage  # noqa: F401
 from backend.app.hasn_knowledge.service import resource_adapter as _knowledge_resource_adapter  # noqa: F401
@@ -329,7 +331,9 @@ class AINativeAppRegistry:
         chosen: dict[str, Any] | None = None
         if resource_kind:
             chosen = next((r for r in resources if r.get('resource_kind') == resource_kind), None)
-        if chosen is None:
+            if chosen is None:
+                return None
+        else:
             chosen = resources[0]
         try:
             return ResourceDescriptor.model_validate(chosen)

@@ -530,12 +530,12 @@ GROWTH_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'growth',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'growth': '获客（线索采集/触达/转化）'},
-    'version': '1.0.0',
+    'version': '1.1.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
-    'project_aware': False,
-    'project_required': False,
-    'project_integration': 'artifact_only',
+    'project_aware': True,
+    'project_required': True,
+    'project_integration': 'project_required',
     'execution_mode': 'cloud',
     # 云端工具模型（对齐 community/knowledge）：工具数据面经 gateway_internal 进程内直调云端 handler，
     # 不经本地 hasn-mcp / daemon Agent 代理（获客无本地文件/电脑操作的本地理由）。
@@ -548,15 +548,49 @@ GROWTH_AI_NATIVE_MANIFEST: dict[str, Any] = {
             'display_name': '获客',
         }
     },
-    # 资源描述符（doc31 §2，RC-P6）：客户资料 → hasn://growth/customers/{server_id}，应用内详情路由打开。
+    # 获客是多资源应用，ref_type 决定工作会话产物应使用哪条稳定 URI。
     'resources': [
         {
+            'resource_kind': 'growth.project',
+            'ref_type': 'project',
+            'uri_domain': 'growth/projects',
+            'open': {
+                'mode': 'internal_route',
+                'route_template': '/apps/growth/projects/:id/overview',
+            },
+            'card': {'verb': '获客漏斗', 'action_label': '打开获客漏斗'},
+            'artifact_kind': 'resource',
+        },
+        {
+            'resource_kind': 'growth.leads',
+            'ref_type': 'leads',
+            'uri_domain': 'growth/leads',
+            'open': {
+                'mode': 'internal_route',
+                'route_template': '/apps/growth/projects/:id/leads',
+            },
+            'card': {'verb': '获客线索池', 'action_label': '查看线索池'},
+            'artifact_kind': 'resource',
+        },
+        {
             'resource_kind': 'growth.customer',
-            'uri_domain': 'growth/customers',  # → hasn://growth/customers/{server_id}（doc08 §3 登记 internal_route 域）
+            'ref_type': 'customer',
+            'uri_domain': 'growth/customers',
             'open': {'mode': 'internal_route', 'route_template': '/apps/growth/customers/:id'},
             'card': {'verb': '客户资料', 'action_label': '查看客户'},
             'artifact_kind': 'resource',
-        }
+        },
+        {
+            'resource_kind': 'growth.opportunity',
+            'ref_type': 'opportunity',
+            'uri_domain': 'growth/opportunities',
+            'open': {
+                'mode': 'internal_route',
+                'route_template': '/apps/growth/opportunities/:id',
+            },
+            'card': {'verb': '获客商机', 'action_label': '查看商机'},
+            'artifact_kind': 'resource',
+        },
     ],
     'capabilities': _CAPABILITIES,
     # tools[] 由 capabilities 派生：每条 gateway_internal + handler 指向云端 handler 注册表键。
@@ -589,4 +623,6 @@ def build_growth_app() -> App:
         entry_route='/apps/growth',
         install_policy='manual',
         execution_mode='cloud',
+        project_aware=True,
+        project_required=True,
     )

@@ -87,6 +87,8 @@ class LinkageAdapter:
     revision_column: str | None = None
     sync_kind: str | None = None
     sync_scope: Literal['owner', 'global'] = 'owner'
+    allow_unlink: bool = True
+    allow_relink: bool = True
     related_resource_uris: Callable[[Any, str, tuple[Any, ...]], Awaitable[list[str]]] | None = None
     related_resource_uri_pairs: Callable[
         [Any, str, dict[UUID, tuple[Any, ...]]], Awaitable[list[tuple[UUID, str]]]
@@ -332,6 +334,15 @@ class ProjectLinkageRegistry:
         row = await self._locate(db, adapter, owner, server_id)
         pid = project_id if isinstance(project_id, UUID) else UUID(str(project_id))
         previous = getattr(row, adapter.attach_column)
+        if previous is not None and previous != pid and not adapter.allow_relink:
+            raise errors.ConflictError(
+                msg='该资源不支持跨项目改绑',
+                data={
+                    'error_code': 'REBIND_NOT_SUPPORTED',
+                    'current_project_id': str(previous),
+                    'requested_project_id': str(pid),
+                },
+            )
         changed = previous != pid
         setattr(row, adapter.attach_column, pid)
         if changed:
@@ -358,6 +369,11 @@ class ProjectLinkageRegistry:
         if adapter is None:
             raise _err('unsupported_link_domain', f'资源域「{domain}」暂不支持挂靠进项目')
         row = await self._locate(db, adapter, owner, server_id)
+        if not adapter.allow_unlink:
+            raise errors.ConflictError(
+                msg='该资源必须保持平台项目挂靠',
+                data={'error_code': 'PROJECT_REQUIRED'},
+            )
         previous = getattr(row, adapter.attach_column)
         expected = (
             project_id
