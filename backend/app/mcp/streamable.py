@@ -265,11 +265,16 @@ class HasnMcpStreamableServer:
             _streamable_agent_context.set(agent_context)
 
             # CLI runtime 直连云端 MCP 时，本地 per-dispatch key 不会经过 daemon 代理，必须由
-            # daemon 组装的静态 header 把工作会话带入 AgentContext。后续 server.call_tool 会将该值
-            # 写入 register-on-write 的 ContextVar，使应用资源登记到正确的工作会话。
+            # daemon 组装的静态 header 把会话语境带入 AgentContext（会话轴分流，设计 02 §4.3）：
+            # - `X-Hasn-Session-Id`（运行时会话）→ `session_id`：message.send 回灌定位等运行时消费；
+            # - `X-Hasn-Work-Session-Id`（工作会话，仅真实工作会话派发才发）→ `work_session_id`：
+            #   server.call_tool 优先据它落 register-on-write 的工作会话 ContextVar。
+            session_header = headers.get(b'x-hasn-session-id')
+            if session_header is not None:
+                agent_context.session_id = session_header.decode('utf-8').strip() or None
             work_session_header = headers.get(b'x-hasn-work-session-id')
             if work_session_header is not None:
-                agent_context.session_id = work_session_header.decode('utf-8').strip() or None
+                agent_context.work_session_id = work_session_header.decode('utf-8').strip() or None
 
             # 一次性能力票据（A-P2 验票跳闸）：带 X-Capability-Ticket 的重试在 call_tool 的 ask 分支验票放行。
             ticket_header = headers.get(b'x-capability-ticket')

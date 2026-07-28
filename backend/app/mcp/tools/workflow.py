@@ -26,6 +26,7 @@ from typing import Any
 from backend.app.hasn_task.service.agent_workflow_service import agent_workflow_service
 from backend.app.hasn_task.service.workflow_template_service import workflow_template_service
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import get_current_work_session_id
 from backend.app.mcp.tools.base import BaseTool
 from backend.common.exception import errors
 from backend.database.db import async_db_session
@@ -66,12 +67,14 @@ async def _h_get_node_result(db: Any, ctx: AgentContext, args: dict[str, Any]) -
 
 
 async def _h_run_artifacts(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
-    # doc36 §6.2 零入参：缺 workflow_run_uuid 时经当前会话（_hasn_session_id → ctx.session_id）反查所属 run。
+    # doc36 §6.2 零入参：缺 workflow_run_uuid 时经当前**工作会话**反查所属 run。会话轴分流
+    # （设计 02 §4.3）：工作会话权威取 ContextVar（三级权威已落）+ auth 绑定字段兜底——
+    # `ctx.session_id` 是运行时/逻辑会话语义，工作会话派发经 `_hasn_work_session_id` 进 ContextVar。
     run_uuid = args.get('workflow_run_uuid')
     return await agent_workflow_service.run_artifacts(
         db,
         owner_id=_owner(ctx),
-        session_id=ctx.session_id,
+        session_id=get_current_work_session_id() or ctx.work_session_id,
         workflow_run_uuid=str(run_uuid) if run_uuid else None,
     )
 

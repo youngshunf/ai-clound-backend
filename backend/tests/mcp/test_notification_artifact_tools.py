@@ -150,9 +150,11 @@ async def test_artifact_record_text_roundtrip_real_db() -> None:
 
     owner = f'h_artifact_tool_{uuid.uuid4().hex[:16]}'
     ctx = _agent_ctx(owner)
-    # 工作会话派发态：server.call_tool 剥 `_hasn_session_id` 后落在这里（分身不可伪造）。
+    # 工作会话派发态（设计 02 §4.3 分流后）：CLI 直连面 streamable 从 `X-Hasn-Work-Session-Id`
+    # header 落 `agent_context.work_session_id`（auth 绑定、分身不可伪造）；测试直接调 execute
+    # 跳过分发入口，设 auth 绑定字段即与真实派发同态。runtime 语义 session_id 与本断言无关，不设。
     work_session_id = f'ws_artifact_tool_{uuid.uuid4().hex[:12]}'
-    ctx.session_id = work_session_id
+    ctx.work_session_id = work_session_id
     try:
         res = await ArtifactRecordTool().execute(
             ctx,

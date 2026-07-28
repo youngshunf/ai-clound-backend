@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from backend.app.hasn_stock.service.download_service import stock_download_service
 from backend.app.hasn_stock.service.provider_store import stock_provider_store
 from backend.app.hasn_stock.service.stock_service import stock_service
+from backend.app.mcp.context import get_current_work_session_id
 from backend.app.mcp.tools.base import BaseTool, require_owner_hasn_id
 
 if TYPE_CHECKING:
@@ -176,7 +177,9 @@ class StockDownloadTool(BaseTool):
             url=raw.strip(),
             title=(arguments.get('title') or None),
             description=(arguments.get('description') or None),
-            session_id=agent_context.session_id,
+            # 会话轴分流（设计 02 §4.3）：工作会话权威取 ContextVar（三级权威已落）+ auth 绑定
+            # 字段兜底；`agent_context.session_id` 是运行时/逻辑会话语义，不再直传工作会话锚。
+            session_id=get_current_work_session_id() or agent_context.work_session_id,
         )
 
 

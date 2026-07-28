@@ -327,23 +327,46 @@ class HasnCloudMcpServer:
             # 解析工具并确定 source（P2）。未注册 → MCP_9209。
             tool, source = self._resolve_tool(tool_name)
 
-            # register-on-write（doc31/32 RC-P8）+ 发起溯源（doc14 §6.2）：剥离系统注入的发起方会话 id
-            # （`_hasn_session_id`，分身不可伪造）→ agent_context.session_id。两处消费：deck/app 写点
-            # 把产物登记进「工作会话资源栏」；message.send 落 origin_session_id 供结果回灌定位发起方会话。
+            # register-on-write（doc31/32 RC-P8）+ 发起溯源（doc14 §6.2）+ 会话轴分流（设计 02 §4.3）：
+            # 剥离系统注入的发起方会话 id（`_hasn_session_id`，分身不可伪造）→ agent_context.session_id
+            # （**运行时/逻辑会话语义**，供 message.send 落 origin_session_id 回灌定位发起方会话）。
             # 须在 trust gate / dispatch 前剥离（工具体永不见）。cloud 直连面（Hermes 出站打在入参）与
             # daemon 代理面（ai_native gateway 注入进 input）走同一提取点；缺省=非派发路径直调。
             arguments, origin_session_id = _tg.pop_session_id(arguments)
             if origin_session_id:
                 agent_context.session_id = origin_session_id
-            # 同时落 ContextVar：AI-Native 应用 handler（knowledge 等，经 ai_native gateway 分发、
-            # 只收 AgentTokenPayload 拿不到 AgentContext）只能经本通道取会话 id 做 register-on-write。
-            # 必须落 agent_context.session_id（已沉淀值）而非 origin_session_id：渐进暴露下 app 工具
-            # 经 hasn.cloud.tool.call 重入本方法，内层入参没有系统注入的 stamp（只打在最外层调用上），
-            # origin_session_id=None 会把外层已落的会话 id 覆写掉 → knowledge 等 handler 面登记的产物
-            # 全部丢会话归属（挂不进工作会话资源栏）。字段与 ContextVar 同源，重入自然继承。
-            from backend.app.mcp.context import set_current_work_session_id
+            # 工作会话 id 的三级权威（设计 02 §4.3，只进不退）：
+            # ① auth 绑定（CLI 直连面 streamable 已从 `X-Hasn-Work-Session-Id` header 落
+            #    `agent_context.work_session_id`，per-dispatch、分身不可伪造）——最优先；
+            # ② 保留参数 `_hasn_work_session_id`（Hermes fork 逐调用盖章）——次优；
+            # ③ 旧节点兼容：对混合语义 `session_id` 做「在册 task」收窄——IM 主会话派发的
+            #    runtime id 查无 → 不落 ContextVar（此前会被直接落列污染工作会话轴）。
+            # 重入只进不退：内层 tool.call 入参无 stamp（只打在最外层），ContextVar 已落非
+            # None 时绝不覆写（防丢外层会话归属）。
+            from backend.app.mcp.context import get_current_work_session_id, set_current_work_session_id
 
-            set_current_work_session_id(agent_context.session_id)
+            arguments, origin_work_session_id = _tg.pop_work_session_id(arguments)
+            bound_work_session_id = agent_context.work_session_id or origin_work_session_id
+            if bound_work_session_id:
+                set_current_work_session_id(bound_work_session_id)
+            elif (
+                get_current_work_session_id() is None
+                and agent_context.session_id
+                and agent_context.owner_hasn_id
+            ):
+                from backend.app.hasn.service.hasn_artifacts_service import (
+                    coalesce_legacy_work_session_id,
+                )
+                from backend.database.db import async_db_session
+
+                async with async_db_session() as db:
+                    narrowed = await coalesce_legacy_work_session_id(
+                        db,
+                        owner_hasn_id=agent_context.owner_hasn_id,
+                        session_id=agent_context.session_id,
+                    )
+                if narrowed:
+                    set_current_work_session_id(narrowed)
 
             # register-on-write 联邦挂靠（doc38 §3.3）：同管道剥离系统注入的平台项目 id
             # （`_hasn_project_id`，分身不可伪造）→ ContextVar，供 register-on-write 公共接缝把产物

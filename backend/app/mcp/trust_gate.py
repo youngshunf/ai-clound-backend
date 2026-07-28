@@ -47,6 +47,15 @@ _RESERVED_KEYS = (RESERVED_IS_EXTERNAL, RESERVED_PEER_ID, RESERVED_PEER_TRUST)
 # resource_uri 归位、进产物 tab，只是不额外挂到某工作会话资源栏。
 RESERVED_SESSION_ID = '_hasn_session_id'
 
+# ── 系统注入的**工作会话** id 保留参数（设计 02 §4.3 会话轴分流）───────────────────
+# 与 `_hasn_session_id` 严格分工：`_hasn_session_id` 恒为运行时/逻辑会话语义（IM 续接、
+# message.send 的 origin 回灌定位），本键只承载**真实工作会话派发**（任务/appcollab）的工作会话
+# id——新节点（CLI per-dispatch key / 升级后 Hermes fork）双键同发、本键仅在非空时盖章；
+# IM 主会话派发缺省。云端 dispatch 前剥离 → 落 work_session ContextVar（register-on-write
+# 挂「工作会话资源栏」的唯一权威来源）。缺省时分发入口对 `_hasn_session_id` 做「在册 task
+# 收窄」兼容旧节点（详见 server.py 提取点），IM runtime id 不落 ContextVar。
+RESERVED_WORK_SESSION_ID = '_hasn_work_session_id'
+
 # ── 系统注入的平台项目 id 保留参数（doc38 §3.3·第三条轴「为了哪件事」联邦挂靠）───────────
 # 与 `_hasn_session_id` 完全同管道：分身经项目上下文派发时，daemon 在每次出站 MCP 调用后无条件
 # 戳进此保留参数（分身不可伪造、工具体不该见）。云端 dispatch 前剥离 → 落 ContextVar，供 register-on-write
@@ -183,6 +192,21 @@ def pop_session_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | Non
         return arguments, None
     cleaned = {k: v for k, v in arguments.items() if k != RESERVED_SESSION_ID}
     raw = arguments.get(RESERVED_SESSION_ID)
+    sid = str(raw).strip() if raw is not None else ''
+    return cleaned, (sid or None)
+
+
+def pop_work_session_id(arguments: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """从工具入参剥离系统注入的**工作会话** id 保留参数（``_hasn_work_session_id``，设计 02 §4.3）。
+
+    返回 ``(cleaned_args, work_session_id)``。无该参数 → 原样返回 + ``None``（never over-block：
+    缺工作会话 id 只是不把产物额外挂进某会话资源栏，绝不影响工具执行、也不影响产物按
+    resource_uri 归位）。与 ``pop_session_id`` 同形状——同一分发入口先后各剥离一次。
+    """
+    if not isinstance(arguments, dict) or RESERVED_WORK_SESSION_ID not in arguments:
+        return arguments, None
+    cleaned = {k: v for k, v in arguments.items() if k != RESERVED_WORK_SESSION_ID}
+    raw = arguments.get(RESERVED_WORK_SESSION_ID)
     sid = str(raw).strip() if raw is not None else ''
     return cleaned, (sid or None)
 

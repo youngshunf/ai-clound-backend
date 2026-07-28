@@ -240,7 +240,9 @@ async def _register_plan_artifact(
         app_id='plan',
         resource_kind=f'plan.{ref_type}',
         server_id=server_id,
-        session_id=ctx.session_id,
+        # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`ctx.session_id` 是运行时/逻辑会话
+        # 语义，直传会绕过在册收窄把工作会话列污染；缺省走 ContextVar 三级权威（auth 绑定 >
+        # `_hasn_work_session_id` 盖章 > 旧节点在册收窄）。
         agent_hasn_id=ctx.agent_hasn_id,
         owner_hasn_id=_owner(ctx),
         title=title,
