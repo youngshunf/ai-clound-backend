@@ -3,8 +3,8 @@
 `run_artifacts` 是「场景成果总览」的基石：汇总节点跑本工具，一次取回本次 run **全节点**的产出清单，
 每条产物带 uri，供分身编织总览 / webui 渲染资源栏。本测试用真库真行钉死它的契约：
 
-- **零入参反查**：不传 workflow_run_uuid 时，据当前会话（`ctx.session_id`，即汇总节点自己的
-  work_session_id）反查所属 run —— 这是分身实际调用的默认路径。
+- **零入参反查**：不传 workflow_run_uuid 时，据当前会话（`ctx.work_session_id`，即汇总节点自己的
+  工作会话 id）反查所属 run —— 这是分身实际调用的默认路径。
 - **拓扑序**：节点按 graph_snapshot 依赖拓扑序返回（parent 先于 child，tiebreak=声明序），
   不是 created_time；同一 run 两次查询顺序稳定。
 - **只取 current 版本**：节点 artifacts JSON 的 `is_current` —— 缺省视为 current，显式 False 剔除。
@@ -53,7 +53,7 @@ def _uid() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _ctx(owner: str, *, session_id: str | None = None, agent: str = 'a_run_arts') -> AgentContext:
+def _ctx(owner: str, *, work_session_id: str | None = None, agent: str = 'a_run_arts') -> AgentContext:
     ctx = AgentContext(
         hasn_id=agent,
         owner_id=1,
@@ -63,8 +63,10 @@ def _ctx(owner: str, *, session_id: str | None = None, agent: str = 'a_run_arts'
         owner_hasn_id=owner,
         session_uuid='amk_run_arts',
     )
-    # 零入参反查靠此字段（server.call_tool 从 _hasn_session_id 剥离后灌入）
-    ctx.session_id = session_id
+    # 零入参反查靠此字段（设计 02 §4.3 分流后：CLI 直连面 streamable 从
+    # `X-Hasn-Work-Session-Id` header 落 auth 绑定字段，分身不可伪造；旧混合语义
+    # `ctx.session_id` 已退役为运行时轴，不再承载工作会话反查）。
+    ctx.work_session_id = work_session_id
     return ctx
 
 
@@ -199,7 +201,7 @@ async def test_run_artifacts_real_db() -> None:
     tool = _tool('hasn.workflow.run_artifacts')
     try:
         # ① 零入参反查：汇总节点会话 → 命中本 run
-        out = await tool.execute(_ctx(owner, session_id=ws_summary), {})
+        out = await tool.execute(_ctx(owner, work_session_id=ws_summary), {})
         assert out['workflow_run_uuid'] == run_uuid
 
         nodes = out['nodes']
@@ -230,21 +232,21 @@ async def test_run_artifacts_real_db() -> None:
         assert 'artifacts_truncated' not in by_key['research']
 
         # ⑥ 显式入参路径（不依赖会话）：无 session 的 ctx 传 run_uuid 直取
-        out2 = await tool.execute(_ctx(owner, session_id=None), {'workflow_run_uuid': run_uuid})
+        out2 = await tool.execute(_ctx(owner, work_session_id=None), {'workflow_run_uuid': run_uuid})
         assert out2['workflow_run_uuid'] == run_uuid
         assert [n['node_key'] for n in out2['nodes']] == ['research', 'compete', 'summary']
 
         # ⑦ owner 隔离：别人拿 run_uuid 打不开
         with pytest.raises(errors.NotFoundError):
-            await tool.execute(_ctx(other_owner, session_id=None), {'workflow_run_uuid': run_uuid})
+            await tool.execute(_ctx(other_owner, work_session_id=None), {'workflow_run_uuid': run_uuid})
 
         # ⑧ 零入参但无会话上下文 → RequestError（诚实报错，不空转）
         with pytest.raises(errors.RequestError):
-            await tool.execute(_ctx(owner, session_id=None), {})
+            await tool.execute(_ctx(owner, work_session_id=None), {})
 
         # ⑨ 会话查无 run → NotFound
         with pytest.raises(errors.NotFoundError):
-            await tool.execute(_ctx(owner, session_id=f'ws_ghost_{_uid()}'), {})
+            await tool.execute(_ctx(owner, work_session_id=f'ws_ghost_{_uid()}'), {})
     finally:
         async with async_db_session.begin() as db:
             await db.execute(

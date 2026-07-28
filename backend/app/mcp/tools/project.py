@@ -32,6 +32,7 @@ from backend.app.hasn_project.service.project_linkage_registry import project_li
 from backend.app.hasn_project.service.project_report_service import report_service
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.app.mcp.auth import AgentContext
+from backend.app.mcp.context import get_current_work_session_id
 from backend.app.mcp.tools.base import BaseTool
 from backend.database.db import async_db_session
 
@@ -199,12 +200,14 @@ async def _h_inspection_publish(db: Any, ctx: AgentContext, args: dict[str, Any]
 
 async def _h_report_publish(db: Any, ctx: AgentContext, args: dict[str, Any]) -> Any:
     """由当前工作会话分身把本周正文登记为项目 document 产物。"""
+    # 会话轴分流（设计 02 §4.3）：工作会话归属取权威轴（ContextVar 三级权威已落，
+    # auth 绑定字段兜底）；`ctx.session_id` 是运行时/逻辑会话语义，不再直传。
     return await report_service.publish(
         db,
         owner=_owner_hasn_id(ctx),
         agent_id=ctx.agent_hasn_id,
         project_id=args['project_id'],
-        work_session_id=ctx.session_id,
+        work_session_id=get_current_work_session_id() or ctx.work_session_id,
         period_start=args['period_start'],
         period_end=args['period_end'],
         title=args['title'],

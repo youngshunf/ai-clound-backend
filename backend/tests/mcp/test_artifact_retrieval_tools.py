@@ -213,6 +213,30 @@ async def _seed_extra_agent(owner: str, agent: str) -> None:
         )
 
 
+async def _seed_work_session(owner: str, agent: str, session_id: str) -> None:
+    """种一条 hasn_sessions kind=task 工作会话行（设计 02 §4.3 分流）。
+
+    真实世界工作会话派发前 AppCollab launch 已把会话上云；契约收紧后只发 `session_id`
+    的旧路径（本文件 `_record` 即此形态）必须在册才收窄落工作会话列，查无则挪
+    metadata.runtime_session_id 溯源、绝污染不了工作会话轴。
+    """
+    from backend.app.hasn.model import HasnSessions
+    from backend.database.db import async_db_session
+
+    async with async_db_session.begin() as db:
+        db.add(
+            HasnSessions(
+                session_id=session_id,
+                owner_id=owner,
+                hasn_id=agent,
+                session_kind='task',
+                session_scope='summary_only',
+                session_status='active',
+                origin_type='app',
+            )
+        )
+
+
 async def _record(
     owner: str,
     agent: str,
@@ -259,6 +283,7 @@ async def _cleanup(owner: str) -> None:
         HasnArtifactRegistrationOutbox,
         HasnArtifacts,
         HasnHumans,
+        HasnSessions,
     )
     from backend.app.hasn.model.hasn_assets import HasnAssets
     from backend.database.db import async_db_session
@@ -273,6 +298,7 @@ async def _cleanup(owner: str) -> None:
         await db.execute(delete(HasnArtifactContributions).where(HasnArtifactContributions.owner_hasn_id == owner))
         await db.execute(delete(HasnArtifacts).where(HasnArtifacts.owner_hasn_id == owner))
         await db.execute(delete(HasnAssets).where(HasnAssets.owner_hasn_id == owner))
+        await db.execute(delete(HasnSessions).where(HasnSessions.owner_id == owner))
         await db.execute(delete(HasnAgents).where(HasnAgents.owner_id == owner))
         await db.execute(delete(HasnHumans).where(HasnHumans.hasn_id == owner))
 
@@ -329,6 +355,7 @@ async def test_list_filters_by_kind_and_session_real_db() -> None:
     sess = f'sess_{tag}'
     try:
         await _seed_owner_and_agent(owner, agent)
+        await _seed_work_session(owner, agent, sess)
         await _record(owner, agent, kind='image', title='图A', asset_id='ast_a', session_id=sess)
         await _record(owner, agent, kind='document', title='文B', body='b', session_id=sess)
         await _record(owner, agent, kind='image', title='图C', asset_id='ast_c')  # 别的会话

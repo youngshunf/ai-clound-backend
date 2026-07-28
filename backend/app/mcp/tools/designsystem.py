@@ -430,7 +430,9 @@ class DesignSystemSaveTool(BaseTool):
                     app_id='designsystem',
                     resource_kind='designsystem.spec',
                     server_id=str(ds_id),
-                    session_id=agent_context.session_id,
+                    # 会话轴分流（设计 02 §4.3）：不显式传 session_id——`agent_context.session_id`
+                    # 是运行时/逻辑会话语义，直传会绕过在册收窄把工作会话列污染；缺省走
+                    # ContextVar 三级权威。
                     agent_hasn_id=agent_context.agent_hasn_id,
                     owner_hasn_id=_owner_hasn_id(agent_context),
                     title=(title or '').strip() or '设计系统',
