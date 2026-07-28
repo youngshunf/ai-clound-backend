@@ -55,6 +55,7 @@ _DOC_LINK_RE = re.compile(r'hasn://knowledge/documents/(\d+)')
 ROOT_FOLDER_SENTINEL = 0
 
 _GRANT_MODES = ('inherit', 'restricted', 'denied')
+_CLIENT_REQUEST_ID_MAX_LENGTH = 200
 
 # 知识库接入平台产物级协作（应用平台 v3 §6）：resource_share 的 resource_type。
 _RESOURCE_TYPE = 'knowledge'
@@ -91,6 +92,49 @@ def _as_project_uuid(value: str | uuid.UUID) -> uuid.UUID:
         return uuid.UUID(str(value).strip())
     except (AttributeError, TypeError, ValueError) as exc:
         raise errors.RequestError(msg=f'项目 id 不是合法 UUID：{value!r}') from exc
+
+
+def _normalize_client_request_id(value: str | None) -> str | None:
+    """归一建库业务幂等键；空值保持旧版非幂等创建语义。"""
+    if value is None:
+        return None
+    request_id = str(value).strip()
+    if not request_id:
+        raise errors.RequestError(
+            msg='client_request_id 不能为空',
+            data={'error_code': 'KNOWLEDGE_CLIENT_REQUEST_ID_INVALID'},
+        )
+    if len(request_id) > _CLIENT_REQUEST_ID_MAX_LENGTH:
+        raise errors.RequestError(
+            msg=f'client_request_id 最长 {_CLIENT_REQUEST_ID_MAX_LENGTH} 个字符',
+            data={'error_code': 'KNOWLEDGE_CLIENT_REQUEST_ID_INVALID'},
+        )
+    return request_id
+
+
+def _same_kb_create_payload(
+    kb: Kb,
+    *,
+    name: str,
+    description: str | None,
+    cover_asset_uri: str | None,
+    platform_project_id: uuid.UUID | None,
+) -> bool:
+    """判断幂等重放是否与首次建库参数完全一致。"""
+    return (
+        kb.name == name
+        and kb.description == description
+        and kb.cover_asset_uri == cover_asset_uri
+        and kb.platform_project_id == platform_project_id
+        and kb.deleted_time is None
+    )
+
+
+def _idempotent_kb_result(kb: Kb, *, replay: bool) -> dict[str, Any]:
+    """序列化建库结果，并显式告诉调用方是否为幂等重放。"""
+    result = _kb_dict(kb)
+    result['idempotent_replay'] = replay
+    return result
 
 
 def _kb_dict(kb: Kb, *, my_permission: str | None = None, relation: str | None = None) -> dict[str, Any]:
@@ -558,6 +602,7 @@ class KnowledgeService:
         description: str | None,
         cover_asset_uri: str | None = None,
         platform_project_id: str | None = None,
+        client_request_id: str | None = None,
     ) -> dict[str, Any]:
         """建库：先建 RAGFlow dataset（失败则不落 kb 行，如实报错），成功后落域行。
 
@@ -569,7 +614,39 @@ class KnowledgeService:
         `create_kb` 时由 ContextVar 缺省；③ 分身显式指名项目（先经 `hasn.project.list` 换权威 UUID）。
         **写前必过归属校验**：非本主人的项目 → 404，绝不直写列（否则绕过挂靠点注册表的 owner 隔离）。
         """
+        normalized_name = name.strip()
+        normalized_description = description.strip() if description and description.strip() else None
+        normalized_cover = cover_asset_uri.strip() if cover_asset_uri and cover_asset_uri.strip() else None
+        request_id = _normalize_client_request_id(client_request_id)
         project_id = await self._resolve_owned_project_id(db, owner_id=owner_id, platform_project_id=platform_project_id)
+        if request_id is not None:
+            # 事务级 advisory lock 在调用真实 RAGFlow 前串行化同 Owner+幂等键并发，
+            # 避免数据库唯一约束虽挡住重复行，却留下第二个外部 dataset。
+            await db.execute(
+                sa.text('SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))'),
+                {'lock_key': f'knowledge:create:{owner_id}:{request_id}'},
+            )
+            existing = (
+                await db.execute(
+                    select(Kb).where(
+                        Kb.owner_id == owner_id,
+                        Kb.client_request_id == request_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                if not _same_kb_create_payload(
+                    existing,
+                    name=normalized_name,
+                    description=normalized_description,
+                    cover_asset_uri=normalized_cover,
+                    platform_project_id=project_id,
+                ):
+                    raise errors.ConflictError(
+                        msg='client_request_id 已用于不同的知识库创建参数',
+                        data={'error_code': 'KNOWLEDGE_IDEMPOTENCY_CONFLICT'},
+                    )
+                return _idempotent_kb_result(existing, replay=True)
         client, config = await resolve_knowledge_instance(db)
         # dataset 内部名取唯一随机串（单平台租户下避免撞名；展示名只活在域行）
         dataset = await client.create_dataset(name=f'hxkb_{uuid.uuid4().hex[:16]}', embedding_model=config.default_embd_id)
@@ -577,19 +654,20 @@ class KnowledgeService:
             owner_id=owner_id,
             scope='personal',
             enterprise_id=None,
-            name=name,
-            description=description,
-            cover_asset_uri=cover_asset_uri or None,
+            name=normalized_name,
+            description=normalized_description,
+            cover_asset_uri=normalized_cover,
             ragflow_dataset_id=str(dataset['id']),
             embedding_model=config.default_embd_id,
             document_count=0,
             chunk_count=0,
             status='active',
             platform_project_id=project_id,
+            client_request_id=request_id,
         )
         db.add(kb)
         await db.flush()
-        return _kb_dict(kb)
+        return _idempotent_kb_result(kb, replay=False) if request_id else _kb_dict(kb)
 
     async def update_kb(
         self,

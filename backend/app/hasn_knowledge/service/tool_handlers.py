@@ -271,6 +271,7 @@ async def handle_knowledge_create_kb(
     # `_hasn_project_id`，与 register-on-write 打标同管道）——分身在项目里建库无须自己填。
     # 归属校验在 service 侧统一做（非本主人项目 → 404），绝不直写列。
     platform_project_id = str(input_payload.get('platform_project_id') or '').strip() or get_current_project_id()
+    client_request_id = str(input_payload.get('client_request_id') or '').strip() or None
     try:
         kb = await knowledge_service.create_kb(
             db,
@@ -279,6 +280,7 @@ async def handle_knowledge_create_kb(
             description=str(description).strip() if description else None,
             cover_asset_uri=cover_asset_uri,
             platform_project_id=platform_project_id,
+            client_request_id=client_request_id,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc

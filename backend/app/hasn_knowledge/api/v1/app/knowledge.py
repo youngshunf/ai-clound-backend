@@ -48,6 +48,12 @@ class CreateKbRequest(BaseModel):
     # doc38 §5.5 容器创建时的项目归属：daemon 代主人建库（派分身建库）时带上本次派发定稿的项目，
     # 新库直接进项目「挂靠资源区」；缺省不挂。非本主人的项目 → service 侧 404。
     platform_project_id: str | None = Field(default=None, description='挂进的平台项目 id（云端权威 UUID，可选）')
+    client_request_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description='Owner 范围业务幂等键；相同键和参数重试返回同一知识库',
+    )
 
 
 class UpdateKbRequest(BaseModel):
@@ -140,6 +146,7 @@ async def create_kb(request: Request, db: CurrentSessionTransaction, body: Creat
             description=body.description,
             cover_asset_uri=body.cover_asset_uri,
             platform_project_id=body.platform_project_id,
+            client_request_id=body.client_request_id,
         )
     except KnowledgeProviderError as exc:
         raise to_http_error(exc) from exc

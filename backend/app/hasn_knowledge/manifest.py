@@ -203,6 +203,15 @@ KNOWLEDGE_AI_NATIVE_MANIFEST: dict[str, Any] = {
                     'description': '封面资产 hasn://asset/（必填；优先素材搜索配图→生图→自画SVG）',
                 },
                 'platform_project_id': _PROJECT_ATTACH_PROP,
+                'client_request_id': {
+                    'type': ['string', 'null'],
+                    'minLength': 1,
+                    'maxLength': 200,
+                    'description': (
+                        '建库业务幂等键（可选）。跨应用编排必须传稳定值；'
+                        '相同 Owner、键和参数重试返回同一知识库'
+                    ),
+                },
             },
             required=['name', 'cover_asset_uri'],
             risk_level='medium',
