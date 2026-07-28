@@ -18,7 +18,16 @@ from backend.app.hasn.schema.asset_api import (
     UploadedSourceSnapshot,
 )
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
-from backend.app.hasn.service.message_router import route_message
+from backend.app.hasn_im.application import local_gateway
+from backend.app.hasn_im.application.errors import ImSendRejected
+from backend.app.hasn_im.application.provider import get_im_gateway
+from backend.app.hasn_im.ports import (
+    ActorKind,
+    DeliveryState,
+    EnsureDirectConversationCommand,
+    SendMessageCommand,
+    ServicePrincipal,
+)
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception import errors
 from backend.common.response.response_code import CustomResponseCode
@@ -124,38 +133,95 @@ async def deliver_local_source_snapshot(
     if asset.access != 'private' or asset.content_sha256 is None:
         raise errors.ConflictError(msg='资产不是可投递的私有原件快照')
 
-    routed = await route_message(
-        db,
-        from_id=agent.agent_hasn_id,
-        to_target=body.target,
-        content={
-            'text': '来自图坊的私有快照',
-            'attachments': [_snapshot_attachment(body.asset_uri, asset)],
-        },
-        content_type={'image': 2, 'file': 3, 'voice': 4}.get(asset.kind, 3),
-        local_id=_delivery_local_id(agent.agent_hasn_id, body.idempotency_key),
-        context={'source': 'imagelab_share', 'asset_uri': body.asset_uri},
-    )
-
-    if routed.get('error'):
+    target = await local_gateway.resolve_target(db, body.target)
+    if target is None:
         result = DeliveredSourceSnapshot(
             target=body.target,
             idempotency_key=body.idempotency_key,
             status='failed',
-            error_code=str(routed.get('code') or 'delivery_failed'),
-            error_message=str(routed.get('message') or '消息投递失败'),
+            error_code='3001',
+            error_message=f'目标 {body.target} 不存在',
         )
+    elif target.get('entity_type') in {'human', 'agent'}:
+        content = {
+            'text': '来自图坊的私有快照',
+            'attachments': [_snapshot_attachment(body.asset_uri, asset)],
+        }
+        principal = ServicePrincipal(
+            canonical_sender=agent.agent_hasn_id,
+            actor_kind=ActorKind.AGENT,
+        )
+        gateway = get_im_gateway()
+        try:
+            conversation = await gateway.ensure_direct_conversation(
+                EnsureDirectConversationCommand(peer_hasn_id=str(target['hasn_id'])),
+                principal,
+            )
+            delivered = await gateway.send_message(
+                SendMessageCommand(
+                    conversation_id=conversation.conversation_id,
+                    content=content,
+                    content_type={'image': 2, 'file': 3, 'voice': 4}.get(asset.kind, 3),
+                    idempotency_key=_delivery_local_id(
+                        agent.agent_hasn_id,
+                        body.idempotency_key,
+                    ),
+                    context={'source': 'imagelab_share', 'asset_uri': body.asset_uri},
+                ),
+                principal,
+            )
+        except ImSendRejected as exc:
+            result = DeliveredSourceSnapshot(
+                target=body.target,
+                idempotency_key=body.idempotency_key,
+                status='failed',
+                error_code=str(exc.code),
+                error_message=exc.message,
+            )
+        else:
+            accepted = delivered.delivery_state is DeliveryState.ACCEPTED
+            result = DeliveredSourceSnapshot(
+                target=body.target,
+                idempotency_key=body.idempotency_key,
+                status='sent' if accepted else 'pending',
+                message_id=str(delivered.message_id) if delivered.message_id is not None else None,
+                conversation_id=delivered.conversation_id,
+                error_code=None if accepted else delivered.delivery_state.value,
+                error_message=None if accepted else delivered.suppress_reason or '等待接收方确认',
+                deduped=delivered.deduped,
+            )
     else:
+        routed = await local_gateway.send_to_target(
+            db,
+            from_id=agent.agent_hasn_id,
+            to_target=body.target,
+            content={
+                'text': '来自图坊的私有快照',
+                'attachments': [_snapshot_attachment(body.asset_uri, asset)],
+            },
+            content_type={'image': 2, 'file': 3, 'voice': 4}.get(asset.kind, 3),
+            local_id=_delivery_local_id(agent.agent_hasn_id, body.idempotency_key),
+            context={'source': 'imagelab_share', 'asset_uri': body.asset_uri},
+        )
         route_status = str(routed.get('status') or '')
-        status = 'sent' if route_status == 'sent' else 'pending'
+        failed = bool(routed.get('error'))
+        status = 'failed' if failed else 'sent' if route_status == 'sent' else 'pending'
         result = DeliveredSourceSnapshot(
             target=body.target,
             idempotency_key=body.idempotency_key,
             status=status,
             message_id=str(routed['msg_id']) if routed.get('msg_id') is not None else None,
             conversation_id=(str(routed['conversation_id']) if routed.get('conversation_id') is not None else None),
-            error_code=None if status == 'sent' else route_status or 'delivery_pending',
-            error_message=None if status == 'sent' else str(routed.get('reason') or '等待接收方确认'),
+            error_code=(
+                None
+                if status == 'sent'
+                else str(routed.get('code') or route_status or 'delivery_pending')
+            ),
+            error_message=(
+                None
+                if status == 'sent'
+                else str(routed.get('message') or routed.get('reason') or '等待接收方确认')
+            ),
             deduped=bool(routed.get('deduped')),
         )
     return ResponseSchemaModel[DeliveredSourceSnapshot](

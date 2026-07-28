@@ -1,7 +1,8 @@
 """Agent JWT 本地原件快照上传与投递 HTTP E2E。
 
 真实走 Agent JWT+Redis、FastAPI、PostgreSQL、消息路由与私有对象存储；不替换业务或存储边界。
-数据库外层事务回滚，远端对象使用稳定内容 hash key，重复执行只覆盖同一对象。
+每个 HTTP 请求使用真实独立事务，测试结束按权威 ID 清理数据库；远端对象使用稳定内容 hash key，
+重复执行只覆盖同一对象。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import pytest_asyncio
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -33,7 +34,7 @@ from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt import create_agent_access_token, revoke_agent_token
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
 
-pytestmark = pytest.mark.asyncio(loop_scope='module')
+pytestmark = pytest.mark.asyncio(loop_scope='session')
 
 _APP = FastAPI()
 _APP.include_router(agent_assets_router, prefix='/api/v1/hasn/agent/assets')
@@ -48,39 +49,34 @@ def _business_error(_request: Request, exc: BaseExceptionError) -> JSONResponse:
     )
 
 
-@pytest_asyncio.fixture(loop_scope='module')
+@pytest_asyncio.fixture(loop_scope='session')
 async def e2e() -> AsyncIterator[SimpleNamespace]:
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
-    connection = await engine.connect()
-    outer_transaction = await connection.begin()
-    await connection.execute(select(1))
-    session = async_sessionmaker(
-        bind=connection,
-        expire_on_commit=False,
-        join_transaction_mode='create_savepoint',
-    )()
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.connect() as connection:
+        await connection.execute(select(1))
     tag = uuid.uuid4().hex[:12]
     owner_hasn_id = f'h_upload_{tag}'
     agent_hasn_id = f'a_upload_{tag}'
     owner_user_id = 990001 + int(uuid.uuid4().int % 8000)
-    session.add_all([
-        HasnHumans(
-            hasn_id=owner_hasn_id,
-            star_id=f's_upload_{tag}',
-            user_id=owner_user_id,
-            nickname='图坊上传测试主人',
-            status='active',
-        ),
-        HasnAgents(
-            hasn_id=agent_hasn_id,
-            star_id=f'sa_upload_{tag}',
-            owner_id=owner_hasn_id,
-            display_name='图坊上传测试分身',
-            agent_name='imagelab-upload-e2e',
-            status='active',
-        ),
-    ])
-    await session.flush()
+    async with maker.begin() as seed:
+        seed.add_all([
+            HasnHumans(
+                hasn_id=owner_hasn_id,
+                star_id=f's_upload_{tag}',
+                user_id=owner_user_id,
+                nickname='图坊上传测试主人',
+                status='active',
+            ),
+            HasnAgents(
+                hasn_id=agent_hasn_id,
+                star_id=f'sa_upload_{tag}',
+                owner_id=owner_hasn_id,
+                display_name='图坊上传测试分身',
+                agent_name='imagelab-upload-e2e',
+                status='active',
+            ),
+        ])
     token = await create_agent_access_token(
         agent_hasn_id=agent_hasn_id,
         agent_name='图坊上传测试分身',
@@ -88,11 +84,19 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         owner_user_id=owner_user_id,
     )
 
-    async def _yield_session() -> AsyncIterator[AsyncSession]:  # ruff: ignore[unused-async]
-        yield session
+    async def _yield_session() -> AsyncIterator[AsyncSession]:
+        async with maker() as request_session:
+            yield request_session
 
     _APP.dependency_overrides[get_db] = _yield_session
-    _APP.dependency_overrides[get_db_transaction] = _yield_session
+
+    async def _yield_transaction() -> AsyncIterator[AsyncSession]:
+        async with maker.begin() as request_session:
+            yield request_session
+
+    _APP.dependency_overrides[get_db_transaction] = _yield_transaction
+    session = maker()
+    asset_ids: list[str] = []
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_APP),
         base_url='http://e2e',
@@ -104,16 +108,69 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             session=session,
             owner_hasn_id=owner_hasn_id,
             agent_hasn_id=agent_hasn_id,
+            asset_ids=asset_ids,
         )
     finally:
         await client.aclose()
         _APP.dependency_overrides.clear()
         await session.rollback()
         await session.close()
-        await outer_transaction.rollback()
-        await connection.close()
-        await engine.dispose()
         await revoke_agent_token(agent_hasn_id, token.session_uuid)
+        async with maker.begin() as cleanup:
+            conversation_ids = (
+                await cleanup.execute(
+                    text(
+                        'SELECT id FROM public.hasn_conversations '
+                        'WHERE participant_a_id IN (:owner, :agent) '
+                        'OR participant_b_id IN (:owner, :agent)'
+                    ),
+                    {'owner': owner_hasn_id, 'agent': agent_hasn_id},
+                )
+            ).scalars().all()
+            if conversation_ids:
+                ids = [str(conversation_id) for conversation_id in conversation_ids]
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_im_integration_events WHERE aggregate_id = ANY(:ids)'),
+                    {'ids': ids},
+                )
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_messages WHERE conversation_id = ANY(:ids)'),
+                    {'ids': ids},
+                )
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_unread_projection WHERE conversation_id = ANY(:ids)'),
+                    {'ids': ids},
+                )
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_conversation_memberships WHERE conversation_id = ANY(:ids)'),
+                    {'ids': ids},
+                )
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_asset_grants WHERE conversation_id = ANY(:ids)'),
+                    {'ids': ids},
+                )
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_conversations WHERE id = ANY(:ids)'),
+                    {'ids': ids},
+                )
+            if asset_ids:
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_asset_grants WHERE asset_id = ANY(:ids)'),
+                    {'ids': asset_ids},
+                )
+                await cleanup.execute(
+                    text('DELETE FROM public.hasn_assets WHERE asset_id = ANY(:ids)'),
+                    {'ids': asset_ids},
+                )
+            await cleanup.execute(
+                text('DELETE FROM public.hasn_agents WHERE hasn_id = :agent'),
+                {'agent': agent_hasn_id},
+            )
+            await cleanup.execute(
+                text('DELETE FROM public.hasn_humans WHERE hasn_id = :owner'),
+                {'owner': owner_hasn_id},
+            )
+        await engine.dispose()
 
 
 async def test_agent_upload_uses_token_owner_and_is_idempotent(e2e: SimpleNamespace) -> None:
@@ -127,6 +184,7 @@ async def test_agent_upload_uses_token_owner_and_is_idempotent(e2e: SimpleNamesp
     )
     assert first.status_code == 200, first.text
     first_data = first.json()['data']
+    e2e.asset_ids.append(first_data['asset_id'])
     assert first_data['asset_uri'] == f'hasn://asset/{first_data["asset_id"]}'
     assert len(first_data['content_sha256']) == 64
 
@@ -164,6 +222,7 @@ async def test_agent_delivers_private_snapshot_once_with_stable_asset_uri(e2e: S
     )
     assert upload.status_code == 200, upload.text
     asset = upload.json()['data']
+    e2e.asset_ids.append(asset['asset_id'])
     payload = {
         'asset_uri': asset['asset_uri'],
         'target': e2e.owner_hasn_id,
@@ -238,9 +297,15 @@ async def test_agent_delivery_returns_deterministic_failure_for_missing_target(e
     )
     assert upload.status_code == 200, upload.text
     asset = upload.json()['data']
+    e2e.asset_ids.append(asset['asset_id'])
     idempotency_key = f'imagelab-share:{uuid.uuid4().hex}'
     target = f'h_missing_{uuid.uuid4().hex[:12]}'
 
+    before = (
+        await e2e.session.execute(
+            select(func.count()).select_from(HasnMessages).where(HasnMessages.from_id == e2e.agent_hasn_id)
+        )
+    ).scalar_one()
     response = await e2e.client.post(
         '/api/v1/hasn/agent/assets/deliver',
         json={
@@ -267,7 +332,7 @@ async def test_agent_delivery_returns_deterministic_failure_for_missing_target(e
             select(func.count()).select_from(HasnMessages).where(HasnMessages.from_id == e2e.agent_hasn_id)
         )
     ).scalar_one()
-    assert count == 0
+    assert count == before
 
 
 async def test_agent_cannot_deliver_another_owners_snapshot(e2e: SimpleNamespace) -> None:
@@ -278,9 +343,15 @@ async def test_agent_cannot_deliver_another_owners_snapshot(e2e: SimpleNamespace
     )
     assert upload.status_code == 200, upload.text
     asset_id = upload.json()['data']['asset_id']
+    e2e.asset_ids.append(asset_id)
+    before = (
+        await e2e.session.execute(
+            select(func.count()).select_from(HasnMessages).where(HasnMessages.from_id == e2e.agent_hasn_id)
+        )
+    ).scalar_one()
     asset = (await e2e.session.execute(select(HasnAssets).where(HasnAssets.asset_id == asset_id))).scalar_one()
     asset.owner_hasn_id = f'h_other_{uuid.uuid4().hex[:12]}'
-    await e2e.session.flush()
+    await e2e.session.commit()
 
     response = await e2e.client.post(
         '/api/v1/hasn/agent/assets/deliver',
@@ -297,4 +368,4 @@ async def test_agent_cannot_deliver_another_owners_snapshot(e2e: SimpleNamespace
             select(func.count()).select_from(HasnMessages).where(HasnMessages.from_id == e2e.agent_hasn_id)
         )
     ).scalar_one()
-    assert count == 0
+    assert count == before
