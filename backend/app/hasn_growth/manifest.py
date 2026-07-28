@@ -255,6 +255,11 @@ _CAPABILITIES = [
         properties={
             'query': {'type': ['string', 'null'], 'description': '关键词（公司/行业/标签）'},
             'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100, 'default': 20},
+            'growth_project_id': {
+                'type': ['string', 'null'],
+                'format': 'uuid',
+                'description': '获客项目云端 UUID；传入后新表优先读取',
+            },
         },
         required=[],
         page_rank=12,
@@ -267,7 +272,14 @@ _CAPABILITIES = [
         description='单线索详情（含多源证据；Agent PII 恒脱敏）。',
         scope=_SCOPE_READ,
         risk_level='low',
-        properties={'lead_contact_id': {'type': 'integer'}},
+        properties={
+            'lead_contact_id': {'type': 'integer'},
+            'growth_project_id': {
+                'type': ['string', 'null'],
+                'format': 'uuid',
+                'description': '获客项目云端 UUID；传入后新表优先读取',
+            },
+        },
         required=['lead_contact_id'],
         page_rank=13,
         tags=['growth', 'lead', 'get', 'read'],

@@ -16,11 +16,11 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.model.activity import Activity
 from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.model.opportunity import Opportunity
@@ -32,6 +32,10 @@ from backend.app.hasn_growth.service.lead_ingestion_privacy_service import (
 )
 from backend.app.hasn_growth.service.pii import mask_contact_fields, redact_pii_value
 from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyring
+from backend.app.hasn_growth.service.project_lead_compatibility_service import (
+    CompatibleLeadReference,
+    project_lead_compatibility_service,
+)
 from backend.app.hasn_growth.service.scope_context import GrowthScope, apply_scope, can_manage_assignment
 from backend.common.exception import errors
 from backend.core.conf import settings
@@ -85,7 +89,12 @@ def _customer_to_dict(c: Customer, *, reveal_pii: bool = False) -> dict[str, Any
     return mask_contact_fields(data, reveal=False)
 
 
-def _lead_to_dict(c: LeadContact, *, ref: LeadRef | None = None, reveal_pii: bool = False) -> dict[str, Any]:
+def _lead_to_dict(
+    c: LeadContact,
+    *,
+    ref: LeadRef | CompatibleLeadReference | None = None,
+    reveal_pii: bool = False,
+) -> dict[str, Any]:
     # 统一线索池：用户级状态（new/qualified/dismissed）与备注来自 lead_ref（非池行）；
     # 无 ref（如刚 request 交付的池行）默认 'new'。
     data = {
@@ -148,7 +157,7 @@ async def _lead_response(
     db: AsyncSession,
     *,
     contact: LeadContact,
-    ref: LeadRef | None,
+    ref: LeadRef | CompatibleLeadReference | None,
     user_id: int,
 ) -> dict[str, Any]:
     data = _lead_to_dict(contact, ref=ref, reveal_pii=False)
@@ -207,8 +216,77 @@ class GrowthFunnelService:
         min_score: float | None = None,
         limit: int = 20,
         reveal_pii: bool = False,
+        growth_project_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """检索「该用户引用的线索」（lead_ref JOIN contact），关键词/评分过滤，默认脱敏。已忽略的不返回。"""
+        """项目读优先；迁移窗口缺行时才审计回落旧引用。"""
+        if growth_project_id is not None:
+            validated_project_id = (
+                await project_lead_compatibility_service.require_owned_project(
+                    db,
+                    user_id=user_id,
+                    growth_project_id=growth_project_id,
+                )
+            )
+            growth_project_id = str(validated_project_id)
+            project_ids = sa.select(GrowthProjectLead.lead_contact_id).where(
+                GrowthProjectLead.growth_project_id == growth_project_id,
+                GrowthProjectLead.user_id == user_id,
+            )
+            candidate_ids: Any = project_ids
+            if not settings.GROWTH_PROJECT_READ_CUTOVER_ENABLED:
+                candidate_ids = project_ids.union(
+                    sa.select(LeadRef.lead_contact_id).where(
+                        LeadRef.user_id == user_id
+                    )
+                )
+            project_stmt = sa.select(LeadContact).where(
+                LeadContact.id.in_(candidate_ids)
+            )
+            if query:
+                like = f'%{query}%'
+                project_stmt = project_stmt.where(
+                    sa.or_(
+                        LeadContact.company_name.ilike(like),
+                        LeadContact.industry.ilike(like),
+                        LeadContact.keyword.ilike(like),
+                        LeadContact.contact_name.ilike(like),
+                    )
+                )
+            if min_score is not None:
+                project_stmt = project_stmt.where(
+                    LeadContact.confidence_score >= min_score
+                )
+            contacts = (
+                (
+                    await db.execute(
+                        project_stmt.order_by(
+                            LeadContact.confidence_score.desc().nullslast()
+                        ).limit(min(limit, 100))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            results: list[dict[str, Any]] = []
+            for contact in contacts:
+                ref = await project_lead_compatibility_service.get_reference(
+                    db,
+                    user_id=user_id,
+                    lead_contact_id=contact.id,
+                    growth_project_id=growth_project_id,
+                )
+                if ref is None or ref.status == 'dismissed':
+                    continue
+                results.append(
+                    await _lead_response(
+                        db,
+                        contact=contact,
+                        ref=ref,
+                        user_id=user_id,
+                    )
+                )
+            return results
+
         stmt = (
             sa
             .select(LeadContact, LeadRef)
@@ -236,8 +314,29 @@ class GrowthFunnelService:
 
     @staticmethod
     async def get_lead(
-        db: AsyncSession, *, user_id: int, lead_contact_id: int, reveal_pii: bool = False
+        db: AsyncSession,
+        *,
+        user_id: int,
+        lead_contact_id: int,
+        reveal_pii: bool = False,
+        growth_project_id: str | None = None,
     ) -> dict[str, Any]:
+        if growth_project_id is not None:
+            project_ref = await project_lead_compatibility_service.get_reference(
+                db,
+                user_id=user_id,
+                lead_contact_id=lead_contact_id,
+                growth_project_id=growth_project_id,
+            )
+            contact = await db.get(LeadContact, lead_contact_id)
+            if project_ref is None or contact is None:
+                raise errors.NotFoundError(msg='线索不存在或无权访问')
+            return await _lead_response(
+                db,
+                contact=contact,
+                ref=project_ref,
+                user_id=user_id,
+            )
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
         return await _lead_response(db, contact=contact, ref=ref, user_id=user_id)
 
@@ -336,16 +435,14 @@ class GrowthFunnelService:
 
         # 建用户引用（幂等：已引用则跳过）；note 为用户私有备注，落引用层。
         safe_note = redact_pii_value(note.strip()) if note and note.strip() else None
-        await db.execute(
-            pg_insert(LeadRef)
-            .values(
-                user_id=user_id,
-                lead_contact_id=contact.id,
-                source='manual',
-                status='new',
-                note=safe_note,
-            )
-            .on_conflict_do_nothing(constraint='uq_growth_lead_ref_user_lead')
+        await project_lead_compatibility_service.upsert_reference(
+            db,
+            user_id=user_id,
+            lead_contact_id=contact.id,
+            source='manual',
+            status='new',
+            note=safe_note,
+            update_existing=False,
         )
         await db.flush()
         ref = await db.scalar(
@@ -414,7 +511,16 @@ class GrowthFunnelService:
             last_activity_at=timezone.now(),
         )
         db.add(customer)
-        ref.status = 'qualified'  # 用户级状态落引用层，不污染公共池行
+        await project_lead_compatibility_service.upsert_reference(
+            db,
+            user_id=user_id,
+            lead_contact_id=lead_contact_id,
+            source=ref.source,
+            status='qualified',
+            dismiss_reason=ref.dismiss_reason,
+            note=ref.note,
+            update_source=False,
+        )
         await db.flush()
         await GrowthFunnelService._add_activity(
             db,
@@ -431,10 +537,17 @@ class GrowthFunnelService:
     async def dismiss_lead(db: AsyncSession, *, user_id: int, lead_contact_id: int, reason: str) -> dict[str, Any]:
         """用户忽略该线索（ref.status=dismissed + dismiss_reason，落引用层不污染公共池行；列表/检索不再返回）。"""
         contact, ref = await GrowthFunnelService._load_lead(db, user_id=user_id, lead_contact_id=lead_contact_id)
-        ref.status = 'dismissed'
         safe_reason = redact_pii_value(reason)
-        ref.dismiss_reason = safe_reason
-        await db.flush()
+        await project_lead_compatibility_service.upsert_reference(
+            db,
+            user_id=user_id,
+            lead_contact_id=lead_contact_id,
+            source=ref.source,
+            status='dismissed',
+            dismiss_reason=safe_reason,
+            note=ref.note,
+            update_source=False,
+        )
         return {'lead_contact_id': contact.id, 'status': 'dismissed', 'reason': safe_reason}
 
     # ----------------------------- 客户 -----------------------------

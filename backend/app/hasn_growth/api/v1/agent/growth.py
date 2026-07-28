@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 
@@ -88,19 +89,36 @@ async def search_leads(
     db: CurrentSession,
     q: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    growth_project_id: Annotated[UUID | None, Query()] = None,
 ) -> ResponseModel:
     data = await growth_funnel_service.search_leads(
-        db, user_id=agent.owner_user_id, query=q, limit=limit, reveal_pii=_reveal(agent)
+        db,
+        user_id=agent.owner_user_id,
+        query=q,
+        limit=limit,
+        reveal_pii=_reveal(agent),
+        growth_project_id=(
+            str(growth_project_id) if growth_project_id is not None else None
+        ),
     )
     return response_base.success(data=data)
 
 
 @router.get('/leads/{lead_contact_id}', summary='[Agent] 线索详情', dependencies=[DependsAgentJwtAuth])
 async def get_lead(
-    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth], db: CurrentSession, lead_contact_id: int
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    lead_contact_id: int,
+    growth_project_id: Annotated[UUID | None, Query()] = None,
 ) -> ResponseModel:
     data = await growth_funnel_service.get_lead(
-        db, user_id=agent.owner_user_id, lead_contact_id=lead_contact_id, reveal_pii=_reveal(agent)
+        db,
+        user_id=agent.owner_user_id,
+        lead_contact_id=lead_contact_id,
+        reveal_pii=_reveal(agent),
+        growth_project_id=(
+            str(growth_project_id) if growth_project_id is not None else None
+        ),
     )
     return response_base.success(data=data)
 

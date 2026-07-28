@@ -26,7 +26,6 @@ from backend.app.hasn_growth.model.customer import Customer
 from backend.app.hasn_growth.model.form_submission import FormSubmission
 from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.lead_contact import LeadContact
-from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.service.contact_privacy_service import (
     ContactChannelWrite,
     contact_privacy_service,
@@ -35,6 +34,9 @@ from backend.app.hasn_growth.service.contact_privacy_service import (
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.pii import redact_pii_value
 from backend.app.hasn_growth.service.pii_keyring import GrowthPiiKeyring, require_growth_pii_keyring
+from backend.app.hasn_growth.service.project_lead_compatibility_service import (
+    project_lead_compatibility_service,
+)
 from backend.app.hasn_publish.model.site import Site
 from backend.common.exception import errors
 from backend.core.conf import settings
@@ -221,18 +223,13 @@ class GrowthFormService:
                 )
             contact = loaded_contact
 
-        await db.execute(
-            pg_insert(LeadRef)
-            .values(
-                user_id=user_id,
-                lead_contact_id=contact.id,
-                source='manual',
-                status='qualified',
-            )
-            .on_conflict_do_update(
-                constraint='uq_growth_lead_ref_user_lead',
-                set_={'status': 'qualified', 'updated_time': timezone.now()},
-            )
+        await project_lead_compatibility_service.upsert_reference(
+            db,
+            user_id=user_id,
+            lead_contact_id=contact.id,
+            source='manual',
+            status='qualified',
+            update_source=False,
         )
         return contact
 

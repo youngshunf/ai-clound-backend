@@ -44,6 +44,9 @@ from backend.app.hasn_growth.service.pii_keyring import (
     GrowthPiiKeyring,
     require_growth_pii_keyring,
 )
+from backend.app.hasn_growth.service.project_lead_compatibility_service import (
+    project_lead_compatibility_service,
+)
 from backend.app.hasn_growth.service.provider_registry import CrawlRequest, CrawledItem, get_provider
 from backend.app.hasn_growth.service.url_dedup_service import UrlDedupService
 from backend.common.exception import errors
@@ -724,6 +727,17 @@ class LeadAutomationBusinessService:
     async def _grant_refs(db: AsyncSession, *, user_id: int, contact_ids: set[int], source: str) -> None:
         """统一线索池：为用户批量建线索引用（幂等·已引用则跳过）。采集/补爬跑完调用，让发起者「拥有」入池线索。"""
         if not user_id or not contact_ids:
+            return
+        if settings.GROWTH_PROJECT_DUAL_WRITE_ENABLED:
+            for contact_id in sorted(contact_ids):
+                await project_lead_compatibility_service.upsert_reference(
+                    db,
+                    user_id=user_id,
+                    lead_contact_id=contact_id,
+                    source=source,
+                    status='new',
+                    update_existing=False,
+                )
             return
         await db.execute(
             pg_insert(LeadRef)

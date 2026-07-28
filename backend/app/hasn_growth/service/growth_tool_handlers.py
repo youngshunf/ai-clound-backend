@@ -224,6 +224,7 @@ async def handle_growth_lead_search(
         query=input_payload.get('q') or input_payload.get('query'),
         limit=int(input_payload.get('limit', 20)),
         reveal_pii=_reveal(agent),
+        growth_project_id=input_payload.get('growth_project_id'),
     )
 
 
@@ -235,6 +236,7 @@ async def handle_growth_lead_get(
         user_id=agent.owner_user_id,
         lead_contact_id=_int(input_payload, 'lead_contact_id'),
         reveal_pii=_reveal(agent),
+        growth_project_id=input_payload.get('growth_project_id'),
     )
 
 

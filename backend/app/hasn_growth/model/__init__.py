@@ -14,6 +14,9 @@ from backend.app.hasn_growth.model.growth_pii_migration_quarantine import (
 )
 from backend.app.hasn_growth.model.growth_project import GrowthProject as GrowthProject
 from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead as GrowthProjectLead
+from backend.app.hasn_growth.model.growth_project_migration_quarantine import (
+    GrowthProjectMigrationQuarantine as GrowthProjectMigrationQuarantine,
+)
 from backend.app.hasn_growth.model.growth_project_playbook import GrowthProjectPlaybook as GrowthProjectPlaybook
 from backend.app.hasn_growth.model.growth_project_provision import GrowthProjectProvision as GrowthProjectProvision
 from backend.app.hasn_growth.model.industry_tag import IndustryTag as IndustryTag
