@@ -26,6 +26,8 @@ from backend.app.hasn_growth.service.growth_notification import growth_notificat
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
+from backend.app.hasn_growth.service.pii import redact_pii_value
+from backend.app.hasn_growth.service.pii_boundary import assert_growth_pii_payload_safe
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
@@ -85,7 +87,11 @@ def _enqueue_collection_job_after_commit(db: AsyncSession, job_id: int) -> None:
             lead_automation_run_job.delay(job_id)
             log.info(f'[GrowthCollect] 采集 job 已入队异步执行: job_id={job_id}')
         except Exception as exc:
-            log.error(f'[GrowthCollect] 采集 job 入队失败 job_id={job_id}: {exc!r}（job 已落库，可手动运行）')
+            log.warning(
+                '[GrowthCollect] 采集 job 入队失败，已落库可手动运行：job_id=%s error_type=%s',
+                job_id,
+                exc.__class__.__name__,
+            )
 
     event.listen(db.sync_session, 'after_commit', _enqueue, once=True)
 
@@ -366,7 +372,9 @@ async def _register_growth_customer(
     customer_id = result.get('id')
     if not isinstance(customer_id, int):
         return None
-    title = str(result.get('company_name') or result.get('contact_name') or '').strip() or '客户资料'
+    raw_title = str(result.get('company_name') or result.get('contact_name') or '').strip() or '客户资料'
+    title = str(redact_pii_value(raw_title))
+    assert_growth_pii_payload_safe({'title': title, 'customer_id': customer_id})
     return await register_app_resource_artifact(
         db,
         app_id='growth',
@@ -420,7 +428,7 @@ async def handle_growth_outreach_send(
             agent=agent,
             message_id=int(data['id']),
             customer_id=_int(input_payload, 'customer_id'),
-            channel=_required_str(input_payload, 'channel'),
+            channel=str(data['channel']),
         )
     return data
 
@@ -481,7 +489,6 @@ async def handle_growth_opportunity_update_stage(
         agent=agent,
         opportunity_id=_int(input_payload, 'opportunity_id'),
         stage=_required_str(input_payload, 'stage'),
-        name=data.get('name'),
     )
     return data
 
@@ -506,7 +513,6 @@ async def handle_growth_deal_close(
         opportunity_id=_int(input_payload, 'opportunity_id'),
         result=_required_str(input_payload, 'result'),
         amount=data.get('amount'),
-        name=data.get('name'),
     )
     return data
 

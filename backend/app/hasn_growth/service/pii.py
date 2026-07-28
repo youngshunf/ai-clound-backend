@@ -11,7 +11,67 @@ import re
 from typing import Any
 
 _EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
-_PHONE_RE = re.compile(r'(?:\+\d{8,15}|\b1[3-9]\d{9}\b)')
+_PHONE_CANDIDATE_RE = re.compile(r'(?<!\d)\+?\d[\d\s().-]{6,}\d(?!\d)')
+_SENSITIVE_PII_KEYS = frozenset({
+    'address',
+    'contactname',
+    'contactnameciphertext',
+    'contacttitle',
+    'customername',
+    'email',
+    'emailnormalized',
+    'imhandle',
+    'mobile',
+    'phone',
+    'phonenumber',
+    'phonenormalized',
+    'tel',
+    'telephone',
+    'titleciphertext',
+    'valueciphertext',
+    'wechat',
+    'whatsapp',
+})
+
+
+def normalize_pii_key(value: Any) -> str:
+    """把 snake_case、camelCase 和连字符字段统一为无分隔小写键。"""
+    return re.sub(r'[^a-z0-9]', '', str(value).strip().casefold())
+
+
+def is_sensitive_pii_key(value: Any) -> bool:
+    """判断字段名是否承载联系人身份或联系渠道。"""
+    return normalize_pii_key(value) in _SENSITIVE_PII_KEYS
+
+
+def _is_phone_candidate(value: str) -> bool:
+    digits = ''.join(character for character in value if character.isdigit())
+    if not 8 <= len(digits) <= 15:
+        return False
+    if value.lstrip().startswith('+'):
+        return True
+    if len(digits) == 11 and digits.startswith('1') and digits[1] in '3456789':
+        return True
+    return len(digits) == 10 and '(' in value and ')' in value
+
+
+def is_numeric_phone(value: Any) -> bool:
+    """识别 JSON 数值形式的中国大陆手机号，避免绕过字符串正则。"""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and len(str(value)) == 11
+        and str(value).startswith('1')
+        and str(value)[1] in '3456789'
+    )
+
+
+def _redact_contact_text(value: str) -> str:
+    redacted = _EMAIL_RE.sub('[已脱敏邮箱]', value)
+    return _PHONE_CANDIDATE_RE.sub(
+        lambda match: '[已脱敏电话]' if _is_phone_candidate(match.group(0)) else match.group(0),
+        redacted,
+    )
 
 
 def mask_name(value: str | None) -> str | None:
@@ -43,11 +103,16 @@ def mask_wechat(value: str | None) -> str | None:
 
 
 def redact_pii_value(value: Any) -> Any:
-    """递归清理自由文本/JSON 中可识别的邮箱和手机号副本。"""
+    """递归清理自由文本、敏感字段别名和数值手机号副本。"""
     if isinstance(value, str):
-        return _PHONE_RE.sub('[已脱敏电话]', _EMAIL_RE.sub('[已脱敏邮箱]', value))
+        return _redact_contact_text(value)
+    if is_numeric_phone(value):
+        return None
     if isinstance(value, dict):
-        return {key: redact_pii_value(item) for key, item in value.items()}
+        return {
+            key: None if is_sensitive_pii_key(key) and item is not None else redact_pii_value(item)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [redact_pii_value(item) for item in value]
     if isinstance(value, tuple):
@@ -84,6 +149,7 @@ def mask_contact_fields(data: dict, *, reveal: bool) -> dict:
         'content',
         'error_message',
         'raw_excerpt',
+        'tags',
     ):
         if field in out:
             out[field] = redact_pii_value(out.get(field))

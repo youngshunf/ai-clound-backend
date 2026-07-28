@@ -28,11 +28,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model.customer import Customer
+from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.pii import redact_pii_value
+from backend.app.hasn_growth.service.pii_boundary import (
+    GrowthPiiBoundaryError,
+    assert_growth_pii_payload_safe,
+)
 from backend.app.hasn_growth.service.pii_keyring import (
     GrowthPiiKeyring,
     require_growth_pii_keyring,
@@ -82,6 +88,14 @@ _QUIET_END_HOUR = 21
 
 # J3 即时跟进防抖：同客户 10 分钟窗口仅触发一次 run_now（§M6，云端侧窗口合并）。
 _FOLLOWUP_DEBOUNCE_MINUTES = 10
+_OUTREACH_CHANNELS = frozenset({
+    'email',
+    'feishu',
+    'hasn_dm',
+    'manual_assist',
+    'qq',
+    'wechat',
+})
 
 
 def _gen_no(prefix: str) -> str:
@@ -102,7 +116,7 @@ def _legacy_address_hash(value: str | None) -> str | None:
 
 
 def _outreach_to_dict(m: OutreachMessage) -> dict[str, Any]:
-    return {
+    return redact_pii_value({
         'id': m.id,
         'customer_id': m.customer_id,
         'opportunity_id': m.opportunity_id,
@@ -125,7 +139,29 @@ def _outreach_to_dict(m: OutreachMessage) -> dict[str, Any]:
         'task_run_id': m.task_run_id,
         'workflow_run_id': m.workflow_run_id,
         'created_time': m.created_time,
-    }
+    })
+
+
+def _assert_outreach_payload_safe(payload: dict[str, Any]) -> None:
+    """触达写入拒绝可识别联系人明文，联系方式必须走私有渠道 reveal。"""
+    try:
+        assert_growth_pii_payload_safe(payload)
+    except GrowthPiiBoundaryError as exc:
+        raise errors.RequestError(
+            msg='触达内容不得包含明文联系方式，请使用联系人私有渠道',
+            data={'error_code': 'GROWTH_OUTREACH_PII_FORBIDDEN'},
+        ) from exc
+
+
+def _normalize_outreach_channel(channel: str) -> str:
+    """只接受协议已声明的稳定渠道枚举，禁止自由文本进入消息元数据。"""
+    normalized = channel.strip().casefold()
+    if normalized not in _OUTREACH_CHANNELS:
+        raise errors.RequestError(
+            msg='触达渠道无效',
+            data={'error_code': 'GROWTH_OUTREACH_CHANNEL_INVALID'},
+        )
+    return normalized
 
 
 def _approval_scope(scope: GrowthScope | None) -> GrowthScope | None:
@@ -157,6 +193,15 @@ class GrowthOutreachService:
         """客户任一联系方式在该渠道（或 all）登记退订 → 命中（硬闸，无豁免）。"""
         owner_scope = customer.owner_scope or 'personal'
         legacy_addresses = tuple(address for address in (customer.email, customer.phone, customer.wechat) if address)
+        if not legacy_addresses and customer.lead_contact_id is not None:
+            # 迁移窗口只读旧公共联系人作退订匹配，绝不复制到 customer 或响应。
+            legacy_contact = await db.get(LeadContact, customer.lead_contact_id)
+            if legacy_contact is not None:
+                legacy_addresses = tuple(
+                    address
+                    for address in (legacy_contact.email, legacy_contact.phone)
+                    if address
+                )
         if keyring is None:
             legacy_hashes = tuple(
                 address_hash
@@ -358,6 +403,13 @@ class GrowthOutreachService:
         whitelist_auto_send：主人对「客户×渠道」开了自动放行（M6/owner 设置驱动，本期由调用方传入）。
         首触达永不豁免（G4）。返回 outreach 字典（含 status）；被拦截也落库返回（分身学习）。
         """
+        normalized_channel = _normalize_outreach_channel(channel)
+        _assert_outreach_payload_safe({
+            'subject': subject,
+            'content': content,
+            'intent_note': intent_note,
+            'content_assets': content_assets,
+        })
         customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id, scope=scope)
 
         needs_keyring = (
@@ -370,12 +422,14 @@ class GrowthOutreachService:
             use_private_channels=settings.GROWTH_PII_SHADOW_READ_ENABLED or keyring is not None,
             user_id=user_id,
             customer=customer,
-            channel=channel,
+            channel=normalized_channel,
             content=content,
         )
 
         # 幂等去重：同 owner+客户+渠道+正文 视为同一条（防分身重复发）。
-        dedupe_key = hashlib.sha256(f'{user_id}|{customer_id}|{channel}|{content}'.encode()).hexdigest()[:64]
+        dedupe_key = hashlib.sha256(
+            f'{user_id}|{customer_id}|{normalized_channel}|{content}'.encode()
+        ).hexdigest()[:64]
         existing = (
             await db.execute(
                 sa.select(OutreachMessage).where(
@@ -390,7 +444,12 @@ class GrowthOutreachService:
             status = compliance['block_status']
             auto_approved = False
         else:
-            is_first = await cls._is_first_contact(db, user_id=user_id, customer_id=customer_id, channel=channel)
+            is_first = await cls._is_first_contact(
+                db,
+                user_id=user_id,
+                customer_id=customer_id,
+                channel=normalized_channel,
+            )
             replied = await cls._customer_has_replied(db, user_id=user_id, customer_id=customer_id)
             if not is_first and whitelist_auto_send and replied:
                 status = 'approved'
@@ -407,7 +466,7 @@ class GrowthOutreachService:
             user_id=user_id,
             agent_id=agent_id,
             direction='outbound',
-            channel=channel,
+            channel=normalized_channel,
             subject=subject,
             content=content,
             content_assets=content_assets or {},
@@ -463,8 +522,9 @@ class GrowthOutreachService:
         if m.status != 'pending_approval':
             raise errors.ForbiddenError(msg=f'仅待审批触达可批准（当前 {m.status}）')
         if edited_content is not None and edited_content != m.content:
+            _assert_outreach_payload_safe({'content': edited_content})
             revisions = list((m.content_assets or {}).get('revisions', []))
-            revisions.append({'before': m.content, 'by': approver_user_id})
+            revisions.append({'before': redact_pii_value(m.content), 'by': approver_user_id})
             m.content_assets = {**(m.content_assets or {}), 'revisions': revisions}
             m.content = edited_content
         m.status = 'approved'
@@ -489,8 +549,9 @@ class GrowthOutreachService:
         m = await cls._load_message(db, user_id=user_id, message_id=message_id, scope=scope)
         if m.status != 'pending_approval':
             raise errors.ForbiddenError(msg=f'仅待审批触达可拒绝（当前 {m.status}）')
+        safe_reason = redact_pii_value(reason)
         m.status = 'rejected'
-        m.reject_reason = reason
+        m.reject_reason = safe_reason
         m.approval_user_id = approver_user_id
         await db.flush()
         await GrowthFunnelService._add_activity(
@@ -498,7 +559,7 @@ class GrowthOutreachService:
             user_id=user_id,
             customer_id=m.customer_id,
             kind='note',
-            content=f'主人拒绝触达：{reason}',
+            content=f'主人拒绝触达：{safe_reason}',
             actor_kind='owner',
             actor_id=str(approver_user_id),
             ref_table='outreach_message',
@@ -531,9 +592,9 @@ class GrowthOutreachService:
             'company_name': customer.company_name,
             'lead_contact_id': customer.lead_contact_id,
             'channel': m.channel,
-            'content': m.content,  # 已批准话术（含主人改稿）
-            'content_assets': m.content_assets or {},  # 素材链接（图/文件等）
-            'intent_note': m.intent_note,
+            'content': redact_pii_value(m.content),  # 已批准话术（含主人改稿）
+            'content_assets': redact_pii_value(m.content_assets or {}),  # 素材链接（图/文件等）
+            'intent_note': redact_pii_value(m.intent_note),
         }
 
     @classmethod
@@ -557,20 +618,28 @@ class GrowthOutreachService:
         scope: GrowthScope | None = None,
     ) -> dict[str, Any]:
         """发送成功（manual_assist 主人「已发送」或 worker 成功；approved/sending → sent）。"""
+        normalized_channel = (
+            _normalize_outreach_channel(channel_actual)
+            if channel_actual
+            else None
+        )
         m = await cls._load_message(db, user_id=user_id, message_id=message_id, scope=scope)
         if m.status not in ('approved', 'sending'):
             raise errors.ForbiddenError(msg=f'仅已批准/发送中触达可标记已发送（当前 {m.status}）')
         m.status = 'sent'
         m.sent_at = timezone.now()
-        if channel_actual:
-            m.content_assets = {**(m.content_assets or {}), 'channel_actual': channel_actual}
+        if normalized_channel:
+            m.content_assets = {
+                **(m.content_assets or {}),
+                'channel_actual': normalized_channel,
+            }
         await db.flush()
         await GrowthFunnelService._add_activity(
             db,
             user_id=user_id,
             customer_id=m.customer_id,
             kind='outreach',
-            content=f'已通过 {channel_actual or m.channel} 发送',
+            content=f'已通过 {normalized_channel or m.channel} 发送',
             actor_kind='agent',
             actor_id=m.agent_id,
             ref_table='outreach_message',
@@ -585,7 +654,7 @@ class GrowthOutreachService:
         if m.status not in ('approved', 'sending'):
             raise errors.ForbiddenError(msg=f'仅已批准/发送中触达可标记失败（当前 {m.status}）')
         m.status = 'failed'
-        m.error_message = error
+        m.error_message = redact_pii_value(error)
         await db.flush()
         return _outreach_to_dict(m)
 
@@ -639,14 +708,16 @@ class GrowthOutreachService:
         触发跟进任务 run_now 即时跟进（J3）属 M6 worker，本服务只落事实。
         """
         customer = await GrowthFunnelService._load_customer(db, user_id=user_id, customer_id=customer_id)
+        normalized_channel = _normalize_outreach_channel(channel)
+        safe_content = str(redact_pii_value(content))
         now = timezone.now()
         message = OutreachMessage(
             customer_id=customer_id,
             user_id=user_id,
             agent_id=agent_id,
             direction='inbound',
-            channel=channel,
-            content=content,
+            channel=normalized_channel,
+            content=safe_content,
             content_assets={},
             status='replied',
             auto_approved=False,
@@ -664,7 +735,7 @@ class GrowthOutreachService:
             user_id=user_id,
             customer_id=customer_id,
             kind='reply',
-            content=content[:500],
+            content=safe_content[:500],
             actor_kind='owner',  # 客户侧（非分身），用 owner 占位区别于 agent 主动
             actor_id=None,
             ref_table='outreach_message',
@@ -679,9 +750,7 @@ class GrowthOutreachService:
                 db,
                 owner_hasn_id=owner_hasn_id,
                 customer_id=customer_id,
-                customer_name=customer.company_name,
-                channel=channel,
-                excerpt=None,
+                channel=normalized_channel,
             )
         # J3：即时跟进 run_now（防抖 10min；复用任务同步接缝下行，无跟进任务则 interval 兜底）。
         trigger = await cls._maybe_trigger_followup(db, customer=customer, owner_hasn_id=owner_hasn_id)
@@ -790,6 +859,8 @@ class GrowthOutreachService:
         owner_scope = 'enterprise' if scope and scope.enterprise_id is not None else 'personal'
         if not source:
             raise errors.RequestError(msg='退订必须提供来源')
+        safe_reason = redact_pii_value(reason)
+        safe_source = redact_pii_value(source)
         if keyring is None and not settings.GROWTH_PII_NEW_WRITE_ENABLED:
             raise errors.ConflictError(
                 msg='联系人 PII 新写尚未启用',
@@ -814,8 +885,8 @@ class GrowthOutreachService:
             enterprise_id=scope.enterprise_id if scope else None,
             channel=channel,
             address=address,
-            reason=reason,
-            source=source,
+            reason=safe_reason,
+            source=safe_source,
             customer_id=customer_id,
         )
         created = not semantic_exists and row_created
@@ -825,7 +896,7 @@ class GrowthOutreachService:
                 user_id=user_id,
                 customer_id=customer_id,
                 kind='note',
-                content=f'客户退订（{channel}）：{reason or "未注明原因"}',
+                content=f'客户退订（{channel}）：{safe_reason or "未注明原因"}',
                 actor_kind='owner',
                 actor_id=None,
             )

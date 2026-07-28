@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import re
-
 from typing import Any
 
-EMAIL_RE = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
-PHONE_RE = re.compile(r'(?:\+\d{8,15}|\b1[3-9]\d{9}\b)')
+from backend.app.hasn_growth.service.pii_boundary import (
+    GrowthPiiBoundaryError,
+    assert_growth_pii_payload_safe,
+)
 
 
-class AuditPayloadLeakError(ValueError):
+class AuditPayloadLeakError(GrowthPiiBoundaryError):
     pass
 
 
 def assert_audit_payload_safe(payload: dict[str, Any]) -> None:
-    text = str(payload)
-    if EMAIL_RE.search(text) or PHONE_RE.search(text):
-        raise AuditPayloadLeakError('audit payload contains plaintext PII')
+    try:
+        assert_growth_pii_payload_safe(payload)
+    except GrowthPiiBoundaryError as exc:
+        raise AuditPayloadLeakError('审计载荷包含明文 PII 或禁止字段') from exc
 
 
 def log_event(

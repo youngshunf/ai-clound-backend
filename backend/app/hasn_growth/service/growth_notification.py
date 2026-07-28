@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn_growth.service.pii_boundary import assert_growth_pii_payload_safe
 from backend.app.notification.service.notification_service import notification_service
 from backend.common.dataclasses import AgentTokenPayload
 
@@ -36,6 +37,42 @@ def _system_source(owner_hasn_id: str) -> dict[str, Any]:
     return {'kind': 'system', 'id': 'growth', 'display_name': '获客', 'on_behalf_of': owner_hasn_id}
 
 
+async def _emit_safe(
+    db: AsyncSession,
+    *,
+    recipient_id: str,
+    source: dict[str, Any],
+    category: str,
+    type: str,
+    title: str,
+    body: str | None = None,
+    payload: dict[str, Any],
+    dedupe_key: str,
+) -> None:
+    """通知写入前统一拒绝联系人明文，避免旁路表和 IM outbox 形成副本。"""
+    assert_growth_pii_payload_safe({
+        'recipient_id': recipient_id,
+        'source': source,
+        'category': category,
+        'type': type,
+        'title': title,
+        'body': body,
+        'payload': payload,
+        'dedupe_key': dedupe_key,
+    })
+    await notification_service.emit(
+        db,
+        recipient_id=recipient_id,
+        source=source,
+        category=category,
+        type=type,
+        title=title,
+        body=body,
+        payload=payload,
+        dedupe_key=dedupe_key,
+    )
+
+
 class GrowthNotificationService:
     """获客业务事件 → 主人通知卡片（M4 三同步事件）。"""
 
@@ -44,7 +81,7 @@ class GrowthNotificationService:
         db: AsyncSession, *, agent: AgentTokenPayload, message_id: int, customer_id: int, channel: str
     ) -> None:
         """触达待审批：分身请求发送触达，落 pending_approval → 提醒主人去审批队列处理。"""
-        await notification_service.emit(
+        await _emit_safe(
             db,
             recipient_id=agent.owner_hasn_id,
             source=_source(agent),
@@ -61,17 +98,16 @@ class GrowthNotificationService:
 
     @staticmethod
     async def opportunity_stage_changed(
-        db: AsyncSession, *, agent: AgentTokenPayload, opportunity_id: int, stage: str, name: str | None
+        db: AsyncSession, *, agent: AgentTokenPayload, opportunity_id: int, stage: str
     ) -> None:
         """商机阶段变更：分身推进/回退商机阶段 → 通知主人。"""
-        label = f'「{name}」' if name else ''
-        await notification_service.emit(
+        await _emit_safe(
             db,
             recipient_id=agent.owner_hasn_id,
             source=_source(agent),
             category='commerce',
             type='growth.opp.stage_changed',  # type 列 varchar(30)，勿超长
-            title=f'分身 {agent.agent_name} 把商机{label}推进到「{stage}」',
+            title=f'分身 {agent.agent_name} 更新了商机阶段',
             payload={
                 'target': {'kind': 'opportunity', 'id': str(opportunity_id)},
                 'stage': stage,
@@ -88,16 +124,14 @@ class GrowthNotificationService:
         opportunity_id: int,
         result: str,
         amount: Any | None,
-        name: str | None,
     ) -> None:
         """成交/流失登记：分身登记成交结果 → 通知主人（仅登记，不自动收款）。"""
-        label = f'「{name}」' if name else ''
         if result == 'won':
             amount_text = f'（金额 {amount}）' if amount is not None else ''
-            title = f'🎉 分身 {agent.agent_name} 登记商机{label}成交{amount_text}'
+            title = f'🎉 分身 {agent.agent_name} 登记商机成交{amount_text}'
         else:
-            title = f'分身 {agent.agent_name} 登记商机{label}流失'
-        await notification_service.emit(
+            title = f'分身 {agent.agent_name} 登记商机流失'
+        await _emit_safe(
             db,
             recipient_id=agent.owner_hasn_id,
             source=_source(agent),
@@ -120,20 +154,16 @@ class GrowthNotificationService:
         *,
         owner_hasn_id: str,
         customer_id: int,
-        customer_name: str | None,
         channel: str,
-        excerpt: str | None = None,
     ) -> None:
         """客户回复：渠道 inbound 回流落库时通知主人去看 / 跟进（J3 即时跟进的人侧提醒）。"""
-        who = f'客户「{customer_name}」' if customer_name else '一位客户'
-        await notification_service.emit(
+        await _emit_safe(
             db,
             recipient_id=owner_hasn_id,
             source=_system_source(owner_hasn_id),
             category='reminder',
             type='growth.reply.received',  # type 列 varchar(30)，勿超长
-            title=f'{who}回复了你的{channel}触达',
-            body=(excerpt or None),
+            title=f'一位客户回复了你的{channel}触达',
             payload={
                 'target': {'kind': 'customer', 'id': str(customer_id)},
                 'channel': channel,
@@ -149,19 +179,17 @@ class GrowthNotificationService:
         owner_hasn_id: str,
         job_id: int,
         new_count: int,
-        keyword: str | None = None,
     ) -> None:
         """新线索批次：采集 worker 完成一批采集落库时通知主人去筛（new_count<=0 不发，零噪声）。"""
         if new_count <= 0:
             return
-        kw = f'「{keyword}」' if keyword else ''
-        await notification_service.emit(
+        await _emit_safe(
             db,
             recipient_id=owner_hasn_id,
             source=_system_source(owner_hasn_id),
             category='reminder',
             type='growth.leads.collected',  # type 列 varchar(30)，勿超长
-            title=f'采集{kw}完成，新增 {new_count} 条线索待筛选',
+            title=f'采集完成，新增 {new_count} 条线索待筛选',
             payload={
                 'target': {'kind': 'lead_collection_job', 'id': str(job_id)},
                 'new_count': new_count,

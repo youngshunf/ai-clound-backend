@@ -24,6 +24,7 @@ from backend.app.hasn_core import HasnHumans
 from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.lead_ref import LeadRef
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
+from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.model.playbook import Playbook
 from backend.app.hasn_growth.service.contact_privacy_service import (
     ContactChannelWrite,
@@ -100,6 +101,28 @@ async def test_outreach_state_machine(session) -> None:
     other_uid = uid + 1
     cid = await _qualified_customer(session, user_id=uid, email='lisi@beta.com', company='Beta')
 
+    with pytest.raises(errors.RequestError) as pii_error:
+        await growth_outreach_service.send_outreach(
+            session,
+            user_id=uid,
+            customer_id=cid,
+            channel='email',
+            content='请联系 lisi@beta.com',
+    )
+    assert pii_error.value.data == {'error_code': 'GROWTH_OUTREACH_PII_FORBIDDEN'}
+
+    with pytest.raises(errors.RequestError) as channel_error:
+        await growth_outreach_service.send_outreach(
+            session,
+            user_id=uid,
+            customer_id=cid,
+            channel='sales@example.com',
+            content='普通业务话术',
+        )
+    assert channel_error.value.data == {
+        'error_code': 'GROWTH_OUTREACH_CHANNEL_INVALID',
+    }
+
     # T1 首触达 → 必 pending_approval（不可豁免），即便传 whitelist 也必审
     m1 = await growth_outreach_service.send_outreach(
         session,
@@ -146,11 +169,38 @@ async def test_outreach_state_machine(session) -> None:
     assert any(t['kind'] == 'note' and '太频繁' in (t['content'] or '') for t in timeline)
 
     # T4 客户回复（inbound）→ 客户态 engaged + 清零静默
-    await growth_outreach_service.record_inbound_reply(
-        session, user_id=uid, customer_id=cid, channel='wechat', content='可以，周三下午方便'
+    inbound = await growth_outreach_service.record_inbound_reply(
+        session,
+        user_id=uid,
+        customer_id=cid,
+        channel='wechat',
+        content='可以，周三下午方便，回电 13800138000',
     )
+    assert '13800138000' not in inbound['content']
+    stored_inbound = await session.get(OutreachMessage, inbound['id'])
+    assert stored_inbound is not None
+    assert '13800138000' not in stored_inbound.content
+    outreach_history = await growth_outreach_service.list_customer_outreach(
+        session,
+        user_id=uid,
+        customer_id=cid,
+    )
+    assert '13800138000' not in str(outreach_history)
+    timeline = await growth_funnel_service.customer_timeline(session, user_id=uid, customer_id=cid)
+    assert '13800138000' not in str(timeline)
     cust = await growth_funnel_service.get_customer(session, user_id=uid, customer_id=cid)
     assert cust['lifecycle_status'] == 'engaged' and cust['silent_round_count'] == 0
+
+    with pytest.raises(errors.RequestError) as invalid_channel:
+        await growth_outreach_service.mark_sent(
+            session,
+            user_id=uid,
+            message_id=m2['id'],
+            channel_actual='联系 lisi@beta.com',
+        )
+    assert invalid_channel.value.data == {
+        'error_code': 'GROWTH_OUTREACH_CHANNEL_INVALID',
+    }
 
     # T5 非首触达（manual_assist 渠道 T1 已有出站）+ 白名单 + 客户已回复 → 自动放行 approved(auto_approved=true)
     m3 = await growth_outreach_service.send_outreach(
@@ -392,7 +442,13 @@ async def test_inbound_reply_emits_owner_notification(session) -> None:
         )
     )
     await session.flush()
-    cid = await _qualified_customer(session, user_id=uid, email=f'reply{tag}@zeta.com', company='Zeta')
+    injected_pii = f'reply{tag}@zeta.com'
+    cid = await _qualified_customer(
+        session,
+        user_id=uid,
+        email=injected_pii,
+        company=f'Zeta {injected_pii}',
+    )
 
     await growth_outreach_service.record_inbound_reply(
         session, user_id=uid, customer_id=cid, channel='wechat', content='可以聊聊，周三下午方便'
@@ -412,6 +468,9 @@ async def test_inbound_reply_emits_owner_notification(session) -> None:
     )
     assert notif, '客户回复应给主人落一条 growth.reply.received 通知'
     assert any('回复' in (n.title or '') for n in notif)
+    assert all(injected_pii not in (n.title or '') for n in notif)
+    assert all(injected_pii not in (n.body or '') for n in notif)
+    assert all(injected_pii not in str(n.data) for n in notif)
 
 
 async def test_send_material_excludes_pii_and_requires_separate_reveal(session) -> None:
