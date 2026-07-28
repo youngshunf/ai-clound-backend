@@ -319,6 +319,37 @@ class NotificationService:
                 data=relay_data,
             )
 
+    @classmethod
+    async def notify_doc_space_updated(
+        cls,
+        db: AsyncSession,
+        *,
+        recipient_hasn_id: str,
+        actor_hasn_id: str,
+        space_id: str,
+        space_title: str,
+        article_id: str,
+        article_title: str,
+    ) -> None:
+        """通知订阅者文集已有公开文章发布或更新。"""
+        if not recipient_hasn_id or recipient_hasn_id == actor_hasn_id:
+            return
+        actor = await cls._resolve_actor(db, actor_hasn_id)
+        await cls._emit(
+            db,
+            recipient_hasn_id=recipient_hasn_id,
+            source=cls._actor_source(actor),
+            ntype='community_doc_space_updated',
+            category='social',
+            title=f'「{space_title}」有新内容',
+            data={
+                'actor': actor,
+                'target': {'type': 'doc_space', 'id': space_id},
+                'preview': f'{article_id} · {article_title}'[:80],
+                'link': f'/community/docs/{space_id}',
+            },
+        )
+
     # ==================== 读取 / 已读（委派通用服务） ====================
 
     @staticmethod

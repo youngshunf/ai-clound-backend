@@ -1459,6 +1459,13 @@ class CommunityService:
         # 圈子文章通过审核计入圈内容数（与 create_article 的 published 分支一致）
         if article.circle_id:
             await circle_service.bump_content_count(db, circle_id=article.circle_id)
+        from backend.app.hasn_community.service.doc_service import doc_service
+
+        await doc_service.notify_article_updated(
+            db,
+            article_id=article.article_id,
+            actor_hasn_id=article.author_hasn_id,
+        )
 
         return {
             'article_id': article_id,
@@ -4154,6 +4161,12 @@ class CommunityService:
                 db, article_id=article_id, article_title=title, actor_hasn_id=owner_hasn_id, owner_user_id=user_id,
                 author_type='human', author_hasn_id=author_hasn_id, placement=doc_placement, allow_visibility=True,
             )
+        if placement_result and status == 'published':
+            await doc_service.notify_article_updated(
+                db,
+                article_id=article_id,
+                actor_hasn_id=author_hasn_id,
+            )
 
         # 已发布（非待审）才对关注者可见，实时通知其在线设备刷新社区镜像
         if status == 'published':
@@ -4380,6 +4393,14 @@ class CommunityService:
         article.updated_time = timezone.now()
 
         await db.flush()
+        if article.status == 'published':
+            from backend.app.hasn_community.service.doc_service import doc_service
+
+            await doc_service.notify_article_updated(
+                db,
+                article_id=article.article_id,
+                actor_hasn_id=article.author_hasn_id,
+            )
 
         return {
             'article_id': article_id,

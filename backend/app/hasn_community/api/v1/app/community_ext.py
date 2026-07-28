@@ -320,7 +320,33 @@ async def app_spaces_mine(request: Request, db: CurrentSession) -> ResponseModel
 
 @router.get('/docs/spaces/discover', summary='发现公开文集（含作者信息）', dependencies=[DependsJwtAuth], response_model=ResponseModel)
 async def app_spaces_discover(request: Request, db: CurrentSession, cursor: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> ResponseModel:
-    return response_base.success(data=await doc_service.discover_public(db, cursor=cursor, limit=limit))
+    human, _ = await _human(db, request)
+    return response_base.success(
+        data=await doc_service.discover_public(
+            db,
+            viewer_hasn_id=human.hasn_id,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
+
+
+@router.get('/docs/spaces/subscribed', summary='我订阅的文集', dependencies=[DependsJwtAuth], response_model=ResponseModel)
+async def app_spaces_subscribed(
+    request: Request,
+    db: CurrentSession,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> ResponseModel:
+    human, _ = await _human(db, request)
+    return response_base.success(
+        data=await doc_service.list_subscribed(
+            db,
+            subscriber_hasn_id=human.hasn_id,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @router.get('/profiles/{hasn_id}/doc-spaces', summary='作者主页文集', dependencies=[DependsJwtAuth], response_model=ResponseModel)
@@ -359,6 +385,38 @@ async def app_update_space(request: Request, db: CurrentSessionTransaction, iden
 async def app_delete_space(request: Request, db: CurrentSessionTransaction, ident: str) -> ResponseModel:
     human, _ = await _human(db, request)
     return response_base.success(data=await doc_service.delete_space(db, ident=ident, actor_hasn_id=human.hasn_id))
+
+
+@router.post('/docs/spaces/{ident}/subscribe', summary='订阅文集', dependencies=[DependsJwtAuth], response_model=ResponseModel)
+async def app_subscribe_space(
+    request: Request,
+    db: CurrentSessionTransaction,
+    ident: str,
+) -> ResponseModel:
+    human, _ = await _human(db, request)
+    return response_base.success(
+        data=await doc_service.subscribe(
+            db,
+            ident=ident,
+            subscriber_hasn_id=human.hasn_id,
+        )
+    )
+
+
+@router.delete('/docs/spaces/{ident}/subscribe', summary='取消订阅文集', dependencies=[DependsJwtAuth], response_model=ResponseModel)
+async def app_unsubscribe_space(
+    request: Request,
+    db: CurrentSessionTransaction,
+    ident: str,
+) -> ResponseModel:
+    human, _ = await _human(db, request)
+    return response_base.success(
+        data=await doc_service.unsubscribe(
+            db,
+            ident=ident,
+            subscriber_hasn_id=human.hasn_id,
+        )
+    )
 
 
 @router.get('/docs/spaces/{ident}/tree', summary='完整目录树（owner 视角）', dependencies=[DependsJwtAuth], response_model=ResponseModel)
