@@ -16,7 +16,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from backend.app.hasn.model import HasnAgents, HasnArtifactContributions, HasnArtifacts, HasnConversations
+from backend.app.hasn.model import HasnAgents, HasnArtifactContributions, HasnArtifacts, HasnConversations, HasnSessions
 from backend.app.hasn.schema.hasn_artifacts import RecordArtifactParam
 from backend.app.hasn.service import hasn_asset_service as asset_mod
 from backend.app.hasn.service.hasn_artifacts_service import HasnArtifactsService, hasn_artifacts_service
@@ -46,6 +46,22 @@ async def _make_agent(db, *, owner_hasn_id: str, agent_hasn_id: str) -> None:
             star_id=f'star_{agent_hasn_id[-16:]}',
             owner_id=owner_hasn_id,
             display_name='测试分身',
+        )
+    )
+    await db.flush()
+
+
+async def _make_work_session(db, *, owner_hasn_id: str, agent_hasn_id: str, session_id: str, kind: str) -> None:
+    """种一条 hasn_sessions 会话行（kind=task 是工作会话，interactive 是主会话逻辑会话）。"""
+    db.add(
+        HasnSessions(
+            session_id=session_id,
+            owner_id=owner_hasn_id,
+            hasn_id=agent_hasn_id,
+            session_kind=kind,
+            session_scope='summary_only',
+            session_status='active',
+            origin_type='app' if kind == 'task' else 'ui',
         )
     )
     await db.flush()
@@ -646,6 +662,12 @@ async def test_list_by_session_filter_and_isolation() -> None:
     async with async_db_session() as db:
         try:
             await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            # 真实世界工作会话派发前 AppCollab launch 已把会话上云（hasn_sessions task 行）；
+            # 契约收紧后只发 session_id 的旧路径必须在册才回落绑会话（设计 §4.3 分流）。
+            await _make_work_session(db, owner_hasn_id=owner, agent_hasn_id=agent, session_id=session, kind='task')
+            await _make_work_session(
+                db, owner_hasn_id=owner, agent_hasn_id=agent, session_id=other_session, kind='task'
+            )
 
             # 本会话产出两条：deck 应用资源 + publish 站点应用资源，同一 session_id。
             # doc35：两者的 artifact_kind 都是 `resource`（怎么打开都是「据 URI 域跳应用」），
@@ -901,5 +923,135 @@ async def test_detail_and_soft_delete(monkeypatch: pytest.MonkeyPatch) -> None:
             # 再次软删不存在 → NotFound
             with pytest.raises(errors.NotFoundError):
                 await hasn_artifacts_service.soft_delete(db, owner_hasn_id=owner, artifact_id=aid)
+        finally:
+            await db.rollback()
+
+
+async def test_record_legacy_session_id_promotes_only_real_work_session() -> None:
+    """过渡兼容：旧节点只发 `session_id` 时，在册工作会话（task）照常回落绑上（设计 §4.3）。"""
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    work_session = _short_id('sessWork')
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            await _make_work_session(db, owner_hasn_id=owner, agent_hasn_id=agent, session_id=work_session, kind='task')
+
+            aid = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='image',
+                    asset_id=_short_id('ast'),
+                    source_tool='hasn.image.generate',
+                    source_kind='platform_tool',
+                    dispatch_id='disp_ws',
+                    session_id=work_session,
+                ),
+            )
+
+            artifact = (
+                await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid))
+            ).scalar_one()
+            assert artifact.session_id == work_session
+            contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == aid)
+                )
+            ).scalar_one()
+            assert contribution.work_session_id == work_session
+            assert 'runtime_session_id' not in (contribution.meta_data or {}), (
+                '回落命中的就是工作会话本身，不得再标 runtime 溯源'
+            )
+        finally:
+            await db.rollback()
+
+
+async def test_record_runtime_session_id_never_pollutes_work_session_column() -> None:
+    """主会话派发灌进来的运行时逻辑会话 id 绝不进工作会话列，只进 metadata 溯源。
+
+    覆盖两种形态：runtime id 根本不在 hasn_sessions；以及它上云了但 kind=interactive
+    （doc02 会话一等实体后主会话逻辑会话也会同步）——两种都不是工作会话。
+    """
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    runtime_absent = _short_id('sessRt')
+    runtime_interactive = _short_id('sessRt')
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            await _make_work_session(
+                db, owner_hasn_id=owner, agent_hasn_id=agent, session_id=runtime_interactive, kind='interactive'
+            )
+
+            for runtime_id in (runtime_absent, runtime_interactive):
+                aid = await hasn_artifacts_service.record(
+                    db,
+                    agent_hasn_id=agent,
+                    owner_hasn_id=owner,
+                    params=RecordArtifactParam(
+                        kind='image',
+                        asset_id=_short_id('ast'),
+                        source_tool='hasn.image.generate',
+                        source_kind='platform_tool',
+                        dispatch_id=f'disp_{runtime_id}',
+                        session_id=runtime_id,
+                    ),
+                )
+
+                artifact = (
+                    await db.execute(select(HasnArtifacts).where(HasnArtifacts.artifact_id == aid))
+                ).scalar_one()
+                assert artifact.session_id is None, '运行时 id 不得落当前态工作会话列'
+                contribution = (
+                    await db.execute(
+                        select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == aid)
+                    )
+                ).scalar_one()
+                assert contribution.work_session_id is None, '运行时 id 不得落参与记录工作会话列'
+                assert (contribution.meta_data or {}).get('runtime_session_id') == runtime_id, (
+                    '运行时 id 必须保留为 metadata 溯源'
+                )
+        finally:
+            await db.rollback()
+
+
+async def test_record_explicit_work_session_id_wins_without_lookup() -> None:
+    """显式 `work_session_id` 直接采信（新节点契约，A12）；runtime session 仍进 metadata 溯源。"""
+    owner = _short_id('hasnOwner')
+    agent = _short_id('aAgent')
+    explicit_ws = _short_id('sessWork')
+    runtime_id = _short_id('sessRt')
+
+    async with async_db_session() as db:
+        try:
+            await _make_agent(db, owner_hasn_id=owner, agent_hasn_id=agent)
+            # 注意：不显式种 hasn_sessions 行——显式字段信任契约，不要求先查在册。
+
+            aid = await hasn_artifacts_service.record(
+                db,
+                agent_hasn_id=agent,
+                owner_hasn_id=owner,
+                params=RecordArtifactParam(
+                    kind='image',
+                    asset_id=_short_id('ast'),
+                    source_tool='hasn.image.generate',
+                    source_kind='platform_tool',
+                    dispatch_id='disp_explicit',
+                    session_id=runtime_id,
+                    work_session_id=explicit_ws,
+                ),
+            )
+
+            contribution = (
+                await db.execute(
+                    select(HasnArtifactContributions).where(HasnArtifactContributions.artifact_id == aid)
+                )
+            ).scalar_one()
+            assert contribution.work_session_id == explicit_ws
+            assert (contribution.meta_data or {}).get('runtime_session_id') == runtime_id
         finally:
             await db.rollback()

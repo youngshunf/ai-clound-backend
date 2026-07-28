@@ -18,7 +18,7 @@ from uuid import UUID
 
 from sqlalchemy import select, update
 
-from backend.app.hasn.model import HasnAgents, HasnArtifacts
+from backend.app.hasn.model import HasnAgents, HasnArtifacts, HasnSessions
 from backend.app.hasn.schema.artifact_contract import ArtifactListItem, ArtifactMutation
 from backend.app.hasn.schema.hasn_artifacts import (
     ArtifactDetail,
@@ -29,6 +29,7 @@ from backend.app.hasn.schema.resource_descriptor import ArtifactRegistration
 from backend.app.hasn.service.artifact_query_service import artifact_query_service
 from backend.app.hasn.service.artifact_registration_service import artifact_registration_service
 from backend.common.exception import errors
+from backend.common.log import log
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +70,40 @@ class HasnArtifactsService:
         return found is not None
 
     @classmethod
+    async def _coalesce_legacy_session_id(
+        cls,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        session_id: str,
+    ) -> str | None:
+        """过渡兼容：旧节点只发混合语义的 `session_id`，按「确实在册的工作会话」收窄回落。
+
+        旧节点工作会话派发发真实工作会话 id、主会话派发发运行时逻辑会话 id，两者同形无法
+        从值区分；但运行时/interactive 会话**不是** `hasn_sessions` 的 task 行，主会话派发的
+        值在这里查无 → 绝不进工作会话列（设计 §4.3：`work_session_id` 只接受工作会话 ID）。
+        旧节点的工作会话派发不受此限——其 session_id 本就是在册 task 会话，照常回落绑上。
+        """
+        found = (
+            await db.execute(
+                select(HasnSessions.session_id)
+                .where(
+                    HasnSessions.session_id == session_id,
+                    HasnSessions.owner_id == owner_hasn_id,
+                    HasnSessions.session_kind == 'task',
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if found is None:
+            log.warning(
+                '产物登记的 session_id 不是在册工作会话，按运行时溯源处理：owner=%s session_id=%s',
+                owner_hasn_id,
+                session_id,
+            )
+        return found
+
+    @classmethod
     async def record(
         cls,
         db: AsyncSession,
@@ -81,6 +116,20 @@ class HasnArtifactsService:
 
         身份由调用方注入（取自 Agent JWT），绝不信任 body 里的 agent/owner。
         """
+        # 工作会话轴与运行时 session 分流（设计 §4.3）：显式 `work_session_id` 直接采信；
+        # 缺省时 `session_id` 只在确为在册工作会话（task）时才回落——旧节点主会话派发灌进来的
+        # 运行时逻辑会话 id 从此只能进 metadata 溯源，不再污染工作会话列。
+        work_session_id = params.work_session_id
+        if work_session_id is None and params.session_id:
+            work_session_id = await cls._coalesce_legacy_session_id(
+                db,
+                owner_hasn_id=owner_hasn_id,
+                session_id=params.session_id,
+            )
+        metadata = dict(params.metadata)
+        if params.session_id and params.session_id != work_session_id:
+            # 运行时 session 是溯源元数据，不是工作会话——进 metadata，绝不占工作会话列。
+            metadata.setdefault('runtime_session_id', params.session_id)
         try:
             mutation = ArtifactMutation(
                 owner_hasn_id=owner_hasn_id,
@@ -100,8 +149,7 @@ class HasnArtifactsService:
                 local_locator_key=params.local_locator_key,
                 local_entry_kind=params.local_entry_kind,
                 node_id=params.node_id,
-                # 优先取显式工作会话；`session_id` 只是过渡期兼容入口（设计 §4.3）。
-                work_session_id=params.work_session_id or params.session_id,
+                work_session_id=work_session_id,
                 project_id=params.project_id,
                 conversation_id=params.conversation_id,
                 message_id=params.message_id,
@@ -118,7 +166,7 @@ class HasnArtifactsService:
                 supersedes_locator_key=params.supersedes_locator_key,
                 title=params.title,
                 summary=params.summary,
-                metadata=params.metadata,
+                metadata=metadata,
             )
         except ValueError as exc:
             raise errors.RequestError(msg=f'产物登记参数不符合第一阶段契约：{exc}') from exc
