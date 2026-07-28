@@ -234,6 +234,19 @@ class Settings(BaseSettings):
     GROWTH_FREE_LEADS_PER_MONTH: int = 50  # 每用户每月免费可领取线索条数
     GROWTH_LEAD_UNIT_PRICE_FEN: int = 100  # 购买线索单价（分/条），默认 ¥1.00/条
 
+    # 获客项目化 v4 分阶段开关（实施 92 §9）：全部默认关闭，生产开启必须经变更审计。
+    GROWTH_PROJECT_V4_ENABLED: bool = False
+    # 企业 ID 的 UUID↔BIGINT 权威映射尚未落地前恒关；后端门禁不能由客户端显隐替代。
+    GROWTH_PROJECT_V4_ENTERPRISE_ENABLED: bool = False
+    GROWTH_PII_NEW_WRITE_ENABLED: bool = False
+    GROWTH_PII_SHADOW_READ_ENABLED: bool = False
+    GROWTH_PROJECT_DUAL_WRITE_ENABLED: bool = False
+    GROWTH_PROJECT_READ_CUTOVER_ENABLED: bool = False
+    # Publish 未完成项目挂靠前，落地页与公开表单必须保持 fail-closed。
+    GROWTH_PUBLISH_LANDING_ENABLED: bool = False
+    # 真实外部发送有独立授权；默认只允许 manual_assist/manual_attested。
+    GROWTH_EXTERNAL_SEND_ENABLED: bool = False
+
     # 获客采集 — 地图 POI 源（doc93 §3.2 maps 混合架构）：地图走官方 Place API 直出 POI，
     # **跳过 firecrawl + LLM**（POI 本就结构化）。高德优先，回落百度；都为空则 maps 源诚实跳过
     # （不 fake，真实 key 由运营配置，真抓 E2E infra-gated）。配置即生效，不动代码。
