@@ -120,7 +120,12 @@ def test_production_observability_containers_use_least_privilege() -> None:
         assert service.get('mem_limit'), name
         assert service.get('cpus'), name
 
-    assert compose['networks']['observability']['internal'] is True
+    network = compose['networks']['observability']
+    assert network.get('internal') is not True
+    assert network['driver'] == 'bridge'
+    assert network['driver_opts'] == {
+        'com.docker.network.bridge.enable_ip_masquerade': 'false'
+    }
 
 
 def test_production_grafana_requires_secret_backed_login() -> None:
@@ -141,6 +146,16 @@ def test_production_grafana_requires_secret_backed_login() -> None:
         '/secrets/grafana_admin_password'
     )
     assert '123456' not in raw
+
+
+def test_production_grafana_disables_plugin_downloads() -> None:
+    grafana_config = (
+        PRODUCTION_DIR / 'grafana' / 'grafana.ini'
+    ).read_text(encoding='utf-8')
+
+    assert 'plugin_admin_enabled = false' in grafana_config
+    assert 'preinstall_disabled = true' in grafana_config
+    assert 'preinstall_auto_update = false' in grafana_config
 
 
 def test_production_grafana_secret_permissions_are_container_readable() -> None:
