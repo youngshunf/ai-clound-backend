@@ -8,8 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import select
 
 from backend.app.admin.model.user import User
@@ -41,12 +41,13 @@ class PublishUser:
 
 @dataclass
 class SourcePublishUser:
-    """已通过 API Key 认证的来源制品发布者。"""
+    """已认证的官方来源制品发布者。"""
 
     user_id: int
     username: str
     nickname: str
     is_admin: bool
+    auth_type: Literal['bearer', 'api_key'] = 'api_key'
 
 
 class PublishResult(BaseModel):
@@ -80,18 +81,39 @@ class SourcePublishResult(BaseModel):
     uploaded: bool
 
 
+class SourceHubPublishResult(BaseModel):
+    """官方 Hub 非技能资源制品发布结果。"""
+
+    resource_id: str
+    resource_type: Literal['skill_pack', 'agent_template', 'workflow']
+    slug: str
+    source_type: str
+    version: str
+    package_url: str
+    file_hash: str
+    content_hash: str
+    file_size: int
+    uploaded: bool
+
+
 class SourceReconcileRequest(BaseModel):
     """完整来源发布后的下架对账请求。"""
 
-    source_type: Literal['huanxing', 'github']
-    active_skill_ids: list[str]
+    resource_type: Literal['skill', 'skill_pack', 'agent_template', 'workflow'] = 'skill'
+    source_type: Literal['huanxing', 'github'] = 'huanxing'
+    active_resource_ids: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices('active_resource_ids', 'active_skill_ids'),
+    )
 
 
 class SourceReconcileResult(BaseModel):
     """来源下架对账结果。"""
 
+    resource_type: str
     source_type: str
     active_count: int
+    unpublished_resource_ids: list[str]
     unpublished_skill_ids: list[str]
 
 
@@ -136,8 +158,27 @@ def require_source_publish_admin(
 ) -> SourcePublishUser:
     """拒绝非管理员的来源制品发布。"""
     if not publish_user.is_admin:
-        raise errors.AuthorizationError(msg='来源技能发布仅允许管理员')
+        raise errors.AuthorizationError(msg='官方来源制品发布仅允许管理员')
     return publish_user
+
+
+def source_publish_user_from_authenticated_user(user: object) -> SourcePublishUser:
+    """把 JWT 中间件解析出的后台用户映射为来源发布身份。"""
+    user_id = getattr(user, 'id', None)
+    if not isinstance(user_id, int):
+        raise errors.AuthorizationError(msg='登录身份无效')
+    return require_source_publish_admin(
+        SourcePublishUser(
+            user_id=user_id,
+            username=str(getattr(user, 'username', '') or ''),
+            nickname=str(getattr(user, 'nickname', '') or ''),
+            is_admin=bool(
+                getattr(user, 'is_superuser', False)
+                or getattr(user, 'is_staff', False)
+            ),
+            auth_type='bearer',
+        )
+    )
 
 
 async def verify_source_publish_api_key(
@@ -154,6 +195,18 @@ async def verify_source_publish_api_key(
             is_admin=bool(user.is_superuser or user.is_staff),
         )
     )
+
+
+async def verify_source_publish_admin(
+    request: Request,
+    db: CurrentSession,
+    x_api_key: Annotated[str | None, Header(alias='X-API-Key')] = None,
+) -> SourcePublishUser:
+    """优先接受管理员登录 JWT，并保留 API Key 供 CI 无人值守发布。"""
+    authorization = request.headers.get('Authorization', '')
+    if authorization.lower().startswith('bearer '):
+        return source_publish_user_from_authenticated_user(request.user)
+    return await verify_source_publish_api_key(db, x_api_key)
 
 
 async def _bump_common_skills(db: CurrentSession) -> None:
@@ -190,6 +243,21 @@ async def _latest_template_version(db: CurrentSession, template_id: str) -> Mark
     if not version:
         raise errors.NotFoundError(msg='模板版本不存在')
     return version
+
+
+@router.get('/source/session', summary='检查 AstraHub 当前管理员发布身份')
+async def get_source_publish_session(
+    publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_admin)],
+) -> ResponseSchemaModel:
+    return response_base.success(
+        data={
+            'user_id': publish_user.user_id,
+            'username': publish_user.username,
+            'nickname': publish_user.nickname,
+            'is_admin': publish_user.is_admin,
+            'auth_type': publish_user.auth_type,
+        }
+    )
 
 
 @router.post('/upload-icon', summary='预上传图标')
@@ -255,7 +323,7 @@ async def publish_skill(
 @router.post('/source/skill', summary='发布官方或 GitHub 来源技能制品')
 async def publish_source_skill(
     db: CurrentSessionTransaction,
-    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_api_key)],
+    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_admin)],
     file: Annotated[UploadFile, File(description='技能包 ZIP 文件')],
     source_type: Annotated[Literal['huanxing', 'github'], Form(description='来源类型')],
     namespace: Annotated[str, Form(description='huanxing/<category> 或 github/<owner>')],
@@ -287,23 +355,101 @@ async def publish_source_skill(
     return response_base.success(data=SourcePublishResult(**result.__dict__))
 
 
+@router.post('/source/skill-pack', summary='发布官方 Hub 技能包制品')
+async def publish_source_skill_pack(
+    db: CurrentSessionTransaction,
+    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_admin)],
+    file: Annotated[UploadFile, File(description='技能包 ZIP 文件')],
+    slug: Annotated[str, Form(description='目录 slug')],
+    source_repo_path: Annotated[str, Form(description='Hub 仓库内相对路径')],
+    git_commit_hash: Annotated[str | None, Form(description='Hub 仓库 commit')] = None,
+    is_common: Annotated[bool, Form(description='是否为默认公共技能包')] = False,
+    content_hash: Annotated[str | None, Form(description='本地源内容指纹')] = None,
+    file_hash: Annotated[str | None, Form(description='本地 ZIP SHA256')] = None,
+) -> ResponseSchemaModel[SourceHubPublishResult]:
+    result = await source_release_service.publish_skill_pack(
+        db=db,
+        slug=slug,
+        content=await file.read(),
+        source_repo_path=source_repo_path,
+        git_commit_hash=git_commit_hash,
+        is_common=is_common,
+        expected_content_hash=content_hash,
+        expected_file_hash=file_hash,
+    )
+    await _bump_common_skills(db)
+    return response_base.success(data=SourceHubPublishResult(**result.__dict__))
+
+
+@router.post('/source/agent-template', summary='发布官方 Hub 分身模板制品')
+async def publish_source_agent_template(
+    db: CurrentSessionTransaction,
+    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_admin)],
+    file: Annotated[UploadFile, File(description='分身模板 ZIP 文件')],
+    slug: Annotated[str, Form(description='目录 slug')],
+    source_repo_path: Annotated[str, Form(description='Hub 仓库内相对路径')],
+    git_commit_hash: Annotated[str | None, Form(description='Hub 仓库 commit')] = None,
+    content_hash: Annotated[str | None, Form(description='本地源内容指纹')] = None,
+    file_hash: Annotated[str | None, Form(description='本地 ZIP SHA256')] = None,
+) -> ResponseSchemaModel[SourceHubPublishResult]:
+    result = await source_release_service.publish_agent_template(
+        db=db,
+        slug=slug,
+        content=await file.read(),
+        source_repo_path=source_repo_path,
+        git_commit_hash=git_commit_hash,
+        expected_content_hash=content_hash,
+        expected_file_hash=file_hash,
+    )
+    return response_base.success(data=SourceHubPublishResult(**result.__dict__))
+
+
+@router.post('/source/workflow', summary='发布官方 Hub 场景工作流制品')
+async def publish_source_workflow(
+    db: CurrentSessionTransaction,
+    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_admin)],
+    file: Annotated[UploadFile, File(description='场景工作流 ZIP 文件')],
+    slug: Annotated[str, Form(description='目录 slug')],
+    source_repo_path: Annotated[str, Form(description='Hub 仓库内相对路径')],
+    git_commit_hash: Annotated[str | None, Form(description='Hub 仓库 commit')] = None,
+    content_hash: Annotated[str | None, Form(description='本地源内容指纹')] = None,
+    file_hash: Annotated[str | None, Form(description='本地 ZIP SHA256')] = None,
+) -> ResponseSchemaModel[SourceHubPublishResult]:
+    result = await source_release_service.publish_workflow(
+        db=db,
+        slug=slug,
+        content=await file.read(),
+        source_repo_path=source_repo_path,
+        git_commit_hash=git_commit_hash,
+        expected_content_hash=content_hash,
+        expected_file_hash=file_hash,
+    )
+    return response_base.success(data=SourceHubPublishResult(**result.__dict__))
+
+
 @router.post('/source/reconcile', summary='对账官方或 GitHub 来源完整发布清单')
 async def reconcile_source_skills(
     db: CurrentSessionTransaction,
-    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_api_key)],
+    _publish_user: Annotated[SourcePublishUser, Depends(verify_source_publish_admin)],
     request: SourceReconcileRequest,
 ) -> ResponseSchemaModel[SourceReconcileResult]:
-    unpublished = await source_release_service.reconcile(
+    unpublished = await source_release_service.reconcile_resource(
         db=db,
+        resource_type=request.resource_type,
         source_type=request.source_type,
-        active_skill_ids=request.active_skill_ids,
+        active_resource_ids=request.active_resource_ids,
     )
-    await _bump_common_skills(db)
+    if request.resource_type in {'skill', 'skill_pack'}:
+        await _bump_common_skills(db)
     return response_base.success(
         data=SourceReconcileResult(
+            resource_type=request.resource_type,
             source_type=request.source_type,
-            active_count=len(set(request.active_skill_ids)),
-            unpublished_skill_ids=unpublished,
+            active_count=len(set(request.active_resource_ids)),
+            unpublished_resource_ids=unpublished,
+            unpublished_skill_ids=(
+                unpublished if request.resource_type == 'skill' else []
+            ),
         )
     )
 
