@@ -201,12 +201,13 @@ class BuildDetail(SchemaBase):
 
 
 class LatestReleaseResponse(SchemaBase):
-    """官网 Hero + 下载页：当前 channel 最新版本 + 各平台安装包"""
+    """官网 Hero + 下载页：当前最高版本 + 各平台自己的最新安装包"""
 
     version: str | None = None
     channel: str = 'stable'
     published_time: datetime | None = None
     release_notes_md: str | None = None
+    platform_versions: dict[str, str] = Field(default_factory=dict, description='platform_target → 该安装包所属版本')
     installers: dict[str, ReleaseAssetDetail] = Field(
         default_factory=dict, description='platform_target → installer 资产（dmg）'
     )

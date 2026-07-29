@@ -105,6 +105,48 @@ def _completed_platforms(
 class ReleaseService:
     # --------- 云端发布批次（跨机器版本与 tag 单一事实源） ---------
 
+    async def _get_public_release_candidates(
+        self,
+        db: AsyncSession,
+        channel: str,
+    ) -> list[AppRelease]:
+        """返回公开消费候选：正式最新版 + 已有平台完成的当前草稿批次。"""
+        releases = list(
+            (
+                await db.execute(
+                    select(AppRelease).where(
+                        AppRelease.channel == channel,
+                        AppRelease.status.in_(('draft', 'published')),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        published = [release for release in releases if release.status == 'published']
+        latest_published = [release for release in published if release.is_latest]
+        published_head = max(
+            latest_published or published,
+            key=lambda release: _semver_tuple(release.version),
+            default=None,
+        )
+        partial_releases = [
+            release
+            for release in releases
+            if release.status == 'draft'
+            and release.tag_status == 'ready'
+            and release.release_notes_status == 'ready'
+            and bool(release.release_tag)
+            and bool(release.completed_platforms)
+        ]
+        candidates = partial_releases + ([published_head] if published_head is not None else [])
+        return sorted(candidates, key=lambda release: _semver_tuple(release.version), reverse=True)
+
+    @staticmethod
+    def _platform_is_public(release: AppRelease, platform_target: str) -> bool:
+        """正式版全部公开；草稿只公开 installer/updater 已成套上传的平台。"""
+        return release.status == 'published' or platform_target in set(release.completed_platforms or [])
+
     @staticmethod
     def _to_batch(release: AppRelease) -> ReleaseBatchResponse:
         if not release.release_tag or not release.source_commit:
@@ -255,9 +297,7 @@ class ReleaseService:
         peeled_ref = f'{direct_ref}^{{}}'
         env = os.environ.copy()
         env['GIT_TERMINAL_PROMPT'] = '0'
-        env['GIT_SSH_COMMAND'] = (
-            'ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes'
-        )
+        env['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes'
         try:
             process = await asyncio.create_subprocess_exec(
                 'git',
@@ -691,38 +731,45 @@ class ReleaseService:
     # --------- 官网 / 桌面端消费 ---------
 
     async def get_latest(self, db: AsyncSession, channel: str = 'stable') -> LatestReleaseResponse:
-        """当前 channel 最新已发布版本 + 各平台 installer（官网 Hero + 下载页）。"""
-        release = (
-            await db.execute(
-                select(AppRelease)
-                .where(
-                    AppRelease.channel == channel,
-                    AppRelease.is_latest.is_(True),
-                    AppRelease.status == 'published',
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if release is None:
+        """返回当前最高版本说明，并为每个平台选择已经可用的最新 installer。"""
+        releases = await self._get_public_release_candidates(db, channel)
+        if not releases:
             return LatestReleaseResponse(channel=channel)
 
-        assets = (
+        release_ids = [release.id for release in releases]
+        assets = list(
             (
                 await db.execute(
                     select(ReleaseAsset).where(
-                        ReleaseAsset.release_id == release.id, ReleaseAsset.asset_kind == 'installer'
+                        ReleaseAsset.release_id.in_(release_ids),
+                        ReleaseAsset.asset_kind == 'installer',
                     )
                 )
             )
             .scalars()
             .all()
         )
-        installers = {a.platform_target: ReleaseAssetDetail.model_validate(a) for a in assets}
+        assets_by_release: dict[int, list[ReleaseAsset]] = {}
+        for asset in assets:
+            assets_by_release.setdefault(asset.release_id, []).append(asset)
+
+        installers: dict[str, ReleaseAssetDetail] = {}
+        platform_versions: dict[str, str] = {}
+        for release in releases:
+            for asset in assets_by_release.get(release.id, []):
+                platform_target = asset.platform_target
+                if platform_target in installers or not self._platform_is_public(release, platform_target):
+                    continue
+                installers[platform_target] = ReleaseAssetDetail.model_validate(asset)
+                platform_versions[platform_target] = release.version
+
+        headline = releases[0]
         return LatestReleaseResponse(
-            version=release.version,
+            version=headline.version,
             channel=channel,
-            published_time=release.published_time,
-            release_notes_md=release.release_notes_md,
+            published_time=headline.published_time,
+            release_notes_md=headline.release_notes_md,
+            platform_versions=platform_versions,
             installers=installers,
         )
 
@@ -734,31 +781,39 @@ class ReleaseService:
         target/arch 形如 darwin/aarch64 → platform_target=darwin-aarch64。
         """
         platform_target = f'{target}-{arch}'
-        release = (
-            await db.execute(
-                select(AppRelease)
-                .where(
-                    AppRelease.channel == channel,
-                    AppRelease.is_latest.is_(True),
-                    AppRelease.status == 'published',
-                )
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if release is None or not _is_newer(release.version, current_version):
+        releases = await self._get_public_release_candidates(db, channel)
+        eligible_releases = [
+            release
+            for release in releases
+            if self._platform_is_public(release, platform_target) and _is_newer(release.version, current_version)
+        ]
+        if not eligible_releases:
             return None
 
-        updater = (
-            await db.execute(
-                select(ReleaseAsset).where(
-                    ReleaseAsset.release_id == release.id,
-                    ReleaseAsset.asset_kind == 'updater',
-                    ReleaseAsset.platform_target == platform_target,
+        release_ids = [release.id for release in eligible_releases]
+        updaters = list(
+            (
+                await db.execute(
+                    select(ReleaseAsset).where(
+                        ReleaseAsset.release_id.in_(release_ids),
+                        ReleaseAsset.asset_kind == 'updater',
+                        ReleaseAsset.platform_target == platform_target,
+                    )
                 )
             )
-        ).scalar_one_or_none()
-        if updater is None or not (updater.signature or '').strip():
+            .scalars()
+            .all()
+        )
+        updater_by_release = {updater.release_id: updater for updater in updaters}
+        selected: tuple[AppRelease, ReleaseAsset] | None = None
+        for release in eligible_releases:
+            updater = updater_by_release.get(release.id)
+            if updater is not None and (updater.signature or '').strip():
+                selected = (release, updater)
+                break
+        if selected is None:
             return None
+        release, updater = selected
 
         pub_date = None
         if release.published_time is not None:
