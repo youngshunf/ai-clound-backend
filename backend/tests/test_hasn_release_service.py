@@ -17,13 +17,14 @@ service 内部 commit（非 flush/rollback），故测试用 99.x 版本命名�
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn_release.model import AppRelease, ReleaseAsset, ReleaseBuild
@@ -45,7 +46,7 @@ _CDN = 'https://cdn.test.example/astra'
 _MIGRATION = Path(__file__).resolve().parents[1] / 'sql/hasn_release/migrations/2026-07-29-desktop-release-batch.sql'
 
 
-async def _apply_release_batch_migration(session) -> None:  # noqa: ANN001
+async def _apply_release_batch_migration(session: AsyncSession) -> None:
     """使用 asyncpg simple-query 协议执行可重复迁移。"""
     connection = await session.connection()
     raw = await connection.get_raw_connection()
@@ -53,7 +54,7 @@ async def _apply_release_batch_migration(session) -> None:  # noqa: ANN001
 
 
 @pytest_asyncio.fixture
-async def session():
+async def session() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(SQLALCHEMY_DATABASE_URL, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
@@ -114,7 +115,7 @@ def _publish_req(version: str, *, channel: str = 'stable', set_latest: bool = Tr
     )
 
 
-async def test_publish_creates_release_and_assets_and_latest(session) -> None:
+async def test_publish_creates_release_and_assets_and_latest(session: AsyncSession) -> None:
     detail = await release_service.publish(session, _publish_req('99.1.0'), source='manual')
     assert detail.version == '99.1.0'
     assert detail.is_latest is True
@@ -129,7 +130,7 @@ async def test_publish_creates_release_and_assets_and_latest(session) -> None:
     assert latest.installers['darwin-aarch64'].download_url.endswith('arm64.dmg')
 
 
-async def test_updater_asset_requires_signature(session) -> None:
+async def test_updater_asset_requires_signature(session: AsyncSession) -> None:
     req = _publish_req('99.1.1')
     # 抹掉一个 updater 的签名 → 应拒收
     req.assets[1].signature = None
@@ -137,14 +138,14 @@ async def test_updater_asset_requires_signature(session) -> None:
         await release_service.publish(session, req, source='manual')
 
 
-async def test_asset_url_must_be_https(session) -> None:
+async def test_asset_url_must_be_https(session: AsyncSession) -> None:
     req = _publish_req('99.1.2')
     req.assets[0].download_url = 'http://cdn.test.example/insecure.dmg'
     with pytest.raises(errors.RequestError):
         await release_service.publish(session, req, source='manual')
 
 
-async def test_publish_new_version_flips_old_latest(session) -> None:
+async def test_publish_new_version_flips_old_latest(session: AsyncSession) -> None:
     await release_service.publish(session, _publish_req('99.2.0'), source='manual')
     await release_service.publish(session, _publish_req('99.3.0'), source='manual')
 
@@ -156,7 +157,7 @@ async def test_publish_new_version_flips_old_latest(session) -> None:
     assert old.is_latest is False
 
 
-async def test_updater_manifest_offers_update_when_newer(session) -> None:
+async def test_updater_manifest_offers_update_when_newer(session: AsyncSession) -> None:
     await release_service.publish(session, _publish_req('99.4.0'), source='manual')
 
     # 客户端在 99.3.0 → 有更新
@@ -182,7 +183,7 @@ async def test_updater_manifest_offers_update_when_newer(session) -> None:
     assert newer is None
 
 
-async def test_resolve_download_increments_count(session) -> None:
+async def test_resolve_download_increments_count(session: AsyncSession) -> None:
     detail = await release_service.publish(session, _publish_req('99.5.0'), source='manual')
     installer = next(a for a in detail.assets if a.asset_kind == 'installer')
     assert installer.download_count == 0
@@ -194,7 +195,7 @@ async def test_resolve_download_increments_count(session) -> None:
     assert row.download_count == 1
 
 
-async def test_set_latest_rolls_back_to_older(session) -> None:
+async def test_set_latest_rolls_back_to_older(session: AsyncSession) -> None:
     await release_service.publish(session, _publish_req('99.6.0'), source='manual')
     v7 = await release_service.publish(session, _publish_req('99.7.0'), source='manual')
     assert (await release_service.get_latest(session, channel='stable')).version == '99.7.0'
@@ -210,7 +211,7 @@ async def test_set_latest_rolls_back_to_older(session) -> None:
     assert v7_row.is_latest is False
 
 
-async def test_ci_callback_sets_source_github_and_updates_build(session) -> None:
+async def test_ci_callback_sets_source_github_and_updates_build(session: AsyncSession) -> None:
     # 先造一个 queued 构建
     build = ReleaseBuild(ref='test/main', channel='stable', status='queued', triggered_by='pytest')
     session.add(build)
@@ -236,7 +237,7 @@ async def test_ci_callback_sets_source_github_and_updates_build(session) -> None
     assert updated.version == '99.8.0'
 
 
-async def test_github_build_without_config_queues_with_reason(session) -> None:
+async def test_github_build_without_config_queues_with_reason(session: AsyncSession) -> None:
     # 未配置 RELEASE_GITHUB_TOKEN 时（默认空）：落 queued 行 + 写明原因，不 fake 成功
     build = await release_service.trigger_github_build(
         session, GithubBuildRequest(ref='test/main', channel='stable'), actor='pytest'
@@ -245,7 +246,7 @@ async def test_github_build_without_config_queues_with_reason(session) -> None:
     assert build.error_message and '未配置' in build.error_message
 
 
-async def test_delete_cascades_assets(session) -> None:
+async def test_delete_cascades_assets(session: AsyncSession) -> None:
     detail = await release_service.publish(session, _publish_req('99.9.0'), source='manual')
     release_id = detail.id
     asset_ids = [a.id for a in detail.assets]
