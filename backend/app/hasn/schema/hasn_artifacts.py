@@ -139,7 +139,7 @@ class RecordArtifactParam(SchemaBase):
         description='产出来源（app_write/platform_tool/runtime_file/agent_note/external_import）',
     )
     action: ArtifactAction = Field('create', description='产出动作 (create:新增 / update:修改)')
-    dispatch_id: str | None = Field(None, description='派发关联（审计/去重）')
+    dispatch_id: str | None = Field(None, max_length=128, description='派发关联（审计/去重）')
     metadata: dict = Field(default_factory=dict, description='元数据快照（mime/size/width/height 等）')
 
     @model_validator(mode='before')
