@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS growth_project (
     provision_error jsonb,
     monthly_budget numeric(18,2),
     budget_currency varchar(3) NOT NULL DEFAULT 'CNY',
+    quiet_hours_start smallint NOT NULL DEFAULT 21,
+    quiet_hours_end smallint NOT NULL DEFAULT 9,
+    daily_outreach_limit integer NOT NULL DEFAULT 20,
+    policy_version integer NOT NULL DEFAULT 1,
     readiness_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
     stats_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_time timestamptz NOT NULL DEFAULT now(),
@@ -45,7 +49,16 @@ CREATE TABLE IF NOT EXISTS growth_project (
     CONSTRAINT ck_growth_project_profile_version CHECK (profile_version >= 1),
     CONSTRAINT ck_growth_project_monthly_budget CHECK (
         monthly_budget IS NULL OR monthly_budget >= 0
-    )
+    ),
+    CONSTRAINT ck_growth_project_quiet_hours CHECK (
+        quiet_hours_start BETWEEN 0 AND 23
+        AND quiet_hours_end BETWEEN 0 AND 23
+        AND quiet_hours_start <> quiet_hours_end
+    ),
+    CONSTRAINT ck_growth_project_daily_outreach_limit CHECK (
+        daily_outreach_limit BETWEEN 1 AND 10000
+    ),
+    CONSTRAINT ck_growth_project_policy_version CHECK (policy_version >= 1)
 );
 COMMENT ON TABLE growth_project IS '平台项目唯一挂靠的获客漏斗';
 COMMENT ON COLUMN growth_project.platform_project_id IS '平台项目云端权威 UUID，一个平台项目至多一个获客漏斗';
@@ -55,6 +68,10 @@ COMMENT ON COLUMN growth_project.status IS '状态 (draft:草稿:gray/active:运
 COMMENT ON COLUMN growth_project.provision_status IS '开通状态 (pending:待开始:gray/running:进行中:blue/ready:就绪:green/failed:失败:red)';
 COMMENT ON COLUMN growth_project.kb_ref IS '知识库资源引用 hasn://knowledge/kbs/{id}';
 COMMENT ON COLUMN growth_project.landing_site_ref IS '站点资源引用 hasn://publish/sites/{id}';
+COMMENT ON COLUMN growth_project.quiet_hours_start IS '静默时段开始小时，使用项目时区的 0–23 整点';
+COMMENT ON COLUMN growth_project.quiet_hours_end IS '静默时段结束小时，使用项目时区的 0–23 整点';
+COMMENT ON COLUMN growth_project.daily_outreach_limit IS '项目每日发送成功或人工发送证明的触达上限';
+COMMENT ON COLUMN growth_project.policy_version IS '渠道、静默时段、频控和预算策略版本';
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_growth_project_kb_ref
     ON growth_project (kb_ref) WHERE kb_ref IS NOT NULL;

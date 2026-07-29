@@ -617,6 +617,30 @@ class ProjectLeadService:
             scope=scope,
         )
         await db.flush()
+        await db.execute(
+            pg_insert(GrowthAttributionEvent)
+            .values(
+                growth_project_id=project.id,
+                event_type='lead_acquired',
+                lead_contact_id=project_lead.lead_contact_id,
+                source_kind=project_lead.source_kind,
+                source_ref=project_lead.source_ref,
+                campaign_ref=(project_lead.source_meta or {}).get('campaign'),
+                occurred_time=project_lead.acquired_at,
+                idempotency_key=f'lead_acquired:{project_lead.id}',
+                meta_data={
+                    'project_lead_id': project_lead.id,
+                    'batch_id': batch_id,
+                    'source_tool': project_lead.source_tool,
+                },
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    GrowthAttributionEvent.growth_project_id,
+                    GrowthAttributionEvent.idempotency_key,
+                ]
+            )
+        )
         return self._ingest_result(
             project_lead=project_lead,
             client_ref=item.client_ref,

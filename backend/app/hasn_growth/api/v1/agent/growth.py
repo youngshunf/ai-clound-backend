@@ -26,6 +26,7 @@ from backend.app.hasn_growth.schema.funnel import (
     UpdateCustomerParam,
     UpdateStageParam,
 )
+from backend.app.hasn_growth.schema.project_review import CreateGrowthReviewSuggestionBody
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
@@ -39,6 +40,7 @@ from backend.app.hasn_growth.service.project_customer_service import (
 )
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.hasn_growth.service.review_service import growth_review_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.app.mcp.artifact_registration import merge_resource_uri
 from backend.common.dataclasses import AgentTokenPayload
@@ -496,7 +498,7 @@ async def list_project_opportunities(
     growth_project_id: UUID,
     customer_id: Annotated[int | None, Query()] = None,
     stage: Annotated[str | None, Query()] = None,
-    open_only: Annotated[bool, Query()] = False,  # ruff: ignore[boolean-default-value-positional-argument]
+    open_only: Annotated[bool, Query()] = False,  # noqa: FBT002
     limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> ResponseModel:
     scope = await _agent_scope(db, agent)
@@ -777,6 +779,31 @@ async def close_deal(
 
 
 # ---------------- 报表 ----------------
+
+
+@router.post(
+    '/projects/{growth_project_id}/review/suggestions',
+    summary='[Agent] 提交下一周期 ICP、渠道或打法建议',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def create_growth_review_suggestion(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: CreateGrowthReviewSuggestionBody,
+) -> ResponseModel:
+    data = await growth_review_service.create_suggestion(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=growth_project_id,
+        suggestion_kind=obj.suggestion_kind,
+        proposal=obj.proposal,
+        evidence=obj.evidence,
+        proposed_by_kind='agent',
+        proposed_by_id=agent.agent_hasn_id,
+        idempotency_key=obj.idempotency_key,
+    )
+    return response_base.success(data=data)
 
 
 @router.get('/report/funnel', summary='[Agent] 漏斗总览', dependencies=[DependsAgentJwtAuth])
