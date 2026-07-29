@@ -34,6 +34,10 @@ class GrowthProjectSchemaBase(SchemaBase):
     provision_error: dict | None = Field(None, description='None')
     monthly_budget: Decimal | None = Field(None, description='None')
     budget_currency: str = Field(description='None')
+    quiet_hours_start: int = Field(description='静默时段开始小时，使用项目时区的 0–23 整点')
+    quiet_hours_end: int = Field(description='静默时段结束小时，使用项目时区的 0–23 整点')
+    daily_outreach_limit: int = Field(description='项目每日发送成功或人工发送证明的触达上限')
+    policy_version: int = Field(description='渠道、静默时段、频控和预算策略版本')
     readiness_snapshot: dict = Field(description='None')
     stats_snapshot: dict = Field(description='None')
 

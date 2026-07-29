@@ -19,6 +19,7 @@ import hashlib
 
 from dataclasses import replace
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -42,6 +43,7 @@ from backend.app.hasn_growth.model.lead_contact import LeadContact
 from backend.app.hasn_growth.model.optout_record import OptoutRecord
 from backend.app.hasn_growth.model.outreach_message import OutreachMessage
 from backend.app.hasn_growth.model.outreach_message_event import OutreachMessageEvent
+from backend.app.hasn_growth.service.attribution_service import growth_attribution_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import GrowthFunnelService
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
@@ -124,6 +126,13 @@ _DELIVERY_STATUSES = frozenset({
     'sending',
     'sent',
 })
+
+
+def _is_quiet_hour(hour: int, *, start: int, end: int) -> bool:
+    """判断支持跨午夜的项目静默时段。"""
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
 
 
 def _gen_no(prefix: str) -> str:
@@ -1514,6 +1523,26 @@ class GrowthOutreachService:
                 'does_not_assert_delivery': True,
             },
         )
+        await growth_attribution_service.record_outreach(
+            db,
+            message=message,
+            event_type='outreach_sent',
+            event_key=event_key,
+            channel=normalized_channel,
+            metadata={
+                'manual_attested': True,
+                'does_not_assert_delivery': True,
+            },
+        )
+        await growth_attribution_service.record_cost(
+            db,
+            message=message,
+            event_key=event_key,
+            channel=normalized_channel,
+            amount=Decimal(0),
+            currency='CNY',
+            metadata={'manual_assist': True},
+        )
         return _outreach_to_dict(message)
 
     @classmethod
@@ -1561,6 +1590,9 @@ class GrowthOutreachService:
         channel_actual: str | None = None,
         scope: GrowthScope | None = None,
         provider_event_id: str | None = None,
+        cost_amount: Decimal | None = None,
+        cost_currency: str | None = None,
+        cost_known: bool = False,
     ) -> dict[str, Any]:
         """真实渠道受理/发送成功；manual_assist 证明必须走 attest_manual_send。"""
         normalized_channel = _normalize_outreach_channel(channel_actual) if channel_actual else None
@@ -1599,6 +1631,23 @@ class GrowthOutreachService:
             actor_kind='provider' if provider_event_id else 'system',
             actor_id=normalized_channel or m.channel,
             metadata={'channel_actual': normalized_channel or m.channel},
+        )
+        event_key = f'provider:{provider_event_id}' if provider_event_id else f'sent:v{m.approval_version}'
+        actual_channel = normalized_channel or m.channel
+        await growth_attribution_service.record_outreach(
+            db,
+            message=m,
+            event_type='outreach_sent',
+            event_key=event_key,
+            channel=actual_channel,
+        )
+        await growth_attribution_service.record_cost(
+            db,
+            message=m,
+            event_key=event_key,
+            channel=actual_channel,
+            amount=cost_amount if cost_known else None,
+            currency=(cost_currency or 'CNY') if cost_known else None,
         )
         await GrowthFunnelService._add_activity(
             db,
@@ -1687,6 +1736,23 @@ class GrowthOutreachService:
                 'detail': redact_pii_value(detail) if detail else None,
             },
         )
+        if outcome == 'sent':
+            actual_channel = normalized_channel or message.channel
+            await growth_attribution_service.record_outreach(
+                db,
+                message=message,
+                event_type='outreach_sent',
+                event_key=event_key,
+                channel=actual_channel,
+            )
+            await growth_attribution_service.record_cost(
+                db,
+                message=message,
+                event_key=event_key,
+                channel=actual_channel,
+                amount=None,
+                currency=None,
+            )
         return _outreach_to_dict(message)
 
     @classmethod
@@ -1806,7 +1872,7 @@ class GrowthOutreachService:
         return _outreach_to_dict(message)
 
     @classmethod
-    async def dispatch_preflight(  # ruff: ignore[complex-structure]
+    async def dispatch_preflight(  # noqa: C901
         cls,
         db: AsyncSession,
         *,
@@ -1824,14 +1890,14 @@ class GrowthOutreachService:
                 'error_class': 'stale_approval',
                 'reason': '批准版本已失效，请重新审核',
             }
-        if not (_QUIET_START_HOUR <= now_hour < _QUIET_END_HOUR):
-            return {
-                'allowed': False,
-                'action': 'retry_scheduled',
-                'error_class': 'quiet_hours',
-                'reason': '当前处于静默时段',
-            }
         if message.growth_project_id is None:
+            if not (_QUIET_START_HOUR <= now_hour < _QUIET_END_HOUR):
+                return {
+                    'allowed': False,
+                    'action': 'retry_scheduled',
+                    'error_class': 'quiet_hours',
+                    'reason': '当前处于静默时段',
+                }
             return {
                 'allowed': True,
                 'snapshot': snapshot,
@@ -1844,6 +1910,17 @@ class GrowthOutreachService:
                 'action': 'blocked_compliance',
                 'error_class': 'project_not_active',
                 'reason': '获客项目未处于运行中',
+            }
+        if _is_quiet_hour(
+            now_hour,
+            start=project.quiet_hours_start,
+            end=project.quiet_hours_end,
+        ):
+            return {
+                'allowed': False,
+                'action': 'retry_scheduled',
+                'error_class': 'quiet_hours',
+                'reason': '当前处于项目静默时段',
             }
         subject_type = 'enterprise' if project.owner_scope == 'enterprise' else 'owner'
         subject_id = str(project.enterprise_id) if subject_type == 'enterprise' else project.owner_hasn_id
@@ -1860,14 +1937,70 @@ class GrowthOutreachService:
                 'error_class': 'entitlement_required',
                 'reason': '获客权益已暂停或失效',
             }
-        if project.monthly_budget is not None:
-            month_start = timezone.now().replace(
-                day=1,
-                hour=0,
-                minute=0,
-                second=0,
-                microsecond=0,
+        day_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        month_start = day_start.replace(day=1)
+        daily_usage = await db.scalar(
+            sa
+            .select(sa.func.count())
+            .select_from(GrowthAttributionEvent)
+            .where(
+                GrowthAttributionEvent.growth_project_id == project.id,
+                GrowthAttributionEvent.event_type == 'outreach_sent',
+                GrowthAttributionEvent.occurred_time >= day_start,
             )
+        )
+        if int(daily_usage or 0) >= project.daily_outreach_limit:
+            return {
+                'allowed': False,
+                'action': 'blocked_compliance',
+                'error_class': 'daily_outreach_limit',
+                'reason': '项目今日触达频控已达上限',
+            }
+        quota_value = (entitlement.quota_json or {}).get('monthly_outreach')
+        if quota_value is not None:
+            try:
+                monthly_quota = int(quota_value)
+            except (TypeError, ValueError):
+                monthly_quota = 0
+            monthly_usage = await db.scalar(
+                sa
+                .select(sa.func.count())
+                .select_from(GrowthAttributionEvent)
+                .where(
+                    GrowthAttributionEvent.growth_project_id == project.id,
+                    GrowthAttributionEvent.event_type == 'outreach_sent',
+                    GrowthAttributionEvent.occurred_time >= month_start,
+                )
+            )
+            if monthly_quota <= 0 or int(monthly_usage or 0) >= monthly_quota:
+                return {
+                    'allowed': False,
+                    'action': 'blocked_compliance',
+                    'error_class': 'entitlement_quota_exhausted',
+                    'reason': '获客权益的月度触达配额已用尽',
+                }
+        if project.monthly_budget is not None:
+            unknown_cost_count = await db.scalar(
+                sa
+                .select(sa.func.count())
+                .select_from(GrowthAttributionEvent)
+                .where(
+                    GrowthAttributionEvent.growth_project_id == project.id,
+                    GrowthAttributionEvent.event_type == 'cost',
+                    GrowthAttributionEvent.occurred_time >= month_start,
+                    sa.or_(
+                        GrowthAttributionEvent.amount.is_(None),
+                        GrowthAttributionEvent.meta_data['cost_state'].astext == 'unknown',
+                    ),
+                )
+            )
+            if int(unknown_cost_count or 0) > 0:
+                return {
+                    'allowed': False,
+                    'action': 'blocked_compliance',
+                    'error_class': 'cost_unknown_budget_guard',
+                    'reason': '存在未知成本用量，确认成本前暂停自动发送',
+                }
             spent = await db.scalar(
                 sa.select(sa.func.coalesce(sa.func.sum(GrowthAttributionEvent.amount), 0)).where(
                     GrowthAttributionEvent.growth_project_id == project.id,
@@ -2067,7 +2200,7 @@ class GrowthOutreachService:
             actor_id=normalized_channel,
             metadata={'channel': normalized_channel},
         )
-        await GrowthFunnelService._add_activity(
+        activity = await GrowthFunnelService._add_activity(
             db,
             user_id=user_id,
             customer_id=customer_id,
@@ -2077,6 +2210,14 @@ class GrowthOutreachService:
             actor_id=None,
             ref_table='outreach_message',
             ref_id=str(message.id),
+        )
+        await growth_attribution_service.record_outreach(
+            db,
+            message=message,
+            event_type='replied',
+            event_key=f'provider:{provider_event_id}' if provider_event_id else f'reply:{message.id}',
+            channel=normalized_channel,
+            metadata={'activity_id': activity.id},
         )
         # M6 通知卡片：客户回复 → 提醒主人（J3 即时跟进的人侧提醒）。owner hasn_id 由 user_id 解析。
         owner_hasn_id = (

@@ -16,6 +16,7 @@ worker 不感知节点本地运行态；运行重叠由节点侧机制兜底。�
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
@@ -105,7 +106,7 @@ class GrowthDispatchService:
     """获客发送 worker：扫 approved → 按渠道闸门分发 → 状态回写（sent/failed）。"""
 
     @staticmethod
-    async def dispatch_approved_batch(  # ruff: ignore[complex-structure]
+    async def dispatch_approved_batch(  # noqa: C901
         db: AsyncSession, *, limit: int = 50, now_hour: int | None = None
     ) -> dict[str, int]:
         """扫一批 approved 出站触达并分发。返回统计（旁路，可观测）。
@@ -242,12 +243,16 @@ class GrowthDispatchService:
                     'dedupe_guaranteed': False,
                 }
             if result.get('ok'):
+                raw_cost = result.get('cost_amount')
                 await growth_outreach_service.mark_sent(
                     db,
                     user_id=m.user_id,
                     message_id=m.id,
                     channel_actual=result.get('channel_actual') or m.channel,
                     provider_event_id=result.get('provider_event_id'),
+                    cost_amount=(Decimal(str(raw_cost)) if raw_cost is not None else None),
+                    cost_currency=result.get('cost_currency'),
+                    cost_known=result.get('cost_known') is True,
                 )
                 stat['sent'] += 1
             elif result.get('retryable') and result.get('dedupe_guaranteed'):

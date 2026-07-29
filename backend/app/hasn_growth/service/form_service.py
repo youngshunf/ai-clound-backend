@@ -63,9 +63,7 @@ def _clean_optional(value: Any, *, max_length: int) -> str | None:
         return None
     normalized = unicodedata.normalize('NFKC', value)
     without_controls = ''.join(
-        char
-        for char in normalized
-        if unicodedata.category(char) not in {'Cc', 'Cf'} or char in {'\n', '\t'}
+        char for char in normalized if unicodedata.category(char) not in {'Cc', 'Cf'} or char in {'\n', '\t'}
     )
     cleaned = _HTML_TAG_RE.sub('', html.unescape(without_controls)).strip()
     return cleaned[:max_length] or None
@@ -353,6 +351,7 @@ class GrowthFormService:
             'publish_site_id': binding['site_id'],
             'landing_revision_id': binding['revision_id'],
             'form_ref': binding['form_ref'],
+            'form_submission_id': submission.id,
             'utm_source_hmac': submission.utm_source,
             'utm_medium_hmac': submission.utm_medium,
             'utm_campaign_hmac': submission.utm_campaign,
@@ -510,7 +509,7 @@ class GrowthFormService:
         return customer
 
     @classmethod
-    async def submit_form(
+    async def submit_form(  # noqa: C901
         cls,
         db: AsyncSession,
         *,
@@ -651,10 +650,7 @@ class GrowthFormService:
             sort_keys=True,
             separators=(',', ':'),
         )
-        identity_hmac = (
-            f'v{keyring.active_hmac_version}:'
-            f'{keyring.hmac_for("form_identity", identity_payload)}'
-        )
+        identity_hmac = f'v{keyring.active_hmac_version}:{keyring.hmac_for("form_identity", identity_payload)}'
         await cls._enforce_rate_limit(
             publish_ref=publish_ref,
             ip_hmac=ip_hmac,

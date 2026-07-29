@@ -338,6 +338,17 @@ async def test_stable_batch_retry_does_not_duplicate_project_lead(ctx: SimpleNam
         .where(GrowthProjectLead.growth_project_id == ctx.first_growth.id)
     )
     assert count == 1
+    attribution_count = await ctx.session.scalar(
+        sa
+        .select(sa.func.count())
+        .select_from(GrowthAttributionEvent)
+        .where(
+            GrowthAttributionEvent.growth_project_id == ctx.first_growth.id,
+            GrowthAttributionEvent.event_type == 'lead_acquired',
+            GrowthAttributionEvent.meta_data['project_lead_id'].astext == str(first['items'][0]['project_lead_id']),
+        )
+    )
+    assert attribution_count == 1
     changed_contact_count = await ctx.session.scalar(
         sa.select(sa.func.count()).select_from(LeadContact).where(LeadContact.domain == 'changed.example')
     )
