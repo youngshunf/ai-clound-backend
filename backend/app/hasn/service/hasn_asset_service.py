@@ -141,7 +141,7 @@ class HasnAssetService:
                 text(
                     """
                     SELECT a.asset_id, a.owner_hasn_id, a.access, a.kind, a.mime,
-                           a.content_sha256,
+                           COALESCE(a.content_sha256, o.sha256) AS content_sha256,
                            a.width, a.height, a.duration_ms, a.transcript,
                            a.thumbnail_asset_id, a.extract_status,
                            COALESCE(a.object_id, 'legacy:' || a.asset_id) AS object_id,
@@ -174,7 +174,7 @@ class HasnAssetService:
                 text(
                     """
                     SELECT a.asset_id, a.owner_hasn_id, a.access, a.kind, a.mime,
-                           a.content_sha256,
+                           COALESCE(a.content_sha256, o.sha256) AS content_sha256,
                            a.width, a.height, a.duration_ms, a.transcript,
                            a.thumbnail_asset_id, a.extract_status,
                            COALESCE(a.object_id, 'legacy:' || a.asset_id) AS object_id,
@@ -211,7 +211,7 @@ class HasnAssetService:
                 text(
                     """
                     SELECT a.asset_id, a.owner_hasn_id, a.access, a.kind, a.mime,
-                           a.content_sha256,
+                           COALESCE(a.content_sha256, o.sha256) AS content_sha256,
                            a.width, a.height, a.duration_ms, a.transcript,
                            a.thumbnail_asset_id, a.extract_status,
                            COALESCE(a.object_id, 'legacy:' || a.asset_id) AS object_id,
