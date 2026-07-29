@@ -12,6 +12,12 @@ from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH, ENV_FILE_PATH
 from backend.plugin.settings_source import PluginSettingsSource
 
 
+def _set_production_observability_default(values: dict[str, Any]) -> None:
+    """生产默认开启可观测性，同时保留显式关闭能力。"""
+    if 'GRAFANA_METRICS_ENABLE' not in values:
+        values['GRAFANA_METRICS_ENABLE'] = True
+
+
 class Settings(BaseSettings):
     """全局配置"""
 
@@ -692,7 +698,7 @@ class Settings(BaseSettings):
             # 生产若要用 RabbitMQ，在 .env 显式设置 CELERY_BROKER=rabbitmq（不再硬编码）
 
             # Grafana
-            values['GRAFANA_METRICS_ENABLE'] = True
+            _set_production_observability_default(values)
 
         return values
 
