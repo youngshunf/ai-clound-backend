@@ -288,6 +288,7 @@ async def test_query_returns_contextual_latest_contribution_without_local_path()
             assert page.total == 1
             item = page.items[0]
             assert item.title == '终稿'
+            assert item.latest_contribution is not None
             assert item.latest_contribution.agent_hasn_id == agent_two
             assert item.latest_contribution.action == 'update'
             assert item.project_relation is not None
@@ -964,5 +965,78 @@ async def test_list_rejects_broken_cursor() -> None:
             for bad in ('not-a-cursor', '2026-01-01|', '|art_x', 'garbage|art_x'):
                 with pytest.raises(errors.RequestError):
                     await artifact_query_service.list(db, owner_hasn_id=owner, cursor=bad)
+        finally:
+            await db.rollback()
+
+
+async def test_contributionless_history_row_surfaces_with_honest_lost_mark() -> None:
+    """A15：历史回填无法恢复参与事实的行必须出现在全量列表里，latest_contribution 合法
+    留空并透 migration_lost_history——INNER JOIN 静默吞行或伪填占位分身都违反诚实原则。"""
+    owner = _id('owner')
+
+    async with async_db_session() as db:
+        try:
+            db.add(
+                HasnArtifacts(
+                    artifact_id=_id('art'),
+                    owner_hasn_id=owner,
+                    agent_hasn_id='',
+                    artifact_key=f'legacy:{_id("key")}',
+                    artifact_kind='document',
+                    kind='document',
+                    body='无法考证发起者的历史正文',
+                    status='active',
+                    meta_data={'migration_lost_history': True},
+                )
+            )
+            await db.flush()
+
+            page = await artifact_query_service.list(db, owner_hasn_id=owner, size=10)
+
+            assert page.total == 1
+            item = page.items[0]
+            assert item.latest_contribution is None, '无参与记录可考时如实留空，不伪填'
+            assert item.migration_lost_history is True
+            assert item.agent_identity is None
+            assert item.body_preview is not None, '产物本体仍正常呈现'
+        finally:
+            await db.rollback()
+
+
+async def test_contributionless_row_excluded_from_contribution_axis_but_not_owner_list() -> None:
+    """A15 补充：按分身/会话等参与轴筛选时，无参与记录的行天然不可能命中（INNER JOIN 语义）；
+    未打标记的缺参与行也不吞——照常在全量列表透出（登记链路缺陷由 service warn 显式告警）。"""
+    owner = _id('owner')
+
+    async with async_db_session() as db:
+        try:
+            db.add(
+                HasnArtifacts(
+                    artifact_id=_id('art'),
+                    owner_hasn_id=owner,
+                    agent_hasn_id='',
+                    artifact_key=f'legacy:{_id("key")}',
+                    artifact_kind='document',
+                    kind='document',
+                    body='缺参与且未打标记的异常行',
+                    status='active',
+                )
+            )
+            await db.flush()
+
+            by_session = await artifact_query_service.list(
+                db, owner_hasn_id=owner, work_session_id=_id('ws'), size=10
+            )
+            assert by_session.total == 0, '会话轴筛选下无参与记录的行不得混入'
+
+            by_agent = await artifact_query_service.list(
+                db, owner_hasn_id=owner, agent_hasn_id=_id('agent'), size=10
+            )
+            assert by_agent.total == 0, '分身轴筛选下无参与记录的行不得混入'
+
+            unfiltered = await artifact_query_service.list(db, owner_hasn_id=owner, size=10)
+            assert unfiltered.total == 1, '全量列表不吞缺参与行（缺陷显式透出而非隐藏）'
+            assert unfiltered.items[0].latest_contribution is None
+            assert unfiltered.items[0].migration_lost_history is False
         finally:
             await db.rollback()

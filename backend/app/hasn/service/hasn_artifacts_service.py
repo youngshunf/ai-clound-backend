@@ -250,6 +250,11 @@ class HasnArtifactsService:
     def _legacy_item(item: ArtifactListItem) -> ArtifactItem:
         """供尚未迁移的 MCP 调用方读取统一 DTO；HTTP API 已直接返回 ArtifactListItem。"""
         asset_id = item.asset_uri.rsplit('/', 1)[-1] if item.asset_uri else None
+        # A15：无参与记录的历史行 latest_contribution 合法为 None。本适配面只服务
+        # agent/session 参与轴筛选（轴激活时查询走 INNER JOIN，None 实际不可达），这里
+        # 防御性如实填空——不编造分身、工具或动作；source_kind 只能取 external_import
+        # （系统外来源，是唯一不含虚构发起者的桶）。
+        contribution = item.latest_contribution
         return ArtifactItem(
             artifact_id=item.artifact_id,
             kind=item.artifact_kind,
@@ -266,15 +271,15 @@ class HasnArtifactsService:
             node_id=item.local_entry.node_id if item.local_entry else None,
             origin_ref=None,
             # doc97：把「哪个分身产的」透出来——项目内跨分身查产物时，分身要据它判断这条是哪一环的产出。
-            agent_hasn_id=item.latest_contribution.agent_hasn_id,
+            agent_hasn_id=contribution.agent_hasn_id if contribution else None,
             conversation_id=None,
             message_id=None,
-            session_id=item.latest_contribution.work_session_id,
-            source_tool=item.latest_contribution.source_tool,
-            source_app_id=item.latest_contribution.source_app_id,
-            source_kind=item.latest_contribution.source_kind,
-            action=item.latest_contribution.action,
-            source_link=item.latest_contribution.source_link,
+            session_id=contribution.work_session_id if contribution else None,
+            source_tool=contribution.source_tool if contribution else None,
+            source_app_id=contribution.source_app_id if contribution else None,
+            source_kind=contribution.source_kind if contribution else 'external_import',
+            action=contribution.action if contribution else 'create',
+            source_link=contribution.source_link if contribution else None,
             display_url=item.preview_url,
             created_time=item.created_time,
         )

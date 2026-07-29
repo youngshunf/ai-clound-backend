@@ -202,7 +202,11 @@ class ArtifactListItem(ArtifactContractModel):
     availability: ArtifactAvailability
     allowed_actions: list[Literal['open', 'preview', 'download', 'locate']]
     sync_state: ArtifactSyncState
-    latest_contribution: LatestContribution
+    # A15：可空且唯一合法场景是「历史回填无法恢复任何参与事实」——此时
+    # migration_lost_history=true，UI 明示「参与记录不可考」；新写入路径产生的产物永远
+    # 至少有一条参与记录，出现 null 而无标记即登记链路缺陷（service 层 warn，不伪填）。
+    latest_contribution: LatestContribution | None = None
+    migration_lost_history: bool = False
     agent_identity: ArtifactAgentIdentity | None
     project_relation: ArtifactProjectRelation | None
     created_time: datetime

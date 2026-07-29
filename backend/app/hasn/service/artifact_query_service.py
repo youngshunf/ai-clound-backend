@@ -24,6 +24,7 @@ from backend.app.hasn.schema.artifact_contract import (
 from backend.app.hasn.service.hasn_asset_service import hasn_asset_service
 from backend.app.hasn_project.service.project_linkage_registry import project_linkage_registry
 from backend.common.exception import errors
+from backend.common.log import log
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -198,6 +199,12 @@ class ArtifactQueryService:
             .subquery()
         )
 
+        # A15：无参与轴筛选时用 LEFT JOIN——「历史回填无法恢复任何参与事实」的行也必须
+        # 出现在主人全量列表里（latest_contribution=None + migration_lost_history 诚实标记），
+        # 而不是被 INNER JOIN 静默吞掉；一旦按分身/会话/来源轴筛选，无参与记录的行天然
+        # 不可能命中该轴，退回 INNER JOIN 保持原语义。
+        has_contribution_axis = bool(agent_hasn_id or work_session_id or source_kind or source_app_id)
+
         artifact_status_condition = (
             HasnArtifacts.status.in_(('active', 'missing'))
             if status == 'active'
@@ -206,8 +213,12 @@ class ArtifactQueryService:
         artifact_conditions = [
             HasnArtifacts.owner_hasn_id == owner_hasn_id,
             artifact_status_condition,
-            ranked.c.rank == 1,
         ]
+        if has_contribution_axis:
+            artifact_conditions.append(ranked.c.rank == 1)
+        else:
+            # 无参与记录的行 rank 为 NULL，靠 OR 逃生口保留；有参与记录的行仍只取 rank=1。
+            artifact_conditions.append(or_(ranked.c.rank == 1, ranked.c.contribution_id.is_(None)))
         if artifact_kind:
             artifact_conditions.append(HasnArtifacts.artifact_kind == artifact_kind)
         if artifact_id:
@@ -243,15 +254,18 @@ class ArtifactQueryService:
                     )
                 )
 
-        statement = (
-            select(HasnArtifacts, HasnArtifactContributions)
-            .join(
+        statement = select(HasnArtifacts, HasnArtifactContributions)
+        if has_contribution_axis:
+            statement = statement.join(
                 HasnArtifactContributions,
                 HasnArtifactContributions.artifact_id == HasnArtifacts.artifact_id,
-            )
-            .join(ranked, ranked.c.contribution_id == HasnArtifactContributions.contribution_id)
-            .where(*artifact_conditions)
-        )
+            ).join(ranked, ranked.c.contribution_id == HasnArtifactContributions.contribution_id)
+        else:
+            statement = statement.outerjoin(
+                HasnArtifactContributions,
+                HasnArtifactContributions.artifact_id == HasnArtifacts.artifact_id,
+            ).outerjoin(ranked, ranked.c.contribution_id == HasnArtifactContributions.contribution_id)
+        statement = statement.where(*artifact_conditions)
         total = (await db.execute(select(func.count()).select_from(statement.subquery()))).scalar_one()
 
         # 排序键对齐设计 02 §8.2：`(updated_time DESC, artifact_id DESC)`，与本地索引
@@ -291,7 +305,9 @@ class ArtifactQueryService:
                 *snapshot_asset_ids,
             ],
         )
-        agent_ids = list({contribution.agent_hasn_id for _artifact, contribution in rows})
+        agent_ids = list(
+            {contribution.agent_hasn_id for _artifact, contribution in rows if contribution is not None}
+        )
         agents = {
             agent.hasn_id: agent
             for agent in (
@@ -310,19 +326,20 @@ class ArtifactQueryService:
         items: list[ArtifactListItem] = []
         for artifact, contribution in rows:
             availability, allowed_actions = self._availability(artifact, current_node_id)
-            agent = agents.get(contribution.agent_hasn_id)
             identity = None
-            if agent is not None:
-                identity = ArtifactAgentIdentity(
-                    hasn_id=agent.hasn_id,
-                    display_name=agent.display_name or None,
-                    avatar_url=agent.avatar,
-                    profession=agent.profession,
-                    owner_name=owner_names.get(artifact.owner_hasn_id) or None,
-                )
+            if contribution is not None:
+                agent = agents.get(contribution.agent_hasn_id)
+                if agent is not None:
+                    identity = ArtifactAgentIdentity(
+                        hasn_id=agent.hasn_id,
+                        display_name=agent.display_name or None,
+                        avatar_url=agent.avatar,
+                        profession=agent.profession,
+                        owner_name=owner_names.get(artifact.owner_hasn_id) or None,
+                    )
             project_relation = None
             if project_uuid:
-                if contribution.project_id == project_uuid:
+                if contribution is not None and contribution.project_id == project_uuid:
                     project_relation = ArtifactProjectRelation(
                         project_id=str(project_uuid), via='participation'
                     )
@@ -347,6 +364,29 @@ class ArtifactQueryService:
                 if artifact.asset_id
                 else urls.get(source_asset_id) if source_asset_id else None
             )
+            # A15：latest_contribution 只在「历史回填无法恢复参与事实」时合法为 None，
+            # 此时 migration_lost_history 必须已在库内打好（2026-07-29 回填迁移）；缺参与
+            # 又没标记的是登记链路缺陷——warn 显式告警（不伪填、不吞行），行仍如实透出。
+            migration_lost_history = bool((artifact.meta_data or {}).get('migration_lost_history'))
+            latest_contribution = None
+            if contribution is not None:
+                latest_contribution = LatestContribution(
+                    contribution_id=contribution.contribution_id,
+                    agent_hasn_id=contribution.agent_hasn_id,
+                    work_session_id=contribution.work_session_id,
+                    project_id=str(contribution.project_id) if contribution.project_id else None,
+                    action=contribution.action,
+                    source_kind=contribution.source_kind,
+                    source_tool=contribution.source_tool,
+                    source_app_id=contribution.source_app_id,
+                    source_link=self._source_link(contribution),
+                    occurred_time=contribution.occurred_time,
+                )
+            elif not migration_lost_history:
+                log.warning(
+                    '产物无任何参与记录且未打 migration_lost_history 标记（登记链路缺陷，A15）：%s',
+                    artifact.artifact_id,
+                )
             items.append(
                 ArtifactListItem(
                     artifact_id=artifact.artifact_id,
@@ -367,18 +407,8 @@ class ArtifactQueryService:
                     availability=availability,
                     allowed_actions=allowed_actions,
                     sync_state='synced',
-                    latest_contribution=LatestContribution(
-                        contribution_id=contribution.contribution_id,
-                        agent_hasn_id=contribution.agent_hasn_id,
-                        work_session_id=contribution.work_session_id,
-                        project_id=str(contribution.project_id) if contribution.project_id else None,
-                        action=contribution.action,
-                        source_kind=contribution.source_kind,
-                        source_tool=contribution.source_tool,
-                        source_app_id=contribution.source_app_id,
-                        source_link=self._source_link(contribution),
-                        occurred_time=contribution.occurred_time,
-                    ),
+                    latest_contribution=latest_contribution,
+                    migration_lost_history=migration_lost_history,
                     agent_identity=identity,
                     project_relation=project_relation,
                     created_time=artifact.created_time,
