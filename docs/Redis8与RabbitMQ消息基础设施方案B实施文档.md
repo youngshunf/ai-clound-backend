@@ -1,6 +1,6 @@
 # Redis 8 与 RabbitMQ 消息基础设施方案 B 实施文档
 
-> 状态：实施中（B0–B2）
+> 状态：实施中（B0–B5；B3 生产切换被共享 Redis 归属门禁阻断）
 >
 > 日期：2026-07-29
 >
@@ -367,13 +367,13 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] RDB 恢复、key 数、TTL 分布和关键结构抽样一致。
+- [x] RDB 恢复、key 数、TTL 分布和关键结构抽样一致。
 - [ ] API worker 分批切换期间没有双写分叉。
 - [ ] presence、路由、锁、限流、Socket.IO fallback 和 realtime pending 全部通过。
 
 **验证：**
 
-- [ ] 切换前后 `INFO`, `DBSIZE`, `MEMORY STATS` 留证。
+- [x] 切换前、Redis 8 恢复后 `INFO`, `DBSIZE`, `MEMORY STATS` 留证。
 - [ ] 4 worker 实时投递与断线重连真实 E2E。
 - [ ] 连续观察 24 小时无 OTel Redis callback 错误。
 
@@ -394,15 +394,15 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] `SOCKETIO_MANAGER=redis` 行为不变。
-- [ ] RabbitMQ 模式下，每个 API worker 有独立临时 fanout queue。
-- [ ] 同步 Celery publisher 发出的 `task_notification` 能被异步 API manager 和真实客户端收到。
-- [ ] manager 初始化失败显式阻止对应进程启动，不做假 fallback。
+- [x] `SOCKETIO_MANAGER=redis` 行为不变。
+- [x] RabbitMQ 模式下，每个 API worker 有独立临时 fanout queue。
+- [x] 同步 Celery publisher 发出的 `task_notification` 能被异步 API manager 和真实客户端收到。
+- [x] manager 初始化失败显式阻止对应进程启动，不做假 fallback。
 
 **验证：**
 
-- [ ] `uv run pytest backend/tests/socketio/test_manager_factory.py -q`
-- [ ] 真实 RabbitMQ 下启动两个 API 进程和一个 Celery publisher，验证跨进程通知。
+- [x] `uv run pytest backend/tests/socketio/test_manager_factory.py -q`
+- [x] 真实 RabbitMQ 下启动两个 API 进程和一个 Celery publisher，验证跨进程通知。
 - [ ] 断开 RabbitMQ 后恢复连接，确认 manager 自动恢复且不出现无限日志洪水。
 
 **依赖：** B1-01；建议在 B2 稳定后上线。
@@ -431,15 +431,15 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] port 只暴露 `publish_node_wakeup`、`publish_broadcast`、`start`、`stop`。
-- [ ] Redis adapter 产生与当前相同的 `hasn:ws:deliver` 消息。
-- [ ] `WsDeliveryBus` 不直接创建 Redis Pub/Sub 连接。
-- [ ] 现有定向、广播、generation、processing 恢复测试全部不改语义通过。
+- [x] port 只暴露 `publish_node_wakeup`、`publish_broadcast`、`start`、`stop`。
+- [x] Redis adapter 产生与当前相同的 `hasn:ws:deliver` 消息。
+- [x] `WsDeliveryBus` 不直接创建 Redis Pub/Sub 连接。
+- [x] 现有定向、广播、generation、processing 恢复测试全部不改语义通过。
 
 **验证：**
 
-- [ ] `uv run pytest backend/tests/hasn/test_ws_delivery_bus.py backend/app/hasn_im/tests/test_routing_delivery_bus.py -q`
-- [ ] `uv run mypy backend/app/hasn_im/ports/ backend/app/hasn_im/adapters/routing/`
+- [x] `uv run pytest backend/tests/hasn/test_ws_delivery_bus.py backend/app/hasn_im/tests/test_routing_delivery_bus.py -q`
+- [x] `uv run mypy backend/app/hasn_im/ports/ backend/app/hasn_im/adapters/routing/`
 
 **依赖：** B3-02。
 
@@ -459,15 +459,15 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] 每个 API worker 使用稳定 instance ID 创建独立临时 queue。
-- [ ] 定向 wake-up 到达所有 worker，但只有持有目标连接且 generation 匹配的 worker drain。
-- [ ] 畸形事件告警并 ACK；业务 send 失败不 requeue 风暴。
-- [ ] stop 时 consumer、channel、connection 有序关闭。
+- [x] 每个 API worker 使用稳定 instance ID 创建独立临时 queue。
+- [x] 定向 wake-up 到达所有 worker，但只有持有目标连接且 generation 匹配的 worker drain。
+- [x] 畸形事件告警并 ACK；业务 send 失败不 requeue 风暴。
+- [x] stop 时 consumer、channel、connection 有序关闭。
 
 **验证：**
 
-- [ ] `uv run pytest backend/tests/hasn/test_rabbitmq_realtime_bus.py -q`
-- [ ] 真实 RabbitMQ + 4 API worker + 真实 Redis 下覆盖定向、广播、worker 重启和 broker 重启。
+- [x] `uv run pytest backend/tests/hasn/test_rabbitmq_realtime_bus.py -q`
+- [ ] 真实 RabbitMQ + 4 API worker + 真实 Redis 下覆盖定向、广播、worker 重启和 broker 重启（四个独立 consumer 与隔离 broker 真实重启已分别通过，完整组合拓扑待验）。
 - [ ] RabbitMQ 停机时 Redis pending 中的定向帧仍保留，恢复或周期 drain 后可发送。
 
 **依赖：** B5-01。
@@ -488,15 +488,15 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] shadow 统计 publish 数、consume 数、格式错误数和端到端延迟。
-- [ ] shadow consumer 不调用 WS send/drain。
-- [ ] active bus 同一时刻只能有一个，非法组合启动失败。
-- [ ] 切换和回滚不需要修改代码。
+- [x] shadow 统计 publish 数、consume 数、格式错误数和端到端延迟。
+- [x] shadow consumer 不调用 WS send/drain。
+- [x] active bus 同一时刻只能有一个，非法组合启动失败。
+- [x] 切换和回滚不需要修改代码。
 
 **验证：**
 
-- [ ] 双发 10 万条 wake-up，按 `event_id` 对账覆盖率 100%。
-- [ ] shadow 期间用户可见下发次数与纯 Redis 基线一致。
+- [x] 双发 10 万条 wake-up，按 `event_id` 对账覆盖率 100%。
+- [x] shadow 期间用户可见下发次数与纯 Redis 基线一致。
 - [ ] Rabbit active 后 Redis Pub/Sub 无新增 publish，pending/processing LIST 继续工作。
 
 **依赖：** B5-02。
@@ -752,11 +752,11 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | B2-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `cebc218c`–`b0a054ed` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B2-02 | 已完成，24h 观察中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `2f3007bd` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B3-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `2b201ca8` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B3-02 | 部署护栏已合入，生产蓝绿切换待执行 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `29a6defe` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B4-01 | 实现已合入，生产真实互通与切换待执行 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `732f05e8` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B3-02 | 恢复与核验已完成；生产切换因共享 Redis 归属不明安全中止 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `29a6defe`、`64de3d0a`、`e4b116d8` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B4-01 | 实现和生产真实互通已完成，正式切换等待 B2 观察门槛 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `732f05e8`、`8f1ffa15` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B5-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0e323c25` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B5-02 | 待开始 | — | — | — | — |
-| B5-03 | 待开始 | — | — | — | — |
+| B5-02 | 实现已合入，生产四 consumer 与原位重连、隔离 broker 真实重启恢复已通过；真实 Redis pending 完整组合拓扑待验 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`8696e9b6` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B5-03 | 实现已合入，10 万条真实 shadow 对账通过；生产 24h 观察待 B3 门禁解除 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `7db54fe8`、`559a6bca` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B6-01 | 待开始 | — | — | — | — |
 | B6-02 | 待开始 | — | — | — | — |
 | B6-03 | 待开始 | — | — | — | — |
