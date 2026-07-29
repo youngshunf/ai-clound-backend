@@ -8,10 +8,15 @@ from fastapi import APIRouter, Body, Path, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.hasn.schema.hasn_message_hub import ErrorObject
 from backend.app.hasn.schema.hasn_sync import (
+    FullRefreshDirective,
     MemorySyncPullRequest,
     MemorySyncPullResponse,
-    FullRefreshDirective,
+    MessageHistoryBootstrapPageRequest,
+    MessageHistoryBootstrapPageResponse,
+    MessageHistoryBootstrapStartRequest,
+    MessageHistoryBootstrapStartResponse,
     RuntimeReportRequest,
     RuntimeReportResponse,
     SyncEventRecord,
@@ -20,7 +25,6 @@ from backend.app.hasn.schema.hasn_sync import (
     SyncPushRequest,
     SyncPushResponse,
 )
-from backend.app.hasn.schema.hasn_message_hub import ErrorObject
 from backend.app.hasn.service._sync_codec import _contains_private_runtime_key
 from backend.app.hasn.service.conversation_projection import load_conversation_object
 from backend.app.hasn.service.hasn_sync_service import hasn_sync_service
@@ -31,6 +35,12 @@ from backend.app.hasn.service.sync_business_handlers import (
 from backend.app.hasn.service.sync_entry_auth import (
     require_node_identity,
     require_owner_identity,
+)
+from backend.app.hasn_im.application.history_snapshot import (
+    HistorySnapshotTokenError,
+    list_history_snapshot_conversations,
+    list_history_snapshot_messages,
+    start_history_snapshot,
 )
 from backend.app.hasn_sync.adapters.sqlalchemy_store import SQLAlchemySyncStore
 from backend.app.hasn_sync.application.pull import pull_events
@@ -110,6 +120,94 @@ async def pull_sync_events(
             if result.full_refresh is not None
             else None
         ),
+    )
+
+
+@router.post(
+    '/sync/im/bootstrap/start',
+    summary='建立主人透明的会话与消息历史快照',
+    dependencies=[DependsJwtAuth],
+)
+async def start_message_history_bootstrap(
+    request: Request,
+    sync_db: CurrentSyncSession,
+    im_db: CurrentImSession,
+    request_body: MessageHistoryBootstrapStartRequest,
+) -> MessageHistoryBootstrapStartResponse:
+    """固定同步流头与消息上界，供新设备从稳定快照恢复本地镜像。"""
+    owner_id = require_owner_identity(request, request_body.owner_id)
+    bounds = await SQLAlchemySyncStore().stream_bounds(
+        sync_db,
+        owner_id=owner_id,
+    )
+    snapshot = await start_history_snapshot(
+        im_db,
+        owner_id=owner_id,
+        head_revision=bounds.head_revision,
+    )
+    return MessageHistoryBootstrapStartResponse(
+        snapshot_token=snapshot.snapshot_token,
+        head_revision=snapshot.head_revision,
+        head_cursor=owner_cursor(owner_id, snapshot.head_revision),
+        message_upper_bound=snapshot.message_upper_bound,
+    )
+
+
+@router.post(
+    '/sync/im/bootstrap/conversations',
+    summary='分页读取主人透明的会话历史快照',
+    dependencies=[DependsJwtAuth],
+)
+async def page_message_history_conversations(
+    request: Request,
+    db: CurrentImSession,
+    request_body: MessageHistoryBootstrapPageRequest,
+) -> MessageHistoryBootstrapPageResponse:
+    """返回主人本人和名下分身当前可见的会话对象投影。"""
+    owner_id = require_owner_identity(request, request_body.owner_id)
+    try:
+        page = await list_history_snapshot_conversations(
+            db,
+            owner_id=owner_id,
+            snapshot_token=request_body.snapshot_token,
+            after=request_body.cursor,
+            limit=request_body.limit,
+        )
+    except HistorySnapshotTokenError as exc:
+        raise errors.RequestError(msg=str(exc)) from exc
+    return MessageHistoryBootstrapPageResponse(
+        items=page.items,
+        has_more=page.has_more,
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.post(
+    '/sync/im/bootstrap/messages',
+    summary='分页读取主人透明的消息历史快照',
+    dependencies=[DependsJwtAuth],
+)
+async def page_message_history_messages(
+    request: Request,
+    db: CurrentImSession,
+    request_body: MessageHistoryBootstrapPageRequest,
+) -> MessageHistoryBootstrapPageResponse:
+    """按成员周期裁剪并返回快照上界内的权威消息。"""
+    owner_id = require_owner_identity(request, request_body.owner_id)
+    try:
+        page = await list_history_snapshot_messages(
+            db,
+            owner_id=owner_id,
+            snapshot_token=request_body.snapshot_token,
+            after=request_body.cursor,
+            limit=request_body.limit,
+        )
+    except HistorySnapshotTokenError as exc:
+        raise errors.RequestError(msg=str(exc)) from exc
+    return MessageHistoryBootstrapPageResponse(
+        items=page.items,
+        has_more=page.has_more,
+        next_cursor=page.next_cursor,
     )
 
 

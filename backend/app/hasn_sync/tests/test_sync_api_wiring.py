@@ -55,6 +55,26 @@ def test_conversation_projection_reads_use_im_session() -> None:
     )
 
 
+def test_message_history_bootstrap_uses_explicit_sync_and_im_sessions() -> None:
+    """快照边界读 sync 流头，历史分页只读 IM 事实，禁止借 Python 通用角色。"""
+    assert (
+        _annotation(_SYNC_API, 'start_message_history_bootstrap', 'sync_db')
+        == 'CurrentSyncSession'
+    )
+    assert (
+        _annotation(_SYNC_API, 'start_message_history_bootstrap', 'im_db')
+        == 'CurrentImSession'
+    )
+    assert (
+        _annotation(_SYNC_API, 'page_message_history_conversations', 'db')
+        == 'CurrentImSession'
+    )
+    assert (
+        _annotation(_SYNC_API, 'page_message_history_messages', 'db')
+        == 'CurrentImSession'
+    )
+
+
 def test_task_sync_routes_use_only_sync_sessions() -> None:
     """任务同步入口只能连接 sync 自有域，禁止借 Python 角色跨域读表。"""
     assert (

@@ -37,7 +37,6 @@ from backend.database.redis import redis_client
 from backend.database.schema_names import SCHEMA_NAMES
 from backend.middleware.jwt_auth_middleware import JwtAuthMiddleware
 
-
 pytestmark = pytest.mark.asyncio(loop_scope='session')
 _INBOX = SCHEMA_NAMES.sync_table('hasn_sync_inbox_events')
 
@@ -240,6 +239,64 @@ async def test_owner_jwt_can_use_general_memory_and_task_sync(
     assert memory.status_code == 200, memory.text
     assert task_pull.status_code == 200, task_pull.text
     assert task_push.status_code == 200, task_push.text
+
+
+async def test_owner_jwt_can_page_message_history_snapshot(
+    auth_matrix: SimpleNamespace,
+) -> None:
+    """真实 Owner JWT 可建立并分页读取自己的消息历史快照。"""
+    owner = auth_matrix.owner_id
+    headers = _bearer(auth_matrix.owner_token.access_token)
+    started = await auth_matrix.client.post(
+        '/api/v1/hasn/sync/im/bootstrap/start',
+        headers=headers,
+        json={'owner_id': owner},
+    )
+    assert started.status_code == 200, started.text
+    started_body = started.json()
+    assert started_body['snapshot_token']
+    assert started_body['head_revision'] >= 0
+    assert (
+        started_body['head_cursor']
+        == f"owner:{owner}:{started_body['head_revision']}"
+    )
+
+    conversations = await auth_matrix.client.post(
+        '/api/v1/hasn/sync/im/bootstrap/conversations',
+        headers=headers,
+        json={
+            'owner_id': owner,
+            'snapshot_token': started_body['snapshot_token'],
+            'cursor': None,
+            'limit': 10,
+        },
+    )
+    messages = await auth_matrix.client.post(
+        '/api/v1/hasn/sync/im/bootstrap/messages',
+        headers=headers,
+        json={
+            'owner_id': owner,
+            'snapshot_token': started_body['snapshot_token'],
+            'cursor': None,
+            'limit': 10,
+        },
+    )
+    assert conversations.status_code == 200, conversations.text
+    assert messages.status_code == 200, messages.text
+    assert isinstance(conversations.json()['items'], list)
+    assert isinstance(messages.json()['items'], list)
+
+
+async def test_message_history_snapshot_rejects_cross_owner(
+    auth_matrix: SimpleNamespace,
+) -> None:
+    """请求体 owner 不能替换真实 JWT 主人。"""
+    response = await auth_matrix.client.post(
+        '/api/v1/hasn/sync/im/bootstrap/start',
+        headers=_bearer(auth_matrix.owner_token.access_token),
+        json={'owner_id': auth_matrix.other_owner_id},
+    )
+    assert response.status_code == 403, response.text
 
 
 async def test_cross_owner_and_unbound_owner_are_rejected_over_http(

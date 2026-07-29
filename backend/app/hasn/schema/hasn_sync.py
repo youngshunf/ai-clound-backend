@@ -57,6 +57,43 @@ class SyncPullResponse(SchemaBase):
     )
 
 
+class MessageHistoryBootstrapStartRequest(SchemaBase):
+    """建立主人消息历史快照。"""
+
+    owner_id: str = Field(description='Owner HASN ID')
+
+
+class MessageHistoryBootstrapStartResponse(SchemaBase):
+    """历史快照边界；snapshot_token 由客户端按不透明值持久化。"""
+
+    snapshot_token: str = Field(description='服务端签名的历史快照令牌')
+    head_revision: int = Field(ge=0, description='快照建立时的同步流头')
+    head_cursor: str = Field(
+        description='快照完成后由 daemon 原样写入的 Owner 同步游标',
+    )
+    message_upper_bound: int = Field(
+        ge=0,
+        description='快照建立时的消息主键上界',
+    )
+
+
+class MessageHistoryBootstrapPageRequest(SchemaBase):
+    """分页读取同一个历史快照。"""
+
+    owner_id: str = Field(description='Owner HASN ID')
+    snapshot_token: str = Field(description='建立快照时返回的不透明令牌')
+    cursor: str | None = Field(default=None, description='稳定分页游标')
+    limit: int = Field(default=200, ge=1, le=500, description='最大返回条数')
+
+
+class MessageHistoryBootstrapPageResponse(SchemaBase):
+    """会话或消息历史快照分页。"""
+
+    items: list[dict[str, Any]] = Field(description='当前页历史镜像')
+    has_more: bool = Field(description='是否仍有下一页')
+    next_cursor: str | None = Field(default=None, description='下一页稳定游标')
+
+
 class ClientEvent(SchemaBase):
     client_event_id: str = Field(description='客户端事件 ID')
     event_type: str = Field(description='事件类型')

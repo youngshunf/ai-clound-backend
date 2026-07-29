@@ -39,6 +39,11 @@ class HasnConversationMemberships(Base):
     charter_updated_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='发言准则最后更新时间')
     joined_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='加入时间')
     left_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='退出时间')
+    history_complete_from_seq: Mapped[int | None] = mapped_column(
+        sa.BIGINT(),
+        default=None,
+        comment='已证明历史完整的最早消息序号；为空表示未知',
+    )
 
     # 收编期只保留 Python 属性别名，物理列始终是 member_hasn_id。
     member_id = synonym('member_hasn_id')
