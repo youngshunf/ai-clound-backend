@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
-from backend.app.marketplace.api.v1.webhook import has_skill_source_changes
+from backend.app.marketplace.api.v1.webhook import (
+    bundle_source_changes,
+    has_skill_source_changes,
+    source_release_required,
+)
 
 
 def _push(*paths: str) -> list[dict]:
@@ -46,3 +50,18 @@ def test_clawhub_cache_change_does_not_trigger() -> None:
 
 def test_unrelated_change_does_not_trigger() -> None:
     assert has_skill_source_changes(_push('README.md', 'docs/x.md')) is False
+
+
+def test_skill_source_push_requires_local_release() -> None:
+    assert source_release_required(_push('huanxing-skills/search/newsnow/SKILL.md')) is True
+    assert source_release_required(_push('github/baoyu-skills')) is True
+    assert source_release_required(_push('common-skills.yaml')) is True
+    assert source_release_required(_push('bundles/research/bundle.yaml')) is False
+
+
+def test_bundle_changes_remain_on_repository_sync_temporarily() -> None:
+    assert bundle_source_changes(_push('bundles/research/bundle.yaml')) == {
+        'bundles/research/bundle.yaml'
+    }
+    assert bundle_source_changes(_push('common-bundles.yaml')) == {'common-bundles.yaml'}
+    assert bundle_source_changes(_push('huanxing-skills/search/newsnow/SKILL.md')) == set()

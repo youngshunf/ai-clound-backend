@@ -12,6 +12,7 @@ from backend.app.marketplace.service.resource_id import (
     encode_namespace,
     parse_resource_id,
     safe_icon_filename,
+    validate_slug,
     validate_version,
 )
 from backend.common.exception import errors
@@ -80,6 +81,24 @@ class MarketplaceStorageService:
         namespace, slug = parse_resource_id(resource_id)
         return f'{encode_namespace(namespace)}/{slug}'
 
+    @staticmethod
+    def skill_release_path(skill_id: str, version: str, file_hash: str) -> str:
+        """构造来源发布的内容寻址不可变对象路径。"""
+        namespace, slug = parse_resource_id(skill_id)
+        for segment in namespace.split('/'):
+            validate_slug(segment)
+        slug = validate_slug(slug)
+        version = validate_version(version)
+        normalized_hash = file_hash.lower()
+        if len(normalized_hash) != 64 or any(
+            char not in '0123456789abcdef' for char in normalized_hash
+        ):
+            raise errors.RequestError(msg='技能发布包 SHA256 无效')
+        return (
+            f'{MarketplaceStorageService.SKILLS_PATH}/{namespace}/{slug}/'
+            f'{version}/{normalized_hash}.zip'
+        )
+
     async def upload_skill_package(
         self,
         db: AsyncSession,
@@ -115,6 +134,26 @@ class MarketplaceStorageService:
         package_url = self._build_url(s3_storage, path)
 
         return package_url, file_hash, file_size
+
+    async def upload_skill_release_package(
+        self,
+        db: AsyncSession,
+        skill_id: str,
+        version: str,
+        content: bytes,
+        storage_id: int | None = None,
+    ) -> tuple[str, str, int]:
+        """上传内容寻址的来源技能制品。
+
+        同一语义版本允许内容指纹推进；对象键包含 ZIP SHA256，旧 CDN URL 永不被覆盖，
+        避免边缘缓存继续返回同版本旧包。
+        """
+        op, s3_storage = await self._get_operator(db, storage_id)
+        file_hash = self._calculate_hash(content)
+        file_size = len(content)
+        path = self.skill_release_path(skill_id, version, file_hash)
+        await op.write(path, content)
+        return self._build_url(s3_storage, path), file_hash, file_size
 
     async def upload_template_package(
         self,

@@ -1,9 +1,9 @@
-"""ClawHub 同步：增量化（版本级跳过 + 元数据变更门控 + 源侧 verbatim）单测。
+"""ClawHub 元数据同步：版本级跳过、元数据变更门控与源侧原文测试。
 
 锁住本次「周期同步不再每轮全量重下载 + 全量重译」改造的契约：
 
-- ``_is_version_unchanged``：上游 latestVersion 与库内最新版本一致 + 已有正文 + repo_path
-  → 整条跳过（只刷计数）。任一缺失则需处理。
+- ``_is_version_unchanged``：上游 latestVersion 与库内最新版本一致，且目录元数据未变
+  → 整条跳过（只刷计数）；不再依赖服务器正文和 ``repo_path``。
 - ``_bilingual_metadata``：name/description 源语言侧存原文逐字（让下次元数据门控能命中）。
 - ``_batch_prepare_metadata``：变更门控真实分流——只把改动 / 新增 / force 的技能送 LLM，
   未变技能复用库内缓存译文（用 recorder 断言零调用）。
@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from types import SimpleNamespace
+from typing import Any
 
 from backend.app.marketplace.service import clawhub_sync_service as mod
 from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_service
@@ -20,7 +21,7 @@ from backend.app.marketplace.service.clawhub_sync_service import clawhub_sync_se
 # ---------- 测试夹具 ----------
 
 
-def _existing(**kw) -> SimpleNamespace:
+def _existing(**kw) -> Any:
     """库内现有 clawhub 行替身。源语言 zh → 源侧（description_zh）存 summary 原文逐字。"""
     base = {
         'id': 1,
@@ -32,6 +33,7 @@ def _existing(**kw) -> SimpleNamespace:
         'name_zh': '翻译大师',
         'description_en': 'A pro translator',
         'description_zh': '一个专业的翻译工具',  # 源侧 = summary 原文逐字
+        'files': '[{"path":"SKILL.md","size":120,"sha256":"' + ('a' * 64) + '"}]',
         'source_language': 'zh',
         'tags_en': '["translate"]',
         'tags_zh': '["翻译"]',
@@ -76,20 +78,27 @@ def test_version_unchanged_false_when_upstream_version_differs() -> None:
     ) is False
 
 
-def test_version_unchanged_false_when_no_body() -> None:
+def test_version_unchanged_does_not_require_server_body() -> None:
     existing = _existing()
     skill = _skill()
-    # body_skill_ids 不含该 skill_id → 上次没下全正文，必须重新处理
     assert clawhub_sync_service._is_version_unchanged(
         existing, skill, {'clawhub/alice/translator': '1.0.0'}, set()
-    ) is False
+    ) is True
 
 
-def test_version_unchanged_false_when_no_repo_path() -> None:
+def test_version_unchanged_does_not_require_repo_path() -> None:
     existing = _existing(repo_path=None)
     skill = _skill()
     assert clawhub_sync_service._is_version_unchanged(
         existing, skill, {'clawhub/alice/translator': '1.0.0'}, {'clawhub/alice/translator'}
+    ) is True
+
+
+def test_version_unchanged_requires_verified_file_manifest() -> None:
+    existing = _existing(files='[{"path":"SKILL.md","size":120}]')
+    skill = _skill()
+    assert clawhub_sync_service._is_version_unchanged(
+        existing, skill, {'clawhub/alice/translator': '1.0.0'}
     ) is False
 
 
