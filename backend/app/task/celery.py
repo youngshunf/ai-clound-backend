@@ -13,6 +13,7 @@ from backend.app.task.tasks.beat import LOCAL_BEAT_SCHEDULE
 from backend.common.enums import DataBaseType
 from backend.common.messaging.rabbitmq import build_amqp_dsn
 from backend.common.observability.otel import init_resource, init_tracer
+from backend.common.socketio.manager import assert_socketio_sync_publisher_ready
 from backend.core.conf import Settings, settings
 from backend.core.path_conf import BASE_PATH
 
@@ -119,6 +120,8 @@ def build_celery_broker_options(config: Settings) -> dict[str, object]:
 
 def init_celery() -> celery.Celery:
     """初始化 Celery 应用"""
+
+    assert_socketio_sync_publisher_ready(settings)
 
     # TODO: Update this work if celery version >= 6.0.0
     # https://github.com/fastapi-practices/fastapi_best_architecture/issues/321

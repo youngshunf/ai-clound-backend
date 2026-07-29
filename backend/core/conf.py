@@ -30,6 +30,22 @@ def _validate_production_celery_rabbitmq(values: dict[str, Any]) -> None:
         raise ValueError('生产 Celery RabbitMQ 密码长度必须至少为 24 位')
 
 
+def _validate_production_realtime_rabbitmq(
+    values: dict[str, Any],
+    *,
+    selected: bool,
+) -> None:
+    """校验生产 realtime 只能使用固定最小权限角色和强凭据。"""
+    if values.get('ENVIRONMENT') != 'prod' or not selected:
+        return
+    if values.get('REALTIME_RABBITMQ_USERNAME') != 'huanxing_realtime':
+        raise ValueError('生产 realtime RabbitMQ 必须使用最小权限角色 huanxing_realtime')
+    if values.get('REALTIME_RABBITMQ_VHOST', 'huanxing') != 'huanxing':
+        raise ValueError('生产 REALTIME_RABBITMQ_VHOST 必须为 huanxing')
+    if len(str(values.get('REALTIME_RABBITMQ_PASSWORD') or '')) < 24:
+        raise ValueError('生产 realtime RabbitMQ 密码长度必须至少为 24 位')
+
+
 class Settings(BaseSettings):
     """全局配置"""
 
@@ -38,6 +54,7 @@ class Settings(BaseSettings):
         env_file_encoding='utf-8',
         extra='allow',
         case_sensitive=True,
+        hide_input_in_errors=True,
     )
 
     @classmethod
@@ -779,6 +796,10 @@ class Settings(BaseSettings):
         if missing_rabbitmq_settings:
             raise ValueError('RabbitMQ 配置不完整，缺少：' + ', '.join(dict.fromkeys(missing_rabbitmq_settings)))
         _validate_production_celery_rabbitmq(values)
+        _validate_production_realtime_rabbitmq(
+            values,
+            selected=realtime_rabbitmq_selected,
+        )
         if values.get('HASN_REALTIME_BUS', 'redis') == 'rabbitmq' and shadow_rabbitmq:
             raise ValueError(
                 'HASN_REALTIME_BUS=rabbitmq 时必须关闭 HASN_REALTIME_SHADOW_RABBITMQ，避免同一通道重复消费'
