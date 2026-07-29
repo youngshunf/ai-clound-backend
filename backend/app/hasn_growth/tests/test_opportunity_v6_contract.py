@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from fastapi.routing import APIRoute
+
 from backend.app.hasn_growth.api.v1.app.growth import router as app_router
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
 from backend.app.hasn_growth.model.opportunity import Opportunity
@@ -50,7 +52,7 @@ def test_opportunity_mutations_require_project_idempotency_and_version() -> None
 
 def test_owner_routes_are_project_scoped() -> None:
     """WebUI 所用 Owner 商机读写必须绑定权威 growth_project_id。"""
-    paths = {route.path for route in app_router.routes}
+    paths = {route.path for route in app_router.routes if isinstance(route, APIRoute)}
     prefix = '/projects/{growth_project_id}/opportunities'
     assert prefix in paths
     assert f'{prefix}/{{opportunity_id}}' in paths
