@@ -147,6 +147,10 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_TIMEOUT: int = 5
+    # 显式固定 RESP，避免 redis-py 主版本升级时跟随客户端默认值漂移。
+    REDIS_PROTOCOL: Literal[2, 3] = 2
+    # Redis 6 使用 Lua；Redis 8 蓝绿验收后由生产环境显式切到原生 LMOVE。
+    REDIS_LIST_MOVE_MODE: Literal['lua', 'lmove'] = 'lua'
 
     # 缓存
     CACHE_LOCAL_ENABLED: bool = True

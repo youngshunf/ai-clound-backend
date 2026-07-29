@@ -1,7 +1,8 @@
 import builtins
 import sys
 
-from typing import Any, Awaitable, TypeVar, cast
+from collections.abc import Awaitable
+from typing import Any, Literal, TypeVar, cast
 
 from redis.asyncio import Redis
 from redis.exceptions import AuthenticationError, TimeoutError
@@ -14,7 +15,7 @@ _RedisResult = TypeVar('_RedisResult')
 
 async def _await_redis_command(result: Awaitable[_RedisResult] | _RedisResult) -> _RedisResult:
     """收口 redis-py 同步/异步混合类型声明，运行时只接受异步客户端结果。"""
-    return await cast(Awaitable[_RedisResult], result)
+    return await cast('Awaitable[_RedisResult]', result)
 
 
 class RedisCli(Redis):
@@ -29,6 +30,7 @@ class RedisCli(Redis):
         socket_timeout: int = settings.REDIS_TIMEOUT,
         socket_connect_timeout: int = settings.REDIS_TIMEOUT,
         *,
+        protocol: Literal[2, 3] = settings.REDIS_PROTOCOL,
         socket_keepalive: bool = True,
         health_check_interval: int = 30,
         decode_responses: bool = True,
@@ -42,6 +44,7 @@ class RedisCli(Redis):
         :param db: 使用的 Redis 逻辑数据库索引
         :param socket_timeout: Socket 读写操作的超时时间
         :param socket_connect_timeout: 建立 TCP 连接时的超时时间
+        :param protocol: 显式选择 RESP2 或 RESP3
         :param socket_keepalive: 是否开启 TCP Keepalive 探测
         :param health_check_interval: 健康检查间隔时间（秒）
         :param decode_responses: 是否自动将 Redis 返回的字节流（bytes）解码为字符串（utf-8）
@@ -56,6 +59,8 @@ class RedisCli(Redis):
             socket_keepalive=socket_keepalive,
             health_check_interval=health_check_interval,
             decode_responses=decode_responses,
+            protocol=protocol,
+            legacy_responses=True,
         )
 
     async def ping(self, *args: Any, **kwargs: Any) -> bool:
@@ -135,6 +140,9 @@ class RedisCli(Redis):
 
     async def rpoplpush(self, *args: Any, **kwargs: Any) -> Any:
         return await _await_redis_command(super().rpoplpush(*args, **kwargs))
+
+    async def lmove(self, *args: Any, **kwargs: Any) -> Any:
+        return await _await_redis_command(super().lmove(*args, **kwargs))
 
     async def mget(self, *args: Any, **kwargs: Any) -> list[Any]:
         return await _await_redis_command(super().mget(*args, **kwargs))
