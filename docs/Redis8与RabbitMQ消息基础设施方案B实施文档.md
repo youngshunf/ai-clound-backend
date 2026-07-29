@@ -1,6 +1,6 @@
 # Redis 8 与 RabbitMQ 消息基础设施方案 B 实施文档
 
-> 状态：待实施
+> 状态：实施中（B0–B2）
 >
 > 日期：2026-07-29
 >
@@ -197,14 +197,14 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] 所有新增变量在配置模型、示例环境文件和配置测试中一致。
-- [ ] 选择 RabbitMQ 且缺少账号/密码时启动失败，错误不泄漏密码。
-- [ ] 默认配置运行行为与改动前一致。
+- [x] 所有新增变量在配置模型、示例环境文件和配置测试中一致。
+- [x] 选择 RabbitMQ 且缺少账号/密码时启动失败，错误不泄漏密码。
+- [x] 默认配置运行行为与改动前一致。
 
 **验证：**
 
-- [ ] `uv run pytest backend/tests/test_rabbitmq_settings.py -q`
-- [ ] `uv run mypy backend/core/conf.py backend/common/messaging/`
+- [x] `uv run pytest backend/tests/test_rabbitmq_settings.py -q`
+- [x] `uv run mypy backend/core/conf.py backend/common/messaging/`
 
 **依赖：** B0-01。
 
@@ -225,18 +225,18 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] 5672、15672、15692 只监听 `127.0.0.1`。
-- [ ] `guest` 禁用或不能远程登录，Celery、realtime、monitor 三个账号权限分离。
-- [ ] definitions 中没有明文密码、默认口令和完整生产 DSN。
-- [ ] 数据、日志和备份落 `/data2`，根盘不会因队列增长被写满。
+- [x] 5672、15672、15692 只监听 `127.0.0.1`；额外收口 4369、25672。
+- [x] `guest` 禁用或不能远程登录，Celery、realtime、monitor 三个账号权限分离。
+- [x] definitions 中没有明文密码、默认口令和完整生产 DSN。
+- [x] 数据、日志和备份落 `/data2`，根盘不会因队列增长被写满。
 
 **验证：**
 
-- [ ] `rabbitmq-diagnostics status`
-- [ ] `rabbitmq-diagnostics check_running`
-- [ ] `rabbitmq-diagnostics check_local_alarms`
-- [ ] 从公网探测 5672/15672/15692 均不可达；SSH 隧道内管理面可达。
-- [ ] RabbitMQ 重启后 vhost、exchange、queue policy 和权限仍存在。
+- [x] `rabbitmq-diagnostics status`
+- [x] `rabbitmq-diagnostics check_running`
+- [x] `rabbitmq-diagnostics check_local_alarms`
+- [x] 从公网探测 5672/15672/15692 均不可达；SSH 隧道内管理面可达。
+- [x] RabbitMQ 重启后 vhost、exchange、queue policy 和权限仍存在。
 
 **依赖：** B0-02。
 
@@ -251,10 +251,10 @@ flowchart TD
 
 ### 检查点一：基础设施就绪
 
-- [ ] RabbitMQ 单节点故障边界已明确，不宣称 HA。
-- [ ] 公网端口不可达，最小权限和强密码已验证。
-- [ ] Prometheus endpoint 仅被本机采集。
-- [ ] 应用仍全部走 Redis，RabbitMQ 上没有真实业务任务。
+- [x] RabbitMQ 单节点故障边界已明确，不宣称 HA。
+- [x] 公网端口不可达，最小权限和强密码已验证。
+- [x] Prometheus endpoint 仅被本机采集。
+- [x] 应用仍全部走 Redis，RabbitMQ 上没有真实业务任务。
 
 ### 阶段 B2：Celery broker 切换
 
@@ -737,11 +737,11 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 
 | 任务 | 状态 | 分支 | worktree | 提交 | 证据 |
 |---|---|---|---|---|---|
-| B0-01 | 待开始 | — | — | — | — |
-| B0-02 | 待开始 | — | — | — | — |
-| B1-01 | 待开始 | — | — | — | — |
-| B2-01 | 待开始 | — | — | — | — |
-| B2-02 | 待开始 | — | — | — | — |
+| B0-01 | 进行中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B0-02 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B1-01 | 已完成，待合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B2-01 | 进行中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B2-02 | 待开始 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | — | — |
 | B3-01 | 待开始 | — | — | — | — |
 | B3-02 | 待开始 | — | — | — | — |
 | B4-01 | 待开始 | — | — | — | — |

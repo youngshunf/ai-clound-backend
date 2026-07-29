@@ -1,0 +1,83 @@
+{
+  "rabbit_version": "4.3.4",
+  "users": [],
+  "vhosts": [
+    {
+      "name": "huanxing",
+      "description": "唤星消息基础设施专用虚拟主机",
+      "tags": [],
+      "default_queue_type": "classic",
+      "metadata": {
+        "description": "唤星消息基础设施专用虚拟主机",
+        "tags": [],
+        "default_queue_type": "classic"
+      }
+    }
+  ],
+  "permissions": [],
+  "topic_permissions": [],
+  "parameters": [],
+  "global_parameters": [],
+  "policies": [
+    {
+      "vhost": "huanxing",
+      "name": "huanxing-realtime-transient-queues",
+      "pattern": "^(python-socketio|huanxing\\.realtime)\\.",
+      "apply-to": "queues",
+      "definition": {
+        "expires": 300000
+      },
+      "priority": 10
+    }
+  ],
+  "queues": [
+    {
+      "name": "huanxing.celery.default",
+      "vhost": "huanxing",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "classic"
+      }
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "huanxing.celery",
+      "vhost": "huanxing",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "huanxing.socketio",
+      "vhost": "huanxing",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "huanxing.realtime",
+      "vhost": "huanxing",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "huanxing.celery",
+      "vhost": "huanxing",
+      "destination": "huanxing.celery.default",
+      "destination_type": "queue",
+      "routing_key": "huanxing.celery.default",
+      "arguments": {}
+    }
+  ]
+}

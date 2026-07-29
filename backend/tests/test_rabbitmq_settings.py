@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import importlib
+
+import pytest
+
+from pydantic import ValidationError
+
+from backend.core.conf import Settings
+from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH
+
+
+NEW_MESSAGE_INFRASTRUCTURE_SETTINGS = {
+    'SOCKETIO_MANAGER',
+    'REALTIME_RABBITMQ_HOST',
+    'REALTIME_RABBITMQ_PORT',
+    'REALTIME_RABBITMQ_VHOST',
+    'REALTIME_RABBITMQ_USERNAME',
+    'REALTIME_RABBITMQ_PASSWORD',
+    'HASN_REALTIME_BUS',
+    'HASN_REALTIME_SHADOW_RABBITMQ',
+    'HASN_OFFLINE_RECOVERY',
+}
+
+
+def _settings(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> Settings:
+    for name, value in overrides.items():
+        if isinstance(value, bool):
+            value = str(value).lower()
+        monkeypatch.setenv(name, str(value))
+    return Settings()
+
+
+def test_message_infrastructure_defaults_preserve_redis_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = _settings(monkeypatch)
+
+    assert configured.CELERY_BROKER == 'redis'
+    assert configured.SOCKETIO_MANAGER == 'redis'
+    assert configured.HASN_REALTIME_BUS == 'redis'
+    assert configured.HASN_REALTIME_SHADOW_RABBITMQ is False
+    assert configured.HASN_OFFLINE_RECOVERY == 'redis'
+    assert configured.REALTIME_RABBITMQ_HOST == '127.0.0.1'
+    assert configured.REALTIME_RABBITMQ_PORT == 5672
+    assert configured.REALTIME_RABBITMQ_VHOST == 'huanxing'
+
+
+def test_new_settings_are_declared_in_model_and_example_environment() -> None:
+    example = ENV_EXAMPLE_FILE_PATH.read_text(encoding='utf-8')
+
+    assert NEW_MESSAGE_INFRASTRUCTURE_SETTINGS <= Settings.model_fields.keys()
+    for name in NEW_MESSAGE_INFRASTRUCTURE_SETTINGS:
+        assert f'{name}=' in example
+
+
+@pytest.mark.parametrize(
+    ('overrides', 'missing_name'),
+    [
+        (
+            {
+                'CELERY_BROKER': 'rabbitmq',
+                'CELERY_RABBITMQ_USERNAME': '',
+                'CELERY_RABBITMQ_PASSWORD': 'celery-secret-must-not-leak',
+            },
+            'CELERY_RABBITMQ_USERNAME',
+        ),
+        (
+            {
+                'SOCKETIO_MANAGER': 'rabbitmq',
+                'REALTIME_RABBITMQ_USERNAME': '',
+                'REALTIME_RABBITMQ_PASSWORD': 'realtime-secret-must-not-leak',
+            },
+            'REALTIME_RABBITMQ_USERNAME',
+        ),
+        (
+            {
+                'HASN_REALTIME_BUS': 'rabbitmq',
+                'REALTIME_RABBITMQ_USERNAME': '',
+                'REALTIME_RABBITMQ_PASSWORD': 'realtime-secret-must-not-leak',
+            },
+            'REALTIME_RABBITMQ_USERNAME',
+        ),
+        (
+            {
+                'HASN_REALTIME_SHADOW_RABBITMQ': True,
+                'REALTIME_RABBITMQ_USERNAME': '',
+                'REALTIME_RABBITMQ_PASSWORD': 'realtime-secret-must-not-leak',
+            },
+            'REALTIME_RABBITMQ_USERNAME',
+        ),
+    ],
+)
+def test_selecting_rabbitmq_requires_role_credentials_without_leaking_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    missing_name: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings(monkeypatch, **overrides)
+
+    message = str(exc_info.value)
+    assert missing_name in message
+    assert 'celery-secret-must-not-leak' not in message
+    assert 'realtime-secret-must-not-leak' not in message
+
+
+def test_rabbitmq_active_bus_rejects_shadow_consumer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError, match='HASN_REALTIME_SHADOW_RABBITMQ'):
+        _settings(
+            monkeypatch,
+            HASN_REALTIME_BUS='rabbitmq',
+            HASN_REALTIME_SHADOW_RABBITMQ=True,
+            REALTIME_RABBITMQ_USERNAME='huanxing_realtime',
+            REALTIME_RABBITMQ_PASSWORD='valid-secret',
+        )
+
+
+def test_complete_rabbitmq_settings_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = _settings(
+        monkeypatch,
+        CELERY_BROKER='rabbitmq',
+        CELERY_RABBITMQ_USERNAME='huanxing_celery',
+        CELERY_RABBITMQ_PASSWORD='celery-secret',
+        SOCKETIO_MANAGER='rabbitmq',
+        HASN_REALTIME_BUS='rabbitmq',
+        HASN_REALTIME_SHADOW_RABBITMQ=False,
+        REALTIME_RABBITMQ_USERNAME='huanxing_realtime',
+        REALTIME_RABBITMQ_PASSWORD='realtime-secret',
+    )
+
+    assert configured.CELERY_BROKER == 'rabbitmq'
+    assert configured.SOCKETIO_MANAGER == 'rabbitmq'
+    assert configured.HASN_REALTIME_BUS == 'rabbitmq'
+
+
+def test_amqp_dsn_encodes_credentials_and_vhost() -> None:
+    try:
+        rabbitmq = importlib.import_module('backend.common.messaging.rabbitmq')
+    except ModuleNotFoundError:
+        pytest.fail('缺少统一 RabbitMQ DSN 构造模块')
+
+    dsn = rabbitmq.build_amqp_dsn(
+        host='rabbit.internal',
+        port=5672,
+        username='service@huanxing',
+        password='secret:/%',
+        vhost='team/blue',
+    )
+
+    assert dsn == (
+        'amqp://service%40huanxing:secret%3A%2F%25'
+        '@rabbit.internal:5672/team%2Fblue'
+    )
+
+
+def test_rabbitmq_endpoint_description_never_contains_credentials() -> None:
+    try:
+        rabbitmq = importlib.import_module('backend.common.messaging.rabbitmq')
+    except ModuleNotFoundError:
+        pytest.fail('缺少统一 RabbitMQ 端点描述模块')
+
+    description = rabbitmq.describe_rabbitmq_endpoint(
+        host='rabbit.internal',
+        port=5672,
+        vhost='team/blue',
+    )
+
+    assert description == 'host=rabbit.internal port=5672 vhost=team/blue'
+    assert 'username' not in description
+    assert 'password' not in description

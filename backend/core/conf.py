@@ -593,17 +593,29 @@ class Settings(BaseSettings):
     CELERY_BROKER_REDIS_DATABASE: int
 
     # .env RabbitMQ
-    # docker run -d --hostname fba-mq --name fba-mq  -p 5672:5672 -p 15672:15672 rabbitmq:latest
-    CELERY_RABBITMQ_HOST: str
-    CELERY_RABBITMQ_PORT: int
-    CELERY_RABBITMQ_USERNAME: str
-    CELERY_RABBITMQ_PASSWORD: str
+    CELERY_RABBITMQ_HOST: str = '127.0.0.1'
+    CELERY_RABBITMQ_PORT: int = Field(default=5672, ge=1, le=65535)
+    CELERY_RABBITMQ_USERNAME: str = ''
+    CELERY_RABBITMQ_PASSWORD: str = ''
 
     # 基础配置
     CELERY_BROKER: Literal['rabbitmq', 'redis'] = 'redis'
-    CELERY_RABBITMQ_VHOST: str = ''
+    CELERY_RABBITMQ_VHOST: str = 'huanxing'
     CELERY_REDIS_PREFIX: str = 'fba:celery'
     CELERY_TASK_MAX_RETRIES: int = 5
+
+    ##################################################
+    # [ Messaging ] Socket.IO / HASN realtime / offline recovery
+    ##################################################
+    SOCKETIO_MANAGER: Literal['rabbitmq', 'redis'] = 'redis'
+    REALTIME_RABBITMQ_HOST: str = '127.0.0.1'
+    REALTIME_RABBITMQ_PORT: int = Field(default=5672, ge=1, le=65535)
+    REALTIME_RABBITMQ_VHOST: str = 'huanxing'
+    REALTIME_RABBITMQ_USERNAME: str = ''
+    REALTIME_RABBITMQ_PASSWORD: str = ''
+    HASN_REALTIME_BUS: Literal['rabbitmq', 'redis'] = 'redis'
+    HASN_REALTIME_SHADOW_RABBITMQ: bool = False
+    HASN_OFFLINE_RECOVERY: Literal['dual', 'redis', 'sync'] = 'redis'
 
     ##################################################
     # [ Plugin ] code_generator
@@ -699,6 +711,43 @@ class Settings(BaseSettings):
                 raise ValueError(
                     'R3 生产硬切换配置不完整，缺少：' + ', '.join(missing)
                 )
+
+        shadow_value = values.get('HASN_REALTIME_SHADOW_RABBITMQ', False)
+        shadow_rabbitmq = shadow_value is True or str(shadow_value).strip().lower() in {
+            '1',
+            'true',
+            'yes',
+            'on',
+        }
+        missing_rabbitmq_settings: list[str] = []
+        if values.get('CELERY_BROKER', 'redis') == 'rabbitmq':
+            missing_rabbitmq_settings.extend(
+                name
+                for name in ('CELERY_RABBITMQ_USERNAME', 'CELERY_RABBITMQ_PASSWORD')
+                if not str(values.get(name) or '').strip()
+            )
+        realtime_rabbitmq_selected = (
+            values.get('SOCKETIO_MANAGER', 'redis') == 'rabbitmq'
+            or values.get('HASN_REALTIME_BUS', 'redis') == 'rabbitmq'
+            or shadow_rabbitmq
+        )
+        if realtime_rabbitmq_selected:
+            missing_rabbitmq_settings.extend(
+                name
+                for name in ('REALTIME_RABBITMQ_USERNAME', 'REALTIME_RABBITMQ_PASSWORD')
+                if not str(values.get(name) or '').strip()
+            )
+        if missing_rabbitmq_settings:
+            raise ValueError(
+                'RabbitMQ 配置不完整，缺少：'
+                + ', '.join(dict.fromkeys(missing_rabbitmq_settings))
+            )
+        if values.get('HASN_REALTIME_BUS', 'redis') == 'rabbitmq' and shadow_rabbitmq:
+            raise ValueError(
+                'HASN_REALTIME_BUS=rabbitmq 时必须关闭 '
+                'HASN_REALTIME_SHADOW_RABBITMQ，避免同一通道重复消费'
+            )
+
         if values.get('ENVIRONMENT') == 'prod':
             # FastAPI
             values['FASTAPI_OPENAPI_URL'] = None
