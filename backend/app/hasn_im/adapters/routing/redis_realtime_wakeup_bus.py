@@ -8,6 +8,11 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from backend.app.hasn_im.observability.metrics import (
+    HASN_REALTIME_WAKEUP_CONSUME_TOTAL,
+    HASN_REALTIME_WAKEUP_PUBLISH_TOTAL,
+    HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL,
+)
 from backend.app.hasn_im.ports.realtime_wakeup_bus import WakeupHandler
 from backend.common.log import log
 from backend.database.redis import RedisCli, redis_client
@@ -40,12 +45,12 @@ class RedisRealtimeWakeupBus:
         self._subscriber_factory = subscriber_factory
         self._task: asyncio.Task[None] | None = None
         self._handler: WakeupHandler | None = None
+        self._ready = asyncio.Event()
 
     async def publish_node_wakeup(self, node_id: str) -> None:
         """发布指定节点的唤醒事件。"""
         message = json.dumps({'node_id': node_id}, ensure_ascii=False)
-        publisher = self._publisher or redis_client
-        await publisher.publish(WS_DELIVERY_CHANNEL, message)
+        await self._publish(message)
 
     async def publish_broadcast(self, payload_json: str) -> None:
         """发布全局在线广播。"""
@@ -53,8 +58,24 @@ class RedisRealtimeWakeupBus:
             {'broadcast': True, 'payload': payload_json},
             ensure_ascii=False,
         )
+        await self._publish(message)
+
+    async def _publish(self, message: str) -> None:
+        """发布既有 Redis 消息形状并记录低基数迁移指标。"""
         publisher = self._publisher or redis_client
-        await publisher.publish(WS_DELIVERY_CHANNEL, message)
+        try:
+            await publisher.publish(WS_DELIVERY_CHANNEL, message)
+        except Exception:
+            HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                transport='redis',
+                result='error',
+            ).inc()
+            raise
+        else:
+            HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                transport='redis',
+                result='ok',
+            ).inc()
 
     def start(self, handler: WakeupHandler) -> None:
         """启动单个订阅任务。"""
@@ -69,6 +90,11 @@ class RedisRealtimeWakeupBus:
             await asyncio.gather(self._task, return_exceptions=True)
         self._task = None
         self._handler = None
+        self._ready.clear()
+
+    async def wait_ready(self, timeout: float = 10.0) -> None:
+        """等待 Redis 频道完成订阅，供真实 shadow E2E 使用。"""
+        await asyncio.wait_for(self._ready.wait(), timeout=timeout)
 
     async def _subscribe_forever(self) -> None:
         """订阅既有 Redis 频道并在瞬时故障后持续重连。"""
@@ -89,17 +115,43 @@ class RedisRealtimeWakeupBus:
         try:
             pubsub = pubsub_client.pubsub()
             await pubsub.subscribe(WS_DELIVERY_CHANNEL)
+            self._ready.set()
             async for message in pubsub.listen():
                 if message.get('type') != 'message':
                     continue
                 event = _decode_event(message.get('data'))
                 if event is None:
+                    HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL.labels(
+                        transport='redis',
+                    ).inc()
+                    HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                        transport='redis',
+                        result='schema_error',
+                    ).inc()
                     log.warning('[RedisRealtimeWakeupBus] 消息格式错误')
                     continue
                 handler = self._handler
-                if handler is not None:
+                if handler is None:
+                    HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                        transport='redis',
+                        result='handler_missing',
+                    ).inc()
+                    continue
+                try:
                     await handler(event)
+                except Exception:
+                    HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                        transport='redis',
+                        result='handler_error',
+                    ).inc()
+                    raise
+                else:
+                    HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                        transport='redis',
+                        result='ok',
+                    ).inc()
         finally:
+            self._ready.clear()
             if pubsub is not None:
                 try:
                     await pubsub.aclose()

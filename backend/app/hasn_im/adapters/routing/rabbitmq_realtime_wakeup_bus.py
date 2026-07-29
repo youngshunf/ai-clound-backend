@@ -1,0 +1,422 @@
+"""HASN realtime wake-up bus 的 RabbitMQ fanout adapter。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import time
+import uuid
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+import aio_pika
+
+from aio_pika.abc import (
+    AbstractChannel,
+    AbstractExchange,
+    AbstractIncomingMessage,
+    AbstractRobustConnection,
+)
+
+from backend.app.hasn_im.observability.metrics import (
+    HASN_REALTIME_WAKEUP_CONSUME_TOTAL,
+    HASN_REALTIME_WAKEUP_LATENCY_SECONDS,
+    HASN_REALTIME_WAKEUP_PUBLISH_TOTAL,
+    HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL,
+)
+from backend.app.hasn_im.ports.realtime_wakeup_bus import WakeupHandler
+from backend.common.log import log
+from backend.common.messaging.rabbitmq import (
+    build_amqp_dsn,
+    describe_rabbitmq_endpoint,
+)
+from backend.core.conf import settings
+
+REALTIME_EXCHANGE = 'huanxing.realtime'
+REALTIME_QUEUE_PREFIX = 'huanxing.realtime.worker.'
+REALTIME_QUEUE_EXPIRES_MS = 300_000
+RECONNECT_DELAY_SECS = 2.0
+EVENT_SCHEMA_VERSION = 1
+_INSTANCE_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+
+
+class RabbitMQRealtimeSettings(Protocol):
+    """RabbitMQ realtime adapter 所需的最小配置契约。"""
+
+    REALTIME_RABBITMQ_HOST: str
+    REALTIME_RABBITMQ_PORT: int
+    REALTIME_RABBITMQ_VHOST: str
+    REALTIME_RABBITMQ_USERNAME: str
+    REALTIME_RABBITMQ_PASSWORD: str
+
+
+@dataclass(frozen=True, slots=True)
+class DecodedWakeupEvent:
+    """校验通过的 RabbitMQ 唤醒事件。"""
+
+    event_id: str
+    sent_at_ms: int
+    delivery_event: dict[str, Any]
+
+
+def _event_metadata(
+    *,
+    event_id: str | None,
+    sent_at_ms: int | None,
+) -> tuple[str, int]:
+    selected_event_id = event_id or str(uuid.uuid4())
+    selected_sent_at_ms = sent_at_ms or time.time_ns() // 1_000_000
+    return selected_event_id, selected_sent_at_ms
+
+
+def encode_node_wakeup(
+    node_id: str,
+    *,
+    event_id: str | None = None,
+    sent_at_ms: int | None = None,
+) -> bytes:
+    """编码定向唤醒事件。"""
+    selected_event_id, selected_sent_at_ms = _event_metadata(
+        event_id=event_id,
+        sent_at_ms=sent_at_ms,
+    )
+    return json.dumps(
+        {
+            'version': EVENT_SCHEMA_VERSION,
+            'event_id': selected_event_id,
+            'sent_at_ms': selected_sent_at_ms,
+            'kind': 'node',
+            'node_id': node_id,
+        },
+        ensure_ascii=False,
+        separators=(',', ':'),
+    ).encode()
+
+
+def encode_broadcast_wakeup(
+    payload_json: str,
+    *,
+    event_id: str | None = None,
+    sent_at_ms: int | None = None,
+) -> bytes:
+    """编码在线广播唤醒事件。"""
+    selected_event_id, selected_sent_at_ms = _event_metadata(
+        event_id=event_id,
+        sent_at_ms=sent_at_ms,
+    )
+    return json.dumps(
+        {
+            'version': EVENT_SCHEMA_VERSION,
+            'event_id': selected_event_id,
+            'sent_at_ms': selected_sent_at_ms,
+            'kind': 'broadcast',
+            'payload': payload_json,
+        },
+        ensure_ascii=False,
+        separators=(',', ':'),
+    ).encode()
+
+
+def _valid_metadata(value: dict[str, Any]) -> bool:
+    event_id = value.get('event_id')
+    sent_at_ms = value.get('sent_at_ms')
+    if value.get('version') != EVENT_SCHEMA_VERSION:
+        return False
+    if not isinstance(event_id, str) or not event_id or len(event_id) > 128:
+        return False
+    return not (not isinstance(sent_at_ms, int) or isinstance(sent_at_ms, bool) or sent_at_ms <= 0)
+
+
+def decode_wakeup_event(body: bytes) -> DecodedWakeupEvent | None:
+    """严格校验 RabbitMQ 唤醒 schema，并还原既有 delivery 事件。"""
+    try:
+        value = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(value, dict) or not _valid_metadata(value):
+        return None
+
+    kind = value.get('kind')
+    delivery_event: dict[str, Any]
+    if kind == 'node':
+        if set(value) != {'version', 'event_id', 'sent_at_ms', 'kind', 'node_id'}:
+            return None
+        node_id = value.get('node_id')
+        if not isinstance(node_id, str) or not node_id:
+            return None
+        delivery_event = {'node_id': node_id}
+    elif kind == 'broadcast':
+        if set(value) != {'version', 'event_id', 'sent_at_ms', 'kind', 'payload'}:
+            return None
+        payload = value.get('payload')
+        if not isinstance(payload, str):
+            return None
+        delivery_event = {'broadcast': True, 'payload': payload}
+    else:
+        return None
+
+    return DecodedWakeupEvent(
+        event_id=value['event_id'],
+        sent_at_ms=value['sent_at_ms'],
+        delivery_event=delivery_event,
+    )
+
+
+class RabbitMQRealtimeWakeupBus:
+    """基于 robust connection 和每 worker 临时队列的 fanout 实现。"""
+
+    def __init__(
+        self,
+        *,
+        config: RabbitMQRealtimeSettings = settings,
+        instance_id: str | None = None,
+        consume_observer: Callable[[DecodedWakeupEvent], None] | None = None,
+    ) -> None:
+        selected_instance_id = uuid.uuid4().hex if instance_id is None else instance_id
+        if _INSTANCE_ID_PATTERN.fullmatch(selected_instance_id) is None:
+            raise ValueError('RabbitMQ realtime instance_id 必须为 1–64 位字母、数字、下划线或连字符')
+
+        self.instance_id = selected_instance_id
+        self.queue_name = f'{REALTIME_QUEUE_PREFIX}{selected_instance_id}'
+        self._dsn = build_amqp_dsn(
+            host=config.REALTIME_RABBITMQ_HOST,
+            port=config.REALTIME_RABBITMQ_PORT,
+            username=config.REALTIME_RABBITMQ_USERNAME,
+            password=config.REALTIME_RABBITMQ_PASSWORD,
+            vhost=config.REALTIME_RABBITMQ_VHOST,
+        )
+        self._endpoint = describe_rabbitmq_endpoint(
+            host=config.REALTIME_RABBITMQ_HOST,
+            port=config.REALTIME_RABBITMQ_PORT,
+            vhost=config.REALTIME_RABBITMQ_VHOST,
+        )
+        self._handler: WakeupHandler | None = None
+        self._consume_observer = consume_observer
+        self._consumer_task: asyncio.Task[None] | None = None
+        self._consumer_connection: AbstractRobustConnection | None = None
+        self._consumer_channel: AbstractChannel | None = None
+        self._publisher_connection: AbstractRobustConnection | None = None
+        self._publisher_channel: AbstractChannel | None = None
+        self._publisher_exchange: AbstractExchange | None = None
+        self._publisher_lock = asyncio.Lock()
+        self._ready = asyncio.Event()
+
+    async def publish_node_wakeup(self, node_id: str) -> None:
+        """向 fanout exchange 发布定向唤醒。"""
+        await self.publish_node_wakeup_event(node_id)
+
+    async def publish_broadcast(self, payload_json: str) -> None:
+        """向 fanout exchange 发布在线广播。"""
+        await self.publish_broadcast_event(payload_json)
+
+    async def publish_node_wakeup_event(
+        self,
+        node_id: str,
+        *,
+        event_id: str | None = None,
+    ) -> str:
+        """发布可由 shadow 测试按 event_id 对账的定向事件。"""
+        selected_event_id = event_id or str(uuid.uuid4())
+        await self._publish(
+            encode_node_wakeup(node_id, event_id=selected_event_id),
+        )
+        return selected_event_id
+
+    async def publish_broadcast_event(
+        self,
+        payload_json: str,
+        *,
+        event_id: str | None = None,
+    ) -> str:
+        """发布可由 shadow 测试按 event_id 对账的广播事件。"""
+        selected_event_id = event_id or str(uuid.uuid4())
+        await self._publish(
+            encode_broadcast_wakeup(payload_json, event_id=selected_event_id),
+        )
+        return selected_event_id
+
+    def start(self, handler: WakeupHandler) -> None:
+        """启动单个 robust 消费任务。"""
+        self._handler = handler
+        if self._consumer_task is None or self._consumer_task.done():
+            self._consumer_task = asyncio.create_task(self._consume_forever())
+
+    async def stop(self) -> None:
+        """停止消费并有序关闭 consumer、channel 和 connection。"""
+        if self._consumer_task is not None and not self._consumer_task.done():
+            self._consumer_task.cancel()
+            await asyncio.gather(self._consumer_task, return_exceptions=True)
+        self._consumer_task = None
+        self._handler = None
+        self._ready.clear()
+        await self._close_publisher()
+        await self._close_consumer()
+
+    async def wait_ready(self, timeout: float = 10.0) -> None:
+        """等待临时队列完成声明和绑定，供启动门禁与真实 E2E 使用。"""
+        await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+
+    async def _publish(self, body: bytes) -> None:
+        try:
+            exchange = await self._publisher()
+            await exchange.publish(
+                aio_pika.Message(
+                    body=body,
+                    content_type='application/json',
+                    delivery_mode=aio_pika.DeliveryMode.NOT_PERSISTENT,
+                ),
+                routing_key='',
+            )
+        except Exception:
+            HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                transport='rabbitmq',
+                result='error',
+            ).inc()
+            raise
+        else:
+            HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                transport='rabbitmq',
+                result='ok',
+            ).inc()
+
+    async def _publisher(self) -> AbstractExchange:
+        async with self._publisher_lock:
+            if self._publisher_exchange is not None:
+                return self._publisher_exchange
+
+            connection = await aio_pika.connect_robust(self._dsn, timeout=10)
+            channel = await connection.channel(publisher_confirms=True)
+            exchange = await channel.declare_exchange(
+                REALTIME_EXCHANGE,
+                aio_pika.ExchangeType.FANOUT,
+                durable=True,
+                auto_delete=False,
+            )
+            self._publisher_connection = connection
+            self._publisher_channel = channel
+            self._publisher_exchange = exchange
+            return exchange
+
+    async def _consume_forever(self) -> None:
+        while True:
+            try:
+                await self._consume_once()
+            except asyncio.CancelledError:  # noqa: PERF203 — 常驻 consumer 必须在循环内隔离重连
+                break
+            except Exception as exc:
+                self._ready.clear()
+                log.warning(
+                    '[RabbitMQRealtimeWakeupBus] consumer 异常，'
+                    f'{RECONNECT_DELAY_SECS}s 后重连 '
+                    f'{self._endpoint} error={type(exc).__name__}'
+                )
+                await self._close_consumer()
+                await asyncio.sleep(RECONNECT_DELAY_SECS)
+
+    async def _consume_once(self) -> None:
+        connection = await aio_pika.connect_robust(self._dsn, timeout=10)
+        self._consumer_connection = connection
+        try:
+            channel = await connection.channel()
+            self._consumer_channel = channel
+            await channel.set_qos(prefetch_count=100)
+            exchange = await channel.declare_exchange(
+                REALTIME_EXCHANGE,
+                aio_pika.ExchangeType.FANOUT,
+                durable=True,
+                auto_delete=False,
+            )
+            queue = await channel.declare_queue(
+                self.queue_name,
+                durable=False,
+                exclusive=True,
+                auto_delete=True,
+                arguments={'x-expires': REALTIME_QUEUE_EXPIRES_MS},
+            )
+            await queue.bind(exchange)
+            self._ready.set()
+            async with queue.iterator() as iterator:
+                async for message in iterator:
+                    await self._consume_message(message)
+        finally:
+            self._ready.clear()
+            if self._consumer_connection is connection:
+                await self._close_consumer()
+
+    async def _consume_message(self, message: AbstractIncomingMessage) -> None:
+        async with message.process(requeue=False):
+            event = decode_wakeup_event(message.body)
+            if event is None:
+                HASN_REALTIME_WAKEUP_SCHEMA_ERROR_TOTAL.labels(
+                    transport='rabbitmq',
+                ).inc()
+                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                    transport='rabbitmq',
+                    result='schema_error',
+                ).inc()
+                log.warning('[RabbitMQRealtimeWakeupBus] 丢弃并确认 schema 非法的唤醒事件')
+                return
+            latency_seconds = max(
+                (time.time_ns() // 1_000_000 - event.sent_at_ms) / 1000,
+                0.0,
+            )
+            HASN_REALTIME_WAKEUP_LATENCY_SECONDS.labels(
+                transport='rabbitmq',
+            ).observe(latency_seconds)
+            observer = self._consume_observer
+            if observer is not None:
+                try:
+                    observer(event)
+                except Exception as exc:
+                    log.warning(
+                        '[RabbitMQRealtimeWakeupBus] consume observer 失败 '
+                        f'event_id={event.event_id} error={type(exc).__name__}'
+                    )
+            handler = self._handler
+            if handler is None:
+                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                    transport='rabbitmq',
+                    result='handler_missing',
+                ).inc()
+                log.warning('[RabbitMQRealtimeWakeupBus] consumer 未绑定 handler，事件已确认')
+                return
+            try:
+                await handler(event.delivery_event)
+            except Exception as exc:
+                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                    transport='rabbitmq',
+                    result='handler_error',
+                ).inc()
+                log.warning(
+                    '[RabbitMQRealtimeWakeupBus] handler 失败，事件不重入队 '
+                    f'event_id={event.event_id} error={type(exc).__name__}'
+                )
+            else:
+                HASN_REALTIME_WAKEUP_CONSUME_TOTAL.labels(
+                    transport='rabbitmq',
+                    result='ok',
+                ).inc()
+
+    async def _close_consumer(self) -> None:
+        channel = self._consumer_channel
+        connection = self._consumer_connection
+        self._consumer_channel = None
+        self._consumer_connection = None
+        if channel is not None and not channel.is_closed:
+            await channel.close()
+        if connection is not None and not connection.is_closed:
+            await connection.close()
+
+    async def _close_publisher(self) -> None:
+        channel = self._publisher_channel
+        connection = self._publisher_connection
+        self._publisher_exchange = None
+        self._publisher_channel = None
+        self._publisher_connection = None
+        if channel is not None and not channel.is_closed:
+            await channel.close()
+        if connection is not None and not connection.is_closed:
+            await connection.close()

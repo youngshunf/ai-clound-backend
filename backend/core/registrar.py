@@ -86,6 +86,12 @@ async def register_init(app: FastAPI) -> AsyncGenerator[None, None]:
     from backend.app.hasn_im.adapters.routing.delivery_bus import ws_delivery_bus
 
     ws_delivery_bus.start_listener()
+    try:
+        await ws_delivery_bus.wait_listener_ready()
+    except Exception:
+        # lifespan 尚未进入 yield，必须在启动失败路径显式回收已创建的后台任务。
+        await ws_delivery_bus.stop_listener()
+        raise
 
     # 注册支付业务回调
     from backend.app.billing.service.pay_callbacks import register_callbacks
