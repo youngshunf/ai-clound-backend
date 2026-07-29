@@ -338,16 +338,16 @@ flowchart TD
 
 **验收条件：**
 
-- [ ] redis-py 锁定到经过测试的 8.x 精确版本，`uv.lock` 更新。
-- [ ] async connection pool 不再触发 OpenTelemetry 连接池指标回调错误。
-- [ ] Redis 6 兼容 Lua 与 Redis 8 原生 `LMOVE` 的切换有测试，顺序均保持 FIFO。
-- [ ] RESP2/RESP3 选择显式，不依赖客户端默认值漂移。
+- [x] redis-py 锁定到经过测试的 8.x 精确版本，`uv.lock` 更新。
+- [x] async connection pool 不再触发 OpenTelemetry 连接池指标回调错误。
+- [x] Redis 6 兼容 Lua 与 Redis 8 原生 `LMOVE` 的切换有测试，顺序均保持 FIFO。
+- [x] RESP2/RESP3 选择显式，不依赖客户端默认值漂移。
 
 **验证：**
 
-- [ ] `uv run pytest backend/tests/test_redis_observability.py backend/tests/hasn/test_ws_delivery_bus.py -q`
-- [ ] 使用真实 Redis 8.8 运行 presence、锁、TTL、Pub/Sub、pending/processing 集成测试。
-- [ ] `uv run mypy backend/database/redis.py backend/app/hasn_im/adapters/routing/`
+- [x] `uv run pytest backend/tests/test_redis_observability.py backend/tests/hasn/test_ws_delivery_bus.py -q`
+- [x] 使用真实 Redis 8.8 运行 presence、锁、TTL、Pub/Sub、pending/processing 集成测试。
+- [x] `uv run mypy backend/database/redis.py backend/app/hasn_im/adapters/routing/`
 
 **依赖：** B2-02。
 
@@ -751,7 +751,7 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | B1-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `5d0fd2df` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B2-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `cebc218c`–`b0a054ed` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B2-02 | 已完成，24h 观察中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `2f3007bd` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B3-01 | 待开始 | — | — | — | — |
+| B3-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `2b201ca8` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B3-02 | 待开始 | — | — | — | — |
 | B4-01 | 待开始 | — | — | — | — |
 | B5-01 | 待开始 | — | — | — | — |

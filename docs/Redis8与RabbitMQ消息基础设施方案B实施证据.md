@@ -452,12 +452,80 @@ RabbitMQ ready/unacked 0/0。数据库调度表同时显示：
 这证明至少一个完整的一分钟生产 Beat 周期已发布、消费并回写。B2-02 切换与回滚演练
 完成；检查点二的 24 小时稳定性观察仍在进行，尚未提前宣称通过。
 
-## 5. 后续证据索引
+## 5. B3-01 Redis 8 / redis-py 8 兼容性
+
+### 5.1 客户端与切换契约
+
+2026-07-30 04:00–04:13 CST 在隔离 worktree 完成 `redis-py==8.0.1`
+精确锁版，`uv.lock` 与 `requirements.txt` 同步更新。应用 Redis 客户端新增两个显式
+契约：
+
+- `REDIS_PROTOCOL=2|3`，兼容阶段默认 RESP2；`RedisCli` 始终把该值传给
+  redis-py，并启用兼容响应形状；
+- `REDIS_LIST_MOVE_MODE=lua|lmove`，Redis 6 默认走原子 Lua，Redis 8 蓝绿验收
+  后才由生产环境显式切到原生 `LMOVE LEFT RIGHT`，配置错误不会静默回退。
+
+两条 pending/processing 路径均以 `LPOP/RPUSH` 等价语义保持 FIFO。Redis 8.0.1
+异步连接池已提供原生连接计数契约，因此恢复 redis-py 原生 OpenTelemetry 指标；
+标准 `opentelemetry-instrumentation-redis` 仍负责 Redis span。
+
+实现提交为 `2b201ca8`，主分支合入提交为 `0e7d4a646`。
+
+### 5.2 真实 Redis 8.8 集成测试
+
+本机 Homebrew `redis-server` 为 Redis 8.8.0。测试在随机回环端口启动隔离真实进程，
+使用每轮随机强密码、禁用持久化，并在结束时关闭进程；没有使用 fake Redis、内存
+替代服务或假 fallback。
+
+`backend/tests/test_redis8_integration.py` 的 7 个实际用例覆盖：
+
+- RESP2 与 RESP3 的显式协商、兼容响应形状、事务 pipeline 和 TTL；
+- 两个 RESP3 客户端的真实 Pub/Sub 往返；
+- presence 写入、代际 Lua 刷新/注销、存活 TTL；
+- 两个真实客户端竞争同一分布式锁；
+- Lua 与原生 `LMOVE` 两条 pending/processing 路径的三条消息 FIFO；
+- 隔离 Python 进程初始化 redis-py 原生 OTel，8 个并发异步 `PING` 后可读取
+  `db.client.connection.count`，stderr 无 `Callback failed`。
+
+验证结果：
+
+```text
+REDIS8_E2E=1 uv run pytest \
+  backend/tests/test_redis_observability.py \
+  backend/app/hasn_im/tests/test_routing_delivery_bus.py \
+  backend/tests/test_redis8_integration.py \
+  backend/tests/hasn/test_ws_delivery_bus.py -q
+=> 25 passed, 96 warnings in 5.65s
+
+uv run pytest backend/tests/test_redis_observability.py \
+  backend/tests/hasn/test_ws_delivery_bus.py -q
+=> 16 passed, 96 warnings in 0.10s
+
+uv run mypy backend/database/redis.py \
+  backend/app/hasn_im/adapters/routing/
+=> Success: no issues found in 7 source files
+
+uv run mypy backend/
+=> Success: no issues found in 2999 source files
+
+uv run prek run --files <B3-01 变更文件>
+=> 全部 hooks 通过
+```
+
+扩大到整个 `backend/app/hasn_im/tests` 并连接真实 PostgreSQL
+`127.0.0.1:15432` 后为 `205 passed, 2 failed`。两项失败均是共享测试库中既有
+固定中文 nickname 撞唯一约束，与本阶段 Redis/WS 文件无关；未删除未知归属测试数据
+来伪造全绿。
+
+B3-01 已完成。B3-02 仍须先精确识别生产主机上的项目 Redis 实例，再执行新端口
+部署、RDB 恢复、逐服务切换和 24 小时观察，本文不提前标记生产升级完成。
+
+## 6. 后续证据索引
 
 | 阶段 | 证据 |
 |---|---|
 | B0–B2 | 本文持续补充；生产部署记录另存父仓 `docs/生产部署/部署记录/` |
-| B3 | 待 Redis 8 蓝绿分支建立后登记 |
+| B3 | B3-01 见本文第 5 节；B3-02 蓝绿切换待执行 |
 | B4 | 待 Socket.IO 分支建立后登记 |
 | B5 | 待 realtime 分支建立后登记 |
 | B6 | 待 offline sync 后端/daemon 分支建立后登记 |
