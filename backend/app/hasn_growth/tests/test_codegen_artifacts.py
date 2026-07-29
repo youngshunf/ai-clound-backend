@@ -208,7 +208,7 @@ def test_sensitive_admin_codegen_crud_is_not_mounted() -> None:
 
 
 def test_m2_app_registration_manifest_scope_catalog() -> None:
-    """应用注册：manifest（app_id=growth，26 工具）+ 5 scope + App（manual）齐备。"""
+    """应用注册：manifest、权限 scope 与云端工具声明齐备。"""
     from backend.app.hasn_core.app_platform import AINativeAppRegistry, app_catalog_registry
     from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
     from backend.app.mcp.scopes import SCOPE_CATALOG
@@ -219,8 +219,12 @@ def test_m2_app_registration_manifest_scope_catalog() -> None:
     # 纯云端业务应用：工具走云端 gateway_internal（对齐 community/knowledge），非本地 hasn-mcp 中转。
     assert GROWTH_AI_NATIVE_MANIFEST['transport_mode'] == 'cloud'
     caps = GROWTH_AI_NATIVE_MANIFEST['capabilities']
-    # 27 = 既有 22 + project.get/create/update/update_profile/pause 五个项目工具。
-    assert len(caps) == 27
+    # 29 = S5 的 27 工具 + S6 项目线索 ingest/list。
+    assert len(caps) == 29
+    assert {
+        'hasn.growth.lead.ingest',
+        'hasn.growth.lead.list',
+    }.issubset({cap['mcp_name'] for cap in caps})
     assert all(c['mcp_name'].startswith('hasn.growth.') for c in caps)
     # 所有 required_scopes 冒号词表
     for c in caps:

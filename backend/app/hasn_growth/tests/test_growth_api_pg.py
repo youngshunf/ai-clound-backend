@@ -15,6 +15,7 @@ import uuid
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -53,6 +54,11 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.asyncio
+_REPO = Path(__file__).resolve().parents[4]
+_S6_MIGRATION_SQL = (
+    _REPO
+    / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
+)
 
 _APP = FastAPI()
 _APP.include_router(agent_growth_router, prefix='/api/v1/growth/agent')
@@ -76,6 +82,10 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         pytest.skip(f'本地 PostgreSQL 不可达，跳过: {exc!r}')
 
     session = async_sessionmaker(engine, expire_on_commit=False)()
+    raw = await (await session.connection()).get_raw_connection()
+    connection = raw.driver_connection
+    assert connection is not None
+    await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
     tag = uuid.uuid4().hex[:8]
     owner = f'h_grw_{tag}'
     owner_uid = 93_700_000_000 + int(uuid.uuid4().int % 900_000_000)
@@ -294,6 +304,91 @@ async def test_owner_growth_project_context_http_contract(e2e) -> None:
 
     enterprise = await e2e.client.get(f'{owner_api}/projects/by-platform/{e2e.enterprise_platform_project_id}')
     assert enterprise.status_code == 422
+
+
+async def test_owner_project_lead_batch_pagination_and_status_http_contract(
+    e2e: SimpleNamespace,
+) -> None:
+    """Owner API 只读写项目关联行，并逐行返回导入错误与服务端分页。"""
+    owner_api = '/api/v1/growth/app'
+    project_id = str(e2e.growth_project_id)
+    batch_id = f'http-s6-{uuid.uuid4().hex}'
+    imported = _ok(
+        await e2e.client.post(
+            f'{owner_api}/projects/{project_id}/leads/import',
+            json={
+                'batch_id': batch_id,
+                'items': [
+                    {
+                        'client_ref': 'http-valid',
+                        'company_name': 'HTTP 受控样本企业',
+                        'domain': f'{uuid.uuid4().hex}.example',
+                        'industry': '企业软件',
+                        'source_kind': 'controlled_import',
+                        'source_ref': f'controlled://http/{batch_id}',
+                        'match_score': 92,
+                        'scoring_version': 'profile-v1/rules-v1',
+                        'score_breakdown': {
+                            'industry': {
+                                'score': 92,
+                                'explanation': '行业与已确认 ICP 一致',
+                            }
+                        },
+                    },
+                    {
+                        'client_ref': 'http-invalid',
+                        'company_name': '',
+                        'source_kind': 'controlled_import',
+                        'source_ref': f'controlled://http/{batch_id}/invalid',
+                    },
+                ],
+            },
+        )
+    )
+    assert imported['inserted'] == 1
+    assert imported['error_count'] == 1
+    assert imported['errors'][0]['client_ref'] == 'http-invalid'
+
+    listed = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/{project_id}/leads',
+            params={'page': 1, 'size': 1, 'min_score': 90},
+        )
+    )
+    assert listed['total'] == 1
+    assert listed['page'] == listed['size'] == 1
+    lead = listed['items'][0]
+    assert lead['scoring_version'] == 'profile-v1/rules-v1'
+    assert lead['evidence_freshness'] == 'unknown'
+    assert lead['score_breakdown']['industry']['explanation']
+
+    dismissed = _ok(
+        await e2e.client.post(
+            f"{owner_api}/projects/{project_id}/leads/{lead['id']}/status",
+            json={'action': 'dismiss', 'reason': '当前批次优先级不匹配'},
+        )
+    )
+    assert dismissed['status'] == 'dismissed'
+    dismissed_page = _ok(
+        await e2e.client.get(
+            f'{owner_api}/projects/{project_id}/leads',
+            params={'status': 'dismissed', 'page': 1, 'size': 20},
+        )
+    )
+    assert dismissed_page['total'] == 1
+    restored = _ok(
+        await e2e.client.post(
+            f"{owner_api}/projects/{project_id}/leads/{lead['id']}/status",
+            json={'action': 'restore'},
+        )
+    )
+    assert restored['status'] == 'new'
+
+    personal_assign = await e2e.client.put(
+        f"{owner_api}/projects/{project_id}/leads/{lead['id']}/assignee",
+        json={'assignee': e2e.owner},
+    )
+    assert personal_assign.status_code == 403
 
 
 async def test_four_scope_funnel_flow(e2e) -> None:

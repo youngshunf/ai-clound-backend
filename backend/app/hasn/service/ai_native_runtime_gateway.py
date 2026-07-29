@@ -663,6 +663,8 @@ class AiNativeRuntimeGateway:
             'growth.enrich_company': growth_handlers.handle_growth_enrich_company,
             'growth.collect_start': growth_handlers.handle_growth_collect_start,
             'growth.collect_status': growth_handlers.handle_growth_collect_status,
+            'growth.lead_ingest': growth_handlers.handle_growth_lead_ingest,
+            'growth.lead_list': growth_handlers.handle_growth_lead_list,
             'growth.lead_search': growth_handlers.handle_growth_lead_search,
             'growth.lead_get': growth_handlers.handle_growth_lead_get,
             'growth.lead_qualify': growth_handlers.handle_growth_lead_qualify,

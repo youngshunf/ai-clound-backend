@@ -233,6 +233,8 @@ class HasnArtifactsService:
         dispatch_id: str | None = None,
         project_id: str | None = None,
         action: Literal['create', 'update'] = 'create',
+        metadata: dict[str, object] | None = None,
+        accumulate_metadata_keys: list[str] | None = None,
     ) -> ArtifactRegistration:
         """据 descriptor 登记一条**应用资源产物**（deck/webpage 等，走 `resource_uri` 指针，无 asset 本体）。
 
@@ -276,7 +278,8 @@ class HasnArtifactsService:
             dispatch_id=effective_dispatch_id,
             title=title or None,
             summary=summary or None,
-            metadata={'origin_ref': origin_ref},
+            metadata={**(metadata or {}), 'origin_ref': origin_ref},
+            accumulate_metadata_keys=accumulate_metadata_keys or [],
         )
         registered = await artifact_registration_service.register(db, mutation)
         assert registered.resource_uri is not None
