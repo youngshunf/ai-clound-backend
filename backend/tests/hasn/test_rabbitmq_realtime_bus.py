@@ -6,6 +6,8 @@ import asyncio
 import inspect
 import json
 import os
+import shutil
+import subprocess
 import uuid
 
 from collections.abc import Awaitable, Callable
@@ -275,6 +277,67 @@ async def test_real_rabbitmq_fanout_to_four_workers_and_restart() -> None:
         assert all(event_ids == published_event_ids for event_ids in consumed_event_ids)
     finally:
         await asyncio.gather(*(bus.stop() for bus in buses))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv('RABBITMQ_REALTIME_RESTART_E2E') != '1',
+    reason='仅在显式提供可重启的隔离 RabbitMQ 容器时运行',
+)
+async def test_real_rabbitmq_recovers_after_isolated_broker_restart() -> None:
+    """真实重启隔离 broker 后，publisher 与稳定 consumer queue 自动恢复。"""
+    container_name = os.getenv('RABBITMQ_REALTIME_RESTART_CONTAINER', '')
+    if container_name != 'huanxing-rabbitmq-realtime-e2e':
+        pytest.fail('RabbitMQ 重启 E2E 只允许操作固定隔离测试容器')
+    docker = shutil.which('docker')
+    if docker is None:
+        pytest.fail('RabbitMQ 重启 E2E 缺少 docker CLI')
+
+    suffix = uuid.uuid4().hex[:12]
+    events: list[dict[str, object]] = []
+
+    async def handle(event: dict[str, object]) -> None:  # noqa: RUF029
+        events.append(event)
+
+    async def wait_for_event_count(expected: int, timeout: float) -> None:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            if len(events) >= expected:
+                return
+            await asyncio.sleep(0.05)
+        pytest.fail(f'隔离 RabbitMQ 重启后未在期限内分发第 {expected} 个事件')
+
+    bus = RabbitMQRealtimeWakeupBus(
+        instance_id=f'restart-e2e-{suffix}',
+    )
+    stable_queue_name = bus.queue_name
+    bus.start(handle)
+    try:
+        await bus.wait_ready(timeout=20)
+        await bus.publish_node_wakeup_event('node-before-restart')
+        await wait_for_event_count(1, 10)
+
+        await asyncio.to_thread(
+            subprocess.run,
+            [docker, 'restart', container_name],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        await asyncio.wait_for(
+            bus.publish_node_wakeup_event('node-after-restart'),
+            timeout=45,
+        )
+        await wait_for_event_count(2, 45)
+        assert bus.queue_name == stable_queue_name
+        assert events == [
+            {'node_id': 'node-before-restart'},
+            {'node_id': 'node-after-restart'},
+        ]
+    finally:
+        await bus.stop()
 
 
 @pytest.mark.asyncio
