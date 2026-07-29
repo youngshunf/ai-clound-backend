@@ -752,9 +752,9 @@ B0–B5 预计不需要数据库结构迁移。B6 若覆盖矩阵发现必须记
 | B2-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `cebc218c`–`b0a054ed` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B2-02 | 已完成，24h 观察中 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `2f3007bd` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B3-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `2b201ca8` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
-| B3-02 | 待开始 | — | — | — | — |
-| B4-01 | 待开始 | — | — | — | — |
-| B5-01 | 待开始 | — | — | — | — |
+| B3-02 | 部署护栏已合入，生产蓝绿切换待执行 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `29a6defe` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B4-01 | 实现已合入，生产真实互通与切换待执行 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `732f05e8` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
+| B5-01 | 已完成并合入 | `fix/rabbitmq-b-celery` | `.worktrees/rabbitmq-b-celery` | `0e323c25` | `docs/Redis8与RabbitMQ消息基础设施方案B实施证据.md` |
 | B5-02 | 待开始 | — | — | — | — |
 | B5-03 | 待开始 | — | — | — | — |
 | B6-01 | 待开始 | — | — | — | — |
