@@ -51,6 +51,7 @@ from backend.app.hasn_growth.service.project_customer_service import (
 )
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
+from backend.app.hasn_growth.service.review_service import growth_review_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
 from backend.app.mcp.artifact_registration import merge_resource_uri, register_app_resource_artifact
 from backend.common.exception import errors
@@ -981,3 +982,51 @@ async def handle_growth_report_funnel(
 ) -> dict[str, Any]:
     scope = await _scope(db, agent, view=str(input_payload.get('view', 'team')))
     return await growth_report_service.funnel_overview(db, user_id=agent.owner_user_id, scope=scope)
+
+
+async def handle_growth_report_performance(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """读取单个项目可追溯的经营复盘报表。"""
+    return await growth_report_service.project_overview(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=_required_str(
+            input_payload,
+            'growth_project_id',
+        ),
+    )
+
+
+async def handle_growth_review_suggest(
+    db: AsyncSession,
+    agent: AgentTokenPayload,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """提交待 Owner 审阅的下一周期建议，并登记本次会话对项目的真实写入。"""
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
+    suggestion = await growth_review_service.create_suggestion(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=growth_project_id,
+        suggestion_kind=_required_str(input_payload, 'suggestion_kind'),
+        proposal=dict(input_payload.get('proposal') or {}),
+        evidence=dict(input_payload.get('evidence') or {}),
+        proposed_by_kind='agent',
+        proposed_by_id=agent.agent_hasn_id,
+        idempotency_key=_required_str(input_payload, 'idempotency_key'),
+    )
+    project = await growth_project_app_service.get_by_id(
+        db,
+        owner_hasn_id=agent.owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    registration = await _register_growth_project(
+        db,
+        agent,
+        project,
+        source_tool='hasn.growth.review.suggest',
+    )
+    return merge_resource_uri(suggestion, registration)

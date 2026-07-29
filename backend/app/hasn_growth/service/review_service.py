@@ -5,10 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 
+from croniter import croniter
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,10 +19,14 @@ from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.growth_review_suggestion import GrowthReviewSuggestion
 from backend.app.hasn_growth.service.pii_boundary import assert_growth_pii_payload_safe
 from backend.app.hasn_growth.service.playbook_service import playbook_service
+from backend.app.hasn_task.model.task import HasnTask
 from backend.common.exception import errors
 
 _SUGGESTION_KINDS = frozenset({'icp', 'channel', 'playbook'})
 _DECISIONS = frozenset({'accept', 'reject'})
+_REVIEW_SCHEDULE_CRON = '0 9 * * 1'
+_REVIEW_SCHEDULE_KIND = 'growth_cycle_review'
+_REVIEW_SCHEDULE_TIMEZONE = 'Asia/Shanghai'
 
 
 def _parse_project_id(value: str | UUID) -> UUID:
@@ -28,6 +34,13 @@ def _parse_project_id(value: str | UUID) -> UUID:
         return value if isinstance(value, UUID) else UUID(str(value))
     except (TypeError, ValueError) as exc:
         raise errors.NotFoundError(msg='获客项目不存在') from exc
+
+
+def _next_review_run_at() -> datetime:
+    """按任务声明的上海时区计算下一个周一 09:00，并以带时区时间落库。"""
+    local_now = datetime.now(ZoneInfo(_REVIEW_SCHEDULE_TIMEZONE))
+    local_next = croniter(_REVIEW_SCHEDULE_CRON, local_now).get_next(datetime)
+    return local_next.astimezone(UTC)
 
 
 def _serialize(row: GrowthReviewSuggestion) -> dict[str, Any]:
@@ -100,6 +113,16 @@ class GrowthReviewService:
     """经营复盘建议只能先落待审记录，再由 Owner 接受或拒绝。"""
 
     @staticmethod
+    def _review_task_uuid(growth_project_id: UUID) -> str:
+        """为每个 Growth 项目派生唯一、可跨重试复用的周期复盘任务键。"""
+        return str(
+            uuid5(
+                NAMESPACE_URL,
+                f'hasn:growth:cycle-review:{growth_project_id}:v1',
+            )
+        )
+
+    @staticmethod
     async def _owned_project(
         db: AsyncSession,
         *,
@@ -161,6 +184,16 @@ class GrowthReviewService:
             growth_project_id=growth_project_id,
             for_update=False,
         )
+        if project.status != 'active':
+            raise errors.ConflictError(
+                msg='获客项目未处于运行状态，不能写入经营复盘建议',
+                data={'error_code': 'GROWTH_PROJECT_INACTIVE'},
+            )
+        if project.provision_status != 'ready':
+            raise errors.ConflictError(
+                msg='获客项目基础资源尚未就绪，不能写入经营复盘建议',
+                data={'error_code': 'GROWTH_PROJECT_NOT_READY'},
+            )
         existing = (
             await db.execute(
                 sa.select(GrowthReviewSuggestion).where(
@@ -248,6 +281,204 @@ class GrowthReviewService:
             .all()
         )
         return [_serialize(row) for row in rows]
+
+    async def get_review_schedule(
+        self,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        growth_project_id: str | UUID,
+    ) -> dict[str, Any]:
+        """读取周期复盘在通用任务系统中的真实状态。"""
+        project = await self._owned_project(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            growth_project_id=growth_project_id,
+            for_update=False,
+        )
+        task_uuid = self._review_task_uuid(project.id)
+        task = (
+            await db.execute(
+                sa.select(HasnTask).where(
+                    HasnTask.owner_id == project.owner_hasn_id,
+                    HasnTask.project_id == project.platform_project_id,
+                    HasnTask.app_id == 'growth',
+                    HasnTask.task_uuid == task_uuid,
+                    HasnTask.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if task is None:
+            return {
+                'growth_project_id': str(project.id),
+                'enabled': False,
+                'task_uuid': task_uuid,
+                'schedule_display': '每周一 09:00',
+                'state': None,
+                'next_run_at': None,
+                'last_status': None,
+                'last_error': None,
+            }
+        return {
+            'growth_project_id': str(project.id),
+            'enabled': bool(task.enabled and task.state == 'scheduled'),
+            'task_uuid': task_uuid,
+            'schedule_display': task.schedule_display or '每周一 09:00',
+            'state': task.state,
+            'next_run_at': task.next_run_at.isoformat() if task.next_run_at else None,
+            'last_status': task.last_status,
+            'last_error': task.last_error,
+        }
+
+    async def set_review_schedule(
+        self,
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        growth_project_id: str | UUID,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        """由 Owner 显式启停周期复盘；恢复项目不会隐式重启该任务。"""
+        project = await self._owned_project(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            growth_project_id=growth_project_id,
+            for_update=True,
+        )
+        task_uuid = self._review_task_uuid(project.id)
+        task = (
+            await db.execute(
+                sa
+                .select(HasnTask)
+                .where(
+                    HasnTask.owner_id == project.owner_hasn_id,
+                    HasnTask.project_id == project.platform_project_id,
+                    HasnTask.app_id == 'growth',
+                    HasnTask.task_uuid == task_uuid,
+                    HasnTask.deleted_at.is_(None),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not enabled:
+            if task is not None:
+                changed = task.enabled or task.state != 'paused' or task.next_run_at is not None
+                if changed:
+                    task.enabled = False
+                    task.state = 'paused'
+                    task.next_run_at = None
+                    task.task_revision += 1
+                    await db.flush()
+            return await self.get_review_schedule(
+                db,
+                owner_hasn_id=owner_hasn_id,
+                growth_project_id=project.id,
+            )
+        if project.status != 'active':
+            raise errors.ConflictError(
+                msg='获客项目未处于运行状态，不能启用周期复盘',
+                data={'error_code': 'GROWTH_PROJECT_INACTIVE'},
+            )
+        if project.provision_status != 'ready':
+            raise errors.ConflictError(
+                msg='获客项目基础资源尚未就绪，不能启用周期复盘',
+                data={'error_code': 'GROWTH_PROJECT_NOT_READY'},
+            )
+        agent_id = (project.owner_agent_id or '').strip()
+        if not agent_id:
+            raise errors.ConflictError(
+                msg='获客项目尚未绑定负责分身，不能启用周期复盘',
+                data={'error_code': 'GROWTH_PROJECT_AGENT_REQUIRED'},
+            )
+        next_run_at = _next_review_run_at()
+        execution_spec = {
+            'kind': _REVIEW_SCHEDULE_KIND,
+            'growth_project_id': str(project.id),
+            'idempotency_scope': 'growth_project_cycle',
+            'cancel_when': [
+                'project_paused',
+                'project_archived',
+                'entitlement_unavailable',
+            ],
+        }
+        prompt = (
+            f'复盘获客项目 {project.id}。先调用 hasn.growth.project.get 确认项目仍为 active 且 ready；'
+            '再调用 hasn.growth.report.performance 读取当前周期真实原始事件、来源、打法、成本和赢输原因。'
+            '分开列出事实、推断与建议；建议必须写明样本量、证据范围、数据不足和局限。'
+            '只通过 hasn.growth.review.suggest 提交待 Owner 审阅的 ICP、渠道或打法差异草案，'
+            '幂等键使用项目 ID、周期起始时间和建议类型稳定派生；不得自动修改当前画像、打法或预算。'
+            '项目暂停、归档、权益不可用或报表无新增事实时立即停止，不生成假建议。'
+        )
+        if task is None:
+            task = HasnTask(
+                owner_id=project.owner_hasn_id,
+                agent_id=agent_id,
+                name=f'获客经营复盘 · {project.name}'[:200],
+                description='主人显式启用的每周经营复盘任务',
+                prompt=prompt,
+                schedule_type='cron',
+                schedule_config={'expr': _REVIEW_SCHEDULE_CRON},
+                schedule_display='每周一 09:00',
+                timezone=_REVIEW_SCHEDULE_TIMEZONE,
+                misfire_policy='skip',
+                enabled=True,
+                state='scheduled',
+                next_run_at=next_run_at,
+                created_by=project.owner_hasn_id,
+                task_uuid=task_uuid,
+                executor_policy='local_node',
+                task_revision=1,
+                continuation_enabled=True,
+                created_by_kind='owner',
+                risk_level='low',
+                project_id=project.platform_project_id,
+                app_id='growth',
+                execution_kind='freeform',
+                execution_spec=execution_spec,
+            )
+            db.add(task)
+        else:
+            changed = not task.enabled or task.state != 'scheduled'
+            task.agent_id = agent_id
+            task.enabled = True
+            task.state = 'scheduled'
+            task.next_run_at = task.next_run_at or next_run_at
+            task.prompt = prompt
+            task.execution_spec = execution_spec
+            if changed:
+                task.task_revision += 1
+        await db.flush()
+        return await self.get_review_schedule(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            growth_project_id=project.id,
+        )
+
+    @staticmethod
+    async def suspend_project_tasks(
+        db: AsyncSession,
+        *,
+        growth_project: GrowthProject,
+    ) -> None:
+        """暂停项目下全部未终态 Growth 任务，切断已排程自动动作。"""
+        await db.execute(
+            sa
+            .update(HasnTask)
+            .where(
+                HasnTask.owner_id == growth_project.owner_hasn_id,
+                HasnTask.project_id == growth_project.platform_project_id,
+                HasnTask.app_id == 'growth',
+                HasnTask.deleted_at.is_(None),
+                HasnTask.state.not_in(('completed', 'deleted', 'rejected')),
+            )
+            .values(
+                enabled=False,
+                state='paused',
+                next_run_at=None,
+                task_revision=HasnTask.task_revision + 1,
+                updated_time=datetime.now(UTC),
+            )
+        )
 
     async def get_policy(
         self,

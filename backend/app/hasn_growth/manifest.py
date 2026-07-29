@@ -155,7 +155,7 @@ def _tool_from_cap(cap: dict) -> dict:
     return tool
 
 
-# 获客 33 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
+# 获客 35 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
 # lead_request（2.1 请求线索·用户端默认入口）为第 1 条；其后 lookup/search/enrich_company
 # （GROWTH-QCC-4 企业数据读穿中台）；customer_reassign（GE4）为末条。
 _CAPABILITIES = [
@@ -986,6 +986,72 @@ _CAPABILITIES = [
         page_rank=27,
         tags=['growth', 'report', 'funnel', 'read'],
     ),
+    _cap(
+        name='report_performance',
+        mcp_suffix='report.performance',
+        title='项目经营复盘报表',
+        description=(
+            '读取指定 Growth 项目的真实归因事件、线索到成交漏斗、来源、打法、站点、表单、'
+            '触达、回复、收入、成本状态和赢输原因；返回原始事件追踪 ID。'
+        ),
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'growth_project_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': 'Growth 云端权威 UUID',
+            },
+        },
+        required=['growth_project_id'],
+        page_rank=28,
+        tags=['growth', 'report', 'performance', 'attribution', 'review', 'read'],
+    ),
+    _cap(
+        name='review_suggest',
+        mcp_suffix='review.suggest',
+        title='提交下一周期经营建议',
+        description=(
+            '基于真实经营报表提交 ICP、渠道或打法的待审差异草案；'
+            '必须声明证据范围、样本量、数据不足与局限，Owner 接受前不会修改当前版本。'
+        ),
+        scope=_SCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'growth_project_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': 'Growth 云端权威 UUID',
+            },
+            'suggestion_kind': {
+                'type': 'string',
+                'enum': ['icp', 'channel', 'playbook'],
+            },
+            'proposal': {
+                'type': 'object',
+                'description': '完整的候选变更，不得只给自然语言结论',
+            },
+            'evidence': {
+                'type': 'object',
+                'description': '必须含 scope、event_count、insufficient_data 和 limitations',
+            },
+            'idempotency_key': {
+                'type': 'string',
+                'minLength': 1,
+                'maxLength': 200,
+                'description': '按项目、周期起始时间和建议类型稳定派生',
+            },
+        },
+        required=[
+            'growth_project_id',
+            'suggestion_kind',
+            'proposal',
+            'evidence',
+            'idempotency_key',
+        ],
+        page_rank=29,
+        tags=['growth', 'review', 'suggestion', 'manage'],
+    ),
 ]
 
 
@@ -993,7 +1059,7 @@ GROWTH_AI_NATIVE_MANIFEST: dict[str, Any] = {
     'app_id': 'growth',
     # 「可搜索域目录」：namespace 关键词 → 一句话（云端 tool.search 描述自动汇聚，agent 据此选关键词搜该域工具）。
     'domain_summary': {'growth': '获客（线索采集/触达/转化）'},
-    'version': '1.1.0',
+    'version': '1.2.0',
     'workspace_scope': ['personal', 'enterprise'],
     'collaboration_mode': 'workspace_shared',
     'project_aware': True,

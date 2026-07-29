@@ -675,6 +675,8 @@ class AiNativeRuntimeGateway:
             'growth.opportunity_update_stage': growth_handlers.handle_growth_opportunity_update_stage,
             'growth.deal_close': growth_handlers.handle_growth_deal_close,
             'growth.report_funnel': growth_handlers.handle_growth_report_funnel,
+            'growth.report_performance': growth_handlers.handle_growth_report_performance,
+            'growth.review_suggest': growth_handlers.handle_growth_review_suggest,
             # 知识库（AI-Native 重做：工具回归 manifest App 工具，handler 落 knowledge service，
             # RAGFlow 为云端内部处理后端——《知识库AI-Native应用重设计》§2.4/§3）
             'knowledge.search': knowledge_handlers.handle_knowledge_search,

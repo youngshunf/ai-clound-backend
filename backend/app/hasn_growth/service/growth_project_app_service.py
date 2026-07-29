@@ -16,6 +16,7 @@ from backend.app.hasn_growth.schema.growth_project import GetGrowthProjectDetail
 from backend.app.hasn_growth.service.growth_profile_service import (
     growth_profile_service,
 )
+from backend.app.hasn_growth.service.review_service import growth_review_service
 from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.common.exception import errors
 from backend.common.response.response_code import StandardResponseCode
@@ -375,6 +376,10 @@ class GrowthProjectAppService:
                 data={'error_code': 'GROWTH_PROJECT_ARCHIVED'},
             )
         growth_project.status = 'paused'
+        await growth_review_service.suspend_project_tasks(
+            db,
+            growth_project=growth_project,
+        )
         await db.flush()
         return await self._serialize_with_provision(db, growth_project)
 
@@ -424,6 +429,10 @@ class GrowthProjectAppService:
             for_update=True,
         )
         growth_project.status = 'archived'
+        await growth_review_service.suspend_project_tasks(
+            db,
+            growth_project=growth_project,
+        )
         await db.flush()
         return await self._serialize_with_provision(db, growth_project)
 
