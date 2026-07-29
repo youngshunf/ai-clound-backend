@@ -1,0 +1,32 @@
+# Redis 8 仅监听本机回环地址，由应用所在主机访问。
+bind 127.0.0.1
+port 9397
+protected-mode yes
+requirepass {{REDIS8_PASSWORD}}
+
+# 容器以前台方式运行，数据统一写入外置数据盘。
+daemonize no
+supervised no
+dir /data
+dbfilename dump.rdb
+databases 16
+
+# 同时保留 RDB 与 AOF，避免单一持久化机制失效。
+save 3600 1
+save 300 100
+save 60 10000
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+appendonly yes
+appendfilename appendonly.aof
+appendfsync everysec
+no-appendfsync-on-rewrite no
+
+# 内存耗尽时显式拒绝写入，禁止静默淘汰业务数据。
+maxmemory 512mb
+maxmemory-policy noeviction
+
+# 日志输出到容器标准输出，由 Docker 统一采集。
+logfile ""
+loglevel notice
