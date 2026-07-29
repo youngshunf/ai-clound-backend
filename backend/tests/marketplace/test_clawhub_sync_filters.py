@@ -132,6 +132,7 @@ class _CursorPagesHandler(BaseHTTPRequestHandler):
         'c1': {'items': [_skill('s2', 3), _skill('s3', 4)], 'nextCursor': 'c2'},
         'c2': {'items': [_skill('s4', 5)], 'nextCursor': None},
     }
+    QUERIES: list[dict[str, list[str]]] = []
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -140,6 +141,7 @@ class _CursorPagesHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         cursor = parse_qs(parsed.query).get('cursor', [None])[0]
+        self.QUERIES.append(parse_qs(parsed.query))
         body = json.dumps(self.PAGES.get(cursor, {'items': [], 'nextCursor': None}))
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -151,6 +153,7 @@ class _CursorPagesHandler(BaseHTTPRequestHandler):
 
 
 def test_fetch_all_skills_follows_cursor() -> None:
+    _CursorPagesHandler.QUERIES = []
     server = HTTPServer(('127.0.0.1', 0), _CursorPagesHandler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -164,6 +167,26 @@ def test_fetch_all_skills_follows_cursor() -> None:
         thread.join(timeout=5)
 
     assert [s['slug'] for s in skills] == ['s0', 's1', 's2', 's3', 's4']
+    assert all(query['sort'] == ['downloads'] for query in _CursorPagesHandler.QUERIES)
+
+
+def test_fetch_all_skills_stops_after_requested_limit() -> None:
+    _CursorPagesHandler.QUERIES = []
+    server = HTTPServer(('127.0.0.1', 0), _CursorPagesHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        svc = ClawHubSyncService()
+        svc.clawhub_api_url = f'http://127.0.0.1:{port}/api/v1'
+        skills = asyncio.run(svc._fetch_all_skills(limit=3))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert [skill['slug'] for skill in skills] == ['s0', 's1', 's2']
+    assert len(_CursorPagesHandler.QUERIES) == 2
+    assert all(query['sort'] == ['downloads'] for query in _CursorPagesHandler.QUERIES)
 
 
 # ── 正文原文填充（translate_body=False 路径，零 LLM） ─────────────────────────

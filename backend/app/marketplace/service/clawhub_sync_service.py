@@ -191,7 +191,7 @@ class ClawHubSyncService:
             skills_data = (
                 await self._fetch_specific_skills(skill_ids)
                 if skill_ids
-                else await self._fetch_all_skills()
+                else await self._fetch_all_skills(limit=effective_limit)
             )
             filtered_skills = self._filter_skills(
                 skills_data,
@@ -231,7 +231,7 @@ class ClawHubSyncService:
             skills_data = (
                 await self._fetch_specific_skills(skill_ids)
                 if skill_ids
-                else await self._fetch_all_skills()
+                else await self._fetch_all_skills(limit=effective_limit)
             )
             filtered_skills = self._filter_skills(
                 skills_data,
@@ -678,8 +678,12 @@ class ClawHubSyncService:
         )
         return prepared
 
-    async def _fetch_all_skills(self) -> list[dict[str, Any]]:
-        """用 ``limit + cursor`` 完整枚举，并展开同 slug 的不同作者。"""
+    async def _fetch_all_skills(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """按下载量降序分页，达到调用方 top-N 后立即停止枚举。"""
         skills: list[dict[str, Any]] = []
         cursor: str | None = None
         page_size = 100
@@ -692,6 +696,7 @@ class ClawHubSyncService:
                 params: dict[str, Any] = {
                     'limit': page_size,
                     'nonSuspiciousOnly': 'true',
+                    'sort': 'downloads',
                 }
                 if cursor:
                     params['cursor'] = cursor
@@ -727,6 +732,9 @@ class ClawHubSyncService:
                 if not items:
                     break
                 skills.extend(item for item in items if isinstance(item, dict))
+                if limit is not None and limit > 0 and len(skills) >= limit:
+                    skills = skills[:limit]
+                    break
                 cursor = data.get('nextCursor')
                 if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
                     break
@@ -735,7 +743,11 @@ class ClawHubSyncService:
                 raise ClawHubUpstreamError(f'ClawHub 技能列表超过安全页数上限 {max_pages}')
 
             expanded = await self._expand_duplicate_slugs(client, skills)
-        log.info(f'ClawHub 枚举完成：{len(skills)} 条列表记录，{len(expanded)} 个稳定身份')
+        log.info(
+            f'ClawHub 枚举完成：{len(skills)} 条列表记录'
+            f'（limit={limit if limit is not None else "all"}），'
+            f'{len(expanded)} 个稳定身份'
+        )
         return expanded
 
     async def _expand_duplicate_slugs(
