@@ -50,7 +50,10 @@ async def _apply_release_batch_migration(session: AsyncSession) -> None:
     """使用 asyncpg simple-query 协议执行可重复迁移。"""
     connection = await session.connection()
     raw = await connection.get_raw_connection()
-    await raw.driver_connection.execute(_MIGRATION.read_text(encoding='utf-8'))
+    driver_connection = raw.driver_connection
+    if driver_connection is None:
+        raise RuntimeError('无法取得 asyncpg driver connection')
+    await driver_connection.execute(_MIGRATION.read_text(encoding='utf-8'))
 
 
 @pytest_asyncio.fixture
