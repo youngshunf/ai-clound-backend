@@ -2380,7 +2380,7 @@ requires-dist = [
     { name = "python-jose", specifier = ">=3.5.0" },
     { name = "python-socketio", specifier = ">=5.16.1" },
     { name = "qiniu", specifier = ">=7.17.0" },
-    { name = "redis", extras = ["hiredis"], specifier = ">=7.2.0" },
+    { name = "redis", extras = ["hiredis"], specifier = ">=7.3.1,<7.4.0" },
     { name = "rtoml", specifier = ">=0.13.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.46" },
     { name = "sqlalchemy-crud-plus", specifier = ">=1.13.1" },
@@ -4726,14 +4726,14 @@ wheels = [
 
 [[package]]
 name = "redis"
-version = "7.2.0"
+version = "7.3.1"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
 dependencies = [
     { name = "async-timeout", marker = "python_full_version < '3.11.3'" },
 ]
-sdist = { url = "https://mirrors.aliyun.com/pypi/packages/9f/32/6fac13a11e73e1bc67a2ae821a72bfe4c2d8c4c48f0267e4a952be0f1bae/redis-7.2.0.tar.gz", hash = "sha256:4dd5bf4bd4ae80510267f14185a15cba2a38666b941aff68cccf0256b51c1f26" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/d0/dd/18929ca8060427f9351b17599e48929e11e93bfe72e063d86d73c79d7efa/redis-7.3.1.tar.gz", hash = "sha256:c19dc44d1aa6d56d882fb17fc2e93183e5371be0ae0049b7400786658e09a561" }
 wheels = [
-    { url = "https://mirrors.aliyun.com/pypi/packages/86/cf/f6180b67f99688d83e15c84c5beda831d1d341e95872d224f87ccafafe61/redis-7.2.0-py3-none-any.whl", hash = "sha256:01f591f8598e483f1842d429e8ae3a820804566f1c73dca1b80e23af9fba0497" },
+    { url = "https://mirrors.aliyun.com/pypi/packages/64/67/9457566995aee96aff727f18f57e8b246c26327a174b1e4598a9d9938f29/redis-7.3.1-py3-none-any.whl", hash = "sha256:9eae87cbbf6490d32eef5d2f9e05718656ccdcb877dcd78e14ce90393f7bb914" },
 ]
 
 [package.optional-dependencies]
