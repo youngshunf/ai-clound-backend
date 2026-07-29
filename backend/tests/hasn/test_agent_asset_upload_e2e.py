@@ -31,6 +31,7 @@ from backend.app.hasn.model import (
     HasnHumans,
     HasnMessages,
 )
+from backend.app.hasn.service.hasn_group_service import HasnGroupService
 from backend.common.exception.errors import BaseExceptionError
 from backend.common.security.agent_jwt import create_agent_access_token, revoke_agent_token
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db, get_db_transaction
@@ -80,6 +81,14 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
                 status='active',
             ),
         ])
+        await seed.flush()
+        group = await HasnGroupService.create_group(
+            seed,
+            owner_hasn_id=owner_hasn_id,
+            title=f'图坊上传真实群-{tag}',
+            members=[{'hasn_id': agent_hasn_id}],
+        )
+        group_id = str(group['group_id'])
     token = await create_agent_access_token(
         agent_hasn_id=agent_hasn_id,
         agent_name='图坊上传测试分身',
@@ -111,6 +120,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             session=session,
             owner_hasn_id=owner_hasn_id,
             agent_hasn_id=agent_hasn_id,
+            group_id=group_id,
             asset_ids=asset_ids,
         )
     finally:
@@ -326,6 +336,54 @@ async def test_agent_delivers_private_snapshot_once_with_stable_asset_uri(e2e: S
             'height': 5,
         }
     ]
+    assert 'path' not in str(message.content).lower()
+
+    grant_count = (
+        await e2e.session.execute(
+            select(func.count())
+            .select_from(HasnAssetGrants)
+            .where(
+                HasnAssetGrants.asset_id == asset['asset_id'],
+                HasnAssetGrants.conversation_id == message.conversation_id,
+            )
+        )
+    ).scalar_one()
+    assert grant_count == 1
+
+
+async def test_agent_delivers_private_snapshot_to_real_group(e2e: SimpleNamespace) -> None:
+    """真实群成员中的 Agent 可把私有快照投递到群会话，并只授予该会话访问权。"""
+    upload = await e2e.client.post(
+        '/api/v1/hasn/agent/assets/upload',
+        files={'file': ('group-source.png', b'imagelab-group-delivery-live-e2e', 'image/png')},
+        headers={'Idempotency-Key': f'imagelab-upload:{uuid.uuid4().hex}'},
+    )
+    assert upload.status_code == 200, upload.text
+    asset = upload.json()['data']
+    e2e.asset_ids.append(asset['asset_id'])
+    payload = {
+        'asset_uri': asset['asset_uri'],
+        'target': e2e.group_id,
+        'idempotency_key': f'imagelab-share:{uuid.uuid4().hex}',
+    }
+
+    response = await e2e.client.post('/api/v1/hasn/agent/assets/deliver', json=payload)
+    assert response.status_code == 200, response.text
+    delivered = response.json()['data']
+    assert delivered['status'] == 'sent'
+    assert delivered['target'] == e2e.group_id
+    assert delivered['message_id']
+    assert delivered['conversation_id']
+
+    message = (
+        await e2e.session.execute(
+            select(HasnMessages).where(HasnMessages.id == int(delivered['message_id']))
+        )
+    ).scalar_one()
+    assert message.from_id == e2e.agent_hasn_id
+    assert message.to_id == e2e.group_id
+    assert str(message.conversation_id) == delivered['conversation_id']
+    assert message.content['attachments'][0]['uri'] == asset['asset_uri']
     assert 'path' not in str(message.content).lower()
 
     grant_count = (
