@@ -7,6 +7,7 @@ import pytest
 from kombu import Queue
 
 from backend.app.task import celery as celery_module
+from backend.app.task.tasks.beat import LOCAL_BEAT_SCHEDULE
 from backend.core.conf import Settings
 
 
@@ -114,3 +115,11 @@ def test_redis_rollback_keeps_explicit_queue_without_rabbit_confirm(
     assert options['task_default_routing_key'] == 'huanxing.celery.rollback'
     assert options['broker_transport_options'] == {}
     assert options['broker_heartbeat'] is None
+
+
+def test_production_task_discovery_and_beat_schedule_exclude_demo_tasks() -> None:
+    retired_tasks = {'task_demo', 'task_demo_async', 'task_demo_params'}
+    scheduled_tasks = {str(entry['task']) for entry in LOCAL_BEAT_SCHEDULE.values()}
+
+    assert scheduled_tasks.isdisjoint(retired_tasks)
+    assert 'backend.app.task.tasks' not in celery_module.find_task_packages()

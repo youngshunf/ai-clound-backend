@@ -374,6 +374,12 @@ Worker。该 Worker 与本项目连接同一 Redis broker、使用相同默认�
 真实 Redis rollback E2E 和部署配置测试已覆盖上述修复。Beat 保持停止，待修复部署、
 Redis 最终排空和 RabbitMQ 切换完成后再恢复。
 
+首次最终启动 Beat 时，RabbitMQ 立即出现一个执行中的 `task_demo`。追查确认上游示例
+调度仍以 30 秒/每分钟频率进入生产队列，造成无业务价值的持续 unacked，且违反本项目
+禁止 fake/echo 的实现门槛。现已从生产调度表移除三项 demo，并删除仅承载这些任务的
+`backend/app/task/tasks/tasks.py`；测试同时约束调度表和自动发现包都不得再包含
+`task_demo`、`task_demo_async`、`task_demo_params`。Beat 在该修复部署前再次停止。
+
 ## 5. 后续证据索引
 
 | 阶段 | 证据 |
