@@ -378,7 +378,10 @@ Redis 最终排空和 RabbitMQ 切换完成后再恢复。
 调度仍以 30 秒/每分钟频率进入生产队列，造成无业务价值的持续 unacked，且违反本项目
 禁止 fake/echo 的实现门槛。现已从生产调度表移除三项 demo，并删除仅承载这些任务的
 `backend/app/task/tasks/tasks.py`；测试同时约束调度表和自动发现包都不得再包含
-`task_demo`、`task_demo_async`、`task_demo_params`。Beat 在该修复部署前再次停止。
+`task_demo`、`task_demo_async`、`task_demo_params`。`DatabaseScheduler` 在首次加载
+数据库调度前还会把三类存量启用行设为 `enabled=false`；真实 RabbitMQ + 临时
+PostgreSQL Beat E2E 已验证存量行被禁用且正常周期任务仍能发布、回写运行次数。
+Beat 在该修复部署前再次停止。
 
 ## 5. 后续证据索引
 
