@@ -15,7 +15,7 @@ from celery.beat import ScheduleEntry, Scheduler
 from celery.beat import event_t as BeatEvent  # noqa: N812 — 避免与 tick 参数同名
 from celery.signals import beat_init
 from celery.utils.log import get_logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import DatabaseError, InterfaceError
 
 from backend.app.task.enums import PeriodType, TaskSchedulerType
@@ -38,6 +38,8 @@ DEFAULT_MAX_INTERVAL = 5  # seconds
 
 # 计划锁时长，避免重复创建
 DEFAULT_MAX_LOCK_TIMEOUT = DEFAULT_MAX_INTERVAL * 5  # seconds
+
+RETIRED_CELERY_DEMO_TASKS = frozenset({'task_demo', 'task_demo_async', 'task_demo_params'})
 
 logger = get_logger('fba.schedulers')
 
@@ -318,9 +320,25 @@ class DatabaseScheduler(Scheduler):
     def setup_schedule(self) -> None:
         """重写父函数"""
         logger.info('setup_schedule')
+        retired_count = run_await(self.disable_retired_task_schedulers)()
+        if retired_count:
+            logger.warning(f'已禁用 {retired_count} 条遗留 Celery 示例调度')
         tasks = self.schedule
         self.install_default_entries(tasks)
         self.update_from_dict(self.app.conf.beat_schedule)
+
+    async def disable_retired_task_schedulers(self) -> int:
+        """在加载调度表前禁用遗留示例任务，防止旧数据库行继续向生产队列投递。"""
+        async with async_db_session.begin() as db:
+            result = await db.execute(
+                update(TaskScheduler)
+                .where(
+                    TaskScheduler.enabled.is_(True),
+                    TaskScheduler.task.in_(RETIRED_CELERY_DEMO_TASKS),
+                )
+                .values(enabled=False)
+            )
+        return int(cast('Any', result).rowcount or 0)
 
     def sync(self) -> None:
         """重写父函数"""

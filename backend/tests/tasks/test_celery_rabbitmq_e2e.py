@@ -118,6 +118,21 @@ def _temporary_beat_database(app: Celery) -> Iterator[tuple[str, Engine]]:
             connection.execute(text(f'CREATE DATABASE "{database_name}"'))
         temporary_engine = create_engine(temporary_url)
         cast('Any', TaskScheduler.__table__).create(temporary_engine)
+        with temporary_engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO task_scheduler (
+                        name, task, type, interval_every, interval_period,
+                        one_off, enabled, total_run_count, created_time
+                    )
+                    VALUES (
+                        'legacy-demo-task', 'task_demo', 0, 30, 'seconds',
+                        false, true, 0, CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            )
         yield database_name, temporary_engine
     finally:
         if temporary_engine is not None:
@@ -631,7 +646,12 @@ def test_real_rabbitmq_beat_publishes_periodic_probe(
                     text('SELECT total_run_count FROM task_scheduler WHERE name = :name'),
                     {'name': 'rabbitmq-e2e-beat-probe'},
                 ).scalar_one()
+                retired_demo_enabled = connection.execute(
+                    text('SELECT enabled FROM task_scheduler WHERE name = :name'),
+                    {'name': 'legacy-demo-task'},
+                ).scalar_one()
             assert int(total_run_count) >= 1
+            assert retired_demo_enabled is False
         except BaseException as exc:
             log_file.flush()
             log_file.seek(0)
