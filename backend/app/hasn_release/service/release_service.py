@@ -16,7 +16,9 @@ Tauri 客户端持公钥自行验签才是安全执行点。云端只**存储 + 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import re
 
 from pathlib import PurePosixPath
@@ -207,17 +209,18 @@ class ReleaseService:
         return self._to_batch(release)
 
     async def _resolve_remote_tag_commit(self, release_tag: str) -> str:
-        """通过 GitHub API 解析轻量或附注 tag 最终指向的 commit。"""
+        """解析轻量或附注 tag 最终指向的 commit；无 REST token 时使用只读 deploy key。"""
         repo = (settings.RELEASE_GITHUB_REPO or '').strip()
         if not repo:
             raise errors.ServerError(msg='未配置 RELEASE_GITHUB_REPO，无法核验 release tag')
         token = (settings.RELEASE_GITHUB_TOKEN or '').strip()
+        if not token:
+            return await self._resolve_remote_tag_commit_via_ssh(repo, release_tag)
         headers = {
             'Accept': 'application/vnd.github+json',
             'X-GitHub-Api-Version': '2022-11-28',
+            'Authorization': f'Bearer {token}',
         }
-        if token:
-            headers['Authorization'] = f'Bearer {token}'
         base_url = f'https://api.github.com/repos/{repo}'
         ref_url = f'{base_url}/git/ref/tags/{quote(release_tag, safe="")}'
         async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
@@ -241,6 +244,54 @@ class ReleaseService:
                     )
                 obj = (tag_response.json() or {}).get('object') or {}
         raise errors.ServerError(msg=f'无法解析 release tag 指向的 commit：{release_tag}')
+
+    async def _resolve_remote_tag_commit_via_ssh(
+        self,
+        repo: str,
+        release_tag: str,
+    ) -> str:
+        """通过生产机现有 GitHub 只读 deploy key 校验私有仓 tag，不接触写权限。"""
+        direct_ref = f'refs/tags/{release_tag}'
+        peeled_ref = f'{direct_ref}^{{}}'
+        env = os.environ.copy()
+        env['GIT_TERMINAL_PROMPT'] = '0'
+        env['GIT_SSH_COMMAND'] = (
+            'ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes'
+        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'git',
+                'ls-remote',
+                '--tags',
+                f'git@github.com:{repo}.git',
+                direct_ref,
+                peeled_ref,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+            except TimeoutError:
+                process.kill()
+                await process.communicate()
+                raise errors.ServerError(msg='GitHub SSH tag 校验超时') from None
+        except FileNotFoundError:
+            raise errors.ServerError(msg='生产环境缺少 git，无法通过 deploy key 校验 release tag') from None
+
+        if process.returncode != 0:
+            detail = stderr.decode('utf-8', errors='replace').strip()[:300]
+            raise errors.ServerError(msg=f'GitHub SSH tag 校验失败：{detail or process.returncode}')
+
+        refs: dict[str, str] = {}
+        for raw_line in stdout.decode('utf-8', errors='replace').splitlines():
+            parts = raw_line.split()
+            if len(parts) == 2:
+                refs[parts[1]] = parts[0].lower()
+        commit = refs.get(peeled_ref) or refs.get(direct_ref)
+        if not commit:
+            raise errors.RequestError(msg=f'远端 release tag 尚不存在：{release_tag}')
+        return commit
 
     async def _generate_release_notes(
         self,
