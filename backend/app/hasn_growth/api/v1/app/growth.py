@@ -1074,6 +1074,172 @@ async def mark_sent(
 # ---------------- 商机 / 成交（主人也可手动） ----------------
 
 
+@router.post(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Owner] 项目内立商机',
+    dependencies=[DependsJwtAuth],
+)
+async def create_project_opportunity(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: CreateOpportunityParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.create_opportunity(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        customer_id=obj.customer_id,
+        name=obj.name,
+        amount=obj.amount,
+        currency=obj.currency,
+        stage=obj.stage,
+        probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
+        created_by_kind='owner',
+        actor_id=str(request.user.id),
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Owner] 项目商机列表',
+    dependencies=[DependsJwtAuth],
+)
+async def list_project_opportunities(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: Annotated[int | None, Query()] = None,
+    stage: Annotated[str | None, Query()] = None,
+    open_only: Annotated[bool, Query()] = False,  # ruff: ignore[boolean-default-value-positional-argument]
+    view: Annotated[str, Query(description='企业视图意图 team/mine')] = 'team',
+    assignee: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id, view=view)
+    data = await growth_opportunity_service.list_opportunities(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        stage=stage,
+        open_only=open_only,
+        assignee=assignee,
+        limit=limit,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}',
+    summary='[Owner] 项目商机摘要',
+    dependencies=[DependsJwtAuth],
+)
+async def get_project_opportunity(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    opportunity_id: int,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.get_opportunity(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/detail',
+    summary='[Owner] 项目商机接续详情',
+    dependencies=[DependsJwtAuth],
+)
+async def get_project_opportunity_detail(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: UUID,
+    opportunity_id: int,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.get_opportunity_detail(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.patch(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/stage',
+    summary='[Owner] 项目商机阶段变更',
+    dependencies=[DependsJwtAuth],
+)
+async def update_project_opportunity_stage(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: UpdateStageParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.update_stage(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        stage=obj.stage,
+        note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='owner',
+        actor_id=str(request.user.id),
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/close',
+    summary='[Owner] 项目商机成交或流失登记',
+    dependencies=[DependsJwtAuth],
+)
+async def close_project_deal(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: CloseDealParam,
+) -> ResponseModel:
+    scope = await resolve_growth_scope(db, user_id=request.user.id)
+    data = await growth_opportunity_service.close_deal(
+        db,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        result=obj.result,
+        amount=obj.amount,
+        currency=obj.currency,
+        close_note=obj.close_note,
+        lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='owner',
+        actor_id=str(request.user.id),
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
 @router.post('/opportunities', summary='[Owner] 立商机', dependencies=[DependsJwtAuth])
 async def create_opportunity(
     request: Request, db: CurrentSessionTransaction, obj: CreateOpportunityParam
@@ -1088,6 +1254,7 @@ async def create_opportunity(
         currency=obj.currency,
         stage=obj.stage,
         probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
         created_by_kind='owner',
         actor_id=str(request.user.id),
         scope=scope,
@@ -1149,6 +1316,8 @@ async def update_stage(
         opportunity_id=opportunity_id,
         stage=obj.stage,
         note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='owner',
         actor_id=str(request.user.id),
         scope=scope,
@@ -1167,8 +1336,11 @@ async def close_deal(
         opportunity_id=opportunity_id,
         result=obj.result,
         amount=obj.amount,
+        currency=obj.currency,
         close_note=obj.close_note,
         lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='owner',
         actor_id=str(request.user.id),
         scope=scope,

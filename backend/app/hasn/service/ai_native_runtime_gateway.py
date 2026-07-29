@@ -680,6 +680,8 @@ class AiNativeRuntimeGateway:
             'growth.outreach_send': growth_handlers.handle_growth_outreach_send,
             'growth.outreach_status': growth_handlers.handle_growth_outreach_status,
             'growth.opportunity_create': growth_handlers.handle_growth_opportunity_create,
+            'growth.opportunity_list': growth_handlers.handle_growth_opportunity_list,
+            'growth.opportunity_get': growth_handlers.handle_growth_opportunity_get,
             'growth.opportunity_update_stage': growth_handlers.handle_growth_opportunity_update_stage,
             'growth.deal_close': growth_handlers.handle_growth_deal_close,
             'growth.report_funnel': growth_handlers.handle_growth_report_funnel,

@@ -155,7 +155,7 @@ def _tool_from_cap(cap: dict) -> dict:
     return tool
 
 
-# 获客 29 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
+# 获客 33 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
 # lead_request（2.1 请求线索·用户端默认入口）为第 1 条；其后 lookup/search/enrich_company
 # （GROWTH-QCC-4 企业数据读穿中台）；customer_reassign（GE4）为末条。
 _CAPABILITIES = [
@@ -833,6 +833,51 @@ _CAPABILITIES = [
         tags=['growth', 'outreach', 'status', 'read'],
     ),
     _cap(
+        name='opportunity_list',
+        mcp_suffix='opportunity.list',
+        title='读取项目商机列表',
+        description='按项目、客户、阶段或开放状态读取脱敏商机列表。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
+            'customer_id': {'type': ['integer', 'null']},
+            'stage': {
+                'type': ['string', 'null'],
+                'enum': [
+                    'contacted',
+                    'replied',
+                    'proposal',
+                    'negotiation',
+                    'closed_won',
+                    'closed_lost',
+                    None,
+                ],
+            },
+            'open_only': {'type': 'boolean', 'default': False},
+            'view': {'type': 'string', 'enum': ['team', 'mine'], 'default': 'team'},
+            'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'default': 200},
+        },
+        required=['growth_project_id'],
+        page_rank=24,
+        tags=['growth', 'opportunity', 'list', 'read'],
+    ),
+    _cap(
+        name='opportunity_get',
+        mcp_suffix='opportunity.get',
+        title='读取商机',
+        description='按项目读取单个商机的当前版本和关闭事实。',
+        scope=_SCOPE_READ,
+        risk_level='low',
+        properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
+            'opportunity_id': {'type': 'integer'},
+        },
+        required=['growth_project_id', 'opportunity_id'],
+        page_rank=24,
+        tags=['growth', 'opportunity', 'get', 'read'],
+    ),
+    _cap(
         name='opportunity_create',
         mcp_suffix='opportunity.create',
         title='立商机',
@@ -840,18 +885,20 @@ _CAPABILITIES = [
         scope=_SCOPE_MANAGE,
         risk_level='medium',
         properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
             'customer_id': {'type': 'integer'},
             'name': {'type': 'string', 'minLength': 1},
             'amount': {'type': ['number', 'null']},
-            'currency': {'type': ['string', 'null']},
+            'currency': {'type': ['string', 'null'], 'pattern': '^[A-Z]{3}$'},
             'stage': {
                 'type': ['string', 'null'],
-                'enum': ['contacted', 'replied', 'proposal', 'negotiation', 'closed_won', 'closed_lost', None],
+                'enum': ['contacted', 'replied', 'proposal', 'negotiation', None],
                 'description': '初始阶段（默认 contacted）',
             },
             'probability': {'type': ['number', 'null'], 'minimum': 0, 'maximum': 1, 'description': '赢率 0-1'},
+            'idempotency_key': {'type': 'string', 'minLength': 1, 'maxLength': 150},
         },
-        required=['customer_id', 'name'],
+        required=['growth_project_id', 'customer_id', 'name', 'idempotency_key'],
         page_rank=24,
         tags=['growth', 'opportunity', 'create', 'manage'],
     ),
@@ -863,15 +910,25 @@ _CAPABILITIES = [
         scope=_SCOPE_MANAGE,
         risk_level='medium',
         properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
             'opportunity_id': {'type': 'integer'},
             'stage': {
                 'type': 'string',
                 'enum': ['contacted', 'replied', 'proposal', 'negotiation'],
                 'description': '目标阶段，仅限 contacted/replied/proposal/negotiation；成交/流失请用 deal.close',
             },
-            'note': {'type': ['string', 'null']},
+            'note': {'type': 'string', 'minLength': 1, 'maxLength': 500},
+            'expected_version': {'type': 'integer', 'minimum': 1},
+            'idempotency_key': {'type': 'string', 'minLength': 1, 'maxLength': 150},
         },
-        required=['opportunity_id', 'stage'],
+        required=[
+            'growth_project_id',
+            'opportunity_id',
+            'stage',
+            'note',
+            'expected_version',
+            'idempotency_key',
+        ],
         page_rank=25,
         tags=['growth', 'opportunity', 'stage', 'manage'],
     ),
@@ -886,13 +943,27 @@ _CAPABILITIES = [
         scope=_SCOPE_MANAGE,
         risk_level='high',
         properties={
+            'growth_project_id': {'type': 'string', 'format': 'uuid'},
             'opportunity_id': {'type': 'integer'},
             'result': {'enum': ['won', 'lost'], 'description': '成交结果'},
-            'amount': {'type': ['number', 'null'], 'description': 'won 必填'},
+            'amount': {'type': ['number', 'null'], 'exclusiveMinimum': 0, 'description': 'won 必填'},
+            'currency': {
+                'type': ['string', 'null'],
+                'pattern': '^[A-Z]{3}$',
+                'description': 'won 必填',
+            },
             'close_note': {'type': ['string', 'null'], 'description': '复盘'},
             'lost_reason': {'type': ['string', 'null'], 'description': '败因（lost 时）'},
+            'expected_version': {'type': 'integer', 'minimum': 1},
+            'idempotency_key': {'type': 'string', 'minLength': 1, 'maxLength': 150},
         },
-        required=['opportunity_id', 'result'],
+        required=[
+            'growth_project_id',
+            'opportunity_id',
+            'result',
+            'expected_version',
+            'idempotency_key',
+        ],
         page_rank=26,
         tags=['growth', 'deal', 'close', 'manage'],
     ),

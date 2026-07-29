@@ -180,6 +180,7 @@ def test_growth_resource_serializers_expose_authoritative_project_id() -> None:
         opportunity_no='O2',
         customer_id=1,
         name='测试商机',
+        version=1,
         stage='contacted',
         amount=None,
         currency='CNY',
@@ -189,11 +190,13 @@ def test_growth_resource_serializers_expose_authoritative_project_id() -> None:
         lost_at=None,
         lost_reason=None,
         close_note=None,
+        review_task_id=None,
         created_by_kind='owner',
         owner_scope='personal',
         enterprise_id=None,
         assignee=None,
         created_time=None,
+        updated_time=None,
     )
 
     assert _customer_to_dict(cast('Customer', customer))['growth_project_id'] == str(growth_project_id)

@@ -39,6 +39,9 @@ from backend.app.hasn_growth.service.growth_project_provision_service import (
     enqueue_growth_provision_after_commit,
 )
 from backend.app.hasn_growth.service.lead_pool_query_service import lead_pool_query_service
+from backend.app.hasn_growth.service.opportunity_artifact import (
+    register_opportunity_artifact,
+)
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.pii import redact_pii_value
@@ -830,13 +833,46 @@ async def handle_growth_outreach_status(
 # ---------------- 商机 / 成交 ----------------
 
 
+async def handle_growth_opportunity_list(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    scope = await _scope(db, agent, view=str(input_payload.get('view', 'team')))
+    customer_id = input_payload.get('customer_id')
+    return await growth_opportunity_service.list_opportunities(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        customer_id=int(customer_id) if customer_id is not None else None,
+        stage=input_payload.get('stage'),
+        open_only=bool(input_payload.get('open_only')),
+        limit=int(input_payload.get('limit', 200)),
+        scope=scope,
+    )
+
+
+async def handle_growth_opportunity_get(
+    db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
+) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    return await growth_opportunity_service.get_opportunity(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=_required_str(input_payload, 'growth_project_id'),
+        opportunity_id=_int(input_payload, 'opportunity_id'),
+        scope=scope,
+    )
+
+
 async def handle_growth_opportunity_create(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
-    return await growth_opportunity_service.create_opportunity(
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
+    idempotency_key = _required_str(input_payload, 'idempotency_key')
+    data = await growth_opportunity_service.create_opportunity(
         db,
         user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
         customer_id=_int(input_payload, 'customer_id'),
         name=_required_str(input_payload, 'name'),
         amount=input_payload.get('amount'),
@@ -847,20 +883,35 @@ async def handle_growth_opportunity_create(
         probability=input_payload.get('probability'),
         created_by_kind='agent',
         actor_id=agent.agent_hasn_id,
+        idempotency_key=idempotency_key,
         scope=scope,
     )
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.create',
+        idempotency_key=idempotency_key,
+        action='create',
+    )
+    return merge_resource_uri(data, registration)
 
 
 async def handle_growth_opportunity_update_stage(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
     scope = await _scope(db, agent)
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
+    idempotency_key = _required_str(input_payload, 'idempotency_key')
     data = await growth_opportunity_service.update_stage(
         db,
         user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
         opportunity_id=_int(input_payload, 'opportunity_id'),
         stage=_required_str(input_payload, 'stage'),
-        note=input_payload.get('note'),
+        note=_required_str(input_payload, 'note'),
+        expected_version=_int(input_payload, 'expected_version'),
+        idempotency_key=idempotency_key,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
         scope=scope,
@@ -871,22 +922,38 @@ async def handle_growth_opportunity_update_stage(
         opportunity_id=_int(input_payload, 'opportunity_id'),
         stage=_required_str(input_payload, 'stage'),
     )
-    return data
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.update_stage',
+        idempotency_key=idempotency_key,
+        action='update',
+    )
+    return merge_resource_uri(data, registration)
 
 
 async def handle_growth_deal_close(
     db: AsyncSession, agent: AgentTokenPayload, input_payload: dict[str, Any]
 ) -> dict[str, Any]:
+    scope = await _scope(db, agent)
+    growth_project_id = _required_str(input_payload, 'growth_project_id')
+    idempotency_key = _required_str(input_payload, 'idempotency_key')
     data = await growth_opportunity_service.close_deal(
         db,
         user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
         opportunity_id=_int(input_payload, 'opportunity_id'),
         result=_required_str(input_payload, 'result'),
         amount=input_payload.get('amount'),
+        currency=input_payload.get('currency'),
         close_note=input_payload.get('close_note'),
         lost_reason=input_payload.get('lost_reason'),
+        expected_version=_int(input_payload, 'expected_version'),
+        idempotency_key=idempotency_key,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
+        scope=scope,
     )
     await growth_notification_service.deal_closed(
         db,
@@ -895,7 +962,15 @@ async def handle_growth_deal_close(
         result=_required_str(input_payload, 'result'),
         amount=data.get('amount'),
     )
-    return data
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.deal.close',
+        idempotency_key=idempotency_key,
+        action='update',
+    )
+    return merge_resource_uri(data, registration)
 
 
 # ---------------- 报表 ----------------

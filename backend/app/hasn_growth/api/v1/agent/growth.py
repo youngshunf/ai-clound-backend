@@ -29,6 +29,9 @@ from backend.app.hasn_growth.schema.funnel import (
 from backend.app.hasn_growth.service.business_service import lead_automation_business_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
 from backend.app.hasn_growth.service.growth_notification import growth_notification_service
+from backend.app.hasn_growth.service.opportunity_artifact import (
+    register_opportunity_artifact,
+)
 from backend.app.hasn_growth.service.opportunity_flow_service import growth_opportunity_service
 from backend.app.hasn_growth.service.outreach_service import growth_outreach_service
 from backend.app.hasn_growth.service.project_customer_service import (
@@ -37,6 +40,7 @@ from backend.app.hasn_growth.service.project_customer_service import (
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.report_service import growth_report_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope, resolve_growth_scope
+from backend.app.mcp.artifact_registration import merge_resource_uri
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.response.response_schema import ResponseModel, response_base
 from backend.common.security.agent_jwt_auth import DependsAgentJwtAuth
@@ -481,6 +485,184 @@ async def outreach_status(
 # ---------------- 商机 / 成交 ----------------
 
 
+@router.get(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Agent] 项目商机列表',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def list_project_opportunities(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    customer_id: Annotated[int | None, Query()] = None,
+    stage: Annotated[str | None, Query()] = None,
+    open_only: Annotated[bool, Query()] = False,  # ruff: ignore[boolean-default-value-positional-argument]
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.list_opportunities(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        customer_id=customer_id,
+        stage=stage,
+        open_only=open_only,
+        limit=limit,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}',
+    summary='[Agent] 项目商机详情',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def get_project_opportunity(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSession,
+    growth_project_id: UUID,
+    opportunity_id: int,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.get_opportunity(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        scope=scope,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/opportunities',
+    summary='[Agent] 项目内立商机',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def create_project_opportunity(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    obj: CreateOpportunityParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.create_opportunity(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        customer_id=obj.customer_id,
+        name=obj.name,
+        amount=obj.amount,
+        currency=obj.currency,
+        stage=obj.stage,
+        probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
+        created_by_kind='agent',
+        actor_id=agent.agent_hasn_id,
+        scope=scope,
+    )
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.create',
+        idempotency_key=obj.idempotency_key,
+        action='create',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
+
+
+@router.patch(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/stage',
+    summary='[Agent] 项目商机阶段变更',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def update_project_opportunity_stage(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: UpdateStageParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.update_stage(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        stage=obj.stage,
+        note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
+        scope=scope,
+    )
+    await growth_notification_service.opportunity_stage_changed(
+        db,
+        agent=agent,
+        opportunity_id=opportunity_id,
+        stage=obj.stage,
+    )
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.update_stage',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
+
+
+@router.post(
+    '/projects/{growth_project_id}/opportunities/{opportunity_id}/close',
+    summary='[Agent] 项目商机成交或流失登记',
+    dependencies=[DependsAgentJwtAuth],
+)
+async def close_project_deal(
+    agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
+    db: CurrentSessionTransaction,
+    growth_project_id: UUID,
+    opportunity_id: int,
+    obj: CloseDealParam,
+) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
+    data = await growth_opportunity_service.close_deal(
+        db,
+        user_id=agent.owner_user_id,
+        growth_project_id=growth_project_id,
+        opportunity_id=opportunity_id,
+        result=obj.result,
+        amount=obj.amount,
+        currency=obj.currency,
+        close_note=obj.close_note,
+        lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
+        actor_kind='agent',
+        actor_id=agent.agent_hasn_id,
+        scope=scope,
+    )
+    await growth_notification_service.deal_closed(
+        db,
+        agent=agent,
+        opportunity_id=opportunity_id,
+        result=obj.result,
+        amount=data.get('amount'),
+    )
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.deal.close',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
+
+
 @router.post('/opportunities', summary='[Agent] 立商机', dependencies=[DependsAgentJwtAuth])
 async def create_opportunity(
     agent: Annotated[AgentTokenPayload, DependsAgentJwtAuth],
@@ -497,11 +679,20 @@ async def create_opportunity(
         currency=obj.currency,
         stage=obj.stage,
         probability=obj.probability,
+        idempotency_key=obj.idempotency_key,
         created_by_kind='agent',
         actor_id=agent.agent_hasn_id,
         scope=scope,
     )
-    return response_base.success(data=data)
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.create',
+        idempotency_key=obj.idempotency_key,
+        action='create',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
 
 
 @router.patch(
@@ -520,6 +711,8 @@ async def update_stage(
         opportunity_id=opportunity_id,
         stage=obj.stage,
         note=obj.note,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
         scope=scope,
@@ -528,7 +721,15 @@ async def update_stage(
     await growth_notification_service.opportunity_stage_changed(
         db, agent=agent, opportunity_id=opportunity_id, stage=obj.stage
     )
-    return response_base.success(data=data)
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.opportunity.update_stage',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
 
 
 @router.post(
@@ -540,16 +741,21 @@ async def close_deal(
     opportunity_id: int,
     obj: CloseDealParam,
 ) -> ResponseModel:
+    scope = await _agent_scope(db, agent)
     data = await growth_opportunity_service.close_deal(
         db,
         user_id=agent.owner_user_id,
         opportunity_id=opportunity_id,
         result=obj.result,
         amount=obj.amount,
+        currency=obj.currency,
         close_note=obj.close_note,
         lost_reason=obj.lost_reason,
+        expected_version=obj.expected_version,
+        idempotency_key=obj.idempotency_key,
         actor_kind='agent',
         actor_id=agent.agent_hasn_id,
+        scope=scope,
     )
     # 成交/流失登记 → 通知主人（仅登记，不自动收款）。
     await growth_notification_service.deal_closed(
@@ -559,7 +765,15 @@ async def close_deal(
         result=obj.result,
         amount=data.get('amount'),
     )
-    return response_base.success(data=data)
+    registration = await register_opportunity_artifact(
+        db,
+        agent=agent,
+        opportunity=data,
+        source_tool='hasn.growth.deal.close',
+        idempotency_key=obj.idempotency_key,
+        action='update',
+    )
+    return response_base.success(data=merge_resource_uri(data, registration))
 
 
 # ---------------- 报表 ----------------

@@ -199,7 +199,15 @@ async def test_dispatch_find_then_decide_tool_chain(ctx: SimpleNamespace) -> Non
 
     # ③ 决策·继续找商机：opportunity.create 立商机
     opp = await _REG['growth.opportunity_create'](
-        s, agent, {'customer_id': cid, 'name': f'年度合作_{ctx.tag}', 'amount': 200000}
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'customer_id': cid,
+            'name': f'年度合作_{ctx.tag}',
+            'amount': 200000,
+            'idempotency_key': f'dispatch:opportunity:{ctx.project_lead_id}',
+        },
     )
     assert opp['id'] and opp['stage'] == 'contacted', f'应立出商机: {opp}'
 

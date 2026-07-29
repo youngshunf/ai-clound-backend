@@ -35,6 +35,7 @@ from backend.app.hasn.model.hasn_artifacts import HasnArtifacts
 from backend.app.hasn_core import HasnAgents, HasnHumans
 from backend.app.hasn_core.app_platform import ai_native_runtime_gateway
 from backend.app.hasn_growth.manifest import GROWTH_AI_NATIVE_MANIFEST
+from backend.app.hasn_growth.model.growth_attribution_event import GrowthAttributionEvent
 from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_growth.model.growth_project_lead import GrowthProjectLead
 from backend.app.hasn_growth.model.lead_collection_job import LeadCollectionJob
@@ -62,6 +63,7 @@ _REG = ai_native_runtime_gateway._internal_handlers()
 _REPO = Path(__file__).resolve().parents[4]
 _S6_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-add-lead-dedupe-keys.sql'
 _S7_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-project-lead-qualification-idempotency.sql'
+_S9_MIGRATION_SQL = _REPO / 'backend/sql/hasn_growth/migrations/2026-07-29-opportunity-version-review-task.sql'
 
 
 @pytest_asyncio.fixture
@@ -80,6 +82,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
     assert connection is not None
     await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
     await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
+    await connection.execute(_S9_MIGRATION_SQL.read_text(encoding='utf-8'))
     tag = uuid.uuid4().hex[:8]
     owner = f'h_gtc_{tag}'
     owner_uid = 94_700_000_000 + int(uuid.uuid4().int % 900_000_000)
@@ -194,7 +197,7 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
 async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # ruff: ignore[unused-async]
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
-    assert len(handlers) == 31
+    assert len(handlers) == 33
     for h in (
         'growth.project_get',
         'growth.project_create',
@@ -469,16 +472,75 @@ async def test_growth_cloud_tools_lifecycle_via_gateway_handlers(ctx: SimpleName
 
     # 商机：立 → 推进 → 成交
     opp = await _REG['growth.opportunity_create'](
-        s, agent, {'customer_id': cid, 'name': '年度 SaaS 订阅', 'amount': 120000}
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'customer_id': cid,
+            'name': '年度 SaaS 订阅',
+            'amount': 120000,
+            'idempotency_key': f'gateway:opportunity:{ctx.project_lead_id}',
+        },
     )
     oid = opp['id']
     assert opp['stage'] == 'contacted'
     o1 = await _REG['growth.opportunity_update_stage'](
-        s, agent, {'opportunity_id': oid, 'stage': 'proposal', 'note': '发了提案'}
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'opportunity_id': oid,
+            'stage': 'proposal',
+            'note': '发了提案',
+            'expected_version': opp['version'],
+            'idempotency_key': f'gateway:stage:{ctx.project_lead_id}',
+        },
     )
     assert o1['stage'] == 'proposal'
-    closed = await _REG['growth.deal_close'](s, agent, {'opportunity_id': oid, 'result': 'won', 'amount': 118000})
+    closed = await _REG['growth.deal_close'](
+        s,
+        agent,
+        {
+            'growth_project_id': str(ctx.growth_project_id),
+            'opportunity_id': oid,
+            'result': 'won',
+            'amount': 118000,
+            'currency': 'CNY',
+            'expected_version': o1['version'],
+            'idempotency_key': f'gateway:close:{ctx.project_lead_id}',
+        },
+    )
     assert closed['stage'] == 'closed_won'
+    assert closed['uri'] == f'hasn://growth/opportunities/{oid}'
+    assert closed['review_task_id']
+    opportunity_artifact = (
+        await s.execute(
+            select(HasnArtifacts).where(
+                HasnArtifacts.agent_hasn_id == ctx.agent_hasn,
+                HasnArtifacts.resource_uri == f'hasn://growth/opportunities/{oid}',
+            )
+        )
+    ).scalar_one()
+    opportunity_contributions = await s.scalar(
+        select(sa.func.count())
+        .select_from(HasnArtifactContributions)
+        .where(
+            HasnArtifactContributions.artifact_id
+            == opportunity_artifact.artifact_id
+        )
+    )
+    assert opportunity_contributions == 3
+    assert (
+        await s.scalar(
+            select(sa.func.count())
+            .select_from(GrowthAttributionEvent)
+            .where(
+                GrowthAttributionEvent.opportunity_id == oid,
+                GrowthAttributionEvent.event_type == 'closed_won',
+            )
+        )
+        == 1
+    )
 
     # 漏斗：本月赢单 ≥1
     funnel = await _REG['growth.report_funnel'](s, agent, {'view': 'team'})

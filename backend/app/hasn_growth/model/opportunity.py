@@ -23,6 +23,11 @@ class Opportunity(HasnGrowthAppBase):
         sa.UUID(), default=None, comment='获客漏斗 UUID（迁移期可空）'
     )
     name: Mapped[str] = mapped_column(sa.String(200), default='', comment=None)
+    version: Mapped[int] = mapped_column(
+        sa.BIGINT(),
+        default=1,
+        comment='并发控制版本；每次阶段变化或关闭单调递增',
+    )
     stage: Mapped[str] = mapped_column(
         sa.String(24),
         default='',
@@ -39,6 +44,11 @@ class Opportunity(HasnGrowthAppBase):
     lost_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment=None)
     lost_reason: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment=None)
     close_note: Mapped[str | None] = mapped_column(UniversalText, default=None, comment=None)
+    review_task_id: Mapped[str | None] = mapped_column(
+        sa.String(64),
+        default=None,
+        comment='成交或流失后幂等创建的复盘任务 UUID',
+    )
     created_by_kind: Mapped[str] = mapped_column(
         sa.String(16), default='', comment='创建者 (owner:主人:blue/agent:分身:violet)'
     )
