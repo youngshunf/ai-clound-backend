@@ -96,7 +96,7 @@ class AINativeAppRegistry:
             'film': FILM_AI_NATIVE_MANIFEST,
             # 短视频合成应用（app_id=reel，源自 MoneyPrinterTurbo，模块 14 doc19；local_tool，reel-P4 铸 scope）。
             'reel': REEL_AI_NATIVE_MANIFEST,
-            # 图像处理应用（app_id=imagelab，图坊，自研本地引擎，模块 14 doc30；local_tool，P3 铸 scope。
+            # 图像处理应用（app_id=imagelab，图坊，自研本地引擎；local_tool，铸七个 scope。
             # hasn.imagelab.* 工具在本地 hasn-mcp（imagelab.rs，P3 待落）经 ImageLabBroker → 自研引擎处理图片，
             # 云端 tools[]/capabilities[] 为发现/权限控制面记录，方案 A 工具不进 tools[]）。
             'imagelab': IMAGELAB_AI_NATIVE_MANIFEST,

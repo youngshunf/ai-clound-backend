@@ -309,8 +309,8 @@ def _load_hasn_reel() -> None:
 
 
 def _load_hasn_imagelab() -> None:
-    # 图坊（hasn_imagelab，模块 14 doc30）：owner 业务面 = 项目云端权威 ID 登记（IMG-P3-cloud）。
-    # 图坊业务数据在 daemon 本地 SQLite（本地权威），云端只有轻登记表（server_id 源）。
+    # 图坊（hasn_imagelab）：仅保留历史本地引用兼容登记；当前流程直接使用平台项目 UUID。
+    # 图坊业务数据在 daemon 本地 SQLite（本地权威），云端这里只保留历史引用兼容表。
     from backend.app.hasn_imagelab.api.router import app as hasn_imagelab_app
 
     router.include_router(hasn_imagelab_app)

@@ -20,7 +20,7 @@ SET @menu_id = (SELECT id FROM sys_menu WHERE path = '/hasn_imagelab/hasn_imagel
 
 -- 如果主菜单不存在，创建它
 INSERT INTO sys_menu (title, name, path, sort, icon, type, component, perms, status, display, cache, link, remark, parent_id, created_time, updated_time)
-SELECT '', 'HasnImagelabProject', '/hasn_imagelab/hasn_imagelab_project', 1, 'lucide:list', 1, '/hasn_imagelab/hasn_imagelab_project/index', NULL, 1, 1, 1, '', '图坊项目云端轻登记（云端权威 ID 源，模块 14 doc30 §5.9 B1）', @parent_id, NOW(), NULL
+SELECT '', 'HasnImagelabProject', '/hasn_imagelab/hasn_imagelab_project', 1, 'lucide:list', 1, '/hasn_imagelab/hasn_imagelab_project/index', NULL, 1, 1, 1, '', '历史图坊本地引用兼容登记（当前流程直接使用平台项目 UUID）', @parent_id, NOW(), NULL
 FROM DUAL WHERE @menu_id IS NULL;
 
 -- 如果已存在，更新它
@@ -28,7 +28,7 @@ UPDATE sys_menu SET
     title = '',
     name = 'HasnImagelabProject',
     component = '/hasn_imagelab/hasn_imagelab_project/index',
-    remark = '图坊项目云端轻登记（云端权威 ID 源，模块 14 doc30 §5.9 B1）',
+    remark = '历史图坊本地引用兼容登记（当前流程直接使用平台项目 UUID）',
     parent_id = @parent_id,
     updated_time = NOW()
 WHERE id = @menu_id AND @menu_id IS NOT NULL;
