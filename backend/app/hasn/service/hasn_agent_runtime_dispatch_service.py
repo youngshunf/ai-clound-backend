@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json as jsonlib
 
 from typing import TYPE_CHECKING, Any
@@ -46,6 +47,190 @@ _READ_ONLY_RUN_CAPABILITIES = (
     'dispatch_idempotency_v1',
     'run_terminal_replay_v1',
 )
+_SKILL_ACTIVATION_ORDER = {'guided': 0, 'preload': 1}
+
+
+def _qualified_resource_id(value: Any, *, field: str, error: str) -> str:
+    resource_id = str(value or '').strip()
+    if (
+        '/' not in resource_id
+        or resource_id.startswith('/')
+        or resource_id.endswith('/')
+        or any(character.isspace() for character in resource_id)
+    ):
+        raise HermesRuntimeError(
+            error=error,
+            details=f'{field} 必须是完整权威 ID',
+            status_code=404 if error == 'runtime_skill_not_found' else 422,
+        )
+    return resource_id
+
+
+def _activation_mode(value: Any) -> str:
+    mode = str(value or '').strip()
+    if mode not in _SKILL_ACTIVATION_ORDER:
+        raise HermesRuntimeError(
+            error='runtime_skill_activation_unsupported',
+            details=f'不支持的技能激活模式: {mode or "<empty>"}',
+            status_code=409,
+        )
+    return mode
+
+
+def normalize_runtime_skill_requirements(  # ruff: ignore[complex-structure]
+    requirements: Any,
+) -> dict[str, list[dict[str, Any]]]:
+    """按 Rust `RuntimeSkillRequirements::normalized` 的顺序冻结跨端快照。"""
+    if not isinstance(requirements, dict):
+        raise HermesRuntimeError(
+            error='runtime_skill_not_found',
+            details='requirements 必须是对象',
+            status_code=422,
+        )
+    raw_skills = requirements.get('skills', [])
+    raw_bundles = requirements.get('bundles', [])
+    if not isinstance(raw_skills, list) or not isinstance(raw_bundles, list):
+        raise HermesRuntimeError(
+            error='runtime_skill_not_found',
+            details='requirements.skills/bundles 必须是数组',
+            status_code=422,
+        )
+
+    skills: list[dict[str, Any]] = []
+    for raw in raw_skills:
+        if not isinstance(raw, dict):
+            raise HermesRuntimeError(
+                error='runtime_skill_not_found',
+                details='技能 requirement 必须是对象',
+                status_code=422,
+            )
+        skill: dict[str, Any] = {
+            'skill_id': _qualified_resource_id(
+                raw.get('skill_id'),
+                field='skill_id',
+                error='runtime_skill_not_found',
+            ),
+            'activation_mode': _activation_mode(raw.get('activation_mode')),
+        }
+        version = raw.get('version')
+        if version is not None:
+            skill['version'] = str(version)
+        content_hash = raw.get('content_hash')
+        if content_hash is not None:
+            skill['content_hash'] = str(content_hash)
+        skills.append(skill)
+
+    bundles: list[dict[str, Any]] = []
+    for raw in raw_bundles:
+        if not isinstance(raw, dict):
+            raise HermesRuntimeError(
+                error='runtime_skill_bundle_incomplete',
+                details='技能包 requirement 必须是对象',
+                status_code=422,
+            )
+        members = raw.get('member_skill_ids')
+        if not isinstance(members, list) or not members:
+            raise HermesRuntimeError(
+                error='runtime_skill_bundle_incomplete',
+                details='技能包必须冻结至少一个完整成员 ID',
+                status_code=422,
+            )
+        bundle_slug = str(raw.get('bundle_slug') or '').strip()
+        if not bundle_slug or '/' in bundle_slug or any(character.isspace() for character in bundle_slug):
+            raise HermesRuntimeError(
+                error='runtime_skill_bundle_incomplete',
+                details='bundle_slug 必须是稳定裸 slug',
+                status_code=422,
+            )
+        bundle = {
+            'package_id': _qualified_resource_id(
+                raw.get('package_id'),
+                field='package_id',
+                error='runtime_skill_bundle_incomplete',
+            ),
+            'version': str(raw.get('version') or '').strip(),
+            'content_hash': str(raw.get('content_hash') or '').strip(),
+            'bundle_slug': bundle_slug,
+            'member_skill_ids': sorted({
+                _qualified_resource_id(
+                    member,
+                    field='member_skill_ids',
+                    error='runtime_skill_bundle_incomplete',
+                )
+                for member in members
+            }),
+            'activation_mode': _activation_mode(raw.get('activation_mode')),
+        }
+        if not bundle['version'] or not bundle['content_hash']:
+            raise HermesRuntimeError(
+                error='runtime_skill_bundle_incomplete',
+                details='技能包 version/content_hash 不得为空',
+                status_code=422,
+            )
+        bundles.append(bundle)
+
+    def _skill_key(skill: dict[str, Any]) -> tuple[Any, ...]:
+        version = skill.get('version')
+        content_hash = skill.get('content_hash')
+        return (
+            skill['skill_id'],
+            (version is not None, version or ''),
+            (content_hash is not None, content_hash or ''),
+            _SKILL_ACTIVATION_ORDER[skill['activation_mode']],
+        )
+
+    def _bundle_key(bundle: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            bundle['package_id'],
+            bundle['version'],
+            bundle['content_hash'],
+            bundle['bundle_slug'],
+            tuple(bundle['member_skill_ids']),
+            _SKILL_ACTIVATION_ORDER[bundle['activation_mode']],
+        )
+
+    return {
+        'skills': list({jsonlib.dumps(item, sort_keys=True): item for item in sorted(skills, key=_skill_key)}.values()),
+        'bundles': list(
+            {jsonlib.dumps(item, sort_keys=True): item for item in sorted(bundles, key=_bundle_key)}.values()
+        ),
+    }
+
+
+def runtime_skill_requirements_hash(requirements: Any) -> str:
+    """计算与 Rust 64 位目标一致的 requirement SHA-256。"""
+    normalized = normalize_runtime_skill_requirements(requirements)
+    digest = hashlib.sha256()
+
+    def _field(value: str) -> None:
+        encoded = value.encode()
+        digest.update(len(encoded).to_bytes(8, byteorder='big'))
+        digest.update(encoded)
+
+    def _optional(value: Any) -> None:
+        if value is None:
+            digest.update(b'\x00')
+        else:
+            digest.update(b'\x01')
+            _field(str(value))
+
+    _field('runtime-skill-requirements/v1')
+    for skill in normalized['skills']:
+        _field('skill')
+        _field(skill['skill_id'])
+        _optional(skill.get('version'))
+        _optional(skill.get('content_hash'))
+        _field(skill['activation_mode'])
+    for bundle in normalized['bundles']:
+        _field('bundle')
+        _field(bundle['package_id'])
+        _field(bundle['version'])
+        _field(bundle['content_hash'])
+        _field(bundle['bundle_slug'])
+        for member_skill_id in bundle['member_skill_ids']:
+            _field(member_skill_id)
+        _field(bundle['activation_mode'])
+    return digest.hexdigest()
 
 
 def _sse_error(error: str, *, details: str | None = None, status_code: int | None = None) -> bytes:
@@ -192,6 +377,228 @@ class HasnAgentRuntimeDispatchService:
 
     def __init__(self, runtime_client: HermesRuntimeClient | None = None) -> None:
         self.runtime_client = runtime_client or HermesRuntimeClient()
+
+    @staticmethod
+    def _validate_skill_receipt(  # ruff: ignore[complex-structure]
+        *,
+        runtime_profile_id: str,
+        requirements: dict[str, list[dict[str, Any]]],
+        requirements_hash: str,
+        receipt: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(receipt, dict):
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 技能准备回执不是对象',
+                status_code=503,
+            )
+        if receipt.get('profile_ref') != f'hermes-profile://{runtime_profile_id}':
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 技能准备回执 profile_ref 不一致',
+                status_code=503,
+            )
+        if receipt.get('runtime_kind') != 'hermes':
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 技能准备回执 runtime_kind 不一致',
+                status_code=503,
+            )
+        if receipt.get('requirements_hash') != requirements_hash:
+            raise HermesRuntimeError(
+                error='runtime_skill_hash_mismatch',
+                details='Runtime 技能准备回执指纹与冻结快照不一致',
+                status_code=422,
+            )
+        missing = receipt.get('missing')
+        if not isinstance(missing, list):
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 技能准备回执 missing 字段无效',
+                status_code=503,
+            )
+        if missing:
+            first = missing[0] if isinstance(missing[0], dict) else {}
+            raise HermesRuntimeError(
+                error=str(first.get('error_code') or 'runtime_skill_not_found'),
+                details=f'required 资源 {first.get("resource_id") or "<unknown>"} 未准备完成',
+                status_code=422,
+            )
+        if receipt.get('status') != 'success':
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 未返回 success 准备状态',
+                status_code=503,
+            )
+
+        skill_states = receipt.get('skills')
+        bundle_states = receipt.get('bundles')
+        if not isinstance(skill_states, list) or not isinstance(bundle_states, list):
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 技能准备回执 skills/bundles 字段无效',
+                status_code=503,
+            )
+        skills_by_id = {str(state.get('skill_id')): state for state in skill_states if isinstance(state, dict)}
+        required_skill_ids: set[str] = set()
+        for requirement in requirements['skills']:
+            skill_id = requirement['skill_id']
+            required_skill_ids.add(skill_id)
+            state = skills_by_id.get(skill_id)
+            if state is None:
+                raise HermesRuntimeError(
+                    error='runtime_skill_not_found',
+                    details=f'回执缺少技能 {skill_id}',
+                    status_code=404,
+                )
+            expected_hash = requirement.get('content_hash')
+            if expected_hash is not None and state.get('content_hash') != expected_hash:
+                raise HermesRuntimeError(
+                    error='runtime_skill_hash_mismatch',
+                    details=f'技能 {skill_id} 指纹不一致',
+                    status_code=422,
+                )
+
+        for requirement in requirements['bundles']:
+            required_skill_ids.update(requirement['member_skill_ids'])
+            state = next(
+                (
+                    item
+                    for item in bundle_states
+                    if isinstance(item, dict)
+                    and item.get('package_id') == requirement['package_id']
+                    and item.get('version') == requirement['version']
+                    and item.get('bundle_slug') == requirement['bundle_slug']
+                ),
+                None,
+            )
+            if (
+                state is None
+                or state.get('content_hash') != requirement['content_hash']
+                or sorted(state.get('member_skill_ids') or []) != requirement['member_skill_ids']
+                or state.get('activation_mode') != requirement['activation_mode']
+                or state.get('materialized') is not True
+            ):
+                raise HermesRuntimeError(
+                    error='runtime_skill_bundle_incomplete',
+                    details=(f'技能包 {requirement["package_id"]}@{requirement["version"]} 未完整物化'),
+                    status_code=422,
+                )
+
+        for skill_id in required_skill_ids:
+            state = skills_by_id.get(skill_id)
+            if state is None:
+                raise HermesRuntimeError(
+                    error='runtime_skill_not_found',
+                    details=f'回执缺少成员技能 {skill_id}',
+                    status_code=404,
+                )
+            if state.get('materialized') is not True:
+                raise HermesRuntimeError(
+                    error='runtime_skill_materialize_failed',
+                    details=f'技能 {skill_id} 未完整物化',
+                    status_code=500,
+                )
+            if state.get('discoverable') is not True:
+                raise HermesRuntimeError(
+                    error='runtime_skill_index_stale',
+                    details=f'技能 {skill_id} 尚未进入当前索引',
+                    status_code=503,
+                )
+        if not receipt.get('receipt_id') or not receipt.get('index_generation'):
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 技能准备回执缺少 receipt_id/index_generation',
+                status_code=503,
+            )
+        return receipt
+
+    async def ensure_cloud_skill_requirements(
+        self,
+        *,
+        runtime_profile_id: str,
+        requirements: Any,
+        requirements_hash: str,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """在云端 Hermes 同侧幂等准备 required 技能并严格校验回执。"""
+        normalized = normalize_runtime_skill_requirements(requirements)
+        computed_hash = runtime_skill_requirements_hash(normalized)
+        if requirements_hash != computed_hash:
+            raise HermesRuntimeError(
+                error='runtime_skill_hash_mismatch',
+                details='daemon requirement 指纹与云端归一化快照不一致',
+                status_code=422,
+                trace_id=trace_id,
+            )
+        receipt = await self.runtime_client.ensure_skill_requirements(
+            runtime_profile_id,
+            {
+                'requirements_hash': computed_hash,
+                'requirements': normalized,
+            },
+            trace_id=trace_id,
+        )
+        return self._validate_skill_receipt(
+            runtime_profile_id=runtime_profile_id,
+            requirements=normalized,
+            requirements_hash=computed_hash,
+            receipt=receipt,
+        )
+
+    async def prepare_cloud_run_payload(
+        self,
+        *,
+        runtime_profile_id: str,
+        payload: dict[str, Any],
+        requirements: Any,
+        requirements_hash: str | None,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """在创建上游 run 前完成 ensure + activate，并前置激活消息。"""
+        normalized = normalize_runtime_skill_requirements(requirements)
+        if not normalized['skills'] and not normalized['bundles']:
+            return dict(payload)
+        if not requirements_hash:
+            raise HermesRuntimeError(
+                error='runtime_skill_hash_mismatch',
+                details='required 派发缺少 requirements_hash',
+                status_code=422,
+                trace_id=trace_id,
+            )
+        receipt = await self.ensure_cloud_skill_requirements(
+            runtime_profile_id=runtime_profile_id,
+            requirements=normalized,
+            requirements_hash=requirements_hash,
+            trace_id=trace_id,
+        )
+        activated = await self.runtime_client.activate_skill_requirements(
+            runtime_profile_id,
+            {
+                'requirements_hash': requirements_hash,
+                'requirements': normalized,
+                'receipt': receipt,
+            },
+            trace_id=trace_id,
+        )
+        messages = activated.get('messages') if isinstance(activated, dict) else None
+        if not isinstance(messages, list) or any(not isinstance(message, str) for message in messages):
+            raise HermesRuntimeError(
+                error='runtime_skill_index_stale',
+                details='Runtime 技能激活响应缺少 messages',
+                status_code=503,
+                trace_id=trace_id,
+            )
+        prepared = dict(payload)
+        if messages:
+            turns = [{'role': 'user', 'content': message} for message in messages]
+            current_input = prepared.get('input')
+            if isinstance(current_input, list):
+                turns.extend(current_input)
+            else:
+                turns.append({'role': 'user', 'content': current_input})
+            prepared['input'] = turns
+        return prepared
 
     async def resolve_cloud_profile(
         self,
@@ -350,7 +757,7 @@ class HasnAgentRuntimeDispatchService:
                 # ⚠️ replace 的第一参必须是**字面占位符** '{run_id}'，不是 f'{run_id}'——后者会被
                 # 插值成 run_id 的实际值，模板里没有该串 → 占位符原样残留 → GET 字面 /v1/runs/{run_id}
                 # /events → 上游 404（曾让所有云端分身对话报 runtime_events_rejected/decoding error）。
-                events_path = events_path_template.replace('{run_id}', str(run_id))  # noqa: RUF027
+                events_path = events_path_template.replace('{run_id}', str(run_id))  # ruff: ignore[missing-f-string-syntax]
                 async with client.stream('GET', f'{base_url}{events_path}', headers=headers) as events:
                     if events.status_code >= 400:
                         body = await events.aread()
@@ -383,7 +790,7 @@ class HasnAgentRuntimeDispatchService:
             raise HermesRuntimeError(error='upstream_endpoint_unconfigured', trace_id=trace_id)
         cancel_template = endpoint.get('runs_cancel_path_template') or f'/v1/runs/{run_id}/cancel'
         # 同上：字面占位符 '{run_id}'，不是 f'{run_id}'（endpoint 返回带占位符模板时才会触发 bug）。
-        cancel_path = cancel_template.replace('{run_id}', str(run_id))  # noqa: RUF027
+        cancel_path = cancel_template.replace('{run_id}', str(run_id))  # ruff: ignore[missing-f-string-syntax]
         base_url = f'http://{host}:{int(port)}'
         headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
         try:

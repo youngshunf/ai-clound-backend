@@ -386,7 +386,63 @@ class RuntimeRunRequest(SchemaBase):
 
     runtime_profile_id: str = Field(description='hermes 上游 profile_id（如 100001-assistant），由 daemon 携带')
     payload: dict[str, Any] = Field(description='/v1/runs 派发信封（daemon 组装，云端不重组）')
+    requirements_hash: str | None = Field(
+        None,
+        description='归一化 required 技能快照 SHA-256；required 非空时必填',
+    )
+    requirements: dict[str, Any] = Field(
+        default_factory=lambda: {'skills': [], 'bundles': []},
+        description='本轮 required 技能与技能包冻结快照，只含权威引用和指纹',
+    )
     trace_id: str | None = Field(None, description='链路追踪 ID（透传到 runtime header）')
+
+
+class RuntimeSkillEnsureRequest(SchemaBase):
+    """云端 dispatch 同侧 required 技能准备请求。"""
+
+    runtime_profile_id: str = Field(description='hermes 上游 profile_id，由 daemon binding 携带')
+    requirements_hash: str = Field(description='归一化 requirement 快照 SHA-256')
+    requirements: dict[str, Any] = Field(description='required 技能与技能包冻结快照')
+    trace_id: str | None = Field(None, description='链路追踪 ID')
+
+
+class RuntimeSkillStateReceipt(SchemaBase):
+    skill_id: str
+    content_hash: str
+    location_kind: str
+    materialized: bool
+    discoverable: bool
+
+
+class RuntimeSkillBundleReceipt(SchemaBase):
+    package_id: str
+    version: str
+    content_hash: str
+    bundle_slug: str
+    member_skill_ids: list[str]
+    activation_mode: str
+    materialized: bool
+
+
+class RuntimeSkillMissingReceipt(SchemaBase):
+    kind: str
+    resource_id: str
+    error_code: str
+
+
+class RuntimeSkillEnsureResponse(SchemaBase):
+    """与本地 `RuntimeSkillReceipt` 完全同构的云端准备回执。"""
+
+    receipt_id: str
+    profile_ref: str
+    runtime_kind: str
+    requirements_hash: str
+    skills: list[RuntimeSkillStateReceipt]
+    bundles: list[RuntimeSkillBundleReceipt]
+    missing: list[RuntimeSkillMissingReceipt]
+    index_generation: str
+    prepared_at: int
+    status: str
 
 
 class RuntimeRunCancelRequest(SchemaBase):
