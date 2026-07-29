@@ -108,13 +108,15 @@ async def _events(uid: int) -> list[CreditGrantEvent]:
 
 
 async def test_free_contract_uses_thirty_day_cycle_without_commercial_expiry(user_id) -> None:
-    """免费合同：30 天周期必填、cycle_count 为空、无商业到期。绝不用「100 年到期」伪造永久合同。"""
+    """免费合同固化周期与存储权益，且不用「100 年到期」伪造永久合同。"""
     async with async_db_session.begin() as db:
         contract = await credit_grant_service.ensure_free_contract(db, user_id=user_id, app_code=_APP_CODE)
     assert contract is not None
     assert contract.cycle_seconds == CYCLE_SECONDS
     assert contract.cycle_count is None
     assert contract.contract_end_at is None
+    assert contract.plan_snapshot is not None
+    assert contract.plan_snapshot['storage_bytes'] == 100 * 1024**3
 
     events = await _events(user_id)
     assert len(events) == 1

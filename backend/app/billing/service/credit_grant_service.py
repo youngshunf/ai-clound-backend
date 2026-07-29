@@ -92,6 +92,10 @@ class CreditGrantService:
         if credits_per_cycle <= 0:
             log.warning(f'[CreditGrant] 免费档未配置每周期额度，跳过: app_code={app_code}')
             return None
+        storage_bytes = tier.storage_bytes
+        if storage_bytes <= 0:
+            log.warning(f'[CreditGrant] 免费档未配置存储额度，跳过: app_code={app_code}')
+            return None
 
         # epoch 取该用户历史最大值 +1：每次「失效 → 重新授予」都必须换一个新键。
         previous_epoch = (
@@ -135,6 +139,7 @@ class CreditGrantService:
             plan_snapshot={
                 'tier': 'free',
                 'credits_per_cycle': format_credits(credits_per_cycle),
+                'storage_bytes': storage_bytes,
                 'cycle_seconds': CYCLE_SECONDS,
                 'cycle_count': None,
             },
