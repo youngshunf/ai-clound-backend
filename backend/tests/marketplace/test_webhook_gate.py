@@ -1,8 +1,6 @@
 """github webhook 技能源变更闸门单测（纯函数，零依赖）。
 
-公共技能加载机制（doc12 §3.2）要求：改 `common-skills.yaml`（仅成员变化、不动任何技能目录）
-也必须触发一次 GitHub skills 同步，否则公共技能集合的增删无法落到云端 is_common 标记。
-本测试锁住该闸门契约，避免与 hub `scripts/trigger_webhook.py:matches` 漂移。
+Webhook 只负责提示本地 AstraHub 发布，不再触发服务器仓库扫描。
 """
 
 from __future__ import annotations
@@ -56,12 +54,15 @@ def test_skill_source_push_requires_local_release() -> None:
     assert source_release_required(_push('huanxing-skills/search/newsnow/SKILL.md')) is True
     assert source_release_required(_push('github/baoyu-skills')) is True
     assert source_release_required(_push('common-skills.yaml')) is True
-    assert source_release_required(_push('bundles/research/bundle.yaml')) is False
+    assert source_release_required(_push('bundles/research/bundle.yaml')) is True
+    assert source_release_required(_push('common-bundles.yaml')) is True
+    assert source_release_required(_push('templates/agent/assistant/SOUL.md')) is True
+    assert source_release_required(
+        _push('workflow-templates/fin-research/workflow-template.yaml')
+    ) is True
 
 
-def test_bundle_changes_remain_on_repository_sync_temporarily() -> None:
-    assert bundle_source_changes(_push('bundles/research/bundle.yaml')) == {
-        'bundles/research/bundle.yaml'
-    }
-    assert bundle_source_changes(_push('common-bundles.yaml')) == {'common-bundles.yaml'}
+def test_no_change_uses_retired_server_repository_sync() -> None:
+    assert bundle_source_changes(_push('bundles/research/bundle.yaml')) == set()
+    assert bundle_source_changes(_push('common-bundles.yaml')) == set()
     assert bundle_source_changes(_push('huanxing-skills/search/newsnow/SKILL.md')) == set()

@@ -25,7 +25,9 @@ class MarketplaceStorageService:
 
     # 存储路径规范
     SKILLS_PATH = 'marketplace/skills'
+    SKILL_PACKS_PATH = 'marketplace/skill-packs'
     TEMPLATES_PATH = 'marketplace/templates'
+    WORKFLOWS_PATH = 'marketplace/workflows'
 
     async def _get_operator(
         self, db: AsyncSession, storage_id: int | None = None
@@ -99,6 +101,54 @@ class MarketplaceStorageService:
             f'{version}/{normalized_hash}.zip'
         )
 
+    @staticmethod
+    def _validated_release_hash(file_hash: str) -> str:
+        """校验内容寻址对象键使用的裸 SHA256。"""
+        normalized_hash = file_hash.lower()
+        if len(normalized_hash) != 64 or any(
+            char not in '0123456789abcdef' for char in normalized_hash
+        ):
+            raise errors.RequestError(msg='发布包 SHA256 无效')
+        return normalized_hash
+
+    @staticmethod
+    def skill_pack_release_path(slug: str, version: str, file_hash: str) -> str:
+        """构造官方技能包的内容寻址对象路径。"""
+        slug = validate_slug(slug)
+        version = validate_version(version)
+        normalized_hash = MarketplaceStorageService._validated_release_hash(file_hash)
+        return (
+            f'{MarketplaceStorageService.SKILL_PACKS_PATH}/{slug}/'
+            f'{version}/{normalized_hash}.zip'
+        )
+
+    @staticmethod
+    def template_release_path(template_id: str, version: str, file_hash: str) -> str:
+        """构造官方分身模板的内容寻址对象路径。"""
+        namespace, slug = parse_resource_id(template_id)
+        for segment in namespace.split('/'):
+            validate_slug(segment)
+        slug = validate_slug(slug)
+        version = validate_version(version)
+        normalized_hash = MarketplaceStorageService._validated_release_hash(file_hash)
+        return (
+            f'{MarketplaceStorageService.TEMPLATES_PATH}/{namespace}/{slug}/'
+            f'{version}/{normalized_hash}.zip'
+        )
+
+    @staticmethod
+    def workflow_release_path(slug: str, version: str, file_hash: str) -> str:
+        """构造官方场景工作流的内容寻址对象路径。"""
+        slug = validate_slug(slug)
+        normalized_version = str(version).strip()
+        if not normalized_version.isdigit() or int(normalized_version) < 1:
+            raise errors.RequestError(msg='场景工作流版本必须为正整数')
+        normalized_hash = MarketplaceStorageService._validated_release_hash(file_hash)
+        return (
+            f'{MarketplaceStorageService.WORKFLOWS_PATH}/{slug}/'
+            f'{normalized_version}/{normalized_hash}.zip'
+        )
+
     async def upload_skill_package(
         self,
         db: AsyncSession,
@@ -154,6 +204,74 @@ class MarketplaceStorageService:
         path = self.skill_release_path(skill_id, version, file_hash)
         await op.write(path, content)
         return self._build_url(s3_storage, path), file_hash, file_size
+
+    async def _upload_release_package(
+        self,
+        *,
+        db: AsyncSession,
+        content: bytes,
+        path: str,
+        storage_id: int | None,
+    ) -> tuple[str, str, int]:
+        """上传已按 SHA256 生成对象键的不可变发布制品。"""
+        op, s3_storage = await self._get_operator(db, storage_id)
+        await op.write(path, content)
+        return (
+            self._build_url(s3_storage, path),
+            self._calculate_hash(content),
+            len(content),
+        )
+
+    async def upload_skill_pack_release_package(
+        self,
+        db: AsyncSession,
+        slug: str,
+        version: str,
+        content: bytes,
+        storage_id: int | None = None,
+    ) -> tuple[str, str, int]:
+        """上传官方技能包的内容寻址制品。"""
+        file_hash = self._calculate_hash(content)
+        return await self._upload_release_package(
+            db=db,
+            content=content,
+            path=self.skill_pack_release_path(slug, version, file_hash),
+            storage_id=storage_id,
+        )
+
+    async def upload_template_release_package(
+        self,
+        db: AsyncSession,
+        template_id: str,
+        version: str,
+        content: bytes,
+        storage_id: int | None = None,
+    ) -> tuple[str, str, int]:
+        """上传官方分身模板的内容寻址制品。"""
+        file_hash = self._calculate_hash(content)
+        return await self._upload_release_package(
+            db=db,
+            content=content,
+            path=self.template_release_path(template_id, version, file_hash),
+            storage_id=storage_id,
+        )
+
+    async def upload_workflow_release_package(
+        self,
+        db: AsyncSession,
+        slug: str,
+        version: str,
+        content: bytes,
+        storage_id: int | None = None,
+    ) -> tuple[str, str, int]:
+        """上传官方场景工作流的内容寻址制品。"""
+        file_hash = self._calculate_hash(content)
+        return await self._upload_release_package(
+            db=db,
+            content=content,
+            path=self.workflow_release_path(slug, version, file_hash),
+            storage_id=storage_id,
+        )
 
     async def upload_template_package(
         self,
