@@ -28,6 +28,8 @@ CREATE TABLE "hasn_copilot"."meetings" (
   "duration_ms"                 bigint,
   "status"                      varchar(16)    NOT NULL DEFAULT 'active',
   "record_version"              integer        NOT NULL DEFAULT 0,
+  "realtime_revision_id"        uuid           NOT NULL DEFAULT gen_random_uuid(),
+  "preferred_enhancement_revision_id" uuid,
   "speaker_annotation_revision" varchar(64),
   "participants_json"           jsonb          NOT NULL DEFAULT '[]',
   "minutes_state"               varchar(16)    NOT NULL DEFAULT 'none',
@@ -56,6 +58,8 @@ COMMENT ON COLUMN "hasn_copilot"."meetings"."ended_at" IS '会议结束时间（
 COMMENT ON COLUMN "hasn_copilot"."meetings"."duration_ms" IS '会议时长（毫秒）';
 COMMENT ON COLUMN "hasn_copilot"."meetings"."status" IS '状态 (active:进行中:green/ended:已结束:blue/finalized:已定稿:gray)';
 COMMENT ON COLUMN "hasn_copilot"."meetings"."record_version" IS '转写记录定稿版本号（segments 幂等上推时 bump）';
+COMMENT ON COLUMN "hasn_copilot"."meetings"."realtime_revision_id" IS '原始实时稿云端权威 revision ID（UUID；永久保留且不可被增强覆盖）';
+COMMENT ON COLUMN "hasn_copilot"."meetings"."preferred_enhancement_revision_id" IS '主人已接受的首选增强候选 ID；NULL 表示默认视图仍为原始实时稿';
 COMMENT ON COLUMN "hasn_copilot"."meetings"."speaker_annotation_revision" IS '说话人标注修订号（说话人定稿快照对应版本）';
 COMMENT ON COLUMN "hasn_copilot"."meetings"."participants_json" IS '说话人定稿快照 JSON 数组（[{cluster_id,speaker_label,...}]）';
 COMMENT ON COLUMN "hasn_copilot"."meetings"."minutes_state" IS '纪要状态 (none:未生成:gray/queued:排队中:amber/ready:已就绪:green/failed:失败:red)';

@@ -52,6 +52,16 @@ class Meetings(CopilotBase):
     record_version: Mapped[int] = mapped_column(
         sa.INTEGER(), default=0, comment='转写记录定稿版本号（segments 幂等上推时 bump）'
     )
+    realtime_revision_id: Mapped[UUID] = mapped_column(
+        sa.UUID(),
+        default_factory=uuid.uuid4,
+        comment='原始实时稿云端权威 revision ID（永久保留且不可被增强覆盖）',
+    )
+    preferred_enhancement_revision_id: Mapped[UUID | None] = mapped_column(
+        sa.UUID(),
+        default=None,
+        comment='主人已接受的首选增强候选 ID；NULL 表示默认视图仍为原始实时稿',
+    )
     speaker_annotation_revision: Mapped[str | None] = mapped_column(
         sa.String(64), default=None, comment='说话人标注修订号（说话人定稿快照对应版本）'
     )
