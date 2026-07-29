@@ -27,7 +27,7 @@ from backend.app.hasn.schema.hasn_platform_default_config import PlatformDefault
 from backend.app.hasn.service.app_catalog_service import ensure_catalog_seeded
 from backend.app.hasn.service.platform_default_config_service import (
     DEFAULT_PLATFORM_CONFIG,
-    normalize_legacy_speech_gateway_defaults,
+    normalize_legacy_media_gateway_defaults,
 )
 from backend.app.hasn.service.platform_default_config_service import (
     platform_default_config_service as svc,
@@ -40,6 +40,7 @@ pytestmark = pytest.mark.asyncio(loop_scope='session')
 def _config(
     *,
     image: list[str] | None = None,
+    image_edit: list[str] | None = None,
     video: list[str] | None = None,
     main: str | None = None,
     fast: str | None = None,
@@ -51,6 +52,7 @@ def _config(
         'node': {
             'media': {
                 'image_models': image or ['gpt-image-2'],
+                'image_edit_models': image_edit or ['gpt-image-2'],
                 'tts_models': ['qwen3-tts-flash'],
                 'stt_models': ['qwen3-asr-flash'],
                 'video_models': video or [],
@@ -78,8 +80,8 @@ async def test_factory_speech_models_match_node_fallback_contract() -> None:
     assert media['stt_models'] == ['qwen3-asr-flash']
 
 
-async def test_legacy_speech_gateway_defaults_are_normalized_without_mutating_source() -> None:
-    """旧出厂值应升级为当前 New API 模型链，且不得原地修改数据库读取结果。"""
+async def test_legacy_media_gateway_defaults_are_normalized_without_mutating_source() -> None:
+    """旧配置应补图像编辑链并升级语音链，且不得原地修改数据库读取结果。"""
     raw: dict[str, Any] = {
         'node': {
             'media': {
@@ -92,8 +94,9 @@ async def test_legacy_speech_gateway_defaults_are_normalized_without_mutating_so
         'agent_runtime': {'models': {}},
     }
 
-    normalized = normalize_legacy_speech_gateway_defaults(raw)
+    normalized = normalize_legacy_media_gateway_defaults(raw)
 
+    assert normalized['node']['media']['image_edit_models'] == ['gpt-image-2']
     assert normalized['node']['media']['tts_models'] == ['qwen3-tts-flash', 'qwen3-tts-instruct-flash']
     assert normalized['node']['media']['stt_models'] == ['qwen3-asr-flash']
     assert raw['node']['media']['tts_models'] == ['tts-1', 'tts-1-hd']
@@ -105,13 +108,14 @@ async def test_custom_speech_gateway_models_are_not_normalized() -> None:
     raw = {
         'node': {
             'media': {
+                'image_edit_models': ['custom-image-edit'],
                 'tts_models': ['custom-tts', 'tts-1'],
                 'stt_models': ['custom-asr'],
             }
         }
     }
 
-    assert normalize_legacy_speech_gateway_defaults(raw) == raw
+    assert normalize_legacy_media_gateway_defaults(raw) == raw
 
 
 async def test_factory_default_when_no_row() -> None:
@@ -120,6 +124,11 @@ async def test_factory_default_when_no_row() -> None:
         cfg, rev = await svc.get_effective_config(db)
         # 无行 → 出厂默认（与 config/default.toml [media] 对齐），revision 稳定可比较。
         assert cfg.node.media.image_models == DEFAULT_PLATFORM_CONFIG['node']['media']['image_models']
+        assert (
+            cfg.node.media.image_edit_models
+            == DEFAULT_PLATFORM_CONFIG['node']['media']['image_edit_models']
+            == ['gpt-image-2']
+        )
         # 视频默认空：视频渠道需运营在 new-api 开通后再经 Admin 下发（PV4）。
         assert cfg.node.media.video_models == DEFAULT_PLATFORM_CONFIG['node']['media']['video_models'] == []
         _cfg2, rev2 = await svc.get_effective_config(db)
@@ -133,6 +142,22 @@ async def test_update_persists_video_models_for_node_downlink() -> None:
         cfg, rev = await svc.get_effective_config(db)
         assert rev == resp.revision
         assert cfg.node.media.video_models == ['sora-1', 'kling-1']
+
+
+async def test_update_persists_image_edit_models_separately_from_generation() -> None:
+    """图像编辑模型必须独立下发，不能被文生图模型列表覆盖。"""
+    async with async_db_session() as db:
+        await svc.update_config(
+            db,
+            config=_config(
+                image=['agnes-image-2.1-flash'],
+                image_edit=['gpt-image-2'],
+            ),
+            updated_by='pytest',
+        )
+        cfg, _rev = await svc.get_effective_config(db)
+        assert cfg.node.media.image_models == ['agnes-image-2.1-flash']
+        assert cfg.node.media.image_edit_models == ['gpt-image-2']
 
 
 async def test_no_film_section_in_pdc_factory_default() -> None:
@@ -182,7 +207,13 @@ async def test_pdc_update_does_not_persist_app_configs() -> None:
     async with async_db_session() as db:
         config = PlatformDefaultConfig.model_validate({
             'node': {
-                'media': {'image_models': ['gpt-image-2'], 'tts_models': [], 'stt_models': [], 'video_models': []}
+                'media': {
+                    'image_models': ['gpt-image-2'],
+                    'image_edit_models': ['gpt-image-2'],
+                    'tts_models': [],
+                    'stt_models': [],
+                    'video_models': [],
+                }
             },
             'agent_runtime': {'models': {'main': None, 'fast': None, 'vision': None, 'delegation': None}},
             'app_configs': {'film': {'models': {'llm': ['injected-should-be-dropped']}}},
