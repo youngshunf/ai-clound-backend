@@ -1,11 +1,9 @@
-import asyncio
-
 from typing import Any
 
 from celery import Task
 from sqlalchemy.exc import SQLAlchemyError
 
-from backend.common.socketio.actions import task_notification
+from backend.common.socketio.actions import task_notification_sync
 from backend.core.conf import settings
 
 
@@ -17,13 +15,8 @@ class TaskBase(Task):
 
     @staticmethod
     def _notify(message: str) -> None:
-        """从 Celery 同步生命周期钩子可靠派发异步通知。"""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(task_notification(msg=message))
-        else:
-            loop.create_task(task_notification(msg=message))
+        """从 Celery 同步生命周期钩子发布通知。"""
+        task_notification_sync(msg=message)
 
     def before_start(self, task_id: str, args, kwargs) -> None:  # noqa: ANN001
         """

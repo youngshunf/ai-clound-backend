@@ -180,6 +180,71 @@ async def test_recommendations_are_read_only_until_owner_adopts(ctx: SimpleNames
     assert before == after == 0
 
 
+async def test_adopt_repairs_legacy_migration_hash_when_definition_is_unchanged(
+    ctx: SimpleNamespace,
+) -> None:
+    """迁移快照字段完全一致时可修正旧哈希算法，不能误报同版本定义被改。"""
+    frozen = PlaybookVersion(
+        playbook_id=ctx.builtin.id,
+        version=ctx.builtin.version,
+        name=ctx.builtin.name,
+        goal=ctx.builtin.goal,
+        target_profile=ctx.builtin.target_profile,
+        cadence=ctx.builtin.cadence,
+        tone_guide=ctx.builtin.tone_guide,
+        exit_rule=ctx.builtin.exit_rule,
+        definition_hash='0' * 64,
+        created_by_kind='migration',
+    )
+    ctx.session.add(frozen)
+    await ctx.session.flush()
+
+    adopted = await playbook_service.adopt_for_project(
+        ctx.session,
+        owner_hasn_id=ctx.owner,
+        user_id=ctx.user_id,
+        growth_project_id=ctx.growth.id,
+        playbook_id=ctx.builtin.id,
+        expected_playbook_version=1,
+        configuration={},
+    )
+
+    assert adopted['status'] == 'active'
+    assert frozen.definition_hash != '0' * 64
+
+
+async def test_adopt_rejects_legacy_migration_hash_when_definition_changed(
+    ctx: SimpleNamespace,
+) -> None:
+    """迁移快照字段有差异时仍必须拒绝，不能借旧哈希修复掩盖未升版本。"""
+    ctx.session.add(
+        PlaybookVersion(
+            playbook_id=ctx.builtin.id,
+            version=ctx.builtin.version,
+            name=ctx.builtin.name,
+            goal='迁移时的旧目标',
+            target_profile=ctx.builtin.target_profile,
+            cadence=ctx.builtin.cadence,
+            tone_guide=ctx.builtin.tone_guide,
+            exit_rule=ctx.builtin.exit_rule,
+            definition_hash='0' * 64,
+            created_by_kind='migration',
+        )
+    )
+    await ctx.session.flush()
+
+    with pytest.raises(errors.ConflictError):
+        await playbook_service.adopt_for_project(
+            ctx.session,
+            owner_hasn_id=ctx.owner,
+            user_id=ctx.user_id,
+            growth_project_id=ctx.growth.id,
+            playbook_id=ctx.builtin.id,
+            expected_playbook_version=1,
+            configuration={},
+        )
+
+
 async def test_project_playbook_rejects_cross_owner_and_version_conflict(
     ctx: SimpleNamespace,
 ) -> None:
