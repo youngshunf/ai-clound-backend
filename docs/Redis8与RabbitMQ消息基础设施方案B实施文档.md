@@ -99,6 +99,8 @@
   并按用户可见性提供数据库权威状态和周期恢复扫描；其外部调用成本/效果不宣称 exactly-once。
 - 自动渠道发送只有在 provider 明确保证按稳定 `idempotency_key` 去重时才允许注册；
   发送成功但数据库提交前崩溃的歧义由 provider 去重和数据库恢复共同收敛。
+- Redis 回滚模式固定使用项目独占队列 `huanxing.celery.rollback`；禁止复用通用
+  `celery` 队列，避免同机其他 Celery 项目误消费回滚任务。
 - Socket.IO 与 HASN realtime queue 都是在线临时通道，不承担离线消息。
 - HASN 第一版给每个 API worker 一份 fanout 消息，再由本地连接表和 Redis generation 判断是否持有目标连接。
 - 单节点不使用 quorum queue。建设 3 节点集群后另行评估。

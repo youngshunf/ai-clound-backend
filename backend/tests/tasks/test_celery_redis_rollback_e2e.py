@@ -85,7 +85,7 @@ def test_real_redis_rollback_consumes_production_task_and_persists_result(
     redis_rollback_app: tuple[Celery, Redis],
 ) -> None:
     app, client = redis_rollback_app
-    assert app.conf.task_default_queue == CELERY_REDIS_ROLLBACK_QUEUE == 'celery'
+    assert app.conf.task_default_queue == CELERY_REDIS_ROLLBACK_QUEUE == 'huanxing.celery.rollback'
     assert app.conf.broker_transport_options == {}
     worker_environment = os.environ.copy()
     # `CELERY_BROKER` 是本项目的模式开关，但 Celery CLI 会把同名环境变量误当 URL；

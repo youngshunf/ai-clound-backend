@@ -11,10 +11,13 @@ FLOWER_SUPERVISOR_FILE = PROJECT_ROOT / 'deploy' / 'backend' / 'supervisor' / 'f
 def test_native_worker_uses_application_queue_and_unique_hostname() -> None:
     content = NATIVE_DEPLOY_FILE.read_text(encoding='utf-8')
     worker_line = next(line for line in content.splitlines() if 'celery_app worker' in line)
+    worker_section = content.split('# Celery Worker 配置', maxsplit=1)[1].split('# Celery Beat 配置', maxsplit=1)[0]
 
     assert '-Q celery' not in worker_line
     assert '--queues=celery' not in worker_line
     assert '--hostname=huanxing@%%h' in worker_line
+    assert 'stopasgroup=true' in worker_section
+    assert 'killasgroup=true' in worker_section
 
 
 def test_supervisor_worker_uses_application_queue_and_unique_hostname() -> None:
@@ -25,6 +28,8 @@ def test_supervisor_worker_uses_application_queue_and_unique_hostname() -> None:
     assert '--queues=celery' not in worker_line
     assert '-A app.task.celery:celery_app' in worker_line
     assert '--hostname=fba@%%h' in worker_line
+    assert 'stopasgroup=true' in content
+    assert 'killasgroup=true' in content
 
 
 def test_flower_supervisor_commands_use_secure_loopback_runner() -> None:

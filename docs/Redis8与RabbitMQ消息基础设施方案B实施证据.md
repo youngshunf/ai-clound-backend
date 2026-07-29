@@ -221,7 +221,8 @@ error_log_count=0
 模式固定使用 durable classic queue `huanxing.celery.default`、direct exchange
 `huanxing.celery`、persistent delivery、publisher confirm、60 秒 heartbeat、
 prefetch 1、late ACK 和 worker-lost reject；Redis rollback 分支保留历史 `celery` 队列，
-但不伪造 RabbitMQ confirm。
+且不伪造 RabbitMQ confirm。生产预检发现同机其他项目也监听通用 `celery` 队列后，
+该初始决定已修正：回滚队列改为项目独占的 `huanxing.celery.rollback`，避免跨项目误消费。
 
 RabbitMQ 4.3.4 的真实 remote-control 首次运行暴露了兼容性缺口：
 Celery/Kombu 默认把 pidbox 请求/回复 queue 和事件接收 queue 声明为非持久、
@@ -301,16 +302,17 @@ Beat 只持锁而不发布。改为始终返回同一个可变映射后，真实
 
 真实 Redis rollback 使用独立 DB 15、生产 Celery 应用和真实 PostgreSQL result backend，
 消费生产 `credit_outbox_metrics_refresh` 任务，并验证 registered、active、reserved、
-scheduled 与旧 `celery` queue：
+scheduled 与独占 rollback queue：
 
 ```text
 CELERY_REDIS_E2E=1 CELERY_BROKER_MODE=redis CELERY_BROKER_REDIS_DATABASE=15 \
   DATABASE_PORT=15432 ENVIRONMENT=dev \
   uv run pytest backend/tests/tasks/test_celery_redis_rollback_e2e.py -q
-=> 1 passed, 60 warnings in 15.87s
+=> 1 passed, 60 warnings in 5.46s
 ```
 
-测试仅在 DB 15 初始为空时运行，结束后只删除本轮创建的键。
+测试验证独占 `huanxing.celery.rollback` queue，仅在 DB 15 初始为空时运行，
+结束后只删除本轮创建的键。
 
 ### 4.3 任务 ACK 与幂等审计
 
@@ -354,6 +356,23 @@ DATABASE_PORT=15432 ENVIRONMENT=dev uv run pytest backend/ -q --tb=short
 - 响应信封基线尚未纳入三个既有 bootstrap route。
 
 以上失败均可单独复现；未删除共享数据库未知归属数据，也未修改非本任务文件掩盖失败。
+
+### 4.5 B2-02 生产预检发现
+
+2026-07-30 03:32 CST，生产代码已部署到 `eeee71884`，Celery 已锁定为 5.6.3，
+API 在 Redis broker 下返回 200。切换前停 Beat 并核对 Worker PID/PPID 后确认没有
+孤儿进程；`DuplicateNodenameWarning` 来自同机 `lottery-project` 的另一组 Celery
+Worker。该 Worker 与本项目连接同一 Redis broker、使用相同默认节点名，并监听通用
+`celery` queue。
+
+因此在继续生产切换前增加两项硬修复：
+
+- Redis rollback queue 改为 `huanxing.celery.rollback`；
+- 本项目 Worker 使用唯一 `huanxing@%h` 节点名，Supervisor 增加
+  `stopasgroup=true` / `killasgroup=true`。
+
+真实 Redis rollback E2E 和部署配置测试已覆盖上述修复。Beat 保持停止，待修复部署、
+Redis 最终排空和 RabbitMQ 切换完成后再恢复。
 
 ## 5. 后续证据索引
 
