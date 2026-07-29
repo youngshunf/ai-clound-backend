@@ -6,13 +6,20 @@ import celery_aio_pool
 
 from celery.app import trace as celery_trace
 from celery.signals import worker_process_init
+from kombu import Exchange, Queue
 from opentelemetry.instrumentation.celery import CeleryInstrumentor
 
 from backend.app.task.tasks.beat import LOCAL_BEAT_SCHEDULE
 from backend.common.enums import DataBaseType
+from backend.common.messaging.rabbitmq import build_amqp_dsn
 from backend.common.observability.otel import init_resource, init_tracer
-from backend.core.conf import settings
+from backend.core.conf import Settings, settings
 from backend.core.path_conf import BASE_PATH
+
+CELERY_DEFAULT_QUEUE = 'huanxing.celery.default'
+CELERY_DEFAULT_EXCHANGE = 'huanxing.celery'
+CELERY_DEFAULT_ROUTING_KEY = CELERY_DEFAULT_QUEUE
+CELERY_REDIS_ROLLBACK_QUEUE = 'celery'
 
 
 @worker_process_init.connect(weak=False)
@@ -47,6 +54,69 @@ def find_task_packages() -> list[str]:
     return packages
 
 
+def build_celery_broker_url(config: Settings) -> str:
+    """构造 Celery broker URL，不在日志中输出返回值。"""
+    if config.CELERY_BROKER == 'rabbitmq':
+        return build_amqp_dsn(
+            host=config.CELERY_RABBITMQ_HOST,
+            port=config.CELERY_RABBITMQ_PORT,
+            username=config.CELERY_RABBITMQ_USERNAME,
+            password=config.CELERY_RABBITMQ_PASSWORD,
+            vhost=config.CELERY_RABBITMQ_VHOST,
+        )
+    password = urllib.parse.quote(config.REDIS_PASSWORD, safe='')
+    return f'redis://:{password}@{config.REDIS_HOST}:{config.REDIS_PORT}/{config.CELERY_BROKER_REDIS_DATABASE}'
+
+
+def build_celery_broker_options(config: Settings) -> dict[str, object]:
+    """返回固定队列与 durable 任务至少一次投递所需的 Celery 配置。"""
+    is_rabbitmq = config.CELERY_BROKER == 'rabbitmq'
+    queue_name = CELERY_DEFAULT_QUEUE if is_rabbitmq else CELERY_REDIS_ROLLBACK_QUEUE
+    exchange_name = CELERY_DEFAULT_EXCHANGE if is_rabbitmq else queue_name
+    routing_key = CELERY_DEFAULT_ROUTING_KEY if is_rabbitmq else queue_name
+    default_exchange = Exchange(
+        exchange_name,
+        type='direct',
+        durable=True,
+        auto_delete=False,
+    )
+    default_queue = Queue(
+        queue_name,
+        exchange=default_exchange,
+        routing_key=routing_key,
+        durable=True,
+        auto_delete=False,
+        queue_arguments={'x-queue-type': 'classic'},
+    )
+    return {
+        'task_default_queue': queue_name,
+        'task_default_exchange': exchange_name,
+        'task_default_exchange_type': 'direct',
+        'task_default_routing_key': routing_key,
+        'task_default_delivery_mode': 'persistent',
+        'task_queues': (default_queue,),
+        'task_create_missing_queues': False,
+        'broker_transport_options': {'confirm_publish': True} if is_rabbitmq else {},
+        'broker_heartbeat': 60 if is_rabbitmq else None,
+        'broker_heartbeat_checkrate': 2.0,
+        'broker_connection_timeout': 10,
+        'broker_connection_retry': True,
+        'broker_connection_retry_on_startup': True,
+        'broker_channel_error_retry': True,
+        'broker_connection_max_retries': 100,
+        'worker_prefetch_multiplier': 1,
+        'task_acks_late': True,
+        'task_acks_on_failure_or_timeout': True,
+        'task_reject_on_worker_lost': True,
+        # RabbitMQ 4.3 禁止非持久且非独占的临时队列；pidbox 与事件接收队列
+        # 绑定单个客户端连接，使用独占队列可在断线时确定性清理。
+        'control_queue_exclusive': True,
+        'control_queue_durable': False,
+        'event_queue_exclusive': True,
+        'event_queue_durable': False,
+    }
+
+
 def init_celery() -> celery.Celery:
     """初始化 Celery 应用"""
 
@@ -56,9 +126,7 @@ def init_celery() -> celery.Celery:
     celery_trace.build_tracer = celery_aio_pool.build_async_tracer
     celery_trace.reset_worker_optimizations()
 
-    broker_url = f'amqp://{settings.CELERY_RABBITMQ_USERNAME}:{urllib.parse.quote(settings.CELERY_RABBITMQ_PASSWORD)}@{settings.CELERY_RABBITMQ_HOST}:{settings.CELERY_RABBITMQ_PORT}/{settings.CELERY_RABBITMQ_VHOST}'
-    if settings.CELERY_BROKER == 'redis':
-        broker_url = f'redis://:{urllib.parse.quote(settings.REDIS_PASSWORD)}@{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.CELERY_BROKER_REDIS_DATABASE}'
+    broker_url = build_celery_broker_url(settings)
 
     result_backend = f'db+postgresql+psycopg://{settings.DATABASE_USER}:{urllib.parse.quote(settings.DATABASE_PASSWORD)}@{settings.DATABASE_HOST}:{settings.DATABASE_PORT}/{settings.DATABASE_SCHEMA}'
     if DataBaseType.mysql == settings.DATABASE_TYPE:
@@ -68,7 +136,6 @@ def init_celery() -> celery.Celery:
     app = celery.Celery(
         'fba_celery',
         broker_url=broker_url,
-        broker_connection_retry_on_startup=True,
         result_backend=result_backend,
         result_extended=True,
         database_engine_options={'echo': settings.DATABASE_ECHO},
@@ -83,6 +150,7 @@ def init_celery() -> celery.Celery:
         worker_send_task_events=True,
         task_send_sent_event=True,
     )
+    app.conf.update(build_celery_broker_options(settings))
 
     # 在 Celery 中设置此参数无效
     # 参数：https://github.com/celery/celery/issues/7270

@@ -31,6 +31,7 @@ from backend.app.hasn_core import HasnAgents
 from backend.app.hasn_memory.model.peer_portrait import PeerPortrait
 from backend.app.hasn_memory.model.semantic_fact import SemanticFact
 from backend.app.hasn_memory.service.semantic_fact_service import semantic_fact_service
+from backend.app.hasn_memory.service.transaction_lock import acquire_memory_transaction_lock
 from backend.common.log import log
 from backend.database.db import async_db_session
 
@@ -76,7 +77,8 @@ class PeerPortraitService:
             return False
         found = (
             await db.execute(
-                sa.select(HasnAgents.hasn_id)
+                sa
+                .select(HasnAgents.hasn_id)
                 .where(HasnAgents.owner_id == owner_id, HasnAgents.hasn_id == peer_hasn_id)
                 .limit(1)
             )
@@ -122,6 +124,7 @@ class PeerPortraitService:
         if await self._is_same_owner_agent(db, owner_id=owner_id, peer_hasn_id=peer_hasn_id):
             return {'synthesized': False, 'reason': 'same_owner_agent'}
 
+        await acquire_memory_transaction_lock(db, f'peer-portrait:{owner_id}:{peer_hasn_id}')
         facts = await semantic_fact_service.recall_facts(
             db, owner_id=owner_id, subject_kind='peer', subject_id=peer_hasn_id, limit=_MAX_FACTS
         )
@@ -129,6 +132,17 @@ class PeerPortraitService:
             return {'synthesized': False, 'reason': 'no_facts'}
 
         existing = await self._existing_portrait(db, owner_id=owner_id, peer_hasn_id=peer_hasn_id)
+        max_fact_updated_at = max((int(f.get('updated_at') or 0) for f in facts), default=0)
+        if (
+            existing is not None
+            and existing.last_synthesized_at is not None
+            and int(existing.last_synthesized_at) >= max_fact_updated_at
+        ):
+            return {
+                'synthesized': False,
+                'reason': 'up_to_date',
+                'version': int(existing.version),
+            }
         baseline = (existing.portrait_text if existing and existing.portrait_text else '').strip()
 
         complete = llm_complete or _default_llm_complete
@@ -140,7 +154,7 @@ class PeerPortraitService:
 
         peer_kind = _peer_kind(peer_hasn_id)
         # 最后交互时间 = 纳入事实里最新的 updated_at（epoch ms）
-        last_interaction_at = max((int(f.get('updated_at') or 0) for f in facts), default=None) or None
+        last_interaction_at = max_fact_updated_at or None
         now = _now_ms()
         new_version = (int(existing.version) if existing else 0) + 1
         token_count = _estimate_tokens(portrait_text)
@@ -205,7 +219,8 @@ class PeerPortraitService:
         if owner_ids is not None:
             fact_where.append(SemanticFact.owner_id.in_(owner_ids))
         fact_agg = (
-            sa.select(
+            sa
+            .select(
                 SemanticFact.owner_id.label('owner_id'),
                 SemanticFact.subject_id.label('peer_hasn_id'),
                 sa.func.max(SemanticFact.updated_at).label('max_fact_updated'),
@@ -215,7 +230,8 @@ class PeerPortraitService:
             .subquery()
         )
         stmt = (
-            sa.select(fact_agg.c.owner_id, fact_agg.c.peer_hasn_id)
+            sa
+            .select(fact_agg.c.owner_id, fact_agg.c.peer_hasn_id)
             .select_from(
                 fact_agg.outerjoin(
                     PeerPortrait,

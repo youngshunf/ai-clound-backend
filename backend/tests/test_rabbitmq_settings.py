@@ -9,8 +9,9 @@ from pydantic import ValidationError
 from backend.core.conf import Settings
 from backend.core.path_conf import ENV_EXAMPLE_FILE_PATH
 
-
 NEW_MESSAGE_INFRASTRUCTURE_SETTINGS = {
+    'CELERY_BROKER_MODE',
+    'FLOWER_BASIC_AUTH',
     'SOCKETIO_MANAGER',
     'REALTIME_RABBITMQ_HOST',
     'REALTIME_RABBITMQ_PORT',
@@ -37,6 +38,7 @@ def test_message_infrastructure_defaults_preserve_redis_behavior(
     configured = _settings(monkeypatch)
 
     assert configured.CELERY_BROKER == 'redis'
+    assert not configured.FLOWER_BASIC_AUTH
     assert configured.SOCKETIO_MANAGER == 'redis'
     assert configured.HASN_REALTIME_BUS == 'redis'
     assert configured.HASN_REALTIME_SHADOW_RABBITMQ is False
@@ -49,7 +51,7 @@ def test_message_infrastructure_defaults_preserve_redis_behavior(
 def test_new_settings_are_declared_in_model_and_example_environment() -> None:
     example = ENV_EXAMPLE_FILE_PATH.read_text(encoding='utf-8')
 
-    assert NEW_MESSAGE_INFRASTRUCTURE_SETTINGS <= Settings.model_fields.keys()
+    assert Settings.model_fields.keys() >= NEW_MESSAGE_INFRASTRUCTURE_SETTINGS
     for name in NEW_MESSAGE_INFRASTRUCTURE_SETTINGS:
         assert f'{name}=' in example
 
@@ -138,6 +140,69 @@ def test_complete_rabbitmq_settings_are_accepted(
     assert configured.HASN_REALTIME_BUS == 'rabbitmq'
 
 
+def test_non_conflicting_celery_broker_mode_overrides_legacy_dotenv_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = _settings(
+        monkeypatch,
+        CELERY_BROKER='redis',
+        CELERY_BROKER_MODE='rabbitmq',
+        CELERY_RABBITMQ_USERNAME='huanxing_celery',
+        CELERY_RABBITMQ_PASSWORD='celery-secret',
+    )
+
+    assert configured.CELERY_BROKER_MODE == 'rabbitmq'
+    assert configured.CELERY_BROKER == 'rabbitmq'
+
+
+@pytest.mark.parametrize(
+    ('overrides', 'error_fragment'),
+    [
+        (
+            {
+                'CELERY_RABBITMQ_USERNAME': 'admin',
+                'CELERY_RABBITMQ_PASSWORD': 'V7rP4mZ2nQ8sK6xD9cT5wL3j',
+                'CELERY_RABBITMQ_VHOST': 'huanxing',
+            },
+            'huanxing_celery',
+        ),
+        (
+            {
+                'CELERY_RABBITMQ_USERNAME': 'huanxing_celery',
+                'CELERY_RABBITMQ_PASSWORD': 'too-short-secret',
+                'CELERY_RABBITMQ_VHOST': 'huanxing',
+            },
+            '24',
+        ),
+        (
+            {
+                'CELERY_RABBITMQ_USERNAME': 'huanxing_celery',
+                'CELERY_RABBITMQ_PASSWORD': 'V7rP4mZ2nQ8sK6xD9cT5wL3j',
+                'CELERY_RABBITMQ_VHOST': '',
+            },
+            'CELERY_RABBITMQ_VHOST',
+        ),
+    ],
+)
+def test_production_celery_rabbitmq_rejects_placeholder_or_wrong_role(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    error_fragment: str,
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings(
+            monkeypatch,
+            ENVIRONMENT='prod',
+            CELERY_BROKER='rabbitmq',
+            **overrides,
+        )
+
+    message = str(exc_info.value)
+    assert error_fragment in message
+    assert 'V7rP4mZ2nQ8sK6xD9cT5wL3j' not in message
+    assert 'too-short-secret' not in message
+
+
 def test_amqp_dsn_encodes_credentials_and_vhost() -> None:
     try:
         rabbitmq = importlib.import_module('backend.common.messaging.rabbitmq')
@@ -152,10 +217,7 @@ def test_amqp_dsn_encodes_credentials_and_vhost() -> None:
         vhost='team/blue',
     )
 
-    assert dsn == (
-        'amqp://service%40huanxing:secret%3A%2F%25'
-        '@rabbit.internal:5672/team%2Fblue'
-    )
+    assert dsn == ('amqp://service%40huanxing:secret%3A%2F%25@rabbit.internal:5672/team%2Fblue')
 
 
 def test_rabbitmq_endpoint_description_never_contains_credentials() -> None:
