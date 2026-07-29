@@ -103,7 +103,17 @@ def _normalize_release_notes(raw: str, *, max_chars: int = _RELEASE_NOTES_MAX_CH
     normalized = '\n'.join(lines).strip()
     if len(normalized) <= max_chars:
         return normalized
-    return f'{normalized[: max_chars - 1].rstrip()}…'
+    candidate = normalized[:max_chars].rstrip()
+    last_line_start = candidate.rfind('\n') + 1
+    sentence_end = max(candidate.rfind(mark) for mark in '。！？；')
+    if sentence_end >= last_line_start:
+        return candidate[: sentence_end + 1].rstrip()
+    clause_end = max(candidate.rfind(mark) for mark in '，,、;')
+    if clause_end >= last_line_start:
+        return f'{candidate[:clause_end].rstrip()}。'
+    if last_line_start > 0:
+        return candidate[: last_line_start - 1].rstrip()
+    return f'{candidate[: max_chars - 1].rstrip()}…'
 
 
 def _should_generate_release_notes(status: str) -> bool:

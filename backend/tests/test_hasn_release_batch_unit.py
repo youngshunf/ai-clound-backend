@@ -18,7 +18,14 @@ def test_normalize_release_notes_preserves_markdown_and_caps_200_chars() -> None
     notes = _normalize_release_notes(raw)
     assert '```' not in notes
     assert notes.startswith('- **新增**：支持批量处理\n- **优化**：')
-    assert len(notes) == 200
+    assert len(notes) <= 200
+    assert notes.endswith('。')
+
+
+def test_normalize_release_notes_closes_truncated_clause() -> None:
+    raw = '- **安全**：上线出站消息三层拦截与敏感信息扫描，阻止高风险内容发送。'
+    notes = _normalize_release_notes(raw, max_chars=30)
+    assert notes == '- **安全**：上线出站消息三层拦截与敏感信息扫描。'
 
 
 def test_ready_release_notes_are_not_generated_again() -> None:
