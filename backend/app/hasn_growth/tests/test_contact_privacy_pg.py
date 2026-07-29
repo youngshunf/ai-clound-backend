@@ -793,19 +793,19 @@ async def test_owner_reveal_http_uses_real_jwt_and_enterprise_acl() -> None:
         await _apply_sql(setup)
         manager = User(
             username=f'pii_mgr_{marker[:16]}',
-            nickname='PII 企业经理',
+            nickname=f'PII 企业经理 {marker[:8]}',
             password=None,
             salt=None,
         )
         member = User(
             username=f'pii_mem_{marker[:16]}',
-            nickname='PII 企业成员',
+            nickname=f'PII 企业成员 {marker[:8]}',
             password=None,
             salt=None,
         )
         outsider = User(
             username=f'pii_out_{marker[:16]}',
-            nickname='PII 外部主人',
+            nickname=f'PII 外部主人 {marker[:8]}',
             password=None,
             salt=None,
         )
