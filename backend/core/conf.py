@@ -197,6 +197,13 @@ class Settings(BaseSettings):
     # 网页发布（模块 18）：制品内容绝不在 API 主域渲染——/s/* 整面落独立分享域名（usercontent 模式）。
     # 形如 https://share.huanxing.ai；为空时回退请求 origin（仅 dev/同域，生产必须配独立域名）。
     WEB_PUBLISH_SHARE_ORIGIN: str = ''
+    # Growth 落地页的受信任外壳向公开表单 API 回流时使用的 origin；为空则与分享域同源。
+    # 跨域部署时必须同时把 WEB_PUBLISH_SHARE_ORIGIN 加入 CORS_ALLOWED_ORIGINS。
+    GROWTH_PUBLIC_FORM_API_ORIGIN: str = ''
+    # Growth 公开表单只通过 Publish 内部 HTTP 解析站点权威绑定；两项缺一即 fail-closed。
+    PUBLISH_INTERNAL_BASE_URL: str = ''
+    PUBLISH_INTERNAL_TOKEN: str = ''
+    PUBLISH_INTERNAL_TIMEOUT: float = 5.0
     RAGFLOW_PUBLIC_RSA_PUBLIC_KEY: str = ''  # RAGFlow RSA 公钥（PEM 格式），用于加密注册密码
     RAGFLOW_DEFAULT_EMBD_ID: str = 'BAAI/bge-large-zh-v1.5'  # 默认 embedding 模型
     RAGFLOW_DEFAULT_LLM_ID: str = 'deepseek-chat'  # 默认 LLM 模型
@@ -257,6 +264,9 @@ class Settings(BaseSettings):
     GROWTH_PUBLISH_LANDING_ENABLED: bool = False
     # 当前页面实际展示的隐私说明版本；为空时公开表单即使误开总开关也必须拒绝写入。
     GROWTH_FORM_PRIVACY_NOTICE_VERSION: str = ''
+    GROWTH_FORM_RATE_WINDOW_SECONDS: int = 3600
+    GROWTH_FORM_RATE_IP_MAX: int = 20
+    GROWTH_FORM_RATE_IDENTITY_MAX: int = 5
     # 真实外部发送有独立授权；默认只允许 manual_assist/manual_attested。
     GROWTH_EXTERNAL_SEND_ENABLED: bool = False
 

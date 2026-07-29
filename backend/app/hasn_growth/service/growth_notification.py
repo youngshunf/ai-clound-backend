@@ -198,5 +198,33 @@ class GrowthNotificationService:
             dedupe_key=f'growth.leads.collected:{job_id}',
         )
 
+    @staticmethod
+    async def inbound_form_received(
+        db: AsyncSession,
+        *,
+        owner_hasn_id: str,
+        customer_id: int,
+        project_lead_id: int,
+        submission_id: int,
+        task_ready: bool,
+    ) -> None:
+        """公开表单有效留资：只发送一条去标识聚合通知，重放不重复建通知。"""
+        await _emit_safe(
+            db,
+            recipient_id=owner_hasn_id,
+            source=_system_source(owner_hasn_id),
+            category='reminder',
+            type='growth.form.received',
+            title='落地页收到一条新留资',
+            body=None if task_ready else '项目尚未绑定负责分身，请先恢复接续任务',
+            payload={
+                'target': {'kind': 'growth_project_lead', 'id': str(project_lead_id)},
+                'customer_id': customer_id,
+                'task_ready': task_ready,
+                'deep_link': f'/growth/leads/{project_lead_id}',
+            },
+            dedupe_key=f'growth.form.received:{submission_id}',
+        )
+
 
 growth_notification_service = GrowthNotificationService()

@@ -207,12 +207,14 @@ def _load_hasn_publish() -> None:
     from backend.app.hasn_publish.api.router import agent as publish_agent
     from backend.app.hasn_publish.api.router import app as publish_app
     from backend.app.hasn_publish.api.router import hosting as publish_hosting
+    from backend.app.hasn_publish.api.router import internal as publish_internal
     from backend.app.hasn_publish.api.router import open_meta as publish_open_meta
 
     router.include_router(publish_app)            # 发布 用户端 API（Owner JWT）
     router.include_router(publish_agent)          # 发布 Agent API（Agent JWT，publish:read/write）
     router.include_router(publish_hosting)        # 发布 公开查看面 /s/{slug}（无鉴权外壳 + CSP sandbox）
     router.include_router(publish_open_meta)      # 发布 公开元数据面（website /s/{slug} 查看器判定态）
+    router.include_router(publish_internal)       # Growth 等云端模块调用的收敛内部 HTTP
 
 
 def _load_notification() -> None:

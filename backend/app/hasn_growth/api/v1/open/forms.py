@@ -6,7 +6,9 @@ POST /forms/{publish_ref}/submit：落地页表单提交 → 反滥用 → 建 i
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Header, Request
 
 from backend.app.hasn_growth.schema.funnel import FormSubmitParam
 from backend.app.hasn_growth.service.form_service import growth_form_service
@@ -28,10 +30,14 @@ async def submit_form(
     db: CurrentSessionTransaction,
     publish_ref: str,
     obj: FormSubmitParam,
+    idempotency_key: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=200)],
+    form_access_token: Annotated[str, Header(alias='X-Publish-Form-Token', min_length=1, max_length=4096)],
 ) -> ResponseModel:
     data = await growth_form_service.submit_form(
         db,
         publish_ref=publish_ref,
+        form_access_token=form_access_token,
+        idempotency_key=idempotency_key,
         data=obj.model_dump(),
         client_ip=_client_ip(request),
         referrer=request.headers.get('referer'),

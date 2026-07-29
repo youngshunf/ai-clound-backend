@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import uuid
+
 from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -226,3 +228,198 @@ async def test_publish_linkage_and_project_flow_use_cloud_site_id(session) -> No
     )
     await session.refresh(site)
     assert site.platform_project_id is None
+
+
+@pytest.mark.asyncio
+async def test_publish_form_access_token_binds_site_revision_form_and_project(session) -> None:
+    """公开表单令牌必须绑定权威站点、当前版本、表单和平台项目，站点换版后旧令牌失效。"""
+    tag = uuid.uuid4().hex[:10]
+    owner = f'h_publish_form_{tag}'
+    project = HasnProject(owner_id=owner, name='表单项目', status='active')
+    session.add(project)
+    await session.flush()
+    created = await publish_service.create_site(
+        session,
+        owner_id=owner,
+        platform_project_id=str(project.id),
+        title='公开获客页',
+        asset_id=f'asset_form_{tag}',
+        source_app='growth',
+        source_ref=f'growth:{tag}',
+        visibility='public',
+    )
+    site_id = created['site']['id']
+    revision_id = created['revision']['id']
+
+    issued = await publish_service.issue_form_access_token(
+        session,
+        slug=created['site']['slug'],
+        form_ref='growth-lead-v1',
+        view_ticket=None,
+    )
+    assert issued['site_id'] == site_id
+    assert issued['revision_id'] == revision_id
+    assert issued['form_ref'] == 'growth-lead-v1'
+
+    binding = await publish_service.resolve_form_access(
+        session,
+        publish_ref=created['site']['slug'],
+        form_access_token=issued['form_access_token'],
+    )
+    assert binding == {
+        'site_id': site_id,
+        'revision_id': revision_id,
+        'form_ref': 'growth-lead-v1',
+        'owner_hasn_id': owner,
+        'platform_project_id': str(project.id),
+        'visibility': 'public',
+    }
+
+    await publish_service.update_site(
+        session,
+        owner_id=owner,
+        site_id=site_id,
+        asset_id=f'asset_form_v2_{tag}',
+        content_hash=f'form-v2-{tag}',
+    )
+    with pytest.raises(errors.ForbiddenError, match='版本'):
+        await publish_service.resolve_form_access(
+            session,
+            publish_ref=created['site']['slug'],
+            form_access_token=issued['form_access_token'],
+        )
+
+
+@pytest.mark.asyncio
+async def test_publish_form_access_requires_password_session_and_rejects_private_site(session) -> None:
+    """口令站点必须先持有效访问票；private 站点即使有 Owner 访问票也不签发表单令牌。"""
+    tag = uuid.uuid4().hex[:10]
+    owner = f'h_publish_form_acl_{tag}'
+    project = HasnProject(owner_id=owner, name='表单权限项目', status='active')
+    session.add(project)
+    await session.flush()
+    password_site = await publish_service.create_site(
+        session,
+        owner_id=owner,
+        platform_project_id=str(project.id),
+        title='口令获客页',
+        asset_id=f'asset_password_{tag}',
+        source_app='growth',
+        source_ref=str(uuid.uuid4()),
+        visibility='password',
+        password='correct-password',
+    )
+    with pytest.raises(errors.ForbiddenError, match='访问校验'):
+        await publish_service.issue_form_access_token(
+            session,
+            slug=password_site['site']['slug'],
+            form_ref='growth-lead-v1',
+            view_ticket=None,
+        )
+    view_ticket = publish_service.issue_view_ticket(
+        site_id=password_site['site']['id'],
+        owner_id=owner,
+    )['ticket']
+    issued = await publish_service.issue_form_access_token(
+        session,
+        slug=password_site['site']['slug'],
+        form_ref='growth-lead-v1',
+        view_ticket=view_ticket,
+    )
+    assert issued['site_id'] == password_site['site']['id']
+
+    private_site = await publish_service.create_site(
+        session,
+        owner_id=owner,
+        platform_project_id=str(project.id),
+        title='私有获客页',
+        asset_id=f'asset_private_{tag}',
+        source_app='growth',
+        source_ref=str(uuid.uuid4()),
+        visibility='private',
+    )
+    private_ticket = publish_service.issue_view_ticket(
+        site_id=private_site['site']['id'],
+        owner_id=owner,
+    )['ticket']
+    with pytest.raises(errors.ForbiddenError, match='私有站点'):
+        await publish_service.issue_form_access_token(
+            session,
+            slug=private_site['site']['slug'],
+            form_ref='growth-lead-v1',
+            view_ticket=private_ticket,
+        )
+
+
+@pytest.mark.asyncio
+async def test_growth_publish_create_is_idempotent_by_authoritative_source(session) -> None:
+    """同一 Growth 项目重复建站复用稳定 site.id；内容变化只新增 revision，不产生第二站点。"""
+    tag = uuid.uuid4().hex[:10]
+    owner = f'h_publish_growth_{tag}'
+    project = HasnProject(owner_id=owner, name='幂等落地页项目', status='active')
+    other_project = HasnProject(owner_id=owner, name='其他项目', status='active')
+    session.add_all([project, other_project])
+    await session.flush()
+
+    first = await publish_service.create_site(
+        session,
+        owner_id=owner,
+        platform_project_id=project.id,
+        title='项目落地页',
+        asset_id=f'asset_growth_{tag}',
+        content_hash=f'hash_growth_{tag}',
+        source_app='growth',
+        source_ref=f'growth-project-{tag}',
+        visibility='public',
+    )
+    replay = await publish_service.create_site(
+        session,
+        owner_id=owner,
+        platform_project_id=project.id,
+        title='项目落地页',
+        asset_id=f'asset_growth_{tag}',
+        content_hash=f'hash_growth_{tag}',
+        source_app='growth',
+        source_ref=f'growth-project-{tag}',
+        visibility='public',
+    )
+    assert replay['site']['id'] == first['site']['id']
+    assert replay['revision']['id'] == first['revision']['id']
+    assert replay['reused'] is True
+
+    updated = await publish_service.create_site(
+        session,
+        owner_id=owner,
+        platform_project_id=project.id,
+        title='项目落地页第二版',
+        asset_id=f'asset_growth_v2_{tag}',
+        content_hash=f'hash_growth_v2_{tag}',
+        source_app='growth',
+        source_ref=f'growth-project-{tag}',
+        visibility='public',
+    )
+    assert updated['site']['id'] == first['site']['id']
+    assert updated['revision']['id'] != first['revision']['id']
+    count = await session.scalar(
+        sa.select(sa.func.count())
+        .select_from(Site)
+        .where(
+            Site.owner_id == owner,
+            Site.source_app == 'growth',
+            Site.source_ref == f'growth-project-{tag}',
+        )
+    )
+    assert count == 1
+
+    with pytest.raises(errors.ConflictError, match='其他平台项目'):
+        await publish_service.create_site(
+            session,
+            owner_id=owner,
+            platform_project_id=other_project.id,
+            title='伪造项目落地页',
+            asset_id=f'asset_growth_other_{tag}',
+            content_hash=f'hash_growth_other_{tag}',
+            source_app='growth',
+            source_ref=f'growth-project-{tag}',
+            visibility='public',
+        )

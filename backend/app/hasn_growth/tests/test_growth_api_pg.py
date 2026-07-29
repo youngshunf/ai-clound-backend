@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import socket
 import uuid
 
 from datetime import UTC, datetime, timedelta
@@ -22,6 +24,8 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 import pytest_asyncio
+import sqlalchemy as sa
+import uvicorn
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -47,6 +51,9 @@ from backend.app.hasn_growth.service.pii_keyring import require_growth_pii_keyri
 from backend.app.hasn_growth.service.project_lead_service import project_lead_service
 from backend.app.hasn_growth.service.scope_context import GrowthScope
 from backend.app.hasn_project.model.hasn_project import HasnProject
+from backend.app.hasn_publish.api.router import internal as publish_internal_router
+from backend.app.hasn_publish.api.router import open_meta as publish_open_router
+from backend.app.hasn_publish.model.revision import Revision
 from backend.app.hasn_publish.model.site import Site
 from backend.common.dataclasses import AgentTokenPayload
 from backend.common.exception.errors import BaseExceptionError
@@ -67,6 +74,8 @@ _APP = FastAPI()
 _APP.include_router(agent_growth_router, prefix='/api/v1/growth/agent')
 _APP.include_router(app_growth_router, prefix='/api/v1/growth/app')
 _APP.include_router(open_forms_router, prefix='/api/v1/growth/open')
+_APP.include_router(publish_open_router)
+_APP.include_router(publish_internal_router)
 
 
 @_APP.exception_handler(BaseExceptionError)
@@ -90,6 +99,35 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     assert connection is not None
     await connection.execute(_S6_MIGRATION_SQL.read_text(encoding='utf-8'))
     await connection.execute(_S7_MIGRATION_SQL.read_text(encoding='utf-8'))
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind(('127.0.0.1', 0))
+    server_socket.listen()
+    server_socket.setblocking(False)
+    server_port = int(server_socket.getsockname()[1])
+    server = uvicorn.Server(
+        uvicorn.Config(
+            _APP,
+            host='127.0.0.1',
+            port=server_port,
+            lifespan='off',
+            log_level='error',
+        )
+    )
+    server_task = asyncio.create_task(server.serve(sockets=[server_socket]))
+    for _ in range(200):
+        if server.started:
+            break
+        await asyncio.sleep(0.01)
+    if not server.started:
+        server.should_exit = True
+        await server_task
+        raise RuntimeError('测试 Publish 内部 HTTP 未能启动')
+    previous_publish_internal = (
+        settings.PUBLISH_INTERNAL_BASE_URL,
+        settings.PUBLISH_INTERNAL_TOKEN,
+    )
+    settings.PUBLISH_INTERNAL_BASE_URL = f'http://127.0.0.1:{server_port}'
+    settings.PUBLISH_INTERNAL_TOKEN = f'publish-test-{uuid.uuid4().hex}'
     tag = uuid.uuid4().hex[:8]
     owner = f'h_grw_{tag}'
     owner_uid = 93_700_000_000 + int(uuid.uuid4().int % 900_000_000)
@@ -167,6 +205,7 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         title='获客落地页',
         slug=publish_ref,
         source_app='growth',
+        platform_project_id=platform_project.id,
         status='active',
         visibility='public',
     )
@@ -188,10 +227,28 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
         title='企业获客落地页',
         slug=enterprise_publish_ref,
         source_app='growth',
+        platform_project_id=enterprise_platform_project.id,
         status='active',
         visibility='public',
     )
     session.add(enterprise_site)
+    await session.flush()
+    for site, suffix in (
+        (landing_site, 'personal'),
+        (enterprise_site, 'enterprise'),
+    ):
+        revision = Revision(
+            site_id=site.id,
+            owner_id=owner,
+            seq=1,
+            asset_id=f'asset-{suffix}-{tag}',
+            runtime='single-html',
+            content_hash=f'hash-{suffix}-{tag}',
+            size_bytes=1,
+        )
+        session.add(revision)
+        await session.flush()
+        site.current_revision_id = revision.id
     await session.flush()
     personal_growth_project = GrowthProject(
         platform_project_id=platform_project.id,
@@ -217,6 +274,8 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
             provision_status='ready',
         )
     )
+    await session.flush()
+    landing_site.source_ref = str(personal_growth_project.id)
     await session.flush()
     session.add(LeadRef(user_id=owner_uid, lead_contact_id=lead.id, source='collect', status='new'))
     await session.flush()
@@ -268,6 +327,13 @@ async def e2e() -> AsyncIterator[SimpleNamespace]:
     finally:
         await client.aclose()
         _APP.dependency_overrides.clear()
+        (
+            settings.PUBLISH_INTERNAL_BASE_URL,
+            settings.PUBLISH_INTERNAL_TOKEN,
+        ) = previous_publish_internal
+        server.should_exit = True
+        await server_task
+        server_socket.close()
         await session.rollback()
         await session.close()
         await engine.dispose()
@@ -477,6 +543,32 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     settings.GROWTH_PII_NEW_WRITE_ENABLED = True
     settings.GROWTH_FORM_PRIVACY_NOTICE_VERSION = 'growth-form-v1'
     try:
+        form_token = _ok(
+            await c.post(
+                f'/api/v1/publish/open/sites/{e2e.publish_ref}/forms/growth-lead-v1/access-token',
+                json={},
+            )
+        )['form_access_token']
+        enterprise_form_token = _ok(
+            await c.post(
+                f'/api/v1/publish/open/sites/{e2e.enterprise_publish_ref}/forms/growth-lead-v1/access-token',
+                json={},
+            )
+        )['form_access_token']
+
+        def form_headers(
+            *,
+            token: str = form_token,
+            key: str | None = None,
+            extra: dict[str, str] | None = None,
+        ) -> dict[str, str]:
+            headers = {
+                'Idempotency-Key': key or str(uuid.uuid4()),
+                'X-Publish-Form-Token': token,
+            }
+            headers.update(extra or {})
+            return headers
+
         gate_response = await c.post(
             f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
             json={
@@ -484,9 +576,10 @@ async def test_four_scope_funnel_flow(e2e) -> None:
                 'contact_name': '赵六',
                 'email': 'zhaoliu@beta.com',
                 'privacy_notice_version': 'growth-form-v1',
-                'consent_purpose': 'sales_followup',
-                'consent_granted': True,
+                'consent_purpose': 'sales_contact',
+                'consent': True,
             },
+            headers=form_headers(),
         )
         assert gate_response.status_code == 409
 
@@ -497,9 +590,10 @@ async def test_four_scope_funnel_flow(e2e) -> None:
             json={
                 'email': 'pii-gate@example.com',
                 'privacy_notice_version': 'growth-form-v1',
-                'consent_purpose': 'sales_followup',
-                'consent_granted': True,
+                'consent_purpose': 'sales_contact',
+                'consent': True,
             },
+            headers=form_headers(),
         )
         assert pii_gate_response.status_code == 409
 
@@ -507,6 +601,7 @@ async def test_four_scope_funnel_flow(e2e) -> None:
         missing_consent = await c.post(
             f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
             json={'email': 'no-consent@example.com'},
+            headers=form_headers(),
         )
         assert missing_consent.status_code == 422
 
@@ -515,9 +610,10 @@ async def test_four_scope_funnel_flow(e2e) -> None:
             json={
                 'email': 'unbound@example.com',
                 'privacy_notice_version': 'growth-form-v1',
-                'consent_purpose': 'sales_followup',
-                'consent_granted': True,
+                'consent_purpose': 'sales_contact',
+                'consent': True,
             },
+            headers=form_headers(),
         )
         assert unbound_site.status_code == 404
 
@@ -526,52 +622,63 @@ async def test_four_scope_funnel_flow(e2e) -> None:
             json={
                 'email': 'enterprise@example.com',
                 'privacy_notice_version': 'growth-form-v1',
-                'consent_purpose': 'sales_followup',
-                'consent_granted': True,
+                'consent_purpose': 'sales_contact',
+                'consent': True,
             },
+            headers=form_headers(token=enterprise_form_token),
         )
-        assert enterprise_site.status_code == 404
+        assert enterprise_site.status_code == 409
 
         wrong_notice = await c.post(
             f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
             json={
                 'email': 'wrong-notice@example.com',
                 'privacy_notice_version': 'attacker-controlled',
-                'consent_purpose': 'sales_followup',
-                'consent_granted': True,
+                'consent_purpose': 'sales_contact',
+                'consent': True,
             },
+            headers=form_headers(),
         )
         assert wrong_notice.status_code == 400
 
+        form_idempotency_key = str(uuid.uuid4())
+        form_payload = {
+            'company_name': 'Beta',
+            'contact_name': '赵六',
+            'email': 'zhaoliu@beta.com',
+            'phone': '13812345678',
+            'message': '请联系 zhaoliu@beta.com',
+            'privacy_notice_version': 'growth-form-v1',
+            'consent_purpose': 'sales_contact',
+            'consent': True,
+            'utm': {
+                'source': 'campaign',
+                'campaign': '+1 (415) 555-2671',
+                'content': 'zhaoliu_wechat',
+            },
+        }
         form = _ok(
             await c.post(
                 f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
-                json={
-                    'company_name': 'Beta',
-                    'contact_name': '赵六',
-                    'email': 'zhaoliu@beta.com',
-                    'phone': '13812345678',
-                    'message': '请联系 zhaoliu@beta.com',
-                    'privacy_notice_version': 'growth-form-v1',
-                    'consent_purpose': 'sales_followup',
-                    'consent_granted': True,
-                    'extra': {
-                        'utm_source': 'campaign',
-                        'utm_campaign': '+1 (415) 555-2671',
-                        'utm_content': 'zhaoliu_wechat',
-                        'arbitrary_note': '不要复制 zhaoliu@beta.com',
+                json=form_payload,
+                headers=form_headers(
+                    key=form_idempotency_key,
+                    extra={
+                        'x-real-ip': '203.0.113.42',
+                        'x-forwarded-for': '198.51.100.19',
+                        'referer': 'https://zhaoliu@campaign.example/path?email=zhaoliu@beta.com',
                     },
-                },
-                headers={
-                    'x-real-ip': '203.0.113.42',
-                    'x-forwarded-for': '198.51.100.19',
-                    'referer': 'https://zhaoliu@campaign.example/path?email=zhaoliu@beta.com',
-                },
+                ),
             )
         )
-        assert form['status'] == 'converted' and form['customer_id']
+        assert form['status'] == 'received'
+        assert set(form) == {'status', 'receipt_ref'}
 
-        submission = await e2e.session.get(FormSubmission, form['form_submission_id'])
+        submission = (
+            await e2e.session.execute(
+                select(FormSubmission).where(FormSubmission.idempotency_key == form_idempotency_key)
+            )
+        ).scalar_one()
         assert submission is not None
         assert submission.email is None and submission.phone is None and submission.name is None
         assert submission.payload == {'message_received': True}
@@ -592,12 +699,12 @@ async def test_four_scope_funnel_flow(e2e) -> None:
         assert submission.ip_hmac != (f'v{keyring.active_hmac_version}:{keyring.hmac_for("ip", "198.51.100.19")}')
         assert submission.referrer == 'https://campaign.example'
         assert submission.privacy_notice_version == 'growth-form-v1'
-        assert submission.consent_purpose == 'sales_followup'
+        assert submission.consent_purpose == 'sales_contact'
         assert submission.contact_private_profile_id
         assert submission.contact_channel_ids
         assert 'zhaoliu@beta.com' not in str(submission)
 
-        inbound_customer = await e2e.session.get(Customer, form['customer_id'])
+        inbound_customer = await e2e.session.get(Customer, submission.customer_id)
         assert inbound_customer is not None
         assert inbound_customer.contact_name is None
         assert inbound_customer.email is None
@@ -635,7 +742,66 @@ async def test_four_scope_funnel_flow(e2e) -> None:
                 {'submission_id': str(submission.id)},
             )
         ).scalar_one()
-        assert activity_content == '落地页留资已转化为客户'
+        assert activity_content == '落地页留资已进入待处理队列'
+        assert submission.project_lead_id is not None
+        assert submission.task_id == f'growth:inbound:{submission.id}'
+        project_lead = (
+            await e2e.session.execute(
+                text(
+                    'SELECT growth_project_id, source_kind, status '
+                    'FROM hasn_growth.growth_project_lead WHERE id = :id'
+                ),
+                {'id': submission.project_lead_id},
+            )
+        ).mappings().one()
+        assert str(project_lead['growth_project_id']) == str(e2e.growth_project_id)
+        assert project_lead['source_kind'] == 'inbound_form'
+        assert project_lead['status'] == 'new'
+        task = (
+            await e2e.session.execute(
+                text(
+                    'SELECT owner_id, agent_id, project_id, app_id '
+                    'FROM hasn_task.task WHERE task_uuid = :task_uuid'
+                ),
+                {'task_uuid': submission.task_id},
+            )
+        ).mappings().one()
+        assert task['owner_id'] == e2e.owner
+        assert task['agent_id'] == e2e.agent_hasn
+        assert str(task['project_id']) == str(e2e.platform_project_id)
+        assert task['app_id'] == 'growth'
+        attribution = (
+            (
+                await e2e.session.execute(
+                    text(
+                        'SELECT idempotency_key, metadata '
+                        'FROM hasn_growth.growth_attribution_event '
+                        'WHERE customer_id = :customer_id AND event_type = :event_type '
+                        'ORDER BY id'
+                    ),
+                    {'customer_id': submission.customer_id, 'event_type': 'inbound'},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert [row['metadata']['touch_model'] for row in attribution] == [
+            'first_touch',
+            'last_touch',
+        ]
+        assert attribution[0]['metadata']['landing_revision_id']
+        notification_count = await e2e.session.scalar(
+            text(
+                'SELECT count(*) FROM hasn_notifications '
+                "WHERE target_id = :owner AND type = 'growth.form.received' "
+                'AND dedupe_key = :dedupe_key'
+            ),
+            {
+                'owner': e2e.owner,
+                'dedupe_key': f'growth.form.received:{submission.id}',
+            },
+        )
+        assert notification_count == 1
 
         profile_before = await e2e.session.get(
             ContactPrivateProfile,
@@ -660,16 +826,36 @@ async def test_four_scope_funnel_flow(e2e) -> None:
         repeat = _ok(
             await c.post(
                 f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
-                json={
-                    'company_name': 'Attacker',
-                    'email': 'zhaoliu@beta.com',
-                    'privacy_notice_version': 'growth-form-v1',
-                    'consent_purpose': 'sales_followup',
-                    'consent_granted': True,
-                },
+                json=form_payload,
+                headers=form_headers(key=form_idempotency_key),
             )
         )
-        assert repeat['customer_id'] == form['customer_id']
+        assert repeat == form
+        idempotent_count = await e2e.session.scalar(
+            select(sa.func.count())
+            .select_from(FormSubmission)
+            .where(FormSubmission.idempotency_key == form_idempotency_key)
+        )
+        assert idempotent_count == 1
+        task_count = await e2e.session.scalar(
+            text('SELECT count(*) FROM hasn_task.task WHERE task_uuid = :task_uuid'),
+            {'task_uuid': submission.task_id},
+        )
+        attribution_count = await e2e.session.scalar(
+            text(
+                'SELECT count(*) FROM hasn_growth.growth_attribution_event '
+                'WHERE customer_id = :customer_id AND event_type = :event_type'
+            ),
+            {'customer_id': submission.customer_id, 'event_type': 'inbound'},
+        )
+        assert task_count == 1
+        assert attribution_count == 2
+        idempotency_conflict = await c.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={**form_payload, 'company_name': '被篡改公司'},
+            headers=form_headers(key=form_idempotency_key),
+        )
+        assert idempotency_conflict.status_code == 409
         await e2e.session.refresh(inbound_contact)
         await e2e.session.refresh(inbound_customer)
         assert inbound_contact.company_name == 'Beta'
@@ -697,9 +883,10 @@ async def test_four_scope_funnel_flow(e2e) -> None:
                 'email': 'zhaoliu@beta.com',
                 'wechat': 'attacker_wechat',
                 'privacy_notice_version': 'growth-form-v1',
-                'consent_purpose': 'sales_followup',
-                'consent_granted': True,
+                'consent_purpose': 'sales_contact',
+                'consent': True,
             },
+            headers=form_headers(),
         )
         assert channel_injection.status_code == 409
         injected_channel = (
@@ -713,6 +900,7 @@ async def test_four_scope_funnel_flow(e2e) -> None:
         assert injected_channel is None
 
         # --- Open: 蜜罐字段 → spam 不进漏斗，也不保留提交的 PII ---
+        spam_idempotency_key = str(uuid.uuid4())
         spam = _ok(
             await c.post(
                 f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
@@ -720,13 +908,18 @@ async def test_four_scope_funnel_flow(e2e) -> None:
                     'email': 'bot@x.com',
                     'website_url': 'http://spam',
                     'privacy_notice_version': 'growth-form-v1',
-                    'consent_purpose': 'sales_followup',
-                    'consent_granted': True,
+                    'consent_purpose': 'sales_contact',
+                    'consent': True,
                 },
+                headers=form_headers(key=spam_idempotency_key),
             )
         )
-        assert spam['status'] == 'spam' and spam['customer_id'] is None
-        spam_submission = await e2e.session.get(FormSubmission, spam['form_submission_id'])
+        assert spam['status'] == 'received'
+        spam_submission = (
+            await e2e.session.execute(
+                select(FormSubmission).where(FormSubmission.idempotency_key == spam_idempotency_key)
+            )
+        ).scalar_one()
         assert spam_submission is not None
         assert spam_submission.email is None and spam_submission.phone is None and spam_submission.name is None
         assert 'bot@x.com' not in str(spam_submission.payload)
@@ -741,6 +934,164 @@ async def test_four_scope_funnel_flow(e2e) -> None:
     e2e.state.owner_uid = e2e.other_uid
     miss = await c.get(f'{A}/customers/{cid}')
     assert miss.status_code == 404, miss.text
+
+
+async def test_open_form_security_cleaning_and_rate_limit(e2e) -> None:
+    """公开表单拒绝伪造项目/无令牌/超长输入，清洗 HTML，并返回带 Retry-After 的 429。"""
+    previous = (
+        settings.GROWTH_PUBLISH_LANDING_ENABLED,
+        settings.GROWTH_PII_NEW_WRITE_ENABLED,
+        settings.GROWTH_FORM_PRIVACY_NOTICE_VERSION,
+        settings.GROWTH_FORM_RATE_IP_MAX,
+        settings.GROWTH_FORM_RATE_IDENTITY_MAX,
+    )
+    settings.GROWTH_PUBLISH_LANDING_ENABLED = True
+    settings.GROWTH_PII_NEW_WRITE_ENABLED = True
+    settings.GROWTH_FORM_PRIVACY_NOTICE_VERSION = 'growth-form-v1'
+    try:
+        token = _ok(
+            await e2e.client.post(
+                f'/api/v1/publish/open/sites/{e2e.publish_ref}/forms/growth-lead-v1/access-token',
+                json={},
+            )
+        )['form_access_token']
+        base_payload = {
+            'company_name': '<b>Gamma</b>\u0000',
+            'contact_name': '<script>甲</script>',
+            'email': 'security@example.com',
+            'privacy_notice_version': 'growth-form-v1',
+            'consent_purpose': 'sales_contact',
+            'consent': True,
+        }
+        missing_token = await e2e.client.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json=base_payload,
+            headers={'Idempotency-Key': str(uuid.uuid4())},
+        )
+        assert missing_token.status_code == 422
+        invalid_token = await e2e.client.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json=base_payload,
+            headers={
+                'Idempotency-Key': str(uuid.uuid4()),
+                'X-Publish-Form-Token': 'invalid-token',
+            },
+        )
+        assert invalid_token.status_code == 403
+        forged_project = await e2e.client.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={**base_payload, 'platform_project_id': str(uuid.uuid4())},
+            headers={
+                'Idempotency-Key': str(uuid.uuid4()),
+                'X-Publish-Form-Token': token,
+            },
+        )
+        assert forged_project.status_code == 422
+        too_long = await e2e.client.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={**base_payload, 'message': 'x' * 2001},
+            headers={
+                'Idempotency-Key': str(uuid.uuid4()),
+                'X-Publish-Form-Token': token,
+            },
+        )
+        assert too_long.status_code == 422
+
+        clean_key = str(uuid.uuid4())
+        cleaned = _ok(
+            await e2e.client.post(
+                f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+                json=base_payload,
+                headers={
+                    'Idempotency-Key': clean_key,
+                    'X-Publish-Form-Token': token,
+                },
+            )
+        )
+        assert cleaned['status'] == 'received'
+        cleaned_submission = (
+            await e2e.session.execute(
+                select(FormSubmission).where(FormSubmission.idempotency_key == clean_key)
+            )
+        ).scalar_one()
+        assert cleaned_submission.company == 'Gamma'
+        assert '<script>' not in str(cleaned_submission)
+
+        settings.GROWTH_FORM_RATE_IP_MAX = 1
+        settings.GROWTH_FORM_RATE_IDENTITY_MAX = 100
+        shared_ip = '203.0.113.200'
+        first = await e2e.client.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={**base_payload, 'email': 'rate-one@example.com'},
+            headers={
+                'Idempotency-Key': str(uuid.uuid4()),
+                'X-Publish-Form-Token': token,
+                'x-real-ip': shared_ip,
+            },
+        )
+        assert first.status_code == 200
+        limited = await e2e.client.post(
+            f'/api/v1/growth/open/forms/{e2e.publish_ref}/submit',
+            json={**base_payload, 'email': 'rate-two@example.com'},
+            headers={
+                'Idempotency-Key': str(uuid.uuid4()),
+                'X-Publish-Form-Token': token,
+                'x-real-ip': shared_ip,
+            },
+        )
+        assert limited.status_code == 429
+        assert int(limited.headers['Retry-After']) >= 1
+    finally:
+        (
+            settings.GROWTH_PUBLISH_LANDING_ENABLED,
+            settings.GROWTH_PII_NEW_WRITE_ENABLED,
+            settings.GROWTH_FORM_PRIVACY_NOTICE_VERSION,
+            settings.GROWTH_FORM_RATE_IP_MAX,
+            settings.GROWTH_FORM_RATE_IDENTITY_MAX,
+        ) = previous
+
+
+async def test_growth_landing_status_and_reconcile_use_publish_provider(e2e) -> None:
+    """Owner 状态面通过真实 Publish 内部 HTTP 找站并显式对账，不直接信任客户端站点 ID。"""
+    previous_enabled = settings.GROWTH_PUBLISH_LANDING_ENABLED
+    settings.GROWTH_PUBLISH_LANDING_ENABLED = True
+    try:
+        growth = await e2e.session.get(GrowthProject, e2e.growth_project_id)
+        assert growth is not None
+        growth.landing_site_ref = None
+        await e2e.session.flush()
+
+        before = _ok(
+            await e2e.client.get(
+                f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'
+            )
+        )
+        assert before['dependency']['status'] == 'ready'
+        assert before['site_state'] == 'published'
+        assert before['site']['platform_project_id'] == str(e2e.platform_project_id)
+        assert before['binding'] == {'resource_uri': None, 'in_sync': False}
+
+        reconciled = _ok(
+            await e2e.client.post(
+                f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing/reconcile',
+                json={},
+            )
+        )
+        assert reconciled['binding']['in_sync'] is True
+        assert reconciled['binding']['resource_uri'].startswith('hasn://publish/sites/')
+        await e2e.session.refresh(growth)
+        assert growth.landing_site_ref == reconciled['binding']['resource_uri']
+
+        settings.GROWTH_PUBLISH_LANDING_ENABLED = False
+        disabled = _ok(
+            await e2e.client.get(
+                f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'
+            )
+        )
+        assert disabled['dependency']['status'] == 'disabled'
+        assert disabled['dependency']['error_code'] == 'GROWTH_PUBLISH_LANDING_DISABLED'
+    finally:
+        settings.GROWTH_PUBLISH_LANDING_ENABLED = previous_enabled
 
 
 async def test_agent_collect_and_outreach_status(e2e) -> None:

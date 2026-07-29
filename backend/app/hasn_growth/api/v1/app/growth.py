@@ -47,6 +47,7 @@ from backend.app.hasn_growth.schema.project_profile import (
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.growth_landing_service import growth_landing_service
 from backend.app.hasn_growth.service.growth_profile_service import (
     growth_profile_service,
 )
@@ -331,6 +332,44 @@ async def reconcile_growth_project_knowledge(
 ) -> ResponseModel:
     owner_hasn_id = await _resolve_owner_hasn_id(db, request)
     data = await growth_profile_service.reconcile_knowledge_binding(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/landing',
+    summary='[Owner] 读取落地页依赖、站点、绑定与留资状态',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project_landing(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_landing_service.status(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/landing/reconcile',
+    summary='[Owner] 对账并绑定该 Growth 来源的 Publish 站点',
+    dependencies=[DependsJwtAuth],
+)
+async def reconcile_growth_project_landing(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_landing_service.reconcile(
         db,
         owner_hasn_id=owner_hasn_id,
         growth_project_id=growth_project_id,

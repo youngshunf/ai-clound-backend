@@ -18,7 +18,7 @@ from uuid import UUID
 from jose import JWTError, jwt
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 
 from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.app.hasn_publish.model import Revision, Site
@@ -40,6 +40,9 @@ VALID_KINDS = ('deck', 'report', 'page', 'dashboard', 'video', 'design', 'other'
 MAX_REVISIONS_PER_SITE = 20
 VIEW_TICKET_TTL_SECONDS = 600  # 10 分钟
 _VIEW_TICKET_TYPE = 'publish_view_ticket'
+FORM_ACCESS_TOKEN_TTL_SECONDS = 600
+GROWTH_LEAD_FORM_REF = 'growth-lead-v1'
+_FORM_ACCESS_TOKEN_TYPE = 'publish_form_access'
 
 _password_hasher = PasswordHash((BcryptHasher(),))
 
@@ -199,6 +202,64 @@ class PublishService:
             owner_id=owner_id,
             platform_project_id=platform_project_id,
         )
+        if source_app == 'growth':
+            normalized_source_ref = (source_ref or '').strip()
+            if not normalized_source_ref or resolved_project_id is None:
+                raise errors.RequestError(msg='Growth 落地页必须绑定来源获客项目与平台项目')
+            await db.execute(
+                text('SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))'),
+                {'lock_key': f'publish:growth:{owner_id}:{normalized_source_ref}'},
+            )
+            existing = (
+                await db.execute(
+                    select(Site).where(
+                        Site.owner_id == owner_id,
+                        Site.source_app == 'growth',
+                        Site.source_ref == normalized_source_ref,
+                        Site.deleted_time.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                if existing.platform_project_id != resolved_project_id:
+                    raise errors.ConflictError(
+                        msg='该 Growth 来源站点已属于其他平台项目',
+                        data={'error_code': 'PUBLISH_GROWTH_PROJECT_MISMATCH'},
+                    )
+                current_revision = await PublishService.get_current_revision(db, site_id=existing.id)
+                same_content = current_revision is not None and (
+                    (bool(content_hash) and current_revision.content_hash == content_hash)
+                    or (not content_hash and current_revision.asset_id == asset_id)
+                )
+                if same_content and current_revision is not None:
+                    return {
+                        'site': site_to_dict(existing),
+                        'revision': revision_to_dict(current_revision),
+                        'reused': True,
+                    }
+                existing.title = title or existing.title
+                existing.status = 'active'
+                existing.visibility = visibility
+                existing.password_hash = (
+                    hash_password(password) if visibility == 'password' and password else None
+                )
+                existing.expires_at = expires_at
+                existing.allow_present = allow_present
+                existing.allow_download = allow_download
+                existing.allow_indexing = allow_indexing if visibility == 'public' else False
+                updated = await PublishService.update_site(
+                    db,
+                    owner_id=owner_id,
+                    site_id=existing.id,
+                    asset_id=asset_id,
+                    runtime=runtime,
+                    content_hash=content_hash,
+                    size_bytes=size_bytes,
+                    manifest_json=manifest_json,
+                )
+                updated['site'] = site_to_dict(existing)
+                return updated
+            source_ref = normalized_source_ref
         slug = await PublishService._alloc_slug(db)
         site = Site(
             owner_id=owner_id,
@@ -503,6 +564,176 @@ class PublishService:
         except JWTError:
             return False
         return claims.get('typ') == _VIEW_TICKET_TYPE and claims.get('site_id') == site_id
+
+    # ---------------- 公开表单访问票（Growth 落地页） ----------------
+
+    @staticmethod
+    def _require_form_site_available(site: Site | None, *, form_ref: str) -> Site:
+        """校验可签发表单令牌的 Publish 权威状态。"""
+        if (
+            site is None
+            or site.status != 'active'
+            or PublishService.is_expired(site)
+            or site.current_revision_id is None
+        ):
+            raise errors.NotFoundError(msg='落地页不存在或已下线')
+        if (
+            form_ref != GROWTH_LEAD_FORM_REF
+            or site.source_app != 'growth'
+            or site.kind != 'page'
+            or site.platform_project_id is None
+        ):
+            raise errors.ForbiddenError(
+                msg='站点表单未开启',
+                data={'error_code': 'PUBLISH_FORM_CLOSED'},
+            )
+        return site
+
+    @staticmethod
+    async def issue_form_access_token(
+        db: AsyncSession,
+        *,
+        slug: str,
+        form_ref: str,
+        view_ticket: str | None,
+    ) -> dict[str, Any]:
+        """在站点访问校验后签发绑定 site/revision/form/expiry 的短时令牌。"""
+        site = PublishService._require_form_site_available(
+            await PublishService.get_site_by_slug(db, slug=slug),
+            form_ref=form_ref,
+        )
+        if site.visibility == 'private':
+            raise errors.ForbiddenError(
+                msg='私有站点不开放公开表单',
+                data={'error_code': 'PUBLISH_PRIVATE_FORM_FORBIDDEN'},
+            )
+        if site.visibility == 'password' and not (
+            view_ticket and PublishService.verify_view_ticket(view_ticket, site_id=site.id)
+        ):
+            raise errors.ForbiddenError(
+                msg='口令站点必须先完成访问校验',
+                data={'error_code': 'PUBLISH_FORM_VIEW_REQUIRED'},
+            )
+        if site.visibility not in {'public', 'unlisted', 'password'}:
+            raise errors.ForbiddenError(
+                msg='站点当前不可提交表单',
+                data={'error_code': 'PUBLISH_FORM_VISIBILITY_FORBIDDEN'},
+            )
+
+        exp = timezone.now() + timedelta(seconds=FORM_ACCESS_TOKEN_TTL_SECONDS)
+        payload = {
+            'typ': _FORM_ACCESS_TOKEN_TYPE,
+            'site_id': site.id,
+            'revision_id': site.current_revision_id,
+            'form_ref': form_ref,
+            'owner_id': site.owner_id,
+            'platform_project_id': str(site.platform_project_id),
+            'exp': timezone.to_utc(exp).timestamp(),
+        }
+        token = jwt.encode(payload, settings.TOKEN_SECRET_KEY, settings.TOKEN_ALGORITHM)
+        return {
+            'form_access_token': token,
+            'site_id': site.id,
+            'revision_id': site.current_revision_id,
+            'form_ref': form_ref,
+            'expires_at': timezone.to_str(exp),
+            'ttl_seconds': FORM_ACCESS_TOKEN_TTL_SECONDS,
+        }
+
+    @staticmethod
+    async def resolve_form_access(
+        db: AsyncSession,
+        *,
+        publish_ref: str,
+        form_access_token: str,
+    ) -> dict[str, Any]:
+        """验签并按当前 Publish 状态解析公开表单的权威项目绑定。"""
+        try:
+            claims = jwt.decode(
+                form_access_token,
+                settings.TOKEN_SECRET_KEY,
+                algorithms=[settings.TOKEN_ALGORITHM],
+                options={'verify_exp': True},
+            )
+        except JWTError as exc:
+            raise errors.ForbiddenError(
+                msg='表单访问令牌无效或已过期',
+                data={'error_code': 'PUBLISH_FORM_TOKEN_INVALID'},
+            ) from exc
+        form_ref = claims.get('form_ref')
+        if claims.get('typ') != _FORM_ACCESS_TOKEN_TYPE or not isinstance(form_ref, str):
+            raise errors.ForbiddenError(
+                msg='表单访问令牌无效',
+                data={'error_code': 'PUBLISH_FORM_TOKEN_INVALID'},
+            )
+        site = PublishService._require_form_site_available(
+            await PublishService.get_site_by_slug(db, slug=publish_ref),
+            form_ref=form_ref,
+        )
+        if claims.get('site_id') != site.id:
+            raise errors.ForbiddenError(
+                msg='表单访问令牌与站点不匹配',
+                data={'error_code': 'PUBLISH_FORM_TOKEN_SITE_MISMATCH'},
+            )
+        if claims.get('revision_id') != site.current_revision_id:
+            raise errors.ForbiddenError(
+                msg='落地页版本已更新，请刷新后重试',
+                data={'error_code': 'PUBLISH_FORM_TOKEN_REVISION_STALE'},
+            )
+        if (
+            claims.get('owner_id') != site.owner_id
+            or claims.get('platform_project_id') != str(site.platform_project_id)
+        ):
+            raise errors.ForbiddenError(
+                msg='表单访问令牌绑定已变化',
+                data={'error_code': 'PUBLISH_FORM_TOKEN_BINDING_STALE'},
+            )
+        return {
+            'site_id': site.id,
+            'revision_id': site.current_revision_id,
+            'form_ref': form_ref,
+            'owner_hasn_id': site.owner_id,
+            'platform_project_id': str(site.platform_project_id),
+            'visibility': site.visibility,
+        }
+
+    @staticmethod
+    async def get_growth_site_status(
+        db: AsyncSession,
+        *,
+        owner_id: str,
+        platform_project_id: str | UUID,
+        growth_project_id: str,
+    ) -> dict[str, Any] | None:
+        """按 Growth 云端来源 ID 查询唯一站点，并复验 Owner 与平台项目。"""
+        site = (
+            await db.execute(
+                select(Site).where(
+                    Site.owner_id == owner_id,
+                    Site.source_app == 'growth',
+                    Site.source_ref == growth_project_id,
+                    Site.deleted_time.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if site is None:
+            return None
+        if str(site.platform_project_id) != str(platform_project_id):
+            raise errors.ConflictError(
+                msg='Growth 来源站点挂靠了其他平台项目',
+                data={'error_code': 'PUBLISH_GROWTH_PROJECT_MISMATCH'},
+            )
+        return {
+            'site_id': site.id,
+            'resource_uri': f'hasn://publish/sites/{site.id}',
+            'slug': site.slug,
+            'title': site.title,
+            'status': site.status,
+            'visibility': site.visibility,
+            'current_revision_id': site.current_revision_id,
+            'platform_project_id': str(site.platform_project_id),
+            'updated_time': timezone.to_str(site.updated_time) if site.updated_time else None,
+        }
 
 
 publish_service = PublishService()

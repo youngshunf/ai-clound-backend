@@ -29,7 +29,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from backend.app.hasn.model.hasn_humans import HasnHumans
-from backend.app.hasn_publish.api.v1.open.hosting import _content_csp, _share_origin
+from backend.app.hasn_publish.api.v1.open.hosting import (
+    _content_csp,
+    _share_origin,
+    _viewer_shell_html,
+)
 from backend.app.hasn_publish.api.v1.open.hosting import router as hosting_router
 from backend.app.hasn_publish.service.publish_service import publish_service
 from backend.database.db import SQLALCHEMY_DATABASE_URL, get_db
@@ -64,6 +68,37 @@ def test_content_csp_no_allow_same_origin() -> None:
     # sandbox 不含 allow-same-origin（否则脚本可读父页）
     csp = _content_csp('https://share.example.com')
     assert 'allow-same-origin' not in csp
+
+
+def test_growth_form_broker_keeps_untrusted_content_on_post_message_boundary() -> None:
+    shell = _viewer_shell_html(
+        'growth-demo',
+        '获客页',
+        False,
+        '',
+        form_api_origin='https://api.example.com',
+        form_view_ticket=None,
+    )
+
+    assert 'hasn:growth-form-submit' in shell
+    assert 'hasn:growth-form-result' in shell
+    assert '/api/v1/publish/open/sites/' in shell
+    assert '"formRef":"growth-lead-v1"' in shell
+    assert "'/forms/'" in shell
+    assert "'/access-token'" in shell
+    assert '/api/v1/growth/open/forms/' in shell
+    assert 'Idempotency-Key' in shell
+    assert 'X-Publish-Form-Token' in shell
+    assert 'event.source!==frame.contentWindow' in shell
+    assert 'sandbox="allow-scripts"' in shell
+    assert 'allow-same-origin' not in shell
+
+
+def test_regular_publish_shell_does_not_install_growth_form_broker() -> None:
+    shell = _viewer_shell_html('regular-demo', '普通页面', False, '')
+
+    assert 'hasn:growth-form-submit' not in shell
+    assert '/api/v1/growth/open/forms/' not in shell
 
 
 # ---------- E2E（真实 PG） ----------
