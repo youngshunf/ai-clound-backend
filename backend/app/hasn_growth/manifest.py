@@ -116,7 +116,7 @@ def _tool_from_cap(cap: dict) -> dict:
     }
 
 
-# 获客 26 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
+# 获客 27 工具能力声明（云端 gateway_internal）。顺序即 tools[] 顺序；
 # lead_request（2.1 请求线索·用户端默认入口）为第 1 条；其后 lookup/search/enrich_company
 # （GROWTH-QCC-4 企业数据读穿中台）；customer_reassign（GE4）为末条。
 _CAPABILITIES = [
@@ -211,6 +211,66 @@ _CAPABILITIES = [
         required=['growth_project_id'],
         page_rank=7,
         tags=['growth', 'project', 'update'],
+    ),
+    _cap(
+        name='project_update_profile',
+        mcp_suffix='project.update_profile',
+        title='提交产品与 ICP 画像建议',
+        description=(
+            '基于同项目 Knowledge 的真实文档版本提交待 Owner 确认的产品/ICP 画像建议；'
+            '本工具不会直接改写当前已确认画像。'
+        ),
+        scope=_SCOPE_MANAGE,
+        risk_level='medium',
+        properties={
+            'growth_project_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': 'Growth 云端权威 UUID',
+            },
+            'expected_version': {
+                'type': 'integer',
+                'minimum': 1,
+                'description': '生成建议时读取的当前画像版本',
+            },
+            'product_profile': {
+                'type': 'object',
+                'description': '精简产品画像；证据只引用稳定 Knowledge 文档',
+            },
+            'icp_profile': {
+                'type': 'object',
+                'description': '精简 ICP 画像与排除条件',
+            },
+            'knowledge_document_ids': {
+                'type': 'array',
+                'items': {'type': 'integer', 'minimum': 1},
+                'minItems': 1,
+                'uniqueItems': True,
+                'description': '同项目 Knowledge 中参与建议的云端文档 ID',
+            },
+            'trace_id': {
+                'type': 'string',
+                'format': 'uuid',
+                'description': '本次建议意图的稳定追踪 UUID；重试复用',
+            },
+            'idempotency_key': {
+                'type': 'string',
+                'minLength': 1,
+                'maxLength': 200,
+                'description': '稳定业务幂等键；重试复用',
+            },
+        },
+        required=[
+            'growth_project_id',
+            'expected_version',
+            'product_profile',
+            'icp_profile',
+            'knowledge_document_ids',
+            'trace_id',
+            'idempotency_key',
+        ],
+        page_rank=7,
+        tags=['growth', 'project', 'profile', 'suggestion'],
     ),
     _cap(
         name='project_pause',

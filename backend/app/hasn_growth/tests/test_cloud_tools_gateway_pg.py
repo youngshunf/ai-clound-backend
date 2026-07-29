@@ -147,11 +147,12 @@ async def ctx() -> AsyncIterator[SimpleNamespace]:
 async def test_all_growth_tools_resolve_in_gateway_registry() -> None:  # ruff: ignore[unused-async]
     """manifest tools[].handler 与网关 handler 注册表零漂移：每条都能 dispatch 到真实 handler。"""
     handlers = [t['handler'] for t in GROWTH_AI_NATIVE_MANIFEST['tools']]
-    assert len(handlers) == 26  # +project 四工具 + lead_request + lookup/search/enrich_company
+    assert len(handlers) == 27  # +project 五工具 + lead_request + lookup/search/enrich_company
     for h in (
         'growth.project_get',
         'growth.project_create',
         'growth.project_update',
+        'growth.project_update_profile',
         'growth.project_pause',
     ):
         assert h in handlers, h

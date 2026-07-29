@@ -13,6 +13,9 @@ from backend.app.hasn_growth.model.growth_project_provision import (
     GrowthProjectProvision,
 )
 from backend.app.hasn_growth.schema.growth_project import GetGrowthProjectDetail
+from backend.app.hasn_growth.service.growth_profile_service import (
+    growth_profile_service,
+)
 from backend.app.hasn_project.model.hasn_project import HasnProject
 from backend.common.exception import errors
 from backend.common.response.response_code import StandardResponseCode
@@ -128,6 +131,11 @@ class GrowthProjectAppService:
             growth_project_id=row.id,
         )
         data['provision_steps'] = [_serialize_provision(provision) for provision in provisions]
+        data['readiness'] = await growth_profile_service.compute_readiness(
+            db,
+            owner_hasn_id=row.owner_hasn_id,
+            growth_project_id=row.id,
+        )
         return data
 
     @staticmethod
@@ -318,6 +326,7 @@ class GrowthProjectAppService:
             enterprise_id=None,
             name=normalized_name,
             tagline=normalized_tagline,
+            owner_agent_id=platform_project.bound_agent_id,
             status='draft',
             provision_status='pending',
         )
@@ -486,6 +495,19 @@ class GrowthProjectAppService:
             raise errors.ConflictError(
                 msg='获客项目尚未完成基础资源开通',
                 data={'error_code': 'GROWTH_PROJECT_NOT_READY'},
+            )
+        readiness = await growth_profile_service.compute_readiness(
+            db,
+            owner_hasn_id=owner_hasn_id,
+            growth_project_id=growth_project.id,
+        )
+        if not readiness['ready']:
+            raise errors.ConflictError(
+                msg='获客画像或知识库尚未就绪，不能恢复自动动作',
+                data={
+                    'error_code': 'GROWTH_PROJECT_READINESS_BLOCKED',
+                    'blocking_reasons': readiness['blocking_reasons'],
+                },
             )
         growth_project.status = 'active'
         await db.flush()

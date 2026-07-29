@@ -38,3 +38,5 @@ from backend.app.hasn_growth.model.outreach_message import OutreachMessage as Ou
 from backend.app.hasn_growth.model.outreach_message_event import OutreachMessageEvent as OutreachMessageEvent
 from backend.app.hasn_growth.model.playbook import Playbook as Playbook
 from backend.app.hasn_growth.model.playbook_version import PlaybookVersion as PlaybookVersion
+from backend.app.hasn_growth.model.growth_profile_version import GrowthProfileVersion as GrowthProfileVersion
+from backend.app.hasn_growth.model.growth_profile_suggestion import GrowthProfileSuggestion as GrowthProfileSuggestion

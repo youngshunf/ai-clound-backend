@@ -30,9 +30,17 @@ from backend.app.hasn_growth.schema.funnel import (
     UpdateStageParam,
 )
 from backend.app.hasn_growth.schema.project_app import EnableGrowthProjectBody
+from backend.app.hasn_growth.schema.project_profile import (
+    AdoptGrowthPlaybookBody,
+    BindGrowthKnowledgeBody,
+    ReviewGrowthProfileSuggestionBody,
+)
 from backend.app.hasn_growth.service import dispatch_service
 from backend.app.hasn_growth.service.contact_privacy_service import contact_privacy_service
 from backend.app.hasn_growth.service.funnel_service import growth_funnel_service
+from backend.app.hasn_growth.service.growth_profile_service import (
+    growth_profile_service,
+)
 from backend.app.hasn_growth.service.growth_project_app_service import growth_project_app_service
 from backend.app.hasn_growth.service.growth_project_provision_service import (
     enqueue_growth_provision_after_commit,
@@ -224,6 +232,119 @@ async def retry_growth_project_provision(
         db,
         owner_hasn_id=owner_hasn_id,
         growth_project_id=growth.id,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/profile',
+    summary='[Owner] 读取已确认画像、版本历史与待确认建议',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project_profile(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_profile_service.project_summary(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/overview',
+    summary='[Owner] 当前获客项目经营总览',
+    dependencies=[DependsJwtAuth],
+)
+async def get_growth_project_overview(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    project = await growth_project_app_service.get_by_id(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    report = await growth_report_service.project_overview(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(
+        data={
+            'project': project,
+            'report': report,
+        }
+    )
+
+
+@router.put(
+    '/projects/{growth_project_id}/knowledge',
+    summary='[Owner] 绑定或改绑同项目 Knowledge',
+    dependencies=[DependsJwtAuth],
+)
+async def bind_growth_project_knowledge(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    obj: BindGrowthKnowledgeBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_profile_service.bind_knowledge(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+        kb_id=obj.kb_id,
+        expected_profile_version=obj.expected_profile_version,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/knowledge/reconcile',
+    summary='[Owner] 对账修复 Growth 与 Knowledge 绑定',
+    dependencies=[DependsJwtAuth],
+)
+async def reconcile_growth_project_knowledge(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_profile_service.reconcile_knowledge_binding(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/profile/suggestions/{suggestion_id}/review',
+    summary='[Owner] 接受或拒绝画像建议',
+    dependencies=[DependsJwtAuth],
+)
+async def review_growth_profile_suggestion(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    suggestion_id: int,
+    obj: ReviewGrowthProfileSuggestionBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await growth_profile_service.review_suggestion(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        owner_user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        suggestion_id=suggestion_id,
+        decision=obj.decision,
     )
     return response_base.success(data=data)
 
@@ -693,6 +814,51 @@ async def list_playbooks(request: Request, db: CurrentSession) -> ResponseModel:
     # 企业上下文成员额外可见本企业 playbook（GE3 自播种产物）；个人上下文 enterprise_id 为 None。
     scope = await resolve_growth_scope(db, user_id=request.user.id)
     data = await playbook_service.list_for_owner(db, user_id=request.user.id, enterprise_id=scope.enterprise_id)
+    return response_base.success(data=data)
+
+
+@router.get(
+    '/projects/{growth_project_id}/playbooks',
+    summary='[Owner] 当前项目的可采用打法与采用状态',
+    dependencies=[DependsJwtAuth],
+)
+async def list_growth_project_playbooks(
+    request: Request,
+    db: CurrentSession,
+    growth_project_id: str,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await playbook_service.recommend_for_project(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+    )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/projects/{growth_project_id}/playbooks/{playbook_id}/adopt',
+    summary='[Owner] 显式采用并冻结打法版本',
+    dependencies=[DependsJwtAuth],
+)
+async def adopt_growth_project_playbook(
+    request: Request,
+    db: CurrentSessionTransaction,
+    growth_project_id: str,
+    playbook_id: int,
+    obj: AdoptGrowthPlaybookBody,
+) -> ResponseModel:
+    owner_hasn_id = await _resolve_owner_hasn_id(db, request)
+    data = await playbook_service.adopt_for_project(
+        db,
+        owner_hasn_id=owner_hasn_id,
+        user_id=request.user.id,
+        growth_project_id=growth_project_id,
+        playbook_id=playbook_id,
+        expected_playbook_version=obj.expected_playbook_version,
+        configuration=obj.configuration,
+    )
     return response_base.success(data=data)
 
 
