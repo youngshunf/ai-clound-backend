@@ -2222,6 +2222,7 @@ wheels = [
 name = "huanxing-backend"
 source = { editable = "." }
 dependencies = [
+    { name = "aio-pika" },
     { name = "aiosmtplib" },
     { name = "alembic" },
     { name = "asgiref" },
@@ -2316,12 +2317,12 @@ lint = [
     { name = "prek" },
 ]
 server = [
-    { name = "aio-pika" },
     { name = "wait-for-it" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "aio-pika", specifier = ">=9.5.8" },
     { name = "aiosmtplib", specifier = ">=5.0.0" },
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "asgiref", specifier = ">=3.11.1" },
@@ -2413,10 +2414,7 @@ dev = [
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
 lint = [{ name = "prek", specifier = ">=0.3.3" }]
-server = [
-    { name = "aio-pika", specifier = ">=9.5.8" },
-    { name = "wait-for-it", specifier = ">=2.3.0" },
-]
+server = [{ name = "wait-for-it", specifier = ">=2.3.0" }]
 
 [[package]]
 name = "huggingface-hub"
