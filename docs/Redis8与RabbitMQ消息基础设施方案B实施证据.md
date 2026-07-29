@@ -383,6 +383,75 @@ Redis 最终排空和 RabbitMQ 切换完成后再恢复。
 PostgreSQL Beat E2E 已验证存量行被禁用且正常周期任务仍能发布、回写运行次数。
 Beat 在该修复部署前再次停止。
 
+### 4.6 B2-02 生产切换与实际回滚
+
+切换窗口为 2026-07-30 03:21–03:56 CST。部署源最终为 `origin/huanxing`
+`2f3007bd5245a366d9e3b4d03cd2f761cf1cc168`，生产快照位于：
+
+```text
+/data2/backups/预部署-20260730-032808
+/data2/backups/celery-rabbitmq-cutover-20260730-032301
+/data2/backups/celery-rabbitmq-cutover-final-20260730-033723
+```
+
+依赖同步把生产 Celery 从 5.6.2 精确升级为 5.6.3。部署 runner 另发现并执行了主分支
+已有的两项待执行迁移：
+
+- `hasn_growth/migrations/2026-07-29-growth-review-v8.sql`
+- `hasn_task/migrations/2026-07-29-workflow-template-source-release.sql`
+
+四项标记为生产暂缓的危险迁移未执行。
+
+干净切换按以下顺序实操：
+
+1. 停止 Beat，再停止 API 阻断新生产者；
+2. Redis 旧 `celery`、新 `huanxing.celery.rollback`、unacked 和 unacked index
+   连续三次均为 0；
+3. 优雅停止本项目 Worker 和 Flower，本项目 Celery 进程数归零；
+4. 原子写入两份生产 env 与精确 Supervisor 配置，启动唯一节点
+   `huanxing@lavm-n0zinl4gex` 的 RabbitMQ Worker；
+5. Linux prefork 子进程数为 4，注册 35 个任务，真实
+   `credit_outbox_metrics_refresh` 成功消费并写入 PostgreSQL `DatabaseBackend`；
+6. 启动 API 并得到 200，此时 Beat 仍停止。
+
+随后执行了真实回滚，而非只做文档推演：
+
+1. 停 API，RabbitMQ active/reserved/scheduled 和 ready/unacked 连续三次为 0；
+2. 停 Worker，把 broker 回拨到 Redis；新 Worker 的 transport 为 `redis`，
+   默认 queue 为 `huanxing.celery.rollback`；
+3. 启动 API 得到 200，真实生产任务成功，rollback queue、unacked 均回到 0，
+   同机其他项目使用的通用 `celery` queue 增量为 0；
+4. 再次停 API、排空 Redis、停 Worker，把 broker 切回 RabbitMQ；
+5. RabbitMQ Worker、真实生产任务和 API 200 再次通过后才恢复 Beat，Flower 最后启动。
+
+删除 demo 并禁用存量数据库行后的最终验收时间为 2026-07-30 03:56 CST：
+
+```text
+api / worker / beat / flower = RUNNING
+local API / public API = 200 / 200
+rabbitmq container = running/healthy
+rabbitmq checks = check_running + check_local_alarms 通过
+huanxing.celery.default = ready 0 / unacked 0 / consumers 1
+worker = ping 1 / registered 32 / prefork 4 / active 0 / reserved 0 / scheduled 0
+worker demo registered = 0
+redis huanxing.celery.rollback = 0
+遗留 demo scheduler = 3 rows / enabled 0
+Flower = unauthenticated 401 / authenticated 200 / worker visible 1
+E2E queue / exchange / connection = 0 / 0 / 0
+四服务错误标记 = 0
+```
+
+最终 Beat 启动后连续 70 秒采样 8 次，均为 active 0、demo active 0、
+RabbitMQ ready/unacked 0/0。数据库调度表同时显示：
+
+```text
+履约指标刷新 runs=4436 last_run=2026-07-30 03:56:00 CST
+用户云存储作业投递 runs=627 last_run=2026-07-30 03:56:00 CST
+```
+
+这证明至少一个完整的一分钟生产 Beat 周期已发布、消费并回写。B2-02 切换与回滚演练
+完成；检查点二的 24 小时稳定性观察仍在进行，尚未提前宣称通过。
+
 ## 5. 后续证据索引
 
 | 阶段 | 证据 |
