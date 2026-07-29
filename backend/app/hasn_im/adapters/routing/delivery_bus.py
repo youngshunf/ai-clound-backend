@@ -16,13 +16,15 @@
 """
 
 import asyncio
-import json
 
 from typing import Literal
 
 from fastapi import WebSocket
 
 from backend.app.hasn_im.adapters.routing.redis_presence_store import NODE_GENERATION_KEY
+from backend.app.hasn_im.adapters.routing.redis_realtime_wakeup_bus import (
+    RedisRealtimeWakeupBus,
+)
 from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
     get_connection,
     get_connection_id,
@@ -30,20 +32,17 @@ from backend.app.hasn_im.adapters.routing.ws_connection_registry import (
     iter_connections,
     local_nodes,
 )
+from backend.app.hasn_im.ports.realtime_wakeup_bus import RealtimeWakeupBus
 from backend.common.log import log
 from backend.core.conf import settings
-from backend.database.redis import RedisCli, redis_client
+from backend.database.redis import redis_client
 
-# 共享投递频道：所有 worker 订阅，发送方 publish
-WS_DELIVERY_CHANNEL = 'hasn:ws:deliver'
 PENDING_PREFIX = 'hasn:ws:pending'
 PROCESSING_PREFIX = 'hasn:ws:processing'
 DELIVERY_QUEUE_TTL_SECS = 7 * 86400
 DELIVERY_BATCH_SIZE = 100
 DELIVERY_SEND_TIMEOUT_SECS = 10.0
 
-# 投递是核心链路，订阅循环永不主动放弃（仅随进程关闭被 cancel）；Redis 抖动时退避重连
-_RECONNECT_DELAY_SECS = 2.0
 _RETRY_PENDING_INTERVAL_SECS = 2.0
 
 # Redis 6.0 没有 LMOVE；兼容路径用 Lua 保持“队头取出并追加到处理中队尾”的原子语义。
@@ -56,17 +55,6 @@ return payload
 """
 
 RedisListMoveMode = Literal['lua', 'lmove']
-
-
-def _decode_payload(raw: str | bytes | None) -> dict | None:
-    """解析队列帧；畸形或非对象 JSON 由调用方安全跳过。"""
-    if raw is None:
-        return None
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, dict) else None
 
 
 async def _move_pending_to_processing(
@@ -95,12 +83,12 @@ async def _move_pending_to_processing(
 class WsDeliveryBus:
     """WS 跨 worker 投递总线（单例）。"""
 
-    _task: asyncio.Task | None = None
-    _retry_task: asyncio.Task | None = None
+    _wakeup_bus: RealtimeWakeupBus = RedisRealtimeWakeupBus()
+    _retry_task: asyncio.Task[None] | None = None
     _drain_locks: dict[str, asyncio.Lock] = {}
 
-    @staticmethod
-    async def publish_to_node(node_id: str, payload_json: str) -> bool:
+    @classmethod
+    async def publish_to_node(cls, node_id: str, payload_json: str) -> bool:
         """先持久化目标帧，再用 Pub/Sub 唤醒持有该节点连接的 worker。"""
         try:
             pending_key = f'{PENDING_PREFIX}:{node_id}'
@@ -111,22 +99,20 @@ class WsDeliveryBus:
             return False
 
         try:
-            message = json.dumps({'node_id': node_id}, ensure_ascii=False)
-            await redis_client.publish(WS_DELIVERY_CHANNEL, message)
+            await cls._wakeup_bus.publish_node_wakeup(node_id)
         except Exception as exc:
             # 唤醒失败不等于消息丢失：周期 drain 和节点重连都会继续消费待投队列。
             log.warning(f'[WsDeliveryBus] 投递唤醒失败，等待周期重试 node={node_id}: {exc!r}')
         return True
 
-    @staticmethod
-    async def publish_broadcast(payload_json: str) -> None:
+    @classmethod
+    async def publish_broadcast(cls, payload_json: str) -> None:
         """把一帧广播给**所有**在线 node（每个 worker 下发其本地全部连接）。
 
         用于全局 ``hasn.sync.invalidate``（builtin_catalog/common_skills/platform_config）。
         """
         try:
-            message = json.dumps({'broadcast': True, 'payload': payload_json}, ensure_ascii=False)
-            await redis_client.publish(WS_DELIVERY_CHANNEL, message)
+            await cls._wakeup_bus.publish_broadcast(payload_json)
         except Exception as exc:
             log.warning(f'[WsDeliveryBus] publish_broadcast 失败: {exc!r}')
 
@@ -240,61 +226,19 @@ class WsDeliveryBus:
                 await cls._drain_node_safely(node_id)
 
     @classmethod
-    async def subscribe_and_listen(cls) -> None:  # noqa: C901
-        """订阅频道并永久监听（随进程关闭被 cancel）。"""
-        while True:
-            pubsub_client: RedisCli | None = None
-            pubsub = None
-            try:
-                # 独立连接订阅，避免占用业务连接
-                pubsub_client = RedisCli()
-                pubsub = pubsub_client.pubsub()
-                await pubsub.subscribe(WS_DELIVERY_CHANNEL)
-
-                async for message in pubsub.listen():
-                    if message.get('type') != 'message':
-                        continue
-                    data = _decode_payload(message.get('data'))
-                    if data is None:
-                        log.warning('[WsDeliveryBus] 消息格式错误')
-                        continue
-                    await cls._deliver_local(data)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                log.error(f'[WsDeliveryBus] 订阅异常，{_RECONNECT_DELAY_SECS}s 后重连: {exc!r}')
-                await asyncio.sleep(_RECONNECT_DELAY_SECS)
-            finally:
-                if pubsub is not None:
-                    try:
-                        await pubsub.aclose()
-                    except Exception:
-                        pass
-                if pubsub_client is not None:
-                    try:
-                        await pubsub_client.aclose()
-                    except Exception:
-                        pass
-
-    @classmethod
     def start_listener(cls) -> None:
         """启动订阅任务（每个 worker 进程一份）。"""
-        if cls._task is None or cls._task.done():
-            cls._task = asyncio.create_task(cls.subscribe_and_listen())
+        cls._wakeup_bus.start(cls._deliver_local)
         if cls._retry_task is None or cls._retry_task.done():
             cls._retry_task = asyncio.create_task(cls.retry_pending_forever())
 
     @classmethod
     async def stop_listener(cls) -> None:
         """停止订阅任务。"""
-        tasks = [task for task in (cls._task, cls._retry_task) if task is not None]
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        cls._task = None
+        await cls._wakeup_bus.stop()
+        if cls._retry_task is not None and not cls._retry_task.done():
+            cls._retry_task.cancel()
+            await asyncio.gather(cls._retry_task, return_exceptions=True)
         cls._retry_task = None
 
 

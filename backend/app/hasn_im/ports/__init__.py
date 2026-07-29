@@ -30,12 +30,13 @@ from backend.app.hasn_im.ports.node_session_gateway import (
 )
 from backend.app.hasn_im.ports.presence_query import OnlinePresence, PresenceQuery
 from backend.app.hasn_im.ports.realtime_gateway import RealtimeFrame, RealtimeGateway
+from backend.app.hasn_im.ports.realtime_wakeup_bus import RealtimeWakeupBus
 from backend.app.hasn_im.ports.relation_gateway import (
     EffectiveRelation,
     RelationGateway,
 )
 
-__all__ = [
+__all__ = [  # noqa: RUF022 — 按 DTO 与 Protocol 分组，避免类型类别混排
     # DTO
     'ActorKind',
     'ConversationRef',
@@ -63,6 +64,7 @@ __all__ = [
     'OnlinePresence',
     'RealtimeFrame',
     'RealtimeGateway',
+    'RealtimeWakeupBus',
     'EffectiveRelation',
     'RelationGateway',
 ]
