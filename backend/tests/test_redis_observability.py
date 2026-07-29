@@ -1,11 +1,17 @@
-from redis.asyncio import ConnectionPool
+from pathlib import Path
 
 
-def test_async_connection_pool_supports_opentelemetry_connection_count() -> None:
-    """异步连接池必须实现 redis-py 原生连接数指标所需的回调契约。"""
-    connection_pool = ConnectionPool()
+OTEL_MODULE = (
+    Path(__file__).resolve().parents[1]
+    / 'common'
+    / 'observability'
+    / 'otel.py'
+)
 
-    connection_counts = connection_pool.get_connection_count()
 
-    assert len(connection_counts) == 2
-    assert sum(count for count, _attributes in connection_counts) == 0
+def test_redis_uses_supported_instrumentation_without_native_async_metrics() -> None:
+    """Redis 保留标准链路追踪，但不得启用 7.2 不支持的原生异步指标。"""
+    source = OTEL_MODULE.read_text(encoding='utf-8')
+
+    assert 'RedisInstrumentor.instrument_client(redis_client)' in source
+    assert 'redis.observability' not in source
