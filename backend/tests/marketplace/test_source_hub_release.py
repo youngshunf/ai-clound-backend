@@ -7,6 +7,7 @@ import io
 import zipfile
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -17,6 +18,9 @@ from backend.app.hasn_task.service.workflow_template_service import (
 from backend.app.marketplace.api.v1.publish import (
     SourceReconcileRequest,
     source_publish_user_from_authenticated_user,
+)
+from backend.app.marketplace.crud.crud_marketplace_template_version import (
+    marketplace_template_version_dao,
 )
 from backend.app.marketplace.service.package_validation import (
     parse_skill_pack_package,
@@ -208,6 +212,33 @@ def test_reconcile_request_accepts_new_and_legacy_skill_manifests() -> None:
     assert current.active_resource_ids == ['huanxing/agent/assistant']
     assert legacy.resource_type == 'skill'
     assert legacy.active_resource_ids == ['github/example/demo']
+
+
+@pytest.mark.asyncio
+async def test_mark_template_history_not_latest_allows_multiple_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """发布第三版模板时必须一次取消全部历史版本的 latest 标记。"""
+    update_many = AsyncMock(return_value=2)
+    monkeypatch.setattr(
+        marketplace_template_version_dao,
+        'update_model_by_column',
+        update_many,
+    )
+    session = SimpleNamespace()
+
+    updated = await marketplace_template_version_dao.mark_all_not_latest(
+        session,
+        'huanxing/agent/sales-advisor',
+    )
+
+    assert updated == 2
+    update_many.assert_awaited_once_with(
+        session,
+        {'is_latest': False},
+        allow_multiple=True,
+        template_id='huanxing/agent/sales-advisor',
+    )
 
 
 def test_authenticated_admin_maps_to_bearer_source_publisher() -> None:
