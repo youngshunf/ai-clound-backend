@@ -281,6 +281,26 @@ def _changelog(metadata: dict[str, Any], explicit: str | None) -> str | None:
     return str(value) if value is not None else None
 
 
+async def _is_reusable_public_release(
+    db: AsyncSession,
+    release: Any,
+    *,
+    content_hash: str,
+) -> bool:
+    """只有内容一致且已在公开桶的制品才允许跳过上传。"""
+    return bool(
+        release
+        and release.content_hash == content_hash
+        and release.package_url
+        and release.file_hash
+        and release.file_size is not None
+        and await marketplace_storage_service.is_public_url(
+            db,
+            str(release.package_url),
+        )
+    )
+
+
 class SourceReleaseService:
     """接收本地 Hub 打包产物并原子更新目录元数据。"""
 
@@ -324,13 +344,15 @@ class SourceReleaseService:
             skill_id,
             version,
         )
-        reusable_version = existing_version if (
+        reusable_version = (
             existing_version
-            and existing_version.content_hash == package.content_hash
-            and existing_version.package_url
-            and existing_version.file_hash
-            and existing_version.file_size is not None
-        ) else None
+            if await _is_reusable_public_release(
+                db,
+                existing_version,
+                content_hash=package.content_hash,
+            )
+            else None
+        )
         if reusable_version is None:
             uploaded = True
             package_url, file_hash, file_size = (
@@ -520,12 +542,10 @@ class SourceReleaseService:
         )
         reusable_version = (
             existing_version
-            if (
-                existing_version
-                and existing_version.content_hash == package.content_hash
-                and existing_version.package_url
-                and existing_version.file_hash
-                and existing_version.file_size is not None
+            if await _is_reusable_public_release(
+                db,
+                existing_version,
+                content_hash=package.content_hash,
             )
             else None
         )
@@ -689,12 +709,10 @@ class SourceReleaseService:
         )
         reusable_version = (
             existing_version
-            if (
-                existing_version
-                and existing_version.content_hash == package.content_hash
-                and existing_version.package_url
-                and existing_version.file_hash
-                and existing_version.file_size is not None
+            if await _is_reusable_public_release(
+                db,
+                existing_version,
+                content_hash=package.content_hash,
             )
             else None
         )
@@ -896,12 +914,10 @@ class SourceReleaseService:
         ).scalar_one_or_none()
         reusable = (
             existing
-            if (
-                existing
-                and existing.content_hash == package.content_hash
-                and existing.package_url
-                and existing.file_hash
-                and existing.file_size is not None
+            if await _is_reusable_public_release(
+                db,
+                existing,
+                content_hash=package.content_hash,
             )
             else None
         )
