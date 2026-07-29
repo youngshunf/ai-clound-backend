@@ -1,7 +1,7 @@
 """通用网页发布与分享（模块 18，P3）托管 + 公开查看 /s/{slug} 进程内 HTTP E2E（真实 PG，零 mock）。
 
 覆盖（DoD）：
-  - /content CSP：sandbox allow-scripts + 显式 host-source（opaque origin 不写 'self'）+ connect-src 'none' 断外联
+  - /content CSP：sandbox allow-scripts allow-forms + 显式 host-source（opaque origin 不写 'self'）+ connect-src 'none' 断外联
   - 四态访问：private 凭票 / unlisted 凭链接 / password 限速+票 / public 直放；缺票 401
   - 过期 410 / 撤销 410 / 不存在 404
   - unlisted/private/password 恒 X-Robots-Tag noindex；public(默认不收录)亦 noindex；public+allow_indexing 才放收录
@@ -56,7 +56,8 @@ def _uid() -> str:
 
 def test_content_csp_is_sandbox_with_host_source() -> None:
     csp = _content_csp('https://share.example.com')
-    assert csp.startswith('sandbox allow-scripts')  # 直开导航也沙箱（opaque origin）
+    # allow-forms 只让浏览器派发 submit 事件给受控 postMessage 脚本；form-action 仍禁止直接外发。
+    assert csp.startswith('sandbox allow-scripts allow-forms')
     assert "connect-src 'none'" in csp  # 断数据外联
     assert 'https://share.example.com' in csp  # 显式 host-source（不是 'self'）
     assert "img-src 'self'" not in csp  # opaque origin 下 'self' 永不匹配，绝不用
@@ -90,7 +91,7 @@ def test_growth_form_broker_keeps_untrusted_content_on_post_message_boundary() -
     assert 'Idempotency-Key' in shell
     assert 'X-Publish-Form-Token' in shell
     assert 'event.source!==frame.contentWindow' in shell
-    assert 'sandbox="allow-scripts"' in shell
+    assert 'sandbox="allow-scripts allow-forms"' in shell
     assert 'allow-same-origin' not in shell
 
 
@@ -162,7 +163,7 @@ async def test_unlisted_shell_and_noindex(host: SimpleNamespace) -> None:
     r = await host.client.get(f'/s/{site["slug"]}')
     assert r.status_code == 200, r.text
     assert '测试发布' in r.text
-    assert 'sandbox="allow-scripts"' in r.text  # 外壳用 sandbox iframe
+    assert 'sandbox="allow-scripts allow-forms"' in r.text  # 外壳用 sandbox iframe
     # iframe 必须委派 fullscreen 权限：否则沙箱 opaque origin 子帧内「放映」requestFullscreen 被静默拒绝，
     # 只剩 CSS 放映态（铺满 iframe≠真·全屏）→ 用户报「点放映只是浏览器全屏」。回归守卫。
     assert 'allow="fullscreen"' in r.text
@@ -283,7 +284,7 @@ async def test_content_streams_real_artifact_with_csp(host: SimpleNamespace) -> 
     assert r.status_code == 200, r.text
     assert b'HELLO-PUBLISH' in r.content  # 服务端代吐真内容
     csp = r.headers.get('Content-Security-Policy', '')
-    assert csp.startswith('sandbox allow-scripts')  # 直开 /content 也被沙箱
+    assert csp.startswith('sandbox allow-scripts allow-forms')  # 直开 /content 也被沙箱
     assert "connect-src 'none'" in csp
     assert r.headers.get('X-Content-Type-Options') == 'nosniff'
 
