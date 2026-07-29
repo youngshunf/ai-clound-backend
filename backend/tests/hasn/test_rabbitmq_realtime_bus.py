@@ -7,7 +7,9 @@ import inspect
 import json
 import os
 import shutil
+import socket
 import subprocess
+import time
 import uuid
 
 from collections.abc import Awaitable, Callable
@@ -47,6 +49,26 @@ class RabbitMQTestSettings:
     REALTIME_RABBITMQ_PASSWORD: str = '仅用于纯构造测试'
     HASN_REALTIME_BUS: Literal['rabbitmq', 'redis'] = 'rabbitmq'
     HASN_REALTIME_SHADOW_RABBITMQ: bool = False
+
+
+def _wait_for_real_broker_listener(
+    *,
+    broker_host: str,
+    broker_port: int,
+) -> None:
+    """等待宿主映射的真实 AMQP listener 完成启动。"""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(
+                (broker_host, broker_port),
+                timeout=0.5,
+            ):
+                return
+        except OSError:
+            pass
+        time.sleep(0.5)
+    raise TimeoutError('隔离 RabbitMQ 重启后 AMQP listener 未在 60 秒内恢复')
 
 
 def test_node_event_schema_round_trip() -> None:
@@ -324,6 +346,11 @@ async def test_real_rabbitmq_recovers_after_isolated_broker_restart() -> None:
             capture_output=True,
             text=True,
             timeout=30,
+        )
+        await asyncio.to_thread(
+            _wait_for_real_broker_listener,
+            broker_host=os.environ['REALTIME_RABBITMQ_HOST'],
+            broker_port=int(os.environ['REALTIME_RABBITMQ_PORT']),
         )
 
         await asyncio.wait_for(

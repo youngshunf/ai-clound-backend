@@ -10,7 +10,7 @@ import uuid
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import aio_pika
 
@@ -20,6 +20,7 @@ from aio_pika.abc import (
     AbstractIncomingMessage,
     AbstractRobustConnection,
 )
+from aio_pika.robust_channel import RobustChannel
 
 from backend.app.hasn_im.observability.metrics import (
     HASN_REALTIME_WAKEUP_CONSUME_TOTAL,
@@ -39,6 +40,7 @@ REALTIME_EXCHANGE = 'huanxing.realtime'
 REALTIME_QUEUE_PREFIX = 'huanxing.realtime.worker.'
 REALTIME_QUEUE_EXPIRES_MS = 300_000
 RECONNECT_DELAY_SECS = 2.0
+PUBLISHER_RECOVERY_TIMEOUT_SECS = 30.0
 EVENT_SCHEMA_VERSION = 1
 _INSTANCE_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 
@@ -199,7 +201,7 @@ class RabbitMQRealtimeWakeupBus:
         self._consumer_connection: AbstractRobustConnection | None = None
         self._consumer_channel: AbstractChannel | None = None
         self._publisher_connection: AbstractRobustConnection | None = None
-        self._publisher_channel: AbstractChannel | None = None
+        self._publisher_channel: RobustChannel | None = None
         self._publisher_exchange: AbstractExchange | None = None
         self._publisher_lock = asyncio.Lock()
         self._ready = asyncio.Event()
@@ -260,35 +262,71 @@ class RabbitMQRealtimeWakeupBus:
         await asyncio.wait_for(self._ready.wait(), timeout=timeout)
 
     async def _publish(self, body: bytes) -> None:
-        try:
-            exchange = await self._publisher()
-            await exchange.publish(
-                aio_pika.Message(
-                    body=body,
-                    content_type='application/json',
-                    delivery_mode=aio_pika.DeliveryMode.NOT_PERSISTENT,
-                ),
-                routing_key='',
-            )
-        except Exception:
-            HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
-                transport='rabbitmq',
-                result='error',
-            ).inc()
-            raise
-        else:
-            HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
-                transport='rabbitmq',
-                result='ok',
-            ).inc()
+        message = aio_pika.Message(
+            body=body,
+            content_type='application/json',
+            delivery_mode=aio_pika.DeliveryMode.NOT_PERSISTENT,
+        )
+        for attempt in range(2):
+            exchange: AbstractExchange | None = None
+            try:
+                exchange = await self._publisher()
+                await exchange.publish(
+                    message,
+                    routing_key='',
+                )
+            except Exception as exc:
+                if attempt == 0 and exchange is not None:
+                    # confirm 失败时交付状态可能不确定；同一 event_id 最多重放一次。
+                    # 唤醒不承载业务事实，重复由 pending/generation 语义幂等收敛。
+                    log.warning(
+                        '[RabbitMQRealtimeWakeupBus] publisher 连接失效，'
+                        f'重建后重放一次 {self._endpoint} error={type(exc).__name__}'
+                    )
+                    await self._reset_publisher_if_current(exchange)
+                    await asyncio.sleep(RECONNECT_DELAY_SECS)
+                    continue
+                HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                    transport='rabbitmq',
+                    result='error',
+                ).inc()
+                raise
+            else:
+                HASN_REALTIME_WAKEUP_PUBLISH_TOTAL.labels(
+                    transport='rabbitmq',
+                    result='ok',
+                ).inc()
+                return
 
     async def _publisher(self) -> AbstractExchange:
         async with self._publisher_lock:
-            if self._publisher_exchange is not None:
-                return self._publisher_exchange
+            exchange = self._publisher_exchange
+            channel = self._publisher_channel
+            connection = self._publisher_connection
+            if exchange is not None and channel is not None and connection is not None:
+                if not connection.is_closed:
+                    try:
+                        await asyncio.wait_for(
+                            channel.ready(),
+                            timeout=PUBLISHER_RECOVERY_TIMEOUT_SECS,
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            '[RabbitMQRealtimeWakeupBus] publisher robust channel 未恢复，'
+                            f'改为重建 {self._endpoint} error={type(exc).__name__}'
+                        )
+                    else:
+                        return exchange
+                self._publisher_exchange = None
+                self._publisher_channel = None
+                self._publisher_connection = None
+                await self._close_channel_and_connection(channel, connection)
 
             connection = await aio_pika.connect_robust(self._dsn, timeout=10)
-            channel = await connection.channel(publisher_confirms=True)
+            channel = cast(
+                'RobustChannel',
+                await connection.channel(publisher_confirms=True),
+            )
             exchange = await channel.declare_exchange(
                 REALTIME_EXCHANGE,
                 aio_pika.ExchangeType.FANOUT,
@@ -299,6 +337,21 @@ class RabbitMQRealtimeWakeupBus:
             self._publisher_channel = channel
             self._publisher_exchange = exchange
             return exchange
+
+    async def _reset_publisher_if_current(
+        self,
+        failed_exchange: AbstractExchange,
+    ) -> None:
+        """仅回收当前失败的 publisher，避免并发恢复关闭新连接。"""
+        async with self._publisher_lock:
+            if self._publisher_exchange is not failed_exchange:
+                return
+            channel = self._publisher_channel
+            connection = self._publisher_connection
+            self._publisher_exchange = None
+            self._publisher_channel = None
+            self._publisher_connection = None
+        await self._close_channel_and_connection(channel, connection)
 
     async def _consume_forever(self) -> None:
         while True:
@@ -411,11 +464,20 @@ class RabbitMQRealtimeWakeupBus:
             await connection.close()
 
     async def _close_publisher(self) -> None:
-        channel = self._publisher_channel
-        connection = self._publisher_connection
-        self._publisher_exchange = None
-        self._publisher_channel = None
-        self._publisher_connection = None
+        async with self._publisher_lock:
+            channel = self._publisher_channel
+            connection = self._publisher_connection
+            self._publisher_exchange = None
+            self._publisher_channel = None
+            self._publisher_connection = None
+        await self._close_channel_and_connection(channel, connection)
+
+    @staticmethod
+    async def _close_channel_and_connection(
+        channel: AbstractChannel | None,
+        connection: AbstractRobustConnection | None,
+    ) -> None:
+        """关闭一组已从共享状态摘除的 publisher 资源。"""
         if channel is not None and not channel.is_closed:
             await channel.close()
         if connection is not None and not connection.is_closed:
