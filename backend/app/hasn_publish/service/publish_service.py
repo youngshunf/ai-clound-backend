@@ -728,6 +728,7 @@ class PublishService:
             'resource_uri': f'hasn://publish/sites/{site.id}',
             'slug': site.slug,
             'title': site.title,
+            'form_ref': 'growth-lead-v1',
             'status': site.status,
             'visibility': site.visibility,
             'current_revision_id': site.current_revision_id,

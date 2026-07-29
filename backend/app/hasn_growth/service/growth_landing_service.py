@@ -10,6 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.hasn_growth.model.form_submission import FormSubmission
+from backend.app.hasn_growth.model.growth_attribution_event import GrowthAttributionEvent
 from backend.app.hasn_growth.model.growth_project import GrowthProject
 from backend.app.hasn_publish.provider.client import publish_provider
 from backend.app.hasn_task.model.task import HasnTask
@@ -94,6 +95,43 @@ class GrowthLandingService:
         ]
 
     @staticmethod
+    async def _attribution_summary(
+        db: AsyncSession,
+        *,
+        project: GrowthProject,
+    ) -> dict[str, Any]:
+        """汇总公开表单的首触与末触事实，不让客户端从留资列表猜归因。"""
+        touch_model = GrowthAttributionEvent.meta_data['touch_model'].astext
+        first_touch = (
+            sa.func.count(GrowthAttributionEvent.id)
+            .filter(touch_model == 'first_touch')
+            .label('first_touch_count')
+        )
+        last_touch = (
+            sa.func.count(GrowthAttributionEvent.id)
+            .filter(touch_model == 'last_touch')
+            .label('last_touch_count')
+        )
+        first_touch_count, last_touch_count, latest_touch_at = (
+            await db.execute(
+                sa.select(
+                    first_touch,
+                    last_touch,
+                    sa.func.max(GrowthAttributionEvent.occurred_time).label('latest_touch_at'),
+                ).where(
+                    GrowthAttributionEvent.growth_project_id == project.id,
+                    GrowthAttributionEvent.event_type == 'inbound',
+                    GrowthAttributionEvent.source_kind == 'inbound_form',
+                )
+            )
+        ).one()
+        return {
+            'first_touch_count': int(first_touch_count or 0),
+            'last_touch_count': int(last_touch_count or 0),
+            'latest_touch_at': timezone.to_str(latest_touch_at) if latest_touch_at else None,
+        }
+
+    @staticmethod
     def _site_state(site: dict[str, Any] | None) -> str:
         if site is None:
             return 'unpublished'
@@ -154,6 +192,7 @@ class GrowthLandingService:
                 'resource_uri': project.landing_site_ref,
                 'in_sync': bool(resource_uri and project.landing_site_ref == resource_uri),
             },
+            'attribution_summary': await self._attribution_summary(db, project=project),
             'recent_submissions': await self._recent_submissions(db, project=project),
         }
 

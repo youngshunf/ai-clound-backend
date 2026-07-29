@@ -802,6 +802,15 @@ async def test_four_scope_funnel_flow(e2e) -> None:
             },
         )
         assert notification_count == 1
+        landing_status = _ok(
+            await c.get(
+                f'/api/v1/growth/app/projects/{e2e.growth_project_id}/landing'
+            )
+        )
+        assert landing_status['attribution_summary']['first_touch_count'] == 1
+        assert landing_status['attribution_summary']['last_touch_count'] == 1
+        assert landing_status['attribution_summary']['latest_touch_at']
+        assert landing_status['recent_submissions'][0]['id'] == submission.id
 
         profile_before = await e2e.session.get(
             ContactPrivateProfile,
@@ -1069,6 +1078,12 @@ async def test_growth_landing_status_and_reconcile_use_publish_provider(e2e) -> 
         assert before['dependency']['status'] == 'ready'
         assert before['site_state'] == 'published'
         assert before['site']['platform_project_id'] == str(e2e.platform_project_id)
+        assert before['site']['form_ref'] == 'growth-lead-v1'
+        assert before['attribution_summary'] == {
+            'first_touch_count': 0,
+            'last_touch_count': 0,
+            'latest_touch_at': None,
+        }
         assert before['binding'] == {'resource_uri': None, 'in_sync': False}
 
         reconciled = _ok(
