@@ -109,8 +109,8 @@ def test_redis_rollback_keeps_explicit_queue_without_rabbit_confirm(
 
     options = celery_module.build_celery_broker_options(configured)
 
-    assert options['task_default_queue'] == 'celery'
-    assert options['task_default_exchange'] == 'celery'
-    assert options['task_default_routing_key'] == 'celery'
+    assert options['task_default_queue'] == 'huanxing.celery.rollback'
+    assert options['task_default_exchange'] == 'huanxing.celery.rollback'
+    assert options['task_default_routing_key'] == 'huanxing.celery.rollback'
     assert options['broker_transport_options'] == {}
     assert options['broker_heartbeat'] is None

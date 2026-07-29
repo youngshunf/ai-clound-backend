@@ -19,7 +19,7 @@ from backend.core.path_conf import BASE_PATH
 CELERY_DEFAULT_QUEUE = 'huanxing.celery.default'
 CELERY_DEFAULT_EXCHANGE = 'huanxing.celery'
 CELERY_DEFAULT_ROUTING_KEY = CELERY_DEFAULT_QUEUE
-CELERY_REDIS_ROLLBACK_QUEUE = 'celery'
+CELERY_REDIS_ROLLBACK_QUEUE = 'huanxing.celery.rollback'
 
 
 @worker_process_init.connect(weak=False)
